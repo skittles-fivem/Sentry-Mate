@@ -306,7 +306,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 .ico--sm { width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); stroke-width: 1.9; }
 .ico--lg { width: round(1.375rem, var(--e)); height: round(1.375rem, var(--e)); }
 .num { font-variant-numeric: tabular-nums; }
-.mono { font-family: var(--font-mono); font-size: 0.92em; letter-spacing: 0.01em; line-height: inherit; } /* the line of the text around it */
+.mono { font-family: var(--font-mono); font-size: max(0.92em, var(--fs-floor)); letter-spacing: 0.01em; line-height: inherit; } /* the line of the text around it */
 .muted { color: var(--text-2); }
 .faint { color: var(--text-3); }
 .nowrap { white-space: nowrap; }
@@ -533,7 +533,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 .pill--warm { --dot: var(--warm); }
 .pill .ico { width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); }
 
-.tag { display: inline-flex; align-items: center; white-space: nowrap; gap: round(0.3125rem, var(--e)); height: round(1.25rem, var(--e)); padding: 0 round(0.4375rem, var(--e)); border-radius: round(0.375rem, var(--e)); font-size: max(0.6875rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.tag { display: inline-flex; align-items: center; white-space: nowrap; gap: round(0.3125rem, var(--e)); height: max(round(1.25rem, var(--e)), round(calc(1.4 * var(--fs-floor)), 1px)); /* the text floor still fits at a small Interface size */ padding: 0 round(0.4375rem, var(--e)); border-radius: round(0.375rem, var(--e)); font-size: max(0.6875rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
 .tag--warm { color: var(--warm); background: var(--warm-soft); }
 .tag--live { color: var(--live); background: var(--live-soft); }
 .tag .ico { width: round(0.75rem, var(--e)); height: round(0.75rem, var(--e)); stroke-width: 2.2; }
@@ -1307,7 +1307,7 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 .hbar-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); }
 .hbar { position: relative; height: round(0.5rem, var(--e)); border-radius: 99px; background: rgba(150, 182, 240, 0.08); overflow: hidden; }
 .hbar > i { position: absolute; inset: 0 auto 0 0; width: var(--w); border-radius: inherit; background: var(--live); opacity: 0.75; }
-.hbar-val { white-space: nowrap; color: var(--text-2); }
+.hbar-val { white-space: nowrap; color: var(--text-2); padding-inline-end: 1px; } /* the text's own subpixel width can pass its whole-pixel column */
 
 .map-overlay--br { bottom: calc(round(0.5rem, var(--e)) + var(--map-foot-br, round(1.25rem, var(--e)))); right: round(0.75rem, var(--e)); }
 .chart-block[data-series] .chart-label .key i { background: var(--c); }
@@ -1592,7 +1592,7 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 :root[data-phone] .page-sub > .sep { display: none; }
 :root[data-phone] .pill--lg { height: auto; min-height: round(2rem, var(--e)); }
 :root[data-phone] :is(.panel-link, .legend-chip, a.hbar-label, .link-btn) { min-height: var(--tap); display: inline-flex; align-items: center; }
-:root[data-phone] .hbars li { min-height: var(--tap); }
+:root[data-phone] .hbars li { min-height: var(--tap); grid-template-columns: minmax(0, 1.25fr) minmax(round(2.5rem, var(--e)), 1fr) max-content; } /* the bar keeps some room, the label gives way first */
 :root[data-phone] .maplibregl-ctrl-group button { width: var(--tap) !important; height: var(--tap) !important; }
 :root[data-phone] .skip:not(:focus) { visibility: hidden; }
 

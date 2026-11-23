@@ -18,7 +18,8 @@ Look at the screenshots, light and dark, desktop, 4K and phone. `--pixel` must r
 
 ```
 index.html     the shell: #scroller > .shell > #head, #notices, #main (the bento grid), #foot; #dock; #toasts
-boot.js        before the first paint: Auto x Interface size, --dp (one device pixel) and the theme
+boot.js        before the first paint: Auto x Interface size (or this device's own size from sentrymate.device-size),
+               --dp (one device pixel) and the theme
 app.css        fonts, size tokens, colours (light, dark), the frame and every shared part
 core/          the frame and its helpers (below)
 pages/<id>.js  one module per page id, plus sign-in, setup and move-parts (shared with Settings: Server)

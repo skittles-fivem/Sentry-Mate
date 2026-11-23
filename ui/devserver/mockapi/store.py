@@ -103,6 +103,7 @@ class Store:
         self.mqtt = extras.mqtt(now)
         self.imports = extras.imports(now, ds.history("c3"))
         self.storage = extras.storage(now)
+        self.compaction = None  # the compaction's state, made on the first read (resources/system.py)
         from .resources import moving
         moving.seed(self, cfg, now)  # first-run set-up, the move to another server, export files
         from .resources import tesla
@@ -112,8 +113,6 @@ class Store:
         from .resources import teslamate
         teslamate.seed(self, now)  # the local TeslaMate input: MQTT on, the database catch-up off, two cars
         teslamate.seed_trouble(self, getattr(cfg, "teslamate_trouble", "none"), now)  # --teslamate-trouble
-        from .resources import fullrebuild
-        fullrebuild.seed(self, cfg, now)  # --full-rebuild: none, running, failed or offered
 
     # ------------------------------------------------------------ seeding
     def seed_accounts(self, now):

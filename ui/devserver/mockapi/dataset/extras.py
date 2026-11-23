@@ -39,8 +39,6 @@ def server_settings(now):
         "default_time_zone": "America/Chicago",
         # an import fills what live history lacks (a car's own `import_gap_fill` wins)
         "import_gap_fill": {"enabled": True},
-        # a new server version that decodes stored logs differently fully rebuilds the cars made with the old one
-        "full_rebuild": {"auto": True},
     }
 
 

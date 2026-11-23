@@ -562,6 +562,9 @@ html[data-form="phone"] dialog.sheet.is-center { padding: 0 var(--s4); }
 .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: var(--s1); padding: var(--s1); border-radius: 999px; background: var(--card-alt); }
 .seg-btn { height: var(--h-sm); padding: 0 var(--s3); border: 0; border-radius: 999px; background: transparent; color: var(--muted); font-size: var(--f14); line-height: var(--l14); font-weight: 700; cursor: pointer; white-space: nowrap; }
 .seg-btn[aria-checked="true"] { background: var(--card); color: var(--text); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08); }
+/* the Interface size on this device: Auto and five steps, in two rows of three so each fits on a phone */
+.seg--device { grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); border-radius: var(--s4, 1.25rem); }
+.seg--device .seg-btn { padding: 0 var(--s2); }
 html[data-form="phone"] .seg-btn { height: var(--h-btn); }
 
 .row-toggle { cursor: pointer; }
@@ -677,29 +680,6 @@ html[data-form="phone"] .auth-card { padding: var(--s6) var(--s5); }
 .mv-copy { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
 .mv-copied { font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
 .mv-copied:empty { display: none; }
-
-/* the full rebuild (core/fullrebuild.js): a well of fixed size, every row there from the start, one line each */
-.fr-tile { gap: var(--s3); }
-.fr-bare { display: flex; flex-direction: column; padding-top: var(--s3); border-top: 1px solid var(--card-alt); }
-.fr-go { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
-.fr-go > .btn { flex: none; }
-.fr-other { flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fr-well { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4); border-radius: var(--r-sm); background: var(--well); }
-.fr-bar { display: grid; grid-template-columns: minmax(0, 1fr) round(3.5rem, var(--e)); align-items: center; column-gap: var(--s3); height: var(--l14); }
-.fr-pct { text-align: right; font-size: var(--f14); line-height: var(--l14); font-weight: 800; font-variant-numeric: tabular-nums; }
-.fr-well.is-warn .mv-bar-fill { background: var(--sun); }
-.fr-well.is-error .mv-bar-fill { background: var(--bad); }
-.fr-rows { display: flex; flex-direction: column; }
-.fr-row { display: grid; grid-template-columns: round(9rem, var(--e)) minmax(0, 1fr); column-gap: var(--s3); height: var(--l14); font-size: var(--f14); line-height: var(--l14); }
-.fr-k { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fr-v { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fr-row:first-child .fr-v { font-weight: 800; }
-.fr-well.is-ok .fr-row:first-child .fr-v { color: var(--teal); }
-.fr-well.is-warn .fr-row:first-child .fr-v { color: var(--sun); }
-.fr-well.is-error .fr-row:first-child .fr-v { color: var(--bad); }
-.fr-errs { display: flex; flex-direction: column; padding-top: var(--s3); border-top: 1px solid var(--card); }
-html[data-form="phone"] .fr-row { grid-template-columns: round(7rem, var(--e)) minmax(0, 1fr); }
-.fr-err { height: var(--l13); font-size: var(--f13); line-height: var(--l13); color: var(--bad); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* --------------------------------------------------------------- data parts: shared by the pages -- */
 

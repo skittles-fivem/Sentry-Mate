@@ -108,6 +108,12 @@
 .page-settings-server .ss-a-when, .page-settings-server .ss-a-who { white-space: nowrap; }
 .page-settings-server .ss-a-action { min-width: round(13rem, var(--e)); }
 .page-settings-server .ss-a-item { min-width: round(13rem, var(--e)); }
+/* the audit log scrolls in a box: its head and five entries high, high from the start; the head stays at the
+   top, more load as the end comes near, and a fade at the bottom while there are more under it */
+.page-settings-server .ss-audit-log .ledger-box { height: calc(round(2.375rem, var(--e)) + 5 * round(4.375rem, var(--e)) + 2px); overflow-y: auto; scrollbar-gutter: stable; border-bottom: 1px solid var(--rule); }
+.page-settings-server .ss-audit-log .ledger-box .ledger-table thead th { top: 0; }
+.page-settings-server .ss-audit-log .ledger-box[data-below] { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - round(2.5rem, var(--e))), rgb(0 0 0 / 0.2)); mask-image: linear-gradient(to bottom, #000 calc(100% - round(2.5rem, var(--e))), rgb(0 0 0 / 0.2)); }
+.page-settings-server .ss-audit-log .ledger-box:focus-visible { outline-offset: calc(-1 * var(--focus-w)); }
 
 /* the account dialog */
 .ss-cars-field .choice, .ss-cars-field .segmented { margin-bottom: round(0.5rem, var(--e)); }
@@ -137,6 +143,8 @@
   .page-settings-server .ss-audit-log .ss-a-action, .page-settings-server .ss-audit-log .ss-a-summary, .page-settings-server .ss-audit-log .ss-a-item { grid-column: 1 / -1; }
   .page-settings-server .ss-audit-log .ss-a-action { font-weight: 600; }
   .page-settings-server .ss-audit-log .ss-a-summary { color: var(--ink-2); }
+  /* about three entries in the box */
+  .page-settings-server .ss-audit-log .ledger-box { height: min(round(30rem, var(--e)), 62svh); overflow-y: auto; }
 }
 
 /* Move to another server (pages/settings-move.js) */
@@ -184,3 +192,52 @@
 .ss-rk-dialog .ss-rk-tick input { margin-top: round(0.1875rem, var(--e)); flex: none; }
 .ss-rk-dialog .ss-rk-go { display: flex; justify-content: flex-end; margin-top: round(0.75rem, var(--e)); }
 .ss-rk-dialog .ss-rk-note { color: var(--ink-3); font-size: var(--text-sm); margin-top: round(0.5rem, var(--e)); }
+
+/* the move and Storage side by side: half the width each on a desktop, one above the other when narrow */
+.page-settings-server .ss-pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 round(3.5rem, var(--e)); align-items: start; margin-top: round(2.5rem, var(--e)); }
+.page-settings-server .ss-pair > .block { min-width: 0; margin-top: 0; }
+.page-settings-server .ss-pair > .block + .block { margin-top: round(2.5rem, var(--e)); }
+@container page (width >= 62rem) {
+  .page-settings-server .ss-pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .page-settings-server .ss-pair > .block + .block { margin-top: 0; }
+}
+@container page (width < 110rem) { .page-settings-server .ss-pair .mv-ways { grid-template-columns: minmax(0, 1fr); } }
+:root[data-phone] .page-settings-server .ss-pair { grid-template-columns: minmax(0, 1fr); }
+:root[data-phone] .page-settings-server .ss-pair > .block + .block { margin-top: round(2.5rem, var(--e)); }
+
+/* storage: the figures in a row, how compaction stands, then the space by kind */
+.page-settings-server .ss-storage .block-actions { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)); justify-content: flex-end; }
+.page-settings-server .st-figs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.page-settings-server .st-fig { min-width: 0; padding: round(0.5rem, var(--e)) round(0.75rem, var(--e)); cursor: help; }
+.page-settings-server .st-fig + .st-fig { border-left: 1px solid var(--rule); }
+.page-settings-server .st-fig:first-child { padding-left: 0; }
+.page-settings-server .st-fig dt { font-size: var(--text-sm); color: var(--ink-3); }
+.page-settings-server .st-fig dd { margin: 0; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.page-settings-server .ss-stor-line { display: flex; align-items: center; gap: round(0.5rem, var(--e)); margin: round(0.75rem, var(--e)) 0; min-height: 1lh; color: var(--ink-2); }
+.page-settings-server .ss-stor-line strong { color: var(--ink); font-weight: 600; }
+.page-settings-server .ss-stor-line.ss-warn, .page-settings-server .ss-stor-line.ss-warn strong { color: var(--rust); }
+.page-settings-server .st-tip { flex: none; display: inline-grid; place-items: center; color: var(--ink-3); cursor: help; }
+.page-settings-server .st-tip .icon { width: round(1rem, var(--e)); height: round(1rem, var(--e)); }
+.page-settings-server .st-groups { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule-strong); }
+.page-settings-server .st-group { border-bottom: 1px solid var(--rule); }
+.page-settings-server .st-group-head { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(3rem, 6rem) auto round(2.75rem, var(--e)); align-items: center; gap: round(0.625rem, var(--e)); width: 100%; min-height: round(2.5rem, var(--e)); padding: round(0.375rem, var(--e)) 0; border: 0; background: none; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+@media (hover: hover) { .page-settings-server .st-group-head:hover .st-group-name { color: var(--accent); text-decoration: underline; } }
+.page-settings-server .st-group-head > .icon { width: round(1rem, var(--e)); height: round(1rem, var(--e)); color: var(--ink-3); }
+.page-settings-server .st-group-name { font-weight: 600; overflow-wrap: anywhere; }
+.page-settings-server .st-bar { position: relative; display: block; height: round(0.375rem, var(--e)); border-radius: 99px; background: var(--paper-sunk); overflow: hidden; }
+.page-settings-server .st-bar > i { position: absolute; inset: 0 auto 0 0; width: round(var(--w, 0%), 1px); background: var(--accent); }
+.page-settings-server .st-group-size, .page-settings-server .st-group-share { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.page-settings-server .st-group-share { color: var(--ink-3); }
+/* a group's categories: five rows at most, the rest scroll */
+.page-settings-server .st-rows { list-style: none; margin: 0 0 round(0.5rem, var(--e)); padding: 0 0 0 round(1.625rem, var(--e)); max-height: calc(5 * round(2rem, var(--e))); overflow-y: auto; overscroll-behavior: contain; }
+.page-settings-server .st-rows[hidden] { display: none; }
+.page-settings-server .st-row { display: flex; align-items: center; justify-content: space-between; gap: round(0.75rem, var(--e)); min-height: round(2rem, var(--e)); color: var(--ink-2); }
+.page-settings-server .st-row-name { min-width: 0; overflow-wrap: anywhere; }
+.page-settings-server .st-row-size { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.page-settings-server .st-none { padding: round(0.75rem, var(--e)) 0; color: var(--ink-2); }
+:root[data-phone] .page-settings-server .st-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+:root[data-phone] .page-settings-server .st-fig:nth-child(3) { border-left: 0; padding-left: 0; }
+:root[data-phone] .page-settings-server .st-fig:nth-child(n+3) { border-top: 1px solid var(--rule); }
+:root[data-phone] .page-settings-server .st-group-head { grid-template-columns: auto minmax(0, 1fr) auto round(2.75rem, var(--e)); }
+:root[data-phone] .page-settings-server .st-bar { grid-column: 2 / -1; grid-row: 2; }
+.page-settings-server .sort-mark { font-size: max(10px, 0.75em); }

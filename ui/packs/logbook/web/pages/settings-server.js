@@ -7,21 +7,23 @@
 // here, saved with the settings' version), the ports, the certificate, the recovery key and backups,
 // the accounts (roles, car lists, two-step sign-in, a new password) and the audit log, whose entries
 // say what was done in words and link to the item they changed (filtered by what and who, loaded as the
-// list scrolls). Every table has a Download CSV button. Admins also get the full rebuild of every car
-// (system/full-rebuild, its progress read again while it runs: rebuild-parts.js) and its automatic switch
-// (full_rebuild.auto, saved with the settings' version).
+// list scrolls), and Storage beside the move: the space on disk by kind and what compaction saved
+// (GET /system/storage/detail), with "Compact now" (POST /system/storage/compact; while a pass runs the
+// detail is read again every 2 s, until the page is left). Every table has a Download CSV button.
 
-import { h, replace } from '../shared/dom.js';
+import { h, replace, setVars } from '../shared/dom.js';
+import { downloadCsv } from '../shared/csv.js';
+import { storageGroups, shortName, shareText, groupWord, PACK_STEP } from '../shared/storage.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { pageHead, section, empty, ago, flag, button, icon, note, sep } from '../core/ui.js';
+import { format } from '../shared/units.js';
+import { pageHead, section, empty, ago, flag, button, icon, note, sep, q } from '../core/ui.js';
 import { dataTable } from '../core/table.js';
 import { field, form, choice, switchField, setFieldError, soldPickRows } from '../core/form.js';
 import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { dateTime, date, zoneLabel, count } from '../core/format.js';
 import { moveBlock, askPassword } from './settings-move.js';
 import { bigCode, downloadText } from './move-parts.js';
-import { fullRebuild } from './rebuild-parts.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 
 export const id = 'settings-server';
@@ -42,6 +44,7 @@ const HOST_RE = /^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-
 const isIpv4 = (s) => /^\d{1,3}(\.\d{1,3}){3}$/.test(s);
 const isLoopback = (s) => s === 'localhost' || s === '[::1]' || s === '::1' || /^127\./.test(s);
 const errText = (e) => (e && e.fields ? Object.values(e.fields).join(' ') : (e && e.message) || 'Something went wrong.');
+const bytes = (v) => q(v, 'bytes');
 
 /* ================================================================== small parts */
 
@@ -472,32 +475,6 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- moving to another server (admin) */
   const mover = admin ? moveBlock(ctx, { network }) : null;
 
-  /* ---------------------------------------------------------------- full rebuild (admin) */
-  let full = null;
-  let fullSection = null;
-  if (admin) {
-    const autoOn = () => !settings.full_rebuild || settings.full_rebuild.auto !== false;
-    const auto = switchField({
-      label: 'Rebuild automatically when a new server version decodes the stored logs differently',
-      hint: 'On by default. Off: a notice offers the full rebuild instead, and you start it here.',
-      checked: autoOn(),
-      onchange: async (on) => {
-        try {
-          settings = await ctx.api.patch('settings', { version: settings.version, full_rebuild: { auto: on } });
-          ctx.flash('Saved for everyone on this server.');
-        } catch (err) {
-          if (err && (err.code === 'stale_version' || err.status === 409)) {
-            settings = await ctx.api.get('settings').catch(() => settings);
-            ctx.flash('Someone else changed the server settings meanwhile. The switch shows the saved setting now; make your change again.', { kind: 'error' });
-          } else ctx.flash(`Not saved: ${errText(err)}`, { kind: 'error' });
-          if (ctx.alive()) auto.set(autoOn());
-        }
-      },
-    });
-    full = fullRebuild(ctx, { carName: (c) => carName.get(c) || c, after: h('div', { class: 'fr-auto' }, auto) });
-    fullSection = section({ title: 'Full rebuild', note: 'every car’s history made again from the stored data', cls: 'ss-full', id: 'full-rebuild' }, full.el);
-  }
-
   /* ---------------------------------------------------------------- accounts (admin) */
   let accountsTable = null;
   let accountsSection = null;
@@ -672,8 +649,9 @@ export async function mount(ctx) {
 
   /* ---------------------------------------------------------------- audit log (admin) */
   // Each entry in words (shared/audit.js): what was done (the code in the tooltip), and the item it changed,
-  // linked where it still exists. Filters: what (a group of actions) and who; ten entries first, more as the
-  // end of the list scrolls into view (or with Load more), added under the ones already there.
+  // linked where it still exists. Filters: what (a group of actions) and who. The list scrolls in a box five
+  // entries high; ten entries first, more as the end of the box comes near (or with Load more), added under
+  // the ones already there.
   let auditTable = null;
   let auditSection = null;
   let auditPrep = null;
@@ -705,7 +683,7 @@ export async function mount(ctx) {
     whoField.control.addEventListener('change', refilter);
     auditTable = dataTable(ctx, {
       path: 'audit', limit: 10, itemName: ['entry', 'entries'], label: 'Audit log', cls: 'ss-audit-log',
-      append: true, autoMore: true, moreLabel: 'Load more',
+      append: true, autoMore: true, moreLabel: 'Load more', box: 'Audit log entries',
       filters: h('div', { class: 'ss-audit-filters' }, whatField, whoField),
       columns: [
         { key: 'at_ms', label: 'When', th: true, cls: 'ss-a-when', cell: (e) => h('span', null, h('span', { class: 'cell-main' }, dateTime(e.at_ms, tz)), h('span', { class: 'cell-sub' }, ago(e.at_ms))) },
@@ -724,6 +702,117 @@ export async function mount(ctx) {
       auditTable.el);
   }
 
+  /* ---------------------------------------------------------------- storage and compaction (admin) */
+  // A compact block beside the move: one row of figures (on disk, free, saved by compaction, the last pass) and
+  // Compact now, then the space by kind (shared/storage.js): one row per group with its size, a bar and its share;
+  // a group opens to its categories by short name, at most five rows tall (the CSV has every category with the
+  // server's own label). While a pass runs (also one the server started by itself) the detail is read again every
+  // 2 s for its progress, and when it ends the groups are drawn again and a note says what was freed.
+  let storageSection = null;
+  let storage = null;
+  if (admin) {
+    let detail = null, readErr = null, pollErr = null, timer = null;
+    ctx.onCleanup(() => clearTimeout(timer));
+    const compactBtn = button('Compact now', { kind: 'primary', iconName: 'reset', cls: 'button-small', onclick: () => compactNow() });
+    const csvBtn = button('Download CSV', { iconName: 'download', cls: 'button-small', onclick: () => downloadCsv('sentry-mate-storage-on-disk.csv', (detail && detail.categories) || [], [
+      { label: 'What', value: (c) => c.label }, { label: 'Kind', value: (c) => groupWord(c.group) }, { label: 'Key', value: (c) => c.key },
+      { label: 'Files', value: (c) => c.files }, { label: 'Size (bytes)', value: (c) => c.bytes }, { label: 'On disk (bytes)', value: (c) => c.disk_bytes }]) });
+    const figsBox = h('dl', { class: 'st-figs' });
+    const line = h('p', { class: 'ss-stor-line', 'aria-live': 'polite' });
+    const list = h('ul', { class: 'st-groups', 'aria-label': 'Space on disk by kind' });
+    const open = new Set();
+    let opened = false;
+    const LOSSLESS = 'Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs’ signed originals are kept byte for byte.';
+    const fig = (label, value, title) => h('div', { class: 'st-fig', title }, h('dt', null, label), h('dd', null, value));
+    const drawGroups = () => {
+      const groups = storageGroups(detail && detail.categories);
+      if (!opened && groups.length) { open.add(groups[0].group); opened = true; }  // the largest, open at first
+      if (!groups.length) {
+        replace(list, h('li', { class: 'st-none' }, `The server did not say what takes the space${readErr ? `: ${errText(readErr)}` : '.'}`));
+        return;
+      }
+      replace(list, groups.map((g) => {
+        const isOpen = open.has(g.group);
+        const bar = h('span', { class: 'st-bar', 'aria-hidden': 'true' }, h('i'));
+        setVars(bar, { '--w': `${Math.max(g.share > 0 ? 1 : 0, g.share * 100).toFixed(1)}%` });
+        const rows = h('ul', { class: 'st-rows', tabindex: '0', 'aria-label': g.name, hidden: !isOpen },
+          g.rows.map((c) => h('li', { class: 'st-row', title: c.label },
+            h('span', { class: 'st-row-name' }, shortName(c)), h('span', { class: 'st-row-size' }, bytes(c.disk_bytes)))));
+        const head = h('button', { class: 'st-group-head', type: 'button', 'aria-expanded': String(isOpen), onclick: () => {
+          if (open.has(g.group)) open.delete(g.group); else open.add(g.group);
+          drawGroups();
+        } }, icon(isOpen ? 'chevronDown' : 'chevronRight'), h('span', { class: 'st-group-name' }, g.name), bar,
+        h('span', { class: 'st-group-size' }, bytes(g.disk_bytes)), h('span', { class: 'st-group-share' }, shareText(g.share)));
+        return h('li', { class: ['st-group', isOpen && 'is-open'] }, head, rows);
+      }));
+    };
+    const draw = () => {
+      const c = (detail && detail.compaction) || null;
+      const running = !!c && c.status === 'running';
+      compactBtn.disabled = running || !c;
+      const num = (v) => (v == null ? q(null, 'bytes', { why: 'not known' }) : bytes(v));
+      replace(figsBox,
+        fig('On disk', num(detail ? detail.total_disk_bytes : null), 'Everything below, as it lies on disk.'),
+        fig('Free', num(detail ? detail.free_bytes : null), 'Room left on the disk for new data.'),
+        fig('Saved', num(c ? c.saved_bytes : null), 'What compaction has freed in all.'),
+        fig('Last pass', !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? h('span', null, bytes(c.last_saved_bytes), ' freed') : 'Nothing left to pack',
+          c && c.finished_ms != null ? `Finished ${dateTime(c.finished_ms, tz)} (${zoneLabel(tz)}).` : 'No pass has finished yet.'));
+      const tip = h('span', { class: 'st-tip', title: LOSSLESS, 'aria-label': LOSSLESS, role: 'img' }, icon('info'));
+      line.classList.toggle('ss-warn', !!c && c.status === 'failed');
+      if (running) {
+        replace(line, h('span', null, h('strong', null, 'Packing…'), ` ${PACK_STEP[c.step] || c.step || 'getting ready'}, `,
+          c.total ? `${format(c.done ?? 0, 'count')} of ${format(c.total, 'count')}` : 'counting',
+          pollErr ? ` (the progress could not be read just now: ${errText(pollErr)})` : null), tip);
+      } else if (c && c.status === 'failed') {
+        replace(line, h('span', null, h('strong', null, 'The last pass failed: '), c.error || 'the server gave no reason.'), tip);
+      } else {
+        replace(line, h('span', null, !c ? 'The server did not say how compaction stands.'
+          : c.automatic ? 'Compaction runs by itself when the server is idle.' : 'Compaction does not run by itself here.'), tip);
+      }
+    };
+    const schedule = () => { clearTimeout(timer); if (detail && detail.compaction && detail.compaction.status === 'running') timer = setTimeout(poll, 2000); };
+    async function poll() {
+      try {
+        const d = await ctx.api.get('system/storage/detail');
+        if (!ctx.alive()) return;
+        detail = d; pollErr = null;
+        const c = d.compaction || {};
+        if (c.status !== 'running') {
+          drawGroups();
+          if (c.status === 'failed') ctx.flash(`Compaction failed: ${c.error || 'the server gave no reason.'}`, { kind: 'error' });
+          else ctx.flash(c.last_saved_bytes ? `Compaction is done: ${format(c.last_saved_bytes, 'bytes')} freed on disk.` : 'Compaction is done: nothing was left to pack.');
+        }
+      } catch (err) {
+        if (!ctx.alive()) return;
+        pollErr = err;
+      }
+      draw(); schedule();
+    }
+    async function compactNow() {
+      compactBtn.disabled = true;
+      try {
+        const r = await ctx.api.post('system/storage/compact');
+        if (!ctx.alive()) return;
+        detail = { ...(detail || {}), compaction: r.compaction };
+        pollErr = null;
+      } catch (err) {
+        if (!ctx.alive()) return;
+        ctx.flash(`Compaction not started: ${errText(err)}`, { kind: 'error' });
+      }
+      draw(); schedule();
+    }
+    draw();
+    storageSection = section({ title: 'Storage', note: 'by kind', cls: 'ss-storage', id: 'storage', actions: [csvBtn, compactBtn] },
+      figsBox, line, list);
+    storage = {
+      async load() {
+        try { detail = await ctx.api.get('system/storage/detail'); } catch (err) { if (!ctx.alive()) return; readErr = err; }
+        if (!ctx.alive()) return;
+        drawGroups(); draw(); schedule();
+      },
+    };
+  }
+
   /* ---------------------------------------------------------------- put together */
   drawNames();
   replace(ctx.main,
@@ -734,17 +823,19 @@ export async function mount(ctx) {
     h('div', { class: 'ss-grid' },
       h('div', { class: 'ss-col' }, addressSection, namesSection, portsSection),
       h('div', { class: 'ss-col' }, accessSection, safetySection)),
-    mover ? mover.el : null, fullSection, accountsSection, sessionsSection, auditSection);
+    // the move and Storage side by side (one above the other on a phone or a narrow window)
+    mover || storageSection ? h('div', { class: 'ss-pair' }, mover ? mover.el : null, storageSection) : null,
+    accountsSection, sessionsSection, auditSection);
 
   try {
-    await Promise.all([portsTable && portsTable.load(), sessionsTable.load(), accountsTable && accountsTable.load(), auditTable && auditPrep.then(() => auditTable.load()), mover && mover.load(), full && full.ready]);
+    await Promise.all([portsTable && portsTable.load(), sessionsTable.load(), accountsTable && accountsTable.load(), auditTable && auditPrep.then(() => auditTable.load()), mover && mover.load(), storage && storage.load()]);
   } catch (err) {
     if (!ctx.alive()) return undefined;
     throw err;
   }
   if (!ctx.alive()) return undefined;
   if (focusAccount) document.getElementById(`account-${focusAccount}`)?.scrollIntoView({ block: 'center' });
-  else if (location.hash === '#move' || location.hash === '#full-rebuild') document.getElementById(location.hash.slice(1))?.scrollIntoView({ block: 'start' });
+  else if (location.hash === '#move') document.getElementById('move')?.scrollIntoView({ block: 'start' });
   ctx.ready();
   return {};
 }

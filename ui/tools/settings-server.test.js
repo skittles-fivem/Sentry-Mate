@@ -3,6 +3,14 @@
 //   - the names in the certificate start with localhost, as the real server's do;
 //   - with the owner's own certificate (--own-certificate) the page offers no "Make a new certificate" (the server
 //     refuses it there) and says how to change the files instead, also in the "certificate expires" row.
+// And its Storage panel in all six packs, at desktop size (admins only):
+//   - the categories of GET /system/storage/detail are grouped by kind, largest first, and the CAN logs group opens
+//     to its categories by short name, largest first; with the total, the free space, what compaction saved and
+//     its last pass, and the sentence that says compaction is lossless on hover (a title);
+//   - "Compact now" posts, the progress shows ("Packing…" with the step and done of total, read again every 2 s),
+//     and when the pass ends the groups are drawn again (the day packs first) and a note says what was freed;
+//   - a failed pass shows the server's error; a watch account gets no panel and asks for no detail;
+//   - the reading stops when the page is left while a pass runs.
 // Run: node --test ui/tools/settings-server.test.js. Skipped when Playwright is not installed.
 'use strict';
 
@@ -100,6 +108,125 @@ for (const pack of ['instrument', 'logbook']) {
         assert.doesNotMatch(text, /button below|with Make a new certificate/i, 'it does not point to a button that fails');
         assert.match(text, /your own certificate/i);
         assert.match(text, /key\.pem/);
+        assert.deepEqual(errors, []);
+        await context.close();
+      } finally { await server.stop(); }
+    } finally {
+      await browser.close();
+    }
+  });
+}
+
+/* ------------------------------------------------------------------ the Storage panel, in all six packs */
+
+const DETAIL = /\/api\/v1\/system\/storage\/detail(\?|$)/;
+async function openDesk(browser, server) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  const errors = [], reads = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  page.on('request', (r) => { if (DETAIL.test(r.url())) reads.push(Date.now()); });
+  return { page, context, errors, reads };
+}
+const ready = (page, id = 'settings-server') => page.waitForFunction((want) => document.documentElement.dataset.ready === want, id, { timeout: 30000 });
+// the page's text with every run of white space as one space (a figure and its unit are separate elements)
+const bodyText = (page) => page.evaluate(() => document.body.innerText.replace(/\s+/g, ' '));
+const compactButton = (page) => page.getByRole('button', { name: /compact now/i });
+const LOGS = 'can logs (signed originals)';
+// the text of the groups by kind, lower case, white space as one space
+const groupsText = (page) => page.locator('.st-groups').first().evaluate((e) => e.innerText.replace(/\s+/g, ' ').toLowerCase());
+// the CAN logs group opened (open at first in most packs; closed at first in Pebble's tile)
+async function openLogs(page) {
+  const head = page.locator('button[aria-expanded]', { hasText: /can logs \(signed originals\)/i }).first();
+  if (await head.getAttribute('aria-expanded') !== 'true') await head.click();
+  await page.waitForFunction(() => [...document.querySelectorAll('button[aria-expanded="true"]')].some((b) => /can logs/i.test(b.textContent)));
+}
+
+for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'manager']) {
+  test(`${pack}: Settings: Server, the Storage panel and Compact now`, { skip: !playwright && 'Playwright is not installed', timeout: 240000 }, async () => {
+    const browser = await playwright.chromium.launch();
+    try {
+      let server = await devServer(pack);
+      try {
+        // idle: the categories largest first, the figures, the lossless sentence
+        let { page, context, errors, reads } = await openDesk(browser, server);
+        await page.goto(`${server.origin}/settings/server`);
+        await ready(page);
+        await openLogs(page);
+        let groups = await groupsText(page);
+        const raw = groups.indexOf('signed originals', groups.indexOf(LOGS) + LOGS.length);
+        const packs = groups.indexOf('packed by day');
+        assert.ok(raw >= 0 && packs > raw, 'the logs as uploaded come first, then the day packs');
+        assert.ok(groups.indexOf('time series') > groups.indexOf('check results'), 'the groups largest first, the open group\'s rows under it');
+        assert.ok(groups.indexOf('drives and charges') > groups.indexOf('kept answers and records'), 'largest first');
+        assert.doesNotMatch(groups, /offline map tiles/, 'a closed group does not list its rows');
+        let text = (await bodyText(page)).toLowerCase();
+        assert.doesNotMatch(text, /\bkv\b/, 'no jargon');
+        assert.match(text, /saved:? 830 mb/, 'saved so far');
+        assert.match(text, /9\.5 MB freed/i, 'what the last pass freed');
+        assert.match(text, /runs by itself when the server is idle/i);
+        assert.match(text, /442 gb/, 'the free space');
+        assert.match(text, /21 gb/, 'the total on disk');
+        assert.match(await page.locator('[title*="losslessly"]').first().getAttribute('title'),
+          /losslessly: every value stays readable exactly, and the logs[’'] signed originals are kept byte for byte/i, 'on hover');
+        assert.equal(await page.locator('.st-rows:not([hidden]) > li').count() >= 4, true, 'the open group lists its categories');
+        assert.equal(reads.length, 1, 'idle: the detail is read once');
+
+        // Compact now: progress, then the list again and what was freed
+        await compactButton(page).click();
+        await page.waitForFunction(() => /packing…\s*CAN logs, [\d,.]+ of [\d,.]+/i.test(document.body.innerText) || /step\s+CAN logs, [\d,.]+ of [\d,.]+/.test(document.body.innerText), null, { timeout: 15000 });
+        assert.ok(await compactButton(page).isDisabled(), 'no second pass while one runs');
+        await page.waitForFunction(() => /Compaction is done: 3\.0\sGB freed on disk\./.test(document.body.innerText), null, { timeout: 30000 });
+        text = (await bodyText(page)).toLowerCase();
+        groups = await groupsText(page);
+        assert.ok(groups.indexOf('packed by day') < groups.indexOf('signed originals', groups.indexOf(LOGS) + LOGS.length), 'the groups were drawn again: the day packs are the largest now');
+        assert.match(text, /3\.0 gb freed/, 'the last pass');
+        assert.match(text, /3\.9 gb/, 'saved so far grew');
+        assert.ok(await compactButton(page).isEnabled());
+        const n = reads.length;
+        await page.waitForTimeout(4500);
+        assert.equal(reads.length, n, 'no reading once the pass is done');
+
+        // a second pass finds nothing left; leaving the page while it runs stops the reading
+        await compactButton(page).click();
+        await page.waitForFunction(() => /Compaction is done: nothing was left to pack\./.test(document.body.innerText), null, { timeout: 30000 });
+        assert.match(await bodyText(page), /nothing left to pack/i);
+        await compactButton(page).click();
+        await page.waitForFunction(() => /packing…/i.test(document.body.innerText), null, { timeout: 15000 });
+        await page.evaluate(() => { history.pushState({}, '', '/settings/display'); dispatchEvent(new PopStateEvent('popstate')); });
+        await ready(page, 'settings-display');
+        await page.waitForTimeout(2500);   // a read already under way may still land
+        const left = reads.length;
+        await page.waitForTimeout(5000);
+        assert.equal(reads.length, left, 'the page was left: nothing reads the detail any more');
+        assert.deepEqual(errors, []);
+        await context.close();
+
+        // a failed pass says why (the answer is changed on its way to the page)
+        ({ page, context, errors, reads } = await openDesk(browser, server));
+        await page.route(DETAIL, async (route) => {
+          const res = await route.fetch();
+          const d = await res.json();
+          Object.assign(d.compaction, { status: 'failed', step: null, error: 'No space left on the disk (made up).' });
+          await route.fulfill({ response: res, json: d });
+        });
+        await page.goto(`${server.origin}/settings/server`);
+        await ready(page);
+        assert.match(await bodyText(page), /No space left on the disk \(made up\)/);
+        assert.ok(await compactButton(page).isEnabled(), 'a failed pass can be started again');
+        assert.deepEqual(errors, []);
+        await context.close();
+      } finally { await server.stop(); }
+
+      // a watch account: no panel, no button, no read
+      server = await devServer(pack, ['--role', 'watch']);
+      try {
+        const { page, context, errors, reads } = await openDesk(browser, server);
+        await page.goto(`${server.origin}/settings/server`);
+        await ready(page);
+        assert.equal(await compactButton(page).count(), 0, 'no Compact now for a watch account');
+        assert.doesNotMatch(await bodyText(page), /signed originals/);
+        assert.equal(reads.length, 0);
         assert.deepEqual(errors, []);
         await context.close();
       } finally { await server.stop(); }

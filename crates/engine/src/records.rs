@@ -146,9 +146,6 @@ pub struct CarMeta {
     pub tmlocal_last_ms: Option<u64>,
     #[serde(default)]
     pub tmlocal_received_ms: Option<u64>,
-    /// The decoding the history was made with ([`crate::full::derived_version`]); none: made before it was kept.
-    #[serde(default)]
-    pub version: Option<String>,
 }
 
 impl CarMeta {

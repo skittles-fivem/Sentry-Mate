@@ -334,6 +334,39 @@ fn span(a: u64, b: u64, state: State) -> StateSpan {
     }
 }
 
+/// `v` to `k` decimals, as a decimal column of a backup gives it.
+fn decimals(v: &mut Option<f64>, k: i32) {
+    let p = 10f64.powi(k);
+    *v = v.map(|x| (x * p).round() / p);
+}
+
+/// A sample with the precision a TeslaMate backup's columns have (as the importer's made-up fixtures show them:
+/// `12.301000`, a whole speed, power, battery level and elevation, `399.00` km, `12.5` degrees), so what is stored
+/// is the size an owner's import is. The odometer stays as worked out: a backup's is a float with any digits.
+fn as_stored(s: &mut Sample) {
+    for v in [&mut s.lat, &mut s.lon] {
+        decimals(v, 6);
+    }
+    for v in [&mut s.speed_kmh, &mut s.battery_power_kw, &mut s.soc, &mut s.elevation_m, &mut s.charge_power_kw] {
+        decimals(v, 0);
+    }
+    for v in [&mut s.range_km, &mut s.ideal_range_km] {
+        decimals(v, 2);
+    }
+    for v in [&mut s.outside_temp_c, &mut s.inside_temp_c] {
+        decimals(v, 1);
+    }
+}
+
+/// A charge point with a backup's precision (whole kW, volts, amperes and battery level, `377.15` km, `12.5` degrees).
+fn point_as_stored(p: &mut ChargePoint) {
+    for v in [&mut p.power_kw, &mut p.voltage_v, &mut p.current_a, &mut p.soc] {
+        decimals(v, 0);
+    }
+    decimals(&mut p.range_km, 2);
+    decimals(&mut p.battery_temp_c, 1);
+}
+
 /// Walks the events of `[from, to)` a day at a time (the car's state carried from day to day).
 fn each_day(
     c: &mut Car0,
@@ -374,6 +407,8 @@ fn each_day(
         }
         d.states.extend(sleep);
         d.states.sort_by_key(|s| s.start_ms);
+        d.samples.iter_mut().for_each(as_stored);
+        d.points.iter_mut().for_each(point_as_stored);
         f(day, d)?;
         day += DAY;
     }

@@ -10,7 +10,8 @@ import { formatDate, isValidZone } from '../shared/time.js';
 import { head, paint, section, note, link, btn } from '../core/ui.js';
 import { editLines } from '../core/kvedit.js';
 import { getPrefs, savePrefs, onPrefs } from '../core/prefs.js';
-import { getInterface, applyInterface, getTheme, applyTheme, onChange } from '../core/display.js';
+import { getInterface, applyInterface, applyDeviceSize, onInterface, getTheme, applyTheme, onChange } from '../core/display.js';
+import { deviceSizeOptions, deviceSizeNote } from '../shared/devicesize.js';
 import { tag, ago } from '../core/fmt.js';
 import { carOptions } from '../core/carpick.js';
 import * as state from '../shared/state.js';
@@ -131,6 +132,9 @@ export async function mount(ctx) {
   const packHere = about?.ui_pack?.id || about?.ui_pack?.name?.toLowerCase() || 'console';
   const switchBtn = h('button', { class: 'btn', type: 'button', hidden: shownPack === packHere, onclick: () => location.reload() }, 'switch now');
   const packInfo = packList.items.filter((k) => k.blurb).map((k) => [h('br'), h('span', { class: 'muted' }, `${k.id}: ${k.blurb}`)]);
+  const deviceNoteEl = h('span', { class: 'muted' });
+  const paintDeviceNote = () => { deviceNoteEl.textContent = deviceSizeNote(getInterface().device, { account: getInterface().size }); };
+  paintDeviceNote();
   const look = editLines([
     { key: 'theme', id: 'theme', type: 'choice', value: th, options: [['device', 'auto'], ['dark', 'dark'], ['light', 'light']], cover: ['shell.theme', 'web.settings.general.theme', 'shots.theme-note'],
       help: 'Auto follows this device. Saved with your account and set before the page is drawn, so there is no flash. Every page, chart and map has a dark and a light look.',
@@ -140,8 +144,13 @@ export async function mount(ctx) {
     { key: 'ui_pack', id: 'pack', type: 'choice', value: shownPack, options: packs,
       help: [`The design of the whole app.${about?.ui_pack?.name ? ` This page is the ${about.ui_pack.name} pack ${about.ui_pack.version || ''}.` : ''} Another pack is used the next time the app loads, where the server offers it. `, switchBtn, packInfo],
       save: async (v) => { await pref({ ui_pack: v }); switchBtn.hidden = v === packHere; if (v !== packHere) toast('Saved. Used the next time the app loads; switch now reloads.', { kind: 'info' }); } },
+    // kept in this browser only (shared/devicesize.js), never with the account
+    { key: 'size_on_this_device', id: 'device-size', type: 'choice', value: getInterface().device ? String(getInterface().device) : 'auto',
+      options: deviceSizeOptions().map((o) => [o.value, o.value === 'auto' ? 'auto' : o.label]), label: 'Interface size on this device',
+      help: ['This device only: kept in this browser, not with your account, so each computer can have its own size. auto uses interface_size below; a fixed size draws everything at that percent of the standard size, with nothing added for large screens. ', deviceNoteEl],
+      save: async (v) => { applyDeviceSize(v); } },
     { key: 'interface_size', id: 'size', type: 'number', value: getInterface().size, unit: '%', cls: 'ke--short', attrs: { min: '75', max: '200' },
-      help: 'Text, tables, charts and maps bigger or smaller together, 75 to 200. Browser zoom works on top.',
+      help: 'Your account\'s size, on every device left at auto. Text, tables, charts and maps bigger or smaller together, 75 to 200. Browser zoom works on top.',
       parse: (t) => { const n = Math.round(Number(t)); return n >= 75 && n <= 200 ? { value: n } : { error: 'a whole number from 75 to 200' }; },
       save: async (v) => { const before = getInterface(); applyInterface({ size: v }); try { await pref({ interface_size: v }); } catch (e) { applyInterface(before); throw e; } } },
     { key: 'follow_screen', type: 'bool', value: getInterface().follow,
@@ -163,6 +172,7 @@ export async function mount(ctx) {
     paintExample(); paintLang();
   }));
   ctx.onCleanup(onChange(() => { look.line('interface_size').set(getInterface().size); }));
+  ctx.onCleanup(onInterface((i) => { look.line('size_on_this_device').set(i.device ? String(i.device) : 'auto'); paintDeviceNote(); }));
   ctx.onCleanup(onLocaleChange(() => { paintExample(); paintLang(); }));
 
   /* ---------------------------------------------------------------- the release check */

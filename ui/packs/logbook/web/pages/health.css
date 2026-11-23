@@ -47,7 +47,8 @@
 .page-health .hl-key-name { display: block; font: 400 1rem var(--serif); --LH: round(calc(1.35 * 1em), 2px); line-height: var(--LH); color: var(--ink); }
 .page-health .hl-key-side { display: grid; justify-items: end; text-align: right; font-size: var(--text-sm); }
 .page-health .hl-span a { font: 400 1rem var(--serif); --LH: round(calc(1.35 * 1em), 2px); line-height: var(--LH); color: var(--ink); }
-.page-health .hl-full { padding-top: round(0.25rem, var(--e)); }
+.page-health .hl-rebuild { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)) round(1.25rem, var(--e)); padding-top: round(0.25rem, var(--e)); }
+.page-health .hl-rebuild .note { margin: 0; }
 
 /* facts: a name on the left, the value and its explanation on the right */
 .page-health .hl-facts { margin: 0; border-top: 1px solid var(--rule); }

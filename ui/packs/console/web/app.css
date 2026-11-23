@@ -436,6 +436,17 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .tbl-sortline { display: none; }
 .tbl-csv:empty { display: none; }
 .tbl-note { margin: 0 0 var(--g); }
+/* the audit log (Settings: server) scrolls in a box: the head line and five rows high (a phone: five two-line
+   rows), high from the start; the head line stays at the top, more load as the end comes near, and a fade at
+   the bottom while there are more under it */
+.audit-sec .tbl-box { height: calc(6 * (var(--lh2) + 2 * var(--g2) + 1px)); overflow-y: auto; scrollbar-gutter: stable; border-bottom: 1px solid var(--rule); }
+.audit-sec .tbl-box thead th { position: sticky; top: 0; z-index: 1; background: var(--bg); }
+.audit-sec .tbl-box[data-below] { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2 * var(--lh2)), rgb(0 0 0 / 0.2)); mask-image: linear-gradient(to bottom, #000 calc(100% - 2 * var(--lh2)), rgb(0 0 0 / 0.2)); }
+.audit-sec .tbl-box:focus-visible { outline-offset: -2px; }
+.audit-sec .tbl-box .tbl-sentinel { height: 1px; margin-top: -1px; }
+@media (max-width: 860px) {
+  .audit-sec .tbl-box { height: calc(5 * (2 * var(--g2) + var(--lh2) + 2 * var(--lh1) + 1px)); border-top: 1px solid var(--rule); }
+}
 .cell-sub { color: var(--muted); }
 .lnk-plain { color: var(--text); text-decoration: none; }
 .lnk-plain.tone--accent { color: var(--accent); }
@@ -767,19 +778,6 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .run-out { margin-top: var(--g); }
 .out-box { margin: var(--g) 0 0; }
 .out-box .code-out { margin-block: var(--g2); }
-/* the full rebuild (core/fullrebuild.js): a box of fixed size, every line there from the start, one line each */
-.hl-full { margin-top: var(--g); }
-.fr > .note + .note { margin-top: var(--g2); }
-.fr-acts { flex-wrap: nowrap; align-items: center; margin-top: var(--g); }
-.fr-acts > .btn { flex: none; }
-.fr-said { flex: 1 1 0; min-width: 0; line-height: var(--ctl); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fr-box { margin-top: var(--g); white-space: normal; }
-.fr-line { display: grid; grid-template-columns: calc(var(--a2) * 13) minmax(0, 1fr); gap: var(--g); height: var(--lh2); }
-.fr-line--bar { display: flex; gap: 0; white-space: pre; overflow: hidden; }
-.fr-k { color: var(--muted); white-space: nowrap; overflow: hidden; }
-.fr-v, .fr-err { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fr-errs { margin-top: var(--g2); padding-top: var(--g2); border-top: 1px solid var(--rule); height: calc(var(--lh2) * 3 + var(--g2) + 1px); }
-.fr-err { height: var(--lh2); color: var(--warn); }
 .ln-list { display: flex; flex-direction: column; border-top: 1px solid var(--rule); }
 .ln-list > li { display: grid; grid-template-columns: calc(var(--a2) * 16) minmax(0, 1fr); gap: var(--g); padding-block: var(--g2); border-bottom: 1px solid var(--rule); }
 .ln-list .tag { line-height: var(--lh2); }
@@ -1207,3 +1205,27 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .rel-titles { margin: 0; padding-left: calc(var(--g) * 2); list-style: '- '; color: var(--muted); overflow-wrap: anywhere; }
 .rel-pull { user-select: all; }
 .rel-help { display: flex; flex-direction: column; row-gap: var(--g2); min-width: 0; overflow-wrap: anywhere; }
+
+/* settings/server: the move and storage side by side (pages/settings-server.js); storage's groups by kind, each a
+   button that opens its categories, five lines at most, the rest scroll */
+@media (max-width: 1100px) { .ss-pair { grid-template-columns: minmax(0, 1fr); } }
+.st .kv { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.st .kv-row { grid-template-columns: calc(var(--a2) * 10) minmax(0, 1fr); }
+.st-line { margin: var(--g) 0; overflow-wrap: anywhere; }
+.st-line--bad { color: var(--bad); }
+.st-tip { cursor: help; }
+.st-groups { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
+.st-group { border-bottom: 1px solid var(--rule); }
+.st-group-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto calc(var(--a2) * 8) calc(var(--a2) * 5); align-items: baseline; column-gap: var(--g); width: 100%; padding-block: var(--g2); border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.st-group-head:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+@media (hover: hover) { .st-group-head:hover .st-group-name { color: var(--accent); } }
+.st-group-name { overflow-wrap: anywhere; }
+.st-group-size, .st-group-share { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.st-rows { list-style: none; margin: 0 0 var(--g2); padding: 0 0 0 calc(var(--a2) * 2); max-height: calc(5 * var(--lh2) + 5 * var(--g2)); overflow-y: auto; overscroll-behavior: contain; }
+.st-rows[hidden] { display: none; }
+.st-row { display: flex; justify-content: space-between; gap: var(--g); padding-block: calc(var(--g2) / 2); color: var(--muted); }
+.st-row-name { min-width: 0; overflow-wrap: anywhere; }
+.st-row-size { flex: none; white-space: nowrap; color: var(--text); font-variant-numeric: tabular-nums; }
+.st-none { padding-block: var(--g2); }
+:root[data-phone] .st-group-head { grid-template-columns: auto minmax(0, 1fr) auto calc(var(--a2) * 5); }
+:root[data-phone] .st-group-head > .tbar { grid-column: 2 / -1; grid-row: 2; }

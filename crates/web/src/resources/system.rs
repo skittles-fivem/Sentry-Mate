@@ -1,5 +1,6 @@
 //! Server health and storage (docs/ui-api.md, "Server, settings and health"): `/about`, `/cars/{car}/health`,
-//! `/cars/{car}/rebuild`, `/cars/{car}/overlaps`, `/cars/{car}/storage`, `/system/storage` and `/system/health`, over
+//! `/cars/{car}/rebuild`, `/cars/{car}/overlaps`, `/cars/{car}/storage`, `/system/storage` (with its `detail` and
+//! `compact`) and `/system/health`, over
 //! the engine's [`engine::query::system`]. (`/health`, with no sign-in and no body, is the frame's own.)
 //!
 //! Reads of a car are for every account that sees it (the guard checks the `{car}`; a hidden car answers as an
@@ -11,7 +12,7 @@ use crate::ctx::target;
 use crate::query::MAX_MS;
 use crate::{ApiError, ApiResult, AppState, CarParam, JsonBody, Params, Viewer, ids};
 use axum::extract::State;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use engine::Engine;
@@ -118,6 +119,8 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/cars/{car}/overlaps", get(overlaps).patch(flip_overlap))
         .route("/api/v1/cars/{car}/storage", get(car_storage))
         .route("/api/v1/system/storage", get(system_storage))
+        .route("/api/v1/system/storage/detail", get(storage_detail))
+        .route("/api/v1/system/storage/compact", post(storage_compact))
         .route("/api/v1/system/health", get(system_health))
 }
 
@@ -204,7 +207,6 @@ async fn rebuild(
     let e2 = e.clone();
     let job = app
         .blocking(move |_| {
-            super::full_rebuild::refuse_while_running(&e2)?;
             e2.rebuild(engine::Scope { car: Some(car), from_ms: from, to_ms: to })
                 .map_err(|x| ApiError::server(format!("starting the rebuild: {x}")))
         })
@@ -366,6 +368,42 @@ async fn system_storage(State(app): State<AppState>, p: Params) -> ApiResult<Res
         Ok(Storage { body: s, free_bytes: free, full_in_days })
     })
     .await
+}
+
+/// `/system/storage/detail`: what the data folder takes by category (one walk over it), the disk's free space, and
+/// compaction as it is now. For the Storage panel of Settings: Server and access.
+async fn storage_detail(State(app): State<AppState>, p: Params) -> ApiResult<Json<Value>> {
+    p.wants_csv()?;
+    let e = app.service::<Engine>()?;
+    let body = app
+        .blocking(move |_| {
+            let categories = q::storage::categories(&e).map_err(super::now::failed)?;
+            let free = e.store().dir().parent().and_then(free_bytes);
+            Ok(json!({
+                "total_bytes": categories.iter().map(|c| c.bytes).sum::<u64>(),
+                "total_disk_bytes": categories.iter().map(|c| c.disk_bytes).sum::<u64>(),
+                "categories": categories,
+                "free_bytes": free,
+                "compaction": e.compaction(),
+            }))
+        })
+        .await?;
+    Ok(Json(body))
+}
+
+/// `POST /system/storage/compact`: starts a compaction pass in the background unless one runs. Nothing is lost by
+/// it (docs/plans/storage.md); the answer is the compaction as it is right after.
+async fn storage_compact(State(app): State<AppState>, v: Viewer) -> ApiResult<Response> {
+    let e = app.service::<Engine>()?;
+    let was = e.compaction();
+    let now = app
+        .blocking(move |_| e.compact_start(false).map_err(|x| ApiError::server(format!("starting compaction: {x}"))))
+        .await?;
+    if was.status != engine::compact::Status::Running {
+        v.audit(&app, "storage-compacted", Some("server:storage"), "Started packing the stored data (Compact now).")
+            .await?;
+    }
+    Ok((axum::http::StatusCode::ACCEPTED, Json(json!({ "compaction": now }))).into_response())
 }
 
 async fn system_health(State(app): State<AppState>, p: Params) -> ApiResult<Response> {

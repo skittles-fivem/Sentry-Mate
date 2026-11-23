@@ -65,88 +65,22 @@ pub(crate) struct JobState {
     status: Mutex<JobStatus>,
     finished_ms: Mutex<Option<u64>>,
     error: Mutex<Option<String>>,
-    /// Bytes of the logs worked on, and to work on (their stored length).
-    pub(crate) bytes_done: AtomicU64,
-    pub(crate) bytes_total: AtomicU64,
-    /// When the last log was done (ms).
-    pub(crate) last_step_ms: AtomicU64,
-    /// The logs that could not be worked on, and why (the first few).
-    pub(crate) log_errors: Mutex<Vec<(String, String)>>,
-    /// A full rebuild's: its progress is noted as it goes ([`crate::full`]).
-    pub(crate) full: bool,
 }
-
-/// A job's log errors kept at most.
-pub(crate) const MAX_LOG_ERRORS: usize = 20;
 
 impl JobState {
     pub(crate) fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
     }
 
-    pub(crate) fn add_total(&self, n: u64, bytes: u64) {
+    pub(crate) fn add_total(&self, n: u64) {
         self.total.fetch_add(n, Ordering::SeqCst);
-        self.bytes_total.fetch_add(bytes, Ordering::SeqCst);
     }
 
-    pub(crate) fn step(&self, e: &Engine, car: Option<CarId>, bytes: u64) {
-        self.bytes_done.fetch_add(bytes, Ordering::SeqCst);
-        self.last_step_ms.store(now_ms(), Ordering::SeqCst);
+    pub(crate) fn step(&self, e: &Engine, car: Option<CarId>) {
         let done = self.done.fetch_add(1, Ordering::SeqCst) + 1;
         let total = self.total.load(Ordering::SeqCst);
-        if self.full {
-            e.full_noted();
-        } else if done.is_multiple_of(50) || done == total {
+        if done.is_multiple_of(50) || done == total {
             e.emit(Event::Job { job: self.id, car, status: JobStatus::Running, done, total });
-        }
-    }
-
-    /// A log that could not be worked on (kept for the job's status; the first [`MAX_LOG_ERRORS`]).
-    pub(crate) fn log_failed(&self, name: &str, why: String) {
-        let mut v = lock(&self.log_errors);
-        if v.len() < MAX_LOG_ERRORS {
-            v.push((name.to_string(), why));
-        }
-    }
-
-    pub(crate) fn cancel_now(&self) {
-        self.cancel.store(true, Ordering::SeqCst);
-    }
-
-    pub(crate) fn counts(&self) -> (u64, u64, u64, u64) {
-        (
-            self.done.load(Ordering::SeqCst),
-            self.total.load(Ordering::SeqCst),
-            self.bytes_done.load(Ordering::SeqCst),
-            self.bytes_total.load(Ordering::SeqCst),
-        )
-    }
-
-    /// A job state of a full rebuild's car (never listed with [`Engine::jobs`]).
-    pub(crate) fn for_full(car: CarId) -> JobState {
-        let mut s = JobState::new(0, Some(car), 0, u64::MAX);
-        s.full = true;
-        s
-    }
-
-    fn new(id: u64, car: Option<CarId>, from_ms: u64, to_ms: u64) -> JobState {
-        JobState {
-            id,
-            car,
-            from_ms,
-            to_ms,
-            started_ms: now_ms(),
-            done: AtomicU64::new(0),
-            total: AtomicU64::new(0),
-            cancel: AtomicBool::new(false),
-            status: Mutex::new(JobStatus::Running),
-            finished_ms: Mutex::new(None),
-            error: Mutex::new(None),
-            bytes_done: AtomicU64::new(0),
-            bytes_total: AtomicU64::new(0),
-            last_step_ms: AtomicU64::new(now_ms()),
-            log_errors: Mutex::new(Vec::new()),
-            full: false,
         }
     }
 
@@ -175,7 +109,19 @@ impl Engine {
         let id = self.inner.next_job.fetch_add(1, Ordering::SeqCst);
         let (from_ms, to_ms) =
             (scope.from_ms.unwrap_or(0), scope.to_ms.unwrap_or(u64::MAX).max(scope.from_ms.unwrap_or(0)));
-        let st = Arc::new(JobState::new(id, scope.car, from_ms, to_ms));
+        let st = Arc::new(JobState {
+            id,
+            car: scope.car,
+            from_ms,
+            to_ms,
+            started_ms: now_ms(),
+            done: AtomicU64::new(0),
+            total: AtomicU64::new(0),
+            cancel: AtomicBool::new(false),
+            status: Mutex::new(JobStatus::Running),
+            finished_ms: Mutex::new(None),
+            error: Mutex::new(None),
+        });
         lock(&self.inner.jobs).insert(id, st.clone());
         let e = self.clone();
         self.inner.outstanding_add();

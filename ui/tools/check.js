@@ -615,6 +615,8 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
     });
     await page.exposeFunction('__smCheckCsp', (v) => { if (v) cspEvents.push(v); });
     await page.addInitScript(initScript);
+    // the Interface size on this device (ui/shared/devicesize.js), in this browser window's storage before boot.js runs
+    if (o.deviceSize) await page.addInitScript((n) => { try { localStorage.setItem('sentrymate.device-size', JSON.stringify(n)); } catch (_) { /* opaque origin */ } }, o.deviceSize);
     if (o.stable) await page.addInitScript(stableInit, { pageId: entry.id });
     page.on('worker', (w) => { w.evaluate(workerHook).catch(() => {}); });
 
@@ -1239,6 +1241,7 @@ const HELP = `Usage: node ui/tools/check.js --pack <name or folder> [options]
                          live updates, and fail it when its layout shifts (more than ${STABLE_MAX_SHIFT}), a block moves more
                          than 1 px, or an element or loading text comes and goes more than once
   --stable-fast          with --stable: live values every 0.5 s and list changes every 3 s (else every 2 s and 10 s)
+  --device-size N        the Interface size on this device (80, 90, 100, 110, 125; else auto): kept in each window's storage
   --base URL             a real sentry-mate serve (https://127.0.0.1:PORT) instead of the dev server; its
                          self-signed certificate is accepted for this run only (see ui/tools/README.md)
   --user NAME            the account to sign in with on --base (the pack becomes its own UI pack)
@@ -1271,6 +1274,7 @@ function parseArgs(argv) {
     '--fixture-matrix': 'fixtureMatrix', '--ready-timeout-ms': 'readyTimeoutMs', '--idle-timeout-ms': 'idleTimeoutMs',
     '--jobs': 'jobs', '--car': 'car', '--drive': 'drive', '--charge': 'charge',
     '--base': 'base', '--user': 'user', '--password': 'password', '--password-file': 'passwordFile',
+    '--device-size': 'deviceSize',
   };
   const flags = { '--json': 'json', '--allow-missing': 'allowMissing', '--full': 'full', '--pixel': 'pixel', '--self-test': 'selfTest', '--help': 'help', '-h': 'help', '--stable-fast': 'stableFast' };
   for (let i = 0; i < argv.length; i++) {
@@ -1305,6 +1309,11 @@ function parseArgs(argv) {
     o[k] = n;
   }
   o.sizes = parseSizes(o.sizes);
+  if (o.deviceSize != null) {
+    if (o.deviceSize === 'auto') o.deviceSize = null;
+    else if (![80, 90, 100, 110, 125].includes(Number(o.deviceSize))) throw new UsageError('--device-size takes auto, 80, 90, 100, 110 or 125');
+    else o.deviceSize = Number(o.deviceSize);
+  }
   o.serverArgs = splitArgs(o.serverArgs);
   if (o.stableFast && !o.stable) throw new UsageError('--stable-fast goes with --stable');
   if (o.stable && o.serverArgs.includes('--freeze-clock')) throw new UsageError('--stable needs the dev server\'s clock to run: leave out --freeze-clock');

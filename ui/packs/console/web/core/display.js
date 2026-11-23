@@ -4,11 +4,15 @@
 // window width; every other length is a whole number of px derived from it. This module keeps the
 // person's choice, saves a copy for the next first paint, and tells charts and maps when they must redraw:
 // the root size changed (a resize, the Interface size), the pixel ratio changed (browser zoom, another
-// screen), or the theme changed.
+// screen), or the theme changed. It also keeps the Interface size on this device (shared/devicesize.js): a
+// fixed size in this browser only that wins over the account's here (boot.js applies it).
+
+import { onDeviceSizeStorage } from '../shared/devicesize.js';
 
 const ui = window.consoleRoot || {
   MIN: 75, MAX: 200, KEY: 'sentrymate.console.interface', THEME_KEY: 'sentrymate.console.theme',
-  apply: (s) => ({ size: 100, follow: true, ...s }), clampSize: (v) => v,
+  apply: (s) => ({ size: 100, follow: true, device: null, ...s }), clampSize: (v) => v,
+  setDevice: () => null, readDevice: () => null,
   effectiveTheme: () => 'dark', applyTheme: () => 'dark', saved: () => null,
 };
 
@@ -21,6 +25,7 @@ const read = () => ({ rootPx: parseFloat(getComputedStyle(root).fontSize) || 16,
 
 const subs = new Set();
 const themeSubs = new Set();
+const ifaceSubs = new Set();
 let iface = ui.apply(ui.saved() || {});
 let themeChoice = root.dataset.themeChoice || 'device';
 let state = read();
@@ -49,16 +54,30 @@ window.addEventListener('resize', check);
 const lightMq = window.matchMedia('(prefers-color-scheme: light)');
 lightMq.addEventListener?.('change', () => { if (themeChoice === 'device') applyTheme('device', { save: false }); });
 
-/** { size: 75..200, follow: bool } now. */
+/** { size: 75..200, follow: bool, device: this browser's own size or null (Automatic) } now. */
 export const getInterface = () => ({ ...iface });
 
 /** Apply { size, follow } now (the rest stays) and keep a copy for the next first paint. Saving is core/prefs.js's job. */
 export function applyInterface(patch = {}) {
   iface = ui.apply({ size: patch.size ?? iface.size, follow: patch.follow ?? iface.follow });
-  store(ui.KEY, iface);
+  store(ui.KEY, { size: iface.size, follow: iface.follow });
   check();
+  for (const f of [...ifaceSubs]) { try { f({ ...iface }); } catch (e) { console.error(e); } }
   return { ...iface };
 }
+
+/**
+ * The Interface size on this device: 80, 90, 100, 110 or 125 (%), or null / 'auto' for Automatic (the
+ * account's size). Kept in this browser only, never saved to the account; applied at once.
+ */
+export function applyDeviceSize(v) {
+  ui.setDevice(v === 'auto' ? null : v);
+  return applyInterface({});
+}
+// another tab of this browser changed it
+onDeviceSizeStorage(() => { ui.readDevice(); applyInterface({}); });
+/** f({ size, follow, device }) after any of them changed here. Returns off(). */
+export function onInterface(f) { ifaceSubs.add(f); return () => ifaceSubs.delete(f); }
 
 /** The next or previous size of SIZES from the size now (dir 1 or -1). */
 export function stepSize(dir) {

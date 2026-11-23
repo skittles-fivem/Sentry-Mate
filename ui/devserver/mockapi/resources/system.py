@@ -15,7 +15,7 @@ import ipaddress
 import re
 
 from .. import derive
-from ..conventions import Response, page
+from ..conventions import Response, json_bytes, page
 from ..errors import ApiError, bad_input, conflict, invalid, not_found, stale_version
 from ..live import now_object
 from ..util import DAY, HOUR, MIN, date_str, h01, local_date, r
@@ -52,7 +52,7 @@ def patch_settings(req):
     req.version_check(cur["version"])
     bad, rule = {}, {}
     known = ("version", "units", "range", "car_order", "geocode", "tiles", "release_check", "outside_links",
-             "outbound", "host_names", "default_time_zone", "import_gap_fill", "full_rebuild")
+             "outbound", "host_names", "default_time_zone", "import_gap_fill")
     for k in body:
         if k not in known:
             bad[k] = "Unknown field."
@@ -116,7 +116,6 @@ def patch_settings(req):
     sub("outside_links", {"maps": bool, "release_notes": bool})
     sub("outbound", {"proxy": "str?"})
     sub("import_gap_fill", {"enabled": bool})
-    sub("full_rebuild", {"auto": bool})
     if "range" in body:
         if body["range"] not in ("rated", "ideal"):
             rule["range"] = "Must be rated or ideal."
@@ -389,8 +388,6 @@ def notices(req):
         items += teslafi_notices(req)
         from .teslamate import notices as teslamate_notices
         items += teslamate_notices(req)
-        from .fullrebuild import notices as full_notices
-        items += full_notices(req)
     return {"items": items, "next": None}
 
 
@@ -615,9 +612,6 @@ def car_health(req):
 
 def rebuild(req):
     st = req.store
-    from .fullrebuild import status as full_status
-    if full_status(req)["state"] == "running":
-        raise ApiError(409, "full_rebuild_running", "A full rebuild is under way: it makes the whole history again.")
     body = req.json(required=False)
     bad = {k: "Unknown field." for k in body if k not in ("from_ms", "to_ms")}
     for k in ("from_ms", "to_ms"):
@@ -861,6 +855,134 @@ def system_storage(req):
             "full_in_days": int(s["free_bytes"] / per_day) if per_day else None}
 
 
+# ------------------------------------------------------------------ storage in detail, and compaction
+
+BLOCK = 4096
+# what a compaction pass does to the made-up figures: this share of the logs and sidecars as uploaded goes
+# into the day packs (which take less room), and these categories shrink by these shares
+PACK_SHARE, PACK_RATIO = 0.8, 0.82
+SHRINK = {"series.can.snapshots": 0.18, "series.teslamate.snapshots": 0.12, "curves.can.snapshots": 0.1,
+          "rows.snapshots": 0.06, "kv.engine": 0.22, "kv.day-parts": 0.3}
+COMPACT_STEPS = ("logs", "series", "records")
+
+
+def _detail_base(req):
+    """{key: [group, label, files, bytes]} before any compaction pass asked for here: the cars' figures of
+    /system/storage split into what lies on disk, plus the server's own files."""
+    kinds = {k["kind"]: k["bytes"] for k in system_storage(req)["kinds"]}
+    logs, series, rows, imported = kinds["logs"], kinds["series"], kinds["rows"], kinds["imported"]
+    n_logs = max(1, logs // 34_400)  # a log a minute while a car is awake, about 34 kB each
+    days = max(1, series // 9_000_000)
+    packed = int(logs * 0.31)  # older days are packed already (see `saved_bytes`)
+    out = {
+        "logs.raw": ["logs", "CAN logs as uploaded (signed originals)", n_logs - int(n_logs * 0.31), logs - packed],
+        "logs.sidecars": ["logs", "Their sidecars as uploaded", n_logs - int(n_logs * 0.31), (n_logs - int(n_logs * 0.31)) * 412],
+        "logs.packs": ["logs", "CAN logs and sidecars as uploaded, packed by day", max(1, days // 3), int(packed * PACK_RATIO)],
+        "logs.ledger": ["logs", "Check results and counts of the logs", 3, n_logs * 96],
+        "series.can.snapshots": ["series", "Time series from CAN logs: days", days, int(series * 0.93)],
+        "curves.can.snapshots": ["series", "Charge curves from CAN logs: days", max(1, days // 2), series - int(series * 0.93)],
+        "series.teslamate.snapshots": ["series", "Time series from the TeslaMate import: days", max(1, imported // 1_500_000), int(imported * 0.9)],
+        "series.teslamate-local.snapshots": ["series", "Time series from local TeslaMate: days", 17, 1_640_512],
+        "rows.snapshots": ["rows", "Drives, charges, states", 12, rows + imported - int(imported * 0.9)],
+        "kv.engine": ["kv", "The engine's records (decoded logs, costs, firmware)", 9, 184_320_000 + n_logs * 310],
+        "kv.day-parts": ["kv", "Kept day parts of the long periods (can be worked out again)", 6, 41_200_000],
+        "imports.uploads": ["imports", "Backups uploaded to import", 1, 312_475_648],
+        "server.accounts": ["server", "Accounts, sessions and settings", 4, 48_211],
+        "server.audit": ["server", "The audit log", 2, 2_184_300],
+        "server.db": ["server", "The list of cars and places", 3, 18_000 + 120 * req.ds.total_cars()],
+        "server.web": ["server", "The built-in interfaces", 412, 6_912_000],
+        "server.tiles": ["server", "Offline map tiles", 1, req.store.storage["tiles_bytes"]],
+    }
+    return out
+
+
+def _detail_categories(req, passes):
+    """The categories after `passes` compaction passes asked for here (the first packs, later ones find
+    nothing left)."""
+    base = _detail_base(req)
+    if passes > 0:
+        moved = 0
+        for key in ("logs.raw", "logs.sidecars"):
+            c = base[key]
+            m_files, m_bytes = int(c[2] * PACK_SHARE), int(c[3] * PACK_SHARE)
+            c[2] -= m_files
+            c[3] -= m_bytes
+            moved += m_bytes
+        base["logs.packs"][2] += max(1, base["series.can.snapshots"][2] // 2)
+        base["logs.packs"][3] += int(moved * PACK_RATIO)
+        for key, share in SHRINK.items():
+            base[key][3] -= int(base[key][3] * share)
+            base[key][2] = max(1, base[key][2] - int(base[key][2] * share))
+    out = []
+    for key, (group, label, files, b_) in base.items():
+        # on disk a file takes whole blocks: half a block lost per file on average
+        disk = -(-(b_ + files * (BLOCK // 2)) // BLOCK) * BLOCK
+        out.append({"key": key, "group": group, "label": label, "files": files, "bytes": b_, "disk_bytes": disk})
+    out.sort(key=lambda c: (-c["disk_bytes"], c["key"]))
+    return out
+
+
+def _disk_total(req, passes):
+    return sum(c["disk_bytes"] for c in _detail_categories(req, passes))
+
+
+def _compaction(req, advance=False):
+    """The compaction's state (under the store's lock). A pass asked for here "runs" for a few reads of
+    the detail: each read while it runs moves it one notch on, whatever the clock does (so it also ends
+    with --freeze-clock)."""
+    st = req.store
+    c = st.compaction
+    if c is None:
+        # the last pass the server ran by itself: three hours before the start, 42 s long
+        t0 = req.app.cfg.now_ms - 3 * HOUR - 17 * MIN
+        c = st.compaction = {"status": "idle", "automatic": True, "started_ms": t0, "finished_ms": t0 + 42_000,
+                             "step": None, "done": 0, "total": 0, "last_saved_bytes": 9_512_345,
+                             "saved_bytes": int(system_storage(req)["kinds"][0]["bytes"] * 0.31 * (1 - PACK_RATIO)),
+                             "error": None, "_passes": 0, "_tick": 0}
+    if advance and c["status"] == "running":
+        c["_tick"] += 1
+        cats = {x["key"]: x for x in _detail_categories(req, c["_passes"])}
+        totals = {"logs": cats["logs.raw"]["files"], "series": cats["series.can.snapshots"]["files"],
+                  "records": cats["kv.engine"]["files"] + cats["kv.day-parts"]["files"]}
+        # the notches: logs counted and half done, logs done, series, records, finished
+        plan = [("logs", 0.45), ("logs", 1.0), ("series", 0.6), ("records", 0.5)]
+        if c["_tick"] <= len(plan):
+            step, share = plan[c["_tick"] - 1]
+            c.update(step=step, total=totals[step], done=int(totals[step] * share))
+        else:
+            before = _disk_total(req, c["_passes"])
+            c["_passes"] += 1
+            saved = before - _disk_total(req, c["_passes"])
+            c.update(status="idle", step=None, done=0, total=0, finished_ms=req.now, last_saved_bytes=saved,
+                     saved_bytes=c["saved_bytes"] + saved)
+    return {k: v for k, v in c.items() if not k.startswith("_")}
+
+
+def storage_detail(req):
+    """GET /system/storage/detail (admin): the space on disk by category, largest first, and the compaction."""
+    with req.store.lock:
+        comp = _compaction(req, advance=True)
+        cats = _detail_categories(req, req.store.compaction["_passes"])
+    return {"categories": cats, "total_bytes": sum(c["bytes"] for c in cats),
+            "total_disk_bytes": sum(c["disk_bytes"] for c in cats), "free_bytes": req.store.storage["free_bytes"],
+            "compaction": comp}
+
+
+def storage_compact(req):
+    """POST /system/storage/compact (admin): starts a pass, 202 with its state; a running pass is not
+    started twice."""
+    with req.store.lock:
+        _compaction(req)
+        c = req.store.compaction
+        started = c["status"] != "running"
+        if started:
+            c.update(status="running", started_ms=req.now, step="logs", done=0, total=0, error=None, _tick=0)
+        comp = _compaction(req)
+    if started:
+        req.store.record(req.account, "storage-compacted", "server:storage", "Started packing the stored data (Compact now).")
+    return Response(202, json_bytes({"compaction": comp}))
+
+
 def system_health(req):
     app = req.app
     s = req.store.storage
@@ -914,6 +1036,8 @@ def register(router):
     router.add("/api/v1/cars/{car}/overlaps", GET=get_overlaps, PATCH=patch_overlap, admin=("PATCH",))
     router.add("/api/v1/cars/{car}/storage", GET=car_storage)
     router.add("/api/v1/system/storage", GET=system_storage, admin=("GET",))
+    router.add("/api/v1/system/storage/detail", GET=storage_detail, admin=("GET",))
+    router.add("/api/v1/system/storage/compact", POST=storage_compact, admin=("POST",))
     router.add("/api/v1/system/health", GET=system_health, admin=("GET",))
 
 

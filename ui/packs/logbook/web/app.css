@@ -925,33 +925,6 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
 .mv-progress-pct { font: 400 1.25rem var(--serif); --LH: round(calc(1 * 1em), 2px); line-height: var(--LH); color: var(--ink); }
 .mv-progress-quiet { color: var(--ink-3); }
 
-/* The full rebuild (pages/rebuild-parts.js): a panel of fixed size, every line there from the start, one line each. */
-.fr { display: grid; gap: round(0.875rem, var(--e)); max-width: round(52rem, var(--e)); }
-.fr-text { display: grid; gap: round(0.5rem, var(--e)); }
-.fr .fr-text .note { margin: 0; }
-.fr-auto { padding-top: round(0.25rem, var(--e)); }
-.fr-stale { display: flex; gap: round(0.5rem, var(--e)); align-items: flex-start; font-size: var(--text-sm); color: var(--rust); }
-.fr-stale .icon { flex: none; }
-.fr-go { display: flex; align-items: center; gap: round(1rem, var(--e)); min-width: 0; }
-.fr-go > .button { flex: none; }
-.fr-other { flex: 1 1 0; min-width: 0; font-size: var(--text-s); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fr-panel { display: grid; gap: round(0.75rem, var(--e)); padding: round(1rem, var(--e)) round(1.125rem, var(--e)); border: 1px solid var(--rule); border-radius: round(0.25rem, var(--e)); background: var(--paper-raised); }
-.fr-bar { display: grid; grid-template-columns: minmax(0, 1fr) round(3.5rem, var(--e)); align-items: center; gap: round(0.75rem, var(--e)); }
-.fr-pct { text-align: right; font: 400 1.125rem var(--serif); --LH: round(1.5rem, 2px); line-height: var(--LH); height: var(--LH); color: var(--ink); font-variant-numeric: tabular-nums; }
-.fr-panel.is-warn .mv-bar-fill { background: var(--ochre); }
-.fr-panel.is-error .mv-bar-fill { background: var(--rust); }
-.fr-lines { margin: 0; border-top: 1px solid var(--rule); }
-.fr-line { display: grid; grid-template-columns: round(9rem, var(--e)) minmax(0, 1fr); gap: round(1rem, var(--e)); padding: round(0.25rem, var(--e)) 0; border-bottom: 1px solid var(--rule); font-size: var(--text-sm); --LH: round(1.25rem, 2px); line-height: var(--LH); }
-.fr-k { color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fr-v { margin: 0; height: var(--LH); color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fr-line:first-child .fr-v { font-weight: 600; }
-.fr-panel.is-ok .fr-line:first-child .fr-v { color: var(--accent); }
-.fr-panel.is-warn .fr-line:first-child .fr-v { color: var(--ochre); }
-.fr-panel.is-error .fr-line:first-child .fr-v { color: var(--rust); }
-.fr-errs { display: grid; }
-.fr-err { margin: 0; font-size: var(--text-s); --LH: round(1.25rem, 2px); line-height: var(--LH); height: var(--LH); color: var(--rust); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-@container page (width < 50rem) { .fr-line { grid-template-columns: round(7rem, var(--e)) minmax(0, 1fr); } }
-
 .mv-callout { display: grid; grid-template-columns: round(1.375rem, var(--e)) minmax(0, 1fr); gap: round(0.75rem, var(--e)); padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border: 1px solid var(--rule); border-left-width: 3px; border-radius: round(0.25rem, var(--e)); background: var(--paper-raised); }
 .mv-callout-ok { border-left-color: var(--accent); }
 .mv-callout-info { border-left-color: var(--slate); }

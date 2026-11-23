@@ -5,14 +5,17 @@
 // - Admins also: host names for the certificate, the ports, the certificate and the recovery key (show it again,
 //   make a new one, say it is saved), the move to another server as numbered step cards (with a move code, or
 //   with an export file: the current card holds the one clear button and what it printed), the accounts (an edit
-//   sheet each), and the audit log.
+//   sheet each), the audit log, and Storage: the space on disk by category and what compaction saved, with a
+//   "Compact now" button.
 // A move that stopped on the new server (a code cancelled here, say) carries on: a new code from this same server
 // lets the new server go on with what it copied. Data: settings, network, notices, accounts, me/sessions, audit,
-// system/move (+ /undo), system/exports, system/recovery-key/{show,new,saved}. Polls once a second while a move
-// or an export file is being made (no event stream for these). A full rebuild of every car (system/full-rebuild,
-// its own tile: core/fullrebuild.js) with the switch for the automatic one (settings full_rebuild.auto).
+// system/move (+ /undo), system/exports, system/recovery-key/{show,new,saved}, system/storage/detail and
+// system/storage/compact. Polls once a second while a move or an export file is being made, and every 2 s
+// while a compaction pass runs (no event stream for these).
 
 import { h } from '../shared/dom.js';
+import { downloadCsv } from '../shared/csv.js';
+import { storageGroups, shortName, shareText, groupWord, PACK_STEP } from '../shared/storage.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { formatDateTime, formatDate } from '../shared/time.js';
@@ -25,7 +28,6 @@ import { checkRow, sectionHead, moreButton } from '../core/bits.js';
 import { group, infoRow, said, notSaved, askPassword, keySheet, tick } from '../core/settings.js';
 import { inOrder } from '../core/settings.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
-import { fullRebuildTile } from '../core/fullrebuild.js';
 import { bytes, bigCode, copyButton, downloadUrl, stepCards, progressBar, callout, PROBLEM } from './move-parts.js';
 
 export const id = 'settings-server';
@@ -417,22 +419,92 @@ export async function mount(ctx) {
     schedule();
   }
 
-  /* ================================================================ full rebuild (admins) */
-  // every car's history made again from the stored data; the switch saves at once, as the other server settings
-  let fullT = null;
-  if (admin) {
-    const auto = toggle({ label: 'Automatic full rebuild', sub: 'Rebuild automatically when a new server version decodes the stored logs differently. Off: a notice offers it instead.',
-      checked: !settings.full_rebuild || settings.full_rebuild.auto !== false,
-      onchange: async (on) => {
-        try {
-          settings = await ctx.api.patch('settings', { version: settings.version, full_rebuild: { auto: on } });
-          ctx.toast(on ? 'Saved. A new server version rebuilds what it decodes differently.' : 'Saved. A notice offers a full rebuild instead.');
-        } catch (e) {
-          if (e && e.status === 409) { settings = await ctx.api.get('settings').catch(() => settings); ctx.toast('Someone else changed the server settings; this page shows theirs now.', { kind: 'info' }); } else ctx.toast(notSaved(e), { kind: 'error' });
-          if (ctx.alive()) auto.set(!settings.full_rebuild || settings.full_rebuild.auto !== false);
-        }
-      } });
-    fullT = fullRebuildTile(ctx, { carName: (c) => carName.get(c) || c, after: group(null, [auto]) });
+  /* ================================================================ storage and compaction (admins) */
+  // Two half tiles side by side: Storage (on disk, free, saved by compaction, the last pass, how compaction stands
+  // with what it does on hover, Compact now and the CSV) and the space by kind (shared/storage.js): one row per
+  // group with its size, a bar and its share; a group opens to its categories by short name, at most five rows
+  // tall (the CSV has every category with the server's own label). While a pass runs (also one the server
+  // started by itself) the detail is read again every 2 s, and when it ends a note says what was freed.
+  let store = null;       // GET /system/storage/detail
+  let storeErr = null;    // why the last read failed
+  let storeTimer = 0;
+  ctx.onCleanup(() => clearTimeout(storeTimer));
+  const storeBox = h('div', { class: 'contents' });
+  const storeOpen = new Set();   // the groups opened (all closed at first, so the two tiles are about as tall)
+  const LOSSLESS = 'Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs’ signed originals are kept byte for byte.';
+  async function readStorage() {
+    clearTimeout(storeTimer);
+    const was = store && store.compaction && store.compaction.status;
+    try { store = await ctx.api.get('system/storage/detail'); storeErr = null; } catch (e) { if (api.isAbort(e)) return; storeErr = e; }
+    if (!ctx.alive()) return;
+    const c = store && store.compaction;
+    if (was === 'running' && !storeErr && c && c.status !== 'running') {
+      if (c.status === 'failed') ctx.toast(`Compaction failed: ${c.error || 'the server gave no reason.'}`, { kind: 'error' });
+      else ctx.toast(c.last_saved_bytes ? `Compaction is done: ${bytes(c.last_saved_bytes)} freed on disk.` : 'Compaction is done: nothing was left to pack.');
+    }
+    drawStorage();
+  }
+  async function compactNow() {
+    try {
+      const r = await ctx.api.post('system/storage/compact');
+      if (!ctx.alive()) return;
+      store = { ...(store || {}), compaction: r.compaction };
+      storeErr = null;
+    } catch (e) { if (api.isAbort(e) || !ctx.alive()) return; ctx.toast(`Compaction not started: ${(e && e.message) || 'the server did not answer'}`, { kind: 'error' }); }
+    drawStorage();
+  }
+  function storageTile() {
+    const c = (store && store.compaction) || null;
+    const running = !!c && c.status === 'running';
+    const failed = !!c && c.status === 'failed';
+    const tip = h('span', { class: 'st-tip', title: LOSSLESS, 'aria-label': LOSSLESS, role: 'img' }, icon('info'));
+    const line = running
+      ? said('info', h('b', null, 'Packing…'), ` ${PACK_STEP[c.step] || c.step || 'getting ready'}, `, c.total ? `${formatNumber(c.done || 0)} of ${formatNumber(c.total)}` : 'counting',
+        storeErr ? ' (the progress could not be read just now)' : null)
+      : failed ? said('warn', h('b', null, 'The last pass failed: '), c.error || 'the server gave no reason.')
+        : said('info', !c ? 'The server did not say how compaction stands.' : c.automatic ? 'Compaction runs by itself when the server is idle.' : 'Compaction does not run by itself here.');
+    line.append(tip);
+    const num = (k, v, title) => [h('span', { class: 'hero-k', title }, k), h('span', { class: 'st-num', title }, v)];
+    return tile({ w: 2, title: 'Compaction', icon: 'refresh', id: 'storage',
+      side: chip(running ? 'Packing' : failed ? 'Failed' : c ? 'Idle' : 'Not known', { tone: running ? 'sky' : failed ? 'sun' : c ? 'teal' : 'muted' }) },
+    h('div', { class: 'tile-nums st-nums' },
+      h('div', null, num('On disk', bytes(store ? store.total_disk_bytes : null), 'Everything on the right, as it lies on disk.')),
+      h('div', null, num('Free', store && store.free_bytes != null ? bytes(store.free_bytes) : 'Not known', 'Room left on the disk for new data.')),
+      h('div', null, num('Saved', bytes(c ? c.saved_bytes : null), 'What compaction has freed in all.')),
+      h('div', null, num('Last pass', !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'Nothing left to pack',
+        c && c.finished_ms != null ? `Finished ${when(c.finished_ms)}.` : 'No pass has finished yet.'))),
+    h('div', { 'aria-live': 'polite' }, line),
+    h('div', { class: 'form-actions' },
+      btn('Compact now', { kind: 'primary', icon: 'refresh', disabled: running || !c, onclick: compactNow }),
+      btn('Download CSV', { kind: 'ghost', icon: 'download', onclick: () => downloadCsv('sentry-mate-storage-on-disk.csv', (store && store.categories) || [], [
+        { label: 'What', value: (x) => x.label }, { label: 'Kind', value: (x) => groupWord(x.group) }, { label: 'Key', value: (x) => x.key },
+        { label: 'Files', value: (x) => x.files }, { label: 'Size (bytes)', value: (x) => x.bytes }, { label: 'On disk (bytes)', value: (x) => x.disk_bytes }]) })));
+  }
+  function spaceTile() {
+    const groups = storageGroups(store && store.categories);
+    return tile({ w: 2, title: 'Space by kind', icon: 'bars', side: chip(store && store.total_disk_bytes != null ? `${bytes(store.total_disk_bytes)} in all` : 'Not known', { tone: 'muted' }) },
+      groups.length
+        ? h('ul', { class: 'rows-list st-groups', 'aria-label': 'Space on disk by kind' }, groups.map((g) => {
+          const open = storeOpen.has(g.group);
+          const fill = h('span', { class: 'st-bar-fill' });
+          fill.style.setProperty('--w', String(Math.max(g.share > 0 ? 0.01 : 0, g.share)));
+          return h('li', { class: 'st-group' },
+            h('button', { class: 'row st-group-head', type: 'button', 'aria-expanded': String(open), onclick: () => {
+              if (storeOpen.has(g.group)) storeOpen.delete(g.group); else storeOpen.add(g.group);
+              drawStorage();
+            } },
+            icon(open ? 'chevronDown' : 'chevronRight', 'row-go'),
+            h('span', { class: 'row-text' }, h('span', { class: 'row-name' }, g.name), h('span', { class: 'st-bar', 'aria-hidden': 'true' }, fill)),
+            h('span', { class: 'row-side st-group-side' }, h('span', { class: 'set-value' }, bytes(g.disk_bytes)), h('span', { class: 'st-share' }, shareText(g.share)))),
+            h('ul', { class: 'st-rows', tabindex: '0', 'aria-label': g.name, hidden: !open },
+              g.rows.map((x) => h('li', { class: 'st-row', title: x.label }, h('span', { class: 'st-row-name' }, shortName(x)), h('span', { class: 'st-row-size' }, bytes(x.disk_bytes))))));
+        }))
+        : said('warn', 'The server did not say what takes the space', storeErr && storeErr.message ? `: ${storeErr.message}` : '.'));
+  }
+  function drawStorage() {
+    storeBox.replaceChildren(sectionHead('Storage'), storageTile(), spaceTile());
+    clearTimeout(storeTimer);
+    if (store && store.compaction && store.compaction.status === 'running') storeTimer = setTimeout(readStorage, 2000);
   }
 
   /* ================================================================ accounts (admins) */
@@ -541,9 +613,9 @@ export async function mount(ctx) {
 
   /* ================================================================ audit log (admins) */
   // Each entry in words (shared/audit.js): what was done (its code on hover), who, when, what happened and the
-  // item it changed, linked where it still exists. Filters: what (a group of actions) and who. Ten entries
-  // first; the next ten when the end of the list scrolls into view, or with Load more. New entries go under
-  // the ones on screen, which stay as they are.
+  // item it changed, linked where it still exists. Filters: what (a group of actions) and who. The list scrolls
+  // in a box about five entries high (its height set from the start); ten entries first, the next ten as the
+  // end of the box comes near, or with Load more. New entries go under the ones on screen, which stay as they are.
   let auditT = null;
   async function auditTile() {
     const trips = new Map((await ctx.api.list('trips', {}).all({ max: 2000 }).catch(() => [])).map((t) => [String(t.id), t]));
@@ -571,6 +643,15 @@ export async function mount(ctx) {
     const list = h('div', { class: 'rows-list au-list', role: 'list', 'aria-label': 'Audit log entries' });
     const status = h('div', { class: 'au-status' });
     const sentinel = h('div', { class: 'au-sentinel', 'aria-hidden': 'true' });
+    // the box: a focusable region (arrow keys scroll it), data-below while entries are hidden under its bottom edge
+    const box = h('div', { class: 'au-box', tabindex: '0', role: 'region', 'aria-label': 'Audit log entries' }, status, list, sentinel);
+    const edge = () => box.toggleAttribute('data-below', box.scrollHeight - box.scrollTop - box.clientHeight > 1);
+    box.addEventListener('scroll', edge, { passive: true });
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(edge);
+      ro.observe(box); ro.observe(list);
+      ctx.onCleanup(() => ro.disconnect());
+    }
     const moreBtn = btn('Load more', { kind: 'soft', icon: 'chevronDown', cls: 'more-btn', onclick: () => more() });
     const moreRow = h('div', { class: 'more-row' }, moreBtn);
     const csv = linkBtn('Download CSV', ctx.api.csvUrl('audit', params()), { kind: 'ghost', icon: 'download', cls: 'btn-sm' });
@@ -606,6 +687,7 @@ export async function mount(ctx) {
       const got = await pager.more().catch((e) => { if (g === gen && ctx.alive()) status.replaceChildren(said('warn', `The log did not load: ${(e && e.message) || 'the server did not answer'}`)); return null; });
       if (g !== gen || !ctx.alive() || !got) return;
       list.replaceChildren(...got.map(rowOf));
+      box.scrollTop = 0;   // new filters: the list starts at its top
       list.hidden = !got.length;
       status.replaceChildren(got.length ? '' : said('info', F.group || F.who ? 'No entry matches this what and who.' : 'Nothing recorded yet.'));
       shown();
@@ -615,7 +697,7 @@ export async function mount(ctx) {
       ? new IntersectionObserver((entries) => {
         if (!ctx.alive()) { io.disconnect(); return; }
         if (entries.some((x) => x.isIntersecting) && !moreRow.hidden && !moreBtn.disabled) more();
-      }, { rootMargin: '0px 0px 300px 0px' })
+      }, { root: box, rootMargin: '0px 0px 96px 0px' })
       : null;
     function recheck() { if (io && ctx.alive() && pager && !pager.done) { io.unobserve(sentinel); io.observe(sentinel); } }
     const refilter = () => { F.group = what.control.value; F.who = who.control.value; first(); };
@@ -626,7 +708,7 @@ export async function mount(ctx) {
     return tile({ w: 'full', title: 'Audit log', icon: 'book', side: csv, cls: 'au-tile' },
       note(`Every change and every sign-in, newest first. Times in ${tz.replace(/_/g, ' ')}. An item opens where it still exists.`),
       h('div', { class: 'au-filters' }, what, who),
-      status, list, sentinel, moreRow);
+      box, moreRow);
   }
 
   /* ================================================================ put together */
@@ -634,11 +716,11 @@ export async function mount(ctx) {
     const tiles = [hostingTile(), accessTile()];
     if (admin) tiles.push(namesTile(), certTile(), portsTile(), keyTile());
     tiles.push(sessionsTile());
-    if (admin) tiles.push(accountsTile(), moveBox, fullT.el, auditT);
+    if (admin) tiles.push(accountsTile(), moveBox, storeBox, auditT);
     ctx.view.replaceChildren(...tiles.filter(Boolean));
   }
   if (admin) {
-    await Promise.all([readMove(), readExport(), fullT.ready]);
+    await Promise.all([readMove(), readExport(), readStorage()]);
     auditT = await auditTile();
     if (!ctx.alive()) return {};
     drawMove();
