@@ -9,7 +9,8 @@
 // API: GET cars/{car}/health, cars/{car}/gaps, cars/{car}/totals?source=, cars/{car}/updates (summary),
 // cars/{car}/storage, cars/{car}/signals/latest, cars/{car}/signals; POST cars/{car}/rebuild (admin),
 // PATCH can-keys/{key} (admin: a key's name, can-key-name.js); GET, POST cars/{car}/full-rebuild and
-// DELETE system/full-rebuild (admin, "Rebuild all data": pages/full-rebuild.js);
+// DELETE system/full-rebuild (admin, "Rebuild all data": pages/full-rebuild.js); GET, POST
+// cars/{car}/gps-layout/fit and PUT cars/{car}/gps-layout (admin, "Find GPS layout": shared/gpsfit.js);
 // GET system/storage, system/health (admin), cars, geocode/status.
 // Live: `health` events of the car change every figure of "Is data arriving?" in place (live events, polling
 // only while the live stream is down); `rows` events of the car load the gaps and totals again, in place; on
@@ -37,6 +38,8 @@ import { q, agoEl, statePill, stateLabel, DASH } from '../core/fmt.js';
 import { overviewCard } from './conn-overview.js';
 import { deviceText, renameKeyButton } from './can-key-name.js';
 import { fullRebuild } from './full-rebuild.js';
+import { gpsFitBlock } from '../shared/gpsfit.js';
+import { confirmDialog } from '../core/dialog.js';
 import { follow, carOf, onRows, FALLBACK_POLL_MS } from '../shared/live.js';
 import { morph, morphChildren, keepEl } from '../core/morph.js';
 import { running, lines as frLines } from '../shared/fullrebuild.js';
@@ -271,6 +274,15 @@ async function mountCar(ctx) {
   // the full rebuild's block, built once and kept in place under the figures painted again
   const rebuildEl = full ? h('div', { class: 'hl-rebuild hl-full', id: 'full-rebuild' }, h('h3', { class: 'hl-sub' }, 'Rebuild all data'), full.el)
     : h('p', { class: 'note hl-rebuild' }, 'An admin can rebuild all of this car’s data from the stored logs.');
+  // Find GPS layout (admin): in the notice that one input's positions are out of step; built once and kept in
+  // place when the card is drawn again
+  const gpsFit = admin ? gpsFitBlock({
+    api: ctx.api, car: cid, alive: () => ctx.alive(), flash,
+    confirm: (text, o) => confirmDialog(text, { title: o.title, ok: o.ok }),
+    errorText: (e) => errorWords(e).text, onApplied: () => refreshHealth(),
+    btnClass: 'btn btn--sm', applyClass: 'btn btn--sm btn--primary', barClass: 'bar', icon: (n) => icon(n, 'ico--sm'),
+  }) : null;
+  ctx.onCleanup(() => gpsFit?.stop());
   // the Rebuild row: the full rebuild's step while one runs for this car, else the period rebuild's state
   const rebuildVal = h('span');
   let lastPending = false;
@@ -348,7 +360,8 @@ async function mountCar(ctx) {
       return h('li', { class: 'hl-fix' },
         h('span', { class: 'hl-fix-ic' }, icon('warn', 'ico--sm')),
         h('div', null, h('div', { class: 'hl-fix-head' }, r.title), h('p', { class: 'hl-fix-text' }, r.text),
-          r.fix ? h('a', { class: 'btn btn--sm', href: state.buildUrl(r.page, { car: cid }) }, r.fix, icon('chev-r', 'ico--sm')) : null));
+          r.fix ? h('a', { class: 'btn btn--sm', href: state.buildUrl(r.page, { car: cid }) }, r.fix, icon('chev-r', 'ico--sm')) : null,
+          code === 'gps_inputs_disagree' && gpsFit ? keepEl(gpsFit.el, 'gps-fit') : null));
     })) : null;
 
     const figs = figures([
