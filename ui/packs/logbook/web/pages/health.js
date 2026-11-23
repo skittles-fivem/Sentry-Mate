@@ -34,7 +34,7 @@ import { sourceMark } from '../core/sources.js';
 import { overviewCard } from './integrations-overview.js';
 import { deviceText, renameButton } from './device-name.js';
 import { fullRebuild } from './rebuild-parts.js';
-import { gpsFitBlock } from '../shared/gpsfit.js';
+import { gpsLayoutSection, hasCanData } from '../shared/gpsfit.js';
 import { confirmDialog } from '../core/dialog.js';
 import * as fr from '../shared/fullrebuild.js';
 import { scrollBox } from '../shared/scrollbox.js';
@@ -308,15 +308,17 @@ async function mountCar(ctx) {
       : lastHl && lastHl.rebuild_pending ? h('span', { class: 'hl-warn' }, 'Running') : 'Nothing pending');
   }
   const full = admin ? fullRebuild(ctx, { car, label: 'Rebuild all data', onStatus: paintRebuild }) : null;
-  // Find GPS layout (admin): in the notice that one input's positions are out of step; built once and moved along
-  // when the health is drawn again
-  const gpsFit = admin ? gpsFitBlock({
-    api, car: cid, alive: () => ctx.alive(), flash: (t, o) => ctx.flash(t, o),
+  // GPS layout: the layout this car's Screenmate GPS frames are read with, always shown for a car with SMO data,
+  // with Find GPS layout and Reset to standard for admins (read-only for others); built once and kept in place
+  // when the health is drawn again (the fit opens under its line once used)
+  const gpsLayout = gpsLayoutSection({
+    api, car: cid, admin, alive: () => ctx.alive(), flash: (t, o) => ctx.flash(t, o), when: (ms) => when(ms, tz),
     confirm: (text, o) => confirmDialog({ title: o.title, text, yes: o.ok }),
     errorText: (e) => errorWords(e).text, onApplied: () => loadHealth(),
-    btnClass: 'button button-small button-quiet', applyClass: 'button button-small',
-  }) : null;
-  ctx.onCleanup(() => gpsFit?.stop());
+    btnClass: 'button button-small button-quiet', applyClass: 'button button-small', resetClass: 'button button-small button-quiet',
+  });
+  ctx.onCleanup(() => gpsLayout.stop());
+  let gpsRead = false;
 
   const healthBox = h('div', { class: 'hl-health' }, loadingBlock(5));
   ctx.main.append(section({ title: 'Is data arriving?', note: 'checked now, over the period', cover: 'faq.stopped-recording', cls: 'hl-block', id: 'hl-health',
@@ -333,7 +335,9 @@ async function mountCar(ctx) {
   const healthReady = new Promise((res, rej) => { firstDone = { res, rej }; });
   const healthLive = follow(ctx.api, {
     type: 'health', match: carOf(cid), pick: (d) => d.health,
-    load: () => ctx.api.get(base('health'), ctx.params),
+    // with the GPS layout line's first reads (so it is drawn whole), then the layout again with every read
+    load: () => Promise.all([ctx.api.get(base('health'), ctx.params),
+      gpsRead ? gpsLayout.load().catch(() => {}) : gpsLayout.ready.then(() => { gpsRead = true; })]).then(([v]) => v),
     pollMs: (v) => (v && v.rebuild_pending ? 3000 : FALLBACK_POLL_MS),
     onValue: (v, how) => {
       if (!ctx.alive() || !v) return;
@@ -393,7 +397,7 @@ async function mountCar(ctx) {
           h('p', { class: 'hl-fix-title' }, r.title),
           r.text ? h('p', { class: 'hl-fix-text' }, r.text) : null,
           r.fix ? h('a', { class: 'link-arrow', href: state.buildUrl(r.page, { car: cid }) }, r.fix, icon('arrowRight')) : null,
-          code === 'gps_inputs_disagree' && gpsFit ? keepEl(gpsFit.el, 'gps-fit') : null));
+          code === 'gps_inputs_disagree' ? h('p', { class: 'hl-fix-text hl-fix-more' }, 'See GPS layout below: Find GPS layout works out how this car’s Screenmate GPS frames should be read.') : null));
     })) : null;
 
     const figs = figures([
@@ -443,7 +447,7 @@ async function mountCar(ctx) {
     paintRebuild();
 
     // only the texts that changed are written; the full rebuild's block stays as it is
-    morphChildren(healthBox, [status, fixes, figs, h('div', { class: 'hl-cols' }, keyList, spanList), keepEl(rebuildEl, 'full-rebuild')]);
+    morphChildren(healthBox, [status, fixes, figs, h('div', { class: 'hl-cols' }, keyList, spanList), hasCanData(car, hl) ? keepEl(gpsLayout.el, 'gps-layout') : null, keepEl(rebuildEl, 'full-rebuild')]);
   }
 
   /** Missing on the server: logs the server should have but no longer does, asked of the car again. Always the same rows. */

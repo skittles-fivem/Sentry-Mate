@@ -332,6 +332,10 @@ fn gps_layout_key(car: CarId) -> String {
     format!("car/{car}/gps-layout")
 }
 
+fn gps_layout_set_key(car: CarId) -> String {
+    format!("car/{car}/gps-layout-set")
+}
+
 impl Engine {
     /// The car's own layout of the Screenmate's GPS frame (0x04F on its internal bus), when one is set: its logs
     /// are decoded with it instead of the DBC's.
@@ -351,9 +355,16 @@ impl Engine {
             return Ok(None);
         }
         records::put(&self.inner.db, records::NS, &gps_layout_key(car), &layout)?;
+        records::put(&self.inner.db, records::NS, &gps_layout_set_key(car), &now_ms())?;
         // noted first: a restart before the job did it does it then
         records::put_redo(&self.inner.db, car, records::Redo::Positions, true)?;
         Ok(Some(self.rebuild_because(Scope::car(car), jobs::What::POSITIONS, versions::Cause::gps_layout(), true)?))
+    }
+
+    /// When the car's GPS layout was last changed (set, or dropped back to the DBC's) through
+    /// [`Engine::set_gps_layout`], in ms; `None` when it never was (or before this was kept).
+    pub fn gps_layout_set_ms(&self, car: CarId) -> Result<Option<u64>> {
+        records::get::<u64>(&self.inner.db, records::NS, &gps_layout_set_key(car))
     }
 
     /// The newest stretch of the car's history whose inputs' GPS fixes disagreed (since the server started).

@@ -215,7 +215,15 @@
 
 /* Find GPS layout (shared/gpsfit.js), in the notice that one input's positions are out of step (admins): every
    row keeps its height in every state (not run, running, done, failed), and long text ends in an ellipsis */
-.hl-fix:has(> div > .gf) { grid-column: 1 / -1; }
+/* GPS layout: one line (the layout in use, Find GPS layout, Reset to standard); the fit opens under it once used */
+.gl { min-width: 0; margin-top: round(1.25rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
+.gl-line { display: flex; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.875rem, var(--e)); min-height: round(2rem, var(--e)); }
+.gl-label { flex: none; font-weight: 600; }
+.gl-text { flex: 1 1 round(8rem, var(--e)); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.gl-val { color: var(--text); }
+.gl-acts { display: flex; flex: none; flex-wrap: wrap; gap: round(0.5rem, var(--e)); }
+.gl [hidden] { display: none !important; }
+.hl-fix-more { margin-bottom: 0; }
 .gf { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); min-width: 0; margin-top: round(0.625rem, var(--e)); padding-top: round(0.625rem, var(--e)); border-top: 1px solid var(--line); }
 .gf-explain { margin: 0; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
 .gf-acts { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)); }

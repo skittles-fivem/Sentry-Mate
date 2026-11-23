@@ -30,7 +30,7 @@ import { totalsLine } from './connections.js';
 import { deviceName } from '../shared/devices.js';
 import { deviceText, renameBtn } from './device-name.js';
 import { fullRebuild } from '../core/fullrebuild.js';
-import { gpsFitBlock } from '../shared/gpsfit.js';
+import { gpsLayoutSection, hasCanData } from '../shared/gpsfit.js';
 import { confirmDialog } from '../core/dialog.js';
 import * as fr from '../shared/fullrebuild.js';
 import { follow, carOf, onRows, FALLBACK_POLL_MS } from '../shared/live.js';
@@ -166,15 +166,18 @@ async function mountCar(ctx) {
       : lastHl?.rebuild_pending ? status(tag('running', 'warn'), 'working out drives again') : status(ok(), 'nothing pending'));
   };
   const full = admin ? fullRebuild(ctx, { car, label: 'rebuild all data', onStatus: paintRebuild }) : null;
-  // find gps layout (admin): under the line that one input's positions are out of step; built once and moved along
-  // when the status is drawn again
-  const gpsFit = admin ? gpsFitBlock({
-    api: ctx.api, car: cid, alive: () => ctx.alive(), flash: (t, o) => toast(t, { kind: o?.kind === 'error' ? 'error' : 'ok' }),
+  // gps layout: the layout this car's screenmate gps frames are read with, always shown for a car with smo data,
+  // with find gps layout and reset to standard for admins (read-only for others); built once and kept in place
+  // when the status is drawn again (the fit opens under its line once used)
+  const gpsLayout = gpsLayoutSection({
+    api: ctx.api, car: cid, admin, alive: () => ctx.alive(), flash: (t, o) => toast(t, { kind: o?.kind === 'error' ? 'error' : 'ok' }),
+    when: (ms) => formatDateTime(ms, tz, { now: ctx.api.now() }),
     confirm: (text, o) => confirmDialog(text, { title: o.title.toLowerCase(), ok: o.ok.toLowerCase() }),
     errorText: (e) => errorWords(e).text, onApplied: () => loadHealth().catch(() => {}),
-    btnClass: 'btn btn--line', applyClass: 'btn btn--primary',
-  }) : null;
-  ctx.onCleanup(() => gpsFit?.stop());
+    btnClass: 'btn btn--line', applyClass: 'btn btn--primary', resetClass: 'btn btn--line',
+  });
+  ctx.onCleanup(() => gpsLayout.stop());
+  let gpsRead = false;
   const statusSlot = h('div', null, loadingLine('reading health'));
   const missSlot = h('div', null, loadingLine('reading health'));
   const tailSlot = h('div');
@@ -188,8 +191,10 @@ async function mountCar(ctx) {
   let periodT = 0, eventPeriod = null;
   ctx.onCleanup(() => clearTimeout(periodT));
   async function readHealth() {
-    const [hl, ts] = await Promise.all([
+    const [hl, , ts] = await Promise.all([
       ctx.api.get(`${base}/health`, fullPeriod(ctx.params)),
+      // the gps layout line's first reads (so it is drawn whole), then the layout again with every read
+      gpsRead ? gpsLayout.load().catch(() => {}) : gpsLayout.ready.then(() => { gpsRead = true; }),
       // the Tesla API input for this car (admins only): what the server asks Tesla for it now
       admin ? ctx.api.list('integrations/tesla/status').all().catch(() => null) : Promise.resolve(null),
     ]);
@@ -228,7 +233,7 @@ async function mountCar(ctx) {
       reasons.length ? h('ul', { class: 'hl-fixes' }, reasons.map((code) => {
         const r = REASONS[code] || [code, '', null];
         return h('li', null, code === 'rebuild_pending' ? tag('running', 'warn') : warn(), ' ', r[0], none(`: ${r[1]}`), r[2] ? ['  ', link(state.buildUrl(r[2], { car: cid }), 'fix')] : null,
-          code === 'gps_inputs_disagree' && gpsFit ? keepEl(gpsFit.el, 'gps-fit') : null);
+          code === 'gps_inputs_disagree' ? none('  (see gps layout below)') : null);
       })) : null,
       kv([
         ['last upload', hl.last_upload_ms != null ? status(silent ? warn() : ok(), ago(hl.last_upload_ms), none(` ${formatDateTime(hl.last_upload_ms, tz, { now: ctx.api.now() })}, the bridge's last contact${hl.newest_log_ms != null ? `; newest log arrived ${ago(hl.newest_log_ms)}` : ''}`)) : status(warn(), 'no log yet')],
@@ -246,6 +251,7 @@ async function mountCar(ctx) {
         ['data from', src(car, { full: true }) || none('no data yet')],
         ...teslaLines(),
       ]),
+      hasCanData(car, hl) ? keepEl(gpsLayout.el, 'gps-layout') : null,
       keepEl(fullEl, 'full-rebuild')]);
 
     paintMissing(hl.missing_logs || {});
