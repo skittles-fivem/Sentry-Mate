@@ -1,11 +1,42 @@
-/* Pebble: Logbook. A numbered tile per drive with both ends and the purpose chip. */
-.tl-list-start { padding: 0 var(--s1); }
-.lb-seq { display: grid; place-items: center; min-width: var(--row-ic); height: var(--row-ic); padding: 0 var(--s2); border-radius: var(--r-sm); background: var(--card-alt); font-size: var(--f14); line-height: var(--l14); font-weight: 800; font-variant-numeric: tabular-nums; flex: none; }
-.lb-ends { display: flex; flex-direction: column; gap: var(--s2); }
-.lb-end { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; column-gap: var(--s3); }
-.lb-dot { display: block; width: var(--dot); height: var(--dot); border-radius: 50%; background: var(--tone); align-self: center; }
-.lb-place { display: flex; flex-direction: column; font-size: var(--f16); line-height: var(--l16); font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
-.lb-odo { font-size: var(--f14); line-height: var(--l14); color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
-.lb-gap { display: flex; align-items: flex-start; gap: var(--s2); font-size: var(--f14); line-height: var(--l14); color: var(--sun); font-weight: 700; }
-.lb-gap .ic { width: var(--ic-sm); height: var(--ic-sm); flex: none; }
+/* Pebble: Logbook. Totals per purpose, then the drives in a box about ten rows high that scrolls; only the rows in
+   view are drawn (shared/vlist.js), every row one height (each line one line, cut with an ellipsis). */
+.lb-seq { display: grid; place-items: center; min-width: var(--h-btn); height: var(--h-btn); padding: 0 var(--s2); border-radius: var(--r-sm); background: var(--card-alt); color: var(--text); text-decoration: none; font-size: var(--f14); line-height: var(--l14); font-weight: 800; font-variant-numeric: tabular-nums; flex: none; }
+a.lb-seq:hover { background: color-mix(in srgb, var(--card-alt) 80%, var(--text)); }
 .tile-stat.tone-sky .num-n { color: var(--sky); }
+
+.lb-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); }
+.lb-tool { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.lb-search { width: round(16rem, var(--e)); height: var(--h-btn); }
+.lb-date { width: round(11rem, var(--e)); height: var(--h-btn); }
+.lb-seg { flex: none; width: round(30rem, var(--e)); }
+.lb-jump .btn { flex: none; width: round(9rem, var(--e)); padding: 0; }
+
+.vl-box {
+  --vl-row: calc(max(var(--h-btn), var(--l16) + var(--l14) + var(--s1)) + 2 * var(--s2) + 1px);
+  max-height: calc(10 * var(--vl-row)); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable;
+  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+}
+.vl-box:focus-visible { outline: 2px solid var(--coral-fill); outline-offset: 2px; }
+.vl-gap { height: var(--vl-h, 0px); }
+.lb-vrow {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; column-gap: var(--s3);
+  box-sizing: border-box; height: var(--vl-row); padding: var(--s2) var(--s1); border-bottom: 1px solid var(--line); overflow: hidden;
+}
+.lb-vrow.is-skel { color: var(--muted); }
+.lb-vtext { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+.lb-vline { margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--f16); line-height: var(--l16); font-weight: 700; font-variant-numeric: tabular-nums; }
+.lb-vsub { font-size: var(--f14); line-height: var(--l14); font-weight: 500; color: var(--muted); }
+.lb-vsep { color: var(--muted); }
+.lb-vodo { color: var(--muted); font-weight: 500; }
+.lb-vgap { color: var(--sun); font-weight: 700; }
+.lb-vgap .ic { width: var(--ic-xs); height: var(--ic-xs); vertical-align: -0.125em; margin-right: var(--s1); }
+.lb-vrule { font-weight: 500; }
+.lb-pchip { flex: none; }
+.lb-empty { padding: var(--s3) 0; }
+html[data-form="phone"] .lb-tools > *, html[data-form="phone"] .lb-search, html[data-form="phone"] .lb-seg { width: 100%; flex: 1 1 100%; }
+html[data-form="phone"] .lb-seg .seg-btn { padding: 0 var(--s1); }
+html[data-form="phone"] .lb-date { flex: 1 1 auto; min-width: 0; }
+html[data-form="phone"] .vl-box { max-height: min(calc(10 * var(--vl-row)), round(down, 65svh, 1px)); }
+html[data-form="phone"] .lb-vmore { display: none; }
+html[data-form="phone"] .lb-pchip .ic { display: none; }
+html[data-form="phone"] .lb-vrow { column-gap: var(--s2); }

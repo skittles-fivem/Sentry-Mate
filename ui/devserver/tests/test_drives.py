@@ -170,6 +170,49 @@ class Drives(ServerCase):
         gaps = self.c.get("/api/v1/cars/c1/logbook")["rows"]
         self.assertTrue(any((r["continuity_gap_km"] or 0) > 1 for r in gaps))  # km driven while no log came in
 
+    def test_logbook_pages(self):
+        base = "/api/v1/cars/c1/logbook"
+        rows = self.c.get(base)["rows"]
+        pg = self.c.get(f"{base}?limit=10")
+        self.assertEqual((pg["offset"], pg["total"], pg["count"]), (0, len(rows), len(rows)))
+        self.assertEqual(pg["items"], rows[:10])
+        self.assertEqual(sum(pg["counts_by_purpose"].values()), len(rows))
+        self.assertEqual(pg["continuity"]["rows"], len(rows))
+        self.assertLessEqual(len(pg["continuity"]["worst"]), 4)
+        self.assertTrue(all(r["prev_end_ms"] is None for r in rows[:1]))
+        self.assertEqual(rows[5]["prev_end_ms"], rows[4]["end_ms"])
+        # by cursor (bound to the filters), by offset, from a date (both orders)
+        pg2 = self.c.get(f"{base}?limit=10&after={pg['next']}")
+        self.assertEqual((pg2["offset"], pg2["items"]), (10, rows[10:20]))
+        st, _, _ = self.c.request("GET", f"{base}?limit=10&purpose=none&after={pg['next']}")
+        self.assertEqual(st, 400)
+        self.assertEqual(self.c.get(f"{base}?limit=3&offset=40")["items"], rows[40:43])
+        at = rows[30]["start_ms"]
+        self.assertEqual(self.c.get(f"{base}?limit=5&at_ms={at}")["offset"], 30)
+        back = self.c.get(f"{base}?limit=5&dir=desc&at_ms={at}")
+        self.assertEqual(back["items"][0], rows[29])
+        self.assertEqual(back["offset"], len(rows) - 30)
+        st, _, _ = self.c.request("GET", f"{base}?limit=5&sort=distance&at_ms={at}")
+        self.assertEqual(st, 400)
+        last = self.c.get(f"{base}?limit=500&offset={len(rows) - 2}")
+        self.assertEqual((len(last["items"]), last["next"]), (2, None))
+        # filters and order: the totals and the check stay the whole period's
+        biz = self.c.get(f"{base}?limit=500&purpose=commute")
+        self.assertEqual(biz["total"], pg["counts_by_purpose"]["commute"])
+        self.assertTrue(all(r["purpose"] == "commute" for r in biz["items"]))
+        self.assertEqual(biz["totals_by_purpose"], pg["totals_by_purpose"])
+        word = (rows[3]["end_place"] or rows[3]["end_address"]).split()[0]
+        found = self.c.get(f"{base}?limit=500&q={word.upper()}")
+        self.assertIn(rows[3], found["items"])
+        gaps = self.c.get(f"{base}?limit=500&gaps=true")
+        self.assertEqual(gaps["total"], pg["continuity"]["gaps"])
+        far = self.c.get(f"{base}?limit=3&sort=distance&dir=desc")["items"]
+        self.assertEqual(far[0]["distance_km"], max(r["distance_km"] or 0 for r in rows))
+        st, hd, raw = self.c.request("GET", f"{base}?format=csv&purpose=commute")
+        self.assertEqual(len(raw.decode("utf-8-sig").strip().splitlines()), biz["total"] + 1)
+        st, _, _ = self.c.request("GET", f"{base}?purpose=holiday")
+        self.assertEqual(st, 400)
+
     def test_trip(self):
         rt = 137
         a = NOW - rt * 86_400_000 - 12 * 3_600_000

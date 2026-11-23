@@ -42,6 +42,10 @@ measure.js options
   --packs instrument,logbook,horizon,console,pebble,manager   --pages car,drives,charges,battery,settings
   --out FILE.json  --md FILE.md  --label NAME  --timeout 90000  --quiet 500
   --cpu 4  --latency 150  --no-throttle  --warm-pause MS  --verbose (every request in the JSON)
+  --device laptop (1440x900 at 1x, CPU 2x, no network throttling unless --latency)  --scroll (scroll the list: fps)
+  --pages logbook (also: the Logbook). rows ms / list ms: first list row painted, from navigation / from the list's
+  request; dom rows and nodes at the end. The dev server works too: --base http://127.0.0.1:PORT --user admin
+  --pass sentry-mate-dev (serve.py --drives 3000 for a long Logbook)
 
 What is measured (see the header of measure.js for detail)
   device   390x844 CSS px, deviceScaleFactor 3, isMobile, hasTouch (Android Chrome UA)

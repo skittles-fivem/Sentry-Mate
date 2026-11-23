@@ -197,7 +197,7 @@ class Req:
         """A short hash of the filters, so a cursor is only used with the filters it came from."""
         parts = []
         for k in sorted(self.query):
-            if k in ("after", "limit", "format"):
+            if k in ("after", "limit", "format", "offset", "at_ms"):
                 continue
             parts.append(k + "=" + ",".join(self.query[k]))
         parts.append(self.path)

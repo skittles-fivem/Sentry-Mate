@@ -89,6 +89,17 @@ pub(crate) struct Shown {
 }
 
 impl Shown {
+    /// A key of what it shows (a kept answer built with it rests on it).
+    pub(crate) fn key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        format!("{:?}", self.filter).hash(&mut h);
+        self.coverage.hash(&mut h);
+        self.sites.hash(&mut h);
+        crate::memo::key(&self.flips).hash(&mut h);
+        h.finish()
+    }
+
     pub(crate) fn new(e: &Engine, car: CarId, filter: Option<SourceFilter>) -> QResult<Shown> {
         let sites = match filter {
             None | Some(SourceFilter::Import(None)) => Sites::new(e, car)?,

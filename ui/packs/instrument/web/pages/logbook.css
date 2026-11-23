@@ -57,6 +57,8 @@
 .lb-rel { color: var(--text-2); }
 .lb-note { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: italic; }
 .lb-edit { margin-left: round(0.125rem, var(--e)); }
+/* the edit button sits in the chip's line without making the row taller */
+.lb-table .lb-edit { margin-block: round(-0.3125rem, var(--e)); }
 .lb-now { color: var(--live); font-weight: 500; }
 .lb-arrow { color: var(--text-3); }
 .lb-pcell { min-width: 0; }
@@ -114,17 +116,9 @@
 /* units next to the numbers in the cards and the gap list stay readable */
 :root[data-phone] :is(.lb-table, .lb-gaps) .q-u { font-size: max(0.86em, var(--fs-floor)); }
 :root[data-phone] .lb-page .cell-text .sub { font-size: max(0.875rem, var(--fs-floor)); }
-/* the cards: the number heads the card; places, purpose and the continuity line wrap rather than clip */
-:root[data-phone] .lb-table .tbl td, :root[data-phone] .lb-table .tbl td:first-child { padding-left: 0; padding-right: 0; }
-:root[data-phone] .lb-page .is-num .cell-text { align-items: flex-start; }
-:root[data-phone] .lb-where, :root[data-phone] .lb-pcell { max-width: none; }
-:root[data-phone] .lb-where .main, :root[data-phone] .lb-where .sub, :root[data-phone] .lb-note { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
-:root[data-phone] .lb-table .nowrap { white-space: normal; }
-:root[data-phone] .lb-seq { display: inline-flex; align-items: center; min-height: var(--tap); min-width: var(--tap); }
-:root[data-phone] .lb-gap { min-height: var(--tap); }
+:root[data-phone] .lb-seq { display: inline-flex; align-items: center; min-width: var(--tap); }
 :root[data-phone] .lb-rule { flex-wrap: wrap; }
 :root[data-phone] .lb-rule-text { flex-basis: 100%; overflow-wrap: anywhere; }
-:root[data-phone] .lb-where a.main { min-width: var(--tap); }
 :root[data-phone] .lb-seg { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 :root[data-phone] .lb-seg .seg-btn:first-child { grid-column: 1 / -1; }
 :root[data-phone] .lb-seg .seg-btn { justify-content: flex-start; }

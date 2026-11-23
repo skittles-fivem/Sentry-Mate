@@ -13,6 +13,7 @@ import { h } from '../shared/dom.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
 import { compareText, formatNumber } from '../shared/i18n.js';
 import { icon, empty as emptyView, errorView, loadingBlock } from './ui.js';
+import { windowList, dayJumpMs } from '../shared/vlist.js';
 
 /**
  * dataTable(ctx, {
@@ -250,4 +251,160 @@ export function dataTable(ctx, opts) {
     get items() { return items(); },
   };
   return ctl;
+}
+
+/**
+ * windowLedger(ctx, {
+ *   columns: [{ key, label, cell(row), sort: 'server_key', firstDir, num, th, cls, cover, hint }],
+ *   path, params, limit,              // a list the API pages by cursor and by offset ({ items, next, offset, total })
+ *   sort: { key, dir }, firstSort,    // the starting order; Jump to date works in firstSort's column only
+ *   itemName, label, cls, cover, caption,
+ *   rowAttrs(row), empty(page),
+ *   search: { label, placeholder, hint } | null,   // the API's q, applied when typing pauses
+ *   jump: true,                       // "Jump to date" (the API's at_ms)
+ *   tools: node,                      // more controls in the tool line (an order choice)
+ *   onPage(page), onError(err),
+ * }) -> { el, ready, setParams(patch, { sort }), refresh(), total(), params() }
+ *
+ * The rows sit in a box about ten rows high that scrolls under its head: only the rows in view and a few more are
+ * in the page (shared/vlist.js), loaded from the API a chunk at a time as the box comes to them. Every row is one
+ * height (.vl-ledger in app.css: two lines a cell at most).
+ */
+export function windowLedger(ctx, opts) {
+  const { columns, itemName = ['row', 'rows'], cover = null, cls = null, label = null } = opts;
+  let params = { ...(opts.params || {}) };
+  let sort = opts.sort ? { ...opts.sort } : null;
+  const base = opts.firstSort || opts.sort || null;
+  let total = null;
+
+  const count = h('p', { class: 'ledger-count vl-count', 'aria-live': 'polite' });
+  const csvBtn = h('a', { class: 'button button-quiet button-small', href: '#', download: '', dataset: { csv: '' }, title: 'Every row the filters leave, as the server writes it (metric, times as epoch ms)' }, icon('download'), 'Download CSV');
+  const search = opts.search ? h('input', { class: 'field-input vl-search', type: 'search', 'aria-label': opts.search.label || 'Search', placeholder: opts.search.placeholder || 'Search', title: opts.search.hint || null, value: params.q || '' }) : null;
+  const jumpIn = opts.jump ? h('input', { class: 'field-input vl-jump-date', type: 'date', 'aria-label': 'Jump to date', title: 'Scroll the log to the first drive of this day' }) : null;
+  const jumpBtn = opts.jump ? h('button', { type: 'button', class: 'button button-quiet button-small', onclick: () => jump() }, 'Jump to date') : null;
+  const head = h('thead', null, h('tr', null, columns.map((c) => headCell(c))));
+  const body = h('tbody', { dataset: { vlBody: '' } });
+  const table = h('table', { class: 'ledger-table vl-ledger', 'aria-label': label }, head, body);
+  const box = h('div', { class: 'ledger-scroll ledger-box vl-box', tabindex: '0', role: 'region', 'aria-label': opts.boxLabel || label }, table);
+  const status = h('div', { class: 'ledger-status' });
+  const el = h('div', { class: ['ledger', cls], cover },
+    h('div', { class: 'ledger-top vl-tools' }, opts.tools || null, search, opts.jump ? h('span', { class: 'vl-jump' }, jumpIn, jumpBtn) : null, count, csvBtn),
+    opts.caption ? h('p', { class: 'ledger-caption vl-caption' }, opts.caption) : null,
+    box, status);
+
+  function serverParams() {
+    const p = { ...params };
+    const col = sort && columns.find((c) => c.key === sort.key);
+    if (col && typeof col.sort === 'string') { p.sort = col.sort; p.dir = sort.dir; }
+    return p;
+  }
+  function headCell(c) {
+    const on = sort && sort.key === c.key;
+    const th = h('th', { scope: 'col', class: [c.cls, { num: c.num, 'is-sortable': !!c.sort }], title: c.hint || null,
+      'aria-sort': on ? (sort.dir === 'asc' ? 'ascending' : 'descending') : null, cover: c.cover || null });
+    if (!c.sort) { th.append(c.label); return th; }
+    th.append(h('button', { type: 'button', class: 'sort-button', onclick: () => sortBy(c) }, c.label,
+      h('span', { class: 'sort-mark', 'aria-hidden': 'true' }, on ? (sort.dir === 'asc' ? '▲' : '▼') : '')));
+    return th;
+  }
+  function drawHead() { head.replaceChildren(h('tr', null, columns.map((x) => headCell(x)))); }
+  function sortBy(c) {
+    const dir = sort && sort.key === c.key ? (sort.dir === 'asc' ? 'desc' : 'asc') : (c.firstDir || (c.num ? 'desc' : 'asc'));
+    sort = { key: c.key, dir };
+    drawHead();
+    opts.onSort?.({ ...sort });
+    restart().catch((e) => fail(e));
+  }
+  function rowEl(r, i) {
+    const attrs = opts.rowAttrs ? opts.rowAttrs(r) || {} : {};
+    return h('tr', { ...attrs, 'aria-rowindex': String(i + 2), dataset: { vlRow: String(i) } }, columns.map((c) => {
+      const v = c.cell ? c.cell(r) : r[c.key];
+      return h(c.th ? 'th' : 'td', { class: [c.cls, { num: c.num }], scope: c.th ? 'row' : null }, v == null ? '—' : v);
+    }));
+  }
+  const skelRow = (i) => h('tr', { class: 'vl-skel', 'aria-rowindex': String(i + 2) }, columns.map(() => h('td', null, h('span', { class: 'vl-skel-bar' }))));
+  const gapRow = () => h('tr', null, h('td', { colspan: String(columns.length) }));
+
+  const list = windowList({
+    box, body, head, limit: opts.limit || 50, overscan: 6, rowHeight: 70,
+    row: rowEl, placeholder: skelRow, spacer: gapRow,
+    load: (p) => ctx.api.get(opts.path, { ...serverParams(), ...paging(p) }, { signal: p.signal }),
+    onPage: (pg) => { if (pg.total !== total) { total = pg.total; paint(); } opts.onPage?.(pg); },
+    onError: (e) => opts.onError?.(e),
+  });
+  ctx.signal.addEventListener('abort', () => list.destroy(), { once: true });
+
+  function paint() {
+    const n = total ?? 0;
+    const [one, many] = itemName;
+    count.textContent = `${formatNumber(n)} ${n === 1 ? one : many}`;
+    table.setAttribute('aria-rowcount', String(n + 1));
+    box.hidden = !n;
+    csvBtn.hidden = !n;
+    csvBtn.setAttribute('href', ctx.api.csvUrl(opts.path, serverParams()));
+    status.replaceChildren(n ? '' : (opts.empty ? opts.empty({ total: n }) : emptyView({ title: `No ${many}.` })));
+    if (jumpIn) {
+      const can = !!n && sort && base && sort.key === base.key;
+      jumpIn.disabled = !can; jumpBtn.disabled = !can;
+      jumpBtn.title = can ? 'Scroll the log to the first drive of this day' : 'Jump to date works in the order of the drives (by number or start).';
+    }
+  }
+  function fail(err) {
+    if (ctx.signal.aborted) return;
+    status.replaceChildren(errorView(err, { retry: () => restart().catch(() => {}), eyebrow: 'Could not load the list' }));
+    opts.onError?.(err);
+  }
+  async function restart() {
+    total = null;
+    const pg = await list.start();
+    if (pg) { total = pg.total; paint(); opts.onPage?.(pg); }
+    return pg;
+  }
+  async function jump() {
+    if (!jumpIn.value) { jumpIn.focus(); return; }
+    try {
+      const pg = await list.jump(dayJumpMs(jumpIn.value, ctx.tz, sort?.dir === 'desc'));
+      if (pg) { total = pg.total; paint(); box.focus({ preventScroll: true }); }
+    } catch (e) { fail(e); }
+  }
+  jumpIn?.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); jump(); } });
+  if (search) {
+    let t = 0;
+    search.addEventListener('input', () => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        const v = search.value.trim();
+        if ((params.q || '') === v) return;
+        if (v) params.q = v; else delete params.q;
+        opts.onSearch?.(v);
+        restart().catch((e) => fail(e));
+      }, 300);
+    });
+    ctx.signal.addEventListener('abort', () => clearTimeout(t), { once: true });
+  }
+
+  const ready = restart();
+  return {
+    el,
+    ready,
+    /** New filters (null removes one), and with { sort } a new order: load again from the top. */
+    setParams(patch, o = {}) {
+      for (const [k, v] of Object.entries(patch || {})) { if (v == null || v === '') delete params[k]; else params[k] = v; }
+      if ('sort' in o) { sort = o.sort ? { ...o.sort } : null; drawHead(); }
+      return restart();
+    },
+    /** The rows in view loaded again (a live change); nothing moves until they are in. */
+    refresh() { return list.refresh().then((pg) => { if (pg) { total = pg.total; paint(); } return pg; }); },
+    total: () => total ?? 0,
+    params: () => serverParams(),
+  };
+}
+
+// what vlist asks with: a cursor, a date or an offset
+function paging(p) {
+  const out = { limit: p.limit };
+  if (p.after) out.after = p.after;
+  else if (p.at_ms != null) out.at_ms = p.at_ms;
+  else out.offset = p.offset || 0;
+  return out;
 }
