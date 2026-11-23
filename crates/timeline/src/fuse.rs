@@ -119,6 +119,9 @@ pub struct Fused {
     /// an SMO second with values from the API (and with `TESLAFI_API` where TeslaFi gave values). A second not here
     /// is SMO's.
     pub marks: Vec<(u64, Inputs)>,
+    /// Fixes taken out as impossible ([`crate::drop_bad_fixes`]): a placeholder, half a fix, or a jump faster than
+    /// [`crate::MAX_FIX_KMH`] from the fixes around it.
+    pub fixes_dropped: u64,
 }
 
 impl Fused {
@@ -201,6 +204,21 @@ macro_rules! slots {
         // the four tyre pressures are one value: an input's four may be in its own slot order (SMO's 0x219 while
         // which wheel each slot is is not known) and another's in wheel order (the APIs'), so a sample takes all
         // four from one input or none, never a slot from each
+        // latitude and longitude are one fix: a sample takes both from one input or neither, never the latitude
+        // of one input and the longitude of another (a point that was nowhere). Both slots look at whole fixes, so
+        // each picks the same one and both are named as filled
+        Slot {
+            name: "lat",
+            hold: |p| p.position_ms,
+            has: |x| x.lat.is_some() && x.lon.is_some(),
+            copy: |to, from| (to.lat, to.lon) = (from.lat, from.lon),
+        },
+        Slot {
+            name: "lon",
+            hold: |p| p.position_ms,
+            has: |x| x.lat.is_some() && x.lon.is_some(),
+            copy: |to, from| (to.lat, to.lon) = (from.lat, from.lon),
+        },
         Slot {
             name: "tpms_bar",
             hold: |p| p.slow_ms,
@@ -217,7 +235,7 @@ macro_rules! slots {
 pub(crate) const SLOTS: &[Slot] = slots!(
     fast_ms: speed_kmh, gear, battery_power_kw, battery_voltage_v, battery_current_a, charging, charge_kind,
         charge_power_kw, charger_voltage_v, charger_current_a;
-    position_ms: lat, lon, gps_accuracy_m, elevation_m;
+    position_ms: gps_accuracy_m, elevation_m;
     battery_ms: soc, soc_bms, range_km, ideal_range_km, energy_remaining_kwh;
     odometer_ms: odometer_km;
     slow_ms: outside_temp_c, inside_temp_c, battery_temp_c
@@ -268,7 +286,9 @@ fn layered(layers: &[(&[Sample], Inputs)], p: &FuseParams) -> Fused {
         };
     }
     let marks = below.iter().filter(|(_, i)| *i != Inputs::SMO).map(|(s, i)| (s.t_ms, *i)).collect();
-    Fused { samples: below.into_iter().map(|(s, _)| s).collect(), marks }
+    let mut samples: Vec<Sample> = below.into_iter().map(|(s, _)| s).collect();
+    let fixes_dropped = crate::calc::drop_bad_fixes(&mut samples, crate::calc::MAX_FIX_KMH);
+    Fused { samples, marks, fixes_dropped }
 }
 
 /// `top`'s seconds (one per second, sorted) with the values they lack from `below` (sorted, one per second), and
@@ -314,10 +334,10 @@ fn lay(top: &[&Sample], top_in: Inputs, below: &[(Sample, Inputs)], gap: u64, p:
 /// Fills what `s` lacks; returns the inputs of the values taken.
 fn fill_one(s: &mut Sample, p: &FuseParams, looks: &[Field<'_>]) -> Inputs {
     let mut from = Inputs::NONE;
-    for (slot, look) in SLOTS.iter().zip(looks) {
-        if !(slot.has)(s)
-            && let Some((a, i)) = look.near(s.t_ms, (slot.hold)(p))
-        {
+    // what the sample had before any filling (the two halves of a fix are filled together)
+    let had: Vec<bool> = SLOTS.iter().map(|slot| (slot.has)(s)).collect();
+    for ((slot, look), had) in SLOTS.iter().zip(looks).zip(had) {
+        if !had && let Some((a, i)) = look.near(s.t_ms, (slot.hold)(p)) {
             (slot.copy)(s, a);
             from = from.union(i);
         }
@@ -351,6 +371,20 @@ mod tests {
             inside_temp_c: Some(21.0),
             ..Sample::default()
         }
+    }
+
+    #[test]
+    fn a_fix_is_never_one_inputs_latitude_and_anothers_longitude() {
+        // SMO's second has a latitude but lost its longitude; the API's, a second later, has a whole fix
+        let s = [Sample { lon: None, ..smo(10) }];
+        let a = [Sample { lat: Some(1.0002), lon: Some(2.0002), ..api(11) }];
+        let f = fuse(&s, &a, &FuseParams::default());
+        let x = f.samples.iter().find(|x| x.t_ms == 10_000).unwrap();
+        assert_eq!((x.lat, x.lon), (Some(1.0002), Some(2.0002)), "the API's whole fix, not SMO's latitude with it");
+        assert_eq!(f.inputs_at(10_000), Inputs::BOTH);
+        // with no whole fix near, the half one is taken out
+        let f = fuse(&s, &[], &FuseParams::default());
+        assert_eq!((f.samples[0].lat, f.samples[0].lon, f.fixes_dropped), (None, None, 1));
     }
 
     #[test]
@@ -478,6 +512,8 @@ mod tests {
                 if i == 2 {
                     x.soc = None;
                 }
+                // a fix a few metres from SMO's (one far from it, with SMO's either side, would be a jump)
+                (x.lat, x.lon) = (Some(1.0001), Some(2.0001));
                 x
             })
             .collect();
@@ -487,7 +523,7 @@ mod tests {
         let at = |sec: u64| f.samples.iter().find(|x| x.t_ms == sec * 1000).cloned();
         // inside the Tesla API's coverage its seconds are the seconds, its values win value by value
         let x = at(15).unwrap();
-        assert_eq!((x.speed_kmh, x.soc, x.lat, x.inside_temp_c), (Some(48.0), Some(69.0), Some(1.1), Some(21.0)));
+        assert_eq!((x.speed_kmh, x.soc, x.lat, x.inside_temp_c), (Some(48.0), Some(69.0), Some(1.0001), Some(21.0)));
         assert_eq!(x.odometer_km, Some(1000.0), "SMO fills what the API lacks");
         assert_eq!(at(25).unwrap().soc, Some(70.0), "the level the API did not send that second: SMO's");
         assert_eq!(f.inputs_at(15_000), Inputs::BOTH);
