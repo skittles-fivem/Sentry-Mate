@@ -438,7 +438,9 @@ ul { margin: 0; padding: 0; list-style: none; }
 @keyframes pulse { 0% { transform: scale(0.6); opacity: 1; } 100% { transform: scale(1.8); opacity: 0; } }
 
 /* no max-width: wide screens get more columns and side panels (see "xwide"), not a narrow column in the middle */
-.view { flex: 1; padding: var(--view-pad-top) var(--gutter) var(--view-pad-bottom); width: 100%; min-width: 0; outline: none; }
+/* at least a screen high (the small one: a phone's toolbars shown), so the footer starts below the fold and is never
+   pushed down on screen as the page draws (the loading skeleton, then the page) */
+.view { flex: 1; padding: var(--view-pad-top) var(--gutter) var(--view-pad-bottom); width: 100%; min-width: 0; min-height: 100svh; outline: none; }
 /* the fleet page fills the window; in a very short window (or at a large interface size) it keeps a usable table and the page scrolls */
 .view--fill { flex: none; height: max(calc(100vh - var(--topbar-h)), round(36rem, var(--e))); display: flex; flex-direction: column; padding-bottom: round(1.25rem, var(--e)); overflow: hidden; }
 
@@ -1542,7 +1544,9 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
   background: var(--bg-1);
   border-top: 1px solid var(--line);
 }
-.dock-period:empty, .dock-period:has(> .period[hidden]) { display: none; }
+/* shown on every page with a period from its first paint (the router sets data-has-period as it starts), so the dock
+   never grows over the page once it is there */
+.dock-period:empty, :root:not([data-has-period]) .dock-period { display: none; }
 .dock-period { display: flex; align-items: center; height: var(--dock-period-h); padding: 0 var(--gutter); border-bottom: 1px solid var(--line); }
 .dock-period .period { display: flex; width: 100%; gap: round(0.5rem, var(--e)); }
 .dock-period .period-btn { flex: 1; min-width: 0; max-width: none; justify-content: center; }
