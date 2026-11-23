@@ -55,6 +55,8 @@ function ask(worker, g, msg) {
 
 /** Drops what the worker keeps (its memory and its caches); never throws. */
 export async function clearServiceWorker(g = globalThis) {
+  // the routers' note that this browser is signed in (prefetch.js signedInHint)
+  try { g.localStorage?.removeItem('sentrymate.signed-in'); } catch { /* storage off */ }
   const tasks = [];
   const sw = g.navigator && g.navigator.serviceWorker;
   if (sw && sw.controller) {
