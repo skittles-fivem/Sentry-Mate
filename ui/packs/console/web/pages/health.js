@@ -30,6 +30,8 @@ import { totalsLine } from './connections.js';
 import { deviceName } from '../shared/devices.js';
 import { deviceText, renameBtn } from './device-name.js';
 import { fullRebuild } from '../core/fullrebuild.js';
+import { gpsFitBlock } from '../shared/gpsfit.js';
+import { confirmDialog } from '../core/dialog.js';
 import * as fr from '../shared/fullrebuild.js';
 import { follow, carOf, onRows, FALLBACK_POLL_MS } from '../shared/live.js';
 import { morphChildren, keepEl } from '../core/morph.js';
@@ -164,6 +166,15 @@ async function mountCar(ctx) {
       : lastHl?.rebuild_pending ? status(tag('running', 'warn'), 'working out drives again') : status(ok(), 'nothing pending'));
   };
   const full = admin ? fullRebuild(ctx, { car, label: 'rebuild all data', onStatus: paintRebuild }) : null;
+  // find gps layout (admin): under the line that one input's positions are out of step; built once and moved along
+  // when the status is drawn again
+  const gpsFit = admin ? gpsFitBlock({
+    api: ctx.api, car: cid, alive: () => ctx.alive(), flash: (t, o) => toast(t, { kind: o?.kind === 'error' ? 'error' : 'ok' }),
+    confirm: (text, o) => confirmDialog(text, { title: o.title.toLowerCase(), ok: o.ok.toLowerCase() }),
+    errorText: (e) => errorWords(e).text, onApplied: () => loadHealth().catch(() => {}),
+    btnClass: 'btn btn--line', applyClass: 'btn btn--primary',
+  }) : null;
+  ctx.onCleanup(() => gpsFit?.stop());
   const statusSlot = h('div', null, loadingLine('reading health'));
   const missSlot = h('div', null, loadingLine('reading health'));
   const tailSlot = h('div');
@@ -216,10 +227,11 @@ async function mountCar(ctx) {
       h('p', { class: 'hl-verdict' }, hl.healthy ? ok() : warn(), ' ', hl.healthy ? 'data arrives, passes its checks and nothing waits' : `${reasons.length} ${reasons.length === 1 ? 'thing needs' : 'things need'} attention`, none('  (the same test sets "healthy" in mqtt)')),
       reasons.length ? h('ul', { class: 'hl-fixes' }, reasons.map((code) => {
         const r = REASONS[code] || [code, '', null];
-        return h('li', null, code === 'rebuild_pending' ? tag('running', 'warn') : warn(), ' ', r[0], none(`: ${r[1]}`), r[2] ? ['  ', link(state.buildUrl(r[2], { car: cid }), 'fix')] : null);
+        return h('li', null, code === 'rebuild_pending' ? tag('running', 'warn') : warn(), ' ', r[0], none(`: ${r[1]}`), r[2] ? ['  ', link(state.buildUrl(r[2], { car: cid }), 'fix')] : null,
+          code === 'gps_inputs_disagree' && gpsFit ? keepEl(gpsFit.el, 'gps-fit') : null);
       })) : null,
       kv([
-        ['last upload', hl.last_upload_ms != null ? status(silent ? warn() : ok(), ago(hl.last_upload_ms), none(` ${formatDateTime(hl.last_upload_ms, tz, { now: ctx.api.now() })}`)) : status(warn(), 'no log yet')],
+        ['last upload', hl.last_upload_ms != null ? status(silent ? warn() : ok(), ago(hl.last_upload_ms), none(` ${formatDateTime(hl.last_upload_ms, tz, { now: ctx.api.now() })}, the bridge's last contact${hl.newest_log_ms != null ? `; newest log arrived ${ago(hl.newest_log_ms)}` : ''}`)) : status(warn(), 'no log yet')],
         ['log check', tw ? status(tag(tw[0], tw[1]), trust.reason ? none(TRUST_REASONS[trust.reason] || trust.reason) : none('signature and hash chain match')) : none('no log checked yet')],
         ['all log checks', hl.log_checks ? status(hl.log_checks.failed ? warn() : ok(), `${formatNumber(hl.log_checks.failed)} failed`, none(` ${logChecksText(hl.log_checks, formatNumber).toLowerCase().replace(/, [\d,]+ failed/, '')}`)) : none(DASH)],
         ['logs waiting', status(hl.logs_waiting ? warn() : ok(), formatNumber(hl.logs_waiting ?? 0), none(hl.logs_waiting ? ' key not trusted yet' : ' every log was read'))],
@@ -239,12 +251,12 @@ async function mountCar(ctx) {
     paintMissing(hl.missing_logs || {});
 
     const lines = [];
-    if (hl.last_upload_ms != null) lines.push({ ms: hl.last_upload_ms, tag: silent ? 'warn' : 'ok', tone: silent ? 'warn' : 'good', text: 'last log arrived' });
+    if (hl.newest_log_ms != null) lines.push({ ms: hl.newest_log_ms, tag: silent ? 'warn' : 'ok', tone: silent ? 'warn' : 'good', text: 'newest log arrived' });
     if (trust.log_start_ms != null && tw) lines.push({ ms: trust.log_start_ms, tag: tw[1] === 'good' ? 'ok' : tw[1], tone: tw[1], text: `log check: ${tw[0]}${trust.reason ? `, ${TRUST_REASONS[trust.reason] || trust.reason}` : ''}` });
     for (const g of hl.chain_gaps || []) lines.push({ ms: g.from_ms, tag: 'bad', tone: 'bad', text: `chain gap until ${formatDateTime(g.to_ms, tz, { now: ctx.api.now() })}` });
     for (const d of hl.dropped_frames || []) lines.push({ ms: d.start_ms, tag: 'warn', tone: 'warn', text: `dropped frames for ${formatDuration((d.end_ms ?? d.start_ms) - d.start_ms)}` });
     for (const s of spans) lines.push({ ms: s.start_ms, tag: 'warn', tone: 'warn', text: `unknown ${s.end_ms == null ? 'since then' : `for ${formatDuration(s.end_ms - s.start_ms)}`}: ${SPAN_REASONS[s.reason] || s.reason}` });
-    for (const k of keys) if (k.last_upload_ms != null) lines.push({ ms: k.last_upload_ms, tag: 'ok', tone: 'good', text: `upload from ${deviceName(k).text}` });
+    for (const k of keys) if (k.last_upload_ms != null) lines.push({ ms: k.last_upload_ms, tag: 'ok', tone: 'good', text: `last contact from ${deviceName(k).text}` });
     morphChildren(tailSlot, [logTail(lines, tz, { cover: 'faq.stopped-recording' })]);
   }
 

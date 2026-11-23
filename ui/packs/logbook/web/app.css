@@ -1011,6 +1011,8 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
 .fr-stale .icon { flex: none; }
 .fr-go { display: flex; align-items: center; gap: round(1rem, var(--e)); min-width: 0; }
 .fr-go > .button { flex: none; }
+.fr-go { flex-wrap: wrap; }
+.fr-hist .fr-err { color: var(--ink-2); }
 .fr-other { flex: 1 1 0; min-width: 0; font-size: var(--text-s); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fr-panel { display: grid; gap: round(0.75rem, var(--e)); padding: round(1rem, var(--e)) round(1.125rem, var(--e)); border: 1px solid var(--rule); border-radius: round(0.25rem, var(--e)); background: var(--paper-raised); }
 .fr-bar { display: grid; grid-template-columns: minmax(0, 1fr) round(3.5rem, var(--e)); align-items: center; gap: round(0.75rem, var(--e)); }

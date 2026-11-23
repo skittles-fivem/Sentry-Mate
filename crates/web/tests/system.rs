@@ -162,6 +162,7 @@ async fn health_storage_and_the_servers_figures() {
             "healthy",
             "reasons",
             "last_upload_ms",
+            "newest_log_ms",
             "last_log_trust",
             "keys",
             "chain_gaps",
@@ -178,7 +179,7 @@ async fn health_storage_and_the_servers_figures() {
     assert_eq!(h["car"], json!(car));
     assert_eq!(h["uploads_enabled"], json!(false), "no upload token: {h}");
     assert_eq!(h["keys"].as_array().unwrap().len(), 1, "{h}");
-    has(&h["keys"][0], &["key", "last_upload_ms", "preferred", "device", "logs_waiting"]);
+    has(&h["keys"][0], &["key", "last_upload_ms", "newest_log_ms", "preferred", "device", "logs_waiting"]);
     has(&h["last_log_trust"], &["result", "reason", "log_start_ms"]);
     assert!(h["reasons"].as_array().unwrap().iter().any(|r| r == "upload_silence"), "a made-up day long ago: {h}");
     assert_eq!(code(&mut admin, &format!("/api/v1/cars/{car}/health?from_ms=5&to_ms=4")).await.0, 400);
@@ -474,13 +475,15 @@ async fn bounds_streamed_pages_arrival_times_and_local_days() {
     assert_eq!(r.status, 200);
     assert_eq!(r.text().lines().count(), all.len() + 1, "every log in the CSV");
 
-    // the last upload is when the newest log arrived, the same figure for the car and its key
+    // with no last contact known (no upload tokens here), the last upload is when the newest log arrived, the same
+    // figure for the car and its key
     let logs = walk(&mut admin, &format!("/api/v1/cars/{car}/logs"), 500, |l| l["name"].as_str().unwrap().into()).await;
     let arrived = logs.iter().map(|l| l["arrived_ms"].as_u64().unwrap()).max().unwrap();
     let newest_start = logs.iter().map(|l| l["start_ms"].as_u64().unwrap()).max().unwrap();
     let h = ok(&mut admin, &format!("/api/v1/cars/{car}/health?from_ms=0")).await;
     assert_eq!(h["last_upload_ms"], json!(arrived), "{h}");
     assert_eq!(h["keys"][0]["last_upload_ms"], json!(arrived), "{h}");
+    assert_eq!((h["newest_log_ms"].clone(), h["keys"][0]["newest_log_ms"].clone()), (json!(arrived), json!(arrived)));
     assert_ne!(h["last_upload_ms"], json!(newest_start), "not the time in a log's name");
     // each list is capped, with its whole count beside it
     for (list, total) in [
@@ -710,24 +713,42 @@ async fn a_full_rebuild_asks_the_password_again_runs_one_at_a_time_and_is_audite
     let held = ok(&mut admin, "/api/v1/system/full-rebuild").await;
     assert_eq!((held["state"].as_str(), held["phase"].as_str()), (Some("running"), Some("switching")), "{held}");
     assert!(held["logs"]["done"].as_u64().unwrap() > 0 && held["logs"]["done"] == held["logs"]["total"], "{held}");
-    let r =
-        admin.post("/api/v1/system/full-rebuild", json!({ "confirm_password": web::testkit::ADMIN_PASSWORD })).await;
-    assert_eq!((r.status, r.code().as_deref()), (409, Some("full_rebuild_running")));
     let r = admin.post(&format!("/api/v1/cars/{car}/rebuild"), json!({})).await;
     assert_eq!((r.status, r.code().as_deref()), (409, Some("full_rebuild_running")));
     let notices = ok(&mut admin, "/api/v1/notices").await;
     assert!(notices["items"].as_array().unwrap().iter().any(|n| n["code"] == "full_rebuild_running"), "{notices}");
+    // put off, paused: it waits (its progress kept); a word it does not know is refused
+    let r = admin.patch("/api/v1/system/full-rebuild", json!({ "when": "later" })).await;
+    assert_eq!(r.status, 422, "{}", r.text());
+    let r = admin.patch("/api/v1/system/full-rebuild", json!({ "when": "pause" })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let paused = r.json();
+    assert_eq!((paused["state"].as_str(), paused["hold"]["kind"].as_str()), (Some("running"), Some("paused")));
+    assert!(paused["causes"].as_array().unwrap().iter().all(|c| c["code"] == "owner"), "{paused}");
+    let notices = ok(&mut admin, "/api/v1/notices").await;
+    assert!(notices["items"].as_array().unwrap().iter().any(|n| n["code"] == "full_rebuild_planned"), "{notices}");
+    let r = admin.patch("/api/v1/system/full-rebuild", json!({ "when": "tonight" })).await;
+    assert_eq!(r.json()["hold"]["kind"], "tonight", "{}", r.text());
+    assert!(r.json()["hold"]["until_ms"].as_u64().unwrap() > k.s.app.now());
     let r = admin.delete("/api/v1/system/full-rebuild", json!({})).await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(r.json()["state"], "cancelled");
     let r = admin.delete("/api/v1/system/full-rebuild", json!({})).await;
     assert_eq!((r.status, r.code().as_deref()), (409, Some("full_rebuild_not_running")));
+    let r = admin.patch("/api/v1/system/full-rebuild", json!({ "when": "now" })).await;
+    assert_eq!((r.status, r.code().as_deref()), (409, Some("full_rebuild_not_running")));
     web::resources::full_rebuild::watch_once(&k.s.app);
 
-    // every car, to the end
+    // every car, held as a crash would hold it; a second ask joins it (one run), and it goes on to the end
+    k.engine.full_rebuild_crash_at(Some(engine::full::Phase::Switching));
     let r =
         admin.post("/api/v1/system/full-rebuild", json!({ "confirm_password": web::testkit::ADMIN_PASSWORD })).await;
     assert_eq!(r.status, 202, "{}", r.text());
+    let first = r.json()["id"].clone();
+    k.engine.idle().await;
+    let r = admin.post(&path, json!({ "confirm_password": web::testkit::ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 202, "{}", r.text());
+    assert_eq!((r.json()["joined"].as_bool(), &r.json()["id"]), (Some(true), &first), "{}", r.text());
     let done = full_state(&k.engine, &mut admin, "/api/v1/system/full-rebuild").await;
     assert_eq!(done["state"], "done", "{done}");
     assert_eq!((done["scope"].as_str(), done["cars_done"].as_u64()), (Some("all"), Some(1)));
@@ -736,7 +757,15 @@ async fn a_full_rebuild_asks_the_password_again_runs_one_at_a_time_and_is_audite
     web::resources::full_rebuild::watch_once(&k.s.app);
     web::resources::full_rebuild::watch_once(&k.s.app);
     let entries = full_entries(&k.s.app);
-    assert_eq!(entries.len(), 4, "{entries:#?}");
+    assert_eq!(entries.len(), 7, "{entries:#?}");
+    assert!(entries.iter().any(|e| e.contains("Asked for a full rebuild while one ran")), "{entries:#?}");
+    assert!(entries.iter().any(|e| e.contains("Paused the full rebuild")), "{entries:#?}");
+    assert!(entries.iter().any(|e| e.contains("off until tonight")), "{entries:#?}");
+    // the rebuilds' history: the cancelled one and the one done, newest first, with why
+    let h = done["history"].as_array().unwrap();
+    assert_eq!(h.iter().map(|x| x["state"].as_str().unwrap()).collect::<Vec<_>>(), ["done", "cancelled"], "{done}");
+    assert_eq!(h[0]["kind"], "full");
+    assert!(h[0]["took_ms"].is_u64() && h[0]["causes"][0]["code"] == "owner", "{done}");
     assert!(entries.iter().any(|e| e.contains("Started a full rebuild of every car")), "{entries:#?}");
     assert!(entries.iter().any(|e| e.contains("cancelled")), "{entries:#?}");
     assert!(entries.iter().any(|e| e.contains("Full rebuild of every car done")), "{entries:#?}");
@@ -764,9 +793,28 @@ async fn a_new_decoding_rebuilds_the_cars_made_with_the_old_one_by_itself_or_off
     assert_eq!(v["version"]["stale_cars"], json!([k.car]));
     let notices = ok(&mut admin, "/api/v1/notices").await;
     assert!(notices["items"].as_array().unwrap().iter().any(|n| n["code"] == "full_rebuild_offered"), "{notices}");
-    // on: run at once, once
+    // on: planned once, waiting its grace (start now, tonight or pause), saying why with a link to the change
     k.engine.set_full_rebuild_auto(true);
     web::resources::full_rebuild::watch_once(&k.s.app);
+    web::resources::full_rebuild::watch_once(&k.s.app);
+    let planned = ok(&mut admin, "/api/v1/system/full-rebuild").await;
+    assert_eq!(
+        (planned["state"].as_str(), planned["hold"]["kind"].as_str()),
+        (Some("running"), Some("grace")),
+        "{planned}"
+    );
+    assert_eq!(planned["phase"], "queued");
+    let link = planned["causes"][0]["link"].as_str().unwrap();
+    assert!(link.starts_with("https://github.com/skittles-fivem/Sentry-Mate/blob/main/docs/rebuilds.md#"), "{planned}");
+    assert!(planned["causes"][0]["text"].as_str().unwrap().starts_with("Server updated: "), "{planned}");
+    let notices = ok(&mut admin, "/api/v1/notices").await;
+    let n = notices["items"].as_array().unwrap().iter().find(|n| n["code"] == "full_rebuild_planned").unwrap();
+    assert!(n["message"].as_str().unwrap().contains("server updated: "), "{n}");
+    assert!(n["message"].as_str().unwrap().contains("start it now, tonight, or pause it"), "{n}");
+    assert_eq!(n["detail"]["causes"][0]["link"], link);
+    let r = admin.patch("/api/v1/system/full-rebuild", json!({ "when": "now" })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert!(r.json()["hold"].is_null(), "{}", r.text());
     let done = full_state(&k.engine, &mut admin, "/api/v1/system/full-rebuild").await;
     assert_eq!((done["state"].as_str(), done["reason"].as_str()), (Some("done"), Some("version")), "{done}");
     assert_eq!(done["version"]["stale_cars"], json!([]));
@@ -774,7 +822,18 @@ async fn a_new_decoding_rebuilds_the_cars_made_with_the_old_one_by_itself_or_off
     k.engine.idle().await;
     web::resources::full_rebuild::watch_once(&k.s.app);
     let entries = full_entries(&k.s.app);
-    assert_eq!(entries.len(), 2, "started and done, by the server: {entries:#?}");
+    assert_eq!(entries.len(), 3, "planned, started now, done: {entries:#?}");
+    assert!(
+        entries.iter().any(|e| e.contains("Planned a full rebuild of every car (Server updated: ")),
+        "{entries:#?}"
+    );
+    assert!(
+        entries.iter().any(|e| e.contains("it starts in 10 min unless an admin chooses otherwise")),
+        "{entries:#?}"
+    );
+    // a plain restart's look plans nothing more
+    web::resources::full_rebuild::watch_once(&k.s.app);
+    assert_eq!(full_entries(&k.s.app).len(), 3);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

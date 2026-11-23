@@ -688,7 +688,7 @@ export async function mount(ctx) {
   // every car's history made again from the stored data; the switch saves at once, as the other server settings
   let fullT = null;
   if (admin) {
-    const auto = toggle({ label: 'Automatic full rebuild', sub: 'Rebuild automatically when a new server version decodes the stored logs differently. Off: a notice offers it instead.',
+    const auto = toggle({ label: 'Automatic full rebuild', sub: 'Rebuild automatically when a new server version decodes the stored logs differently: once for that version, 10 minutes after the start unless you start it now, put it off or pause it. Off: a notice offers it instead.',
       checked: !settings.full_rebuild || settings.full_rebuild.auto !== false,
       onchange: async (on) => {
         try {

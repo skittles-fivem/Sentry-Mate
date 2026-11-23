@@ -85,6 +85,9 @@ pub struct SampleBuilder {
     /// The car's own layout of the Screenmate's GPS frame (0x04F on its internal bus), when one is set: read with it
     /// instead of the DBC's.
     internal_gps: Option<model::gps::GpsLayout>,
+    /// Frames of the Screenmate's own GPS (0x04F on its internal bus) taken as the car's position: a log without
+    /// any reads the same whatever the car's layout of that frame.
+    internal_frames: u64,
 }
 
 impl SampleBuilder {
@@ -101,7 +104,14 @@ impl SampleBuilder {
             vin: VinCollector::new(),
             soc_check: SocCheck::default(),
             internal_gps: None,
+            internal_frames: 0,
         }
+    }
+
+    /// Whether any of the Screenmate's own GPS frames were taken as the car's position (see
+    /// [`SampleBuilder::set_internal_gps`]).
+    pub fn used_internal_gps(&self) -> bool {
+        self.internal_frames > 0
     }
 
     /// Reads the Screenmate's own GPS frames (0x04F on its internal bus) with `layout` instead of the DBC's.
@@ -163,12 +173,13 @@ impl SampleBuilder {
     /// A frame and every value the decoder gets from it.
     pub fn feed(&mut self, decoder: &mut dbc::Decoder, frame: &logfmt::Frame) {
         self.frame(frame);
-        if let Some(layout) = self.internal_gps
-            && frame.id == dbc::INTERNAL_MESSAGE
-            && decoder.message(frame).is_some_and(|(_, internal)| internal)
-        {
-            self.internal_fix(layout, frame);
-            return;
+        // (asking the decoder twice about one frame gives the same answer: it only notes the frame's time)
+        if frame.id == dbc::INTERNAL_MESSAGE && decoder.message(frame).is_some_and(|(_, internal)| internal) {
+            self.internal_frames += 1;
+            if let Some(layout) = self.internal_gps {
+                self.internal_fix(layout, frame);
+                return;
+            }
         }
         if !std::ptr::eq(decoder.dbc(), self.dbc) {
             // a decoder of another DBC set: by the series' names

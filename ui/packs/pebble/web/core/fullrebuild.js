@@ -1,7 +1,9 @@
 // Sentry Mate, "Pebble" UI pack: the full rebuild tile (the words: shared/fullrebuild.js).
 //
-// What it does and does not touch, one button (Cancel while one runs) and a progress well of fixed size: the bar,
-// the seven status rows and three rows for problems, all there from the start and their text changed in place,
+// What it does and does not touch, one button (Cancel while one runs; Start now, Tonight and Pause beside it then)
+// and a progress well of fixed size: the bar, the eight status rows (the last says why it runs, with a link to the
+// change while release-notes links are allowed), three rows for problems and the recent rebuilds, all there from
+// the start and their text changed in place,
 // so the tile never grows or shrinks; only the texts that changed are written. Follows the `job` events of kind
 // full_rebuild (live events, polling only while the live stream is down: every 2 s while one runs, every 30 s
 // otherwise). Used by Health (one car: cars/{car}/full-rebuild) and Settings: Server and access (every car:
@@ -41,15 +43,22 @@ export function fullRebuildTile(ctx, { car = null, carName = null, after = null,
   const fill = h('span', { class: 'mv-bar-fill' });
   const bar = h('div', { class: 'mv-bar', role: 'progressbar', 'aria-label': 'Full rebuild', 'aria-valuemin': '0', 'aria-valuemax': '100' }, fill);
   const pct = h('span', { class: 'fr-pct' });
+  // the why row: its words and the change explained (a link, only while release-notes links are allowed)
+  const whyText = h('span', { class: 'fr-why' });
+  const whyA = h('a', { class: 'link fr-why-link', target: '_blank', rel: 'noopener noreferrer', hidden: true }, fr.WHY_LINK);
+  let linksOn = false;
   const rows = fr.lines(null).map((l) => {
     const k = h('span', { class: 'fr-k' }, l.label);
-    const v = h('span', { class: 'fr-v' });
-    return { k, v, el: h('div', { class: 'fr-row' }, k, v) };
+    const v = l.key === 'why' ? h('span', { class: 'fr-v' }, whyText, ' ', whyA) : h('span', { class: 'fr-v' });
+    return { key: l.key, k, v, el: h('div', { class: 'fr-row' }, k, v) };
   });
   const errs = Array.from({ length: ERRORS }, () => h('p', { class: 'fr-err' }));
+  const hist = Array.from({ length: fr.HISTORY_ROWS }, () => h('p', { class: 'fr-err' }));
+  const whenBtns = fr.WHEN.map((w) => { const b = btn(w.label, { kind: 'soft', onclick: () => defer(w.when) }); b.hidden = true; b.title = w.title; return b; });
   const well = h('div', { class: 'fr-well', role: 'status', 'aria-label': 'Full rebuild progress' },
-    h('div', { class: 'fr-bar' }, bar, pct), h('div', { class: 'fr-rows' }, rows.map((r) => r.el)), h('div', { class: 'fr-errs' }, errs));
-  const parts = [fr.EXPLAIN.map((p) => note(p)), stale, h('div', { class: 'fr-go' }, go, other), well, after];
+    h('div', { class: 'fr-bar' }, bar, pct), h('div', { class: 'fr-rows' }, rows.map((r) => r.el)), h('div', { class: 'fr-errs' }, errs),
+    h('div', { class: 'fr-errs fr-hist' }, h('p', { class: 'fr-k' }, fr.HISTORY_TITLE), hist));
+  const parts = [fr.EXPLAIN.map((p) => note(p)), stale, h('div', { class: 'fr-go' }, go, whenBtns, other), well, after];
   const el = bare ? h('div', { class: 'fr-tile fr-bare', id: 'full-rebuild' }, parts)
     : tile({ w: 2, title: 'Full rebuild', icon: 'reset', id: 'full-rebuild', cls: 'fr-tile' }, parts);
 
@@ -74,14 +83,21 @@ export function fullRebuildTile(ctx, { car = null, carName = null, after = null,
     setAttr(bar, 'aria-valuenow', p == null ? null : String(p));
     setText(pct, p == null ? '' : `${p} %`);
     setAttr(well, 'class', `fr-well is-${tone}`);
+    fr.WHEN.forEach((w, i) => { const show = fr.whenShown(s, w.when); if (whenBtns[i].hidden !== !show) whenBtns[i].hidden = !show; if (whenBtns[i].disabled !== busy) whenBtns[i].disabled = busy; });
     for (const [i, l] of fr.lines(s, now, names).entries()) {
       setText(rows[i].k, l.label);
-      setText(rows[i].v, l.text);
+      if (l.key === 'why') {
+        setText(whyText, l.text);
+        const href = linksOn ? l.link : '';
+        setAttr(whyA, 'href', href || null);
+        if (whyA.hidden !== !href) whyA.hidden = !href;
+      } else setText(rows[i].v, l.text);
       setAttr(rows[i].v, 'title', l.text);
     }
     const lines = fr.errorLines(s, ERRORS, names);
     if (!lines.length && s?.error) lines.push(s.error);
     for (const [i, e] of errs.entries()) { setText(e, lines[i] || ''); setAttr(e, 'title', lines[i] || ''); }
+    for (const [i, l] of fr.historyLines(s, now, names).entries()) { setText(hist[i], l.text); setAttr(hist[i], 'title', l.title); }
   }
 
   // GET once at the start and after a reconnect, then the `job` events (a car's own read adds this_car and
@@ -145,7 +161,24 @@ export function fullRebuildTile(ctx, { car = null, carName = null, after = null,
     read();
   }
 
+  // start now, put off until tonight, pause (the one under way, whatever started it)
+  async function defer(when) {
+    if (busy) return;
+    busy = true; paint();
+    try {
+      const v = await ctx.api.send('PATCH', 'system/full-rebuild', fr.whenBody(when));
+      s = car ? { ...v, this_car: s?.this_car ?? false, car_stale: s?.car_stale ?? false } : v;
+      toast(fr.whenDone(when));
+    } catch (e) { if (ctx.alive() && !api.isAbort(e)) toast(e?.code ? fr.errorText(e) : errorWords(e).text, { kind: 'error' }); }
+    busy = false;
+    if (!ctx.alive()) return;
+    paint();
+    read();
+  }
+
   async function start() {
+    // whether the why row may link to the change (the owner's choice about outside links; off when unknown)
+    ctx.api.get('settings', null, { maxAgeMs: 300000 }).then((x) => { linksOn = !!x?.outside_links?.release_notes; if (ctx.alive()) paint(); }).catch(() => {});
     if (!carName) {
       const cars = await ctx.api.list('cars', {}).all({ max: 500 }).catch(() => []);
       const m = new Map(cars.map((c) => [c.id, c.name]));

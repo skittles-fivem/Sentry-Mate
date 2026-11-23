@@ -100,6 +100,7 @@ Everything Sentry Mate keeps, today and in the crates not yet wired in:
 | `tls/key.sealed` | ingest | sealed | Its private key. Written once (again if the owner brings their own `key.pem`). |
 | `tokens/<sha256>.json` | `token new`, `token revoke` | sealed | Replaced whole on revoke. |
 | `tokens/<sha256>.key` | the server, first upload | sealed | Written once. |
+| `tokens/contacts.sealed` | the server | sealed | Each bridge's last contact; replaced whole at most once a minute, through the gate. |
 | `tokens.json` | versions before | sealed | Moved into `tokens/` when opened. |
 | `can/<key>/<name>.log.xz`, `<name>.log.xz.json` | ingest | sealed | Written once, never replaced. Most of the bytes. |
 | `can/<key>/counts.json` | ingest | sealed | Replaced whole after every finished log. |

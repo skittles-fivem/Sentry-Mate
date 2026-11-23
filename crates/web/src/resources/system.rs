@@ -8,7 +8,7 @@
 //! recorded in the audit log, and tell the live stream which rows changed.
 
 use super::now::{answer, list_answer, period, run};
-use crate::ctx::target;
+use crate::ctx::{Admin, target};
 use crate::query::MAX_MS;
 use crate::{ApiError, ApiResult, AppState, CarParam, JsonBody, Params, Viewer, ids};
 use axum::extract::State;
@@ -236,6 +236,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/cars/{car}/health", get(health))
         .route("/api/v1/cars/{car}/rebuild", post(rebuild))
         .route("/api/v1/cars/{car}/gps-layout", get(gps_layout).put(put_gps_layout))
+        .route("/api/v1/cars/{car}/gps-layout/fit", get(gps_fit).post(start_gps_fit))
         .route("/api/v1/cars/{car}/overlaps", get(overlaps).patch(flip_overlap))
         .route("/api/v1/cars/{car}/storage", get(car_storage))
         .route("/api/v1/system/storage", get(system_storage))
@@ -325,11 +326,17 @@ async fn rebuild(
     }
     let e = app.service::<Engine>()?;
     let e2 = e.clone();
+    let by = v.name().to_string();
     let job = app
         .blocking(move |_| {
             super::full_rebuild::refuse_while_running(&e2)?;
-            e2.rebuild(engine::Scope { car: Some(car), from_ms: from, to_ms: to })
-                .map_err(|x| ApiError::server(format!("starting the rebuild: {x}")))
+            e2.rebuild_because(
+                engine::Scope { car: Some(car), from_ms: from, to_ms: to },
+                engine::jobs::What::WHOLE,
+                engine::versions::Cause::owner(Some(&by)),
+                false,
+            )
+            .map_err(|x| ApiError::server(format!("starting the rebuild: {x}")))
         })
         .await?;
     let waited = Instant::now();
@@ -386,8 +393,9 @@ async fn gps_layout(State(app): State<AppState>, CarParam(car): CarParam) -> Api
 }
 
 /// `PUT /cars/{car}/gps-layout` `{ layout }`: the layout `sentry-mate gps-layout` printed (`lat 0|28@1- (1e-6,0);
-/// lon 28|28@1- (1e-6,0)`), or null for the DBC's. A change starts a whole rebuild of the car (its stored logs are
-/// decoded again); the answer names its `job`, null when nothing changed.
+/// lon 28|28@1- (1e-6,0)`), or null for the DBC's. A change reads the car's positions again (only its stored logs whose
+/// positions came from that frame are decoded again, a few saves in a row are one rebuild); the answer names its
+/// `job`, null when nothing changed.
 async fn put_gps_layout(
     State(app): State<AppState>,
     v: Viewer,
@@ -408,8 +416,12 @@ async fn put_gps_layout(
     if job.is_some() {
         let name = app.car_name_now(car).await;
         let summary = match layout {
-            Some(l) => format!("Set how {name}'s Screenmate GPS frames are read ({l}); its history is rebuilt."),
-            None => format!("Set {name}'s Screenmate GPS frames to be read as the DBC says; its history is rebuilt."),
+            Some(l) => {
+                format!("Set how {name}'s Screenmate GPS frames are read ({l}); its positions are read again.")
+            }
+            None => {
+                format!("Set {name}'s Screenmate GPS frames to be read as the DBC says; its positions are read again.")
+            }
         };
         v.audit(&app, "car-gps-layout", Some(&target("car", Some(car), "")), &summary).await?;
     }
@@ -418,6 +430,91 @@ async fn put_gps_layout(
         "layout": layout.map(|l| l.to_string()),
         "job": job.map(|j| j.id.to_string()),
     })))
+}
+
+/// A GPS layout fit as the API answers it (`None`: none since the server started): its state and progress, what
+/// it found (layouts, counts and errors in metres only), the car's layout now, and what else the server is busy
+/// with.
+pub fn gps_fit_json(e: &Engine, car: model::CarId, s: Option<&engine::gps_fit::FitStatus>) -> ApiResult<Value> {
+    use engine::gps_fit::FitState;
+    let current = e.gps_layout(car).map_err(|x| ApiError::server(format!("reading the layout: {x}")))?;
+    let current = current.map(|l| l.to_string());
+    let busy = e.busy_words();
+    let Some(s) = s else {
+        return Ok(json!({
+            "car": ids::car(car), "state": "idle", "id": null, "days": null, "phase": null, "done": 0, "total": 0,
+            "percent": 0, "started_ms": null, "finished_ms": null, "error": null, "result": null,
+            "current": current, "applied": false, "server_busy": busy,
+        }));
+    };
+    let result = match &s.outcome {
+        Some(o) => {
+            let mut v = serde_json::to_value(o).map_err(ApiError::server)?;
+            v["car"] = json!(ids::car(car));
+            v
+        }
+        None => Value::Null,
+    };
+    // the layout found is the one the car's frames are read with now
+    let applied = s
+        .outcome
+        .as_ref()
+        .is_some_and(|o| o.layout.is_some() && if o.is_dbc { current.is_none() } else { o.layout == current });
+    Ok(json!({
+        "car": ids::car(car),
+        "state": match s.state { FitState::Running => "running", FitState::Done => "done", FitState::Failed => "failed" },
+        "id": s.id.to_string(),
+        "days": s.days,
+        "phase": s.phase,
+        "done": s.done,
+        "total": s.total,
+        "percent": s.percent(),
+        "started_ms": s.started_ms,
+        "finished_ms": s.finished_ms,
+        "error": s.error,
+        "result": result,
+        "current": current,
+        "applied": applied,
+        "server_busy": busy,
+    }))
+}
+
+/// `GET /cars/{car}/gps-layout/fit` (admin): the car's newest GPS layout fit, `state: "idle"` when none ran since
+/// the server started.
+async fn gps_fit(State(app): State<AppState>, Admin(_): Admin, CarParam(car): CarParam) -> ApiResult<Json<Value>> {
+    let e = app.service::<Engine>()?;
+    let v = app.blocking(move |_| gps_fit_json(&e, car, e.gps_fit_status(car).as_ref())).await?;
+    Ok(Json(v))
+}
+
+/// `POST /cars/{car}/gps-layout/fit` `{ days? }` (admin): finds the layout of the car's Screenmate GPS frame from
+/// the last `days` days (1 to 366, default 30) in the background, as `sentry-mate gps-layout` does; `202` with the
+/// fit's status (one under way already is answered instead). It only reads: Apply is `PUT /cars/{car}/gps-layout`.
+async fn start_gps_fit(
+    State(app): State<AppState>,
+    Admin(_): Admin,
+    CarParam(car): CarParam,
+    body: JsonBody,
+) -> ApiResult<Response> {
+    body.only(&["days"])?;
+    let days = match body.get("days") {
+        None | Some(Value::Null) => 30,
+        Some(v) => match v.as_u64() {
+            Some(d @ 1..=366) => d as u32,
+            _ => return Err(ApiError::invalid("days", "A whole number of days, 1 to 366.")),
+        },
+    };
+    let e = app.service::<Engine>()?;
+    let v = app
+        .blocking(move |_| {
+            let s = e.gps_fit_start(car, days).map_err(|x| match x {
+                engine::gps_fit::FitError::NoSuchCar => ApiError::no_such_car(),
+                engine::gps_fit::FitError::Other(why) => ApiError::server(format!("starting the fit: {why}")),
+            })?;
+            gps_fit_json(&e, car, Some(&s))
+        })
+        .await?;
+    Ok((axum::http::StatusCode::ACCEPTED, Json(v)).into_response())
 }
 
 async fn overlaps(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {

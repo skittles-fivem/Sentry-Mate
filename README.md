@@ -27,6 +27,7 @@ Bridge app at `https://<server>:10100/api/can/logs` with a token from **Settings
 | [Moving](docs/moving.md) | Another server in one step: a move code or an export file |
 | [Commands](docs/commands.md) | Every command, setting, port, limit and file |
 | [Security](docs/security.md) | Encryption at rest, accounts, what leaves the server |
+| [Rebuilds](docs/rebuilds.md) | What makes the server work its history out again, and why it never does so twice |
 | [UI packs](ui/README.md) | The six built-in designs |
 | [Development](docs/development.md) | Building, tests, CI, the crates |
 

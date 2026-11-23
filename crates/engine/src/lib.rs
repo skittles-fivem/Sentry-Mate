@@ -46,6 +46,8 @@ pub mod compact;
 pub mod costs;
 pub mod firmware;
 pub mod full;
+pub mod gps_fit;
+pub mod history;
 pub mod importer;
 pub mod invoice_prices;
 pub mod invoices;
@@ -62,6 +64,7 @@ pub mod rehome;
 pub mod tesla_in;
 pub mod tmlocal_catchup;
 pub mod tz;
+pub mod versions;
 mod warm;
 
 pub use tesla_in::{TeslaSink, TeslafiSink, TeslamateLocalSink};
@@ -132,6 +135,9 @@ pub struct Options {
     /// log, where that gives the same timeline (nothing stored yet at or after the logs, no API input: a first
     /// start over a full store, a car rebuilt whole). `1`: always after every log, as a log that arrives alone gets.
     pub window_batch: usize,
+    /// A rebuild a saved setting asks for waits this long (ms) before it starts, so a few saves in a row (or a
+    /// setting saved again while one runs) are one rebuild ([`Engine::rebuild_because`]).
+    pub rebuild_settle_ms: u64,
 }
 
 impl Default for Options {
@@ -147,6 +153,7 @@ impl Default for Options {
             api_rebuild_ms: 30_000,
             fuse: timeline::FuseParams::default(),
             window_batch: 64,
+            rebuild_settle_ms: 3_000,
         }
     }
 }
@@ -284,6 +291,8 @@ pub(crate) struct Inner {
     pub(crate) full_fail_at: Mutex<Option<full::Phase>>,
     pub(crate) full_crash_at: Mutex<Option<full::Phase>>,
     pub(crate) full_auto: std::sync::atomic::AtomicBool,
+    /// How long a new version's full rebuild waits before it starts ([`Engine::full_rebuild_auto_plan`]'s grace).
+    pub(crate) full_grace_ms: AtomicU64,
     /// The cars whose history was made with another decoding ([`Engine::version_stale`]).
     pub(crate) version_stale: Mutex<std::collections::HashSet<CarId>>,
     /// The invoice sessions as kept ([`invoices`]), while none changes; one writer at a time; bumped by each write.
@@ -293,6 +302,13 @@ pub(crate) struct Inner {
     /// A run of the places' invoice prices is queued ([`invoice_prices::run`]); one runs at a time.
     pub(crate) invoice_prices_queued: std::sync::atomic::AtomicBool,
     pub(crate) invoice_prices_run: Mutex<()>,
+    /// The cars' GPS layout fits ([`gps_fit`]), and the one that runs (one at a time).
+    pub(crate) gps_fits: Mutex<gps_fit::Fits>,
+    pub(crate) gps_fit_one: Mutex<()>,
+    /// The rebuilds' history ([`history`]): one writer at a time.
+    pub(crate) history: Mutex<()>,
+    /// Rebuild jobs not started yet, per car (`None`: every car), that later asks join ([`jobs`]).
+    pub(crate) pending_jobs: Mutex<HashMap<Option<CarId>, Arc<jobs::JobState>>>,
 }
 
 /// A stretch of a car's history where one input's GPS fixes disagreed with another's of the same moments by far
@@ -323,8 +339,10 @@ impl Engine {
         Ok(records::get::<Option<model::gps::GpsLayout>>(&self.inner.db, records::NS, &gps_layout_key(car))?.flatten())
     }
 
-    /// Sets (or with `None` drops) the car's own layout of the Screenmate's GPS frame. When it changes, a whole
-    /// rebuild of the car starts (its stored logs are decoded again with it) and is returned.
+    /// Sets (or with `None` drops) the car's own layout of the Screenmate's GPS frame. When it changes, the car's
+    /// positions are read again: only its stored logs whose positions came from that frame are decoded again with it
+    /// (the others read the same whatever the layout), after a short settle so a few saves in a row are one rebuild
+    /// ([`jobs`]). The job is returned.
     pub fn set_gps_layout(&self, car: CarId, layout: Option<model::gps::GpsLayout>) -> Result<Option<jobs::Job>> {
         if layout.is_some_and(|l| !l.lat.valid() || !l.lon.valid() || l.accuracy.is_some_and(|a| !a.valid())) {
             return Err(Error::Store("a GPS field does not fit in 8 bytes".into()));
@@ -333,7 +351,9 @@ impl Engine {
             return Ok(None);
         }
         records::put(&self.inner.db, records::NS, &gps_layout_key(car), &layout)?;
-        Ok(Some(self.rebuild(Scope::car(car))?))
+        // noted first: a restart before the job did it does it then
+        records::put_redo(&self.inner.db, car, records::Redo::Positions, true)?;
+        Ok(Some(self.rebuild_because(Scope::car(car), jobs::What::POSITIONS, versions::Cause::gps_layout(), true)?))
     }
 
     /// The newest stretch of the car's history whose inputs' GPS fixes disagreed (since the server started).
@@ -347,6 +367,10 @@ type ZoneAt = (f64, f64, Option<&'static str>);
 
 /// A car's zone is looked up again once its position moved this far (degrees, about a kilometre).
 const ZONE_MOVE_DEG: f64 = 0.01;
+
+/// How much lower the engine's background work runs than the server's other threads ([`Engine::background`]): the
+/// uploads' judging, the web pages. Compaction runs lower still (19).
+pub const BACKGROUND_NICE: i32 = 10;
 
 impl Inner {
     pub(crate) fn default_zone(&self) -> String {
@@ -456,12 +480,17 @@ impl Engine {
                 full_fail_at: Mutex::new(None),
                 full_crash_at: Mutex::new(None),
                 full_auto: std::sync::atomic::AtomicBool::new(true),
+                full_grace_ms: AtomicU64::new(full::AUTO_GRACE_MS),
                 version_stale: Mutex::default(),
                 invoice_all: Mutex::new(None),
                 invoice_write: Mutex::new(()),
                 invoice_gen: AtomicU64::new(0),
                 invoice_prices_queued: std::sync::atomic::AtomicBool::new(false),
                 invoice_prices_run: Mutex::new(()),
+                gps_fits: Mutex::default(),
+                gps_fit_one: Mutex::new(()),
+                history: Mutex::new(()),
+                pending_jobs: Mutex::new(HashMap::new()),
                 opts,
             }),
         }
@@ -534,6 +563,13 @@ impl Engine {
         self.inner.tokens.get()
     }
 
+    /// The last contact of each car key's CAN Bridge (its last request the upload server accepted), when tokens
+    /// were given: the upload server's live values when they share its contacts ([`ingest::Tokens::with_contacts`]),
+    /// else what it last saved. `None`: no tokens given (pages then go by when the newest log arrived).
+    pub fn contacts(&self) -> Option<&Arc<ingest::Contacts>> {
+        self.tokens().map(|t| t.contacts())
+    }
+
     /// What to give [`ingest::Judge::on_judged`]: it notes the log and returns at once.
     pub fn listener(&self) -> ingest::OnJudged {
         let (tx, outstanding) = (self.inner.tx.clone(), self.inner.outstanding.clone());
@@ -591,6 +627,26 @@ impl Engine {
         }
     }
 
+    /// Runs `f` on a thread of its own below the server's other threads (nice [`BACKGROUND_NICE`]): the decoding,
+    /// rebuilds and full rebuilds still take every core nothing else wants, but checking an upload or answering a
+    /// page goes first. On the blocking threads of `rt` should a thread not start.
+    pub(crate) fn background(rt: &tokio::runtime::Handle, name: &str, f: impl FnOnce() + Send + 'static) {
+        let job = Arc::new(Mutex::new(Some(f)));
+        let mine = job.clone();
+        let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
+            #[cfg(unix)]
+            let _ = rustix::process::nice(BACKGROUND_NICE);
+            if let Some(f) = lock(&mine).take() {
+                f();
+            }
+        });
+        if spawned.is_err()
+            && let Some(f) = lock(&job).take()
+        {
+            drop(rt.spawn_blocking(f));
+        }
+    }
+
     pub(crate) fn handle(&self) -> Result<tokio::runtime::Handle> {
         lock(&self.inner.handle).clone().ok_or(Error::NotStarted)
     }
@@ -607,7 +663,8 @@ impl Engine {
             let Ok(permit) = permits.clone().acquire_owned().await else { break };
             let e = self.clone();
             self.inner.counters.queued.fetch_add(1, Ordering::Relaxed);
-            tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Handle::current();
+            Engine::background(&rt, "engine-work", move || {
                 let r = match w {
                     Work::Log { key, name } => e.work_log(&key, &name),
                     Work::Reconcile { car } => e.work_reconcile(car),

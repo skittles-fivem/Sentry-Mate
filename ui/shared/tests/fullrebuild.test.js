@@ -12,11 +12,11 @@ const running = {
   started_ms: NOW - 600000, finished_ms: null, last_progress_ms: NOW - 3000, stalled: false, errors: [], error: null,
 };
 
-test('the panel always has the same seven lines', () => {
+test('the panel always has the same eight lines', () => {
   const idle = F.lines({ state: 'idle' }, NOW);
   const run = F.lines(running, NOW, (id) => (id === 'c2' ? 'Comet' : id));
   assert.deepEqual(idle.map((l) => l.key), run.map((l) => l.key));
-  assert.equal(idle.length, 7);
+  assert.equal(idle.length, 8);
   assert.equal(idle[0].text, 'Never run');
   assert.ok(idle.slice(1).every((l) => l.text === ''), 'an idle panel keeps the lines, empty');
   const by = Object.fromEntries(run.map((l) => [l.key, l.text]));
@@ -63,4 +63,40 @@ test('words: bytes, durations, the body and the errors', () => {
   assert.equal(F.staleText({ car_stale: true }).startsWith('This car'), true);
   assert.equal(F.staleText({ car_stale: false }), '');
   assert.equal(F.EXPLAIN.length, 2);
+});
+
+test('a run says why it runs, and one that waits says until when', () => {
+  const causes = [
+    { code: 'server_update', text: 'Server updated: positions are worked out differently', link: 'https://example.invalid/docs/rebuilds.md#rules-2' },
+    { code: 'owner', text: 'Asked for by admin', link: null },
+  ];
+  const why = F.lines({ ...running, causes }, NOW).find((l) => l.key === 'why');
+  assert.equal(why.text, 'Server updated: positions are worked out differently; Asked for by admin');
+  assert.equal(why.link, 'https://example.invalid/docs/rebuilds.md#rules-2');
+  assert.equal(F.lines({ state: 'idle', causes }, NOW).find((l) => l.key === 'why').text, '');
+
+  const grace = { ...running, phase: 'queued', hold: { kind: 'grace', until_ms: NOW + 8 * 60000 } };
+  assert.ok(F.held(grace) && !F.held(running));
+  assert.equal(F.lines(grace, NOW)[0].text, 'Waits: starts in about 8 min, unless you choose otherwise');
+  assert.equal(F.lines(grace, NOW)[6].text, '', 'no last progress while it waits');
+  assert.equal(F.lines({ ...grace, hold: { kind: 'paused', until_ms: null } }, NOW)[0].text, 'Paused: starts when you start it');
+  assert.equal(F.lines({ ...grace, hold: { kind: 'tonight', until_ms: NOW + 5 * 3600000 } }, NOW)[0].text, 'Put off until tonight: starts in about 5 h');
+  assert.deepEqual(F.WHEN.filter((w) => F.whenShown(grace, w.when)).map((w) => w.when), ['now', 'tonight', 'pause']);
+  assert.deepEqual(F.WHEN.filter((w) => F.whenShown(running, w.when)).map((w) => w.when), ['tonight', 'pause']);
+  assert.deepEqual(F.WHEN.filter((w) => F.whenShown({ state: 'done' }, w.when)), []);
+  assert.deepEqual(F.whenBody('tonight'), { when: 'tonight' });
+});
+
+test('the recent rebuilds keep their rows, newest first, with cause and time taken', () => {
+  const history = [
+    { kind: 'positions', scope: 'car', cars: ['c1'], causes: [{ code: 'gps_layout', text: 'The car\'s GPS layout changed: its positions are read again' }], state: 'done', started_ms: NOW - 3 * 60000, finished_ms: NOW - 2 * 60000, took_ms: 60000, logs: 12 },
+    { kind: 'full', scope: 'all', cars: ['c1', 'c2'], causes: [{ code: 'server_update', text: 'Server updated: positions are worked out differently' }], state: 'cancelled', started_ms: NOW - 7200000, finished_ms: NOW - 3600000, took_ms: 3600000, logs: 900 },
+  ];
+  const l = F.historyLines({ state: 'idle', history }, NOW, (id) => (id === 'c1' ? 'Comet' : id));
+  assert.equal(l.length, F.HISTORY_ROWS);
+  assert.equal(l[0].text, '2 min ago · Comet\'s positions read again · The car\'s GPS layout changed: its positions are read again · took 1 min');
+  assert.equal(l[1].text, '60 min ago · Full rebuild of every car · Server updated: positions are worked out differently · cancelled');
+  assert.ok(l.slice(2).every((x) => x.text === ''));
+  assert.equal(F.historyLines({ state: 'idle', history: [] }, NOW)[0].text, 'None yet.');
+  assert.equal(F.historyLines(null, NOW)[0].text, '');
 });

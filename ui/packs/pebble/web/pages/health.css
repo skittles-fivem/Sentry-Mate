@@ -75,3 +75,25 @@ html[data-form="phone"] :is(.sig-msg, .sig-mh) { display: none; }
 /* a bridge key's last upload and, for admins, its rename button */
 .hl-key-side { display: flex; align-items: center; gap: var(--s2); align-self: start; }
 .hl-keys .check-text { align-self: start; } /* the name's line stays by its dot when the button makes the row taller */
+
+/* Find GPS layout (shared/gpsfit.js), in the notice that one input's positions are out of step (admins): every
+   row keeps its height in every state; long text ends in an ellipsis */
+.fix .gf { display: flex; flex-direction: column; gap: var(--s2); align-self: stretch; min-width: 0; padding-top: var(--s3); border-top: 1px solid var(--line); }
+.gf-explain { margin: 0; color: var(--muted); font-size: var(--f13); line-height: var(--l13); }
+.gf-acts { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.gf-bar-row { display: flex; align-items: center; gap: var(--s3); height: var(--l14); }
+.gf-bar { flex: 1 1 auto; height: var(--s2); border-radius: 999px; background: var(--card-alt); overflow: hidden; }
+.gf-bar > i { display: block; height: 100%; width: var(--w, 0%); border-radius: inherit; background: var(--coral-fill); transition: width 400ms var(--ease); }
+.gf-pct { flex: none; width: 6ch; height: var(--l14); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); font-size: var(--f13); line-height: var(--l14); }
+.gf-head, .gf-notes { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; height: calc(var(--l14) * 2); margin: 0; overflow: hidden; overflow-wrap: anywhere; font-size: var(--f14); line-height: var(--l14); }
+.gf-notes { color: var(--muted); font-size: var(--f13); }
+.gf-step { height: var(--l14); margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); font-size: var(--f13); line-height: var(--l14); }
+.gf-rows { display: flex; flex-direction: column; gap: var(--s1); margin: 0; }
+.gf-row { display: grid; grid-template-columns: calc(var(--s10) * 2) minmax(0, 1fr) minmax(0, calc(var(--s12) * 4)); gap: var(--s3); height: var(--l14); font-size: var(--f13); line-height: var(--l14); }
+.gf-row dt, .gf-row dd { margin: 0; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.gf-row dt { color: var(--muted); }
+.gf-layout { font-family: var(--mono); }
+.gf-err { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.gf[data-tone="ok"] .gf-head { color: var(--teal); }
+.gf[data-tone="error"] .gf-head { color: var(--bad); }
+@media (prefers-reduced-motion: reduce) { .gf-bar > i { transition: none; } }

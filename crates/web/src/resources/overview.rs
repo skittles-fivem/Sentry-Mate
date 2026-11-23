@@ -4,9 +4,10 @@
 //!
 //! Built from what the server already keeps: each input's own status (the [`tesla`], [`teslafi`] and [`tmlocal`]
 //! services), the MQTT publisher's counters, the release check, the saved map and address settings, and each car's
-//! upload record (the engine's car meta: logs worked on, logs left out, when the newest arrived). On top of that, the
-//! [`Tracker`] keeps small hourly counters per connection (count, ok, errors, 168 hours) and a log of problems (a
-//! connection going to `problem` and leaving it).
+//! upload record (the engine's car meta: logs worked on, logs left out, when the newest arrived) with its CAN Bridge's
+//! last contact (the last request the upload server accepted from it, see `ingest::contacts`: a CAN Bridge row's
+//! `last_ok_ms` and whether it is live). On top of that, the [`Tracker`] keeps small hourly counters per connection
+//! (count, ok, errors, 168 hours) and a log of problems (a connection going to `problem` and leaving it).
 //!
 //! **Where the counters come from.** Nothing in the inputs had to change: each time the overview is built (an answer,
 //! or the server's upkeep every minute, [`upkeep`]), the counters the inputs already keep are read and what grew
@@ -57,9 +58,9 @@ const LABEL: &str = "web/overview";
 const HOUR_MS: u64 = 3_600_000;
 const DAY_MS: u64 = 24 * HOUR_MS;
 const WEEK_MS: u64 = HOURS * HOUR_MS;
-/// A CAN Bridge whose newest upload is this recent is live; up to [`SMO_QUIET_MS`] it is parked (idle).
+/// A CAN Bridge whose last contact is this recent is live; up to [`SMO_QUIET_MS`] it is parked (idle).
 const SMO_LIVE_MS: u64 = 6 * HOUR_MS;
-/// No upload for longer than this: a problem (the same day as the fleet's `upload_silence`).
+/// No contact for longer than this: a problem (the same day as the fleet's `upload_silence`).
 const SMO_QUIET_MS: u64 = DAY_MS;
 
 pub fn routes() -> Router<AppState> {
@@ -209,6 +210,8 @@ struct Row {
     reading: Reading,
     /// A CAN Bridge row: the car's logs the server is missing and has asked the car for (`None` on other rows).
     missing_logs: Option<u64>,
+    /// A CAN Bridge row: when the car's newest log arrived (`last_ok_ms` is the bridge's last request).
+    newest_log_ms: Option<u64>,
 }
 
 impl Row {
@@ -231,6 +234,7 @@ impl Row {
             link: link.to_string(),
             reading: Reading::default(),
             missing_logs: None,
+            newest_log_ms: None,
         }
     }
 
@@ -330,9 +334,16 @@ fn smo_rows(e: &Engine, now: u64) -> Vec<Row> {
         );
         r.car = Some(id);
         r.missing_logs = Some(engine::query::system::missing_logs(e, id).map_or(0, |m| m.count));
-        r.last_ok_ms = meta.last_arrived_ms;
+        // the last contact: the bridge's last request the upload server accepted (it talks every few seconds while
+        // online), not when the engine got to its newest log (far behind while it works through a backlog)
+        let contacts = e.contacts();
+        let keys = || car.vehicle_keys.iter().map(String::as_str);
+        let contact = contacts.and_then(|c| c.newest(keys())).map(|c| c.at_ms);
+        r.newest_log_ms =
+            contacts.into_iter().flat_map(|c| keys().map(|k| c.newest_log(k))).fold(meta.last_arrived_ms, Option::max);
+        r.last_ok_ms = contact.max(r.newest_log_ms);
         r.reading = Reading { count: Some(meta.decoded + meta.holes), errors: Some(meta.holes), ..Reading::default() };
-        let age = meta.last_arrived_ms.map(|t| now.saturating_sub(t));
+        let age = r.last_ok_ms.map(|t| now.saturating_sub(t));
         match age {
             _ if car.vehicle_keys.is_empty() && !uploads => r.set(Status::Off, Some("not_added")),
             _ if !uploads => r.set(Status::Off, Some("uploads_off")),
@@ -700,6 +711,7 @@ pub fn build(app: &AppState) -> Value {
                 "last_error": r.last_error.as_ref().map(|e| json!({ "code": e.code, "message": e.message, "at_ms": e.at_ms })),
                 "hourly": hourly,
                 "missing_logs": r.missing_logs,
+                "newest_log_ms": r.newest_log_ms,
                 "link": r.link,
             })
         })

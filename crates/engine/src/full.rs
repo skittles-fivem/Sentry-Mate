@@ -30,10 +30,19 @@
 //! **Versions** ([`derived_version`]): the decoder's version, the timeline's rules and a digest of the DBC sets the
 //! history was made with are kept per car (in its record's meta). A server whose decoding differs finds the cars made
 //! with another at its start ([`Engine::version_stale`]); their logs are then not decoded again in place for that
-//! alone, and a full rebuild is offered (or run at once, the server's choice: the web side's).
+//! alone, and a full rebuild is offered (or run by itself, the server's choice: the web side's).
+//!
+//! **At most once per version, never stacked** ([`Engine::full_rebuild_auto_plan`]): the one a new version calls
+//! for is planned once (noted `engine` / `full-auto`: a plain restart plans nothing), with a grace before it starts
+//! (start now, tonight or pause: [`Engine::full_rebuild_when`]). A car's new version is noted only when its switch is
+//! done. A restart under way carries on where it was; one after an update that changed the version again takes the
+//! cars that are now out of date into the same run ([`Engine::full_resume`]). An admin's ask while one runs joins it
+//! (its cars added, its cause noted): one run, never two back to back. Each run says why it runs ([`Cause`]) and is
+//! kept in the rebuilds' history when it ends ([`crate::history`]).
 
 use crate::jobs::JobState;
 use crate::records::{self, CarMeta, NS};
+use crate::versions::{self, Cause};
 use crate::{Engine, Event, Result, Work, lock, now_ms};
 use db::Db;
 use model::{CarId, Source};
@@ -54,6 +63,26 @@ pub const STALL_MS: u64 = 120_000;
 const CRASHED: &str = "stopped as by a crash, for a test";
 /// The job's record is written at most this often while it moves on (and at every phase).
 const NOTE_EVERY_MS: u64 = 2_000;
+/// The version whose automatic full rebuild was planned (once per version).
+const AUTO_KEY: &str = "full-auto";
+/// How long a new version's full rebuild waits before it starts by itself (an admin can start it now, put it off
+/// until tonight or pause it meanwhile).
+pub const AUTO_GRACE_MS: u64 = 10 * 60_000;
+/// "Tonight": this hour, local time of the server's default zone.
+pub const TONIGHT_HOUR: u32 = 2;
+
+/// The next [`TONIGHT_HOUR`] o'clock after `now` (ms) in `zone`.
+pub fn tonight_ms(now: u64, zone: &str) -> u64 {
+    let tz = crate::tz::zone(zone);
+    let day = crate::tz::date(now, tz);
+    for d in [day, day.succ_opt().unwrap_or(day), day.succ_opt().and_then(|d| d.succ_opt()).unwrap_or(day)] {
+        let at = crate::tz::start_of(d, tz).saturating_add(u64::from(TONIGHT_HOUR) * 3_600_000);
+        if at > now {
+            return at;
+        }
+    }
+    now.saturating_add(86_400_000)
+}
 
 /// The decoding and rules a history is made with: the decoder's version, the timeline's rules and a digest of the
 /// DBC sets as parsed. A server that would decode stored logs otherwise has another.
@@ -113,6 +142,40 @@ pub enum Reason {
     Owner,
     /// The server's decoding changed since the history was made.
     Version,
+}
+
+/// Why a full rebuild under way does not go on now: it waits (`until_ms`) or is paused (no end).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hold {
+    pub kind: HoldKind,
+    pub until_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldKind {
+    /// A new version's, planned: it starts after a short grace unless an admin chooses otherwise.
+    Grace,
+    /// Put off until tonight.
+    Tonight,
+    /// Paused until an admin starts it again.
+    Paused,
+}
+
+impl Hold {
+    /// Whether it still holds at `now`.
+    pub fn holds(&self, now: u64) -> bool {
+        self.until_ms.is_none_or(|u| now < u)
+    }
+}
+
+/// When a full rebuild under way goes on ([`Engine::full_rebuild_when`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum When {
+    Now,
+    /// At this time (ms): tonight.
+    Tonight(u64),
+    Pause,
 }
 
 /// Something that went wrong, said so a person can read it.
@@ -179,6 +242,12 @@ pub struct FullRecord {
     pub audited_end: bool,
     #[serde(default)]
     seed: Seed,
+    /// Why it runs: every ask it took in.
+    #[serde(default)]
+    pub causes: Vec<Cause>,
+    /// It waits or is paused (its progress kept): no worker on it until it ends.
+    #[serde(default)]
+    pub hold: Option<Hold>,
     /// Test only: fail at this phase.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fail_at: Option<Phase>,
@@ -188,6 +257,11 @@ impl FullRecord {
     /// Whether it is still under way.
     pub fn running(&self) -> bool {
         self.status == FullStatus::Running
+    }
+
+    /// Whether it waits or is paused at `now`.
+    pub fn held(&self, now: u64) -> bool {
+        self.running() && self.hold.is_some_and(|h| h.holds(now))
     }
 
     /// The car under way.
@@ -233,7 +307,7 @@ impl FullRecord {
 
     /// No progress for [`STALL_MS`] while running.
     pub fn stalled(&self, now: u64) -> bool {
-        self.running() && now.saturating_sub(self.last_progress_ms) > STALL_MS
+        self.running() && !self.held(now) && now.saturating_sub(self.last_progress_ms) > STALL_MS
     }
 
     fn error(&mut self, car: Option<CarId>, log: Option<String>, message: String) {
@@ -281,6 +355,7 @@ fn derived_engine_key(car: CarId, key: &str) -> bool {
     let Some(rest) = key.strip_prefix(&p) else { return false };
     rest.is_empty()
         || ["/dirty", "/rebuild", "/fw/history", "/api_dirty"].contains(&rest)
+        || rest.starts_with("/redo/")
         || rest.starts_with("/day/")
         || rest.starts_with("/fw/day/")
         || rest.starts_with("/fw/sum/")
@@ -396,12 +471,53 @@ impl Engine {
         reason: Reason,
         by: Option<String>,
     ) -> Result<FullRecord, StartError> {
+        let cause = match reason {
+            Reason::Owner => Cause::owner(by.as_deref()),
+            Reason::Version => Cause::new("server_update", "Server updated: the logs are decoded differently"),
+        };
+        self.full_rebuild_for(cars, all, reason, by, vec![cause], None)
+    }
+
+    /// [`Engine::full_rebuild_of`] with its causes, held (`hold`) until it may start. One under way takes the ask in
+    /// (its cars added, its causes noted, started now if it waited) and is returned: two never run one after the
+    /// other for one ask each.
+    pub fn full_rebuild_for(
+        &self,
+        cars: Vec<CarId>,
+        all: bool,
+        reason: Reason,
+        by: Option<String>,
+        causes: Vec<Cause>,
+        hold: Option<Hold>,
+    ) -> Result<FullRecord, StartError> {
         self.handle()?;
         let _one = lock(&self.inner.full_start);
-        if let Some(r) = self.full_get()?
+        if let Some(mut r) = self.full_get()?
             && r.running()
         {
-            return Err(StartError::Running(Box::new(r)));
+            // the cars this run did not do yet (one it did already is made with this server's decoding)
+            let done: Vec<CarId> = r.cars[..r.index.min(r.cars.len())].to_vec();
+            for c in cars {
+                if !r.cars[r.index.min(r.cars.len())..].contains(&c) && !done.contains(&c) {
+                    r.cars.push(c);
+                }
+            }
+            r.all |= all;
+            for c in causes {
+                Cause::add(&mut r.causes, c);
+            }
+            if reason == Reason::Owner {
+                if r.by.is_none() {
+                    r.by = by;
+                }
+                // an admin's ask: it goes on now
+                r.hold = None;
+            }
+            self.full_put(&r)?;
+            if !r.held(now_ms()) {
+                self.full_spawn();
+            }
+            return Ok(self.full_rebuild_status()?.unwrap_or(r));
         }
         let now = now_ms();
         let id = self.full_get()?.map_or(1, |r| r.id + 1);
@@ -435,11 +551,100 @@ impl Engine {
             cancel: false,
             audited_end: false,
             seed: Seed::default(),
+            causes,
+            hold,
             fail_at: *lock(&self.inner.full_fail_at),
         };
         self.full_put(&r)?;
-        self.full_spawn();
+        if !r.held(now) {
+            self.full_spawn();
+        }
         Ok(r)
+    }
+
+    /// When the full rebuild under way goes on: now, at a time (tonight), or paused until asked again. A worker on
+    /// it stops at its next step (its progress kept, as a restart keeps it). `None`: none runs.
+    pub fn full_rebuild_when(&self, when: When) -> Result<Option<FullRecord>> {
+        let r = {
+            let _one = lock(&self.inner.full_start);
+            let Some(mut r) = self.full_get()? else { return Ok(None) };
+            if !r.running() {
+                return Ok(None);
+            }
+            r.hold = match when {
+                When::Now => None,
+                When::Tonight(at) => Some(Hold { kind: HoldKind::Tonight, until_ms: Some(at) }),
+                When::Pause => Some(Hold { kind: HoldKind::Paused, until_ms: None }),
+            };
+            self.full_put(&r)?;
+            r
+        };
+        if r.held(now_ms()) {
+            if let Some(j) = lock(&self.inner.full).job.clone() {
+                j.cancel_now();
+            }
+        } else {
+            self.full_spawn();
+        }
+        self.full_rebuild_status()
+    }
+
+    /// Starts the worker of a full rebuild whose wait ended (called now and then: the web side's watch).
+    pub fn full_rebuild_tick(&self) {
+        let now = now_ms();
+        let due = {
+            let _one = lock(&self.inner.full_start);
+            match self.full_get().ok().flatten() {
+                Some(mut r) if r.running() && !r.held(now) => {
+                    if r.hold.is_some() {
+                        r.hold = None;
+                        let _ = self.full_put(&r);
+                    }
+                    true
+                }
+                _ => false,
+            }
+        };
+        if due && self.handle().is_ok() {
+            self.full_spawn();
+        }
+    }
+
+    /// The full rebuild a new server version calls for, planned once per version: the cars whose history was made
+    /// with another decoding, with why ([`versions::causes_between`]), waiting `grace_ms` before it starts (an admin
+    /// can start it now, put it off until tonight or pause it meanwhile). Nothing when automatic full rebuilds are
+    /// off, no car is out of date, or it was planned for this version already (a plain restart, or after it ended,
+    /// failed or was cancelled: a failed one is offered again, not retried). A run under way takes the cars in
+    /// instead (see [`Engine::full_rebuild_for`]). Returns the run it planned.
+    pub fn full_rebuild_auto_plan(&self, grace_ms: u64) -> Result<Option<FullRecord>, StartError> {
+        let stale = self.version_stale();
+        if stale.is_empty() || !self.full_rebuild_auto() {
+            return Ok(None);
+        }
+        let now_v = derived_version();
+        if records::get::<String>(&self.inner.db, NS, AUTO_KEY)?.as_deref() == Some(now_v.as_str()) {
+            return Ok(None);
+        }
+        let causes = self.stale_causes(&stale);
+        let every = crate::query::all_cars(self).map_err(|e| crate::Error::Other(e.to_string()))?.len() == stale.len();
+        let hold = (grace_ms > 0).then(|| Hold { kind: HoldKind::Grace, until_ms: Some(now_ms() + grace_ms) });
+        let r = self.full_rebuild_for(stale, every, Reason::Version, None, causes, hold)?;
+        records::put(&self.inner.db, NS, AUTO_KEY, &now_v)?;
+        Ok(Some(r))
+    }
+
+    /// Why the history of these cars is out of date: each change between the version it was made with and this
+    /// server's, once.
+    pub fn stale_causes(&self, cars: &[CarId]) -> Vec<Cause> {
+        let now_v = derived_version();
+        let mut out = Vec::new();
+        for &car in cars {
+            let made = car_version(&self.inner.db, car).ok().flatten();
+            for c in versions::causes_between(made.as_deref(), &now_v) {
+                Cause::add(&mut out, c);
+            }
+        }
+        out
     }
 
     /// Asks the full rebuild under way to stop: the cars not switched yet keep their history as it is (the shadow
@@ -461,6 +666,7 @@ impl Engine {
             r.status = FullStatus::Cancelled;
             r.finished_ms = Some(now_ms());
             self.inner.db.remove_shadow(SHADOW)?;
+            self.full_ended(&r);
         }
         self.full_put(&r)?;
         if let Some(j) = job {
@@ -494,11 +700,68 @@ impl Engine {
         *lock(&self.inner.full_crash_at) = phase;
     }
 
-    /// Carries on with a full rebuild a restart cut off (from [`Engine::start`]).
+    /// Carries on with a full rebuild a restart cut off (from [`Engine::start`], after [`Engine::check_versions`]),
+    /// unless it waits. After an update that changed the decoding again, the same run takes the version on: the cars
+    /// it switched already (made with the old decoding) and the others now out of date are added to its cars, the car
+    /// under way starts again, and the change is noted with its causes. One run, never a second after it.
     pub(crate) fn full_resume(&self) {
-        if self.full_get().ok().flatten().is_some_and(|r| r.running()) {
+        let now_v = derived_version();
+        let run = {
+            let _one = lock(&self.inner.full_start);
+            let Some(mut r) = self.full_get().ok().flatten() else { return };
+            if !r.running() {
+                return;
+            }
+            if r.version != now_v {
+                let stale = self.version_stale();
+                for c in self.stale_causes(&stale) {
+                    Cause::add(&mut r.causes, c);
+                }
+                let left = r.index.min(r.cars.len());
+                for c in stale {
+                    if !r.cars[left..].contains(&c) {
+                        r.cars.push(c);
+                    }
+                }
+                r.version = now_v.clone();
+                if r.phase == Phase::Switching {
+                    // its switch is finished as it was, and the car made again after the others
+                    if let Some(c) = r.car() {
+                        r.cars.push(c);
+                    }
+                } else {
+                    // the car under way was being decoded by the old server: started again from its copy
+                    r.phase = Phase::Queued;
+                    let _ = self.inner.db.remove_shadow(SHADOW);
+                }
+                let _ = self.full_put(&r);
+                // (planned for this version: the run under way is it)
+                let _ = records::put(&self.inner.db, NS, AUTO_KEY, &now_v);
+            }
+            !r.held(now_ms())
+        };
+        if run {
             self.full_spawn();
         }
+    }
+
+    /// A full rebuild ended: kept in the rebuilds' history.
+    fn full_ended(&self, r: &FullRecord) {
+        self.note_rebuild(crate::history::Run {
+            kind: "full".into(),
+            cars: r.cars.clone(),
+            all: r.all,
+            causes: r.causes.clone(),
+            state: match r.status {
+                FullStatus::Failed => "failed",
+                FullStatus::Cancelled => "cancelled",
+                _ => "done",
+            }
+            .into(),
+            started_ms: r.started_ms,
+            finished_ms: r.finished_ms.unwrap_or_else(now_ms),
+            logs: r.logs_done,
+        });
     }
 
     fn full_spawn(&self) {
@@ -515,7 +778,7 @@ impl Engine {
         };
         let e = self.clone();
         self.inner.outstanding_add();
-        rt.spawn_blocking(move || {
+        Engine::background(&rt, "full-rebuild", move || {
             match e.full_run() {
                 // (a test's crash: left as a stop of the server would leave it)
                 Err(err) if err.to_string().contains(CRASHED) => {}
@@ -543,6 +806,7 @@ impl Engine {
             r.status = FullStatus::Failed;
             r.finished_ms = Some(now_ms());
             let _ = self.full_put(&r);
+            self.full_ended(&r);
         }
         // the history in use was never touched: only the shadow goes
         let _ = self.inner.db.remove_shadow(SHADOW);
@@ -602,8 +866,9 @@ impl Engine {
         Ok(r)
     }
 
+    /// Whether the worker stops now: cancelled, ended, or held (put off or paused: its progress kept).
     fn full_cancelled(&self) -> bool {
-        self.full_get().ok().flatten().is_none_or(|r| r.cancel || !r.running())
+        self.full_get().ok().flatten().is_none_or(|r| r.cancel || !r.running() || r.held(now_ms()))
     }
 
     fn full_run(&self) -> Result<()> {
@@ -614,17 +879,23 @@ impl Engine {
             }
             if r.cancel {
                 self.inner.db.remove_shadow(SHADOW)?;
-                self.full_edit(|r| {
+                let r = self.full_edit(|r| {
                     r.status = FullStatus::Cancelled;
                     r.finished_ms = Some(now_ms());
                 })?;
+                self.full_ended(&r);
+                return Ok(());
+            }
+            if r.held(now_ms()) {
+                // put off or paused: left as a stop of the server leaves it, carried on when the hold ends
                 return Ok(());
             }
             let Some(car) = r.car() else {
-                self.full_edit(|r| {
+                let r = self.full_edit(|r| {
                     r.status = FullStatus::Done;
                     r.finished_ms = Some(now_ms());
                 })?;
+                self.full_ended(&r);
                 return Ok(());
             };
             if self.inner.db.car(car)?.is_none() {
@@ -633,11 +904,10 @@ impl Engine {
                 self.full_next()?;
                 continue;
             }
-            self.full_car(car, &r)?;
-            if self.full_cancelled() {
-                continue;
+            // (a car switched goes on to the next even when a hold came meanwhile: done is done)
+            if self.full_car(car, &r)? {
+                self.full_next()?;
             }
-            self.full_next()?;
         }
     }
 
@@ -653,8 +923,9 @@ impl Engine {
         Ok(())
     }
 
-    /// One car, from where its record is (a restart carries on).
-    fn full_car(&self, car: CarId, r: &FullRecord) -> Result<()> {
+    /// One car, from where its record is (a restart carries on). Whether it was switched (else it stopped: a
+    /// cancel or a hold).
+    fn full_car(&self, car: CarId, r: &FullRecord) -> Result<bool> {
         let db = &self.inner.db;
         let shadow = match (r.phase, db.open_shadow(SHADOW)?) {
             (Phase::Decoding | Phase::Days | Phase::Switching, Some(s)) if s.car(car)?.is_some() => s,
@@ -666,7 +937,8 @@ impl Engine {
         let se = self.shadow_of(shadow)?;
         let r = self.full_get()?.unwrap_or_else(|| r.clone());
         if r.phase == Phase::Switching {
-            return self.full_switch(car, &se);
+            self.full_switch(car, &se)?;
+            return Ok(true);
         }
         if r.phase != Phase::Days {
             self.full_phase(Phase::Decoding)?;
@@ -685,16 +957,17 @@ impl Engine {
             lock(&self.inner.full).job = None;
             res?;
             if self.full_cancelled() {
-                return Ok(());
+                return Ok(false);
             }
         }
         self.full_phase(Phase::Days)?;
         self.full_days(car, &se)?;
         if self.full_cancelled() {
-            return Ok(());
+            return Ok(false);
         }
         self.full_phase(Phase::Switching)?;
-        self.full_switch(car, &se)
+        self.full_switch(car, &se)?;
+        Ok(true)
     }
 
     /// Starts the car's shadow: its folder copied (without SMO's series), its kept keys copied in, then what was
@@ -810,7 +1083,12 @@ impl Engine {
         // the logs that came during the rebuild (not recorded in the new history), the API data that came, the
         // days' readings and long periods worked out again ahead
         if redo {
-            self.rebuild(crate::Scope::car(car))?;
+            self.rebuild_because(
+                crate::Scope::car(car),
+                crate::jobs::What::WHOLE,
+                Cause::new("full_rebuild", "The car's keys or source order changed while its full rebuild ran"),
+                false,
+            )?;
         } else {
             self.send(Work::Reconcile { car: Some(car) });
         }
@@ -908,6 +1186,15 @@ impl Engine {
         self.inner.full_auto.store(on, Ordering::SeqCst);
     }
 
+    /// How long a new version's full rebuild waits before it starts by itself ([`AUTO_GRACE_MS`] unless set).
+    pub fn full_rebuild_grace_ms(&self) -> u64 {
+        self.inner.full_grace_ms.load(Ordering::SeqCst)
+    }
+
+    pub fn set_full_rebuild_grace_ms(&self, ms: u64) {
+        self.inner.full_grace_ms.store(ms, Ordering::SeqCst);
+    }
+
     /// The cars whose history was made with another decoding than this server's: a full rebuild makes them again
     /// (until then their logs are not decoded again in place for that alone).
     pub fn version_stale(&self) -> Vec<CarId> {
@@ -969,6 +1256,7 @@ mod tests {
             "car/7/fw/sum/3",
             "car/7/fw/history",
             "car/7/api_dirty",
+            "car/7/redo/positions",
         ] {
             assert!(derived_engine_key(c, k), "{k}");
         }

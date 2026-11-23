@@ -717,6 +717,8 @@ html[data-form="phone"] .auth-card { padding: var(--s6) var(--s5); }
 .fr-bare { display: flex; flex-direction: column; padding-top: var(--s3); border-top: 1px solid var(--card-alt); }
 .fr-go { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
 .fr-go > .btn { flex: none; }
+.fr-go { flex-wrap: wrap; }
+.fr-hist .fr-err { color: inherit; }
 .fr-other { flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fr-well { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4); border-radius: var(--r-sm); background: var(--well); }
 .fr-bar { display: grid; grid-template-columns: minmax(0, 1fr) round(3.5rem, var(--e)); align-items: center; column-gap: var(--s3); height: var(--l14); }
