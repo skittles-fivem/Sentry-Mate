@@ -93,6 +93,7 @@ mod logged;
 mod plain;
 mod rows;
 pub mod segment;
+mod shadow;
 mod table;
 
 pub use backup::{BackupReport, RestoreReport};
@@ -142,6 +143,8 @@ pub enum Crash {
     /// A pack (a month of days, a bundle of key/value records) is in place; the loose files it took in are not yet
     /// removed.
     BeforeLooseRemoved,
+    /// A switch to a shadow's car ([`Db::adopt_car`]): the old folder is moved out, the new one not yet in.
+    BetweenSwapRenames,
 }
 
 #[derive(Debug, Clone)]
@@ -327,13 +330,15 @@ impl Db {
     pub fn open(data: &Path, vault: Arc<Vault>, opts: Options) -> Result<Db> {
         let dir = data.join("db");
         std::fs::create_dir_all(dir.join("cars"))?;
+        let cars = OpenCars::new(opts.max_open_cars, opts.max_open_bytes);
+        let ctx = Arc::new(Ctx::new(vault, data.to_path_buf(), opts));
+        // a switch to a shadow's car a crash cut off (before the trash goes: the old folder waits there)
+        shadow::finish_adopt(&ctx, &dir)?;
         // cars removed before a crash finished deleting them
         let trash = dir.join("trash");
         if trash.exists() {
             std::fs::remove_dir_all(&trash)?;
         }
-        let cars = OpenCars::new(opts.max_open_cars, opts.max_open_bytes);
-        let ctx = Arc::new(Ctx::new(vault, data.to_path_buf(), opts));
         let files = Files::named(&dir, "fleet");
         if !files.snap.exists() && !files.log.exists() && std::fs::read_dir(dir.join("cars"))?.next().is_some() {
             // opened as empty, the next car made would get the first car's id, and its folder
