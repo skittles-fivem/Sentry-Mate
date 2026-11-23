@@ -170,8 +170,41 @@ export function holdScroll(el) {
       // the anchor's move on screen, plus what the box itself was scrolled meanwhile, is how far it moved in the page
       const want = a?.isConnected ? t + (a.getBoundingClientRect().top - at) + (b.scrollTop - t) : t;
       if (Math.abs(b.scrollTop - want) >= 1) b.scrollTop = want;
+      // a page that got shorter under a reader at its end (a list above drawn again with fewer rows) is held as tall
+      // as it was, so the box is not pulled up: the room is given back as the page grows again or the reader scrolls up
+      if (want - b.scrollTop >= 1) { growPad(doc, b, want - b.scrollTop); b.scrollTop = want; }
+      fitPad(b);
     }
   });
+}
+
+// room under a page, kept so it does not get shorter under the reader (see holdScroll)
+const pads = new Map(); // box -> { el, px }
+function growPad(doc, b, px) {
+  let p = pads.get(b);
+  if (!p) {
+    const el = doc.createElement('div');
+    el.setAttribute('aria-hidden', 'true');
+    el.dataset.scrollPad = '';
+    p = { el, px: 0 };
+    pads.set(b, p);
+    // it shrinks as soon as the reader scrolls up (what goes is below the screen, so nothing moves)
+    (b === doc.scrollingElement ? doc : b).addEventListener('scroll', () => fitPad(b), { passive: true });
+  }
+  p.px += px;
+  p.el.style.height = `${Math.ceil(p.px)}px`;
+  const host = b === doc.scrollingElement ? doc.body : b;
+  if (p.el.parentNode !== host || host.lastElementChild !== p.el) host.append(p.el);
+}
+function fitPad(b) {
+  const p = pads.get(b);
+  if (!p || !p.px) return;
+  // what is below the screen: the pad can give that much back
+  const spare = b.scrollHeight - b.scrollTop - b.clientHeight;
+  if (spare < 1) return;
+  p.px = Math.max(0, p.px - spare);
+  p.el.style.height = `${Math.ceil(p.px)}px`;
+  if (!p.px) p.el.remove();
 }
 
 /** Remove every child. */
