@@ -350,11 +350,13 @@ def timeline_row(app, h, s, now):
         })
         return base
     # software update
+    from .live import update_version
+    ver, vsrc = update_version(app, s)
     base.update({
         "end_ms": None if live else s.end, "start": _tl_point(app, s.lat, s.lon, s.pid), "end": None,
         "odometer_km": None, "distance_km": None, "duration_ms": end - s.start, "soc_end_pct": r(s.soc, 1),
         "soc_delta_pct": 0.0, "range_end_km": None, "range_delta_km": None, "energy_delta_kwh": None,
-        "outside_avg_c": None, "ref": {"update": s.id}, "version": s.version, "version_source": s.version_source,
+        "outside_avg_c": None, "ref": {"update": s.id}, "version": ver, "version_source": vsrc if ver else None,
     })
     if s.source == "can" and s.detected_by == "fingerprint":  # found from the modules' firmware fingerprints
         base.update({"detected_by": "fingerprint", "changed_modules": list(s.changed_modules)})

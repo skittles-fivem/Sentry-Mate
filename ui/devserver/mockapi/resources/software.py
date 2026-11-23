@@ -1,10 +1,13 @@
 """Reports (docs/ui-api.md, "Reports"), part three: software updates, the versions across the
 fleet, and a car's events as MQTT publishes them.
 
-A version is only ever what someone said: imported from TeslaMate, typed by the owner, or learned
-from another update to the same fingerprint set ("build_match", named_by "auto"). An update found
-only from the modules' firmware fingerprints (detected_by "fingerprint") has `version: null` until
-someone names it; its changed fields come from resources/firmware.py.
+A version is only ever what someone said: imported from TeslaMate or TeslaFi, typed by the owner, read by a live
+input (the Tesla API, TeslaFi, local TeslaMate), or learned from another update to the same fingerprint set
+("build_match"). An update found only from the modules' firmware fingerprints (detected_by "fingerprint") has
+`version: null` until it is named: typed (named_by "owner"), else the first new version a live input started
+reporting from its start until 24 h after its end, else a build match (both named_by "auto"); a name an owner
+cleared stays cleared. Its changed fields come from resources/firmware.py. The rules are live.update_version and
+live.software_at (crates/engine query/software.rs `version_of` and `current`).
 """
 from __future__ import annotations
 
@@ -15,7 +18,7 @@ import re
 from .. import derive
 from ..conventions import bad_cursor, decode_cursor, encode_cursor, page
 from ..errors import bad_input, invalid, not_found
-from ..live import software_at, update_version
+from ..live import is_fingerprint as FW_UPDATE, software_at, update_version
 from ..placing import drive_pids, piece_pid, place_obj
 from ..util import iso_utc, median, r
 from .battery import bms_full
@@ -52,7 +55,7 @@ def update_rows(req, h):
             "detected_by": u.detected_by, "changed_modules": list(u.changed_modules) if u.source == "can" else [],
             "build_id": u.build_id if u.source == "can" else None,
             "changes": FW.update_changes(h, u, req.now) if fp else [],
-            "named_by": ({"owner": "owner", "build_match": "auto"}.get(vs) if fp and v else None),
+            "named_by": (("owner" if vs == "owner" else "auto") if fp and v else None),
             "between_ms": [u.start, u.end] if fp else None,
             "charges": len(on), "full_range_km": r(car.full_range_km(mid), 1),
             "full_pack_kwh": r(bms_full(car, mid), 2) if u.source == "can" else None,
@@ -71,7 +74,7 @@ def list_updates(req):
         return {"car": req.car, "time_zone": tz, "items": [], "next": None,
                 "summary": {"count": 0, "median_gap_ms": None, "current_version": None,
                             "current_version_source": None, "current_version_since_ms": None,
-                            "build_changed_since": None}}
+                            "build_changed_since": None, "last_update": None}}
     rows = update_rows(req, h)
     sel = [x for x in rows if a <= x["start_ms"] < b]
     items, nxt = page(req, sel, key=lambda x: (x["start_ms"],), reverse=True)
@@ -81,7 +84,15 @@ def list_updates(req):
             "summary": {"count": len(sel), "median_gap_ms": int(median(gaps)) if gaps else None,
                         "current_version": sw["version"], "current_version_source": sw["version_source"],
                         "current_version_since_ms": sw["version_since_ms"],
-                        "build_changed_since": sw["changed_since_ms"]}}
+                        "build_changed_since": sw["changed_since_ms"], "last_update": _last_update(rows)}}
+
+
+def _last_update(rows):
+    """The car's newest update whatever the period (null: none)."""
+    if not rows:
+        return None
+    x = rows[-1]
+    return {k: x[k] for k in ("id", "start_ms", "end_ms", "version", "version_source")}
 
 
 def patch_update(req):
@@ -103,7 +114,10 @@ def patch_update(req):
     st = req.store
     with st.lock:
         if v is None:
-            st.update_versions.pop(u.id, None)
+            if FW_UPDATE(u):  # a cleared name stays cleared: no input or build match names it again
+                st.update_versions[u.id] = None
+            else:  # an imported update shows its imported version again
+                st.update_versions.pop(u.id, None)
             if st.builds.get(u.build_id, {}).get("from_update") == u.id:
                 st.builds.pop(u.build_id, None)
         else:

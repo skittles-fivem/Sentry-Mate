@@ -6,7 +6,9 @@ after an age limit (body 1 h, update 6 h, schedule 12 h, route 10 min, version 3
 The made-up inputs: Comet (`c1`) and Maple (`c2`) have the Tesla API, Atlas (`c3`) has TeslaFi while its TeslaFi
 account is matched, running and not paused; every other car has SMO alone, so all its values are null. Comet waits
 on an update that is downloading; Maple has a sunroof and a departure set the evening before (stale by now); Atlas
-reads its windows from TeslaFi like the rest. A car that drives follows a route. Nothing is ever guessed: a lock
+reads its windows from TeslaFi like the rest. The software version: Comet's from the Tesla API, Atlas's from TeslaFi
+(live.live_version), Maple's from the owner's local TeslaMate once its car there is matched to Maple (its Tesla API
+reads carry none). A car that drives follows a route. Nothing is ever guessed: a lock
 state comes only from what an input read, never from a lock request.
 """
 
@@ -67,15 +69,23 @@ def _next_local(t, tz, hour):
 def off_can(app, car_id, t, n):
     """The `off_can` object for a car at t, given its now object `n` (without `off_can`)."""
     out = empty()
+    if n.get("at_ms") is None:
+        return out
+    from .live import live_version
+    h = app.ds.history(car_id)
+    lv = live_version(app, h, t) if h is not None else None
+    if lv is not None:  # a version a live input reads (TeslaFi, local TeslaMate), with that input
+        out["version"] = _v(lv[0], lv[1], lv[2], t, AGE["version"])
     kind = api_input(app, car_id)
-    if kind is None or n.get("at_ms") is None:
+    if kind is None:
         return out
     at = next((i["last_ms"] for i in n.get("inputs") or [] if i["kind"] == kind), None)
     if at is None:
         return out
     tz = n.get("time_zone") or "UTC"
-    ver = (n.get("software") or {}).get("version")
-    out["version"] = _v(ver, at, kind, t, AGE["version"])
+    if car_id == "c1":  # Comet's Tesla API reads say the version it runs; Maple's carry none (made up)
+        ver = (n.get("software") or {}).get("version")
+        out["version"] = _v(ver, at, kind, t, AGE["version"])
     upd = UPDATES.get(car_id)
     out["update_available"] = _v(upd is not None, at, kind, t, AGE["update"])
     out["update_installing"] = _v(bool(upd and upd[1] == "installing"), at, kind, t, AGE["update"])
