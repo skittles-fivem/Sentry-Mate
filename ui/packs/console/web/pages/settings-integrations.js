@@ -241,16 +241,10 @@ function tabs(ctx, panels, { fallback }) {
   return { el: bar, show, pick, current: () => cur };
 }
 
-// a link of the overview to an anchor of this page: opens the set-up tab at it (so j / k and Enter work as well)
-const ownLink = (link) => {
-  const u = new URL(link, location.origin);
-  return u.pathname === state.buildUrl('settings-integrations') && u.hash ? `${u.pathname}?tab=setup${u.hash}` : link;
-};
-
 export async function mount(ctx) {
   const admin = ctx.admin;
   // the overview's first read starts before everything else
-  const ov = admin ? overviewSection(ctx, { href: ownLink }) : null;
+  const ov = admin ? overviewSection(ctx) : null;
   const [cfg0, status0, net, cars] = await Promise.all([
     admin ? ctx.api.get('settings/mqtt').catch(() => null) : null,
     ctx.api.get('settings/mqtt/status').catch(() => null),
