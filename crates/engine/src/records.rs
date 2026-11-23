@@ -248,6 +248,9 @@ pub struct CostEntry {
     pub session_fee: Option<f64>,
     pub gap_ms: u64,
     pub at_ms: u64,
+    /// With tiered prices: the billing cycle the charge was priced in.
+    #[serde(default)]
+    pub cycle: Option<TierCycle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -256,6 +259,20 @@ pub struct CostPart {
     pub per_kwh: f64,
     pub kwh: f64,
     pub cost: f64,
+    /// A step of tiered prices: its range of the cycle's kWh (`to_kwh` `None`: no end).
+    #[serde(default)]
+    pub from_kwh: Option<f64>,
+    #[serde(default)]
+    pub to_kwh: Option<f64>,
+}
+
+/// The billing cycle of a charge priced by steps: `[start_ms, end_ms)`, and the cycle's kWh before it (the household's
+/// use plus the earlier charges at the place).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TierCycle {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub before_kwh: f64,
 }
 
 pub(crate) fn get<T: DeserializeOwned>(db: &Db, ns: &str, key: &str) -> Result<Option<T>> {
