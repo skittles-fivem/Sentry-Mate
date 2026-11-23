@@ -203,6 +203,13 @@ pub enum Applied {
     Nothing,
 }
 
+/// TeslaMate writes an empty value as `nil` (and some topics as `null` or nothing at all): no value, on every topic
+/// (a route destination `nil` is no route, never a place called "nil").
+pub fn no_value(payload: &str) -> bool {
+    let p = payload.trim();
+    p.is_empty() || p.eq_ignore_ascii_case("nil") || p.eq_ignore_ascii_case("null")
+}
+
 fn num(s: &str) -> Option<f64> {
     s.trim().parse::<f64>().ok().filter(|x| x.is_finite())
 }
@@ -388,7 +395,7 @@ impl Car {
     /// Takes one message (`name`: the topic's last level). `now_ms`: when it came.
     pub fn apply(&mut self, name: &str, payload: &str, now_ms: u64) -> Applied {
         self.last_message_ms = Some(now_ms);
-        let p = payload.trim();
+        let p = if no_value(payload) { "" } else { payload.trim() };
         let changed = match target(name) {
             Target::DisplayName => {
                 let n = text(p);
@@ -535,6 +542,40 @@ mod tests {
         assert_eq!(parse_time("2026-11-22T06:00:00.000+01:00"), Some(1_795_323_600_000));
         assert_eq!(parse_time("1970-01-01T00:00:01Z"), Some(1_000));
         assert_eq!(parse_time("not a time"), None);
+    }
+
+    #[test]
+    fn nil_null_and_empty_are_no_value_on_every_topic() {
+        for empty in ["nil", "NIL", " null ", "Null", "", "  "] {
+            assert!(no_value(empty), "{empty:?}");
+        }
+        assert!(!no_value("nile") && !no_value("0") && !no_value("false"));
+        let mut c = Car::default();
+        c.apply("active_route_destination", "Made-up Lake", 1);
+        c.apply("version", "2026.32.5", 1);
+        c.apply("update_version", "2026.38.1", 1);
+        c.apply("locked", "true", 1);
+        let o = c.take_meta(1_000).unwrap().off_can;
+        assert_eq!(o.route_destination.as_deref(), Some("Made-up Lake"));
+        // TeslaMate clears the route (and any value) by writing `nil`: the value goes, nothing reads "nil"
+        c.apply("active_route_destination", "nil", 2_000_000);
+        c.apply("version", "null", 2_000_000);
+        c.apply("update_version", "", 2_000_000);
+        c.apply("locked", "nil", 2_000_000);
+        let m = c.take_meta(2_000_000).unwrap();
+        let o = &m.off_can;
+        assert_eq!((o.route_destination.as_deref(), o.version.as_deref(), o.update_version.as_deref()), (None, None, None));
+        assert_eq!((o.locked, m.locked, m.car_version.as_deref()), (None, None, None));
+        // a `nil` as the first value of a topic leaves nothing either, and names no car or state "nil"
+        let mut d = Car::default();
+        for t in ["active_route_destination", "version", "update_version", "sunroof_state", "windows_open", "geofence"] {
+            d.apply(t, "nil", 1);
+        }
+        assert!(d.take_meta(1_000).unwrap_or_default().off_can.is_empty());
+        assert_eq!(d.apply("display_name", "nil", 1), Applied::Nothing);
+        assert_eq!(d.apply("state", "nil", 1), Applied::Nothing);
+        assert_eq!(d.state(), None);
+        assert_eq!(d.apply("soc", "nil", 1), Applied::Nothing);
     }
 
     #[test]

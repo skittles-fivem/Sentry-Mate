@@ -224,7 +224,7 @@ class OffCan(ServerCase):
             self.assertIsInstance(v["at_ms"], int, k)
             self.assertIsInstance(v["stale"], bool, k)
             self.assertEqual(len(v["sources"]), 1, k)
-            self.assertIn(v["sources"][0]["kind"], ("tesla_api", "teslafi_api"), k)
+            self.assertIn(v["sources"][0]["kind"], ("tesla_api", "teslafi_api", "teslamate_local"), k)
 
     def test_tesla_api_car(self):
         n = self.c.get("/api/v1/cars/c1/now")
@@ -260,10 +260,25 @@ class OffCan(ServerCase):
         o = n["off_can"]
         self.check(o)
         self.assertIn("teslafi_api", [i["kind"] for i in n["inputs"]])
+        # its four windows are from TeslaFi's last full poll, 6 h ago: stale, and so is the flag made from them
         for k in WINDOWS:
             self.assertEqual(o["windows"][k]["sources"][0], {"kind": "teslafi_api", "label": "Data from TeslaFi"})
-            self.assertFalse(o["windows"][k]["stale"])
+            self.assertTrue(o["windows"][k]["stale"])
+        self.assertTrue(o["windows_open"]["stale"])
+        self.assertFalse(o["locked"]["stale"])
         self.assertIsNone(o["scheduled_charge_start_ms"])  # TeslaFi's polls of Atlas carry no schedule
+
+    def test_local_teslamate_covers_teslafis_stale_windows(self):
+        t = self.server.app.store.teslamate
+        t["cars"][0]["match"] = "c3"
+        try:
+            o = self.c.get("/api/v1/cars/c3/now")["off_can"]
+        finally:
+            t["cars"][0]["match"] = None
+        self.check(o)
+        self.assertEqual(o["windows_open"]["sources"][0]["kind"], "teslamate_local")
+        self.assertFalse(o["windows_open"]["stale"])
+        self.assertTrue(all(o["windows"][k] is None for k in WINDOWS), "the stale windows are left out")
 
     def test_smo_only_cars_have_nothing(self):
         for car in ("c0", "c4"):
