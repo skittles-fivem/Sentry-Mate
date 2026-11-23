@@ -76,3 +76,9 @@
 .st-row { display: flex; justify-content: space-between; gap: var(--s3); padding: calc(var(--s3) / 2) 0; font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
 .st-row-name { min-width: 0; overflow-wrap: anywhere; }
 .st-row-size { flex: none; white-space: nowrap; color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* Server updates: the value with its chip on the right of each row; Change names beside the names in the certificate */
+.upd-val { display: inline-flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: var(--s2); text-align: right; overflow-wrap: anywhere; }
+.upd-val.is-error { color: var(--coral-ink, inherit); }
+.names-btn { margin-left: auto; }
+.names-ed { display: flex; flex-direction: column; gap: var(--s3); }

@@ -1107,7 +1107,7 @@ Not on the CAN bus, and what Sentry Mate does instead:
 
 **Sections**
 
-- **Access and hosting.** Accounts with Admin and Watch-only roles, per-account car lists, two-step sign-in, sessions (sign out here or everywhere), the audit log, host names for the certificate, the HTTPS port, and backups and the recovery key.
+- **Access and hosting.** Accounts with Admin and Watch-only roles, per-account car lists, two-step sign-in, sessions (sign out here or everywhere), the audit log, the certificate's host names (Change names), the HTTPS port in the address check, server updates (this build and the opt-in release check), and backups and the recovery key.
   Covers: `docs.env.web.virtual-host`, `docs.env.web.port`, `web.shell.access-model`, `web.shell.hosting`
 
 **Better than TeslaMate**
