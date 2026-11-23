@@ -1,4 +1,5 @@
-//! What this crate asks TeslaFi: two reads of `feed.php`, nothing else. [`Read`] is the whole list, and each read is
+//! What this crate asks TeslaFi: two reads of `feed.php` and, only with costs turned on, its charge log
+//! ([`crate::costs`]), nothing else. [`Read`] is the whole list, and each read is
 //! a fixed path: no command word is ever built from text, no other key is ever added (never `wake`, `noWake`, a
 //! token or a VIN), so no wake and no command can be sent.
 //!
@@ -76,6 +77,15 @@ pub type Poll = Map<String, Value>;
 /// TeslaFi as the poller sees it (tests use a fake).
 pub trait Feed: Send + Sync + 'static {
     fn read(&self, token: &Secret, what: Read) -> impl std::future::Future<Output = Result<Poll, FeedError>> + Send;
+    /// TeslaFi's charge log of `[from_day, to_day]` (days since the epoch), only with costs on ([`crate::costs`]).
+    fn charges(
+        &self,
+        _token: &Secret,
+        _from_day: i64,
+        _to_day: i64,
+    ) -> impl std::future::Future<Output = Result<Vec<Value>, FeedError>> + Send {
+        async { Err(FeedError::NotEnabled) }
+    }
 }
 
 /// The real client.
@@ -97,6 +107,11 @@ impl Feed for Client {
     async fn read(&self, token: &Secret, what: Read) -> Result<Poll, FeedError> {
         let a = self.http.get(what.path(), token).await.map_err(FeedError::Http)?;
         classify(a.status, a.retry_after_s, &a.body)
+    }
+
+    async fn charges(&self, token: &Secret, from_day: i64, to_day: i64) -> Result<Vec<Value>, FeedError> {
+        let a = self.http.get(&crate::costs::path(from_day, to_day), token).await.map_err(FeedError::Http)?;
+        crate::costs::records(a.status, a.retry_after_s, &a.body)
     }
 }
 

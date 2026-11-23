@@ -1,0 +1,160 @@
+//! The charge costs TeslaFi lists, on a virtual clock against a fake TeslaFi: off by default, the log read back
+//! in chunks until it is empty, each charge kept once, then a daily check, all between the reads of the car and
+//! under the caps. Everything is made up.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+mod common;
+
+use common::{TOKEN, VIN, vault};
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+use teslafi::api::Poll;
+use teslafi::{Account, AccountState, Cadence, Feed, FeedError, Match, Poller, Read, Secret, Store};
+
+const NOW: u64 = 1_800_000_000_000;
+const DAY: u64 = 86_400_000;
+
+#[derive(Clone, Default)]
+struct Fake {
+    reads: Arc<Mutex<u64>>,
+    charges: Arc<Mutex<Vec<(i64, i64)>>>,
+    /// The made-up charges: day since the epoch, cost.
+    log: Arc<Mutex<Vec<(i64, f64)>>>,
+}
+
+impl Feed for Fake {
+    async fn read(&self, token: &Secret, _what: Read) -> Result<Poll, FeedError> {
+        assert_eq!(token.expose(), TOKEN);
+        *self.reads.lock().unwrap() += 1;
+        let v = json!({"data_id": "1", "Date": "2027-01-15 08:00:00", "carState": "Sleeping", "state": "asleep",
+                       "vin": VIN});
+        match v {
+            Value::Object(o) => Ok(o),
+            _ => unreachable!(),
+        }
+    }
+
+    async fn charges(&self, token: &Secret, from: i64, to: i64) -> Result<Vec<Value>, FeedError> {
+        assert_eq!(token.expose(), TOKEN);
+        assert!(from <= to);
+        self.charges.lock().unwrap().push((from, to));
+        Ok(self
+            .log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(d, _)| (from..=to).contains(d))
+            .map(|(d, cost)| {
+                json!({"id": d * 10, "startDate": format!("{} 10:00:00", teslafi::costs::date(*d)),
+                       "endDate": format!("{} 10:30:00", teslafi::costs::date(*d)), "locationName": "Made-up Supercharger",
+                       "cost": cost, "totalEnergyAdded": 30.0})
+            })
+            .collect())
+    }
+}
+
+#[derive(Default)]
+struct Sink {
+    kept: Mutex<BTreeMap<String, tesla::invoices::Found>>,
+}
+
+impl teslafi::Sink for Sink {
+    fn new_car(&self, _car: &tesla::NewCar) -> Result<u32, tesla::SinkError> {
+        Ok(1)
+    }
+    fn points(&self, _c: u32, _s: &[model::Sample], _f: &[tesla::ApiFact]) -> Result<(), tesla::SinkError> {
+        Ok(())
+    }
+    fn off_can(&self, _c: u32, _t: u64, _v: &model::OffCan) -> Result<(), tesla::SinkError> {
+        Ok(())
+    }
+    fn invoices(&self, found: &[tesla::invoices::Found]) -> Result<u64, tesla::SinkError> {
+        let mut k = self.kept.lock().unwrap();
+        Ok(found.iter().filter(|f| k.insert(f.key.clone(), (*f).clone()).is_none()).count() as u64)
+    }
+}
+
+fn rig(cadence: Cadence) -> (tempfile::TempDir, Store, Fake, Arc<Sink>, Poller<Fake, Sink>) {
+    let (t, data, v) = vault();
+    let store = Store::new(&data, v);
+    let car = teslafi::AccountCar {
+        vehicle: "fv1".into(),
+        vin_prefix: Some("5YJ3E1EA0PF".into()),
+        vin_tag: Some(store.vin_tag(&tesla::FullVin::new(VIN))),
+        model: Some('3'),
+        year: Some(2023),
+        display_name: None,
+        matched: Some(Match::Car { car: 7 }),
+    };
+    let a = Account {
+        id: String::new(),
+        label: "Made-up".into(),
+        added_ms: NOW,
+        version: 0,
+        paused: false,
+        time_zone: Some("UTC".into()),
+        state: AccountState::Ok,
+        last_ok_ms: None,
+        last_error: None,
+        cars: vec![car],
+    };
+    let id = store.add(a, &Secret::new(TOKEN)).unwrap().id;
+    let fake = Fake::default();
+    let today = (NOW / DAY) as i64;
+    *fake.log.lock().unwrap() = vec![(today - 3, 12.5), (today - 40, 9.0), (today - 200, 7.25)];
+    let sink = Arc::new(Sink::default());
+    let p = Poller::new(store.clone(), &id, fake.clone(), sink.clone(), cadence, chrono_tz::Tz::UTC).unwrap();
+    (t, store, fake, sink, p)
+}
+
+async fn run(p: &mut Poller<Fake, Sink>, from: u64, to: u64) {
+    let mut now = from;
+    while now < to {
+        let next = p.tick(now).await.unwrap();
+        assert!(next > now);
+        now = next;
+    }
+}
+
+#[tokio::test]
+async fn off_until_turned_on() {
+    let (_t, _s, fake, sink, mut p) = rig(Cadence::default());
+    run(&mut p, NOW, NOW + DAY).await;
+    assert!(fake.charges.lock().unwrap().is_empty());
+    assert!(sink.kept.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_log_is_read_back_once_then_daily() {
+    let (_t, store, fake, sink, mut p) = rig(Cadence { invoices: true, ..Cadence::default() });
+    run(&mut p, NOW, NOW + 3_600_000).await;
+    let asked = fake.charges.lock().unwrap().clone();
+    // three chunks with charges (today back to 270 days), two empty ones, then done
+    assert_eq!(asked.len(), 5, "{asked:?}");
+    assert!(asked.windows(2).all(|w| w[1].1 + 1 == w[0].0), "chunks back to back: {asked:?}");
+    let kept = sink.kept.lock().unwrap().clone();
+    assert_eq!(kept.len(), 3);
+    let one = kept.values().find(|f| f.session.total == Some(12.5)).unwrap();
+    assert!(one.key.starts_with("teslafi-"));
+    assert_eq!((one.car, one.vehicle.as_deref()), (Some(7), Some("fv1")));
+    assert_eq!(one.session.end_ms - one.session.start_ms, 30 * 60_000);
+    let c = store.pacing("fa1").unwrap().costs;
+    assert!(c.backfill_done);
+    assert_eq!(c.found, 3);
+    // the car is still read at its pace meanwhile
+    assert!(*fake.reads.lock().unwrap() >= 5);
+    // a day on: the last two weeks, once
+    run(&mut p, NOW + 3_600_000, NOW + DAY + 2 * 3_600_000).await;
+    let asked = fake.charges.lock().unwrap().clone();
+    assert_eq!(asked.len(), 6);
+    assert_eq!(asked[5].1 - asked[5].0, teslafi::costs::CHECK_DAYS);
+    assert_eq!(sink.kept.lock().unwrap().len(), 3, "each charge once");
+}
+
+#[tokio::test]
+async fn the_costs_keep_to_their_daily_cap() {
+    let (_t, _s, fake, _sink, mut p) = rig(Cadence { invoices: true, invoice_daily_cap: 2, ..Cadence::default() });
+    run(&mut p, NOW, NOW + 6 * 3_600_000).await;
+    assert_eq!(fake.charges.lock().unwrap().len(), 2);
+}
