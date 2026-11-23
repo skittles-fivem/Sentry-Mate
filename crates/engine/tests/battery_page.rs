@@ -314,3 +314,51 @@ fn the_chemistry_is_the_build_cards_on_every_page() {
         assert_eq!(s.battery_chemistry.setting, "auto");
     });
 }
+
+#[test]
+fn lifetime_energy_by_kind_is_the_totals_and_unknown_kinds_are_not_ac() {
+    rt().block_on(async {
+        let k = kit();
+        let e = &k.engine;
+        let life = query::battery::battery(e, k.car).unwrap().body.lifetime;
+        let t = serde_json::to_value(query::reports::totals(e, k.car, None).unwrap().body).unwrap();
+        assert_eq!(life["ac_kwh"], t["ac"]["kwh"], "{life}");
+        assert_eq!(life["dc_kwh"], t["dc"]["kwh"], "{life}");
+        // the one charge of no known kind (5 kWh) is neither
+        assert_eq!(life["unknown_kwh"], t["unknown_kind"]["kwh"], "{life}");
+        assert_eq!(life["unknown_kwh"], 5.0);
+        let sum = |k: &str| life[k].as_f64().unwrap();
+        assert!((sum("ac_kwh") + sum("dc_kwh") + sum("unknown_kwh") - sum("charged_kwh")).abs() < 0.11, "{life}");
+        assert!((sum("charged_kwh") - t["energy_added_kwh"].as_f64().unwrap()).abs() < 0.11, "{life} {t}");
+    });
+}
+
+#[test]
+fn a_pack_is_never_healthier_than_new() {
+    rt().block_on(async {
+        let k = kit();
+        let e = &k.engine;
+        let typed = |kwh: f64| {
+            let version = query::fleet::car_settings(e, k.car).unwrap().body.version;
+            let body = serde_json::json!({ "version": version, "capacity_new_kwh": kwh });
+            let done = query::fleet::patch_settings(e, k.car, body.as_object().unwrap()).unwrap();
+            assert!(matches!(done, query::fleet::Patched::Done(_)));
+            query::battery::battery(e, k.car).unwrap().body
+        };
+        let usable = query::battery::battery(e, k.car).unwrap().body.capacity["usable_kwh"].as_f64().unwrap();
+        // typed 5 kWh below what the charges measure now: no loss, full health, and a note that says why
+        let b = typed(usable - 5.0);
+        assert_eq!(b.capacity["new_source"], "owner");
+        assert_eq!(
+            (b.capacity["degradation_pct"].as_f64(), b.capacity["health_pct"].as_f64()),
+            (Some(0.0), Some(100.0))
+        );
+        assert!((b.capacity["difference_kwh"].as_f64().unwrap() + 5.0).abs() < 0.011, "the difference as it is");
+        assert!(b.notes.contains(&"reading_above_new"), "{:?}", b.notes);
+        // typed above it: a loss, no such note
+        let b = typed(usable + 10.0);
+        let lost = b.capacity["degradation_pct"].as_f64().unwrap();
+        assert!(lost > 5.0 && (b.capacity["health_pct"].as_f64().unwrap() - (100.0 - lost)).abs() < 0.11);
+        assert!(!b.notes.contains(&"reading_above_new"), "{:?}", b.notes);
+    });
+}

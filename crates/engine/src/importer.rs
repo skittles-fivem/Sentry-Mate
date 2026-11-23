@@ -319,6 +319,7 @@ impl DbSink<'_> {
                             session_fee: None,
                             gap_ms: 0,
                             cycle: None,
+                            of: None,
                             at_ms: now_ms(),
                         };
                         b.costs.push((c.id, c.start_ms, entry));
@@ -416,6 +417,7 @@ impl import::Sink for DbSink<'_> {
                             gap_ms: 0,
                             at_ms: now_ms(),
                             cycle: None,
+                            of: None,
                         };
                         records::put_cost(db, car, c.id, c.start_ms, Some(entry)).map_err(err)?;
                     }

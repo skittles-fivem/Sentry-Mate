@@ -805,9 +805,13 @@ pub struct SampleExtra {
     pub charge_current_limit_a: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub charge_limit_source: Option<String>,
-    /// AC phases in use, 1 to 3.
+    /// AC phases in use, 1 to 3. [`Sample::charger_voltage_v`] and [`Sample::charger_current_a`] are one phase's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub charger_phases: Option<f64>,
+    /// The power on the AC line into the onboard charger as the car itself says it, all phases together, kW (coarse:
+    /// 0.1 kW steps on the bus).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub charger_line_kw: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_to_full_min: Option<f64>,
     /// A tyre more than 10 % below its recommended pressure ([`tyre_low`]; the car's own warning where it sends one).
@@ -829,6 +833,16 @@ pub struct SampleExtra {
     pub navigating: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update_installing: Option<bool>,
+}
+
+/// The AC phases in use from the phase count the Tesla API gives (`charger_phases`, which TeslaFi and TeslaMate pass
+/// on as it is): it says 2 for a three-phase charge. `None` for a count that is none (0, more than 3).
+pub fn api_phases(count: f64) -> Option<f64> {
+    match count.round() {
+        1.0 => Some(1.0),
+        2.0 | 3.0 => Some(3.0),
+        _ => None,
+    }
 }
 
 impl SampleExtra {

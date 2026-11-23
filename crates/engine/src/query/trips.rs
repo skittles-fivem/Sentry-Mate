@@ -337,11 +337,13 @@ fn view(e: &Engine, t: &Stored) -> QResult<SavedTrip> {
     })
 }
 
-/// The name a trip may have: 1 to 80 characters, trimmed.
+/// The name a trip may have: one line of 1 to 80 characters, trimmed.
 fn name_of(name: &str, fields: &mut BTreeMap<String, String>) -> String {
     let n = name.trim();
     if !(1..=80).contains(&n.chars().count()) {
         fields.insert("name".into(), "1 to 80 characters.".into());
+    } else if super::not_plain_text(n) {
+        fields.insert("name".into(), "No control characters.".into());
     }
     n.to_string()
 }

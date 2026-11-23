@@ -361,7 +361,7 @@ fn version_rows(e: &Engine, car: CarId, h: &History) -> QResult<Vec<HistoryRow>>
         from: super::Sources,
     }
     let mut vs: Vec<V> = Vec::new();
-    for u in super::software::all_updates(e, car)?.into_iter().filter(|u| u.update.source.site().is_some()) {
+    for u in super::software::shown_updates(e, car, None)?.into_iter().filter(|u| u.update.source.site().is_some()) {
         let (version, version_source) = super::software::version_of(e, car, &u)?;
         let start = u.update.start_ms;
         vs.push(V {

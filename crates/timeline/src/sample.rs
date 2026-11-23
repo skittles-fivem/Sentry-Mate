@@ -405,6 +405,7 @@ impl SampleBuilder {
             charge_current_limit_a: limit.map(|l| l.0),
             charge_limit_source: limit.map(|l| l.1.to_string()),
             charger_phases,
+            charger_line_kw: num(Field::AcPower),
             time_to_full_min: num(Field::TimeToFull),
             tire_low: flag(Field::TpmsWarning)
                 .or_else(|| tire_low(tpms_bar, [rec_front, rec_rear], tires_mapped == Some(true))),

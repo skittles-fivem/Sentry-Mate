@@ -2,7 +2,8 @@
 //! [`crate::placing::DatedPrice`]; one price or time-of-use rates in the place's time zone, else the car's; a session
 //! fee and a price per minute where set) from its curve, the energy taken from the grid
 //! where known. Once a charge has ended its cost is kept ([`records::CostEntry`]) and stays put: rebuilding the
-//! charge, or changing the place's price, does not change it. A price change reaches past charges only through
+//! charge, or changing the place's price, does not change it (only a charge that has grown since, its logs having
+//! come late, is priced again as a whole). A price change reaches past charges only through
 //! [`reprice`], and a cost typed in ([`set_manual`]) is never repriced. A charge matched to a Supercharger invoice
 //! ([`crate::invoices`]) costs what the invoice says, over any price; a typed cost still wins over it.
 
@@ -36,7 +37,19 @@ pub fn settle(
         return Ok(Some(free));
     }
     if let Some(kept) = kept {
-        return Ok(Some(kept));
+        if typed {
+            // a rate typed per kWh or per minute follows the charge as it is now
+            let now = typed_now(kept.clone(), ch);
+            if now.amount != kept.amount {
+                records::put_cost(db, car, ch.id, ch.start_ms, Some(now.clone()))?;
+            }
+            return Ok(Some(now));
+        }
+        // a place's price worked out before the charge was whole (logs that came late or out of order: it was
+        // settled as far as it was known, and has grown since) is worked out again, at the price as it is now
+        if !(ended && kept.source == "tariff" && kept.of.is_some_and(|of| grew(&of, ch))) {
+            return Ok(Some(kept));
+        }
     }
     if ended && kept_none(e, car, ch.id)? {
         return Ok(None);
@@ -177,6 +190,7 @@ fn free_supercharging(e: &Engine, places: &crate::placing::Places, ch: &Charge, 
         gap_ms: 0,
         at_ms: now_ms(),
         cycle: None,
+        of: None,
     })
 }
 
@@ -211,11 +225,20 @@ pub fn price_in(
     let rate_per_minute = tariff.rate_at(ch.start_ms).and_then(|i| given.rates.get(i)).and_then(|r| r.per_minute);
     let per_minute = rate_per_minute.or(given.per_minute).unwrap_or(0.0);
     let minutes = ch.end_ms.saturating_sub(ch.start_ms) as f64 / 60_000.0;
+    let known = ch.energy_used_kwh.or(ch.energy_added_kwh);
     let c = if curve.len() >= 2 {
         let opts = places::CostOptions { grid_kwh: ch.energy_used_kwh, ..places::CostOptions::default() };
-        tariff.charge_cost_after(curve, &opts, before)
+        let by_curve = tariff.charge_cost_after(curve, &opts, before);
+        match known.filter(|k| k.is_finite() && *k > 0.0) {
+            // a curve with no energy under it (its points too far apart, or all at 0 kW as an API's whole kW say
+            // of a slow charge) prices nothing: the charge's own energy then, as for a charge without a curve
+            Some(kwh) if by_curve.kwh <= 0.0 => {
+                places::ChargeCost { gap_ms: by_curve.gap_ms, ..tariff.energy_cost(kwh, ch.start_ms, before) }
+            }
+            _ => by_curve,
+        }
     } else {
-        tariff.energy_cost(ch.energy_used_kwh.or(ch.energy_added_kwh)?, ch.start_ms, before)
+        tariff.energy_cost(known?, ch.start_ms, before)
     };
     let parts = c
         .parts
@@ -250,6 +273,7 @@ pub fn price_in(
             end_ms,
             before_kwh: c.tier_start_kwh.unwrap_or(before),
         }),
+        of: Some(priced_of(ch)),
     })
 }
 
@@ -291,6 +315,46 @@ pub fn cycle_kwh(
     Ok(sum)
 }
 
+/// What a tariff cost of `ch` is worked out from.
+fn priced_of(ch: &Charge) -> records::PricedOf {
+    records::PricedOf { end_ms: ch.end_ms, kwh: ch.energy_used_kwh.or(ch.energy_added_kwh) }
+}
+
+/// Whether the charge has grown since its cost was worked out: it ends later, or has more energy (by more than
+/// rounding; a rebuild that gives the same charge again changes nothing).
+fn grew(of: &records::PricedOf, ch: &Charge) -> bool {
+    let now = priced_of(ch);
+    let more = match (of.kwh, now.kwh) {
+        (Some(a), Some(b)) => b > a + 0.01,
+        (None, Some(b)) => b > 0.01,
+        _ => false,
+    };
+    now.end_ms > of.end_ms || more
+}
+
+/// The energy a cost typed per kWh is over: the grid's with that basis (the pack's where the charge did not
+/// measure the grid's), else the pack's.
+fn typed_kwh(ch: &Charge, grid_basis: bool) -> Option<f64> {
+    let grid = ch.energy_used_kwh.filter(|_| grid_basis);
+    grid.or(ch.energy_added_kwh).filter(|k| k.is_finite() && *k > 0.0)
+}
+
+/// A typed cost as it is for the charge now: a rate per kWh or per minute is over the charge's energy or minutes as
+/// they are (typed while the charge was going on, or before a late log made it longer, it follows the charge); a
+/// total stays as typed. A rate per kWh on a charge that has lost its energy keeps the amount it had.
+pub(crate) fn typed_now(mut k: CostEntry, ch: &Charge) -> CostEntry {
+    let (Some(rate), true) = (k.entered, k.source == "manual") else { return k };
+    let amount = match k.mode.as_deref() {
+        Some("per_kwh") => typed_kwh(ch, k.energy_basis.as_deref() == Some("grid")).map(|kwh| rate * kwh),
+        Some("per_minute") => Some(rate * ch.end_ms.saturating_sub(ch.start_ms) as f64 / 60_000.0),
+        _ => None,
+    };
+    if let Some(a) = amount.filter(|a| a.is_finite()) {
+        k.amount = round2(a);
+    }
+    k
+}
+
 pub(crate) fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
@@ -324,6 +388,8 @@ impl Mode {
 
 /// A cost typed on a charge (`PUT .../cost`): kept across rebuilds and never repriced. `grid_basis`: the energy a
 /// per-kWh amount is over is the grid's (else the pack's; the pack's too where the charge did not measure the grid's).
+/// A rate per kWh or per minute is kept as the rate: its amount follows the charge's energy or minutes
+/// ([`typed_now`]); per kWh on a charge with no energy is refused.
 /// The cost the charge kept before (its place's price when it ended, an imported one) is put aside, and comes back
 /// when the typed one is taken off ([`clear_manual`]).
 pub fn set_manual(
@@ -341,11 +407,16 @@ pub fn set_manual(
         return Err(QueryError::invalid("amount", "a cost is a number of 0 or more"));
     }
     let grid_basis = grid_basis && ch.energy_used_kwh.is_some();
-    let basis_kwh = if grid_basis { ch.energy_used_kwh } else { ch.energy_added_kwh };
     let minutes = ch.end_ms.saturating_sub(ch.start_ms) as f64 / 60_000.0;
     let total = match mode {
         Mode::Total => amount,
-        Mode::PerKwh => amount * basis_kwh.unwrap_or(0.0),
+        // (with no energy there is nothing to multiply: a cost of 0.00 would be kept as if it were typed)
+        Mode::PerKwh => {
+            amount
+                * typed_kwh(&ch, grid_basis).ok_or_else(|| {
+                    QueryError::invalid("mode", "This charge has no energy to price per kWh. Enter the total.")
+                })?
+        }
         Mode::PerMinute => amount * minutes,
     };
     let c = CostEntry {
@@ -361,6 +432,7 @@ pub fn set_manual(
         gap_ms: 0,
         at_ms: now_ms(),
         cycle: None,
+        of: None,
     };
     if let Some(before) = records::cost(db, car, charge, ch.start_ms)?.filter(|k| k.source != "manual") {
         put_replaced(e, car, charge, Some(&before))?;

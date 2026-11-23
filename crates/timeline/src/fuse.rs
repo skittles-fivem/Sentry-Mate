@@ -202,13 +202,25 @@ pub(crate) struct Slot {
     pub(crate) copy: fn(&mut Sample, &Sample),
 }
 
+/// What comes with a value from the same input. The charger's current is one phase's: how many phases carry it (and
+/// the line's own power, where the input has it) come with it.
+fn with(name: &str, to: &mut Sample, from: &Sample) {
+    if name == "charger_current_a" {
+        to.extra.charger_phases = from.extra.charger_phases;
+        to.extra.charger_line_kw = from.extra.charger_line_kw;
+    }
+}
+
 macro_rules! slots {
     ($($hold:ident: $($f:ident),+);+) => {
         &[$($(Slot {
             name: stringify!($f),
             hold: |p| p.$hold,
             has: |x| x.$f.is_some(),
-            copy: |to, from| to.$f = from.$f,
+            copy: |to, from| {
+                to.$f = from.$f;
+                with(stringify!($f), to, from);
+            },
         },)+)+
         // the four tyre pressures are one value: an input's four may be in its own slot order (SMO's 0x219 while
         // which wheel each slot is is not known) and another's in wheel order (the APIs'), so a sample takes all

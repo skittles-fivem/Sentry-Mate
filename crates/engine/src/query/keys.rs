@@ -61,7 +61,7 @@ pub fn check_name(name: &str) -> Result<String, &'static str> {
     if n.is_empty() || n.chars().count() > DEVICE_NAME_MAX {
         return Err("A name has 1 to 60 characters.");
     }
-    if n.chars().any(char::is_control) {
+    if super::not_plain_text(n) {
         return Err("A name is one line of text.");
     }
     Ok(n.to_string())

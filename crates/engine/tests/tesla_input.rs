@@ -1118,8 +1118,9 @@ fn smo_charging_minute(i: u64, a: u64, b: u64, pack: bool) -> (String, Vec<u8>, 
 }
 
 /// A 12-minute AC charge (from 50 s to 790 s after T0): SMO's logs (with its pack frames or not) and TeslaFi's polls
-/// once a minute (the charging state, its charger's power and per-phase volts and amps). Its row.
-fn short_charge(pack: bool) -> query::charges::ChargeView {
+/// once a minute (the charging state, its charger's power and per-phase volts and amps; the power on the first
+/// `with_power` polls only). Its row.
+fn short_charge(pack: bool, with_power: usize) -> query::charges::ChargeView {
     rt().block_on(async {
         let k = kit();
         let (a, b) = (50, 790);
@@ -1132,7 +1133,8 @@ fn short_charge(pack: bool) -> query::charges::ChargeView {
         let car = k.db.car_for_key(KEY).unwrap().unwrap();
         let polls: Vec<Sample> = (a + 10..b)
             .step_by(60)
-            .map(|s| Sample {
+            .enumerate()
+            .map(|(i, s)| Sample {
                 t_ms: T0 + s * 1000,
                 lat: Some(LAT),
                 lon: Some(LON),
@@ -1140,7 +1142,7 @@ fn short_charge(pack: bool) -> query::charges::ChargeView {
                 soc: Some(60.0),
                 charging: Some(true),
                 charge_kind: Some(model::ChargeKind::Ac),
-                charge_power_kw: Some(11.0),
+                charge_power_kw: (i < with_power).then_some(11.0),
                 charger_voltage_v: Some(230.0),
                 charger_current_a: Some(16.0),
                 ..Sample::default()
@@ -1166,7 +1168,7 @@ fn short_charge(pack: bool) -> query::charges::ChargeView {
 fn a_short_charge_seen_by_smo_and_teslafi_compares_its_energies_over_one_span() {
     // SMO's pack power gives the energy added over the whole charge too, not only the seconds next to one of
     // TeslaFi's polls (those alone gave a third of it: 0.83 kWh against 2.27 kWh from the grid, "37 %")
-    let c = short_charge(true);
+    let c = short_charge(true, usize::MAX);
     let (added, grid) = (c.energy_added_kwh.unwrap(), c.energy_grid_kwh.unwrap());
     assert!((1.9..2.25).contains(&added), "added {added} (grid {grid})");
     let eff = c.efficiency_pct.unwrap();
@@ -1176,9 +1178,21 @@ fn a_short_charge_seen_by_smo_and_teslafi_compares_its_energies_over_one_span() 
 }
 
 #[test]
+fn an_apis_power_beside_smo_seconds_without_it_counts_from_poll_to_poll() {
+    // no pack frames from SMO; TeslaFi says 11 kW at each poll, a minute apart: the whole charge's energy, not only
+    // the seconds next to a poll (a third of it)
+    let c = short_charge(false, usize::MAX);
+    let (added, grid) = (c.energy_added_kwh.unwrap(), c.energy_grid_kwh.unwrap());
+    assert!((2.1..2.4).contains(&added), "added {added} (grid {grid})");
+    assert_eq!(c.efficiency_note, None);
+}
+
+#[test]
 fn a_charge_whose_energies_cover_different_spans_shows_no_efficiency_and_says_why() {
-    // no pack frames from SMO: the energy into the pack is known only next to TeslaFi's polls, the grid's all along
-    let c = short_charge(false);
+    // no pack frames from SMO, and TeslaFi's polls say the power for the first minutes only (each reading counts
+    // until the next, the last for as long as an API's reading stands): the energy into the pack is known for part
+    // of the charge, the grid's all along
+    let c = short_charge(false, 4);
     let added = c.energy_added_kwh.unwrap();
     assert!(added < 1.2, "only part of the charge: {added}");
     assert_eq!((c.efficiency_pct, c.losses_kwh), (None, None), "{c:?}");

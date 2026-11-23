@@ -981,7 +981,8 @@ fn price_rules(p: &Price, pre: &str, bad: &mut BTreeMap<String, String>) {
         let name = rt.name.trim();
         if name.is_empty()
             || name.chars().count() > 24
-            || name.chars().any(|c| c.is_control() || "<>&\"'`\\".contains(c))
+            || super::not_plain_text(name)
+            || name.chars().any(|c| "<>&\"'`\\".contains(c))
         {
             add(&k("name"), "1 to 24 characters, plain words.");
         }
@@ -1083,7 +1084,7 @@ pub fn check(d: &Draft) -> QResult<()> {
     let name = d.name.trim();
     if name.is_empty() || name.chars().count() > 64 {
         bad.insert("name".into(), "1 to 64 characters.".into());
-    } else if name.chars().any(char::is_control) {
+    } else if super::not_plain_text(name) {
         bad.insert("name".into(), "No control characters.".into());
     }
     if !KINDS.contains(&d.kind.as_str()) {

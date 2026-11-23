@@ -156,7 +156,8 @@ fn cost_live(e: &Engine, c: &Car, ch: &Charge, live: bool) -> QResult<Option<Cos
         return Ok(Some(free));
     }
     if let Some(k) = kept.filter(|k| !live || k.source == "manual") {
-        return Ok(Some(k));
+        // (a rate typed per kWh or per minute is over the charge as it is now)
+        return Ok(Some(costs::typed_now(k, ch)));
     }
     if ch.source == Source::Live {
         // an ended charge that had no cost when a place change was saved keeps none until a reprice
@@ -1248,11 +1249,14 @@ pub fn charge(e: &Engine, car: CarId, id: u64) -> QResult<ChargeDetail> {
     };
     let sessions = e.invoice_sessions_of(car, ch.id)?;
     let applied = kept.as_ref().is_some_and(|k| k.source == "tesla_invoice" || k.source == "teslafi");
+    // (of one visit read by two inputs, one session counts: the other is shown, its cost not used)
+    let counted: Vec<&str> = crate::invoices::counted(&sessions).iter().map(|s| s.key.as_str()).collect();
     let cost_breakdown = match &kept {
         // an invoice's fees: energy at its rate, minutes (idle, or billed by time) at theirs
         Some(k) if applied => Breakdown {
             parts: sessions
                 .iter()
+                .filter(|s| counted.contains(&s.key.as_str()))
                 .flat_map(|s| s.fees.iter())
                 .map(|f| BreakdownPart {
                     rate: Some(
@@ -1296,7 +1300,7 @@ pub fn charge(e: &Engine, car: CarId, id: u64) -> QResult<ChargeDetail> {
             fees: s.fees.clone(),
             invoice_name: s.invoice_name.clone(),
             pdf: s.pdf,
-            applied,
+            applied: applied && counted.contains(&s.key.as_str()),
         })
         .collect();
     let manual_cost = kept.as_ref().filter(|k| k.source == "manual").map(|k| ManualCost {

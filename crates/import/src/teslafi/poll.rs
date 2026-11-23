@@ -335,6 +335,11 @@ impl Poll {
             charge_power_kw: if self.charging { self.charger_power_kw } else { None },
             charger_voltage_v: if self.charging { self.charger_voltage_v } else { None },
             charger_current_a: if self.charging { self.charger_current_a } else { None },
+            // (the API's count as TeslaFi passes it on: 2 is three phases)
+            extra: model::SampleExtra {
+                charger_phases: self.phases.filter(|_| self.charging).and_then(|p| model::api_phases(f64::from(p))),
+                ..model::SampleExtra::default()
+            },
             ..model::Sample::default()
         }
     }
