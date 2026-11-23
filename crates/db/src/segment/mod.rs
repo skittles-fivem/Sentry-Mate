@@ -304,7 +304,7 @@ pub(crate) fn list_days(dir: &Path) -> Result<Vec<u64>> {
 }
 
 /// The days of `[from, to)` that have files.
-fn days_in(dir: &Path, from: u64, to: u64) -> Result<Vec<u64>> {
+pub(crate) fn days_in(dir: &Path, from: u64, to: u64) -> Result<Vec<u64>> {
     let (from, to) = clamp(from, to);
     if let Some(days) = window_days(dir, from, to)? {
         return Ok(days);

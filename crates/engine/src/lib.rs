@@ -275,7 +275,30 @@ fn input_words<S: serde::Serializer>(i: &model::Inputs, s: S) -> Result<S::Ok, S
     s.collect_seq(i.iter().map(model::Input::word))
 }
 
+fn gps_layout_key(car: CarId) -> String {
+    format!("car/{car}/gps-layout")
+}
+
 impl Engine {
+    /// The car's own layout of the Screenmate's GPS frame (0x04F on its internal bus), when one is set: its logs
+    /// are decoded with it instead of the DBC's.
+    pub fn gps_layout(&self, car: CarId) -> Result<Option<model::gps::GpsLayout>> {
+        Ok(records::get::<Option<model::gps::GpsLayout>>(&self.inner.db, records::NS, &gps_layout_key(car))?.flatten())
+    }
+
+    /// Sets (or with `None` drops) the car's own layout of the Screenmate's GPS frame. When it changes, a whole
+    /// rebuild of the car starts (its stored logs are decoded again with it) and is returned.
+    pub fn set_gps_layout(&self, car: CarId, layout: Option<model::gps::GpsLayout>) -> Result<Option<jobs::Job>> {
+        if layout.is_some_and(|l| !l.lat.valid() || !l.lon.valid() || l.accuracy.is_some_and(|a| !a.valid())) {
+            return Err(Error::Store("a GPS field does not fit in 8 bytes".into()));
+        }
+        if self.gps_layout(car)? == layout {
+            return Ok(None);
+        }
+        records::put(&self.inner.db, records::NS, &gps_layout_key(car), &layout)?;
+        Ok(Some(self.rebuild(Scope::car(car))?))
+    }
+
     /// The newest stretch of the car's history whose inputs' GPS fixes disagreed (since the server started).
     pub fn gps_disagreement(&self, car: CarId) -> Option<GpsDisagreement> {
         lock(&self.inner.gps_cross).get(&car).copied()

@@ -556,7 +556,8 @@ impl Engine {
                         self.emit(Event::Fleet { car, change: "renamed", name: Some(c.name.clone()) });
                     }
                     let profile = dbc::Profile::from_name(c.profile().dbc_name());
-                    match timeline::read_log(&bytes, &side, profile, self.inner.opts.sample) {
+                    let gps = self.gps_layout(car)?;
+                    match timeline::read_log_with(&bytes, &side, profile, self.inner.opts.sample, gps) {
                         Ok(r) if other_vin(&c, r.vin.as_ref()) => {
                             tracing::warn!(
                                 "car {car}: log {name} names another car's VIN than the car's; it is left out"
@@ -752,7 +753,8 @@ impl Engine {
         let side: serde_json::Value =
             read(&format!("{name}.json"))?.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let profile = dbc::Profile::from_name(c.profile().dbc_name());
-        Ok(timeline::read_log(&bytes, &side, profile, self.inner.opts.sample).ok().map(|r| r.samples))
+        let gps = self.gps_layout(c.id)?;
+        Ok(timeline::read_log_with(&bytes, &side, profile, self.inner.opts.sample, gps).ok().map(|r| r.samples))
     }
 
     /// The car's newest values, from an input's samples. Each value keeps when it was recorded

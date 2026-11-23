@@ -83,6 +83,7 @@ mod journal;
 mod kv;
 mod logged;
 mod plain;
+mod readonly;
 mod rows;
 pub mod segment;
 mod table;
@@ -93,6 +94,7 @@ pub use error::{Error, Result};
 pub use file::FORMAT_VERSION;
 pub use fleet::{FleetCursor, FleetEntry, FleetPage, FleetQuery, Summary};
 pub use kv::{Kv, MAX_VALUE};
+pub use readonly::Reader;
 pub use rows::{Cursor, Item, MAX_PAGE, Order, Page, Query, StateRow, Table, Tally, Totals, UpdateRow};
 pub use segment::{DAY_MS, DayInfo, END_MS, Fields, Point, keeping_days};
 
