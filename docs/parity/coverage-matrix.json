@@ -5540,6 +5540,42 @@
    "page_name": "Settings: Integrations"
   },
   {
+   "id": "conn.overview.rows",
+   "tab": "web.connections",
+   "page": "settings-integrations",
+   "section": "Connections overview",
+   "data_status": "have",
+   "inventory": "web-admin",
+   "page_name": "Settings: Integrations"
+  },
+  {
+   "id": "conn.overview.status",
+   "tab": "web.connections",
+   "page": "settings-integrations",
+   "section": "Connections overview",
+   "data_status": "have",
+   "inventory": "web-admin",
+   "page_name": "Settings: Integrations"
+  },
+  {
+   "id": "conn.overview.sparkline",
+   "tab": "web.connections",
+   "page": "settings-integrations",
+   "section": "Connections overview",
+   "data_status": "have",
+   "inventory": "web-admin",
+   "page_name": "Settings: Integrations"
+  },
+  {
+   "id": "conn.overview.problems",
+   "tab": "web.connections",
+   "page": "settings-integrations",
+   "section": "Connections overview",
+   "data_status": "have",
+   "inventory": "web-admin",
+   "page_name": "Settings: Integrations"
+  },
+  {
    "id": "projects.achievements",
    "tab": "docs.projects",
    "page": "statistics",
@@ -10540,6 +10576,15 @@
    "page": "health",
    "section": "API errors",
    "data_status": "derive",
+   "inventory": "web-admin",
+   "page_name": "Data health and storage"
+  },
+  {
+   "id": "conn.overview.link",
+   "tab": "web.connections",
+   "page": "health",
+   "section": "Connections overview",
+   "data_status": "have",
    "inventory": "web-admin",
    "page_name": "Data health and storage"
   }
