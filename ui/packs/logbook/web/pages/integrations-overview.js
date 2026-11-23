@@ -5,9 +5,10 @@
 // contact, next poll, pace, today's count, 24 h and 7 d counts, uptime, last error and 24 hourly counts; the
 // problems of the last 7 days; and the totals per status.
 //
-// Live: read again every 10 s while the overview is shown; every text is set in place (the rows, the bars and
-// the problems keep their elements), and relative times tick every second. Nothing is emptied while a read
-// is on its way, and a read that fails keeps what was read before and says so on the line under the head.
+// Live: `connections` events while the overview is shown (live events, polling every 10 s only while the live
+// stream is down); every text is set in place (the rows, the bars and the problems keep their elements), and
+// relative times tick every second. Nothing is emptied while a read is on its way, and a read that fails keeps
+// what was read before and says so on the line under the head.
 
 import { h, svg, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -15,6 +16,7 @@ import { format } from '../shared/units.js';
 import { formatDateTime, formatDuration, formatRelative } from '../shared/time.js';
 import { section, icon, empty, errorView, errorWords } from '../core/ui.js';
 import { scrollBox } from '../shared/scrollbox.js';
+import { follow } from '../shared/live.js';
 
 const POLL_MS = 10000;
 const NBSP = ' ';
@@ -273,7 +275,7 @@ export function overviewPart(ctx) {
   let data = null;
   let readAt = null;
   let lastFail = null;
-  let timer = null;
+  let live = null;
   let ticker = null;
   let running = false;
   let inflight = null;
@@ -290,7 +292,7 @@ export function overviewPart(ctx) {
         h('p', { class: 'fig-note' }, STATUS_NOTE[s]));
     }));
 
-  const readLine = h('p', { class: 'co-read', 'aria-live': 'off' }, h('span', null, 'Read '), relEl(''), h('span', null, ` · read again every ${POLL_MS / 1000}${NBSP}s while this tab is open`));
+  const readLine = h('p', { class: 'co-read', 'aria-live': 'off' }, h('span', null, 'Read '), relEl(''), h('span', null, ' · updated as it changes while this tab is open'));
 
   const head = h('div', { class: 'co-head', 'aria-hidden': 'true' },
     [['Status'], ['Connection'], ['Last good', 'next contact'], ['Pace'], ['Today'], ['Success', '24 h · 7 d'], ['Uptime', '24 h · 7 d'], ['Last 24 hours', 'a bar an hour']]
@@ -347,8 +349,8 @@ export function overviewPart(ctx) {
     setText(readLine.firstChild, lastFail ? 'Could not read again (' : 'Read ');
     setRel(at, readAt);
     setText(readLine.lastChild, lastFail
-      ? `${errorWords(lastFail).text.replace(/\.$/, '')}); showing what was read then · trying every ${POLL_MS / 1000}${NBSP}s`
-      : ` · read again every ${POLL_MS / 1000}${NBSP}s while this tab is open`);
+      ? `${errorWords(lastFail).text.replace(/\.$/, '')}); showing what was read then · trying again`
+      : ' · updated as it changes while this tab is open');
     setClass(readLine, 'is-bad', !!lastFail);
   }
 
@@ -372,23 +374,30 @@ export function overviewPart(ctx) {
   async function load() {
     try { await read(); } catch (e) {
       if (api.isAbort(e)) throw e;
-      replace(el, errorView(e, { title: 'The connections overview could not be read.', home: false, retry: () => { replace(el, body); load().then(() => { if (running) schedule(); }); } }));
+      replace(el, errorView(e, { title: 'The connections overview could not be read.', home: false, retry: () => { replace(el, body); load(); } }));
     }
   }
 
-  function schedule() {
-    clearTimeout(timer);
-    if (!running) return;
-    timer = setTimeout(async () => { await read().catch(() => {}); schedule(); }, POLL_MS);
-  }
+  // while shown: the `connections` events, a read after a reconnect (and at the start when asked), and only while
+  // the live stream is down a read every POLL_MS
   function start({ now = false } = {}) {
     if (running) return;
     running = true;
-    if (now) read().catch(() => {}).finally(schedule); else schedule();
+    let skip = !now;
+    live = follow(ctx.api, {
+      type: 'connections',
+      load: () => { if (skip) { skip = false; return Promise.resolve(null); } return read().catch(() => {}).then(() => null); },
+      pollMs: POLL_MS,
+      onValue: (d) => {
+        if (!d || !ctx.alive()) return;
+        data = d; readAt = d.read_ms ?? api.now(); lastFail = null;
+        paint();
+      },
+    });
     clearInterval(ticker);
     ticker = setInterval(() => tickTimes(el), 1000);
   }
-  function stop() { running = false; clearTimeout(timer); clearInterval(ticker); }
+  function stop() { running = false; live?.stop(); live = null; clearInterval(ticker); }
   ctx.onCleanup(stop);
 
   return { el, load, start, stop, get data() { return data; } };

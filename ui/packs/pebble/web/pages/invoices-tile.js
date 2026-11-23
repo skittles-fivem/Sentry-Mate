@@ -6,6 +6,8 @@
 //
 // Data: the overview's `invoices`, GET integrations/invoices?source=&matched=false (the unmatched sessions),
 // GET integrations/invoices/zip?source=tesla, GET integrations/invoices?source=&from_ms=&to_ms=&format=csv.
+// Live: `job` events of kind invoices (id the source) change its checks in place (live events, polling
+// GET integrations/<source> only while the live stream is down).
 
 import { h } from '../shared/dom.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -16,8 +18,12 @@ import * as api from '../shared/api.js';
 import { tile, chip, linkBtn, ago } from '../core/ui.js';
 import { toggle } from '../core/form.js';
 import { group, infoRow, pickRow, ctlRow } from '../core/settings.js';
+import { follow, jobOf } from '../shared/live.js';
+import { morph } from '../core/morph.js';
 
 const coverOf = (source) => `inv.settings.${source}`;
+// while the live stream is down: read again this often (sooner while older invoices are fetched)
+const pollMs = (inv) => (inv?.backfill === 'running' ? 5000 : 30000);
 
 /** The unmatched sessions to show (a few), or null: read in the tiles' load, before they paint. */
 export function loadUnmatched(ctx, source, ov) {
@@ -47,14 +53,18 @@ export function invoicesTile(ctx, { source, ov, unmatched = null, setOn }) {
 
   const check = (level, name, sub, word) => h('li', { class: ['check', `is-${level}`] }, h('span', { class: 'check-dot', 'aria-hidden': 'true' }),
     h('span', { class: 'check-text' }, h('span', { class: 'check-name' }, name), sub ? h('span', { class: 'check-sub' }, sub) : null), h('span', { class: 'check-word' }, word));
-  const le = inv.last_error;
-  const checks = h('ul', { class: 'checks' },
-    !inv.available ? check('warn', 'Not available', tesla ? 'This Tesla account gives no invoices.' : 'TeslaFi gives no costs for this account.', 'No') : null,
-    check(inv.sessions ? 'ok' : 'off', 'Sessions found', `${formatNumber(inv.matched ?? 0)} matched to a charge, ${formatNumber(inv.unmatched ?? 0)} not.`, formatNumber(inv.sessions ?? 0)),
-    inv.gives_pdfs ? check(inv.pdfs_waiting ? 'warn' : inv.pdfs ? 'ok' : 'off', 'Invoices (PDF) downloaded', inv.pdfs_waiting ? `${formatNumber(inv.pdfs_waiting)} still to download.` : 'Every invoice found is kept.', formatNumber(inv.pdfs ?? 0)) : null,
-    check(inv.backfill === 'running' ? 'warn' : inv.backfill === 'done' ? 'ok' : 'off', backfillLabel(inv.backfill), inv.backfill === 'running' ? 'Older sessions are read a few at a time.' : null, inv.backfill === 'done' ? 'Done' : inv.backfill === 'running' ? 'Running' : 'Off'),
-    check(inv.last_check_ms ? 'ok' : 'off', 'Last check', inv.next_check_ms && on ? `Next at ${formatTime(inv.next_check_ms, tz)}. ${formatNumber(inv.requests_today ?? 0)} requests today.` : `${formatNumber(inv.requests_today ?? 0)} requests today.`, inv.last_check_ms ? ago(inv.last_check_ms) : 'None yet'),
-    check(le ? 'warn' : 'ok', 'Last error', le ? `${le.message || le.code}${le.at_ms ? `, ${formatDate(le.at_ms, tz, { weekday: false })}` : ''}` : 'None.', le ? 'Yes' : 'None'));
+  const checksOf = (inv) => {
+    const on = !!inv.enabled;
+    const le = inv.last_error;
+    return h('ul', { class: 'checks' },
+      !inv.available ? check('warn', 'Not available', tesla ? 'This Tesla account gives no invoices.' : 'TeslaFi gives no costs for this account.', 'No') : null,
+      check(inv.sessions ? 'ok' : 'off', 'Sessions found', `${formatNumber(inv.matched ?? 0)} matched to a charge, ${formatNumber(inv.unmatched ?? 0)} not.`, formatNumber(inv.sessions ?? 0)),
+      inv.gives_pdfs ? check(inv.pdfs_waiting ? 'warn' : inv.pdfs ? 'ok' : 'off', 'Invoices (PDF) downloaded', inv.pdfs_waiting ? `${formatNumber(inv.pdfs_waiting)} still to download.` : 'Every invoice found is kept.', formatNumber(inv.pdfs ?? 0)) : null,
+      check(inv.backfill === 'running' ? 'warn' : inv.backfill === 'done' ? 'ok' : 'off', backfillLabel(inv.backfill), inv.backfill === 'running' ? 'Older sessions are read a few at a time.' : null, inv.backfill === 'done' ? 'Done' : inv.backfill === 'running' ? 'Running' : 'Off'),
+      check(inv.last_check_ms ? 'ok' : 'off', 'Last check', inv.next_check_ms && on ? `Next at ${formatTime(inv.next_check_ms, tz)}. ${formatNumber(inv.requests_today ?? 0)} requests today.` : `${formatNumber(inv.requests_today ?? 0)} requests today.`, inv.last_check_ms ? ago(inv.last_check_ms) : 'None yet'),
+      check(le ? 'warn' : 'ok', 'Last error', le ? `${le.message || le.code}${le.at_ms ? `, ${formatDate(le.at_ms, tz, { weekday: false })}` : ''}` : 'None.', le ? 'Yes' : 'None'));
+  };
+  let checks = checksOf(inv);
 
   // one month as CSV: this month and the eleven before it
   const first = startOf(api.now(), 'month', tz);
@@ -65,7 +75,7 @@ export function invoicesTile(ctx, { source, ov, unmatched = null, setOn }) {
   const month = pickRow({ name: 'Month', value: 0, options: months.map((m, i) => [i, fmt.format(m)]), sheetTitle: 'Month of the CSV',
     onpick: (i) => { csv.href = csvHref(Number(i) || 0); } });
 
-  return tile({ w: 2, title: 'Supercharger invoices', icon: 'coin', cover: coverOf(source),
+  const el = tile({ w: 2, title: 'Supercharger invoices', icon: 'coin', cover: coverOf(source),
     side: on ? chip('On', { tone: 'teal', icon: 'check' }) : chip('Off', { tone: 'muted', icon: 'minus' }) },
   group(null, [sw]),
   checks,
@@ -76,4 +86,22 @@ export function invoicesTile(ctx, { source, ov, unmatched = null, setOn }) {
   ]),
   unmatched?.length ? group(`Not matched to a charge (${formatNumber(inv.unmatched)})`, unmatched.map((i) => infoRow({ icon: 'bolt', name: i.site || 'A Supercharger',
     sub: formatDate(i.start_ms, tz, { weekday: false }), side: formatMoney(i.total, i.currency) }))) : null);
+
+  // the checks follow the source's `job` events, written in place; the tile's own answer is the first read. A tile
+  // painted over by a newer one stops following.
+  let firstRead = true, seen = false;
+  const live = follow(ctx.api, {
+    type: 'job', match: jobOf('invoices', source), pick: (d) => d.status,
+    load: () => {
+      if (firstRead) { firstRead = false; return Promise.resolve(inv); }
+      return ctx.api.get(`integrations/${source}`).then((o) => o?.invoices || inv);
+    },
+    pollMs,
+    onValue: (next) => {
+      if (!el.isConnected) { if (seen) live.stop(); return; }
+      seen = true;
+      if (next && ctx.alive()) checks = morph(checks, checksOf(next));
+    },
+  });
+  return el;
 }

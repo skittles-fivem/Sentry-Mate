@@ -2,7 +2,7 @@
 // picker plus shortcuts and a second car to set beside this one), the trip figures (GET /cars/{car}/trip),
 // time spent and energy as text bars, the legs (every drive and charge that started in the range, in time
 // order, numbered, with totals), the route on one map (GET /tracks), the state strip and the battery and
-// elevation charts (drag to zoom both).
+// elevation charts (drag to zoom both). Live: 'rows' events of the car build it again off screen.
 
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
@@ -21,6 +21,7 @@ import { src, rowTitle, est as estTag } from '../core/source.js';
 import { empty } from '../core/states.js';
 import { rpx } from '../core/display.js';
 import { placeLink } from './timeline.js';
+import { onRows } from '../shared/live.js';
 
 export const id = 'trip';
 
@@ -225,4 +226,6 @@ export async function mount(ctx) {
   }
   if (!ctx.alive()) return;
   ctx.ready();
+  // a drive or charge of the car started or ended (once a burst has passed): built again off screen, swapped in whole
+  onRows(ctx.api, { car: cid, waitMs: 2000, run: () => ctx.refresh() });
 }

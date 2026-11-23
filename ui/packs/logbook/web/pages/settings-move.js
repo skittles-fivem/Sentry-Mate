@@ -6,7 +6,8 @@
 //     server says where its data went, with "Undo the move" (POST /system/move/undo).
 //   - An export file (/system/exports): made by the server in three steps, shown in a status panel of a fixed
 //     size (shared/exportjob.js: step, bar, x of y GB, speed, time left, stalled, failed, Cancel), then downloaded as one file that opens with
-//     the recovery key on the new server's first page.
+//     the recovery key on the new server's first page. It follows `job` events of kind export, written in place
+//     (live events, polling only while the live stream is down).
 // Making a code, undoing a move and making an export ask for the password again (and the two-step code
 // when the account has it). The rules are in docs/ui-api.md ("Moving and first-run setup").
 
@@ -18,6 +19,8 @@ import { openDialog, confirmDialog } from '../core/dialog.js';
 import { dateTime, count } from '../core/format.js';
 import { bytes, bigCode, copyButton, downloadUrl, stepList, progressBar, callout, PROBLEM } from './move-parts.js';
 import { exportModel, exportPollMs } from '../shared/exportjob.js';
+import { follow, jobOf } from '../shared/live.js';
+import { morphChildren } from '../core/morph.js';
 
 const OLD_STEPS = [
   ['copying', 'The new server copies everything', 'This server keeps taking uploads meanwhile, so nothing is missed.'],
@@ -83,8 +86,7 @@ export function moveBlock(ctx, { network = null } = {}) {
   let expErr = null;    // the last read of it failed (the export goes on on the server)
   let fetchOnReady = null; // the export made on this page: downloaded once it is ready
   let moveTimer = 0;
-  let expTimer = 0;
-  ctx.onCleanup(() => { clearTimeout(moveTimer); clearTimeout(expTimer); });
+  ctx.onCleanup(() => clearTimeout(moveTimer));
 
   const statusBox = h('div', { class: 'mv-status', 'aria-live': 'polite' });
   const codeBox = h('div', { class: 'mv-way-body' });
@@ -268,17 +270,20 @@ export function moveBlock(ctx, { network = null } = {}) {
   }
 
   /* ---------------------------------------------------------------- the export file */
-  async function refreshExport() {
-    clearTimeout(expTimer);
-    try {
-      if (exp && exp.id) exp = await ctx.api.get(api.apiPath`system/exports/${exp.id}`);
-      else { const r = await ctx.api.get('system/exports'); exp = (r.items || [])[0] || null; }
-      expErr = null;
-    } catch (err) {
-      if (api.isAbort(err)) return;
-      if (err && (err.code === 'no_such_export' || err.status === 404)) { exp = null; expErr = null; } else expErr = err;
-    }
-    drawExport();
+  // the newest export file: read at the start and after a reconnect, then its `job` events (one made elsewhere
+  // too, when none is shown); only while the live stream is down, read again while it is made
+  let expLive = null;
+  function followExport() {
+    let first;
+    const ready = new Promise((res) => { first = res; });
+    expLive = follow(ctx.api, {
+      type: 'job', match: (d) => jobOf('export')(d) && (!exp || d.id === exp.id), pick: (d) => d.status,
+      load: async () => { const r = await ctx.api.get('system/exports'); return (r.items || [])[0] || null; },
+      pollMs: () => exportPollMs(exp),
+      onValue: (e) => { exp = e; expErr = null; if (ctx.alive()) drawExport(); first(); },
+      onError: (err) => { expErr = err; if (ctx.alive()) drawExport(); first(); },
+    });
+    return ready;
   }
 
   async function makeExport() {
@@ -299,6 +304,7 @@ export function moveBlock(ctx, { network = null } = {}) {
     exp = out;
     fetchOnReady = out.id;
     drawExport();
+    if (expLive) expLive.refresh();
   }
 
   async function cancelExport() {
@@ -321,7 +327,6 @@ export function moveBlock(ctx, { network = null } = {}) {
 
   // One panel with the same rows in every state (none, making, stalled, failed, ready), so it never jumps.
   function drawExport() {
-    clearTimeout(expTimer);
     const e = exp;
     const m = exportModel(e);
     const ready = m.kind === 'ready';
@@ -344,7 +349,8 @@ export function moveBlock(ctx, { network = null } = {}) {
     const acts = m.kind === 'busy' ? [button('Cancel', { onclick: cancelExport })]
       : ready ? [h('a', { class: 'button', href: e.url, download: e.file_name }, 'Download'), button('Make a new one', { onclick: makeExport }), button('Delete it', { kind: 'danger', onclick: deleteExport })]
         : [button(m.kind === 'failed' ? 'Make a new one' : 'Download export file', { kind: 'primary', iconName: 'download', onclick: makeExport })];
-    replace(exportBox,
+    // only the texts that changed are written (a job event can come twice a second)
+    morphChildren(exportBox, [
       h('div', { class: ['xp', `xp-${tone}`], role: 'group', 'aria-label': 'Export file status' },
         h('div', { class: 'xp-top' },
           h('div', { class: 'xp-titles' }, h('p', { class: 'xp-title' }, m.head), h('p', { class: 'xp-sub' }, m.sub)),
@@ -359,9 +365,7 @@ export function moveBlock(ctx, { network = null } = {}) {
         h('div', { class: ['xp-say', `xp-say-${tone}`] }, h('p', null, say)),
         h('div', { class: 'mv-actions xp-acts' }, acts)),
       ready && e.skipped && e.skipped.length ? h('p', { class: 'mv-quiet' }, `Left out (this server cannot read ${e.skipped.length === 1 ? 'it' : 'them'}): `, e.skipped.map((x, i) => [i ? ', ' : null, h('code', { class: 'mono mv-mono' }, x.path)])) : null,
-      h('p', { class: 'mv-quiet' }, 'On the new server’s first page choose ', h('strong', null, 'Restore from an export file'), ', choose the file and type this server’s recovery key. Without the key the file is useless to anyone who takes it.'));
-    const ms = exportPollMs(e);
-    if (ms) expTimer = setTimeout(refreshExport, ms);
+      h('p', { class: 'mv-quiet' }, 'On the new server’s first page choose ', h('strong', null, 'Restore from an export file'), ', choose the file and type this server’s recovery key. Without the key the file is useless to anyone who takes it.')]);
   }
 
   /* ---------------------------------------------------------------- put together */
@@ -388,7 +392,7 @@ export function moveBlock(ctx, { network = null } = {}) {
   return {
     el,
     async load() {
-      await Promise.all([refreshMove(), refreshExport()]);
+      await Promise.all([refreshMove(), followExport()]);
     },
   };
 }

@@ -16,12 +16,14 @@
 // API (admins): GET / POST imports, GET / PATCH / DELETE imports/{import}, GET / PUT
 // imports/{import}/cars, POST imports/{import}/start, GET / PATCH cars/{car}/overlaps, GET cars.
 //
-// Progress: there is no live event for an import, so while a job is being checked or imported (or
-// uploaded from another tab, or waits checked for its cars to be matched) the page reads that one job
-// again every few seconds, and stops as soon as the job is done or failed, or the page is left.
+// Progress: the job shown follows its `job` events (kind import, its id), its steps, progress and report written
+// in place (live events; only while the live stream is down, the page reads that one job again every few
+// seconds while it is checked or imported, uploaded from another tab, or waits checked for its cars).
 
 import { h, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
+import { follow as followLive, jobOf } from '../shared/live.js';
+import { morphChildren } from '../core/morph.js';
 import * as state from '../shared/state.js';
 import { format } from '../shared/units.js';
 import { formatDateTime, formatDate, formatDuration } from '../shared/time.js';
@@ -239,7 +241,7 @@ export async function mount(ctx) {
     const j = S.job && (UNFINISHED.includes(S.job.status) || S.job.status === 'failed' || (S.job.status === 'done' && S.job.id === ctx.query?.import)) ? S.job : null;
     let at = -1;
     if (j) at = j.status === 'failed' ? (j.checked_ms ? 3 : j.uploaded_bytes >= j.bytes_total ? 1 : 0) : STEPS.findIndex(([k]) => k === j.status);
-    replace(stepsEl, STEPS.map(([k, label0], i) => {
+    morphChildren(stepsEl, STEPS.map(([k, label0], i) => {
       const label = stepLabel(k, label0, j);
       const st = !j ? 'later' : j.status === 'done' || i < at ? 'done' : i === at ? (j.status === 'failed' ? 'failed' : 'now') : 'later';
       return h('li', { class: ['im-step', `is-${st}`], 'aria-current': st === 'now' ? 'step' : null },
@@ -437,38 +439,45 @@ export async function mount(ctx) {
   function pauseUpload() { up.paused = true; up.ctl?.abort(); paintAll(); }
 
   /* ---------------------------------------------------------------- following a job */
-  let pollTimer = null;
-  ctx.onCleanup(() => clearTimeout(pollTimer));
-  function follow() {
-    clearTimeout(pollTimer);
-    const j = S.job;
-    if (!j) return;
+  // a box painted again: only the texts that changed are written (a job event can come twice a second)
+  const put = (box, ...kids) => morphChildren(box, kids);
+  // whether the shown job moves on by itself (and how often to read it while the live stream is down)
+  function pollFor(j) {
+    if (!j) return null;
     const otherTabUpload = j.status === 'uploading' && !up.active && !up.files.size;
     // a job waiting in 'ready' is read too (more slowly): another tab can match its cars or discard it
-    if (!MOVING.includes(j.status) && !otherTabUpload && j.status !== 'ready') return;
-    pollTimer = setTimeout(async () => {
-      if (!ctx.alive() || S.job?.id !== j.id) return;
-      try {
-        const was = S.job?.status;
-        const wasToMatch = S.job?.cars_to_match;
-        const fresh = await ctx.api.get(api.apiPath`imports/${j.id}`);
-        if (!ctx.alive() || S.job?.id !== j.id) return;
-        putJob(fresh);
-        if (fresh.status === 'ready' && was === 'ready' && fresh.cars_to_match !== wasToMatch) {
-          // matched (or changed) elsewhere: read the matches again and repaint Start
-          await loadMatch();
-          if (!ctx.alive()) return;
-          paintJob();
-        } else if (fresh.status !== was) {
-          if (fresh.status === 'ready') ctx.flash(isCan(fresh) ? 'The zip is checked. See its report, then start the import.' : 'The file is checked. Match its cars, then start the import.', { kind: 'info' });
-          if (fresh.status === 'done') { ctx.flash(isCan(fresh) ? 'The import is done. Its logs are decoded into drives and charges as uploads are.' : 'The import is done. The history shows on every page.'); loadOverlaps(); }
-          if (fresh.status === 'failed') ctx.flash('The import failed. The reason is on this page.', { kind: 'error' });
-          if (['checking', 'ready'].includes(fresh.status) && !S.match) loadMatch();
-          paintAll();
-        } else paintProgress();
-      } catch (e) {
-        if (!ctx.alive() || api.isAbort(e)) return;
-        if (e.code === 'no_such_import') {
+    if (!MOVING.includes(j.status) && !otherTabUpload && j.status !== 'ready') return null;
+    return otherTabUpload || j.status === 'ready' ? POLL_MS * 2 : POLL_MS;
+  }
+  async function take(fresh) {
+    if (!ctx.alive() || !fresh || S.job?.id !== fresh.id) return;
+    const was = S.job?.status;
+    const wasToMatch = S.job?.cars_to_match;
+    putJob(fresh);
+    if (fresh.status === 'ready' && was === 'ready' && fresh.cars_to_match !== wasToMatch) {
+      // matched (or changed) elsewhere: read the matches again and repaint Start
+      await loadMatch();
+      if (!ctx.alive()) return;
+      paintJob();
+    } else if (fresh.status !== was) {
+      if (fresh.status === 'ready') ctx.flash(isCan(fresh) ? 'The zip is checked. See its report, then start the import.' : 'The file is checked. Match its cars, then start the import.', { kind: 'info' });
+      if (fresh.status === 'done') { ctx.flash(isCan(fresh) ? 'The import is done. Its logs are decoded into drives and charges as uploads are.' : 'The import is done. The history shows on every page.'); loadOverlaps(); }
+      if (fresh.status === 'failed') ctx.flash('The import failed. The reason is on this page.', { kind: 'error' });
+      if (['checking', 'ready'].includes(fresh.status) && !S.match) loadMatch();
+      paintAll();
+    } else paintProgress();
+  }
+  // the shown job's `job` events (not while this page sends its files: the upload says how far it got); its GET
+  // after a reconnect, and only while the live stream is down every few seconds while it moves on
+  let firstJob = true;
+  const jobLive = followLive(ctx.api, {
+    type: 'job', match: (d) => jobOf('import')(d) && d.id === S.job?.id && !up.active, pick: (d) => d.status,
+    load: async () => {
+      const j = S.job;
+      // the page's own read stands for the first one
+      if (firstJob || !j || up.active) { firstJob = false; return null; }
+      try { return await ctx.api.get(api.apiPath`imports/${j.id}`); } catch (e) {
+        if (e.code === 'no_such_import' && ctx.alive() && S.job?.id === j.id) {
           S.jobs = S.jobs.filter((x) => x.id !== j.id);
           S.match = null;
           if (ctx.query?.import === j.id) ctx.setQuery({ import: null });
@@ -476,12 +485,17 @@ export async function mount(ctx) {
           if (S.job && ['checking', 'ready'].includes(S.job.status)) loadMatch();
           ctx.flash('This import was discarded, perhaps from another browser tab.', { kind: 'info' });
           paintAll();
-          follow();
-          return;
         }
+        return null;
       }
-      follow();
-    }, otherTabUpload || j.status === 'ready' ? POLL_MS * 2 : POLL_MS);
+    },
+    pollMs: () => (up.active ? null : pollFor(S.job)),
+    onValue: (fresh) => { take(fresh).catch(() => {}); },
+  });
+  // after a change of the page's own: while the live stream is down, the shown job is read again (its events
+  // come by themselves otherwise)
+  function follow() {
+    if (!jobLive.live && pollFor(S.job)) jobLive.refresh();
   }
 
   async function refreshJobs(pickRunning = false) {
@@ -510,7 +524,7 @@ export async function mount(ctx) {
 
   function paintProgress() {
     const j = S.job;
-    if (!j || !UNFINISHED.concat('failed', 'done').includes(j.status)) { replace(progressBox); return; }
+    if (!j || !UNFINISHED.concat('failed', 'done').includes(j.status)) { morphChildren(progressBox, []); return; }
     const st = STATUS[j.status] || { word: j.status, kind: null, text: '' };
     const lines = [];
     lines.push(h('p', { class: 'im-status-line' },
@@ -566,7 +580,7 @@ export async function mount(ctx) {
         j.finished_ms ? [h('dt', null, j.status === 'failed' ? 'Stopped' : 'Finished'), h('dd', null, formatDateTime(j.finished_ms, tz, { now: api.now() }), ` ${zone}`,
           j.started_ms ? h('span', { class: 'im-quiet' }, ` · ${formatDuration(j.finished_ms - j.started_ms)} from upload to end`) : null)] : null));
     }
-    replace(progressBox, lines);
+    morphChildren(progressBox, [lines]);
   }
 
   const restartNote = h('div', { class: 'im-aside-note', cover: 'web.import.restart-note' },
@@ -830,7 +844,7 @@ export async function mount(ctx) {
   function paintReport() {
     const j = S.job?.report ? S.job : S.jobs.find((x) => x.report && x.status === 'done');
     if (!j || !j.report) {
-      replace(reportBox, empty({ title: 'No report yet.', text: 'A report shows here once a file is checked: rows read per table, rows imported, how many rows were skipped and why.', cover: ['web.import.rejected-count', 'web.import.rejected.col-reason'] }));
+      put(reportBox, empty({ title: 'No report yet.', text: 'A report shows here once a file is checked: rows read per table, rows imported, how many rows were skipped and why.', cover: ['web.import.rejected-count', 'web.import.rejected.col-reason'] }));
       return;
     }
     const rep = j.report;
@@ -919,7 +933,7 @@ export async function mount(ctx) {
       ],
     }) : null;
 
-    replace(reportBox,
+    put(reportBox,
       h('p', { class: 'im-lead' }, h('span', { class: 'im-report-of' }, j.name), ' · ', statusWord(j.status),
         j.finished_ms ? ` ${formatDateTime(j.finished_ms, tz, { now: api.now() })} ${zone}` : j.checked_ms ? ` since ${formatDateTime(j.checked_ms, tz, { now: api.now() })} ${zone}` : null),
       figs,
@@ -1018,7 +1032,7 @@ export async function mount(ctx) {
       ],
     }) : null;
     const warnings = rep.warnings || [];
-    replace(reportBox,
+    put(reportBox,
       h('p', { class: 'im-lead' }, h('span', { class: 'im-report-of' }, j.name), ' · TeslaFi data download · ', statusWord(j.status),
         j.finished_ms ? ` ${formatDateTime(j.finished_ms, tz, { now: api.now() })} ${zone}` : j.checked_ms ? ` since ${formatDateTime(j.checked_ms, tz, { now: api.now() })} ${zone}` : null),
       figs,
@@ -1077,7 +1091,7 @@ export async function mount(ctx) {
       ],
     }) : null;
     const by = Object.entries(rep.refused || {}).filter(([, c]) => c);
-    replace(reportBox,
+    put(reportBox,
       h('p', { class: 'im-lead' }, h('span', { class: 'im-report-of' }, j.name), ' · ', statusWord(j.status),
         j.finished_ms ? ` ${formatDateTime(j.finished_ms, tz, { now: api.now() })} ${zone}` : j.checked_ms ? ` since ${formatDateTime(j.checked_ms, tz, { now: api.now() })} ${zone}` : null),
       figs,

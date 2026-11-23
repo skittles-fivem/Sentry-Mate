@@ -17,6 +17,7 @@ import { emptyTile } from '../core/states.js';
 import { segmented } from '../core/form.js';
 import { timeChart, bars } from '../core/chart.js';
 import { filterBar, statTile, money, sectionHead, nums } from '../core/bits.js';
+import { morphChildren } from '../core/morph.js';
 
 export const id = 'statistics';
 export const css = true;
@@ -224,7 +225,7 @@ export async function mount(ctx) {
     if (rows.error) { ctx.fail(rows.error, { retry: () => load() }); return; }
     paintTotals(rows);
     paintChart(rows);
-    rowsBox.replaceChildren(...(rows.length ? rows.map(rowTile) : [emptyTile({ icon: 'calendar', title: 'Nothing in this period', text: 'Pick a longer period above.' })]));
+    morphChildren(rowsBox, (rows.length ? rows.map(rowTile) : [emptyTile({ icon: 'calendar', title: 'Nothing in this period', text: 'Pick a longer period above.' })]));
     // the first time, the page goes in with its tiles filled, so nothing is pushed down when the rows arrive
     if (!bar.isConnected) ctx.view.replaceChildren(bar, precise, totBox, chartT, rowsHead, rowsBox, odoT, stoneT);
     await Promise.all([paintOdometer(), paintStones(rows)]);
@@ -234,6 +235,10 @@ export async function mount(ctx) {
   await load();
   let timer = 0;
   ctx.onCleanup(() => clearTimeout(timer));
-  ctx.events?.('rows', () => { clearTimeout(timer); timer = setTimeout(() => ctx.alive() && load(), 1500); });
+  // a car shown has new drives or charges (once a burst has passed): read again, the tiles written in place
+  ctx.events(['rows'], (ev) => {
+    if (car && ev?.data?.car && ev.data.car !== car.id) return;
+    clearTimeout(timer); timer = setTimeout(() => ctx.alive() && load(), 1500);
+  });
   return {};
 }
