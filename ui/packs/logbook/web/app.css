@@ -560,23 +560,6 @@ html.is-auth .main { min-height: 100vh; display: flex; align-items: flex-start; 
 .ledger-foot { display: flex; justify-content: center; padding-top: round(1.125rem, var(--e)); }
 .ledger-status:empty { display: none; }
 .ledger-sentinel { height: 1px; margin-top: -1px; }
-/* a long list in a box of ten rows (core/table.js windowLedger): the head stays, the rows scroll, only those in view
-   are drawn; every row is one height (each cell holds at most two lines, which do not wrap) */
-.vl-box { --vl-row: round(4.375rem, var(--e)); max-height: calc(round(2.375rem, var(--e)) + 10 * var(--vl-row)); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; border-bottom: 1px solid var(--rule); }
-.vl-box:focus-visible { outline: var(--focus-w) solid var(--accent); outline-offset: calc(-1 * var(--focus-w)); }
-.vl-box .ledger-table thead th { top: 0; }
-.vl-ledger tbody > tr:not(.vl-gap) { height: var(--vl-row); }
-.vl-ledger tbody > tr:not(.vl-gap) > * { white-space: nowrap; }
-.vl-ledger tbody > tr.vl-gap > td { height: var(--vl-h, 0px); padding: 0; border: 0; }
-.vl-ledger tbody > tr.vl-gap:hover > * { background: none; }
-.vl-ledger tbody tr:nth-child(5n) > * { border-bottom-color: var(--rule); }
-.vl-skel-bar { display: block; height: round(0.625rem, var(--e)); width: 70%; border-radius: round(0.125rem, var(--e)); background: var(--paper-sunk); }
-.vl-tools { flex-wrap: wrap; row-gap: round(0.5rem, var(--e)); }
-.vl-tools .vl-search { width: round(15rem, var(--e)); }
-.vl-jump { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); }
-.vl-tools .vl-count { margin: 0 0 0 auto; }
-.vl-tools [data-csv] { margin-left: 0; }
-.vl-caption { margin: 0 0 round(0.5rem, var(--e)); }
 .cell-main { display: block; font: 400 1.03125rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); text-decoration: none; }
 a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rule-strong); }
 .cell-sub { display: block; font-size: var(--small-2); color: var(--ink-3); margin-top: round(0.1875rem, var(--e)); }
@@ -728,9 +711,11 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
 .chart-plot { min-width: 0; padding-top: round(0.25rem, var(--e)); }
 .chart-box { height: round(8.125rem, var(--e)); }
 .readout { display: flex; flex-wrap: wrap; gap: round(0.25rem, var(--e)) round(1.375rem, var(--e)); justify-content: flex-end; font-size: var(--text-sm); color: var(--ink-3); font-variant-numeric: tabular-nums; min-height: round(1.5rem, var(--e)); align-items: baseline; }
-.readout b { font: 400 1.1875rem var(--serif); --LH: normal; line-height: var(--LH); color: var(--ink); }
+/* one line height for every part of a readout, the idle sentence and the values alike: pointing at a chart changes
+   the text, never the readout's height */
+.readout b { font: 400 1.1875rem var(--serif); --LH: round(1.75rem, var(--e)); line-height: var(--LH); color: var(--ink); }
 .readout-time { font-weight: 600; color: var(--ink); }
-.readout-idle { font: italic 400 0.9375rem var(--serif); --LH: normal; line-height: var(--LH); }
+.readout-idle { font: italic 400 0.9375rem var(--serif); --LH: round(1.75rem, var(--e)); line-height: var(--LH); }
 .uplot { font-family: var(--sans); width: 100%; }
 .uplot .u-select { background: var(--chart-wash); box-shadow: inset 1px 0 0 var(--accent), inset -1px 0 0 var(--accent); }
 .uplot .u-cursor-x { border-right: 1px solid var(--ink); }
@@ -966,3 +951,6 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
 .steady { display: inline-grid; font-variant-numeric: tabular-nums; }
 .steady > * { grid-area: 1 / 1; }
 .steady-size { visibility: hidden; }
+/* a chart is never the browser's scroll anchor: its cursor line comes and goes under the mouse, and the page
+   would scroll to keep it in place */
+.uplot, .uplot * { overflow-anchor: none; }

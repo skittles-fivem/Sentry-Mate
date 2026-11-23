@@ -1080,7 +1080,7 @@ function hoverDetails(h) {
   const what = (m) => [m.dx && `x ${px(m.dx)}`, m.dy && `y ${px(m.dy)}`, m.dw && `width ${px(m.dw)}`, m.dh && `height ${px(m.dh)}`].filter(Boolean).join(', ');
   for (const f of h.findings.slice(0, HOVER_LINES)) {
     const how = f.kind === 'focus' ? 'focus on' : f.kind === 'point' ? 'the mouse at' : f.kind === 'chart' ? 'the mouse on the chart' : 'hover on';
-    const page = [f.scrolled && 'the page scrolled', f.scrollbar && 'a page scrollbar came or went'].filter(Boolean);
+    const page = [f.scrolled && 'the page scrolled', f.scrollbar && 'a page scrollbar came or went', f.stays && 'and it stayed so with the mouse away'].filter(Boolean);
     d.push(`hover: ${f.n}. ${how} ${f.target} (${f.x}, ${f.y}) moved ${listOf(f.moved, 2, (m) => `${m.selector} (${what(m)} px)`)}${f.count > f.moved.length ? ` (${f.count} in all)` : ''}${page.length ? '; ' + page.join(', ') : ''}`);
   }
   if (h.findings.length > HOVER_LINES) d.push(`hover: and ${h.findings.length - HOVER_LINES} more (--json)`);

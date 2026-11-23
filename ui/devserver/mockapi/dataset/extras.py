@@ -29,8 +29,8 @@ def server_settings(now):
                     "rounding_m": 10},
         "tiles": {"mode": "online", "online_url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
                   "attribution": "© OpenStreetMap contributors", "max_zoom": 19, "offline_file": None,
-                  # never picked by an admin: the default preset (the OpenStreetMap street map) applies
-                  "preset": None, "labels": True, "styles": ["osm", "satellite"]},
+                  # never picked by an admin: the default preset (satellite with names and roads) applies
+                  "preset": None, "labels": True, "styles": ["satellite", "osm"]},
         "release_check": {"enabled": False},
         "outside_links": {"maps": False, "release_notes": False},
         "outbound": {"proxy": None},

@@ -6,9 +6,8 @@
 //   - every tile request carries a Referer with the page's origin only (OpenStreetMap blocks tiles without one);
 //   - Settings: Display and units at 360 px with a long zone name: its zone button and tile terms fit the window;
 //   - a new server (no map file, tiles offline): the car page's map says "No map tiles yet"; an admin's one click
-//     (after the confirm) turns the default online map on (the OpenStreetMap street map) and the map loads its tiles;
-//     the Map / Satellite switch then draws the satellite pictures with place names and roads; a watch account is told
-//     to ask an admin;
+//     (after the confirm) turns the default online map on (Esri satellite pictures with place names and roads) and the
+//     map loads its tiles; the Map / Satellite switch then draws OpenStreetMap; a watch account is told to ask an admin;
 //   - a tile server that refuses (403) gives a short note with the cause.
 // No request leaves the machine: the tile servers are answered by page.route.
 // Run: node --test ui/tools/map-tiles.test.js. Skipped when Playwright is not installed.
@@ -166,14 +165,13 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'ma
 }
 
 // A new server: no map file and offline tiles. Every map says so; an admin turns the online map on from the map
-// itself, with the default preset (the OpenStreetMap street map); the Map / Satellite switch then draws the satellite
-// pictures with place names and roads over them instead.
+// itself, with the default preset (Esri satellite pictures with place names and roads over them); the Map / Satellite
+// switch then draws OpenStreetMap instead.
 const SAT_BASE = /^https:\/\/server\.arcgisonline\.com\/ArcGIS\/rest\/services\/World_Imagery\//;
 const SAT_LABELS = /^https:\/\/server\.arcgisonline\.com\/ArcGIS\/rest\/services\/Reference\//;
-const OSM = /^https:\/\/tile\.openstreetmap\.org\//;
 const TILE_HOSTS = /^https:\/\/(server\.arcgisonline\.com|tile\.openstreetmap\.org)\//;
 for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'manager']) {
-  test(`${pack}: a map with no tiles says so, and an admin turns the online map on from it`, { skip: !playwright && 'Playwright is not installed', timeout: 180000 }, async () => {
+  test(`${pack}: a map with no tiles says so, and an admin turns the satellite map on from it`, { skip: !playwright && 'Playwright is not installed', timeout: 180000 }, async () => {
     const browser = await playwright.chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
     const server = await devServer(pack, ['--map-tiles', 'none']);
     try {
@@ -189,31 +187,31 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'ma
       const note = page.locator('.map-empty').first();
       await note.waitFor({ timeout: 30000 });
       assert.match(await note.textContent(), /No map tiles yet/);
-      const use = note.getByRole('button', { name: 'Use the online map' });
+      const use = note.getByRole('button', { name: 'Use online map (satellite)' });
       await use.waitFor({ timeout: 10000 });
       assert.equal(await note.getByRole('link', { name: 'Add an offline map file' }).getAttribute('href'), '/settings/display#offline-map');
       await use.click();
       // the confirm is drawn once maps/config is read: wait for it, not for the next frame
       await page.waitForFunction(() => document.querySelector('.map-empty')?.dataset.mapEmpty === 'confirm', null, { timeout: 10000 });
-      assert.match(await note.textContent(), /tile\.openstreetmap\.org/, 'the confirm names the tile server');
+      assert.match(await note.textContent(), /server\.arcgisonline\.com/, 'the confirm names the tile server');
       assert.match(await note.textContent(), /sees the viewer.s IP address/, 'the confirm says what the tile server sees');
       assert.equal(tiles.length, 0, 'nothing asked before the confirm');
       await note.getByRole('button', { name: 'Turn on' }).click();
       const has = (re) => tiles.some((u) => re.test(u));
-      for (let i = 0; i < 150 && !has(OSM); i++) await page.waitForTimeout(100);
-      assert.ok(has(OSM), 'the map loads the OpenStreetMap street map after the confirm');
-      assert.ok(!tiles.some((u) => u.includes('arcgisonline')), 'no satellite pictures while the street map is shown');
+      for (let i = 0; i < 150 && !(has(SAT_BASE) && has(SAT_LABELS)); i++) await page.waitForTimeout(100);
+      assert.ok(has(SAT_BASE), 'the map loads the satellite pictures after the confirm');
+      assert.ok(has(SAT_LABELS), 'and the place names and roads over them');
+      assert.ok(!tiles.some((u) => u.includes('openstreetmap')), 'no OpenStreetMap tiles while satellite is shown');
       assert.equal(await page.locator('.map-empty').count(), 0, 'no note once tiles are there');
 
-      // the Map / Satellite switch: the satellite pictures and the place names and roads over them, drawn in place
-      const toSat = page.locator('[data-map-style="satellite"]').first();
-      await toSat.waitFor({ timeout: 10000 });
+      // the Map / Satellite switch: OpenStreetMap, drawn in place
+      const toMap = page.locator('[data-map-style="osm"]').first();
+      await toMap.waitFor({ timeout: 10000 });
       tiles.length = 0;
-      await toSat.click();
-      for (let i = 0; i < 150 && !(has(SAT_BASE) && has(SAT_LABELS)); i++) await page.waitForTimeout(100);
-      assert.ok(has(SAT_BASE), 'the switch to Satellite loads the satellite pictures');
-      assert.ok(has(SAT_LABELS), 'and the place names and roads over them');
-      assert.equal(await toSat.getAttribute('aria-pressed'), 'true');
+      await toMap.click();
+      for (let i = 0; i < 150 && !tiles.some((u) => u.includes('tile.openstreetmap.org')); i++) await page.waitForTimeout(100);
+      assert.ok(tiles.some((u) => u.includes('tile.openstreetmap.org')), 'the switch to Map loads OpenStreetMap tiles');
+      assert.equal(await toMap.getAttribute('aria-pressed'), 'true');
       assert.deepEqual(errors, []);
       await context.close();
     } finally {
@@ -238,7 +236,7 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'ma
     } finally {
       await watch.stop();
     }
-    // the dev server starts online with the default preset (OpenStreetMap): its tile server refuses every picture
+    // the dev server starts online with the default preset (satellite): its tile server refuses every picture
     const server = await devServer(pack);
     try {
       const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -248,7 +246,7 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'ma
       await page.goto(`${server.origin}/cars/c1`);
       const err = page.locator('[data-tile-error="403"]').first();
       await err.waitFor({ timeout: 30000 });
-      assert.match(await err.textContent(), /tile\.openstreetmap\.org refused them \(403\)/);
+      assert.match(await err.textContent(), /server\.arcgisonline\.com refused them \(403\)/);
       await context.close();
     } finally {
       await server.stop();

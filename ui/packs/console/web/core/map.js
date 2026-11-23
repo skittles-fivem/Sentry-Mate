@@ -3,7 +3,7 @@
 // Tiles: GET /api/v1/maps/config, read by shared/maptiles.js. The offline map file comes from Sentry Mate
 // itself (raster, or a Protomaps vector file in a plain style); online tiles from the source the owner
 // turned on (only then does the browser ask an outside server); otherwise the map has no tiles: a plain land
-// colour, the track and the points, under a "No map tiles yet" note (for an admin, a one-click online map
+// colour, the track and the points, under a "No map tiles yet" note (for an admin, a one-click satellite map
 // switch). Tiles that fail show their cause. In the dark theme the raster is dimmed and mostly grey (never
 // inverted, so streets, labels and water stay readable) unless the person chose original colours; satellite
 // pictures are never dimmed, and the lines, points and pins over them get a dark casing (IMAGERY_HALO); the light

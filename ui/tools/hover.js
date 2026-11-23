@@ -389,24 +389,28 @@ async function hoverRun(page, opts) {
         // Straight from the last target to this one: nothing moved is the usual answer. When something moved,
         // the mouse goes away and the page must be back where it was, and the same hover must move it again
         // (so a page that changed by itself is not taken for a hover).
-        let res = null, hits = 0;
+        // A page that is not back as it was each time (three tries in a row) moved for good on this hover: that
+        // counts too ("stays").
+        let res = null, hits = 0, stays = 0;
         for (let attempt = 0; attempt < 4 && hits < 2; attempt++) {
           if (!focus) await page.mouse.move(t.x, t.y);
           const r = await page.evaluate((a) => window.__smHover.measure(a), { i: t.i, focus });
           if (!(r.count || r.scrolled || r.scrollbar)) break;
           await away();
           const back = await page.evaluate(() => window.__smHover.rest());
-          if (back.changed) { out.noise++; hits = 0; continue; } // the page changed by itself: look again
+          if (back.changed) { out.noise++; hits = 0; res = r; if (++stays >= 3) break; continue; } // changed by itself? look again
+          stays = 0;
           hits++;
           res = r;
         }
-        if (hits < 2) res = null;
+        if (stays >= 3) res.stays = true;
+        else if (hits < 2) res = null;
         if (!res || !(res.count || res.scrolled || res.scrollbar)) continue;
         const key = res.kind + '|' + res.target.replace(/:nth-of-type\(\d+\)/g, '') + '|' + res.moved.map((x) => x.selector.replace(/:nth-of-type\(\d+\)/g, '')).slice(0, 2).join(',');
         out.count++;
         if (seen.has(key) || out.findings.length >= opts.maxFindings) continue;
         seen.add(key);
-        out.findings.push({ n: out.findings.length + 1, kind: res.kind, target: res.target, x: Math.round(t.x), y: Math.round(t.y + grp.y), scrolled: res.scrolled, scrollbar: res.scrollbar, count: res.count, moved: res.moved });
+        out.findings.push({ n: out.findings.length + 1, kind: res.kind, target: res.target, x: Math.round(t.x), y: Math.round(t.y + grp.y), scrolled: res.scrolled, scrollbar: res.scrollbar, stays: !!res.stays, count: res.count, moved: res.moved });
       }
     }
     if (out.truncated) break;

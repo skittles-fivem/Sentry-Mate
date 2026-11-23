@@ -188,13 +188,6 @@ await table.load();
   (a page with its own order control keeps it, and its URL, in step).
 - `num: true` right-aligns figures; `th: true` makes the cell the row's header; `rowAttrs(row)` adds a class or
   `data-` value to a row. The heads stick under the masthead while the rows scroll.
-- `windowLedger(ctx, { path, params, columns, sort, firstSort, search, jump, tools, onPage, empty })` is for a list of
-  thousands of rows (the log): the rows sit in a box ten rows high (`.vl-box`) that scrolls under its head, only the
-  rows in view and a few more are in the page (`shared/vlist.js`), and they load from the API a chunk at a time as the
-  box comes to them (by cursor when the chunk goes on from one already in, else by `offset`; Jump to date asks with
-  `at_ms`). Every row has the same height (`.vl-ledger`: two lines a cell, no wrapping). Sorting is the server's, the
-  search field sends `q`, Download CSV is the server's file with the same filters, and every answer goes to
-  `onPage`. `setParams(patch, { sort })` starts again from the top; `refresh()` loads the rows in view again quietly.
 
 ### `core/chart.js`: charts (uPlot)
 

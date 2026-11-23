@@ -91,6 +91,9 @@
 
 /* capacity chart */
 .page-battery .bt-readout { min-height: round(1.75rem, var(--e)); justify-content: flex-start; padding: round(0.25rem, var(--e)) 0; }
+/* With a mouse the readout keeps one line's height whatever it holds: a longer one runs over the top of the chart
+   under it, as a tooltip would, instead of pushing the chart and the page down. (On a touch screen it wraps.) */
+@media (hover: hover) and (pointer: fine) { .page-battery .bt-readout { height: calc(round(1.75rem, var(--e)) + 2 * round(0.25rem, var(--e))); position: relative; z-index: 2; } }
 .page-battery .bt-cap-plot { display: grid; grid-template-columns: round(4.5rem, var(--e)) minmax(0, 1fr); grid-template-rows: round(18rem, var(--e)) round(1.75rem, var(--e)); column-gap: round(0.625rem, var(--e)); margin-top: round(0.5rem, var(--e)); }
 .page-battery .bt-cap-plot > .empty, .page-battery .bt-cap-plot > .loading, .page-battery .bt-cap-plot > .empty-error { grid-column: 1 / -1; grid-row: 1 / -1; }
 .page-battery .bt-cap-y { position: relative; }

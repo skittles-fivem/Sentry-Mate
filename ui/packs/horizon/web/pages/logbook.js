@@ -1,23 +1,20 @@
 // Logbook (/cars/{car}/logbook): a trip log for tax and expense claims, for any country.
 // - GET /cars/{car}/logbook (period; every drive in it, numbered from 1, oldest first, with odometer at
-//   start and end and the odometer kilometres missing before each drive), a page at a time (limit, after or
-//   offset, at_ms for Jump to date; purpose, q, sort on the server); every page carries the totals, the counts
-//   per purpose, the continuity check and the rows per rule of the whole period. CSV and PDF hold every row.
-// - The table is a box of about ten rows that scrolls under its header; only the rows in view are drawn
-//   (core/table.js windowTable).
+//   start and end and the odometer kilometres missing before each drive), as JSON, CSV or PDF.
 // - A purpose per drive (business, commute, private) with a relation and a note: typed by an admin
 //   (PUT/DELETE .../drives/{drive}/purpose) or filled in by rules (GET/POST/DELETE .../purpose-rules).
 //   Both are kept apart from the drive rows, so a rebuild of the history keeps them.
 // - The purpose filter (?purpose=) only narrows the table; totals and continuity always cover the period.
-// - Live: a drive that starts or ends ("rows" events with kind "drives") loads the rows in view again.
+// - Live: a drive that starts or ends ("rows" events with kind "drives") loads the logbook again.
 
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
+import { column, timeColumn } from '../shared/csv.js';
 import { formatDate, formatTime, formatDuration, dayKey, MINUTE } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel, metric, figures } from '../core/page.js';
-import { windowTable } from '../core/table.js';
+import { dataTable } from '../core/table.js';
 import { emptyState, skel } from '../core/states.js';
 import { openPeriodPicker } from '../core/period.js';
 import { openCarSwitcher } from '../core/carswitch.js';
@@ -57,7 +54,7 @@ export async function mount(ctx) {
   const path = `cars/${enc(cid)}/logbook`;
   const rulesPath = `cars/${enc(cid)}/purpose-rules`;
   let filter = ORDER.includes(ctx.query.purpose) ? ctx.query.purpose : 'all';
-  let data = null;     // the last logbook page: the whole period's totals, counts, continuity and rules used
+  let data = null;     // the last logbook answer
   let places = [];     // for rule names and the rule form
   let rules = [];
 
@@ -106,18 +103,18 @@ export async function mount(ctx) {
     title: 'Totals per purpose', icon: 'book', cls: 'lb-export', cover: 'dt.export.csv',
     side: h('div', { class: 'lb-export-btns' }, exportCsv, exportPdf),
   }, totalsSlot,
-  h('p', { class: 'note' }, 'The table below has its own Download CSV, with the purpose filter and the search applied. The full CSV and the PDF hold every drive of the period.'));
+  h('p', { class: 'note' }, 'The table below has its own Download CSV (in your units, with the filter applied). The full CSV and the PDF hold every drive of the period.'));
 
   /* ---------- continuity */
   const contSlot = h('div');
   const contPanel = panel({ title: 'Odometer check', icon: 'odo', cls: 'lb-cont' }, contSlot);
 
   function paintTotals() {
-    const count = data?.count || 0;
+    const rows = data?.rows || [];
     const tot = data?.totals_by_purpose || {};
     const all = ORDER.reduce((s, k) => s + (tot[k]?.distance_km || 0), 0);
     for (const k of ['all', ...ORDER]) {
-      const n = k === 'all' ? count : data?.counts_by_purpose?.[k] || 0;
+      const n = k === 'all' ? rows.length : rows.filter((r) => (r.purpose || 'none') === k).length;
       segBtns[k].querySelector('.count').textContent = formatNumber(n);
     }
     replace(totalsSlot, ORDER.map((k) => {
@@ -130,31 +127,37 @@ export async function mount(ctx) {
         h('span', { class: 'explain' }, `${formatNumber(t.drives)} ${t.drives === 1 ? 'drive' : 'drives'} · ${formatNumber(share, { maximumFractionDigits: 1 })} % of the distance`));
     }));
     const unset = tot.none?.drives || 0;
-    if (unset && count) {
+    if (unset && rows.length) {
       totalsSlot.append(h('p', { class: 'note lb-unset' }, icon('warn', 'ico--sm'),
         ` ${formatNumber(unset)} ${unset === 1 ? 'drive has' : 'drives have'} no purpose yet. `,
         admin ? 'Give them one in the table, or add a rule below.' : 'An admin can give them one, or add a rule.'));
     }
   }
 
+  const prevOf = (r) => (data?.rows || []).find((x) => x.seq === r.seq - 1) || null;
   const gapHref = (r) => {
-    const from = (r.prev_end_ms ?? r.start_ms - 6 * 60 * MINUTE) - 10 * MINUTE;
+    const p = prevOf(r);
+    const from = (p?.end_ms ?? r.start_ms - 6 * 60 * MINUTE) - 10 * MINUTE;
     return state.buildUrl('timeline', { car: cid, period: { from, to: r.start_ms + 10 * MINUTE } });
   };
   const hasGap = (r) => r.continuity_gap_km != null && r.continuity_gap_km > GAP_KM;
 
   function paintContinuity() {
-    const c = data?.continuity;
-    if (!c || !c.rows) { replace(contSlot, h('p', { class: 'note' }, 'Nothing to check: no drive in this period.')); return; }
-    const span = c.last_end_odometer_km != null && c.first_start_odometer_km != null ? c.last_end_odometer_km - c.first_start_odometer_km : null;
-    const worst = c.worst || [];
+    const rows = data?.rows || [];
+    if (!rows.length) { replace(contSlot, h('p', { class: 'note' }, 'Nothing to check: no drive in this period.')); return; }
+    const first = rows[0], last = rows[rows.length - 1];
+    const logged = rows.reduce((s, r) => s + (r.distance_km || 0), 0);
+    const gaps = rows.filter(hasGap);
+    const missing = gaps.reduce((s, r) => s + r.continuity_gap_km, 0);
+    const span = last.end_odometer_km != null && first.start_odometer_km != null ? last.end_odometer_km - first.start_odometer_km : null;
+    const worst = [...gaps].sort((a, b) => b.continuity_gap_km - a.continuity_gap_km).slice(0, 4);
     replace(contSlot,
       figures([
-        metric('Odometer span', span, 'distance', { digits: 1, explain: `From ${qt(c.first_start_odometer_km, 'distance', { digits: 1 })} at the start of drive 1 to ${qt(c.last_end_odometer_km, 'distance', { digits: 1 })} at the end of drive ${formatNumber(c.last_seq)}.` }),
-        metric('In the logbook', c.logged_km, 'distance', { digits: 1, explain: 'The sum of the drives’ distances (each end odometer minus its start).' }),
-        metric('Not logged', c.missing_km, 'distance', {
-          digits: 1, cls: c.gaps ? 'is-warn' : 'is-ok',
-          explain: c.gaps ? `${formatNumber(c.gaps)} ${c.gaps === 1 ? 'place' : 'places'} where the odometer moved between two drives with no log (more than ${gapWords()}).` : 'Every drive starts where the one before ended: the rows add up to the odometer.',
+        metric('Odometer span', span, 'distance', { digits: 1, explain: `From ${qt(first.start_odometer_km, 'distance', { digits: 1 })} at the start of drive 1 to ${qt(last.end_odometer_km, 'distance', { digits: 1 })} at the end of drive ${formatNumber(last.seq)}.` }),
+        metric('In the logbook', logged, 'distance', { digits: 1, explain: 'The sum of the drives’ distances (each end odometer minus its start).' }),
+        metric('Not logged', missing, 'distance', {
+          digits: 1, cls: gaps.length ? 'is-warn' : 'is-ok',
+          explain: gaps.length ? `${formatNumber(gaps.length)} ${gaps.length === 1 ? 'place' : 'places'} where the odometer moved between two drives with no log (more than ${gapWords()}).` : 'Every drive starts where the one before ended: the rows add up to the odometer.',
         }),
       ]),
       worst.length ? h('ul', { class: 'lb-gaps', 'aria-label': 'The largest missing stretches' }, worst.map((r) => h('li', null,
@@ -176,8 +179,8 @@ export async function mount(ctx) {
       h('span', { class: 'lb-prow' }, purposeChip(r.purpose),
         admin ? h('button', { class: 'btn btn--sm btn--ghost btn--icon lb-edit', type: 'button', onclick: () => editPurpose(r), title: r.purpose ? 'Change the purpose, relation and note of this drive' : 'Set the purpose of this drive', 'aria-label': `Purpose of drive ${r.seq}` },
           icon('settings', 'ico--sm')) : null),
-      src || r.relation || r.note ? h('span', { class: 'sub', title: r.note || null }, [r.relation ? h('span', { class: 'lb-rel' }, r.relation) : null, r.relation && src ? ' · ' : null, src,
-        r.note ? [r.relation || src ? ' · ' : null, h('span', { class: 'lb-note' }, r.note)] : null]) : null);
+      src || r.relation ? h('span', { class: 'sub' }, [r.relation ? h('span', { class: 'lb-rel' }, r.relation) : null, r.relation && src ? ' · ' : null, src]) : null,
+      r.note ? h('span', { class: 'sub lb-note', title: r.note }, r.note) : null);
   }
 
   function continuityCell(r) {
@@ -192,60 +195,76 @@ export async function mount(ctx) {
   const odo = (v) => (v == null ? h('span', { class: 'faint' }, DASH) : h('span', { title: `${qt(v, 'distance', { digits: 3 })} (to the metre)` }, q(v, 'distance', { digits: 1 })));
   const columns = [
     {
-      key: 'seq', label: '#', num: true, sort: 'seq', firstDir: 'asc', cover: 'dt.col.id', title: 'The number of the drive in this period, from 1. The PDF and the CSV use the same numbers. Opens the drive.',
+      key: 'seq', label: '#', num: true, sort: true, cover: 'dt.col.id', title: 'The number of the drive in this period, from 1. The PDF and the CSV use the same numbers. Opens the drive.',
       render: (r) => h('a', { class: 'link lb-seq', href: state.buildUrl('drive', { car: cid, drive: r.drive }), title: 'Open this drive' }, formatNumber(r.seq)),
+      csv: { label: 'Number', value: (r) => r.seq },
     },
     {
-      key: 'start_ms', label: 'When', sort: 'seq', firstDir: 'asc', cover: ['dt.col.start_time', 'dt.col.end_time'], title: 'The day, the start time and the end time of the drive, in the car’s time zone.',
+      key: 'start_ms', label: 'When', sort: true, cover: ['dt.col.start_time', 'dt.col.end_time'], title: 'The day, the start time and the end time of the drive, in the car’s time zone.',
       render: (r) => h('span', { class: 'cell-text' }, h('span', { class: 'main nowrap' }, formatDate(r.start_ms, tz, { year: true })),
         h('span', { class: 'sub nowrap' }, h('span', { title: 'Start' }, formatTime(r.start_ms, tz)), ' – ',
           r.end_ms == null ? h('span', { class: 'lb-now' }, 'driving now')
             : h('span', { title: 'End' }, formatTime(r.end_ms, tz), dayKey(r.end_ms, tz) !== dayKey(r.start_ms, tz) ? ` (${formatDate(r.end_ms, tz, { weekday: false })})` : ''))),
+      csv: false,
     },
     {
-      key: 'start_odometer_km', label: 'Odometer', num: true, sort: 'odometer', cover: ['dt.col.start_odometer', 'dt.col.end_odometer'], title: 'The odometer at the start (top) and the end (below) of the drive, kept to the metre: hover a value, or see the CSV.',
+      key: 'start_odometer_km', label: 'Odometer', num: true, sort: true, cover: ['dt.col.start_odometer', 'dt.col.end_odometer'], title: 'The odometer at the start (top) and the end (below) of the drive, kept to the metre: hover a value, or see the CSV.',
       render: (r) => h('span', { class: 'cell-text' }, h('span', { class: 'main' }, odo(r.start_odometer_km)), h('span', { class: 'sub' }, h('span', { class: 'lb-arrow', 'aria-label': 'to' }, '→ '), odo(r.end_odometer_km))),
+      csv: false,
     },
     {
-      key: 'from', label: 'From', sort: 'from', value: (r) => r.start_place || r.start_address, cover: 'dt.col.start_address', title: 'Where the drive started: the saved place, else the address (looked up on this server).',
+      key: 'from', label: 'From', sort: true, value: (r) => r.start_place || r.start_address, cover: 'dt.col.start_address', title: 'Where the drive started: the saved place, else the address (looked up on this server).',
       render: (r) => placeCell(r.start_place, r.start_address, r.start_place_id),
+      csv: false,
     },
     {
-      key: 'to', label: 'To', sort: 'to', value: (r) => r.end_place || r.end_address, cover: 'dt.col.end_address', title: 'Where the drive ended: the saved place, else the address.',
+      key: 'to', label: 'To', sort: true, value: (r) => r.end_place || r.end_address, cover: 'dt.col.end_address', title: 'Where the drive ended: the saved place, else the address.',
       render: (r) => placeCell(r.end_place, r.end_address, r.end_place_id),
+      csv: false,
     },
     {
-      key: 'distance_km', label: 'Distance', num: true, sort: 'distance', cover: ['dt.col.distance', 'dt.col.duration'], title: 'The distance (end odometer minus start odometer) and, below it, how long the drive took.',
+      key: 'distance_km', label: 'Distance', num: true, sort: true, cover: ['dt.col.distance', 'dt.col.duration'], title: 'The distance (end odometer minus start odometer) and, below it, how long the drive took.',
       render: (r) => h('span', { class: 'cell-text' }, h('span', { class: 'main' }, q(r.distance_km, 'distance', { digits: 1 })),
         h('span', { class: 'sub nowrap', title: 'Duration' }, r.duration_ms == null ? DASH : formatDuration(r.duration_ms), r.end_ms == null ? ' so far' : '')),
+      csv: false,
     },
     {
-      key: 'purpose', label: 'Purpose', sort: 'purpose', value: (r) => PURPOSES[r.purpose || 'none'].label, title: 'Business, commute or private, with the relation (who or what for) and a note. Set by an admin or by a rule; the owner’s choice wins.',
-      render: purposeCell,
+      key: 'purpose', label: 'Purpose', sort: true, value: (r) => PURPOSES[r.purpose || 'none'].label, title: 'Business, commute or private, with the relation (who or what for) and a note. Set by an admin or by a rule; the owner’s choice wins.',
+      render: purposeCell, csv: false,
     },
     {
-      key: 'continuity_gap_km', label: 'Not logged', num: true, sort: 'gap', title: 'The odometer check: distance the odometer moved since the drive before, with no log. Opens the timeline at that time.',
-      render: continuityCell,
+      key: 'continuity_gap_km', label: 'Not logged', num: true, sort: true, title: 'The odometer check: distance the odometer moved since the drive before, with no log. Opens the timeline at that time.',
+      render: continuityCell, csv: false,
     },
+  ];
+  const csvColumns = [
+    { label: 'Number', value: (r) => r.seq },
+    timeColumn('Start', 'start_ms', tz), timeColumn('End', 'end_ms', tz),
+    column('Odometer start', 'start_odometer_km', 'distance', { digits: 3 }), column('Odometer end', 'end_odometer_km', 'distance', { digits: 3 }),
+    { label: 'From place', value: (r) => r.start_place || '' }, { label: 'From address', value: (r) => r.start_address || '' },
+    { label: 'To place', value: (r) => r.end_place || '' }, { label: 'To address', value: (r) => r.end_address || '' },
+    column('Distance', 'distance_km', 'distance', { digits: 3 }),
+    { label: 'Duration (minutes)', value: (r) => (r.duration_ms == null ? '' : Math.round(r.duration_ms / 6000) / 10) },
+    { label: 'Purpose', value: (r) => r.purpose || '' }, { label: 'Purpose set by', value: (r) => r.purpose_source || '' },
+    { label: 'Relation', value: (r) => r.relation || '' }, { label: 'Note', value: (r) => r.note || '' },
+    column('Not logged before', 'continuity_gap_km', 'distance', { digits: 3 }),
   ];
 
   // Preset names read as words in a sentence ("in this year"); a custom range keeps its own capitals.
   const periodWords = () => (period.preset && period.preset !== 'custom'
     ? `in ${period.label.toLowerCase()}`
     : `in this period (${period.label})`);
-  const words = () => (table?.params().q ? ` matching “${table.params().q}”` : '');
-  const table = windowTable(ctx, {
-    title: 'Drives', icon: 'route', path, params: { ...ctx.params, purpose: filter === 'all' ? null : filter }, cls: 'lb-table', cover: 'dt.table', csvName: 'logbook',
-    columns, sort: { key: 'seq', dir: 'asc' }, firstSort: { key: 'seq', dir: 'asc' }, limit: 50, jump: true,
-    search: { label: 'Search the drives', placeholder: 'Place, address, note', title: 'Shows the drives with these words in a place, an address, the relation or the note' },
-    csv: (p) => ctx.api.csvUrl(path, p),
-    boxLabel: 'The drives of the logbook (scrolls; the arrow keys scroll it)',
+  const shownRows = () => (data?.rows || []).filter((r) => filter === 'all' || (r.purpose || 'none') === filter);
+  const table = dataTable(ctx, {
+    title: 'Drives', icon: 'route', rows: [], cls: 'lb-table', cover: 'dt.table', csvName: 'logbook',
+    columns, sort: { key: 'seq', dir: 'asc' },
+    csv: { columns: csvColumns },
     rowHref: (r) => state.buildUrl('drive', { car: cid, drive: r.drive }),
-    note: 'Oldest first, as a logbook is kept. Each row opens its drive; a place opens it in Places; a warning in the last column opens the timeline where distance went unlogged. Download CSV holds every drive the purpose and the search leave (metric, times in UTC epoch ms).',
-    onPage: (pg) => { data = pg; },
-    onError: (err) => flash(err?.message || 'The logbook could not be loaded.', { kind: 'error' }),
-    empty: () => (data?.count
-      ? emptyState({ icon: 'book', title: filter === 'none' && !words() ? 'Every drive has a purpose' : filter === 'all' ? 'No drive matches' : `No ${PURPOSES[filter].label.toLowerCase()} drives${words()}`, text: filter === 'none' && !words() ? `All ${formatNumber(data.count)} drives of this period have a purpose. Choose All to see them.` : `None of the ${formatNumber(data.count)} drives of this period is ${filter === 'all' ? 'a match' : PURPOSES[filter].label.toLowerCase()}${words()}. Choose All, or clear the search, to see them.` })
+    note: 'Oldest first, as a logbook is kept. Each row opens its drive; a place opens it in Places; a warning in the last column opens the timeline where distance went unlogged.',
+    empty: () => (data == null
+      ? h('div', { class: 'lb-loading', 'aria-busy': 'true', 'aria-label': 'Loading the drives' }, skel('text'), skel('text'), skel('text'))
+      : data.rows?.length
+      ? emptyState({ icon: 'book', title: filter === 'none' ? 'Every drive has a purpose' : `No ${PURPOSES[filter].label.toLowerCase()} drives`, text: filter === 'none' ? `All ${formatNumber(data.rows.length)} drives of this period have a purpose. Choose All to see them.` : `None of the ${formatNumber(data.rows.length)} drives of this period is ${PURPOSES[filter].label.toLowerCase()}. Choose All to see them.` })
       : emptyState({
         icon: 'book', title: 'No drives in this period',
         text: period.preset === 'all' ? `Nothing has been recorded for ${car.name} yet. Drives show here once the car drives while recording, or after a TeslaMate import.`
@@ -257,7 +276,7 @@ export async function mount(ctx) {
     filter = k;
     for (const [key, b] of Object.entries(segBtns)) b.setAttribute('aria-pressed', String(key === k));
     ctx.setQuery({ purpose: k === 'all' ? null : k });
-    table.setParams({ purpose: k === 'all' ? null : k }).then(paintSummary, (err) => flash(err?.message || 'The logbook could not be loaded.', { kind: 'error' }));
+    table.setRows(shownRows());
   }
 
   /* ---------- purpose rules */
@@ -273,7 +292,8 @@ export async function mount(ctx) {
       replace(rulesSlot, emptyState({ icon: 'flag', title: 'No rules yet', text: admin ? 'Add one for the trips you make every week, and their drives get a purpose by themselves.' : 'An admin can add rules for trips that repeat.' }));
       return;
     }
-    const used = new Map(Object.entries(data?.rules_used || {}));
+    const used = new Map();
+    for (const r of data?.rows || []) if (r.purpose_rule) used.set(r.purpose_rule, (used.get(r.purpose_rule) || 0) + 1);
     replace(rulesSlot, h('ul', { class: 'lb-rule-list' }, rules.map((x) => h('li', { class: 'lb-rule' },
       purposeChip(x.purpose),
       h('span', { class: 'lb-rule-text' },
@@ -283,16 +303,14 @@ export async function mount(ctx) {
   }
 
   /* ---------- loading */
-  function paintSummary() {
+  async function loadLogbook() {
+    data = await ctx.api.get(path, ctx.params);
     if (!ctx.alive()) return;
+    exportCsv.href = ctx.api.csvUrl(path, ctx.params);
     paintTotals();
     paintContinuity();
+    table.setRows(shownRows());
     paintRules();
-  }
-  exportCsv.href = ctx.api.csvUrl(path, ctx.params);
-  async function loadLogbook(again = false) {
-    await (again ? table.refresh() : table.ready);
-    paintSummary();
   }
   async function loadRules() {
     const [rl, pl] = await Promise.all([
@@ -388,7 +406,7 @@ export async function mount(ctx) {
   let busy = null;
   function refresh() {
     if (busy) return busy;
-    busy = Promise.all([loadLogbook(true), loadRules()]).catch((err) => { if (ctx.alive()) flash(err?.message || 'The logbook could not be loaded again.', { kind: 'error' }); })
+    busy = Promise.all([loadLogbook(), loadRules()]).catch((err) => { if (ctx.alive()) flash(err?.message || 'The logbook could not be loaded again.', { kind: 'error' }); })
       .finally(() => { busy = null; });
     return busy;
   }

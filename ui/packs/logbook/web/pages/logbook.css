@@ -121,11 +121,5 @@
   .page-logbook .lb-purpose-cell { min-width: round(8rem, var(--e)); max-width: round(14rem, var(--e)); }
   .page-logbook .lb-gap { white-space: normal; }
 }
-.page-logbook .lb-table .ledger-count:not(.vl-count) { display: none; }
-/* the log in its box: one line per part of a cell, the edit link on the purpose's line */
-.page-logbook .lb-purpose-line { display: flex; align-items: baseline; gap: round(0.625rem, var(--e)); }
-.page-logbook .lb-purpose-more { display: block; }
-.page-logbook .vl-ledger .lb-where, .page-logbook .vl-ledger .lb-purpose-cell { white-space: nowrap; }
-.page-logbook .vl-ledger :is(.lb-where, .lb-purpose-cell) > * { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-.page-logbook .vl-ledger .lb-gap { white-space: nowrap; }
+.page-logbook .lb-table .ledger-count { display: none; }
 .page-logbook .lb-when { white-space: nowrap; }

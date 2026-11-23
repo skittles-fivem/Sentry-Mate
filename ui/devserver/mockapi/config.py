@@ -44,7 +44,6 @@ class Config:
     map_tiles: str = "online"
     release_check: str = "off"
     teslamate_trouble: str = "none"
-    drives: int = 0
 
 
 def parse_args(argv=None) -> Config:
@@ -83,14 +82,9 @@ def parse_args(argv=None) -> Config:
                     help="the local TeslaMate starts in trouble, with its notice for admins: its broker refuses the "
                          "connection, the user name or password, or has another certificate than the pinned one, goes "
                          "quiet, or the database catch-up (then on) fails")
-    ap.add_argument("--drives", type=int, default=0,
-                    help="give car c1 about this many drives in all (short errands from home added each day; "
-                         "0: the usual history, about 1150)")
     a = ap.parse_args(argv)
     if a.cars < 0 or a.cars > 5_000_000:
         ap.error("--cars must be between 0 and 5000000")
-    if a.drives < 0 or a.drives > 100_000:
-        ap.error("--drives must be between 0 and 100000")
     if a.latency_ms < 0:
         ap.error("--latency-ms must be 0 or more")
     if a.rows_every_s < 0:
@@ -107,8 +101,7 @@ def parse_args(argv=None) -> Config:
                   freeze_clock=a.freeze_clock, sse_interval_ms=max(200, a.sse_interval_ms),
                   rows_every_s=a.rows_every_s, verbose=a.verbose,
                   own_certificate=a.own_certificate, map_tiles=a.map_tiles,
-                  release_check=a.release_check, teslamate_trouble=a.teslamate_trouble,
-                  drives=a.drives)
+                  release_check=a.release_check, teslamate_trouble=a.teslamate_trouble)
 
 
 class Clock:
