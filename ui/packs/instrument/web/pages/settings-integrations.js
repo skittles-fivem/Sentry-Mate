@@ -8,6 +8,10 @@
 // status, the preview and the events of the cars they see. Changes: the switches and single fields save
 // at once (PUT settings/mqtt with the whole setting and its version); the connection has a Save button,
 // because host, port, TLS, pin and password are checked together.
+//
+// Admins get two tabs: Overview (every connection the server keeps, pages/conn-overview.js; the default) and
+// Details (everything above). The tab is in the address (?tab=details); a link to a section (#tesla,
+// #si-network, ...) opens the tab that holds it and scrolls there.
 
 import { h, replace } from '../shared/dom.js';
 import { buildUrl, lastCar, preferredCar, rememberCar, isSold } from '../shared/state.js';
@@ -24,6 +28,7 @@ import { dateTime, ago, num } from '../core/fmt.js';
 import { teslaSection } from './tesla-account.js';
 import { teslafiSection } from './teslafi-account.js';
 import { teslamateSection } from './teslamate-local.js';
+import { connectionsOverview } from './conn-overview.js';
 
 export const id = 'settings-integrations';
 export const css = true;
@@ -794,19 +799,85 @@ export async function mount(ctx) {
       works('Smart mirrors and wall screens', 'projects.magic-mirror', 'A status tile on a mirror or wall display, from MQTT or the API.', [code('soc'), ', ', code('range'), ', ', code('state'), ', ', code('updated'), '.']),
       works('Garage door openers', 'projects.geogdo', 'Openers that act on arrival and departure, for several cars, by zone or saved place. Values are about 75 s late: good for closing behind you, late for opening.', [code('location'), ', ', code('place'), ' and drive events.'])));
 
-  /* ---------- put it together */
-  replace(ctx.view,
-    pageHead({ title: ctx.info.title, purpose: ctx.info.purpose, actions: headSlot }),
+  /* ---------- put it together: for admins, the Overview and Details tabs */
+  const details = h('div', { class: 'si-tabpanel', id: 'si-details', role: admin ? 'tabpanel' : null, 'aria-labelledby': admin ? 'si-tab-details' : null, tabindex: admin ? '-1' : null },
     jumpNav,
     h('div', { class: 'si-stack' },
       h('p', { class: 'note saving-note' }, icon('check', 'ico--sm'), ' Switches and single fields save at once and a short note confirms it; the broker connection saves with its button. Nothing leaves the server until publishing is on.'),
       tesla.el, teslafi.el, teslamate.el, brokerPanel, topicsPanel, valuesPanel, haPanel, entitiesPanel, eventsPanel, apiPanel, netPanel, worksPanel));
+  // where a link to a section lands: its own id, or the name the API gives it (#mqtt is the broker)
+  const ALIAS = { mqtt: 'si-broker', broker: 'si-broker', network: 'si-network', overview: 'si-overview' };
+  const targetOf = (hash) => {
+    if (!hash) return null;
+    return ctx.view.querySelector(`#${CSS.escape(ALIAS[hash] || hash)}`);
+  };
+  let overview = null, tabs = null, tabBtns = null, overviewPanel = null, tab = 'details';
+  function scrollToEl(el) {
+    const bar = document.querySelector('.topbar')?.getBoundingClientRect().height || 0;
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    window.scrollTo(0, Math.max(0, el.getBoundingClientRect().top + window.scrollY - bar - rem));
+  }
+  function showTab(next) {
+    tab = next;
+    if (!tabs) return;
+    for (const [v, b] of Object.entries(tabBtns)) { b.setAttribute('aria-selected', String(v === next)); b.tabIndex = v === next ? 0 : -1; }
+    overviewPanel.hidden = next !== 'overview';
+    details.hidden = next !== 'details';
+  }
+  // a tab chosen here: in the address (replace; a row's link pushes, so Back returns to the overview)
+  function openTab(next, { push = false, target = null } = {}) {
+    showTab(next);
+    ctx.setQuery({ tab: next === 'overview' ? null : next }, { push });
+    if (target) {
+      const el = targetOf(target);
+      try { history.replaceState(history.state, '', `${location.pathname}${location.search}#${encodeURIComponent(target)}`); } catch { /* the address stays */ }
+      if (el) requestAnimationFrame(() => scrollToEl(el));
+    }
+  }
+  if (admin) {
+    overview = connectionsOverview(ctx, { onLocal: (hash) => openTab(hash === 'si-overview' ? 'overview' : 'details', { push: true, target: hash }) });
+    overviewPanel = h('div', { class: 'si-tabpanel', id: 'si-overview', role: 'tabpanel', 'aria-labelledby': 'si-tab-overview', tabindex: '-1' }, overview.el);
+    const tabBtn = (v, label, ic) => h('button', {
+      class: 'seg-btn', type: 'button', role: 'tab', id: `si-tab-${v}`, 'aria-controls': `si-${v}`,
+      onclick: () => { if (tab !== v) openTab(v); },
+      onkeydown: (e) => { if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { const o = v === 'overview' ? 'details' : 'overview'; openTab(o); tabBtns[o].focus(); e.preventDefault(); } },
+    }, icon(ic, 'ico--sm'), label);
+    tabBtns = { overview: tabBtn('overview', 'Overview', 'pulse'), details: tabBtn('details', 'Details', 'settings') };
+    tabs = h('div', { class: 'seg si-tabs', role: 'tablist', 'aria-label': 'Integrations' }, tabBtns.overview, tabBtns.details);
+  }
+  const notAdmin = admin ? null : h('p', { class: 'note si-admin-note', cover: ['conn.overview.rows', 'conn.overview.status', 'conn.overview.sparkline', 'conn.overview.problems'] },
+    icon('lock', 'ico--sm'), ' An admin also sees an overview of every connection the server keeps here: is it live, when it last worked, its errors and problems.');
+  replace(ctx.view,
+    pageHead({ title: ctx.info.title, purpose: ctx.info.purpose, actions: headSlot }),
+    tabs, notAdmin, overviewPanel, details);
+  // the tab: a link to a section of Details opens Details; else the address's (Overview by default)
+  const hash = decodeURIComponent(location.hash.slice(1) || '');
+  const hashEl = hash ? targetOf(hash) : null;
+  let aliasScroll = null;
+  if (admin) {
+    const fromHash = hashEl ? (overviewPanel.contains(hashEl) ? 'overview' : details.contains(hashEl) ? 'details' : null) : null;
+    showTab(fromHash || (ctx.query.tab === 'details' ? 'details' : 'overview'));
+    if (fromHash === 'details' && ctx.query.tab !== 'details') ctx.setQuery({ tab: 'details' });
+    if (fromHash === 'details') try { history.replaceState(history.state, '', `${location.pathname}${location.search}#${encodeURIComponent(hash)}`); } catch { /* kept */ }
+  }
+  // the router scrolls to an element with the hash's id itself; an alias (#mqtt) is scrolled to here
+  if (hashEl && hashEl.id !== hash) aliasScroll = hashEl;
   paintHead(); paintBroker(); paintStatus(); paintTopics(); paintValues(); paintHa(); paintEntities();
   eventsPanel.append(...eventsBody());
   paintEvents(); paintNetwork();
-  await Promise.all([valuesTable?.ready, eventsTable?.ready, paintLog(), tesla.load(), teslafi.load(), teslamate.load()].filter(Boolean));
+  await Promise.all([valuesTable?.ready, eventsTable?.ready, paintLog(), tesla.load(), teslafi.load(), teslamate.load(), overview?.load()].filter(Boolean));
   if (!ctx.alive()) return;
+  overview?.start();
   ctx.ready();
+  if (aliasScroll) requestAnimationFrame(() => { if (ctx.alive()) scrollToEl(aliasScroll); });
+
+  return {
+    // back / forward: another tab is shown in place; another preview car builds the page again
+    onQuery(query) {
+      if (query.car && query.car !== carId) { ctx.reload(); return; }
+      if (admin) showTab(query.tab === 'details' ? 'details' : 'overview');
+    },
+  };
 }
 
 // a discovery topic is <prefix>/<domain>/<node>/<key>/config, and the prefix may have several levels
