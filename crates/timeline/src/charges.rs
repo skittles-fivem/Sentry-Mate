@@ -3,13 +3,20 @@
 //! data at all (a lost log, an app update: unknown, but too short to be a settled span) is no interruption: charging on
 //! both sides of it is one charge, as a drive goes on across one.
 
-use crate::calc::{counters_in, integrate_kwh, max, mean, position};
+use crate::calc::{Piece, add_span, counters_in, covered_ms, integrate_pieces, max, mean, position};
 use crate::timeline::{Params, RULES_VERSION, charge_id};
-use model::{CarId, Charge, ChargeKind, ChargePoint, Sample, Source};
+use model::{CarId, Charge, ChargeKind, ChargePoint, EnergySpans, Sample, Source};
 
 /// The lifetime counter is used for the energy added when it was read this close to both ends of the charge (ms);
 /// else the counter may have missed part of it and the charge power is integrated instead.
 const COUNTER_EDGE_MS: u64 = 60_000;
+
+/// The energy added and the grid energy are compared (an efficiency, losses) only when neither has more than this
+/// share of itself in time the other was not measured over ([`Charge::energy_spans`])...
+const SPAN_SLACK: f64 = 0.03;
+
+/// ... or this much (kWh): a few seconds at an edge of a short charge are no reason not to.
+const SPAN_SLACK_KWH: f64 = 0.02;
 
 /// The charges of a run of samples as index ranges `[first, last]` (first and last charging second).
 pub(crate) fn find(seg: &[&Sample], drives: &[(usize, usize)], params: &Params) -> Vec<(usize, usize)> {
@@ -48,27 +55,68 @@ pub(crate) fn make(car: CarId, s: &[&Sample], before: &[&Sample], params: &Param
         _ => Some(ChargeKind::Ac),
     };
 
-    // into the pack: the lifetime counter where it covers the charge, else the charge power integrated
-    // (read from the second before the charge when there is one: the first charging second already counted)
-    let just_before = before.last().filter(|p| start_ms.saturating_sub(p.t_ms) <= params.max_hold_ms);
+    let hold = params.max_hold_ms;
+    // into the pack, second by second: the charge power, else the pack's own power while it takes energy (a second
+    // whose charging state came from another input has the pack's power but no charge power of its own)
+    let pack_kw = |x: &Sample| x.charge_power_kw.or_else(|| x.battery_power_kw.map(|p| -p).filter(|p| *p > 0.0));
+    let pack = integrate_pieces(s, end_ms, hold, pack_kw, counters_in);
+    // into the pack: the lifetime counter where it covers the charge (from its first reading to its last, that second
+    // included, with the pack's power before and after them), else the power integrated (read from the second before
+    // the charge when there is one: the first charging second already counted)
+    let just_before = before.last().filter(|p| start_ms.saturating_sub(p.t_ms) <= hold);
     let has = |x: &&&Sample| x.total_charge_kwh.is_some();
     let counted = just_before.filter(has).or_else(|| s.iter().find(has)).zip(s.iter().rev().find(has));
     let by_counter = counted
         .filter(|(a, b)| {
             a.t_ms.saturating_sub(start_ms) <= COUNTER_EDGE_MS && end_ms.saturating_sub(b.t_ms) <= COUNTER_EDGE_MS
         })
-        .and_then(|(a, b)| counters_in(a, b));
-    let energy_added_kwh =
-        by_counter.or_else(|| integrate_kwh(s, end_ms, params.max_hold_ms, |x| x.charge_power_kw, counters_in));
+        .and_then(|(a, b)| Some((counters_in(a, b)?, a.t_ms, b.t_ms)));
+    let (energy_added_kwh, added_spans) = match (by_counter, &pack) {
+        (Some((kwh, a, b)), _) => {
+            let edges: Vec<Piece> = pack.iter().flat_map(|(_, v)| v.iter()).filter_map(|p| edge(p, a, b)).collect();
+            let mut spans = Vec::new();
+            for p in edges.iter().filter(|p| p.to <= a) {
+                add_span(&mut spans, p.from, p.to);
+            }
+            add_span(&mut spans, a.max(start_ms), b.saturating_add(1000).min(end_ms));
+            for p in edges.iter().filter(|p| p.from > b) {
+                add_span(&mut spans, p.from, p.to);
+            }
+            (Some(kwh + edges.iter().map(Piece::kwh).sum::<f64>()), spans)
+        }
+        (None, Some((kwh, v))) => (Some(*kwh), spans_of(v)),
+        (None, None) => (None, Vec::new()),
+    };
     // from the grid: what went into the onboard charger (AC only; a DC charger's own losses are out of sight)
-    let energy_used_kwh = match kind {
-        Some(ChargeKind::Ac) => integrate_kwh(
+    let grid = match kind {
+        Some(ChargeKind::Ac) => integrate_pieces(
             s,
             end_ms,
-            params.max_hold_ms,
+            hold,
             |x| x.charger_voltage_v.zip(x.charger_current_a).map(|(v, a)| v * a / 1000.0),
             |_, _| None,
         ),
+        _ => None,
+    };
+    let energy_used_kwh = grid.as_ref().map(|g| g.0);
+    // the two compared only over one span: each with little of its energy where the other was not measured
+    let energy_spans = match (energy_added_kwh, &grid, &pack) {
+        (Some(added), Some((used, g)), pack) => {
+            let grid_spans = spans_of(g);
+            let off = |p: &Piece, spans: &[(u64, u64)]| {
+                let ms = p.to.saturating_sub(p.from);
+                p.kwh() * ms.saturating_sub(covered_ms(spans, p.from, p.to)) as f64 / ms.max(1) as f64
+            };
+            let grid_off: f64 = g.iter().map(|p| off(p, &added_spans)).sum();
+            let added_off: f64 = pack.iter().flat_map(|(_, v)| v.iter()).map(|p| off(p, &grid_spans)).sum();
+            let too_much = |x: f64, of: f64| x > SPAN_SLACK_KWH.max(SPAN_SLACK * of.abs());
+            (too_much(grid_off, *used) || too_much(added_off, added)).then(|| {
+                let len = |v: &[(u64, u64)]| covered_ms(v, start_ms, end_ms);
+                let both: u64 =
+                    grid_spans.iter().map(|&(a, b)| covered_ms(&added_spans, a.max(start_ms), b.min(end_ms))).sum();
+                EnergySpans { added_ms: len(&added_spans), grid_ms: len(&grid_spans), both_ms: both }
+            })
+        }
         _ => None,
     };
     let position = s.iter().find_map(|x| position(x)).or_else(|| before.iter().rev().find_map(|x| position(x)));
@@ -83,6 +131,7 @@ pub(crate) fn make(car: CarId, s: &[&Sample], before: &[&Sample], params: &Param
         kind,
         energy_added_kwh,
         energy_used_kwh,
+        energy_spans,
         start_soc: s.iter().find_map(|x| x.soc),
         end_soc: s.iter().rev().find_map(|x| x.soc),
         start_range_km: s.iter().find_map(|x| x.range_km),
@@ -95,6 +144,27 @@ pub(crate) fn make(car: CarId, s: &[&Sample], before: &[&Sample], params: &Param
         inputs: model::Inputs::SMO,
         rules_version: RULES_VERSION,
     })
+}
+
+/// The part of a piece of the pack's power outside the lifetime counter's readings `[a, b]` (the second of `b`
+/// counted by it), if any.
+fn edge(p: &Piece, a: u64, b: u64) -> Option<Piece> {
+    if p.from < a {
+        Some(Piece { to: p.to.min(a), ..*p })
+    } else if p.from > b {
+        Some(*p)
+    } else {
+        None
+    }
+}
+
+/// The time pieces cover, as sorted spans apart from each other.
+fn spans_of(pieces: &[Piece]) -> Vec<(u64, u64)> {
+    let mut out = Vec::new();
+    for p in pieces {
+        add_span(&mut out, p.from, p.to);
+    }
+    out
 }
 
 /// The charge curve: every second of the charge.

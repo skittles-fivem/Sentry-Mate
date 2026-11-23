@@ -307,6 +307,7 @@ fn charge_of(c: &mut Car0, start: u64, mins: u64, dc: bool, target: f64, step: u
         kind: Some(if dc { ChargeKind::Dc } else { ChargeKind::Ac }),
         energy_added_kwh: Some(added),
         energy_used_kwh: Some(added * if dc { 1.04 } else { 1.1 }),
+        energy_spans: None,
         start_soc: Some(soc0),
         end_soc: Some(c.soc),
         start_range_km: Some(range0),
