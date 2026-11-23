@@ -2,7 +2,8 @@
 //!
 //! Every list here reads the db a page at a time ([`each`]) and keeps only what it answers: the page asked for (the
 //! best `limit` rows after the cursor, whatever the sort), running totals, and fixed-size tallies. Nothing loads a
-//! period's rows to sort them.
+//! period's rows to sort them. What the imports fill into a live charge is worked out once and kept, in memory and
+//! across restarts, while what it was made from stays the same ([`FillDone`]).
 
 use super::now::kind_word;
 use super::system::Shown;
@@ -17,6 +18,7 @@ use model::{Car, CarId, Charge, ChargeKind, ChargePoint, Drive, Sample, Source};
 use serde::Serialize;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ChargePlace {
@@ -172,19 +174,139 @@ pub(crate) fn view_filled(
     fill: &super::gapfill::Gaps,
 ) -> QResult<ChargeView> {
     let kept = cost_live(e, c, ch, x.live == Some(ch.id))?;
-    filled_with(c, ch, x, kept.as_ref(), fill)
+    filled_with(e, c, ch, x, kept.as_ref(), fill)
+}
+
+/// A live charge as the imports filled it, and which values they gave ([`super::gapfill::Gaps::charge`]).
+type FilledCharge = Arc<(Charge, super::gapfill::Filled)>;
+
+/// Live charges as the imports filled them (by a key of the charge as stored), kept in memory while the car's imported
+/// data and what the filling rests on ([`super::gapfill::Gaps::key`]) stay the same: filling reads a day or two of
+/// import samples per charge, and every list and report goes through every charge.
+type FillKept = std::sync::Mutex<std::collections::HashMap<u64, FilledCharge>>;
+
+/// Charges kept filled in memory per car at most; past it they are all made again.
+const FILL_KEPT: usize = 20_000;
+
+/// Where filled charges are kept across restarts: `car/{car}/charge/{id}` → [`FillDone`].
+const FILL_NS: &str = "charge-fill";
+
+/// How charges are filled, in [`FillDone::stamp`]: a change to the filling rules ([`timeline::gapfill`]) moves it
+/// on, and every kept fill is made again.
+const FILL_VERSION: u32 = 1;
+
+/// The API words a filled charge value can have ([`super::gapfill::Filled`]): a kept fill naming another is made
+/// again.
+const FILL_WORDS: &[&str] = &[
+    "position",
+    "odometer_km",
+    "start_soc_pct",
+    "end_soc_pct",
+    "start_range_km",
+    "end_range_km",
+    "outside_avg_c",
+    "battery_avg_c",
+];
+
+/// A charge's fill kept across restarts, with a stamp of everything it was made from: the charge as stored, the
+/// rules, which import shows where and whether filling is on, and the size of each import day it read.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FillDone {
+    stamp: String,
+    charge: Charge,
+    filled: Vec<(String, model::ImportSite)>,
+}
+
+/// A charge with the values the chosen import fills, and which they are: kept in memory, else across restarts while
+/// what it was made from stays the same ([`FillDone`]), else filled (and kept).
+fn filled_charge(e: &Engine, car: CarId, ch: &Charge, fill: &super::gapfill::Gaps) -> QResult<FilledCharge> {
+    // (only live charges are ever filled)
+    if ch.source != Source::Live || !fill.is_on() {
+        return fill_one(ch, fill);
+    }
+    let kept = e.memo(car, "charges-filled", crate::memo::On::Imported, fill.key(), || {
+        Ok::<_, QueryError>(FillKept::default())
+    })?;
+    let lock = || kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = crate::memo::key(ch);
+    if let Some(v) = lock().get(&key) {
+        return Ok(v.clone());
+    }
+    let stamp = fill_stamp(e, car, ch, fill)?;
+    let db_key = format!("car/{car}/charge/{}", ch.id);
+    let done = records::kept::<FillDone>(e.db(), FILL_NS, &db_key)?.filter(|d| d.stamp == stamp).and_then(|d| {
+        let words: Option<Vec<_>> = d
+            .filled
+            .iter()
+            .map(|(w, site)| FILL_WORDS.iter().find(|k| **k == w.as_str()).map(|k| (*k, *site)))
+            .collect();
+        Some(Arc::new((d.charge, super::gapfill::Filled(words?))))
+    });
+    let v = match done {
+        Some(v) => v,
+        None => {
+            let v = fill_one(ch, fill)?;
+            let filled = v.1.0.iter().map(|(w, site)| ((*w).to_string(), *site)).collect();
+            // (a fill that cannot be kept, as on a full disk, is made again next time)
+            let _ = records::put(e.db(), FILL_NS, &db_key, &FillDone { stamp, charge: v.0.clone(), filled });
+            v
+        }
+    };
+    let mut m = lock();
+    if m.len() >= FILL_KEPT {
+        m.clear();
+    }
+    m.insert(key, v.clone());
+    Ok(v)
+}
+
+fn fill_one(ch: &Charge, fill: &super::gapfill::Gaps) -> QResult<FilledCharge> {
+    let mut filled = ch.clone();
+    let got = fill.charge(&mut filled)?;
+    Ok(Arc::new((filled, got)))
+}
+
+/// The stamp of a charge's fill ([`FillDone`]): the import days it may read are those around the charge, by the
+/// fuse margin ([`super::gapfill::Gaps::charge`]).
+fn fill_stamp(e: &Engine, car: CarId, ch: &Charge, fill: &super::gapfill::Gaps) -> QResult<String> {
+    use sha2::{Digest, Sha256};
+    const DAY: u64 = 86_400_000;
+    let sizes = e.memo(car, "import-day-sizes", crate::memo::On::Imported, 0, || {
+        let mut out = Vec::new();
+        for site in model::ImportSite::ALL {
+            let d: BTreeMap<u64, u64> = e
+                .db()
+                .days::<model::Sample>(car, model::Stream::of_site(site))?
+                .into_iter()
+                .map(|d| (d.start_ms, d.bytes))
+                .collect();
+            out.push((site, d));
+        }
+        Ok::<_, QueryError>(out)
+    })?;
+    let p = &e.inner.opts.fuse;
+    let m = p.margin_ms();
+    let (a, b) = (ch.start_ms.saturating_sub(m), ch.end_ms.saturating_add(m + 1));
+    let read: Vec<(model::ImportSite, Vec<(u64, u64)>)> =
+        sizes.iter().map(|(site, d)| (*site, d.range(a / DAY * DAY..b).map(|(s, n)| (*s, *n)).collect())).collect();
+    let mut h = Sha256::new();
+    h.update(FILL_VERSION.to_be_bytes());
+    h.update(fill.key().to_be_bytes());
+    h.update(serde_json::to_vec(&(ch, p, &read)).unwrap_or_default());
+    Ok(h.finalize()[..16].iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn filled_with(
+    e: &Engine,
     c: &Car,
     ch: &Charge,
     x: &Ctx,
     kept: Option<&CostEntry>,
     fill: &super::gapfill::Gaps,
 ) -> QResult<ChargeView> {
-    let mut filled = ch.clone();
-    let got = fill.charge(&mut filled)?;
-    let mut v = view_with(c, &filled, x, kept);
+    let f = filled_charge(e, c.id, ch, fill)?;
+    let (filled, got) = (&f.0, &f.1);
+    let mut v = view_with(c, filled, x, kept);
     if !got.is_empty() {
         v.value_sources = got.value_sources();
         v.from = got.sources(&v.from);
@@ -971,7 +1093,7 @@ pub fn charge(e: &Engine, car: CarId, id: u64) -> QResult<ChargeDetail> {
         energy_basis: k.energy_basis.clone(),
     });
     let fill = super::gapfill::Gaps::new(e, car, None)?;
-    let mut v = filled_with(&c, &ch, &x, kept.as_ref(), &fill)?;
+    let mut v = filled_with(e, &c, &ch, &x, kept.as_ref(), &fill)?;
     v.has_gaps = !gaps.is_empty();
     v.flags.gap_ms = covered_ms(&gaps);
     Ok(ChargeDetail { charge: v, prev, next, cost_breakdown, manual_cost, gaps })

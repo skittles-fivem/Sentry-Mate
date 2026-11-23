@@ -49,7 +49,7 @@ fn choices(e: &Engine, car: CarId) -> QResult<Choices> {
 }
 
 /// The import site shown in each span both imports cover (by start, apart): elsewhere every site's rows are shown.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Hash)]
 pub(crate) struct Sites(Vec<(u64, u64, ImportSite)>);
 
 impl Sites {

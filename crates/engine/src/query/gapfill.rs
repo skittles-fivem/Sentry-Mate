@@ -62,6 +62,20 @@ impl<'e> Gaps<'e> {
         Ok(g)
     }
 
+    /// A key of what the filling rests on besides the imported samples themselves (whether it is on, which import
+    /// shows where, the import days): with the car's imported data version, what a kept fill was made from.
+    pub(crate) fn key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (self.on, &self.sites, &self.days).hash(&mut h);
+        h.finish()
+    }
+
+    /// Whether values are filled.
+    pub(crate) fn is_on(&self) -> bool {
+        self.on
+    }
+
     /// One site's samples of a UTC day (read once, a few days kept).
     fn day(&self, site: ImportSite, day: u64) -> QResult<Rc<Vec<Sample>>> {
         if let Some((_, v)) = self.kept.borrow().iter().find(|(k, _)| *k == (site, day)) {
