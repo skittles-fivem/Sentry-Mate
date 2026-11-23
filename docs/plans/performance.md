@@ -179,6 +179,68 @@ Caveats:
   - logbook battery: `/api/v1/cars/c1/battery` twice;
   - console settings: `/api/v1/cars?limit=200&sort=name` twice.
 
+### Pages in milliseconds (bundle, service worker, lazy panels, in-app cache)
+
+**Target:** on the slowed phone, a return visit usable under 500 ms with its first paint under 200 ms; on an
+unthrottled desktop, usable under 150 ms warm and under 400 ms cold; in-app navigation under 100 ms.
+
+Measured with the same harness, extended (`measure.js`): the pages are now car, drives, drive, charges, battery,
+statistics, Settings: Display and units, and Settings: Integrations (8 per pack, 48 loads per phase);
+`--desktop` runs a 1440x900 window with no throttling; `--nav` clicks the pack's own link from the car page to each
+other page (a hover and touchstart first) and times the click to the new page's `data-ready`. The same seeded data
+folder (2 made-up cars, 30 light days) and day for every run; one run per row (allow a few hundred ms on TTU).
+
+What changed, each its own commit:
+1. **Bundled and minified** (`ui/tools/bundle`, esbuild pinned by its lock file, run by `build-binary.sh` in the
+   Image workflow, about 5 s): each page an entry at `pages/<id>.js`, the shared code in `core/c-<hash>.js` chunks,
+   style sheets and `boot.js` minified, `vendor/` as it was. The server serves them in place of the sources
+   (`SENTRY_MATE_UI_BUNDLE` in `build.rs`); a download, an uploaded pack laid over a built-in one, the tests and the
+   dev server keep the sources. Instrument's scripts: 1.68 MB of sources, 1.08 MB bundled.
+2. **A service worker** (`GET /sw.js`, embedded, `no-cache`): the kept `index.html` at once and refreshed behind,
+   `/_v/` files cache first, the last API answers in the worker's memory only (never on disk, never a `no-store`
+   one) for a page that can take them; all of it cleared on sign-out and on any change of who is signed in or which
+   pack they see.
+3. **Below the fold later** (`ui/shared/lazy.js`): charts (and the maps of the car and charges pages) built when
+   they come within a screen, in the room they already have; `check.js` scrolls each page through before checking.
+4. **In-app pages from memory** (`ui/shared/api.js`, `ui/shared/prefetch.js`, every router): answers kept per tab
+   with their `ETag` (a `304` gives the kept one), a link's page module, style sheet and first reads loaded under
+   the pointer (hover, touchstart, focus), the main sections' modules on idle 2 s after the first page; a first
+   read may show the kept (or the worker's) answer when the network's is not in within 100 ms, the view dimmed
+   (`data-stale`) until the fresh one is in and the page built again in place.
+5. **The server:** hyper's server sends no `103 Early Hints` (only its client reads them) and browsers dropped
+   HTTP/2 push, so the first modules stay named with `modulepreload`; `index.html` is about 3 KB compressed with
+   no inline script (a test keeps it under 8 KB).
+
+Means over 6 packs x 8 pages (ms):
+
+| run | phone cold TTU | cold FCP | warm TTU | warm FCP | nav | desktop cold | warm | nav |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| origin/main `4889351` | 5001 | 1593 | 2206 | 440 | 1606 | 439 | 291 | 242 |
+| 1 bundled | 4462 | 1274 | 2093 | 405 | 1521 | 415 | 282 | 233 |
+| 2 + service worker (on `cf81f68`) | 3125 | 1227 | 1123 | 229 | 844 | 479 | 372 | 264 |
+| 3 + below the fold later | 3201 | 1242 | 1182 | 271 | 786 | 492 | 386 | 260 |
+| 4 + in-app cache and prefetch | 3186 | 1328 | 1214 | 298 | 503 | 647 | 513 | 140 |
+| 4b + fresh answer first within 100 ms, `/me` once | 3204 | 1315 | 1078 | 289 | 507 | 652 | 495 | 145 |
+| 4c + idle warming 2 s after the first page | **2842** | 1286 | **783** | 252 | **437** | **415** | **293** | **140** |
+
+- From the start to the end: phone cold 5.0 → 2.8 s, warm 2.2 → 0.78 s (first paint 0.44 → 0.25 s), in-app
+  navigation 1.6 → 0.44 s; desktop cold 439 → 415 ms, warm 291 → 293 ms, navigation 242 → 140 ms. Warm loads now
+  ask the network for no pack file and no `index.html` (0 KiB of files on the phone).
+- Step 2's run is on a newer origin/main (`cf81f68`, with other sessions' page and map changes): part of its cold
+  change is theirs.
+- Step 3 made little difference here (the dev server showed the long tasks of a cold car or charges page about
+  halved; on the real server's pages the measured TTU did not move beyond noise). Long tasks per cold load overall:
+  1142 → 638 ms.
+- Tried and dropped, each measured: a static route of the service worker for `/_v/` files (warm loads fetched
+  137 KiB again: a route's cache miss skips the worker's keeping), and leaving `/_v/` files to the browser's cache
+  while online (warm first paint 1.0 s and 270 KiB: with a worker in place Chrome did not serve them from its cache).
+- **Not met yet:** phone warm 783 ms (target 500) and first paint 252 ms (200); desktop warm 293 ms (150) and
+  cold 415 ms (400, about at it); navigation 140 ms on the desktop (100) and 437 ms on the phone. What is left is
+  mostly the pages' own drawing (long tasks 408 ms per warm phone load) and the API round trips a warm load still
+  waits for (TTU counts the last answer): the next steps would be drawing less on the first frame (`core/snap.js`'s
+  whole-document passes, long lists), and not waiting on answers that are only below the fold.
+
+
 # Plan: page speed with a long history
 
 Status (2026-11-23): done. On the owner-sized made-up history every page's calls answer within the target warm and
