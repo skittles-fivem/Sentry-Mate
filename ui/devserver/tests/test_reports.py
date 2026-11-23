@@ -273,7 +273,7 @@ class SoftwareFromInputs(ServerCase):
         base = "/api/v1/integrations/teslamate"
         cars = self.c.get(base + "/cars")
         self.c.json("PUT", base + "/cars", {"version": cars["version"], "items": [
-            {"teslamate_car": "1", "match": "c2"}], "confirm_password": "sentry-mate-dev"})
+            {"teslamate_car": "1", "match": "c2"}]})
         n = self.c.get("/api/v1/cars/c2/now")
         self.assertIn("teslamate_local", [i["kind"] for i in n["inputs"]])
         self.assertEqual((n["software"]["version"], n["software"]["version_source"]), ("2026.44.1", "teslamate_local"))
@@ -292,7 +292,7 @@ class SoftwareFromInputs(ServerCase):
         # not read any more, nothing names the newest update: the car settings' typed version
         cars = self.c.get(base + "/cars")
         self.c.json("PUT", base + "/cars", {"version": cars["version"], "items": [
-            {"teslamate_car": "1", "match": None}], "confirm_password": "sentry-mate-dev"})
+            {"teslamate_car": "1", "match": None}]})
         s = self.c.get("/api/v1/cars/c2/updates")["summary"]
         self.assertEqual((s["current_version"], s["current_version_source"]), (None, None))
         st = self.c.get("/api/v1/cars/c2/settings")
