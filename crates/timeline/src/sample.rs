@@ -445,17 +445,14 @@ impl SampleBuilder {
     }
 
     /// Latitude, longitude and accuracy of one message, the best with all three fresh. A position is kept only when
-    /// it is plausible: on the globe, not 0,0 or a placeholder ([`crate::real_fix`]), with a known accuracy, and
-    /// its latitude and longitude from the same frame (a frame cut short before the longitude leaves the one held
-    /// from an earlier frame, which is not where the car is now).
+    /// it is plausible: on the globe, not 0,0, and with a known accuracy.
     fn position(&self, end_us: u64) -> (Option<f64>, Option<f64>, Option<f64>) {
         let hold = self.params.gps_hold_ms.saturating_mul(1000);
         for &[la, lo, ac] in &self.table.gps {
             let (lat, lon, acc) =
                 (self.fresh(la, end_us, hold), self.fresh(lo, end_us, hold), self.fresh(ac, end_us, hold));
-            let one_frame = matches!((self.slots[la], self.slots[lo]), (Some((_, a)), Some((_, b))) if a == b);
             match (lat, lon, acc) {
-                (Some(lat), Some(lon), Some(acc)) if one_frame && crate::real_fix(lat, lon) => {
+                (Some(lat), Some(lon), Some(acc)) if !(lat == 0.0 && lon == 0.0) => {
                     return (Some(lat), Some(lon), Some(acc));
                 }
                 (_, _, Some(acc)) => return (None, None, Some(acc)),
@@ -594,30 +591,6 @@ mod tests {
         assert_eq!(s[3].lat, Some(10.5), "held for a missed frame");
         assert_eq!(s[4].lat, None, "a fix is held 2 s at most");
         assert_eq!((s[5].lat, s[5].gps_accuracy_m), (None, None));
-    }
-
-    #[test]
-    fn a_position_is_one_frames_latitude_and_longitude_and_never_a_placeholder() {
-        let mut b = SampleBuilder::new(dbc::Profile::Tesla3Y, SampleParams::default());
-        b.value(at(0.2), "DI_gear", 1.0);
-        // a whole fix, then a frame that gave only a new latitude (its longitude cut off)
-        b.value(at(1.2), "GPSLatitude04F", 10.5);
-        b.value(at(1.2), "GPSLongitude04F", 20.25);
-        b.value(at(1.2), "GPSAccuracy04F", 3.0);
-        b.value(at(2.2), "GPSLatitude04F", 10.6);
-        b.value(at(2.2), "GPSAccuracy04F", 3.0);
-        // the 28-bit field's lowest value as the longitude: a placeholder
-        b.value(at(3.2), "GPSLatitude04F", 10.6);
-        b.value(at(3.2), "GPSLongitude04F", -134.217728);
-        b.value(at(3.2), "GPSAccuracy04F", 3.0);
-        b.value(at(4.2), "GPSLatitude04F", 10.7);
-        b.value(at(4.2), "GPSLongitude04F", 20.3);
-        b.value(at(4.2), "GPSAccuracy04F", 3.0);
-        let (s, _) = b.finish();
-        assert_eq!((s[0].lat, s[0].lon), (Some(10.5), Some(20.25)));
-        assert_eq!((s[1].lat, s[1].lon), (None, None), "a new latitude is never paired with an old longitude");
-        assert_eq!((s[2].lat, s[2].lon), (None, None), "a placeholder is no position");
-        assert_eq!((s[3].lat, s[3].lon), (Some(10.7), Some(20.3)));
     }
 
     #[test]

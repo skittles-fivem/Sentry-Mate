@@ -198,3 +198,24 @@ test('rememberCar saves last_car once after quick picks, never a sold car picked
   await S.flushCar();
   assert.equal(S.lastCar(), 'c5', 'a failed save keeps the local copy');
 });
+
+test('a URL that only moves the #hash on the page shown is no new page: data-ready and the store stay', () => {
+  S.navigate('/settings/integrations');
+  htmlEl().dataset.ready = 'settings-integrations';
+  const before = S.current();
+  const seen = [];
+  const off = S.subscribe((s) => seen.push(s.page));
+  assert.equal(S.sameRoute('/settings/integrations#mqtt'), true);
+  assert.equal(S.sameRoute('/settings/integrations?tab=setup#mqtt'), false, 'another query is another view');
+  assert.equal(S.sameRoute('/settings/cars#data-sources'), false);
+  const s = S.navigate('/settings/integrations#teslamate');
+  off();
+  assert.equal(s, before);
+  assert.deepEqual(seen, []);
+  assert.equal(htmlEl().dataset.ready, 'settings-integrations');
+  assert.deepEqual(historyLog.at(-1), ['push', '/settings/integrations#teslamate']);
+  // another page still re-routes
+  S.navigate('/settings/cars#data-sources');
+  assert.equal(htmlEl().dataset.ready, undefined);
+  assert.equal(S.current().page, 'settings-cars');
+});

@@ -24,6 +24,8 @@ import { src, srcText } from '../core/source.js';
 import { teslaCarRows, lastErrorText } from './tesla.js';
 import { versionTag } from './firmware.js';
 import { totalsLine } from './connections.js';
+import { deviceName } from '../shared/devices.js';
+import { deviceText, renameBtn } from './device-name.js';
 
 export const id = 'health';
 export const title = (ctx) => (ctx.car ? 'Health' : 'System');
@@ -42,7 +44,6 @@ const REASONS = {
   upload_silence: ['no log has arrived for a while', 'check the bridge has power and a network, and that its key still uploads. nothing is lost while the car sleeps.', 'settings-cars'],
   trust_failed: ['the last log failed its check', 'its signature or chain did not match, so its data is kept apart. pair the bridge again if its key changed.', 'settings-cars'],
   logs_waiting_trust: ['logs wait for a key to be trusted', 'approve or assign the key and they are read at once.', 'settings-cars'],
-  gps_inputs_disagree: ['positions from one input are out of step', 'one input’s GPS positions are far from the other inputs’ positions at the same moments, more than lag or noise explains (often a decoding problem). Its positions are not used there; the other inputs’ positions are. The rest of its data is still used.', null],
   logs_missing: ['logs missing on the server', 'the server lost some logs and asked the car to send them again; see missing on the server below.', null],
   rebuild_pending: ['drives and charges are being rebuilt', 'worked out again from the stored logs; this page reads again until it is done.', null],
 };
@@ -177,7 +178,7 @@ async function mountCar(ctx) {
         ['dropped frames', status((hl.dropped_frames || []).length ? warn() : ok(), formatNumber((hl.dropped_frames || []).length), none(' times the bridge lost frames'))],
         ['uploads', hl.uploads_enabled ? status(ok(), 'accepted') : status(warn(), 'turned off for this car')],
         ['rebuild', hl.rebuild_pending ? status(tag('running', 'warn'), 'working out drives again') : status(ok(), 'nothing pending')],
-        ...keys.map((k, i) => [keys.length > 1 ? `bridge key ${i + 1}` : 'bridge key', h('span', null, k.preferred ? tag('preferred', 'accent') : null, k.preferred ? ' ' : null, k.device || 'unnamed', ' ', h('span', { class: 'muted break' }, k.key), '  ',
+        ...keys.map((k, i) => [keys.length > 1 ? `bridge key ${i + 1}` : 'bridge key', h('span', null, k.preferred ? tag('preferred', 'accent') : null, k.preferred ? ' ' : null, deviceText(k), admin ? [' ', renameBtn(ctx, k, (row) => { Object.assign(k, row); paintHealth(hl); }, { line: true })] : null, ' ', h('span', { class: 'muted break' }, k.key), '  ',
           k.last_upload_ms != null ? ago(k.last_upload_ms) : none('never uploaded'), k.logs_waiting ? [' ', warn(`${formatNumber(k.logs_waiting)} waiting`)] : null)]),
         keys.length ? null : ['bridge keys', status(warn(), 'none tied to this car: pair one on settings/cars')],
         ['data from', src(car, { full: true }) || none('no data yet')],
@@ -195,7 +196,7 @@ async function mountCar(ctx) {
     for (const g of hl.chain_gaps || []) lines.push({ ms: g.from_ms, tag: 'bad', tone: 'bad', text: `chain gap until ${formatDateTime(g.to_ms, tz, { now: ctx.api.now() })}` });
     for (const d of hl.dropped_frames || []) lines.push({ ms: d.start_ms, tag: 'warn', tone: 'warn', text: `dropped frames for ${formatDuration((d.end_ms ?? d.start_ms) - d.start_ms)}` });
     for (const s of spans) lines.push({ ms: s.start_ms, tag: 'warn', tone: 'warn', text: `unknown ${s.end_ms == null ? 'since then' : `for ${formatDuration(s.end_ms - s.start_ms)}`}: ${SPAN_REASONS[s.reason] || s.reason}` });
-    for (const k of keys) if (k.last_upload_ms != null) lines.push({ ms: k.last_upload_ms, tag: 'ok', tone: 'good', text: `upload from ${k.device || 'a bridge'}` });
+    for (const k of keys) if (k.last_upload_ms != null) lines.push({ ms: k.last_upload_ms, tag: 'ok', tone: 'good', text: `upload from ${deviceName(k).text}` });
     replace(tailSlot, logTail(lines, tz, { cover: 'faq.stopped-recording' }));
   }
 

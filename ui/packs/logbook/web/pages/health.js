@@ -29,6 +29,7 @@ import { stackedCharts } from '../core/chart.js';
 import { zoneLabel, count } from '../core/format.js';
 import { sourceMark } from '../core/sources.js';
 import { overviewCard } from './integrations-overview.js';
+import { deviceText, renameButton } from './device-name.js';
 
 export const id = 'health';
 export const css = true;
@@ -52,11 +53,6 @@ const REASONS = {
     title: 'Logs wait for a key to be trusted',
     text: 'They came from a key nobody has approved for this car yet. Approve or assign the key and they are read at once; nothing has to be uploaded again.',
     fix: 'Approve the key', page: 'settings-cars',
-  },
-  gps_inputs_disagree: {
-    title: 'Positions from one input are out of step',
-    text: 'One input’s GPS positions are far from the other inputs’ positions at the same moments, more than lag or noise explains (often a decoding problem). Its positions are not used there; the other inputs’ positions are. The rest of its data is still used.',
-    fix: null, page: null,
   },
   logs_missing: {
     title: 'Logs missing on the server',
@@ -335,11 +331,12 @@ async function mountCar(ctx) {
       h('h3', { class: 'hl-sub' }, 'CAN Bridge keys of this car'),
       keys.length ? h('ul', { class: 'hl-list' }, keys.map((k) => h('li', { class: 'hl-key' },
         h('div', null,
-          h('span', { class: 'hl-key-name' }, k.device || 'Unnamed device', k.preferred ? [' ', flag('Preferred', { title: 'When two keys send the same time, this one is used.' })] : null),
+          h('span', { class: 'hl-key-name' }, deviceText(k), k.preferred ? [' ', flag('Preferred', { title: 'When two keys send the same time, this one is used.' })] : null),
           h('span', { class: 'cell-sub mono' }, k.key)),
         h('div', { class: 'hl-key-side' },
           k.last_upload_ms != null ? ago(k.last_upload_ms) : h('span', { class: 'hl-faint' }, 'never uploaded'),
-          h('span', { class: ['cell-sub', { 'hl-warn': !!k.logs_waiting }] }, k.logs_waiting ? `${formatNumber(k.logs_waiting)} waiting` : 'none waiting')))))
+          h('span', { class: ['cell-sub', { 'hl-warn': !!k.logs_waiting }] }, k.logs_waiting ? `${formatNumber(k.logs_waiting)} waiting` : 'none waiting'),
+          renameButton(ctx, k, (row) => { Object.assign(k, row); drawHealth(hl); })))))
         : note('No key is tied to this car yet. Pair a CAN Bridge on Settings: Cars.'),
       facts([
         ['Uploads', hl.uploads_enabled ? h('span', { class: 'hl-ok' }, 'Accepted') : h('span', { class: 'hl-warn' }, 'Turned off for this car'), hl.uploads_enabled ? null : 'Turn them on again on Settings: Cars.'],
@@ -780,7 +777,7 @@ async function mountSystem(ctx) {
   /* ---------------------------------------------------------------- every car */
 
   const carSearch = h('input', { class: 'field-input', type: 'search', id: 'hl-car-search', placeholder: 'Find a car by name, model or VIN', autocomplete: 'off' });
-  const DATA_BAD = new Set(['upload_silence', 'trust_failed', 'logs_waiting_trust', 'logs_missing', 'gps_inputs_disagree']);
+  const DATA_BAD = new Set(['upload_silence', 'trust_failed', 'logs_waiting_trust', 'logs_missing']);
   const carTable = dataTable(ctx, {
     path: 'cars', params: {}, limit: 50, itemName: ['car', 'cars'], sort: { key: 'name', dir: 'asc' }, cls: 'hl-cars', label: 'Every car',
     cover: 'faq.stopped-recording',

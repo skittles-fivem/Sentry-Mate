@@ -390,6 +390,26 @@ impl Engine {
         Ok(())
     }
 
+    /// The names admins gave CAN Bridge keys (key → name).
+    pub fn key_names(&self) -> Result<std::collections::BTreeMap<String, String>> {
+        records::key_names(&self.inner.db)
+    }
+
+    /// Names a CAN Bridge key (`None`: forgets its name); whether that changed anything. The caller checks the name.
+    pub fn set_key_name(&self, key: &str, name: Option<&str>) -> Result<bool> {
+        let _one = lock(&self.inner.claim);
+        let db = &self.inner.db;
+        let mut m = records::key_names(db)?;
+        let changed = match name {
+            Some(n) => m.insert(key.to_string(), n.to_string()).as_deref() != Some(n),
+            None => m.remove(key).is_some(),
+        };
+        if changed {
+            records::put_key_names(db, &m)?;
+        }
+        Ok(changed)
+    }
+
     /// Makes `key` its car's preferred key (`true`), or no longer (`false`); the car's samples are written again so
     /// each second's source follows it.
     pub fn set_preferred(&self, key: &str, preferred: bool) -> Result<Option<CarId>> {
@@ -874,22 +894,6 @@ impl Engine {
         }
         let by: Vec<(&[Sample], Input)> = by.iter().map(|(v, i)| (v.as_slice(), *i)).collect();
         let mut fused = timeline::fuse_ordered(&by, &order, fp);
-        self.inner.counters.gps_fixes_dropped.fetch_add(fused.fixes_dropped, Ordering::Relaxed);
-        if !fused.gps_disagree.is_empty() {
-            let seen = crate::GpsDisagreement {
-                disagree: fused.gps_disagree,
-                not_used: fused.gps_distrusted,
-                from_ms: from,
-                to_ms: to,
-            };
-            let mut m = crate::lock(&self.inner.gps_cross);
-            if m.get(&car).is_none_or(|x| x.to_ms <= to) {
-                if fused.gps_distrusted.contains(Input::Smo) {
-                    tracing::warn!(car, "SMO's GPS disagrees with the other inputs; its fixes are left out there");
-                }
-                m.insert(car, seen);
-            }
-        }
         fused.samples.retain(|s| s.t_ms >= from && s.t_ms < to);
         fused.marks.retain(|m| m.0 >= from && m.0 < to);
         let seen = records::api_between(db, car, meta, from, to)?;
@@ -1085,6 +1089,8 @@ impl Engine {
         {
             let l = self.car_lock(car);
             let _held = lock(&l);
+            // updates stored before an install's fingerprint changes were one update are found again
+            self.fw_regroup(car)?;
             let dirty = records::dirty(db, car)?;
             if !dirty.is_empty() {
                 let mut meta = records::meta(db, car)?;

@@ -63,12 +63,13 @@ pub fn load_settings(e: &Engine) -> TeslafiSettings {
     e.db().setting(SETTING).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
 }
 
-/// The options the service starts with: the saved pace, the owner's proxy and the server's default time zone.
+/// The options the service starts with: the saved pace, the owner's proxy and the server's default time zone (the
+/// saved one, not the zone the server started in: [`follow_time_zone`] keeps it so).
 pub fn options(e: &Engine) -> teslafi::Options {
     let mut o = teslafi::Options::default();
     o.proxy = super::tesla::proxy(e);
     o.cadence = load_settings(e).poll.cadence();
-    o.default_time_zone = e.options().default_time_zone.clone();
+    o.default_time_zone = e.default_time_zone();
     o
 }
 
@@ -121,6 +122,14 @@ pub fn service(
 pub fn follow_proxy(app: &AppState, proxy: Option<&str>) {
     if let Ok(svc) = app.service::<TeslafiService>() {
         svc.reconfigure(proxy.and_then(tesla::Proxy::parse));
+    }
+}
+
+/// The server's default time zone changed: the pollers of accounts with no zone of their own read TeslaFi's poll
+/// times in it (they start again with it).
+pub fn follow_time_zone(app: &AppState, zone: &str) {
+    if let Ok(svc) = app.service::<TeslafiService>() {
+        svc.set_default_time_zone(zone);
     }
 }
 

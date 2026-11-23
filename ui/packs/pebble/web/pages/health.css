@@ -61,3 +61,7 @@ html[data-form="phone"] .sig-msg { display: none; }
 .hl-conn-tot .is-idle { background: var(--sky-soft); color: var(--sky); }
 .hl-conn-tot .is-paused { background: var(--sun-soft); color: var(--sun); }
 .hl-conn-tot .is-problem { background: var(--bad-soft); color: var(--bad); }
+
+/* a bridge key's last upload and, for admins, its rename button */
+.hl-key-side { display: flex; align-items: center; gap: var(--s2); align-self: start; }
+.hl-keys .check-text { align-self: start; } /* the name's line stays by its dot when the button makes the row taller */

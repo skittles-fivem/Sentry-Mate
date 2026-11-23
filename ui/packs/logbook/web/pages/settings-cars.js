@@ -22,6 +22,8 @@ import { field, setFieldError, choice, switchField } from '../core/form.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
 import { zoneLabel, zoneShort, count } from '../core/format.js';
 import { remount } from '../core/router.js';
+import { deviceName } from '../shared/devices.js';
+import { deviceText, renameButton } from './device-name.js';
 
 export const id = 'settings-cars';
 export const css = true;
@@ -253,16 +255,17 @@ function waitingTable(ctx, { car = null, onChange }) {
   return dataTable(ctx, {
     path: 'can-keys', params: { assigned: 'false' }, itemName: ['key waiting', 'keys waiting'], label: 'CAN Bridge keys waiting for a car',
     columns: [
-      { key: 'key', label: 'Key', th: true, cell: (k) => [h('span', { class: 'cell-main mono' }, k.key), h('span', { class: 'cell-sub' }, k.device || 'Logger not named')], value: (k) => k.key },
+      { key: 'key', label: 'Key', th: true, cell: (k) => [h('span', { class: 'cell-main mono' }, k.key), deviceText(k, 'cell-sub')], value: (k) => k.key },
       { key: 'first', label: 'First upload', cell: (k) => dateCell(k.first_seen_ms, ctx.tz), value: (k) => k.first_seen_ms },
       { key: 'last', label: 'Last upload', cell: (k) => dateCell(k.last_upload_ms, ctx.tz, true), value: (k) => k.last_upload_ms },
       { key: 'waiting', label: 'Logs kept', num: true, cell: (k) => count(k.logs_waiting || 0, 'log'), value: (k) => k.logs_waiting, hint: 'Logs it uploaded, kept until the key is tied to a car.' },
       { key: 'do', label: 'Tie to', cell: (k) => {
-        if (car) return button(`Tie to ${car.name}`, { onclick: () => assign(k, car.id, car.name) });
-        return button('Choose the car…', { iconName: 'search', cls: 'button-small', onclick: async () => {
-          const c = await pickCar(ctx, { title: `Tie key ${k.key} to a car`, text: `Find the car this logger is in (${k.device || 'logger not named'}). Every car is searched, however many there are.` });
+        const rename = renameButton(ctx, k, () => onChange?.());
+        if (car) return h('span', { class: 'dev-acts' }, button(`Tie to ${car.name}`, { onclick: () => assign(k, car.id, car.name) }), rename);
+        return h('span', { class: 'dev-acts' }, button('Choose the car…', { iconName: 'search', cls: 'button-small', onclick: async () => {
+          const c = await pickCar(ctx, { title: `Tie key ${k.key} to a car`, text: `Find the car this logger is in (${deviceName(k).text}). Every car is searched, however many there are.` });
           if (c) await assign(k, c.id, c.name || c.id);
-        } });
+        } }), rename);
       } },
     ],
     empty: () => empty({ title: 'No key is waiting.', text: 'Every CAN Bridge that uploads belongs to a car.' }),
@@ -513,7 +516,6 @@ const FIX_NOW = {
   token_unused: 'A token was made but no CAN Bridge has uploaded with it yet.',
   key_waiting: 'A CAN Bridge key is waiting for a car (below).',
   logs_waiting_trust: 'Some logs wait for a trust check.',
-  gps_inputs_disagree: 'One input’s GPS positions are out of step with the others’; its positions are not used there.',
   logs_missing: 'Some logs are missing on the server; the car was asked to send them again.',
 };
 
@@ -692,7 +694,7 @@ async function mountCar(ctx) {
       columns: [
         { key: 'id', label: 'Token', th: true, cell: (t) => [h('span', { class: 'cell-main mono' }, t.id), h('span', { class: 'cell-sub' }, `made ${formatDate(t.created_ms, ctx.tz, { weekday: false, now: api.now() })}`)] },
         { key: 'status', label: 'State', cell: (t) => (t.revoked ? chip('Revoked') : t.key || t.last_upload_ms ? chip('In use', { kind: 'on' }) : chip('Not used yet', { kind: 'warn' })) },
-        { key: 'key', label: 'Tied to key', cell: (t) => (t.key ? h('span', { class: 'mono' }, t.key) : h('span', { class: 'cell-sub' }, t.revoked ? '—' : 'ties itself on the first upload')) },
+        { key: 'key', label: 'Tied to key', cell: (t) => (t.key ? [h('span', { class: 'cell-main mono' }, t.key), deviceText(t, 'cell-sub')] : h('span', { class: 'cell-sub' }, t.revoked ? '—' : 'ties itself on the first upload')) },
         { key: 'last', label: 'Last upload', cell: (t) => dateCell(t.last_upload_ms, ctx.tz, true) },
         { key: 'do', label: '', cell: (t) => (t.revoked ? '' : button('Revoke', { kind: 'quiet', cls: 'button-small', onclick: () => revoke(t) })) },
       ],
@@ -701,12 +703,12 @@ async function mountCar(ctx) {
     const keys = dataTable(ctx, {
       path: 'can-keys', params: { car: car.id }, itemName: ['key', 'keys'], label: `CAN Bridge keys tied to ${car.name}`,
       columns: [
-        { key: 'key', label: 'Key', th: true, cell: (k) => [h('span', { class: 'cell-main mono' }, k.key), h('span', { class: 'cell-sub' }, k.device || 'Logger not named')] },
+        { key: 'key', label: 'Key', th: true, cell: (k) => [h('span', { class: 'cell-main mono' }, k.key), deviceText(k, 'cell-sub')] },
         { key: 'first', label: 'First upload', cell: (k) => dateCell(k.first_seen_ms, ctx.tz) },
         { key: 'last', label: 'Last upload', cell: (k) => dateCell(k.last_upload_ms, ctx.tz, true) },
         { key: 'waiting', label: 'Logs waiting', num: true, cell: (k) => count(k.logs_waiting || 0, 'log'), hint: 'Logs waiting for their signature check.' },
         { key: 'pref', label: 'Preferred', cell: (k) => (k.preferred ? flag('Preferred') : button('Make preferred', { cls: 'button-small', onclick: () => prefer(k) })) },
-        { key: 'do', label: '', cell: (k) => button('Untie', { cls: 'button-small', onclick: () => untie(k) }) },
+        { key: 'do', label: '', cell: (k) => h('span', { class: 'dev-acts' }, renameButton(ctx, k, () => keys.reload()), button('Untie', { cls: 'button-small', onclick: () => untie(k) })) },
       ],
       empty: () => empty({ title: 'No CAN Bridge key is tied to this car yet.', text: 'A key ties itself when the bridge first uploads with one of this car’s tokens, or tie a waiting key below.' }),
     });

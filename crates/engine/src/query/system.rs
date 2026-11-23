@@ -843,7 +843,9 @@ pub struct KeyHealth {
     pub key: String,
     pub last_upload_ms: Option<u64>,
     pub preferred: bool,
+    /// The name an admin gave the key, and what pages call it (that name, else an automatic label).
     pub device: Option<String>,
+    pub device_label: String,
     pub logs_waiting: u64,
 }
 
@@ -921,9 +923,6 @@ pub struct Health {
     /// The logs the server should have but no longer does (see `ingest::missing`), over all the car's keys.
     pub missing_logs: MissingLogs,
     pub rebuild_pending: bool,
-    /// The newest stretch where one input's GPS fixes disagreed with another's (`gps_inputs_disagree`): which
-    /// inputs, and whose fixes were left out of positions there.
-    pub gps_disagreement: Option<crate::GpsDisagreement>,
     /// The web server fills this from the upload settings.
     pub uploads_enabled: Option<bool>,
 }
@@ -1000,10 +999,12 @@ fn verdict(e: &Engine, c: &model::Car, meta: &records::CarMeta, now: u64) -> QRe
     let mut waiting = 0u64;
     let mut last_upload: Option<u64> = None;
     let mut missing = MissingLogs::default();
+    let mut names = e.key_names()?;
     for key in &c.vehicle_keys {
         if let Ok(book) = rt.block_on(e.judge().missing(key)) {
             missing.add(&book.counts());
         }
+        let name = names.remove(key);
         let s = rt.block_on(e.judge().summary(key));
         let w = s.as_ref().map_or(0, |s| s.waiting as u64);
         waiting += w;
@@ -1014,7 +1015,8 @@ fn verdict(e: &Engine, c: &model::Car, meta: &records::CarMeta, now: u64) -> QRe
             key: key.clone(),
             last_upload_ms: lu,
             preferred: c.preferred_key.as_deref() == Some(key),
-            device: None,
+            device_label: super::keys::device_label(key, name.as_deref()),
+            device: name,
             logs_waiting: w,
         });
     }
@@ -1037,11 +1039,6 @@ fn verdict(e: &Engine, c: &model::Car, meta: &records::CarMeta, now: u64) -> QRe
     // logs the server lost and has asked the car for (those the car no longer has either are only shown)
     if missing.count > 0 {
         reasons.push("logs_missing");
-    }
-    // an input's GPS out of step with the others' in the last 30 days of the car's history
-    let recent = meta.newest_ms.unwrap_or(now).saturating_sub(30 * 86_400_000);
-    if e.gps_disagreement(car).is_some_and(|g| g.to_ms >= recent) {
-        reasons.push("gps_inputs_disagree");
     }
     Ok(Verdict { keys, waiting, last_upload, last_trust, rebuild_pending, missing, reasons })
 }
@@ -1146,7 +1143,6 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
             logs_waiting: waiting,
             missing_logs: missing,
             rebuild_pending,
-            gps_disagreement: e.gps_disagreement(car),
             uploads_enabled: None,
         },
     ))
@@ -1205,7 +1201,8 @@ fn data_dir(e: &Engine) -> Option<&Path> {
 
 /// A car's stored CAN logs (sealed, with their sidecars) whose start falls in `[a, b)`, per day of their start in
 /// `tz`: `(date, bytes)`, and the total of every log (the period apart). One look at each file's size in the car's key
-/// folders; logs still arriving are not counted.
+/// folders; logs still arriving are not counted. A finished day packed into one file (see `ingest::store`) counts
+/// whole for the UTC day it is of, when that day meets the period.
 fn log_days(e: &Engine, c: &model::Car, tz: chrono_tz::Tz, a: u64, b: u64) -> (BTreeMap<String, u64>, u64) {
     let mut days: BTreeMap<String, u64> = BTreeMap::new();
     let mut total = 0u64;
@@ -1222,6 +1219,17 @@ fn log_days(e: &Engine, c: &model::Car, tz: chrono_tz::Tz, a: u64, b: u64) -> (B
             let log = name.strip_suffix(".json").unwrap_or(&name);
             if let Some(t) = records::name_start_ms(log).filter(|t| *t >= a && *t < b) {
                 *days.entry(crate::tz::date_str(t, tz)).or_default() += m.len();
+            }
+        }
+        // finished days packed into one file each: the pack's bytes count for its (UTC) day
+        for (day, bytes) in e.store().pack_sizes(key) {
+            total += bytes;
+            let start = chrono::NaiveDate::parse_from_str(&day, "%Y-%m-%d")
+                .ok()
+                .and_then(|d| d.and_hms_opt(0, 0, 0))
+                .and_then(|d| u64::try_from(d.and_utc().timestamp_millis()).ok());
+            if start.is_some_and(|t| t < b && t.saturating_add(86_400_000) > a) {
+                *days.entry(day).or_default() += bytes;
             }
         }
     }

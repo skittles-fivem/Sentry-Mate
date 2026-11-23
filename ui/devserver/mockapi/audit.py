@@ -139,6 +139,7 @@ def seed(ds, now):
         (28 * DAY, "admin", "key-assigned", "key:c1:cbk_5b2e9f13", "c1", "Moved the CAN Bridge key cbk_5b2e9f13 to Comet."),
         (28 * DAY - MIN, "admin", "key-unassigned", "key:c2:cbk_5b2e9f13", "c2", "Moved the CAN Bridge key cbk_5b2e9f13 from Maple to Comet."),
         (28 * DAY - 2 * MIN, "admin", "key-preferred", "key:c1:cbk_8d41c0a2", "c1", "Made the CAN Bridge key cbk_8d41c0a2 Comet's preferred one."),
+        (28 * DAY - 3 * MIN, "admin", "can-key-renamed", "key:c1:cbk_5b2e9f13", "c1", "Named the CAN Bridge key cbk_5b2e9f13 \u201cPi logger\u201d."),
         (27 * DAY, "admin", "token-created", "token:t40", None, "Made the upload token t40 for a new car."),
         (27 * DAY - HOUR, "admin", "token-revoked", "token:t40", None, "Revoked the upload token t40 of a new car."),
         (26 * DAY, "alex", "place-created", "place:p20", None, "Added the place Corner Bakery (12 drives and 0 charges now carry its name)."),
@@ -199,6 +200,7 @@ def seed(ds, now):
         (2 * DAY - HOUR, "alex", "sessions-revoked", "account:a3", None, "Ended 2 other sessions."),
         (DAY + 3 * HOUR, "admin", "drive-purpose-set", f"drive:c1:{dr3}", "c1", "Set the purpose of a drive of Comet to private."),
         (DAY + 2 * HOUR, "admin", "charge-cost-entered", f"charge:c1:{ch2}", "c1", "Entered a cost for a charge of Comet: 3.10 USD."),
+        (DAY + HOUR, "admin", "storage-compacted", "server:storage", None, "Started packing the stored data (Compact now)."),
         (DAY, S, "release-checked", "server:release", None, "Checked GitHub for a newer build."),
         (DAY - HOUR, "admin", "teslamate-local-car-matched", "teslamate:local", "c2", "Matched TeslaMate car Maple to Maple."),
         (20 * HOUR, "admin", "backup-made", "backup:b1", None, "Made a backup."),  # a code this list does not know

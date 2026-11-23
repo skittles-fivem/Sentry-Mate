@@ -75,7 +75,7 @@ start after the virtual clock are not shown yet, and the piece the clock is in i
 
 | Car | What it is | Story |
 |---|---|---|
-| `c1` Comet | Model Y 2025, Long Range AWD, NCA pack, `America/Los_Angeles` | Home in Noe Valley, work in Mission Bay (San Francisco). Weekday commutes, weekend outings, a road trip to Los Angeles in July with six Supercharger stops, a nine-day holiday parked at home (vampire drain), Sentry at work, scheduled home charging at 23:30 (1 phase, 32 A). **Driving at "now"** (home to Palo Alto). A drive and a charge that stopped mid-way, and a gap of every kind. |
+| `c1` Comet | Model Y 2025, Long Range AWD, NCA pack, `America/Los_Angeles` | Home in Noe Valley, work in Mission Bay (San Francisco). Weekday commutes, weekend outings, a road trip to Los Angeles in July with six Supercharger stops, a nine-day holiday parked at home (vampire drain), Sentry at work, scheduled home charging at 23:30 (1 phase, 32 A). **Driving at "now"** (home to Palo Alto). A drive and a charge that stopped mid-way, and a gap of every kind. Three software updates found from fingerprints, one of each kind of name: `2026.2.6` typed by the owner (`named_by: "owner"`); one nobody has named that changed every module (on a real car its fingerprints flap for minutes after such an install, and the server keeps one update with the final set: so does the mock, never several same-version updates minutes apart); and the newest, `2026.32.5`, named from TeslaFi (`version_source: "teslafi_api"`, `named_by: "auto"`), its current version. |
 | `c2` Maple | Model 3 2022, RWD, LFP pack, `America/Chicago` | Home in Logan Square, work garage in River North (Chicago). Cold winters with reduced range days, home charging on 3 phases, public AC at work, a road trip to Toronto in August (DC in Michigan and in Ontario, costs in CAD). A slow leak in the rear left tyre for the last three weeks. **Charging at "now"** at work. Its newest software update (found from fingerprints, 17 days ago) is named `2026.44.1` from the owner's local TeslaMate (`version_source: "teslamate_local"`, `named_by: "auto"`), so that is its current version; once local TeslaMate's car 1 is matched to Maple, `/now` also reads it live there. |
 | `c3` Atlas | Model S 2017, 90D, old (legacy) CAN profile, `America/Los_Angeles` | East Bay. 16 months imported from TeslaMate (`source: "teslamate"`, estimated energy) that overlap 5 days of CAN rows, and a week of that history imported from TeslaFi as well (TeslaFi's copies of the same drives and charges, `source: "teslafi"`; with no live data there, one import is shown: TeslaMate's at first, flipped in `/overlaps`), free Supercharging, fewer decoded signals (no tyres, no set points). Its CAN Bridge went quiet about 55 hours before "now": the last log failed its check. Its current version `2025.45.8` is read live from TeslaFi (`current_version_source: "teslafi_api"`); TeslaFi first said it eight days after the update, too late to name it, so that update stays `build_match`. |
 | `c4`..`cN` | synthetic | Names, models, states and battery from the car's index only; lists elsewhere are empty but valid. |
@@ -208,6 +208,16 @@ then is the `certificate_expiring` notice up (a certificate the server makes is 
 starts with `localhost`, as the real server's do. A missing `password` on any request that asks for it again is
 `400 bad_input`, a wrong one `403 wrong_password`.
 
+**Storage and compaction**: `GET /api/v1/system/storage/detail` (admin) lists the made-up space on disk by
+category, largest first (the cars' figures of `/system/storage` split into logs as uploaded, their sidecars, day
+packs, series, rows and records, plus the server's own files), with a compaction that is `idle` at start (its last
+pass ended about three hours before `--now-ms`), so a first load is always the same. `POST
+/api/v1/system/storage/compact` starts a pass that "runs" for four reads of the detail (`logs` counted and half
+done, `logs` done, `series`, `records`) and ends on the fifth, whatever the clock does (also with `--freeze-clock`):
+most logs and sidecars as uploaded have then gone into the day packs, the series and records are smaller, and
+`last_saved_bytes` is what the disk total lost. A later pass finds nothing left (`last_saved_bytes` 0). A `failed`
+pass is not played; tests set it in the store (`store.compaction`).
+
 ## Layout
 
 ```
@@ -272,5 +282,7 @@ They start servers in-process on free ports (about 45 s for all). They cover:
   the document and called with ids from the API; it fails on a missing resource, a 5xx or a missing field, on a route
   the document lacks, on anything under "Deliberately absent" that answers, and on a VIN serial in any answer;
 - determinism, a 200,000-car fleet paged under 200 ms a page, and the event stream (with `--rows-every-s` at its pace).
+- storage in detail and compaction (`test_system.py`): categories largest first that add up, idle at start, a pass that
+  runs for a few reads and moves the logs into the day packs, a second pass with nothing left, a failed pass, admin only.
 - the integrations overview (`test_overview.py`): its shape, admin only, problems newest first with one open, 24
   hourly entries ending at the current hour, values that move in place, the capped car rows of a large fleet.

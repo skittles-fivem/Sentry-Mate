@@ -48,6 +48,7 @@ pub const CODES: &[Code] = &[
     c("account-changed", A, Some("account"), "Changed an account"),
     c("account-created", A, Some("account"), "Added an account"),
     c("account-removed", A, Some("account"), "Removed an account"),
+    c("can-key-renamed", CARS, Some("key"), "Named a CAN Bridge key"),
     c(
         "can-logs-missing",
         CARS,
@@ -113,6 +114,7 @@ pub const CODES: &[Code] = &[
     c("sign-in-refused", S, Some("account"), "Was refused: two-step sign-in is required here"),
     c("sign-out", S, Some("session"), "Signed out"),
     c("signed-out", S, Some("session"), "Was signed out: two-step sign-in is required outside the home network"),
+    c("storage-compacted", SET, Some("server"), "Started packing the stored data"),
     c("tesla-account-added", INT, Some("tesla"), "Added a Tesla account"),
     c("tesla-account-changed", INT, Some("tesla"), "Changed a Tesla account"),
     c("tesla-account-error", INT, Some("tesla"), "Tesla refused a Tesla account"),

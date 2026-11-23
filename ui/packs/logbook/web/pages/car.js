@@ -16,7 +16,7 @@ import { formatList } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { tyreView, recommendedLine } from '../shared/tyres.js';
-import { pageHead, q, plus, figure, chip, flag, icon, stateMark, empty, errorView, loadingBlock, sep, ago, routeSketch } from '../core/ui.js';
+import { pageHead, q, plus, figure, chip, icon, stateMark, empty, errorView, loadingBlock, sep, ago, routeSketch } from '../core/ui.js';
 import { column, timeColumn, csvFilename, downloadCsv } from '../shared/csv.js';
 import { makeMap, coordsText, boundsOf } from '../core/map.js';
 import { stackedCharts, spansFromStates } from '../core/chart.js';
@@ -516,8 +516,9 @@ const SUNROOF_WORDS = { closed: 'Closed', open: 'Open', vent: 'Vent', venting: '
 
 /**
  * What no CAN message carries (now.off_can): software and its update, lock and windows, sunroof, schedules and the
- * route, each from the Tesla API or TeslaFi with its input and a stale mark once it is older than its limit. A value
- * no input gave is a dash, never a guess (no lock state from a lock request).
+ * route, each from the car's other inputs; its input, its time and (once older than its limit) stale are its hover
+ * title, never words beside it. Each window by name only while one is read now: stale readings fold into "Any window
+ * open". A value no input gave is a dash, never a guess (no lock state from a lock request).
  */
 function offCan(now, tz) {
   const o = now.off_can || {};
@@ -526,7 +527,7 @@ function offCan(now, tz) {
   const all = [o.version, o.update_available, o.update_version, o.update_download_pct, o.update_installing, o.locked, o.windows_open,
     ...WINDOWS.map(([k]) => w[k]), o.sunroof_state, o.sunroof_pct, o.scheduled_charge_start_ms, o.scheduled_departure_ms, r.destination, r.km, r.minutes, r.traffic_min];
   const covers = ['summary.flag.lock', 'summary.flag.windows_open'];
-  const head = h('h2', { class: 'label', id: 'offcan-title' }, 'Not on the CAN bus', h('span', { class: 'label-note' }, 'from the Tesla API or TeslaFi; hover a value for its time'));
+  const head = h('h2', { class: 'label', id: 'offcan-title' }, 'Not on the CAN bus', h('span', { class: 'label-note' }, 'hover a value for its input and time'));
   if (all.every((x) => x == null)) {
     return h('section', { class: 'off-can', 'aria-labelledby': 'offcan-title', cover: covers }, head,
       h('p', { class: 'note' }, 'Software updates, lock, windows, sunroof, schedules and the route are not on the car’s CAN bus. A Tesla account or a TeslaFi token (Settings: Integrations) gives them; none has for this car.'));
@@ -534,11 +535,14 @@ function offCan(now, tz) {
   const opts = { now: api.now() };
   const dash = () => h('span', { class: 'nil' }, '—');
   const show = (x, fn) => (x == null || v(x) == null ? dash() : fn(v(x)));
-  const item = (name, x, value, { warn = false, on = false, cover = null } = {}) => h('li', {
+  const readAt = (x) => (x && x.at_ms ? `${x.sources?.[0]?.label ? `${x.sources[0].label}, read` : 'Read'} ${formatDateTime(x.at_ms, tz, { ...opts, seconds: true })}${x.stale ? '; stale, may have changed since' : ''}` : null);
+  const item = (name, x, value, { warn = false, on = false, cover = null, title = null } = {}) => h('li', {
     class: ['flag-item', { 'is-warn': warn && x && !x.stale, 'is-on': on && x && !x.stale, 'is-stale': !!(x && x.stale) }], cover,
-    title: x && x.at_ms ? `Read ${formatDateTime(x.at_ms, tz, { ...opts, seconds: true })}${x.stale ? ', too old to count on now' : ''}` : null },
+    title: [readAt(x), title].filter(Boolean).join('. ') || null },
   h('span', { class: 'flag-name' }, name),
-  h('span', { class: 'flag-value' }, value, valueMark(x), x && x.stale ? flag('Stale', { kind: 'warn', title: 'Older than this value’s age limit; the broker gets it empty.' }) : null));
+  h('span', { class: 'flag-value' }, value));
+  const winRead = WINDOWS.map(([k]) => w[k]).filter(Boolean);
+  const winRows = winRead.some((x) => !x.stale);
   const group = (title, items) => h('div', { class: 'oc-group' }, h('h3', { class: 'oc-name' }, title), h('ul', { class: 'oc-list' }, items));
   const yes = (t, f) => (b) => (b ? t : f);
   const installing = v(o.update_installing), avail = v(o.update_available);
@@ -554,8 +558,8 @@ function offCan(now, tz) {
       ]),
       group('Lock and windows', [
         item('Locked', o.locked, show(o.locked, yes('Locked', 'Unlocked')), { warn: v(o.locked) === false && now.state !== 'driving' }),
-        item('Any window open', o.windows_open, show(o.windows_open, yes('Yes', 'No')), { warn: !!v(o.windows_open) }),
-        ...WINDOWS.map(([k, n]) => item(n, w[k], show(w[k], yes('Open', 'Closed')), { warn: !!v(w[k]) })),
+        item('Any window open', o.windows_open, show(o.windows_open, yes('Yes', 'No')), { warn: !!v(o.windows_open), title: !winRows && winRead.length && winRead[0].at_ms !== o.windows_open?.at_ms ? `Each window: ${readAt(winRead[0])}` : null }),
+        ...(winRows ? WINDOWS.filter(([k]) => w[k]).map(([k, n]) => item(n, w[k], show(w[k], yes('Open', 'Closed')), { warn: !!v(w[k]) })) : []),
       ]),
       group('Sunroof and schedule', [
         item('Sunroof', o.sunroof_state, show(o.sunroof_state, (x) => SUNROOF_WORDS[x] || x)),

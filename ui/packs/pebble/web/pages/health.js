@@ -29,6 +29,7 @@ import { teslamateCarFacts, teslamateHref } from './teslamate.js';
 import { TM_BASE, TM_SOURCE } from '../shared/teslamate.js';
 import { VERSION_SOURCE } from '../core/firmware.js';
 import { STATUS, STATUS_ORDER } from './connections.js';
+import { deviceText, keyRows } from './device-name.js';
 
 export const id = 'health';
 export const css = true;
@@ -45,7 +46,6 @@ const REASONS = {
   upload_silence: ['No log has arrived for a while', 'Check that the CAN Bridge has power and a network, and that its key still uploads. Nothing is lost while the car sleeps.', 'Check the keys'],
   trust_failed: ['The last log failed its check', 'Its signature or hash chain did not match, so its data is kept apart. Pair the bridge again if its key changed.', 'Pair again'],
   logs_waiting_trust: ['Logs wait for a key to be trusted', 'They came from a key nobody has approved yet. Approve it and they are read at once.', 'Approve the key'],
-  gps_inputs_disagree: ['Positions from one input are out of step', 'One input’s GPS positions are far from the other inputs’ positions at the same moments, more than lag or noise explains (often a decoding problem). Its positions are not used there; the other inputs’ positions are. The rest of its data is still used.', null],
   logs_missing: ['Logs missing on the server', 'The server lost some logs and asked the car to send them again. Nothing needs doing; see Missing on the server below.', null],
   rebuild_pending: ['Drives and charges are being rebuilt', 'This page reads again every few seconds until it is done. Nothing needs doing.', null],
 };
@@ -155,8 +155,9 @@ async function mountCar(ctx) {
   /* the keys and the rebuild */
   const keys = hl.keys || [];
   const keysT = tile({ w: 2, title: 'CAN Bridge keys', icon: 'key' },
-    keys.length ? h('ul', { class: 'checks' }, keys.map((k) => checkRow({ name: k.device || 'Unnamed device', sub: k.key, word: k.last_upload_ms != null ? ago(k.last_upload_ms) : 'Never',
-      level: k.logs_waiting ? 'warn' : k.last_upload_ms != null ? 'ok' : 'off', side: h('span', { class: 'check-word' }, k.preferred ? 'Preferred · ' : '', k.last_upload_ms != null ? ago(k.last_upload_ms) : 'never') })))
+    keys.length ? h('ul', { class: ['checks', 'hl-keys'] }, keyRows(ctx, keys, (k, rename) => checkRow({ name: deviceText(k), sub: k.key, word: k.last_upload_ms != null ? ago(k.last_upload_ms) : 'Never',
+      level: k.logs_waiting ? 'warn' : k.last_upload_ms != null ? 'ok' : 'off',
+      side: h('span', { class: 'hl-key-side' }, h('span', { class: 'check-word' }, k.preferred ? 'Preferred · ' : '', k.last_upload_ms != null ? ago(k.last_upload_ms) : 'never'), rename) })))
       : note('No key is tied to this car yet. Pair a CAN Bridge in car settings.'),
     ctx.admin ? h('div', { class: 'hl-rebuild' },
       btn('Rebuild this period', { kind: 'soft', icon: 'reset', onclick: (e) => rebuild(e.currentTarget) }),

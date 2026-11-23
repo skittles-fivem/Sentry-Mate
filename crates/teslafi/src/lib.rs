@@ -245,6 +245,28 @@ impl<S: Sink> Service<S> {
         self.restart();
     }
 
+    /// The zone TeslaFi's poll times are read in for an account with no zone of its own.
+    pub fn default_time_zone(&self) -> chrono_tz::Tz {
+        self.opts().tz()
+    }
+
+    /// The server's default time zone changed (an admin saved one): pollers of accounts with no zone of their own
+    /// start again reading TeslaFi's poll times in it. TeslaFi writes them in the account's wall time, so read in the
+    /// wrong zone a poll taken now looks hours old (or ahead), and its lock and windows look stale.
+    pub fn set_default_time_zone(&self, zone: &str) {
+        if zone.parse::<chrono_tz::Tz>().is_err() {
+            return;
+        }
+        {
+            let mut o = self.inner.opts.write().unwrap_or_else(|p| p.into_inner());
+            if o.default_time_zone == zone {
+                return;
+            }
+            o.default_time_zone = zone.to_string();
+        }
+        self.restart();
+    }
+
     fn restart(&self) {
         let running: Vec<String> = lock(&self.inner.tasks).keys().cloned().collect();
         for id in running {
