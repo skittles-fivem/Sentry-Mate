@@ -354,7 +354,7 @@ async function mountCar(ctx) {
     ];
     upT = tile({ w: 2, title: 'Uploads, tokens and keys', icon: 'upload', cover: 'faq.car-missing.outcomes', side: btn('Make a token', { kind: 'primary', icon: 'plus', cls: 'btn-sm', onclick: makeToken }) },
       h('ul', { class: 'checks' }, checks.filter(Boolean)),
-      group('Upload tokens', toks.length ? toks.map((t) => infoRow({ icon: 'key', name: t.id, sub: `Made ${day(t.created_ms, ctx.tz)}${t.key ? ` · tied to ${t.key}` : ''}${t.last_upload_ms ? ` · last upload ${day(t.last_upload_ms, ctx.tz)}` : ''}`,
+      group('Upload tokens', toks.length ? toks.map((t) => infoRow({ icon: 'key', name: t.id, sub: `Made ${day(t.created_ms, ctx.tz)}${t.key ? ` · tied to ${t.device ? `${t.device} (${t.key})` : t.key}` : ''}${t.last_upload_ms ? ` · last upload ${day(t.last_upload_ms, ctx.tz)}` : ''}`,
         side: t.revoked ? chip('Revoked', { tone: 'muted' }) : [chip(t.key || t.last_upload_ms ? 'In use' : 'Not used yet', { tone: t.key || t.last_upload_ms ? 'teal' : 'sun' }),
           btn(`Revoke ${t.id}`, { kind: 'ghost', icon: 'close', iconOnly: true, cls: 'btn-sm', onclick: async () => {
             if (!await confirmSheet({ title: `Revoke token ${t.id}?`, text: 'The CAN Bridge that uses it stops uploading at its next request. Logs it sent stay.', yes: 'Revoke', danger: true })) return;

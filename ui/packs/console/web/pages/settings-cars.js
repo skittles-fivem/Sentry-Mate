@@ -456,7 +456,7 @@ async function mountCar(ctx) {
         { key: 'id', label: 'token', ph: 'main' },
         { key: 'created', label: 'made', sort: true, ph: 'sub', value: (t) => t.created_ms, render: (t) => dateTime(t.created_ms, z) },
         { key: 'state', label: 'state', ph: 'num', render: tokenState },
-        { key: 'key', label: 'key it brought', ph: 'sub', render: (t) => t.key || h('span', { class: 'muted' }, t.revoked ? DASH : 'none yet') },
+        { key: 'key', label: 'key it brought', ph: 'sub', render: (t) => (t.key ? [t.key, ' ', deviceText(t)] : h('span', { class: 'muted' }, t.revoked ? DASH : 'none yet')) },
         { key: 'last', label: 'last upload', sort: true, value: (t) => t.last_upload_ms, render: (t) => (t.last_upload_ms ? ago(t.last_upload_ms) : 'never') },
         { key: 'act', label: '', grow: true, render: (t) => (t.revoked ? false : btn('revoke', () => revokeToken(t), { kind: 'danger' })) },
       ],

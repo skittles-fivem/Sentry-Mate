@@ -695,7 +695,7 @@ async function mountCar(ctx) {
       columns: [
         { key: 'id', label: 'Token', th: true, cell: (t) => [h('span', { class: 'cell-main mono' }, t.id), h('span', { class: 'cell-sub' }, `made ${formatDate(t.created_ms, ctx.tz, { weekday: false, now: api.now() })}`)] },
         { key: 'status', label: 'State', cell: (t) => (t.revoked ? chip('Revoked') : t.key || t.last_upload_ms ? chip('In use', { kind: 'on' }) : chip('Not used yet', { kind: 'warn' })) },
-        { key: 'key', label: 'Tied to key', cell: (t) => (t.key ? h('span', { class: 'mono' }, t.key) : h('span', { class: 'cell-sub' }, t.revoked ? '—' : 'ties itself on the first upload')) },
+        { key: 'key', label: 'Tied to key', cell: (t) => (t.key ? [h('span', { class: 'cell-main mono' }, t.key), deviceText(t, 'cell-sub')] : h('span', { class: 'cell-sub' }, t.revoked ? '—' : 'ties itself on the first upload')) },
         { key: 'last', label: 'Last upload', cell: (t) => dateCell(t.last_upload_ms, ctx.tz, true) },
         { key: 'do', label: '', cell: (t) => (t.revoked ? '' : button('Revoke', { kind: 'quiet', cls: 'button-small', onclick: () => revoke(t) })) },
       ],
