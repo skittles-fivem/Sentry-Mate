@@ -45,6 +45,7 @@
 pub mod compact;
 pub mod costs;
 pub mod firmware;
+pub mod full;
 pub mod importer;
 pub mod jobs;
 mod pipeline;
@@ -85,6 +86,8 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("the engine is not running (Engine::start was not called)")]
     NotStarted,
+    #[error("{0}")]
+    Other(String),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -262,6 +265,14 @@ pub(crate) struct Inner {
     pub(crate) compaction: Mutex<compact::Running>,
     pub(crate) compact_stop: std::sync::atomic::AtomicBool,
     pub(crate) compact_auto: std::sync::atomic::AtomicBool,
+    /// The full rebuild under way ([`full`]); its record's changes, one at a time; a test's failure point.
+    pub(crate) full: Mutex<full::Full>,
+    pub(crate) full_start: Mutex<()>,
+    pub(crate) full_fail_at: Mutex<Option<full::Phase>>,
+    pub(crate) full_crash_at: Mutex<Option<full::Phase>>,
+    pub(crate) full_auto: std::sync::atomic::AtomicBool,
+    /// The cars whose history was made with another decoding ([`Engine::version_stale`]).
+    pub(crate) version_stale: Mutex<std::collections::HashSet<CarId>>,
 }
 
 /// A stretch of a car's history where one input's GPS fixes disagreed with another's of the same moments by far
@@ -396,6 +407,12 @@ impl Engine {
                 compaction: Mutex::default(),
                 compact_stop: std::sync::atomic::AtomicBool::new(false),
                 compact_auto: std::sync::atomic::AtomicBool::new(false),
+                full: Mutex::default(),
+                full_start: Mutex::new(()),
+                full_fail_at: Mutex::new(None),
+                full_crash_at: Mutex::new(None),
+                full_auto: std::sync::atomic::AtomicBool::new(true),
+                version_stale: Mutex::default(),
                 opts,
             }),
         }
@@ -500,7 +517,11 @@ impl Engine {
         *lock(&self.inner.handle) = Some(handle.clone());
         let engine = self.clone();
         handle.spawn(async move { engine.run(rx).await });
+        // the cars whose history was made with another decoding: held for a full rebuild, not redone in place
+        self.check_versions();
         self.send(Work::Reconcile { car: None });
+        // a full rebuild a restart cut off carries on
+        self.full_resume();
         // the days' pack readings, worked out once idle (and again now and then)
         handle.spawn(query::pack_logs::passes(self.clone()));
         Ok(())
