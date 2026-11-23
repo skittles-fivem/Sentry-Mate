@@ -8,7 +8,8 @@
 // An update found from them (/updates rows with detected_by "fingerprint") lists the changed fields, old -> new, and
 // sits between the last drive with the old set and the first with the new one. Its version is null until an admin
 // types it (PATCH /updates/{id} { version }, null clears it); the server then names every later update with the same
-// fingerprint set by itself (named_by "auto").
+// fingerprint set by itself (named_by "auto"), or from the version a live input (teslafi, local teslamate, the tesla
+// api) reported within a day after it (named_by "auto", version_source the input). A typed name always wins.
 //
 //   firmwarePanel(ctx)          { el, ready, reload() }: ## car firmware, one table per module
 //   fingerprintUpdates(ctx, o)  { el, ready, reload() }: ## tesla updates installed, a block per update with a name box
@@ -30,6 +31,18 @@ export const MODULE_WORDS = { vcfront: 'front body controller', bms: 'battery ma
 const SHORT = { vcfront: 'front body', bms: 'battery', dir: 'rear drive', dif: 'front drive' };
 export const modWords = (ids, { short = false } = {}) => (ids || []).map((m) => (short ? SHORT : MODULE_WORDS)[m] || m).join(', ');
 const VERSION_RX = /^\d{4}\.\d{1,2}(\.\d{1,3}){0,2}$/;
+/** Where a version came from (version_source), as a short tag and as words. Every source the server sends. */
+export const VERSION_SOURCE = {
+  owner: 'typed', build_match: 'same fingerprints', tesla_api: 'from tesla api', teslafi_api: 'from teslafi',
+  teslamate_local: 'from teslamate', teslamate: 'teslamate import', teslafi: 'teslafi import',
+};
+export const VERSION_SOURCE_WORDS = {
+  owner: 'typed by an admin', build_match: 'named from an earlier update with the same fingerprints',
+  tesla_api: 'read from the tesla api after it', teslafi_api: 'read from teslafi after it', teslamate_local: 'read from local teslamate after it',
+  teslamate: 'imported from a teslamate backup', teslafi: 'imported from a teslafi backup',
+};
+/** The source tag of a version, or null for a source this pack does not know. */
+export const versionTag = (vs) => (VERSION_SOURCE[vs] ? tag(VERSION_SOURCE[vs], 'muted') : null);
 const none = (t) => h('span', { class: 'muted' }, t);
 /** A fingerprint as monospace hex that may break anywhere on a narrow screen. */
 export const hexEl = (v) => (v == null ? none(DASH) : h('code', { class: 'hex' }, v));
@@ -163,7 +176,7 @@ export function fingerprintUpdates(ctx, { onNamed = null } = {}) {
 
   function block(u, dr) {
     const named = u.version
-      ? [h('b', null, u.version), ' ', u.named_by === 'auto' ? tag('same fingerprints', 'muted') : tag('typed', 'muted')]
+      ? [h('b', null, u.version), ' ', versionTag(u.version_source) || (u.named_by === 'auto' ? tag('same fingerprints', 'muted') : tag('typed', 'muted'))]
       : h('span', { class: 'tone--warn' }, 'not named yet');
     const t = table(ctx, {
       bare: true, rows: u.changes || [], csv: false, label: `What changed in the Tesla update installed ${dateTime(u.end_ms, tz)}`,
@@ -180,7 +193,7 @@ export function fingerprintUpdates(ctx, { onNamed = null } = {}) {
       h('p', { class: 'fw-upd-head' }, tag('installed', 'accent'), ' ', h('b', null, 'Tesla update installed'), ' ', h('span', { class: 'muted' }, dateTime(u.end_ms, tz))),
       kv([
         ['version', named],
-        u.version && u.named_by === 'auto' ? ['named', none('named from an earlier update with the same fingerprints')] : null,
+        u.version && u.named_by === 'auto' ? ['named', none(VERSION_SOURCE_WORDS[u.version_source] || 'named from an earlier update with the same fingerprints')] : null,
         ['between', [h('span', { class: 'muted' }, 'last drive before '), dl(dr.before)]],
         ['and', [h('span', { class: 'muted' }, 'first drive after '), dl(dr.after)]],
         ['window', [dateTime(u.between_ms?.[0] ?? u.start_ms, tz), ' .. ', dateTime(u.between_ms?.[1] ?? u.end_ms, tz), none(` (${dur((u.between_ms?.[1] ?? u.end_ms) - (u.between_ms?.[0] ?? u.start_ms))}: old fingerprints last seen, new first seen)`)]],
@@ -211,7 +224,7 @@ export function fingerprintUpdates(ctx, { onNamed = null } = {}) {
     tables.length = 0;
     replace(side, found.length ? `${formatNumber(found.length)} in this range` : 'none in this range');
     replace(body,
-      note('Found from the modules\' fingerprints: the old ones were last seen at the start of the window, the new ones first seen at its end. The car does not send the version text, so an admin types it once; the server then names every later update with the same fingerprints.'),
+      note('Found from the modules\' fingerprints: the old ones were last seen at the start of the window, the new ones first seen at its end. The car does not send the version text: teslafi, local teslamate or the tesla api name it when they report it, or an admin types it once (typed wins); the server then names every later update with the same fingerprints.'),
       found.length ? found.slice(0, 30).map((u, i) => block(u, drs[i]))
         : empty('no update found from fingerprints in this range', 'A Tesla update shows here once the car\'s logs carry new fingerprints. Choose a longer range; all shows every one.'),
       found.length > 30 ? note(`The newest 30 of ${formatNumber(found.length)} are shown; a shorter range shows older ones.`) : null);

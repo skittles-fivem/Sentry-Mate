@@ -23,15 +23,14 @@ import { field, form } from '../core/form.js';
 import { openDialog } from '../core/dialog.js';
 import { toast } from '../core/toast.js';
 import { src, srcText } from '../core/source.js';
-import { firmwarePanel, fingerprintUpdates, modWords } from './firmware.js';
+import { firmwarePanel, fingerprintUpdates, modWords, VERSION_SOURCE as SOURCE, versionTag } from './firmware.js';
 import { firmwareHistory } from './firmware-history.js';
 
 export const id = 'software';
 export const title = () => 'Software';
 
 const enc = encodeURIComponent;
-const SOURCE = { teslamate: 'imported', tesla_api: 'tesla api', owner: 'typed', build_match: 'same build' };
-const FOUND = { ota_status: 'update status', build_change: 'module builds', fingerprint: 'fingerprints', teslamate: 'imported', tesla_api: 'tesla api' };
+const FOUND = { ota_status: 'update status', build_change: 'module builds', fingerprint: 'fingerprints', teslamate: 'teslamate import', teslafi: 'teslafi import', tesla_api: 'tesla api', teslafi_api: 'teslafi', teslamate_local: 'teslamate' };
 const mods = (list) => modWords(list, { short: true });
 const none = (t) => h('span', { class: 'muted' }, t);
 const VERSION_RX = /^\d{4}\.\d{1,2}(\.\d{1,3}){0,2}$/;
@@ -60,17 +59,21 @@ export async function mount(ctx) {
     const v = sm.current_version;
     const changed = sm.build_changed_since != null;
     replace(nowSlot, kv([
-      ['version', changed ? [h('span', { class: 'tone--warn' }, 'not named yet'), none(v ? `  last named ${v}` : '')] : v ? [h('b', null, v), SOURCE[sm.current_version_source] ? [' ', tag(SOURCE[sm.current_version_source], 'muted')] : null] : none('not known')],
+      ['version', changed ? [h('span', { class: 'tone--warn' }, 'not named yet'), none(v ? `  last named ${v}` : '')] : v ? [h('b', null, v), SOURCE[sm.current_version_source] ? [' ', versionTag(sm.current_version_source)] : null] : none('not known')],
       ['since', changed ? dateTime(sm.build_changed_since, tz) : sm.current_version_since_ms != null ? dateTime(sm.current_version_since_ms, tz) : DASH],
       ['updates', h('span', { cover: 'updates.stat.count' }, formatNumber(sm.count ?? 0), none(' in this range'))],
       ['typical gap', h('span', { cover: 'updates.stat.median_gap' }, sm.median_gap_ms != null ? formatDuration(sm.median_gap_ms) : none('needs two updates')), { }],
       installing ? ['installing', [tag('running', 'warn'), ` since ${formatTime(installing.start_ms, tz)}`], { tone: 'warn' }] : null,
       ['state', changed ? [tag('warn', 'warn'), ' a tesla update was installed; nobody has named its version yet: ', link('#tesla-updates', 'name it below')] : [tag('ok', 'good'), ' the version is known']],
     ]),
-    note('the car does not send its version text: a version is imported, typed by an admin, or taken from an update with the same builds. never guessed.'),
+    note('the car does not send its version text: a version is read from teslafi, local teslamate or the tesla api, imported, typed by an admin (typed wins), or taken from an update with the same builds. never guessed.'),
     h('p', { class: 'note', cover: 'projects.telegram-bot' }, 'a "software changed" event goes out on mqtt and the events list when an update ends: ',
       link(state.buildUrl('settings-integrations'), 'settings/integrations'), '. a pending update is not on the can bus.'));
   }
+
+  // the car's newest update whatever the period (summary.last_update), and a way to all time
+  const lastWords = (u) => `${formatDate(u.end_ms ?? u.start_ms, tz, { weekday: false })}${u.version ? ` (${u.version})` : ''}`;
+  const allBtn = () => h('button', { class: 'btn btn--line tone--accent', type: 'button', title: 'set the period to all time', onclick: () => state.setPeriod({ preset: 'all' }, { push: true }) }, '[show all time]');
 
   const timelineHref = (r) => state.buildUrl('timeline', { car: cid, period: { from: r.start_ms - HOUR, to: (r.end_ms ?? now()) + HOUR } });
   const onVersion = (r) => ({ from: r.end_ms ?? r.start_ms, to: r.until_ms ?? now() });
@@ -83,12 +86,13 @@ export async function mount(ctx) {
         ? h('a', { class: 'lnk', href: notesHref(r.version), target: '_blank', rel: 'noopener noreferrer external', title: 'release notes on an outside site' }, r.version)
         : h('b', null, r.version))
       : h('span', { class: 'tone--warn' }, r.detected_by === 'fingerprint' ? 'tesla update installed' : 'build changed'),
-    r.version && SOURCE[r.version_source] ? [' ', tag(SOURCE[r.version_source], 'muted')] : null,
+    r.version && SOURCE[r.version_source] ? [' ', versionTag(r.version_source)] : null,
     ctx.admin && r.source === 'can' ? [' ', r.detected_by === 'fingerprint'
       ? h('a', { class: 'btn btn--line tone--accent', href: `#upd-${r.id}`, title: 'name it below, with what changed' }, r.version ? '[edit]' : '[name it]')
       : h('button', { class: 'btn btn--line tone--accent', type: 'button', onclick: () => editVersion(r) }, r.version ? '[edit]' : '[type it]')] : null);
 
   let painted = false;
+  let summary = null;   // the newest page's summary: its last_update fills the empty state
   const updates = table(ctx, {
     title: 'versions', path, params: ctx.params, limit: 50, cover: 'updates.table', csvName: 'software updates',
     side: reloadBtn,
@@ -111,8 +115,10 @@ export async function mount(ctx) {
       { key: 'pack', label: 'full pack', num: true, render: (r) => (r.full_pack_kwh == null ? none('not measured') : num(r.full_pack_kwh, 'energy')) },
       { key: 'from', label: 'data', title: 'where the data came from: smo, api (the Tesla API), imp (imported)', render: (r) => src(r), value: (r) => srcText(r) },
     ],
-    empty: () => empty('no updates in this range', ctx.period.preset === 'all' ? 'an update shows once the car installs one while recording, or with an imported history' : 'choose a longer range; all shows every update'),
-    onPage: (pg) => { if (!ctx.alive()) return; painted = true; paintNow(pg.summary, updates.rows()); },
+    empty: () => (ctx.period.preset !== 'all' && summary?.last_update
+      ? empty(`no updates in this period; the last one was ${lastWords(summary.last_update)}`, allBtn())
+      : empty('no updates in this range', ctx.period.preset === 'all' ? 'an update shows once the car installs one while recording, or with an imported history' : 'choose a longer range; all shows every update')),
+    onPage: (pg) => { if (!ctx.alive()) return; painted = true; summary = pg?.summary || null; paintNow(pg.summary, updates.rows()); },
   });
   const notesLine = h('p', { class: 'note', cover: 'updates.link.release_notes' }, notesOn
     ? 'a known version links to its release notes on an outside site; nothing is sent until you open one.'
@@ -124,7 +130,7 @@ export async function mount(ctx) {
     side: h('label', { class: 'filt filt--inline' }, h('span', { class: 'filt-p' }, 'find>'), search),
     columns: [
       { key: 'car', label: 'car', ph: 'main', grow: true, render: (r) => link(state.buildUrl('software', { car: r.car, period: state.current().period }), r.name || r.car) },
-      { key: 'version', label: 'version now', ph: 'sub', render: (r) => (r.build_changed_since != null ? [h('span', { class: 'tone--warn' }, 'not named yet'), none(r.version ? ` last ${r.version}` : '')] : r.version || none('not known')) },
+      { key: 'version', label: 'version now', ph: 'sub', render: (r) => (r.build_changed_since != null ? [h('span', { class: 'tone--warn' }, 'not named yet'), none(r.version ? ` last ${r.version}` : '')] : r.version ? [r.version, SOURCE[r.version_source] ? [' ', versionTag(r.version_source)] : null] : none('not known')) },
       { key: 'changed', label: 'changed since', render: (r) => (r.build_changed_since != null ? h('span', { class: 'tone--warn' }, dateTime(r.build_changed_since, tz)) : none('no change')) },
       { key: 'last', label: 'last update', num: true, ph: 'num', render: (r) => (r.last_update_ms != null ? formatDate(r.last_update_ms, tz, { weekday: false }) : none('none')) },
     ],

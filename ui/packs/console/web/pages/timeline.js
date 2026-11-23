@@ -14,7 +14,7 @@ import { num, stateWord, when, ago, tag } from '../core/fmt.js';
 import { stateStrip } from '../core/strip.js';
 import { empty, loadingLine, errorWords } from '../core/states.js';
 import { src, isEstimated } from '../core/source.js';
-import { modWords } from './firmware.js';
+import { modWords, VERSION_SOURCE } from './firmware.js';
 
 export const id = 'timeline';
 
@@ -77,10 +77,11 @@ export function eventLine(r, { car, tz }) {
     bits.push(GAP[r.gap_reason] || 'no data for this time', r.distance_km ? `moved ${format(r.distance_km, 'distance')} without a drive` : null);
   } else {
     if (r.detected_by === 'fingerprint') {
-      // found from the modules' firmware fingerprints: the version is what an admin typed (or none yet)
+      // found from the modules' firmware fingerprints: the version an admin typed or a live input reported (or none yet)
       what = ['Tesla update installed', r.version ? h('span', { class: 'muted' }, ` ${r.version}`) : h('span', { class: 'tone--warn' }, ' not named yet')];
       bits.push(r.changed_modules?.length ? `changed: ${modWords(r.changed_modules, { short: true })}` : null);
     } else what = ['software update', r.version ? h('span', { class: 'muted' }, ` ${r.version}`) : null];
+    if (r.version && VERSION_SOURCE[r.version_source]) bits.push(`version ${VERSION_SOURCE[r.version_source]}`);
   }
   if (r.soc_end_pct != null && r.kind !== 'gap' && r.kind !== 'update') bits.push(`${format(r.soc_end_pct - (r.soc_delta_pct || 0), 'percent')} -> ${format(r.soc_end_pct, 'percent')} (${sign(r.soc_delta_pct, 'percent')})`);
   if (r.range_end_km != null && r.kind !== 'gap') bits.push(`range ${format(r.range_end_km, 'range')}${r.range_delta_km != null && r.kind !== 'charge' ? ` (${sign(r.range_delta_km, 'range')})` : ''}`);

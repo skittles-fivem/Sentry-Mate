@@ -22,6 +22,7 @@ import { chartOrNote, line, timeAxis, valueAxis, cursor, readout } from '../core
 import { rpx } from '../core/display.js';
 import { src, srcText } from '../core/source.js';
 import { teslaCarRows, lastErrorText } from './tesla.js';
+import { versionTag } from './firmware.js';
 
 export const id = 'health';
 export const title = (ctx) => (ctx.car ? 'Health' : 'System');
@@ -260,7 +261,7 @@ async function mountCar(ctx) {
       ['drives', [formatNumber(all.drives ?? 0), split(can.drives, api.drives, tm.drives, 'count')], { cover: 'dbinfo.stat.drive_count' }],
       ['charges', [formatNumber(all.charges ?? 0), split(can.charges, api.charges, tm.charges, 'count')], { cover: 'dbinfo.stat.charge_count' }],
       ['updates', [formatNumber(all.updates ?? 0), split(can.updates, api.updates, tm.updates, 'count')], { cover: 'dbinfo.stat.update_count' }],
-      ['software', sm?.current_version ? [link(state.buildUrl('software', { car: cid }), sm.current_version), sm.build_changed_since != null ? [' ', warn('changed since')] : null] : none('not known: the car does not send its version text'), { cover: 'dbinfo.stat.current_version' }],
+      ['software', sm?.current_version ? [link(state.buildUrl('software', { car: cid }), sm.current_version), versionTag(sm.current_version_source) ? [' ', versionTag(sm.current_version_source)] : null, sm.build_changed_since != null ? [' ', warn('changed since')] : null] : none('not known: the car does not send its version text'), { cover: 'dbinfo.stat.current_version' }],
     ]), counts.el);
   }
 

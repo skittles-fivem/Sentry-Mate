@@ -138,7 +138,7 @@ export async function mount(ctx) {
       .concat(val(f.trunk) ? ['trunk'] : [], val(f.frunk) ? ['frunk'] : [], val(f.liftgate_deg) ? ['liftgate'] : []);
     const doorsKnown = ['fl', 'fr', 'rl', 'rr'].some((k) => val(doors[k]) != null);
     const sw = n.software || {};
-    const swSrc = { teslamate: 'imported', tesla_api: 'from the Tesla API', owner: 'typed by the owner', build_match: 'matched by module builds' }[sw.version_source];
+    const swSrc = { teslamate: 'imported from TeslaMate', teslafi: 'imported from TeslaFi', tesla_api: 'from the Tesla API', teslafi_api: 'from TeslaFi', teslamate_local: 'from local TeslaMate', owner: 'typed by the owner', build_match: 'matched by module builds' }[sw.version_source];
     const o = oc();
     const winOpen = WINDOWS.filter(([k]) => val(o.windows?.[k])).map(([, w]) => w);
     const ov = val(o.version);

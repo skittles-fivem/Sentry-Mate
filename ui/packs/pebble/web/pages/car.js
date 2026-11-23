@@ -31,7 +31,7 @@ import { srcPill, viaMark, inputsLine } from '../core/source.js';
 // a tile's new children; a null or false part is left out (replaceChildren would print it as text)
 const put = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false && k !== ''));
 import { vehicleTiles } from './vehicle-parts.js';
-import { historyHref } from '../core/firmware.js';
+import { historyHref, VERSION_SOURCE } from '../core/firmware.js';
 
 const withVia = (text, x) => { const m = viaMark(x); return m ? h('span', { class: 'src-line' }, text, m) : text; };
 /** The input mark of an off_can value ({ value, at_ms, sources, stale } or null), and Stale past its age limit. */
@@ -263,7 +263,7 @@ export async function mount(ctx) {
     const updText = upd == null ? null : v(oc.update_installing) ? `Installing ${uv || 'an update'}` : upd ? `${uv || 'An update'} waiting${pct != null ? `, ${format(pct, 'percent')} downloaded` : ''}` : 'No update waiting';
     put(tSoft, tSoft.firstChild,
       h('p', { class: 'tile-big' }, ver || 'Not known'),
-      h('p', { class: 'tile-line' }, sw.version ? (sw.version_source === 'owner' ? 'typed by the owner' : sw.version_source === 'build_match' ? 'named from an earlier update with the same fingerprints' : sw.version_source === 'tesla_api' ? 'from the Tesla API' : 'from the import') : ov ? 'as the car reports it' : 'the version is not on the CAN bus',
+      h('p', { class: 'tile-line' }, sw.version ? (VERSION_SOURCE[sw.version_source] || 'from its source') : ov ? 'as the car reports it' : 'the version is not on the CAN bus',
         sw.changed_since_ms ? `; changed ${formatDate(sw.changed_since_ms, tz, { now: api.now() })}` : '', ov && sw.version && ov !== sw.version ? `; the car reports ${ov}` : ''),
       ov ? h('p', { class: 'src-line' }, offMark(oc.version, tz)) : null,
       updText ? h('p', { class: ['tile-line', 'src-line', { 'is-warn': !!upd }] }, updText, offMark(oc.update_available, tz)) : null,
