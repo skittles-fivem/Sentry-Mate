@@ -12,6 +12,7 @@ from ..errors import bad_input, invalid, not_found
 from ..placing import piece_pid
 from ..rows import charge_row, in_progress, place_obj
 from ..util import DAY, MIN, local_dt, median, r
+from . import invoices
 
 SORTS = {"start": lambda c: c["start_ms"], "energy": lambda c: c["energy_added_kwh"],
          "cost": lambda c: (c["cost"] or {}).get("amount"), "duration": lambda c: c["charging_ms"],
@@ -159,6 +160,7 @@ def get_charge(req):
         gaps.append({"start_ms": c.cut_ms, "end_ms": None, "kind": "unknown"})
     row["gaps"] = gaps
     row["manual_cost"] = req.store.costs.get(c.id)
+    row["invoices"] = invoices.refs(req.app, c.id, row["manual_cost"] is not None)
     return row
 
 

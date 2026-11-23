@@ -27,6 +27,10 @@ SETUP_ONLY = {("POST", "/api/v1/setup"), ("POST", "/api/v1/setup/claim"), ("POST
               ("DELETE", "/api/v1/setup/job")}
 DEV_KEY = "SMRK-DEVK-EY00-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000"
 VIN_RX = re.compile(r"[A-HJ-NPR-Z0-9]{17}")
+# answers that are files, not JSON
+PDF_OR_ZIP = {"/api/v1/cars/{car}/charges/{charge}/invoices/{invoice}/pdf": "application/pdf",
+              "/api/v1/integrations/invoices/{invoice}/pdf": "application/pdf",
+              "/api/v1/integrations/invoices/zip": "application/zip"}
 
 
 def _all_strings(obj, out):
@@ -57,6 +61,11 @@ class Contract(ServerCase):
             "teslafi_account": "fa1", "z": "13", "x": "1310", "y": "3166",
             "export": c.json("POST", "/api/v1/system/exports", {"password": "sentry-mate-dev"}, expect=201)["id"],
         }
+        # a Supercharger session of c1 matched to a charge, with its invoice (PDF) kept
+        inv = next(i for i in c.get("/api/v1/integrations/invoices?matched=true&limit=200")["items"]
+                   if i["car"] == "c1" and i["pdf"])
+        cls.ids["invoice"] = inv["id"]
+        cls.invoice_charge = inv["charge"]
         cls.server.app.store.exports[cls.ids["export"]]["made_ms"] -= 10_000  # prepared
         cls.bodies = []
 
@@ -135,7 +144,15 @@ class Contract(ServerCase):
             if pattern == "/api/v1/events":
                 self.check_events(problems)
                 continue
+            if pattern == "/api/v1/cars/{car}/charges/{charge}/invoices/{invoice}/pdf":
+                path = self.fill(pattern, charge=self.invoice_charge)
             st, hd, raw, data = self.call("GET", path)
+            if pattern in PDF_OR_ZIP:
+                if st != 200 or hd.get("content-type") != PDF_OR_ZIP[pattern] or not raw.startswith(
+                        b"%PDF-1.4" if "pdf" in PDF_OR_ZIP[pattern] else b"PK") \
+                        or "attachment" not in (hd.get("content-disposition") or ""):
+                    problems.append(f"GET {path}: {st} {hd.get('content-type')}")
+                continue
             if pattern == "/api/v1/system/exports/{export}/file":
                 if st != 200 or hd.get("content-type") != "application/octet-stream" or not raw:
                     problems.append(f"GET {path}: {st} {hd.get('content-type')}")
