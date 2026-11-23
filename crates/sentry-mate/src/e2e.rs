@@ -393,7 +393,9 @@ async fn two_seeded_cars_stay_two_cars_and_their_keys_and_tokens_are_served() {
     assert!(has("token-created", format!("token:{new_id}"), &Value::Null), "a new car's token: {rows:?}");
     assert!(has("token-revoked", format!("token:{new_id}"), &Value::Null), "{rows:?}");
     let moved = rows.iter().find(|e| e["action"] == "key-assigned" && e["car"] == t).unwrap();
-    assert!(moved["summary"].as_str().unwrap().contains(&format!("from {owner} to {other}")), "{moved}");
+    // by the cars' names (each car's own name, else "car c2")
+    let said = moved["summary"].as_str().unwrap();
+    assert!(said.starts_with(&format!("Moved the CAN Bridge key {key} from ")) && said.contains(" to "), "{moved}");
     assert!(
         !rows.iter().any(|e| e["summary"].as_str().is_some_and(|s| s.contains("{key}") || s.contains("{token}"))),
         "no entry with only the route: {rows:?}"

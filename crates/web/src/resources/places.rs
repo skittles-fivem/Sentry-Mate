@@ -382,7 +382,10 @@ async fn reprice(
         pq::reprice(e, &who.cars, id, from, to, only, dry)
     })
     .await?;
-    if !dry {
+    if dry {
+        // a dry run changes nothing
+        v.mark_audited();
+    } else {
         let n = value["repriced"].as_u64().unwrap_or(0);
         let summary = format!("Repriced {n} past charges at a place at its price now.");
         v.audit(&app, "place-repriced", Some(&target("place", None, &q::place_ref(id))), &summary).await?;

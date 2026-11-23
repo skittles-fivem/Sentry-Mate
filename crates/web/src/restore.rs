@@ -223,7 +223,9 @@ pub(crate) fn give_up(app: &AppState, s: &crate::moving::MoveSite, job: &Value, 
         e => ApiError::server(format!("cancelling the restore: {e}")),
     })?;
     let name = job["file_name"].as_str().unwrap_or("the export file");
-    app.accounts.audit().record(None, Some(ip), "setup-restore-cancelled", &format!("Gave up restoring {name}."))?;
+    let details =
+        crate::ctx::audit_details(Some(&crate::moving::job_target(job)), &format!("Gave up restoring {name}."));
+    app.accounts.audit().record(None, Some(ip), "setup-restore-cancelled", &details)?;
     Ok(())
 }
 
@@ -409,12 +411,11 @@ pub(crate) async fn start(
             *held = Some(r);
             drop(held);
             if fresh {
-                app.accounts.audit().record(
-                    None,
-                    Some(conn.ip),
-                    "setup-restore-started",
+                let details = crate::ctx::audit_details(
+                    Some(&crate::moving::job_target(&v)),
                     &format!("Started restoring {name} ({size} bytes)."),
-                )?;
+                );
+                app.accounts.audit().record(None, Some(conn.ip), "setup-restore-started", &details)?;
             }
             Ok((v, fresh))
         })

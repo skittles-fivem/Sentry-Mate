@@ -28,6 +28,7 @@ const BY_GROUP = {
     'sign-in-failed': 'Wrong password',
     'sign-in-refused': 'Sign-in refused',
     'sign-out': 'Signed out',
+    'signed-out': 'Signed out by the server',
     'two-step-failed': 'Wrong two-step code',
     'confirm-failed': 'Wrong password to confirm',
     'session-revoked': 'Ended a session',
@@ -105,7 +106,6 @@ const BY_GROUP = {
     'teslafi-token-refused': 'TeslaFi refused the token',
     'teslafi-car-matched': 'Matched a TeslaFi car',
     'teslafi-poll-changed': 'Changed the TeslaFi pace',
-    'teslafi-sign-in-needed': 'TeslaFi asked for a new token',
     'teslafi-account-error': 'Could not read a TeslaFi account',
     'teslamate-local-added': 'Connected the local TeslaMate',
     'teslamate-local-changed': 'Changed the local TeslaMate',
@@ -134,6 +134,10 @@ const BY_GROUP = {
     'export-downloaded': 'Downloaded an export',
     'setup-restore-started': 'Started restoring from a backup',
     'setup-restore-cancelled': 'Gave up restoring from a backup',
+    'setup-move-started': 'Started moving the data here',
+    'setup-move-resumed': 'Carried on moving the data here',
+    'setup-move-cancelled': 'Gave up moving the data here',
+    'setup-move-finished-forced': 'Finished a move with the recovery key',
   },
 };
 

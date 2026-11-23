@@ -164,7 +164,7 @@ async fn a_broker_in_trouble_is_a_notice_for_admins_with_an_audit_entry() {
     assert_eq!(told.iter().filter(|n| n["code"] == "teslamate_connection_refused").count(), 1, "{told:?}");
     let written = audit_written(&w.audit);
     assert_eq!(written.iter().filter(|(a, _)| a == "teslamate-local-connection-refused").count(), 1, "{written:?}");
-    assert!(written.iter().all(|(_, d)| d.starts_with("[settings:teslamate_local]")), "{written:?}");
+    assert!(written.iter().all(|(_, d)| d.starts_with("[teslamate:local]")), "{written:?}");
 
     // a broker that takes the connection and then sends nothing: refused no more, quiet instead
     let quiet = quiet_broker().await;

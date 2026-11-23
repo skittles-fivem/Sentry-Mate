@@ -648,9 +648,18 @@ async fn chunk_of(app: AppState, v: crate::ctx::Viewer, id: String, k: usize, re
         Ok((done.then(|| j.id.clone()), out))
     })
     .await?;
-    if let Some(id) = done {
-        v.audit(&app, "import-uploaded", Some(&target("import", None, &id)), "Uploaded the whole file; checking it.")
-            .await?;
+    match done {
+        Some(id) => {
+            v.audit(
+                &app,
+                "import-uploaded",
+                Some(&target("import", None, &id)),
+                "Uploaded the whole file; checking it.",
+            )
+            .await?
+        }
+        // a chunk on its way: the upload's entries are `import-created` and, once whole, `import-uploaded`
+        None => v.mark_audited(),
     }
     Ok(Json(out))
 }
