@@ -51,12 +51,23 @@ const MAX_LABEL: usize = 64;
 #[serde(default)]
 pub struct TeslaSettings {
     pub poll: Pace,
+    /// Supercharger invoices (`/integrations/invoices`): off until an admin turns them on.
+    pub invoices: bool,
     pub version: u64,
+}
+
+impl TeslaSettings {
+    /// The pollers' cadence: the pace, and whether they read invoices.
+    pub fn cadence(&self) -> tesla::Cadence {
+        let mut c = self.poll.cadence();
+        c.invoices = self.invoices;
+        c
+    }
 }
 
 impl Default for TeslaSettings {
     fn default() -> TeslaSettings {
-        TeslaSettings { poll: Pace::Normal, version: 1 }
+        TeslaSettings { poll: Pace::Normal, invoices: false, version: 1 }
     }
 }
 
@@ -75,7 +86,7 @@ pub fn proxy(e: &Engine) -> Option<tesla::Proxy> {
 pub fn options(e: &Engine) -> tesla::Options {
     let mut o = tesla::Options::default();
     o.proxy = proxy(e);
-    o.cadence = load_settings(e).poll.cadence();
+    o.cadence = load_settings(e).cadence();
     o
 }
 
@@ -419,6 +430,7 @@ async fn overview(State(app): State<AppState>, Admin(_): Admin) -> ApiResult<Jso
             "polls_today": status.iter().map(|s| s.polls_today).sum::<u64>(),
             "last_error": last_error(&accounts),
             "clients_built": s.clients_built(),
+            "invoices": super::invoices::tesla_block(&e, &s, settings.invoices),
             "version": settings.version,
         })))
     })
@@ -432,8 +444,9 @@ async fn change_settings(
     headers: HeaderMap,
     body: JsonBody,
 ) -> ApiResult<Json<Value>> {
-    body.only(&["version", "poll", "confirm_password", "code"])?;
+    body.only(&["version", "poll", "invoices", "confirm_password", "code"])?;
     let version = body.version()?;
+    let invoices = body.bool("invoices")?;
     let pace = match body.str("poll")? {
         None => None,
         Some(p) => Some(Pace::parse(p).ok_or_else(|| ApiError::invalid("poll", "Must be often, normal or gentle."))?),
@@ -452,19 +465,31 @@ async fn change_settings(
             if let Some(p) = pace {
                 new.poll = p;
             }
+            if let Some(i) = invoices {
+                new.invoices = i;
+            }
             if new != old {
                 new.version = old.version + 1;
                 let value = serde_json::to_value(&new).map_err(ApiError::server)?;
                 e.db().set_setting(SETTING, value).map_err(|err| ApiError::server(format!("tesla settings: {err}")))?;
-                s.reconfigure(proxy(&e), new.poll.cadence());
+                s.reconfigure(proxy(&e), new.cadence());
             }
             Ok((old, new))
         })
         .await?;
-    if new != old {
+    if new.invoices != old.invoices {
+        let summary = if new.invoices {
+            "Turned Supercharger invoices from the Tesla API on."
+        } else {
+            "Turned Supercharger invoices from the Tesla API off."
+        };
+        v.audit(&app, "tesla-invoices-changed", Some(&target("settings", None, "tesla-invoices")), summary).await?;
+    }
+    if new.poll != old.poll {
         let summary = format!("Set how often the Tesla API is asked to {}.", new.poll.word());
         v.audit(&app, "tesla-poll-changed", Some(&target("settings", None, "tesla")), &summary).await?;
-    } else {
+    }
+    if new == old {
         v.mark_audited();
     }
     overview(State(app), Admin(v)).await
