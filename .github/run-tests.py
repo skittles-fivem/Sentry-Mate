@@ -77,11 +77,7 @@ def main() -> int:
 
     # The doc tests, with the same arguments as the build: other packages or features would build the libraries
     # again for them (cargo leaves out a package with no library). None when no package asked has a library.
-<<<<<<< HEAD
-    doc = ["cargo", "test", "--doc", *argv] if lib_packages else None
-=======
     doc = ["cargo", "test", "--doc", *argv] if lib_packages and part == 1 else None
->>>>>>> work
 
     def run(task):
         name, cmd, folder, env = task
