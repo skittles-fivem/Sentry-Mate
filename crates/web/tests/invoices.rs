@@ -6,7 +6,7 @@
 use engine::Engine;
 use engine::invoices::{Fee, Session};
 use model::{CarId, Charge, ChargeKind, Position, Source};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::sync::Arc;
 use web::resources::tesla::TeslaService;
 use web::testkit::{ADMIN_PASSWORD, TestServer};
@@ -182,6 +182,18 @@ async fn invoices_are_opt_in_priced_on_the_charge_and_downloadable() {
     assert_eq!(l["items"][1]["charge"], json!("900"));
     let r = admin.get("/api/v1/integrations/invoices?matched=false&limit=1").await;
     assert_eq!(r.json()["items"].as_array().unwrap().len(), 1);
+    // paged by the cursor the server gave, as every list: a number someone made up is not one
+    let r = admin.get("/api/v1/integrations/invoices?limit=1").await;
+    let next = r.json()["next"].as_str().expect("a second page").to_string();
+    assert_eq!(r.json()["items"][0]["id"], json!("tesla-2"));
+    let r = admin.get(&format!("/api/v1/integrations/invoices?limit=1&after={next}")).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!((r.json()["items"][0]["id"].clone(), r.json()["next"].clone()), (json!("tesla-1"), Value::Null));
+    for made_up in ["1", "5", "18446744073709551615"] {
+        let r = admin.get(&format!("/api/v1/integrations/invoices?limit=1&after={made_up}")).await;
+        assert_eq!((r.status, r.code().as_deref()), (400, Some("bad_input")), "after={made_up}: {}", r.text());
+        assert!(r.json()["error"]["fields"]["after"].is_string(), "{}", r.text());
+    }
     let r =
         admin.get(&format!("/api/v1/integrations/invoices?format=csv&from_ms={}&to_ms={}", T0, T0 + 3_600_000)).await;
     assert_eq!(r.status, 200);

@@ -891,7 +891,7 @@ def _claim_ok(req):
     st = req.store
     c = st.setup["claim"]
     tok = getattr(req, "setup_token", None)
-    return bool(c and tok and secrets.compare_digest(c["token"], tok) and req.now < c["expires_ms"])
+    return bool(c and tok and secrets.compare_digest(c["token"].encode(), tok.encode()) and req.now < c["expires_ms"])
 
 
 def _need_claim(req, allow_done=False):

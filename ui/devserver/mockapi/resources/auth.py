@@ -14,7 +14,11 @@ _throttle_lock = threading.Lock()
 THROTTLE_TRIES = 5
 THROTTLE_WINDOW_S = 60
 THROTTLE_SETUP_TRIES = 10  # wrong set-up codes from one address
-THROTTLE_ADDRESS_TRIES = 30  # wrong tries from one address, whatever the names (trying many names at once)
+# wrong passwords, as the real server counts them (docs/ui-api.md, "Sign-in throttle"): per address and per name,
+# five free, then a wait of 30 s that doubles with every further wrong try, up to 15 minutes
+STRIKES_FREE = 5
+STRIKES_FIRST_WAIT_S = 30
+STRIKES_MAX_WAIT_S = 15 * 60
 PENDING_S = 300
 
 
@@ -47,10 +51,38 @@ def _fail(store, *keys):
     now = time.monotonic()
     with _throttle_lock:
         if len(store.throttle) > 10_000:  # forget names whose tries are all old, so the table stays small
-            for k in [k for k, v in store.throttle.items() if not v or now - v[-1] >= THROTTLE_WINDOW_S]:
+            for k in [k for k, v in store.throttle.items()
+                      if isinstance(v, list) and (not v or now - v[-1] >= THROTTLE_WINDOW_S)]:
                 del store.throttle[k]
         for key in keys:
             store.throttle.setdefault(key, []).append(now)
+
+
+def _check_strikes(store, keys):
+    """429 while any of the keys (an address, a name) has to wait after its wrong tries. Nothing is counted."""
+    now = time.monotonic()
+    with _throttle_lock:
+        wait = max((store.throttle[k]["until"] - now for k in keys if k in store.throttle), default=0)
+    if wait > 0:
+        raise throttled(max(1, int(-(-wait // 1))))
+
+
+def _strike(store, keys):
+    """A wrong try for every key: from the fifth on, the next one waits (30 s, then twice as long each time)."""
+    now = time.monotonic()
+    with _throttle_lock:
+        for k in keys:
+            s = store.throttle.setdefault(k, {"failures": 0, "until": 0.0})
+            s["failures"] += 1
+            if s["failures"] >= STRIKES_FREE:
+                doublings = min(s["failures"] - STRIKES_FREE, 16)
+                s["until"] = now + min(STRIKES_FIRST_WAIT_S << doublings, STRIKES_MAX_WAIT_S)
+
+
+def _clear_strikes(store, keys):
+    with _throttle_lock:
+        for k in keys:
+            store.throttle.pop(k, None)
 
 
 def _signed_in(req, account):
@@ -68,16 +100,15 @@ def post_session(req):
     st = req.store
     body = req.json()
     _types(body, {"name": str, "password": str})
-    key = "name:" + body["name"].strip().lower()
-    addr = "address:" + (req.client_ip or "")
-    _check_throttle(st, addr, THROTTLE_ADDRESS_TRIES)
-    _check_throttle(st, key)
+    keys = ("sign-in-name:" + body["name"].strip().lower(), "sign-in-address:" + (req.client_ip or ""))
+    _check_strikes(st, keys)
     a = st.account_by_name(body["name"].strip())
-    if a is None or not secrets.compare_digest(a["password"], body["password"]):
-        _fail(st, key, addr)
+    if a is None or not secrets.compare_digest(a["password"].encode(), body["password"].encode()):
+        _strike(st, keys)
         st.record(a, "sign-in-failed", None, f"Wrong password for {a['name']}." if a else "Wrong name or password.",
                   address=getattr(req, "client_ip", None) or "127.0.0.1")
         raise ApiError(401, "wrong_credentials", "That name and password do not match an account.")
+    _clear_strikes(st, keys)
     if a.get("two_step"):
         token = "pend_" + secrets.token_urlsafe(16)
         with st.lock:

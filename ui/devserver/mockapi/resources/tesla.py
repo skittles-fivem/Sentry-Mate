@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 import secrets
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, unquote_to_bytes, urlencode, urlsplit
 
 from ..errors import ApiError, bad_input, conflict, invalid, not_found
 from ..store import DEV_PASSWORD, DEV_TWO_STEP_CODE
@@ -85,15 +85,31 @@ def _str(body, key):
     return v
 
 
+def _header_password(req):
+    """The password from a header, as the real server reads it: X-Sentry-Mate-Password-Encoded (percent-encoded
+    UTF-8, any password), else X-Sentry-Mate-Password (its bytes as UTF-8). Neither: None."""
+    not_text = bad_input({"confirm_password": "The password header is not UTF-8: send it percent-encoded in "
+                                              "X-Sentry-Mate-Password-Encoded."})
+    enc = req.headers.get("X-Sentry-Mate-Password-Encoded")
+    try:
+        if enc is not None:
+            return unquote_to_bytes(enc).decode("utf-8")
+        pw = req.headers.get("X-Sentry-Mate-Password")
+        # http.server reads header bytes as Latin-1
+        return None if pw is None else pw.encode("latin-1").decode("utf-8")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        raise not_text
+
+
 def reconfirm(req, body):
     """The admin's own password again, and a code when the admin has two-step sign-in on."""
     pw = _str(body, "confirm_password")
     if pw is None:
-        pw = req.headers.get("X-Sentry-Mate-Password")
+        pw = _header_password(req)
     if pw is None:
         raise ApiError(403, "password_needed", "Type your own password again to change this.",
                        fields={"confirm_password": "Your own password, again."})
-    if not secrets.compare_digest(str(pw), req.account.get("password", DEV_PASSWORD)):
+    if not secrets.compare_digest(str(pw).encode(), req.account.get("password", DEV_PASSWORD).encode()):
         raise ApiError(403, "wrong_password", "That is not your password.",
                        fields={"confirm_password": "Not your password."})
     if req.account.get("two_step"):

@@ -455,6 +455,9 @@ async fn rows_without_a_vin_whose_odometer_jumps_wait_for_a_car_an_admin_chooses
     assert_eq!(j["needs_car"][0]["status"], "assigned", "{j}");
     assert_eq!(j["moves"][0]["to_car"], json!(to), "{j}");
     let all = admin.get("/api/v1/import-holds").await.json();
+    let csv = admin.get("/api/v1/import-holds?format=csv").await;
+    assert!(csv.header("content-type").unwrap_or("").starts_with("text/csv"), "{}", csv.text());
+    assert_eq!(admin.get("/api/v1/import-holds?format=xml").await.status, 400);
     assert_eq!(all["items"].as_array().unwrap().len(), 1, "{all}");
     let audit = admin.get("/api/v1/audit?limit=50").await.json();
     let moved: Vec<&Value> =

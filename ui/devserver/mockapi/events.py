@@ -174,7 +174,7 @@ class EventHub:
             if v != "all":
                 return set(v)
             n = ds.total_cars()
-            return None if n > 1000 else {f"c{i}" for i in range(1, n + 1) if ds.exists(f"c{i}")}
+            return None if n > 1000 else {f"c{i}" for i in range(0, n + 1) if ds.exists(f"c{i}")}
 
         a, b = ids(old), ids(new)
         if a is not None and b is not None:

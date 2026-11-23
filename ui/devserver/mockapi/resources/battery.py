@@ -114,6 +114,7 @@ def _lifetime(req, h):
     discharged = drive + stand
     new_usable = car.full_new_kwh - car.buffer_kwh
     return {"charged_kwh": r(ac + dc, 1), "discharged_kwh": r(discharged, 1), "ac_kwh": r(ac, 1), "dc_kwh": r(dc, 1),
+            "unknown_kwh": 0.0,  # the pack's own counters count every charge as AC or DC
             "regen_kwh": r(regen, 1), "drive_kwh": r(drive, 1), "standing_kwh": r(stand, 1),
             "equivalent_cycles": r(discharged / new_usable, 1), "basis": "pack counters"}
 
@@ -153,7 +154,8 @@ def get_battery(req):
     recent = [bms_full(car, at - i * DAY) for i in range(30)]
     new_kwh, new_src = _new_capacity(req, h)
     diff = new_kwh - full
-    deg = diff / new_kwh * 100
+    # a pack is never healthier than new: no loss where the reading is above the value when new, and a note
+    deg = max(0.0, diff / new_kwh * 100)
     s = req.store.car_settings.get(car.id) or {}
     rng_new, rng_src = _new_range(req, h)
     full_km = car.full_range_km(at)
@@ -169,6 +171,8 @@ def get_battery(req):
     notes.append({"owner": "new_value_typed", "early_bms": "new_value_from_early_readings",
                   "imported_charges": "new_value_from_imported_charges",
                   "vehicle_info": "new_value_from_vehicle_info"}[new_src])
+    if diff <= -0.05:
+        notes.append("reading_above_new")
     if soc is not None and usable_soc is not None and usable_soc < soc - 0.5:
         notes.append("cold_battery_locks_part")
     if chem["value"] == "lfp":

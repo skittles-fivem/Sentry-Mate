@@ -12,6 +12,7 @@
 use crate::{ApiResult, AppState};
 use axum::Router;
 use axum::extract::State;
+use axum::response::Response;
 use axum::routing::get;
 use base64::Engine as _;
 use serde::Serialize;
@@ -51,7 +52,8 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/api/v1/notices", get(list))
 }
 
-async fn list(State(app): State<AppState>, v: crate::Viewer) -> ApiResult<axum::Json<Value>> {
+async fn list(State(app): State<AppState>, v: crate::Viewer, q: crate::Params) -> ApiResult<Response> {
+    q.wants_csv()?;
     let now = app.now();
     let src = app.service::<Sources>().ok();
     let items = app
@@ -75,7 +77,7 @@ async fn list(State(app): State<AppState>, v: crate::Viewer) -> ApiResult<axum::
             Ok(out)
         })
         .await?;
-    Ok(axum::Json(json!({ "items": items, "next": null })))
+    crate::csv::answer(&q, "notices", json!({ "items": items, "next": null }))
 }
 
 /// The notices of this server's side of a move: a move code waiting (`move_code_waiting`), a new server copying

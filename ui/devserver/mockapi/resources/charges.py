@@ -208,6 +208,13 @@ def put_cost(req):
         rule["currency"] = "A currency code such as USD, CAD or EUR."
     if body.get("energy_basis") not in (None, "grid", "pack"):
         rule["energy_basis"] = "Must be grid or pack."
+    if not rule and body["mode"] == "per_kwh":
+        # a rate per kWh is over the charge's energy (the grid's with that basis, else the pack's): with none there
+        # is nothing to multiply, and a cost of 0.00 would be kept as if it were entered
+        now = get_charge(req)
+        grid = now.get("energy_grid_kwh") if body.get("energy_basis") != "pack" else None
+        if not ((grid if grid is not None else now.get("energy_added_kwh")) or 0) > 0:
+            rule["mode"] = "This charge has no energy to price per kWh. Enter the total."
     if rule:
         raise invalid(rule)
     st = req.store

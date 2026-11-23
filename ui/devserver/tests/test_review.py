@@ -534,8 +534,9 @@ class SignInSpray(ServerCase):
         for i in range(40):
             st, _, _ = c.request("POST", "/api/v1/session", {"name": f"guess{i}", "password": "nope"})
             codes.append(st)
-        self.assertEqual(codes[:30], [401] * 30)
-        self.assertEqual(set(codes[30:]), {429})
+        # five from one address, whatever the names (the real server's count, not thirty)
+        self.assertEqual(codes[:5], [401] * 5)
+        self.assertEqual(set(codes[5:]), {429})
         self.server.app.store.throttle.clear()
         st, _, _ = c.request("POST", "/api/v1/session", {"name": "admin", "password": "sentry-mate-dev"})
         self.assertEqual(st, 200)

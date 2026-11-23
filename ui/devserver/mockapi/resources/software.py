@@ -190,7 +190,18 @@ def fleet_versions(req):
     acc = req.account
     out = []
     more = False
-    ids = None if acc["cars"] == "all" else sorted((c for c in acc["cars"] if ds.exists(c)), key=lambda c: int(c[1:]))
+    # The cars /cars lists, in its order: c1 to the last numbered car, then the sold car c0. A row's place in
+    # that order is the cursor (c0 comes after the last number).
+    last = max(ds.synthetic.n, 3)
+
+    def pos(cid):
+        n = int(cid[1:])
+        return n if n else last + 1
+
+    def car_at(p):
+        return "c0" if p == last + 1 else f"c{p}"
+
+    ids = None if acc["cars"] == "all" else sorted((pos(c) for c in acc["cars"] if ds.exists(c)))
     if req.csv:
         limit = 10 ** 9
 
@@ -204,48 +215,31 @@ def fleet_versions(req):
         return {"car": cid, "name": meta["name"], "version": sw["version"], "version_source": sw["version_source"],
                 "build_changed_since": sw["changed_since_ms"], "last_update_ms": ups[-1].end if ups else None}
 
+    def row_at(p):
+        cid = car_at(p)
+        return featured_row(cid) if (cid in ds.featured or cid in st.car_over) else _syn_version(ds.synthetic, p)
+
     def ok(row):
         return not search or search in (row["version"] or "").lower() or search in row["name"].lower()
 
     if ids is not None:
-        cands = [int(c[1:]) for c in ids if int(c[1:]) >= start]
-        for n in cands:
-            row = featured_row(f"c{n}")
-            if ok(row):
-                if len(out) == limit:
-                    more = True
-                    break
-                out.append((n, row))
+        cands = [p for p in ids if p >= start]
+    elif search:
+        special = sorted(pos(c) for c in set(ds.featured) | set(st.car_over)
+                         if c[1:].isdigit() and ds.exists(c) and pos(c) >= start)
+        # synthetic cars that match, from one pass over the cached index (kept for the next page)
+        syn_hits = _syn_matches(req.app, ds.synthetic, search)
+        k0 = bisect.bisect_left(syn_hits, start)
+        cands = sorted(set(special) | set(n for n in syn_hits[k0:k0 + limit + 1 + len(special)]))
     else:
-        total = ds.total_cars()
-        special = sorted(int(c[1:]) for c in set(ds.featured) | set(st.car_over)
-                         if c[1:].isdigit() and start <= int(c[1:]) <= total and ds.exists(c))
-        if search:
-            # synthetic cars that match, from one pass over the cached index (kept for the next page)
-            syn_hits = _syn_matches(req.app, ds.synthetic, search)
-            k0 = bisect.bisect_left(syn_hits, start)
-            cands = sorted(set(special) | set(n for n in syn_hits[k0:k0 + limit + 1 + len(special)]))
-        else:
-            cands = None
-        if cands is not None:
-            for n in cands:
-                cid = f"c{n}"
-                row = featured_row(cid) if (cid in ds.featured or cid in st.car_over) else _syn_version(ds.synthetic, n)
-                if ok(row):
-                    if len(out) == limit:
-                        more = True
-                        break
-                    out.append((n, row))
-        else:
-            n = start
-            while n <= total:
-                cid = f"c{n}"
-                row = featured_row(cid) if (cid in ds.featured or cid in st.car_over) else _syn_version(ds.synthetic, n)
-                if len(out) == limit:
-                    more = True
-                    break
-                out.append((n, row))
-                n += 1
+        cands = (p for p in range(start, last + 2) if ds.exists(car_at(p)))
+    for p in cands:
+        row = row_at(p)
+        if ok(row):
+            if len(out) == limit:
+                more = True
+                break
+            out.append((p, row))
     nxt = encode_cursor([out[-1][0]], fp) if more and out else None
     # each car's own time zone, so a list of many cars can show every row's times where that car is
     return {"items": [row | {"time_zone": st.car_meta(row["car"])["time_zone"]} for _, row in out], "next": nxt}

@@ -68,6 +68,38 @@ class Tesla(ServerCase):
                                                            "confirm_password": PW})
         self.assertIn("tesla-poll-changed", {x["action"] for x in self.audit()})
 
+    def test_2b_a_password_that_is_not_ascii(self):
+        """Any password is an account's password: it signs in, confirms a change in the body, and in the headers
+        the real server takes (UTF-8, or percent-encoded for what a browser's fetch cannot put in a header)."""
+        store = self.server.app.store
+        admin = store.account_by_name("admin")
+        odd = " pässwort-鍵-zwölf "
+        admin["password"] = odd
+        try:
+            c = self.server.client()
+            c.cookie = None
+            st, _, _ = c.request("POST", "/api/v1/session", {"name": "admin", "password": odd})
+            self.assertEqual(st, 200)
+            v = self.c.get(BASE)["version"]
+            self.c.error("PATCH", BASE, 403, "wrong_password",
+                         body={"version": v, "poll": "normal", "confirm_password": odd.strip()})
+            o = self.c.json("PATCH", BASE, {"version": v, "poll": "normal", "confirm_password": odd})
+            enc = "%20p%C3%A4sswort-%E9%8D%B5-zw%C3%B6lf%20"
+            o = self.c.json("PATCH", BASE, {"version": o["version"], "poll": "normal"},
+                            headers={"X-Sentry-Mate-Password-Encoded": enc})
+            e, _ = self.c.error("PATCH", BASE, 400, "bad_input", body={"version": o["version"], "poll": "normal"},
+                                headers={"X-Sentry-Mate-Password-Encoded": "p%E4sswort"})
+            self.assertIn("confirm_password", e["fields"])
+            # the plain header: UTF-8 bytes (HTTP drops the spaces at its ends); Latin-1 bytes are not a password
+            admin["password"] = odd.strip()
+            self.c.json("PATCH", BASE, {"version": o["version"], "poll": "normal"},
+                        headers={"X-Sentry-Mate-Password": odd.strip().encode("utf-8").decode("latin-1")})
+            self.c.error("PATCH", BASE, 400, "bad_input", body={"version": o["version"] + 1, "poll": "normal"},
+                         headers={"X-Sentry-Mate-Password": "p\xe4sswort"})
+        finally:
+            admin["password"] = PW
+            store.throttle.clear()
+
     def test_3_two_step_code(self):
         alex = self.server.client()
         d = alex.json("POST", "/api/v1/session", {"name": "alex", "password": PW})
