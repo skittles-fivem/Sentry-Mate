@@ -414,11 +414,12 @@ class Contract(ServerCase):
         # every change is in the audit log
         audit = self.c.get("/api/v1/audit?limit=500")["items"]
         actions = {a["action"] for a in audit}
-        for want in ("account.create", "account.update", "account.delete", "token.create", "token.revoke",
-                     "drive.purpose", "purpose_rule.create", "trip.create", "charge.cost", "update.version",
-                     "place.create", "place.update", "place.delete", "mqtt.update", "settings.update",
-                     "car.rebuild", "car.overlap", "import.create", "import.start", "import.discard",
-                     "export.create", "export.delete", "move.code", "move.undo", "recovery_key.new", "recovery_key.shown", "recovery_key.saved",
+        for want in ("account-created", "account-removed", "token-created", "token-revoked",
+                     "drive-purpose-set", "purpose-rule-created", "trip-saved", "charge-cost-entered", "update-version",
+                     "place-created", "place-changed", "place-deleted", "mqtt-changed", "settings-changed",
+                     "car-rebuild", "car-overlap", "import-created", "import-started", "import-discarded",
+                     "export-made", "export-removed", "move-code-made", "move-undone", "recovery-key-new",
+                     "recovery-key-shown", "recovery-key-saved",
                      "tesla-poll-changed", "tesla-account-added", "tesla-account-changed", "tesla-car-matched",
                      "tesla-account-removed"):
             self.assertIn(want, actions)

@@ -124,7 +124,7 @@ def patch_update(req):
             st.update_versions[u.id] = v
             if u.source == "can":  # remember this set of build ids: other cars on the same build get the version
                 st.builds[u.build_id] = {"version": v, "from_update": u.id}
-    st.record(req.account, "update.version", f"update:{u.id}",
+    st.record(req.account, "update-version", f"update:{req.car}:{u.id}",
               f"Set the software version of an update to {v}." if v else "Forgot the version of an update.", car=req.car)
     req.app.events.publish("rows", {"car": req.car, "kinds": ["updates"], "from_ms": u.start, "to_ms": u.end},
                            car=req.car)

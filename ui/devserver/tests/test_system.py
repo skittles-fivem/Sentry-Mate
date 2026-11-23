@@ -82,7 +82,7 @@ class Settings(ServerCase):
         # the watch account chose its own units and range: those stay
         w = watch.get("/api/v1/me/preferences")
         self.assertEqual((w["units"]["distance"], w["units"]["pressure"], w["range"]), ("mi", "psi", "ideal"))
-        self.assertIn("settings.update", [a["action"] for a in self.c.get("/api/v1/audit?limit=3")["items"]])
+        self.assertIn("settings-changed", [a["action"] for a in self.c.get("/api/v1/audit?limit=3")["items"]])
 
     def test_3_maps_geocode_notices_about(self):
         m = self.c.get("/api/v1/maps/config")
@@ -167,7 +167,7 @@ class Health(ServerCase):
         self.assertIn("rebuild_pending", h["reasons"])
         self.server.app.clock.advance(6000)
         self.assertFalse(self.c.get("/api/v1/cars/c1/health")["rebuild_pending"])
-        self.assertEqual(self.c.get("/api/v1/audit?limit=1")["items"][0]["action"], "car.rebuild")
+        self.assertEqual(self.c.get("/api/v1/audit?limit=1")["items"][0]["action"], "car-rebuild")
 
     def test_overlaps(self):
         o = self.c.get("/api/v1/cars/c3/overlaps")["items"]
@@ -232,7 +232,7 @@ class Health(ServerCase):
         d = self.c.json("PATCH", path, {"id": span["id"], "shown": "import:teslafi", "version": span["version"]})
         self.assertEqual(d["changed"]["shown_source"], "import:teslafi")
         self.assertEqual(d["changed"]["version"], span["version"] + 1)
-        self.assertEqual(self.c.get("/api/v1/audit?limit=1")["items"][0]["action"], "car.overlap")
+        self.assertEqual(self.c.get("/api/v1/audit?limit=1")["items"][0]["action"], "car-overlap")
         self.assertEqual(sources(), (n, {"teslafi"}))
         self.assertEqual(d["changed"]["imported"], span["sites"]["teslafi"])
         visits_point_at_shown_rows()

@@ -415,7 +415,7 @@ class OldServer(ServerCase):
         self.assertEqual(g["state"], "none")
         self.assertIsNotNone(g["last_undone_ms"])
         actions = {a["action"] for a in c.get("/api/v1/audit?limit=500")["items"]}
-        self.assertTrue({"move.code", "move.undo"} <= actions)
+        self.assertTrue({"move-code-made", "move-undone"} <= actions)
 
     def test_cancel_a_code_and_end_a_move(self):
         c = self.c

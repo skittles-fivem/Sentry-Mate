@@ -226,18 +226,19 @@ class Audit(ServerCase):
         after = self.c.get("/api/v1/audit?limit=500")["items"]
         self.assertEqual(len(after), len(before) + 1)
         top = after[0]
-        self.assertEqual((top["account"], top["action"], top["target"]), ("admin", "car.update", "car:c3"))
+        self.assertEqual((top["account"], top["action"], top["target"]), ("admin", "car-changed", "car:c3"))
         self.assertIn("Atlas II", top["summary"])
-        self.assertEqual(set(top), {"at_ms", "account", "action", "target", "car", "summary"})
+        self.assertEqual(set(top), {"at_ms", "account", "action", "group", "target", "car", "summary", "address"})
+        self.assertEqual(top["group"], "cars")
         self.assertEqual(top["car"], "c3")
 
     def test_audit_rows_name_the_car(self):
         d = self.c.get("/api/v1/cars/c1/drives?limit=1")["items"][0]
         self.c.json("PUT", f"/api/v1/cars/c1/drives/{d['id']}/purpose", {"purpose": "business"})
         top = self.c.get("/api/v1/audit?limit=1")["items"][0]
-        self.assertEqual((top["target"], top["car"]), (f"drive:{d['id']}", "c1"))
+        self.assertEqual((top["target"], top["car"]), (f"drive:c1:{d['id']}", "c1"))
         self.c.json("DELETE", f"/api/v1/cars/c1/drives/{d['id']}/purpose")
-        settings_rows = [e for e in self.c.get("/api/v1/audit?limit=500")["items"] if e["target"].startswith("account:")]
+        settings_rows = [e for e in self.c.get("/api/v1/audit?limit=500")["items"] if (e["target"] or "").startswith("account:")]
         self.assertTrue(settings_rows and all(e["car"] is None for e in settings_rows))
 
     def test_certificate_names_follow_the_running_certificate(self):

@@ -87,7 +87,9 @@ synthetic cars have SMO. Only the labels differ: the made-up data is the same.
 
 Also present: places that overlap (Work and the Mission Bay Supercharger, Home and Noe Valley), charges with
 and without cost, two software changes per car (one known only as "software changed"), awake, asleep and
-vehicle-bus-only spells, attention items, upload tokens, a CAN Bridge key waiting to be assigned, an audit log,
+vehicle-bus-only spells, attention items, upload tokens, a CAN Bridge key waiting to be assigned, an audit log
+(about 118 made-up entries over 400 days by five people and the server, every code of `ui/shared/audit-codes.json`
+and one code no list knows, at 192.0.2.x addresses; `mockapi/audit.py`),
 saved trips and purpose rules, 40 places (some with prices by time of day), server and MQTT settings, notices (an
 unsaved recovery key; with `--own-certificate` also a certificate that expires in 12 days), a Tesla account (`ta1`, reading `c1` and `c2`, a third
 car not matched; every change asks for the password `sentry-mate-dev` again), the finished import that brought `c3`'s TeslaMate
@@ -215,6 +217,7 @@ mockapi/router.py        path patterns -> handlers per method, admin and public 
 mockapi/conventions.py   the request object, query parsing with field errors, cursor paging, CSV
 mockapi/errors.py        the one error shape
 mockapi/store.py         everything that can change (accounts, sessions, preferences, audit, overrides)
+mockapi/audit.py         the audit codes and groups (read from ui/shared/audit-codes.json) and the seeded log
 mockapi/rows.py          history pieces -> Drive, Charge and timeline rows (in progress, costs, purposes)
 mockapi/placing.py       places as they are now, the nearest-centre match, costs that stay put
 mockapi/derive.py        figures several sections share: odometer, stops (visits), parked spells, caching
