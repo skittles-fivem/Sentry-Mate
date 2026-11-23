@@ -47,6 +47,7 @@ pub mod costs;
 pub mod firmware;
 pub mod full;
 pub mod importer;
+pub mod invoices;
 pub mod jobs;
 mod pipeline;
 pub use pipeline::NEW_CAR_NAME;
@@ -273,6 +274,10 @@ pub(crate) struct Inner {
     pub(crate) full_auto: std::sync::atomic::AtomicBool,
     /// The cars whose history was made with another decoding ([`Engine::version_stale`]).
     pub(crate) version_stale: Mutex<std::collections::HashSet<CarId>>,
+    /// The invoice sessions as kept ([`invoices`]), while none changes; one writer at a time; bumped by each write.
+    pub(crate) invoice_all: Mutex<Option<Arc<std::collections::BTreeMap<String, invoices::Session>>>>,
+    pub(crate) invoice_write: Mutex<()>,
+    pub(crate) invoice_gen: AtomicU64,
 }
 
 /// A stretch of a car's history where one input's GPS fixes disagreed with another's of the same moments by far
@@ -436,6 +441,9 @@ impl Engine {
                 full_crash_at: Mutex::new(None),
                 full_auto: std::sync::atomic::AtomicBool::new(true),
                 version_stale: Mutex::default(),
+                invoice_all: Mutex::new(None),
+                invoice_write: Mutex::new(()),
+                invoice_gen: AtomicU64::new(0),
                 opts,
             }),
         }

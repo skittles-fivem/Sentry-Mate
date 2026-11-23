@@ -134,6 +134,62 @@ impl tesla::Sink for TeslaSink {
             h(account);
         }
     }
+
+    fn invoices(&self, found: &[tesla::invoices::Found]) -> std::result::Result<u64, tesla::SinkError> {
+        let sessions: Vec<crate::invoices::Session> = found.iter().map(session_of).collect();
+        self.engine.invoice_upsert(&sessions).map(|u| u.new).map_err(|e| tesla::SinkError(e.to_string()))
+    }
+
+    fn invoice_known(&self, key: &str) -> bool {
+        self.engine.invoice_known(key).unwrap_or(false)
+    }
+
+    fn invoice_pdfs_wanted(&self, account: &str) -> Vec<(String, String, Option<String>)> {
+        self.engine.invoice_pdfs_wanted("tesla", account).unwrap_or_default()
+    }
+
+    fn invoice_pdf(&self, key: &str, pdf: &[u8]) -> std::result::Result<bool, tesla::SinkError> {
+        self.engine.invoice_put_pdf(key, pdf).map_err(|e| tesla::SinkError(e.to_string()))
+    }
+}
+
+/// A session the Tesla API input read, as the engine keeps it (no VIN).
+fn session_of(f: &tesla::invoices::Found) -> crate::invoices::Session {
+    let s = &f.session;
+    crate::invoices::Session {
+        key: f.key.clone(),
+        source: if f.key.starts_with("teslafi-") { "teslafi" } else { "tesla" }.into(),
+        account: f.account.clone(),
+        vehicle: f.vehicle.clone(),
+        car: f.car,
+        invoice_id: s.invoice_id.clone(),
+        invoice_name: s.invoice_name.clone(),
+        site: s.site.clone(),
+        lat: s.lat,
+        lon: s.lon,
+        country_code: s.country_code.clone(),
+        start_ms: s.start_ms,
+        end_ms: s.end_ms,
+        total: s.total,
+        currency: s.currency.clone(),
+        kwh_billed: s.kwh_billed,
+        minutes_billed: s.minutes_billed,
+        fees: s
+            .fees
+            .iter()
+            .map(|x| crate::invoices::Fee {
+                kind: x.kind.clone(),
+                amount: x.amount,
+                rate: x.rate,
+                usage: x.usage,
+                unit: x.unit.clone(),
+            })
+            .collect(),
+        first_seen_ms: 0,
+        updated_ms: 0,
+        pdf: false,
+        pdf_bytes: 0,
+    }
 }
 
 /// Told when a TeslaFi account's state changes (TeslaFi refuses its token): the web side writes the audit entry
@@ -177,6 +233,11 @@ impl teslafi::Sink for TeslafiSink {
         if let Some(h) = &self.on_account {
             h(account);
         }
+    }
+
+    fn invoices(&self, found: &[tesla::invoices::Found]) -> std::result::Result<u64, tesla::SinkError> {
+        let sessions: Vec<crate::invoices::Session> = found.iter().map(session_of).collect();
+        self.engine.invoice_upsert(&sessions).map(|u| u.new).map_err(|e| tesla::SinkError(e.to_string()))
     }
 }
 
