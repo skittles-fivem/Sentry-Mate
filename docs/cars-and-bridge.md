@@ -181,6 +181,26 @@ once known), and a complete one also its `check`:
   as before.
 - **How many at once:** `GET /api/can/logs/ping` says `maxParallel` (16): the uploads to send at once. A car's
   address may have 32 connections open, so 16 uploads leave a spare connection each for keep-alive.
+- **Logs the server lost are asked for again.** A log stays known after its file is gone: its trust record keeps
+  the SHA-256 and length it was stored with (and whether it had a sidecar), and a signed log names the one before
+  it. A scan, a couple of minutes after the start (in the background) and then once a day, compares those with what
+  is on disk, per car key: a log (or sidecar) with a record whose file is gone, and a chain gap, where a verified
+  log names a previous log the server has neither a record nor a file of while older logs of that signing key are
+  here (a chain received from its middle is no gap). It reads no log, only a stat per file. What it finds is kept
+  sealed in `data/can/<car key>/missing.json` with when it was found (a restart keeps it), and the audit log gets a
+  `can-logs-missing` entry on the car.
+- **`wanted` in the ping.** `GET /api/can/logs/ping` answers `"wanted": [names...]` for the car its token is tied
+  to: the logs and sidecars the server is missing, oldest first, at most 500 (empty when none, or for a token not
+  tied to a car yet). The app sends those it still holds again, as any upload. A name leaves the list once it has
+  arrived again and been judged with the SHA-256 it was stored with (a sidecar: once it is back); an upload of a
+  wanted name with another SHA-256 is refused, `409 wanted_mismatch`, unless the server never had its SHA-256. In
+  its status call the app may add `"not_held": [names...]`: wanted names it no longer has. Those are no longer
+  asked for, and Data health shows them as lost for good (their time stays unknown time on the timeline, as
+  before). A name the app asks about again in a status call is asked for again. The app's side is in
+  [can-bridge-wanted.md](can-bridge-wanted.md).
+- **Data health** shows a "Missing on the server" card (how many, the oldest, that the car was asked to send them
+  again, and those the car no longer has either), `logs_missing` among the reasons while any are asked for, and the
+  connections overview's CAN Bridge row counts them.
 - **Limits** (see [Ports and limits](commands.md#ports-and-limits)): 32 connections per car's address, 6
   anonymous ones from an address that is not a car's, 512 in all of which 192 anonymous. Over a limit the answer is
   `503 too_many_connections` with `Retry-After: 5`: wait that long and send fewer at once.
