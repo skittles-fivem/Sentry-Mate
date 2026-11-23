@@ -786,6 +786,16 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .run-out { margin-top: var(--g); }
 .out-box { margin: var(--g) 0 0; }
 .out-box .code-out { margin-block: var(--g2); }
+/* the export file's status: the same rows in every state, so the box keeps its size */
+.xp-box { display: grid; grid-template-rows: repeat(7, auto) 1fr auto; row-gap: 0; min-height: calc(13 * var(--lh2) + 2 * var(--g)); white-space: normal; }
+.xp-row { display: grid; grid-template-columns: 7ch minmax(0, 1fr); column-gap: 1ch; min-width: 0; }
+.xp-k { color: var(--muted); }
+.xp-v { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.xp-note { display: block; margin-top: var(--g2); color: var(--muted); overflow-wrap: anywhere; }
+.xp-note--warn { color: var(--warn); }
+.xp-note--bad { color: var(--bad); }
+.xp-acts { margin-top: var(--g2); align-self: end; }
+@media (max-width: 40rem) { .xp-box { min-height: calc(18 * var(--lh2) + 2 * var(--g)); } }
 .ln-list { display: flex; flex-direction: column; border-top: 1px solid var(--rule); }
 .ln-list > li { display: grid; grid-template-columns: calc(var(--a2) * 16) minmax(0, 1fr); gap: var(--g); padding-block: var(--g2); border-bottom: 1px solid var(--rule); }
 .ln-list .tag { line-height: var(--lh2); }
