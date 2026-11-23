@@ -7,6 +7,7 @@ from __future__ import annotations
 from .helpers import ServerCase
 
 FIT = "/api/v1/cars/c1/gps-layout/fit"
+LAYOUT_URL = "/api/v1/cars/c1/gps-layout"
 LAYOUT = "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)"
 
 
@@ -33,9 +34,18 @@ class FindAndApply(ServerCase):
         self.assertIsNone(res["lon"]["dbc"]["median_m"], "over 10 km is only said so")
         for k in ("lat", "lon", "lat_deg", "lon_deg", "position"):
             self.assertNotIn(k + "_value", res)
-        # Apply: the PUT; the fit then says it is in use
-        put = self.c.json("PUT", "/api/v1/cars/c1/gps-layout", {"layout": res["layout"]})
+        # Apply: the PUT; the fit then says it is in use, and the layout when it was set
+        before = self.c.get(LAYOUT_URL)
+        self.assertEqual((before["layout"], before["set_ms"]), (None, None))
+        put = self.c.json("PUT", LAYOUT_URL, {"layout": res["layout"]})
         self.assertEqual(put["layout"], LAYOUT)
+        now = self.c.get(LAYOUT_URL)
+        self.assertEqual((now["layout"], now["set_ms"]), (LAYOUT, put["set_ms"]))
+        self.assertIsInstance(now["set_ms"], int)
+        # set again: nothing changes, not even when
+        self.server.app.clock.advance(60_000)
+        again = self.c.json("PUT", LAYOUT_URL, {"layout": LAYOUT})
+        self.assertEqual((again["job"], again["set_ms"]), (None, put["set_ms"]))
         after = self.c.get(FIT)
         self.assertEqual((after["applied"], after["current"]), (True, LAYOUT))
 
@@ -47,6 +57,9 @@ class WatchAccount(ServerCase):
     def test_admins_only(self):
         self.c.error("GET", FIT, 403, "not_allowed")
         self.c.error("POST", FIT, 403, "not_allowed", body={})
+        # the layout in use is read by everyone; only an admin sets it
+        self.assertEqual(self.c.get(LAYOUT_URL)["layout"], None)
+        self.c.error("PUT", LAYOUT_URL, 403, "not_allowed", body={"layout": None})
 
 
 class Disagree(ServerCase):

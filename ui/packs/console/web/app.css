@@ -1366,8 +1366,17 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 
 /* find gps layout (shared/gpsfit.js), under the line that one input's positions are out of step (admins): every
    row keeps its height in every state; long text ends in an ellipsis */
-.hl-fixes .gf { display: flex; flex-direction: column; gap: var(--g2); min-width: 0; max-width: calc(var(--a2) * 96); margin: var(--g2) 0 0 calc(var(--a2) * 2); padding: var(--g) 0 0 var(--g); border-left: 1px solid var(--rule); }
+.gl .gf { display: flex; flex-direction: column; gap: var(--g2); min-width: 0; max-width: calc(var(--a2) * 96); margin: var(--g2) 0 0 calc(var(--a2) * 2); padding: var(--g) 0 0 var(--g); border-left: 1px solid var(--rule); }
 .gf-explain { margin: 0; color: var(--muted); }
+/* gps layout: one line (the layout in use, find gps layout, reset to standard); the fit opens under it once used */
+.gl { min-width: 0; margin-top: var(--g); }
+.gl-fit .gf-pct { width: round(up, 6ch, 1px); }
+.gl-line { display: flex; align-items: center; flex-wrap: wrap; gap: var(--g2) var(--g); min-height: var(--lh2); }
+.gl-label { flex: none; color: var(--muted); }
+.gl-text { flex: 1 1 calc(var(--a2) * 16); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); }
+.gl-val { color: var(--text); }
+.gl-acts { display: flex; flex: none; flex-wrap: wrap; gap: var(--g); }
+.gl [hidden] { display: none !important; }
 .gf-acts { display: flex; flex-wrap: wrap; gap: var(--g); }
 .gf-bar-row { display: flex; align-items: center; gap: var(--g); height: var(--lh2); }
 .gf-bar { flex: 1 1 auto; height: calc(var(--g2) * 2); background: var(--panel-2); border: 1px solid var(--rule); overflow: hidden; }
