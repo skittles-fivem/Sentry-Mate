@@ -172,3 +172,12 @@
 :root[data-phone] .pl-handle--edge { width: round(1.25rem, var(--e)); height: round(1.25rem, var(--e)); }
 :root[data-phone] .places-page .tbl:not(.tbl--keep) td .nowrap { white-space: normal; overflow-wrap: anywhere; }
 :root[data-phone] .pl-actions-bar { position: static; }
+
+/* prices by date (the place price editor opens from here) */
+.pl-dated { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); margin-bottom: round(0.875rem, var(--e)); }
+.pl-dated-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+.pl-dated-row { display: grid; grid-template-columns: round(9rem, var(--e)) minmax(0, 1fr) auto; gap: round(0.75rem, var(--e)); padding: round(0.375rem, var(--e)) 0; border-bottom: 1px solid var(--line); font-size: 0.875rem; }
+.pl-dated-row > * { min-width: 0; overflow-wrap: anywhere; }
+.pl-dated-row.is-now .pl-dated-from { color: var(--live); }
+.pl-dated-from { font-weight: 600; }
+@media (max-width: 40rem) { .pl-dated-row { grid-template-columns: minmax(0, 1fr); gap: 0; } }
