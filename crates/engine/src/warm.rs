@@ -2,12 +2,13 @@
 //! so a page's first call on a long history finds them done instead of making them: after the engine started (once
 //! the logs waiting are decoded) for every car, most recently active first, and after an import for the cars it
 //! brought rows to. It runs the answers themselves (a year of the series, the battery level, the projected range, the
-//! temperatures), so what it keeps is exactly what a request would keep; their per-day work uses every core.
+//! temperatures, the statistics by month), so what it keeps is exactly what a request would keep; their per-day work
+//! uses every core.
 //!
 //! One pass at a time; a car asked for meanwhile waits for the next pass. A failure only means a page makes the part
 //! itself.
 
-use crate::query::{Period, battery, series};
+use crate::query::{Period, battery, reports, series};
 use crate::{Engine, lock, now_ms};
 use model::CarId;
 use std::collections::BTreeSet;
@@ -100,6 +101,8 @@ fn warm_car(e: &Engine, car: CarId) -> crate::query::QResult<()> {
     let range = battery::RangeQuery { period: year, ..Default::default() };
     battery::projected_range(e, car, &range, now)?;
     battery::temperatures(e, car, &year, now)?;
+    // the charges' import-filled values (kept per charge) and the parked spells' reads the statistics page needs
+    reports::car_statistics(e, car, "month", &Period::default(), &crate::query::Paging::first(12))?;
     Ok(())
 }
 
