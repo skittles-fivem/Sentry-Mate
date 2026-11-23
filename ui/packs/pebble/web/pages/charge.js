@@ -20,6 +20,7 @@ import { mapTile } from '../core/map.js';
 import { timeChart, xyChart } from '../core/chart.js';
 import { statTile, facts, socBar, money } from '../core/bits.js';
 import { srcPill, estPill, isImported, isEstimated, apiOnly, EST_WHY } from '../core/source.js';
+import { appliedInvoice, unusedInvoices, invoiceSourceLabel, feeLabel, chargeInvoicePdfUrl } from '../shared/invoices.js';
 
 export const id = 'charge';
 export const css = true;
@@ -27,7 +28,7 @@ export const title = () => 'Charge';
 
 const FIELDS = 'power_kw,ac_line_kw,soc_pct,usable_soc_pct,range_km,battery_c,outside_c,heater_kw,ac_volts_v,ac_amps_a,pilot_a,phases,dc_volts_v,dc_amps_a';
 const KIND_WORDS = { ac: 'AC charge', dc: 'Fast charge (DC)', unknown: 'Charge' };
-const COST_SOURCE = { tariff: 'From the place price', manual: 'Entered by hand', free_supercharging: 'Free Supercharging', teslamate: 'Imported' };
+const COST_SOURCE = { tariff: 'From the place price', manual: 'Entered by hand', free_supercharging: 'Free Supercharging', teslamate: 'Imported', tesla_invoice: 'From Tesla invoice', teslafi: 'From TeslaFi' };
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'NZD', 'CHF', 'SEK', 'NOK', 'DKK', 'JPY', 'CNY'];
 const has = (l) => (l || []).some((x) => x != null);
 const placeName = (c) => c.place?.name || c.address?.short || 'Unnamed spot';
@@ -138,6 +139,7 @@ export async function mount(ctx) {
     h('div', { class: 'cost-now' }, money(cost ? [cost] : [], { size: 'l', why: 'no cost yet' }),
       h('p', { class: 'tile-line' }, cost ? `${COST_SOURCE[cost.source] || cost.source}${c.price_per_kwh?.value != null ? ` · ${format({ amount: c.price_per_kwh.value, currency: cost.currency }, 'price_energy')} over the ${c.price_per_kwh.basis === 'grid' ? 'energy drawn' : 'energy added'}` : ''}`
         : c.place ? `${c.place.name} has no price yet: add one on Places, or enter the cost here.` : 'Not at a saved place with a price: enter the cost here.')),
+    invoiceLines(c, car.id, ctx.chargeId),
     facts([
       ['When', h('span', { cover: 'web.charge-cost.dates' }, `${formatDate(t0, tz, { weekday: false })} ${formatTime(t0, tz)} – ${live ? 'now' : formatTime(t1, tz)} ${zone}`)],
       ['Charging', h('span', { cover: 'web.charge-cost.duration' }, formatDuration(c.charging_ms))],
@@ -209,6 +211,30 @@ export async function mount(ctx) {
   ctx.ready();
   if (ctx.query.edit === 'cost') { costT.scrollIntoView({ block: 'start' }); costT.querySelector('input, select')?.focus({ preventScroll: true }); }
   return {};
+}
+
+/**
+ * The charge's Supercharger invoices: where the cost came from with the site and its fees, and a download
+ * button per invoice PDF. Both are always in the tile (hidden when there is no invoice), so the item is there.
+ */
+function invoiceLines(c, car, charge) {
+  const list = Array.isArray(c.invoices) ? c.invoices : [];
+  const used = appliedInvoice(c);
+  const usage = (f) => (f.usage == null ? '' : f.unit === 'kwh' ? ` for ${format(f.usage, 'energy')}` : f.unit === 'min' ? ` for ${formatDuration(f.usage * 60000)}` : '');
+  const fees = (i) => (i.fees || []).map((f) => `${feeLabel(f.kind)} ${formatMoney(f.amount, i.currency)}${usage(f)}`).join(' · ');
+  const lines = [];
+  if (used) lines.push(h('span', null, h('b', null, used.site || invoiceSourceLabel(used.source)), fees(used) ? ` · ${fees(used)}` : ''));
+  for (const i of unusedInvoices(c)) lines.push(h('span', null, `${invoiceSourceLabel(i.source)}: ${formatMoney(i.total, i.currency)} (an entered cost is used instead)`));
+  const pdfs = list.filter((i) => i.pdf);
+  const links = pdfs.map((i, n) => {
+    const a = linkBtn(pdfs.length > 1 ? `Invoice ${n + 1} (PDF)` : 'Invoice (PDF)', chargeInvoicePdfUrl(car, charge, i.id), { kind: 'soft', icon: 'download' });
+    a.setAttribute('download', '');
+    if (i.invoice_name) a.title = i.invoice_name;
+    return a;
+  });
+  return h('div', { class: 'inv-box', hidden: !list.length },
+    h('p', { class: 'tile-line inv-lines', cover: 'inv.charge.source' }, lines),
+    h('div', { class: 'inv-pdfs', cover: 'inv.charge.pdf', hidden: !links.length }, links));
 }
 
 /** The cost editor: a total, a price per kWh or per minute, the currency and the energy basis. */

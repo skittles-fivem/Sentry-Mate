@@ -26,6 +26,7 @@ import { errorWords } from '../core/states.js';
 import { facts } from '../core/bits.js';
 import { srcPill } from '../core/source.js';
 import { group, infoRow, pickRow, said, askPassword } from '../core/settings.js';
+import { invoicesTile, invoicesSlot, loadUnmatched } from './invoices-tile.js';
 
 const enc = encodeURIComponent;
 // the pace (PATCH integrations/teslafi { poll }): [value, word, its waits driving or charging / awake / asleep]
@@ -114,7 +115,7 @@ export const teslafiAccountHref = (id) => `${state.buildUrl('settings-integratio
  */
 export function teslafiTiles(ctx, { cars = [] } = {}) {
   const el = h('div', { class: 'contents' });
-  let ov = null, accounts = [], status = [], carRows = {};
+  let ov = null, accounts = [], status = [], carRows = {}, unmatched = null;
   const carName = (id) => cars.find((c) => c.id === id)?.name || id;
 
   const head = () => h('div', { class: 'section-head w-full', id: 'teslafi' },
@@ -125,7 +126,7 @@ export function teslafiTiles(ctx, { cars = [] } = {}) {
   async function load() {
     if (!ctx.admin) {
       el.replaceChildren(head(), tile({ w: 2, title: 'TeslaFi', icon: 'key', side: chip('Admins only', { tone: 'muted' }) },
-        said('info', 'Only an admin sees and changes the TeslaFi input: its token, its status and its car. Every page still says where its data came from, “Data from TeslaFi” included.')));
+        said('info', 'Only an admin sees and changes the TeslaFi input: its token, its status and its car. Every page still says where its data came from, “Data from TeslaFi” included.')), invoicesSlot('teslafi'));
       return;
     }
     try {
@@ -138,11 +139,13 @@ export function teslafiTiles(ctx, { cars = [] } = {}) {
       carRows = Object.fromEntries(accounts.map((a, i) => [a.id, rows[i] || { items: a.cars || [], version: a.version }]));
     } catch (e) {
       if (e?.name === 'AbortError') return;
-      el.replaceChildren(head(), tile({ w: 2, title: 'TeslaFi', icon: 'key', side: chip('Not read', { tone: 'bad' }) }, said('bad', 'The TeslaFi input could not be read: ', errorWords(e).text)));
+      el.replaceChildren(head(), tile({ w: 2, title: 'TeslaFi', icon: 'key', side: chip('Not read', { tone: 'bad' }) }, said('bad', 'The TeslaFi input could not be read: ', errorWords(e).text)), invoicesSlot('teslafi'));
       return;
     }
     if (!ctx.alive()) return;
-    el.replaceChildren(head(), statusTile(), paceTile(), ...accounts.flatMap((a) => [accountTile(a), carsTile(a)]), addTile());
+    unmatched = await loadUnmatched(ctx, 'teslafi', ov);
+    if (!ctx.alive()) return;
+    el.replaceChildren(head(), statusTile(), paceTile(), invoicesTile(ctx, { source: 'teslafi', ov, unmatched, setOn: setInvoices }), ...accounts.flatMap((a) => [accountTile(a), carsTile(a)]), addTile());
   }
   const reload = async (msg) => { if (msg) ctx.toast(msg); await load(); };
   const after = async (r, msg) => {
@@ -190,6 +193,14 @@ export function teslafiTiles(ctx, { cars = [] } = {}) {
       note('One pace for every TeslaFi account. Often reads about as fast as TeslaFi itself polls the car (up to 6,000 requests a day per account); reading faster would only read the same poll again. These reads come from TeslaFi’s database: they never wake the car and do not count against TeslaFi’s monthly command limit.'));
   }
 
+  async function setInvoices(on, sw) {
+    const r = await askPassword(ctx, {
+      title: on ? 'Turn Supercharger invoices on' : 'Turn Supercharger invoices off', yes: on ? 'Turn on' : 'Turn off', hint: HINT,
+      text: on ? 'The server reads the cost TeslaFi gives for each Supercharger session. It becomes the charge’s cost; an entered cost still wins. TeslaFi gives no PDFs.' : 'No more invoices are fetched. The costs and invoices already kept stay.',
+      run: guarded((cred) => ctx.api.patch(BASE, withPw(cred, { version: ov.version, invoices: on }))),
+    });
+    if (!(await after(r, on ? 'Supercharger invoices on.' : 'Supercharger invoices off.'))) sw.set(!on);
+  }
   async function setPace(v, seg) {
     if (v === ov.poll) return;
     const w = PACE.find((x) => x[0] === v)[1];

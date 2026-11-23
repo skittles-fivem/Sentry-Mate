@@ -348,3 +348,11 @@
   .si-tabs { gap: round(1.25rem, var(--e)); }
   .si-tab-name { font-size: 1.125rem; }
 }
+
+/* Supercharger invoices, in the Tesla account and TeslaFi parts */
+.inv-part { display: flex; flex-direction: column; gap: round(0.875rem, var(--e)); margin-top: round(2rem, var(--e)); padding-top: round(1.25rem, var(--e)); border-top: 1px solid var(--rule); }
+.inv-downloads { display: flex; flex-wrap: wrap; align-items: end; gap: round(0.75rem, var(--e)) round(2rem, var(--e)); }
+.inv-csv { display: flex; flex-wrap: wrap; align-items: end; gap: round(0.5rem, var(--e)) round(1rem, var(--e)); }
+.inv-csv .inv-month { min-width: round(12rem, var(--e)); }
+.inv-csv .inv-month .field-hint, .inv-csv .inv-month .field-error[hidden] { display: none; }
+.inv-list { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); margin-top: round(0.25rem, var(--e)); }
