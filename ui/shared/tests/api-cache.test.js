@@ -1,5 +1,5 @@
 // Tests for api.js's kept answers with a fake fetch: kept by URL and accept with their tag, asked again with
-// If-None-Match (a 304 hands the kept answer over), no-store answers never kept, everything forgotten on
+// If-None-Match (a 304 hands the kept answer over), no-store answers never kept (but for keep + maxAgeMs), everything forgotten on
 // sign-out and on a 401, every kept answer asked again after a change, the size bounds, prefetch() and its
 // sharing with reads under way, a similar answer for a period that ends now, and the stale tracker (kept
 // answers at once, the worker's stale answers, changed or not).
@@ -78,6 +78,19 @@ test('no-store answers (secret paths) are never kept, and drop what was kept for
   assert.equal(api2.cacheSize().entries, 0, 'a prefetch of a no-store path keeps nothing either');
   await api2.get('me');
   assert.equal(f2.gets('me').length, 2);
+});
+
+test('a no-store answer asked for with keep is reused by maxAgeMs only (the session’s /me), and never sent with a tag', async () => {
+  const f = server({ me: () => ({ body: { name: 'Ada' }, cacheControl: 'no-store' }) });
+  const api = createClient({ fetch: f });
+  const a = await api.get('me', null, { keep: true });
+  assert.equal(await api.get('me', null, { maxAgeMs: 60000 }), a, 'the kept one: no second request');
+  assert.equal(f.gets('me').length, 1);
+  await api.get('me');
+  assert.equal(f.gets('me').length, 2, 'a plain read asks again');
+  assert.equal(f.gets('me')[1].init.headers['If-None-Match'], undefined);
+  await api.prefetch('me');
+  assert.equal(f.gets('me').length, 3, 'no warm answer from a no-store one');
 });
 
 test('a change that succeeds makes every kept answer be asked again; maxAgeMs and prefetch do not reuse them', async () => {
@@ -261,49 +274,61 @@ test('the stale tracker: a kept answer at once, then the fresh one; unchanged, c
   assert.deepEqual(seen.pop(), { changed: false, failed: true }, 'a check that failed says so');
 });
 
-test('the first page after a reload asks the service worker for its kept answer, then the fresh one', async () => {
+test('the first page after a reload: the network first; the service worker\u2019s kept answer when that is slow', async () => {
   let v = 1;
   const calls = [];
+  let gate = deferred();
   const fetch = async (url, init) => {
     calls.push(init);
-    const etag = `W/"${v}"`;
     if (init.headers[STALE_OK_HEADER] === '1') {
       // the worker has an answer from before the reload: v0
       return new Response(JSON.stringify({ v: 0 }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: 'W/"0"', [STALE_HEADER]: '42000' } });
     }
-    if (init.headers['If-None-Match'] === etag) return new Response(null, { status: 304 });
-    return new Response(JSON.stringify({ v }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: etag } });
+    await gate.promise;
+    return new Response(JSON.stringify({ v }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: `W/"${v}"` } });
   };
   const api = createClient({ fetch });
   const seen = [];
   const tr = api.staleTracker({ worker: true, onStale: () => seen.push('stale'), onFresh: (r) => seen.push(r) });
-  assert.deepEqual(await api.get('cars/c1/now', null, { stale: tr }), { v: 0 }, 'the worker’s answer draws at once');
-  assert.equal(calls[0].headers[STALE_OK_HEADER], '1');
+  assert.deepEqual(await api.get('cars/c1/now', null, { stale: tr }), { v: 0 }, 'a slow network: the worker\u2019s answer draws');
+  assert.equal(calls[0].headers[STALE_OK_HEADER], undefined, 'the network is asked first');
+  assert.equal(calls[1].headers[STALE_OK_HEADER], '1', 'then the worker');
   assert.deepEqual(seen, ['stale']);
+  gate.resolve();
   await settle();
-  assert.equal(calls[1].headers[STALE_OK_HEADER], undefined, 'the fresh read goes to the network');
-  assert.equal(calls[1].headers['If-None-Match'], 'W/"0"', 'with the stale answer’s tag');
   assert.deepEqual(seen.pop(), { changed: true, failed: false });
   assert.deepEqual(await api.get('cars/c1/now'), { v: 1 }, 'the fresh answer is kept');
 
+  // a fast network: the fresh answer within the grace, the worker never asked, nothing marked
+  calls.length = 0;
+  seen.length = 0;
+  const tr2 = api.staleTracker({ worker: true, onStale: () => seen.push('stale'), onFresh: (r) => seen.push(r) });
+  assert.deepEqual(await api.get('cars/c1/other', null, { stale: tr2 }), { v: 1 });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(seen, []);
+
   // no worker (the dev server): no stale header in the answer, so it is a fresh answer and nothing follows
   const plain = [];
-  const api2 = createClient({ fetch: async (url, init) => { plain.push(init); return new Response('{"v":5}', { status: 200, headers: { 'Content-Type': 'application/json' } }); } });
+  const slow2 = deferred();
+  const api2 = createClient({ fetch: async (url, init) => { plain.push(init); if (!init.headers[STALE_OK_HEADER]) await slow2.promise; return new Response('{"v":5}', { status: 200, headers: { 'Content-Type': 'application/json' } }); } });
   const seen2 = [];
-  const tr2 = api2.staleTracker({ worker: true, onStale: () => seen2.push('stale'), onFresh: (r) => seen2.push(r) });
-  assert.deepEqual(await api2.get('cars/c1/now', null, { stale: tr2 }), { v: 5 });
+  const tr3 = api2.staleTracker({ worker: true, onStale: () => seen2.push('stale'), onFresh: (r) => seen2.push(r) });
+  assert.deepEqual(await api2.get('cars/c1/now', null, { stale: tr3 }), { v: 5 });
+  slow2.resolve();
   await settle();
-  assert.equal(plain.length, 1);
   assert.deepEqual(seen2, [], 'never marked stale');
 
   // the worker's stale answer equal to the fresh one (same tag): no change, just unmarked
+  const slow3 = deferred();
   const api3 = createClient({ fetch: async (url, init) => {
     if (init.headers[STALE_OK_HEADER]) return new Response('{"v":7}', { status: 200, headers: { 'Content-Type': 'application/json', ETag: 'W/"7"', [STALE_HEADER]: '10' } });
-    return init.headers['If-None-Match'] === 'W/"7"' ? new Response(null, { status: 304 }) : new Response('{"v":8}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    await slow3.promise;
+    return new Response('{"v":7}', { status: 200, headers: { 'Content-Type': 'application/json', ETag: 'W/"7"' } });
   } });
   const seen3 = [];
-  const tr3 = api3.staleTracker({ worker: true, onStale: () => seen3.push('stale'), onFresh: (r) => seen3.push(r) });
-  await api3.get('x', null, { stale: tr3 });
+  const tr4 = api3.staleTracker({ worker: true, onStale: () => seen3.push('stale'), onFresh: (r) => seen3.push(r) });
+  await api3.get('x', null, { stale: tr4 });
+  slow3.resolve();
   await settle();
   assert.deepEqual(seen3, ['stale', { changed: false, failed: false }]);
 });

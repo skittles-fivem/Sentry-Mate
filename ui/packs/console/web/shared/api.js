@@ -34,6 +34,9 @@ export const STALE_HEADER = 'X-Sentry-Mate-Stale';
 const NOT_MODIFIED = Symbol('not modified');
 // how long a prefetched (or just checked) answer is taken at once by the page it was for
 const WARM_MS = 10000;
+// A first read that may take a kept answer waits this long for the fresh one first: on a fast network the page
+// is drawn once, with fresh data; on a slow one the kept answer shows at once after it, the fresh one later.
+const STALE_GRACE_MS = 100;
 
 /** A short sum of an answer's text: two answers with the same sum are taken as the same. */
 function textSum(t) {
@@ -494,7 +497,14 @@ export function createClient(options = {}) {
       if (meta) {
         e.info = { etag: meta.etag || null, sum: meta.sum || null };
         e.stale = meta.staleMs != null;
-        if (meta.noStore) memDrop(key.replace(/ stale-ok$/, ''));
+        if (meta.noStore) {
+          // a no-store answer (the session's /me) is kept only for a caller that asked to keep it, and only for
+          // reads with maxAgeMs: never revalidated, warmed or shown stale
+          memDrop(key.replace(/ stale-ok$/, ''));
+          if (keep && !e.stale && ep === epoch && value != null && w === writes) {
+            memPut(key, { value, etag: null, sum: null, bytes: meta.bytes || 0, at: t, keep: true, dirty: false, warmAt: 0, noStore: true });
+          }
+        }
         else if (ep === epoch && value != null) {
           const dirty = w !== writes;
           memPut(key.replace(/ stale-ok$/, ''), {
@@ -519,6 +529,11 @@ export function createClient(options = {}) {
   const same = (a, b) => !!a && !!b && (a.etag && b.etag ? a.etag === b.etag : !!a.sum && a.sum === b.sum);
 
   // check a stale answer in the background (no caller's signal: it is kept either way), for the tracker
+  // { v } when p resolves within STALE_GRACE_MS, else (or when it fails) null
+  function grace(p) {
+    return Promise.race([p.then((v) => ({ v }), () => null), new Promise((r) => setTimeout(r, STALE_GRACE_MS, null))]);
+  }
+
   function check(tracker, key, path, params, opts, shown, base = null) {
     const e = shared(key, path, params, opts, { warm: true, base });
     tracker.watch(join(e, null, key).then(() => same(shown, e.info)));
@@ -541,6 +556,10 @@ export function createClient(options = {}) {
     const near = json && !own ? similar(key) : null;
     const kept = own || near?.entry || null;
     const tracker = json && opts.stale && opts.stale.open ? opts.stale : null;
+    if (own?.noStore) {
+      if (opts.maxAgeMs > 0 && localNow() - own.at <= opts.maxAgeMs) { memUse(key); return Promise.resolve(own.value); }
+      return join(shared(key, path, params, opts), opts.signal, key);
+    }
     if (kept && !kept.dirty) {
       const t = localNow();
       if ((own && opts.maxAgeMs > 0 && kept.keep && t - kept.at <= opts.maxAgeMs) || (kept.warmAt && t - kept.warmAt <= WARM_MS)) {
@@ -548,18 +567,32 @@ export function createClient(options = {}) {
         return Promise.resolve(kept.value);
       }
       if (tracker) {
+        // the fresh answer if it is in within STALE_GRACE_MS (a fast network: drawn once), else the kept one now
+        // and the fresh one after it
         memUse(near ? near.key : key);
-        check(tracker, key, path, params, opts, kept, near?.entry);
-        return Promise.resolve(kept.value);
+        const e = shared(key, path, params, opts, { warm: true, base: near?.entry });
+        const fresh = join(e, null, key);
+        return grace(fresh).then((r) => {
+          if (r) return r.v;
+          tracker.watch(fresh.then(() => same(kept, e.info)));
+          return kept.value;
+        });
       }
     }
     if (near) return join(shared(key, path, params, opts, { base: near.entry }), opts.signal, key);
     if (!kept && tracker?.worker) {
       // the first page after a reload: the worker may have the answer in its memory
-      const e = shared(key + ' stale-ok', path, params, opts, { staleOk: true });
-      return join(e, opts.signal, key + ' stale-ok').then((value) => {
-        if (e.stale) check(tracker, key, path, params, opts, e.info);
-        return value;
+      // (asked for only when the network's answer is not in within STALE_GRACE_MS)
+      const e = shared(key, path, params, opts);
+      const fresh = join(e, opts.signal, key);
+      return grace(fresh).then((r) => {
+        if (r) return r.v;
+        if (!tracker.open) return fresh;
+        const w = shared(key + ' stale-ok', path, params, opts, { staleOk: true });
+        return join(w, opts.signal, key + ' stale-ok').then((value) => {
+          if (w.stale) tracker.watch(fresh.then(() => same(w.info, e.info)));
+          return value;
+        }, () => fresh);
       });
     }
     return join(shared(key, path, params, opts), opts.signal, key);
