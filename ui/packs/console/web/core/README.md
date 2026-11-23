@@ -50,13 +50,13 @@ pages/<id>.js  one module per page id, plus sign-in and setup; pages/<id>.css wh
 | `notices.js` | Server notices and the offline line under the command bar. |
 | `toast.js` | `toast(text, { kind: 'ok' \| 'info' \| 'error', next })`: bottom-right notes, no motion. |
 | `dialog.js` | `openDialog({ title, body, actions })`, `confirmDialog(text, { danger, ok })` on native `<dialog>`. |
-| `states.js` | `loadingLine(what)` (a blinking caret, never a spinner), `empty(text, hint)`, `errorBlock(err, { retry })`, `errorWords(err)`. |
+| `states.js` | `loadingLine(what)` (a blinking caret, never a spinner; a pass under way shows `.spin`, one character cell turning, the same size everywhere), `empty(text, hint)`, `errorBlock(err, { retry })`, `errorWords(err)`. |
 | `form.js` | `field({ label, name, type, ... })`, `form({ fields, submit, onSubmit })`, `showApiError`: `label: [input]` lines. |
 | `ui.js` | `head(ctx)` (the header line), `section`, `kv`, `btn`, `actions`, `note`, `link`, `textBar`, `paint`, `centreUpDown`. |
 | `fmt.js` | `num(value, kind)` (number with its unit muted), `numText`, `time`, `date`, `dateTime`, `when`, `dur`, `ago`, `range`, `slug`, `stateWord`, `tag`. |
 | `bare.js` | The sign-in and set-up box: centred both ways on whole pixels; `canSendSecrets()` and the plain-HTTP line. |
 | `stage.js` | `offstage(slot, build)`: a part of a page drawn again on a live update is built in an invisible box of the same width (charts and all) and swapped in at once. |
-| `table.js` | `table(ctx, opts)`: dense text tables from an API list (server sort and paging, csv) or local rows, a totals row, `data-row` rows, the two-line phone rows (`ph: 'main' \| 'sub' \| 'num'`); `cellBar(frac, cells)`. |
+| `table.js` | `table(ctx, opts)`: dense text tables from an API list (server sort and paging, csv) or local rows, a totals row, `data-row` rows, the two-line phone rows (`ph: 'main' \| 'sub' \| 'num'`); `autoMore`; `box` (and `boxRows`) for a long log-like list that scrolls in a box about five rows high (shared/scrollbox.js, `.scroll-box` in app.css: the head line stays at the top, a fade at the bottom while rows are hidden below; an API list has its height from the start and loads its next page as the end of the box comes near, "more" stays under it for the keyboard and the csv still exports every row; local rows are all drawn in a box at most that high, `.scroll-box--fit`); `cellBar(frac, cells)`. |
 | `chart.js` | uPlot: `loadUPlot`, `plot(el, ctx, make, data, { onCursor })`, `line(label, n)` (series n: c1 solid, c2 / c3 dashed), `timeAxis(tz)`, `valueAxis(fmt)`, `cursor(syncKey)`, `readout()`, `chartOrNote`. |
 | `map.js` | MapLibre in a flat grey style: `createMap` / `safeMap(el, ctx, opts)` with `line`, `points`, `circle`, `marker`, `fit`, `frame`. |
 | `strip.js` | `stateStrip(ctx, items, from, to, tz)`: the state strip, one character per cell. |
@@ -168,4 +168,4 @@ may make the page wider than the window.
 - No inline styles, `innerHTML` or string event handlers: build with `h()`; dynamic sizes go through CSS custom
   properties (`vars`), which use CSSOM.
 - No `fetch` outside `shared/api.js`, no outside requests except map tiles, no unit or date maths by hand.
-- No blur, gradients, glow, shadows or serif; corners 2 px at most; motion only the command list fade and the caret.
+- No blur, gradients, glow, shadows or serif; corners 2 px at most; motion only the command list fade, the caret and the `.spin` cell.

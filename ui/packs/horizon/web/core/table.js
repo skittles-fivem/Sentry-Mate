@@ -6,6 +6,7 @@
 import * as state from '../shared/state.js';
 import { h, replace, cover } from '../shared/dom.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
+import { scrollBox } from '../shared/scrollbox.js';
 import { formatNumber, compareText } from '../shared/i18n.js';
 import { icon } from './icons.js';
 import { csvButton } from './page.js';
@@ -31,6 +32,12 @@ import { errorWords } from './states.js';
  *   autoMore,                           an API list: the next page loads as the foot scrolls into view
  *                                       (IntersectionObserver); the button stays, for the keyboard
  *   moreLabel,                          the button's words (default "Show more")
+ *   box,                                true or the box's accessible name: the rows scroll inside a box of about
+ *                                       five rows (shared/scrollbox.js; app.css .scroll-box gives it its height
+ *                                       from the start, the column header stays at its top); with autoMore the
+ *                                       next page loads as the end of the box comes near. Local rows, and an
+ *                                       API list whose first page holds it all, get a box only as high as its
+ *                                       rows, up to five (boxFit: true or false sets it for local rows)
  * }) -> { el, reload(params), setParams(patch), rows(), done() }
  *
  * A column's sort is the API's sort name (a string) for API lists, or true for local rows (sorted by
@@ -61,15 +68,28 @@ export function dataTable(ctx, opts) {
   const footText = h('span');
   const foot = h('div', { class: 'tbl-foot', hidden: true }, footText, moreBtn);
   const noteEl = opts.note ? h('p', { class: 'note tbl-note', cover: opts.noteCover || null }, opts.note) : null;
+  const scroller = h('div', { class: 'tbl-scroll' }, table);
+  // box: the rows scroll in a box of about five rows; with autoMore its end marker asks for the next page
+  const fit = opts.boxFit ?? !!opts.rows;
+  const box = opts.box ? scrollBox({
+    el: scroller, cls: ['tbl-box', fit && 'scroll-box--fit'], onCleanup: ctx.onCleanup,
+    label: typeof opts.box === 'string' ? opts.box : opts.label || opts.title || null,
+    onEnd: opts.autoMore && opts.path ? async () => {
+      if (busy || done || foot.hidden || !ctx.alive()) return false;
+      const n = loaded.length;
+      await more();
+      return loaded.length > n;
+    } : null,
+  }) : null;
   const el = h('section', { class: ['panel', 'tbl-panel', opts.cls], 'aria-label': opts.label || opts.title || null },
-    bar, noteEl, h('div', { class: 'tbl-scroll' }, table), foot);
+    bar, noteEl, scroller, foot);
   if (opts.cover) cover(el, opts.cover);
 
-  // autoMore: the foot is the sentinel. New rows go under the ones on screen (appended, never re-drawn), so
-  // nothing above moves; after each page, a foot still in view (a tall screen) asks for the next one.
+  // autoMore (no box): the foot is the sentinel. New rows go under the ones on screen (appended, never
+  // re-drawn), so nothing above moves; after each page, a foot still in view (a tall screen) asks for the next.
   const AHEAD = 240;
   let watcher = null;
-  if (opts.autoMore && opts.path && typeof IntersectionObserver === 'function') {
+  if (opts.autoMore && opts.path && !box && typeof IntersectionObserver === 'function') {
     watcher = new IntersectionObserver((entries) => {
       if (!ctx.alive()) { watcher.disconnect(); return; }
       if (entries.some((e) => e.isIntersecting)) more();
@@ -201,6 +221,7 @@ export function dataTable(ctx, opts) {
     loaded = sortedLocal();
     done = true; total = null;
     replace(tbody, loaded.length ? loaded.map(rowEl) : emptyRow(opts.empty ? opts.empty() : h('div', { class: 'empty' }, h('h3', null, 'Nothing to show'))));
+    box?.edge();
     setCount();
     setCsv();
   }
@@ -214,6 +235,7 @@ export function dataTable(ctx, opts) {
     if (!freshQuiet) {
       loaded = []; done = false; total = null;
       replace(tbody, skeleton());
+      box?.top();   // a new list starts at its top
       foot.hidden = true;
       count.textContent = '';
     }
@@ -235,8 +257,11 @@ export function dataTable(ctx, opts) {
       if (fresh) { fresh = false; loaded = []; total = null; tbody.replaceChildren(); if (freshQuiet) setCsv(); }
       loaded.push(...items);
       tbody.append(...items.map(rowEl));
+      const first = !answered;
       answered = true;
       done = !pg.next;
+      // a box whose whole list came with the first page (before the page is shown) is only as high as its rows
+      if (box && first && done) scroller.classList.add('scroll-box--fit');
       if (pg.total != null) total = pg.total;
       if (!loaded.length) replace(tbody, emptyRow(opts.empty ? opts.empty(pg) : h('div', { class: 'empty' }, h('h3', null, 'Nothing in this period'))));
       setCount();
@@ -255,6 +280,7 @@ export function dataTable(ctx, opts) {
       // a stale load leaves busy alone: load() cleared it and the current load owns it now
       if (my === gen) { busy = false; moreBtn.disabled = false; }
     }
+    if (drew && my === gen && box && ctx.alive()) box.recheck();
     if (drew && my === gen && watcher && !done && ctx.alive()) requestAnimationFrame(() => { if (my === gen && !busy && !done && footNear()) more(); });
   }
 

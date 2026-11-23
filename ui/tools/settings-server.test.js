@@ -6,7 +6,8 @@
 // And its Storage panel in all six packs, at desktop size (admins only):
 //   - the categories of GET /system/storage/detail are listed largest first, with the total, the free space, what
 //     compaction saved and its last pass, and the sentence that says compaction is lossless;
-//   - "Compact now" posts, the progress shows ("Packing…" with the step and done of total, read again every 2 s),
+//   - "Compact now" posts, the progress shows (the step of three, days done of the total, what the pass freed so far,
+//     the estimate and the last progress, read again every 2 s),
 //     and when the pass ends the list is drawn again (the day packs first) and a note says what was freed;
 //   - a failed pass shows the server's error; a watch account gets no panel and asks for no detail;
 //   - the reading stops when the page is left while a pass runs.
@@ -160,7 +161,11 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'ma
 
         // Compact now: progress, then the list again and what was freed
         await compactButton(page).click();
-        await page.waitForFunction(() => /packing…\s*CAN logs, [\d,.]+ of [\d,.]+/i.test(document.body.innerText) || /step\s+CAN logs, [\d,.]+ of [\d,.]+/.test(document.body.innerText), null, { timeout: 15000 });
+        await page.waitForFunction(() => /Step 1 of 3[^\n]*CAN logs/i.test(document.body.innerText) && /[\d,.]+ of [\d,.]+ days/.test(document.body.innerText), null, { timeout: 15000 });
+        text = await bodyText(page);
+        assert.match(text, /Freed so far in this pass/i, 'what the pass freed so far');
+        assert.match(text, /left in this step/i, 'the estimate');
+        assert.match(text, /Last step [\d,.]+\s*s ago/i, 'when it last got on');
         assert.ok(await compactButton(page).isDisabled(), 'no second pass while one runs');
         await page.waitForFunction(() => /Compaction is done: 3\.0\sGB freed on disk\./.test(document.body.innerText), null, { timeout: 30000 });
         text = await bodyText(page);
@@ -177,7 +182,7 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'ma
         await page.waitForFunction(() => /Compaction is done: nothing was left to pack\./.test(document.body.innerText), null, { timeout: 30000 });
         assert.match(await bodyText(page), /nothing left to pack/i);
         await compactButton(page).click();
-        await page.waitForFunction(() => /packing…/i.test(document.body.innerText), null, { timeout: 15000 });
+        await page.waitForFunction(() => /Step \d of 3/i.test(document.body.innerText), null, { timeout: 15000 });
         await page.evaluate(() => { history.pushState({}, '', '/settings/display'); dispatchEvent(new PopStateEvent('popstate')); });
         await ready(page, 'settings-display');
         await page.waitForTimeout(2500);   // a read already under way may still land

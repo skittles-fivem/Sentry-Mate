@@ -24,6 +24,7 @@ import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { signOut } from '../core/session.js';
 import { askPassword, copyBtn, codeOut, downloadKey, showOnce, STAY } from '../core/secret.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
+import { compactionProgress } from '../shared/compaction.js';
 
 export const id = 'settings-server';
 export const title = () => 'Settings: server';
@@ -46,7 +47,7 @@ const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)
 const LIVE = new Set(['offered', 'copying', 'paused', 'moved']);
 // storage: the groups of the categories and the steps of a compaction pass, in plain words
 const STORE_GROUP = { logs: 'CAN logs', series: 'time series', rows: 'drives and charges', kv: 'kept answers and records', imports: 'imports', server: 'server' };
-const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records' };
+const lower1 = (t) => (t ? t[0].toLowerCase() + t.slice(1) : t);
 
 /** A list of '[tag] text' lines. */
 const lines = (rows, attrs = {}) => h('ul', { class: 'ln-list', ...attrs }, rows.filter(Boolean).map(([t, text, sub]) =>
@@ -417,7 +418,7 @@ export async function mount(ctx) {
   let gt = null;
   ctx.onCleanup(() => clearTimeout(gt));
   const storTable = admin ? table(ctx, {
-    title: 'on disk by category', rows: G.d?.categories || [], csv: false, label: 'Space on disk by category', sort: { key: 'disk_bytes', dir: 'desc' },
+    title: 'on disk by category', rows: G.d?.categories || [], csv: false, label: 'Space on disk by category', sort: { key: 'disk_bytes', dir: 'desc' }, box: true,
     note: 'largest first, with the kind of data.',
     columns: [
       { key: 'label', label: 'what', sort: true, ph: 'main', grow: true, cls: 'wrap-cell', render: (c) => c.label },
@@ -427,25 +428,49 @@ export async function mount(ctx) {
     ],
     empty: () => empty('not known', G.err ? `the server did not say what takes the space: ${errText(G.err)}` : 'the server did not say what takes the space'),
   }) : null;
+  // the progress row: always three lines (four on a phone), the same idle or running, so nothing below moves;
+  // each line is cut with an ellipsis (the whole text in its title) rather than growing
+  const ln = (cls, ...kids) => {
+    const el = h('div', { class: ['cmp-ln', cls] }, ...kids);
+    el.title = el.textContent.trim() || '';
+    return el;
+  };
+  function progressRow(c) {
+    const p = compactionProgress(c, { now: ctx.api.now?.() ?? Date.now(), bytes });
+    const dot = h('span', { class: 'sep muted' }, '  ·  ');
+    const join = (parts) => parts.filter(Boolean).flatMap((x, i) => (i ? [dot.cloneNode(true), x] : [x]));
+    const warnLine = G.pollErr ? `could not read the progress just now (${errText(G.pollErr)}); it keeps trying.` : p.errors;
+    if (!p.running) {
+      const failed = c?.status === 'failed';
+      return h('div', { class: 'cmp', 'aria-label': 'Compaction progress' },
+        ln('cmp-head', h('span', { class: 'spin spin--off', 'aria-hidden': 'true' }), failed ? tag('failed', 'bad') : tag(c ? 'idle' : 'not known', 'muted'), ' ',
+          failed ? `the last pass stopped: ${c.error || 'the server gave no reason'}` : !c ? 'the server did not say' : 'no pass is running'),
+        ln('cmp-bar', textBar(0, { cells: 20, tone: 'muted', label: 'not running' }), ' ', h('span', { class: 'muted' }, c?.finished_ms != null ? `last pass ${t(c.finished_ms)}` : 'no pass has finished yet')),
+        ln('cmp-more muted', c?.finished_ms != null ? (c.last_saved_bytes ? `it freed ${bytes(c.last_saved_bytes)}` : 'it found nothing left to pack') : DASH),
+        ln('cmp-warn tone--warn', warnLine || ''));
+    }
+    return h('div', { class: 'cmp cmp--on', 'aria-label': 'Compaction progress' },
+      ln('cmp-head', h('span', { class: 'spin', 'aria-hidden': 'true' }), join([p.stepOf ? h('b', null, p.stepOf) : null, p.step || 'getting ready'])),
+      ln('cmp-bar', textBar(p.pct ?? 0, { cells: 20, tone: p.stalled ? 'warn' : 'accent', label: p.counting ? 'counting' : null }), ' ', h('span', { class: 'n' }, p.count)),
+      ln('cmp-more', join([p.saved, p.rate, p.stalled ? h('span', { class: 'tone--warn' }, lower1(p.stall)) : p.eta, p.stalled ? null : p.last].map((x) => (typeof x === 'string' ? h('span', { class: 'muted' }, lower1(x)) : x)))),
+      ln('cmp-warn tone--warn', lower1(warnLine) || ''));
+  }
   function paintStor() {
     const d = G.d, c = d?.compaction || null;
     const running = c?.status === 'running';
     const failed = c?.status === 'failed';
     const out = [
-      G.pollErr ? `! could not read the progress just now (${errText(G.pollErr)}); it keeps trying.` : null,
       `state   ${c ? c.status : 'not known'}`,
-      `step    ${running ? `${PACK_STEP[c.step] || c.step || 'getting ready'}, ${c.total ? `${count(c.done ?? 0)} of ${count(c.total)}` : 'counting'}` : DASH}`,
-      failed ? `error   ${c.error || 'the server gave no reason'}` : null,
       `saved   ${c ? `${bytes(c.saved_bytes)} so far` : DASH}`,
       `last    ${!c || c.finished_ms == null ? 'no pass has finished yet' : `${t(c.finished_ms)}, ${c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'nothing left to pack'}`}`,
       `auto    ${!c ? DASH : c.automatic ? 'runs by itself when the server is idle' : 'does not run by itself on this server'}`,
       `on disk ${bytes(d?.total_disk_bytes)} in all, ${d?.free_bytes != null ? `${bytes(d.free_bytes)} free` : 'free space not known'}`,
-    ].filter(Boolean).join('\n');
+    ].join('\n');
     replace(storSlot,
       runs([
         [!c ? 'off' : running ? 'running' : failed ? 'bad' : 'ok', running ? 'packing…' : 'pack what is no longer written',
           'Packs data that is no longer written, losslessly: every value stays readable exactly, and the logs\' signed originals are kept byte for byte.',
-          btn('compact now', compactNow, { kind: 'primary', disabled: running || !c })],
+          btn('compact now', compactNow, { kind: 'primary', disabled: running || !c }), progressRow(c)],
       ]),
       h('pre', { class: 'mono-box out-box', 'aria-label': 'Compaction output' }, out));
   }
@@ -612,7 +637,6 @@ export async function mount(ctx) {
 
   // the audit log in words (shared/audit.js): the action (its code on hover), the item it changed, linked where
   // it still exists; filtered by what (a group of actions) and who; ten entries, more as the end scrolls in
-  const lower1 = (t) => (t ? t[0].toLowerCase() + t.slice(1) : t);
   const tripOf = new Map((trips || []).map((x) => [String(x.id), x]));
   const itemCtx = { carName: (c) => carName.get(c), accountName: (a) => S.accounts.find((x) => x.id === a)?.name, trip: (x) => tripOf.get(String(x)) };
   function target(e) {
@@ -635,7 +659,7 @@ export async function mount(ctx) {
     title: 'audit log', path: 'audit', limit: 10, csvName: 'audit-log', label: 'Who changed what', wrapCls: 'audit-sec',
     note: `Every change and sign-in, newest first. Times in ${tz}.`,
     filters: h('div', { class: 'filt filt--audit' }, h('span', { class: 'filt-p' }, 'filter>'), h('span', { class: 'filt-sel' }, whatSel), h('span', { class: 'filt-sel' }, whoSel)),
-    autoMore: true, moreLabel: 'load more',
+    autoMore: true, moreLabel: 'load more', box: 'Audit log entries',
     columns: [
       { key: 'at_ms', label: 'when', ph: 'sub', cls: 'nowrap', render: (e) => dateTime(e.at_ms, tz) },
       { key: 'account', label: 'who', ph: 'num', cls: 'nowrap', render: (e) => e.account || h('span', { class: 'muted' }, 'the server') },

@@ -9,7 +9,8 @@
 // is read again every 2 s). Changes are saved through the API with the object's version; a short note
 // confirms each one.
 
-import { h, replace } from '../shared/dom.js';
+import { h, replace, setVars } from '../shared/dom.js';
+import { compactionProgress } from '../shared/compaction.js';
 import * as state from '../shared/state.js';
 import { format } from '../shared/units.js';
 import { icon } from '../core/icons.js';
@@ -40,7 +41,6 @@ const errText = (e) => (e?.fields ? Object.values(e.fields).join(' ') : errorWor
 const bytes = (v) => format(v, 'bytes');
 // storage: the groups of the categories and the steps of a compaction pass, in plain words
 const STORE_GROUP = { logs: 'CAN logs', series: 'Time series', rows: 'Drives and charges', kv: 'Kept answers and records', imports: 'Imports', server: 'Server' };
-const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records' };
 
 // a row: the label and its explanation on the left, the control on the right (the app's .setting)
 const setting = (titleText, text, control, cv = null) => h('div', { class: 'setting', cover: cv },
@@ -572,8 +572,8 @@ export async function mount(ctx) {
   ctx.on(whoPick, 'change', refilter);
   const auditTable = admin ? dataTable(ctx, {
     title: 'Audit log', icon: 'book', path: 'audit', label: 'Who changed what', csvName: 'audit-log',
-    limit: 10, autoMore: true, moreLabel: 'Load more', cls: 'ss-audit', side: auditFilters,
-    note: `Every change and every sign-in, newest first; more load as you scroll. The item links to what was changed, where it still exists. Times are in ${zoneText}.`,
+    limit: 10, autoMore: true, moreLabel: 'Load more', cls: 'ss-audit', side: auditFilters, box: 'Audit log entries',
+    note: `Every change and every sign-in, newest first; five show at a time, and more load as you scroll the list. The item links to what was changed, where it still exists. Times are in ${zoneText}.`,
     columns: [
       { key: 'at_ms', label: `When (${zone})`, cls: 'ss-audit-when', render: (e) => dateTime(e.at_ms, tz) },
       { key: 'account', label: 'Who', render: (e) => (e.account ? h('b', null, e.account) : h('span', { class: 'faint' }, 'The server')) },
@@ -592,9 +592,28 @@ export async function mount(ctx) {
   // progress, and when it ends the table is drawn again and a note says what was freed.
   const compactBtn = h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: () => compactNow() }, icon('reset', 'ico--sm'), 'Compact now');
   const storFigs = h('div', { class: 'ss-stor-figs' });
-  const storLine = h('p', { class: 'ss-stor-line', 'aria-live': 'polite' });
+  // the progress row: one box of fixed size, the same idle or running (nothing below it moves); its parts
+  // stay and only their words change
+  const prog = {
+    lead: h('span', { class: 'ss-prog-lead' }),
+    head: h('span', { class: 'ss-prog-text' }),
+    bar: h('div', { class: 'bar ss-prog-bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-label': 'Progress of this step' }, h('i')),
+    count: h('span', { class: 'ss-prog-count' }),
+    info: h('p', { class: 'ss-prog-info' }),
+    err: h('p', { class: 'ss-prog-err warn' }),
+  };
+  const storLine = h('div', { class: 'ss-prog' },
+    h('p', { class: 'ss-prog-head', 'aria-live': 'polite' }, prog.lead, prog.head),
+    h('div', { class: 'ss-prog-barrow' }, prog.bar, prog.count), prog.info, prog.err);
+  const say = (el, t) => { const s = t || ''; if (el.textContent !== s) el.textContent = s; el.title = s; };
+  let leadKind = null;
+  function lead(kind) {
+    if (leadKind === kind) return;
+    leadKind = kind;
+    replace(prog.lead, kind === 'run' ? h('span', { class: 'mv-spin', 'aria-hidden': 'true' }) : icon(kind === 'bad' ? 'warn' : 'info', 'ico--sm'));
+  }
   const storageTable = admin ? dataTable(ctx, {
-    title: 'Storage', icon: 'server', rows: S.storage?.categories || [], label: 'Space on disk by category', csvName: 'storage on disk', cls: 'ss-storage',
+    title: 'Storage', icon: 'server', rows: S.storage?.categories || [], label: 'Space on disk by category', csvName: 'storage on disk', cls: 'ss-storage', box: 'Categories',
     note: 'What takes the space on disk, largest first, with the kind of data as a tag.',
     side: [h('span', { class: 'faint' }, 'Admins only'), compactBtn],
     sort: { key: 'disk_bytes', dir: 'desc' },
@@ -621,19 +640,29 @@ export async function mount(ctx) {
       metric('Saved so far', c?.saved_bytes, 'bytes', { size: 'sm', why: 'Not known.', explain: 'What compaction has freed in all.' }),
       metric('Last pass', last, null, { size: 'sm', explain: c?.finished_ms != null ? `Finished ${dateTime(c.finished_ms, tz)} (${zone}).` : 'No pass has finished yet.' }),
     ]));
-    if (running) {
-      replace(storLine, h('span', { class: 'mv-spin', 'aria-hidden': 'true' }),
-        h('span', null, h('b', null, 'Packing…'), ` ${PACK_STEP[c.step] || c.step || 'getting ready'}, `,
-          c.total ? `${format(c.done ?? 0, 'count')} of ${format(c.total, 'count')}` : 'counting',
-          storPollErr ? ` (could not read the progress just now: ${errText(storPollErr)})` : null));
-    } else if (c?.status === 'failed') {
-      replace(storLine, icon('warn', 'ico--sm'), h('span', null, h('b', null, 'The last pass failed: '), c.error || 'the server gave no reason.'));
-    } else {
-      replace(storLine, icon('info', 'ico--sm'), h('span', null, !c ? 'The server did not say how compaction stands.'
-        : c.automatic ? 'Compaction runs by itself when the server is idle; Compact now starts a pass at once.'
-          : 'Compaction does not run by itself on this server; Compact now starts a pass.'));
-    }
+    const p = compactionProgress(c, { now: ctx.api.now?.() ?? Date.now(), bytes });
+    storLine.classList.toggle('is-running', running);
     storLine.classList.toggle('is-bad', !running && c?.status === 'failed');
+    if (running) {
+      lead('run');
+      say(prog.head, [p.stepOf, p.step].filter(Boolean).join(' · ') || 'Packing…');
+      prog.bar.classList.toggle('is-counting', p.counting);
+      setVars(prog.bar, { '--w': p.pct == null ? '0%' : `${p.pct.toFixed(1)}%` });
+      if (p.pct == null) prog.bar.removeAttribute('aria-valuenow'); else prog.bar.setAttribute('aria-valuenow', String(Math.round(p.pct)));
+      say(prog.count, p.count);
+      say(prog.info, [p.saved, p.rate, p.stalled ? null : p.eta, p.last].filter(Boolean).join(' · '));
+      // the stall warning takes the estimate's place; the units left as they were, and a progress read that
+      // failed, go on the warn line (cut with an ellipsis, never growing the row)
+      say(prog.err, [p.stall, p.errors, storPollErr ? `Could not read the progress just now: ${errText(storPollErr)}` : null].filter(Boolean).join(' '));
+    } else {
+      lead(c?.status === 'failed' ? 'bad' : 'idle');
+      if (c?.status === 'failed') replace(prog.head, h('b', null, 'The last pass failed: '), c.error || 'the server gave no reason.');
+      else say(prog.head, !c ? 'The server did not say how compaction stands.'
+        : c.automatic ? 'Compaction runs by itself when the server is idle; Compact now starts a pass at once.'
+          : 'Compaction does not run by itself on this server; Compact now starts a pass.');
+      prog.head.title = prog.head.textContent;
+      say(prog.count, ''); say(prog.info, ''); say(prog.err, '');
+    }
   }
   function scheduleStorage() {
     clearTimeout(storTimer);

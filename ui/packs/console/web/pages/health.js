@@ -240,7 +240,7 @@ async function mountCar(ctx) {
 
   /* ---------- gaps */
   const gaps = table(ctx, {
-    title: 'gaps', path: `${base}/gaps`, params: ctx.params, csvName: 'gaps',
+    title: 'gaps', path: `${base}/gaps`, params: ctx.params, csvName: 'gaps', box: 'Gaps in the period', autoMore: true,
     note: 'times with no usable data, newest first. a gap in which the odometer moved is a drive nobody recorded.',
     columns: [
       { key: 'start', label: 'from', ph: 'main', render: (g) => h('a', { class: 'lnk-plain', href: timelineAt(cid, g.start_ms, g.end_ms ?? ctx.api.now()) }, formatDateTime(g.start_ms, tz, { now: ctx.api.now(), weekday: false })) },
@@ -298,7 +298,7 @@ async function mountCar(ctx) {
     const kt = kindsTable(ctx, st.kinds, st.total_bytes, { title: `storage of ${car.name}`, csvName: 'storage by kind', coverIds: ['dbinfo.table.sizes'] });
     const labels = Object.fromEntries((st.kinds || []).map((k) => [k.kind, k.label]));
     const days = table(ctx, {
-      title: 'storage by day', path: `${base}/storage`, params: {}, limit: 16, csvName: 'storage by day',
+      title: 'storage by day', path: `${base}/storage`, params: {}, limit: 16, csvName: 'storage by day', box: 'Storage by day', autoMore: true,
       note: 'newest first, only days with data, in the car’s days.',
       columns: [
         { key: 'date', label: 'day', ph: 'main', render: (r) => h('a', { class: 'lnk-plain', href: state.buildUrl('timeline', { car: cid, period: { from: dayStart(r.date, tz), to: dayStart(r.date, tz) + DAY } }) }, formatDayKey(r.date, { weekday: false })) },

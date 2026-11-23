@@ -11,6 +11,7 @@ import { formatNumber } from '../shared/i18n.js';
 import { formatDuration } from '../shared/time.js';
 import { format } from '../shared/units.js';
 import { section, note } from '../core/ui.js';
+import { scrollBox } from '../shared/scrollbox.js';
 import { tag, dateTime, time, DASH } from '../core/fmt.js';
 import { loadingLine, errorWords } from '../core/states.js';
 
@@ -98,8 +99,11 @@ export function overviewSection(ctx, { href = (l) => l } = {}) {
     tbody);
   const ptbl = h('table', { class: 'ov ov--pb', 'aria-label': 'Problems in the last 7 days', cover: 'conn.overview.problems' },
     head([['began', 'ov-c-when'], ['connection', 'ov-c-conn'], ['what happened', 'ov-c-what'], ['how long', 'ov-c-dur num'], ['', 'ov-c-res']]), ptbody);
+  const pbox = scrollBox({ el: h('div', { class: 'ov-scroll scroll-box--fit ov-pbox' }), label: 'Problems in the last 7 days', onCleanup: ctx.onCleanup }, ptbl);
   const body = h('div', { class: 'ov-body', hidden: true }, tot.el, h('div', { class: 'ov-scroll' }, tbl),
-    h('h3', { class: 'sub-title ov-ptitle' }, 'problems in the last 7 days'), pnote, h('div', { class: 'ov-scroll' }, ptbl));
+    h('h3', { class: 'sub-title ov-ptitle' }, 'problems in the last 7 days'), pnote,
+    // a long week of problems scrolls in a box five rows high (at most: a short list leaves no empty box)
+    pbox.el);
   const first = loadingLine('reading every connection');
   const el = h('div', { class: 'ov-wrap' },
     section({ title: 'connections', cls: 'ov-sec', side: [errEl, readEl] }, first, body,
@@ -241,6 +245,8 @@ export function overviewSection(ctx, { href = (l) => l } = {}) {
     sync(prows, d.problems || [], probRow, fillProb, ptbody);
     pnote.hidden = !!(d.problems || []).length;
     ptbl.hidden = !(d.problems || []).length;
+    pbox.el.hidden = ptbl.hidden;
+    pbox.recheck();
     first.remove();
     body.hidden = false;
     tick();

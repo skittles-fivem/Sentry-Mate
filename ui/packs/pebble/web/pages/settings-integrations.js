@@ -23,7 +23,7 @@ import { formatNumber } from '../shared/i18n.js';
 import { tile, btn, chip, note, icon, ago } from '../core/ui.js';
 import { toggle, field, form, setFieldError } from '../core/form.js';
 import { confirmSheet } from '../core/sheet.js';
-import { sectionHead, pills, nums } from '../core/bits.js';
+import { sectionHead, pills, nums, listBox } from '../core/bits.js';
 import { group, infoRow, said, notSaved } from '../core/settings.js';
 import { inOrder } from '../core/settings.js';
 import { srcPill } from '../core/source.js';
@@ -496,8 +496,8 @@ export async function mount(ctx) {
         note(['Automations should react to what happened, not to a value changing. One message per event goes to ', code(`${ns()}/cars/${carId || 'c1'}/event`), '. It is never retained, so a restart never fires an automation again. Sentry Mate only publishes; nothing here can control the car.']),
         group(null, EVENTS.map(([t, w, c]) => infoRow({ name: code(t), sub: `${w}: ${c}.` })))),
       tile({ w: 2, title: 'Recent events', icon: 'timeline' },
-        events.length ? h('div', { class: 'log', role: 'list' }, events.map((e) => h('div', { class: 'log-row', role: 'listitem' },
-          h('span', { class: 'log-k' }, `${formatDateTime(e.at_ms, ctx.tz, { now: api.now() })}  ${e.type}`), h('span', { class: 'log-v' }, Object.keys(e.payload || {}).length ? `${Object.keys(e.payload).length} fields` : ''))))
+        events.length ? listBox(ctx, { fit: true, label: 'Recent events', cls: 'log-box' }, h('div', { class: 'log', role: 'list' }, events.map((e) => h('div', { class: 'log-row', role: 'listitem' },
+          h('span', { class: 'log-k' }, `${formatDateTime(e.at_ms, ctx.tz, { now: api.now() })}  ${e.type}`), h('span', { class: 'log-v' }, Object.keys(e.payload || {}).length ? `${Object.keys(e.payload).length} fields` : ''))))).el
           : said('info', carId ? 'No events in the last 30 days.' : 'Events appear here once a car has uploaded logs.'),
         note('The last 30 days, newest first, as a subscriber got them.')),
       recipe('Garage door', 'ha.automation.garage', ['drive_ended', 'end_place'], 'Close the garage door, or log the arrival, when a drive ends at home. Opening it on arrival is better left to the car’s own HomeLink.', 'published'),

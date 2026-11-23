@@ -436,6 +436,20 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .tbl-sortline { display: none; }
 .tbl-csv:empty { display: none; }
 .tbl-note { margin: 0 0 var(--g); }
+/* a long list in a box (shared/scrollbox.js, core/table.js box): the head line and five rows high, high from the
+   start, so the page never grows while rows load; the head line stays at the top, a fade at the bottom while
+   there are more under it. A list of other rows sets --box-row (one row) or --box-rows (how many). Local rows
+   (.scroll-box--fit) are at most that high, so a short list leaves no empty box. */
+.scroll-box {
+  --box-rows: 5; --box-row: calc(var(--lh2) + 2 * var(--g2) + 1px); --box-head: var(--box-row);
+  height: calc(var(--box-head) + var(--box-rows) * var(--box-row)); overflow-y: auto; scrollbar-gutter: stable;
+}
+.scroll-box--fit { height: auto; max-height: calc(var(--box-head) + var(--box-rows) * var(--box-row)); }
+.scroll-box :is(.tbl, .ov) thead th { position: sticky; top: 0; z-index: 1; background: var(--bg); }
+.scroll-box .tbl tfoot td { position: sticky; bottom: 0; z-index: 1; background: var(--bg); }
+.scroll-box[data-below] { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2 * var(--lh2)), rgb(0 0 0 / 0.2)); mask-image: linear-gradient(to bottom, #000 calc(100% - 2 * var(--lh2)), rgb(0 0 0 / 0.2)); }
+.scroll-box:focus-visible { outline-offset: -2px; }
+.scroll-box-end { height: 1px; margin-top: -1px; }
 .cell-sub { color: var(--muted); }
 .lnk-plain { color: var(--text); text-decoration: none; }
 .lnk-plain.tone--accent { color: var(--accent); }
@@ -759,6 +773,16 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .run-n { color: var(--muted); }
 .sec-head + .runs, .sec-head + div > .runs:first-child, .sec-head + .ke-list, .sec-head + div > .ke-list:first-child, .sec-head + .ln-list, .sec-head + div > .ln-list:first-child { border-top: 0; }
 .run-body { min-width: 0; display: flex; flex-direction: column; gap: var(--g2); }
+/* busy: one character cell turning | / - \ ; the same width and height wherever it is (one advance by a line) */
+.spin { display: inline-block; flex: none; width: var(--a2); height: var(--lh2); line-height: var(--lh2); vertical-align: top; color: var(--accent); overflow: hidden; }
+.spin::before { content: '|'; animation: spin-ch 0.8s steps(1) infinite; }
+.spin--off::before { content: none; }
+@keyframes spin-ch { 25% { content: '/'; } 50% { content: '-'; } 75% { content: '\\'; } }
+/* the storage progress row (settings: server): four lines, idle or running, each cut rather than wrapped */
+.cmp { display: flex; flex-direction: column; height: calc(4 * var(--lh2)); font-variant-numeric: tabular-nums; }
+.cmp-ln { height: var(--lh2); line-height: var(--lh2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cmp-head .spin { margin-right: var(--a2); }
+.cmp-head .tag { margin-right: 0; }
 .run-head { line-height: var(--ctl); }
 .run--now .run-head { color: var(--accent); }
 .run--later .run-head { color: var(--muted); }
@@ -943,6 +967,8 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
   .ov--pb .ov-c-dur { grid-column: 2; grid-row: 3; text-align: right; }
   .ov--pb td.ov-c-dur::before { text-align: right; }
   .ov-read { min-width: 0; }
+  /* the problems box: about three cards (a card: the connection, what happened, began and how long) */
+  .ov-pbox { --box-rows: 3; --box-row: calc(2 * var(--g) + 2px + 3 * var(--lh2) + var(--g2) + var(--lh1) + var(--g)); }
   .tabs .key { min-width: calc(var(--a2) * 12); }
 }
 
@@ -1121,6 +1147,11 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
   .tbl-sortline { display: flex; align-items: center; gap: var(--g); margin-bottom: var(--g); }
   .tbl td.tbl-ph .btn:not(.btn--quiet), .tbl td.tbl-ph .key { height: 44px; line-height: 44px; min-width: 0; }
   .tbl-sortline .in { width: auto; flex: 1 1 auto; }
+  /* a box: five two-line rows (no head line on a phone) */
+  .cmp { height: calc(5 * var(--lh2)); }
+  .cmp-more { height: calc(2 * var(--lh2)); white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .audit-sec .scroll-box { --box-row: calc(2 * var(--g2) + var(--lh2) + 2 * var(--lh1) + 1px); }
+  .scroll-box { --box-head: 0px; --box-row: max(45px, calc(2 * var(--g2) + var(--lh2) + var(--lh1) + 1px)); }
   .chart, .chart--pane { height: 180px; }
   .chart--spark { height: calc(var(--g) * 6); }
   .map, .map--lg { height: 240px; }
@@ -1152,7 +1183,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .dlg--palette[open] { animation: fade 120ms linear; }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
-  .caret, .dlg--palette[open] { animation: none; }
+  .caret, .dlg--palette[open], .spin::before { animation: none; }
 }
 
 /* ------------------------------------------------------------------ firmware, vehicle facts, teslafi, overlaps */

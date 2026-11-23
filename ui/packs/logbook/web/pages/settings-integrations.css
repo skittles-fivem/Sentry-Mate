@@ -348,3 +348,6 @@
   .si-tabs { gap: round(1.25rem, var(--e)); }
   .si-tab-name { font-size: 1.125rem; }
 }
+
+/* the problems scroll in a box about five high */
+.co-probs-scroll { --box-head: 0px; --box-row: round(3.0625rem, var(--e)); }
