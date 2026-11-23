@@ -44,17 +44,23 @@ pub(crate) fn header(kind: Kind) -> Vec<u8> {
 
 /// The body after a checked header.
 pub(crate) fn check_header<'a>(b: &'a [u8], kind: Kind, file: &str) -> Result<&'a [u8]> {
+    Ok(check_header_upto(b, kind, file, FORMAT_VERSION)?.1)
+}
+
+/// The version and the body after a checked header, for a kind of file that has more versions than the first
+/// (`newest`: the last one this program reads).
+pub(crate) fn check_header_upto<'a>(b: &'a [u8], kind: Kind, file: &str, newest: u16) -> Result<(u16, &'a [u8])> {
     if b.len() < HEADER || &b[..4] != MAGIC {
         return Err(Error::Damaged { file: file.to_string(), why: "not a Sentry Mate db file".into() });
     }
     let version = u16::from_be_bytes([b[5], b[6]]);
-    if version != FORMAT_VERSION {
-        return Err(Error::Version { file: file.to_string(), found: version, supported: FORMAT_VERSION });
+    if !(FORMAT_VERSION..=newest).contains(&version) {
+        return Err(Error::Version { file: file.to_string(), found: version, supported: newest });
     }
     if b[4] != kind as u8 {
         return Err(Error::Damaged { file: file.to_string(), why: format!("holds kind {}, not {}", b[4], kind as u8) });
     }
-    Ok(&b[HEADER..])
+    Ok((version, &b[HEADER..]))
 }
 
 pub(crate) fn with_suffix(file: &Path, suffix: &str) -> PathBuf {

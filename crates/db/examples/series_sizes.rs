@@ -6,7 +6,12 @@
 //! ```bash
 //! cargo run --release -p db --example series_sizes -- D/data D/keys            # every stream, the summary
 //! cargo run --release -p db --example series_sizes -- D/data D/keys columns    # and each stream's columns
+//! cargo run --release -p db --example series_sizes -- D/data D/keys teslamate   # one stream (its folder's name)
+//! cargo run --release -p db --example series_sizes -- D/data D/keys odometer teslamate
 //! ```
+//!
+//! The last one asks what a stream's days take if its odometer had other digits than the made-up history gives it
+//! (an import's odometer is most of its bytes, and what a real backup's looks like is not known here).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::print_stdout)]
 
 use db::segment::{Tuning, decode, decode_fields, describe, encode, encode_small, encode_tuned, same_points};
@@ -20,6 +25,8 @@ use std::time::Instant;
 const Q10: Level = Level { quality: 10, lgwin: 22 };
 const Q11: Level = Level { quality: 11, lgwin: 22 };
 const Q11_24: Level = Level { quality: 11, lgwin: 24 };
+/// Bytes of columns in a run of days packed together: `db::Options::group_bytes` as it is by default.
+const RUN: usize = 2 << 20;
 
 fn brotli(b: &[u8], level: Level) -> Vec<u8> {
     db::compress(b, level).unwrap()
@@ -171,6 +178,7 @@ fn measure<P: Point>(db: &Db, car: model::CarId, stream: Stream, chart: &[&str],
         let t = Instant::now();
         let new = encode_small(&pts);
         let encode_ms = ms(t);
+        time("pack: small columns alone (no compression)", encode_ms);
         assert!(same_points(&decode::<P>(&new).unwrap(), &pts));
         plain_new += new.len();
         sum.add("small columns (all parts), brotli 10", brotli(&new, Q10).len());
@@ -228,6 +236,7 @@ fn measure<P: Point>(db: &Db, car: model::CarId, stream: Stream, chart: &[&str],
     }
     // grouping: the days of a month together
     let (mut month_read, mut month_cols_read, mut group8_read) = ((0.0f64, 0.0f64), (0.0f64, 0.0f64), (0.0f64, 0.0f64));
+    let (mut run_pack, mut run_read, mut run_chart) = (0.0f64, (0.0f64, 0.0f64, 0usize), (0.0f64, 0.0f64));
     for days in months.values() {
         let bodies: Vec<Vec<u8>> = days.iter().map(|d| encode_small(d)).collect();
         let all: Vec<u8> = bodies.concat();
@@ -240,18 +249,42 @@ fn measure<P: Point>(db: &Db, car: model::CarId, stream: Stream, chart: &[&str],
         let took = ms(t);
         month_read = (month_read.0 + took, month_read.1.max(took));
         sum.add("a month's days as one stream, LZMA 9", lzma(&all).len());
-        for (name, size) in [("4 days as one stream, brotli 11", 4), ("8 days as one stream, brotli 11", 8)] {
-            for group in bodies.chunks(size) {
-                let packed = brotli(&group.concat(), Q11_24);
-                sum.add(name, packed.len());
-                if size == 8 {
-                    let t = Instant::now();
-                    let plain = db::decompress(&packed).unwrap();
-                    decode::<P>(&plain[..group[0].len()]).unwrap();
-                    let took = ms(t);
-                    group8_read = (group8_read.0 + took, group8_read.1.max(took));
-                }
+        for group in bodies.chunks(8) {
+            let packed = brotli(&group.concat(), Q11);
+            sum.add("8 days as one stream, brotli 11", packed.len());
+            let t = Instant::now();
+            let plain = db::decompress(&packed).unwrap();
+            decode::<P>(&plain[..group[0].len()]).unwrap();
+            let took = ms(t);
+            group8_read = (group8_read.0 + took, group8_read.1.max(took));
+        }
+        // what is built: runs of neighbouring days of about 2 MiB of columns, each compressed as one
+        let mut runs: Vec<Vec<&Vec<u8>>> = vec![Vec::new()];
+        let mut bytes = 0;
+        for b in &bodies {
+            if bytes > 0 && bytes + b.len() > RUN {
+                runs.push(Vec::new());
+                bytes = 0;
             }
+            bytes += b.len();
+            runs.last_mut().unwrap().push(b);
+        }
+        for run in runs.iter().filter(|r| !r.is_empty()) {
+            let all: Vec<u8> = run.iter().flat_map(|b| b.iter().copied()).collect();
+            let t = Instant::now();
+            let packed = brotli(&all, Q11);
+            run_pack += ms(t);
+            sum.add("built: runs of about 2 MiB of small columns, each one stream, brotli 11", packed.len());
+            let t = Instant::now();
+            let plain = db::decompress(&packed).unwrap();
+            decode::<P>(&plain[..run[0].len()]).unwrap();
+            let took = ms(t);
+            run_read = (run_read.0 + took, run_read.1.max(took), run_read.2 + 1);
+            let t = Instant::now();
+            let plain = db::decompress(&packed).unwrap();
+            decode_fields::<P>(&plain[..run[0].len()], chart).unwrap();
+            let took = ms(t);
+            run_chart = (run_chart.0 + took, run_chart.1.max(took));
         }
         let together: Vec<P> = days.iter().flatten().cloned().collect();
         let body = encode_small(&together);
@@ -293,6 +326,12 @@ fn measure<P: Point>(db: &Db, car: model::CarId, stream: Stream, chart: &[&str],
     }
     let groups = months.values().map(|d| d.len().div_ceil(8)).sum::<usize>() as f64;
     println!("| read a day out of 8 as one stream | {:.2} | {:.2} |", group8_read.0 / groups, group8_read.1);
+    let runs = run_read.2.max(1) as f64;
+    println!("| built: read a day (unpack its run, decode the day) | {:.2} | {:.2} |", run_read.0 / runs, run_read.1);
+    println!("| built: read a chart's fields of a day | {:.2} | {:.2} |", run_chart.0 / runs, run_chart.1);
+    let small_ms = times.get("pack: small columns alone (no compression)").map_or(0.0, |t| t.0);
+    println!("| built: pack (small columns, then the runs at brotli 11) | {:.2} | |", (small_ms + run_pack) / n);
+    println!("\n{} runs for {} days", run_read.2, days.len());
     if columns {
         println!("\n| column | values | encodings (days) | bytes today | bytes small | digits after the point |");
         println!("|---|---:|---|---:|---:|---|");
@@ -311,13 +350,74 @@ fn measure<P: Point>(db: &Db, car: model::CarId, stream: Stream, chart: &[&str],
     }
 }
 
+/// An odometer value another way (the second number: noise).
+type Shape = fn(f64, u64) -> f64;
+
+/// What a stream's days take, today and built, with its odometer as it is and as it might be in a real history.
+fn odometers(db: &Db, car: model::CarId, stream: Stream) {
+    const KM_PER_MILE: f64 = 1.609_344;
+    let days = db.days::<Sample>(car, stream).unwrap();
+    if days.is_empty() {
+        return;
+    }
+    let shapes: [(&str, Shape); 6] = [
+        ("as the made-up history has it (any digits, climbing evenly)", |v, _| v),
+        ("miles with 6 decimals, times 1.609344", |v, _| (v / KM_PER_MILE * 1e6).round() / 1e6 * KM_PER_MILE),
+        ("miles with 1 decimal, times 1.609344", |v, _| (v / KM_PER_MILE * 10.0).round() / 10.0 * KM_PER_MILE),
+        ("km with 2 decimals", |v, _| (v * 100.0).round() / 100.0),
+        ("km with 6 decimals", |v, _| (v * 1e6).round() / 1e6),
+        // the last 20 bits of every value made up: nothing to find in them
+        ("any digits, no pattern in the last 20 bits", |v, noise| f64::from_bits(v.to_bits() ^ (noise & 0xf_ffff))),
+    ];
+    println!("\n## samples.{}: what its odometer's digits cost\n", stream.dir_name());
+    println!("| the odometer | today, bytes a car-day | built, bytes a car-day | change |\n|---|---:|---:|---:|");
+    let mut all: Vec<Vec<Sample>> = Vec::new();
+    for d in &days {
+        all.push(db.read_points(car, stream, d.start_ms, d.start_ms + DAY_MS).unwrap());
+    }
+    for (name, shape) in shapes {
+        let mut noise = 0x9E37_79B9_7F4A_7C15u64;
+        let (mut today, mut built, mut run, mut run_bytes) = (0usize, 0usize, Vec::new(), 0usize);
+        for (i, pts) in all.iter().enumerate() {
+            let pts: Vec<Sample> = pts
+                .iter()
+                .map(|p| {
+                    noise ^= noise << 13;
+                    noise ^= noise >> 7;
+                    noise ^= noise << 17;
+                    Sample { odometer_km: p.odometer_km.map(|v| shape(v, noise)), ..p.clone() }
+                })
+                .collect();
+            today += brotli(&encode(&pts), Q10).len();
+            let small = encode_small(&pts);
+            assert!(same_points(&decode::<Sample>(&small).unwrap(), &pts));
+            // runs as they are built: within a month, about 2 MiB of columns
+            let month_ends = all.get(i + 1).is_none()
+                || month_of(days[i].start_ms / DAY_MS) != month_of(days[i + 1].start_ms / DAY_MS);
+            if run_bytes > 0 && run_bytes + small.len() > RUN {
+                built += brotli(&run, Q11).len();
+                (run, run_bytes) = (Vec::new(), 0);
+            }
+            run_bytes += small.len();
+            run.extend_from_slice(&small);
+            if month_ends {
+                built += brotli(&run, Q11).len();
+                (run, run_bytes) = (Vec::new(), 0);
+            }
+        }
+        let n = days.len();
+        println!("| {name} | {} | {} | {:+.1} % |", today / n, built / n, (built as f64 / today as f64 - 1.0) * 100.0);
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let (Some(data), Some(keys)) = (args.get(1), args.get(2)) else {
-        panic!("usage: series_sizes <data folder> <keys folder> [columns] [stream ...]");
+        panic!("usage: series_sizes <data folder> <keys folder> [columns | odometer] [stream ...]");
     };
     let columns = args.iter().any(|a| a == "columns");
-    let only: Vec<&String> = args.iter().skip(3).filter(|a| *a != "columns").collect();
+    let odometer = args.iter().any(|a| a == "odometer");
+    let only: Vec<&String> = args.iter().skip(3).filter(|a| *a != "columns" && *a != "odometer").collect();
     let vault = Arc::new(vault::Vault::open(data.as_ref(), keys.as_ref()).unwrap());
     let db = Db::open(data.as_ref(), vault, db::Options::default()).unwrap();
     let cars = db.fleet(&db::FleetQuery { search: None, limit: 100, after: None }).unwrap().cars;
@@ -325,6 +425,10 @@ fn main() {
         println!("# car {}", car.car.id);
         for stream in Stream::ALL {
             if !only.is_empty() && !only.iter().any(|o| *o == stream.dir_name()) {
+                continue;
+            }
+            if odometer {
+                odometers(&db, car.car.id, stream);
                 continue;
             }
             measure::<Sample>(

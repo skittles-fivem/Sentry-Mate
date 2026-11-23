@@ -408,6 +408,11 @@ fn new() -> Options {
     Options { fold_min_bytes: 1 << 30, ..Options::default() }
 }
 
+/// The small form with each day by itself in its month's pack.
+fn new_alone() -> Options {
+    Options { group_bytes: 0, ..new() }
+}
+
 fn seg(t: &TestDb, car: CarId, series: &str) -> PathBuf {
     t.data.join("db/cars").join(car.to_string()).join("seg").join(series)
 }
@@ -427,14 +432,22 @@ fn opened(t: &TestDb, file: &Path) -> Vec<u8> {
     t.vault.open_sealed(&label, &std::fs::read(file).unwrap()).unwrap().to_vec()
 }
 
-/// The level of every day a series' folder holds: its own snapshots, then its packs' days.
-fn levels(t: &TestDb, dir: &Path) -> Vec<u8> {
-    let mut out: Vec<u8> = names(dir, ".snap").iter().map(|n| opened(t, &dir.join(n))[15]).collect();
+/// The level of every day a series' folder holds: of its own snapshots, and of its packs' days.
+fn levels(t: &TestDb, dir: &Path) -> (Vec<u8>, Vec<u8>) {
+    let loose: Vec<u8> = names(dir, ".snap").iter().map(|n| opened(t, &dir.join(n))[15]).collect();
+    let mut packed = Vec::new();
     for n in names(dir, ".pack") {
         let p = opened(t, &dir.join(n));
-        out.extend((0..p[7] as usize).map(|i| p[8 + i * 25 + 12]));
+        packed.extend((0..p[7] as usize).map(|i| p[8 + i * 25 + 12]));
     }
-    out
+    (loose, packed)
+}
+
+/// Whether every day is as small as it goes: a day of its own in the small form (2), a packed day together with
+/// its neighbours (3 the first of a run, 4 another) or, where days are not packed together, in the small form.
+fn all_small(t: &TestDb, dir: &Path, together: bool) -> bool {
+    let (loose, packed) = levels(t, dir);
+    loose.iter().all(|l| *l == 2) && packed.iter().all(|l| if together { *l == 3 || *l == 4 } else { *l == 2 })
 }
 
 fn bytes_of(dir: &Path) -> u64 {
@@ -524,7 +537,8 @@ fn old_folder() -> (TestDb, CarId) {
     assert_eq!(names(&sdir, ".pack"), ["2024-02.pack", "2024-03.pack"]);
     assert_eq!(names(&sdir, ".snap"), ["2024-04-01.snap", "2024-04-02.snap"]);
     assert_eq!(names(&sdir, ".log"), ["2024-02-06.log"]);
-    assert!(levels(&t, &sdir).iter().all(|l| *l == 1), "every day is cold, as before");
+    let (loose, packed) = levels(&t, &sdir);
+    assert!(loose.iter().chain(&packed).all(|l| *l == 1), "every day is cold, as before");
     (t, car)
 }
 
@@ -545,50 +559,164 @@ fn pass(db: &Db, car: CarId, before: u64) -> SeriesCompacted {
     panic!("the pass never ends");
 }
 
-#[test]
-fn a_folder_an_older_server_left_is_written_again_small_and_reads_the_same() {
+/// An older server's folder opened by the new one and passed over: `together`, with a month's days packed
+/// together; else each by itself.
+fn written_again(together: bool) {
+    let opts = || if together { new() } else { new_alone() };
     let (mut t, car) = old_folder();
     let (sdir, cdir) = (seg(&t, car, "samples.can"), seg(&t, car, "charge.can"));
     let before = reads(&t.db, car);
     let (sample_bytes, curve_bytes) = (bytes_of(&sdir), bytes_of(&cdir));
     // the new server reads it as it is
-    t.reopen(new());
+    t.reopen(opts());
     assert_same(&reads(&t.db, car), &before, "opened by the new server");
     assert!(t.db.series_pending(car, APR10).unwrap() >= 11, "the days wait to be written again");
     let done = pass(&t.db, car, APR10);
     // April's days (two of samples, one curve) and the day with a journal were folded, that day packed again, and
-    // the packs' other days written again (8 of samples, 4 curves)
-    assert_eq!((done.days_folded, done.days_packed, done.days_recoded), (4, 1, 12), "{done:?}");
-    assert!(levels(&t, &sdir).iter().all(|l| *l == 2), "every day is in the small form: {:?}", levels(&t, &sdir));
-    assert!(levels(&t, &cdir).iter().all(|l| *l == 2));
+    // the packs' days written again: 8 of samples and 4 curves by themselves in the small form, and then all 9 and
+    // 4 together with their neighbours
+    let again = if together { 12 + 13 } else { 12 };
+    assert_eq!((done.days_folded, done.days_packed, done.days_recoded), (4, 1, again), "{done:?}");
+    assert!(all_small(&t, &sdir, together), "every day is as small as it goes: {:?}", levels(&t, &sdir));
+    assert!(all_small(&t, &cdir, together));
     assert!(names(&sdir, ".log").is_empty() && names(&sdir, ".tmp").is_empty());
     assert_same(&reads(&t.db, car), &before, "after the pass");
     assert!(bytes_of(&sdir) * 2 < sample_bytes, "samples: {sample_bytes} -> {} bytes", bytes_of(&sdir));
     assert!(bytes_of(&cdir) < curve_bytes, "curves: {curve_bytes} -> {} bytes", bytes_of(&cdir));
     // a pass again has nothing to do, and touches no file; so after a restart
     let files = |dir: &Path| -> Vec<(String, std::time::SystemTime)> {
-        names(dir, "")
-            .into_iter()
-            .map(|n| (n.clone(), std::fs::metadata(dir.join(n)).unwrap().modified().unwrap()))
-            .collect()
+        let modified = |n: &String| std::fs::metadata(dir.join(n)).unwrap().modified().unwrap();
+        names(dir, "").into_iter().map(|n| (n.clone(), modified(&n))).collect()
     };
     let was = files(&sdir);
     assert_eq!(t.db.compact_series(car, APR10, 1000).unwrap(), SeriesCompacted::default());
-    t.reopen(new());
+    t.reopen(opts());
     assert_eq!(t.db.series_pending(car, APR10).unwrap(), 0);
     assert_eq!(t.db.compact_series(car, APR10, 1000).unwrap(), SeriesCompacted::default());
     assert_eq!(files(&sdir), was);
     assert_same(&reads(&t.db, car), &before, "after a restart");
-    // a write into a day written again lands, and the next pass takes it into the pack in the small form
+    // a write into a day written again lands, and the next pass takes it into the pack again (the days it was
+    // packed together with stand by themselves for a moment, and are packed together again: February's 7)
     let late = api_day(FEB1 + 12 * DAY_MS + 9 * H, 15);
     t.db.write_points(car, Source::Live, late[0].t_ms, late[0].t_ms + 60_000, &late).unwrap();
     let with_late = reads(&t.db, car);
     assert_eq!(with_late.samples.len(), before.samples.len() + 15);
     let done = pass(&t.db, car, APR10);
-    assert_eq!((done.days_folded, done.days_packed, done.days_recoded), (1, 1, 0));
-    assert!(levels(&t, &sdir).iter().all(|l| *l == 2));
-    t.reopen(new());
+    assert_eq!((done.days_folded, done.days_packed, done.days_recoded), (1, 1, if together { 7 } else { 0 }));
+    assert!(all_small(&t, &sdir, together), "{:?}", levels(&t, &sdir));
+    t.reopen(opts());
     assert_same(&reads(&t.db, car), &with_late, "after a late write");
+    // and an older server's options still read what the new one wrote (the same program, the old way of writing)
+    t.reopen(old());
+    assert_same(&reads(&t.db, car), &with_late, "read the old way");
+    assert_eq!(t.db.series_pending(car, APR10).unwrap(), 0);
+}
+
+#[test]
+fn a_folder_an_older_server_left_is_written_again_small_and_reads_the_same() {
+    written_again(true);
+}
+
+#[test]
+fn a_folder_an_older_server_left_is_written_again_small_with_each_day_by_itself() {
+    written_again(false);
+}
+
+/// A pack read by the format its docs give: per day (day number, generation, level, length), and the pack's version.
+fn pack_index(t: &TestDb, file: &Path) -> (u16, Vec<(u64, u64, u8, usize)>) {
+    let p = opened(t, file);
+    assert_eq!(&p[..5], b"SMDB\x0b");
+    let entries = (0..p[7] as usize)
+        .map(|i| {
+            let e = &p[8 + i * 25..8 + (i + 1) * 25];
+            let day = u32::from_be_bytes(e[..4].try_into().unwrap()) as u64;
+            let len = u32::from_be_bytes(e[13..17].try_into().unwrap()) as usize;
+            (day, u64::from_be_bytes(e[4..12].try_into().unwrap()), e[12], len)
+        })
+        .collect();
+    (u16::from_be_bytes([p[5], p[6]]), entries)
+}
+
+#[test]
+fn days_packed_together_take_late_writes_new_days_and_emptied_days() {
+    // runs of about 30 KB of columns, so February is several
+    let opts = || Options { group_bytes: 30_000, ..new() };
+    let mut t = test_db(opts());
+    let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
+    let sdir = seg(&t, car, "samples.can");
+    let day = |d: u64| FEB1 + (d - 1) * DAY_MS;
+    let mut want: std::collections::BTreeMap<u64, Vec<Sample>> = std::collections::BTreeMap::new();
+    for d in [1, 2, 3, 4, 7, 8, 9, 10, 11, 20, 21, 22] {
+        let pts = api_day(day(d), 500 + d * 20);
+        t.db.write_points(car, Source::Live, day(d), day(d) + DAY_MS, &pts).unwrap();
+        want.insert(d, pts);
+    }
+    // one day too large for a run with others
+    let big = api_day(day(5), 9000);
+    t.db.write_points(car, Source::Live, day(5), day(5) + DAY_MS, &big).unwrap();
+    want.insert(5, big);
+    let check = |t: &TestDb, want: &std::collections::BTreeMap<u64, Vec<Sample>>, when: &str| {
+        for (d, pts) in want {
+            let read: Vec<Sample> = t.db.read_points(car, Source::Live, day(*d), day(*d) + DAY_MS).unwrap();
+            assert!(same_points(&read, pts), "{when}: day {d}");
+            let f = t.db.read_fields::<Sample>(car, Source::Live, day(*d), day(*d) + DAY_MS, &["range_km"]).unwrap();
+            assert_eq!(f.values[0].1.len(), pts.len(), "{when}: day {d}, a field");
+        }
+        let all: Vec<Sample> = t.db.read_points(car, Source::Live, 0, u64::MAX).unwrap();
+        assert_eq!(all.len(), want.values().map(Vec::len).sum::<usize>(), "{when}");
+        let days: Vec<String> = t.db.days::<Sample>(car, Source::Live).unwrap().into_iter().map(|d| d.date).collect();
+        // (a day emptied since it was packed is listed until the pass that drops it from the pack)
+        let emptied = usize::from(!want.contains_key(&2) && names(&sdir, ".snap").contains(&"2024-02-02.snap".into()));
+        assert_eq!(days.len(), want.len() + emptied, "{when}: {days:?}");
+    };
+    pass(&t.db, car, APR10);
+    check(&t, &want, "packed together");
+    let (version, index) = pack_index(&t, &sdir.join("2024-02.pack"));
+    assert_eq!(version, 2);
+    let firsts = index.iter().filter(|e| e.2 == 3).count();
+    assert!(index.iter().all(|e| e.2 == 3 || e.2 == 4) && (3..13).contains(&firsts), "{index:?}");
+    // the large day is a run of its own
+    let at = index.iter().position(|e| e.0 == day(5) / DAY_MS).unwrap();
+    assert!(index[at].2 == 3 && index.get(at + 1).is_none_or(|e| e.2 == 3), "{index:?}");
+    // a day's size is its share of its run; the days of a run have the same
+    let sizes = t.db.days::<Sample>(car, Source::Live).unwrap();
+    assert!(sizes.iter().all(|d| d.bytes > 0 && d.bytes < 30_000));
+    t.reopen(opts());
+    check(&t, &want, "after a restart");
+
+    // a late window into a day of a run; a day that was not there, between a run's days; a day of a run emptied
+    let late = api_day(day(8) + 13 * H, 40);
+    t.db.write_points(car, Source::Live, late[0].t_ms, late[0].t_ms + 60_000, &late).unwrap();
+    want.get_mut(&8).unwrap().extend(late);
+    let between = api_day(day(21) + 2 * H, 7);
+    t.db.write_points(car, Source::Live, day(21), day(22), &between).unwrap();
+    want.insert(21, between);
+    let new_day = api_day(day(15), 300);
+    t.db.write_points(car, Source::Live, day(15), day(16), &new_day).unwrap();
+    want.insert(15, new_day);
+    t.db.write_points::<Sample>(car, Source::Live, day(2), day(3), &[]).unwrap();
+    want.remove(&2);
+    check(&t, &want, "written after packing");
+    t.reopen(opts());
+    check(&t, &want, "written after packing, after a restart");
+    let done = pass(&t.db, car, APR10);
+    assert!(done.days_packed >= 4 && done.days_recoded >= 4, "{done:?}");
+    check(&t, &want, "packed together again");
+    let (_, index) = pack_index(&t, &sdir.join("2024-02.pack"));
+    assert_eq!(index.len(), want.len());
+    assert!(index.iter().all(|e| e.2 == 3 || e.2 == 4), "{index:?}");
+    assert!(names(&sdir, ".snap").is_empty() && names(&sdir, ".log").is_empty() && names(&sdir, ".tmp").is_empty());
+    assert_eq!(t.db.compact_series(car, APR10, 1000).unwrap(), SeriesCompacted::default());
+    t.reopen(opts());
+    check(&t, &want, "at the end");
+
+    // every day of the month emptied: the pack goes
+    for d in want.keys() {
+        t.db.write_points::<Sample>(car, Source::Live, day(*d), day(*d) + DAY_MS, &[]).unwrap();
+    }
+    pass(&t.db, car, APR10);
+    assert!(names(&sdir, "").is_empty(), "{:?}", names(&sdir, ""));
+    assert!(t.db.read_points::<Sample>(car, Source::Live, 0, u64::MAX).unwrap().is_empty());
 }
 
 #[test]
@@ -625,7 +753,7 @@ fn a_crash_at_every_step_of_writing_a_folder_again_loses_nothing() {
         assert_eq!(t.db.series_pending(car, APR10).unwrap(), 0);
         assert_same(&reads(&t.db, car), &before, &format!("after the pass with crashes at {crash:?}"));
         let sdir = seg(&t, car, "samples.can");
-        assert!(levels(&t, &sdir).iter().all(|l| *l == 2), "{crash:?}: {:?}", levels(&t, &sdir));
+        assert!(all_small(&t, &sdir, true), "{crash:?}: {:?}", levels(&t, &sdir));
         assert!(names(&sdir, ".tmp").is_empty() && names(&sdir, ".log").is_empty());
     }
 }
