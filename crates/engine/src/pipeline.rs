@@ -505,12 +505,15 @@ impl Engine {
         let l = self.car_lock(car);
         let _held = lock(&l);
         let _hot = crate::hot::Keep::new(self);
-        self.log_locked(car, key, name, false)
+        self.log_locked(car, key, name, false, true)
     }
 
     /// Works on one log of `car` (its lock held): decoded (or left out) and recorded, then the window it changes is
     /// rebuilt. A log already worked on the same way is left as it is unless `force`.
-    pub(crate) fn log_locked(&self, car: CarId, key: &str, name: &str, force: bool) -> Result<()> {
+    ///
+    /// `rebuild`: `false` leaves the window for [`Self::rebuild_dirty`] (it stays noted dirty, as when a crash came
+    /// between the two: several logs' windows are then rebuilt as one).
+    pub(crate) fn log_locked(&self, car: CarId, key: &str, name: &str, force: bool, rebuild: bool) -> Result<()> {
         let rt = self.handle()?;
         let db = &self.inner.db;
         let Some(record) = rt.block_on(self.inner.judge.record(key, name)) else { return Ok(()) };
@@ -685,12 +688,14 @@ impl Engine {
         meta.last_arrived_ms = meta.last_arrived_ms.max(Some(record.arrived_ms));
         records::put_meta(db, car, &meta)?;
 
-        self.rebuild_span(car, &mut meta, span.0, span.1)?;
-        let mut dirty = records::dirty(db, car)?;
-        if let Some(i) = dirty.iter().position(|&s| s == span) {
-            dirty.remove(i);
+        if rebuild {
+            self.rebuild_span(car, &mut meta, span.0, span.1)?;
+            let mut dirty = records::dirty(db, car)?;
+            if let Some(i) = dirty.iter().position(|&s| s == span) {
+                dirty.remove(i);
+            }
+            records::put_dirty(db, car, &dirty)?;
         }
-        records::put_dirty(db, car, &dirty)?;
         if profile_changed && meta.decoded > 1 {
             // logs decoded before the VIN was seen used another DBC set
             self.send(Work::Reconcile { car: Some(car) });
@@ -1096,6 +1101,23 @@ impl Engine {
         Ok(out)
     }
 
+    /// Rebuilds the windows noted dirty for `car` (logs worked on whose windows wait, or a crash between a log's
+    /// writing and its rebuild), joined where they meet ([`join_spans`]), and clears the note.
+    pub(crate) fn rebuild_dirty(&self, car: CarId) -> Result<()> {
+        let db = &self.inner.db;
+        let l = self.car_lock(car);
+        let _held = lock(&l);
+        let dirty = records::dirty(db, car)?;
+        if dirty.is_empty() {
+            return Ok(());
+        }
+        let mut meta = records::meta(db, car)?;
+        for (a, b) in join_spans(dirty) {
+            self.rebuild_span(car, &mut meta, a, b)?;
+        }
+        records::put_dirty(db, car, &[])
+    }
+
     /// One car's comparison; `job` counts progress and can stop it.
     pub(crate) fn reconcile_car(&self, car: CarId, job: Option<&crate::jobs::JobState>) -> Result<()> {
         let _hot = crate::hot::Keep::new(self);
@@ -1118,15 +1140,8 @@ impl Engine {
             let _held = lock(&l);
             // updates stored before an install's fingerprint changes were one update are found again
             self.fw_regroup(car)?;
-            let dirty = records::dirty(db, car)?;
-            if !dirty.is_empty() {
-                let mut meta = records::meta(db, car)?;
-                for (a, b) in &dirty {
-                    self.rebuild_span(car, &mut meta, *a, *b)?;
-                }
-                records::put_dirty(db, car, &[])?;
-            }
         }
+        self.rebuild_dirty(car)?;
         let mut todo: Vec<(u64, String, String, ingest::judge::Record)> = Vec::new();
         for key in &c.vehicle_keys {
             let book = rt.block_on(self.inner.judge.book(key));
@@ -1166,13 +1181,41 @@ impl Engine {
         if let Some(j) = job {
             j.add_total(wanted.len() as u64, bytes);
         }
+        // the windows the logs change are rebuilt once per run of logs, not after each log (a window reaches back
+        // to the last settled point, and in a rebuild on to the car's newest data: far more than a log)
+        //
+        // Only where it gives the very timeline that a rebuild after every log gives: nothing of the timeline is
+        // stored yet at or after the first of these logs (a first start over a full store, a car rebuilt whole),
+        // and the car has no API input. Where logs fill a gap before rows that are there, a drive or charge keeps
+        // the id of the piece of it that was there first, and which piece that is depends on the windows rebuilt
+        // on the way: there, and beside an API's samples (not tried), every log's window is rebuilt as before.
+        let mut batch = self.inner.opts.window_batch.max(1);
+        if batch > 1 {
+            let first = wanted.first().and_then(|(_, name, _)| records::name_start_ms(name));
+            let meta = records::meta(db, car)?;
+            let apis = !(meta.api_days.is_empty() && meta.teslafi_days.is_empty() && meta.tmlocal_days.is_empty());
+            let ahead = match first {
+                Some(t) => {
+                    let q = db::Query { limit: 1, source: Some(Source::Live), ..db::Query::between(t, u64::MAX) };
+                    !(db.list::<StateRow>(car, &q)?.items.is_empty()
+                        && db.list::<Drive>(car, &q)?.items.is_empty()
+                        && db.list::<Charge>(car, &q)?.items.is_empty())
+                }
+                None => true,
+            };
+            if apis || ahead {
+                batch = 1;
+            }
+        }
+        let mut waiting = 0;
         for (key, name, len) in wanted {
             if job.is_some_and(|j| j.cancelled()) {
+                self.rebuild_dirty(car)?;
                 return Ok(());
             }
             let l = self.car_lock(car);
             let held = lock(&l);
-            let r = self.log_locked(car, &key, &name, false);
+            let r = self.log_locked(car, &key, &name, false, batch == 1);
             drop(held);
             if let Err(e) = r {
                 if let Some(j) = job {
@@ -1180,10 +1223,16 @@ impl Engine {
                 }
                 self.failed(&e);
             }
+            waiting += 1;
+            if batch > 1 && waiting >= batch {
+                waiting = 0;
+                self.rebuild_dirty(car)?;
+            }
             if let Some(j) = job {
                 j.step(self, Some(car), len);
             }
         }
+        self.rebuild_dirty(car)?;
         // Tesla API data stored and not built yet (a restart, or a rebuild of the car)
         {
             let l = self.car_lock(car);
