@@ -8,27 +8,33 @@
 // For each pack it starts the dev API server (live values every 2 s, a `rows` event every 10 s, every /api answer
 // delayed --latency-ms as on a phone's network) and opens every page in fresh windows of each device: iPhone 15 and
 // iPhone 13 mini in WebKit (Playwright's device descriptors: Safari's engine, a touch phone's viewport), a 390x844
-// phone at scale 3 in Chromium's mobile emulation, and a 1440x900 desktop in Chromium. Scroll anchoring is off in
-// every window (overflow-anchor: none), as in Safari on iOS: whatever changes size above what is on screen moves
-// what is on screen. From before the page's first script to the end it watches, each animation frame:
+// phone at scale 3 in Chromium's mobile emulation, and a 1440x900 desktop in Chromium. In WebKit scroll anchoring is
+// off (overflow-anchor: none), as in Safari on iOS: whatever changes size above what is on screen moves what is on
+// screen (Chrome keeps its own anchoring, as on Android and desktops). From before the page's first script to the end
+// it watches, each animation frame:
 //
 //   blocks    every block of the page (its path from <body>, so a block drawn again in its place is the same block)
-//             and its top and height in the box that scrolls (the window, or the page's own scrolling box);
-//   scroll    where the box is scrolled, against where this check last scrolled it.
+//             and where it is on screen, and its top and height in the box that scrolls (the window, or the page's
+//             own scrolling box);
+//   scroll    where that box is scrolled, and how much of that the check scrolled itself.
 //
 // After the page says it is ready it waits 1.5 s (live updates arrive), then scrolls down a screen at a time
 // (--step-ms between steps, so the charts, maps and lists drawn when they come near are drawn), to the end, and
 // back up. Then it opens another page inside the app and comes back (the kept answers are drawn first, then the
 // fresh ones) and scrolls down again. A page fails when:
 //
-//   score     the jump score is over --max-score (0.02): for each frame, the part of the screen whose blocks moved
-//             (without the check scrolling) times how far they moved, as a share of the screen's height, summed
-//             over the whole visit (the same measure as the layout shift score); in Chromium also the browser's
-//             own layout shift score (PerformanceObserver 'layout-shift', every entry without recent input);
-//   above     a block above the screen changed its height while the page was scrolled (it moves what is on screen);
-//   scrolled  the box scrolled by itself, by more than 1 px, after the check scrolled it (a page that got shorter,
-//             a scrollIntoView, a scroll put back).
+//   score     the jump score is over --max-score (0.02): for each frame, the part of the screen whose blocks moved on
+//             screen (less what the check scrolled) times how far they moved, as a share of the screen's height, summed
+//             over the whole visit (the same measure as the layout shift score); in Chromium also the browser's own
+//             layout shift score (PerformanceObserver 'layout-shift', every entry without recent input);
+//   above     a block above the screen changed its height while the page was scrolled (it moves what is on screen
+//             unless something puts it back);
+//   scrolled  the box scrolled by itself, by more than 1 px, and what is on screen moved with it (a page that got
+//             shorter, a part emptied and drawn again, a scrollIntoView). A scroll that keeps what is on screen in
+//             place (the page's own scroll anchoring) is not a jump.
 //
+// Blocks that show nothing of their own (no text, background, border, picture or control), blocks as tall as the
+// screen that cover it before and after, and what moves within 500 ms of the check's own taps do not count.
 // Exit code 0 only when every page passes on every device. Made-up data only (the dev server's). Plain Node plus
 // the installed Playwright; WebKit needs `npx playwright install webkit` (and its system libraries) once: without
 // it the WebKit devices are skipped with a note. See ui/tools/README.md ("The jump check").
@@ -62,7 +68,7 @@ function within(ms, promise, what) {
 
 // Runs before any page script. Watches the blocks and the scroll position every animation frame (see the top of
 // this file) and keeps the moves, until __smJumps.take().
-function jumpsInit() {
+function jumpsInit(arg) {
   if (window.top !== window || window.__smJumps) return;
   const J = window.__smJumps = {
     phase: 'load', score: 0, cls: 0, clsByPhase: {}, scoreByPhase: {}, moves: [], above: [], selfScroll: [], noCls: false,
@@ -80,7 +86,8 @@ function jumpsInit() {
       document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
     } catch (_) { /* no constructed sheets: the context's own style tag (bypassCSP) does it */ }
   };
-  if (document.documentElement) anchorOff(); else document.addEventListener('readystatechange', anchorOff, { once: true });
+  // (in WebKit only: Chrome on Android and on a desktop has scroll anchoring, and keeps it)
+  if (arg && arg.anchorOff) { if (document.documentElement) anchorOff(); else document.addEventListener('readystatechange', anchorOff, { once: true }); }
   if (!(globalThis.PerformanceObserver?.supportedEntryTypes || []).includes('layout-shift')) J.noCls = true; // WebKit
   else try {
     new PerformanceObserver((list) => {
@@ -127,11 +134,15 @@ function jumpsInit() {
     return box;
   }
   J.box = () => scroller(performance.now());
-  // the check scrolls with this, so a scroll the page makes by itself can be told apart
+  // the check scrolls with this: what it scrolled since the last frame is taken out of what moved on screen, and a
+  // scroll the page makes by itself can be told apart
+  J.cmd = 0; J.cmdBox = null;
   J.scrollTo = (y) => {
     const b = J.box();
+    const before = b.scrollTop;
     b.scrollTo({ top: y, behavior: 'instant' });
-    J.expected = { box: b, top: b.scrollTop };
+    if (J.cmdBox !== b) { J.cmdBox = b; J.cmd = 0; }
+    J.cmd += b.scrollTop - before;
     return { top: b.scrollTop, max: b.scrollHeight - b.clientHeight, height: b.clientHeight };
   };
 
@@ -179,20 +190,23 @@ function jumpsInit() {
     };
     if (document.body) visit(document.body, 'body', 0, false);
     J.blocks = Math.max(J.blocks, n);
-    // a scroll the check did not make (with the blocks that changed most this frame, as its likely cause)
-    if (J.expected && J.expected.box === b && Math.abs(st - J.expected.top) > MOVE_PX) {
-      const ch = [];
-      for (const [k, p] of now) { const q = last.get(k); if (q && Math.abs(p.h - q.h) > MOVE_PX) ch.push([Math.abs(p.h - q.h), `${sel(p.el)} ${Math.round(q.h)} -> ${Math.round(p.h)} px`]); }
-      for (const [k, q] of last) if (!now.has(k) && q.h > 40) ch.push([q.h, `${k.split('>').slice(-3).join(' > ')} went away (${Math.round(q.h)} px)`]);
-      ch.sort((x, y) => y[0] - x[0]);
-      if (J.selfScroll.length < 50) J.selfScroll.push({ phase: J.phase, t: Math.round(t), from: Math.round(J.expected.top), to: Math.round(st), height: Math.round(b.scrollHeight), cause: ch.slice(0, 3).map((c) => c[1]) });
-      const d = Math.min(1, Math.abs(st - J.expected.top) / (view.bottom - view.top || 1));
-      add(d, 1);
-      J.expected = { box: b, top: st };
-    }
-    // what moved since the last frame (blocks on screen then or now), without a scroll of the window between: a
-    // block whose top in the content changed
+    // what the check scrolled since the last frame
+    const cmd = J.cmdBox === b ? J.cmd : 0;
+    J.cmd = 0;
+    let self = null;
+    // what moved on screen since the last frame (blocks on screen then or now), less what the check scrolled: content
+    // that moved in the page, or the page scrolled by itself (scroll anchoring of the page's own, which keeps what is
+    // on screen in place, moves nothing)
     if (lastView && lastView.box === b) {
+      // a scroll the check did not make (with the blocks that changed most this frame, as its likely cause)
+      if (Math.abs(st - lastView.st - cmd) > MOVE_PX) {
+        const ch = [];
+        for (const [k, p] of now) { const q = last.get(k); if (q && Math.abs(p.h - q.h) > MOVE_PX) ch.push([Math.abs(p.h - q.h), `${sel(p.el)} ${Math.round(q.h)} -> ${Math.round(p.h)} px`]); }
+        for (const [k, q] of last) if (!now.has(k) && q.h > 40) ch.push([q.h, `${k.split('>').slice(-3).join(' > ')} went away (${Math.round(q.h)} px)`]);
+        ch.sort((x, y) => y[0] - x[0]);
+        self = { phase: J.phase, t: Math.round(t), from: Math.round(lastView.st + cmd), to: Math.round(st), height: Math.round(b.scrollHeight), cause: ch.slice(0, 3).map((c) => c[1]), visible: false };
+        if (J.selfScroll.length < 50) J.selfScroll.push(self);
+      }
       const moved = [];
       // what changed this frame, as the cause of a move: blocks that appeared, went away or changed height
       let changes = null;
@@ -216,10 +230,13 @@ function jumpsInit() {
       for (const [k, p] of now) {
         const q = last.get(k);
         if (!q) continue;
-        const dy = p.top - q.top;
+        const dy = p.vtop - q.vtop + cmd;
         const onNow = p.vbot > view.top && p.vtop < view.bottom, onThen = q.vbot > lastView.top && q.vtop < lastView.bottom;
         // (a block that cannot be seen, visibility: hidden or opacity 0, does not count, as in the layout shift score)
-        if (Math.abs(dy) > MOVE_PX && (onNow || onThen) && (!p.el.checkVisibility || p.el.checkVisibility({ visibilityProperty: true, opacityProperty: true }))) moved.push([k, p, q, dy]);
+        // (a block as tall as the screen or taller, over all of it before and after, shows no move of its own: what is
+        // in it is looked at block by block)
+        const over = q.vtop <= view.top && q.vbot >= view.bottom && p.vtop <= view.top && p.vbot >= view.bottom;
+        if (Math.abs(dy) > MOVE_PX && (onNow || onThen) && !over && (!p.el.checkVisibility || p.el.checkVisibility({ visibilityProperty: true, opacityProperty: true }))) moved.push([k, p, q, dy]);
         // above the screen and changed its height while the page is scrolled
         if ((J.phase === 'scroll-down' || J.phase === 'scroll-up' || J.phase === 'again-scroll') && q.vbot <= lastView.top && p.vbot <= view.top
           && Math.abs(p.h - q.h) > MOVE_PX && J.above.length < 100) {
@@ -243,6 +260,7 @@ function jumpsInit() {
       };
       if (t - J.inputAt < INPUT_MS) moved.length = 0;
       for (let i = moved.length - 1; i >= 0; i--) if (!paints(moved[i][1].el)) moved.splice(i, 1);
+      if (moved.length && self) self.visible = true;
       if (moved.length) {
         // the part of the screen that moved: the union of the moved blocks' rows on screen (before and after)
         const spans = [];
@@ -271,7 +289,7 @@ function jumpsInit() {
       }
     }
     last = now;
-    lastView = { ...view, box: b };
+    lastView = { ...view, box: b, st };
     J.samples++;
     J.maxSampleMs = Math.max(J.maxSampleMs, performance.now() - t0);
   }
@@ -362,7 +380,7 @@ async function visit(browser, server, pack, pageId, url, devName, o) {
       if (u && u.protocol === 'https:' && TILE_HOSTS.has(u.host)) return route.fulfill({ status: 200, contentType: 'image/png', headers: { 'access-control-allow-origin': '*' }, body: BLANK_TILE }).catch(() => {});
       return route.abort('blockedbyclient').catch(() => {});
     });
-    await context.addInitScript(jumpsInit);
+    await context.addInitScript(jumpsInit, { anchorOff: dev.engine === 'webkit' });
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', (e) => errors.push(String(e.message || e).slice(0, 200)));
@@ -391,7 +409,7 @@ async function visit(browser, server, pack, pageId, url, devName, o) {
       }, to);
       await nav(away);
       await sleep(1200);
-      await page.evaluate(() => { window.__smJumps.phase = 'again'; window.__smJumps.expected = null; });
+      await page.evaluate(() => { window.__smJumps.phase = 'again'; });
       await nav(url);
       const r2 = await waitReady(page, pageId, o.readyTimeoutMs);
       if (!r2.ok) res.notes.push('not ready again after coming back');
@@ -410,7 +428,8 @@ async function visit(browser, server, pack, pageId, url, devName, o) {
     res.cls = J.noCls ? null : Object.entries(J.clsByPhase).filter(([p]) => counted(p)).reduce((a, [, v]) => a + v, 0);
     res.clsByPhase = J.clsByPhase;
     res.above = J.above;
-    res.selfScroll = J.selfScroll.filter((s) => counted(s.phase));
+    // a scroll the page made by itself fails when it moved what is on screen (its own scroll anchoring does not)
+    res.selfScroll = J.selfScroll.filter((s) => counted(s.phase) && s.visible);
     res.moves = J.moves.filter((m) => counted(m.phase));
     res.samples = J.samples;
     res.maxSampleMs = Math.round(J.maxSampleMs);

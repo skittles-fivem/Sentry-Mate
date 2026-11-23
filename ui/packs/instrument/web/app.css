@@ -1509,7 +1509,9 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 }
 :root[data-phone] .sidebar { display: none; }
 :root[data-phone] .app > .main { padding-bottom: var(--dock-h); }
-:root[data-phone] .view--fill { height: max(calc(100dvh - var(--topbar-h) - var(--safe-t) - var(--dock-h)), round(26rem, var(--e))); }
+/* (svh, not dvh: in the page's flow a height that follows Safari's toolbars as they come and go while the page scrolls
+   moves everything under it; dialogs over the page keep dvh) */
+:root[data-phone] .view--fill { height: max(calc(100svh - var(--topbar-h) - var(--safe-t) - var(--dock-h)), round(26rem, var(--e))); }
 
 /* the top bar: the car (opens the switcher), live status, the account */
 :root[data-phone] .topbar { height: calc(var(--topbar-h) + var(--safe-t)); padding: var(--safe-t) var(--gutter) 0; gap: round(0.5rem, var(--e)); }
