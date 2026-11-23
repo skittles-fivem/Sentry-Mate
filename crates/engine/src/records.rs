@@ -382,16 +382,6 @@ pub(crate) fn waiting_keys(db: &Db) -> Result<BTreeMap<String, WaitingKey>> {
     Ok(get(db, NS, "keys/waiting")?.unwrap_or_default())
 }
 
-/// The names admins gave CAN Bridge keys (key → name). Kept apart from the cars, so a key keeps its name when it
-/// moves to another car or waits for one, and through every rebuild.
-pub(crate) fn key_names(db: &Db) -> Result<BTreeMap<String, String>> {
-    Ok(get(db, NS, "keys/names")?.unwrap_or_default())
-}
-
-pub(crate) fn put_key_names(db: &Db, m: &BTreeMap<String, String>) -> Result<()> {
-    put(db, NS, "keys/names", m)
-}
-
 /// Upload tokens made on a car's page (token id → car): their key goes to that car.
 pub(crate) fn token_cars(db: &Db) -> Result<BTreeMap<String, CarId>> {
     Ok(get(db, NS, "tokens/cars")?.unwrap_or_default())

@@ -701,7 +701,7 @@ def _car_change_words(old_name, body):
 
 
 def list_tokens(req):
-    rows = [_tok_out(req.store, t) for t in req.store.tokens.get(req.car, [])]
+    rows = req.store.tokens.get(req.car, [])
     items, nxt = page(req, rows, key=lambda t: (t["created_ms"], t["id"]), reverse=True)
     return {"car": req.car, "time_zone": req.tz(), "items": items, "next": nxt}
 
@@ -713,7 +713,7 @@ def create_token(req):
         st.tokens.setdefault(req.car, []).append(tok)
     st.record(req.account, "token-created", f"token:{req.car}:{tok['id']}",
               f"Made the upload token {tok['id']} for {st.car_meta(req.car)['name']}.")
-    out = _tok_out(st, tok)
+    out = dict(tok)
     out["secret"] = "smu_" + secrets.token_urlsafe(24)
     out["app"] = bridge_fields(req, out["secret"])
     out["car"] = req.car
@@ -729,7 +729,7 @@ def _token(req):
 
 
 def get_token(req):
-    return _tok_out(req.store, _token(req), car=req.car)
+    return dict(_token(req), car=req.car)
 
 
 def revoke_token(req):
@@ -738,11 +738,11 @@ def revoke_token(req):
         t["revoked"] = True
     req.store.record(req.account, "token-revoked", f"token:{req.car}:{t['id']}",
                      f"Revoked the upload token {t['id']} of {req.store.car_meta(req.car)['name']}.")
-    return _tok_out(req.store, t, car=req.car)
+    return dict(t, car=req.car)
 
 
 def list_new_tokens(req):
-    rows = [_tok_out(req.store, t, car=None) for t in req.store.new_car_tokens]
+    rows = [dict(t, car=None) for t in req.store.new_car_tokens]
     items, nxt = page(req, rows, key=lambda t: (t["created_ms"], t["id"]), reverse=True)
     return {"items": items, "next": nxt}
 
@@ -753,7 +753,7 @@ def create_new_token(req):
     with st.lock:
         st.new_car_tokens.append(tok)
     st.record(req.account, "token-created", f"token:{tok['id']}", f"Made the upload token {tok['id']} for a new car.")
-    out = _tok_out(st, tok, car=None)
+    out = dict(tok, car=None)
     out["secret"] = "smu_" + secrets.token_urlsafe(24)
     out["app"] = bridge_fields(req, out["secret"])
     out["_created"] = True
@@ -767,31 +767,7 @@ def revoke_new_token(req):
     with req.store.lock:
         t["revoked"] = True
     req.store.record(req.account, "token-revoked", f"token:{t['id']}", f"Revoked the upload token {t['id']} of a new car.")
-    return _tok_out(req.store, t, car=None)
-
-
-DEVICE_NAME_MAX = 60
-
-
-def device_label(k):
-    """The key's chosen name, else the server's automatic label: "CAN Bridge key" and the key's short id."""
-    if k.get("device"):
-        return k["device"]
-    tail = k["key"].rsplit("_", 1)[-1] or k["key"]
-    return f"CAN Bridge key {tail[:6]}"
-
-
-def key_out(k):
-    return dict(k, device=k.get("device"), device_label=device_label(k))
-
-
-def _tok_out(st, t, **extra):
-    """A token row; one tied to a key also names its device, as the key rows do."""
-    out = dict(t, **extra)
-    k = next((x for x in st.keys if x["key"] == t.get("key")), None) if t.get("key") else None
-    out["device"] = k.get("device") if k else None
-    out["device_label"] = device_label(k) if k else None
-    return out
+    return dict(t, car=None)
 
 
 def list_keys(req):
@@ -805,7 +781,7 @@ def list_keys(req):
         if not req.ds.exists(car) or not st.sees(req.account, car):
             raise not_found("no_such_car", "There is no such car.")
         rows = [k for k in rows if k["car"] == car]
-    items, nxt = page(req, [key_out(k) for k in rows], key=lambda k: (k["first_seen_ms"], k["key"]), reverse=True)
+    items, nxt = page(req, rows, key=lambda k: (k["first_seen_ms"], k["key"]), reverse=True)
     return {"items": items, "next": nxt}
 
 
@@ -817,10 +793,8 @@ def patch_key(req):
     body = req.json()
     bad, rule = {}, {}
     for f in body:
-        if f not in ("car", "preferred", "name"):
+        if f not in ("car", "preferred"):
             bad[f] = "Unknown field."
-    if "name" in body and body["name"] is not None and not isinstance(body["name"], str):
-        bad["name"] = "Must be text or null."
     if "car" in body and body["car"] is not None and not isinstance(body["car"], str):
         bad["car"] = "Must be a car id or null."
     if "preferred" in body and not isinstance(body["preferred"], bool):
@@ -829,15 +803,9 @@ def patch_key(req):
         raise bad_input(bad)
     if body.get("car") is not None and (not req.ds.exists(body["car"]) or not st.sees(req.account, body["car"])):
         rule["car"] = "No such car."
-    new_name = body.get("name").strip() if isinstance(body.get("name"), str) else None
-    if "name" in body and body["name"] is not None and not 1 <= len(new_name) <= DEVICE_NAME_MAX:
-        rule["name"] = f"A name has 1 to {DEVICE_NAME_MAX} characters."
-    elif new_name and any(ord(ch) < 32 or 127 <= ord(ch) < 160 for ch in new_name):
-        rule["name"] = "A name is one line of text."
     if rule:
         raise invalid(rule)
     was = k["car"]
-    old_name = k.get("device")
     with st.lock:
         if "car" in body:
             k["car"] = body["car"]
@@ -851,8 +819,6 @@ def patch_key(req):
                     other["preferred"] = other is k
         elif body.get("preferred") is False:
             k["preferred"] = False
-        if "name" in body:
-            k["device"] = new_name
     name = lambda c: st.car_meta(c)["name"] if c else "no car"  # noqa: E731
     now_car = k["car"]
     if "car" in body and was != now_car:
@@ -869,11 +835,7 @@ def patch_key(req):
         st.record(req.account, "key-preferred", f"key:{now_car}:{k['key']}",
                   f"Made the CAN Bridge key {k['key']} {name(now_car)}'s preferred one." if k["preferred"] else
                   f"The CAN Bridge key {k['key']} is no longer {name(now_car)}'s preferred one.", car=now_car)
-    if "name" in body and new_name != old_name:
-        st.record(req.account, "can-key-renamed", f"key:{now_car}:{k['key']}" if now_car else f"key:{k['key']}",
-                  f"Named the CAN Bridge key {k['key']} \u201c{new_name}\u201d." if new_name else
-                  f"Cleared the name of the CAN Bridge key {k['key']}.", car=now_car)
-    return key_out(k)
+    return k
 
 
 def bridge_fields(req, secret):

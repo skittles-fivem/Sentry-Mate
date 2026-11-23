@@ -25,6 +25,13 @@ pub(crate) enum Kind {
     Backup = 5,
     NameKey = 6,
     Meta = 7,
+    /// A key/value record whose value is compressed (see kv).
+    KvPacked = 8,
+    /// Key/value records packed together, and the note of how a namespace's bundles are split.
+    KvBundle = 9,
+    KvBundles = 10,
+    /// A month of a series' finished days, packed together (see segment::pack).
+    SegmentPack = 11,
 }
 
 pub(crate) fn header(kind: Kind) -> Vec<u8> {
@@ -64,6 +71,19 @@ pub(crate) fn remove_if_exists(file: &Path) -> Result<bool> {
     }
 }
 
+/// Bytes a file takes on disk: its allocated blocks where the system says, else its length.
+pub fn allocated(m: &std::fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        m.blocks().saturating_mul(512)
+    }
+    #[cfg(not(unix))]
+    {
+        m.len()
+    }
+}
+
 pub(crate) fn sync_dir(dir: &Path) {
     if let Ok(d) = std::fs::File::open(dir) {
         let _ = d.sync_all();
@@ -79,12 +99,14 @@ pub(crate) struct Ctx {
     pub opts: crate::Options,
     /// Day snapshots read last, opened and unpacked.
     pub plain: crate::plain::PlainCache,
+    /// Indexes of the months' packs of days, and the packs opened last.
+    pub packs: crate::segment::pack::PackCache,
 }
 
 impl Ctx {
     pub(crate) fn new(vault: Arc<Vault>, data: PathBuf, opts: crate::Options) -> Ctx {
         let plain = crate::plain::PlainCache::new(opts.max_cached_bytes);
-        Ctx { vault, data, crash: Mutex::new(None), opts, plain }
+        Ctx { vault, data, crash: Mutex::new(None), opts, plain, packs: Default::default() }
     }
 
     /// A file's label: its path under the data folder, with `/` between parts.

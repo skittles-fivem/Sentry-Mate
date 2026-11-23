@@ -126,7 +126,7 @@ async fn can_keys(State(app): State<AppState>, v: Viewer, p: Params) -> ApiResul
     .await
 }
 
-/// `PATCH /can-keys/{key}` with `{ car: id | null, preferred: bool, name: text | null }`.
+/// `PATCH /can-keys/{key}` with `{ car: id | null, preferred: bool }`.
 async fn patch_key(
     State(app): State<AppState>,
     v: Viewer,
@@ -146,34 +146,28 @@ async fn patch_key(
             ("car", _) => bad.add("car", "Must be a car id or null."),
             ("preferred", serde_json::Value::Bool(b)) => change.preferred = Some(*b),
             ("preferred", _) => bad.add("preferred", "Must be true or false."),
-            ("name", serde_json::Value::Null) => change.name = Some(None),
-            ("name", serde_json::Value::String(n)) => change.name = Some(Some(n.clone())),
-            ("name", _) => bad.add("name", "Must be text or null."),
             (other, _) => bad.add(other, "Unknown field."),
         }
     }
     bad.bad_input()?;
     let access = v.cars().clone();
     let e = app.service::<Engine>()?;
-    let (value, was, now, id, names) = app
+    let (value, was, now, id) = app
         .blocking(move |_| {
             let cars = visible(&e, &access, &CarsParam(None)).map_err(failed)?;
             let was = e.db().car_for_key(&key).ok().flatten().filter(|c| cars.contains(c));
-            let old_name = e.key_names().map_err(|x| failed(QueryError::Engine(x)))?.remove(&key);
             let row = q::keys::set_key(&e, &cars, &key, &change).map_err(failed)?;
             let now = row.car.as_ref().map(|c| c.0);
-            let names = (old_name, row.device.clone());
-            Ok((serde_json::to_value(&row).map_err(ApiError::server)?, was, now, (key, change), names))
+            Ok((serde_json::to_value(&row).map_err(ApiError::server)?, was, now, (key, change)))
         })
         .await?;
     let (key, change) = id;
-    audit_key(&app, &v, &key, &change, was, now, names).await?;
+    audit_key(&app, &v, &key, &change, was, now).await?;
     web::csv::answer(&p, "can-key", value)
 }
 
 /// The audit entries of a key change: which key, the car it left and the car it went to (each car's own entry, so
-/// the log's car filter finds the move from either side), the preferred mark, and its name (`names`: before and
-/// after).
+/// the log's car filter finds the move from either side), and the preferred mark.
 async fn audit_key(
     app: &AppState,
     v: &Viewer,
@@ -181,11 +175,10 @@ async fn audit_key(
     change: &q::keys::KeyChange,
     was: Option<CarId>,
     now: Option<CarId>,
-    names: (Option<String>, Option<String>),
 ) -> ApiResult<()> {
     let (was_name, now_name) = (car_words(app, was).await, car_words(app, now).await);
     let name = |c: Option<CarId>| if c == was { was_name.clone() } else { now_name.clone() };
-    if change.car.is_none() && change.preferred.is_none() && (change.name.is_none() || names.0 == names.1) {
+    if change.car.is_none() && change.preferred.is_none() {
         // nothing asked to change
         v.mark_audited();
         return Ok(());
@@ -210,14 +203,6 @@ async fn audit_key(
     if change.car.is_some() && was == now && change.preferred.is_none() {
         let summary = format!("Kept the CAN Bridge key {key} with {}.", name(now));
         v.audit(app, "key-assigned", Some(&target("key", now, key)), &summary).await?;
-    }
-    if change.name.is_some() && names.0 != names.1 {
-        let summary = match (&names.0, &names.1) {
-            (_, Some(n)) => format!("Named the CAN Bridge key {key} \u{201c}{n}\u{201d}."),
-            (Some(old), None) => format!("Cleared the name \u{201c}{old}\u{201d} of the CAN Bridge key {key}."),
-            (None, None) => format!("Cleared the name of the CAN Bridge key {key}."),
-        };
-        v.audit(app, "can-key-renamed", Some(&target("key", now, key)), &summary).await?;
     }
     Ok(())
 }

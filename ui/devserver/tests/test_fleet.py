@@ -226,37 +226,6 @@ class TokensAndKeys(ServerCase):
         self.assertEqual(self.c.get("/api/v1/setup/status")["keys_waiting"], 0)
         self.c.json("PATCH", f"/api/v1/can-keys/{k['key']}", {"car": None})
 
-    def test_key_names(self):
-        keys = {k["key"]: k for k in self.c.get("/api/v1/can-keys")["items"]}
-        unnamed = next(k for k in keys.values() if k["device"] is None)
-        self.assertTrue(unnamed["device_label"].startswith("CAN Bridge key "))
-        named = next(k for k in keys.values() if k["device"])
-        self.assertEqual(named["device_label"], named["device"])
-        path = f"/api/v1/can-keys/{unnamed['key']}"
-        self.c.error("PATCH", path, 400, "bad_input", body={"name": 5})
-        for bad in ("   ", "x" * 61, "two\nlines"):
-            self.c.error("PATCH", path, 422, "invalid", body={"name": bad})
-        up = self.c.json("PATCH", path, {"name": "  Pi logger in the boot "})
-        self.assertEqual((up["device"], up["device_label"]), ("Pi logger in the boot", "Pi logger in the boot"))
-        again = {k["key"]: k for k in self.c.get("/api/v1/can-keys")["items"]}[unnamed["key"]]
-        self.assertEqual(again["device"], "Pi logger in the boot")
-        if unnamed["car"]:
-            health = self.c.get(f"/api/v1/cars/{unnamed['car']}/health")
-            h = next(k for k in health["keys"] if k["key"] == unnamed["key"])
-            self.assertEqual((h["device"], h["device_label"]), ("Pi logger in the boot", "Pi logger in the boot"))
-        audit = self.c.get("/api/v1/audit?limit=50")["items"]
-        self.assertTrue(any(e["action"] == "can-key-renamed" and unnamed["key"] in e["target"] for e in audit))
-        cleared = self.c.json("PATCH", path, {"name": None})
-        self.assertIsNone(cleared["device"])
-        self.assertTrue(cleared["device_label"].startswith("CAN Bridge key "))
-
-    def test_token_rows_name_their_device(self):
-        rows = self.c.get("/api/v1/cars/c1/upload-tokens")["items"]
-        tied = [t for t in rows if t["key"]]
-        self.assertTrue(tied)
-        self.assertTrue(all(t["device_label"] for t in tied))
-        self.assertTrue(all(t["device"] is None and t["device_label"] is None for t in rows if not t["key"]))
-
     def test_keys_of_one_car(self):
         mine = self.c.get("/api/v1/can-keys?car=c1")["items"]
         self.assertTrue(mine)

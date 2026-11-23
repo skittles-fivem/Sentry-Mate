@@ -147,13 +147,6 @@ second table.
   Sentry Six Manager or to Sentry Mate. It needs a token of its own: its car key is not the Screenmate's.
 - A reinstalled bridge app or a new Screenmate has a new car key, and needs a new token
   ([When a log fails its check](security.md#when-a-log-fails-its-check)).
-- **Name each key.** A car with two loggers (the Screenmate's app and a Raspberry Pi logger) has two car keys,
-  and the uploads don't say which device sent them. An admin names each key on **Data health** (CAN Bridge keys)
-  or in **Settings → Cars** (the car's keys): the pencil next to the key, then a name such as "Screenmate in the
-  Model Y" or "Pi logger" (up to 60 characters; empty clears it). Until then the key shows, muted, as "CAN Bridge
-  key" and its short id (`CAN Bridge key 8d41c0`). The name stays with the key when it moves to another car or
-  waits for one, and through restarts, rebuilds and a move of the server; each change is in the audit log
-  (`can-key-renamed`). API: [`PATCH /can-keys/{key}`](ui-api.md) with `{ "name": "..." }`.
 
 ## Did each log arrive intact
 

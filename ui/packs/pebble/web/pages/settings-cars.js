@@ -23,7 +23,6 @@ import { field, segmented, toggle, setFieldError } from '../core/form.js';
 import { remount } from '../core/router.js';
 import { checkRow, moreButton } from '../core/bits.js';
 import { group, infoRow, said, notSaved } from '../core/settings.js';
-import { deviceText, keyRows } from './device-name.js';
 import { inOrder } from '../core/settings.js';
 import { copyButton } from './move-parts.js';
 
@@ -121,11 +120,11 @@ async function waitingRows(ctx, { car = null, onChange }) {
   };
   return {
     count: keys.length,
-    rows: keyRows(ctx, keys, (k, rename) => infoRow({ icon: 'key', tone: 'sun', name: deviceText(k), sub: `${k.key} · first ${day(k.first_seen_ms, ctx.tz)} · ${k.logs_waiting || 0} logs kept`,
-      side: ctx.admin ? [rename, btn(car ? `Tie to ${car.name}` : 'Choose the car', { kind: 'soft', icon: car ? 'check' : 'search', cls: 'btn-sm', onclick: async () => {
+    rows: keys.map((k) => infoRow({ icon: 'key', tone: 'sun', name: k.device || 'Logger not named', sub: `${k.key} · first ${day(k.first_seen_ms, ctx.tz)} · ${k.logs_waiting || 0} logs kept`,
+      side: ctx.admin ? btn(car ? `Tie to ${car.name}` : 'Choose the car', { kind: 'soft', icon: car ? 'check' : 'search', cls: 'btn-sm', onclick: async () => {
         const c = car || await pickCar(ctx, `Tie key ${k.key} to a car`);
         if (c) tie(k, c);
-      } })] : null })),
+      } }) : null })),
   };
 }
 
@@ -354,15 +353,15 @@ async function mountCar(ctx) {
     ];
     upT = tile({ w: 2, title: 'Uploads, tokens and keys', icon: 'upload', cover: 'faq.car-missing.outcomes', side: btn('Make a token', { kind: 'primary', icon: 'plus', cls: 'btn-sm', onclick: makeToken }) },
       h('ul', { class: 'checks' }, checks.filter(Boolean)),
-      group('Upload tokens', toks.length ? toks.map((t) => infoRow({ icon: 'key', name: t.id, sub: `Made ${day(t.created_ms, ctx.tz)}${t.key ? ` · tied to ${t.device ? `${t.device} (${t.key})` : t.key}` : ''}${t.last_upload_ms ? ` · last upload ${day(t.last_upload_ms, ctx.tz)}` : ''}`,
+      group('Upload tokens', toks.length ? toks.map((t) => infoRow({ icon: 'key', name: t.id, sub: `Made ${day(t.created_ms, ctx.tz)}${t.key ? ` · tied to ${t.key}` : ''}${t.last_upload_ms ? ` · last upload ${day(t.last_upload_ms, ctx.tz)}` : ''}`,
         side: t.revoked ? chip('Revoked', { tone: 'muted' }) : [chip(t.key || t.last_upload_ms ? 'In use' : 'Not used yet', { tone: t.key || t.last_upload_ms ? 'teal' : 'sun' }),
           btn(`Revoke ${t.id}`, { kind: 'ghost', icon: 'close', iconOnly: true, cls: 'btn-sm', onclick: async () => {
             if (!await confirmSheet({ title: `Revoke token ${t.id}?`, text: 'The CAN Bridge that uses it stops uploading at its next request. Logs it sent stay.', yes: 'Revoke', danger: true })) return;
             act(() => ctx.api.del(api.apiPath`cars/${car.id}/upload-tokens/${t.id}`), `Token ${t.id} revoked.`)();
           } })] })) : [infoRow({ name: 'No upload token yet', sub: 'Make one and enter it in the CAN Bridge app.' })],
       { note: 'A token lets one CAN Bridge upload. It is shown once, and ties itself to the bridge’s key on the first upload.' }),
-      group('CAN Bridge keys', keys.length ? keyRows(ctx, keys, (k, rename) => infoRow({ icon: 'chip', tone: k.preferred ? 'teal' : null, name: deviceText(k), sub: `${k.key} · last upload ${day(k.last_upload_ms, ctx.tz)}${k.logs_waiting ? ` · ${k.logs_waiting} logs wait` : ''}`,
-        side: [rename, k.preferred ? chip('Preferred', { tone: 'teal' }) : btn('Prefer', { kind: 'soft', cls: 'btn-sm', onclick: act(() => ctx.api.patch(api.apiPath`can-keys/${k.key}`, { preferred: true }), `Key ${k.key} is preferred now.`) }),
+      group('CAN Bridge keys', keys.length ? keys.map((k) => infoRow({ icon: 'chip', tone: k.preferred ? 'teal' : null, name: k.device || 'Logger not named', sub: `${k.key} · last upload ${day(k.last_upload_ms, ctx.tz)}${k.logs_waiting ? ` · ${k.logs_waiting} logs wait` : ''}`,
+        side: [k.preferred ? chip('Preferred', { tone: 'teal' }) : btn('Prefer', { kind: 'soft', cls: 'btn-sm', onclick: act(() => ctx.api.patch(api.apiPath`can-keys/${k.key}`, { preferred: true }), `Key ${k.key} is preferred now.`) }),
           btn(`Untie ${k.key}`, { kind: 'ghost', icon: 'close', iconOnly: true, cls: 'btn-sm', onclick: async () => {
             if (!await confirmSheet({ title: `Untie key ${k.key}?`, text: 'Its new uploads wait for a car until it is tied again. History stays.', yes: 'Untie', danger: true })) return;
             act(() => ctx.api.patch(api.apiPath`can-keys/${k.key}`, { car: null }), `Key ${k.key} untied.`)();
