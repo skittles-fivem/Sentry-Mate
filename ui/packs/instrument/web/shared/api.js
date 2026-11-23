@@ -322,7 +322,12 @@ export function createClient(options = {}) {
         }
       }
       try {
-        if (res.status === 401) { clearCache(); emit('unauthorized', { method, path }); }
+        if (res.status === 401) {
+          clearCache();
+          // the routers' note that this browser is signed in (prefetch.js signedInHint) is no longer true
+          try { globalThis.localStorage?.removeItem('sentrymate.signed-in'); } catch { /* storage off */ }
+          emit('unauthorized', { method, path });
+        }
         if (res.status === 304 && etag) return NOT_MODIFIED;
         if (!res.ok) throw await toError(res, method, path);
         if (meta) {
