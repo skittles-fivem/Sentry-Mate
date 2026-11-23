@@ -4,7 +4,7 @@
 //   node ui/tools/check.js --pack instrument [--pages fleet,car,...|all] [--sizes 1440x900,3840x2160]
 //        [--out DIR] [--server-args "<dev server flags>"] [--json] [--allow-missing] [--full]
 //        [--fixture-matrix FILE] [--ready-timeout-ms N] [--idle-timeout-ms N] [--jobs N]
-//        [--car ID] [--drive ID] [--charge ID] [--pixel] [--stable [SECONDS]] [--stable-fast]
+//        [--car ID] [--drive ID] [--charge ID] [--place ID] [--pixel] [--stable [SECONDS]] [--stable-fast]
 //        [--base https://HOST:PORT --user NAME (--password PW | --password-file FILE)]
 //   node ui/tools/check.js --self-test
 //
@@ -902,6 +902,8 @@ async function run(o) {
     for (const e of entries) if (e.mode === 'normal') for (const m of e.route.matchAll(/\{([a-z]+)\}/g)) need[m[1]] = true;
     const { ids, problems } = await resolveIds(servers.normal, o, need);
     for (const e of entries) if (!e.problem) Object.assign(e, fillRoute(e.route, ids, problems));
+    // --place: the places page opens that place's editor
+    if (o.place) for (const e of entries) if (e.id === 'places' && !e.problem) e.url += `?place=${encodeURIComponent(o.place)}`;
     log(`checking ${plural(entries.length, 'route')} of pack ${packName} at ${o.sizes.map((s) => s.label).join(', ')} on ${servers.normal ? servers.normal.origin : Object.values(servers)[0].origin}`);
 
     let chromium;
@@ -1234,6 +1236,7 @@ const HELP = `Usage: node ui/tools/check.js --pack <name or folder> [options]
   --idle-timeout-ms N    how long to wait for the network to go quiet after that (default 10000)
   --jobs N               pages checked at the same time (default 2)
   --car ID, --drive ID, --charge ID   open these instead of the first car and its newest drive and charge
+  --place ID                         the places page opens this place's editor (its list items then count as missing)
   --pixel                also check that the page is pixel centred and correct (off-centre text and icons, rows
                          and columns that just miss, borders off device pixels, cut, sticking out, overlapping or
                          hidden text, sideways scroll), with an outlined screenshot of the problems
@@ -1267,12 +1270,12 @@ function parseArgs(argv) {
   const o = {
     pack: null, pages: 'all', sizes: DEFAULT_SIZES, out: null, serverArgs: '', json: false, allowMissing: false,
     full: false, pixel: false, fixtureMatrix: null, selfTest: false, readyTimeoutMs: '20000', idleTimeoutMs: '10000', jobs: '2',
-    car: null, drive: null, charge: null, help: false, stable: false, stableSeconds: STABLE_DEFAULT_S, stableFast: false, base: null, user: null, password: null, passwordFile: null,
+    car: null, drive: null, charge: null, place: null, help: false, stable: false, stableSeconds: STABLE_DEFAULT_S, stableFast: false, base: null, user: null, password: null, passwordFile: null,
   };
   const values = {
     '--pack': 'pack', '--pages': 'pages', '--sizes': 'sizes', '--out': 'out', '--server-args': 'serverArgs',
     '--fixture-matrix': 'fixtureMatrix', '--ready-timeout-ms': 'readyTimeoutMs', '--idle-timeout-ms': 'idleTimeoutMs',
-    '--jobs': 'jobs', '--car': 'car', '--drive': 'drive', '--charge': 'charge',
+    '--jobs': 'jobs', '--car': 'car', '--drive': 'drive', '--charge': 'charge', '--place': 'place',
     '--base': 'base', '--user': 'user', '--password': 'password', '--password-file': 'passwordFile',
     '--device-size': 'deviceSize',
   };

@@ -45,6 +45,7 @@ also on Ctrl-C and on errors. It needs Node and the Playwright that is already i
 | `--idle-timeout-ms N` | `10000` | How long to wait after that for the network to go quiet. |
 | `--jobs N` | `2` | Pages checked at the same time. |
 | `--car`, `--drive`, `--charge ID` | from the API | Open these instead. |
+| `--place ID` | none | The `places` page opens that place's editor (`/places?place=ID`) instead of the list; the list's items then count as missing (add `--allow-missing`). |
 | `--base URL` | none | Check against a running real server (`https://127.0.0.1:PORT`) instead of the dev server; see below. |
 | `--user NAME` | none | With `--base`: the account to sign in with. |
 | `--password PW`, `--password-file FILE` | `UI_CHECK_PASSWORD` | With `--base`: that account's password. |
