@@ -40,6 +40,35 @@ pub struct TmCar {
     pub free_supercharging: Option<bool>,
     /// When TeslaMate first saw it.
     pub added_ms: Option<u64>,
+    /// The whole VIN, for the sink to tell two cars of the same prefix apart (a keyed hash of it): never stored,
+    /// never shown, never serialized.
+    #[serde(skip)]
+    pub full_vin: Option<FullVin>,
+    /// TeslaFi rows without a VIN that the file ties to no car (their vehicle id or name shows up with no VIN): they
+    /// go with a car only once the import is sure which ([`crate::teslafi::Group`]), else they need one chosen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_match: bool,
+}
+
+/// A whole VIN, serial and all, held only while an import reads it. Its `Debug` shows nothing of it.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct FullVin(String);
+
+impl FullVin {
+    /// The VIN as given, trimmed and in capitals.
+    pub fn new(v: &str) -> FullVin {
+        FullVin(v.trim().to_ascii_uppercase())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for FullVin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FullVin(..)")
+    }
 }
 
 /// Which Sentry Mate car a TeslaMate car is, and what earlier imports took from it.

@@ -273,7 +273,9 @@ The local TeslaMate input, for owners who already run TeslaMate on their own net
 | `/api/v1/imports` | GET, POST (admin) | GET lists the imports (newest first, same fields as one import). POST starts a resumable upload of a TeslaMate backup (plain, gzip or xz), of TeslaFi's data download (its CSVs: one, several in a `.zip`, gzip or xz) or of Sentry Six Manager's CAN export (`.zip`). | Import |
 | `/api/v1/imports/{import}` | PATCH, GET, DELETE (admin) | PATCH sends a chunk with `Upload-Offset`, `Upload-Length`, `Upload-SHA256`. GET -> `{ status: "uploading" \| "checking" \| "importing" \| "done" \| "failed", kind: "teslamate" \| "teslafi" \| "sentry_manager_can" \| null, pass, bytes_read, bytes_total, error: { code, message }, report: { tables: { name: { read, imported, skipped: { reason: n }, bad_values: { column: n } } }, span } }` (a TeslaMate backup's report; TeslaFi's and a CAN export's are described under "TeslaFi's data" and "Sentry Six Manager's CAN export" below). DELETE discards. | Import |
 | `/api/v1/imports/{import}/files/{index}` | PATCH (admin) | Sends a chunk of file `index` (0-based) of the import, as the import's PATCH does (offsets per file). Answers the import plus `offset` (that file's). See "Import" below. | Import |
-| `/api/v1/imports/{import}/cars` | GET, PUT (admin) | `[{ tm_car, vin_prefix, match: car \| "new" \| "leave_out" }]` (always empty for a CAN export) | Import |
+| `/api/v1/imports/{import}/cars` | GET, PUT (admin) | `[{ tm_car, vin_prefix, match: car \| "new" \| "leave_out" \| "needs_car", needs_car, rows, odometer_km }]` (always empty for a CAN export) | Import |
+| `/api/v1/import-holds` | GET (admin) | Imported rows that wait for a car: `{ items: [ImportHold], next: null }`, oldest first. See "Rows that need a car" below. | Import |
+| `/api/v1/import-holds/{hold}` | POST (admin) | `{ match: car \| "new" \| "ignore" \| "wait" }`: gives the rows a car, a new one named as they are, leaves them aside (kept), or takes them back to wait. Answers `{ hold: ImportHold, move }`. | Import |
 | `/api/v1/imports/{import}/start` | POST (admin) | `{ currency?, time_zone?, distance_unit?, temperature_unit? }` (`currency`: a code such as `EUR`, what TeslaMate's costs and place prices are in; it keeps none. The other three for TeslaFi's data only: see below). Starts the import after the whole file has been checked. | Import |
 
 ## Moving and first-run setup
@@ -622,6 +624,23 @@ America/Chicago", "Changed: text size, units", "Checked GitHub for a newer build
 - **Several files:** POST `{ files: [{ name, bytes_total }, ...] }` (1 to 500 files, each 1 byte to 64 GB) makes one import of them all. Every import has `files: [{ index, name, bytes_total, uploaded_bytes, upload_url }]` (`upload_url`: `/api/v1/imports/{import}/files/{index}`), and the create's `upload_url` is file 0's; the import's own PATCH is file 0. Each file's chunks go to its own address with that file's `Upload-Offset` and `Upload-Length`; different files may be sent at the same time. The import's `name` is the first file's plus " and N more files", `bytes_total` and `uploaded_bytes` the sums. Once every file is complete it goes to `checking`. Several files are taken for TeslaFi's data only (one check, one car matching, one report, with `report.uploads: [{ name, compression, packed_bytes, unpacked_bytes, files, files_skipped, rows_read, rows_used, rows_skipped }]` one per file in order); several files that are a TeslaMate backup or a CAN export fail the check with `one_file_only`, a file among TeslaFi ones that is not TeslaFi's with `not_a_teslafi_export` naming it. A page resuming after a reload matches its files to `files` by name and `bytes_total` and continues each from its `uploaded_bytes`.
 - **Status** moves `uploading` -> `checking` (pass 1) -> `ready` -> `importing` (pass 2) -> `done`, or `failed` with `error`. `ready` means checked and waiting for the cars to be matched and the import started. While checking or importing, `bytes_read` grows. Answers also carry `id`, `name`, `compression`, `uploaded_bytes`, `started_ms`, `checked_ms`, `finished_ms` and `cars_to_match`.
 - **Cars:** GET `/imports/{import}/cars` answers `{ import, items: [{ tm_car, name, vin_prefix, drives, charges, first_ms, last_ms, match, suggested }], next }` once the whole file is uploaded (`409 not_checked` before). A car here with the same VIN prefix is suggested and matched at first, unless that car is suggested for another car of the backup too (cars of the same model, year and plant share the prefix): then none of them is. PUT `{ items: [{ tm_car, match }] }` changes only the cars it names; one car here takes at most one imported car.
+- **Which car (whole VINs):** a car keeps a keyed hash of each whole VIN an import brought it (never the VIN or its
+  serial), so cars of the same model, year and plant (the same VIN prefix) are told apart: an imported car goes to the
+  car here with its whole VIN, else to the one car with its prefix whose whole VIN is not known to be another; a prefix
+  alone never matches a car whose whole VIN differs.
+- **Moves and rows that need a car:** every import has `moves: [{ kind: "rehomed" \| "assigned", at_ms, from_car,
+  from_name, to_car, to_name, hold, rows, drives, charges, owner_entries, first_ms, last_ms }]` (rows of it moved
+  from one car to another, or to wait for a car: `to_car` null and `hold` its id) and `needs_car: [ImportHold]` (its
+  rows that wait for a car, or waited). `ImportHold` is `{ hold: "h1", import, tm_car, name, source, status:
+  "waiting" \| "ignored" \| "assigned", why: "no_vin" \| "odometer", from_car, to_car, rows, drives, charges, first_ms,
+  last_ms, odometer_km: [first, last] \| null }`. A move takes what the owner entered on the rows with them (a
+  charge's cost, a drive's purpose and note); nothing is deleted, `ignore` keeps the rows aside and they can still be
+  given a car. Each move is an audit entry (`import-rows-moved`; `import-rows-ignored` for ignore and wait), and the
+  cars that lost or got rows are rebuilt. Once after an update, the server reads each done TeslaFi import's kept files
+  again with this matching (nothing is read into a car) and moves the rows an older server put on the wrong car
+  (`kind: "rehomed"`): to the one car of their name whose own history their odometer and time fit, else to wait for
+  a car. Without an import's files, a car's imported drives whose odometer reads above the car's own later drives
+  (three or more in a row) are moved to wait for a car (`why: "odometer"`).
 - **Currency:** TeslaMate stores no currency. Imported charge costs and geofence prices take the `currency` sent with Start; without one, imported charges keep no cost and imported places no price. A per-minute geofence price becomes a place price with `per_minute` (and its `session_fee`) and no `per_kwh`.
 - **Start** needs `ready` and every car matched, each car here to one imported car at most (`409 not_ready`, `409 cars_unmatched`). Chunks of one upload are stored one at a time: a chunk sent again while the first try is still being stored gets `409 wrong_offset`. The report counts only cars not left out. DELETE discards the job (history already imported stays). `/setup/status` sets `import_running` while an import is unfinished, with a fix `{ cause: "import_running", link, import }`.
 - **Report per car (TeslaMate):** `report.cars` is `[{ tm_car, name, match, drives, charges, read, imported, skipped: { reason: n } }]` and `report.imported` says whether the rows are stored yet. `read`, `imported` and `skipped` count that car's rows over every table (`imported` is 0 until the import ran; read minus skipped is what it would store). Each table's figures in `report.tables` are the sum of its cars', plus rows that belong to no car (`geofences`). A car whose match is `leave_out` (a car with no drives and no charges starts so) is not in `report.cars` and its rows are not in the report's counts (TeslaFi's `rows`, `found`, `tables` and `cars_count` too); it stays in `/imports/{import}/cars` so it can be matched again. A count the file does not have (a table missing from the backup, no dated rows) is null, never 0. The `skipped` reason codes are `already-imported`, `open` (still going when the backup was made), `unknown-car`, `car-left-out`, `unknown-charge`, `bad-value` (`bad_values` names the column), `wrong-field-count` and `too-long`.
@@ -665,9 +684,17 @@ the file is all there is.
   `Europe/Berlin`: any IANA name, else `422 invalid`) with Start; the check keeps its own zone, the import's report
   (and its `cars[]` figures) are the import's. In the hour the clocks go back the rows are read in their order
   (the second pass through that hour is the later one); a wall time the clocks skip is passed over (`dst_gap`).
-- **Cars:** each car is told apart by its VIN (else `vehicle_id`, else its name): a row without its VIN goes with the
-  car whose rows have the same `vehicle_id` (or name), never to a car of its own. Matched as a TeslaMate car is, by
-  its VIN prefix (`tm_car` is the file's own car number, 1 up; `name` is TeslaFi's `display_name`).
+- **Cars:** each car is told apart by its VIN (else `vehicle_id`, else its name, as rows of this import show them,
+  never across to a car with another VIN): a row without its VIN goes with the car whose rows have the same
+  `vehicle_id` (or name). Rows without a VIN whose `vehicle_id` and name show up nowhere with one (some exports put a
+  made-up id on them each day) go with a car that showed a VIN only when that is plain: their odometer carries on from
+  that car's readings before and after them (at most 1 km lower, 50 km higher) and their time meets none of that car's
+  rows. Such a car of the file is not listed (it takes that car's match); otherwise it needs a car (`needs_car: true`,
+  `match: "needs_car"`: its rows are held at the import and wait in `needs_car` for an admin to choose their car, a
+  new car or to leave them aside; the car of its name whose history its odometer and time fit is suggested and
+  matched at first). Days of such rows that carry on from one another are one (`rows` and the counts are all of
+  them). When no row shows a VIN the file is one car. Matched as a TeslaMate car is, by its whole VIN or its VIN
+  prefix (`tm_car` is the file's own car number, 1 up; `name` is TeslaFi's `display_name`).
 - **Never doubled:** each car keeps the stretches of time already imported (with what was under way at their edges).
   A row inside one is passed over (`already_imported`): importing the same files again adds nothing, and a month
   downloaded before it ended, then again whole, adds only the rest. A drive or charge over the end of a month is

@@ -375,3 +375,93 @@ async fn several_files_that_are_not_all_teslafi_are_refused() {
         assert_eq!(admin.request("DELETE", &format!("/api/v1/imports/{id}"), None, &[]).await.status, 200);
     }
 }
+
+/// A file's rows with the VIN, vehicle id and name replaced (made-up: an older car without its VIN).
+fn retag(csv: &str, id: impl Fn(&str) -> String, name: &str) -> String {
+    csv.lines()
+        .enumerate()
+        .map(|(i, l)| {
+            if i == 0 {
+                return l.to_string();
+            }
+            let mut f: Vec<String> = l.split(',').map(String::from).collect();
+            f[33] = String::new();
+            f[34] = format!("\"{name}\"");
+            f[35] = id(l);
+            f.join(",")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rows_without_a_vin_whose_odometer_jumps_wait_for_a_car_an_admin_chooses() {
+    let k = kit().await;
+    let car = format!("c{}", k.car);
+    let mut admin = k.s.admin().await;
+    // January: an older car (made-up, 90,000 mi) without its VIN, a new id each day; February: the car here
+    let mut old = tf::Gen::new(tf::VIN2);
+    old.odo_mi = 90_000.0;
+    for d in 1..=3 {
+        old.day(chrono::NaiveDate::from_ymd_opt(2023, 1, d).unwrap());
+    }
+    let jan = retag(&old.take_csv(), |l| format!("77{}", &l.split(',').nth(1).unwrap()[8..10]), "Old Car");
+    let mut g = tf::Gen::new(tf::VIN1);
+    g.day(chrono::NaiveDate::from_ymd_opt(2023, 2, 19).unwrap());
+    let feb = g.take_csv();
+    let mut z = import::zip::ManagerZip::new(Vec::new());
+    z.entry("TeslaFi12023.csv", jan.as_bytes()).unwrap();
+    z.entry("TeslaFi22023.csv", feb.as_bytes()).unwrap();
+    let zip = z.finish().unwrap();
+
+    let id = upload(&mut admin, "teslafi.zip", &zip).await;
+    let j = wait_for(&mut admin, &id, "ready").await;
+    assert_eq!(j["cars_to_match"], json!(0), "{j}");
+    let cars = admin.get(&format!("/api/v1/imports/{id}/cars")).await.json();
+    let items = cars["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{cars}");
+    let waits = items.iter().find(|c| c["needs_car"] == json!(true)).unwrap();
+    assert_eq!((waits["match"].as_str(), waits["name"].as_str()), (Some("needs_car"), Some("Old Car")), "{waits}");
+    assert!(waits["odometer_km"][0].as_f64().unwrap() > 140_000.0, "{waits}");
+    // a car of its own is a match too; "needs_car" only for such rows
+    let tm_vin = items.iter().find(|c| c["needs_car"] == json!(false)).unwrap()["tm_car"].clone();
+    let r = admin
+        .put(&format!("/api/v1/imports/{id}/cars"), json!({ "items": [{ "tm_car": tm_vin, "match": "needs_car" }] }))
+        .await;
+    assert_eq!(r.status, 422, "{}", r.text());
+
+    let r = admin.post(&format!("/api/v1/imports/{id}/start"), json!({})).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let done = wait_for(&mut admin, &id, "done").await;
+    let holds = done["needs_car"].as_array().unwrap();
+    assert_eq!(holds.len(), 1, "{done}");
+    assert_eq!((holds[0]["status"].as_str(), holds[0]["drives"].as_u64()), (Some("waiting"), Some(6)), "{done}");
+    let d = admin.get(&format!("/api/v1/cars/{car}/drives?limit=50")).await.json();
+    assert_eq!(d["items"].as_array().unwrap().len(), 2, "only the car's own: {d}");
+
+    // the admin gives them a new car, named as the rows are
+    let hold = holds[0]["hold"].as_str().unwrap().to_string();
+    let r = admin.post(&format!("/api/v1/import-holds/{hold}"), json!({ "match": "new" })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let to = r.json()["move"]["to_car"].as_str().unwrap().to_string();
+    assert_eq!(r.json()["move"]["drives"], json!(6));
+    let d = admin.get(&format!("/api/v1/cars/{to}/drives?limit=50")).await.json();
+    assert_eq!(d["items"].as_array().unwrap().len(), 6, "{d}");
+    let fleet = admin.get("/api/v1/cars").await.json();
+    assert!(fleet.to_string().contains("Old Car"), "{fleet}");
+    let again = admin.post(&format!("/api/v1/import-holds/{hold}"), json!({ "match": "ignore" })).await;
+    assert_eq!(again.status, 409, "{}", again.text());
+    let j = admin.get(&format!("/api/v1/imports/{id}")).await.json();
+    assert_eq!(j["needs_car"][0]["status"], "assigned", "{j}");
+    assert_eq!(j["moves"][0]["to_car"], json!(to), "{j}");
+    let all = admin.get("/api/v1/import-holds").await.json();
+    assert_eq!(all["items"].as_array().unwrap().len(), 1, "{all}");
+    let audit = admin.get("/api/v1/audit?limit=50").await.json();
+    let moved: Vec<&Value> =
+        audit["items"].as_array().unwrap().iter().filter(|r| r["action"] == "import-rows-moved").collect();
+    assert_eq!(moved.len(), 1, "{audit}");
+    assert!(moved[0]["summary"].as_str().unwrap().contains("Old Car"), "{}", moved[0]);
+    // a watch account sees none of it
+    let mut watch = k.s.watch(&mut admin, &[k.car]).await;
+    assert_eq!(watch.get("/api/v1/import-holds").await.status, 403);
+}

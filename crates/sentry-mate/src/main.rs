@@ -1655,6 +1655,8 @@ async fn start_web(
     // a CAN export's logs are stored through the data folder's gate, as uploads are
     if let Ok(im) = app.service::<web::resources::imports::Imports>() {
         im.set_gate(gate.clone());
+        // imported rows an older server put on the wrong car are moved, once
+        web::resources::imports::spawn_rehome(&app);
     }
     let listener = tokio::net::TcpListener::bind((net.bind.as_str(), net.web)).await?;
     tracing::info!("web UI on https://{}:{}/ (TLS 1.3), the same certificate", net.bind, net.web);
