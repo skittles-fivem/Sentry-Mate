@@ -404,6 +404,9 @@ export function cardLabels(table) {
  *   csv(params): href,                      the Download CSV link (the server's, every row the filters show)
  *   onPage(page),                           after each answer (every one holds the totals of the whole list)
  *   boxLabel,                               the box's accessible name
+ *   load({ ...params, sort: { key, dir }, offset, limit }) -> { items, next, offset, total }
+ *                                           in place of path: a list the page holds already (a chunk of it, at once)
+ *   rows: N,                                a box N rows high instead of about ten
  * }) -> { el, ready, setParams(patch), refresh(), total() }
  *
  * The rows sit in a box about ten rows high that scrolls under a header that stays: only the rows in view and a few
@@ -433,7 +436,7 @@ export function windowTable(ctx, opts) {
   const tbody = h('tbody', { dataset: { vlBody: '' } });
   const table = h('table', { class: 'tbl tbl--keep vl-table', 'aria-label': opts.label || opts.title || null }, thead, tbody);
   const noteEl = opts.note ? h('p', { class: 'note tbl-note', cover: opts.noteCover || null }, opts.note) : null;
-  const box = h('div', { class: 'tbl-scroll tbl-box vl-box', tabindex: '0', role: 'region', 'aria-label': opts.boxLabel || opts.label || opts.title || null }, table);
+  const box = h('div', { class: ['tbl-scroll tbl-box vl-box', opts.rows && 'vl-box--rows'], vars: opts.rows ? { '--vl-rows': String(opts.rows) } : null, tabindex: '0', role: 'region', 'aria-label': opts.boxLabel || opts.label || opts.title || null }, table);
   const emptyBox = h('div', { class: 'vl-empty', hidden: true });
   const el = h('section', { class: ['panel', 'tbl-panel', 'vl-panel', opts.cls], 'aria-label': opts.label || opts.title || null }, bar, noteEl, box, emptyBox);
   if (opts.cover) cover(el, opts.cover);
@@ -475,7 +478,7 @@ export function windowTable(ctx, opts) {
   const list = windowList({
     box, body: tbody, head: thead, limit: opts.limit || 50, overscan: 6, rowHeight: 55,
     row: rowEl, placeholder: skelRow, spacer: gapRow,
-    load: (p) => ctx.api.get(opts.path, { ...query(), ...pick(p) }, { signal: p.signal }),
+    load: (p) => (opts.load ? Promise.resolve(opts.load({ ...query(), sort: sort ? { ...sort } : null, ...pick(p) })) : ctx.api.get(opts.path, { ...query(), ...pick(p) }, { signal: p.signal })),
     onPage: (pg) => { if (pg.total !== total) { total = pg.total; paintCount(); } opts.onPage?.(pg); },
     onError: (e) => opts.onError?.(e),
   });
