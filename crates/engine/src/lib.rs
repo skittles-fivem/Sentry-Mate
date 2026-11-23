@@ -256,6 +256,7 @@ pub(crate) struct Inner {
     /// themselves.
     pub(crate) compaction: Mutex<compact::Running>,
     pub(crate) compact_stop: std::sync::atomic::AtomicBool,
+    pub(crate) compact_steps: Mutex<Vec<Arc<dyn compact::Step>>>,
     pub(crate) compact_auto: std::sync::atomic::AtomicBool,
 }
 
@@ -365,6 +366,7 @@ impl Engine {
                 hot: Mutex::new(hot::Hot::default()),
                 compaction: Mutex::default(),
                 compact_stop: std::sync::atomic::AtomicBool::new(false),
+                compact_steps: Mutex::default(),
                 compact_auto: std::sync::atomic::AtomicBool::new(false),
                 opts,
             }),

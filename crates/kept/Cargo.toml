@@ -1,0 +1,24 @@
+[package]
+name = "kept"
+description = "The uploaded files an import keeps (a TeslaMate dump, TeslaFi's CSVs), packed as small as they go and given back byte for byte; sealed with the vault"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+vault = { path = "../vault" }
+brotli = { version = "8", default-features = false, features = ["std"] }
+getrandom = { version = "0.3", features = ["std"] }
+sha2 = "0.10"
+thiserror = "2"
+
+[dev-dependencies]
+synth = { path = "../synth" }
+tempfile = "3"
+# the other packers the format was measured against (examples/measure.rs)
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "encoder"] }

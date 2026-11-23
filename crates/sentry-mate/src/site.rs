@@ -161,6 +161,9 @@ pub fn web_state(
     // the local TeslaMate: the same, nothing connects before an admin adds its settings
     let teslamate_local =
         Arc::new(web::resources::teslamate_local::service(data, v.clone(), engine, audit, events.clone()));
+    // the uploaded backups of finished imports are packed by compaction: the web side knows which, the engine when
+    let imports = Arc::new(web::resources::imports::Imports::new());
+    engine.compact_step(imports.kept_step(&data.join("web"), v.clone()));
     let app = web::AppState::builder(acc, v, data.join("web"))
         .events(events)
         .service(tesla)
@@ -177,7 +180,7 @@ pub fn web_state(
             certificate: Some(ingest::server::tls_dir(data).join("cert.pem")),
         }))
         .service(Arc::new(web::resources::mqtt::Publisher::new()))
-        .service(Arc::new(web::resources::imports::Imports::new()))
+        .service(imports)
         .service(Arc::new(
             web::moving::MoveSite::new(data.to_path_buf(), keys.to_path_buf(), env!("CARGO_PKG_VERSION"))
                 .keeping_claim(claim),

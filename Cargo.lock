@@ -553,6 +553,7 @@ dependencies = [
  "hmac 0.12.1",
  "lz4_flex",
  "lzma-rs",
+ "lzma-rust2",
  "miniz_oxide 0.9.1",
  "model",
  "serde",
@@ -1123,6 +1124,21 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "kept"
+version = "0.1.0"
+dependencies = [
+ "brotli",
+ "flate2",
+ "getrandom 0.3.4",
+ "lzma-rust2",
+ "sha2 0.10.9",
+ "synth",
+ "tempfile",
+ "thiserror",
+ "vault",
 ]
 
 [[package]]
@@ -2878,6 +2894,7 @@ dependencies = [
  "hyper-util",
  "import",
  "ingest",
+ "kept",
  "model",
  "moving",
  "mqtt",

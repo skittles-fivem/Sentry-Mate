@@ -5,7 +5,10 @@
 //!   ([`ingest::Store::pack_finished`]);
 //! - **series**: journals of finished days are folded into their snapshots at the cold level, the finished months'
 //!   days packed into one file a month, the tables' journals folded ([`db::Db::compact_series`]);
-//! - **records**: the key/value store's small records go into bundles ([`db::Kv::compact`]).
+//! - **records**: the key/value store's small records go into bundles ([`db::Kv::compact`]);
+//! - **steps of other parts of the server** ([`Step`], [`Engine::compact_step`]): what the engine doesn't own but
+//!   wants packed in the same pass, under the same rules. The web side's is `imports`: the uploaded backups of
+//!   finished imports, packed by the `kept` crate.
 //!
 //! Each step writes the new file, reads it back and compares it with what it took in before anything is removed, so
 //! a pass stopped anywhere (a crash, a restart) leaves every value readable, and the next pass carries on.
@@ -44,6 +47,10 @@ pub struct Compacted {
     pub days: u64,
     /// Kept records and answers taken into bundles.
     pub records: u64,
+    /// What the steps of other parts of the server packed (uploaded backups of finished imports).
+    pub others: u64,
+    /// What a step found wrong and left as it was, each with the file's name.
+    pub problems: Vec<String>,
     /// Bytes on disk before and after, of what the pass looked at.
     pub before_bytes: u64,
     pub after_bytes: u64,
@@ -63,6 +70,30 @@ pub enum Status {
     Idle,
     Running,
     Failed,
+}
+
+/// A step of the pass that another part of the server owns: it knows what of its files is no longer written, the
+/// engine gives it the pass's turns. It works under the pass's rules: the new file written, read back and compared
+/// before anything is removed, so it can be stopped after any unit and carried on by the next pass.
+pub trait Step: Send + Sync {
+    /// The word the Storage panel shows while it runs (`imports`).
+    fn name(&self) -> &'static str;
+    /// The folder it works in, for the bytes on disk before and after.
+    fn dir(&self) -> std::path::PathBuf;
+    /// How many units wait (files to pack).
+    fn pending(&self) -> u64;
+    /// Does the work. `next` is called between two units (a unit: seconds of work at most): it lets go of the write
+    /// gate, pauses and takes the gate again, and says whether to stop. `done` is told each unit finished.
+    fn run(&self, next: &dyn Fn() -> bool, done: &dyn Fn()) -> StepDone;
+}
+
+/// What a [`Step`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StepDone {
+    pub units: u64,
+    pub stopped: bool,
+    /// What it found wrong and left as it was, each with the file's name.
+    pub problems: Vec<String>,
 }
 
 /// Compaction as it is now, for the Storage panel.
@@ -249,7 +280,7 @@ impl Engine {
                         Err(db::Error::NoSuchCar(_)) => break,
                         Err(e) => return Err(e.into()),
                     };
-                    out.days += (done.days_folded + done.days_packed) as u64;
+                    out.days += (done.days_folded + done.days_packed + done.days_recoded) as u64;
                     self.progress("series", out.days, total);
                     if turns.next() {
                         out.stopped = true;
@@ -280,7 +311,32 @@ impl Engine {
             out.stopped = kv.stopped;
             self.progress("records", kv.records, pending);
         }
+        // what other parts of the server registered
+        let steps: Vec<std::sync::Arc<dyn Step>> = lock(&self.inner.compact_steps).clone();
+        for step in steps {
+            if out.stopped {
+                break;
+            }
+            let (name, dir) = (step.name(), step.dir());
+            let total = step.pending();
+            self.progress(name, 0, total);
+            out.before_bytes += tree_disk(&dir);
+            let units = std::cell::Cell::new(0u64);
+            let done = step.run(&|| turns.next(), &|| {
+                units.set(units.get() + 1);
+                self.progress(name, units.get(), total);
+            });
+            out.after_bytes += tree_disk(&dir);
+            out.others += done.units;
+            out.stopped = done.stopped;
+            out.problems.extend(done.problems);
+        }
         Ok(out)
+    }
+
+    /// Adds a step of another part of the server to every pass from now on (the web side's kept uploads).
+    pub fn compact_step(&self, step: std::sync::Arc<dyn Step>) {
+        lock(&self.inner.compact_steps).push(step);
     }
 
     /// Runs a pass and writes down how it went.
@@ -292,14 +348,19 @@ impl Engine {
         kept.finished_ms = Some(now_ms());
         match &r {
             Ok(c) => {
-                kept.error = None;
+                // a file a step could not pack or open is said, with its name; the rest of the pass counts
+                kept.error = (!c.problems.is_empty()).then(|| c.problems.join("; "));
+                for p in &c.problems {
+                    tracing::warn!("compaction: {p} (left as it was)");
+                }
                 kept.last_saved_bytes = Some(c.saved_bytes());
                 kept.saved_bytes = kept.saved_bytes.saturating_add(c.saved_bytes());
                 tracing::info!(
-                    "compaction: {} log files, {} days, {} records packed; {} bytes freed{}",
+                    "compaction: {} log files, {} days, {} records, {} uploads packed; {} bytes freed{}",
                     c.log_files,
                     c.days,
                     c.records,
+                    c.others,
                     c.saved_bytes(),
                     if c.stopped { " (gave way: the rest another time)" } else { "" }
                 );
@@ -550,6 +611,81 @@ mod tests {
         drop(e);
         let e = open(&data, &v);
         assert_eq!(read(&e, car), want2);
+    }
+
+    /// A step of another part of the server: files `f0`, `f1` ... in a folder, each "packed" by cutting it short.
+    struct Halves {
+        dir: std::path::PathBuf,
+        bad: bool,
+    }
+
+    impl Step for Halves {
+        fn name(&self) -> &'static str {
+            "halves"
+        }
+
+        fn dir(&self) -> std::path::PathBuf {
+            self.dir.clone()
+        }
+
+        fn pending(&self) -> u64 {
+            std::fs::read_dir(&self.dir)
+                .unwrap()
+                .filter(|f| f.as_ref().unwrap().metadata().unwrap().len() > 50_000)
+                .count() as u64
+        }
+
+        fn run(&self, next: &dyn Fn() -> bool, done: &dyn Fn()) -> StepDone {
+            let mut out = StepDone::default();
+            for f in std::fs::read_dir(&self.dir).unwrap() {
+                let path = f.unwrap().path();
+                if std::fs::metadata(&path).unwrap().len() > 50_000 {
+                    std::fs::write(&path, vec![1u8; 50_000]).unwrap();
+                    out.units += 1;
+                    done();
+                    if next() {
+                        out.stopped = true;
+                        return out;
+                    }
+                }
+            }
+            if self.bad {
+                out.problems.push("web/imports/im1/backup.pack: block 3 doesn't open".into());
+            }
+            out
+        }
+    }
+
+    #[test]
+    fn a_step_of_another_part_runs_in_every_pass_under_its_turns_and_its_problems_are_said() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        let theirs = data.join("web").join("imports");
+        std::fs::create_dir_all(&theirs).unwrap();
+        let (v, _) = vault::Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
+        let e = open(&data, &Arc::new(v));
+        for i in 0..3 {
+            std::fs::write(theirs.join(format!("f{i}")), vec![0u8; 100_000]).unwrap();
+        }
+        e.compact_step(Arc::new(Halves { dir: theirs.clone(), bad: false }));
+        // stopped after its first unit: the next pass does the rest
+        let asked = Cell::new(0u32);
+        let first = e.compact(&|| asked.replace(asked.get() + 1) >= 1, false).unwrap();
+        assert_eq!((first.others, first.stopped), (1, true), "{first:?}");
+        assert!(first.saved_bytes() >= 40_000 && first.saved_bytes() < 100_000, "{first:?}");
+        let rest = e.compact(&|| false, false).unwrap();
+        assert_eq!((rest.others, rest.stopped, rest.problems.len()), (2, false, 0), "{rest:?}");
+        assert!(rest.saved_bytes() >= 90_000, "{rest:?}");
+        assert_eq!(e.compact(&|| false, false).unwrap().others, 0);
+        // what a step could not open is kept as the pass's error, by name, and what it saved still counts
+        e.compact_step(Arc::new(Halves { dir: theirs, bad: true }));
+        lock(&e.inner.compaction).started_ms = 5;
+        let kept = e.compact_and_keep(false).unwrap();
+        assert_eq!(kept.problems, ["web/imports/im1/backup.pack: block 3 doesn't open"]);
+        let c = e.compaction();
+        assert_eq!(c.status, Status::Failed);
+        assert_eq!(c.error.as_deref(), Some("web/imports/im1/backup.pack: block 3 doesn't open"));
+        assert_eq!(c.last_saved_bytes, Some(0));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
