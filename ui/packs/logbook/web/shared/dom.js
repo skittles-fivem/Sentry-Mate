@@ -139,6 +139,37 @@ export function on(target, type, fn, opts) {
   return () => target.removeEventListener(type, fn, opts);
 }
 
+const sheets = new Map();
+/**
+ * Add <link rel="stylesheet" href> to <head> once (per resolved URL) and resolve when it has loaded, so a
+ * map or chart is only drawn once its style sheet applies. A sheet that fails to load resolves too (false)
+ * and is tried again next time: a missing style must not stop the page. Give it a URL relative to the
+ * calling module (new URL('../x.css', import.meta.url)), so it follows the pack's versioned prefix.
+ * { first: true } puts it before the page's other style sheets, as if index.html linked it ahead of app.css,
+ * so the pack's own rules still win over the library's at the same specificity.
+ */
+export function styleSheet(href, { first = false } = {}) {
+  const doc = globalThis.document;
+  const url = new URL(String(href), doc.baseURI).href;
+  let p = sheets.get(url);
+  if (p) return p;
+  p = new Promise((resolve) => {
+    let link = [...doc.querySelectorAll('link[rel="stylesheet"]')].find((l) => l.href === url);
+    if (link?.sheet) { resolve(true); return; }
+    const fresh = !link;
+    if (fresh) { link = doc.createElement('link'); link.rel = 'stylesheet'; }
+    link.addEventListener('load', () => resolve(true), { once: true });
+    link.addEventListener('error', () => { sheets.delete(url); if (fresh) link.remove(); resolve(false); }, { once: true });
+    if (fresh) {
+      link.href = url;
+      const ahead = first ? doc.head.querySelector('link[rel="stylesheet"]') : null;
+      if (ahead) ahead.before(link); else doc.head.append(link);
+    }
+  });
+  sheets.set(url, p);
+  return p;
+}
+
 /* ------------------------------------------------------------------ coverage and readiness */
 
 /** Add inventory item ids to an element's data-cover (space separated, no repeats). Returns el. */

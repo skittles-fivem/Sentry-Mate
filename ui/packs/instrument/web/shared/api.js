@@ -255,11 +255,13 @@ export function createClient(options = {}) {
     if (signal) { if (signal.aborted) throw abortError(signal); signal.addEventListener('abort', onAbort, { once: true }); }
     const timer = timeoutMs > 0 ? setT(() => { timedOut = true; ctl.abort(); }, timeoutMs) : null;
 
+    // a read is always asked again, but with the tag of the answer the browser kept: an unchanged answer comes
+    // back as 304 with no body (the browser hands the kept one over); a change is never kept
     for (let attempt = 0; ; attempt++) {
       const sent = localNow();
       let res;
       try {
-        res = await doFetch(href, { method, headers: h, body: payload, signal: ctl.signal, credentials: 'same-origin', cache: 'no-store' });
+        res = await doFetch(href, { method, headers: h, body: payload, signal: ctl.signal, credentials: 'same-origin', cache: method === 'GET' ? 'no-cache' : 'no-store' });
       } catch (err) {
         clearT(timer);
         signal?.removeEventListener('abort', onAbort);
@@ -335,15 +337,24 @@ export function createClient(options = {}) {
     });
   }
 
+  // the request headers that change the answer, in one order: names in lower case, sorted
+  function headerKey(headers) {
+    if (!headers) return '';
+    const e = Object.entries(headers).map(([k, v]) => [String(k).toLowerCase(), String(v)]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    return e.length ? ' ' + JSON.stringify(e) : '';
+  }
+
   /**
    * GET an API path; resolves to the parsed JSON (treat it as read-only: callers asking at the same time
-   * share it). opts: signal, maxAgeMs (reuse a result this young), keep (keep this answer for callers that pass
+   * share it). Identical reads in flight (same URL, same accept, same headers) are sent once and every
+   * caller gets the one answer; only GETs are shared, never a change or the event stream.
+   * opts: signal, maxAgeMs (reuse a result this young), keep (keep this answer for callers that pass
    * maxAgeMs, without reusing an older one: the frame's own reads, which a page loaded at the same time asks
    * for again), timeoutMs, headers.
    */
   function get(path, params, opts = {}) {
     const href = url(path, params);
-    const key = 'GET ' + href + ' ' + (opts.accept || 'json');
+    const key = 'GET ' + href + ' ' + (opts.accept || 'json') + headerKey(opts.headers);
     if (opts.maxAgeMs > 0) {
       const hit = cache.get(key);
       if (hit && localNow() - hit.at <= opts.maxAgeMs) return Promise.resolve(hit.value);
