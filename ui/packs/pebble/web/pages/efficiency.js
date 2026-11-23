@@ -8,7 +8,7 @@
 // and each day outside as a small range bar.
 // Data: GET /api/v1/cars/{car}/efficiency, /temperatures, /series, /drives, /charges.
 
-import { h } from '../shared/dom.js';
+import { h, holdScroll } from '../shared/dom.js';
 import { format, convert, toMetric, unitLabel, getUnits } from '../shared/units.js';
 import { formatDate, formatDayKey } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -77,6 +77,8 @@ export async function mount(ctx) {
   async function refresh() {
     const [d, drives] = await Promise.all([ctx.api.get(`${base}/efficiency`, effParams()).catch((e) => ({ error: e })), drivesOf()]);
     if (!ctx.alive()) return;
+    // what is on screen stays where it is while the parts above it are drawn again (shared/dom.js)
+    holdScroll(ctx.view);
     paintEff(d, drives);
     ctx.ready();
   }

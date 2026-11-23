@@ -22,6 +22,8 @@ import { srcPill, estPill, srcText, isEstimated, apiOnly, EST_WHY } from '../cor
 
 export const id = 'drive';
 export const css = true;
+// its title (the route) and Earlier / Later come with the drive: the router shows the page once they are in
+export const headLater = true;
 export const title = () => 'Drive';
 
 const FIELDS = 'speed_kph,power_kw,soc_pct,range_km,ideal_range_km,battery_heat_kw,elevation_m,outside_c,cabin_c,setpoint_left_c,climate,tyre_fl_kpa,tyre_fr_kpa,tyre_rl_kpa,tyre_rr_kpa,lat,lon';
