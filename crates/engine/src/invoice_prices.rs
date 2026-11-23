@@ -157,7 +157,8 @@ pub fn update(e: &Engine, src: &dyn InvoiceRates) -> crate::query::QResult<Updat
         want.insert(id, derive(&list, &currency));
     }
     let changed = crate::query::places::set_invoice_prices(e, &want)?;
-    let mut out = Updated { places: changed.iter().map(|&id| crate::query::place_ref(id)).collect(), charges_priced: 0 };
+    let mut out =
+        Updated { places: changed.iter().map(|&id| crate::query::place_ref(id)).collect(), charges_priced: 0 };
     if changed.is_empty() {
         return Ok(out);
     }

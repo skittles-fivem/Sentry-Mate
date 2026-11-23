@@ -80,9 +80,8 @@ pub fn sort_prices(list: &mut [DatedPrice]) {
 /// The price in force on `day` (`YYYY-MM-DD`): the newest typed price that started by then, else the newest invoice
 /// price that did. `list` is oldest first ([`sort_prices`]).
 pub fn price_on<'a>(list: &'a [DatedPrice], day: &str) -> Option<&'a DatedPrice> {
-    let of = |src: PriceSource| {
-        list.iter().rev().find(|d| d.source == src && d.from.as_deref().is_none_or(|f| f <= day))
-    };
+    let of =
+        |src: PriceSource| list.iter().rev().find(|d| d.source == src && d.from.as_deref().is_none_or(|f| f <= day));
     of(PriceSource::Typed).or_else(|| of(PriceSource::Invoice))
 }
 
@@ -95,11 +94,7 @@ pub struct Places {
 
 impl Places {
     pub fn new(list: Vec<Place>, extras: HashMap<PlaceId, PlaceExtra>) -> Places {
-        let prices = list
-            .iter()
-            .map(|p| (p.id, dated(p, extras.get(&p.id))))
-            .filter(|(_, v)| !v.is_empty())
-            .collect();
+        let prices = list.iter().map(|p| (p.id, dated(p, extras.get(&p.id)))).filter(|(_, v)| !v.is_empty()).collect();
         Places { index: places::PlaceIndex::new(list), extras, prices }
     }
 
@@ -227,8 +222,7 @@ mod tests {
     use crate::query::places::Price;
 
     fn at(from: Option<&str>, source: PriceSource, per_kwh: f64) -> DatedPrice {
-        let price =
-            Price {
+        let price = Price {
             currency: "EUR".into(),
             per_kwh: Some(per_kwh),
             per_minute: None,

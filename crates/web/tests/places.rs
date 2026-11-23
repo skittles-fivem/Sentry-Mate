@@ -921,9 +921,12 @@ async fn dated_prices_are_kept_in_order_checked_and_price_alone_changes_the_one_
 
     // field errors name the entry: a day that is not one, two prices from one day, price and prices at once
     let r = admin
-        .post("/api/v1/places", json!({ "name": "X", "lat": 1.0, "lon": 1.0, "prices": [
+        .post(
+            "/api/v1/places",
+            json!({ "name": "X", "lat": 1.0, "lon": 1.0, "prices": [
             { "from": "2026-02-30", "price": usd(0.1) }, { "from": "2026-03-01", "price": usd(0.1) },
-            { "from": "2026-03-01", "price": usd(11.0) }] }))
+            { "from": "2026-03-01", "price": usd(11.0) }] }),
+        )
         .await;
     assert_eq!(r.status, 422, "{}", r.text());
     let f = &r.json()["error"]["fields"];
@@ -944,7 +947,8 @@ async fn dated_prices_are_kept_in_order_checked_and_price_alone_changes_the_one_
     let r = admin.patch(&format!("/api/v1/places/{id}"), json!({ "version": 1, "price": usd(0.25) })).await;
     assert_eq!(r.status, 200, "{}", r.text());
     let p = r.json();
-    let per: Vec<f64> = p["prices"].as_array().unwrap().iter().map(|x| x["price"]["per_kwh"].as_f64().unwrap()).collect();
+    let per: Vec<f64> =
+        p["prices"].as_array().unwrap().iter().map(|x| x["price"]["per_kwh"].as_f64().unwrap()).collect();
     assert_eq!(per, vec![0.1, 0.25, 0.9], "{p}");
     // its errors are named price.…
     let r = admin.patch(&format!("/api/v1/places/{id}"), json!({ "version": 2, "price": usd(12.0) })).await;
@@ -958,8 +962,11 @@ async fn dated_prices_are_kept_in_order_checked_and_price_alone_changes_the_one_
     // a place saved with one price has it from the start
     let r = admin.post("/api/v1/places", json!({ "name": "Y", "lat": 2.0, "lon": 2.0, "price": usd(0.3) })).await;
     assert_eq!(r.status, 201, "{}", r.text());
-    assert_eq!(r.json()["prices"], json!([{ "from": null, "source": "typed", "price": {
-        "currency": "USD", "per_kwh": 0.3, "per_minute": null, "rates": [], "session_fee": null } }]));
+    assert_eq!(
+        r.json()["prices"],
+        json!([{ "from": null, "source": "typed", "price": {
+        "currency": "USD", "per_kwh": 0.3, "per_minute": null, "rates": [], "session_fee": null } }])
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1025,8 +1032,11 @@ async fn a_reprice_takes_each_charges_price_of_its_day_and_invoices_price_only_w
     // covers no day any more, and a reprice takes each charge's price of its own day
     let v = p["version"].as_u64().unwrap();
     let r = admin
-        .patch(&format!("/api/v1/places/{hid}"), json!({ "version": v, "prices": [
-            { "from": null, "price": usd(0.10) }, { "from": last_day, "price": usd(0.50) }] }))
+        .patch(
+            &format!("/api/v1/places/{hid}"),
+            json!({ "version": v, "prices": [
+            { "from": null, "price": usd(0.10) }, { "from": last_day, "price": usd(0.50) }] }),
+        )
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
     let p = r.json();
@@ -1042,8 +1052,11 @@ async fn a_reprice_takes_each_charges_price_of_its_day_and_invoices_price_only_w
     // the dearer price from the day after: the charges before it keep the older one
     let v = p["version"].as_u64().unwrap();
     let r = admin
-        .patch(&format!("/api/v1/places/{hid}"), json!({ "version": v, "prices": [
-            { "from": null, "price": usd(0.10) }, { "from": day_after, "price": usd(0.50) }] }))
+        .patch(
+            &format!("/api/v1/places/{hid}"),
+            json!({ "version": v, "prices": [
+            { "from": null, "price": usd(0.10) }, { "from": day_after, "price": usd(0.50) }] }),
+        )
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
     let r = admin.post(&format!("/api/v1/places/{hid}/reprice"), json!({ "dry_run": true })).await;

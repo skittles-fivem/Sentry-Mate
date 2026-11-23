@@ -1379,8 +1379,7 @@ pub(crate) fn set_invoice_prices(e: &Engine, want: &HashMap<PlaceId, Vec<DatedPr
     let now = e.places();
     let mut done = Vec::new();
     for p in now.all() {
-        let have: Vec<&DatedPrice> =
-            now.prices(p.id).iter().filter(|x| x.source == PriceSource::Invoice).collect();
+        let have: Vec<&DatedPrice> = now.prices(p.id).iter().filter(|x| x.source == PriceSource::Invoice).collect();
         let new = want.get(&p.id).map_or(&[][..], Vec::as_slice);
         if have.len() == new.len() && have.iter().zip(new).all(|(a, b)| *a == b) {
             continue;
@@ -1601,7 +1600,14 @@ mod tests {
             lon: 2.0,
             radius_m: 100.0,
             time_zone: None,
-            prices: vec![typed(Price { currency: "EUR".into(), per_kwh, per_minute: None, rates, session_fee: None, tiers: None })],
+            prices: vec![typed(Price {
+                currency: "EUR".into(),
+                per_kwh,
+                per_minute: None,
+                rates,
+                session_fee: None,
+                tiers: None,
+            })],
             price_at: Some(0),
         };
         let weekdays = vec![
