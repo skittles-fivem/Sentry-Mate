@@ -264,6 +264,7 @@ pub(crate) struct Inner {
     /// themselves.
     pub(crate) compaction: Mutex<compact::Running>,
     pub(crate) compact_stop: std::sync::atomic::AtomicBool,
+    pub(crate) compact_steps: Mutex<Vec<Arc<dyn compact::Step>>>,
     pub(crate) compact_auto: std::sync::atomic::AtomicBool,
     /// The full rebuild under way ([`full`]); its record's changes, one at a time; a test's failure point.
     pub(crate) full: Mutex<full::Full>,
@@ -429,6 +430,7 @@ impl Engine {
                 hot: Mutex::new(hot::Hot::default()),
                 compaction: Mutex::default(),
                 compact_stop: std::sync::atomic::AtomicBool::new(false),
+                compact_steps: Mutex::default(),
                 compact_auto: std::sync::atomic::AtomicBool::new(false),
                 full: Mutex::default(),
                 full_start: Mutex::new(()),
