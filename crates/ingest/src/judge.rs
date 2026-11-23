@@ -24,7 +24,7 @@ use crate::store::now_ms;
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use trust::{Check, Entry, Link, LogName, SIGNED_BY_ANOTHER_KEY, Verdict, same_fingerprint};
 
 /// A log without its sidecar this long is judged without it.
@@ -255,6 +255,7 @@ impl Fault {
 pub const CHECK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// What one pass over a key's records keeps of each log, to fit the chain links of the logs asked about.
+#[derive(Clone, Copy)]
 struct Seen {
     /// Verified (`Some(true)`), waiting (`None`) or anything else (`Some(false)`).
     good: Option<bool>,
@@ -279,6 +280,15 @@ struct Asked {
     older: bool,
 }
 
+fn seen_of(r: &Record) -> Seen {
+    let good = match r.status {
+        Status::Verified => Some(true),
+        Status::Waiting => None,
+        Status::Failed | Status::CouldNotSign | Status::Unsigned => Some(false),
+    };
+    Seen { good, link: r.link.as_ref().and_then(|k| sha_bytes(&k.sha256).map(|sha| (k.index, sha))) }
+}
+
 /// One pass over a key's records: the check of each log `want` takes, told to `f` in name order (with when it
 /// arrived). `uploading`: the key's logs still arriving.
 ///
@@ -288,8 +298,7 @@ struct Asked {
 /// once: the earlier log's own failure, or a gap in the chain report and the missing-log scan). While the log before it
 /// is waiting, arriving, or missing for less than `wait_ms` after this one came, it is pending.
 fn checks_pass(
-    l: &Ledger,
-    h: &Head,
+    l: &View,
     want: &dyn Fn(&str) -> bool,
     uploading: &std::collections::HashSet<String>,
     now: u64,
@@ -301,13 +310,8 @@ fn checks_pass(
     // the lowest chain index of each signing key so far, in name order (a log's older logs come before it)
     let mut lowest: HashMap<String, u64> = HashMap::new();
     let mut asked: Vec<Asked> = Vec::new();
-    l.for_each(h, |name, r| {
-        let good = match r.status {
-            Status::Verified => Some(true),
-            Status::Waiting => None,
-            Status::Failed | Status::CouldNotSign | Status::Unsigned => Some(false),
-        };
-        let link = r.link.as_ref().and_then(|k| sha_bytes(&k.sha256).map(|sha| (k.index, sha)));
+    let mem = matches!(l, View::Mem(_));
+    l.for_each(|name, r| {
         if want(name) {
             let older = r
                 .link
@@ -323,10 +327,17 @@ fn checks_pass(
             });
         }
         if let Some(k) = r.link.as_ref() {
-            let e = lowest.entry(k.key_fingerprint.clone()).or_insert(k.index);
-            *e = (*e).min(k.index);
+            match lowest.get_mut(&k.key_fingerprint) {
+                Some(e) => *e = (*e).min(k.index),
+                None => {
+                    lowest.insert(k.key_fingerprint.clone(), k.index);
+                }
+            }
         }
-        seen.insert(name.into(), Seen { good, link });
+        // (a mirror is looked up directly)
+        if !mem {
+            seen.insert(name.into(), seen_of(r));
+        }
         ControlFlow::Continue(())
     })?;
     let fit = |a: &Asked| -> UploadCheck {
@@ -334,10 +345,14 @@ fn checks_pass(
         if k.prev_name == "-" {
             return UploadCheck::Verified;
         }
-        match seen.get(k.prev_name.as_str()) {
+        let before = match l {
+            View::Mem(m) => m.logs.get(k.prev_name.as_str()).map(seen_of),
+            View::Disk(..) => seen.get(k.prev_name.as_str()).copied(),
+        };
+        match before {
             Some(Seen { good: None, .. }) => UploadCheck::Pending,
             Some(Seen { good: Some(true), link: Some((i, sha)) }) => {
-                let fits = i.checked_add(1) == Some(k.index) && sha_bytes(&k.prev_sha256) == Some(*sha);
+                let fits = i.checked_add(1) == Some(k.index) && sha_bytes(&k.prev_sha256) == Some(sha);
                 if fits { UploadCheck::Verified } else { UploadCheck::Failed(Fault::ChainBreak) }
             }
             // a verified log has its link; one without can't be fitted
@@ -465,11 +480,467 @@ pub struct Judged {
 /// while the key is held: it must be quick and never wait (send on a channel, set a flag).
 pub type OnJudged = Arc<dyn Fn(&Judged) + Send + Sync>;
 
+/// Records of all keys kept in memory at most ([`Judge::mirror_size`]): about 1 KB each.
+pub const MIRRORED_RECORDS: usize = 250_000;
+
+/// A key's records as they are on disk, kept in memory ([`Shared::mirrors`]): its head as of these records (with the
+/// files' stamp then) and every log's record. Changed only with the key held, as the files are; read without holding
+/// the key while the files are still the ones it was made from.
+pub(crate) struct Mirror {
+    pub(crate) head: Head,
+    pub(crate) logs: BTreeMap<String, Record>,
+}
+
+/// The mirrors kept, the most recently used last.
+struct Mirrors {
+    keys: Vec<(String, Arc<RwLock<Mirror>>)>,
+    budget: usize,
+}
+
+impl Mirrors {
+    fn total(&self) -> usize {
+        self.keys.iter().map(|(_, m)| read_lock(m).logs.len()).sum()
+    }
+
+    /// Drops the least recently used until all fit (the newest is kept whatever its size: it fit when it was made).
+    fn trim(&mut self) {
+        while self.keys.len() > 1 && self.total() > self.budget {
+            self.keys.remove(0);
+        }
+    }
+}
+
+fn read_lock<T>(l: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    l.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn write_lock<T>(l: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    l.write().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// What every [`Judge`] of one CAN folder in this process shares (the server's uploads and its engine each have one):
+/// the keys' locks, heads and mirrors, so they never wait on each other's lock files nor read records again that the
+/// other just wrote.
+pub(crate) struct Shared {
+    heads: Mutex<Lru<Head>>,
+    locks: KeyLocks<tokio::sync::Mutex<()>>,
+    mirrors: Mutex<Mirrors>,
+}
+
+impl Shared {
+    fn new() -> Shared {
+        Shared {
+            heads: Mutex::new(Lru::new(CACHED_HEADS)),
+            locks: KeyLocks::new(),
+            mirrors: Mutex::new(Mirrors { keys: Vec::new(), budget: MIRRORED_RECORDS }),
+        }
+    }
+
+    /// The one for `dir` in this process.
+    fn of(dir: &std::path::Path) -> Arc<Shared> {
+        static ALL: Mutex<Vec<(PathBuf, std::sync::Weak<Shared>)>> = Mutex::new(Vec::new());
+        let mut all = ALL.lock().unwrap_or_else(PoisonError::into_inner);
+        all.retain(|(_, w)| w.strong_count() > 0);
+        if let Some(s) = all.iter().find(|(d, _)| d == dir).and_then(|(_, w)| w.upgrade()) {
+            return s;
+        }
+        let s = Arc::new(Shared::new());
+        all.push((dir.to_path_buf(), Arc::downgrade(&s)));
+        s
+    }
+
+    fn mirrors(&self) -> MutexGuard<'_, Mirrors> {
+        self.mirrors.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The key's mirror, if one is kept (made the most recently used).
+    fn mirror(&self, key: &str) -> Option<Arc<RwLock<Mirror>>> {
+        let mut m = self.mirrors();
+        let i = m.keys.iter().position(|(k, _)| k == key)?;
+        let e = m.keys.remove(i);
+        let found = e.1.clone();
+        m.keys.push(e);
+        Some(found)
+    }
+
+    /// The key's mirror when it is of `head` (the key held).
+    fn mirror_of(&self, key: &str, head: &Head) -> Option<Arc<RwLock<Mirror>>> {
+        self.mirror(key).filter(|m| head.stamp.is_some() && read_lock(m).head.stamp == head.stamp)
+    }
+
+    fn forget_mirror(&self, key: &str) {
+        self.mirrors().keys.retain(|(k, _)| k != key);
+    }
+
+    /// Changes written to a key's files (the key held): into its mirror when it was of the head before them
+    /// (`before`), else the mirror is dropped (it is made again at its next read).
+    fn mirror_commit<'a>(
+        &self,
+        key: &str,
+        before: Option<&ledger::Stamp>,
+        head: &Head,
+        changes: impl Iterator<Item = &'a Change>,
+    ) {
+        let Some(m) = self.mirror(key) else { return };
+        let mut g = write_lock(&m);
+        if before.is_none() || g.head.stamp.as_ref() != before {
+            drop(g);
+            self.forget_mirror(key);
+            return;
+        }
+        for c in changes {
+            if let Change::Log { name, record } = c {
+                g.logs.insert(name.clone(), record.clone());
+            }
+        }
+        g.head = head.clone();
+        drop(g);
+        self.mirrors().trim();
+    }
+}
+
+/// A key's records to read: its mirror, or its files with its head (the key held).
+pub(crate) enum View<'a> {
+    Mem(&'a Mirror),
+    Disk(&'a Ledger, &'a Head),
+}
+
+impl View<'_> {
+    pub(crate) fn head(&self) -> &Head {
+        match self {
+            View::Mem(m) => &m.head,
+            View::Disk(_, h) => h,
+        }
+    }
+
+    /// Every log's record, in name order.
+    pub(crate) fn for_each(&self, mut f: impl FnMut(&str, &Record) -> ControlFlow<()>) -> std::io::Result<()> {
+        match self {
+            View::Mem(m) => {
+                for (n, r) in &m.logs {
+                    if f(n, r).is_break() {
+                        break;
+                    }
+                }
+                Ok(())
+            }
+            View::Disk(l, h) => l.for_each(h, f),
+        }
+    }
+
+    pub(crate) fn lookup(&self, name: &str) -> std::io::Result<Option<Record>> {
+        match self {
+            View::Mem(m) => Ok(m.logs.get(name).cloned()),
+            View::Disk(l, h) => l.lookup(h, name),
+        }
+    }
+}
+
+/// A log's files as read for its check before its key is held: on the judges' threads, any number at once.
+pub(crate) struct Prepared {
+    /// The versions of the log and its sidecar that were read (judged again with the key held if either changed).
+    log: Option<crate::store::Version>,
+    side: Option<crate::store::Version>,
+    /// The sidecar's SHA-256, when it is here.
+    side_sha: Option<String>,
+    /// The log's SHA-256 and length and its check against the sidecar: when the sidecar is here (and reads as JSON),
+    /// or the log is judged without it.
+    judged: Option<((String, u64), Check)>,
+}
+
+fn side_of(log_name: &str) -> String {
+    format!("{log_name}.json")
+}
+
+fn hash_check(store: &Store, log_name: &str, side: &serde_json::Value) -> std::io::Result<((String, u64), Check)> {
+    let (sha, len) = store.hash_here(log_name).map_err(io)?;
+    let check = trust::check(log_name, &sha, len, side);
+    Ok(((sha, len), check))
+}
+
+/// Reads a log's sidecar and, when it is here, the log (once: its SHA-256 as it is unsealed), and checks one against
+/// the other (the signature too). `force`: check it without its sidecar if that is missing. `None`: no log here.
+/// Nothing is decoded. On a blocking thread.
+pub(crate) fn prepare(store: &Store, log_name: &str, force: bool) -> std::io::Result<Option<Prepared>> {
+    let side_name = side_of(log_name);
+    let (log, side) = (store.version(log_name), store.version(&side_name));
+    if !store.exists(log_name) {
+        return Ok(None);
+    }
+    let side_bytes = store.read_here(&side_name).ok().flatten();
+    let side_sha = side_bytes.as_ref().map(|b| hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&b[..])));
+    let json = side_bytes.and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+    let judged = match (json, force) {
+        (Some(v), _) => Some(hash_check(store, log_name, &v)?),
+        (None, true) => Some(hash_check(store, log_name, &serde_json::Value::Null)?),
+        (None, false) => None,
+    };
+    Ok(Some(Prepared { log, side, side_sha, judged }))
+}
+
+/// A log's verdict against the key's `head` (its pairing): its record and the changes that make it so (pairing
+/// first, then the record). On a blocking thread (a log judged without its sidecar is read here).
+fn settle(
+    store: &Store,
+    wait_ms: u64,
+    head: &Head,
+    log_name: &str,
+    pre: Prepared,
+    arrived_ms: u64,
+    force: bool,
+) -> std::io::Result<(Record, Vec<Change>)> {
+    let waited = now_ms().saturating_sub(arrived_ms) >= wait_ms;
+    let ((sha, len), check) = match pre.judged {
+        Some(j) => j,
+        None if force || waited => hash_check(store, log_name, &serde_json::Value::Null)?,
+        None => {
+            let r = Record {
+                v: trust::RULES_VERSION,
+                status: Status::Waiting,
+                reason: None,
+                link: None,
+                override_use: false,
+                judged_ms: now_ms(),
+                arrived_ms,
+                sha256: None,
+                length: None,
+                sidecar_sha256: None,
+            };
+            return Ok((r.clone(), vec![Change::Log { name: log_name.to_string(), record: r }]));
+        }
+    };
+    // signed by a key the owner trusted before the one trusted now, and here while it was: still verified
+    let earlier = match &check {
+        Check::Signed(l) => {
+            head.former.iter().any(|f| same_fingerprint(&f.fingerprint, &l.key_fingerprint) && arrived_ms < f.until_ms)
+        }
+        _ => false,
+    };
+    let verdict = match trust::judge(&check, head.pin.as_ref().map(|p| p.fingerprint.as_str())) {
+        Verdict::Failed(r) if earlier && r == SIGNED_BY_ANOTHER_KEY => Verdict::Verified,
+        v => v,
+    };
+    let link = match &check {
+        Check::Signed(l) => Some(l.clone()),
+        Check::Bad { link, .. } => link.clone(),
+        Check::NotSigned { .. } => None,
+    };
+    let mut changes = Vec::new();
+    if let (Verdict::Verified, None, Some(l)) = (&verdict, &head.pin, &link) {
+        let pin = Pin { fingerprint: l.key_fingerprint.clone(), pinned_ms: now_ms(), how: "first-signed-log".into() };
+        changes.push(Change::Pin { pin: Some(pin) });
+    }
+    if let (Verdict::Failed(reason), Some(l)) = (&verdict, &link)
+        && reason == SIGNED_BY_ANOTHER_KEY
+        && head.new_key.is_none()
+    {
+        changes.push(Change::NewKey { fingerprint: Some(l.key_fingerprint.clone()) });
+    }
+    let (status, reason) = match verdict {
+        Verdict::Verified => (Status::Verified, None),
+        Verdict::Failed(r) => (Status::Failed, Some(r)),
+        Verdict::CouldNotSign(r) => (Status::CouldNotSign, Some(r)),
+        Verdict::Unsigned => (Status::Unsigned, None),
+    };
+    let override_use = head.overrides.contains(log_name);
+    let r = Record {
+        v: trust::RULES_VERSION,
+        status,
+        reason,
+        link,
+        override_use,
+        judged_ms: now_ms(),
+        arrived_ms,
+        sha256: Some(sha),
+        length: Some(len),
+        sidecar_sha256: pre.side_sha,
+    };
+    changes.push(Change::Log { name: log_name.to_string(), record: r.clone() });
+    Ok((r, changes))
+}
+
+/// An arrival waiting for its key ([`Judge::arrived`]): judged with the others that came meanwhile, all written at
+/// once.
+struct Queued {
+    name: String,
+    log_name: String,
+    sidecar: bool,
+    pre: Option<Prepared>,
+    tx: tokio::sync::oneshot::Sender<std::io::Result<Option<Record>>>,
+}
+
+fn copy_err(e: &std::io::Error) -> std::io::Error {
+    std::io::Error::new(e.kind(), e.to_string())
+}
+
+/// What a write of a key's records needs, for a blocking thread.
+#[derive(Clone)]
+pub(crate) struct Ctx {
+    dir: PathBuf,
+    store: Store,
+    shared: Arc<Shared>,
+    wait_ms: u64,
+    compact_after: usize,
+    on_judged: Option<OnJudged>,
+}
+
+impl Ctx {
+    fn ledger(&self, key: &str) -> Ledger {
+        Ledger::new(&self.dir, key, self.store.vault().clone())
+    }
+
+    /// Writes the groups of changes (already applied to `head`, each group whole in one journal record) and keeps
+    /// the key's waiting marker and mirror in step: the marker made before a change that leaves logs waiting is
+    /// written, removed after the last waiting one is judged. `marker`: one may be there already.
+    fn commit(
+        &self,
+        key: &str,
+        mut head: Head,
+        marker: bool,
+        groups: Vec<Vec<Change>>,
+        fold: Fold,
+    ) -> std::io::Result<Head> {
+        let ledger = self.ledger(key);
+        let before = head.stamp.clone();
+        let told: Vec<Judged> = match &self.on_judged {
+            Some(_) => groups
+                .iter()
+                .flatten()
+                .filter_map(|c| match c {
+                    Change::Log { name, record } if record.status != Status::Waiting => {
+                        Some(Judged { key: key.to_string(), name: name.clone(), record: record.clone() })
+                    }
+                    _ => None,
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        if !head.waiting.is_empty() && !head.marked {
+            ledger::mark_waiting(&self.dir, key)?;
+            head.marked = true;
+        }
+        if fold == Fold::Whole {
+            ledger.compact(&mut head, groups.iter().flatten().cloned().collect())?;
+        } else {
+            let refs: Vec<&[Change]> = groups.iter().map(Vec::as_slice).collect();
+            ledger.append_groups(&mut head, &refs)?;
+            if head.journal_len >= self.compact_after {
+                ledger.compact(&mut head, Vec::new())?;
+            }
+        }
+        if head.waiting.is_empty() && (marker || head.marked) {
+            ledger::unmark_waiting(&self.dir, key)?;
+            head.marked = false;
+        }
+        head.stamp = Some(ledger.stamp(head.generation)?);
+        self.shared.mirror_commit(key, before.as_ref(), &head, groups.iter().flatten());
+        if let Some(f) = &self.on_judged {
+            told.iter().for_each(|j| f(j));
+        }
+        Ok(head)
+    }
+
+    /// `f` over the key's records with its head (the key held): from its mirror, made now when there is none and
+    /// the key's records fit.
+    pub(crate) fn view<T>(
+        &self,
+        key: &str,
+        head: &Head,
+        f: impl FnOnce(&View) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        if let Some(m) = self.mirror_held(key, head)? {
+            return f(&View::Mem(&read_lock(&m)));
+        }
+        f(&View::Disk(&self.ledger(key), head))
+    }
+
+    /// The key's mirror of `head` (the key held), made from its files when there is none: `None` when its records
+    /// are more than all mirrors may hold.
+    fn mirror_held(&self, key: &str, head: &Head) -> std::io::Result<Option<Arc<RwLock<Mirror>>>> {
+        if let Some(m) = self.shared.mirror_of(key, head) {
+            return Ok(Some(m));
+        }
+        if head.stamp.is_none() {
+            return Ok(None);
+        }
+        let budget = self.shared.mirrors().budget;
+        let mut logs = BTreeMap::new();
+        let mut over = false;
+        self.ledger(key).for_each(head, |name, r| {
+            if logs.len() >= budget {
+                over = true;
+                return ControlFlow::Break(());
+            }
+            logs.insert(name.to_string(), r.clone());
+            ControlFlow::Continue(())
+        })?;
+        if over {
+            self.shared.forget_mirror(key);
+            return Ok(None);
+        }
+        let m = Arc::new(RwLock::new(Mirror { head: head.clone(), logs }));
+        let mut all = self.shared.mirrors();
+        all.keys.retain(|(k, _)| k != key);
+        all.keys.push((key.to_string(), m.clone()));
+        all.trim();
+        Ok(Some(m))
+    }
+
+    /// The prepared logs of `items` (name, when it arrived, force), judged in this order against `head`, which takes
+    /// each one's changes: the groups to commit, and how many of those that were not verified are verified now.
+    fn settle_all(
+        &self,
+        head: &mut Head,
+        items: Vec<(String, u64, bool, bool)>,
+        prepared: Vec<Option<Prepared>>,
+    ) -> std::io::Result<(Vec<Vec<Change>>, usize, usize)> {
+        let (mut groups, mut judged, mut now_verified) = (Vec::new(), 0, 0);
+        for ((name, arrived_ms, force, was_verified), pre) in items.into_iter().zip(prepared) {
+            let Some(pre) = pre else { continue };
+            let (r, ch) = settle(&self.store, self.wait_ms, head, &name, pre, arrived_ms, force)?;
+            judged += 1;
+            if !was_verified && r.status == Status::Verified {
+                now_verified += 1;
+            }
+            for c in &ch {
+                head.apply(c);
+            }
+            groups.push(ch);
+        }
+        Ok((groups, judged, now_verified))
+    }
+}
+
+/// Prepares many logs at once on the judges' threads (`skip_gone_sidecar`: one judged with its sidecar whose sidecar
+/// is gone now is left out, as `None`). From a blocking thread; in batches, so their sidecars are never all in memory.
+fn prepare_many(store: &Store, items: &[(String, bool, bool)], urgent: bool) -> std::io::Result<Vec<Option<Prepared>>> {
+    let mut out = Vec::with_capacity(items.len());
+    for part in items.chunks(1024) {
+        let jobs: Vec<Box<dyn FnOnce() -> std::io::Result<Option<Prepared>> + Send>> = part
+            .iter()
+            .map(|(name, force, had_sidecar)| {
+                let (store, name, force, had_sidecar) = (store.clone(), name.clone(), *force, *had_sidecar);
+                Box::new(move || {
+                    if had_sidecar && !store.exists(&side_of(&name)) {
+                        return Ok(None);
+                    }
+                    prepare(&store, &name, force)
+                }) as Box<dyn FnOnce() -> std::io::Result<Option<Prepared>> + Send>
+            })
+            .collect();
+        for r in crate::pool::run_all(urgent, jobs)? {
+            out.push(r?);
+        }
+    }
+    Ok(out)
+}
+
 pub struct Judge {
     pub(crate) dir: PathBuf,
     pub(crate) store: Store,
-    heads: Mutex<Lru<Head>>,
-    locks: KeyLocks<tokio::sync::Mutex<()>>,
+    shared: Arc<Shared>,
+    /// Arrivals waiting for their key, per key: whoever holds the key next judges them all.
+    queued: Mutex<std::collections::HashMap<String, Vec<Queued>>>,
     pub(crate) wait_ms: u64,
     compact_after: usize,
     on_judged: Option<OnJudged>,
@@ -507,13 +978,25 @@ enum Fold {
 }
 
 impl Judge {
-    /// Judges the logs `store` keeps (its trust records are sealed with the same vault).
+    /// Judges the logs `store` keeps (its trust records are sealed with the same vault). Every judge of the same
+    /// folder in this process shares its keys' locks, heads and records in memory.
     pub fn new(store: Store) -> Judge {
+        let shared = Shared::of(store.dir());
+        Judge::with_shared(store, shared)
+    }
+
+    /// A judge with memory of its own, as another process would have (tests: the owner's command beside the server).
+    #[doc(hidden)]
+    pub fn alone(store: Store) -> Judge {
+        Judge::with_shared(store, Arc::new(Shared::new()))
+    }
+
+    fn with_shared(store: Store, shared: Arc<Shared>) -> Judge {
         Judge {
             dir: store.dir().to_path_buf(),
             store,
-            heads: Mutex::new(Lru::new(CACHED_HEADS)),
-            locks: KeyLocks::new(),
+            shared,
+            queued: Mutex::new(std::collections::HashMap::new()),
             wait_ms: WAIT_MS,
             compact_after: COMPACT_AFTER,
             on_judged: None,
@@ -529,7 +1012,16 @@ impl Judge {
 
     /// At most `heads` keys' heads in memory.
     pub fn cache_size(self, heads: usize) -> Judge {
-        self.heads.lock().unwrap_or_else(PoisonError::into_inner).set_cap(heads);
+        self.shared.heads.lock().unwrap_or_else(PoisonError::into_inner).set_cap(heads);
+        self
+    }
+
+    /// At most `records` records of all keys in memory (a key with more is read from its files every time).
+    pub fn mirror_size(self, records: usize) -> Judge {
+        let mut m = self.shared.mirrors();
+        m.budget = records;
+        m.trim();
+        drop(m);
         self
     }
 
@@ -547,21 +1039,38 @@ impl Judge {
 
     /// Keys whose head is in memory now.
     pub fn cached_heads(&self) -> usize {
-        self.heads.lock().unwrap_or_else(PoisonError::into_inner).len()
+        self.shared.heads.lock().unwrap_or_else(PoisonError::into_inner).len()
+    }
+
+    /// Keys whose records are in memory now, and how many records that is.
+    pub fn mirrored(&self) -> (usize, usize) {
+        let m = self.shared.mirrors();
+        (m.keys.len(), m.total())
     }
 
     /// Entries in the per-key lock table now (about the keys in use at this moment).
     pub fn lock_entries(&self) -> usize {
-        self.locks.len()
+        self.shared.locks.len()
     }
 
     pub(crate) fn ledger(&self, key: &str) -> Ledger {
         Ledger::new(&self.dir, key, self.store.vault().clone())
     }
 
+    pub(crate) fn ctx(&self) -> Ctx {
+        Ctx {
+            dir: self.dir.clone(),
+            store: self.store.clone(),
+            shared: self.shared.clone(),
+            wait_ms: self.wait_ms,
+            compact_after: self.compact_after,
+            on_judged: self.on_judged.clone(),
+        }
+    }
+
     /// Holds a key: one task of this process at a time, and one process at a time (its lock file), until dropped.
     pub(crate) async fn hold(&self, key: &str) -> std::io::Result<Held> {
-        let one = self.locks.get(key).lock_owned().await;
+        let one = self.shared.locks.get(key).lock_owned().await;
         let ledger = self.ledger(key);
         let file = blocking(move || ledger.lock()).await?;
         Ok(Held { _file: file, _one: one })
@@ -570,7 +1079,7 @@ impl Judge {
     /// The key's head (the caller holds the key): from memory while the files are as it last saw them, else from
     /// disk (another process changed them, or it isn't in memory).
     pub(crate) async fn take_head(&self, key: &str) -> std::io::Result<Head> {
-        let cached = self.heads.lock().unwrap_or_else(PoisonError::into_inner).take(key);
+        let cached = self.shared.heads.lock().unwrap_or_else(PoisonError::into_inner).take(key);
         let ledger = self.ledger(key);
         blocking(move || {
             if let Some(h) = cached
@@ -587,195 +1096,139 @@ impl Judge {
     }
 
     pub(crate) fn put_head(&self, key: &str, head: Head) {
-        self.heads.lock().unwrap_or_else(PoisonError::into_inner).put(key.to_string(), head);
-    }
-
-    /// Writes `changes` (already applied to `head`) and keeps the key's waiting marker in step: made before a change
-    /// that leaves logs waiting is written, removed after the last waiting one is judged. `marker`: one may be there
-    /// already.
-    async fn commit(
-        &self,
-        key: &str,
-        head: Head,
-        marker: bool,
-        changes: Vec<Change>,
-        fold: Fold,
-    ) -> std::io::Result<Head> {
-        let (ledger, can, key, limit) = (self.ledger(key), self.dir.clone(), key.to_string(), self.compact_after);
-        let told: Vec<Judged> = match &self.on_judged {
-            Some(_) => changes
-                .iter()
-                .filter_map(|c| match c {
-                    Change::Log { name, record } if record.status != Status::Waiting => {
-                        Some(Judged { key: key.clone(), name: name.clone(), record: record.clone() })
-                    }
-                    _ => None,
-                })
-                .collect(),
-            None => Vec::new(),
-        };
-        let on_judged = self.on_judged.clone();
-        blocking(move || {
-            let mut head = head;
-            if !head.waiting.is_empty() && !head.marked {
-                ledger::mark_waiting(&can, &key)?;
-                head.marked = true;
-            }
-            if fold == Fold::Whole {
-                ledger.compact(&mut head, changes)?;
-            } else {
-                ledger.append(&mut head, &changes)?;
-                if head.journal_len >= limit {
-                    ledger.compact(&mut head, Vec::new())?;
-                }
-            }
-            if head.waiting.is_empty() && (marker || head.marked) {
-                ledger::unmark_waiting(&can, &key)?;
-                head.marked = false;
-            }
-            head.stamp = Some(ledger.stamp(head.generation)?);
-            if let Some(f) = &on_judged {
-                told.iter().for_each(|j| f(j));
-            }
-            Ok(head)
-        })
-        .await
+        self.shared.heads.lock().unwrap_or_else(PoisonError::into_inner).put(key.to_string(), head);
     }
 
     /// A log or sidecar finished arriving: judge its log if both are here (or mark it waiting).
+    ///
+    /// The log and its sidecar are read and checked first (the SHA-256, the signature), on the judges' threads,
+    /// without holding the key: arrivals of one car are checked as many at once as there are cores. Only the verdict
+    /// against the key's pairing and its writing hold the key, and whoever holds it next writes every arrival checked
+    /// meanwhile with one sync ([`Judge::arrived_batch`]).
     pub async fn arrived(&self, name: &str) -> std::io::Result<Option<Record>> {
         let Some(n) = LogName::parse(name) else {
             return Ok(None);
         };
         let log_name = name.strip_suffix(".json").unwrap_or(name).to_string();
         let key = n.vehicle_key.to_string();
-        let _held = self.hold(&key).await?;
-        let r = self.arrived_held(&key, &log_name, n.sidecar).await;
-        // a log (or sidecar) the server had lost, back as it was: off the list of those it asks the car for
-        if let Err(e) = self.missing_arrived(&key, name, r.as_ref().ok().and_then(Option::as_ref)).await {
-            // not the name: it holds the car's key, and the server's log is kept in the clear
-            tracing::warn!("CAN upload: could not update a car's missing logs: {e}");
-        }
-        r
-    }
-
-    /// [`Judge::arrived`] with the key held.
-    async fn arrived_held(&self, key: &str, log_name: &str, sidecar: bool) -> std::io::Result<Option<Record>> {
-        let (key, log_name) = (key.to_string(), log_name.to_string());
-        let mut head = self.take_head(&key).await?;
-        if !self.store.exists(&log_name) {
-            self.put_head(&key, head);
-            return Ok(None);
-        }
-        // when the log came: from the waiting list, or (a sidecar after its log was judged without it) its record
-        let arrived_ms = match head.waiting.get(&log_name) {
-            Some(&t) => Some(t),
-            None if sidecar => {
-                let (ledger, h, name) = (self.ledger(&key), head.clone(), log_name.clone());
-                blocking(move || ledger.lookup(&h, &name)).await?.map(|r| r.arrived_ms)
+        let (store, ln) = (self.store.clone(), log_name.clone());
+        let pre = crate::pool::run(true, move || prepare(&store, &ln, false)).await??;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let q = Queued { name: name.to_string(), log_name, sidecar: n.sidecar, pre, tx };
+        self.queued.lock().unwrap_or_else(PoisonError::into_inner).entry(key.clone()).or_default().push(q);
+        let held = self.hold(&key).await;
+        // (taken with the key held: an arrival queued after this waits for the key itself)
+        let batch = self.queued.lock().unwrap_or_else(PoisonError::into_inner).remove(&key).unwrap_or_default();
+        match held {
+            Ok(held) => {
+                if !batch.is_empty() {
+                    self.arrived_batch(held, &key, batch).await;
+                }
             }
-            None => None,
-        };
-        let Some((record, changes)) =
-            self.judge_one(&head, &log_name, arrived_ms.unwrap_or_else(now_ms), false).await?
-        else {
-            self.put_head(&key, head);
-            return Ok(None);
-        };
-        let marker = !head.waiting.is_empty();
-        for c in &changes {
-            head.apply(c);
+            Err(e) => {
+                for q in batch {
+                    let _ = q.tx.send(Err(copy_err(&e)));
+                }
+            }
         }
-        let head = self.commit(&key, head, marker, changes, Fold::WhenLong).await?;
-        self.put_head(&key, head);
-        Ok(Some(record))
+        rx.await.unwrap_or_else(|_| Err(std::io::Error::other("a log's judging stopped")))
     }
 
-    /// Judges one log against `head`: its record and the changes that make it so (pairing first, then the record).
-    /// `force`: judge without the sidecar if it is still missing. `None`: the log isn't here.
-    async fn judge_one(
-        &self,
-        head: &Head,
-        log_name: &str,
-        arrived_ms: u64,
-        force: bool,
-    ) -> std::io::Result<Option<(Record, Vec<Change>)>> {
-        if !self.store.exists(log_name) {
-            return Ok(None);
+    /// Arrivals of one key, the key held: each judged against the head as the ones before it left it (in the order
+    /// they came), all written at once, each told its record.
+    async fn arrived_batch(&self, held: Held, key: &str, batch: Vec<Queued>) {
+        let (mut items, mut txs) = (Vec::with_capacity(batch.len()), Vec::with_capacity(batch.len()));
+        for q in batch {
+            items.push((q.name, q.log_name, q.sidecar, q.pre));
+            txs.push(q.tx);
         }
-        let side_bytes = self.store.read(&format!("{log_name}.json")).await.ok().flatten();
-        let sidecar_sha256 = side_bytes.as_ref().map(|b| hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&b[..])));
-        let waited = now_ms().saturating_sub(arrived_ms) >= self.wait_ms;
-        let Some(side) = side_bytes
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            .or(if force || waited { Some(serde_json::Value::Null) } else { None })
-        else {
-            let r = Record {
-                v: trust::RULES_VERSION,
-                status: Status::Waiting,
-                reason: None,
-                link: None,
-                override_use: false,
-                judged_ms: now_ms(),
-                arrived_ms,
-                sha256: None,
-                length: None,
-                sidecar_sha256: None,
-            };
-            return Ok(Some((r.clone(), vec![Change::Log { name: log_name.to_string(), record: r }])));
+        let names: Vec<String> = items.iter().map(|i| i.0.clone()).collect();
+        let head = match self.take_head(key).await {
+            Ok(h) => h,
+            Err(e) => {
+                for tx in txs {
+                    let _ = tx.send(Err(copy_err(&e)));
+                }
+                return;
+            }
         };
-        let (sha, len) = self.store.hash(log_name).await.map_err(io)?;
-        let check = trust::check(log_name, &sha, len, &side);
-        // signed by a key the owner trusted before the one trusted now, and here while it was: still verified
-        let earlier = match &check {
-            Check::Signed(l) => head
-                .former
-                .iter()
-                .any(|f| same_fingerprint(&f.fingerprint, &l.key_fingerprint) && arrived_ms < f.until_ms),
-            _ => false,
-        };
-        let verdict = match trust::judge(&check, head.pin.as_ref().map(|p| p.fingerprint.as_str())) {
-            Verdict::Failed(r) if earlier && r == SIGNED_BY_ANOTHER_KEY => Verdict::Verified,
-            v => v,
-        };
-        let link = match &check {
-            Check::Signed(l) => Some(l.clone()),
-            Check::Bad { link, .. } => link.clone(),
-            Check::NotSigned { .. } => None,
-        };
-        let mut changes = Vec::new();
-        if let (Verdict::Verified, None, Some(l)) = (&verdict, &head.pin, &link) {
-            let pin =
-                Pin { fingerprint: l.key_fingerprint.clone(), pinned_ms: now_ms(), how: "first-signed-log".into() };
-            changes.push(Change::Pin { pin: Some(pin) });
+        let (ctx, key_s) = (self.ctx(), key.to_string());
+        let done = blocking(move || {
+            let mut head = head;
+            let marker = !head.waiting.is_empty();
+            let mirror = ctx.shared.mirror_of(&key_s, &head);
+            let ledger = ctx.ledger(&key_s);
+            // the records judged so far in this batch (a log and its sidecar may both be in it)
+            let mut fresh: std::collections::HashMap<String, Record> = std::collections::HashMap::new();
+            let (mut groups, mut out) = (Vec::new(), Vec::new());
+            for (_, log_name, sidecar, pre) in items {
+                let one = || -> std::io::Result<Option<Record>> {
+                    // read again when a file changed since (sent again in place of a failed one, packed): the verdict
+                    // is always of the files as they are now
+                    let pre = match pre {
+                        Some(p)
+                            if p.log == ctx.store.version(&log_name)
+                                && p.side == ctx.store.version(&side_of(&log_name)) =>
+                        {
+                            Some(p)
+                        }
+                        _ => prepare(&ctx.store, &log_name, false)?,
+                    };
+                    let Some(pre) = pre else { return Ok(None) };
+                    // when the log came: from the waiting list, or (a sidecar after its log was judged without it)
+                    // its record
+                    let arrived_ms = match head.waiting.get(&log_name) {
+                        Some(&t) => Some(t),
+                        None if sidecar => match fresh.get(&log_name) {
+                            Some(r) => Some(r.arrived_ms),
+                            None => match &mirror {
+                                Some(m) => read_lock(m).logs.get(&log_name).map(|r| r.arrived_ms),
+                                None => ledger.lookup(&head, &log_name)?.map(|r| r.arrived_ms),
+                            },
+                        },
+                        None => None,
+                    };
+                    let (record, changes) = settle(
+                        &ctx.store,
+                        ctx.wait_ms,
+                        &head,
+                        &log_name,
+                        pre,
+                        arrived_ms.unwrap_or_else(now_ms),
+                        false,
+                    )?;
+                    for c in &changes {
+                        head.apply(c);
+                    }
+                    fresh.insert(log_name.clone(), record.clone());
+                    groups.push(changes);
+                    Ok(Some(record))
+                };
+                out.push(one());
+            }
+            let head = ctx.commit(&key_s, head, marker, groups, Fold::WhenLong)?;
+            Ok((head, out))
+        })
+        .await;
+        match done {
+            Ok((head, out)) => {
+                self.put_head(key, head);
+                for ((name, tx), r) in names.iter().zip(txs).zip(out) {
+                    // a log (or sidecar) the server had lost, back as it was: off the list of those it asks the car for
+                    if let Err(e) = self.missing_arrived(key, name, r.as_ref().ok().and_then(Option::as_ref)).await {
+                        // not the name: it holds the car's key, and the server's log is kept in the clear
+                        tracing::warn!("CAN upload: could not update a car's missing logs: {e}");
+                    }
+                    let _ = tx.send(r);
+                }
+            }
+            Err(e) => {
+                for tx in txs {
+                    let _ = tx.send(Err(copy_err(&e)));
+                }
+            }
         }
-        if let (Verdict::Failed(reason), Some(l)) = (&verdict, &link)
-            && reason == SIGNED_BY_ANOTHER_KEY
-            && head.new_key.is_none()
-        {
-            changes.push(Change::NewKey { fingerprint: Some(l.key_fingerprint.clone()) });
-        }
-        let (status, reason) = match verdict {
-            Verdict::Verified => (Status::Verified, None),
-            Verdict::Failed(r) => (Status::Failed, Some(r)),
-            Verdict::CouldNotSign(r) => (Status::CouldNotSign, Some(r)),
-            Verdict::Unsigned => (Status::Unsigned, None),
-        };
-        let override_use = head.overrides.contains(log_name);
-        let r = Record {
-            v: trust::RULES_VERSION,
-            status,
-            reason,
-            link,
-            override_use,
-            judged_ms: now_ms(),
-            arrived_ms,
-            sha256: Some(sha),
-            length: Some(len),
-            sidecar_sha256,
-        };
-        changes.push(Change::Log { name: log_name.to_string(), record: r.clone() });
-        Ok(Some((r, changes)))
+        drop(held);
     }
 
     /// Logs still waiting for their sidecar past the wait are judged without it. Returns how many. Only keys with
@@ -800,7 +1253,7 @@ impl Judge {
 
     async fn sweep_key(&self, key: &str) -> std::io::Result<usize> {
         let _held = self.hold(key).await?;
-        let mut head = self.take_head(key).await?;
+        let head = self.take_head(key).await?;
         let now = now_ms();
         let due: Vec<(String, u64)> = head
             .waiting
@@ -808,19 +1261,20 @@ impl Judge {
             .filter(|&(_, &t)| now.saturating_sub(t) >= self.wait_ms)
             .map(|(k, &t)| (k.clone(), t))
             .collect();
-        let mut changes = Vec::new();
-        for (name, arrived_ms) in &due {
-            if let Some((_, ch)) = self.judge_one(&head, name, *arrived_ms, true).await? {
-                for c in &ch {
-                    head.apply(c);
-                }
-                changes.extend(ch);
-            }
-        }
-        // the marker is there (that is how this key was found): commit removes it once nothing waits
-        let head = self.commit(key, head, true, changes, Fold::WhenLong).await?;
+        let n = due.len();
+        let (ctx, key_s) = (self.ctx(), key.to_string());
+        let head = blocking(move || {
+            let mut head = head;
+            let want: Vec<(String, bool, bool)> = due.iter().map(|(name, _)| (name.clone(), true, false)).collect();
+            let prepared = prepare_many(&ctx.store, &want, true)?;
+            let items = due.into_iter().map(|(name, t)| (name, t, true, true)).collect();
+            let (groups, _, _) = ctx.settle_all(&mut head, items, prepared)?;
+            // the marker is there (that is how this key was found): commit removes it once nothing waits
+            ctx.commit(&key_s, head, true, groups, Fold::WhenLong)
+        })
+        .await?;
         self.put_head(key, head);
-        Ok(due.len())
+        Ok(n)
     }
 
     /// Judges every log of a key again (after a pairing change, or records from older rules).
@@ -840,7 +1294,7 @@ impl Judge {
     /// The logs `which` picks again, in name order (the key held), with `changes` already applied to `head` (a new
     /// pin). Nothing is written until every one is judged; then it all goes into the next generation at once, so a
     /// crash or an error part way (a log that can't be read) leaves the key exactly as it was, never half judged by a
-    /// new pin. Memory: the picked names once (a fold of a journal this long needs them anyway).
+    /// new pin. The logs are read and checked on all the judges' threads at once, then judged in name order.
     ///
     /// A log whose file is gone, or that was judged with its sidecar and whose sidecar is gone now (a backup put back
     /// in part, a move under way), keeps its record: judging it again could only make up a failure. Returns the head,
@@ -848,48 +1302,41 @@ impl Judge {
     async fn rejudge_locked(
         &self,
         key: &str,
-        mut head: Head,
-        mut changes: Vec<Change>,
+        head: Head,
+        changes: Vec<Change>,
         which: impl Fn(&Record) -> bool + Send + 'static,
     ) -> std::io::Result<(Head, usize, usize)> {
-        let (ledger, h) = (self.ledger(key), head.clone());
-        let names: Vec<(String, u64, bool, bool, bool)> = blocking(move || {
-            let mut v = Vec::new();
-            ledger.for_each(&h, |name, r| {
-                if which(r) {
-                    let was_verified = r.status == Status::Verified;
-                    v.push((
-                        name.to_string(),
-                        r.arrived_ms,
-                        r.status != Status::Waiting,
-                        r.had_sidecar(),
-                        was_verified,
-                    ));
-                }
-                ControlFlow::Continue(())
+        let (ctx, key_s) = (self.ctx(), key.to_string());
+        blocking(move || {
+            let mut head = head;
+            // (name, arrived, judged with or without its sidecar already, had its sidecar, verified)
+            let names: Vec<(String, u64, bool, bool, bool)> = ctx.view(&key_s, &head, |v| {
+                let mut out = Vec::new();
+                v.for_each(|name, r| {
+                    if which(r) {
+                        out.push((
+                            name.to_string(),
+                            r.arrived_ms,
+                            r.status != Status::Waiting,
+                            r.had_sidecar(),
+                            r.status == Status::Verified,
+                        ));
+                    }
+                    ControlFlow::Continue(())
+                })?;
+                Ok(out)
             })?;
-            Ok(v)
+            let marker = !head.waiting.is_empty();
+            let want: Vec<(String, bool, bool)> = names.iter().map(|n| (n.0.clone(), n.2, n.3)).collect();
+            let prepared = prepare_many(&ctx.store, &want, false)?;
+            let items = names.into_iter().map(|(n, t, force, _, was)| (n, t, force, was)).collect();
+            let (groups, judged, now_verified) = ctx.settle_all(&mut head, items, prepared)?;
+            let mut all = vec![changes];
+            all.extend(groups);
+            let head = ctx.commit(&key_s, head, marker, all, Fold::Whole)?;
+            Ok((head, judged, now_verified))
         })
-        .await?;
-        let marker = !head.waiting.is_empty();
-        let (mut judged, mut now_verified) = (0, 0);
-        for (name, arrived_ms, force, had_sidecar, was_verified) in &names {
-            if *had_sidecar && !self.store.exists(&format!("{name}.json")) {
-                continue;
-            }
-            if let Some((r, ch)) = self.judge_one(&head, name, *arrived_ms, *force).await? {
-                judged += 1;
-                if !was_verified && r.status == Status::Verified {
-                    now_verified += 1;
-                }
-                for c in &ch {
-                    head.apply(c);
-                }
-                changes.extend(ch);
-            }
-        }
-        let head = self.commit(key, head, marker, changes, Fold::Whole).await?;
-        Ok((head, judged, now_verified))
+        .await
     }
 
     /// Once per key after an update to newer rules ([`trust::RULES_VERSION`]): its logs that failed their check (or
@@ -993,7 +1440,7 @@ impl Judge {
         self.read(key, |l, h| {
             // (a map: logs uploaded with the token could each name a key of their own)
             let mut by_key: std::collections::HashMap<String, Signer> = std::collections::HashMap::new();
-            l.for_each(h, |_, r| {
+            l.for_each(|_, r| {
                 let Some(link) = r.link.as_ref() else { return ControlFlow::Continue(()) };
                 let k = by_key.entry(link.key_fingerprint.clone()).or_insert_with(|| Signer {
                     fingerprint: link.key_fingerprint.clone(),
@@ -1020,9 +1467,9 @@ impl Judge {
 
     /// The names of a car key's `n` newest logs whose data may be used, newest first.
     pub async fn latest_usable(&self, key: &str, n: usize) -> std::io::Result<Vec<String>> {
-        self.read(key, move |l, h| {
+        self.read(key, move |l, _| {
             let mut last = std::collections::VecDeque::with_capacity(n + 1);
-            l.for_each(h, |name, r| {
+            l.for_each(|name, r| {
                 if r.usable() && n > 0 {
                     if last.len() == n {
                         last.pop_front();
@@ -1046,9 +1493,9 @@ impl Judge {
         keep: impl Fn(&str, &Record) -> bool + Send + Sync + 'static,
         stop: impl Fn(&str) -> bool + Send + Sync + 'static,
     ) -> std::io::Result<Vec<(String, Record)>> {
-        self.read(key, move |l, h| {
+        self.read(key, move |l, _| {
             let mut last = std::collections::VecDeque::with_capacity(n + 1);
-            l.for_each(h, |name, r| {
+            l.for_each(|name, r| {
                 if stop(name) {
                     return ControlFlow::Break(());
                 }
@@ -1069,7 +1516,7 @@ impl Judge {
     pub async fn last_arrived(&self, key: &str) -> std::io::Result<Option<u64>> {
         self.read(key, |l, h| {
             let mut last: Option<u64> = h.waiting.values().copied().max();
-            l.for_each(h, |_, r| {
+            l.for_each(|_, r| {
                 last = last.max(Some(r.arrived_ms));
                 ControlFlow::Continue(())
             })?;
@@ -1078,42 +1525,70 @@ impl Judge {
         .await
     }
 
-    /// Reads a key's records with `f` (the key held). A process that doesn't take the lock file (an older version)
-    /// may fold the journal at the same moment: a generation that vanished while being read is read again from the
-    /// new head.
+    /// Reads a key's records with `f`: from the key's mirror without holding the key while its files are still the
+    /// ones the mirror was made from (an upload being written, a rebuild reading every record: neither waits for the
+    /// other), else with the key held ([`Judge::read_held`]).
     async fn read<T: Send + 'static>(
         &self,
         key: &str,
-        f: impl Fn(&Ledger, &Head) -> std::io::Result<T> + Send + Sync + 'static,
+        f: impl Fn(&View, &Head) -> std::io::Result<T> + Send + Sync + 'static,
     ) -> std::io::Result<T> {
         if !ledger::valid_key(key) {
             return Err(bad_key());
+        }
+        let f = Arc::new(f);
+        if let Some(r) = self.read_quick(key, f.clone()).await? {
+            return Ok(r);
         }
         let held = self.hold(key).await?;
         self.read_held(held, key, f).await
     }
 
-    /// [`Judge::read`] with the key already held.
+    /// `f` over the key's mirror when the key's files are still the ones it was made from (checked now: a few
+    /// bytes of its head file and its journal's size), without holding the key. `None`: no such mirror.
+    async fn read_quick<T: Send + 'static>(
+        &self,
+        key: &str,
+        f: Arc<impl Fn(&View, &Head) -> std::io::Result<T> + Send + Sync + 'static>,
+    ) -> std::io::Result<Option<T>> {
+        let Some(m) = self.shared.mirror(key) else { return Ok(None) };
+        let ledger = self.ledger(key);
+        blocking(move || {
+            let g = read_lock(&m);
+            if g.head.stamp.is_none() || g.head.stamp != Some(ledger.stamp(g.head.generation)?) {
+                return Ok(None);
+            }
+            let v = View::Mem(&g);
+            Ok(Some(f(&v, &g.head)?))
+        })
+        .await
+    }
+
+    /// [`Judge::read`] with the key held: from its mirror (made now when there is none and its records fit), else
+    /// from its files. A process that doesn't take the lock file (an older version) may fold the journal at the same
+    /// moment: a generation that vanished while being read is read again from the new head.
     async fn read_held<T: Send + 'static>(
         &self,
         _held: Held,
         key: &str,
-        f: impl Fn(&Ledger, &Head) -> std::io::Result<T> + Send + Sync + 'static,
+        f: Arc<impl Fn(&View, &Head) -> std::io::Result<T> + Send + Sync + 'static>,
     ) -> std::io::Result<T> {
-        let f = Arc::new(f);
         let mut tries = 0;
         loop {
             let head = self.take_head(key).await?;
-            let (ledger, f) = (self.ledger(key), f.clone());
+            let (ctx, key_s, f) = (self.ctx(), key.to_string(), f.clone());
             let (head, r) = tokio::task::spawn_blocking(move || {
-                let r = f(&ledger, &head);
+                let r = ctx.view(&key_s, &head, |v| f(v, v.head()));
                 (head, r)
             })
             .await
             .map_err(std::io::Error::other)?;
             tries += 1;
             match r {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound && tries < 3 => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && tries < 3 => {
+                    self.shared.forget_mirror(key);
+                    continue;
+                }
                 r => {
                     self.put_head(key, head);
                     return r;
@@ -1141,21 +1616,27 @@ impl Judge {
             return Err(bad_key());
         }
         let pending = || logs.iter().map(|n| (n.clone(), UploadCheck::Pending)).collect::<HashMap<_, _>>();
-        let Ok(held) = tokio::time::timeout(CHECK_WAIT, self.hold(key)).await else {
-            return Ok(pending());
-        };
         let wanted: Arc<HashSet<String>> = Arc::new(logs.iter().cloned().collect());
         let (wait_ms, now) = (self.wait_ms, now_ms());
-        let found = self
-            .read_held(held?, key, move |l, h| {
-                let w = wanted.clone();
-                let mut out = HashMap::new();
-                checks_pass(l, h, &|name: &str| w.contains(name), &uploading, now, wait_ms, |name, _, c| {
-                    out.insert(name.to_string(), c);
-                })?;
-                Ok(out)
-            })
-            .await?;
+        let f = Arc::new(move |l: &View, _: &Head| {
+            let w = wanted.clone();
+            let mut out = HashMap::new();
+            checks_pass(l, &|name: &str| w.contains(name), &uploading, now, wait_ms, |name, _, c| {
+                out.insert(name.to_string(), c);
+            })?;
+            Ok(out)
+        });
+        // from memory, the key not held, while its records there are the ones on disk: never behind an upload
+        // being written or a rebuild reading them
+        let found = match self.read_quick(key, f.clone()).await? {
+            Some(found) => found,
+            None => {
+                let Ok(held) = tokio::time::timeout(CHECK_WAIT, self.hold(key)).await else {
+                    return Ok(pending());
+                };
+                self.read_held(held?, key, f).await?
+            }
+        };
         let mut all = pending();
         all.extend(found);
         Ok(all)
@@ -1170,10 +1651,10 @@ impl Judge {
         uploading: std::collections::HashSet<String>,
     ) -> std::io::Result<LogChecks> {
         let (wait_ms, now) = (self.wait_ms, now_ms());
-        self.read(key, move |l, h| {
+        self.read(key, move |l, _| {
             let mut c = LogChecks::default();
             let mut run: Option<FailedRun> = None;
-            checks_pass(l, h, &|_| true, &uploading, now, wait_ms, |name, _, check| {
+            checks_pass(l, &|_| true, &uploading, now, wait_ms, |name, _, check| {
                 c.add(check);
                 let start = LogName::parse(name).map_or(0, |n| n.started_ms);
                 match (check, &mut run) {
@@ -1214,7 +1695,7 @@ impl Judge {
     pub async fn book(&self, key: &str) -> Book {
         self.read(key, |l, h| {
             let mut logs = BTreeMap::new();
-            l.for_each(h, |name, r| {
+            l.for_each(|name, r| {
                 logs.insert(name.to_string(), r.clone());
                 ControlFlow::Continue(())
             })?;
@@ -1248,7 +1729,7 @@ impl Judge {
 
     pub async fn record(&self, key: &str, log_name: &str) -> Option<Record> {
         let name = log_name.to_string();
-        self.read(key, move |l, h| l.lookup(h, &name)).await.ok().flatten()
+        self.read(key, move |l, _| l.lookup(&name)).await.ok().flatten()
     }
 
     /// The chain report of a key's signed logs by its paired key, and which key that is.
@@ -1276,7 +1757,7 @@ impl Judge {
                 };
                 let mut entries: Vec<Entry> = Vec::new();
                 let mut linked = std::collections::HashSet::new();
-                l.for_each(h, |name, r| {
+                l.for_each(|name, r| {
                     let Some(link) = r.link.as_ref() else { return ControlFlow::Continue(()) };
                     linked.insert(name.to_string());
                     if trust::same_fingerprint(&link.key_fingerprint, &pin) {

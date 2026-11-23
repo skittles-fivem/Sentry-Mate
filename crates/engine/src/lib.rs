@@ -352,6 +352,10 @@ type ZoneAt = (f64, f64, Option<&'static str>);
 /// A car's zone is looked up again once its position moved this far (degrees, about a kilometre).
 const ZONE_MOVE_DEG: f64 = 0.01;
 
+/// How much lower the engine's background work runs than the server's other threads ([`Engine::background`]): the
+/// uploads' judging, the web pages. Compaction runs lower still (19).
+pub const BACKGROUND_NICE: i32 = 10;
+
 impl Inner {
     pub(crate) fn default_zone(&self) -> String {
         self.default_zone.read().unwrap_or_else(|e| e.into_inner()).clone()
@@ -597,6 +601,26 @@ impl Engine {
         }
     }
 
+    /// Runs `f` on a thread of its own below the server's other threads (nice [`BACKGROUND_NICE`]): the decoding,
+    /// rebuilds and full rebuilds still take every core nothing else wants, but checking an upload or answering a
+    /// page goes first. On the blocking threads of `rt` should a thread not start.
+    pub(crate) fn background(rt: &tokio::runtime::Handle, name: &str, f: impl FnOnce() + Send + 'static) {
+        let job = Arc::new(Mutex::new(Some(f)));
+        let mine = job.clone();
+        let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
+            #[cfg(unix)]
+            let _ = rustix::process::nice(BACKGROUND_NICE);
+            if let Some(f) = lock(&mine).take() {
+                f();
+            }
+        });
+        if spawned.is_err()
+            && let Some(f) = lock(&job).take()
+        {
+            drop(rt.spawn_blocking(f));
+        }
+    }
+
     pub(crate) fn handle(&self) -> Result<tokio::runtime::Handle> {
         lock(&self.inner.handle).clone().ok_or(Error::NotStarted)
     }
@@ -613,7 +637,8 @@ impl Engine {
             let Ok(permit) = permits.clone().acquire_owned().await else { break };
             let e = self.clone();
             self.inner.counters.queued.fetch_add(1, Ordering::Relaxed);
-            tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Handle::current();
+            Engine::background(&rt, "engine-work", move || {
                 let r = match w {
                     Work::Log { key, name } => e.work_log(&key, &name),
                     Work::Reconcile { car } => e.work_reconcile(car),

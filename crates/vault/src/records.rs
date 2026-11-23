@@ -508,6 +508,46 @@ impl Records {
         Ok(())
     }
 
+    /// Adds each of `items` as records of its own (one record each, when it is at most 64 KiB), with one write and one
+    /// sync for all of them: what [`Records::append`] of each in turn would leave, with one sync instead of one each.
+    /// As with [`Records::append`], nothing is counted until it is all on disk.
+    pub fn append_each(&mut self, items: &[Vec<u8>]) -> io::Result<()> {
+        if self.broken {
+            return Err(io::Error::other(
+                "an earlier write to this sealed file failed and couldn't be undone: open the file again",
+            ));
+        }
+        let r = &mut self.read;
+        let cipher = r.cipher.as_ref().ok_or_else(|| io::Error::other("this sealed file isn't open to add to"))?;
+        let size: usize = items.iter().map(|d| d.len() + (d.len() / CHUNK + 1) * (4 + NONCE + TAG)).sum();
+        let mut out = Vec::with_capacity(size);
+        let (mut count, mut plain_len, mut last_tag) = (r.count, r.plain_len, self.last_tag);
+        for data in items {
+            for piece in data.chunks(CHUNK) {
+                last_tag = seal_record(cipher, &r.label, count, &last_tag, piece, &mut out)?;
+                count += 1;
+                plain_len += piece.len() as u64;
+            }
+        }
+        if out.is_empty() {
+            return Ok(());
+        }
+        if self.dirty {
+            if let Err(e) = r.file.set_len(r.end) {
+                self.broken = true;
+                return Err(e);
+            }
+            self.dirty = false;
+        }
+        if let Err(e) = write_synced(&mut r.file, r.end, &out) {
+            self.dirty = true;
+            return Err(e);
+        }
+        (r.count, r.plain_len, self.last_tag) = (count, plain_len, last_tag);
+        r.end += out.len() as u64;
+        Ok(())
+    }
+
     /// Calls `each` with every record's plaintext, in order, checking each.
     pub fn read_all(&mut self, each: impl FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
         self.read.read_all(each)
@@ -749,6 +789,31 @@ mod tests {
     /// Swaps the handle's file for one opened read-only: every write and every cut through it fails.
     fn read_only_underneath(w: &mut Records, path: &Path) -> File {
         std::mem::replace(&mut w.read.file, File::open(path).unwrap())
+    }
+
+    #[test]
+    fn many_appended_at_once_read_back_as_appended_one_by_one() {
+        let (_t, data, v) = vault();
+        let (one, many) = (data.join("one.j"), data.join("many.j"));
+        let items: Vec<Vec<u8>> =
+            vec![b"first".to_vec(), vec![7u8; CHUNK], Vec::new(), vec![3u8; CHUNK + 10], b"last".to_vec()];
+        let mut w = v.records(&one, "j").unwrap();
+        for i in &items {
+            w.append(i).unwrap();
+        }
+        let mut m = v.records(&many, "j").unwrap();
+        m.append_each(&items[..2]).unwrap();
+        m.append_each(&[]).unwrap();
+        m.append_each(&items[2..]).unwrap();
+        assert_eq!(all(w.as_reader()), all(m.as_reader()));
+        assert_eq!((w.plain_len(), state(&w).0), (m.plain_len(), state(&m).0));
+        drop(m);
+        let mut r = v.records_read(&many, "j").unwrap();
+        assert_eq!(all(&mut r).len(), 5, "one record each, the long one in two");
+        // and what was there is kept: adding after reopening
+        let mut m = v.records(&many, "j").unwrap();
+        m.append_each(&[b"more".to_vec()]).unwrap();
+        assert_eq!(all(m.as_reader()).last().unwrap(), b"more");
     }
 
     #[test]
