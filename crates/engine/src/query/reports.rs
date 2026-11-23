@@ -398,17 +398,13 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
         }
     }
     // energy lost while parked, by the spell's start
-    let mut pg = Paging::first(super::MAX_LIMIT);
-    for _ in 0..1000 {
-        let page = super::parked::parked(e, car, &Period::new(Some(wa), Some(wb)), None, &pg)?;
-        for s in &page.body.items {
-            if let (Some(i), Some(kwh)) = (slot_of(slots, s.start_ms), s.energy_kwh) {
-                acc[i].stand = Some(acc[i].stand.unwrap_or(0.0) + kwh);
-            }
-        }
-        match page.body.next {
-            Some(n) => pg.after = Some(n),
-            None => break,
+    // (only their starts and energies: none is read whole)
+    let mut spells = super::parked::spells(e, c, wa, wb, None)?.0;
+    // summed newest first, as the parked list gives them
+    spells.sort_by(|x, y| cmp_key(&(x.start_ms as f64, x.id.clone()), &(y.start_ms as f64, y.id.clone()), true));
+    for s in &spells {
+        if let (Some(i), Some(kwh)) = (slot_of(slots, s.start_ms), s.energy_kwh) {
+            acc[i].stand = Some(acc[i].stand.unwrap_or(0.0) + kwh);
         }
     }
     let mut rows = Vec::with_capacity(slots.len());

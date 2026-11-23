@@ -6,9 +6,10 @@
 //! it where the car sends one (`counter`), else the pack's energy remaining (`bms_energy`), else the rated range lost
 //! at the car's consumption (`range`, imported history). The values at a spell's ends come from the drive or charge
 //! either side, or at a clipped edge from the sample nearest to it; only the days that hold those samples are read
-//! (each once), and the page's spells alone are read whole (for their temperatures and awake power). The summary
-//! counts the known time of the spells whose energy is known: unknown time (no data) is not time the drain is
-//! known for.
+//! (each once), and the page's spells alone are read whole (for their temperatures and awake power). What is read
+//! is kept in memory with a stamp of the days it came from ([`Kept`]), so a day is read again only once its data
+//! changed. `/statistics` takes the spells without reading any whole ([`spells`]). The summary counts the known time
+//! of the spells whose energy is known: unknown time (no data) is not time the drain is known for.
 
 use super::system::Shown;
 use super::{Paging, Period, PlaceBrief, QResult, Scoped, car_of, paginate, place_ref, r, scoped};
@@ -17,6 +18,8 @@ use crate::pipeline::all_rows;
 use db::StateRow;
 use model::{Car, CarId, Charge, Drive, Sample, Source};
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 const DAY: u64 = 86_400_000;
 /// How many days with samples the nearest reading to an edge is looked for in, each way.
@@ -358,9 +361,22 @@ pub fn parked(
 ) -> QResult<Scoped<Parked>> {
     let c = car_of(e, car)?;
     let (a, b) = period.bounds()?;
+    let (items, summary) = spells(e, &c, a, b, min_hours)?;
+    let sig = format!("parked|{car}|{}|{min_hours:?}", period.sig());
+    let page = paginate(items, |s| (s.start_ms as f64, s.id.clone()), true, &sig, paging, false)?;
+    let mut out = page.items;
+    // the page's spells read whole: battery and outside temperatures, the pack's power while awake
+    read_all_whole(e, car, &mut out)?;
+    Ok(scoped(&c, Parked { items: out, summary, next: page.next }))
+}
+
+/// The spells of `[a, b)` (clipped to now), oldest first, and their summary: everything [`parked`] answers but what
+/// only the page's spells get by being read whole ([`read_all_whole`]).
+pub(crate) fn spells(e: &Engine, c: &Car, a: u64, b: u64, min_hours: Option<f64>) -> QResult<(Vec<Spell>, Summary)> {
+    let car = c.id;
     let now = crate::now_ms();
     let b = b.min(now);
-    let (busy, next) = busy_around(e, &c, a, b)?;
+    let (busy, next) = busy_around(e, c, a, b)?;
     let states: Vec<model::StateSpan> = if a < b {
         all_rows::<StateRow>(e.db(), car, a, b, Some(Source::Live))?.into_iter().map(|s| s.span).collect()
     } else {
@@ -369,10 +385,8 @@ pub fn parked(
     let now_soc = e.db().entry(car)?.and_then(|x| x.summary.now).map(|n| n.sample);
     let places = e.places();
     let rated = c.efficiency_wh_km;
-    let mut sampler = Sampler::new(e, car, Source::Live, &END_FIELDS)?;
-    let mut items = Vec::new();
-    // what known time the summary counts: that of the spells whose energy is known
-    let (mut known_ms, mut known_kwh) = (0u64, 0.0);
+    // the spells' bounds first: (the drive or charge before it, its start and end, clipped)
+    let mut found: Vec<(usize, u64, u64, u64, u64)> = Vec::new();
     for i in 0..busy.len() {
         let p = &busy[i];
         let n = busy.get(i + 1).or(next.as_ref());
@@ -386,10 +400,26 @@ pub fn parked(
             continue;
         }
         let (x, y) = (s0.max(a), s1.min(b));
-        let dur = y - x;
-        if min_hours.is_some_and(|h| (dur as f64) < h * 3_600_000.0) {
+        if min_hours.is_some_and(|h| ((y - x) as f64) < h * 3_600_000.0) {
             continue;
         }
+        found.push((i, s0, s1, x, y));
+    }
+    // the samples nearest to the live spells' ends, all looked up at once: (time, from, to)
+    let hi_of = |i: usize| busy.get(i + 1).or(next.as_ref()).map_or(now, |n| n.end);
+    let asks: Vec<(u64, u64, u64)> = found
+        .iter()
+        .filter(|f| busy[f.0].source == Source::Live)
+        .flat_map(|&(i, _, _, x, y)| [(x, busy[i].start, y), (y, x, hi_of(i))])
+        .collect();
+    let near = nearest(e, car, &asks)?;
+    let mut items = Vec::new();
+    // what known time the summary counts: that of the spells whose energy is known
+    let (mut known_ms, mut known_kwh) = (0u64, 0.0);
+    for &(i, s0, s1, x, y) in &found {
+        let p = &busy[i];
+        let n = busy.get(i + 1).or(next.as_ref());
+        let dur = y - x;
         // going: nothing follows it, and the period does not end before it does
         let going = n.is_none() && y == s1;
         let sp = super::timeline::split(&states, x, y);
@@ -397,9 +427,9 @@ pub fn parked(
         // the ends: the drive or charge either side, the car's values now for the spell still going, else (at a
         // clipped edge) the sample nearest to it
         let can = source == Source::Live;
-        let hi = n.map_or(now, |n| n.end);
-        let first = if can { Some(sampler.at(x, p.start, y)?) } else { None };
-        let last = if can { Some(sampler.at(y, x, hi)?) } else { None };
+        let hi = hi_of(i);
+        let first = if can { near.get(&(x, p.start, y)).cloned() } else { None };
+        let last = if can { near.get(&(y, x, hi)).cloned() } else { None };
         let edge = |row: &Option<Row>, k: usize| row.as_ref().and_then(|v| v.get(k).copied().flatten());
         let (soc0, range0) = if x == s0 { (p.soc1, p.range1) } else { (edge(&first, 2), edge(&first, 3)) };
         let (soc1, range1) = match n {
@@ -454,44 +484,157 @@ pub fn parked(
         kwh_per_day: r((known_ms > 3_600_000).then(|| known_kwh / hours * 24.0), 3),
         cost: None,
     };
-    let sig = format!("parked|{car}|{}|{min_hours:?}", period.sig());
-    let page = paginate(items, |s| (s.start_ms as f64, s.id.clone()), true, &sig, paging, false)?;
-    let mut out = page.items;
-    // the page's spells read whole: battery and outside temperatures, the pack's power while awake
-    for s in &mut out {
-        if s.from.is_imported() {
-            continue;
-        }
-        let end = s.start_ms.saturating_add(s.duration_ms);
-        let (mut bmin, mut out_sum, mut out_n, mut kw_sum, mut kw_n) = (None::<f64>, 0.0, 0u64, 0.0, 0u64);
-        each(
-            e,
-            car,
-            Source::Live,
-            s.start_ms,
-            end,
-            &["battery_temp_c", "outside_temp_c", "battery_power_kw"],
-            |_, v| {
-                if let Some(t) = v[0] {
-                    bmin = Some(bmin.map_or(t, |m: f64| m.min(t)));
-                }
-                if let Some(t) = v[1] {
-                    out_sum += t;
-                    out_n += 1;
-                }
-                if let Some(k) = v[2] {
-                    kw_sum += k;
-                    kw_n += 1;
-                }
-            },
-        )?;
-        s.battery_min_c = r(bmin, 1);
-        s.outside_avg_c = r((out_n > 0).then(|| out_sum / out_n as f64), 1);
-        s.cold = bmin.map(|t| t < COLD_C);
-        // samples come only while the car is awake: their mean power is the awake power
-        s.awake_avg_power_w = r((kw_n > 0).then(|| kw_sum / kw_n as f64 * 1000.0), 0);
+    Ok((items, summary))
+}
+
+/// What was read of a car's live samples lately, each kept with a stamp of the days it was read from (their starts and
+/// sizes on disk, as the battery's days are kept: a day's points change its files' size), so that new data on other
+/// days leaves it be.
+#[derive(Default)]
+struct Kept {
+    /// The fields of [`END_FIELDS`] nearest to a time ([`Sampler::at`]): (time, from, to, stamp) → the row.
+    near: Mutex<HashMap<(u64, u64, u64, u64), Row>>,
+    /// A spell read whole ([`read_whole`]): (start, end, stamp) → its figures.
+    whole: Mutex<HashMap<(u64, u64, u64), Whole>>,
+}
+
+/// Rows kept per car at most, of each kind; past it they are all read again.
+const KEPT_MAX: usize = 50_000;
+
+fn kept(e: &Engine, car: CarId) -> QResult<Arc<Kept>> {
+    e.memo(car, "parked-reads", crate::memo::On::Imported, 0, || Ok::<_, super::QueryError>(Kept::default()))
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The live sample days (start, bytes), oldest first.
+fn live_days(e: &Engine, car: CarId) -> QResult<Vec<(u64, u64)>> {
+    let mut days: Vec<(u64, u64)> =
+        e.db().days::<Sample>(car, Source::Live)?.into_iter().map(|d| (d.start_ms, d.bytes)).collect();
+    days.sort_unstable();
+    Ok(days)
+}
+
+/// A stamp of the days whose samples reach into `(lo, hi]`: their starts and sizes.
+fn stamp(days: &[(u64, u64)], lo: u64, hi: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let i = days.partition_point(|d| d.0.saturating_add(DAY) <= lo);
+    let j = days.partition_point(|d| d.0 <= hi);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    days[i..j.max(i)].hash(&mut h);
+    h.finish()
+}
+
+/// [`Sampler::at`] for each of `asks` (time, from, to), kept across answers while the days it reads stay the same.
+fn nearest(e: &Engine, car: CarId, asks: &[(u64, u64, u64)]) -> QResult<HashMap<(u64, u64, u64), Row>> {
+    let mut out = HashMap::with_capacity(asks.len());
+    if asks.is_empty() {
+        return Ok(out);
     }
-    Ok(scoped(&c, Parked { items: out, summary, next: page.next }))
+    let days = live_days(e, car)?;
+    let kept = kept(e, car)?;
+    let mut todo = Vec::new();
+    {
+        let m = lock(&kept.near);
+        for &(t, lo, hi) in asks {
+            let key = (t, lo, hi, stamp(&days, lo, hi));
+            match m.get(&key) {
+                Some(row) => {
+                    out.insert((t, lo, hi), row.clone());
+                }
+                None => todo.push(key),
+            }
+        }
+    }
+    if todo.is_empty() {
+        return Ok(out);
+    }
+    let mut s = Sampler::new(e, car, Source::Live, &END_FIELDS)?;
+    let mut found = Vec::with_capacity(todo.len());
+    for k in todo {
+        found.push((k, s.at(k.0, k.1, k.2)?));
+    }
+    let mut m = lock(&kept.near);
+    if m.len() >= KEPT_MAX {
+        m.clear();
+    }
+    for (k, row) in found {
+        out.insert((k.0, k.1, k.2), row.clone());
+        m.insert(k, row);
+    }
+    Ok(out)
+}
+
+/// A spell's figures from reading it whole: the battery's coldest, the mean outside temperature and the pack's mean
+/// power (samples come only while the car is awake).
+type Whole = (Option<f64>, Option<f64>, Option<f64>);
+
+/// The page's live spells read whole ([`read_whole`]), kept while the days they cover stay the same.
+fn read_all_whole(e: &Engine, car: CarId, spells: &mut [Spell]) -> QResult<()> {
+    let live: Vec<usize> = (0..spells.len()).filter(|&i| !spells[i].from.is_imported()).collect();
+    if live.is_empty() {
+        return Ok(());
+    }
+    let days = live_days(e, car)?;
+    let kept = kept(e, car)?;
+    let span = |s: &Spell| (s.start_ms, s.start_ms.saturating_add(s.duration_ms));
+    let key = |s: &Spell| {
+        let (a, b) = span(s);
+        (a, b, stamp(&days, a, b.saturating_sub(1)))
+    };
+    let mut got: HashMap<(u64, u64, u64), Whole> = HashMap::with_capacity(live.len());
+    let mut todo = Vec::new();
+    {
+        let m = lock(&kept.whole);
+        for &i in &live {
+            let k = key(&spells[i]);
+            match m.get(&k) {
+                Some(w) => {
+                    got.insert(k, *w);
+                }
+                None => todo.push(k),
+            }
+        }
+    }
+    for k in todo {
+        let w = read_whole(e, car, k.0, k.1)?;
+        got.insert(k, w);
+        let mut m = lock(&kept.whole);
+        if m.len() >= KEPT_MAX {
+            m.clear();
+        }
+        m.insert(k, w);
+    }
+    for &i in &live {
+        let s = &mut spells[i];
+        let (bmin, outside, kw) = got.get(&key(s)).copied().unwrap_or_default();
+        s.battery_min_c = r(bmin, 1);
+        s.outside_avg_c = r(outside, 1);
+        s.cold = bmin.map(|t| t < COLD_C);
+        s.awake_avg_power_w = r(kw.map(|k| k * 1000.0), 0);
+    }
+    Ok(())
+}
+
+/// A live spell `[start, end)` read whole: its battery and outside temperatures, the pack's power while awake.
+fn read_whole(e: &Engine, car: CarId, start: u64, end: u64) -> QResult<Whole> {
+    let (mut bmin, mut out_sum, mut out_n, mut kw_sum, mut kw_n) = (None::<f64>, 0.0, 0u64, 0.0, 0u64);
+    each(e, car, Source::Live, start, end, &["battery_temp_c", "outside_temp_c", "battery_power_kw"], |_, v| {
+        if let Some(t) = v[0] {
+            bmin = Some(bmin.map_or(t, |m: f64| m.min(t)));
+        }
+        if let Some(t) = v[1] {
+            out_sum += t;
+            out_n += 1;
+        }
+        if let Some(k) = v[2] {
+            kw_sum += k;
+            kw_n += 1;
+        }
+    })?;
+    Ok((bmin, (out_n > 0).then(|| out_sum / out_n as f64), (kw_n > 0).then(|| kw_sum / kw_n as f64)))
 }
 
 #[cfg(test)]
