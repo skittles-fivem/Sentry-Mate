@@ -20,9 +20,6 @@ import { mapTile } from '../core/map.js';
 import { timeChart, xyChart } from '../core/chart.js';
 import { statTile, facts, socBar, money } from '../core/bits.js';
 import { srcPill, estPill, isImported, isEstimated, apiOnly, EST_WHY } from '../core/source.js';
-import { setPrice } from '../shared/prices.js';
-
-const PRICE_CLS = { btn: 'btn', primary: 'btn-primary', ghost: 'btn-ghost', plain: 'btn-soft', input: 'input', select: 'input' };
 
 export const id = 'charge';
 export const css = true;
@@ -90,13 +87,7 @@ export async function mount(ctx) {
   const mapBox = h('div', { class: 'map' });
   const whereT = tile({ w: 2, title: 'Where', icon: 'pin', cls: ['map-tile', 'where-tile'], cover: ['cd.map.location', 'web.charge-cost.map'],
     side: pHref ? h('a', { class: 'tile-link', href: pHref, cover: ['cd.stat.location', 'web.charge-cost.location'] }, c.place ? 'Edit this place' : 'Save as a place', icon('chevronRight')) : h('span', { cover: ['cd.stat.location', 'web.charge-cost.location'] }, 'No position') },
-  mapBox, h('p', { class: 'map-foot' }, h('span', null, h('b', null, placeName(c)), c.place && c.address?.short ? ` · ${c.address.short}` : c.place ? '' : ' · not a saved place',
-    ctx.admin && (c.place?.id || c.position?.lat != null) ? btn(c.place?.id ? 'Set price' : 'Save place and set price', { kind: 'ghost', cls: 'set-price', onclick: async () => {
-      try {
-        const saved = await setPrice({ client: ctx.api, placeId: c.place?.id || null, spot: c.place?.id ? null : { name: placeName(c), lat: c.position.lat, lon: c.position.lon }, cls: PRICE_CLS });
-        if (saved) { ctx.toast(`Prices at ${saved.name} saved.`, { next: true }); ctx.reload(); }
-      } catch (e) { ctx.toast(`Could not set the price: ${e.message}`, { kind: 'error' }); }
-    } }) : null),
+  mapBox, h('p', { class: 'map-foot' }, h('span', null, h('b', null, placeName(c)), c.place && c.address?.short ? ` · ${c.address.short}` : c.place ? '' : ' · not a saved place'),
     h('span', null, c.fast_charger ? [c.fast_charger.brand, c.fast_charger.type === 'supercharger' ? 'Supercharger' : c.fast_charger.type, c.fast_charger.class].filter(Boolean).join(' ') : format(c.odometer_km, 'odometer'))));
   const socAdded = c.end_soc_pct != null && c.start_soc_pct != null ? c.end_soc_pct - c.start_soc_pct : null;
   const levelT = tile({ w: 2, title: 'Battery', icon: 'battery', cls: 'level-tile' },

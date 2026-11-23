@@ -43,17 +43,6 @@ def _p(pid, name, kind, lat, lon, radius, tz, address, price=None, created="2025
             "time_zone": tz, "address": address, "price": price, "created": created}
 
 
-def _dated(price, *later, invoice=None):
-    """Dated prices: `price` from the start, each (from, price) of `later` from its day, and an
-    invoice price (from, price, sessions) worked out from made-up Supercharger invoices."""
-    out = [{"from": None, "source": "typed", "price": price}]
-    out += [{"from": f, "source": "typed", "price": p} for f, p in later]
-    if invoice:
-        f, p, n = invoice
-        out.append({"from": f, "source": "invoice", "price": p, "invoice": {"sessions": n}})
-    return out
-
-
 PLACES = [
     # --- San Francisco (car c1, a few shared with c3)
     _p("p1", "Home", "home", 37.75080, -122.43300, 60, LA,
@@ -188,12 +177,3 @@ ROAD_CHI_TOR = [
     [42.4200, -82.1800, 190], [42.7000, -81.7000, 230], [42.9849, -81.2453, 260], [43.1300, -80.7600, 300],
     [43.2000, -80.3000, 290], [43.4200, -79.8000, 120], [43.6000, -79.5500, 100], [43.6450, -79.3850, 80],
 ]
-
-
-# made-up dated prices: a new Mission Bay price from next year, and a price from invoices at London
-# (the typed price there covers every day, so it wins)
-for _q in PLACES:
-    if _q["id"] == "p3":
-        _q["prices"] = _dated(_q["price"], ("2027-01-01", _price("USD", 0.52, _SC_RATES)))
-    elif _q["id"] == "p40":
-        _q["prices"] = _dated(_q["price"], invoice=("2026-09-04", _price("CAD", 0.64), 10))

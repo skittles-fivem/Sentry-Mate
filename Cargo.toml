@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/logfmt", "crates/trust", "crates/vault", "crates/gate", "crates/moving", "crates/model", "crates/dbc", "crates/ingest", "crates/timeline", "crates/db", "crates/places", "crates/accounts", "crates/import", "crates/mqtt", "crates/engine", "crates/web", "crates/sentry-mate", "crates/synth", "crates/tesla", "crates/teslafi", "crates/tmlocal", "crates/release", "crates/kept"]
+members = ["crates/logfmt", "crates/trust", "crates/vault", "crates/gate", "crates/moving", "crates/model", "crates/dbc", "crates/ingest", "crates/timeline", "crates/db", "crates/places", "crates/accounts", "crates/import", "crates/mqtt", "crates/engine", "crates/web", "crates/sentry-mate", "crates/synth", "crates/tesla", "crates/teslafi", "crates/tmlocal", "crates/release"]
 
 [workspace.package]
 version = "0.1.0"

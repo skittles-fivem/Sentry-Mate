@@ -108,10 +108,6 @@
 .page-statistics .st-xaxis-time { container-type: inline-size; }
 @container (width < 30rem) { .page-statistics .st-xaxis-time > .st-xtick:nth-child(even) { display: none; } }
 .page-statistics .st-readout { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.25rem, var(--e)) round(1rem, var(--e)); min-height: round(1.5rem, var(--e)); font-size: var(--text-s); color: var(--ink-2); padding-left: round(4rem, var(--e)); }
-/* With a mouse the readout keeps two lines' height whatever it holds (the idle sentence takes two in a narrow
-   column): a longer one runs over what is under it, as a tooltip would, instead of pushing the page down. (On a
-   touch screen it wraps.) */
-@media (hover: hover) and (pointer: fine) { .page-statistics .st-readout { --LH: round(1.75rem, var(--e)); height: calc(2 * var(--LH)); align-content: center; row-gap: 0; position: relative; z-index: 2; } }
 .page-statistics .st-readout-when { font-family: var(--serif); color: var(--ink); }
 .page-statistics .st-readout-item { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); white-space: nowrap; }
 .page-statistics .st-readout-sub { color: var(--ink-3); }

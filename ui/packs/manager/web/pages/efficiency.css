@@ -60,9 +60,7 @@
 .ef-compare-tbl .ef-rowhead .legend-swatch { display: inline-block; margin-right: round(0.5rem, var(--e)); vertical-align: round(0.1875rem, var(--e)); }
 .ef-compare .chart-label { padding-left: 0; flex-wrap: wrap; }
 .ef-compare-chart { --chart-h: round(12rem, var(--e)); margin-bottom: round(0.5rem, var(--e)); }
-/* one line: pointing at a chart (or at the one synced with it) changes the text, never where the line wraps */
-.ef-readout { margin-left: auto; font-size: max(0.78125rem, var(--fs-floor)); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.tp-top > .ef-readout { flex: 1 1 round(16rem, var(--e)); }
+.ef-readout { margin-left: auto; font-size: max(0.78125rem, var(--fs-floor)); text-align: right; }
 
 /* temperatures */
 .ef-section-head { display: flex; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(1rem, var(--e)); margin: 0 0 round(0.875rem, var(--e)); }
@@ -125,7 +123,7 @@
 :root[data-phone] .tp-col-figs { align-items: start; }
 :root[data-phone] .tp-cov { grid-template-columns: minmax(round(3rem, var(--e)), 1fr) auto auto; }
 :root[data-phone] .tp-cov > :first-child { grid-column: 1 / -1; }
-:root[data-phone] .ef-readout { margin-left: 0; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+:root[data-phone] .ef-readout { margin-left: 0; text-align: left; overflow-wrap: anywhere; }
 :root[data-phone] .efficiency-page .tbl:not(.tbl--keep) .ef-rowhead { white-space: normal; }
 :root[data-phone] .ef-whcell { justify-content: flex-start; }
 :root[data-phone="short"] .tp-hist-chart { --chart-h: min(round(15rem, var(--e)), 60dvh); }

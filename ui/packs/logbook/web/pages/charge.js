@@ -25,9 +25,6 @@ import { field, form, choice, setFieldError } from '../core/form.js';
 import { confirmDialog } from '../core/dialog.js';
 import { remount } from '../core/router.js';
 import { browserZone } from '../core/format.js';
-import { setPrice } from '../shared/prices.js';
-
-const PRICE_CLS = { btn: 'button button-small', primary: '', ghost: 'button-quiet', plain: 'button-quiet', input: 'field-input', select: 'field-select' };
 
 export const id = 'charge';
 export const css = true;
@@ -573,15 +570,7 @@ function costEditor(ctx, c, { tz, car, listUrl, place, onSaved }) {
     h('div', { cover: 'web.charge-cost.car' }, h('dt', null, 'Car'), h('dd', null, car.name)),
     h('div', { cover: 'web.charge-cost.energy' }, h('dt', null, 'Energy'), h('dd', null, 'added ', q(c.energy_added_kwh, 'energy'), gridKnown ? ['; drawn ', q(c.energy_grid_kwh, 'energy'), c.losses_kwh != null ? [' (', format(c.losses_kwh, 'energy'), ' lost)'] : null] : '; drawn: not known on DC')),
     h('div', { cover: 'web.charge-cost.duration' }, h('dt', null, 'Charging'), h('dd', null, formatDuration(c.charging_ms), ` (${formatNumber(Math.round(minutes * 10) / 10)} min)`)),
-    h('div', null, h('dt', null, 'Place'), h('dd', null, placeName(c),
-      c.place?.id || (c.position && c.position.lat != null) ? [' ', h('button', { type: 'button', class: 'button button-quiet button-small set-price',
-        title: c.place?.id ? 'Set the price of this place' : 'Save this spot as a place, then set its price',
-        onclick: async () => {
-          try {
-            const saved = await setPrice({ client: api, placeId: c.place?.id || null, spot: c.place?.id ? null : { name: placeName(c), lat: c.position.lat, lon: c.position.lon }, cls: PRICE_CLS });
-            if (saved) { ctx.flash(`Prices at ${saved.name} saved.`); remount(); }
-          } catch (e) { ctx.flash(`Could not set the price: ${e.message}`, { kind: 'error' }); }
-        } }, c.place?.id ? 'Set price' : 'Save place and set price')] : null)));
+    h('div', null, h('dt', null, 'Place'), h('dd', null, placeName(c))));
 
   const amount = field({ label: 'Amount', name: 'amount', type: 'number', value: entered ? entered.amount : null,
     hint: `Rates take up to ${MAX_RATE_DECIMALS} decimals (0.34567); only the total is rounded.`,

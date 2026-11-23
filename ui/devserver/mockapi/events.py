@@ -5,7 +5,8 @@ to every stream whose account may see that car. A stream's first `now` event for
 the whole object; later ones only the fields that changed (merge them into what you have).
 With --rows-every-s N every featured car also gets a `rows` event every N seconds with every row kind, as if
 its rows had changed: the pages load their lists again, so their refreshes can be watched (ui/tools/check.js
---stable) without waiting for a drive to end.
+--stable) without waiting for a drive to end. With --rebuild-running that is every second unless --rows-every-s
+says otherwise, as while a long rebuild rewrites the car's rows window by window (ui/tools/scroll.js).
 """
 
 from __future__ import annotations
@@ -168,7 +169,7 @@ class EventHub:
         t = app.clock.now()
         with self.lock:
             streams = list(self.streams)
-        every = app.cfg.rows_every_s
+        every = app.cfg.rows_every_s or (1.0 if app.cfg.rebuild_running else 0)
         mono = time.monotonic()
         forced = bool(every) and (self.forced_rows_at is None or mono - self.forced_rows_at >= every - 0.05)
         if forced:

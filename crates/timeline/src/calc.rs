@@ -61,6 +61,99 @@ pub(crate) fn haversine_km(a: (f64, f64), b: (f64, f64)) -> f64 {
     2.0 * EARTH_KM * h.sqrt().min(1.0).asin()
 }
 
+/// No car moves faster than this between two fixes (km/h): a step that implies more is a bad fix on one side.
+pub const MAX_FIX_KMH: f64 = 400.0;
+
+/// Steps this short always pass the speed check (km): a fix's noise, and two inputs' fixes of the same moment
+/// that disagree (an API's position lags the car's own by up to its hold time). What is left out is a jump to where
+/// the car cannot have been, not a fix a little off.
+const FIX_SLACK_KM: f64 = 3.0;
+
+/// How many runs of agreeing fixes back a run looks for one it can follow (keeps a noisy day linear).
+const RUN_LOOKBACK: usize = 256;
+
+/// The value a 28-bit signed position field with all but its sign bit clear decodes to (0x04F's lowest raw value,
+/// 1e-6 degrees a step): a placeholder, never a real latitude or longitude.
+pub const FIX_PLACEHOLDER_DEG: f64 = 134.217728;
+
+/// Whether a latitude, longitude pair can be a real fix: finite, on the globe, not 0,0 and not a placeholder.
+pub fn real_fix(lat: f64, lon: f64) -> bool {
+    let placeholder = |v: f64| (v.abs() - FIX_PLACEHOLDER_DEG).abs() < 1e-6;
+    lat.is_finite()
+        && lon.is_finite()
+        && (-90.0..=90.0).contains(&lat)
+        && (-180.0..=180.0).contains(&lon)
+        && !(lat == 0.0 && lon == 0.0)
+        && !placeholder(lat)
+        && !placeholder(lon)
+}
+
+/// Whether going from fix `a` to fix `b` (lat, lon, ms) is possible at `max_kmh`.
+fn reachable(a: (f64, f64, u64), b: (f64, f64, u64), max_kmh: f64) -> bool {
+    let hours = b.2.abs_diff(a.2) as f64 / 3_600_000.0;
+    haversine_km((a.0, a.1), (b.0, b.1)) <= max_kmh * hours + FIX_SLACK_KM
+}
+
+/// Takes out the fixes (latitude and longitude, with the accuracy) that cannot be real: a placeholder, or a fix
+/// that implies a speed over `max_kmh` from its neighbours. The fixes (in time order) are cut into runs where each
+/// step is possible; the runs kept are the chain with the most fixes in which each run can be reached from the one
+/// before it, so a few bad fixes (a jump away and back, a stale fix at the start, a stretch decoded wrong) are left
+/// out whichever side of them the good ones are. The other values of those samples stay. Returns how many fixes
+/// were taken out.
+pub fn drop_bad_fixes(s: &mut [Sample], max_kmh: f64) -> u64 {
+    let mut dropped = 0u64;
+    let mut fixes: Vec<(usize, (f64, f64, u64))> = Vec::new();
+    for (i, x) in s.iter_mut().enumerate() {
+        match (x.lat, x.lon) {
+            (Some(lat), Some(lon)) if real_fix(lat, lon) => fixes.push((i, (lat, lon, x.t_ms))),
+            (None, None) => {}
+            _ => {
+                // half a fix, or a placeholder
+                (x.lat, x.lon, x.gps_accuracy_m) = (None, None, None);
+                dropped += 1;
+            }
+        }
+    }
+    // runs of fixes whose every step is possible: (first, last) indexes into `fixes`
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    for k in 0..fixes.len() {
+        match runs.last_mut() {
+            Some(r) if reachable(fixes[r.1].1, fixes[k].1, max_kmh) => r.1 = k,
+            _ => runs.push((k, k)),
+        }
+    }
+    if runs.len() < 2 {
+        return dropped;
+    }
+    // the chain of runs with the most fixes: best[j] = (fixes in the best chain ending with run j, the run before)
+    let size = |r: (usize, usize)| r.1 - r.0 + 1;
+    let mut best: Vec<(usize, Option<usize>)> = Vec::with_capacity(runs.len());
+    for j in 0..runs.len() {
+        let mut pick = (size(runs[j]), None);
+        for i in j.saturating_sub(RUN_LOOKBACK)..j {
+            let n = best[i].0 + size(runs[j]);
+            if n > pick.0 && reachable(fixes[runs[i].1].1, fixes[runs[j].0].1, max_kmh) {
+                pick = (n, Some(i));
+            }
+        }
+        best.push(pick);
+    }
+    let mut keep = vec![false; runs.len()];
+    let mut at = best.iter().enumerate().max_by(|a, b| a.1.0.cmp(&b.1.0).then(b.0.cmp(&a.0))).map(|(j, _)| j);
+    while let Some(j) = at {
+        keep[j] = true;
+        at = best[j].1;
+    }
+    for run in runs.iter().zip(&keep).filter(|(_, k)| !**k).map(|(r, _)| r) {
+        for &(i, _) in &fixes[run.0..=run.1] {
+            let x = &mut s[i];
+            (x.lat, x.lon, x.gps_accuracy_m) = (None, None, None);
+            dropped += 1;
+        }
+    }
+    dropped
+}
+
 /// Fixes in a row that agree with each other but not with the last good one: that one was the bad fix (a stale
 /// position at the start), so the track goes on from them.
 const REANCHOR_AFTER: usize = 3;
@@ -220,6 +313,55 @@ mod tests {
         let km = gps_km(&r, 300.0).unwrap();
         // the drive's 0.6 km, less the first steps the track waited out; not the 2 km jump from the stale fix
         assert!((0.55..=0.6).contains(&km), "{km}");
+    }
+
+    /// A made-up drive due east at about 72 km/h (20 m a second), one fix a second, from 40 N 100 W.
+    fn eastward(n: u64) -> Vec<Sample> {
+        let step = 0.02 / (111.195 * 40f64.to_radians().cos());
+        (0..n)
+            .map(|i| Sample {
+                t_ms: i * 1000,
+                lat: Some(40.0),
+                lon: Some(-100.0 + i as f64 * step),
+                gps_accuracy_m: Some(3.0),
+                speed_kmh: Some(72.0),
+                ..Sample::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_stretch_of_fixes_far_away_at_the_same_latitude_is_left_out() {
+        // 120 s of driving; seconds 60 to 69 have a longitude 16.78 degrees east (one bit of the field off): a
+        // straight line 1400 km east and a small hook there, at the same latitude
+        let mut v = eastward(120);
+        for x in &mut v[60..70] {
+            x.lon = x.lon.map(|l| l + 16.777216);
+        }
+        let dropped = drop_bad_fixes(&mut v, MAX_FIX_KMH);
+        assert_eq!(dropped, 10);
+        assert!(v[60..70].iter().all(|x| x.lat.is_none() && x.lon.is_none() && x.gps_accuracy_m.is_none()));
+        assert!(v[60..70].iter().all(|x| x.speed_kmh == Some(72.0)), "the other values stay");
+        assert!(v[..60].iter().chain(&v[70..]).all(|x| x.lat == Some(40.0)));
+        let r: Vec<&Sample> = v.iter().collect();
+        let km = gps_km(&r, 300.0).unwrap();
+        assert!((km - 2.38).abs() < 0.05, "{km}");
+    }
+
+    #[test]
+    fn bad_fixes_at_the_start_or_end_and_placeholders_are_left_out() {
+        let mut v = eastward(60);
+        v[0].lon = Some(-80.0); // a stale fix from elsewhere
+        v[59].lon = Some(-80.0);
+        v[30].lon = Some(-FIX_PLACEHOLDER_DEG);
+        v[31].lon = None; // half a fix
+        assert_eq!(drop_bad_fixes(&mut v, MAX_FIX_KMH), 4);
+        assert_eq!(v.iter().filter(|x| x.lat.is_some()).count(), 56);
+        // a good drive loses nothing, and a long time between two fixes far apart is no jump
+        let mut v = eastward(60);
+        v.push(Sample { t_ms: 10 * 3_600_000, lat: Some(40.0), lon: Some(-90.0), ..Sample::default() });
+        assert_eq!(drop_bad_fixes(&mut v, MAX_FIX_KMH), 0);
+        assert!(real_fix(40.0, -100.0) && !real_fix(0.0, 0.0) && !real_fix(91.0, 0.0) && !real_fix(f64::NAN, 1.0));
     }
 
     #[test]

@@ -31,10 +31,6 @@ import { SOURCE_FILTER, sourceFilter, SOURCE_WHY, sourceMark, sourceLabel, isImp
 import { zoneLabel } from '../core/format.js';
 import { display } from '../core/display.js';
 import { onTheme } from '../core/prefs.js';
-import { remount } from '../core/router.js';
-import { setPrice } from '../shared/prices.js';
-
-const PRICE_CLS = { btn: 'button button-small', primary: '', ghost: 'button-quiet', plain: 'button-quiet', input: 'field-input', select: 'field-select' };
 
 export const id = 'charges';
 export const css = true;
@@ -740,15 +736,6 @@ export async function mount(ctx) {
         h('span', { class: 'cell-sub' }, [p.place ? null : 'not a saved place', multi && p.cars && p.cars.length ? p.cars.map(carName).join(', ') : null].filter(Boolean).join(' · ')));
     };
     const sessions = { key: 'sessions', label: 'Sessions', num: true, cell: (p) => formatNumber(p.sessions) };
-    // an admin sets the place's price from here; a spot that is no saved place is saved first
-    const setCol = { key: 'set_price', label: '', cell: (p) => (admin ? h('button', { type: 'button', class: 'button button-quiet button-small set-price',
-      title: p.place ? `Set the price at ${p.label}` : 'Save this spot as a place, then set its price',
-      onclick: async () => {
-        try {
-          const saved = await setPrice({ client: api, placeId: p.place, spot: p.place ? null : { name: p.label, lat: p.lat, lon: p.lon }, cls: PRICE_CLS });
-          if (saved) { ctx.flash(`Prices at ${saved.name} saved.`); remount(); }
-        } catch (e) { ctx.flash(`Could not set the price: ${e.message}`, { kind: 'error' }); }
-      } }, p.place ? 'Set price' : 'Save place and set price') : null) };
     const ppkCell = (p) => (p.price_per_kwh != null && p.cost_by_currency && p.cost_by_currency.length === 1 ? format({ amount: p.price_per_kwh, currency: p.cost_by_currency[0].currency }, 'price_energy') : h('span', { class: 'ch-quiet' }, '—'));
     const none = () => empty({ title: 'No charging place in this period.', text: 'Choose a longer period, or clear the place filter.' });
     // Built once; a refresh loads the tables again and moves the map's circles, with the old ones on screen
@@ -757,14 +744,14 @@ export async function mount(ctx) {
       const byEnergy = dataTable(ctx, {
         path: 'charging-stats/places', params: { ...pp, sort: 'energy' }, limit: 8, itemName: ['place', 'places'], label: 'Charging places by energy', cls: 'ch-place-table', cover: 'cs.table.top_energy',
         columns: [{ key: 'label', label: 'Place', th: true, cover: 'cs.table.top_energy.location', cell: placeCell }, sessions,
-          { key: 'energy', label: 'Added', num: true, cover: 'cs.table.top_energy.charged', cell: (p) => q(p.energy_added_kwh, 'energy') }, setCol],
+          { key: 'energy', label: 'Added', num: true, cover: 'cs.table.top_energy.charged', cell: (p) => q(p.energy_added_kwh, 'energy') }],
         empty: none,
       });
       const byCost = dataTable(ctx, {
         path: 'charging-stats/places', params: { ...pp, sort: 'cost' }, limit: 8, itemName: ['place', 'places'], label: 'Charging places by cost', cls: 'ch-place-table', cover: 'cs.table.top_cost',
         columns: [{ key: 'label', label: 'Place', th: true, cover: 'cs.table.top_cost.location', cell: placeCell }, sessions,
           { key: 'cost', label: 'Cost', num: true, cover: 'cs.table.top_cost.cost', cell: (p) => (p.cost_by_currency && p.cost_by_currency.length ? moneyList(p.cost_by_currency) : h('span', { class: 'ch-quiet' }, 'no price')) },
-          { key: 'ppk', label: 'Per kWh', num: true, cell: ppkCell }, setCol],
+          { key: 'ppk', label: 'Per kWh', num: true, cell: ppkCell }],
         empty: none,
       });
       const mapEl = h('div', { class: 'map ch-map', role: 'region', 'aria-label': 'Map of the charging places' });

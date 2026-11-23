@@ -962,7 +962,7 @@ pub(crate) fn track_with(e: &Engine, car: CarId, id: u64, gaps: Option<&super::g
     let own = samples(e, car, &d)?;
     // a live drive's track with what the chosen import fills: values it lacks, and the import's points where the
     // drive's own data has a gap
-    let given = if d.source == Source::Live {
+    let mut given = if d.source == Source::Live {
         let own_gaps;
         let gaps = match gaps {
             Some(g) => g,
@@ -976,6 +976,9 @@ pub(crate) fn track_with(e: &Engine, car: CarId, id: u64, gaps: Option<&super::g
     } else {
         super::gapfill::Given { samples: own, masks: Vec::new() }
     };
+    // the map draws no fix the car can't have been at: a placeholder, or a jump faster than a car drives (an
+    // import's own samples were not fused, so they are checked here too)
+    timeline::drop_bad_fixes(&mut given.samples, timeline::MAX_FIX_KMH);
     let mut value_sources = super::gapfill::ValueSources::new();
     for s in &given.samples {
         let (Some(lat), Some(lon)) = (s.lat, s.lon) else { continue };

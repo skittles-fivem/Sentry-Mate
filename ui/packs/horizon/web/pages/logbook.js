@@ -257,6 +257,7 @@ export async function mount(ctx) {
   const shownRows = () => (data?.rows || []).filter((r) => filter === 'all' || (r.purpose || 'none') === filter);
   const table = dataTable(ctx, {
     title: 'Drives', icon: 'route', rows: [], cls: 'lb-table', cover: 'dt.table', csvName: 'logbook',
+    reuseRows: true, // reloads on every `rows` event (each second while a rebuild runs): unchanged rows stay as they are
     columns, sort: { key: 'seq', dir: 'asc' },
     csv: { columns: csvColumns },
     rowHref: (r) => state.buildUrl('drive', { car: cid, drive: r.drive }),

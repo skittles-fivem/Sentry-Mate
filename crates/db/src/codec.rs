@@ -25,9 +25,6 @@ impl Level {
     /// Finished days, packed by `Db::settle`: about 10% smaller than q9 at a fraction of a second per day (q11
     /// gains another 1% at 2-4 times the time). A day's columns (at most ~3 MB) fit the 4 MiB window whole.
     pub const COLD: Level = Level { quality: 10, lgwin: 22 };
-    /// Finished days in their smallest form (`Db::compact_series`): the last 2% (measured on made-up days of every
-    /// input, docs/plans/storage.md) at about twice the time of q10, paid once per day in the background.
-    pub const SMALL: Level = Level { quality: 11, lgwin: 22 };
 }
 
 /// Nothing a db file holds unpacks past this: a guard against a body that claims to be huge.

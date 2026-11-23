@@ -36,7 +36,6 @@ node --test ui/shared/tests/
 | [`password.js`](password.js) | `passwordAdvice(name, password)`: why a new password is easy to guess, in the server's words; pages warn with it and let the person go on |
 | [`maptiles.js`](maptiles.js) | Map tiles for every map: which tiles to draw (`GET /maps/config`: the offline map file, the online source, or none and why), raster paint for the theme and the person's map colours (dimmed, never inverted, in the dark theme), a plain style for an offline Protomaps vector file, the "No map tiles yet" note with an admin's one-click OpenStreetMap switch, the note with the cause when tiles fail, and the words of the Settings map rows |
 | [`devicesize.js`](devicesize.js) | The Interface size on this device: Automatic (the account's `interface_size`, the default) or 80, 90, 100, 110 or 125 % of the standard size, kept in this browser's storage under `sentrymate.device-size` (one key for every pack, never sent to the server) and winning over the account's size here only; `readDeviceSize`, `writeDeviceSize`, `deviceSizeOptions`, `deviceSizeNote`, `onDeviceSizeStorage` (another tab). Every pack's `boot.js` reads the same key before the first paint |
-| [`prices.js`](prices.js) | A place's prices by date: the price in force on a day (`priceOnDay`: a typed price wins over one from Supercharger invoices), `pricesOf`, `priceLine`, `checkPrices` and `typedBody` for `PATCH /places/{place}` `{ prices }`, and the place price editor (`openPriceEditor`: a dialog listing the prices with add, edit and remove; `setPrice`: the "Set price" shortcut, saving an unsaved spot as a place first). Each pack passes its own class names and styles `.pp-*` |
 | [`teslamate.js`](teslamate.js) | The local TeslaMate input's shared rules for every pack's Settings: Integrations section: state and error words, the drafts of the MQTT and database forms, the server's checks said first (the plain text rule, a kept password, the pin, the topic prefix), the PUT body and the changed car matches, the TLS tick's port switch (`tmTlsPort`: 1883 and 8883, only from the other default) and the Host and pin hints; and its notices for every pack's notices bar (`isTmNotice`, `tmNoticeFix`: the link to Settings: Integrations #teslamate, `TM_NOTICE_ACTION`: the link's words) |
 
 ### api.js
@@ -183,6 +182,14 @@ downloadCsv(csvFilename(car.name, 'battery-level'), rows, [timeColumn('Time', 't
 `on(target, type, fn)`, `esc`, `safeUrl`, `setVars(el, vars)`, `cssVar(name)`, `cover(el, ...ids)`,
 `ready(pageId)`, `unready()`, `failed(pageId)`, `readyPage()`, `setTitle(...parts)`, `quantity(value, kind,
 opts)`, `styleSheet(href, { first })` (adds a style sheet once, after the others or with `first` before them, and resolves when it has loaded: maps and charts await it).
+`disclose(button, part, { focus, onOpen, onClose })` opens a hidden part in place from a button (a name box behind "Edit"):
+aria-expanded and aria-controls on the button, the focus into the part when it opens and back to the button when
+it closes, Escape inside it closes it; returns `{ open(), close(), isOpen() }`.
+`replaceChanged(el, ...children)` is `replace()` for parts drawn again on every live update: a child equal to the
+one already in its place (the node itself, or `isEqualNode`) stays and only the others are swapped, so nothing is
+laid out, snapped or painted again for a value that did not change (handlers are not compared). `markScrolling(ms)`
+(once at start) sets `<html data-scrolling>` while the page or a box in it scrolls and `ms` after (passive), so CSS
+can pause endless animations during a scroll.
 
 `h()` attributes: `class` (text, array or `{ name: on }`), `dataset`, `vars` (CSS custom properties, set through
 CSSOM), `style` (an object, CSSOM), `cover` (inventory item ids), `on<event>` functions, `value` / `checked`

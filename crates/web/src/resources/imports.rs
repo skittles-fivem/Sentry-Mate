@@ -25,10 +25,6 @@
 //! A job is kept sealed (`web/imports/<id>/job`); a restart picks up a check again, and an import cut off by one
 //! goes back to `ready` with the reason in `error` (running it again replaces what it stored, never doubles it).
 //! `DELETE` discards a job at any step (a running pass stops at its next read); history already imported stays.
-//!
-//! The uploaded file is kept until the import is discarded. Once the import is over (`done` or `failed`),
-//! compaction packs it ([`Imports::kept_step`], the `kept` crate): `backup` becomes `backup.pack`, a few percent of
-//! a plain dump's size, and gives back the same bytes. Whatever reads an upload reads either form.
 
 use crate::ctx::{read_body, target};
 use crate::{Admin, ApiError, ApiResult, AppState, JsonBody, Params};
@@ -83,19 +79,6 @@ pub struct Imports {
     upload_opens: AtomicU64,
     /// The data folder's write gate, which a CAN export's logs are stored through (as uploads are).
     gate: std::sync::OnceLock<gate::Gate>,
-    /// One per import whose kept files compaction packs or a discard removes: whoever holds its lock works in the
-    /// import's folder, and its flag asks a pack under way to stop at its next block (see [`KeptStep`]).
-    packing: Mutex<HashMap<String, Arc<Packing>>>,
-    /// Uploads found packed already (gzip, xz, zip): left as they are, not looked at again until a restart.
-    as_uploaded: Mutex<std::collections::HashSet<String>>,
-    /// For tests of what a crash leaves: where the next pack stops.
-    kept_stop: Mutex<Option<kept::Stop>>,
-}
-
-#[derive(Default)]
-struct Packing {
-    lock: Mutex<()>,
-    discarded: AtomicBool,
 }
 
 #[derive(Default)]
@@ -144,31 +127,6 @@ impl Imports {
     /// after a restart or a failed write).
     pub fn upload_opens(&self) -> u64 {
         self.upload_opens.load(Ordering::Relaxed)
-    }
-
-    fn packing_of(&self, id: &str) -> Arc<Packing> {
-        self.packing.lock().unwrap_or_else(|e| e.into_inner()).entry(id.to_string()).or_default().clone()
-    }
-
-    /// The step of compaction that packs the kept uploads of finished imports (the engine runs it in every pass:
-    /// [`Engine::compact_step`]). `dir` is the web side's folder, `vault` what its files are sealed with.
-    pub fn kept_step(self: &Arc<Self>, dir: &std::path::Path, vault: Arc<vault::Vault>) -> Arc<KeptStep> {
-        Arc::new(KeptStep { all: self.clone(), dir: dir.join("imports"), vault })
-    }
-
-    /// For tests: the next pack stops there, as if the server died.
-    #[doc(hidden)]
-    pub fn kept_stop_at(&self, at: Option<kept::Stop>) {
-        *self.kept_stop.lock().unwrap_or_else(|e| e.into_inner()) = at;
-    }
-
-    /// For tests: forgets the jobs in memory, as a restart does (the next request reads them from the disk).
-    #[doc(hidden)]
-    pub fn forget_jobs(&self) {
-        let mut st = self.lock();
-        st.loaded = false;
-        st.jobs.clear();
-        st.live.clear();
     }
 
     /// The data folder's write gate (the server gives it once; without one, as in tests, nothing is paused for).
@@ -706,20 +664,15 @@ async fn chunk_of(app: AppState, v: crate::ctx::Viewer, id: String, k: usize, re
     Ok(Json(out))
 }
 
-/// The uploaded file read back in order: from the sealed records it arrived in (a thread reads them; at most a few
-/// records wait), or from its pack once compaction packed it. The same bytes either way.
+/// The uploaded file read back in order, from the sealed records (a thread reads them; at most a few records wait).
 struct Backup {
     rx: std::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
     buf: Vec<u8>,
     pos: usize,
-    packed: Option<Box<kept::Reader>>,
 }
 
 impl Read for Backup {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        if let Some(p) = &mut self.packed {
-            return p.read(out);
-        }
         while self.pos >= self.buf.len() {
             match self.rx.recv() {
                 Ok(Ok(b)) => {
@@ -745,153 +698,15 @@ fn opener(app: &AppState, id: &str) -> impl FnMut() -> io::Result<Backup> + use<
 fn opener_of(app: &AppState, id: &str, k: usize) -> impl FnMut() -> io::Result<Backup> + use<> {
     let (vault, path, label) = (app.vault.clone(), folder(app, id).join(backup_file(k)), label(id, &backup_file(k)));
     move || {
+        let mut r = vault.records_read(&path, &label).map_err(|e| io::Error::other(e.to_string()))?;
         let (tx, rx) = std::sync::mpsc::sync_channel::<io::Result<Vec<u8>>>(4);
-        // the upload as it arrived wins while it is there; without it, its pack
-        let mut r = match vault.records_read(&path, &label) {
-            Ok(r) => r,
-            Err(e) if e.is_not_found() && kept::packed_path(&path).exists() => {
-                let packed = kept::Reader::open(&vault, &kept::packed_path(&path), &kept::packed_label(&label))?;
-                return Ok(Backup { rx, buf: Vec::new(), pos: 0, packed: Some(Box::new(packed)) });
-            }
-            Err(e) => return Err(io::Error::other(e.to_string())),
-        };
         std::thread::Builder::new().name("import-read".into()).spawn(move || {
             let r2 = r.read_all(|rec| tx.send(Ok(rec.to_vec())).map_err(|_| io::Error::other("the reader stopped")));
             if let Err(e) = r2 {
                 let _ = tx.send(Err(e));
             }
         })?;
-        Ok(Backup { rx, buf: Vec::new(), pos: 0, packed: None })
-    }
-}
-
-/// Compaction's step for the kept uploads: every upload of an import that is over (`done`, `failed`) is packed
-/// ([`kept::pack`]: written beside it, read back and compared, renamed into place, and only then is the upload
-/// removed). Uploads still arriving and imports not yet over are not touched; an upload that is packed already
-/// (gzip, xz, zip) stays as it was uploaded.
-///
-/// Whether an import is over is read from its job on the disk (a state an import never leaves), so the step works
-/// after a restart before anyone opened the imports. A discard and this step never work in one import's folder at
-/// the same time: each holds the import's lock while it does, and a discard first asks a pack under way to stop,
-/// which it does after the block it is on.
-pub struct KeptStep {
-    all: Arc<Imports>,
-    dir: PathBuf,
-    vault: Arc<vault::Vault>,
-}
-
-/// The uploads in an import's folder, by their names as uploaded (`backup`, `backup.1` ...), whichever form is there.
-fn kept_names(dir: &std::path::Path) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for f in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let name = f.file_name().to_string_lossy().into_owned();
-        let base = name.strip_suffix(".pack.tmp").or_else(|| name.strip_suffix(".pack")).unwrap_or(&name);
-        let numbered =
-            base.strip_prefix("backup.").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-        if (base == "backup" || numbered) && !names.iter().any(|n| n == base) {
-            names.push(base.to_string());
-        }
-    }
-    names.sort();
-    names
-}
-
-impl KeptStep {
-    /// The imports that are over, by what their jobs on the disk say.
-    fn over(&self) -> Vec<String> {
-        let mut ids = Vec::new();
-        for d in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
-            let id = d.file_name().to_string_lossy().into_owned();
-            let Ok(Some(raw)) = self.vault.read_file(&d.path().join("job"), &label(&id, "job")) else { continue };
-            let Ok(j) = serde_json::from_slice::<Job>(&raw) else { continue };
-            // what the server knows now counts too (a job saved a moment ago)
-            let unfinished = j.unfinished() || self.all.lock().jobs.get(&id).is_some_and(Job::unfinished);
-            if !unfinished {
-                ids.push(id);
-            }
-        }
-        ids.sort();
-        ids
-    }
-
-    fn left_as_uploaded(&self, label: &str) -> bool {
-        self.all.as_uploaded.lock().unwrap_or_else(|e| e.into_inner()).contains(label)
-    }
-}
-
-impl engine::compact::Step for KeptStep {
-    fn name(&self) -> &'static str {
-        "imports"
-    }
-
-    fn dir(&self) -> PathBuf {
-        self.dir.clone()
-    }
-
-    fn pending(&self) -> u64 {
-        let mut n = 0;
-        for id in self.over() {
-            let dir = self.dir.join(&id);
-            let waiting = |f: &&String| dir.join(f).exists() && !self.left_as_uploaded(&label(&id, f));
-            n += kept_names(&dir).iter().filter(waiting).count() as u64;
-        }
-        n
-    }
-
-    fn run(&self, next: &dyn Fn() -> bool, done: &dyn Fn()) -> engine::compact::StepDone {
-        let mut out = engine::compact::StepDone::default();
-        let stop_at = *self.all.kept_stop.lock().unwrap_or_else(|e| e.into_inner());
-        for id in self.over() {
-            let packing = self.all.packing_of(&id);
-            let _held = packing.lock.lock().unwrap_or_else(|e| e.into_inner());
-            let dir = self.dir.join(&id);
-            // discarded while this waited: its folder is gone, or going
-            if packing.discarded.load(Ordering::SeqCst) || !dir.join("job").exists() {
-                continue;
-            }
-            for file in kept_names(&dir) {
-                let label = label(&id, &file);
-                if self.left_as_uploaded(&label) {
-                    continue;
-                }
-                let gave_way = std::cell::Cell::new(false);
-                let stop = || {
-                    if packing.discarded.load(Ordering::SeqCst) {
-                        return true;
-                    }
-                    gave_way.set(next());
-                    gave_way.get()
-                };
-                match kept::pack(
-                    &self.vault,
-                    &dir.join(&file),
-                    &label,
-                    &kept::Options { stop_at, ..kept::Options::new(&stop) },
-                ) {
-                    Ok(kept::Outcome::Packed { .. }) => {
-                        out.units += 1;
-                        done();
-                    }
-                    Ok(kept::Outcome::AsUploaded) => {
-                        self.all.as_uploaded.lock().unwrap_or_else(|e| e.into_inner()).insert(label);
-                    }
-                    Ok(kept::Outcome::Nothing) => {}
-                    Ok(kept::Outcome::Stopped) if gave_way.get() => {
-                        out.stopped = true;
-                        return out;
-                    }
-                    // discarded meanwhile: the rest of its files go with it
-                    Ok(kept::Outcome::Stopped) => break,
-                    Err(kept::Error::TestStop) => {
-                        out.stopped = true;
-                        return out;
-                    }
-                    Err(e @ kept::Error::Damaged { .. }) => out.problems.push(e.to_string()),
-                    Err(e) => out.problems.push(format!("{label}: {e}")),
-                }
-            }
-        }
-        out
+        Ok(Backup { rx, buf: Vec::new(), pos: 0 })
     }
 }
 
@@ -1115,10 +930,6 @@ fn spawn_check(app: &AppState, id: &str) -> ApiResult<()> {
 async fn discard(State(app): State<AppState>, Admin(v): Admin, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let id2 = id.clone();
     let (name, status) = with_jobs(&app, move |app, all| {
-        // compaction packing one of its files stops at its next block and lets go of the folder
-        let packing = all.packing_of(&id2);
-        packing.discarded.store(true, Ordering::SeqCst);
-        let _folder = packing.lock.lock().unwrap_or_else(|e| e.into_inner());
         // a chunk being stored finishes first (it would put the job back)
         let one = all.chunk_lock(&id2);
         let mut held = one.lock().unwrap_or_else(|e| e.into_inner());
@@ -1131,7 +942,6 @@ async fn discard(State(app): State<AppState>, Admin(v): Admin, Path(id): Path<St
         *held = None;
         all.forget_chunks(&j.id);
         let _ = std::fs::remove_dir_all(folder(app, &j.id));
-        all.packing.lock().unwrap_or_else(|e| e.into_inner()).remove(&j.id);
         Ok((j.name, j.status))
     })
     .await?;

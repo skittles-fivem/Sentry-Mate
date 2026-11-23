@@ -10,7 +10,7 @@
 // The plot fills a box app.css sizes (15 rem, 200 px on a phone) and follows it; fonts and line widths follow the
 // Interface size; a new theme or root size builds the chart again with the same zoom. uPlot loads on first use.
 
-import { h, cssVar, styleSheet, steady } from '../shared/dom.js';
+import { h, cssVar, styleSheet } from '../shared/dom.js';
 import { convert, unitLabel, format } from '../shared/units.js';
 import { formatNumber } from '../shared/i18n.js';
 import { dateFormat } from '../shared/time.js';
@@ -18,14 +18,6 @@ import { display } from './display.js';
 import { onTheme } from './prefs.js';
 
 let loading = null;
-
-// A value that changes under the cursor sits in a box as wide as the widest text it can show (shared/dom.js
-// steady), so a key never changes width, and the legend never wraps anew, while the mouse moves over the chart.
-// Returns [box, the element whose text changes].
-function slot(cls, texts) {
-  const val = h('span', { class: cls });
-  return [steady(val, texts), val];
-}
 /** Load uPlot (script and style sheet) once. */
 export function loadUplot() {
   if (!loading) {
@@ -114,12 +106,11 @@ export async function timeChart(ctx, body, { tz, t_ms, series, states = null, sp
     return { ...s, n, vals, unitText: s.unit ?? (s.kind ? unitLabel(s.kind) : ''), shown: true, axis: s.axis || (n === 0 ? 'left' : 'right') };
   });
   // the legend keys: swatch, name, value at the cursor, unit; pressing hides or shows the line
-  const valText = (l, v) => (v == null ? '—' : `${formatNumber(v, { maximumFractionDigits: l.digits ?? (Math.abs(v) < 10 ? 1 : 0) })}${l.unitText ? ` ${l.unitText}` : ''}`);
   const keys = lines.map((l) => {
-    const [box, val] = slot('key-val', ['—', ...l.vals.map((v) => valText(l, v))]);
+    const val = h('span', { class: 'key-val' }, '—');
     const b = h('button', { type: 'button', class: ['key', `tone-${l.tone || 'c1'}`, { 'is-dashed': l.dashed }], 'aria-pressed': 'true', cover: l.cover,
       title: `Show or hide ${l.name}`, onclick: () => toggle(l, b) },
-    h('span', { class: 'key-sw', 'aria-hidden': 'true' }), h('span', { class: 'key-name' }, l.name), box);
+    h('span', { class: 'key-sw', 'aria-hidden': 'true' }), h('span', { class: 'key-name' }, l.name), val);
     l.valEl = val;
     return b;
   });
@@ -128,7 +119,8 @@ export async function timeChart(ctx, body, { tz, t_ms, series, states = null, sp
   const show = (i) => {
     for (const l of lines) {
       const j = i == null ? lastIdx(l.vals) : i;
-      l.valEl.textContent = valText(l, j >= 0 ? l.vals[j] : null);
+      const v = j >= 0 ? l.vals[j] : null;
+      l.valEl.textContent = v == null ? '—' : `${formatNumber(v, { maximumFractionDigits: l.digits ?? (Math.abs(v) < 10 ? 1 : 0) })}${l.unitText ? ` ${l.unitText}` : ''}`;
     }
   };
   show(null);
@@ -286,23 +278,23 @@ export async function xyChart(ctx, body, { xs = [], xKind = null, xUnit = null, 
     h('span', { class: 'key-sw key-dot', 'aria-hidden': 'true' }), h('span', { class: 'key-name' }, dotsName), h('span', { class: 'key-val' }, formatNumber(pts.length)));
     keys.push(b);
   }
-  const valText = (v) => (v == null ? '—' : `${formatNumber(v, { maximumFractionDigits: Math.abs(v) < 10 ? 1 : 0 })}${yUnit ? ` ${yUnit}` : ''}`);
-  const atText = (v) => (v == null ? '' : `at ${formatNumber(v, { maximumFractionDigits: 1 })}${xu ? ` ${xu}` : ''}`);
   for (const l of lines) {
-    const [box, val] = slot('key-val', ['—', ...l.vals.map(valText)]);
+    const val = h('span', { class: 'key-val' }, '—');
     const b = h('button', { type: 'button', class: ['key', `tone-${l.tone || 'c1'}`, { 'is-dashed': l.dashed }], 'aria-pressed': 'true', cover: l.cover, title: `Show or hide ${l.name}`,
       onclick: () => { l.shown = !l.shown; b.setAttribute('aria-pressed', String(l.shown)); plot?.setSeries(l.n + 1, { show: l.shown }); } },
-    h('span', { class: 'key-sw', 'aria-hidden': 'true' }), h('span', { class: 'key-name' }, l.name), box);
+    h('span', { class: 'key-sw', 'aria-hidden': 'true' }), h('span', { class: 'key-name' }, l.name), val);
     l.valEl = val;
     keys.push(b);
   }
   legend.append(...keys);
-  // the x under the cursor: its room is kept while the mouse is away, so nothing moves when it comes
-  const [atBox, at] = slot('key-at', x.filter((v) => v != null).map(atText));
-  if (lines.length) legend.append(atBox);
+  const at = h('span', { class: 'key-at' });
+  legend.append(at);
   const show = (i) => {
-    at.textContent = i == null ? '' : atText(x[i]);
-    for (const l of lines) l.valEl.textContent = valText(i == null ? null : l.vals[i]);
+    at.textContent = i == null || x[i] == null ? '' : `at ${formatNumber(x[i], { maximumFractionDigits: 1 })}${xu ? ` ${xu}` : ''}`;
+    for (const l of lines) {
+      const v = i == null ? null : l.vals[i];
+      l.valEl.textContent = v == null ? '—' : `${formatNumber(v, { maximumFractionDigits: Math.abs(v) < 10 ? 1 : 0 })}${yUnit ? ` ${yUnit}` : ''}`;
+    }
   };
   show(null);
   let plot = null;

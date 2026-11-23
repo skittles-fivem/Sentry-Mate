@@ -22,9 +22,6 @@ import { mapTile, boundsOf } from '../core/map.js';
 import { xyChart } from '../core/chart.js';
 import { byDay, dayHead, socBar, filterBar, moreButton, statTile, pills, money, splitBar, sectionHead, dur } from '../core/bits.js';
 import { srcPill, estPill, SOURCE_OPTIONS, SOURCE_WORDS, sourceParam } from '../core/source.js';
-import { setPrice } from '../shared/prices.js';
-
-const PRICE_CLS = { btn: 'btn', primary: 'btn-primary', ghost: 'btn-ghost', plain: 'btn-soft', input: 'input', select: 'input' };
 
 export const id = 'charges';
 export const css = true;
@@ -276,13 +273,7 @@ export async function mount(ctx) {
         const href = p.place ? state.buildUrl('places', { query: { place: p.place } }) : state.buildUrl('places', { query: { new: `${p.lat.toFixed(5)},${p.lon.toFixed(5)}` } });
         return h('li', { class: 'rank-row' }, h('a', { class: 'rank-name place-link', href, cover: cover[1] }, p.label),
           h('span', { class: 'rank-n', cover: cover[2] }, cover[2].endsWith('cost') ? (p.cost_by_currency?.length ? p.cost_by_currency.map((x) => formatMoney(x.amount, x.currency)).join(' + ') : 'no price') : format(p.energy_added_kwh, 'energy')),
-          h('span', { class: 'rank-bar', 'aria-hidden': 'true' }, fl),
-          ctx.admin ? btn(p.place ? 'Set price' : 'Save place and set price', { kind: 'ghost', cls: 'rank-set set-price', title: p.place ? `Set the price at ${p.label}` : 'Save this spot as a place, then set its price', onclick: async () => {
-            try {
-              const saved = await setPrice({ client: ctx.api, placeId: p.place, spot: p.place ? null : { name: p.label, lat: p.lat, lon: p.lon }, cls: PRICE_CLS });
-              if (saved) { ctx.toast(`Prices at ${saved.name} saved.`, { next: true }); ctx.reload(); }
-            } catch (e) { ctx.toast(`Could not set the price: ${e.message}`, { kind: 'error' }); }
-          } }) : null);
+          h('span', { class: 'rank-bar', 'aria-hidden': 'true' }, fl));
       }));
     };
 

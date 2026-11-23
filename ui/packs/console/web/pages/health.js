@@ -42,6 +42,7 @@ const REASONS = {
   upload_silence: ['no log has arrived for a while', 'check the bridge has power and a network, and that its key still uploads. nothing is lost while the car sleeps.', 'settings-cars'],
   trust_failed: ['the last log failed its check', 'its signature or chain did not match, so its data is kept apart. pair the bridge again if its key changed.', 'settings-cars'],
   logs_waiting_trust: ['logs wait for a key to be trusted', 'approve or assign the key and they are read at once.', 'settings-cars'],
+  gps_inputs_disagree: ['positions from one input are out of step', 'one input’s GPS positions are far from the other inputs’ positions at the same moments, more than lag or noise explains (often a decoding problem). Its positions are not used there; the other inputs’ positions are. The rest of its data is still used.', null],
   logs_missing: ['logs missing on the server', 'the server lost some logs and asked the car to send them again; see missing on the server below.', null],
   rebuild_pending: ['drives and charges are being rebuilt', 'worked out again from the stored logs; this page reads again until it is done.', null],
 };

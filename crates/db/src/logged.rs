@@ -3,7 +3,7 @@
 //! state itself, so writing costs a small constant factor however big the state gets.
 //!
 //! ```text
-//! <name>.snap  = "SMDB" | kind | version | generation (u64) | level (0 warm, 1 cold, 2 small) | compressed state
+//! <name>.snap  = "SMDB" | kind | version | generation (u64) | level (0 warm, 1 cold) | compressed state
 //! <name>.log   = journal whose header names the generation it follows
 //! ```
 //!
@@ -28,18 +28,6 @@ pub(crate) trait Logged: Sized {
     fn decode_op(b: &[u8]) -> Result<Self::Op>;
     fn encode_state(&self) -> Result<Vec<u8>>;
     fn decode_state(b: &[u8]) -> Result<Self>;
-    /// The state as a finished one is kept: its bytes, the level noted for it, and how hard to compress them.
-    fn encode_cold(&self, ctx: &Ctx) -> Result<(Vec<u8>, u8, codec::Level)> {
-        Ok((self.encode_state()?, LEVEL_COLD, ctx.level(Which::Cold)))
-    }
-    /// The level a finished state's snapshot is at when nothing more can be done for it.
-    fn settled_level(_ctx: &Ctx) -> u8 {
-        LEVEL_COLD
-    }
-    /// Whether `other` (a snapshot read back) is this state, value for value.
-    fn same_as(&self, other: &Self) -> Result<bool> {
-        Ok(self.encode_state()? == other.encode_state()?)
-    }
     /// How hard snapshots are compressed when the journal is folded in on the way.
     const FOLD: Which = Which::Warm;
     /// Whether to fold now, from the journal's size and the last snapshot's.
@@ -50,9 +38,6 @@ pub(crate) trait Logged: Sized {
 
 pub(crate) const LEVEL_WARM: u8 = 0;
 pub(crate) const LEVEL_COLD: u8 = 1;
-/// A finished segment day in its smallest form: the columns of [`crate::segment::encode_small`], compressed at
-/// [`crate::Options::small`]. Nothing more is done to such a day.
-pub(crate) const LEVEL_SMALL: u8 = 2;
 /// Header, generation and level: what [`snapshot_head`] reads.
 pub(crate) const SNAP_HEAD: usize = crate::file::HEADER + 9;
 
@@ -74,10 +59,8 @@ pub(crate) struct Elsewhere {
     pub label: String,
     pub generation: u64,
     pub level: u8,
-    /// The state, unpacked: what a snapshot file holds compressed after its generation and level.
-    pub plain: Vec<u8>,
-    /// About what it takes where it is, compressed.
-    pub bytes: u64,
+    /// The compressed state: what follows the generation and level in a snapshot file.
+    pub body: Vec<u8>,
 }
 
 /// Looks for a snapshot kept elsewhere (`Ok(None)`: there is none).
@@ -132,8 +115,9 @@ impl<S: Logged> LoggedFile<S> {
             }
             None => match elsewhere()? {
                 Some(e) => {
-                    let state = S::decode_state(&e.plain).map_err(|err| err.in_file(&e.label))?;
-                    (state, e.generation, SNAP_HEAD as u64 + e.bytes, e.plain.len() as u64, e.level)
+                    let plain = codec::decompress(&e.body).map_err(|err| err.in_file(&e.label))?;
+                    let state = S::decode_state(&plain).map_err(|err| err.in_file(&e.label))?;
+                    (state, e.generation, (SNAP_HEAD + e.body.len()) as u64, plain.len() as u64, e.level)
                 }
                 None => (S::empty(), 0, 0, 0, LEVEL_WARM),
             },
@@ -181,38 +165,16 @@ impl<S: Logged> LoggedFile<S> {
         Ok(())
     }
 
-    /// Writes the state as a new snapshot and drops the journal. A cold snapshot (a finished state's, which may be
-    /// written another way than it was read: see [`Logged::encode_cold`]) is read back from the disk and compared
-    /// with the state, value for value, before it takes the old one's place.
+    /// Writes the state as a new snapshot and drops the journal.
     pub(crate) fn fold(&mut self, ctx: &Ctx, which: Which) -> Result<()> {
-        let (plain, level, how) = match which {
-            Which::Cold => self.state.encode_cold(ctx)?,
-            Which::Hot | Which::Warm => (self.state.encode_state()?, LEVEL_WARM, ctx.level(which)),
-        };
-        let packed = codec::compress(&plain, how)?;
+        let plain = self.state.encode_state()?;
+        let packed = codec::compress(&plain, ctx.level(which))?;
+        let level = if which == Which::Cold { LEVEL_COLD } else { LEVEL_WARM };
         let mut b = header(S::KIND);
         b.extend_from_slice(&(self.generation + 1).to_be_bytes());
         b.push(level);
         b.extend_from_slice(&packed);
-        if which == Which::Cold {
-            let label = ctx.label(&self.files.snap);
-            let state = &self.state;
-            ctx.write_checked(&self.files.snap, &b, &|back: &[u8]| {
-                let body = check_header(back, S::KIND, &label)?;
-                parse_gen_level(body, &label)?;
-                let plain = codec::decompress(&body[9..]).map_err(|e| e.in_file(&label))?;
-                let read = S::decode_state(&plain).map_err(|e| e.in_file(&label))?;
-                match state.same_as(&read)? {
-                    true => Ok(()),
-                    false => Err(Error::Damaged {
-                        file: label.clone(),
-                        why: "its new snapshot does not read back as it was written; the old one was kept".into(),
-                    }),
-                }
-            })?;
-        } else {
-            ctx.write_atomic(&self.files.snap, &b)?;
-        }
+        ctx.write_atomic(&self.files.snap, &b)?;
         self.generation += 1;
         self.snap_bytes = b.len() as u64;
         self.snap_plain = plain.len() as u64;
@@ -226,9 +188,9 @@ impl<S: Logged> LoggedFile<S> {
         Ok(())
     }
 
-    /// Whether the state is all in a snapshot at the level finished states are kept at (nothing in the journal).
-    pub(crate) fn settled(&self, ctx: &Ctx) -> bool {
-        self.journal.is_none() && self.snap_level >= S::settled_level(ctx)
+    /// Whether the state is all in a cold snapshot (nothing in the journal).
+    pub(crate) fn settled(&self) -> bool {
+        self.journal.is_none() && self.snap_level == LEVEL_COLD
     }
 
     /// Whether a journal is open (changes since the snapshot, or one just started).

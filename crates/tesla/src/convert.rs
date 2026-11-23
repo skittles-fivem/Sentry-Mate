@@ -151,8 +151,10 @@ pub fn reading(v: &Value, now_ms: u64) -> Reading {
     let charging_state = s(v, "charge_state", "charging_state");
     let charging = charging_state.as_deref().map(|c| matches!(c, "Charging" | "Starting"));
     let fast = b(v, "charge_state", "fast_charger_present");
-    let lat = f(v, "drive_state", "latitude").or_else(|| f(v, "drive_state", "native_latitude"));
-    let lon = f(v, "drive_state", "longitude").or_else(|| f(v, "drive_state", "native_longitude"));
+    // `latitude` and `longitude` as a pair, else `native_latitude` and `native_longitude` as a pair: never one of
+    // each, which may be of different moments
+    let pair = |la: &str, lo: &str| f(v, "drive_state", la).zip(f(v, "drive_state", lo));
+    let (lat, lon) = pair("latitude", "longitude").or_else(|| pair("native_latitude", "native_longitude")).unzip();
     let (lat, lon) = match (lat, lon) {
         (Some(a), Some(o)) if (-90.0..=90.0).contains(&a) && (-180.0..=180.0).contains(&o) => (Some(a), Some(o)),
         _ => (None, None),
@@ -262,6 +264,19 @@ mod tests {
 
     fn near(a: Option<f64>, b: f64) -> bool {
         a.is_some_and(|a| (a - b).abs() < 1e-6)
+    }
+
+    #[test]
+    fn a_position_is_one_pair_of_keys() {
+        let at = |d: serde_json::Value| {
+            let s = reading(&json!({"drive_state": d}), 1_000).sample;
+            (s.lat, s.lon)
+        };
+        // a latitude with only a native longitude: never one of each
+        assert_eq!(at(json!({"latitude": 12.5, "native_longitude": -45.0})), (None, None));
+        assert_eq!(at(json!({"native_latitude": 12.5, "native_longitude": -45.0})), (Some(12.5), Some(-45.0)));
+        let both = json!({"latitude": 12.5, "longitude": -45.25, "native_latitude": 1.0, "native_longitude": 2.0});
+        assert_eq!(at(both), (Some(12.5), Some(-45.25)));
     }
 
     #[test]

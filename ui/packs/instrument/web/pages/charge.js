@@ -6,7 +6,7 @@
 // (PUT/DELETE .../cost, admin) that survives rebuilds.
 
 import * as state from '../shared/state.js';
-import { h, replace, cssVar, cover, steady } from '../shared/dom.js';
+import { h, replace, cssVar, cover } from '../shared/dom.js';
 import { format, convert, unitLabel, getUnits, formatMoney } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, zoneName, dayRange, dayKey, DAY } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -17,9 +17,6 @@ import { pageHead, panel, metric, tag, csvButton, kv } from '../core/page.js';
 import { dataTable } from '../core/table.js';
 import { field, form } from '../core/form.js';
 import { flash } from '../core/flash.js';
-import { setPrice } from '../shared/prices.js';
-
-const PRICE_CLS = { btn: 'btn', primary: 'btn--primary', ghost: 'btn--ghost', input: 'input', select: 'select' };
 import { emptyState } from '../core/states.js';
 import { createMap, carMarker, mapFallback } from '../core/map.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, colors, areaFill, hexA, chartFont } from '../core/chart.js';
@@ -185,16 +182,7 @@ export async function mount(ctx) {
     h('b', null, pHref ? h('a', { href: pHref }, placeLabel(c)) : placeLabel(c)),
     c.address?.short && c.place ? h('span', null, c.address.short) : null,
     h('span', { class: 'faint' }, c.position?.accuracy_m != null ? `GPS within ${format(c.position.accuracy_m, 'length')}` : c.position?.lat != null ? spotText(c) : 'No GPS fix'),
-    pHref ? h('a', { class: 'panel-link', href: pHref }, c.place ? 'Edit this place' : 'Save as a place', icon('chev-r', 'ico--sm')) : null,
-    ctx.admin && (c.place?.id || c.position?.lat != null) ? h('button', { class: 'btn btn--sm set-price', type: 'button',
-      title: c.place?.id ? `Set the price at ${placeLabel(c)}` : 'Save this spot as a place, then set its price',
-      onclick: async () => {
-        try {
-          const saved = await setPrice({ client: ctx.api, placeId: c.place?.id || null, spot: c.place?.id ? null : { name: placeLabel(c), lat: c.position.lat, lon: c.position.lon }, cls: PRICE_CLS });
-          if (saved) { flash(`Prices at ${saved.name} saved.`, { next: true }); ctx.reload(); }
-        } catch (e) { flash(`Could not set the price: ${e.message}`, { kind: 'error' }); }
-      },
-    }, icon('settings', 'ico--sm'), c.place?.id ? 'Set price' : 'Save place and set price') : null);
+    pHref ? h('a', { class: 'panel-link', href: pHref }, c.place ? 'Edit this place' : 'Save as a place', icon('chev-r', 'ico--sm')) : null);
   const mapPanel = h('section', { class: 'panel map-panel charge-map', 'aria-label': 'Where it charged', cover: ['cd.map.location', 'web.charge-cost.map'] },
     mapEl, h('div', { class: 'map-overlay map-overlay--tl' }, placeCard));
 
@@ -220,7 +208,7 @@ export async function mount(ctx) {
 
   const chargePanel = h('section', { class: 'panel charts-panel', 'aria-label': 'Through the charge', cover: 'cd.chart.timeline' },
     h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('signals'), 'Through the charge'),
-      h('span', { class: 'row' }, steady(timeEl, t.map((v) => formatTime(v, tz, { seconds: true }))), h('span', { class: 'faint zoom-hint' }, 'Drag across a chart to zoom; double-click for the whole session'), resetBtn, csvCurve('curve'))),
+      h('span', { class: 'row' }, timeEl, h('span', { class: 'faint zoom-hint' }, 'Drag across a chart to zoom; double-click for the whole session'), resetBtn, csvCurve('curve'))),
     selBox, gapNote, chargeHost, h('p', { class: 'note' }, stepNote));
   const limitSeen = [...new Set(col('limit_source').filter((v) => v != null))];
   const supplyPanel = h('section', { class: 'panel charts-panel', 'aria-label': 'The supply' },

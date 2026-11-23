@@ -14,7 +14,6 @@ accounts = { path = "../accounts" }
 engine = { path = "../engine" }
 gate = { path = "../gate" }
 import = { path = "../import" }
-kept = { path = "../kept" }
 model = { path = "../model" }
 moving = { path = "../moving" }
 mqtt = { path = "../mqtt" }

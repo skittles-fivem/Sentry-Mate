@@ -35,7 +35,6 @@
 //! how many days it has: the logs of `days(n)` are the first logs of `days(n + 1)`, the same names and bytes (the log
 //! still being written at the end is left out), so seeding a longer run over a shorter one only adds logs.
 
-pub mod backup;
 mod bridge;
 mod car;
 pub mod columns;
