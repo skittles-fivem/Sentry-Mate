@@ -16,7 +16,7 @@
 
 import { h } from '../shared/dom.js';
 import { format, rangeValue, rangeLabel, getUnits } from '../shared/units.js';
-import { formatDate, formatWhen, formatDuration } from '../shared/time.js';
+import { formatDate, formatWhen, formatDuration, formatRelative } from '../shared/time.js';
 import { formatList } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
@@ -35,10 +35,11 @@ import { vehicleTiles } from './vehicle-parts.js';
 import { historyHref, VERSION_SOURCE } from '../core/firmware.js';
 
 const withVia = (text, x) => { const m = viaMark(x); return m ? h('span', { class: 'src-line' }, text, m) : text; };
-/** The input mark of an off_can value ({ value, at_ms, sources, stale } or null), and Stale past its age limit. */
-const offMark = (x, tz) => (x ? [viaMark(x), x.stale ? h('span', { class: 'src src-via is-stale', title: x.at_ms ? `Newest ${formatWhen(x.at_ms, tz, api.now())}; past its age limit` : null }, 'Stale') : null] : null);
-/** Text with its off_can marks, or null when no input has the value. */
-const withOff = (text, x, tz) => (x == null || v(x) == null || text == null ? null : h('span', { class: ['src-line', { 'is-stale': !!x.stale }] }, text, offMark(x, tz)));
+/** The hover title of an off_can value ({ value, at_ms, sources, stale } or null): its input and age, and stale past
+ *  its age limit. Never words beside the value: the main view stays clean. */
+const offTitle = (x) => { const s = x?.sources?.[0]; return s ? `${s.label}, read ${x.at_ms ? formatRelative(x.at_ms, api.now()) : 'at a time not known'}${x.stale ? '; stale, may have changed since' : ''}` : null; };
+/** Text with its input and age as its title, or null when no input has the value. */
+const withOff = (text, x) => (x == null || v(x) == null || text == null ? null : h('span', { class: { 'is-stale': !!x.stale }, title: offTitle(x) }, text));
 const WINDOWS = [['driver_front', 'driver front'], ['passenger_front', 'passenger front'], ['driver_rear', 'driver rear'], ['passenger_rear', 'passenger rear']];
 
 export const id = 'car';
@@ -99,9 +100,7 @@ export async function mount(ctx) {
     const dest = v(r.destination), km = v(r.km), min = v(r.minutes), traffic = v(r.traffic_min);
     if (dest == null && km == null && min == null) return null;
     const bits = [km != null ? format(km, 'distance') : null, min != null ? `${formatDuration(min * 60000)} to go` : null, traffic ? `${formatDuration(traffic * 60000)} lost to traffic` : null].filter(Boolean);
-    // each mark after a space, not a margin: a mark that wraps to a line of its own stays centred on a phone
-    const marks = (offMark(r.destination || r.km || r.minutes, tz) || []).filter(Boolean).flatMap((m) => [h('span', { class: 'src-gap' }, ' '), m]);
-    return h('p', { class: 'hero-route' }, icon('route'), h('span', null, `Navigating to ${dest || 'a destination'}`, bits.length ? h('span', { class: 'muted' }, `, ${bits.join(', ')}`) : null, marks));
+    return h('p', { class: 'hero-route' }, icon('route'), h('span', { title: offTitle(r.destination || r.km || r.minutes) }, `Navigating to ${dest || 'a destination'}`, bits.length ? h('span', { class: 'muted' }, `, ${bits.join(', ')}`) : null));
   }
   function drawHero() {
     const st = now.state || 'unknown';
@@ -186,7 +185,7 @@ export async function mount(ctx) {
     return h('li', { class: ['flag', { 'is-on': on === true, 'is-unknown': on == null, 'is-stale': !!off?.stale }], cover },
       h('span', { class: ['flag-dot', `tone-${tone}`], 'aria-hidden': 'true' }),
       h('span', { class: 'flag-name' }, text),
-      h('span', { class: 'flag-val' }, on == null ? (w || 'not sent') : on ? words[0] : words[1], via ? viaMark(via) : null, on != null && off ? offMark(off, tz) : null));
+      h('span', { class: 'flag-val', title: on != null && off ? offTitle(off) : null }, on == null ? (w || 'not sent') : on ? words[0] : words[1], via ? viaMark(via) : null));
   }
   function drawFlags() {
     const f = now.flags || {};
@@ -247,8 +246,8 @@ export async function mount(ctx) {
         ['Charge limit', withVia(format(v(c.limit_pct), 'percent'), c.limit_pct), 'nr.dash.charge-limit'],
         ['Current', v(c.amps_a) != null ? `${format(v(c.amps_a), 'current')}${v(c.phases) ? `, ${v(c.phases)} phase${v(c.phases) > 1 ? 's' : ''}` : ''}${v(c.pilot_a) ? ` (pilot ${format(v(c.pilot_a), 'current')})` : ''}` : on ? 'not sent' : '—', 'nr.dash.charging-current'],
         ['Voltage', format(v(c.volts_v), 'voltage'), 'overview.stat.ac_voltage'],
-        ['Scheduled charging', withOff(sched(now.off_can?.scheduled_charge_start_ms), now.off_can?.scheduled_charge_start_ms, tz) || '—', 'summary.stat.scheduled_charging'],
-        ['Scheduled departure', withOff(sched(now.off_can?.scheduled_departure_ms), now.off_can?.scheduled_departure_ms, tz) || '—'],
+        ['Scheduled charging', withOff(sched(now.off_can?.scheduled_charge_start_ms), now.off_can?.scheduled_charge_start_ms) || '—', 'summary.stat.scheduled_charging'],
+        ['Scheduled departure', withOff(sched(now.off_can?.scheduled_departure_ms), now.off_can?.scheduled_departure_ms) || '—'],
       ]));
   }
 
@@ -263,10 +262,9 @@ export async function mount(ctx) {
     const updText = upd == null ? null : v(oc.update_installing) ? `Installing ${uv || 'an update'}` : upd ? `${uv || 'An update'} waiting${pct != null ? `, ${format(pct, 'percent')} downloaded` : ''}` : 'No update waiting';
     put(tSoft, tSoft.firstChild,
       h('p', { class: 'tile-big' }, ver || 'Not known'),
-      h('p', { class: 'tile-line' }, sw.version ? (VERSION_SOURCE[sw.version_source] || 'from its source') : ov ? 'as the car reports it' : 'the version is not on the CAN bus',
+      h('p', { class: 'tile-line', title: ov ? offTitle(oc.version) : null }, sw.version ? (VERSION_SOURCE[sw.version_source] || 'from its source') : ov ? 'as the car reports it' : 'the version is not on the CAN bus',
         sw.changed_since_ms ? `; changed ${formatDate(sw.changed_since_ms, tz, { now: api.now() })}` : '', ov && sw.version && ov !== sw.version ? `; the car reports ${ov}` : ''),
-      ov ? h('p', { class: 'src-line' }, offMark(oc.version, tz)) : null,
-      updText ? h('p', { class: ['tile-line', 'src-line', { 'is-warn': !!upd }] }, updText, offMark(oc.update_available, tz)) : null,
+      updText ? h('p', { class: ['tile-line', { 'is-warn': !!upd }], title: offTitle(oc.update_available) }, updText) : null,
       h('a', { class: 'tile-link', href: state.buildUrl('software', { car: car.id }), cover: 'overview.link.updates' }, 'Software history'),
       h('a', { class: 'tile-link', href: `${state.buildUrl('software', { car: car.id })}#firmware` }, 'Car firmware'),
       h('a', { class: 'tile-link', href: historyHref(car.id) }, 'Module firmware history'));
