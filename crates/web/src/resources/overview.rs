@@ -207,6 +207,8 @@ struct Row {
     last_error: Option<Error>,
     link: String,
     reading: Reading,
+    /// A CAN Bridge row: the car's logs the server is missing and has asked the car for (`None` on other rows).
+    missing_logs: Option<u64>,
 }
 
 impl Row {
@@ -228,6 +230,7 @@ impl Row {
             last_error: None,
             link: link.to_string(),
             reading: Reading::default(),
+            missing_logs: None,
         }
     }
 
@@ -326,6 +329,7 @@ fn smo_rows(e: &Engine, now: u64) -> Vec<Row> {
             &format!("/cars/{}/health", ids::car(id)),
         );
         r.car = Some(id);
+        r.missing_logs = Some(engine::query::system::missing_logs(e, id).map_or(0, |m| m.count));
         r.last_ok_ms = meta.last_arrived_ms;
         r.reading = Reading { count: Some(meta.decoded + meta.holes), errors: Some(meta.holes), ..Reading::default() };
         let age = meta.last_arrived_ms.map(|t| now.saturating_sub(t));
@@ -693,6 +697,7 @@ pub fn build(app: &AppState) -> Value {
                 },
                 "last_error": r.last_error.as_ref().map(|e| json!({ "code": e.code, "message": e.message, "at_ms": e.at_ms })),
                 "hourly": hourly,
+                "missing_logs": r.missing_logs,
                 "link": r.link,
             })
         })

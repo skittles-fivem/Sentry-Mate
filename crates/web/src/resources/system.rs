@@ -28,6 +28,87 @@ pub const REBUILD_WAIT: Duration = Duration::from_secs(60);
 /// A rebuild covers at most this much at a time.
 pub const REBUILD_MAX_MS: u64 = 3 * 366 * 86_400_000;
 
+/// The data folder's write gate, waited for while it pauses (an export's snapshot); `None` when it is closed (the
+/// data moved away) or still paused after a minute.
+async fn through_gate(gate: &gate::Gate) -> Option<gate::Pass> {
+    let until = Instant::now() + Duration::from_secs(60);
+    loop {
+        match gate.try_enter() {
+            Ok(Some(pass)) => return Some(pass),
+            Ok(None) | Err(gate::Refused::Busy) => {}
+            Err(gate::Refused::Closed(_) | gate::Refused::Io(_)) => return None,
+        }
+        if Instant::now() >= until {
+            return None;
+        }
+        tokio::time::sleep(gate::STEP * 4).await;
+    }
+}
+
+/// How long after the start the first look for missing CAN logs waits (the server's start has its own work first).
+pub const MISSING_SCAN_DELAY: Duration = Duration::from_secs(120);
+
+/// One look for the CAN logs the server should have but no longer does, over every car key with records (see
+/// `ingest::missing`), each key through the data folder's write gate. A key with logs newly found missing gets an
+/// audit entry (`can-logs-missing`) on its car. Returns how many were newly found.
+pub async fn scan_missing_logs(app: &AppState, gate: &gate::Gate) -> usize {
+    let Ok(e) = app.service::<Engine>() else { return 0 };
+    let keys = match e.judge().keys().await {
+        Ok(k) => k,
+        Err(err) => {
+            tracing::warn!("missing CAN logs: the car keys could not be listed: {err}");
+            return 0;
+        }
+    };
+    let mut found = 0;
+    for key in keys {
+        // low priority: every other task goes first between keys
+        tokio::task::yield_now().await;
+        let Some(pass) = through_gate(gate).await else { continue };
+        let uploading = e.store().uploading(&key).await;
+        let r = e.judge().scan_missing(&key, uploading).await;
+        drop(pass);
+        let scan = match r {
+            Ok(s) => s,
+            // not the key: the server's log is kept in the clear
+            Err(err) => {
+                tracing::warn!("missing CAN logs: a car key could not be looked at: {err}");
+                continue;
+            }
+        };
+        if scan.new.is_empty() {
+            continue;
+        }
+        found += scan.new.len();
+        let (n, k) = (scan.new.len(), key.clone());
+        let _ = app
+            .blocking(move |app| {
+                let e = app.service::<Engine>()?;
+                let car = q::all_cars(&e)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|&c| e.db().car(c).ok().flatten().is_some_and(|c| c.vehicle_keys.contains(&k)));
+                let logs = if n == 1 { "1 CAN log".to_string() } else { format!("{n} CAN logs") };
+                let (t, whose) = match car {
+                    Some(c) => (Some(target("car", Some(c), "")), app.car_name(c)),
+                    None => (None, "a CAN Bridge key not given to a car".to_string()),
+                };
+                let summary =
+                    format!("Found {logs} of {whose} missing on the server; asked the car to send them again");
+                let details = crate::ctx::audit_details(t.as_deref(), &summary);
+                if let Err(err) = app.accounts.audit().record(None, None, "can-logs-missing", &details) {
+                    tracing::warn!("audit: {err}");
+                }
+                Ok(())
+            })
+            .await;
+    }
+    if found > 0 {
+        tracing::info!("missing CAN logs: {found} found missing on the server; the cars are asked to send them again");
+    }
+    found
+}
+
 pub fn routes() -> Router<AppState> {
     STARTED.get_or_init(Instant::now);
     Router::new()
