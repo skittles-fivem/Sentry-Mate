@@ -6,7 +6,8 @@ import assert from 'node:assert/strict';
 
 import { define } from './fake-browser.js';
 define('addEventListener', (type, f) => { if (type === 'beforeprint') printListeners.push(f); });
-const { whenNear, isNear, nearNow, scrollRoot } = await import('../lazy.js');
+const { whenNear, isNear, nearNow, scrollRoot, setLazy } = await import('../lazy.js');
+setLazy(true);
 
 // a tiny element: a box at top..top+height, in the page or not, inside parent
 function el({ top = 0, height = 100, connected = true, parent = null, inert = false, hidden = false, shift = null } = {}) {

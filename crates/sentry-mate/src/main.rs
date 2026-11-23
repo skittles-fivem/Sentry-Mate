@@ -26,8 +26,10 @@
 //!   keys KEY                      the signing keys a car key's logs name, and which one is trusted
 //!   keys trust KEY SIGNING-KEY    trust another signing key for a car key (asks first; --yes doesn't)
 //!   health                        exit 0 when the upload port answers, or a move comes in (for Docker)
-//!   gps-layout --car C [--days N] where the Screenmate's GPS frame keeps latitude and longitude, from the stored
-//!                                 logs and the other inputs' positions (only reads; prints no positions)
+//!   gps-layout --car C [--days N] [--wait MIN]
+//!                                 where the Screenmate's GPS frame keeps latitude and longitude, from the stored
+//!                                 logs and the other inputs' positions (only reads; prints no positions; with the
+//!                                 server running, the server runs it)
 //!   log-checks --car C            every log of a car as the CAN Bridge app is told it now, counted per check_reason,
 //!                                 and when the failed ones were (only reads; prints no names or keys)
 //!
@@ -173,7 +175,8 @@ enum Cmd {
     /// Where the Screenmate's own GPS frame (0x04F on its internal bus) keeps latitude and longitude, worked out from
     /// a car's stored logs and the positions its other inputs (Tesla API, TeslaFi, TeslaMate) reported at the same
     /// moments. Prints layouts and errors in metres only (no positions or times), so it can be passed on. Runs beside
-    /// the server and only reads: `docker exec <container> /sentry-mate gps-layout --car c1`.
+    /// the server and only reads: `docker exec <container> /sentry-mate gps-layout --car c1`. With the server
+    /// running, the server runs the fit (as Data health's Find GPS layout does) and this shows its progress.
     GpsLayout {
         /// The car, as its pages' address names it (`c1`).
         #[arg(long)]
@@ -181,6 +184,9 @@ enum Cmd {
         /// How many days back from now to read.
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=366))]
         days: u32,
+        /// How many minutes to wait for a busy server at most.
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=1440))]
+        wait: u64,
     },
     /// Every log of a car's CAN Bridge keys as the app is told it now (`verified`, `pending`, `failed` and its
     /// `check_reason`), counted, and the runs of failed logs by their start times (UTC). Prints no log name, car key or
@@ -468,7 +474,7 @@ fn needs(cmd: &Cmd) -> Option<(bool, bool)> {
             Some((true, true))
         }
         Cmd::Move { cmd: MoveCmd::Status } => Some((false, false)),
-        // (the GPS layout fit only reads, pausing the writes a moment for each read of the db)
+        // (the GPS layout fit only reads: the running server's job, or the folder read without its write gate)
         Cmd::Log { cmd: LogCmd::Export { .. } | LogCmd::Decode { .. } }
         | Cmd::Chain { .. }
         | Cmd::Keys { .. }
@@ -583,13 +589,14 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
             let out = std::io::stdout();
             return decode::run(&store, &judge, &name, any, model, &mut out.lock(), &mut std::io::stderr()).await;
         }
-        Cmd::GpsLayout { car, days } => {
+        Cmd::GpsLayout { car, days, wait } => {
             let Some(car) = gps_layout::parse_car(&car) else {
                 eprintln!("--car: a car as its pages' address names it, like c1");
                 return Ok(ExitCode::FAILURE);
             };
-            let out = std::io::stdout();
-            return gps_layout::run(&data, &keys, car, days, &mut out.lock(), &mut std::io::stderr()).await;
+            let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
+            let wait = Duration::from_secs(wait * 60);
+            return gps_layout::run(&data, &keys, car, days, wait, &mut out, &mut err).await;
         }
         Cmd::LogChecks { car } => {
             let Some(car) = gps_layout::parse_car(&car) else {

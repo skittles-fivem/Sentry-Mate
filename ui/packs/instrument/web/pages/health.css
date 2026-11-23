@@ -210,3 +210,27 @@
 /* Rebuild all data at the bottom of the health card: the full rebuild block (below) over the whole width */
 .hl-full { display: block; }
 .hl-full > .hl-sub { margin-top: 0; }
+
+/* Find GPS layout (shared/gpsfit.js), in the notice that one input's positions are out of step (admins): every
+   row keeps its height in every state (not run, running, done, failed), and long text ends in an ellipsis */
+.hl-fix:has(> div > .gf) { grid-column: 1 / -1; }
+.gf { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); min-width: 0; margin-top: round(0.625rem, var(--e)); padding-top: round(0.625rem, var(--e)); border-top: 1px solid var(--line); }
+.gf-explain { margin: 0; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
+.gf-acts { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)); }
+.gf-bar-row { display: flex; align-items: center; gap: round(0.75rem, var(--e)); height: round(1.25rem, var(--e)); }
+.gf-bar { flex: 1 1 auto; }
+.gf-bar > i { transition: width 0.9s linear; }
+.gf-pct { flex: none; width: 6ch; white-space: nowrap; height: round(1.25rem, var(--e)); text-align: right; font-variant-numeric: tabular-nums; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
+.gf-head, .gf-notes { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; height: round(2.5rem, var(--e)); margin: 0; overflow: hidden; overflow-wrap: anywhere; font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
+.gf-notes { color: var(--text-3); }
+.gf-step { height: round(1.25rem, var(--e)); margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
+.gf-rows { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); margin: 0; }
+.gf-row { display: grid; grid-template-columns: round(5.5rem, var(--e)) minmax(0, 1fr) minmax(0, round(12rem, var(--e))); gap: round(0.75rem, var(--e)); height: round(1.25rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
+.gf-row dt, .gf-row dd { margin: 0; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.gf-row dt { color: var(--text-3); }
+.gf-layout { font-variant-numeric: tabular-nums; }
+.gf-err { color: var(--text-2); text-align: right; font-variant-numeric: tabular-nums; }
+.gf[data-tone="ok"] .gf-head { color: var(--live); }
+.gf[data-tone="warn"] .gf-head { color: var(--warm); }
+.gf[data-tone="error"] .gf-head { color: var(--danger); }
+@media (prefers-reduced-motion: reduce) { .gf-bar > i { transition: none; } }

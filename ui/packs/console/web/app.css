@@ -1358,3 +1358,24 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 #view { transition: opacity 0.2s ease; }
 :root[data-stale] #view { opacity: 0.72; transition: opacity 0.3s ease 0.25s; }
 @media (prefers-reduced-motion: reduce) { #view, :root[data-stale] #view { transition: none; } }
+
+/* find gps layout (shared/gpsfit.js), under the line that one input's positions are out of step (admins): every
+   row keeps its height in every state; long text ends in an ellipsis */
+.hl-fixes .gf { display: flex; flex-direction: column; gap: var(--g2); min-width: 0; max-width: calc(var(--a2) * 96); margin: var(--g2) 0 0 calc(var(--a2) * 2); padding: var(--g) 0 0 var(--g); border-left: 1px solid var(--rule); }
+.gf-explain { margin: 0; color: var(--muted); }
+.gf-acts { display: flex; flex-wrap: wrap; gap: var(--g); }
+.gf-bar-row { display: flex; align-items: center; gap: var(--g); height: var(--lh2); }
+.gf-bar { flex: 1 1 auto; height: calc(var(--g2) * 2); background: var(--panel-2); border: 1px solid var(--rule); overflow: hidden; }
+.gf-bar > i { display: block; height: 100%; width: var(--w, 0%); background: var(--accent); }
+.gf-pct { flex: none; width: 6ch; height: var(--lh2); text-align: right; white-space: nowrap; color: var(--muted); }
+.gf-head, .gf-notes { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; height: calc(var(--lh2) * 2); margin: 0; overflow: hidden; overflow-wrap: anywhere; }
+.gf-notes { color: var(--muted); }
+.gf-step { height: var(--lh2); margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); }
+.gf-rows { display: flex; flex-direction: column; margin: 0; }
+.gf-row { display: grid; grid-template-columns: calc(var(--a2) * 10) minmax(0, 1fr) minmax(0, calc(var(--a2) * 30)); gap: var(--g); height: var(--lh2); }
+.gf-row dt, .gf-row dd { margin: 0; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.gf-row dt { color: var(--muted); }
+.gf-err { text-align: right; color: var(--muted); }
+.gf[data-tone="ok"] .gf-head { color: var(--good); }
+.gf[data-tone="warn"] .gf-head { color: var(--warn); }
+.gf[data-tone="error"] .gf-head { color: var(--bad); }
