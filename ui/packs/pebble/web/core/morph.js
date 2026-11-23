@@ -22,7 +22,9 @@ export function keepEl(el, name) {
 }
 
 function syncAttrs(el, to) {
-  for (const a of [...el.attributes]) if (!to.hasAttribute(a.name)) el.removeAttribute(a.name);
+  // an inline style the new part was built without is the page's own layout work (a grid's measured columns,
+  // a box's kept height): it stays, or the part would jump until that work is done again
+  for (const a of [...el.attributes]) if (a.name !== 'style' && !to.hasAttribute(a.name)) el.removeAttribute(a.name);
   for (const a of [...to.attributes]) {
     if (el.getAttribute(a.name) === a.value) continue;
     // custom properties (setVars) through the style object: the policy refuses a style attribute set as text
