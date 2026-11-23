@@ -402,7 +402,10 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
     ctx.fail(err);
   }
   if (!alive()) return;
-  requestAnimationFrame(rec.release); // (a page that never called ready())
+  // a page that never calls ready(): snapped all the same, a moment after its mount (a page that does is snapped
+  // once, at ready: its mount often returns before its data is in, and every part it draws after would otherwise
+  // start a whole-page snap of its own)
+  setTimeout(rec.release, 2000);
   if (live) { showPending(); return; }
   if (!keepScroll) {
     window.scrollTo(0, 0);

@@ -493,7 +493,8 @@ let restTimer = 0;
 function later() {
   if (queued) return;
   queued = true;
-  requestAnimationFrame(() => { queued = false; snapAll(); });
+  // (a resize or the fonts while a page is being built: one run, when it is drawn)
+  requestAnimationFrame(() => { queued = false; if (holds) held = true; else snapAll(); });
 }
 
 /** Starts keeping grids and tables on whole pixels: call once at start. */
