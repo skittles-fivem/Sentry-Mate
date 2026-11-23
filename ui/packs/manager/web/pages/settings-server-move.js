@@ -6,6 +6,8 @@
 //     Afterwards it says where the data went, with "Undo the move" (POST /system/move/undo).
 //   - an export file (POST /system/exports): one file with everything, for servers that can't reach each
 //     other, or to keep as a backup. It opens only with the recovery key and never holds the key file.
+//     Its progress follows `job` events of kind export (live events, polling GET /system/exports only while the
+//     live stream is down), painted in place.
 // Making a code, undoing a move and making an export ask for the person's own password again.
 
 import { h, replace, setVars } from '../shared/dom.js';
@@ -19,6 +21,8 @@ import { openDialog, confirmDialog } from '../core/dialog.js';
 import { dateTime, dur, ago, DASH } from '../core/fmt.js';
 import { dayKey } from '../shared/time.js';
 import { exportModel, exportPollMs } from '../shared/exportjob.js';
+import { follow, jobOf } from '../shared/live.js';
+import { morphChildren } from '../core/morph.js';
 
 const enc = encodeURIComponent;
 const bytes = (n) => (n == null ? DASH : format(n, 'bytes'));
@@ -197,8 +201,9 @@ export function movePanel(ctx, { tz, zone }) {
   const t = (ms) => (ms == null ? DASH : dateTime(ms, tz));
 
   /* ---------------------------------------------------------------- polling */
-  let timer = null, expTimer = null;
-  ctx.onCleanup(() => { clearTimeout(timer); clearTimeout(expTimer); });
+  // the move has no event: its state is read every second or two while one is under way
+  let timer = null;
+  ctx.onCleanup(() => clearTimeout(timer));
   function schedule() {
     clearTimeout(timer);
     if (!S.move || !LIVE.has(S.move.state)) return;
@@ -391,24 +396,24 @@ export function movePanel(ctx, { tz, zone }) {
   /* ---------------------------------------------------------------- export file */
   // The status panel has the same rows in every state (none, making, stalled, failed, ready), each always there,
   // so the box keeps its size as the export goes on. The words come from shared/exportjob.js.
-  function scheduleExp() {
-    clearTimeout(expTimer);
-    const ms = exportPollMs(S.exp);
-    if (ms) expTimer = setTimeout(refreshExp, ms);
+  // `job` events of kind export carry the ExportFile; GET /system/exports (at most one) is read at the start, after
+  // a reconnect and, only while the live stream is down, as often as exportPollMs says
+  function takeExp(e) {
+    if (!ctx.alive()) return;
+    const was = S.exp;
+    S.exp = e || null; S.expErr = null;
+    if (e && was?.id === e.id && was.state === 'preparing' && e.state === 'ready' && S.wantDownload) { S.wantDownload = false; download(e); }
+    paintExp();
   }
-  async function refreshExp() {
-    try {
-      const e = S.exp ? await ctx.api.get(`system/exports/${enc(S.exp.id)}`) : null;
-      if (!ctx.alive()) return;
-      const was = S.exp?.state;
-      S.exp = e; S.expErr = null;
-      if (e && was === 'preparing' && e.state === 'ready' && S.wantDownload) { S.wantDownload = false; download(e); }
-    } catch (err) {
-      if (!ctx.alive()) return;
-      if (err.status === 404) { S.exp = null; S.expErr = null; } else S.expErr = err;
-    }
-    paintExp(); scheduleExp();
-  }
+  let expFirst = null;
+  const expReady = new Promise((res) => { expFirst = res; });
+  const expLive = follow(ctx.api, {
+    type: 'job', match: jobOf('export'), pick: (d) => d.status,
+    load: () => ctx.api.get('system/exports').then((x) => x?.items?.[0] || null),
+    pollMs: () => exportPollMs(S.exp),
+    onValue: (e) => { takeExp(e); expFirst(); },
+    onError: (err) => { if (ctx.alive()) { S.expErr = err; paintExp(); } expFirst(); },
+  });
   function download(e) {
     if (!e?.url) return;
     const a = h('a', { href: e.url, download: e.file_name || '', hidden: true });
@@ -429,7 +434,7 @@ export function movePanel(ctx, { tz, zone }) {
     });
     if (!r || !ctx.alive()) return;
     S.exp = r; S.expErr = null; S.wantDownload = true;
-    paintExp(); scheduleExp();
+    paintExp(); expLive.refresh();
   }
   async function cancelExport() {
     if (!S.exp || !(await confirmDialog('The server stops making the file and keeps nothing of it. Uploads go on. You can make a new one at any time.', { title: 'Stop making the export file?', ok: 'Stop making it', danger: true }))) return;
@@ -438,7 +443,7 @@ export function movePanel(ctx, { tz, zone }) {
       S.exp = null; S.wantDownload = false;
       flash('The export file was cancelled.', { kind: 'info' });
     } catch (e) { flash(`Could not cancel it: ${errText(e)}`, { kind: 'error' }); }
-    if (ctx.alive()) { paintExp(); scheduleExp(); }
+    if (ctx.alive()) { paintExp(); expLive.refresh(); }
   }
   async function removeExport() {
     if (!(await confirmDialog('The file is removed from this server. A copy you downloaded stays where you put it.', { title: 'Remove the export file?', ok: 'Remove it', danger: true }))) return;
@@ -497,7 +502,8 @@ export function movePanel(ctx, { tz, zone }) {
   }
   function paintExp() {
     const e = S.exp;
-    replace(expBox, [
+    // only the words and figures that changed are written (an event can come twice a second)
+    morphChildren(expBox, [
       expPanel(e),
       e?.state === 'ready' ? skippedNote(e.skipped) : null,
       h('p', { class: 'note' }, h('b', null, 'On the new server:'), ' choose Restore from an export file on its first page, choose this file and type the recovery key. A cut download carries on when you press Download again.'),
@@ -522,13 +528,12 @@ export function movePanel(ctx, { tz, zone }) {
 
   async function load() {
     try {
-      const [m, ex] = await Promise.all([ctx.api.get('system/move'), ctx.api.get('system/exports').catch(() => null)]);
+      const m = await ctx.api.get('system/move');
       if (!ctx.alive()) return;
       setMove(m);
-      S.exp = ex?.items?.[0] || null;
     } catch (e) { if (!ctx.alive()) return; S.err = e; }
-    paintMove(); paintExp(); schedule(); scheduleExp();
+    paintMove(); schedule();
   }
   paintMove(); paintExp();
-  return { el, ready: load() };
+  return { el, ready: Promise.all([load(), expReady]) };
 }
