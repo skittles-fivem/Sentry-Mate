@@ -329,3 +329,18 @@
 /* overview: a CAN Bridge row's logs missing on the server, beside its name (no line of its own) */
 .co-nameline { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.25rem, var(--e)) round(0.5rem, var(--e)); min-width: 0; }
 .co-miss { flex: none; height: round(1.125rem, var(--e)); }
+
+/* Supercharger invoices, in the Tesla and TeslaFi sections (pages/invoices-block.js) */
+.inv-block { display: flex; flex-direction: column; gap: round(0.875rem, var(--e)); margin-top: var(--gap); min-width: 0; }
+.inv-block .panel-head { margin: 0; }
+.inv-block .switch-row { margin-top: 0; padding: 0; justify-content: flex-start; }
+.inv-block > .note, .inv-block > .si-last-error { margin: 0; }
+.inv-downloads { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.625rem, var(--e)); }
+.inv-month { display: inline-flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)); }
+.inv-unmatched { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); }
+.inv-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); }
+.inv-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: round(0.75rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); }
+.inv-list .faint { white-space: nowrap; }
+.inv-list .num { font-variant-numeric: tabular-nums; text-align: right; }
+:root[data-phone] .inv-list li { grid-template-columns: minmax(0, 1fr) auto; }
+:root[data-phone] .inv-list li .faint { grid-column: 1; grid-row: 2; }

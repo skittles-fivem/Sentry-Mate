@@ -34,8 +34,7 @@ pub fn read_log(
     let mut decoder = dbc::Decoder::new(profile, sidecar);
     let mut builder = SampleBuilder::new(profile, params);
     let mut facts = FactsCollector::new(LogFacts::from_sidecar(sidecar));
-    // the vehicle bus as the sidecar's bus map names it, as the decoder reads it
-    let mut firmware = FirmwareCollector::on_buses(crate::firmware::vehicle_buses(decoder.buses()));
+    let mut firmware = FirmwareCollector::new();
     logfmt::read_log(xz, logfmt::Limits::default(), |l| {
         let line = logfmt::Line::parse(l);
         if let logfmt::Line::Frame(f) = &line

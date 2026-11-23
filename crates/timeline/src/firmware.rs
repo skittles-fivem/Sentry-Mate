@@ -1,11 +1,8 @@
 //! The firmware fingerprints one log's frames carry ([`dbc::firmware`]): which values each field had on the vehicle
 //! bus, how often, and when.
 //!
-//! Only the vehicle bus counts: the gateway copies some of these messages to the chassis bus, and a copy must not
-//! count twice or bring another bus's view. Which interface the vehicle bus is comes from the log's sidecar bus map
-//! ([`vehicle_buses`]): the bridge works it out from the ids it sees, and a bridge that came up with its interfaces
-//! the other way round names `can1` the vehicle bus. Read as `can0` always, such a log's fingerprints were lost while
-//! its drives (decoded through the map) were not. A value is not trusted from one frame: the history takes a value
+//! Only `can0` (the vehicle bus) counts: the gateway copies some of these messages to the chassis bus, and a copy
+//! must not count twice or bring another bus's view. A value is not trusted from one frame: the history takes a value
 //! once it was seen [`CONFIRM`] times within one awake span (a corrupt frame must not look like an update). What
 //! this collects is the raw tally; the confirming is done over the span's logs together, since one log can end
 //! before a field was sent often enough.
@@ -50,47 +47,20 @@ impl LogFirmware {
     }
 }
 
-/// The interfaces (`canN` as N) a bus map calls the vehicle bus; with none, `can0` unless the map calls it the
-/// chassis bus (a set without a vehicle bus, or a sidecar that names none, reads `can0` as before).
-pub fn vehicle_buses(map: &std::collections::BTreeMap<String, String>) -> Vec<u8> {
-    let num = |iface: &str| iface.strip_prefix("can").and_then(|n| n.parse::<u8>().ok());
-    let mut v: Vec<u8> = map.iter().filter(|(_, b)| b.as_str() == "VehicleBus").filter_map(|(i, _)| num(i)).collect();
-    if v.is_empty() && map.get("can0").is_none_or(|b| b != "ChassisBus") {
-        v.push(0);
-    }
-    v.sort_unstable();
-    v.dedup();
-    v
-}
-
 /// Reads a log's lines into its [`LogFirmware`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FirmwareCollector {
     out: LogFirmware,
-    /// The vehicle bus's interface numbers.
-    buses: Vec<u8>,
-}
-
-impl Default for FirmwareCollector {
-    fn default() -> Self {
-        FirmwareCollector { out: LogFirmware::default(), buses: vec![0] }
-    }
 }
 
 impl FirmwareCollector {
-    /// A collector for a log whose vehicle bus is `can0`.
     pub fn new() -> FirmwareCollector {
         FirmwareCollector::default()
     }
 
-    /// A collector for a log whose vehicle bus is on these interfaces ([`vehicle_buses`]).
-    pub fn on_buses(buses: Vec<u8>) -> FirmwareCollector {
-        FirmwareCollector { out: LogFirmware::default(), buses }
-    }
-
-    /// One frame: counted when it is a module's info frame on the vehicle bus with a value that says something.
+    /// One frame: counted when it is a module's info frame on `can0` with a value that says something.
     pub fn frame(&mut self, f: &logfmt::Frame) {
-        if !self.buses.contains(&f.bus) || f.extended || dbc::firmware::module_of(f.id).is_none() {
+        if f.bus != 0 || f.extended || dbc::firmware::module_of(f.id).is_none() {
             return;
         }
         let ms = f.time_us / 1000;
@@ -165,29 +135,6 @@ mod tests {
                 },
             ]
         );
-    }
-
-    #[test]
-    fn the_vehicle_bus_is_the_one_the_bus_map_names() {
-        let map = |pairs: &[(&str, &str)]| -> std::collections::BTreeMap<String, String> {
-            pairs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
-        };
-        assert_eq!(vehicle_buses(&map(&[("can0", "VehicleBus"), ("can1", "ChassisBus")])), vec![0]);
-        // a bridge that came up the other way round: the vehicle bus is can1, can0 carries the gateway's copies
-        assert_eq!(vehicle_buses(&map(&[("can0", "ChassisBus"), ("can1", "VehicleBus")])), vec![1]);
-        // no vehicle bus named (another set): can0 as before, unless it is the chassis bus
-        assert_eq!(vehicle_buses(&map(&[("can0", "PowertrainBus"), ("can1", "ChassisBus")])), vec![0]);
-        assert!(vehicle_buses(&map(&[("can0", "ChassisBus")])).is_empty());
-        let text = "(1767225600.100000) can1 300#0D000000484280F2\n\
-                    (1767225601.100000) can0 300#0D000000DDCCBBAA\n\
-                    (1767225602.100000) can1 300#0D000000484280F2\n";
-        let mut c = FirmwareCollector::on_buses(vec![1]);
-        for l in text.lines() {
-            c.line(&logfmt::Line::parse(l.as_bytes()));
-        }
-        let fw = c.finish();
-        assert_eq!(fw.seen.len(), 1, "{fw:?}");
-        assert_eq!((fw.seen[0].value, fw.seen[0].count), (0xF280_4248, 2));
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub mod drives;
 pub mod efficiency;
 pub mod fleet;
 pub mod imports;
+pub mod invoices;
 pub mod logs;
 pub mod mqtt;
 pub mod notices;
@@ -55,6 +56,7 @@ pub fn routes() -> Router<AppState> {
         .merge(tokens::routes())
         .merge(tesla::routes())
         .merge(teslafi::routes())
+        .merge(invoices::routes())
         .merge(teslamate_local::routes())
         .merge(release::routes())
         .merge(overview::routes())

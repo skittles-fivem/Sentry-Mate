@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ..errors import ApiError, bad_input, conflict, invalid, not_found
 from ..util import DAY, MIN
+from . import invoices
 from .tesla import _only, _str, reconfirm
 
 HOST = "www.teslafi.com"
@@ -196,27 +197,34 @@ def overview(req):
         "polls_today": sum(_polls_today(req, a) for a in t["accounts"].values()), "last_error": _last_error(t),
         "clients_built": t["clients_built"], "tls": "1.3" if t["accounts"] else None,
         "version": _poll(req)["version"],
+        "invoices": invoices.block(req, "teslafi"),
     }
 
 
 def patch_overview(req):
     """`PATCH /integrations/teslafi` `{ version, poll }`: how often TeslaFi is read."""
     body = req.json()
-    _only(body, ("version", "poll", "confirm_password", "code"))
+    _only(body, ("version", "poll", "invoices", "confirm_password", "code"))
     poll = _str(body, "poll")
     if poll is not None and poll not in PACES:
         raise invalid({"poll": "Must be often, normal or gentle."})
+    inv = invoices.patch_value(body)
     reconfirm(req, body)
     st = req.store
     s = _poll(req)
     with st.lock:
         req.version_check(s["version"])
+        changed = False
         if poll is not None and poll != s["poll"]:
             s["poll"] = poll
-            s["version"] += 1
-            st.rev += 1
+            changed = True
             st.record(req.account, "teslafi-poll-changed", "settings:teslafi",
                       f"Set how often TeslaFi is read to {poll}.")
+        if invoices.apply_patch(req, "teslafi", inv):
+            changed = True
+        if changed:
+            s["version"] += 1
+            st.rev += 1
     return overview(req)
 
 

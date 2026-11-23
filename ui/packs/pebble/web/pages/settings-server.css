@@ -31,9 +31,3 @@
   .au-who { order: 1; flex: 1 1 100%; max-width: none; justify-content: flex-start; text-align: left; color: var(--muted); padding-top: 0; }
   .au-box { height: min(round(30rem, var(--e)), 62svh); }
 }
-
-/* Server updates: the value with its chip on the right of each row; Change names beside the names in the certificate */
-.upd-val { display: inline-flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: var(--s2); text-align: right; overflow-wrap: anywhere; }
-.upd-val.is-error { color: var(--coral-ink, inherit); }
-.names-btn { margin-left: auto; }
-.names-ed { display: flex; flex-direction: column; gap: var(--s3); }

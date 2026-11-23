@@ -33,21 +33,23 @@
 .page-settings-server .ss-out-text { color: var(--ink-3); margin-top: round(0.1875rem, var(--e)); max-width: 70ch; font-size: var(--text-sm); --LH: round(calc(1.5 * 1em), 2px); }
 .page-settings-server .ss-out-action { margin-top: round(0.5rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.7 * 1em), 2px); }
 
-/* host names: the editor in the Change names dialog */
-.ss-names-block .ss-names { list-style: none; margin: 0 0 round(1rem, var(--e)); padding: 0; border-top: 1px solid var(--rule); }
-.ss-names-block .ss-name { display: flex; align-items: center; gap: round(0.75rem, var(--e)); padding: round(0.5rem, var(--e)) 0; border-bottom: 1px solid var(--rule); min-height: round(2.75rem, var(--e)); }
-.ss-names-block .ss-name-text { font-size: var(--text-sm); flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
-.ss-names-block .ss-name .button { margin-left: auto; }
-.ss-names-block .ss-add .field { min-width: 0; }
-.ss-names-block .ss-add .field-control { gap: round(0.75rem, var(--e)); }
-.ss-names-block .ss-add .field-input { flex: 1 1 auto; width: auto; min-width: 0; }
-.ss-names-block .ss-add-btn { flex: none; }
-.ss-names-block .ss-save { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.75rem, var(--e)); margin-top: round(0.75rem, var(--e)); }
-.ss-names-block .ss-details { margin-top: round(1.25rem, var(--e)); border-top: 1px solid var(--rule); padding-top: round(0.875rem, var(--e)); }
-.ss-names-block .ss-details summary { cursor: pointer; font-size: var(--text-sm); color: var(--accent-strong); }
-.ss-names-block .ss-details[open] summary { margin-bottom: round(0.75rem, var(--e)); }
-.ss-names-block .ss-steps { margin: 0; padding-left: round(1.25rem, var(--e)); display: grid; gap: round(0.5rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.6 * 1em), 2px); max-width: 70ch; }
+/* host names */
+.page-settings-server .ss-names { list-style: none; margin: 0 0 round(1rem, var(--e)); padding: 0; border-top: 1px solid var(--rule); }
+.page-settings-server .ss-name { display: flex; align-items: center; gap: round(0.75rem, var(--e)); padding: round(0.5rem, var(--e)) 0; border-bottom: 1px solid var(--rule); min-height: round(2.75rem, var(--e)); }
+.page-settings-server .ss-name-text { font-size: var(--text-sm); flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.page-settings-server .ss-name .button { margin-left: auto; }
+.page-settings-server .ss-add .field { min-width: 0; }
+.page-settings-server .ss-add .field-control { gap: round(0.75rem, var(--e)); }
+.page-settings-server .ss-add .field-input { flex: 1 1 auto; width: auto; min-width: 0; }
+.page-settings-server .ss-add-btn { flex: none; }
+.page-settings-server .ss-save { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.75rem, var(--e)); margin-top: round(0.75rem, var(--e)); }
+.page-settings-server .ss-details { margin-top: round(1.25rem, var(--e)); border-top: 1px solid var(--rule); padding-top: round(0.875rem, var(--e)); }
+.page-settings-server .ss-details summary { cursor: pointer; font-size: var(--text-sm); color: var(--accent-strong); }
+.page-settings-server .ss-details[open] summary { margin-bottom: round(0.75rem, var(--e)); }
+.page-settings-server .ss-steps { margin: 0; padding-left: round(1.25rem, var(--e)); display: grid; gap: round(0.5rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.6 * 1em), 2px); max-width: 70ch; }
 
+/* ports */
+.page-settings-server .ss-port { font: 400 1.0625rem var(--serif); --LH: normal; line-height: var(--LH); font-variant-numeric: tabular-nums; }
 
 /* access */
 .page-settings-server .ss-me { padding: round(1rem, var(--e)) round(1.125rem, var(--e)); background: var(--accent-wash); border-radius: round(0.25rem, var(--e)); margin: round(0.25rem, var(--e)) 0 round(1.25rem, var(--e)); }
@@ -197,15 +199,3 @@
 .page-settings-server .ss-stor-line.ss-warn, .page-settings-server .ss-stor-line.ss-warn strong { color: var(--rust); }
 .page-settings-server .ss-stor-table { margin-top: round(0.75rem, var(--e)); }
 .page-settings-server .sort-mark { font-size: max(10px, 0.75em); }
-
-/* the Change names dialog (outside the page's own class) and Server updates */
-.ss-names-block .ss-state { font-size: var(--text-s); color: var(--ink-3); }
-.ss-names-block > .note { margin-bottom: round(1rem, var(--e)); }
-.page-settings-server .ss-names-btn { margin-left: auto; }
-.page-settings-server .ss-upd-facts { margin: 0; border-top: 1px solid var(--rule); }
-.page-settings-server .ss-upd-row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: round(0.25rem, var(--e)) round(1rem, var(--e)); padding: round(0.5rem, var(--e)) 0; border-bottom: 1px solid var(--rule); }
-.page-settings-server .ss-upd-row dt { font-size: var(--text-sm); color: var(--ink-2); }
-.page-settings-server .ss-upd-row dd { margin: 0 0 0 auto; text-align: right; overflow-wrap: anywhere; min-width: 0; }
-.page-settings-server .ss-upd--error { color: var(--rust); }
-.page-settings-server .ss-upd-on { margin-top: round(0.875rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); max-width: 70ch; }
-.page-settings-server .ss-upd-how { margin-top: round(0.5rem, var(--e)); }

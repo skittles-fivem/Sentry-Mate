@@ -71,8 +71,10 @@ class Charges(ServerCase):
         self.assertEqual(up["cost"], {"amount": 12.5, "currency": "USD", "source": "manual"})
         self.c.error("PUT", f"/api/v1/cars/c1/charges/{x['id']}/cost", 422, "invalid",
                      body={"mode": "total", "amount": 5, "currency": "XYZ"})
+        self.assertEqual([i["applied"] for i in up["invoices"]], [False] * len(up["invoices"]))  # an entered cost wins
         back = self.c.json("DELETE", f"/api/v1/cars/c1/charges/{x['id']}/cost")
-        self.assertEqual(back["cost"]["source"], "tariff")
+        # back to the Tesla invoice matched to the charge, else the place price
+        self.assertEqual(back["cost"]["source"], "tesla_invoice" if d["invoices"] else "tariff")
 
     def test_stopped_mid_charge(self):
         g = self.c.get("/api/v1/cars/c1/charges?flags=gap&limit=500")["items"]

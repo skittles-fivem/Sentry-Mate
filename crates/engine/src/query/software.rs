@@ -76,10 +76,6 @@ pub struct UpdateView {
     pub named_by: Option<&'static str>,
     /// A fingerprint update: the last time the old fingerprints were seen and the first time the new ones were.
     pub between_ms: Option<[u64; 2]>,
-    /// A fingerprint update with no readings at all for a whole day or more inside `between_ms`: it came somewhere
-    /// in there, when is not known (its `start_ms` and `end_ms` are where the new set was first seen, and
-    /// `duration_ms` is null).
-    pub readings_gap: bool,
     /// Charges that started while the car ran this version.
     pub charges: u64,
     /// The rated range at 100 % at the end of those charges (their median).
@@ -169,49 +165,37 @@ pub(crate) fn version_of(e: &Engine, car: CarId, u: &UpdateRow) -> QResult<(Opti
 pub(crate) const INPUT_NAME_WINDOW_MS: u64 = 24 * 3600 * 1000;
 
 /// The version a live input said the car ran after the update whose old fingerprints were last seen at `from_ms` and
-/// the new ones first at `to_ms`, from the inputs in the car's order (its `source_order`, [`Engine::source_order`]):
-///
-/// 1. the first version the input began reporting from `to_ms` until a day after it (what it said right after the
-///    new set appeared, even when it said that version before too: it may predate the window, or the window be wrong);
-/// 2. else the newest one it changed to between `from_ms` and `to_ms` that is not the one it said before `from_ms`
-///    (the input saw the update before the logs did);
-/// 3. else the one it was reporting when the new set appeared and still reported after it.
+/// the new ones first at `to_ms`: the newest version an input started saying from `from_ms` until a day after `to_ms`
+/// that is not the one it said before `from_ms` (before `to_ms`, only one it changed to), from the inputs in the car's
+/// order (its `source_order`, [`Engine::source_order`]).
 fn input_named(e: &Engine, car: CarId, from_ms: u64, to_ms: u64) -> QResult<Option<(String, model::Input)>> {
     let seen = crate::records::input_versions(e.db(), car)?;
     let mut inputs: Vec<model::Input> = seen.iter().map(|s| s.input).collect();
     let order = e.source_order(car);
     inputs.sort_by_key(|&i| order.rank(i));
     inputs.dedup();
+    let until = to_ms.saturating_add(INPUT_NAME_WINDOW_MS);
     for input in inputs {
         let mine: Vec<&crate::records::VersionSeen> = seen.iter().filter(|s| s.input == input).collect();
-        if let Some(s) = pick_named(&mine, from_ms, to_ms) {
+        let before = mine.iter().rev().find(|s| s.first_ms < from_ms).map(|s| s.version.as_str());
+        // the newest one said in the window; one said before the new fingerprints were seen counts only as a change
+        // the input saw (its first version said then can still be the old one)
+        let changed = |k: usize| k.checked_sub(1).is_some_and(|j| mine[j].version != mine[k].version);
+        if let Some(s) = (0..mine.len())
+            .rev()
+            .find(|&k| {
+                let s = mine[k];
+                (from_ms..=until).contains(&s.first_ms)
+                    && before != Some(s.version.as_str())
+                    && (s.first_ms >= to_ms || changed(k))
+            })
+            .map(|k| mine[k])
+            && valid_version(&s.version)
+        {
             return Ok(Some((s.version.clone(), input)));
         }
     }
     Ok(None)
-}
-
-/// [`input_named`] for one input's stretches (oldest first): the stretch that names the update, if one does.
-fn pick_named<'a>(
-    mine: &[&'a crate::records::VersionSeen],
-    from_ms: u64,
-    to_ms: u64,
-) -> Option<&'a crate::records::VersionSeen> {
-    let until = to_ms.saturating_add(INPUT_NAME_WINDOW_MS);
-    let ok = |s: &&&crate::records::VersionSeen| valid_version(&s.version);
-    let after = mine.iter().filter(ok).find(|s| (to_ms..=until).contains(&s.first_ms));
-    let before = mine.iter().rev().find(|s| s.first_ms < from_ms).map(|s| s.version.as_str());
-    let changed = |k: usize| k.checked_sub(1).is_some_and(|j| mine[j].version != mine[k].version);
-    let during = (0..mine.len())
-        .rev()
-        .filter(|&k| {
-            let s = mine[k];
-            (from_ms..to_ms).contains(&s.first_ms) && before != Some(s.version.as_str()) && changed(k)
-        })
-        .map(|k| &mine[k])
-        .find(ok);
-    let holding = mine.iter().filter(ok).rev().find(|s| s.first_ms < to_ms && s.last_ms >= to_ms);
-    after.or(during).or(holding).copied()
 }
 
 /// The row of `all[i]`: its version, the stretch until the next update, the charges in that stretch.
@@ -252,9 +236,7 @@ fn view(e: &Engine, c: &Car, all: &[UpdateRow], i: usize, shown: &Shown) -> QRes
         start_ms: up.start_ms,
         end_ms: up.end_ms,
         until_ms: until,
-        // across a gap in the readings, how long it took is not known
-        duration_ms: (!fw.as_ref().is_some_and(|f| f.gap))
-            .then_some(up.end_ms.unwrap_or(now).saturating_sub(up.start_ms)),
+        duration_ms: Some(up.end_ms.unwrap_or(now).saturating_sub(up.start_ms)),
         since_previous_ms: prev_end.map(|p| up.start_ms.saturating_sub(p)),
         version,
         version_source,
@@ -272,7 +254,6 @@ fn view(e: &Engine, c: &Car, all: &[UpdateRow], i: usize, shown: &Shown) -> QRes
         changes: fw.as_ref().map(super::firmware::changes_of).unwrap_or_default(),
         named_by,
         between_ms: fw.as_ref().map(|f| [f.from_ms, f.to_ms]),
-        readings_gap: fw.as_ref().is_some_and(|f| f.gap),
         charges,
         full_range_km: r(full_range, 1),
         full_pack_kwh: None,
@@ -355,13 +336,6 @@ pub fn updates(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QRes
         _ => None,
     };
     let (cv, cs, since) = current(e, &c, &all)?;
-    let (changed_since, named_end) = build_changed_since(e, car, &all)?;
-    // after a build change the version shown is the last named one: it ran from when it was named until the change
-    // (never from the change itself: that is the unnamed update's end)
-    let since = match changed_since {
-        Some(t) => since.filter(|s| *s < t).or(named_end.filter(|s| *s < t)),
-        None => since,
-    };
     let median = match gaps.len() {
         0 => None,
         n if n % 2 == 1 => Some(gaps[n / 2]),
@@ -373,7 +347,7 @@ pub fn updates(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QRes
         current_version: cv,
         current_version_source: cs,
         current_version_since_ms: since,
-        build_changed_since: changed_since,
+        build_changed_since: build_changed_since(e, car, &all)?,
         last_update: match all.last() {
             Some(u) => {
                 let (version, version_source) = version_of(e, car, u)?;
@@ -392,20 +366,19 @@ pub fn updates(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QRes
 }
 
 /// When the module builds changed after the newest named version: the end of the oldest fingerprint update without
-/// a version after the newest update with one (null: none since, or no update was ever named); and the end of that
-/// named update (null: none named).
-fn build_changed_since(e: &Engine, car: CarId, all: &[UpdateRow]) -> QResult<(Option<u64>, Option<u64>)> {
+/// a version after the newest update with one (null: none since, or no update was ever named).
+fn build_changed_since(e: &Engine, car: CarId, all: &[UpdateRow]) -> QResult<Option<u64>> {
     let mut since = None;
     for u in all.iter().rev() {
         let (v, _) = version_of(e, car, u)?;
         if v.is_some() {
-            return Ok((since, Some(u.update.end_ms.unwrap_or(u.update.start_ms))));
+            return Ok(since);
         }
         if crate::firmware::is_fingerprint(u.id) {
             since = Some(u.update.end_ms.unwrap_or(u.update.start_ms));
         }
     }
-    Ok((None, None))
+    Ok(None)
 }
 
 /// One update as `PATCH` answers it: the row with the car's zone.
@@ -702,41 +675,5 @@ mod tests {
             ["drive_ended", "charge_started"]
         );
         assert_eq!(parse_types(Some("door_opened")).unwrap_err().code(), "bad_input");
-    }
-
-    #[test]
-    fn an_input_names_an_update_by_what_it_reported_right_after_the_new_set() {
-        use crate::records::VersionSeen;
-        const H: u64 = 3_600_000;
-        let s = |v: &str, a: u64, b: u64| VersionSeen {
-            input: model::Input::TeslamateLocal,
-            version: v.into(),
-            first_ms: a,
-            last_ms: b,
-        };
-        let pick = |all: &[VersionSeen], from: u64, to: u64| {
-            let mine: Vec<&VersionSeen> = all.iter().collect();
-            pick_named(&mine, from, to).map(|s| s.version.clone())
-        };
-        let (from, to) = (100 * H, 400 * H);
-        // reported first before the window (it predates it, or the window was too wide) and still after the new
-        // set appeared: it names the update
-        let all = [s("2026.40.2", 0, 50 * H), s("2026.44.1", 60 * H, 500 * H)];
-        assert_eq!(pick(&all, from, to).as_deref(), Some("2026.44.1"));
-        // a version begun right after the new set wins over one held from before
-        let all = [s("2026.40.2", 0, 401 * H), s("2026.44.1", 402 * H, 500 * H)];
-        assert_eq!(pick(&all, from, to).as_deref(), Some("2026.44.1"));
-        // a change seen before the logs saw the new set
-        let all = [s("2026.40.2", 0, 150 * H), s("2026.44.1", 200 * H, 300 * H)];
-        assert_eq!(pick(&all, from, to).as_deref(), Some("2026.44.1"));
-        // nothing reported after the new set appeared, and no change: no name
-        let all = [s("2026.40.2", 0, 150 * H)];
-        assert_eq!(pick(&all, from, to), None);
-        // a change more than a day after the new set, and nothing held across it: no name
-        let all = [s("2026.40.2", 0, 150 * H), s("2026.44.1", to + 30 * H, to + 40 * H)];
-        assert_eq!(pick(&all, from, to), None);
-        // not a version: skipped
-        let all = [s("unknown", 0, 500 * H)];
-        assert_eq!(pick(&all, from, to), None);
     }
 }

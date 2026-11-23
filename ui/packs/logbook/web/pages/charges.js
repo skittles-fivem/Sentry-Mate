@@ -20,6 +20,7 @@ import { formatNumber, tn } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
+import { costSourceLabel } from '../shared/invoices.js';
 import { pageHead, q, figure, icon, empty, errorView, loadingBlock, flag, button, sep } from '../core/ui.js';
 import { dataTable } from '../core/table.js';
 import { makeMap, boundsOf } from '../core/map.js';
@@ -42,7 +43,7 @@ const KIND_WHY = {
   dc: 'DC: a fast charger fed the pack directly. Its grid side is not metered, so the efficiency is unknown.',
   unknown: 'Unknown: the charge port did not say AC or DC (often imported history). It is never counted as DC.',
 };
-const COST_SOURCE = { tariff: 'place price', manual: 'typed in', free_supercharging: 'free Supercharging', teslamate: 'imported' };
+const COST_SOURCE = { tariff: 'place price', manual: 'typed in', free_supercharging: 'free Supercharging', teslamate: 'imported', tesla_invoice: 'Tesla invoice', teslafi: 'from TeslaFi' };
 const PLACE_KINDS = [['', 'Any kind of place'], ['home', 'Home'], ['work', 'Work'], ['charger', 'Public charger'], ['service', 'Service centre'], ['other', 'Other saved place'], ['none', 'Not a saved place']];
 const TYPES = [['', 'All'], ['ac', 'AC'], ['dc', 'DC'], ['unknown', 'Unknown']];
 const SOURCES = SOURCE_FILTER;
@@ -226,10 +227,12 @@ export async function mount(ctx) {
   const costCell = (c) => {
     const text = c.cost ? formatMoney(c.cost.amount, c.cost.currency) : 'No price';
     const sub = c.cost ? COST_SOURCE[c.cost.source] || c.cost.source : c.place ? 'the place has no price' : 'not a saved place';
+    const from = c.cost ? costSourceLabel(c.cost.source) || null : null;
     const main = admin
-      ? h('button', { type: 'button', class: ['ch-cost-button', { 'is-missing': !c.cost }], title: c.cost ? 'Change the cost of this charge' : 'Set a cost for this charge', onclick: () => costDialog(c) }, text, icon('settings'))
-      : h('a', { class: ['ch-cost-link', { 'is-missing': !c.cost }], href: state.buildUrl('charge', { car: c.car, charge: c.id, period: ctx.state.period, query: { edit: 'cost' } }), title: 'Open the charge to see how its cost was worked out' }, text);
-    return h('span', null, main, h('span', { class: 'cell-sub' }, sub),
+      ? h('button', { type: 'button', class: ['ch-cost-button', { 'is-missing': !c.cost }], title: c.cost ? `${from ? `${from}. ` : ''}Change the cost of this charge` : 'Set a cost for this charge', onclick: () => costDialog(c) }, text, icon('settings'))
+      : h('a', { class: ['ch-cost-link', { 'is-missing': !c.cost }], href: state.buildUrl('charge', { car: c.car, charge: c.id, period: ctx.state.period, query: { edit: 'cost' } }), title: `${from ? `${from}. ` : ''}Open the charge to see how its cost was worked out` }, text);
+    // the hover title names where the cost came from (Place price, From Tesla invoice, ...)
+    return h('span', { title: from, cover: 'inv.charges.cost-source' }, main, h('span', { class: 'cell-sub' }, sub),
       c.price_per_kwh && c.price_per_kwh.value != null
         ? h('span', { class: 'cell-sub ch-ppk', title: c.price_per_kwh.basis === 'grid' ? 'Cost over the energy from the grid (metered)' : 'Cost over the energy added to the pack' }, format({ amount: c.price_per_kwh.value, currency: c.cost && c.cost.currency }, 'price_energy'), c.price_per_kwh.basis === 'grid' ? ' of grid' : ' of pack')
         : null);

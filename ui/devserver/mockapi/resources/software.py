@@ -57,8 +57,6 @@ def update_rows(req, h):
             "changes": FW.update_changes(h, u, req.now) if fp else [],
             "named_by": (("owner" if vs == "owner" else "auto") if fp and v else None),
             "between_ms": [u.start, u.end] if fp else None,
-            # the mock's updates are read every day: never across a day with no readings
-            "readings_gap": False,
             "charges": len(on), "full_range_km": r(car.full_range_km(mid), 1),
             "full_pack_kwh": r(bms_full(car, mid), 2) if u.source == "can" else None,
             "until_ms": ups[i + 1].start if i + 1 < len(ups) else None,

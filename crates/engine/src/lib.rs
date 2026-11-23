@@ -46,6 +46,7 @@ pub mod compact;
 pub mod costs;
 pub mod firmware;
 pub mod importer;
+pub mod invoices;
 pub mod jobs;
 mod pipeline;
 pub use pipeline::NEW_CAR_NAME;
@@ -256,6 +257,10 @@ pub(crate) struct Inner {
     pub(crate) compaction: Mutex<compact::Running>,
     pub(crate) compact_stop: std::sync::atomic::AtomicBool,
     pub(crate) compact_auto: std::sync::atomic::AtomicBool,
+    /// The invoice sessions as kept ([`invoices`]), while none changes; one writer at a time; bumped by each write.
+    pub(crate) invoice_all: Mutex<Option<Arc<std::collections::BTreeMap<String, invoices::Session>>>>,
+    pub(crate) invoice_write: Mutex<()>,
+    pub(crate) invoice_gen: AtomicU64,
 }
 
 /// Where a car's zone was last looked up (latitude, longitude) and the zone found there.
@@ -365,6 +370,9 @@ impl Engine {
                 compaction: Mutex::default(),
                 compact_stop: std::sync::atomic::AtomicBool::new(false),
                 compact_auto: std::sync::atomic::AtomicBool::new(false),
+                invoice_all: Mutex::new(None),
+                invoice_write: Mutex::new(()),
+                invoice_gen: AtomicU64::new(0),
                 opts,
             }),
         }
