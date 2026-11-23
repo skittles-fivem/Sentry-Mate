@@ -87,9 +87,11 @@ export function estPill(r, { text = 'Energy estimated' } = {}) {
 }
 
 /** A small mark after a live value that came from an input other than SMO ({ value, at_ms, sources }). */
+const SHOW_VIA = false;
 export function viaMark(val) {
   const s = val && typeof val === 'object' && Array.isArray(val.sources) ? val.sources[0] : null;
-  if (!s || s.kind === 'smo') return null;
+  // where a value came from is not marked beside it (the main view stays clean); the live inputs line names them
+  if (!s || s.kind === 'smo' || !SHOW_VIA) return null;
   return h('span', { class: 'src src-via', title: labelOf(s) }, dots([s.kind]), h('span', null, SHORT[s.kind] || s.kind));
 }
 

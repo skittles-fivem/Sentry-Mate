@@ -87,12 +87,16 @@ function merge(into, delta) {
 const at = (x) => (x && typeof x === 'object' && 'at_ms' in x ? x.at_ms : null);
 // the input a live value came from ({ value, at_ms, sources }): a small mark for any input but SMO (the Tesla API),
 // so a value the API sent is never mistaken for one measured on the car's bus. The live inputs line explains it.
+const SHOW_VIA = false;
 function via(pair) {
   const s = pair && typeof pair === 'object' ? pair.sources?.[0] : null;
-  if (!s || s.kind === 'smo') return null;
-  return h('span', { class: 'src-via', title: s.label || 'Data from the Tesla API' }, h('i', { class: `src-m src-m--${s.kind}`, 'aria-hidden': 'true' }), h('span', null, s.kind === 'tesla_api' ? 'API' : s.kind === 'teslafi_api' ? 'TeslaFi' : s.kind));
+  if (!s || s.kind === 'smo' || !SHOW_VIA) return null;
+  return h('span', { class: 'src-via', title: s.label || 'Data from the Tesla API' }, h('i', { class: `src-m src-m--${s.kind}`, 'aria-hidden': 'true' }), h('span', null, s.kind === 'tesla_api' ? 'API' : s.kind === 'teslafi_api' ? 'TeslaFi' : s.kind === 'teslamate_local' ? 'TeslaMate' : s.label || s.kind));
 }
-const withVia = (pair, content) => { const m = via(pair); return m ? h('span', { class: 'aged' }, content, m) : content; };
+// where a value came from is not shown beside it (the main view stays clean): its source is the value's hover title,
+// and the Live inputs line names the inputs
+const srcTitle = (pair) => { const x = pair && typeof pair === 'object' ? pair.sources?.[0] : null; return x && x.kind !== 'smo' ? (x.label || x.kind) : null; };
+const withVia = (pair, content) => { const t = srcTitle(pair); return t ? h('span', { class: 'aged', title: t }, content) : content; };
 // a value with its own age when it is older than the snapshot (a tyre read an hour ago), and its input
 function aged(pair, content, newest) {
   const t = at(pair);

@@ -78,7 +78,9 @@ export const EST_WHY = 'Only the Tesla API saw this: its power readings (every f
 export const est = (r) => (isEstimated(r) ? h('span', { class: 'tag tag--warn src-est', title: apiOnly(r) ? EST_WHY : 'This energy is estimated, not measured.' }, '[est]') : null);
 
 /** '[api]' after a live value that came from an input other than SMO. */
+const SHOW_VIA = false;
 export function via(v) {
+  if (!SHOW_VIA) return null; // where a value came from is not marked beside it; the live inputs line names them
   const s = v && typeof v === 'object' && Array.isArray(v.sources) ? v.sources[0] : null;
   if (!s || s.kind === 'smo') return null;
   return h('span', { class: 'src src--via', title: s.label || labelOf(s) }, h('span', { class: 'src-b' }, '[', h('span', { class: ['src-k', `src-k--${s.kind}`] }, SHORT[s.kind] || s.kind), ']'));
