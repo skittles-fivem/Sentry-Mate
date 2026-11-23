@@ -402,7 +402,7 @@ def create_place(req):
     p["version"] = 1
     p["created_ms"] = req.now
     summary = _apply(req, "create", p["id"], p)
-    st.record(req.account, "place.create", f"place:{p['id']}",
+    st.record(req.account, "place-created", f"place:{p['id']}",
               f"Added the place {p['name']} ({summary['drives_named']} drives and {summary['charges_named']} "
               "charges now carry its name).")
     _rows_event(req)
@@ -421,7 +421,7 @@ def patch_place(req):
     p["version"] = cur["version"] + 1
     summary = _apply(req, "update", cur["id"], p)
     what = ", ".join(sorted(k for k in body if k != "version")) or "nothing"
-    st.record(req.account, "place.update", f"place:{cur['id']}", f"Changed {what} of the place {p['name']}.")
+    st.record(req.account, "place-changed", f"place:{cur['id']}", f"Changed {what} of the place {p['name']}.")
     _rows_event(req)
     out = view(req, p)
     out["effect"] = summary
@@ -436,7 +436,7 @@ def delete_place(req):
         from ..errors import stale_version
         raise stale_version(cur["version"])
     summary = _apply(req, "delete", cur["id"], None)
-    st.record(req.account, "place.delete", f"place:{cur['id']}",
+    st.record(req.account, "place-deleted", f"place:{cur['id']}",
               f"Removed the place {cur['name']} ({summary['drives_unnamed']} drives lost the name).")
     _rows_event(req)
     return {"deleted": True, "id": cur["id"], "effect": summary}
@@ -532,7 +532,7 @@ def reprice(req):
         if not dry:
             st.rev += 1
     if not dry:
-        st.record(req.account, "place.reprice", f"place:{pl['id']}",
+        st.record(req.account, "place-repriced", f"place:{pl['id']}",
                   f"Repriced {len(changed)} past charges at {pl['name']}.")
         _rows_event(req)
     money = lambda d: [{"currency": k, "amount": round(v, 2)} for k, v in sorted(d.items())]  # noqa: E731

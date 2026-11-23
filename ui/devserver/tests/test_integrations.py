@@ -87,8 +87,8 @@ class Mqtt(ServerCase):
         d = self.put(password=None)
         self.assertFalse(d["password_set"])
         audit = [a["action"] for a in self.c.get("/api/v1/audit?limit=10")["items"]]
-        self.assertIn("mqtt.update", audit)
-        self.assertIn("settings.update", audit)
+        self.assertIn("mqtt-changed", audit)
+        self.assertIn("settings-changed", audit)
 
     def test_4_test_and_status(self):
         ok = self.c.json("POST", "/api/v1/settings/mqtt/test")

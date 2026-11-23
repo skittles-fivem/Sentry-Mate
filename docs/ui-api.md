@@ -12,7 +12,7 @@ This is the `/api/v1` the pages in [`parity/ui-parity.md`](parity/ui-parity.md) 
 - **Several cars:** report resources accept `cars=all` or `cars=1,7` where the page offers it; each row then has `car`.
 - **Access:** every car-scoped route checks the account's car list. An unknown car and a car the account may not see give the same answer: `404 { error: { code: "no_such_car" } }`.
 - **Errors** use one shape: `{ error: { code, message, fields? } }`. `400` bad input (with `fields`), `401` not signed in, `403` not allowed (role), `404` unknown or hidden, `409` conflict (stale `version`), `422` invalid value, `429` with `Retry-After`.
-- **Changes** need the CSRF header, are recorded in the audit log, and admin-only changes say so below. An entry names what was changed: a CAN Bridge key move is `key-assigned` (the car it went to) and `key-unassigned` (the car it left), with `target` `key:<car>:<key>`; `key-preferred`; `token-created` and `token-revoked` with `target` `token:<car>:<id>` (`token:<id>` for a new car's token). A change no handler words itself is a plain `change` entry with the request's ids filled into its route (and `car` set when the route names one). `POST /places/preview` changes nothing and writes no entry, and the same `/me/preferences` change by one account within 10 minutes is one entry.
+- **Changes** need the CSRF header, are recorded in the audit log, and admin-only changes say so below. An entry names what was changed: a CAN Bridge key move is `key-assigned` (the car it went to) and `key-unassigned` (the car it left), with `target` `key:<car>:<key>`; `key-preferred`; `token-created` and `token-revoked` with `target` `token:<car>:<id>` (`token:<id>` for a new car's token). Every admin route writes a code of its own with a summary in words (never a method and a route); see [Audit log](#audit-log) for the codes, their groups and item kinds. The plain `change` code is left only on old stored entries, and those read back mapped. `POST /places/preview` changes nothing and writes no entry, and the same `/me/preferences` change by one account within 10 minutes is one entry.
 - **Sources:** every row says where it came from. `sources` is a list (never empty on a row) of `{ kind: "smo" | "tesla_api" | "teslafi_api" | "teslamate_local" | "import", site?, label }`: `smo` is SMO (the Screenmate CAN Bridge's signed logs), `tesla_api` the Tesla Owner API this server reads, `teslafi_api` TeslaFi's polls this server reads, `teslamate_local` the owner's local TeslaMate (its MQTT topics), `import` history brought in from another site (`site: "teslamate"` or `"teslafi"`). `label` is a short line a page can show ("Data from SMO", "Data from the Tesla API", "Data from TeslaFi", "Data from local TeslaMate", "Imported from TeslaMate", "Imported from TeslaFi"). A row that several inputs saw lists them all (always SMO first in the list; which input's values win where they cover the same time is the car's `source_order`, by default SMO > Tesla API > TeslaFi > local TeslaMate, imports after every live input), and `source_label` says it in one line ("Data from SMO and the Tesla API"). Live values carry `sources` too (one entry), and so do `/cars` items (what the car has data from), `config` values (empty when an admin typed the value), `/series` and other column answers (what gave the points), `/storage` days and `/overlaps`. Estimated values carry a `basis` (for example `energy_basis: "measured" | "estimated"`). A drive or charge with Tesla API data alone has `energy_basis: "estimated"` (the API's power read every few seconds to a minute, summed).
 - **Values filled from an import:** where the live inputs (SMO, the Tesla API, TeslaFi's API, local TeslaMate) all have nothing for a value at a time, the import shown for that span (TeslaMate's or TeslaFi's, as [Overlaps](#conventions) chooses) fills it, with `source=all` only and while the car's `import_gap_fill` (else the server's `import_gap_fill.enabled`, on by default) says so. A filled row is still its own source's row (its `source` word is kept); its `sources` add the import ("Data from SMO; imported from TeslaMate") and `value_sources: { field: [source] }` names each filled field (an empty object when the row has only its own values). Drives fill `start` (never `end`: a live drive without one is one whose data stopped, and keeps its "Data stopped here"), `start_odometer_km`, `end_odometer_km`, `start_soc_pct`, `end_soc_pct`, `start_range_km`, `end_range_km`, `outside_avg_c`, `cabin_avg_c`, `climb_m` and `descent_m`; charges `position` (and `odometer_km`), `start_soc_pct`, `end_soc_pct`, `start_range_km`, `end_range_km`, `outside_avg_c` and `battery_avg_c`. Distance, energy, costs and `energy_basis` are never filled, so totals and consumption stay the live row's own. Columns (`/series`) carry `value_sources: { field: [source] }`: every input or import that gave that column a value. `/now` is the car's newest values and is never filled (an import is history).
 - **Old `source` word (deprecated, kept for one release):** rows still carry `source`: `can` when SMO is among `sources`, `teslamate` for an imported row, `tesla_api` for a row from the Tesla API alone (a new word). `/overlaps` keeps `shown: "can" | "teslamate"` and the `can` and `teslamate` counts beside the new fields. The packs read these today; they should move to `sources`, `shown_source`, `live` and `imported`. A later release drops them.
@@ -31,7 +31,7 @@ This is the `/api/v1` the pages in [`parity/ui-parity.md`](parity/ui-parity.md) 
 | `/api/v1/me/sessions[/{session}]` | GET, DELETE | `{ id, created_ms, last_seen_ms, this_one }`; delete one or all. | Settings: Server and access |
 | `/api/v1/me/preferences` | GET, PATCH | `{ units: { distance: "km" \| "mi", temperature: "c" \| "f", pressure: "bar" \| "psi" }, range: "rated" \| "ideal", theme: "light" \| "dark" \| "device", language, interface_size, follow_screen, map_colors, map_style: "dimmed" \| "original", ui_pack, car_order: [id], pinned_cars: [id], main_car: id \| null, last_car: id \| null }`. Units default from the server settings, which can default from the car's own distance unit. `last_car` is the car the person picked last (car switcher, a page's car picker, opening `/cars/{car}/...`; pages save it a moment after the pick, a sold car only when opened explicitly), `main_car` the car they chose in Settings: Display and units; both are a car the account sees, or `null` (set `null` to forget it; one the account no longer sees reads `null`). A page whose URL names no car, and the landing after signing in, show the main car if set and seen, else the last car if seen and not sold, else the first pinned car (then the car order) not sold, else the first car not sold. | Every page, Fleet, Settings: Display and units |
 | `/api/v1/accounts[/{account}]` | GET, POST, PATCH, DELETE (admin) | `{ id, name, role, cars: [id] \| "all", two_step_required, created_ms }` | Settings: Server and access |
-| `/api/v1/audit` | GET (admin) | `{ items: [{ at_ms, account, action, target, summary }], next }` | Settings: Server and access |
+| `/api/v1/audit` | GET (admin) | `{ items: [{ at_ms, account, action, group, target, car, summary, address }], next }`, newest first. `group` is the code's group (`"other"` for a code the server does not know), `car` the car the `target` item belongs to (or null), `address` where the request came from (null for the server's own entries). Filters by group (a comma list) and by who (an account name, or the server itself) apply before paging, which is by cursor as on every list. See [Audit log](#audit-log) for the parameters, the codes and the item kinds. | Settings: Server and access |
 
 - **Passwords.** `POST /setup`, `POST /setup/fresh`, `POST /accounts` and `PUT /me/password` refuse only an empty password and one over 1,024 bytes (`422 invalid` on the field); any other is taken, for the first admin as for everyone. `PATCH /accounts/{account}` refuses one over 1,024 bytes the same way, but takes an empty `password` as "keep the current one" (`200`, the password and the account's sign-ins unchanged). Pages warn before they send one that `passwordAdvice()` (`ui/shared/password.js`, the same reasons as the server's `password_advice`) has reasons for (shorter than 12 characters, close to the account name, one of the most common, repeating itself) and let the person use it anyway. Argon2id, the sign-in throttles, HTTPS only and two-step sign-in are what keep a weak one out of reach.
 - **Asking again before a change.** Account changes (`POST`/`PATCH`/`DELETE /accounts[/{account}]`, `DELETE /accounts/{account}/two-step`, `PUT /two-step-policy`) take the acting admin's own password (`confirm_password`, or the `X-Sentry-Mate-Password` header); `PUT /me/password`, `DELETE /me/two-step` and `POST /me/two-step/recovery-codes` take one's own `password`. When the acting account has two-step sign-in on, each also needs `code` (from the authenticator app, or a recovery code; or the `X-Sentry-Mate-Code` header), the same as exports and interfaces for everyone do: without it, or wrong, `401 wrong_code`. A code works once; one `PATCH` that changes several things takes one code. Missing and wrong codes count toward the code throttle.
@@ -317,6 +317,148 @@ Points this document left open, decided while building the dev server (`ui/devse
 - **`cars=`** on report resources: absent or `all` means every car the account sees. A list with an unknown or hidden car gives `404 no_such_car`.
 - **CSV:** `?format=csv`, or `Accept: text/csv` without JSON in it. A CSV answer carries every matching row, not one page. Nested fields become dotted columns (`start.place.name`), lists of plain values are joined with `;`, null is an empty cell. The file starts with a UTF-8 byte order mark and comes with `Content-Disposition: attachment`. Columns (series, curves, signals) give one row per `t_ms`. Asking CSV of something that is not a list gives `400` on `format`. Text that starts with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'`, so a spreadsheet shows it instead of running it as a formula; numbers are written as they are.
 - **Car list sorts:** `sort=last_activity` (default newest first), `name` (A to Z), `soc` (highest first), and `custom`: the person's `pinned_cars`, then their `car_order`, then the rest by last activity. `search` matches the name, the model and the VIN prefix.
+
+### Audit log
+
+`GET /api/v1/audit` (admins) is the server's own record of what people and the server did. Every entry is
+`{ at_ms, account, action, group, target, car, summary, address }`: `account` is the account's name (`null` for an
+entry the server made itself), `action` one of the codes below, `group` the code's group, `target` the item it is
+about (`<kind>:<id>`, or `null`), `car` the car that item belongs to (or `null`), `summary` one line in words that
+names the thing ("Matched TeslaMate car Comet to Comet", "Chose the Horizon design", "Changed Maple's time zone to
+America/Chicago", "Changed: text size, units", "Checked GitHub for a newer build"; never a method and a route) and
+`address` where the request came from (`null` for the server's own entries).
+
+- **Groups**, in the order the pages show them: `sign-ins` Sign-ins, `accounts` Accounts and access, `settings`
+  Settings, `cars` Cars and trips, `integrations` Integrations, `imports` Imports and moves. A code the server does
+  not know (an entry from a newer server, say) passes through unchanged with `group: "other"`; pages still show it
+  (`actionLabel()` in `ui/shared/audit.js`: "Other: <code in words>").
+- **Filters**, applied before paging, so every page is full of matching entries: `group=<id>[,<id>]` (`other`
+  allowed; an unknown group is `400 bad_input`) and `who=<account name>` (`who=*server`: the entries the server made
+  itself, `account` null). With the usual `limit`, `after` (the previous page's `next`), `from_ms` and `to_ms`.
+  Newest first. The pages ask for 10 at a time and load more as the list scrolls.
+- **Item kinds** (`target`): `car:<car>` · `drive:<car>:<id>` · `charge:<car>:<id>` · `update:<car>:<id>` ·
+  `trip:<id>` · `place:<id>` · `import:<id>` · `export:<id>` · `move:<id>` · `account:<id>` · `session:<id>` ·
+  `key:<car>:<key>` · `token:<car>:<id>` (`token:<id>` for a new car's token) · `server:<what>`
+  (`server:certificate`, `server:release`, `server:recovery-key`) · `settings:server|mqtt|tesla|teslafi` (the server
+  settings, the MQTT settings, an input's pace) · `tesla:<account>[:<vehicle>]` · `teslafi:<account>[:<vehicle>]` ·
+  `teslamate:local` (the local TeslaMate connection) · `ui-pack:<id>` (a design). For a car match
+  (`tesla-car-matched`, `teslafi-car-matched`, `teslamate-local-car-matched`) `target` is the integration's item and
+  `car` the Sentry Mate car it was matched to. `auditItem()` in `ui/shared/audit.js` turns a target into words and a
+  link; a kind it does not know reads "Something else".
+- **Old stored entries are read back mapped**, so the pages never see a raw route: a `change` entry whose
+  `METHOD /route` now has a code of its own reads as that code with its summary (`POST /api/v1/release/check` reads
+  `release-checked`, "Checked GitHub for a newer build"); any other stays `change` with a summary in words ("Changed
+  ..."). An old `settings:teslamate_local` target reads `teslamate:local`.
+- **The codes** (`ui/shared/audit-codes.json` holds the same list, written from the server's table; a web test checks
+  the two agree). "The server:" marks entries the server writes in its own name (`account` null). The moves and
+  restores into a fresh server also write `setup-move-started`, `setup-move-resumed`, `setup-move-cancelled` and
+  `setup-move-finished-forced` (group `imports`, no item).
+
+| Code | Group | Item | What it records |
+|---|---|---|---|
+| `confirm-failed` | `sign-ins` | none | A wrong password or two-step code given again to confirm a change. |
+| `session-revoked` | `sign-ins` | `session` | Ended one session (Settings: Server and access). |
+| `sessions-revoked` | `sign-ins` | `account` | Ended every other session of the account. |
+| `setup` | `sign-ins` | `account` | The first admin account was made with the set-up code. |
+| `setup-code-made` | `sign-ins` | none | The server made a set-up code for the first admin (a fresh server). |
+| `setup-code-wrong` | `sign-ins` | none | Someone gave a wrong set-up code. |
+| `sign-in` | `sign-ins` | `session` | Signed in (a new session). |
+| `sign-in-failed` | `sign-ins` | none | A wrong name or password (`account` set when the name is an account's). |
+| `sign-in-refused` | `sign-ins` | none | The right password from outside the home network for an account the two-step rule keeps at home. |
+| `sign-out` | `sign-ins` | `session` | Signed out (that session ended). |
+| `two-step-failed` | `sign-ins` | none | A wrong two-step code at sign-in. |
+| `account-changed` | `accounts` | `account` | Any other change of an account (its name, whether it needs two-step sign-in). |
+| `account-created` | `accounts` | `account` | Made an account. |
+| `account-removed` | `accounts` | `account` | Removed an account. |
+| `cars-changed` | `accounts` | `account` | Changed which cars an account sees. |
+| `password-changed` | `accounts` | `account` | Changed an account's password (one's own or by an admin). |
+| `recovery-codes-new` | `accounts` | `account` | Made new two-step recovery codes for an account. |
+| `role-changed` | `accounts` | `account` | Made an account admin or watch. |
+| `two-step-off` | `accounts` | `account` | Turned two-step sign-in off for an account. |
+| `two-step-on` | `accounts` | `account` | Turned two-step sign-in on for an account. |
+| `two-step-policy` | `accounts` | `settings` | Changed where the server needs two-step sign-in. |
+| `certificate-made` | `settings` | `server` | Made a new HTTPS certificate. |
+| `change` | `settings` | none | Old stored entries only: a change no code covers, worded from its route ("Changed ..."). |
+| `preferences-changed` | `settings` | `account` | Changed one's own preferences (the fields in words: "Changed: text size, units"). |
+| `recovery-key-new` | `settings` | `server` | Made a new recovery key (the old one stops working). |
+| `recovery-key-saved` | `settings` | `server` | Said the recovery key is saved (its file is removed). |
+| `recovery-key-shown` | `settings` | `server` | Showed the recovery key from its file again. |
+| `release-checked` | `settings` | `server` | Checked GitHub for a newer build. |
+| `settings-changed` | `settings` | `settings` | Changed the server settings. |
+| `ui-pack-chosen` | `settings` | `ui-pack` | Chose a design (UI pack), for oneself or for everyone. |
+| `ui-pack-installed` | `settings` | `ui-pack` | Uploaded a design. |
+| `ui-pack-removed` | `settings` | `ui-pack` | Removed an uploaded design. |
+| `car-changed` | `cars` | `car` | Changed a car (its name, time zone, sold date, configuration). |
+| `car-overlap` | `cars` | `car` | Chose which history a car shows where live and imported history overlap. |
+| `car-rebuild` | `cars` | `car` | Rebuilt a car's drives, charges, states and visits from the stored logs. |
+| `car-settings-changed` | `cars` | `car` | Changed a car's settings (battery, warranty, free Supercharging). |
+| `charge-cost-entered` | `cars` | `charge` | Entered the cost of a charge. |
+| `charge-cost-removed` | `cars` | `charge` | Removed the entered cost of a charge (the place price applies again). |
+| `drive-purpose-removed` | `cars` | `drive` | Removed the purpose of a drive. |
+| `drive-purpose-set` | `cars` | `drive` | Set the purpose of a drive. |
+| `key-assigned` | `cars` | `key` | A CAN Bridge key went to a car (or was kept with it). |
+| `key-preferred` | `cars` | `key` | Made a CAN Bridge key a car's preferred one (or no longer). |
+| `key-unassigned` | `cars` | `key` | A CAN Bridge key left a car. |
+| `place-changed` | `cars` | `place` | Changed a place. |
+| `place-created` | `cars` | `place` | Added a place. |
+| `place-deleted` | `cars` | `place` | Removed a place. |
+| `place-repriced` | `cars` | `place` | Repriced past charges at a place. |
+| `purpose-rule-created` | `cars` | `car` | Added a purpose rule to a car. |
+| `purpose-rule-removed` | `cars` | `car` | Removed a purpose rule of a car. |
+| `token-created` | `cars` | `token` | Made an upload token. |
+| `token-revoked` | `cars` | `token` | Revoked an upload token. |
+| `trip-changed` | `cars` | `trip` | Changed a saved trip. |
+| `trip-removed` | `cars` | `trip` | Removed a saved trip. |
+| `trip-saved` | `cars` | `trip` | Saved a trip. |
+| `update-version` | `cars` | `update` | Typed (or forgot) the software version of an update. |
+| `mqtt-changed` | `integrations` | `settings` | Changed the MQTT publishing settings. |
+| `mqtt-tested` | `integrations` | `settings` | Tested the MQTT broker. |
+| `tesla-account-added` | `integrations` | `tesla` | Added a Tesla account. |
+| `tesla-account-changed` | `integrations` | `tesla` | Changed a Tesla account (its label). |
+| `tesla-account-error` | `integrations` | `tesla` | The server: a Tesla account keeps failing. |
+| `tesla-account-paused` | `integrations` | `tesla` | Paused a Tesla account. |
+| `tesla-account-removed` | `integrations` | `tesla` | Removed a Tesla account. |
+| `tesla-account-resumed` | `integrations` | `tesla` | Resumed a Tesla account. |
+| `tesla-car-matched` | `integrations` | `tesla` | Matched a car of a Tesla account to a car (or left it out). |
+| `tesla-poll-changed` | `integrations` | `settings` | Changed how often Tesla is asked. |
+| `tesla-sign-in-needed` | `integrations` | `tesla` | The server: a Tesla account needs signing in again. |
+| `tesla-token-replaced` | `integrations` | `tesla` | Gave a Tesla account a new token. |
+| `teslafi-account-added` | `integrations` | `teslafi` | Added a TeslaFi account. |
+| `teslafi-account-changed` | `integrations` | `teslafi` | Changed a TeslaFi account (its label). |
+| `teslafi-account-error` | `integrations` | `teslafi` | The server: a TeslaFi account keeps failing. |
+| `teslafi-account-paused` | `integrations` | `teslafi` | Paused a TeslaFi account. |
+| `teslafi-account-removed` | `integrations` | `teslafi` | Removed a TeslaFi account. |
+| `teslafi-account-resumed` | `integrations` | `teslafi` | Resumed a TeslaFi account. |
+| `teslafi-car-matched` | `integrations` | `teslafi` | Matched a car of a TeslaFi account to a car (or left it out). |
+| `teslafi-poll-changed` | `integrations` | `settings` | Changed how often TeslaFi is asked. |
+| `teslafi-sign-in-needed` | `integrations` | `teslafi` | The server: a TeslaFi account needs signing in again. |
+| `teslafi-token-refused` | `integrations` | `teslafi` | The server: TeslaFi refused a TeslaFi account's token. |
+| `teslafi-token-replaced` | `integrations` | `teslafi` | Gave a TeslaFi account a new token. |
+| `teslamate-local-added` | `integrations` | `teslamate` | Added the local TeslaMate. |
+| `teslamate-local-auth-failed` | `integrations` | `teslamate` | The server: the TeslaMate broker refused the user name or password. |
+| `teslamate-local-car-matched` | `integrations` | `teslamate` | Matched a TeslaMate car to a car (or left it out). |
+| `teslamate-local-catchup-failed` | `integrations` | `teslamate` | The server: the TeslaMate database catch-up failed. |
+| `teslamate-local-changed` | `integrations` | `teslamate` | Changed the local TeslaMate's settings. |
+| `teslamate-local-connection-refused` | `integrations` | `teslamate` | The server: the TeslaMate broker refused the connection or did not answer. |
+| `teslamate-local-paused` | `integrations` | `teslamate` | Paused the local TeslaMate. |
+| `teslamate-local-pin-mismatch` | `integrations` | `teslamate` | The server: the TeslaMate broker's certificate is not the pinned one. |
+| `teslamate-local-quiet` | `integrations` | `teslamate` | The server: the TeslaMate broker has sent nothing for hours. |
+| `teslamate-local-removed` | `integrations` | `teslamate` | Removed the local TeslaMate. |
+| `teslamate-local-resumed` | `integrations` | `teslamate` | Resumed the local TeslaMate. |
+| `teslamate-local-tested` | `integrations` | `teslamate` | Tested the local TeslaMate's MQTT broker or database. |
+| `export-downloaded` | `imports` | `export` | Downloaded the export file. |
+| `export-made` | `imports` | `export` | Made an export file of the whole server. |
+| `export-removed` | `imports` | `export` | Removed the export file. |
+| `import-cars` | `imports` | `import` | Matched an import's cars. |
+| `import-created` | `imports` | `import` | Started uploading an import file. |
+| `import-discarded` | `imports` | `import` | Discarded an import (history already imported stays). |
+| `import-started` | `imports` | `import` | Started importing. |
+| `import-uploaded` | `imports` | `import` | Uploaded every file of an import; it is being checked. |
+| `move-cancelled` | `imports` | `move` | Cancelled the move code, or ended a move under way. |
+| `move-code-made` | `imports` | `move` | Made a move code (moving to another server). |
+| `move-undone` | `imports` | `move` | Undid a finished move: this server takes uploads again. |
+| `setup-restore-cancelled` | `imports` | none | A fresh server gave up restoring an export file. |
+| `setup-restore-started` | `imports` | none | A fresh server started restoring an export file. |
 
 ### Vehicle info
 

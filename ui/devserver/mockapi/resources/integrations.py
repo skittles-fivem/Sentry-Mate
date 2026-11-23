@@ -131,7 +131,7 @@ def put_mqtt(req):
         if not cur["enabled"]:
             stt["waiting"] = 0
     what = "on" if body["enabled"] else "off"
-    st.record(req.account, "mqtt.update", "settings:mqtt",
+    st.record(req.account, "mqtt-changed", "settings:mqtt",
               f"Changed the MQTT settings (publishing {what}, broker {body['host']}:{body['port']}).")
     return mqtt_view(cur)
 
@@ -477,7 +477,7 @@ def test(req):
         res = {"ok": True, "error": None, "message": f"Connected to {host}:{m['port']} and published one test message.",
                "latency_ms": 8 + int(h01("mqtt", t0 // 1000) * 30),
                "topic": f"{m['namespace']}/test", "tls": m["tls"]}
-    st.record(req.account, "mqtt.test", "settings:mqtt",
+    st.record(req.account, "mqtt-tested", "settings:mqtt",
               "Tested the MQTT broker: " + ("connected." if res["ok"] else res["error"] + "."))
     res["at_ms"] = t0
     return res

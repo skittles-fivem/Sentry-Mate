@@ -188,7 +188,7 @@ def patch_settings(req):
         new["version"] = cur["version"] + 1
         st.server_settings = new
         accounts = list(st.accounts.values())
-    st.record(req.account, "settings.update", "settings:server",
+    st.record(req.account, "settings-changed", "settings:server",
               "Changed the server settings: " + ", ".join(sorted(k for k in body if k != "version")) + ".")
     if any(cur[k] != new[k] for k in ("units", "range", "car_order")):
         # preferences default from these: everyone's (merged) preferences may have changed
@@ -462,6 +462,7 @@ def release_check_now(req):
         raise conflict("release_check_off", "The release check is off. Turn it on in Settings: Display and units.")
     if req.store.release_result != "checking":
         req.store.release_checked_ms = req.now
+    req.store.record(req.account, "release-checked", "server:release", "Checked GitHub for a newer build.")
     out = release_state(req)
     n = release_notice(req)
     if n:
@@ -606,7 +607,7 @@ def rebuild(req):
            "pending_until": req.now + min(took, 5000), "kinds": ["drives", "charges", "states", "visits"]}
     with st.lock:
         st.rebuilds.setdefault(req.car, []).append(job)
-    st.record(req.account, "car.rebuild", f"car:{req.car}",
+    st.record(req.account, "car-rebuild", f"car:{req.car}",
               f"Rebuilt drives, charges, states and visits of {st.car_meta(req.car)['name']} "
               f"from the stored logs ({days} days).")
     req.app.events.publish("rows", {"car": req.car, "kinds": job["kinds"], "from_ms": a, "to_ms": b}, car=req.car)
@@ -705,7 +706,7 @@ def patch_overlap(req):
         what = f"the {'TeslaFi' if shown == 'teslafi' else 'TeslaMate'} import"
     else:
         what = f"{'live (SMO)' if shown == 'can' else 'imported TeslaMate'} history"
-    st.record(req.account, "car.overlap", f"car:{req.car}",
+    st.record(req.account, "car-overlap", f"car:{req.car}",
               f"Showing {what} from {date_str(o['start_ms'], req.tz())} to {date_str(o['end_ms'], req.tz())}.")
     req.app.events.publish("rows", {"car": req.car, "kinds": ["drives", "charges", "states", "visits"],
                                     "from_ms": o["start_ms"], "to_ms": o["end_ms"]}, car=req.car)

@@ -37,12 +37,6 @@ DEFAULT_PREFS = {
 }
 
 
-def _audit_car(target, car):
-    if car:
-        return car
-    return target[4:] if isinstance(target, str) and target.startswith("car:") else None
-
-
 class Store:
     def __init__(self, cfg, ds, clock):
         self.cfg = cfg
@@ -207,16 +201,10 @@ class Store:
                                  "to_ms": day0 + 5 * DAY, "name": "Los Angeles in July"}
 
     def _seed_audit(self, now):
-        entries = [
-            (now - 400 * DAY, "admin", "account.create", "account:a2", "Made the watch account (sees Comet)."),
-            (now - 399 * DAY, "admin", "token.create", "car:c1", "Made an upload token for Comet."),
-            (now - 120 * DAY, "admin", "car.update", "car:c2", "Set the paint of Maple to Pearl White."),
-            (now - 3 * DAY, "watch", "session.start", "account:a2", "Signed in."),
-            (now - 2 * HOUR, "admin", "session.start", "account:a1", "Signed in."),
-        ]
-        for at, who, action, target, summary in entries:
-            self.audit.append({"at_ms": at, "account": who, "action": action, "target": target,
-                               "car": _audit_car(target, None), "summary": summary})
+        from .audit import seed
+        for at, who, action, target, car, summary, address in seed(self.ds, now):
+            self.audit.append({"at_ms": at, "account": who, "action": action, "target": target, "car": car,
+                               "summary": summary, "address": address})
 
     # ------------------------------------------------------------ ids, audit
     def new_id(self, prefix):
@@ -224,14 +212,18 @@ class Store:
             self.next_id += 1
             return f"{prefix}{self.next_id}"
 
-    def record(self, account, action, target, summary, car=None):
-        """car: the car the changed item belongs to (a drive's, a charge's, a trip's, an update's car);
-        a car:<id> target is its own car."""
+    def record(self, account, action, target, summary, car=None, address=None):
+        """car: the car the changed item belongs to (a drive's, a charge's, a trip's, an update's car, the car a
+        TeslaMate car was matched to); a target that names its car (car:<id>, drive:<car>:<id>, ...) gives it.
+        address: where the request came from (the dev server's own browser: 127.0.0.1); None for the server."""
+        from .audit import car_of
+        if address is None and account:
+            address = "127.0.0.1"
         with self.lock:
             self.rev += 1
             self.audit.append({"at_ms": self.clock.now(), "account": account["name"] if account else None,
-                               "action": action, "target": target, "car": _audit_car(target, car),
-                               "summary": summary})
+                               "action": action, "target": target, "car": car_of(target, car),
+                               "summary": summary, "address": address})
 
     # ------------------------------------------------------------ accounts and sessions
     def account_by_name(self, name):
