@@ -349,14 +349,14 @@ async fn two_seeded_cars_stay_two_cars_and_their_keys_and_tokens_are_served() {
         "{}",
         keys_list.text()
     );
-    let name_it = |n: Value| c.request("PATCH", &format!("/api/v1/can-keys/{key}"), Some(json!({ "name": n })));
-    let r = name_it(json!(5)).await;
+    let key_path = format!("/api/v1/can-keys/{key}");
+    let r = c.request("PATCH", &key_path, Some(json!({ "name": json!(5) }))).await;
     assert_eq!((r.status, r.json()["error"]["fields"]["name"].is_string()), (400, true), "{}", r.text());
     for bad in [json!("  "), json!("x".repeat(61))] {
-        let r = name_it(bad).await;
+        let r = c.request("PATCH", &key_path, Some(json!({ "name": bad }))).await;
         assert_eq!((r.status, r.json()["error"]["code"].clone()), (422, json!("invalid")), "{}", r.text());
     }
-    let r = name_it(json!("  Screenmate in the test car ")).await;
+    let r = c.request("PATCH", &key_path, Some(json!({ "name": json!("  Screenmate in the test car ") }))).await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(
         (r.json()["device"].clone(), r.json()["device_label"].clone()),
@@ -364,9 +364,9 @@ async fn two_seeded_cars_stay_two_cars_and_their_keys_and_tokens_are_served() {
         "{}",
         r.text()
     );
-    let r = name_it(json!(null)).await;
+    let r = c.request("PATCH", &key_path, Some(json!({ "name": json!(null) }))).await;
     assert_eq!(r.json()["device"], Value::Null, "{}", r.text());
-    let r = name_it(json!("Screenmate in the test car")).await;
+    let r = c.request("PATCH", &key_path, Some(json!({ "name": json!("Screenmate in the test car") }))).await;
     assert_eq!(r.status, 200, "{}", r.text());
 
     // tokens: each car's, and one for a new car (its secret shown once)
