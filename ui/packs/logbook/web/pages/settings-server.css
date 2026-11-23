@@ -101,6 +101,14 @@
 .page-settings-server .ss-target .icon { width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); }
 .page-settings-server .ss-targets { display: inline-flex; flex-direction: column; gap: round(0.125rem, var(--e)); }
 
+/* the audit log: what and who above it; on a phone each entry is a small card (no sideways scroll) */
+.page-settings-server .ss-audit-filters { display: flex; flex-wrap: wrap; gap: round(0.75rem, var(--e)) round(1.25rem, var(--e)); padding-bottom: round(1rem, var(--e)); }
+.page-settings-server .ss-audit-filters .field { flex: 0 1 round(16rem, var(--e)); }
+.page-settings-server .ss-audit-filters .field-select { width: 100%; }
+.page-settings-server .ss-a-when, .page-settings-server .ss-a-who { white-space: nowrap; }
+.page-settings-server .ss-a-action { min-width: round(13rem, var(--e)); }
+.page-settings-server .ss-a-item { min-width: round(13rem, var(--e)); }
+
 /* the account dialog */
 .ss-cars-field .choice, .ss-cars-field .segmented { margin-bottom: round(0.5rem, var(--e)); }
 .ss-carpick { display: grid; gap: round(0.5rem, var(--e)); }
@@ -115,6 +123,20 @@
 @container page (width < 50rem) {
   .page-settings-server .ledger-scroll { overflow-x: auto; }
   .page-settings-server .ss-cars-col, .page-settings-server .ss-summary-col { min-width: 0; }
+  .page-settings-server .ss-audit-filters .field { flex: 1 1 round(10rem, var(--e)); }
+  /* the audit log stacks: when and who on the first line, then the action, what happened and the item */
+  .page-settings-server .ss-audit-log .ledger-scroll { overflow-x: visible; }
+  .page-settings-server .ss-audit-log .ledger-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .page-settings-server .ss-audit-log .ledger-table, .page-settings-server .ss-audit-log .ledger-table tbody { display: block; }
+  .page-settings-server .ss-audit-log .ledger-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: round(0.75rem, var(--e)); row-gap: round(0.25rem, var(--e)); padding: round(0.75rem, var(--e)) 0; border-bottom: 1px solid var(--rule); }
+  .page-settings-server .ss-audit-log .ledger-table tbody tr > * { display: block; padding: 0; border: 0; min-width: 0; overflow-wrap: anywhere; }
+  .page-settings-server .ss-audit-log .ledger-table tbody tr:hover > * { background: none; }
+  .page-settings-server .ss-audit-log .ss-a-when { grid-column: 1; white-space: normal; }
+  .page-settings-server .ss-audit-log .ss-a-action, .page-settings-server .ss-audit-log .ss-a-item { min-width: 0; }
+  .page-settings-server .ss-audit-log .ss-a-who { grid-column: 2; grid-row: 1; text-align: right; color: var(--ink-2); }
+  .page-settings-server .ss-audit-log .ss-a-action, .page-settings-server .ss-audit-log .ss-a-summary, .page-settings-server .ss-audit-log .ss-a-item { grid-column: 1 / -1; }
+  .page-settings-server .ss-audit-log .ss-a-action { font-weight: 600; }
+  .page-settings-server .ss-audit-log .ss-a-summary { color: var(--ink-2); }
 }
 
 /* Move to another server (pages/settings-move.js) */

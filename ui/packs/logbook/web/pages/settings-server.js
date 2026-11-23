@@ -6,7 +6,8 @@
 // their own sessions (sign out one, every other one, or here). Admins also get: the host names (edited
 // here, saved with the settings' version), the ports, the certificate, the recovery key and backups,
 // the accounts (roles, car lists, two-step sign-in, a new password) and the audit log, whose entries
-// link to the item they changed. Every table has a Download CSV button.
+// say what was done in words and link to the item they changed (filtered by what and who, loaded as the
+// list scrolls). Every table has a Download CSV button.
 
 import { h, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -18,6 +19,7 @@ import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { dateTime, date, zoneLabel, count } from '../core/format.js';
 import { moveBlock, askPassword } from './settings-move.js';
 import { bigCode, downloadText } from './move-parts.js';
+import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 
 export const id = 'settings-server';
 export const css = true;
@@ -87,15 +89,6 @@ function copyValue(text, valueEl) {
 const origin = (proto, host, port) => `${proto}//${host}${port && !((proto === 'https:' && port === 443) || (proto === 'http:' && port === 80)) ? `:${port}` : ''}`;
 
 /* ================================================================== the page */
-
-// Audit actions in words (the code stays beside them, for searching the log).
-const ACTION_WORDS = {
-  'tesla-account-added': 'Tesla account added', 'tesla-account-removed': 'Tesla account removed',
-  'tesla-account-paused': 'Tesla account paused', 'tesla-account-resumed': 'Tesla account resumed',
-  'tesla-account-changed': 'Tesla account changed', 'tesla-token-replaced': 'Tesla token replaced',
-  'tesla-car-matched': 'Tesla car matched', 'tesla-poll-changed': 'How often Tesla is asked changed',
-  'tesla-sign-in-needed': 'Tesla needs a new sign-in', 'tesla-account-error': 'Tesla refuses an account',
-};
 
 export async function mount(ctx) {
   const admin = ctx.me && ctx.me.role === 'admin';
@@ -649,70 +642,54 @@ export async function mount(ctx) {
   sessionsTable.el);
 
   /* ---------------------------------------------------------------- audit log (admin) */
+  // Each entry in words (shared/audit.js): what was done (the code in the tooltip), and the item it changed,
+  // linked where it still exists. Filters: what (a group of actions) and who; ten entries first, more as the
+  // end of the list scrolls into view (or with Load more), added under the ones already there.
   let auditTable = null;
   let auditSection = null;
+  let auditPrep = null;
   if (admin) {
-    const link = (href, text) => h('a', { class: 'ss-target', href }, text, icon('arrowRight'));
-    // a drive, charge or update id does not say its car: find it when the link is used
-    const finder = (text, find) => h('button', { type: 'button', class: 'ss-target ss-target-find', onclick: async (e) => {
-      const b = e.currentTarget;
-      b.disabled = true;
-      try {
-        const href = await find();
-        if (href) { ctx.go(href); return; }
-        ctx.flash(`${text} is no longer there, or belongs to a car no account here sees.`, { kind: 'info' });
-      } catch (err) { if (!api.isAbort(err)) ctx.flash(`Could not open it: ${errText(err)}`, { kind: 'error' }); }
-      b.disabled = false;
-    } }, text, icon('arrowRight'));
-    const inCars = async (fn) => { for (const c of cars) { const r = await fn(c.id).catch((err) => { if (err && err.status === 404) return null; throw err; }); if (r) return r; } return null; };
-    const target = (t, summary) => {
-      const s = String(t || '');
-      const i = s.indexOf(':');
-      const kind = i < 0 ? s : s.slice(0, i);
-      const tid = i < 0 ? '' : s.slice(i + 1);
-      switch (kind) {
-        case 'account': return link(state.buildUrl('settings-server', { query: { account: tid } }) + `#account-${tid}`, 'The account');
-        case 'session': return link(state.buildUrl('settings-server', { query: { session: tid } }), 'A session');
-        case 'car': return carName.has(tid) ? link(state.buildUrl('settings-cars', { car: tid }), carName.get(tid)) : h('span', { class: 'ss-quiet' }, 'A car no longer here');
-        case 'key': return link(state.buildUrl('settings-cars'), `CAN Bridge key ${tid}`);
-        case 'place': return link(state.buildUrl('places', { query: { place: tid } }), 'The place');
-        case 'import': return link(state.buildUrl('import'), 'The import');
-        case 'tesla': {
-          const acc = tid.split(':')[0];
-          return link(`${state.buildUrl('settings-integrations')}#tesla${acc && acc !== 'settings' ? `-${acc}` : ''}`, acc ? `Tesla account ${acc}` : 'Tesla account');
-        }
-        case 'settings': {
-          if (tid === 'mqtt') return link(state.buildUrl('settings-integrations'), 'MQTT settings');
-          if (tid === 'tesla') return link(`${state.buildUrl('settings-integrations')}#tesla`, 'Tesla API settings');
-          const names = /host_names/.test(summary || '');
-          const other = /units|range|car_order|geocode|tiles|release_check|outside_links/.test(summary || '');
-          return h('span', { class: 'ss-targets' },
-            names || !other ? link(state.buildUrl('settings-server'), 'Host names') : null,
-            other || !names ? link(state.buildUrl('settings-display'), 'Server defaults') : null);
-        }
-        case 'trip': return finder('The saved trip', async () => {
-          const tr = await ctx.api.get(api.apiPath`trips/${tid}`).catch((err) => { if (err && err.status === 404) return null; throw err; });
-          return tr ? state.buildUrl('trip', { car: tr.car, period: { from: tr.from_ms, to: tr.to_ms } }) : null;
-        });
-        case 'drive': return finder('The drive', () => inCars(async (c) => (await ctx.api.get(api.apiPath`cars/${c}/drives/${tid}`)) && state.buildUrl('drive', { car: c, drive: tid })));
-        case 'charge': return finder('The charge', () => inCars(async (c) => (await ctx.api.get(api.apiPath`cars/${c}/charges/${tid}`)) && state.buildUrl('charge', { car: c, charge: tid })));
-        case 'update': return finder('The update', () => inCars(async (c) => {
-          for await (const u of ctx.api.list(api.apiPath`cars/${c}/updates`, {}, { limit: 500 })) if (String(u.id) === tid) return state.buildUrl('software', { car: c });
-          return null;
-        }));
-        default: return h('span', { class: 'mono ss-quiet' }, s || '—');
-      }
+    const people = new Map();   // account id -> name
+    const trips = new Map();
+    auditPrep = Promise.all([
+      ctx.api.list('accounts', {}).all({ max: 2000 }).then((list) => { for (const a of list) people.set(a.id, a.name); }).catch(() => {}),
+      ctx.api.list('trips', {}).all({ max: 2000 }).then((list) => { for (const t of list) trips.set(String(t.id), t); }).catch(() => {}),
+    ]);
+    const itemCtx = { carName: (c) => carName.get(c), accountName: (a) => people.get(a), trip: (t) => trips.get(String(t)) };
+    const itemCell = (e) => {
+      const it = auditItem(e, itemCtx);
+      if (!it) return h('span', { class: 'ss-quiet' }, '—');
+      if (!it.route || it.faint) return h('span', { class: 'ss-quiet' }, it.text);
+      return h('a', { class: 'ss-target', href: state.buildUrl(it.route[0], it.route[1] || {}) + (it.hash || '') }, it.text, icon('arrowRight'));
     };
+    const filters = { group: '', who: '' };
+    const params = () => ({ ...(filters.group ? { group: filters.group } : {}), ...(filters.who ? { who: filters.who } : {}) });
+    const whatField = field({ label: 'What', name: 'audit-group', type: 'select', value: '', options: [['', 'All'], ...AUDIT_GROUPS.map((g) => [g.id, g.label])] });
+    const whoField = field({ label: 'Who', name: 'audit-who', type: 'select', value: '', options: [['', 'All'], ['*server', 'The server']] });
+    const whoOptions = () => {
+      const names = [...new Set(people.values())].sort((a, b) => a.localeCompare(b));
+      whoField.control.replaceChildren(h('option', { value: '' }, 'All'), ...names.map((n) => h('option', { value: n }, n)), h('option', { value: '*server' }, 'The server'));
+      whoField.control.value = filters.who;
+    };
+    const refilter = () => { filters.group = whatField.control.value; filters.who = whoField.control.value; auditTable.reload(params()); };
+    whatField.control.addEventListener('change', refilter);
+    whoField.control.addEventListener('change', refilter);
     auditTable = dataTable(ctx, {
-      path: 'audit', limit: 50, itemName: ['entry', 'entries'], label: 'Audit log',
+      path: 'audit', limit: 10, itemName: ['entry', 'entries'], label: 'Audit log', cls: 'ss-audit-log',
+      append: true, autoMore: true, moreLabel: 'Load more',
+      filters: h('div', { class: 'ss-audit-filters' }, whatField, whoField),
       columns: [
-        { key: 'at_ms', label: 'When', th: true, cell: (e) => h('span', null, h('span', { class: 'cell-main' }, dateTime(e.at_ms, tz)), h('span', { class: 'cell-sub' }, ago(e.at_ms))) },
-        { key: 'account', label: 'Who', cell: (e) => (e.account ? h('span', null, e.account) : h('span', { class: 'ss-quiet' }, 'The server itself')) },
-        { key: 'summary', label: 'What happened', cls: 'ss-summary-col', cell: (e) => h('span', null, h('span', { class: 'cell-main' }, e.summary || '—'), h('span', { class: 'cell-sub' }, ACTION_WORDS[e.action] ? [ACTION_WORDS[e.action], ' · '] : null, h('span', { class: 'mono' }, e.action))) },
-        { key: 'target', label: 'Changed item', cell: (e) => target(e.target, e.summary), value: (e) => e.target },
+        { key: 'at_ms', label: 'When', th: true, cls: 'ss-a-when', cell: (e) => h('span', null, h('span', { class: 'cell-main' }, dateTime(e.at_ms, tz)), h('span', { class: 'cell-sub' }, ago(e.at_ms))) },
+        { key: 'account', label: 'Who', cls: 'ss-a-who', cell: (e) => (e.account ? h('span', null, e.account) : h('span', { class: 'ss-quiet' }, 'The server')) },
+        { key: 'action', label: 'Action', cls: 'ss-a-action', cell: (e) => h('span', { class: 'ss-action', title: e.action }, actionLabel(e.action)) },
+        { key: 'summary', label: 'What happened', cls: 'ss-summary-col ss-a-summary', cell: (e) => h('span', null, e.summary || '—') },
+        { key: 'target', label: 'Item', cls: 'ss-a-item', cell: itemCell, value: (e) => e.target },
       ],
-      empty: () => empty({ title: 'Nothing recorded yet.', text: 'Each sign-in and each change appears here as it happens.' }),
+      empty: () => (filters.group || filters.who
+        ? empty({ title: 'No entry matches.', text: 'Nothing recorded fits this what and who. Choose All in one of them to see more.' })
+        : empty({ title: 'Nothing recorded yet.', text: 'Each sign-in and each change appears here as it happens.' })),
     });
+    auditPrep = auditPrep.then(whoOptions);
     auditSection = section({ title: 'Audit log', note: 'every sign-in and every change, newest first', cover: 'web.shell.access-model', cls: 'ss-audit' },
       note(`Times are in ${zoneLabel(tz)}. The last column opens the item that was changed, where it still exists. The log is sealed: no one can edit or remove an entry, admins included.`),
       auditTable.el);
@@ -731,7 +708,7 @@ export async function mount(ctx) {
     mover ? mover.el : null, accountsSection, sessionsSection, auditSection);
 
   try {
-    await Promise.all([portsTable && portsTable.load(), sessionsTable.load(), accountsTable && accountsTable.load(), auditTable && auditTable.load(), mover && mover.load()]);
+    await Promise.all([portsTable && portsTable.load(), sessionsTable.load(), accountsTable && accountsTable.load(), auditTable && auditPrep.then(() => auditTable.load()), mover && mover.load()]);
   } catch (err) {
     if (!ctx.alive()) return undefined;
     throw err;

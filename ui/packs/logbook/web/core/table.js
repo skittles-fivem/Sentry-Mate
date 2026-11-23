@@ -32,6 +32,12 @@ import { icon, empty as emptyView, errorView, loadingBlock } from './ui.js';
  *   sortAll: 2000,                    // a paged list: a client sort (sort: true) first loads every page, up to
  *                                     // this many rows, so the order covers the whole list, not one page
  *   cover, cls, label,                // ids for the table, extra class, the table's accessible name
+ *   append: true,                     // a paged list in the server's order: "Show more" appends the new rows
+ *                                     // (the rows on screen stay as they are, the page does not move)
+ *   autoMore: true,                   // with append: the next page also loads when the end of the table
+ *                                     // scrolls into view (the button stays, for the keyboard and as fallback)
+ *   moreLabel: 'Show more',           // the button's words
+ *   filters: node,                    // controls put between the caption line and the table
  * }) -> { el, reload(params), items, destroy() }
  */
 export function dataTable(ctx, opts) {
@@ -50,12 +56,25 @@ export function dataTable(ctx, opts) {
   const head = h('thead', null, h('tr', null, columns.map((c) => headCell(c))));
   const body = h('tbody');
   const table = h('table', { class: 'ledger-table', 'aria-label': label }, head, body);
-  const more = h('button', { type: 'button', class: 'button button-quiet', hidden: true, onclick: () => loadMore() }, 'Show more');
+  const more = h('button', { type: 'button', class: 'button button-quiet', hidden: true, onclick: () => loadMore() }, opts.moreLabel || 'Show more');
   const foot = h('div', { class: 'ledger-foot' }, more);
   const status = h('div', { class: 'ledger-status' });
+  const sentinel = opts.autoMore ? h('div', { class: 'ledger-sentinel', 'aria-hidden': 'true' }) : null;
   const el = h('div', { class: ['ledger', cls], cover },
     h('div', { class: 'ledger-top' }, count, opts.caption ? h('p', { class: 'ledger-caption' }, opts.caption) : null, csvBtn),
-    h('div', { class: 'ledger-scroll' }, table), status, foot);
+    opts.filters || null,
+    h('div', { class: 'ledger-scroll' }, table), status, sentinel, foot);
+  // the next page when the end of the table comes into view (looked at again after each page, so a tall
+  // window fills up; a failed page waits for the button or the retry)
+  let seen = false;
+  const io = sentinel && typeof IntersectionObserver === 'function'
+    ? new IntersectionObserver((entries) => {
+      seen = entries.some((e) => e.isIntersecting);
+      if (seen && pager && !pager.done && !pager.loading && drawn && !more.hidden && !more.disabled) loadMore().then((ok) => { if (ok) recheck(); });
+    }, { rootMargin: '0px 0px 300px 0px' })
+    : null;
+  function recheck() { if (io && !ctx.signal.aborted && pager && !pager.done) { io.unobserve(sentinel); io.observe(sentinel); } }
+  if (io) { io.observe(sentinel); ctx.signal.addEventListener('abort', () => io.disconnect(), { once: true }); }
 
   function serverParams() {
     const p = { ...params };
@@ -119,9 +138,10 @@ export function dataTable(ctx, opts) {
   }
   function items() { return pager ? pager.items : rows; }
   const kept = (list) => (opts.keep ? list.filter(opts.keep) : list);
-  function draw() {
+  function draw(added = null) {
     const list = kept(pager && !clientSorted() ? pager.items : sortedClient(items() || []));
-    body.replaceChildren(...list.map(rowEl));
+    if (added) body.append(...kept(added).map(rowEl));
+    else body.replaceChildren(...list.map(rowEl));
     const loaded = (items() || []).length;
     const n = list.length;
     const left = loaded - n; // loaded but not shown: the total counts them too
@@ -144,10 +164,12 @@ export function dataTable(ctx, opts) {
     more.disabled = true;
     if (!pager.items.length && !drawn) status.replaceChildren(loadingBlock(4));
     try {
+      const shown = pager.items.length;
       const got = await pager.more();
       if (pager.last && typeof pager.last.total === 'number') total = pager.last.total;
       opts.onRows?.(got, pager.last);
-      draw();
+      // append: only the new rows are drawn, under the ones already there
+      draw(opts.append && drawn && shown && !clientSorted() && body.children.length ? got : null);
       return true;
     } catch (err) {
       if (ctx.signal.aborted) return false;
@@ -182,7 +204,7 @@ export function dataTable(ctx, opts) {
   const ctl = {
     el,
     /** The first page (call once after putting el in the page); resolves when it is drawn. */
-    async load() { if (pager) { await loadMore(true); fillForSort(); } else { draw(); opts.onRows?.(rows, null); } },
+    async load() { if (pager) { await loadMore(true); fillForSort(); recheck(); } else { draw(); opts.onRows?.(rows, null); } },
     /** New filters: start again from the first page. opts.sort: a new column order, or null for the resource's own. */
     async reload(newParams, o = {}) {
       if (newParams) params = { ...newParams };
@@ -197,6 +219,7 @@ export function dataTable(ctx, opts) {
       if (!drawn) body.replaceChildren();
       if (!(await quietLoad(shown))) return;
       draw();
+      recheck();
       await fillForSort();
     },
     /** Replace the rows (rows source only). */

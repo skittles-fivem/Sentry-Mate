@@ -23,11 +23,13 @@ import { toggle } from '../core/form.js';
 import { checkRow, sectionHead, moreButton } from '../core/bits.js';
 import { group, infoRow, said, notSaved, askPassword, keySheet, tick } from '../core/settings.js';
 import { inOrder } from '../core/settings.js';
+import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 import { bytes, bigCode, copyButton, downloadUrl, stepCards, progressBar, callout, PROBLEM } from './move-parts.js';
 
 export const id = 'settings-server';
 export const shape = [[2, 'h2'], [2, 'h2'], [2, 'h3'], [2, 'h3']];
 export const title = () => 'Server and access';
+export const css = true;
 
 const ROLE = { admin: 'Admin', watch: 'Watch only' };
 const ROLE_TEXT = {
@@ -35,13 +37,6 @@ const ROLE_TEXT = {
   watch: 'Sees only the cars on its list, and changes only its own preferences and sessions.',
 };
 const PURPOSE = { web: 'Web pages and API', upload: 'CAN Bridge uploads' };
-// audit actions this page names in words (the entry's own summary says the rest)
-const ACTION = {
-  'tesla-account-added': 'Tesla account added', 'tesla-account-removed': 'Tesla account removed', 'tesla-account-paused': 'Tesla account paused',
-  'tesla-account-resumed': 'Tesla account resumed', 'tesla-account-changed': 'Tesla account changed', 'tesla-token-replaced': 'Tesla token replaced',
-  'tesla-car-matched': 'Tesla cars matched', 'tesla-poll-changed': 'Tesla pace changed', 'tesla-sign-in-needed': 'Tesla stopped taking a sign-in',
-  'tesla-account-error': 'Tesla account error', 'certificate-made': 'New certificate made',
-};
 /** Text that may break only after a slash, a colon or a dot (addresses, a SHA-256). */
 const breakable = (t) => String(t).split(/(?<=[/:.])/).map((part, i) => [i ? h('wbr') : null, part]);
 
@@ -525,28 +520,93 @@ export async function mount(ctx) {
   }
 
   /* ================================================================ audit log (admins) */
+  // Each entry in words (shared/audit.js): what was done (its code on hover), who, when, what happened and the
+  // item it changed, linked where it still exists. Filters: what (a group of actions) and who. Ten entries
+  // first; the next ten when the end of the list scrolls into view, or with Load more. New entries go under
+  // the ones on screen, which stay as they are.
   let auditT = null;
   async function auditTile() {
-    const pager = ctx.api.pager('audit', {}, { limit: 25 });
-    await pager.more();
-    const target = (t, car) => {
-      const i = String(t || '').indexOf(':');
-      const kind = i < 0 ? t : t.slice(0, i), tid = i < 0 ? '' : t.slice(i + 1);
-      if (kind === 'car' && carName.has(tid)) return carName.get(tid);
-      if (kind === 'account') return `account ${(accounts.find((a) => a.id === tid) || {}).name || tid}`;
-      if (kind === 'tesla') return `Tesla account ${tid}`;
-      if (kind === 'server') return tid === 'certificate' ? 'the certificate' : 'the server';
-      if (car && carName.has(car)) return `${kind} of ${carName.get(car)}`;
-      return kind || '';
+    const trips = new Map((await ctx.api.list('trips', {}).all({ max: 2000 }).catch(() => [])).map((t) => [String(t.id), t]));
+    const itemCtx = { carName: (c) => carName.get(c), accountName: (a) => (accounts.find((x) => x.id === a) || {}).name, trip: (t) => trips.get(String(t)) };
+    const F = { group: '', who: '' };
+    const params = () => ({ ...(F.group ? { group: F.group } : {}), ...(F.who ? { who: F.who } : {}) });
+    const names = [...new Set(accounts.map((a) => a.name))].sort((a, b) => a.localeCompare(b));
+    const what = field({ label: 'What', name: 'audit-group', type: 'select', value: '', options: [['', 'All'], ...AUDIT_GROUPS.map((g) => [g.id, g.label])] });
+    const who = field({ label: 'Who', name: 'audit-who', type: 'select', value: '', options: [['', 'All'], ...names.map((n) => [n, n]), ['*server', 'The server']] });
+    const itemEl = (e) => {
+      const it = auditItem(e, itemCtx);
+      if (!it) return null;
+      if (!it.route || it.faint) return h('span', { class: 'au-faint' }, it.text);
+      return h('a', { class: 'au-item', href: state.buildUrl(it.route[0], it.route[1] || {}) + (it.hash || '') }, it.text);
     };
-    const rowOf = (e) => h('div', { class: 'log-row', role: 'listitem' }, h('span', { class: 'log-k' }, `${when(e.at_ms)}  ${e.account || 'server'}  ${e.summary || ACTION[e.action] || e.action}`), h('span', { class: 'log-v' }, [ACTION[e.action] && e.summary ? ACTION[e.action] : null, target(e.target, e.car)].filter(Boolean).join(' · ')));
-    const log = h('div', { class: 'log', role: 'list' }, pager.items.map(rowOf));
-    const more = moreButton(async () => { const b = pager.items.length; await pager.more(); log.append(...pager.items.slice(b).map(rowOf)); return !pager.done; }, { text: 'Older entries' });
-    more.querySelector('button').hidden = pager.done;
-    more.classList.remove('w-full');
-    return tile({ w: 'full', title: 'Audit log', icon: 'book' },
-      note(`Every change and every sign-in, newest first. Times in ${tz.replace(/_/g, ' ')}.`),
-      pager.items.length ? log : said('info', 'Nothing recorded yet.'), more);
+    const rowOf = (e) => {
+      const item = itemEl(e);
+      return h('div', { class: 'row row-static au-row', role: 'listitem' },
+        h('span', { class: 'row-text' },
+          h('span', { class: 'row-name au-act', title: e.action }, actionLabel(e.action)),
+          e.summary ? h('span', { class: 'row-sub au-sum' }, e.summary) : null,
+          h('span', { class: 'row-sub au-meta' }, h('span', { class: 'au-when' }, when(e.at_ms)), item ? h('span', { class: 'au-it' }, h('span', { class: 'au-dot', 'aria-hidden': 'true' }, '·'), item) : null)),
+        h('span', { class: 'row-side au-who' }, e.account || h('span', { class: 'au-faint' }, 'The server')));
+    };
+    const list = h('div', { class: 'rows-list au-list', role: 'list', 'aria-label': 'Audit log entries' });
+    const status = h('div', { class: 'au-status' });
+    const sentinel = h('div', { class: 'au-sentinel', 'aria-hidden': 'true' });
+    const moreBtn = btn('Load more', { kind: 'soft', icon: 'chevronDown', cls: 'more-btn', onclick: () => more() });
+    const moreRow = h('div', { class: 'more-row' }, moreBtn);
+    const csv = linkBtn('Download CSV', ctx.api.csvUrl('audit', params()), { kind: 'ghost', icon: 'download', cls: 'btn-sm' });
+    csv.setAttribute('download', '');
+    let pager = null, gen = 0;
+    function shown() {
+      moreRow.hidden = !pager || pager.done;
+      csv.href = ctx.api.csvUrl('audit', params());
+      csv.hidden = !list.children.length;
+    }
+    async function more() {
+      if (!pager || pager.done || pager.loading) return;
+      const g = gen;
+      moreBtn.disabled = true;
+      try {
+        const got = await pager.more();
+        if (g !== gen || !ctx.alive()) return;
+        list.append(...got.map(rowOf));
+        status.replaceChildren(list.children.length ? '' : said('info', F.group || F.who ? 'No entry matches this what and who.' : 'Nothing recorded yet.'));
+        list.hidden = !list.children.length;
+      } catch (e) {
+        if (g !== gen || !ctx.alive() || api.isAbort(e)) return;
+        status.replaceChildren(said('warn', `The log did not load: ${(e && e.message) || 'the server did not answer'}`));
+      } finally {
+        if (g === gen) { moreBtn.disabled = false; shown(); recheck(); }
+      }
+    }
+    async function first() {
+      gen++;
+      moreBtn.disabled = false;
+      pager = ctx.api.pager('audit', params(), { limit: 10 });
+      const g = gen;
+      const got = await pager.more().catch((e) => { if (g === gen && ctx.alive()) status.replaceChildren(said('warn', `The log did not load: ${(e && e.message) || 'the server did not answer'}`)); return null; });
+      if (g !== gen || !ctx.alive() || !got) return;
+      list.replaceChildren(...got.map(rowOf));
+      list.hidden = !got.length;
+      status.replaceChildren(got.length ? '' : said('info', F.group || F.who ? 'No entry matches this what and who.' : 'Nothing recorded yet.'));
+      shown();
+      recheck();
+    }
+    const io = typeof IntersectionObserver === 'function'
+      ? new IntersectionObserver((entries) => {
+        if (!ctx.alive()) { io.disconnect(); return; }
+        if (entries.some((x) => x.isIntersecting) && !moreRow.hidden && !moreBtn.disabled) more();
+      }, { rootMargin: '0px 0px 300px 0px' })
+      : null;
+    function recheck() { if (io && ctx.alive() && pager && !pager.done) { io.unobserve(sentinel); io.observe(sentinel); } }
+    const refilter = () => { F.group = what.control.value; F.who = who.control.value; first(); };
+    what.control.addEventListener('change', refilter);
+    who.control.addEventListener('change', refilter);
+    await first();
+    if (io) io.observe(sentinel);
+    return tile({ w: 'full', title: 'Audit log', icon: 'book', side: csv, cls: 'au-tile' },
+      note(`Every change and every sign-in, newest first. Times in ${tz.replace(/_/g, ' ')}. An item opens where it still exists.`),
+      h('div', { class: 'au-filters' }, what, who),
+      status, list, sentinel, moreRow);
   }
 
   /* ================================================================ put together */
