@@ -21,7 +21,7 @@ import { field, segmented } from '../core/form.js';
 import { mapTile, boundsOf } from '../core/map.js';
 import { xyChart } from '../core/chart.js';
 import { byDay, dayHead, socBar, filterBar, moreButton, statTile, pills, money, splitBar, sectionHead, dur } from '../core/bits.js';
-import { srcPill, estPill, SOURCE_OPTIONS, SOURCE_WORDS, sourceParam } from '../core/source.js';
+import { rowTitle, SOURCE_OPTIONS, SOURCE_WORDS, sourceParam } from '../core/source.js';
 
 export const id = 'charges';
 export const css = true;
@@ -33,7 +33,7 @@ const KIND_TONE = { ac: 'teal', dc: 'sky', unknown: 'muted' };
 const COST_SOURCE = { tariff: 'place price', manual: 'typed by hand', free_supercharging: 'free Supercharging', teslamate: 'imported' };
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const pct = (v) => format(v, 'percent');
-const placeName = (c) => c?.place?.name || c?.address?.short || 'Unnamed spot';
+const placeName = (c) => c?.place?.name || c?.address?.short || (c?.position?.lat != null ? `${c.position.lat.toFixed(4)}, ${c.position.lon.toFixed(4)}` : 'Unnamed spot');
 const placeHref = (c) => (c?.place?.id ? state.buildUrl('places', { query: { place: c.place.id } })
   : c?.position?.lat != null ? state.buildUrl('places', { query: { new: `${c.position.lat.toFixed(5)},${c.position.lon.toFixed(5)}` } }) : null);
 
@@ -45,12 +45,17 @@ function chargeTile(c, ctx, tz, carName) {
   const costHref = state.buildUrl('charge', { car: c.car, charge: c.id, query: { edit: 'cost' } });
   const pHref = placeHref(c);
   const kind = c.kind || 'unknown';
-  return tile({ w: 2, cls: ['item', 'charge-tile'] },
+  const costSrc = c.cost ? String(COST_SOURCE[c.cost.source] || c.cost.source || '') : '';
+  const costWhy = costSrc ? costSrc.charAt(0).toUpperCase() + costSrc.slice(1) : null;
+  // no efficiency: a fast charger (no grid side), or the engine's reason (added and grid energy over different spans)
+  const effWords = c.efficiency_pct != null ? `${pct(c.efficiency_pct)} efficient`
+    : h('span', { title: c.efficiency_note || (kind === 'dc' ? 'A fast charger does not report its grid side.' : 'Not known: the energy from the grid and the energy added were not both measured.') }, 'efficiency —');
+  const t = tile({ w: 2, cls: ['item', 'charge-tile'] },
     h('div', { class: 'item-top' },
       h('span', { class: 'item-ic tone-teal', 'aria-hidden': 'true' }, icon('bolt')),
       h('div', { class: 'item-text' },
         h('p', { class: 'item-title', cover: ['charges.table.location', 'charges.link.geofence'] },
-          pHref ? h('a', { class: 'place-link', href: pHref, title: c.place ? `Edit ${c.place.name}` : 'Name this place' }, placeName(c)) : placeName(c)),
+          pHref ? h('a', { class: 'place-link', href: pHref, title: c.place ? `Edit ${c.place.name}` : 'Save this spot as a place' }, placeName(c)) : placeName(c)),
         h('p', { class: 'item-sub', cover: 'charges.table.date' }, `${carName ? `${carName} · ` : ''}${formatTime(c.start_ms, zone)} – ${going ? 'now' : formatTime(c.end_ms, zone)}`)),
       h('span', { class: 'item-flags' },
         h('span', { cover: 'charges.table.type' }, chip(c.fast_charger?.type === 'supercharger' ? `${KIND[kind]} · Supercharger` : KIND[kind], { tone: KIND_TONE[kind] })),
@@ -61,23 +66,27 @@ function chargeTile(c, ctx, tz, carName) {
       h('span', { cover: 'charges.table.energy_added' }, num(c.energy_added_kwh, 'energy', { size: 's' })),
       h('span', { cover: 'charges.table.duration' }, num(c.charging_ms, 'duration', { size: 's' })),
       h('span', { cover: ['charges.table.cost', 'charges.link.set_cost'] },
-        ctx.admin ? h('a', { class: ['cost-link', { 'is-missing': !c.cost }], href: costHref, title: c.cost ? 'Change the cost' : 'Set a cost' },
-          c.cost ? formatMoney(c.cost.amount, c.cost.currency) : 'Set a cost')
-          : h('span', { class: ['cost-link', { 'is-missing': !c.cost }] }, c.cost ? formatMoney(c.cost.amount, c.cost.currency) : 'No price'))),
+        c.cost
+          ? (ctx.admin ? h('a', { class: 'cost-link', href: costHref, title: costWhy ? `${costWhy}. Change the cost` : 'Change the cost' }, formatMoney(c.cost.amount, c.cost.currency))
+            : h('span', { class: 'cost-link', title: costWhy }, formatMoney(c.cost.amount, c.cost.currency)))
+          : h('span', { class: 'cost-none' }, h('span', { class: 'cost-link is-missing', title: 'No price' }, '—'),
+            ctx.admin ? h('a', { class: 'row-act cost-set', href: costHref, title: 'Set a cost', 'aria-label': 'Set a cost' }, icon('edit')) : null))),
     socBar(c.start_soc_pct, c.end_soc_pct, { cover: ['charges.table.start_soc', 'charges.table.end_soc'] }),
-    h('p', { class: 'src-line' }, srcPill(c, { short: true }), estPill(c)),
     h('p', { class: 'item-sub charge-more' },
       h('span', { cover: 'charges.table.energy_used' }, c.energy_grid_kwh != null ? `${format(c.energy_grid_kwh, 'energy')} from the grid` : c.dc_inlet_kwh != null ? `${format(c.dc_inlet_kwh, 'energy')} at the inlet` : 'grid not measured'), ' · ',
-      h('span', { cover: 'charges.table.efficiency' }, c.efficiency_pct != null ? `${pct(c.efficiency_pct)} efficient` : kind === 'dc' ? 'efficiency unknown (DC)' : 'efficiency —'), ' · ',
-      h('span', { cover: 'charges.table.cost_per_kwh' }, c.price_per_kwh?.value != null ? format({ amount: c.price_per_kwh.value, currency: c.cost?.currency }, 'price_energy') : 'no price per kWh'), ' · ',
+      h('span', { cover: 'charges.table.efficiency' }, effWords), ' · ',
+      h('span', { cover: 'charges.table.cost_per_kwh' }, c.price_per_kwh?.value != null ? [format({ amount: c.price_per_kwh.value, currency: c.cost?.currency }, 'price_energy'), ' · '] : null),
       h('span', { cover: 'charges.table.avg_power' }, `avg ${format(c.power_avg_kw, 'power')}, peak ${format(c.power_max_kw, 'power')}`), ' · ',
       h('span', { cover: 'charges.table.range_added' }, `+${format(c.range_added_km, 'range')}`), ' · ',
       h('span', { cover: 'charges.table.charge_rate' }, format(c.range_per_hour_km, 'range_rate')), ' · ',
       h('span', { cover: 'charges.table.temp' }, `${format(c.outside_avg_c, 'temperature')} outside`), ' · ',
       h('span', { cover: 'charges.table.odometer' }, format(c.odometer_km, 'odometer'))),
     h('p', { class: 'item-links tile-foot' },
-      h('a', { href, cover: 'charges.link.view_details' }, 'Details'),
-      c.cost ? h('span', { class: 'item-sub' }, COST_SOURCE[c.cost.source] || c.cost.source) : null));
+      h('a', { href, cover: 'charges.link.view_details' }, 'Details')));
+  // where the data came from: the card's hover title; the charge page shows it in full
+  const why = rowTitle(c);
+  if (why) t.title = why;
+  return t;
 }
 
 export async function mount(ctx) {
@@ -128,7 +137,7 @@ export async function mount(ctx) {
   /* ------------------------------------------------------------ totals, missing data, the list */
   const sumBox = h('div', { class: 'contents' });
   const incBox = h('div', { class: 'contents' });
-  const listHead = sectionHead('Sessions', 'Charging time leaves out time plugged in but not charging, so average power is not diluted. DC efficiency is unknown: a fast charger’s grid side is not measured.', { cover: 'charges.text.list_help' });
+  const listHead = sectionHead('Sessions', h('span', { title: 'Charging time leaves out time plugged in but not charging, so average power is not diluted. DC efficiency is unknown: a fast charger’s grid side is not measured. Hover a card for where its data came from; Details shows it in full.' }, 'Charging time only; open Details for the curve, cost and sources.'), { cover: 'charges.text.list_help' });
   const listStart = h('div', { class: 'tl-list-start w-full', cover: ['charges.table', 'shots.charges'] });
   let pager = null, lastDay = null;
   const more = moreButton(async () => { const b = pager.items.length; await pager.more(); drawFrom(b); return !pager.done; }, { text: 'Show earlier charges' });

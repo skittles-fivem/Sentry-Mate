@@ -69,8 +69,8 @@
 .page-charges .ch-list .c-car { width: round(5.5rem, var(--e)); }
 .page-charges .ch-list .c-start { width: round(8.75rem, var(--e)); }
 .page-charges .ch-list .c-place { width: auto; }
-.page-charges .ch-list .c-kind { width: round(6rem, var(--e)); }
-.page-charges .ch-list .c-dur { width: round(7.5rem, var(--e)); }
+.page-charges .ch-list .c-kind { width: round(8rem, var(--e)); }
+.page-charges .ch-list .c-dur { width: round(10rem, var(--e)); }
 .page-charges .ch-list .c-added { width: round(7rem, var(--e)); }
 .page-charges .ch-list .c-grid { width: round(7.5rem, var(--e)); }
 .page-charges .ch-list .c-cost { width: round(8.75rem, var(--e)); }
@@ -79,9 +79,9 @@
 .page-charges .ch-list .c-soc { width: round(7.5rem, var(--e)); }
 .page-charges .ch-list .c-temp { width: round(6rem, var(--e)); }
 .page-charges .ch-list .c-odo { width: round(6.5rem, var(--e)); }
-/* The per-hour and odometer columns fold into the Added and Start cells where there is no room for them. */
-.page-charges .ch-list .c-rate, .page-charges .ch-list .c-odo { display: none; }
-.page-charges .ch-fold-odo, .page-charges .ch-fold-rate { display: block; }
+/* Per hour, outside temperature and odometer only on wide panels (per hour is in the Added cell's title; all
+   three are in the CSV and on the charge's page). */
+.page-charges .ch-list .c-rate, .page-charges .ch-list .c-odo, .page-charges .ch-list .c-temp { display: none; }
 .page-charges .ch-start { font-size: 0.96875rem; }
 .page-charges .ch-place { font: 400 1rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); text-decoration: none; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .page-charges a.ch-place:hover { text-decoration: underline; text-decoration-color: var(--rule-strong); }
@@ -96,6 +96,12 @@
 .page-charges .ch-cost-button { display: inline-flex; align-items: center; gap: round(0.3125rem, var(--e)); border: 0; padding: 0; background: none; font: inherit; line-height: var(--LH); color: var(--ink); cursor: pointer; text-decoration: underline; text-decoration-color: var(--rule-strong); text-underline-offset: 0.1875rem; }
 .page-charges .ch-cost-button .icon { width: round(0.8125rem, var(--e)); height: round(0.8125rem, var(--e)); color: var(--ink-4); }
 .page-charges .ch-cost-button:hover .icon, .page-charges .ch-cost-button:hover { color: var(--accent); }
+/* The set-cost icon shows on the row under the pointer or with the keyboard in it, not down the whole list;
+   always on touch screens (no hover) and on a phone, so it stays reachable. */
+.page-charges .ch-list .ch-cost-button .icon { visibility: hidden; }
+.page-charges .ch-list tr:hover .ch-cost-button .icon, .page-charges .ch-list tr:focus-within .ch-cost-button .icon { visibility: visible; }
+@media (hover: none) { .page-charges .ch-list .ch-cost-button .icon { visibility: visible; } }
+@container page (width < 50rem) { .page-charges .ch-list .ch-cost-button .icon { visibility: visible; } }
 .page-charges .ch-cost-button.is-missing, .page-charges .ch-cost-link.is-missing { color: var(--ink-3); font-style: italic; }
 .page-charges .ch-cost-link { color: var(--ink); }
 .page-charges .ch-soc { display: flex; flex-direction: column; align-items: flex-end; gap: round(0.3125rem, var(--e)); white-space: nowrap; }
@@ -225,15 +231,12 @@
 .page-charges .ch-session-line { stroke: var(--ink-2); stroke-width: 1.5px; stroke-linecap: round; }
 
 /* ------------------------------------------------------------- tiers */
-@container page (width < 112.5rem) {
-  .page-charges .ch-list .c-temp { width: round(5.5rem, var(--e)); }
-}
 
 @container page (width < 72rem) {
   .page-charges .ch-totals { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .page-charges .ch-totals > .fig:nth-child(3n + 1) { border-left: 0; padding-left: 0; }
   .page-charges .ch-totals > .fig:nth-child(n + 4) { border-top: 1px solid var(--rule); }
-  .page-charges .ch-list .c-power, .page-charges .ch-list .c-temp, .page-charges .ch-list .c-kind { display: none; }
+  .page-charges .ch-list .c-power, .page-charges .ch-list .c-kind { display: none; }
   .page-charges .ch-stats-row, .page-charges .ch-habits-top, .page-charges .ch-pair, .page-charges .ch-places-grid { grid-template-columns: minmax(0, 1fr); }
   .page-charges .ch-habit-lists { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .page-charges .ch-cost-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -257,8 +260,7 @@
 }
 
 @container page (width >= 112.5rem) {
-  .page-charges .ch-list .c-rate { display: table-cell; }
-  .page-charges .ch-fold-rate { display: none; }
+  .page-charges .ch-list .c-rate, .page-charges .ch-list .c-temp { display: table-cell; }
   .page-charges .ch-delta { grid-template-rows: round(16rem, var(--e)) round(1.5rem, var(--e)); }
   .page-charges .ch-levels { grid-template-rows: repeat(10, round(1.5rem, var(--e))); }
   .page-charges .ch-map { height: round(32rem, var(--e)); }
@@ -267,7 +269,6 @@
 
 @container page (width >= 150rem) {
   .page-charges .ch-list .c-odo { display: table-cell; }
-  .page-charges .ch-fold-odo { display: none; }
 }
 .page-charges .sort-mark { font-size: max(10px, 0.75em); }
 

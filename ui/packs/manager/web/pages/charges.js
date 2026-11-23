@@ -25,7 +25,7 @@ import { placePopover } from '../core/popover.js';
 import { isAdmin } from '../core/prefs.js';
 import { flash } from '../core/flash.js';
 import { rpx } from '../core/display.js';
-import { srcMark, sourceOptions, filterWord } from '../core/source.js';
+import { srcTitle, sourceOptions, filterWord } from '../core/source.js';
 import { soldParts, soldToggle } from '../core/carswitch.js';
 
 export const id = 'charges';
@@ -264,16 +264,21 @@ export async function mount(ctx) {
   };
 
   /* ---------- the session list */
-  const kindCell = (c) => h('span', { class: 'cell-text' },
-    h('span', { class: ['kind-pill', `kind-pill--${c.kind || 'unknown'}`], title: KIND_HELP[c.kind || 'unknown'] }, KIND[c.kind] || 'Unknown'),
-    c.fast_charger ? h('span', { class: 'sub' }, [c.fast_charger.type === 'supercharger' ? 'Supercharger' : c.fast_charger.brand || 'Fast charger', c.fast_charger.class].filter(Boolean).join(' ')) : null);
+  // the pill alone; the fast charger's name and class in its title
+  const chargerName = (c) => (c.fast_charger ? [c.fast_charger.type === 'supercharger' ? 'Supercharger' : c.fast_charger.brand || 'Fast charger', c.fast_charger.class].filter(Boolean).join(' ') : '');
+  const kindCell = (c) => h('span', { class: ['kind-pill', `kind-pill--${c.kind || 'unknown'}`], title: [chargerName(c), KIND_HELP[c.kind || 'unknown']].filter(Boolean).join('. ') }, KIND[c.kind] || 'Unknown');
+  // the cost, its price per kWh under it; unpriced is a quiet "—" (the edit pen shows on hover or focus only)
   const costCell = (c) => {
     const edit = state.buildUrl('charge', { car: c.car, charge: c.id, query: { edit: 'cost' } });
-    const txt = c.cost ? formatMoney(c.cost.amount, c.cost.currency) : 'No price';
-    return h('span', { class: 'cell-text cell-num' },
-      isAdmin() ? h('a', { class: ['main', 'cost-link', !c.cost && 'is-missing'], href: edit, title: c.cost ? 'Change the cost of this charge' : 'Set a cost for this charge' }, txt, ' ', icon('settings', 'ico--sm'))
+    const txt = c.cost ? formatMoney(c.cost.amount, c.cost.currency) : '—';
+    const why = c.cost ? `Cost: ${COST_SOURCE[c.cost.source] || c.cost.source}` : c.place ? 'No price: the place has no price' : 'No price: not a saved place';
+    const ppk = c.cost && c.price_per_kwh?.value != null
+      ? `${format({ amount: c.price_per_kwh.value, currency: c.cost.currency }, 'price_energy')}` : '';
+    const basis = c.price_per_kwh?.value != null ? (c.price_per_kwh.basis === 'grid' ? ', per kWh of grid energy' : ', per kWh added') : '';
+    return h('span', { class: 'cell-text cell-num', title: why + basis },
+      isAdmin() ? h('a', { class: ['main', 'cost-link', !c.cost && 'is-missing'], href: edit, title: c.cost ? 'Change the cost of this charge' : 'Set a cost for this charge', 'aria-label': c.cost ? `${txt}, change the cost` : 'No price, set a cost' }, txt, icon('settings', 'ico--sm cost-pen'))
         : h('span', { class: ['main', !c.cost && 'faint'] }, txt),
-      h('span', { class: 'sub' }, c.cost ? COST_SOURCE[c.cost.source] || c.cost.source : c.place ? 'the place has no price' : 'not a saved place'));
+      ppk ? h('span', { class: 'sub' }, ppk) : null);
   };
   const effCell = (c) => {
     if (c.efficiency_pct != null) {
@@ -281,55 +286,52 @@ export async function mount(ctx) {
       setVars(bar, { '--w': `${Math.max(4, Math.min(100, c.efficiency_pct)).toFixed(1)}%` });
       return h('span', { class: 'eff', title: `Energy into the pack over energy from the grid. Lost: ${format(c.losses_kwh, 'energy')}` }, bar, h('span', { class: 'eff-val' }, pct(c.efficiency_pct)));
     }
-    return h('span', { class: 'faint nowrap', title: c.kind === 'dc' ? 'A fast charger’s grid side is not measured, so the efficiency is unknown.' : 'No grid meter reading for this charge.' }, c.kind === 'dc' ? 'unknown (DC)' : '—');
+    return h('span', { class: 'faint nowrap', title: c.kind === 'dc' ? 'A fast charger’s grid side is not measured, so the efficiency is unknown.' : c.efficiency_note || 'No grid meter reading for this charge.' }, c.kind === 'dc' ? 'unknown (DC)' : '—');
   };
   const columns = [
-    multi ? { key: 'car', label: 'Car', render: (c) => h('span', { class: 'nowrap' }, carName(c.car)), csv: (c) => carName(c.car) } : null,
-    { key: 'start', label: 'Start', sort: 'start', firstDir: 'desc', cover: ['charges.table.date', 'charges.link.view_details'], render: (c) => h('span', { class: 'cell-text' },
-      h('a', { class: 'main', href: state.buildUrl('charge', { car: c.car, charge: c.id }) }, `${formatDate(c.start_ms, c.time_zone || tz, { year: false })}, ${formatTime(c.start_ms, c.time_zone || tz)}`),
-      h('span', { class: 'sub sub--src' }, c.end_ms ? `to ${formatTime(c.end_ms, c.time_zone || tz)}` : 'charging now', srcMark(c, { short: true, estimated: true }))),
+    multi ? { key: 'car', label: 'Car', cls: 'col-car', render: (c) => h('span', { class: 'car-name', title: carName(c.car) }, carName(c.car)), csv: (c) => carName(c.car) } : null,
+    { key: 'start', label: 'Start', sort: 'start', firstDir: 'desc', cover: ['charges.table.date', 'charges.link.view_details', 'charges.table.odometer'], title: 'Start, then end; the odometer in the date’s title', render: (c) => h('span', { class: 'cell-text' },
+      h('a', { class: 'main', href: state.buildUrl('charge', { car: c.car, charge: c.id }), title: c.odometer_km != null ? `Odometer ${format(c.odometer_km, 'odometer')}` : null }, `${formatDate(c.start_ms, c.time_zone || tz, { year: false })}, ${formatTime(c.start_ms, c.time_zone || tz)}`),
+      h('span', { class: 'sub start-sub' }, c.end_ms ? `to ${formatTime(c.end_ms, c.time_zone || tz)}` : h('span', { class: 'tag tag--live' }, 'charging now'),
+        c.has_gaps ? h('span', { class: 'flag-ico', title: `Data missing for ${formatDuration(c.flags?.gap_ms || 0)} inside this charge` }, icon('warn', 'ico--sm')) : null)),
       csv: (c) => iso(c.start_ms) },
     { key: 'place', label: 'Place', cls: 'col-place', cover: ['charges.table.location', 'charges.link.geofence'], render: (c) => {
       const href = placeHref(c);
       return h('span', { class: 'cell-text' },
-        href ? h('a', { class: 'main place-link', href, title: c.place ? `Edit the place ${c.place.name}` : 'Make this spot a saved place' }, placeLabel(c)) : h('span', { class: 'main' }, placeLabel(c)),
-        h('span', { class: 'sub' }, c.place ? c.address?.short || '' : 'not a saved place yet'));
+        href ? h('a', { class: 'main place-link', href, title: c.place ? `Edit the place ${c.place.name}` : `${placeLabel(c)}: save this spot as a place` }, placeLabel(c)) : h('span', { class: 'main' }, placeLabel(c)),
+        c.place && c.address?.short ? h('span', { class: 'sub' }, c.address.short) : null);
     }, csv: (c) => placeLabel(c) },
-    { key: 'kind', label: 'Type', cover: 'charges.table.type', title: 'From the charge port’s own signal', render: kindCell, csv: (c) => KIND[c.kind] || 'Unknown' },
-    { key: 'duration', label: 'Charging', num: true, sort: 'duration', cover: 'charges.table.duration', title: 'Time charging, then time plugged in', render: (c) => h('span', { class: 'cell-text cell-num' },
-      h('span', { class: 'main' }, formatDuration(c.charging_ms)), h('span', { class: 'sub' }, c.plugged_ms != null ? `plugged ${formatDuration(c.plugged_ms)}` : '')),
+    { key: 'kind', label: 'Type', cls: 'col-kind', cover: 'charges.table.type', title: 'From the charge port’s own signal; a fast charger’s name in the pill’s title', render: kindCell, csv: (c) => KIND[c.kind] || 'Unknown' },
+    { key: 'duration', label: 'Charging', num: true, sort: 'duration', cover: 'charges.table.duration', title: 'Time charging; the time plugged in in each value’s title', render: (c) => h('span', { class: 'cell-text cell-num', title: c.plugged_ms != null ? `Plugged in ${formatDuration(c.plugged_ms)}` : null },
+      h('span', { class: 'main' }, formatDuration(c.charging_ms)),
+      // a narrow table has no Type column: the pill goes under the time
+      h('span', { class: 'sub dur-kind' }, kindCell(c))),
       csv: (c) => (c.charging_ms == null ? null : Math.round(c.charging_ms / 60000)) },
-    { key: 'added', label: 'Added', num: true, sort: 'energy', cover: 'charges.table.energy_added', title: 'Energy into the pack', render: (c) => format(c.energy_added_kwh, 'energy'), csv: column('Energy added', 'energy_added_kwh', 'energy') },
+    { key: 'added', label: 'Added', num: true, sort: 'energy', cover: ['charges.table.energy_added', 'charges.table.range_added', 'charges.table.charge_rate'], title: `Energy into the pack, then the ${rangeLabel().toLowerCase()} it added`, render: (c) => h('span', { class: 'cell-text cell-num', title: c.range_per_hour_km != null ? `${format(c.range_per_hour_km, 'range_rate')} while charging` : null },
+      h('span', { class: 'main' }, format(c.energy_added_kwh, 'energy')), c.range_added_km != null ? h('span', { class: 'sub added-range' }, `+${format(c.range_added_km, 'range')}`) : null,
+      // a narrow table has no Battery column: the levels take the range's line
+      h('span', { class: 'sub added-soc' }, `${pct(c.start_soc_pct)} → ${pct(c.end_soc_pct)}`)),
+      csv: column('Energy added', 'energy_added_kwh', 'energy') },
     { key: 'grid', label: 'From grid', num: true, cover: 'charges.table.energy_used', title: 'AC: measured at the car’s charger input. DC: what the charger delivered at the inlet.', render: (c) => (c.energy_grid_kwh != null ? format(c.energy_grid_kwh, 'energy')
-      : c.dc_inlet_kwh != null ? h('span', { class: 'cell-text cell-num' }, h('span', { class: 'main faint' }, 'not measured'), h('span', { class: 'sub' }, `${format(c.dc_inlet_kwh, 'energy')} at the inlet`)) : h('span', { class: 'faint' }, '—')),
+      : c.dc_inlet_kwh != null ? h('span', { class: 'cell-text cell-num', title: 'Not measured: a fast charger’s grid side is unknown. This is what the charger delivered at the car’s inlet.' }, h('span', { class: 'main faint' }, format(c.dc_inlet_kwh, 'energy')), h('span', { class: 'sub' }, 'at the inlet')) : h('span', { class: 'faint' }, '—')),
       csv: column('Energy from grid', 'energy_grid_kwh', 'energy') },
     { key: 'eff', label: 'Efficiency', cover: 'charges.table.efficiency', title: 'Energy into the pack over energy from the grid (AC only)', render: effCell, csv: (c) => c.efficiency_pct },
-    { key: 'cost', label: 'Cost', num: true, sort: 'cost', cover: ['charges.table.cost', 'charges.link.set_cost'], render: costCell, csv: (c) => (c.cost ? `${c.cost.amount} ${c.cost.currency}` : '') },
-    { key: 'ppk', label: 'Per kWh', num: true, cover: 'charges.table.cost_per_kwh', title: 'Cost over the grid energy (AC) or over the energy added (DC)', render: (c) => (c.price_per_kwh?.value != null
-      ? h('span', { class: 'cell-text cell-num' }, h('span', { class: 'main' }, format({ amount: c.price_per_kwh.value, currency: c.cost?.currency }, 'price_energy')), h('span', { class: 'sub' }, c.price_per_kwh.basis === 'grid' ? 'of grid energy' : 'of energy added'))
-      : h('span', { class: 'faint' }, '—')), csv: (c) => c.price_per_kwh?.value },
-    { key: 'power', label: 'Power', num: true, sort: 'power_max', cover: 'charges.table.avg_power', title: 'Average while charging (waiting time left out), then the peak', render: (c) => h('span', { class: 'cell-text cell-num' },
-      h('span', { class: 'main' }, format(c.power_avg_kw, 'power')), h('span', { class: 'sub' }, c.power_max_kw != null ? `peak ${format(c.power_max_kw, 'power')}` : '')),
+    { key: 'cost', label: 'Cost', num: true, sort: 'cost', cover: ['charges.table.cost', 'charges.link.set_cost', 'charges.table.cost_per_kwh'], title: 'The cost, then its price per kWh: of the grid energy (AC) or of the energy added (DC)', render: costCell, csv: (c) => (c.cost ? `${c.cost.amount} ${c.cost.currency}` : '') },
+    { key: 'power', label: 'Power', num: true, cls: 'col-power', sort: 'power_max', cover: 'charges.table.avg_power', title: 'Average while charging (waiting time left out); the peak in each value’s title', render: (c) => h('span', { class: 'nowrap', title: c.power_max_kw != null ? `Peak ${format(c.power_max_kw, 'power')}` : null }, format(c.power_avg_kw, 'power')),
       csv: column('Average power', 'power_avg_kw', 'power') },
-    { key: 'range', label: 'Range added', num: true, cover: 'charges.table.range_added', title: `${rangeLabel()} added`, render: (c) => format(c.range_added_km, 'range'), csv: column('Range added', 'range_added_km', 'range') },
-    { key: 'rate', label: 'Per hour', num: true, cover: 'charges.table.charge_rate', title: 'Range added per hour of charging', render: (c) => format(c.range_per_hour_km, 'range_rate'), csv: column('Range per hour', 'range_per_hour_km', 'range_rate') },
-    { key: 'soc', label: 'Battery', sort: 'end_soc', cover: ['charges.table.start_soc', 'charges.table.end_soc'], title: 'Battery level at the start and the end', render: (c) => {
+    { key: 'soc', label: 'Battery', cls: 'col-soc', sort: 'end_soc', cover: ['charges.table.start_soc', 'charges.table.end_soc', 'charges.table.temp'], title: 'Battery level at the start and the end; the temperatures in each value’s title', render: (c) => {
       const bar = h('span', { class: 'soc-bar', 'aria-hidden': 'true' }, h('i'));
       setVars(bar, { '--a': `${Math.max(0, Math.min(100, c.start_soc_pct ?? 0))}%`, '--b': `${Math.max(0, Math.min(100, c.end_soc_pct ?? c.start_soc_pct ?? 0))}%` });
-      return h('span', { class: 'soc-cell' }, bar, h('span', { class: 'nowrap' }, `${pct(c.start_soc_pct)} → ${pct(c.end_soc_pct)}`));
+      const temps = [c.outside_avg_c != null ? `outside ${format(c.outside_avg_c, 'temperature')}` : null, c.battery_avg_c != null ? `battery ${format(c.battery_avg_c, 'temperature')}` : null].filter(Boolean).join(', ');
+      return h('span', { class: 'soc-cell', title: temps ? `Average temperatures: ${temps}` : null }, bar, h('span', { class: 'nowrap' }, `${pct(c.start_soc_pct)} → ${pct(c.end_soc_pct)}`));
     }, csv: (c) => `${c.start_soc_pct ?? ''} -> ${c.end_soc_pct ?? ''}` },
-    { key: 'temp', label: 'Temps', num: true, cover: 'charges.table.temp', title: 'Average outside, then battery temperature', render: (c) => h('span', { class: 'cell-text cell-num' },
-      h('span', { class: 'main' }, format(c.outside_avg_c, 'temperature')), h('span', { class: 'sub' }, c.battery_avg_c != null ? `battery ${format(c.battery_avg_c, 'temperature')}` : 'battery —')),
-      csv: column('Outside', 'outside_avg_c', 'temperature') },
-    { key: 'odo', label: 'Odometer', num: true, cover: 'charges.table.odometer', render: (c) => format(c.odometer_km, 'odometer'), csv: column('Odometer', 'odometer_km', 'odometer') },
-    { key: 'flags', label: '', csv: false, render: (c) => h('span', { class: 'flag-icons' },
-      c.has_gaps ? h('span', { class: 'flag-ico', title: `Data missing for ${formatDuration(c.flags?.gap_ms || 0)} inside this charge` }, icon('warn', 'ico--sm')) : null,
-      c.flags?.in_progress || c.end_ms == null ? h('span', { class: 'tag tag--live' }, 'live') : null) },
   ].filter(Boolean);
   const table = dataTable(ctx, {
     title: 'Charging sessions', icon: 'bolt', path: listPath, params: listParams(), limit: 25, columns, sort: { key: 'start', dir: 'desc' }, csvName: 'charges', cls: 'charges-table',
     cover: 'charges.table', noteCover: 'charges.text.list_help',
-    note: 'Narrow the list with the period, cars, places, AC or DC, text, a lowest cost and a shortest charging time; the totals above count exactly the listed charges. Charging time leaves out time plugged in but not charging, so average power is not diluted. Energy added is measured at the pack (estimated for a charge with Tesla API data alone, or imported; the line under each start says where its data came from); DC efficiency is unknown because a fast charger’s grid side is not measured. Open a row for its curve and cost.',
+    note: 'The totals above count exactly the listed charges. Open a row for its curve, cost and where its data came from.',
+    noteMore: 'Narrow the list with the period, cars, places, AC or DC, text, a lowest cost and a shortest charging time. Charging time leaves out time plugged in but not charging, so average power is not diluted. Energy added is measured at the pack (estimated for a charge with Tesla API data alone, or imported); hover a row to see where its data came from. DC efficiency is unknown because a fast charger’s grid side is not measured. The CSV has every figure, also the temperatures and the odometer.',
+    rowTitle: srcTitle,
     rowHref: (c) => state.buildUrl('charge', { car: c.car, charge: c.id }),
     onPage: (pg) => { if (pg.totals) paintSummary(pg.totals); },
     empty: () => {
@@ -717,9 +719,9 @@ export async function mount(ctx) {
   async function paintPlaces(sp) {
     const pp = { cars: fixedCar ? fixedCar.id : sp.cars, from_ms: sp.from_ms, to_ms: sp.to_ms, places: sp.places, min_duration_min: sp.min_duration_min };
     const placeCell = (p) => (p.place ? h('a', { class: 'main place-link', href: state.buildUrl('places', { query: { place: p.place } }), title: `Edit the place ${p.label}` }, p.label)
-      : h('a', { class: 'main place-link', href: state.buildUrl('places', { query: { lat: p.lat.toFixed(5), lon: p.lon.toFixed(5), new: 1 } }), title: 'Make this spot a saved place' }, p.label));
+      : h('a', { class: 'main place-link', href: state.buildUrl('places', { query: { lat: p.lat.toFixed(5), lon: p.lon.toFixed(5), new: 1 } }), title: `${p.label}: save this spot as a place` }, p.label));
     const placeCol = (cv) => ({ key: 'label', label: 'Place', cover: cv, render: (p) => h('span', { class: 'cell-text' }, placeCell(p),
-      h('span', { class: 'sub' }, [p.place ? null : 'not a saved place', multi && p.cars?.length ? p.cars.map(carName).join(', ') : null].filter(Boolean).join(' · '))), csv: (p) => p.label });
+      multi && p.cars?.length ? h('span', { class: 'sub' }, p.cars.map(carName).join(', ')) : null), csv: (p) => p.label });
     const sessionsCol = { key: 'sessions', label: 'Sessions', num: true, render: (p) => formatNumber(p.sessions) };
     const byEnergy = dataTable(ctx, {
       title: 'By energy', icon: 'bolt', path: 'charging-stats/places', params: { ...pp, sort: 'energy' }, limit: 10, csvName: 'charging-places-energy', cls: 'places-table', cover: 'cs.table.top_energy',
@@ -729,8 +731,9 @@ export async function mount(ctx) {
     const byCost = dataTable(ctx, {
       title: 'By cost', icon: 'stats', path: 'charging-stats/places', params: { ...pp, sort: 'cost' }, limit: 10, csvName: 'charging-places-cost', cls: 'places-table', cover: 'cs.table.top_cost',
       columns: [placeCol('cs.table.top_cost.location'), sessionsCol,
-        { key: 'cost', label: 'Cost', num: true, cover: 'cs.table.top_cost.cost', render: (p) => (p.cost_by_currency?.length ? moneyStack(p.cost_by_currency) : h('span', { class: 'faint' }, 'no price')) },
-        { key: 'ppk', label: 'Per kWh', num: true, render: (p) => (p.price_per_kwh != null && p.cost_by_currency?.length === 1 ? format({ amount: p.price_per_kwh, currency: p.cost_by_currency[0].currency }, 'price_energy') : '—') }],
+        { key: 'cost', label: 'Cost', num: true, cover: 'cs.table.top_cost.cost', title: 'The cost, then its price per kWh', render: (p) => (p.cost_by_currency?.length ? h('span', { class: 'cell-text cell-num' }, moneyStack(p.cost_by_currency),
+          p.price_per_kwh != null && p.cost_by_currency.length === 1 ? h('span', { class: 'sub' }, format({ amount: p.price_per_kwh, currency: p.cost_by_currency[0].currency }, 'price_energy')) : null)
+          : h('span', { class: 'faint', title: 'No price' }, '—')) }],
       empty: () => emptyState({ icon: 'pin', title: 'No charging place', text: 'No charge in this period.' }),
     });
     const mapEl = h('div', { class: 'map places-map' });
