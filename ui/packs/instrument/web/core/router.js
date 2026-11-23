@@ -198,6 +198,7 @@ function stageView(view, finishOld) {
 // that land near the screen are drawn in the box; the rest when they come near once in place (shared/lazy.js).
 const FIRST_MS = 3000;
 const NOTICES_MS = 1500;
+const FONTS_MS = 1000;
 function firstStage(view, onCommit) {
   const r = view.getBoundingClientRect();
   const stage = h('div', { class: view.className + ' view-stage', 'aria-hidden': 'true', inert: '' });
@@ -319,8 +320,12 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
     return;
   }
 
-  if (noticesIn) noticesIn.then(() => { if (alive() && !frame.view().hasChildNodes()) replace(frame.view(), loadingPage(info.loading ?? 3)); });
-  else if (!keepScroll || firstMount) replace(view, loadingPage(info.loading ?? 3));
+  // a new page opens at its top: once, when its skeleton (or, without one, the page) goes in, never after its mount
+  // returns (a page that goes on loading after it is shown would throw the reader back up the page)
+  let topped = false;
+  const toTop = () => { if (keepScroll || live || topped) return; topped = true; window.scrollTo(0, 0); };
+  if (noticesIn) noticesIn.then(() => { if (alive() && !frame.view().hasChildNodes()) { replace(frame.view(), loadingPage(info.loading ?? 3)); toTop(); } });
+  else if (!keepScroll || firstMount) { replace(view, loadingPage(info.loading ?? 3)); toTop(); }
 
   // the car of a car page
   let car = null;
@@ -375,7 +380,7 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   rec.mod = mod;
   if (!live && !BARE.has(id)) {
     // (once in place, the page's view is the view itself: what it looks up or draws later is there)
-    first = firstStage(frame.view(), () => { view = frame.view(); if (rec.ctx) rec.ctx.view = view; });
+    first = firstStage(frame.view(), () => { view = frame.view(); if (rec.ctx) rec.ctx.view = view; toTop(); });
     cleanups.push(first.drop);
     view = first.stage;
   }
@@ -398,7 +403,12 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
       shownOnce = true;
       if (refreshAsked) { refreshAsked = false; setTimeout(() => ctx.refresh(), 0); }
       st?.settle(() => scope.busy);
-      if (noticesIn) noticesIn.then(() => { if (alive()) first?.commit(); }); else first?.commit();
+      // put in place once the fonts its words use are in too (at most FONTS_MS): laid out in the box they load, and a
+      // face that came in after the page was on screen would re-wrap its lines under the reader
+      if (first) {
+        const fonts = document.fonts?.status === 'loading' ? Promise.race([document.fonts.ready, new Promise((r) => { setTimeout(r, FONTS_MS); })]) : null;
+        if (noticesIn || fonts) Promise.all([noticesIn, fonts]).then(() => { if (alive()) first.commit(); }); else first.commit();
+      }
       frame.view().removeAttribute('aria-busy');
       // at the next frame (the page's own code after ready() and the router's are done by then), once the fonts the
       // page uses are in (a late swap would re-flow the text it just drew)
@@ -459,7 +469,7 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   setTimeout(rec.release, 2000);
   if (live) { showPending(); return; }
   if (!keepScroll) {
-    window.scrollTo(0, 0);
+    toTop();
     if (!firstMount) frame.view().focus({ preventScroll: true });
   }
   // a link to a section of a page (/cars/c1/charges?…#habits): open the page there
