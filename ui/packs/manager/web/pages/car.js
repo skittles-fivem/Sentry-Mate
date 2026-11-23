@@ -241,6 +241,7 @@ export async function mount(ctx) {
     const api = ins.some((i) => i.kind === 'tesla_api');
     replace(inputsSlot,
       ins.length ? inputsLine(ins, ago) : h('span', { class: 'src-inputs' }, h('span', { class: 'src-inputs-label' }, 'Live inputs'), h('span', { class: 'faint' }, 'none: no SMO log and no Tesla API reading yet')),
+      ctx.admin ? panelLink(`${state.buildUrl('settings-cars', { car: cid })}#data-sources`, 'Change order', { class: 'panel-link now-inputs-order', title: 'Which input wins when two cover the same time: Settings: Cars, Data sources' }) : null,
       api ? h('span', { class: 'now-inputs-key' }, 'A value marked ', h('span', { class: 'src-via' }, h('i', { class: 'src-m src-m--tesla_api' }), h('span', null, 'API')), ' came from the Tesla API; the rest from SMO.') : null,
       car.sources?.length ? h('span', { class: 'now-inputs-hist' }, h('span', { class: 'faint' }, 'History: '), srcMark(car)) : null);
   }
