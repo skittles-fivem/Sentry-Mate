@@ -307,7 +307,7 @@ export function teslaPart(ctx) {
         const out = await askAgain(ctx, {
           title: `Remove ${a.label}?`, yes: 'Remove the account', danger: true,
           text: 'Its cars stop being read at once and the sealed file with its tokens is deleted. The history already stored stays, marked as data from the Tesla API.',
-          run: (creds) => ctx.api.del(api.apiPath`integrations/tesla/accounts/${a.id}`, { headers: { 'X-Sentry-Mate-Password': creds.confirm_password, ...(creds.code ? { 'X-Sentry-Mate-Code': creds.code } : {}) } }),
+          run: (creds) => ctx.api.send('DELETE', api.apiPath`integrations/tesla/accounts/${a.id}`, creds),
         });
         if (out) flashDone(`${a.label} was removed.`);
         // removed: its card is gone, so focus goes to the part
@@ -325,7 +325,7 @@ export function teslaPart(ctx) {
           text: h('div', { class: 'dialog-text' },
             h('p', null, 'A Tesla sign-in always adds an account here, and the same Tesla account can be here only once. So this removes ', h('strong', null, a.label), ' first (its sealed tokens are deleted; the history already stored stays) and then starts a sign-in at Tesla for the same region.'),
             h('p', null, 'Finish it within ten minutes, under “Add another Tesla account”, then choose its cars again under “Its cars”. To keep the account and its matches instead, use “Replace the token” with a refresh token from another tool.')),
-          run: (creds) => ctx.api.del(api.apiPath`integrations/tesla/accounts/${a.id}`, { headers: { 'X-Sentry-Mate-Password': creds.confirm_password, ...(creds.code ? { 'X-Sentry-Mate-Code': creds.code } : {}) } }),
+          run: (creds) => ctx.api.send('DELETE', api.apiPath`integrations/tesla/accounts/${a.id}`, creds),
         });
         if (!out) { await again(`resign-${a.id}`, `tesla-${a.id}`); return; }
         let started = null;

@@ -66,6 +66,7 @@ const NOTES = {
   imported_history_estimated: 'Part of the history is imported; figures from it are estimated.',
   no_history: 'There is no history for this car yet.',
   pack_replaced: 'The pack was replaced: capacity, health and the trend cover the new pack only.',
+  reading_above_new: 'The capacity now reads above the value when new, so no loss is shown. If that value was typed, it is probably too low: check it under Reference values.',
 };
 const CHEM = { lfp: 'LFP (iron phosphate)', nca_nmc: 'NCA / NMC (nickel)' };
 const REASONS = {
@@ -331,10 +332,13 @@ export async function mount(ctx) {
     const t = totals || {};
     // from the valid odometer readings only, never below 0 (the server picks them)
     const mileage = t.driven_since_km ?? (t.odometer_last_km != null && t.odometer_first_km != null ? Math.max(0, t.odometer_last_km - t.odometer_first_km) : null);
-    const inKwh = (life.ac_kwh || 0) + (life.dc_kwh || 0) + (life.regen_kwh || 0);
+    // charges whose kind no input told are neither AC nor DC: their own part, only where there are any
+    const unknownKwh = life.unknown_kwh > 0 ? life.unknown_kwh : 0;
+    const inKwh = (life.ac_kwh || 0) + (life.dc_kwh || 0) + unknownKwh + (life.regen_kwh || 0);
     const parts = [
       { key: 'ac', label: 'AC charging', kwh: life.ac_kwh, cls: 'p-ac' },
       { key: 'dc', label: 'DC fast charging', kwh: life.dc_kwh, cls: 'p-dc' },
+      ...(unknownKwh ? [{ key: 'unknown', label: 'Charging, kind not known', kwh: unknownKwh, cls: 'p-unknown' }] : []),
       { key: 'regen', label: 'Regen braking', kwh: life.regen_kwh, cls: 'p-regen' },
     ];
     const share = (k) => (inKwh ? ((k || 0) / inKwh) * 100 : 0);

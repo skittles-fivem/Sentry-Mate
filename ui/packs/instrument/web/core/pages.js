@@ -93,7 +93,7 @@ export const PAGES = Object.freeze([
     purpose: 'Where the cars have been: stops, places, cities, regions and countries, with time spent there.',
     words: 'visited locations countries cities stops map',
     sections: ['Filters', 'Summary', 'Map', 'Countries', 'Cities and regions', 'Days in a city', 'Places visited', 'Recent stops'] },
-  { id: 'software', title: 'Software', group: 'reports', icon: 'chip', car: 'optional', period: 'all',
+  { id: 'software', title: 'Software', group: 'reports', icon: 'chip', car: 'required', period: 'all',
     desc: 'Software history and the version now.',
     purpose: "The car's software history and the version it runs now, honest about what is known.",
     words: 'updates firmware version',

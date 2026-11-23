@@ -766,7 +766,7 @@ export async function mount(ctx) {
   async function removeAccount(a) {
     const r = await askPassword(ctx, { title: `Remove ${a.name}?`, yes: 'Remove the account', danger: true, hint: 'Account changes ask for it again.',
       text: `${a.name} can no longer sign in, and every session of theirs ends now. Their changes stay in the audit log.`,
-      run: (creds) => ctx.api.del(api.apiPath`accounts/${a.id}`, { headers: { 'X-Sentry-Mate-Password': creds.password, ...(creds.two_step ? { 'X-Sentry-Mate-Code': creds.two_step } : {}) } }).then(() => true) });
+      run: (creds) => ctx.api.send('DELETE', api.apiPath`accounts/${a.id}`, { confirm_password: creds.password, ...(creds.two_step ? { code: creds.two_step } : {}) }).then(() => true) });
     if (!r) return;
     ctx.toast(`${a.name} was removed.`);
     accounts = await ctx.api.list('accounts', {}).all({ max: 2000 });

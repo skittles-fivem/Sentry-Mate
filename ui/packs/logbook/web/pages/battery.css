@@ -30,6 +30,7 @@
 .page-battery .bt-sw-new { height: 0; background: none; border-top: 2px dotted var(--rust); }
 .page-battery .bt-sw-ac, .page-battery .bt-in-ac { background: var(--accent); fill: var(--accent); }
 .page-battery .bt-sw-dc, .page-battery .bt-in-dc { background: var(--ochre); fill: var(--ochre); }
+.page-battery .bt-sw-unknown, .page-battery .bt-in-unknown { background: var(--rule-strong); fill: var(--rule-strong); }
 .page-battery .bt-sw-regen, .page-battery .bt-in-regen { background: var(--dusk); fill: var(--dusk); }
 
 /* now */

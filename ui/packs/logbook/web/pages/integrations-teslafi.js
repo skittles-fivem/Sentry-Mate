@@ -258,7 +258,7 @@ export function teslafiPart(ctx) {
         const out = await ask({
           title: `Remove ${a.label}?`, yes: 'Remove the account', danger: true,
           text: 'Its car stops being read from TeslaFi at once and the sealed file with its token is deleted. The history already stored stays, marked as data from TeslaFi.',
-          run: (creds) => ctx.api.del(api.apiPath`integrations/teslafi/accounts/${a.id}`, { headers: { 'X-Sentry-Mate-Password': creds.confirm_password, ...(creds.code ? { 'X-Sentry-Mate-Code': creds.code } : {}) } }),
+          run: (creds) => ctx.api.send('DELETE', api.apiPath`integrations/teslafi/accounts/${a.id}`, creds),
         });
         if (out) ctx.flash(`${a.label} was removed.`);
         await again(`remove-${a.id}`, 'teslafi');

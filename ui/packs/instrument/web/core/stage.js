@@ -6,9 +6,10 @@
 //
 // box copies slot's tag and classes and sits in copies of its parents (tags and classes only), so the page's
 // style sheets give it the same layout; it is fixed, hidden and inert, so it is never seen, focused or
-// measured as part of the page. When build resolves (or throws) its children replace slot's.
+// measured as part of the page. When build resolves (or throws) its children replace slot's, and the keyboard
+// focus stays at its place in the part.
 
-import { h } from '../shared/dom.js';
+import { h, keepFocus } from '../shared/dom.js';
 
 function shell(slot) {
   const chain = [];
@@ -54,7 +55,8 @@ export async function offstage(slot, build) {
       // the charts of the part that goes are taken down with it (core/chart.js keeps each on its box): left up,
       // each would keep its listeners, its observer and its whole drawing until the page is left
       for (const el of slot.querySelectorAll('*')) el.__smPlot?.destroy();
-      slot.replaceChildren(...box.childNodes);
+      // the control that had the focus in the old part: the one at its place in the new part gets it
+      keepFocus(slot, () => slot.replaceChildren(...box.childNodes));
       slot.setAttribute('data-staged', '');
     }
     outer.remove();

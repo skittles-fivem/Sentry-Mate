@@ -359,7 +359,7 @@ export function teslaTiles(ctx, { cars = [] } = {}) {
         title: `Remove ${a.label}?`, danger: true, yes: 'Remove the account', hint: HINT,
         text: 'Reading stops at once and the sealed file with its tokens is deleted. The history already stored from it stays, marked as data from the Tesla API.',
         // a 204 answers null: true stands for done
-        run: guarded(async (cred) => (await ctx.api.del(`${BASE}/accounts/${enc(a.id)}`, { headers: { 'X-Sentry-Mate-Password': cred.password, ...(cred.two_step ? { 'X-Sentry-Mate-Code': cred.two_step } : {}) } })) ?? true),
+        run: guarded(async (cred) => (await ctx.api.send('DELETE', `${BASE}/accounts/${enc(a.id)}`, withPw(cred))) ?? true),
       });
       await after(r, `${a.label} removed. Its history stays.`);
     } });
