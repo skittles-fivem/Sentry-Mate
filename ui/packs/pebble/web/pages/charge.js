@@ -113,7 +113,7 @@ export async function mount(ctx) {
       h('p', { class: 'tile-line' }, cost ? COST_SOURCE[cost.source] || cost.source : ctx.admin ? 'enter it below' : 'no cost yet')),
     statTile({ label: 'Charging time', value: c.charging_ms, kind: 'duration', icon: 'clock', cover: 'cd.stat.duration', sub: c.plugged_ms != null ? `plugged in ${formatDuration(c.plugged_ms)}` : null }),
     statTile({ label: 'Average power', value: c.power_avg_kw, kind: 'power', icon: 'gauge', cover: 'cd.stat.avg_power', why, sub: c.power_max_kw != null ? `peak ${format(c.power_max_kw, 'power')}` : null }),
-    statTile({ label: 'Efficiency', value: c.efficiency_pct, kind: 'percent', icon: 'leaf', cover: 'cd.stat.efficiency', why: dc ? 'DC: the charger’s losses are not sent' : why, sub: c.efficiency_pct != null ? 'into the pack over drawn' : null }),
+    statTile({ label: 'Efficiency', value: c.efficiency_pct, kind: 'percent', icon: 'leaf', cover: 'cd.stat.efficiency', why: dc ? 'DC: the charger’s losses are not sent' : c.efficiency_note || why, sub: c.efficiency_pct != null ? 'into the pack over drawn' : null }),
     statTile({ label: 'Outside', value: c.outside_avg_c, kind: 'temperature', icon: 'thermo', cover: 'cd.stat.avg_temp', why, sub: c.battery_avg_c != null ? `battery ${format(c.battery_avg_c, 'temperature')}` : 'average' }),
     statTile({ label: 'Range per hour', value: c.range_per_hour_km, kind: 'range_rate', icon: 'route', why, sub: `${format(c.odometer_km, 'odometer')} on the clock` }),
   ];

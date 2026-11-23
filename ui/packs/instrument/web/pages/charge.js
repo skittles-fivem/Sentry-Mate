@@ -145,7 +145,7 @@ export async function mount(ctx) {
   const eff = metric('Efficiency', c.efficiency_pct, 'percent', {
     cover: 'cd.stat.efficiency', digits: 1,
     explain: c.efficiency_pct != null ? `${format(c.losses_kwh, 'energy')} lost on the way${est ? ' (estimated)' : ''}${c.efficiency_pct > 100 ? '; above 100 % means a bad reading' : ''}` : null,
-    why: dc ? "DC: the charger's own losses are not on the CAN bus" : why,
+    why: dc ? "DC: the charger's own losses are not on the CAN bus" : c.efficiency_note || why,
   });
   const avgTemp = metric('Outside', c.outside_avg_c, 'temperature', { cover: 'cd.stat.avg_temp', explain: c.battery_avg_c != null ? `average; battery ${format(c.battery_avg_c, 'temperature')}` : 'average of the session', why });
   const socFrom = clamp(c.start_soc_pct ?? 0, 0, 100), socTo = clamp(c.end_soc_pct ?? 0, 0, 100);
@@ -277,7 +277,7 @@ export async function mount(ctx) {
     ['When', h('span', { cover: 'web.charge-cost.dates' }, `${formatDate(t0, tz, { weekday: false })} ${formatTime(t0, tz)} – ${live ? 'now' : formatTime(t1, tz)} ${zone}`, otherZone ? h('span', { class: 'faint block' }, otherZone) : null)],
     ['Charging time', h('span', { cover: 'web.charge-cost.duration' }, formatDuration(c.charging_ms), h('span', { class: 'faint block' }, 'pauses under 3 min count as one charge'))],
     ['Energy', h('span', { cover: 'web.charge-cost.energy' }, `${format(c.energy_added_kwh, 'energy')} into the pack`,
-      h('span', { class: 'faint block' }, ac && gridKwh != null ? `${format(gridKwh, 'energy')} drawn, ${format(c.losses_kwh, 'energy')} lost` : dc ? `${format(c.dc_inlet_kwh, 'energy')} delivered; grid energy unknown` : 'energy drawn unknown'))],
+      h('span', { class: 'faint block' }, ac && gridKwh != null ? `${format(gridKwh, 'energy')} drawn${c.losses_kwh != null ? `, ${format(c.losses_kwh, 'energy')} lost` : ''}` : dc ? `${format(c.dc_inlet_kwh, 'energy')} delivered; grid energy unknown` : 'energy drawn unknown'))],
     ['Place', price ? `${placeLabel(c)}: ${[price.per_kwh != null ? format(price.per_kwh, 'price_energy', { currency: price.currency }) : null, price.per_minute != null ? format(price.per_minute, 'price_time', { currency: price.currency }) : null, (price.rates || []).length ? `${price.rates.length} time rates` : null, price.session_fee ? `${formatMoney(price.session_fee, price.currency)} per session` : null].filter(Boolean).join(', ') || 'priced'}` : `${placeLabel(c)}: no price`],
   ]);
 
