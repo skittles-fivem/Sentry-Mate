@@ -18,3 +18,4 @@ serde_json = "1"
 
 [dev-dependencies]
 lzma-rs = "0.3"
+synth = { path = "../synth" }

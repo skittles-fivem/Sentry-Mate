@@ -277,3 +277,50 @@ cores (other builds sometimes ran at the same time: take them as about, ±20 %).
 3. **The pages waited for their slowest call.** Battery and car in every pack (and efficiency, timeline, travel,
    charges, health where they waited on several calls) lay out at once with each block's room held, and fill each
    block when its own answers come. Requests asked twice on one load are asked once.
+
+# More performance: logs, rebuilds, start-up, the always-on parts
+
+Status (2026-11-23): measured area by area; each section says what was measured, what changed and what was left.
+All on made-up data, in a release build on this container's 4 cores (take the times as about, ±15 %).
+
+## CAN logs: unpacking and decoding
+
+**How it is measured.** `cargo test --release -p timeline --test decode_speed -- --ignored --nocapture`: the busiest
+60 one-minute logs in a row of a made-up day at the car's real rates (a drive: 1,161,659 frames, 323 a second, 53 MB
+as candump text), read one after the other on one core, the best of three runs. Three times per format: unpacked only
+(xz, and for columns the columns put back into lines), unpacked and every line parsed, and read whole into samples
+(`timeline::read_log`: what the engine does with a log).
+
+| An hour of driving (60 logs) | before | now |
+|---|---:|---:|
+| candump (`/1`, 3.4 MB packed): unpack | 565 ms | 526 ms |
+| candump: read whole into 3,566 samples | 1,173 ms (1,010 ns a frame) | 721 ms (621 ns a frame) |
+| columns (`/2`, 2.1 MB packed): unpack | 354 ms | 385 ms |
+| columns: read whole into 3,566 samples | 922 ms (794 ns a frame) | 600 ms (517 ns a frame) |
+
+**What was slow, and what changed.**
+
+1. **Every signal of every frame was decoded, bit by bit in floating point.** A sample is made of about 110 signals;
+   the DBC set has about 2,800, and each frame's signals were all taken out (each bit a `powi`), put in a list and
+   looked up by name. Now `SampleBuilder::feed` takes only the wanted signals out of a frame (a table per message,
+   made once per DBC set: `timeline/src/signals.rs`, `Table::by_message`), most frames are dropped after one lookup,
+   and a signal of up to 53 bits is taken out with integers (`dbc::raw_bits`; longer ones keep the bit-by-bit sum,
+   which is what Sentry Six Manager's JavaScript gives). The interface name (`can0`) is no longer formatted and
+   looked up per frame (`dbc::Decoder::message`).
+2. Checked the same: `dbc`'s `the_quick_bits_are_the_summed_bits` (every signal of both sets and every start and
+   length, on made-up payloads, whole and cut short) and `decode_speed.rs`'s
+   `feeding_frames_gives_what_every_decoded_signal_gives` (a made-up day with trouble, both formats: the samples are
+   those of every signal decoded and given by name).
+
+**Left as it is.**
+
+- **xz itself is now most of the time** (about 470 of 721 ms for candump, 230 of 600 ms for columns). The pure-Rust
+  `lzma-rs` unpacks candump text at about 115 MB/s. `lzma-rust2` (already used by the tests to pack) was tried:
+  the same on candump (442 against 467 ms), twice as fast on columns (119 against 226 ms, about 100 ms an hour of
+  driving). Not changed here: the unpacker is where the upload limits are enforced (`logfmt` stops at the unpack
+  limit through its own sink), and that wants its own change with its own tests.
+- **Columns logs are put back into text lines and parsed again** (about 150 ms an hour of driving). A way straight
+  from the columns to frames would save most of it; the line is what every reader of a log is written against.
+- A log is a minute long, so memory per log is small (a columns log's body, at most 64 MB by the limit, in practice
+  about 1 MB) and logs of different cars are already read at once (one car's are read one after the other: each
+  changes the car's timeline).
