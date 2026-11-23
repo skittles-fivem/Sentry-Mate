@@ -6,6 +6,7 @@
 
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
+import { clearServiceWorker } from '../shared/offline.js';
 import { createSheet, sheetRow, sheetGroup } from './sheet.js';
 import { segmented, toggle } from './form.js';
 import { btn, initial } from './ui.js';
@@ -73,6 +74,7 @@ function build() {
 
 async function signOut() {
   try { await api.del('session'); } catch { /* signed out either way */ }
+  await clearServiceWorker();
   toast('Signed out.', { kind: 'info', next: true });
   location.assign('/sign-in');
 }

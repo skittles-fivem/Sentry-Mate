@@ -7,6 +7,7 @@ import { initFrame } from './frame.js';
 import { startRouter } from './router.js';
 import { initKeys } from './keys.js';
 import * as session from './session.js';
+import { registerServiceWorker } from '../shared/offline.js';
 import { toast } from './toast.js';
 
 // a session that ends while a page is open: sign in again, then come back to this page
@@ -32,3 +33,5 @@ if (document.fonts?.load) {
 initFrame();
 initKeys();
 startRouter();
+// after the first draw: the next load draws from what the service worker keeps
+registerServiceWorker();

@@ -5,6 +5,7 @@
 // A 401 later (the session ended on the server, another tab signed out) goes to sign-in (core/app.js).
 
 import * as api from '../shared/api.js';
+import { clearServiceWorker } from '../shared/offline.js';
 import { loadSession, clearSession, getMe } from './prefs.js';
 
 let known = null;      // { needsSetup, signedIn } once checked
@@ -79,5 +80,6 @@ export function signedOut() {
 /** Sign out on the server, then here. */
 export async function signOut() {
   try { await api.del('session'); } catch (e) { if (e.status !== 401) throw e; }
+  await clearServiceWorker();
   signedOut();
 }
