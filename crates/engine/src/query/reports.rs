@@ -664,6 +664,10 @@ pub struct Totals {
     pub odometer_first_km: Option<f64>,
     pub odometer_last_km: Option<f64>,
     pub odometer_last_ms: Option<u64>,
+    /// How far the odometer moved since logging began (`odometer_last_km - odometer_first_km`, never below 0). Both
+    /// ends are the valid readings only: the longest run of the drives' readings that never goes down, so a reading
+    /// of another car or in another unit (higher or lower than the readings around it) is left out.
+    pub driven_since_km: Option<f64>,
     pub not_logged_km: Option<f64>,
     pub charges: u64,
     pub energy_added_kwh: f64,
@@ -672,6 +676,8 @@ pub struct Totals {
     pub charging_efficiency_pct: Option<f64>,
     pub ac: KindTotal,
     pub dc: KindTotal,
+    /// Charges whose kind (AC or DC) no input told: `ac`, `dc` and these add up to `charges`.
+    pub unknown_kind: KindTotal,
     pub updates: u64,
 }
 
@@ -684,41 +690,45 @@ pub fn totals(e: &Engine, car: CarId, source: Option<&str>) -> QResult<Scoped<To
     let shown = Shown::new(e, car, src)?;
     let dx = super::drives::ctx(e, &c)?;
     let (mut drives, mut km) = (0u64, 0.0f64);
-    let (mut first, mut last): (Option<f64>, Option<(f64, u64)>) = (None, None);
+    // every odometer reading of the drives, in time order (two numbers a drive)
+    let mut odo: Vec<(f64, u64)> = Vec::new();
     each::<Drive>(e, car, 0, u64::MAX, src, &shown, false, |d| {
         drives += 1;
         km += d.distance_km.unwrap_or(0.0);
-        if first.is_none() {
-            first = d.start_odometer_km.or(d.end_odometer_km);
-        }
-        if let Some(o) = d.end_odometer_km.or(d.start_odometer_km) {
-            let at = if dx.live == Some(d.id) { crate::now_ms() } else { d.end_ms };
-            last = Some((o, at));
-        }
+        let at = if dx.live == Some(d.id) { crate::now_ms() } else { d.end_ms };
+        odo.extend(d.start_odometer_km.map(|o| (o, d.start_ms)));
+        odo.extend(d.end_odometer_km.map(|o| (o, at)));
         Ok(true)
     })?;
-    let (mut charges, mut added, mut grid, mut added_with_grid, mut with_grid) = (0u64, 0.0, 0.0, 0.0, 0u64);
+    let (first, last) = match odometer_run(&odo) {
+        Some((f, l)) => (Some(f.0), Some(l)),
+        None => (None, None),
+    };
+    drop(odo);
+    let (mut charges, mut added, mut grid, mut with_grid) = (0u64, 0.0, 0.0, 0u64);
+    // the efficiency: over the charges whose two energies may be compared (as each charge's own)
+    let (mut added_compared, mut grid_compared) = (0.0, 0.0);
     let (mut ac, mut dc) = (KindTotal { charges: 0, kwh: 0.0 }, KindTotal { charges: 0, kwh: 0.0 });
+    let mut unknown_kind = KindTotal { charges: 0, kwh: 0.0 };
     each::<Charge>(e, car, 0, u64::MAX, src, &shown, false, |ch| {
         charges += 1;
         let kwh = ch.energy_added_kwh.unwrap_or(0.0);
         added += kwh;
         if let Some(g) = ch.energy_used_kwh {
             grid += g;
-            added_with_grid += kwh;
             with_grid += 1;
         }
-        match ch.kind {
-            Some(model::ChargeKind::Ac) => {
-                ac.charges += 1;
-                ac.kwh += kwh;
-            }
-            Some(model::ChargeKind::Dc) => {
-                dc.charges += 1;
-                dc.kwh += kwh;
-            }
-            None => {}
+        if let Some((a, g)) = super::charges::compared_energies(&ch) {
+            added_compared += a;
+            grid_compared += g;
         }
+        let k = match ch.kind {
+            Some(model::ChargeKind::Ac) => &mut ac,
+            Some(model::ChargeKind::Dc) => &mut dc,
+            None => &mut unknown_kind,
+        };
+        k.charges += 1;
+        k.kwh += kwh;
         Ok(true)
     })?;
     // (no overlaps to settle: CAN logs give no updates, so every imported one counts)
@@ -727,8 +737,9 @@ pub fn totals(e: &Engine, car: CarId, source: Option<&str>) -> QResult<Scoped<To
         updates += 1;
         Ok(true)
     })?;
-    ac.kwh = r(Some(ac.kwh), 3).unwrap_or(0.0);
-    dc.kwh = r(Some(dc.kwh), 3).unwrap_or(0.0);
+    for k in [&mut ac, &mut dc, &mut unknown_kind] {
+        k.kwh = r(Some(k.kwh), 3).unwrap_or(0.0);
+    }
     Ok(scoped(
         &c,
         Totals {
@@ -739,17 +750,44 @@ pub fn totals(e: &Engine, car: CarId, source: Option<&str>) -> QResult<Scoped<To
             odometer_first_km: r(first, 3),
             odometer_last_km: r(last.map(|l| l.0), 3),
             odometer_last_ms: last.map(|l| l.1),
+            driven_since_km: r(first.zip(last).map(|(f, l)| (l.0 - f).max(0.0)), 3),
             not_logged_km: r(first.zip(last).map(|(f, l)| (l.0 - f - km).max(0.0)), 3),
             charges,
             energy_added_kwh: r(Some(added), 3).unwrap_or(0.0),
             energy_grid_kwh: r(Some(grid), 3).unwrap_or(0.0),
             grid_coverage_pct: r((charges > 0).then(|| with_grid as f64 / charges as f64 * 100.0), 1),
-            charging_efficiency_pct: r((grid > 0.0).then(|| added_with_grid / grid * 100.0), 1),
+            charging_efficiency_pct: r((grid_compared > 0.0).then(|| added_compared / grid_compared * 100.0), 1),
             ac,
             dc,
+            unknown_kind,
             updates,
         },
     ))
+}
+
+/// The first and the last of the valid odometer readings `(km, at_ms)` (in time order): the longest run of them that
+/// never goes down (a reading may equal the one before). A reading that does not fit the car's own (another car's, a
+/// wrong unit, a reading of 0) is left out wherever it is, first or last too. `None` without a finite reading.
+pub(crate) fn odometer_run(v: &[(f64, u64)]) -> Option<((f64, u64), (f64, u64))> {
+    let ok: Vec<(f64, u64)> = v.iter().copied().filter(|(o, _)| o.is_finite() && *o > 0.0).collect();
+    // patience sorting: `tails[k]` ends the best run of length k + 1 found so far (the lowest such end)
+    let mut tails: Vec<usize> = Vec::new();
+    let mut prev: Vec<Option<usize>> = vec![None; ok.len()];
+    for (i, &(o, _)) in ok.iter().enumerate() {
+        let k = tails.partition_point(|&j| ok[j].0 <= o);
+        prev[i] = k.checked_sub(1).map(|p| tails[p]);
+        if k == tails.len() {
+            tails.push(i);
+        } else {
+            tails[k] = i;
+        }
+    }
+    let last = *tails.last()?;
+    let mut first = last;
+    while let Some(p) = prev[first] {
+        first = p;
+    }
+    Some((ok[first], ok[last]))
 }
 
 // ---------------------------------------------------------------- /gaps
@@ -1097,5 +1135,19 @@ mod tests {
         assert_eq!(all, vec![Slot { start: lo, end, label: "All".into() }]);
         assert!(slots_back(end, end, P::Day, zone).next().is_none());
         assert_eq!(median(vec![3.0, 1.0, 2.0, 10.0]), Some(2.5));
+    }
+
+    #[test]
+    fn the_odometer_run_leaves_out_readings_that_do_not_fit() {
+        let t = |v: &[f64]| v.iter().enumerate().map(|(i, o)| (*o, i as u64)).collect::<Vec<_>>();
+        // a first reading of another car (or in another unit) and a later one far too low
+        let v = t(&[98_000.0, 20_000.0, 20_010.0, 1_500.0, 20_030.0, 20_030.0, 20_050.0]);
+        assert_eq!(odometer_run(&v), Some(((20_000.0, 1), (20_050.0, 6))));
+        // a newest reading too low is left out too: the run never goes down, so the distance is never negative
+        let v = t(&[20_000.0, 20_100.0, 20_200.0, 900.0]);
+        assert_eq!(odometer_run(&v), Some(((20_000.0, 0), (20_200.0, 2))));
+        assert_eq!(odometer_run(&t(&[0.0, f64::NAN])), None);
+        assert_eq!(odometer_run(&[]), None);
+        assert_eq!(odometer_run(&t(&[5.0])), Some(((5.0, 0), (5.0, 0))));
     }
 }
