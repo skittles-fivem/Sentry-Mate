@@ -7,6 +7,7 @@ import { getUnits, format } from '../shared/units.js';
 import { isSupportedLocale, onLocaleChange } from '../shared/i18n.js';
 import { formatDate, isValidZone } from '../shared/time.js';
 import { buildUrl } from '../shared/state.js';
+import { soldParts, soldOptions } from '../core/carswitch.js';
 import { packChoices, packLabel } from '../shared/packs.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel } from '../core/page.js';
@@ -63,14 +64,15 @@ async function savePref(patch, what) {
 
 export async function mount(ctx) {
   const admin = isAdmin();
-  let about = null, server = null, geo = null, maps = null, packList = null, release = null;
-  [about, server, geo, maps, packList, release] = await Promise.all([
+  let about = null, server = null, geo = null, maps = null, packList = null, release = null, cars = null;
+  [about, server, geo, maps, packList, release, cars] = await Promise.all([
     ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     ctx.api.get('settings').catch(() => null),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
     packChoices(ctx.api, { fallback: PACKS, current: getPrefs()?.ui_pack || 'instrument' }),
     ctx.api.get('release').catch(() => null),
+    ctx.api.list('cars', { sort: 'custom', limit: 500 }).all({ max: 5000 }).catch(() => null),
   ]);
   if (!ctx.alive()) return;
   const p = getPrefs() || {};
@@ -129,6 +131,7 @@ export async function mount(ctx) {
     segMapColors.set(pp?.map_colors || 'dimmed');
     lang.value = pp?.language === 'en' ? 'en-US' : (pp?.language || 'auto');
     packSel.value = pp?.ui_pack || 'instrument';
+    paintMainCar(pp?.main_car ?? null);
     paintSwitch();
     paintLangExample();
   }));
@@ -144,6 +147,20 @@ export async function mount(ctx) {
   const switchNote = h('p', { class: 'setting-note', hidden: true }, 'The new pack is used the next time the app loads.');
   function paintSwitch() { const other = packSel.value !== packHere; switchBtn.hidden = !other; switchNote.hidden = !other; }
   paintSwitch();
+  // Main car: the car pages without one in the address show (Fleet's sidebar, Travel's days, links); none
+  // means the car looked at last. Sold cars wait in their own group unless one is the Main car.
+  const mainCarSel = h('select', { class: 'select', id: 'set-main-car', 'aria-label': 'Main car', disabled: !cars,
+    onchange: (e) => savePref({ main_car: e.target.value || null }, 'Main car') });
+  function paintMainCar(chosen) {
+    const opt = (c) => h('option', { value: c.id, selected: c.id === chosen }, c.name || c.id);
+    const { main, sold } = soldParts(cars || [], chosen ? [chosen] : []);
+    const missing = chosen && !(cars || []).some((c) => c.id === chosen);
+    replace(mainCarSel,
+      h('option', { value: '', selected: !chosen }, 'None (the car you looked at last)'),
+      main.map(opt), soldOptions(sold, opt),
+      missing ? h('option', { value: chosen, selected: true }, chosen) : null);
+  }
+  paintMainCar(p.main_car ?? null);
   // written with the app's own formatters, so it shows what the saved language really does
   const langExample = h('p', { class: 'setting-note' });
   const paintLangExample = () => replace(langExample, 'Example: ', h('b', null, format(1234.5, 'distance')), ', ', h('b', null, formatDate(ctx.api.now(), ctx.tz, { weekday: false, year: true })), '.');
@@ -159,7 +176,9 @@ export async function mount(ctx) {
       [lang, langExample],
       ['shell.locale', 'web.settings.general.ui-language', 'web.shell.locale-negotiation']),
     setting('UI pack', `The design of the whole app. ${about?.ui_pack?.name ? `This page is the ${about.ui_pack.name} pack ${about.ui_pack.version || ''}.` : ''} Your choice is used the next time the app loads where the server offers that pack.`,
-      [h('div', { class: 'row pack-row' }, packSel, switchBtn), switchNote]));
+      [h('div', { class: 'row pack-row' }, packSel, switchBtn), switchNote]),
+    setting('Main car', 'The car shown on pages without one in their address: the sidebar on All cars, the days on Travel, and links to car pages. With none, the car you looked at last is shown.',
+      [mainCarSel, cars ? null : h('p', { class: 'setting-note' }, 'The cars could not be read.')]));
 
   /* ---------- server defaults, addresses and maps */
   const serverPanel = h('div', { class: 'settings-server' });

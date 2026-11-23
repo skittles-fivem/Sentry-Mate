@@ -324,15 +324,13 @@ async function loadCarCount() {
   } catch { /* the count is a convenience */ }
 }
 
-// the car shown in the sidebar on pages without a car: the last one opened
+// the car shown in the sidebar on pages without a car: the person's preferred car (Main car, else the last one opened)
 async function lastCarForSidebar() {
-  const id = state.lastCar();
   try {
-    if (id) return await api.get(api.apiPath`cars/${id}`, null, { maxAgeMs: 30000 });
-    const p = await api.page('cars', { sort: 'custom', limit: 10 });
-    return state.splitSold(p.items).active[0] || p.items[0] || null;
-  } catch (e) {
-    if (e.status === 404 && id) state.forgetCar(id);
+    const p = await api.page('cars', { sort: 'custom', limit: 50 }, { maxAgeMs: 30000 });
+    const id = state.preferredCar(p.items);
+    return p.items.find((c) => c.id === id) || null;
+  } catch {
     return null;
   }
 }
