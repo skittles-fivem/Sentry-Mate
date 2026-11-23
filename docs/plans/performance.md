@@ -193,6 +193,108 @@ what they took, and what was changed.
 **Target:** every page's API calls under 300 ms warm and under 2 s cold (the first call after the server started), in
 a release build on 4 cores, on that history.
 
+## Scrolling
+
+A report from a 4K desktop (Instrument, Data health, while drives and charges were being rebuilt): the scroll bar
+moved for a few seconds, then the page jumped to where it should be. The browser had no time to draw while it
+scrolled: the page was busy, or every frame cost too much to paint.
+
+### How it is measured
+
+`node ui/tools/scroll.js` ([ui/tools/README.md](../../ui/tools/README.md#the-scroll-check-scrolljs)):
+- **Server:** the dev server with `--rebuild-running --sse-interval-ms 500 --rows-every-s 1`. The rebuild never
+  ends, so Data health reads itself again, every featured car gets a `rows` event every second, and live values
+  come every 500 ms.
+- **Browser:** Chromium through Playwright, headless, drawing in software with no GPU. That is harder on painting
+  than most desktops.
+- **Screen:** a 4K screen, at 100 % (3840x2160 at scale 1) and at 200 % (1920x1080 at scale 2).
+- **Pages:** each pack's Data health, car, drives, charges, statistics, Settings: Server and logbook.
+- **Scroll:** 30 mouse-wheel steps of 100 px down, 50 ms apart, then the same back up.
+- **What is counted:** the time between animation frames (a page fails with one over 50 ms), long tasks, and a
+  DevTools trace of the scroll.
+- **Noise:** one run per row. A single frame of 66 to 166 ms on a page that is otherwise at 16 ms is often noise.
+
+Runs, on the same machine the same day:
+- **before:** origin/main `48ecb90`;
+- **after:** the changes below.
+
+### What was slow
+
+- **Instrument painted the whole window on every frame.**
+  - Every panel had a backdrop blur, and the top bar too.
+  - The page's glow was a body background fixed to the window, which the browser paints again on each frame of a
+    scroll.
+  - On Data health at 3840x2160 that was 17 s of raster in a 4-second scroll.
+- **Pages were busy on every update while a rebuild ran.**
+  - On each change of content `core/snap.js` snapped the whole page to whole pixels (Instrument, Horizon,
+    Manager, Logbook). That is 50 to 100 ms on a page of 2,000 elements, and again for each card that loaded.
+  - Its ResizeObserver started yet another whole run for each grid that had just been taken off the page.
+- **The logbook page (Instrument, Horizon, Manager) was rebuilt in one go on each `rows` event.**
+  - Every drive of the period went into one table, about 41,000 elements, in tasks of 1.2 to 1.5 s.
+- **Car pages drew the map again on every live value.**
+  - The marker and the map's position were redone each time, even when the car had not moved.
+  - The Logbook pack's car page laid its whole live column out again, the map's section included.
+- **Horizon's sky kept moving under the page.**
+  - The floor animates at 30 frames a second and the glow breathes, so the window is drawn again under a scrolling
+    page.
+
+### What changed
+
+- **`core/snap.js` (Instrument, Horizon, Manager, Logbook):**
+  - After a change of content, only the boxes that hold it are snapped again; rows added at the end of a table are
+    snapped on their own.
+  - The whole page is snapped again only when such a box changed size by something other than whole pixels.
+  - Grids taken off the page are left alone, and a box that is shown or hidden is watched too.
+- **Tables (Instrument, Horizon, Manager):**
+  - Rows the page already has are drawn 200 at a time, the next 200 as the foot scrolls into view.
+  - With `reuseRows` (the logbook, the gaps on Data health), a row that loads again with the same data keeps its
+    element, so a reload that changed nothing touches nothing.
+- **Data health:** draws its status card and its totals again only when they changed.
+- **Car pages:** move the map only when the car moved, turned or changed state.
+- **Logbook pack car page and Data health:** swap only the parts that changed (`replaceChanged`,
+  `ui/shared/dom.js`).
+- **Paint:**
+  - No backdrop blur on panels or the top bar; the top bar and Horizon's panels are a little more solid instead.
+  - The glow is a fixed layer of its own, painted once.
+  - While the page scrolls (`data-scrolling`, a passive listener) the pulsing dot, the car marker's halo and
+    Horizon's glow, haze and floor hold still.
+
+### Results
+
+Pages that pass (no frame over 50 ms): **40 of 84 before, 59 of 84 after.** The longest frame, and the longest
+long task (`-`: none), in ms:
+
+| Pack | Page | 3840x2160@1 before | after | 1920x1080@2 before | after |
+|---|---|---|---|---|---|
+| instrument | Data health | 750 (65) | 67 (-) | 183 (53) | 17 (-) |
+| instrument | car | 667 (255) | 200 (177) | 383 (269) | 217 (187) |
+| instrument | drives | 750 (54) | 83 (-) | 183 (-) | 33 (-) |
+| instrument | charges | 900 (-) | 83 (-) | 167 (-) | 17 (-) |
+| instrument | statistics | 850 (-) | 67 (-) | 150 (-) | 17 (-) |
+| instrument | Settings: Server | 733 (-) | 50 (-) | 233 (-) | 17 (-) |
+| instrument | logbook | 2100 (1279) | 50 (-) | 1967 (1309) | 50 (-) |
+| horizon | Data health | 250 (88) | 133 (-) | 167 (66) | 50 (-) |
+| horizon | logbook | 2017 (1238) | 133 (-) | 2017 (1250) | 50 (-) |
+| manager | logbook | 1950 (1305) | 33 (-) | 1900 (1160) | 33 (-) |
+| logbook | Data health | 117 (108) | 33 (-) | 117 (54) | 33 (-) |
+| logbook | car | 233 (184) | 100 (100) | 250 (222) | 167 (86) |
+
+Every page of every pack at 1920x1080@2 is at most 50 ms after, except these:
+
+| Pack | Page | Longest frame (ms) | Why |
+|---|---|---|---|
+| horizon, instrument, logbook, manager | car | 100 to 217 | The mock car is driving, so the map moves with it, and the map's WebGL is drawn in software here. |
+| console | car | 100 | Console's pages were not changed. |
+| console | logbook | 100 | Console's pages were not changed. |
+| manager | drives | 67 | One frame. |
+
+Still over 50 ms at 3840x2160@1:
+- **Horizon:** every page measured, 100 to 233 ms. The whole window is its sky: several layers that the software
+  renderer blends again on every frame of a scroll. With no sky, the same page keeps under 50 ms.
+- **Instrument:** its frames now sit at about 50 ms (three 60 Hz frames). The fixed glow layer is about one frame
+  of that.
+- **Logbook pack drives:** 92 long tasks, the same before and after; not looked into yet.
+
 ## The made-up history
 
 All of it is made up (no one's car):
