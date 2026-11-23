@@ -826,6 +826,10 @@ html[data-form="phone"] .key { height: var(--h-btn); }
 .key-val { font-weight: 800; font-variant-numeric: tabular-nums; }
 .plot { position: relative; height: round(15rem, var(--e)); border-radius: var(--r-card); overflow: hidden; }
 .plot.plot-short { height: round(11rem, var(--e)); }
+/* a chart's room while its data loads: the legend's row and the plot */
+.plot-ghost { display: block; height: calc(var(--h-sm) + var(--s2) + round(15rem, var(--e))); border-radius: var(--r-card); background: var(--ghost); }
+.plot-ghost.plot-short { height: calc(var(--h-sm) + var(--s2) + round(11rem, var(--e))); }
+html[data-form="phone"] .plot-ghost { height: calc(var(--h-btn) + var(--s2) + round(15rem, var(--e))); }
 .plot .u-select { background: color-mix(in srgb, var(--coral-fill) 18%, transparent); }
 .plot .u-cursor-x { border-right: 1px dashed var(--muted); }
 .plot .u-over, .plot .u-under { border-radius: 0; }
@@ -850,6 +854,8 @@ a.bar:hover .bar-fill { opacity: 0.85; }
 
 /* the activity strip */
 .strip { display: flex; flex-direction: column; gap: var(--s2); margin: 0; }
+/* the strip's room while the activity loads: the bar, the ticks and a line of keys and the note under it */
+.strip-ghost { display: block; height: calc(var(--s8) + var(--l13) * 3 + var(--s2) * 3); border-radius: var(--r-sm); background: var(--ghost); }
 .strip-bar { position: relative; height: var(--s8); border-radius: var(--r-sm); background: var(--card-alt); overflow: hidden; }
 /* both edges on whole CSS px (whole device px at every scale, and exact in layout units): each is rounded on its
    own, so neighbours meet without a gap or a blur; a short stop is still two device px wide */

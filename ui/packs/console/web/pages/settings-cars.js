@@ -172,9 +172,10 @@ async function mountCar(ctx) {
   const ro = !admin;
   const cid = ctx.car.id;
   const S = {};
-  async function load() {
+  // first: the page's first load reuses the car the router read a moment ago; later loads ask again
+  async function load(first = false) {
     const [car, settings, tokens, keys, waiting, health, battery, cars] = await Promise.all([
-      ctx.api.get(`cars/${enc(cid)}`),
+      ctx.api.get(`cars/${enc(cid)}`, null, first ? { maxAgeMs: 5000 } : undefined),
       ctx.api.get(`cars/${enc(cid)}/settings`),
       admin ? ctx.api.get(`cars/${enc(cid)}/upload-tokens`, { limit: 100 }).catch(() => null) : null,
       admin ? ctx.api.get('can-keys', { car: cid, limit: 100 }).catch(() => null) : null,
@@ -185,7 +186,7 @@ async function mountCar(ctx) {
     ]);
     Object.assign(S, { car, settings, tokens: tokens?.items || [], keys: keys?.items || [], waiting: waiting?.items || [], health, battery, cars: cars?.items || [], more: !!cars?.next });
   }
-  await load();
+  await load(true);
   if (!ctx.alive()) return;
   const tz = () => S.car.time_zone || ctx.tz;
 

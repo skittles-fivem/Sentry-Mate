@@ -86,6 +86,9 @@ export async function mount(ctx) {
   const q = ctx.query;
   const now = () => ctx.api.now();
 
+  // the places (for the place filter) are asked for together with the cars, not after them
+  const placesP = ctx.api.page('places', { sort: 'visits' }, { limit: 200 }).then((x) => x.items || [], () => []);
+
   /* ---------- which cars */
   let fleet = [];
   try { fleet = (await ctx.api.page('cars', { sort: 'name' }, { limit: 200 })).items || []; } catch { fleet = fixedCar ? [fixedCar] : []; }
@@ -123,8 +126,7 @@ export async function mount(ctx) {
   replace(ctx.view, root);
 
   // places for the place filter (the most visited first)
-  let places = [];
-  try { places = (await ctx.api.page('places', { sort: 'visits' }, { limit: 200 })).items || []; } catch { places = []; }
+  const places = await placesP;
   if (!ctx.alive()) return;
   const twins = new Set(places.map((p) => p.name).filter((n, i, a) => a.indexOf(n) !== i));
   const placeSub = (p) => [p.counts?.charges != null ? `${formatNumber(p.counts.charges)} ${p.counts.charges === 1 ? 'charge' : 'charges'}` : null,

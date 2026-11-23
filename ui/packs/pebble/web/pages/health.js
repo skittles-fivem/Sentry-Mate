@@ -18,7 +18,7 @@ import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { tile, btn, linkBtn, icon, note, stateTag, ago } from '../core/ui.js';
-import { emptyTile, errorWords } from '../core/states.js';
+import { emptyTile, errorWords, ghostTile, plotGhost } from '../core/states.js';
 import { confirmSheet } from '../core/sheet.js';
 import { bars } from '../core/chart.js';
 import { filterBar, statTile, checkRow, sectionHead, pills, moreButton, nums, facts } from '../core/bits.js';
@@ -102,7 +102,11 @@ async function mountCar(ctx) {
   ] });
   const bar = filterBar(ctx, { carCover: 'dbinfo.filter.car' }, h('span', { class: 'filter-note' }, 'Checks and gaps follow the period; totals and storage are all time.'));
 
-  const [hl, gaps, all, can, tm, upd, st, sig, tapi, tst, tfi, tfst, tmst, ov] = await Promise.all([
+  // The signals of the newest log are decoded from the stored logs (the slowest answer by far): they load beside
+  // the rest and fill their own tile when they are in. The other tiles wait in grey tiles of their size meanwhile.
+  const sigP = ctx.api.list(`${base}/signals/latest`, {}, { limit: 500 }).all({ max: 5000 }).catch(() => []);
+  ctx.view.replaceChildren(bar, ghostTile(2, 'h3'), ghostTile(2, 'h2'), ghostTile(2, 'h2'), ghostTile(2, 'h2'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile('full', 'h3'));
+  const [hl, gaps, all, can, tm, upd, st, tapi, tst, tfi, tfst, tmst, ov] = await Promise.all([
     ctx.api.get(`${base}/health`, fullPeriod(ctx.params)),
     ctx.api.page(`${base}/gaps`, ctx.params, { limit: 40 }).catch(() => ({ items: [] })),
     ctx.api.get(`${base}/totals`, { source: 'all' }).catch(() => ({})),
@@ -110,7 +114,6 @@ async function mountCar(ctx) {
     ctx.api.get(`${base}/totals`, { source: 'import' }).catch(() => ({})),
     ctx.api.get(`${base}/updates`, { limit: 1 }).catch(() => null),
     ctx.api.get(`${base}/storage`, { limit: 14 }).catch(() => null),
-    ctx.api.list(`${base}/signals/latest`, {}, { limit: 500 }).all({ max: 5000 }).catch(() => []),
     ctx.api.get(`${base}/totals`, { source: 'tesla_api' }).catch(() => ({})),
     ctx.admin ? ctx.api.list('integrations/tesla/status').all().catch(() => null) : Promise.resolve(null),
     ctx.api.get(`${base}/totals`, { source: 'teslafi_api' }).catch(() => ({})),
@@ -231,7 +234,7 @@ async function mountCar(ctx) {
     const k = kindOf(s);
     return k ? format(s.value, k) : `${formatNumber(s.value, { maximumFractionDigits: 2 })}${s.unit ? ` ${s.unit}` : ''}`;
   };
-  let sort = 'name';
+  let sort = 'name', sig = [];
   const search = h('input', { type: 'search', placeholder: 'Find a signal or value', 'aria-label': 'Find a signal', autocomplete: 'off' });
   const count = h('span', { class: 'filter-note' });
   const listEl = h('div', { class: 'sig-list', role: 'table', 'aria-label': 'Signals', tabindex: '0', cover: ['nr.dash.state-table', 'nr.dash.state-table.sort-scroll'] });
@@ -253,11 +256,14 @@ async function mountCar(ctx) {
   let timer = 0;
   ctx.on(search, 'input', () => { clearTimeout(timer); timer = setTimeout(() => ctx.alive() && paint(), 150); });
   ctx.onCleanup(() => clearTimeout(timer));
-  paint();
   const sigT = tile({ w: 'full', title: 'Signals', icon: 'pulse', cls: 'sig-tile' },
     h('div', { class: 'page-bar' }, h('label', { class: 'search-pill' }, icon('search'), search), sortPills, count), listEl);
+  listEl.append(plotGhost());
 
   ctx.view.replaceChildren(bar, status, keysT, connTile(ctx, ov, car.id), teslaT, teslafiT, teslamateT, logT, rowsT, ...tots, storeT, daysT, sigHead, sigT);
+  sig = await sigP;
+  if (!ctx.alive()) return {};
+  paint();
   ctx.ready();
   return {};
 }
@@ -287,14 +293,16 @@ function connTile(ctx, ov, carId = null) {
 async function mountSystem(ctx) {
   const admin = !!ctx.admin;
   ctx.head({ actions: [btn('Reload', { kind: 'soft', icon: 'refresh', iconOnly: true, onclick: () => ctx.reload() })] });
+  // the car list's first page is asked for with the rest, not after it
+  const pager = ctx.api.pager('cars', { sort: 'name' }, { limit: 30 });
+  const firstCars = pager.more().catch(() => null);
   const [st, sh, geo, ov] = admin ? await Promise.all([
     ctx.api.get('system/storage').catch((e) => ({ error: e })),
     ctx.api.get('system/health').catch((e) => ({ error: e })),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('integrations/overview').catch(() => null),
   ]) : [null, null, null, null];
-  const pager = ctx.api.pager('cars', { sort: 'name' }, { limit: 30 });
-  await pager.more().catch(() => null);
+  await firstCars;
   if (!ctx.alive()) return {};
 
   /* ------------------------------------------------------------ storage */

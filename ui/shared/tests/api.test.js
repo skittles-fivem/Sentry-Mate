@@ -226,6 +226,21 @@ test('kept results are reused while young and dropped by any change', async () =
   assert.equal((await api.get('me', null, { maxAgeMs: 5000 })).n, 5);
 });
 
+test('keep stores an answer for later maxAgeMs callers but never reuses an old one itself', async () => {
+  let n = 0;
+  let local = 1000;
+  const api = createClient({ fetch: fakeFetch(() => json(200, { n: ++n })), localNow: () => local });
+  assert.equal((await api.get('notices')).n, 1);
+  assert.equal((await api.get('notices', null, { maxAgeMs: 5000 })).n, 2, 'a plain read is not kept');
+  assert.equal((await api.get('fleet/summary', null, { keep: true })).n, 3);
+  local += 1000;
+  assert.equal((await api.get('fleet/summary', null, { keep: true })).n, 4, 'keep itself always asks again');
+  local += 1000;
+  assert.equal((await api.get('fleet/summary', null, { maxAgeMs: 5000 })).n, 4, 'a page loaded with it reuses the kept answer');
+  local += 10000;
+  assert.equal((await api.get('fleet/summary', null, { maxAgeMs: 5000 })).n, 5, 'too old: asked again');
+});
+
 test('the server clock is read from the response headers', async () => {
   let local = 1_000_000;
   const c = createServerClock(() => local);
