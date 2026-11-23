@@ -51,6 +51,8 @@ mod seed;
 mod site;
 #[cfg(test)]
 mod testkit;
+#[cfg(test)]
+mod window_batch;
 
 use clap::{Parser, Subcommand};
 use ingest::server::{Identity, serve_tls, tls_dir};

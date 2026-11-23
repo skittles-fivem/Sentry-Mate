@@ -123,6 +123,11 @@ pub struct Options {
     pub api_rebuild_ms: u64,
     /// How SMO's and the Tesla API's samples are made one ([`timeline::fuse`]).
     pub fuse: timeline::FuseParams,
+    /// While a car's stored logs are worked through (at the start, after a rebuild was asked for), the windows of
+    /// the timeline they change are rebuilt once per this many logs, joined where they meet, instead of after every
+    /// log, where that gives the same timeline (nothing stored yet at or after the logs, no API input: a first
+    /// start over a full store, a car rebuilt whole). `1`: always after every log, as a log that arrives alone gets.
+    pub window_batch: usize,
 }
 
 impl Default for Options {
@@ -137,6 +142,7 @@ impl Default for Options {
             default_time_zone: "UTC".into(),
             api_rebuild_ms: 30_000,
             fuse: timeline::FuseParams::default(),
+            window_batch: 64,
         }
     }
 }

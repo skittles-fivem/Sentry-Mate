@@ -453,6 +453,35 @@ What changed (nothing stored differently, nothing answered differently):
 - **Start-up** with every log already worked on is the comparison of the store's logs with the day records: 0.03 s
   for these 30 days.
 
+### After that: a rebuild's windows once per run of logs
+
+The long windows above are now rebuilt once per 64 logs (`engine::Options::window_batch`), joined where they meet,
+instead of after every log, where that gives the very same timeline: nothing of the timeline is stored yet at or
+after the logs (a first start over a full store, a car rebuilt whole) and the car has no API input. A log that
+arrives alone, logs that fill a gap before rows already there, and a car with an API input get a window per log as
+before. It uses what a crash already left behind: a log's window is noted dirty before its samples are written, and
+windows left dirty are rebuilt at the next start.
+
+| 30 days, 2,341 logs | before this | now |
+|---|---:|---:|
+| the car rebuilt whole | 46.2 s (19.7 ms a log), 34.8 s of CPU | 25.4 s (10.9 ms a log), 17.0 s of CPU |
+| the logs found at the start | 38.7 s (16.5 ms a log) | 35.3 s (15.1 ms a log) |
+| memory at most: the logs / the rebuild | 101 MB / 138 MB | 100 MB / 114 MB |
+
+A rebuild of this car now takes a third of what it took at the start of this work (75.8 s).
+
+**Why not everywhere.** `crates/sentry-mate/src/window_batch.rs` puts the same made-up logs through two engines,
+one rebuilding after every log and one per run, and compares everything stored for the car (drives, charges, state
+spans, updates, charge curves, samples, the summary and newest values, the engine's record), after every step and
+after a rebuild: all logs at the start; every seventh log and a stretch of two hours filled in later; the second
+half before the first. A day runs with the tests; a week at runs of 7, 64 and all logs is run by hand
+(`cargo test --release -p sentry-mate windows_rebuilt -- --ignored`). Without the condition above, the week with
+its gaps filled later gave one drive with the same times and values and another id: a drive keeps the id of the
+piece of it that was stored first, and which piece that is depends on the windows rebuilt on the way. What points
+at a drive (its purpose, notes, costs) goes by that id, so there the windows stay one per log. A car with an API
+input was not tried, and stays as it was too: that is the next step, and it is what a car with TeslaFi or
+TeslaMate beside SMO would gain from.
+
 ## Start-up and the idle server, on the long history
 
 **How it is measured.** The long made-up history above (211 MB: 2.7 million imported positions, 1.7 million API

@@ -79,7 +79,7 @@ impl Options {
 pub type Enter<'a> = &'a dyn Fn() -> Result<gate::Pass, Box<dyn std::error::Error>>;
 
 /// One file (log or sidecar) through the store in chunks, then judged as the upload API does, inside the gate.
-async fn put(
+pub(crate) async fn put(
     store: &Store,
     judge: &Judge,
     enter: Enter<'_>,
