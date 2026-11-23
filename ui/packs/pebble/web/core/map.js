@@ -18,7 +18,7 @@ import { h, cssVar, styleSheet } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import { display } from './display.js';
 import { isDark, onTheme, currentPrefs, onPrefs } from './prefs.js';
-import { tileChoice, rasterPaint, mapColors, tileSources, tileLayers, repaintTiles, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles } from '../shared/maptiles.js';
+import { tileChoice, rasterPaint, mapColors, tileSources, tileLayers, repaintTiles, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles, sharpZoom } from '../shared/maptiles.js';
 
 let lib = null;
 /** Load MapLibre once (module, worker and style sheet, all relative to this file); resolves once the style sheet applies. */
@@ -102,6 +102,9 @@ export async function mapTile(ctx, box, { center = null, zoom = 13, bounds = nul
   box.toggleAttribute('data-imagery', onImagery(src));
   const pad = () => Math.round(padding * display.scale);
   let tiles = tilePx();
+  // never opens deeper than the tiles are sharp (the satellite photos end sooner than the map)
+  zoom = Math.min(zoom, sharpZoom(src, tiles));
+  maxZoom = Math.min(maxZoom, sharpZoom(src, tiles));
   const ground = () => (src?.kind === 'vector' ? vectorGround(isDark()) : cssVar('--map-ground'));
   const map = new ml.Map({
     container: box,

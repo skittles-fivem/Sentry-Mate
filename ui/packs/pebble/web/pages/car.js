@@ -25,6 +25,7 @@ import { tile, num, ring, stateTag, chip, btn, icon, note, ago } from '../core/u
 import { ghostTile, plotGhost } from '../core/states.js';
 import { openPeriod, rangeText } from '../core/period.js';
 import { mapTile, coordsText } from '../core/map.js';
+import { SPOT_ZOOM } from '../shared/maptiles.js';
 import { timeChart, spansOf } from '../core/chart.js';
 import { v, AWAKE_WORDS, endLabel, placeLink, strip, stripShares, facts, dur } from '../core/bits.js';
 import { srcPill, viaMark, inputsLine } from '../core/source.js';
@@ -375,7 +376,7 @@ export async function mount(ctx) {
       lat != null && outside ? h('a', { class: 'tile-link', href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=16/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'noopener noreferrer', cover: 'summary.map.external_link' }, 'Open in a map', icon('external'))
         : h('span', { class: 'muted', cover: 'summary.map.external_link' }, 'Outside map links are off'));
     if (lat != null && lon != null) {
-      const m = await mapTile(ctx, mapBox, { center: [lon, lat], zoom: 14, fullscreen: true });
+      const m = await mapTile(ctx, mapBox, { center: [lon, lat], zoom: SPOT_ZOOM, fullscreen: true });
       if (!m) return;
       if (m.map) m.pin([lon, lat], { tone: now.state === 'charging' ? 'teal' : 'coral', title: car.name });
       await m.ready;

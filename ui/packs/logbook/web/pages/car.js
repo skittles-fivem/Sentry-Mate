@@ -19,6 +19,7 @@ import { tyreView, recommendedLine, wheelGuessLine, tyresTitle } from '../shared
 import { pageHead, q, plus, figure, chip, flag, icon, stateMark, empty, errorView, loadingBlock, sep, ago, routeSketch } from '../core/ui.js';
 import { column, timeColumn, csvFilename, downloadCsv } from '../shared/csv.js';
 import { makeMap, coordsText, boundsOf } from '../core/map.js';
+import { SPOT_ZOOM } from '../shared/maptiles.js';
 import { stackedCharts, spansFromStates } from '../core/chart.js';
 import { activityStrip, timelineRow, AWAKE_WORDS, endLabel } from '../core/journal.js';
 import { sourceMark, valueMark, inputsLine, labelOf } from '../core/sources.js';
@@ -168,7 +169,7 @@ export async function mount(ctx) {
   const lat = v(now.location?.lat), lon = v(now.location?.lon);
   let marker = null;
   const mapReady = lat != null && lon != null
-    ? makeMap(ctx, mapBox, { center: [lon, lat], zoom: 14.2, fullscreen: true }).then(async (m) => {
+    ? makeMap(ctx, mapBox, { center: [lon, lat], zoom: SPOT_ZOOM, fullscreen: true }).then(async (m) => {
       if (!m) return;
       await m.loaded;
       marker = m.addPin([lon, lat], now.location.place ? now.location.place.name : null, 'pin-here');

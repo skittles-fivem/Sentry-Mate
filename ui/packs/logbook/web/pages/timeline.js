@@ -9,6 +9,7 @@
 
 import { h, replace } from '../shared/dom.js';
 import { format } from '../shared/units.js';
+import { trackBounds } from '../shared/tracks.js';
 import { formatTime, formatDate, formatDateTime, formatDuration, dayKey, formatDayKey, addDays, periodLabel } from '../shared/time.js';
 import { formatNumber, formatList, tn } from '../shared/i18n.js';
 import { downloadCsv, column, timeColumn } from '../shared/csv.js';
@@ -313,7 +314,7 @@ export async function mount(ctx) {
       else sideMap.map.getSource('roads')?.setData({ type: 'FeatureCollection', features: [] });
       return;
     }
-    const bounds = boundsOf(lines.flatMap((l) => l.coords));
+    const bounds = trackBounds(drives) || boundsOf(lines.flatMap((l) => l.coords)); // without stray fixes
     if (!sideMap) {
       sideMap = await makeMap(c, mapBox, { bounds, padding: 28, maxZoom: 15 });
       if (!sideMap) return;
