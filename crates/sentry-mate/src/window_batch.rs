@@ -42,6 +42,9 @@ fn stored(e: &engine::Engine) -> Vec<(&'static str, Vec<String>)> {
     meta.last_took_ms = None;
     // (when the logs were stored: each side stored its own)
     meta.last_arrived_ms = None;
+    meta.api_received_ms = None;
+    meta.teslafi_received_ms = None;
+    meta.tmlocal_received_ms = None;
     let points = |v: Vec<Sample>| v.iter().map(|p| format!("{p:?}")).collect::<Vec<_>>();
     vec![
         ("drives", rows::<Drive>(db, car)),
@@ -179,4 +182,60 @@ async fn windows_rebuilt_once_per_run_of_logs_give_the_same_timeline_over_a_week
     for batch in [7, 64, 100_000] {
         every_way(7, batch).await;
     }
+}
+
+/// Beside API inputs: a TeslaMate import, TeslaFi's API and local TeslaMate over the same days (made-up, another
+/// car's days than the logs': the inputs disagree, which is the hard case), then the rest of the logs, then the car
+/// rebuilt whole. The same on both sides because a car with an API input gets a window per log either way: with
+/// that condition taken out of the engine (tried by hand), five days gave one drive with the same times and values
+/// and another id after the rebuild, at runs of 7 and of 64 logs (a rebuild builds rows from the API's samples
+/// ahead of the logs, and a drive keeps the id of the piece of it stored first); with the other condition taken
+/// out as well, two days gave a drive without its start and end positions.
+async fn beside_apis(days: u32, batch: usize) {
+    let logs: Vec<synth::LogFile> =
+        synth::Scenario::new(7).days(days).rates(synth::Rates::Light).with_trouble(true).logs().collect();
+    let n = logs.len();
+    let (each, run) = (Side::new(1).await, Side::new(batch).await);
+    let all: Vec<&synth::LogFile> = logs.iter().collect();
+    let o = history::Options {
+        days,
+        end_ms: synth::DEFAULT_START_MS + u64::from(days) * 86_400_000,
+        seed: 5,
+        drives: 6 * days,
+        charges: 2 * days,
+        drive_step_s: 5,
+        teslafi_days: 1,
+        api_days: days,
+    };
+    for (k, side) in [&each, &run].into_iter().enumerate() {
+        side.take(&all[..20]).await;
+        history::run(&side.engine, &o).await.unwrap();
+        side.engine.idle().await;
+        println!("side {k}: history in");
+    }
+    let n0 = same("beside APIs, the history in", &each.engine, &run.engine);
+    for (a, b) in [(n / 2, n), (20, n / 2)] {
+        each.take(&all[a..b]).await;
+        run.take(&all[a..b]).await;
+        let k = same(&format!("beside APIs, logs {a}..{b}"), &each.engine, &run.engine);
+        println!(
+            "beside APIs, logs {a}..{b}: {k} the same (windows {} and {})",
+            each.engine.stats().windows_rebuilt,
+            run.engine.stats().windows_rebuilt
+        );
+    }
+    each.rebuild().await;
+    run.rebuild().await;
+    let k = same("beside APIs, rebuilt", &each.engine, &run.engine);
+    println!(
+        "beside APIs, rebuilt: {k} the same (windows {} and {}), {n0} before",
+        each.engine.stats().windows_rebuilt,
+        run.engine.stats().windows_rebuilt
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "long: cargo test --release -p sentry-mate windows_rebuilt -- --ignored --nocapture"]
+async fn windows_rebuilt_beside_api_inputs_give_the_same_timeline() {
+    beside_apis(2, 64).await;
 }

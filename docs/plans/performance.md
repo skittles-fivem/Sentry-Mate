@@ -478,9 +478,17 @@ half before the first. A day runs with the tests; a week at runs of 7, 64 and al
 (`cargo test --release -p sentry-mate windows_rebuilt -- --ignored`). Without the condition above, the week with
 its gaps filled later gave one drive with the same times and values and another id: a drive keeps the id of the
 piece of it that was stored first, and which piece that is depends on the windows rebuilt on the way. What points
-at a drive (its purpose, notes, costs) goes by that id, so there the windows stay one per log. A car with an API
-input was not tried, and stays as it was too: that is the next step, and it is what a car with TeslaFi or
-TeslaMate beside SMO would gain from.
+at a drive (its purpose, notes, costs) goes by that id, so there the windows stay one per log.
+
+**Beside an API input it is not the same either, so such a car stays as it was.** Tried by hand with the second
+condition taken out: the same logs beside a made-up TeslaMate import, TeslaFi's API and local TeslaMate over the
+same days. Two days came out the same; five days, rebuilt whole per run of 7 and of 64 logs, each gave one drive
+with the same times and values and another id (a rebuild builds rows from the API's samples ahead of the logs, and
+which piece of a drive is stored first depends on the windows on the way). With both conditions out, two days gave
+a drive without its start and end positions (which input's position is used is judged over the window). Rebuilding
+after every log is deterministic there: two such engines agreed on everything. So a car with TeslaFi or TeslaMate
+beside SMO gains nothing from this step; for it to, a drive's id would have to come from the data alone and not
+from what was stored before, which is a change to what a rebuild keeps and not a speed-up.
 
 ## Start-up and the idle server, on the long history
 
