@@ -170,9 +170,11 @@ async fn health_storage_and_the_servers_figures() {
             "unknown_ms",
             "logs_waiting",
             "rebuild_pending",
+            "gps_disagreement",
             "uploads_enabled",
         ],
     );
+    assert_eq!(h["gps_disagreement"], Value::Null, "SMO alone: nothing to compare: {h}");
     assert_eq!(h["car"], json!(car));
     assert_eq!(h["uploads_enabled"], json!(false), "no upload token: {h}");
     assert_eq!(h["keys"].as_array().unwrap().len(), 1, "{h}");
