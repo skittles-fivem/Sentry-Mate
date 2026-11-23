@@ -73,6 +73,7 @@ fn charge(car: u32, id: u64, start: u64, end: u64, kind: ChargeKind, lat: f64) -
         outside_temp_avg_c: None,
         battery_temp_avg_c: None,
         cost: None,
+        energy_spans: None,
         source: Source::Live,
         inputs: Default::default(),
         rules_version: 0,

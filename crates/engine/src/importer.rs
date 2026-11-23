@@ -318,6 +318,7 @@ impl DbSink<'_> {
                             parts: Vec::new(),
                             session_fee: None,
                             gap_ms: 0,
+                            cycle: None,
                             at_ms: now_ms(),
                         };
                         b.costs.push((c.id, c.start_ms, entry));

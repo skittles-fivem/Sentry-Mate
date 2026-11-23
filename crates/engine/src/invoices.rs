@@ -374,6 +374,8 @@ pub fn cost_of(sessions: &[Session]) -> Option<CostEntry> {
             per_kwh: if f.unit.as_deref() == Some("kwh") { f.rate.unwrap_or(0.0) } else { 0.0 },
             kwh: if f.unit.as_deref() == Some("kwh") { f.usage.unwrap_or(0.0) } else { 0.0 },
             cost: f.amount,
+            from_kwh: None,
+            to_kwh: None,
         })
         .collect();
     Some(CostEntry {
@@ -387,6 +389,7 @@ pub fn cost_of(sessions: &[Session]) -> Option<CostEntry> {
         parts,
         session_fee: None,
         gap_ms: 0,
+        cycle: None,
         at_ms: mine.iter().map(|s| s.updated_ms).max().unwrap_or(0),
     })
 }

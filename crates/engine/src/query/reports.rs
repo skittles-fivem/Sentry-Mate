@@ -338,7 +338,7 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
                     *g.basis.entry(cost.currency.clone()).or_default() += basis.unwrap_or(0.0);
                 }
                 g.priced += 1;
-            } else if let Some((cur, amount)) = estimate(&places, &ch, &v, &c.time_zone, default_price.as_ref()) {
+            } else if let Some((cur, amount)) = estimate(e, &places, &ch, &v, &c.time_zone, default_price.as_ref()) {
                 g.estimated += 1;
                 *g.est.entry(cur).or_default() += amount;
             }
@@ -484,13 +484,14 @@ fn cents(v: f64) -> f64 {
 /// What a charge without a cost is estimated at: its place's price as it is now (a price set after the charge
 /// ended), else the car's default price per kWh on the energy from the grid, else the energy added.
 fn estimate(
+    e: &Engine,
     places: &crate::placing::Places,
     ch: &Charge,
     v: &super::charges::ChargeView,
     car_tz: &str,
     default: Option<&super::fleet::PricePerKwh>,
 ) -> Option<(String, f64)> {
-    if let Some(c) = crate::costs::price_in(places, ch, &[], car_tz) {
+    if let Some(c) = crate::costs::price_in(e, places, ch, &[], car_tz) {
         return Some((c.currency, c.amount));
     }
     let p = default?;

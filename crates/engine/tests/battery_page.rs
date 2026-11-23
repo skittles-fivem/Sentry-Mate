@@ -106,6 +106,7 @@ fn charge(
         outside_temp_avg_c: None,
         battery_temp_avg_c: None,
         cost: None,
+        energy_spans: None,
         source,
         inputs: model::Inputs::NONE,
         rules_version: 0,

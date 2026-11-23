@@ -80,6 +80,7 @@ fn seed(w: &World) {
         outside_temp_avg_c: None,
         battery_temp_avg_c: None,
         cost: None,
+        energy_spans: None,
         source: Source::Live,
         inputs: Default::default(),
         rules_version: 0,
