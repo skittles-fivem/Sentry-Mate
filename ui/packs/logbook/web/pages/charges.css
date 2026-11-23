@@ -137,7 +137,7 @@
 .page-charges .ch-split-key { display: grid; gap: round(0.25rem, var(--e)); }
 .page-charges .ch-split-key li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto round(3rem, var(--e)); align-items: center; gap: round(0.5rem, var(--e)); font-size: var(--text-s); }
 .page-charges .ch-split-kind { color: var(--ink-2); }
-.page-charges .ch-split-val { font-variant-numeric: tabular-nums; white-space: nowrap; } /* its column is as wide as the value: a column core/snap.js rounds a fraction of a pixel narrower must not wrap it onto a second line */
+.page-charges .ch-split-val { font-variant-numeric: tabular-nums; }
 .page-charges .ch-split-share { color: var(--ink-3); text-align: right; font-variant-numeric: tabular-nums; }
 
 /* Charging habits */

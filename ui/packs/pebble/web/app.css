@@ -200,25 +200,13 @@ main:focus { outline: none; }
 :root { --dock-h: calc(var(--h-btn) + 2 * var(--s1) + 2px); --dock-zone: calc(var(--dock-h) + 2 * var(--s4) + env(safe-area-inset-bottom, 0px)); }
 html, body { height: 100%; }
 body { overflow: hidden; }
-/* scrollbar-gutter: the scroll bar's room is kept, so the grid does not narrow (and the page move sideways) when the
-   page grows taller than the window; a phone's scroll bars take no room, so it changes nothing there */
-.scroller { position: fixed; inset: 0 0 var(--dock-zone) 0; overflow: auto; overscroll-behavior: contain; scroll-padding-top: var(--s4); scrollbar-gutter: stable; }
-/* (a sign-in screen fits the window and centres its card in it: no scroll bar room kept) */
-html.is-auth .scroller { bottom: 0; scrollbar-gutter: auto; }
+.scroller { position: fixed; inset: 0 0 var(--dock-zone) 0; overflow: auto; overscroll-behavior: contain; scroll-padding-top: var(--s4); }
+html.is-auth .scroller { bottom: 0; }
 .shell { width: var(--grid-w, calc(100% - 2rem)); margin-left: var(--grid-x, 1rem); padding-bottom: var(--s8); }
-/* (empty until the page starts; not drawn before core/display.js has laid the grid out, so it does not move sideways
-   as the grid comes in) */
-:root:not([data-cols]) .shell { visibility: hidden; }
 .bento {
   display: grid; grid-template-columns: repeat(var(--cols, 4), var(--col, 1fr)); gap: var(--gap, 16px);
   grid-auto-flow: row dense; align-items: stretch; align-content: start; margin-top: var(--s6);
-  /* at least a screen high (the small one: a phone's toolbars shown), so the footer starts below the fold and is
-     never pushed down or pulled up on screen as the page draws (the grey tiles, then the page) */
-  min-height: 100svh;
 }
-/* a new page's part of the frame waits, hidden, until its header is final (core/router.js holdFrame): a header that
-   grew once shown would push everything under it down */
-:root[data-hold] :is(.head-main, .notices, .bento, .foot) { visibility: hidden; }
 .w-1 { grid-column: span 1; }
 .w-2 { grid-column: span 2; }
 .w-3 { grid-column: span 3; }
@@ -619,7 +607,7 @@ html[data-form="phone"] .seg-btn { height: var(--h-btn); }
 
 html.is-auth :is(.head, .notices, .foot, .dock) { display: none; }
 html.is-auth .shell { width: auto; margin: 0; padding: var(--s6) var(--s4); }
-html.is-auth .bento { display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; align-content: center; min-height: calc(100svh - 2 * var(--s6)); margin: 0; }
+html.is-auth .bento { display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; align-content: center; min-height: calc(100dvh - 2 * var(--s6)); margin: 0; }
 .auth-card {
   display: flex; flex-direction: column; gap: var(--s4); width: round(down, min(25rem, 100%), var(--e)); padding: var(--s8);
   background: var(--card); border: 1px solid var(--edge); border-radius: var(--r-tile); box-shadow: var(--shadow);

@@ -76,6 +76,29 @@ class Charges(ServerCase):
         # back to the Tesla invoice matched to the charge, else the place price
         self.assertEqual(back["cost"]["source"], "tesla_invoice" if d["invoices"] else "tariff")
 
+    def test_a_rate_per_kwh_needs_an_energy(self):
+        from unittest import mock
+
+        from mockapi.resources import charges as res
+
+        x = self.c.get("/api/v1/cars/c1/charges?kind=ac&limit=3")["items"][1]
+        path = f"/api/v1/cars/c1/charges/{x['id']}/cost"
+        body = {"mode": "per_kwh", "amount": 0.45, "currency": "USD"}
+        # a charge with no energy known (none in the made-up data): per kWh is refused on `mode`, nothing is kept
+        for bare in ({"energy_added_kwh": None, "energy_grid_kwh": None}, {"energy_added_kwh": 0, "energy_grid_kwh": None}):
+            with mock.patch.object(res, "get_charge", return_value=bare):
+                e, _ = self.c.error("PUT", path, 422, "invalid", body=body)
+                self.assertEqual(list(e["fields"]), ["mode"])
+                # the pack's energy asked for, the grid's alone known: none to price either
+                with mock.patch.object(res, "get_charge", return_value={"energy_added_kwh": None, "energy_grid_kwh": 9.0}):
+                    self.c.error("PUT", path, 422, "invalid", body={**body, "energy_basis": "pack"})
+        self.assertNotEqual(self.c.get(path[:-5])["cost"]["source"], "manual")
+        # with its energy it is the rate times the energy
+        up = self.c.json("PUT", path, body)
+        self.assertEqual(up["cost"]["source"], "manual")
+        self.assertEqual(up["price_per_kwh"]["value"], 0.45)
+        self.c.json("DELETE", path)
+
     def test_stopped_mid_charge(self):
         g = self.c.get("/api/v1/cars/c1/charges?flags=gap&limit=500")["items"]
         self.assertTrue(g)

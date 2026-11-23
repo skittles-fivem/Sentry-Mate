@@ -300,7 +300,3 @@ a.fact[href] .fact-label::after { content: "›"; margin-left: auto; color: var(
 :root:not([data-phone]) .fact { height: round(11.75rem, var(--e)); }
 :root:not([data-phone]) .fact-sub { -webkit-line-clamp: 3; height: round(3.75rem, var(--e)); }
 .fact-value { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
-/* the header is drawn again on every live update: its bottom margin stays inside its slot, so it does not collapse
-   through the slot one moment (the slot held at its whole-pixel height by core/snap.js) and not the next (the new
-   header not snapped yet), and the page under it does not move by the margin */
-.now-head-slot { display: flow-root; }

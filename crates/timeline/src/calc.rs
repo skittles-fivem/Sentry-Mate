@@ -7,18 +7,19 @@ fn kwh(kw: f64, ms: u64) -> f64 {
     kw * ms as f64 / 3_600_000.0
 }
 
-/// The integral of a power over samples (kWh): each sample's power counts until the next sample, or for `max_hold_ms`
-/// at most across a gap. A longer gap is bridged with `bridge(before, after)` when it can say what happened (the
-/// pack's lifetime counters), else only `max_hold_ms` of it counts. The last sample counts until `end_ms`. `None` when
-/// no sample has the power.
+/// The integral of a power over samples (kWh): each sample's power counts until the next sample that has the power
+/// (a second without it says nothing about it), or for that sample's hold time at most across a gap (`max_hold_ms`
+/// of the sample's index: a reading from an API stands for longer than one of the car's own seconds). A longer gap
+/// is bridged with `bridge(before, after)` when it can say what happened (the pack's lifetime counters), else only
+/// the hold time of it counts. The last one counts until `end_ms`. `None` when no sample has the power.
 pub(crate) fn integrate_kwh(
     s: &[&Sample],
     end_ms: u64,
-    max_hold_ms: u64,
+    max_hold_ms: impl Fn(usize) -> u64,
     power: impl Fn(&Sample) -> Option<f64>,
     bridge: impl Fn(&Sample, &Sample) -> Option<f64>,
 ) -> Option<f64> {
-    integrate(s, end_ms, max_hold_ms, power, bridge, |_, _, _| {})
+    integrate(s, end_ms, max_hold_ms, power, |_| false, bridge, |_, _, _| {})
 }
 
 /// One sample's share of an integral ([`integrate_pieces`]): its power over `[from, to)` (kW; over a bridged gap, the
@@ -36,16 +37,18 @@ impl Piece {
     }
 }
 
-/// [`integrate_kwh`], and the pieces its sum is made of, by time.
+/// [`integrate_kwh`], and the pieces its sum is made of, by time. A sample that is `off` (it says nothing flows: the
+/// car is not charging) ends the hold of the reading before it.
 pub(crate) fn integrate_pieces(
     s: &[&Sample],
     end_ms: u64,
-    max_hold_ms: u64,
+    max_hold_ms: impl Fn(usize) -> u64,
     power: impl Fn(&Sample) -> Option<f64>,
+    off: impl Fn(&Sample) -> bool,
     bridge: impl Fn(&Sample, &Sample) -> Option<f64>,
 ) -> Option<(f64, Vec<Piece>)> {
     let mut out = Vec::new();
-    let sum = integrate(s, end_ms, max_hold_ms, power, bridge, |from, to, e| {
+    let sum = integrate(s, end_ms, max_hold_ms, power, off, bridge, |from, to, e| {
         if to > from {
             out.push(Piece { from, to, kw: e * 3_600_000.0 / (to - from) as f64 });
         }
@@ -73,28 +76,50 @@ pub(crate) fn covered_ms(spans: &[(u64, u64)], a: u64, b: u64) -> u64 {
 fn integrate(
     s: &[&Sample],
     end_ms: u64,
-    max_hold_ms: u64,
+    max_hold_ms: impl Fn(usize) -> u64,
     power: impl Fn(&Sample) -> Option<f64>,
+    off: impl Fn(&Sample) -> bool,
     bridge: impl Fn(&Sample, &Sample) -> Option<f64>,
     mut piece: impl FnMut(u64, u64, f64),
 ) -> Option<f64> {
     let mut sum = 0.0;
+    // the sample with the power that is waiting for the next one
+    let mut held: Option<(usize, f64)> = None;
     let mut any = false;
-    for (i, x) in s.iter().enumerate() {
-        let Some(p) = power(x) else { continue };
-        any = true;
-        let next = s.get(i + 1);
+    // (`bridged`: the next sample has the power too, so the lifetime counters may say what a long gap held)
+    let mut close = |i: usize, p: f64, next: Option<&Sample>, bridged: bool| {
+        let x = s[i];
+        let hold = max_hold_ms(i);
         let to = next.map_or(end_ms, |n| n.t_ms);
         let dt = to.saturating_sub(x.t_ms);
-        let (e, until) = if dt <= max_hold_ms {
+        let (e, until) = if dt <= hold {
             (kwh(p, dt), to)
-        } else if let Some(e) = next.and_then(|n| bridge(x, n)) {
+        } else if let Some(e) = next.filter(|_| bridged).and_then(|n| bridge(x, n)) {
             (e, to)
         } else {
-            (kwh(p, max_hold_ms), x.t_ms + max_hold_ms)
+            (kwh(p, hold), x.t_ms.saturating_add(hold))
         };
         sum += e;
         piece(x.t_ms, until, e);
+    };
+    for (i, x) in s.iter().enumerate() {
+        match power(x) {
+            Some(p) => {
+                any = true;
+                if let Some((j, q)) = held.replace((i, p)) {
+                    close(j, q, Some(x), true);
+                }
+            }
+            None if off(x) => {
+                if let Some((j, q)) = held.take() {
+                    close(j, q, Some(x), false);
+                }
+            }
+            None => {}
+        }
+    }
+    if let Some((j, q)) = held {
+        close(j, q, None, false);
     }
     any.then_some(sum)
 }
@@ -264,7 +289,7 @@ pub(crate) fn gps_km(s: &[&Sample], max_kmh: f64) -> Option<f64> {
 
 /// Distance from the speed alone, km (only to judge whether a drive moved at all).
 pub(crate) fn speed_km(s: &[&Sample], end_ms: u64, max_hold_ms: u64) -> Option<f64> {
-    integrate_kwh(s, end_ms, max_hold_ms, |x| x.speed_kmh.map(f64::abs), |_, _| None)
+    integrate_kwh(s, end_ms, |_| max_hold_ms, |x| x.speed_kmh.map(f64::abs), |_, _| None)
 }
 
 /// Elevation changes smaller than this are noise (Elevation3D8 has 1 m steps), m.
@@ -334,17 +359,26 @@ mod tests {
     fn power_integrates_with_holds_and_bridges() {
         let v = [s(0, Some(36.0)), s(1000, Some(36.0)), s(2000, None), s(3000, Some(-36.0))];
         let r: Vec<&Sample> = v.iter().collect();
-        // 36 kW for 1 s + 1 s, nothing for the sample without power, −36 kW for its 1 s: 0.01 kWh
-        let e = integrate_kwh(&r, 4000, 10_000, |x| x.battery_power_kw, |_, _| None).unwrap();
-        assert!((e - 0.01).abs() < 1e-12, "{e}");
+        // 36 kW for 1 s, then for 2 s (held across the sample without power: it says nothing about it), −36 kW for
+        // its 1 s: 0.02 kWh
+        let e = integrate_kwh(&r, 4000, |_| 10_000, |x| x.battery_power_kw, |_, _| None).unwrap();
+        assert!((e - 0.02).abs() < 1e-12, "{e}");
+        // held for the hold time at most, however many samples without the power lie in between
+        let v = [s(0, Some(36.0)), s(1000, None), s(30_000, None), s(60_000, Some(36.0))];
+        let r: Vec<&Sample> = v.iter().collect();
+        let e = integrate_kwh(&r, 61_000, |_| 10_000, |x| x.battery_power_kw, |_, _| None).unwrap();
+        assert!((e - 0.11).abs() < 1e-12, "{e}");
+        // each sample has its own hold time
+        let e = integrate_kwh(&r, 61_000, |i| if i == 0 { 20_000 } else { 500 }, |x| x.battery_power_kw, |_, _| None);
+        assert!((e.unwrap() - 0.205).abs() < 1e-12, "{e:?}");
         // a 60 s gap: 10 s of it counts, or what the bridge says
         let v = [s(0, Some(36.0)), s(60_000, Some(36.0))];
         let r: Vec<&Sample> = v.iter().collect();
-        let held = integrate_kwh(&r, 61_000, 10_000, |x| x.battery_power_kw, |_, _| None).unwrap();
+        let held = integrate_kwh(&r, 61_000, |_| 10_000, |x| x.battery_power_kw, |_, _| None).unwrap();
         assert!((held - 0.11).abs() < 1e-12, "{held}");
-        let bridged = integrate_kwh(&r, 61_000, 10_000, |x| x.battery_power_kw, |_, _| Some(0.5)).unwrap();
+        let bridged = integrate_kwh(&r, 61_000, |_| 10_000, |x| x.battery_power_kw, |_, _| Some(0.5)).unwrap();
         assert!((bridged - 0.51).abs() < 1e-12);
-        assert!(integrate_kwh(&[], 0, 1, |x| x.battery_power_kw, |_, _| None).is_none());
+        assert!(integrate_kwh(&[], 0, |_| 1, |x| x.battery_power_kw, |_, _| None).is_none());
     }
 
     #[test]

@@ -35,6 +35,7 @@ pub(crate) enum Field {
     ChargerPower,
     AcVolts,
     AcAmps,
+    AcPower,
     DcVolts,
     DcAmps,
     DcStale,
@@ -227,6 +228,8 @@ pub(crate) const WANTED: &[(Field, &str, Kind)] = &[
     (F::AcVolts, "ChargeLineVoltage264", Number(Q::Voltage, 0.0, 600.0)),
     (F::AcVolts, "ChargerVoltage28C", Number(Q::Voltage, 0.0, 600.0)),
     (F::AcAmps, "ChargeLineCurrent264", Number(Q::Current, 0.0, 200.0)),
+    // the same line's power, all phases together (the voltage and the current are one phase's)
+    (F::AcPower, "ChargeLinePower264", Number(Q::Power, 0.0, 100.0)),
     // what a DC fast charger says it gives (0x29D), as carCalc's DC charger power reads it
     (F::DcVolts, "CP_evseOutputDcVoltage", Number(Q::Voltage, 0.0, 1000.0)),
     (F::DcAmps, "CP_evseOutputDcCurrent", Number(Q::Current, -1500.0, 1500.0)),

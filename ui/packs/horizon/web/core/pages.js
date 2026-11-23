@@ -37,7 +37,7 @@ export const PAGES = Object.freeze([
     purpose: 'Everything the car did, as one list and one strip: drives, charges, parked spells, gaps and updates.',
     words: 'states asleep awake parked gaps history day',
     sections: ['Filters', 'State summary', 'State strip', 'Timeline rows', 'Row links', 'Why the car stayed awake'] },
-  { id: 'software', tab: 'Software', title: 'Software and firmware', group: 'car', icon: 'chip', car: 'optional', period: 'all',
+  { id: 'software', tab: 'Software', title: 'Software and firmware', group: 'car', icon: 'chip', car: 'required', period: 'all',
     desc: 'Software history and the version now.',
     purpose: "The car's software history and the version it runs now, honest about what is known.",
     words: 'updates firmware version',

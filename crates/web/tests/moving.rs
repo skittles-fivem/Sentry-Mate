@@ -104,6 +104,9 @@ async fn a_move_code_and_an_export_file() {
 
     // an export file
     assert_eq!(admin.get("/api/v1/system/exports").await.json(), json!({ "items": [], "next": null }));
+    let csv = admin.get("/api/v1/system/exports?format=csv").await;
+    assert!(csv.header("content-type").unwrap_or("").starts_with("text/csv"), "{}", csv.text());
+    assert_eq!(admin.get("/api/v1/system/exports?format=xml").await.status, 400);
     let r = admin.post("/api/v1/system/exports", json!({ "password": "wrong password here" })).await;
     assert_eq!(r.status, 403);
     let r = admin.post("/api/v1/system/exports", json!({ "password": ADMIN_PASSWORD })).await;

@@ -40,15 +40,38 @@ pub(crate) fn find(seg: &[&Sample], api: &[bool], params: &Params) -> Vec<(usize
 
 /// A drive from its samples (`s[0]` the first second out of P, the last the last one), or `None` when it is too
 /// short or didn't move. `prev` is the sample just before it, when there is one: where the drive started from (its
-/// odometer and position before the first second moved them).
-pub(crate) fn make(car: CarId, s: &[&Sample], prev: Option<&Sample>, params: &Params) -> Option<Drive> {
+/// odometer and position before the first second moved them). `holds`: how long each of `s` counts across a gap in
+/// the energy sum (ms; empty: [`Params::max_hold_ms`] for all).
+///
+/// The distance is the odometer's difference. Where the odometer was first read later than the hold time after the
+/// start, or last read earlier than that before the end (lost frames, an input that sends it late), the GPS distance
+/// of the stretch it missed is added and the odometer at that end is worked out from it; with no fixes there, the
+/// distance is what the odometer has.
+pub(crate) fn make(car: CarId, s: &[&Sample], prev: Option<&Sample>, params: &Params, holds: &[u64]) -> Option<Drive> {
     let (first, last) = (s.first()?, s.last()?);
     let (start_ms, end_ms) = (first.t_ms, last.t_ms + 1000);
     let prev = prev.filter(|p| start_ms.saturating_sub(p.t_ms) <= params.max_hold_ms);
     let track: Vec<&Sample> = prev.into_iter().chain(s.iter().copied()).collect();
-    let start_odometer_km = track.iter().find_map(|x| x.odometer_km);
-    let end_odometer_km = s.iter().rev().find_map(|x| x.odometer_km);
-    let by_odometer = start_odometer_km.zip(end_odometer_km).map(|(a, b)| b - a).filter(|d| *d >= 0.0);
+    let first_read = track.iter().position(|x| x.odometer_km.is_some());
+    let last_read = track.iter().rposition(|x| x.odometer_km.is_some()).filter(|&i| i > 0 || prev.is_none());
+    let mut start_odometer_km = first_read.and_then(|i| track[i].odometer_km);
+    let mut end_odometer_km = last_read.and_then(|i| track[i].odometer_km);
+    let mut by_odometer = start_odometer_km.zip(end_odometer_km).map(|(a, b)| b - a).filter(|d| *d >= 0.0);
+    if let (Some(km), Some(i), Some(j)) = (by_odometer.as_mut(), first_read, last_read) {
+        // what the odometer missed at each end, by GPS
+        if track[i].t_ms.saturating_sub(start_ms) > params.max_hold_ms
+            && let Some(head) = gps_km(&track[..=i], params.max_gps_kmh)
+        {
+            *km += head;
+            start_odometer_km = start_odometer_km.map(|o| o - head);
+        }
+        if end_ms.saturating_sub(track[j].t_ms + 1000) > params.max_hold_ms
+            && let Some(tail) = gps_km(&track[j..], params.max_gps_kmh)
+        {
+            *km += tail;
+            end_odometer_km = end_odometer_km.map(|o| o + tail);
+        }
+    }
     let distance_km = by_odometer.or_else(|| gps_km(&track, params.max_gps_kmh));
     if end_ms - start_ms < params.min_drive_ms {
         return None;
@@ -78,7 +101,13 @@ pub(crate) fn make(car: CarId, s: &[&Sample], prev: Option<&Sample>, params: &Pa
         power_max_kw: max(s.iter().filter_map(|x| x.battery_power_kw)),
         power_min_kw: min(s.iter().filter_map(|x| x.battery_power_kw)),
         // regenerated energy is negative power, so it comes off by itself
-        energy_used_kwh: integrate_kwh(s, end_ms, params.max_hold_ms, |x| x.battery_power_kw, counters_net_out),
+        energy_used_kwh: integrate_kwh(
+            s,
+            end_ms,
+            |i| holds.get(i).copied().unwrap_or(params.max_hold_ms),
+            |x| x.battery_power_kw,
+            counters_net_out,
+        ),
         start_soc: s.iter().find_map(|x| x.soc),
         end_soc: s.iter().rev().find_map(|x| x.soc),
         start_range_km: s.iter().find_map(|x| x.range_km),

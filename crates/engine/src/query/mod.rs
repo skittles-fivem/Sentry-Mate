@@ -60,6 +60,16 @@ impl Serialize for CarRef {
     }
 }
 
+/// Whether a name or other one-line text a person typed holds a character it may not: a control character (NUL,
+/// tab, line breaks...), a line or paragraph separator, or one that turns the direction of the text after it
+/// (embeddings, overrides and isolates, which are not control characters to `char::is_control` but can make a
+/// name read as another one wherever it is shown).
+pub fn not_plain_text(text: &str) -> bool {
+    text.chars().any(|c| {
+        c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    })
+}
+
 /// `c7` → 7 (also a plain `7`).
 pub fn parse_car(s: &str) -> Option<CarId> {
     s.strip_prefix('c').unwrap_or(s).parse().ok()

@@ -60,6 +60,7 @@ const NOTE_WORDS = {
   imported_history_estimated: 'Part of this car’s history was imported; energy figures from it are estimated.',
   no_history: 'No history has been logged for this car yet.',
   pack_replaced: 'The pack was replaced: capacity, health and the trend cover the new pack only.',
+  reading_above_new: 'The capacity now reads above the value when new, so no loss is shown. If that value was typed, it is probably too low: check it under Reference values.',
 };
 const packWords = (pk, tz) => (pk && pk.replaced_ms != null
   ? `Pack replaced on ${formatDate(pk.replaced_ms, tz, { weekday: false, month: 'long' })} (${pk.source === 'owner' ? 'typed by the owner' : 'detected from the pack’s readings'}).` : null);
@@ -483,7 +484,10 @@ export async function mount(ctx) {
         ': ', q(x.odometer_jump_km, 'distance'), ` from ${placeOf(x.from_place)} to ${placeOf(x.to_place)}`)), jumps.length > 6 ? h('li', null, `and ${tn(jumps.length - 6, '{n} more', '{n} more')}`) : null)
         : h('p', { class: 'note' }, 'Every distance the odometer counted was logged as a drive.');
     const ac = L.ac_kwh, dc = L.dc_kwh, regen = L.regen_kwh;
-    const parts = [['ac', 'AC charging', ac, 'home and destination chargers'], ['dc', 'DC fast charging', dc, 'Superchargers and other fast chargers'], ['regen', 'Regenerative braking', regen, 'won back while slowing down']];
+    // charges whose kind no input told are neither AC nor DC: their own part, only where there are any
+    const parts = [['ac', 'AC charging', ac, 'home and destination chargers'], ['dc', 'DC fast charging', dc, 'Superchargers and other fast chargers'],
+      ...(L.unknown_kwh > 0 ? [['unknown', 'Charging, kind not known', L.unknown_kwh, 'no input told whether AC or DC']] : []),
+      ['regen', 'Regenerative braking', regen, 'won back while slowing down']];
     const total = parts.reduce((s, p) => s + (num(p[2]) ? p[2] : 0), 0);
     let at = 0;
     const splitCsv = () => downloadCsv(csvFilename(car.name, 'battery energy in'), parts.map(([k, name, v]) => ({ k, name, v, share: total ? (v / total) * 100 : null })),
@@ -516,7 +520,7 @@ export async function mount(ctx) {
         total ? svg('svg', { class: 'bt-split-bar', width: '100%', height: '100%', preserveAspectRatio: 'none', role: 'img', 'aria-label': parts.map(([, name, v]) => `${name} ${format(v, 'energy')}`).join(', ') },
           parts.map(([k, , v]) => { const w = num(v) ? (v / total) * 100 : 0; const r = svg('rect', { class: `bt-in-${k}`, x: p3(at), y: 0, width: p3(w), height: '100%' }); at += w; return r; })) : empty({ title: 'No lifetime counters from this car yet.', text: 'Older cars and imported history do not send them.' }),
         total ? h('ul', { class: 'bt-split-key' }, parts.map(([k, name, v, why]) => h('li', null, h('span', { class: `bt-sw bt-sw-${k}`, 'aria-hidden': 'true' }), h('span', { class: 'bt-split-name' }, name), ' ', q(v, 'energy', { digits: 0 }), h('span', { class: 'bt-split-pct' }, ` ${pctText(total ? (v / total) * 100 : null)}`), h('span', { class: 'bt-split-why' }, why)))) : null,
-        num(L.drive_kwh) ? h('p', { class: 'note' }, 'Out of the pack: ', q(L.drive_kwh, 'energy', { digits: 0 }), ' driving and ', q(L.standing_kwh, 'energy', { digits: 0 }), ' while parked (', q(L.discharged_kwh, 'energy', { digits: 0 }), ' in all). AC and DC add up to the ', q(L.charged_kwh, 'energy', { digits: 0 }), ' charged.') : null));
+        num(L.drive_kwh) ? h('p', { class: 'note' }, 'Out of the pack: ', q(L.drive_kwh, 'energy', { digits: 0 }), ' driving and ', q(L.standing_kwh, 'energy', { digits: 0 }), ' while parked (', q(L.discharged_kwh, 'energy', { digits: 0 }), ' in all). ', L.unknown_kwh > 0 ? 'AC, DC and the charges of no known kind' : 'AC and DC', ' add up to the ', q(L.charged_kwh, 'energy', { digits: 0 }), ' charged.') : null));
   }
   const placeOf = (p) => (p && p.name) || 'an unnamed spot';
   const pageLink2 = (text, page, cover) => h('a', { class: 'link-arrow', href: state.buildUrl(page, { car: car.id, period: ctx.state.period }), cover }, text, icon('arrowRight'));

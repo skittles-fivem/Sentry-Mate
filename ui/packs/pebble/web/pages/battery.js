@@ -122,6 +122,7 @@ export async function mount(ctx) {
         ])),
       h('p', { class: 'note', cover: ['bh.capacity.help', 'bh.gauge.degradation_help'] },
         `Health is usable capacity now over usable when new (${NEW_SOURCE[cap.new_source] || 'not known'}). ${cap.degradation_pct != null ? `Down ${pct(cap.degradation_pct, 1)}; ` : ''}the warranty promises ${pct(cap.warranty_pct ?? 70)}. Usable is the full pack minus the ${format(cap.buffer_kwh, 'energy')} the car keeps back, from ${n0(cap.readings)} pack readings.`),
+      (bat.notes || []).includes('reading_above_new') ? note('The capacity now reads above the value when new, so no loss is shown. If that value was typed, it is probably too low: check it below.') : null,
       bat.pack?.replaced_ms != null ? note(`Pack replaced on ${formatDate(bat.pack.replaced_ms, tz, { weekday: false, month: 'long' })} (${bat.pack.source === 'owner' ? 'typed by the owner' : 'detected from the pack’s readings'}). Capacity and health cover the new pack only.`) : null);
     const lostShare = rng.lost_km != null && rng.full_new_km ? (rng.lost_km / rng.full_new_km) * 100 : null;
     const rangeT = tile({ w: 2, title: 'Full-charge range', icon: 'gauge' },
@@ -159,8 +160,10 @@ export async function mount(ctx) {
         ['Charging efficiency', t.charging_efficiency_pct == null ? 'not measured' : pct(t.charging_efficiency_pct, 1), 'bh.charging.efficiency'],
         ['Equivalent full cycles', life.equivalent_cycles == null ? '—' : formatNumber(life.equivalent_cycles, { maximumFractionDigits: 1 }), 'bh.charging.cycles'],
       ]),
-      splitBar({ label: 'Charged by kind', total: format((life.ac_kwh || 0) + (life.dc_kwh || 0), 'energy'), cover: 'bh.chart.ac_dc',
-        parts: [{ name: 'AC', value: life.ac_kwh || 0, text: format(life.ac_kwh || 0, 'energy'), tone: 'c3' }, { name: 'DC', value: life.dc_kwh || 0, text: format(life.dc_kwh || 0, 'energy'), tone: 'c2' }] }),
+      // charges whose kind no input told are neither AC nor DC: their own part, only where there are any
+      splitBar({ label: 'Charged by kind', total: format((life.ac_kwh || 0) + (life.dc_kwh || 0) + (life.unknown_kwh || 0), 'energy'), cover: 'bh.chart.ac_dc',
+        parts: [{ name: 'AC', value: life.ac_kwh || 0, text: format(life.ac_kwh || 0, 'energy'), tone: 'c3' }, { name: 'DC', value: life.dc_kwh || 0, text: format(life.dc_kwh || 0, 'energy'), tone: 'c2' },
+          ...(life.unknown_kwh > 0 ? [{ name: 'Kind not known', value: life.unknown_kwh, text: format(life.unknown_kwh, 'energy'), tone: 'c4' }] : [])] }),
       h('p', { class: 'note', cover: 'bh.charging.help' }, 'Efficiency is energy into the pack over energy from the grid, for AC charges where both were measured. DC is left out, not counted as 100 %. A full cycle is one usable pack’s worth of charging.'));
     put(driveS, driveT); put(chargeS, chargeT);
   };

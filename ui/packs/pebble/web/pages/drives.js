@@ -6,7 +6,7 @@
 // histogram, top destinations), drives with missing data, and one tile per drive under friendly day headers.
 // Data: GET /api/v1/cars/{car}/drives (paged, with summary), /drive-stats, /places (for the filters).
 
-import { h, holdScroll } from '../shared/dom.js';
+import { h } from '../shared/dom.js';
 import { format, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDate } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -79,8 +79,8 @@ const listQuery = (ctx, f) => ({
 });
 const placesRead = (ctx) => ctx.api.list('places', { sort: 'name' }).all({ max: 300 });
 // [the list's first page, the patterns, drives with missing data]
-const loadReads = (ctx, f, p, limit = 30) => [
-  ctx.api.pager(api.apiPath`cars/${ctx.car.id}/drives`, p, { limit }),
+const loadReads = (ctx, f, p) => [
+  ctx.api.pager(api.apiPath`cars/${ctx.car.id}/drives`, p, { limit: 30 }),
   ctx.api.get(api.apiPath`cars/${ctx.car.id}/drive-stats`, { ...ctx.params, exclude_places: f.exclude.length ? f.exclude.join(',') : undefined }),
   ctx.api.page(api.apiPath`cars/${ctx.car.id}/drives`, { ...ctx.params, flags: 'gap,in_progress' }, { limit: 6 }),
 ];
@@ -169,16 +169,12 @@ export async function mount(ctx) {
     more.querySelector('button').hidden = pager.done;
   }
 
-  // live: a live refresh asks for as many drives as are shown (at most a server page), so a list opened further with
-  // "Show earlier drives" is not cut back to its first page under the person reading it
-  async function load({ live = false } = {}) {
+  async function load() {
     const p = params();
-    const [pg, statsP, incP] = loadReads(ctx, f, p, live && pager ? Math.min(500, Math.max(30, pager.items.length)) : 30);
+    const [pg, statsP, incP] = loadReads(ctx, f, p);
     pager = pg;
     const [, stats, inc] = await Promise.all([pager.more(), statsP.catch(() => null), incP.catch(() => null)]);
     if (!ctx.alive()) return;
-    // what is on screen stays where it is while the parts above it are drawn again (shared/dom.js)
-    holdScroll(ctx.view);
     const sm = pager.last?.summary || {};
     sumBox.replaceChildren(
       statTile({ label: 'Distance', value: sm.distance_km, kind: 'distance', icon: 'route', cover: 'drives.summary.distance', sub: `${formatNumber(sm.count || 0)} drives` }),
@@ -243,6 +239,6 @@ export async function mount(ctx) {
   await load();
   ctx.ready();
   // a drive of the car started or ended (once a burst of `rows` has passed): the list and figures read again
-  onRows(ctx.api, { car: car.id, waitMs: 2000, run: () => { if (ctx.alive()) load({ live: true }).catch(() => {}); } });
+  onRows(ctx.api, { car: car.id, waitMs: 2000, run: () => { if (ctx.alive()) load().catch(() => {}); } });
   return { onQuery: async () => { await load(); } };
 }

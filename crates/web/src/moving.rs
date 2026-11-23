@@ -593,13 +593,15 @@ fn tidy_export(st: &mut SiteState, now: u64) {
     }
 }
 
-async fn exports(State(app): State<AppState>, Admin(_): Admin) -> ApiResult<Json<Value>> {
+async fn exports(State(app): State<AppState>, Admin(_): Admin, q: crate::Params) -> ApiResult<Response> {
+    q.wants_csv()?;
     let s = site(&app)?;
     let now = app.now();
     let mut st = s.lock();
     tidy_export(&mut st, now);
     let items: Vec<Value> = st.export.iter().map(|e| export_view(e, now)).collect();
-    Ok(Json(json!({ "items": items, "next": null })))
+    drop(st);
+    crate::csv::answer(&q, "exports", json!({ "items": items, "next": null }))
 }
 
 async fn make_export(State(app): State<AppState>, Admin(v): Admin, body: JsonBody) -> ApiResult<Response> {

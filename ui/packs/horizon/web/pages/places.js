@@ -772,11 +772,13 @@ async function mountEditor(ctx, q) {
     mapEl, h('div', { class: 'map-overlay map-overlay--tl' }, mapCard));
   let m = null, centreMk = null, edgeMk = null;
   const drawR = () => (radiusOk() ? d.radius_m : lastR);
+  // a centre the map can draw: while the typed one is not, the circle stays where it last was
+  const posOk = () => Number.isFinite(d.lat) && Number.isFinite(d.lon) && Math.abs(d.lat) <= 90 && Math.abs(d.lon) <= 180;
   const edgeAt = () => [d.lon + drawR() / mPerDegLon(d.lat), d.lat];
   function paintCircle({ refit = false } = {}) {
     if (radiusOk()) lastR = d.radius_m;
     paintMapCard();
-    if (!m || !m.map.getSource('draft')) return;
+    if (!m || !m.map.getSource('draft') || !posOk()) return;
     m.map.getSource('draft').setData({ type: 'FeatureCollection', features: [circleFeature({ id: 'draft', kind: d.kind, lat: d.lat, lon: d.lon, radius_m: drawR() })] });
     centreMk?.setLngLat([d.lon, d.lat]);
     edgeMk?.setLngLat(edgeAt());
@@ -799,8 +801,8 @@ async function mountEditor(ctx, q) {
     edgeMk = new m.ml.Marker({ element: eEl, draggable: !lock }).setLngLat(edgeAt()).addTo(m.map);
     centreMk.on('drag', () => { const p = centreMk.getLngLat(); setCentre(p.lat, p.lng, { live: true }); });
     centreMk.on('dragend', () => { const p = centreMk.getLngLat(); setCentre(p.lat, p.lng); });
-    edgeMk.on('drag', () => { const p = edgeMk.getLngLat(); setRadius(distM(d.lat, d.lon, p.lat, p.lng), { live: true }); });
-    edgeMk.on('dragend', () => { const p = edgeMk.getLngLat(); setRadius(distM(d.lat, d.lon, p.lat, p.lng)); edgeMk.setLngLat(edgeAt()); });
+    edgeMk.on('drag', () => { if (!posOk()) return; const p = edgeMk.getLngLat(); setRadius(distM(d.lat, d.lon, p.lat, p.lng), { live: true }); });
+    edgeMk.on('dragend', () => { if (!posOk()) return; const p = edgeMk.getLngLat(); setRadius(distM(d.lat, d.lon, p.lat, p.lng)); edgeMk.setLngLat(edgeAt()); });
     if (!lock) m.map.on('click', (e) => setCentre(e.lngLat.lat, e.lngLat.lng));
     paintCircle({ refit: true });
   }
@@ -914,9 +916,9 @@ async function mountEditor(ctx, q) {
     changed();
   });
   fRadius.input.addEventListener('change', () => paintCircle({ refit: true }));
-  const onPos = () => { d.lat = fLat.value() ?? NaN; d.lon = fLon.value() ?? NaN; if (Number.isFinite(d.lat) && Number.isFinite(d.lon) && Math.abs(d.lat) <= 90 && Math.abs(d.lon) <= 180) { paintCircle(); paintOverlaps(); } changed(); };
+  const onPos = () => { d.lat = fLat.value() ?? NaN; d.lon = fLon.value() ?? NaN; if (posOk()) { paintCircle(); paintOverlaps(); } changed(); };
   fLat.input.addEventListener('input', onPos); fLon.input.addEventListener('input', onPos);
-  for (const x of [fLat, fLon]) x.input.addEventListener('change', () => { if (Number.isFinite(d.lat) && Number.isFinite(d.lon)) { paintCircle({ refit: true }); lookupAddress(); } });
+  for (const x of [fLat, fLon]) x.input.addEventListener('change', () => { if (posOk()) { paintCircle({ refit: true }); lookupAddress(); } });
   fCurrency.input.addEventListener('change', () => { d.currency = fCurrency.input.value; paintRates(); paintTiers(); paintRule(); changed(); });
   for (const [x, key] of [[fPerKwh, 'per_kwh'], [fPerMin, 'per_minute'], [fFee, 'session_fee']]) x.input.addEventListener('input', () => { d[key] = x.value(); priceMsg.hidden = true; paintRule(); changed(); });
 

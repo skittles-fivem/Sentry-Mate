@@ -872,7 +872,7 @@ fn owner_extra(path: &str, kind: OwnerKind, v: &serde_json::Value, errs: &mut Er
         }
         (OwnerKind::Text, J::String(s)) => {
             let t = s.trim();
-            if t.is_empty() || t.chars().count() > 100 || t.chars().any(char::is_control) {
+            if t.is_empty() || t.chars().count() > 100 || super::not_plain_text(t) {
                 errs.rule(path, "1 to 100 characters, or null to forget it.");
                 return None;
             }
@@ -934,7 +934,7 @@ pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDeta
             let t = s.trim();
             if t.chars().count() > 64 || t.is_empty() {
                 errs.rule("name", "1 to 64 characters.");
-            } else if t.chars().any(char::is_control) {
+            } else if super::not_plain_text(t) {
                 errs.rule("name", "No line breaks or control characters.");
             }
             Some(t.to_string())
@@ -981,7 +981,7 @@ pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDeta
                     serde_json::Value::Bool(_) if is_bool => config.push((k.clone(), v.clone())),
                     serde_json::Value::String(s) if !is_bool => {
                         let t = s.trim();
-                        if t.is_empty() || t.chars().count() > 100 || t.chars().any(char::is_control) {
+                        if t.is_empty() || t.chars().count() > 100 || super::not_plain_text(t) {
                             errs.rule(&path, "1 to 100 characters, or null to forget it.");
                         }
                         config.push((k.clone(), t.into()));

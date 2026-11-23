@@ -4,17 +4,41 @@ import { h } from '../shared/dom.js';
 import { icon } from './icons.js';
 import { passwordAdvice } from '../shared/password.js';
 
+// A button that disables itself while its request runs loses the focus before its dialog opens (the browser
+// takes the focus off a disabled control, and document.activeElement is then <body>). It is remembered here, so
+// the dialog still gives the focus back to it. Any focus or press after that forgets it.
+let dropped = null;
+document.addEventListener('focusout', (e) => { dropped = !e.relatedTarget && e.target instanceof HTMLElement && e.target.matches(':disabled') ? e.target : null; }, true);
+document.addEventListener('focusin', () => { dropped = null; }, true);
+document.addEventListener('pointerdown', () => { dropped = null; }, true);
+
+/** The control a dialog opening now gives the focus back to when it closes. */
+function opener() {
+  const a = document.activeElement;
+  if (a && a !== document.body) return a;
+  return dropped && dropped.isConnected ? dropped : null;
+}
+
+/** Focus `el`; one that is still disabled (its request has not ended) gets the focus as soon as it is not. */
+function giveBack(el) {
+  if (!el || !el.isConnected || typeof el.focus !== 'function') return;
+  el.focus();
+  if (document.activeElement === el) return;
+  setTimeout(() => { if (el.isConnected && (!document.activeElement || document.activeElement === document.body)) el.focus(); }, 0);
+}
+
 /**
  * Open a dialog and wait for it to close. Resolves with the value of the action pressed, or null (Esc,
  * the close button). body: elements or text. actions: [{ label, value, kind: 'primary' | 'danger' |
  * undefined, onClick?, focus? }]; an onClick that returns false keeps the dialog open (a form with errors).
  * The action with focus: true has the focus when the dialog opens (else the browser's first focusable).
+ * When it closes the focus goes back to the control that had it (back: another element to give it to).
  *   const ok = await openDialog({ title: 'Delete place?', body: 'Drives keep their addresses.',
  *     actions: [{ label: 'Cancel', value: false }, { label: 'Delete', value: true, kind: 'danger' }] });
  */
-export function openDialog({ title, body = null, actions = [{ label: 'Close', value: null }], wide = false, cls = null } = {}) {
+export function openDialog({ title, body = null, actions = [{ label: 'Close', value: null }], wide = false, cls = null, back: backTo = null } = {}) {
   return new Promise((resolve) => {
-    const back = document.activeElement;
+    const back = backTo || opener();
     let result = null;
     const titleId = `dlg-${Math.random().toString(36).slice(2, 8)}`;
     let first = null;
@@ -36,8 +60,8 @@ export function openDialog({ title, body = null, actions = [{ label: 'Close', va
       })) : null);
     dlg.addEventListener('close', () => {
       dlg.remove();
-      if (back && typeof back.focus === 'function') back.focus();
       resolve(result);
+      giveBack(back);
     });
     document.body.append(dlg);
     dlg.showModal();

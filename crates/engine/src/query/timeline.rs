@@ -519,7 +519,10 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
     }
     out.extend(pieces.into_iter().map(|p| p.2));
     let fw = crate::firmware::history(db, car)?;
-    for u in all_rows::<UpdateRow>(db, car, a, b, None)? {
+    // (an update both imports have is one row, as the updates list shows it)
+    let listed: std::collections::HashSet<u64> =
+        super::software::shown_updates(e, car, None)?.iter().map(|u| u.id).collect();
+    for u in all_rows::<UpdateRow>(db, car, a, b, None)?.into_iter().filter(|u| listed.contains(&u.id)) {
         let up = &u.update;
         let ev = fw.events.iter().find(|ev| crate::firmware::is_fingerprint(u.id) && ev.id == u.id);
         let fw_name = match ev {
@@ -880,7 +883,10 @@ pub fn activity(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Activ
             });
         }
     }
-    for u in all_rows::<UpdateRow>(e.db(), car, a.saturating_sub(86_400_000), b, None)? {
+    let listed: std::collections::HashSet<u64> =
+        super::software::shown_updates(e, car, None)?.iter().map(|u| u.id).collect();
+    let updates = all_rows::<UpdateRow>(e.db(), car, a.saturating_sub(86_400_000), b, None)?;
+    for u in updates.into_iter().filter(|u| listed.contains(&u.id)) {
         let end = u.update.end_ms.unwrap_or(b);
         if end > a {
             busy.push(Segment {

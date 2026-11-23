@@ -6,9 +6,6 @@
 .drive-live { display: flex; align-items: center; gap: round(0.75rem, var(--e)); margin-top: round(0.75rem, var(--e)); padding: round(0.5rem, var(--e)) round(0.875rem, var(--e)); background: var(--accent-wash); font-size: var(--text-s); }
 /* the text ends on a whole pixel, so the button after it starts on one */
 .drive-live > span { width: calc-size(fit-content, round(up, size, 1px)); }
-/* on a phone the words have two lines from the start: when news arrives they change ("has new data") and may wrap
-   differently, and the note grew by a line over the page under it */
-@container page (width < 50rem) { .drive-live > span { min-height: 2lh; } }
 
 .drive-top { display: grid; grid-template-columns: minmax(0, 1fr) round(19rem, var(--e)); gap: round(2.5rem, var(--e)); padding: round(1.875rem, var(--e)) 0 round(2.125rem, var(--e)); border-bottom: 1px solid var(--rule); }
 .drive-main { min-width: 0; display: flex; flex-direction: column; gap: round(1.75rem, var(--e)); }

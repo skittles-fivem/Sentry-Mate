@@ -25,7 +25,7 @@ use crate::accounts_admin::{confirm_code, confirm_password};
 use crate::ctx::{Admin, JsonBody, audit_details, target};
 use crate::events::{Event, Events};
 use crate::resources::notices::Notice;
-use crate::{ApiError, ApiResult, AppState, Fields, Viewer, ids};
+use crate::{ApiError, ApiResult, AppState, Fields, Params, Viewer, ids};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -495,7 +495,8 @@ async fn change_settings(
     overview(State(app), Admin(v)).await
 }
 
-async fn status(State(app): State<AppState>, Admin(_): Admin) -> ApiResult<Json<Value>> {
+async fn status(State(app): State<AppState>, Admin(_): Admin, q: Params) -> ApiResult<Response> {
+    q.wants_csv()?;
     let s = svc(&app)?;
     let mut items = Vec::new();
     for a in s.status() {
@@ -515,17 +516,18 @@ async fn status(State(app): State<AppState>, Admin(_): Admin) -> ApiResult<Json<
             }));
         }
     }
-    Ok(Json(json!({ "items": items, "next": null })))
+    crate::csv::answer(&q, "tesla-status", json!({ "items": items, "next": null }))
 }
 
 // ---------------------------------------------------------------- accounts
 
-async fn list(State(app): State<AppState>, Admin(_): Admin) -> ApiResult<Json<Value>> {
+async fn list(State(app): State<AppState>, Admin(_): Admin, q: Params) -> ApiResult<Response> {
+    q.wants_csv()?;
     let s = svc(&app)?;
     let e = app.service::<Engine>()?;
     app.blocking(move |_| {
         let items: Vec<Value> = s.accounts().iter().map(|a| account_json(&e, &s, a)).collect();
-        Ok(Json(json!({ "items": items, "next": null })))
+        crate::csv::answer(&q, "tesla-accounts", json!({ "items": items, "next": null }))
     })
     .await
 }
@@ -695,9 +697,15 @@ async fn remove(
 
 // ---------------------------------------------------------------- the cars of an account
 
-async fn cars(State(app): State<AppState>, Admin(_): Admin, Path(id): Path<String>) -> ApiResult<Json<Value>> {
-    let a = account_answer(&app, id).await?;
-    Ok(Json(json!({ "items": a["cars"].clone(), "next": null, "version": a["version"].clone() })))
+async fn cars(State(app): State<AppState>, Admin(_): Admin, Path(id): Path<String>, q: Params) -> ApiResult<Response> {
+    q.wants_csv()?;
+    crate::csv::answer(&q, "tesla-account-cars", cars_answer(&app, id).await?)
+}
+
+/// An account's cars as the list `GET .../cars` answers.
+async fn cars_answer(app: &AppState, id: String) -> ApiResult<Value> {
+    let a = account_answer(app, id).await?;
+    Ok(json!({ "items": a["cars"].clone(), "next": null, "version": a["version"].clone() }))
 }
 
 /// `PUT /integrations/tesla/accounts/{account}/cars` `{ version, items: [{ vehicle, match }] }`: `match` is a car
@@ -806,7 +814,7 @@ async fn put_cars(
     if !audited {
         v.mark_audited();
     }
-    cars(State(app), Admin(v), Path(id)).await
+    Ok(Json(cars_answer(&app, id).await?))
 }
 
 /// The Supercharger invoices block as `/integrations/tesla` gives it now (`None` without the Tesla API input).

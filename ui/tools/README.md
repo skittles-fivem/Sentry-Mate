@@ -9,9 +9,10 @@
 | `pixel.js`, `stable.js`, `hover.js` | The in-page parts of `check.js --pixel`, `check.js --stable` and `check.js --hover`. |
 | `map-tiles.test.js` | `node --test ui/tools/map-tiles.test.js`: in all six packs, a page loaded with tiles offline shows OpenStreetMap tiles once an admin turns them on and the person moves to a map inside the app (the page loads itself again once, for the server's new policy), the same after a switch to OpenTopoMap, and every tile request carries only the page origin as Referer; and Settings: Maps and addresses and Settings: Cars at 360 px with a long zone name (America/Argentina/Buenos_Aires) keep the tile terms and the zone button for new cars inside the window. The tile servers are answered inside the browser; nothing leaves the machine. Skipped without Playwright. |
 | `server-update.test.js` | `node --test ui/tools/server-update.test.js`: a tab open across a server update in all six packs, in Chromium on the dev server: after `POST /__dev/new-build` and the tab coming back into view, a link to Data health loads that address in full and the page loads; a page module that fails once is loaded again with a full load; one that keeps failing says "Sentry Mate was updated or a file could not load" (`page_failed`, never "No answer from the server") with a Reload button, and the tab title and the trail name Data health, not the page before. `PACKS=a,b` runs only those. Skipped without Playwright. |
+| `battery-figures.test.js` | `node --test ui/tools/battery-figures.test.js`: the Battery page of all six packs in Chromium on the dev server, given a `/battery` answer the made-up cars do not have: a capacity that reads above the value when new (no loss, the note `reading_above_new`) and logged charges of no known kind (`lifetime.unknown_kwh`). Every pack says why no loss is shown and shows those charges as their own part of the energy into the pack, not as AC. Skipped without Playwright. |
 | `scroll.js`, `scroll.test.js` | The scroll check: scrolls each pack's key pages (Data health, car, drives, charges, statistics, Settings: Server, logbook) with the mouse wheel on a 4K screen while a rebuild runs on the dev server (`--rebuild-running`), and fails a page with a frame over 50 ms; frame times, long tasks and a DevTools trace of each scroll. `node --test ui/tools/scroll.test.js` runs it at 1920x1080 at scale 2 (`SCROLL_PACKS`, `SCROLL_SIZES` to change). Skipped without Playwright. [Below](#the-scroll-check-scrolljs). |
-| `jumps.js`, `jumps.test.js` | The jump check: every page of every pack loaded and scrolled through on an iPhone 15 and an iPhone 13 mini in WebKit, a 390x844 phone in Chromium's mobile emulation and a 1440x900 desktop, with scroll anchoring off in WebKit as in Safari on iOS; fails a page that moves what is on screen (jump score or layout shift over 0.02), resizes a block above the screen while it is scrolled, or scrolls by itself and moves what is on screen. `node --test ui/tools/jumps.test.js` runs all of it, `check.js --pack NAME --jumps` one pack. Skipped without Playwright; the WebKit devices need `npx playwright install webkit`. [Below](#the-jump-check-jumpsjs). |
 | `live-rows.test.js` | `node --test ui/tools/live-rows.test.js`: Pebble's Charges page in Chromium on the dev server (`--rows-every-s 2`) loads its list again on a `rows` event and draws a charge that was not there before, without loading the page again. Skipped without Playwright. |
+| `overview-links.test.js` | `node --test ui/tools/overview-links.test.js`: in all six packs on the dev server, the connections overview's rows for the online map tiles, the address lookup and the release check link to `/settings/display#maps`, `#addresses` and `#release` (what the real server sends), and each opens the section where it lives now, drawn and scrolled to: `#map-tiles` and `#address-lookup` of Settings: Maps and addresses, `#release-check` of Settings: Server and access. `PACKS=a,b` runs only those. Skipped without Playwright. |
 | `settings-server.test.js` | `node --test ui/tools/settings-server.test.js`: Settings: Server and access of both built-in packs in Chromium at phone size on the dev server: the CAN Bridge upload address breaks only after a slash or a colon, the certificate's names start with `localhost`, and with `--own-certificate` no "Make a new certificate" is offered; and the Storage panel of all six packs at desktop size: the categories grouped by kind, largest first, the CAN logs group opened to its categories by short name, with what compaction saved, "Compact now" with its progress and what it freed, a failed pass with the server's error, no panel for a watch account, and no more reads of the detail once the page is left. Skipped without Playwright. |
 
 ## The page checker
@@ -329,70 +330,6 @@ hovered after 240 s (a `note:` says so).
 What it cannot see: a hover that only acts after a delay longer than one frame, what is drawn inside a canvas or
 svg, an element out of the window or inside a box that scrolls it out of view, elements more than half a window
 away from the window, and a non-interactive element that changes on hover where no grid point falls.
-
-## The jump check (`jumps.js`)
-
-A page must not move under the reader: not while it loads (its parts coming in one by one, the notices bar, the
-footer), not while it is scrolled (charts, maps and lists drawn as they come near, live updates of what is above the
-screen), and not when it is opened again from kept answers. On a phone this is what makes a page unusable.
-
-```bash
-node ui/tools/jumps.js                                   # every pack, page and device
-node ui/tools/jumps.js --packs pebble --pages car,drives --devices iphone-15
-node ui/tools/check.js --pack pebble --jumps             # the same for one pack
-node --test ui/tools/jumps.test.js                       # as a test (JUMPS_PACKS, JUMPS_PAGES, JUMPS_DEVICES)
-```
-
-It starts the dev server per pack (live values every 2 s, a `rows` event every 10 s, every answer 60 ms late) and opens
-every page of the matrix in a fresh window of each device: `iphone-15` and `iphone-13-mini` (WebKit, Playwright's
-device descriptors: Safari's engine and a touch phone's viewport), `phone-chromium` (390x844 at scale 3, mobile
-emulation) and `desktop` (1440x900). In WebKit scroll anchoring is off (`overflow-anchor: none`): Safari on iOS has
-none, so a block above the screen that changes its height moves what is on screen (Chrome keeps its own, as on Android
-and desktops). In each window it:
-
-1. loads the page and waits until it says it is ready, then 1.5 s more (live updates arrive);
-2. scrolls down a screen at a time (0.7 of it, 300 ms apart) to the end, and back up;
-3. opens Help inside the app and comes back (the page is drawn from kept answers, then from the fresh ones), and
-   scrolls down again.
-
-From before the page's first script to the end it watches each animation frame: every block of the page (by its path
-from `<body>`, so a block drawn again in its place is the same block), where it is on screen and its height, and where
-the box that scrolls (the window, or a pack's own scrolling box) is scrolled and how much of that the check did itself.
-Blocks that show nothing (no text, background, border, picture or control of their own), blocks as tall as the screen
-that cover it before and after, and what moves within 500 ms of the check's own taps do not count, as in the layout
-shift score. A page fails when:
-
-| Fails | When |
-|---|---|
-| **score** | The jump score is over 0.02: for each frame, the part of the screen whose blocks moved on screen (less what the check scrolled), times how far they moved as a share of the screen's height, summed over the visit (how the layout shift score is made). In Chromium the browser's own layout shift score (every `layout-shift` entry without recent input) counts too. |
-| **above** | A block wholly above the screen changed its height while the page was scrolled. |
-| **scrolled** | The box scrolled by itself, by more than 1 px, and what is on screen moved with it (a list cut back to its first page, a part emptied and drawn again, a `scrollIntoView`). A scroll that keeps what is on screen in place, such as the page's own scroll anchoring, is not a jump. |
-
-The report names, for each move, the block that moved, by how much, in which step, and what came in, grew, shrank or
-went away above it in the same frame. Exit code 0 only when every visit passes.
-
-How a page stays still:
-
-- **The first draw in one go.** The router builds a page drawn for the first time in an invisible box while the view
-  shows the loading skeleton, and puts it in place when the page says it is ready (at most 3 s), as it already does for
-  a live refresh: its parts come in one by one off screen, not under the reader.
-- **The notices bar first.** The first page of a visit waits for the notices (at most 1.5 s) before it shows its
-  skeleton, so the bar never pushes a page down.
-- **The footer below the fold.** The view is at least a screen high (`100svh`), so the footer never starts on screen.
-- **Room kept.** A chart, a map or a list drawn when it comes near has its final height from the start (CSS), and a
-  value that changes keeps its width and height (tabular figures, a reserved line).
-- **Lists keep their length.** A live refresh asks for as many rows as are shown; a window list swaps its rows in
-  place.
-- **Scroll anchoring of the page's own.** Safari on iOS has none, and can lay a page out in the middle of a swap and
-  scroll it up to fit: `shared/dom.js` `holdScroll()` (called by `replace()` and the routers' and tables' swaps) notes
-  the block in the middle of the screen before a part on the page is swapped, and scrolls by as much as it moved, before
-  anything is painted.
-- **Icons as shapes, not `<use>`.** Safari lays the page out while a part with `<use>` icons is taken out of it.
-- **The whole-pixel snap on phones** leaves column widths, and the widths of boxes whose edges do not show, as the CSS
-  gives them: a later snap that rounded them by a fraction of a pixel re-wrapped a line of text after the page was
-  painted.
-- **Small viewport units.** Heights in `svh` (or `lvh`), never `dvh`: `dvh` changes while Safari's toolbars come and
-  go as the page scrolls.
 
 ## The scroll check (`scroll.js`)
 

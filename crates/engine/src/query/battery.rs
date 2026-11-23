@@ -957,7 +957,9 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
     // the charges' readings, newest first: the last five give a usable capacity where the pack sends none
     let live = live_charge(e, &c)?;
     let rated = rated_kwh(e, car, &s)?;
-    let (mut charge_usable_v, mut imported, mut ac, mut dc, mut charges_n) = (Vec::new(), false, 0.0, 0.0, 0u64);
+    let (mut charge_usable_v, mut imported, mut charges_n) = (Vec::new(), false, 0u64);
+    // by kind, as `/totals` counts them: a charge whose kind no input told is neither AC nor DC
+    let (mut ac, mut dc, mut unknown_kind) = (0.0, 0.0, 0.0);
     each_row::<Charge>(e, car, 0, u64::MAX, None, &shown, true, |ch| {
         charges_n += 1;
         imported |= ch.source.is_imported();
@@ -970,8 +972,9 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
         }
         let k = ch.energy_added_kwh.unwrap_or(0.0);
         match ch.kind {
+            Some(ChargeKind::Ac) => ac += k,
             Some(ChargeKind::Dc) => dc += k,
-            _ => ac += k,
+            None => unknown_kind += k,
         }
         Ok(true)
     })?;
@@ -1013,7 +1016,10 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
     // the same basis as the value when new: its full pack where the early readings named no buffer, else usable
     let now_basis = if new_is_full { pack_full.or(full) } else { usable };
     let diff = new_kwh.zip(now_basis).map(|(n, u)| n - u);
-    let degradation = diff.zip(new_kwh).filter(|(_, n)| *n > 0.0).map(|(d, n)| d / n * 100.0);
+    // a pack is never healthier than new: a reading above the value when new (a typed value too low, or one from
+    // early readings below a noisy reading now) is no loss, and a note says so
+    let above_new = diff.is_some_and(|d| d < 0.0);
+    let degradation = diff.zip(new_kwh).filter(|(_, n)| *n > 0.0).map(|(d, n)| (d / n * 100.0).max(0.0));
     // the consumption factor the build gives where the car has none of its own yet
     let rated = match factor.rated {
         Some(w) => Some(w),
@@ -1037,6 +1043,10 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
         Some("imported_charges") => notes.push("new_value_from_imported_charges"),
         Some("vehicle_info") => notes.push("new_value_from_vehicle_info"),
         _ => {}
+    }
+    // (at a tenth of a kWh: the page shows no less)
+    if above_new && diff.is_some_and(|d| d <= -0.05) {
+        notes.push("reading_above_new");
     }
     if lfp {
         notes.push("lfp_charge_to_100_weekly");
@@ -1063,7 +1073,8 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
             let out = discharged.unwrap_or(drive);
             json!({
                 "charged_kwh": r(Some(ac + dc), 1), "discharged_kwh": r(Some(out), 1), "ac_kwh": r(Some(ac), 1),
-                "dc_kwh": r(Some(dc), 1), "regen_kwh": r(p.regen_kwh, 1), "drive_kwh": r(Some(drive), 1),
+                "dc_kwh": r(Some(dc), 1), "unknown_kwh": 0.0, "regen_kwh": r(p.regen_kwh, 1),
+                "drive_kwh": r(Some(drive), 1),
                 "standing_kwh": r(discharged.map(|d| (d - drive).max(0.0)), 1),
                 "equivalent_cycles": r(cycles_base.map(|u| out / u), 1), "basis": "pack counters",
             })
@@ -1072,15 +1083,16 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
             // what was logged: the energy charged and driven (the parked energy and the years before logging are not
             // in it, so the pack's lifetime discharge counter is not put beside it)
             json!({
-                "charged_kwh": r(Some(ac + dc), 1), "discharged_kwh": null, "ac_kwh": r(Some(ac), 1),
-                "dc_kwh": r(Some(dc), 1), "regen_kwh": null, "drive_kwh": r(Some(drive_kwh), 1),
-                "standing_kwh": null,
-                "equivalent_cycles": r(cycles_base.map(|u| (ac + dc) / u), 1), "basis": "logged charges and drives",
+                "charged_kwh": r(Some(ac + dc + unknown_kind), 1), "discharged_kwh": null,
+                "ac_kwh": r(Some(ac), 1), "dc_kwh": r(Some(dc), 1), "unknown_kwh": r(Some(unknown_kind), 1),
+                "regen_kwh": null, "drive_kwh": r(Some(drive_kwh), 1), "standing_kwh": null,
+                "equivalent_cycles": r(cycles_base.map(|u| (ac + dc + unknown_kind) / u), 1),
+                "basis": "logged charges and drives",
             })
         }
         None => json!({
-            "charged_kwh": null, "discharged_kwh": null, "ac_kwh": null, "dc_kwh": null, "regen_kwh": null,
-            "drive_kwh": null, "standing_kwh": null, "equivalent_cycles": null, "basis": null,
+            "charged_kwh": null, "discharged_kwh": null, "ac_kwh": null, "dc_kwh": null, "unknown_kwh": null,
+            "regen_kwh": null, "drive_kwh": null, "standing_kwh": null, "equivalent_cycles": null, "basis": null,
         }),
     };
     Ok(scoped(

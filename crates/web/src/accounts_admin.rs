@@ -36,6 +36,7 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 pub const PASSWORD_HEADER: &str = "x-sentry-mate-password";
+pub const PASSWORD_ENCODED_HEADER: &str = "x-sentry-mate-password-encoded";
 pub const CODE_HEADER: &str = "x-sentry-mate-code";
 
 pub fn routes() -> Router<AppState> {
@@ -47,18 +48,39 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/audit", get(audit))
 }
 
-/// The acting admin's password asked again: `confirm_password` in the body, else the header.
+/// A header's value as text: its bytes as UTF-8 (a password is any text, not only visible ASCII). `Err` when the
+/// bytes are not UTF-8 (a browser's `fetch` writes U+0080 to U+00FF as single bytes).
+fn header_text<'a>(headers: &'a HeaderMap, name: &str) -> Option<Result<&'a str, ()>> {
+    headers.get(name).map(|v| std::str::from_utf8(v.as_bytes()).map_err(|_| ()))
+}
+
+/// The acting admin's password asked again: `confirm_password` in the body, else the
+/// `X-Sentry-Mate-Password-Encoded` header (percent-encoded UTF-8, for a request whose body is not JSON and a
+/// password a header can't hold as it is), else the `X-Sentry-Mate-Password` header (UTF-8).
 pub fn confirm_password(body: Option<&JsonBody>, headers: &HeaderMap) -> ApiResult<Zeroizing<String>> {
     if let Some(b) = body
         && let Some(p) = b.str("confirm_password")?
     {
         return Ok(Zeroizing::new(p.to_string()));
     }
-    headers.get(PASSWORD_HEADER).and_then(|v| v.to_str().ok()).map(|p| Zeroizing::new(p.to_string())).ok_or_else(|| {
-        ApiError::new(403, "password_needed", "Type your own password again to change this.").with_fields(
+    if let Some(raw) = headers.get(PASSWORD_ENCODED_HEADER) {
+        return percent_encoding::percent_decode(raw.as_bytes())
+            .decode_utf8()
+            .map(|p| Zeroizing::new(p.into_owned()))
+            .map_err(|_| {
+                ApiError::bad_input("confirm_password", "X-Sentry-Mate-Password-Encoded is percent-encoded UTF-8.")
+            });
+    }
+    match header_text(headers, PASSWORD_HEADER) {
+        Some(Ok(p)) => Ok(Zeroizing::new(p.to_string())),
+        Some(Err(())) => Err(ApiError::bad_input(
+            "confirm_password",
+            "X-Sentry-Mate-Password is not UTF-8: send the password percent-encoded in X-Sentry-Mate-Password-Encoded.",
+        )),
+        None => Err(ApiError::new(403, "password_needed", "Type your own password again to change this.").with_fields(
             Fields::one("confirm_password", "Your own password, again.").into_bad_input().fields.unwrap_or_default(),
-        )
-    })
+        )),
+    }
 }
 
 /// The two-step code that may come with it (`code` in the body, else the header).
@@ -68,7 +90,8 @@ pub fn confirm_code(body: Option<&JsonBody>, headers: &HeaderMap) -> ApiResult<O
     {
         return Ok(Some(c.to_string()));
     }
-    Ok(headers.get(CODE_HEADER).and_then(|v| v.to_str().ok()).map(str::to_string))
+    // a code is digits or a recovery code: bytes that are not text are a wrong code, not a missing one
+    Ok(header_text(headers, CODE_HEADER).map(|c| c.unwrap_or("\u{fffd}").to_string()))
 }
 
 fn version_of(a: &AccountView, cars: &CarAccess) -> u64 {
@@ -113,14 +136,16 @@ fn account_id(text: &str) -> ApiResult<AccountId> {
     ids::parse_account(text).ok_or_else(|| ApiError::not_found("no_such_account"))
 }
 
-async fn list(State(app): State<AppState>, Admin(_): Admin, q: Params) -> ApiResult<Json<Value>> {
+async fn list(State(app): State<AppState>, Admin(_): Admin, q: Params) -> ApiResult<Response> {
     let paging = q.paging()?;
     let after: Option<String> = app.cursor(&q)?;
+    // a CSV answer is every account, not one page
+    let (limit, after) = if q.wants_csv()? { (usize::MAX - 1, None) } else { (paging.limit, after) };
     let q2 = q.clone();
     app.blocking(move |app| {
-        let mut page = app.accounts.list(after.as_deref(), paging.limit + 1);
-        let more = page.len() > paging.limit;
-        page.truncate(paging.limit);
+        let mut page = app.accounts.list(after.as_deref(), limit + 1);
+        let more = page.len() > limit;
+        page.truncate(limit);
         let next = match (more, page.last()) {
             (true, Some(last)) => Some(app.next_cursor(&q2, &last.name)?),
             _ => None,
@@ -130,7 +155,7 @@ async fn list(State(app): State<AppState>, Admin(_): Admin, q: Params) -> ApiRes
             let cars = app.accounts.car_access(a.id)?;
             items.push(account_json(app, a, &cars));
         }
-        Ok(Json(json!({ "items": items, "next": next, "total": app.accounts.count() })))
+        crate::csv::answer(&q2, "accounts", json!({ "items": items, "next": next, "total": app.accounts.count() }))
     })
     .await
 }
@@ -354,10 +379,14 @@ async fn put_policy(
     Ok(Json(json!({ "everyone": policy.everyone, "outside": policy.outside })))
 }
 
-async fn audit(State(app): State<AppState>, Admin(_): Admin, q: Params) -> ApiResult<Json<Value>> {
+async fn audit(State(app): State<AppState>, Admin(_): Admin, q: Params) -> ApiResult<Response> {
     let period = q.period(app.now(), None)?;
-    let paging = q.paging()?;
-    let start: Option<String> = app.cursor(&q)?;
+    let mut paging = q.paging()?;
+    let mut start: Option<String> = app.cursor(&q)?;
+    // a CSV answer is every matching entry of the period, not one page
+    if q.wants_csv()? {
+        (paging.limit, start) = (usize::MAX, None);
+    }
     let filter = AuditFilter::of(&q)?;
     let q2 = q.clone();
     app.blocking(move |app| {
@@ -414,7 +443,7 @@ async fn audit(State(app): State<AppState>, Admin(_): Admin, q: Params) -> ApiRe
             Some(c) => Some(app.next_cursor(&q2, &c)?),
             None => None,
         };
-        Ok(Json(json!({ "items": items, "next": next })))
+        crate::csv::answer(&q2, "audit-log", json!({ "items": items, "next": next }))
     })
     .await
 }
@@ -466,5 +495,37 @@ impl AuditFilter {
                 (Some(w), Some(a)) => w.eq_ignore_ascii_case(a),
                 _ => false,
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn headers(name: &'static str, value: &[u8]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(name, HeaderValue::from_bytes(value).unwrap());
+        h
+    }
+
+    #[test]
+    fn the_password_header_is_utf8_or_percent_encoded() {
+        let p = confirm_password(None, &headers(PASSWORD_HEADER, "pässwort 鍵".as_bytes())).unwrap();
+        assert_eq!(p.as_str(), "pässwort 鍵");
+        // what a browser's fetch writes for U+00E4: one byte, not UTF-8
+        let e = confirm_password(None, &headers(PASSWORD_HEADER, b"p\xe4sswort")).unwrap_err();
+        assert_eq!((e.status, e.code), (400, "bad_input"));
+        let p = confirm_password(None, &headers(PASSWORD_ENCODED_HEADER, b"%20p%C3%A4ss%25wort+%E9%8D%B5")).unwrap();
+        assert_eq!(p.as_str(), " päss%wort+鍵");
+        let e = confirm_password(None, &headers(PASSWORD_ENCODED_HEADER, b"p%E4sswort")).unwrap_err();
+        assert_eq!((e.status, e.code), (400, "bad_input"));
+        let e = confirm_password(None, &HeaderMap::new()).unwrap_err();
+        assert_eq!((e.status, e.code), (403, "password_needed"));
+        // a code that is not text is a wrong code, never "no code"
+        assert_eq!(confirm_code(None, &headers(CODE_HEADER, b"123456")).unwrap().as_deref(), Some("123456"));
+        assert!(confirm_code(None, &headers(CODE_HEADER, b"\xe4")).unwrap().is_some());
+        assert_eq!(confirm_code(None, &HeaderMap::new()).unwrap(), None);
     }
 }

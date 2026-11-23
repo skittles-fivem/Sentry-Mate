@@ -124,7 +124,7 @@ export function teslamatePart(ctx) {
         const out = await ask({
           title: 'Remove the local TeslaMate?', yes: 'Remove it', danger: true,
           text: 'Reading stops at once and its sealed settings, passwords included, are deleted. The history already stored stays, marked as data from local TeslaMate.',
-          run: (creds) => ctx.api.del(TM_BASE, { headers: { 'X-Sentry-Mate-Password': creds.confirm_password, ...(creds.code ? { 'X-Sentry-Mate-Code': creds.code } : {}) } }),
+          run: (creds) => ctx.api.send('DELETE', TM_BASE, creds),
         });
         await settle(out, 'The local TeslaMate was removed. Its history stays.');
       },

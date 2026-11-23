@@ -172,6 +172,41 @@ fn an_invoice_prices_its_dc_charge_and_a_typed_cost_wins() {
 }
 
 #[test]
+fn one_visit_read_by_the_tesla_api_and_teslafi_costs_once() {
+    let rt = rt();
+    let _in = rt.enter();
+    let k = kit();
+    k.engine.start().unwrap();
+    let dc = charge(k.car, 11, T0, T0 + 30 * MIN, ChargeKind::Dc, 45.0);
+    k.db.replace_window::<Charge>(k.car, T0 - 3_600_000, T0 + 86_400_000, std::slice::from_ref(&dc)).unwrap();
+    // the same 20.00 visit as Tesla's charging history has it and as TeslaFi's charge log has it
+    let tesla = session("tesla-1", Some(k.car), T0 + 2 * MIN, T0 + 36 * MIN, 20.0);
+    let teslafi = Session {
+        source: "teslafi".into(),
+        invoice_id: None,
+        invoice_name: None,
+        ..session("teslafi-77", Some(k.car), T0 + MIN, T0 + 31 * MIN, 20.0)
+    };
+    k.engine.invoice_upsert(&[teslafi.clone(), tesla.clone()]).unwrap();
+    assert_eq!(cost_of(&k, 11), Some((20.0, "USD".into(), "tesla_invoice".into())));
+    let d = query::charges::charge(&k.engine, k.car, 11).unwrap();
+    assert_eq!(d.cost_breakdown.total, Some(20.0));
+    assert_eq!(d.cost_breakdown.parts.len(), 2, "the fees of the session that counts");
+    let applied: Vec<(&str, bool)> = d.invoices.iter().map(|i| (i.id.as_str(), i.applied)).collect();
+    assert_eq!(applied, vec![("teslafi-77", false), ("tesla-1", true)], "both shown, one used");
+    // both stay listed with the charge
+    let listed = k.engine.invoices(None, 0, u64::MAX).unwrap();
+    assert!(listed.iter().all(|l| l.charge == Some(11)));
+    // TeslaFi's alone is the charge's cost
+    let alone = kit();
+    alone.engine.start().unwrap();
+    let dc = charge(alone.car, 11, T0, T0 + 30 * MIN, ChargeKind::Dc, 45.0);
+    alone.db.replace_window::<Charge>(alone.car, T0 - 3_600_000, T0 + 86_400_000, &[dc]).unwrap();
+    alone.engine.invoice_upsert(&[Session { car: Some(alone.car), ..teslafi }]).unwrap();
+    assert_eq!(cost_of(&alone, 11), Some((20.0, "USD".into(), "teslafi".into())));
+}
+
+#[test]
 fn a_rebuilt_charge_is_matched_again_and_a_far_one_is_not() {
     let rt = rt();
     let _in = rt.enter();

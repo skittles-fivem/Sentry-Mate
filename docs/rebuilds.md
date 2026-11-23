@@ -85,6 +85,13 @@ Proof: `bad_fixes_at_the_start_or_end_and_placeholders_are_left_out`.
 A charge's energy added and grid energy are measured over one span, or the charge says they are not (its
 efficiency is then not shown). Proof: `a_charge_whose_energies_cover_different_spans_shows_no_efficiency_and_says_why`.
 
+<a id="rules-4"></a>
+### rules-4: energy and distance are summed differently
+
+A charge's grid energy counts every phase in use. A reading counts in an energy sum until the next second that has
+it (an API's for 150 s at most), so readings far apart leave no energy out. A drive whose odometer was first read
+late or last read early has the GPS distance of the rest. Proof: `grid_energy_counts_every_phase`.
+
 <a id="trust-2"></a>
 ### trust-2: a chain break fails only the log that breaks it
 

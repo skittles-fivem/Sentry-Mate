@@ -417,10 +417,8 @@ export function initFrame() {
   });
 }
 
-/** Where the page is: its section, its tabs and its trail, and (given) the period. The router calls it as soon as it
- *  knows the page, before the loading skeleton: the row of tabs and the period are there before the page under them,
- *  so they never push it down or wrap the tabs anew once it is drawn. */
-export function showPlace({ s, info, period, tz }) {
+/** The router tells the frame what page is shown: { s (state), info, car, period, tz }. */
+export async function update({ s, info, car, period, tz = null }) {
   const page = info?.id || s.page;
   const section = sectionOf(page);
   const tab = tabOf(page);
@@ -430,13 +428,6 @@ export function showPlace({ s, info, period, tz }) {
   if (els.where) els.where.textContent = GROUPS.find((g) => g.id === section)?.title || info?.title || '';
   // the trail shows only on a page inside a tab (a drive, a charge); a tab's own name is the tab
   document.documentElement.toggleAttribute('data-detail', !!info?.parent);
-  if (period !== undefined) setPeriodShown(period, tz);
-}
-
-/** The router tells the frame what page is shown: { s (state), info, car, period, tz }. */
-export async function update({ s, info, car, period, tz = null }) {
-  const page = info?.id || s.page;
-  showPlace({ s, info });
   document.documentElement.toggleAttribute('data-has-period', !!period);
   setPeriodShown(period, tz);
   shown = { car, tz: tz || (car ? car.time_zone : null), page };

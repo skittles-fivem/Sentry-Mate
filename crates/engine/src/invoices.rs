@@ -14,6 +14,9 @@
 //!   in one charge) is the charge's cost, source `tesla_invoice` (or `teslafi`), over a place price or free
 //!   Supercharging; a cost an admin typed ([`crate::costs::set_manual`]) wins over it. A session with no charge is
 //!   listed ([`Engine::invoices`]), never dropped.
+//! - **One visit read by two inputs** (a car with both the Tesla API and TeslaFi) is two sessions of one charge at
+//!   the same time: only one counts ([`counted`]), Tesla's own (it has the invoice) before TeslaFi's. The other
+//!   stays listed with the charge, its cost not used.
 
 use crate::records::{self, CostEntry, CostPart};
 use crate::{Engine, Result, lock, now_ms};
@@ -354,12 +357,28 @@ impl Engine {
     }
 }
 
-/// The cost of a charge's sessions.
+/// Whose word on a visit counts first: Tesla's own charging history (the invoice), then any other input's.
+fn rank(s: &Session) -> u8 {
+    u8::from(s.source != "tesla")
+}
+
+/// The sessions of one charge that count toward its cost: a session at the same time as one of an input that ranks
+/// before it (Tesla's own before TeslaFi's) is the same visit read twice, and is left out. Sessions of one input
+/// all count (the car plugged in twice in one charge), as do sessions of two inputs at different times.
+pub fn counted(sessions: &[Session]) -> Vec<&Session> {
+    let meet = |a: &Session, b: &Session| {
+        a.start_ms <= b.end_ms.max(b.start_ms + 1) && b.start_ms <= a.end_ms.max(a.start_ms + 1)
+    };
+    sessions.iter().filter(|s| !sessions.iter().any(|o| rank(o) < rank(s) && meet(o, s))).collect()
+}
+
+/// The cost of a charge's sessions: those that count ([`counted`]), added up.
 pub fn cost_of(sessions: &[Session]) -> Option<CostEntry> {
+    let sessions = counted(sessions);
     let first = sessions.iter().find(|s| s.total.is_some() && s.currency.is_some())?;
     let currency = first.currency.clone()?;
     let mine: Vec<&Session> =
-        sessions.iter().filter(|s| s.total.is_some() && s.currency.as_deref() == Some(&currency)).collect();
+        sessions.iter().copied().filter(|s| s.total.is_some() && s.currency.as_deref() == Some(&currency)).collect();
     let amount: f64 = mine.iter().filter_map(|s| s.total).sum();
     if !amount.is_finite() {
         return None;
@@ -392,6 +411,7 @@ pub fn cost_of(sessions: &[Session]) -> Option<CostEntry> {
         session_fee: None,
         gap_ms: 0,
         cycle: None,
+        of: None,
         at_ms: mine.iter().map(|s| s.updated_ms).max().unwrap_or(0),
     })
 }
@@ -521,6 +541,27 @@ mod tests {
         assert_eq!(c.parts.len(), 2);
         assert!(cost_of(&[s("tesla-1", None, "EUR")]).is_none());
         assert_eq!(s("tesla-1", None, "EUR").idle_fee(), Some(1.5));
+    }
+
+    #[test]
+    fn one_visit_read_by_two_inputs_counts_once() {
+        let at = |key: &str, source: &str, start: u64, end: u64, total: f64| Session {
+            source: source.into(),
+            start_ms: start,
+            end_ms: end,
+            ..s(key, Some(total), "USD")
+        };
+        // the same visit from Tesla and from TeslaFi: Tesla's counts, whichever was read first
+        let both = [at("teslafi-9", "teslafi", 1000, 9000, 20.5), at("tesla-1", "tesla", 2000, 9500, 20.0)];
+        let c = cost_of(&both).unwrap_or_else(|| panic!("a cost"));
+        assert_eq!((c.amount, c.source.as_str()), (20.0, "tesla_invoice"));
+        assert_eq!(counted(&both).iter().map(|s| s.key.as_str()).collect::<Vec<_>>(), vec!["tesla-1"]);
+        // plugged in twice, the second visit read by TeslaFi alone: both count
+        let twice = [at("tesla-1", "tesla", 1000, 9000, 20.0), at("teslafi-9", "teslafi", 20_000, 30_000, 5.0)];
+        assert_eq!(cost_of(&twice).map(|c| c.amount), Some(25.0));
+        // TeslaFi alone
+        let one = [at("teslafi-9", "teslafi", 1000, 9000, 20.5)];
+        assert_eq!(cost_of(&one).map(|c| (c.amount, c.source)), Some((20.5, "teslafi".into())));
     }
 
     #[test]

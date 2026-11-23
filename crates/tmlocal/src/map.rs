@@ -324,6 +324,8 @@ impl Car {
                     SampleField::Lat => num(p).filter(|v| (-90.0..=90.0).contains(v)),
                     SampleField::Lon => num(p).filter(|v| (-180.0..=180.0).contains(v)),
                     SampleField::TimeToFull => num(p).map(|h| (h * 60.0).round()),
+                    // (the API's count, passed on as it is: 2 is three phases)
+                    SampleField::ChargerPhases => num(p).and_then(model::api_phases),
                     _ => num(p),
                 };
                 let changed = put(n, v);
@@ -515,12 +517,14 @@ mod tests {
         c.apply("longitude", "-93.0", 1_000);
         c.apply("charger_power", "7", 1_000);
         c.apply("time_to_full_charge", "1.5", 1_000);
+        c.apply("charger_phases", "2", 1_000);
         c.apply("tpms_pressure_rr", "2.9", 1_000);
         c.apply("shift_state", "", 1_000);
         assert_eq!(c.apply("doors_open", "true", 1_000), Applied::Nothing);
         let s = c.take(1_500, 1_000).unwrap();
         assert_eq!((s.t_ms, s.soc, s.lat, s.lon), (1_000, Some(55.0), Some(45.0), Some(-93.0)));
         assert_eq!((s.charging, s.charge_power_kw, s.extra.time_to_full_min), (Some(true), Some(7.0), Some(90.0)));
+        assert_eq!(s.extra.charger_phases, Some(3.0), "the API's 2 is three phases");
         assert_eq!(s.tpms_bar[3], Some(2.9));
         assert!(c.take(1_600, 1_000).is_none(), "nothing new");
         c.apply("battery_level", "56", 1_700);

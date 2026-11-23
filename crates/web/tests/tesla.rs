@@ -268,6 +268,12 @@ async fn accounts_cars_pause_poll_notices_and_removal() {
     let base = format!("/api/v1/integrations/tesla/accounts/{}", a.id);
 
     let r = admin.get("/api/v1/integrations/tesla/accounts").await;
+    // the lists answer CSV as every list does, and no other format
+    for list in ["accounts", "status"] {
+        let csv = admin.get(&format!("/api/v1/integrations/tesla/{list}?format=csv")).await;
+        assert!(csv.header("content-type").unwrap_or("").starts_with("text/csv"), "{list}: {}", csv.text());
+        assert_eq!(admin.get(&format!("/api/v1/integrations/tesla/{list}?format=xml")).await.status, 400, "{list}");
+    }
     assert_eq!(r.status, 200);
     clean(&r);
     let item = &r.json()["items"][0];

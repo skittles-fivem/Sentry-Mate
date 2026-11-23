@@ -35,8 +35,23 @@ class Battery(ServerCase):
         self.assertEqual(b2["band"]["high_pct"], 100)
         self.assertIn("lfp_charge_to_100_weekly", b2["notes"])
         life = b1["lifetime"]
-        self.assertAlmostEqual(life["charged_kwh"], life["ac_kwh"] + life["dc_kwh"], delta=0.11)
+        self.assertAlmostEqual(life["charged_kwh"], life["ac_kwh"] + life["dc_kwh"] + life["unknown_kwh"], delta=0.11)
         self.assertGreater(life["equivalent_cycles"], 1)
+
+    def test_a_pack_is_never_healthier_than_new(self):
+        b = self.c.get("/api/v1/cars/c2/battery")
+        self.assertNotIn("reading_above_new", b["notes"])
+        self.assertEqual(b["lifetime"]["unknown_kwh"], 0)
+        now_kwh = b["capacity"]["full_pack_kwh"]
+        s = self.c.get("/api/v1/cars/c2/settings")
+        # a value when new typed below what the pack reads now: no loss, full health, a note, the difference as it is
+        up = self.c.json("PATCH", "/api/v1/cars/c2/settings", {"version": s["version"], "capacity_new_kwh": round(now_kwh - 4, 1)})
+        cap = self.c.get("/api/v1/cars/c2/battery")
+        self.assertEqual((cap["capacity"]["degradation_pct"], cap["capacity"]["health_pct"]), (0, 100))
+        self.assertAlmostEqual(cap["capacity"]["difference_kwh"], -4, delta=0.06)
+        self.assertIn("reading_above_new", cap["notes"])
+        self.c.json("PATCH", "/api/v1/cars/c2/settings", {"version": up["version"], "capacity_new_kwh": None})
+        self.assertNotIn("reading_above_new", self.c.get("/api/v1/cars/c2/battery")["notes"])
 
     def test_capacity_follows_the_charges(self):
         cap = self.c.get(f"/api/v1/cars/c1/battery/capacity?group=charge&from_ms={NOW - 60 * DAY}&limit=500")

@@ -1,6 +1,6 @@
 // Runs inside Chromium for browser.test.js, under the same Content-Security-Policy the dev server sends.
 // Each check pushes { name, ok, detail }; window.__results is set when all are done.
-import { h, svg, cover, ready, unready, failed, setTitle, quantity, setVars, safeUrl, readyPage, disclose, steady, longest, textShapes, replace, replaceChanged, markScrolling } from './shared/dom.js';
+import { h, svg, cover, ready, unready, failed, setTitle, quantity, setVars, safeUrl, readyPage, disclose, steady, longest, textShapes, replace, replaceChanged, markScrolling, redraw, keepFocus } from './shared/dom.js';
 import { setLocale, t } from './shared/i18n.js';
 import { setUnits } from './shared/units.js';
 import * as api from './shared/api.js';
@@ -42,34 +42,6 @@ async function run() {
   replaceChanged(slot, keep, 'and text', null);
   check('replaceChanged with another count or order draws again', slot.childNodes.length === 2 && slot.firstChild === keep && slot.textContent === 'mapand text', slot.outerHTML);
   mo.disconnect();
-  // holdScroll() (through replace()): a part above the screen drawn again taller leaves what is on screen where it was
-  // (scroll anchoring of its own: Safari on iOS has none; Chromium's is switched off here), and a part drawn again in
-  // the middle of the screen keeps where the window is scrolled
-  {
-    const de = document.documentElement;
-    de.style.overflowAnchor = 'none'; document.body.style.overflowAnchor = 'none';
-    const tall = (n, px) => Array.from({ length: n }, (_, i) => h('div', { style: { height: `${px}px` } }, `row ${i}`));
-    const above = h('div', null, tall(5, 100));
-    const mid = h('div', null, tall(30, 100));
-    const page = h('div', null, above, mid, h('div', { style: { height: '3000px' } }));
-    document.body.append(page);
-    const pageTop = page.getBoundingClientRect().top + scrollY;
-    scrollTo(0, pageTop + 1000);
-    await new Promise((r) => requestAnimationFrame(r));
-    const y0 = scrollY;
-    const mark = mid.children[10];
-    const at = mark.getBoundingClientRect().top;
-    replace(above, tall(7, 100)); // 200 px taller, above the screen
-    await Promise.resolve(); await Promise.resolve();
-    check('holdScroll keeps what is on screen in place when a part above it grows', Math.abs(mark.getBoundingClientRect().top - at) < 1 && Math.abs(scrollY - (y0 + 200)) < 1, `${y0} -> ${scrollY}, ${at} -> ${mark.getBoundingClientRect().top}`);
-    const y1 = scrollY;
-    replace(mid, tall(30, 100)); // the part on screen itself, the same height
-    await Promise.resolve(); await Promise.resolve();
-    check('holdScroll keeps the scroll when the part on screen is drawn again', Math.abs(scrollY - y1) < 1, `${y1} -> ${scrollY}`);
-    page.remove();
-    scrollTo(0, 0);
-    de.style.overflowAnchor = ''; document.body.style.overflowAnchor = '';
-  }
   // markScrolling(): data-scrolling on the root while something scrolls, gone a moment after
   const stopMark = markScrolling(60);
   const scroller = h('div', { style: { height: '50px', overflow: 'auto' } }, h('div', { style: { height: '500px' } }));
@@ -96,6 +68,47 @@ async function run() {
   dz.close();
   check('closing from code keeps the focus where it is unless it was inside', box.hidden && toggles.join(',') === 'open,close,open,close', toggles.join(','));
   edit.remove(); box.remove();
+  // redraw(): a live part drawn again keeps the nodes that look the same, so the focused control is not thrown away
+  const live = h('div');
+  document.body.append(live);
+  const drawLive = (speed, label = 'Switch car') => redraw(live,
+    h('div', { class: 'head' }, h('h1', null, 'Comet'), h('span', { class: 'v' }, `${speed} km/h`), h('button', { type: 'button' }, label)),
+    h('a', { href: '/cars/c1/timeline' }, 'Timeline'), ' updated ', String(speed));
+  drawLive(50);
+  const liveBtn = live.querySelector('button'), liveLink = live.querySelector('a'), liveHead = live.querySelector('.head');
+  liveBtn.focus();
+  drawLive(51);
+  check('redraw changes what differs', live.querySelector('.v').textContent === '51 km/h' && live.textContent.endsWith(' updated 51'), live.textContent);
+  check('redraw leaves the nodes that look the same, and the focus on its button', live.querySelector('button') === liveBtn && live.querySelector('a') === liveLink && live.querySelector('.head') === liveHead && document.activeElement === liveBtn, document.activeElement?.outerHTML);
+  // a size put on a drawn element afterwards (a pack's pixel snap) does not make it another element; a style the drawing sets does
+  liveBtn.style.setProperty('min-width', '100px');
+  drawLive(52);
+  check('an inline style added after drawing does not replace the element', live.querySelector('button') === liveBtn && document.activeElement === liveBtn && live.querySelector('.v').textContent === '52 km/h');
+  liveBtn.style.removeProperty('min-width');
+  const bar = (w) => redraw(live.querySelector('.head'), h('i', { vars: { '--w': w } }));
+  const headKids = [...live.querySelector('.head').childNodes];
+  bar('10%'); const bar1 = live.querySelector('.head i'); bar('10%'); const bar2 = live.querySelector('.head i'); bar('20%');
+  check('a style the drawing sets is compared', bar1 === bar2 && live.querySelector('.head i') !== bar1 && live.querySelector('.head i').style.getPropertyValue('--w') === '20%');
+  live.querySelector('.head').replaceChildren(...headKids);
+  liveBtn.focus();
+  drawLive(51, 'Switch car (3)');
+  check('a focused control that changed is replaced and the one at its place gets the focus', live.querySelector('button') !== liveBtn && document.activeElement === live.querySelector('button') && document.activeElement.textContent === 'Switch car (3)', document.activeElement?.outerHTML);
+  redraw(live, h('p', null, 'No data'));
+  check('redraw removes what is no longer drawn, and a focus with no place left is not forced anywhere', live.childNodes.length === 1 && live.textContent === 'No data' && document.activeElement === document.body, live.outerHTML);
+  // a canvas has its picture outside the DOM: a box with one is always put in new
+  redraw(live, h('div', { class: 'chart' }, h('canvas'), h('span', null, 'a')));
+  const oldCanvas = live.querySelector('canvas');
+  redraw(live, h('div', { class: 'chart' }, h('canvas'), h('span', null, 'b')));
+  check('a box with a canvas is replaced whole', live.querySelector('canvas') !== oldCanvas && live.textContent === 'b');
+  // keepFocus(): a part replaced whole gives the focus to the control at the same place
+  const whole = () => live.replaceChildren(h('p', null, 'x'), h('div', null, h('button', { type: 'button' }, 'One'), h('button', { type: 'button' }, 'Two')));
+  whole();
+  live.querySelectorAll('button')[1].focus();
+  keepFocus(live, whole);
+  check('keepFocus gives the focus to the same place in the new drawing', document.activeElement === live.querySelectorAll('button')[1] && document.activeElement.textContent === 'Two', document.activeElement?.outerHTML);
+  await keepFocus(live, async () => { await sleep(5); whole(); });
+  check('keepFocus waits for a drawing that is a promise', document.activeElement === live.querySelectorAll('button')[1], document.activeElement?.outerHTML);
+  live.remove();
   const evil = h('div', null, '<img src=x onerror="window.__pwned=1">');
   check('text is never markup', evil.childElementCount === 0 && evil.textContent.startsWith('<img'));
   const link = h('a', { href: 'javascript:window.__pwned=1', onmouseover: 'window.__pwned=1' }, 'x');

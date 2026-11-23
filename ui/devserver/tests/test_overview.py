@@ -52,6 +52,11 @@ class Overview(ServerCase):
                 self.assertEqual(c["link"], f"/cars/{c['car']}/health")
             if c["kind"] in ("tesla", "teslafi"):
                 self.assertEqual(c["id"], f"{c['kind']}:{c['account']}")
+            # where each is changed, as the real server names it (crates/web/src/resources/overview.rs)
+            where = {"tiles": "/settings/display#maps", "geocoding": "/settings/display#addresses",
+                     "release_check": "/settings/display#release"}
+            if c["kind"] in where:
+                self.assertEqual(c["link"], where[c["kind"]])
         by = {c["id"]: c for c in d["connections"]}
         self.assertEqual(by["smo:c1"]["status"], "live")  # driving
         self.assertEqual(by["smo:c3"]["status"], "problem")  # quiet for 55 hours

@@ -90,6 +90,13 @@ pub const BUMPS: &[Bump] = &[
         proof_file: "crates/engine/tests/tesla_input.rs",
     },
     Bump {
+        part: Part::Rules,
+        version: 4,
+        what: "energy and distance are summed differently: every phase counts, and readings far apart or late leave nothing out",
+        proof: "grid_energy_counts_every_phase",
+        proof_file: "crates/timeline/tests/energy.rs",
+    },
+    Bump {
         part: Part::Trust,
         version: 2,
         what: "a break in a log chain fails only the log that breaks it",

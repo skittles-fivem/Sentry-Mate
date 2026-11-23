@@ -197,11 +197,13 @@ fn chosen(e: &Engine, p: &Params) -> ApiResult<Vec<Listed>> {
         .collect())
 }
 
-/// `GET /integrations/invoices`: newest first, paged by position (`after` is the position of the next item).
+/// `GET /integrations/invoices`: newest first, paged by position (the cursor holds the position of the next item,
+/// signed and bound to the filters like every list's).
 async fn list(State(app): State<AppState>, Admin(_): Admin, p: Params) -> ApiResult<Response> {
     let e = app.service::<Engine>()?;
     let paging = p.paging()?;
     let csv = p.wants_csv()?;
+    let start: usize = app.cursor(&p)?.unwrap_or(0);
     let (all, p) = app.blocking(move |_| Ok((chosen(&e, &p)?, p))).await?;
     let mut money: BTreeMap<String, f64> = BTreeMap::new();
     for l in &all {
@@ -233,12 +235,9 @@ async fn list(State(app): State<AppState>, Admin(_): Admin, p: Params) -> ApiRes
             .collect();
         return crate::csv::answer(&p, "supercharger-invoices", json!({ "items": items }));
     }
-    let start = match paging.after.as_deref() {
-        None => 0,
-        Some(a) => a.parse::<usize>().map_err(|_| ApiError::bad_input("after", "Not a cursor of this list."))?,
-    };
     let items: Vec<Value> = all.iter().skip(start).take(paging.limit).map(item).collect();
-    let next = (start + paging.limit < all.len()).then(|| (start + paging.limit).to_string());
+    let end = start.saturating_add(paging.limit);
+    let next = if end < all.len() { Some(app.next_cursor(&p, &end)?) } else { None };
     Ok(Json(json!({ "items": items, "next": next, "totals": totals })).into_response())
 }
 

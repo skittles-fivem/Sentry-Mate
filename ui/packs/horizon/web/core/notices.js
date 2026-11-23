@@ -14,18 +14,6 @@ const HIDDEN_KEY = 'sentrymate.notices-hidden';
 let box = null;
 let items = [];
 const subs = new Set();
-let firstDone = null;
-/** Resolves once the notices were loaded the first time and are in the bar (or could not be loaded). */
-export const noticesLoaded = new Promise((resolve) => { firstDone = resolve; });
-// The top bar sits under the notices bar and is not held at the top of the screen: until the notices are in (at
-// most WAIT_MS) it is left out, so a bar that comes in does not push it down. It comes in with the bar, as the
-// first page's loading skeleton under it does (core/router.js).
-const WAIT_MS = 3000;
-const topbar = document.getElementById('topbar');
-if (topbar) topbar.style.display = 'none';
-const showTop = () => { if (topbar) topbar.style.display = ''; };
-noticesLoaded.then(showTop);
-setTimeout(showTop, WAIT_MS);
 
 const hidden = () => { try { return new Set(JSON.parse(sessionStorage.getItem(HIDDEN_KEY) || '[]')); } catch { return new Set(); } };
 const hide = (code) => { try { const s = hidden(); s.add(code); sessionStorage.setItem(HIDDEN_KEY, JSON.stringify([...s])); } catch { /* fine */ } };
@@ -84,7 +72,6 @@ export async function loadNotices() {
     items = r.items || [];
   } catch { items = []; }
   render();
-  firstDone();
   for (const f of [...subs]) { try { f(items); } catch (e) { console.error(e); } }
   return items;
 }

@@ -397,7 +397,8 @@ impl Tariff {
     /// charge puts energy into the pack, so whichever sign carries more energy over the curve is "into the pack";
     /// power the other way (the pack giving power) costs nothing. Points need not be sorted; points without power
     /// are skipped, and of two at the same moment the later in the list counts. With tiered prices the charge's kWh
-    /// follow on from `before_kwh` already used in the cycle (plus the household's use), in time order.
+    /// follow on from `before_kwh` already used in the cycle (plus the household's use), in time order. A curve with
+    /// no energy under it and a known grid energy is priced as [`Tariff::energy_cost`] at its first point's time.
     pub fn charge_cost_after(&self, points: &[ChargePoint], opts: &CostOptions, before_kwh: f64) -> ChargeCost {
         let mut curve: Vec<(u64, f64)> =
             points.iter().filter_map(|p| p.power_kw.filter(|w| w.is_finite()).map(|w| (p.t_ms, w))).collect();
@@ -448,9 +449,16 @@ impl Tariff {
             }
         }
 
-        let curve_kwh: f64 = runs.iter().map(|r| r.1).sum();
+        // (an empty sum is -0.0)
+        let curve_kwh: f64 = runs.iter().map(|r| r.1).sum::<f64>() + 0.0;
         let scale = match opts.grid_kwh {
             Some(g) if g.is_finite() && g >= 0.0 && curve_kwh > 0.0 => g / curve_kwh,
+            // a curve with no energy under it (every stretch a gap, or all its points at 0 kW) cannot say when
+            // the grid energy was taken: all of it at the price of the charge's start, as without a curve
+            Some(g) if g.is_finite() && g > 0.0 => {
+                let start = curve.first().map_or(0, |p| p.0);
+                return ChargeCost { curve_kwh, gap_ms, ..self.energy_cost(g, start, before_kwh) };
+            }
             _ => 1.0,
         };
         self.finish(&runs, scale, before_kwh, curve_kwh, gap_ms)

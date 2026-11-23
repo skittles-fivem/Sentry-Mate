@@ -18,9 +18,6 @@
 .now-aside { border-left: 1px solid var(--rule); padding: round(1.875rem, var(--e)) 0 0 round(2.5rem, var(--e)); min-width: 0; display: flex; flex-direction: column; gap: round(1.25rem, var(--e)); }
 .lede { font: 400 1.6875rem var(--serif); --LH: round(calc(1.38 * 1em), 2px); line-height: var(--LH); letter-spacing: -0.006em; color: var(--ink); max-width: round(30em, var(--e)); }
 .lede em { font-style: italic; }
-/* on a phone, while the car drives, the line keeps the room of four lines: its distance and the place it is near change
-   with every live update, and it wrapped to one line more or less over the page under it */
-@container page (width < 50rem) { .now-driving .lede { min-height: calc(4 * var(--LH)); } }
 
 .hero { padding: round(1.875rem, var(--e)) 0; border-bottom: 1px solid var(--rule); container: hero / inline-size; }
 .hero-figs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: round(1.5rem, var(--e)); }

@@ -73,7 +73,7 @@ impl Sites {
         self.0.get(i).is_none_or(|s| s.0 > t || s.2 == site)
     }
 
-    fn keeps(&self, source: Source, t: u64) -> bool {
+    pub(crate) fn keeps(&self, source: Source, t: u64) -> bool {
         source.site().is_none_or(|site| self.shows(site, t))
     }
 }
@@ -241,8 +241,9 @@ fn can_coverage(e: &Engine, car: CarId, from: u64, to: u64) -> QResult<Vec<(u64,
     }
 }
 
-/// The first and last start of a car's imported drives and charges, as `[first, last + 1)`: imported history can
-/// overlap CAN history only there.
+/// From the first start of a car's imported drives and charges to the end of the last one to start (at least its
+/// start, `[first, last + 1)`): imported history can overlap CAN history only there. (To the last one's end, not its
+/// start: live logging that began while it was going on meets it.)
 fn imported_span(e: &Engine, car: CarId) -> QResult<Option<(u64, u64)>> {
     fn ends<T: db::Item>(e: &Engine, car: CarId) -> QResult<Option<(u64, u64)>> {
         let mut q = db::Query::default().oldest_first().limit(1);
@@ -250,7 +251,7 @@ fn imported_span(e: &Engine, car: CarId) -> QResult<Option<(u64, u64)>> {
         let Some(first) = e.db().list::<T>(car, &q)?.items.first().map(db::Item::start_ms) else { return Ok(None) };
         let mut q = db::Query::default().limit(1);
         q.source = Some(Source::Teslamate);
-        let last = e.db().list::<T>(car, &q)?.items.first().map_or(first, db::Item::start_ms);
+        let last = e.db().list::<T>(car, &q)?.items.first().map_or(first, |r| r.start_ms().max(r.end_ms()));
         Ok(Some((first, last.max(first).saturating_add(1))))
     }
     let join = |x: Option<(u64, u64)>, y: Option<(u64, u64)>| match (x, y) {
@@ -632,9 +633,65 @@ fn pair_overlaps(e: &Engine, car: CarId, ch: &Choices, pairs: Vec<Pair>) -> QRes
 /// stays the same.
 fn imported_coverage(e: &Engine, car: CarId) -> QResult<std::sync::Arc<Vec<(u64, u64)>>> {
     e.memo(car, "imported-coverage", crate::memo::On::All, 0, || match imported_span(e, car)? {
-        Some((lo, hi)) => can_coverage(e, car, lo, hi),
+        Some((lo, hi)) => with_straddlers(e, car, can_coverage(e, car, lo, hi)?),
         None => Ok(Vec::new()),
     })
+}
+
+/// The CAN coverage with the imported drives and charges that were going on when a span of it began (the first live
+/// day, or live logging coming back after a gap: the import has the whole drive or charge, the live side the rest
+/// of it from where its logging began). Such a row starts before the span, so by its start alone it would be shown
+/// beside the live row of the same drive. Where the live side has a row of the same kind starting while the
+/// imported one goes on, the time the imported row covers becomes a span of its own, cut off the front of the live
+/// one: the two rows are then one overlap, the live one shown unless that span is flipped. With no live row there
+/// the imported one stays as it is (nothing shows twice).
+fn with_straddlers(e: &Engine, car: CarId, cov: Vec<(u64, u64)>) -> QResult<Vec<(u64, u64)>> {
+    let (Some(first), Some(last)) = (cov.first().copied(), cov.last().copied()) else { return Ok(cov) };
+    // per span, the reach of the imported rows that go on into its start
+    let mut reach: Vec<Option<(u64, u64)>> = vec![None; cov.len()];
+    fn gather<T: db::Item>(
+        e: &Engine,
+        car: CarId,
+        cov: &[(u64, u64)],
+        (from, to): (u64, u64),
+        reach: &mut [Option<(u64, u64)>],
+    ) -> QResult<()> {
+        // (only rows that meet a span's start can be going on into one)
+        super::reports::overlapping::<T>(e, car, from, to, Some(Source::Teslamate), false, |r| {
+            let (a, b) = (r.start_ms(), r.end_ms());
+            // the first span that starts after the row does; the row itself outside every span
+            let i = cov.partition_point(|s| s.0 <= a);
+            let outside = i.checked_sub(1).and_then(|k| cov.get(k)).is_none_or(|s| s.1 <= a);
+            let Some(&(s, _)) = cov.get(i).filter(|s| outside && s.0 < b) else { return Ok(true) };
+            // the live row of the same drive or charge: one that starts while the imported one goes on
+            let mut twin = false;
+            super::reports::overlapping::<T>(e, car, s, b, Some(Source::Live), false, |l| {
+                twin = (s..b).contains(&l.start_ms());
+                Ok(!twin)
+            })?;
+            if twin && let Some(slot) = reach.get_mut(i) {
+                *slot = Some(slot.map_or((a, b), |(x, y)| (x.min(a), y.max(b))));
+            }
+            Ok(true)
+        })
+    }
+    let range = (first.0, last.0.saturating_add(1));
+    gather::<model::Drive>(e, car, &cov, range, &mut reach)?;
+    gather::<model::Charge>(e, car, &cov, range, &mut reach)?;
+    let mut out = Vec::with_capacity(cov.len() + 1);
+    for ((s, end), r) in cov.into_iter().zip(reach) {
+        match r {
+            None => out.push((s, end)),
+            Some((a, b)) => {
+                let cut = b.min(end);
+                out.push((a, cut));
+                if cut < end {
+                    out.push((cut, end));
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The live spans flipped to show the imported side (in order, apart): a series shows the import there.

@@ -2,6 +2,8 @@
 .tl-filters { flex-wrap: wrap; }
 .tl-filters .seg { flex-wrap: wrap; }
 .tl-filters .field--search { width: round(18rem, var(--e)); }
+/* the place list arrives after the page: the select keeps one width, so the row does not wrap when it does */
+:root:not([data-phone]) .tl-filters .select { width: round(13rem, var(--e)); }
 .tl-summary { margin-bottom: var(--gap); }
 .tl-summary .figures { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 @container page (max-width: 30rem) { .tl-summary .figures.figures { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

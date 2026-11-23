@@ -44,6 +44,7 @@ const NOTES = {
   imported_history_estimated: 'part of the history is imported; figures from it are estimated.',
   no_history: 'no history for this car yet.',
   pack_replaced: 'the pack was replaced: capacity, health and the trend cover the new pack only.',
+  reading_above_new: 'the capacity now reads above the value when new, so no loss is shown. if that value was typed, it is probably too low: check the reference values.',
 };
 const CHEM = { lfp: 'lfp (iron phosphate)', nca_nmc: 'nca / nmc (nickel)' };
 const REASONS = {
@@ -206,7 +207,9 @@ export async function mount(ctx) {
     const t = totals || {};
     // from the valid odometer readings only, never below 0 (the server picks them)
     const mileage = t.driven_since_km ?? (t.odometer_last_km != null && t.odometer_first_km != null ? Math.max(0, t.odometer_last_km - t.odometer_first_km) : null);
-    const inKwh = (life.ac_kwh || 0) + (life.dc_kwh || 0) + (life.regen_kwh || 0);
+    // charges whose kind no input told are neither ac nor dc: their own line, only where there are any
+    const unknownKwh = life.unknown_kwh > 0 ? life.unknown_kwh : 0;
+    const inKwh = (life.ac_kwh || 0) + (life.dc_kwh || 0) + unknownKwh + (life.regen_kwh || 0);
     const share = (k) => (inKwh ? ((k || 0) / inKwh) * 100 : 0);
     const lifeBlock = h('div', null,
       kv([
@@ -223,7 +226,7 @@ export async function mount(ctx) {
       h('p', { class: 'note', cover: 'bh.drive.help' }, 'not logged is distance the odometer moved while nothing was recorded; each gap is on health.'),
       h('p', { class: 'note', cover: 'bh.charging.help' }, 'charging efficiency is energy into the pack over energy from the grid, for ac charges where both were measured; dc chargers do not report their grid side, so they are left out.'),
       h('div', { class: 'blk', cover: 'bh.chart.ac_dc' }, h('h3', { class: 'sub-title' }, 'energy into the pack, by source'),
-        kv([['ac charging', life.ac_kwh], ['dc fast', life.dc_kwh], ['regen', life.regen_kwh]].map(([l, k], i) => [l, [cellBar(share(k) / 100, 20, ['accent', 'warn', 'text'][i]), ' ', pct(share(k)), none(`  ${format(k, 'energy')}`)]]), { cols: 1 }),
+        kv([['ac charging', life.ac_kwh, 'accent'], ['dc fast', life.dc_kwh, 'warn'], ...(unknownKwh ? [['kind not known', unknownKwh, 'text']] : []), ['regen', life.regen_kwh, 'text']].map(([l, k, tone]) => [l, [cellBar(share(k) / 100, 20, tone), ' ', pct(share(k)), none(`  ${format(k, 'energy')}`)]]), { cols: 1 }),
         note(`from the pack’s lifetime counters (${life.basis || 'pack counters'}), so it covers years before logging. out: ${format(life.drive_kwh, 'energy')} driving, ${format(life.standing_kwh, 'energy')} parked.`)));
     lifeWait.replaceWith(section({ title: 'lifetime totals', side: none('whole life') }, lifeBlock));
   }
@@ -369,8 +372,10 @@ export async function mount(ctx) {
   }
   function paintMonths(items) {
     // health against the same base as the headline figure (usable now over its health), so they agree
-    const newKwh = cap.health_pct && cap.usable_kwh ? (cap.usable_kwh * 100) / cap.health_pct : cap.new_kwh;
-    const rows = [...items].reverse().map((it) => ({ ...it, health: newKwh && it.usable_kwh != null ? (it.usable_kwh / newKwh) * 100 : null,
+    // (health stops at 100 where the reading is above the value when new: no base can be worked back from it then)
+    const aboveNew = (bat.notes || []).includes('reading_above_new') || cap.health_pct >= 100;
+    const newKwh = !aboveNew && cap.health_pct && cap.usable_kwh ? (cap.usable_kwh * 100) / cap.health_pct : cap.new_kwh;
+    const rows = [...items].reverse().map((it) => ({ ...it, health: newKwh && it.usable_kwh != null ? Math.min(100, (it.usable_kwh / newKwh) * 100) : null,
       full_km: factor && it.usable_kwh != null ? (it.usable_kwh * 1000) / factor : null }));
     const tb = table(ctx, {
       title: 'by month', rows, csv: false, sort: { key: 'month', dir: 'desc' }, limit: 36, box: 'Battery by month',
