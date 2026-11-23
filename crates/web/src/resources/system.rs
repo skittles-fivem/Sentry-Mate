@@ -325,17 +325,11 @@ async fn rebuild(
     }
     let e = app.service::<Engine>()?;
     let e2 = e.clone();
-    let by = v.name().to_string();
     let job = app
         .blocking(move |_| {
             super::full_rebuild::refuse_while_running(&e2)?;
-            e2.rebuild_because(
-                engine::Scope { car: Some(car), from_ms: from, to_ms: to },
-                engine::jobs::What::WHOLE,
-                engine::versions::Cause::owner(Some(&by)),
-                false,
-            )
-            .map_err(|x| ApiError::server(format!("starting the rebuild: {x}")))
+            e2.rebuild(engine::Scope { car: Some(car), from_ms: from, to_ms: to })
+                .map_err(|x| ApiError::server(format!("starting the rebuild: {x}")))
         })
         .await?;
     let waited = Instant::now();
@@ -392,9 +386,8 @@ async fn gps_layout(State(app): State<AppState>, CarParam(car): CarParam) -> Api
 }
 
 /// `PUT /cars/{car}/gps-layout` `{ layout }`: the layout `sentry-mate gps-layout` printed (`lat 0|28@1- (1e-6,0);
-/// lon 28|28@1- (1e-6,0)`), or null for the DBC's. A change reads the car's positions again (only its stored logs whose
-/// positions came from that frame are decoded again, a few saves in a row are one rebuild); the answer names its
-/// `job`, null when nothing changed.
+/// lon 28|28@1- (1e-6,0)`), or null for the DBC's. A change starts a whole rebuild of the car (its stored logs are
+/// decoded again); the answer names its `job`, null when nothing changed.
 async fn put_gps_layout(
     State(app): State<AppState>,
     v: Viewer,
@@ -415,12 +408,8 @@ async fn put_gps_layout(
     if job.is_some() {
         let name = app.car_name_now(car).await;
         let summary = match layout {
-            Some(l) => {
-                format!("Set how {name}'s Screenmate GPS frames are read ({l}); its positions are read again.")
-            }
-            None => {
-                format!("Set {name}'s Screenmate GPS frames to be read as the DBC says; its positions are read again.")
-            }
+            Some(l) => format!("Set how {name}'s Screenmate GPS frames are read ({l}); its history is rebuilt."),
+            None => format!("Set {name}'s Screenmate GPS frames to be read as the DBC says; its history is rebuilt."),
         };
         v.audit(&app, "car-gps-layout", Some(&target("car", Some(car), "")), &summary).await?;
     }

@@ -436,12 +436,7 @@ impl Engine {
             changed
         };
         if changed && self.handle().is_ok() {
-            self.rebuild_because(
-                crate::Scope::car(car),
-                crate::jobs::What::WHOLE,
-                crate::versions::Cause::preferred_key(),
-                true,
-            )?;
+            self.rebuild(crate::Scope::car(car))?;
         }
         Ok(Some(car))
     }
@@ -554,7 +549,6 @@ impl Engine {
         };
         let mut wrote_samples = false;
         let mut firmware: Option<(timeline::LogFirmware, bool)> = None;
-        let mut internal_gps: Option<bool> = None;
         let outcome = if usable {
             match read(name)? {
                 None => Outcome::Hole { from_ms: start, to_ms: start + 60_000, reason: "not_stored".into() },
@@ -600,7 +594,6 @@ impl Engine {
                             Outcome::Hole { from_ms: a, to_ms: b, reason: "other_vin".into() }
                         }
                         Ok(r) => {
-                            internal_gps = Some(r.internal_gps);
                             firmware = Some((r.firmware.clone(), r.facts.closed == timeline::Closed::Quiet));
                             let (from, to) = match (r.samples.first(), r.samples.last()) {
                                 (Some(a), Some(b)) => (Some(a.t_ms), Some(b.t_ms + 1000)),
@@ -653,7 +646,6 @@ impl Engine {
             status: status.to_string(),
             reason: record.reason.clone(),
             done_ms: now_ms(),
-            internal_gps,
         };
         let mut span = entry.span();
         if let Some(o) = &old {
@@ -1306,11 +1298,6 @@ impl Engine {
         }
         if job.is_none_or(|j| !j.cancelled()) {
             records::put_rebuild_mark(db, car, None)?;
-        }
-        // a narrow rebuild asked for and not done (a restart came before its job, or its job was cancelled)
-        if job.is_none() {
-            self.redo_positions(car, None)?;
-            self.redo_inputs(car, None)?;
         }
         Ok(())
     }

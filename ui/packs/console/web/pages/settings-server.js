@@ -650,7 +650,7 @@ export async function mount(ctx) {
   const full = admin ? fullRebuild(ctx, { carName: (c) => carName.get(c) || c }) : null;
   const autoLine = admin && S.settings ? editLines([
     { key: 'full_rebuild.auto', id: 'full-rebuild-auto', type: 'bool', value: S.settings.full_rebuild?.auto !== false,
-      help: 'Rebuild automatically when a new server version decodes the stored logs differently: once for that version, 10 minutes after the start unless you start it now, put it off or pause it. Off: a notice offers it instead.',
+      help: 'Rebuild automatically when a new server version decodes the stored logs differently. Off: a notice offers it instead.',
       save: async (v) => {
         try { S.settings = await ctx.api.patch('settings', { version: S.settings.version, full_rebuild: { auto: v } }); } catch (e) {
           if (e.status === 409) { S.settings = await ctx.api.get('settings'); throw new Error('Someone else changed the server settings first. Look again and save once more.'); }

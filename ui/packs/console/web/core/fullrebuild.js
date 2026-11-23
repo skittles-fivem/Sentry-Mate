@@ -1,7 +1,6 @@
 // The full rebuild block (shared/fullrebuild.js has the words): what it does, the button (cancel while one runs)
-// (start now, tonight and pause beside it while one runs) and a progress box of fixed size: a text bar, the eight
-// status lines (the last says why it runs, with a link to the change while release-notes links are allowed), three
-// error lines and the recent rebuilds, all there from the start, only the texts that changed written again. Follows the `job` events of kind full_rebuild (live events,
+// and a progress box of fixed size: a text bar, the seven status lines and three error lines, all there from the
+// start, only the texts that changed written again. Follows the `job` events of kind full_rebuild (live events,
 // polling only while the live stream is down: every 2 s while one runs, every 30 s otherwise).
 // Used by health (one car: cars/{car}/full-rebuild) and settings/server (every car: system/full-rebuild).
 
@@ -43,24 +42,17 @@ export function fullRebuild(ctx, { car = null, carName = null, label = null, onS
   const bar = h('span', { class: 'fr-bar', role: 'progressbar', 'aria-label': 'Full rebuild progress', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0' }, tbar);
   const CELLS = barOn.textContent.length + barOff.textContent.length;
   const pct = h('span', { class: 'fr-pct' });
-  // the why line: its words and the change explained (a link, only while release-notes links are allowed)
-  const whyText = h('span', { class: 'fr-why' });
-  const whyA = h('a', { class: 'link fr-why-link', target: '_blank', rel: 'noopener noreferrer', hidden: true }, low(fr.WHY_LINK));
-  let linksOn = false;
   const rows = fr.lines(null).map((l) => {
     const k = h('span', { class: 'fr-k' }, low(l.label));
-    const v = l.key === 'why' ? h('span', { class: 'fr-v' }, whyText, ' ', whyA) : h('span', { class: 'fr-v' });
+    const v = h('span', { class: 'fr-v' });
     return { key: l.key, k, v, el: h('div', { class: 'fr-line' }, k, v) };
   });
   const errs = Array.from({ length: ERRORS }, () => h('div', { class: 'fr-err' }));
-  const hist = Array.from({ length: fr.HISTORY_ROWS }, () => h('div', { class: 'fr-err' }));
-  const whenBtns = fr.WHEN.map((w) => { const b = btn(low(w.label), () => defer(w.when)); b.hidden = true; b.title = w.title; return b; });
   const box = h('div', { class: 'mono-box fr-box', role: 'status', 'aria-label': 'Full rebuild progress' },
-    h('div', { class: 'fr-line fr-line--bar' }, bar, pct), rows.map((r) => r.el), h('div', { class: 'fr-errs' }, errs),
-    h('div', { class: 'fr-errs fr-hist' }, h('div', { class: 'fr-line' }, h('span', { class: 'fr-k' }, low(fr.HISTORY_TITLE))), hist));
+    h('div', { class: 'fr-line fr-line--bar' }, bar, pct), rows.map((r) => r.el), h('div', { class: 'fr-errs' }, errs));
   const el = h('div', { class: 'fr' },
     fr.EXPLAIN.map((p) => note(p)), stale,
-    h('div', { class: 'acts fr-acts' }, go, whenBtns, said), box);
+    h('div', { class: 'acts fr-acts' }, go, said), box);
 
   let shownStale = null;
   function paint() {
@@ -85,16 +77,10 @@ export function fullRebuild(ctx, { car = null, carName = null, label = null, onS
     setAttr(bar, 'aria-valuenow', String(p ?? 0));
     setAttr(bar, 'aria-valuetext', p == null ? 'no full rebuild under way' : `${p} percent`);
     setText(pct, p == null ? '' : ` ${String(p).padStart(3)} %`);
-    fr.WHEN.forEach((w, i) => { const show = fr.whenShown(s, w.when); if (whenBtns[i].hidden !== !show) whenBtns[i].hidden = !show; if (whenBtns[i].disabled !== busy) whenBtns[i].disabled = busy; });
     for (const [i, l] of fr.lines(s, now, names || ((x) => x)).entries()) {
       const r = rows[i];
       setText(r.k, low(l.label));
-      if (l.key === 'why') {
-        setText(whyText, l.text);
-        const href = linksOn ? l.link : '';
-        setAttr(whyA, 'href', href || null);
-        if (whyA.hidden !== !href) whyA.hidden = !href;
-      } else setText(r.v, l.text);
+      setText(r.v, l.text);
       setAttr(r.v, 'title', l.text);
       if (l.key === 'state') setAttr(r.v, 'class', `fr-v tag--${TONE[tone]}`);
     }
@@ -104,10 +90,6 @@ export function fullRebuild(ctx, { car = null, carName = null, label = null, onS
       const t = lines[i] || '';
       setText(e, t);
       setAttr(e, 'title', t);
-    }
-    for (const [i, l] of fr.historyLines(s, now, names || ((x) => x)).entries()) {
-      setText(hist[i], l.text);
-      setAttr(hist[i], 'title', l.title);
     }
   }
 
@@ -172,24 +154,7 @@ export function fullRebuild(ctx, { car = null, carName = null, label = null, onS
     read();
   }
 
-  // start now, put off until tonight, pause (the one under way, whatever started it)
-  async function defer(when) {
-    if (busy) return;
-    busy = true; paint();
-    try {
-      const v = await ctx.api.send('PATCH', 'system/full-rebuild', fr.whenBody(when));
-      s = car ? { ...v, this_car: s?.this_car ?? false, car_stale: s?.car_stale ?? false } : v;
-      toast(fr.whenDone(when));
-    } catch (e) { if (ctx.alive()) toast(e.code ? fr.errorText(e) : errorWords(e).text, { kind: 'error' }); }
-    busy = false;
-    if (!ctx.alive()) return;
-    paint();
-    read();
-  }
-
   async function start() {
-    // whether the why line may link to the change (the owner's choice about outside links; off when unknown)
-    ctx.api.get('settings', null, { maxAgeMs: 300000 }).then((x) => { linksOn = !!x?.outside_links?.release_notes; if (ctx.alive()) paint(); }).catch(() => {});
     if (!names) {
       try {
         const cars = await ctx.api.list('cars', { limit: 500 }).all({ max: 5000 });

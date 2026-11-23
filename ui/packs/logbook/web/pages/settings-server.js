@@ -540,7 +540,7 @@ export async function mount(ctx) {
     const autoOn = () => !settings.full_rebuild || settings.full_rebuild.auto !== false;
     const auto = switchField({
       label: 'Rebuild automatically when a new server version decodes the stored logs differently',
-      hint: 'On by default: once per server version, 10 minutes after the start unless you start it now, put it off or pause it. Off: a notice offers the full rebuild instead, and you start it here.',
+      hint: 'On by default. Off: a notice offers the full rebuild instead, and you start it here.',
       checked: autoOn(),
       onchange: async (on) => {
         try {

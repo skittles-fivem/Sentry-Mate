@@ -7,20 +7,14 @@
 //! | `POST /cars/{car}/full-rebuild` | admin, `{ confirm_password, code }` -> `202` the status |
 //! | `GET /system/full-rebuild` | admin: the status |
 //! | `POST /system/full-rebuild` | admin, `{ confirm_password, code }`: every car -> `202` |
-//! | `PATCH /system/full-rebuild` | admin, `{ when: "now" \| "tonight" \| "pause" }`: when the one under way goes on |
 //! | `DELETE /system/full-rebuild` | admin: cancels the one under way |
 //!
 //! A start asks for the admin's own password again (as an account change does: `403 password_needed`, `403
 //! wrong_password`, `401 wrong_code`; every request is over TLS, the policy refuses anything else). The audit log has
 //! its start (`car-full-rebuild`, by the admin) here; its end, its failure or its cancel is written by [`spawn_watch`]
-//! once the engine's record says it ended (after a restart too). The watch also plans the full rebuild a new
+//! once the engine's record says it ended (after a restart too). The watch also starts the full rebuild a new
 //! server version calls for (the cars whose history was made with another decoding) while the server setting
-//! `full_rebuild.auto` is on, once per version ([`engine::Engine::full_rebuild_auto_plan`]): it starts after a grace
-//! of [`engine::full::AUTO_GRACE_MS`] unless an admin starts it now, puts it off until tonight or pauses it; one that
-//! failed is offered again by the notice, not retried. A start while one runs joins it (its cars added): one run.
-//!
-//! Every status says why it runs (`causes`: each with its words and a `link` to the change explained, for a server
-//! update), whether it waits (`hold`), and the last rebuilds of any kind with their causes and times (`history`).
+//! `full_rebuild.auto` is on, once per version: one that failed is offered again by the notice, not retried.
 
 use crate::accounts_admin::{confirm_code, confirm_password};
 use crate::ctx::{Admin, target};
@@ -32,8 +26,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use engine::Engine;
-use engine::full::{FullRecord, FullStatus, HoldKind, Phase, Reason, StartError, When};
-use engine::versions::Cause;
+use engine::full::{FullRecord, FullStatus, Phase, Reason, StartError};
 use model::CarId;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -46,53 +39,7 @@ const LINK: &str = "/settings/server#full-rebuild";
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/cars/{car}/full-rebuild", get(car_status).post(car_start))
-        .route("/api/v1/system/full-rebuild", get(system_status).post(system_start).patch(when).delete(cancel))
-}
-
-/// The rebuilds' history answered with the status: at most this many.
-pub const HISTORY_SHOWN: usize = 5;
-
-/// A cause as the API answers it: its link a page can open (the change explained in the repository's docs).
-pub fn cause_json(c: &Cause) -> Value {
-    json!({
-        "code": c.code,
-        "text": c.text,
-        "link": c.link.as_ref().map(|l| format!("https://github.com/{}/blob/main/{l}", release::REPO)),
-    })
-}
-
-fn causes_json(v: &[Cause]) -> Vec<Value> {
-    v.iter().map(cause_json).collect()
-}
-
-fn hold_word(k: HoldKind) -> &'static str {
-    match k {
-        HoldKind::Grace => "grace",
-        HoldKind::Tonight => "tonight",
-        HoldKind::Paused => "paused",
-    }
-}
-
-/// The last rebuilds, newest first ([`engine::history`]).
-pub fn history_json(e: &Engine) -> Vec<Value> {
-    e.rebuild_history()
-        .unwrap_or_default()
-        .iter()
-        .take(HISTORY_SHOWN)
-        .map(|r| {
-            json!({
-                "kind": r.kind,
-                "scope": if r.all { "all" } else { "car" },
-                "cars": r.cars.iter().map(|c| ids::car(*c)).collect::<Vec<_>>(),
-                "causes": causes_json(&r.causes),
-                "state": r.state,
-                "started_ms": r.started_ms,
-                "finished_ms": r.finished_ms,
-                "took_ms": r.took_ms(),
-                "logs": r.logs,
-            })
-        })
-        .collect()
+        .route("/api/v1/system/full-rebuild", get(system_status).post(system_start).delete(cancel))
 }
 
 fn phase_word(p: Phase) -> &'static str {
@@ -133,10 +80,9 @@ pub fn status_json(e: &Engine, r: Option<&FullRecord>, now_ms: u64) -> Value {
             "bytes": { "done": 0, "total": 0, "copied": 0 }, "percent": null, "rate_bytes_per_s": null,
             "rate_logs_per_s": null, "rate_days_per_s": null, "eta_ms": null,
             "started_ms": null, "finished_ms": null, "last_progress_ms": null, "stalled": false, "errors": [],
-            "error": null, "by": null, "version": version, "causes": [], "hold": null, "history": history_json(e),
+            "error": null, "by": null, "version": version,
         });
     };
-    let hold = r.hold.filter(|_| r.held(now_ms)).map(|h| json!({ "kind": hold_word(h.kind), "until_ms": h.until_ms }));
     let running = r.running();
     let rates = if running { r.rates(now_ms) } else { engine::full::Rates::default() };
     let errors: Vec<Value> = r
@@ -170,9 +116,6 @@ pub fn status_json(e: &Engine, r: Option<&FullRecord>, now_ms: u64) -> Value {
         "error": r.error,
         "by": r.by,
         "version": version,
-        "causes": causes_json(&r.causes),
-        "hold": hold,
-        "history": history_json(e),
     })
 }
 
@@ -246,10 +189,14 @@ async fn start(
 ) -> ApiResult<Response> {
     body.only(&["confirm_password", "code"])?;
     let e = app.service::<Engine>()?;
-    // (one under way takes the ask in: its cars added, one run)
+    // one at a time: said before the password is asked (nothing is changed either way)
     let e2 = e.clone();
-    let was = app.blocking(move |_| e2.full_rebuild_status().map_err(|x| ApiError::server(x.to_string()))).await?;
-    let joined = was.as_ref().is_some_and(FullRecord::running);
+    if let Some(r) =
+        app.blocking(move |_| e2.full_rebuild_status().map_err(|x| ApiError::server(x.to_string()))).await?
+        && r.running()
+    {
+        return Err(running_error(&r));
+    }
     let password = confirm_password(Some(body), headers)?;
     let code = confirm_code(Some(body), headers)?;
     let v2 = v.clone();
@@ -264,66 +211,26 @@ async fn start(
             Err(StartError::Engine(x)) => Err(ApiError::server(format!("starting the full rebuild: {x}"))),
         })
         .await?;
-    let summary = if joined {
-        format!("Asked for a full rebuild while one ran: it does {} in the same run.", of_words(app, &r))
-    } else {
-        format!(
-            "Started a full rebuild of {}: everything worked out made again from the stored data, beside the history \
-             in use.",
-            of_words(app, &r)
-        )
-    };
-    audit_run(app, v, &r, &summary).await?;
-    let mut out = read(app, car).await?;
-    out["accepted"] = json!(true);
-    out["joined"] = json!(joined);
-    Ok((StatusCode::ACCEPTED, Json(out)).into_response())
-}
-
-/// `PATCH /system/full-rebuild` `{ when }`: the one under way goes on now, waits until tonight
-/// ([`engine::full::TONIGHT_HOUR`] o'clock in the server's time zone), or is paused until started again (its
-/// progress kept). `409 full_rebuild_not_running` when none is under way.
-async fn when(State(app): State<AppState>, Admin(v): Admin, body: JsonBody) -> ApiResult<Json<Value>> {
-    body.only(&["when"])?;
-    let word = body.get("when").and_then(Value::as_str).unwrap_or_default().to_string();
-    let e = app.service::<Engine>()?;
-    let now = app.now();
-    let w = match word.as_str() {
-        "now" => When::Now,
-        "tonight" => When::Tonight(engine::full::tonight_ms(now, &e.default_time_zone())),
-        "pause" => When::Pause,
-        _ => return Err(ApiError::invalid("when", "One of now, tonight, pause.")),
-    };
-    let e2 = e.clone();
-    let r = app.blocking(move |_| e2.full_rebuild_when(w).map_err(|x| ApiError::server(x.to_string()))).await?;
-    let Some(r) = r else {
-        return Err(ApiError::conflict("full_rebuild_not_running", "No full rebuild is under way."));
-    };
-    let of = of_words(&app, &r);
-    let summary = match w {
-        When::Now => format!("Started the full rebuild of {of} now."),
-        When::Tonight(_) => format!("Put the full rebuild of {of} off until tonight."),
-        When::Pause => format!("Paused the full rebuild of {of} (its progress is kept)."),
-    };
-    audit_run(&app, &v, &r, &summary).await?;
-    Ok(Json(read(&app, None).await?))
-}
-
-/// The audit entry of an admin's change to a full rebuild (`car-full-rebuild`): on its car, or on none for every car.
-async fn audit_run(app: &AppState, v: &crate::Viewer, r: &FullRecord, summary: &str) -> ApiResult<()> {
-    match audit_target(r) {
-        Some(t) => v.audit(app, "car-full-rebuild", Some(&t), summary).await,
+    let summary = format!(
+        "Started a full rebuild of {}: everything worked out made again from the stored data, beside the history in use.",
+        of_words(app, &r)
+    );
+    match audit_target(&r) {
+        Some(t) => v.audit(app, "car-full-rebuild", Some(&t), &summary).await?,
         // every car: the entry names no one car
         None => {
             v.mark_audited();
             let (who, ip) = (v.name().to_string(), v.client().address);
-            let details = crate::ctx::audit_details(None, summary);
+            let details = crate::ctx::audit_details(None, &summary);
             app.blocking(move |app| {
                 Ok(app.accounts.audit().record(Some(&who), Some(ip), "car-full-rebuild", &details)?)
             })
-            .await
+            .await?;
         }
     }
+    let mut out = read(app, car).await?;
+    out["accepted"] = json!(true);
+    Ok((StatusCode::ACCEPTED, Json(out)).into_response())
 }
 
 async fn car_start(
@@ -374,30 +281,13 @@ pub fn notices(app: &AppState) -> Vec<Notice> {
     let Ok(e) = app.service::<Engine>() else { return Vec::new() };
     let Ok(r) = e.full_rebuild_status() else { return Vec::new() };
     let stale = e.version_stale();
-    let now = app.now();
     match &r {
-        Some(r) if r.held(now) => {
-            let why = why_words(r);
-            let when = match r.hold.map(|h| (h.kind, h.until_ms)) {
-                Some((HoldKind::Paused, _)) => "It is paused until you start it".to_string(),
-                Some((HoldKind::Tonight, _)) => "It waits for tonight".to_string(),
-                Some((_, Some(u))) => format!("It starts in about {} min", u.saturating_sub(now).div_ceil(60_000)),
-                _ => "It starts soon".to_string(),
-            };
-            return vec![Notice {
-                code: "full_rebuild_planned",
-                level: "info",
-                message: format!(
-                    "A full rebuild of {} is planned{why}. {when}: start it now, tonight, or pause it.",
-                    of_words(app, r)
-                ),
-                since_ms: Some(r.started_ms),
-                fix_link: Some(LINK),
-                detail: Some(json!({ "causes": causes_json(&r.causes) })),
-            }];
-        }
         Some(r) if r.running() => {
-            let why = why_words(r);
+            let why = if r.reason == Reason::Version {
+                " (this server decodes the stored logs differently from the one that made it)"
+            } else {
+                ""
+            };
             return vec![Notice {
                 code: "full_rebuild_running",
                 level: "info",
@@ -407,7 +297,7 @@ pub fn notices(app: &AppState) -> Vec<Notice> {
                 ),
                 since_ms: Some(r.started_ms),
                 fix_link: Some(LINK),
-                detail: Some(json!({ "causes": causes_json(&r.causes) })),
+                detail: None,
             }];
         }
         Some(r) if r.status == FullStatus::Failed => {
@@ -432,37 +322,18 @@ pub fn notices(app: &AppState) -> Vec<Notice> {
         return Vec::new();
     }
     let names: Vec<String> = stale.iter().map(|c| app.car_name(*c)).collect();
-    let causes = e.stale_causes(&stale);
-    let why = causes.first().map(|c| format!(" ({})", c.text)).unwrap_or_default();
     vec![Notice {
         code: "full_rebuild_offered",
         level: "warning",
         message: format!(
-            "This server decodes the stored logs differently from the one that made the history of {}{why}: a full \
-             rebuild makes it again.",
+            "This server decodes the stored logs differently from the one that made the history of {}: a full rebuild \
+             makes it again.",
             names.join(", ")
         ),
         since_ms: None,
         fix_link: Some(LINK),
-        detail: Some(json!({
-            "cars": stale.iter().map(|c| ids::car(*c)).collect::<Vec<_>>(),
-            "causes": causes_json(&causes),
-        })),
+        detail: Some(json!({ "cars": stale.iter().map(|c| ids::car(*c)).collect::<Vec<_>>() })),
     }]
-}
-
-/// Why a full rebuild runs, for a notice: " (server updated: positions are worked out differently, and 1 more)".
-fn why_words(r: &FullRecord) -> String {
-    match r.causes.as_slice() {
-        [] => String::new(),
-        [one] => format!(" ({})", lower_first(&one.text)),
-        [one, rest @ ..] => format!(" ({}, and {} more)", lower_first(&one.text), rest.len()),
-    }
-}
-
-fn lower_first(s: &str) -> String {
-    let mut c = s.chars();
-    c.next().map(|f| f.to_lowercase().chain(c).collect()).unwrap_or_default()
 }
 
 /// One look: the end of a finished full rebuild into the audit log, and the one a new version calls for started.
@@ -503,28 +374,36 @@ pub fn watch_once(app: &AppState) {
             Err(err) => tracing::warn!("audit: {err}"),
         }
     }
-    // a wait that ended: the worker goes on
-    e.full_rebuild_tick();
-    // a new version's: planned once per version (one that failed or was cancelled is offered, not run again)
-    match e.full_rebuild_auto_plan(e.full_rebuild_grace_ms()) {
-        Ok(Some(r)) => {
-            let why = r.causes.iter().map(|c| c.text.trim_end_matches('.')).collect::<Vec<_>>().join("; ");
-            let when = match r.hold {
-                Some(_) => format!(
-                    "it starts in {} min unless an admin chooses otherwise",
-                    e.full_rebuild_grace_ms().div_ceil(60_000)
-                ),
-                None => "it started at once".to_string(),
-            };
-            let summary = format!("Planned a full rebuild of {} ({why}): {when}.", of_words(app, &r));
+    // a new version's: once per version (one that failed or was cancelled is offered, not run again)
+    let stale = e.version_stale();
+    let tried = r
+        .as_ref()
+        .is_some_and(|r| r.running() || (r.reason == Reason::Version && r.version == engine::full::derived_version()));
+    if stale.is_empty() || tried || !e.full_rebuild_auto() {
+        return;
+    }
+    let all = engine::query::all_cars(&e).unwrap_or_default();
+    let every = stale.len() == all.len();
+    let res = if every || stale.len() > 1 {
+        e.full_rebuild_of(stale.clone(), every, Reason::Version, None)
+    } else {
+        e.full_rebuild(Some(stale[0]), Reason::Version, None)
+    };
+    match res {
+        Ok(r) => {
+            let summary = format!(
+                "Started a full rebuild of {}: this server decodes the stored logs differently from the one that \
+                 made their history.",
+                of_words(app, &r)
+            );
             let details = crate::ctx::audit_details(audit_target(&r).as_deref(), &summary);
             if let Err(err) = app.accounts.audit().record(None, None, "car-full-rebuild", &details) {
                 tracing::warn!("audit: {err}");
             }
-            tracing::info!("full rebuild of {} planned: {why}", of_words(app, &r));
+            tracing::info!("full rebuild of {} started: the server's decoding changed", of_words(app, &r));
         }
-        Ok(None) | Err(StartError::Running(_)) => {}
-        Err(err) => tracing::warn!("the full rebuild a new version calls for was not planned: {err}"),
+        Err(StartError::Running(_)) => {}
+        Err(err) => tracing::warn!("the full rebuild a new version calls for did not start: {err}"),
     }
 }
 

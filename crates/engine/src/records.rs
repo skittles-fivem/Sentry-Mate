@@ -10,8 +10,6 @@
 //! engine  car/<id>/day/<day>    DayRec: the logs that start that day (facts, or why their data is not used), cut points
 //! engine  car/<id>/dirty        windows written to but not yet rebuilt (a crash between the two)
 //! engine  car/<id>/rebuild      a rebuild of the car under way
-//! engine  car/<id>/redo/<what>  a narrow rebuild of the car asked for and not done yet ([`Redo`]: its positions read
-//!                               again, its inputs joined again)
 //! engine  car/<id>/costs/<mon>  the costs of the charges that start that month (UTC), kept across rebuilds
 //! engine  keys/waiting          CAN keys no car claims yet
 //! engine  tokens/cars           upload tokens made on a car's page, and that car
@@ -88,10 +86,6 @@ pub struct LogEntry {
     pub reason: Option<String>,
     /// When it was worked on.
     pub done_ms: u64,
-    /// Whether the Screenmate's own GPS frames gave it positions (only such a log reads otherwise when the car's GPS
-    /// layout changes); not known for logs decoded before it was noted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub internal_gps: Option<bool>,
 }
 
 impl LogEntry {
@@ -388,39 +382,6 @@ pub(crate) fn put_dirty(db: &Db, car: CarId, spans: &[(u64, u64)]) -> Result<()>
         return Ok(());
     }
     put(db, NS, &key, &spans)
-}
-
-/// A narrow rebuild of a car: only what one change touches is worked out again ([`crate::jobs`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Redo {
-    /// The logs whose positions came from the Screenmate's own GPS frames, decoded again (a GPS layout changed).
-    Positions,
-    /// The car's windows built again from what is stored, nothing decoded again (its source order changed).
-    Inputs,
-}
-
-impl Redo {
-    fn key(self, car: CarId) -> String {
-        match self {
-            Redo::Positions => format!("car/{car}/redo/positions"),
-            Redo::Inputs => format!("car/{car}/redo/inputs"),
-        }
-    }
-}
-
-/// Whether a narrow rebuild of the car waits (noted before its job starts, cleared once it is done: a restart in
-/// between does it then).
-pub(crate) fn redo(db: &Db, car: CarId, what: Redo) -> Result<bool> {
-    Ok(get::<bool>(db, NS, &what.key(car))?.unwrap_or(false))
-}
-
-pub(crate) fn put_redo(db: &Db, car: CarId, what: Redo, on: bool) -> Result<()> {
-    if on {
-        put(db, NS, &what.key(car), &true)
-    } else {
-        db.kv().delete(NS, &what.key(car))?;
-        Ok(())
-    }
 }
 
 pub(crate) fn rebuild_mark(db: &Db, car: CarId) -> Result<Option<RebuildMark>> {

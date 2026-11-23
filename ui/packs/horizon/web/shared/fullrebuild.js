@@ -54,35 +54,8 @@ export function tone(s, nowMs = Date.now()) {
   }
 }
 
-/** Whether a full rebuild runs (the button is then "Cancel"); one that waits or is paused runs too. */
+/** Whether a full rebuild runs (the button is then "Cancel"). */
 export const running = (s) => s?.state === 'running';
-
-/** Whether the one under way waits (a new version's grace, put off until tonight) or is paused: no progress. */
-export const held = (s) => running(s) && !!s?.hold;
-
-/** When the one under way goes on (PATCH system/full-rebuild { when }): the buttons beside Cancel, in this order. */
-export const WHEN = [
-  { when: 'now', label: 'Start now', title: 'Start the full rebuild now' },
-  { when: 'tonight', label: 'Tonight', title: 'Put the full rebuild off until 02:00 tonight (the server\'s time zone)' },
-  { when: 'pause', label: 'Pause', title: 'Pause the full rebuild (its progress is kept) until you start it' },
-];
-
-/** Whether the button for `when` is shown: only while one runs, and not for what it does already. */
-export function whenShown(s, when) {
-  if (!running(s)) return false;
-  const k = s.hold?.kind;
-  if (when === 'now') return !!k;
-  if (when === 'tonight') return k !== 'tonight';
-  return k !== 'paused';
-}
-
-/** The PATCH body, and what the page says once it is done. */
-export const whenBody = (when) => ({ when });
-export const whenDone = (when) => ({
-  now: 'Full rebuild started. Pages show the old history until the new one is ready.',
-  tonight: 'Full rebuild put off until tonight.',
-  pause: 'Full rebuild paused. Its progress is kept; start it again when you like.',
-}[when] || '');
 
 /** No progress for two minutes while running (the server says so too; this follows the page's clock between reads). */
 export function stalledAt(s, nowMs = Date.now()) {
@@ -114,31 +87,6 @@ export function durationText(ms) {
   return m ? `about ${h} h ${m} min` : `about ${h} h`;
 }
 
-/** "in about 8 min", "in about 5 h" (for a wait). */
-export function inText(ms, nowMs = Date.now()) {
-  if (!Number.isFinite(ms)) return '';
-  const left = ms - nowMs;
-  if (left < 60000) return 'in under a minute';
-  return `in ${durationText(left)}`;
-}
-
-/** What a hold says as the state: "Waits: starts in about 8 min", "Paused: starts when you start it". */
-export function holdText(s, nowMs = Date.now()) {
-  const h = s?.hold;
-  if (!h) return '';
-  if (h.kind === 'paused') return 'Paused: starts when you start it';
-  if (h.kind === 'tonight') return `Put off until tonight: starts ${inText(h.until_ms, nowMs)}`;
-  return `Waits: starts ${inText(h.until_ms, nowMs)}, unless you choose otherwise`;
-}
-
-/** Why it runs, in words (every cause, joined), and the first change explained (a link), or ''. */
-export function whyText(s) {
-  const c = Array.isArray(s?.causes) ? s.causes : [];
-  return c.map((x) => x.text).filter(Boolean).join('; ');
-}
-export const whyLink = (s) => (Array.isArray(s?.causes) ? s.causes.find((x) => x.link)?.link || '' : '');
-export const WHY_LINK = 'What changed';
-
 /** "3 min ago", "just now" (for the last progress). */
 export function agoText(ms, nowMs = Date.now()) {
   if (!Number.isFinite(ms)) return '';
@@ -147,9 +95,7 @@ export function agoText(ms, nowMs = Date.now()) {
   if (s < 90) return `${s} s ago`;
   const m = Math.round(s / 60);
   if (m < 90) return `${m} min ago`;
-  const hours = Math.round(m / 60);
-  if (hours < 48) return `${hours} h ago`;
-  return `${Math.round(hours / 24)} days ago`;
+  return `${Math.round(m / 60)} h ago`;
 }
 
 /**
@@ -178,10 +124,8 @@ export function countRate(perS, one, many) {
 }
 
 /**
- * The progress panel's lines, always the same eight in the same order (`label`, `text`; an empty text keeps the
- * line's room): State, Step, Logs decoded, Days, Data, Speed and time left, Last progress, Why (what started it:
- * its `link` the change explained, or ''). `carName(id)` names a car. While it waits or is paused, State says until
- * when.
+ * The progress panel's lines, always the same seven in the same order (`label`, `text`; an empty text keeps the
+ * line's room): State, Step, Logs decoded, Days, Data, Speed and time left, Last progress. `carName(id)` names a car.
  */
 export function lines(s, nowMs = Date.now(), carName = (id) => id) {
   const st = s?.state || 'idle';
@@ -190,7 +134,6 @@ export function lines(s, nowMs = Date.now(), carName = (id) => id) {
   let state = STATES[st] || st;
   if (st === 'done' && s.errors?.length) state = `Done, with ${plural(s.errors.length, 'problem', 'problems')}`;
   if (r && (s.stalled || stalledAt(s, nowMs))) state = 'Running, but no progress for a while';
-  if (held(s)) state = holdText(s, nowMs);
   const logs = s?.logs || {};
   const days = s?.days || {};
   const bytes = s?.bytes || {};
@@ -207,7 +150,7 @@ export function lines(s, nowMs = Date.now(), carName = (id) => id) {
   const count = (x, f = (v) => n(v).toLocaleString('en-US')) => (showCounts && n(x.total) ? `${f(x.done)} of ${f(x.total)}` : '');
   const daysText = count(days) || (r && s.phase !== 'switching' ? 'Counted once the logs are decoded' : '');
   const bytesLine = count(bytes, bytesText);
-  const when = st === 'idle' ? '' : held(s) ? '' : r ? agoText(s.last_progress_ms, nowMs) : endedText(s, nowMs);
+  const when = st === 'idle' ? '' : r ? agoText(s.last_progress_ms, nowMs) : endedText(s, nowMs);
   return [
     { key: 'state', label: 'State', text: state },
     { key: 'phase', label: 'Step', text: r ? `${PHASES[s.phase] || s.phase || ''}${cars}` : '' },
@@ -216,40 +159,7 @@ export function lines(s, nowMs = Date.now(), carName = (id) => id) {
     { key: 'bytes', label: 'Data', text: bytesLine },
     { key: 'rate', label: 'Speed', text: [speed, left].filter(Boolean).join(' · ') || measuring },
     { key: 'when', label: r ? 'Last progress' : 'Finished', text: when },
-    { key: 'why', label: 'Why', text: st === 'idle' ? '' : whyText(s), link: st === 'idle' ? '' : whyLink(s) },
   ];
-}
-
-/** The recent rebuilds list: its title and how many rows it always has (an empty one keeps its room). */
-export const HISTORY_TITLE = 'Recent rebuilds';
-export const HISTORY_ROWS = 5;
-
-const KINDS = {
-  full: (who) => `Full rebuild of ${who}`,
-  car: (who) => `${who}'s history made again`,
-  positions: (who) => `${who}'s positions read again`,
-  inputs: (who) => `${who}'s inputs joined again`,
-  'positions+inputs': (who) => `${who}'s positions read and inputs joined again`,
-};
-
-/**
- * The last rebuilds of any kind, newest first, always HISTORY_ROWS lines (`text`, `title`; an empty text keeps the
- * line's room): "2 h ago · Full rebuild of every car · Server updated: positions are worked out … · took 25 min".
- */
-export function historyLines(s, nowMs = Date.now(), carName = (id) => id) {
-  const runs = Array.isArray(s?.history) ? s.history.slice(0, HISTORY_ROWS) : [];
-  const out = runs.map((r) => {
-    const who = r.scope === 'all' ? 'every car' : (r.cars || []).map(carName).join(', ') || 'a car';
-    const what = (KINDS[r.kind] || KINDS.car)(who);
-    const why = (r.causes || []).map((c) => c.text).filter(Boolean).join('; ');
-    const took = Number.isFinite(r.took_ms) ? `took ${durationText(r.took_ms).replace(/^about /, '')}` : '';
-    const end = r.state === 'failed' ? 'failed' : r.state === 'cancelled' ? 'cancelled' : '';
-    const text = [agoText(r.finished_ms, nowMs), what, why, end || took].filter(Boolean).join(' · ');
-    return { text, title: text };
-  });
-  if (!out.length && s) out.push({ text: 'None yet.', title: '' });
-  while (out.length < HISTORY_ROWS) out.push({ text: '', title: '' });
-  return out;
 }
 
 function endedText(s, nowMs) {
@@ -290,7 +200,6 @@ export function errorText(e) {
     case 'wrong_code': return 'That two-step code is not right.';
     case 'full_rebuild_running': return 'A full rebuild is running already.';
     case 'full_rebuild_not_running': return 'No full rebuild is running.';
-    case 'invalid': return 'That is not one of start now, tonight or pause.';
     case 'https_only': return 'Use HTTPS: the password is only sent over a secure connection.';
     default: return e?.message || 'The full rebuild could not be started.';
   }

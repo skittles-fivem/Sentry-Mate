@@ -1,13 +1,10 @@
 // The full rebuild block (admin only; used by pages/health.js for one car and by pages/settings-server.js for
 // every car): what it does and does not touch, the button (Full rebuild, or Cancel while one runs) and a progress
-// panel of fixed size: the bar, the eight lines of shared/fullrebuild.js (the last says why it runs, with a link to
-// the change while release-notes links are allowed), three lines for problems and the recent rebuilds; beside the
-// button, Start now, Tonight and Pause while one runs. Built once and changed in place on every value (only the
-// texts that changed are written), so nothing on the page moves.
+// panel of fixed size: the bar, the seven lines of shared/fullrebuild.js and three lines for problems. Built once
+// and changed in place on every value (only the texts that changed are written), so nothing on the page moves.
 // API: GET cars/{car}/full-rebuild or system/full-rebuild, then `job` events of kind full_rebuild (live events,
 // polling only while the live stream is down: every POLL_MS while one runs, IDLE_POLL_MS otherwise); POST the
-// same with the password asked again, PATCH system/full-rebuild { when } to start it now, put it off or pause it,
-// DELETE system/full-rebuild to cancel; GET settings once (whether links to release notes are allowed).
+// same with the password asked again, DELETE system/full-rebuild to cancel.
 
 import { h, replace, setVars } from '../shared/dom.js';
 import * as fr from '../shared/fullrebuild.js';
@@ -40,33 +37,24 @@ export function fullRebuild(ctx, { car = null, carName = (id) => id, label = nul
   // the panel: every row is there from the start, an empty one keeps its room
   const bar = h('div', { class: 'bar fr-bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-label': 'Full rebuild progress' }, h('i'));
   const pct = h('span', { class: 'fr-pct' });
-  // the why line: its words, and the change explained (a link, only while release-notes links are allowed)
-  const whyText = h('span', { class: 'fr-why' });
-  const whyA = h('a', { class: 'link fr-why-link', target: '_blank', rel: 'noopener noreferrer', hidden: true }, fr.WHY_LINK);
-  let linksOn = false;
   const rows = fr.lines(null).map((l) => {
     const dt = h('dt', null, l.label);
-    const dd = l.key === 'why' ? h('dd', null, whyText, ' ', whyA) : h('dd', null);
+    const dd = h('dd', null);
     return { key: l.key, dt, dd, el: h('div', { class: 'fr-line', 'data-key': l.key }, dt, dd) };
   });
-  const whenBtns = fr.WHEN.map((w) => h('button', { class: 'btn btn--sm', type: 'button', hidden: true, title: w.title, onclick: () => defer(w.when) }, w.label));
-  const hist = Array.from({ length: fr.HISTORY_ROWS }, () => h('li', null));
   const errs = Array.from({ length: ERRORS_SHOWN }, () => h('li', null));
   const panelEl = h('div', { class: 'fr-panel', 'aria-live': 'polite' },
     h('div', { class: 'fr-bar-row' }, bar, pct),
     h('dl', { class: 'fr-lines' }, rows.map((r) => r.el)),
     h('div', { class: 'fr-errors-box' },
       h('p', { class: 'fr-errors-head' }, 'Problems'),
-      h('ul', { class: 'fr-errors' }, errs)),
-    h('div', { class: 'fr-errors-box fr-history-box' },
-      h('p', { class: 'fr-errors-head' }, fr.HISTORY_TITLE),
-      h('ul', { class: 'fr-history' }, hist)));
+      h('ul', { class: 'fr-errors' }, errs)));
 
   const el = h('div', { class: 'fr' },
     h('div', { class: 'fr-about' },
       fr.EXPLAIN.map((t) => h('p', { class: 'fr-explain' }, t)),
       stale,
-      h('div', { class: 'row fr-acts' }, btn, whenBtns)),
+      h('div', { class: 'row fr-acts' }, btn)),
     panelEl);
 
   // only what changed is written (a job event can come twice a second): the button only when it flips
@@ -95,21 +83,14 @@ export function fullRebuild(ctx, { car = null, carName = (id) => id, label = nul
     if (tb && !bar.classList.contains(tb)) bar.classList.add(tb);
     setText(pct, p == null ? '' : `${p} %`);
 
-    fr.WHEN.forEach((w, i) => { const show = fr.whenShown(S, w.when); if (whenBtns[i].hidden !== !show) whenBtns[i].hidden = !show; });
     const ls = fr.lines(S, now, carName);
     ls.forEach((l, i) => {
       const r = rows[i];
       setText(r.dt, l.label);
-      if (l.key === 'why') {
-        setText(whyText, l.text);
-        const href = linksOn ? l.link : '';
-        setAttr(whyA, 'href', href || null);
-        if (whyA.hidden !== !href) whyA.hidden = !href;
-      } else setText(r.dd, l.text);
+      setText(r.dd, l.text);
       setAttr(r.dd, 'title', l.text || null);
       setAttr(r.el, 'data-tone', l.key === 'state' ? tone : '');
     });
-    fr.historyLines(S, now, carName).forEach((l, i) => { setText(hist[i], l.text); setAttr(hist[i], 'title', l.title || null); });
 
     const n = Array.isArray(S?.errors) ? S.errors.length : 0;
     const el3 = fr.errorLines(S, n > ERRORS_SHOWN ? ERRORS_SHOWN - 1 : ERRORS_SHOWN, carName);
@@ -151,12 +132,6 @@ export function fullRebuild(ctx, { car = null, carName = (id) => id, label = nul
   // the time since the last progress (and the stall warning) follow the clock between events, with no read
   ctx.every(10000, () => { if (fr.running(S)) paint(); });
 
-  // whether the why line may link to the change (the owner's choice about outside links; off when unknown)
-  ctx.api.get('settings', null, { maxAgeMs: 300000 }).then((x) => {
-    linksOn = !!x?.outside_links?.release_notes;
-    if (ctx.alive()) paint();
-  }).catch(() => {});
-
   /* ---------------------------------------------------------------- the button */
   async function press() {
     if (fr.running(S)) return cancel();
@@ -194,18 +169,6 @@ export function fullRebuild(ctx, { car = null, carName = (id) => id, label = nul
     } catch (e) {
       if (ctx.alive()) flash(e?.code ? fr.errorText(e) : errorWords(e).text, { kind: 'error' });
     } finally { btn.disabled = false; }
-    if (ctx.alive()) refresh();
-  }
-
-  // start now, put off until tonight, pause (the one under way, whatever started it)
-  async function defer(when) {
-    whenBtns.forEach((b) => { b.disabled = true; });
-    try {
-      set(fromEvent(await ctx.api.send('PATCH', 'system/full-rebuild', fr.whenBody(when))));
-      flash(fr.whenDone(when), { kind: 'info' });
-    } catch (e) {
-      if (ctx.alive()) flash(e?.code ? fr.errorText(e) : errorWords(e).text, { kind: 'error' });
-    } finally { whenBtns.forEach((b) => { b.disabled = false; }); }
     if (ctx.alive()) refresh();
   }
 

@@ -1649,12 +1649,7 @@ async fn assign_hold(
                     }
                 };
                 let m = engine::rehome::assign(&e2, &h2, car).map_err(|x| ApiError::server(x.to_string()))?;
-                if let Err(x) = e2.rebuild_because(
-                    engine::Scope::car(car),
-                    engine::jobs::What::WHOLE,
-                    engine::versions::Cause::import_moved(),
-                    true,
-                ) {
+                if let Err(x) = e2.rebuild(engine::Scope::car(car)) {
                     tracing::warn!("rebuild after a move: {x}");
                 }
                 Some(m)
@@ -1808,12 +1803,7 @@ fn rehome(app: &AppState) -> ApiResult<()> {
         let _ = engine::rehome::mark_done(e.db(), "strays-v1");
     }
     for car in touched {
-        if let Err(x) = e.rebuild_because(
-            engine::Scope::car(car),
-            engine::jobs::What::WHOLE,
-            engine::versions::Cause::import_moved(),
-            false,
-        ) {
+        if let Err(x) = e.rebuild(engine::Scope::car(car)) {
             tracing::warn!("car {car}: rebuild after its rows moved: {x}");
         }
     }

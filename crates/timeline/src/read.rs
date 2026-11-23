@@ -20,9 +20,6 @@ pub struct LogRead {
     pub vin: Option<VinInfo>,
     /// The firmware fingerprints its vehicle-bus frames carried, and the bridge's hint lines.
     pub firmware: LogFirmware,
-    /// Whether the Screenmate's own GPS frames gave positions: only such a log reads otherwise when the car's layout
-    /// of that frame changes.
-    pub internal_gps: bool,
 }
 
 /// Reads a `.log.xz` (either format) with its sidecar: decodes it with the car's DBC set (the sidecar's bus map
@@ -61,7 +58,6 @@ pub fn read_log_with(
         facts.line(line);
         firmware.line(line);
     })?;
-    let internal_gps = builder.used_internal_gps();
     let (samples, vin) = builder.finish();
-    Ok(LogRead { samples, facts: facts.finish(), vin, firmware: firmware.finish(), internal_gps })
+    Ok(LogRead { samples, facts: facts.finish(), vin, firmware: firmware.finish() })
 }

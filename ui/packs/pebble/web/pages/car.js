@@ -15,7 +15,7 @@
 // Data: GET /api/v1/cars/{car}/now, /activity, /series (battery), /trip (the period's summary), /drives and
 // /charges (the latest of each, and the period's charges with their /curve), /settings (outside map links).
 
-import { h } from '../shared/dom.js';
+import { h, holdScroll } from '../shared/dom.js';
 import { format, rangeValue, rangeLabel, getUnits } from '../shared/units.js';
 import { formatDate, formatWhen, formatDuration, formatRelative } from '../shared/time.js';
 import { formatList } from '../shared/i18n.js';
@@ -33,7 +33,8 @@ import { v, AWAKE_WORDS, endLabel, placeLink, strip, stripShares, facts, dur } f
 import { srcPill, viaMark, inputsLine } from '../core/source.js';
 
 // a tile's new children; a null or false part is left out (replaceChildren would print it as text)
-const put = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false && k !== ''));
+// (what is on screen stays where it is when a tile above it is drawn again taller or shorter: shared/dom.js)
+const put = (el, ...kids) => { holdScroll(el); el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false && k !== '')); };
 import { vehicleTiles } from './vehicle-parts.js';
 import { historyHref, VERSION_SOURCE } from '../core/firmware.js';
 import { onRows } from '../shared/live.js';

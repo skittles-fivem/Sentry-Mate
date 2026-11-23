@@ -63,7 +63,7 @@
 .hl-days .tbl-scroll { max-height: round(28rem, var(--e)); overflow-y: auto; }
 
 /* signals */
-.hl-signals .tbl-scroll { max-height: round(34rem, var(--e)); overflow-y: auto; }
+/* the signals box is five rows high (core/table.js windowTable, rows: 5); its head stays as the rows scroll */
 .hl-signals thead th { position: sticky; top: 0; z-index: 1; background: var(--panel-solid); }
 .hl-sig-val { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .hl-plot-bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(1rem, var(--e)); margin-bottom: round(0.5rem, var(--e)); }
@@ -92,9 +92,6 @@
 .hl-flags { display: inline-flex; flex-wrap: wrap; gap: round(0.375rem, var(--e)); }
 .hl-signals-note { display: flex; align-items: center; gap: round(0.375rem, var(--e)); }
 
-@container page (min-width: 140rem) {
-  .hl-signals .tbl-scroll { max-height: round(44rem, var(--e)); }
-}
 @container page (max-width: 85.375rem) {
   .hl-two, .hl-storage, .hl-store-cols { grid-template-columns: minmax(0, 1fr); }
   .hl-srv-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -117,7 +114,7 @@
 :root[data-phone] .cell-text > .hl-phone-only { display: block; }
 :root[data-phone] .hl-page .is-num .cell-text { align-items: flex-start; }
 /* the long lists (40 days, every signal) run with the page: a box that scrolls inside a scrolling page is hard to use by thumb */
-:root[data-phone] .hl-page :is(.hl-days, .hl-signals) .tbl-scroll { max-height: none; overflow-y: visible; }
+:root[data-phone] .hl-page .hl-days .tbl-scroll { max-height: none; overflow-y: visible; }
 :root[data-phone] .hl-tot-figs .metric { min-width: 0; }
 :root[data-phone] .hl-tot-figs .metric-value { white-space: normal; overflow-wrap: anywhere; }
 :root[data-phone] .hl-kinds td:first-child { min-width: 0; }
@@ -194,9 +191,6 @@
 .fr-errors-head { margin: 0 0 round(0.25rem, var(--e)); color: var(--text-3); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
 .fr-errors { display: flex; flex-direction: column; gap: round(0.125rem, var(--e)); margin: 0; padding: 0; list-style: none; }
 .fr-errors li { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; height: round(2.5rem, var(--e)); overflow: hidden; overflow-wrap: anywhere; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
-/* the recent rebuilds: as the problems, in the plain text colour whatever the tone */
-.fr-history { display: flex; flex-direction: column; gap: round(0.125rem, var(--e)); margin: 0; padding: 0; list-style: none; }
-.fr-history li { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; height: round(2.5rem, var(--e)); overflow: hidden; overflow-wrap: anywhere; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
 .fr-panel[data-tone="error"] .fr-errors li, .fr-panel[data-tone="warn"] .fr-errors li { color: var(--warm); }
 .fr-panel[data-tone="error"] .fr-errors li:last-child:not(:empty) { color: var(--danger); }
 .fr-intro { margin: 0 0 round(0.75rem, var(--e)); }
@@ -213,5 +207,3 @@
 /* Rebuild all data at the bottom of the health card: the full rebuild block (below) over the whole width */
 .hl-full { display: block; }
 .hl-full > .hl-sub { margin-top: 0; }
-/* the buttons beside the full rebuild (start now, tonight, pause) wrap on a narrow screen */
-.fr-acts { flex-wrap: wrap; }

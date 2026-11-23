@@ -837,11 +837,6 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .fr-v, .fr-err { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fr-errs { margin-top: var(--g2); padding-top: var(--g2); border-top: 1px solid var(--rule); height: calc(var(--lh2) * 3 + var(--g2) + 1px); }
 .fr-err { height: var(--lh2); color: var(--warn); }
-/* the recent rebuilds: a heading line and five rows, in the plain colour */
-.fr-hist { height: calc(var(--lh2) * 6 + var(--g2) + 1px); }
-.fr-hist > .fr-line { display: block; }
-.fr-hist .fr-err { color: inherit; }
-.fr-acts { flex-wrap: wrap; }
 .ln-list { display: flex; flex-direction: column; border-top: 1px solid var(--rule); }
 .ln-list > li { display: grid; grid-template-columns: calc(var(--a2) * 16) minmax(0, 1fr); gap: var(--g); padding-block: var(--g2); border-bottom: 1px solid var(--rule); }
 .ln-list .tag { line-height: var(--lh2); }
