@@ -37,6 +37,7 @@ const FIXES = {
   token_unused: ['A token was never used', 'Check that the CAN Bridge app has the token and can reach this server.'],
   key_waiting: ['A CAN Bridge key is waiting', 'A CAN Bridge sent logs with a key no car has yet. Give it to a car in Settings: Cars.'],
   logs_waiting_trust: ['Logs wait for trust', 'Uploaded logs wait until their key is trusted. Trust the key in Settings: Cars.'],
+  logs_missing: ['Logs missing on the server', 'The server lost some logs and asked the car to send them again. See the car’s Health page.'],
   import_running: ['An import is running', 'Cars from the TeslaMate import show when it is done. See Import.'],
 };
 
