@@ -42,7 +42,7 @@ pub use input::{Compression, Encoding};
 pub use map::CLOSED_AT_LAST;
 pub use report::{CarReport, Links, Report, Skip, TableReport};
 pub use rows::{
-    AddressRow, Batch, ChargePointRow, ChargeRefs, ChargeRow, DriveRefs, DriveRow, MAPPING_VERSION, PlaceRow,
+    AddressRow, Batch, ChargePointRow, ChargeRefs, ChargeRow, DriveRefs, DriveRow, FullVin, MAPPING_VERSION, PlaceRow,
     PositionRow, Sink, SinkError, StateRow, Target, TmCar, UpdateRow, position_of,
 };
 pub use schema::Table;

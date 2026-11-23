@@ -61,6 +61,7 @@ pub const ADMIN_READS: &[&str] = &[
     "/network",
     "/system",
     "/imports",
+    "/import-holds",
     "/logs",
     "/cars/{car}/logs",
     "/integrations",
