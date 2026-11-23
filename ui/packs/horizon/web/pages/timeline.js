@@ -42,6 +42,8 @@ const AWAKE_WORD = {
 };
 
 const FP_MODULE = { vcfront: 'front body controller', bms: 'battery management', dir: 'rear drive unit', dif: 'front drive unit' };
+// the live inputs that name such an update (the version they reported within a day after it)
+const FP_NAMED = { teslamate_local: 'named from local TeslaMate', teslafi_api: 'named from TeslaFi', tesla_api: 'named from the Tesla API' };
 const placeLabel = (p) => p?.place?.name || p?.label || (typeof p?.address === 'string' ? p.address : p?.address?.short) || spotText(p) || null;
 // the place editor for a point: an existing place opens for editing, else a new one starts there
 const placeHref = (p) => (p?.place?.id ? state.buildUrl('places', { query: { place: p.place.id } })
@@ -91,7 +93,8 @@ export function timelineRow(r, { car, tz, compact = false }) {
     // a "Tesla update installed" found from the modules' firmware fingerprints: named only once someone names it
     title = [h('span', { class: 'tl-fp' }, 'Tesla update installed'), h('span', { class: 'tl-place' }, ` · ${r.version || 'not named yet'}`)];
     bits.push(r.changed_modules?.length ? `changed: ${r.changed_modules.map((m) => FP_MODULE[m] || m).join(', ')}` : null,
-      r.version_source === 'build_match' ? 'named from an earlier update with the same fingerprints' : !r.version ? 'the car does not send the version name; it can be named on Software' : null);
+      r.version_source === 'build_match' ? 'named from an earlier update with the same fingerprints'
+        : r.version && r.named_by !== 'owner' && FP_NAMED[r.version_source] ? FP_NAMED[r.version_source] : !r.version ? 'the car does not send the version name; it can be named on Software' : null);
   } else {
     title = [h('span', null, 'Software update'), r.version ? h('span', { class: 'tl-place' }, ` · ${r.version}`) : null];
   }
