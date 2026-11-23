@@ -173,6 +173,7 @@ pub struct Builder {
     body_timeout: std::time::Duration,
     heavy: (usize, std::time::Duration),
     release: Option<(Arc<dyn release::Fetch>, release::Build)>,
+    this_build: release::Build,
     services: HashMap<std::any::TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
@@ -229,7 +230,15 @@ impl Builder {
         self
     }
 
-    /// What the release check asks through, and the build it asks about (default: GitHub's API host, this build).
+    /// The build the release check asks about, when it asks GitHub's API (default [`release::Build::local`]): the
+    /// binary passes its own, with the image build's number, commit and date (crates/sentry-mate/build.rs).
+    pub fn this_build(mut self, build: release::Build) -> Builder {
+        self.this_build = build;
+        self
+    }
+
+    /// What the release check asks through, and the build it asks about (default: GitHub's API host, the build
+    /// [`Builder::this_build`] gave).
     /// For tests: a stand-in that never reaches the network.
     pub fn release_check(mut self, fetch: Arc<dyn release::Fetch>, build: release::Build) -> Builder {
         self.release = Some((fetch, build));
@@ -252,7 +261,7 @@ impl Builder {
             Some(r) => r,
             None => (
                 Arc::new(release::Http::github().map_err(std::io::Error::other)?) as Arc<dyn release::Fetch>,
-                release::Build::this(),
+                self.this_build,
             ),
         };
         let release = Arc::new(resources::release::Checker::new(fetch, build, self.clock.clone()));
@@ -298,6 +307,7 @@ impl AppState {
             body_timeout: server::BODY_TIMEOUT,
             heavy: (heavy::RUNNING, heavy::WAIT),
             release: None,
+            this_build: release::Build::local(),
             services: HashMap::new(),
         }
     }

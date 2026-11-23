@@ -79,7 +79,7 @@ impl TestServer {
         let b = AppState::builder(acc, v.clone(), data.join("web"))
             .setup_code_file(keys.join("SETUP-CODE.txt"))
             .clock(clock.clone())
-            .release_check(Arc::new(FakeGitHub::default()), release::Build::this());
+            .release_check(Arc::new(FakeGitHub::default()), release::Build::local());
         let app = f(b).build().unwrap_or_else(|e| panic!("{e}"));
         let setup_code = app.announce_setup().unwrap_or_else(|e| panic!("{e}")).unwrap_or_default();
         let id = ingest::server::Identity::load_or_create(&data.join("tls"), &[], &v).unwrap_or_else(|e| panic!("{e}"));
