@@ -34,9 +34,6 @@ import { VERSION_SOURCE } from '../core/firmware.js';
 import { STATUS, STATUS_ORDER } from './connections.js';
 import { deviceText, keyRows } from './device-name.js';
 import { fullRebuildTile } from '../core/fullrebuild.js';
-import { gpsFitBlock } from '../shared/gpsfit.js';
-import { confirmSheet } from '../core/sheet.js';
-import { toast } from '../core/toast.js';
 import * as fr from '../shared/fullrebuild.js';
 import { follow, carOf, onRows, setAttr, FALLBACK_POLL_MS } from '../shared/live.js';
 import { morph, morphChildren, keepEl } from '../core/morph.js';
@@ -163,14 +160,6 @@ async function mountCar(ctx) {
   paintRebuild(null);
   // Rebuild all data (admins): everything worked out made again from the stored data, in the keys tile
   const full = ctx.admin ? fullRebuildTile(ctx, { car, label: 'Rebuild all data', bare: true, onStatus: paintRebuild }) : null;
-  // Find GPS layout (admins): in the notice that one input's positions are out of step; built once and kept in place
-  const gpsFit = ctx.admin ? gpsFitBlock({
-    api: ctx.api, car: car.id, alive: () => ctx.alive(), flash: (t, o) => toast(t, { kind: o?.kind === 'error' ? 'error' : 'ok' }),
-    confirm: (text, o) => confirmSheet({ title: o.title, text, yes: o.ok }),
-    errorText: (e) => errorWords(e).text, onApplied: () => ctx.alive() && ctx.reload(),
-    btnClass: 'btn btn-soft btn-sm', applyClass: 'btn btn-primary btn-sm', icon: (n) => icon(n),
-  }) : null;
-  if (gpsFit) ctx.onCleanup(() => gpsFit.stop());
 
   // each live tile is built by a function of its data: the first time it goes on the page, later ones are made
   // like it in place (core/morph.js: only the texts that changed are written)
@@ -186,7 +175,7 @@ async function mountCar(ctx) {
         h('div', null, h('p', { class: 'hl-verdict-t' }, hl.healthy ? 'All good' : `${reasons.length === 1 ? 'One thing needs' : `${reasons.length} things need`} a look`),
           h('p', { class: 'tile-line' }, 'The same test sets “healthy” in MQTT.'))),
       h('ul', { class: 'checks' },
-        checkRow({ name: 'Last upload', sub: hl.last_upload_ms != null ? `${when(hl.last_upload_ms)}, the CAN Bridge’s last contact${hl.newest_log_ms != null ? `; newest log arrived ${when(hl.newest_log_ms)}` : ''}` : 'Pair a CAN Bridge in car settings.', word: hl.last_upload_ms != null ? ago(hl.last_upload_ms) : 'Never', level: reasons.includes('upload_silence') ? 'bad' : hl.last_upload_ms != null ? 'ok' : 'off' }),
+        checkRow({ name: 'Last log arrived', sub: hl.last_upload_ms != null ? when(hl.last_upload_ms) : 'Pair a CAN Bridge in car settings.', word: hl.last_upload_ms != null ? ago(hl.last_upload_ms) : 'Never', level: reasons.includes('upload_silence') ? 'bad' : hl.last_upload_ms != null ? 'ok' : 'off' }),
         checkRow({ name: 'Last log check', sub: trust.reason ? `Reason: ${trust.reason.replace(/_/g, ' ')}` : trust.log_start_ms != null ? `Log from ${when(trust.log_start_ms)}` : 'Signature and hash chain', word: tw ? tw[0] : 'None yet', level: tw ? tw[1] : 'off' }),
         checkRow({ name: 'All log checks', sub: logChecksText(hl.log_checks, n0) || 'Not known yet', word: hl.log_checks ? `${n0(hl.log_checks.failed)} failed` : '—', level: !hl.log_checks ? 'off' : hl.log_checks.failed ? 'warn' : 'ok' }),
         checkRow({ name: 'Logs waiting', sub: hl.logs_waiting ? 'Their key is not trusted yet.' : 'Every log that arrived was read.', word: n0(hl.logs_waiting ?? 0), level: hl.logs_waiting ? 'warn' : 'ok' }),
@@ -198,8 +187,7 @@ async function mountCar(ctx) {
       reasons.length ? h('ul', { class: 'fixes' }, reasons.map((code) => {
         const r = REASONS[code] || [code, '', null];
         return h('li', { class: 'fix' }, h('b', null, r[0]), h('span', null, r[1]),
-          r[2] ? linkBtn(r[2], state.buildUrl('settings-cars', { car: car.id }), { icon: 'key', cls: 'fix-btn' }) : null,
-          code === 'gps_inputs_disagree' && gpsFit ? keepEl(gpsFit.el, 'gps-fit') : null);
+          r[2] ? linkBtn(r[2], state.buildUrl('settings-cars', { car: car.id }), { icon: 'key', cls: 'fix-btn' }) : null);
       })) : null);
   };
 

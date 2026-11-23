@@ -145,7 +145,7 @@ pub enum PackStop {
 }
 
 /// What tells one version of a pack file from the next (a pack is replaced by renaming a new file over it).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Stamp {
     ino: u64,
     len: u64,
@@ -155,14 +155,6 @@ struct Stamp {
 fn stamp(m: &std::fs::Metadata) -> Stamp {
     use std::os::unix::fs::MetadataExt;
     Stamp { ino: m.ino(), len: m.len(), mtime: (m.mtime(), m.mtime_nsec()) }
-}
-
-/// Which copy of a finished file is here: the file in the car's folder, or its day's pack, as it is now. A file sent
-/// again in place of a failed one, or packed, is another version.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Version {
-    packed: bool,
-    stamp: Stamp,
 }
 
 /// Where one day's pack is.
@@ -402,16 +394,6 @@ impl Inner {
                 false
             }
         }
-    }
-
-    /// The version of a finished file now (its own file, else its day's pack). `None`: neither is here.
-    fn version(&self, name: &str) -> Option<Version> {
-        let (file, _) = self.file_of(name).ok()?;
-        if let Ok(m) = std::fs::metadata(&file) {
-            return Some(Version { packed: false, stamp: stamp(&m) });
-        }
-        let pf = self.pack_file_of(name)?;
-        Inner::pack_stamp(&pf).ok().flatten().map(|st| Version { packed: true, stamp: st })
     }
 
     fn pack_file(&self, key: &str, day: &str) -> PackFile {
@@ -1318,21 +1300,6 @@ impl Store {
         self.0.file_of(name)?;
         let (inner, name) = (self.0.clone(), name.to_string());
         blocking(move || inner.read_finished(&name)).await
-    }
-
-    /// [`Store::read`] on this thread (a blocking one).
-    pub fn read_here(&self, name: &str) -> Result<Option<Zeroizing<Vec<u8>>>, ApiError> {
-        self.0.read_finished(name)
-    }
-
-    /// [`Store::hash`] on this thread (a blocking one).
-    pub fn hash_here(&self, name: &str) -> Result<(String, u64), ApiError> {
-        self.0.hash_finished(name)
-    }
-
-    /// Which copy of a finished file is here now (a few `stat` calls: any thread). `None`: none.
-    pub fn version(&self, name: &str) -> Option<Version> {
-        self.0.version(name)
     }
 
     /// SHA-256 and length of a finished file's plaintext.

@@ -5,7 +5,6 @@
 //! <data>/tokens/<sha256>.json   a token (sealed): its id, the car's name, when it was made, whether it is revoked;
 //!                               written by `token new` and `token revoke`
 //! <data>/tokens/<sha256>.key    the CAN Bridge key it is tied to (sealed), written once, by its first upload
-//! <data>/tokens/contacts.sealed every token's and car key's last contact (see [`crate::contacts`])
 //! <data>/tokens.json            every token in one file (the format before): moved into the folder when opened
 //! ```
 //!
@@ -19,7 +18,6 @@
 //! while the server runs stops working at its next request, with nothing decrypted when nothing changed.
 
 use crate::cache::{KeyLocks, Lru};
-use crate::contacts::{self, Contacts};
 use base64::Engine;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Seek};
@@ -95,8 +93,6 @@ pub struct Tokens {
     /// One first-upload claim at a time ([`Tokens::claim`]), with the ties read so far (token hash → car key: a tie
     /// is written once and never changes, so each is read once).
     claims: tokio::sync::Mutex<std::collections::HashMap<String, String>>,
-    /// The last contact of each token and car key (read from the folder's contacts file when opened).
-    contacts: Arc<Contacts>,
 }
 
 const LEGACY_LABEL: &str = "tokens.json";
@@ -130,13 +126,10 @@ impl Tokens {
         let dir = legacy.with_extension("");
         let label = dir.file_name().and_then(|n| n.to_str()).unwrap_or("tokens").to_string();
         std::fs::create_dir_all(&dir)?;
-        let contacts =
-            Arc::new(Contacts::open(dir.join(contacts::FILE), format!("{label}/{}", contacts::FILE), vault.clone()));
         let t = Tokens {
             dir,
             label,
             vault,
-            contacts,
             cache: Mutex::new(Lru::new(CACHED_TOKENS)),
             locks: KeyLocks::new(),
             claims: tokio::sync::Mutex::new(std::collections::HashMap::new()),
@@ -149,18 +142,6 @@ impl Tokens {
     pub fn cache_size(self, n: usize) -> Tokens {
         self.cache.lock().unwrap_or_else(PoisonError::into_inner).set_cap(n);
         self
-    }
-
-    /// Shares `contacts` instead of the ones read when opened: the upload server's instance and the engine's see
-    /// the same last contacts (the server records them, the pages show them).
-    pub fn with_contacts(mut self, contacts: Arc<Contacts>) -> Tokens {
-        self.contacts = contacts;
-        self
-    }
-
-    /// The last contact of each token and car key ([`crate::contacts`]).
-    pub fn contacts(&self) -> &Arc<Contacts> {
-        &self.contacts
     }
 
     /// Tokens in memory now.

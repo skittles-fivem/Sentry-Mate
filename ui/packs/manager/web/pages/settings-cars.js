@@ -448,7 +448,7 @@ async function mountCar(ctx) {
   /* ---- Uploads: outcome, tokens, keys, waiting keys */
   function outcome() {
     const hl = S.health, c = car();
-    const last = hl?.newest_log_ms ?? hl?.last_upload_ms ?? c.now?.received_ms ?? null;
+    const last = hl?.last_upload_ms ?? c.now?.received_ms ?? null;
     const trust = hl?.last_log_trust?.result || null;
     const used = S.tokens.some((t) => t.last_upload_ms);
     const active = S.tokens.filter((t) => !t.revoked);

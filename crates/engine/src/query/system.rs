@@ -870,11 +870,7 @@ pub struct LastTrust {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct KeyHealth {
     pub key: String,
-    /// The bridge's last contact: its last request the upload server accepted (a ping, a status question or an
-    /// upload), else (none known) when its newest log arrived.
     pub last_upload_ms: Option<u64>,
-    /// When its newest log arrived whole (null when not known).
-    pub newest_log_ms: Option<u64>,
     pub preferred: bool,
     /// The name an admin gave the key, and what pages call it (that name, else an automatic label).
     pub device: Option<String>,
@@ -940,10 +936,8 @@ impl<T> Newest<T> {
 pub struct Health {
     pub healthy: bool,
     pub reasons: Vec<&'static str>,
-    /// The last contact of the car's CAN Bridge, the newest of its keys' (see [`KeyHealth::last_upload_ms`]).
+    /// When the car's newest log arrived (its upload), the newest of its keys'.
     pub last_upload_ms: Option<u64>,
-    /// When the car's newest log arrived whole, the newest of its keys'.
-    pub newest_log_ms: Option<u64>,
     pub last_log_trust: Option<LastTrust>,
     pub keys: Vec<KeyHealth>,
     /// At most [`HEALTH_LIST_MAX`] (the newest) in each list; the `*_total` counts are of the whole period.
@@ -1043,7 +1037,6 @@ struct Verdict {
     keys: Vec<KeyHealth>,
     waiting: u64,
     last_upload: Option<u64>,
-    newest_log: Option<u64>,
     last_trust: Option<LastTrust>,
     rebuild_pending: bool,
     missing: MissingLogs,
@@ -1056,11 +1049,8 @@ fn verdict(e: &Engine, c: &model::Car, meta: &records::CarMeta, now: u64) -> QRe
     let mut keys = Vec::new();
     let mut waiting = 0u64;
     let mut last_upload: Option<u64> = None;
-    // the engine's own figure lags while it works through a backlog, but never says a log came later than it did
-    let mut newest_log: Option<u64> = meta.last_arrived_ms;
     let mut missing = MissingLogs::default();
     let mut names = e.key_names()?;
-    let contacts = e.contacts();
     for key in &c.vehicle_keys {
         if let Ok(book) = rt.block_on(e.judge().missing(key)) {
             missing.add(&book.counts());
@@ -1069,23 +1059,12 @@ fn verdict(e: &Engine, c: &model::Car, meta: &records::CarMeta, now: u64) -> QRe
         let s = rt.block_on(e.judge().summary(key));
         let w = s.as_ref().map_or(0, |s| s.waiting as u64);
         waiting += w;
-        // the bridge's last request, and when its newest log arrived (not the time in the log's name nor when the
-        // server worked on it): the judge's records (all of them read) only when the upload server knows neither
-        let contact = contacts.and_then(|x| x.key(key)).map(|x| x.at_ms);
-        let log = match (contact, contacts.and_then(|x| x.newest_log(key))) {
-            (_, Some(t)) => Some(t),
-            (Some(_), None) => None,
-            (None, None) => {
-                rt.block_on(e.judge().last_arrived(key)).map_err(|x| QueryError::Engine(crate::Error::Io(x)))?
-            }
-        };
-        let lu = contact.max(log);
+        // when its newest log arrived, not the time in the log's name nor when the server worked on it
+        let lu = rt.block_on(e.judge().last_arrived(key)).map_err(|x| QueryError::Engine(crate::Error::Io(x)))?;
         last_upload = last_upload.max(lu);
-        newest_log = newest_log.max(log);
         keys.push(KeyHealth {
             key: key.clone(),
             last_upload_ms: lu,
-            newest_log_ms: log,
             preferred: c.preferred_key.as_deref() == Some(key),
             device_label: super::keys::device_label(key, name.as_deref()),
             device: name,
@@ -1094,7 +1073,7 @@ fn verdict(e: &Engine, c: &model::Car, meta: &records::CarMeta, now: u64) -> QRe
     }
     let last_trust = last_judged(e, car, meta)?;
     let mut reasons = Vec::new();
-    let last_seen = meta.newest_ms.or(newest_log);
+    let last_seen = meta.newest_ms.or(last_upload);
     if last_seen.is_none_or(|t| now.saturating_sub(t) > 24 * super::now::STALE_MS) {
         reasons.push("upload_silence");
     }
@@ -1117,7 +1096,7 @@ fn verdict(e: &Engine, c: &model::Car, meta: &records::CarMeta, now: u64) -> QRe
     if e.gps_disagreement(car).is_some_and(|g| g.to_ms >= recent) {
         reasons.push("gps_inputs_disagree");
     }
-    Ok(Verdict { keys, waiting, last_upload, newest_log, last_trust, rebuild_pending, missing, reasons })
+    Ok(Verdict { keys, waiting, last_upload, last_trust, rebuild_pending, missing, reasons })
 }
 
 /// Whether the car's data is healthy by the Data health rule (`healthy` of `/cars/{car}/health`): uploads within a
@@ -1139,7 +1118,7 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
     // the last 30 days of the car's data (a car that stopped uploading still shows its last month)
     let end = meta.newest_ms.map_or(now, |n| n.saturating_add(1).min(now));
     let (a, b) = period.window(30 * 86_400_000, end)?;
-    let Verdict { keys, waiting, last_upload, newest_log, last_trust, rebuild_pending, missing, reasons } =
+    let Verdict { keys, waiting, last_upload, last_trust, rebuild_pending, missing, reasons } =
         verdict(e, &c, &meta, now)?;
     let mut why: Vec<Why> = Vec::new();
     let mut chain_gaps = Newest::new();
@@ -1208,7 +1187,6 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
             healthy: reasons.is_empty(),
             reasons,
             last_upload_ms: last_upload,
-            newest_log_ms: newest_log,
             last_log_trust: last_trust,
             keys,
             chain_gaps_total: chain_gaps.total,

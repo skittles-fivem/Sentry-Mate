@@ -162,7 +162,6 @@ async fn health_storage_and_the_servers_figures() {
             "healthy",
             "reasons",
             "last_upload_ms",
-            "newest_log_ms",
             "last_log_trust",
             "keys",
             "chain_gaps",
@@ -179,7 +178,7 @@ async fn health_storage_and_the_servers_figures() {
     assert_eq!(h["car"], json!(car));
     assert_eq!(h["uploads_enabled"], json!(false), "no upload token: {h}");
     assert_eq!(h["keys"].as_array().unwrap().len(), 1, "{h}");
-    has(&h["keys"][0], &["key", "last_upload_ms", "newest_log_ms", "preferred", "device", "logs_waiting"]);
+    has(&h["keys"][0], &["key", "last_upload_ms", "preferred", "device", "logs_waiting"]);
     has(&h["last_log_trust"], &["result", "reason", "log_start_ms"]);
     assert!(h["reasons"].as_array().unwrap().iter().any(|r| r == "upload_silence"), "a made-up day long ago: {h}");
     assert_eq!(code(&mut admin, &format!("/api/v1/cars/{car}/health?from_ms=5&to_ms=4")).await.0, 400);
@@ -475,15 +474,13 @@ async fn bounds_streamed_pages_arrival_times_and_local_days() {
     assert_eq!(r.status, 200);
     assert_eq!(r.text().lines().count(), all.len() + 1, "every log in the CSV");
 
-    // with no last contact known (no upload tokens here), the last upload is when the newest log arrived, the same
-    // figure for the car and its key
+    // the last upload is when the newest log arrived, the same figure for the car and its key
     let logs = walk(&mut admin, &format!("/api/v1/cars/{car}/logs"), 500, |l| l["name"].as_str().unwrap().into()).await;
     let arrived = logs.iter().map(|l| l["arrived_ms"].as_u64().unwrap()).max().unwrap();
     let newest_start = logs.iter().map(|l| l["start_ms"].as_u64().unwrap()).max().unwrap();
     let h = ok(&mut admin, &format!("/api/v1/cars/{car}/health?from_ms=0")).await;
     assert_eq!(h["last_upload_ms"], json!(arrived), "{h}");
     assert_eq!(h["keys"][0]["last_upload_ms"], json!(arrived), "{h}");
-    assert_eq!((h["newest_log_ms"].clone(), h["keys"][0]["newest_log_ms"].clone()), (json!(arrived), json!(arrived)));
     assert_ne!(h["last_upload_ms"], json!(newest_start), "not the time in a log's name");
     // each list is capped, with its whole count beside it
     for (list, total) in [

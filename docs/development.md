@@ -218,7 +218,9 @@ Then open `http://127.0.0.1:8000/`. The pages load map tiles from `tile.openstre
 Swap `instrument` for `logbook`, `horizon`, `console`, `pebble` or `manager` to preview another of the six built-in packs.
 
 Before a pack change goes in, check its pages ([`ui/tools/README.md`](../ui/tools/README.md)): the normal check at
-`1440x900,390x844`, `--pixel` at `1440x900,3840x2160,390x844@3`, and `--stable` at `1440x900,390x844`.
+`1440x900,390x844`, `--pixel` at `1440x900,3840x2160,390x844@3`, `--stable` at `1440x900,390x844`, and `--jumps`
+(every page loaded and scrolled through on two iPhones in WebKit, a phone in Chromium and a desktop:
+`npx playwright install webkit` once for WebKit).
 
 The stability rule (the owner's): a page you are on must not jump around, and nothing may show up, go away and
 come back while live updates arrive. A refresh keeps what is on screen until the new data is there (no loading
@@ -228,7 +230,13 @@ changes, and fails a page whose layout shifts (more than 0.01), whose blocks mov
 
 ```bash
 node ui/tools/check.js --pack instrument --stable --sizes 1440x900,390x844
+node ui/tools/check.js --pack instrument --jumps
 ```
+
+The jump rule (the owner's, after a phone that was unusable): nothing on screen moves unless the person scrolls it. Not
+while a page loads, not while it is scrolled (a chart or a map drawn as it comes near has its room already), not when
+something above the screen changes, and the page never scrolls by itself. `--jumps` fails a page whose jump score or
+layout shift is over 0.02, that resizes a block above the screen while it is scrolled, or that scrolls by itself.
 
 ## Crates
 

@@ -7,7 +7,7 @@
 // already has are drawn 200 at a time; the next 200 come as the foot scrolls into view (or "Show more").
 
 import * as state from '../shared/state.js';
-import { h, replace, cover } from '../shared/dom.js';
+import { h, replace, cover, holdScroll } from '../shared/dom.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
 import { scrollBox } from '../shared/scrollbox.js';
 import { formatNumber, compareText } from '../shared/i18n.js';
@@ -198,6 +198,7 @@ export function dataTable(ctx, opts) {
   function setBody(trs) {
     const now = tbody.children;
     if (now.length === trs.length && trs.every((tr, i) => now[i] === tr)) return;
+    holdScroll(tbody);
     tbody.replaceChildren(...trs);
   }
 
@@ -298,7 +299,10 @@ export function dataTable(ctx, opts) {
       count.textContent = '';
     }
     prevPager = pager;
-    pager = ctx.api.pager(opts.path, { ...params, ...sortParams() }, { limit });
+    // a live refresh asks for as many rows as are on screen (at most a server page): the list keeps its length, so
+    // nothing below it moves and a page scrolled down the list is not cut back to the first page
+    const n = freshQuiet ? Math.min(500, Math.max(limit, loaded.length)) : limit;
+    pager = ctx.api.pager(opts.path, { ...params, ...sortParams() }, { limit: n });
     if (!freshQuiet) setCsv();
     await more(my);
   }

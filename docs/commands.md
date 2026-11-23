@@ -74,7 +74,7 @@ a file it can't read is on standard error.
 | `move cancel` | The old server: the code stops working. The new server: the move stops and what was copied is removed. |
 | `move undo` | The old server, after a move: takes uploads again (asks to type `yes`). Stop the new server first. |
 | `move finish --recovery-key` | A new server, last resort when the old one is gone: switches to what was copied. Asks for the recovery key. The last changes may be missing. |
-| `gps-layout --car CAR [--days N] [--wait MIN]` | Works out where the Screenmate's own GPS frame (0x04F on its internal bus) keeps latitude and longitude, from the car's stored logs of the last `N` days (default 30) and the positions its other inputs reported at the same moments. Prints layouts and errors in metres only: no position, time or place, so the output can be passed on. Runs beside the server and only reads; with the server running, the server runs it (as Data health's **Find GPS layout** does) and this waits for it at most `MIN` minutes (default 30). See [The Screenmate's GPS layout](#the-screenmates-gps-layout). |
+| `gps-layout --car CAR [--days N]` | Works out where the Screenmate's own GPS frame (0x04F on its internal bus) keeps latitude and longitude, from the car's stored logs of the last `N` days (default 30) and the positions its other inputs reported at the same moments. Prints layouts and errors in metres only: no position, time or place, so the output can be passed on. Runs beside the server and only reads. See [The Screenmate's GPS layout](#the-screenmates-gps-layout). |
 | `log-checks --car CAR` | Every log of the car's CAN Bridge keys as the app is told it now (`verified`, `pending`, `failed` and each `check_reason`), counted, and the runs of failed logs by their start times (UTC). Prints no log name, car key or signing key, so the output can be passed on. Runs beside the server and only reads. See [Log checks](#log-checks). |
 | `health` | Exit 0 when the upload port and the web port accept a TCP connection on 127.0.0.1 (only the upload port on a server whose data moved away), or while a move comes in. Docker's health check runs it. |
 | `--version` | Prints the version and build, for example `sentry-mate 0.1.0 (build-1001, sha-6f83191, 2026-11-17T19:06:35Z)`. A local build shows no build number. |
@@ -265,35 +265,13 @@ best and a runner-up, each with its median and 95th-percentile error. A layout i
 tens of metres; one of kilometres is not. Errors over 10 km show as `over 10 km`. It prints no position, time or
 place.
 
-The same fit runs inside the server from the car's **Data health** page: an admin's **Find GPS layout** button, next
-to the notice that one input's positions are out of step, shows its progress and then the best layout with its
-errors in metres and how many frames it paired, and **Apply** sets it (below). No position is shown there either.
+It only reads: the stored logs as `log decode` reads them, and the db a day at a time while the data folder's writes
+pause for a moment (as an export's snapshot does). The car needs another input with positions for the same days,
+and a few minutes of driving.
 
-It only reads, and it works while the server is busy (a full rebuild, a compaction, uploads arriving):
-
-- **With the server running** (it holds the data folder's `.lock`), the command asks the server to run the fit
-  (through a request file in the data folder's `.gps-fit` folder: the command has no sign-in) and shows how far it is,
-  with what else the server is busy with, on standard error every few seconds:
-  `waiting for the server: reading the logs' GPS frames, 120 of 400 (48 %); the server is also busy: rebuild 34 %…`.
-  It waits at most `--wait` minutes (default 30, up to 1440); after that it stops waiting (exit 1) and says so, and
-  the server carries on: run it again later, or see **Find GPS layout** on Data health. A server from before this
-  version never answers; after 15 s the command reads the folder itself, as below.
-- **Without a server** (or one that didn't answer), the command reads the data folder itself, without pausing the
-  server's writes: the stored logs as they are (a finished log never changes), and the positions a day at a time,
-  each read again when its files changed while it was read. A day the server kept changing through every try is left
-  out, and the report says how many were (`2 of 31 days of positions were left out ...`); a log that would not read
-  is left out and counted the same way. Only the car's record waits (with growing pauses, up to `--wait`) while the
-  server writes the list of cars or a full rebuild switches the car's history; it says `waiting for the server: ...`
-  meanwhile.
-
-When it can't finish, it says what to do: `the server is still working on it after 30 minutes ... try again when it
-is done, give --wait more minutes, or see Find GPS layout on the car's Data health page`. The car needs another
-input with positions for the same days, and a few minutes of driving.
-
-When it prints `layout: lat ...; lon ...` (a layout other than the DBC's), an admin sets it for the car with **Apply**
-under **Find GPS layout** on its Data health page, or with `PUT /api/v1/cars/c1/gps-layout` and
-`{"layout": "lat ...; lon ..."}` ([ui-api.md](ui-api.md)). The car's history is then rebuilt from the stored logs
-with it. `{"layout": null}` goes back to the DBC's layout (and rebuilds too).
+When it prints `layout: lat ...; lon ...` (a layout other than the DBC's), an admin sets it for the car with
+`PUT /api/v1/cars/c1/gps-layout` and `{"layout": "lat ...; lon ..."}` ([ui-api.md](ui-api.md)). The car's history
+is then rebuilt from the stored logs with it. `{"layout": null}` goes back to the DBC's layout (and rebuilds too).
 
 ## The vault
 
@@ -464,7 +442,6 @@ The data folder (contents sealed unless said):
 | `can/<car key>/quarantine/<name>` | The first bad copy of a log (or sidecar) that failed its check and was sent again, kept until the copy sent again verifies. |
 | `migrated.json` | A note that the one-time check for files an older version stored in the clear has run, so later starts skip it. Made on the first start, a new install too. |
 | `tokens/<sha256>.json`, `tokens/<sha256>.key` | Each token, and the car key it is tied to. |
-| `tokens/contacts.sealed` | Each token's and car key's last contact (the bridge's last request the server accepted, and when its newest log arrived), saved at most once a minute. |
 | `tls/cert.pem` | The certificate, in the clear (it is public). |
 | `tls/key.sealed` | Its private key. |
 | `can/<car key>/<name>.log.xz`, `<name>.log.xz.json` | The logs and sidecars, as uploaded. |

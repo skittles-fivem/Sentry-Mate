@@ -539,43 +539,26 @@ impl Ledger {
 
     /// Adds `changes` (already applied to `head`) to the journal, in batches of one sealed record each. A change too
     /// big for one record, or a damaged journal, goes through [`Ledger::compact`] instead.
-    #[cfg(test)]
     pub(crate) fn append(&self, head: &mut Head, changes: &[Change]) -> io::Result<()> {
-        let groups: Vec<&[Change]> = changes.iter().map(std::slice::from_ref).collect();
-        self.append_groups(head, &groups)
-    }
-
-    /// [`Ledger::append`] of several groups of changes (already applied to `head`, in this order), each group whole
-    /// in one sealed record (a log's record with the pin or key it sets: all there after a crash, or none of it), as
-    /// many groups to a record as fit, all written with one sync.
-    pub(crate) fn append_groups(&self, head: &mut Head, groups: &[&[Change]]) -> io::Result<()> {
-        let total: usize = groups.iter().map(|g| g.len()).sum();
-        if total == 0 {
+        if changes.is_empty() {
             return Ok(());
         }
-        let all = || groups.iter().flat_map(|g| g.iter().cloned()).collect::<Vec<Change>>();
         if head.damaged {
-            return self.compact(head, all());
+            return self.compact(head, changes.to_vec());
         }
         let mut batches: Vec<Vec<u8>> = Vec::new();
         let mut cur: Vec<u8> = Vec::new();
-        for g in groups.iter().filter(|g| !g.is_empty()) {
-            let mut gb: Vec<u8> = Vec::new();
-            for c in g.iter() {
-                if !gb.is_empty() {
-                    gb.push(b',');
-                }
-                gb.extend_from_slice(&serde_json::to_vec(c).map_err(other)?);
+        for c in changes {
+            let b = serde_json::to_vec(c).map_err(other)?;
+            if b.len() + 2 > BATCH_LIMIT {
+                return self.compact(head, changes.to_vec());
             }
-            if gb.len() + 2 > BATCH_LIMIT {
-                return self.compact(head, all());
-            }
-            if !cur.is_empty() && cur.len() + gb.len() + 2 > BATCH_LIMIT {
+            if !cur.is_empty() && cur.len() + b.len() + 2 > BATCH_LIMIT {
                 cur.push(b']');
                 batches.push(std::mem::take(&mut cur));
             }
             cur.push(if cur.is_empty() { b'[' } else { b',' });
-            cur.extend_from_slice(&gb);
+            cur.extend_from_slice(&b);
         }
         if !cur.is_empty() {
             cur.push(b']');
@@ -586,8 +569,10 @@ impl Ledger {
             std::fs::create_dir_all(d)?;
         }
         let mut journal = self.vault.records(&path, &label).map_err(other)?;
-        journal.append_each(&batches)?;
-        head.journal_len += total;
+        for b in &batches {
+            journal.append(b)?;
+        }
+        head.journal_len += changes.len();
         Ok(())
     }
 
