@@ -30,6 +30,7 @@ import { flash } from '../core/flash.js';
 import { isAdmin } from '../core/prefs.js';
 import { timeChart, barChart } from '../core/chart.js';
 import { q, agoEl, statePill, stateLabel, DASH } from '../core/fmt.js';
+import { overviewCard } from './conn-overview.js';
 
 export const id = 'health';
 export const css = true;
@@ -564,7 +565,9 @@ async function mountCar(ctx) {
 
   /* ---------- page */
   replace(ctx.view, root);
-  root.append(head, healthPanel, gapsTable.el,
+  const ovSlot = h('div', { class: 'hl-ov-slot' });
+  const ovLoad = overviewCard(ctx, admin).then((el) => { if (el) ovSlot.append(el); else ovSlot.remove(); });
+  root.append(head, ovSlot, healthPanel, gapsTable.el,
     h('div', { class: 'hl-two' }, totalsPanel, countsSlot),
     storageSlot, sigTable.el, plotPanel);
 
@@ -587,7 +590,7 @@ async function mountCar(ctx) {
   });
 
   try {
-    await Promise.all([loadHealth(), loadTotals(), loadStorage(), loadSignals(), gapsTable.ready]);
+    await Promise.all([loadHealth(), loadTotals(), loadStorage(), loadSignals(), gapsTable.ready, ovLoad]);
   } catch (e) {
     if (ctx.alive()) ctx.fail(e);
     return;
@@ -794,7 +797,9 @@ async function mountSystem(ctx) {
   ctx.onCleanup(() => clearTimeout(carTimer));
 
   replace(ctx.view, root);
-  root.append(head, storePanel, carTable.el, srvPanel, errTable.el,
+  const ovSlot = h('div', { class: 'hl-ov-slot' });
+  const ovLoad = overviewCard(ctx, admin).then((el) => { if (el) ovSlot.append(el); else ovSlot.remove(); });
+  root.append(head, ovSlot, storePanel, carTable.el, srvPanel, errTable.el,
     h('p', { class: 'note hl-signals-note', cover: ['nr.dash.state-table', 'nr.dash.state-table.parameter', 'nr.dash.state-table.value', 'nr.dash.state-table.sort-scroll'] },
       icon('signals', 'ico--sm'), ' Every decoded signal of a car, with its value and a chart over time, is on that car’s data health page: open a car above.'));
 
@@ -810,7 +815,7 @@ async function mountSystem(ctx) {
   }
 
   try {
-    await Promise.all([loadStorage(), loadServer(), carTable.ready]);
+    await Promise.all([loadStorage(), loadServer(), carTable.ready, ovLoad]);
   } catch (e) {
     if (ctx.alive()) ctx.fail(e);
     return;
