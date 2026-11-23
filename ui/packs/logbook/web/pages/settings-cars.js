@@ -56,12 +56,6 @@ function setting(name, desc, control, { cover = null, cls = null } = {}) {
     h('div', { class: 'sc-setting-control' }, control));
 }
 
-/** The currency a car's charges cost most in (the Charges list's totals), or null. */
-function topCurrency(list) {
-  const by = (list && list.totals && list.totals.cost_by_currency) || [];
-  return by.length ? by.reduce((a, b) => (b.amount > a.amount ? b : a)).currency : null;
-}
-
 function crumbs(car) {
   const sepEl = () => h('span', { class: 'crumb-sep', 'aria-hidden': 'true' }, '/');
   return h('nav', { class: 'crumbs', 'aria-label': 'Breadcrumb', cover: 'web.settings.car.breadcrumb' },
@@ -519,6 +513,7 @@ const FIX_NOW = {
   token_unused: 'A token was made but no CAN Bridge has uploaded with it yet.',
   key_waiting: 'A CAN Bridge key is waiting for a car (below).',
   logs_waiting_trust: 'Some logs wait for a trust check.',
+  gps_inputs_disagree: 'One input’s GPS positions are out of step with the others’; its positions are not used there.',
   logs_missing: 'Some logs are missing on the server; the car was asked to send them again.',
 };
 
@@ -528,13 +523,10 @@ async function mountCar(ctx) {
   const admin = ctx.me && ctx.me.role === 'admin';
   let car = ctx.car;
   const carPath = api.apiPath`cars/${car.id}`;
-  const [settings0, battery, chargeList] = await Promise.all([
+  const [settings0, battery] = await Promise.all([
     ctx.api.get(api.apiPath`cars/${car.id}/settings`),
     ctx.api.get(api.apiPath`cars/${car.id}/battery`).catch(() => null),
-    // the currency for an empty default price: the one the car's charges cost most in
-    ctx.api.get(api.apiPath`cars/${car.id}/charges`, { limit: 1 }).catch(() => null),
   ]);
-  const priceCur = topCurrency(chargeList);
   let settings = settings0;
   let carVersion = car.version;
   const ro = !admin;
@@ -979,37 +971,6 @@ async function mountCar(ctx) {
     ranges.forEach((r, i) => { const p = rowProblem(r); if (p && fsNote && fsNote[0] === 'held') setFieldError(r.from_date ? fsEls[i].to : fsEls[i].from, p); });
   }
   drawRanges();
-
-  /* ---------- charging: the default price per kWh ({ value, currency } or null), for Statistics' estimates */
-  const dpBox = h('div', { class: 'sc-stack' });
-  function drawPrice() {
-    const p = settings.default_price_per_kwh;
-    const val = field({ label: 'Price per kWh', name: 'dp-value', type: 'number', value: p ? p.value : '', attrs: { min: '0', max: '10', step: 'any', inputmode: 'decimal', placeholder: '0.15', disabled: ro } });
-    const cur = field({ label: 'Currency', name: 'dp-currency', value: (p && p.currency) || priceCur || '', cls: 'sc-dp-cur', attrs: { maxlength: '3', autocomplete: 'off', spellcheck: 'false', placeholder: 'USD', disabled: ro } });
-    const showErrs = (f) => {
-      setFieldError(val, f['default_price_per_kwh.value'] || null);
-      setFieldError(cur, f['default_price_per_kwh.currency'] || f.default_price_per_kwh || null);
-    };
-    const put = async (body, okText) => {
-      try { await patchSettings({ default_price_per_kwh: body }); ctx.flash(okText); drawPrice(); syncRanges(); } catch (err) {
-        if (err && err.code === 'conflict') { drawPrice(); ctx.flash('Not saved: someone else changed the default price at the same time. It shows theirs now; make yours again if it is still needed.', { kind: 'error' }); return; }
-        if (err.fields) showErrs(err.fields); else ctx.flash(`Not saved: ${err.message}`, { kind: 'error' });
-      }
-    };
-    const save = () => {
-      const raw = val.control.value.trim(), n = Number(raw), c = cur.control.value.trim().toUpperCase();
-      const bad = {};
-      if (raw === '' || !Number.isFinite(n) || n < 0 || n > 10) bad['default_price_per_kwh.value'] = 'A price from 0 to 10.';
-      if (!/^[A-Z]{3}$/.test(c)) bad['default_price_per_kwh.currency'] = 'Three letters, such as USD or EUR.';
-      showErrs(bad);
-      if (!Object.keys(bad).length) put({ value: n, currency: c }, `Saved: the default price is ${n} ${c} per kWh.`);
-    };
-    for (const f of [val, cur]) f.control.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
-    replace(dpBox, h('div', { class: 'sc-dp-row' }, val, cur,
-      ro ? null : h('div', { class: 'sc-dp-acts' }, button('Save', { cls: 'button-small', onclick: save }),
-        p ? button('Clear', { cls: 'button-small', onclick: () => put(null, 'Saved: no default price.') }) : null)));
-  }
-  drawPrice();
   const chargingSection = section({ title: 'Charging', id: 'sc-chg', cover: 'web.settings.car.free-supercharging' },
     setting('Free Supercharging',
       'Dated ranges, in the car’s time zone. A Supercharger session that starts inside one gets a cost of zero, marked “free Supercharging”; sessions outside keep their price, so turning it off later does not rewrite history.',
@@ -1019,7 +980,6 @@ async function mountCar(ctx) {
         fromWords(access) ? h('span', { class: 'sc-quiet' }, ` (${fromWords(access)})`) : null,
         '. The car does not say since when, so the dates are yours.'),
         fsBox)),
-    setting('Default price per kWh', 'Charges without a price are estimated at it on Statistics, shown apart as estimated.', dpBox),
     h('p', { class: 'sc-more' }, h('a', { class: 'link-arrow', href: ctx.link('charges') }, 'Charges and their cost', icon('arrowRight'))));
 
   /* ---------- put it together */

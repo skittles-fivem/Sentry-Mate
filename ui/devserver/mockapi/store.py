@@ -103,7 +103,6 @@ class Store:
         self.mqtt = extras.mqtt(now)
         self.imports = extras.imports(now, ds.history("c3"))
         self.storage = extras.storage(now)
-        self.compaction = None  # the compaction's state, made on the first read (resources/system.py)
         from .resources import moving
         moving.seed(self, cfg, now)  # first-run set-up, the move to another server, export files
         from .resources import tesla
@@ -154,8 +153,6 @@ class Store:
                 "software_version_typed": None,
                 "pack_replaced_date": None,
                 "pack_new_kwh": None,
-                # Comet's charges with no price (its Los Angeles hotel) are estimated at this on Statistics
-                "default_price_per_kwh": {"value": 0.14, "currency": "USD"} if cid == "c1" else None,
             }
             self.car_settings[cid] = s
             sold = getattr(car, "sold_date_days", None)

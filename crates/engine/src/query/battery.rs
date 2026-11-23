@@ -275,35 +275,14 @@ pub struct Reading {
     pub readings: Option<usize>,
 }
 
-/// The pack's rated size (kWh) that capacity readings are held against ([`plausible`]): the owner's value when new
-/// (the new pack's after a replacement), else the car's build (its usable kWh when new, else its full pack).
-fn rated_kwh(e: &Engine, car: CarId, s: &super::fleet::CarSettings) -> QResult<Option<f64>> {
-    if let Some(v) = s.pack_new_kwh.or(s.capacity_new_kwh).filter(|v| *v > 0.0) {
-        return Ok(Some(v));
-    }
-    Ok(super::fleet::vehicle_defaults(e, car)?.capacity_new_kwh.map(|(v, _)| v).filter(|v| *v > 0.0))
-}
-
-/// Whether a capacity reading (usable or full pack, kWh) can be the pack's at all: from 30 % of its rated size up to
-/// 1.3 times it (a pack never holds more; below that is a reading of something else, a wrong unit or a mapping
-/// mistake), or 10 to 250 kWh (the sizes Car settings takes) while no size is known.
-fn plausible(kwh: f64, rated: Option<f64>) -> bool {
-    match rated {
-        Some(r) => kwh.is_finite() && kwh >= r * 0.3 && kwh <= r * 1.3,
-        None => (10.0..=250.0).contains(&kwh),
-    }
-}
-
-/// The usable capacity a charge measured: the energy it added over the % it added (at least 10 %), when that is a
-/// [`plausible`] size for the pack.
-fn charge_usable(ch: &Charge, rated: Option<f64>) -> Option<f64> {
+fn charge_usable(ch: &Charge) -> Option<f64> {
     let (a, b) = (r(ch.start_soc, 1)?, r(ch.end_soc, 1)?);
     let kwh = r(ch.energy_added_kwh, 3)?;
-    (b - a >= 10.0 && kwh > 0.0).then(|| kwh / (b - a) * 100.0).filter(|u| plausible(*u, rated))
+    (b - a >= 10.0 && kwh > 0.0).then(|| kwh / (b - a) * 100.0)
 }
 
-fn charge_reading(ch: &Charge, buffer: Option<f64>, rated: Option<f64>) -> Option<Reading> {
-    let usable = charge_usable(ch, rated)?;
+fn charge_reading(ch: &Charge, buffer: Option<f64>) -> Option<Reading> {
+    let usable = charge_usable(ch)?;
     Some(Reading {
         t_ms: ch.end_ms,
         odometer_km: r(ch.position.as_ref().and_then(|p| p.odometer_km), 1),
@@ -337,21 +316,6 @@ fn pack_reading_row(p: &PackReading, recent_buffer: Option<f64>) -> Option<Readi
         usable_basis: basis,
         readings: None,
     })
-}
-
-/// [`pack_reading_row`], when its sizes are [`plausible`].
-fn pack_row(p: &PackReading, recent_buffer: Option<f64>, rated: Option<f64>) -> Option<Reading> {
-    pack_reading_row(p, recent_buffer)
-        .filter(|rd| [rd.usable_kwh, rd.full_pack_kwh].into_iter().flatten().all(|k| plausible(k, rated)))
-}
-
-/// The usable charge level (%) from the pack's energy: the energy it holds now above the buffer it keeps back, over
-/// its usable capacity (the full pack less that buffer), as the car works it out; without a known buffer, the energy
-/// over the usable capacity. Between 0 and 100.
-fn usable_pct(energy_kwh: Option<f64>, buffer_kwh: Option<f64>, usable_kwh: Option<f64>) -> Option<f64> {
-    let (now, usable) = (energy_kwh?, usable_kwh.filter(|u| *u > 0.0)?);
-    let above = now - buffer_kwh.unwrap_or(0.0);
-    (now.is_finite() && usable.is_finite()).then(|| (above / usable * 100.0).clamp(0.0, 100.0))
 }
 
 /// The id of the charge going on now, if any (it has no capacity reading yet).
@@ -867,9 +831,8 @@ fn new_capacity(
     let mut imported = Vec::new();
     // (imported charges of the pack before a replacement are not the new pack's)
     let from = swap.map_or(0, |w| w.at_ms);
-    let rated = rated_kwh(e, c.id, s)?;
     each_row::<Charge>(e, c.id, from, u64::MAX, Some(super::SourceFilter::Import(None)), shown, false, |ch| {
-        if let Some(u) = charge_usable(&ch, rated) {
+        if let Some(u) = charge_usable(&ch) {
             imported.push(u);
         }
         Ok(imported.len() < 10)
@@ -913,11 +876,12 @@ fn new_range(
     Ok((vd, vd.map(|_| super::fleet::VehicleDefaults::SOURCE)))
 }
 
-/// The pack's chemistry, `(value, source)`: the owner's setting, else what the car's build says (the same detection
-/// Car settings and the build card show, see [`super::fleet::chemistry_of`]).
-fn chemistry(e: &Engine, car: CarId) -> QResult<(Option<&'static str>, Option<&'static str>)> {
-    let (v, src, _) = super::fleet::chemistry_of(e, car)?;
-    Ok((v, src))
+fn chemistry(s: &super::fleet::CarSettings) -> (Option<&'static str>, Option<&'static str>) {
+    match s.chemistry.as_str() {
+        "lfp" => (Some("lfp"), Some("owner")),
+        "nca_nmc" => (Some("nca_nmc"), Some("owner")),
+        _ => (None, None),
+    }
 }
 
 // ---------------------------------------------------------------- /battery
@@ -956,7 +920,6 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
     let buffer = packs.iter().find_map(|p| p.buffer_kwh);
     // the charges' readings, newest first: the last five give a usable capacity where the pack sends none
     let live = live_charge(e, &c)?;
-    let rated = rated_kwh(e, car, &s)?;
     let (mut charge_usable_v, mut imported, mut ac, mut dc, mut charges_n) = (Vec::new(), false, 0.0, 0.0, 0u64);
     each_row::<Charge>(e, car, 0, u64::MAX, None, &shown, true, |ch| {
         charges_n += 1;
@@ -964,7 +927,7 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
         if Some(ch.id) != live
             && charge_usable_v.len() < 5
             && ch.start_ms >= since
-            && let Some(u) = charge_usable(&ch, rated)
+            && let Some(u) = charge_usable(&ch)
         {
             charge_usable_v.push(u);
         }
@@ -1024,9 +987,7 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
     // the current range at 100 %: the car's own range over its charge level, else the usable energy at the factor
     let full_now =
         smp.range_km.zip(smp.soc).filter(|(_, soc)| *soc >= 5.0).map(|(rg, soc)| rg / soc * 100.0).or(from_energy);
-    let (chem, chem_src, found) = super::fleet::chemistry_of(e, car)?;
-    let energy_now = smp.energy_remaining_kwh.or(newest.as_ref().and_then(|p| p.energy_kwh));
-    let usable_soc = smp.extra.usable_soc.or_else(|| usable_pct(energy_now, buffer, usable));
+    let (chem, chem_src) = chemistry(&s);
     let lfp = chem == Some("lfp");
     let has_history = drives_n + charges_n > 0 || newest.is_some();
 
@@ -1101,18 +1062,15 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
                 "full_new_km": r(range_new, 1), "new_source": range_new_source,
                 "lost_km": r(range_new.zip(full_now).map(|(n, x)| n - x), 1),
             }),
-            energy_now_kwh: r(energy_now, 2),
+            energy_now_kwh: r(smp.energy_remaining_kwh.or(newest.as_ref().and_then(|p| p.energy_kwh)), 2),
             soc_pct: r(smp.soc, 1),
-            usable_soc_pct: r(usable_soc, 1),
+            // the usable % (the part of the pack a cold battery does not lock) is not decoded from the car yet
+            usable_soc_pct: None,
             band: json!({
                 "low_pct": 20, "high_pct": if lfp { 100 } else { 80 },
                 "charge_limit_pct": r(newest.as_ref().and_then(|p| p.charge_limit_pct), 0),
             }),
-            chemistry: json!({
-                "value": chem, "source": chem_src,
-                "confidence": if chem_src == Some("owner") { None } else { found.as_ref().and_then(|f| f.confidence) },
-                "evidence": if chem_src == Some("owner") { None } else { found.and_then(|f| f.evidence) },
-            }),
+            chemistry: json!({ "value": chem, "source": chem_src }),
             brick_spread_v: r(
                 newest.as_ref().and_then(|p| p.brick_max_v.zip(p.brick_min_v)).map(|(hi, lo)| (hi - lo).max(0.0)),
                 3,
@@ -1274,7 +1232,6 @@ pub fn capacity(
     };
     let keep = |rd: &Reading| !by_odo || rd.odometer_km.is_some();
     let buffer = recent_packs_newest_buffer(e, &c)?;
-    let rated = rated_kwh(e, car, &s)?;
     let mut resume: Option<String> = None;
     let (items, more, trend_v) = match group {
         "charge" => {
@@ -1285,7 +1242,7 @@ pub fn capacity(
             let mut page = PageBuf { rows: Vec::new(), cap: limit + 1, after: after.as_ref() };
             each_row::<Charge>(e, car, a, b, None, &shown, false, |ch| {
                 if Some(ch.id) != live
-                    && let Some(rd) = charge_reading(&ch, buffer, rated)
+                    && let Some(rd) = charge_reading(&ch, buffer)
                 {
                     if let (Some(o), Some(u)) = (rd.odometer_km, rd.usable_kwh)
                         && rd.t_ms >= since
@@ -1308,7 +1265,7 @@ pub fn capacity(
             // the trend over the period's days, thinned evenly
             let mut tr = Trend::default();
             for d in thin(&days, MAX_SPREAD_DAYS) {
-                if let Some(rd) = day_pack(e, &c, d)?.as_ref().and_then(|p| pack_row(p, buffer, rated))
+                if let Some(rd) = day_pack(e, &c, d)?.as_ref().and_then(|p| pack_reading_row(p, buffer))
                     && rd.t_ms >= a.max(since)
                     && rd.t_ms < b
                     && let (Some(o), Some(u)) = (rd.odometer_km, rd.usable_kwh)
@@ -1348,7 +1305,7 @@ pub fn capacity(
                         break;
                     }
                     last_day = Some(d);
-                    let Some(rd) = day_pack(e, &c, d)?.as_ref().and_then(|p| pack_row(p, buffer, rated)) else {
+                    let Some(rd) = day_pack(e, &c, d)?.as_ref().and_then(|p| pack_reading_row(p, buffer)) else {
                         continue;
                     };
                     if rd.t_ms < a || rd.t_ms >= b || !keep(&rd) {
@@ -1392,7 +1349,7 @@ pub fn capacity(
                     }
                     let mut v: Vec<Reading> = Vec::new();
                     for d in thin(&ds, MONTH_DAYS) {
-                        if let Some(rd) = day_pack(e, &c, d)?.as_ref().and_then(|p| pack_row(p, buffer, rated))
+                        if let Some(rd) = day_pack(e, &c, d)?.as_ref().and_then(|p| pack_reading_row(p, buffer))
                             && rd.t_ms >= a
                             && rd.t_ms < b
                         {
@@ -1590,7 +1547,8 @@ pub fn battery_level(e: &Engine, car: CarId, q: &LevelQuery, now_ms: u64) -> QRe
     let wdays: usize = if window == "7d" { 7 } else { 30 };
     let moving_on = q.moving.unwrap_or(true);
     let tz = crate::tz::zone(&c.time_zone);
-    let lfp = chemistry(e, car)?.0 == Some("lfp");
+    let s = super::fleet::settings_of(e, car)?;
+    let lfp = chemistry(&s).0 == Some("lfp");
     let band = json!({ "low_pct": 20, "high_pct": if lfp { 100 } else { 80 } });
     // the buckets: local days, or hours from the local midnight before `a`
     let day_edges = local_edges(a, end, tz, 1)?;
@@ -2501,28 +2459,5 @@ mod tests {
         assert_eq!((p.full_pack_kwh, p.t_ms, p.readings), (Some(78.4), 5, 1));
         assert!((p.usable_kwh().unwrap() - 75.3).abs() < 1e-9);
         assert_eq!(p.charge_limit_pct, Some(80.0));
-    }
-
-    #[test]
-    fn capacity_readings_beyond_what_a_pack_holds_are_not_plausible() {
-        // a 75 kWh pack: 30 % to 1.3 times
-        assert!(plausible(74.0, Some(75.0)) && plausible(23.0, Some(75.0)) && plausible(97.0, Some(75.0)));
-        assert!(!plausible(454.2, Some(75.0)) && !plausible(20.0, Some(75.0)) && !plausible(f64::NAN, Some(75.0)));
-        // no size known: what Car settings takes
-        assert!(plausible(75.0, None) && !plausible(454.2, None) && !plausible(5.0, None));
-    }
-
-    #[test]
-    fn the_usable_level_is_the_energy_above_the_buffer_over_the_usable_capacity() {
-        // 64.3 kWh usable (67.6 full less 3.3 kept back), 35.45 kWh held: 32.15 above the buffer is 50 %
-        let u = usable_pct(Some(35.45), Some(3.3), Some(64.3)).unwrap();
-        assert!((u - 50.0).abs() < 1e-9, "{u}");
-        // the buffer not known: the energy over the usable capacity
-        assert!((usable_pct(Some(32.15), None, Some(64.3)).unwrap() - 50.0).abs() < 1e-9);
-        // never below 0 or above 100, nothing without both
-        assert_eq!(usable_pct(Some(2.0), Some(3.3), Some(64.3)), Some(0.0));
-        assert_eq!(usable_pct(Some(80.0), Some(3.3), Some(64.3)), Some(100.0));
-        assert_eq!(usable_pct(None, Some(3.3), Some(64.3)), None);
-        assert_eq!(usable_pct(Some(30.0), Some(3.3), None), None);
     }
 }

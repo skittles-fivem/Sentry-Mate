@@ -89,9 +89,11 @@ pub fn fill(live: &[Sample], import: &[Sample], p: &FuseParams, how: How) -> Fil
     for s in &live {
         let mut x = (*s).clone();
         let mut mask = 0u64;
-        for (i, (slot, look)) in SLOTS.iter().zip(&looks).enumerate() {
+        // what the second had before any filling (the two halves of a fix are filled together)
+        let had: Vec<bool> = SLOTS.iter().map(|slot| (slot.has)(&x)).collect();
+        for (i, ((slot, look), had)) in SLOTS.iter().zip(&looks).zip(had).enumerate() {
             if values
-                && !(slot.has)(&x)
+                && !had
                 && let Some((a, _)) = look.near(x.t_ms, (slot.hold)(p))
             {
                 (slot.copy)(&mut x, a);
@@ -125,6 +127,8 @@ pub fn fill(live: &[Sample], import: &[Sample], p: &FuseParams, how: How) -> Fil
         }
         out.sort_by_key(|s| s.t_ms);
     }
+    // the import's fixes and the live ones are one track now: none may jump where the car never was
+    crate::calc::drop_bad_fixes(&mut out, crate::calc::MAX_FIX_KMH);
     Filled { samples: out, filled, own: own_t }
 }
 

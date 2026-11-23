@@ -65,8 +65,6 @@ impl EngineRun {
             engine.start()?;
             // the long periods' day parts, worked out in the background once the logs waiting are decoded
             engine.warm(None);
-            // what is no longer written is packed when the server is idle (docs/plans/storage.md)
-            engine.compact_automatically();
         }
         Ok(EngineRun { engine, rt: Some(rt) })
     }
@@ -74,9 +72,6 @@ impl EngineRun {
     /// Stops the background work, waiting at most `wait` for a log being decoded (what is left is picked up on the
     /// next start: the engine compares every car's logs with what it recorded).
     pub async fn stop(&mut self, wait: Duration) {
-        // a compaction pass ends at its next unit (a few seconds at most), before the data folder may change
-        let e = self.engine.clone();
-        let _ = tokio::task::spawn_blocking(move || e.compact_stop()).await;
         if let Some(rt) = self.rt.take() {
             let _ = tokio::task::spawn_blocking(move || rt.shutdown_timeout(wait)).await;
         }
@@ -85,7 +80,6 @@ impl EngineRun {
 
 impl Drop for EngineRun {
     fn drop(&mut self) {
-        self.engine.compact_stop();
         if let Some(rt) = self.rt.take() {
             rt.shutdown_background();
         }

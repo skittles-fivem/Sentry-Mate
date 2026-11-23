@@ -74,7 +74,7 @@ export async function mount(ctx) {
         h('div', { class: 'bat-text' },
           h('div', { cover: 'bh.bar.stored_energy' }, h('span', { class: 'hero-k' }, 'Stored energy'), num(bat.energy_now_kwh, 'energy', { size: 'l', why: 'not reported' }),
             h('p', { class: 'tile-line' }, cap.usable_kwh ? `of ${format(cap.usable_kwh, 'energy')} usable when full` : 'usable energy in the pack now')),
-          h('p', { class: 'tile-line' }, `${CHEM[bat.chemistry?.value] || 'Chemistry not known'}${bat.chemistry?.value ? `, ${bat.chemistry.source === 'owner' ? 'set by the owner' : 'detected'}${bat.chemistry?.confidence === 'low' ? ' (low confidence)' : ''}` : ''}${bat.brick_spread_v != null ? ` · cells within ${format(bat.brick_spread_v * 1000, 'number', { digits: 0 })} mV` : ''}`))),
+          h('p', { class: 'tile-line' }, `${CHEM[bat.chemistry?.value] || 'Chemistry not known'}${bat.chemistry ? `, ${bat.chemistry.source === 'owner' ? 'set by the owner' : 'detected'}` : ''}${bat.brick_spread_v != null ? ` · cells within ${format(bat.brick_spread_v * 1000, 'number', { digits: 0 })} mV` : ''}`))),
       bandEl, bat.sources?.length ? h('p', { class: 'src-line' }, srcPill(bat)) : null);
 
     /* health: capacity now vs new */
@@ -107,8 +107,7 @@ export async function mount(ctx) {
     const [bat, totals] = await Promise.all([batOrNull, totalsP]);
     if (!ctx.alive()) return;
     const t = totals || {}, life = (bat && bat.lifetime) || {};
-    // from the valid odometer readings only, never below 0 (the server picks them)
-    const mileage = t.driven_since_km ?? (t.odometer_last_km != null && t.odometer_first_km != null ? Math.max(0, t.odometer_last_km - t.odometer_first_km) : null);
+    const mileage = t.odometer_last_km != null && t.odometer_first_km != null ? t.odometer_last_km - t.odometer_first_km : null;
     const driveT = tile({ w: 2, title: 'Driving, all time', icon: 'route', side: h('a', { class: 'tile-link', href: ctx.link('statistics'), cover: 'bh.drive.link_stats' }, 'Statistics', icon('chevronRight')) },
       facts([
         ['Odometer', format(t.odometer_last_km, 'odometer'), 'bh.drive.odometer'],
@@ -121,7 +120,7 @@ export async function mount(ctx) {
       h('p', { class: 'note', cover: 'bh.drive.help' }, 'Not logged is distance the odometer moved while nothing was recorded. Health lists each gap.'));
     const chargeT = tile({ w: 2, title: 'Charging, all time', icon: 'bolt', side: h('a', { class: 'tile-link', href: ctx.link('charges', { period: { preset: 'all' } }), cover: 'bh.charging.link_stats' }, 'Charges', icon('chevronRight')) },
       facts([
-        ['Charging sessions', `${n0(t.charges)} (AC ${n0(t.ac?.charges)}, DC ${n0(t.dc?.charges)}${t.unknown_kind?.charges ? `, ${n0(t.unknown_kind.charges)} of no known kind` : ''})`, 'bh.charging.count'],
+        ['Charging sessions', `${n0(t.charges)} (AC ${n0(t.ac?.charges)}, DC ${n0(t.dc?.charges)})`, 'bh.charging.count'],
         ['Energy added to the pack', format(t.energy_added_kwh, 'energy'), 'bh.charging.energy_added'],
         ['Energy from the grid', `${format(t.energy_grid_kwh, 'energy')}${t.grid_coverage_pct != null && t.grid_coverage_pct < 100 ? ` (measured for ${pct(t.grid_coverage_pct)})` : ''}`, 'bh.charging.energy_used'],
         ['Charging efficiency', t.charging_efficiency_pct == null ? 'not measured' : pct(t.charging_efficiency_pct, 1), 'bh.charging.efficiency'],

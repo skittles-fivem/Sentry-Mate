@@ -1,6 +1,5 @@
 //! Server health and storage (docs/ui-api.md, "Server, settings and health"): `/about`, `/cars/{car}/health`,
-//! `/cars/{car}/rebuild`, `/cars/{car}/overlaps`, `/cars/{car}/storage`, `/system/storage` (with its `detail` and
-//! `compact`) and `/system/health`, over
+//! `/cars/{car}/rebuild`, `/cars/{car}/overlaps`, `/cars/{car}/storage`, `/system/storage` and `/system/health`, over
 //! the engine's [`engine::query::system`]. (`/health`, with no sign-in and no body, is the frame's own.)
 //!
 //! Reads of a car are for every account that sees it (the guard checks the `{car}`; a hidden car answers as an
@@ -12,7 +11,7 @@ use crate::ctx::target;
 use crate::query::MAX_MS;
 use crate::{ApiError, ApiResult, AppState, CarParam, JsonBody, Params, Viewer, ids};
 use axum::extract::State;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use engine::Engine;
@@ -116,11 +115,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/about", get(about))
         .route("/api/v1/cars/{car}/health", get(health))
         .route("/api/v1/cars/{car}/rebuild", post(rebuild))
+        .route("/api/v1/cars/{car}/gps-layout", get(gps_layout).put(put_gps_layout))
         .route("/api/v1/cars/{car}/overlaps", get(overlaps).patch(flip_overlap))
         .route("/api/v1/cars/{car}/storage", get(car_storage))
         .route("/api/v1/system/storage", get(system_storage))
-        .route("/api/v1/system/storage/detail", get(storage_detail))
-        .route("/api/v1/system/storage/compact", post(storage_compact))
         .route("/api/v1/system/health", get(system_health))
 }
 
@@ -254,6 +252,51 @@ async fn rebuild(
     })))
 }
 
+/// `GET /cars/{car}/gps-layout`: the car's own layout of the Screenmate's GPS frame (0x04F on its internal bus) as
+/// `sentry-mate gps-layout` prints it, or null while the DBC's is used.
+async fn gps_layout(State(app): State<AppState>, CarParam(car): CarParam) -> ApiResult<Json<Value>> {
+    let e = app.service::<Engine>()?;
+    let l = app
+        .blocking(move |_| e.gps_layout(car).map_err(|x| ApiError::server(format!("reading the layout: {x}"))))
+        .await?;
+    Ok(Json(json!({ "car": ids::car(car), "layout": l.map(|l| l.to_string()) })))
+}
+
+/// `PUT /cars/{car}/gps-layout` `{ layout }`: the layout `sentry-mate gps-layout` printed (`lat 0|28@1- (1e-6,0);
+/// lon 28|28@1- (1e-6,0)`), or null for the DBC's. A change starts a whole rebuild of the car (its stored logs are
+/// decoded again); the answer names its `job`, null when nothing changed.
+async fn put_gps_layout(
+    State(app): State<AppState>,
+    v: Viewer,
+    CarParam(car): CarParam,
+    body: JsonBody,
+) -> ApiResult<Json<Value>> {
+    body.only(&["layout"])?;
+    let layout: Option<model::gps::GpsLayout> = match body.get("layout") {
+        None => return Err(ApiError::invalid("layout", "Required: the layout, or null for the DBC's.")),
+        Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.parse().map_err(|why: String| ApiError::invalid("layout", &why))?),
+        Some(_) => return Err(ApiError::invalid("layout", "Must be text or null.")),
+    };
+    let e = app.service::<Engine>()?;
+    let job = app
+        .blocking(move |_| e.set_gps_layout(car, layout).map_err(|x| ApiError::server(format!("the layout: {x}"))))
+        .await?;
+    if job.is_some() {
+        let name = app.car_name_now(car).await;
+        let summary = match layout {
+            Some(l) => format!("Set how {name}'s Screenmate GPS frames are read ({l}); its history is rebuilt."),
+            None => format!("Set {name}'s Screenmate GPS frames to be read as the DBC says; its history is rebuilt."),
+        };
+        v.audit(&app, "car-gps-layout", Some(&target("car", Some(car), "")), &summary).await?;
+    }
+    Ok(Json(json!({
+        "car": ids::car(car),
+        "layout": layout.map(|l| l.to_string()),
+        "job": job.map(|j| j.id.to_string()),
+    })))
+}
+
 async fn overlaps(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
     list_answer(&app, &p, "overlaps", move |e, pg| q::system::overlaps(e, car, pg)).await
 }
@@ -368,42 +411,6 @@ async fn system_storage(State(app): State<AppState>, p: Params) -> ApiResult<Res
         Ok(Storage { body: s, free_bytes: free, full_in_days })
     })
     .await
-}
-
-/// `/system/storage/detail`: what the data folder takes by category (one walk over it), the disk's free space, and
-/// compaction as it is now. For the Storage panel of Settings: Server and access.
-async fn storage_detail(State(app): State<AppState>, p: Params) -> ApiResult<Json<Value>> {
-    p.wants_csv()?;
-    let e = app.service::<Engine>()?;
-    let body = app
-        .blocking(move |_| {
-            let categories = q::storage::categories(&e).map_err(super::now::failed)?;
-            let free = e.store().dir().parent().and_then(free_bytes);
-            Ok(json!({
-                "total_bytes": categories.iter().map(|c| c.bytes).sum::<u64>(),
-                "total_disk_bytes": categories.iter().map(|c| c.disk_bytes).sum::<u64>(),
-                "categories": categories,
-                "free_bytes": free,
-                "compaction": e.compaction(),
-            }))
-        })
-        .await?;
-    Ok(Json(body))
-}
-
-/// `POST /system/storage/compact`: starts a compaction pass in the background unless one runs. Nothing is lost by
-/// it (docs/plans/storage.md); the answer is the compaction as it is right after.
-async fn storage_compact(State(app): State<AppState>, v: Viewer) -> ApiResult<Response> {
-    let e = app.service::<Engine>()?;
-    let was = e.compaction();
-    let now = app
-        .blocking(move |_| e.compact_start(false).map_err(|x| ApiError::server(format!("starting compaction: {x}"))))
-        .await?;
-    if was.status != engine::compact::Status::Running {
-        v.audit(&app, "storage-compacted", Some("server:storage"), "Started packing the stored data (Compact now).")
-            .await?;
-    }
-    Ok((axum::http::StatusCode::ACCEPTED, Json(json!({ "compaction": now }))).into_response())
 }
 
 async fn system_health(State(app): State<AppState>, p: Params) -> ApiResult<Response> {

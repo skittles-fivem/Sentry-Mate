@@ -311,114 +311,6 @@ class Storage(ServerCase):
         self.assertGreater(h["uptime_ms"], 0)
 
 
-class StorageDetail(ServerCase):
-    GROUPS = {"logs", "series", "rows", "kv", "imports", "server"}
-
-    def detail(self):
-        return self.c.get("/api/v1/system/storage/detail")
-
-    def test_1_detail_idle(self):
-        d = self.detail()
-        cats = d["categories"]
-        self.assertEqual([c["disk_bytes"] for c in cats], sorted((c["disk_bytes"] for c in cats), reverse=True))
-        self.assertEqual(len({c["key"] for c in cats}), len(cats))
-        for c in cats:
-            self.assertIn(c["group"], self.GROUPS)
-            self.assertTrue(c["label"])
-            self.assertGreater(c["files"], 0)
-            self.assertGreaterEqual(c["disk_bytes"], c["bytes"])
-            self.assertEqual(c["disk_bytes"] % 4096, 0)
-        for key in ("logs.raw", "logs.sidecars", "logs.packs", "logs.ledger", "series.can.snapshots",
-                    "series.teslamate.snapshots", "series.teslamate-local.snapshots", "curves.can.snapshots",
-                    "rows.snapshots", "kv.engine", "kv.day-parts", "imports.uploads", "server.accounts",
-                    "server.audit", "server.db", "server.web", "server.tiles"):
-            self.assertIn(key, {c["key"] for c in cats})
-        self.assertEqual(d["total_bytes"], sum(c["bytes"] for c in cats))
-        self.assertEqual(d["total_disk_bytes"], sum(c["disk_bytes"] for c in cats))
-        self.assertEqual(d["free_bytes"], self.c.get("/api/v1/system/storage")["free_bytes"])
-        comp = d["compaction"]
-        self.assertEqual(set(comp), {"status", "automatic", "started_ms", "finished_ms", "step", "done", "total",
-                                     "last_saved_bytes", "saved_bytes", "error"})
-        # idle on the first load, and reading it again changes nothing (the pixel checks rely on it)
-        self.assertEqual(comp["status"], "idle")
-        self.assertIs(comp["automatic"], True)
-        self.assertIsNone(comp["step"])
-        self.assertIsNone(comp["error"])
-        self.assertLess(comp["started_ms"], comp["finished_ms"])
-        self.assertLess(comp["finished_ms"], NOW)
-        self.assertGreater(comp["saved_bytes"], comp["last_saved_bytes"])
-        self.assertEqual(self.detail(), d)
-
-    def test_2_compact(self):
-        before = self.detail()
-        size = {c["key"]: c for c in before["categories"]}
-        self.c.error("POST", "/api/v1/system/storage/compact", 403, "csrf", csrf=False)
-        r = self.c.json("POST", "/api/v1/system/storage/compact", expect=202)
-        self.assertEqual(set(r), {"compaction"})
-        run = r["compaction"]
-        self.assertEqual((run["status"], run["step"], run["done"], run["total"]), ("running", "logs", 0, 0))
-        self.assertEqual(run["started_ms"], NOW)
-        # a second ask while it runs starts no second pass
-        again = self.c.json("POST", "/api/v1/system/storage/compact", expect=202)["compaction"]
-        self.assertEqual(again, run)
-        log = [x for x in self.c.get("/api/v1/audit?limit=5")["items"] if x["action"] == "storage-compacted"]
-        self.assertEqual(len(log), 1, "the pass that started is in the audit log, once")
-        self.assertEqual((log[0]["account"], log[0]["target"], log[0]["group"]), ("admin", "server:storage", "settings"))
-        seen, d = [], None
-        for _ in range(12):
-            d = self.detail()
-            comp = d["compaction"]
-            if comp["status"] != "running":
-                break
-            self.assertIn(comp["step"], ("logs", "series", "records"))
-            self.assertLessEqual(comp["done"], comp["total"])
-            self.assertGreater(comp["total"], 0)
-            self.assertEqual(d["categories"], before["categories"], "nothing moves until the pass is done")
-            seen.append(comp["step"])
-        self.assertEqual(seen, ["logs", "logs", "series", "records"])
-        comp = d["compaction"]
-        self.assertEqual(comp["status"], "idle")
-        self.assertEqual(comp["finished_ms"], NOW)
-        after = {c["key"]: c for c in d["categories"]}
-        # logs and sidecars as uploaded went into the day packs, and a few categories shrank
-        for key in ("logs.raw", "logs.sidecars", "series.can.snapshots", "kv.engine", "kv.day-parts"):
-            self.assertLess(after[key]["disk_bytes"], size[key]["disk_bytes"], key)
-        self.assertGreater(after["logs.packs"]["bytes"], size["logs.packs"]["bytes"])
-        self.assertGreater(after["logs.packs"]["files"], size["logs.packs"]["files"])
-        for key in ("server.tiles", "imports.uploads", "server.audit", "logs.ledger"):
-            self.assertEqual(after[key], size[key], key)
-        freed = before["total_disk_bytes"] - d["total_disk_bytes"]
-        self.assertGreater(freed, 0)
-        self.assertEqual(comp["last_saved_bytes"], freed)
-        self.assertEqual(comp["saved_bytes"], before["compaction"]["saved_bytes"] + freed)
-        self.assertEqual([c["disk_bytes"] for c in d["categories"]],
-                         sorted((c["disk_bytes"] for c in d["categories"]), reverse=True))
-        self.assertEqual(self.detail(), d)
-
-    def test_3_nothing_left(self):
-        before = self.detail()
-        self.c.json("POST", "/api/v1/system/storage/compact", expect=202)
-        d = before
-        for _ in range(12):
-            d = self.detail()
-            if d["compaction"]["status"] != "running":
-                break
-        self.assertEqual(d["compaction"]["status"], "idle")
-        self.assertEqual(d["compaction"]["last_saved_bytes"], 0)
-        self.assertEqual(d["compaction"]["saved_bytes"], before["compaction"]["saved_bytes"])
-        self.assertEqual(d["categories"], before["categories"])
-
-    def test_4_failed(self):
-        # a pass that failed says why, and the next ask starts a new one without the error
-        self.detail()
-        with self.server.app.store.lock:
-            self.server.app.store.compaction.update(status="failed", step=None, error="The disk is full.")
-        comp = self.detail()["compaction"]
-        self.assertEqual((comp["status"], comp["error"]), ("failed", "The disk is full."))
-        run = self.c.json("POST", "/api/v1/system/storage/compact", expect=202)["compaction"]
-        self.assertEqual((run["status"], run["error"]), ("running", None))
-
-
 class BigFleetSystem(ServerCase):
     server_args = {"cars": 500}
 
@@ -439,8 +331,6 @@ class WatchSystem(ServerCase):
     def test_watch(self):
         self.c.error("PATCH", "/api/v1/settings", 403, "not_allowed", body={"version": 1, "range": "ideal"})
         self.c.error("GET", "/api/v1/system/storage", 403, "not_allowed")
-        self.c.error("GET", "/api/v1/system/storage/detail", 403, "not_allowed")
-        self.c.error("POST", "/api/v1/system/storage/compact", 403, "not_allowed")
         self.c.error("GET", "/api/v1/system/health", 403, "not_allowed")
         self.c.error("POST", "/api/v1/cars/c1/rebuild", 403, "not_allowed", body={})
         self.c.error("GET", "/api/v1/cars/c3/health", 404, "no_such_car")

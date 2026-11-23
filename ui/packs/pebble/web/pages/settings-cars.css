@@ -17,9 +17,3 @@
   .ds-row { transition: background-color 120ms ease, box-shadow 120ms ease; }
 }
 html[data-form="phone"] .ds-link { min-height: var(--h-btn); }
-
-/* the default price per kWh, beside free Supercharging */
-.dp-cur { text-transform: uppercase; }
-.dp-two { display: flex; flex-wrap: wrap; gap: var(--s3); }
-.dp-two .field { width: round(10rem, var(--e)); }
-.dp-two .field:last-child { width: round(6rem, var(--e)); }

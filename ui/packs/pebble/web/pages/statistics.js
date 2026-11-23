@@ -7,8 +7,8 @@
 // Data: GET /api/v1/cars/{car}/statistics (or /statistics?cars=all), /cars/{car}/mileage, /cars/{car}/drives.
 
 import { h } from '../shared/dom.js';
-import { format, formatMoney, convert, getUnits, unitLabel } from '../shared/units.js';
-import { formatDate, formatDateRange, formatDuration, dateFormat, DAY } from '../shared/time.js';
+import { format, convert, getUnits, unitLabel } from '../shared/units.js';
+import { formatDate, formatDateRange, formatDuration, dateFormat } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
@@ -34,16 +34,6 @@ function addMoney(lists, key = 'amount') {
   const by = new Map();
   for (const l of lists) for (const x of l || []) if (x && x[key] != null) by.set(x.currency, (by.get(x.currency) || 0) + x[key]);
   return [...by].map(([currency, amount]) => ({ currency, amount }));
-}
-
-// the total cost of a row: priced plus estimated, per currency (an older server sends only the priced cost)
-const totalOf = (r) => r.cost_total_by_currency || r.cost_by_currency || [];
-const moneyLine = (list, kind = 'money') => list.map((x) => (kind === 'money' ? formatMoney(x.amount, x.currency) : format({ amount: x.amount, currency: x.currency }, kind))).join(' + ');
-// under a row's total: the estimated part, else how many of its charges have a price
-function costSub(r) {
-  const est = (r.cost_estimated_by_currency || []).filter((x) => x && x.amount);
-  if (est.length) return `est. ${moneyLine(est)}`;
-  return r.charges_priced != null && r.charges && r.charges_priced < r.charges && totalOf(r).length ? `${n0(r.charges_priced)} of ${n0(r.charges)} priced` : null;
 }
 
 export async function mount(ctx) {
@@ -106,9 +96,9 @@ export async function mount(ctx) {
         ['Added', r.charges ? h('a', { class: 'st-count', href: `${linkFor('charges', r)}#habits`, cover: 'statistics.link.charging_stats', title: 'Charging habits of this period' }, format(r.energy_added_kwh, 'energy')) : h('span', { class: 'st-count is-zero', cover: 'statistics.link.charging_stats' }, format(r.energy_added_kwh ?? 0, 'energy'))],
         ['Charges', r.charges ? h('a', { class: 'st-count', href: linkFor('charges', r), cover: 'statistics.link.charges' }, n0(r.charges)) : h('span', { class: 'st-count is-zero', cover: 'statistics.link.charges' }, '0'), 'statistics.col.charges_count'],
         ['Per charge', num(r.energy_per_charge_kwh, 'energy', { size: 's' }), 'statistics.col.avg_energy_per_charge'],
-        ['Cost', [money(totalOf(r), { size: 's' }), costSub(r) ? h('span', { class: 'tile-line' }, costSub(r)) : null], 'statistics.col.costs'],
+        ['Cost', money(r.cost_by_currency, { size: 's' }), 'statistics.col.costs'],
         ['Per kWh', money(r.price_per_kwh, { size: 's', key: 'value', kind: 'price_energy' }), 'statistics.col.cost_per_kwh'],
-        [`Priced per 100 ${unitLabel('distance')}`, money(r.cost_per_100km, { size: 's', kind: 'money_per_distance' }), 'statistics.col.cost_per_distance'],
+        [`Per 100 ${unitLabel('distance')}`, money(r.cost_per_100km, { size: 's', kind: 'money_per_distance' }), 'statistics.col.cost_per_distance'],
         ['Net use', num(r.net_wh_per_km, 'efficiency', { size: 's' }), 'statistics.col.consumption_net'],
         ['Gross use', num(r.gross_wh_per_km, 'efficiency', { size: 's' }), 'statistics.col.consumption_gross'],
         ['Parked on top', num(r.overhead_pct, 'percent', { size: 's' }), 'statistics.col.consumption_overhead'],
@@ -119,23 +109,12 @@ export async function mount(ctx) {
   }
 
   function paintTotals(rows) {
-    const cost = addMoney(rows.map(totalOf));
-    const est = addMoney(rows.map((r) => r.cost_estimated_by_currency)).filter((x) => x.amount);
-    const charges = sum(rows, (r) => r.charges), logged = sum(rows, (r) => r.distance_logged_km);
-    const priced = rows.some((r) => r.charges_priced != null) ? sum(rows, (r) => r.charges_priced) : null;
-    const days = Math.max(1, sum(rows, (r) => (r.period_end_ms - r.period_start_ms) / DAY));
-    const costNote = cost.length ? [
-      priced != null ? `priced ${n0(priced)} of ${n0(charges)} charges` : 'per currency, never added across',
-      est.length ? `${moneyLine(est)} estimated` : null,
-      logged > 1 ? moneyLine(cost.map((x) => ({ currency: x.currency, amount: (x.amount / logged) * 100 })), 'money_per_distance') : null,
-      `${moneyLine(cost.map((x) => ({ currency: x.currency, amount: x.amount / days })))} per day`,
-    ].filter(Boolean).join(' · ') : 'per currency, never added across';
-    const odoDropped = sum(rows, (r) => r.completeness?.odometer_dropped);
+    const cost = addMoney(rows.map((r) => r.cost_by_currency));
     totBox.replaceChildren(
-      statTile({ label: 'Distance', value: sum(rows, (r) => r.distance_odometer_km ?? r.distance_logged_km), kind: 'distance', icon: 'route', sub: `${n0(sum(rows, (r) => r.drives))} drives${odoDropped > 0 ? `; ${n0(odoDropped)} odometer ${odoDropped === 1 ? 'reading' : 'readings'} left out` : ''}` }),
+      statTile({ label: 'Distance', value: sum(rows, (r) => r.distance_odometer_km ?? r.distance_logged_km), kind: 'distance', icon: 'route', sub: `${n0(sum(rows, (r) => r.drives))} drives` }),
       statTile({ label: 'Driving time', value: sum(rows, (r) => r.time_driven_ms), kind: 'duration', icon: 'clock', sub: 'drives that started in the period' }),
       statTile({ label: 'Energy added', value: sum(rows, (r) => r.energy_added_kwh), kind: 'energy', icon: 'bolt', sub: `${n0(sum(rows, (r) => r.charges))} charges` }),
-      tile({ w: 1, title: 'Total cost', icon: 'coin', cls: 'tile-stat' }, money(cost, { why: charges ? 'no charge has a price' : 'no charge' }), h('p', { class: 'tile-line' }, costNote)));
+      tile({ w: 1, title: 'Charging cost', icon: 'coin', cls: 'tile-stat' }, money(cost, { why: 'no price yet' }), h('p', { class: 'tile-line' }, 'per currency, never added across')));
   }
 
   function paintChart(rows) {

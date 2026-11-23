@@ -3,10 +3,8 @@
 // server's host names and port, how access works, and their own sessions (sign out one, all others, or
 // here). Admins also get the accounts (roles, car lists, two-step sign-in), the audit log (each entry
 // links to the item it changed), the host names for the certificate, the ports, and where the recovery
-// key and backups stand, the move to another server (a move code or an export file:
-// pages/settings-server-move.js), and Storage: the space on disk by category and what compaction saved
-// (GET /system/storage/detail), with "Compact now" (POST /system/storage/compact; while a pass runs the detail
-// is read again every 2 s). Changes are saved through the API with the object's version; a short note
+// key and backups stand, and the move to another server (a move code or an export file:
+// pages/settings-server-move.js). Changes are saved through the API with the object's version; a short note
 // confirms each one.
 
 import { h, replace } from '../shared/dom.js';
@@ -37,10 +35,6 @@ const ROLE_TEXT = {
 };
 const PURPOSE = { web: 'Web pages and API', upload: 'CAN Bridge uploads' };
 const errText = (e) => (e?.fields ? Object.values(e.fields).join(' ') : errorWords(e).text);
-const bytes = (v) => format(v, 'bytes');
-// storage: the groups of the categories and the steps of a compaction pass, in plain words
-const STORE_GROUP = { logs: 'CAN logs', series: 'Time series', rows: 'Drives and charges', kv: 'Kept answers and records', imports: 'Imports', server: 'Server' };
-const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records' };
 
 // a row: the label and its explanation on the left, the control on the right (the app's .setting)
 const setting = (titleText, text, control, cv = null) => h('div', { class: 'setting', cover: cv },
@@ -84,7 +78,7 @@ export async function mount(ctx) {
   const admin = ctx.admin;
   const me = ctx.me || {};
   const query = ctx.query || {};
-  const S = { settings: null, network: null, notices: [], accounts: [], cars: [], sessions: [], trips: [], storage: null, storageErr: null };
+  const S = { settings: null, network: null, notices: [], accounts: [], cars: [], sessions: [], trips: [] };
 
   async function loadAccounts() { S.accounts = admin ? await ctx.api.list('accounts', { limit: 500 }).all({ max: 5000 }) : []; }
   async function loadSessions() { S.sessions = await ctx.api.list('me/sessions', { limit: 500 }).all({ max: 5000 }); }
@@ -98,7 +92,6 @@ export async function mount(ctx) {
       loadAccounts(),
       loadSessions(),
       admin ? ctx.api.list('trips', { limit: 500 }).all({ max: 5000 }).then((t) => { S.trips = t; }).catch(() => {}) : null,
-      admin ? ctx.api.get('system/storage/detail').then((d) => { S.storage = d; }).catch((e) => { S.storageErr = e; }) : null,
     ]);
     Object.assign(S, { settings, network, notices: notices?.items || [], cars });
   } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }
@@ -572,8 +565,8 @@ export async function mount(ctx) {
   ctx.on(whoPick, 'change', refilter);
   const auditTable = admin ? dataTable(ctx, {
     title: 'Audit log', icon: 'book', path: 'audit', label: 'Who changed what', csvName: 'audit-log',
-    limit: 10, autoMore: true, moreLabel: 'Load more', cls: 'ss-audit', side: auditFilters, box: 'Audit log entries',
-    note: `Every change and every sign-in, newest first; five show at a time, and more load as you scroll the list. The item links to what was changed, where it still exists. Times are in ${zoneText}.`,
+    limit: 10, autoMore: true, moreLabel: 'Load more', cls: 'ss-audit', side: auditFilters,
+    note: `Every change and every sign-in, newest first; more load as you scroll. The item links to what was changed, where it still exists. Times are in ${zoneText}.`,
     columns: [
       { key: 'at_ms', label: `When (${zone})`, cls: 'ss-audit-when', render: (e) => dateTime(e.at_ms, tz) },
       { key: 'account', label: 'Who', render: (e) => (e.account ? h('b', null, e.account) : h('span', { class: 'faint' }, 'The server')) },
@@ -585,96 +578,6 @@ export async function mount(ctx) {
       ? emptyState({ icon: 'book', title: 'Nothing matches', text: 'No entry fits this What and Who. Choose Everything or Everyone to see more.' })
       : emptyState({ icon: 'book', title: 'Nothing recorded yet', text: 'Each sign-in and each change appears here as it happens.' })),
   }) : null;
-
-  /* ---------------------------------------------------------------- storage and compaction (admin) */
-  // The space on disk by category, largest first, and what compaction saved. "Compact now" starts a pass;
-  // while one runs (also one the server started by itself) the detail is read again every 2 s for its
-  // progress, and when it ends the table is drawn again and a note says what was freed.
-  const compactBtn = h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: () => compactNow() }, icon('reset', 'ico--sm'), 'Compact now');
-  const storFigs = h('div', { class: 'ss-stor-figs' });
-  const storLine = h('p', { class: 'ss-stor-line', 'aria-live': 'polite' });
-  const storageTable = admin ? dataTable(ctx, {
-    title: 'Storage', icon: 'server', rows: S.storage?.categories || [], label: 'Space on disk by category', csvName: 'storage on disk', cls: 'ss-storage',
-    note: 'What takes the space on disk, largest first, with the kind of data as a tag.',
-    side: [h('span', { class: 'faint' }, 'Admins only'), compactBtn],
-    sort: { key: 'disk_bytes', dir: 'desc' },
-    csv: { columns: [{ label: 'What', value: (c) => c.label }, { label: 'Kind', value: (c) => STORE_GROUP[c.group] || c.group }, { label: 'Key', value: (c) => c.key },
-      { label: 'Files', value: (c) => c.files }, { label: 'Size (bytes)', value: (c) => c.bytes }, { label: 'On disk (bytes)', value: (c) => c.disk_bytes }] },
-    columns: [
-      { key: 'label', label: 'What', sort: true, render: (c) => h('span', { class: 'row ss-acc' }, h('span', null, c.label), tag(STORE_GROUP[c.group] || c.group)) },
-      { key: 'files', label: 'Files', num: true, sort: true, render: (c) => format(c.files, 'count') },
-      { key: 'disk_bytes', label: 'On disk', num: true, sort: true, render: (c) => bytes(c.disk_bytes) },
-    ],
-    empty: () => emptyState({ icon: 'server', title: 'Not known', text: `The server did not say what takes the space${S.storageErr ? `: ${errText(S.storageErr)}` : '.'}` }),
-  }) : null;
-  let storTimer = null, storPollErr = null;
-  ctx.onCleanup(() => clearTimeout(storTimer));
-  function paintStorage() {
-    const d = S.storage;
-    const c = d?.compaction || null;
-    const running = c?.status === 'running';
-    compactBtn.disabled = running || !c;
-    const last = !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'Nothing left to pack';
-    replace(storFigs, figures([
-      metric('All together', d?.total_disk_bytes, 'bytes', { size: 'sm', why: 'Not known.', explain: 'Everything in the table, as it lies on disk.' }),
-      metric('Free on the disk', d?.free_bytes, 'bytes', { size: 'sm', why: 'Not known.', explain: 'Room left for new data.' }),
-      metric('Saved so far', c?.saved_bytes, 'bytes', { size: 'sm', why: 'Not known.', explain: 'What compaction has freed in all.' }),
-      metric('Last pass', last, null, { size: 'sm', explain: c?.finished_ms != null ? `Finished ${dateTime(c.finished_ms, tz)} (${zone}).` : 'No pass has finished yet.' }),
-    ]));
-    if (running) {
-      replace(storLine, h('span', { class: 'mv-spin', 'aria-hidden': 'true' }),
-        h('span', null, h('b', null, 'Packing…'), ` ${PACK_STEP[c.step] || c.step || 'getting ready'}, `,
-          c.total ? `${format(c.done ?? 0, 'count')} of ${format(c.total, 'count')}` : 'counting',
-          storPollErr ? ` (could not read the progress just now: ${errText(storPollErr)})` : null));
-    } else if (c?.status === 'failed') {
-      replace(storLine, icon('warn', 'ico--sm'), h('span', null, h('b', null, 'The last pass failed: '), c.error || 'the server gave no reason.'));
-    } else {
-      replace(storLine, icon('info', 'ico--sm'), h('span', null, !c ? 'The server did not say how compaction stands.'
-        : c.automatic ? 'Compaction runs by itself when the server is idle; Compact now starts a pass at once.'
-          : 'Compaction does not run by itself on this server; Compact now starts a pass.'));
-    }
-    storLine.classList.toggle('is-bad', !running && c?.status === 'failed');
-  }
-  function scheduleStorage() {
-    clearTimeout(storTimer);
-    if (S.storage?.compaction?.status === 'running') storTimer = setTimeout(pollStorage, 2000);
-  }
-  async function pollStorage() {
-    try {
-      const d = await ctx.api.get('system/storage/detail');
-      if (!ctx.alive()) return;
-      S.storage = d; storPollErr = null;
-      const c = d.compaction || {};
-      if (c.status !== 'running') {
-        storageTable.setRows(d.categories || []);
-        if (c.status === 'failed') flash(`Compaction failed: ${c.error || 'the server gave no reason.'}`, { kind: 'error' });
-        else flash(c.last_saved_bytes ? `Compaction is done: ${bytes(c.last_saved_bytes)} freed on disk.` : 'Compaction is done: nothing was left to pack.');
-      }
-    } catch (e) {
-      if (!ctx.alive()) return;
-      storPollErr = e;
-    }
-    paintStorage(); scheduleStorage();
-  }
-  async function compactNow() {
-    compactBtn.disabled = true;
-    try {
-      const r = await ctx.api.post('system/storage/compact');
-      if (!ctx.alive()) return;
-      S.storage = { ...(S.storage || {}), compaction: r.compaction };
-      storPollErr = null;
-    } catch (e) {
-      if (!ctx.alive()) return;
-      flash(`Could not start compaction: ${errText(e)}`, { kind: 'error' });
-    }
-    paintStorage(); scheduleStorage();
-  }
-  if (storageTable) {
-    storageTable.el.id = 'storage';
-    storageTable.el.querySelector('.tbl-bar').after(h('div', { class: 'ss-stor' }, storFigs, storLine,
-      h('p', { class: 'note' }, 'Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs\' signed originals are kept byte for byte.')));
-    paintStorage(); scheduleStorage();
-  }
 
   /* ---------------------------------------------------------------- moving to another server (admin) */
   const move = admin ? movePanel(ctx, { tz, zone: zoneText }) : null;
@@ -697,7 +600,6 @@ export async function mount(ctx) {
       h('div', { class: 'ss-two' }, hostPanel, h('div', { class: 'ss-col' }, namesPanel, portsPanel)),
       h('div', { class: 'ss-two' }, accessPanel, admin ? safety : null),
       move ? move.el : null,
-      storageTable ? storageTable.el : null,
       accountsTable ? [goneNote, accountsTable.el] : null,
       sessionGone, sessionsTable.el,
       auditTable ? auditTable.el : null));

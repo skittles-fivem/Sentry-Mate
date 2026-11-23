@@ -2,8 +2,7 @@
 //
 // Who is signed in, the look of this pack (theme Auto / Light / Dark, Interface size 50 to 200 %, Follow screen
 // size), quick links and Sign out. Every choice is saved to the account at once (PATCH /me/preferences), so it
-// follows the person to every device; a choice the server refuses is put back with a note. The one exception:
-// Size on this device (Auto or 80 to 125 %), kept in this browser only.
+// follows the person to every device; a choice the server refuses is put back with a note.
 
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -11,8 +10,7 @@ import { createSheet, sheetRow, sheetGroup } from './sheet.js';
 import { segmented, toggle } from './form.js';
 import { btn, initial } from './ui.js';
 import { currentPrefs, savePref, onPrefs } from './prefs.js';
-import { SIZES, SIZE_MIN, SIZE_MAX, sizeState, setSize, setDeviceSize, sizeNote, display, onSize } from './display.js';
-import { deviceSizeOptions, deviceSizeNote } from '../shared/devicesize.js';
+import { SIZES, SIZE_MIN, SIZE_MAX, sizeState, setSize, sizeNote, display } from './display.js';
 import { toast } from './toast.js';
 
 let sheet = null;
@@ -38,9 +36,6 @@ function build() {
     h('div', { class: 'stepper', role: 'group', 'aria-label': 'Interface size' }, smaller, sizeValue, bigger));
   const follow = toggle({ label: 'Follow screen size', sub: 'Larger on big screens, such as a 4K monitor.', checked: sizeState().follow, onchange: (on) => { setSize({ follow: on }); savePref({ follow_screen: on }).catch(notSaved); } });
   const sizeLine = h('p', { class: 'sheet-note' });
-  const device = segmented({ label: 'Size on this device', name: 'device-size', value: sizeState().device ? String(sizeState().device) : 'auto', cls: 'seg--device',
-    options: deviceSizeOptions().map((o) => [o.value, o.value === 'auto' ? 'Auto' : o.label]), onchange: (v) => setDeviceSize(v) });
-  const deviceLine = h('p', { class: 'sheet-note' });
   function stepSize(d) {
     const now = sizeState().size;
     const next = d > 0 ? (SIZES.find((s) => s > now) ?? SIZE_MAX) : ([...SIZES].reverse().find((s) => s < now) ?? SIZE_MIN);
@@ -53,7 +48,7 @@ function build() {
   sheet.body.append(
     who,
     h('section', { class: 'rows' }, h('h3', { class: 'rows-name' }, 'Look'),
-      h('div', { class: 'rows-card' }, theme, device, deviceLine, stepper, sizeLine), h('div', { class: 'rows-list' }, follow)),
+      h('div', { class: 'rows-card' }, theme, stepper, sizeLine), h('div', { class: 'rows-list' }, follow)),
     sheetGroup('Go to', [
       sheetRow({ href: '/settings/display', icon: 'sun', name: 'Display and units', sub: 'Units, language, UI pack' }),
       admin ? sheetRow({ href: '/settings/server', icon: 'server', name: 'Server and access', sub: 'Accounts, sessions, moving' }) : null,
@@ -70,12 +65,9 @@ function build() {
     bigger.disabled = s.size >= SIZE_MAX;
     follow.set(s.follow);
     sizeLine.textContent = sizeNote();
-    device.set(s.device ? String(s.device) : 'auto');
-    deviceLine.textContent = deviceSizeNote(s.device, { account: s.size });
   };
   onPrefs(sync);
   display.onChange(sync);
-  onSize(sync);
   sync();
 }
 

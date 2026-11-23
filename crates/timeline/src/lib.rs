@@ -44,10 +44,11 @@ mod units;
 pub mod vin;
 mod window;
 
+pub use calc::{FIX_PLACEHOLDER_DEG, MAX_FIX_KMH, drop_bad_fixes, real_fix};
 pub use facts::{Closed, FactsCollector, LogFacts, NotRecorded};
 pub use firmware::{FirmwareCollector, LogFirmware};
 pub use fuse::{ApiSpan, ApiState, FuseParams, Fused, fuse, fuse_all, fuse_ordered};
-pub use read::{LogRead, MAX_LOG_SAMPLES, read_log};
+pub use read::{LogRead, MAX_LOG_SAMPLES, read_log, read_log_with};
 pub use sample::{SampleBuilder, SampleParams};
 pub use states::is_settled;
 pub use timeline::{Input, Loss, Params, RULES_VERSION, Timeline, build, charge_id, drive_id};

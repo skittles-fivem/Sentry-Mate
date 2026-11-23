@@ -366,6 +366,7 @@ export async function mount(ctx) {
     if (t && tabs && tabNow !== 'setup') showTab('setup', { fromHash: true });
     if (t && !/^(tesla|teslafi)(-|$)/.test(t.id)) t.scrollIntoView({ block: 'start' });
     showTeslaHash();
+    if (ctx.alive()) ctx.ready(); // (going to an anchor took data-ready away: the page is still ready)
   };
   window.addEventListener('hashchange', onHash);
   ctx.onCleanup(() => window.removeEventListener('hashchange', onHash));

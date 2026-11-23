@@ -366,16 +366,10 @@ async fn a_cars_settings_keep_their_rules_and_the_consumption_factor_reaches_the
     assert_eq!(
         r.json(),
         json!({ "car": "c2", "time_zone": "Europe/Amsterdam", "version": 1,
-                // what the build says (as its card does): a US VIN only hints at the usual pack
-                "battery_chemistry": {
-                    "setting": "auto", "detected": "lfp",
-                    "evidence": "the usual pack for this build; a US VIN does not tell the chemistry: RWD (LFP) \
-                                 (owners' BMS readings; brick count from 0x332)",
-                },
+                "battery_chemistry": { "setting": "auto", "detected": null, "evidence": null },
                 "free_supercharging": [], "capacity_new_kwh": null, "full_range_new_km": null,
                 "warranty_threshold_pct": 70.0, "efficiency_wh_per_km_override": null, "software_version_typed": null,
                 "import_gap_fill": null, "import_gap_fill_on": true, "pack_replaced_date": null, "pack_new_kwh": null,
-                "default_price_per_kwh": null,
                 // what the car's build (a US Model 3 RWD) gives when nothing is typed
                 "capacity_new_kwh_default": 57.5, "full_range_new_km_default": 438.0,
                 "efficiency_wh_per_km_default": 131.3, "defaults_source": "vehicle_info",

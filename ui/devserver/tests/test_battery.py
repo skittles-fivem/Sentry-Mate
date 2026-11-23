@@ -7,16 +7,6 @@ from .helpers import DAY, NOW, ServerCase
 
 
 class Battery(ServerCase):
-    def test_whole_life_totals_add_up_and_stay_possible(self):
-        for car in ("c1", "c2", "c3"):
-            t = self.c.get(f"/api/v1/cars/{car}/totals")
-            self.assertEqual(t["ac"]["charges"] + t["dc"]["charges"] + t["unknown_kind"]["charges"], t["charges"])
-            if t["driven_since_km"] is not None:
-                self.assertGreaterEqual(t["driven_since_km"], 0)
-                self.assertAlmostEqual(t["driven_since_km"], t["odometer_last_km"] - t["odometer_first_km"], delta=0.01)
-            if t["charging_efficiency_pct"] is not None:
-                self.assertLessEqual(t["charging_efficiency_pct"], 100)
-
     def test_health_and_sources(self):
         b1 = self.c.get("/api/v1/cars/c1/battery")
         cap = b1["capacity"]
@@ -27,11 +17,7 @@ class Battery(ServerCase):
         self.assertEqual(b1["band"], {"low_pct": 20, "high_pct": 80, "charge_limit_pct": 80})
         self.assertEqual(self.c.get("/api/v1/cars/c3/battery")["capacity"]["new_source"], "owner")
         b2 = self.c.get("/api/v1/cars/c2/battery")
-        chem = b2["chemistry"]
-        self.assertEqual((chem["value"], chem["source"]), ("lfp", "detected"))
-        self.assertIn(chem["confidence"], ("low", "medium", "high"))
-        # the same detection as Car settings shows
-        self.assertEqual(self.c.get("/api/v1/cars/c2/settings")["battery_chemistry"]["detected"], chem["value"])
+        self.assertEqual(b2["chemistry"], {"value": "lfp", "source": "detected"})
         self.assertEqual(b2["band"]["high_pct"], 100)
         self.assertIn("lfp_charge_to_100_weekly", b2["notes"])
         life = b1["lifetime"]

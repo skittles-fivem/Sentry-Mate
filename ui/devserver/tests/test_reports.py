@@ -36,52 +36,6 @@ class Statistics(ServerCase):
         self.assertEqual(len(c2), 1)
         self.assertEqual(c2[0]["label"], "All")
 
-    def test_estimated_and_total_costs(self):
-        def per(lst):
-            return {x["currency"]: x["amount"] for x in lst}
-        seen = 0
-        for car in ("c1", "c2", "c3"):
-            for x in self.walk(f"/api/v1/cars/{car}/statistics?period=month", limit=100):
-                self.assertLessEqual(x["charges_priced"] + x["charges_estimated"], x["charges"], (car, x["label"]))
-                self.assertEqual(x["completeness"]["odometer_dropped"], 0)
-                cost, est, tot = per(x["cost_by_currency"]), per(x["cost_estimated_by_currency"]), per(x["cost_total_by_currency"])
-                self.assertEqual(set(tot), set(cost) | set(est))
-                for k, v in tot.items():
-                    self.assertAlmostEqual(v, cost.get(k, 0) + est.get(k, 0), delta=0.011, msg=(car, x["label"], k))
-                self.assertEqual(bool(est), x["charges_estimated"] > 0)
-                days = max(1.0, (x["period_end_ms"] - x["period_start_ms"]) / DAY)
-                self.assertEqual(set(per(x["cost_total_per_day"])), set(tot))
-                for k, v in per(x["cost_total_per_day"]).items():
-                    self.assertAlmostEqual(v, tot[k] / days, delta=0.011)
-                if x["distance_logged_km"] > 1:
-                    for k, v in per(x["cost_total_per_100km"]).items():
-                        self.assertAlmostEqual(v, tot[k] / x["distance_logged_km"] * 100, delta=0.011)
-                else:
-                    self.assertEqual(x["cost_total_per_100km"], [])
-                seen += x["charges_estimated"] if car == "c1" else 0
-        self.assertGreater(seen, 0)  # Comet's unpriced hotel charges are estimated at its default price
-        # Maple has no default price: its unpriced Toronto hotel charges stay unpriced and not estimated
-        c2 = self.c.get("/api/v1/cars/c2/statistics?period=all")["items"][0]
-        self.assertEqual(c2["charges_estimated"], 0)
-        self.assertLess(c2["charges_priced"], c2["charges"])
-
-    def test_estimates_follow_the_default_price(self):
-        path = "/api/v1/cars/c1/settings"
-        q = "/api/v1/cars/c1/statistics?period=all"
-        before = self.c.get(q)["items"][0]
-        self.assertEqual([x["currency"] for x in before["cost_estimated_by_currency"]], ["USD"])
-        s = self.c.get(path)
-        s = self.c.json("PATCH", path, {"version": s["version"], "default_price_per_kwh": {"value": 0.28, "currency": "USD"}})
-        doubled = self.c.get(q)["items"][0]
-        self.assertAlmostEqual(doubled["cost_estimated_by_currency"][0]["amount"],
-                               2 * before["cost_estimated_by_currency"][0]["amount"], delta=0.05)
-        self.assertEqual(doubled["cost_by_currency"], before["cost_by_currency"])  # the real cost is unchanged
-        s = self.c.json("PATCH", path, {"version": s["version"], "default_price_per_kwh": None})
-        none = self.c.get(q)["items"][0]
-        self.assertEqual((none["charges_estimated"], none["cost_estimated_by_currency"]), (0, []))
-        self.assertEqual(none["cost_total_by_currency"], none["cost_by_currency"])
-        self.c.json("PATCH", path, {"version": s["version"], "default_price_per_kwh": {"value": 0.14, "currency": "USD"}})
-
     def test_periods_in_the_car_time_zone(self):
         day = self.c.get("/api/v1/cars/c2/statistics?period=day&limit=3")["items"]
         import datetime as dt

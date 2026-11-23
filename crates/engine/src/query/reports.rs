@@ -9,7 +9,6 @@
 //! few counters; `/gaps` reads the states newest first and stops once the page is full.
 
 use super::drives::{Best, each, page_of};
-use super::odometer::{self, Odometer};
 use super::system::Shown;
 use super::{
     CarRef, List, Money, Paging, Period, PlaceBrief, QResult, QueryError, Scoped, car_of, cmp_key, money, place_ref, r,
@@ -98,14 +97,45 @@ pub(crate) fn drive_from(e: &Engine, car: CarId, t: u64, shown: &Shown) -> QResu
     Ok(out)
 }
 
+/// The odometer at `t`: from the newest drive before it that knows one (across a drive going on at `t`, in step
+/// with its distance); before every such drive, the start of the first one after `t` that knows it.
+pub(crate) fn odometer_at(e: &Engine, car: CarId, t: u64, shown: &Shown) -> QResult<Option<f64>> {
+    let mut out = None;
+    each::<Drive>(e, car, 0, t.saturating_add(1), None, shown, true, |d| {
+        let v = if d.end_ms <= t {
+            d.end_odometer_km.or(d.start_odometer_km)
+        } else {
+            let part = (t - d.start_ms) as f64 / d.end_ms.saturating_sub(d.start_ms).max(1) as f64;
+            d.start_odometer_km.map(|s| s + d.distance_km.unwrap_or(0.0) * part.clamp(0.0, 1.0))
+        };
+        out = v;
+        Ok(v.is_none())
+    })?;
+    if out.is_none() {
+        // before the first drive that knows it: where that drive started (the history's start, mostly)
+        each::<Drive>(e, car, t, u64::MAX, None, shown, false, |d| {
+            out = d.start_odometer_km.or(d.end_odometer_km);
+            Ok(out.is_none())
+        })?;
+    }
+    Ok(out)
+}
+
 /// The odometer at the start and at the end of `[a, b)`, both null when no data came in it: the period starts once
 /// the car's data stopped (`still`, see [`still_unknown`]). A period the data stopped in ends where the data did.
-pub(crate) fn odometer_over(odo: &Odometer, a: u64, b: u64, still: Option<u64>) -> (Option<f64>, Option<f64>) {
+pub(crate) fn odometer_over(
+    e: &Engine,
+    car: CarId,
+    a: u64,
+    b: u64,
+    still: Option<u64>,
+    shown: &Shown,
+) -> QResult<(Option<f64>, Option<f64>)> {
     let b = still.map_or(b, |t| b.min(t));
     if b <= a {
-        return (None, None);
+        return Ok((None, None));
     }
-    (odo.at(a), odo.at(b - 1))
+    Ok((odometer_at(e, car, a, shown)?, odometer_at(e, car, b - 1, shown)?))
 }
 
 /// One period of a report: its start and end (clipped to the asked span) and its label.
@@ -187,8 +217,6 @@ pub struct Completeness {
     pub open_drive: bool,
     pub open_charge: bool,
     pub teslamate_rows: u64,
-    /// Odometer readings of the period left out of the car's series ([`odometer`]).
-    pub odometer_dropped: u64,
 }
 
 /// A price in one currency.
@@ -222,17 +250,6 @@ pub struct StatRow {
     pub cost_by_currency: Vec<Money>,
     pub price_per_kwh: Vec<PriceIn>,
     pub cost_per_100km: Vec<Money>,
-    /// The charges with a cost (typed, a place's price, free Supercharging, an invoice, an import's).
-    pub charges_priced: u64,
-    /// The charges without one given an estimate: their place's price as it is now, else the car's
-    /// `default_price_per_kwh`. Estimates are never added into `cost_by_currency`.
-    pub charges_estimated: u64,
-    pub cost_estimated_by_currency: Vec<Money>,
-    /// The cost and the estimates together, per currency.
-    pub cost_total_by_currency: Vec<Money>,
-    /// That total over the logged distance (empty under 1 km) and over the period's days (at least one).
-    pub cost_total_per_100km: Vec<Money>,
-    pub cost_total_per_day: Vec<Money>,
     pub net_wh_per_km: Option<f64>,
     pub gross_wh_per_km: Option<f64>,
     pub overhead_pct: Option<f64>,
@@ -264,9 +281,6 @@ struct Acc {
     grid_known: bool,
     cost: BTreeMap<String, f64>,
     basis: BTreeMap<String, f64>,
-    priced: u64,
-    estimated: u64,
-    est: BTreeMap<String, f64>,
     stand: Option<f64>,
     unknown_ms: u64,
     dropped: u64,
@@ -317,8 +331,6 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
         Ok(true)
     })?;
     let cx = super::charges::ctx(e, c)?;
-    let places = e.places();
-    let default_price = super::fleet::settings_of(e, car)?.default_price_per_kwh;
     super::charges::prefill(e, car, wa, wb, &gaps)?;
     each::<Charge>(e, car, wa, wb, None, &shown, false, |ch| {
         if let Some(i) = slot_of(slots, ch.start_ms) {
@@ -337,10 +349,6 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
                         if p.basis == "grid" { v.energy_grid_kwh } else { v.dc_inlet_kwh.or(v.energy_added_kwh) };
                     *g.basis.entry(cost.currency.clone()).or_default() += basis.unwrap_or(0.0);
                 }
-                g.priced += 1;
-            } else if let Some((cur, amount)) = estimate(&places, &ch, &v, &c.time_zone, default_price.as_ref()) {
-                g.estimated += 1;
-                *g.est.entry(cur).or_default() += amount;
             }
             g.open_charge |= v.flags.in_progress;
             g.tm += u64::from(ch.source.is_imported());
@@ -400,10 +408,9 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
             acc[i].stand = Some(acc[i].stand.unwrap_or(0.0) + kwh);
         }
     }
-    let odo = odometer::of(e, car, None)?;
     let mut rows = Vec::with_capacity(slots.len());
     for (s, g) in slots.iter().zip(acc) {
-        let (o0, o1) = odometer_over(&odo, s.start, s.end, still);
+        let (o0, o1) = odometer_over(e, car, s.start, s.end, still, &shown)?;
         let span = s.end.saturating_sub(s.start).max(1);
         let net = (g.km > 0.1).then(|| g.kwh / g.km * 1000.0);
         let gross = g.stand.filter(|_| g.km > 0.1).map(|st| (g.kwh + st) / g.km * 1000.0);
@@ -423,16 +430,6 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
         } else {
             Vec::new()
         };
-        let mut total = g.cost.clone();
-        for (cur, amt) in &g.est {
-            *total.entry(cur.clone()).or_default() += amt;
-        }
-        let days = (span as f64 / DAY as f64).max(1.0);
-        let per = |by: f64| -> Vec<Money> {
-            total.iter().map(|(cur, amt)| Money { currency: cur.clone(), amount: cents(amt / by) }).collect()
-        };
-        let total_per100 = if g.km > 1.0 { per(g.km / 100.0) } else { Vec::new() };
-        let total_per_day = per(days);
         rows.push(StatRow {
             car: CarRef(car),
             time_zone: c.time_zone.clone(),
@@ -454,12 +451,6 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
             cost_by_currency: money(g.cost),
             price_per_kwh: price,
             cost_per_100km: per100,
-            charges_priced: g.priced,
-            charges_estimated: g.estimated,
-            cost_estimated_by_currency: money(g.est),
-            cost_total_by_currency: money(total),
-            cost_total_per_100km: total_per100,
-            cost_total_per_day: total_per_day,
             net_wh_per_km: r(net, 1),
             gross_wh_per_km: r(gross, 1),
             overhead_pct: r(net.zip(gross).filter(|(n, _)| *n > 0.0).map(|(n, gr)| (gr - n) / n * 100.0), 1),
@@ -470,32 +461,10 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
                 open_drive: g.open_drive,
                 open_charge: g.open_charge,
                 teslamate_rows: g.tm,
-                odometer_dropped: odo.dropped_in(s.start, s.end),
             },
         });
     }
     Ok(rows)
-}
-
-fn cents(v: f64) -> f64 {
-    (v * 100.0).round() / 100.0
-}
-
-/// What a charge without a cost is estimated at: its place's price as it is now (a price set after the charge
-/// ended), else the car's default price per kWh on the energy from the grid, else the energy added.
-fn estimate(
-    places: &crate::placing::Places,
-    ch: &Charge,
-    v: &super::charges::ChargeView,
-    car_tz: &str,
-    default: Option<&super::fleet::PricePerKwh>,
-) -> Option<(String, f64)> {
-    if let Some(c) = crate::costs::price_in(places, ch, &[], car_tz) {
-        return Some((c.currency, c.amount));
-    }
-    let p = default?;
-    let kwh = v.energy_grid_kwh.or(v.energy_added_kwh).filter(|k| *k > 0.0)?;
-    Some((p.currency.clone(), cents(kwh * p.value)))
 }
 
 /// `/statistics` for the cars given (the several-car answer names them): one row per car and period (day, ISO
@@ -640,10 +609,9 @@ pub fn mileage(
         })?;
     }
     let still = still_unknown(e, car)?;
-    let odo = odometer::of(e, car, None)?;
     let mut items = Vec::with_capacity(page.len());
     for (s, km) in page.iter().zip(logged) {
-        let (o0, o1) = odometer_over(&odo, s.start, s.end, still);
+        let (o0, o1) = odometer_over(e, car, s.start, s.end, still, &shown)?;
         let dist = r(o0.zip(o1).map(|(a, b)| (b - a).max(0.0)), 3);
         items.push(MileageRow {
             period_start_ms: s.start,
@@ -663,7 +631,7 @@ pub fn mileage(
     // over the recorded span only: from the start up to where the data stopped, if it has
     let basis_end = still.map_or(end, |t| end.min(t)).max(lo);
     let days = (basis_end - lo) as f64 / DAY as f64;
-    let (o0, o1) = odometer_over(&odo, lo, basis_end, None);
+    let (o0, o1) = odometer_over(e, car, lo, basis_end, None, &shown)?;
     let km_per_year = o0.zip(o1).filter(|_| days >= 7.0).map(|(a, b)| (b - a).max(0.0) / days * 365.25);
     Ok(scoped(
         &c,
@@ -696,9 +664,6 @@ pub struct Totals {
     pub odometer_first_km: Option<f64>,
     pub odometer_last_km: Option<f64>,
     pub odometer_last_ms: Option<u64>,
-    /// How far the odometer moved since logging began (`odometer_last_km - odometer_first_km`, never below 0), both
-    /// ends from the car's clean odometer series ([`super::odometer`]): valid readings only.
-    pub driven_since_km: Option<f64>,
     pub not_logged_km: Option<f64>,
     pub charges: u64,
     pub energy_added_kwh: f64,
@@ -707,8 +672,6 @@ pub struct Totals {
     pub charging_efficiency_pct: Option<f64>,
     pub ac: KindTotal,
     pub dc: KindTotal,
-    /// Charges whose kind (AC or DC) no input told: `ac`, `dc` and these add up to `charges`.
-    pub unknown_kind: KindTotal,
     pub updates: u64,
 }
 
@@ -721,45 +684,41 @@ pub fn totals(e: &Engine, car: CarId, source: Option<&str>) -> QResult<Scoped<To
     let shown = Shown::new(e, car, src)?;
     let dx = super::drives::ctx(e, &c)?;
     let (mut drives, mut km) = (0u64, 0.0f64);
-    let mut newest: Option<Drive> = None;
+    let (mut first, mut last): (Option<f64>, Option<(f64, u64)>) = (None, None);
     each::<Drive>(e, car, 0, u64::MAX, src, &shown, false, |d| {
         drives += 1;
         km += d.distance_km.unwrap_or(0.0);
-        newest = Some(d);
+        if first.is_none() {
+            first = d.start_odometer_km.or(d.end_odometer_km);
+        }
+        if let Some(o) = d.end_odometer_km.or(d.start_odometer_km) {
+            let at = if dx.live == Some(d.id) { crate::now_ms() } else { d.end_ms };
+            last = Some((o, at));
+        }
         Ok(true)
     })?;
-    // the first and last readings of the car's clean odometer series ([`odometer`]), not the first drive's
-    let odo = odometer::of(e, car, src)?;
-    let first = odo.first();
-    let last = odo.last().map(|(o, t)| match &newest {
-        // the drive going on now: read at this moment
-        Some(d) if dx.live == Some(d.id) && t >= d.start_ms => (o, crate::now_ms()),
-        _ => (o, t),
-    });
-    let (mut charges, mut added, mut grid, mut with_grid) = (0u64, 0.0, 0.0, 0u64);
-    // the efficiency: over the charges whose two energies may be compared (as each charge's own)
-    let (mut added_compared, mut grid_compared) = (0.0, 0.0);
+    let (mut charges, mut added, mut grid, mut added_with_grid, mut with_grid) = (0u64, 0.0, 0.0, 0.0, 0u64);
     let (mut ac, mut dc) = (KindTotal { charges: 0, kwh: 0.0 }, KindTotal { charges: 0, kwh: 0.0 });
-    let mut unknown_kind = KindTotal { charges: 0, kwh: 0.0 };
     each::<Charge>(e, car, 0, u64::MAX, src, &shown, false, |ch| {
         charges += 1;
         let kwh = ch.energy_added_kwh.unwrap_or(0.0);
         added += kwh;
         if let Some(g) = ch.energy_used_kwh {
             grid += g;
+            added_with_grid += kwh;
             with_grid += 1;
         }
-        if let Some((a, g)) = super::charges::compared_energies(&ch) {
-            added_compared += a;
-            grid_compared += g;
+        match ch.kind {
+            Some(model::ChargeKind::Ac) => {
+                ac.charges += 1;
+                ac.kwh += kwh;
+            }
+            Some(model::ChargeKind::Dc) => {
+                dc.charges += 1;
+                dc.kwh += kwh;
+            }
+            None => {}
         }
-        let k = match ch.kind {
-            Some(model::ChargeKind::Ac) => &mut ac,
-            Some(model::ChargeKind::Dc) => &mut dc,
-            None => &mut unknown_kind,
-        };
-        k.charges += 1;
-        k.kwh += kwh;
         Ok(true)
     })?;
     // (no overlaps to settle: CAN logs give no updates, so every imported one counts)
@@ -768,9 +727,8 @@ pub fn totals(e: &Engine, car: CarId, source: Option<&str>) -> QResult<Scoped<To
         updates += 1;
         Ok(true)
     })?;
-    for k in [&mut ac, &mut dc, &mut unknown_kind] {
-        k.kwh = r(Some(k.kwh), 3).unwrap_or(0.0);
-    }
+    ac.kwh = r(Some(ac.kwh), 3).unwrap_or(0.0);
+    dc.kwh = r(Some(dc.kwh), 3).unwrap_or(0.0);
     Ok(scoped(
         &c,
         Totals {
@@ -781,16 +739,14 @@ pub fn totals(e: &Engine, car: CarId, source: Option<&str>) -> QResult<Scoped<To
             odometer_first_km: r(first, 3),
             odometer_last_km: r(last.map(|l| l.0), 3),
             odometer_last_ms: last.map(|l| l.1),
-            driven_since_km: r(first.zip(last).map(|(f, l)| (l.0 - f).max(0.0)), 3),
             not_logged_km: r(first.zip(last).map(|(f, l)| (l.0 - f - km).max(0.0)), 3),
             charges,
             energy_added_kwh: r(Some(added), 3).unwrap_or(0.0),
             energy_grid_kwh: r(Some(grid), 3).unwrap_or(0.0),
             grid_coverage_pct: r((charges > 0).then(|| with_grid as f64 / charges as f64 * 100.0), 1),
-            charging_efficiency_pct: r((grid_compared > 0.0).then(|| added_compared / grid_compared * 100.0), 1),
+            charging_efficiency_pct: r((grid > 0.0).then(|| added_with_grid / grid * 100.0), 1),
             ac,
             dc,
-            unknown_kind,
             updates,
         },
     ))
@@ -1057,14 +1013,12 @@ pub fn compare(
             match metric {
                 "wh_per_km" | "odometer" => {
                     let mut acc: Vec<(f64, f64, Option<f64>, bool)> = vec![(0.0, 0.0, None, false); slots.len()];
-                    let odo = if metric == "odometer" { Some(odometer::of(e, car, None)?) } else { None };
                     each::<Drive>(e, car, lo, end, None, &shown, false, |d| {
                         if let Some(i) = slot_of(&slots, d.start_ms) {
                             let g = &mut acc[i];
                             g.3 = true;
-                            // the newest clean reading of the day (week), not a drive's own
-                            if let Some(o) = odo.as_ref().and_then(|o| o.last_in(slots[i].start, slots[i].end)) {
-                                g.2 = Some(o);
+                            if let Some(o) = d.end_odometer_km.or(d.start_odometer_km) {
+                                g.2 = Some(g.2.map_or(o, |x: f64| x.max(o)));
                             }
                             let km = d.distance_km.unwrap_or(0.0);
                             if km >= min_d {

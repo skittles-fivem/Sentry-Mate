@@ -149,11 +149,6 @@ pub struct Agg {
     pub cpower_max: Option<f64>,
     #[serde(default)]
     pub added_max: Option<f64>,
-    /// TeslaFi's `charge_energy_added` before a charge began, when the car had not set it back to 0 (it counts on
-    /// while the car stays plugged in, so a charge that resumes after a pause, a schedule or a raised limit starts
-    /// with the energy of the one before): the charge added only what came on top of it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub added_base: Option<f64>,
     #[serde(default)]
     pub charge_kind: Option<ChargeKind>,
     #[serde(default)]
@@ -207,7 +202,6 @@ impl Agg {
             power_min: p.power_kw,
             cpower_max: p.charger_power_kw.filter(|_| p.charging),
             added_max: p.energy_added_kwh.filter(|_| kind == Kind::Charge),
-            added_base: None,
             charge_kind: if kind == Kind::Charge { p.kind } else { None },
             out_sum: p.outside_temp_c.unwrap_or(0.0),
             out_n,
@@ -273,7 +267,6 @@ impl Agg {
         self.power_min = min(self.power_min, later.power_min);
         self.cpower_max = max(self.cpower_max, later.cpower_max);
         self.added_max = max(self.added_max, later.added_max);
-        self.added_base = self.added_base.or(later.added_base);
         self.charge_kind = match (self.charge_kind, later.charge_kind) {
             (Some(ChargeKind::Dc), _) | (_, Some(ChargeKind::Dc)) => Some(ChargeKind::Dc),
             (a, b) => a.or(b),
@@ -354,16 +347,6 @@ impl Agg {
         }
     }
 
-    /// The energy a charge added: the highest `charge_energy_added` of its polls, less what the counter had before it
-    /// began ([`Agg::added_base`]).
-    fn added(&self) -> Option<f64> {
-        let max = self.added_max?;
-        Some(match self.added_base {
-            Some(b) if b <= max => max - b,
-            _ => max,
-        })
-    }
-
     pub fn charge(&self) -> Charge {
         let r3 = |x: f64| (x * 1000.0).round() / 1000.0;
         let used = (self.charge_kind != Some(ChargeKind::Dc) && self.energy_seen && self.energy > 0.0)
@@ -377,7 +360,7 @@ impl Agg {
             place: None,
             address: None,
             kind: self.charge_kind,
-            energy_added_kwh: self.added().map(r3),
+            energy_added_kwh: self.added_max.map(r3),
             energy_used_kwh: used,
             start_soc: self.start_soc,
             end_soc: self.end_soc,
@@ -435,8 +418,6 @@ pub(crate) struct Run {
     was_parked: bool,
     charge: Option<Agg>,
     state: Option<Agg>,
-    /// The newest `charge_energy_added` of the piece's polls so far.
-    last_added: Option<f64>,
     /// Segments that began with the piece's first poll and ended inside it.
     pub heads: Vec<Agg>,
 }
@@ -548,19 +529,9 @@ impl Run {
         if p.charging && !p.moving() {
             match &mut self.charge {
                 Some(c) => c.add(p),
-                None => {
-                    let mut c = Agg::new(Kind::Charge, p);
-                    // the counter still holds an earlier charge's energy (it was not set back to 0 since)
-                    c.added_base = self
-                        .last_added
-                        .zip(p.energy_added_kwh)
-                        .filter(|(before, now)| *before > 0.0 && *now + 0.05 >= *before)
-                        .map(|(before, _)| before);
-                    self.charge = Some(c);
-                }
+                None => self.charge = Some(Agg::new(Kind::Charge, p)),
             }
         }
-        self.last_added = p.energy_added_kwh.or(self.last_added);
 
         // the state
         let st = p.state.or((p.driving() || p.charging).then_some(CarState::Online));

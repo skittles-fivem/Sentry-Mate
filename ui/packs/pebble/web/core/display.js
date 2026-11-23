@@ -7,8 +7,6 @@
 // screen size" off makes Auto 1. Interface size is 50 to 200 %. boot.js has the same formula for the first
 // paint: change both together. Both choices live in the person's preferences (interface_size, follow_screen);
 // this browser keeps a copy only for boot.js.
-// The Interface size on this device (shared/devicesize.js: 80 to 125 %, or Automatic) is kept in this browser only
-// and wins here when set: Auto 1 and that size, whatever the account says.
 //
 // Device pixels. --dp on <html> is one device pixel in CSS px. app.css rounds lengths to it, so tile edges,
 // borders and lines sit on whole device pixels at every browser zoom (50 to 200 %) and on 2x and 3x screens.
@@ -18,8 +16,6 @@
 //   data-form: 'phone' (under 600 CSS px wide: icons-only dock, 2 columns), 'compact' (icons-only dock) or 'wide'.
 // Columns are 17.5rem to 22.5rem wide (280 to 360 px at the standard size), 4 at 1280, 6 at 1920 and 8 at most:
 // a big screen shows more tiles, not bigger ones, and the grid sits in the middle with equal margins.
-
-import { readDeviceSize, writeDeviceSize, onDeviceSizeStorage } from '../shared/devicesize.js';
 
 const root = document.documentElement;
 
@@ -45,19 +41,14 @@ const clampSize = (v) => (Number.isFinite(+v) && v !== null && v !== '' ? Math.m
 const cached = readCache();
 let size = clampSize(cached?.size ?? 100);
 let follow = cached?.follow !== false;
-let device = readDeviceSize();
 const sizeListeners = new Set();
 
-/**
- * { size, follow, auto, device }: the account's choice, Auto for this screen, and this browser's own size
- * (null for Automatic), which wins when set.
- */
-export const sizeState = () => ({ size, follow, auto: follow ? autoFactor() : 1, device });
+/** { size, follow, auto }: the person's choice and Auto for this screen. */
+export const sizeState = () => ({ size, follow, auto: follow ? autoFactor() : 1 });
 
 function applySize() {
-  root.style.setProperty('--auto', String(follow && !device ? autoFactor() : 1));
-  root.style.setProperty('--ui-size', String((device || size) / 100));
-  if (device) root.dataset.uiDevice = String(device); else delete root.dataset.uiDevice;
+  root.style.setProperty('--auto', String(follow ? autoFactor() : 1));
+  root.style.setProperty('--ui-size', String(size / 100));
   try { localStorage.setItem(CACHE_KEY, JSON.stringify({ size, follow })); } catch { /* storage blocked: fine */ }
   for (const f of [...sizeListeners]) { try { f(sizeState()); } catch (e) { console.error(e); } }
   check();
@@ -71,19 +62,7 @@ export function setSize({ size: s = size, follow: f = follow } = {}) {
   applySize();
   return true;
 }
-/**
- * The Interface size on this device: 80, 90, 100, 110 or 125 (%), or null / 'auto' for Automatic (the
- * account's size). Kept in this browser only, never saved to the account; applied at once.
- */
-export function setDeviceSize(v) {
-  device = writeDeviceSize(v);
-  applySize();
-  return device;
-}
-// another tab of this browser changed it
-onDeviceSizeStorage((v) => { if (v !== device) { device = v; applySize(); } });
-
-/** fn({ size, follow, auto, device }) after the size choice, the device size or Auto changed. Returns a remover. */
+/** fn({ size, follow, auto }) after the size choice or Auto changed. Returns a remover. */
 export function onSize(fn) { sizeListeners.add(fn); return () => sizeListeners.delete(fn); }
 
 /* ------------------------------------------------------------------ device pixels and the grid */
@@ -194,7 +173,6 @@ export const display = {
 export function sizeNote() {
   const pct = Math.round((display.rem / 16) * 100);
   const s = sizeState();
-  if (device) return `Text here is ${pct}% of standard: this device uses its own size (${device}%). Your account’s size (${size}%) applies on your other devices.`;
   return follow
     ? `Text here is ${pct}% of standard (Auto ${Math.round(s.auto * 100)}% for this screen × size ${size}%).`
     : `Text here is ${pct}% of standard (size ${size}%; not following the screen).`;

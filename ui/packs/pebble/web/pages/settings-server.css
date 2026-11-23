@@ -18,16 +18,10 @@
 .au-who { font-size: var(--f14); line-height: var(--l14); font-weight: 700; padding-top: 0.125rem; max-width: 40%; overflow-wrap: anywhere; justify-content: flex-end; text-align: right; }
 .au-sentinel { height: 1px; margin-top: -1px; }
 .au-tile .more-row[hidden] { display: none; }
-/* the list scrolls in a box about five entries high (a phone: about three), high from the start; a fade at
-   the bottom while there are more under it */
-.au-box { height: calc(5 * round(6rem, var(--e)) + 6 * var(--s1)); overflow-y: auto; scrollbar-gutter: stable; border-radius: var(--r-card); background: var(--well); }
-.au-box[data-below] { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - round(2.5rem, var(--e))), rgb(0 0 0 / 0.2)); mask-image: linear-gradient(to bottom, #000 calc(100% - round(2.5rem, var(--e))), rgb(0 0 0 / 0.2)); }
-.au-box > .au-status { padding: var(--s3); }
 
 @media (max-width: 40rem) {
   .au-filters .field { flex: 1 1 round(9rem, var(--e)); }
   .au-row { flex-wrap: wrap; row-gap: var(--s1); }
   .au-row .row-text { flex: 1 1 100%; order: 2; }
   .au-who { order: 1; flex: 1 1 100%; max-width: none; justify-content: flex-start; text-align: left; color: var(--muted); padding-top: 0; }
-  .au-box { height: min(round(30rem, var(--e)), 62svh); }
 }

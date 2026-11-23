@@ -200,13 +200,6 @@ def charge_cost(app, car_id, c, f, now, pricing=None):
                 {"parts": [], "session_fee": None, "total": 0.0, "gap_ms": gap_ms, "mode": "free_supercharging"})
     if not price:
         return None, None, {"parts": [], "session_fee": None, "total": None, "gap_ms": gap_ms, "mode": None}
-    return _tariff_cost(c, f, end, price, tz)
-
-
-def _tariff_cost(c, f, end, price, tz):
-    """A charge costed with a place's price (rates by time of day, per kWh and per minute, a session fee)."""
-    added, grid, inlet = f["added"], f["grid"], f["inlet"]
-    gap_ms = int(f["gap_ms"])
     basis = "grid" if grid is not None else "pack"
     # AC is billed by the grid meter; a fast charger bills what it delivered (about the car's inlet energy)
     kwh = grid if grid is not None else (inlet if inlet is not None else added)
@@ -236,24 +229,6 @@ def _tariff_cost(c, f, end, price, tz):
     ppk = {"value": round(amount / per, 4), "basis": basis} if per else None
     return cost, ppk, {"parts": plist, "session_fee": fee, "total": round(amount, 2), "gap_ms": gap_ms,
                        "mode": "tariff"}
-
-
-def charge_estimate(app, car_id, c, row, now):
-    """{amount, currency} for a charge that has no cost (row["cost"] is None), or None: the price of the
-    place it is at now (a price set after the charge ended), else the car's `default_price_per_kwh` on its
-    energy from the grid, else the energy added. Statistics shows it apart; it never becomes the cost."""
-    added, grid = row["energy_added_kwh"], row["energy_grid_kwh"]
-    pl = place_obj(app, placing.piece_pid(app, c))
-    if pl and pl.get("price"):
-        f = {"added": added or 0.0, "grid": grid, "inlet": row["dc_inlet_kwh"], "gap_ms": row["flags"]["gap_ms"]}
-        end = min(now, c.data_end)
-        cost = _tariff_cost(c, f, end, pl["price"], pl["time_zone"])[0]
-        return {"amount": cost["amount"], "currency": cost["currency"]}
-    dp = (app.store.car_settings.get(car_id) or {}).get("default_price_per_kwh")
-    kwh = grid if grid is not None else added
-    if dp is None or kwh is None:
-        return None
-    return {"amount": round(dp["value"] * kwh, 2), "currency": dp["currency"]}
 
 
 def charge_row(app, h, c, now, with_breakdown=False):

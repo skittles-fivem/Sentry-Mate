@@ -8,14 +8,12 @@ Periods are in each car's own time zone (ISO weeks, Monday first).
 
 from __future__ import annotations
 
-import bisect
 import datetime as dt
 
 from .. import derive
 from ..conventions import page
 from ..errors import bad_input
 from ..placing import eff_pid, place_obj, ref
-from ..rows import charge_estimate
 from ..util import DAY, local_date, local_ms, r
 from .battery import bms_full
 from .charges import cached_charge_row
@@ -123,9 +121,7 @@ def _money(d):
 
 
 def stat_rows(req, h, kind, a, b):
-    # the car's settings (its default price per kWh) and the places' prices change the estimates
-    sv = (req.store.car_settings.get(h.car.id) or {}).get("version")
-    key = (kind, a, b, req.store.rev, req.store.places_rev, sv, derive.started(h, req.now), req.now // 10_000)
+    key = (kind, a, b, req.store.rev, derive.started(h, req.now), req.now // 10_000)
     return derive.memo(req.app, f"stats:{h.car.id}", key, lambda: _stat_rows(req, h, kind, a, b))
 
 
@@ -139,7 +135,7 @@ def _stat_rows(req, h, kind, a, b):
         return []
     bk = Buckets(ps)
     acc = [{"ms": 0, "drives": 0, "km": 0.0, "kwh": 0.0, "temp_w": 0.0, "temp_ms": 0, "added": 0.0, "grid": 0.0,
-            "charges": 0, "cost": {}, "basis": {}, "priced": 0, "estimated": 0, "est": {}, "stand": 0.0, "unknown": 0, "dropped": 0, "open_drive": False,
+            "charges": 0, "cost": {}, "basis": {}, "stand": 0.0, "unknown": 0, "dropped": 0, "open_drive": False,
             "open_charge": False, "tm": 0} for _ in ps]
     for d in derive.shown_drives(h, lo, end, req.now):
         i = bk.index(d.start)
@@ -166,13 +162,7 @@ def _stat_rows(req, h, kind, a, b):
         g["charges"] += 1
         g["added"] += x["energy_added_kwh"] or 0
         g["grid"] += x["energy_grid_kwh"] or 0
-        if not x["cost"]:
-            e = charge_estimate(req.app, car.id, c, x, req.now)
-            if e is not None:
-                g["estimated"] += 1
-                g["est"][e["currency"]] = g["est"].get(e["currency"], 0.0) + e["amount"]
         if x["cost"]:
-            g["priced"] += 1
             cur = x["cost"]["currency"]
             g["cost"][cur] = g["cost"].get(cur, 0.0) + x["cost"]["amount"]
             if x["price_per_kwh"]:
@@ -195,16 +185,12 @@ def _stat_rows(req, h, kind, a, b):
     for (ps_, pe_, lab), g in zip(ps, acc):
         o0, o1 = derive.odo_at(h, ps_), derive.odo_at(h, pe_ - 1)
         span = max(1, pe_ - ps_)
-        total = dict(g["cost"])
-        for k, v in g["est"].items():
-            total[k] = total.get(k, 0.0) + v
-        days = max(1.0, (pe_ - ps_) / DAY)
         net = g["kwh"] / g["km"] * 1000 if g["km"] > 0.1 else None
         gross = (g["kwh"] + g["stand"]) / g["km"] * 1000 if g["km"] > 0.1 else None
         rows.append({
             "car": car.id, "time_zone": tz, "period_start_ms": ps_, "period_end_ms": pe_, "label": lab,
             "time_driven_ms": g["ms"], "drives": g["drives"],
-            "distance_odometer_km": r(max(0.0, o1 - o0), 3) if o0 is not None and o1 is not None else None,
+            "distance_odometer_km": r(o1 - o0, 3) if o0 is not None and o1 is not None else None,
             "distance_logged_km": r(g["km"], 3),
             "outside_avg_c": r(g["temp_w"] / g["temp_ms"], 1) if g["temp_ms"] else None,
             "driving_efficiency_pct": r(car.rated_wh_per_km / net * 100, 1) if net else None,
@@ -216,19 +202,11 @@ def _stat_rows(req, h, kind, a, b):
                               for k, v in sorted(g["cost"].items()) if g["basis"].get(k)],
             "cost_per_100km": [{"currency": k, "amount": round(v / g["km"] * 100, 2)}
                                for k, v in sorted(g["cost"].items())] if g["km"] > 1 else [],
-            "charges_priced": g["priced"], "charges_estimated": g["estimated"],
-            "cost_estimated_by_currency": _money(g["est"]),
-            "cost_total_by_currency": _money(total),
-            "cost_total_per_100km": [{"currency": k, "amount": round(v / g["km"] * 100, 2)}
-                                     for k, v in sorted(total.items())] if g["km"] > 1 else [],
-            "cost_total_per_day": [{"currency": k, "amount": round(v / days, 2)} for k, v in sorted(total.items())],
             "net_wh_per_km": r(net, 1), "gross_wh_per_km": r(gross, 1),
             "overhead_pct": r((gross - net) / net * 100, 1) if net and gross else None,
             "completeness": {"recorded_pct": r(100 * (span - g["unknown"]) / span, 2), "unknown_ms": g["unknown"],
                              "dropped_stretches": g["dropped"], "open_drive": g["open_drive"],
-                             "open_charge": g["open_charge"], "teslamate_rows": g["tm"],
-                             # the made-up odometer is one clean monotonic series per car: nothing to drop
-                             "odometer_dropped": 0},
+                             "open_charge": g["open_charge"], "teslamate_rows": g["tm"]},
         })
     return rows
 
@@ -294,11 +272,10 @@ def totals(req):
         from ..live import list_item
         it = list_item(req.app, req.car, req.now)
         out.update({"drives": 0, "distance_km": 0.0, "odometer_first_km": None, "odometer_last_km": None,
-                    "odometer_last_ms": it["now"]["at_ms"], "driven_since_km": None, "not_logged_km": None,
-                    "charges": 0,
+                    "odometer_last_ms": it["now"]["at_ms"], "not_logged_km": None, "charges": 0,
                     "energy_added_kwh": 0.0, "energy_grid_kwh": 0.0, "grid_coverage_pct": None,
                     "charging_efficiency_pct": None, "ac": {"charges": 0, "kwh": 0.0}, "dc": {"charges": 0, "kwh": 0.0},
-                    "unknown_kind": {"charges": 0, "kwh": 0.0}, "updates": 0})
+                    "updates": 0})
         return out
     key = (source, req.store.rev, derive.started(h, req.now), req.now // 10_000)
     out.update(derive.memo(req.app, f"totals:{h.car.id}", key, lambda: _totals(req, h, source)))
@@ -309,59 +286,27 @@ def _totals(req, h, source):
     drows = [cached_drive_row(req, h, d) for d in derive.shown_drives(h, 0, req.now + 1, req.now, source)]
     crows = [cached_charge_row(req, h, c) for c in derive.shown_charges(h, 0, req.now + 1, req.now, source)]
     dist = sum(x["distance_km"] or 0 for x in drows)
-    first, last, last_ms = _odometer_run(drows, req.now)
+    first = drows[0]["start_odometer_km"] if drows else None
+    last = drows[-1]["end_odometer_km"] if drows else None
+    last_ms = drows[-1]["end_ms"] or req.now if drows else None
     added = sum(x["energy_added_kwh"] or 0 for x in crows)
     with_grid = [x for x in crows if x["energy_grid_kwh"] is not None]
     grid = sum(x["energy_grid_kwh"] for x in with_grid)
-    # the efficiency: AC charges only, both energies known, no more into the pack than from the grid (as the server)
-    compared = [x for x in with_grid if x["kind"] == "ac" and (x["energy_added_kwh"] or 0) > 0
-                and x["energy_grid_kwh"] > 0 and x["energy_added_kwh"] <= x["energy_grid_kwh"]]
-    grid_c = sum(x["energy_grid_kwh"] for x in compared)
-    added_c = sum(x["energy_added_kwh"] for x in compared)
+    added_grid = sum(x["energy_added_kwh"] or 0 for x in with_grid)
     ac = [x for x in crows if x["kind"] == "ac"]
     dc = [x for x in crows if x["kind"] == "dc"]
-    unknown = [x for x in crows if x["kind"] not in ("ac", "dc")]
     ups = [u for u in h.updates if u.start <= req.now and S.keeps(source, u.source, u.inputs)]
     return {
         "drives": len(drows), "distance_km": r(dist, 3), "odometer_first_km": first, "odometer_last_km": last,
         "odometer_last_ms": last_ms,
-        "driven_since_km": r(max(0.0, last - first), 3) if first is not None else None,
         "not_logged_km": r(max(0.0, (last - first) - dist), 3) if first is not None else None,
         "charges": len(crows), "energy_added_kwh": r(added, 3), "energy_grid_kwh": r(grid, 3),
         "grid_coverage_pct": r(100 * len(with_grid) / len(crows), 1) if crows else None,
-        "charging_efficiency_pct": r(100 * added_c / grid_c, 1) if grid_c else None,
+        "charging_efficiency_pct": r(100 * added_grid / grid, 1) if grid else None,
         "ac": {"charges": len(ac), "kwh": r(sum(x["energy_added_kwh"] or 0 for x in ac), 3)},
         "dc": {"charges": len(dc), "kwh": r(sum(x["energy_added_kwh"] or 0 for x in dc), 3)},
-        "unknown_kind": {"charges": len(unknown), "kwh": r(sum(x["energy_added_kwh"] or 0 for x in unknown), 3)},
         "updates": len(ups),
     }
-
-
-def _odometer_run(drows, now):
-    """The first and last valid odometer readings (and when the last was): the longest run of the drives' readings
-    that never goes down, as the server picks them."""
-    pts = []
-    for x in drows:
-        if x["start_odometer_km"]:
-            pts.append((x["start_odometer_km"], x["start_ms"]))
-        if x["end_odometer_km"]:
-            pts.append((x["end_odometer_km"], x["end_ms"] or now))
-    tails, ends, prev = [], [], [None] * len(pts)
-    for i, (o, _) in enumerate(pts):
-        k = bisect.bisect_right(ends, o)
-        prev[i] = tails[k - 1] if k else None
-        if k == len(tails):
-            tails.append(i)
-            ends.append(o)
-        else:
-            tails[k] = i
-            ends[k] = o
-    if not tails:
-        return None, None, None
-    last = first = tails[-1]
-    while prev[first] is not None:
-        first = prev[first]
-    return pts[first][0], pts[last][0], pts[last][1]
 
 
 # ------------------------------------------------------------------ gaps

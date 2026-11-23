@@ -52,20 +52,6 @@ pub(crate) struct LoggedFile<S: Logged> {
     snap_level: u8,
 }
 
-/// A snapshot kept somewhere else than `<name>.snap` (a segment day inside its month's pack, see
-/// [`crate::segment::pack`]): what [`LoggedFile::load_or`] starts from when there is no snapshot file.
-pub(crate) struct Elsewhere {
-    /// The file it is in, for naming damage.
-    pub label: String,
-    pub generation: u64,
-    pub level: u8,
-    /// The compressed state: what follows the generation and level in a snapshot file.
-    pub body: Vec<u8>,
-}
-
-/// Looks for a snapshot kept elsewhere (`Ok(None)`: there is none).
-pub(crate) type Fallback<'a> = &'a dyn Fn() -> Result<Option<Elsewhere>>;
-
 /// A snapshot's generation and level, opening only its first chunk. `Ok(None)`: no snapshot.
 pub(crate) fn snapshot_head(ctx: &Ctx, files: &Files, kind: Kind) -> Result<Option<(u64, u8, u64)>> {
     let label = ctx.label(&files.snap);
@@ -76,7 +62,7 @@ pub(crate) fn snapshot_head(ctx: &Ctx, files: &Files, kind: Kind) -> Result<Opti
     Ok(Some((generation, level, len)))
 }
 
-pub(crate) fn parse_gen_level(body: &[u8], label: &str) -> Result<(u64, u8)> {
+fn parse_gen_level(body: &[u8], label: &str) -> Result<(u64, u8)> {
     let damaged = || Error::Damaged { file: label.to_string(), why: "snapshot header cut short".into() };
     let generation =
         body.get(..8).and_then(|g| <[u8; 8]>::try_from(g).ok()).map(u64::from_be_bytes).ok_or_else(damaged)?;
@@ -87,23 +73,25 @@ pub(crate) fn parse_gen_level(body: &[u8], label: &str) -> Result<(u64, u8)> {
 impl<S: Logged> LoggedFile<S> {
     /// Reads the snapshot and replays the journal, kept open to commit changes to.
     pub(crate) fn load(ctx: &Ctx, files: Files) -> Result<LoggedFile<S>> {
-        LoggedFile::load_as(ctx, files, true, &|| Ok(None))
-    }
-
-    /// [`LoggedFile::load`], starting from the snapshot `elsewhere` finds when there is no snapshot file. The next
-    /// fold writes the snapshot file, which then stands for the state (the one elsewhere is older).
-    pub(crate) fn load_or(ctx: &Ctx, files: Files, elsewhere: Fallback<'_>) -> Result<LoggedFile<S>> {
-        LoggedFile::load_as(ctx, files, true, elsewhere)
+        LoggedFile::load_as(ctx, files, true, true)
     }
 
     /// Reads the state only (snapshot and journal), for a reader that commits nothing: the journal is opened
-    /// read-only, so it is never cut or changed. The snapshot may be kept elsewhere (see [`LoggedFile::load_or`]).
-    pub(crate) fn read_state_or(ctx: &Ctx, files: Files, elsewhere: Fallback<'_>) -> Result<S> {
-        Ok(LoggedFile::load_as(ctx, files, false, elsewhere)?.state)
+    /// read-only, so it is never cut or changed.
+    pub(crate) fn read_state(ctx: &Ctx, files: Files) -> Result<S> {
+        Ok(LoggedFile::load_as(ctx, files, false, true)?.state)
     }
 
-    fn load_as(ctx: &Ctx, files: Files, to_commit: bool, elsewhere: Fallback<'_>) -> Result<LoggedFile<S>> {
-        files.clean_temporary()?;
+    /// [`Self::read_state`] for another process's files ([`crate::Reader`]): not even a crash's leftovers (a
+    /// temporary file, a journal already folded) are cleaned up; the owner does that.
+    pub(crate) fn inspect_state(ctx: &Ctx, files: Files) -> Result<S> {
+        Ok(LoggedFile::load_as(ctx, files, false, false)?.state)
+    }
+
+    fn load_as(ctx: &Ctx, files: Files, to_commit: bool, tidy: bool) -> Result<LoggedFile<S>> {
+        if tidy {
+            files.clean_temporary()?;
+        }
         let snap_label = ctx.label(&files.snap);
         let (state, generation, snap_bytes, snap_plain, snap_level) = match ctx.read(&files.snap)? {
             Some(b) => {
@@ -113,14 +101,7 @@ impl<S: Logged> LoggedFile<S> {
                 let state = S::decode_state(&plain).map_err(|e| e.in_file(&snap_label))?;
                 (state, generation, b.len() as u64, plain.len() as u64, level)
             }
-            None => match elsewhere()? {
-                Some(e) => {
-                    let plain = codec::decompress(&e.body).map_err(|err| err.in_file(&e.label))?;
-                    let state = S::decode_state(&plain).map_err(|err| err.in_file(&e.label))?;
-                    (state, e.generation, (SNAP_HEAD + e.body.len()) as u64, plain.len() as u64, e.level)
-                }
-                None => (S::empty(), 0, 0, 0, LEVEL_WARM),
-            },
+            None => (S::empty(), 0, 0, 0, LEVEL_WARM),
         };
         let mut lf = LoggedFile { state, files, generation, journal: None, snap_bytes, snap_plain, snap_level };
         let log_label = ctx.label(&lf.files.log);
@@ -131,9 +112,12 @@ impl<S: Logged> LoggedFile<S> {
         };
         if let Some((generation, entries, journal)) = found {
             if generation < lf.generation {
-                // folded into the snapshot already; a crash came before it was removed
+                // folded into the snapshot already; a crash came before it was removed (another process's
+                // reader leaves it to the owner)
                 drop(journal);
-                remove_if_exists(&lf.files.log)?;
+                if tidy {
+                    remove_if_exists(&lf.files.log)?;
+                }
             } else if generation > lf.generation {
                 return Err(Error::Damaged {
                     file: log_label,
@@ -193,11 +177,6 @@ impl<S: Logged> LoggedFile<S> {
         self.journal.is_none() && self.snap_level == LEVEL_COLD
     }
 
-    /// Whether a journal is open (changes since the snapshot, or one just started).
-    pub(crate) fn has_journal(&self) -> bool {
-        self.journal.is_some()
-    }
-
     /// About how much memory this holds (the state's size as stored, plus the journal).
     pub(crate) fn weight(&self) -> u64 {
         self.snap_plain + self.journal.as_ref().map_or(0, |j| j.bytes)
@@ -215,16 +194,12 @@ impl<S: Logged> LoggedFile<S> {
 
 /// Appends a change to a state without reading it (for segment days written often and read now and then). Returns
 /// whether the journal is due to be folded.
-/// `snapshot`: the generation and size of the snapshot the journal follows, wherever it is kept (`None`: there is
-/// no snapshot).
-pub(crate) fn append_only<S: Logged>(
-    ctx: &Ctx,
-    files: &Files,
-    op: &S::Op,
-    snapshot: Option<(u64, u64)>,
-) -> Result<bool> {
+pub(crate) fn append_only<S: Logged>(ctx: &Ctx, files: &Files, op: &S::Op) -> Result<bool> {
     files.clean_temporary()?;
-    let (generation, snap_bytes) = snapshot.unwrap_or((0, 0));
+    let (generation, snap_bytes) = match snapshot_head(ctx, files, S::KIND)? {
+        Some((generation, _, len)) => (generation, len),
+        None => (0, 0),
+    };
     let mut journal = match Journal::open_for_append(ctx, &files.log)? {
         Some(o) if o.generation == generation => o.journal,
         Some(o) if o.generation < generation => {
