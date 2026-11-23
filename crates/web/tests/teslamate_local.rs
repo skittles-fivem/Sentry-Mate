@@ -146,7 +146,7 @@ async fn a_broker_in_trouble_is_a_notice_for_admins_with_an_audit_entry() {
     assert!(!notice_codes(&mut admin).await.iter().any(|c| c.starts_with("teslamate_")), "not added: nothing to say");
 
     // nothing listens on the broker's port: refused
-    let (_refusing, port) = closed_port();
+    let port = closed_port();
     let mqtt = json!({ "host": "127.0.0.1", "port": port });
     let r = admin.put(t, json!({ "version": 0, "mqtt": mqtt, "confirm_password": ADMIN_PASSWORD })).await;
     assert_eq!(r.status, 201, "{}", r.text());
@@ -215,13 +215,9 @@ fn every_trouble_has_its_notice() {
     }
 }
 
-/// A port that refuses connections while the socket lives: bound but never listening, so no other test can take it
-/// meanwhile (several test binaries run at once).
-fn closed_port() -> (tokio::net::TcpSocket, u16) {
-    let s = tokio::net::TcpSocket::new_v4().unwrap();
-    s.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-    let port = s.local_addr().unwrap().port();
-    (s, port)
+fn closed_port() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    l.local_addr().unwrap().port()
 }
 
 fn clean(r: &web::testkit::Res) {
@@ -265,7 +261,7 @@ async fn off_until_added_plaintext_refused_then_added_and_removed() {
     assert_eq!(watch.get("/api/v1/integrations/teslamate/cars").await.status, 403);
 
     // a password over plain TCP without the tick: refused, nothing stored or connected
-    let (_refusing, port) = closed_port();
+    let port = closed_port();
     let mqtt = json!({ "host": "127.0.0.1", "port": port, "username": "reader", "password": PASSWORD });
     let r = admin.put(t, json!({ "version": 0, "mqtt": mqtt, "confirm_password": ADMIN_PASSWORD })).await;
     assert_eq!((r.status, r.code().as_deref()), (422, Some("plaintext_password")), "{}", r.text());

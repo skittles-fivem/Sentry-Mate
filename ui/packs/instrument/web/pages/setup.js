@@ -25,7 +25,7 @@ import { keyBox, etaText } from './settings-server-move.js';
 
 export const id = 'setup';
 
-// the browser's time zone goes with the first admin: new cars start in it (Settings: Cars changes it)
+// the browser's time zone goes with the first admin: new cars start in it (Settings: Display and units changes it)
 const browserZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined; } catch { return undefined; } };
 export const css = true;
 export const title = () => 'Set up';

@@ -57,10 +57,8 @@ function packLink(link) {
   const [path, hash = ''] = String(link).split('#');
   if (path === '/settings/integrations') return `/settings/integrations?tab=setup${hash ? `#${hash === 'mqtt' ? 'si-broker' : hash}` : ''}`;
   if (path === '/settings/server') {
-    // older names of sections that now live elsewhere
-    if (hash === 'release') return '/settings/server#release-check';
-    if (hash === 'maps') return '/settings/maps#map-tiles';
-    if (hash === 'geocoding') return '/settings/maps#address-lookup';
+    if (hash === 'release') return '/settings/display#release-check';
+    if (hash === 'maps' || hash === 'geocoding') return '/settings/display';
   }
   return link;
 }

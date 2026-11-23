@@ -351,17 +351,6 @@ const KEYS_USAGE: &str = "sentry-mate: which car key? The car keys are the last 
 /// The version, and the image build's number, commit and date when it was given them (build.rs).
 const VERSION: &str = env!("SENTRY_MATE_VERSION");
 
-/// This build, for the release check: read here, in the last crate built, so a new build number, commit or date
-/// builds again only this crate (and links), not web and the crates below it.
-pub(crate) fn this_build() -> release::Build {
-    release::Build::from_parts(
-        env!("CARGO_PKG_VERSION"),
-        option_env!("SENTRY_MATE_BUILD"),
-        option_env!("SENTRY_MATE_COMMIT"),
-        option_env!("SENTRY_MATE_DATE"),
-    )
-}
-
 #[tokio::main]
 async fn main() -> ExitCode {
     vault::harden_process();

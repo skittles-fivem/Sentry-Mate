@@ -27,7 +27,7 @@ import { bytes, bigCode, copyButton, downloadText, stepCards, progressBar, callo
 
 export const id = 'setup';
 
-// the browser's time zone goes with the first admin: new cars start in it (Settings: Cars changes it)
+// the browser's time zone goes with the first admin: new cars start in it (Settings: Display and units changes it)
 const browserZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined; } catch { return undefined; } };
 export const title = () => 'Set up Sentry Mate';
 

@@ -22,11 +22,10 @@ export const PAGES = Object.freeze({
   travel: { title: 'Travel', label: 'Travel', icon: 'globe', period: 'year', car: 'none', blurb: 'Where the cars have been.', purpose: 'Where the cars have been: stops, places, cities, regions and countries, with time spent there.' },
   software: { title: 'Software', label: 'Software', icon: 'chip', period: 'all', car: 'required', blurb: 'Versions and when they came.', purpose: 'The car’s software history and the version it runs now, honest about what is known.' },
   places: { title: 'Places', label: 'Places', icon: 'pin', period: null, car: 'none', blurb: 'Named places and their prices.', purpose: 'Name the places that matter, give them charging prices, and see what a change will do before saving.' },
-  'settings-cars': { title: 'Cars', label: 'Cars', icon: 'car', period: null, car: 'optional', blurb: 'Per-car settings, the CAN Bridge, the zone new cars start in.', purpose: 'Per-car settings, and how each car’s CAN Bridge is tied to it.' },
-  'settings-display': { title: 'Display', label: 'Display', icon: 'sun', period: null, car: 'none', blurb: 'Theme, units, map style and the UI pack.', purpose: 'How numbers, words and maps look to you: your own choices, and the size on this device.' },
+  'settings-cars': { title: 'Cars', label: 'Cars', icon: 'car', period: null, car: 'optional', blurb: 'Per-car settings and the CAN Bridge.', purpose: 'Per-car settings, and how each car’s CAN Bridge is tied to it.' },
+  'settings-display': { title: 'Display', label: 'Display', icon: 'sun', period: null, car: 'none', blurb: 'Theme, units and the UI pack.', purpose: 'How numbers, words and maps look, per person, with server defaults set by an admin.' },
   'settings-integrations': { title: 'Integrations', label: 'Integrations', icon: 'plug', period: null, car: 'none', blurb: 'Send live values to other systems.', purpose: 'Send the cars’ live values to other systems, if the owner wants to.' },
-  'settings-maps': { title: 'Maps and addresses', label: 'Maps', icon: 'map', period: null, car: 'none', blurb: 'Map tiles, the offline map and address lookup.', purpose: 'Where maps and addresses come from, for everyone on this server.' },
-  'settings-server': { title: 'Server', label: 'Server', icon: 'server', period: null, car: 'none', blurb: 'Accounts, access, moving and updates.', purpose: 'Who can sign in, what they may see, how the server is reached, moving it, and its updates.' },
+  'settings-server': { title: 'Server', label: 'Server', icon: 'server', period: null, car: 'none', blurb: 'Accounts, access and moving.', purpose: 'Who can sign in, what they may see, how the server is reached, and moving it.' },
   import: { title: 'Import', label: 'Import', icon: 'upload', period: null, car: 'none', blurb: 'Bring in a TeslaMate backup.', purpose: 'Bring in the history from a TeslaMate backup, checked before anything is stored.' },
   health: { title: 'Health', label: 'Health', icon: 'pulse', period: '30d', car: 'optional', blurb: 'Is the car’s data complete?', purpose: 'Is the data complete and trustworthy, and how much room does it take.' },
   help: { title: 'Help', label: 'Help', icon: 'help', period: null, car: 'none', blurb: 'Version, licences and answers.', purpose: 'Version, licences, data credits and short answers to common questions.' },
@@ -46,7 +45,7 @@ export const SHEET = Object.freeze([
   { name: 'Activity', pages: ['timeline', 'trip', 'logbook'] },
   { name: 'Insights', pages: ['efficiency', 'statistics', 'travel', 'places'] },
   { name: 'Car', pages: ['software', 'health'] },
-  { name: 'Settings', pages: ['settings-cars', 'settings-display', 'settings-integrations', 'settings-maps', 'settings-server', 'import'] },
+  { name: 'Settings', pages: ['settings-cars', 'settings-display', 'settings-integrations', 'settings-server', 'import'] },
   { name: 'More', pages: ['system', 'help'] },
 ]);
 

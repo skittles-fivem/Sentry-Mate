@@ -15,7 +15,6 @@
 //! engine  tokens/cars           upload tokens made on a car's page, and that car
 //! engine  car/<id>/now_at       when each of the car's newest values was recorded
 //! engine  car/<id>/now_from     which of the car's newest values came from the Tesla API (the rest are SMO's)
-//! engine  car/<id>/smo_gps      whether SMO's GPS fixes are used for the car's live position ([`SmoGps`])
 //! engine  car/<id>/api/<day>    what the Tesla API saw of the car's state that UTC day (spans, clipped to the day)
 //! engine  car/<id>/api_dirty    Tesla API data stored but not yet built into the timeline
 //! engine  car/<id>/api_meta     the Tesla API's newest values beside the samples (version, settings, charger)
@@ -526,22 +525,6 @@ pub(crate) fn replace_cuts(
         }
     }
     Ok(())
-}
-
-/// Whether SMO's GPS fixes are used for the car's live position: the newest rebuild that compared them with an API's
-/// fixes of the same moments ([`timeline::fuse::gps_cross_check`]) said so, up to `to_ms` of the car's history.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SmoGps {
-    pub trusted: bool,
-    pub to_ms: u64,
-}
-
-pub(crate) fn smo_gps(db: &Db, car: CarId) -> Result<Option<SmoGps>> {
-    get(db, NS, &format!("car/{car}/smo_gps"))
-}
-
-pub(crate) fn put_smo_gps(db: &Db, car: CarId, v: &SmoGps) -> Result<()> {
-    put(db, NS, &format!("car/{car}/smo_gps"), v)
 }
 
 /// Which of a car's newest values came from the Tesla API (field → input; a field not here is SMO's).

@@ -182,9 +182,6 @@ downloadCsv(csvFilename(car.name, 'battery-level'), rows, [timeColumn('Time', 't
 `on(target, type, fn)`, `esc`, `safeUrl`, `setVars(el, vars)`, `cssVar(name)`, `cover(el, ...ids)`,
 `ready(pageId)`, `unready()`, `failed(pageId)`, `readyPage()`, `setTitle(...parts)`, `quantity(value, kind,
 opts)`, `styleSheet(href, { first })` (adds a style sheet once, after the others or with `first` before them, and resolves when it has loaded: maps and charts await it).
-`disclose(button, part, { focus, onOpen, onClose })` opens a hidden part in place from a button (a name box behind "Edit"):
-aria-expanded and aria-controls on the button, the focus into the part when it opens and back to the button when
-it closes, Escape inside it closes it; returns `{ open(), close(), isOpen() }`.
 
 `h()` attributes: `class` (text, array or `{ name: on }`), `dataset`, `vars` (CSS custom properties, set through
 CSSOM), `style` (an object, CSSOM), `cover` (inventory item ids), `on<event>` functions, `value` / `checked`

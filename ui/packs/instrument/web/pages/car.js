@@ -6,7 +6,7 @@
 
 import * as state from '../shared/state.js';
 import { tyreView, recommendedLine } from '../shared/tyres.js';
-import { h, svg, replace, cover, cssVar, quantity } from '../shared/dom.js';
+import { h, svg, replace, cover, cssVar, quantity, steady } from '../shared/dom.js';
 import { format, getUnits, onUnitsChange, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDate, formatDateTime, zoneName, buckets } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -304,7 +304,7 @@ export async function mount(ctx) {
       h('button', { class: 'btn btn--sm map-btn', type: 'button', cover: 'summary.map.fullscreen', onclick: () => toggleFull() }, icon('monitor', 'ico--sm'), document.fullscreenElement ? 'Back to the page' : 'Full screen'),
       outside && lat != null
         ? h('a', { class: 'btn btn--sm map-btn', href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=17/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'noopener noreferrer external', cover: 'summary.map.external_link' }, icon('ext', 'ico--sm'), 'Open in OpenStreetMap')
-        : h('span', { class: 'map-chip', cover: 'summary.map.external_link', title: 'Links to outside map sites are off. An admin can turn them on in Settings: Maps and addresses.' }, icon('lock', 'ico--sm'), 'Outside map links off'));
+        : h('span', { class: 'map-chip', cover: 'summary.map.external_link', title: 'Links to outside map sites are off. An admin can turn them on in Settings: Display and units.' }, icon('lock', 'ico--sm'), 'Outside map links off'));
   }
   function toggleFull() {
     if (document.fullscreenElement) document.exitFullscreen?.();
@@ -621,11 +621,14 @@ export async function mount(ctx) {
     });
   }
 
-  // a legend whose entries show and hide their series, with the value at the cursor
-  function legendChips(host, entries, plots) {
+  // a legend whose entries show and hide their series, with the value at the cursor: textsAt(i) gives the
+  // values at point i, and each value sits in a box as wide as the widest of them, so the chips keep their size
+  function legendChips(host, entries, plots, count, textsAt) {
+    const all = Array.from({ length: count }, (_, i) => textsAt(i));
     const chips = entries.map((e, i) => {
       const b = h('button', { class: 'legend-chip', type: 'button', 'aria-pressed': 'true', dataset: { series: e.key }, title: 'Show or hide this line' },
-        h('i', { class: 'legend-swatch', vars: { '--c': `var(${e.color})` } }), h('span', null, e.label), h('b', { class: 'legend-val' }, e.idle || ''));
+        h('i', { class: 'legend-swatch', vars: { '--c': `var(${e.color})` } }), h('span', null, e.label),
+        steady(h('b', { class: 'legend-val' }, e.idle || ''), [e.idle, '—', ...all.map((t) => t[i])]));
       b.addEventListener('click', () => {
         const on = b.getAttribute('aria-pressed') !== 'true';
         b.setAttribute('aria-pressed', String(on));
@@ -636,7 +639,7 @@ export async function mount(ctx) {
     });
     replace(host, chips);
     return {
-      show(i, texts) { chips.forEach((c, k) => { c.querySelector('.legend-val').textContent = i == null ? (entries[k].idle || '') : (texts[k] ?? '—'); }); },
+      show(i) { const texts = i == null ? null : textsAt(i); chips.forEach((c, k) => { c.querySelector('.legend-val').textContent = i == null ? (entries[k].idle || '') : (texts[k] ?? '—'); }); },
     };
   }
 
@@ -680,7 +683,7 @@ export async function mount(ctx) {
       { key: 'usable', label: 'Usable', color: '--c-power', plot: 'batt', index: 2, idle: span(usable, 'percent') },
       { key: 'range', label: rk === 'ideal_range_km' ? 'Ideal range' : 'Rated range', color: '--live', plot: 'batt', index: 3, idle: r0 != null ? `${formatNumber(r0, { maximumFractionDigits: 0 })} – ${formatNumber(r1, { maximumFractionDigits: 0 })} ${unitLabel('range')}` : 'no data' },
     ];
-    const leg = legendChips(legendHost, entries, plots);
+    const leg = legendChips(legendHost, entries, plots, xs.length, (i) => [pct(soc[i]), pct(usable[i]), format(rangeKm[i], 'range')]);
     const make = (width, height) => {
       const c = colors();
       return {
@@ -694,7 +697,7 @@ export async function mount(ctx) {
           { label: 'Range', scale: 'dist', stroke: c.live, width: rpx(1.5), points: { show: false } }],
         hooks: {
           drawClear: [stateBands(series.state, xs)],
-          setCursor: [(u) => { const i = u.cursor.idx; leg.show(i == null || u.cursor.left < 0 ? null : i, [pct(soc[i]), pct(usable[i]), format(rangeKm[i], 'range')]); }],
+          setCursor: [(u) => { const i = u.cursor.idx; leg.show(i == null || u.cursor.left < 0 ? null : i); }],
         },
       };
     };
@@ -743,11 +746,11 @@ export async function mount(ctx) {
       { key: 'volts', label: 'Volts', color: '--c-power', plot: 'sup', index: 1, idle: span(V, 'voltage') },
       { key: 'amps', label: 'Amps', color: '--live', plot: 'sup', index: 2, idle: span(A, 'current') },
     ];
-    const leg = legendChips(legendHost, entries, plots);
+    const leg = legendChips(legendHost, entries, plots, T.length, (i) => [format(P[i], 'power'), format(HT[i], 'power'), format(E[i], 'energy'), format(V[i], 'voltage'), format(A[i], 'current')]);
     const css = cssVar;
     const xs = T.length ? T : [from / 1000, to / 1000];
     const empty = (n) => (T.length ? n : [null, null]);
-    const cursor = (u) => { const i = u.cursor.idx; leg.show(i == null || u.cursor.left < 0 ? null : i, [format(P[i], 'power'), format(HT[i], 'power'), format(E[i], 'energy'), format(V[i], 'voltage'), format(A[i], 'current')]); };
+    const cursor = (u) => { const i = u.cursor.idx; leg.show(i == null || u.cursor.left < 0 ? null : i); };
     const base = (width, height, showX) => {
       const c = colors();
       return {

@@ -44,10 +44,9 @@ mod units;
 pub mod vin;
 mod window;
 
-pub use calc::{FIX_PLACEHOLDER_DEG, MAX_FIX_KMH, drop_bad_fixes, real_fix};
 pub use facts::{Closed, FactsCollector, LogFacts, NotRecorded};
 pub use firmware::{FirmwareCollector, LogFirmware};
-pub use fuse::{ApiSpan, ApiState, FuseParams, Fused, GpsCross, fixes_apart, fuse, fuse_all, fuse_ordered};
+pub use fuse::{ApiSpan, ApiState, FuseParams, Fused, fuse, fuse_all, fuse_ordered};
 pub use read::{LogRead, MAX_LOG_SAMPLES, read_log};
 pub use sample::{SampleBuilder, SampleParams};
 pub use states::is_settled;

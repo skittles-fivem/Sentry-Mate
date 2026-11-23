@@ -91,7 +91,7 @@ export async function mount(ctx) {
     h('p', { class: 'note' }, 'Sentry Mate sends a “software changed” event (MQTT and the events list) as soon as an update ends. ',
       h('a', { href: state.buildUrl('settings-integrations') }, 'Integrations'), ' connects it to your chat or home automation. A waiting update is not on the CAN bus, so there is no “update available” message.'),
     h('p', { class: 'note', cover: 'updates.link.release_notes' }, notesOn ? 'A known version links to its release notes on an outside site. Nothing is sent until you tap one.'
-      : 'Release-notes links are off, so nothing leaves this server. An admin can turn them on in ', notesOn ? null : h('a', { href: `${state.buildUrl('settings-maps')}#outside-links` }, 'Maps and addresses'), notesOn ? null : '.'));
+      : 'Release-notes links are off, so nothing leaves this server. An admin can turn them on in ', notesOn ? null : h('a', { href: state.buildUrl('settings-display') }, 'Display'), notesOn ? null : '.'));
 
   /* ------------------------------------------------------------ the updates */
   const listStart = h('div', { class: 'sw-list-start w-full', cover: 'updates.table' },

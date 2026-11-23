@@ -187,15 +187,15 @@ const EVENTS = [
 ];
 const ERRORS = { connection_refused: 'the broker refused the connection', pin_mismatch: 'the certificate did not match the pin', no_host: 'no broker host set', tls_failed: 'TLS failed', auth_failed: 'the user name or password was refused', timeout: 'no answer in time', invalid_settings: 'the settings do not work together' };
 const PURPOSE = {
-  geocoding: ['Address lookup', 'Only when an admin turns online addresses on; positions are rounded first.', 'settings-maps'],
-  tiles: ['Map pictures', 'Asked by each viewer’s browser while online tiles are on.', 'settings-maps'],
-  geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-maps'],
+  geocoding: ['Address lookup', 'Only when an admin turns online addresses on; positions are rounded first.', 'settings-display'],
+  tiles: ['Map pictures', 'Asked by each viewer’s browser while online tiles are on.', 'settings-display'],
+  geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-display'],
   mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
   tesla: ['Tesla API', 'Only while a Tesla account is added and not paused: Tesla’s sign-in, its Owner API and its live stream (Tesla account, above).', null],
   teslafi: ['TeslaFi API', 'Only while a TeslaFi token is added and not paused: reads your cars’ data from TeslaFi', '#teslafi'],
   teslamate_mqtt: ['Local TeslaMate (MQTT)', 'Only while a local TeslaMate is added and not paused: subscribes to its topics, never publishes', '#teslamate'],
   teslamate_db: ['Local TeslaMate (database)', 'Only while its database catch-up is on: reads what MQTT missed', '#teslamate'],
-  release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-server'],
+  release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-display'],
   upload: ['CAN Bridge uploads', 'The car’s CAN Bridge sends its logs here.', null],
   web: ['This app and the API', 'Browsers, apps and the API.', null],
 };

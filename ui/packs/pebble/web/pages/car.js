@@ -16,7 +16,7 @@
 
 import { h } from '../shared/dom.js';
 import { format, rangeValue, rangeLabel, getUnits } from '../shared/units.js';
-import { formatDate, formatWhen, formatDuration, formatRelative } from '../shared/time.js';
+import { formatDate, formatWhen, formatDuration } from '../shared/time.js';
 import { formatList } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
@@ -364,7 +364,7 @@ export async function mount(ctx) {
     if (!ctx.alive()) return;
     const outside = !settings.error && settings.outside_links?.maps;
     whereFoot.append(
-      h('span', { title: posTitle(now.location?.lat) }, now.location?.place ? placeLink({ place: now.location.place, lat, lon }) : now.location?.address?.short || (lat != null ? coordsText(lon, lat) : 'Position not known')),
+      h('span', null, now.location?.place ? placeLink({ place: now.location.place, lat, lon }) : now.location?.address?.short || (lat != null ? coordsText(lon, lat) : 'Position not known')),
       lat != null && outside ? h('a', { class: 'tile-link', href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=16/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'noopener noreferrer', cover: 'summary.map.external_link' }, 'Open in a map', icon('external'))
         : h('span', { class: 'muted', cover: 'summary.map.external_link' }, 'Outside map links are off'));
     if (lat != null && lon != null) {
@@ -446,10 +446,3 @@ async function drawCharging(ctx, el, sync) {
   el.append(facts2, note(`${list.length} ${list.length === 1 ? 'charge' : 'charges'} drawn one after another${res.next ? '; the Charges page lists every one' : ''}.`));
 }
 
-/** A position's hover title: when it was recorded and the input that sent it (an API's when SMO's GPS is out of step). */
-function posTitle(pair) {
-  const t = pair && typeof pair === 'object' ? pair.at_ms : null;
-  if (t == null) return null;
-  const src = pair.sources?.[0]?.label;
-  return `Position recorded ${formatRelative(t, api.now())}${src ? `; ${src}` : ''}`;
-}

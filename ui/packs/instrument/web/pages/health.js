@@ -71,11 +71,6 @@ const REASONS = {
     text: 'They arrived from a key nobody has approved yet. Approve or assign the key and they are read at once.',
     fix: 'Approve the key', page: 'settings-cars',
   },
-  gps_inputs_disagree: {
-    title: 'Positions from one input are out of step',
-    text: 'One input’s GPS positions are far from the other inputs’ positions at the same moments, more than lag or noise explains (often a decoding problem). Its positions are not used there; the other inputs’ positions are. The rest of its data is still used.',
-    fix: null, page: null,
-  },
   logs_missing: {
     title: 'Logs missing on the server',
     text: 'The server lost some logs it had recorded and asked the car to send them again. They come in by themselves when the CAN Bridge has them; see Missing on the server below.',

@@ -48,10 +48,6 @@ const QA = [
   { id: 'q-units', q: 'How do I change units, range or the size of the text?',
     a: 'Use Aa in the masthead for the quick choices, or Settings: Display and units for all of them. Your choices are yours; an admin sets the defaults for new accounts.',
     page: 'settings-display' },
-  { id: 'q-maps', q: 'Where do maps and addresses come from?',
-    a: 'From this server by default: an offline map file and bundled place names, so nothing is looked up on another site. An admin can choose an online map (satellite pictures, for example), which maps people may switch to, and an online address service, for everyone. Each person picks their own map colours and map style in Settings: Display and units.',
-    admin: { you: 'Change them in Settings: Maps and addresses.', watch: 'An admin changes them in Settings: Maps and addresses.' },
-    page: 'settings-maps' },
   { id: 'q-times', q: 'Which time zone are times in?',
     a: 'Every time and every day is in the car’s own time zone, shown next to the clock in the masthead. A page with several cars shows each row in its car’s zone.',
     page: 'fleet' },
@@ -156,8 +152,7 @@ function releaseValue(r) {
 }
 
 function releaseNote(r, settings, admin, ctx) {
-  const where = () => h('a', { href: `${ctx.link('settings-server')}#release-check` }, 'Settings: Server and access');
-  const whereLinks = () => h('a', { href: `${ctx.link('settings-maps')}#outside-links` }, 'Settings: Maps and addresses');
+  const where = () => h('a', { href: ctx.link('settings-display') }, 'Settings: Display and units');
   if (!r) return 'The server did not say whether the release check is on.';
   const ago = checkedAgo(r, now());
   if (r.status === 'off' || !r.enabled) {
@@ -169,7 +164,7 @@ function releaseNote(r, settings, admin, ctx) {
     const allowed = !!(settings && settings.outside_links && settings.outside_links.release_notes);
     let notes;
     if (!settings) notes = 'The server did not say whether release-notes links are allowed, so none is shown.';
-    else if (!allowed) notes = ['Release-notes links are off, so the changes are not linked. ', admin ? ['Turn them on in ', whereLinks(), '.'] : 'An admin can turn them on.'];
+    else if (!allowed) notes = ['Release-notes links are off, so the changes are not linked. ', admin ? ['Turn them on in ', where(), '.'] : 'An admin can turn them on.'];
     else if (!notesUrl) notes = 'The server gives no address for the changes.';
     else notes = [h('a', { href: notesUrl, ...outside }, 'What changed'), ' opens on another site.'];
     const lines = changeLines(r.newest);

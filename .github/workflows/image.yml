@@ -23,8 +23,7 @@ name: Image
 # (docs/development.md has what the runs so far measured; check the job times
 # on a run's page).
 #   - tests runs the fast set (cargo test --workspace --locked, split in
-#     four parts on five machines at once (web on two), each running its test binaries
-#     several at a time): every unit test and the quick
+#     four parts on four machines at once): every unit test and the quick
 #     integration tests, which still take each main
 #     feature end to end once (upload, check, decode, a drive and a charge on
 #     the web API; sign-in and accounts; places; imports; the Tesla client;
@@ -36,9 +35,7 @@ name: Image
 #     in the Dockerfile's own Rust image, with its build folder kept per
 #     arch (an artifact of main's last run): a push builds again only the
 #     crates it changed (a change to ui/packs: web and sentry-mate), and
-#     those incremental: 20 to 40 s for a change to web or engine (only the
-#     newest incremental session of each crate is kept: two made the folder
-#     pass 3 GB, and the build start over, every other run). In
+#     those incremental: 20 to 40 s for a change to web or engine. In
 #     the Docker build it took 6 to 7.5 minutes a run (every workspace crate
 #     each time; with full LTO and one codegen unit 9, so the release
 #     profile in Cargo.toml has neither). The image is then made from the
@@ -70,14 +67,10 @@ on:
 permissions:
   contents: read
 
-# On main a newer push waits for the running build and replaces only one still
-# waiting (GitHub keeps one waiting per group): every build that starts
-# finishes and moves `latest`, and keeps its build folder for the next. A
-# cancelled build kept nothing, and a push every few minutes cancelled every
-# build, so `latest` stayed behind. A branch run by hand: a newer one replaces it.
+# A newer push replaces a build still running for an older one.
 concurrency:
   group: image-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -115,17 +108,13 @@ jobs:
             echo "build=$GITHUB_RUN_NUMBER"
           } >> "$GITHUB_OUTPUT"
 
-  # The fast set, in four parts on five machines at once (web on two), parted
-  # by the time each crate's tests took in run 24: web alone; synth, engine and moving;
-  # import, places, the binary, accounts and timeline; every other crate (a
-  # new crate lands there by itself). Each part builds its test binaries once
-  # with its dependencies from the cache (web: about 2 minutes), then
-  # .github/run-tests.py runs them as many at a time as the machine has
-  # cores, where cargo test runs one at a time and most of them wait more
-  # than they work (web took 3 minutes of tests that way in run 79, its
-  # slowest binary 46 s). web's binaries are dealt out to two machines by
-  # the times they took (--slow): both build them all, each runs half.
-  # The slow tests are in full-tests.yml.
+  # The fast set, in four parts on four machines at once (cargo runs one test
+  # binary at a time, and most of them wait more than they work), parted by
+  # the time each crate's tests took in run 24: web alone (about 100 s);
+  # synth, engine and moving (about 95 s); import, places, the binary,
+  # accounts and timeline (about 75 s); every other crate (about 45 s; a new
+  # crate lands there by itself). Each part builds in about a minute with its
+  # dependencies from the cache. The slow tests are in full-tests.yml.
   tests:
     name: tests (${{ matrix.part }})
     runs-on: ubuntu-latest
@@ -134,13 +123,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # (web's binaries on two machines, dealt out by the times they took in run 85)
-          - part: web 1
+          - part: web
             packages: -p web
-            split: --part 1/2 --slow audit_log=60,charges=45,now_timeline=25,missing_logs=23,system=16,log_queries=15,long_series=11,drives_checks=9,auth_attacks=8,imports_teslafi=8
-          - part: web 2
-            packages: -p web
-            split: --part 2/2 --slow audit_log=60,charges=45,now_timeline=25,missing_logs=23,system=16,log_queries=15,long_series=11,drives_checks=9,auth_attacks=8,imports_teslafi=8
           - part: engine
             packages: -p synth -p engine -p moving
           - part: import
@@ -160,10 +144,9 @@ jobs:
       # (the dependencies only; main writes it, a branch run by hand only reads)
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: tests-${{ matrix.packages == '-p web' && 'web' || matrix.part }}
+          key: tests-${{ matrix.part }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # (several test binaries at once: .github/run-tests.py)
-      - run: .github/run-tests.py ${{ matrix.split }} -- --locked ${{ matrix.packages }}
+      - run: cargo test --locked ${{ matrix.packages }}
 
   # Beside the tests, on a machine of its own (its own build cache too).
   clippy:

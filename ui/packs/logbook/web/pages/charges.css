@@ -144,8 +144,11 @@
 .page-charges .ch-window { font: 400 1rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); }
 .page-charges .ch-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: round(0.75rem, var(--e)) round(3rem, var(--e)); padding-top: round(1.5rem, var(--e)); }
 .page-charges .ch-pair > .ch-readout { grid-column: 1 / -1; }
-.page-charges .ch-readout { display: block; text-align: left; min-height: round(1.5rem, var(--e)); }
-.page-charges .ch-readout strong { font: 400 1.0625rem var(--serif); --LH: normal; line-height: var(--LH); color: var(--ink); }
+.page-charges .ch-readout { display: block; text-align: left; min-height: round(1.75rem, var(--e)); }
+.page-charges .ch-readout strong { font: 400 1.0625rem var(--serif); --LH: round(1.75rem, var(--e)); line-height: var(--LH); color: var(--ink); }
+/* With a mouse the readout keeps one line's height whatever it holds: a longer one runs over what is under it, as a
+   tooltip would, instead of pushing it down. (On a touch screen it wraps.) */
+@media (hover: hover) and (pointer: fine) { .page-charges .ch-readout { height: round(1.75rem, var(--e)); position: relative; z-index: 2; } }
 .page-charges .ch-part { min-width: 0; }
 .page-charges .ch-part-head { display: flex; align-items: center; justify-content: space-between; gap: round(0.75rem, var(--e)); margin-bottom: round(0.625rem, var(--e)); }
 .page-charges .ch-part-head .label { margin: 0; }

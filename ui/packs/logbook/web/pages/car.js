@@ -629,19 +629,11 @@ function whereLines(now, tz, outsideMaps, visit) {
     h('p', { class: 'where-area' }, [L.place ? a.short : null, a.locality, a.region].filter((x, i, arr) => x && arr.indexOf(x) === i).join(', ')),
     sinceLine(now, tz, visit),
     hd != null ? h('p', { class: 'where-since' }, `Heading ${compass(hd)} (${Math.round(hd)}°)`) : null,
-    lat != null ? h('p', { class: 'where-coords', title: posTitle(L.lat) }, h('span', { class: 'mono' }, coordsText([lon, lat]), acc != null ? ` ± ${format(acc, 'length')}` : ''), valueMark(L.lat)) : null,
+    lat != null ? h('p', { class: 'where-coords' }, h('span', { class: 'mono' }, coordsText([lon, lat]), acc != null ? ` ± ${format(acc, 'length')}` : ''), valueMark(L.lat)) : null,
     h('p', { class: 'where-ext', cover: 'summary.map.external_link' }, outsideMaps && lat != null
       ? h('a', { href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=16/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'external noopener noreferrer' }, 'Open on OpenStreetMap')
-      : h('span', { class: 'note' }, 'Outside map links are off. An admin can turn them on in Settings: Maps and addresses.')),
+      : h('span', { class: 'note' }, 'Outside map links are off. An admin can turn them on in Settings: Display and units.')),
   ];
-}
-
-/** A position's hover title: when it was recorded and the input that sent it (an API's when SMO's GPS is out of step). */
-function posTitle(pair) {
-  const t = pair && typeof pair === 'object' ? pair.at_ms : null;
-  if (t == null) return null;
-  const src = pair.sources?.[0]?.label;
-  return `Position recorded ${formatRelative(t, api.now())}${src ? `; ${src}` : ''}`;
 }
 
 /** 'Here since' the arrival of the open stop; with no recent data, only when the car was last seen here. */

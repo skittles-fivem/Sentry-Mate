@@ -83,13 +83,8 @@ def featured_specs():
                 "pack_kwh_code": ("78", "can"), "wheel": ("19 in Gemini", "can"), "paint": ("Stealth Grey", "can"),
                 "roof": ("Glass", "can"), "spoiler": ("None", "can"), "right_hand_drive": (False, "can"),
                 "map_region": ("North America", "can"), "supercharging_access": ("Paid", "can")},
-        # one typed by the owner; one nobody has named, which changed every module (on the car its fingerprints
-        # flapped for a few minutes after the install: the server makes that ONE update with the final, stable set,
-        # so it is one update here too); and the newest, named by TeslaFi (named_by "auto")
         updates=[(-286, "2026.2.6", "owner", "fingerprint"), (-163, None, None, "fingerprint"),
-                 (-49, None, None, "fingerprint")],
-        # TeslaFi was read for Comet then: it said 2026.32.5 five hours after the newest update ended
-        input_versions=[("teslafi_api", "2026.32.5", 3, 5.0)],
+                 (-49, "2026.32.5", "build_match", "fingerprint")],
         first_version=("2025.26.7", "owner"),
         special={"road_trip": (-137, -133), "holiday": (-238, -230)},
         gaps=[  # (days before now, local hour, minutes, reason, mode)

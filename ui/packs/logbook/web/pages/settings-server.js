@@ -10,9 +10,6 @@
 // list scrolls), and Storage: the space on disk by category and what compaction saved
 // (GET /system/storage/detail), with "Compact now" (POST /system/storage/compact; while a pass runs the
 // detail is read again every 2 s, until the page is left). Every table has a Download CSV button.
-// Server updates (#server-updates): this build and the release check (#release-check: the switch, PATCH
-// /settings release_check with its version, an admin's), its last answer (GET /release) and Check now
-// (POST /release/check, admins); while a check runs the answer is read again every 4 s.
 
 import { h, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -26,8 +23,6 @@ import { dateTime, date, zoneLabel, count } from '../core/format.js';
 import { moveBlock, askPassword } from './settings-move.js';
 import { bigCode, downloadText } from './move-parts.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
-import { buildLabel, buildTitle, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
-import { currentAbout } from '../core/frame.js';
 
 export const id = 'settings-server';
 export const css = true;
@@ -51,86 +46,6 @@ const bytes = (v) => q(v, 'bytes');
 // storage: the groups of the categories and the steps of a compaction pass, in plain words
 const STORE_GROUP = { logs: 'CAN logs', series: 'Time series', rows: 'Drives and charges', kv: 'Kept answers and records', imports: 'Imports', server: 'Server' };
 const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records' };
-
-/* ================================================================== server updates */
-
-/**
- * Server updates (#server-updates): this build, the release check's switch (#release-check) and its last
- * answer, with Check now for an admin. S.settings is the page's copy of the settings, which the switch
- * replaces with the saved one. Returns { el, load }.
- */
-function updatesSection(ctx, S, admin) {
-  let rel = null, about = currentAbout(), busy = false, timer = null;
-  ctx.onCleanup(() => clearTimeout(timer));
-  const info = h('div', { class: 'ss-release' });
-  const sw = switchField({ label: 'Check for new releases', checked: !!(S.settings.release_check && S.settings.release_check.enabled),
-    onchange: async (on) => {
-      try {
-        S.settings = await ctx.api.patch('settings', { version: S.settings.version, release_check: { enabled: on } });
-        ctx.flash(on ? 'Release check on, for this server.' : 'Release check off: the server asks nothing.');
-      } catch (err) {
-        if (err && (err.code === 'stale_version' || err.status === 409)) {
-          S.settings = await ctx.api.get('settings').catch(() => S.settings);
-          ctx.flash('Someone else changed the server settings meanwhile; the switch shows the saved one now.', { kind: 'info' });
-        } else ctx.flash(`Not saved: ${errText(err)}`, { kind: 'error' });
-      }
-      if (!ctx.alive()) return;
-      sw.set(S.settings.release_check && S.settings.release_check.enabled);
-      await refresh();
-    } });
-  sw.input.disabled = !admin;
-  async function refresh() {
-    try { rel = await ctx.api.get('release'); } catch { /* keep the last answer */ }
-    if (ctx.alive()) draw();
-  }
-  async function checkNow() {
-    busy = true;
-    draw();
-    try {
-      rel = await ctx.api.post('release/check', {});
-      if (rel && rel.status === 'error') ctx.flash(releaseStatus(rel).text, { kind: 'error' });
-    } catch (err) {
-      if (api.isAbort(err)) return;
-      ctx.flash(err && err.code === 'release_check_off' ? 'Not checked: the release check is off.' : `Not checked: ${errText(err)}`, { kind: 'error' });
-      try { rel = await ctx.api.get('release'); } catch { /* keep the last answer */ }
-    } finally { busy = false; }
-    if (ctx.alive()) draw();
-  }
-  function draw() {
-    const now = api.now();
-    const st = rel ? releaseStatus(rel, now) : { tone: 'error', text: 'Could not read the release check from the server.' };
-    const when = rel ? checkedAgo(rel, now) : '';
-    const on = !!(rel ? rel.enabled : S.settings.release_check && S.settings.release_check.enabled);
-    const checking = busy || (rel && rel.status === 'checking');
-    const lines = rel && rel.status === 'newer' ? changeLines(rel.newest) : [];
-    replace(info,
-      h('dl', { class: 'ss-facts ss-release-facts' },
-        h('dt', null, 'This build'), h('dd', { title: buildTitle(about) || null }, h('span', { class: 'mono' }, buildLabel(about || {}, now))),
-        h('dt', null, 'Last answer'), h('dd', { class: ['ss-release-status', `ss-release-${st.tone}`], role: 'status' }, checking && st.tone !== 'wait' ? 'Checking…' : st.text, when ? h('span', { class: 'ss-quiet' }, ` · ${when}`) : null)),
-      lines.length ? h('ul', { class: 'ss-release-titles' }, lines.map((x) => h('li', null, x))) : null,
-      rel && rel.status === 'newer' && rel.pull ? h('p', { class: 'ss-release-pull' }, 'To update, run on the server: ', mono(rel.pull)) : null,
-      admin ? h('p', { class: 'ss-release-actions' }, button(checking ? 'Checking…' : 'Check now', { iconName: 'reset', disabled: !on || checking, title: on ? null : 'Turn the release check on first', onclick: checkNow })) : null);
-    clearTimeout(timer);
-    if (rel && rel.status === 'checking' && !busy) timer = setTimeout(() => { if (ctx.alive()) refresh(); }, 4000);
-  }
-  draw();
-  const el = section({ title: 'Server updates', note: admin ? 'off by default' : 'read only for your account', cls: 'ss-updates', id: 'server-updates' },
-    h('div', { class: 'ss-release-row', id: 'release-check' },
-      h('p', { class: 'ss-lede' }, 'Once a day the server asks GitHub whether a newer Sentry Mate image is published, and tells admins. Only that question goes out: no token, no car, no account. It never downloads or installs anything.'),
-      sw, admin ? null : h('p', { class: 'ss-state' }, 'Set by an admin; shown here to read.'),
-      info));
-  return {
-    el,
-    async load() {
-      const [r, a] = await Promise.all([
-        ctx.api.get('release').catch((e) => { if (api.isAbort(e)) throw e; return null; }),
-        ctx.api.get('about', null, { maxAgeMs: 600000 }).catch((e) => { if (api.isAbort(e)) throw e; return null; }),
-      ]);
-      rel = r; about = a || about;
-      if (ctx.alive()) draw();
-    },
-  };
-}
 
 /* ================================================================== small parts */
 
@@ -884,11 +799,6 @@ export async function mount(ctx) {
     };
   }
 
-  /* ---------------------------------------------------------------- server updates */
-  // the switch saves into the page's own copy of the settings (S), which the host names also use
-  const S = { get settings() { return settings; }, set settings(v) { settings = v; } };
-  const updates = updatesSection(ctx, S, admin);
-
   /* ---------------------------------------------------------------- put together */
   drawNames();
   replace(ctx.main,
@@ -898,11 +808,11 @@ export async function mount(ctx) {
     }),
     h('div', { class: 'ss-grid' },
       h('div', { class: 'ss-col' }, addressSection, namesSection, portsSection),
-      h('div', { class: 'ss-col' }, accessSection, safetySection, updates.el)),
+      h('div', { class: 'ss-col' }, accessSection, safetySection)),
     mover ? mover.el : null, storageSection, accountsSection, sessionsSection, auditSection);
 
   try {
-    await Promise.all([portsTable && portsTable.load(), sessionsTable.load(), accountsTable && accountsTable.load(), auditTable && auditPrep.then(() => auditTable.load()), mover && mover.load(), storage && storage.load(), updates.load()]);
+    await Promise.all([portsTable && portsTable.load(), sessionsTable.load(), accountsTable && accountsTable.load(), auditTable && auditPrep.then(() => auditTable.load()), mover && mover.load(), storage && storage.load()]);
   } catch (err) {
     if (!ctx.alive()) return undefined;
     throw err;

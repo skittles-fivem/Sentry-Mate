@@ -88,7 +88,7 @@ export async function mount(ctx) {
       : h('span', { class: 'tone--warn' }, r.detected_by === 'fingerprint' ? 'tesla update installed' : 'build changed'),
     r.version && SOURCE[r.version_source] ? [' ', versionTag(r.version_source)] : null,
     ctx.admin && r.source === 'can' ? [' ', r.detected_by === 'fingerprint'
-      ? h('a', { class: 'btn btn--line tone--accent', href: `#upd-${r.id}`, title: 'name it below, with what changed', onclick: () => setTimeout(() => fpUpdates.open(r.id), 0) }, r.version ? '[edit]' : '[name it]')
+      ? h('a', { class: 'btn btn--line tone--accent', href: `#upd-${r.id}`, title: 'name it below, with what changed' }, r.version ? '[edit]' : '[name it]')
       : h('button', { class: 'btn btn--line tone--accent', type: 'button', onclick: () => editVersion(r) }, r.version ? '[edit]' : '[type it]')] : null);
 
   let painted = false;
@@ -122,7 +122,7 @@ export async function mount(ctx) {
   });
   const notesLine = h('p', { class: 'note', cover: 'updates.link.release_notes' }, notesOn
     ? 'a known version links to its release notes on an outside site; nothing is sent until you open one.'
-    : ['release-note links are off, so nothing leaves this server. ', ctx.admin ? 'turn them on in ' : 'an admin can turn them on in ', link(`${state.buildUrl('settings-maps')}#outside-links`, 'settings/maps'), '.']);
+    : ['release-note links are off, so nothing leaves this server. ', ctx.admin ? 'turn them on in ' : 'an admin can turn them on in ', link(state.buildUrl('settings-display'), 'settings/display'), '.']);
 
   const search = h('input', { class: 'in in--search', type: 'search', placeholder: 'car or version', 'aria-label': 'Find a car or version', spellcheck: 'false' });
   const fleet = table(ctx, {

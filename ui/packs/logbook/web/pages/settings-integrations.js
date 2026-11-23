@@ -179,11 +179,11 @@ const ERROR_WORDS = {
 };
 
 const NET_PURPOSE = {
-  geocoding: ['Address lookup', 'Only when an admin turns online addresses on; positions are rounded first.', 'settings-maps'],
-  tiles: ['Map pictures', 'Asked for by each viewer’s browser while online tiles are on.', 'settings-maps'],
-  geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-maps'],
+  geocoding: ['Address lookup', 'Only when an admin turns online addresses on; positions are rounded first.', 'settings-display'],
+  tiles: ['Map pictures', 'Asked for by each viewer’s browser while online tiles are on.', 'settings-display'],
+  geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-display'],
   mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
-  release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-server'],
+  release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-display'],
   tesla: ['Tesla API', 'Only while a Tesla account is added (Tesla account, on this page): signs in and reads its cars, never sends a command.', null],
   teslafi: ['TeslaFi API', 'Only while a TeslaFi token is added and not paused: reads your cars’ data from TeslaFi', null],
   teslamate_mqtt: ['Local TeslaMate (MQTT)', 'Only while a local TeslaMate is added and not paused: subscribes to its topics, never publishes', null],

@@ -5,9 +5,8 @@
 // (imported from a TeslaMate or TeslaFi backup, read live from TeslaFi, the owner's local TeslaMate or the
 // Tesla API, typed by an admin, or learned from another update with exactly the same module builds). An update seen only as changed module builds says "build changed" with the modules, never a guess.
 // A "Tesla update installed" (found from the firmware fingerprints the modules broadcast on CAN) is shown with
-// each changed fingerprint (old -> new, lowercase hex), the drives before and after it, and its name (or "Not named
-// yet") with where the name came from; an admin's "Name it" / "Edit the name" opens a box in place to type its
-// version (or clear it; Escape or Cancel closes it). The car's current fingerprints are on the car page (Car firmware).
+// each changed fingerprint (old -> new, lowercase hex), the drives before and after it, and, for an admin, a box
+// to type its version (or clear it); the car's current fingerprints are on the car page (Car firmware).
 // Data:
 //   GET /cars/{car}/updates            the history in the period (newest first, paged, CSV from the server),
 //                                      with a summary in every page (count, median gap, the version now,
@@ -20,7 +19,7 @@
 //   GET /settings                      whether the owner allows release-notes links (outside_links)
 // Live: an update that starts or ends ("rows" events naming "updates") loads the lists again.
 
-import { h, replace, disclose } from '../shared/dom.js';
+import { h, replace } from '../shared/dom.js';
 import { formatDate, formatTime, formatDateTime, formatDuration, periodLabel, HOUR, DAY } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
@@ -299,7 +298,7 @@ export async function mount(ctx) {
     h('span', null, notesOn
       ? 'A known version links to its release notes on an outside site, opened in a new tab by your own click; this server sends nothing.'
       : ['Release-notes links are off, so nothing leaves this server. ', admin ? 'Turn them on in ' : 'An admin can turn them on in ',
-        h('a', { href: `${state.buildUrl('settings-maps')}#outside-links` }, 'Settings: Maps and addresses'), '.']));
+        h('a', { href: state.buildUrl('settings-display') }, 'Settings: Display and units'), '.']));
   /* ---------------------------------------------------------------- Tesla updates installed (fingerprints) */
 
   const drivesPath = api.apiPath`cars/${cid}/drives`;
@@ -314,7 +313,6 @@ export async function mount(ctx) {
     }));
   }
   const fpRows = () => (table.items || []).filter(isFp);
-  const fpOpen = new Map(); // update id -> its name box's disclose(): open boxes stay open when the cards are drawn again
   const fpBox = h('div', { class: 'sw-fp-list' });
   const firmwareHref = `${state.buildUrl('car', { car: cid })}#car-firmware`;
   const fpSec = h('section', { class: 'block sw-fp', id: 'sw-fp', 'aria-labelledby': 'sw-fp-title' },
@@ -340,25 +338,21 @@ export async function mount(ctx) {
     const byModule = new Map();
     for (const c of changes) { if (!byModule.has(c.module)) byModule.set(c.module, []); byModule.get(c.module).push(c); }
     const err = h('p', { class: 'field-error sw-fp-err', role: 'alert', id: `sw-fp-err-${r.id}`, hidden: true });
-    // the name is on the card; an admin's "Edit the name" ("Name it" while it has none) opens the box in place
-    let nameBox = null, editBtn = null;
+    let nameBox = null;
     if (admin) {
       const input = h('input', {
         class: 'field-input sw-fp-input', id: `sw-fp-name-${r.id}`, name: 'version', value: r.version || '', placeholder: '2026.38.4',
         autocomplete: 'off', spellcheck: 'false', inputmode: 'decimal', 'aria-describedby': `sw-fp-hint-${r.id} sw-fp-err-${r.id}`,
       });
-      let dz = null;
       const save = async (v) => {
         err.hidden = true;
         if (v && !VERSION_RX.test(v)) { replace(err, 'A version such as 2026.38.4, as the car’s screen shows it.'); err.hidden = false; input.setAttribute('aria-invalid', 'true'); input.focus(); return; }
-        if (!v && !r.version) { replace(err, 'Type the version as the car’s screen shows it, such as 2026.38.4.'); err.hidden = false; input.focus(); return; }
         input.removeAttribute('aria-invalid');
         for (const b of box.querySelectorAll('button')) b.disabled = true;
         try {
           await ctx.api.patch(api.apiPath`cars/${cid}/updates/${r.id}`, { version: v || null });
           if (!ctx.alive()) return;
-          dz.close();
-          await reloadAll(false, `sw-fp-edit-${r.id}`);
+          await reloadAll(false, `sw-fp-name-${r.id}`);
           if (!ctx.alive()) return;
           const after = (table.items || []).find((x) => x.id === r.id);
           ctx.flash(v ? `Saved: this Tesla update installed ${v}. Later updates to the same fingerprints are named by themselves.`
@@ -371,18 +365,13 @@ export async function mount(ctx) {
           for (const b of box.querySelectorAll('button')) b.disabled = false;
         }
       };
-      const box = h('form', { class: 'sw-fp-name', id: `sw-fp-box-${r.id}`, onsubmit: (e) => { e.preventDefault(); save(String(input.value || '').trim()); } },
+      const box = h('form', { class: 'sw-fp-name', onsubmit: (e) => { e.preventDefault(); save(String(input.value || '').trim()); } },
         h('label', { class: 'field-label', for: input.id }, r.version ? 'Its version' : 'Name it'),
         h('div', { class: 'sw-fp-name-row' }, input,
           h('button', { type: 'submit', class: 'button button-small button-primary' }, 'Save'),
-          r.version ? h('button', { type: 'button', class: 'button button-small button-quiet', onclick: () => { input.value = ''; save(''); } }, 'Clear the name') : null,
-          h('button', { type: 'button', class: 'button button-small button-quiet', title: 'Close without saving (Escape)', onclick: () => dz.close({ focus: true }) }, 'Cancel')),
+          r.version ? h('button', { type: 'button', class: 'button button-small button-quiet', onclick: () => { input.value = ''; save(''); } }, 'Clear the name') : null),
         h('p', { class: 'field-hint', id: `sw-fp-hint-${r.id}` }, 'As the car’s screen shows it (Controls, Software). Clearing it also takes it off the updates that were named from this one.'),
         err);
-      editBtn = h('button', { type: 'button', class: 'sw-edit sw-fp-edit', id: `sw-fp-edit-${r.id}`, title: r.version ? 'Type another version for this update, from the car’s screen' : 'Type the version this update installed, from the car’s screen' },
-        icon('settings'), r.version ? 'Edit the name' : 'Name it');
-      dz = disclose(editBtn, box, { focus: input, onClose: () => { input.value = r.version || ''; err.hidden = true; input.removeAttribute('aria-invalid'); } });
-      fpOpen.set(r.id, dz);
       nameBox = box;
     }
     return h('article', { class: 'sw-fp-card', id: `update-${r.id}`, tabindex: '-1', 'aria-labelledby': `sw-fp-t-${r.id}` },
@@ -392,9 +381,7 @@ export async function mount(ctx) {
         h('p', { class: 'sw-fp-named' }, named === 'auto' ? 'Named from an earlier update with the same fingerprints.'
           : named === 'live' ? `Named ${srcWords(r.version_source)}, which reported this version within a day after the update.${admin ? ' A typed version takes its place.' : ''}`
             : named === 'other' ? `Named ${srcWords(r.version_source)}.`
-              : named === 'owner' ? 'Typed by an admin from the car’s screen.' : admin ? 'Not named yet: name it from the car’s screen.' : 'Not named yet: an admin can name it.'),
-        editBtn),
-      nameBox,
+              : named === 'owner' ? 'Typed by an admin from the car’s screen.' : admin ? 'Type its version below.' : 'Not named yet: an admin can name it.')),
       h('dl', { class: 'sw-fp-facts' },
         h('div', null, h('dt', null, 'Installed between'), h('dd', null, `${formatDateTime(btw[0], tz, { now: api.now() })} and ${formatDateTime(btw[1], tz, { now: api.now() })}`,
           h('span', { class: 'sw-faint' }, ' (last old, first new fingerprint)'))),
@@ -405,22 +392,20 @@ export async function mount(ctx) {
           h('div', { class: 'sw-fp-change sw-fp-change-head', role: 'row' },
             h('span', { role: 'columnheader' }, 'Module and fingerprint'), h('span', { role: 'columnheader' }, 'Old → new')),
           [...byModule].map(([m, list]) => list.map((c, i) => h('div', { class: 'sw-fp-change', role: 'row' },
-            h('span', { class: 'sw-fp-what', role: 'cell' }, i === 0 ? h('span', { class: 'sw-fp-module' }, c.module_name || MODULES[m] || m) : null, h('span', { class: 'sw-fp-field' }, c.field)),
+            h('span', { class: 'sw-fp-what', role: 'cell' }, i === 0 ? h('span', { class: 'sw-fp-module' }, c.module_name || MODULES[m] || m) : null, h('span', { class: 'sw-fp-field mono' }, c.field)),
             h('span', { class: 'sw-fp-hexes', role: 'cell' }, h('span', { class: 'sw-hex is-old mono' }, c.old), h('span', { class: 'sw-fp-arrow', 'aria-label': 'changed to' }, ' → '), h('span', { class: 'sw-hex mono' }, c.new))))))
-        : h('p', { class: 'note' }, `Changed: ${moduleNames(r.changed_modules)}.`));
+        : h('p', { class: 'note' }, `Changed: ${moduleNames(r.changed_modules)}.`),
+      nameBox);
   }
   function drawFp() {
     const rows = fpRows();
     // a name being typed survives a redraw (live updates load the list again)
     const typed = new Map([...fpBox.querySelectorAll('.sw-fp-input:not([data-saved])')].map((i) => [i.id, i.value]));
     const focused = document.activeElement && fpBox.contains(document.activeElement) ? document.activeElement.id : null;
-    const opened = [...fpOpen].filter(([, dz]) => dz.isOpen()).map(([id]) => id);
-    fpOpen.clear();
     replace(fpBox, rows.length ? rows.map(fpCard) : empty({
       title: 'No Tesla update found from fingerprints in this period.',
       text: 'Updates show here when the modules’ firmware fingerprints change between two drives. Choose a longer period to see earlier ones.',
     }));
-    for (const id of opened) fpOpen.get(id)?.open({ focus: false });
     for (const [idv, v] of typed) { const i = document.getElementById(idv); if (i && i.value !== v) i.value = v; }
     if (focused) document.getElementById(focused)?.focus({ preventScroll: true });
   }
@@ -454,7 +439,7 @@ export async function mount(ctx) {
         ? h('div', { class: 'cell-main' }, cellLabel('Fingerprint'), h('span', { class: 'sw-faint' }, 'none: an imported version only'))
         : h('div', { class: 'cell-main' }, cellLabel('Fingerprint'),
           h('span', { class: 'sw-hex fwh-hex mono' }, r.fingerprint || '—'),
-          h('span', { class: 'cell-sub' }, r.previous ? ['after ', h('span', { class: 'sw-hex mono' }, r.previous)] : 'the first one seen'))),
+          h('span', { class: 'cell-sub' }, r.previous ? ['after ', h('span', { class: 'mono' }, r.previous)] : 'the first one seen'))),
     },
     {
       key: 'seen', label: 'Seen', hint: 'From when it was first seen to when it was last seen, in the car’s time zone; “now” while it is current.',

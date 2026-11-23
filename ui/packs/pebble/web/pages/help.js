@@ -45,16 +45,13 @@ const QA = [
   { id: 'q-tesla', icon: 'plug', q: 'Do I need a Tesla account?', page: 'settings-integrations',
     a: 'No. SMO, the car’s CAN Bridge, is enough. A Tesla account is an optional second live input: an admin adds it under Settings: Integrations, and the server then reads its cars from Tesla’s Owner API too. It only reads; it never wakes a car or sends it a command.' },
   { id: 'q-units', icon: 'gauge', q: 'How do I change units, theme or text size?', page: 'settings-display',
-    a: 'Settings: Display has the theme (Auto, Light, Dark), map colours and map style, units, rated or ideal range, the interface size and the UI pack. Your choices are yours alone.' },
-  { id: 'q-maps', icon: 'map', q: 'Where do maps and addresses come from?', page: 'settings-maps',
-    a: 'From this server by default: an offline map file and bundled place names, so nothing is looked up on another site. An admin can choose an online map (satellite pictures, for example), which maps people may switch to, and an online address service, for everyone.',
-    you: 'Change them in Settings: Maps and addresses.', watch: 'An admin sets them; you pick your own map style in Settings: Display.' },
+    a: 'Settings: Display has the theme (Auto, Light, Dark), units, rated or ideal range, the interface size and the UI pack. Your choices are yours alone.' },
   { id: 'q-times', icon: 'calendar', q: 'Which time zone are times in?', page: 'fleet',
     a: 'Every time and day is in the car’s own time zone. A page with several cars shows each one in its own zone.' },
   { id: 'q-csv', icon: 'download', q: 'How do I get my data out?', page: 'drives',
     a: 'Lists have an Export button. The file holds every row of the period and filters, not only those on screen, with the units in the column names.' },
   { id: 'q-car', icon: 'shield', q: 'Does Sentry Mate talk to the car or to Tesla?', page: 'settings-integrations',
-    a: 'No. It only reads what the CAN Bridge recorded. It never wakes the car or sends commands, and it asks no other server anything unless an admin turns that on (Settings: Integrations, Maps and addresses, Server).' },
+    a: 'No. It only reads what the CAN Bridge recorded. It never wakes the car or sends commands, and it asks no other server anything unless an admin turns that on in Settings: Integrations.' },
   { id: 'q-move', icon: 'move', q: 'How do I move to another server?', page: 'settings-server',
     a: 'Start the new server, then make a move code on the old one under Settings: Server and type it on the new one’s first page. An export file and the recovery key do the same when the two cannot reach each other.',
     you: 'The move code and the export file ask for your password again.', watch: 'Only an admin can move the server.' },
@@ -73,7 +70,7 @@ export async function mount(ctx) {
   if (!ctx.alive()) return {};
   const links = about.links || {};
   const pack = about.ui_pack || {};
-  const display = () => h('a', { class: 'place-link', href: `${ctx.link('settings-server')}#release-check` }, 'Settings: Server');
+  const display = () => h('a', { class: 'place-link', href: `${ctx.link('settings-display')}#release` }, 'Settings: Display');
 
   /* ---------------------------------------------------------------- about */
   const mismatch = pack.api != null && String(pack.api) !== String(about.api_version);
@@ -107,7 +104,7 @@ export async function mount(ctx) {
     relSide = val(st.text);
   } else {
     relSub = ['The release check is off, so no other server is asked. ', admin ? ['Turn it on in ', display(), '.'] : 'An admin can turn it on.'];
-    relSide = admin ? h('a', { class: 'tile-link', href: `${ctx.link('settings-server')}#release-check` }, 'Off', icon('chevronRight')) : val('Off');
+    relSide = admin ? h('a', { class: 'tile-link', href: `${ctx.link('settings-display')}#release` }, 'Off', icon('chevronRight')) : val('Off');
   }
 
   const docs = links.docs;

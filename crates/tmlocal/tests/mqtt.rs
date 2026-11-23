@@ -260,7 +260,7 @@ async fn a_broker_in_trouble_is_told_once_and_its_end_too() {
     let dir = tempfile::tempdir().unwrap();
     let (svc, sink) = service(&dir);
     // nothing listens on the port: refused, told once however often it is tried again
-    let (_refusing, closed) = refusing_port();
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     svc.put(0, draft(closed), 1).unwrap();
     until("refused", || sink.told().iter().any(|t| t == &[Trouble::ConnectionRefused])).await;
     let p = svc.status().mqtt_problem().unwrap();
@@ -314,7 +314,7 @@ async fn a_failed_catch_up_is_told() {
     let dir = tempfile::tempdir().unwrap();
     let (svc, sink) = service(&dir);
     let (port, _, _) = broker().await;
-    let (_refusing, closed) = refusing_port();
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let mut d = draft(port);
     d.database = tmlocal::DbConfig { enabled: true, host: "127.0.0.1".into(), port: closed, ..Default::default() };
     svc.put(0, d, 1).unwrap();
@@ -390,14 +390,4 @@ async fn a_password_over_plain_tcp_is_refused_before_anything_connects() {
     moved.mqtt.allow_unencrypted = true;
     assert_eq!(svc.put(c.version, moved, 2).unwrap_err().code(), "password_resend");
     svc.stop();
-}
-
-/// A port that refuses connections while the socket lives: bound but never listening, so no other test can take it
-/// meanwhile (a port bound and let go could be, with several test binaries running at once: the refusal was then
-/// told twice).
-fn refusing_port() -> (tokio::net::TcpSocket, u16) {
-    let s = tokio::net::TcpSocket::new_v4().unwrap();
-    s.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-    let port = s.local_addr().unwrap().port();
-    (s, port)
 }

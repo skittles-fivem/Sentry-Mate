@@ -72,10 +72,6 @@
    "name": "Settings: Display and units",
    "route": "/settings/display"
   },
-  "settings-maps": {
-   "name": "Settings: Maps and addresses",
-   "route": "/settings/maps"
-  },
   "settings-integrations": {
    "name": "Settings: Integrations",
    "route": "/settings/integrations"
@@ -4817,11 +4813,11 @@
   {
    "id": "docs.env.tesla-api.nominatim-proxy",
    "tab": "docs.env.tesla-api",
-   "page": "settings-maps",
-   "section": "Address lookup",
+   "page": "settings-display",
+   "section": "Addresses and maps",
    "data_status": "have",
    "inventory": "docs-extras",
-   "page_name": "Settings: Maps and addresses"
+   "page_name": "Settings: Display and units"
   },
   {
    "id": "api.which-api",
@@ -9452,38 +9448,38 @@
   {
    "id": "web.settings.general.address-language",
    "tab": "web.settings.general",
-   "page": "settings-maps",
-   "section": "Address lookup",
+   "page": "settings-display",
+   "section": "Addresses and maps",
    "data_status": "derive",
    "inventory": "web-admin",
-   "page_name": "Settings: Maps and addresses"
+   "page_name": "Settings: Display and units"
   },
   {
    "id": "web.settings.general.address-language-error",
    "tab": "web.settings.general",
-   "page": "settings-maps",
-   "section": "Address lookup",
+   "page": "settings-display",
+   "section": "Addresses and maps",
    "data_status": "derive",
    "inventory": "web-admin",
-   "page_name": "Settings: Maps and addresses"
+   "page_name": "Settings: Display and units"
   },
   {
    "id": "web.settings.general.address-language-invalid",
    "tab": "web.settings.general",
-   "page": "settings-maps",
-   "section": "Address lookup",
+   "page": "settings-display",
+   "section": "Addresses and maps",
    "data_status": "derive",
    "inventory": "web-admin",
-   "page_name": "Settings: Maps and addresses"
+   "page_name": "Settings: Display and units"
   },
   {
    "id": "web.settings.general.address-lookup",
    "tab": "web.settings.general",
-   "page": "settings-maps",
-   "section": "Address lookup",
+   "page": "settings-display",
+   "section": "Addresses and maps",
    "data_status": "derive",
    "inventory": "web-admin",
-   "page_name": "Settings: Maps and addresses"
+   "page_name": "Settings: Display and units"
   },
   {
    "id": "web.settings.general.theme",
@@ -10496,11 +10492,11 @@
   {
    "id": "web.shell.map-tiles",
    "tab": "web.shell",
-   "page": "settings-maps",
-   "section": "Map tiles",
+   "page": "settings-display",
+   "section": "Addresses and maps",
    "data_status": "have",
    "inventory": "web-admin",
-   "page_name": "Settings: Maps and addresses"
+   "page_name": "Settings: Display and units"
   },
   {
    "id": "web.shell.locale-negotiation",
