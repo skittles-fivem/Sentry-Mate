@@ -56,7 +56,8 @@
 .trip-split > i, .trip-split-legend i { background: var(--tc); }
 .trip-split > i[data-tone="asleep"], .trip-split-legend i[data-tone="asleep"] { background: var(--asleep-fill); }
 .trip-split > i[data-tone="none"], .trip-split-legend i[data-tone="none"] { background: var(--nodata-fill); }
-.trip-split-legend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(0.5rem, var(--e)) round(1.5rem, var(--e)); margin: 0 0 round(0.75rem, var(--e)); padding: 0; list-style: none; }
+/* two columns where each fits, else one (the panel is narrow beside the map on a laptop) */
+.trip-split-legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(round(16rem, var(--e)), 1fr)); gap: round(0.5rem, var(--e)) round(1.5rem, var(--e)); margin: 0 0 round(0.75rem, var(--e)); padding: 0; list-style: none; }
 .trip-split-legend li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto round(3rem, var(--e)); align-items: center; gap: round(0.5rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); }
 .trip-split-legend li i { width: round(0.75rem, var(--e)); height: round(0.75rem, var(--e)); border-radius: round(0.1875rem, var(--e)); }
 .trip-split-legend li b { color: var(--text); font-weight: 600; white-space: nowrap; }
