@@ -341,25 +341,41 @@ fn snapshot_plain(ctx: &Ctx, files: &Files) -> Result<Option<crate::plain::Plain
     Ok(Some(p))
 }
 
-/// A day's points: from its snapshot alone (through the cache) when its journal is empty, else snapshot and journal.
-fn day_points<P: Point>(ctx: &Ctx, files: Files) -> Result<Vec<P>> {
+/// Reads a day that has a journal: under the car's lock (a fold meanwhile would pair a snapshot with a journal of
+/// another generation). A day of a snapshot alone is read without it: the snapshot is replaced whole, by a rename.
+pub(crate) type Journaled<'a, P> = &'a mut dyn FnMut(Files) -> Result<Vec<P>>;
+
+/// A day's points, snapshot and journal (under the car's lock: see [`Journaled`]).
+pub(crate) fn journaled_points<P: Point>(ctx: &Ctx, files: Files) -> Result<Vec<P>> {
+    Ok(LoggedFile::<DayLog<P>>::read_state(ctx, files)?.points)
+}
+
+/// A day's points: from its snapshot alone (through the cache) when it has no journal, else through `journaled`.
+fn day_points<P: Point>(ctx: &Ctx, files: Files, journaled: Journaled<'_, P>) -> Result<Vec<P>> {
     if !files.log.exists() {
         let label = ctx.label(&files.snap);
         return match snapshot_plain(ctx, &files)? {
             Some(p) => Ok(DayLog::<P>::decode_state(&p.1).map_err(|e| e.in_file(&label))?.points),
-            None if files.log.exists() => Ok(LoggedFile::<DayLog<P>>::read_state(ctx, files)?.points),
+            None if files.log.exists() => journaled(files),
             None => Ok(Vec::new()),
         };
     }
-    Ok(LoggedFile::<DayLog<P>>::read_state(ctx, files)?.points)
+    journaled(files)
 }
 
 /// Every point of `[from, to)`, in time order.
-pub(crate) fn read<P: Point>(ctx: &Ctx, car_dir: &Path, source: Stream, from: u64, to: u64) -> Result<Vec<P>> {
+pub(crate) fn read<P: Point>(
+    ctx: &Ctx,
+    car_dir: &Path,
+    source: Stream,
+    from: u64,
+    to: u64,
+    journaled: Journaled<'_, P>,
+) -> Result<Vec<P>> {
     let dir = series_dir::<P>(car_dir, source);
     let mut out = Vec::new();
     for day in days_in(&dir, from, to)? {
-        let pts = day_points::<P>(ctx, day_files(&dir, day))?;
+        let pts = day_points::<P>(ctx, day_files(&dir, day), journaled)?;
         let a = pts.partition_point(|p| p.t_ms() < from);
         let b = pts.partition_point(|p| p.t_ms() < to);
         out.extend(pts.into_iter().skip(a).take(b - a));
@@ -376,6 +392,7 @@ pub(crate) fn read_fields<P: Point>(
     from: u64,
     to: u64,
     names: &[&str],
+    journaled: Journaled<'_, P>,
 ) -> Result<Fields> {
     let cols = columns::field_columns::<P>(names)?;
     let dir = series_dir::<P>(car_dir, source);
@@ -383,7 +400,7 @@ pub(crate) fn read_fields<P: Point>(
     for day in days_in(&dir, from, to)? {
         let files = day_files(&dir, day);
         let fields = if files.log.exists() {
-            let points = day_points::<P>(ctx, files)?;
+            let points = day_points::<P>(ctx, files, journaled)?;
             let mut f = Fields::new(names);
             f.t_ms = points.iter().map(Point::t_ms).collect();
             for ((_, v), c) in f.values.iter_mut().zip(&cols) {
