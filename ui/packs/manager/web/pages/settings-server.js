@@ -4,7 +4,8 @@
 // here). Admins also get the accounts (roles, car lists, two-step sign-in), the audit log (each entry
 // links to the item it changed), the host names for the certificate, the ports, and where the recovery
 // key and backups stand, and the move to another server (a move code or an export file:
-// pages/settings-server-move.js). Changes are saved through the API with the object's version; a short note
+// pages/settings-server-move.js), and the full rebuild of every car with its automatic run on a new server
+// version (pages/full-rebuild.js). Changes are saved through the API with the object's version; a short note
 // confirms each one.
 
 import { h, replace } from '../shared/dom.js';
@@ -23,6 +24,7 @@ import { dateTime, date, agoEl, tzName, DASH } from '../core/fmt.js';
 import { timeColumn } from '../shared/csv.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 import { movePanel, showRecoveryKey, newRecoveryKey, markKeySaved, askPassword } from './settings-server-move.js';
+import { fullRebuild } from './full-rebuild.js';
 
 export const id = 'settings-server';
 export const css = true;
@@ -582,6 +584,46 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- moving to another server (admin) */
   const move = admin ? movePanel(ctx, { tz, zone: zoneText }) : null;
 
+  /* ---------------------------------------------------------------- the full rebuild (admin) */
+  let fullPanel = null, full = null;
+  if (admin) {
+    // the cars whose history was made with another way of decoding (from the status), named
+    const staleLine = h('p', { class: 'ss-fr-stale', hidden: true });
+    const paintStale = (st) => {
+      const ids = st?.version?.stale_cars || [];
+      staleLine.textContent = ids.length
+        ? `Made with an older way of decoding the logs: ${ids.map((c) => carName.get(c) || c).join(', ')}. A full rebuild makes ${ids.length === 1 ? 'its history' : 'their histories'} again with this server's.`
+        : '';
+      staleLine.hidden = !ids.length;
+    };
+    full = fullRebuild(ctx, { carName: (c) => carName.get(c) || c, onStatus: paintStale });
+    // full_rebuild.auto: saved at once with the settings' version
+    const autoOn = () => S.settings.full_rebuild?.auto ?? true;
+    const autoState = h('label', { for: 'ss-fr-auto' }, autoOn() ? 'On' : 'Off');
+    const autoInput = h('input', { type: 'checkbox', id: 'ss-fr-auto', role: 'switch', checked: autoOn(),
+      'aria-label': 'Rebuild automatically when a new server version decodes the stored logs differently',
+      onchange: async () => {
+        const want = autoInput.checked;
+        autoInput.disabled = true;
+        try {
+          S.settings = await ctx.api.patch('settings', { version: S.settings.version, full_rebuild: { auto: want } });
+          flash(want ? 'Automatic full rebuild on.' : 'Automatic full rebuild off: a notice offers it instead.');
+        } catch (e) {
+          if (e.status === 409) {
+            S.settings = await ctx.api.get('settings').catch(() => S.settings);
+            flash('Someone else changed the server settings meanwhile; this page shows theirs now. Try again.', { kind: 'info' });
+          } else flash(`Could not save: ${errText(e)}`, { kind: 'error' });
+        } finally { autoInput.disabled = false; }
+        if (!ctx.alive()) return;
+        autoInput.checked = autoOn();
+        autoState.textContent = autoOn() ? 'On' : 'Off';
+      } });
+    fullPanel = panel({ title: 'Full rebuild', icon: 'reset', pad: true, id: 'full-rebuild' },
+      full.el, staleLine,
+      setting('Rebuild automatically', 'When a new server version decodes the stored logs differently, the cars whose history was made the old way are rebuilt by themselves at its start. Off, a notice offers it instead.',
+        h('div', { class: 'switch-row switch-row--inline' }, h('span', { class: 'switch' }, autoInput, h('i', { 'aria-hidden': 'true' })), autoState)));
+  }
+
   /* ---------------------------------------------------------------- the page */
   paintHosting();
   paintNames();
@@ -599,12 +641,14 @@ export async function mount(ctx) {
     h('div', { class: 'settings-stack ss' },
       h('div', { class: 'ss-two' }, hostPanel, h('div', { class: 'ss-col' }, namesPanel, portsPanel)),
       h('div', { class: 'ss-two' }, accessPanel, admin ? safety : null),
+      fullPanel,
       move ? move.el : null,
       accountsTable ? [goneNote, accountsTable.el] : null,
       sessionGone, sessionsTable.el,
       auditTable ? auditTable.el : null));
   if (auditTable) await auditTable.ready;
   if (move) await move.ready;
+  if (full) await full.ready;
   if (!ctx.alive()) return;
   ctx.ready();
 }
