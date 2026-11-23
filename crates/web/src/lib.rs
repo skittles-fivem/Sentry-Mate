@@ -1,6 +1,6 @@
 //! Sentry Mate's web side: the HTTPS server for the UI packs and the `/api/v1` JSON API (docs/ui-api.md), on its own
 //! port ([`PORT`], 10101, beside the upload port 10100). TLS 1.3 only with the server's own certificate (the same
-//! one the upload port uses), HTTP/1.1.
+//! one the upload port uses), HTTP/2 or HTTP/1.1.
 //!
 //! # The frame every endpoint shares
 //!
@@ -51,6 +51,7 @@ pub mod accounts_admin;
 pub mod auth;
 pub mod csv;
 pub mod ctx;
+pub mod delivery;
 pub mod error;
 pub mod events;
 pub mod heavy;
@@ -406,7 +407,8 @@ pub fn router_with(app: AppState, extra: Router<AppState>) -> Router {
         .merge(moving::routes())
         .merge(recovery::routes())
         .merge(resources::routes())
-        .route_layer(axum::middleware::from_fn_with_state(app.clone(), policy::guard));
+        .route_layer(axum::middleware::from_fn_with_state(app.clone(), policy::guard))
+        .route_layer(axum::middleware::from_fn(delivery::layer));
     Router::new()
         .merge(api)
         .route("/health", get(|| async { axum::http::StatusCode::OK }))

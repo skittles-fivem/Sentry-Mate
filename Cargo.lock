@@ -2856,6 +2856,7 @@ dependencies = [
  "accounts",
  "axum",
  "base64 0.22.1",
+ "brotli",
  "bytes",
  "chrono",
  "crc32fast",
