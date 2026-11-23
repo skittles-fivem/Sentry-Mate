@@ -3,6 +3,8 @@
 
 .sw-page > .panel, .sw-page > .sw-summary { margin-bottom: var(--gap); }
 .sw-filters .filter-bar { margin-bottom: round(0.625rem, var(--e)); }
+/* a long custom period (a stale from/to in the address) wraps inside its button instead of pushing the page sideways */
+.sw-filters .filter-bar .btn { max-width: 100%; height: auto; min-height: round(2.25rem, var(--e)); padding-block: round(0.375rem, var(--e)); white-space: normal; text-align: start; }
 .sw-filters .note { display: flex; align-items: center; gap: round(0.375rem, var(--e)); margin: 0; }
 
 .sw-summary { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: var(--gap); }
