@@ -13,6 +13,7 @@ import { h } from '../shared/dom.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
 import { compareText, formatNumber } from '../shared/i18n.js';
 import { icon, empty as emptyView, errorView, loadingBlock } from './ui.js';
+import { scrollBox } from '../shared/scrollbox.js';
 
 /**
  * dataTable(ctx, {
@@ -38,11 +39,13 @@ import { icon, empty as emptyView, errorView, loadingBlock } from './ui.js';
  *                                     // scrolls into view (the button stays, for the keyboard and as fallback)
  *   moreLabel: 'Show more',           // the button's words
  *   filters: node,                    // controls put between the caption line and the table
- *   box: true | 'name',               // the rows (and the loading, empty or error view) scroll inside a box that
- *                                     // the page's CSS gives its height (.ledger-box, from the start); with
- *                                     // autoMore the next page loads as the end of the box comes near. The box is
- *                                     // a focusable region (arrow keys scroll it), data-below while rows are
- *                                     // hidden under its bottom edge (for a fade)
+ *   box: true | 'name',               // a long log-like list: the rows (and the loading, empty or error view)
+ *                                     // scroll in a box about five rows high (shared/scrollbox.js, .scroll-box in
+ *                                     // app.css; a page sets --box-rows / --box-row for other rows). A paged list
+ *                                     // has that height from the start and, with autoMore, loads the next page as
+ *                                     // the end of the box comes near ("Show more" stays under it); rows in hand
+ *                                     // make a box at most that high (.scroll-box--fit). The column heads stay at
+ *                                     // the top while the rows scroll.
  * }) -> { el, reload(params), items, destroy() }
  */
 export function dataTable(ctx, opts) {
@@ -64,14 +67,17 @@ export function dataTable(ctx, opts) {
   const more = h('button', { type: 'button', class: 'button button-quiet', hidden: true, onclick: () => loadMore() }, opts.moreLabel || 'Show more');
   const foot = h('div', { class: 'ledger-foot' }, more);
   const status = h('div', { class: 'ledger-status' });
-  const sentinel = opts.autoMore ? h('div', { class: 'ledger-sentinel', 'aria-hidden': 'true' }) : null;
+  const sentinel = opts.autoMore && !opts.box ? h('div', { class: 'ledger-sentinel', 'aria-hidden': 'true' }) : null;
+  const box = opts.box
+    ? scrollBox({
+      label: typeof opts.box === 'string' ? opts.box : label, cls: ['ledger-scroll', 'ledger-box', pager ? null : 'scroll-box--fit'], signal: ctx.signal,
+      onEnd: opts.autoMore && pager ? () => (pager.done || pager.loading || !drawn || more.hidden || more.disabled ? false : loadMore()) : null,
+    }, table, status)
+    : null;
   const el = h('div', { class: ['ledger', cls], cover },
     h('div', { class: 'ledger-top' }, count, opts.caption ? h('p', { class: 'ledger-caption' }, opts.caption) : null, csvBtn),
     opts.filters || null,
-    ...(opts.box
-      ? [h('div', { class: 'ledger-scroll ledger-box', tabindex: '0', role: 'region', 'aria-label': typeof opts.box === 'string' ? opts.box : label }, table, status, sentinel), foot]
-      : [h('div', { class: 'ledger-scroll' }, table), status, sentinel, foot]));
-  const box = opts.box ? el.querySelector('.ledger-box') : null;
+    ...(box ? [box.el, foot] : [h('div', { class: 'ledger-scroll' }, table), status, sentinel, foot]));
   // the next page when the end of the table comes into view (looked at again after each page, so a tall
   // window fills up; a failed page waits for the button or the retry)
   let seen = false;
@@ -79,20 +85,13 @@ export function dataTable(ctx, opts) {
     ? new IntersectionObserver((entries) => {
       seen = entries.some((e) => e.isIntersecting);
       if (seen && pager && !pager.done && !pager.loading && drawn && !more.hidden && !more.disabled) loadMore().then((ok) => { if (ok) recheck(); });
-    }, { root: box, rootMargin: `0px 0px ${box ? 96 : 300}px 0px` })
+    }, { rootMargin: '0px 0px 300px 0px' })
     : null;
-  function recheck() { if (io && !ctx.signal.aborted && pager && !pager.done) { io.unobserve(sentinel); io.observe(sentinel); } }
-  if (io) { io.observe(sentinel); ctx.signal.addEventListener('abort', () => io.disconnect(), { once: true }); }
-  // a box: data-below while rows are hidden under its bottom edge
-  if (box) {
-    const edge = () => box.toggleAttribute('data-below', box.scrollHeight - box.scrollTop - box.clientHeight > 1);
-    box.addEventListener('scroll', edge, { passive: true });
-    if (typeof ResizeObserver === 'function') {
-      const ro = new ResizeObserver(edge);
-      ro.observe(box); ro.observe(table);
-      ctx.signal.addEventListener('abort', () => ro.disconnect(), { once: true });
-    }
+  function recheck() {
+    if (box) { if (!ctx.signal.aborted) box.recheck(); return; }
+    if (io && !ctx.signal.aborted && pager && !pager.done) { io.unobserve(sentinel); io.observe(sentinel); }
   }
+  if (io) { io.observe(sentinel); ctx.signal.addEventListener('abort', () => io.disconnect(), { once: true }); }
 
   function serverParams() {
     const p = { ...params };
@@ -222,7 +221,7 @@ export function dataTable(ctx, opts) {
   const ctl = {
     el,
     /** The first page (call once after putting el in the page); resolves when it is drawn. */
-    async load() { if (pager) { await loadMore(true); fillForSort(); recheck(); } else { draw(); opts.onRows?.(rows, null); } },
+    async load() { if (pager) { await loadMore(true); fillForSort(); recheck(); } else { draw(); opts.onRows?.(rows, null); box?.recheck(); } },
     /** New filters: start again from the first page. opts.sort: a new column order, or null for the resource's own. */
     async reload(newParams, o = {}) {
       if (newParams) params = { ...newParams };
@@ -237,12 +236,12 @@ export function dataTable(ctx, opts) {
       if (!drawn) body.replaceChildren();
       if (!(await quietLoad(shown))) return;
       draw();
-      if (box && !same) box.scrollTop = 0;   // new filters or order: the list starts at its top
+      if (box && !same) box.top();   // new filters or order: the list starts at its top
       recheck();
       await fillForSort();
     },
     /** Replace the rows (rows source only). */
-    setRows(list) { rows = [...list]; draw(); },
+    setRows(list) { rows = [...list]; draw(); box?.recheck(); },
     /** Draw every row again (after something they show changed, such as a pin). */
     redraw() { draw(); },
     /** Draw one row again in place (a live update of that item). */

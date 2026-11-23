@@ -18,11 +18,12 @@
 //     filters,                                   controls put above the table
 //     autoMore: true, moreLabel,                 an API list: the next page also loads when the end of the table
 //                                                scrolls into view (the "more" button stays, for the keyboard)
-//     box: true | 'name',                        the rows (and the loading or empty line) scroll inside a box that the
-//                                                page's CSS gives its height (.tbl-box, from the start); with autoMore
-//                                                the next page loads as the end of the box comes near. The box is a
-//                                                focusable region (arrow keys scroll it), data-below while rows are
-//                                                hidden under its bottom edge (for a fade)
+//     box: true | 'name', boxRows,               the rows (and the loading or empty line) scroll in a box about five
+//                                                rows high (shared/scrollbox.js; .scroll-box in app.css, boxRows sets
+//                                                --box-rows): an API list has that height from the start and, with
+//                                                autoMore, loads the next page as the end of the box comes near; local
+//                                                rows are all drawn and the box is at most that high (.scroll-box--fit).
+//                                                The column header stays at the top while the rows scroll.
 //   });
 //   t.el; await t.ready; t.reload(params); t.rows();
 
@@ -31,6 +32,7 @@ import { compareText, formatNumber } from '../shared/i18n.js';
 import { csvFilename } from '../shared/csv.js';
 import { empty as emptyLine, loadingLine, errorWords } from './states.js';
 import { section } from './ui.js';
+import { scrollBox } from '../shared/scrollbox.js';
 
 export function table(ctx, opts) {
   const { rowHref = null, limit = 50 } = opts;
@@ -40,7 +42,8 @@ export function table(ctx, opts) {
   let params = { ...(opts.params || {}) };
   let sort = opts.sort ? { ...opts.sort } : null;
   let pager = null, items = [], gen = 0;
-  let localShown = limit;   // local rows: shown a page at a time too
+  const pageRows = opts.box && opts.rows ? Infinity : limit;   // local rows: a page at a time too (in a box: all, it scrolls)
+  let localShown = pageRows;
 
   const count = h('span', { class: 'tbl-count muted' });
   const csvSlot = h('span', { class: 'tbl-csv' });
@@ -55,12 +58,20 @@ export function table(ctx, opts) {
   const sortLine = h('label', { class: 'tbl-sortline' }, h('span', { class: 'muted' }, 'sort: '), sortSel);
   const sortable = columns.filter((c) => c.sort);
   const note = opts.note ? h('p', { class: 'note tbl-note', cover: opts.noteCover || null }, opts.note) : null;
-  const sentinel = opts.autoMore && !opts.rows ? h('div', { class: 'tbl-sentinel', 'aria-hidden': 'true' }) : null;
+  const sentinel = opts.autoMore && !opts.rows && !opts.box ? h('div', { class: 'tbl-sentinel', 'aria-hidden': 'true' }) : null;
   const box = opts.box
-    ? h('div', { class: 'tbl-scroll tbl-box', tabindex: '0', role: 'region', 'aria-label': typeof opts.box === 'string' ? opts.box : opts.label || opts.title || null }, tbl, status, sentinel)
+    ? scrollBox({
+      label: typeof opts.box === 'string' ? opts.box : opts.label || opts.title || null,
+      cls: ['tbl-scroll', 'tbl-box', opts.rows ? 'scroll-box--fit' : null], signal: ctx.signal, onCleanup: ctx.signal ? null : ctx.onCleanup,
+      onEnd: opts.autoMore && !opts.rows ? () => {
+        if (!ctx.alive() || !pager || pager.done || pager.loading || foot.hidden || moreBtn.disabled) return false;
+        return more().then(() => !!pager && !pager.done, () => false);
+      } : null,
+    }, tbl, status)
     : null;
+  if (box && opts.boxRows) box.el.style.setProperty('--box-rows', String(opts.boxRows));
   const body = box
-    ? [note, opts.filters || null, sortable.length ? sortLine : null, box, foot]
+    ? [note, opts.filters || null, sortable.length ? sortLine : null, box.el, foot]
     : [note, opts.filters || null, sortable.length ? sortLine : null, h('div', { class: 'tbl-scroll' }, tbl), status, sentinel, foot];
   const el = opts.bare
     ? h('div', { class: ['tbl-wrap', opts.wrapCls] }, body)
@@ -168,7 +179,7 @@ export function table(ctx, opts) {
   }
 
   async function more() {
-    if (opts.rows) { localShown += limit; paintLocal(); return; }
+    if (opts.rows) { localShown += pageRows; paintLocal(); return; }
     const g = gen;
     moreBtn.disabled = true;
     let got;
@@ -188,10 +199,9 @@ export function table(ctx, opts) {
 
   async function load({ quiet = false } = {}) {
     const g = ++gen;
-    if (opts.rows) { localShown = limit; paintLocal(); return; }
+    if (opts.rows) { localShown = pageRows; paintLocal(); box?.recheck(); return; }
     pager = ctx.api.pager(opts.path, { ...params, ...sortParams() }, { limit });
-    if (!quiet) { replace(tbody); replace(tfoot); tbl.hidden = true; foot.hidden = true; replace(status, loadingLine(`loading ${opts.title || 'rows'}`)); }
-    if (!quiet && box) box.scrollTop = 0;   // a new list starts at its top
+    if (!quiet) { replace(tbody); replace(tfoot); tbl.hidden = true; foot.hidden = true; replace(status, loadingLine(`loading ${opts.title || 'rows'}`)); box?.top(); }   // a new list starts at its top
     let got;
     try { got = await pager.more(); } catch (e) {
       if (g !== gen || !ctx.alive()) return;
@@ -215,20 +225,13 @@ export function table(ctx, opts) {
       if (!ctx.alive()) { io.disconnect(); return; }
       if (!entries.some((e) => e.isIntersecting) || !pager || pager.done || pager.loading || foot.hidden || moreBtn.disabled) return;
       more().then(recheck, () => {});
-    }, { root: box, rootMargin: `0px 0px ${box ? 96 : 300}px 0px` })
+    }, { rootMargin: '0px 0px 300px 0px' })
     : null;
-  function recheck() { if (io && ctx.alive() && pager && !pager.done) { io.unobserve(sentinel); io.observe(sentinel); } }
-  if (io) { io.observe(sentinel); ctx.signal?.addEventListener('abort', () => io.disconnect(), { once: true }); }
-  // a box: data-below while rows are hidden under its bottom edge
-  if (box) {
-    const edge = () => box.toggleAttribute('data-below', box.scrollHeight - box.scrollTop - box.clientHeight > 1);
-    box.addEventListener('scroll', edge, { passive: true });
-    if (typeof ResizeObserver === 'function') {
-      const ro = new ResizeObserver(edge);
-      ro.observe(box); ro.observe(tbl);
-      ctx.signal?.addEventListener('abort', () => ro.disconnect(), { once: true });
-    }
+  function recheck() {
+    if (box) { if (ctx.alive()) box.recheck(); return; }
+    if (io && ctx.alive() && pager && !pager.done) { io.unobserve(sentinel); io.observe(sentinel); }
   }
+  if (io) { io.observe(sentinel); ctx.signal?.addEventListener('abort', () => io.disconnect(), { once: true }); }
 
   head();
   const ready = load();

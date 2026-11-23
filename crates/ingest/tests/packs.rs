@@ -186,8 +186,16 @@ async fn every_file_reads_the_same_before_and_after_packing() {
     assert!(before.iter().any(|a| a.4.state == State::Missing));
     let stored_before: u64 = loose(&t.car()).iter().map(|n| std::fs::metadata(t.car().join(n)).unwrap().len()).sum();
 
-    let r = t.store.pack_finished(AFTER, &|| false);
+    let told = std::cell::RefCell::new(Vec::new());
+    let r = t.store.pack_finished_with_progress(AFTER, &|| false, &|p| told.borrow_mut().push(p.clone()));
     assert_eq!((r.days, r.files, r.failed, r.stopped), (2, files.len(), 0, false), "{r:?}");
+    // the progress: the days counted first, then one more after each day, with what was freed so far (a
+    // small day can take a little more in its pack than it freed, so that need not only grow)
+    let told = told.into_inner();
+    assert_eq!(told.iter().map(|p| (p.days_done, p.days_total)).collect::<Vec<_>>(), [(0, 2), (1, 2), (2, 2)]);
+    assert_eq!(told[0].saved_bytes, 0);
+    assert_eq!(told[2].saved_bytes, r.before_bytes - r.after_bytes);
+    assert!(told.iter().all(|p| p.failed == 0 && p.last_error.is_none()));
     assert_eq!(r.before_bytes, stored_before);
     assert!(r.after_bytes < r.before_bytes, "{r:?}");
     assert_eq!(loose(&t.car()), Vec::<String>::new(), "every finished file is in its day pack only");

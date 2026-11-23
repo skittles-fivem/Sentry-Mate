@@ -564,7 +564,7 @@ export async function mount(ctx) {
     if (!carId) { eventsT = null; replace(eventsSlot, empty('no car yet', 'Events appear once a car has uploaded logs.')); return; }
     const now = ctx.api.now();
     eventsT = table(ctx, {
-      title: 'recent events', path: `cars/${enc(carId)}/events`, params: { from_ms: now - 30 * DAY, to_ms: now + 60_000, types: EVENT_TYPES.join(',') }, csvName: `events-${carId}`, limit: 12, label: 'Recent events',
+      title: 'recent events', path: `cars/${enc(carId)}/events`, params: { from_ms: now - 30 * DAY, to_ms: now + 60_000, types: EVENT_TYPES.join(',') }, csvName: `events-${carId}`, limit: 12, label: 'Recent events', box: true, autoMore: true,
       note: 'The last 30 days, newest first, as a subscriber to the event topic got them.',
       columns: [
         { key: 'at_ms', label: 'when', ph: 'sub', render: (r) => dateTime(r.at_ms, ctx.tz) },

@@ -22,10 +22,11 @@ import { tile, btn, linkBtn, chip, note, icon, ago } from '../core/ui.js';
 import { openSheet, confirmSheet, passwordOk } from '../core/sheet.js';
 import { field, form, segmented } from '../core/form.js';
 import { toggle } from '../core/form.js';
-import { checkRow, sectionHead, moreButton } from '../core/bits.js';
+import { checkRow, sectionHead, moreButton, listBox } from '../core/bits.js';
 import { group, infoRow, said, notSaved, askPassword, keySheet, tick } from '../core/settings.js';
 import { inOrder } from '../core/settings.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
+import { compactionProgress } from '../shared/compaction.js';
 import { bytes, bigCode, copyButton, downloadUrl, stepCards, progressBar, callout, PROBLEM } from './move-parts.js';
 
 export const id = 'settings-server';
@@ -41,7 +42,6 @@ const ROLE_TEXT = {
 const PURPOSE = { web: 'Web pages and API', upload: 'CAN Bridge uploads' };
 // storage: the groups of the categories and the steps of a compaction pass, in plain words
 const STORE_GROUP = { logs: 'CAN logs', series: 'Time series', rows: 'Drives and charges', kv: 'Kept answers and records', imports: 'Imports', server: 'Server' };
-const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records' };
 /** Text that may break only after a slash, a colon or a dot (addresses, a SHA-256). */
 const breakable = (t) => String(t).split(/(?<=[/:.])/).map((part, i) => [i ? h('wbr') : null, part]);
 
@@ -450,45 +450,83 @@ export async function mount(ctx) {
     } catch (e) { if (api.isAbort(e) || !ctx.alive()) return; ctx.toast(`Compaction not started: ${(e && e.message) || 'the server did not answer'}`, { kind: 'error' }); }
     drawStorage();
   }
+  // The compaction tile is built once and changed in place on every read (2 s while a pass runs), so its
+  // ring keeps turning and nothing in it moves. The progress row has the same room idle or running: a line
+  // of words with the ring, a bar, a line of figures and a warning line, each cut with an ellipsis (the whole
+  // text in its title) rather than wrapped (two lines of figures on a phone).
+  const cmp = {
+    chip: h('span'), saved: h('span', { class: 'set-value' }), last: h('span', { class: 'set-value' }), lastSub: h('span'),
+    spin: h('span', { class: 'spin', 'aria-hidden': 'true' }), head: h('span', { class: 'cmp-head-t' }), count: h('span', { class: 'cmp-count' }),
+    fill: h('span', { class: 'mv-bar-fill' }), facts: h('p', { class: 'cmp-facts' }), warn: h('p', { class: 'cmp-warn' }),
+    go: btn('Compact now', { kind: 'primary', icon: 'refresh', onclick: () => compactNow() }),
+  };
+  cmp.bar = h('span', { class: 'mv-bar cmp-bar', role: 'progressbar', 'aria-label': 'Compaction progress', 'aria-valuemin': '0', 'aria-valuemax': '100' }, cmp.fill);
+  cmp.row = h('div', { class: 'cmp', 'aria-live': 'polite' }, h('p', { class: 'cmp-head' }, cmp.spin, cmp.head, cmp.count), cmp.bar, cmp.facts, cmp.warn);
+  const lastRow = infoRow({ icon: 'clock', name: 'Last pass', sub: cmp.lastSub, side: cmp.last });
+  const cmpTile = tile({ w: 2, title: 'Compaction', icon: 'refresh', id: 'storage', side: cmp.chip },
+    group(null, [infoRow({ icon: 'check', name: 'Saved so far', sub: 'What compaction has freed in all.', side: cmp.saved }), lastRow]),
+    cmp.row,
+    h('div', { class: 'form-actions' }, cmp.go),
+    note('Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs’ signed originals are kept byte for byte.'));
+  const setLine = (el, ...kids) => { el.replaceChildren(...kids); el.title = el.textContent.trim(); };
   function compactionTile() {
     const c = (store && store.compaction) || null;
     const running = !!c && c.status === 'running';
     const failed = !!c && c.status === 'failed';
-    const line = running
-      ? said('info', h('b', null, 'Packing…'), ` ${PACK_STEP[c.step] || c.step || 'getting ready'}, `, c.total ? `${formatNumber(c.done || 0)} of ${formatNumber(c.total)}` : 'counting',
-        storeErr ? ' (the progress could not be read just now)' : null)
-      : failed ? said('warn', h('b', null, 'The last pass failed: '), c.error || 'the server gave no reason.')
-        : said('info', !c ? 'The server did not say how compaction stands.'
+    const p = compactionProgress(c, { now: api.now(), bytes });
+    cmp.chip.replaceChildren(chip(running ? 'Packing' : failed ? 'Failed' : c ? 'Idle' : 'Not known', { tone: running ? 'sky' : failed ? 'sun' : c ? 'teal' : 'muted' }));
+    cmp.saved.textContent = bytes(c ? c.saved_bytes : null);
+    cmp.last.textContent = !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'Nothing left to pack';
+    cmp.lastSub.textContent = c && c.finished_ms != null ? `Finished ${when(c.finished_ms)}.` : 'No pass has finished yet.';
+    cmp.go.disabled = running || !c;
+    cmp.row.classList.toggle('is-running', running);
+    cmp.row.classList.toggle('is-failed', failed);
+    cmp.spin.style.visibility = running ? '' : 'hidden';
+    cmp.bar.style.visibility = running ? '' : 'hidden';
+    cmp.bar.classList.toggle('is-stalled', p.stalled);
+    cmp.fill.style.setProperty('--w', String((p.pct ?? 0) / 100));
+    if (p.pct == null) cmp.bar.removeAttribute('aria-valuenow'); else cmp.bar.setAttribute('aria-valuenow', String(Math.round(p.pct)));
+    const pollWords = storeErr && store ? `The progress could not be read just now: ${(storeErr && storeErr.message) || 'the server did not answer'}` : null;
+    if (running) {
+      setLine(cmp.head, h('b', null, 'Packing…'), ' ', [p.stepOf, p.step].filter(Boolean).join(' · ') || 'getting ready');
+      setLine(cmp.count, p.count);
+      setLine(cmp.facts, [p.saved, p.rate, p.stalled ? null : p.eta, p.stalled ? null : p.last].filter(Boolean).join(' · '));
+      setLine(cmp.warn, (p.stalled ? p.stall : p.errors || pollWords) || '');
+    } else {
+      setLine(cmp.head, ...(failed ? [h('b', null, 'The last pass failed: '), c.error || 'the server gave no reason.']
+        : [!c ? 'The server did not say how compaction stands.'
           : c.automatic ? 'Compaction runs by itself when the server is idle. Compact now starts a pass at once.'
-            : 'Compaction does not run by itself on this server. Compact now starts a pass.');
-    return tile({ w: 2, title: 'Compaction', icon: 'refresh', id: 'storage',
-      side: chip(running ? 'Packing' : failed ? 'Failed' : c ? 'Idle' : 'Not known', { tone: running ? 'sky' : failed ? 'sun' : c ? 'teal' : 'muted' }) },
-    group(null, [
-      infoRow({ icon: 'check', name: 'Saved so far', sub: 'What compaction has freed in all.', side: h('span', { class: 'set-value' }, bytes(c ? c.saved_bytes : null)) }),
-      infoRow({ icon: 'clock', name: 'Last pass', sub: c && c.finished_ms != null ? `Finished ${when(c.finished_ms)}.` : 'No pass has finished yet.',
-        side: h('span', { class: 'set-value' }, !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'Nothing left to pack') }),
-    ]),
-    h('div', { 'aria-live': 'polite' }, line),
-    h('div', { class: 'form-actions' }, btn('Compact now', { kind: 'primary', icon: 'refresh', disabled: running || !c, onclick: compactNow })),
-    note('Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs’ signed originals are kept byte for byte.'));
+            : 'Compaction does not run by itself on this server. Compact now starts a pass.']));
+      setLine(cmp.count, '');
+      setLine(cmp.facts, '');
+      setLine(cmp.warn, pollWords || '');
+    }
+    return cmpTile;
   }
+  // the categories scroll in a box about five rows high; the tile is drawn again only when they change
+  let spaceEl = null, spaceKey = null;
   function spaceTile() {
     const cats = (store && store.categories) || [];
-    return tile({ w: 2, title: 'Space on disk', icon: 'server', side: chip(store && store.total_disk_bytes != null ? `${bytes(store.total_disk_bytes)} in all` : 'Not known', { tone: 'muted' }) },
+    const key = JSON.stringify([cats, store && store.total_disk_bytes, store && store.free_bytes, !!storeErr && !cats.length]);
+    if (spaceEl && key === spaceKey) return spaceEl;
+    spaceKey = key;
+    spaceEl = tile({ w: 2, title: 'Space on disk', icon: 'server', side: chip(store && store.total_disk_bytes != null ? `${bytes(store.total_disk_bytes)} in all` : 'Not known', { tone: 'muted' }) },
       cats.length
-        ? group(null, [
-          cats.map((c) => infoRow({ name: c.label, sub: `${STORE_GROUP[c.group] || c.group} · ${formatNumber(c.files)} ${c.files === 1 ? 'file' : 'files'}`,
-            side: h('span', { class: 'set-value' }, bytes(c.disk_bytes)) })),
+        ? [listBox(ctx, { fit: true, label: 'Space on disk by category', cls: 'st-box' },
+          h('div', { class: 'rows-list' }, cats.map((c) => infoRow({ name: c.label, sub: `${STORE_GROUP[c.group] || c.group} · ${formatNumber(c.files)} ${c.files === 1 ? 'file' : 'files'}`,
+            side: h('span', { class: 'set-value' }, bytes(c.disk_bytes)) })))).el,
+        group(null, [
           infoRow({ icon: 'server', name: 'All together', sub: 'Everything above, as it lies on disk.', side: h('span', { class: 'set-value' }, bytes(store.total_disk_bytes)) }),
           infoRow({ icon: 'download', name: 'Free on the disk', sub: 'Room left for new data.', side: h('span', { class: 'set-value' }, store.free_bytes != null ? bytes(store.free_bytes) : 'Not known') }),
-        ])
+        ])]
         : said('warn', 'The server did not say what takes the space', storeErr && storeErr.message ? `: ${storeErr.message}` : '.'),
       note('What takes the space on disk, largest first, with the kind of data under each.'));
+    return spaceEl;
   }
+  const storeHead = sectionHead('Storage', 'What takes the space on disk, and what compaction saved.');
   function drawStorage() {
-    storeBox.replaceChildren(
-      sectionHead('Storage', 'What takes the space on disk, and what compaction saved.'),
-      compactionTile(), spaceTile());
+    const want = [storeHead, compactionTile(), spaceTile()];
+    if (want.some((el, i) => storeBox.children[i] !== el) || storeBox.children.length !== want.length) storeBox.replaceChildren(...want);
     clearTimeout(storeTimer);
     if (store && store.compaction && store.compaction.status === 'running') storeTimer = setTimeout(readStorage, 2000);
   }
@@ -628,73 +666,52 @@ export async function mount(ctx) {
     };
     const list = h('div', { class: 'rows-list au-list', role: 'list', 'aria-label': 'Audit log entries' });
     const status = h('div', { class: 'au-status' });
-    const sentinel = h('div', { class: 'au-sentinel', 'aria-hidden': 'true' });
-    // the box: a focusable region (arrow keys scroll it), data-below while entries are hidden under its bottom edge
-    const box = h('div', { class: 'au-box', tabindex: '0', role: 'region', 'aria-label': 'Audit log entries' }, status, list, sentinel);
-    const edge = () => box.toggleAttribute('data-below', box.scrollHeight - box.scrollTop - box.clientHeight > 1);
-    box.addEventListener('scroll', edge, { passive: true });
-    if (typeof ResizeObserver === 'function') {
-      const ro = new ResizeObserver(edge);
-      ro.observe(box); ro.observe(list);
-      ctx.onCleanup(() => ro.disconnect());
-    }
-    const moreBtn = btn('Load more', { kind: 'soft', icon: 'chevronDown', cls: 'more-btn', onclick: () => more() });
-    const moreRow = h('div', { class: 'more-row' }, moreBtn);
+    let pager = null, gen = 0;
+    // Load more under the box; as the end of the box comes near it loads too (core/bits.js listBox)
+    const moreRow = moreButton(async () => {
+      const g = gen;
+      try {
+        const got = await pager.more();
+        if (g !== gen || !ctx.alive()) return false;
+        list.append(...got.map(rowOf));
+        status.replaceChildren(list.children.length ? '' : said('info', F.group || F.who ? 'No entry matches this what and who.' : 'Nothing recorded yet.'));
+        list.hidden = !list.children.length;
+      } catch (e) {
+        if (g !== gen || !ctx.alive() || api.isAbort(e)) return false;
+        status.replaceChildren(said('warn', `The log did not load: ${(e && e.message) || 'the server did not answer'}`));
+        return true;
+      } finally { if (g === gen) shown(); }
+      return !pager.done;
+    }, { text: 'Load more' });
+    const box = listBox(ctx, { label: 'Audit log entries', cls: 'au-box', more: moreRow }, status, list);
     const csv = linkBtn('Download CSV', ctx.api.csvUrl('audit', params()), { kind: 'ghost', icon: 'download', cls: 'btn-sm' });
     csv.setAttribute('download', '');
-    let pager = null, gen = 0;
     function shown() {
       moreRow.hidden = !pager || pager.done;
       csv.href = ctx.api.csvUrl('audit', params());
       csv.hidden = !list.children.length;
     }
-    async function more() {
-      if (!pager || pager.done || pager.loading) return;
-      const g = gen;
-      moreBtn.disabled = true;
-      try {
-        const got = await pager.more();
-        if (g !== gen || !ctx.alive()) return;
-        list.append(...got.map(rowOf));
-        status.replaceChildren(list.children.length ? '' : said('info', F.group || F.who ? 'No entry matches this what and who.' : 'Nothing recorded yet.'));
-        list.hidden = !list.children.length;
-      } catch (e) {
-        if (g !== gen || !ctx.alive() || api.isAbort(e)) return;
-        status.replaceChildren(said('warn', `The log did not load: ${(e && e.message) || 'the server did not answer'}`));
-      } finally {
-        if (g === gen) { moreBtn.disabled = false; shown(); recheck(); }
-      }
-    }
     async function first() {
       gen++;
-      moreBtn.disabled = false;
       pager = ctx.api.pager('audit', params(), { limit: 10 });
       const g = gen;
       const got = await pager.more().catch((e) => { if (g === gen && ctx.alive()) status.replaceChildren(said('warn', `The log did not load: ${(e && e.message) || 'the server did not answer'}`)); return null; });
       if (g !== gen || !ctx.alive() || !got) return;
       list.replaceChildren(...got.map(rowOf));
-      box.scrollTop = 0;   // new filters: the list starts at its top
+      box.top();   // new filters: the list starts at its top
       list.hidden = !got.length;
       status.replaceChildren(got.length ? '' : said('info', F.group || F.who ? 'No entry matches this what and who.' : 'Nothing recorded yet.'));
       shown();
-      recheck();
+      box.recheck();
     }
-    const io = typeof IntersectionObserver === 'function'
-      ? new IntersectionObserver((entries) => {
-        if (!ctx.alive()) { io.disconnect(); return; }
-        if (entries.some((x) => x.isIntersecting) && !moreRow.hidden && !moreBtn.disabled) more();
-      }, { root: box, rootMargin: '0px 0px 96px 0px' })
-      : null;
-    function recheck() { if (io && ctx.alive() && pager && !pager.done) { io.unobserve(sentinel); io.observe(sentinel); } }
     const refilter = () => { F.group = what.control.value; F.who = who.control.value; first(); };
     what.control.addEventListener('change', refilter);
     who.control.addEventListener('change', refilter);
     await first();
-    if (io) io.observe(sentinel);
     return tile({ w: 'full', title: 'Audit log', icon: 'book', side: csv, cls: 'au-tile' },
       note(`Every change and every sign-in, newest first. Times in ${tz.replace(/_/g, ' ')}. An item opens where it still exists.`),
       h('div', { class: 'au-filters' }, what, who),
-      box, moreRow);
+      box.el, moreRow);
   }
 
   /* ================================================================ put together */

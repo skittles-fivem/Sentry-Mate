@@ -7,6 +7,7 @@ import * as api from './shared/api.js';
 import * as state from './shared/state.js';
 import { downloadCsv, column } from './shared/csv.js';
 import { resolvePeriod } from './shared/time.js';
+import { scrollBox } from './shared/scrollbox.js';
 
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok: !!ok, detail: String(detail) });
@@ -131,6 +132,37 @@ async function run() {
   check('navigate() to the same page with a hash keeps data-ready', location.hash === '#mqtt' && document.documentElement.dataset.ready === 'fleet' && changes.length === before, `${location.href} ${document.documentElement.dataset.ready}`);
   toPart.remove(); spacer.remove(); part.remove();
   stopRouting();
+
+  // ---- scrollbox.js: a box of fixed height, data-below, the next page as its end comes near
+  {
+    const list = h('div', { class: 'rows' });
+    let pages = 0;
+    const addPage = () => { for (let i = 0; i < 5; i++) list.append(h('div', null, `row ${pages * 5 + i}`)); pages++; };
+    addPage();
+    const ac = new AbortController();
+    const sb = scrollBox({ label: 'Rows', cls: 'test-box', signal: ac.signal, onEnd: async () => { if (pages >= 4) return false; await sleep(10); addPage(); return true; } }, list);
+    sb.el.style.height = '100px'; sb.el.style.overflowY = 'auto';
+    for (const r of [list]) r.style.lineHeight = '40px';
+    document.body.append(sb.el);
+    check('scrollBox is a focusable region with its name', sb.el.getAttribute('role') === 'region' && sb.el.tabIndex === 0 && sb.el.getAttribute('aria-label') === 'Rows' && sb.el.classList.contains('scroll-box') && sb.el.classList.contains('test-box') && sb.el.lastElementChild === sb.end, sb.el.outerHTML.slice(0, 200));
+    await sleep(80);
+    check('scrollBox marks rows hidden below its edge', sb.el.hasAttribute('data-below'), sb.el.scrollHeight);
+    check('scrollBox does not load more until its end comes near', pages === 1, pages);
+    sb.el.scrollTop = sb.el.scrollHeight;
+    for (let i = 0; i < 40 && pages < 2; i++) await sleep(20);
+    check('scrollBox loads the next page as its end comes near', pages >= 2 && sb.el.offsetHeight === 100, `${pages} ${sb.el.offsetHeight}`);
+    for (let n = 0; n < 6; n++) { sb.el.scrollTop = sb.el.scrollHeight; await sleep(40); }
+    check('scrollBox stops when onEnd says there is no more', pages === 4, pages);
+    sb.el.scrollTop = sb.el.scrollHeight; await sleep(40);
+    check('scrollBox drops data-below at the end', !sb.el.hasAttribute('data-below'), sb.el.scrollTop);
+    sb.top();
+    check('scrollBox top() goes back to the first row', sb.el.scrollTop === 0 && sb.el.hasAttribute('data-below'));
+    ac.abort();
+    const before = pages;
+    sb.el.scrollTop = sb.el.scrollHeight; await sleep(40);
+    check('scrollBox stops when its signal aborts', pages === before);
+    sb.el.remove();
+  }
 
   check('no CSP violations', violations.length === 0 && !window.__pwned, violations.join('; '));
 }
