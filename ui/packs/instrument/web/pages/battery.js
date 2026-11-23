@@ -1,3 +1,4 @@
+// ci-speed probe: a pack change
 // Battery (/cars/{car}/battery): how healthy the pack is, how the charge level is used, and where energy
 // goes while the car is parked.
 // - Now, capacity and health, full-charge range and the lifetime totals come from GET .../battery (the
