@@ -17,7 +17,7 @@ export const API_BASE = '/api/v1';
 export const CSRF_HEADER = 'X-Sentry-Mate';
 // Headers the server's clock is read from: an exact one if the server sends it, else the standard Date.
 export const NOW_HEADER = 'X-Sentry-Mate-Now-Ms';
-export const EVENT_TYPES = Object.freeze(['now', 'fleet', 'rows', 'prefs', 'notice']);
+export const EVENT_TYPES = Object.freeze(['now', 'fleet', 'rows', 'prefs', 'notice', 'job', 'health', 'connections', 'storage']);
 
 const DEFAULT_MESSAGES = {
   0: 'Could not reach the server. Check the connection and try again.',

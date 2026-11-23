@@ -57,6 +57,7 @@ pub mod error;
 pub mod events;
 pub mod heavy;
 pub mod ids;
+pub mod live;
 pub mod moving;
 pub mod packs;
 pub mod policy;

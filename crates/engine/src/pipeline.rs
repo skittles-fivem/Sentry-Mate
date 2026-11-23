@@ -1178,6 +1178,25 @@ impl Engine {
                 wanted.push((key, name, len));
             }
         }
+        // logs judged before their length was kept: their size as stored (a job's bytes then add up to its logs')
+        if job.is_some() {
+            let unknown: Vec<String> = wanted.iter().filter(|w| w.2 == 0).map(|w| w.1.clone()).collect();
+            if !unknown.is_empty() {
+                let sizes: std::collections::HashMap<String, u64> = rt
+                    .block_on(self.inner.store.status(&unknown, None))
+                    .into_iter()
+                    .filter_map(|(n, st)| st.length.map(|l| (n, l)))
+                    .collect();
+                for w in &mut wanted {
+                    if w.2 == 0
+                        && let Some(l) = sizes.get(&w.1)
+                    {
+                        w.2 = *l;
+                        bytes += *l;
+                    }
+                }
+            }
+        }
         if let Some(j) = job {
             j.add_total(wanted.len() as u64, bytes);
         }

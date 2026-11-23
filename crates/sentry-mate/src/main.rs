@@ -1692,6 +1692,8 @@ async fn start_web(
         site::forward(&engine.engine, app.events.clone()),
         site::spawn_upkeep(app.clone(), announced),
         web::resources::mqtt::spawn(app.clone()),
+        // the live figures of the open pages (jobs, health, connections, storage) onto the live stream
+        web::live::spawn(app.clone()),
     ];
     // the logs the server lost are looked for after the start and once a day (not after a move away: no uploads)
     let mut tasks = tasks;

@@ -1619,3 +1619,13 @@ fn rehome(app: &AppState) -> ApiResult<()> {
     }
     Ok(())
 }
+
+/// Every import as `/imports/{import}` gives it now, `(id, view)` (the live stream's `job` events of kind `import`).
+pub(crate) fn views_now(app: &AppState) -> Vec<(String, Value)> {
+    let Ok(all) = imports(app) else { return Vec::new() };
+    if load(app, &all).is_err() {
+        return Vec::new();
+    }
+    let st = all.lock();
+    st.jobs.values().map(|j| (j.id.clone(), j.view(st.live.get(&j.id)))).collect()
+}
