@@ -373,7 +373,7 @@ impl Engine {
                     && !busy
                     && let Err(err) = e.compact_start(true)
                 {
-                    tracing::debug!("compaction not started: {err}");
+                    tracing::debug!("compaction did not start: {err}");
                 }
                 tokio::time::sleep(Duration::from_secs(60)).await;
             }
