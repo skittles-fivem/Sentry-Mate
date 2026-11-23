@@ -118,6 +118,7 @@ function contentBox(e, u) {
   }
   return u;
 }
+const wraps = (e) => { const p = e.parentElement; if (!p) return false; const ps = getComputedStyle(p); return /flex/.test(ps.display) && ps.flexWrap !== 'nowrap'; };
 const edged = (s) => s.backgroundColor !== 'rgba(0, 0, 0, 0)' || s.backgroundImage !== 'none' || SIDES.some((k) => s[`border${k}Style`] !== 'none' && parseFloat(s[`border${k}Width`]) > 0);
 const seen = (s) => s.backgroundColor !== 'rgba(0, 0, 0, 0)' || s.backgroundImage !== 'none' || s.borderTopStyle !== 'none';
 function grow(u, q) {
@@ -244,8 +245,10 @@ function boxPass(boxes) {
     const cs = getComputedStyle(e);
     // on a phone only a box whose edges show (a border, a background) grows sideways: a box of words a fraction of a
     // pixel wider can push what shares its line onto the next, and the block it is in grows or shrinks by a line
-    // (what follows it still lands on whole pixels: nudge() moves it there without a change of layout)
-    if (w && narrow && !edged(cs)) w = 0;
+    // (what follows it still lands on whole pixels: nudge() moves it there without a change of layout); and on any
+    // screen an item of a flex row that wraps keeps its width: the items (and a spacer) stretched to fill a line, each
+    // held at its width rounded up, no longer fit on it, and the last one went to a line of its own
+    if (w && ((narrow && !edged(cs)) || wraps(e))) w = 0;
     if (!w && !h) continue;
     // min-width and min-height size the border box only for border-box boxes
     const side = (ks) => (cs.boxSizing === 'content-box' ? ks.reduce((x, k) => x + (parseFloat(cs[k]) || 0), 0) : 0);
