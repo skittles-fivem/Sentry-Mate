@@ -24,6 +24,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 pub(crate) struct Meta {
     /// Every segment day before this is packed at the cold level with nothing in its journal.
     pub settled_before_ms: u64,
+    /// Every segment day before this with a snapshot file of its own has it in the small form
+    /// ([`crate::logged::LEVEL_SMALL`]), with nothing in its journal. (Not there in a folder older servers wrote: 0.)
+    #[serde(default)]
+    pub small_before_ms: u64,
 }
 
 #[derive(Default)]
