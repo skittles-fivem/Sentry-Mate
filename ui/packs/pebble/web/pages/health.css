@@ -29,15 +29,26 @@ a.log-k:hover { color: var(--coral); text-decoration: underline; }
 .kinds-total { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s3); padding-top: var(--s3); border-top: 1px solid var(--card-alt); font-size: var(--f14); line-height: var(--l14); }
 .kinds-total b { font-size: var(--f20); line-height: var(--l20); font-weight: 800; font-variant-numeric: tabular-nums; }
 
-/* signals: a list that scrolls on its own */
+/* signals: a box five rows high that scrolls inside itself under a head that stays; only the rows in view are drawn
+   (shared/vlist.js), every row one height (each line one line, cut short; the whole text is in its title) */
 .sig-tile { gap: var(--s4); }
-.sig-list { display: flex; flex-direction: column; max-height: round(32rem, var(--e)); overflow: auto; border-radius: var(--r-sm); background: var(--well); padding: 0 var(--s4); }
-.sig-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr); column-gap: var(--s4); align-items: baseline; padding: var(--s2) 0; border-top: 1px solid var(--card-alt); font-size: var(--f14); line-height: var(--l14); }
-.sig-head { position: sticky; top: 0; z-index: 1; border-top: 0; background: var(--well); color: var(--muted); font-size: var(--f13); line-height: var(--l13); font-weight: 700; padding-top: var(--s3); }
+.sig-list {
+  --sig-head: calc(var(--l13) + var(--s3) + var(--s2));
+  --sig-row: calc(var(--l14) + var(--l13) + 2 * var(--s2) + 1px);
+  display: block; max-height: calc(var(--sig-head) + 5 * var(--sig-row)); overflow: auto; overscroll-behavior: contain;
+  border-radius: var(--r-sm); background: var(--well); padding: 0 var(--s4);
+}
+.sig-list.is-loading { height: calc(var(--sig-head) + 5 * var(--sig-row)); }
+.sig-list:focus-visible { outline: 2px solid var(--coral-fill); outline-offset: 2px; }
+.sig-body .vl-gap { height: var(--vl-h, 0px); }
+.sig-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr); column-gap: var(--s4); align-items: center; height: var(--sig-row); padding: var(--s2) 0; border-top: 1px solid var(--card-alt); font-size: var(--f14); line-height: var(--l14); overflow: hidden; }
+.sig-head { position: sticky; top: 0; z-index: 1; height: var(--sig-head); border-top: 0; background: var(--well); color: var(--muted); font-size: var(--f13); line-height: var(--l13); font-weight: 700; padding: var(--s3) 0 var(--s2); }
+.sig-row.is-skel { color: var(--muted); }
 .sig-name { display: flex; flex-direction: column; min-width: 0; }
-.sig-name b { font-weight: 800; overflow-wrap: anywhere; }
-.sig-id, .sig-msg { font-family: var(--mono); font-size: var(--f13); line-height: var(--l13); color: var(--muted); overflow-wrap: anywhere; }
-.sig-val { text-align: right; font-weight: 800; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.sig-name b, .sig-id, .sig-msg, .sig-val { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sig-name b { font-weight: 800; }
+.sig-id, .sig-msg { font-family: var(--mono); font-size: var(--f13); line-height: var(--l13); color: var(--muted); }
+.sig-val { text-align: right; font-weight: 800; font-variant-numeric: tabular-nums; }
 .sig-head > :last-child { text-align: right; }
 .sig-none { padding: var(--s4) 0; }
 
@@ -48,7 +59,7 @@ a.log-k:hover { color: var(--coral); text-decoration: underline; }
 .st-precise { padding-top: var(--s4); padding-bottom: var(--s4); }
 
 html[data-form="phone"] .sig-row { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
-html[data-form="phone"] .sig-msg { display: none; }
+html[data-form="phone"] :is(.sig-msg, .sig-mh) { display: none; }
 
 /* the Connections overview tile (both routes) */
 .hl-conn-go { width: var(--ic-sm); height: var(--ic-sm); color: var(--muted); }

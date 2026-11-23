@@ -121,8 +121,11 @@ export async function mount(ctx) {
 
   // the state tile and the strip
   const stGhost = ghostTile(2, 'h2'), stripGhost = ghostTile('full', 'h1');
-  const paintStates = async () => {
+  // gate: the first draw puts every part in at once, once every answer is in (a part drawn on its own, a line
+  // taller or shorter than its grey tile, would move the parts under it)
+  const paintStates = async (gate) => {
     const states = await statesP;
+    await gate;
     if (!ctx.alive()) return;
     const cur = states?.current;
     const share = states?.share_pct || {};
@@ -138,8 +141,9 @@ export async function mount(ctx) {
   const awake = tile({ w: 2, title: 'Why it stayed awake', icon: 'sun', cls: 'tl-awake', cover: ['faq.no-sleep.log-timeline', 'faq.no-sleep.state-image', 'faq.no-sleep.accessory', 'faq.no-sleep.mcu1', 'faq.no-sleep.other-loggers'] },
     note('Each stop below says how long the car slept and what kept it awake: Sentry, climate, someone inside, accessory power or a door. '),
     note('Other apps that poll the car keep it awake too; Sentry Mate only listens to the CAN bus, so it never wakes the car. Older cars with the first media computer sleep less.'));
-  const paintStrip = async () => {
+  const paintStrip = async (gate) => {
     const act = await actP;
+    await gate;
     if (!ctx.alive()) return;
     const stripTile = tile({ w: 'full', title: 'States', icon: 'timeline', cls: 'strip-tile', cover: ['states.chart.states', 'states.chart.legend', 'projects.dash'] },
       act ? strip(act, { tz, link: (s) => (s.ref?.drive ? state.buildUrl('drive', { car: car.id, drive: s.ref.drive }) : s.ref?.charge ? state.buildUrl('charge', { car: car.id, charge: s.ref.charge }) : null) }) : note('The states did not load.'),
@@ -174,9 +178,12 @@ export async function mount(ctx) {
     extra.updates = new Map(list.filter(isFingerprint).map((u) => [u.id, u]));
     await Promise.all([...extra.updates.values()].filter((u) => !extra.around.has(u.id)).map(async (u) => { extra.around.set(u.id, await aroundDrives(ctx, car.id, u)); }));
   }
-  async function reload() {
+  function readList() {
     pager = ctx.api.pager(api.apiPath`cars/${car.id}/timeline`, { ...ctx.params, kinds: [...kinds].join(','), q: qtext || undefined }, { limit: 30 });
-    await Promise.all([pager.more(), readUpdates()]);
+    return Promise.all([pager.more(), readUpdates()]);
+  }
+  async function reload(read = readList()) {
+    await read;
     if (!ctx.alive()) return;
     while (listStart.nextSibling && listStart.nextSibling !== more) listStart.nextSibling.remove();
     lastDay = null;
@@ -190,7 +197,9 @@ export async function mount(ctx) {
     drawFrom(0);
   }
   ctx.view.replaceChildren(bar, stGhost, awake, stripGhost, listStart, ghostTile('full', 'h1'), ghostTile('full', 'h1'), more);
-  await Promise.all([paintStates(), paintStrip(), reload()]);
+  const listRead = readList();
+  const allIn = Promise.all([statesP, actP, listRead.catch(() => {})]);
+  await Promise.all([paintStates(allIn), paintStrip(allIn), reload(allIn.then(() => listRead))]);
   if (!ctx.alive()) return {};
   ctx.ready();
   return { onQuery: async () => { await reload(); } };
