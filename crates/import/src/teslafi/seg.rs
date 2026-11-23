@@ -362,7 +362,6 @@ impl Agg {
             kind: self.charge_kind,
             energy_added_kwh: self.added_max.map(r3),
             energy_used_kwh: used,
-            energy_spans: None,
             start_soc: self.start_soc,
             end_soc: self.end_soc,
             start_range_km: self.start_range,

@@ -18,83 +18,20 @@ pub(crate) fn integrate_kwh(
     power: impl Fn(&Sample) -> Option<f64>,
     bridge: impl Fn(&Sample, &Sample) -> Option<f64>,
 ) -> Option<f64> {
-    integrate(s, end_ms, max_hold_ms, power, bridge, |_, _, _| {})
-}
-
-/// One sample's share of an integral ([`integrate_pieces`]): its power over `[from, to)` (kW; over a bridged gap, the
-/// bridge's energy spread over the gap).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Piece {
-    pub(crate) from: u64,
-    pub(crate) to: u64,
-    pub(crate) kw: f64,
-}
-
-impl Piece {
-    pub(crate) fn kwh(&self) -> f64 {
-        kwh(self.kw, self.to.saturating_sub(self.from))
-    }
-}
-
-/// [`integrate_kwh`], and the pieces its sum is made of, by time.
-pub(crate) fn integrate_pieces(
-    s: &[&Sample],
-    end_ms: u64,
-    max_hold_ms: u64,
-    power: impl Fn(&Sample) -> Option<f64>,
-    bridge: impl Fn(&Sample, &Sample) -> Option<f64>,
-) -> Option<(f64, Vec<Piece>)> {
-    let mut out = Vec::new();
-    let sum = integrate(s, end_ms, max_hold_ms, power, bridge, |from, to, e| {
-        if to > from {
-            out.push(Piece { from, to, kw: e * 3_600_000.0 / (to - from) as f64 });
-        }
-    })?;
-    Some((sum, out))
-}
-
-/// Adds `[a, b)` to sorted spans apart from each other (`a` no earlier than the last one's start).
-pub(crate) fn add_span(spans: &mut Vec<(u64, u64)>, a: u64, b: u64) {
-    if b <= a {
-        return;
-    }
-    match spans.last_mut() {
-        Some(last) if a <= last.1 => last.1 = last.1.max(b),
-        _ => spans.push((a, b)),
-    }
-}
-
-/// How much of `[a, b)` sorted spans apart from each other cover (ms).
-pub(crate) fn covered_ms(spans: &[(u64, u64)], a: u64, b: u64) -> u64 {
-    let i = spans.partition_point(|s| s.1 <= a);
-    spans[i..].iter().take_while(|s| s.0 < b).map(|s| s.1.min(b).saturating_sub(s.0.max(a))).sum()
-}
-
-fn integrate(
-    s: &[&Sample],
-    end_ms: u64,
-    max_hold_ms: u64,
-    power: impl Fn(&Sample) -> Option<f64>,
-    bridge: impl Fn(&Sample, &Sample) -> Option<f64>,
-    mut piece: impl FnMut(u64, u64, f64),
-) -> Option<f64> {
     let mut sum = 0.0;
     let mut any = false;
     for (i, x) in s.iter().enumerate() {
         let Some(p) = power(x) else { continue };
         any = true;
         let next = s.get(i + 1);
-        let to = next.map_or(end_ms, |n| n.t_ms);
-        let dt = to.saturating_sub(x.t_ms);
-        let (e, until) = if dt <= max_hold_ms {
-            (kwh(p, dt), to)
+        let dt = next.map_or(end_ms, |n| n.t_ms).saturating_sub(x.t_ms);
+        if dt <= max_hold_ms {
+            sum += kwh(p, dt);
         } else if let Some(e) = next.and_then(|n| bridge(x, n)) {
-            (e, to)
+            sum += e;
         } else {
-            (kwh(p, max_hold_ms), x.t_ms + max_hold_ms)
-        };
-        sum += e;
-        piece(x.t_ms, until, e);
+            sum += kwh(p, max_hold_ms);
+        }
     }
     any.then_some(sum)
 }

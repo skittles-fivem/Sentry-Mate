@@ -11,7 +11,6 @@
 //   srcPill(row)                 the pill with the whole line ("Data from SMO and the Tesla API")
 //   srcPill(row, { short })      the pill with short words ("SMO + Tesla API"), the whole line for screen readers
 //   srcText(row)                 the line as text
-//   rowTitle(row)                a list card's hover title: the line, plus why its energy is estimated
 //   estPill(row)                 "Energy estimated" for a row the Tesla API alone saw (energy_basis), else null
 //   viaMark(value)               a small "Tesla API" mark after a live value that came from the Tesla API
 //   inputsLine(inputs, { extra }) the car's live inputs from /now: "Live inputs: SMO, 1 min ago · Tesla API, 2 min ago",
@@ -86,14 +85,6 @@ export const EST_WHY = 'Only the Tesla API saw this: its power readings, every f
 export function estPill(r, { text = 'Energy estimated' } = {}) {
   if (!isEstimated(r)) return null;
   return h('span', { class: 'src is-est', title: apiOnly(r) ? EST_WHY : 'This energy is estimated, not measured.' }, h('span', { class: 'src-dots', 'aria-hidden': 'true' }, h('span', { class: 'src-dot tone-sun' })), h('span', null, text));
-}
-
-/** A list card's hover title: where its data came from, and why its energy is estimated (list cards show no
- * source pills; the detail sheets and pages do). */
-export function rowTitle(r) {
-  const line = srcText(r);
-  const e = isEstimated(r) ? (apiOnly(r) ? `Energy is estimated. ${EST_WHY}` : 'Energy is estimated, not measured.') : null;
-  return [line ? `${line}.` : null, e].filter(Boolean).join(' ') || null;
 }
 
 /** A small mark after a live value that came from an input other than SMO ({ value, at_ms, sources }). */

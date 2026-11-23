@@ -263,8 +263,6 @@ def charge_row(app, h, c, now, with_breakdown=False):
         "dc_inlet_kwh": r(f["inlet"], 3),
         "losses_kwh": r(f["grid"] - f["added"], 3) if f["grid"] is not None else None,
         "efficiency_pct": r(f["added"] / f["grid"] * 100, 1) if f["grid"] else None,
-        # the server's reason when added and grid energy were measured over different spans (none here)
-        "efficiency_note": None,
         "cost": cost, "price_per_kwh": ppk,
         "start_soc_pct": r(c.soc0, 1), "end_soc_pct": r(f["soc1"], 1),
         "start_range_km": r(f["range0"], 1), "end_range_km": r(f["range1"], 1),

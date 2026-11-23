@@ -9,8 +9,7 @@
 export const GROUPS = Object.freeze([
   Object.freeze({ id: "cars", name: "Cars", pages: Object.freeze(["fleet", "car", "timeline"]) }),
   Object.freeze({ id: "driving", name: "Driving", pages: Object.freeze(["drives", "trip", "logbook"]) }),
-  Object.freeze({ id: "charging", name: "Charging", pages: Object.freeze(["charges"]) }),
-  Object.freeze({ id: "battery", name: "Battery and energy", pages: Object.freeze(["battery", "efficiency"]) }),
+  Object.freeze({ id: "battery", name: "Battery and energy", pages: Object.freeze(["charges", "battery", "efficiency"]) }),
   Object.freeze({ id: "reports", name: "Reports", pages: Object.freeze(["statistics", "travel", "software"]) }),
   Object.freeze({ id: "setup", name: "Set-up", pages: Object.freeze(["places", "settings-cars", "settings-display", "settings-integrations", "settings-server", "import", "health", "help"]) }),
 ]);
@@ -122,7 +121,7 @@ export const PAGES = Object.freeze({
     ],
   }),
   "charges": Object.freeze({
-    id: "charges", name: "Charges", group: "charging", period: "30d", car: "optional", detail: false,
+    id: "charges", name: "Charges", group: "battery", period: "30d", car: "optional", detail: false,
     blurb: "Charging sessions, habits and costs.",
     purpose: "Find charging sessions and understand charging habits and costs.",
     keywords: "charging cost price kwh supercharger sessions ac dc curve",
@@ -139,7 +138,7 @@ export const PAGES = Object.freeze({
     ],
   }),
   "charge": Object.freeze({
-    id: "charge", name: "Charge detail", group: "charging", period: null, car: "required", detail: true,
+    id: "charge", name: "Charge detail", group: "battery", period: null, car: "required", detail: true,
     blurb: "One charging session in full, with its cost.",
     purpose: "One charging session in full, with its cost editor on the same page.",
     keywords: "cost session",

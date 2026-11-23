@@ -6,7 +6,7 @@ from .helpers import NOW, ServerCase
 
 CHARGE = {"id", "car", "start_ms", "end_ms", "charging_ms", "plugged_ms", "kind", "fast_charger", "place", "address",
           "position", "odometer_km", "energy_added_kwh", "energy_grid_kwh", "dc_inlet_kwh", "losses_kwh",
-          "efficiency_pct", "efficiency_note", "cost", "price_per_kwh", "start_soc_pct", "end_soc_pct", "start_range_km", "end_range_km",
+          "efficiency_pct", "cost", "price_per_kwh", "start_soc_pct", "end_soc_pct", "start_range_km", "end_range_km",
           "range_added_km", "range_per_hour_km", "power_max_kw", "power_avg_kw", "outside_avg_c", "battery_avg_c",
           "source", "has_gaps"}
 

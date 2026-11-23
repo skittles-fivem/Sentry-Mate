@@ -29,7 +29,7 @@ import { rpx } from '../core/display.js';
 import { isAdmin } from '../core/prefs.js';
 import { toast } from '../core/toast.js';
 import { placeLink } from './timeline.js';
-import { est as estTag, rowTitle, sourceWord, sourceCheck, SOURCE_KEY } from '../core/source.js';
+import { src, est as estTag, srcText, sourceWord, sourceCheck, SOURCE_KEY } from '../core/source.js';
 
 export const id = 'charges';
 
@@ -158,26 +158,12 @@ export async function mount(ctx) {
   const kindTag = (c) => h('span', { class: 'nowrap', title: c.kind === 'unknown' || !c.kind ? 'the charge port did not say ac or dc' : null },
     tag(KIND[c.kind] || '?', KIND_TONE[c.kind] || 'muted'),
     c.fast_charger ? h('span', { class: 'muted' }, ` ${c.fast_charger.type === 'supercharger' ? 'sc' : 'fast'}${c.fast_charger.class ? ` ${c.fast_charger.class.toLowerCase()}` : ''}`) : null);
-  // the cost, or a dash when unpriced; the price's source in the title, the edit link only on row hover / focus
-  // (always on a phone)
   const costCell = (c) => {
-    const why = c.cost ? (COST_SOURCE[c.cost.source] || c.cost.source) : null;
-    const amount = c.cost ? formatMoney(c.cost.amount, c.cost.currency) : null;
-    const editHref = state.buildUrl('charge', { car: c.car, charge: c.id, query: { edit: 'cost' } });
-    const main = c.cost
-      ? (isAdmin() ? h('a', { class: 'lnk-plain', href: editHref, title: `${why}; change the cost` }, amount) : h('span', { title: why }, amount))
-      : h('span', { class: 'muted', title: 'no price: the place has none and none was typed' }, '\u2014');
-    // the hidden link goes before the dash, so the dash stays right-aligned with the amounts
-    return h('span', { class: 'nowrap' },
-      !c.cost && isAdmin() ? h('a', { class: 'lnk-plain tone--accent row-act', href: editHref, title: 'set a cost for this charge' }, '[set] ') : null, main);
-  };
-  const ppkCell = (c) => (c.price_per_kwh?.value != null ? format({ amount: c.price_per_kwh.value, currency: c.cost?.currency }, 'price_energy') : false);
-  // no efficiency: a fast charger (no grid side), or the engine's reason (added and grid energy over different spans)
-  const effCell = (c) => {
-    if (c.efficiency_pct != null) return pct(c.efficiency_pct);
-    if (c.efficiency_note) return h('span', { class: 'muted', title: c.efficiency_note }, '\u2014');
-    if (c.kind === 'dc') return h('span', { class: 'muted', title: 'a fast charger does not report its grid side' }, 'dc');
-    return h('span', { class: 'muted', title: 'not known: the energy from the grid and the energy added were not both measured' }, '\u2014');
+    const txt = c.cost ? formatMoney(c.cost.amount, c.cost.currency) : 'set';
+    const src = c.cost ? h('span', { class: 'muted' }, ` ${COST_SOURCE[c.cost.source] || c.cost.source}`) : null;
+    return isAdmin()
+      ? h('span', { class: 'nowrap' }, h('a', { class: ['lnk-plain', !c.cost && 'tone--accent'], href: state.buildUrl('charge', { car: c.car, charge: c.id, query: { edit: 'cost' } }), title: c.cost ? 'change the cost' : 'set a cost for this charge' }, c.cost ? txt : '[set]'), src)
+      : h('span', { class: 'nowrap' }, c.cost ? txt : none('no price'), src);
   };
   const columns = [
     multi ? { key: 'car', label: 'car', ph: 'sub', render: (c) => carName(c.car) } : null,
@@ -192,25 +178,26 @@ export async function mount(ctx) {
       render: (c) => (c.energy_grid_kwh != null ? num(c.energy_grid_kwh, 'energy') : c.dc_inlet_kwh != null ? h('span', { title: 'delivered at the inlet; the grid side of a fast charger is not measured' }, num(c.dc_inlet_kwh, 'energy'), none(' in')) : null),
       total: (pg) => (sum(pg)?.energy_grid_known ? num(sum(pg).energy_grid_kwh, 'energy') : null) },
     { key: 'eff', label: 'eff', num: true, cover: 'charges.table.efficiency', title: 'energy into the pack over energy from the grid (ac only)',
-      render: effCell },
+      render: (c) => (c.efficiency_pct != null ? pct(c.efficiency_pct) : c.kind === 'dc' ? none('dc') : null) },
     { key: 'cost', label: 'cost', num: true, sort: 'cost', ph: 'num', cover: ['charges.table.cost', 'charges.link.set_cost'], render: costCell, total: (pg) => (sum(pg) ? money(sum(pg).cost_by_currency) : null) },
-    { key: 'ppk', label: '/kwh', num: true, cover: 'charges.table.cost_per_kwh', title: 'cost over the grid energy (ac) or the energy added (dc); empty when unpriced',
-      render: ppkCell },
+    { key: 'ppk', label: '/kwh', num: true, cover: 'charges.table.cost_per_kwh', title: 'cost over the grid energy (ac) or the energy added (dc)',
+      render: (c) => (c.price_per_kwh?.value != null ? format({ amount: c.price_per_kwh.value, currency: c.cost?.currency }, 'price_energy') : null) },
     { key: 'power', label: 'avg', num: true, sort: 'power_max', cover: 'charges.table.avg_power', title: 'average power while charging', render: (c) => num(c.power_avg_kw, 'power') },
     { key: 'curve', label: 'power', cls: 'spark-col', title: 'power through the charge', render: sparkCell },
-    { key: 'range', label: 'range+', num: true, cover: ['charges.table.range_added', 'charges.table.charge_rate'], title: `${rangeLabel()} added (per hour of charging in the cell's title)`,
-      render: (c) => h('span', { title: c.range_per_hour_km != null ? `${format(c.range_per_hour_km, 'range_rate')} per hour of charging` : null }, num(c.range_added_km, 'range')) },
+    { key: 'range', label: 'range+', num: true, cover: 'charges.table.range_added', title: `${rangeLabel()} added`, render: (c) => num(c.range_added_km, 'range') },
+    { key: 'rate', label: '/h', num: true, cover: 'charges.table.charge_rate', title: 'range added per hour of charging', render: (c) => num(c.range_per_hour_km, 'range_rate') },
     { key: 'soc', label: 'soc', num: true, sort: 'end_soc', ph: 'sub', cover: ['charges.table.start_soc', 'charges.table.end_soc'], render: (c) => h('span', { class: 'nowrap' }, pct(c.start_soc_pct), h('span', { class: 'arrow' }, '->'), pct(c.end_soc_pct)) },
-    { key: 'temp', label: 'out', num: true, cls: 'wide-col', cover: 'charges.table.temp', title: 'average outside temperature (battery in the tooltip)', render: (c) => h('span', { title: c.battery_avg_c != null ? `battery ${format(c.battery_avg_c, 'temperature')}` : null }, num(c.outside_avg_c, 'temperature')) },
-    { key: 'odo', label: 'odo', num: true, cls: 'wide-col', cover: 'charges.table.odometer', render: (c) => num(c.odometer_km, 'odometer') },
+    { key: 'temp', label: 'out', num: true, cover: 'charges.table.temp', title: 'average outside temperature (battery in the tooltip)', render: (c) => h('span', { title: c.battery_avg_c != null ? `battery ${format(c.battery_avg_c, 'temperature')}` : null }, num(c.outside_avg_c, 'temperature')) },
+    { key: 'odo', label: 'odo', num: true, cover: 'charges.table.odometer', render: (c) => num(c.odometer_km, 'odometer') },
     { key: 'flags', label: 'flags', title: 'gap: data missing; live: charging now',
       render: (c) => [c.has_gaps ? tag('gap', 'bad') : null, c.flags?.in_progress || c.end_ms == null ? tag('live', 'warn') : null].filter(Boolean) },
+    { key: 'from', label: 'data', title: 'where the data came from: smo (the CAN Bridge), api (the Tesla API), imp (imported)', ph: 'sub', render: (c) => src(c), value: (c) => srcText(c) },
   ].filter(Boolean);
   const list = table(ctx, {
     title: 'charges', path: listPath, params: listParams(), limit: 25, columns, sort: { key: 'start', dir: 'desc' }, csvName: 'charges',
     cover: 'charges.table', noteCover: 'charges.text.list_help',
-    note: h('span', { title: 'time is charging time; waiting while plugged in is left out, so the average power is not watered down. added is measured at the pack. dc efficiency is unknown: a fast charger does not report its grid side. hover a row for where its data came from.' }, 'time is charging time; open a row for its curve, cost and sources.'),
-    rowHref: chargeHref, rowTitle,
+    note: 'time is charging time; waiting while plugged in is left out, so the average power is not watered down. added is measured at the pack. dc efficiency is unknown: a fast charger does not report its grid side. open a row for its curve and cost.',
+    rowHref: chargeHref,
     onPage: (pg) => { if (pg?.totals) paintSummary(pg.totals); },
     onError: () => paintSummary(null, 'error'),
     empty: () => empty(`no charges in this range${fl.input.value.trim() ? ' that pass the filter' : ''}`, fl.input.value.trim() ? h('button', { class: 'btn', type: 'button', onclick: () => fl.set('') }, 'clear the filter') : `pick a longer range than ${period.label.toLowerCase()}`),
@@ -460,7 +447,7 @@ export async function mount(ctx) {
 
   async function paintPlaces(sp) {
     const pp = { cars: fixed ? fixed.id : sp.cars, from_ms: sp.from_ms, to_ms: sp.to_ms, places: sp.places, min_duration_min: sp.min_duration_min };
-    const placeCell = (p) => h('a', { class: 'lnk-plain', href: p.place ? state.buildUrl('places', { query: { place: p.place } }) : state.buildUrl('places', { query: { lat: p.lat.toFixed(5), lon: p.lon.toFixed(5), new: 1 } }), title: p.place ? `edit the place ${p.label}` : 'save this spot as a place' }, p.label);
+    const placeCell = (p) => h('a', { class: 'lnk-plain', href: p.place ? state.buildUrl('places', { query: { place: p.place } }) : state.buildUrl('places', { query: { lat: p.lat.toFixed(5), lon: p.lon.toFixed(5), new: 1 } }), title: p.place ? `edit the place ${p.label}` : 'make this spot a place' }, p.label);
     const placeCol = (cv) => ({ key: 'label', label: 'place', cls: 'wrap-cell', ph: 'main', cover: cv, render: placeCell });
     const sessions = { key: 'sessions', label: 'sessions', num: true, ph: 'sub', render: (p) => formatNumber(p.sessions) };
     const byEnergy = table(ctx, {

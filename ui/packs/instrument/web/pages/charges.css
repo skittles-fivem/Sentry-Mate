@@ -27,32 +27,11 @@
 .charges-page .cell-text > * { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .charges-page .cell-text .sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
 .charges-page .cell-num { align-items: flex-end; }
-.charges-table .col-place .cell-text { max-width: round(12rem, var(--e)); }
+.charges-table .col-place .cell-text { max-width: round(15rem, var(--e)); }
 .place-link:hover, .cost-link:hover { color: var(--live); }
 .cost-link { display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); }
 .cost-link .ico { color: var(--text-3); }
-.cost-link.is-missing { color: var(--text-3); }
-/* a narrower table: power goes, the battery levels take the range's line under the energy added, the
-   efficiency keeps its number only; narrower still the AC or DC pill goes under the charging time */
-.charges-table { container: charges-list / inline-size; }
-.charges-table .car-name { display: block; max-width: round(8rem, var(--e)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.charges-table :is(.added-soc, .dur-kind) { display: none; }
-@container charges-list (max-width: 80rem) {
-  :root:not([data-phone]) .charges-table :is(.col-power, .col-soc, .added-range) { display: none; }
-  :root:not([data-phone]) .charges-table .added-soc { display: block; }
-  :root:not([data-phone]) .charges-table .eff { grid-template-columns: auto; }
-  :root:not([data-phone]) .charges-table .eff-bar { display: none; }
-}
-@container charges-list (max-width: 66rem) {
-  :root:not([data-phone]) .charges-table .col-kind { display: none; }
-  :root:not([data-phone]) .charges-table .dur-kind { display: flex; justify-content: flex-end; }
-  :root:not([data-phone]) .charges-table .col-place .cell-text { max-width: round(10rem, var(--e)); }
-}
-/* the pen only on the row's hover or keyboard focus (always on a phone, where there is no hover) */
-.charges-table .cost-pen { opacity: 0; }
-.charges-table tr:hover .cost-pen, .charges-table .cost-link:focus-visible .cost-pen { opacity: 1; }
-:root[data-phone] .charges-table .cost-pen { opacity: 1; }
-@media (hover: none) { .charges-table .cost-pen { opacity: 1; } }
+.cost-link.is-missing { color: var(--warm); }
 .kind-pill { display: inline-flex; width: fit-content; align-items: center; height: round(1.375rem, var(--e)); padding: 0 round(0.5rem, var(--e)); border-radius: round(0.375rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.04em; }
 .kind-pill--ac { color: var(--ac); background: var(--warm-soft); }
 .kind-pill--dc { color: var(--dc); background: var(--glass-3); }
@@ -65,8 +44,6 @@
 .soc-bar { position: relative; display: block; width: round(5.5rem, var(--e)); height: round(0.375rem, var(--e)); border-radius: 99px; background: var(--glass-3); overflow: hidden; }
 .soc-bar > i { position: absolute; top: 0; bottom: 0; left: var(--a); right: calc(100% - var(--b)); min-width: 2px; border-radius: inherit; background: var(--c-soc); }
 .charges-page .flag-icons { display: flex; gap: round(0.375rem, var(--e)); align-items: center; color: var(--warm); }
-.charges-table .start-sub { display: flex; align-items: center; gap: round(0.375rem, var(--e)); }
-.charges-table .start-sub .flag-ico { display: inline-flex; color: var(--warm); }
 .missing-table { margin-bottom: round(1.75rem, var(--e)); }
 
 /* statistics */
@@ -149,8 +126,6 @@
 .places-tables { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
 .places-table .tbl td { height: calc(round(2.875rem, var(--e)) - 2 * round(0.375rem, var(--e))); }
 .places-table .cell-text { max-width: round(18rem, var(--e)); }
-.places-table { container: charging-places / inline-size; }
-@container charging-places (max-width: 30rem) { .places-table .cell-text { max-width: round(12rem, var(--e)); } }
 
 /* fast-charging curve */
 .curve-legend { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)) round(1.25rem, var(--e)); margin-bottom: round(0.5rem, var(--e)); }

@@ -21,7 +21,7 @@ import { makeMap, boundsOf } from '../core/map.js';
 import { confirmDialog, popover } from '../core/dialog.js';
 import { choice } from '../core/form.js';
 import { placeLink, endLabel } from '../core/journal.js';
-import { SOURCE_FILTER, sourceFilter, SOURCE_WHY, isEstimated, rowTitle } from '../core/sources.js';
+import { SOURCE_FILTER, sourceFilter, SOURCE_WHY, sourceMark, isImported, teslaOnly, isEstimated, ESTIMATED_WHY } from '../core/sources.js';
 
 export const id = 'drives';
 export const css = true;
@@ -218,7 +218,7 @@ export async function mount(ctx) {
   const placeCell = (p) => {
     const text = (p.address && (p.address.short || p.address.locality)) || p.label || '—';
     const href = placeLink(p);
-    return href ? h('a', { class: 'quiet-link', href, title: p.place ? `Edit ${p.place.name} in Places` : 'Save this spot as a place' }, text) : text;
+    return href ? h('a', { class: 'quiet-link', href, title: p.place ? `Edit ${p.place.name} in Places` : 'Name this place in Places' }, text) : text;
   };
   const shapeOf = (d) => tracks.get(d.id) || [[d.start.lon, d.start.lat], [d.end.lon, d.end.lat]];
 
@@ -256,7 +256,7 @@ export async function mount(ctx) {
       fact('power', 'Power', q(d.power_max_kw, 'power', { digits: 0 }), ' peak'),
       fact('energy', 'Energy', q(d.energy_kwh, 'energy', { why: 'no reading' }), energySub ? ` ${energySub}` : ''),
       fact('eff', 'Consumption', q(d.wh_per_km, 'efficiency'), d.efficiency_pct != null ? `, ${format(d.efficiency_pct, 'percent', { digits: 0 })} of rated` : ''));
-    return h('tr', { class: ['drive-row', { 'is-going': going, 'is-picked': picked.has(d.id) }], dataset: { id: d.id, href }, title: rowTitle(d) || null },
+    return h('tr', { class: ['drive-row', { 'is-going': going, 'is-picked': picked.has(d.id) }], dataset: { id: d.id, href } },
       h('td', { class: 'c-pick' }, box),
       h('td', { class: 'c-time' }, `${formatTime(d.start_ms, tz)} – ${going ? 'now' : formatTime(d.end_ms, tz)}`,
         f.sort !== 'start' ? h('span', { class: 'cell-sub' }, formatDayKey(dayKey(d.start_ms, tz), { year: dayKey(d.start_ms, tz).slice(0, 4) !== dayKey(api.now(), tz).slice(0, 4) })) : null),
@@ -267,10 +267,12 @@ export async function mount(ctx) {
             h('a', { class: 'route-name', href }, endLabel(d.start), h('span', { class: 'to' }, ' to '), endLabel(d.end)),
             h('span', { class: 'cell-sub' },
               placeCell(d.start), going ? null : [h('span', { class: 'sep', 'aria-hidden': 'true' }, ' → '), placeCell(d.end)],
+              isImported(d) ? [' ', flag('Imported', { kind: 'estimated' })] : null,
+              teslaOnly(d) && isEstimated(d) ? [' ', flag('Estimated', { kind: 'estimated', title: ESTIMATED_WHY })] : null,
               going ? [' ', flag('In progress')] : null,
               d.flags && (d.flags.gap_ms || d.flags.lost_frames) ? [' ', flag(d.flags.gap_ms ? `Gap ${formatDuration(d.flags.gap_ms)}` : 'Lost frames', { kind: 'warn', title: 'Part of this drive has no data; its figures cover only the time with data' })] : null,
               d.flags && d.flags.reduced_range ? [' ', flag('Cold battery', { title: 'Part of the battery was locked by the cold during this drive' })] : null),
-            facts))),
+            facts, sourceMark(d, { block: true, cls: 'drive-src' })))),
       h('td', { class: 'c-num c-dist' }, q(d.distance_km, 'distance')),
       h('td', { class: 'c-num c-dur' }, formatDuration(d.duration_ms)),
       h('td', { class: 'c-num c-batt' }, batt, h('span', { class: 'cell-sub' }, 'start → end')),

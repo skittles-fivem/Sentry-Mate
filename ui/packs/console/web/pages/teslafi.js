@@ -173,7 +173,6 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
         ['charging', `every ${secs(p.charging_s)}`],
         ['parked, awake', `every ${secs(p.parked_s)}`],
         ['asleep', `every ${secs(p.asleep_s)}`],
-        ['SMO or API live', [`every ${secs(p.other_live_s)}`, h('span', { class: 'muted' }, ' at most, while another input sends')]],
         ['per day', [formatNumber(p.daily_cap ?? 1500), h('span', { class: 'muted' }, ' requests a token, then none until midnight UTC')]],
       ]),
       note('Often reads about as fast as TeslaFi itself refreshes (up to 6,000 requests a day per token); normal and gentle stay within 1,500. In every pace at most one request goes out every 10 s per token, TeslaFi\'s own waits (Retry-After) and the back-off after errors are kept, and the car is never woken: these reads come from TeslaFi\'s own database.'));

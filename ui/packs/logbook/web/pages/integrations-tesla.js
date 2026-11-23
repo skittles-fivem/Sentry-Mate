@@ -230,7 +230,7 @@ export function teslaPart(ctx) {
     });
     const paceRows = [
       ['Parked and awake', caps.parked_s], ['Charging', caps.charging_s], ['Driving', caps.driving_s],
-      ['Driving, with Tesla’s live stream', caps.driving_streaming_s], ['The list of cars (asleep cars)', caps.list_s], ['A car whose SMO is live', caps.smo_live_s],
+      ['Driving, with Tesla’s live stream', caps.driving_streaming_s], ['The list of cars (asleep cars)', caps.list_s],
     ];
     return h('div', { class: 'tesla-over' },
       h('div', { class: 'figs tesla-figs' },

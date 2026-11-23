@@ -27,7 +27,7 @@ import { IMAGERY_HALO } from '../shared/maptiles.js';
 import { openDialog, confirmDialog, popover } from '../core/dialog.js';
 import { choice, soldPickRows } from '../core/form.js';
 import { placeLink } from '../core/journal.js';
-import { SOURCE_FILTER, sourceFilter, SOURCE_WHY, rowTitle } from '../core/sources.js';
+import { SOURCE_FILTER, sourceFilter, SOURCE_WHY, sourceMark, sourceLabel, isImported, isEstimated, ESTIMATED_WHY } from '../core/sources.js';
 import { zoneLabel } from '../core/format.js';
 import { display } from '../core/display.js';
 import { onTheme } from '../core/prefs.js';
@@ -222,59 +222,57 @@ export async function mount(ctx) {
 
   const kindCell = (c) => h('span', null,
     h('span', { class: ['ch-kind', `ch-kind-${c.kind || 'unknown'}`], title: KIND_WHY[c.kind || 'unknown'] }, KIND[c.kind] || 'Unknown'),
-    c.fast_charger ? (() => { const t = [c.fast_charger.type === 'supercharger' ? 'Supercharger' : c.fast_charger.brand || 'Fast charger', c.fast_charger.class].filter(Boolean).join(' '); return h('span', { class: 'cell-sub ch-nowrap', title: t }, t); })() : null);
-  // The cost, or "—" when unpriced; where the price came from goes in the title. The set-cost icon shows on row
-  // hover or focus (always on touch screens), so it does not repeat down the list.
+    c.fast_charger ? h('span', { class: 'cell-sub' }, [c.fast_charger.type === 'supercharger' ? 'Supercharger' : c.fast_charger.brand || 'Fast charger', c.fast_charger.class].filter(Boolean).join(' ')) : null);
   const costCell = (c) => {
-    const text = c.cost ? formatMoney(c.cost.amount, c.cost.currency) : '—';
-    const why = c.cost ? `Cost from the ${COST_SOURCE[c.cost.source] || c.cost.source}` : c.place ? 'No price: the place has no price' : 'No price: not at a saved place';
+    const text = c.cost ? formatMoney(c.cost.amount, c.cost.currency) : 'No price';
+    const sub = c.cost ? COST_SOURCE[c.cost.source] || c.cost.source : c.place ? 'the place has no price' : 'not a saved place';
     const main = admin
-      ? h('button', { type: 'button', class: ['ch-cost-button', { 'is-missing': !c.cost }], title: `${why}. ${c.cost ? 'Change the cost of this charge' : 'Set a cost for this charge'}`, 'aria-label': c.cost ? `${text}, change the cost` : 'No price, set a cost', onclick: () => costDialog(c) }, text, icon('settings'))
-      : h('a', { class: ['ch-cost-link', { 'is-missing': !c.cost }], href: state.buildUrl('charge', { car: c.car, charge: c.id, period: ctx.state.period, query: { edit: 'cost' } }), title: `${why}. Open the charge to see how its cost was worked out` }, text);
-    return h('span', null, main,
+      ? h('button', { type: 'button', class: ['ch-cost-button', { 'is-missing': !c.cost }], title: c.cost ? 'Change the cost of this charge' : 'Set a cost for this charge', onclick: () => costDialog(c) }, text, icon('settings'))
+      : h('a', { class: ['ch-cost-link', { 'is-missing': !c.cost }], href: state.buildUrl('charge', { car: c.car, charge: c.id, period: ctx.state.period, query: { edit: 'cost' } }), title: 'Open the charge to see how its cost was worked out' }, text);
+    return h('span', null, main, h('span', { class: 'cell-sub' }, sub),
       c.price_per_kwh && c.price_per_kwh.value != null
-        ? h('span', { class: 'cell-sub ch-ppk ch-nowrap', title: c.price_per_kwh.basis === 'grid' ? 'Per kWh: cost over the energy from the grid (metered)' : 'Per kWh: cost over the energy added to the pack' }, format({ amount: c.price_per_kwh.value, currency: c.cost && c.cost.currency }, 'price_energy'))
+        ? h('span', { class: 'cell-sub ch-ppk', title: c.price_per_kwh.basis === 'grid' ? 'Cost over the energy from the grid (metered)' : 'Cost over the energy added to the pack' }, format({ amount: c.price_per_kwh.value, currency: c.cost && c.cost.currency }, 'price_energy'), c.price_per_kwh.basis === 'grid' ? ' of grid' : ' of pack')
         : null);
   };
-  // Efficiency under the grid energy; when it is not known, nothing under it and the reason in the cell's title
-  // (the server's efficiency_note when it gives one, such as energies measured over different spans).
-  const effSub = (c) => (c.efficiency_pct != null
-    ? h('span', { class: 'cell-sub', title: c.losses_kwh != null ? `${format(c.losses_kwh, 'energy')} lost between the grid and the pack` : null }, `${format(c.efficiency_pct, 'percent', { digits: 0 })} efficient`)
-    : null);
-  const effWhy = (c) => (c.efficiency_pct != null ? null
-    : c.efficiency_note || (c.kind === 'dc' ? KIND_WHY.dc : 'Efficiency unknown: this charge has no reading from the car’s charger input.'));
+  const effSub = (c) => (c.efficiency_pct != null ? [h('span', { class: 'cell-sub' }, `${format(c.efficiency_pct, 'percent', { digits: 0 })} efficient`), h('span', { class: 'cell-sub' }, `${format(c.losses_kwh, 'energy')} lost`)]
+    : h('span', { class: 'cell-sub', title: c.kind === 'dc' ? KIND_WHY.dc : 'This charge has no reading from the car’s charger input.' }, c.kind === 'dc' ? 'efficiency unknown (DC)' : 'no meter reading'));
   const columns = [
     multi ? { key: 'car', label: 'Car', cls: 'c-car', cell: (c) => carName(c.car), value: (c) => carName(c.car) } : null,
     { key: 'start', label: 'Start', sort: 'start', th: true, cls: 'c-start', firstDir: 'desc', cell: (c) => h('span', null,
       h('a', { class: 'cell-main ch-start', href: state.buildUrl('charge', { car: c.car, charge: c.id, period: ctx.state.period }) },
         `${formatDate(c.start_ms, zoneOf(c), { weekday: false, now: api.now() })}, ${formatTime(c.start_ms, zoneOf(c))}`),
       h('span', { class: 'cell-sub' }, c.end_ms == null ? 'charging now' : `to ${formatTime(c.end_ms, zoneOf(c))}`,
-        c.has_gaps ? [' ', flag('Gap', { kind: 'warn', title: `No data for ${formatDuration((c.flags && c.flags.gap_ms) || 0)} inside this charge` })] : null)) },
+        isImported(c) ? [' ', flag('Imported', { kind: 'estimated', title: `${sourceLabel(c)}: energy is estimated` })] : null,
+        !isImported(c) && isEstimated(c) ? [' ', flag('Estimated', { kind: 'estimated', title: ESTIMATED_WHY })] : null,
+        c.has_gaps ? [' ', flag('Gap', { kind: 'warn', title: `No data for ${formatDuration((c.flags && c.flags.gap_ms) || 0)} inside this charge` })] : null),
+      h('span', { class: 'cell-sub ch-fold-odo' }, 'odometer ', format(c.odometer_km, 'odometer')),
+      sourceMark(c, { block: true, short: true, cls: 'ch-src' })) },
     { key: 'place', label: 'Place', cls: 'c-place', cell: (c) => {
       const href = placeLink(pointOf(c));
       return h('span', null,
-        href ? h('a', { class: 'ch-place', href, title: c.place ? `Edit ${c.place.name} in Places` : 'Save this spot as a place' }, placeName(c)) : h('span', { class: 'ch-place' }, placeName(c)),
-        c.place && c.address && c.address.short ? h('span', { class: 'cell-sub' }, c.address.short) : null);
+        href ? h('a', { class: 'ch-place', href, title: c.place ? `Edit ${c.place.name} in Places` : 'Make this spot a saved place' }, placeName(c)) : h('span', { class: 'ch-place' }, placeName(c)),
+        h('span', { class: 'cell-sub' }, c.place ? (c.address && c.address.short) || '' : 'not a saved place yet'));
     } },
     { key: 'kind', label: 'Type', cls: 'c-kind', cell: kindCell },
     { key: 'duration', label: 'Charging', sort: 'duration', num: true, cls: 'c-dur', hint: 'Time charging, then time plugged in', cell: (c) => h('span', null,
-      formatDuration(c.charging_ms || 0), h('span', { class: 'cell-sub ch-nowrap', title: c.plugged_ms != null ? `Plugged in ${formatDuration(c.plugged_ms)}` : null }, c.plugged_ms != null ? `plugged ${formatDuration(c.plugged_ms)}` : '')) },
-    { key: 'energy', label: 'Added', sort: 'energy', num: true, cls: 'c-added', hint: 'Energy into the pack, and the range it added', cell: (c) => h('span', { title: c.range_per_hour_km != null ? `${format(c.range_per_hour_km, 'range')} of range an hour` : null },
+      formatDuration(c.charging_ms || 0), h('span', { class: 'cell-sub ch-nowrap' }, c.plugged_ms != null ? `plugged ${formatDuration(c.plugged_ms)}` : '')) },
+    { key: 'energy', label: 'Added', sort: 'energy', num: true, cls: 'c-added', hint: 'Energy into the pack, and the range it added', cell: (c) => h('span', null,
       q(c.energy_added_kwh, 'energy', { why: 'no reading' }),
-      h('span', { class: 'cell-sub ch-nowrap' }, c.range_added_km != null ? ['+', format(c.range_added_km, 'range')] : '')) },
-    { key: 'grid', label: 'From grid', num: true, cls: 'c-grid', hint: 'AC: metered at the car’s charger input', cell: (c) => h('span', { title: effWhy(c) },
-      c.energy_grid_kwh != null ? q(c.energy_grid_kwh, 'energy') : h('span', { class: 'ch-quiet' }, '—'),
+      h('span', { class: 'cell-sub' }, c.range_added_km != null ? ['+', format(c.range_added_km, 'range'), ' range'] : ''),
+      h('span', { class: 'cell-sub ch-fold-rate' }, c.range_per_hour_km != null ? `${format(c.range_per_hour_km, 'range')} an hour` : '')) },
+    { key: 'grid', label: 'From grid', num: true, cls: 'c-grid', hint: 'AC: metered at the car’s charger input', cell: (c) => h('span', null,
+      c.energy_grid_kwh != null ? q(c.energy_grid_kwh, 'energy') : h('span', { class: 'ch-quiet' }, c.kind === 'dc' ? 'not metered' : '—'),
       effSub(c)) },
     { key: 'cost', label: 'Cost', sort: 'cost', num: true, cls: 'c-cost', cell: costCell },
-    { key: 'power', label: 'Power', sort: 'power_max', num: true, cls: 'c-power', hint: 'Average while charging (waiting left out); the peak is in the cell’s title', cell: (c) => h('span', { title: c.power_max_kw != null ? `Peak ${format(c.power_max_kw, 'power')}` : null },
-      q(c.power_avg_kw, 'power')) },
+    { key: 'power', label: 'Power', sort: 'power_max', num: true, cls: 'c-power', hint: 'Average while charging (waiting left out), then the peak', cell: (c) => h('span', null,
+      q(c.power_avg_kw, 'power'), h('span', { class: 'cell-sub' }, c.power_max_kw != null ? `peak ${format(c.power_max_kw, 'power')}` : '')) },
     { key: 'rate', label: 'Per hour', num: true, cls: 'c-rate', hint: 'Range added per hour of charging', cell: (c) => h('span', null,
       q(c.range_per_hour_km, 'range'), h('span', { class: 'cell-sub' }, 'an hour')) },
     { key: 'soc', label: 'Battery', sort: 'end_soc', num: true, cls: 'c-soc', firstDir: 'desc', hint: 'Battery level at the start and the end', cell: (c) => h('span', { class: 'ch-soc' },
       h('span', null, pct(c.start_soc_pct), ' → ', pct(c.end_soc_pct)),
       socBar(c.start_soc_pct, c.end_soc_pct)) },
-    { key: 'temp', label: 'Outside', num: true, cls: 'c-temp', hint: 'Average outside temperature; the battery’s is in the cell’s title', cell: (c) => h('span', { title: c.battery_avg_c != null ? `Battery ${format(c.battery_avg_c, 'temperature', { digits: 0 })}` : null },
-      q(c.outside_avg_c, 'temperature', { digits: 0 })) },
+    { key: 'temp', label: 'Outside', num: true, cls: 'c-temp', hint: 'Average outside temperature, then the battery’s', cell: (c) => h('span', null,
+      q(c.outside_avg_c, 'temperature', { digits: 0 }), h('span', { class: 'cell-sub' }, 'battery ', format(c.battery_avg_c, 'temperature', { digits: 0 }))) },
     { key: 'odo', label: 'Odometer', num: true, cls: 'c-odo', cell: (c) => q(c.odometer_km, 'odometer') },
   ].filter(Boolean);
   const emptyWhy = () => {
@@ -296,7 +294,6 @@ export async function mount(ctx) {
       'charges.table.temp', 'charges.table.avg_power', 'charges.table.charge_rate', 'charges.table.range_added', 'charges.table.start_soc', 'charges.table.end_soc', 'charges.table.odometer'],
     caption: 'Open a charge for its curve and cost. The CSV holds every listed charge.',
     rowAttrs: (c) => ({ class: ['ch-row', { 'is-going': c.end_ms == null }] }),
-    rowTitle: (c) => rowTitle(c),
     onRows: (got, page) => { if (page && page.totals && table.items.length === got.length) drawTotals(page.totals); },
     empty: () => {
       const bits = emptyWhy();
@@ -735,8 +732,8 @@ export async function mount(ctx) {
     const pp = { cars: fixedCar ? fixedCar.id : sp.cars, from_ms: sp.from_ms, to_ms: sp.to_ms, places: sp.places, min_duration_min: sp.min_duration_min };
     const placeCell = (p) => {
       const href = placeLink({ place: p.place ? { id: p.place } : null, lat: p.lat, lon: p.lon });
-      return h('span', null, href ? h('a', { class: 'ch-place', href, title: p.place ? `Edit ${p.label} in Places` : 'Save this spot as a place' }, p.label) : p.label,
-        multi && p.cars && p.cars.length ? h('span', { class: 'cell-sub' }, p.cars.map(carName).join(', ')) : null);
+      return h('span', null, href ? h('a', { class: 'ch-place', href, title: p.place ? `Edit ${p.label} in Places` : 'Make this spot a saved place' }, p.label) : p.label,
+        h('span', { class: 'cell-sub' }, [p.place ? null : 'not a saved place', multi && p.cars && p.cars.length ? p.cars.map(carName).join(', ') : null].filter(Boolean).join(' · ')));
     };
     const sessions = { key: 'sessions', label: 'Sessions', num: true, cell: (p) => formatNumber(p.sessions) };
     const ppkCell = (p) => (p.price_per_kwh != null && p.cost_by_currency && p.cost_by_currency.length === 1 ? format({ amount: p.price_per_kwh, currency: p.cost_by_currency[0].currency }, 'price_energy') : h('span', { class: 'ch-quiet' }, '—'));
@@ -898,9 +895,7 @@ export async function mount(ctx) {
     }),
     filters, totals,
     h('section', { class: 'ch-sessions', 'aria-label': 'Charging sessions', cover: 'shots.charges' },
-      h('p', { class: 'note ch-list-help', cover: 'charges.text.list_help',
-        title: `The totals above count exactly the charges listed. Charging time leaves out time plugged in but not charging, so average power is not diluted. Energy added is measured at the pack; from the grid is metered for AC only, so DC efficiency is shown as unknown. Range added is ${rangeLabel().toLowerCase()}, as chosen in Display and units. Point at a row for where its data came from.` },
-        'The totals count exactly the charges listed. ', ctx.me && ctx.me.role === 'admin' ? 'Click a cost to see or change it.' : 'Click a cost to see how it was worked out.'),
+      h('p', { class: 'note ch-list-help', cover: 'charges.text.list_help' }, 'The totals above count exactly the charges listed. Charging time leaves out time plugged in but not charging, so average power is not diluted. Energy added is measured at the pack; from the grid is metered for AC only, so DC efficiency is shown as unknown. Range added is ', rangeLabel().toLowerCase(), ', as chosen in Display and units. ', 'Click a cost to see how it was worked out', ctx.me && ctx.me.role === 'admin' ? ' or to change it.' : '.'),
       table.el),
     missing,
     h('div', { class: 'ch-stats', cover: 'shots.charging-stats' }, statsHead, h('div', { class: 'ch-stats-row' }, costsBox, splitBox), habitsBox, placesBox, curveBox));

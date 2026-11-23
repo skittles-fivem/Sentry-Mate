@@ -123,14 +123,17 @@ const days = buckets(period.from_ms, period.to_ms, 'day', car.time_zone);
 
 `ROUTES`, `PAGE_IDS`, `PERIOD_PAGES`, `CAR_PAGES`, `parseUrl(url)`, `buildUrl(page, { car, drive, charge,
 period, query })`, `parsePeriod(search)`, `periodQuery(period)`, `createStore(initial)`, `store`, `current()`,
-`subscribe(fn)`, `syncFromLocation()`, `navigate(href, { replace })`, `linkTo(page, params)`,
+`subscribe(fn)`, `syncFromLocation()`, `sameRoute(url)`, `navigate(href, { replace })`, `linkTo(page, params)`,
 `linkForCar(car)`, `setPeriod(period, { push })`, `setQuery(patch, { push })`, `startRouting()`,
 `tabPeriod()`, `lastCar()`, `rememberCar(id)`, `forgetCar(id)`.
 
 The car is in the path, the period in the query (`?preset=7d` or `?from=<ms>&to=<ms>`). A URL without a
 period uses the one chosen last in this tab; a page with neither uses its own default (`period` is null).
 `navigate()` removes `data-ready`. `startRouting()` reads the address, follows back and forward, and turns
-clicks on in-app links into `navigate()`; subscribe first, it notifies at once.
+clicks on in-app links into `navigate()`; subscribe first, it notifies at once. A step that only moves the
+`#hash` on the page shown (an in-page anchor, back / forward between anchors, `navigate()` to the same URL
+with another hash) is no new page: `data-ready` stays, the store does not change, the router scrolls to the
+element and the page can open the part holding it on `hashchange`.
 
 ```js
 import * as state from './shared/state.js';
@@ -178,6 +181,9 @@ downloadCsv(csvFilename(car.name, 'battery-level'), rows, [timeColumn('Time', 't
 `on(target, type, fn)`, `esc`, `safeUrl`, `setVars(el, vars)`, `cssVar(name)`, `cover(el, ...ids)`,
 `ready(pageId)`, `unready()`, `failed(pageId)`, `readyPage()`, `setTitle(...parts)`, `quantity(value, kind,
 opts)`, `styleSheet(href, { first })` (adds a style sheet once, after the others or with `first` before them, and resolves when it has loaded: maps and charts await it).
+`disclose(button, part, { focus, onOpen, onClose })` opens a hidden part in place from a button (a name box behind "Edit"):
+aria-expanded and aria-controls on the button, the focus into the part when it opens and back to the button when
+it closes, Escape inside it closes it; returns `{ open(), close(), isOpen() }`.
 
 `h()` attributes: `class` (text, array or `{ name: on }`), `dataset`, `vars` (CSS custom properties, set through
 CSSOM), `style` (an object, CSSOM), `cover` (inventory item ids), `on<event>` functions, `value` / `checked`

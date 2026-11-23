@@ -1,5 +1,5 @@
 // The app frame every page shares, laid out like Sentry Manager's: a card at the left with the brand and
-// the six sections (Car, Trips, Charging, Battery, Stats, Settings), which collapses to icons; beside it
+// the five sections (Car, Trips, Battery and energy, Battery, Stats, Settings), which collapses to icons; beside it
 // a line with where you are ("Sentry Mate / Car", a detail page's trail) and the tools ("Find a page" (/),
 // live status, the car's clock, the car switcher, the account); under that the open section's tabs as a
 // row of pills and the shared period picker; the notices bar, flash notes and the footer.
@@ -74,7 +74,7 @@ function carButton(cls) {
 
 const RAIL_KEY = 'sentrymate.manager.rail';
 
-// Laid out like Sentry Manager: a card at the left with the brand and the six sections (icons only once
+// Laid out like Sentry Manager: a card at the left with the brand and the five sections (icons only once
 // collapsed, and a bar of icons along the top on a phone); beside it a line with where you are ("Sentry
 // Mate / Car") and the tools, then the open section's tabs and the period.
 function buildTopbar() {

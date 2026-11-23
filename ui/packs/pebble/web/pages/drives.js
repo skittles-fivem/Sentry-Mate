@@ -19,7 +19,7 @@ import { field, segmented } from '../core/form.js';
 import { bars } from '../core/chart.js';
 import { openPeriod } from '../core/period.js';
 import { placeLink, byDay, dayHead, socBar, filterBar, moreButton, statTile, dur, pills } from '../core/bits.js';
-import { rowTitle, SOURCE_OPTIONS, SOURCE_WORDS, sourceParam } from '../core/source.js';
+import { srcPill, estPill, SOURCE_OPTIONS, SOURCE_WORDS, sourceParam } from '../core/source.js';
 
 export const id = 'drives';
 export const css = true;
@@ -31,7 +31,7 @@ export function driveTile(d, ctx, { w = 2, cover = null, links = true } = {}) {
   const tz = ctx.tz, car = ctx.car;
   const going = !!d.flags?.in_progress;
   const href = state.buildUrl('drive', { car: car.id, drive: d.id, period: ctx.state.period });
-  const t = tile({ w, cls: ['item', 'drive-tile'], cover },
+  return tile({ w, cls: ['item', 'drive-tile'], cover },
     h('div', { class: 'item-top' },
       h('span', { class: 'item-ic tone-coral', 'aria-hidden': 'true' }, icon('route')),
       h('div', { class: 'item-text' },
@@ -51,6 +51,7 @@ export function driveTile(d, ctx, { w = 2, cover = null, links = true } = {}) {
       h('span', { cover: 'drives.table.energy' }, num(d.energy_kwh, 'energy', { size: 's' })),
       h('span', { cover: 'drives.table.consumption' }, num(d.wh_per_km, 'efficiency', { size: 's' }))),
     socBar(d.start_soc_pct, d.end_soc_pct, { cover: ['drives.table.soc_start', 'drives.table.soc_end'] }),
+    h('p', { class: 'src-line' }, srcPill(d, { short: true }), estPill(d)),
     h('p', { class: 'item-sub drive-more' },
       h('span', { cover: 'drives.table.speed_avg' }, `Avg ${format(d.speed_avg_kph, 'speed')}`), ' · ',
       h('span', { cover: 'drives.table.speed_max' }, `top ${format(d.speed_max_kph, 'speed')}`), ' · ',
@@ -58,10 +59,6 @@ export function driveTile(d, ctx, { w = 2, cover = null, links = true } = {}) {
       h('span', { cover: 'drives.table.outside_temp' }, format(d.outside_avg_c, 'temperature')), ' · ',
       h('span', { cover: 'drives.table.efficiency' }, `${format(d.efficiency_pct, 'percent')} of rated`)),
     links ? h('p', { class: 'item-links tile-foot' }, h('a', { href, cover: 'drives.table.link.details' }, 'Details')) : null);
-  // where the data came from: the card's hover title; the drive page shows it in full
-  const why = rowTitle(d);
-  if (why) t.title = why;
-  return t;
 }
 
 export async function mount(ctx) {

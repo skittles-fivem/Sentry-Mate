@@ -26,7 +26,7 @@ import { openDialog, confirmDialog } from '../core/dialog.js';
 import { flash } from '../core/flash.js';
 import { isAdmin } from '../core/prefs.js';
 import { rpx } from '../core/display.js';
-import { srcText, srcTitle } from '../core/source.js';
+import { srcMark, srcText } from '../core/source.js';
 
 export const id = 'trip';
 export const css = true;
@@ -264,7 +264,7 @@ export async function mount(ctx) {
     [timeColumn('Time', 't', tz), column('State', 'state'), column('Battery', 'soc', 'percent'), column(rangeLabel(), 'range', 'range'), column('Elevation', 'elev', 'length')]);
   const chartsPanel = h('section', { class: 'panel trip-charts', 'aria-label': 'Battery and elevation', cover: 'trip.control.zoom' },
     h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('battery'), 'Battery and elevation'),
-      h('span', { class: 'row', title: series ? srcText(series) || null : null }, chartTime, h('span', { class: 'faint' }, 'Drag across a chart to make that span the trip'), csvButton({ onClick: seriesCsv }))),
+      h('span', { class: 'row' }, chartTime, srcMark(series, { short: true }), h('span', { class: 'faint' }, 'Drag across a chart to make that span the trip'), csvButton({ onClick: seriesCsv }))),
     h('div', { class: 'chart-block', dataset: { series: 'batt' }, cover: ['trip.chart.battery.soc', 'trip.chart.battery.range'] },
       h('div', { class: 'chart-label' }, h('span', { class: 'name' }, 'Battery', h('span', { class: 'chart-unit' }, ' · % and ', unitLabel('range'))),
         h('span', { class: 'key' }, h('i', { vars: { '--c': 'var(--c-soc)' } }), 'Battery %'),
@@ -282,17 +282,16 @@ export async function mount(ctx) {
     title: 'Drives', icon: 'route', path: `cars/${enc(cid)}/drives`, params: listParams, limit: 50, csvName: 'trip-drives', cls: 'trip-table',
     cover: 'trip.drives.table', sort: { key: 'start', dir: 'asc' },
     note: 'Every drive that started in the window, oldest first. Consumption is left blank, with the reason, where it would not be reliable.',
-    rowTitle: srcTitle,
     rowHref: (d) => state.buildUrl('drive', { car: cid, drive: d.id }),
     columns: [
       { key: 'start', label: 'Start', sort: 'start', firstDir: 'asc', cover: ['trip.drives.date', 'trip.drives.link.details'], csv: (d) => iso(d.start_ms),
         render: (d) => h('span', { class: 'cell-text' }, h('a', { class: 'main', href: state.buildUrl('drive', { car: cid, drive: d.id }), title: 'Open this drive' }, `${formatDate(d.start_ms, tz, { year: false })}, ${formatTime(d.start_ms, tz)}`),
-          h('span', { class: 'sub' }, d.flags?.in_progress ? 'driving now' : `to ${formatTime(d.end_ms, tz)}`)) },
+          h('span', { class: 'sub sub--src' }, d.flags?.in_progress ? 'driving now' : `to ${formatTime(d.end_ms, tz)}`, srcMark(d, { short: true, estimated: true }))) },
       { key: 'from', label: 'From', cls: 'col-place', cover: ['trip.drives.start', 'trip.drives.link.geofence_start'], csv: (d) => placeLabel(d.start), render: (d) => placeCell(d.start, d.start?.lat, d.start?.lon) },
       { key: 'to', label: 'To', cls: 'col-place', cover: ['trip.drives.destination', 'trip.drives.link.geofence_end'], csv: (d) => placeLabel(d.end), render: (d) => (d.flags?.in_progress ? h('span', { class: 'cell-text' }, h('span', { class: 'main faint' }, 'driving now')) : placeCell(d.end, d.end?.lat, d.end?.lon)) },
       { key: 'duration', label: 'Duration', num: true, sort: 'duration', cover: ['trip.drives.duration', 'trip.drives.link.duration_hint'], csv: (d) => (d.duration_ms == null ? null : Math.round(d.duration_ms / 60000)),
         render: (d) => h('span', { class: 'cell-text cell-num', title: `${hm(d.duration_ms)} (hours:minutes), ${formatTime(d.start_ms, tz)} to ${d.end_ms ? formatTime(d.end_ms, tz) : 'now'}` },
-          h('span', { class: 'main' }, formatDuration(d.duration_ms))) },
+          h('span', { class: 'main' }, formatDuration(d.duration_ms)), h('span', { class: 'sub' }, `${hm(d.duration_ms)} h:min`)) },
       { key: 'distance', label: 'Distance', num: true, sort: 'distance', cover: 'trip.drives.distance', csv: column('Distance', 'distance_km', 'distance'), render: (d) => format(d.distance_km, 'distance') },
       { key: 'soc', label: 'Battery', num: true, cover: ['trip.drives.soc_start', 'trip.drives.soc_end'], title: `Battery at the start → at the end, with the ${rangeLabel().toLowerCase()} below`,
         render: (d) => socCell(d.start_soc_pct, d.end_soc_pct, d.start_range_km, d.end_range_km) },
@@ -304,25 +303,23 @@ export async function mount(ctx) {
   const tripCharges = dataTable(ctx, {
     title: 'Charges', icon: 'bolt', path: `cars/${enc(cid)}/charges`, params: listParams, limit: 50, csvName: 'trip-charges', cls: 'trip-table trip-table--charges',
     cover: 'trip.charges.table', sort: { key: 'start', dir: 'asc' },
-    note: 'Every charge that started in the window, oldest first.',
-    noteMore: `Energy added is measured at the pack; from the grid is measured on AC only (a fast charger’s grid side is not). Hover a row to see where its data came from. ${admin ? 'Click a cost to set or change it.' : 'An admin can set costs.'}`,
-    rowTitle: srcTitle,
+    note: `Every charge that started in the window, oldest first. Energy added is measured at the pack; from the grid is measured on AC only (a fast charger’s grid side is not). ${admin ? 'Click a cost to set or change it.' : 'An admin can set costs.'}`,
     rowHref: (c) => state.buildUrl('charge', { car: cid, charge: c.id }),
     columns: [
       { key: 'start', label: 'Start', sort: 'start', firstDir: 'asc', cover: ['trip.charges.date', 'trip.charges.link.details'], csv: (c) => iso(c.start_ms),
         render: (c) => h('span', { class: 'cell-text' }, h('a', { class: 'main', href: state.buildUrl('charge', { car: cid, charge: c.id }), title: 'Open this charge' }, `${formatDate(c.start_ms, tz, { year: false })}, ${formatTime(c.start_ms, tz)}`),
-          h('span', { class: 'sub' }, c.end_ms ? `${c.kind === 'dc' ? 'DC' : c.kind === 'ac' ? 'AC' : 'AC or DC unknown'}, to ${formatTime(c.end_ms, tz)}` : 'charging now')) },
+          h('span', { class: 'sub sub--src' }, c.end_ms ? `${c.kind === 'dc' ? 'DC' : c.kind === 'ac' ? 'AC' : 'AC or DC unknown'}, to ${formatTime(c.end_ms, tz)}` : 'charging now', srcMark(c, { short: true, estimated: true }))) },
       { key: 'place', label: 'Place', cls: 'col-place', cover: ['trip.charges.location', 'trip.charges.link.geofence'], csv: (c) => placeLabel(c), render: (c) => placeCell(c, c.position?.lat, c.position?.lon) },
       { key: 'duration', label: 'Charging', num: true, sort: 'duration', cover: 'trip.charges.duration', csv: (c) => (c.charging_ms == null ? null : Math.round(c.charging_ms / 60000)),
-        render: (c) => h('span', { class: 'nowrap', title: `Time actually charging; waiting while plugged in is left out${c.plugged_ms != null ? `. Plugged in ${formatDuration(c.plugged_ms)}` : ''}` }, formatDuration(c.charging_ms)) },
+        render: (c) => h('span', { class: 'cell-text cell-num', title: 'Time actually charging; waiting while plugged in is left out' }, h('span', { class: 'main' }, formatDuration(c.charging_ms)), h('span', { class: 'sub' }, c.plugged_ms != null ? `plugged ${formatDuration(c.plugged_ms)}` : '')) },
       { key: 'cost', label: 'Cost', num: true, sort: 'cost', cover: ['trip.charges.cost', 'trip.charges.link.cost'], csv: (c) => (c.cost ? `${c.cost.amount} ${c.cost.currency}` : ''), render: (c) => costCell(c, cid, admin) },
-      { key: 'added', label: 'Added', num: true, sort: 'energy', cover: ['trip.charges.energy_added', 'trip.charges.range_added'], title: `Energy into the pack, then the ${rangeLabel().toLowerCase()} it added`, csv: column('Energy added', 'energy_added_kwh', 'energy'),
-        render: (c) => h('span', { class: 'cell-text cell-num' }, h('span', { class: 'main' }, format(c.energy_added_kwh, 'energy')), c.range_added_km != null ? h('span', { class: 'sub' }, `+${format(c.range_added_km, 'range')}`) : null) },
+      { key: 'added', label: 'Added', num: true, sort: 'energy', cover: 'trip.charges.energy_added', title: 'Energy into the pack', csv: column('Energy added', 'energy_added_kwh', 'energy'), render: (c) => format(c.energy_added_kwh, 'energy') },
       { key: 'grid', label: 'From grid', num: true, cover: 'trip.charges.energy_used', title: 'Energy drawn, losses included (AC only)', csv: column('Energy from grid', 'energy_grid_kwh', 'energy'),
         render: (c) => (c.energy_grid_kwh != null ? format(c.energy_grid_kwh, 'energy') : h('span', { class: 'cell-text cell-num', title: c.kind === 'dc' ? 'A fast charger’s grid side is not measured.' : 'No meter reading for this charge.' },
           h('span', { class: 'main faint' }, '—'), h('span', { class: 'sub' }, c.kind === 'dc' ? 'DC: not metered' : 'no reading'))) },
-      { key: 'power', label: 'Avg power', num: true, cover: 'trip.charges.power_avg', title: 'While charging, waiting time left out; the peak in each value’s title', csv: column('Average power', 'power_avg_kw', 'power'),
-        render: (c) => h('span', { class: 'nowrap', title: c.power_max_kw != null ? `Peak ${format(c.power_max_kw, 'power')}` : null }, format(c.power_avg_kw, 'power')) },
+      { key: 'power', label: 'Avg power', num: true, cover: 'trip.charges.power_avg', title: 'While charging, waiting time left out', csv: column('Average power', 'power_avg_kw', 'power'),
+        render: (c) => h('span', { class: 'cell-text cell-num' }, h('span', { class: 'main' }, format(c.power_avg_kw, 'power')), h('span', { class: 'sub' }, c.power_max_kw != null ? `peak ${format(c.power_max_kw, 'power')}` : '')) },
+      { key: 'range', label: 'Range added', num: true, cover: 'trip.charges.range_added', title: `${rangeLabel()} added`, csv: column('Range added', 'range_added_km', 'range'), render: (c) => format(c.range_added_km, 'range') },
       { key: 'soc', label: 'Battery', num: true, sort: 'end_soc', cover: ['trip.charges.soc_start', 'trip.charges.soc_end'], title: `Battery at the start → at the end, with the ${rangeLabel().toLowerCase()} below (sorts by the end)`,
         render: (c) => socCell(c.start_soc_pct, c.end_soc_pct, c.start_range_km, c.end_range_km) },
     ],
@@ -537,8 +534,8 @@ function placeCell(p, lat, lon) {
   const name = placeLabel(p);
   const saved = !!p?.place?.id;
   return h('span', { class: 'cell-text' },
-    href ? h('a', { class: 'main place-link', href, title: saved ? `Edit the place ${name}` : `${name}: save this spot as a place` }, name) : h('span', { class: 'main' }, name),
-    saved && p.address?.short && p.address.short !== name ? h('span', { class: 'sub' }, p.address.short) : null);
+    href ? h('a', { class: 'main place-link', href, title: saved ? `Edit the place ${name}` : 'Make this spot a saved place' }, name) : h('span', { class: 'main' }, name),
+    h('span', { class: 'sub' }, saved ? (p.address?.short && p.address.short !== name ? p.address.short : 'saved place') : 'not a saved place yet'));
 }
 
 // the battery at the start and the end in one cell: "63% → 61%" over "322 → 315 km"
@@ -552,22 +549,20 @@ function consumptionCell(d) {
   let why = null;
   if (d.flags?.in_progress) why = 'still driving';
   else if (d.wh_per_km == null) why = 'not measured';
-  else if ((d.distance_km ?? 0) < 1) why = 'too short';
+  else if ((d.distance_km ?? 0) < 1) why = 'too short to be reliable';
   else if (d.flags?.gap_ms > 60000) why = `${formatDuration(d.flags.gap_ms)} without data`;
-  if (why) return h('span', { class: 'cell-text cell-num', title: why === 'too short' ? 'Too short to be reliable' : null }, h('span', { class: 'main faint' }, '—'), h('span', { class: 'sub' }, why));
-  const est = d.energy_basis === 'estimated';
-  return h('span', { class: 'cell-text cell-num', title: est ? 'Estimated: from the Tesla API\'s power readings (or an import), not measured at the pack' : 'Energy measured at the pack' }, h('span', { class: 'main' }, format(d.wh_per_km, 'efficiency')),
-    h('span', { class: 'sub' }, `${est ? '≈ ' : ''}${format(d.energy_kwh, 'energy')}`));
+  if (why) return h('span', { class: 'cell-text cell-num' }, h('span', { class: 'main faint' }, '—'), h('span', { class: 'sub' }, why));
+  return h('span', { class: 'cell-text cell-num' }, h('span', { class: 'main' }, format(d.wh_per_km, 'efficiency')),
+    h('span', { class: 'sub' }, d.energy_basis === 'estimated' ? 'estimated (imported)' : `${format(d.energy_kwh, 'energy')} at the pack`));
 }
 
 function costCell(c, cid, admin) {
   const edit = state.buildUrl('charge', { car: cid, charge: c.id, query: { edit: 'cost' } });
-  // unpriced is a quiet "—"; the edit pen shows on hover or focus only; where the cost came from is the title
-  const txt = c.cost ? formatMoney(c.cost.amount, c.cost.currency) : '—';
-  const why = c.cost ? `Cost: ${COST_SOURCE[c.cost.source] || c.cost.source}` : c.place ? 'No price: the place has no price' : 'No price: not a saved place';
-  return h('span', { class: 'cell-text cell-num', title: why },
-    admin ? h('a', { class: ['main', 'cost-link', !c.cost && 'is-missing'], href: edit, title: c.cost ? 'Change the cost of this charge' : 'Set a cost for this charge', 'aria-label': c.cost ? `${txt}, change the cost` : 'No price, set a cost' }, txt, icon('settings', 'ico--sm cost-pen'))
-      : h('span', { class: ['main', !c.cost && 'faint'] }, txt));
+  const txt = c.cost ? formatMoney(c.cost.amount, c.cost.currency) : 'No price';
+  return h('span', { class: 'cell-text cell-num' },
+    admin ? h('a', { class: ['main', 'cost-link', !c.cost && 'is-missing'], href: edit, title: c.cost ? 'Change the cost of this charge' : 'Set a cost for this charge' }, txt, ' ', icon('settings', 'ico--sm'))
+      : h('span', { class: ['main', !c.cost && 'faint'] }, txt),
+    h('span', { class: 'sub' }, c.cost ? COST_SOURCE[c.cost.source] || c.cost.source : c.place ? 'the place has no price' : 'not a saved place'));
 }
 
 // the figures as rows, for the CSV and the side-by-side table

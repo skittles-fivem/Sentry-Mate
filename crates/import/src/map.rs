@@ -281,7 +281,6 @@ pub(crate) fn charge(
         kind,
         energy_added_kwh: row.f64(Cp::charge_energy_added),
         energy_used_kwh: row.f64(Cp::charge_energy_used),
-        energy_spans: None,
         start_soc: row.f64(Cp::start_battery_level),
         end_soc: row.f64(Cp::end_battery_level),
         start_range_km: row.f64(Cp::start_rated_range_km),

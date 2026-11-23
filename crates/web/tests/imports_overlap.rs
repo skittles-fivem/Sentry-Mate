@@ -77,7 +77,6 @@ fn charge(car: CarId, source: Source, n: i64, start_ms: u64) -> model::Charge {
         kind: Some(model::ChargeKind::Ac),
         energy_added_kwh: Some(20.0),
         energy_used_kwh: None,
-        energy_spans: None,
         start_soc: None,
         end_soc: None,
         start_range_km: None,

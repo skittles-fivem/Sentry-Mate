@@ -697,9 +697,7 @@ pub fn totals(e: &Engine, car: CarId, source: Option<&str>) -> QResult<Scoped<To
         }
         Ok(true)
     })?;
-    let (mut charges, mut added, mut grid, mut with_grid) = (0u64, 0.0, 0.0, 0u64);
-    // the efficiency: over the charges whose two energies were measured over the same span
-    let (mut added_compared, mut grid_compared) = (0.0, 0.0);
+    let (mut charges, mut added, mut grid, mut added_with_grid, mut with_grid) = (0u64, 0.0, 0.0, 0.0, 0u64);
     let (mut ac, mut dc) = (KindTotal { charges: 0, kwh: 0.0 }, KindTotal { charges: 0, kwh: 0.0 });
     each::<Charge>(e, car, 0, u64::MAX, src, &shown, false, |ch| {
         charges += 1;
@@ -707,11 +705,8 @@ pub fn totals(e: &Engine, car: CarId, source: Option<&str>) -> QResult<Scoped<To
         added += kwh;
         if let Some(g) = ch.energy_used_kwh {
             grid += g;
+            added_with_grid += kwh;
             with_grid += 1;
-            if ch.energies_comparable() {
-                added_compared += kwh;
-                grid_compared += g;
-            }
         }
         match ch.kind {
             Some(model::ChargeKind::Ac) => {
@@ -749,7 +744,7 @@ pub fn totals(e: &Engine, car: CarId, source: Option<&str>) -> QResult<Scoped<To
             energy_added_kwh: r(Some(added), 3).unwrap_or(0.0),
             energy_grid_kwh: r(Some(grid), 3).unwrap_or(0.0),
             grid_coverage_pct: r((charges > 0).then(|| with_grid as f64 / charges as f64 * 100.0), 1),
-            charging_efficiency_pct: r((grid_compared > 0.0).then(|| added_compared / grid_compared * 100.0), 1),
+            charging_efficiency_pct: r((grid > 0.0).then(|| added_with_grid / grid * 100.0), 1),
             ac,
             dc,
             updates,
