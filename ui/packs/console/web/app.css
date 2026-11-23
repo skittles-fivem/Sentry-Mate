@@ -657,6 +657,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .pl-rate .in--time { width: calc(var(--a2) * 8); }
 .pl-rate select.in--cell { width: calc(var(--a2) * 14); }
 .pl-rate > .muted, .pl-rate > .btn--line { line-height: var(--ctl); }
+.pl-tier-words { min-width: calc(var(--a2) * 24); }
 .pl-list .optline .in { width: auto; flex: 1 1 calc(var(--a2) * 24); }
 .pl-list .optline select.in { flex: none; }
 .pl-edit .map { margin-bottom: var(--g2); }

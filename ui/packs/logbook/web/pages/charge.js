@@ -13,6 +13,7 @@ import { format, unitLabel, rangeField, rangeLabel, formatMoney } from '../share
 import { formatTime, formatDate, formatDuration, dayKey, zoneName, MINUTE, DAY } from '../shared/time.js';
 import { formatList, formatNumber } from '../shared/i18n.js';
 import { column, timeColumn, csvFilename, downloadCsv } from '../shared/csv.js';
+import * as TI from '../shared/tiers.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { pageHead, q, figure, icon, sep, empty, errorWords, flag, chip } from '../core/ui.js';
@@ -515,8 +516,10 @@ function costView(ctx, c, { tz, car, listUrl, place, onSaved }) {
     h('p', { class: 'cost-amount' }, cost ? formatMoney(cost.amount, cost.currency) : q(null, 'money', { why: 'no price' })),
     h('p', { class: 'fig-note' }, cost ? COST_SOURCE[cost.source] || cost.source : c.place ? `${c.place.name} has no price, and none was entered.` : 'No place with a price here, and none was entered.'),
     ppk && ppk.value != null && cur ? h('p', { class: 'fig-note' }, rateText(ppk.value, cur, 'price_energy'), ppk.basis === 'grid' ? ' over the energy drawn from the grid' : c.kind === 'dc' ? ' over the energy added to the pack (the grid side of a fast charger is not known)' : ' over the energy added to the pack, as entered') : null,
-    bd.gap_ms > 0 ? h('p', { class: 'fig-note' }, `${formatDuration(bd.gap_ms)} without data is priced from the energy at its ends.`) : null);
+    bd.gap_ms > 0 ? h('p', { class: 'fig-note' }, `${formatDuration(bd.gap_ms)} without data is priced from the energy at its ends.`) : null,
+    bd.cycle && cur ? h('p', { class: 'fig-note' }, `Tiered price: ${TI.splitText(TI.stepParts(bd), cur)}. This billing cycle (from ${formatDate(bd.cycle.start_ms, (place && place.time_zone) || tz)}) had ${format(bd.cycle.before_kwh, 'energy')} before this charge; a rate by time of day still sets the price of its hours.`) : null);
 
+  const stepName = (p) => (p.from_kwh != null ? `${p.rate}: ${TI.stepLabel(p.from_kwh, p.to_kwh)}` : p.rate);
   const rows = (bd.parts || []).map((p) => ({ ...p }));
   if (bd.session_fee != null) rows.push({ rate: 'Session fee', per_kwh: null, per_minute: null, kwh: null, minutes: null, cost: bd.session_fee, fee: true });
   const money = (v) => (v == null || !cur ? '—' : formatMoney(v, cur));
@@ -525,7 +528,7 @@ function costView(ctx, c, { tz, car, listUrl, place, onSaved }) {
     rows, itemName: ['line', 'lines'], label: 'Cost breakdown',
     caption: ['Total ', money(bd.total ?? (cost && cost.amount)), bd.mode === 'tariff' ? '; each rate over the time it applied' : ''],
     columns: [
-      { key: 'rate', label: 'Rate', th: true, cell: (r) => r.rate, value: (r) => r.rate },
+      { key: 'rate', label: 'Rate', th: true, cell: (r) => stepName(r), value: (r) => stepName(r) },
       { key: 'kwh', label: `Energy (${unitLabel('energy')})`, num: true, cell: (r) => (r.kwh == null ? '—' : format(r.kwh, 'energy', { unit: false })), value: (r) => r.kwh },
       { key: 'minutes', label: 'Time (min)', num: true, cell: (r) => (r.minutes == null ? '—' : format(r.minutes, 'number', { digits: 1 })), value: (r) => r.minutes },
       { key: 'per_kwh', label: 'Per kWh', num: true, cell: (r) => rate(r.per_kwh, 'price_energy'), value: (r) => r.per_kwh },
@@ -533,7 +536,7 @@ function costView(ctx, c, { tz, car, listUrl, place, onSaved }) {
       { key: 'cost', label: cur ? `Cost (${cur})` : 'Cost', num: true, cell: (r) => money(r.cost), value: (r) => r.cost },
     ],
     csv: { filename: csvFilename(car.name, 'charge', dayKey(c.start_ms, tz), 'cost'), columns: [
-      { label: 'Rate', value: (r) => r.rate }, { label: 'Energy (kWh)', value: (r) => r.kwh }, { label: 'Time (min)', value: (r) => r.minutes },
+      { label: 'Rate', value: (r) => stepName(r) }, { label: 'Energy (kWh)', value: (r) => r.kwh }, { label: 'Time (min)', value: (r) => r.minutes },
       { label: `Per kWh (${cur || ''})`, value: (r) => r.per_kwh }, { label: `Per minute (${cur || ''})`, value: (r) => r.per_minute }, { label: `Cost (${cur || ''})`, value: (r) => r.cost }] },
     cls: 'cost-table',
   }) : null;
