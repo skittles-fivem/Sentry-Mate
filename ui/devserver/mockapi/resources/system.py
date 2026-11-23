@@ -556,7 +556,7 @@ def car_health(req):
                 "last_log_trust": {"result": "failed" if "trust_failed" in reasons else "verified", "reason": None},
                 "keys": [], "chain_gaps": [], "dropped_frames": [], "unknown_spans": [], "unknown_ms": 0,
                 "logs_waiting": 0, "missing_logs": missing_logs(req, cid), "rebuild_pending": pending,
-                "uploads_enabled": True}
+                "gps_disagreement": None, "uploads_enabled": True}
     n = now_object(req.app, cid, req.now)
     last_upload = n.get("received_ms")
     reasons = []
@@ -605,7 +605,8 @@ def car_health(req):
                   "device": k["device"], "logs_waiting": k["logs_waiting"]} for k in keys],
         "chain_gaps": chain, "dropped_frames": dropped, "unknown_spans": unknown,
         "unknown_ms": sum(((u["end_ms"] or req.now) - u["start_ms"]) for u in unknown),
-        "logs_waiting": waiting, "missing_logs": missing, "rebuild_pending": pending, "uploads_enabled": bool(toks),
+        "logs_waiting": waiting, "missing_logs": missing, "rebuild_pending": pending, "gps_disagreement": None,
+        "uploads_enabled": bool(toks),
         "from_ms": a, "to_ms": min(b, req.now),
     }
 

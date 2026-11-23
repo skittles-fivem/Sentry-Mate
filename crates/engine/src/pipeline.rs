@@ -875,6 +875,21 @@ impl Engine {
         let by: Vec<(&[Sample], Input)> = by.iter().map(|(v, i)| (v.as_slice(), *i)).collect();
         let mut fused = timeline::fuse_ordered(&by, &order, fp);
         self.inner.counters.gps_fixes_dropped.fetch_add(fused.fixes_dropped, Ordering::Relaxed);
+        if !fused.gps_disagree.is_empty() {
+            let seen = crate::GpsDisagreement {
+                disagree: fused.gps_disagree,
+                not_used: fused.gps_distrusted,
+                from_ms: from,
+                to_ms: to,
+            };
+            let mut m = crate::lock(&self.inner.gps_cross);
+            if m.get(&car).is_none_or(|x| x.to_ms <= to) {
+                if fused.gps_distrusted.contains(Input::Smo) {
+                    tracing::warn!(car, "SMO's GPS disagrees with the other inputs; its fixes are left out there");
+                }
+                m.insert(car, seen);
+            }
+        }
         fused.samples.retain(|s| s.t_ms >= from && s.t_ms < to);
         fused.marks.retain(|m| m.0 >= from && m.0 < to);
         let seen = records::api_between(db, car, meta, from, to)?;
