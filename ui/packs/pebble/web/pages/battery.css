@@ -10,9 +10,7 @@
 .band-track { position: relative; display: block; height: var(--s4); border-radius: 999px; background: var(--card-alt); overflow: hidden; }
 .band-ok { position: absolute; top: 0; bottom: 0; left: calc(var(--lo, 0.2) * 100%); width: calc((var(--hi, 0.8) - var(--lo, 0.2)) * 100%); background: var(--c3-wash); }
 .band-fill { position: absolute; top: 0; bottom: 0; left: 0; width: round(calc(var(--v, 0) * 100%), var(--e)); border-radius: 999px; background: var(--coral-fill); }
-/* both edges from the rounded spot, not left + width: at scale 3 a width of --e (2/3 px) is not a whole number of
-   layout units (1/64 px), so left + width ends between device pixels; right from the same spot keeps each edge on one */
-.band-limit { --at: round(calc(var(--v, 0.8) * 100%), var(--e)); position: absolute; top: 0; bottom: 0; left: var(--at); right: calc(100% - var(--at) - var(--e)); background: var(--text); }
+.band-limit { position: absolute; top: 0; bottom: 0; left: round(calc(var(--v, 0.8) * 100%), var(--e)); width: var(--e); background: var(--text); }
 .band-low { display: none; }
 .band-words { font-size: var(--f14); line-height: var(--l14); color: var(--muted); font-variant-numeric: tabular-nums; }
 

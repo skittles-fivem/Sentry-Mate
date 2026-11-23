@@ -208,16 +208,6 @@ then is the `certificate_expiring` notice up (a certificate the server makes is 
 starts with `localhost`, as the real server's do. A missing `password` on any request that asks for it again is
 `400 bad_input`, a wrong one `403 wrong_password`.
 
-**Storage and compaction**: `GET /api/v1/system/storage/detail` (admin) lists the made-up space on disk by
-category, largest first (the cars' figures of `/system/storage` split into logs as uploaded, their sidecars, day
-packs, series, rows and records, plus the server's own files), with a compaction that is `idle` at start (its last
-pass ended about three hours before `--now-ms`), so a first load is always the same. `POST
-/api/v1/system/storage/compact` starts a pass that "runs" for four reads of the detail (`logs` counted and half
-done, `logs` done, `series`, `records`) and ends on the fifth, whatever the clock does (also with `--freeze-clock`):
-most logs and sidecars as uploaded have then gone into the day packs, the series and records are smaller, and
-`last_saved_bytes` is what the disk total lost. A later pass finds nothing left (`last_saved_bytes` 0). A `failed`
-pass is not played; tests set it in the store (`store.compaction`).
-
 ## Layout
 
 ```
@@ -282,7 +272,5 @@ They start servers in-process on free ports (about 45 s for all). They cover:
   the document and called with ids from the API; it fails on a missing resource, a 5xx or a missing field, on a route
   the document lacks, on anything under "Deliberately absent" that answers, and on a VIN serial in any answer;
 - determinism, a 200,000-car fleet paged under 200 ms a page, and the event stream (with `--rows-every-s` at its pace).
-- storage in detail and compaction (`test_system.py`): categories largest first that add up, idle at start, a pass that
-  runs for a few reads and moves the logs into the day packs, a second pass with nothing left, a failed pass, admin only.
 - the integrations overview (`test_overview.py`): its shape, admin only, problems newest first with one open, 24
   hourly entries ending at the current hour, values that move in place, the capped car rows of a large fleet.

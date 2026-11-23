@@ -5,13 +5,11 @@
 // - Admins also: host names for the certificate, the ports, the certificate and the recovery key (show it again,
 //   make a new one, say it is saved), the move to another server as numbered step cards (with a move code, or
 //   with an export file: the current card holds the one clear button and what it printed), the accounts (an edit
-//   sheet each), the audit log, and Storage: the space on disk by category and what compaction saved, with a
-//   "Compact now" button.
+//   sheet each), and the audit log.
 // A move that stopped on the new server (a code cancelled here, say) carries on: a new code from this same server
 // lets the new server go on with what it copied. Data: settings, network, notices, accounts, me/sessions, audit,
-// system/move (+ /undo), system/exports, system/recovery-key/{show,new,saved}, system/storage/detail and
-// system/storage/compact. Polls once a second while a move or an export file is being made, and every 2 s
-// while a compaction pass runs (no event stream for these).
+// system/move (+ /undo), system/exports, system/recovery-key/{show,new,saved}. Polls once a second while a move
+// or an export file is being made (no event stream for these).
 
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -39,9 +37,6 @@ const ROLE_TEXT = {
   watch: 'Sees only the cars on its list, and changes only its own preferences and sessions.',
 };
 const PURPOSE = { web: 'Web pages and API', upload: 'CAN Bridge uploads' };
-// storage: the groups of the categories and the steps of a compaction pass, in plain words
-const STORE_GROUP = { logs: 'CAN logs', series: 'Time series', rows: 'Drives and charges', kv: 'Kept answers and records', imports: 'Imports', server: 'Server' };
-const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records' };
 /** Text that may break only after a slash, a colon or a dot (addresses, a SHA-256). */
 const breakable = (t) => String(t).split(/(?<=[/:.])/).map((part, i) => [i ? h('wbr') : null, part]);
 
@@ -420,79 +415,6 @@ export async function mount(ctx) {
     schedule();
   }
 
-  /* ================================================================ storage and compaction (admins) */
-  // The space on disk by category, largest first, and what compaction saved. "Compact now" starts a pass; while
-  // one runs (also one the server started by itself) the detail is read again every 2 s for its progress, and
-  // when it ends the list is drawn again and a note says what was freed.
-  let store = null;       // GET /system/storage/detail
-  let storeErr = null;    // why the last read failed
-  let storeTimer = 0;
-  ctx.onCleanup(() => clearTimeout(storeTimer));
-  const storeBox = h('div', { class: 'contents' });
-  async function readStorage() {
-    clearTimeout(storeTimer);
-    const was = store && store.compaction && store.compaction.status;
-    try { store = await ctx.api.get('system/storage/detail'); storeErr = null; } catch (e) { if (api.isAbort(e)) return; storeErr = e; }
-    if (!ctx.alive()) return;
-    const c = store && store.compaction;
-    if (was === 'running' && !storeErr && c && c.status !== 'running') {
-      if (c.status === 'failed') ctx.toast(`Compaction failed: ${c.error || 'the server gave no reason.'}`, { kind: 'error' });
-      else ctx.toast(c.last_saved_bytes ? `Compaction is done: ${bytes(c.last_saved_bytes)} freed on disk.` : 'Compaction is done: nothing was left to pack.');
-    }
-    drawStorage();
-  }
-  async function compactNow() {
-    try {
-      const r = await ctx.api.post('system/storage/compact');
-      if (!ctx.alive()) return;
-      store = { ...(store || {}), compaction: r.compaction };
-      storeErr = null;
-    } catch (e) { if (api.isAbort(e) || !ctx.alive()) return; ctx.toast(`Compaction not started: ${(e && e.message) || 'the server did not answer'}`, { kind: 'error' }); }
-    drawStorage();
-  }
-  function compactionTile() {
-    const c = (store && store.compaction) || null;
-    const running = !!c && c.status === 'running';
-    const failed = !!c && c.status === 'failed';
-    const line = running
-      ? said('info', h('b', null, 'Packing…'), ` ${PACK_STEP[c.step] || c.step || 'getting ready'}, `, c.total ? `${formatNumber(c.done || 0)} of ${formatNumber(c.total)}` : 'counting',
-        storeErr ? ' (the progress could not be read just now)' : null)
-      : failed ? said('warn', h('b', null, 'The last pass failed: '), c.error || 'the server gave no reason.')
-        : said('info', !c ? 'The server did not say how compaction stands.'
-          : c.automatic ? 'Compaction runs by itself when the server is idle. Compact now starts a pass at once.'
-            : 'Compaction does not run by itself on this server. Compact now starts a pass.');
-    return tile({ w: 2, title: 'Compaction', icon: 'refresh', id: 'storage',
-      side: chip(running ? 'Packing' : failed ? 'Failed' : c ? 'Idle' : 'Not known', { tone: running ? 'sky' : failed ? 'sun' : c ? 'teal' : 'muted' }) },
-    group(null, [
-      infoRow({ icon: 'check', name: 'Saved so far', sub: 'What compaction has freed in all.', side: h('span', { class: 'set-value' }, bytes(c ? c.saved_bytes : null)) }),
-      infoRow({ icon: 'clock', name: 'Last pass', sub: c && c.finished_ms != null ? `Finished ${when(c.finished_ms)}.` : 'No pass has finished yet.',
-        side: h('span', { class: 'set-value' }, !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'Nothing left to pack') }),
-    ]),
-    h('div', { 'aria-live': 'polite' }, line),
-    h('div', { class: 'form-actions' }, btn('Compact now', { kind: 'primary', icon: 'refresh', disabled: running || !c, onclick: compactNow })),
-    note('Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs’ signed originals are kept byte for byte.'));
-  }
-  function spaceTile() {
-    const cats = (store && store.categories) || [];
-    return tile({ w: 2, title: 'Space on disk', icon: 'server', side: chip(store && store.total_disk_bytes != null ? `${bytes(store.total_disk_bytes)} in all` : 'Not known', { tone: 'muted' }) },
-      cats.length
-        ? group(null, [
-          cats.map((c) => infoRow({ name: c.label, sub: `${STORE_GROUP[c.group] || c.group} · ${formatNumber(c.files)} ${c.files === 1 ? 'file' : 'files'}`,
-            side: h('span', { class: 'set-value' }, bytes(c.disk_bytes)) })),
-          infoRow({ icon: 'server', name: 'All together', sub: 'Everything above, as it lies on disk.', side: h('span', { class: 'set-value' }, bytes(store.total_disk_bytes)) }),
-          infoRow({ icon: 'download', name: 'Free on the disk', sub: 'Room left for new data.', side: h('span', { class: 'set-value' }, store.free_bytes != null ? bytes(store.free_bytes) : 'Not known') }),
-        ])
-        : said('warn', 'The server did not say what takes the space', storeErr && storeErr.message ? `: ${storeErr.message}` : '.'),
-      note('What takes the space on disk, largest first, with the kind of data under each.'));
-  }
-  function drawStorage() {
-    storeBox.replaceChildren(
-      sectionHead('Storage', 'What takes the space on disk, and what compaction saved.'),
-      compactionTile(), spaceTile());
-    clearTimeout(storeTimer);
-    if (store && store.compaction && store.compaction.status === 'running') storeTimer = setTimeout(readStorage, 2000);
-  }
-
   /* ================================================================ accounts (admins) */
   function carsPicker(current) {
     const all = toggle({ label: 'Every car, also cars that come later', checked: current === 'all' });
@@ -692,11 +614,11 @@ export async function mount(ctx) {
     const tiles = [hostingTile(), accessTile()];
     if (admin) tiles.push(namesTile(), certTile(), portsTile(), keyTile());
     tiles.push(sessionsTile());
-    if (admin) tiles.push(accountsTile(), moveBox, storeBox, auditT);
+    if (admin) tiles.push(accountsTile(), moveBox, auditT);
     ctx.view.replaceChildren(...tiles.filter(Boolean));
   }
   if (admin) {
-    await Promise.all([readMove(), readExport(), readStorage()]);
+    await Promise.all([readMove(), readExport()]);
     auditT = await auditTile();
     if (!ctx.alive()) return {};
     drawMove();

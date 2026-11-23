@@ -102,7 +102,6 @@ const ROUTES: &[(&str, &str, Case)] = &[
     ("DELETE", "/api/v1/cars/{car}/charges/{charge}/cost", Walk),
     ("POST", "/api/v1/network/certificate", Elsewhere("settings.rs")),
     ("POST", "/api/v1/cars/{car}/rebuild", Walk),
-    ("POST", "/api/v1/system/storage/compact", Walk),
     ("PATCH", "/api/v1/cars/{car}/overlaps", Elsewhere("imports_overlap.rs")),
     ("PATCH", "/api/v1/settings", Walk),
     ("POST", "/api/v1/imports", Elsewhere("imports.rs")),
@@ -455,7 +454,6 @@ async fn every_change_route_writes_a_readable_entry() {
         w.0.insert(("DELETE".into(), "/api/v1/cars/{car}/charges/{charge}/cost".into()));
     }
     w.send(&mut admin, "POST", "/api/v1/cars/{car}/rebuild", &format!("/api/v1/cars/{car}/rebuild"), json!({})).await;
-    w.send(&mut admin, "POST", "/api/v1/system/storage/compact", "/api/v1/system/storage/compact", json!({})).await;
 
     // a place
     let draft = json!({ "name": "Made-up office", "kind": "work", "lat": synth::TOWN.lat, "lon": synth::TOWN.lon,

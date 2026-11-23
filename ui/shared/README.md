@@ -123,17 +123,14 @@ const days = buckets(period.from_ms, period.to_ms, 'day', car.time_zone);
 
 `ROUTES`, `PAGE_IDS`, `PERIOD_PAGES`, `CAR_PAGES`, `parseUrl(url)`, `buildUrl(page, { car, drive, charge,
 period, query })`, `parsePeriod(search)`, `periodQuery(period)`, `createStore(initial)`, `store`, `current()`,
-`subscribe(fn)`, `syncFromLocation()`, `sameRoute(url)`, `navigate(href, { replace })`, `linkTo(page, params)`,
+`subscribe(fn)`, `syncFromLocation()`, `navigate(href, { replace })`, `linkTo(page, params)`,
 `linkForCar(car)`, `setPeriod(period, { push })`, `setQuery(patch, { push })`, `startRouting()`,
 `tabPeriod()`, `lastCar()`, `rememberCar(id)`, `forgetCar(id)`.
 
 The car is in the path, the period in the query (`?preset=7d` or `?from=<ms>&to=<ms>`). A URL without a
 period uses the one chosen last in this tab; a page with neither uses its own default (`period` is null).
 `navigate()` removes `data-ready`. `startRouting()` reads the address, follows back and forward, and turns
-clicks on in-app links into `navigate()`; subscribe first, it notifies at once. A step that only moves the
-`#hash` on the page shown (an in-page anchor, back / forward between anchors, `navigate()` to the same URL
-with another hash) is no new page: `data-ready` stays, the store does not change, the router scrolls to the
-element and the page can open the part holding it on `hashchange`.
+clicks on in-app links into `navigate()`; subscribe first, it notifies at once.
 
 ```js
 import * as state from './shared/state.js';

@@ -62,7 +62,6 @@
   {"code":"sign-in-refused","group":"sign-ins","item":"account"},
   {"code":"sign-out","group":"sign-ins","item":"session"},
   {"code":"signed-out","group":"sign-ins","item":"session"},
-  {"code":"storage-compacted","group":"settings","item":"server"},
   {"code":"tesla-account-added","group":"integrations","item":"tesla"},
   {"code":"tesla-account-changed","group":"integrations","item":"tesla"},
   {"code":"tesla-account-error","group":"integrations","item":"tesla"},

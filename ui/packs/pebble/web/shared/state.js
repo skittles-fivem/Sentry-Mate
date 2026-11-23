@@ -316,25 +316,6 @@ function stateFromUrl(u) {
   return { ...s, period, periodFromUrl: fromUrl };
 }
 
-/**
- * True when the URL shows what the store already shows (the same page, ids, period and query): it differs
- * at most in its #hash, so going there is no new page: the page stays (and stays ready), only the hash moves.
- */
-export function sameRoute(u) {
-  const s = parseUrl(u ?? '/');
-  const next = { ...s, period: s.period || tabPeriod(), periodFromUrl: !!s.period };
-  const now = store.get();
-  return now.page != null && Object.keys(next).every((k) => sameValue(next[k], now[k]));
-}
-
-/** Scroll to the element the address's #hash names (when it is shown); pages that keep it in a closed tab open it on hashchange. */
-function landOnHash(w = globalThis.window) {
-  let id = '';
-  try { id = decodeURIComponent((w?.location?.hash || '').slice(1)); } catch { return; }
-  const t = id ? w.document?.getElementById(id) : null;
-  if (t && !t.closest('[hidden]')) t.scrollIntoView({ block: 'start' });
-}
-
 /** Read the browser's address into the store (on start and after back / forward). */
 export function syncFromLocation(u = globalThis.location) {
   return store.set(stateFromUrl(u ?? '/'));
@@ -345,22 +326,9 @@ const browserHistory = () => (globalThis.history && typeof globalThis.history.pu
 /**
  * Go to a URL inside the app: changes the address (push, or replace with opts.replace), removes
  * data-ready, and updates the store, which tells subscribers (the frame's router). Returns the state.
- * A URL that differs from the shown one only in its #hash is no new page: data-ready stays, the browser
- * moves to the hash (hashchange fires, so a page can open the part holding it) and the store is unchanged.
  */
 export function navigate(href, { replace = false } = {}) {
   const h = browserHistory();
-  if (sameRoute(href)) {
-    const loc = globalThis.location;
-    const hash = splitUrl(href).hash;
-    if (loc && typeof loc.replace === 'function') {
-      if (hash && hash !== loc.hash) { if (replace) loc.replace(hash); else loc.hash = hash; }
-      else if (!hash && loc.hash && h) { if (replace) h.replaceState(null, '', href); else h.pushState(null, '', href); }
-    } else if (h) {
-      if (replace) h.replaceState(null, '', href); else h.pushState(null, '', href);
-    }
-    return store.get();
-  }
   unready();
   if (h) {
     if (replace) h.replaceState(null, '', href); else h.pushState(null, '', href);
@@ -430,8 +398,7 @@ export function setQuery(patch, { push = false } = {}) {
 }
 
 /**
- * Start following the browser: reads the address now, listens to back / forward (a step that only moves
- * the #hash on the same page keeps the page and its data-ready, and scrolls to the hash), and turns clicks on
+ * Start following the browser: reads the address now, listens to back / forward, and turns clicks on
  * same-origin links inside root into navigate() (links with target, download, rel="external" or a
  * modifier key behave as usual; so do links outside the app's routes and /api/ links). Returns stop().
  */
@@ -439,8 +406,7 @@ export function startRouting({ root = globalThis.document } = {}) {
   syncFromLocation();
   const w = globalThis.window;
   if (!w || !root) return () => {};
-  // back / forward, or an in-page #anchor (the browser fires popstate for it too): only another page re-routes
-  const onPop = () => { if (sameRoute(w.location)) { landOnHash(w); return; } unready(); syncFromLocation(); };
+  const onPop = () => { unready(); syncFromLocation(); };
   const onClick = (e) => {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;

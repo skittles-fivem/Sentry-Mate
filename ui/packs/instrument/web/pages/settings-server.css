@@ -95,13 +95,6 @@
   .ss-name-input { width: 100%; }
 }
 
-/* storage: the figures, how compaction stands and what it does, then the table */
-.ss-stor { display: flex; flex-direction: column; gap: round(0.875rem, var(--e)); padding: round(1rem, var(--e)) round(1.25rem, var(--e)) round(1.125rem, var(--e)); border-bottom: 1px solid var(--line); }
-.ss-stor-line { display: flex; align-items: center; gap: round(0.5rem, var(--e)); margin: 0; min-height: round(1.5rem, var(--e)); color: var(--text-2); }
-.ss-stor-line b { color: var(--text); font-weight: 600; }
-.ss-stor-line > .ico, .ss-stor-line > .mv-spin { flex: none; }
-.ss-stor-line.is-bad > .ico { color: var(--warm); }
-
 /* moving to another server (pages/settings-server-move.js) */
 .mv-lead { color: var(--text-2); max-width: round(64rem, var(--e)); margin: 0 0 round(1rem, var(--e)); }
 .mv-ways { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: var(--gap); align-items: start; }

@@ -1,7 +1,6 @@
 //! Day snapshots of the time series as read last, opened and unpacked, kept in memory: a page that reads the same days again (or several pages that read the same
 //! days) skips opening and unpacking them. Each is kept with what its file was (inode, size and change time): a day
-//! written again is a new file (written whole and renamed into place), so it is read again. A day inside a month's
-//! pack is kept under `<pack>#<day>` with what the day is there ([`Stamp::packed`]). The plaintext is held as
+//! written again is a new file (written whole and renamed into place), so it is read again. The plaintext is held as
 //! the open cars' tables are (in this process's memory only, wiped when let go).
 //!
 //! How much: a quarter of the memory free for it (the machine's available memory, or less under a container's
@@ -19,15 +18,6 @@ pub(crate) struct Stamp {
     ino: u64,
     len: u64,
     mtime_ns: i128,
-}
-
-impl Stamp {
-    /// The stamp of a day kept inside a month's pack ([`crate::segment::pack`]): what the day is there (its
-    /// generation, its body's length and content hash), not what the pack file is, so it stays the same when the
-    /// month is packed again around it. Never equal to a file's stamp.
-    pub(crate) fn packed(generation: u64, len: u64, hash: u64) -> Stamp {
-        Stamp { ino: hash, len, mtime_ns: -1 - i128::from(generation) }
-    }
 }
 
 pub(crate) fn stamp(file: &Path) -> std::io::Result<Option<Stamp>> {

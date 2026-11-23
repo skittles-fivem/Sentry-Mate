@@ -184,10 +184,3 @@
 .ss-rk-dialog .ss-rk-tick input { margin-top: round(0.1875rem, var(--e)); flex: none; }
 .ss-rk-dialog .ss-rk-go { display: flex; justify-content: flex-end; margin-top: round(0.75rem, var(--e)); }
 .ss-rk-dialog .ss-rk-note { color: var(--ink-3); font-size: var(--text-sm); margin-top: round(0.5rem, var(--e)); }
-
-/* storage: the figures, how compaction stands and what it does, then the table by category */
-.page-settings-server .ss-stor-line { margin: round(0.875rem, var(--e)) 0 round(0.375rem, var(--e)); min-height: 1lh; color: var(--ink-2); }
-.page-settings-server .ss-stor-line strong { color: var(--ink); font-weight: 600; }
-.page-settings-server .ss-stor-line.ss-warn, .page-settings-server .ss-stor-line.ss-warn strong { color: var(--rust); }
-.page-settings-server .ss-stor-table { margin-top: round(0.75rem, var(--e)); }
-.page-settings-server .sort-mark { font-size: max(10px, 0.75em); }

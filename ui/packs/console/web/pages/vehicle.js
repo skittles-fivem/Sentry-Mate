@@ -1,7 +1,5 @@
-// The car overview's "## vehicle" block: everything the server knows of the car's build (GET /cars/{car} `vehicle`).
-// A row shows the label, the value and [change]; where the fact came from (CAN, the VIN, the Tesla API, the owner, an
-// import), how sure it is and the evidence are in the row's hover title, its [src] toggle (touch screens) and the
-// change dialog; a low-confidence value is muted with a faint ?.
+// The car overview's "## vehicle" block: everything the server knows of the car's build (GET /cars/{car} `vehicle`),
+// each fact with where it came from (CAN, the VIN, the Tesla API, the owner, an import) and how sure it is.
 // Unknown says unknown (never a guess); two inputs that disagree are listed; an admin can type a value over any of
 // them, or forget a typed one (PATCH /cars/{car} { version, config: { key: value | null } }; 409 when the car changed
 // meanwhile: the block shows the car as it is now and says so).
@@ -69,12 +67,7 @@ export function factText(k, v) {
   return String(v);
 }
 const srcTag = (s) => (s ? h('span', { class: 'veh-src', title: `from ${(SOURCE[s] || [s, s])[1]}` }, tag((SOURCE[s] || [s])[0], s === 'owner' ? 'warn' : 'muted')) : null);
-// where a fact came from, how sure and the evidence, as sentences (the hover title, [src], the change dialog)
-const howLines = (f) => (f.value == null ? ['no input says it'] : [
-  f.source ? `from ${(SOURCE[f.source] || [f.source, f.source])[1]}` : null,
-  f.confidence ? `${(CONF[f.confidence] || [f.confidence])[0]}${CONF[f.confidence] ? `: ${CONF[f.confidence][2]}` : ''}` : null,
-  f.note || null,
-].filter(Boolean));
+const confTag = (c) => (c ? h('span', { class: 'veh-conf', title: (CONF[c] || [c, '', c])[2] }, tag((CONF[c] || [c, 'muted'])[0], (CONF[c] || [c, 'muted'])[1])) : null);
 
 /**
  * The block. getCar(): the car as the page has it; setCar(car): after a save (the page keeps the new copy).
@@ -97,17 +90,11 @@ export function vehicleSection(ctx, { getCar, setCar }) {
       const text = factText(k, f.value);
       const d = dis.get(k);
       const yearWord = k === 'model_year' && v.year_kind === 'build_year' ? ' (build year)' : '';
-      const low = text != null && f.confidence === 'low';
-      const how = howLines(f);
-      const val = h('span', { class: 'veh-val', title: how.join('\n') }, text == null
+      const val = text == null
         ? [muted('unknown'), unknownCodes.some((u) => u.field === k) ? muted(' (a code the tables do not know)') : null]
-        : [h('span', { class: ['veh-v', low && 'veh-v--low'] }, text + yearWord), low ? [h('span', { class: 'veh-q muted', 'aria-hidden': 'true' }, '?'), h('span', { class: 'sr-only' }, ' (low confidence)')] : null,
-          d ? [' ', tag('disagree', 'warn')] : null]);
-      const detail = h('span', { class: 'veh-note muted', hidden: true }, how.join('; '));
-      const info = h('button', { class: 'btn btn--line veh-info', type: 'button', 'aria-expanded': 'false', 'aria-label': `Where the ${label} comes from`,
-        onclick: (e) => { const open = detail.hidden; detail.hidden = !open; e.currentTarget.setAttribute('aria-expanded', String(open)); } }, '[src]');
+        : [h('span', { class: 'veh-v' }, text + yearWord), ' ', srcTag(f.source), ' ', confTag(f.confidence), d ? [' ', tag('disagree', 'warn')] : null];
       const btnEl = ctx.admin && edit ? h('button', { class: 'btn btn--line tone--accent veh-edit', type: 'button', title: `type the ${label} yourself`, 'aria-label': `${f.source === 'owner' ? 'Change' : 'Type'} the ${label}`, onclick: () => editFact(k, label, edit, f) }, f.source === 'owner' ? '[change]' : '[type]') : null;
-      return [label, [val, btnEl ? [' ', btnEl] : null, ' ', info, detail], { tone: d ? 'warn' : null }];
+      return [label, [val, btnEl ? [' ', btnEl] : null, f.note ? h('span', { class: 'veh-note muted' }, f.note) : null], { tone: d ? 'warn' : null }];
     };
     replace(body,
       kv([
@@ -125,7 +112,9 @@ export function vehicleSection(ctx, { getCar, setCar }) {
       (v.wheel_options_in || []).length ? note(`factory wheel sizes: ${v.wheel_options_in.map((x) => `${x} in`).join(', ')}`) : null,
       v.epa_name ? note(`EPA: ${v.epa_name}${v.epa_id ? ` (id ${v.epa_id})` : ''}`) : null,
       (v.notes || []).map((t) => note(t)),
-      note(`hover a fact for where it came from and how sure${ctx.admin ? '; [type] sets the right value' : ''}`));
+      note('Where each fact came from: ', srcTag('can'), ' the car\'s own CAN configuration, ', srcTag('vin'), ' the VIN prefix and built-in tables, ', srcTag('tesla_api'), ' the Tesla API, ',
+        srcTag('teslamate'), ' an import, ', srcTag('owner'), ' typed by an admin (beats every other source). How sure: ', confTag('high'), ' ', confTag('medium'), ' ', confTag('low'), '.',
+        ctx.admin ? '' : ' An admin can type a value over any of them.'));
   }
 
   function editFact(k, label, edit, f) {
@@ -177,8 +166,7 @@ export function vehicleSection(ctx, { getCar, setCar }) {
         toast(value == null ? `The typed ${label} is forgotten: the inputs' own is shown.` : `${label}: ${factText(k, k === 'nominal_kwh' || k === 'usable_kwh' ? { min: value, max: value } : k === 'steering' ? (value ? 'right' : 'left') : value) ?? value}, typed by you.`, { kind: 'ok' });
       },
     });
-    dlg = openDialog({ title: `${label} of ${getCar().name || 'the car'}`, body: [note('Typed values are kept apart from what the inputs say, and win over them.'),
-      f.value != null ? note(howLines(f).join('; ')) : null, frm.el] });
+    dlg = openDialog({ title: `${label} of ${getCar().name || 'the car'}`, body: [note('Typed values are kept apart from what the inputs say, and win over them.'), frm.el] });
     fl.input.focus();
   }
 

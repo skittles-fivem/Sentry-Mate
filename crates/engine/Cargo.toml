@@ -37,9 +37,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 tracing = "0.1"
 tzf-rs = { version = "2.3", default-features = false, features = ["bundled"] }
 
-[target.'cfg(unix)'.dependencies]
-rustix = { version = "1", features = ["process"] }
-
 [dev-dependencies]
 lzma-rs = "0.3"
 synth = { path = "../synth" }

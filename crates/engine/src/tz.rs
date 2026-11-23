@@ -22,37 +22,12 @@ fn finder() -> &'static tzf_rs::EmbeddedFinder {
 }
 
 /// The IANA zone a position is in, looked up in the boundaries built in: nothing is sent anywhere. At sea it is
-/// the nautical zone (`Etc/GMT+6`), and the zero-offset one (`Etc/GMT`) is called `UTC`; `None` for a position that
-/// is no position or a zone chrono-tz doesn't know.
+/// the nautical zone (`Etc/GMT+6`); `None` for a position that is no position or a zone chrono-tz doesn't know.
 pub fn zone_at(lat: f64, lon: f64) -> Option<&'static str> {
     if !(lat.is_finite() && lon.is_finite() && (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)) {
         return None;
     }
-    Some(finder().get_tz_name(lon, lat)).filter(|z| !z.is_empty() && is_zone(z)).map(plain_utc)
-}
-
-/// `UTC` for the names that are UTC by another name (`Etc/GMT`, `Etc/UTC`, `GMT0`, `Zulu`, ...); others unchanged.
-pub fn plain_utc(name: &str) -> &str {
-    const SAME: &[&str] = &[
-        "Etc/GMT",
-        "Etc/GMT+0",
-        "Etc/GMT-0",
-        "Etc/GMT0",
-        "Etc/Greenwich",
-        "Etc/UTC",
-        "Etc/UCT",
-        "Etc/Universal",
-        "Etc/Zulu",
-        "GMT",
-        "GMT+0",
-        "GMT-0",
-        "GMT0",
-        "Greenwich",
-        "UCT",
-        "Universal",
-        "Zulu",
-    ];
-    if SAME.contains(&name) { "UTC" } else { name }
+    Some(finder().get_tz_name(lon, lat)).filter(|z| !z.is_empty() && is_zone(z))
 }
 
 /// Where a car's time zone comes from.
@@ -205,9 +180,6 @@ mod tests {
         // the middle of the Atlantic: a nautical zone
         let sea = zone_at(30.0, -40.0);
         assert!(sea.is_some_and(|z| z.starts_with("Etc/")), "{sea:?}");
-        // the Gulf of Guinea, at no offset: plain UTC, not Etc/GMT
-        assert_eq!(zone_at(0.0, 0.0), Some("UTC"));
-        assert_eq!((plain_utc("Etc/GMT"), plain_utc("Etc/UTC"), plain_utc("Etc/GMT+6")), ("UTC", "UTC", "Etc/GMT+6"));
         assert_eq!(zone_at(f64::NAN, 0.0), None);
         assert_eq!(zone_at(91.0, 0.0), None);
     }
