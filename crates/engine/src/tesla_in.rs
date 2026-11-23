@@ -305,6 +305,9 @@ impl Engine {
             if db.car(car)?.is_none() || records::off_can_of(db, car, input)?.at_ms > at_ms {
                 return Ok(());
             }
+            if let Some(v) = values.version.as_deref() {
+                records::note_input_version(db, car, input, v, at_ms)?;
+            }
             records::put_off_can_of(db, car, input, &records::TeslafiOffCan { at_ms, values })?;
         }
         if let Ok(now) = crate::query::now::now_view(self, car) {
@@ -549,6 +552,7 @@ impl Engine {
                     }
                 }
             }
+            records::note_input_version(db, car, input, &v, meta.at_ms)?;
             rec.version = Some(v);
             rec.version_seen_ms = Some(meta.at_ms);
         }

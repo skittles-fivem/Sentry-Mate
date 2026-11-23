@@ -198,6 +198,11 @@ impl Names {
         }
     }
 
+    /// Whether an owner cleared `ev`'s name (so no name is given to it from elsewhere either).
+    fn cleared(&self, ev: &FwEvent) -> bool {
+        matches!(self.events.get(&ev.id), Some(None)) && self.keys.get(&ev.id).is_none_or(|k| k.is(ev))
+    }
+
     /// An owner names `ev` (or, with `None`, clears its name).
     fn set(&mut self, ev: &FwEvent, version: Option<&str>) {
         self.keys.insert(ev.id, Key::of(ev));
@@ -485,6 +490,13 @@ fn names(db: &db::Db, car: CarId) -> Result<Names> {
 /// The version an update found from fingerprints shows, and who named it (`owner` or `auto`).
 pub fn name_of(db: &db::Db, car: CarId, ev: &FwEvent) -> Result<Option<(String, &'static str)>> {
     Ok(names(db, car)?.lookup(ev))
+}
+
+/// The name `ev` shows, who gave it (`owner`, or `auto` from another update to the same set), and whether an owner
+/// cleared it: one read of the names.
+pub fn naming_of(db: &db::Db, car: CarId, ev: &FwEvent) -> Result<(Option<(String, &'static str)>, bool)> {
+    let n = names(db, car)?;
+    Ok((n.lookup(ev), n.cleared(ev)))
 }
 
 /// The log a fingerprint frame at `ms` came in: the log of that UTC day whose fingerprint frames span `ms`, else the

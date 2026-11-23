@@ -21,6 +21,7 @@
 //! engine  car/<id>/teslamate_local_api_meta  local TeslaMate's (the energy added, the estimated range)
 //! engine  car/<id>/teslafi_off_can  TeslaFi's newest values no CAN message carries (lock, windows, update ...)
 //! engine  car/<id>/teslamate_local_off_can  the same from the owner's own TeslaMate
+//! engine  car/<id>/input_versions  the versions the API inputs said the car ran, a stretch per version
 //! engine  car/<id>/fw/...       the firmware fingerprints of the car's logs, their history and the updates found
 //!                               from them ([`crate::firmware`])
 //! ```
@@ -676,6 +677,54 @@ pub(crate) fn put_off_can_of(db: &Db, car: CarId, input: model::Input, m: &Tesla
         Some(k) => put(db, NS, &k, m),
         None => Ok(()),
     }
+}
+
+/// One stretch of an API input saying the car ran `version`: the first and the last reading that said it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VersionSeen {
+    pub input: model::Input,
+    pub version: String,
+    pub first_ms: u64,
+    pub last_ms: u64,
+}
+
+/// How many stretches a car keeps (a car changes version a few dozen times a year).
+const VERSIONS_KEPT: usize = 400;
+
+fn versions_key(car: CarId) -> String {
+    format!("car/{car}/input_versions")
+}
+
+/// The versions the API inputs said the car ran, oldest first by `first_ms`.
+pub(crate) fn input_versions(db: &Db, car: CarId) -> Result<Vec<VersionSeen>> {
+    Ok(kept(db, NS, &versions_key(car))?.unwrap_or_default())
+}
+
+/// Notes that `input` read the car's version as `version` at `at_ms`: the input's stretch for it grows, or a new one
+/// starts when the version is not the one the input said last. A reading older than the input's newest stretch is
+/// left out (readings come in order; a late one says nothing new).
+pub(crate) fn note_input_version(db: &Db, car: CarId, input: model::Input, version: &str, at_ms: u64) -> Result<()> {
+    let version = version.trim();
+    if version.is_empty() || at_ms == 0 {
+        return Ok(());
+    }
+    let mut all = input_versions(db, car)?;
+    let last = all.iter_mut().filter(|s| s.input == input).max_by_key(|s| s.first_ms);
+    match last {
+        Some(s) if at_ms < s.first_ms => return Ok(()),
+        Some(s) if s.version == version => {
+            if at_ms <= s.last_ms {
+                return Ok(());
+            }
+            s.last_ms = at_ms;
+        }
+        Some(s) if at_ms <= s.last_ms => return Ok(()),
+        _ => all.push(VersionSeen { input, version: version.to_string(), first_ms: at_ms, last_ms: at_ms }),
+    }
+    all.sort_by_key(|s| (s.first_ms, model::off_can::rank(s.input)));
+    let over = all.len().saturating_sub(VERSIONS_KEPT);
+    all.drain(..over);
+    put(db, NS, &versions_key(car), &all)
 }
 
 #[cfg(test)]
