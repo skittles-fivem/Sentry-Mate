@@ -517,6 +517,27 @@ def ui_packs(req):
 # ------------------------------------------------------------------ per-car health
 
 
+# the car with logs missing on the server (ingest::missing): three still asked of the car, one it no longer has
+MISSING_CAR = "c2"
+
+
+def missing_logs(req, cid):
+    """The "Missing on the server" figures of `/cars/{car}/health` (zeros for every car but MISSING_CAR)."""
+    now = req.now
+    # the daily look, at 04:00 UTC
+    scanned = now - now % DAY + 4 * HOUR - (DAY if now % DAY < 4 * HOUR else 0)
+    if cid != MISSING_CAR:
+        return {"count": 0, "oldest_ms": None, "found_ms": None, "asked": False, "asked_ms": None, "gone": 0,
+                "gone_oldest_ms": None, "scanned_ms": scanned}
+    return {"count": 3, "oldest_ms": now - 9 * DAY - 5 * HOUR, "found_ms": scanned - 2 * DAY, "asked": True,
+            "asked_ms": scanned - 2 * DAY + 7 * MIN, "gone": 1, "gone_oldest_ms": now - 23 * DAY - 2 * HOUR,
+            "scanned_ms": scanned}
+
+
+def missing_count(req, cid):
+    return missing_logs(req, cid)["count"]
+
+
 def car_health(req):
     st = req.store
     cid = req.car
@@ -534,7 +555,8 @@ def car_health(req):
                 "last_upload_ms": it["now"]["received_ms"],
                 "last_log_trust": {"result": "failed" if "trust_failed" in reasons else "verified", "reason": None},
                 "keys": [], "chain_gaps": [], "dropped_frames": [], "unknown_spans": [], "unknown_ms": 0,
-                "logs_waiting": 0, "rebuild_pending": pending, "uploads_enabled": True}
+                "logs_waiting": 0, "missing_logs": missing_logs(req, cid), "rebuild_pending": pending,
+                "uploads_enabled": True}
     n = now_object(req.app, cid, req.now)
     last_upload = n.get("received_ms")
     reasons = []
@@ -556,6 +578,9 @@ def car_health(req):
         reasons.append("logs_waiting_trust")
     if pending:
         reasons.append("rebuild_pending")
+    missing = missing_logs(req, cid)
+    if missing["count"]:
+        reasons.append("logs_missing")
     chain = [{"from_ms": x["start_ms"], "to_ms": x["end_ms"]} for x in gs
              if x["cause"] == "chain_gap" and a <= x["start_ms"] < b]
     dropped, unknown = [], []
@@ -580,7 +605,7 @@ def car_health(req):
                   "device": k["device"], "logs_waiting": k["logs_waiting"]} for k in keys],
         "chain_gaps": chain, "dropped_frames": dropped, "unknown_spans": unknown,
         "unknown_ms": sum(((u["end_ms"] or req.now) - u["start_ms"]) for u in unknown),
-        "logs_waiting": waiting, "rebuild_pending": pending, "uploads_enabled": bool(toks),
+        "logs_waiting": waiting, "missing_logs": missing, "rebuild_pending": pending, "uploads_enabled": bool(toks),
         "from_ms": a, "to_ms": min(b, req.now),
     }
 

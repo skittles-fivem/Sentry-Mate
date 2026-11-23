@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 
 from ..util import DAY, HOUR, MIN, h01
-from . import tesla, teslafi, teslamate
+from . import system, tesla, teslafi, teslamate
 
 MAX_CAR_ROWS = 50
 WEEK_H = 168
@@ -526,6 +526,8 @@ def _view(req, c, problems, now):
         "uptime": {"day_pct": up(DAY), "week_pct": up(7 * DAY)},
         "last_error": last_error,
         "hourly": [{"hour_ms": a, "count": n, "errors": e} for a, n, e in hours[-24:]],
+        # a CAN Bridge row: the car's logs the server is missing and has asked the car for (null on other rows)
+        "missing_logs": system.missing_count(req, c.car) if c.kind == "smo" else None,
         "link": c.link,
     }
 
