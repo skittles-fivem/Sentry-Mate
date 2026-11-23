@@ -207,19 +207,16 @@ async fn accounts_cars_pause_notices_and_removal() {
 
     // an admin confirms the match
     let cars = format!("{base}/cars");
-    let r = admin
+    // the admin session alone, no password asked again; a watch account is refused
+    let mut watch = w.s.watch(&mut admin, &[w.car]).await;
+    let r = watch
         .put(&cars, json!({ "version": a.version, "items": [{ "vehicle": "fv1", "match": format!("c{}", w.car) }] }))
         .await;
-    assert_eq!((r.status, r.code().as_deref()), (403, Some("password_needed")));
-    let r = admin
-        .put(&cars, json!({ "version": a.version, "items": [{ "vehicle": "fv9", "match": "new" }], "confirm_password": ADMIN_PASSWORD }))
-        .await;
+    assert_eq!(r.status, 403);
+    let r = admin.put(&cars, json!({ "version": a.version, "items": [{ "vehicle": "fv9", "match": "new" }] })).await;
     assert_eq!((r.status, r.code().as_deref()), (422, Some("invalid")));
     let r = admin
-        .put(
-            &cars,
-            json!({ "version": a.version, "items": [{ "vehicle": "fv1", "match": format!("c{}", w.car) }], "confirm_password": ADMIN_PASSWORD }),
-        )
+        .put(&cars, json!({ "version": a.version, "items": [{ "vehicle": "fv1", "match": format!("c{}", w.car) }] }))
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(r.json()["items"][0]["match"], format!("c{}", w.car));
@@ -296,7 +293,6 @@ async fn accounts_cars_pause_notices_and_removal() {
     let n = admin.get("/api/v1/notices").await.json();
     let codes: Vec<&str> = n["items"].as_array().unwrap().iter().filter_map(|i| i["code"].as_str()).collect();
     assert!(codes.contains(&"teslafi_token_refused"), "{codes:?}");
-    let mut watch = w.s.watch(&mut admin, &[w.car]).await;
     let n = watch.get("/api/v1/notices").await.json();
     assert!(!n["items"].as_array().unwrap().iter().any(|i| i["code"] == "teslafi_token_refused"));
     assert_eq!(admin.get(&base).await.json()["status"], "token_refused");

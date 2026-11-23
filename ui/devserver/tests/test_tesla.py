@@ -143,24 +143,25 @@ class Tesla(ServerCase):
         path = BASE + "/accounts/ta1/cars"
         self.assertEqual(self.c.get(path)["items"][2]["vehicle"], "tv3")
         e, _ = self.c.error("PUT", path, 422, "invalid", body={
-            "version": a["version"], "confirm_password": PW,
+            "version": a["version"],
             "items": [{"vehicle": "tv9", "match": "c3"}, {"vehicle": "tv3", "match": "c999"}]})
         self.assertEqual(set(e["fields"]), {"items.0.vehicle", "items.1.match"})
-        self.c.error("PUT", path, 400, "bad_input", body={"version": a["version"], "confirm_password": PW,
+        self.c.error("PUT", path, 400, "bad_input", body={"version": a["version"],
                                                           "items": [{"vehicle": "tv3", "match": 7}]})
-        d = self.c.json("PUT", path, {"version": a["version"], "confirm_password": PW,
-                                      "items": [{"vehicle": "tv3", "match": "c3"}]})
+        # the admin's session alone: no password asked again (one sent is an unknown field)
+        self.c.error("PUT", path, 400, "bad_input", body={"version": a["version"], "confirm_password": PW,
+                                                          "items": [{"vehicle": "tv3", "match": "c3"}]})
+        d = self.c.json("PUT", path, {"version": a["version"], "items": [{"vehicle": "tv3", "match": "c3"}]})
         self.assertEqual(d["items"][2]["match"], "c3")
         self.assertNotEqual(d["items"][2]["mode"], "off")  # read from now on
         # a car matched on one account can't be matched on another
         other = self.c.json("POST", BASE + "/accounts", {"refresh_token": "made-up-2", "confirm_password": PW},
                             expect=201)
         self.c.error("PUT", f"{BASE}/accounts/{other['id']}/cars", 409, "car_taken",
-                     body={"version": other["version"], "confirm_password": PW,
+                     body={"version": other["version"],
                            "items": [{"vehicle": other["cars"][0]["vehicle"], "match": "c1"}]})
         # car off again
-        d = self.c.json("PUT", path, {"version": d["version"], "confirm_password": PW,
-                                      "items": [{"vehicle": "tv3", "match": "leave_out"}]})
+        d = self.c.json("PUT", path, {"version": d["version"], "items": [{"vehicle": "tv3", "match": "leave_out"}]})
         self.assertEqual(d["items"][2]["mode"], "off")
         # pause and resume
         a = self.c.json("PATCH", BASE + "/accounts/ta1", {"version": d["version"], "paused": True,
@@ -234,7 +235,8 @@ class TeslaWatch(ServerCase):
 
     def test_admin_only(self):
         for m, path in (("GET", BASE), ("GET", BASE + "/accounts"), ("GET", BASE + "/accounts/ta1"),
-                        ("GET", BASE + "/accounts/ta1/cars"), ("GET", BASE + "/status"), ("POST", BASE + "/sign-in"),
+                        ("GET", BASE + "/accounts/ta1/cars"), ("PUT", BASE + "/accounts/ta1/cars"),
+                        ("GET", BASE + "/status"), ("POST", BASE + "/sign-in"),
                         ("POST", BASE + "/accounts"), ("DELETE", BASE + "/accounts/ta1")):
             self.c.error(m, path, 403, "not_allowed", body={} if m != "GET" else None)
         self.assertIsNone(self.c.get("/api/v1/setup/status")["tesla_accounts"])

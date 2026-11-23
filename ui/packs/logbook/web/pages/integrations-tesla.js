@@ -6,7 +6,8 @@
 // account (sign in at Tesla and paste the address the page ends on, or paste a refresh token), and per account
 // its status, last good answer and last error, pause and resume, when the position is asked for, a new token,
 // removing it, and its cars: matched to a car here, a new car, or left out, each with what the server does now.
-// Every change but starting a sign-in asks for the admin's own password again (and the two-step code).
+// Every change but starting a sign-in and saving the matches asks for the admin's own password again (and the
+// two-step code); the matches take the admin's session alone (they store and show no token).
 //
 // API: GET / PATCH integrations/tesla, GET / POST integrations/tesla/accounts, POST integrations/tesla/sign-in,
 // POST integrations/tesla/sign-in/{sign_in}, PATCH / DELETE integrations/tesla/accounts/{id}, PUT
@@ -410,11 +411,10 @@ export function teslaPart(ctx) {
         const items = list.map((c) => ({ vehicle: c.vehicle, match: chosen.get(c.vehicle) || null }));
         const changes = items.filter((x) => x.match !== (list.find((c) => c.vehicle === x.vehicle).match ?? null));
         if (!changes.length) { ctx.flash('Nothing changed in the matches.', { kind: 'info' }); return; }
-        const out = await askAgain(ctx, {
-          title: 'Save the matches?', yes: 'Save',
-          text: `${changes.length === 1 ? 'One car changes' : `${changes.length} cars change`}. A car matched to a car here, or to a new car, is read from now on; a car left out or not decided is not read.`,
-          run: (creds) => ctx.api.put(api.apiPath`integrations/tesla/accounts/${a.id}/cars`, { version: a.version, items: changes, ...creds }),
-        });
+        // the admin's session alone: no password asked again
+        save.disabled = true;
+        let out = null;
+        try { out = await ctx.api.put(api.apiPath`integrations/tesla/accounts/${a.id}/cars`, { version: a.version, items: changes }); } catch (e) { if (api.isAbort(e)) return; ctx.flash(teslaErrorText(e), { kind: 'error' }); } finally { save.disabled = false; }
         if (out) flashDone('The matches were saved.');
         await again(`save-${a.id}`, `tesla-${a.id}`);
       },

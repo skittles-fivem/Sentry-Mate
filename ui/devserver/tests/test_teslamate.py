@@ -82,24 +82,24 @@ class Teslamate(ServerCase):
         self.no_password(self.c.get("/api/v1/audit?limit=500"))
 
     def test_3_test_match_pause_remove(self):
-        self.c.error("POST", BASE + "/test", 403, "password_needed", body={"target": "mqtt"})
-        r = self.c.json("POST", BASE + "/test", {"target": "mqtt", "confirm_password": PW})
+        # a test takes the admin's session alone: no password asked again (one sent is an unknown field)
+        self.c.error("POST", BASE + "/test", 400, "bad_input", body={"target": "mqtt", "confirm_password": PW})
+        r = self.c.json("POST", BASE + "/test", {"target": "mqtt"})
         self.assertTrue(r["ok"])
         self.assertEqual(r["cars_seen"], ["1", "2"])
-        r = self.c.json("POST", BASE + "/test", {"target": "mqtt", "mqtt": {"host": "refused.example", "port": 1883},
-                                                 "confirm_password": PW})
+        r = self.c.json("POST", BASE + "/test", {"target": "mqtt", "mqtt": {"host": "refused.example", "port": 1883}})
         self.assertEqual((r["ok"], r["error"]), (False, "connection_refused"))
         r = self.c.json("POST", BASE + "/test", {"target": "database", "database": {
-            "host": "192.0.2.10", "database": "postgres"}, "confirm_password": PW})
+            "host": "192.0.2.10", "database": "postgres"}})
         self.assertEqual(r["error"], "not_teslamate")
         self.c.error("POST", BASE + "/test", 422, "plaintext_password", body={
-            "target": "database", "database": {"host": "192.0.2.10", "password": SECRET}, "confirm_password": PW})
+            "target": "database", "database": {"host": "192.0.2.10", "password": SECRET}})
         cars = self.c.get(BASE + "/cars")
         self.c.error("PUT", BASE + "/cars", 409, "car_taken", body={
             "version": cars["version"], "items": [{"teslamate_car": "1", "match": "c2"},
-                                                  {"teslamate_car": "2", "match": "c2"}], "confirm_password": PW})
+                                                  {"teslamate_car": "2", "match": "c2"}]})
         cars = self.c.json("PUT", BASE + "/cars", {"version": cars["version"], "items": [
-            {"teslamate_car": "1", "match": "c2"}], "confirm_password": PW})
+            {"teslamate_car": "1", "match": "c2"}]})
         self.assertEqual(cars["items"][0]["match"], "c2")
         t = self.c.json("PATCH", BASE, {"version": cars["version"], "paused": True, "confirm_password": PW})
         self.assertEqual((t["paused"], t["status"]["mqtt"]["state"]), (True, "paused"))
@@ -166,5 +166,5 @@ class TeslamateWatch(ServerCase):
 
     def test_admin_only(self):
         for m, path in (("GET", BASE), ("GET", BASE + "/cars"), ("PUT", BASE), ("POST", BASE + "/test"),
-                        ("DELETE", BASE)):
+                        ("PUT", BASE + "/cars"), ("DELETE", BASE)):
             self.c.error(m, path, 403, "not_allowed", body={} if m != "GET" else None)

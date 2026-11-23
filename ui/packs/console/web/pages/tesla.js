@@ -3,9 +3,10 @@
 // admin adds an account; before that the server makes no connection to Tesla at all. It only reads: it never
 // wakes a car or sends it a command, and no answer ever holds a Tesla token.
 //
-// Admins only, reading included. Every change except starting a sign-in asks for the admin's own password again
-// (and the two-step code when the account has it): askPassword() from core/secret.js, sent as confirm_password
-// and code. Each account block has the id tesla-<account> so a notice can link to it.
+// Admins only, reading included. Every change except starting a sign-in and saving the car matches asks for the
+// admin's own password again (and the two-step code when the account has it): askPassword() from core/secret.js,
+// sent as confirm_password and code. The car matches take the admin's session alone (they store and show no token).
+// Each account block has the id tesla-<account> so a notice can link to it.
 //
 // API: GET/PATCH integrations/tesla, GET/POST integrations/tesla/accounts, POST integrations/tesla/sign-in,
 // POST integrations/tesla/sign-in/{sign_in}, PATCH/DELETE integrations/tesla/accounts/{id},
@@ -419,11 +420,10 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     async function saveMatches() {
       const ch = changed();
       if (!ch.length || dupes().length) { sync(); return; }
-      const r = await askPassword(ctx, {
-        title: `match the cars of ${a.label}`, submit: 'save matches',
-        intro: lines(ch.map((c) => { const v = sels.get(c.vehicle).value; return [tag(v === 'leave_out' || !v ? 'off' : 'read', v === 'leave_out' || !v ? 'muted' : 'ok'), [h('b', null, c.display_name || c.vehicle), ': ', v === 'new' ? 'a new car here, read from now on' : v === 'leave_out' ? 'left out, not read' : !v ? 'not decided, not read' : `${carName(v)}, read from now on`]]; })),
-        run: async (cred) => { try { return await ctx.api.put(`${BASE}/accounts/${enc(a.id)}/cars`, withPw(cred, { version: carRows[a.id]?.version ?? data.version ?? a.version, items: ch.map((c) => ({ vehicle: c.vehicle, match: sels.get(c.vehicle).value || null })) })); } catch (e) { throw fail(e); } },
-      });
+      // the admin's session alone: no password asked again (a match stores and shows no token)
+      save.disabled = true;
+      let r = null;
+      try { r = await ctx.api.put(`${BASE}/accounts/${enc(a.id)}/cars`, { version: carRows[a.id]?.version ?? data.version ?? a.version, items: ch.map((c) => ({ vehicle: c.vehicle, match: sels.get(c.vehicle).value || null })) }); } catch (e) { if (e?.name !== 'AbortError') toast(errorWords(fail(e)).text, { kind: 'error' }); } finally { save.disabled = false; sync(); }
       if (r) await reload('Matches saved.');
     }
     const statusOf = (c) => status.find((s) => s.account === a.id && s.vehicle === c.vehicle) || {};

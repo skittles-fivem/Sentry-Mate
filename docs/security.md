@@ -214,8 +214,10 @@ SMO. How to add an account is in [install.md](install.md#add-a-tesla-account).
   line shows a token. A move or an export carries the account to the new server, still sealed.
 - **No full VIN is kept:** the VIN prefix, as for SMO, and a keyed hash to tell two cars with the same prefix apart.
   The access token names the account's e-mail inside; the server never reads it, and the e-mail is kept nowhere.
-- **Admins only.** Every page and call about Tesla accounts is for admins, and every change asks for the admin's
-  password again (and the two-step code when it is on) and writes an audit entry. When Tesla stops taking an
+- **Admins only.** Every page and call about Tesla accounts is for admins, and every change writes an audit entry.
+  Adding, replacing or removing an account or its token (and the poll pace) asks for the admin's password again (and
+  the two-step code when it is on); matching a Tesla vehicle to a car here takes the admin's session alone, as it
+  stores and shows no token. When Tesla stops taking an
   account's token, the server stops asking (no retries against Tesla's sign-in), writes an audit entry and shows a
   notice to admins until someone signs in again.
 - **Removing an account** stops reading at once and deletes its sealed file. Sign the server out at Tesla too
@@ -252,8 +254,10 @@ given; this server only reads what TeslaFi stored. How to add the token is in
   it. A move or an export carries the account to the new server, still sealed.
 - **No full VIN is kept:** the VIN prefix (11 characters at most) and a keyed hash to tell two cars apart. A car
   TeslaFi names is not read into any car here until an admin confirms which car it is.
-- **Admins only.** Every page and call about TeslaFi is for admins, and every change asks for the admin's password
-  again (and the two-step code when it is on) and writes an audit entry. When TeslaFi refuses the token (a wrong
+- **Admins only.** Every page and call about TeslaFi is for admins, and every change writes an audit entry. Adding,
+  replacing or removing an account or its token (and the poll pace) asks for the admin's password again (and the
+  two-step code when it is on); matching TeslaFi's car to a car here takes the admin's session alone, as it stores
+  and shows no token. When TeslaFi refuses the token (a wrong
   token, or the subscription ended), the server stops asking, writes an audit entry and shows a notice to admins
   until someone gives a new token.
 - **Removing an account** stops reading at once and deletes its sealed file. Make a new token on TeslaFi's API page
@@ -282,8 +286,10 @@ and optionally its PostgreSQL database to catch up on what MQTT missed.
 - **The passwords are sealed in the vault** (`teslamate-local/config.json` in the data folder). No page, API answer
   (it says only `password_set`), audit entry, error or log line shows them. A catch-up's dump is written next to it
   while it is stored and deleted right after.
-- **Admins only.** Every page and call about it is for admins (reads included), and every change asks for the
-  admin's password again (and the two-step code when it is on) and writes an audit entry. A TeslaMate car is read
+- **Admins only.** Every page and call about it is for admins (reads included), and every change writes an audit
+  entry. Adding, replacing, pausing or removing its settings (which hold the passwords) asks for the admin's password
+  again (and the two-step code when it is on); a connection test and matching TeslaMate's cars take the admin's
+  session alone, as they store and show no password. A TeslaMate car is read
   into no car here until an admin says which car it is.
 - Data from TeslaMate is not signed like SMO's logs. Every value says where it came from (`teslamate_local`, "Data
   from local TeslaMate"); SMO's, the Tesla API's and TeslaFi's data win over it where they cover the same time.

@@ -4,8 +4,9 @@
 // subscribes to TeslaMate's MQTT topics (it only reads, never publishes) and, when an admin turns it on, catches up
 // from TeslaMate's PostgreSQL database now and then. Off until an admin adds it. This part shows its status, the MQTT
 // connection and the optional database catch-up (each with Test and Save), which car here each TeslaMate car is,
-// pause and resume, and removing it. Every change, and every test, asks for the admin's own password again (and the
-// two-step code), as the TeslaFi part does. The rules and words every pack shares are in shared/teslamate.js.
+// pause and resume, and removing it. Adding, saving, pausing and removing ask for the admin's own password again (and
+// the two-step code), as the TeslaFi part does; a test and saving the matches take the admin's session alone (they
+// store and show no password). The rules and words every pack shares are in shared/teslamate.js.
 //
 // API: GET / PUT / PATCH / DELETE integrations/teslamate, POST integrations/teslamate/test, PUT
 // integrations/teslamate/cars, GET cars (the match picker).
@@ -14,7 +15,7 @@ import { h, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import { formatDateTime } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
-import { TM_BASE, TM_DEFAULTS, TM_HOST_HINT, tmPinNote, tmTlsPort, MQTT_STATE, DB_STATE, UNENCRYPTED_LABEL, UNENCRYPTED_WARNING, tmErrorText, tmWords, tmDraft, tmCheck, tmPutBody, tmMatchChanges, tmPreselect, tmHeadline } from '../shared/teslamate.js';
+import { TM_BASE, TM_DEFAULTS, TM_HOST_HINT, tmPinNote, tmTlsPort, MQTT_STATE, DB_STATE, UNENCRYPTED_LABEL, UNENCRYPTED_WARNING, tmErrorText, tmWords, tmStale, tmDraft, tmCheck, tmPutBody, tmMatchChanges, tmPreselect, tmHeadline } from '../shared/teslamate.js';
 import { section, figure, chip, button, icon, ago, errorView, empty } from '../core/ui.js';
 import { field, form, setFieldError } from '../core/form.js';
 import { dataTable } from '../core/table.js';
@@ -54,6 +55,20 @@ export function teslamatePart(ctx) {
   let t = null, cars = [], loadErr = null;
   const carName = (cid) => (cars.find((c) => c.id === cid) || {}).name || cid;
   const ask = (opts) => askAgain(ctx, { input: 'the local TeslaMate input', errorText, ...opts });
+  // a test and the matches: the admin's session alone, no password asked again. A field error goes under its field,
+  // a stale answer reloads, the rest is said in a flash.
+  const direct = async (b, run, fields = []) => {
+    b.disabled = true;
+    try { return await run(); } catch (e) {
+      if (api.isAbort(e)) return null;
+      const text = errorText(e);
+      const at = e.fields ? Object.entries(e.fields).map(([k, v]) => [fields.find((y) => y.dataset.field === k), v]).filter(([x]) => x) : [];
+      for (const [x, v] of at) setFieldError(x, v);
+      if (!at.length) ctx.flash(text, { kind: tmStale(e) ? 'info' : 'error' });
+      if (tmStale(e)) await again();
+      return null;
+    } finally { b.disabled = false; }
+  };
 
   async function load() {
     if (!admin) { draw(); return; }
@@ -175,12 +190,9 @@ export function teslamatePart(ctx) {
         if (isDb) d.enabled = true;
         const bad = tmCheck(part, d, t.enabled ? saved : null);
         if (Object.keys(bad).length) { for (const [k, v] of Object.entries(bad)) { const x = fields.find((y) => y.dataset.field === k); if (x) setFieldError(x, v); } return; }
-        const r = await ask({
-          title: `Test the ${isDb ? 'database' : 'MQTT'} connection`, yes: 'Test',
-          text: isDb ? 'Connects to the database with these settings and looks for TeslaMate’s tables. Nothing is saved.' : 'Connects to the broker with these settings and listens a few seconds for TeslaMate’s cars. It subscribes only and publishes nothing; nothing is saved.',
-          run: (creds) => ctx.api.post(`${TM_BASE}/test`, { target: part, [part]: d, ...creds }),
-        });
-        if (!r) return;
+        replace(testOut, h('p', { class: 'si-quiet' }, isDb ? 'Testing: connecting to the database and looking for TeslaMate’s tables. Nothing is saved.' : 'Testing: connecting to the broker and listening a few seconds for TeslaMate’s cars. It subscribes only and publishes nothing; nothing is saved.'));
+        const r = await direct(testBtn, () => ctx.api.post(`${TM_BASE}/test`, { target: part, [part]: d }), fields);
+        if (!r) { replace(testOut); return; }
         replace(testOut, h('p', { class: ['tm-test-line', r.ok ? 'is-ok' : 'is-warn'] }, icon(r.ok ? 'check' : 'warning'),
           r.ok ? r.message : `${tmErrorText({ code: r.error, message: r.message }) || 'It did not work'}.`,
           r.ok && r.latency_ms != null ? ` ${formatNumber(r.latency_ms)} ms.` : '',
@@ -218,12 +230,8 @@ export function teslamatePart(ctx) {
       kind: 'primary', onclick: async () => {
         const changes = tmMatchChanges(list, chosen);
         if (!changes.length) { ctx.flash('Nothing changed in the matches.', { kind: 'info' }); return; }
-        const out = await ask({
-          title: 'Save the matches?', yes: 'Save',
-          text: 'A TeslaMate car matched to a car here, or to a new car, is read from now on; one left out or not decided is not read.',
-          run: (creds) => ctx.api.put(`${TM_BASE}/cars`, { version: t.version, items: changes, ...creds }),
-        });
-        await settle(out, 'The matches were saved.');
+        const out = await direct(save, () => ctx.api.put(`${TM_BASE}/cars`, { version: t.version, items: changes }));
+        if (out) await settle(out, 'The matches were saved.');
       },
     });
     const sync = () => { save.hidden = !tmMatchChanges(list, chosen).length; };
