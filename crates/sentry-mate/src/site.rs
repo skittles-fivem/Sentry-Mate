@@ -170,6 +170,7 @@ pub fn web_state(
         .service(teslafi)
         .service(teslamate_local)
         .setup_code_file(keys.join(SETUP_FILE))
+        .this_build(crate::this_build())
         .cars(Arc::new(EngineCars(engine.db().clone())))
         .service(Arc::new(engine.clone()))
         .service(Arc::new(engine.db().clone()))

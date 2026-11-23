@@ -29,6 +29,7 @@ moving = { path = "../moving" }
 ingest = { path = "../ingest" }
 logfmt = { path = "../logfmt" }
 model = { path = "../model" }
+release = { path = "../release" }
 synth = { path = "../synth", optional = true }
 timeline = { path = "../timeline" }
 trust = { path = "../trust" }
