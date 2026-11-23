@@ -61,7 +61,7 @@ function paintPath(s, info, car) {
     add(info?.link || page, state.current().path);
   } else if (s.car) {
     add('cars', '/');
-    add(names.get(s.car) || slug(car?.name || s.car), state.buildUrl('car', { car: s.car, period: s.period }));
+    add(names.get(s.car) || slug(car?.name || s.car), state.linkTo('car', { car: s.car }));
     if (page !== 'car') {
       const parent = info?.parent;
       add(parent || info?.link || page, state.linkTo(parent || page));
