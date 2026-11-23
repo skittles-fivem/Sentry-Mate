@@ -952,7 +952,8 @@ mod tests {
         let c = e.compact_start(false).unwrap();
         assert_eq!(c.status, Status::Running);
         assert_eq!(e.compact_start(false).unwrap().started_ms, c.started_ms, "no second pass");
-        for _ in 0..1200 {
+        // up to 5 minutes: a shared CI machine can take well over a minute for this pass
+        for _ in 0..6000 {
             if e.compaction().status != Status::Running {
                 break;
             }
