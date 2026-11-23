@@ -730,5 +730,10 @@ async fn the_recommended_tyre_pressure_is_typed_else_the_cars_else_the_placards_
         (n["tyre_recommended_source"].clone(), n["tyre_recommended_wheel_in"].clone()),
         (json!("placard"), json!(18))
     );
+    // the size typed: no guess
+    assert_eq!(
+        (n["tyre_recommended_wheel_from"].clone(), n["tyre_recommended_wheel_guess"].clone()),
+        (json!("owner"), json!(false))
+    );
     assert_eq!(n["tyre_low"]["value"], json!(false));
 }

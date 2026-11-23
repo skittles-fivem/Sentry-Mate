@@ -15,7 +15,7 @@ import { formatTime, formatDate, formatDateTime, formatDuration, formatRelative,
 import { formatList } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { tyreView, recommendedLine } from '../shared/tyres.js';
+import { tyreView, recommendedLine, wheelGuessLine, tyresTitle } from '../shared/tyres.js';
 import { pageHead, q, plus, figure, chip, flag, icon, stateMark, empty, errorView, loadingBlock, sep, ago, routeSketch } from '../core/ui.js';
 import { column, timeColumn, csvFilename, downloadCsv } from '../shared/csv.js';
 import { makeMap, coordsText, boundsOf } from '../core/map.js';
@@ -24,6 +24,13 @@ import { stackedCharts, spansFromStates } from '../core/chart.js';
 import { activityStrip, timelineRow, AWAKE_WORDS, endLabel } from '../core/journal.js';
 import { sourceMark, valueMark, inputsLine, labelOf } from '../core/sources.js';
 import { vehiclePanel, firmwarePanel } from './car-facts.js';
+
+// the door placard's pressure for a wheel size that is only a guess: say so, and (for an admin) link to where the
+// size is typed
+const wheelGuess = (now, anchor, admin) => {
+  const g = wheelGuessLine(now);
+  return g ? [' ', g.said, admin ? [' ', g.ask, ' ', h('a', { href: anchor }, g.action), '.'] : null] : null;
+};
 
 export const id = 'car';
 export const css = true;
@@ -122,7 +129,7 @@ export async function mount(ctx) {
     replace(head, header(car, now, tz, ctx.me && ctx.me.role === 'admin'));
     replace(whereText, whereLines(now, tz, outsideMaps, currentVisit()));
     drawState();
-    replace(live, staleBanner(now, tz), h('p', { class: 'lede' }, lede(now, tz)), stateBox, hero(car, now, tz), vitals(car, now, tz), awake(now), statusFlags(now, tz), offCan(now, tz), charging(now, tz, usualStart()), where, latest);
+    replace(live, staleBanner(now, tz), h('p', { class: 'lede' }, lede(now, tz)), stateBox, hero(car, now, tz), vitals(car, now, tz, ctx.me && ctx.me.role === 'admin'), awake(now), statusFlags(now, tz), offCan(now, tz), charging(now, tz, usualStart()), where, latest);
   }
   const vehicle = vehiclePanel(ctx, car);
   const firmware = firmwarePanel(ctx, car);
@@ -431,7 +438,7 @@ function row(name, value, note = null, { cover = null, measured = null, src = nu
     h('dt', null, name), h('dd', null, value, valueMark(src), note ? h('span', { class: 'spec-note' }, note) : null));
 }
 
-function vitals(car, now, tz) {
+function vitals(car, now, tz, admin = false) {
   const t = (x) => (at(x) ? formatDateTime(at(x), tz, { now: api.now(), seconds: true }) : null);
   const notSent = /legacy/.test(car.profile || '') ? 'not sent by this car' : 'not sent yet';
   const sp = (x) => { const val = v(x); return typeof val === 'string' ? val : q(val, 'temperature'); };
@@ -461,8 +468,8 @@ function vitals(car, now, tz) {
         wheel(76, 33), wheel(135, 33), wheel(76, 99), wheel(135, 99),
         reading(0, 64, 52, 'end'), reading(1, 156, 52, 'start'), reading(2, 64, 118, 'end'), reading(3, 156, 118, 'start')),
       h('span', { class: 'tire-axle', 'aria-hidden': 'true' }, 'rear')) : h('p', { class: 'note' }, 'This car sends no tyre pressures.'),
-    h('p', { class: ['spec-foot', { 'is-low': lows.length }] }, lows.length ? `Low: ${formatList(lows)}. ` : kpa.length && tv.front != null ? 'All four at or near the recommended pressure. ' : '',
-      kpa.length ? recommendedLine(now) : ''));
+    h('p', { class: ['spec-foot', { 'is-low': lows.length }], title: kpa.length ? tyresTitle(now) || null : null }, lows.length ? `Low: ${formatList(lows)}. ` : kpa.length && tv.front != null ? 'All four at or near the recommended pressure. ' : '',
+      kpa.length ? recommendedLine(now) : '', kpa.length ? wheelGuess(now, '#car-vehicle', admin) : null));
 
   const sw = now.software || {};
   const swSrc = {

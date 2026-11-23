@@ -126,7 +126,7 @@ export function vehicleTiles(ctx, car, { onChanged = null } = {}) {
       d ? h('ul', { class: 'vi-differ' }, d.map((x, i) => h('li', null, h('span', { class: 'vi-differ-v' }, valueText(key, x.value) ?? 'nothing'), ' ', h('span', { class: 'vi-differ-s' }, `said ${srcWords(x.source)[0]}`, i === 0 ? ', shown' : '')))) : null);
   }
 
-  const tiles = GROUPS.map(([name, ic, rows]) => tile({ w: 2, title: name, icon: ic, cls: 'vi-tile' }, h('ul', { class: 'vi-list' }, rows.map(row))));
+  const tiles = GROUPS.map(([name, ic, rows]) => tile({ w: 2, title: name, icon: ic, cls: 'vi-tile', id: rows.some(([k]) => k === 'wheel_in') ? 'vi-wheels' : null }, h('ul', { class: 'vi-list' }, rows.map(row))));
 
   const extra = [];
   if (vh.trim_candidates && vh.trim_candidates.length) extra.push(['Could be', vh.trim_candidates.join(', ')]);

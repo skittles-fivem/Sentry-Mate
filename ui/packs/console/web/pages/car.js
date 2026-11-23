@@ -13,7 +13,7 @@
 
 import { h, replace, cover } from '../shared/dom.js';
 import { isSold, buildUrl } from '../shared/state.js';
-import { tyreView, recommendedLine } from '../shared/tyres.js';
+import { tyreView, recommendedLine, wheelGuessLine, tyresTitle } from '../shared/tyres.js';
 import { format, getUnits, onUnitsChange, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDateTime } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -28,6 +28,13 @@ import { stateStrip } from '../core/strip.js';
 import { src, via, inputsLine } from '../core/source.js';
 import { vehicleSection } from './vehicle.js';
 import { loadingLine } from '../core/states.js';
+
+// the door placard's pressure for a wheel size that is only a guess: say so, and (for an admin) link to where the
+// size is typed
+const wheelGuess = (now, anchor, admin) => {
+  const g = wheelGuessLine(now);
+  return g ? [' ', g.said, admin ? [' ', g.ask, ' ', h('a', { href: anchor }, g.action), '.'] : null] : null;
+};
 
 export const id = 'car';
 export const title = () => 'Overview';
@@ -195,7 +202,7 @@ export async function mount(ctx) {
         ['service mode', val(f.service_mode) == null ? null : val(f.service_mode) ? h('span', { class: 'tone--warn' }, loc.place ? `on, at ${loc.place.name}` : 'on') : 'off', { cover: ['summary.flag.service_mode', 'summary.state.in_service'] }],
         [tv.mapped ? 'tyres fl fr' : 'tyre sensors 1 2', [tyre(0), '  ', tyre(1)], { cover: 'summary.flag.tire_pressure_warning' }],
         [tv.mapped ? 'tyres rl rr' : 'tyre sensors 3 4', [tyre(2), '  ', tyre(3)]],
-        ['tyre pressure', h('span', { class: 'muted' }, recommendedLine(n))],
+        ['tyre pressure', h('span', { class: 'muted', title: tyresTitle(n) || null }, recommendedLine(n), wheelGuess(n, '#vehicle', ctx.admin))],
         ['12 v battery', aged(n.lv_v, num(val(n.lv_v), 'voltage'))],
         ['software', [h('a', { class: 'lnk-plain', href: ctx.link('software') }, sw.version || ov || 'not known'), sw.version && swSrc ? h('span', { class: 'muted' }, ` (${swSrc})`) : null,
           ov != null && sw.version && ov !== sw.version ? h('span', { class: 'muted' }, `; the car reports ${ov}`) : null, ov != null ? offMark(o.version) : null], { cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates'] }],

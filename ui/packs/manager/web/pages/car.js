@@ -5,7 +5,7 @@
 // starts or ends (`rows` events).
 
 import * as state from '../shared/state.js';
-import { tyreView, recommendedLine } from '../shared/tyres.js';
+import { tyreView, recommendedLine, wheelGuessLine, tyresTitle } from '../shared/tyres.js';
 import { h, svg, replace, cover, cssVar, quantity } from '../shared/dom.js';
 import { format, getUnits, onUnitsChange, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDate, formatDateTime, zoneName, buckets } from '../shared/time.js';
@@ -488,6 +488,11 @@ export async function mount(ctx) {
         isLow ? h('span', { class: 'tire-note' }, `${format(tv.against[i] - v, 'pressure')} under`) : null);
     };
     const wheel = (i) => (tv.low[i] === true ? 'wheel is-low' : 'wheel');
+    // the placard's size only a guess: say so, and where an admin sets it (the Vehicle info panel below)
+    const wheelGuess = (now) => {
+      const g = wheelGuessLine(now);
+      return g ? [' ', g.said, ctx.admin ? [' ', g.ask, ' ', h('a', { href: '#vehicle-info' }, g.action), '.'] : null] : null;
+    };
     const tyrePanel = panel({ title: 'Tyres', icon: 'tire', cover: 'summary.flag.tire_pressure_warning', side: h('span', { class: 'faint' }, agoEl(at(n.tyres_kpa?.[0]) ?? newest, tz)) },
       h('div', { class: 'tires' },
         tyre(TYRES[0], 0, false),
@@ -498,9 +503,7 @@ export async function mount(ctx) {
           svg('path', { class: 'glass', d: 'M15.5 36 Q32 28 48.5 36 L45.5 52 Q32 48 18.5 52 Z' }),
           svg('path', { class: 'glass', d: 'M18.5 86 Q32 90 45.5 86 L47.5 98 Q32 103 16.5 98 Z' })),
         tyre(TYRES[1], 1, true), tyre(TYRES[2], 2, false), tyre(TYRES[3], 3, true)),
-      h('p', { class: 'note tire-rec' }, recommendedLine(n), tv.front != null
-        ? ' A tyre more than 10 % under it is flagged; a cold morning alone takes a few percent off every tyre.'
-        : ' No tyre is flagged.'));
+      h('p', { class: 'note tire-rec', title: tyresTitle(n) || null }, recommendedLine(n), tv.front != null ? wheelGuess(n) : ' No tyre is flagged.'));
 
     // the car: 12 V, odometer, software, data age
     const sw = n.software || {};
