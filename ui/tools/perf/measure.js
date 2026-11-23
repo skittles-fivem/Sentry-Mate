@@ -6,6 +6,15 @@
 //   node measure.js --base https://127.0.0.1:10101 --user owner --pass 'correct horse battery staple' \
 //     [--packs instrument,logbook,...] [--pages car,drives,charges,battery,settings] \
 //     [--out results.json] [--md results.md] [--label baseline] [--timeout 90000] [--quiet 500]
+//     [--device phone|laptop] [--scroll]
+//
+// --device laptop: 1440 x 900 at 1x, no touch, CPU 2x slower (a mid laptop), no network throttling unless --latency
+// is given (a server on the home network). --scroll: after each load, the list on the page (the box holding its first
+// row, else the page) is scrolled 60 px a frame for 180 frames; frames per second and slow frames are reported.
+// rows ms: when the page's first list row (a drive link in a table body, a Pebble .lb-row, or a [data-vl-row]) was
+// first painted (the frame after it was in the document), in the page's clock; list ms: the same, counted from the
+// start of the page's first request for its list (the API path ending in /<page>, e.g. /cars/c1/logbook); dom rows:
+// list rows in the document at the end.
 //
 // Conditions (stated in the output too):
 //   CPU      Emulation.setCPUThrottlingRate { rate: 4 }
@@ -51,10 +60,13 @@ const LABEL = args.label || 'run';
 const OUT = args.out || 'perf-results.json';
 const MD = args.md || OUT.replace(/\.json$/, '') + '.md';
 
+const LAPTOP = args.device === 'laptop';
 const NET = { offline: false, latency: Number(args.latency || 150), downloadThroughput: Math.round(1.6e6 * 0.9 / 8), uploadThroughput: Math.round(750e3 * 0.9 / 8) };
-const CPU = Number(args.cpu || 4);
-const DEVICE = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true,
-  userAgent: 'Mozilla/5.0 (Linux; Android 13; Phone) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36' };
+const CPU = Number(args.cpu || (LAPTOP ? 2 : 4));
+const THROTTLE_NET = !LAPTOP || args.latency != null;
+const DEVICE = LAPTOP ? { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false }
+  : { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true,
+    userAgent: 'Mozilla/5.0 (Linux; Android 13; Phone) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36' };
 
 // every pack shares ui/packs/*/web/shared/state.js's ROUTES; "settings" is Settings: Display and units
 const PATHS = {
@@ -62,9 +74,11 @@ const PATHS = {
   drives: (c) => `/cars/${c}/drives`,
   charges: (c) => `/cars/${c}/charges`,
   battery: (c) => `/cars/${c}/battery`,
+  logbook: (c) => `/cars/${c}/logbook`,
   settings: () => '/settings/display',
 };
 
+const ROW_SELECTOR = '[data-vl-row], tbody a[href*="/drives/"], .lb-row';
 const READY_SELECTOR_BLOCKERS = '[aria-busy="true"], .loading, .page--loading, .lb-loading, .loading-grid, .loading-head, .skeleton, [class*="skeleton"]';
 
 // runs in every document before its scripts: long tasks, a resource buffer big enough, and the "view ready" clock
@@ -77,7 +91,13 @@ const INIT = `(() => {
       .observe({ type: 'longtask', buffered: true });
   } catch (e) {}
   const BLOCK = ${JSON.stringify(READY_SELECTOR_BLOCKERS)};
+  const ROWS = ${JSON.stringify(ROW_SELECTOR)};
   function check() {
+    const p = window.__perf;
+    if (p.rowsSeen == null && document.querySelector(ROWS)) {
+      p.rowsSeen = performance.now();
+      requestAnimationFrame(() => { p.rowsAt = performance.now(); });
+    }
     const v = document.getElementById('view') || document.getElementById('main') || document.querySelector('main');
     let blocker = null;
     if (!v) blocker = 'no view';
@@ -150,15 +170,18 @@ async function load(page, cdp, url) {
   }
   offs.forEach((f) => f());
   ctx.off('request', pwReq); ctx.off('requestfinished', pwEnd); ctx.off('requestfailed', pwEnd);
-  const m = await page.evaluate(() => {
+  const listName = '/' + new URL(url).pathname.split('/').pop();
+  const m = await page.evaluate((listName) => {
     const p = window.__perf || {};
+    const listReq = performance.getEntriesByType('resource').find((e) => { try { const u = new URL(e.name); return u.pathname.startsWith('/api/') && u.pathname.endsWith(listName); } catch (x) { return false; } });
     const fcp = performance.getEntriesByName('first-contentful-paint')[0];
     const res = performance.getEntriesByType('resource').filter((e) => !/\/api\/v1\/events(\?|$)/.test(new URL(e.name).pathname));
     const nav = performance.getEntriesByType('navigation')[0];
     const lastRes = Math.max(nav ? nav.responseEnd : 0, ...res.map((e) => e.responseEnd));
-    return { fcp: fcp ? fcp.startTime : null, readyAt: p.readyAt, ready: p.ready, blocker: p.blocker, lastRes, lt: p.lt,
+    const rowsIn = document.querySelectorAll('[data-vl-row], tbody tr:not(.vl-gap):not(.tbl-skel), .lb-row').length;
+    return { listAt: listReq ? listReq.startTime : null, rowsAt: p.rowsAt ?? null, rowsIn, nodes: document.getElementsByTagName('*').length, fcp: fcp ? fcp.startTime : null, readyAt: p.readyAt, ready: p.ready, blocker: p.blocker, lastRes, lt: p.lt,
       dcl: nav ? nav.domContentLoadedEventEnd : null, load: nav ? nav.loadEventEnd : null, finalPath: location.pathname };
-  }).catch((e) => ({ error: String(e) }));
+  }, listName).catch((e) => ({ error: String(e) }));
   const list = [...reqs.values()];
   // a worker's own script: its response never reaches the page's CDP session; take its size from Playwright
   for (const r of list) {
@@ -190,6 +213,8 @@ async function load(page, cdp, url) {
     protocols: protos,
     fcp_ms: m.fcp != null ? Math.round(m.fcp) : null,
     view_ready_ms: m.readyAt != null ? Math.round(m.readyAt) : null,
+    rows_ms: m.rowsAt != null ? Math.round(m.rowsAt) : null,
+    list_ms: m.rowsAt != null && m.listAt != null ? Math.round(m.rowsAt - m.listAt) : null, dom_rows: m.rowsIn ?? null, dom_nodes: m.nodes ?? null,
     ttu_ms: ttu,
     dcl_ms: m.dcl != null ? Math.round(m.dcl) : null,
     long_tasks: m.lt ? m.lt.count : null, long_tasks_ms: m.lt ? Math.round(m.lt.total) : null, long_task_max_ms: m.lt ? Math.round(m.lt.max) : null,
@@ -199,6 +224,31 @@ async function load(page, cdp, url) {
       .sort((x, y) => y.bytes - x.bytes).slice(0, 8),
     api_gets: Object.keys(gets).map((u) => new URL(u).pathname + new URL(u).search),
   };
+}
+
+// scrolls the list holding the first row (its scrolling box, else the page) 60 px a frame and times the frames
+async function scrollRun(page) {
+  return page.evaluate(async (sel) => {
+    const first = document.querySelector(sel);
+    let box = first ? first.parentElement : null;
+    while (box && !(box.scrollHeight > box.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(box).overflowY))) box = box.parentElement;
+    const el = box || document.scrollingElement;
+    const times = [];
+    await new Promise((done) => {
+      let n = 0;
+      const step = (t) => {
+        times.push(t);
+        el.scrollTop += 60;
+        if (++n < 180) requestAnimationFrame(step); else done();
+      };
+      requestAnimationFrame(step);
+    });
+    const d = times.slice(1).map((t, i) => t - times[i]);
+    const sorted = [...d].sort((a, b) => a - b);
+    return { target: box ? 'box' : 'page', frames: times.length, fps: Math.round((d.length * 1000) / (times.at(-1) - times[0])),
+      p95_ms: Math.round(sorted[Math.floor(sorted.length * 0.95)] * 10) / 10, slow_frames: d.filter((x) => x > 25).length,
+      max_ms: Math.round(sorted.at(-1)), scrolled_px: Math.round(el.scrollTop) };
+  }, ROW_SELECTOR).catch((e) => ({ error: String(e) }));
 }
 
 async function main() {
@@ -214,7 +264,7 @@ async function main() {
   const about = await (await auth.request.get(BASE + '/api/v1/about', { headers: h })).json().catch(() => ({}));
   const results = { label: LABEL, base: BASE, when: new Date().toISOString(), server_version: about.version || null,
     build: about.build || null, car, cars: cars.items.length,
-    conditions: { cpu_throttling_rate: CPU, network: NET, device: { ...DEVICE, userAgent: undefined }, quiet_ms: QUIET, timeout_ms: TIMEOUT,
+    conditions: { laptop: LAPTOP, network_throttled: THROTTLE_NET, cpu_throttling_rate: CPU, network: NET, device: { ...DEVICE, userAgent: undefined }, quiet_ms: QUIET, timeout_ms: TIMEOUT,
       ttu: 'max(main view ready: content, no aria-busy, no placeholders; last resource responseEnd excl. /api/v1/events), after ' + QUIET + ' ms network quiet',
       warm: 'second page.goto of the same URL in the same page and persistent profile (fresh profile folder per pack/page) (HTTP cache warm; packs answer Cache-Control: no-cache, so 304 revalidations)' },
     runs: [] };
@@ -236,14 +286,15 @@ async function main() {
       await cdp.send('Network.setCacheDisabled', { cacheDisabled: false });
       if (!args['no-throttle']) {
         await cdp.send('Emulation.setCPUThrottlingRate', { rate: CPU });
-        await cdp.send('Network.emulateNetworkConditions', NET);
+        if (THROTTLE_NET) await cdp.send('Network.emulateNetworkConditions', NET);
       }
       for (const phase of ['cold', 'warm']) {
         if (phase === 'warm') await new Promise((r) => setTimeout(r, Number(args['warm-pause'] || 0)));
         const r = await load(page, cdp, url);
+        if (args.scroll) r.scroll = await scrollRun(page);
         const row = { pack, pack_served: got, page: pg, phase, ...r };
         results.runs.push(row);
-        console.log(`${pack.padEnd(10)} ${pg.padEnd(8)} ${phase} ttu=${r.ttu_ms}ms fcp=${r.fcp_ms}ms ${(r.bytes / 1024).toFixed(1)}KiB req=${r.requests_static}+${r.requests_api}api dup=${r.dup_api_gets} lt=${r.long_tasks}/${r.long_tasks_ms}ms ${JSON.stringify(r.protocols)}${r.timed_out ? ' TIMEOUT ' + r.blocker : ''}`);
+        console.log(`${pack.padEnd(10)} ${pg.padEnd(8)} ${phase} rows=${r.rows_ms}ms list=${r.list_ms}ms dom_rows=${r.dom_rows} nodes=${r.dom_nodes}${r.scroll ? ` fps=${r.scroll.fps} slow=${r.scroll.slow_frames} p95=${r.scroll.p95_ms}ms` : ''} ttu=${r.ttu_ms}ms fcp=${r.fcp_ms}ms ${(r.bytes / 1024).toFixed(1)}KiB req=${r.requests_static}+${r.requests_api}api dup=${r.dup_api_gets} lt=${r.long_tasks}/${r.long_tasks_ms}ms ${JSON.stringify(r.protocols)}${r.timed_out ? ' TIMEOUT ' + r.blocker : ''}`);
       }
       await ctx.close();
       fs.rmSync(dir, { recursive: true, force: true });
@@ -260,12 +311,13 @@ function table(res) {
   const c = res.conditions;
   let s = `# ${res.label}: browser delivery per pack and page\n\n`;
   s += `Server ${res.server_version || '?'} at ${res.base}, ${res.when}. Car ${res.car} (${res.cars} cars).\n`;
-  s += `Phone 390x844 @3x, CPU x${c.cpu_throttling_rate}, network latency ${c.network.latency} ms, down ${c.network.downloadThroughput} B/s, up ${c.network.uploadThroughput} B/s.\n`;
+  s += c.laptop ? `Laptop 1440x900 @1x, CPU x${c.cpu_throttling_rate}, ${c.network_throttled ? `network latency ${c.network.latency} ms` : 'no network throttling'}.\n`
+    : `Phone 390x844 @3x, CPU x${c.cpu_throttling_rate}, network latency ${c.network.latency} ms, down ${c.network.downloadThroughput} B/s, up ${c.network.uploadThroughput} B/s.\n`;
   s += `TTU = ${c.ttu}. Warm = ${c.warm}.\n\n`;
-  s += '| pack | page | phase | TTU ms | FCP ms | KiB | static req | api req | 304 | dup GETs | long tasks (n / ms) | proto |\n';
-  s += '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|\n';
+  s += '| pack | page | phase | TTU ms | FCP ms | rows ms | list ms | dom rows | nodes | fps | slow frames | KiB | static req | api req | 304 | dup GETs | long tasks (n / ms) | proto |\n';
+  s += '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|\n';
   for (const r of res.runs) {
-    s += `| ${r.pack} | ${r.page} | ${r.phase} | ${r.timed_out ? 'timeout' : r.ttu_ms} | ${r.fcp_ms ?? '-'} | ${(r.bytes / 1024).toFixed(1)} | ${r.requests_static} | ${r.requests_api} | ${r.not_modified} | ${r.dup_api_gets} | ${r.long_tasks} / ${r.long_tasks_ms} | ${Object.keys(r.protocols).join(',')} |\n`;
+    s += `| ${r.pack} | ${r.page} | ${r.phase} | ${r.timed_out ? 'timeout' : r.ttu_ms} | ${r.fcp_ms ?? '-'} | ${r.rows_ms ?? '-'} | ${r.list_ms ?? '-'} | ${r.dom_rows ?? '-'} | ${r.dom_nodes ?? '-'} | ${r.scroll?.fps ?? '-'} | ${r.scroll?.slow_frames ?? '-'} | ${(r.bytes / 1024).toFixed(1)} | ${r.requests_static} | ${r.requests_api} | ${r.not_modified} | ${r.dup_api_gets} | ${r.long_tasks} / ${r.long_tasks_ms} | ${Object.keys(r.protocols).join(',')} |\n`;
   }
   // per pack means
   s += '\n| pack | phase | mean TTU ms | mean KiB | mean requests | total dup GETs |\n|---|---|---:|---:|---:|---:|\n';
