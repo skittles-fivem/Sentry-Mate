@@ -125,10 +125,9 @@ export async function createMap(el, ctx, { center = [0, 0], zoom = 13, interacti
   // the Map / Satellite switch (only when the admin allows two or more styles)
   const sw = styleSwitch ? mapStyleSwitch(cfg, getPrefs(), {
     classes: { box: 'map-style', button: 'map-style-btn', active: 'is-on' },
-    onChange: (next, s) => {
-      if (!map.isStyleLoaded()) { map.once('load', () => apply(next, s)); return; }
-      apply(next, s);
-    },
+    // after 'load', not while the style is "loaded": isStyleLoaded() reads false while any tiles or sources are
+    // still loading, long after 'load' fired (which never fires again), and a pick then was lost
+    onChange: (next, s) => { ready.then(() => { if (ctx.alive()) apply(next, s); }); },
   }) : null;
   const apply = (next, s) => {
     const dark = isDark();
