@@ -65,7 +65,7 @@ impl Checker {
         self.st.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    fn now(&self) -> u64 {
+    pub(crate) fn now(&self) -> u64 {
         (self.clock)()
     }
 
@@ -233,37 +233,13 @@ pub fn about_build(app: &AppState) -> Value {
             "built_ms": b.built_ms, "dev": b.dev() })
 }
 
-/// `Nov 24` (UTC) of a time.
-fn month_day(ms: u64) -> String {
-    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    let z = i64::try_from(ms / 86_400_000).unwrap_or(0) + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    format!("{} {d}", MONTHS[usize::try_from(m - 1).unwrap_or(0)])
-}
-
-/// "abc1234, Nov 24, 4 changes"
-fn summary(n: &Newest) -> String {
-    let mut parts = vec![n.short.clone()];
-    if let Some(d) = n.date_ms {
-        parts.push(month_day(d));
-    }
-    parts.push(if n.changes == 1 { "1 change".into() } else { format!("{} changes", n.changes) });
-    parts.join(", ")
-}
-
 /// The admins' `release_available` notice, while a newer build is published.
 pub fn notices(app: &AppState) -> Vec<Notice> {
     let Some(n) = app.release.newer() else { return Vec::new() };
     vec![Notice {
         code: "release_available",
         level: "info",
-        message: format!("A newer build is ready: {}.", summary(&n)),
+        message: format!("A newer build is ready: {}.", n.summary(app.release.now())),
         since_ms: n.date_ms,
         fix_link: Some("/help#about"),
         detail: Some(json!({ "version": n.short, "commit": n.commit, "build": n.build, "changes": n.changes,
@@ -294,26 +270,4 @@ async fn check(State(app): State<AppState>, _v: Viewer, body: JsonBody) -> ApiRe
         ));
     }
     Ok(Json(app.release.view()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dates_and_summaries() {
-        assert_eq!(month_day(0), "Jan 1");
-        assert_eq!(month_day(1_795_305_600_000 + 2 * 86_400_000), "Nov 24");
-        let n = Newest {
-            commit: "abc1234".repeat(5) + "00000",
-            short: "abc1234".into(),
-            date_ms: Some(1_795_305_600_000 + 2 * 86_400_000),
-            build: Some(57),
-            changes: 4,
-            titles: vec![],
-            more: 4,
-            compare_url: String::new(),
-        };
-        assert_eq!(summary(&n), "abc1234, Nov 24, 4 changes");
-    }
 }

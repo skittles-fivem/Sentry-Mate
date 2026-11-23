@@ -16,7 +16,7 @@ import { carOptions } from '../core/carpick.js';
 import * as state from '../shared/state.js';
 import { toast } from '../core/toast.js';
 import { packChoices } from '../shared/packs.js';
-import { buildLabel, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
+import { buildLabel, buildTitle, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 import { MAP_COLORS_TEXT, LABELS_TEXT, STYLES_TEXT, presetHosts, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 
 export const id = 'settings-display';
@@ -193,7 +193,7 @@ export async function mount(ctx) {
     const lines = newer ? changeLines(release.newest) : [];
     const word = { ok: ['ok', 'ok'], newer: ['new', 'accent'], error: ['err', 'bad'], wait: ['wait', 'muted'], off: ['off', 'muted'] }[st.tone] || ['off', 'muted'];
     replace(releaseBox,
-      h('p', { class: 'rel-line' }, h('span', { class: 'muted' }, 'this build: '), h('span', { class: 'mono' }, buildLabel(about || {}, now))),
+      h('p', { class: 'rel-line' }, h('span', { class: 'muted' }, 'this build: '), h('span', { class: 'mono', title: buildTitle(about) || null }, buildLabel(about || {}, now))),
       h('p', { class: 'rel-line', role: 'status' }, busy ? [tag('wait', 'muted'), ' Checking…'] : [tag(...word), ' ', st.text], when ? h('span', { class: 'muted' }, ` · ${when}`) : null),
       lines.length ? h('ul', { class: 'rel-titles' }, lines.map((x) => h('li', null, x))) : null,
       newer && release.pull ? h('p', { class: 'rel-line' }, h('span', { class: 'muted' }, 'to update, on the server: '), h('code', { class: 'mono rel-pull' }, release.pull)) : null,

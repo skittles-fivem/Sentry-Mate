@@ -397,7 +397,7 @@ def notices(req):
 BUILD = {"version": "0.1.0", "number": 41, "commit": "2f44a52c0e9b7d1a6f3e8c5b4a2d9e7f1c0b3a68", "short": "2f44a52",
          "built_days_ago": 2, "dev": False}
 # the newest build on main the made-up check finds
-NEWEST = {"commit": "9c1e7d3b5a2f4e8c6d0b1a3f5e7c9d2b4a6f8e01", "short": "9c1e7d3", "build": 57, "days_ago": 1}
+NEWEST = {"commit": "9c1e7d3b5a2f4e8c6d0b1a3f5e7c9d2b4a6f8e01", "short": "9c1e7d3", "build": 42, "days_ago": 1}
 NEWEST_TITLES = [
     "Battery: one counter per stream, so imported days no longer stop the battery pages",
     "Odometer: read the CAN odometer's \"not available\" as such, drop impossible readings",
@@ -479,7 +479,12 @@ def release_notice(req):
     nw = s["newest"]
     import datetime
     d = datetime.datetime.fromtimestamp(nw["date_ms"] / 1000, datetime.timezone.utc)
-    msg = f"A newer build is ready: {nw['short']}, {d.strftime('%b')} {d.day}, {nw['changes']} changes."
+    # named by its number, as the real server does (crates/release Newest::summary); the commit is in `detail`
+    when = f"{d.strftime('%b')} {d.day}" + ("" if d.year == datetime.datetime.fromtimestamp(
+        req.app.cfg.now_ms / 1000, datetime.timezone.utc).year else f", {d.year}")
+    changes = "1 change" if nw["changes"] == 1 else f"{nw['changes']} changes"
+    number = f"build {nw['build']}" if nw.get("build") is not None else ""
+    msg = f"A newer build is ready: {', '.join(x for x in (number, when, changes) if x)}."
     return {"code": "release_available", "level": "info", "message": msg,
             "since_ms": nw["date_ms"], "fix_link": "/help#about",
             "detail": {"version": nw["short"], "commit": nw["commit"], "build": nw["build"],

@@ -358,6 +358,9 @@ class ReleaseCheck(ServerCase):
         self.assertIn("docker", r["pull"])
         n = {x["code"]: x for x in self.c.get("/api/v1/notices")["items"]}["release_available"]
         self.assertEqual((n["detail"]["commit"], n["detail"]["changes"]), (nw["commit"], 4))
+        self.assertEqual((b["number"], nw["build"]), (41, 42))
+        self.assertTrue(n["message"].startswith("A newer build is ready: build 42, "), n["message"])
+        self.assertNotIn(nw["short"], n["message"])
         self.assertEqual(n["detail"]["notes_url"], nw["compare_url"])
         self.server.app.store.release_result = "error"
         r = self.c.json("POST", "/api/v1/release/check", {})

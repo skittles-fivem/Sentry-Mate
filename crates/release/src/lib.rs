@@ -69,6 +69,54 @@ impl Build {
     pub fn short(&self) -> Option<String> {
         self.commit.as_deref().map(short)
     }
+
+    /// How pages show it: `0.1.0 · build 41 · Nov 22` (the year added when not `now_ms`'s), the date left out when
+    /// unknown. A build with no number (a local one) is `0.1.0 · dev build`: the commit is never in the label.
+    pub fn label(&self, now_ms: u64) -> String {
+        let Some(n) = self.number.filter(|_| !self.dev()) else { return format!("{} · dev build", self.version) };
+        let mut parts = vec![self.version.clone(), format!("build {n}")];
+        if let Some(d) = self.built_ms {
+            parts.push(build_date(d, now_ms));
+        }
+        parts.join(" · ")
+    }
+}
+
+impl Newest {
+    /// `build 42, Nov 22, 1 change`: the newer build as the notice and the pages name it (without a run number,
+    /// only the date and the count; the commit stays in the change list).
+    pub fn summary(&self, now_ms: u64) -> String {
+        let mut parts = Vec::new();
+        if let Some(n) = self.build {
+            parts.push(format!("build {n}"));
+        }
+        if let Some(d) = self.date_ms {
+            parts.push(build_date(d, now_ms));
+        }
+        parts.push(if self.changes == 1 { "1 change".into() } else { format!("{} changes", self.changes) });
+        parts.join(", ")
+    }
+}
+
+/// `(year, month 1..=12, day)` (UTC) of a time.
+fn civil(ms: u64) -> (i64, i64, i64) {
+    let z = i64::try_from(ms / 86_400_000).unwrap_or(0) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
+/// `Nov 22` (UTC), with the year when it is not `now_ms`'s year: `Nov 22, 2025`.
+pub fn build_date(ms: u64, now_ms: u64) -> String {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let (y, m, d) = civil(ms);
+    let month = MONTHS.get(usize::try_from(m - 1).unwrap_or(0)).copied().unwrap_or("Jan");
+    if y == civil(now_ms).0 { format!("{month} {d}") } else { format!("{month} {d}, {y}") }
 }
 
 /// A full commit id: 40 hex characters, lower case.
@@ -168,5 +216,42 @@ mod tests {
         assert!(b.dev());
         assert_eq!((b.number, b.built_ms), (None, None));
         assert!(Build::from_parts("0.1.0", None, None, None).dev());
+    }
+
+    const NOV_22: u64 = 1_795_305_600_000;
+
+    #[test]
+    fn the_number_is_shown_not_the_commit() {
+        let b = Build::from_parts("0.1.0", Some("41"), Some(SHA), Some("2026-11-22T00:00:00Z"));
+        assert_eq!(b.label(NOV_22), "0.1.0 · build 41 · Nov 22");
+        assert!(!b.label(NOV_22).contains("2f44a52"));
+        // another year: the year too
+        assert_eq!(b.label(NOV_22 + 365 * 86_400_000), "0.1.0 · build 41 · Nov 22, 2026");
+        // no date
+        let b = Build::from_parts("0.1.0", Some("41"), Some(SHA), None);
+        assert_eq!(b.label(NOV_22), "0.1.0 · build 41");
+        // a commit but no number, and a local build: dev build
+        assert_eq!(Build::from_parts("0.1.0", None, Some(SHA), None).label(NOV_22), "0.1.0 · dev build");
+        assert_eq!(Build::from_parts("0.1.0", Some("41"), None, None).label(NOV_22), "0.1.0 · dev build");
+    }
+
+    #[test]
+    fn a_newer_build_by_its_number() {
+        let mut n = Newest {
+            commit: "d5f1c7c".repeat(5) + "00000",
+            short: "d5f1c7c".into(),
+            date_ms: Some(NOV_22),
+            build: Some(42),
+            changes: 1,
+            titles: vec![],
+            more: 0,
+            compare_url: String::new(),
+        };
+        assert_eq!(n.summary(NOV_22), "build 42, Nov 22, 1 change");
+        n.changes = 4;
+        n.build = None;
+        assert_eq!(n.summary(NOV_22), "Nov 22, 4 changes");
+        assert_eq!(build_date(0, NOV_22), "Jan 1, 1970");
+        assert_eq!(build_date(NOV_22 + 2 * 86_400_000, NOV_22), "Nov 24");
     }
 }

@@ -9,7 +9,7 @@ import { h, replace } from '../shared/dom.js';
 import { head, paint, section, kv, link, btn, note } from '../core/ui.js';
 import { KEYS } from '../core/keys.js';
 import { tag, DASH } from '../core/fmt.js';
-import { buildLabel, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
+import { buildLabel, buildTitle, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 import { getNotices, onNotices } from '../core/notices.js';
 import { downloadText } from '../core/secret.js';
 import { toast } from '../core/toast.js';
@@ -87,7 +87,7 @@ export async function mount(ctx) {
 
   const docs = about.links?.docs, source = about.links?.source;
   const aboutSec = section({ title: 'about', id: 'about' }, kv([
-    ['sentry mate', [buildLabel(about, ctx.api.now()) || DASH, about.dev_server ? [' ', tag('dev server, made-up data', 'warn')] : null], { cover: 'web.settings.about.version' }],
+    ['sentry mate', [h('span', { title: buildTitle(about) || null }, buildLabel(about, ctx.api.now()) || DASH), about.dev_server ? [' ', tag('dev server, made-up data', 'warn')] : null], { cover: 'web.settings.about.version' }],
     ['api', `/api/v${about.api_version ?? '?'}`],
     ['ui pack', [`${pack.name || DASH} ${pack.version || ''}`.trim(), mismatch ? [' ', tag('warn', 'warn'), ` made for api ${pack.api}; this server speaks ${about.api_version}`] : null]],
     ['newer release', release, { cover: 'web.settings.about.update-available' }],

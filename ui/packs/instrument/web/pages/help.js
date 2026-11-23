@@ -9,7 +9,7 @@ import { downloadCsv, csvFilename } from '../shared/csv.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel, kv, pill, csvButton, appLink } from '../core/page.js';
 import { getNotices, onNotices } from '../core/notices.js';
-import { buildLabel, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
+import { buildLabel, buildTitle, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 import { flash } from '../core/flash.js';
 
 export const id = 'help';
@@ -118,7 +118,7 @@ export async function mount(ctx) {
   const pack = about.ui_pack || {};
   const apiMismatch = pack.api != null && about.api_version != null && String(pack.api) !== String(about.api_version);
   const versionCell = h('div', { class: 'help-version' },
-    h('span', { class: 'help-version-main mono' }, buildLabel(about, ctx.api.now()) || '—'),
+    h('span', { class: 'help-version-main mono', title: buildTitle(about) || null }, buildLabel(about, ctx.api.now()) || '—'),
     about.dev_server ? pill('Dev server, made-up data', { tone: 'warm', ic: 'warn' }) : null);
 
   const releaseCell = h('div', { class: 'help-release' });

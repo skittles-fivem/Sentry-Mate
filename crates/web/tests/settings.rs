@@ -1148,7 +1148,7 @@ async fn release_check_against_a_fake_github() {
     let notice = items.as_array().unwrap().iter().find(|i| i["code"] == "release_available").cloned().unwrap();
     assert_eq!(notice["level"], "info");
     assert_eq!(notice["fix_link"], "/help#about");
-    assert_eq!(notice["message"], "A newer build is ready: abc1234, Nov 24, 2 changes.");
+    assert_eq!(notice["message"], "A newer build is ready: build 57, Nov 24, 2 changes.");
     assert_eq!(notice["detail"]["commit"], NEWEST_BUILD);
     assert_eq!(notice["detail"]["version"], "abc1234");
     assert_eq!(notice["detail"]["build"], 57);
