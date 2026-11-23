@@ -950,6 +950,11 @@ pub struct Track {
 }
 
 pub fn track(e: &Engine, car: CarId, id: u64) -> QResult<Track> {
+    track_with(e, car, id, None)
+}
+
+/// [`track`], with the car's import gap filling at hand (one for many tracks keeps the import's days read).
+pub(crate) fn track_with(e: &Engine, car: CarId, id: u64, gaps: Option<&super::gapfill::Gaps<'_>>) -> QResult<Track> {
     let c = car_of(e, car)?;
     let d: Drive = e.db().get(car, id)?.ok_or(QueryError::NotFound("no_such_drive"))?;
     let mut stretches: Vec<Vec<TrackPoint>> = Vec::new();
@@ -958,7 +963,14 @@ pub fn track(e: &Engine, car: CarId, id: u64) -> QResult<Track> {
     // a live drive's track with what the chosen import fills: values it lacks, and the import's points where the
     // drive's own data has a gap
     let given = if d.source == Source::Live {
-        let gaps = super::gapfill::Gaps::new(e, car, None)?;
+        let own_gaps;
+        let gaps = match gaps {
+            Some(g) => g,
+            None => {
+                own_gaps = super::gapfill::Gaps::new(e, car, None)?;
+                &own_gaps
+            }
+        };
         let to = d.end_ms.max(d.start_ms) + 1;
         gaps.samples(own, d.start_ms, to, GAP_MS, super::gapfill::Own::WhenOn)?
     } else {
