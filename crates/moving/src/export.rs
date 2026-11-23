@@ -30,6 +30,13 @@
 //! linked too (only bytes after that length ever change); plain files, and growing files with a tail that isn't a
 //! whole record, are copied as stored. Then the writes go on and the export is read from the snapshot.
 //!
+//! # How far it got: a [`Watch`]
+//!
+//! [`Snapshot::make_watched`] reports as it goes, for a page that polls: it first counts what it will carry (outside
+//! the pause, so the writes go on), then waits for the writes under way, then links and copies the files under the
+//! pause, each step with its files and bytes done of those counted. [`Snapshot::sha256`] reads the whole export once
+//! more, the same way, for its SHA-256. Both stop at the next file or MiB once the watch is cancelled.
+//!
 //! The snapshot can't change, so the export's bytes are the same every time: [`Snapshot::reader`] starts at any
 //! byte (a resumed download), making the chunk that holds it again. The chunks' nonces are made from their own
 //! bytes (see `vault::chunks`), so even a file that did change under a snapshot is never sealed twice with one nonce.
@@ -43,6 +50,8 @@ use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use vault::{Vault, chunks};
 
@@ -113,6 +122,190 @@ struct Plan {
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+/// The time now, ms since 1970 UTC (the web side hands over its own clock).
+pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// A step of making an export ([`Watch`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    /// Counting the files to carry and their bytes (the writes go on).
+    Counting,
+    /// Waiting for the writes under way, before the pause.
+    Waiting,
+    /// Linking and copying the files into the snapshot (the writes wait).
+    Collecting,
+    /// Reading the whole export once for its SHA-256.
+    Checking,
+    /// Nothing runs any more.
+    Done,
+}
+
+impl Phase {
+    const ALL: [Phase; 5] = [Phase::Counting, Phase::Waiting, Phase::Collecting, Phase::Checking, Phase::Done];
+
+    /// Its name in the API.
+    pub fn name(self) -> &'static str {
+        match self {
+            Phase::Counting => "counting",
+            Phase::Waiting => "waiting",
+            Phase::Collecting => "collecting",
+            Phase::Checking => "checking",
+            Phase::Done => "done",
+        }
+    }
+}
+
+/// A speed is worked out over at least this long.
+const RATE_MS: u64 = 2_000;
+
+/// How far an export has got: written by the thread that makes it, read by whoever looks (atomics; one small lock
+/// for the speed).
+pub struct Watch {
+    clock: Clock,
+    phase: AtomicU8,
+    files_done: AtomicU64,
+    files_total: AtomicU64,
+    bytes_done: AtomicU64,
+    bytes_total: AtomicU64,
+    started_ms: u64,
+    phase_ms: AtomicU64,
+    progress_ms: AtomicU64,
+    /// The speed's window: when it began, the bytes done then, and the speed of the window before.
+    rate: Mutex<(u64, u64, Option<u64>)>,
+    cancel: AtomicBool,
+}
+
+/// What a look at a [`Watch`] saw.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Seen {
+    pub phase: Phase,
+    pub files_done: u64,
+    /// 0 while counting (not known yet).
+    pub files_total: u64,
+    pub bytes_done: u64,
+    /// 0 while counting (not known yet); never less than `bytes_done`.
+    pub bytes_total: u64,
+    pub started_ms: u64,
+    /// When this phase began.
+    pub phase_ms: u64,
+    /// When the last byte or file was done (or the phase began).
+    pub progress_ms: u64,
+    /// Over the last few seconds; `None` until a few seconds went by in this phase.
+    pub bytes_per_s: Option<u64>,
+    pub cancelled: bool,
+}
+
+impl Watch {
+    pub fn new(clock: Clock) -> Watch {
+        let now = clock();
+        Watch {
+            clock,
+            phase: AtomicU8::new(0),
+            files_done: AtomicU64::new(0),
+            files_total: AtomicU64::new(0),
+            bytes_done: AtomicU64::new(0),
+            bytes_total: AtomicU64::new(0),
+            started_ms: now,
+            phase_ms: AtomicU64::new(now),
+            progress_ms: AtomicU64::new(now),
+            rate: Mutex::new((now, 0, None)),
+            cancel: AtomicBool::new(false),
+        }
+    }
+
+    /// One on the system clock.
+    pub fn system() -> Watch {
+        Watch::new(Arc::new(now_ms))
+    }
+
+    /// Asks the work to stop: it ends with [`Error::Cancelled`] at its next file or MiB.
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
+
+    fn check(&self) -> Result<(), Error> {
+        if self.cancelled() { Err(Error::Cancelled) } else { Ok(()) }
+    }
+
+    pub fn phase(&self) -> Phase {
+        Phase::ALL.get(usize::from(self.phase.load(Ordering::SeqCst))).copied().unwrap_or(Phase::Done)
+    }
+
+    /// The next phase, with what it will do (0: not known); its counts start again.
+    pub(crate) fn begin(&self, phase: Phase, files_total: u64, bytes_total: u64) {
+        let now = (self.clock)();
+        let mut r = self.rate.lock().unwrap_or_else(|e| e.into_inner());
+        self.files_done.store(0, Ordering::SeqCst);
+        self.bytes_done.store(0, Ordering::SeqCst);
+        self.files_total.store(files_total, Ordering::SeqCst);
+        self.bytes_total.store(bytes_total, Ordering::SeqCst);
+        self.phase_ms.store(now, Ordering::SeqCst);
+        self.progress_ms.store(now, Ordering::SeqCst);
+        self.phase.store(Phase::ALL.iter().position(|p| *p == phase).unwrap_or(4) as u8, Ordering::SeqCst);
+        *r = (now, 0, None);
+    }
+
+    /// `files` and `bytes` more done.
+    pub(crate) fn step(&self, files: u64, bytes: u64) {
+        self.files_done.fetch_add(files, Ordering::SeqCst);
+        self.bytes_done.fetch_add(bytes, Ordering::SeqCst);
+        if files > 0 || bytes > 0 {
+            self.progress_ms.store((self.clock)(), Ordering::SeqCst);
+        }
+    }
+
+    /// A look now.
+    pub fn seen(&self) -> Seen {
+        let now = (self.clock)();
+        let bytes_done = self.bytes_done.load(Ordering::SeqCst);
+        let per_s = {
+            let mut r = self.rate.lock().unwrap_or_else(|e| e.into_inner());
+            let dt = now.saturating_sub(r.0);
+            if dt >= RATE_MS {
+                r.2 = Some(bytes_done.saturating_sub(r.1).saturating_mul(1000) / dt);
+                r.0 = now;
+                r.1 = bytes_done;
+            }
+            r.2
+        };
+        let bytes_total = self.bytes_total.load(Ordering::SeqCst);
+        let files_done = self.files_done.load(Ordering::SeqCst);
+        let files_total = self.files_total.load(Ordering::SeqCst);
+        Seen {
+            phase: self.phase(),
+            files_done,
+            files_total: if files_total == 0 { 0 } else { files_total.max(files_done) },
+            bytes_done,
+            bytes_total: if bytes_total == 0 && files_total == 0 { 0 } else { bytes_total.max(bytes_done) },
+            started_ms: self.started_ms,
+            phase_ms: self.phase_ms.load(Ordering::SeqCst),
+            progress_ms: self.progress_ms.load(Ordering::SeqCst),
+            bytes_per_s: per_s,
+            cancelled: self.cancelled(),
+        }
+    }
+}
+
+/// Copies `src` to `dst` a MiB at a time, telling `watch` and stopping when it is cancelled.
+fn copy_watched(src: &mut impl Read, dst: &mut impl Write, watch: &Watch) -> Result<u64, Error> {
+    let mut buf = vec![0u8; 1 << 20];
+    let mut n = 0u64;
+    loop {
+        watch.check()?;
+        let got = read_up_to(src, &mut buf)?;
+        if got == 0 {
+            return Ok(n);
+        }
+        dst.write_all(&buf[..got])?;
+        n += got as u64;
+        watch.step(0, got as u64);
+    }
 }
 
 /// The day of a time, "2026-11-17" (UTC).
@@ -200,6 +393,21 @@ impl Snapshot {
     /// Takes the snapshot: pauses the writes (waiting at most `wait` for those under way), looks at every carried file
     /// once, then lets the writes go on. `app` is this Sentry Mate's version.
     pub fn make(data: &Path, vault: &Vault, gate: &gate::Gate, app: &str, wait: Duration) -> Result<Snapshot, Error> {
+        Snapshot::make_watched(data, vault, gate, app, wait, &Watch::system())
+    }
+
+    /// [`Snapshot::make`], telling `watch` how far it got (counting, waiting, collecting) and stopping with
+    /// [`Error::Cancelled`] when it is cancelled.
+    pub fn make_watched(
+        data: &Path,
+        vault: &Vault,
+        gate: &gate::Gate,
+        app: &str,
+        wait: Duration,
+        watch: &Watch,
+    ) -> Result<Snapshot, Error> {
+        watch.begin(Phase::Counting, 0, 0);
+        let (files, bytes) = count(data, watch)?;
         remove_unused_snapshots(data);
         let mut id = [0u8; 16];
         getrandom::fill(&mut id).map_err(|e| Error::Io(io::Error::other(e.to_string())))?;
@@ -209,7 +417,7 @@ impl Snapshot {
         let Some(lock) = lock_snapshot(&dir)? else {
             return Err(Error::Io(io::Error::other("a new snapshot's lock is held")));
         };
-        let made = take(data, &dir, &hid, vault, gate, app, wait);
+        let made = take(data, &dir, &hid, vault, gate, app, wait, watch, (files, bytes));
         match made {
             Ok((header, prefix, skips)) => Ok(Snapshot { dir, id, header, prefix, skips, _lock: lock }),
             Err(e) => {
@@ -268,6 +476,30 @@ impl Snapshot {
         })
     }
 
+    /// The export file's SHA-256 (hex), reading it once from the start, telling `watch` (phase checking) and stopping
+    /// with [`Error::Cancelled`] when it is cancelled. Checks its length too.
+    pub fn sha256(&self, vault: &Vault, watch: &Watch) -> Result<String, Error> {
+        watch.begin(Phase::Checking, 0, self.header.size);
+        let mut r = self.reader(vault, 0)?;
+        let mut h = Sha256::new();
+        let mut buf = vec![0u8; 1 << 20];
+        let mut n = 0u64;
+        loop {
+            watch.check()?;
+            let got = read_up_to(&mut r, &mut buf).map_err(unwrap_changed)?;
+            if got == 0 {
+                break;
+            }
+            h.update(&buf[..got]);
+            n += got as u64;
+            watch.step(0, got as u64);
+        }
+        if n != self.header.size {
+            return Err(Error::Changed("the export came out at another length".into()));
+        }
+        Ok(hex::encode(h.finalize()))
+    }
+
     /// Writes the whole export to `out`; returns its length.
     pub fn write_to(&self, vault: &Vault, out: &mut impl Write) -> Result<u64, Error> {
         let mut r = self.reader(vault, 0)?;
@@ -286,6 +518,22 @@ fn unwrap_changed(e: io::Error) -> Error {
 
 type Made = (Header, Vec<u8>, Skips);
 
+/// The files the export will carry and their bytes, looked at once outside the pause (only for the progress: the
+/// snapshot looks again under the pause).
+fn count(data: &Path, watch: &Watch) -> Result<(u64, u64), Error> {
+    let (mut files, mut bytes) = (0u64, 0u64);
+    let mut skips = Skips::default();
+    tree::walk(data, Purpose::Export, &mut skips, |f| -> Result<ControlFlow<()>, Error> {
+        watch.check()?;
+        files += 1;
+        bytes += f.len;
+        watch.step(1, f.len);
+        Ok(ControlFlow::Continue(()))
+    })?;
+    Ok((files, bytes))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn take(
     data: &Path,
     dir: &Path,
@@ -294,6 +542,8 @@ fn take(
     gate: &gate::Gate,
     app: &str,
     wait: Duration,
+    watch: &Watch,
+    (count_files, count_bytes): (u64, u64),
 ) -> Result<Made, Error> {
     let files_dir = dir.join(FILES);
     let entries_label = format!("{SNAPSHOTS}/{hid}/{ENTRIES}");
@@ -301,7 +551,9 @@ fn take(
     let mut w = vault.seal_writer(&entries_label, BufWriter::with_capacity(1 << 16, out))?;
     let (mut files, mut bytes, mut manifest) = (0u64, 0u64, 0u64);
     let mut skips = Skips::default();
+    watch.begin(Phase::Waiting, 0, 0);
     let pause = gate.pause(wait)?;
+    watch.begin(Phase::Collecting, count_files, count_bytes);
     // read under the pause too: what an export opens with is the recovery key of that moment
     let recovery = Vault::recovery_part(data)?;
     let made_ms = now_ms();
@@ -309,6 +561,7 @@ fn take(
     let mut enc = Vec::with_capacity(256);
     let mut unreadable = Skips::default();
     tree::walk(data, Purpose::Export, &mut skips, |f| -> Result<ControlFlow<()>, Error> {
+        watch.check()?;
         // a file this server may not open (made by root, say) is skipped and named, like a folder it can't read
         let mut src = match tree::open_file(f.full) {
             Ok(x) => x,
@@ -336,12 +589,14 @@ fn take(
         };
         let len = if link {
             std::fs::hard_link(f.full, &dst).map_err(Error::NoHardLinks)?;
+            watch.step(0, f.len);
             f.len
         } else {
             src.seek(SeekFrom::Start(0))?;
             let mut out = create_private(&dst)?;
-            io::copy(&mut src, &mut out)?
+            copy_watched(&mut src, &mut out, watch)?
         };
+        watch.step(1, 0);
         let e = Entry { path: f.path.to_string(), kind, len, mtime_us: f.mtime_us };
         enc.clear();
         e.encode(&mut enc);
@@ -383,6 +638,7 @@ fn take(
     let plan =
         serde_json::to_vec(&Plan { header: header.clone(), manifest }).map_err(|e| Error::Malformed(e.to_string()))?;
     vault.write_file(&dir.join(PLAN), &format!("{SNAPSHOTS}/{hid}/{PLAN}"), &plan)?;
+    watch.begin(Phase::Done, files, bytes);
     Ok((header, prefix, skips))
 }
 

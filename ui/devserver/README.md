@@ -28,6 +28,8 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 | `--now-ms MS` | `1794850200000` | The virtual "now" at start (2026-11-16 17:30 UTC). It then moves with real time. |
 | `--fresh` (or `--needs-setup`) | off | Starts as a fresh server: no accounts and nobody signed in, the first-run set-up page. The set-up code is `SETUP-DEV-0000`. See "First-run set-up and moving" below. |
 | `--move-state S` | `none` | Starts Settings: Server's "Move to another server" in state `S`: `offered`, `expired`, `copying`, `paused`, `moved` or `done` (screenshots; add `--freeze-clock` to hold it there). Not with `--fresh`. |
+| `--export P` | `quick` | How a new export file is made: `quick` (3 s), `slow` (18 GB in 2 min), `stall` (stops at 40 %, `stalled` a minute later) or `fail` (problem `no_space` at 55 %). |
+| `--export-state S` | `none` | An export file there at start: `preparing` (slow, a third collected), `stalled`, `failed` or `ready` (its SHA-256 worked out). Screenshots: add `--freeze-clock`. Not with `--fresh`. |
 | `--own-certificate` | off | Runs with the owner's own certificate (`certificate.own` in `/network`), expiring in 12 days: the `certificate_expiring` notice is up and `POST /network/certificate` is `409 own_certificate`. Without it the certificate is one the server made, which never expires soon. |
 | `--release-check off\|newer\|up_to_date\|error\|never\|checking` | `off` | The release check at start: off, or on with that result of the last check (`GET /api/v1/release`): a newer build (`9c1e7d3`, 4 changes, with the admins' `release_available` notice), up to date, GitHub's rate limit, not checked yet, or a check in flight. Turned on later in a session it finds the newer build. `/about` carries a made-up `build` (`0.1.0 · build 2f44a52`). |
 | `--teslamate-trouble none\|connection_refused\|auth_failed\|pin_mismatch\|quiet\|catchup_failed` | `none` | The local TeslaMate starts in that trouble with its admins' notice (`teslamate_connection_refused`, `teslamate_auth_failed`, `teslamate_pin_mismatch`, `teslamate_quiet`, `teslamate_catchup_failed`; the last turns the database catch-up on), linking to Settings: Integrations (#teslamate). In tests, `resources.teslamate.fail(store, part, code, now)` starts or ends one (`quiet` for a broker that stays connected and sends nothing). |
@@ -196,8 +198,10 @@ After a move or a restore the server has the made-up accounts (`admin`, `watch`,
 sends `two_step: "000000"`) answers the move code once. After `--move-peer-after-s` the made-up new server claims it:
 `copying` (10 s, round 1, then round 2), `paused` (2 s), `moved` (2 s: the server takes no changes, `409 moved`),
 `done`. `POST /api/v1/system/move/undo { password, confirm: true }` takes it back. `POST /api/v1/system/exports
-{ password }` prepares a 4 MB made-up export file in 3 s; its `url` downloads it (with `Range`), and it restores
-on a `--fresh` dev server.
+{ password }` prepares a 4 MB made-up export file in 3 s (counting 0.5 s, waiting 0.3 s, collecting 2.2 s, then its
+SHA-256 in 2 s more); its `url` downloads it (with `Range`), and it restores on a `--fresh` dev server. `--export
+slow` makes it collect 18 GB in 2 min, `--export stall` stops it at 40 % (`stalled` a minute later, for ever; cancel
+it with `DELETE`), `--export fail` fails it at 55 % with problem `no_space`.
 
 **A new certificate**: `POST /api/v1/network/certificate { password }` answers `{ names, sha256, upload_address }`
 with `localhost` and the saved host names and a made-up SHA-256 (a new one each time), which `/network` shows from

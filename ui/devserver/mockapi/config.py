@@ -12,6 +12,9 @@ import time
 DEFAULT_NOW_MS = 1_794_850_200_000
 # where --move-state starts the old server's side of a move (resources/moving.py)
 MOVE_STATES = ("none", "offered", "expired", "copying", "paused", "moved", "done")
+# --export: how a new export file is made (resources/moving.py EXPORT_PROFILES); --export-state: one there at start
+EXPORT_PROFILES = ("quick", "slow", "stall", "fail")
+EXPORT_STATES = ("none", "preparing", "stalled", "failed", "ready")
 
 
 # --map-tiles: how the maps start (see parse_args)
@@ -36,6 +39,8 @@ class Config:
     needs_setup: bool = False
     move_state: str = "none"
     move_peer_after_s: int = 15
+    export_profile: str = "quick"
+    export_state: str = "none"
     freeze_clock: bool = False
     sse_interval_ms: int = 2000
     rows_every_s: float = 0
@@ -63,6 +68,12 @@ def parse_args(argv=None) -> Config:
                     help="start the 'move to another server' section in this state (screenshots)")
     ap.add_argument("--move-peer-after-s", type=int, default=15,
                     help="a made-up new server claims a waiting move code this many seconds after it is made (0: never)")
+    ap.add_argument("--export", dest="export_profile", choices=EXPORT_PROFILES, default="quick",
+                    help="how a new export file is made: quick (3 s), slow (18 GB in 2 min), stall (stops at 40 %%) "
+                         "or fail (no space at 55 %%)")
+    ap.add_argument("--export-state", choices=EXPORT_STATES, default="none",
+                    help="an export file there at start: preparing (slow, a third done), stalled, failed or ready "
+                         "(screenshots; add --freeze-clock to hold it there)")
     ap.add_argument("--freeze-clock", action="store_true", help="keep 'now' fixed instead of advancing")
     ap.add_argument("--sse-interval-ms", type=int, default=2000, help="how often live values are pushed")
     ap.add_argument("--rows-every-s", type=float, default=0,
@@ -91,6 +102,8 @@ def parse_args(argv=None) -> Config:
         ap.error("--rows-every-s must be 0 or more")
     if a.move_peer_after_s < 0:
         ap.error("--move-peer-after-s must be 0 or more")
+    if a.needs_setup and a.export_state != "none":
+        ap.error("--export-state needs a server that is set up (not --fresh)")
     if a.needs_setup and a.move_state != "none":
         ap.error("--move-state needs a server that is set up (not --fresh)")
     if not os.path.isdir(os.path.join(a.pack, "web")):
@@ -98,6 +111,7 @@ def parse_args(argv=None) -> Config:
     return Config(pack=a.pack, host=a.host, port=a.port, cars=a.cars, latency_ms=a.latency_ms, seed=a.seed,
                   signed_out=a.signed_out, role=a.role, now_ms=a.now_ms, needs_setup=a.needs_setup,
                   move_state=a.move_state, move_peer_after_s=a.move_peer_after_s,
+                  export_profile=a.export_profile, export_state=a.export_state,
                   freeze_clock=a.freeze_clock, sse_interval_ms=max(200, a.sse_interval_ms),
                   rows_every_s=a.rows_every_s, verbose=a.verbose,
                   own_certificate=a.own_certificate, map_tiles=a.map_tiles,
