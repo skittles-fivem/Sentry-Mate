@@ -7,6 +7,9 @@
 // API: GET cars/{car}/health, gaps, totals?source=, updates (summary), storage, signals/latest, signals;
 // GET/POST cars/{car}/full-rebuild, DELETE system/full-rebuild (admin: rebuild all data);
 // GET system/storage, system/health (admin), cars, geocode/status.
+// Live: `health` events of the car change every figure of the status, the missing logs and the log tail in place
+// (live events, polling only while the live stream is down); the full rebuild follows its `job` events; `rows`
+// events of the car read the gaps and totals again, in place, once a burst has passed.
 
 import * as state from '../shared/state.js';
 import { h, replace, cover } from '../shared/dom.js';
@@ -28,6 +31,8 @@ import { deviceName } from '../shared/devices.js';
 import { deviceText, renameBtn } from './device-name.js';
 import { fullRebuild } from '../core/fullrebuild.js';
 import * as fr from '../shared/fullrebuild.js';
+import { follow, carOf, onRows, FALLBACK_POLL_MS } from '../shared/live.js';
+import { morphChildren, keepEl } from '../core/morph.js';
 
 export const id = 'health';
 export const title = (ctx) => (ctx.car ? 'Health' : 'System');
@@ -35,6 +40,8 @@ export const title = (ctx) => (ctx.car ? 'Health' : 'System');
 const enc = encodeURIComponent;
 const bytes = (v) => format(v, 'bytes');
 const fullPeriod = (p) => ({ ...p, from_ms: p?.from_ms ?? 0 });
+// the figures of /health that cover a period: a `health` event has them for its default window only
+const PERIOD_KEYS = ['unknown_ms', 'unknown_spans', 'unknown_spans_total', 'chain_gaps', 'chain_gaps_total', 'dropped_frames', 'dropped_frames_total'];
 const none = (t) => h('span', { class: 'muted' }, t);
 const ok = (word = 'ok') => tag(word, 'good');
 const warn = (word = 'warn') => tag(word, 'warn');
@@ -47,7 +54,7 @@ const REASONS = {
   logs_waiting_trust: ['logs wait for a key to be trusted', 'approve or assign the key and they are read at once.', 'settings-cars'],
   gps_inputs_disagree: ['positions from one input are out of step', 'one input’s GPS positions are far from the other inputs’ positions at the same moments, more than lag or noise explains (often a decoding problem). Its positions are not used there; the other inputs’ positions are. The rest of its data is still used.', null],
   logs_missing: ['logs missing on the server', 'the server lost some logs and asked the car to send them again; see missing on the server below.', null],
-  rebuild_pending: ['drives and charges are being rebuilt', 'worked out again from the stored logs; this page reads again until it is done.', null],
+  rebuild_pending: ['drives and charges are being rebuilt', 'worked out again from the stored logs; this page follows it until it is done.', null],
 };
 const TRUST = { verified: ['verified', 'good'], unsigned: ['unsigned', 'warn'], failed: ['failed', 'bad'] };
 const TRUST_REASONS = { signature_mismatch: 'the signature does not match the key', chain_break: 'it does not follow the log before it', unknown_key: 'the key is not known', bad_format: 'the file could not be read' };
@@ -152,23 +159,41 @@ async function mountCar(ctx) {
   const statusSlot = h('div', null, loadingLine('reading health'));
   const missSlot = h('div', null, loadingLine('reading health'));
   const tailSlot = h('div');
-  let pendingT = 0, wasPending = false;
-  ctx.onCleanup(() => clearTimeout(pendingT));
+  // the full rebuild's block, built once and kept in place under the figures painted again
+  const fullEl = full ? h('div', { class: 'hl-full', id: 'full-rebuild' }, full.el)
+    : note('an admin can rebuild all of this car\'s data from the stored logs and api data.');
+  let wasPending = false;
   let teslaItems = null;
-  async function loadHealth() {
+  // the figures follow the car's `health` events; the endpoint is read at the start, after a reconnect and, only
+  // while the live stream is down, every few seconds (every 3 s while drives are worked out again)
+  let periodT = 0, eventPeriod = null;
+  ctx.onCleanup(() => clearTimeout(periodT));
+  async function readHealth() {
     const [hl, ts] = await Promise.all([
       ctx.api.get(`${base}/health`, fullPeriod(ctx.params)),
       // the Tesla API input for this car (admins only): what the server asks Tesla for it now
       admin ? ctx.api.list('integrations/tesla/status').all().catch(() => null) : Promise.resolve(null),
     ]);
-    if (!ctx.alive()) return;
     teslaItems = ts;
+    return hl;
+  }
+  function onHealth(v, how) {
+    let hl = v;
+    if (how === 'event' && lastHl) {
+      // an event's period figures (unknown time, chain gaps, dropped frames) are for its own window: the page's
+      // read keeps them for the range shown, and is made again (at most every 2 s) when the event's ones changed
+      const sig = JSON.stringify(PERIOD_KEYS.map((k) => v[k] ?? null));
+      if (eventPeriod != null && sig !== eventPeriod && !periodT) periodT = setTimeout(() => { periodT = 0; if (ctx.alive()) healthLive.refresh(); }, 2000);
+      eventPeriod = sig;
+      hl = { ...v };
+      for (const k of PERIOD_KEYS) hl[k] = lastHl[k];
+    }
     paintHealth(hl);
-    clearTimeout(pendingT);
-    if (hl.rebuild_pending) pendingT = setTimeout(() => { if (ctx.alive()) loadHealth().catch(() => {}); }, 3000);
-    else if (wasPending) { gaps.reload(); loadTotals().catch(() => {}); }
+    if (!hl.rebuild_pending && wasPending) { gaps.reload(null, { quiet: true }); loadTotals().catch(() => {}); }
     wasPending = !!hl.rebuild_pending;
   }
+  let healthLive = null;
+  const loadHealth = async () => healthLive?.refresh();
 
   function paintHealth(hl) {
     const trust = hl.last_log_trust || {};
@@ -178,7 +203,8 @@ async function mountCar(ctx) {
     const keys = hl.keys || [];
     const silent = hl.last_upload_ms == null || reasons.includes('upload_silence');
     lastHl = hl; paintRebuild();
-    replace(statusSlot,
+    // only the texts that changed are written; the full rebuild's panel stays as it is
+    morphChildren(statusSlot, [
       h('p', { class: 'hl-verdict' }, hl.healthy ? ok() : warn(), ' ', hl.healthy ? 'data arrives, passes its checks and nothing waits' : `${reasons.length} ${reasons.length === 1 ? 'thing needs' : 'things need'} attention`, none('  (the same test sets "healthy" in mqtt)')),
       reasons.length ? h('ul', { class: 'hl-fixes' }, reasons.map((code) => {
         const r = REASONS[code] || [code, '', null];
@@ -192,15 +218,14 @@ async function mountCar(ctx) {
         ['chain gaps', status((hl.chain_gaps || []).length ? bad() : ok(), formatNumber((hl.chain_gaps || []).length))],
         ['dropped frames', status((hl.dropped_frames || []).length ? warn() : ok(), formatNumber((hl.dropped_frames || []).length), none(' times the bridge lost frames'))],
         ['uploads', hl.uploads_enabled ? status(ok(), 'accepted') : status(warn(), 'turned off for this car')],
-        ['rebuild', rebuildWord],
-        ...keys.map((k, i) => [keys.length > 1 ? `bridge key ${i + 1}` : 'bridge key', h('span', null, k.preferred ? tag('preferred', 'accent') : null, k.preferred ? ' ' : null, deviceText(k), admin ? [' ', renameBtn(ctx, k, (row) => { Object.assign(k, row); paintHealth(hl); }, { line: true })] : null, ' ', h('span', { class: 'muted break' }, k.key), '  ',
+        ['rebuild', keepEl(rebuildWord, 'rebuild')],
+        ...keys.map((k, i) => [keys.length > 1 ? `bridge key ${i + 1}` : 'bridge key', h('span', null, k.preferred ? tag('preferred', 'accent') : null, k.preferred ? ' ' : null, deviceText(k), admin ? [' ', renameBtn(ctx, k, (row) => { Object.assign(k, row); const cur = (lastHl?.keys || []).find((x) => x.key === k.key); if (cur) Object.assign(cur, row); paintHealth(lastHl || hl); }, { line: true })] : null, ' ', h('span', { class: 'muted break' }, k.key), '  ',
           k.last_upload_ms != null ? ago(k.last_upload_ms) : none('never uploaded'), k.logs_waiting ? [' ', warn(`${formatNumber(k.logs_waiting)} waiting`)] : null)]),
         keys.length ? null : ['bridge keys', status(warn(), 'none tied to this car: pair one on settings/cars')],
         ['data from', src(car, { full: true }) || none('no data yet')],
         ...teslaLines(),
       ]),
-      full ? h('div', { class: 'hl-full', id: 'full-rebuild' }, full.el)
-        : note('an admin can rebuild all of this car\'s data from the stored logs and api data.'));
+      keepEl(fullEl, 'full-rebuild')]);
 
     paintMissing(hl.missing_logs || {});
 
@@ -211,7 +236,7 @@ async function mountCar(ctx) {
     for (const d of hl.dropped_frames || []) lines.push({ ms: d.start_ms, tag: 'warn', tone: 'warn', text: `dropped frames for ${formatDuration((d.end_ms ?? d.start_ms) - d.start_ms)}` });
     for (const s of spans) lines.push({ ms: s.start_ms, tag: 'warn', tone: 'warn', text: `unknown ${s.end_ms == null ? 'since then' : `for ${formatDuration(s.end_ms - s.start_ms)}`}: ${SPAN_REASONS[s.reason] || s.reason}` });
     for (const k of keys) if (k.last_upload_ms != null) lines.push({ ms: k.last_upload_ms, tag: 'ok', tone: 'good', text: `upload from ${deviceName(k).text}` });
-    replace(tailSlot, logTail(lines, tz, { cover: 'faq.stopped-recording' }));
+    morphChildren(tailSlot, [logTail(lines, tz, { cover: 'faq.stopped-recording' })]);
   }
 
   // logs the server should have but no longer does (it looks at start-up and once a day): the same five lines always
@@ -219,7 +244,7 @@ async function mountCar(ctx) {
     const at = (ms) => formatDateTime(ms, tz, { now: ctx.api.now() });
     const n = m.count ?? 0, gone = m.gone ?? 0;
     const logs = (k) => `${formatNumber(k)} ${k === 1 ? 'log' : 'logs'}`;
-    replace(missSlot, kv([
+    morphChildren(missSlot, [kv([
       ['missing', n ? status(warn(), logs(n), none(' (with their sidecars) the server should have but no longer does'))
         : status(ok(), 'none', none(' every log the server recorded is here'))],
       ['oldest', n && m.oldest_ms != null ? h('span', null, at(m.oldest_ms), m.found_ms != null ? none(`  found missing ${at(m.found_ms)}`) : null) : none(DASH)],
@@ -230,7 +255,7 @@ async function mountCar(ctx) {
         : none(n ? 'none so far' : DASH)],
       ['timeline', gone ? status(warn(), 'their time shows as unknown time') : none(n ? 'filled in once the car sends them' : DASH)],
       ['last checked', m.scanned_ms != null ? h('span', null, at(m.scanned_ms), none('  at start-up and once a day')) : none('not checked yet')],
-    ], { cols: 1 }));
+    ], { cols: 1 })]);
   }
 
   // the Tesla API rows of this car: admins see what the server asks Tesla; others a plain line
@@ -260,6 +285,7 @@ async function mountCar(ctx) {
 
   /* ---------- totals */
   const totalsSlot = h('div', null, loadingLine('reading totals'));
+  let counts = null;
   async function loadTotals() {
     const [all, can, api, tm, upd] = await Promise.all([
       ctx.api.get(`${base}/totals`, { source: 'all' }), ctx.api.get(`${base}/totals`, { source: 'smo' }),
@@ -270,11 +296,14 @@ async function mountCar(ctx) {
     const sm = upd?.summary || null;
     // by input: a row SMO and the Tesla API both saw counts under each, so the parts can add up to more than the whole
     const split = (a, x, b, kind) => none(`  smo ${format(a ?? 0, kind)}${x ? `, tesla api ${format(x, kind)}` : ''}, imported ${format(b ?? 0, kind)}`);
-    const counts = table(ctx, {
-      title: 'rows kept', rows: [
-        { kind: 'drives', can: can.drives, api: api.drives, tm: tm.drives, total: all.drives }, { kind: 'charges', can: can.charges, api: api.charges, tm: tm.charges, total: all.charges },
-        { kind: 'software updates', can: can.updates, api: api.updates, tm: tm.updates, total: all.updates },
-      ], csv: false, cover: 'dbinfo.table.row_counts', sort: { key: 'total', dir: 'desc' },
+    const countRows = [
+      { kind: 'drives', can: can.drives, api: api.drives, tm: tm.drives, total: all.drives }, { kind: 'charges', can: can.charges, api: api.charges, tm: tm.charges, total: all.charges },
+      { kind: 'software updates', can: can.updates, api: api.updates, tm: tm.updates, total: all.updates },
+    ];
+    // the table built once: later reads change only its counts
+    if (counts) counts.setRows(countRows);
+    else counts = table(ctx, {
+      title: 'rows kept', rows: countRows, csv: false, cover: 'dbinfo.table.row_counts', sort: { key: 'total', dir: 'desc' },
       note: 'exact counts kept as rows change. a row smo and the tesla api both saw counts in both columns; where imported and live history overlap both are counted, and shown is what the other pages list.',
       columns: [
         { key: 'kind', label: 'kind', sort: true, ph: 'main', grow: true, cover: 'dbinfo.rows.table_name' },
@@ -284,7 +313,7 @@ async function mountCar(ctx) {
         { key: 'total', label: 'shown', num: true, sort: true, ph: 'num', cover: 'dbinfo.rows.row_count', render: (r) => h('b', null, formatNumber(r.total)) },
       ],
     });
-    replace(totalsSlot, kv([
+    morphChildren(totalsSlot, [kv([
       ['logged distance', [num(all.distance_km, 'distance'), split(can.distance_km, api.distance_km, tm.distance_km, 'distance')], { cover: 'dbinfo.stat.logged_distance' }],
       ['odometer', [num(all.odometer_last_km, 'odometer'), all.odometer_last_ms != null ? none(`  read ${ago(all.odometer_last_ms)}`) : none('  not sent yet')], { cover: 'dbinfo.stat.odometer' }],
       ['not logged', all.not_logged_km != null ? status(all.not_logged_km > 1 ? warn() : ok(), num(all.not_logged_km, 'distance')) : none('needs two odometer readings')],
@@ -292,7 +321,7 @@ async function mountCar(ctx) {
       ['charges', [formatNumber(all.charges ?? 0), split(can.charges, api.charges, tm.charges, 'count')], { cover: 'dbinfo.stat.charge_count' }],
       ['updates', [formatNumber(all.updates ?? 0), split(can.updates, api.updates, tm.updates, 'count')], { cover: 'dbinfo.stat.update_count' }],
       ['software', sm?.current_version ? [link(state.buildUrl('software', { car: cid }), sm.current_version), versionTag(sm.current_version_source) ? [' ', versionTag(sm.current_version_source)] : null, sm.build_changed_since != null ? [' ', warn('changed since')] : null] : none('not known: the car does not send its version text'), { cover: 'dbinfo.stat.current_version' }],
-    ]), counts.el);
+    ]), keepEl(counts.el, 'counts')]);
   }
 
   /* ---------- storage */
@@ -402,12 +431,22 @@ async function mountCar(ctx) {
       if (say && ctx.alive()) toast('read again', { kind: 'info' });
     } catch (e) { if (ctx.alive()) toast(errorWords(e).text, { kind: 'error' }); } finally { reloadBtn.disabled = false; }
   }
-  ctx.events('rows', (ev) => {
-    if (ev?.data?.car !== cid) return;
-    loadHealth().catch(() => {}); gaps.reload(null, { quiet: true }); loadTotals().catch(() => {});
+  // the car's rows changed (once a burst of them has passed): its gaps and totals, read again in place
+  onRows(ctx.api, { car: cid, waitMs: 1000, run: () => {
+    if (!ctx.alive()) return;
+    gaps.reload(null, { quiet: true }); loadTotals().catch(() => {});
+  } });
+
+  let firstHealth;
+  const healthReady = new Promise((res, rej) => { firstHealth = { res, rej }; });
+  healthLive = follow(ctx.api, {
+    type: 'health', match: carOf(cid), pick: (d) => d.health, load: readHealth,
+    onValue: (v, how) => { if (!ctx.alive()) return; onHealth(v, how); firstHealth.res(); },
+    onError: (e) => firstHealth.rej(e),
+    pollMs: (hl) => (hl?.rebuild_pending ? 3000 : FALLBACK_POLL_MS),
   });
 
-  try { await Promise.all([loadHealth(), loadTotals(), loadStorage(), loadSignals(), gaps.ready, full?.ready]); } catch (e) { if (ctx.alive()) ctx.fail(e); return; }
+  try { await Promise.all([healthReady, loadTotals(), loadStorage(), loadSignals(), gaps.ready, full?.ready]); } catch (e) { if (ctx.alive()) ctx.fail(e); return; }
   if (!ctx.alive()) return;
   ctx.ready();
 }

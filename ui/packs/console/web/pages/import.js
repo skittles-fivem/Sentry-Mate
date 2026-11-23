@@ -11,7 +11,8 @@
 // A progress line under the steps, the report (rows per table and car, why rows were skipped: counts only; for a
 // zip the logs per car key and why logs were refused), the spans where imported and live history overlap (with a
 // switch), and every import so far.
-// There is no live event for imports: while one is checked or imported the page reads it every 2 s.
+// Live: the import shown follows its `job` events (kind import, its id), its steps, progress and report written in
+// place (live events, polling only while the live stream is down: every 2 s while it is checked or imported).
 
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
@@ -25,6 +26,8 @@ import { tag, dateTime, date, dur, ago, DASH } from '../core/fmt.js';
 import { toast } from '../core/toast.js';
 import { confirmDialog } from '../core/dialog.js';
 import { src } from '../core/source.js';
+import { follow, jobOf } from '../shared/live.js';
+import { morphChildren } from '../core/morph.js';
 import { moveSummary, waiting, holdWhy, HOLD_ACTIONS, holdSaid, counted as nOf } from '../shared/rehome.js';
 
 export const id = 'import';
@@ -112,6 +115,8 @@ export async function mount(ctx) {
   const S = { jobs: [], cars: [], job: null, match: [], overlaps: [], overlapErr: null, holds: [] };
   // files: the chosen File per index of job.files (only those still to go up)
   const up = { files: new Map(), active: false, paused: false, error: null, t0: 0, b0: 0 };
+  // a slot painted again: only the texts that changed are written (a job event can come twice a second)
+  const put = (slot, ...kids) => morphChildren(slot, kids);
   const filesOf = (j) => (j?.files?.length ? j.files : j ? [{ index: 0, name: j.name, bytes_total: j.bytes_total, uploaded_bytes: j.uploaded_bytes || 0, upload_url: `imports/${enc(j.id)}` }] : []);
   const left = (f) => (f.uploaded_bytes || 0) < f.bytes_total;
   const loadJobs = async () => { S.jobs = await ctx.api.list('imports', { limit: 100 }).all({ max: 1000 }); };
@@ -336,7 +341,7 @@ export async function mount(ctx) {
     const sel = had === zoneIn ? [zoneIn.selectionStart, zoneIn.selectionEnd] : null;
     if (teslafi && tf.zone && !isValidZone(tf.zone)) zoneIn.setAttribute('aria-invalid', 'true');
     const n = teslafi ? 5 : 4;
-    replace(stepsSlot, h('ol', { class: 'runs' },
+    put(stepsSlot, h('ol', { class: 'runs' },
       step(1, 'file', 'choose the files', 'A TeslaMate backup, TeslaFi\'s data download (Settings > Account > Advanced > "Download TeslaFi Data": a CSV per month, alone, gzipped, several at once as one import, or in a .zip) or a Sentry Six Manager CAN export (.zip). Each file goes up over https in chunks of about 1 MB, each with its SHA-256, so a damaged chunk is sent again and a stopped upload goes on from the last chunk; up to 3 files go up at the same time.',
         s === 'uploading' && up.active ? btn('pause', () => { up.paused = true; }) : s === 'uploading' && up.paused && up.files.size ? btn('go on', () => upload(S.job), { kind: 'primary' }) : null,
         [(!j || !UNFINISHED.includes(s) || (s === 'uploading' && !up.active)) ? choose : null, upErr]),
@@ -361,7 +366,7 @@ export async function mount(ctx) {
   }
   function paintProgress() {
     const j = S.job;
-    if (!j) { replace(progSlot, h('pre', { class: 'mono-box' }, 'no import yet: choose a TeslaMate backup, TeslaFi data or a CAN export above')); return; }
+    if (!j) { put(progSlot, h('pre', { class: 'mono-box' }, 'no import yet: choose a TeslaMate backup, TeslaFi data or a CAN export above')); return; }
     const s = j.status;
     let doneB = 0, of = j.bytes_total, what = s;
     if (s === 'uploading') { doneB = j.uploaded_bytes ?? 0; what = up.active ? 'uploading' : up.paused ? 'paused' : 'stopped'; }
@@ -372,7 +377,7 @@ export async function mount(ctx) {
     const secs = (Date.now() - up.t0) / 1000;
     const fs = filesOf(j), many = fs.length > 1;
     const rate = s === 'uploading' && up.active && secs > 1 ? (doneB - up.b0) / secs : null;
-    replace(progSlot, h('pre', { class: 'mono-box', 'aria-live': 'polite' },
+    put(progSlot, h('pre', { class: 'mono-box', 'aria-live': 'polite' },
       `${what.padEnd(9)} `, textBar(p, { tone: s === 'failed' ? 'bad' : 'accent' }), ` ${format(p, 'number', { digits: 0 }).padStart(3)} %  ${bytes(doneB)} of ${bytes(of)}`,
       rate ? `  ${bytes(rate)}/s, about ${dur(((of - doneB) / rate) * 1000)} left` : '',
       `\nfile${many ? 's ' : '  '}    ${j.name}${j.compression && j.compression !== 'plain' ? ` (${j.compression})` : ''}`,
@@ -503,7 +508,7 @@ export async function mount(ctx) {
     tablesT.el.hidden = reasonsT.el.hidden = carsT.el.hidden = uploadsT.el.hidden = true;
     keysT.el.hidden = refusedT.el.hidden = false;
     const by = Object.entries(rep.refused || {}).filter(([, n]) => n);
-    replace(repSlot, kv([
+    put(repSlot, kv([
       ['logs read', [cnt(L.read), h('span', { class: 'muted' }, ` ${bytes(L.bytes)} of CAN Bridge logs`)]],
       [rep.imported ? 'logs imported' : 'logs to import', [cnt(rep.imported ? L.imported : L.to_import), h('span', { class: 'muted' }, ' signed by the car\'s CAN Bridge, unchanged since')]],
       ['here already', [cnt(L.already_here), h('span', { class: 'muted' }, ' the same name and SHA-256: not stored twice')]],
@@ -535,7 +540,7 @@ export async function mount(ctx) {
     carsT.setRows(cars.map((c) => ({ ...c, read: c.rows ?? null, imported: rep.imported ? c.rows ?? null : 0, skipped: c.rows == null ? null : {} })));
     uploadsT.setRows(uploads);
     const fileSk = Object.entries(rep.files_skipped || {});
-    replace(repSlot, kv([
+    put(repSlot, kv([
       ['file', [h('span', null, 'TeslaFi data download'), h('span', { class: 'muted' }, ` ${nf(rep.files)} file${rep.files === 1 ? '' : 's'}${rep.compression && rep.compression !== 'plain' ? `, ${rep.compression}` : ''}, ${bytes(rep.unpacked_bytes)}`)]],
       ['polls read', [nf(R.read), h('span', { class: 'muted' }, ` (${nf(R.used)} used)`)]],
       ['polls skipped', skipped.length ? [h('span', { class: 'tone--warn' }, nf(sum(R.skipped))), ` ${skipped.map(([k, n]) => `${k.replace(/_/g, ' ')} ${nf(n)}`).join(', ')}`] : 'none: every poll was used', { tone: skipped.length ? 'warn' : null }],
@@ -560,7 +565,7 @@ export async function mount(ctx) {
     if (rep && rep.kind === CAN) { paintCanReport(rep); return; }
     if (rep && rep.kind === TF) { paintTfReport(rep); return; }
     if (!rep) {
-      replace(repSlot, empty(j ? 'no report yet' : 'no import yet', j ? 'The report appears once the whole file has been checked.' : 'Each import gets a report: rows read, imported and skipped per table, and why.'));
+      put(repSlot, empty(j ? 'no report yet' : 'no import yet', j ? 'The report appears once the whole file has been checked.' : 'Each import gets a report: rows read, imported and skipped per table, and why.'));
       tablesT.el.hidden = reasonsT.el.hidden = carsT.el.hidden = uploadsT.el.hidden = true;
       return;
     }
@@ -576,7 +581,7 @@ export async function mount(ctx) {
       return `${nf(r.closed)} ${r.closed === 1 ? one : many} TeslaMate never ended ${rep.imported ? (r.closed === 1 ? 'was' : 'were') : 'will be'} taken, ending at ${r.closed === 1 ? 'its' : 'their'} last reading. `;
     });
     const tot = rows.reduce((a, r) => ({ read: add(a.read, r.read), imp: add(a.imp, rep.imported ? r.imported : r.would), sk: add(a.sk, r.skipped) }), { read: null, imp: null, sk: null });
-    replace(repSlot, kv([
+    put(repSlot, kv([
       ['rows read', cnt(tot.read)],
       [rep.imported ? 'rows imported' : 'rows to import', cnt(tot.imp)],
       ['rows skipped', tot.sk == null ? gap() : tot.sk ? [h('span', { class: 'tone--warn' }, nf(tot.sk)), ' each with its reason below'] : 'none: every row passed', { tone: tot.sk ? 'warn' : null }],
@@ -730,32 +735,43 @@ export async function mount(ctx) {
     S.jobs = S.jobs.map((x) => (x.id === j.id ? { ...x, ...j } : x));
     if (S.job?.id === j.id) S.job = { ...S.job, ...j };
   }
-  let busy = false, tick = 0;
-  async function refreshJob() {
+  // the import shown: its `job` events (not while this page sends its file: the upload says how far it got), its
+  // GET after a reconnect and, only while the live stream is down, every 2 s while it is checked or imported
+  let busy = false, firstJob = true, matchAt = 0;
+  async function gotJob(fresh) {
     const j = S.job;
-    if (!j || busy) return;
+    if (!j || !fresh || fresh.id !== j.id || busy) return;
     busy = true;
     const was = j.status;
     try {
-      const fresh = await ctx.api.get(`imports/${enc(j.id)}`);
-      if (!ctx.alive()) return;
       setJob(fresh);
-      if (fresh.status !== was || ['checking', 'ready'].includes(fresh.status)) await loadMatch();
+      // the cars found so far: read again when the state changed, and at most every 2 s while they are checked
+      if (fresh.status !== was || (['checking', 'ready'].includes(fresh.status) && Date.now() - matchAt > 2000)) { matchAt = Date.now(); await loadMatch(); }
       if (fresh.status === 'done' && was !== 'done') { await loadJobs(); await loadCars(); await loadHolds(); pick(); await loadOverlaps(); toast('Import done. The history shows on every page, marked as imported.'); }
       if (fresh.status === 'failed' && was !== 'failed') toast('The import failed; step 2 says why.', { kind: 'error' });
-    } catch (e) {
-      if (!ctx.alive()) return;
-      if (e?.code === 'no_such_import') { S.jobs = S.jobs.filter((x) => x.id !== j.id); S.job = null; pick(); }
-    } finally { busy = false; }
+    } catch { /* the next one tries again */ } finally { busy = false; }
     if (ctx.alive()) paintAll();
   }
-  ctx.every(2000, () => {
-    const j = S.job;
-    tick++;
-    if (!j || up.active) return;
-    if (j.status === 'checking' || j.status === 'importing') refreshJob();
-    else if (j.status === 'uploading' && tick % 5 === 0) refreshJob();
+  const jobLive = follow(ctx.api, {
+    type: 'job', match: (d) => jobOf('import')(d) && d.id === S.job?.id && !up.active, pick: (d) => d.status,
+    load: async () => {
+      const j = S.job;
+      // the page's own read stands for the first one
+      if (firstJob) { firstJob = false; return null; }
+      if (!j || up.active) return null;
+      try { return await ctx.api.get(`imports/${enc(j.id)}`); } catch (e) {
+        if (e?.code === 'no_such_import' && ctx.alive() && S.job?.id === j.id) { S.jobs = S.jobs.filter((x) => x.id !== j.id); S.job = null; pick(); paintAll(); }
+        return null;
+      }
+    },
+    pollMs: () => {
+      const j = S.job;
+      if (!j || up.active) return null;
+      return j.status === 'checking' || j.status === 'importing' ? 2000 : j.status === 'uploading' ? 10000 : null;
+    },
+    onValue: (fresh) => { if (ctx.alive()) gotJob(fresh); },
   });
+  const refreshJob = () => jobLive.refresh();
   function paintAll() {
     paintSteps(); paintProgress(); paintReport();
     const show = S.job && !isZip(S.job) && ['checking', 'ready'].includes(S.job.status);

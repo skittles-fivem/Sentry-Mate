@@ -23,6 +23,7 @@ import { deviceSizeOptions, deviceSizeNote } from '../shared/devicesize.js';
 import { flash } from './flash.js';
 import { buildLabel, buildTitle, releaseDismissed, dismissRelease } from '../shared/release.js';
 import { isTmNotice, tmNoticeFix, TM_NOTICE_ACTION } from '../shared/teslamate.js';
+import { liveWords, setAttr } from '../shared/live.js';
 
 const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 
@@ -315,7 +316,18 @@ export function mountFrame(opts) {
       applyPrefs(ev.data);
     }
   }, { types: ['notice', 'prefs'] });
-  api.on('network', (n) => document.documentElement.classList.toggle('is-offline', !n.ok));
+  // whether figures come live: the page's data-live ('live', 'wait' or 'off') and the clock's title say so (while
+  // the stream reconnects, pages read their figures every few seconds instead)
+  const showLive = () => {
+    const off = api.network().ok === false;
+    document.documentElement.classList.toggle('is-offline', off);
+    const w = off ? { tone: 'off', text: 'Offline: the server does not answer' } : liveWords(api.eventsState());
+    setAttr(document.documentElement, 'data-live', w.tone);
+    setAttr(parts.clock, 'title', `${w.text}.`);
+  };
+  api.on('network', showLive);
+  api.on('events', showLive);
+  showLive();
   return { update };
 }
 
