@@ -76,8 +76,12 @@ pub struct ChargeView {
     pub energy_added_kwh: Option<f64>,
     pub energy_grid_kwh: Option<f64>,
     pub dc_inlet_kwh: Option<f64>,
+    /// Grid energy less energy added, and their ratio: null unless both are known over the same span.
     pub losses_kwh: Option<f64>,
     pub efficiency_pct: Option<f64>,
+    /// Why `efficiency_pct` and `losses_kwh` are null although both energies are known (they were measured over
+    /// different parts of the charge), as a sentence to show with them; else null.
+    pub efficiency_note: Option<String>,
     pub cost: Option<Cost>,
     pub price_per_kwh: Option<PricePerKwh>,
     pub start_soc_pct: Option<f64>,
@@ -407,6 +411,8 @@ fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeV
         Some(PricePerKwh { value, basis })
     });
     let hours = ms as f64 / 3_600_000.0;
+    // compared only when measured over the same span
+    let both = grid.zip(added).filter(|_| ch.energy_spans.is_none());
     let range_added = ch.end_range_km.zip(ch.start_range_km).map(|(b, a)| b - a);
     ChargeView {
         id: ch.id.to_string(),
@@ -429,8 +435,9 @@ fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeV
         energy_added_kwh: r(added, 3),
         energy_grid_kwh: r(grid, 3),
         dc_inlet_kwh: None,
-        losses_kwh: r(grid.zip(added).map(|(g, a)| g - a), 3),
-        efficiency_pct: r(grid.zip(added).filter(|(g, _)| *g > 0.0).map(|(g, a)| a / g * 100.0), 1),
+        losses_kwh: r(both.map(|(g, a)| g - a), 3),
+        efficiency_pct: r(both.filter(|(g, _)| *g > 0.0).map(|(g, a)| a / g * 100.0), 1),
+        efficiency_note: ch.energy_spans.filter(|_| grid.is_some() && added.is_some()).map(efficiency_note),
         cost,
         price_per_kwh,
         start_soc_pct: r(ch.start_soc, 1),
@@ -448,6 +455,21 @@ fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeV
         has_gaps: false,
         flags: ChargeFlags { in_progress: live, gap_ms: 0 },
     }
+}
+
+/// Why a charge's energies are not compared ([`ChargeView::efficiency_note`]).
+fn efficiency_note(s: model::EnergySpans) -> String {
+    let min = |ms: u64| {
+        let s = ms.div_ceil(1000);
+        if s < 60 { format!("{s} s") } else { format!("{} min", (s + 30) / 60) }
+    };
+    format!(
+        "Not measured over the same time: the energy added covers {} of this charge and the grid energy {} \
+         ({} both), so no efficiency or losses are shown.",
+        min(s.added_ms),
+        min(s.grid_ms),
+        min(s.both_ms)
+    )
 }
 
 /// Calls `f` with each shown row of `car` whose start is in `[a, b)`, newest or oldest first, reading the db a page

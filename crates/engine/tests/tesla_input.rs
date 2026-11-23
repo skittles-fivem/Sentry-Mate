@@ -1043,3 +1043,113 @@ fn smo_gps_out_of_step_with_the_api_gives_way_and_is_named() {
         assert!(!visits.items.is_empty() && visits.items.iter().all(|v| near(v.lon)), "the stops");
     });
 }
+
+/// SMO's log of minute `i` of a parked car charging from `a` to `b` (s from T0): the pack takes 10 kW and the charge
+/// line gives 230 V at 48 A (11.04 kW) then, as SMO reads them every second; nothing on the bus says it is charging
+/// (no charge status frame), so that comes from the other input. Without `pack`, no pack frames either.
+fn smo_charging_minute(i: u64, a: u64, b: u64, pack: bool) -> (String, Vec<u8>, Vec<u8>) {
+    let start = T0 + i * 60_000;
+    let mut log = String::from("# canbridge v1 app=test\n");
+    for k in 0..600u64 {
+        let t = start + 10 + k * 100;
+        let on = (a..b).contains(&((t - T0) / 1000));
+        log += &frame(t, &[("DI_gear", 1.0)]);
+        log += &frame(t + 1, &[("DI_vehicleSpeed", 0.0)]);
+        if pack {
+            log += &frame(t + 2, &[("BattVoltage132", 400.0), ("SmoothBattCurrent132", if on { -25.0 } else { 0.5 })]);
+        }
+        log += &frame(
+            t + 3,
+            &[
+                ("ChargeLineVoltage264", if on { 230.0 } else { 0.0 }),
+                ("ChargeLineCurrent264", if on { 48.0 } else { 0.0 }),
+            ],
+        );
+        if k % 10 == 0 {
+            log += &frame(t + 5, &[("UI_SOC", 60.0), ("UI_Range", 300.0)]);
+            log += &frame(t + 6, &[("GPSLatitude04F", LAT), ("GPSLongitude04F", LON), ("GPSAccuracy04F", 5.0)]);
+        }
+    }
+    let name = format!("{KEY}_20260101T00{i:02}00Z_{}.log.xz", i + 1);
+    let mut xz = Vec::new();
+    lzma_rs::xz_compress(&mut log.as_bytes(), &mut xz).unwrap();
+    let side = serde_json::json!({
+        "format": "canbridge-candump-xz/1",
+        "start_wall_ms": start,
+        "end_wall_ms": start + 60_000,
+        "closed_because": "rotate",
+    });
+    (name, xz, serde_json::to_vec(&side).unwrap())
+}
+
+/// A 12-minute AC charge (from 50 s to 790 s after T0): SMO's logs (with its pack frames or not) and TeslaFi's polls
+/// once a minute (the charging state, its charger's power and per-phase volts and amps). Its row.
+fn short_charge(pack: bool) -> query::charges::ChargeView {
+    rt().block_on(async {
+        let k = kit();
+        let (a, b) = (50, 790);
+        for i in 0..15 {
+            let (name, log, side) = smo_charging_minute(i, a, b, pack);
+            upload(&k, &name, &log).await;
+            upload(&k, &format!("{name}.json"), &side).await;
+        }
+        k.engine.idle().await;
+        let car = k.db.car_for_key(KEY).unwrap().unwrap();
+        let polls: Vec<Sample> = (a + 10..b)
+            .step_by(60)
+            .map(|s| Sample {
+                t_ms: T0 + s * 1000,
+                lat: Some(LAT),
+                lon: Some(LON),
+                gear: Some(Gear::P),
+                soc: Some(60.0),
+                charging: Some(true),
+                charge_kind: Some(model::ChargeKind::Ac),
+                charge_power_kw: Some(11.0),
+                charger_voltage_v: Some(230.0),
+                charger_current_a: Some(16.0),
+                ..Sample::default()
+            })
+            .collect();
+        k.engine.feed_points(Input::TeslafiApi, car, polls, vec![online(0, 900)]);
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+        let mut items =
+            query::charges::car_charges(&k.engine, car, &Default::default(), &Paging::default()).unwrap().items;
+        assert_eq!(items.len(), 1, "{items:#?}");
+        let c = items.remove(0);
+        assert_eq!(c.kind, Some("ac"));
+        assert!(kinds(&c.from).contains(&"teslafi_api"), "{:?}", c.from);
+        // the grid energy is SMO's charge line over the whole charge (about 12.5 minutes at 11.04 kW)
+        let grid = c.energy_grid_kwh.unwrap();
+        assert!((2.1..2.4).contains(&grid), "grid {grid}");
+        c
+    })
+}
+
+#[test]
+fn a_short_charge_seen_by_smo_and_teslafi_compares_its_energies_over_one_span() {
+    // SMO's pack power gives the energy added over the whole charge too, not only the seconds next to one of
+    // TeslaFi's polls (those alone gave a third of it: 0.83 kWh against 2.27 kWh from the grid, "37 %")
+    let c = short_charge(true);
+    let (added, grid) = (c.energy_added_kwh.unwrap(), c.energy_grid_kwh.unwrap());
+    assert!((1.9..2.25).contains(&added), "added {added} (grid {grid})");
+    let eff = c.efficiency_pct.unwrap();
+    assert!((85.0..100.0).contains(&eff), "efficiency {eff}: added {added}, grid {grid}");
+    assert!((c.losses_kwh.unwrap() - (grid - added)).abs() < 0.002, "{c:?}");
+    assert_eq!(c.efficiency_note, None);
+}
+
+#[test]
+fn a_charge_whose_energies_cover_different_spans_shows_no_efficiency_and_says_why() {
+    // no pack frames from SMO: the energy into the pack is known only next to TeslaFi's polls, the grid's all along
+    let c = short_charge(false);
+    let added = c.energy_added_kwh.unwrap();
+    assert!(added < 1.2, "only part of the charge: {added}");
+    assert_eq!((c.efficiency_pct, c.losses_kwh), (None, None), "{c:?}");
+    let note = c.efficiency_note.as_deref().unwrap();
+    assert!(note.starts_with("Not measured over the same time: the energy added covers "), "{note}");
+    assert!(note.contains("the grid energy 12 min"), "{note}");
+    let v = serde_json::to_value(&c).unwrap();
+    assert!(v["efficiency_pct"].is_null() && v["efficiency_note"].is_string(), "{v}");
+}

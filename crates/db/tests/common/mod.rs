@@ -448,6 +448,7 @@ pub fn charge(
         kind: Some(model::ChargeKind::Ac),
         energy_added_kwh: Some(kwh),
         energy_used_kwh: Some(kwh * 1.1),
+        energy_spans: None,
         start_soc: Some(40.0),
         end_soc: Some(80.0),
         start_range_km: None,
