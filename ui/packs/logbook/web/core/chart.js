@@ -9,6 +9,8 @@
 // draws in device pixels and follows the pixel ratio itself. Fonts, axis room and line widths are given
 // at the standard size and scaled with the interface size; a new root size or theme builds the charts
 // again, keeping the zoom. uPlot is loaded on first use (vendor/uplot), so pages without charts never load it.
+// A chart below the fold is built when it comes within a screen of view (shared/lazy.js); its box has its height
+// from app.css already, so nothing moves, and it takes the zoom the others have then.
 
 import { h, cssVar, styleSheet } from '../shared/dom.js';
 import { convert, unitLabel } from '../shared/units.js';
@@ -16,6 +18,7 @@ import { formatNumber } from '../shared/i18n.js';
 import { dateFormat } from '../shared/time.js';
 import { display } from './display.js';
 import { onTheme } from './prefs.js';
+import { whenNear } from '../shared/lazy.js';
 
 let loading = null;
 /** Load uPlot (script and style sheet, relative to this file) once: resolves with the uPlot constructor once both are in. */
@@ -216,20 +219,27 @@ export async function stackedCharts(ctx, container, { tz, t_ms, rows, spans = []
     };
   }
 
+  function buildOne(b, C, k) {
+    const { opts, data } = options(b, b === boxes[boxes.length - 1], C, k);
+    b.plot = new uPlot(opts, data, b.box);
+    plots.push(b.plot);
+  }
   function build() {
     const shown = plots.length ? { min: plots[0].scales.x.min, max: plots[0].scales.x.max } : null;
     for (const p of plots) p.destroy();
     plots = [];
     const C = chartColours();
     const k = display.scale;
-    boxes.forEach((b, i) => {
-      const { opts, data } = options(b, i === boxes.length - 1, C, k);
-      b.plot = new uPlot(opts, data, b.box);
-      plots.push(b.plot);
-    });
+    for (const b of boxes) if (b.near) buildOne(b, C, k);
     if (shown && plots[0]) plots[0].setScale('x', shown);
   }
-  build();
+  // each chart once it comes near; a late one takes the zoom of those drawn already (without telling onZoom)
+  const cancels = boxes.map((b) => whenNear(b.box, () => {
+    b.near = true;
+    const shown = plots.length ? { min: plots[0].scales.x.min, max: plots[0].scales.x.max } : null;
+    buildOne(b, chartColours(), display.scale);
+    if (shown) { syncing = true; b.plot.setScale('x', shown); syncing = false; }
+  }));
 
   const ro = new ResizeObserver(() => {
     for (const b of boxes) {
@@ -243,7 +253,7 @@ export async function stackedCharts(ctx, container, { tz, t_ms, rows, spans = []
   // (the page takes its charts down before it draws them again, as on a live refresh: nothing of them is held on to
   // then, though the page's clean-up list still names this function)
   const destroy = () => {
-    stopSize(); stopTheme(); ro.disconnect(); plots.forEach((p) => p.destroy()); plots = [];
+    cancels.forEach((f) => f()); stopSize(); stopTheme(); ro.disconnect(); plots.forEach((p) => p.destroy()); plots = [];
     boxes.length = 0; x.length = 0;
     t_ms = null; rows = null; spans = null; states = null; onHover = null; onZoom = null; container = null;
   };

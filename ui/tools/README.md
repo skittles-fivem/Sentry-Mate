@@ -103,7 +103,11 @@ newest drive and charge (the first item of `GET /api/v1/cars/{car}/drives` and `
 
 ### The checks
 
-Each page and size is checked in a fresh browser window, then gets a screenshot.
+Each page and size is checked in a fresh browser window, then gets a screenshot. Before the checks below (after
+ready, and after the `--stable` watch) it scrolls the page down about a screen at a time to its end and back (in the
+window, else in the page's tallest box that scrolls), and waits for the network to go quiet again: pages draw charts,
+maps and lists below the fold only when they come near the screen (`ui/shared/lazy.js`), so this way they are all
+there to be measured and photographed.
 
 | Column | Fails when |
 |---|---|
@@ -150,7 +154,8 @@ Status per page: **PASS**, **WARN** (passes, with missing items under `--allow-m
       stable: null | { error } | { watchedMs, firstPaintMs, readyMs, shift, shiftBeforeReady, shiftWithInput,
         shiftSources: [{ selector, times, px }], moved: [{ selector, px, times, atMs: [ms], cause, box }], movedCount,
         toggling: [{ selector, times, first, atMs: [ms], text? }], togglingCount, late: [{ selector, h, atMs, pushed }],
-        events: { now, rows, ... }, eventCount, apiRequests, cost, before, after, outlined },
+        events: { now, rows, ... }, eventCount, apiRequests, cost, before, after, outlined, scrollMoved?, scrollMovedCount? },
+      scrolled: null | { steps, moved: [{ selector, px }], movedCount },
       hover: null | { error } | { targets, points, charts, focused, groups, count, noise, ms, pageMs, shot,
         findings: [{ n, kind, target, x, y, count, scrolled, scrollbar, stays, moved: [{ selector, dx, dy, dw, dh, box }] }] },
       shot, fullShot, tiles, covered, notes: [text], ms, dropped? }] }] }
@@ -226,6 +231,7 @@ long after it is ready (`data-ready`) and measures in the page (`stable.js`, ins
 | **moved** | A cross-check that also sees below the window: every 250 ms the layout top (`offsetTop` up the `offsetParent` chain, so a turning spinner or a transform animation does not count) of every block-level element of at least 40 x 8 px. A block whose top moves by more than 1 px without input is listed once with the largest move, how often and when, and what came before it in the page in that step (`cause`: a block that appeared, grew, shrank or went away). Only the outermost of blocks that moved together is listed; fixed and sticky ones are left out. | A block moved. |
 | **flicker** | A `MutationObserver` marks the page changed; at the next animation frame (the frame that gets painted) the checker takes the set of visible elements (by their place in the page: tag, id or first class, place among their kind) and of placeholder texts (`—`, `…`, `Loading…`, `Updating…`, `No …`, `None`, `unknown` and the like). Each element or placeholder that appears or goes away counts one change. An element that appeared once (a new row) or went away once is fine. Only the outermost of elements that changed together is listed. | Anything changed more than once: it went away and came back (data, then a loading text or an empty state, then data again), or it appeared and went away again (a spinner or `Loading…` coming back), hidden and shown again (`hidden`, `display`, `visibility`, `opacity: 0`). |
 | **late** | Blocks that appeared after ready and pushed others down (the `cause` of a move). | (Shown with the moves they caused.) |
+| scrolled | After the watch, the layout top of every block of the whole page before and after the page is scrolled through (see "The checks"): a part drawn on the way when it came near the screen that had no room kept for it moves what is under it (`scrollMoved`, `scrollMovedCount`). | A block moved (a `stable: moved ... while the page was scrolled through` line). |
 | before ready | The shift between the first paint and ready, and both times. | Never: shown on the summary line. |
 | updates | The events the page's `EventSource` got during the watch, by type, and its `/api` requests. | Never; a `note:` when nothing arrived at all. |
 

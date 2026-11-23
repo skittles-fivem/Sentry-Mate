@@ -15,6 +15,7 @@ import { formatTime, formatDate } from '../shared/time.js';
 import { cssVar, styleSheet } from '../shared/dom.js';
 import { formatNumber } from '../shared/i18n.js';
 import { rpx, onChange, onTheme, uplotRatio } from './display.js';
+import { whenNear } from '../shared/lazy.js';
 
 let load = null;
 /**
@@ -58,13 +59,16 @@ export const colors = () => ({
 /**
  * A uPlot chart that fills its box: make(width, height) returns the uPlot options (called again on
  * every build), data is uPlot's [x, ...ys]. onBuild(u) runs after each build. Cleaned up with the page.
+ * A chart below the fold is built when it comes within a screen of view (shared/lazy.js); its box has its
+ * height from CSS already, so nothing moves. Until then u is null and setData keeps the newest data.
  * Returns { get u(), setData(data) }.
  */
 export function mountPlot(target, make, data, ctx, onBuild = null) {
   const uPlot = window.uPlot;
-  // a chart drawn again into the same box (a live refresh) takes the old one's place, never a second one under it
+  // a chart drawn again into the same box (a live refresh) takes the old one's place at once, never a second one under it
+  const again = !!target.__smPlot;
   target.__smPlot?.destroy();
-  let u = null, later = 0, cur = data;
+  let u = null, later = 0, cur = data, ro = null, off = null, offTheme = null;
   const box = () => ({ width: Math.max(10, Math.floor(target.clientWidth)), height: Math.max(10, Math.floor(target.clientHeight)) });
   const cursorAt = () => (u && u.cursor.idx != null && u.cursor.left >= 0 ? { x: u.posToVal(u.cursor.left, 'x'), fy: u.cursor.top / Math.max(1, u.over.clientHeight) } : null);
   const putCursor = (c) => { if (c) requestAnimationFrame(() => { if (u) u.setCursor({ left: u.valToPos(c.x, 'x'), top: c.fy * u.over.clientHeight }); }); };
@@ -78,29 +82,33 @@ export function mountPlot(target, make, data, ctx, onBuild = null) {
     onBuild?.(u);
     putCursor(c);
   };
-  build();
-  keepTapReadout(target);
-  const ro = new ResizeObserver(() => {
-    if (!u) return;
-    const { width, height } = box();
-    if (width !== u.width || height !== u.height) { const c = cursorAt(); u.setSize({ width, height }); putCursor(c); }
-  });
-  ro.observe(target);
-  const off = onChange((ev) => {
-    if (ev.dprChanged || ev.sizeChanged) build();
-    else { clearTimeout(later); later = setTimeout(build, 150); }
-  });
-  const offTheme = onTheme(() => build());
+  const start = () => {
+    build();
+    keepTapReadout(target);
+    ro = new ResizeObserver(() => {
+      if (!u) return;
+      const { width, height } = box();
+      if (width !== u.width || height !== u.height) { const c = cursorAt(); u.setSize({ width, height }); putCursor(c); }
+    });
+    ro.observe(target);
+    off = onChange((ev) => {
+      if (ev.dprChanged || ev.sizeChanged) build();
+      else { clearTimeout(later); later = setTimeout(build, 150); }
+    });
+    offTheme = onTheme(() => build());
+  };
+  let cancelNear = null;
+  if (again) start(); else cancelNear = whenNear(target, start);
   // (taken down before the page is left, as on a live refresh: nothing of the chart is held on to, though the
   // page's clean-up list still names this function)
   const destroy = () => {
     if (!target) return;
-    clearTimeout(later); ro.disconnect(); off(); offTheme(); u?.destroy(); u = null;
+    cancelNear?.(); clearTimeout(later); ro?.disconnect(); off?.(); offTheme?.(); u?.destroy(); u = null;
     if (target.__smPlot === plot) delete target.__smPlot;
     target = null; make = null; cur = null; data = null; onBuild = null;
   };
   ctx.onCleanup(destroy);
-  const plot = { get u() { return u; }, setData(d) { cur = d; u?.setData(d); }, rebuild: build, destroy };
+  const plot = { get u() { return u; }, setData(d) { cur = d; u?.setData(d); }, rebuild: () => { if (u) build(); }, destroy };
   target.__smPlot = plot;
   return plot;
 }

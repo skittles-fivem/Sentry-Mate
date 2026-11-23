@@ -15,6 +15,7 @@
 import * as api from '../shared/api.js';
 import { h, cssVar, esc, styleSheet } from '../shared/dom.js';
 import { rpx, onChange, onTheme, getTheme } from './display.js';
+import { whenNear } from '../shared/lazy.js';
 import { getPrefs, onPrefs, applyPrefs } from './prefs.js';
 import { tileChoice, rasterPaint, mapColors, tileSources, tileLayers, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles, sharpZoom } from '../shared/maptiles.js';
 
@@ -88,7 +89,13 @@ function style(src) {
  * Returns null when the page was left meanwhile. Throws when MapLibre cannot start (no WebGL): show
  * mapFallback() then.
  */
-export async function createMap(el, ctx, { center = [0, 0], zoom = 13, interactive = true, styleSwitch = true } = {}) {
+export async function createMap(el, ctx, { center = [0, 0], zoom = 13, interactive = true, styleSwitch = true, lazy = false } = {}) {
+  // lazy: a map below the fold is made (and MapLibre loaded) when it comes within a screen of view (shared/lazy.js);
+  // a page waits for it before ready only when nearNow(el) says it is near
+  if (lazy) {
+    await new Promise((resolve) => ctx.onCleanup(whenNear(el, resolve)));
+    if (!ctx.alive()) return null;
+  }
   const [ml, cfg] = await Promise.all([loadMapLibre(), mapsConfig()]);
   let src = tileChoice(cfg, getPrefs());
   watchTilePolicy(src.template && !src.offline ? src.template : null);
