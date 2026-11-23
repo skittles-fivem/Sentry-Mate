@@ -1,6 +1,6 @@
 // The app frame every page shares: Simple's structure in Horizon's look. Along the top a dashboard strip
 // (Horizon's HUD bar, without its radio display) with the brand, the five sections (Car, Trips, Battery and energy,
-// Battery, Stats, Settings) as buttons with an icon over the name, and the tools ("Find a page" (/), live
+// Stats, Settings) as buttons with an icon over the name, and the tools ("Find a page" (/), live
 // status, the car's clock, the car switcher, the account); under it where you are ("Sentry Mate / Car",
 // a detail page's trail), then the open section's tabs as a row of chips and the shared period picker;
 // the notices bar, flash notes and the footer.
