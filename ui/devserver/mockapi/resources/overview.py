@@ -528,6 +528,8 @@ def _view(req, c, problems, now):
         "hourly": [{"hour_ms": a, "count": n, "errors": e} for a, n, e in hours[-24:]],
         # a CAN Bridge row: the car's logs the server is missing and has asked the car for (null on other rows)
         "missing_logs": system.missing_count(req, c.car) if c.kind == "smo" else None,
+        # a CAN Bridge row: when the newest log arrived (here a log a minute while awake: its last contact)
+        "newest_log_ms": c.last_ok_ms if c.kind == "smo" else None,
         "link": c.link,
     }
 

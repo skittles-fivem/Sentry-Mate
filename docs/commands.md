@@ -464,6 +464,7 @@ The data folder (contents sealed unless said):
 | `can/<car key>/quarantine/<name>` | The first bad copy of a log (or sidecar) that failed its check and was sent again, kept until the copy sent again verifies. |
 | `migrated.json` | A note that the one-time check for files an older version stored in the clear has run, so later starts skip it. Made on the first start, a new install too. |
 | `tokens/<sha256>.json`, `tokens/<sha256>.key` | Each token, and the car key it is tied to. |
+| `tokens/contacts.sealed` | Each token's and car key's last contact (the bridge's last request the server accepted, and when its newest log arrived), saved at most once a minute. |
 | `tls/cert.pem` | The certificate, in the clear (it is public). |
 | `tls/key.sealed` | Its private key. |
 | `can/<car key>/<name>.log.xz`, `<name>.log.xz.json` | The logs and sidecars, as uploaded. |

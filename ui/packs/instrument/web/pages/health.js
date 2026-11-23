@@ -367,7 +367,7 @@ async function mountCar(ctx) {
 
     const figs = figures([
       metric('Last upload', hl.last_upload_ms != null ? agoEl(hl.last_upload_ms, tz) : null, null, {
-        why: 'No log has arrived yet.', explain: hl.last_upload_ms != null ? `${when(ctx, hl.last_upload_ms)}. A car that sleeps sends nothing; that is not a fault.` : 'Pair a CAN Bridge on Settings: Cars.',
+        why: 'Nothing has come from the CAN Bridge yet.', explain: hl.last_upload_ms != null ? `${when(ctx, hl.last_upload_ms)}: the CAN Bridge's last contact.${hl.newest_log_ms != null ? ` Newest log arrived ${when(ctx, hl.newest_log_ms)}.` : ''} A car that sleeps sends nothing; that is not a fault.` : 'Pair a CAN Bridge on Settings: Cars.',
       }),
       metric('Last log check', tw ? h('span', { class: tw[1] === 'live' ? 'ok' : 'warn' }, tw[0]) : null, null, {
         why: 'No log checked yet.',

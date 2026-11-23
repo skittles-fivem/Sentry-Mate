@@ -1611,8 +1611,10 @@ async fn start(
     let offer = tokio::task::spawn_blocking(move || moving::old::Offer::open(&d, v2, g, APP_VERSION, &fp)).await??;
     // the history: told of every log the uploads' judge checks (not on a server whose data moved away)
     let serving = !offer.is_moved();
-    // the engine's own view of the tokens (the same files; the uploads' instance ties them)
-    let engine_tokens = Arc::new(Tokens::open(tokens_file(data), v.clone()).await?);
+    // the engine's own view of the tokens (the same files; the uploads' instance ties them), with the uploads' last
+    // contacts: the pages show each bridge's last request as it happens
+    let engine_tokens =
+        Arc::new(Tokens::open(tokens_file(data), v.clone()).await?.with_contacts(tokens.contacts().clone()));
     let (d, v2, s2) = (data.to_path_buf(), v.clone(), store.clone());
     let engine = tokio::task::spawn_blocking(move || site::EngineRun::open(&d, v2, s2, Some(engine_tokens), serving))
         .await?

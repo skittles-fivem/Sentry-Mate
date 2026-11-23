@@ -7,6 +7,7 @@
 
 pub mod api;
 mod cache;
+pub mod contacts;
 pub mod error;
 pub mod judge;
 mod ledger;
@@ -18,6 +19,7 @@ pub mod store;
 pub mod tokens;
 
 pub use api::{Conn, Exporter, Memory, RefusedCall, Uploads, router};
+pub use contacts::{Call, Contact, Contacts};
 pub use error::ApiError;
 pub use judge::{Judge, Judged, OnJudged};
 pub use missing::{Missing, MissingLog};

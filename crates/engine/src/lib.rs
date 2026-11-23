@@ -544,6 +544,13 @@ impl Engine {
         self.inner.tokens.get()
     }
 
+    /// The last contact of each car key's CAN Bridge (its last request the upload server accepted), when tokens
+    /// were given: the upload server's live values when they share its contacts ([`ingest::Tokens::with_contacts`]),
+    /// else what it last saved. `None`: no tokens given (pages then go by when the newest log arrived).
+    pub fn contacts(&self) -> Option<&Arc<ingest::Contacts>> {
+        self.tokens().map(|t| t.contacts())
+    }
+
     /// What to give [`ingest::Judge::on_judged`]: it notes the log and returns at once.
     pub fn listener(&self) -> ingest::OnJudged {
         let (tx, outstanding) = (self.inner.tx.clone(), self.inner.outstanding.clone());

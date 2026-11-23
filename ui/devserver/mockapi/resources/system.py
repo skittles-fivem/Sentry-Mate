@@ -587,7 +587,7 @@ def car_health(req):
         it = list_item(req.app, cid, req.now)
         reasons = [c for c in it["attention"] if c in ("upload_silence", "trust_failed")]
         return {"car": cid, "time_zone": req.tz(), "healthy": not reasons, "reasons": reasons,
-                "last_upload_ms": it["now"]["received_ms"],
+                "last_upload_ms": it["now"]["received_ms"], "newest_log_ms": it["now"]["received_ms"],
                 "last_log_trust": {"result": "failed" if "trust_failed" in reasons else "verified", "reason": None},
                 "keys": [], "chain_gaps": [], "dropped_frames": [], "unknown_spans": [], "unknown_ms": 0,
                 "logs_waiting": 0, "missing_logs": missing_logs(req, cid), "log_checks": log_checks(req, None, 0),
@@ -638,8 +638,10 @@ def car_health(req):
             unknown.append({"start_ms": s.start, "end_ms": None if live else s.end, "reason": s.reason})
     return {
         "car": cid, "time_zone": req.tz(), "healthy": not reasons, "reasons": reasons, "last_upload_ms": last_upload,
-        "last_log_trust": trust,
-        "keys": [{"key": k["key"], "last_upload_ms": k["last_upload_ms"], "preferred": k["preferred"],
+        # the bridge's last request and the newest log's arrival: one and the same here (a log a minute while awake)
+        "newest_log_ms": last_upload, "last_log_trust": trust,
+        "keys": [{"key": k["key"], "last_upload_ms": k["last_upload_ms"], "newest_log_ms": k["last_upload_ms"],
+                  "preferred": k["preferred"],
                   "device": k["device"], "device_label": device_label(k), "logs_waiting": k["logs_waiting"]}
                  for k in keys],
         "chain_gaps": chain, "dropped_frames": dropped, "unknown_spans": unknown,
