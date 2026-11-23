@@ -118,6 +118,7 @@ each piece's own seed and never stored, so a year of data answers in a few hundr
 | Reports (statistics, mileage, totals, gaps, compare, stops and Travel, tracks, software, car events) | done |
 | Places (preview of a change, reprice, suggestions, the place at a point) | done |
 | Integrations (MQTT settings, status, preview, test; outside connections) | done |
+| Integrations: Overview (every connection with made-up hourly counters for 7 days and the week's problems; see below) | done |
 | Integrations: Tesla (accounts, sign-in at Tesla with a pasted address, refresh token, cars, pause, poll setting, status; nothing leaves the dev server) | done |
 | Server, settings and health (notices, maps, data health, rebuild, overlaps, storage) | done |
 | Import (resumable upload, check, car matching, import, report) | done |
@@ -125,6 +126,29 @@ each piece's own seed and never stored, so a year of data answers in a few hundr
 | Deliberately absent (no car commands, no wake, no Tesla token, no SQL, no VIN serial) | absent: `404` |
 
 Decisions on points the API document left open are at the end of `docs/ui-api.md` ("Decisions").
+
+## Integrations: Overview
+
+`GET /api/v1/integrations/overview` (admin; `watch` gets `403`, like every `/integrations` route) lists the CAN
+Bridge of each car (the sold car `c0` has none), the Tesla and TeslaFi accounts, local TeslaMate (MQTT, database),
+the MQTT broker, online map tiles, address lookup and the release check, in that order, from the mock's own state
+(`mockapi/resources/overview.py`). With the default flags: `c1` and `c2` live (driving, charging), `c3` in
+`problem` (`quiet`: its CAN Bridge has sent nothing since the log that failed its check, about 55 h before "now";
+the one open problem), TeslaFi `idle` (`parked`: it reads `c3`), the TeslaMate database, address lookup (offline)
+and the release check `off`. Synthetic cars are live when driving, charging or parked, else `idle` (`car_asleep`).
+`--teslamate-trouble`, `--release-check error`, a Tesla sign-in refused or TeslaFi token refused put that
+connection in `problem` with an open problem since its error.
+
+The hourly counters are worked out, never stored: a featured car's CAN Bridge sends a log a minute while the car
+is awake (nothing while it sleeps), the Tesla and TeslaFi counts follow their paces and their cars, the rest
+follow a day-time shape (Pacific time); the odd failed try is marked, and a try inside a problem counts as an
+error. The five resolved problems of the week (`c1`'s CAN Bridge offline for the afternoon two days before, as in
+its sources; Tesla, TeslaMate's broker, the MQTT broker, the tiles: 12 minutes to 6 hours) are fixed relative to
+`--now-ms`; `uptime` is the share of the period outside the connection's problems. On a running clock the current
+hour's count grows, `last_ok_ms` and the open problem's `duration_ms` move on, and the list keeps its order.
+
+A large fleet lists the CAN Bridge of the first 50 cars only (`MAX_CAR_ROWS`); `totals` still counts every car
+(the cars not listed from the fleet's cached state counts), so `--cars 200000` answers in about 0.15 s.
 
 ## First-run set-up and moving
 
@@ -245,3 +269,5 @@ They start servers in-process on free ports (about 45 s for all). They cover:
   the document and called with ids from the API; it fails on a missing resource, a 5xx or a missing field, on a route
   the document lacks, on anything under "Deliberately absent" that answers, and on a VIN serial in any answer;
 - determinism, a 200,000-car fleet paged under 200 ms a page, and the event stream (with `--rows-every-s` at its pace).
+- the integrations overview (`test_overview.py`): its shape, admin only, problems newest first with one open, 24
+  hourly entries ending at the current hour, values that move in place, the capped car rows of a large fleet.
