@@ -1,9 +1,10 @@
 // Settings: Server and access (/settings/server): who can sign in, what each account may see, and how
-// the server is reached. Every visitor gets: the check of the address in this browser against the
+// the server is reached. Every visitor gets: Server updates (this build and the release check's last answer:
+// GET /about, GET /release; Check now for an admin, POST /release/check; the switch stays in Display and units), the check of the address in this browser against the
 // server's host names and port, how access works, and their own sessions (sign out one, all others, or
 // here). Admins also get the accounts (roles, car lists, two-step sign-in), the audit log (each entry
-// links to the item it changed), the host names for the certificate, the ports, and where the recovery
-// key and backups stand, the move to another server (a move code or an export file:
+// links to the item it changed), where the certificate (its names: Change names), the recovery key and
+// backups stand, the move to another server (a move code or an export file:
 // pages/settings-server-move.js), and Storage: the space on disk by category and what compaction saved
 // (GET /system/storage/detail), with "Compact now" (POST /system/storage/compact; while a pass runs the detail
 // is read again every 2 s). Changes are saved through the API with the object's version; a short note
@@ -24,6 +25,8 @@ import { signOut } from '../core/session.js';
 import { dateTime, date, agoEl, tzName, DASH } from '../core/fmt.js';
 import { timeColumn } from '../shared/csv.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
+import { serverUpdates, RELEASE_OFF_TEXT, RELEASE_SETTING } from '../shared/release.js';
+import { cover } from '../shared/dom.js';
 import { movePanel, showRecoveryKey, newRecoveryKey, markKeySaved, askPassword } from './settings-server-move.js';
 
 export const id = 'settings-server';
@@ -35,7 +38,6 @@ const ROLE_TEXT = {
   admin: 'Sees every car and every setting, and can change everything: accounts, cars, places, integrations, imports.',
   watch: 'Sees only the cars on its list and can change only its own preferences and sessions.',
 };
-const PURPOSE = { web: 'Web pages and API', upload: 'CAN Bridge uploads' };
 const errText = (e) => (e?.fields ? Object.values(e.fields).join(' ') : errorWords(e).text);
 const bytes = (v) => format(v, 'bytes');
 // storage: the groups of the categories and the steps of a compaction pass, in plain words
@@ -84,7 +86,7 @@ export async function mount(ctx) {
   const admin = ctx.admin;
   const me = ctx.me || {};
   const query = ctx.query || {};
-  const S = { settings: null, network: null, notices: [], accounts: [], cars: [], sessions: [], trips: [], storage: null, storageErr: null };
+  const S = { settings: null, network: null, notices: [], accounts: [], cars: [], sessions: [], trips: [], storage: null, storageErr: null, about: null, release: null };
 
   async function loadAccounts() { S.accounts = admin ? await ctx.api.list('accounts', { limit: 500 }).all({ max: 5000 }) : []; }
   async function loadSessions() { S.sessions = await ctx.api.list('me/sessions', { limit: 500 }).all({ max: 5000 }); }
@@ -98,6 +100,8 @@ export async function mount(ctx) {
       loadAccounts(),
       loadSessions(),
       admin ? ctx.api.list('trips', { limit: 500 }).all({ max: 5000 }).then((t) => { S.trips = t; }).catch(() => {}) : null,
+      ctx.api.get('about', null, { maxAgeMs: 600000 }).then((a) => { S.about = a; }).catch(() => {}),
+      ctx.api.get('release').then((r) => { S.release = r; }).catch(() => {}),
       admin ? ctx.api.get('system/storage/detail').then((d) => { S.storage = d; }).catch((e) => { S.storageErr = e; }) : null,
     ]);
     Object.assign(S, { settings, network, notices: notices?.items || [], cars });
@@ -145,27 +149,28 @@ export async function mount(ctx) {
       : savedOnly
         ? (certOwn()
           ? checkRow('info', `Host name ${here.host} is saved, not yet in the certificate`,
-            `The name is on the list below, but the certificate the server uses now is your own and names ${names.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until your certificate names it too.`,
+            `The name is on the server's list of names, but the certificate the server uses now is your own and names ${names.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until your certificate names it too.`,
             admin ? ownSteps() : null)
           : checkRow('info', `Host name ${here.host} is saved, not yet in the certificate`,
-            `The name is on the list below, but the certificate the server uses now names ${names.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until you make a new certificate: the button is here and under Certificate, recovery key and backups.`,
+            `The name is on the server's list of names, but the certificate the server uses now names ${names.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until you make a new certificate: the button is here and under Certificate, recovery key and backups.`,
             admin ? h('button', { class: 'btn btn--sm', type: 'button', onclick: () => makeCertificate() }, icon('reset', 'ico--sm'), 'Make a new certificate') : null))
         : checkRow('warn', `Host name ${here.host} is not on the certificate`,
           `You opened Sentry Mate as ${here.host}, but the certificate names ${names.join(', ') || 'no host'}. Browsers warn about a name that is not on it. The CAN Bridge is not affected: it pins the certificate's SHA-256 and does not check names.`,
           admin ? h('button', { class: 'btn btn--sm', type: 'button', onclick: () => addName(here.host) }, icon('plus', 'ico--sm'), `Add ${here.host} to the names`) : null));
+    const portRow = (el) => cover(el, 'docs.env.web.port');
     if (webIn) {
-      rows.push(here.port === webIn.port
+      rows.push(portRow(here.port === webIn.port
         ? checkRow('ok', `Port ${here.port}`, `The same port the server listens on for the web pages (${webIn.port}).`)
-        : checkRow('info', `Port ${here.port}, server port ${webIn.port}`, `Your address uses port ${here.port}; the server listens on ${webIn.port} inside its container. A port mapping such as "${here.port}:${webIn.port}" in the compose file (or a proxy) joins the two. That is fine; it only matters when you write the address into another device.`));
+        : checkRow('info', `Port ${here.port}, server port ${webIn.port}`, `Your address uses port ${here.port}; the server listens on ${webIn.port} inside its container. A port mapping such as "${here.port}:${webIn.port}" in the compose file (or a proxy) joins the two. That is fine; it only matters when you write the address into another device.`)));
     } else {
-      rows.push(checkRow('info', `Port ${here.port}`, 'The port in your address. An admin sees the ports the server itself listens on.'));
+      rows.push(portRow(checkRow('info', `Port ${here.port}`, 'The port in your address. An admin sees the ports the server itself listens on.')));
     }
     rows.push(checkRow('ok', 'At the root of its address', `Sentry Mate always lives at / on its own host name or port, so links never need a path prefix. Behind a shared proxy, give it its own name (such as ${names[0] || 'sentry-mate.local'}) rather than a path.`));
     rows.push(checkRow('ok', 'Works from any address', 'There is no list of allowed origins to keep in step: the session cookie is never sent by other sites (SameSite=Strict) and every change carries a header other sites cannot set, so the page works under each of its names.'));
     replace(hostingBox, h('ul', { class: 'ss-checks' }, rows));
   }
 
-  /* ---------------------------------------------------------------- host names for the certificate */
+  /* ---------------------------------------------------------------- host names for the certificate (Change names, in a dialog) */
   const namesBox = h('div', { class: 'ss-names' });
   let draft = [...(S.settings.host_names || [])];
   const nameInput = h('input', { class: 'input ss-name-input', type: 'text', placeholder: 'sentry-mate.local', 'aria-label': 'Host name to add', autocomplete: 'off', spellcheck: 'false', disabled: !admin,
@@ -176,7 +181,7 @@ export async function mount(ctx) {
     const changed = JSON.stringify(draft) !== JSON.stringify(S.settings.host_names || []);
     saveNames.disabled = !admin || !changed || !draft.length;
     replace(namesBox,
-      h('ul', { class: 'ss-name-list', 'aria-label': 'Host names for the certificate' }, draft.map((n, i) => h('li', { class: 'ss-name' },
+      h('ul', { class: 'ss-name-list', 'aria-label': 'Names for the certificate' }, draft.map((n, i) => h('li', { class: 'ss-name' },
         h('span', { class: 'mono' }, n),
         n.toLowerCase() === here.host ? tag('this address', 'live') : null,
         admin ? h('button', { class: 'btn btn--ghost btn--icon btn--sm', type: 'button', 'aria-label': `Remove ${n}`, disabled: draft.length <= 1,
@@ -237,28 +242,9 @@ export async function mount(ctx) {
   function addName(n) {
     const saved = S.settings.host_names || [];
     if (saved.includes(n)) return;
-    if (saved.length >= 10) { flash('The certificate takes up to 10 names. Remove one under Host names first.', { kind: 'error' }); return; }
+    if (saved.length >= 10) { flash('The certificate takes up to 10 names. Remove one with Change names under Certificate first.', { kind: 'error' }); return; }
     putNames([...saved, n], { fromDraft: false });
   }
-
-  /* ---------------------------------------------------------------- ports */
-  const portRows = S.network?.inbound?.length
-    ? S.network.inbound.map((p) => [PURPOSE[p.purpose] || p.purpose, h('span', { class: 'ss-port' },
-      h('b', { class: 'mono' }, String(p.port)), p.tls ? pill('HTTPS, TLS 1.3', { tone: 'live', ic: 'lock' }) : pill('no TLS', { tone: 'warm', ic: 'warn' }))])
-    : [['Your address', h('span', { class: 'mono' }, String(here.port))]];
-  const upIn = S.network?.inbound?.find((x) => x.purpose === 'upload') || null;
-  const webPort = webIn ? webIn.port : null;
-  // the example mapping: the port in this address on the host, the web port inside the container
-  const hostPort = webPort != null && here.port !== webPort ? here.port : (webPort === 443 ? 8443 : 10443);
-  const portsPanel = panel({ title: 'Ports', icon: 'plug', pad: true, cover: 'docs.env.web.port' },
-    kv(portRows),
-    h('p', { class: 'note ss-gap' }, S.network
-      ? `${upIn ? 'Both ports speak' : 'The port speaks'} only HTTPS with TLS 1.3; there is no plain HTTP port to forget about.${upIn ? ` The upload port (${upIn.port}) takes only CAN Bridge uploads with a car's upload token, turns away wrong tokens after a few tries, and takes connections only while uploads are on: with uploads off it stays closed.` : ''}`
-      : 'An admin sees which ports the server listens on.'),
-    h('p', { class: 'note' }, webPort != null
-      ? ['To reach the web pages on another port of the host, change only the left number of the web port\'s mapping in the compose or TrueNAS file, for example ',
-        mono(`${hostPort}:${webPort}`), ` (host port ${hostPort}, web port ${webPort} inside the container), and use that number in the address.${upIn ? ` The upload port maps the same way, for example ${upIn.port}:${upIn.port}; a CAN Bridge then uses the left number.` : ''} The listening address stays 0.0.0.0 inside the container; the mapping decides what is reachable.`]
-      : 'To use another port on the host, change only the left number of the port mapping in the compose or TrueNAS file (host port:container port) and use that number in the address. The listening address stays 0.0.0.0 inside the container; the mapping decides what is reachable.'));
 
   /* ---------------------------------------------------------------- the certificate, the recovery key and backups */
   const cert = S.notices.find((n) => n.code === 'certificate_expiring');
@@ -297,8 +283,9 @@ export async function mount(ctx) {
       rows.push(h('div', { class: 'ss-fact' }, h('dt', null, 'SHA-256'), h('dd', null, v, copyValue(c.sha256, v))));
     }
     if (c?.names?.length) {
-      rows.push(h('div', { class: 'ss-fact' }, h('dt', null, 'Names in it'),
-        h('dd', null, h('ul', { class: 'ss-cert-names' }, c.names.map((n) => h('li', null, h('code', { class: 'mono ss-value' }, n)))))));
+      rows.push(h('div', { class: 'ss-fact', cover: 'docs.env.web.virtual-host' }, h('dt', null, 'Names in it'),
+        h('dd', null, h('ul', { class: 'ss-cert-names' }, c.names.map((n) => h('li', null, h('code', { class: 'mono ss-value' }, n)))),
+          admin ? h('button', { class: 'btn btn--ghost btn--sm ss-names-btn', type: 'button', onclick: () => changeNames() }, icon('settings', 'ico--sm'), 'Change names') : null)));
     }
     if (S.network?.upload_address) {
       const v = addressEl(S.network.upload_address);
@@ -324,7 +311,7 @@ export async function mount(ctx) {
         h('ul', { class: 'ss-newcert-list' },
           h('li', null, h('b', null, 'The SHA-256 changes. '), 'The CAN Bridge app\'s uploads are refused until you enter the new SHA-256 in its upload settings.'),
           h('li', null, h('b', null, 'Browsers ask again '), 'to accept the new certificate, on every device that opens these pages.'),
-          h('li', null, h('b', null, 'The names in it: '), h('span', { class: 'ss-newcert-names' }, names.map((n, i) => [i ? ', ' : '', h('code', { class: 'mono' }, n)])), '. Change them under Host names for the certificate first, if one is missing.'))),
+          h('li', null, h('b', null, 'The names in it: '), h('span', { class: 'ss-newcert-names' }, names.map((n, i) => [i ? ', ' : '', h('code', { class: 'mono' }, n)])), '. Change them first with Change names, if one is missing.'))),
       submit: 'Make a new certificate', danger: true,
       run: (cred) => ctx.api.post('network/certificate', cred),
     });
@@ -679,23 +666,74 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- moving to another server (admin) */
   const move = admin ? movePanel(ctx, { tz, zone: zoneText }) : null;
 
+  // Change names: the list for the next certificate, saved here; then, if the server makes its own, a new one
+  async function changeNames() {
+    draft = [...(S.settings.host_names || [])];
+    nameInput.value = ''; nameErr.hidden = true;
+    paintNames();
+    const go = await openDialog({
+      title: 'Names for the certificate', wide: true,
+      body: h('div', { class: 'ss-names-dlg' },
+        h('p', null, 'The names (or addresses) people and devices use to reach this server. The server puts them in the certificate it makes, so browsers accept those names. A saved change goes into the next certificate it makes.'),
+        namesBox,
+        certOwn() ? h('p', { class: 'note' }, 'The server runs with your own certificate, so these names go only into a certificate it makes, not into yours. To have browsers accept another name, get a certificate that names it, put its ', mono('cert.pem'), ' and ', mono('key.pem'), ' in ', mono('data/tls'), ' and start the container again.') : null),
+      actions: certOwn() ? [{ label: 'Close', value: null }]
+        : [{ label: 'Close', value: null }, { label: 'Make a new certificate', value: 'cert', kind: 'primary' }],
+    });
+    if (go === 'cert' && ctx.alive()) makeCertificate();
+  }
+
+  /* ---------------------------------------------------------------- server updates (every visitor; Check now: admins) */
+  const updBox = h('div', { class: 'ss-upd' });
+  let updChecking = false, updTimer = null;
+  ctx.onCleanup(() => clearTimeout(updTimer));
+  async function updCheckNow() {
+    updChecking = true; paintUpdates();
+    try {
+      S.release = await ctx.api.post('release/check', {});
+      if (S.release?.status === 'error') flash(S.release.error?.message ? `Could not check: ${S.release.error.message}` : 'Could not check.', { kind: 'error' });
+    } catch (e) {
+      if (!ctx.alive()) return;
+      flash(e?.code === 'release_check_off' ? 'Not checked: the release check is off.' : `Not checked: ${errText(e)}`, { kind: 'error' });
+      S.release = await ctx.api.get('release').catch(() => S.release);
+    }
+    updChecking = false;
+    if (ctx.alive()) paintUpdates();
+  }
+  function paintUpdates() {
+    const u = serverUpdates(S.about, S.release, ctx.api.now());
+    const busy = updChecking || u.busy;
+    const turnOn = h('a', { class: 'link', href: `${state.buildUrl(RELEASE_SETTING.page)}#${RELEASE_SETTING.hash}` }, RELEASE_SETTING.text);
+    replace(updBox,
+      kv(u.rows.map((r) => [r.label, h('span', { class: ['ss-upd-val', `ss-upd-val--${r.tone || 'plain'}`] },
+        h('span', { class: r.key === 'this' ? 'mono' : null, title: r.title || null }, r.text),
+        r.badge ? pill(r.badge, { tone: r.tone === 'newer' ? 'warm' : 'live', ic: r.tone === 'newer' ? 'upload' : 'check' }) : null)])),
+      h('div', { class: 'ss-upd-check' },
+        h('p', { class: 'ss-upd-on' }, 'Release check: ', h('b', null, u.on ? 'On' : 'Off'), u.on ? '. Once a day the server asks GitHub whether a newer image is published.' : `. ${RELEASE_OFF_TEXT}`,
+          !u.on ? [' ', admin ? turnOn : 'An admin can turn it on.'] : null),
+        admin ? h('button', { class: 'btn btn--sm', type: 'button', disabled: !u.on || busy, title: u.on ? null : 'Turn the release check on first', onclick: updCheckNow },
+          icon('reset', 'ico--sm'), busy ? 'Checking…' : 'Check now') : null),
+      h('p', { class: 'note ss-upd-how' }, `${u.how} Steps for Docker and TrueNAS: `,
+        u.doc.href ? h('a', { class: 'link', href: u.doc.href, target: '_blank', rel: 'noopener noreferrer external' }, u.doc.text) : mono(u.doc.path), '.'));
+    if (S.release?.status === 'checking' && !updChecking) {
+      clearTimeout(updTimer);
+      updTimer = setTimeout(async () => { S.release = await ctx.api.get('release').catch(() => S.release); if (ctx.alive()) paintUpdates(); }, 4000);
+    }
+  }
+  paintUpdates();
+  const updatesPanel = panel({ title: 'Server updates', icon: 'upload', pad: true, id: 'updates' }, updBox);
+
   /* ---------------------------------------------------------------- the page */
   paintHosting();
   paintNames();
   const hostPanel = panel({ title: 'How this server is reached', icon: 'globe', pad: true, cover: 'web.shell.hosting' },
     h('p', { class: 'ss-addr' }, 'This page: ', h('span', { class: 'mono' }, `${loc.protocol}//${loc.host}/`)),
     hostingBox);
-  const namesPanel = panel({ title: 'Host names for the certificate', icon: 'server', pad: true, cover: 'docs.env.web.virtual-host' },
-    setting('Names on the certificate', 'The names (or addresses) people and devices use to reach this server. The server puts them in the certificate it makes, so browsers accept those names. They are used when a certificate is made: to put a change in the running certificate, make a new one (see below).', namesBox));
-  if (certOwn()) {
-    namesPanel.append(h('p', { class: 'note ss-gap' }, 'The server runs with your own certificate, so these names go only into a certificate it makes, not into yours. To have browsers accept another name, get a certificate that names it, put its ', mono('cert.pem'), ' and ', mono('key.pem'), ' in ', mono('data/tls'), ' and start the container again.'));
-  }
-
   replace(ctx.view,
     pageHead({ title: ctx.info.title, purpose: ctx.info.purpose }),
     h('div', { class: 'settings-stack ss' },
-      h('div', { class: 'ss-two' }, hostPanel, h('div', { class: 'ss-col' }, namesPanel, portsPanel)),
-      h('div', { class: 'ss-two' }, accessPanel, admin ? safety : null),
+      h('div', { class: 'ss-two' }, hostPanel, h('div', { class: 'ss-col' }, updatesPanel, accessPanel)),
+      admin ? safety : null,
       move ? move.el : null,
       storageTable ? storageTable.el : null,
       accountsTable ? [goneNote, accountsTable.el] : null,

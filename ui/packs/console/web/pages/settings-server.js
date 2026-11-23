@@ -1,6 +1,8 @@
 // settings/server: who can sign in and how the server is reached, and moving it.
-// Everyone: the check of this address (https, host name, port), how access works, their own sessions.
-// Admins also: host names as a 'key = value' line, ports, the certificate and the recovery key (show again,
+// Everyone: the check of this address (https, host name, port), server updates (this build and the release check's
+// last answer: GET /about, GET /release; check now for an admin; the switch stays in display and units), how access
+// works, their own sessions.
+// Admins also: the certificate (its names changed in a dialog as a 'key = value' line) and the recovery key (show again,
 // make new, say it is saved), moving to another server as numbered steps with a state tag and a run button
 // each (a move code, or an export file; carry on a stopped move; undo a move), output in a mono box; the
 // accounts, and the audit log; and storage: the space on disk by category (GET /system/storage/detail) and
@@ -24,6 +26,7 @@ import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { signOut } from '../core/session.js';
 import { askPassword, copyBtn, codeOut, downloadKey, showOnce, STAY } from '../core/secret.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
+import { serverUpdates, RELEASE_OFF_TEXT, RELEASE_SETTING } from '../shared/release.js';
 
 export const id = 'settings-server';
 export const title = () => 'Settings: server';
@@ -41,7 +44,6 @@ const withCred = (cred, body) => (ASCII.test(cred.password) && ASCII.test(cred.t
   : [{ ...(body || {}), confirm_password: cred.password, ...(cred.two_step ? { code: cred.two_step } : {}) }, {}]);
 const errText = (e) => (e?.fields ? Object.values(e.fields).join(' ') : e?.message || errorWords(e).text);
 const ROLE = { admin: 'admin', watch: 'watch' };
-const PURPOSE = { web: 'web and api', upload: 'uploads' };
 const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
 const LIVE = new Set(['offered', 'copying', 'paused', 'moved']);
 // storage: the groups of the categories and the steps of a compaction pass, in plain words
@@ -65,7 +67,7 @@ function runs(steps, attrs = {}) {
 export async function mount(ctx) {
   const admin = ctx.admin;
   const me = ctx.me || {};
-  const S = { settings: null, network: null, notices: [], accounts: [], cars: [], sessions: [] };
+  const S = { settings: null, network: null, notices: [], accounts: [], cars: [], sessions: [], about: null, release: null };
   const loadAccounts = async () => { S.accounts = admin ? await ctx.api.list('accounts', { limit: 500 }).all({ max: 5000 }) : []; };
   const loadSessions = async () => { S.sessions = await ctx.api.list('me/sessions', { limit: 500 }).all({ max: 5000 }); };
   const G = { d: null, err: null, pollErr: null };   // storage: the detail, why it could not be read
@@ -77,6 +79,8 @@ export async function mount(ctx) {
     admin ? ctx.api.list('trips', { limit: 500 }).all({ max: 2000 }).catch(() => []) : [],
     loadAccounts(), loadSessions(),
     admin ? ctx.api.get('system/storage/detail').then((d) => { G.d = d; }).catch((e) => { G.err = e; }) : null,
+    ctx.api.get('about', null, { maxAgeMs: 600000 }).then((a) => { S.about = a; }).catch(() => {}),
+    ctx.api.get('release').then((r) => { S.release = r; }).catch(() => {}),
   ]);
   if (!ctx.alive()) return;
   Object.assign(S, { settings, network, notices: notices?.items || [], cars });
@@ -95,7 +99,7 @@ export async function mount(ctx) {
   readCert();
   // the owner's own certificate (a cert.pem and key.pem put in data/tls): the server never makes one in its place
   const certOwn = () => !!S.network?.certificate?.own;
-  const hostSlot = h('div');
+  const hostSlot = h('div', { dataset: { cover: 'docs.env.web.port' } });
   function paintHosting() {
     const saved = (S.settings?.host_names || []).map((n) => n.toLowerCase());
     const names = certNames || saved;
@@ -114,7 +118,7 @@ export async function mount(ctx) {
     ]));
   }
 
-  /* ---------------------------------------------------------------- host names, ports */
+  /* ---------------------------------------------------------------- host names (change names, in a dialog) */
   const names = S.settings ? editLines([
     { key: 'host_names', id: 'certificate', type: 'text', value: (S.settings.host_names || []).join(', '), readOnly: !admin, cover: 'docs.env.web.virtual-host',
       help: 'The names or addresses people and devices use to reach this server, comma between them, at most 10. They go into the next certificate the server makes; the one in use keeps its names until then.',
@@ -134,12 +138,51 @@ export async function mount(ctx) {
         paintHosting();
       } },
   ]) : null;
-  const ports = section({ title: 'ports', cover: 'docs.env.web.port' },
-    S.network?.inbound?.length ? kv(S.network.inbound.map((p) => [PURPOSE[p.purpose] || p.purpose, [String(p.port), ' ', p.tls ? tag('https, tls 1.3', 'ok') : tag('no tls', 'warn')]]), { cols: 1 })
-      : kv([['your address', String(here.port)]], { cols: 1 }),
-    note(webIn ? ['To use another port on the host, change only the left number of the mapping in the compose or TrueNAS file, such as ', h('span', { class: 'prompt' }, `${here.port !== webIn.port ? here.port : 10443}:${webIn.port}`),
-      `, and use that number in the address.${upIn ? ` The upload port maps the same way (${upIn.port}:${upIn.port}); a CAN Bridge uses the left number. It takes only uploads with a car's token, and stays closed while uploads are off.` : ''} Both speak only https; there is no plain http port.`]
-      : 'An admin sees which ports the server listens on. Change only the left number of a port mapping (host:container) to use another host port.'));
+  async function changeNames() {
+    if (!names) return;
+    let go = false;
+    const make = certOwn() || CERT_HELD[moveState] ? null : btn('make a new certificate', () => { go = true; d.close(); }, { kind: 'primary' });
+    const d = openDialog({ title: 'names for the certificate', cls: 'names-dlg',
+      body: h('div', { class: 'hc' }, names.el,
+        certOwn() ? note('The server runs with your own certificate: these names go only into a certificate it makes. For another name, get a certificate that names it, put its cert.pem and key.pem in data/tls and start the container again.')
+          : note('Saved names go into the next certificate the server makes: make one after saving to use them now.')),
+      actions: [make, btn('close', () => d.close())].filter(Boolean),
+      onClose: () => { if (go && ctx.alive()) makeCertificate(); } });
+  }
+
+  /* ---------------------------------------------------------------- server updates */
+  const updSlot = h('div', { 'aria-live': 'polite' });
+  let updChecking = false, updTimer = null;
+  ctx.onCleanup?.(() => clearTimeout(updTimer));
+  async function updCheckNow() {
+    updChecking = true; paintUpdates();
+    try {
+      S.release = await ctx.api.post('release/check', {});
+      if (S.release?.status === 'error') toast(`Could not check: ${S.release.error?.message || 'no answer'}`, { kind: 'error' });
+    } catch (e) {
+      if (!ctx.alive()) return;
+      toast(e?.code === 'release_check_off' ? 'Not checked: the release check is off.' : `Not checked: ${errText(e)}`, { kind: 'error' });
+      S.release = await ctx.api.get('release').catch(() => S.release);
+    }
+    updChecking = false;
+    if (ctx.alive()) paintUpdates();
+  }
+  const UPD_TAG = { newer: 'warn', ok: 'ok', error: 'bad', wait: 'muted', off: 'muted' };
+  function paintUpdates() {
+    const u = serverUpdates(S.about, S.release, ctx.api.now());
+    const busy = updChecking || u.busy;
+    replace(updSlot,
+      kv(u.rows.map((r) => [r.label.toLowerCase(), [h('span', { title: r.title || null }, r.text), r.badge ? [' ', tag(r.badge.toLowerCase(), UPD_TAG[r.tone] || 'muted')] : null]]), { cols: 1 }),
+      lines([[tag(u.on ? 'on' : 'off', u.on ? 'ok' : 'muted'), u.on ? 'release check: once a day the server asks GitHub whether a newer image is published.' : `release check: ${RELEASE_OFF_TEXT}`,
+        !u.on ? (admin ? [' ', link(`${state.buildUrl(RELEASE_SETTING.page)}#${RELEASE_SETTING.hash}`, RELEASE_SETTING.text.toLowerCase())] : ' An admin can turn it on.') : null]]),
+      admin ? h('div', { class: 'acts' }, btn(busy ? 'checking…' : 'check now', updCheckNow, { disabled: !u.on || busy, title: u.on ? null : 'Turn the release check on first' })) : null,
+      note(`${u.how} Steps for Docker and TrueNAS: `, u.doc.href ? h('a', { class: 'lnk', href: u.doc.href, target: '_blank', rel: 'noopener noreferrer external' }, u.doc.text) : h('span', { class: 'prompt' }, u.doc.path), '.'));
+    if (S.release?.status === 'checking' && !updChecking) {
+      clearTimeout(updTimer);
+      updTimer = setTimeout(async () => { S.release = await ctx.api.get('release').catch(() => S.release); if (ctx.alive()) paintUpdates(); }, 4000);
+    }
+  }
+  paintUpdates();
 
   /* ---------------------------------------------------------------- certificate and recovery key */
   const cert = S.notices.find((n) => n.code === 'certificate_expiring');
@@ -217,7 +260,7 @@ export async function mount(ctx) {
     replace(certSlot,
       c || S.network?.upload_address ? kv([
         c?.sha256 ? ['sha-256', h('span', { class: 'hc' }, h('span', { class: 'cert-sha' }, breakAfter(shaText(c.sha256))), h('span', { class: 'acts' }, copyBtn(shaText(c.sha256))))] : null,
-        c?.names?.length ? ['names in it', c.names.join(', ')] : null,
+        c?.names?.length ? ['names in it', h('span', { class: 'hc', dataset: { cover: 'docs.env.web.virtual-host' } }, h('span', null, c.names.join(', ')), names ? h('span', { class: 'acts' }, btn('change names', changeNames)) : null)] : null,
         S.network?.upload_address ? ['upload address', h('span', { class: 'hc' }, h('span', { class: 'cert-sha' }, breakAfter(S.network.upload_address)), h('span', { class: 'acts' }, copyBtn(S.network.upload_address)))] : null,
         ['made by', certOwn() ? [tag('own', 'muted'), ' you: the cert.pem and key.pem in data/tls'] : [tag('server', 'muted'), ' this server']],
       ], { cols: 1 }) : note('The server did not say which certificate it runs with.'),
@@ -238,7 +281,7 @@ export async function mount(ctx) {
         lines([
           [tag('sha-256', 'warn'), 'It changes. Each CAN Bridge app refuses this server until you type the new SHA-256 into its upload settings.'],
           [tag('browsers', 'warn'), 'They ask again to accept the new certificate, on every device that opens these pages.'],
-          [tag('names', 'muted'), [nextNames().join(', '), h('span', { class: 'muted' }, 'Change them under host names first, if one is missing.')]],
+          [tag('names', 'muted'), [nextNames().join(', '), h('span', { class: 'muted' }, 'Change them first with change names, if one is missing.')]],
         ])),
       run: (cred) => ctx.api.post('network/certificate', cred).catch((e) => {
         if (e.status === 409) e.message = { own_certificate: 'This server runs with your own certificate; it never replaces it.', move_under_way: 'A move is under way: a new server pins this certificate. Finish or end the move first.', setup_busy: 'A move or a restore into this server runs now. Try again when it is done.', moved: 'The data moved to another server; this one makes no new certificate.' }[e.code] || e.message;
@@ -658,11 +701,10 @@ export async function mount(ctx) {
       note('Neither way changes this server\'s data. Codes, passwords and keys travel only over https.')),
   ] : null;
   paint(ctx, head(ctx),
-    section({ title: 'this address', cover: 'web.shell.hosting', side: h('span', { class: 'muted' }, `${loc.protocol}//${loc.host}/`) }, hostSlot),
-    names ? section({ title: 'host names' }, names.el) : null,
-    ports,
+    h('div', { class: 'cols2' },
+      section({ title: 'this address', cover: 'web.shell.hosting', side: h('span', { class: 'muted' }, `${loc.protocol}//${loc.host}/`) }, hostSlot),
+      h('div', null, section({ title: 'server updates', id: 'updates' }, updSlot), access)),
     section({ title: 'certificate and recovery key', id: 'certificate-in-use' }, certSlot, keySlot),
-    access,
     moving,
     storage,
     accounts?.el,
