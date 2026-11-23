@@ -213,3 +213,41 @@ fn a_day_read_again_after_a_write_has_the_new_points_and_versions_move_on() {
     let v3 = t.db.version(car);
     assert!(v3.imported > v2.imported && v3.live == v2.live && v3.shared == v2.shared, "{v2:?} {v3:?}");
 }
+
+#[test]
+fn days_read_while_they_are_written_folded_and_settled_never_fail() {
+    let t = test_db(Options { fold_min_bytes: 2_000, ..Options::default() });
+    let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
+    // two days already whole (snapshots alone, read without the car's lock), a third written a minute at a time
+    let old = samples(DAY0, 2 * 86_400 / 60);
+    t.db.write_points(car, Source::Live, DAY0, DAY0 + 2 * DAY_MS, &old).unwrap();
+    let day3 = DAY0 + 2 * DAY_MS;
+    let all = samples(day3, 3 * 3600);
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let n_old = old.len();
+    std::thread::scope(|s| {
+        let (db, done) = (&t.db, &done);
+        s.spawn(move || {
+            for (i, minute) in all.chunks(60).enumerate() {
+                let (from, to) = (minute[0].t_ms, minute[0].t_ms + 60_000);
+                db.write_points(car, Source::Live, from, to, minute).unwrap();
+                if i % 40 == 39 {
+                    db.settle(car, day3 + DAY_MS).unwrap();
+                }
+            }
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        for _ in 0..3 {
+            s.spawn(move || {
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    let pts: Vec<Sample> = db.read_points(car, Source::Live, DAY0, day3 + DAY_MS).unwrap();
+                    assert!(pts.windows(2).all(|p| p[0].t_ms < p[1].t_ms));
+                    let f = db.read_fields::<Sample>(car, Source::Live, DAY0, day3 + DAY_MS, &["soc"]).unwrap();
+                    assert!(f.t_ms.len() >= n_old);
+                }
+            });
+        }
+    });
+    let back: Vec<Sample> = t.db.read_points(car, Source::Live, day3, day3 + DAY_MS).unwrap();
+    assert_eq!(back.len(), 3 * 3600);
+}

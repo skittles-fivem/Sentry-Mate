@@ -762,7 +762,13 @@ impl Db {
         to_ms: u64,
     ) -> Result<Vec<P>> {
         let stream = stream.into();
-        self.with_car(car, |db, _, dir| segment::read(&db.inner.ctx, dir, stream, from_ms, to_ms))
+        // days of a snapshot alone are read (opened, unpacked) without holding the car's lock, so several answers
+        // read one car at once; a day with a journal is read under it
+        let dir = self.with_car(car, |_, _, dir| Ok(dir.to_path_buf()))?;
+        let ctx = &self.inner.ctx;
+        segment::read(ctx, &dir, stream, from_ms, to_ms, &mut |files| {
+            self.with_car(car, |_, _, _| segment::journaled_points::<P>(ctx, files))
+        })
     }
 
     /// Some fields of a series in `[from_ms, to_ms)`, as columns (what a chart draws; faster than whole points).
@@ -775,7 +781,12 @@ impl Db {
         fields: &[&str],
     ) -> Result<Fields> {
         let stream = stream.into();
-        self.with_car(car, |db, _, dir| segment::read_fields::<P>(&db.inner.ctx, dir, stream, from_ms, to_ms, fields))
+        // as [`Db::read_points`]: a day with a journal under the car's lock, the others without it
+        let dir = self.with_car(car, |_, _, dir| Ok(dir.to_path_buf()))?;
+        let ctx = &self.inner.ctx;
+        segment::read_fields::<P>(ctx, &dir, stream, from_ms, to_ms, fields, &mut |files| {
+            self.with_car(car, |_, _, _| segment::journaled_points::<P>(ctx, files))
+        })
     }
 
     /// The days a series has.
