@@ -75,6 +75,11 @@ const REASONS = {
     text: 'They are worked out again from the stored logs. This page reads the figures again every few seconds until it is done; nothing needs doing.',
     fix: null, page: null,
   },
+  logs_missing: {
+    title: 'Logs missing on the server',
+    text: 'The server lost some logs and asked the car to send them again. They are read as soon as they come; any the car no longer has either stay unknown time.',
+    fix: null, page: null,
+  },
 };
 const TRUST = {
   verified: ['Verified', 'live', 'Signed by a trusted key and in the hash chain.'],
@@ -318,7 +323,33 @@ async function mountCar(ctx) {
       h('span', { class: 'note' }, 'Works out drives, charges, states and visits again from the stored logs of the period. Nothing is edited by hand.'))
       : h('p', { class: 'note' }, 'An admin can rebuild drives and charges from the stored logs.');
 
-    replace(healthSlot, status, fixes, figs, h('div', { class: 'hl-health-cols' }, h('div', null, keyList, flags, teslaBlock()), spanList), rebuild);
+    replace(healthSlot, status, fixes, figs, h('div', { class: 'hl-health-cols' }, h('div', null, keyList, flags, teslaBlock()), h('div', null, spanList, missingBlock(hl.missing_logs))), rebuild);
+  }
+
+  // logs the server should have but no longer does, asked of the car again (always shown, same rows every time)
+  function missingBlock(m) {
+    const x = m || {};
+    const n = x.count || 0;
+    const gone = x.gone || 0;
+    const logs = (k) => `${formatNumber(k)} ${k === 1 ? 'log' : 'logs'}`;
+    const lines = n > 0
+      ? [
+        x.asked ? `Asked the car to send them again: ${when(ctx, x.asked_ms)}. They are read as soon as they come.` : 'The car has not been asked to send them again yet.',
+        gone > 0 ? h('span', { class: 'warn' }, `The car no longer has ${formatNumber(gone)} of ${n === 1 ? 'it' : 'these'} either: lost for good, shown as unknown time.`) : null,
+      ]
+      : ['Every log the server recorded is here.'];
+    return h('div', { class: 'hl-missing' },
+      h('h3', { class: 'hl-sub' }, 'Missing on the server'),
+      kv([
+        kvRow('Missing', n > 0 ? h('span', { class: 'warn' }, logs(n)) : h('span', { class: 'ok' }, 'None'), 'logs',
+          { title: 'CAN logs (and their sidecars) the server should have but no longer does.' }),
+        kvRow('Oldest', n > 0 ? when(ctx, x.oldest_ms) : DASH, 'clock'),
+        kvRow('Lost for good', gone > 0 ? h('span', { class: 'warn' }, `${logs(gone)}, oldest ${when(ctx, x.gone_oldest_ms)}`) : 'None', 'warn',
+          { title: 'Missing logs the car no longer has either. Their time shows as unknown time on the timeline.' }),
+        kvRow('Last checked', x.scanned_ms != null ? when(ctx, x.scanned_ms) : 'Not checked yet', 'search',
+          { title: 'The server looks for missing logs when it starts and once a day.' }),
+      ]),
+      h('p', { class: 'note hl-missing-note' }, lines.filter(Boolean).map((l, i) => [i ? ' ' : null, l])));
   }
 
   // the Tesla API rows of this car: shown to admins (the status is admin only); others get a plain line

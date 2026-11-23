@@ -265,6 +265,8 @@
 .ov-status { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); font-weight: 600; color: var(--ov-c); }
 .ov-row[data-status="off"] .ov-status { color: var(--text-2); }
 .ov-reason { color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); }
+.ov-missing { color: var(--warm); font-size: max(0.8125rem, var(--fs-floor)); font-weight: 500; white-space: nowrap; }
+.ov-missing[hidden] { display: none; }
 .ov-v { color: var(--text); font-variant-numeric: tabular-nums; }
 .ov-sub { color: var(--text-3); font-size: max(0.75rem, var(--fs-floor)); font-variant-numeric: tabular-nums; }
 .ov-cell > .ov-time.ov-v { min-width: 9ch; }
