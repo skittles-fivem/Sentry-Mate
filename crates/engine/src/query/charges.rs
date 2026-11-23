@@ -387,6 +387,21 @@ fn filled_with(
     Ok(v)
 }
 
+/// A charge's energy added and grid energy `(added, grid)` where the two may be compared (its efficiency and losses,
+/// and the totals of charging efficiency over many charges): every page that shows an efficiency asks this, so a
+/// charge is in all of them or in none. Only an AC charge (a DC charger's grid side is out of sight, and an unknown
+/// kind may be DC), both energies known and above zero, and no more into the pack than came from the grid: more is two
+/// energies that were not measured over the same span by the same input (or one in the wrong unit), never a real
+/// charge, so it is left out rather than counted as an efficiency over 100 %. Nor a charge whose two energies cover
+/// different spans of it ([`Charge::energy_spans`]: its `efficiency_note` says why).
+pub(crate) fn compared_energies(ch: &Charge) -> Option<(f64, f64)> {
+    if ch.kind != Some(ChargeKind::Ac) || !ch.energies_comparable() {
+        return None;
+    }
+    let (added, grid) = (ch.energy_added_kwh?, ch.energy_used_kwh?);
+    (added.is_finite() && grid.is_finite() && added > 0.0 && grid > 0.0 && added <= grid).then_some((added, grid))
+}
+
 fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeView {
     let live = x.live == Some(ch.id);
     let ms = ch.end_ms.saturating_sub(ch.start_ms);
@@ -412,7 +427,6 @@ fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeV
     });
     let hours = ms as f64 / 3_600_000.0;
     // compared only when measured over the same span
-    let both = grid.zip(added).filter(|_| ch.energy_spans.is_none());
     let range_added = ch.end_range_km.zip(ch.start_range_km).map(|(b, a)| b - a);
     ChargeView {
         id: ch.id.to_string(),
@@ -435,8 +449,8 @@ fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeV
         energy_added_kwh: r(added, 3),
         energy_grid_kwh: r(grid, 3),
         dc_inlet_kwh: None,
-        losses_kwh: r(both.map(|(g, a)| g - a), 3),
-        efficiency_pct: r(both.filter(|(g, _)| *g > 0.0).map(|(g, a)| a / g * 100.0), 1),
+        losses_kwh: r(compared_energies(ch).map(|(a, g)| g - a), 3),
+        efficiency_pct: r(compared_energies(ch).map(|(a, g)| a / g * 100.0), 1),
         efficiency_note: ch.energy_spans.filter(|_| grid.is_some() && added.is_some()).map(efficiency_note),
         cost,
         price_per_kwh,
@@ -1930,5 +1944,43 @@ mod tests {
         assert_eq!(inside[0].start_ms, 30);
         assert_eq!(covered_ms(&inside), 40);
         assert!(holes_in(&holes, 100, 200).is_empty());
+    }
+
+    #[test]
+    fn energies_are_compared_only_where_both_sides_can_be() {
+        let ch = |kind, added: Option<f64>, used: Option<f64>| Charge {
+            id: 1,
+            car: 1,
+            start_ms: 0,
+            end_ms: 3_600_000,
+            position: None,
+            place: None,
+            address: None,
+            kind,
+            energy_added_kwh: added,
+            energy_used_kwh: used,
+            start_soc: None,
+            end_soc: None,
+            start_range_km: None,
+            end_range_km: None,
+            power_max_kw: None,
+            outside_temp_avg_c: None,
+            battery_temp_avg_c: None,
+            cost: None,
+            source: Source::Live,
+            inputs: model::Inputs::SMO,
+            rules_version: 0,
+        };
+        let ac = Some(ChargeKind::Ac);
+        assert_eq!(compared_energies(&ch(ac, Some(18.0), Some(20.0))), Some((18.0, 20.0)));
+        assert_eq!(compared_energies(&ch(ac, Some(20.0), Some(20.0))), Some((20.0, 20.0)));
+        // more into the pack than from the grid: not one span or one unit
+        assert_eq!(compared_energies(&ch(ac, Some(23.1), Some(20.0))), None);
+        assert_eq!(compared_energies(&ch(ac, Some(18.0), Some(0.0))), None);
+        // a DC charger's grid side is out of sight, an unknown kind may be DC
+        assert_eq!(compared_energies(&ch(Some(ChargeKind::Dc), Some(30.0), Some(31.0))), None);
+        assert_eq!(compared_energies(&ch(None, Some(18.0), Some(20.0))), None);
+        assert_eq!(compared_energies(&ch(ac, None, Some(20.0))), None);
+        assert_eq!(compared_energies(&ch(ac, Some(18.0), None)), None);
     }
 }

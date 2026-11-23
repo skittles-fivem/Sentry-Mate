@@ -687,7 +687,6 @@ pub fn visits_summary(e: &Engine, cars: &[CarId], q: &VisitsQuery) -> QResult<Vi
     let mut first: Option<(u64, CarRef)> = None;
     let mut last: Option<(u64, CarRef)> = None;
     let (mut km, mut added, mut grid, mut unpriced) = (0.0, 0.0, 0.0, 0u64);
-    // the efficiency: over the charges whose two energies were measured over the same span
     let (mut added_g, mut grid_g, mut counted) = (0.0, 0.0, 0u64);
     let mut cost: BTreeMap<String, f64> = BTreeMap::new();
     for &car in cars {
@@ -736,13 +735,12 @@ pub fn visits_summary(e: &Engine, cars: &[CarId], q: &VisitsQuery) -> QResult<Vi
         each::<Charge>(e, car, f.a, f.b, None, &st.shown, false, |ch| {
             let v = super::charges::view(e, &st.c, &ch, &cx)?;
             added += v.energy_added_kwh.unwrap_or(0.0);
-            if let Some(g) = v.energy_grid_kwh {
-                grid += g;
-                if v.losses_kwh.is_some() {
-                    grid_g += g;
-                    added_g += v.energy_added_kwh.unwrap_or(0.0);
-                    counted += 1;
-                }
+            grid += v.energy_grid_kwh.unwrap_or(0.0);
+            // the efficiency: over the charges whose two energies may be compared (as each charge's own)
+            if let Some((a, g)) = super::charges::compared_energies(&ch) {
+                added_g += a;
+                grid_g += g;
+                counted += 1;
             }
             match v.cost {
                 Some(x) => *cost.entry(x.currency).or_default() += x.amount,
