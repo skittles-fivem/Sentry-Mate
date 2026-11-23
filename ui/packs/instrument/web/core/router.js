@@ -38,8 +38,9 @@ const BARE = new Set(['sign-in', 'setup']);
 // the main sections: their modules load when the browser is idle after the first page
 const MAIN = ['car', 'drives', 'drive', 'charges', 'battery', 'statistics', 'timeline', 'fleet'];
 // pages that may show kept answers at once (marked stale until checked): not forms
-// kept answers first are off for now: redrawing with the fresh answer made phone pages jump
-const takesStale = () => false;
+// (kept answers first are on again: the first draw is built off screen and a page drawn again from the fresh answers
+// is swapped in at once, and the jump check, ui/tools/jumps.js, passes with them)
+const takesStale = (id) => !BARE.has(id) && !/^(settings-|import$)/.test(id);
 const pageModule = (id) => import(`../pages/${id}.js`);
 let mounted = null;      // { key, queryKey, ctx, instance, cleanups, scope, cssHref }
 let seq = 0;
