@@ -71,10 +71,10 @@ export function watchLinks(warm, { root = globalThis.document, delayMs = 50, aga
 }
 
 /**
- * Load modules one at a time while the browser is idle (each within timeoutMs): loaders are functions that
- * import one module. Nothing when the person asked to save data.
+ * Load modules one at a time while the browser is idle (each within timeoutMs), starting afterMs from now:
+ * loaders are functions that import one module. Nothing when the person asked to save data.
  */
-export function warmModules(loaders, { timeoutMs = 3000 } = {}) {
+export function warmModules(loaders, { timeoutMs = 3000, afterMs = 2000 } = {}) {
   if (globalThis.navigator?.connection?.saveData) return;
   const list = [...loaders];
   const idle = typeof globalThis.requestIdleCallback === 'function'
@@ -85,7 +85,8 @@ export function warmModules(loaders, { timeoutMs = 3000 } = {}) {
     if (!load) return;
     Promise.resolve().then(load).catch(() => {}).finally(() => idle(next));
   };
-  idle(next);
+  // not while the page just drawn may still be loading what it shows (a chart, a map coming near)
+  setTimeout(() => idle(next), afterMs);
 }
 
 /**
