@@ -1,6 +1,7 @@
 // The full rebuild block (shared/fullrebuild.js has the words): what it does, the button (cancel while one runs)
 // and a progress box of fixed size: a text bar, the seven status lines and three error lines, all there from the
-// start, their text changed in place. Read again every 2 s while one runs, every 30 s otherwise.
+// start, only the texts that changed written again. Follows the `job` events of kind full_rebuild (live events,
+// polling only while the live stream is down: every 2 s while one runs, every 30 s otherwise).
 // Used by health (one car: cars/{car}/full-rebuild) and settings/server (every car: system/full-rebuild).
 
 import { h } from '../shared/dom.js';
@@ -11,6 +12,7 @@ import { confirmDialog } from './dialog.js';
 import { askPassword } from './secret.js';
 import { toast } from './toast.js';
 import { errorWords } from './states.js';
+import { follow, jobOf, setText, setAttr } from '../shared/live.js';
 
 const ERRORS = 3;
 const TONE = { off: 'muted', wait: 'accent', ok: 'good', warn: 'warn', error: 'bad' };
@@ -26,13 +28,19 @@ export function fullRebuild(ctx, { car = null, carName = null, label = null, onS
   const word = label || low(car ? fr.BUTTON : fr.BUTTON_ALL);
   const path = car ? `cars/${encodeURIComponent(car.id)}/full-rebuild` : 'system/full-rebuild';
   let names = carName;
-  let s = null, timer = 0, busy = false;
-  ctx.onCleanup(() => clearTimeout(timer));
+  let s = null, busy = false;
 
   const stale = h('p', { class: 'note fr-stale', hidden: true }, tag('stale', 'warn'), ' ', h('span'));
   const go = btn(word, () => act());
   const said = h('span', { class: 'muted fr-said' });
-  const bar = h('span', { class: 'fr-bar' });
+  // the text bar built once: its cells and tone change in place, its percent is the lines' (shared/fullrebuild.js)
+  const tbar = textBar(0, { label: 'no full rebuild under way' });
+  tbar.removeAttribute('role');
+  tbar.removeAttribute('aria-label');
+  tbar.setAttribute('aria-hidden', 'true');
+  const [barOn, barOff] = tbar.children;
+  const bar = h('span', { class: 'fr-bar', role: 'progressbar', 'aria-label': 'Full rebuild progress', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0' }, tbar);
+  const CELLS = barOn.textContent.length + barOff.textContent.length;
   const pct = h('span', { class: 'fr-pct' });
   const rows = fr.lines(null).map((l) => {
     const k = h('span', { class: 'fr-k' }, low(l.label));
@@ -46,50 +54,74 @@ export function fullRebuild(ctx, { car = null, carName = null, label = null, onS
     fr.EXPLAIN.map((p) => note(p)), stale,
     h('div', { class: 'acts fr-acts' }, go, said), box);
 
+  let shownStale = null;
   function paint() {
     const now = ctx.api.now();
     const tone = fr.tone(s, now);
     const run = fr.running(s);
-    go.textContent = run ? low(fr.CANCEL) : word;
-    go.className = ['btn', run && 'btn--danger'].filter(Boolean).join(' ');
-    go.disabled = busy;
+    setText(go, run ? low(fr.CANCEL) : word);
+    setAttr(go, 'class', ['btn', run && 'btn--danger'].filter(Boolean).join(' '));
+    if (go.disabled !== busy) go.disabled = busy;
     // a full rebuild of other cars: this car's page shows it too, and can cancel it
-    said.textContent = run && car && s && !s.this_car ? 'running for other cars; this car keeps its history' : '';
+    setText(said, run && car && s && !s.this_car ? 'running for other cars; this car keeps its history' : '');
     // the car made with an older decoding (health), or every such car by name (settings/server)
     const list = s?.version?.stale_cars || [];
     const st = car ? fr.staleText(s) : list.length ? `made with an older way of decoding the logs: ${list.map(names || ((x) => x)).join(', ')}.` : '';
-    stale.hidden = !st;
-    stale.lastChild.textContent = st;
+    if (shownStale !== !!st) { shownStale = !!st; stale.hidden = !st; }
+    setText(stale.lastChild, st);
     const p = fr.percent(s);
-    bar.replaceChildren(textBar(fr.fraction(s) * 100, { tone: BAR[tone], label: p == null ? 'no full rebuild under way' : `${p} percent` }));
-    pct.textContent = p == null ? '' : ` ${String(p).padStart(3)} %`;
+    const on = Math.round(fr.fraction(s) * CELLS);
+    setText(barOn, '#'.repeat(on));
+    setText(barOff, (p == null ? '?' : '.').repeat(CELLS - on));
+    setAttr(tbar, 'class', `tbar tbar--${BAR[tone]}`);
+    setAttr(bar, 'aria-valuenow', String(p ?? 0));
+    setAttr(bar, 'aria-valuetext', p == null ? 'no full rebuild under way' : `${p} percent`);
+    setText(pct, p == null ? '' : ` ${String(p).padStart(3)} %`);
     for (const [i, l] of fr.lines(s, now, names || ((x) => x)).entries()) {
       const r = rows[i];
-      r.k.textContent = low(l.label);
-      r.v.textContent = l.text;
-      r.v.title = l.text;
-      if (l.key === 'state') r.v.className = `fr-v tag--${TONE[tone]}`;
+      setText(r.k, low(l.label));
+      setText(r.v, l.text);
+      setAttr(r.v, 'title', l.text);
+      if (l.key === 'state') setAttr(r.v, 'class', `fr-v tag--${TONE[tone]}`);
     }
     const lines = fr.errorLines(s, ERRORS, names || ((x) => x));
     if (!lines.length && s?.error) lines.push(s.error);
     for (const [i, e] of errs.entries()) {
       const t = lines[i] || '';
-      e.textContent = t;
-      e.title = t;
+      setText(e, t);
+      setAttr(e, 'title', t);
     }
   }
 
-  async function read() {
-    clearTimeout(timer);
-    try {
-      const next = await ctx.api.get(path);
-      if (!ctx.alive()) return;
-      s = next;
-      paint();
-      onStatus?.(s, fr.lines(s, ctx.api.now(), names || ((x) => x)));
-    } catch (e) { if (!ctx.alive()) return; }
-    // while one runs, and once more after it ended
-    timer = setTimeout(() => { if (ctx.alive()) read(); }, fr.running(s) ? fr.POLL_MS : fr.IDLE_POLL_MS);
+  // GET once at the start and after a reconnect, then the `job` events (a car's own read adds this_car and
+  // car_stale, which an event does not carry: they stay from the last read)
+  const shown = (next) => {
+    s = next;
+    paint();
+    onStatus?.(s, fr.lines(s, ctx.api.now(), names || ((x) => x)));
+  };
+  let live = null;
+  const read = () => live?.refresh();
+  function follows() {
+    let first;
+    const ready = new Promise((res) => { first = res; });
+    live = follow(ctx.api, {
+      type: 'job', match: jobOf('full_rebuild'), pick: (d) => d.status,
+      load: () => ctx.api.get(path),
+      pollMs: (v) => (fr.running(v) ? fr.POLL_MS : fr.IDLE_POLL_MS),
+      onValue: (v, how) => {
+        if (!ctx.alive()) return;
+        const before = s;
+        shown(how === 'event' && car && v ? { ...v, this_car: before?.this_car ?? false, car_stale: before?.car_stale ?? false } : v);
+        first();
+        // a run that started or ended changes this car's part in it: its own status is read once
+        if (car && how === 'event' && fr.running(v) !== fr.running(before)) live.refresh();
+      },
+      onError: () => first(),   // the last status stays; the next read tries again
+    });
+    // the time since the last progress (and the stall warning) follow the clock between events
+    ctx.every(10000, () => { if (fr.running(s)) paint(); });
+    return ready;
   }
 
   async function act() {
@@ -106,7 +138,7 @@ export function fullRebuild(ctx, { car = null, carName = null, label = null, onS
       }),
     });
     if (!r || !ctx.alive()) return;
-    s = r; paint(); onStatus?.(s, fr.lines(s, ctx.api.now(), names || ((x) => x)));
+    shown(r);
     toast('Full rebuild started. Pages show the old history until it is done.');
     read();
   }
@@ -131,7 +163,7 @@ export function fullRebuild(ctx, { car = null, carName = null, label = null, onS
       } catch { names = (id) => id; }
     }
     paint();
-    await read();
+    await follows();
   }
   paint();
   return { el, ready: start(), status: () => s };

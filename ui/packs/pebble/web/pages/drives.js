@@ -20,6 +20,7 @@ import { bars } from '../core/chart.js';
 import { openPeriod } from '../core/period.js';
 import { placeLink, byDay, dayHead, socBar, filterBar, moreButton, statTile, dur, pills } from '../core/bits.js';
 import { rowTitle, SOURCE_OPTIONS, SOURCE_WORDS, sourceParam } from '../core/source.js';
+import { onRows } from '../shared/live.js';
 
 export const id = 'drives';
 export const css = true;
@@ -237,5 +238,7 @@ export async function mount(ctx) {
   ctx.view.replaceChildren(bar, sumBox, patBox, incBox, listStart, more);
   await load();
   ctx.ready();
+  // a drive of the car started or ended (once a burst of `rows` has passed): the list and figures read again
+  onRows(ctx.api, { car: car.id, waitMs: 2000, run: () => { if (ctx.alive()) load().catch(() => {}); } });
   return { onQuery: async () => { await load(); } };
 }

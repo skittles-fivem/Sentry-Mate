@@ -25,6 +25,7 @@ import { stackedCharts, spansFromStates } from '../core/chart.js';
 import { activityStrip, timelineRow, AWAKE_WORDS, endLabel } from '../core/journal.js';
 import { sourceMark, valueMark, inputsLine, labelOf } from '../core/sources.js';
 import { vehiclePanel, firmwarePanel } from './car-facts.js';
+import { onRows } from '../shared/live.js';
 
 // the door placard's pressure for a wheel size that is only a guess: say so, and (for an admin) link to where the
 // size is typed
@@ -212,11 +213,12 @@ export async function mount(ctx) {
 
   await Promise.all([latestP, periodP, firmwareP]);
 
-  // Live: values pushed by the server as the car sends them; nothing is re-queried on a timer.
-  ctx.events(['now', 'rows'], (ev) => {
+  // Live: values pushed by the server as the car sends them; nothing is re-queried on a timer. The period's part
+  // is read again once a burst of `rows` events of the car has passed.
+  onRows(ctx.api, { car: car.id, waitMs: 1500, run: () => { if (ctx.alive()) drawPeriod(ctx, aside, periodBox, { refresh: true }).catch(() => {}); } });
+  ctx.events(['now'], (ev) => {
     const d = ev.data || {};
     if (d.car !== car.id) return;
-    if (ev.type === 'rows') { drawPeriod(ctx, aside, periodBox, { refresh: true }).catch(() => {}); return; }
     if (!d.now) return;
     now = mergeNow(now, d.now);
     draw();
