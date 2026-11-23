@@ -7,7 +7,7 @@
 written and read back), so a part of the fast set took as long as its slowest binaries added up (web: about 190 s
 of tests on 4 cores). This builds every test binary once (`cargo test --no-run`, the same build), then runs them N
 at a time (default: the machine's cores), each in its package's folder with CARGO_MANIFEST_DIR set, as cargo runs
-them, and the doc tests beside them (`cargo test --doc`, only for the packages with a library). Each binary's
+them, and the doc tests beside them (`cargo test --doc` with the same arguments, so nothing is built again). Each binary's
 output is printed whole when it ends, with its time; the run fails when any of them does, and the times end the
 log, slowest first (docs/development.md keeps what they were).
 """
@@ -48,21 +48,16 @@ def main() -> int:
         package = m["package_id"]
         folder = os.path.dirname(m["manifest_path"])
         name = os.path.basename(folder)
-        if "lib" in target["kind"] and not m["profile"]["test"]:
+        if "lib" in target["kind"] and not m["profile"]["test"] and package.startswith("path+"):
             lib_packages.add(name)
         if m.get("executable") and m["profile"]["test"]:
             kind = "unittests" if set(target["kind"]) & {"lib", "bin"} else "tests"
             tests.append((f"{name} {kind} {target['name']}", m["executable"], folder, package))
     print(f"built in {time.monotonic() - started:.0f} s: {len(tests)} test binaries, {jobs} at a time", flush=True)
 
-    # The doc tests: only the asked packages that have a library (cargo test --doc refuses one without).
-    asked = [a for i, a in enumerate(argv) if i > 0 and argv[i - 1] in ("-p", "--package")]
-    doc_args = [a for a in argv if a.startswith("--locked") or a.startswith("--frozen") or a == "--offline"]
-    if asked:
-        doc_packages = [p for p in asked if p in lib_packages]
-        doc = ["cargo", "test", "--doc", *doc_args] + [x for p in doc_packages for x in ("-p", p)] if doc_packages else None
-    else:
-        doc = ["cargo", "test", "--doc", *[a for a in argv if a != "--all-targets"]]
+    # The doc tests, with the same arguments as the build: other packages or features would build the libraries
+    # again for them (cargo leaves out a package with no library). None when no package asked has a library.
+    doc = ["cargo", "test", "--doc", *argv] if lib_packages else None
 
     def run(task):
         name, cmd, folder, env = task
