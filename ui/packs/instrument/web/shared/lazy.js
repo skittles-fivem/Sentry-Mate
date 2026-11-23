@@ -53,15 +53,33 @@ const SCROLLS = new Set(['auto', 'scroll', 'overlay']);
 // the page said it is ready (shared/dom.js ready()): it is not being drawn for the first time
 const readyNow = () => !!globalThis.document?.documentElement?.dataset?.ready;
 
+// What the ancestors walked in this task scroll in (element -> the box its children scroll in): a page that asks
+// for many blocks at once walks each ancestor and reads its style and size once, not once per block. Forgotten
+// after the task (the layout may change after it).
+let rootMemo = null;
+function memo() {
+  if (!rootMemo) {
+    rootMemo = new Map();
+    queueMicrotask(() => { rootMemo = null; });
+  }
+  return rootMemo;
+}
+
 /** The nearest ancestor of el that scrolls up and down and has more to show, else null (the window). */
 export function scrollRoot(el) {
   const view = globalThis.getComputedStyle;
   if (typeof view !== 'function') return null;
+  const m = memo();
+  const walked = [];
+  let root = null;
   for (let p = el.parentElement; p; p = p.parentElement) {
-    if (p === globalThis.document?.body || p === globalThis.document?.documentElement) return null;
-    if (p.scrollHeight > p.clientHeight + 1 && SCROLLS.has(view(p).overflowY)) return p;
+    if (m.has(p)) { root = m.get(p); break; }
+    if (p === globalThis.document?.body || p === globalThis.document?.documentElement) break;
+    walked.push(p);
+    if (p.scrollHeight > p.clientHeight + 1 && SCROLLS.has(view(p).overflowY)) { root = p; break; }
   }
-  return null;
+  for (const p of walked) m.set(p, root);
+  return root;
 }
 
 /** Whether el is within margin screen heights of root's visible box (the window when root is null). */
