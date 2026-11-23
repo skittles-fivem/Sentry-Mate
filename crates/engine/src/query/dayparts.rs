@@ -82,6 +82,22 @@ pub(crate) mod exact {
     }
 }
 
+/// [`exact`] of an `Option<f64>`.
+pub(crate) mod exact_opt {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(crate) fn serialize<S: Serializer>(v: &Option<f64>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(v) => s.serialize_some(&v.to_bits()),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+        Option::<u64>::deserialize(d).map(|b| b.map(f64::from_bits))
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Stored<T> {
     stamp: u64,
