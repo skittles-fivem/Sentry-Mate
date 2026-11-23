@@ -11,6 +11,7 @@ import { h, replace, cover } from '../shared/dom.js';
 import { format, formatMoney, unitLabel, convert, getUnits } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, zoneName, dayRange, dayKey, DAY } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
+import * as TI from '../shared/tiers.js';
 import { head, section, kv, note, link } from '../core/ui.js';
 import { num, tag } from '../core/fmt.js';
 import { safeMap } from '../core/map.js';
@@ -187,11 +188,12 @@ export async function mount(ctx) {
     ['per kwh', c.price_per_kwh?.value != null ? [format(c.price_per_kwh.value, 'price_energy', { currency: cost?.currency }), none(` of the ${c.price_per_kwh.basis === 'grid' ? 'energy drawn' : 'energy added'}`)]
       : none(c.place ? `${c.place.name} has no price yet: add one on places, or type the cost below` : 'not a saved place with a price: type the cost below')],
     ...inv.rows,
-  ], { cols: 1 });
+    bd.cycle ? ['tiered', h('span', null, TI.splitText(TI.stepParts(bd), cur), none(`; the cycle from ${formatDate(bd.cycle.start_ms, c.place?.time_zone || tz, { weekday: false })} had ${format(bd.cycle.before_kwh, 'energy')} before it`))] : null,
+  ].filter(Boolean), { cols: 1 });
   const breakdown = table(ctx, {
     title: 'how the cost was made', rows: parts, csv: false,
     columns: [
-      { key: 'rate', label: 'rate', ph: 'main', render: (p) => String(p.rate || '').toLowerCase() },
+      { key: 'rate', label: 'rate', ph: 'main', render: (p) => String(p.from_kwh != null ? `${p.rate}: ${TI.stepLabel(p.from_kwh, p.to_kwh)}` : p.rate || '').toLowerCase() },
       { key: 'per_kwh', label: '/kwh', num: true, ph: 'sub', render: (p) => (p.per_kwh != null ? rateText(p.per_kwh, 'price_energy', cur) : null) },
       { key: 'per_minute', label: '/min', num: true, ph: 'sub', render: (p) => (p.per_minute != null ? rateText(p.per_minute, 'price_time', cur) : null) },
       { key: 'kwh', label: 'energy', num: true, render: (p) => (p.kwh != null ? num(p.kwh, 'energy') : null) },
