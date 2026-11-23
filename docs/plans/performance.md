@@ -31,6 +31,7 @@ Runs:
 - **baseline:** origin/main `5fdaf34`, before any of the changes below.
 - **step1:** the server changes only (below), on the same data folder the same day. Its base is a little older
   (`880fa26`); the commits in between change no page measured here.
+- **step2:** step 1 and the page changes (below), on origin/main `d167339`, the same data folder the same day.
 
 ### What changed
 
@@ -62,95 +63,117 @@ Step 1, the server (`crates/web`):
 - **HTTP/2:** the web port offers `h2` by ALPN, still TLS 1.3 only. One connection carries every request of a tab;
   HTTP/1.1 with keep-alive stays for clients that don't offer `h2`.
 
+Step 2, the pages (`ui/`):
+- **Map and chart style sheets:** they are no longer in `index.html`'s head (console, horizon, instrument,
+  manager), where they held up the first paint. The map and chart loaders fetch the library and its style sheet
+  together and draw nothing until both are in.
+- **Relative addresses:** fonts in CSS, page style sheets, uPlot, MapLibre and its worker, and the brand image are
+  named relative to the file. They load under `/_v/<version>/` too, so a warm load revalidates nothing.
+- **Fonts:** every `@font-face` already had `font-display: swap`. Each pack now preloads the 2 or 3 font files
+  its first paint uses (measured), and no others.
+- **API reads** (`ui/shared/api.js`):
+  - **Identical reads in flight** share one request, keyed by URL, accept and headers.
+  - **Kept answers:** the last 32 answers are kept, so a read that accepts some age (`maxAgeMs`) takes an answer
+    another part of the page just loaded. That removed the second `/api/v1/me` on every map page.
+  - **Revalidation:** reads go with `cache: 'no-cache'`, so the browser revalidates with the server's `ETag`
+    and an unchanged answer comes back as `304` without a body.
+- **Pages fixed:** logbook battery and console settings each asked for the same data twice; they now reuse it.
+
 ### Results
 
 Means over the 6 packs x 5 pages:
 
-| mean over 6 packs × 5 pages | baseline | step1 |
-|---|---|---|
-| cold TTU s | 11.1 | 5.4 |
-| cold FCP s | 3.6 | 1.7 |
-| cold KiB | 1279 | 512 |
-| warm TTU s | 7.2 | 2.8 |
-| warm FCP s | 1.7 | 0.5 |
-| warm KiB | 476 | 120 |
+| mean over 6 packs × 5 pages | baseline | step1 | step2 |
+|---|---|---|---|
+| cold TTU s | 11.1 | 5.4 | 5.5 |
+| cold FCP s | 3.6 | 1.7 | 1.6 |
+| cold KiB | 1279 | 512 | 471 |
+| warm TTU s | 7.2 | 2.8 | 2.7 |
+| warm FCP s | 1.7 | 0.5 | 0.5 |
+| warm KiB | 476 | 120 | 60 |
 
-Every request of the step1 run went over HTTP/2; every request of the baseline over HTTP/1.1.
+- **Protocol:** every request of step1 and step2 went over HTTP/2; every request of the baseline over HTTP/1.1.
+- **Duplicate API GETs** (the same URL twice in one load), summed over all 60 loads: 28 in the baseline, none in step2.
+- **API bytes** per page load: 56 KiB → 10 KiB.
+- **Warm loads in step2:** no pack file is asked for again (no `304` either).
+- **Long tasks** are a little higher in step2: 1.4 s → 1.7 s per cold load, 1.1 s → 1.2 s warm. With the files
+  arriving sooner and at once, more script runs in the same stretch. They are the pages' own work (drawing the
+  map, the lists), which this part doesn't change.
 
-<details><summary>Every pack and page (baseline → step1)</summary>
+<details><summary>Every pack and page (baseline → step1 → step2)</summary>
 
-| pack | page | phase | TTU s (baseline → step1) | FCP s | KiB | requests (static+api) | long tasks ms |
+| pack | page | phase | TTU s (baseline → step1 → step2) | FCP s | KiB | requests (static+api) | long tasks ms |
 |---|---|---|---|---|---|---|---|
-| instrument | car | cold | 17.9 → 7.3 | 3.9 → 1.7 | 2184 → 838 | 57+17 → 57+17 | 1851 → 1916 |
-| instrument | car | warm | 14.0 → 3.1 | 1.5 → 0.4 | 1231 → 149 | 57+17 → 57+17 | 1811 → 1473 |
-| instrument | drives | cold | 7.4 → 4.4 | 3.9 → 1.8 | 961 → 442 | 46+12 → 46+12 | 1210 → 1328 |
-| instrument | drives | warm | 3.5 → 2.0 | 1.5 → 0.4 | 87 → 10 | 46+12 → 46+12 | 945 → 758 |
-| instrument | charges | cold | 18.6 → 8.0 | 3.9 → 1.6 | 2123 → 823 | 50+21 → 50+21 | 2719 → 2531 |
-| instrument | charges | warm | 16.1 → 4.1 | 2.4 → 0.4 | 1634 → 154 | 50+21 → 50+21 | 2190 → 2066 |
-| instrument | battery | cold | 9.6 → 5.2 | 4.0 → 1.7 | 1103 → 464 | 47+22 → 47+22 | 1675 → 1530 |
-| instrument | battery | warm | 4.8 → 3.0 | 1.5 → 0.4 | 191 → 23 | 47+22 → 47+22 | 1385 → 1260 |
-| instrument | settings | cold | 6.2 → 3.4 | 3.9 → 1.7 | 869 → 418 | 44+14 → 44+14 | 523 → 475 |
-| instrument | settings | warm | 2.7 → 1.1 | 1.4 → 0.4 | 62 → 9 | 44+14 → 44+14 | 274 → 183 |
-| logbook | car | cold | 16.6 → 6.3 | 2.5 → 0.8 | 2004 → 762 | 45+22 → 47+22 | 2622 → 2955 |
-| logbook | car | warm | 15.6 → 4.3 | 2.0 → 0.4 | 1843 → 456 | 45+22 → 47+22 | 2137 → 2145 |
-| logbook | drives | cold | 6.6 → 4.0 | 2.5 → 0.9 | 724 → 361 | 37+13 → 39+13 | 730 → 640 |
-| logbook | drives | warm | 3.4 → 2.0 | 0.4 → 0.3 | 83 → 67 | 37+13 → 39+13 | 475 → 496 |
-| logbook | charges | cold | 17.4 → 7.3 | 2.5 → 0.9 | 1925 → 737 | 42+21 → 44+21 | 2931 → 2667 |
-| logbook | charges | warm | 16.9 → 5.2 | 2.0 → 0.4 | 1764 → 433 | 42+21 → 44+21 | 2625 → 2131 |
-| logbook | battery | cold | 10.1 → 7.5 | 2.5 → 0.9 | 940 → 409 | 41+27 → 43+27 | 4376 → 4577 |
-| logbook | battery | warm | 8.8 → 5.8 | 1.9 → 0.5 | 768 → 104 | 41+27 → 43+27 | 3829 → 4283 |
-| logbook | settings | cold | 5.5 → 3.3 | 2.6 → 0.9 | 637 → 341 | 34+13 → 36+13 | 560 → 493 |
-| logbook | settings | warm | 2.7 → 1.5 | 0.4 → 0.3 | 43 → 61 | 34+13 → 36+13 | 219 → 297 |
-| horizon | car | cold | 17.8 → 7.2 | 4.0 → 1.7 | 2028 → 682 | 60+17 → 63+17 | 2644 → 2188 |
-| horizon | car | warm | 14.1 → 3.5 | 1.6 → 0.5 | 1184 → 156 | 60+17 → 63+17 | 2388 → 1857 |
-| horizon | drives | cold | 6.5 → 4.3 | 3.9 → 1.7 | 804 → 285 | 49+12 → 52+12 | 1476 → 1667 |
-| horizon | drives | warm | 3.8 → 2.3 | 1.6 → 0.5 | 90 → 36 | 49+12 → 52+12 | 1299 → 1006 |
-| horizon | charges | cold | 18.2 → 8.0 | 4.0 → 1.7 | 1966 → 667 | 53+21 → 56+21 | 3445 → 3245 |
-| horizon | charges | warm | 17.6 → 4.3 | 3.6 → 0.5 | 1875 → 180 | 53+21 → 56+21 | 2728 → 2294 |
-| horizon | battery | cold | 8.5 → 5.0 | 4.0 → 1.8 | 946 → 308 | 50+22 → 53+22 | 2115 → 2030 |
-| horizon | battery | warm | 5.3 → 4.1 | 1.8 → 0.8 | 194 → 49 | 50+22 → 53+22 | 1608 → 2132 |
-| horizon | settings | cold | 5.8 → 3.1 | 4.0 → 1.7 | 713 → 262 | 47+14 → 50+14 | 918 → 712 |
-| horizon | settings | warm | 2.7 → 1.3 | 1.5 → 0.4 | 65 → 36 | 47+14 → 50+14 | 290 → 363 |
-| console | car | cold | 15.8 → 6.4 | 3.4 → 1.7 | 1771 → 689 | 49+17 → 53+17 | 845 → 831 |
-| console | car | warm | 6.8 → 2.7 | 1.4 → 0.3 | 81 → 217 | 49+17 → 53+17 | 393 → 399 |
-| console | drives | cold | 5.7 → 3.8 | 3.3 → 1.7 | 625 → 302 | 44+11 → 48+11 | 305 → 346 |
-| console | drives | warm | 3.2 → 1.6 | 1.4 → 0.3 | 100 → 97 | 44+11 → 48+11 | 131 → 107 |
-| console | charges | cold | 16.4 → 6.8 | 3.4 → 1.7 | 1820 → 704 | 52+26 → 56+26 | 571 → 529 |
-| console | charges | warm | 7.2 → 3.1 | 1.4 → 0.4 | 86 → 219 | 52+26 → 56+26 | 223 → 129 |
-| console | battery | cold | 6.8 → 4.0 | 3.4 → 1.6 | 749 → 329 | 43+16 → 47+16 | 538 → 486 |
-| console | battery | warm | 4.3 → 2.0 | 1.4 → 0.4 | 173 → 106 | 43+16 → 47+16 | 251 → 123 |
-| console | settings | cold | 4.9 → 2.8 | 3.4 → 1.7 | 559 → 294 | 41+13 → 45+13 | 202 → 198 |
-| console | settings | warm | 2.5 → 1.1 | 1.4 → 0.4 | 50 → 95 | 41+13 → 45+12 | 71 → 93 |
-| pebble | car | cold | 16.3 → 6.4 | 3.6 → 2.2 | 1861 → 675 | 48+18 → 52+18 | 765 → 785 |
-| pebble | car | warm | 6.7 → 2.8 | 1.8 → 0.9 | 89 → 198 | 48+18 → 52+18 | 244 → 390 |
-| pebble | drives | cold | 5.1 → 3.4 | 3.7 → 2.3 | 509 → 225 | 36+12 → 39+12 | 353 → 376 |
-| pebble | drives | warm | 2.8 → 1.6 | 1.8 → 0.9 | 54 → 75 | 36+12 → 39+12 | 0 → 0 |
-| pebble | charges | cold | 15.9 → 6.5 | 3.7 → 2.2 | 1726 → 608 | 41+18 → 44+18 | 666 → 602 |
-| pebble | charges | warm | 6.8 → 3.3 | 1.9 → 1.1 | 65 → 197 | 41+18 → 44+18 | 244 → 219 |
-| pebble | battery | cold | 6.0 → 4.0 | 3.7 → 2.3 | 613 → 256 | 38+17 → 41+17 | 741 → 683 |
-| pebble | battery | warm | 3.3 → 2.1 | 1.8 → 1.0 | 95 → 84 | 38+17 → 41+17 | 72 → 82 |
-| pebble | settings | cold | 5.0 → 3.4 | 3.6 → 2.3 | 536 → 237 | 38+13 → 41+13 | 142 → 325 |
-| pebble | settings | warm | 2.7 → 1.3 | 1.8 → 0.9 | 46 → 76 | 38+13 → 41+13 | 0 → 0 |
-| manager | car | cold | 18.9 → 8.0 | 4.1 → 1.8 | 2282 → 894 | 58+18 → 58+18 | 1406 → 2162 |
-| manager | car | warm | 7.5 → 3.4 | 1.4 → 0.5 | 103 → 131 | 58+18 → 58+18 | 902 → 1596 |
-| manager | drives | cold | 8.4 → 4.7 | 4.2 → 1.8 | 1046 → 494 | 47+12 → 47+12 | 1463 → 1545 |
-| manager | drives | warm | 3.6 → 2.1 | 1.4 → 0.4 | 88 → 10 | 47+12 → 47+12 | 898 → 1198 |
-| manager | charges | cold | 19.3 → 8.6 | 4.1 → 1.8 | 2208 → 875 | 51+21 → 51+21 | 2944 → 2970 |
-| manager | charges | warm | 17.5 → 4.4 | 3.6 → 0.5 | 1880 → 154 | 51+21 → 51+21 | 2436 → 2256 |
-| manager | battery | cold | 9.8 → 5.9 | 4.2 → 1.7 | 1188 → 517 | 48+22 → 48+22 | 1914 → 1983 |
-| manager | battery | warm | 5.2 → 3.4 | 1.6 → 0.6 | 192 → 23 | 48+22 → 48+22 | 1608 → 1646 |
-| manager | settings | cold | 7.0 → 3.8 | 4.1 → 1.8 | 954 → 471 | 45+14 → 45+14 | 591 → 678 |
-| manager | settings | warm | 2.9 → 1.3 | 1.5 → 0.5 | 63 → 9 | 45+14 → 45+14 | 368 → 379 |
+| instrument | car | cold | 17.9 → 7.3 → 7.6 | 3.9 → 1.7 → 1.8 | 2184 → 838 → 840 | 57+17 → 57+17 → 57+16 | 1851 → 1916 → 2198 |
+| instrument | car | warm | 14.0 → 3.1 → 3.2 | 1.5 → 0.4 → 0.5 | 1231 → 149 → 129 | 57+17 → 57+17 → 57+16 | 1811 → 1473 → 1879 |
+| instrument | drives | cold | 7.4 → 4.4 → 4.6 | 3.9 → 1.8 → 1.7 | 961 → 442 → 435 | 46+12 → 46+12 → 45+12 | 1210 → 1328 → 1858 |
+| instrument | drives | warm | 3.5 → 2.0 → 2.3 | 1.5 → 0.4 → 0.5 | 87 → 10 → 9 | 46+12 → 46+12 → 45+12 | 945 → 758 → 1403 |
+| instrument | charges | cold | 18.6 → 8.0 → 8.6 | 3.9 → 1.6 → 1.9 | 2123 → 823 → 825 | 50+21 → 50+21 → 50+20 | 2719 → 2531 → 3315 |
+| instrument | charges | warm | 16.1 → 4.1 → 4.6 | 2.4 → 0.4 → 0.4 | 1634 → 154 → 131 | 50+21 → 50+21 → 50+20 | 2190 → 2066 → 2888 |
+| instrument | battery | cold | 9.6 → 5.2 → 5.3 | 4.0 → 1.7 → 1.7 | 1103 → 464 → 458 | 47+22 → 47+22 → 46+22 | 1675 → 1530 → 1780 |
+| instrument | battery | warm | 4.8 → 3.0 → 3.1 | 1.5 → 0.4 → 0.5 | 191 → 23 → 23 | 47+22 → 47+22 → 46+22 | 1385 → 1260 → 1620 |
+| instrument | settings | cold | 6.2 → 3.4 → 3.5 | 3.9 → 1.7 → 1.8 | 869 → 418 → 411 | 44+14 → 44+14 → 42+14 | 523 → 475 → 755 |
+| instrument | settings | warm | 2.7 → 1.1 → 1.1 | 1.4 → 0.4 → 0.4 | 62 → 9 → 9 | 44+14 → 44+14 → 42+14 | 274 → 183 → 404 |
+| logbook | car | cold | 16.6 → 6.3 → 6.3 | 2.5 → 0.8 → 1.0 | 2004 → 762 → 709 | 45+22 → 47+22 → 45+21 | 2622 → 2955 → 2969 |
+| logbook | car | warm | 15.6 → 4.3 → 3.5 | 2.0 → 0.4 → 0.3 | 1843 → 456 → 132 | 45+22 → 47+22 → 45+21 | 2137 → 2145 → 2045 |
+| logbook | drives | cold | 6.6 → 4.0 → 3.9 | 2.5 → 0.9 → 1.0 | 724 → 361 → 308 | 37+13 → 39+13 → 37+13 | 730 → 640 → 734 |
+| logbook | drives | warm | 3.4 → 2.0 → 1.9 | 0.4 → 0.3 → 0.2 | 83 → 67 → 13 | 37+13 → 39+13 → 37+13 | 475 → 496 → 424 |
+| logbook | charges | cold | 17.4 → 7.3 → 7.7 | 2.5 → 0.9 → 1.0 | 1925 → 737 → 685 | 42+21 → 44+21 → 42+20 | 2931 → 2667 → 3379 |
+| logbook | charges | warm | 16.9 → 5.2 → 4.2 | 2.0 → 0.4 → 0.3 | 1764 → 433 → 129 | 42+21 → 44+21 → 42+20 | 2625 → 2131 → 2499 |
+| logbook | battery | cold | 10.1 → 7.5 → 8.9 | 2.5 → 0.9 → 1.0 | 940 → 409 → 356 | 41+27 → 43+27 → 41+26 | 4376 → 4577 → 5920 |
+| logbook | battery | warm | 8.8 → 5.8 → 5.2 | 1.9 → 0.5 → 0.4 | 768 → 104 → 26 | 41+27 → 43+27 → 41+26 | 3829 → 4283 → 3810 |
+| logbook | settings | cold | 5.5 → 3.3 → 3.3 | 2.6 → 0.9 → 1.0 | 637 → 341 → 288 | 34+13 → 36+13 → 34+13 | 560 → 493 → 606 |
+| logbook | settings | warm | 2.7 → 1.5 → 1.3 | 0.4 → 0.3 → 0.2 | 43 → 61 → 7 | 34+13 → 36+13 → 34+13 | 219 → 297 → 248 |
+| horizon | car | cold | 17.8 → 7.2 → 7.2 | 4.0 → 1.7 → 1.7 | 2028 → 682 → 658 | 60+17 → 63+17 → 60+16 | 2644 → 2188 → 2660 |
+| horizon | car | warm | 14.1 → 3.5 → 3.1 | 1.6 → 0.5 → 0.5 | 1184 → 156 → 129 | 60+17 → 63+17 → 60+16 | 2388 → 1857 → 1830 |
+| horizon | drives | cold | 6.5 → 4.3 → 4.2 | 3.9 → 1.7 → 1.7 | 804 → 285 → 253 | 49+12 → 52+12 → 48+12 | 1476 → 1667 → 1818 |
+| horizon | drives | warm | 3.8 → 2.3 → 2.1 | 1.6 → 0.5 → 0.5 | 90 → 36 → 9 | 49+12 → 52+12 → 48+12 | 1299 → 1006 → 1134 |
+| horizon | charges | cold | 18.2 → 8.0 → 8.3 | 4.0 → 1.7 → 1.6 | 1966 → 667 → 643 | 53+21 → 56+21 → 53+20 | 3445 → 3245 → 3744 |
+| horizon | charges | warm | 17.6 → 4.3 → 4.5 | 3.6 → 0.5 → 0.5 | 1875 → 180 → 131 | 53+21 → 56+21 → 53+20 | 2728 → 2294 → 2756 |
+| horizon | battery | cold | 8.5 → 5.0 → 5.2 | 4.0 → 1.8 → 1.7 | 946 → 308 → 276 | 50+22 → 53+22 → 49+22 | 2115 → 2030 → 2277 |
+| horizon | battery | warm | 5.3 → 4.1 → 3.3 | 1.8 → 0.8 → 0.6 | 194 → 49 → 23 | 50+22 → 53+22 → 49+22 | 1608 → 2132 → 1934 |
+| horizon | settings | cold | 5.8 → 3.1 → 3.0 | 4.0 → 1.7 → 1.7 | 713 → 262 → 229 | 47+14 → 50+14 → 45+14 | 918 → 712 → 789 |
+| horizon | settings | warm | 2.7 → 1.3 → 1.2 | 1.5 → 0.4 → 0.4 | 65 → 36 → 9 | 47+14 → 50+14 → 45+14 | 290 → 363 → 484 |
+| console | car | cold | 15.8 → 6.4 → 6.2 | 3.4 → 1.7 → 1.4 | 1771 → 689 → 603 | 49+17 → 53+17 → 49+16 | 845 → 831 → 1086 |
+| console | car | warm | 6.8 → 2.7 → 2.7 | 1.4 → 0.3 → 0.5 | 81 → 217 → 128 | 49+17 → 53+17 → 49+16 | 393 → 399 → 507 |
+| console | drives | cold | 5.7 → 3.8 → 3.3 | 3.3 → 1.7 → 1.5 | 625 → 302 → 208 | 44+11 → 48+11 → 42+11 | 305 → 346 → 408 |
+| console | drives | warm | 3.2 → 1.6 → 1.8 | 1.4 → 0.3 → 0.3 | 100 → 97 → 9 | 44+11 → 48+11 → 42+11 | 131 → 107 → 281 |
+| console | charges | cold | 16.4 → 6.8 → 6.6 | 3.4 → 1.7 → 1.3 | 1820 → 704 → 619 | 52+26 → 56+26 → 52+25 | 571 → 529 → 518 |
+| console | charges | warm | 7.2 → 3.1 → 2.9 | 1.4 → 0.4 → 0.4 | 86 → 219 → 130 | 52+26 → 56+26 → 52+25 | 223 → 129 → 212 |
+| console | battery | cold | 6.8 → 4.0 → 3.8 | 3.4 → 1.6 → 1.4 | 749 → 329 → 236 | 43+16 → 47+16 → 42+16 | 538 → 486 → 513 |
+| console | battery | warm | 4.3 → 2.0 → 2.0 | 1.4 → 0.4 → 0.4 | 173 → 106 → 18 | 43+16 → 47+16 → 42+16 | 251 → 123 → 236 |
+| console | settings | cold | 4.9 → 2.8 → 2.5 | 3.4 → 1.7 → 1.3 | 559 → 294 → 199 | 41+13 → 45+13 → 39+12 | 202 → 198 → 285 |
+| console | settings | warm | 2.5 → 1.1 → 0.9 | 1.4 → 0.4 → 0.3 | 50 → 95 → 6 | 41+13 → 45+12 → 39+12 | 71 → 93 → 51 |
+| pebble | car | cold | 16.3 → 6.4 → 6.4 | 3.6 → 2.2 → 2.2 | 1861 → 675 → 608 | 48+18 → 52+18 → 48+17 | 765 → 785 → 1004 |
+| pebble | car | warm | 6.7 → 2.8 → 2.5 | 1.8 → 0.9 → 0.9 | 89 → 198 → 129 | 48+18 → 52+18 → 48+17 | 244 → 390 → 522 |
+| pebble | drives | cold | 5.1 → 3.4 → 3.1 | 3.7 → 2.3 → 2.1 | 509 → 225 → 158 | 36+12 → 39+12 → 35+12 | 353 → 376 → 368 |
+| pebble | drives | warm | 2.8 → 1.6 → 1.6 | 1.8 → 0.9 → 1.0 | 54 → 75 → 6 | 36+12 → 39+12 → 35+12 | 0 → 0 → 155 |
+| pebble | charges | cold | 15.9 → 6.5 → 6.2 | 3.7 → 2.2 → 2.2 | 1726 → 608 → 540 | 41+18 → 44+18 → 40+17 | 666 → 602 → 844 |
+| pebble | charges | warm | 6.8 → 3.3 → 3.0 | 1.9 → 1.1 → 1.1 | 65 → 197 → 127 | 41+18 → 44+18 → 40+17 | 244 → 219 → 235 |
+| pebble | battery | cold | 6.0 → 4.0 → 3.7 | 3.7 → 2.3 → 2.1 | 613 → 256 → 189 | 38+17 → 41+17 → 37+17 | 741 → 683 → 556 |
+| pebble | battery | warm | 3.3 → 2.1 → 2.1 | 1.8 → 1.0 → 1.0 | 95 → 84 → 14 | 38+17 → 41+17 → 37+17 | 72 → 82 → 146 |
+| pebble | settings | cold | 5.0 → 3.4 → 3.3 | 3.6 → 2.3 → 2.2 | 536 → 237 → 169 | 38+13 → 41+13 → 37+13 | 142 → 325 → 340 |
+| pebble | settings | warm | 2.7 → 1.3 → 1.4 | 1.8 → 0.9 → 0.9 | 46 → 76 → 6 | 38+13 → 41+13 → 37+13 | 0 → 0 → 136 |
+| manager | car | cold | 18.9 → 8.0 → 7.8 | 4.1 → 1.8 → 1.8 | 2282 → 894 → 895 | 58+18 → 58+18 → 58+17 | 1406 → 2162 → 1872 |
+| manager | car | warm | 7.5 → 3.4 → 3.0 | 1.4 → 0.5 → 0.4 | 103 → 131 → 131 | 58+18 → 58+18 → 58+17 | 902 → 1596 → 1407 |
+| manager | drives | cold | 8.4 → 4.7 → 4.8 | 4.2 → 1.8 → 1.8 | 1046 → 494 → 488 | 47+12 → 47+12 → 46+12 | 1463 → 1545 → 1594 |
+| manager | drives | warm | 3.6 → 2.1 → 2.3 | 1.4 → 0.4 → 0.6 | 88 → 10 → 9 | 47+12 → 47+12 → 46+12 | 898 → 1198 → 1553 |
+| manager | charges | cold | 19.3 → 8.6 → 9.2 | 4.1 → 1.8 → 2.0 | 2208 → 875 → 877 | 51+21 → 51+21 → 51+20 | 2944 → 2970 → 3714 |
+| manager | charges | warm | 17.5 → 4.4 → 5.2 | 3.6 → 0.5 → 0.5 | 1880 → 154 → 131 | 51+21 → 51+21 → 51+20 | 2436 → 2256 → 3045 |
+| manager | battery | cold | 9.8 → 5.9 → 5.9 | 4.2 → 1.7 → 1.8 | 1188 → 517 → 511 | 48+22 → 48+22 → 47+22 | 1914 → 1983 → 2130 |
+| manager | battery | warm | 5.2 → 3.4 → 3.0 | 1.6 → 0.6 → 0.6 | 192 → 23 → 23 | 48+22 → 48+22 → 47+22 | 1608 → 1646 → 1504 |
+| manager | settings | cold | 7.0 → 3.8 → 3.7 | 4.1 → 1.8 → 1.7 | 954 → 471 → 464 | 45+14 → 45+14 → 43+14 | 591 → 678 → 737 |
+| manager | settings | warm | 2.9 → 1.3 → 1.0 | 1.5 → 0.5 → 0.4 | 63 → 9 → 9 | 45+14 → 45+14 → 43+14 | 368 → 379 → 382 |
 
 </details>
 
 Caveats:
 - **Warm loads of the map pages, baseline:** in instrument, logbook, horizon and manager, the warm car and
   charges pages fetched some `no-cache` files again in full under network emulation instead of revalidating them.
-  MapLibre GL was one of them. Their warm bytes are high for that reason. In step1, a warm load asks for no file under
-  `/_v/`. Its few remaining `304`s (0 to 10 per page) are files the pages still name by a root address (fonts in
-  CSS, page style sheets).
-- **Duplicate API GETs in the baseline:**
+  MapLibre GL was one of them. Their warm bytes are high for that reason. In step1 a warm load asks for no file under
+  `/_v/`. Its few remaining `304`s (0 to 10 per page) were files the pages still named by a root address, which
+  step 2 made relative.
+- **Duplicate API GETs in the baseline** (all fixed in step 2):
   - `/api/v1/me` twice on the car and charges pages of every pack;
   - logbook battery: `/api/v1/cars/c1/battery` twice;
   - console settings: `/api/v1/cars?limit=200&sort=name` twice.
