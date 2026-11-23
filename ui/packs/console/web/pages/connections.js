@@ -2,10 +2,9 @@
 // screen. Totals by status, then one dense row per connection (a status light and word, why, the last good contact
 // and the next, pace and today's count against the cap, 24 h and 7 d success and errors, uptime, the last error
 // and a 24 h bar line, error hours red), then the problems of the last 7 days.
-// Live: `connections` events changed in place (live events, polling only while the live stream is down: every 10 s;
-// the old values stay until the new answer is in; every cell has its width in characters up front); relative times
-// tick every second. Admins only (the API is admin only).
-// API: GET integrations/overview, then `connections` events.
+// Live: read again every 10 s and changed in place (the old values stay until the new answer is in; every cell has
+// its width in characters up front); relative times tick every second. Admins only (the API is admin only).
+// API: GET integrations/overview.
 
 import { h, svg, replace, cover } from '../shared/dom.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -15,7 +14,6 @@ import { section, note } from '../core/ui.js';
 import { scrollBox } from '../shared/scrollbox.js';
 import { tag, dateTime, time, DASH } from '../core/fmt.js';
 import { loadingLine, errorWords } from '../core/states.js';
-import { follow } from '../shared/live.js';
 
 export const STATUSES = ['live', 'idle', 'paused', 'off', 'problem'];
 const POLL_MS = 10_000;
@@ -254,27 +252,25 @@ export function overviewSection(ctx, { href = (l) => l } = {}) {
     tick();
   }
 
-  // GET once at the start and after a reconnect, then the `connections` events
-  let first1;
-  const ready = new Promise((res) => { first1 = res; });
-  follow(ctx.api, {
-    type: 'connections',
-    load: () => ctx.api.get('integrations/overview'),
-    pollMs: POLL_MS,
-    onValue: (d) => {
-      if (!ctx.alive() || !d) return;
+  let busy = false;
+  async function load() {
+    if (busy) return;
+    busy = true;
+    try {
+      const d = await ctx.api.get('integrations/overview');
+      if (!ctx.alive()) return;
       put(errEl, '');
       paintData(d);
-      first1();
-    },
-    onError: (e) => {
-      if (!ctx.alive()) return;
+    } catch (e) {
+      if (e?.name === 'AbortError' || !ctx.alive()) return;
       // the old figures stay; a word says they are not new
       if (data) { put(errEl, `not read again: ${errorWords(e).text}  `); errEl.className = 'ov-err tone--warn'; }
       else replace(first, h('span', { class: 'tone--bad' }, `the overview could not be read: ${errorWords(e).text}`));
-      first1();
-    },
-  });
+    } finally { busy = false; }
+  }
+
+  const ready = load();
+  ctx.every(POLL_MS, () => { if (!document.hidden) load(); });
   ctx.every(1000, tick);
   return { el, ready, totals: () => data?.totals || null };
 }

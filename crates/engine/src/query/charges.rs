@@ -1776,6 +1776,10 @@ pub struct PlaceStat {
     pub cost_by_currency: Vec<Money>,
     /// Over the grid energy where known, else the energy into the pack; null with more than one currency.
     pub price_per_kwh: Option<f64>,
+    /// The saved place's price in force today (null for a spot that is no saved place, or a place with no price).
+    pub place_price: Option<super::places::Price>,
+    /// Who set it: `typed`, or `invoice` (worked out from Supercharger invoices).
+    pub price_source: Option<crate::placing::PriceSource>,
     pub cars: Vec<CarRef>,
 }
 
@@ -1840,6 +1844,8 @@ pub fn charging_places(
                 energy_added_kwh: 0.0,
                 cost_by_currency: Vec::new(),
                 price_per_kwh: None,
+                place_price: None,
+                price_source: None,
                 cars: Vec::new(),
             },
             cost: BTreeMap::new(),
@@ -1864,6 +1870,13 @@ pub fn charging_places(
             st.energy_added_kwh = r(Some(st.energy_added_kwh), 3).unwrap_or(0.0);
             st.cost_by_currency = money(s.cost);
             st.cars = s.cars.into_iter().map(CarRef).collect();
+            if let Some(id) = st.place.as_deref().and_then(super::parse_place) {
+                let zone = places.extra(id).and_then(|x| x.time_zone.as_deref());
+                if let Some(d) = places.price_on(id, &super::places::today(zone)) {
+                    st.place_price = Some(d.price.clone());
+                    st.price_source = Some(d.source);
+                }
+            }
             (key, st)
         })
         .collect();

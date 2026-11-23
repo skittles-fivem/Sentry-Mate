@@ -4,6 +4,7 @@ dispatch to /api/v1 routes, and the server-sent event stream.
 
 from __future__ import annotations
 
+import hashlib
 import http.server
 import mimetypes
 import os
@@ -16,7 +17,7 @@ import traceback
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import resources, uploads
+from . import resources
 from .config import Clock
 from .conventions import Req, Response, json_bytes, to_csv
 from .dataset import Dataset
@@ -87,6 +88,7 @@ class App:
         self.build_s = time.monotonic() - t0
         self.store = Store(cfg, self.ds, self.clock)
         self.cache = {}
+        resources.invoices.apply_prices(self)  # the places' prices from the made-up Supercharger invoices
         # One change at a time: a handler checks `version` and then changes the data, and two requests
         # with the same version must not both pass the check.
         self.write_lock = threading.Lock()
@@ -171,7 +173,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer" if api else page_referrer_policy(self.app.store))
         self.send_header("X-Sentry-Mate-Build", self.app.build)
         if api:
-            self.send_header("Cache-Control", "no-store")
+            # (a tagged JSON answer of a GET says "private, no-cache" itself, see tagged())
+            self.send_header("Cache-Control", (headers or {}).pop("Cache-Control", None) or "no-store")
             # The virtual clock, so pages count "5 min ago" and the period presets from the dataset's "now".
             self.send_header("X-Sentry-Mate-Now-Ms", str(self.app.clock.now()))
         else:
@@ -281,7 +284,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 allow = ", ".join(sorted(route.handlers))
                 raise ApiError(405, "method_not_allowed", f"{path} answers {allow}.", headers={"Allow": allow})
             resources.moving.advance(app.store, app.clock.now())  # a move or restore here that finished
-            uploads.advance(app, app.clock.now())  # the made-up upload cadence (mockapi/uploads.py)
             session, cookie = self.session()
             if m != "GET" and self.headers.get(CSRF_HEADER) != "1":
                 raise csrf()
@@ -334,7 +336,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.send(200, csv_res.body, csv_res.content_type, headers, api=True)
             status = 201 if m in ("POST", "PUT") and isinstance(res, dict) and res.pop("_created", False) else 200
             headers = {"Set-Cookie": cookie} if cookie else {}
-            return self.send(status, json_bytes(_strip(res)), "application/json; charset=utf-8", headers, api=True)
+            body = json_bytes(_strip(res))
+            if m == "GET" and status == 200 and not sensitive(path):
+                tag = tagged(body)
+                headers.update({"ETag": tag, "Cache-Control": "private, no-cache"})
+                if tag in [t.strip() for t in (self.headers.get("If-None-Match") or "").split(",")]:
+                    return self.send(304, b"", None, headers, api=True)
+            return self.send(status, body, "application/json; charset=utf-8", headers, api=True)
         except ApiError as e:
             return self.send_error_obj(e, cookie)
 
@@ -422,6 +430,23 @@ def _device(ua):
         if name in ua:
             return {"Edg": "Edge"}.get(name, name)
     return "Browser"
+
+
+
+# As the real server (crates/web/src/delivery.rs): a successful GET with a JSON body is tagged (a weak tag, a hash
+# of the body), "private, no-cache", and answered 304 with no body when If-None-Match names the tag. Paths that may
+# carry a secret stay no-store, untagged.
+SECRET_PARTS = ("token", "key", "setup", "/me", "two-step", "session", "auth", "sign-in", "sign-out", "password", "exports",
+                "move", "recover")
+
+
+def sensitive(path: str) -> bool:
+    p = path.lower()
+    return any(w in p for w in SECRET_PARTS)
+
+
+def tagged(body: bytes) -> str:
+    return 'W/"' + hashlib.sha256(body).hexdigest()[:20] + '"'
 
 
 def _strip(obj):

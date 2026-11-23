@@ -28,6 +28,8 @@
 //!   health                        exit 0 when the upload port answers, or a move comes in (for Docker)
 //!   gps-layout --car C [--days N] where the Screenmate's GPS frame keeps latitude and longitude, from the stored
 //!                                 logs and the other inputs' positions (only reads; prints no positions)
+//!   log-checks --car C            every log of a car as the CAN Bridge app is told it now, counted per check_reason,
+//!                                 and when the failed ones were (only reads; prints no names or keys)
 //!
 //! A new server can also move in with no shell at all: `SENTRY_MATE_MOVE_FROM` and `SENTRY_MATE_MOVE_CODE` in its
 //! environment, and it brings the data in as it starts (`docs/plans/move-server.md`).
@@ -41,6 +43,7 @@ mod gps_layout;
 #[cfg(any(test, feature = "dev-seed"))]
 mod history;
 mod keys;
+mod log_checks;
 mod migrate;
 #[cfg(test)]
 mod perf;
@@ -179,6 +182,15 @@ enum Cmd {
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=366))]
         days: u32,
     },
+    /// Every log of a car's CAN Bridge keys as the app is told it now (`verified`, `pending`, `failed` and its
+    /// `check_reason`), counted, and the runs of failed logs by their start times (UTC). Prints no log name, car key or
+    /// signing key, so it can be passed on. Runs beside the server and only reads:
+    /// `docker exec <container> /sentry-mate log-checks --car c1`.
+    LogChecks {
+        /// The car, as its pages' address names it (`c1`).
+        #[arg(long)]
+        car: String,
+    },
     /// Development only (not in the help, and only in a build with the `dev-seed` feature): made-up cars for trying
     /// the server without anyone's car.
     #[cfg(feature = "dev-seed")]
@@ -220,8 +232,9 @@ enum DevCmd {
         start: Option<u64>,
     },
     /// A long made-up history for the first car (or a new one): a TeslaMate import of about a year (about 3 million
-    /// positions), a TeslaFi import, and TeslaFi's API and local TeslaMate as live inputs over its last weeks. Run
-    /// after `dev seed` (its car gets the history). For timing the pages (docs/plans/performance.md).
+    /// positions), a TeslaFi import, and TeslaFi's API, local TeslaMate and the Tesla API as live inputs over its
+    /// last weeks. Run after `dev seed` (its car gets the history). For timing the pages
+    /// (docs/plans/performance.md).
     History {
         /// The day the history ends (YYYY-MM-DD, UTC, not included).
         #[arg(long, value_parser = seed::parse_day)]
@@ -239,6 +252,9 @@ enum DevCmd {
         teslafi_days: u32,
         #[arg(long, default_value_t = 30)]
         api_days: u32,
+        /// Days of the Tesla API as a live input, before the end.
+        #[arg(long, default_value_t = 30)]
+        tesla_days: u32,
         #[arg(long, default_value_t = 1)]
         seed: u64,
     },
@@ -368,6 +384,17 @@ const KEYS_USAGE: &str = "sentry-mate: which car key? The car keys are the last 
 /// The version, and the image build's number, commit and date when it was given them (build.rs).
 const VERSION: &str = env!("SENTRY_MATE_VERSION");
 
+/// This build, for the release check: read here, in the last crate built, so a new build number, commit or date
+/// builds again only this crate (and links), not web and the crates below it.
+pub(crate) fn this_build() -> release::Build {
+    release::Build::from_parts(
+        env!("CARGO_PKG_VERSION"),
+        option_env!("SENTRY_MATE_BUILD"),
+        option_env!("SENTRY_MATE_COMMIT"),
+        option_env!("SENTRY_MATE_DATE"),
+    )
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     vault::harden_process();
@@ -445,7 +472,8 @@ fn needs(cmd: &Cmd) -> Option<(bool, bool)> {
         Cmd::Log { cmd: LogCmd::Export { .. } | LogCmd::Decode { .. } }
         | Cmd::Chain { .. }
         | Cmd::Keys { .. }
-        | Cmd::GpsLayout { .. } => Some((false, false)),
+        | Cmd::GpsLayout { .. }
+        | Cmd::LogChecks { .. } => Some((false, false)),
         #[cfg(feature = "dev-seed")]
         Cmd::Dev { cmd: DevCmd::Seed { .. } | DevCmd::History { .. } | DevCmd::Storage { .. } } => Some((true, false)),
         Cmd::Log { .. } | Cmd::Health => None,
@@ -563,6 +591,14 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
             let out = std::io::stdout();
             return gps_layout::run(&data, &keys, car, days, &mut out.lock(), &mut std::io::stderr()).await;
         }
+        Cmd::LogChecks { car } => {
+            let Some(car) = gps_layout::parse_car(&car) else {
+                eprintln!("--car: a car as its pages' address names it, like c1");
+                return Ok(ExitCode::FAILURE);
+            };
+            let out = std::io::stdout();
+            return log_checks::run(&data, &keys, car, &mut out.lock(), &mut std::io::stderr()).await;
+        }
         Cmd::Log { cmd: LogCmd::Export { name } } => {
             let store = Store::new(can_dir(&data), Arc::new(Vault::open(&data, &keys)?));
             match store.read(&name).await? {
@@ -618,7 +654,9 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
             seed::run(&store, &judge, &tokens, &o, &enter, &mut std::io::stdout()).await?;
         }
         #[cfg(feature = "dev-seed")]
-        Cmd::Dev { cmd: DevCmd::History { end, days, drives, charges, drive_step, teslafi_days, api_days, seed } } => {
+        Cmd::Dev {
+            cmd: DevCmd::History { end, days, drives, charges, drive_step, teslafi_days, api_days, tesla_days, seed },
+        } => {
             let _lock = take_server_lock(&data).await?;
             let v = Arc::new(Vault::open(&data, &keys)?);
             refuse_writes(&data, &v)?;
@@ -634,6 +672,7 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
                 drive_step_s: drive_step.max(1),
                 teslafi_days,
                 api_days,
+                tesla_days,
             };
             let t = Instant::now();
             let c = history::run(&engine, &o).await?;
@@ -1671,8 +1710,6 @@ async fn start_web(
         site::forward(&engine.engine, app.events.clone()),
         site::spawn_upkeep(app.clone(), announced),
         web::resources::mqtt::spawn(app.clone()),
-        // the live figures of the open pages (jobs, health, connections, storage) onto the live stream
-        web::live::spawn(app.clone()),
     ];
     // the logs the server lost are looked for after the start and once a day (not after a move away: no uploads)
     let mut tasks = tasks;
@@ -1681,6 +1718,8 @@ async fn start_web(
         // a full rebuild's end into the audit log, and the one a new server version calls for started
         tasks.push(web::resources::full_rebuild::spawn_watch(app.clone()));
     }
+    // a place's prices worked out from Supercharger invoices into the audit log
+    tasks.push(web::resources::places::spawn_invoice_audit(app.clone()));
     // the Tesla API input reads cars only on a server that serves its data (not after a move away), and only for an
     // account an admin added: with none, nothing is started and nothing connects to Tesla
     let tesla = app.service::<web::resources::tesla::TeslaService>().ok();

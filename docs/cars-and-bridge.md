@@ -169,9 +169,29 @@ once known), and a complete one also its `check`:
 
 | `check` | When |
 |---|---|
-| `verified` | The whole file's SHA-256 is the one its sidecar names, the ECDSA P-256 signature is the paired key's, and its chain link fits: the log before it (`prev_name`, `prev_sha256`, index one less) is here and verified, or it is the first of its chain (`prev_name` `-`), or the first one here (a chain received from its middle). |
-| `failed` | It failed one of those, with `check_reason`: `mismatch` (the file differs from what its sidecar names), `bad_signature` (a wrong signature, another key's, another car key's, or fields that can't be read), `unsigned` (no signature, or the bridge could not sign) or `chain_break` (the log before it is here but is not the one it names or failed its check, or it is missing though older logs of the chain are here and nothing of it is arriving). |
-| `pending` | Not judged yet: its sidecar hasn't come (a log is judged without it after 10 minutes), or the log before it is still arriving, or is missing but may still come (for 10 minutes after this log arrived). The app asks again next round. |
+| `verified` | The whole file's SHA-256 is the one its sidecar names, the ECDSA P-256 signature is the paired key's, and its chain link does not contradict the log before it: that log (`prev_name`, `prev_sha256`, index one less) is here and verified, or it is the first of its chain (`prev_name` `-`), or the first one here (a chain received from its middle), or the log before it failed its own check or did not come (see below). |
+| `failed` | It failed its own check, with `check_reason`: `mismatch` (the file differs from what its sidecar names), `bad_signature` (a wrong signature, another key's, another car key's, or fields that can't be read), `unsigned` (no signature, or the bridge could not sign) or `chain_break` (its chain fields can't be read, or the log before it is here and verified but is not the one this log names: another SHA-256, or not the index before). |
+| `pending` | Not judged yet: its sidecar hasn't come (a log is judged without it after 10 minutes), or the log before it is waiting for its own sidecar, is still arriving, or is missing but may still come (for 10 minutes after this log arrived). The app asks again next round. |
+
+- **A break in the chain fails only the log that breaks it.** A log whose own file and signature are fine is never
+  failed because of an earlier log: when the log before it failed its check (a changed file, a bad signature, not
+  signed) or never came (the car no longer has it), this log is `verified` and starts a new segment of its chain.
+  The break is reported once: as that earlier log's own failure, or as one gap in the chain report, on Data health
+  ("chain gaps") and in the missing-log scan below. A log that came before the one it names (16 uploads at once
+  finish in any order) is `pending` while that one is on its way, never `failed`. Earlier builds answered such a log
+  `chain_break` once 10 minutes had passed, and the log after any failed one too: the app kept those as failed.
+- **The chain is read afresh on every status call.** Nothing about the chain is stored with a log, so when the log
+  before it arrives, or a failed one is sent again and verifies, the logs after it are answered as they now fit on
+  the very next call. Judging logs again (a newer version's rules at the start, a full rebuild, `keys trust`) answers
+  from the stored verdicts, or `pending` while a car key is held over 2 s: never a failure made up meanwhile. A log
+  whose file or sidecar is gone from the disk keeps its verdict when it is judged again.
+- **Failed logs judged by an older version are judged again once**, a couple of minutes after the start of a
+  version with newer rules: only failed ones (verified logs are left as they are), all of a car key at once, without
+  anything being sent again. A log that verifies now is decoded and its time stops being unknown time; the audit log
+  gets a `can-logs-rechecked` entry on the car saying how many were checked and how many verify now.
+- **Why logs failed**, without sharing data: `sentry-mate log-checks --car c1` prints the counts per
+  `check_reason` and when the failed runs were ([Log checks](commands.md#log-checks)); Data health shows the same
+  counts ("all log checks").
 
 - A sidecar's name has its log's `check` (`pending` while its log isn't here). Partial and missing names have none.
 - The answer is read from the stored verdicts (one pass over the car key's records, whatever the number of names):

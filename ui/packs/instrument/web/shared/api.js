@@ -10,6 +10,14 @@
 // sign-in). events() follows /api/v1/events and reconnects with backoff. now() is the server's clock,
 // estimated from response headers, for period presets and "5 min ago". Each answer's X-Sentry-Mate-Build goes to
 // build.js (a tab open across an update loads its next page in full).
+//
+// Answers are kept in this tab's memory while it is open (across page changes, not across reloads): every
+// JSON GET the server does not mark no-store, up to 200 answers or 4 MB, the oldest used going first. A read
+// asks again with the kept answer's tag (If-None-Match); 304 hands the kept answer over without reading it
+// again. prefetch() warms it (a link under the pointer); a page about to be shown reads the warm answer at
+// once. staleTracker() lets a page's first reads take a kept answer at once and says when the fresh one is in
+// (changed or not). Any change that succeeds marks every kept answer as to be asked again; signing out
+// (DELETE session) and a 401 forget them all (clearApiCache()).
 
 import { observeBuild, BUILD_HEADER } from './build.js';
 
@@ -17,7 +25,25 @@ export const API_BASE = '/api/v1';
 export const CSRF_HEADER = 'X-Sentry-Mate';
 // Headers the server's clock is read from: an exact one if the server sends it, else the standard Date.
 export const NOW_HEADER = 'X-Sentry-Mate-Now-Ms';
-export const EVENT_TYPES = Object.freeze(['now', 'fleet', 'rows', 'prefs', 'notice', 'job', 'health', 'connections', 'storage']);
+export const EVENT_TYPES = Object.freeze(['now', 'fleet', 'rows', 'prefs', 'notice']);
+// The service worker answers a read with this header at once from its memory, when it has the answer, and
+// marks that answer with STALE_HEADER (its age in ms). Without it (or without a worker) the read is fresh.
+export const STALE_OK_HEADER = 'X-Sentry-Mate-Stale-Ok';
+export const STALE_HEADER = 'X-Sentry-Mate-Stale';
+// a 304 to a read sent with a kept answer's tag
+const NOT_MODIFIED = Symbol('not modified');
+// how long a prefetched (or just checked) answer is taken at once by the page it was for
+const WARM_MS = 10000;
+// A first read that may take a kept answer waits this long for the fresh one first: on a fast network the page
+// is drawn once, with fresh data; on a slow one the kept answer shows at once after it, the fresh one later.
+const STALE_GRACE_MS = 100;
+
+/** A short sum of an answer's text: two answers with the same sum are taken as the same. */
+function textSum(t) {
+  let a = 0x811c9dc5, b = 0;
+  for (let i = 0; i < t.length; i++) { a = Math.imul(a ^ t.charCodeAt(i), 0x01000193); b = (b * 31 + t.charCodeAt(i)) | 0; }
+  return `${t.length}:${(a >>> 0).toString(36)}:${(b >>> 0).toString(36)}`;
+}
 
 const DEFAULT_MESSAGES = {
   0: 'Could not reach the server. Check the connection and try again.',
@@ -239,9 +265,13 @@ export function createClient(options = {}) {
     await heavyTurn(opts.signal);
     try { return await exchangeNow(method, path, opts); } finally { heavyDone(); }
   }
-  async function exchangeNow(method, path, { params, body, headers = {}, signal, accept = 'json', timeoutMs }) {
+  // meta (reads only) gets what the kept answers need: etag, noStore, staleMs (the worker's age of a stale
+  // answer), sum. etag sends If-None-Match: a 304 resolves to NOT_MODIFIED.
+  async function exchangeNow(method, path, { params, body, headers = {}, signal, accept = 'json', timeoutMs, etag = null, staleOk = false, priority = null, meta = null }) {
     const href = url(path, params);
     const h = { ...headers };
+    if (etag) h['If-None-Match'] = etag;
+    if (staleOk) h[STALE_OK_HEADER] = '1';
     if (accept === 'json' && !('Accept' in h)) h.Accept = 'application/json';
     if (accept === 'csv' && !('Accept' in h)) h.Accept = 'text/csv';
     let payload;
@@ -265,7 +295,10 @@ export function createClient(options = {}) {
       const sent = localNow();
       let res;
       try {
-        res = await doFetch(href, { method, headers: h, body: payload, signal: ctl.signal, credentials: 'same-origin', cache: method === 'GET' ? 'no-cache' : 'no-store' });
+        // (with our own tag the browser's cache stays out of it, so the 304 reaches this code)
+        const init = { method, headers: h, body: payload, signal: ctl.signal, credentials: 'same-origin', cache: method === 'GET' && !etag ? 'no-cache' : 'no-store' };
+        if (priority) init.priority = priority;
+        res = await doFetch(href, init);
       } catch (err) {
         clearT(timer);
         signal?.removeEventListener('abort', onAbort);
@@ -289,11 +322,20 @@ export function createClient(options = {}) {
         }
       }
       try {
-        if (res.status === 401) emit('unauthorized', { method, path });
+        if (res.status === 401) { clearCache(); emit('unauthorized', { method, path }); }
+        if (res.status === 304 && etag) return NOT_MODIFIED;
         if (!res.ok) throw await toError(res, method, path);
+        if (meta) {
+          const hd = (k) => res.headers?.get?.(k) ?? null;
+          meta.etag = hd('ETag');
+          meta.noStore = /\bno-store\b/i.test(hd('Cache-Control') || '');
+          const age = hd(STALE_HEADER);
+          meta.staleMs = age != null && /^\d+$/.test(age.trim()) ? +age : null;
+        }
         if (res.status === 204 || method === 'HEAD') return null;
         if (accept === 'json') {
           const text = await res.text();
+          if (meta) { meta.sum = textSum(text); meta.bytes = text.length; }
           if (!text) return null;
           try { return JSON.parse(text); } catch { throw new ApiError({ status: res.status, code: 'bad_response', message: 'The server sent an answer the page could not read.', method, path }); }
         }
@@ -314,10 +356,53 @@ export function createClient(options = {}) {
   // GETs in flight, shared by every caller asking for the same URL. Each caller can cancel its own
   // wait; the request itself is cancelled only when every caller has.
   const inflight = new Map();
-  // Results kept for opts.maxAgeMs, dropped on any write. writes counts the writes, so an answer that
-  // was under way during a write is not kept.
-  const cache = new Map();
-  let writes = 0;
+  // writes counts the changes, so an answer that was under way during one is kept only to lend its tag;
+  // epoch counts the times everything was forgotten (sign-out, 401), so such an answer is not kept at all.
+  let writes = 0, epoch = 0;
+
+  // The kept answers, the last used at the end: key -> { value, etag, sum, bytes, at, keep, dirty, warmAt }.
+  // keep: asked for with maxAgeMs or keep (only those are reused by maxAgeMs). dirty: a change came after it,
+  // so it is only asked again with its tag. warmAt: prefetched or just checked; taken at once for WARM_MS.
+  const memMax = options.cacheEntries ?? 200;
+  const memMaxBytes = options.cacheBytes ?? 4 * 1024 * 1024;
+  const mem = new Map();
+  let memBytes = 0;
+  // A period that ends now (to_ms = the time it was asked) gives every read a new address. The last kept answer
+  // of the same read without the period's ends: periodKey -> key (see similar()).
+  const byPeriod = new Map();
+  function memDrop(key) {
+    const e = mem.get(key);
+    if (!e) return;
+    memBytes -= e.bytes;
+    mem.delete(key);
+    if (e.pk && byPeriod.get(e.pk) === key) byPeriod.delete(e.pk);
+  }
+  function memPut(key, e) {
+    memDrop(key);
+    if (e.bytes > memMaxBytes) return;
+    e.pk = periodKey(key)?.pk || null;
+    if (e.pk) byPeriod.set(e.pk, key);
+    mem.set(key, e);
+    memBytes += e.bytes;
+    for (const k of mem.keys()) {
+      if (mem.size <= memMax && memBytes <= memMaxBytes) break;
+      memDrop(k);
+    }
+  }
+  function memUse(key) {
+    const e = mem.get(key);
+    if (e) { mem.delete(key); mem.set(key, e); }
+    return e;
+  }
+  /** Forget every kept answer, and let no read under way join or fill it (sign-out, a 401). */
+  function clearCache() {
+    mem.clear();
+    byPeriod.clear();
+    memBytes = 0;
+    inflight.clear();
+    epoch++;
+  }
+  function markAllDirty() { for (const e of mem.values()) { e.dirty = true; e.warmAt = 0; } }
 
   function join(entry, signal, key) {
     entry.refs++;
@@ -348,45 +433,225 @@ export function createClient(options = {}) {
     const e = Object.entries(headers).map(([k, v]) => [String(k).toLowerCase(), String(v)]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
     return e.length ? ' ' + JSON.stringify(e) : '';
   }
+  const keyOf = (href, opts) => 'GET ' + href + ' ' + (opts.accept || 'json') + headerKey(opts.headers);
+
+  // key -> { pk: the key without from_ms and to_ms, from, to }, for a read with a to_ms
+  function periodKey(key) {
+    const m = /^GET ([^? ]*)\?([^ ]*)( .*)$/.exec(key);
+    if (!m || !/(^|&)to_ms=/.test(m[2])) return null;
+    const q = new URLSearchParams(m[2]);
+    const from = q.has('from_ms') ? +q.get('from_ms') : null, to = +q.get('to_ms');
+    q.delete('from_ms');
+    q.delete('to_ms');
+    return { pk: `GET ${m[1]}?${q}${m[3]}`, from, to };
+  }
+  // A kept answer of the same read for a period that ended earlier: the asked period ends now (within 2 min)
+  // and has the same start, or the same length (24 h). Only a stand-in: it is shown stale (or, warm, as a
+  // prefetch made a moment ago), and its tag goes with the fresh read (the same body answers 304).
+  function similar(key) {
+    const a = periodKey(key);
+    if (!a || !Number.isFinite(a.to) || Math.abs(clock.now() - a.to) > 120000) return null;
+    const k = byPeriod.get(a.pk);
+    const e = k && k !== key ? mem.get(k) : null;
+    if (!e) return null;
+    const b = periodKey(k);
+    if (!(b.to <= a.to) || !(b.from === a.from || (a.from != null && b.from != null && a.to - a.from === b.to - b.from))) return null;
+    return { key: k, entry: e };
+  }
+
+  // One read, shared by everyone asking for key while it is under way (each caller joins it). A JSON answer is
+  // kept unless the server says no-store; a kept answer's tag goes with it. extra: warm (prefetched, or a check
+  // of a stale answer: the page takes it at once), priority, staleOk (the worker may answer from its memory).
+  // entry.info is { etag, sum } of the answer once it is in; entry.stale says the worker answered from memory.
+  function shared(key, path, params, opts, extra = {}) {
+    let entry = inflight.get(key);
+    if (entry) { if (extra.warm) entry.warm = true; return entry; }
+    const controller = new AbortController();
+    entry = { controller, refs: 0, settled: false, promise: null, warm: !!extra.warm, info: null, stale: false };
+    const e = entry, w = writes, ep = epoch;
+    const accept = opts.accept || 'json';
+    // the answer whose tag goes with the read: this read's kept one, or a similar one (extra.base)
+    const kept = accept === 'json' && !extra.staleOk ? (mem.get(key) || extra.base || null) : null;
+    const meta = accept === 'json' ? {} : null;
+    e.promise = exchange('GET', path, {
+      params, signal: controller.signal, headers: opts.headers, accept, timeoutMs: opts.timeoutMs ?? readTimeoutMs,
+      etag: kept?.etag || null, staleOk: !!extra.staleOk, priority: extra.priority || null, meta,
+    }).then((value) => {
+      const t = localNow();
+      const keep = opts.maxAgeMs > 0 || !!opts.keep;
+      if (value === NOT_MODIFIED) {
+        e.info = { etag: kept.etag, sum: kept.sum };
+        if (ep === epoch && mem.get(key) === kept) {
+          memUse(key);
+          kept.at = t;
+          kept.keep ||= keep;
+          if (w === writes) kept.dirty = false;
+          if (e.warm && !kept.dirty) kept.warmAt = t;
+        } else if (ep === epoch) {
+          // the similar answer is this one's too
+          const dirty = w !== writes;
+          memPut(key, { value: kept.value, etag: kept.etag, sum: kept.sum, bytes: kept.bytes, at: t, keep, dirty, warmAt: e.warm && !dirty ? t : 0 });
+        }
+        return kept.value;
+      }
+      if (meta) {
+        e.info = { etag: meta.etag || null, sum: meta.sum || null };
+        e.stale = meta.staleMs != null;
+        if (meta.noStore) {
+          // a no-store answer (the session's /me) is kept only for a caller that asked to keep it, and only for
+          // reads with maxAgeMs: never revalidated, warmed or shown stale
+          memDrop(key.replace(/ stale-ok$/, ''));
+          if (keep && !e.stale && ep === epoch && value != null && w === writes) {
+            memPut(key, { value, etag: null, sum: null, bytes: meta.bytes || 0, at: t, keep: true, dirty: false, warmAt: 0, noStore: true });
+          }
+        }
+        else if (ep === epoch && value != null) {
+          const dirty = w !== writes;
+          memPut(key.replace(/ stale-ok$/, ''), {
+            value, etag: e.info.etag, sum: e.info.sum, bytes: meta.bytes || 0,
+            // a stale answer from the worker is as old as it says, and never reused by maxAgeMs
+            at: e.stale ? t - meta.staleMs : t, keep: keep && !e.stale, dirty, warmAt: e.warm && !dirty && !e.stale ? t : 0,
+          });
+        }
+      }
+      return value;
+    }, (err) => {
+      // a page that is not there any more (or may not be seen) is not kept
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 429) memDrop(key);
+      throw err;
+    }).finally(() => { e.settled = true; if (inflight.get(key) === e) inflight.delete(key); });
+    e.promise.catch(() => {}); // a caller that left must not leave an unhandled rejection behind
+    inflight.set(key, entry);
+    return entry;
+  }
+
+  // the answer a page showed (stale) against the fresh one: true when they are the same
+  const same = (a, b) => !!a && !!b && (a.etag && b.etag ? a.etag === b.etag : !!a.sum && a.sum === b.sum);
+
+  // check a stale answer in the background (no caller's signal: it is kept either way), for the tracker
+  // { v } when p resolves within STALE_GRACE_MS, else (or when it fails) null
+  function grace(p) {
+    return Promise.race([p.then((v) => ({ v }), () => null), new Promise((r) => setTimeout(r, STALE_GRACE_MS, null))]);
+  }
+
+  function check(tracker, key, path, params, opts, shown, base = null) {
+    const e = shared(key, path, params, opts, { warm: true, base });
+    tracker.watch(join(e, null, key).then(() => same(shown, e.info)));
+  }
 
   /**
    * GET an API path; resolves to the parsed JSON (treat it as read-only: callers asking at the same time
-   * share it). Identical reads in flight (same URL, same accept, same headers) are sent once and every
-   * caller gets the one answer; only GETs are shared, never a change or the event stream.
-   * opts: signal, maxAgeMs (reuse a result this young), keep (keep this answer for callers that pass
+   * share it, and it may be the kept answer). Identical reads in flight (same URL, same accept, same headers)
+   * are sent once and every caller gets the one answer; only GETs are shared, never a change or the event stream.
+   * opts: signal, maxAgeMs (reuse a kept result this young), keep (keep this answer for callers that pass
    * maxAgeMs, without reusing an older one: the frame's own reads, which a page loaded at the same time asks
-   * for again), timeoutMs, headers.
+   * for again), timeoutMs, headers, stale (a staleTracker(): a kept answer comes at once while the fresh one
+   * is asked for; see staleTracker).
    */
   function get(path, params, opts = {}) {
     const href = url(path, params);
-    const key = 'GET ' + href + ' ' + (opts.accept || 'json') + headerKey(opts.headers);
-    if (opts.maxAgeMs > 0) {
-      const hit = cache.get(key);
-      if (hit && localNow() - hit.at <= opts.maxAgeMs) return Promise.resolve(hit.value);
+    const key = keyOf(href, opts);
+    const json = (opts.accept || 'json') === 'json';
+    const own = json ? mem.get(key) : null;
+    const near = json && !own ? similar(key) : null;
+    const kept = own || near?.entry || null;
+    const tracker = json && opts.stale && opts.stale.open ? opts.stale : null;
+    if (own?.noStore) {
+      if (opts.maxAgeMs > 0 && localNow() - own.at <= opts.maxAgeMs) { memUse(key); return Promise.resolve(own.value); }
+      return join(shared(key, path, params, opts), opts.signal, key);
     }
-    let entry = inflight.get(key);
-    if (!entry) {
-      const controller = new AbortController();
-      entry = { controller, refs: 0, settled: false, promise: null };
-      const e = entry, w = writes;
-      e.promise = exchange('GET', path, { params, signal: controller.signal, headers: opts.headers, accept: opts.accept || 'json', timeoutMs: opts.timeoutMs ?? readTimeoutMs })
-        .then((value) => { if (w === writes && (opts.maxAgeMs > 0 || opts.keep || cache.has(key))) cache.set(key, { at: localNow(), value }); return value; })
-        .finally(() => { e.settled = true; if (inflight.get(key) === e) inflight.delete(key); });
-      e.promise.catch(() => {}); // a caller that left must not leave an unhandled rejection behind
-      inflight.set(key, entry);
+    if (kept && !kept.dirty) {
+      const t = localNow();
+      if ((own && opts.maxAgeMs > 0 && kept.keep && t - kept.at <= opts.maxAgeMs) || (kept.warmAt && t - kept.warmAt <= WARM_MS)) {
+        memUse(near ? near.key : key);
+        return Promise.resolve(kept.value);
+      }
+      if (tracker) {
+        // the fresh answer if it is in within STALE_GRACE_MS (a fast network: drawn once), else the kept one now
+        // and the fresh one after it
+        memUse(near ? near.key : key);
+        const e = shared(key, path, params, opts, { warm: true, base: near?.entry });
+        const fresh = join(e, null, key);
+        return grace(fresh).then((r) => {
+          if (r) return r.v;
+          tracker.watch(fresh.then(() => same(kept, e.info)));
+          return kept.value;
+        });
+      }
     }
-    return join(entry, opts.signal, key);
+    if (near) return join(shared(key, path, params, opts, { base: near.entry }), opts.signal, key);
+    if (!kept && tracker?.worker) {
+      // the first page after a reload: the worker may have the answer in its memory
+      // (asked for only when the network's answer is not in within STALE_GRACE_MS)
+      const e = shared(key, path, params, opts);
+      const fresh = join(e, opts.signal, key);
+      return grace(fresh).then((r) => {
+        if (r) return r.v;
+        if (!tracker.open) return fresh;
+        const w = shared(key + ' stale-ok', path, params, opts, { staleOk: true });
+        return join(w, opts.signal, key + ' stale-ok').then((value) => {
+          if (w.stale) tracker.watch(fresh.then(() => same(w.info, e.info)));
+          return value;
+        }, () => fresh);
+      });
+    }
+    return join(shared(key, path, params, opts), opts.signal, key);
+  }
+
+  /**
+   * Warm the kept answer of a read a page is about to make (the same path, params and opts it will use), at a
+   * low priority; joins the same read under way. Resolves to the answer, or null when it failed. The page then
+   * takes it at once (for 10 s; a change or a 'rows' event ends that). A read the page makes with maxAgeMs is not
+   * asked for while its kept answer is that young.
+   */
+  function prefetch(path, params, opts = {}) {
+    const key = keyOf(url(path, params), opts);
+    const near = mem.has(key) ? null : similar(key);
+    const kept = mem.get(key) || near?.entry;
+    const t = localNow();
+    if (kept && !kept.dirty && ((kept.warmAt && t - kept.warmAt <= WARM_MS) || (!near && opts.maxAgeMs > 0 && kept.keep && t - kept.at <= opts.maxAgeMs))) return Promise.resolve(kept.value);
+    return join(shared(key, path, params, { ...opts, accept: 'json' }, { warm: true, priority: 'low', base: near?.entry }), null, key).catch(() => null);
+  }
+
+  /**
+   * For a page's first reads: get(..., { stale: tracker }) takes a kept answer at once (or, with worker, the
+   * service worker's, the first page after a reload) and asks for the fresh one at the same time.
+   * onStale() when the first stale answer goes out; onFresh({ changed, failed }) once every stale answer
+   * shown has its fresh one (changed: one of them differs; failed: one could not be asked for). close() takes no
+   * more stale answers (the page is drawn); stop() ends it (the page was left).
+   */
+  function staleTracker({ worker = false, onStale = null, onFresh = null } = {}) {
+    let pending = 0, changed = false, failed = false, open = true, done = false;
+    const call = (f, a) => { try { f?.(a); } catch (e) { console.error(e); } };
+    return {
+      worker,
+      get open() { return open && !done; },
+      get stale() { return pending > 0; },
+      watch(p) {
+        if (done) return;
+        if (pending++ === 0) call(onStale);
+        p.then((s) => { if (!s) changed = true; }, (e) => { if (!isAbort(e)) failed = true; }).finally(() => {
+          if (--pending > 0 || done) return;
+          const r = { changed, failed };
+          changed = failed = false;
+          call(onFresh, r);
+        });
+      },
+      close() { open = false; },
+      stop() { done = true; open = false; },
+    };
   }
 
   /** Drop kept results (all, or those whose path starts with prefix). */
   function invalidate(prefix = '') {
     const p = prefix ? url(prefix) : '';
-    for (const k of [...cache.keys()]) if (!p || k.startsWith('GET ' + p)) cache.delete(k);
+    for (const k of [...mem.keys()]) if (!p || k.startsWith('GET ' + p)) memDrop(k);
   }
 
   /**
    * Change something: send('PATCH', 'me/preferences', { theme: 'dark' }). Adds the CSRF header and a JSON
    * body (a Blob, ArrayBuffer or FormData body is sent as it is). Resolves to the JSON answer or null.
+   * Every kept answer is asked again afterwards (a change may change any read); signing out forgets them.
    * opts: signal, headers, timeoutMs, params.
    */
   async function send(method, path, body, opts = {}) {
@@ -394,9 +659,15 @@ export function createClient(options = {}) {
     if (m === 'GET') return get(path, opts.params, opts);
     // a GET started before this change must not answer a caller who asks after it
     inflight.clear();
-    cache.clear();
     writes++;
-    return exchange(m, path, { params: opts.params, body, headers: opts.headers, signal: opts.signal, accept: opts.accept || 'json', timeoutMs: opts.timeoutMs ?? readTimeoutMs * 2 });
+    markAllDirty();
+    try {
+      const r = await exchange(m, path, { params: opts.params, body, headers: opts.headers, signal: opts.signal, accept: opts.accept || 'json', timeoutMs: opts.timeoutMs ?? readTimeoutMs * 2 });
+      if (m === 'DELETE' && url(path, opts.params) === url('session')) clearCache();
+      return r;
+    } finally {
+      markAllDirty();
+    }
   }
 
   /** One page of a list: { items, next, ... }. opts.after and opts.limit, or the same keys in params. */
@@ -510,6 +781,8 @@ export function createClient(options = {}) {
     try { data = ev.data ? JSON.parse(ev.data) : null; } catch { data = ev.data; }
     const t = type === 'message' && data && typeof data.type === 'string' ? data.type : type;
     const msg = { type: t, data, id: ev.lastEventId || null };
+    // a drive or charge changed: a prefetched answer is asked for again
+    if (t === 'rows') for (const e of mem.values()) e.warmAt = 0;
     for (const s of [...hub.subs]) {
       if (s.types && !s.types.includes(t)) continue;
       try { s.onEvent(msg); } catch (e) { console.error(e); }
@@ -607,6 +880,7 @@ export function createClient(options = {}) {
       get aborted() { return s.aborted; },
       abort: (reason) => ctl.abort(reason),
       get: (path, params, opts) => get(path, params, o(opts)),
+      prefetch,
       page: (path, params, opts) => page(path, params, o(opts)),
       list: (path, params, opts) => list(path, params, o(opts)),
       pager: (path, params, opts) => pager(path, params, o(opts)),
@@ -626,7 +900,11 @@ export function createClient(options = {}) {
     put: (path, body, opts) => send('PUT', path, body, opts),
     patch: (path, body, opts) => send('PATCH', path, body, opts),
     del: (path, opts) => send('DELETE', path, undefined, opts),
-    csvUrl, url, invalidate, events, reconnectEvents, scope, on,
+    csvUrl, url, invalidate, events, reconnectEvents, scope, on, prefetch, staleTracker,
+    /** Forget every kept answer (signing out does it by itself). */
+    clearApiCache: clearCache,
+    /** How many answers are kept, and their size: { entries, bytes }. */
+    cacheSize: () => ({ entries: mem.size, bytes: memBytes }),
     /** The server's time now, in ms (falls back to this browser's clock until a response has arrived). */
     now: clock.now,
     clock,
@@ -643,4 +921,5 @@ export default client;
 export const {
   get, page, list, pager, send, post, put, patch, del, csvUrl, url, invalidate,
   events, reconnectEvents, scope, on, now, clock, network, eventsState,
+  prefetch, staleTracker, clearApiCache, cacheSize,
 } = client;

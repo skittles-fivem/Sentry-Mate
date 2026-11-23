@@ -56,11 +56,10 @@ pages/<id>.js  one module per page id, plus sign-in and setup; pages/<id>.css wh
 | `ui.js` | `head(ctx)` (the header line), `section`, `kv`, `btn`, `actions`, `note`, `link`, `textBar`, `paint`, `centreUpDown`. |
 | `fmt.js` | `num(value, kind)` (number with its unit muted), `numText`, `time`, `date`, `dateTime`, `when`, `dur`, `ago`, `range`, `slug`, `stateWord`, `tag`. |
 | `bare.js` | The sign-in and set-up box: centred both ways on whole pixels; `canSendSecrets()` and the plain-HTTP line. |
-| `morph.js` | Live figures painted in place: `morphChildren(slot, nodes)` / `morph(el, next)` make what is on the page look like a part built again from new data, writing only the texts and attributes that changed; `keepEl(el, name)` keeps a part with its own state (a progress panel) as it is. |
 | `stage.js` | `offstage(slot, build)`: a part of a page drawn again on a live update is built in an invisible box of the same width (charts and all) and swapped in at once. |
 | `table.js` | `table(ctx, opts)`: dense text tables from an API list (server sort and paging, csv) or local rows, a totals row, `data-row` rows, the two-line phone rows (`ph: 'main' \| 'sub' \| 'num'`); `autoMore`; `box` (and `boxRows`) for a long log-like list that scrolls in a box about five rows high (shared/scrollbox.js, `.scroll-box` in app.css: the head line stays at the top, a fade at the bottom while rows are hidden below; an API list has its height from the start and loads its next page as the end of the box comes near, "more" stays under it for the keyboard and the csv still exports every row; local rows are all drawn in a box at most that high, `.scroll-box--fit`); `cellBar(frac, cells)`. |
 | `chart.js` | uPlot: `loadUPlot`, `plot(el, ctx, make, data, { onCursor })`, `line(label, n)` (series n: c1 solid, c2 / c3 dashed), `timeAxis(tz)`, `valueAxis(fmt)`, `cursor(syncKey)`, `readout()`, `chartOrNote`. |
-| `map.js` | MapLibre in a flat grey style: `createMap` / `safeMap(el, ctx, opts)` with `line`, `points`, `circle`, `marker`, `fit`, `frame`. |
+| `map.js` | MapLibre in a flat grey style: `createMap` / `safeMap(el, ctx, opts)` with `line`, `points`, `circle`, `marker`, `fit`, `frame`. Below the fold, `plot` builds a chart and `createMap(el, ctx, { lazy: true })` makes a map (and loads MapLibre) only when its box comes within a screen of view (`shared/lazy.js`); the box has its height from CSS, so nothing moves. A page waits for a map before `ctx.ready()` only when `nearNow(el)` says it is near. |
 | `strip.js` | `stateStrip(ctx, items, from, to, tz)`: the state strip, one character per cell. |
 | `filterline.js` | `filterLine({ keys, value, onApply })`: 'filter> from:2026-10 min:10km place:home'; `parseFilter`, `dateSpan`, `numberOf`. |
 | `kvedit.js` | Settings as `key = value` lines: `editLines(specs)`, `editGroup({ save })` (lines saved together), `saveError`. A value is text until focused; Enter saves, Esc undoes, a choice is a row of keys. |
@@ -88,6 +87,17 @@ export async function mount(ctx) {
 
 Every page starts with `head(ctx)`: the title on the left, the period and the car on the right (both open their
 pickers). Then sections (`## drives`), `key: value` blocks, tables and charts, one column, at most `--maxw` wide.
+
+Fast page changes: a page may export `prefetch(ctx)`. The router calls it when a link to the page is under the
+pointer for 50 ms, touched or focused, with the `ctx` that `mount` will get (car, period, params, query, state,
+me; `ctx.prefetching` is true), but its `ctx.api` only warms answers (`prefetchApi` in `shared/prefetch.js`). It must
+make the same calls as the page's first reads, so build them in one function both use (`firstReads(ctx)` in
+`pages/battery.js`): a call with other parameters warms an answer nobody asks for. The router also loads the page's
+module and style sheet then, and once the first page is drawn the main sections' modules load while the browser
+is idle. A page (not the settings forms) takes kept answers at once for the reads it makes before `ready()`; each is
+checked at the same time, `<html data-stale>` dims the page while one is on screen, and a page whose answers
+changed is built again in place, like a live refresh. On the first page after a reload the service worker's kept
+answers can come first the same way.
 
 ### `ctx`
 

@@ -7,8 +7,9 @@
 | `perf/` | Delivery measurement on the real server (release build, seeded made-up cars): each pack's car, drives, drive, charges, battery, statistics, settings and settings-integrations pages, cold and warm, on an emulated phone with 4x CPU slowdown and a Fast 3G-like network (or an unthrottled desktop, `--desktop`), and in-app navigation between them (`--nav`); bytes, requests, protocol, first paint, time to usable, long tasks, duplicate API calls. `perf/README.txt` says how to seed and run; `perf/compare.js` puts runs side by side. Results: [docs/plans/performance.md](../../docs/plans/performance.md). |
 | `bundle/` | The release build's bundler: `npm ci --prefix ui/tools/bundle && node ui/tools/bundle/bundle.mjs OUT` writes each built-in pack's scripts bundled and minified (esbuild, pinned by `bundle/package-lock.json`; each page its own entry at `pages/<id>.js`, the code pages share in `core/c-<hash>.js` chunks) and its style sheets and `boot.js` minified. `crates/web/build.rs` embeds them with `SENTRY_MATE_UI_BUNDLE=OUT` and the server serves them in place of the sources' files of the same path; a pack's download and an uploaded pack laid over a built-in one keep the sources. `.github/build-binary.sh` (the Image workflow) runs it; tests, a plain `cargo build` and the dev server serve the sources as they are. |
 | `pixel.js`, `stable.js`, `hover.js` | The in-page parts of `check.js --pixel`, `check.js --stable` and `check.js --hover`. |
-| `map-tiles.test.js` | `node --test ui/tools/map-tiles.test.js`: in all six packs, a page loaded with tiles offline shows OpenStreetMap tiles once an admin turns them on and the person moves to a map inside the app (the page loads itself again once, for the server's new policy), the same after a switch to OpenTopoMap, and every tile request carries only the page origin as Referer; and Settings: Display and units at 360 px with a long zone name (America/Argentina/Buenos_Aires) keeps its zone button and tile terms inside the window. The tile servers are answered inside the browser; nothing leaves the machine. Skipped without Playwright. |
+| `map-tiles.test.js` | `node --test ui/tools/map-tiles.test.js`: in all six packs, a page loaded with tiles offline shows OpenStreetMap tiles once an admin turns them on and the person moves to a map inside the app (the page loads itself again once, for the server's new policy), the same after a switch to OpenTopoMap, and every tile request carries only the page origin as Referer; and Settings: Maps and addresses and Settings: Cars at 360 px with a long zone name (America/Argentina/Buenos_Aires) keep the tile terms and the zone button for new cars inside the window. The tile servers are answered inside the browser; nothing leaves the machine. Skipped without Playwright. |
 | `server-update.test.js` | `node --test ui/tools/server-update.test.js`: a tab open across a server update in all six packs, in Chromium on the dev server: after `POST /__dev/new-build` and the tab coming back into view, a link to Data health loads that address in full and the page loads; a page module that fails once is loaded again with a full load; one that keeps failing says "Sentry Mate was updated or a file could not load" (`page_failed`, never "No answer from the server") with a Reload button, and the tab title and the trail name Data health, not the page before. `PACKS=a,b` runs only those. Skipped without Playwright. |
+| `scroll.js`, `scroll.test.js` | The scroll check: scrolls each pack's key pages (Data health, car, drives, charges, statistics, Settings: Server, logbook) with the mouse wheel on a 4K screen while a rebuild runs on the dev server (`--rebuild-running`), and fails a page with a frame over 50 ms; frame times, long tasks and a DevTools trace of each scroll. `node --test ui/tools/scroll.test.js` runs it at 1920x1080 at scale 2 (`SCROLL_PACKS`, `SCROLL_SIZES` to change). Skipped without Playwright. [Below](#the-scroll-check-scrolljs). |
 | `live-rows.test.js` | `node --test ui/tools/live-rows.test.js`: Pebble's Charges page in Chromium on the dev server (`--rows-every-s 2`) loads its list again on a `rows` event and draws a charge that was not there before, without loading the page again. Skipped without Playwright. |
 | `settings-server.test.js` | `node --test ui/tools/settings-server.test.js`: Settings: Server and access of both built-in packs in Chromium at phone size on the dev server: the CAN Bridge upload address breaks only after a slash or a colon, the certificate's names start with `localhost`, and with `--own-certificate` no "Make a new certificate" is offered; and the Storage panel of all six packs at desktop size: the categories grouped by kind, largest first, the CAN logs group opened to its categories by short name, with what compaction saved, "Compact now" with its progress and what it freed, a failed pass with the server's error, no panel for a watch account, and no more reads of the detail once the page is left. Skipped without Playwright. |
 
@@ -48,6 +49,7 @@ also on Ctrl-C and on errors. It needs Node and the Playwright that is already i
 | `--idle-timeout-ms N` | `10000` | How long to wait after that for the network to go quiet. |
 | `--jobs N` | `2` | Pages checked at the same time. |
 | `--car`, `--drive`, `--charge ID` | from the API | Open these instead. |
+| `--place ID` | none | The `places` page opens that place's editor (`/places?place=ID`) instead of the list; the list's items then count as missing (add `--allow-missing`). |
 | `--base URL` | none | Check against a running real server (`https://127.0.0.1:PORT`) instead of the dev server; see below. |
 | `--user NAME` | none | With `--base`: the account to sign in with. |
 | `--password PW`, `--password-file FILE` | `UI_CHECK_PASSWORD` | With `--base`: that account's password. |
@@ -102,7 +104,11 @@ newest drive and charge (the first item of `GET /api/v1/cars/{car}/drives` and `
 
 ### The checks
 
-Each page and size is checked in a fresh browser window, then gets a screenshot.
+Each page and size is checked in a fresh browser window, then gets a screenshot. Before the checks below (after
+ready, and after the `--stable` watch) it scrolls the page down about a screen at a time to its end and back (in the
+window, else in the page's tallest box that scrolls), and waits for the network to go quiet again: pages draw charts,
+maps and lists below the fold only when they come near the screen (`ui/shared/lazy.js`), so this way they are all
+there to be measured and photographed.
 
 | Column | Fails when |
 |---|---|
@@ -149,9 +155,10 @@ Status per page: **PASS**, **WARN** (passes, with missing items under `--allow-m
       stable: null | { error } | { watchedMs, firstPaintMs, readyMs, shift, shiftBeforeReady, shiftWithInput,
         shiftSources: [{ selector, times, px }], moved: [{ selector, px, times, atMs: [ms], cause, box }], movedCount,
         toggling: [{ selector, times, first, atMs: [ms], text? }], togglingCount, late: [{ selector, h, atMs, pushed }],
-        events: { now, rows, ... }, eventCount, apiRequests, cost, before, after, outlined },
+        events: { now, rows, ... }, eventCount, apiRequests, cost, before, after, outlined, scrollMoved?, scrollMovedCount? },
+      scrolled: null | { steps, moved: [{ selector, px }], movedCount },
       hover: null | { error } | { targets, points, charts, focused, groups, count, noise, ms, pageMs, shot,
-        findings: [{ n, kind, target, x, y, count, scrolled, scrollbar, moved: [{ selector, dx, dy, dw, dh, box }] }] },
+        findings: [{ n, kind, target, x, y, count, scrolled, scrollbar, stays, moved: [{ selector, dx, dy, dw, dh, box }] }] },
       shot, fullShot, tiles, covered, notes: [text], ms, dropped? }] }] }
 ```
 
@@ -225,6 +232,7 @@ long after it is ready (`data-ready`) and measures in the page (`stable.js`, ins
 | **moved** | A cross-check that also sees below the window: every 250 ms the layout top (`offsetTop` up the `offsetParent` chain, so a turning spinner or a transform animation does not count) of every block-level element of at least 40 x 8 px. A block whose top moves by more than 1 px without input is listed once with the largest move, how often and when, and what came before it in the page in that step (`cause`: a block that appeared, grew, shrank or went away). Only the outermost of blocks that moved together is listed; fixed and sticky ones are left out. | A block moved. |
 | **flicker** | A `MutationObserver` marks the page changed; at the next animation frame (the frame that gets painted) the checker takes the set of visible elements (by their place in the page: tag, id or first class, place among their kind) and of placeholder texts (`—`, `…`, `Loading…`, `Updating…`, `No …`, `None`, `unknown` and the like). Each element or placeholder that appears or goes away counts one change. An element that appeared once (a new row) or went away once is fine. Only the outermost of elements that changed together is listed. | Anything changed more than once: it went away and came back (data, then a loading text or an empty state, then data again), or it appeared and went away again (a spinner or `Loading…` coming back), hidden and shown again (`hidden`, `display`, `visibility`, `opacity: 0`). |
 | **late** | Blocks that appeared after ready and pushed others down (the `cause` of a move). | (Shown with the moves they caused.) |
+| scrolled | After the watch, the layout top of every block of the whole page before and after the page is scrolled through (see "The checks"): a part drawn on the way when it came near the screen that had no room kept for it moves what is under it (`scrollMoved`, `scrollMovedCount`). | A block moved (a `stable: moved ... while the page was scrolled through` line). |
 | before ready | The shift between the first paint and ready, and both times. | Never: shown on the summary line. |
 | updates | The events the page's `EventSource` got during the watch, by type, and its `/api` requests. | Never; a `note:` when nothing arrived at all. |
 
@@ -281,7 +289,9 @@ checker, on each ready page (`hover.js`):
 3. after each move compares every box with step 1 and lists the elements that moved or changed size by more than
    0.5 CSS px, only the outermost of those that moved together;
 4. when something moved, moves the mouse away again: the page must be back as it was in step 1 (else the page
-   changed by itself, and step 1 is taken again), and the same hover must move it again. Only then it counts;
+   changed by itself, and step 1 is taken again), and the same hover must move it again. Only then it counts.
+   A page that is not back as it was after three tries in a row counts too (`stays`: the hover moved it for good,
+   for example by scrolling it a pixel each time);
 5. scrolls down by 0.9 of a window and does it again, up to 6 windows down. The scroller is the document, or the
    box that fills most of the window when the document does not scroll (Pebble's `.scroller`).
 
@@ -311,13 +321,47 @@ FAIL  drives  /cars/c1/drives
 
 `hover` in `--json`: `null` without `--hover`, `{ error }` when it could not run, else `{ targets, points, charts,
 focused, groups, count, noise, ms, pageMs, truncated?, shot, findings: [{ n, kind: element | point | chart | focus,
-target, x, y, count, scrolled, scrollbar, moved: [{ selector, dx, dy, dw, dh, box }] }] }`. `count` is every hover
+target, x, y, count, scrolled, scrollbar, stays, moved: [{ selector, dx, dy, dw, dh, box }] }] }`. `count` is every hover
 that moved something; `findings` keeps one per kind of target and what it moved (up to 100). A page stops being
 hovered after 240 s (a `note:` says so).
 
 What it cannot see: a hover that only acts after a delay longer than one frame, what is drawn inside a canvas or
 svg, an element out of the window or inside a box that scrolls it out of view, elements more than half a window
 away from the window, and a non-interactive element that changes on hover where no grid point falls.
+
+## The scroll check (`scroll.js`)
+
+```bash
+node ui/tools/scroll.js                                  # every pack, the key pages, at 3840x2160@1 and 1920x1080@2
+node ui/tools/scroll.js --packs instrument --pages health --sizes 3840x2160@1
+node ui/tools/scroll.js --packs horizon --add-style '.sky{display:none}'   # which rule makes painting slow?
+node ui/tools/scroll.js --json > scroll.json
+node --test ui/tools/scroll.test.js                      # the same as a test, at 1920x1080@2
+```
+
+Made for a report of a page that scrolled with only its scroll bar moving, then jumped: the browser had no time to
+draw while it scrolled. For each pack it starts the dev server with `--rebuild-running --sse-interval-ms 500
+--rows-every-s 1` (a rebuild that never ends: Data health says "Drives and charges are being rebuilt" and reads
+itself again, every featured car gets a `rows` event every second, live values come every 500 ms), opens each page,
+waits for it to be ready, then turns the wheel down the page and back up (`--steps` 30 each way, `--step-px` 100,
+`--step-ms` 50 apart). It records in the page the time between animation frames and the long tasks
+(PerformanceObserver `longtask`), and a DevTools trace of the scroll: the longest main-thread task and what took its
+time, and the time spent painting and rastering.
+
+| Option | Default | What it does |
+|---|---|---|
+| `--packs LIST\|all` | `all` | The packs. |
+| `--pages LIST` | `health,car,drives,charges,statistics,settings-server,logbook` | Page ids, as in `check.js`. |
+| `--sizes WxH@S,...` | `3840x2160@1,1920x1080@2` | Window sizes in CSS px at device scale S: both defaults are a 4K screen (at 100 % and at 200 %). |
+| `--max-frame-ms N` | `50` | A page fails with a frame longer than this (half a ms of slack: three 60 Hz frames read 50.1 ms). |
+| `--quiet-server` | off | No rebuild and normal live values (the dev server's defaults). |
+| `--server-args "..."` | none | More dev server flags. |
+| `--add-style CSS` | none | Adds CSS to each page before the scroll (the page's Content Security Policy is set aside for it). |
+| `--trace DIR` | none | Saves each scroll's trace (open it in the DevTools Performance panel). |
+| `--json` | off | One JSON object with every page's numbers. |
+
+The browser draws in software here (no GPU), so painting costs more than on most desktops: a page that keeps its
+frames under 50 ms here has room to spare on a graphics card. Results: [docs/plans/performance.md](../../docs/plans/performance.md#scrolling).
 
 ## Fixtures and the self-test
 

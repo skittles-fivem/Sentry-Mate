@@ -21,6 +21,7 @@ import { head, section, kv, textBar, link, note } from '../core/ui.js';
 import { num, stateWord, ago, when, dur, tag, date } from '../core/fmt.js';
 import { safeMap } from '../core/map.js';
 import { SPOT_ZOOM } from '../shared/maptiles.js';
+import { nearNow } from '../shared/lazy.js';
 import { offstage } from '../core/stage.js';
 import { chartOrNote, line, timeAxis, valueAxis, cursor, readout } from '../core/chart.js';
 import { rpx } from '../core/display.js';
@@ -60,6 +61,33 @@ function merge(into, delta) {
   return into;
 }
 
+// The first reads, made by mount() and warmed ahead by prefetch() (a link to this page under the pointer).
+const nowRead = (ctx) => ctx.api.get(`cars/${encodeURIComponent(ctx.car.id)}/now`);
+const settingsRead = (ctx) => ctx.api.get('settings', null, { maxAgeMs: 300000 });
+// the period: [statistics, series, activity, charges, last drive, last charge]
+function periodReads(ctx) {
+  const enc = encodeURIComponent(ctx.car.id), p = ctx.period;
+  const from = p.from_ms ?? (ctx.api.now() - 86400000), to = p.to_ms ?? ctx.api.now();
+  const rk = getUnits().range === 'ideal' ? 'ideal_range_km' : 'range_km';
+  const qs = { from_ms: from, to_ms: to };
+  return Object.assign([
+    ctx.api.get(`cars/${enc}/statistics`, { period: 'all', ...qs }),
+    ctx.api.get(`cars/${enc}/series`, { fields: `soc_pct,${rk}`, ...qs, max_points: 480 }),
+    ctx.api.get(`cars/${enc}/activity`, qs),
+    ctx.api.page(`cars/${enc}/charges`, { from_ms: from - 12 * 3600000, to_ms: to }, { limit: 10 }),
+    ctx.api.page(`cars/${enc}/drives`, {}, { limit: 1 }),
+    ctx.api.page(`cars/${enc}/charges`, {}, { limit: 1 }),
+  ], { from, to });
+}
+// the charging chart: the curves of the charges that reach into the period
+const curveReads = (ctx, charges, from, to) => [...(charges.items || [])].filter((c) => (c.end_ms ?? to) > from).sort((a, b) => a.start_ms - b.start_ms)
+  .map((c) => ctx.api.get(`cars/${encodeURIComponent(ctx.car.id)}/charges/${encodeURIComponent(c.id)}/curve`, { fields: 'power_kw,volts_v,amps_a,heater_kw,dc_volts_v,dc_amps_a', max_points: 300 }));
+export async function prefetch(ctx) {
+  const r = periodReads(ctx);
+  const [, , , , , charges] = await Promise.all([nowRead(ctx), settingsRead(ctx), ...r]);
+  if (charges) await Promise.all(curveReads(ctx, charges, r.from, r.to));
+}
+
 export async function mount(ctx) {
   const { tz } = ctx;
   let car = ctx.car;
@@ -68,8 +96,8 @@ export async function mount(ctx) {
   // GET now and the period's calls start together; each part draws when its own answers are in, and a loading
   // line holds its place until then
   let now, settings;
-  const nowP = ctx.api.get(`cars/${enc}/now`);
-  const settingsP = ctx.api.get('settings', null, { maxAgeMs: 300000 }).catch(() => null);
+  const nowP = nowRead(ctx);
+  const settingsP = settingsRead(ctx).catch(() => null);
   nowP.catch(() => {}); // handled below
 
   const hd = head(ctx, { title: h('span', { cover: 'summary.header.name' }, car.name || `unnamed ${car.model || 'car'}`),
@@ -253,18 +281,18 @@ export async function mount(ctx) {
     const outside = !!settings?.outside_links?.maps;
     const where = loc.place?.name || loc.address?.short || (now.state === 'driving' ? 'on the road' : lat != null ? 'not a saved place' : 'no position yet');
     replace(mapTools,
-      h('span', null, h('span', { class: 'muted' }, 'at '), where, val(loc.accuracy_m) != null ? h('span', { class: 'muted' }, ` ±${format(val(loc.accuracy_m), 'length')}`) : null),
+      h('span', { title: at(loc.lat) != null ? `position recorded ${ago(at(loc.lat))}${loc.lat.sources?.[0]?.label ? `; ${loc.lat.sources[0].label}` : ''}` : null }, h('span', { class: 'muted' }, 'at '), where, val(loc.accuracy_m) != null ? h('span', { class: 'muted' }, ` ±${format(val(loc.accuracy_m), 'length')}`) : null),
       h('button', { class: 'btn btn--quiet btn--line', type: 'button', cover: 'summary.map.fullscreen', onclick: () => (document.fullscreenElement ? document.exitFullscreen?.() : mapEl.requestFullscreen?.().catch(() => {})) }, document.fullscreenElement ? '[exit full screen]' : '[full screen]'),
       outside && lat != null
         ? h('a', { class: 'lnk', href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=17/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'noopener noreferrer external', cover: 'summary.map.external_link' }, 'openstreetmap')
-        : h('span', { class: 'muted', cover: 'summary.map.external_link', title: 'An admin can turn outside map links on in settings / display' }, 'outside map links off'));
+        : h('span', { class: 'muted', cover: 'summary.map.external_link', title: 'An admin can turn outside map links on in settings / maps' }, 'outside map links off'));
   }
   ctx.on(document, 'fullscreenchange', () => { paintTools(); map?.map.resize(); });
   async function mountMap() {
     const loc = now.location || {};
     const lat = val(loc.lat), lon = val(loc.lon);
     if (lat == null || lon == null) { mapEl.append(h('p', { class: 'map-note' }, '-- no position recorded yet --')); return; }
-    map = await safeMap(mapEl, ctx, { center: [lon, lat], zoom: SPOT_ZOOM });
+    map = await safeMap(mapEl, ctx, { center: [lon, lat], zoom: SPOT_ZOOM, lazy: true });
     if (!map || !ctx.alive()) return;
     placePin();
   }
@@ -286,13 +314,10 @@ export async function mount(ctx) {
     const from = p.from_ms ?? (ctx.api.now() - 86400000), to = p.to_ms ?? ctx.api.now();
     const rk = getUnits().range === 'ideal' ? 'ideal_range_km' : 'range_km';
     const qs = { from_ms: from, to_ms: to };
+    const r = periodReads(ctx);
+    const none = () => ({ items: [] });
     const [stats, series, act, charges, lastDrive, lastCharge] = await Promise.all([
-      ctx.api.get(`cars/${enc}/statistics`, { period: 'all', ...qs }).catch(() => null),
-      ctx.api.get(`cars/${enc}/series`, { fields: `soc_pct,${rk}`, ...qs, max_points: 480 }),
-      ctx.api.get(`cars/${enc}/activity`, qs),
-      ctx.api.page(`cars/${enc}/charges`, { from_ms: from - 12 * 3600000, to_ms: to }, { limit: 10 }).catch(() => ({ items: [] })),
-      ctx.api.page(`cars/${enc}/drives`, {}, { limit: 1 }).catch(() => ({ items: [] })),
-      ctx.api.page(`cars/${enc}/charges`, {}, { limit: 1 }).catch(() => ({ items: [] })),
+      r[0].catch(() => null), r[1], r[2], r[3].catch(none), r[4].catch(none), r[5].catch(none),
     ]);
     if (!ctx.alive()) return;
     const row = stats?.items?.[0] || {};
@@ -362,7 +387,7 @@ export async function mount(ctx) {
 
     // charging: the curves of the charges in the period, on one time axis, broken between charges
     const sorted = [...(charges.items || [])].filter((c) => (c.end_ms ?? to) > from).sort((a, b) => a.start_ms - b.start_ms);
-    const curves = await Promise.all(sorted.map((c) => ctx.api.get(`cars/${enc}/charges/${encodeURIComponent(c.id)}/curve`, { fields: 'power_kw,volts_v,amps_a,heater_kw,dc_volts_v,dc_amps_a', max_points: 300 }).catch(() => null)));
+    const curves = await Promise.all(curveReads(ctx, charges, from, to).map((p) => p.catch(() => null)));
     if (!ctx.alive()) return;
     const T = [], P = [], E = [], HT = [], V = [], A = [];
     curves.forEach((cv, k) => {
@@ -412,8 +437,9 @@ export async function mount(ctx) {
   } catch (e) { ctx.fail(e); return; }
   if (!ctx.alive()) return;
   paintSub(); paintNow(); paintCharge(); paintTools();
+  // a map below the fold (a phone) is made when it comes near, and ready does not wait for it
   const mapP = mountMap();
-  await Promise.all([periodP, mapP]);
+  await Promise.all([periodP, nearNow(mapEl) ? mapP : null]);
   if (!ctx.alive()) return;
   if (!ctx.alive()) return;
   ctx.ready();

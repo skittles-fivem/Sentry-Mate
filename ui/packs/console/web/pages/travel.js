@@ -3,7 +3,6 @@
 // square per city (bigger with more days; a click picks the city), the top cities and regions as text
 // bars, then tables: countries, cities (a click picks the city), days in the picked city, places visited
 // and the newest stops. Lists come from /visits/{countries,regions,cities,places,days} and /visits.
-// Live: 'rows' events of the cars shown build it again off screen once a burst has passed.
 
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
@@ -19,7 +18,6 @@ import { trackBounds } from '../shared/tracks.js';
 import { empty } from '../core/states.js';
 import { filterLine } from '../core/filterline.js';
 import { src, srcText } from '../core/source.js';
-import { onRows } from '../shared/live.js';
 
 export const id = 'travel';
 
@@ -264,7 +262,4 @@ export async function mount(ctx) {
   }
   if (!ctx.alive()) return;
   ctx.ready();
-  // a car shown parked somewhere new (once a burst of 'rows' has passed): built again off screen, swapped in
-  // whole; not while a city is being looked for in the list (the words typed would go)
-  onRows(ctx.api, { waitMs: 2000, run: (d) => { if (viewCars.includes(d.car) && !cityFilter.value) ctx.refresh(); } });
 }

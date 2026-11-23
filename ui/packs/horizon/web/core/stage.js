@@ -30,15 +30,22 @@ function shell(slot) {
   if (slot.className) box.className = slot.className;
   for (const k of Object.keys(slot.dataset)) box.dataset[k] = slot.dataset[k];
   box.style.boxSizing = 'border-box';
-  box.style.width = `${slot.getBoundingClientRect().width}px`;
+  const r = slot.getBoundingClientRect();
+  box.style.width = `${r.width}px`;
   at.append(box);
   document.body.append(outer);
+  // a part drawn for the first time says where it will land: charts and maps near the screen there are drawn here,
+  // the rest once they come near (shared/lazy.js); drawn again (or inside a live refresh of the page), everything
+  // is drawn here, as it was on screen
+  if (!slot.hasAttribute('data-staged') && !slot.closest('[inert]')) box.dataset.nearShift = String(Math.round(r.top - box.getBoundingClientRect().top));
   return { outer, box };
 }
 
 /** Build slot's new contents off screen, then swap them in at once. Resolves (or throws) with build. */
 export async function offstage(slot, build) {
-  if (!slot.isConnected) return build(slot);
+  if (!slot.isConnected) {
+    try { return await build(slot); } finally { slot.setAttribute('data-staged', ''); }
+  }
   const { outer, box } = shell(slot);
   try {
     return await build(box);
@@ -48,6 +55,7 @@ export async function offstage(slot, build) {
       // each would keep its listeners, its observer and its whole drawing until the page is left
       for (const el of slot.querySelectorAll('*')) el.__smPlot?.destroy();
       slot.replaceChildren(...box.childNodes);
+      slot.setAttribute('data-staged', '');
     }
     outer.remove();
   }

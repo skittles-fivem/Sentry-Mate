@@ -8,8 +8,6 @@
 //
 // API: the overview's `invoices`, GET integrations/invoices?source=&matched=false (the unmatched sessions),
 // GET integrations/invoices/zip?source=tesla, GET integrations/invoices?source=&from_ms=&to_ms=&format=csv.
-// Live: `job` events of kind invoices (id the source) change its figures in place (live events, polling
-// GET integrations/<source> only while the live stream is down).
 
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -19,8 +17,6 @@ import { formatMoney } from '../shared/units.js';
 import { invoicesZipUrl, invoicesCsvUrl, backfillLabel } from '../shared/invoices.js';
 import { figure, icon, ago } from '../core/ui.js';
 import { field, switchField } from '../core/form.js';
-import { follow, jobOf } from '../shared/live.js';
-import { morph } from '../core/morph.js';
 
 const coverOf = (source) => `inv.settings.${source}`;
 
@@ -77,20 +73,16 @@ export function invoicesPart(ctx, { source, over, unmatched = null, ask, again }
   const csv = h('a', { class: 'link-arrow', href: csvHref(0), download: true }, icon('download'), 'Download the month as CSV');
   month.control.addEventListener('change', () => { csv.href = csvHref(Number(month.control.value) || 0); });
 
-  const figsOf = (inv) => {
-    const err = inv.last_error;
-    return h('div', { class: 'figs tesla-figs inv-figs' },
-      figure('Sessions found', formatNumber(inv.sessions || 0), `${formatNumber(inv.matched || 0)} matched to a charge, ${formatNumber(inv.unmatched || 0)} not`),
-      inv.gives_pdfs ? figure('Invoices (PDF)', formatNumber(inv.pdfs || 0), inv.pdfs_waiting ? `downloaded; ${formatNumber(inv.pdfs_waiting)} still to download` : 'downloaded') : null,
-      figure('Last check', inv.last_check_ms ? ago(inv.last_check_ms) : 'Not yet', [backfillLabel(inv.backfill), inv.next_check_ms && inv.enabled ? `; next ${formatTime(inv.next_check_ms, tz)}` : '', `; ${formatNumber(inv.requests_today || 0)} requests today`]),
-      figure('Last error', err ? err.message || err.code : 'None', err ? (err.at_ms ? ago(err.at_ms) : null) : `no error from ${name}`));
-  };
-  let figs = figsOf(inv);
-  const el = h('div', { class: 'inv-part', cover: coverOf(source) },
+  const err = inv.last_error;
+  return h('div', { class: 'inv-part', cover: coverOf(source) },
     h('h3', { class: 'si-sub' }, 'Supercharger invoices', h('span', { class: 'label-note' }, on ? 'on' : 'off, nothing is fetched')),
     sw,
     !inv.available ? h('p', { class: 'si-quiet' }, tesla ? 'This Tesla account gives no invoices (Tesla’s China accounts do not).' : 'TeslaFi gives no costs for this account.') : null,
-    figs,
+    h('div', { class: 'figs tesla-figs inv-figs' },
+      figure('Sessions found', formatNumber(inv.sessions || 0), `${formatNumber(inv.matched || 0)} matched to a charge, ${formatNumber(inv.unmatched || 0)} not`),
+      inv.gives_pdfs ? figure('Invoices (PDF)', formatNumber(inv.pdfs || 0), inv.pdfs_waiting ? `downloaded; ${formatNumber(inv.pdfs_waiting)} still to download` : 'downloaded') : null,
+      figure('Last check', inv.last_check_ms ? ago(inv.last_check_ms) : 'Not yet', [backfillLabel(inv.backfill), inv.next_check_ms && on ? `; next ${formatTime(inv.next_check_ms, tz)}` : '', `; ${formatNumber(inv.requests_today || 0)} requests today`]),
+      figure('Last error', err ? err.message || err.code : 'None', err ? (err.at_ms ? ago(err.at_ms) : null) : `no error from ${name}`)),
     h('div', { class: 'inv-downloads' },
       tesla ? h('a', { class: 'link-arrow', href: invoicesZipUrl('tesla'), download: true }, icon('download'), 'Download all invoices') : null,
       h('div', { class: 'inv-csv' }, month, csv)),
@@ -98,22 +90,4 @@ export function invoicesPart(ctx, { source, over, unmatched = null, ask, again }
       h('p', { class: 'si-quiet' }, `Not matched to a charge (${formatNumber(inv.unmatched)}):`),
       h('ul', { class: 'inv-list' }, unmatched.map((i) => h('li', null, h('span', null, i.site || 'A Supercharger'),
         h('span', { class: 'si-quiet' }, ` ${formatDate(i.start_ms, tz, { weekday: false })}, ${formatMoney(i.total, i.currency)}`))))) : null);
-
-  // the figures follow the source's `job` events, written in place; the part's own answer is the first read. A
-  // part drawn over by a newer one stops following.
-  let firstRead = true, seen = false;
-  const live = follow(ctx.api, {
-    type: 'job', match: jobOf('invoices', source), pick: (d) => d.status,
-    load: () => {
-      if (firstRead) { firstRead = false; return Promise.resolve(inv); }
-      return ctx.api.get(`integrations/${source}`).then((o) => (o && o.invoices) || inv);
-    },
-    pollMs: (v) => (v && v.backfill === 'running' ? 5000 : 30000),
-    onValue: (next) => {
-      if (!el.isConnected) { if (seen) live.stop(); return; }
-      seen = true;
-      if (next && ctx.alive()) figs = morph(figs, figsOf(next));
-    },
-  });
-  return el;
 }

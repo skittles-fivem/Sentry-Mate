@@ -9,6 +9,7 @@ and POST /places/{place}/reprice applies the place's current price to past charg
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import math
 
 from .. import derive, placing
@@ -16,11 +17,12 @@ from ..conventions import page
 from ..dataset import places as P
 from ..errors import bad_input, conflict, invalid, not_found
 from ..rows import charge_cost
-from ..util import haversine_m, r, valid_zone
+from ..util import date_str, haversine_m, r, valid_zone
 from .charges import CURRENCIES
 
 KINDS = ("home", "work", "charger", "service", "other")
-FIELDS = ("name", "kind", "lat", "lon", "radius_m", "time_zone", "price")
+FIELDS = ("name", "kind", "lat", "lon", "radius_m", "time_zone", "price", "prices")
+MAX_PRICES = 50
 DAYS_RX = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
@@ -73,7 +75,8 @@ def view(req, p, counts=None):
     c = counts.get(p["id"], {"drives": 0, "charges": 0, "visits": 0, "last_visit_ms": None})
     return {"id": p["id"], "name": p["name"], "kind": p["kind"], "lat": p["lat"], "lon": p["lon"],
             "radius_m": p["radius_m"], "time_zone": p["time_zone"], "address": p["address"],
-            "price": copy.deepcopy(p.get("price")),
+            "price": placing.price_on(p, req.now), "price_source": placing.source_on(p, req.now),
+            "prices": copy.deepcopy(placing.prices_of(p)),
             "counts": {"drives": c["drives"], "charges": c["charges"], "visits": c["visits"]},
             "last_visit_ms": c["last_visit_ms"], "created_ms": p.get("created_ms"), "version": p["version"]}
 
@@ -286,6 +289,55 @@ def check_tiers(t, bad, rule):
     return {"steps": clean, "cycle_day": day, "base_kwh": base}
 
 
+def check_prices(lst, bad, rule, have):
+    """`prices`: the typed prices (entries with source "invoice" are the server's: the place keeps its
+    own), each `{ from: "YYYY-MM-DD" | null, price }`."""
+    if not isinstance(lst, list):
+        bad["prices"] = "Must be a list of prices."
+        return have
+    if len(lst) > MAX_PRICES:
+        bad["prices"] = f"At most {MAX_PRICES} prices."
+        return have
+    out, days = [], set()
+    for i, x in enumerate(lst):
+        k = f"prices.{i}"
+        if not isinstance(x, dict):
+            bad[k] = "Must be a price with its first day."
+            continue
+        for f in x:
+            if f not in ("from", "price", "source", "invoice"):
+                bad[f"{k}.{f}"] = "Unknown field."
+        if x.get("source") == "invoice":
+            continue
+        if x.get("source") not in (None, "typed"):
+            bad[f"{k}.source"] = "typed (or invoice, left as it is)."
+            continue
+        frm = x.get("from")
+        if frm is not None and not isinstance(frm, str):
+            bad[f"{k}.from"] = "Must be text or null."
+            continue
+        if frm is not None:
+            try:
+                ok = len(frm) == 10 and dt.date.fromisoformat(frm)
+            except ValueError:
+                ok = False
+            if not ok:
+                rule[f"{k}.from"] = "A date as YYYY-MM-DD, or null for from the start."
+        if frm in days:
+            rule[f"{k}.from"] = "Another price starts on the same day."
+        days.add(frm)
+        if x.get("price") is None:
+            bad[f"{k}.price"] = "Required: the price from that day."
+            continue
+        b2, r2 = {}, {}
+        price = check_price(x["price"], b2, r2)
+        bad.update({k + "." + f: v for f, v in b2.items()})
+        rule.update({k + "." + f: v for f, v in r2.items()})
+        out.append({"from": frm, "source": "typed", "price": price})
+    inv = [x for x in have if x.get("source") == "invoice"]
+    return placing.sort_prices(out + inv)
+
+
 def check_place(req, body, base=None):
     """The place `body` describes (merged into `base` for an edit), or 400/422 with fields."""
     bad, rule = {}, {}
@@ -327,8 +379,26 @@ def check_place(req, body, base=None):
             rule["time_zone"] = "Not a known time zone (for example America/Chicago)."
         else:
             p["time_zone"] = body["time_zone"]
-    if "price" in body:
-        p["price"] = check_price(body["price"], bad, rule)
+    if "price" in body and "prices" in body:
+        bad["prices"] = "Send price or prices, not both."
+    if "prices" in body:
+        p["prices"] = check_prices(body["prices"], bad, rule, placing.prices_of(base))
+    elif "price" in body:
+        price = check_price(body["price"], bad, rule)
+        lst = [x for x in placing.prices_of(p) if x.get("source", "typed") == "typed"]
+        inv = [x for x in placing.prices_of(p) if x.get("source") == "invoice"]
+        if price is None:
+            lst = []
+        else:  # the typed price in force today is replaced (one from the start when there is none)
+            today = date_str(req.now, p.get("time_zone") or "UTC")
+            at = [i for i, x in enumerate(lst) if x.get("from") is None or x["from"] <= today]
+            if at:
+                lst[at[-1]] = dict(lst[at[-1]], price=price)
+            else:
+                lst.insert(0, {"from": None, "source": "typed", "price": price})
+        p["prices"] = placing.sort_prices(lst + inv)
+    if "prices" in p:
+        p["price"] = placing.price_on(p, req.now)
     if bad:
         raise bad_input(bad)
     if rule:
@@ -415,12 +485,12 @@ def effect(req, old_places, new_places, focus):
             if len(examples) < 5:
                 examples.append(rid)
             note("charge", rid, piece, h, "named" if aid in focus_ids else "unnamed")
-        if moved or (bid in focus_ids and (before or {}).get("price") != (after or {}).get("price")):
+        if moved or (bid in focus_ids and placing.prices_of(before) != placing.prices_of(after)):
             affected.append(piece)
         if aid in focus_ids and st.costs.get(rid) is None and piece.source == "can" and piece.data_end <= req.now:
             f = piece.figures()
             cur, _, _ = charge_cost(req.app, h.car.id, piece, f, req.now)
-            new, _, _ = charge_cost(req.app, h.car.id, piece, f, req.now, pricing=(_pinfo(after), after.get("price")))
+            new, _, _ = charge_cost(req.app, h.car.id, piece, f, req.now, pricing=(_pinfo(after), placing.price_on(after, piece.start)))
             if (cur or {}).get("amount") != (new or {}).get("amount"):
                 repriced.add(rid)
                 if not moved:
@@ -560,8 +630,7 @@ def reprice(req):
     dry = body.get("dry_run", False)
     considered, changed, examples, example_rows = 0, [], [], []
     before, after = {}, {}
-    snap = {"place": {k: pl[k] for k in ("id", "name", "kind", "time_zone")}, "price": copy.deepcopy(pl.get("price")),
-            "at_ms": req.now}
+    info = {k: pl[k] for k in ("id", "name", "kind", "time_zone")}
     with st.lock:
         for cid in _cars(req):
             h = req.ds.history(cid)
@@ -575,6 +644,8 @@ def reprice(req):
                 if only and old is not None:
                     continue
                 considered += 1
+                # the place's price of the charge's own day
+                snap = {"place": info, "price": placing.price_on(pl, c.start), "at_ms": req.now}
                 new, _, _ = charge_cost(req.app, cid, c, f, req.now, pricing=(snap["place"], snap["price"]))
                 if not dry:
                     st.charge_price[c.id] = snap

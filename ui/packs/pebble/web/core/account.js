@@ -7,6 +7,7 @@
 
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
+import { clearServiceWorker } from '../shared/offline.js';
 import { createSheet, sheetRow, sheetGroup } from './sheet.js';
 import { segmented, toggle } from './form.js';
 import { btn, initial } from './ui.js';
@@ -55,7 +56,7 @@ function build() {
     h('section', { class: 'rows' }, h('h3', { class: 'rows-name' }, 'Look'),
       h('div', { class: 'rows-card' }, theme, device, deviceLine, stepper, sizeLine), h('div', { class: 'rows-list' }, follow)),
     sheetGroup('Go to', [
-      sheetRow({ href: '/settings/display', icon: 'sun', name: 'Display and units', sub: 'Units, language, UI pack' }),
+      sheetRow({ href: '/settings/display', icon: 'sun', name: 'Display and units', sub: 'Units, language, map style, UI pack' }),
       admin ? sheetRow({ href: '/settings/server', icon: 'server', name: 'Server and access', sub: 'Accounts, sessions, moving' }) : null,
       sheetRow({ href: '/help', icon: 'help', name: 'Help and about' }),
     ].filter(Boolean)),
@@ -81,6 +82,7 @@ function build() {
 
 async function signOut() {
   try { await api.del('session'); } catch { /* signed out either way */ }
+  await clearServiceWorker();
   toast('Signed out.', { kind: 'info', next: true });
   location.assign('/sign-in');
 }

@@ -357,6 +357,7 @@ async fn perf_pages_stay_within_their_budget() {
             drive_step_s: 2,
             teslafi_days: 30,
             api_days: 10,
+            tesla_days: 0,
         },
     };
     if fresh {

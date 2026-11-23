@@ -13,6 +13,10 @@
 //! the data folder, the offline map files in its `maps/` folder (the chosen one, else the largest, is served tile by
 //! tile at `/maps/tiles/{z}/{x}/{y}` while tiles are offline), and no address lookup running yet (nothing cached, no
 //! online error).
+//!
+//! A place's prices worked out from Supercharger invoices change without a request (the engine's
+//! [`engine::invoice_prices`]): [`audit_invoice_prices`] writes each change into the audit log
+//! (`place-invoice-priced`, by the server itself), [`spawn_invoice_audit`] every few seconds.
 
 use super::now::{answer, failed, list_answer, run, text};
 use crate::ctx::target;
@@ -23,6 +27,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use engine::Engine;
+use engine::placing::{DatedPrice, PriceSource};
 use engine::query::places::{self as pq, Asker, Change, Draft, Patch, Price, Rate};
 use engine::query::{self as q};
 use model::{CarId, PlaceId};
@@ -102,7 +107,7 @@ async fn suggestions(State(app): State<AppState>, v: Viewer, p: Params) -> ApiRe
 
 // ---- reading a place from a body (types: 400; rules are the engine's: 422)
 
-const PLACE_FIELDS: &[&str] = &["name", "kind", "lat", "lon", "radius_m", "time_zone", "price"];
+const PLACE_FIELDS: &[&str] = &["name", "kind", "lat", "lon", "radius_m", "time_zone", "price", "prices"];
 
 /// A number of the body, or a field error.
 fn num(v: &Value, key: &str, f: &mut Fields) -> Option<f64> {
@@ -134,39 +139,90 @@ fn opt_text(v: Option<&Value>, key: &str, f: &mut Fields) -> Option<String> {
     }
 }
 
-/// `price`: an object or null (`None` when it is not one: the fields say why).
-fn read_price(v: &Value, f: &mut Fields) -> Option<Option<Price>> {
+/// `price`: an object or null (`None` when it is not one: the fields say why). `pre` names the field (`price`, or
+/// `prices.N.price`).
+fn read_price(v: &Value, pre: &str, f: &mut Fields) -> Option<Option<Price>> {
     let o = match v {
         Value::Null => return Some(None),
         Value::Object(o) => o,
         _ => {
-            f.add("price", "Must be an object or null.");
+            f.add(pre, "Must be an object or null.");
             return None;
         }
     };
+    read_price_object(o, pre, f)
+}
+
+/// `prices`: a list of `{ from, price, source? }`, the typed prices (an entry with `source: "invoice"`, as a place
+/// gives them back, is the server's own and left out).
+fn read_prices(v: &Value, f: &mut Fields) -> Option<Vec<DatedPrice>> {
+    let Value::Array(list) = v else {
+        f.add("prices", "Must be a list of prices.");
+        return None;
+    };
+    if list.len() > pq::MAX_PRICES {
+        f.add("prices", &format!("At most {} prices.", pq::MAX_PRICES));
+        return None;
+    }
+    let mut out = Vec::new();
+    for (i, x) in list.iter().enumerate() {
+        let key = |k: &str| format!("prices.{i}.{k}");
+        let Some(o) = x.as_object() else {
+            f.add(&format!("prices.{i}"), "Must be a price with its first day.");
+            continue;
+        };
+        for k in o.keys() {
+            if !["from", "price", "source", "invoice"].contains(&k.as_str()) {
+                f.add(&key(k), "Unknown field.");
+            }
+        }
+        match o.get("source") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(s)) if s == "typed" => {}
+            Some(Value::String(s)) if s == "invoice" => continue,
+            Some(_) => {
+                f.add(&key("source"), "typed (or invoice, left as it is).");
+                continue;
+            }
+        }
+        let from = opt_text(o.get("from"), &key("from"), f).map(|s| s.trim().to_string());
+        match o.get("price") {
+            None | Some(Value::Null) => f.add(&key("price"), "Required: the price from that day."),
+            Some(v) => {
+                if let Some(Some(price)) = read_price(v, &key("price"), f) {
+                    out.push(DatedPrice { from, source: PriceSource::Typed, price, invoice: None });
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
+/// The fields of a `price` object.
+fn read_price_object(o: &serde_json::Map<String, Value>, pre: &str, f: &mut Fields) -> Option<Option<Price>> {
     for k in o.keys() {
         if !["currency", "per_kwh", "per_minute", "rates", "session_fee", "tiers"].contains(&k.as_str()) {
-            f.add(&format!("price.{k}"), "Unknown field.");
+            f.add(&format!("{pre}.{k}"), "Unknown field.");
         }
     }
     let currency = match o.get("currency") {
         Some(Value::String(s)) => s.trim().to_string(),
         _ => {
-            f.add("price.currency", "Required: a currency code such as USD.");
+            f.add(&format!("{pre}.currency"), "Required: a currency code such as USD.");
             String::new()
         }
     };
-    let per_kwh = opt_num(o.get("per_kwh"), "price.per_kwh", f);
-    let per_minute = opt_num(o.get("per_minute"), "price.per_minute", f);
-    let session_fee = opt_num(o.get("session_fee"), "price.session_fee", f);
+    let per_kwh = opt_num(o.get("per_kwh"), &format!("{pre}.per_kwh"), f);
+    let per_minute = opt_num(o.get("per_minute"), &format!("{pre}.per_minute"), f);
+    let session_fee = opt_num(o.get("session_fee"), &format!("{pre}.session_fee"), f);
     let mut rates = Vec::new();
     match o.get("rates") {
         None | Some(Value::Null) => {}
         Some(Value::Array(list)) if list.len() <= 100 => {
             for (i, rt) in list.iter().enumerate() {
-                let key = |k: &str| format!("price.rates.{i}.{k}");
+                let key = |k: &str| format!("{pre}.rates.{i}.{k}");
                 let Some(r) = rt.as_object() else {
-                    f.add(&format!("price.rates.{i}"), "Must be a rate.");
+                    f.add(&format!("{pre}.rates.{i}"), "Must be a rate.");
                     continue;
                 };
                 for k in r.keys() {
@@ -184,34 +240,34 @@ fn read_price(v: &Value, f: &mut Fields) -> Option<Option<Price>> {
                 });
             }
         }
-        Some(_) => f.add("price.rates", "Must be a list of rates."),
+        Some(_) => f.add(&format!("{pre}.rates"), "Must be a list of rates."),
     }
-    let tiers = read_tiers(o.get("tiers"), f);
+    let tiers = read_tiers(o.get("tiers"), pre, f);
     Some(Some(Price { currency, per_kwh, per_minute, rates, session_fee, tiers }))
 }
 
-/// `price.tiers`: `{ steps: [{ from_kwh, per_kwh }], cycle_day, base_kwh }` or null (types here; rules: the engine's).
-fn read_tiers(v: Option<&Value>, f: &mut Fields) -> Option<places::Tiers> {
+/// `<pre>.tiers` (`price.tiers`, `prices.N.price.tiers`): `{ steps: [{ from_kwh, per_kwh }], cycle_day, base_kwh }` or null (types here; rules: the engine's).
+fn read_tiers(v: Option<&Value>, pre: &str, f: &mut Fields) -> Option<places::Tiers> {
     let o = match v {
         None | Some(Value::Null) => return None,
         Some(Value::Object(o)) => o,
         Some(_) => {
-            f.add("price.tiers", "Must be an object or null.");
+            f.add(&format!("{pre}.tiers"), "Must be an object or null.");
             return None;
         }
     };
     for k in o.keys() {
         if !["steps", "cycle_day", "base_kwh"].contains(&k.as_str()) {
-            f.add(&format!("price.tiers.{k}"), "Unknown field.");
+            f.add(&format!("{pre}.tiers.{k}"), "Unknown field.");
         }
     }
     let mut steps = Vec::new();
     match o.get("steps") {
         Some(Value::Array(list)) if list.len() <= 100 => {
             for (i, st) in list.iter().enumerate() {
-                let key = |k: &str| format!("price.tiers.steps.{i}.{k}");
+                let key = |k: &str| format!("{pre}.tiers.steps.{i}.{k}");
                 let Some(r) = st.as_object() else {
-                    f.add(&format!("price.tiers.steps.{i}"), "Must be a step.");
+                    f.add(&format!("{pre}.tiers.steps.{i}"), "Must be a step.");
                     continue;
                 };
                 for k in r.keys() {
@@ -230,19 +286,19 @@ fn read_tiers(v: Option<&Value>, f: &mut Fields) -> Option<places::Tiers> {
                 steps.push(places::Tier { from_kwh: from_kwh.unwrap_or(0.0), per_kwh: per_kwh.unwrap_or(0.0) });
             }
         }
-        _ => f.add("price.tiers.steps", "Required: a list of steps."),
+        _ => f.add(&format!("{pre}.tiers.steps"), "Required: a list of steps."),
     }
     let cycle_day = match o.get("cycle_day") {
         None | Some(Value::Null) => 1,
         Some(x) => match x.as_u64() {
             Some(d) => u8::try_from(d).unwrap_or(0),
             None => {
-                f.add("price.tiers.cycle_day", "Must be a whole number.");
+                f.add(&format!("{pre}.tiers.cycle_day"), "Must be a whole number.");
                 1
             }
         },
     };
-    let base_kwh = opt_num(o.get("base_kwh"), "price.tiers.base_kwh", f).unwrap_or(0.0);
+    let base_kwh = opt_num(o.get("base_kwh"), &format!("{pre}.tiers.base_kwh"), f).unwrap_or(0.0);
     Some(places::Tiers { steps, cycle_day, base_kwh })
 }
 
@@ -287,7 +343,13 @@ fn read_fields(body: &JsonBody, extra: &[&str], f: &mut Fields) -> Patch {
         }
     }
     if let Some(v) = body.get("price") {
-        p.price = read_price(v, f);
+        p.price = read_price(v, "price", f);
+    }
+    if let Some(v) = body.get("prices") {
+        if body.get("price").is_some() {
+            f.add("prices", "Send price or prices, not both.");
+        }
+        p.prices = read_prices(v, f);
     }
     p
 }
@@ -309,8 +371,11 @@ fn read_new(body: &JsonBody, extra: &[&str]) -> ApiResult<Draft> {
         lon: p.lon.unwrap_or(f64::NAN),
         radius_m: p.radius_m.unwrap_or(pq::NEW_RADIUS_M),
         time_zone: p.time_zone.flatten(),
-        price: p.price.flatten(),
-    })
+        prices: Vec::new(),
+        price_at: None,
+    }
+    .with_price(p.price.flatten())
+    .with_prices(p.prices))
 }
 
 /// A JSON answer with its status.
@@ -448,6 +513,44 @@ async fn reprice(
         v.audit(&app, "place-repriced", Some(&target("place", None, &q::place_ref(id))), &summary).await?;
     }
     Ok(Json(value).into_response())
+}
+
+// ---- prices from invoices into the audit log
+
+/// How often the engine's invoice price changes are taken into the audit log.
+pub const INVOICE_AUDIT_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Writes the engine's invoice price changes not in the audit log yet (`place-invoice-priced`, one per place
+/// changed, by the server itself). Blocking. Answers how many were written.
+pub fn audit_invoice_prices(app: &AppState) -> usize {
+    let Ok(e) = app.service::<Engine>() else { return 0 };
+    let taken = match e.invoice_price_audits() {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!("invoice prices: their audit entries could not be read: {err}");
+            return 0;
+        }
+    };
+    let mut n = 0;
+    for a in taken {
+        let details = crate::ctx::audit_details(Some(&target("place", None, &a.place)), &a.summary());
+        match app.accounts.audit().record(None, None, "place-invoice-priced", &details) {
+            Ok(()) => n += 1,
+            Err(err) => tracing::warn!("audit: {err}"),
+        }
+    }
+    n
+}
+
+/// Takes the engine's invoice price changes into the audit log every [`INVOICE_AUDIT_EVERY`], off the async threads.
+pub fn spawn_invoice_audit(app: AppState) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let a = app.clone();
+            let _ = tokio::task::spawn_blocking(move || audit_invoice_prices(&a)).await;
+            tokio::time::sleep(INVOICE_AUDIT_EVERY).await;
+        }
+    })
 }
 
 // ---- maps and addresses

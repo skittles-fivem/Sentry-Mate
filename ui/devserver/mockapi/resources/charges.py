@@ -9,6 +9,7 @@ from .. import sources as S
 from ..conventions import nk, page
 from ..dataset.segments import CURVE_FIELDS
 from ..errors import bad_input, invalid, not_found
+from .. import placing
 from ..placing import piece_pid
 from ..rows import charge_row, in_progress, place_obj
 from ..util import DAY, MIN, local_dt, median, r
@@ -358,12 +359,14 @@ def charging_places(req):
             g["_basis_kwh"] += x["energy_grid_kwh"] or x["dc_inlet_kwh"] or x["energy_added_kwh"] or 0
     out = []
     for g in groups.values():
+        pl = place_obj(req.app, g["place"])
         cbc = [{"currency": k, "amount": round(v, 2)} for k, v in sorted(g["_cost"].items())]
         total = sum(v for v in g["_cost"].values())
         out.append({"place": g["place"], "label": g["label"], "lat": g["lat"], "lon": g["lon"],
                     "sessions": g["sessions"], "energy_added_kwh": r(g["energy_added_kwh"], 3),
                     "cost_by_currency": cbc,
                     "price_per_kwh": round(total / g["_basis_kwh"], 4) if g["_basis_kwh"] and len(cbc) == 1 else None,
+                    "place_price": placing.price_on(pl, req.now), "price_source": placing.source_on(pl, req.now),
                     "cars": sorted(g["cars"], key=lambda c: int(c[1:])), "_total": total, "_key": g["_key"]})
     # the group key last: two places may share a name and a figure, and a page must not skip one of them
     keyf = {"energy": lambda g: (g["energy_added_kwh"], g["label"], g["_key"]),

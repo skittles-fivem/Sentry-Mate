@@ -17,6 +17,7 @@ import { timelineRow } from './timeline.js';
 import { createMap, carMarker, addRoute, padClear, mapFallback } from '../core/map.js';
 import { SPOT_ZOOM } from '../shared/maptiles.js';
 import { offstage } from '../core/stage.js';
+import { nearNow } from '../shared/lazy.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, colors, areaFill, hexA } from '../core/chart.js';
 import { activityStrip } from '../core/strip.js';
 import { openCarSwitcher } from '../core/carswitch.js';
@@ -140,6 +141,40 @@ function gauge(socPct, limit, tone) {
 
 /* ------------------------------------------------------------------ the page */
 
+// The first reads, made by mount() and warmed ahead by prefetch() (a link to this page under the pointer).
+const nowRead = (ctx) => ctx.api.get(`cars/${encodeURIComponent(ctx.car.id)}/now`);
+const settingsRead = (ctx) => ctx.api.get('settings', null, { maxAgeMs: 300000 });
+const todayRead = (ctx) => {
+  const dayStart = buckets(ctx.api.now() - 1, ctx.api.now(), 'day', ctx.tz)[0]?.start_ms;
+  return ctx.api.page(`cars/${encodeURIComponent(ctx.car.id)}/timeline`, { from_ms: dayStart }, { limit: 30 });
+};
+// the period's figures, charts and strip: [statistics, series, activity, charges]
+function windowReads(ctx) {
+  const cid = ctx.car.id, p = ctx.period;
+  const from = p.from_ms ?? (ctx.api.now() - 86400000), to = p.to_ms;
+  const rk = getUnits().range === 'ideal' ? 'ideal_range_km' : 'range_km';
+  const qs = { from_ms: from, to_ms: to };
+  return Object.assign([
+    ctx.api.get(`cars/${encodeURIComponent(cid)}/statistics`, { period: 'all', ...qs }),
+    ctx.api.get(`cars/${encodeURIComponent(cid)}/series`, { fields: `soc_pct,usable_soc_pct,${rk}`, ...qs, max_points: 720 }),
+    ctx.api.get(`cars/${encodeURIComponent(cid)}/activity`, qs),
+    ctx.api.page(`cars/${encodeURIComponent(cid)}/charges`, { from_ms: from - 12 * 3600000, to_ms: to }, { limit: 12 }),
+  ], { from, to });
+}
+// the charging chart: the charges that reach into the period, and the curves of the last 10 of them
+const chargesIn = (items, from, to) => items.filter((c) => (c.end_ms ?? to) > from);
+const curveReads = (ctx, charges) => [...charges].sort((a, b) => a.start_ms - b.start_ms).slice(-10)
+  .map((c) => ctx.api.get(`cars/${encodeURIComponent(ctx.car.id)}/charges/${encodeURIComponent(c.id)}/curve`, { fields: 'power_kw,volts_v,amps_a,heater_kw,dc_volts_v,dc_amps_a', max_points: 400 }));
+const trailRead = (ctx, driveId) => ctx.api.get(`cars/${encodeURIComponent(ctx.car.id)}/drives/${encodeURIComponent(driveId)}/track`, { simplify_m: 5 });
+export async function prefetch(ctx) {
+  const w = windowReads(ctx);
+  const [n, , , , , , charges] = await Promise.all([nowRead(ctx), settingsRead(ctx), todayRead(ctx), ...w, Promise.resolve().then(loadUPlot).catch(() => null)]);
+  await Promise.all([
+    ...curveReads(ctx, chargesIn(charges?.items || [], w.from, w.to)),
+    n?.state === 'driving' && n.drive?.drive_id ? trailRead(ctx, n.drive.drive_id) : null,
+  ]);
+}
+
 export async function mount(ctx) {
   const { car, tz } = ctx;
   const cid = car.id;
@@ -149,8 +184,8 @@ export async function mount(ctx) {
   // GET now and the period's calls start together: the period paints when its answers are in, the live part when
   // /now is in, and grey blocks keep each part's place until then
   let now, settings = null;
-  const nowP = ctx.api.get(`cars/${encodeURIComponent(cid)}/now`);
-  const settingsP = ctx.api.get('settings', null, { maxAgeMs: 300000 }).catch(() => null);
+  const nowP = nowRead(ctx);
+  const settingsP = settingsRead(ctx).catch(() => null);
   nowP.catch(() => {}); // handled below
 
   const head = h('div');
@@ -276,7 +311,7 @@ export async function mount(ctx) {
   }
 
   /* ---------- the map */
-  let map = null, marker = null, trailShown = false;
+  let map = null, marker = null, markerKey = null, trailShown = false;
   function paintPlace() {
     const n = now, loc = n.location || {};
     const plat = val(loc.lat), plon = val(loc.lon);
@@ -305,7 +340,7 @@ export async function mount(ctx) {
       h('button', { class: 'btn btn--sm map-btn', type: 'button', cover: 'summary.map.fullscreen', onclick: () => toggleFull() }, icon('monitor', 'ico--sm'), document.fullscreenElement ? 'Back to the page' : 'Full screen'),
       outside && lat != null
         ? h('a', { class: 'btn btn--sm map-btn', href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=17/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'noopener noreferrer external', cover: 'summary.map.external_link' }, icon('ext', 'ico--sm'), 'Open in OpenStreetMap')
-        : h('span', { class: 'map-chip', cover: 'summary.map.external_link', title: 'Links to outside map sites are off. An admin can turn them on in Settings: Display and units.' }, icon('lock', 'ico--sm'), 'Outside map links off'));
+        : h('span', { class: 'map-chip', cover: 'summary.map.external_link', title: 'Links to outside map sites are off. An admin can turn them on in Settings: Maps and addresses.' }, icon('lock', 'ico--sm'), 'Outside map links off'));
   }
   function toggleFull() {
     if (document.fullscreenElement) document.exitFullscreen?.();
@@ -318,7 +353,7 @@ export async function mount(ctx) {
     const lat = val(loc.lat), lon = val(loc.lon);
     if (lat == null || lon == null) { mapEl.append(mapFallback('No position recorded yet.')); return; }
     try {
-      map = await createMap(mapEl, ctx, { center: [lon, lat], zoom: SPOT_ZOOM });
+      map = await createMap(mapEl, ctx, { center: [lon, lat], zoom: SPOT_ZOOM, lazy: true });
       if (!map) return;
       await map.ready;
       if (!ctx.alive()) return;
@@ -334,12 +369,19 @@ export async function mount(ctx) {
     const lat = val(loc.lat), lon = val(loc.lon);
     if (lat == null) return;
     const tone = n.stale || n.state === 'unknown' ? 'muted' : n.state === 'charging' ? 'warm' : n.state === 'asleep' ? 'asleep' : 'live';
+    const heading = n.state === 'driving' ? val(loc.heading_deg) : null;
+    const pad = () => ({ ...padClear(mapEl, placeCard, { left: 4, top: 30, right: 0, bottom: 0, beside: true }), top: rpx(30) });
+    // live values come every few seconds: the map is drawn again only when the car moved, turned or changed
+    // state (a map drawn again on a 4K screen takes longer than a frame and holds a scroll up)
+    const key = JSON.stringify([lon, lat, tone, heading, pad()]);
+    if (key === markerKey && marker) return;
+    markerKey = key;
     marker?.remove();
-    marker = carMarker(map, [lon, lat], { tone, heading: n.state === 'driving' ? val(loc.heading_deg) : null });
-    map.frame(() => map.map.jumpTo({ center: [lon, lat], padding: { ...padClear(mapEl, placeCard, { left: 4, top: 30, right: 0, bottom: 0, beside: true }), top: rpx(30) } }));
+    marker = carMarker(map, [lon, lat], { tone, heading });
+    map.frame(() => map.map.jumpTo({ center: [lon, lat], padding: pad() }));
     if (n.state === 'driving' && n.drive?.drive_id && !trailShown) {
       trailShown = true;
-      ctx.api.get(`cars/${encodeURIComponent(cid)}/drives/${encodeURIComponent(n.drive.drive_id)}/track`, { simplify_m: 5 }).then((t) => {
+      trailRead(ctx, n.drive.drive_id).then((t) => {
         if (!ctx.alive() || !map) return;
         const coords = (t.features || []).flatMap((f) => f.geometry.coordinates.map((c) => [c[0], c[1]]));
         if (coords.length > 1) addRoute(map, coords, 'trail', { thin: true });
@@ -550,9 +592,8 @@ export async function mount(ctx) {
 
   /* ---------- today, newest first (beside the map on large screens) */
   async function paintToday() {
-    const dayStart = buckets(ctx.api.now() - 1, ctx.api.now(), 'day', tz)[0]?.start_ms;
     try {
-      const pg = await ctx.api.page(`cars/${encodeURIComponent(cid)}/timeline`, { from_ms: dayStart }, { limit: 30 });
+      const pg = await todayRead(ctx);
       if (!ctx.alive()) return;
       replace(todaySlot,
         h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('timeline'), 'Today, newest first'), panelLink(state.buildUrl('timeline', { car: cid, period: { preset: '24h' } }), 'Timeline')),
@@ -568,12 +609,8 @@ export async function mount(ctx) {
     const rk = getUnits().range === 'ideal' ? 'ideal_range_km' : 'range_km';
     const qs = { from_ms: from, to_ms: to };
     const ideal = rk === 'ideal_range_km';
-    const [stats, series, act, charges] = await Promise.all([
-      ctx.api.get(`cars/${encodeURIComponent(cid)}/statistics`, { period: 'all', ...qs }).catch(() => null),
-      ctx.api.get(`cars/${encodeURIComponent(cid)}/series`, { fields: `soc_pct,usable_soc_pct,${rk}`, ...qs, max_points: 720 }),
-      ctx.api.get(`cars/${encodeURIComponent(cid)}/activity`, qs),
-      ctx.api.page(`cars/${encodeURIComponent(cid)}/charges`, { from_ms: from - 12 * 3600000, to_ms: to }, { limit: 12 }).catch(() => ({ items: [] })),
-    ]);
+    const reads = windowReads(ctx);
+    const [stats, series, act, charges] = await Promise.all([reads[0].catch(() => null), reads[1], reads[2], reads[3].catch(() => ({ items: [] }))]);
     if (!ctx.alive()) return;
     const row = stats?.items?.[0] || {};
     // a period with no data is not a period the car stood still: say which it was
@@ -621,7 +658,7 @@ export async function mount(ctx) {
     await loadUPlot();
     if (!ctx.alive()) return;
     batteryChart(battEl, battLegend, series, rk, from, to);
-    await chargingChart(chgEl, supEl, chgLegend, curveNote, charges.items.filter((c) => (c.end_ms ?? to) > from), from, to);
+    await chargingChart(chgEl, supEl, chgLegend, curveNote, chargesIn(charges.items, from, to), from, to);
     });
   }
 
@@ -711,7 +748,7 @@ export async function mount(ctx) {
   async function chargingChart(el, supEl, legendHost, noteEl, charges, from, to) {
     // the curves of the charges in the period, on one time axis, broken between sessions
     const sorted = [...charges].sort((a, b) => a.start_ms - b.start_ms).slice(-10);
-    const curves = await Promise.all(sorted.map((c) => ctx.api.get(`cars/${encodeURIComponent(cid)}/charges/${encodeURIComponent(c.id)}/curve`, { fields: 'power_kw,volts_v,amps_a,heater_kw,dc_volts_v,dc_amps_a', max_points: 400 }).catch(() => null)));
+    const curves = await Promise.all(curveReads(ctx, charges).map((p) => p.catch(() => null)));
     if (!ctx.alive()) return;
     const T = [], P = [], E = [], V = [], A = [], HT = [];
     let addedInWin = 0;
@@ -794,9 +831,10 @@ export async function mount(ctx) {
   paintHead(); paintInputs(); paintBanner(); paintGauge(); paintPlace(); paintLive();
   ctx.setTitle('Overview');
   const todayP = paintToday();
-  // the map is in place before ready, so its controls do not move the page once it is on screen
+  // the map is in place before ready, so its controls do not move the page once it is on screen; a map below the
+  // fold (a phone) is made when it comes near, and ready does not wait for it
   const mapP = mountMap();
-  await Promise.all([windowP, todayP, mapP]);
+  await Promise.all([windowP, todayP, nearNow(mapEl) ? mapP : null]);
   if (!ctx.alive()) return;
   ctx.ready();
   learnSchedule();

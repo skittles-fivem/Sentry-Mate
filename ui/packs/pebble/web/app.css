@@ -899,6 +899,7 @@ a.bar:hover .bar-fill { opacity: 0.85; }
 .rank { display: flex; flex-direction: column; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
 .rank-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: var(--s3); row-gap: var(--s1); }
 .rank-name { font-size: var(--f14); line-height: var(--l14); font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rank-from { font-weight: 500; color: var(--muted); }
 .rank-n { font-size: var(--f14); line-height: var(--l14); font-weight: 800; font-variant-numeric: tabular-nums; text-align: right; }
 .rank-bar { grid-column: 1 / -1; display: block; height: var(--s2); border-radius: 999px; background: var(--card-alt); overflow: hidden; }
 .rank-fill { display: block; height: 100%; width: round(calc(var(--v, 0) * 100%), var(--e)); border-radius: 999px; background: var(--tone, var(--c1)); transition: width 0.4s var(--ease); }
@@ -1185,3 +1186,55 @@ html[data-form="phone"] .fw-change { flex-direction: column; align-items: flex-s
 .steady { display: inline-grid; font-variant-numeric: tabular-nums; }
 .steady > * { grid-area: 1 / 1; }
 .steady-size { visibility: hidden; }
+/* a chart is never the browser's scroll anchor: its cursor line comes and goes under the mouse, and the page
+   would scroll to keep it in place */
+.uplot, .uplot * { overflow-anchor: none; }
+/* the place price editor (shared/prices.js): a place's prices by date, opened from Places, Charges and a charge */
+.pp-dialog {
+  width: min(44rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); margin: auto; padding: 0;
+  border: 1px solid var(--pp-line); border-radius: var(--pp-radius); background: var(--pp-bg); color: var(--pp-text);
+}
+.pp-dialog[open] { display: flex; flex-direction: column; }
+.pp-dialog::backdrop { background: var(--pp-backdrop); }
+.pp-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.25rem 0.5rem; }
+.pp-head h2 { margin: 0; font-size: 1.15rem; overflow-wrap: anywhere; }
+.pp-body { display: flex; flex-direction: column; gap: 0.75rem; padding: 0.5rem 1.25rem 1rem; overflow-y: auto; }
+.pp-hint, .pp-none { margin: 0; color: var(--pp-muted); font-size: 0.875rem; }
+.pp-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--pp-line); }
+.pp-row { display: grid; grid-template-columns: 9rem minmax(0, 1fr) auto; grid-template-areas: "from price acts" "from who acts"; column-gap: 0.75rem; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--pp-line); }
+.pp-from { grid-area: from; font-weight: 600; }
+.pp-price { grid-area: price; overflow-wrap: anywhere; }
+.pp-who { grid-area: who; color: var(--pp-muted); font-size: 0.8125rem; }
+.pp-acts { grid-area: acts; display: flex; gap: 0.25rem; }
+.pp-row--now .pp-from { color: var(--pp-accent); }
+.pp-tag { margin-left: 0.5rem; padding: 0 0.375rem; border: 1px solid var(--pp-accent); border-radius: 999px; color: var(--pp-accent); font-size: 0.75rem; white-space: nowrap; }
+.pp-add, .pp-entry-acts, .pp-sub { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.pp-entry { display: flex; flex-direction: column; gap: 0.75rem; }
+.pp-when, .pp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 0.75rem; align-items: end; }
+.pp-field { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; font-size: 0.875rem; }
+.pp-field > span { color: var(--pp-muted); }
+.pp-field > :is(input, select) { width: 100%; min-width: 0; }
+.pp-check { display: flex; align-items: center; gap: 0.5rem; min-height: 2.5rem; }
+.pp-rates { display: flex; flex-direction: column; gap: 0.5rem; }
+.pp-rate { display: grid; grid-template-columns: minmax(6rem, 1.4fr) minmax(6rem, 1fr) 5rem 5rem 5.5rem auto; gap: 0.375rem; align-items: center; }
+.pp-rate > :is(input, select) { width: 100%; min-width: 0; }
+.pp-msg { margin: 0 1.25rem; color: var(--pp-bad); font-size: 0.875rem; }
+.pp-foot { display: flex; justify-content: flex-end; gap: 0.625rem; padding: 0.875rem 1.25rem 1rem; border-top: 1px solid var(--pp-line); }
+.set-price { white-space: nowrap; }
+@media (max-width: 40rem) {
+  .pp-dialog { width: calc(100vw - 1rem); max-height: calc(100dvh - 1rem); }
+  .pp-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "from acts" "price acts" "who acts"; }
+  .pp-rate { grid-template-columns: 1fr 1fr; padding-bottom: 0.5rem; border-bottom: 1px solid var(--pp-line); }
+}
+.pp-dialog { --pp-bg: var(--card); --pp-line: var(--line); --pp-text: var(--text); --pp-muted: var(--muted); --pp-accent: var(--coral); --pp-bad: var(--bad); --pp-radius: var(--r-tile); --pp-backdrop: var(--backdrop); }
+.rank-set { grid-column: 1 / -1; justify-self: start; }
+.dated { display: flex; flex-direction: column; gap: var(--s2); }
+.dated-list { margin: 0; padding: 0; list-style: none; }
+.dated-list li { display: flex; flex-wrap: wrap; gap: 0 var(--s3); padding: var(--s2) 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.dated-list li.is-now b { color: var(--coral); }
+.map-foot .set-price { margin-left: var(--s3); }
+/* A kept answer on screen while the fresh one is asked for (core/router.js puts data-stale on the root): the page
+   is a little dimmed after a moment, so a quick check shows nothing. Only the opacity changes: nothing moves. */
+#main { transition: opacity 0.2s ease; }
+:root[data-stale] #main { opacity: 0.72; transition: opacity 0.3s ease 0.25s; }
+@media (prefers-reduced-motion: reduce) { #main, :root[data-stale] #main { transition: none; } }

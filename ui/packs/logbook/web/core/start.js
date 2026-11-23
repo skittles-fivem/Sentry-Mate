@@ -14,6 +14,7 @@ import { loadPrefs } from './prefs.js';
 import { mountFrame } from './frame.js';
 import { watchTables } from './snap.js';
 import { startRouter, AUTH_SCREENS } from './router.js';
+import { registerServiceWorker } from '../shared/offline.js';
 
 const here = () => location.pathname + location.search;
 const pageNow = () => state.parseUrl(location.href).page;
@@ -65,3 +66,5 @@ start().catch((err) => {
   }
   document.documentElement.dataset.ready = 'error:start';
 });
+// after the first draw: the next load draws from what the service worker keeps
+registerServiceWorker();

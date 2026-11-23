@@ -42,11 +42,10 @@ vendor/        MapLibre GL JS (BSD-3-Clause) and uPlot (MIT), for the map and ch
 | `states.js` | `loadingTiles(shape)`, `emptyTile()`, `errorTile()`, `errorWords()`; `ghostTile(w, h)` (one grey tile that keeps a block's room until its own data is in: `slot.replaceWith(tile)`) and `plotGhost()` (a chart's room inside a tile). |
 | `form.js` | `field()`, `form()`, `toggle()` (an on / off row), `segmented()`. |
 | `ui.js` | Icons, `btn`, `linkBtn`, `chip`, `stateTag`, `num` (number and unit on one baseline), `ring` (SOC ring), `tile`, `note`, `ago`. |
-| `map.js` | `mapTile(ctx, box, opts)`: MapLibre in a rounded box, tiles from `/maps/config` (offline first), routes in the series colours, round pins, a place circle. |
-| `chart.js` | `timeChart(ctx, body, opts)`: a uPlot chart with one or two lines, a legend of keys that show the value under the cursor and hide a line when pressed; charts with one `sync` key share cursor and zoom. `bars()` for plain histograms. |
+| `map.js` | `mapTile(ctx, box, opts)`: MapLibre in a rounded box, tiles from `/maps/config` (offline first), routes in the series colours, round pins, a place circle. With `lazy: true` a map below the fold is made (and MapLibre loaded) when it comes near: a page waits for it before `ctx.ready()` only when `nearNow(box)` (`shared/lazy.js`) says it is near. |
+| `chart.js` | `timeChart(ctx, body, opts)`: a uPlot chart with one or two lines, a legend of keys that show the value under the cursor and hide a line when pressed; charts with one `sync` key share cursor and zoom. `bars()` for plain histograms. A chart below the fold is built when it comes within a screen of view (`shared/lazy.js`); its `.plot` box has its height from CSS, so nothing moves. |
 | `source.js` | Where data came from: `srcPill(row)` (the row's `source_label` as a soft pill, one dot per input: SMO, Tesla API, TeslaFi, imported), `estPill` (Tesla-only energy is estimated), `viaMark` (a live value the Tesla API sent), `inputsLine` (the car's live inputs from `/now`), the source filter words. |
 | `firmware.js` | The car's firmware fingerprints and the "Tesla update installed" marker: module names, `hexCode` (lowercase hex, monospace), `changesList` (old hex -> new hex per module), `aroundDrives` / `betweenLine` (the drive before and after), `namedLine`, `nameBox` (the version name and who gave it; admins open a box with Edit to type or clear it, Escape or Cancel closes it). Used by Software and Timeline. |
-| `morph.js` | Live figures painted in place: `morphChildren(slot, nodes)` / `morph(el, next)` make what is on the page look like a part built again from new data, writing only the texts and attributes that changed; `keepEl(el, name)` keeps a part with its own state (a progress panel) as it is. |
 | `bits.js` | Parts the data pages share: `filterBar` (car and period pills), day groups and `dayHead`, `statTile`, `facts`, `socBar`, `strip` (the activity strip), `pills`, `moreButton` (its row's `load()` is what a click does, never two at once), `listBox(ctx, { label, cls, fit, more }, ...children)`: a long log-like list in a box about five rows high that scrolls by itself (shared/scrollbox.js, `.scroll-box` in app.css; `--box-row` / `--box-rows` per list, about three on a phone; `fit` for rows in hand, a box at most that high; `more`, a moreButton row under the box, loads as the end of the box comes near). Used by the audit log, Space on disk, the fingerprints, the gaps log and the connection problems. Place words and links. |
 
 ## A page module
@@ -79,6 +78,17 @@ grid), `alive()`, `ready()`, `fail(err, { retry })`, `head({ title, actions })`,
 `link(page, params)`, `navigate(href)`, `reload()`, `events(types, fn)`, `on(target, type, fn)`, `every(ms, fn)`,
 `onCleanup(fn)`, `toast`. A page exporting `onQuery(query, ctx)` takes back and forward on its own filters;
 `update(ctx, { period | prefs })` takes a new period or new units without a remount.
+
+Fast page changes: a page may export `prefetch(ctx)`. The router calls it when a link to the page is under the
+pointer for 50 ms, touched or focused, with the `ctx` that `mount` will get (car, period, params, query, state,
+me; `ctx.prefetching` is true), but its `ctx.api` only warms answers (`prefetchApi` in `shared/prefetch.js`). It must
+make the same calls as the page's first reads, so build them in one function both use (`firstReads(ctx)` in
+`pages/battery.js`): a call with other parameters warms an answer nobody asks for. The router also loads the page's
+module and style sheet then, and once the first page is drawn the main sections' modules load while the browser
+is idle. A page (not the settings forms) takes kept answers at once for the reads it makes before `ready()`; each is
+checked at the same time, `<html data-stale>` dims the page while one is on screen, and a page whose answers
+changed is built again in place, like a live refresh. On the first page after a reload the service worker's kept
+answers can come first the same way.
 
 ## Layout: the bento grid
 

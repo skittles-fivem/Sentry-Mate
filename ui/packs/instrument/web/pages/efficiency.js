@@ -12,7 +12,6 @@
 //   temperature at each charge). The three time charts share one cursor.
 // Asleep is not unknown: the car reads no temperature while it sleeps, so lines break in both, but asleep
 // spans are shaded blue and unknown ones grey, and the summary says how much of the period each took.
-// Live: a drive or charge of a car shown that starts or ends ("rows" events) builds the page again.
 
 import * as state from '../shared/state.js';
 import { h, replace, cssVar, steady } from '../shared/dom.js';
@@ -29,7 +28,6 @@ import { openPeriodPicker } from '../core/period.js';
 import { openCarSwitcher, soldParts, soldToggle } from '../core/carswitch.js';
 import { rpx } from '../core/display.js';
 import { srcMark } from '../core/source.js';
-import { onRows } from '../shared/live.js';
 
 export const id = 'efficiency';
 export const css = true;
@@ -158,9 +156,6 @@ export async function mount(ctx) {
     picker,
     ]);
   };
-  // live: a drive or charge of a car shown started or ended (a burst of them, once it has passed): the page is built
-  // again off screen and swapped in whole, at the same scroll
-  onRows(ctx.api, { kinds: ['drives', 'charges'], waitMs: 1500, run: (d) => { if (ctx.alive() && (d.car === cid || opt.cars.includes(d.car))) ctx.refresh(); } });
   await Promise.all([effDone, paintRest()]);
   // ready once every section has its data: the charts and the car picker are part of the first render
   if (ctx.alive()) ctx.ready();

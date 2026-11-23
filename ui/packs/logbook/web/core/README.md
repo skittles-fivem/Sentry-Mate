@@ -82,6 +82,17 @@ A new period calls `update(ctx, { period: true })` when the page has one, otherw
 again. A change of units, range or language calls `update(ctx, { prefs: true })`, or mounts again. A change of
 car, drive or charge always mounts again.
 
+Fast page changes: a page may export `prefetch(ctx)`. The router calls it when a link to the page is under the
+pointer for 50 ms, touched or focused, with the `ctx` that `mount` will get (car, period, params, query, state,
+me; `ctx.prefetching` is true), but its `ctx.api` only warms answers (`prefetchApi` in `shared/prefetch.js`). It must
+make the same calls as the page's first reads, so build them in one function both use (`topReads(ctx)` in
+`pages/battery.js`): a call with other parameters warms an answer nobody asks for. The router also loads the page's
+module and style sheet then, and once the first page is drawn the main sections' modules load while the browser
+is idle. A page (not the settings forms) takes kept answers at once for the reads it makes before `ready()`; each is
+checked at the same time, `<html data-stale>` dims the page while one is on screen, and a page whose answers
+changed is built again in place, like a live refresh. On the first page after a reload the service worker's kept
+answers can come first the same way.
+
 ### The page context (`ctx`)
 
 | Field | What it is |
@@ -219,6 +230,10 @@ await stackedCharts(ctx, box, {
 - Sizes: the chart fills its `.chart-box`, which CSS sizes in rem (`.chart-box { height: 8.125rem }`; give a row
   another height with `.chart-<key> .chart-box`). Fonts, padding and lines scale with the interface size;
   the charts rebuild on a new root size or theme; uPlot draws at the device pixel ratio by itself.
+- Below the fold: each chart is built, and `makeMap(ctx, el, { lazy: true })` makes its map (and loads MapLibre), only when its box comes
+  within a screen of view (`shared/lazy.js` `whenNear`), so the first paint draws only what is on screen. The box
+  has its height from CSS from the start, so nothing moves; a late chart takes the zoom of the others. A page waits
+  for a map before `ready()` only when `nearNow(box)` (`shared/lazy.js`) says it is near.
 - uPlot is loaded on first use (`loadUplot()`). `niceSplits`, `niceStep`, `chartColours()` are there for a
   page that draws its own uPlot chart; it must then follow the same rules.
 
@@ -421,8 +436,12 @@ Pages are checked with `node ui/tools/check.js --pixel` (see `ui/tools/README.md
     half a pixel (`translate`, or `position: relative` for an inline box) onto whole ones.
   It first takes back everything the last run set, so the CSS always decides the layout and the snap only
   rounds it. It runs again when the page adds or takes away elements, when text in a table changes, when a
-  snapped grid or table changes size (not when the run itself changed it) and when the fonts have loaded. It
-  takes about 1 s on a page of 40,000 elements: it reads all sizes before it writes any.
+  snapped grid or table changes size (not when the run itself changed it) and when the fonts have loaded. A
+  whole run takes about 1 s on a page of 40,000 elements (it reads all sizes before it writes any), so after a
+  change of content only the boxes that hold it are snapped again (a card drawn again, a table's new rows),
+  unless one of them changed size other than by whole pixels: a page that reloads its cards while it scrolls
+  (a rebuild sends `rows` every second) stays under a frame. The parts that live values draw again keep
+  what did not change (`replaceChanged` in `shared/dom.js`), so most updates change nothing at all.
 - Mark a box the snap must leave alone with `data-nosnap` (maps, charts and the busy ring `.spin` are left alone already).
 - A box that sits in a line of text (an inline-flex pill or button) is a source of half pixels: in a table cell
   give it `vertical-align: top` or make it a block; in a flex row with `align-items: baseline`, let the words

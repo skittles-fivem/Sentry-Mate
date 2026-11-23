@@ -744,11 +744,3 @@ async fn put_cars(
     }
     cars(State(app), Admin(v), Path(id)).await
 }
-
-/// The charge costs block as `/integrations/teslafi` gives it now (`None` without the TeslaFi input).
-pub(crate) fn invoices_now(app: &AppState) -> Option<Value> {
-    let s = svc(app).ok()?;
-    let e = app.service::<Engine>().ok()?;
-    let settings = load_settings(&e);
-    Some(super::invoices::teslafi_block(&e, &s, settings.invoices))
-}

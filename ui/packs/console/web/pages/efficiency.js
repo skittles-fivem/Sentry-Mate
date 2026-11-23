@@ -8,7 +8,6 @@
 // - Temperatures: GET .../temperatures, GET .../series (outside, cabin, battery, set point while climate runs),
 //   the charges of the range (outside temperature at each). The three time charts share one cursor.
 // Asleep is not unknown: the car reads nothing while it sleeps; both are shaded, unknown darker.
-// Live: 'rows' events of the cars shown build the page again off screen once a burst has passed.
 
 import * as state from '../shared/state.js';
 import { h, replace, cssVar } from '../shared/dom.js';
@@ -23,7 +22,6 @@ import { empty, loadingLine, errorBlock } from '../core/states.js';
 import { loadUPlot, plot, line, timeAxis, valueAxis, cursor, readout, colors, hexA } from '../core/chart.js';
 import { rpx } from '../core/display.js';
 import { src, est as estTag } from '../core/source.js';
-import { onRows } from '../shared/live.js';
 
 export const id = 'efficiency';
 export const title = () => 'Efficiency';
@@ -476,7 +474,4 @@ export async function mount(ctx) {
   await Promise.all([paintCars(), effDone, uplotP.then(() => (ctx.alive() ? paintSpeed() : null)), paintRest()]);
   if (!ctx.alive()) return;
   ctx.ready();
-  // a drive or charge of a car shown started or ended (once a burst has passed): built again off screen and
-  // swapped in whole, so the figures and charts never go back to loading lines
-  onRows(ctx.api, { waitMs: 2000, run: (d) => { if (d.car === cid || opt.cars.includes(d.car)) ctx.refresh(); } });
 }

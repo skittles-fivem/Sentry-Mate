@@ -57,7 +57,6 @@ pub mod error;
 pub mod events;
 pub mod heavy;
 pub mod ids;
-pub mod live;
 pub mod moving;
 pub mod packs;
 pub mod policy;
@@ -67,6 +66,7 @@ pub mod recovery;
 pub mod resources;
 pub mod restore;
 pub mod server;
+pub mod sw;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 pub mod units;
@@ -174,6 +174,7 @@ pub struct Builder {
     body_timeout: std::time::Duration,
     heavy: (usize, std::time::Duration),
     release: Option<(Arc<dyn release::Fetch>, release::Build)>,
+    this_build: release::Build,
     services: HashMap<std::any::TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
@@ -230,7 +231,15 @@ impl Builder {
         self
     }
 
-    /// What the release check asks through, and the build it asks about (default: GitHub's API host, this build).
+    /// The build the release check asks about, when it asks GitHub's API (default [`release::Build::local`]): the
+    /// binary passes its own, with the image build's number, commit and date (crates/sentry-mate/build.rs).
+    pub fn this_build(mut self, build: release::Build) -> Builder {
+        self.this_build = build;
+        self
+    }
+
+    /// What the release check asks through, and the build it asks about (default: GitHub's API host, the build
+    /// [`Builder::this_build`] gave).
     /// For tests: a stand-in that never reaches the network.
     pub fn release_check(mut self, fetch: Arc<dyn release::Fetch>, build: release::Build) -> Builder {
         self.release = Some((fetch, build));
@@ -253,7 +262,7 @@ impl Builder {
             Some(r) => r,
             None => (
                 Arc::new(release::Http::github().map_err(std::io::Error::other)?) as Arc<dyn release::Fetch>,
-                release::Build::this(),
+                self.this_build,
             ),
         };
         let release = Arc::new(resources::release::Checker::new(fetch, build, self.clock.clone()));
@@ -299,6 +308,7 @@ impl AppState {
             body_timeout: server::BODY_TIMEOUT,
             heavy: (heavy::RUNNING, heavy::WAIT),
             release: None,
+            this_build: release::Build::local(),
             services: HashMap::new(),
         }
     }
@@ -407,8 +417,8 @@ impl AppState {
     }
 }
 
-/// The whole web side: the API under `/api/v1` (behind the guard), `/health`, `/original`, and the UI pack for
-/// every other path. Serve it with [`serve`].
+/// The whole web side: the API under `/api/v1` (behind the guard), `/health`, `/original`, `/sw.js`, and the UI
+/// pack for every other path. Serve it with [`serve`].
 pub fn router(app: AppState) -> Router {
     router_with(app, Router::new())
 }
@@ -432,6 +442,7 @@ pub fn router_with(app: AppState, extra: Router<AppState>) -> Router {
         .route("/health", get(|| async { axum::http::StatusCode::OK }))
         .route("/original", get(packs::original_on))
         .route("/original/off", get(packs::original_off))
+        .route("/sw.js", get(sw::script))
         .fallback(packs::fallback)
         .method_not_allowed_fallback(policy::method_not_allowed)
         .layer(axum::middleware::from_fn_with_state(app.clone(), policy::headers))

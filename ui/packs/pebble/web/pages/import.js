@@ -14,9 +14,8 @@
 // report and shows as a gap (a faint dash), never as 0; cars left out are not in the report.
 //
 // API (admins): GET / POST imports, GET / PATCH / DELETE imports/{import}, GET / PUT imports/{import}/cars,
-// POST imports/{import}/start, GET / PATCH cars/{car}/overlaps, GET cars. The import shown follows its `job` events
-// (kind import, its id), its step cards and report written in place (live events, polling only while the live
-// stream is down: every few seconds while it is uploaded elsewhere, checked, waiting or imported).
+// POST imports/{import}/start, GET / PATCH cars/{car}/overlaps, GET cars. No event says how an import goes, so
+// while one is uploaded elsewhere, checked, waiting or imported the page reads that job again every few seconds.
 
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -33,8 +32,6 @@ import { isValidZone } from '../shared/time.js';
 import { group, infoRow, pickRow, said } from '../core/settings.js';
 import { moveSummary, waiting, holdWhy, HOLD_ACTIONS, holdSaid, counted as nOf } from '../shared/rehome.js';
 import { progressBar, callout, bytes } from './move-parts.js';
-import { follow as followLive, jobOf } from '../shared/live.js';
-import { morphChildren } from '../core/morph.js';
 
 export const id = 'import';
 export const css = true;
@@ -377,55 +374,43 @@ export async function mount(ctx) {
   const pauseUpload = () => { up.paused = true; if (up.ctl) up.ctl.abort(); paintAll(); };
 
   /* ---------------------------------------------------------------- following a job */
+  let pollTimer = null;
+  ctx.onCleanup(() => clearTimeout(pollTimer));
   // what the step cards show of a job: they are drawn again only when it changes (and not while you type in them)
   const sig = (x) => [x.status, x.bytes_read, x.uploaded_bytes, x.cars_to_match, x.checked_ms].join('|');
-  // whether the shown job moves on by itself (and how often to read it while the live stream is down)
-  function pollFor(j) {
-    if (!j) return null;
-    const elsewhere = j.status === 'uploading' && !up.active && !up.files;
-    if (!MOVING.includes(j.status) && !elsewhere && j.status !== 'ready') return null;
-    return elsewhere || j.status === 'ready' ? POLL_MS * 2 : POLL_MS;
-  }
-  async function take(fresh) {
+  function follow() {
+    clearTimeout(pollTimer);
     const j = S.job;
-    if (!ctx.alive() || !fresh || !j || fresh.id !== j.id) return;
-    const was = j.status, toMatch = j.cars_to_match, before = sig(j);
-    putJob(fresh);
-    if (fresh.status === 'ready' && was === 'ready' && fresh.cars_to_match !== toMatch) {
-      await loadMatch();
-    } else if (fresh.status !== was) {
-      if (fresh.status === 'ready') ctx.toast(isCan(fresh) ? 'The zip is checked. Start the import when the report looks right.' : 'The file is checked. Match its cars, then start the import.', { kind: 'info' });
-      if (fresh.status === 'done') { ctx.toast(isCan(fresh) ? 'The import is done. The logs are in as the car’s own SMO data.' : 'The import is done. The history shows on every page.'); loadOverlaps(); }
-      if (fresh.status === 'failed') ctx.toast('The import failed. The reason is on this page.', { kind: 'error' });
-      if (['checking', 'ready'].includes(fresh.status) && !S.match && !isCan(fresh)) loadMatch();
-      paintAll();
-    } else if (sig(fresh) !== before && !(stepsBox.contains(document.activeElement) && document.activeElement.matches('input, select, textarea'))) paintSteps();
-  }
-  // the shown job's `job` events (not while this page sends its files: the upload says how far it got); its GET
-  // after a reconnect, and only while the live stream is down every few seconds while it moves on
-  let firstJob = true;
-  const jobLive = followLive(ctx.api, {
-    type: 'job', match: (d) => jobOf('import')(d) && d.id === S.job?.id && !up.active, pick: (d) => d.status,
-    load: async () => {
-      const j = S.job;
-      // the page's own read stands for the first one
-      if (firstJob || !j || up.active) { firstJob = false; return null; }
-      try { return await ctx.api.get(api.apiPath`imports/${j.id}`); } catch (e) {
-        if (e.code === 'no_such_import' && ctx.alive() && S.job && S.job.id === j.id) {
+    if (!j) return;
+    const elsewhere = j.status === 'uploading' && !up.active && !up.files;
+    if (!MOVING.includes(j.status) && !elsewhere && j.status !== 'ready') return;
+    pollTimer = setTimeout(async () => {
+      if (!ctx.alive() || !S.job || S.job.id !== j.id) return;
+      try {
+        const was = S.job.status, toMatch = S.job.cars_to_match, before = sig(S.job);
+        const fresh = await ctx.api.get(api.apiPath`imports/${j.id}`);
+        if (!ctx.alive() || !S.job || S.job.id !== j.id) return;
+        putJob(fresh);
+        if (fresh.status === 'ready' && was === 'ready' && fresh.cars_to_match !== toMatch) {
+          await loadMatch();
+        } else if (fresh.status !== was) {
+          if (fresh.status === 'ready') ctx.toast(isCan(fresh) ? 'The zip is checked. Start the import when the report looks right.' : 'The file is checked. Match its cars, then start the import.', { kind: 'info' });
+          if (fresh.status === 'done') { ctx.toast(isCan(fresh) ? 'The import is done. The logs are in as the car’s own SMO data.' : 'The import is done. The history shows on every page.'); loadOverlaps(); }
+          if (fresh.status === 'failed') ctx.toast('The import failed. The reason is on this page.', { kind: 'error' });
+          if (['checking', 'ready'].includes(fresh.status) && !S.match && !isCan(fresh)) loadMatch();
+          paintAll();
+        } else if (sig(fresh) !== before && !(stepsBox.contains(document.activeElement) && document.activeElement.matches('input, select, textarea'))) paintSteps();
+      } catch (e) {
+        if (!ctx.alive() || api.isAbort(e)) return;
+        if (e.code === 'no_such_import') {
           S.jobs = S.jobs.filter((x) => x.id !== j.id);
           ctx.toast('This import was discarded, perhaps from another tab.', { kind: 'info' });
           showJob(null);
+          return;
         }
-        return null;
       }
-    },
-    pollMs: () => (up.active ? null : pollFor(S.job)),
-    onValue: (fresh) => { take(fresh).catch(() => {}); },
-  });
-  // after a change of the page's own: while the live stream is down, the shown job is read again (its events
-  // come by themselves otherwise)
-  function follow() {
-    if (!jobLive.live && pollFor(S.job)) jobLive.refresh();
+      follow();
+    }, elsewhere || j.status === 'ready' ? POLL_MS * 2 : POLL_MS);
   }
 
   /* ---------------------------------------------------------------- matching the cars */
@@ -686,7 +671,7 @@ export async function mount(ctx) {
   function paintSteps() {
     const j = shownJob();
     const { at, st } = atOf(j);
-    morphChildren(stepsBox, (isCan(j) ? CAN_STEPS : isTf(j) ? TF_STEPS : STEPS).map(([key, name, text, cov], i) => {
+    stepsBox.replaceChildren(...(isCan(j) ? CAN_STEPS : isTf(j) ? TF_STEPS : STEPS).map(([key, name, text, cov], i) => {
       const mine = st === 'done' || i < at ? 'done' : i === at ? st : 'later';
       const word = mine === 'done' ? 'done' : mine === 'now' ? 'now' : mine === 'stuck' ? 'failed' : 'to do';
       const out = mine === 'now' ? stepOutput(j, key) : null;
@@ -701,7 +686,7 @@ export async function mount(ctx) {
     const head = stepsTile.querySelector('.tile-head');
     let side = head.querySelector('.tile-side');
     if (!side) { side = h('div', { class: 'tile-side' }); head.append(side); }
-    morphChildren(side, (j ? [statusChip(j.status), btn(j.status === 'done' ? 'Remove' : 'Discard', { kind: 'ghost', icon: 'trash', cls: 'btn-sm', onclick: () => discard(j) })] : []));
+    side.replaceChildren(...(j ? [statusChip(j.status), btn(j.status === 'done' ? 'Remove' : 'Discard', { kind: 'ghost', icon: 'trash', cls: 'btn-sm', onclick: () => discard(j) })] : []));
     // a failed job: why, and what to do
     if (j && j.status === 'failed') {
       const code = j.error && j.error.code;
@@ -746,8 +731,8 @@ export async function mount(ctx) {
   function paintReport() {
     const j = S.job && S.job.report ? S.job : S.jobs.find((x) => x.report && x.status === 'done');
     if (!j || !j.report) {
-      morphChildren(reportBox, [
-        emptyTile({ icon: 'bars', title: 'No report yet', text: 'Once a file is checked, its report shows here: rows read per table, rows imported, and how many were skipped and why.', cover: ['web.import.rejected-count', 'web.import.rejected.col-reason'] })]);
+      reportBox.replaceChildren(
+        emptyTile({ icon: 'bars', title: 'No report yet', text: 'Once a file is checked, its report shows here: rows read per table, rows imported, and how many were skipped and why.', cover: ['web.import.rejected-count', 'web.import.rejected.col-reason'] }));
       return;
     }
     const rep = j.report;
@@ -817,7 +802,7 @@ export async function mount(ctx) {
       }))),
       note('The number on the right is the rows used from that file.')) : null;
 
-    morphChildren(reportBox, [
+    reportBox.replaceChildren(
       tile({ w: 2, title: 'Report', icon: 'bars', side: statusChip(j.status), cls: 'im-report' },
         h('p', { class: 'im-report-of' }, sub),
         nums([
@@ -829,7 +814,7 @@ export async function mount(ctx) {
         rep.span ? h('p', { class: 'set-a' }, h('b', null, `${day(rep.span.from_ms)} to ${day(rep.span.to_ms)}`), `: ${formatDuration(rep.span.to_ms - rep.span.from_ms, { style: 'long' })} of TeslaMate history in the file.`) : null,
         closedLine,
         note(imported ? 'Imported rows show on every page, marked as imported.' : 'Nothing is stored until the import is started.')),
-      ...[filesTile, reasonTile, tableTile, carTile].filter(Boolean)]);
+      ...[filesTile, reasonTile, tableTile, carTile].filter(Boolean));
   }
 
   /** The report of a CAN export: logs read, stored or to store, here already and refused (and why), per car key. */
@@ -882,7 +867,7 @@ export async function mount(ctx) {
         rep.manifest ? infoRow({ name: 'Manifest', sub: [rep.manifest.vehicle_key ? `car key ${rep.manifest.vehicle_key}` : null, rep.manifest.logs != null ? `${count(rep.manifest.logs)} logs` : null].filter(Boolean).join(' · ') || null, side: h('span', { class: 'set-value' }, 'Yes') })
           : infoRow({ name: 'Manifest', side: h('span', { class: 'set-value' }, 'None') }),
       ]));
-    morphChildren(reportBox, [reportT, keysT, refusedT, filesT]);
+    reportBox.replaceChildren(reportT, keysT, refusedT, filesT);
   }
 
   /** The report of TeslaFi's data: polls read, used and skipped (and why), what they make, the units and zone, per car. */
@@ -942,7 +927,7 @@ export async function mount(ctx) {
           side: isCar(c.match) ? h('a', { class: 'tile-link', href: state.buildUrl('timeline', { car: c.match, period: rep.span && rep.span.from_ms ? { from: rep.span.from_ms, to: rep.span.to_ms } : null }) }, 'Timeline', icon('chevronRight')) : null,
         });
       }))) : null;
-    morphChildren(reportBox, [reportT, foundT, readT, whyT, carT]);
+    reportBox.replaceChildren(reportT, foundT, readT, whyT, carT);
   }
 
   /* ---------------------------------------------------------------- overlaps */

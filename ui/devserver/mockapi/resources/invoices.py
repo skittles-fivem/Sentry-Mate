@@ -9,6 +9,11 @@ fifth one and a tiny made-up PDF (every ninth one's PDF is still waiting). Two s
 unless an admin entered a cost, which wins (`applied: false`). TeslaFi gives no invoices (`gives_pdfs: false`): its
 block has no sessions.
 
+Each saved place where sessions are matched to charges gets dated prices marked "invoice" (`apply_prices`, at
+start): the median price per kWh billed over a window of its ten newest sessions, from the day of the earliest
+session at it, as the real server works them out (crates/engine/src/invoice_prices.rs); a typed price wins over
+them. Supercharger Schaumburg (p36) has no typed price, so its price in force is from invoices.
+
 The made-up server had Tesla invoices turned on by an admin before "now" (the real default is off); TeslaFi's are
 off. Turning them off stops the checks (`next_check_ms` null) and keeps what was fetched.
 """
@@ -128,6 +133,76 @@ def sessions(app):
         if s["charge"]:
             by.setdefault(s["charge"], []).append(s)
     return out
+
+
+# ------------------------------------------------------------------ place prices from invoices
+
+RECENT = 10
+
+
+def derive(sessions, currency):
+    """Dated invoice prices of one place: `sessions` is [(local day, price per kWh)] in time order. A window of the
+    RECENT newest up to each session; a new price whenever its median (the lower middle one) changes."""
+    n = len(sessions)
+    if not n:
+        return []
+    out = []
+    for i in range(min(RECENT, n) - 1, n):
+        window = sessions[max(0, i + 1 - RECENT):i + 1]
+        rates = sorted(round(x[1], 5) for x in window)
+        median = rates[(len(rates) - 1) // 2]
+        if out and out[-1][1] == median:
+            continue
+        frm = next(x[0] for x in window if round(x[1], 5) == median)
+        while out and out[-1][0] >= frm:
+            out.pop()
+        if out and out[-1][1] == median:
+            continue
+        out.append((frm, median, len(window)))
+    return [{"from": f, "source": "invoice", "invoice": {"sessions": k},
+             "price": {"currency": currency, "per_kwh": m, "per_minute": None, "rates": [], "session_fee": None,
+                       "tiers": None}} for f, m, k in out]
+
+
+def place_prices(app):
+    """{place id: its invoice prices} from the sessions matched to charges at a saved place."""
+    from ..placing import date_str
+    from ..rows import place_obj
+    at = {}
+    by_id = {}
+    for s in sessions(app):
+        if not s["charge"] or not s["currency"]:
+            continue
+        rate = next((f["rate"] for f in s["fees"] if f["kind"] == "charging" and f["unit"] == "kwh"), None)
+        if rate is None:
+            continue
+        if s["car"] not in by_id:
+            h = app.ds.history(s["car"])
+            by_id[s["car"]] = {c.id: c for c in h.charges} if h else {}
+        c = by_id[s["car"]].get(s["charge"])
+        pl = place_obj(app, piece_pid(app, c)) if c else None
+        if not pl:
+            continue
+        day = date_str(s["start_ms"], pl.get("time_zone") or "UTC")
+        at.setdefault(pl["id"], []).append((s["start_ms"], day, s["currency"], rate))
+    out = {}
+    for pid, v in at.items():
+        v.sort()
+        currency = v[-1][2]
+        out[pid] = derive([(d, x) for _, d, c, x in v if c == currency], currency)
+    return out
+
+
+def apply_prices(app):
+    """Gives each place with matched sessions its invoice prices (next to its typed ones, which win)."""
+    from .. import placing
+    for pid, inv in sorted(place_prices(app).items()):
+        p = app.store.places.get(pid)
+        if p is None:
+            continue
+        typed = [x for x in placing.prices_of(p) if x.get("source", "typed") == "typed"]
+        p["prices"] = placing.sort_prices(typed + inv)
+        p["price"] = placing.price_on(p, app.cfg.now_ms)
 
 
 def for_charge(app, charge_id):

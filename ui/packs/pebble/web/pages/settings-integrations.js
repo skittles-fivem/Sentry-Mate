@@ -187,15 +187,15 @@ const EVENTS = [
 ];
 const ERRORS = { connection_refused: 'the broker refused the connection', pin_mismatch: 'the certificate did not match the pin', no_host: 'no broker host set', tls_failed: 'TLS failed', auth_failed: 'the user name or password was refused', timeout: 'no answer in time', invalid_settings: 'the settings do not work together' };
 const PURPOSE = {
-  geocoding: ['Address lookup', 'Only when an admin turns online addresses on; positions are rounded first.', 'settings-display'],
-  tiles: ['Map pictures', 'Asked by each viewer’s browser while online tiles are on.', 'settings-display'],
-  geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-display'],
+  geocoding: ['Address lookup', 'Only when an admin turns online addresses on; positions are rounded first.', 'settings-maps'],
+  tiles: ['Map pictures', 'Asked by each viewer’s browser while online tiles are on.', 'settings-maps'],
+  geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-maps'],
   mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
   tesla: ['Tesla API', 'Only while a Tesla account is added and not paused: Tesla’s sign-in, its Owner API and its live stream (Tesla account, above).', null],
   teslafi: ['TeslaFi API', 'Only while a TeslaFi token is added and not paused: reads your cars’ data from TeslaFi', '#teslafi'],
   teslamate_mqtt: ['Local TeslaMate (MQTT)', 'Only while a local TeslaMate is added and not paused: subscribes to its topics, never publishes', '#teslamate'],
   teslamate_db: ['Local TeslaMate (database)', 'Only while its database catch-up is on: reads what MQTT missed', '#teslamate'],
-  release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-display'],
+  release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-server'],
   upload: ['CAN Bridge uploads', 'The car’s CAN Bridge sends its logs here.', null],
   web: ['This app and the API', 'Browsers, apps and the API.', null],
 };
@@ -208,16 +208,25 @@ const prefixOf = (t) => { const p = String(t || '').split('/'); return p.length 
 const statusChip = (s, inputs) => chip(STATUS[s][0] ?? apiWord(inputs), { tone: STATUS[s][1] });
 const nsBad = (v) => !v || /[+#]/.test(v) || v.startsWith('$') || v.split('/').some((x) => !x);
 
+// The first reads; prefetch() warms the same ones when a link here is under the pointer.
+const firstReads = (ctx) => [
+  ctx.admin ? ctx.api.get('settings/mqtt') : Promise.resolve(null),
+  ctx.api.get('settings/mqtt/status'),
+  ctx.admin ? ctx.api.get('network') : Promise.resolve(null),
+  ctx.api.page('cars', { sort: 'custom' }, { limit: 12 }),
+  ctx.admin ? ctx.api.page('cars', { sort: 'name' }, { limit: 200 }) : Promise.resolve(null),
+];
+export function prefetch(ctx) { return Promise.all(firstReads(ctx)); }
+
 export async function mount(ctx) {
   inOrder(ctx);
   const admin = ctx.admin;
+  const r = firstReads(ctx);
+  const allP = r[4].then((x) => x?.items || [], () => null); // every car (admins), asked for with the rest
   let [cfg, status, net, cars] = await Promise.all([
-    admin ? ctx.api.get('settings/mqtt') : Promise.resolve(null),
-    ctx.api.get('settings/mqtt/status').catch(() => null),
-    admin ? ctx.api.get('network').catch(() => null) : Promise.resolve(null),
-    ctx.api.page('cars', { sort: 'custom' }, { limit: 12 }).then((r) => r.items || []).catch(() => []),
+    r[0], r[1].catch(() => null), r[2].catch(() => null), r[3].then((x) => x.items || []).catch(() => []),
   ]);
-  const allCars = admin ? await ctx.api.page('cars', { sort: 'name' }, { limit: 200 }).then((r) => r.items || []).catch(() => cars) : cars;
+  const allCars = admin ? (await allP) ?? cars : cars;
   const tesla = teslaTiles(ctx, { cars: allCars });
   const teslafi = teslafiTiles(ctx, { cars: allCars });
   const teslamate = teslamateTiles(ctx, { cars: allCars });

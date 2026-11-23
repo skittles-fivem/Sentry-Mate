@@ -11,9 +11,6 @@
 // GET integrations/tesla/status, integrations/teslafi/status, integrations/teslamate (admin: the live inputs' tiles);
 // GET system/storage, system/health (admin), geocode/status, cars; GET integrations/overview (admin) for the
 // Connections overview tile on both routes, a link to Settings: Integrations (its Overview tab).
-// Live: `health` events of the car change every check, key and missing-log figure in place (live events, polling
-// only while the live stream is down); the full rebuild follows its `job` events; `rows` events of the car read the
-// gaps and totals again, in place, once a burst has passed. Reload reads the whole page again.
 
 import { h } from '../shared/dom.js';
 import { format, convert } from '../shared/units.js';
@@ -35,8 +32,14 @@ import { STATUS, STATUS_ORDER } from './connections.js';
 import { deviceText, keyRows } from './device-name.js';
 import { fullRebuildTile } from '../core/fullrebuild.js';
 import * as fr from '../shared/fullrebuild.js';
-import { follow, carOf, onRows, setAttr, FALLBACK_POLL_MS } from '../shared/live.js';
-import { morph, morphChildren, keepEl } from '../core/morph.js';
+
+// every log of the car as the CAN Bridge app is told it now (`sentry-mate log-checks --car` prints the same)
+function logChecksText(lc, fmt) {
+  if (!lc) return '';
+  const why = [['mismatch', lc.mismatch], ['bad signature', lc.bad_signature], ['unsigned', lc.unsigned], ['chain break', lc.chain_break]]
+    .filter((x) => x[1]).map((x) => `${x[0]} ${fmt(x[1])}`).join(', ');
+  return `All logs as the CAN Bridge app is told: ${fmt(lc.verified)} verified, ${fmt(lc.pending)} pending, ${fmt(lc.failed)} failed${why ? ` (${why})` : ''}.`;
+}
 
 export const id = 'health';
 export const css = true;
@@ -48,8 +51,6 @@ const bytes = (v) => format(v, 'bytes');
 const n0 = (v) => (v == null ? '—' : formatNumber(v, { maximumFractionDigits: 0 }));
 const took = (ms) => (ms == null ? '—' : ms < 1000 ? `${formatNumber(Math.round(ms))} ms` : formatDuration(ms));
 const fullPeriod = (p) => ({ ...p, from_ms: p?.from_ms ?? 0 });
-// the figures of /health that cover a period: a `health` event has them for its default window only
-const PERIOD_KEYS = ['unknown_ms', 'unknown_spans', 'unknown_spans_total', 'chain_gaps', 'chain_gaps_total', 'dropped_frames', 'dropped_frames_total'];
 
 const REASONS = {
   upload_silence: ['No log has arrived for a while', 'Check that the CAN Bridge has power and a network, and that its key still uploads. Nothing is lost while the car sleeps.', 'Check the keys'],
@@ -57,7 +58,7 @@ const REASONS = {
   logs_waiting_trust: ['Logs wait for a key to be trusted', 'They came from a key nobody has approved yet. Approve it and they are read at once.', 'Approve the key'],
   gps_inputs_disagree: ['Positions from one input are out of step', 'One input’s GPS positions are far from the other inputs’ positions at the same moments, more than lag or noise explains (often a decoding problem). Its positions are not used there; the other inputs’ positions are. The rest of its data is still used.', null],
   logs_missing: ['Logs missing on the server', 'The server lost some logs and asked the car to send them again. Nothing needs doing; see Missing on the server below.', null],
-  rebuild_pending: ['Drives and charges are being rebuilt', 'This page follows it until it is done. Nothing needs doing.', null],
+  rebuild_pending: ['Drives and charges are being rebuilt', 'This page reads again every few seconds until it is done. Nothing needs doing.', null],
 };
 const TRUST = { verified: ['Verified', 'ok'], unsigned: ['Unsigned', 'warn'], failed: ['Failed', 'bad'] };
 const SPAN_REASONS = { no_log: 'no log arrived', dropped_frames: 'frames were dropped', failed_check: 'the log failed its check', chain_gap: 'a log is missing from the chain', paused: 'recording was paused' };
@@ -118,7 +119,7 @@ async function mountCar(ctx) {
   // the rest and fill their own tile when they are in. The other tiles wait in grey tiles of their size meanwhile.
   const sigP = ctx.api.list(`${base}/signals/latest`, {}, { limit: 500 }).all({ max: 5000 }).catch(() => []);
   ctx.view.replaceChildren(bar, ghostTile(2, 'h3'), ghostTile(2, 'h2'), ghostTile(2, 'h2'), ghostTile(2, 'h2'), ghostTile(2, 'h2'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile('full', 'h3'));
-  const [hl0, gaps0, all0, can0, tm0, upd0, st, tapi0, tst, tfi0, tfst, tmst, ov] = await Promise.all([
+  const [hl, gaps, all, can, tm, upd, st, tapi, tst, tfi, tfst, tmst, ov] = await Promise.all([
     ctx.api.get(`${base}/health`, fullPeriod(ctx.params)),
     ctx.api.page(`${base}/gaps`, ctx.params, { limit: 40 }).catch(() => ({ items: [] })),
     ctx.api.get(`${base}/totals`, { source: 'all' }).catch(() => ({})),
@@ -134,9 +135,7 @@ async function mountCar(ctx) {
     ctx.admin ? ctx.api.get('integrations/overview').catch(() => null) : Promise.resolve(null),
   ]);
   if (!ctx.alive()) return {};
-  // what the live parts are painted from: the health (its events), the gaps and the totals (read again on `rows`)
-  let hl = hl0;
-  const R = { gaps: gaps0, all: all0, can: can0, tm: tm0, upd: upd0, tapi: tapi0, tfi: tfi0 };
+  if (hl.rebuild_pending) { const t = setTimeout(() => ctx.alive() && ctx.reload(), 4000); ctx.onCleanup(() => clearTimeout(t)); }
 
   /* ------------------------------------------------------------ the checks */
   // the Rebuild row: a full rebuild of this car when one runs (its step), else the period rebuild's state
@@ -144,78 +143,68 @@ async function mountCar(ctx) {
   const paintRebuild = (fs, ls) => {
     const step = fs && fr.running(fs) && fs.this_car && ls ? ls[1].text : '';
     const busy = !!step || !!hl.rebuild_pending;
-    lastFull = [fs, ls];
-    setAttr(rebuildRow, 'class', `check is-${busy ? 'warn' : 'ok'}`);
-    morphChildren(rebuildRow, [...checkRow({ name: 'Rebuild', sub: step ? `Full rebuild: ${step}` : 'Drives and charges from the logs', word: busy ? 'Running' : 'Idle' }).childNodes]);
+    rebuildRow.className = `check is-${busy ? 'warn' : 'ok'}`;
+    rebuildRow.replaceChildren(...checkRow({ name: 'Rebuild', sub: step ? `Full rebuild: ${step}` : 'Drives and charges from the logs', word: busy ? 'Running' : 'Idle' }).childNodes);
   };
-  let lastFull = [null, null];
   paintRebuild(null);
   // Rebuild all data (admins): everything worked out made again from the stored data, in the keys tile
   const full = ctx.admin ? fullRebuildTile(ctx, { car, label: 'Rebuild all data', bare: true, onStatus: paintRebuild }) : null;
 
-  // each live tile is built by a function of its data: the first time it goes on the page, later ones are made
-  // like it in place (core/morph.js: only the texts that changed are written)
-  const statusOf = () => {
-    const reasons = hl.reasons || [];
-    const trust = hl.last_log_trust || {};
-    const tw = TRUST[trust.result];
-    const spans = hl.unknown_spans || [];
-    return tile({ w: 2, title: 'Is data arriving?', icon: 'pulse', cls: ['hl-status', hl.healthy ? 'is-ok' : 'is-warn'], cover: ['faq.stopped-recording', 'shots.database-info'],
-      side: h('a', { class: 'tile-link', href: state.buildUrl('settings-cars', { car: car.id }) }, 'Car settings', icon('chevronRight')) },
-      h('div', { class: 'hl-verdict' },
-        h('span', { class: 'hl-verdict-ic', 'aria-hidden': 'true' }, icon(hl.healthy ? 'check' : 'warning')),
-        h('div', null, h('p', { class: 'hl-verdict-t' }, hl.healthy ? 'All good' : `${reasons.length === 1 ? 'One thing needs' : `${reasons.length} things need`} a look`),
-          h('p', { class: 'tile-line' }, 'The same test sets “healthy” in MQTT.'))),
-      h('ul', { class: 'checks' },
-        checkRow({ name: 'Last log arrived', sub: hl.last_upload_ms != null ? when(hl.last_upload_ms) : 'Pair a CAN Bridge in car settings.', word: hl.last_upload_ms != null ? ago(hl.last_upload_ms) : 'Never', level: reasons.includes('upload_silence') ? 'bad' : hl.last_upload_ms != null ? 'ok' : 'off' }),
-        checkRow({ name: 'Last log check', sub: trust.reason ? `Reason: ${trust.reason.replace(/_/g, ' ')}` : trust.log_start_ms != null ? `Log from ${when(trust.log_start_ms)}` : 'Signature and hash chain', word: tw ? tw[0] : 'None yet', level: tw ? tw[1] : 'off' }),
-        checkRow({ name: 'Logs waiting', sub: hl.logs_waiting ? 'Their key is not trusted yet.' : 'Every log that arrived was read.', word: n0(hl.logs_waiting ?? 0), level: hl.logs_waiting ? 'warn' : 'ok' }),
-        checkRow({ name: 'Unknown time', sub: `${n0(hl.unknown_spans_total ?? spans.length)} spans in the period (asleep is known, not unknown)`, word: formatDuration(hl.unknown_ms ?? 0), level: hl.unknown_ms ? 'warn' : 'ok' }),
-        checkRow({ name: 'Chain gaps', sub: 'Logs missing from the hash chain', word: n0(hl.chain_gaps_total ?? (hl.chain_gaps || []).length), level: (hl.chain_gaps || []).length ? 'warn' : 'ok' }),
-        checkRow({ name: 'Dropped frames', sub: 'Times the bridge could not keep up', word: n0(hl.dropped_frames_total ?? (hl.dropped_frames || []).length), level: (hl.dropped_frames || []).length ? 'warn' : 'ok' }),
-        checkRow({ name: 'Uploads', sub: 'From this car’s bridge', word: hl.uploads_enabled ? 'On' : 'Off', level: hl.uploads_enabled ? 'ok' : 'warn' }),
-        keepEl(rebuildRow, 'rebuild')),
-      reasons.length ? h('ul', { class: 'fixes' }, reasons.map((code) => {
-        const r = REASONS[code] || [code, '', null];
-        return h('li', { class: 'fix' }, h('b', null, r[0]), h('span', null, r[1]),
-          r[2] ? linkBtn(r[2], state.buildUrl('settings-cars', { car: car.id }), { icon: 'key', cls: 'fix-btn' }) : null);
-      })) : null);
-  };
+  const reasons = hl.reasons || [];
+  const trust = hl.last_log_trust || {};
+  const tw = TRUST[trust.result];
+  const spans = hl.unknown_spans || [];
+  const status = tile({ w: 2, title: 'Is data arriving?', icon: 'pulse', cls: ['hl-status', hl.healthy ? 'is-ok' : 'is-warn'], cover: ['faq.stopped-recording', 'shots.database-info'],
+    side: h('a', { class: 'tile-link', href: state.buildUrl('settings-cars', { car: car.id }) }, 'Car settings', icon('chevronRight')) },
+    h('div', { class: 'hl-verdict' },
+      h('span', { class: 'hl-verdict-ic', 'aria-hidden': 'true' }, icon(hl.healthy ? 'check' : 'warning')),
+      h('div', null, h('p', { class: 'hl-verdict-t' }, hl.healthy ? 'All good' : `${reasons.length === 1 ? 'One thing needs' : `${reasons.length} things need`} a look`),
+        h('p', { class: 'tile-line' }, 'The same test sets “healthy” in MQTT.'))),
+    h('ul', { class: 'checks' },
+      checkRow({ name: 'Last log arrived', sub: hl.last_upload_ms != null ? when(hl.last_upload_ms) : 'Pair a CAN Bridge in car settings.', word: hl.last_upload_ms != null ? ago(hl.last_upload_ms) : 'Never', level: reasons.includes('upload_silence') ? 'bad' : hl.last_upload_ms != null ? 'ok' : 'off' }),
+      checkRow({ name: 'Last log check', sub: trust.reason ? `Reason: ${trust.reason.replace(/_/g, ' ')}` : trust.log_start_ms != null ? `Log from ${when(trust.log_start_ms)}` : 'Signature and hash chain', word: tw ? tw[0] : 'None yet', level: tw ? tw[1] : 'off' }),
+      checkRow({ name: 'All log checks', sub: logChecksText(hl.log_checks, n0) || 'Not known yet', word: hl.log_checks ? `${n0(hl.log_checks.failed)} failed` : '—', level: !hl.log_checks ? 'off' : hl.log_checks.failed ? 'warn' : 'ok' }),
+      checkRow({ name: 'Logs waiting', sub: hl.logs_waiting ? 'Their key is not trusted yet.' : 'Every log that arrived was read.', word: n0(hl.logs_waiting ?? 0), level: hl.logs_waiting ? 'warn' : 'ok' }),
+      checkRow({ name: 'Unknown time', sub: `${n0(hl.unknown_spans_total ?? spans.length)} spans in the period (asleep is known, not unknown)`, word: formatDuration(hl.unknown_ms ?? 0), level: hl.unknown_ms ? 'warn' : 'ok' }),
+      checkRow({ name: 'Chain gaps', sub: 'Logs missing from the hash chain', word: n0(hl.chain_gaps_total ?? (hl.chain_gaps || []).length), level: (hl.chain_gaps || []).length ? 'warn' : 'ok' }),
+      checkRow({ name: 'Dropped frames', sub: 'Times the bridge could not keep up', word: n0(hl.dropped_frames_total ?? (hl.dropped_frames || []).length), level: (hl.dropped_frames || []).length ? 'warn' : 'ok' }),
+      checkRow({ name: 'Uploads', sub: 'From this car’s bridge', word: hl.uploads_enabled ? 'On' : 'Off', level: hl.uploads_enabled ? 'ok' : 'warn' }),
+      rebuildRow),
+    reasons.length ? h('ul', { class: 'fixes' }, reasons.map((code) => {
+      const r = REASONS[code] || [code, '', null];
+      return h('li', { class: 'fix' }, h('b', null, r[0]), h('span', null, r[1]),
+        r[2] ? linkBtn(r[2], state.buildUrl('settings-cars', { car: car.id }), { icon: 'key', cls: 'fix-btn' }) : null);
+    })) : null);
 
   /* the keys and the rebuild */
-  const fullEl = full ? full.el : note('An admin can rebuild all of this car’s data from the stored logs and API data.');
-  const keysOf = () => {
-    const keys = hl.keys || [];
-    return tile({ w: 2, title: 'CAN Bridge keys', icon: 'key' },
-      keys.length ? h('ul', { class: ['checks', 'hl-keys'] }, keyRows(ctx, keys, (k, rename) => checkRow({ name: deviceText(k), sub: k.key, word: k.last_upload_ms != null ? ago(k.last_upload_ms) : 'Never',
-        level: k.logs_waiting ? 'warn' : k.last_upload_ms != null ? 'ok' : 'off',
-        side: h('span', { class: 'hl-key-side' }, h('span', { class: 'check-word' }, k.preferred ? 'Preferred · ' : '', k.last_upload_ms != null ? ago(k.last_upload_ms) : 'never'), rename) })))
-        : note('No key is tied to this car yet. Pair a CAN Bridge in car settings.'),
-      keepEl(fullEl, 'full-rebuild'));
-  };
+  const keys = hl.keys || [];
+  const keysT = tile({ w: 2, title: 'CAN Bridge keys', icon: 'key' },
+    keys.length ? h('ul', { class: ['checks', 'hl-keys'] }, keyRows(ctx, keys, (k, rename) => checkRow({ name: deviceText(k), sub: k.key, word: k.last_upload_ms != null ? ago(k.last_upload_ms) : 'Never',
+      level: k.logs_waiting ? 'warn' : k.last_upload_ms != null ? 'ok' : 'off',
+      side: h('span', { class: 'hl-key-side' }, h('span', { class: 'check-word' }, k.preferred ? 'Preferred · ' : '', k.last_upload_ms != null ? ago(k.last_upload_ms) : 'never'), rename) })))
+      : note('No key is tied to this car yet. Pair a CAN Bridge in car settings.'),
+    full ? full.el : note('An admin can rebuild all of this car’s data from the stored logs and API data.'));
 
   /* logs the server should have but lost: asked of the car again, and those the car no longer has either */
+  const ml = hl.missing_logs || {};
+  const mn = ml.count || 0, mg = ml.gone || 0;
   const plural = (n, one, many) => `${n0(n)} ${n === 1 ? one : many}`;
-  const missOf = () => {
-    const ml = hl.missing_logs || {};
-    const mn = ml.count || 0, mg = ml.gone || 0;
-    return tile({ w: 2, title: 'Missing on the server', icon: 'server', cls: 'hl-miss' },
-      h('ul', { class: 'checks' },
-        checkRow({ name: 'Missing logs', sub: mn ? `Oldest from ${when(ml.oldest_ms)}${ml.found_ms != null ? `, found ${when(ml.found_ms)}` : ''}` : 'Every log the server recorded is here.',
-          word: mn ? plural(mn, 'log', 'logs') : 'None', level: mn ? 'warn' : 'ok' }),
-        checkRow({ name: 'Asked the car', sub: !mn ? 'Nothing to ask for.' : ml.asked ? `Asked the car to send them again${ml.asked_ms != null ? `, ${when(ml.asked_ms)}` : ''}.` : 'The server will ask the car to send them again.',
-          word: !mn ? '—' : ml.asked ? (ml.asked_ms != null ? ago(ml.asked_ms) : 'Asked') : 'Not yet', level: !mn ? 'off' : 'warn' }),
-        checkRow({ name: 'Lost for good', sub: mg ? `The car no longer has ${n0(mg)} of these either; oldest from ${when(ml.gone_oldest_ms)}. Their time shows as unknown time.` : 'The car still has every missing log.',
-          word: mg ? plural(mg, 'log', 'logs') : 'None', level: mg ? 'bad' : 'ok' })),
-      note(ml.scanned_ms != null ? `Last checked ${when(ml.scanned_ms)}. The server looks at start-up and once a day.` : 'Not checked yet. The server looks at start-up and once a day.'));
-  };
+  const missT = tile({ w: 2, title: 'Missing on the server', icon: 'server', cls: 'hl-miss' },
+    h('ul', { class: 'checks' },
+      checkRow({ name: 'Missing logs', sub: mn ? `Oldest from ${when(ml.oldest_ms)}${ml.found_ms != null ? `, found ${when(ml.found_ms)}` : ''}` : 'Every log the server recorded is here.',
+        word: mn ? plural(mn, 'log', 'logs') : 'None', level: mn ? 'warn' : 'ok' }),
+      checkRow({ name: 'Asked the car', sub: !mn ? 'Nothing to ask for.' : ml.asked ? `Asked the car to send them again${ml.asked_ms != null ? `, ${when(ml.asked_ms)}` : ''}.` : 'The server will ask the car to send them again.',
+        word: !mn ? '—' : ml.asked ? (ml.asked_ms != null ? ago(ml.asked_ms) : 'Asked') : 'Not yet', level: !mn ? 'off' : 'warn' }),
+      checkRow({ name: 'Lost for good', sub: mg ? `The car no longer has ${n0(mg)} of these either; oldest from ${when(ml.gone_oldest_ms)}. Their time shows as unknown time.` : 'The car still has every missing log.',
+        word: mg ? plural(mg, 'log', 'logs') : 'None', level: mg ? 'bad' : 'ok' })),
+    note(ml.scanned_ms != null ? `Last checked ${when(ml.scanned_ms)}. The server looks at start-up and once a day.` : 'Not checked yet. The server looks at start-up and once a day.'));
 
   /* the gaps and unknown time as a log */
-  const logLines = () => [
-    ...(R.gaps.items || []).map((g) => ({ at: g.start_ms, end: g.end_ms, what: `${GAP_CAUSES[g.cause] || g.cause}${g.odometer_jump_km ? `, odometer moved ${format(g.odometer_jump_km, 'distance')}` : ''}` })),
-    ...(hl.unknown_spans || []).map((s) => ({ at: s.start_ms, end: s.end_ms, what: `Unknown: ${SPAN_REASONS[s.reason] || s.reason}` })),
+  const lines = [
+    ...(gaps.items || []).map((g) => ({ at: g.start_ms, end: g.end_ms, what: `${GAP_CAUSES[g.cause] || g.cause}${g.odometer_jump_km ? `, odometer moved ${format(g.odometer_jump_km, 'distance')}` : ''}` })),
+    ...spans.map((s) => ({ at: s.start_ms, end: s.end_ms, what: `Unknown: ${SPAN_REASONS[s.reason] || s.reason}` })),
   ].sort((a, b) => b.at - a.at).slice(0, 60);
-  const logOf = (lines) => tile({ w: 2, title: 'Gaps in the period', icon: 'timeline' },
+  const logT = tile({ w: 2, title: 'Gaps in the period', icon: 'timeline' },
     // the gaps and unknown spans scroll in a box about five lines high (at most: a short log leaves no empty box)
     lines.length ? listBox(ctx, { fit: true, label: 'Gaps and unknown time in the period', cls: 'log-box' }, h('div', { class: 'log', role: 'list' }, lines.map((l) => h('div', { class: 'log-row', role: 'listitem' },
       h('a', { class: 'log-k', href: timelineAt(l.at, l.end ?? api.now()), title: 'Open the timeline here' }, `${when(l.at)}  ${l.what}`),
@@ -224,29 +213,23 @@ async function mountCar(ctx) {
     note('Newest first. A gap in which the odometer moved means a drive was not recorded.'));
 
   /* ------------------------------------------------------------ what is recorded */
-  const totsOf = () => {
-    const { all, can, tm, upd, tapi, tfi } = R;
-    const sm = upd?.summary || {};
-    return [
-      statTile({ label: 'Logged distance', value: all.distance_km, kind: 'distance', icon: 'route', cover: 'dbinfo.stat.logged_distance', sub: `${format(can.distance_km ?? 0, 'distance')} from SMO, ${format(tapi.distance_km ?? 0, 'distance')} from the Tesla API${tfi.distance_km ? `, ${format(tfi.distance_km, 'distance')} from TeslaFi` : ''}` }),
-      statTile({ label: 'Odometer', value: all.odometer_last_km, kind: 'odometer', icon: 'gauge', cover: 'dbinfo.stat.odometer', why: 'not sent yet', sub: all.odometer_last_ms != null ? h('span', null, 'read ', ago(all.odometer_last_ms)) : null }),
-      statTile({ label: 'Drives', value: all.drives ?? 0, kind: 'count', icon: 'route', cover: 'dbinfo.stat.drive_count', sub: `${n0(tm.drives ?? 0)} imported` }),
-      statTile({ label: 'Charges', value: all.charges ?? 0, kind: 'count', icon: 'bolt', cover: 'dbinfo.stat.charge_count', sub: `${n0(tm.charges ?? 0)} imported` }),
-      statTile({ label: 'Software updates', value: all.updates ?? 0, kind: 'count', icon: 'download', cover: 'dbinfo.stat.update_count', sub: `${n0(tm.updates ?? 0)} imported` }),
-      tile({ w: 1, title: 'Software version', icon: 'chip', cls: 'tile-stat', cover: 'dbinfo.stat.current_version', href: state.buildUrl('software', { car: car.id }) },
-        h('span', { class: 'num num-m' }, h('span', { class: 'num-n' }, sm.current_version || '—')),
-        h('p', { class: 'tile-line' }, sm.current_version ? (VERSION_SOURCE[sm.current_version_source] ? `${VERSION_SOURCE[sm.current_version_source]}, never guessed` : 'never guessed') : 'not known yet')),
-    ];
-  };
+  const sm = upd?.summary || {};
+  const tots = [
+    statTile({ label: 'Logged distance', value: all.distance_km, kind: 'distance', icon: 'route', cover: 'dbinfo.stat.logged_distance', sub: `${format(can.distance_km ?? 0, 'distance')} from SMO, ${format(tapi.distance_km ?? 0, 'distance')} from the Tesla API${tfi.distance_km ? `, ${format(tfi.distance_km, 'distance')} from TeslaFi` : ''}` }),
+    statTile({ label: 'Odometer', value: all.odometer_last_km, kind: 'odometer', icon: 'gauge', cover: 'dbinfo.stat.odometer', why: 'not sent yet', sub: all.odometer_last_ms != null ? h('span', null, 'read ', ago(all.odometer_last_ms)) : null }),
+    statTile({ label: 'Drives', value: all.drives ?? 0, kind: 'count', icon: 'route', cover: 'dbinfo.stat.drive_count', sub: `${n0(tm.drives ?? 0)} imported` }),
+    statTile({ label: 'Charges', value: all.charges ?? 0, kind: 'count', icon: 'bolt', cover: 'dbinfo.stat.charge_count', sub: `${n0(tm.charges ?? 0)} imported` }),
+    statTile({ label: 'Software updates', value: all.updates ?? 0, kind: 'count', icon: 'download', cover: 'dbinfo.stat.update_count', sub: `${n0(tm.updates ?? 0)} imported` }),
+    tile({ w: 1, title: 'Software version', icon: 'chip', cls: 'tile-stat', cover: 'dbinfo.stat.current_version', href: state.buildUrl('software', { car: car.id }) },
+      h('span', { class: 'num num-m' }, h('span', { class: 'num-n' }, sm.current_version || '—')),
+      h('p', { class: 'tile-line' }, sm.current_version ? (VERSION_SOURCE[sm.current_version_source] ? `${VERSION_SOURCE[sm.current_version_source]}, never guessed` : 'never guessed') : 'not known yet')),
+  ];
   const rowKinds = [['Drives', 'drives'], ['Charges', 'charges'], ['Software updates', 'updates']];
-  const rowsOf = () => {
-    const { all, can, tm, tapi, tfi } = R;
-    return tile({ w: 2, title: 'Rows kept', icon: 'book', cover: 'dbinfo.table.row_counts' },
-      h('div', { class: 'hl-rows', role: 'table', 'aria-label': 'Rows kept' },
-        h('div', { class: 'hl-row hl-row-head', role: 'row' }, h('span', { role: 'columnheader', cover: 'dbinfo.rows.table_name' }, 'Kind'), h('span', { role: 'columnheader' }, 'SMO'), h('span', { role: 'columnheader' }, 'Tesla API'), h('span', { role: 'columnheader' }, 'TeslaFi'), h('span', { role: 'columnheader' }, 'Imported'), h('span', { role: 'columnheader', cover: 'dbinfo.rows.row_count' }, 'Rows')),
-        rowKinds.map(([name, k]) => h('div', { class: 'hl-row', role: 'row' }, h('span', { role: 'cell' }, name), h('span', { role: 'cell' }, n0(can[k] ?? 0)), h('span', { role: 'cell' }, n0(tapi[k] ?? 0)), h('span', { role: 'cell' }, n0(tfi[k] ?? 0)), h('span', { role: 'cell' }, n0(tm[k] ?? 0)), h('b', { role: 'cell' }, n0(all[k] ?? 0))))),
-      note('Exact counts, kept up to date as rows change. A row two live inputs (SMO, the Tesla API, TeslaFi) both saw counts in both columns, and once under Rows; where imported and live history overlap both are counted.'));
-  };
+  const rowsT = tile({ w: 2, title: 'Rows kept', icon: 'book', cover: 'dbinfo.table.row_counts' },
+    h('div', { class: 'hl-rows', role: 'table', 'aria-label': 'Rows kept' },
+      h('div', { class: 'hl-row hl-row-head', role: 'row' }, h('span', { role: 'columnheader', cover: 'dbinfo.rows.table_name' }, 'Kind'), h('span', { role: 'columnheader' }, 'SMO'), h('span', { role: 'columnheader' }, 'Tesla API'), h('span', { role: 'columnheader' }, 'TeslaFi'), h('span', { role: 'columnheader' }, 'Imported'), h('span', { role: 'columnheader', cover: 'dbinfo.rows.row_count' }, 'Rows')),
+      rowKinds.map(([name, k]) => h('div', { class: 'hl-row', role: 'row' }, h('span', { role: 'cell' }, name), h('span', { role: 'cell' }, n0(can[k] ?? 0)), h('span', { role: 'cell' }, n0(tapi[k] ?? 0)), h('span', { role: 'cell' }, n0(tfi[k] ?? 0)), h('span', { role: 'cell' }, n0(tm[k] ?? 0)), h('b', { role: 'cell' }, n0(all[k] ?? 0))))),
+    note('Exact counts, kept up to date as rows change. A row two live inputs (SMO, the Tesla API, TeslaFi) both saw counts in both columns, and once under Rows; where imported and live history overlap both are counted.'));
   const storeT = st ? kindsTile(st.kinds, st.total_bytes, { title: `What ${car.name}’s data takes` }) : tile({ w: 2, title: 'Storage', icon: 'server', cover: 'dbinfo.table.sizes' }, note('Storage could not be read.'));
   const days = (st?.items || []).slice(0, 14);
   const daysT = tile({ w: 2, title: 'Stored by day', icon: 'calendar' },
@@ -306,82 +289,7 @@ async function mountCar(ctx) {
     h('div', { class: 'page-bar' }, h('label', { class: 'search-pill' }, icon('search'), search), sortPills, count), listEl);
   listEl.append(plotGhost());
 
-  let status = statusOf(), keysT = keysOf(), missT = missOf(), rowsT = rowsOf(), tots = totsOf();
-  let logSig = JSON.stringify(logLines());
-  let logT = logOf(logLines());
   ctx.view.replaceChildren(bar, status, keysT, missT, connTile(ctx, ov, car.id), teslaT, teslafiT, teslamateT, logT, rowsT, ...tots, storeT, daysT, sigHead, sigT);
-
-  // the gaps log: drawn again only when its lines changed (its scroll box keeps its place otherwise)
-  function paintLog() {
-    const lines = logLines();
-    const sig = JSON.stringify(lines);
-    if (sig === logSig) return;
-    logSig = sig;
-    const next = logOf(lines);
-    logT.replaceWith(next);
-    logT = next;
-  }
-  function paintHealth() {
-    status = morph(status, statusOf());
-    keysT = morph(keysT, keysOf());
-    missT = morph(missT, missOf());
-    paintRebuild(...lastFull);
-    paintLog();
-  }
-  // the gaps and totals of the car, read again (after its rows changed, or a rebuild ended)
-  let rowsBusy = false;
-  async function loadRows() {
-    if (rowsBusy) return;
-    rowsBusy = true;
-    try {
-      const [gaps, all, can, tm, upd, tapi, tfi] = await Promise.all([
-        ctx.api.page(`${base}/gaps`, ctx.params, { limit: 40 }).catch(() => R.gaps),
-        ctx.api.get(`${base}/totals`, { source: 'all' }).catch(() => R.all),
-        ctx.api.get(`${base}/totals`, { source: 'smo' }).catch(() => R.can),
-        ctx.api.get(`${base}/totals`, { source: 'import' }).catch(() => R.tm),
-        ctx.api.get(`${base}/updates`, { limit: 1 }).catch(() => R.upd),
-        ctx.api.get(`${base}/totals`, { source: 'tesla_api' }).catch(() => R.tapi),
-        ctx.api.get(`${base}/totals`, { source: 'teslafi_api' }).catch(() => R.tfi),
-      ]);
-      if (!ctx.alive()) return;
-      Object.assign(R, { gaps, all, can, tm, upd, tapi, tfi });
-      rowsT = morph(rowsT, rowsOf());
-      tots = totsOf().map((t, i) => morph(tots[i], t));
-      paintLog();
-    } finally { rowsBusy = false; }
-  }
-  onRows(ctx.api, { car: car.id, waitMs: 1000, run: () => { if (ctx.alive()) loadRows().catch(() => {}); } });
-
-  // the health follows the car's `health` events; its endpoint is read after a reconnect and, only while the live
-  // stream is down, every few seconds (every 3 s while drives are worked out again). The page's own read is the first.
-  let firstHealth = true, eventPeriod = null, periodT = 0;
-  ctx.onCleanup(() => clearTimeout(periodT));
-  const healthLive = follow(ctx.api, {
-    type: 'health', match: carOf(car.id), pick: (d) => d.health,
-    load: () => {
-      if (firstHealth) { firstHealth = false; return Promise.resolve(hl0); }
-      return ctx.api.get(`${base}/health`, fullPeriod(ctx.params));
-    },
-    pollMs: (v) => (v?.rebuild_pending ? 3000 : FALLBACK_POLL_MS),
-    onValue: (v, how) => {
-      if (!ctx.alive() || !v) return;
-      const was = !!hl.rebuild_pending;
-      let next = v;
-      if (how === 'event') {
-        // an event's period figures (unknown time, chain gaps, dropped frames) are for its own window: the page's
-        // read keeps them for the period shown, and is made again (at most every 2 s) when the event's ones changed
-        const sig = JSON.stringify(PERIOD_KEYS.map((k) => v[k] ?? null));
-        if (eventPeriod != null && sig !== eventPeriod && !periodT) periodT = setTimeout(() => { periodT = 0; if (ctx.alive()) healthLive.refresh(); }, 2000);
-        eventPeriod = sig;
-        next = { ...v };
-        for (const k of PERIOD_KEYS) next[k] = hl[k];
-      }
-      hl = next;
-      paintHealth();
-      // drives and charges worked out again: the gaps and totals they changed are read again too
-      if (was && !hl.rebuild_pending) loadRows().catch(() => {});
-    },
-  });
   [sig] = await Promise.all([sigP, full?.ready]);
   if (!ctx.alive()) return {};
   paint();

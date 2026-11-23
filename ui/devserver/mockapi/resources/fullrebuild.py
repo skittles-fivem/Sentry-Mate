@@ -87,22 +87,20 @@ def _view(req, j):
     if state == "done":
         index, within = len(cars), 0
     logs_done = logs_total = bytes_done = bytes_total = days_done = days_total = 0
-    cur = (0, 0, 0)  # the logs, bytes and days of the car under way
     for i, cid in enumerate(cars[: min(index + 1, len(cars))]):
         n, b, d = _sizes(req, cid)
         logs_total += n
         bytes_total += b
-        days_total += d  # known from the start: the car's days (an estimate while decoding)
+        days_total += d
         if i < index or state == "done":
             logs_done += n
             bytes_done += b
             days_done += d
             continue
-        cur = (n, b, d)
         f_dec = min(1.0, max(0.0, (within - 0.05) / 0.80))
         f_days = min(1.0, max(0.0, (within - 0.85) / 0.13))
         logs_done += int(n * f_dec)
-        bytes_done += int(b * f_dec)  # moves with the logs
+        bytes_done += int(b * f_dec)
         days_done += int(d * f_days)
     phase = None
     if state == "running":
@@ -113,27 +111,11 @@ def _view(req, j):
                 phase = name
                 break
         phase = phase or "switching"
-    shares = dict(SHARES)
-    rate = rate_logs = rate_days = None
+    phase_ms = per * dict(SHARES).get(phase or "decoding", 0.8)
+    rate = (bytes_total / max(1, len(cars))) / (phase_ms / 1000) if phase == "decoding" else None
     eta = None
-    if phase == "decoding":
-        secs = per * shares["decoding"] / 1000
-        rate, rate_logs = cur[1] / secs, cur[0] / secs
-        eta = int((logs_total - logs_done) / rate_logs * 1000) if rate_logs else None
-    elif phase == "days":
-        rate_days = cur[2] / (per * shares["days"] / 1000)
-        eta = int((days_total - days_done) / rate_days * 1000) if rate_days else None
-    elif state == "running":
+    if state == "running":
         eta = int(total_ms - at)
-    percent = None
-    if state == "done" or phase == "switching":
-        percent = 100
-    elif phase in ("copying", "queued"):
-        percent = 0
-    elif phase == "decoding":
-        percent = 100 * min(logs_done, logs_total) // logs_total if logs_total else None
-    elif phase == "days":
-        percent = 100 * min(days_done, days_total) // days_total if days_total else None
     errors = []
     if state in ("running", "done") and len(cars) and (state == "done" or index > 0 or within > 0.05):
         errors.append({"car": cars[0], "log": "feedc0ffee42_20261003T0412Z_88.log.xz", "at_ms": j["started_ms"] + per // 2,
@@ -148,8 +130,7 @@ def _view(req, j):
         "cars_done": min(index, len(cars)), "cars_total": len(cars), "reason": j["reason"], "phase": phase,
         "logs": {"done": logs_done, "total": logs_total}, "days": {"done": days_done, "total": days_total},
         "bytes": {"done": bytes_done, "total": bytes_total, "copied": int(bytes_total * 0.18 / max(1, len(cars)))},
-        "percent": percent, "rate_bytes_per_s": rate, "rate_logs_per_s": rate_logs, "rate_days_per_s": rate_days,
-        "eta_ms": eta, "started_ms": j["started_ms"], "finished_ms": finished,
+        "rate_bytes_per_s": rate, "eta_ms": eta, "started_ms": j["started_ms"], "finished_ms": finished,
         "last_progress_ms": (now - 1500) if state == "running" else finished, "stalled": False,
         "errors": errors, "error": j["error"] if state == "failed" else None, "by": j["by"],
     }
@@ -160,8 +141,7 @@ def status(req, car=None):
     j = st.full_rebuild
     base = {"state": "idle", "id": None, "scope": None, "cars": [], "car": None, "cars_done": 0, "cars_total": 0,
             "reason": None, "phase": None, "logs": {"done": 0, "total": 0}, "days": {"done": 0, "total": 0},
-            "bytes": {"done": 0, "total": 0, "copied": 0}, "percent": None, "rate_bytes_per_s": None,
-            "rate_logs_per_s": None, "rate_days_per_s": None, "eta_ms": None,
+            "bytes": {"done": 0, "total": 0, "copied": 0}, "rate_bytes_per_s": None, "eta_ms": None,
             "started_ms": None, "finished_ms": None, "last_progress_ms": None, "stalled": False, "errors": [],
             "error": None, "by": None}
     v = _view(req, j) if j else base

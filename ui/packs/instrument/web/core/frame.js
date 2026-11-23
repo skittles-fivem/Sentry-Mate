@@ -12,7 +12,6 @@ import * as state from '../shared/state.js';
 import { buildLabel, buildTitle } from '../shared/release.js';
 import { h, replace, cover, safeUrl } from '../shared/dom.js';
 import { formatTime, zoneName } from '../shared/time.js';
-import { liveWords } from '../shared/live.js';
 import { format } from '../shared/units.js';
 import { icon, brandMark } from './icons.js';
 import { GROUPS, pagesIn, pageInfo } from './pages.js';
@@ -189,7 +188,6 @@ function showTabs(activePage) {
   els.more.classList.toggle('is-current', !any && !!activePage);
 }
 
-let freshTitle = null;   // the dot's own explanation, the state's words put before it
 function showFreshness(info) {
   const f = els.fresh;
   if (!f) return;
@@ -197,14 +195,9 @@ function showFreshness(info) {
   const late = info.state === 'reconnecting' || info.state === 'closed' || info.state === 'unsupported';
   f.classList.toggle('is-late', late);
   f.hidden = info.state === 'signed_out';
-  // while the stream is down the pages read their figures every few seconds instead: the dot says which it is
-  const w = liveWords(info);
-  f.dataset.live = w.tone;
   t.textContent = info.state === 'open' ? 'Live' : info.state === 'connecting' ? 'Connecting'
-    : info.state === 'reconnecting' ? `Reconnecting${info.retryInMs ? ` in ${Math.ceil(info.retryInMs / 1000)} s` : ''}`
-      : info.state === 'unsupported' ? w.text : 'Not live: reload to update';
-  freshTitle ??= f.title;
-  f.title = info.state === 'open' ? freshTitle : `${w.text}. ${freshTitle}`;
+    : info.state === 'reconnecting' ? `Live updates paused${info.retryInMs ? `, trying again in ${Math.ceil(info.retryInMs / 1000)} s` : ''}`
+      : 'Not live: reload to update';
 }
 
 function tickClock() {

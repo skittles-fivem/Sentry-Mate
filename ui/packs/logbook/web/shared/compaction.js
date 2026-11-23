@@ -25,8 +25,8 @@
 import { formatDuration } from './time.js';
 import { formatNumber } from './i18n.js';
 
-export const COMPACT_STEPS = { logs: 'CAN logs', series: 'time series', records: 'records' };
-const UNIT = { days: ['day', 'days'], records: ['record', 'records'] };
+export const COMPACT_STEPS = { logs: 'CAN logs', series: 'time series', records: 'records', imports: 'uploaded backups' };
+const UNIT = { days: ['day', 'days'], records: ['record', 'records'], files: ['file', 'files'] };
 
 const plural = (n, [one, other]) => (n === 1 ? one : other);
 

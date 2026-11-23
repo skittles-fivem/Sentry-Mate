@@ -13,6 +13,7 @@ import { startDisplay } from './display.js';
 import { loadPrefs } from './prefs.js';
 import { mountFrame } from './frame.js';
 import { startRouter, AUTH_SCREENS } from './router.js';
+import { registerServiceWorker } from '../shared/offline.js';
 import { toast } from './toast.js';
 
 const here = () => location.pathname + location.search;
@@ -69,3 +70,5 @@ start().catch((err) => {
   if (m) m.textContent = `Sentry Mate could not start: ${err && err.message ? err.message : String(err)}. Reload the page to try again.`;
   document.documentElement.dataset.ready = 'error:start';
 });
+// after the first draw: the next load draws from what the service worker keeps
+registerServiceWorker();

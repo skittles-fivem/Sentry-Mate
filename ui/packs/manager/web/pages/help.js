@@ -31,6 +31,7 @@ const QA = [
   ['How does pairing a CAN Bridge work?', 'Make an upload token for the car in Settings: Cars and enter it in the CAN Bridge app. The CAN Bridge signs every log with its own key; the first key is tied to the car, and other keys wait until an admin assigns them.', 'settings-cars', 'Settings: Cars', 'pair token key sign'],
   ['Does Sentry Mate wake the car?', 'No. It only listens to the messages the car sends anyway, so it never wakes the car, keeps it awake or sends it a command.', 'car', 'Car overview', 'sleep vampire drain command'],
   ['Where do I change units or rated against ideal range?', 'Each person picks distance, temperature and pressure units and the range type once; every page then uses them. The server keeps metric values, so changing units never changes your data.', 'settings-display', 'Settings: Display and units', 'miles km fahrenheit psi bar range'],
+  ['Where do maps and addresses come from?', 'From this server by default: an offline map file and bundled place names, so nothing is looked up on another site. An admin can choose an online map (satellite pictures, for example), which maps people may switch to, and an online address service, for everyone.', 'settings-maps', 'Settings: Maps and addresses', 'map tiles satellite offline geocoding address lookup'],
   ['How do I pick the dates a page shows?', 'Use the one period picker in the top bar. It works in the car’s own time zone and the period carries over when you change page or car.', 'statistics', 'Statistics', 'period range date month year time zone'],
   ['Can I take my data out?', 'Yes. Every table and chart has a Download CSV button that uses your units, and drives can also be saved as GPX tracks.', 'drives', 'Drives', 'export csv gpx download'],
   ['Can I bring my TeslaMate history?', 'Yes. An admin can import a TeslaMate backup. Imported rows are marked as imported, and where they overlap with CAN data you choose which one is shown.', 'import', 'Import', 'teslamate backup import overlap'],
@@ -56,7 +57,7 @@ function lookupSentence(settings) {
   else parts.push('Map tiles come from data stored on this server');
   if (geoOn) parts.push(`addresses are looked up at ${hostOf(settings.geocode.url) || 'an outside address service'}`);
   else parts.push('addresses come from data stored on this server');
-  return [`${parts.join('; ')}. Change this in `, appLink('settings-integrations', 'Settings: Integrations'), '.'];
+  return [`${parts.join('; ')}. Change this in `, appLink('settings-maps', 'Settings: Maps and addresses'), '.'];
 }
 
 /**
@@ -125,7 +126,7 @@ export async function mount(ctx) {
   const paintRelease = (list) => {
     const now = ctx.api.now();
     const n = (list || []).find((x) => x.code === 'release_available');
-    const turnLink = ctx.admin ? h('a', { class: 'link', href: `${state.buildUrl('settings-display')}#release-check` }, 'Release check in Settings: Display and units') : null;
+    const turnLink = ctx.admin ? h('a', { class: 'link', href: `${state.buildUrl('settings-server')}#release-check` }, 'Release check in Settings: Server and access') : null;
     const st = release ? releaseStatus(release, now) : null;
     const when = release ? checkedAgo(release, now) : '';
     if (!release) {

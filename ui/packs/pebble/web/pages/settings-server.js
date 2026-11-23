@@ -2,8 +2,8 @@
 //
 // Who can sign in, what they may see, how the server is reached, and moving it, as rounded tiles:
 // - Everyone: how this address is reached (HTTPS, host name, port), Server updates (this build and the release
-//   check's last answer: about, release; Check now for an admin, release/check; the switch stays in Display and
-//   units), how access works, and their own sessions.
+//   check's last answer: about, release; Check now and the release check's switch for an admin, release/check,
+//   settings release_check), how access works, and their own sessions.
 // - Admins also: the certificate (its names changed in a sheet: Change names) and the recovery key (show it again,
 //   make a new one, say it is saved), the move to another server as numbered step cards (with a move code, or
 //   with an export file: the current card holds the one clear button and what it printed), the accounts (an edit
@@ -12,10 +12,8 @@
 // A move that stopped on the new server (a code cancelled here, say) carries on: a new code from this same server
 // lets the new server go on with what it copied. Data: settings, network, notices, accounts, me/sessions, audit,
 // system/move (+ /undo), system/exports, system/recovery-key/{show,new,saved}, system/storage/detail and
-// system/storage/compact. Polls system/move once a second while a move runs (it has no event); the export file
-// follows `job` events of kind export, compaction those of kind compaction and the free space `storage` events
-// (live events, polling only while the live stream is down: the export while it is made, the detail every 2 s
-// while a pass runs). A full rebuild of every car (system/full-rebuild,
+// system/storage/compact. Polls once a second while a move or an export file is being made, and every 2 s
+// while a compaction pass runs (no event stream for these). A full rebuild of every car (system/full-rebuild,
 // its own tile: core/fullrebuild.js) with the switch for the automatic one (settings full_rebuild.auto).
 
 import { h } from '../shared/dom.js';
@@ -34,12 +32,10 @@ import { group, infoRow, said, notSaved, askPassword, keySheet, tick } from '../
 import { inOrder } from '../core/settings.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 import { fullRebuildTile } from '../core/fullrebuild.js';
-import { serverUpdates, RELEASE_OFF_TEXT, RELEASE_SETTING } from '../shared/release.js';
+import { serverUpdates, RELEASE_OFF_TEXT } from '../shared/release.js';
 import { compactionProgress } from '../shared/compaction.js';
 import { bytes, bigCode, copyButton, downloadUrl, stepCards, progressBar, callout, PROBLEM } from './move-parts.js';
 import { exportModel, exportPollMs } from '../shared/exportjob.js';
-import { follow, jobOf, setText, setAttr } from '../shared/live.js';
-import { morph, morphChildren } from '../core/morph.js';
 
 export const id = 'settings-server';
 export const shape = [[2, 'h2'], [2, 'h2'], [2, 'h3'], [2, 'h3']];
@@ -167,6 +163,26 @@ export async function mount(ctx) {
   }
   const UPD_TONE = { newer: 'sun', ok: 'teal', error: 'coral', wait: 'muted', off: 'muted' };
   const UPD_ICON = { this: 'server', built: 'calendar', newest: 'upload', checked: 'clock' };
+  // the release check's switch (#release-check, PATCH /settings release_check with the settings' version; an
+  // admin's, read only for others): made once, kept across the page's redraws
+  const relSw = toggle({ label: 'Check for new releases', sub: 'Once a day the server asks GitHub for the newest published build and tells admins. Only that question goes out: no token, no car, no account. It never downloads or installs anything.',
+    checked: !!(settings.release_check || {}).enabled, disabled: !admin,
+    onchange: async (on) => {
+      try {
+        settings = await ctx.api.patch('settings', { version: settings.version, release_check: { enabled: on } });
+        ctx.toast(on ? 'Release check on. Saved for everyone on this server.' : 'Release check off. Saved for everyone on this server.');
+      } catch (e) {
+        if (e && (e.status === 409 || e.code === 'stale_version')) {
+          settings = await ctx.api.get('settings').catch(() => settings);
+          ctx.toast('Someone changed these settings meanwhile; they are shown fresh now. Make your change again.', { kind: 'info' });
+        } else ctx.toast(notSaved(e), { kind: 'error' });
+      }
+      if (!ctx.alive()) return;
+      relSw.set(!!(settings.release_check || {}).enabled);
+      release = await ctx.api.get('release').catch(() => release);
+      if (ctx.alive()) draw();
+    } });
+  relSw.id = 'release-check';
   function updatesTile() {
     const u = serverUpdates(about, release, api.now());
     const busy = updChecking || u.busy;
@@ -175,9 +191,10 @@ export async function mount(ctx) {
       updTimer = setTimeout(async () => { release = await ctx.api.get('release').catch(() => release); if (ctx.alive()) draw(); }, 4000);
     }
     return tile({ w: 2, title: 'Server updates', icon: 'upload', id: 'updates', side: chip(u.on ? 'Check on' : 'Check off', { tone: u.on ? 'teal' : 'muted' }) },
+      group(null, [relSw]),
       group(null, u.rows.map((r) => infoRow({ icon: UPD_ICON[r.key], name: r.label,
         side: h('span', { class: ['set-value', 'upd-val', r.tone && `is-${r.tone}`], title: r.title || null }, r.text, r.badge ? chip(r.badge, { tone: UPD_TONE[r.tone] }) : null) }))),
-      u.on ? null : said('info', `The release check is off. ${RELEASE_OFF_TEXT} `, admin ? h('a', { class: 'place-link', href: `${state.buildUrl(RELEASE_SETTING.page)}#${RELEASE_SETTING.hash}` }, RELEASE_SETTING.text) : 'An admin can turn it on.'),
+      u.on ? null : said('info', `The release check is off. ${RELEASE_OFF_TEXT} `, admin ? 'Turn it on with the switch above.' : 'An admin can turn it on.'),
       note(`${u.how} Steps for Docker and TrueNAS: `, u.doc.href ? h('a', { class: 'place-link', href: u.doc.href, target: '_blank', rel: 'noopener noreferrer external' }, u.doc.text) : h('code', { class: 'set-mono' }, u.doc.path), '.'),
       admin ? h('div', { class: 'form-actions' }, btn(busy ? 'Checking…' : 'Check now', { kind: 'soft', icon: 'refresh', disabled: !u.on || busy, title: u.on ? null : 'Turn the release check on first', onclick: updCheckNow })) : null);
   }
@@ -294,8 +311,8 @@ export async function mount(ctx) {
   let shown = null;     // { id, text }: the code made on this page, shown until it is used or cancelled
   let exp = null;       // the newest ExportFile
   let fetchOnReady = null;
-  let moveTimer = 0;
-  ctx.onCleanup(() => clearTimeout(moveTimer));
+  let moveTimer = 0, expTimer = 0;
+  ctx.onCleanup(() => { clearTimeout(moveTimer); clearTimeout(expTimer); });
   const moveBox = h('div', { class: 'contents' });
   const myAddress = (() => { try { const u = new URL(network && network.upload_address); return u.port && u.port !== '10100' ? u.host : u.hostname; } catch { return location.hostname; } })();
 
@@ -305,26 +322,23 @@ export async function mount(ctx) {
     if (ctx.alive()) drawMove();
   }
   let expErr = null;    // the last read of the export failed (the export goes on on the server)
-  // the newest export file: read at the start and after a reconnect, then its `job` events (one made elsewhere
-  // too, when none is shown)
-  let expLive = null;
-  function followExport() {
-    let first;
-    const ready = new Promise((res) => { first = res; });
-    expLive = follow(ctx.api, {
-      type: 'job', match: (d) => jobOf('export')(d) && (!exp || d.id === exp.id), pick: (d) => d.status,
-      load: async () => ((await ctx.api.get('system/exports')).items || [])[0] || null,
-      pollMs: () => exportPollMs(exp),
-      onValue: (e) => { exp = e; expErr = null; if (ctx.alive() && moveBox.firstChild) drawMove(); first(); },
-      onError: (e) => { expErr = e; if (ctx.alive() && moveBox.firstChild) drawMove(); first(); },
-    });
-    return ready;
+  async function readExport() {
+    clearTimeout(expTimer);
+    try {
+      if (exp && exp.id) exp = await ctx.api.get(api.apiPath`system/exports/${exp.id}`);
+      else exp = ((await ctx.api.get('system/exports')).items || [])[0] || null;
+      expErr = null;
+    } catch (e) { if (api.isAbort(e)) return; if (e && e.status === 404) { exp = null; expErr = null; } else expErr = e; }
+    if (ctx.alive()) drawMove();
   }
   function schedule() {
     clearTimeout(moveTimer);
     const s = move && move.state;
     const ms = s === 'copying' || s === 'paused' || s === 'moved' ? 1000 : s === 'offered' ? 3000 : 0;
     if (ms) moveTimer = setTimeout(readMove, ms);
+    clearTimeout(expTimer);
+    const ems = exportPollMs(exp);
+    if (ems) expTimer = setTimeout(readExport, ems);
   }
 
   async function makeCode() {
@@ -385,7 +399,6 @@ export async function mount(ctx) {
     if (!out) return;
     exp = out; fetchOnReady = out.id;
     drawMove();
-    expLive?.refresh();
   }
   async function cancelExport() {
     if (!exp || !await confirmSheet({ title: 'Stop making the export file?', text: 'The server stops and keeps nothing of it. Uploads go on. You can make a new one at any time.', yes: 'Stop making it', danger: true })) return;
@@ -496,11 +509,10 @@ export async function mount(ctx) {
       panel,
       note('On the new server: its first page, “Restore from an export file”, this file and this server’s recovery key. A download that stops carries on.'));
   }
-  // only the texts that changed are written (an export's job event can come twice a second)
   function drawMove() {
-    morphChildren(moveBox, [
+    moveBox.replaceChildren(
       sectionHead('Move to another server', 'No shell, no commands. Everything goes along: logs, uploads still arriving, accounts, cars, tokens and the HTTPS key. A move never changes this server’s data, so stopping half way is always safe.'),
-      codeTile(), exportTile()]);
+      codeTile(), exportTile());
     schedule();
   }
 
@@ -508,57 +520,26 @@ export async function mount(ctx) {
   // Two half tiles side by side: Storage (on disk, free, saved by compaction, the last pass, how compaction stands
   // with what it does on hover, Compact now and the CSV) and the space by kind (shared/storage.js): one row per
   // group with its size, a bar and its share; a group opens to its categories by short name, at most five rows
-  // tall (the CSV has every category with the server's own label). A pass (also one the server started by itself)
-  // follows its `job` events and the free space the `storage` events; when it ends the detail is read once and a
-  // note says what was freed.
+  // tall (the CSV has every category with the server's own label). While a pass runs (also one the server
+  // started by itself) the detail is read again every 2 s, and when it ends a note says what was freed.
   let store = null;       // GET /system/storage/detail
   let storeErr = null;    // why the last read failed
+  let storeTimer = 0;
+  ctx.onCleanup(() => clearTimeout(storeTimer));
   const storeBox = h('div', { class: 'contents' });
   const storeOpen = new Set();   // the groups opened (all closed at first, so the two tiles are about as tall)
   const LOSSLESS = 'Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs’ signed originals are kept byte for byte.';
-  // the pass: GET the detail at the start and after a reconnect, then the `job` events; a pass that ended reads the
-  // detail once (what it packed changed the groups); only while the live stream is down, the detail every 2 s
-  let storeLive = null;
-  let fresh = null;   // the detail of the last read, put in with its status
-  function setCompaction(c, how) {
-    const ended = store?.compaction?.status === 'running' && c?.status !== 'running';
-    if (ended && how === 'event') { storeLive.refresh(); return; }
-    if (fresh) { store = fresh; fresh = null; }
-    store = { ...(store || {}), compaction: c };
-    storeErr = null;
-    if (ended && c) {
+  async function readStorage() {
+    clearTimeout(storeTimer);
+    const was = store && store.compaction && store.compaction.status;
+    try { store = await ctx.api.get('system/storage/detail'); storeErr = null; } catch (e) { if (api.isAbort(e)) return; storeErr = e; }
+    if (!ctx.alive()) return;
+    const c = store && store.compaction;
+    if (was === 'running' && !storeErr && c && c.status !== 'running') {
       if (c.status === 'failed') ctx.toast(`Compaction failed: ${c.error || 'the server gave no reason.'}`, { kind: 'error' });
       else ctx.toast(c.last_saved_bytes ? `Compaction is done: ${bytes(c.last_saved_bytes)} freed on disk.` : 'Compaction is done: nothing was left to pack.');
     }
-    if (storeBox.firstChild) drawStorage();
-  }
-  async function readStorage() {
-    try { store = await ctx.api.get('system/storage/detail'); storeErr = null; } catch (e) { if (api.isAbort(e)) return; storeErr = e; }
-  }
-  function followStorage() {
-    let firstRead = true;
-    storeLive = follow(ctx.api, {
-      type: 'job', match: jobOf('compaction'), pick: (d) => d.status,
-      load: async () => {
-        // the page's own read of the detail stands for the first one
-        if (firstRead && store) { firstRead = false; return store.compaction || null; }
-        firstRead = false;
-        fresh = await ctx.api.get('system/storage/detail');
-        return fresh.compaction || null;
-      },
-      pollMs: (c) => (c?.status === 'running' ? 2000 : null),
-      onValue: (c, how) => { if (ctx.alive()) setCompaction(c, how); },
-      onError: (e) => { storeErr = e; if (ctx.alive() && storeBox.firstChild) drawStorage(); },
-    });
-    // the free space on disk, from the `storage` events (no read of their own)
-    follow(ctx.api, {
-      type: 'storage',
-      onValue: (st) => {
-        if (!ctx.alive() || !st || st.free_bytes === store?.free_bytes) return;
-        store = { ...(store || {}), free_bytes: st.free_bytes ?? null };
-        if (storeBox.firstChild) drawStorage();
-      },
-    });
+    drawStorage();
   }
   async function compactNow() {
     try {
@@ -568,7 +549,6 @@ export async function mount(ctx) {
       storeErr = null;
     } catch (e) { if (api.isAbort(e) || !ctx.alive()) return; ctx.toast(`Compaction not started: ${(e && e.message) || 'the server did not answer'}`, { kind: 'error' }); }
     drawStorage();
-    storeLive?.refresh();
   }
   // The compaction tile is built once and changed in place on every read (2 s while a pass runs), so its
   // ring keeps turning and nothing in it moves. The progress row has the same room idle or running: a line
@@ -595,27 +575,26 @@ export async function mount(ctx) {
       btn('Download CSV', { kind: 'ghost', icon: 'download', onclick: () => downloadCsv('sentry-mate-storage-on-disk.csv', (store && store.categories) || [], [
         { label: 'What', value: (x) => x.label }, { label: 'Kind', value: (x) => groupWord(x.group) }, { label: 'Key', value: (x) => x.key },
         { label: 'Files', value: (x) => x.files }, { label: 'Size (bytes)', value: (x) => x.bytes }, { label: 'On disk (bytes)', value: (x) => x.disk_bytes }]) })));
-  const setLine = (el, ...kids) => { morphChildren(el, kids); setAttr(el, 'title', el.textContent.trim()); };
+  const setLine = (el, ...kids) => { el.replaceChildren(...kids); el.title = el.textContent.trim(); };
   function compactionTile() {
     const c = (store && store.compaction) || null;
     const running = !!c && c.status === 'running';
     const failed = !!c && c.status === 'failed';
     const p = compactionProgress(c, { now: api.now(), bytes });
-    morphChildren(cmp.chip, chip(running ? 'Packing' : failed ? 'Failed' : c ? 'Idle' : 'Not known', { tone: running ? 'sky' : failed ? 'sun' : c ? 'teal' : 'muted' }));
-    setText(cmp.disk, bytes(store ? store.total_disk_bytes : null));
-    setText(cmp.free, store && store.free_bytes != null ? bytes(store.free_bytes) : 'Not known');
-    setText(cmp.saved, bytes(c ? c.saved_bytes : null));
-    setText(cmp.last, !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'Nothing left to pack');
-    setAttr(cmp.last, 'title', c && c.finished_ms != null ? `Finished ${when(c.finished_ms)}.` : 'No pass has finished yet.');
-    if (cmp.go.disabled !== (running || !c)) cmp.go.disabled = running || !c;
+    cmp.chip.replaceChildren(chip(running ? 'Packing' : failed ? 'Failed' : c ? 'Idle' : 'Not known', { tone: running ? 'sky' : failed ? 'sun' : c ? 'teal' : 'muted' }));
+    cmp.disk.textContent = bytes(store ? store.total_disk_bytes : null);
+    cmp.free.textContent = store && store.free_bytes != null ? bytes(store.free_bytes) : 'Not known';
+    cmp.saved.textContent = bytes(c ? c.saved_bytes : null);
+    cmp.last.textContent = !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'Nothing left to pack';
+    cmp.last.title = c && c.finished_ms != null ? `Finished ${when(c.finished_ms)}.` : 'No pass has finished yet.';
+    cmp.go.disabled = running || !c;
     cmp.row.classList.toggle('is-running', running);
     cmp.row.classList.toggle('is-failed', failed);
     cmp.spin.style.visibility = running ? '' : 'hidden';
     cmp.bar.style.visibility = running ? '' : 'hidden';
     cmp.bar.classList.toggle('is-stalled', p.stalled);
-    const w = String((p.pct ?? 0) / 100);
-    if (cmp.fill.style.getPropertyValue('--w') !== w) cmp.fill.style.setProperty('--w', w);
-    setAttr(cmp.bar, 'aria-valuenow', p.pct == null ? null : String(Math.round(p.pct)));
+    cmp.fill.style.setProperty('--w', String((p.pct ?? 0) / 100));
+    if (p.pct == null) cmp.bar.removeAttribute('aria-valuenow'); else cmp.bar.setAttribute('aria-valuenow', String(Math.round(p.pct)));
     const pollWords = storeErr && store ? `The progress could not be read just now: ${(storeErr && storeErr.message) || 'the server did not answer'}` : null;
     if (running) {
       setLine(cmp.head, h('b', null, 'Packing…'), ' ', [p.stepOf, p.step].filter(Boolean).join(' · ') || 'getting ready');
@@ -656,11 +635,11 @@ export async function mount(ctx) {
         : said('warn', 'The server did not say what takes the space', storeErr && storeErr.message ? `: ${storeErr.message}` : '.'));
   }
   const storeHead = sectionHead('Storage');
-  let spaceEl = null;   // the space tile on the page: later ones are made like it in place
   function drawStorage() {
-    spaceEl = spaceEl ? morph(spaceEl, spaceTile()) : spaceTile();
-    const want = [storeHead, compactionTile(), spaceEl];
+    const want = [storeHead, compactionTile(), spaceTile()];
     if (want.some((el, i) => storeBox.children[i] !== el) || storeBox.children.length !== want.length) storeBox.replaceChildren(...want);
+    clearTimeout(storeTimer);
+    if (store && store.compaction && store.compaction.status === 'running') storeTimer = setTimeout(readStorage, 2000);
   }
 
   /* ================================================================ full rebuild (admins) */
@@ -873,12 +852,10 @@ export async function mount(ctx) {
     ctx.view.replaceChildren(...tiles.filter(Boolean));
   }
   if (admin) {
-    await Promise.all([readMove(), followExport(), readStorage(), fullT.ready]);
+    await Promise.all([readMove(), readExport(), readStorage(), fullT.ready]);
     auditT = await auditTile();
     if (!ctx.alive()) return {};
     drawMove();
-    drawStorage();
-    followStorage();
   }
   draw();
   ctx.ready();

@@ -47,8 +47,10 @@ pub mod costs;
 pub mod firmware;
 pub mod full;
 pub mod importer;
+pub mod invoice_prices;
 pub mod invoices;
 pub mod jobs;
+mod live_gps;
 mod pipeline;
 pub use pipeline::NEW_CAR_NAME;
 mod hot;
@@ -223,6 +225,8 @@ pub(crate) enum Work {
         at_ms: u64,
         values: Box<model::OffCan>,
     },
+    /// The places' prices from Supercharger invoices worked out again ([`invoice_prices::run`]).
+    InvoicePrices,
 }
 
 pub(crate) struct Inner {
@@ -272,6 +276,7 @@ pub(crate) struct Inner {
     /// themselves.
     pub(crate) compaction: Mutex<compact::Running>,
     pub(crate) compact_stop: std::sync::atomic::AtomicBool,
+    pub(crate) compact_steps: Mutex<Vec<Arc<dyn compact::Step>>>,
     pub(crate) compact_auto: std::sync::atomic::AtomicBool,
     /// The full rebuild under way ([`full`]); its record's changes, one at a time; a test's failure point.
     pub(crate) full: Mutex<full::Full>,
@@ -285,6 +290,9 @@ pub(crate) struct Inner {
     pub(crate) invoice_all: Mutex<Option<Arc<std::collections::BTreeMap<String, invoices::Session>>>>,
     pub(crate) invoice_write: Mutex<()>,
     pub(crate) invoice_gen: AtomicU64,
+    /// A run of the places' invoice prices is queued ([`invoice_prices::run`]); one runs at a time.
+    pub(crate) invoice_prices_queued: std::sync::atomic::AtomicBool,
+    pub(crate) invoice_prices_run: Mutex<()>,
 }
 
 /// A stretch of a car's history where one input's GPS fixes disagreed with another's of the same moments by far
@@ -441,6 +449,7 @@ impl Engine {
                 hot: Mutex::new(hot::Hot::default()),
                 compaction: Mutex::default(),
                 compact_stop: std::sync::atomic::AtomicBool::new(false),
+                compact_steps: Mutex::default(),
                 compact_auto: std::sync::atomic::AtomicBool::new(false),
                 full: Mutex::default(),
                 full_start: Mutex::new(()),
@@ -451,6 +460,8 @@ impl Engine {
                 invoice_all: Mutex::new(None),
                 invoice_write: Mutex::new(()),
                 invoice_gen: AtomicU64::new(0),
+                invoice_prices_queued: std::sync::atomic::AtomicBool::new(false),
+                invoice_prices_run: Mutex::new(()),
                 opts,
             }),
         }
@@ -542,6 +553,12 @@ impl Engine {
     }
 
     pub(crate) fn emit(&self, e: Event) {
+        // charges rebuilt where invoiced sessions are: their matches, and so the places' invoice prices, may move
+        if let Event::Rows { car, kinds, from_ms, to_ms } = &e
+            && kinds.contains(&"charges")
+        {
+            self.invoice_rows_changed(*car, *from_ms, *to_ms);
+        }
         let _ = self.inner.events.send(e);
     }
 
@@ -558,6 +575,8 @@ impl Engine {
         // the cars whose history was made with another decoding: held for a full rebuild, not redone in place
         self.check_versions();
         self.send(Work::Reconcile { car: None });
+        // the places' prices from invoices, as the sessions and charges kept now give them
+        self.invoice_prices_soon();
         // a full rebuild a restart cut off carries on
         self.full_resume();
         // the days' pack readings, worked out once idle (and again now and then)
@@ -596,6 +615,7 @@ impl Engine {
                     Work::ApiMeta { input, car, meta } => e.work_api_meta(input, car, *meta),
                     Work::ApiBuild { car } => e.work_api_build(car),
                     Work::OffCan { input, car, at_ms, values } => e.work_off_can(input, car, at_ms, *values),
+                    Work::InvoicePrices => invoice_prices::run(&e),
                 };
                 if let Err(err) = r {
                     e.failed(&err);

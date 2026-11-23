@@ -6,10 +6,9 @@
 // hours red); a tap on a card opens its details. Then the problems of the last 7 days.
 //
 // Live without jumps: the cards are built once with every line in place (a value that is missing says so in
-// words), each `connections` event writes the new text into them (live events, polling every 10 s only while the
-// live stream is down), and the relative times tick every second. A failed read keeps what is shown. Admins only
-// (the server answers 403 to anyone else).
-// Data: GET integrations/overview, then `connections` events.
+// words), a poll every 10 s writes the new text into them, and the relative times tick every second. A failed
+// poll keeps what is shown. Admins only (the server answers 403 to anyone else).
+// Data: GET integrations/overview.
 
 import { h, svg } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -19,7 +18,6 @@ import { format } from '../shared/units.js';
 import { tile, chip, note, icon } from '../core/ui.js';
 import { errorWords } from '../core/states.js';
 import { listBox } from '../core/bits.js';
-import { follow } from '../shared/live.js';
 
 const POLL_MS = 10000;
 
@@ -268,7 +266,7 @@ export function connectionsOverview(ctx) {
     for (const c of data.connections || []) cards.get(c.id)?.set(c);
     probs.set(data.problems);
     setText(staleNote, err ? `Could not read the newest state (${errorWords(err).title.toLowerCase()}); shown as read at ${formatTime(data.read_ms, tz, { seconds: true })}.`
-      : `Read at ${formatTime(data.read_ms ?? api.now(), tz, { seconds: true })}; updated as it changes.`);
+      : `Read at ${formatTime(data.read_ms ?? api.now(), tz, { seconds: true })}; updated every 10 seconds.`);
   }
 
   async function read() {
@@ -281,7 +279,10 @@ export function connectionsOverview(ctx) {
     build();
   }
 
-  function take(d) {
+  async function poll() {
+    if (!ctx.admin || document.hidden) return;
+    let d;
+    try { d = await read(); } catch { return; }
     if (!ctx.alive()) return;
     if (!d) { if (data) paint(); return; }
     const had = !!data;
@@ -294,16 +295,9 @@ export function connectionsOverview(ctx) {
     for (const x of el.querySelectorAll('[data-rel]')) setText(x, relText(Number(x.dataset.rel), x.dataset.future === '1'));
   }
 
-  // the first answer is load()'s; then the `connections` events, and a read after a reconnect
   function start() {
     if (!ctx.admin) return;
-    let first = true;
-    follow(ctx.api, {
-      type: 'connections',
-      load: () => (first ? (first = false, Promise.resolve(data)) : read()),
-      pollMs: POLL_MS,
-      onValue: (d, how) => { if (how === 'event') err = null; take(d); },
-    });
+    ctx.every(POLL_MS, poll);
     ctx.every(1000, tick);
   }
   return { el, load, start, totals: () => (data && data.totals) || null };

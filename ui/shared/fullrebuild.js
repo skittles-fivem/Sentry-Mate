@@ -2,10 +2,9 @@
 // pack: what it does and does not touch, the button's state, the progress panel's fixed lines (phase, logs, days,
 // bytes, rate, time left, last progress with the stall warning, errors) and the POST body with the password asked
 // again. Pure functions: a page renders them in its own look, into a panel of fixed size (every line is always
-// there, an empty one keeps its room). The status comes as `job` events of kind `full_rebuild` on the live stream
-// (shared/live.js); a page reads it again every POLL_MS while one runs only while the stream is down.
+// there, an empty one keeps its room), and reads the status again every POLL_MS while one runs.
 
-/** How often a page reads the status again while a full rebuild runs and the live stream is down. */
+/** How often a page reads the status again while a full rebuild runs (and once more after it ends). */
 export const POLL_MS = 2000;
 /** How often while none runs (a page left open sees one an admin started elsewhere). */
 export const IDLE_POLL_MS = 30000;
@@ -98,29 +97,20 @@ export function agoText(ms, nowMs = Date.now()) {
   return `${Math.round(m / 60)} h ago`;
 }
 
-/**
- * A percentage 0..100 of the phase under way, or null: the logs decoded of all while decoding, then the days worked
- * out of all in the days step (the same counts the panel's lines show, so the bar always matches them); 100 while
- * switching and once done. The server's own `percent` when it sends one.
- */
+/** A percentage 0..100 of the phase under way (logs by bytes when known, days), or null. */
 export function percent(s) {
   if (!running(s)) return s?.state === 'done' ? 100 : null;
-  if (Number.isFinite(s.percent)) return Math.max(0, Math.min(100, Math.floor(s.percent)));
-  const of = (x) => (n(x?.total) > 0 ? Math.min(100, Math.floor((100 * n(x.done)) / n(x.total))) : 0);
-  if (s.phase === 'decoding') return of(s.logs);
-  if (s.phase === 'days') return of(s.days);
-  return s.phase === 'switching' ? 100 : 0;
-}
-
-/** "12 a second", "1.5 a second", "40 a minute" of a thing counted (logs, days). */
-export function countRate(perS, one, many) {
-  if (!Number.isFinite(perS) || perS <= 0) return '';
-  if (perS >= 1) {
-    const v = perS >= 10 ? Math.round(perS) : Math.round(perS * 10) / 10;
-    return `${v.toLocaleString('en-US')} ${v === 1 ? one : many}/s`;
+  if (s.phase === 'decoding') {
+    const b = s.bytes || {};
+    if (n(b.total) > 0) return Math.min(100, Math.floor((100 * n(b.done)) / n(b.total)));
+    const l = s.logs || {};
+    return n(l.total) > 0 ? Math.min(100, Math.floor((100 * n(l.done)) / n(l.total))) : 0;
   }
-  const m = Math.round(perS * 60);
-  return `${m.toLocaleString('en-US')} ${m === 1 ? one : many}/min`;
+  if (s.phase === 'days') {
+    const d = s.days || {};
+    return n(d.total) > 0 ? Math.min(100, Math.floor((100 * n(d.done)) / n(d.total))) : 0;
+  }
+  return s.phase === 'switching' ? 100 : 0;
 }
 
 /**
@@ -138,26 +128,16 @@ export function lines(s, nowMs = Date.now(), carName = (id) => id) {
   const days = s?.days || {};
   const bytes = s?.bytes || {};
   const showCounts = r || st === 'done' || st === 'failed' || st === 'cancelled';
-  const speed = !r ? '' : [
-    Number.isFinite(s.rate_bytes_per_s) ? `${bytesText(s.rate_bytes_per_s)}/s` : '',
-    s.phase === 'decoding' ? countRate(s.rate_logs_per_s, 'log', 'logs') : '',
-    s.phase === 'days' ? countRate(s.rate_days_per_s, 'day', 'days') : '',
-  ].filter(Boolean).join(' · ');
+  const speed = r && Number.isFinite(s.rate_bytes_per_s) ? `${bytesText(s.rate_bytes_per_s)}/s` : '';
   const left = r && Number.isFinite(s.eta_ms) ? `${durationText(s.eta_ms)} left` : '';
-  const measuring = r && (s.phase === 'decoding' || s.phase === 'days') && !speed && !left ? 'Working out the speed' : '';
-  // the days are known from the start of the decoding (the car's days, counted again when their step starts), and
-  // the data from the logs' sizes: both are shown as soon as a run is under way
-  const count = (x, f = (v) => n(v).toLocaleString('en-US')) => (showCounts && n(x.total) ? `${f(x.done)} of ${f(x.total)}` : '');
-  const daysText = count(days) || (r && s.phase !== 'switching' ? 'Counted once the logs are decoded' : '');
-  const bytesLine = count(bytes, bytesText);
   const when = st === 'idle' ? '' : r ? agoText(s.last_progress_ms, nowMs) : endedText(s, nowMs);
   return [
     { key: 'state', label: 'State', text: state },
     { key: 'phase', label: 'Step', text: r ? `${PHASES[s.phase] || s.phase || ''}${cars}` : '' },
-    { key: 'logs', label: 'Logs decoded', text: count(logs) },
-    { key: 'days', label: 'Days', text: daysText },
-    { key: 'bytes', label: 'Data', text: bytesLine },
-    { key: 'rate', label: 'Speed', text: [speed, left].filter(Boolean).join(' · ') || measuring },
+    { key: 'logs', label: 'Logs decoded', text: showCounts && n(logs.total) ? `${n(logs.done).toLocaleString('en-US')} of ${n(logs.total).toLocaleString('en-US')}` : '' },
+    { key: 'days', label: 'Days', text: showCounts && n(days.total) ? `${n(days.done).toLocaleString('en-US')} of ${n(days.total).toLocaleString('en-US')}` : '' },
+    { key: 'bytes', label: 'Data', text: showCounts && n(bytes.total) ? `${bytesText(bytes.done)} of ${bytesText(bytes.total)}` : '' },
+    { key: 'rate', label: 'Speed', text: [speed, left].filter(Boolean).join(' · ') },
     { key: 'when', label: r ? 'Last progress' : 'Finished', text: when },
   ];
 }

@@ -133,6 +133,55 @@ export function clear(el) { el.replaceChildren(); return el; }
 /** Replace every child with these. */
 export function replace(el, ...children) { el.replaceChildren(); return append(el, children); }
 
+// the nodes append() would add, without moving any of them yet (null when a fragment is among them)
+function flatNodes(children, out = []) {
+  for (const c of children) {
+    if (Array.isArray(c)) { if (!flatNodes(c, out)) return null; continue; }
+    if (c == null || c === false || c === true || c === '') continue;
+    if (typeof c === 'object' && 'nodeType' in c) { if (c.nodeType === 11) return null; out.push(c); continue; }
+    out.push(globalThis.document.createTextNode(String(c)));
+  }
+  return out;
+}
+/**
+ * Like replace(), for parts drawn again on every live update: a child that is the same as the one already in its
+ * place (the node itself, or isEqualNode: the same tags, attributes and text) stays, and only the others are
+ * swapped, so the page lays out, snaps and paints only what changed. Event handlers are not compared: use it for
+ * children whose handlers do not depend on the values drawn.
+ */
+export function replaceChanged(el, ...children) {
+  const next = flatNodes(children);
+  const now = Array.from(el.childNodes);
+  // a node that moves within el, or a different count: everything again
+  if (!next || next.length !== now.length || next.some((n, i) => n !== now[i] && n.parentNode === el)) {
+    el.replaceChildren();
+    return append(el, children);
+  }
+  for (let i = 0; i < next.length; i++) {
+    if (next[i] !== now[i] && !now[i].isEqualNode(next[i])) el.replaceChild(next[i], now[i]);
+  }
+  return el;
+}
+
+/**
+ * While the page or a box in it scrolls, and for `ms` after, the root element carries data-scrolling. CSS pauses
+ * endless animations with it (a pulsing dot, a halo), so a frame of a scroll only moves what is painted already
+ * instead of drawing them again too. The listener is passive (it never holds a scroll up), and the attribute
+ * changes twice per scroll, not on every scroll event. Call once at start; returns a remover.
+ */
+export function markScrolling(ms = 200) {
+  const root = globalThis.document.documentElement;
+  let t = 0;
+  const end = () => { t = 0; delete root.dataset.scrolling; };
+  const onScroll = () => {
+    if (!t) root.dataset.scrolling = '';
+    else clearTimeout(t);
+    t = setTimeout(end, ms);
+  };
+  globalThis.document.addEventListener('scroll', onScroll, { capture: true, passive: true });
+  return () => { globalThis.document.removeEventListener('scroll', onScroll, { capture: true }); if (t) { clearTimeout(t); end(); } };
+}
+
 /** The longest of some texts (null and undefined count as ''). */
 export function longest(texts) {
   let w = '';

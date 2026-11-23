@@ -179,11 +179,11 @@ const ERROR_WORDS = {
 };
 
 const NET_PURPOSE = {
-  geocoding: ['Address lookup', 'Only when an admin turns online addresses on; positions are rounded first.', 'settings-display'],
-  tiles: ['Map pictures', 'Asked for by each viewer’s browser while online tiles are on.', 'settings-display'],
-  geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-display'],
+  geocoding: ['Address lookup', 'Only when an admin turns online addresses on; positions are rounded first.', 'settings-maps'],
+  tiles: ['Map pictures', 'Asked for by each viewer’s browser while online tiles are on.', 'settings-maps'],
+  geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-maps'],
   mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
-  release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-display'],
+  release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-server'],
   tesla: ['Tesla API', 'Only while a Tesla account is added (Tesla account, on this page): signs in and reads its cars, never sends a command.', null],
   teslafi: ['TeslaFi API', 'Only while a TeslaFi token is added and not paused: reads your cars’ data from TeslaFi', null],
   teslamate_mqtt: ['Local TeslaMate (MQTT)', 'Only while a local TeslaMate is added and not paused: subscribes to its topics, never publishes', null],
@@ -268,17 +268,23 @@ function payloadParts(p) {
 
 /* ================================================================== the page */
 
+// The first reads; prefetch() warms the same ones when a link here is under the pointer.
+const firstReads = (ctx, admin) => [
+  admin ? ctx.api.get('settings/mqtt') : Promise.resolve(null),
+  ctx.api.get('settings/mqtt/status'),
+  admin ? ctx.api.get('network') : Promise.resolve(null),
+  ctx.api.get('cars', { sort: 'name', limit: 100 }),
+];
+export function prefetch(ctx) { return Promise.all(firstReads(ctx, ctx.me && ctx.me.role === 'admin')); }
+
 export async function mount(ctx) {
   const admin = ctx.me && ctx.me.role === 'admin';
   // the Connections overview (admins): its first read starts with the page's own
   const overview = admin ? overviewPart(ctx) : null;
   const overviewLoad = overview ? overview.load() : Promise.resolve();
-  const [cfgFirst, statusFirst, netFirst, carsFirst] = await Promise.all([
-    admin ? ctx.api.get('settings/mqtt') : Promise.resolve(null),
-    ctx.api.get('settings/mqtt/status').catch((e) => { if (api.isAbort(e)) throw e; return null; }),
-    admin ? ctx.api.get('network').catch((e) => { if (api.isAbort(e)) throw e; return null; }) : Promise.resolve(null),
-    ctx.api.get('cars', { sort: 'name', limit: 100 }),
-  ]);
+  const r = firstReads(ctx, admin);
+  const orNull = (e) => { if (api.isAbort(e)) throw e; return null; };
+  const [cfgFirst, statusFirst, netFirst, carsFirst] = await Promise.all([r[0], r[1].catch(orNull), r[2].catch(orNull), r[3]]);
   let cfg = cfgFirst;
   let status = statusFirst;
   let net = netFirst;

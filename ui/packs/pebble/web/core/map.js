@@ -17,6 +17,7 @@
 import { h, cssVar, styleSheet } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import { display } from './display.js';
+import { whenNear } from '../shared/lazy.js';
 import { isDark, onTheme, currentPrefs, onPrefs } from './prefs.js';
 import { tileChoice, rasterPaint, mapColors, tileSources, tileLayers, repaintTiles, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles, sharpZoom } from '../shared/maptiles.js';
 
@@ -87,8 +88,14 @@ const ROUND = { 'line-cap': 'round', 'line-join': 'round' };
  * onclick }), circle(id, lngLat, radius_m), frame(bounds), noTiles } or null when the page was left meanwhile.
  * ready resolves once the map has drawn (or after 12 s), so a page can say it is ready after its map.
  */
-export async function mapTile(ctx, box, { center = null, zoom = 13, bounds = null, padding = 36, interactive = true, fullscreen = false, maxZoom = 16, styleSwitch = true } = {}) {
+export async function mapTile(ctx, box, { center = null, zoom = 13, bounds = null, padding = 36, interactive = true, fullscreen = false, maxZoom = 16, styleSwitch = true, lazy = false } = {}) {
   box.classList.add('map', 'is-loading');
+  // lazy: a map below the fold is made (and MapLibre loaded) when it comes within a screen of view (shared/lazy.js);
+  // a page waits for it before ready only when nearNow(box) says it is near
+  if (lazy) {
+    await new Promise((resolve) => whenNear(box, resolve, { signal: ctx.signal }));
+    if (ctx.signal.aborted) return null;
+  }
   let ml, cfg;
   try { [ml, cfg] = await Promise.all([loadMapLibre(), mapConfig().catch(() => null)]); } catch (err) {
     box.classList.remove('is-loading');

@@ -9,6 +9,8 @@
 //
 // The plot fills a box app.css sizes (15 rem, 200 px on a phone) and follows it; fonts and line widths follow the
 // Interface size; a new theme or root size builds the chart again with the same zoom. uPlot loads on first use.
+// A chart below the fold is built when it comes within a screen of view (shared/lazy.js): its box has its height
+// from app.css already, so nothing moves, and it takes the zoom of the charts it shares a sync key with.
 
 import { h, cssVar, styleSheet, steady } from '../shared/dom.js';
 import { convert, unitLabel, format } from '../shared/units.js';
@@ -16,6 +18,7 @@ import { formatNumber } from '../shared/i18n.js';
 import { dateFormat } from '../shared/time.js';
 import { display } from './display.js';
 import { onTheme } from './prefs.js';
+import { whenNear } from '../shared/lazy.js';
 
 let loading = null;
 
@@ -218,25 +221,26 @@ export async function timeChart(ctx, body, { tz, t_ms, series, states = null, sp
   }
   const data = () => [x, ...lines.map((l) => l.vals)];
   function build() {
-    const zoom = plot ? { min: plot.scales.x.min, max: plot.scales.x.max } : null;
+    const peer = !plot && sync ? [...(peers.get(sync) || [])][0] : null;
+    const zoom = plot ? { min: plot.scales.x.min, max: plot.scales.x.max } : peer ? { min: peer.scales.x.min, max: peer.scales.x.max } : null;
     if (plot) { keySync?.unsub(plot); peers.get(sync)?.delete(plot); plot.destroy(); }
     plot = new uPlot(opts(), data(), box);
     keySync?.sub(plot);
     if (sync) { if (!peers.has(sync)) peers.set(sync, new Set()); peers.get(sync).add(plot); }
-    if (zoom && zoom.min != null) plot.setScale('x', zoom);
+    if (zoom && zoom.min != null) { zooming.add(sync); try { plot.setScale('x', zoom); } finally { zooming.delete(sync); } }
     // zooms follow across charts of one sync key
     plot.over.addEventListener('dblclick', () => reset());
   }
-  build();
+  const stopNear = whenNear(box, build);
   const ro = new ResizeObserver(() => {
     const w = Math.floor(box.clientWidth), hh = Math.floor(box.clientHeight);
     if (plot && w && hh && (w !== plot.width || hh !== plot.height)) plot.setSize({ width: w, height: hh });
   });
   ro.observe(box);
-  const stopSize = display.onChange((c) => { if (c.rem) build(); });
-  const stopTheme = onTheme(() => build());
+  const stopSize = display.onChange((c) => { if (c.rem && plot) build(); });
+  const stopTheme = onTheme(() => { if (plot) build(); });
   function reset() { if (plot && x.length) plot.setScale('x', { min: x[0], max: x[x.length - 1] }); }
-  const destroy = () => { stopSize(); stopTheme(); ro.disconnect(); if (plot) { keySync?.unsub(plot); peers.get(sync)?.delete(plot); plot.destroy(); plot = null; } };
+  const destroy = () => { stopNear(); stopSize(); stopTheme(); ro.disconnect(); if (plot) { keySync?.unsub(plot); peers.get(sync)?.delete(plot); plot.destroy(); plot = null; } };
   ctx.onCleanup(destroy);
   return { get plot() { return plot; }, reset, destroy, zoomTo(a, b) { plot?.setScale('x', { min: a / 1000, max: b / 1000 }); } };
 }
@@ -364,15 +368,15 @@ export async function xyChart(ctx, body, { xs = [], xKind = null, xUnit = null, 
       });
     }
   }
-  build();
+  const stopNear = whenNear(box, build);
   const ro = new ResizeObserver(() => {
     const w = Math.floor(box.clientWidth), hh = Math.floor(box.clientHeight);
     if (plot && w && hh && (w !== plot.width || hh !== plot.height)) plot.setSize({ width: w, height: hh });
   });
   ro.observe(box);
-  const stopSize = display.onChange((c) => { if (c.rem) build(); });
-  const stopTheme = onTheme(() => build());
-  const destroy = () => { stopSize(); stopTheme(); ro.disconnect(); if (plot) { plot.destroy(); plot = null; } };
+  const stopSize = display.onChange((c) => { if (c.rem && plot) build(); });
+  const stopTheme = onTheme(() => { if (plot) build(); });
+  const destroy = () => { stopNear(); stopSize(); stopTheme(); ro.disconnect(); if (plot) { plot.destroy(); plot = null; } };
   ctx.onCleanup(destroy);
   return { get plot() { return plot; }, destroy };
 }

@@ -5,9 +5,7 @@
 // list of the sessions not matched to a charge is read with the block (GET integrations/invoices?matched=false).
 //
 // The block is drawn from the input's overview (`ov.invoices`) by the section's paint(); its sessions list is read
-// by load() before the page is ready, so nothing shows up later. Its figures then follow `job` events of kind
-// invoices for the input (live events, polling GET integrations/tesla or /teslafi only while the live stream is
-// down), changed in place.
+// by load() before the page is ready, so nothing shows up later.
 
 import { h } from '../shared/dom.js';
 import { formatMoney } from '../shared/units.js';
@@ -17,8 +15,6 @@ import { icon } from '../core/icons.js';
 import { metric, figures } from '../core/page.js';
 import { ago, num, time } from '../core/fmt.js';
 import { askPassword } from './settings-server-move.js';
-import { follow, jobOf } from '../shared/live.js';
-import { morph } from '../core/morph.js';
 
 const LOCAL = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 const NAME = { tesla: 'Tesla', teslafi: 'TeslaFi' };
@@ -34,37 +30,11 @@ export async function loadUnmatched(ctx, source) {
   }
 }
 
-// one follower per page and input, kept across the section's paints: it changes the block painted last
-const followers = new WeakMap();
-
 /**
  * The block. ov: the input's overview; base: 'integrations/tesla' or '/teslafi'; guarded, withPw, after: the
  * section's own helpers for the password dialog (so the words and the stale-page rule are the section's).
  */
-export function invoicesBlock(ctx, opts) {
-  const el = blockEl(ctx, opts);
-  if (!opts.ov?.invoices) return el;
-  const mine = followers.get(ctx) || {};
-  followers.set(ctx, mine);
-  const f = (mine[opts.source] ||= { el: null, opts: null, live: null });
-  f.el = el;
-  f.opts = opts;
-  f.live ||= follow(ctx.api, {
-    type: 'job', match: jobOf('invoices', opts.source), pick: (d) => d.status,
-    load: () => ctx.api.get(opts.base).then((o) => o?.invoices || null),
-    // while the stream is down: often while older invoices or PDFs are still being fetched, else now and then
-    pollMs: (inv) => (inv?.backfill === 'running' || inv?.pdfs_waiting ? 10000 : 60000),
-    onValue: (inv) => {
-      if (!ctx.alive() || !inv) return;
-      // the section's overview with this input's newest block; only the figures that changed are written
-      f.opts = { ...f.opts, ov: { ...f.opts.ov, invoices: inv } };
-      f.el = morph(f.el, blockEl(ctx, f.opts));
-    },
-  });
-  return el;
-}
-
-function blockEl(ctx, { source, ov, base, unmatched = [], guarded, withPw, after }) {
+export function invoicesBlock(ctx, { source, ov, base, unmatched = [], guarded, withPw, after }) {
   const inv = ov?.invoices;
   const id = `${source}-invoices`;
   if (!inv) return h('div', { class: 'panel panel-pad inv-block', id, hidden: true, cover: `inv.settings.${source}` });

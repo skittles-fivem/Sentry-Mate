@@ -241,16 +241,21 @@ function tabs(ctx, panels, { fallback }) {
   return { el: bar, show, pick, current: () => cur };
 }
 
+// The first reads; prefetch() warms the same ones when a link here is under the pointer.
+const firstReads = (ctx) => [
+  ctx.admin ? ctx.api.get('settings/mqtt') : Promise.resolve(null),
+  ctx.api.get('settings/mqtt/status'),
+  ctx.admin ? ctx.api.get('network') : Promise.resolve(null),
+  ctx.api.get('cars', { sort: 'name', limit: 100 }),
+];
+export function prefetch(ctx) { return Promise.all(firstReads(ctx)); }
+
 export async function mount(ctx) {
   const admin = ctx.admin;
   // the overview's first read starts before everything else
   const ov = admin ? overviewSection(ctx) : null;
-  const [cfg0, status0, net, cars] = await Promise.all([
-    admin ? ctx.api.get('settings/mqtt').catch(() => null) : null,
-    ctx.api.get('settings/mqtt/status').catch(() => null),
-    admin ? ctx.api.get('network').catch(() => null) : null,
-    ctx.api.get('cars', { sort: 'name', limit: 100 }).catch(() => ({ items: [] })),
-  ]);
+  const r = firstReads(ctx);
+  const [cfg0, status0, net, cars] = await Promise.all([r[0].catch(() => null), r[1].catch(() => null), r[2].catch(() => null), r[3].catch(() => ({ items: [] }))]);
   if (!ctx.alive()) return;
   let cfg = cfg0, status = status0;
   const carList = cars?.items || [];
@@ -579,15 +584,15 @@ export async function mount(ctx) {
 
   /* ---------- network */
   const PURPOSE = {
-    geocoding: ['address lookup', 'only while online addresses are on; positions rounded first', 'settings-display'],
-    tiles: ['map pictures', 'asked by each viewer\'s browser while online tiles are on', 'settings-display'],
-    geonames_download: ['place-name download', 'only when an admin asks for new offline place names', 'settings-display'],
+    geocoding: ['address lookup', 'only while online addresses are on; positions rounded first', 'settings-maps'],
+    tiles: ['map pictures', 'asked by each viewer\'s browser while online tiles are on', 'settings-maps'],
+    geonames_download: ['place-name download', 'only when an admin asks for new offline place names', 'settings-maps'],
     mqtt: ['mqtt broker', 'only while publishing is on (above)', null],
     tesla: ['tesla api', 'only while a Tesla account is added and not paused: sign-in, the Owner API and its live stream (tesla account, above)', null],
     teslafi: ['teslafi api', 'only while a TeslaFi token is added and not paused: reads your cars\' data from TeslaFi', '#teslafi'],
     teslamate_mqtt: ['local teslamate (mqtt)', 'only while a local TeslaMate is added and not paused: subscribes to its topics, never publishes', '#teslamate'],
     teslamate_db: ['local teslamate (database)', 'only while its database catch-up is on: reads what MQTT missed', '#teslamate'],
-    release_check: ['release check', 'asks whether a newer Sentry Mate exists, when on', 'settings-display'],
+    release_check: ['release check', 'asks whether a newer Sentry Mate exists, when on', 'settings-server'],
     upload: ['can bridge uploads', 'the car\'s CAN Bridge sends its logs here', null],
     web: ['this app and the api', 'browsers, apps and the api', null],
   };

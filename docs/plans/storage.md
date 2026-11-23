@@ -1,6 +1,7 @@
 # Storage: as little disk as possible, nothing lost
 
-Status (2026-11-23): measured, and the first round of savings is in. Every value, log, signature and imported row
+Status (2026-11-23): measured, and two rounds of savings are in (the second: "Every input's raw, as small as it
+goes", below). Every value, log, signature and imported row
 reads exactly as before: nothing here is lossy, and the signed logs are kept byte for byte.
 
 ## How it is measured
@@ -116,6 +117,207 @@ a pass with nothing to do takes well under a second.
 still counting, units done of the total, what it freed so far, its rate and the time the step still needs, when it
 last got on (stalled after 2 minutes without a unit) and the units it left as they were.
 
+## Every input's raw, as small as it goes (second round, 2026-11-23)
+
+The first round packed files together. This one asks of each input what it stores and how small that can be made
+with nothing lost. The tables in "Before and after" above are the first round's; the series' numbers there are
+this section's "before".
+
+### What each input stores
+
+| input | what is kept | lossless means | done here |
+|---|---|---|---|
+| SMO CAN logs | the signed xz logs, their sidecars, the decoded series | the uploaded bytes | the logs: nothing, at the floor (see "Looked at and left"); the decoded series: small columns |
+| Tesla API (`vehicle_data`, the stream) | parsed values only, in day columns; the answers' text is never written | every value's 64 bits, which fields are there, every time | small columns, days packed together |
+| TeslaFi polls | parsed values only (a poll with a `data_id` already seen is skipped) | the same | the same |
+| local TeslaMate, MQTT | parsed values only (a sample when a value changed, at most one a second) | the same | the same |
+| local TeslaMate, catch-up rows | read like an import into the `teslamate` series; the rows' text is a temporary file, removed after each catch-up | the same | the same |
+| imports (TeslaMate dump, TeslaFi CSVs) | parsed values in series and tables, and **the uploaded file, kept until the import is discarded** | values: the same; the file: its bytes | series: the same; the file: packed by columns |
+
+So the only raw text the server keeps is the signed logs and the imports' uploaded files.
+
+### Per input, a car-day
+
+| input | before | after | ratio | CPU to pack a day | a day read cold, before → after |
+|---|---:|---:|---:|---|---|
+| Tesla API (7,656 samples a day) | 17,040 | 8,056 | 2.1 | 107 → 198 ms | 3.1 → 7.0 ms |
+| TeslaFi, live (1 a minute) | 1,512 | 609 | 2.5 | 7 → 17 ms | 0.2 → 0.7 ms |
+| local TeslaMate, live (1 every 5 s) | 73,900 | 13,400 | 5.5 | not timed by itself | not timed by itself |
+| TeslaMate import or catch-up: its series | 22,808 | 1,447 | 15.8 (see the odometer, below) | 70 → 129 ms | 3.8 → 7.3 ms |
+| TeslaFi import: its series | 1,515 | 620 | 2.4 | 7 → 16 ms | 0.2 → 0.6 ms |
+| TeslaMate import: the uploaded dump, plain (4,823 positions, 629 charge rows) | 855,762 | 40,944 | 20.9 | 0.4 s | the whole 100 MB dump: 0.14 → 1.4 s |
+| TeslaFi import: the uploaded CSVs, plain (233 rows) | 72,040 | 1,262 | 57 | 0.02 s | a month: under 0.1 s |
+| an uploaded gzip, xz or zip | as uploaded | as uploaded | 1 | | |
+| SMO CAN logs: the decoded series | 7,628 | about 4,450 | 1.7 | 63 → 198 ms | 3.4 → 3.0 ms, a day by itself; in a run not timed |
+| SMO CAN logs: the signed logs | not touched | | | | |
+
+Bytes, made-up data. Series: "before" is the first round's form (quick columns, brotli 10, each day by itself);
+the "after" of local TeslaMate and of the CAN series is their bytes on disk over their days, the others come from
+the measuring example. Times are of one core, taken with other work running: good to about a fifth.
+
+### The stored series
+
+Measured on the long history, now with a made-up Tesla API input (`dev history`, 229,694 samples in 30 days: the
+stream's records while driving, `vehicle_data` answers while awake, values with the API's own digits times
+1.609344).
+
+**What was wrong.** A finished day used the same quick columns as a day still being written. One value that didn't
+fit a scale sent its whole column to raw bits: every Tesla API distance (miles times 1.609344), a power column with
+a -0.0 in it, an odometer with any digits. And each day was compressed by itself, starting from nothing.
+
+**What is built** (`crates/db/src/segment/columns.rs`, `pack.rs`):
+
+- **Small columns** for finished days. Per column every encoding is tried and the smallest kept: scales for miles
+  (`n / 10^k × 1.609344`) and °F, a scaled column that keeps its few odd values beside it, floats with any digits as
+  integer deltas of their bits, runs. What is written is decoded and compared with the points bit for bit; if it ever
+  differed, the quick columns are written instead. Days still being written keep the quick columns, byte for byte.
+- **brotli 11** instead of 10 for these days.
+- **A month's days packed together**, in runs of about 2 MiB of columns, each run one stream (pack version 2).
+  Reading one day unpacks its run; the run's other days are kept unpacked with it.
+
+Encryption is as it was: the vault seals the same files.
+
+| series, bytes in the long history | before | after |
+|---|---:|---:|
+| TeslaMate import | 7,537,475 | 497,756 |
+| local TeslaMate (live) | 2,218,375 | 402,934 |
+| CAN logs | 521,117 | 302,882 |
+| Tesla API (live) | 512,600 | 257,256 |
+| TeslaFi (live) | 508,445 | 215,199 |
+| TeslaFi import | 92,523 | 38,855 |
+| charge curves (all) | 292,113 | 130,608 |
+| **all series** | **11,682,648** | **1,845,490 (-84 %)** |
+
+The whole folder on disk: 42,147,840 → 32,317,440 (the signed logs are most of the rest). The current month's days
+are small but not yet packed together (the month is not over): 20 of the Tesla API's 30 days here.
+
+**What was tried**, on the Tesla API's days (bytes a car-day; the others follow the same order):
+
+| candidate | bytes | against today |
+|---|---:|---:|
+| today: quick columns, brotli 10 | 17,040 | |
+| brotli 11 (a 16 MiB window gives the same as 4 MiB) | 16,670 | -2.2 % |
+| LZMA 9 | 16,736 | -1.8 % |
+| the miles and °F scales alone | 9,136 | -46.4 % |
+| odd values kept beside a scaled column, alone | 15,707 | -7.8 % |
+| bits as integer deltas, alone | 11,573 | -32.1 % |
+| byte planes of the bits, alone | 15,663 | -8.1 % |
+| change-only runs / deltas of deltas / byte runs, each alone | 16,987 / 17,080 / 17,018 | -0.3 / +0.2 / -0.1 % |
+| small columns (all of these), brotli 11 | 8,728 | -48.8 % |
+| small columns, LZMA 9 | 8,539 | -49.9 % |
+| small columns, the first or the previous day as a brotli dictionary | 8,613 | -49.5 % |
+| **built: small columns, runs of at most 2 MiB as one stream, brotli 11** | **8,056** | **-52.7 %** |
+| a month's points as one body of columns | 7,574 | -55.6 % |
+
+Left: LZMA (no gain once days are packed together: 8,153 against 8,056; slower to read; one more dependency at run
+time). A dictionary: about 1 %. Change-only encoding and deltas of deltas: brotli already packs a column of delta
+zeros to almost nothing, so they gain under 0.5 %; they stay as candidates a column may pick. A month as one body:
+the smallest, but one day then costs the whole month to decode (77 to 157 ms). Runs of 1 MiB, 512 KiB or none give
+1.91, 1.99 and 2.35 MB for all series against 1.85.
+
+**The import's number depends on its odometer.** The made-up odometer climbs evenly with any digits, which the bit
+deltas pack well. A car-day of the import's series, today → built:
+
+| the odometer's shape | today | built |
+|---|---:|---:|
+| as made up (any digits, an even climb) | 22,807 | 1,446 |
+| miles with 6 decimals × 1.609344 | 24,817 | 1,427 |
+| miles with 1 decimal × 1.609344 | 4,361 | 1,380 |
+| km with 2 decimals | 2,241 | 1,409 |
+| any digits, the last 20 bits with no pattern | 28,124 | 22,777 |
+
+What a real backup holds is still not known.
+
+**What it costs.** Packing a day: 107 → 198 ms (Tesla API), 70 → 129 ms (import), once, in the background. A first
+pass over the long history: 114 s of one core in 220 steps, the car's lock held 3.8 s at most; a pass with nothing
+to do: under a millisecond. Reading one day cold: 3.1 → 7.0 ms (Tesla API), 3.8 → 7.3 ms (import), the fields of a
+chart 1.2 → 4.1 ms; read again, as before. Reading every point of the folder: 4.0 → 3.5 s (a run is unpacked once
+for all its days).
+
+**Old data.** Nothing is converted at once. The compaction pass folds days into the small form, writes the packs'
+days again a few at a time, then packs them together. Each step: written under a temporary name, synced, read back
+from the disk, opened, compared (points bit for bit, or bytes), renamed. A crash at any step leaves the old file or
+the new. A day's level (2 small, 3 and 4 packed together) says it is done. A damaged pack is reported by name and
+kept. A late write into a run takes the run apart; the next pass packs it again. On the long history all 5,110,063
+stored points were read before and after and compared equal, bit for bit. Day stamps change once, so kept day parts
+of those days are worked out again on first use. An older server can't read a folder a newer one has packed (it
+says so: an unknown encoding or version); the newer reads everything old.
+
+**How to measure again.**
+
+    cargo run --release -p db --example series_sizes -- D/data D/keys [columns] [stream]
+    cargo run --release -p db --example series_sizes -- D/data D/keys odometer teslamate
+    cargo run --release -p db --example compact -- D/data D/keys 1 BEFORE_MS 16     # on a copy
+
+Tests: `crates/db/tests/small.rs` (odd values and random days bit for bit, bodies an older server wrote, a folder
+an older server left, a crash at every step, a damaged pack).
+
+### The kept uploads of imports
+
+An import keeps the file that was uploaded (`web/imports/<id>/backup`, `backup.1` …) until the import is
+discarded. It was stored as it arrived: a plain TeslaMate dump at its full size. Now compaction packs it once the
+import is over (`done` or `failed`), and every reader gets the same bytes back.
+
+**Measured** on made-up files (`cargo run --release -p kept --example measure`): a dump of 60 days and 2 cars
+(578,727 positions about a second apart, 75,534 charge rows, 102.6 MB of text) and 36 TeslaFi months (255,959
+rows, 78.9 MB).
+
+| the upload, packed (lossless) | TeslaMate dump | TeslaFi CSVs | time for the dump |
+|---|---:|---:|---|
+| as stored before (plain) | 102,691,402 | 78,956,107 | |
+| gzip -6 | 21.3 % | 7.7 % | 5 s |
+| xz -6 / xz -9e | 12.0 % / 12.0 % | 4.9 % / 4.3 % | 71 s / 262 s |
+| brotli 11 (16 MiB window; a 1 GiB window is the same) | 12.3 % | 4.4 % | 318 s |
+| rows turned into columns, 4 MiB blocks, xz 6 | 5.0 % | 1.9 % | 7 s |
+| **rows turned into columns, 4 MiB blocks, brotli 11 (built)** | **4.8 %** | **1.75 %** | 50 s, compare included |
+
+Blocks of 16 or 64 MiB gain 2 to 3 % more for 4 to 16 times the memory. Reading a packed dump whole takes 1.4 s
+for 100 MB (0.14 s before); reading its start 1 ms.
+
+**How** (`crates/kept`). The text is cut into blocks of about 4 MiB at a line's end (the first is 64 KiB, so a
+look at the file's start reads little). In a block, runs of rows with the same number of fields (a `COPY` block's
+tab-separated rows, a CSV's rows) are turned on their side. A column is stored as numbers when every field's exact
+text comes back: whole numbers, decimals and timestamps as differences, with the fraction digits each was written
+with; a dictionary for few different texts; else the text. A field that is not canonically written (`\N`, `007`,
+`-0`, `1e5`) keeps its text. Everything else (SQL, comments, headers) is kept as it is. Then brotli 11. Each block
+is turned back and compared before it is used, and the pack ends with the upload's length and SHA-256. Rows are
+never sorted: their order is part of the file. The blocks are sealed by the vault, each by itself, the file's name
+bound in.
+
+The 4.8 % rests on one guess: that a dump's odometer is miles with six decimals times 1.609344 (stored then as
+the miles; each value is worked out again and compared, else kept as text). Without it the same dump is 6.2 %.
+This needs a look at a real backup's numbers.
+
+**Safety**, the rule of the other steps: the pack is written under a temporary name and synced, read back from
+the disk, unpacked whole and compared with the upload byte for byte (and by SHA-256), renamed into place, and only
+then is the upload removed. A pass stopped half-way through a large dump is carried on from its last whole block.
+If both the upload and its pack are there after a crash, the upload wins: it is what is read, and the next pass
+compares the pack again before removing it. A pack that doesn't open is reported with its name and its block,
+never read as a shorter file, and nothing is removed; the pass then shows as failed with that name, and what it
+packed still counts. A pass looks at each pack's start and end; a damaged block in the middle is found when the
+pack is next read.
+
+**Who does it.** The web side knows which imports are over, the engine when to pack: the web side registers a
+step (`engine::compact::Step`), run last in every pass and by Compact now, a block at a time under the write gate.
+Nothing reads an upload once its import is over, and imports not yet over are never packed. A discard asks a pack
+under way to stop and waits for it (one block), then removes the folder. Packing costs about half a second a MB:
+some 8 minutes of one core at the lowest priority for a dump of 1 GB.
+
+**Left as uploaded: gzip, xz and zip.** Unpacking and packing by columns would save 77 % of a gzip or zip and
+60 % of an xz, but the uploaded bytes themselves could not be made again: the server's deflate gives other bytes
+than `gzip` from the second byte on, at every level, and its xz other bytes than `xz` after the headers, at every
+preset. A recipe that did match would depend on a packer never changing. So these stay byte for byte. (If the
+owner would rather keep the unpacked text exactly and let go of the container's bytes, that is a decision, not a
+lossless step.)
+
+**The upload can't be dropped.** The import keeps the values of the tables it reads; the upload also holds the
+tables and columns it doesn't, the SQL around them, and each value's own text. It can't be made again from what
+is stored.
+
+Tests: `crates/kept/tests/packs.rs` (round trips, nasty and random text, every stop and a restart, damage),
+`crates/web/tests/imports_kept.rs` (an import checked and imported again from its pack reports the same as from
+the upload; a discard during a pack; TeslaFi's several files).
+
 ## Tests
 
 - Round trips, byte for byte, on made-up data: `crates/ingest/tests/packs.rs`, `crates/db/tests/packs.rs`,
@@ -155,10 +357,11 @@ last got on (stalled after 2 minutes without a unit) and the units it left as th
 - **zstd with trained dictionaries.** The db is pure Rust by choice (brotli was picked by measuring, see
   `crates/db`'s docs); the pure-Rust zstd encoders compress worse than brotli. What a dictionary would give small
   records (shared structure paid once) the bundles and day packs give by compressing them together.
-- **The odometer of imported positions** is now most of an import's series (6.8 of 7.5 MB): a float with any digits
-  (kilometres worked out from miles), stored as XOR of bits, 2.6 bytes a value. If a real backup's values turn out
-  to be `miles with 6 decimals × 1.609344`, an exact encoding for that would shrink it several times; this needs a
-  look at a real backup's numbers (not at TeslaMate's code) and is not done.
+- **The odometer of imported positions** was most of an import's series. The small columns now pack it whatever
+  shape it has but one (digits with no pattern at all); see "The import's number depends on its odometer" above.
+  What a real backup holds is still not known.
+- **The catch-up's temporary dump** (`teslamate-local/catchup.dump`) is plain text on the disk while a catch-up
+  runs, then removed. Writing it through the vault would take a few lines; not done here.
 - **The ledger of check results** (`trust-*.records`, about 700 bytes a log: 3.6 MB here) is the judge's
   append-only record; not touched.
 - **Kept day parts** (1.6 MB after bundling) can be worked out again, but the pages' first calls on a long history

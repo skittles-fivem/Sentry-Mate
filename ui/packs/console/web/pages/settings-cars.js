@@ -1,7 +1,8 @@
 // settings/cars and settings/cars/{car}: per-car keys as 'key = value' lines, and how each car's CAN Bridge
 // is tied to it.
 // Without a car: every car the account sees, upload tokens for a car not here yet, keys waiting for a car,
-// and how a car appears. With a car: name and what the car reports (each value with its source), upload
+// the time zone a new car starts in (#default-tz: the server's default_time_zone, PATCH /settings with its
+// version; an admin's, others read), and how a car appears. With a car: name and what the car reports (each value with its source), upload
 // tokens and CAN Bridge keys with the outcome of the uploads, time zone, battery chemistry, reference values
 // and free Supercharging as dated ranges. Every line saves on its own (PATCH with the object's version).
 // Data sources: the car's live inputs in priority order (drag, or up / down), saved as source_order, and whether
@@ -110,13 +111,53 @@ async function mountIndex(ctx) {
   });
   const tokens = admin ? newCarTokens(ctx, fresh?.items || [], noCars) : null;
   const keys = admin ? waitingTable(ctx, waiting?.items || [], null, () => ctx.reload(), tz) : null;
+  const zone = defaultZone(ctx, admin);
   paint(ctx, head(ctx, { title: 'Settings: cars' }),
     h('p', { class: 'note', cover: 'web.settings.car.autosave' }, admin ? 'Open a car to change its keys: each line saves with Enter, Esc undoes.' : 'Car settings are changed by an admin; you can read them here.'),
     noCars ? section({ title: 'no cars yet', cover: 'web.settings.car.empty-state' }, empty('no cars yet', 'Sentry Mate needs no Tesla account: a car appears when its CAN Bridge uploads its first log.'), howCarsAppear(admin)) : null,
-    cars?.el, tokens?.el, keys?.el,
+    cars?.el, tokens?.el, keys?.el, zone.el,
     noCars ? null : section({ title: 'how a car appears', cover: 'web.settings.car.empty-state' }, howCarsAppear(admin)));
-  await Promise.all([cars?.ready, tokens?.ready, keys?.ready].filter(Boolean));
+  await Promise.all([zone.ready, cars?.ready, tokens?.ready, keys?.ready].filter(Boolean));
   if (ctx.alive()) ctx.ready();
+}
+
+/**
+ * default_time_zone: the zone a new car starts in (#default-tz), as one line with the zone list and, for an admin,
+ * "use <this browser's zone>". PATCH /settings with its version. -> { el, ready }
+ */
+function defaultZone(ctx, admin) {
+  const ZONES = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
+  const here = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
+  const slot = h('div');
+  let server = null;
+  const save = async (v) => {
+    try { server = await ctx.api.patch('settings', { version: server.version, default_time_zone: v }); } catch (e) {
+      if (e.status === 409) {
+        server = await ctx.api.get('settings').catch(() => server);
+        if (ctx.alive()) paintZone();
+        throw Object.assign(new Error('Someone else changed the settings first; the line shows theirs now. Try again.'), { status: 409 });
+      }
+      throw e;
+    }
+  };
+  function paintZone() {
+    if (!server) { replace(slot, note('The server settings could not be read.')); return; }
+    const ro = !admin;
+    const z = server.default_time_zone || 'UTC';
+    const lines = editLines([
+      { key: 'default_time_zone', id: 'default-tz-line', type: 'text', value: z, readOnly: ro, attrs: { list: 'sc-zones' },
+        parse: (t) => (isValidZone(t.trim()) ? { value: t.trim() } : { error: 'not a time zone this browser knows: pick one from the list, such as America/Chicago' }),
+        help: 'The zone a new car starts in: its days, weeks and prices by time of day. Each car keeps its own after that; open a car above to change it. The page header\'s clock names the zone shown.',
+        after: here && here !== z && !ro ? h('button', { class: 'btn', type: 'button', onclick: async () => {
+          try { await save(here); toast(`New cars start in ${here}.`); if (ctx.alive()) paintZone(); } catch (e) { toast(saveError(e), { kind: 'error' }); }
+        } }, `use ${here}`) : null,
+        save: (v) => save(v) },
+    ]);
+    replace(slot, lines.el, ro ? null : h('datalist', { id: 'sc-zones' }, ZONES.map((x) => h('option', { value: x }))));
+  }
+  const ready = ctx.api.get('settings').then((x) => { server = x; }).catch(() => null).then(() => { if (ctx.alive()) paintZone(); });
+  const el = section({ title: 'time zone for new cars', id: 'default-tz', side: h('span', { class: 'muted' }, admin ? 'for everyone' : 'set by an admin; read only') }, slot);
+  return { el, ready };
 }
 
 function newCarTokens(ctx, rows, noCars) {

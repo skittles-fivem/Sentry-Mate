@@ -22,7 +22,6 @@ import { confirmDialog, popover } from '../core/dialog.js';
 import { choice } from '../core/form.js';
 import { placeLink, endLabel } from '../core/journal.js';
 import { SOURCE_FILTER, sourceFilter, SOURCE_WHY, isEstimated, rowTitle } from '../core/sources.js';
-import { onRows } from '../shared/live.js';
 
 export const id = 'drives';
 export const css = true;
@@ -39,32 +38,51 @@ const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0
 /** A metric value shown in the person's unit in a number box (one decimal). */
 const shown = (metric, kind) => (metric != null ? String(Math.round(convert(metric, kind) * 10) / 10) : '');
 
+// The filters of the address and the list's query; the page's reads. prefetch() warms the first ones with the
+// same calls when a link here is under the pointer.
+const filtersOf = (q) => ({
+  q: q.q || '',
+  places: idList(q.places),
+  side: oneOf(SIDES, q.place_side, 'any'),
+  min: num(q.min_distance_km),
+  speed: num(q.min_avg_kph),
+  source: sourceFilter(q.source),
+  flags: oneOf(FLAGS, q.flags, ''),
+  sort: oneOf(SORTS, q.sort, 'start'),
+  basis: oneOf(BASES, q.efficiency, 'plain'),
+  exclude: idList(q.exclude),
+});
+const listQuery = (ctx, f) => ({
+  ...ctx.params, q: f.q || undefined, places: f.places.length ? f.places.join(',') : undefined, place_side: f.places.length ? f.side : undefined,
+  min_distance_km: f.min || undefined, min_avg_kph: f.speed || undefined, source: f.source || undefined, flags: f.flags || undefined,
+  efficiency: f.basis === 'plain' ? undefined : f.basis, sort: f.sort, dir: 'desc',
+});
+const placesRead = (ctx) => ctx.api.list('places', { sort: 'name', car: ctx.car.id }, { limit: 200 });
+const listPager = (ctx, params) => ctx.api.pager(api.apiPath`cars/${ctx.car.id}/drives`, params, { limit: 50 });
+const patternsRead = (ctx, exclude) => ctx.api.get(api.apiPath`cars/${ctx.car.id}/drive-stats`, { ...ctx.params, exclude_places: exclude.length ? exclude.join(',') : undefined });
+const missingRead = (ctx) => ctx.api.page(api.apiPath`cars/${ctx.car.id}/drives`, { ...ctx.params, flags: 'gap,in_progress' }, { limit: 20 });
+// the routes of the drives listed (one request for the page)
+function tracksRead(ctx, got) {
+  const from = Math.min(...got.map((d) => d.start_ms)), to = Math.max(...got.map((d) => d.end_ms ?? api.now())) + 1;
+  return ctx.api.get('tracks', { cars: ctx.car.id, from_ms: from, to_ms: to, max_points: Math.min(20000, Math.max(200, got.length * 60)) });
+}
+export async function prefetch(ctx) {
+  const f = filtersOf(ctx.query);
+  const [, first] = await Promise.all([placesRead(ctx).all(), listPager(ctx, listQuery(ctx, f)).more(), patternsRead(ctx, f.exclude), missingRead(ctx)]);
+  if (first?.items?.length) await tracksRead(ctx, first.items);
+}
+
 export async function mount(ctx) {
   const car = ctx.car, tz = ctx.tz;
-  const f = {
-    q: ctx.query.q || '',
-    places: idList(ctx.query.places),
-    side: oneOf(SIDES, ctx.query.place_side, 'any'),
-    min: num(ctx.query.min_distance_km),
-    speed: num(ctx.query.min_avg_kph),
-    source: sourceFilter(ctx.query.source),
-    flags: oneOf(FLAGS, ctx.query.flags, ''),
-    sort: oneOf(SORTS, ctx.query.sort, 'start'),
-    basis: oneOf(BASES, ctx.query.efficiency, 'plain'),
-    exclude: idList(ctx.query.exclude),
-  };
-  const listParams = () => ({
-    ...ctx.params, q: f.q || undefined, places: f.places.length ? f.places.join(',') : undefined, place_side: f.places.length ? f.side : undefined,
-    min_distance_km: f.min || undefined, min_avg_kph: f.speed || undefined, source: f.source || undefined, flags: f.flags || undefined,
-    efficiency: f.basis === 'plain' ? undefined : f.basis, sort: f.sort, dir: 'desc',
-  });
+  const f = filtersOf(ctx.query);
+  const listParams = () => listQuery(ctx, f);
   const filtered = () => !!(f.q || f.places.length || f.min || f.speed || f.source || f.flags);
 
   // The places the account may see (watch accounts: where their cars have been), for both pickers, with
   // this car's counts (car=). When they cannot be loaded, the ids from the address are still sent: the API
   // checks them itself, so a shared link never quietly shows unfiltered numbers.
   let places = [], placesFailed = false;
-  try { places = await ctx.api.list('places', { sort: 'name', car: car.id }, { limit: 200 }).all({ max: 2000 }); } catch (err) { if (ctx.signal.aborted) throw err; placesFailed = true; }
+  try { places = await placesRead(ctx).all({ max: 2000 }); } catch (err) { if (ctx.signal.aborted) throw err; placesFailed = true; }
   if (!placesFailed) {
     const known = new Set(places.map((p) => p.id));
     f.places = f.places.filter((x) => known.has(x));
@@ -180,13 +198,12 @@ export async function mount(ctx) {
 
   let pager = null, items = [], tracks = new Map(), sideMap = null, gen = 0;
   const picked = new Map();
-  // quiet: a live reload (the list stays as it is until the new one is in)
-  async function loadList(quiet = false) {
+  async function loadList() {
     const my = ++gen;
-    pager = ctx.api.pager(api.apiPath`cars/${car.id}/drives`, listParams(), { limit: 50 });
+    pager = listPager(ctx, listParams());
     items = [];
     picked.clear();
-    if (!quiet) replace(listBox, loadingBlock(6));
+    replace(listBox, loadingBlock(6));
     replace(more);
     csv.setAttribute('href', ctx.api.csvUrl(api.apiPath`cars/${car.id}/drives`, listParams()));
     await more1(true, my);
@@ -210,9 +227,8 @@ export async function mount(ctx) {
   }
   async function loadTracks(got) {
     if (!got.length) return;
-    const from = Math.min(...got.map((d) => d.start_ms)), to = Math.max(...got.map((d) => d.end_ms ?? api.now())) + 1;
     try {
-      const t = await ctx.api.get('tracks', { cars: car.id, from_ms: from, to_ms: to, max_points: Math.min(20000, Math.max(200, got.length * 60)) });
+      const t = await tracksRead(ctx, got);
       for (const d of t.drives || []) tracks.set(d.drive, d.lon.map((x, i) => [x, d.lat[i]]));
     } catch { /* the sketches fall back to a straight line */ }
   }
@@ -385,8 +401,6 @@ export async function mount(ctx) {
   spanText();
   await Promise.all([loadList(), drawPatterns(ctx, patternsBody, f.exclude), drawMissing(ctx, missing)]);
   ctx.ready();
-  // a drive of the car started or ended (once a burst of `rows` has passed): the list loaded again in place
-  onRows(ctx.api, { car: car.id, waitMs: 2000, run: () => { if (ctx.alive()) loadList(true).catch(() => {}); } });
   return {
     async update(c, why) {
       if (why && why.prefs) {
@@ -497,7 +511,7 @@ async function drawPatterns(ctx, box, exclude) {
   const car = ctx.car, tz = ctx.tz;
   let s;
   try {
-    s = await ctx.api.get(api.apiPath`cars/${car.id}/drive-stats`, { ...ctx.params, exclude_places: exclude.length ? exclude.join(',') : undefined });
+    s = await patternsRead(ctx, exclude);
   } catch (err) { if (!ctx.signal.aborted) replace(box, partError('The driving patterns could not be loaded', err, () => { replace(box, loadingBlock(4)); drawPatterns(ctx, box, exclude); })); return; }
   const span = periodLabel(ctx.period, tz, api.now());
   const file = (what) => csvFilename(car.name, what, span);
@@ -581,7 +595,7 @@ async function drawMissing(ctx, box) {
   const car = ctx.car, tz = ctx.tz;
   const params = { ...ctx.params, flags: 'gap,in_progress' };
   let pg;
-  try { pg = await ctx.api.page(api.apiPath`cars/${car.id}/drives`, params, { limit: 20 }); } catch (err) {
+  try { pg = await missingRead(ctx); } catch (err) {
     if (!ctx.signal.aborted) replace(box, h('div', { class: 'block-head' }, h('h2', { class: 'label' }, 'Drives with missing data')), partError('The drives with missing data could not be loaded', err, () => { replace(box, loadingBlock(3)); drawMissing(ctx, box); }));
     return;
   }

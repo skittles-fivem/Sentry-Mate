@@ -100,8 +100,8 @@ export function dismissRelease(notice) {
 
 /**
  * What Settings: Server and access shows in its "Server updates" card, in the same words on every pack: GET /about
- * (this build) and GET /release (the release check's last answer), the same answers Help and Settings: Display and
- * units show. The switch itself stays in Display and units (`RELEASE_SETTING`); the card only links to it.
+ * (this build) and GET /release (the release check's last answer), the same answers Help shows. The card also
+ * holds the release check's switch (#release-check; `RELEASE_SETTING` names where it is).
  *   { on, tone, rows: [{ key, label, text, title, badge, tone }], how, doc, busy }
  * rows: this (version and build), built (when it was built), newest (the newest published build and whether it is
  * newer), checked (when the check last asked). `release` null: the server did not answer.
@@ -138,7 +138,7 @@ export function serverUpdates(about, release, nowMs = Date.now()) {
 /** The one line on how to update, and where the release check is switched (Settings: Display and units). */
 export const UPDATE_HOW = 'To update, pull the new image and redeploy the app.';
 export const RELEASE_OFF_TEXT = 'Off by default: the server asks nothing and sends nothing until an admin turns it on.';
-export const RELEASE_SETTING = { page: 'settings-display', hash: 'release-check', text: 'Turn it on in Display and units' };
+export const RELEASE_SETTING = { page: 'settings-server', hash: 'release-check', text: 'Turn it on in Server and access' };
 
 /** The Docker and TrueNAS steps (docs/install.md, Updating): a link when the server names its source, else the path. */
 export function updatingDoc(about) {

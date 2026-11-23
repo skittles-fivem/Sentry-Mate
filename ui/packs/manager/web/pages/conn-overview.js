@@ -1,8 +1,8 @@
 // Connections overview: every connection the server keeps, on one page (GET integrations/overview, admin).
 // Used by Settings: Integrations (its first tab, overviewTab) and Data health and storage (overviewCard).
 //
-// The tab follows `connections` events (live events, polling every 10 s only while the live stream is down),
-// and updates every row in place (keyed by the connection's id): text changes, nothing is drawn again, and the old figures stay
+// The tab reads the overview again every 10 s while it is shown and the window is visible, and updates every
+// row in place (keyed by the connection's id): text changes, nothing is drawn again, and the old figures stay
 // until the new ones are in. Relative times ("12 s ago", "in 30 s") tick every second against the server's
 // clock; their boxes have a fixed width, so nothing beside them moves.
 
@@ -13,10 +13,7 @@ import { formatNumber } from '../shared/i18n.js';
 import { icon } from '../core/icons.js';
 import { panel, note } from '../core/page.js';
 import { emptyState, errorWords } from '../core/states.js';
-import { follow } from '../shared/live.js';
-import { morph } from '../core/morph.js';
 
-// how often the overview is read while the live stream is down
 const POLL_MS = 10_000;
 const TICK_MS = 1_000;
 const NBSP = ' ';
@@ -61,8 +58,10 @@ function packLink(link) {
   const [path, hash = ''] = String(link).split('#');
   if (path === '/settings/integrations') return `/settings/integrations?tab=setup${hash ? `#${hash === 'mqtt' ? 'si-broker' : hash}` : ''}`;
   if (path === '/settings/server') {
-    if (hash === 'release') return '/settings/display#release-check';
-    if (hash === 'maps' || hash === 'geocoding') return '/settings/display';
+    // older names of sections that now live elsewhere
+    if (hash === 'release') return '/settings/server#release-check';
+    if (hash === 'maps') return '/settings/maps#map-tiles';
+    if (hash === 'geocoding') return '/settings/maps#address-lookup';
   }
   return link;
 }
@@ -234,7 +233,7 @@ export function overviewTab(ctx, { first }) {
   const head = h('div', { class: 'ov-headrow', 'aria-hidden': 'true' },
     ['Connection', 'Last good contact', 'Pace', 'Today', 'Last 24 h', 'Last 7 days', 'Uptime', 'Each hour, 24 h'].map((t) => h('span', null, t)));
   const connPanel = panel({ title: 'Connections', icon: 'share', cls: 'ov-panel', cover: 'conn.overview.rows',
-    side: h('span', { class: 'faint ov-side' }, 'Updated ', readEl) },
+    side: h('span', { class: 'faint ov-side' }, 'Read ', readEl, ', again every 10 s') },
   note('Every connection the server keeps. Open a row for its settings or details. Times are relative to the server’s clock; the bars are the last 24 hours, one per hour, red where something failed.'),
   head, listEl);
   const probList = h('ol', { class: 'ov-probs' });
@@ -311,21 +310,23 @@ export function overviewTab(ctx, { first }) {
     totalsEl.hidden = true; connPanel.hidden = true; probPanel.hidden = true;
   }
 
-  let on = false;
-  function take(d) {
-    if (!ctx.alive() || !d) return;
-    data = d;
-    if (errSlot.hidden === false && totalsEl.hidden === false) { errSlot.hidden = true; replace(errSlot); }
-    if (totalsEl.hidden) { totalsEl.hidden = false; connPanel.hidden = false; probPanel.hidden = false; errSlot.hidden = true; replace(errSlot); }
-    paint(d);
+  let on = false, busy = false;
+  async function poll() {
+    if (!on || busy || document.visibilityState === 'hidden') return;
+    busy = true;
+    try {
+      const d = await ctx.api.get('integrations/overview');
+      if (!ctx.alive()) return;
+      data = d;
+      if (errSlot.hidden === false && totalsEl.hidden === false) { errSlot.hidden = true; replace(errSlot); }
+      if (totalsEl.hidden) { totalsEl.hidden = false; connPanel.hidden = false; probPanel.hidden = false; errSlot.hidden = true; replace(errSlot); }
+      paint(d);
+    } catch (e) {
+      if (e?.name === 'AbortError' || !ctx.alive()) return;
+      if (data) showError(e);
+    } finally { busy = false; }
   }
-  // the page read the first answer; this reads it again after a reconnect and every 10 s while the stream is down
-  const live = follow(ctx.api, {
-    type: 'connections', load: () => ctx.api.get('integrations/overview'), pollMs: POLL_MS,
-    onValue: take,
-    onError: (e) => { if (ctx.alive() && data) showError(e); },
-  });
-  const poll = () => live.refresh();
+  ctx.every(POLL_MS, poll);
   ctx.every(TICK_MS, () => { if (on) tick(); });
 
   return {
@@ -358,22 +359,7 @@ export async function overviewCard(ctx, admin) {
         h('span', { class: 'ov-card-title' }, 'Connections overview'),
         h('span', { class: 'ov-card-text' }, 'Every input and output of the server, on Settings: Integrations, Overview. An admin sees it.')));
   }
-  // the counts follow `connections` events, changed in place (read every 10 s only while the stream is down)
-  let el = null;
-  let first = null;
-  const got = new Promise((res) => { first = res; });
-  const paintCard = (d) => { const next = cardOf(d); if (el) morph(el, next); else el = next; first(); };
-  follow(ctx.api, {
-    type: 'connections', load: () => ctx.api.get('integrations/overview'), pollMs: POLL_MS,
-    onValue: (d) => { if (ctx.alive() && d) paintCard(d); },
-    // the link still works without the counts
-    onError: () => { if (!el) paintCard(null); },
-  });
-  await got;
-  return el;
-}
-
-function cardOf(d) {
+  const d = await ctx.api.get('integrations/overview').catch((e) => (e?.name === 'AbortError' ? Promise.reject(e) : null));
   const totals = d?.totals || null;
   const parts = totals ? STATUS_ORDER.filter((s) => totals[s]).map((s) => h('span', { class: 'ov-chip', dataset: { status: s } }, light(s), `${formatNumber(totals[s])} ${STATUS_WORD[s].toLowerCase()}`)) : [];
   return h('a', { class: 'ov-card', href: '/settings/integrations?tab=overview', cover: 'conn.overview.link' },

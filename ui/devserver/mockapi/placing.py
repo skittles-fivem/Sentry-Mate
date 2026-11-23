@@ -16,7 +16,7 @@ import copy
 
 from .dataset import places as P
 from .dataset.segments import address_at
-from .util import haversine_m
+from .util import date_str, haversine_m
 
 
 def seed_places():
@@ -127,16 +127,64 @@ def full_address(app, lat, lon, base_pid=None):
 # ------------------------------------------------------------------ costs that stay put
 
 
+def prices_of(p):
+    """A place's dated prices, oldest first: [{from, source, price[, invoice]}]. A place saved with one
+    `price` and no list has it from the start."""
+    if not p:
+        return []
+    if p.get("prices") is not None:
+        return sort_prices(p["prices"])
+    return [{"from": None, "source": "typed", "price": copy.deepcopy(p["price"])}] if p.get("price") else []
+
+
+def sort_prices(lst):
+    return sorted(lst, key=lambda x: (x.get("from") or "", x.get("source") != "typed"))
+
+
+def price_on_day(lst, day):
+    """The price in force on `day` (YYYY-MM-DD): the newest typed one that started by then, else the
+    newest invoice one."""
+    for src in ("typed", "invoice"):
+        hit = None
+        for x in sort_prices(lst):
+            if x.get("source", "typed") == src and (x.get("from") is None or x["from"] <= day):
+                hit = x
+        if hit:
+            return hit
+    return None
+
+
+def entry_on(p, ms, tz=None):
+    """The dated entry of a place (dict) in force at `ms`, on the place's own day (None: no price)."""
+    if not p:
+        return None
+    return price_on_day(prices_of(p), date_str(ms, p.get("time_zone") or tz or "UTC"))
+
+
+def source_on(p, ms, tz=None):
+    """Who set the price in force at `ms`: "typed", "invoice" or None."""
+    hit = entry_on(p, ms, tz)
+    return hit.get("source", "typed") if hit else None
+
+
+def price_on(p, ms, tz=None):
+    """The price of a place (dict) in force at `ms`, on the place's own day."""
+    if not p:
+        return None
+    hit = price_on_day(prices_of(p), date_str(ms, p.get("time_zone") or tz or "UTC"))
+    return copy.deepcopy(hit["price"]) if hit else None
+
+
 def pricing(app, c):
     """(place used for pricing or None, price or None) for a charge: its frozen price if it has one,
-    else the place it is at now with that place's current price."""
+    else the place it is at now with that place's price of the charge's day."""
     snap = app.store.charge_price.get(c.id)
     if snap is not None:
         return snap["place"], snap["price"]
     pl = place_obj(app, piece_pid(app, c))
     if pl is None:
         return None, None
-    return {k: pl[k] for k in ("id", "name", "kind", "time_zone")}, pl.get("price")
+    return {k: pl[k] for k in ("id", "name", "kind", "time_zone")}, price_on(pl, c.start)
 
 
 def freeze_costs(app, affected):

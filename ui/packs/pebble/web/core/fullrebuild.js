@@ -2,10 +2,8 @@
 //
 // What it does and does not touch, one button (Cancel while one runs) and a progress well of fixed size: the bar,
 // the seven status rows and three rows for problems, all there from the start and their text changed in place,
-// so the tile never grows or shrinks; only the texts that changed are written. Follows the `job` events of kind
-// full_rebuild (live events, polling only while the live stream is down: every 2 s while one runs, every 30 s
-// otherwise). Used by Health (one car: cars/{car}/full-rebuild) and Settings: Server and access (every car:
-// system/full-rebuild).
+// so the tile never grows or shrinks. Read again every 2 s while one runs, every 30 s otherwise. Used by Health
+// (one car: cars/{car}/full-rebuild) and Settings: Server and access (every car: system/full-rebuild).
 // Styles: app.css (.fr-*).
 
 import { h } from '../shared/dom.js';
@@ -16,7 +14,6 @@ import { confirmSheet } from './sheet.js';
 import { askPassword, said } from './settings.js';
 import { toast } from './toast.js';
 import { errorWords } from './states.js';
-import { follow, jobOf, setText, setAttr } from '../shared/live.js';
 
 const ERRORS = 3;
 
@@ -30,7 +27,8 @@ export function fullRebuildTile(ctx, { car = null, carName = null, after = null,
   const path = car ? api.apiPath`cars/${car.id}/full-rebuild` : 'system/full-rebuild';
   const label = word || (car ? fr.BUTTON : fr.BUTTON_ALL);
   let names = carName || ((x) => x);
-  let s = null, busy = false;
+  let s = null, timer = 0, busy = false;
+  ctx.onCleanup(() => clearTimeout(timer));
 
   const staleText = h('span');
   const stale = said('warn', staleText);
@@ -53,66 +51,45 @@ export function fullRebuildTile(ctx, { car = null, carName = null, after = null,
   const el = bare ? h('div', { class: 'fr-tile fr-bare', id: 'full-rebuild' }, parts)
     : tile({ w: 2, title: 'Full rebuild', icon: 'reset', id: 'full-rebuild', cls: 'fr-tile' }, parts);
 
-  let shownStale = null;
   function paint() {
     const now = api.now();
     const run = fr.running(s);
     const tone = fr.tone(s, now);
-    setText(goText, run ? fr.CANCEL : label);
-    setAttr(go, 'class', ['btn', run ? 'btn-danger' : 'btn-soft'].join(' '));
-    if (go.disabled !== busy) go.disabled = busy;
+    goText.textContent = run ? fr.CANCEL : label;
+    go.className = ['btn', run ? 'btn-danger' : 'btn-soft'].join(' ');
+    go.disabled = busy;
     // a full rebuild of other cars shows here too, and can be cancelled here
-    setText(other, run && car && s && !s.this_car ? 'Running for other cars; this car keeps its history.' : '');
+    other.textContent = run && car && s && !s.this_car ? 'Running for other cars; this car keeps its history.' : '';
     const list = s?.version?.stale_cars || [];
     const st = car ? fr.staleText(s) : list.length ? `Made with an older way of decoding the logs: ${list.map(names).join(', ')}.` : '';
-    if (shownStale !== !!st) { shownStale = !!st; stale.hidden = !st; }
-    setText(staleText, st);
-    // the bar's fill is the same percent as the figure beside it and the rows' counts
+    stale.hidden = !st;
+    staleText.textContent = st;
     const p = fr.percent(s);
-    const w = String(fr.fraction(s));
-    if (fill.style.getPropertyValue('--w') !== w) fill.style.setProperty('--w', w);
-    setAttr(bar, 'aria-valuenow', p == null ? null : String(p));
-    setText(pct, p == null ? '' : `${p} %`);
-    setAttr(well, 'class', `fr-well is-${tone}`);
+    fill.style.setProperty('--w', String(fr.fraction(s)));
+    if (p == null) bar.removeAttribute('aria-valuenow'); else bar.setAttribute('aria-valuenow', String(p));
+    pct.textContent = p == null ? '' : `${p} %`;
+    well.className = `fr-well is-${tone}`;
     for (const [i, l] of fr.lines(s, now, names).entries()) {
-      setText(rows[i].k, l.label);
-      setText(rows[i].v, l.text);
-      setAttr(rows[i].v, 'title', l.text);
+      rows[i].k.textContent = l.label;
+      rows[i].v.textContent = l.text;
+      rows[i].v.title = l.text;
     }
     const lines = fr.errorLines(s, ERRORS, names);
     if (!lines.length && s?.error) lines.push(s.error);
-    for (const [i, e] of errs.entries()) { setText(e, lines[i] || ''); setAttr(e, 'title', lines[i] || ''); }
+    for (const [i, e] of errs.entries()) { e.textContent = lines[i] || ''; e.title = lines[i] || ''; }
   }
 
-  // GET once at the start and after a reconnect, then the `job` events (a car's own read adds this_car and
-  // car_stale, which an event does not carry: they stay from the last read)
-  const shown = (next) => {
-    s = next;
-    paint();
-    onStatus?.(s, fr.lines(s, api.now(), names));
-  };
-  let live = null;
-  const read = () => live?.refresh();
-  function follows() {
-    let first;
-    const ready = new Promise((res) => { first = res; });
-    live = follow(ctx.api, {
-      type: 'job', match: jobOf('full_rebuild'), pick: (d) => d.status,
-      load: () => ctx.api.get(path),
-      pollMs: (v) => (fr.running(v) ? fr.POLL_MS : fr.IDLE_POLL_MS),
-      onValue: (v, how) => {
-        if (!ctx.alive()) return;
-        const before = s;
-        shown(how === 'event' && car && v ? { ...v, this_car: before?.this_car ?? false, car_stale: before?.car_stale ?? false } : v);
-        first();
-        // a run that started or ended changes this car's part in it: its own status is read once
-        if (car && how === 'event' && fr.running(v) !== fr.running(before)) live.refresh();
-      },
-      onError: () => first(),   // the last status stays; the next read tries again
-    });
-    // the time since the last progress (and the stall warning) follow the clock between events
-    ctx.every(10000, () => { if (fr.running(s)) paint(); });
-    return ready;
+  async function read() {
+    clearTimeout(timer);
+    try {
+      const next = await ctx.api.get(path);
+      if (!ctx.alive()) return;
+      s = next;
+      paint();
+      onStatus?.(s, fr.lines(s, api.now(), names));
+    } catch (e) { if (!ctx.alive() || api.isAbort(e)) return; }
+    // while one runs, and once more after it ended
+    timer = setTimeout(() => { if (ctx.alive()) read(); }, fr.running(s) ? fr.POLL_MS : fr.IDLE_POLL_MS);
   }
 
   async function act() {
@@ -129,7 +106,7 @@ export function fullRebuildTile(ctx, { car = null, carName = null, after = null,
       }),
     });
     if (!r || !ctx.alive()) return;
-    shown(r);
+    s = r; paint(); onStatus?.(s, fr.lines(s, api.now(), names));
     toast('Full rebuild started. Pages show the old history until it is done.');
     read();
   }
@@ -151,7 +128,7 @@ export function fullRebuildTile(ctx, { car = null, carName = null, after = null,
       const m = new Map(cars.map((c) => [c.id, c.name]));
       names = (id) => m.get(id) || id;
     }
-    await follows();
+    await read();
   }
   paint();
   return { el, ready: start(), status: () => s };

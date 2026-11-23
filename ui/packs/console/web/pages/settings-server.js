@@ -1,6 +1,6 @@
 // settings/server: who can sign in and how the server is reached, and moving it.
 // Everyone: the check of this address (https, host name, port), server updates (this build and the release check's
-// last answer: GET /about, GET /release; check now for an admin; the switch stays in display and units), how access
+// last answer: GET /about, GET /release; check now and the release check's switch for an admin), how access
 // works, their own sessions.
 // Admins also: the certificate (its names changed in a dialog as a 'key = value' line) and the recovery key (show again,
 // make new, say it is saved), moving to another server as numbered steps with a state tag and a run button
@@ -8,10 +8,9 @@
 // accounts, a full rebuild of every car (with its progress and the automatic run), and the audit log; and
 // storage beside the move: the space on disk by kind (GET /system/storage/detail) and compaction with a run
 // button (POST /system/storage/compact), its state in one line.
-// Compaction follows `job` events of kind compaction and `storage` events, the export file `job` events of kind
-// export (live events, polling only while the live stream is down: the detail every 2 s while a pass runs,
-// GET /system/exports while the file is made). The move is read once a second while it runs (GET /system/move:
-// it has no event); every dangerous action asks for the person's own password again.
+// While a compaction pass runs the detail is read again every 2 s.
+// The move and the export file are read once a second while something runs (GET /system/move,
+// GET /system/exports/{id}); every dangerous action asks for the person's own password again.
 
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
@@ -32,10 +31,8 @@ import { askPassword, copyBtn, codeOut, downloadKey, showOnce, STAY } from '../c
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 import { exportModel, exportPollMs } from '../shared/exportjob.js';
 import { fullRebuild } from '../core/fullrebuild.js';
-import { serverUpdates, RELEASE_OFF_TEXT, RELEASE_SETTING } from '../shared/release.js';
+import { serverUpdates, RELEASE_OFF_TEXT } from '../shared/release.js';
 import { compactionProgress } from '../shared/compaction.js';
-import { follow, jobOf } from '../shared/live.js';
-import { morphChildren } from '../core/morph.js';
 
 export const id = 'settings-server';
 export const title = () => 'Settings: server';
@@ -181,7 +178,7 @@ export async function mount(ctx) {
     replace(updSlot,
       kv(u.rows.map((r) => [r.label.toLowerCase(), [h('span', { title: r.title || null }, r.text), r.badge ? [' ', tag(r.badge.toLowerCase(), UPD_TAG[r.tone] || 'muted')] : null]]), { cols: 1 }),
       lines([[tag(u.on ? 'on' : 'off', u.on ? 'ok' : 'muted'), u.on ? 'release check: once a day the server asks GitHub whether a newer image is published.' : `release check: ${RELEASE_OFF_TEXT}`,
-        !u.on ? (admin ? [' ', link(`${state.buildUrl(RELEASE_SETTING.page)}#${RELEASE_SETTING.hash}`, RELEASE_SETTING.text.toLowerCase())] : ' An admin can turn it on.') : null]]),
+        !u.on ? (admin ? ' turn it on with release_check.enabled above.' : ' An admin can turn it on.') : null]]),
       admin ? h('div', { class: 'acts' }, btn(busy ? 'checking…' : 'check now', updCheckNow, { disabled: !u.on || busy, title: u.on ? null : 'Turn the release check on first' })) : null,
       note(`${u.how} Steps for Docker and TrueNAS: `, u.doc.href ? h('a', { class: 'lnk', href: u.doc.href, target: '_blank', rel: 'noopener noreferrer external' }, u.doc.text) : h('span', { class: 'prompt' }, u.doc.path), '.'));
     if (S.release?.status === 'checking' && !updChecking) {
@@ -190,6 +187,23 @@ export async function mount(ctx) {
     }
   }
   paintUpdates();
+  // the release check's switch (#release-check, PATCH /settings with its version; an admin's, others read)
+  const relLine = S.settings ? editLines([
+    { key: 'release_check.enabled', id: 'release-check', type: 'bool', value: !!S.settings.release_check?.enabled, readOnly: !admin,
+      help: 'Check for new releases: once a day the server asks GitHub whether a newer Sentry Mate image is published, and tells admins. Only that question goes out (no token, no car, no account); it never downloads or installs anything.',
+      save: async (v) => {
+        try { S.settings = await ctx.api.patch('settings', { version: S.settings.version, release_check: { enabled: v } }); } catch (e) {
+          if (e.status === 409) {
+            S.settings = await ctx.api.get('settings').catch(() => S.settings);
+            relLine.line('release_check.enabled').set(!!S.settings?.release_check?.enabled);
+            throw new Error('Someone else changed the server settings first; the line shows theirs now. Try again.');
+          }
+          throw e;
+        }
+        S.release = await ctx.api.get('release').catch(() => S.release);
+        if (ctx.alive()) paintUpdates();
+      } },
+  ]) : null;
 
   /* ---------------------------------------------------------------- certificate and recovery key */
   const cert = S.notices.find((n) => n.code === 'certificate_expiring');
@@ -315,8 +329,8 @@ export async function mount(ctx) {
   const M = { move: null, codeText: null, codeId: null, err: null, exp: null, expErr: null, want: false };
   const moveSlot = h('div', { 'aria-live': 'polite' });
   const expSlot = h('div', { 'aria-live': 'polite' });
-  let mt = null;
-  ctx.onCleanup(() => clearTimeout(mt));
+  let mt = null, et = null;
+  ctx.onCleanup(() => { clearTimeout(mt); clearTimeout(et); });
   function schedule() { clearTimeout(mt); if (M.move && LIVE.has(M.move.state)) mt = setTimeout(refreshMove, M.move.state === 'offered' ? 2000 : 1000); }
   async function refreshMove() {
     try { const m = await ctx.api.get('system/move'); if (!ctx.alive()) return; setMove(m); M.err = null; } catch (e) { if (!ctx.alive()) return; M.err = e; }
@@ -407,27 +421,16 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- export file */
   // One box of a fixed size: the same lines in every state (none, making, stalled, failed, ready), so it never
   // jumps as the export goes on. The words come from shared/exportjob.js.
-  // the newest export file read at the start and after a reconnect, then its `job` events (one made elsewhere
-  // too, when none is shown)
-  let expLive = null;
-  const refreshExp = () => expLive?.refresh();
-  function setExp(e) {
-    const was = M.exp?.state;
-    M.exp = e; M.expErr = null;
-    if (e && was === 'preparing' && e.state === 'ready' && M.want) { M.want = false; download(e); }
-    paintExp();
-  }
-  function followExp() {
-    let first;
-    const ready = new Promise((res) => { first = res; });
-    expLive = follow(ctx.api, {
-      type: 'job', match: (d) => jobOf('export')(d) && (!M.exp || d.id === M.exp.id), pick: (d) => d.status,
-      load: () => ctx.api.get('system/exports').then((ex) => ex?.items?.[0] || null),
-      pollMs: () => exportPollMs(M.exp),
-      onValue: (e) => { if (ctx.alive()) setExp(e); first(); },
-      onError: (err) => { if (ctx.alive()) { M.expErr = err; paintExp(); } first(); },
-    });
-    return ready;
+  function scheduleExp() { clearTimeout(et); const ms = exportPollMs(M.exp); if (ms) et = setTimeout(refreshExp, ms); }
+  async function refreshExp() {
+    try {
+      const e = M.exp ? await ctx.api.get(`system/exports/${enc(M.exp.id)}`) : null;
+      if (!ctx.alive()) return;
+      const was = M.exp?.state;
+      M.exp = e; M.expErr = null;
+      if (e && was === 'preparing' && e.state === 'ready' && M.want) { M.want = false; download(e); }
+    } catch (err) { if (!ctx.alive()) return; if (err.status === 404) { M.exp = null; M.expErr = null; } else M.expErr = err; }
+    paintExp(); scheduleExp();
   }
   function download(e) {
     if (!e?.url) return;
@@ -442,12 +445,12 @@ export async function mount(ctx) {
       run: (cred) => ctx.api.post('system/exports', cred).catch(async (e) => { if (e.code !== 'export_preparing') throw e; return (await ctx.api.get('system/exports')).items?.[0] || null; }) });
     if (!r || !ctx.alive()) return;
     M.exp = r; M.expErr = null; M.want = true;
-    paintExp(); refreshExp();
+    paintExp(); scheduleExp();
   }
   async function cancelExport() {
     if (!M.exp || !(await confirmDialog('The server stops making the file and keeps nothing of it. Uploads go on.', { title: 'stop making the export file?', ok: 'stop it', danger: true }))) return;
     try { await ctx.api.del(`system/exports/${enc(M.exp.id)}`); M.exp = null; M.want = false; toast('The export file was cancelled.', { kind: 'info' }); } catch (e) { toast(`Could not cancel it: ${errText(e)}`, { kind: 'error' }); }
-    if (ctx.alive()) paintExp();
+    if (ctx.alive()) { paintExp(); scheduleExp(); }
   }
   async function removeExport() {
     if (!(await confirmDialog('The file is removed from this server. A copy you downloaded stays where you put it.', { title: 'remove the export file?', ok: 'remove', danger: true }))) return;
@@ -477,8 +480,7 @@ export async function mount(ctx) {
       : ready ? [h('a', { class: 'btn btn--primary', href: e.url, download: e.file_name }, 'download'), btn('make a new one', makeExport), btn('remove', removeExport, { kind: 'quiet' })]
         : m.kind === 'failed' ? [btn('make a new one', makeExport, { kind: 'primary' })]
           : [btn('make the export file', makeExport, { kind: 'primary' })];
-    // only the texts that changed are written (a job event can come twice a second)
-    morphChildren(expSlot, [
+    replace(expSlot,
       h('div', { class: ['mono-box', 'out-box', 'xp-box', `xp-box--${m.kind}`], role: 'group', 'aria-label': 'Export file status' },
         label('export', [tag(stateTag[0], stateTag[1]), ` ${m.head.toLowerCase()}`]),
         label('step', m.kind === 'busy' ? m.sub.replace(/^Step /, '').toLowerCase() : m.sub),
@@ -490,21 +492,21 @@ export async function mount(ctx) {
         h('span', { class: ['xp-note', m.tone === 'warn' && 'xp-note--warn', m.tone === 'error' && 'xp-note--bad'] }, note1),
         h('span', { class: 'acts xp-acts' }, acts)),
       ready ? skipped(e?.skipped) : null,
-      note('On the new server: its first page, ', h('b', null, 'restore from an export file'), ', this file and the recovery key. A cut download carries on when you press download again.')]);
+      note('On the new server: its first page, ', h('b', null, 'restore from an export file'), ', this file and the recovery key. A cut download carries on when you press download again.'));
   }
 
   /* ---------------------------------------------------------------- storage and compaction (admin) */
   // beside the move: on disk, free, saved by compaction and the last pass in one key: value block, how compaction
   // stands in one line (what it does on hover), and the space by kind (shared/storage.js): one line per group
   // with a text bar, its size and share; a group opens to its categories by short name, at most five lines tall
-  // (the CSV has every category with the server's own label). A pass (also one the server started by itself)
-  // follows its `job` events, free space the `storage` events; the detail is read again every 2 s while a pass
-  // runs only while the live stream is down. When it ends the detail is read once, the groups are drawn again
-  // and a note says what was freed.
+  // (the CSV has every category with the server's own label). While a pass runs (also one the server started by
+  // itself) the detail is read again every 2 s; when it ends the groups are drawn again and a note says what was freed.
   const storSlot = h('div', { 'aria-live': 'polite' });
   const storList = h('ul', { class: 'st-groups', 'aria-label': 'Space on disk by kind' });
   const storOpen = new Set();
   let storOpened = false;
+  let gt = null;
+  ctx.onCleanup(() => clearTimeout(gt));
   const LOSSLESS = 'Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs\' signed originals are kept byte for byte.';
   const compactBtn = btn('compact now', () => compactNow(), { kind: 'primary' });
   const storCsv = btn('csv', () => downloadCsv('sentry-mate-storage-on-disk.csv', G.d?.categories || [], [
@@ -515,10 +517,10 @@ export async function mount(ctx) {
     const groups = storageGroups(G.d?.categories);
     if (!storOpened && groups.length) { storOpen.add(groups[0].group); storOpened = true; }  // the largest, open at first
     if (!groups.length) {
-      morphChildren(storList, h('li', { class: 'st-none muted' }, G.err ? `the server did not say what takes the space: ${errText(G.err)}` : 'the server did not say what takes the space'));
+      replace(storList, h('li', { class: 'st-none muted' }, G.err ? `the server did not say what takes the space: ${errText(G.err)}` : 'the server did not say what takes the space'));
       return;
     }
-    morphChildren(storList, groups.map((g) => {
+    replace(storList, groups.map((g) => {
       const open = storOpen.has(g.group);
       const rows = h('ul', { class: 'st-rows', tabindex: '0', 'aria-label': g.name, hidden: !open },
         g.rows.map((c) => h('li', { class: 'st-row', title: c.label }, h('span', { class: 'st-row-name' }, shortName(c)), h('span', { class: 'st-row-size' }, bytes(c.disk_bytes)))));
@@ -562,7 +564,7 @@ export async function mount(ctx) {
     const running = c?.status === 'running';
     compactBtn.disabled = running || !c;
     const tip = h('span', { class: 'st-tip muted', title: LOSSLESS, 'aria-label': LOSSLESS, role: 'img' }, '[?]');
-    morphChildren(storSlot, [
+    replace(storSlot,
       kv([
         ['on disk', bytes(d?.total_disk_bytes)],
         ['free', d?.free_bytes != null ? bytes(d.free_bytes) : 'not known'],
@@ -570,50 +572,22 @@ export async function mount(ctx) {
         ['last pass', !c || c.finished_ms == null ? 'not yet' : h('span', { title: `finished ${t(c.finished_ms)}` }, c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'nothing left to pack')],
       ]),
       h('p', { class: 'st-line muted' }, !c ? 'the server did not say how compaction stands' : c.automatic ? 'compaction runs by itself when the server is idle' : 'compaction does not run by itself here'),
-      progressRow(c)]);
+      progressRow(c));
   }
-  // the pass: GET the detail at the start (its answer of the page's load is the first) and after a reconnect, then
-  // the `job` events; a pass that ended reads the detail once (what it packed changed the groups)
-  let storLive = null;
-  let firstStor = true;
-  let fresh = null;   // the detail of the last read, put in when its status is
-  function setCompaction(c, how) {
-    const ended = G.d?.compaction?.status === 'running' && c?.status !== 'running';
-    // a pass that ended: the detail is read once (what it packed changed the groups), the note comes with it
-    if (ended && how === 'event') { storLive.refresh(); return; }
-    if (fresh) { G.d = fresh; G.err = null; fresh = null; paintGroups(); }
-    G.d = { ...(G.d || {}), compaction: c }; G.pollErr = null;
-    if (ended) {
-      if (c?.status === 'failed') toast(`Compaction failed: ${c.error || 'the server gave no reason'}`, { kind: 'error' });
-      else toast(c?.last_saved_bytes ? `Compaction is done: ${bytes(c.last_saved_bytes)} freed on disk.` : 'Compaction is done: nothing was left to pack.');
-    }
-    paintStor();
-  }
-  function followStor() {
-    storLive = follow(ctx.api, {
-      type: 'job', match: jobOf('compaction'), pick: (d) => d.status,
-      load: async () => {
-        // the page's own read of the detail stands for the first one
-        if (firstStor && G.d) { firstStor = false; return G.d.compaction || null; }
-        firstStor = false;
-        fresh = await ctx.api.get('system/storage/detail');
-        return fresh.compaction || null;
-      },
-      pollMs: (c) => (c?.status === 'running' ? 2000 : null),
-      onValue: (c, how) => { if (ctx.alive()) setCompaction(c, how); },
-      onError: (e) => { if (!ctx.alive()) return; G.pollErr = e; paintStor(); },
-    });
-    // the free space on disk, from the `storage` events (no read of their own)
-    follow(ctx.api, {
-      type: 'storage',
-      onValue: (st) => {
-        if (!ctx.alive() || !st) return;
-        const free = st.free_bytes ?? G.d?.free_bytes ?? null;
-        if (free === G.d?.free_bytes) return;
-        G.d = { ...(G.d || {}), free_bytes: free };
-        paintStor();
-      },
-    });
+  function scheduleStor() { clearTimeout(gt); if (G.d?.compaction?.status === 'running') gt = setTimeout(refreshStor, 2000); }
+  async function refreshStor() {
+    try {
+      const d = await ctx.api.get('system/storage/detail');
+      if (!ctx.alive()) return;
+      G.d = d; G.pollErr = null;
+      const c = d.compaction || {};
+      if (c.status !== 'running') {
+        paintGroups();
+        if (c.status === 'failed') toast(`Compaction failed: ${c.error || 'the server gave no reason'}`, { kind: 'error' });
+        else toast(c.last_saved_bytes ? `Compaction is done: ${bytes(c.last_saved_bytes)} freed on disk.` : 'Compaction is done: nothing was left to pack.');
+      }
+    } catch (e) { if (!ctx.alive()) return; G.pollErr = e; }
+    paintStor(); scheduleStor();
   }
   async function compactNow() {
     compactBtn.disabled = true;
@@ -622,12 +596,12 @@ export async function mount(ctx) {
       if (!ctx.alive()) return;
       G.d = { ...(G.d || {}), compaction: r.compaction }; G.pollErr = null;
     } catch (e) { if (!ctx.alive()) return; toast(`Could not start compaction: ${errText(e)}`, { kind: 'error' }); }
-    paintStor(); storLive?.refresh();
+    paintStor(); scheduleStor();
   }
   const storage = admin
     ? section({ title: 'storage', id: 'storage', cls: 'st', side: [storCsv, compactBtn] }, storSlot, storList)
     : null;
-  if (admin) { paintGroups(); paintStor(); followStor(); }
+  if (admin) { paintGroups(); paintStor(); scheduleStor(); }
   /* ---------------------------------------------------------------- full rebuild (admin) */
   // every car's history made again from the stored data, the cars made with an older decoding named
   const full = admin ? fullRebuild(ctx, { carName: (c) => carName.get(c) || c }) : null;
@@ -825,7 +799,7 @@ export async function mount(ctx) {
   paint(ctx, head(ctx),
     h('div', { class: 'cols2' },
       section({ title: 'this address', cover: 'web.shell.hosting', side: h('span', { class: 'muted' }, `${loc.protocol}//${loc.host}/`) }, hostSlot),
-      h('div', null, section({ title: 'server updates', id: 'updates' }, updSlot), access)),
+      h('div', null, section({ title: 'server updates', id: 'updates' }, relLine?.el, updSlot), access)),
     section({ title: 'certificate and recovery key', id: 'certificate-in-use' }, certSlot, keySlot),
     access,
     // the move and storage side by side (one above the other on a phone or a narrow window)
@@ -836,11 +810,11 @@ export async function mount(ctx) {
     audit?.el);
   if (admin) {
     try {
-      const [m] = await Promise.all([ctx.api.get('system/move'), followExp()]);
+      const [m, ex] = await Promise.all([ctx.api.get('system/move'), ctx.api.get('system/exports').catch(() => null)]);
       if (!ctx.alive()) return;
-      setMove(m);
+      setMove(m); M.exp = ex?.items?.[0] || null;
     } catch (e) { if (!ctx.alive()) return; M.err = e; }
-    paintMove(); paintExp(); schedule();
+    paintMove(); paintExp(); schedule(); scheduleExp();
   }
   await Promise.all([accounts?.ready, sessions.ready, audit?.ready, full?.ready].filter(Boolean)).catch(() => {});
   if (ctx.alive()) ctx.ready();

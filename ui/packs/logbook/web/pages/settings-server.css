@@ -272,3 +272,5 @@
 .page-settings-server .ss-upd--error { color: var(--rust); }
 .page-settings-server .ss-upd-on { margin-top: round(0.875rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); max-width: 70ch; }
 .page-settings-server .ss-upd-how { margin-top: round(0.5rem, var(--e)); }
+.page-settings-server .ss-release-row { scroll-margin-top: round(5rem, var(--e)); }
+.page-settings-server .ss-release-row .switch-field { margin: round(0.25rem, var(--e)) 0 round(0.5rem, var(--e)); }

@@ -2,7 +2,8 @@
 //!
 //! The first signed log of a key pins its public key; from then on only logs signed by it are verified. A log
 //! whose sidecar hasn't come after [`WAIT_MS`] is judged without it (unsigned, or failed once the car is paired).
-//! Records judged by older rules ([`trust::RULES_VERSION`]) are judged again by [`Judge::rejudge_all`].
+//! A key whose records were judged by older rules ([`trust::RULES_VERSION`]) has its failed logs judged again once,
+//! at the server's start ([`Judge::rejudge_old`]); [`Judge::rejudge_all`] judges every log again.
 //!
 //! The owner can trust another key that signed a car key's logs ([`Judge::trust_key`]): it becomes the pin, and the
 //! key trusted before stays trusted for the logs that came while it was ([`Former`]), as Sentry Six Manager keeps
@@ -167,6 +168,13 @@ pub enum Trusted {
     NotSeen,
 }
 
+/// What [`Judge::rejudge_old`] did: failed logs judged again, and how many of them are verified now.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Rejudged {
+    pub judged: u64,
+    pub verified: u64,
+}
+
 /// The chain report of a car key's trusted key.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
 pub struct KeyChain {
@@ -192,8 +200,10 @@ pub enum UploadCheck {
 pub enum Fault {
     /// Signed, but the signature, its key (another key than the paired one, another car key's) or its fields are wrong.
     BadSignature,
-    /// Its chain link does not fit: the log before it is here but is not the one it names, failed its check, or is
-    /// missing although older logs of its chain are here (and nothing of it is on its way).
+    /// Its own chain fields can't be read, or its link contradicts the log before it: that log is here and verified,
+    /// yet it is not the one this log names (another SHA-256, or not the index before). A log before it that failed
+    /// its check, or is missing, is not this log's fault: the break is reported once, as a gap or that log's own
+    /// failure, and this log starts a new segment of its chain.
     ChainBreak,
     /// Not signed (or the bridge could not sign it).
     Unsigned,
@@ -256,6 +266,188 @@ fn sha_bytes(hex_sha: &str) -> Option<[u8; 32]> {
     let mut out = [0u8; 32];
     hex::decode_to_slice(hex_sha.to_ascii_lowercase(), &mut out).ok()?;
     Some(out)
+}
+
+/// What the chain check of one log needs of it.
+struct Asked {
+    name: String,
+    status: Status,
+    reason: Option<String>,
+    link: Option<Link>,
+    arrived_ms: u64,
+    /// Logs of its signing key with a lower index came before it (in name order).
+    older: bool,
+}
+
+/// One pass over a key's records: the check of each log `want` takes, told to `f` in name order (with when it
+/// arrived). `uploading`: the key's logs still arriving.
+///
+/// A log's own check (its file, its signature, its key) is its record's. Its chain link then only fails when it
+/// contradicts the log before it as it is stored and verified ([`Fault::ChainBreak`]); a log before it that failed
+/// its check or is missing leaves it verified (a new segment of its chain starts there, and the break is reported
+/// once: the earlier log's own failure, or a gap in the chain report and the missing-log scan). While the log before it
+/// is waiting, arriving, or missing for less than `wait_ms` after this one came, it is pending.
+fn checks_pass(
+    l: &Ledger,
+    h: &Head,
+    want: &dyn Fn(&str) -> bool,
+    uploading: &std::collections::HashSet<String>,
+    now: u64,
+    wait_ms: u64,
+    mut f: impl FnMut(&str, u64, UploadCheck),
+) -> std::io::Result<()> {
+    use std::collections::HashMap;
+    let mut seen: HashMap<Box<str>, Seen> = HashMap::new();
+    // the lowest chain index of each signing key so far, in name order (a log's older logs come before it)
+    let mut lowest: HashMap<String, u64> = HashMap::new();
+    let mut asked: Vec<Asked> = Vec::new();
+    l.for_each(h, |name, r| {
+        let good = match r.status {
+            Status::Verified => Some(true),
+            Status::Waiting => None,
+            Status::Failed | Status::CouldNotSign | Status::Unsigned => Some(false),
+        };
+        let link = r.link.as_ref().and_then(|k| sha_bytes(&k.sha256).map(|sha| (k.index, sha)));
+        if want(name) {
+            let older = r
+                .link
+                .as_ref()
+                .is_some_and(|k| lowest.iter().any(|(fp, &i)| i < k.index && same_fingerprint(fp, &k.key_fingerprint)));
+            asked.push(Asked {
+                name: name.to_string(),
+                status: r.status.clone(),
+                reason: r.reason.clone(),
+                link: r.link.clone(),
+                arrived_ms: r.arrived_ms,
+                older,
+            });
+        }
+        if let Some(k) = r.link.as_ref() {
+            let e = lowest.entry(k.key_fingerprint.clone()).or_insert(k.index);
+            *e = (*e).min(k.index);
+        }
+        seen.insert(name.into(), Seen { good, link });
+        ControlFlow::Continue(())
+    })?;
+    let fit = |a: &Asked| -> UploadCheck {
+        let Some(k) = a.link.as_ref() else { return UploadCheck::Failed(Fault::ChainBreak) };
+        if k.prev_name == "-" {
+            return UploadCheck::Verified;
+        }
+        match seen.get(k.prev_name.as_str()) {
+            Some(Seen { good: None, .. }) => UploadCheck::Pending,
+            Some(Seen { good: Some(true), link: Some((i, sha)) }) => {
+                let fits = i.checked_add(1) == Some(k.index) && sha_bytes(&k.prev_sha256) == Some(*sha);
+                if fits { UploadCheck::Verified } else { UploadCheck::Failed(Fault::ChainBreak) }
+            }
+            // a verified log has its link; one without can't be fitted
+            Some(Seen { good: Some(true), link: None }) => UploadCheck::Failed(Fault::ChainBreak),
+            // the log before it failed its own check: that one is failed, this one starts a new segment
+            Some(Seen { good: Some(false), .. }) => UploadCheck::Verified,
+            None if uploading.contains(&k.prev_name) => UploadCheck::Pending,
+            // the first of its chain here (a chain received from its middle)
+            None if !a.older => UploadCheck::Verified,
+            // older logs of its chain are here but not the one before it: it may still come
+            None if now.saturating_sub(a.arrived_ms) < wait_ms => UploadCheck::Pending,
+            // it did not come: a gap (the chain report and the missing-log scan name it), this one starts a new segment
+            None => UploadCheck::Verified,
+        }
+    };
+    for a in &asked {
+        let c = match a.status {
+            Status::Verified => fit(a),
+            Status::Waiting => UploadCheck::Pending,
+            Status::Unsigned | Status::CouldNotSign => UploadCheck::Failed(Fault::Unsigned),
+            Status::Failed => UploadCheck::Failed(Fault::of(a.reason.as_deref())),
+        };
+        f(&a.name, a.arrived_ms, c);
+    }
+    Ok(())
+}
+
+/// The checks of a car key's logs counted ([`Judge::log_checks`]): no names, no keys.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct LogChecks {
+    pub verified: u64,
+    pub pending: u64,
+    pub failed: u64,
+    /// The failed ones per `check_reason`.
+    pub mismatch: u64,
+    pub bad_signature: u64,
+    pub unsigned: u64,
+    pub chain_break: u64,
+    /// Runs of failed logs one after another (in name order), oldest first: at most [`LogChecks::RUNS_MAX`], the
+    /// newest; `runs_total` counts them all.
+    pub failed_runs: Vec<FailedRun>,
+    pub runs_total: u64,
+}
+
+/// Logs that failed their check one after another.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct FailedRun {
+    /// The start (from its name, UTC ms) of the run's first and last log.
+    pub first_start_ms: i64,
+    pub last_start_ms: i64,
+    pub logs: u64,
+    pub mismatch: u64,
+    pub bad_signature: u64,
+    pub unsigned: u64,
+    pub chain_break: u64,
+}
+
+impl FailedRun {
+    fn add(&mut self, f: Fault) {
+        match f {
+            Fault::Mismatch => self.mismatch += 1,
+            Fault::BadSignature => self.bad_signature += 1,
+            Fault::Unsigned => self.unsigned += 1,
+            Fault::ChainBreak => self.chain_break += 1,
+        }
+    }
+}
+
+impl LogChecks {
+    pub const RUNS_MAX: usize = 200;
+
+    fn add(&mut self, c: UploadCheck) {
+        match c {
+            UploadCheck::Verified => self.verified += 1,
+            UploadCheck::Pending => self.pending += 1,
+            UploadCheck::Failed(f) => {
+                self.failed += 1;
+                match f {
+                    Fault::Mismatch => self.mismatch += 1,
+                    Fault::BadSignature => self.bad_signature += 1,
+                    Fault::Unsigned => self.unsigned += 1,
+                    Fault::ChainBreak => self.chain_break += 1,
+                }
+            }
+        }
+    }
+
+    fn push_run(&mut self, r: FailedRun) {
+        self.runs_total += 1;
+        if self.failed_runs.len() == Self::RUNS_MAX {
+            self.failed_runs.remove(0);
+        }
+        self.failed_runs.push(r);
+    }
+
+    /// Another key's counts added (a car with several car keys): runs of both, oldest first.
+    pub fn merge(&mut self, o: LogChecks) {
+        self.verified += o.verified;
+        self.pending += o.pending;
+        self.failed += o.failed;
+        self.mismatch += o.mismatch;
+        self.bad_signature += o.bad_signature;
+        self.unsigned += o.unsigned;
+        self.chain_break += o.chain_break;
+        self.runs_total += o.runs_total;
+        self.failed_runs.extend(o.failed_runs);
+        self.failed_runs.sort_by_key(|r| (r.first_start_ms, r.last_start_ms));
+        let over = self.failed_runs.len().saturating_sub(Self::RUNS_MAX);
+        self.failed_runs.drain(..over);
+    }
 }
 
 /// A log's record as it was just written: judged on arrival, by the sweep, judged again, or after its key was trusted.
@@ -640,7 +832,7 @@ impl Judge {
         let mut head = self.take_head(key).await?;
         let rules = Change::Rules { v: trust::RULES_VERSION };
         head.apply(&rules);
-        let (head, n) = self.rejudge_locked(key, head, vec![rules], |_| true).await?;
+        let (head, n, _) = self.rejudge_locked(key, head, vec![rules], |_| true).await?;
         self.put_head(key, head);
         Ok(n)
     }
@@ -649,19 +841,30 @@ impl Judge {
     /// pin). Nothing is written until every one is judged; then it all goes into the next generation at once, so a
     /// crash or an error part way (a log that can't be read) leaves the key exactly as it was, never half judged by a
     /// new pin. Memory: the picked names once (a fold of a journal this long needs them anyway).
+    ///
+    /// A log whose file is gone, or that was judged with its sidecar and whose sidecar is gone now (a backup put back
+    /// in part, a move under way), keeps its record: judging it again could only make up a failure. Returns the head,
+    /// how many were judged again, and how many of those that were not verified are verified now.
     async fn rejudge_locked(
         &self,
         key: &str,
         mut head: Head,
         mut changes: Vec<Change>,
         which: impl Fn(&Record) -> bool + Send + 'static,
-    ) -> std::io::Result<(Head, usize)> {
+    ) -> std::io::Result<(Head, usize, usize)> {
         let (ledger, h) = (self.ledger(key), head.clone());
-        let names: Vec<(String, u64, bool)> = blocking(move || {
+        let names: Vec<(String, u64, bool, bool, bool)> = blocking(move || {
             let mut v = Vec::new();
             ledger.for_each(&h, |name, r| {
                 if which(r) {
-                    v.push((name.to_string(), r.arrived_ms, r.status != Status::Waiting));
+                    let was_verified = r.status == Status::Verified;
+                    v.push((
+                        name.to_string(),
+                        r.arrived_ms,
+                        r.status != Status::Waiting,
+                        r.had_sidecar(),
+                        was_verified,
+                    ));
                 }
                 ControlFlow::Continue(())
             })?;
@@ -669,8 +872,16 @@ impl Judge {
         })
         .await?;
         let marker = !head.waiting.is_empty();
-        for (name, arrived_ms, force) in &names {
-            if let Some((_, ch)) = self.judge_one(&head, name, *arrived_ms, *force).await? {
+        let (mut judged, mut now_verified) = (0, 0);
+        for (name, arrived_ms, force, had_sidecar, was_verified) in &names {
+            if *had_sidecar && !self.store.exists(&format!("{name}.json")) {
+                continue;
+            }
+            if let Some((r, ch)) = self.judge_one(&head, name, *arrived_ms, *force).await? {
+                judged += 1;
+                if !was_verified && r.status == Status::Verified {
+                    now_verified += 1;
+                }
                 for c in &ch {
                     head.apply(c);
                 }
@@ -678,7 +889,29 @@ impl Judge {
             }
         }
         let head = self.commit(key, head, marker, changes, Fold::Whole).await?;
-        Ok((head, names.len()))
+        Ok((head, judged, now_verified))
+    }
+
+    /// Once per key after an update to newer rules ([`trust::RULES_VERSION`]): its logs that failed their check (or
+    /// could not be signed) and were judged by older rules are judged again, all at once (see
+    /// [`Judge::rejudge_locked`]); verified logs are left as they are. Nothing is sent again. `None`: the key was
+    /// judged by these rules already.
+    pub async fn rejudge_old(&self, key: &str) -> std::io::Result<Option<Rejudged>> {
+        if !ledger::valid_key(key) {
+            return Err(bad_key());
+        }
+        let _held = self.hold(key).await?;
+        let mut head = self.take_head(key).await?;
+        if head.v >= trust::RULES_VERSION {
+            self.put_head(key, head);
+            return Ok(None);
+        }
+        let rules = Change::Rules { v: trust::RULES_VERSION };
+        head.apply(&rules);
+        let old = |r: &Record| r.v < trust::RULES_VERSION && matches!(r.status, Status::Failed | Status::CouldNotSign);
+        let (head, judged, verified) = self.rejudge_locked(key, head, vec![rules], old).await?;
+        self.put_head(key, head);
+        Ok(Some(Rejudged { judged: judged as u64, verified: verified as u64 }))
     }
 
     /// The owner trusts another key that signed this car key's logs (checked by its fingerprint in the app): it
@@ -733,7 +966,7 @@ impl Judge {
         // key's stay verified (they came before), others' stay failed. The pin is written with them, or not at all (on
         // an error the head in memory, with the new pin, is dropped: the next use reads the key as it is on disk).
         let other_key = |r: &Record| r.status == Status::Failed && r.reason.as_deref() == Some(SIGNED_BY_ANOTHER_KEY);
-        let (head, _) = self.rejudge_locked(key, head, changes, other_key).await?;
+        let (head, _, _) = self.rejudge_locked(key, head, changes, other_key).await?;
         let (ledger, h, want) = (self.ledger(key), head.clone(), fp.clone());
         let verified = blocking(move || {
             let mut n = 0u64;
@@ -892,7 +1125,11 @@ impl Judge {
     /// The check of each of `logs` (a car key's log names) as the CAN Bridge app is told it, from the stored records
     /// only (nothing is judged here): one pass over the key's records, whatever the number of names. `uploading`: the
     /// logs of the key still arriving (a log whose previous one is among them is pending). A log with no record yet is
-    /// pending; so are all of them when the key is held longer than [`CHECK_WAIT`] (a long judging).
+    /// pending; so are all of them when the key is held longer than [`CHECK_WAIT`] (a long judging, or a judging of
+    /// every log again: never a failure made up meanwhile).
+    ///
+    /// The chain is read afresh on every call, so a log whose previous log arrives, or is sent again and verifies, is
+    /// told of at once on the next call: nothing about the chain is stored with a log.
     pub async fn upload_checks(
         &self,
         key: &str,
@@ -909,72 +1146,61 @@ impl Judge {
         };
         let wanted: Arc<HashSet<String>> = Arc::new(logs.iter().cloned().collect());
         let (wait_ms, now) = (self.wait_ms, now_ms());
-        let w = wanted.clone();
         let found = self
             .read_held(held?, key, move |l, h| {
-                let mut seen: HashMap<Box<str>, Seen> = HashMap::new();
-                // the lowest chain index of each signing key so far, in name order (a log's older logs come before it)
-                let mut lowest: HashMap<String, u64> = HashMap::new();
-                let mut asked: Vec<(String, Record, bool)> = Vec::new();
-                l.for_each(h, |name, r| {
-                    let good = match r.status {
-                        Status::Verified => Some(true),
-                        Status::Waiting => None,
-                        Status::Failed | Status::CouldNotSign | Status::Unsigned => Some(false),
-                    };
-                    let link = r.link.as_ref().and_then(|k| sha_bytes(&k.sha256).map(|sha| (k.index, sha)));
-                    if w.contains(name) {
-                        let older = r.link.as_ref().is_some_and(|k| {
-                            lowest.iter().any(|(fp, &i)| i < k.index && same_fingerprint(fp, &k.key_fingerprint))
-                        });
-                        asked.push((name.to_string(), r.clone(), older));
-                    }
-                    if let Some(k) = r.link.as_ref() {
-                        let e = lowest.entry(k.key_fingerprint.clone()).or_insert(k.index);
-                        *e = (*e).min(k.index);
-                    }
-                    seen.insert(name.into(), Seen { good, link });
-                    ControlFlow::Continue(())
+                let w = wanted.clone();
+                let mut out = HashMap::new();
+                checks_pass(l, h, &|name: &str| w.contains(name), &uploading, now, wait_ms, |name, _, c| {
+                    out.insert(name.to_string(), c);
                 })?;
-                let fit = |r: &Record, older: bool| -> UploadCheck {
-                    let Some(k) = r.link.as_ref() else { return UploadCheck::Failed(Fault::ChainBreak) };
-                    if k.prev_name == "-" {
-                        return UploadCheck::Verified;
-                    }
-                    match seen.get(k.prev_name.as_str()) {
-                        Some(Seen { good: None, .. }) => UploadCheck::Pending,
-                        Some(Seen { good: Some(true), link: Some((i, sha)) }) => {
-                            let fits = i.checked_add(1) == Some(k.index) && sha_bytes(&k.prev_sha256) == Some(*sha);
-                            if fits { UploadCheck::Verified } else { UploadCheck::Failed(Fault::ChainBreak) }
-                        }
-                        Some(Seen { good: Some(true), link: None }) | Some(Seen { good: Some(false), .. }) => {
-                            UploadCheck::Failed(Fault::ChainBreak)
-                        }
-                        None if uploading.contains(&k.prev_name) => UploadCheck::Pending,
-                        // the first of its chain here (a chain received from its middle)
-                        None if !older => UploadCheck::Verified,
-                        // older logs of its chain are here but not the one before it: it may still come
-                        None if now.saturating_sub(r.arrived_ms) < wait_ms => UploadCheck::Pending,
-                        None => UploadCheck::Failed(Fault::ChainBreak),
-                    }
-                };
-                Ok(asked
-                    .into_iter()
-                    .map(|(name, r, older)| {
-                        let c = match r.status {
-                            Status::Verified => fit(&r, older),
-                            Status::Waiting => UploadCheck::Pending,
-                            Status::Unsigned | Status::CouldNotSign => UploadCheck::Failed(Fault::Unsigned),
-                            Status::Failed => UploadCheck::Failed(Fault::of(r.reason.as_deref())),
-                        };
-                        (name, c)
-                    })
-                    .collect::<HashMap<_, _>>())
+                Ok(out)
             })
             .await?;
         let mut all = pending();
         all.extend(found);
         Ok(all)
+    }
+
+    /// The check of every log of a car key as the CAN Bridge app would be told it now, counted per result and
+    /// `check_reason`, with the runs of failed logs (by their start times). Names no log and no key: for an owner to
+    /// pass on (`sentry-mate log-checks`) and for Data health. One pass over the key's records; only reads.
+    pub async fn log_checks(
+        &self,
+        key: &str,
+        uploading: std::collections::HashSet<String>,
+    ) -> std::io::Result<LogChecks> {
+        let (wait_ms, now) = (self.wait_ms, now_ms());
+        self.read(key, move |l, h| {
+            let mut c = LogChecks::default();
+            let mut run: Option<FailedRun> = None;
+            checks_pass(l, h, &|_| true, &uploading, now, wait_ms, |name, _, check| {
+                c.add(check);
+                let start = LogName::parse(name).map_or(0, |n| n.started_ms);
+                match (check, &mut run) {
+                    (UploadCheck::Failed(f), Some(r)) => {
+                        r.last_start_ms = r.last_start_ms.max(start);
+                        r.logs += 1;
+                        r.add(f);
+                    }
+                    (UploadCheck::Failed(f), None) => {
+                        let mut r = FailedRun { first_start_ms: start, last_start_ms: start, ..FailedRun::default() };
+                        r.logs = 1;
+                        r.add(f);
+                        run = Some(r);
+                    }
+                    (_, r) => {
+                        if let Some(r) = r.take() {
+                            c.push_run(r);
+                        }
+                    }
+                }
+            })?;
+            if let Some(r) = run {
+                c.push_run(r);
+            }
+            Ok(c)
+        })
+        .await
     }
 
     /// Whether a stored log failed its check, so that a new upload of its name (or its sidecar's) replaces it.

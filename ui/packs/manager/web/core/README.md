@@ -101,6 +101,17 @@ forward or a link to other filters of the same page build it again, unless the p
 then that takes the new query (`ctx.query` is already updated), and the page is ready again when it resolves. A
 page that was left cannot change the address any more (`ctx.setQuery` does nothing then).
 
+Fast page changes: a page may export `prefetch(ctx)`. The router calls it when a link to the page is under the
+pointer for 50 ms, touched or focused, with the `ctx` that `mount` will get (car, period, params, query, state,
+me; `ctx.prefetching` is true), but its `ctx.api` only warms answers (`prefetchApi` in `shared/prefetch.js`). It must
+make the same calls as the page's first reads, so build them in one function both use (`firstReads(ctx)` in
+`pages/battery.js`): a call with other parameters warms an answer nobody asks for. The router also loads the page's
+module and style sheet then, and once the first page is drawn the main sections' modules load while the browser
+is idle. A page (not the settings forms) takes kept answers at once for the reads it makes before `ready()`; each is
+checked at the same time, `<html data-stale>` dims the page while one is on screen, and a page whose answers
+changed is built again in place, like a live refresh. On the first page after a reload the service worker's kept
+answers can come first the same way.
+
 ## `ctx`
 
 | Field | What it is |
@@ -136,6 +147,12 @@ reload tables (`t.reload()` keeps the rows on screen until the new ones are in) 
 paint skeletons or "loading" again; a part with charts that is drawn again uses `offstage(slot, build)`
 (`core/stage.js`), which builds it off screen and swaps it in at once; reserve the space of text that arrives later.
 Never poll on a timer for data.
+
+Below the fold: `mountPlot` builds a chart and `createMap(el, ctx, { lazy: true })` makes a map (and loads MapLibre) only when its box comes
+within a screen of view (`shared/lazy.js` `whenNear`), so the first paint draws only what is on screen. The box has
+its final height from CSS from the start, so nothing moves when it is drawn; `plot.u` is null until then and
+`setData` keeps the newest data. `createMap` waits until then, so a page that waits for its map before `ready()` does
+so only when `nearNow(el)` (`shared/lazy.js`) says it is near; ready never waits for a part below the fold.
 
 ## Core helpers
 
@@ -244,7 +261,6 @@ its field (`path` is the API's field path, `units.distance`) and the rest in the
 | `emptyState({ icon, title, text, action, warn })` | Empty: always say exactly why it is empty and how to change that. |
 | `errorState(err, { retry, home, compact })`, `errorWords(err)`, `statePanel(child)` | Errors: the cause in words and a way out. Prefer `ctx.fail(err)` for a page that cannot load. |
 | `core/flash.js` `flash(text, { kind: 'ok' \| 'info' \| 'error', next })` | A short note after an action. `next: true` shows it on the page you navigate to. |
-| `core/morph.js` `morphChildren(slot, nodes)`, `morph(el, to)`, `keepEl(el, name)` | Live figures in place: build the part again from new data and only the texts and attributes that changed are written (nothing moves). With `shared/live.js` `follow()`: live events, polling only while the live stream is down. |
 | `core/dialog.js` `openDialog({ title, body, actions })`, `confirmDialog(text, { danger, ok })` | Native `<dialog>`: focus moves in and back, Esc closes. |
 
 ### Formatting: `core/fmt.js` (on `shared/units.js` and `shared/time.js`)
@@ -406,8 +422,13 @@ Pages are checked with `node ui/tools/check.js --pixel` (see `ui/tools/README.md
     half a pixel (`translate`, or `position: relative` for an inline box) onto whole ones.
   It first takes back everything the last run set, so the CSS always decides the layout and the snap only
   rounds it. It runs again when the page adds or takes away elements, when text in a table changes, when a
-  snapped grid or table changes size (not when the run itself changed it) and when the fonts have loaded. It
-  takes about 1 s on a page of 40,000 elements: it reads all sizes before it writes any.
+  snapped grid or table changes size (not when the run itself changed it) and when the fonts have loaded. A
+  whole run takes about 1 s on a page of 40,000 elements (it reads all sizes before it writes any), so after a
+  change of content only the boxes that hold it are snapped again (a card drawn again, a table's new rows),
+  unless one of them changed size other than by whole pixels: a page that reloads its cards while it scrolls
+  (a rebuild sends `rows` every second) stays under a frame. Tables that load again keep unchanged rows
+  (`reuseRows`) and the page parts that live values draw again keep what did not change, so most reloads
+  change nothing at all.
 - Mark a box the snap must leave alone with `data-nosnap` (maps and charts are left alone already).
 - A box that sits in a line of text (an inline-flex pill or button) is a source of half pixels: in a table cell
   give it `vertical-align: top` or make it a block; in a flex row with `align-items: baseline`, let the words

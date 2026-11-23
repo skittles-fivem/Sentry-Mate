@@ -50,12 +50,28 @@ const BAND_KPH = { 'km/h': 10, mph: 16.09344 };
 const SPEED_STEPS = { 'km/h': [30, 60, 90, 120], mph: [20, 40, 60, 80] };
 const POWER_STEPS = [0, 25, 60];
 
+// The page's reads; prefetch() warms the same ones when a link here is under the pointer.
+const driveBase = (ctx) => api.apiPath`cars/${ctx.car.id}/drives/${ctx.driveId}`;
+const driveRead = (ctx) => ctx.api.get(driveBase(ctx), { speed_band_kph: BAND_KPH[unitLabel('speed')] || 10 });
+const trackRead = (ctx) => ctx.api.get(`${driveBase(ctx)}/track`, { format: 'geojson', extensions: 'speed,power,accuracy' });
+const seriesRead = (ctx, d) => ctx.api.get(api.apiPath`cars/${ctx.car.id}/series`, { fields: FIELDS, from_ms: d.start_ms, to_ms: (d.end_ms ?? api.now()) + 1, max_points: 3000 });
+// the charges before and after it
+const nearReads = (ctx, d) => [
+  ctx.api.get(api.apiPath`cars/${ctx.car.id}/charges`, { to_ms: d.start_ms, limit: 1 }),
+  d.end_ms == null ? null : ctx.api.get(api.apiPath`cars/${ctx.car.id}/charges`, { from_ms: d.end_ms, sort: 'start', dir: 'asc', limit: 1 }),
+];
+const recentRead = (ctx, d) => (d.est_wh_per_km != null ? null : ctx.api.get(api.apiPath`cars/${ctx.car.id}/drives`, { from_ms: d.start_ms - 30 * DAY_MS, to_ms: d.start_ms, limit: 1 }));
+export async function prefetch(ctx) {
+  const [d] = await Promise.all([driveRead(ctx), trackRead(ctx)]);
+  if (d) await Promise.all([seriesRead(ctx, d), ...nearReads(ctx, d), recentRead(ctx, d)]);
+}
+
 export async function mount(ctx) {
   const car = ctx.car, tz = ctx.tz;
-  const base = api.apiPath`cars/${car.id}/drives/${ctx.driveId}`;
+  const base = driveBase(ctx);
   let d;
   const bandKph = BAND_KPH[unitLabel('speed')] || 10;
-  try { d = await ctx.api.get(base, { speed_band_kph: bandKph }); } catch (err) {
+  try { d = await driveRead(ctx); } catch (err) {
     if (err && err.status === 404) {
       // An unknown drive, or one of a car this account may not see: the same answer, with the way back.
       ctx.main.append(pageHead({ eyebrow: h('nav', { class: 'crumbs', 'aria-label': 'Breadcrumb' }, h('a', { href: state.buildUrl('car', { car: car.id }) }, car.name)), title: 'No such drive' }),
@@ -74,16 +90,13 @@ export async function mount(ctx) {
   const end = d.end_ms ?? api.now();
   // A failed request is kept as { error }, never turned into "nothing recorded".
   const kept = (p) => p.catch((err) => ({ error: err }));
-  const loadNear = () => Promise.all([
-    kept(ctx.api.get(api.apiPath`cars/${car.id}/charges`, { to_ms: d.start_ms, limit: 1 })),
-    going ? null : kept(ctx.api.get(api.apiPath`cars/${car.id}/charges`, { from_ms: d.end_ms, sort: 'start', dir: 'asc', limit: 1 })),
-  ]);
+  const loadNear = () => Promise.all(nearReads(ctx, d).map((p) => (p ? kept(p) : null)));
   // The estimate's consumption: the server's (est_wh_per_km), else the 30 days of drives before this one.
-  const recent = d.est_wh_per_km != null ? null
-    : kept(ctx.api.get(api.apiPath`cars/${car.id}/drives`, { from_ms: d.start_ms - 30 * DAY_MS, to_ms: d.start_ms, limit: 1 }));
+  const recentP = recentRead(ctx, d);
+  const recent = recentP ? kept(recentP) : null;
   const [track, series, near, recentDrives] = await Promise.all([
-    kept(ctx.api.get(`${base}/track`, { format: 'geojson', extensions: 'speed,power,accuracy' })),
-    kept(ctx.api.get(api.apiPath`cars/${car.id}/series`, { fields: FIELDS, from_ms: d.start_ms, to_ms: end + 1, max_points: 3000 })),
+    kept(trackRead(ctx)),
+    kept(seriesRead(ctx, d)),
     loadNear(), recent,
   ]);
   if (!ctx.alive()) return {};
@@ -338,7 +351,7 @@ export async function mount(ctx) {
         hasSet ? reading('Set, passenger', setText(val('setpoint_right_c', i))) : null,
         hasClimate ? reading('Climate', CLIMATE[val('climate', i)] || (val('climate', i) == null ? '—' : String(val('climate', i)))) : null,
         hasFan ? reading('Fan', val('fan_level', i) == null ? '—' : val('fan_level', i) === 0 ? 'off' : `step ${format(val('fan_level', i), 'number', { digits: 0 })} of 10`) : null,
-        hasTyres ? reading('Tyres', tyre.every((v) => v == null) ? '—' : [TYRES.map(([, , ab], k) => [h('abbr', { class: 'tyre-ab', title: TYRES[k][1] }, ab), ' ', format(tyre[k], 'pressure', { unit: false })]).flatMap((x, k) => (k ? [' · ', x] : [x])), ` ${unitLabel('pressure')}`]) : null,
+        hasTyres ? reading('Tyres', tyre.every((v) => v == null) ? '—' : [TYRES.map(([, , ab], k) => [h('abbr', { class: 'tyre-ab', title: TYRES[k][1] }, ab), ' ', format(tyre[k], 'pressure', { unit: false })]).flatMap((x, k) => (k ? [' · ', x] : [x])), ` ${unitLabel('pressure')}`], 'is-wide') : null,
         reading('Elevation', q(val('elevation_m', i), 'length')),
         reading('GPS', val('accuracy_m', i) == null ? '—' : ['within ', q(val('accuracy_m', i), 'length')])));
   };

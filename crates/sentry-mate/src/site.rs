@@ -161,12 +161,16 @@ pub fn web_state(
     // the local TeslaMate: the same, nothing connects before an admin adds its settings
     let teslamate_local =
         Arc::new(web::resources::teslamate_local::service(data, v.clone(), engine, audit, events.clone()));
+    // the uploaded backups of finished imports are packed by compaction: the web side knows which, the engine when
+    let imports = Arc::new(web::resources::imports::Imports::new());
+    engine.compact_step(imports.kept_step(&data.join("web"), v.clone()));
     let app = web::AppState::builder(acc, v, data.join("web"))
         .events(events)
         .service(tesla)
         .service(teslafi)
         .service(teslamate_local)
         .setup_code_file(keys.join(SETUP_FILE))
+        .this_build(crate::this_build())
         .cars(Arc::new(EngineCars(engine.db().clone())))
         .service(Arc::new(engine.clone()))
         .service(Arc::new(engine.db().clone()))
@@ -177,7 +181,7 @@ pub fn web_state(
             certificate: Some(ingest::server::tls_dir(data).join("cert.pem")),
         }))
         .service(Arc::new(web::resources::mqtt::Publisher::new()))
-        .service(Arc::new(web::resources::imports::Imports::new()))
+        .service(imports)
         .service(Arc::new(
             web::moving::MoveSite::new(data.to_path_buf(), keys.to_path_buf(), env!("CARGO_PKG_VERSION"))
                 .keeping_claim(claim),
@@ -240,10 +244,13 @@ pub fn spawn_upkeep(app: web::AppState, announced: bool) -> tokio::task::JoinHan
 }
 
 /// Looks for the CAN logs the server should have but no longer does (`ingest::missing`): a while after the start, in
-/// the background, then once a day. What it finds the cars are asked for in their next ping.
+/// the background, then once a day. Before the first look, the failed logs judged by an older version's rules are
+/// judged again (once per car key). What it finds the cars are asked for in their next ping.
 pub fn spawn_missing_scan(app: web::AppState, gate: gate::Gate) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         tokio::time::sleep(web::resources::system::MISSING_SCAN_DELAY).await;
+        // logs that failed their check under an older version's rules, judged again once
+        web::resources::system::rejudge_old_logs(&app, &gate).await;
         loop {
             web::resources::system::scan_missing_logs(&app, &gate).await;
             tokio::time::sleep(Duration::from_millis(ingest::missing::SCAN_EVERY_MS)).await;

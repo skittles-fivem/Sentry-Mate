@@ -8,10 +8,13 @@
 // - x is time in ms (uPlot ms: 1), shown in the car's zone. Values are converted to the person's units
 //   before they reach a chart (shared/units.js convert); null stays null, so a line breaks over gaps.
 // - No legend of uPlot's own: a readout line under the chart shows the values at the cursor.
+// - A chart below the fold is built when it comes within a screen of view (shared/lazy.js); its box has its
+//   height from CSS already, so nothing moves. Until then u is null and setData keeps the newest data.
 
 import { h, cssVar, replace, styleSheet } from '../shared/dom.js';
 import { formatTime, formatDate } from '../shared/time.js';
 import { rpx, onChange, onTheme } from './display.js';
+import { whenNear } from '../shared/lazy.js';
 
 let load = null;
 /**
@@ -107,20 +110,20 @@ export function plot(el, ctx, make, data, { onCursor = null, onBuild = null } = 
     u = new uPlot(o, cur, el);
     onBuild?.(u);
   };
-  build();
+  const stopNear = whenNear(el, build);
   const ro = new ResizeObserver(() => {
     if (!u) return;
     const b = box();
     if (b.width !== u.width || b.height !== u.height) u.setSize(b);
   });
   ro.observe(el);
-  const off = onChange(() => build());
-  const offTheme = onTheme(() => build());
+  const off = onChange(() => { if (u) build(); });
+  const offTheme = onTheme(() => { if (u) build(); });
   // taken down with the page, or before it when the part of the page it is in is drawn again (core/stage.js): then
   // nothing of the chart is held on to, though the page's clean-up list still names this function
   const destroy = () => {
     if (!el) return;
-    ro.disconnect(); off(); offTheme(); u?.destroy(); u = null;
+    stopNear(); ro.disconnect(); off(); offTheme(); u?.destroy(); u = null;
     if (el.__smPlot === handle) delete el.__smPlot;
     el = null; make = null; cur = null; data = null; onCursor = null; onBuild = null;
   };

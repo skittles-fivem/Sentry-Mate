@@ -10,10 +10,9 @@
 // overlap is listed with the side that is shown and a switch. A CAN export has no cars to match (its
 // logs name their car key); its report counts logs: imported, already here, and refused with why.
 //
-// Progress: the job shown follows `job` events of kind import with its id (live events, polling only while the
-// live stream is down: then, while it is being checked or imported, or uploaded from another tab, the page reads
-// that one job again every few seconds, and stops as soon as it is ready, done or failed). Its figures change in
-// place; the rest of the page is drawn again only when the job's state changes.
+// Progress: there is no live event for imports, so while a job is being checked or imported (or
+// uploaded from another tab) the page reads that one job again every few seconds, and stops as soon
+// as the job is ready, done or failed.
 
 import { h, replace, setVars } from '../shared/dom.js';
 import { buildUrl, preferredCar } from '../shared/state.js';
@@ -29,8 +28,6 @@ import { confirmDialog } from '../core/dialog.js';
 import { dateTime, date, time, dur, num, agoEl, DASH } from '../core/fmt.js';
 import { moveSummary, waiting, holdWhy, HOLD_ACTIONS, holdSaid, counted as nOf } from '../shared/rehome.js';
 import { srcMark } from '../core/source.js';
-import { follow } from '../shared/live.js';
-import { morphChildren } from '../core/morph.js';
 
 export const id = 'import';
 export const css = true;
@@ -375,8 +372,8 @@ export async function mount(ctx) {
     setVars(upBar, { '--w': `${pct(done, j.bytes_total).toFixed(1)}%` });
     const secs = (Date.now() - up.startedAt) / 1000;
     const rate = up.active && secs > 1 ? (done - up.sentAt0) / secs : null;
-    morphChildren(upText, [h('b', null, bytes(done)), ` of ${bytes(j.bytes_total)} uploaded (${num(pct(done, j.bytes_total), 0)} %)`,
-      rate ? ` · ${bytes(rate)} per second · about ${dur(((j.bytes_total - done) / rate) * 1000)} to go` : null]);
+    replace(upText, h('b', null, bytes(done)), ` of ${bytes(j.bytes_total)} uploaded (${num(pct(done, j.bytes_total), 0)} %)`,
+      rate ? ` · ${bytes(rate)} per second · about ${dur(((j.bytes_total - done) / rate) * 1000)} to go` : null);
     // a line per file once there are several: name, bytes, percent, done
     const fs = jobFiles(j);
     replace(upFiles, fs.length < 2 ? null : fs.map((f) => {
@@ -518,8 +515,7 @@ export async function mount(ctx) {
     const im = ['uploading', 'checking', 'ready'].includes(s) ? 'waiting' : s === 'importing' ? 'now' : s === 'done' ? 'done' : failedAt === 'import' ? 'failed' : 'skipped';
     const read = (st) => (st === 'now' ? `${bytes(j.bytes_read)} of ${bytes(j.bytes_total)} read (${num(pct(j.bytes_read, j.bytes_total))} %)` : null);
     const S1 = STATUS[s] || { label: s, tone: 'plain', text: '' };
-    // in place: only the figures that changed are written (an event can come twice a second)
-    morphChildren(progBox, [
+    replace(progBox,
       h('div', { class: 'im-status' }, pill(S1.label, { tone: S1.tone === 'ok' ? 'live' : S1.tone === 'danger' ? 'warm' : S1.tone, lg: true }), h('p', null, statusText(j))),
       kv([
         ['File', h('span', { class: 'mono im-name' }, j.name), { icon: 'logs' }],
@@ -533,7 +529,7 @@ export async function mount(ctx) {
         stageRow('Upload', jobFiles(j).length > 1 ? `The ${num(jobFiles(j).length)} files go to the server in chunks.` : 'The file goes to the server in chunks.', up1, up1 === 'done' ? `${bytes(j.bytes_total)} uploaded` : null, up1 === 'now' ? pct(uploadedOf(j), j.bytes_total) : null),
         stageRow('Check (pass 1)', isCan(j) ? 'Every log is read and its signature checked; nothing is stored.' : 'Every row is read and checked; nothing is stored.', ck, read(ck) || (ck === 'done' ? `Checked ${j.checked_ms ? dateTime(j.checked_ms, tz) : ''}` : null), ck === 'now' ? pct(j.bytes_read, j.bytes_total) : null),
         stageRow('Import (pass 2)', isCan(j) ? 'The logs are stored and checked as uploads are, then decoded into drives and charges.' : 'The rows are stored and the timeline is built again for the matched cars.', im, read(im) || (im === 'done' ? `Done ${dateTime(j.finished_ms, tz)}` : im === 'skipped' ? 'Not run: the check failed.' : null), im === 'now' ? pct(j.bytes_read, j.bytes_total) : null)),
-      restartNote()]);
+      restartNote());
   }
   const progressPanel = panel({ title: 'Progress', icon: 'pulse', side: h('span', { class: 'im-age' }) }, progBox);
 
@@ -1082,77 +1078,43 @@ export async function mount(ctx) {
     S.jobs = S.jobs.map((x) => (x.id === j.id ? { ...x, ...j } : x));
     if (S.job?.id === j.id) S.job = { ...S.job, ...j };
   }
-  let busy = false, pending = null, lastRead = 0, tick = 0, matchAt = ctx.api.now();
-  // a new state of the job shown, from its `job` event or a read: the figures change in place, and the rest of
-  // the page is drawn again when its state changed (one at a time; the newest waiting is taken next)
-  async function takeJob(fresh) {
-    if (!fresh || !S.job || fresh.id !== S.job.id) return;
-    if (busy) { pending = fresh; return; }
+  let busy = false, lastRead = 0, tick = 0;
+  async function refreshJob() {
+    const j = S.job;
+    if (!j || busy) return;
     busy = true;
-    const was = S.job.status;
-    let whole = fresh.status !== was;
+    const was = j.status;
     try {
+      const fresh = await ctx.api.get(`imports/${enc(j.id)}`);
+      if (!ctx.alive()) return;
       setJob(fresh);
       lastRead = ctx.api.now();
-      // the cars to match: again when the state changed, and every 2 s while it is checked or ready
-      if (whole || (['checking', 'ready'].includes(fresh.status) && lastRead - matchAt >= 2000)) { matchAt = lastRead; await loadMatch(); whole = true; }
+      if (fresh.status !== was || ['checking', 'ready'].includes(fresh.status)) await loadMatch();
       if (fresh.status === 'done' && was !== 'done') { await Promise.all([loadJobs(), loadHolds()]); S.cars = await ctx.api.list('cars', { limit: 500 }).all({ max: 10000 }); pick(); await loadOverlaps(); flash(isCan(fresh) ? 'Import done. The logs are in; their drives and charges show as they are decoded.' : 'Import done. The history shows on every page, marked as imported.'); }
       if (fresh.status === 'failed' && was !== 'failed') flash('The import failed; see Upload for why.', { kind: 'error' });
     } catch (e) {
       if (!ctx.alive()) return;
+      if (e?.code === 'no_such_import') { S.jobs = S.jobs.filter((x) => x.id !== j.id); S.job = null; pick(); }
     } finally { busy = false; }
-    if (!ctx.alive()) return;
-    if (whole) paintAll(); else paintLive();
-    if (pending) { const p = pending; pending = null; takeJob(p); }
+    if (ctx.alive()) paintAll();
   }
-  async function readJob() {
-    const j = S.job;
-    if (!j) return null;
-    try {
-      return await ctx.api.get(`imports/${enc(j.id)}`);
-    } catch (e) {
-      if (!ctx.alive()) return null;
-      if (e?.code === 'no_such_import' && S.job?.id === j.id) { S.jobs = S.jobs.filter((x) => x.id !== j.id); S.job = null; pick(); paintAll(); return null; }
-      throw e;
-    }
-  }
-  async function refreshJob() {
-    const fresh = await readJob().catch(() => null);
-    if (fresh && ctx.alive()) await takeJob(fresh);
-  }
-  // the job shown, as the server sends it (and read once more after a reconnect)
-  const jobLive = follow(ctx.api, {
-    type: 'job', match: (d) => !!d && d.kind === 'import' && !!S.job && d.id === S.job.id, pick: (d) => d.status,
-    load: () => (up.active ? Promise.resolve(null) : readJob()),
-    // the fallback below reads only while the stream is down
-    pollMs: () => null,
-    onValue: (j) => { if (ctx.alive() && j) takeJob(j); },
-  });
-  // the fallback, only while the live stream is down and a job moves on the server; nothing is read once it is
-  // ready, done or failed
+  // only while a job moves on the server; nothing is read once it is ready, done or failed
   ctx.every(2000, () => {
     const j = S.job;
     tick++;
-    if (!j || up.active || jobLive.live) return;
+    if (!j || up.active) return;
     if (j.status === 'checking' || j.status === 'importing') refreshJob();
     else if (j.status === 'uploading' && tick % 5 === 0) refreshJob(); // perhaps uploading from another tab
   });
 
   const ageEl = progressPanel.querySelector('.im-age');
-  function paintAge() { if (ageEl) morphChildren(ageEl, lastRead ? h('span', { class: 'setting-note' }, 'read ', agoEl(lastRead, tz)) : []); }
-  // the figures of the job under way only (its state is the same)
-  function paintLive() {
-    paintProgress();
-    if (S.job?.status === 'uploading' && !up.active) paintUploadProgress();
-    paintAge();
-  }
   function paintAll() {
     paintSteps(); paintUpload(); paintProgress(); paintMatch(); paintReport();
     historyTable.setRows(S.jobs);
     paintHolds();
     overlapTable.setRows(S.overlaps);
     paintTimelineLink();
-    paintAge();
+    if (ageEl) replace(ageEl, lastRead ? h('span', { class: 'setting-note' }, 'read ', agoEl(lastRead, tz)) : null);
   }
 
   try { await Promise.all([loadMatch(), loadOverlaps()]); } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }

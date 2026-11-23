@@ -14,7 +14,7 @@ export const STORE_GROUP = {
 export const groupWord = (g) => String(STORE_GROUP[g] || g || '').replace(/\s*\(.*\)$/, '');
 
 /** The steps of a compaction pass, in plain words. */
-export const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records' };
+export const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records', imports: 'uploaded backups' };
 
 const STREAM = {
   can: 'CAN logs', 'tesla-api': 'Tesla API', 'teslafi-api': 'TeslaFi (live)', 'teslamate-local': 'Local TeslaMate',

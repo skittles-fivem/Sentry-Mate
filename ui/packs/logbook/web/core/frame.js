@@ -9,6 +9,7 @@
 
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
+import { clearServiceWorker } from '../shared/offline.js';
 import * as state from '../shared/state.js';
 import { formatTime, zoneName } from '../shared/time.js';
 import { GROUPS, PAGES, findPages, groupOf } from './pages.js';
@@ -23,7 +24,6 @@ import { deviceSizeOptions, deviceSizeNote } from '../shared/devicesize.js';
 import { flash } from './flash.js';
 import { buildLabel, buildTitle, releaseDismissed, dismissRelease } from '../shared/release.js';
 import { isTmNotice, tmNoticeFix, TM_NOTICE_ACTION } from '../shared/teslamate.js';
-import { liveWords, setAttr } from '../shared/live.js';
 
 const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 
@@ -120,6 +120,7 @@ function accountMenu() {
 
 async function signOut() {
   try { await api.del('session'); } catch { /* signed out either way */ }
+  await clearServiceWorker();
   flash('Signed out.', { kind: 'info', next: true });
   location.assign('/sign-in');
 }
@@ -212,7 +213,7 @@ function navigation(navEl) {
 }
 
 /** Shorter tab names inside a group ('Settings: Cars' -> 'Cars' under Set-up). */
-const shortName = (id) => ({ 'settings-cars': 'Cars', 'settings-display': 'Display and units', 'settings-integrations': 'Integrations', 'settings-server': 'Server and access', health: 'Data health', efficiency: 'Efficiency and temperatures', help: 'Help' }[id] || PAGES[id].name);
+const shortName = (id) => ({ 'settings-cars': 'Cars', 'settings-display': 'Display and units', 'settings-integrations': 'Integrations', 'settings-maps': 'Maps and addresses', 'settings-server': 'Server and access', health: 'Data health', efficiency: 'Efficiency and temperatures', help: 'Help' }[id] || PAGES[id].name);
 function safeLink(id) { try { return state.linkTo(id); } catch { return '/'; } }
 
 /* ------------------------------------------------------------------ notices and footer */
@@ -316,18 +317,7 @@ export function mountFrame(opts) {
       applyPrefs(ev.data);
     }
   }, { types: ['notice', 'prefs'] });
-  // whether figures come live: the page's data-live ('live', 'wait' or 'off') and the clock's title say so (while
-  // the stream reconnects, pages read their figures every few seconds instead)
-  const showLive = () => {
-    const off = api.network().ok === false;
-    document.documentElement.classList.toggle('is-offline', off);
-    const w = off ? { tone: 'off', text: 'Offline: the server does not answer' } : liveWords(api.eventsState());
-    setAttr(document.documentElement, 'data-live', w.tone);
-    setAttr(parts.clock, 'title', `${w.text}.`);
-  };
-  api.on('network', showLive);
-  api.on('events', showLive);
-  showLive();
+  api.on('network', (n) => document.documentElement.classList.toggle('is-offline', !n.ok));
   return { update };
 }
 

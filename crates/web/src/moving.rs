@@ -1312,16 +1312,6 @@ async fn give_up_job(
     .await
 }
 
-/// The export file as `/system/exports/{export}` gives it now, if there is one (the live stream's `job` of kind
-/// `export`).
-pub(crate) fn export_now(app: &AppState) -> Option<Value> {
-    let s = site(app).ok()?;
-    let now = app.now();
-    let mut st = s.lock();
-    tidy_export(&mut st, now);
-    st.export.as_ref().map(|e| export_view(e, now))
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -1347,4 +1337,3 @@ mod tests {
         assert!(s.key_work().is_some());
     }
 }
-
