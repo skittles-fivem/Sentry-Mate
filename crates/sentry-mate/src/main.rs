@@ -1718,6 +1718,8 @@ async fn start_web(
         // a full rebuild's end into the audit log, and the one a new server version calls for started
         tasks.push(web::resources::full_rebuild::spawn_watch(app.clone()));
     }
+    // a place's prices worked out from Supercharger invoices into the audit log
+    tasks.push(web::resources::places::spawn_invoice_audit(app.clone()));
     // the Tesla API input reads cars only on a server that serves its data (not after a move away), and only for an
     // account an admin added: with none, nothing is started and nothing connects to Tesla
     let tesla = app.service::<web::resources::tesla::TeslaService>().ok();

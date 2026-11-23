@@ -13,6 +13,10 @@
 //! the data folder, the offline map files in its `maps/` folder (the chosen one, else the largest, is served tile by
 //! tile at `/maps/tiles/{z}/{x}/{y}` while tiles are offline), and no address lookup running yet (nothing cached, no
 //! online error).
+//!
+//! A place's prices worked out from Supercharger invoices change without a request (the engine's
+//! [`engine::invoice_prices`]): [`audit_invoice_prices`] writes each change into the audit log
+//! (`place-invoice-priced`, by the server itself), [`spawn_invoice_audit`] every few seconds.
 
 use super::now::{answer, failed, list_answer, run, text};
 use crate::ctx::target;
@@ -509,6 +513,44 @@ async fn reprice(
         v.audit(&app, "place-repriced", Some(&target("place", None, &q::place_ref(id))), &summary).await?;
     }
     Ok(Json(value).into_response())
+}
+
+// ---- prices from invoices into the audit log
+
+/// How often the engine's invoice price changes are taken into the audit log.
+pub const INVOICE_AUDIT_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Writes the engine's invoice price changes not in the audit log yet (`place-invoice-priced`, one per place
+/// changed, by the server itself). Blocking. Answers how many were written.
+pub fn audit_invoice_prices(app: &AppState) -> usize {
+    let Ok(e) = app.service::<Engine>() else { return 0 };
+    let taken = match e.invoice_price_audits() {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!("invoice prices: their audit entries could not be read: {err}");
+            return 0;
+        }
+    };
+    let mut n = 0;
+    for a in taken {
+        let details = crate::ctx::audit_details(Some(&target("place", None, &a.place)), &a.summary());
+        match app.accounts.audit().record(None, None, "place-invoice-priced", &details) {
+            Ok(()) => n += 1,
+            Err(err) => tracing::warn!("audit: {err}"),
+        }
+    }
+    n
+}
+
+/// Takes the engine's invoice price changes into the audit log every [`INVOICE_AUDIT_EVERY`], off the async threads.
+pub fn spawn_invoice_audit(app: AppState) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let a = app.clone();
+            let _ = tokio::task::spawn_blocking(move || audit_invoice_prices(&a)).await;
+            tokio::time::sleep(INVOICE_AUDIT_EVERY).await;
+        }
+    })
 }
 
 // ---- maps and addresses

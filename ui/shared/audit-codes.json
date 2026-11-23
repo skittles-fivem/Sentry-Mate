@@ -42,6 +42,7 @@
   {"code":"place-changed","group":"cars","item":"place"},
   {"code":"place-created","group":"cars","item":"place"},
   {"code":"place-deleted","group":"cars","item":"place"},
+  {"code":"place-invoice-priced","group":"cars","item":"place"},
   {"code":"place-repriced","group":"cars","item":"place"},
   {"code":"preferences-changed","group":"settings","item":"account"},
   {"code":"purpose-rule-created","group":"cars","item":"car"},

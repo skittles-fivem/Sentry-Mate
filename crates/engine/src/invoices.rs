@@ -246,6 +246,8 @@ impl Engine {
                     to_ms: to + TIME_SLACK_MS,
                 });
             }
+            // the places' prices from invoices, with these sessions
+            self.invoice_prices_soon();
         }
         Ok(out)
     }

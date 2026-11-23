@@ -899,6 +899,7 @@ a.bar:hover .bar-fill { opacity: 0.85; }
 .rank { display: flex; flex-direction: column; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
 .rank-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: var(--s3); row-gap: var(--s1); }
 .rank-name { font-size: var(--f14); line-height: var(--l14); font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rank-from { font-weight: 500; color: var(--muted); }
 .rank-n { font-size: var(--f14); line-height: var(--l14); font-weight: 800; font-variant-numeric: tabular-nums; text-align: right; }
 .rank-bar { grid-column: 1 / -1; display: block; height: var(--s2); border-radius: 999px; background: var(--card-alt); overflow: hidden; }
 .rank-fill { display: block; height: 100%; width: round(calc(var(--v, 0) * 100%), var(--e)); border-radius: 999px; background: var(--tone, var(--c1)); transition: width 0.4s var(--ease); }

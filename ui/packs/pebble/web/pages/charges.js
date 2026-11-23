@@ -24,7 +24,7 @@ import { nearNow } from '../shared/lazy.js';
 import { xyChart } from '../core/chart.js';
 import { byDay, dayHead, socBar, filterBar, moreButton, statTile, pills, money, splitBar, sectionHead, dur } from '../core/bits.js';
 import { rowTitle, SOURCE_OPTIONS, SOURCE_WORDS, sourceParam } from '../core/source.js';
-import { setPrice } from '../shared/prices.js';
+import { setPrice, priceInForce } from '../shared/prices.js';
 
 const PRICE_CLS = { btn: 'btn', primary: 'btn-primary', ghost: 'btn-ghost', plain: 'btn-soft', input: 'input', select: 'input' };
 
@@ -309,7 +309,10 @@ export async function mount(ctx) {
       return h('ol', { class: 'rank', cover: cover[0] || null }, list.slice(0, 6).map((p) => {
         const fl = h('span', { class: 'rank-fill' }); fl.style.setProperty('--v', (val(p) / max).toFixed(4));
         const href = p.place ? state.buildUrl('places', { query: { place: p.place } }) : state.buildUrl('places', { query: { new: `${p.lat.toFixed(5)},${p.lon.toFixed(5)}` } });
-        return h('li', { class: 'rank-row' }, h('a', { class: 'rank-name place-link', href, cover: cover[1] }, p.label),
+        // a place priced from its Supercharger invoices says so after its name
+        const inv = priceInForce(p);
+        return h('li', { class: 'rank-row' }, h('a', { class: 'rank-name place-link', href, cover: cover[1] }, p.label,
+          inv?.source === 'invoice' ? h('span', { class: 'rank-from from-invoice', title: 'Worked out from its Supercharger invoices; a price typed on the place wins over it' }, ` · ${inv.line} from invoice`) : null),
           h('span', { class: 'rank-n', cover: cover[2] }, cover[2].endsWith('cost') ? (p.cost_by_currency?.length ? p.cost_by_currency.map((x) => formatMoney(x.amount, x.currency)).join(' + ') : 'no price') : format(p.energy_added_kwh, 'energy')),
           h('span', { class: 'rank-bar', 'aria-hidden': 'true' }, fl),
           ctx.admin ? btn(p.place ? 'Set price' : 'Save place and set price', { kind: 'ghost', cls: 'rank-set set-price', title: p.place ? `Set the price at ${p.label}` : 'Save this spot as a place, then set its price', onclick: async () => {

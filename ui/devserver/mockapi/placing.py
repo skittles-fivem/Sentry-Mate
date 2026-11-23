@@ -154,6 +154,19 @@ def price_on_day(lst, day):
     return None
 
 
+def entry_on(p, ms, tz=None):
+    """The dated entry of a place (dict) in force at `ms`, on the place's own day (None: no price)."""
+    if not p:
+        return None
+    return price_on_day(prices_of(p), date_str(ms, p.get("time_zone") or tz or "UTC"))
+
+
+def source_on(p, ms, tz=None):
+    """Who set the price in force at `ms`: "typed", "invoice" or None."""
+    hit = entry_on(p, ms, tz)
+    return hit.get("source", "typed") if hit else None
+
+
 def price_on(p, ms, tz=None):
     """The price of a place (dict) in force at `ms`, on the place's own day."""
     if not p:

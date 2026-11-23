@@ -30,7 +30,7 @@ import { spark, textGrid, gridAxis } from '../core/spark.js';
 import { rpx } from '../core/display.js';
 import { isAdmin } from '../core/prefs.js';
 import { toast } from '../core/toast.js';
-import { setPrice } from '../shared/prices.js';
+import { setPrice, priceInForce } from '../shared/prices.js';
 
 const PRICE_CLS = { dialog: 'dlg-pp', btn: 'btn', primary: 'btn--primary', ghost: '', plain: '', input: 'in', select: 'in' };
 import { placeLink } from './timeline.js';
@@ -500,7 +500,12 @@ export async function mount(ctx) {
 
   async function paintPlaces(sp) {
     const pp = placesQuery(sp, fixed ? fixed.id : sp.cars);
-    const placeCell = (p) => h('a', { class: 'lnk-plain', href: p.place ? state.buildUrl('places', { query: { place: p.place } }) : state.buildUrl('places', { query: { lat: p.lat.toFixed(5), lon: p.lon.toFixed(5), new: 1 } }), title: p.place ? `edit the place ${p.label}` : 'save this spot as a place' }, p.label);
+    // a place priced from its Supercharger invoices says so after its name
+    const invoicePrice = (p) => {
+      const f = priceInForce(p);
+      return f?.source === 'invoice' ? h('span', { class: 'muted from-invoice', title: 'worked out from its Supercharger invoices; a price typed on the place wins over it' }, ` ${f.line} from invoice`) : null;
+    };
+    const placeCell = (p) => h('span', null, h('a', { class: 'lnk-plain', href: p.place ? state.buildUrl('places', { query: { place: p.place } }) : state.buildUrl('places', { query: { lat: p.lat.toFixed(5), lon: p.lon.toFixed(5), new: 1 } }), title: p.place ? `edit the place ${p.label}` : 'save this spot as a place' }, p.label), invoicePrice(p));
     const placeCol = (cv) => ({ key: 'label', label: 'place', cls: 'wrap-cell', ph: 'main', cover: cv, render: placeCell });
     const sessions = { key: 'sessions', label: 'sessions', num: true, ph: 'sub', render: (p) => formatNumber(p.sessions) };
     const setCol = { key: 'set_price', label: '', ph: 'sub', csv: false, render: (p) => (isAdmin() ? h('button', { class: 'btn set-price', type: 'button',

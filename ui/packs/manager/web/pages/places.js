@@ -24,7 +24,7 @@ import { createMap, mapFallback, boundsOf } from '../core/map.js';
 import { field } from '../core/form.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
 import { flash } from '../core/flash.js';
-import { openPriceEditor, pricesOf, priceOnDay, priceLine, fromWord, dayIn } from '../shared/prices.js';
+import { openPriceEditor, pricesOf, priceOnDay, priceLine, fromWord, dayIn, sourceWord, invoiceNote } from '../shared/prices.js';
 
 const PRICE_CLS = { btn: 'btn', primary: 'btn--primary', ghost: 'btn--ghost', input: 'input', select: 'select' };
 import { rpx } from '../core/display.js';
@@ -1065,12 +1065,15 @@ async function mountEditor(ctx, q) {
       } }, icon('plus', 'ico--sm'), dated.length ? 'Add or change prices by date' : 'Add prices by date') : null),
     dated.length ? h('ul', { class: 'pl-dated-list' }, dated.map((x) => h('li', { class: ['pl-dated-row', x === todayEntry && 'is-now'] },
       h('span', { class: 'pl-dated-from' }, fromWord(x.from)), h('span', null, priceLine(x.price)),
-      h('span', { class: 'faint' }, [x.source === 'invoice' ? 'from invoices' : null, x === todayEntry ? 'in force today' : null].filter(Boolean).join(' · '))))) : null,
+      h('span', { class: 'faint' }, [sourceWord(x.source) || null, x === todayEntry ? 'in force today' : null].filter(Boolean).join(' · '))))) : null,
     h('p', { class: 'faint' }, cur
       ? 'A charge is costed at the price of its own day. The fields below change the price in force today; a price you type wins over one from Supercharger invoices.'
       : 'Save the place first; then it can have prices from a date on.'));
   const pricePanel = panel({ title: 'Charging price', icon: 'bolt', cls: 'pl-price' },
-    datedBox, h('div', { class: 'form-row' }, pricedSeg), priceMsg, priceBody);
+    datedBox,
+    // the price in force today is from invoices: the fields below show it, and a price typed there wins over it
+    invoiceNote(cur) ? h('p', { class: 'faint pl-from-invoice' }, invoiceNote(cur)) : null,
+    h('div', { class: 'form-row' }, pricedSeg), priceMsg, priceBody);
 
   const formEl = h('form', { class: 'pl-form', novalidate: true, cover: 'web.geofences.form.validation', onsubmit: (e) => { e.preventDefault(); save(); } },
     h('div', { class: 'pl-editor' },

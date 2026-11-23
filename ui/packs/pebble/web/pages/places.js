@@ -19,7 +19,7 @@ import { createSheet, confirmSheet } from '../core/sheet.js';
 import { field, segmented } from '../core/form.js';
 import { mapTile, boundsOf, coordsText } from '../core/map.js';
 import { pills, moreButton } from '../core/bits.js';
-import { openPriceEditor, pricesOf, priceOnDay, priceLine, fromWord, dayIn } from '../shared/prices.js';
+import { openPriceEditor, pricesOf, priceOnDay, priceLine, fromWord, dayIn, sourceWord, invoiceNote } from '../shared/prices.js';
 
 const PRICE_CLS = { btn: 'btn', primary: 'btn-primary', ghost: 'btn-ghost', plain: 'btn-soft', input: 'input', select: 'input' };
 
@@ -136,8 +136,10 @@ export async function mount(ctx) {
       h('span', { class: 'label' }, 'Prices by date'),
       dated.length ? h('ul', { class: 'dated-list' }, dated.map((x) => h('li', { class: x === nowEntry ? 'is-now' : null },
         h('b', null, fromWord(x.from)), h('span', null, priceLine(x.price)),
-        h('span', { class: 'hint' }, [x.source === 'invoice' ? 'from invoices' : null, x === nowEntry ? 'in force today' : null].filter(Boolean).join(' · '))))) : null,
+        h('span', { class: 'hint' }, [sourceWord(x.source) || null, x === nowEntry ? 'in force today' : null].filter(Boolean).join(' · '))))) : null,
       h('p', { class: 'hint' }, cur ? 'A charge is costed at the price of its own day. The price below is the one in force today; a price you type wins over one from invoices.' : 'Save the place first; then it can have prices from a date on.'),
+      // the price in force today is from invoices: the fields show it, and a price typed there wins over it
+      invoiceNote(cur) ? h('p', { class: 'hint from-invoice' }, invoiceNote(cur)) : null,
       cur && admin ? btn(dated.length ? 'Add or change prices by date' : 'Add prices by date', { kind: 'soft', icon: 'calendar', onclick: async () => {
         const saved = await openPriceEditor({ client: ctx.api, place: cur, cls: PRICE_CLS });
         if (saved) { ctx.toast('Prices saved.'); sheet.close(); load(); }

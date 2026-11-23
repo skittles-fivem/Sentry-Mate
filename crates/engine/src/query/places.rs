@@ -79,6 +79,9 @@ pub struct PlaceView {
     pub time_zone: Option<String>,
     /// The price in force today (a typed one, else one from invoices).
     pub price: Option<Price>,
+    /// Who set the price in force today: `typed`, or `invoice` (worked out from Supercharger invoices); null with
+    /// no price.
+    pub price_source: Option<PriceSource>,
     /// Every dated price, oldest first.
     pub prices: Vec<DatedPrice>,
     pub counts: Counts,
@@ -194,6 +197,7 @@ pub const MAX_PRICES: usize = 50;
 pub(crate) fn view(p: &Place, places: &Places, counts: Counts, last: Option<u64>) -> PlaceView {
     let extra = places.extra(p.id);
     let day = today(extra.and_then(|x| x.time_zone.as_deref()));
+    let in_force = places.price_on(p.id, &day);
     PlaceView {
         id: place_ref(p.id),
         name: p.name.clone(),
@@ -202,7 +206,8 @@ pub(crate) fn view(p: &Place, places: &Places, counts: Counts, last: Option<u64>
         lon: p.lon,
         radius_m: p.radius_m,
         time_zone: extra.and_then(|x| x.time_zone.clone()),
-        price: places.price_on(p.id, &day).map(|d| d.price.clone()),
+        price: in_force.map(|d| d.price.clone()),
+        price_source: in_force.map(|d| d.source),
         prices: places.prices(p.id).to_vec(),
         counts,
         last_visit_ms: last,

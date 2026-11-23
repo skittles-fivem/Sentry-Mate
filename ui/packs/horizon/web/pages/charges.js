@@ -25,7 +25,7 @@ import { openPeriodPicker } from '../core/period.js';
 import { placePopover } from '../core/popover.js';
 import { isAdmin } from '../core/prefs.js';
 import { flash } from '../core/flash.js';
-import { setPrice } from '../shared/prices.js';
+import { setPrice, priceInForce } from '../shared/prices.js';
 
 const PRICE_CLS = { btn: 'btn', primary: 'btn--primary', ghost: 'btn--ghost', input: 'input', select: 'select' };
 import { rpx } from '../core/display.js';
@@ -761,7 +761,12 @@ export async function mount(ctx) {
     const placeCell = (p) => (p.place ? h('a', { class: 'main place-link', href: state.buildUrl('places', { query: { place: p.place } }), title: `Edit the place ${p.label}` }, p.label)
       : h('a', { class: 'main place-link', href: state.buildUrl('places', { query: { lat: p.lat.toFixed(5), lon: p.lon.toFixed(5), new: 1 } }), title: `${p.label}: save this spot as a place` }, p.label));
     const placeCol = (cv) => ({ key: 'label', label: 'Place', cover: cv, render: (p) => h('span', { class: 'cell-text' }, placeCell(p),
-      multi && p.cars?.length ? h('span', { class: 'sub' }, p.cars.map(carName).join(', ')) : null), csv: (p) => p.label });
+      multi && p.cars?.length ? h('span', { class: 'sub' }, p.cars.map(carName).join(', ')) : null, invoicePrice(p)), csv: (p) => p.label });
+    // a place priced from its Supercharger invoices says so under its name
+    const invoicePrice = (p) => {
+      const f = priceInForce(p);
+      return f?.source === 'invoice' ? h('span', { class: 'sub from-invoice', title: 'The place\'s price is worked out from its Supercharger invoices; a price typed on the place wins over it' }, `${f.line} from invoice`) : null;
+    };
     const sessionsCol = { key: 'sessions', label: 'Sessions', num: true, render: (p) => formatNumber(p.sessions) };
     // an admin sets a place's price from here (the place price editor); a spot that is no saved place is saved first
     const setPriceCol = { key: 'set_price', label: '', csv: false, render: (p) => (isAdmin() ? h('button', {
