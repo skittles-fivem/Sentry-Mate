@@ -2,8 +2,10 @@
 //
 // GET /cars/{car} `vehicle` holds facts worked out offline from the VIN's first 11 characters, the car's own CAN
 // configuration, the Tesla API, an import, and what an admin typed. Each fact is { value, source, confidence,
-// note? }: the tiles show the value (or "Unknown"), where it came from (CAN, VIN, Tesla API, owner, import) and how
-// sure it is (high, medium, low), and mark a fact two inputs disagree on with what each said. An admin corrects a
+// note? }: a row shows the label, the value (or "Unknown") and the pencil; where it came from (CAN, VIN, Tesla API,
+// owner, import), how sure it is (high, medium, low) and the evidence are in the row's hover title, its info toggle
+// (phone and touch) and the correction sheet. A low-confidence value is muted with a faint ?; a fact two inputs
+// disagree on is marked with what each said. An admin corrects a
 // fact in a sheet (PATCH /cars/{car} with the car's version and config: { key: value }; null forgets a typed one):
 // a typed value beats every other source. A stale version reads the car again and says so.
 
@@ -79,15 +81,15 @@ function valueText(key, val) {
 }
 const srcWords = (s) => SOURCE[s] || [String(s || '').replace(/_/g, ' '), 'muted', `From ${s}`];
 
-/** The source mark of a fact: "CAN · high". */
-function sourceMark(f) {
-  if (!f || f.source == null) return null;
-  const [word, tone, why] = srcWords(f.source);
-  const c = CONF[f.confidence];
-  return h('span', { class: ['vi-src', `tone-${tone}`, { 'is-low': f.confidence === 'low' }], title: `${why}.${c ? ` ${CONF_WHY[f.confidence]}` : ''}` },
-    h('span', { class: 'src-dot', 'aria-hidden': 'true' }), h('span', null, word),
-    c ? h('span', { class: 'vi-conf' }, `${c}`) : null,
-    h('span', { class: 'sr-only' }, c ? ` source, ${c} confidence` : ' source'));
+/** Where a fact came from, how sure and the evidence, as sentences (the hover title, the info toggle, the sheet). */
+function howLines(key, f, d) {
+  if (!f || f.value == null) return ['No input says it.'];
+  return [
+    f.source != null ? `${srcWords(f.source)[0]}: ${srcWords(f.source)[2]}.` : null,
+    CONF[f.confidence] ? CONF_WHY[f.confidence] : null,
+    f.note ? f.note.replace(/\.?$/, '.') : null,
+    d ? `Inputs differ: ${d.map((x, i) => `${valueText(key, x.value) ?? 'nothing'} said ${srcWords(x.source)[0]}${i === 0 ? ' (shown)' : ''}`).join(', ')}.` : null,
+  ].filter(Boolean);
 }
 
 /**
@@ -108,13 +110,19 @@ export function vehicleTiles(ctx, car, { onChanged = null } = {}) {
     const text = valueText(key, f.value);
     const d = dis.get(key);
     const known = text != null;
-    const edit = ctx.admin && cfgKey ? btn(`Correct ${label.toLowerCase()}`, { kind: 'ghost', icon: 'edit', iconOnly: true, cls: 'btn-sm vi-edit', onclick: (e) => correct({ key, label, cfgKey, kind, f }, e.currentTarget) }) : null;
-    return h('li', { class: ['vi-row', { 'is-unknown': !known, 'is-differ': !!d }] },
+    const low = known && f.confidence === 'low';
+    const how = howLines(key, f, d);
+    const edit = ctx.admin && cfgKey ? btn(`Correct ${label.toLowerCase()}`, { kind: 'ghost', icon: 'edit', iconOnly: true, cls: 'btn-sm vi-edit', onclick: (e) => correct({ key, label, cfgKey, kind, f, how }, e.currentTarget) }) : null;
+    const detail = h('p', { class: 'vi-note', hidden: true }, how.join(' '));
+    const info = btn(`Where the ${label.toLowerCase()} comes from`, { kind: 'ghost', icon: 'info', iconOnly: true, cls: 'btn-sm vi-info', attrs: { 'aria-expanded': 'false' },
+      onclick: (e) => { const open = detail.hidden; detail.hidden = !open; e.currentTarget.setAttribute('aria-expanded', String(open)); } });
+    return h('li', { class: ['vi-row', { 'is-unknown': !known, 'is-differ': !!d, 'is-low': low }], title: how.join('\n') },
       h('div', { class: 'vi-line' },
         h('span', { class: 'vi-k' }, label),
-        h('span', { class: 'vi-v' }, h('span', { class: 'vi-val' }, known ? text : 'Unknown'), sourceMark(f), d ? chip('Inputs differ', { tone: 'sun', icon: 'warning' }) : null),
-        edit || (ctx.admin ? h('span', { class: 'vi-edit-gap', 'aria-hidden': 'true' }) : null)),
-      f.note ? h('p', { class: 'vi-note' }, f.note) : null,
+        h('span', { class: 'vi-v' }, h('span', { class: 'vi-val' }, known ? text : 'Unknown', low ? h('span', { class: 'vi-q', 'aria-hidden': 'true' }, '?') : null, low ? h('span', { class: 'sr-only' }, ' (low confidence)') : null),
+          d ? chip('Inputs differ', { tone: 'sun', icon: 'warning' }) : null),
+        h('span', { class: 'vi-acts' }, info, edit || (ctx.admin ? h('span', { class: 'vi-edit-gap', 'aria-hidden': 'true' }) : null))),
+      detail,
       d ? h('ul', { class: 'vi-differ' }, d.map((x, i) => h('li', null, h('span', { class: 'vi-differ-v' }, valueText(key, x.value) ?? 'nothing'), ' ', h('span', { class: 'vi-differ-s' }, `said ${srcWords(x.source)[0]}`, i === 0 ? ', shown' : '')))) : null);
   }
 
@@ -131,10 +139,7 @@ export function vehicleTiles(ctx, car, { onChanged = null } = {}) {
       h('div', { class: 'fact' }, h('dt', null, 'Inputs that disagree'), h('dd', null, dis.size ? `${formatNumber(dis.size)}: marked above` : 'None'))),
     unknown.length ? said('warn', `Codes the tables do not know (no value is given for them, never a guess): ${unknown.map((u) => `${u.field} (${u.at ? String(u.at).replace(/^vin:/, 'VIN position ') : u.source === 'vin' ? 'VIN' : u.source === 'can' ? 'CAN' : u.source}: code ${u.code})`).join('; ')}.`) : null,
     (vh.notes || []).length ? h('ul', { class: 'set-list' }, vh.notes.map((n) => h('li', null, n))) : null,
-    h('div', { class: 'vi-legend' },
-      ['owner', 'can', 'tesla_api', 'vin', 'teslamate'].map((s) => h('span', { class: ['vi-src', `tone-${srcWords(s)[1]}`], title: srcWords(s)[2] }, h('span', { class: 'src-dot', 'aria-hidden': 'true' }), h('span', null, srcWords(s)[0])))),
-    note('Each value says where it came from, and how sure that is: high (Tesla’s filing, the EPA’s data, the car’s own configuration), medium (several sources agree), low (one source, to be checked). What an admin types comes first, then the car’s CAN configuration, then the VIN; an import last. Nothing is looked up online.'),
-    note(ctx.admin ? 'Press the pencil on a row to correct it; “Forget” goes back to what the inputs say.' : 'An admin can correct a value.'));
+    note('What an admin types comes first, then the car’s CAN configuration, then the VIN; an import last. Nothing is looked up online.'));
 
   /* ---------- an admin's correction */
   function control(kind, f, cfgKey) {
@@ -159,7 +164,7 @@ export function vehicleTiles(ctx, car, { onChanged = null } = {}) {
     if (['year', 'whole', 'inch', 'kwh', 'km'].includes(kind)) return typeof raw === 'number' ? raw : Number(raw);
     return String(raw).trim() || undefined;
   };
-  function correct({ key, label, cfgKey, kind, f }, opener) {
+  function correct({ key, label, cfgKey, kind, f, how }, opener) {
     const fld = control(kind, f, cfgKey);
     const typed = f.source === 'owner';
     async function send(value) {
@@ -191,6 +196,7 @@ export function vehicleTiles(ctx, car, { onChanged = null } = {}) {
     sheet.titleEl.textContent = `Correct ${label.toLowerCase()}`;
     sheet.body.replaceChildren(
       h('p', { class: 'sheet-text' }, `${others} A typed value beats every other source, on every page. `),
+      f.value != null ? h('p', { class: 'sheet-text vi-sheet-how' }, how.join(' ')) : null,
       form({
         fields: [fld], submitLabel: 'Save', secondary: forget,
         async onsubmit(vals) {
@@ -202,5 +208,5 @@ export function vehicleTiles(ctx, car, { onChanged = null } = {}) {
     sheet.open(opener);
   }
 
-  return [sectionHead('Vehicle info', 'What is known of how this car was built, and where each fact came from.'), ...tiles, whereT];
+  return [sectionHead('Vehicle info', `How this car was built. Hover a fact for its source${ctx.admin ? '; the pencil corrects it' : ''}.`), ...tiles, whereT];
 }

@@ -54,7 +54,6 @@ mod memo;
 pub mod placing;
 pub mod query;
 pub mod records;
-pub mod rehome;
 pub mod tesla_in;
 pub mod tmlocal_catchup;
 pub mod tz;
@@ -163,6 +162,9 @@ pub struct EngineStats {
     pub failures: u64,
     pub decode_ms_total: u64,
     pub rebuild_ms_total: u64,
+    /// GPS fixes the timeline rebuilds left out since the server started (a placeholder, half a fix, or a jump
+    /// faster than a car drives from the fixes around it): rebuilding a window counts its fixes again.
+    pub gps_fixes_dropped: u64,
     pub last_error: Option<String>,
 }
 
@@ -175,6 +177,7 @@ struct Counters {
     failures: AtomicU64,
     decode_ms: AtomicU64,
     rebuild_ms: AtomicU64,
+    gps_fixes_dropped: AtomicU64,
 }
 
 pub(crate) enum Work {
@@ -244,6 +247,8 @@ pub(crate) struct Inner {
     pub(crate) gap_fill: std::sync::atomic::AtomicBool,
     /// Per car, the position its zone was last looked up at and the zone found there ([`Inner::car_zone`]).
     zone_at: Mutex<HashMap<CarId, ZoneAt>>,
+    /// Per car, the newest rebuilt stretch whose inputs' fixes disagreed ([`timeline::fuse::gps_cross_check`]).
+    pub(crate) gps_cross: Mutex<HashMap<CarId, GpsDisagreement>>,
     /// Answers' parts kept while their data stays the same.
     pub(crate) memo: memo::Memo,
     /// The cars whose long periods wait to be worked out in the background ([`warm`]).
@@ -257,6 +262,30 @@ pub(crate) struct Inner {
     pub(crate) compaction: Mutex<compact::Running>,
     pub(crate) compact_stop: std::sync::atomic::AtomicBool,
     pub(crate) compact_auto: std::sync::atomic::AtomicBool,
+}
+
+/// A stretch of a car's history where one input's GPS fixes disagreed with another's of the same moments by far
+/// more than lag or noise (a decode mistake, a wrong car): `disagree` names the inputs out of step, `not_used`
+/// those whose fixes were left out of positions there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct GpsDisagreement {
+    #[serde(serialize_with = "input_words")]
+    pub disagree: model::Inputs,
+    #[serde(serialize_with = "input_words")]
+    pub not_used: model::Inputs,
+    pub from_ms: u64,
+    pub to_ms: u64,
+}
+
+fn input_words<S: serde::Serializer>(i: &model::Inputs, s: S) -> Result<S::Ok, S::Error> {
+    s.collect_seq(i.iter().map(model::Input::word))
+}
+
+impl Engine {
+    /// The newest stretch of the car's history whose inputs' GPS fixes disagreed (since the server started).
+    pub fn gps_disagreement(&self, car: CarId) -> Option<GpsDisagreement> {
+        lock(&self.inner.gps_cross).get(&car).copied()
+    }
 }
 
 /// Where a car's zone was last looked up (latitude, longitude) and the zone found there.
@@ -359,6 +388,7 @@ impl Engine {
                 default_zone: RwLock::new(opts.default_time_zone.clone()),
                 gap_fill: std::sync::atomic::AtomicBool::new(true),
                 zone_at: Mutex::new(HashMap::new()),
+                gps_cross: Mutex::new(HashMap::new()),
                 memo: memo::Memo::default(),
                 warm: Mutex::default(),
                 packs: Default::default(),
@@ -544,6 +574,7 @@ impl Engine {
             failures: c.failures.load(Ordering::Relaxed),
             decode_ms_total: c.decode_ms.load(Ordering::Relaxed),
             rebuild_ms_total: c.rebuild_ms.load(Ordering::Relaxed),
+            gps_fixes_dropped: c.gps_fixes_dropped.load(Ordering::Relaxed),
             last_error: lock(&self.inner.last_error).clone(),
         }
     }

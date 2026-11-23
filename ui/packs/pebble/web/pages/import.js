@@ -30,7 +30,6 @@ import { sectionHead, count, nums, facts } from '../core/bits.js';
 import { srcPill } from '../core/source.js';
 import { isValidZone } from '../shared/time.js';
 import { group, infoRow, pickRow, said } from '../core/settings.js';
-import { moveSummary, waiting, holdWhy, HOLD_ACTIONS, holdSaid, counted as nOf } from '../shared/rehome.js';
 import { progressBar, callout, bytes } from './move-parts.js';
 
 export const id = 'import';
@@ -182,14 +181,12 @@ export async function mount(ctx) {
   const fileDone = (f) => Math.max(f.uploaded_bytes || 0, up.off.get(f.index) || 0);
   const upDone = (j) => jobFiles(j).reduce((a, f) => a + fileDone(f), 0);
 
-  const [jobs, carsPage, holds] = await Promise.all([
+  const [jobs, carsPage] = await Promise.all([
     ctx.api.list('imports', { limit: 100 }).all({ max: 500 }),
     ctx.api.page('cars', { limit: 500 }),
-    ctx.api.get('import-holds'),
   ]);
   if (!ctx.alive()) return {};
   S.jobs = jobs;
-  S.holds = holds?.items || [];
   S.cars = carsPage.items || [];
   S.carsMore = !!carsPage.next;
   const carById = new Map(S.cars.map((c) => [c.id, c]));
@@ -1018,40 +1015,6 @@ export async function mount(ctx) {
     overlapBox.replaceChildren(...(tiles.length ? tiles : [emptyTile({ icon: 'timeline', title: 'No overlaps', text: 'Once an import is done, each span where two histories cover the same time shows here with a switch for the side shown.', w: 2 })]));
   }
 
-  /* ---------------------------------------------------------------- rows moved, rows that need a car */
-  const holdsBox = h('div', { class: 'contents' });
-  async function giveCar(x, v) {
-    try {
-      const out = await ctx.api.post(api.apiPath`import-holds/${x.hold}`, { match: v });
-      if (!ctx.alive()) return;
-      const [jobs2, holds2] = await Promise.all([ctx.api.list('imports', { limit: 100 }).all({ max: 500 }), ctx.api.get('import-holds')]);
-      if (!ctx.alive()) return;
-      S.jobs = jobs2;
-      S.holds = holds2?.items || [];
-      ctx.toast(holdSaid(out, carName, count), { kind: 'info' });
-    } catch (e) {
-      if (ctx.alive()) ctx.toast(errorWords(e).text, { kind: 'error' });
-      throw e;
-    } finally { if (ctx.alive()) { paintHolds(); paintList(); } }
-  }
-  function paintHolds() {
-    const lines = S.jobs.map((j) => [j, moveSummary(j, carName, count)]).filter(([, w]) => w);
-    const lots = waiting(S.holds);
-    if (!lines.length && !S.holds.length) { holdsBox.replaceChildren(); return; }
-    const odo = (x) => (x.odometer_km ? `${format(x.odometer_km[0], 'odometer')} to ${format(x.odometer_km[1], 'odometer')}` : null);
-    const options = (x) => [...S.cars.map((c) => [c.id, c.name]), ...HOLD_ACTIONS.map(([v, l]) => [v, v === 'new' && x.name ? `A new car named ${x.name}` : l])];
-    holdsBox.replaceChildren(sectionHead('Imported rows and their cars', 'Rows an import could not put on a car for sure wait here, kept, until you choose their car. Nothing is deleted.'),
-      tile({ w: 'full', title: 'Rows moved', icon: 'car', id: 'needs-car' },
-        lines.length ? group(null, lines.map(([j, w]) => infoRow({ icon: 'file', name: j.name, sub: `${w}.`, cls: 'im-job-row' })))
-          : said('ok', 'No import moved rows.'),
-        lots.length ? group('Rows that need a car', lots.map((x) => pickRow({
-          name: x.name ? `Named ${x.name}` : 'Rows without a name',
-          sub: [`${count(x.rows)} rows, ${nOf(x.drives, 'drive', count)}`, x.first_ms != null ? `${day(x.first_ms)} to ${day(x.last_ms)}` : null, odo(x)].filter(Boolean).join(' · '),
-          value: x.status === 'ignored' ? 'ignore' : 'wait', options: options(x), sheetTitle: 'Where these rows go', sheetNote: holdWhy(x),
-          onpick: (v) => giveCar(x, v),
-        }))) : said('ok', 'Every imported row has a car.')));
-  }
-
   /* ---------------------------------------------------------------- earlier imports */
   const listBox = h('div', { class: 'contents' });
   function paintList() {
@@ -1071,14 +1034,14 @@ export async function mount(ctx) {
         })))));
   }
 
-  function paintAll() { paintSteps(); paintReport(); paintList(); paintHolds(); }
+  function paintAll() { paintSteps(); paintReport(); paintList(); }
 
   if (S.job && ['checking', 'ready'].includes(S.job.status)) await loadMatch();
   await loadOverlaps();
   if (!ctx.alive()) return {};
   paintAll();
   paintOverlaps();
-  ctx.view.replaceChildren(bar, stepsTile, knowTile, reportBox, overlapBox, holdsBox, listBox);
+  ctx.view.replaceChildren(bar, stepsTile, knowTile, reportBox, overlapBox, listBox);
   follow();
   ctx.ready();
   return {};

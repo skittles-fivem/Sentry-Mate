@@ -3,6 +3,10 @@
 //!
 //! Left out on purpose: files only the pack's developers use (`README.md` notes, a `mock-api.js` or other `mock`
 //! files, tests), so the real server never serves them.
+//!
+//! With `SENTRY_MATE_UI_BUNDLE=DIR` (the release build: `ui/tools/bundle/bundle.mjs DIR`), each pack's bundled and
+//! minified files in `DIR/<pack>/web/` are embedded too, as its `bundle`: served in place of the sources' files of the
+//! same path. Without it (tests, a plain `cargo build`) the packs are served as they are in `ui/packs`.
 
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -82,6 +86,14 @@ fn main() -> std::io::Result<()> {
     let packs = manifest.join("../../ui/packs");
     println!("cargo:rerun-if-changed={}", packs.display());
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=SENTRY_MATE_UI_BUNDLE");
+    let bundle = std::env::var_os("SENTRY_MATE_UI_BUNDLE").filter(|v| !v.is_empty()).map(PathBuf::from);
+    if let Some(b) = &bundle {
+        if !b.is_dir() {
+            return Err(std::io::Error::other(format!("SENTRY_MATE_UI_BUNDLE: no folder {}", b.display())));
+        }
+        println!("cargo:rerun-if-changed={}", b.display());
+    }
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").map_err(std::io::Error::other)?);
     let cache = out_dir.join("precompressed");
     std::fs::create_dir_all(&cache)?;
@@ -114,6 +126,25 @@ fn main() -> std::io::Result<()> {
             let abs = path.canonicalize()?;
             writeln!(code, "        ({rel:?}, include_bytes!({:?})),", abs.display().to_string())
                 .map_err(std::io::Error::other)?;
+        }
+        code.push_str("    ], bundle: &[\n");
+        if let Some(bweb) = bundle.as_ref().map(|b| b.join(&id).join("web")) {
+            if !bweb.join("core").is_dir() {
+                return Err(std::io::Error::other(format!(
+                    "SENTRY_MATE_UI_BUNDLE: no bundle of pack {id} in {}",
+                    bweb.display()
+                )));
+            }
+            let mut bfiles = Vec::new();
+            walk(&bweb, &bweb, &mut bfiles)?;
+            for (rel, path) in bfiles {
+                if let Some((sum, br, gz)) = precompress(&cache, &path, &rel)? {
+                    packed.insert(sum, (br, gz));
+                }
+                let abs = path.canonicalize()?;
+                writeln!(code, "        ({rel:?}, include_bytes!({:?})),", abs.display().to_string())
+                    .map_err(std::io::Error::other)?;
+            }
         }
         code.push_str("    ] },\n");
     }

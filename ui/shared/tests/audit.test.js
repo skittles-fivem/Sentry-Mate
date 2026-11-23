@@ -11,7 +11,7 @@ const GROUP_IDS = A.AUDIT_GROUPS.map((g) => g.id);
 // one sample target per item kind (contract: `<kind>:<id>`)
 const SAMPLE = {
   car: 'car:c1', drive: 'drive:c1:d9', charge: 'charge:c1:ch3', update: 'update:c1:u2', trip: 'trip:t1', place: 'place:p1',
-  import: 'import:i1', 'import-hold': 'import-hold:h1', export: 'export:e1', move: 'move:m1', account: 'account:a1', session: 'session:s1', key: 'key:c1:k1',
+  import: 'import:i1', export: 'export:e1', move: 'move:m1', account: 'account:a1', session: 'session:s1', key: 'key:c1:k1',
   token: 'token:c1:tk1', server: 'server:release', settings: 'settings:mqtt', tesla: 'tesla:ta1', teslafi: 'teslafi:tf1',
   teslamate: 'teslamate:local', 'ui-pack': 'ui-pack:horizon',
 };

@@ -9,7 +9,8 @@
 // starts between two device pixels onto whole ones (core/README.md, "Whole pixels").
 //
 // It runs again when the page adds or changes content, when a snapped grid or table changes size and when the
-// fonts have loaded. Each run first puts back what the last one set, so the CSS (its tiers and container
+// fonts have loaded. After a change of content only the boxes that hold it are snapped again (a card that loads
+// its figures again, a table's new rows), unless one of them changed size: then the whole page is. Each run first puts back what the last one set, so the CSS (its tiers and container
 // queries) always decides the layout and the snap only rounds it. It reads every size before it writes one.
 
 // what a run changed: element -> { property: the inline value it had before }, so the next run can put it back
@@ -20,13 +21,17 @@ function put(e, prop, value) {
   if (!(prop in was)) was[prop] = [e.style.getPropertyValue(prop), e.style.getPropertyPriority(prop)];
   e.style.setProperty(prop, value);
 }
-function restore() {
-  for (const [e, was] of snapped) {
-    for (const [prop, [v, prio]] of Object.entries(was)) {
-      if (v) e.style.setProperty(prop, v, prio); else e.style.removeProperty(prop);
-    }
+function putBack(e, was) {
+  for (const [prop, [v, prio]] of Object.entries(was)) {
+    if (v) e.style.setProperty(prop, v, prio); else e.style.removeProperty(prop);
   }
-  snapped.clear();
+}
+function restore(roots = null) {
+  for (const [e, was] of snapped) {
+    if (roots && e.isConnected && !roots.some((r) => r.contains(e))) continue;
+    putBack(e, was);
+    snapped.delete(e);
+  }
 }
 
 const off = (v) => Math.abs(v - Math.round(v)) > 0.01;
@@ -288,34 +293,38 @@ function nudge(list) {
 
 let ro = null;
 const watched = new WeakSet();
+// each box's size as the last run left it: a run over part of the page checks that part kept its size
+const sizeAt = new WeakMap();
+const sizeKey = (b) => `${b.width} ${b.height}`;
 
-export function snapAll() {
-  restore();
-  const grids = [], tables = [], boxes = [], lined = [];
+// the grids, tables, boxes and lined elements in root (and root itself), as snapAll walks them
+function collect(root, into) {
+  const { grids, tables, boxes, lined } = into;
   // walk the page, but not into tables, pictures or closed <details> (a grid inside a table cell is left alone)
-  const w = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, {
-    acceptNode(e) {
-      if (e.localName === 'table') { tables.push(e); return NodeFilter.FILTER_REJECT; }
-      if (e.localName === 'svg' || e.localName === 'script' || e.localName === 'template') return NodeFilter.FILTER_REJECT;
-      if (e.localName === 'details' && !e.open) return NodeFilter.FILTER_REJECT; // its content is not laid out
-      const d = getComputedStyle(e).display;
-      if (d === 'none') return NodeFilter.FILTER_REJECT;
-      if (d === 'grid' || d === 'inline-grid') grids.push(e);
-      if (!e.closest(NOT_BOXES)) {
-        if (BOXES.has(d)) boxes.push(e);
-        lined.push(e);
-      }
-      return NodeFilter.FILTER_SKIP;
-    },
-  });
+  const accept = (e) => {
+    if (e.localName === 'table') { tables.push(e); return NodeFilter.FILTER_REJECT; }
+    if (e.localName === 'svg' || e.localName === 'script' || e.localName === 'template') return NodeFilter.FILTER_REJECT;
+    if (e.localName === 'details' && !e.open) return NodeFilter.FILTER_REJECT; // its content is not laid out
+    const d = getComputedStyle(e).display;
+    if (d === 'none') return NodeFilter.FILTER_REJECT;
+    if (d === 'grid' || d === 'inline-grid') grids.push(e);
+    if (!e.closest(NOT_BOXES)) {
+      if (BOXES.has(d)) boxes.push(e);
+      lined.push(e);
+    }
+    return NodeFilter.FILTER_SKIP;
+  };
+  if (root !== document.body && accept(root) !== NodeFilter.FILTER_SKIP) return;
+  const w = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, { acceptNode: accept });
   w.nextNode(); // the filter does the work and finds no node to stop at
+}
+
+function run(lists) {
+  const { grids, tables, boxes, lined } = lists;
   // the lines inside tables' cells (their boxes keep their own sizes: a table sizes its columns by them)
   for (const t of tables) {
     if (t.offsetParent === null) continue;
-    for (const e of t.querySelectorAll('td *, th *')) {
-      if (e.closest('svg, table table, ' + NOT_BOXES) || e.closest('details:not([open]) > :not(summary)')) continue;
-      if (getComputedStyle(e).display !== 'none') lined.push(e);
-    }
+    cellLines(t.querySelectorAll('td *, th *'), lined);
   }
   // outer grids first: a grid inside another gets its width from the outer one's columns
   const levels = new Map();
@@ -329,10 +338,23 @@ export function snapAll() {
   for (let i = 0; i < 3; i++) if (!boxPass(boxes)) break;
   const plans = tables.filter((t) => t.offsetParent !== null).map(tablePlan).filter(Boolean);
   for (const run of plans) run();
-  // a row whose cells are an odd height inside centres their one-line content on a half pixel: it grows by one;
-  // a row of a fraction of a pixel high (rows of text at scale 3) grows to the next whole one
   const rows = [];
   for (const t of tables) if (t.offsetParent !== null) for (const row of Array.from(t.rows).slice(0, 2000)) rows.push(row);
+  rowPass(rows);
+  // and again, for boxes around a table that grew
+  for (let i = 0; i < 2; i++) if (!boxPass(boxes)) break;
+  // last, a box with a border or a 1 px line that still starts between two device pixels (it follows a line of
+  // text, or a centred box an odd number of px smaller) moves by less than half a pixel onto whole ones
+  nudge(lined);
+  if (ro) for (const e of [...grids, ...tables]) if (!watched.has(e)) { watched.add(e); ro.observe(e); }
+  // the sizes this run left, so a resize the run itself caused does not start another run
+  for (const e of [...grids, ...tables]) left.set(e, sizeKey(e.getBoundingClientRect()));
+  for (const e of boxes) sizeAt.set(e, sizeKey(e.getBoundingClientRect()));
+}
+
+// a row whose cells are an odd height inside centres their one-line content on a half pixel: it grows by one;
+// a row of a fraction of a pixel high (rows of text at scale 3) grows to the next whole one
+function rowPass(rows) {
   const odd = [];
   for (const row of rows) {
     const c = row.cells[0];
@@ -349,18 +371,111 @@ export function snapAll() {
   // then cells centred up and down whose content misses the row's common centre by a pixel or so move by that much
   const shifts = rows.flatMap((row) => [...centrePlan(row), ...baselinePlan(row)]);
   for (const run of shifts) run();
-  // and again, for boxes around a table that grew
-  for (let i = 0; i < 2; i++) if (!boxPass(boxes)) break;
-  // last, a box with a border or a 1 px line that still starts between two device pixels (it follows a line of
-  // text, or a centred box an odd number of px smaller) moves by less than half a pixel onto whole ones
-  nudge(lined);
-  if (ro) for (const e of [...grids, ...tables]) if (!watched.has(e)) { watched.add(e); ro.observe(e); }
-  // the sizes this run left, so a resize the run itself caused does not start another run
-  for (const e of [...grids, ...tables]) { const b = e.getBoundingClientRect(); left.set(e, `${b.width} ${b.height}`); }
 }
+// the lines inside some cells (as run() finds them in a table)
+function cellLines(cells, lined) {
+  for (const e of cells) {
+    if (e.closest('svg, table table, ' + NOT_BOXES) || e.closest('details:not([open]) > :not(summary)')) continue;
+    if (getComputedStyle(e).display !== 'none') lined.push(e);
+  }
+}
+const lists = () => ({ grids: [], tables: [], boxes: [], lined: [] });
+
+export function snapAll() {
+  restore();
+  const l = lists();
+  collect(document.body, l);
+  run(l);
+}
+
+// Only the parts of the page in roots, after their content changed: the rest of the page is laid out as before
+// as long as each part keeps its size, so it keeps what the last run gave it (settled() below).
+function snapIn(roots) {
+  const was = roots.map((r) => sizeAt.get(r));
+  restore(roots);
+  const l = lists();
+  for (const r of roots) collect(r, l);
+  run(l);
+  settled(roots, was);
+}
+
+// Rows added under the ones a table had (the next page of a list): the table keeps its columns (fixed by the last
+// run), so only the new rows need whole heights, their cells' content centred and their lines on whole pixels.
+function snapRows(table, rows) {
+  const was = left.get(table);
+  rowPass(rows);
+  const lined = [];
+  for (const row of rows) cellLines(row.querySelectorAll('td *, th *'), lined);
+  nudge(lined);
+  settled([table], [was]);
+}
+
+// After a run over part of the page: when a part kept its size nothing else moved. A part that only grew or
+// shrank by whole device pixels, with the boxes around it still on whole ones, moved what follows it by whole
+// pixels, which keeps everything there on whole pixels too. Anything else: the whole page is snapped again, in
+// the same turn.
+function settled(roots, was) {
+  const r = devicePixelRatio || 1;
+  const whole = (v) => Math.abs(v * r - Math.round(v * r)) <= 0.02;
+  const around = new Set();
+  for (let i = 0; i < roots.length; i++) {
+    const e = roots[i];
+    if (!e.isConnected || was[i] == null) { snapAll(); return; }
+    const b = e.getBoundingClientRect();
+    if (was[i] === sizeKey(b)) continue;
+    const [w0, h0] = was[i].split(' ').map(Number);
+    if (Math.abs(w0 - b.width) > 0.01 || !whole(b.height) || !whole(h0)) { snapAll(); return; }
+    for (let a = e.parentElement; a && a !== document.body; a = a.parentElement) around.add(a);
+  }
+  for (const a of around) {
+    if (!sizeAt.has(a) && !left.has(a)) continue;
+    const b = a.getBoundingClientRect();
+    if (b.width || b.height) if (!whole(b.height) || !whole(b.top) || !whole(b.left)) { snapAll(); return; }
+  }
+  // the sizes the boxes around now have are the snapped ones (no resize-run for them)
+  for (const a of around) {
+    if (sizeAt.has(a)) sizeAt.set(a, sizeKey(a.getBoundingClientRect()));
+    if (left.has(a)) left.set(a, sizeKey(a.getBoundingClientRect()));
+  }
+  for (const e of roots) {
+    if (sizeAt.has(e)) sizeAt.set(e, sizeKey(e.getBoundingClientRect()));
+    if (left.has(e)) left.set(e, sizeKey(e.getBoundingClientRect()));
+  }
+}
+
+// the smallest boxes the last run measured that hold every change in the records (null: snap the whole page)
+function changedRoots(list) {
+  const roots = new Set();
+  for (const m of list) {
+    // a box shown or hidden: from the box around it (its own size was not measured while hidden)
+    let e = m.type === 'attributes' ? m.target.parentElement : m.target.nodeType === 1 ? m.target : m.target.parentElement;
+    while (e && e !== document.body && !sizeAt.has(e)) e = e.parentElement;
+    if (!e || e === document.body || !e.isConnected) return null;
+    roots.add(e);
+  }
+  const out = [...roots].filter((r) => ![...roots].some((o) => o !== r && o.contains(r)));
+  return out.length > 24 ? null : out;
+}
+// rows that were only added at the end of one table's body which the last run snapped (null: anything else)
+function appendedRows(list) {
+  let table = null;
+  const rows = [];
+  for (const m of list) {
+    const tb = m.target;
+    if (m.type !== 'childList' || tb.localName !== 'tbody' || m.removedNodes.length || m.nextSibling) return null;
+    const t = tb.parentElement;
+    if (!t || t.localName !== 'table' || !left.has(t) || (table && table !== t) || !snapped.has(t)) return null;
+    table = t;
+    for (const n of m.addedNodes) { if (n.localName !== 'tr') return null; rows.push(n); }
+  }
+  return table && rows.length ? { table, rows } : null;
+}
+
 const left = new WeakMap();
 function resized(entries) {
   for (const x of entries) {
+    // a grid or table that was taken off the page (a card drawn again) reports 0 x 0: nothing on the page moved
+    if (!x.target.isConnected) { ro.unobserve(x.target); watched.delete(x.target); continue; }
     const b = x.target.getBoundingClientRect();
     if (left.get(x.target) !== `${b.width} ${b.height}`) { later(); return; }
   }
@@ -381,8 +496,16 @@ export function watchTables() {
     const el = (ns) => { for (const n of ns) if (n.nodeType === 1) return true; return false; };
     const inTable = (n) => { const e = n.nodeType === 1 ? n : n.parentElement; return !!(e && e.closest('table')); };
     // at once, in the same turn as the change: nothing can measure or paint the page in between
-    for (const m of list) if (el(m.addedNodes) || el(m.removedNodes) || inTable(m.target)) { snapAll(); return; }
-  }).observe(document.body, { childList: true, subtree: true, characterData: true });
+    // only the parts that changed (a card's figures, a table's rows): a run over the whole page lays it all out
+    // several times, which on a big screen takes longer than a frame (scrolling stalls while a page reloads)
+    // or a box shown or hidden (a table's "Show more" foot): it moves what is around it
+    const changed = list.filter((m) => m.type === 'attributes' || el(m.addedNodes) || el(m.removedNodes) || inTable(m.target));
+    if (!changed.length) return;
+    const added = appendedRows(changed);
+    if (added) { snapRows(added.table, added.rows); return; }
+    const roots = changedRoots(changed);
+    if (roots) snapIn(roots); else snapAll();
+  }).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['hidden'] });
   if ('ResizeObserver' in window) ro = new ResizeObserver(resized);
   addEventListener('resize', later);
   document.addEventListener('toggle', later, true); // a <details> opened or closed

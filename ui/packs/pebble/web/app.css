@@ -934,6 +934,7 @@ html[data-form="phone"] .brand-name { font-size: var(--f14); line-height: var(--
 .key-sw.key-dot { width: var(--s3); height: var(--s3); border-radius: 50%; }
 .key-dots[aria-pressed="false"] .key-sw.key-dot { box-shadow: inset 0 0 0 2px var(--tone); }
 .key-at { display: inline-flex; align-items: center; height: var(--h-sm); font-size: var(--f14); line-height: var(--l14); color: var(--muted); font-variant-numeric: tabular-nums; }
+.key-at:empty { display: none; }
 
 /* money in several currencies, one per line (never added together) */
 .money { display: inline-flex; flex-direction: column; gap: var(--s1); }
@@ -1083,7 +1084,8 @@ html[data-form="phone"] .set-ctl .two { grid-template-columns: minmax(0, 1fr); }
 .fw-change:first-child { border-top: 0; padding-top: 0; }
 .fw-k { display: flex; flex-direction: column; min-width: 0; }
 .fw-field { font-size: var(--f14); line-height: var(--l14); font-weight: 700; }
-.fw-sig { font-family: var(--mono); font-size: var(--f13); line-height: var(--l13); color: var(--muted); overflow-wrap: anywhere; }
+/* the signal's DBC name is a label, not a fingerprint: the UI face at the small text size; only the hex is monospace */
+.fw-sig { font-size: var(--f14); line-height: var(--l14); color: var(--muted); overflow-wrap: anywhere; }
 .fw-diff { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); min-width: 0; }
 .fw-to { display: inline-flex; align-items: center; color: var(--muted); }
 .fw-to .ic { width: var(--ic-xs); height: var(--ic-xs); }
@@ -1092,11 +1094,15 @@ html[data-form="phone"] .set-ctl .two { grid-template-columns: minmax(0, 1fr); }
 .fw-between-line .place-link { font-weight: 700; }
 .fw-named { display: flex; align-items: center; gap: var(--s2); font-size: var(--f14); line-height: var(--l14); color: var(--sky); font-weight: 700; }
 .fw-named .ic { flex: none; width: var(--ic-sm); height: var(--ic-sm); }
-.fw-name { display: flex; flex-direction: column; gap: var(--s1); padding: var(--s3) var(--s4); border-radius: var(--r-card); background: var(--well); }
+.fw-name { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s3) var(--s4); border-radius: var(--r-card); background: var(--well); }
+.fw-name-shown { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s3); min-width: 0; }
+.fw-name-text { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+.fw-name-edit { flex: none; }
+.fw-name-form { padding-top: var(--s3); border-top: 1px solid var(--card-alt); }
 .fw-name .field { gap: var(--s2); }
 .fw-name-row { display: flex; flex-direction: column; align-items: stretch; gap: var(--s2); }
-.fw-input { width: 100%; min-width: 0; font-family: var(--mono); font-weight: 400; }
-.fw-name-acts { display: flex; gap: var(--s2); }
+.fw-input { width: 100%; min-width: 0; font-variant-numeric: tabular-nums; }
+.fw-name-acts { display: flex; flex-wrap: wrap; gap: var(--s2); }
 .fw-name-k { font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
 .fw-name-v { font-size: var(--f20); line-height: var(--l20); font-weight: 800; font-variant-numeric: tabular-nums; }
 .fw-name-v.is-unknown { color: var(--muted); }
@@ -1104,7 +1110,7 @@ html[data-form="phone"] .set-ctl .two { grid-template-columns: minmax(0, 1fr); }
 .fw-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s1) var(--s3); padding: var(--s2) 0; border-top: 1px solid var(--card-alt); }
 .fw-row:first-child { border-top: 0; padding-top: 0; }
 .fw-v { display: flex; flex-direction: column; align-items: flex-end; gap: var(--s1); min-width: 0; }
-.fw-when { font-size: var(--f13); line-height: var(--l13); color: var(--muted); }
+.fw-when { font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
 html[data-form="phone"] .fw-v { align-items: flex-start; }
 html[data-form="phone"] .fw-change { flex-direction: column; align-items: flex-start; }
 .tf-head-text { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); }
@@ -1123,11 +1129,3 @@ html[data-form="phone"] .fw-change { flex-direction: column; align-items: flex-s
 .rel-row { flex-wrap: wrap; }
 .rel-row .row-text { flex: 1 1 14em; }
 .rel-row .row-side { flex: none; }
-
-/* a readout whose text changes in place sits in a box as wide as its longest text (shared/dom.js steady) */
-.steady { display: inline-grid; font-variant-numeric: tabular-nums; }
-.steady > * { grid-area: 1 / 1; }
-.steady-size { visibility: hidden; }
-/* a chart is never the browser's scroll anchor: its cursor line comes and goes under the mouse, and the page
-   would scroll to keep it in place */
-.uplot, .uplot * { overflow-anchor: none; }

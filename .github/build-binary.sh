@@ -66,10 +66,17 @@ else
 fi
 rm -f "$cache/target/built-from"
 
+# The packs' scripts and style sheets bundled and minified (ui/tools/bundle: esbuild, pinned by its
+# package-lock.json), embedded by crates/web/build.rs (SENTRY_MATE_UI_BUNDLE) and served in place of the sources.
+# The bundle's files get their pack's newest source time, so a kept build is not built again for it alone.
+npm ci --prefix ui/tools/bundle --no-audit --no-fund --loglevel=error
+node ui/tools/bundle/bundle.mjs "$cache/ui-bundle"
+
 docker run --rm \
   --user "$(id -u):$(id -g)" \
   -v "$PWD:/src:ro" -v "$cache:/cache" -w /src \
   -e CARGO_HOME=/cache/home -e CARGO_TARGET_DIR=/cache/target -e CARGO_TERM_COLOR=always -e CARGO_PROFILE_RELEASE_INCREMENTAL=true \
+  -e SENTRY_MATE_UI_BUNDLE=/cache/ui-bundle \
   -e SENTRY_MATE_BUILD="${BUILD_NUMBER:-}" -e SENTRY_MATE_COMMIT="${GIT_SHA:-}" -e SENTRY_MATE_DATE="${BUILD_DATE:-}" \
   "$image" \
   sh -c 'apk info -e musl-dev >/dev/null && cargo build --release --locked -p sentry-mate'

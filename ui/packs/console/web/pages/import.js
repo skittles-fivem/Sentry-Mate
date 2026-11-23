@@ -25,7 +25,6 @@ import { tag, dateTime, date, dur, ago, DASH } from '../core/fmt.js';
 import { toast } from '../core/toast.js';
 import { confirmDialog } from '../core/dialog.js';
 import { src } from '../core/source.js';
-import { moveSummary, waiting, holdWhy, HOLD_ACTIONS, holdSaid, counted as nOf } from '../shared/rehome.js';
 
 export const id = 'import';
 export const title = () => 'Import';
@@ -109,15 +108,14 @@ export async function mount(ctx) {
     ctx.ready();
     return;
   }
-  const S = { jobs: [], cars: [], job: null, match: [], overlaps: [], overlapErr: null, holds: [] };
+  const S = { jobs: [], cars: [], job: null, match: [], overlaps: [], overlapErr: null };
   // files: the chosen File per index of job.files (only those still to go up)
   const up = { files: new Map(), active: false, paused: false, error: null, t0: 0, b0: 0 };
   const filesOf = (j) => (j?.files?.length ? j.files : j ? [{ index: 0, name: j.name, bytes_total: j.bytes_total, uploaded_bytes: j.uploaded_bytes || 0, upload_url: `imports/${enc(j.id)}` }] : []);
   const left = (f) => (f.uploaded_bytes || 0) < f.bytes_total;
   const loadJobs = async () => { S.jobs = await ctx.api.list('imports', { limit: 100 }).all({ max: 1000 }); };
   const loadCars = async () => { S.cars = await ctx.api.list('cars', { limit: 500 }).all({ max: 10000 }); };
-  const loadHolds = async () => { S.holds = (await ctx.api.get('import-holds'))?.items || []; };
-  await Promise.all([loadJobs(), loadCars(), loadHolds()]);
+  await Promise.all([loadJobs(), loadCars()]);
   if (!ctx.alive()) return;
   const carName = (cid) => S.cars.find((c) => c.id === cid)?.name || cid;
   const pick = () => {
@@ -684,47 +682,6 @@ export async function mount(ctx) {
     empty: () => empty('no imports yet'),
   });
 
-  /* ---------------------------------------------------------------- rows moved, rows that need a car */
-  const nf = (n) => format(n ?? 0, 'count');
-  async function giveCar(x, value) {
-    try {
-      const out = await ctx.api.post(`import-holds/${enc(x.hold)}`, { match: value });
-      if (!ctx.alive()) return;
-      await Promise.all([loadHolds(), loadJobs(), out?.move ? loadCars() : null]);
-      if (!ctx.alive()) return;
-      pick();
-      toast(holdSaid(out, carName, nf));
-    } catch (e) { if (ctx.alive()) toast(errorWords(e).text, { kind: 'error' }); }
-    if (ctx.alive()) paintAll();
-  }
-  const movedSlot = h('div', { class: 'im-moved' });
-  const holdsT = table(ctx, {
-    title: 'rows that need a car', rows: [], csv: false, label: 'Imported rows that wait for a car',
-    sort: { key: 'first_ms', dir: 'asc' },
-    columns: [
-      { key: 'first_ms', label: 'rows', ph: 'main', grow: true, render: (x) => [h('b', null, x.name ? `named ${x.name}` : 'no name'), h('span', { class: 'muted' }, ` · ${x.first_ms != null ? `${date(x.first_ms, tz)} to ${date(x.last_ms, tz)}` : DASH}`)] },
-      { key: 'rows', label: 'what', ph: 'sub', render: (x) => `${nOf(x.rows, 'row', nf)}, ${nOf(x.drives, 'drive', nf)}${x.odometer_km ? `, ${format(x.odometer_km[0], 'odometer')} to ${format(x.odometer_km[1], 'odometer')}` : ''}` },
-      { key: 'go', label: 'goes to', ph: 'sub', render: (x) => {
-        const sel = h('select', { class: 'in in--cell', 'aria-label': `Where the rows${x.name ? ` named ${x.name}` : ''} go`, title: holdWhy(x), onchange: () => giveCar(x, sel.value) },
-          h('option', { value: '', selected: x.status !== 'ignored', disabled: true }, 'choose'),
-          carOptions(S.cars, (c) => h('option', { value: c.id }, c.name)),
-          HOLD_ACTIONS.filter(([v]) => v !== 'wait' || x.status === 'ignored').map(([v, l]) => h('option', { value: v, selected: v === 'ignore' && x.status === 'ignored' }, (v === 'new' && x.name ? `a new car named ${x.name}` : l).toLowerCase())));
-        return sel;
-      } },
-    ],
-    empty: () => empty('every imported row has a car'),
-  });
-  const holdsSec = section({ title: 'imported rows and their cars', id: 'needs-car' }, movedSlot,
-    h('p', { class: 'note' }, 'Rows an import could not put on a car for sure wait here, kept, until you choose their car: they came without a VIN and do not carry on from any car of the file, or an older import put them on a car whose odometer says they are not its own. Nothing is deleted.'));
-  function paintHolds() {
-    const lines = S.jobs.map((j) => [j, moveSummary(j, carName, nf)]).filter(([, w]) => w);
-    replace(movedSlot, lines.length ? h('ul', { class: 'ln-list' }, lines.map(([j, w]) => h('li', null, tag('moved', 'muted'), h('span', { class: 'ln-list-t' }, h('b', null, j.name), `: ${w}.`)))) : null);
-    const show = lines.length > 0 || S.holds.length > 0;
-    holdsSec.hidden = !show;
-    holdsT.el.hidden = !show;
-    holdsT.setRows(waiting(S.holds));
-  }
-
   /* ---------------------------------------------------------------- refresh */
   function setJob(j) {
     S.jobs = S.jobs.map((x) => (x.id === j.id ? { ...x, ...j } : x));
@@ -741,7 +698,7 @@ export async function mount(ctx) {
       if (!ctx.alive()) return;
       setJob(fresh);
       if (fresh.status !== was || ['checking', 'ready'].includes(fresh.status)) await loadMatch();
-      if (fresh.status === 'done' && was !== 'done') { await loadJobs(); await loadCars(); await loadHolds(); pick(); await loadOverlaps(); toast('Import done. The history shows on every page, marked as imported.'); }
+      if (fresh.status === 'done' && was !== 'done') { await loadJobs(); await loadCars(); pick(); await loadOverlaps(); toast('Import done. The history shows on every page, marked as imported.'); }
       if (fresh.status === 'failed' && was !== 'failed') toast('The import failed; step 2 says why.', { kind: 'error' });
     } catch (e) {
       if (!ctx.alive()) return;
@@ -763,7 +720,6 @@ export async function mount(ctx) {
     if (show) matchT.setRows(S.match);
     historyT.setRows(S.jobs);
     overlapT.setRows(S.overlaps);
-    paintHolds();
   }
 
   await Promise.all([loadMatch(), loadOverlaps()]);
@@ -783,7 +739,6 @@ export async function mount(ctx) {
         h('li', { cover: 'faq.no-backfill' }, tag('gap', 'warn'), h('span', { class: 'ln-list-t' }, 'Time nobody recorded cannot be fetched later: Tesla keeps no history to download. The CAN Bridge uploads its own logs when it can, so its gaps fill themselves; time before it shows as unknown on the ',
           firstCar ? link(state.buildUrl('timeline', { car: firstCar.id }), 'timeline') : 'timeline', '. Only an import from another logger, such as TeslaMate, fills it.')))),
     overlapT.el,
-    holdsSec, holdsT.el,
     historyT.el);
   paintAll();
   ctx.ready();

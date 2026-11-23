@@ -29,8 +29,6 @@ import { column, timeColumn } from '../shared/csv.js';
 import { pageHead, section, figure, figures, flag, button, icon, empty, errorView, errorWords } from '../core/ui.js';
 import { labelOf } from '../core/sources.js';
 import { choice, field, carOptions } from '../core/form.js';
-import { formatNumber } from '../shared/i18n.js';
-import { moveSummary, waiting, holdWhy, HOLD_ACTIONS, holdSaid, counted as nOf } from '../shared/rehome.js';
 import { dataTable } from '../core/table.js';
 import { confirmDialog } from '../core/dialog.js';
 import { zoneShort, count } from '../core/format.js';
@@ -207,13 +205,11 @@ export async function mount(ctx) {
   const S = { jobs: [], cars: [], carsMore: false, job: null, match: null, matchErr: null, overlaps: new Map(), currency: '', tf: null };
   const up = { files: new Map(), active: false, paused: false, error: null, t0: 0, b0: 0, ctl: null };
 
-  const [jobs, carsPage, holds] = await Promise.all([
+  const [jobs, carsPage] = await Promise.all([
     ctx.api.list('imports', { limit: 100 }).all({ max: 500 }),
     ctx.api.page('cars', { limit: 500 }),
-    ctx.api.get('import-holds'),
   ]);
   S.jobs = jobs;
-  S.holds = holds?.items || [];
   S.cars = carsPage.items || [];
   S.carsMore = !!carsPage.next;
   const carById = new Map(S.cars.map((c) => [c.id, c]));
@@ -1224,52 +1220,6 @@ export async function mount(ctx) {
     h('p', { cover: 'web.import.docs-backfill' }, 'TeslaMate’s backup carries its own addresses and places, so imported drives and charges keep their street names. Spots it had no address for are filled in by the server’s address lookup after the import, a few at a time, so a big import can show some plain coordinates for a while.'),
     h('p', { cover: 'faq.no-backfill' }, 'Time the CAN Bridge missed is not lost the way a cloud logger’s is: the bridge keeps its logs and sends them late, so most gaps fill by themselves. Time nothing recorded shows as Unknown, never as asleep. An import fills only the time before the CAN Bridge, or spans another logger recorded; Tesla keeps no history that could be fetched.'));
 
-  /* ---------------------------------------------------------------- rows moved, rows that need a car */
-  const holdsBox = h('div', { class: 'im-holds' });
-  const holdsSec = section({ title: 'Imported rows and their cars', note: 'moved to another car, or waiting for one', cls: 'im-sec', id: 'needs-car' }, holdsBox);
-  const nf = (n) => formatNumber(n ?? 0);
-  const pickOf = new Map();
-  async function giveCar(x, btn) {
-    const v = pickOf.get(x.hold);
-    if (!v) return;
-    btn.disabled = true;
-    try {
-      const out = await ctx.api.post(api.apiPath`import-holds/${x.hold}`, { match: v });
-      const [jobs2, holds2] = await Promise.all([ctx.api.list('imports', { limit: 100 }).all({ max: 500 }), ctx.api.get('import-holds')]);
-      S.jobs = jobs2;
-      S.holds = holds2?.items || [];
-      pickOf.delete(x.hold);
-      ctx.flash(holdSaid(out, carName, nf), { kind: 'info' });
-    } catch (e) {
-      ctx.flash(errorWords(e).text, { kind: 'error' });
-    }
-    paintAll();
-  }
-  function paintHolds() {
-    const lines = S.jobs.map((j) => [j, moveSummary(j, carName, nf)]).filter(([, w]) => w);
-    const lots = waiting(S.holds);
-    holdsSec.hidden = !lines.length && !S.holds.length;
-    const odo = (x) => (x.odometer_km ? `odometer ${format(x.odometer_km[0], 'odometer')} to ${format(x.odometer_km[1], 'odometer')}` : null);
-    const lotRow = (x) => {
-      const cur = pickOf.get(x.hold) || '';
-      const sel = h('select', { class: 'field-select im-select', 'aria-label': `Where the rows${x.name ? ` named ${x.name}` : ''} go` },
-        h('option', { value: '', selected: !cur, disabled: true }, x.status === 'ignored' ? 'Left aside: choose a car' : 'Choose a car'),
-        carOptions(S.cars, { option: (c) => h('option', { value: c.id, selected: cur === c.id }, c.name) }),
-        HOLD_ACTIONS.map(([v, l]) => h('option', { value: v, selected: cur === v }, v === 'new' && x.name ? `A new car named ${x.name}` : l)));
-      const go = button('Apply', { kind: 'quiet', cls: 'button-small', onclick: () => giveCar(x, go) });
-      sel.addEventListener('change', () => pickOf.set(x.hold, sel.value));
-      return h('li', { class: 'im-lot' },
-        h('span', null, h('span', { class: 'cell-main' }, x.name ? `Named ${x.name}` : 'Rows without a name'),
-          h('span', { class: 'cell-sub' }, [`${nf(x.rows)} rows, ${nOf(x.drives, 'drive', nf)}, ${nOf(x.charges, 'charge', nf)}`, x.first_ms != null ? `${formatDate(x.first_ms, tz)} to ${formatDate(x.last_ms, tz)}` : null, odo(x)].filter(Boolean).join(' · ')),
-          h('span', { class: 'cell-sub' }, holdWhy(x))),
-        h('span', { class: 'im-lot-go' }, sel, go));
-    };
-    replace(holdsBox,
-      lines.length ? h('ul', { class: 'im-moved-list' }, lines.map(([j, w]) => h('li', null, h('b', null, j.name), `: ${w}.`))) : null,
-      lots.length ? h('ul', { class: 'im-lots', 'aria-label': 'Rows that need a car' }, lots.map(lotRow))
-        : h('p', { class: 'im-quiet' }, 'Every imported row has a car.'));
-  }
-
   /* ---------------------------------------------------------------- earlier imports */
   const historyBox = h('div', { class: 'im-history' });
   function paintHistory() {
@@ -1302,7 +1252,6 @@ export async function mount(ctx) {
     paintJob();
     paintReport();
     paintHistory();
-    paintHolds();
   }
 
   /* ---------------------------------------------------------------- layout */
@@ -1316,7 +1265,6 @@ export async function mount(ctx) {
       h('div', { class: 'im-two' }, jobBox, h('aside', { class: 'im-side' }, howTo, restartNote))),
     section({ title: 'Report', note: 'Counts and reasons only: no row values or positions', cls: 'im-sec' }, reportBox),
     section({ title: 'Overlapping history', note: 'live and imported, and two imports', cls: 'im-sec', id: 'im-overlaps' }, h('div', { class: 'im-two im-two-even' }, overlapWords, overlapBox)),
-    holdsSec,
     section({ title: 'Imports', note: 'Newest first', cls: 'im-sec' }, historyBox));
 
   if (S.job && ['checking', 'ready'].includes(S.job.status)) await loadMatch();

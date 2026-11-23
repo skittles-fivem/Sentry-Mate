@@ -63,11 +63,8 @@
 .along-head { display: flex; align-items: center; justify-content: space-between; gap: round(1.5rem, var(--e)); padding-bottom: round(0.75rem, var(--e)); border-bottom: 1px solid var(--ink); }
 .along-actions { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)); }
 .charge-readout { min-height: round(4.25rem, var(--e)); padding: round(0.625rem, var(--e)) 0 round(0.75rem, var(--e)); border-bottom: 1px solid var(--rule); }
-.reading-time.readout-idle { font: italic 400 0.9375rem var(--serif); --LH: round(1.5rem, var(--e)); line-height: var(--LH); color: var(--ink-3); }
-/* the time line has one height, idle or pointing at a chart */
-.reading-time { font-weight: 600; font-size: var(--text-sm); --LH: round(1.5rem, var(--e)); min-height: var(--LH); display: flex; gap: round(0.75rem, var(--e)); align-items: baseline; }
-/* the time line and every value keep one line, so the readout is as high pointing at a chart as idle */
-.reading-time, .reading-time > *, .reading dd { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.reading-time.readout-idle { font: italic 400 0.9375rem var(--serif); --LH: round(calc(1.5 * 1em), 2px); line-height: var(--LH); color: var(--ink-3); }
+.reading-time { font-weight: 600; font-size: var(--text-sm); --LH: round(calc(1.5 * 1em), 2px); min-height: round(1.5em, var(--e)); display: flex; gap: round(0.75rem, var(--e)); align-items: baseline; }
 .reading-state { font-weight: 400; color: var(--rust); font-size: var(--small-2); text-transform: uppercase; letter-spacing: 0.06em; }
 .readings { display: grid; grid-template-columns: repeat(auto-fill, minmax(round(8.5rem, var(--e)), 1fr)); gap: round(0.25rem, var(--e)) round(1.25rem, var(--e)); margin-top: round(0.25rem, var(--e)); }
 .reading { min-width: 0; }

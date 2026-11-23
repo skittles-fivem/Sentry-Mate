@@ -430,16 +430,6 @@ impl Db {
         Ok(())
     }
 
-    /// A keyed hash of `text` for `purpose` (hex), with a key made from the vault's (the same after a restart or a
-    /// move): to tell values apart without keeping them, such as two cars' whole VINs.
-    pub fn keyed_tag(&self, purpose: &[u8], text: &str) -> String {
-        use hmac::{Hmac, Mac};
-        let key = self.inner.ctx.vault.derive_key(purpose);
-        let Ok(mut m) = <Hmac<sha2::Sha256> as Mac>::new_from_slice(&*key) else { return String::new() };
-        m.update(text.as_bytes());
-        m.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect()
-    }
-
     pub fn car(&self, id: CarId) -> Result<Option<Car>> {
         Ok(lock(&self.inner.fleet)?.state.get(id).map(|e| e.car.clone()))
     }

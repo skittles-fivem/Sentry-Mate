@@ -12,7 +12,7 @@ from .helpers import ROOT, ServerCase
 CODES_FILE = os.path.normpath(os.path.join(ROOT, "..", "shared", "audit-codes.json"))
 GROUPS = ("sign-ins", "accounts", "settings", "cars", "integrations", "imports")
 KINDS = {"car", "drive", "charge", "update", "trip", "place", "import", "export", "move", "account", "session",
-         "key", "token", "server", "settings", "tesla", "teslafi", "teslamate", "ui-pack", "import-hold"}
+         "key", "token", "server", "settings", "tesla", "teslafi", "teslamate", "ui-pack"}
 
 
 def codes():

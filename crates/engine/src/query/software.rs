@@ -127,23 +127,33 @@ pub(crate) fn all_updates(e: &Engine, car: CarId) -> QResult<Vec<UpdateRow>> {
     Ok(out)
 }
 
+/// The version an update found from fingerprints shows, however it was named: typed on it (`owner`), else from a
+/// live input, else from another update to the same set (`build_match`); none when an admin cleared it.
+pub(crate) fn fw_version_of(
+    e: &Engine,
+    car: CarId,
+    ev: &crate::firmware::FwEvent,
+) -> QResult<(Option<String>, Option<&'static str>)> {
+    let (name, cleared) = crate::firmware::naming_of(e.db(), car, ev)?;
+    // typed on it wins, and a name an admin cleared stays cleared
+    if let Some((v, "owner")) = &name {
+        return Ok((Some(v.clone()), Some("owner")));
+    }
+    if cleared {
+        return Ok((None, None));
+    }
+    if let Some((v, input)) = input_named(e, car, ev.from_ms, ev.to_ms)? {
+        return Ok((Some(v), Some(model::Origin::from(input).kind())));
+    }
+    Ok(name.map_or((None, None), |(v, _)| (Some(v), Some("build_match"))))
+}
+
 /// The version an update shows and where it came from: typed by an admin, else imported. A fingerprint update's
 /// is its name ([`crate::firmware::name_of`]): `owner`, or `build_match` when its set was named on another.
 pub(crate) fn version_of(e: &Engine, car: CarId, u: &UpdateRow) -> QResult<(Option<String>, Option<&'static str>)> {
     if crate::firmware::is_fingerprint(u.id) {
         let Some(ev) = super::firmware::event(e, car, u.id)? else { return Ok((None, None)) };
-        let (name, cleared) = crate::firmware::naming_of(e.db(), car, &ev)?;
-        // typed on it wins, and a name an admin cleared stays cleared
-        if let Some((v, "owner")) = &name {
-            return Ok((Some(v.clone()), Some("owner")));
-        }
-        if cleared {
-            return Ok((None, None));
-        }
-        if let Some((v, input)) = input_named(e, car, ev.from_ms, ev.to_ms)? {
-            return Ok((Some(v), Some(model::Origin::from(input).kind())));
-        }
-        return Ok(name.map_or((None, None), |(v, _)| (Some(v), Some("build_match"))));
+        return fw_version_of(e, car, &ev);
     }
     if let Some(t) = typed(e, car, u.id)? {
         return Ok((Some(t.version), Some("owner")));

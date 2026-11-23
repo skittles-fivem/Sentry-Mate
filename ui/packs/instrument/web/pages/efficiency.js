@@ -14,7 +14,7 @@
 // spans are shaded blue and unknown ones grey, and the summary says how much of the period each took.
 
 import * as state from '../shared/state.js';
-import { h, replace, cssVar, steady } from '../shared/dom.js';
+import { h, replace, cssVar } from '../shared/dom.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import { format, convert, toMetric, unitLabel, getUnits } from '../shared/units.js';
 import { formatDateTime, formatDate } from '../shared/time.js';
@@ -480,14 +480,11 @@ export async function mount(ctx) {
     const chips = keys.map((k, idx) => {
       const s = SERIES[k];
       const b = h('button', { class: 'legend-chip', type: 'button', 'aria-pressed': 'true', title: 'Show or hide this line', cover: s.cover },
-        h('i', { class: ['legend-swatch', k === 'setpoint' && 'is-dashed'], vars: { '--c': `var(${s.color})` } }), h('span', null, s.label),
-        // the room of the widest value it can show, so pointing at the chart resizes no chip
-        steady(h('b', { class: 'legend-val' }, ''), ['—', ...raw[k].map((x) => format(x, 'temperature'))]));
+        h('i', { class: ['legend-swatch', k === 'setpoint' && 'is-dashed'], vars: { '--c': `var(${s.color})` } }), h('span', null, s.label), h('b', { class: 'legend-val' }, ''));
       b.addEventListener('click', () => { const vis = b.getAttribute('aria-pressed') !== 'true'; b.setAttribute('aria-pressed', String(vis)); plot.p?.u?.setSeries(idx + 1, { show: vis }); });
       return b;
     });
     const at = h('span', { class: 'faint ef-readout' }, 'Point at the chart for the values at a time.');
-    const atBox = steady(at, ['Point at the chart for the values at a time.', ...ts.map((t, i) => `${formatDateTime(t, tz, { now: now() })}${st[i] && st[i] !== 'driving' && st[i] !== 'parked' && st[i] !== 'charging' ? ` · ${st[i]}` : ''}`)]);
     const tUnit = unitLabel('temperature');
     const bw = bucketWords(bms);
     const statsTbl = h('div', { class: 'tbl-scroll' }, h('table', { class: 'tbl tp-stats', 'aria-label': `Lines in the chart, from ${bw} averages: lowest, average, highest and last` },
@@ -499,7 +496,7 @@ export async function mount(ctx) {
     cardLabels(statsTbl.querySelector('table'));
     const plotEl = h('div', { class: 'chart tp-hist-chart' });
     replace(tHistSlot,
-      h('div', { class: 'tp-top' }, h('div', { class: 'legend', role: 'group', 'aria-label': 'Temperature lines' }, chips), atBox),
+      h('div', { class: 'tp-top' }, h('div', { class: 'legend', role: 'group', 'aria-label': 'Temperature lines' }, chips), at),
       plotEl,
       statsTbl,
       h('p', { class: 'note' }, h('i', { class: 'k-asleep', 'aria-hidden': 'true' }), ' Asleep (blue) and ', h('i', { class: 'k-unknown', 'aria-hidden': 'true' }), ` unknown (grey) time: the car reads nothing then, so the lines break instead of guessing. The dashed set point is the driver’s climate setting, drawn only while climate runs${noSet ? ' (none in this period)' : ''}. Values are ${tUnit}, averaged per ${bw}, so the table’s lowest and highest are of those averages: the single readings in the summary above reach further.`));

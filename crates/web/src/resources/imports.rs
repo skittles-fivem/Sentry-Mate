@@ -63,8 +63,6 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/imports/{import}/files/{index}", axum::routing::patch(chunk_file))
         .route("/api/v1/imports/{import}/cars", get(cars).put(match_cars))
         .route("/api/v1/imports/{import}/start", post(start))
-        .route("/api/v1/import-holds", get(holds))
-        .route("/api/v1/import-holds/{hold}", post(assign_hold))
 }
 
 /// The imports of this server (a service the program hands the frame; one per server).
@@ -143,21 +141,9 @@ struct JobError {
     message: String,
 }
 
-/// The match of a car of the file whose rows go with another car of the file (it takes that car's match).
-const WITH: &str = "with";
-/// The match of rows that wait for a car (held, then given one in Settings: Import).
-const NEEDS_CAR: &str = "needs_car";
-
-/// Where a backup car goes at first: with the car of the file its rows carry on from; for rows that need a car, the
-/// car of their name their odometer and time fit, else held; else the car here with its whole VIN or VIN prefix,
-/// else left out when it holds no drive and no charge (nothing would be imported for it), else not chosen yet.
+/// Where a backup car goes at first: the car here with its VIN prefix, else left out when it holds no drive and no
+/// charge (nothing would be imported for it), else not chosen yet.
 fn first_match(car: &engine::query::imports::BackupCar) -> Option<String> {
-    if car.joins.is_some() {
-        return Some(WITH.into());
-    }
-    if car.needs_car {
-        return Some(car.suggested.map_or_else(|| NEEDS_CAR.into(), crate::ids::car));
-    }
     match car.suggested {
         Some(c) => Some(crate::ids::car(c)),
         None if car.drives == 0 && car.charges == 0 => Some("leave_out".into()),
@@ -214,20 +200,7 @@ struct Job {
     /// The files, when several were uploaded as one import (empty: one file, the job's own name and sizes).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     files: Vec<Part>,
-    /// Rows of this import moved from one car to another or to wait for a car, newest last.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    moves: Vec<Value>,
-    /// The lots of its rows that wait for a car (or waited), as [`lot_view`] writes them.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    holds: Vec<Value>,
-    /// The version of the matching its rows were last checked against ([`REHOME_VERSION`]).
-    #[serde(default)]
-    rehomed: u32,
 }
-
-/// The version of TeslaFi's matching (whole VINs; rows without a VIN only where they plainly carry on): a done import
-/// matched by an older one has its rows checked again once, from its kept files.
-const REHOME_VERSION: u32 = 1;
 
 impl Job {
     fn is_can(&self) -> bool {
@@ -287,8 +260,6 @@ impl Job {
                 "index": k, "name": p.name, "bytes_total": p.bytes_total, "uploaded_bytes": p.uploaded_bytes,
                 "upload_url": format!("/api/v1/imports/{}/files/{k}", self.id),
             })).collect::<Vec<_>>(),
-            "moves": self.moves,
-            "needs_car": self.holds,
         })
     }
 
@@ -499,9 +470,6 @@ async fn create(
             kind: None,
             teslafi: None,
             files: parts,
-            moves: Vec::new(),
-            holds: Vec::new(),
-            rehomed: REHOME_VERSION,
         };
         save(app, &j)?;
         st.jobs.insert(j.id.clone(), j.clone());
@@ -985,7 +953,6 @@ async fn discard(State(app): State<AppState>, Admin(v): Admin, Path(id): Path<St
 fn car_rows(j: &Job) -> Vec<Value> {
     j.cars
         .iter()
-        .filter(|c| c.matched.as_deref() != Some(WITH))
         .map(|c| {
             json!({
                 "tm_car": c.car.tm_car.to_string(),
@@ -997,12 +964,6 @@ fn car_rows(j: &Job) -> Vec<Value> {
                 "last_ms": c.car.last_ms,
                 "match": c.matched,
                 "suggested": c.car.suggested.map(crate::ids::car),
-                "needs_car": c.car.needs_car,
-                "rows": c.car.rows,
-                "odometer_km": match (c.car.first_odo_km, c.car.last_odo_km) {
-                    (Some(a), Some(b)) => json!([a.round(), b.round()]),
-                    _ => Value::Null,
-                },
             })
         })
         .collect()
@@ -1057,7 +1018,7 @@ async fn match_cars(
         let tm = tm_car(m.get("tm_car"))
             .ok_or_else(|| ApiError::bad_input(&format!("items.{i}.tm_car"), "A TeslaMate car number."))?;
         let word = match m.get("match") {
-            Some(Value::String(s)) if s == "new" || s == "leave_out" || s == NEEDS_CAR => s.clone(),
+            Some(Value::String(s)) if s == "new" || s == "leave_out" => s.clone(),
             Some(Value::String(_)) => match one.car(&app, &v, "match") {
                 Ok(Some(c)) => crate::ids::car(c),
                 Ok(None) | Err(_) => {
@@ -1081,18 +1042,9 @@ async fn match_cars(
                 format!("This import is {}; cars can't be matched now.", j.status),
             ));
         }
-        for (i, (tm, m)) in wanted.iter().enumerate() {
-            let Some(c) = j.cars.iter().find(|c| c.car.tm_car == *tm) else {
+        for (i, (tm, _)) in wanted.iter().enumerate() {
+            if !j.cars.iter().any(|c| c.car.tm_car == *tm) {
                 return Err(ApiError::invalid(&format!("items.{i}.tm_car"), "Not a car in this file."));
-            };
-            if c.matched.as_deref() == Some(WITH) {
-                return Err(ApiError::invalid(
-                    &format!("items.{i}.tm_car"),
-                    "Its rows go with another car of the file: match that one.",
-                ));
-            }
-            if m == NEEDS_CAR && !c.car.needs_car {
-                return Err(ApiError::invalid(&format!("items.{i}.match"), "Only rows without a VIN wait for a car."));
             }
         }
         for (tm, m) in &wanted {
@@ -1100,10 +1052,10 @@ async fn match_cars(
                 c.matched = Some(m.clone());
             }
         }
-        // one car here takes at most one imported car (rows that need a car may go to one that has another's)
+        // one car here takes at most one imported car
         let mut seen: HashMap<&str, i64> = HashMap::new();
-        for c in j.cars.iter().filter(|c| !c.car.needs_car) {
-            if let Some(m) = c.matched.as_deref().filter(|m| !matches!(*m, "new" | "leave_out" | WITH | NEEDS_CAR))
+        for c in &j.cars {
+            if let Some(m) = c.matched.as_deref().filter(|m| *m != "new" && *m != "leave_out")
                 && let Some(other) = seen.insert(m, c.car.tm_car)
             {
                 let i = wanted.iter().position(|(t, _)| *t == c.car.tm_car || *t == other).unwrap_or(0);
@@ -1185,8 +1137,8 @@ async fn start(
         // one car here takes at most one imported car (as PUT /cars checks: a job matched before, or by an older
         // server's suggestion, is checked again here)
         let mut seen: HashMap<&str, i64> = HashMap::new();
-        for c in j.cars.iter().filter(|c| !c.car.needs_car) {
-            if let Some(m) = c.matched.as_deref().filter(|m| !matches!(*m, "new" | "leave_out" | WITH | NEEDS_CAR))
+        for c in &j.cars {
+            if let Some(m) = c.matched.as_deref().filter(|m| *m != "new" && *m != "leave_out")
                 && let Some(other) = seen.insert(m, c.car.tm_car)
             {
                 return Err(ApiError::conflict(
@@ -1198,15 +1150,10 @@ async fn start(
                 ));
             }
         }
-        let mut m = im::Matches { hold_import: Some(j.id.clone()), ..im::Matches::default() };
+        let mut m = im::Matches::default();
         for c in &j.cars {
-            if let Some(to) = c.car.joins.filter(|_| c.matched.as_deref() == Some(WITH)) {
-                m.joins.insert(c.car.tm_car, to);
-                continue;
-            }
             match c.matched.as_deref() {
                 Some("leave_out") => m.leave_out.push(c.car.tm_car),
-                Some(NEEDS_CAR) => m.hold.push(c.car.tm_car),
                 Some("new") => {
                     m.to.insert(c.car.tm_car, None);
                 }
@@ -1237,8 +1184,7 @@ async fn start(
             st.live.insert(j.id.clone(), live.clone());
         }
         let (app2, id2, all2) = (app.clone(), j.id.clone(), imports(app)?);
-        let tables_before: Vec<CarRow> =
-            j.cars.iter().filter(|c| c.matched.as_deref() != Some(WITH)).cloned().collect();
+        let tables_before = j.cars.clone();
         let teslafi = j.is_teslafi();
         let parts = j.parts();
         tokio::task::spawn_blocking(move || {
@@ -1261,15 +1207,12 @@ async fn start(
                 return;
             }
             let now = app2.now();
-            let lots = engine::rehome::held_of_import(e.db(), &id2).unwrap_or_default();
             finish(&app2, &all2, &id2, |j| match r {
                 Ok(report) => {
                     j.status = "done".into();
                     j.finished_ms = Some(now);
                     j.bytes_read = j.bytes_total;
                     j.report = Some(report);
-                    j.holds = lots.iter().map(lot_view).collect();
-                    j.rehomed = REHOME_VERSION;
                 }
                 Err(err) => {
                     let (code, message) = im::error_of(&err);
@@ -1336,286 +1279,4 @@ fn start_can(app: &AppState, all: &Imports, e: Arc<Engine>, mut j: Job) -> ApiRe
     });
     let view = view_of(all, &j);
     Ok((view, j.name))
-}
-
-/// A lot of rows that waits for a car, as `/imports` and `/import-holds` write it.
-fn lot_view(h: &engine::rehome::Held) -> Value {
-    json!({
-        "hold": h.id,
-        "import": h.import,
-        "tm_car": h.tm_car.map(|t| t.to_string()),
-        "name": h.name,
-        "source": h.source.site().map(model::ImportSite::word),
-        "status": h.status,
-        "why": h.why,
-        "from_car": h.from_car.map(crate::ids::car),
-        "to_car": h.to_car.map(crate::ids::car),
-        "rows": h.held.rows,
-        "drives": h.held.drives,
-        "charges": h.held.charges,
-        "first_ms": h.held.first_ms,
-        "last_ms": h.held.last_ms,
-        "odometer_km": match (h.first_odo_km, h.last_odo_km) {
-            (Some(a), Some(b)) => json!([a.round(), b.round()]),
-            _ => Value::Null,
-        },
-    })
-}
-
-/// A move as `/imports` lists it: where the rows went (`to_car` a car, or null with `hold`: they wait for one).
-fn move_view(e: &Engine, m: &engine::rehome::Move, kind: &str) -> Value {
-    let name = |c: Option<model::CarId>| c.and_then(|c| e.db().car(c).ok().flatten()).map(|c| c.name);
-    json!({
-        "kind": kind,
-        "at_ms": m.at_ms,
-        "from_car": m.from_car.map(crate::ids::car),
-        "from_name": name(m.from_car),
-        "to_car": m.to_car.map(crate::ids::car),
-        "to_name": name(m.to_car),
-        "hold": m.held,
-        "rows": m.moved.rows,
-        "drives": m.moved.drives,
-        "charges": m.moved.charges,
-        "owner_entries": m.moved.owner_entries,
-        "first_ms": m.moved.first_ms,
-        "last_ms": m.moved.last_ms,
-    })
-}
-
-/// The sentence of a move's audit entry.
-fn move_said(e: &Engine, m: &engine::rehome::Move, why: &str) -> String {
-    let name = |c: model::CarId| e.db().car(c).ok().flatten().map_or_else(|| crate::ids::car(c), |c| c.name);
-    let what = m.moved.words();
-    let owner = match m.moved.owner_entries {
-        0 => String::new(),
-        n => format!(
-            ", with the {n} cost{} and purpose{} entered on them",
-            if n == 1 { "" } else { "s" },
-            if n == 1 { "" } else { "s" }
-        ),
-    };
-    match (m.from_car, m.to_car) {
-        (Some(f), Some(t)) => format!("Moved {what}{owner} from {} to {}: {why}.", name(f), name(t)),
-        (Some(f), None) => format!("Moved {what}{owner} off {} to wait for a car: {why}.", name(f)),
-        (None, Some(t)) => format!("Gave {what} that waited for a car to {}.", name(t)),
-        (None, None) => format!("Moved {what}: {why}."),
-    }
-}
-
-/// `GET /import-holds`: every lot of imported rows that waits for a car (or waited), oldest first.
-async fn holds(State(app): State<AppState>) -> ApiResult<Json<Value>> {
-    let e = app.service::<Engine>()?;
-    let items = app
-        .blocking(move |_| {
-            engine::rehome::held_all(e.db())
-                .map_err(|x| ApiError::server(x.to_string()))
-                .map(|v| v.iter().map(lot_view).collect::<Vec<_>>())
-        })
-        .await?;
-    Ok(Json(json!({ "items": items, "next": null })))
-}
-
-/// `POST /import-holds/{hold}` `{ match: car | "new" | "ignore" | "wait" }`: gives the lot's rows a car (a new one,
-/// named as the rows are, with `new`), leaves them aside (`ignore`: kept, not shown in any car) or takes them back to
-/// wait (`wait`). A car's rows that moved are rebuilt with it.
-async fn assign_hold(
-    State(app): State<AppState>,
-    Admin(v): Admin,
-    Path(hold): Path<String>,
-    body: JsonBody,
-) -> ApiResult<Json<Value>> {
-    body.only(&["match"])?;
-    let word = body.req_str("match")?.to_string();
-    let to = match word.as_str() {
-        "new" | "ignore" | "wait" => None,
-        _ => Some(
-            body.car(&app, &v, "match")?
-                .ok_or_else(|| ApiError::invalid("match", "A car id, \"new\", \"ignore\" or \"wait\"."))?,
-        ),
-    };
-    let e = app.service::<Engine>()?;
-    let all = imports(&app)?;
-    let (e2, h2) = (e.clone(), hold.clone());
-    let (lot, mv) = with_jobs(&app, move |app, all| {
-        let db = e2.db();
-        let h = engine::rehome::held(db, &h2)
-            .map_err(|x| ApiError::server(x.to_string()))?
-            .ok_or_else(|| ApiError::not_found("no_such_hold"))?;
-        if h.status == "assigned" {
-            return Err(ApiError::conflict("already_assigned", "These rows went to a car already."));
-        }
-        let mv = match (word.as_str(), to) {
-            ("ignore" | "wait", _) => {
-                engine::rehome::set_ignored(db, &h2, word == "ignore").map_err(|x| ApiError::server(x.to_string()))?;
-                None
-            }
-            (_, car) => {
-                let car = match car {
-                    Some(c) => c,
-                    None => {
-                        let name =
-                            h.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Imported car".into());
-                        engine::rehome::new_car(&e2, &name).map_err(|x| ApiError::server(x.to_string()))?
-                    }
-                };
-                let m = engine::rehome::assign(&e2, &h2, car).map_err(|x| ApiError::server(x.to_string()))?;
-                if let Err(x) = e2.rebuild(engine::Scope::car(car)) {
-                    tracing::warn!("rebuild after a move: {x}");
-                }
-                Some(m)
-            }
-        };
-        let lot = engine::rehome::held(db, &h2).map_err(|x| ApiError::server(x.to_string()))?.unwrap_or(h);
-        // the import it came from lists it as it is now, and the move
-        if let Some(id) = lot.import.clone() {
-            let mut st = all.lock();
-            if let Some(j) = st.jobs.get_mut(&id) {
-                j.holds = engine::rehome::held_of_import(db, &id).unwrap_or_default().iter().map(lot_view).collect();
-                if let Some(m) = &mv {
-                    j.moves.push(move_view(&e2, m, "assigned"));
-                }
-                let j = j.clone();
-                drop(st);
-                save(app, &j)?;
-            }
-        }
-        Ok((lot, mv))
-    })
-    .await?;
-    drop(all);
-    let target = target("import-hold", None, &hold);
-    match &mv {
-        Some(m) => {
-            let said = move_said(&e, m, "an admin chose their car");
-            v.audit(&app, "import-rows-moved", None, &said).await?;
-        }
-        None => {
-            let said = if lot.status == "ignored" {
-                format!("Left aside {} that wait for a car (kept).", lot.held.words())
-            } else {
-                format!("Took back {} to wait for a car.", lot.held.words())
-            };
-            v.audit(&app, "import-rows-ignored", Some(&target), &said).await?;
-        }
-    }
-    Ok(Json(json!({ "hold": lot_view(&lot), "move": mv.as_ref().map(|m| move_view(&e, m, "assigned")) })))
-}
-
-/// Checks the rows of every done TeslaFi import against today's matching, once (in the background at start): each
-/// import's kept files are read again (nothing is read into a car) and rows an earlier server put on the wrong car
-/// are moved to the right one, or to wait for a car; without the files, a car's own odometer tells which imported
-/// drives can't be its own. Nothing is deleted; each move is in the audit log (`import-rows-moved`, in the server's
-/// name) and on the import; each car that lost or got rows is rebuilt.
-pub fn spawn_rehome(app: &AppState) {
-    let app = app.clone();
-    tokio::task::spawn_blocking(move || {
-        if let Err(e) = rehome(&app) {
-            tracing::warn!("checking imported rows' cars: {}", e.message);
-        }
-    });
-}
-
-fn rehome(app: &AppState) -> ApiResult<()> {
-    let all = imports(app)?;
-    let e = app.service::<Engine>()?;
-    load(app, &all)?;
-    // a move names no one item (rows of an import, from one car to another or to wait): the sentence names them
-    let audit = |summary: &str| {
-        let details = crate::ctx::audit_details(None, summary);
-        if let Err(x) = app.accounts.audit().record(None, None, "import-rows-moved", &details) {
-            tracing::warn!("audit: {x}");
-        }
-    };
-    let mut touched: std::collections::BTreeSet<model::CarId> = std::collections::BTreeSet::new();
-    let todo: Vec<Job> = all
-        .lock()
-        .jobs
-        .values()
-        .filter(|j| j.is_teslafi() && j.status == "done" && j.rehomed < REHOME_VERSION)
-        .cloned()
-        .collect();
-    for j in todo {
-        let cars: Vec<model::CarId> =
-            j.cars.iter().filter_map(|c| c.matched.as_deref().and_then(crate::ids::parse_car)).collect();
-        let parts = j.parts();
-        let have = (0..parts.len()).all(|k| folder(app, &j.id).join(backup_file(k)).exists());
-        if !have || cars.is_empty() {
-            continue;
-        }
-        let tf = j.teslafi.clone().unwrap_or_default();
-        let live = Live::new(1);
-        let r = if parts.len() > 1 {
-            im::teslafi_rehome(&e, several_files(app, &j.id, &parts, &live), &tf, &cars, &j.id)
-        } else {
-            match opener(app, &j.id)() {
-                Ok(r) => im::teslafi_rehome(
-                    &e,
-                    im::TeslafiFiles::<_, Vec<io::Result<(String, Backup)>>>::One(r),
-                    &tf,
-                    &cars,
-                    &j.id,
-                ),
-                Err(x) => Err(import::Error::Io(x)),
-            }
-        };
-        let (checked, moves) = match r {
-            Ok(x) => x,
-            Err(x) => {
-                tracing::warn!("import {}: its files could not be read again: {x}", j.id);
-                continue;
-            }
-        };
-        let views: Vec<Value> = moves.iter().map(|m| move_view(&e, m, "rehomed")).collect();
-        for m in &moves {
-            touched.extend(m.from_car.into_iter().chain(m.to_car));
-            audit(&move_said(&e, m, &format!("the import {} matched them to the wrong car", j.name)));
-        }
-        // the import's cars as the rows tell them now, each with the match it had (by its VIN prefix), else as a
-        // check would start it
-        let old: HashMap<Option<String>, Option<String>> =
-            j.cars.iter().filter(|c| !c.car.needs_car).map(|c| (c.car.vin_prefix.clone(), c.matched.clone())).collect();
-        let lots = engine::rehome::held_of_import(e.db(), &j.id).unwrap_or_default();
-        let mut st = all.lock();
-        if let Some(job) = st.jobs.get_mut(&j.id) {
-            job.cars = checked
-                .cars
-                .into_iter()
-                .map(|car| {
-                    let matched = match old.get(&car.vin_prefix) {
-                        Some(m) if car.vin_prefix.is_some() && !car.needs_car && car.joins.is_none() => m.clone(),
-                        _ => first_match(&car),
-                    };
-                    CarRow { car, matched }
-                })
-                .collect();
-            job.moves.extend(views);
-            job.holds = lots.iter().map(lot_view).collect();
-            job.rehomed = REHOME_VERSION;
-            let job = job.clone();
-            drop(st);
-            save(app, &job)?;
-        }
-    }
-    // without an import's files: what each car's own odometer says
-    if !engine::rehome::done_once(e.db(), "strays-v1").unwrap_or(true) {
-        let cars = engine::rehome::car_ids(&e).unwrap_or_default();
-        for car in cars {
-            match engine::rehome::rehome_strays(&e, car) {
-                Ok(moves) => {
-                    for m in &moves {
-                        touched.insert(car);
-                        audit(&move_said(&e, m, "their odometer reads above the car's own later drives"));
-                    }
-                }
-                Err(x) => tracing::warn!("car {car}: checking its imported drives: {x}"),
-            }
-        }
-        let _ = engine::rehome::mark_done(e.db(), "strays-v1");
-    }
-    for car in touched {
-        if let Err(x) = e.rebuild(engine::Scope::car(car)) {
-            tracing::warn!("car {car}: rebuild after its rows moved: {x}");
-        }
-    }
-    Ok(())
 }

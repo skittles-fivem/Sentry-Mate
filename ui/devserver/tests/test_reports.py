@@ -203,6 +203,40 @@ class Software(ServerCase):
         self.assertEqual(self.c.get("/api/v1/cars/c1/firmware")["modules"][3]["fields"][0]["field"],
                          "DIF_applicationCrc")
 
+    def test_comet_shows_each_kind_of_name(self):
+        # Comet's three fingerprint updates: typed by the owner, not named (it changed every module: on the car
+        # its fingerprints flapped for minutes after the install, which the server keeps as ONE update with the
+        # final set), and named from TeslaFi
+        ups = sorted(self.c.get("/api/v1/cars/c1/updates?from_ms=0")["items"], key=lambda u: u["start_ms"])
+        self.assertEqual([u["detected_by"] for u in ups], ["fingerprint"] * 3)
+        typed, flapped, named = ups
+        self.assertEqual((typed["version"], typed["version_source"], typed["named_by"]), ("2026.2.6", "owner", "owner"))
+        self.assertEqual((flapped["version"], flapped["version_source"], flapped["named_by"]), (None, None, None))
+        self.assertEqual(sorted(flapped["changed_modules"]), ["bms", "dif", "dir", "vcfront"])
+        self.assertGreater(len(flapped["changes"]), len(flapped["changed_modules"]))
+        self.assertEqual(sorted({c["module"] for c in flapped["changes"]}), sorted(flapped["changed_modules"]))
+        self.assertEqual((named["version"], named["version_source"], named["named_by"]), ("2026.32.5", "teslafi_api", "auto"))
+        # the final set is what the car runs from then on: each new value is the one first seen at its end
+        fw = {f["field"]: f for m in self.c.get("/api/v1/cars/c1/firmware")["modules"] for f in m["fields"]}
+        for c in flapped["changes"]:
+            run = next(x for x in fw[c["field"]]["history"] if x["first_seen_ms"] == flapped["end_ms"])
+            self.assertEqual(run["hex"], c["new"])
+
+    def test_no_repeated_fingerprint_updates(self):
+        # one install is one update: never several fingerprint updates of one car minutes apart, nor two in a
+        # row with the same version (what a flapping fingerprint made before the server kept the final set)
+        for car in ("c1", "c2", "c3"):
+            ups = sorted((u for u in self.c.get(f"/api/v1/cars/{car}/updates?from_ms=0&limit=100")["items"]
+                          if u["detected_by"] == "fingerprint"), key=lambda u: u["start_ms"])
+            for a, b in zip(ups, ups[1:]):
+                self.assertGreater(b["start_ms"] - a["end_ms"], DAY, (car, a["id"], b["id"]))
+                if a["version"] is not None:
+                    self.assertNotEqual(a["version"], b["version"], (car, a["id"], b["id"]))
+            for u in ups:
+                fields = [c["field"] for c in u["changes"]]
+                self.assertEqual(len(fields), len(set(fields)), (car, u["id"]))  # each field changed once
+                self.assertTrue(all(c["old"] != c["new"] for c in u["changes"]), (car, u["id"]))
+
     def test_fingerprint_update_never_in_progress(self):
         # like the real server: between_ms and end_ms are set even while "now" is inside the update's window
         from types import SimpleNamespace
@@ -251,9 +285,9 @@ class SoftwareFromInputs(ServerCase):
         fv = {x["car"]: x for x in self.c.get("/api/v1/fleet/versions")["items"]}
         self.assertEqual((fv["c3"]["version"], fv["c3"]["version_source"]), ("2025.45.8", "teslafi_api"))
         self.assertEqual(self.c.get("/api/v1/cars/c3/now")["off_can"]["version"]["sources"][0]["kind"], "teslafi_api")
-        # Comet has no input version: as before
+        # Comet's newest update was named by TeslaFi when it was read for Comet (its API input is the Tesla API now)
         c1 = self.c.get("/api/v1/cars/c1/updates")["summary"]
-        self.assertEqual((c1["current_version"], c1["current_version_source"]), ("2026.32.5", "build_match"))
+        self.assertEqual((c1["current_version"], c1["current_version_source"]), ("2026.32.5", "teslafi_api"))
 
     def test_last_update_with_a_narrow_period(self):
         every = self.c.get("/api/v1/cars/c3/updates?from_ms=0")

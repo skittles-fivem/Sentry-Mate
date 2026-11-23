@@ -219,45 +219,6 @@ def imports(now, h=None):
     }
 
 
-def teslafi_rehomed(now):
-    """A TeslaFi import an older server matched by the old rule (rows without a VIN went to the one car with a VIN):
-    older than the TeslaMate import (so the page shows that one first). The check of its kept files moved a sold car's rows off Comet (c1) to Maple (c2), the car of their name whose
-    odometer they carry on, and left a second car's rows waiting for a car. Made-up names and figures."""
-    t0 = now - 500 * DAY
-    cars = [
-        {"tm_car": 1, "name": "Comet", "vin_prefix": "7SAYGDEE0SF", "drives": 214, "charges": 61, "first_ms": t0 - 80 * DAY,
-         "last_ms": t0 - 2 * DAY, "match": "c1", "needs_car": False, "rows": 48_200, "odometer_km": None},
-        {"tm_car": 4, "name": "Grey Seal", "vin_prefix": None, "drives": 4, "charges": 1, "first_ms": t0 - 120 * DAY,
-         "last_ms": t0 - 117 * DAY, "match": "needs_car", "needs_car": True, "rows": 620,
-         "odometer_km": [145_610, 145_790]},
-    ]
-    moves = [{"kind": "rehomed", "at_ms": now - 2 * HOUR, "from_car": "c1", "from_name": "Comet", "to_car": "c2",
-              "to_name": "Maple", "hold": None, "rows": 1_840, "drives": 11, "charges": 3, "owner_entries": 1,
-              "first_ms": t0 - 110 * DAY, "last_ms": t0 - 96 * DAY},
-             {"kind": "rehomed", "at_ms": now - 2 * HOUR, "from_car": "c1", "from_name": "Comet", "to_car": None,
-              "to_name": None, "hold": "h1", "rows": 620, "drives": 4, "charges": 1, "owner_entries": 0,
-              "first_ms": t0 - 120 * DAY, "last_ms": t0 - 117 * DAY}]
-    hold = {"hold": "h1", "import": "im2", "tm_car": "4", "name": "Grey Seal", "source": "teslafi", "status": "waiting",
-            "why": "no_vin", "from_car": "c1", "to_car": None, "rows": 620, "drives": 4, "charges": 1,
-            "first_ms": t0 - 120 * DAY, "last_ms": t0 - 117 * DAY, "odometer_km": [145_610, 145_790]}
-    job = {"id": "im2", "name": "TeslaFi-2025.zip", "compression": "zip", "kind": "teslafi", "status": "done",
-           "pass": 2, "bytes_read": 21_400_000, "bytes_total": 21_400_000, "uploaded_bytes": 21_400_000,
-           "started_ms": t0, "checked_ms": t0 + 3 * MIN, "finished_ms": t0 + 9 * MIN, "error": None,
-           "cars": cars, "moves": moves, "_seeded": True,
-           "report": {"kind": "teslafi", "imported": True, "files": 4, "files_skipped": {},
-                      "rows": {"read": 48_820, "used": 48_820, "skipped": {}, "bad_values": {}, "windows_1252": 0},
-                      "found": {"drives": 218, "charges": 62, "states": 410, "updates": 2, "positions": 48_820,
-                                "charge_points": 9_100, "replaced": 0, "read_again": 0},
-                      "tables": {}, "span": {"from_ms": t0 - 120 * DAY, "to_ms": t0 - 2 * DAY},
-                      "cars": [], "cars_count": 2, "cars_left_out": 0,
-                      "units": {"distance": "mi", "distance_from": "detected", "temperature": "c",
-                                "temperature_from": "detected"},
-                      "time_zone": {"name": "UTC", "from": "car", "asked": True, "dst_repeated_rows": 0},
-                      "compression": "zip", "packed_bytes": 21_400_000, "unpacked_bytes": 88_000_000,
-                      "missing_columns": [], "unknown_columns": 3, "warnings": []}}
-    return job, {"h1": hold}
-
-
 def storage(now):
     """Server figures that no car gives: offline tiles, free space and uptime (cars' bytes come from
     their own history, see resources/system.py)."""

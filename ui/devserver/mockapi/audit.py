@@ -91,11 +91,6 @@ def seed(ds, now):
         (396 * DAY - 10 * MIN, "admin", "import-uploaded", "import:im1", None, "Uploaded every file of teslamate-backup-atlas.sql.xz; checking it."),
         (396 * DAY - 20 * MIN, "admin", "import-cars", "import:im1", None, "Matched the imported cars: Atlas to Atlas, Old Roadster left out."),
         (396 * DAY - 30 * MIN, "admin", "import-started", "import:im1", None, "Started importing teslamate-backup-atlas.sql.xz."),
-        (395 * DAY + HOUR, S, "import-rows-moved", None, "c2",
-         "Moved 1840 rows (11 drives, 3 charges), with the 1 cost and purpose entered on them, from Comet to Maple: "
-         "the import TeslaFi-2025.zip matched them to the wrong car."),
-        (395 * DAY + 50 * MIN, "admin", "import-rows-ignored", "import-hold:h0", None,
-         "Left aside 40 rows (1 drive) that wait for a car (kept)."),
         (395 * DAY, "admin", "import-discarded", "import:im0", None, "Discarded the import teslafi-export.csv (failed). History already imported stays."),
         (300 * DAY, "admin", "account-created", "account:a7", None, "Made the account sam (watch, sees Maple)."),
         (240 * DAY, "admin", "account-created", "account:a8", None, "Made the account jordan (admin, sees every car)."),

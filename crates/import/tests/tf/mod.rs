@@ -246,8 +246,6 @@ pub struct Store {
     pub cars: BTreeMap<String, CarId>,
     /// Where a car without a VIN goes.
     pub no_vin: Option<CarId>,
-    /// Where a car the file asks for by number goes, whatever its VIN (a check's plan, as `/imports` keeps it).
-    pub plan: BTreeMap<i64, Option<CarId>>,
     pub zones: BTreeMap<CarId, String>,
     pub states: BTreeMap<CarId, ImportState>,
     pub drives: BTreeMap<(CarId, i64), model::Drive>,
@@ -289,10 +287,6 @@ impl Store {
 impl Sink for Store {
     fn car(&mut self, car: &TmCar) -> Result<Option<Target>, SinkError> {
         self.asked.push(car.clone());
-        if let Some(to) = self.plan.get(&car.tm_id) {
-            let Some(id) = *to else { return Ok(None) };
-            return Ok(Some(Target { car: id, state: self.states.get(&id).cloned().unwrap_or_default() }));
-        }
         let id = match &car.vin {
             Some(v) => self.cars.get(&v.vin_prefix).copied(),
             None => self.no_vin,

@@ -111,7 +111,6 @@ const ROUTES: &[(&str, &str, Case)] = &[
     ("PATCH", "/api/v1/imports/{import}/files/{index}", Elsewhere("imports_teslafi.rs")),
     ("PUT", "/api/v1/imports/{import}/cars", Elsewhere("imports.rs")),
     ("POST", "/api/v1/imports/{import}/start", Elsewhere("imports.rs")),
-    ("POST", "/api/v1/import-holds/{hold}", Elsewhere("imports_teslafi.rs")),
     ("PUT", "/api/v1/settings/mqtt", Elsewhere("settings.rs")),
     ("POST", "/api/v1/settings/mqtt/test", Elsewhere("settings.rs")),
     ("PATCH", "/api/v1/me/preferences", Walk),

@@ -15,7 +15,7 @@
 //       GET system/storage, system/health (admin), geocode/status, cars.
 // Live: a "rows" event for the car loads its health, gaps and totals again.
 
-import { h, svg, replace } from '../shared/dom.js';
+import { h, svg, replace, replaceChanged } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { format, convert, unitLabel, DASH } from '../shared/units.js';
@@ -52,6 +52,11 @@ const REASONS = {
     title: 'Logs wait for a key to be trusted',
     text: 'They came from a key nobody has approved for this car yet. Approve or assign the key and they are read at once; nothing has to be uploaded again.',
     fix: 'Approve the key', page: 'settings-cars',
+  },
+  gps_inputs_disagree: {
+    title: 'Positions from one input are out of step',
+    text: 'One input’s GPS positions are far from the other inputs’ positions at the same moments, more than lag or noise explains (often a decoding problem). Its positions are not used there; the other inputs’ positions are. The rest of its data is still used.',
+    fix: null, page: null,
   },
   logs_missing: {
     title: 'Logs missing on the server',
@@ -355,7 +360,8 @@ async function mountCar(ctx) {
         ? 'Nothing is ever repaired by hand: drives, charges, states and visits of the period are worked out again from the stored logs. Typed names, purposes and prices stay.'
         : 'Nothing is ever repaired by hand: an admin can work drives and charges out again from the stored logs.'));
 
-    replace(healthBox, status, fixes, figs, h('div', { class: 'hl-cols' }, keyList, spanList), rebuild);
+    // read again on every `rows` event (every second while a rebuild runs): only what changed is swapped
+    replaceChanged(healthBox, status, fixes, figs, h('div', { class: 'hl-cols' }, keyList, spanList), rebuild);
   }
 
   /** Missing on the server: logs the server should have but no longer does, asked of the car again. Always the same rows. */
@@ -465,7 +471,7 @@ async function mountCar(ctx) {
   function drawTotals(all, can, ta, tm, sm) {
     sm = sm || {};
     const vs = VERSION_SOURCE[sm.current_version_source];
-    replace(totalsBox, figures([
+    replaceChanged(totalsBox, figures([
       figure('Logged distance', q(all.distance_km, 'distance'), `The sum of every recorded drive. ${split(can.distance_km, ta.distance_km, tm.distance_km, 'distance')}`, { cover: 'dbinfo.stat.logged_distance' }),
       figure('Odometer', q(all.odometer_last_km, 'odometer', { why: 'not sent yet' }), all.odometer_last_km != null && all.odometer_last_ms != null ? `Last read ${when(all.odometer_last_ms, tz)}; the car sends it while awake.` : 'The car sends it while awake.', { cover: 'dbinfo.stat.odometer' }),
       figure('Not logged', q(all.not_logged_km, 'distance', { why: 'needs two readings' }), 'The odometer’s change since the first reading minus the logged distance: driving nobody recorded.'),
@@ -497,7 +503,7 @@ async function mountCar(ctx) {
         { key: 'total', label: 'Rows', num: true, sort: true, cover: 'dbinfo.rows.row_count', cell: (r) => h('b', null, q(r.total, 'count')) },
       ],
     });
-    replace(rowsBox, t.el);
+    replaceChanged(rowsBox, t.el);
     t.load();
   }
 
@@ -775,7 +781,7 @@ async function mountSystem(ctx) {
   /* ---------------------------------------------------------------- every car */
 
   const carSearch = h('input', { class: 'field-input', type: 'search', id: 'hl-car-search', placeholder: 'Find a car by name, model or VIN', autocomplete: 'off' });
-  const DATA_BAD = new Set(['upload_silence', 'trust_failed', 'logs_waiting_trust', 'logs_missing']);
+  const DATA_BAD = new Set(['upload_silence', 'trust_failed', 'logs_waiting_trust', 'logs_missing', 'gps_inputs_disagree']);
   const carTable = dataTable(ctx, {
     path: 'cars', params: {}, limit: 50, itemName: ['car', 'cars'], sort: { key: 'name', dir: 'asc' }, cls: 'hl-cars', label: 'Every car',
     cover: 'faq.stopped-recording',

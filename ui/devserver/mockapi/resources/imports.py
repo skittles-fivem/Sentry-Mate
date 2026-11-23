@@ -16,12 +16,6 @@ check and the import then run on the virtual clock (about 6 s and 12 s), so a pa
 from "checking" through "ready" and "importing" to "done". A file named with "broken" fails its
 check. Imported history is not added to the made-up dataset; the report says what would be.
 
-Rows that need a car (docs/ui-api.md, "Moves and rows that need a car"): the seeded TeslaFi import `im2` was checked
-again against the matching by whole VINs: a move of a sold car's rows off Comet (c1) to Maple (c2), and a lot of a
-second car's rows that waits for a car (`h1`, listed in `/import-holds` and in the import's `needs_car`). POST
-`/import-holds/{hold}` gives it a car (the dev server makes no new car for `new`: the lot is marked given to a new
-car named as its rows are), leaves it aside or takes it back; the dataset's rows don't change.
-
 Several files make one import (`files: [...]` at create, each sent to its own `files/{index}` address): taken for
 TeslaFi only (each the made-up TeslaFi day once, listed in `report.uploads`); several files that are not TeslaFi's
 fail the check with `one_file_only`, a non-TeslaFi file among TeslaFi ones with `not_a_teslafi_export`.
@@ -214,7 +208,7 @@ def _advance_tf(req, j):
         return
     # the server keeps what an import took per car: a done import whose cars were all left out took nothing
     took = [x for x in req.store.imports.values() if x.get("kind") == KIND_TF and x["status"] == "done"
-            and not x.get("_seeded") and any(c["match"] != "leave_out" for c in x["cars"])]
+            and any(c["match"] != "leave_out" for c in x["cars"])]
     again = bool(took)
     j["_again"] = again
     j["_read_in"] = _reading(took[-1].get("teslafi") or {}) if took else None
@@ -299,8 +293,6 @@ def view(j):
     out = {k: copy.deepcopy(v) for k, v in j.items() if not k.startswith("_") and k != "cars"}
     out.setdefault("kind", None)
     out["files"] = _file_views(j)
-    out["moves"] = copy.deepcopy(j.get("moves") or [])
-    out["needs_car"] = [copy.deepcopy(h) for h in (j.get("_holds") or {}).values() if h.get("import") == j["id"]]
     if j.get("kind") == KIND_CAN:
         out["cars_to_match"] = 0 if j["status"] not in ("uploading", "checking") else None
     else:
@@ -553,8 +545,7 @@ def delete_import(req):
 def _car_row(req, j, c):
     return {"tm_car": c["tm_car"], "name": c["name"], "vin_prefix": c["vin_prefix"], "drives": c["drives"],
             "charges": c["charges"], "first_ms": c["first_ms"], "last_ms": c["last_ms"], "match": c["match"],
-            "suggested": None if c.get("needs_car") else _suggest(req, c), "needs_car": bool(c.get("needs_car")),
-            "rows": c.get("rows"), "odometer_km": c.get("odometer_km")}
+            "suggested": _suggest(req, c)}
 
 
 def get_cars(req):
@@ -590,11 +581,6 @@ def put_cars(req):
             rule[f"items.{i}.tm_car"] = "Not a car in this file."
             continue
         m = x.get("match")
-        if m == "needs_car" and not known[x["tm_car"]].get("needs_car"):
-            rule[f"items.{i}.match"] = "Only rows without a VIN wait for a car."
-            continue
-        if m == "needs_car":
-            continue
         if m not in ("new", "leave_out") and not (isinstance(m, str) and req.ds.exists(m)
                                                   and st.sees(req.account, m)):
             rule[f"items.{i}.match"] = 'A car id, "new" or "leave_out".'
@@ -670,56 +656,6 @@ def start(req):
     return view(j)
 
 
-HOLD_WORDS = ("new", "ignore", "wait")
-
-
-def list_holds(req):
-    """`GET /import-holds`: every lot of imported rows that waits for a car (or waited), oldest first."""
-    return {"items": [copy.deepcopy(h) for h in sorted(req.store.holds.values(), key=lambda h: int(h["hold"][1:]))],
-            "next": None}
-
-
-def assign_hold(req):
-    """`POST /import-holds/{hold}` `{ match: car | "new" | "ignore" | "wait" }`."""
-    st = req.store
-    h = st.holds.get(req.params["hold"])
-    if h is None:
-        raise not_found("no_such_hold", "There is no such lot of rows.")
-    body = req.json()
-    if set(body) - {"match"} or not isinstance(body.get("match"), str):
-        raise bad_input({"match": 'A car id, "new", "ignore" or "wait".'})
-    m = body["match"]
-    if m not in HOLD_WORDS and not (req.ds.exists(m) and st.sees(req.account, m)):
-        raise invalid({"match": 'A car id, "new", "ignore" or "wait".'})
-    if h["status"] == "assigned":
-        raise conflict("already_assigned", "These rows went to a car already.")
-    move = None
-    with st.lock:
-        if m in ("ignore", "wait"):
-            h["status"] = "ignored" if m == "ignore" else "waiting"
-        else:
-            to_name = (h.get("name") or "Imported car") if m == "new" else st.car_meta(m)["name"]
-            h.update(status="assigned", to_car=None if m == "new" else m)
-            move = {"kind": "assigned", "at_ms": req.now, "from_car": None, "from_name": None,
-                    "to_car": h["to_car"], "to_name": to_name, "hold": h["hold"], "rows": h["rows"],
-                    "drives": h["drives"], "charges": h["charges"], "owner_entries": 0,
-                    "first_ms": h["first_ms"], "last_ms": h["last_ms"]}
-            j = st.imports.get(h.get("import") or "")
-            if j is not None:
-                j.setdefault("moves", []).append(move)
-    what = f"{h['rows']} rows ({h['drives']} drives, {h['charges']} charges)"
-    if move:
-        st.record(req.account, "import-rows-moved", None,
-                  f"Gave {what} that waited for a car to {move['to_name']}.")
-    elif h["status"] == "ignored":
-        st.record(req.account, "import-rows-ignored", f"import-hold:{h['hold']}",
-                  f"Left aside {what} that wait for a car (kept).")
-    else:
-        st.record(req.account, "import-rows-ignored", f"import-hold:{h['hold']}",
-                  f"Took back {what} to wait for a car.")
-    return {"hold": copy.deepcopy(h), "move": move}
-
-
 def register(router):
     router.add("/api/v1/imports", GET=list_imports, POST=create_import, admin=("GET", "POST"))
     router.add("/api/v1/imports/{import}", GET=get_import, PATCH=patch_import, DELETE=delete_import,
@@ -727,5 +663,3 @@ def register(router):
     router.add("/api/v1/imports/{import}/files/{index}", PATCH=patch_file, admin=("PATCH",))
     router.add("/api/v1/imports/{import}/cars", GET=get_cars, PUT=put_cars, admin=("GET", "PUT"))
     router.add("/api/v1/imports/{import}/start", POST=start, admin=("POST",))
-    router.add("/api/v1/import-holds", GET=list_holds, admin=("GET",))
-    router.add("/api/v1/import-holds/{hold}", POST=assign_hold, admin=("POST",))

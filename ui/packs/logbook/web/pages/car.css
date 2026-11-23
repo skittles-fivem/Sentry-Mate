@@ -238,15 +238,17 @@
 .vi-value { color: var(--ink); overflow-wrap: anywhere; }
 .vi-fact.is-unknown .vi-value { color: var(--ink-3); font-style: italic; }
 .vi-fact.is-owner .vi-value { font-weight: 600; }
-.vi-meta { display: inline-flex; flex-wrap: wrap; gap: round(0.375rem, var(--e)); align-items: baseline; }
-.vi-src, .vi-conf { font: 600 var(--micro) var(--sans); --LH: round(calc(1.2 * 1em), 2px); line-height: var(--LH); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
-.vi-src-can { color: var(--accent); }
-.vi-src-owner { color: var(--ochre); }
-.vi-conf-low { color: var(--rust); }
-.vi-note { flex-basis: 100%; font-size: var(--small-2); color: var(--ink-3); }
-.vi-note.is-warn { color: var(--rust); }
-.vi-edit { flex-basis: 100%; text-align: left; padding: 0; border: 0; background: none; font: 500 var(--small-2) var(--sans); --LH: round(calc(1.4 * 1em), 2px); line-height: var(--LH); color: var(--ink-3); text-decoration: underline; text-decoration-color: var(--rule-strong); text-underline-offset: 0.2em; cursor: pointer; }
-.vi-edit:hover { color: var(--accent-strong); text-decoration-color: currentColor; }
+.vi-fact.is-low .vi-value { color: var(--ink-2); }
+.vi-q { margin-left: round(0.125rem, var(--e)); color: var(--ink-3); }
+.vi-detail { flex-basis: 100%; font-size: var(--small-2); color: var(--ink-3); overflow-wrap: anywhere; }
+.vi-detail[hidden] { display: none; }
+.vi-dlg-how { color: var(--ink-3); overflow-wrap: anywhere; }
+.vi-acts { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: round(1rem, var(--e)); }
+.vi-acts:empty { display: none; }
+.vi-info { display: none; }
+@media (hover: none) { .vi-info { display: inline; } }
+.vi-edit, .vi-info { text-align: left; padding: 0; border: 0; background: none; font: 500 var(--small-2) var(--sans); --LH: round(calc(1.4 * 1em), 2px); line-height: var(--LH); color: var(--ink-3); text-decoration: underline; text-decoration-color: var(--rule-strong); text-underline-offset: 0.2em; cursor: pointer; }
+.vi-edit:hover, .vi-info:hover { color: var(--accent-strong); text-decoration-color: currentColor; }
 .vi-faint { color: var(--ink-3); }
 .vi-disagree { margin-top: round(1.25rem, var(--e)); padding: round(0.75rem, var(--e)) round(1rem, var(--e)); border-left: round(0.25rem, var(--e)) solid var(--rust); background: var(--rust-wash); font-size: var(--text-sm); --LH: round(calc(1.5 * 1em), 2px); line-height: var(--LH); }
 .vi-disagree-title { display: flex; gap: round(0.5rem, var(--e)); align-items: center; font-weight: 600; color: var(--ink); }

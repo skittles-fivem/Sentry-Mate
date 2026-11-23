@@ -14,6 +14,11 @@ pub const MAX_CAR_ID: usize = 9;
 /// At most one `ApiMeta` per car this often.
 pub const META_EVERY_MS: u64 = 10_000;
 
+/// A new latitude (or longitude) waits this long for its other half (TeslaMate sends them as two topics, one after
+/// the other) before the sample is made: a sample never pairs a new latitude with the longitude of an earlier
+/// position. After it, the other half is taken as unchanged (TeslaMate sends only what changed).
+pub const PAIR_WAIT_MS: u64 = 2_000;
+
 /// A topic's place: `<prefix>/cars/<id>/<name>` → (`id`, `name`). Anything else (another prefix, more levels, an id
 /// that is not a number): `None`.
 pub fn split_topic<'a>(prefix: &str, topic: &'a str) -> Option<(&'a str, &'a str)> {
@@ -279,6 +284,9 @@ pub struct Car {
     last_emit_ms: u64,
     last_meta_ms: u64,
     pub last_message_ms: Option<u64>,
+    /// Which half of the position changed since the last whole one (latitude, longitude), and since when.
+    half: (bool, bool),
+    half_since_ms: u64,
 }
 
 fn put<T: PartialEq>(slot: &mut Option<T>, v: Option<T>) -> bool {
@@ -294,7 +302,22 @@ impl Car {
         self.state.as_deref()
     }
 
-    fn sample_value(&mut self, f: SampleField, p: &str) -> bool {
+    /// One half of the position changed: a whole position once the other half changed too.
+    fn half_changed(&mut self, lat: bool, now_ms: u64) {
+        if self.half == (false, false) {
+            self.half_since_ms = now_ms;
+        }
+        if lat {
+            self.half.0 = true;
+        } else {
+            self.half.1 = true;
+        }
+        if self.half == (true, true) {
+            self.half = (false, false);
+        }
+    }
+
+    fn sample_value(&mut self, f: SampleField, p: &str, now_ms: u64) -> bool {
         let changed = match slot(&mut self.values, f) {
             Slot::Num(n) => {
                 let v = match f {
@@ -303,7 +326,11 @@ impl Car {
                     SampleField::TimeToFull => num(p).map(|h| (h * 60.0).round()),
                     _ => num(p),
                 };
-                put(n, v)
+                let changed = put(n, v);
+                if changed && matches!(f, SampleField::Lat | SampleField::Lon) {
+                    self.half_changed(f == SampleField::Lat, now_ms);
+                }
+                changed
             }
             Slot::Flag(b) => put(b, flag(p)),
             Slot::Gear(g) => {
@@ -381,6 +408,7 @@ impl Car {
             return false;
         }
         (self.values.lat, self.values.lon) = (lat, lon);
+        self.half = (false, false);
         self.dirty = true;
         true
     }
@@ -401,7 +429,7 @@ impl Car {
             }
             Target::State => return self.set_state(p, now_ms),
             Target::Location => self.location(p),
-            Target::Sample(f) => self.sample_value(f, p),
+            Target::Sample(f) => self.sample_value(f, p, now_ms),
             Target::Meta(f) => self.meta_value(f, p),
             Target::LeftOut => false,
         };
@@ -413,6 +441,13 @@ impl Car {
     pub fn take(&mut self, now_ms: u64, every_ms: u64) -> Option<Sample> {
         if !self.dirty || (self.last_emit_ms != 0 && now_ms < self.last_emit_ms + every_ms) {
             return None;
+        }
+        if self.half != (false, false) {
+            // half a new position: wait a while for the other half
+            if now_ms < self.half_since_ms.saturating_add(PAIR_WAIT_MS) {
+                return None;
+            }
+            self.half = (false, false);
         }
         self.dirty = false;
         self.last_emit_ms = now_ms;
@@ -494,6 +529,26 @@ mod tests {
         c.apply("state", "online", 3_000);
         let s = c.take(3_700, 1_000).unwrap();
         assert_eq!((s.charging, s.charge_power_kw), (Some(false), None), "no charge power while not charging");
+    }
+
+    #[test]
+    fn a_new_latitude_waits_for_its_longitude() {
+        let mut c = Car::default();
+        c.apply("latitude", "45.0", 1_000);
+        c.apply("longitude", "-93.0", 1_000);
+        assert_eq!(c.take(1_500, 1_000).map(|s| (s.lat, s.lon)), Some((Some(45.0), Some(-93.0))));
+        // a new latitude: no sample with the old longitude, the next has both
+        c.apply("latitude", "45.01", 3_000);
+        assert!(c.take(3_100, 1_000).is_none(), "half a position waits");
+        c.apply("longitude", "-93.01", 3_400);
+        assert_eq!(c.take(3_500, 1_000).map(|s| (s.lat, s.lon)), Some((Some(45.01), Some(-93.01))));
+        // only the latitude changes (driving due north): after the wait the longitude stands
+        c.apply("latitude", "45.02", 6_000);
+        assert!(c.take(7_000, 1_000).is_none());
+        assert_eq!(c.take(8_000, 1_000).map(|s| (s.lat, s.lon)), Some((Some(45.02), Some(-93.01))));
+        // the location topic is a whole position
+        c.apply("location", r#"{"latitude": 45.03, "longitude": -93.02}"#, 10_000);
+        assert_eq!(c.take(10_100, 1_000).map(|s| (s.lat, s.lon)), Some((Some(45.03), Some(-93.02))));
     }
 
     #[test]

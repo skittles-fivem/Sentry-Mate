@@ -13,7 +13,7 @@ use import::{Batch, CarReport, Report, SinkError, Table, Target, TmCar};
 use model::CarId;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::io::{self, Read};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -28,24 +28,9 @@ pub struct BackupCar {
     pub charges: u64,
     pub first_ms: Option<u64>,
     pub last_ms: Option<u64>,
-    /// The car here with its whole VIN, else the one with the same VIN prefix whose whole VIN is not known to be
-    /// another (and suggested for no other car of the backup); for rows that need a car, the one car of their name
-    /// their odometer and time fit; else `None`.
+    /// The car here with the same VIN prefix (the only one, and suggested for no other car of the backup), else
+    /// `None`.
     pub suggested: Option<CarId>,
-    /// TeslaFi rows without a VIN the file ties to no car: a car is to be chosen for them (they are held till then).
-    #[serde(default)]
-    pub needs_car: bool,
-    /// The car of the file its rows go with (a car with a VIN whose odometer they carry on, or a car of rows that
-    /// need a car it follows): it takes that car's match.
-    #[serde(default)]
-    pub joins: Option<i64>,
-    /// Rows of the file it has (TeslaFi), with those of the cars that follow it.
-    #[serde(default)]
-    pub rows: u64,
-    #[serde(default)]
-    pub first_odo_km: Option<f64>,
-    #[serde(default)]
-    pub last_odo_km: Option<f64>,
 }
 
 /// A check's result: the cars, and the report as JSON (`imported` 0 everywhere: nothing was stored).
@@ -53,8 +38,6 @@ pub struct BackupCar {
 pub struct Checked {
     pub cars: Vec<BackupCar>,
     pub report: Value,
-    /// TeslaFi's cars of the files as the rows told them apart (empty for a TeslaMate backup).
-    pub groups: Vec<import::teslafi::Group>,
 }
 
 /// Where each car of the backup goes, by TeslaMate id: `Some(car)`, `None` = a new car; left-out cars are absent
@@ -63,28 +46,6 @@ pub struct Checked {
 pub struct Matches {
     pub to: HashMap<i64, Option<CarId>>,
     pub leave_out: Vec<i64>,
-    /// Cars of the file that go with another of the file.
-    pub joins: HashMap<i64, i64>,
-    /// Cars of the file whose rows are held until a car is chosen.
-    pub hold: Vec<i64>,
-    /// The `/imports` id held rows are kept under.
-    pub hold_import: Option<String>,
-}
-
-impl Matches {
-    fn apply(&self, sink: &mut DbSink<'_>) {
-        for (tm, to) in &self.to {
-            sink.matches.insert(*tm, to.map_or(Match::New, Match::Car));
-        }
-        for tm in &self.leave_out {
-            sink.matches.insert(*tm, Match::LeaveOut);
-        }
-        for tm in &self.hold {
-            sink.matches.insert(*tm, Match::Hold);
-        }
-        sink.joins = self.joins.clone();
-        sink.hold_import = self.hold_import.clone();
-    }
 }
 
 /// Reads through `inner`, counting the bytes into `read` and failing once `stop` is set.
@@ -114,11 +75,22 @@ pub fn counted<R: Read>(
     move || Ok(Counted { inner: open()?, read: read.clone(), stop: stop.clone() })
 }
 
-/// The one car here an imported car with this VIN prefix (and whole VIN's keyed hash, `tag`) may be
-/// ([`crate::rehome::cars_for_vin`]: never a car whose whole VIN is known to be another).
-pub fn suggest(e: &Engine, vin_prefix: Option<&str>, tag: Option<&str>) -> QResult<Option<CarId>> {
+/// The one car here with this VIN prefix.
+pub fn suggest(e: &Engine, vin_prefix: Option<&str>) -> QResult<Option<CarId>> {
     let Some(p) = vin_prefix.filter(|p| !p.is_empty()) else { return Ok(None) };
-    let same = crate::rehome::cars_for_vin(e.db(), p, tag)?;
+    // (the fleet search reads names and keys, not VINs: every car is looked at, from the fleet list alone)
+    let mut q = db::FleetQuery { search: None, limit: 500, after: None };
+    let mut same = Vec::new();
+    for _ in 0..100_000 {
+        let page = e.db().fleet(&q)?;
+        same.extend(
+            page.cars.iter().filter(|x| x.car.vin.as_ref().is_some_and(|v| v.vin_prefix == p)).map(|x| x.car.id),
+        );
+        match page.next {
+            Some(n) => q.after = Some(n),
+            None => break,
+        }
+    }
     Ok(if same.len() == 1 { same.first().copied() } else { None })
 }
 
@@ -142,8 +114,7 @@ fn sink_err(e: impl std::fmt::Display) -> SinkError {
 impl import::Sink for CountSink<'_> {
     fn car(&mut self, tm: &TmCar) -> Result<Option<Target>, SinkError> {
         let prefix = tm.vin.as_ref().map(|v| v.vin_prefix.clone()).filter(|p| !p.is_empty());
-        let tag = tm.full_vin.as_ref().map(|v| crate::rehome::vin_tag(self.engine.db(), v));
-        let suggested = suggest(self.engine, prefix.as_deref(), tag.as_deref()).map_err(sink_err)?;
+        let suggested = suggest(self.engine, prefix.as_deref()).map_err(sink_err)?;
         let id = STAND_IN + self.cars.len() as CarId;
         self.stand_in.insert(id, tm.tm_id);
         self.cars.push(BackupCar {
@@ -155,11 +126,6 @@ impl import::Sink for CountSink<'_> {
             first_ms: None,
             last_ms: None,
             suggested,
-            needs_car: tm.needs_match,
-            joins: None,
-            rows: 0,
-            first_odo_km: None,
-            last_odo_km: None,
         });
         // what an earlier import of the suggested car took is not counted again
         let state = match suggested {
@@ -169,17 +135,6 @@ impl import::Sink for CountSink<'_> {
         let zone = match suggested {
             Some(c) => self.engine.db().car(c).map_err(sink_err)?.map(|c| self.engine.car_zone(&c).0),
             None => None,
-        };
-        // rows that need a car are read in the zone of the one car suggested so far (they are compared with it)
-        let zone = match zone {
-            None if tm.needs_match => {
-                let s: BTreeSet<CarId> = self.cars.iter().filter_map(|c| c.suggested).collect();
-                match s.iter().collect::<Vec<_>>().as_slice() {
-                    [one] => self.engine.db().car(**one).map_err(sink_err)?.map(|c| self.engine.car_zone(&c).0),
-                    _ => None,
-                }
-            }
-            z => z,
         };
         self.zones.insert(id, zone.unwrap_or_else(|| self.engine.inner.default_zone()));
         Ok(Some(Target { car: id, state }))
@@ -405,94 +360,6 @@ pub fn one_each(cars: &mut [BackupCar]) {
     }
 }
 
-/// Puts what TeslaFi's rows told of each car of the files on the check's cars: which go with another (their rows and
-/// counts folded into it), which need a car (with the car of their name their odometer and time fit, suggested).
-fn with_groups(e: &Engine, cars: &mut [BackupCar], groups: &[import::teslafi::Group]) -> crate::Result<()> {
-    let by_tm: HashMap<i64, &import::teslafi::Group> = groups.iter().map(|g| (g.tm_car, g)).collect();
-    for c in cars.iter_mut() {
-        if let Some(g) = by_tm.get(&c.tm_car) {
-            c.needs_car = g.needs_match;
-            c.joins = g.joins;
-            c.rows = g.rows;
-            c.first_odo_km = g.first_odo_km;
-            c.last_odo_km = g.last_odo_km;
-        }
-    }
-    // a car's followers add to it
-    let adds: Vec<(i64, BackupCar)> = cars.iter().filter_map(|c| c.joins.map(|j| (j, c.clone()))).collect();
-    for (j, f) in adds {
-        if let Some(lead) = cars.iter_mut().find(|c| c.tm_car == j) {
-            lead.rows += f.rows;
-            lead.drives += f.drives;
-            lead.charges += f.charges;
-            lead.first_ms = match (lead.first_ms, f.first_ms) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
-            lead.last_ms = lead.last_ms.max(f.last_ms);
-            if lead.needs_car && f.first_ms <= lead.first_ms {
-                lead.first_odo_km = f.first_odo_km.or(lead.first_odo_km);
-            }
-            if lead.needs_car && f.last_ms >= lead.last_ms {
-                lead.last_odo_km = f.last_odo_km.or(lead.last_odo_km);
-            }
-        }
-    }
-    for c in cars.iter_mut().filter(|c| c.needs_car && c.joins.is_none()) {
-        let mut merged: Vec<import::teslafi::Spell> = groups
-            .iter()
-            .filter(|g| g.tm_car == c.tm_car || (g.needs_match && g.joins == Some(c.tm_car)))
-            .flat_map(|g| g.spells.iter().copied())
-            .collect();
-        merged.sort_by_key(|s| s.first_ms);
-        let g = import::teslafi::Group { spells: merged, ..Default::default() };
-        c.suggested = crate::rehome::by_name(e, c.name.as_deref(), &g)?;
-    }
-    Ok(())
-}
-
-/// Re-runs TeslaFi's matching over an import's kept files (nothing is read into a car) and moves the rows an
-/// earlier run put on `cars` that the matching now puts elsewhere: to the car of their name their odometer and time
-/// fit ([`crate::rehome::by_name`]), else held for a car to be chosen under `import`. Returns the new check (the
-/// cars as the rows tell them now) and the moves.
-pub fn teslafi_rehome<R: Read, I: IntoIterator<Item = io::Result<(String, R)>>>(
-    e: &Engine,
-    files: TeslafiFiles<R, I>,
-    s: &TeslafiSettings,
-    cars: &[CarId],
-    import: &str,
-) -> Result<(Checked, Vec<crate::rehome::Move>), import::Error> {
-    let sink_err = |x: crate::Error| import::Error::Sink(x.to_string().into());
-    let checked = teslafi_check_files(e, files, s)?;
-    let plan = crate::rehome::rehome_plan(e, &checked.groups).map_err(sink_err)?;
-    let mut moves = Vec::new();
-    for r in plan {
-        if r.spans.is_empty() {
-            continue;
-        }
-        let dest = match r.to {
-            Some(c) => crate::rehome::Dest::Car(c),
-            None => crate::rehome::Dest::Hold(crate::rehome::HoldAs {
-                import: Some(import.to_string()),
-                tm_car: Some(r.tm_car),
-                name: r.name.clone(),
-                first_odo_km: r.first_odo_km,
-                last_odo_km: r.last_odo_km,
-                why: "no_vin".into(),
-                ..Default::default()
-            }),
-        };
-        for &car in cars.iter().filter(|&&c| Some(c) != r.to) {
-            if let Some(m) =
-                crate::rehome::move_rows(e, car, &dest, model::Source::Teslafi, &r.spans).map_err(sink_err)?
-            {
-                moves.push(m);
-            }
-        }
-    }
-    Ok((checked, moves))
-}
-
 /// Checks a whole backup: reads it as the import would and stores nothing.
 pub fn check<R: Read>(e: &Engine, open: impl FnMut() -> io::Result<R>) -> Result<Checked, import::Error> {
     let mut sink =
@@ -501,7 +368,7 @@ pub fn check<R: Read>(e: &Engine, open: impl FnMut() -> io::Result<R>) -> Result
     one_each(&mut sink.cars);
     let pairs: Vec<(BackupCar, Value)> = sink.cars.iter().map(|c| (c.clone(), Value::Null)).collect();
     let json = report_json(&report, &sink.reports, &pairs, false);
-    Ok(Checked { cars: sink.cars, report: json, groups: Vec::new() })
+    Ok(Checked { cars: sink.cars, report: json })
 }
 
 /// What an import run did.
@@ -521,7 +388,12 @@ pub fn run<R: Read>(
     currency: Option<String>,
 ) -> Result<Imported, import::Error> {
     let mut sink = DbSink::new(e);
-    m.apply(&mut sink);
+    for (tm, to) in &m.to {
+        sink.matches.insert(*tm, to.map_or(Match::New, Match::Car));
+    }
+    for tm in &m.leave_out {
+        sink.matches.insert(*tm, Match::LeaveOut);
+    }
     sink.currency = currency;
     let r = import::import(open, &mut sink, &import::Options::default());
     sink.finish();
@@ -669,11 +541,9 @@ pub fn teslafi_check_files<R: Read, I: IntoIterator<Item = io::Result<(String, R
         CountSink { engine: e, stand_in: HashMap::new(), cars: Vec::new(), reports: Vec::new(), zones: HashMap::new() };
     let report = files.import(&mut sink, &teslafi_options(e, s))?;
     one_each(&mut sink.cars);
-    with_groups(e, &mut sink.cars, &report.groups).map_err(|x| import::Error::Sink(x.to_string().into()))?;
-    let pairs: Vec<(BackupCar, Value)> =
-        sink.cars.iter().filter(|c| c.joins.is_none()).map(|c| (c.clone(), Value::Null)).collect();
+    let pairs: Vec<(BackupCar, Value)> = sink.cars.iter().map(|c| (c.clone(), Value::Null)).collect();
     let json = teslafi_report_json(&report, &sink.reports, &pairs, false);
-    Ok(Checked { cars: sink.cars, report: json, groups: report.groups })
+    Ok(Checked { cars: sink.cars, report: json })
 }
 
 /// What a TeslaFi run did.
@@ -682,8 +552,6 @@ pub struct TeslafiImported {
     pub report: import::teslafi::Report,
     pub cars: Vec<CarReport>,
     pub made: Vec<CarId>,
-    /// The lots of rows held for a car to be chosen: (the car of the file, the lot's id).
-    pub held: Vec<(i64, String)>,
 }
 
 /// Imports TeslaFi's export with every car matched.
@@ -704,28 +572,16 @@ pub fn teslafi_run_files<R: Read, I: IntoIterator<Item = io::Result<(String, R)>
     s: &TeslafiSettings,
 ) -> Result<TeslafiImported, import::Error> {
     let mut sink = DbSink::teslafi(e);
-    m.apply(&mut sink);
+    for (tm, to) in &m.to {
+        sink.matches.insert(*tm, to.map_or(Match::New, Match::Car));
+    }
+    for tm in &m.leave_out {
+        sink.matches.insert(*tm, Match::LeaveOut);
+    }
     let r = files.import(&mut sink, &teslafi_options(e, s));
     sink.finish();
     let report = r?;
-    // each lot named as its rows are, with their odometer
-    for (tm, lot) in &sink.held {
-        let members: Vec<&import::teslafi::Group> =
-            report.groups.iter().filter(|g| g.tm_car == *tm || m.joins.get(&g.tm_car) == Some(tm)).collect();
-        let name = members.iter().find_map(|g| g.name.clone());
-        let first =
-            members.iter().filter(|g| g.first_odo_km.is_some()).min_by_key(|g| g.first_ms).and_then(|g| g.first_odo_km);
-        let last =
-            members.iter().filter(|g| g.last_odo_km.is_some()).max_by_key(|g| g.last_ms).and_then(|g| g.last_odo_km);
-        crate::rehome::describe_lot(e.db(), lot, name, (first, last))
-            .map_err(|x| import::Error::Sink(x.to_string().into()))?;
-    }
-    Ok(TeslafiImported {
-        report,
-        cars: std::mem::take(&mut sink.reports),
-        made: std::mem::take(&mut sink.made),
-        held: std::mem::take(&mut sink.held),
-    })
+    Ok(TeslafiImported { report, cars: std::mem::take(&mut sink.reports), made: std::mem::take(&mut sink.made) })
 }
 
 /// A car of the backup may be matched to this car (it exists).
