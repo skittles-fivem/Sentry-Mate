@@ -204,6 +204,8 @@ class Drives(ServerCase):
         word = (rows[3]["end_place"] or rows[3]["end_address"]).split()[0]
         found = self.c.get(f"{base}?limit=500&q={word.upper()}")
         self.assertIn(rows[3], found["items"])
+        gaps = self.c.get(f"{base}?limit=500&gaps=true")
+        self.assertEqual(gaps["total"], pg["continuity"]["gaps"])
         far = self.c.get(f"{base}?limit=3&sort=distance&dir=desc")["items"]
         self.assertEqual(far[0]["distance_km"], max(r["distance_km"] or 0 for r in rows))
         st, hd, raw = self.c.request("GET", f"{base}?format=csv&purpose=commute")

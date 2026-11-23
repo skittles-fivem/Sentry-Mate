@@ -383,6 +383,8 @@ async fn purposes_rules_logbook_and_saved_trips() {
     assert_eq!(biz["total"], 1);
     assert_eq!(biz["items"][0]["drive"], json!(id));
     assert_eq!(ok(&mut watch, &format!("{lbp}?limit=50&q=quarterly")).await["total"], 1);
+    let gaps = ok(&mut watch, &format!("{lbp}?limit=500&gaps=true")).await;
+    assert_eq!(gaps["total"], pg["continuity"]["gaps"]);
     let longest = ok(&mut watch, &format!("{lbp}?limit=1&sort=distance&dir=desc")).await;
     let most = rows.iter().filter_map(|x| x["distance_km"].as_f64()).fold(0.0, f64::max);
     assert_eq!(longest["items"][0]["distance_km"].as_f64(), Some(most));
