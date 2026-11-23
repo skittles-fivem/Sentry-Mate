@@ -149,7 +149,7 @@ Status per page: **PASS**, **WARN** (passes, with missing items under `--allow-m
         toggling: [{ selector, times, first, atMs: [ms], text? }], togglingCount, late: [{ selector, h, atMs, pushed }],
         events: { now, rows, ... }, eventCount, apiRequests, cost, before, after, outlined },
       hover: null | { error } | { targets, points, charts, focused, groups, count, noise, ms, pageMs, shot,
-        findings: [{ n, kind, target, x, y, count, scrolled, scrollbar, moved: [{ selector, dx, dy, dw, dh, box }] }] },
+        findings: [{ n, kind, target, x, y, count, scrolled, scrollbar, stays, moved: [{ selector, dx, dy, dw, dh, box }] }] },
       shot, fullShot, tiles, covered, notes: [text], ms, dropped? }] }] }
 ```
 
@@ -279,7 +279,9 @@ checker, on each ready page (`hover.js`):
 3. after each move compares every box with step 1 and lists the elements that moved or changed size by more than
    0.5 CSS px, only the outermost of those that moved together;
 4. when something moved, moves the mouse away again: the page must be back as it was in step 1 (else the page
-   changed by itself, and step 1 is taken again), and the same hover must move it again. Only then it counts;
+   changed by itself, and step 1 is taken again), and the same hover must move it again. Only then it counts.
+   A page that is not back as it was after three tries in a row counts too (`stays`: the hover moved it for good,
+   for example by scrolling it a pixel each time);
 5. scrolls down by 0.9 of a window and does it again, up to 6 windows down. The scroller is the document, or the
    box that fills most of the window when the document does not scroll (Pebble's `.scroller`).
 
@@ -309,7 +311,7 @@ FAIL  drives  /cars/c1/drives
 
 `hover` in `--json`: `null` without `--hover`, `{ error }` when it could not run, else `{ targets, points, charts,
 focused, groups, count, noise, ms, pageMs, truncated?, shot, findings: [{ n, kind: element | point | chart | focus,
-target, x, y, count, scrolled, scrollbar, moved: [{ selector, dx, dy, dw, dh, box }] }] }`. `count` is every hover
+target, x, y, count, scrolled, scrollbar, stays, moved: [{ selector, dx, dy, dw, dh, box }] }] }`. `count` is every hover
 that moved something; `findings` keeps one per kind of target and what it moved (up to 100). A page stops being
 hovered after 240 s (a `note:` says so).
 
