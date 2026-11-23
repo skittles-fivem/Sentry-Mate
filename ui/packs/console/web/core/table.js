@@ -15,6 +15,9 @@
 //     sort: { key, dir }, onSort({ key, dir }),
 //     rowHref(row), empty(), onPage(page), csv: true | false, csvName,
 //     keep(row),                                 an API list: only the rows it says yes to are shown (and counted)
+//     filters,                                   controls put above the table
+//     autoMore: true, moreLabel,                 an API list: the next page also loads when the end of the table
+//                                                scrolls into view (the "more" button stays, for the keyboard)
 //   });
 //   t.el; await t.ready; t.reload(params); t.rows();
 
@@ -40,14 +43,15 @@ export function table(ctx, opts) {
   const tbody = h('tbody');
   const tfoot = h('tfoot');
   const tbl = h('table', { class: ['tbl', opts.cls], 'aria-label': opts.label || opts.title || null }, thead, tbody, tfoot);
-  const moreBtn = h('button', { class: 'btn', type: 'button', onclick: () => more() }, 'more');
+  const moreBtn = h('button', { class: 'btn', type: 'button', onclick: () => more() }, opts.moreLabel || 'more');
   const foot = h('div', { class: 'tbl-more', hidden: true }, moreBtn);
   const status = h('div', { class: 'tbl-status' });
   const sortSel = h('select', { class: 'in tbl-sortsel', 'aria-label': 'Sort by' });
   const sortLine = h('label', { class: 'tbl-sortline' }, h('span', { class: 'muted' }, 'sort: '), sortSel);
   const sortable = columns.filter((c) => c.sort);
   const note = opts.note ? h('p', { class: 'note tbl-note', cover: opts.noteCover || null }, opts.note) : null;
-  const body = [note, sortable.length ? sortLine : null, h('div', { class: 'tbl-scroll' }, tbl), status, foot];
+  const sentinel = opts.autoMore && !opts.rows ? h('div', { class: 'tbl-sentinel', 'aria-hidden': 'true' }) : null;
+  const body = [note, opts.filters || null, sortable.length ? sortLine : null, h('div', { class: 'tbl-scroll' }, tbl), status, sentinel, foot];
   const el = opts.bare
     ? h('div', { class: ['tbl-wrap', opts.wrapCls] }, body)
     : section({ title: opts.title, cls: ['tbl-sec', opts.wrapCls], id: opts.id || null, side: [opts.side || null, count, csvSlot] }, body);
@@ -193,12 +197,25 @@ export function table(ctx, opts) {
     paintCount(pager.done);
   }
 
+  // the next page when the end of the table comes into view; looked at again after each page, so a tall
+  // window fills up (a page that failed waits for the button)
+  const io = sentinel && typeof IntersectionObserver === 'function'
+    ? new IntersectionObserver((entries) => {
+      if (!ctx.alive()) { io.disconnect(); return; }
+      if (!entries.some((e) => e.isIntersecting) || !pager || pager.done || pager.loading || foot.hidden || moreBtn.disabled) return;
+      more().then(recheck, () => {});
+    }, { rootMargin: '0px 0px 300px 0px' })
+    : null;
+  function recheck() { if (io && ctx.alive() && pager && !pager.done) { io.unobserve(sentinel); io.observe(sentinel); } }
+  if (io) { io.observe(sentinel); ctx.signal?.addEventListener('abort', () => io.disconnect(), { once: true }); }
+
   head();
   const ready = load();
+  ready.then(recheck, () => {});
   ready.catch(() => {});
   return {
     el, ready,
-    reload(p, o) { if (p) params = { ...p }; const r = load(o); r.catch(() => {}); return r; },
+    reload(p, o) { if (p) params = { ...p }; const r = load(o); r.then(recheck, () => {}); return r; },
     setRows(rows) { opts.rows = rows; load(); },
     /** Draw the rows again from what is loaded (a cell's data changed). */
     repaint() { if (opts.rows) paintLocal(); else paintRows(items, true); },

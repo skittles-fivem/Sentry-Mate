@@ -557,6 +557,7 @@ html.is-auth .main { min-height: 100vh; display: flex; align-items: flex-start; 
 .sort-mark { font-size: 0.75em; }
 .ledger-foot { display: flex; justify-content: center; padding-top: round(1.125rem, var(--e)); }
 .ledger-status:empty { display: none; }
+.ledger-sentinel { height: 1px; margin-top: -1px; }
 .cell-main { display: block; font: 400 1.03125rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); text-decoration: none; }
 a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rule-strong); }
 .cell-sub { display: block; font-size: var(--small-2); color: var(--ink-3); margin-top: round(0.1875rem, var(--e)); }
