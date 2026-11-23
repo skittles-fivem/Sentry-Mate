@@ -168,6 +168,15 @@ pub enum Trusted {
     NotSeen,
 }
 
+/// What [`Judge::arrivals`] tells of a car key's logs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Arrivals {
+    pub first_ms: Option<u64>,
+    pub last_ms: Option<u64>,
+    /// Logs waiting for their sidecar.
+    pub waiting: u64,
+}
+
 /// What [`Judge::rejudge_old`] did: failed logs judged again, and how many of them are verified now.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Rejudged {
@@ -493,13 +502,14 @@ pub(crate) struct Mirror {
 
 /// The mirrors kept, the most recently used last.
 struct Mirrors {
-    keys: Vec<(String, Arc<RwLock<Mirror>>)>,
+    /// Each with how many records it holds.
+    keys: Vec<(String, Arc<RwLock<Mirror>>, usize)>,
     budget: usize,
 }
 
 impl Mirrors {
     fn total(&self) -> usize {
-        self.keys.iter().map(|(_, m)| read_lock(m).logs.len()).sum()
+        self.keys.iter().map(|(.., n)| n).sum()
     }
 
     /// Drops the least recently used until all fit (the newest is kept whatever its size: it fit when it was made).
@@ -556,7 +566,7 @@ impl Shared {
     /// The key's mirror, if one is kept (made the most recently used).
     fn mirror(&self, key: &str) -> Option<Arc<RwLock<Mirror>>> {
         let mut m = self.mirrors();
-        let i = m.keys.iter().position(|(k, _)| k == key)?;
+        let i = m.keys.iter().position(|(k, ..)| k == key)?;
         let e = m.keys.remove(i);
         let found = e.1.clone();
         m.keys.push(e);
@@ -569,7 +579,7 @@ impl Shared {
     }
 
     fn forget_mirror(&self, key: &str) {
-        self.mirrors().keys.retain(|(k, _)| k != key);
+        self.mirrors().keys.retain(|(k, ..)| k != key);
     }
 
     /// Changes written to a key's files (the key held): into its mirror when it was of the head before them
@@ -594,8 +604,13 @@ impl Shared {
             }
         }
         g.head = head.clone();
+        let n = g.logs.len();
         drop(g);
-        self.mirrors().trim();
+        let mut all = self.mirrors();
+        if let Some(e) = all.keys.iter_mut().find(|(k, ..)| k == key) {
+            e.2 = n;
+        }
+        all.trim();
     }
 }
 
@@ -840,9 +855,23 @@ impl Ctx {
         Ok(head)
     }
 
-    /// `f` over the key's records with its head (the key held): from its mirror, made now when there is none and
-    /// the key's records fit.
+    /// `f` over the key's records (the key held, `head` read from the files or with changes not written yet): from
+    /// its mirror when that is of the files as they are, else from the files. A mirror is made only by a read
+    /// ([`Judge::read_held`]): from a head as it is on disk, never one with changes not written yet.
     pub(crate) fn view<T>(
+        &self,
+        key: &str,
+        head: &Head,
+        f: impl FnOnce(&View) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        if let Some(m) = self.shared.mirror_of(key, head) {
+            return f(&View::Mem(&read_lock(&m)));
+        }
+        f(&View::Disk(&self.ledger(key), head))
+    }
+
+    /// [`Ctx::view`] for a head just read from the files (the key held): the mirror is made now when there is none.
+    pub(crate) fn view_read<T>(
         &self,
         key: &str,
         head: &Head,
@@ -878,10 +907,11 @@ impl Ctx {
             self.shared.forget_mirror(key);
             return Ok(None);
         }
+        let n = logs.len();
         let m = Arc::new(RwLock::new(Mirror { head: head.clone(), logs }));
         let mut all = self.shared.mirrors();
-        all.keys.retain(|(k, _)| k != key);
-        all.keys.push((key.to_string(), m.clone()));
+        all.keys.retain(|(k, ..)| k != key);
+        all.keys.push((key.to_string(), m.clone(), n));
         all.trim();
         Ok(Some(m))
     }
@@ -1512,6 +1542,25 @@ impl Judge {
         .await
     }
 
+    /// When a car key's first and newest logs arrived and how many wait for their sidecar, from its records (what a
+    /// whole [`Judge::book`] gives, without a copy of every record). All `None` and 0 for a key with nothing here.
+    pub async fn arrivals(&self, key: &str) -> Arrivals {
+        self.read(key, |l, _| {
+            let mut a = Arrivals::default();
+            l.for_each(|_, r| {
+                a.first_ms = Some(a.first_ms.map_or(r.arrived_ms, |t| t.min(r.arrived_ms)));
+                a.last_ms = Some(a.last_ms.map_or(r.arrived_ms, |t| t.max(r.arrived_ms)));
+                if r.status == Status::Waiting {
+                    a.waiting += 1;
+                }
+                ControlFlow::Continue(())
+            })?;
+            Ok(a)
+        })
+        .await
+        .unwrap_or_default()
+    }
+
     /// When a car key's newest log arrived (its upload), `None` before its first (each record read, none kept).
     pub async fn last_arrived(&self, key: &str) -> std::io::Result<Option<u64>> {
         self.read(key, |l, h| {
@@ -1578,7 +1627,7 @@ impl Judge {
             let head = self.take_head(key).await?;
             let (ctx, key_s, f) = (self.ctx(), key.to_string(), f.clone());
             let (head, r) = tokio::task::spawn_blocking(move || {
-                let r = ctx.view(&key_s, &head, |v| f(v, v.head()));
+                let r = ctx.view_read(&key_s, &head, |v| f(v, v.head()));
                 (head, r)
             })
             .await

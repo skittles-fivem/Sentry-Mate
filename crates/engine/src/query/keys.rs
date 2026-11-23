@@ -8,7 +8,6 @@
 
 use super::{CarRef, List, Paging, QResult, QueryError, Scoped, car_of, paginate, scoped};
 use crate::{Engine, records};
-use ingest::judge::Status;
 use ingest::tokens::Token;
 use model::CarId;
 use serde::Serialize;
@@ -75,14 +74,14 @@ fn car_ids(e: &Engine) -> QResult<Vec<CarId>> {
 
 /// A car's key, from its logs' records.
 fn car_key(e: &Engine, car: CarId, preferred: Option<&str>, key: &str, name: Option<String>) -> QResult<KeyRow> {
-    let book = e.handle()?.block_on(e.judge().book(key));
+    let a = e.handle()?.block_on(e.judge().arrivals(key));
     Ok(KeyRow {
         device_label: device_label(key, name.as_deref()),
         device: name,
         key: key.to_string(),
-        first_seen_ms: book.logs.values().map(|r| r.arrived_ms).min(),
-        last_upload_ms: book.logs.values().map(|r| r.arrived_ms).max(),
-        logs_waiting: book.logs.values().filter(|r| r.status == Status::Waiting).count() as u64,
+        first_seen_ms: a.first_ms,
+        last_upload_ms: a.last_ms,
+        logs_waiting: a.waiting,
         car: Some(CarRef(car)),
         preferred: preferred == Some(key),
     })
@@ -203,14 +202,14 @@ pub fn key_row(e: &Engine, key: &str) -> QResult<KeyRow> {
         return car_key(e, car, c.preferred_key.as_deref(), key, name_of(e, key)?);
     }
     let w = e.waiting_keys()?.get(key).cloned();
-    let book = e.handle()?.block_on(e.judge().book(key));
+    let a = e.handle()?.block_on(e.judge().arrivals(key));
     let name = name_of(e, key)?;
     Ok(KeyRow {
         device_label: device_label(key, name.as_deref()),
         device: name,
         key: key.to_string(),
-        first_seen_ms: w.as_ref().map(|w| w.first_seen_ms).or(book.logs.values().map(|r| r.arrived_ms).min()),
-        last_upload_ms: w.as_ref().map(|w| w.last_upload_ms).or(book.logs.values().map(|r| r.arrived_ms).max()),
+        first_seen_ms: w.as_ref().map(|w| w.first_seen_ms).or(a.first_ms),
+        last_upload_ms: w.as_ref().map(|w| w.last_upload_ms).or(a.last_ms),
         logs_waiting: w.map_or(0, |w| w.logs_waiting),
         car: None,
         preferred: false,
@@ -259,7 +258,7 @@ fn tokens(e: &Engine) -> QResult<Vec<(Token, Option<CarId>)>> {
 
 fn row(e: &Engine, t: &Token, car: Option<CarId>) -> QResult<TokenRow> {
     let last = match &t.vehicle_key {
-        Some(k) => e.handle()?.block_on(e.judge().book(k)).logs.values().map(|r| r.arrived_ms).max(),
+        Some(k) => e.handle()?.block_on(e.judge().arrivals(k)).last_ms,
         None => None,
     };
     let device = match &t.vehicle_key {
