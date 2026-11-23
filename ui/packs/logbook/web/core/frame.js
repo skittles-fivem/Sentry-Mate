@@ -9,6 +9,7 @@
 
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
+import { clearServiceWorker } from '../shared/offline.js';
 import * as state from '../shared/state.js';
 import { formatTime, zoneName } from '../shared/time.js';
 import { GROUPS, PAGES, findPages, groupOf } from './pages.js';
@@ -119,6 +120,7 @@ function accountMenu() {
 
 async function signOut() {
   try { await api.del('session'); } catch { /* signed out either way */ }
+  await clearServiceWorker();
   flash('Signed out.', { kind: 'info', next: true });
   location.assign('/sign-in');
 }
