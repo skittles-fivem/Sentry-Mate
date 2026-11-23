@@ -7,7 +7,10 @@
 //!   their charge curves, the car's states and its software updates, two geofences;
 //! - a **TeslaFi import** over the first weeks (a point a minute), overlapping the TeslaMate one;
 //! - **TeslaFi's API** and **local TeslaMate** as live inputs over the last weeks (through the engine's own input,
-//!   built into the timeline like a poll).
+//!   built into the timeline like a poll);
+//! - the **Tesla API** as a live input over the same weeks, shaped like the real one ([`tesla_day`]): the stream's
+//!   records about every second while driving, `vehicle_data` every 60 s while awake and every 30 s while charging,
+//!   nothing while asleep, each value with the digits the API gives it, converted as `tesla::convert` does.
 //!
 //! SMO's CAN logs come from `dev seed` (run first, with `--start` near the end of this history): the import goes to
 //! the made-up car it made, matched by its VIN.
@@ -42,6 +45,8 @@ pub struct Options {
     pub teslafi_days: u32,
     /// Days of TeslaFi's API and local TeslaMate, live, before `end_ms`.
     pub api_days: u32,
+    /// Days of the Tesla API, live, before `end_ms`.
+    pub tesla_days: u32,
 }
 
 impl Options {
@@ -57,6 +62,8 @@ impl Options {
             drive_step_s: 1,
             teslafi_days: 60,
             api_days: 30,
+            // (the pages' timings were taken without it)
+            tesla_days: 0,
         }
     }
 }
@@ -71,6 +78,7 @@ pub struct Counts {
     pub updates: u64,
     pub teslafi_positions: u64,
     pub api_samples: u64,
+    pub tesla_samples: u64,
 }
 
 /// A small deterministic generator (xorshift).
@@ -368,6 +376,122 @@ fn point_as_stored(p: &mut ChargePoint) {
     decimals(&mut p.battery_temp_c, 1);
 }
 
+/// As `tesla::convert` has it.
+const KM_PER_MILE: f64 = 1.609_344;
+
+/// A distance as the Tesla API gives it and `tesla::convert` reads it: miles written with `k` decimals, read as a
+/// number, times the kilometres in a mile.
+fn from_miles(km: Option<f64>, k: usize) -> Option<f64> {
+    let text = format!("{:.k$}", km? / KM_PER_MILE);
+    text.parse::<f64>().ok().map(|mi| mi * KM_PER_MILE)
+}
+
+/// A value written with `k` decimals and read back, as a JSON number is.
+fn written(v: Option<f64>, k: usize) -> Option<f64> {
+    format!("{:.k$}", v?).parse().ok()
+}
+
+/// One `vehicle_data` answer for the car as `s` has it, at `t`: what `tesla::convert::reading` makes of one. Miles
+/// with the API's digits (the odometer 6, the ranges 2, a whole mph), whole kW, V, A and battery level, 0.1 °C,
+/// the tyres in bar at the 0.025 bar the car measures in.
+fn tesla_reading(rng: &mut Rng, s: &Sample, t: u64) -> Sample {
+    let driving = matches!(s.gear, Some(Gear::D | Gear::R | Gear::N));
+    let charging = s.charging == Some(true);
+    let tyre = |rng: &mut Rng, base: f64| written(Some(base + (rng.next() % 3) as f64 * 0.025), 3);
+    let tpms_bar = [tyre(rng, 2.875), tyre(rng, 2.875), tyre(rng, 2.85), tyre(rng, 2.85)];
+    Sample {
+        t_ms: t,
+        lat: s.lat,
+        lon: s.lon,
+        // parked: the API's speed and gear are null
+        speed_kmh: if driving { from_miles(s.speed_kmh, 0) } else { None },
+        gear: if driving { s.gear } else { None },
+        odometer_km: from_miles(s.odometer_km, 6),
+        soc: written(s.soc, 0),
+        range_km: from_miles(s.range_km, 2),
+        ideal_range_km: from_miles(s.ideal_range_km, 2),
+        battery_power_kw: written(s.battery_power_kw.or(Some(0.0)), 0),
+        outside_temp_c: written(s.outside_temp_c, 1),
+        inside_temp_c: written(s.inside_temp_c.map(|c| c + (rng.next() % 5) as f64 * 0.1), 1),
+        charging: Some(charging),
+        charge_kind: if charging { s.charge_kind } else { None },
+        charge_power_kw: if charging { written(s.charge_power_kw, 0) } else { None },
+        charger_voltage_v: if charging {
+            Some(if s.charge_kind == Some(ChargeKind::Dc) { 390.0 } else { 238.0 + (rng.next() % 5) as f64 })
+        } else {
+            None
+        },
+        charger_current_a: if charging {
+            Some(if s.charge_kind == Some(ChargeKind::Dc) { 0.0 } else { 32.0 })
+        } else {
+            None
+        },
+        tpms_bar,
+        extra: model::SampleExtra { tires_mapped: Some(true), ..model::SampleExtra::default() },
+        ..Sample::default()
+    }
+}
+
+/// One record of the Tesla API's stream for the car as `s` has it: what `tesla::stream::parse_record` makes of one
+/// (a whole mph, the odometer in miles with one decimal, whole battery level, metres, kW and miles of range).
+fn tesla_record(s: &Sample) -> Sample {
+    Sample {
+        t_ms: s.t_ms,
+        lat: s.lat,
+        lon: s.lon,
+        speed_kmh: from_miles(s.speed_kmh, 0),
+        odometer_km: from_miles(s.odometer_km, 1),
+        soc: written(s.soc, 0),
+        elevation_m: written(s.elevation_m, 0),
+        battery_power_kw: written(s.battery_power_kw, 0),
+        gear: s.gear,
+        range_km: from_miles(s.range_km, 0),
+        ..Sample::default()
+    }
+}
+
+/// A day as the Tesla API input gets it, from the day's samples made every second while driving and every 30 s
+/// while charging: the stream's records while driving (a record missing now and then) with a `vehicle_data` answer
+/// about every 60 s joined in, an answer about every 30 s while charging, and one every 60 s while the car is awake
+/// and parked (the minutes before and after a drive or a charge); nothing while it sleeps.
+fn tesla_day(rng: &mut Rng, d: &Day) -> Vec<Sample> {
+    let mut out: std::collections::BTreeMap<u64, Sample> = std::collections::BTreeMap::new();
+    let mut next_poll = 0u64;
+    for s in &d.samples {
+        if s.charging.is_some() {
+            // a charge: answers only, a second early or late
+            let t = s.t_ms + (rng.next() % 3) * S;
+            out.insert(t, tesla_reading(rng, s, t));
+            continue;
+        }
+        if s.t_ms >= next_poll {
+            // the answer's values win over the record's of the same second; the record's elevation stays
+            let mut r = tesla_reading(rng, s, s.t_ms);
+            r.elevation_m = written(s.elevation_m, 0);
+            out.insert(s.t_ms, r);
+            next_poll = s.t_ms + 58 * S + (rng.next() % 5) * S;
+        } else if !rng.next().is_multiple_of(20) {
+            out.insert(s.t_ms, tesla_record(s));
+        }
+    }
+    // awake and parked: the car as the nearest sample has it
+    for span in d.states.iter().filter(|s| s.state == State::Online) {
+        let mut t = span.start_ms - span.start_ms % S;
+        while t < span.end_ms {
+            let near = out.range(t.saturating_sub(45 * S)..t + 45 * S).next().is_some();
+            let i = d.samples.partition_point(|s| s.t_ms <= t);
+            if let (false, Some(s)) = (near, d.samples.get(i.saturating_sub(1))) {
+                let mut parked = s.clone();
+                (parked.gear, parked.speed_kmh, parked.charging) = (None, None, None);
+                parked.battery_power_kw = Some(0.0);
+                out.insert(t, tesla_reading(rng, &parked, t));
+            }
+            t += 59 * S + (rng.next() % 3) * S;
+        }
+    }
+    out.into_values().collect()
+}
+
 /// Walks the events of `[from, to)` a day at a time (the car's state carried from day to day).
 fn each_day(
     c: &mut Car0,
@@ -645,6 +769,31 @@ pub async fn run(e: &Engine, o: &Options) -> Result<Counts, Box<dyn std::error::
             })?;
             e.idle().await;
         }
+    }
+    if o.tesla_days > 0 {
+        let a = o.end_ms.saturating_sub(u64::from(o.tesla_days) * DAY).max(from);
+        let mut c = start(o.seed + 2);
+        let mut rng = Rng(o.seed.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1);
+        each_day(&mut c, &events, a, o.end_ms, S, 30 * S, |day, d| {
+            let samples: Vec<Sample> =
+                tesla_day(&mut rng, &d).into_iter().filter(|s| (day..day + DAY).contains(&s.t_ms)).collect();
+            counts.tesla_samples += samples.len() as u64;
+            let facts = d
+                .states
+                .iter()
+                .filter(|s| s.state == State::Online)
+                .map(|s| ApiSpan {
+                    start_ms: s.start_ms,
+                    end_ms: s.end_ms,
+                    state: ApiState::Online,
+                    data: true,
+                    inputs: Inputs::NONE,
+                })
+                .collect();
+            e.feed_points(Input::TeslaApi, car.id, samples, facts);
+            Ok(())
+        })?;
+        e.idle().await;
     }
     e.idle().await;
     let _: CarId = car.id;

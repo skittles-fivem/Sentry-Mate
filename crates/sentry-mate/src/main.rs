@@ -218,8 +218,9 @@ enum DevCmd {
         start: Option<u64>,
     },
     /// A long made-up history for the first car (or a new one): a TeslaMate import of about a year (about 3 million
-    /// positions), a TeslaFi import, and TeslaFi's API and local TeslaMate as live inputs over its last weeks. Run
-    /// after `dev seed` (its car gets the history). For timing the pages (docs/plans/performance.md).
+    /// positions), a TeslaFi import, and TeslaFi's API, local TeslaMate and the Tesla API as live inputs over its
+    /// last weeks. Run after `dev seed` (its car gets the history). For timing the pages
+    /// (docs/plans/performance.md).
     History {
         /// The day the history ends (YYYY-MM-DD, UTC, not included).
         #[arg(long, value_parser = seed::parse_day)]
@@ -237,6 +238,9 @@ enum DevCmd {
         teslafi_days: u32,
         #[arg(long, default_value_t = 30)]
         api_days: u32,
+        /// Days of the Tesla API as a live input, before the end.
+        #[arg(long, default_value_t = 30)]
+        tesla_days: u32,
         #[arg(long, default_value_t = 1)]
         seed: u64,
     },
@@ -616,7 +620,9 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
             seed::run(&store, &judge, &tokens, &o, &enter, &mut std::io::stdout()).await?;
         }
         #[cfg(feature = "dev-seed")]
-        Cmd::Dev { cmd: DevCmd::History { end, days, drives, charges, drive_step, teslafi_days, api_days, seed } } => {
+        Cmd::Dev {
+            cmd: DevCmd::History { end, days, drives, charges, drive_step, teslafi_days, api_days, tesla_days, seed },
+        } => {
             let _lock = take_server_lock(&data).await?;
             let v = Arc::new(Vault::open(&data, &keys)?);
             refuse_writes(&data, &v)?;
@@ -632,6 +638,7 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
                 drive_step_s: drive_step.max(1),
                 teslafi_days,
                 api_days,
+                tesla_days,
             };
             let t = Instant::now();
             let c = history::run(&engine, &o).await?;
