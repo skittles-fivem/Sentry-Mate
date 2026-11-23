@@ -11,10 +11,12 @@
 //! | `GET /integrations/tesla/status` | what each car's poller is doing |
 //!
 //! All admin only, reads included (the guard: `/integrations` is in `policy::ADMIN_READS`). Every change but the
-//! sign-in start asks for the admin's own password again (`confirm_password` or the `X-Sentry-Mate-Password`
-//! header) and, when the admin has two-step sign-in on, a code (`code` or `X-Sentry-Mate-Code`), and writes its own
-//! audit entry. No answer ever holds a Tesla token, a VIN serial or the account's e-mail: the [`tesla`] crate keeps
-//! the tokens sealed and never hands them out, and the answers here are built from its token-free `Account`.
+//! sign-in start and the car matches asks for the admin's own password again (`confirm_password` or the
+//! `X-Sentry-Mate-Password` header) and, when the admin has two-step sign-in on, a code (`code` or
+//! `X-Sentry-Mate-Code`); the car matches take the admin session alone (they store and reveal no token). Every change
+//! writes its own audit entry. No answer ever holds a Tesla token, a VIN serial or the account's e-mail: the
+//! [`tesla`] crate keeps the tokens sealed and never hands them out, and the answers here are built from its
+//! token-free `Account`.
 //!
 //! Nothing connects to Tesla until an admin adds an account: the service builds no client before that
 //! (`clients_built` says how many it built), and a server that starts with no account starts no poller.
@@ -675,10 +677,9 @@ async fn put_cars(
     State(app): State<AppState>,
     Admin(v): Admin,
     Path(id): Path<String>,
-    headers: HeaderMap,
     body: JsonBody,
 ) -> ApiResult<Json<Value>> {
-    body.only(&["version", "items", "confirm_password", "code"])?;
+    body.only(&["version", "items"])?;
     let version = body.version()?;
     let Some(Value::Array(items)) = body.get("items") else {
         return Err(ApiError::bad_input("items", "Required: a list of { vehicle, match }."));
@@ -736,7 +737,6 @@ async fn put_cars(
         changes.push((vehicle.to_string(), m));
     }
     bad.invalid()?;
-    reconfirm(&app, &v, &body, &headers).await?;
     let after = {
         let (s, id, ch) = (s.clone(), id.clone(), changes.clone());
         app.blocking(move |_| s.set_matches(&id, version, &ch).map_err(|e| failed(&s, Some(&id), e))).await?

@@ -19,7 +19,9 @@ Made-up data only: hosts `192.0.2.x`, made-up VINs (as `crates/import/tests/fixt
 - Audit actions: `teslamate-local-added`, `teslamate-local-changed`, `teslamate-local-paused`,
   `teslamate-local-resumed`, `teslamate-local-car-matched`, `teslamate-local-removed`. None holds a password.
 
-## API (admin only, reads included; every change takes `confirm_password` and `code?` like TeslaFi)
+## API (admin only, reads included; PUT, PATCH and DELETE take `confirm_password` and `code?` like TeslaFi)
+
+The test and the car matches take the admin session alone (they store and show no password).
 
 `/api/v1/integrations/teslamate` GET, PUT, PATCH, DELETE
 
@@ -61,12 +63,12 @@ GET answers TeslamateLocal:
 - **PATCH** `{ version, paused, confirm_password, code? }`.
 - **DELETE** (body `{ confirm_password, code? }`) stops at once and deletes the sealed file: `{ deleted: true }`.
   History already stored stays.
-- `/api/v1/integrations/teslamate/test` POST `{ target: "mqtt" | "database", mqtt?, database?, confirm_password,
-  code? }`: tries the draft (or the saved settings when no draft; a draft without `password` and the same host/port/tls
-  uses the saved one) and answers `{ ok, error, message, latency_ms, at_ms, cars_seen }` (`cars_seen`: the TeslaMate
-  car ids seen in a few seconds on MQTT, or in the `cars` table). Subscribes only; publishes nothing.
+- `/api/v1/integrations/teslamate/test` POST `{ target: "mqtt" | "database", mqtt?, database? }`: tries the draft
+  (or the saved settings when no draft; a draft without `password` and the same host/port/tls uses the saved one) and
+  answers `{ ok, error, message, latency_ms, at_ms, cars_seen }` (`cars_seen`: the TeslaMate car ids seen in a few
+  seconds on MQTT, or in the `cars` table). Subscribes only; publishes nothing.
 - `/api/v1/integrations/teslamate/cars` GET `{ items: [car], version }`, PUT `{ version, items: [{ teslamate_car,
-  match }], confirm_password, code? }`; `409 car_taken` when that car here is matched to another TeslaMate car.
+  match }] }`; `409 car_taken` when that car here is matched to another TeslaMate car.
 - `/system/health` gains `teslamate_local: { enabled, mqtt_state, database_state, cars, last_message_ms, last_sync_ms }`.
 
 ## MQTT

@@ -6,9 +6,9 @@ starts with `refused` plays one TeslaFi refuses (`422 teslafi_refused`: a wrong 
 one that starts with `unreachable` plays TeslaFi being down (`502 teslafi_unreachable`), one that starts with
 `same-car` a car already on another TeslaFi account here (`409 account_exists`).
 
-Every change asks for the admin's own password again (`confirm_password` or the `X-Sentry-Mate-Password` header)
-and, for an admin with two-step sign-in on, a code (the dev code is 000000), like the real server. No answer ever
-holds a token.
+Every change but the car matches asks for the admin's own password again (`confirm_password` or the
+`X-Sentry-Mate-Password` header) and, for an admin with two-step sign-in on, a code (the dev code is 000000), like
+the real server; the car matches take the admin session alone. No answer ever holds a token.
 """
 
 from __future__ import annotations
@@ -351,7 +351,7 @@ def get_cars(req):
 
 def put_cars(req):
     body = req.json()
-    _only(body, ("version", "items", "confirm_password", "code"))
+    _only(body, ("version", "items"))
     a = _account(req)
     rows = body.get("items")
     if not isinstance(rows, list) or not all(isinstance(x, dict) for x in rows):
@@ -384,7 +384,6 @@ def put_cars(req):
         changes.append((v, m))
     if bad:
         raise invalid(bad)
-    reconfirm(req, body)
     with st.lock:
         req.version_check(a["version"])
         taken = {c["match"] for o in st.teslafi["accounts"].values() if o["id"] != a["id"] for c in o["cars"]

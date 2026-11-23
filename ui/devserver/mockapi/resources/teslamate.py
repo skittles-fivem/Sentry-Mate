@@ -10,9 +10,10 @@ plays a certificate with another fingerprint (`pin_mismatch`); a database named 
 
 The plain text rule: a password (new or kept) with `tls: false` needs `allow_unencrypted: true`
 (`422 plaintext_password`); without a password plain TCP is allowed. A kept password goes only to the host it was
-typed for (`422 password_resend`). Every change asks for the admin's own password again (`confirm_password` or the
-`X-Sentry-Mate-Password` header) and, with two-step sign-in on, a code (the dev code is 000000), like TeslaFi. No
-answer ever holds a password.
+typed for (`422 password_resend`). Adding, replacing, pausing or removing the settings asks for the admin's own
+password again (`confirm_password` or the `X-Sentry-Mate-Password` header) and, with two-step sign-in on, a code (the
+dev code is 000000), like TeslaFi; a test and the car matches take the admin session alone. No answer ever holds a
+password.
 """
 
 from __future__ import annotations
@@ -397,7 +398,7 @@ def delete(req):
 
 def test(req):
     body = req.json()
-    _only(body, ("target", "mqtt", "database", "confirm_password", "code"))
+    _only(body, ("target", "mqtt", "database"))
     target = body.get("target")
     if target not in ("mqtt", "database"):
         raise bad_input({"target": "Must be mqtt or database."})
@@ -410,7 +411,6 @@ def test(req):
     s = _draft(t, {target: draft}, (target,))[target]
     if target == "database" and draft is None and not s["host"]:
         raise bad_input({"database": "Send the settings to try: no database is saved yet."})
-    reconfirm(req, body)
     code = _try(s, target)
     lat = 3 + len(s["host"] or "") % 7
     if code:
@@ -429,7 +429,7 @@ def get_cars(req):
 
 def put_cars(req):
     body = req.json()
-    _only(body, ("version", "items", "confirm_password", "code"))
+    _only(body, ("version", "items"))
     t = _t(req)
     _added(t)
     rows = body.get("items")
@@ -463,7 +463,6 @@ def put_cars(req):
         changes.append((v, m))
     if bad:
         raise invalid(bad)
-    reconfirm(req, body)
     with st.lock:
         req.version_check(t["version"])
         after = {c["teslamate_car"]: c["match"] for c in t["cars"]}

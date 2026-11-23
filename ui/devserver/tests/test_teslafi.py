@@ -71,10 +71,10 @@ class Teslafi(ServerCase):
         aid = a["id"]
         # the car is taken by fa1: refused; a new car is fine
         self.c.error("PUT", f"{BASE}/accounts/{aid}/cars", 409, "car_taken",
-                     body={"version": a["version"], "items": [{"vehicle": "fv1", "match": "c3"}], "confirm_password": PW})
+                     body={"version": a["version"], "items": [{"vehicle": "fv1", "match": "c3"}]})
+        # the admin's session alone: no password asked again
         cars = self.c.json("PUT", f"{BASE}/accounts/{aid}/cars",
-                           {"version": a["version"], "items": [{"vehicle": "fv1", "match": "new"}],
-                            "confirm_password": PW})
+                           {"version": a["version"], "items": [{"vehicle": "fv1", "match": "new"}]})
         self.assertEqual(cars["items"][0]["match"], "new")
         a = self.c.json("PATCH", f"{BASE}/accounts/{aid}",
                         {"version": cars["version"], "paused": True, "time_zone": "Europe/Oslo", "confirm_password": PW})
@@ -115,7 +115,8 @@ class TeslafiWatch(ServerCase):
 
     def test_admin_only(self):
         for m, path in (("GET", BASE), ("GET", BASE + "/accounts"), ("GET", BASE + "/accounts/fa1"),
-                        ("GET", BASE + "/accounts/fa1/cars"), ("GET", BASE + "/status"),
+                        ("GET", BASE + "/accounts/fa1/cars"), ("PUT", BASE + "/accounts/fa1/cars"),
+                        ("GET", BASE + "/status"),
                         ("POST", BASE + "/accounts"), ("DELETE", BASE + "/accounts/fa1")):
             self.c.error(m, path, 403, "not_allowed", body={} if m != "GET" else None)
         self.assertFalse([n for n in self.c.get("/api/v1/notices")["items"] if n["code"].startswith("teslafi")])
