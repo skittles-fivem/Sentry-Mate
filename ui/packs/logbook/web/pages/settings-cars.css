@@ -80,6 +80,11 @@
 .page-settings-cars .sc-fs-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: round(0.75rem, var(--e)); align-items: end; padding-bottom: round(0.75rem, var(--e)); border-bottom: 1px dotted var(--rule-strong); }
 .page-settings-cars .sc-fs-row .field-input { width: 100%; }
 .page-settings-cars .sc-fs-status { grid-column: 1 / -1; font-size: var(--text-s); color: var(--ink-3); }
+/* the default price per kWh */
+.page-settings-cars .sc-dp-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, round(6rem, var(--e))) auto; gap: round(0.75rem, var(--e)); align-items: end; }
+.page-settings-cars .sc-dp-row .field-input { width: 100%; }
+.page-settings-cars .sc-dp-cur .field-input { text-transform: uppercase; }
+.page-settings-cars .sc-dp-acts { display: flex; gap: round(0.75rem, var(--e)); }
 .page-settings-cars .sc-fs-note { display: flex; gap: round(0.5rem, var(--e)); align-items: flex-start; font-size: var(--text-s); color: var(--ink-2); padding: round(0.5rem, var(--e)) round(0.75rem, var(--e)); border-left: 3px solid var(--ochre); background: var(--ochre-wash); border-radius: round(0.1875rem, var(--e)); max-width: 60ch; }
 .page-settings-cars .sc-fs-note[hidden] { display: none; }
 .page-settings-cars .sc-fs-note .icon { flex: none; margin-top: round(0.125rem, var(--e)); color: var(--ochre); }
@@ -117,6 +122,8 @@
 
 @container page (width < 50rem) {
   .page-settings-cars .sc-fs-row { grid-template-columns: minmax(0, 1fr); }
+  .page-settings-cars .sc-dp-row { grid-template-columns: minmax(0, 1fr) minmax(0, round(6rem, var(--e))); }
+  .page-settings-cars .sc-dp-acts { grid-column: 1 / -1; }
   .sc-token-fields { grid-template-columns: minmax(0, 1fr); }
 }
 

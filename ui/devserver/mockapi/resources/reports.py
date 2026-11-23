@@ -14,6 +14,7 @@ from .. import derive
 from ..conventions import page
 from ..errors import bad_input
 from ..placing import eff_pid, place_obj, ref
+from ..rows import charge_estimate
 from ..util import DAY, local_date, local_ms, r
 from .battery import bms_full
 from .charges import cached_charge_row
@@ -121,7 +122,9 @@ def _money(d):
 
 
 def stat_rows(req, h, kind, a, b):
-    key = (kind, a, b, req.store.rev, derive.started(h, req.now), req.now // 10_000)
+    # the car's settings (its default price per kWh) and the places' prices change the estimates
+    sv = (req.store.car_settings.get(h.car.id) or {}).get("version")
+    key = (kind, a, b, req.store.rev, req.store.places_rev, sv, derive.started(h, req.now), req.now // 10_000)
     return derive.memo(req.app, f"stats:{h.car.id}", key, lambda: _stat_rows(req, h, kind, a, b))
 
 
@@ -135,7 +138,7 @@ def _stat_rows(req, h, kind, a, b):
         return []
     bk = Buckets(ps)
     acc = [{"ms": 0, "drives": 0, "km": 0.0, "kwh": 0.0, "temp_w": 0.0, "temp_ms": 0, "added": 0.0, "grid": 0.0,
-            "charges": 0, "cost": {}, "basis": {}, "stand": 0.0, "unknown": 0, "dropped": 0, "open_drive": False,
+            "charges": 0, "cost": {}, "basis": {}, "priced": 0, "estimated": 0, "est": {}, "stand": 0.0, "unknown": 0, "dropped": 0, "open_drive": False,
             "open_charge": False, "tm": 0} for _ in ps]
     for d in derive.shown_drives(h, lo, end, req.now):
         i = bk.index(d.start)
@@ -162,7 +165,13 @@ def _stat_rows(req, h, kind, a, b):
         g["charges"] += 1
         g["added"] += x["energy_added_kwh"] or 0
         g["grid"] += x["energy_grid_kwh"] or 0
+        if not x["cost"]:
+            e = charge_estimate(req.app, car.id, c, x, req.now)
+            if e is not None:
+                g["estimated"] += 1
+                g["est"][e["currency"]] = g["est"].get(e["currency"], 0.0) + e["amount"]
         if x["cost"]:
+            g["priced"] += 1
             cur = x["cost"]["currency"]
             g["cost"][cur] = g["cost"].get(cur, 0.0) + x["cost"]["amount"]
             if x["price_per_kwh"]:
@@ -185,12 +194,16 @@ def _stat_rows(req, h, kind, a, b):
     for (ps_, pe_, lab), g in zip(ps, acc):
         o0, o1 = derive.odo_at(h, ps_), derive.odo_at(h, pe_ - 1)
         span = max(1, pe_ - ps_)
+        total = dict(g["cost"])
+        for k, v in g["est"].items():
+            total[k] = total.get(k, 0.0) + v
+        days = max(1.0, (pe_ - ps_) / DAY)
         net = g["kwh"] / g["km"] * 1000 if g["km"] > 0.1 else None
         gross = (g["kwh"] + g["stand"]) / g["km"] * 1000 if g["km"] > 0.1 else None
         rows.append({
             "car": car.id, "time_zone": tz, "period_start_ms": ps_, "period_end_ms": pe_, "label": lab,
             "time_driven_ms": g["ms"], "drives": g["drives"],
-            "distance_odometer_km": r(o1 - o0, 3) if o0 is not None and o1 is not None else None,
+            "distance_odometer_km": r(max(0.0, o1 - o0), 3) if o0 is not None and o1 is not None else None,
             "distance_logged_km": r(g["km"], 3),
             "outside_avg_c": r(g["temp_w"] / g["temp_ms"], 1) if g["temp_ms"] else None,
             "driving_efficiency_pct": r(car.rated_wh_per_km / net * 100, 1) if net else None,
@@ -202,11 +215,19 @@ def _stat_rows(req, h, kind, a, b):
                               for k, v in sorted(g["cost"].items()) if g["basis"].get(k)],
             "cost_per_100km": [{"currency": k, "amount": round(v / g["km"] * 100, 2)}
                                for k, v in sorted(g["cost"].items())] if g["km"] > 1 else [],
+            "charges_priced": g["priced"], "charges_estimated": g["estimated"],
+            "cost_estimated_by_currency": _money(g["est"]),
+            "cost_total_by_currency": _money(total),
+            "cost_total_per_100km": [{"currency": k, "amount": round(v / g["km"] * 100, 2)}
+                                     for k, v in sorted(total.items())] if g["km"] > 1 else [],
+            "cost_total_per_day": [{"currency": k, "amount": round(v / days, 2)} for k, v in sorted(total.items())],
             "net_wh_per_km": r(net, 1), "gross_wh_per_km": r(gross, 1),
             "overhead_pct": r((gross - net) / net * 100, 1) if net and gross else None,
             "completeness": {"recorded_pct": r(100 * (span - g["unknown"]) / span, 2), "unknown_ms": g["unknown"],
                              "dropped_stretches": g["dropped"], "open_drive": g["open_drive"],
-                             "open_charge": g["open_charge"], "teslamate_rows": g["tm"]},
+                             "open_charge": g["open_charge"], "teslamate_rows": g["tm"],
+                             # the made-up odometer is one clean monotonic series per car: nothing to drop
+                             "odometer_dropped": 0},
         })
     return rows
 
