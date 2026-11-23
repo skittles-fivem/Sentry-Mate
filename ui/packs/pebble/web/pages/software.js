@@ -123,7 +123,7 @@ export async function mount(ctx) {
           !r.version ? chip('Version not known', { tone: 'sun' }) : null)),
       fp ? namedLine(r) : null,
       h('div', { class: 'tile-nums sw-nums' },
-        h('div', { cover: 'updates.table.duration' }, h('span', { class: 'hero-k' }, going ? 'So far' : fp ? 'Window' : 'Took'), num(r.duration_ms, 'duration', { size: 's' })),
+        h('div', { cover: 'updates.table.duration' }, h('span', { class: 'hero-k' }, going ? 'So far' : fp ? 'Window' : 'Took'), num(r.duration_ms, 'duration', { size: 's', why: r.readings_gap ? 'no readings in between' : null })),
         h('div', { cover: 'updates.table.since_previous' }, h('span', { class: 'hero-k' }, 'After the one before'), num(r.since_previous_ms, 'duration', { size: 's', why: 'first one recorded' })),
         h('div', { cover: 'updates.table.charge_count' }, h('span', { class: 'hero-k' }, 'Charges on it'),
           r.charges ? h('a', { class: 'sw-link', href: state.buildUrl('charges', { car: car.id, period: onVersion(r) }) }, formatNumber(r.charges)) : h('span', { class: 'sw-link is-zero' }, '0')),

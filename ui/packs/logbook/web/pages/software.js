@@ -233,7 +233,8 @@ export async function mount(ctx) {
       key: 'duration', label: 'Took', num: true, cover: 'updates.table.duration', hint: 'From the start of the update to its end (the car’s own update status, or the module builds changing).',
       cell: (r) => (r.end_ms == null
         ? h('div', { class: 'cell-main' }, flag('Installing', { kind: 'warn' }), h('span', { class: 'cell-sub' }, `${formatDuration(r.duration_ms)} so far`))
-        : h('div', { class: 'cell-main' }, formatDuration(r.duration_ms), h('span', { class: 'cell-sub' }, `ended ${formatTime(r.end_ms, tz)}`))),
+        : r.readings_gap ? h('div', { class: 'cell-main', title: 'No fingerprint readings for a day or more before the new ones: when it was installed in there is not known' }, h('span', { class: 'sw-faint' }, 'not known'), h('span', { class: 'cell-sub' }, `seen ${formatTime(r.end_ms, tz)}`))
+          : h('div', { class: 'cell-main' }, formatDuration(r.duration_ms), h('span', { class: 'cell-sub' }, `ended ${formatTime(r.end_ms, tz)}`))),
       value: (r) => r.duration_ms,
     },
     {
@@ -308,8 +309,8 @@ export async function mount(ctx) {
   async function neighbours(rows) {
     await Promise.all(rows.filter((r) => !near.has(r.id)).map(async (r) => {
       const [b, a] = await Promise.all([
-        ctx.api.get(drivesPath, { to_ms: r.start_ms, limit: 1 }).catch(() => null),
-        ctx.api.get(drivesPath, { from_ms: r.end_ms, sort: 'start', dir: 'asc', limit: 1 }).catch(() => null),
+        ctx.api.get(drivesPath, { to_ms: r.between_ms ? r.between_ms[0] : r.start_ms, limit: 1 }).catch(() => null),
+        ctx.api.get(drivesPath, { from_ms: r.between_ms ? r.between_ms[1] : r.end_ms, sort: 'start', dir: 'asc', limit: 1 }).catch(() => null),
       ]);
       near.set(r.id, { before: (b && b.items && b.items[0]) || null, after: (a && a.items && a.items[0]) || null, failed: !b || !a });
     }));
@@ -398,7 +399,7 @@ export async function mount(ctx) {
       nameBox,
       h('dl', { class: 'sw-fp-facts' },
         h('div', null, h('dt', null, 'Installed between'), h('dd', null, `${formatDateTime(btw[0], tz, { now: api.now() })} and ${formatDateTime(btw[1], tz, { now: api.now() })}`,
-          h('span', { class: 'sw-faint' }, ' (last old, first new fingerprint)'))),
+          h('span', { class: 'sw-faint' }, r.readings_gap ? ' (no readings in between)' : ' (last old, first new fingerprint)'))),
         h('div', null, h('dt', null, 'After the drive'), h('dd', null, driveLine(nb.before, nb.failed ? 'could not be loaded' : 'no drive before it'))),
         h('div', null, h('dt', null, 'Before the drive'), h('dd', null, driveLine(nb.after, nb.failed ? 'could not be loaded' : r.until_ms == null ? 'no drive since' : 'none')))),
       changes.length
