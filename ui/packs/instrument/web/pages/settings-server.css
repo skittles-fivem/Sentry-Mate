@@ -85,6 +85,13 @@
 
 /* the account dialog */
 .ss-carpick { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); margin-top: round(0.5rem, var(--e)); }
+/* the audit log scrolls in a box of five rows (the header and five rows; on a phone about three cards),
+   high from the start; the next entries load as its end comes near, and a fade at the bottom says more are
+   under it */
+.ss-audit .tbl-box { height: calc(round(2.625rem, var(--e)) + 1px + 5 * (round(3.375rem, var(--e)) + 1px)); overflow-y: auto; scrollbar-gutter: stable; }
+.ss-audit .tbl-box[data-below] { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - round(2.5rem, var(--e))), rgb(0 0 0 / 0.2)); mask-image: linear-gradient(to bottom, #000 calc(100% - round(2.5rem, var(--e))), rgb(0 0 0 / 0.2)); }
+.ss-audit .tbl-box:focus-visible { outline-offset: round(-0.125rem, var(--e)); }
+.ss-audit .tbl-box-end { height: 1px; margin-top: -1px; }
 .ss-carlist { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); max-height: round(14rem, var(--e)); overflow-y: auto; padding: round(0.5rem, var(--e)) round(0.625rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); }
 
 @container page (min-width: 108rem) {
@@ -200,6 +207,7 @@
 :root[data-phone] .ss-name-add { flex-wrap: wrap; }
 :root[data-phone] .ss-name-input { width: 100%; flex: 1 1 100%; }
 :root[data-phone] .ss-acts { flex-wrap: wrap; }
+:root[data-phone] .ss-audit .tbl-box { height: min(round(30rem, var(--e)), 62svh); border-top: 1px solid var(--line); }
 :root[data-phone="tall"] .ss .kv-row { flex-direction: column; align-items: flex-start; gap: round(0.125rem, var(--e)); }
 :root[data-phone="tall"] .ss .kv dd { margin: 0; text-align: left; white-space: normal; }
 :root[data-phone] .ss-port { justify-content: flex-start; }

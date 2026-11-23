@@ -572,8 +572,8 @@ export async function mount(ctx) {
   ctx.on(whoPick, 'change', refilter);
   const auditTable = admin ? dataTable(ctx, {
     title: 'Audit log', icon: 'book', path: 'audit', label: 'Who changed what', csvName: 'audit-log',
-    limit: 10, autoMore: true, moreLabel: 'Load more', cls: 'ss-audit', side: auditFilters,
-    note: `Every change and every sign-in, newest first; more load as you scroll. The item links to what was changed, where it still exists. Times are in ${zoneText}.`,
+    limit: 10, autoMore: true, moreLabel: 'Load more', cls: 'ss-audit', side: auditFilters, box: 'Audit log entries',
+    note: `Every change and every sign-in, newest first; five show at a time, and more load as you scroll the list. The item links to what was changed, where it still exists. Times are in ${zoneText}.`,
     columns: [
       { key: 'at_ms', label: `When (${zone})`, cls: 'ss-audit-when', render: (e) => dateTime(e.at_ms, tz) },
       { key: 'account', label: 'Who', render: (e) => (e.account ? h('b', null, e.account) : h('span', { class: 'faint' }, 'The server')) },
