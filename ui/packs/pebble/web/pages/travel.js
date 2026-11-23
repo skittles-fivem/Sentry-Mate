@@ -6,7 +6,7 @@
 // places visited (named places and plain addresses) and the latest stops. Data: GET /api/v1/visits/summary,
 // /visits (paged), /visits/places, /visits/cities, /visits/regions, /visits/countries, /visits/days, /tracks, /cars.
 
-import { h } from '../shared/dom.js';
+import { h, holdScroll } from '../shared/dom.js';
 import { format, formatMoneyList } from '../shared/units.js';
 import { formatDate, formatDayKey, formatTime } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -107,6 +107,8 @@ export async function mount(ctx) {
       keep(ctx.api.get('tracks', { ...p, max_points: 6000 })),
     ]);
     if (!ctx.alive()) return;
+    // what is on screen stays where it is while the parts above it are drawn again (shared/dom.js)
+    holdScroll(ctx.view);
     const money = sum.cost_by_currency?.length ? formatMoneyList(sum.cost_by_currency) : 'none';
     sumBox.replaceChildren(
       statTile({ label: 'Places', value: sum.places, kind: 'count', icon: 'pin', cover: 'locations.stat.addresses', sub: `${formatNumber(sum.visits)} stops${sum.unnamed_stops ? `, ${formatNumber(sum.unnamed_stops)} unnamed` : ''}` }),

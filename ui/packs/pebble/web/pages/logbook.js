@@ -8,7 +8,7 @@
 // note. Data: GET /api/v1/cars/{car}/logbook (paged: limit, after or offset, at_ms; purpose, q on the server; every
 // page carries the period's totals and counts); PUT and DELETE /cars/{car}/drives/{drive}/purpose (admins).
 
-import { h } from '../shared/dom.js';
+import { h, holdScroll } from '../shared/dom.js';
 import { format } from '../shared/units.js';
 import { formatTime, formatDate } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -158,9 +158,13 @@ export async function mount(ctx) {
   if (!ctx.alive()) return {};
   draw();
   paintCount();
-  // the window draws again once it is in the page (it has its height there)
+  // the window draws again once it is in the page (it has its height there), and once more when it has measured a
+  // row: the page says it is ready after that, so no row comes and goes once it is shown
   box.scrollTop = 0;
   box.dispatchEvent(new Event('scroll'));
+  // (a frame each, or 50 ms in a tab that is not drawn)
+  for (let i = 0; i < 3; i++) await new Promise((r) => { requestAnimationFrame(() => r()); setTimeout(r, 50); });
+  if (!ctx.alive()) return {};
 
   async function edit(r) {
     let chosen = r.purpose || 'none';
@@ -190,6 +194,8 @@ export async function mount(ctx) {
       const pg = await list.refresh();
       if (!ctx.alive()) return;
       if (pg) { data = pg; total = pg.total; }
+      // what is on screen stays where it is while the totals above it are drawn again (shared/dom.js)
+      holdScroll(ctx.view);
       paintTotals();
       paintCount();
     } catch (e) { if (!api.isAbort(e)) ctx.toast(e.message || 'The drives could not be loaded again.', { kind: 'error' }); }
