@@ -3,10 +3,11 @@
 // and 7 days, what went wrong last, and its last 24 hours hour by hour. Then the problems of the last 7 days.
 // Also the small card on Data health that leads here (overviewCard).
 //
-// Admins only (the API answers 403 to anyone else). Read again every 10 s; every text is changed in place,
-// so the rows never go away and come back, and the times ("12 s ago", "in 30 s") tick each second.
+// Admins only (the API answers 403 to anyone else). Follows `connections` events (live events, polling every
+// 10 s only while the live stream is down); every text is changed in place, so the rows never go away and come
+// back, and the times ("12 s ago", "in 30 s") tick each second.
 //
-// API: GET integrations/overview.
+// API: GET integrations/overview (at the start and after a reconnect), then `connections` events.
 
 import { h, svg, replace } from '../shared/dom.js';
 import { scrollBox } from '../shared/scrollbox.js';
@@ -17,8 +18,11 @@ import { icon } from '../core/icons.js';
 import { panel, note } from '../core/page.js';
 import { errorWords } from '../core/states.js';
 import { dateTime, tzName, DASH } from '../core/fmt.js';
+import { follow } from '../shared/live.js';
+import { morphChildren } from '../core/morph.js';
 
 const PATH = 'integrations/overview';
+// how often the overview is read while the live stream is down
 const POLL_MS = 10_000;
 const NBSP = ' ';
 // a connection belongs to no car: its times are on this computer's clock, with the zone named
@@ -262,7 +266,7 @@ export function connectionsOverview(ctx, { onLocal }) {
   const el = h('div', { class: 'co-wrap' },
     panel({ title: 'Connections', icon: 'pulse', cls: 'co-panel', side: fresh },
       totalsEl,
-      h('p', { class: 'note co-note' }, 'Every connection the server keeps. Idle means quiet as expected (the car asleep or parked), not broken. Open a row for its settings or its car’s data health. Read again every 10 s.'),
+      h('p', { class: 'note co-note' }, 'Every connection the server keeps. Idle means quiet as expected (the car asleep or parked), not broken. Open a row for its settings or its car’s data health. It changes here as it changes on the server.'),
       h('div', { class: 'co-table' }, head, list)),
     panel({ title: 'Problems in the last 7 days', icon: 'warn', cls: 'co-prob-panel', side: probCount, cover: 'conn.overview.problems' },
       probBox.el, probEmpty,
@@ -305,24 +309,32 @@ export function connectionsOverview(ctx, { onLocal }) {
     fresh.classList.toggle('warn', failedAt != null);
   }
 
-  async function load() {
-    try {
-      const d = await ctx.api.get(PATH);
-      if (!ctx.alive()) return;
-      data = d; readAt = now(); failedAt = null; failErr = null;
-    } catch (e) {
-      if (e?.name === 'AbortError' || !ctx.alive()) return;
-      failedAt = now(); failErr = e;
-      if (!data) {
+  // the first value (or failure) resolves load(): the page is ready once the overview is drawn
+  let live = null;
+  let first = null;
+  const firstValue = new Promise((res) => { first = res; });
+  function load() {
+    live ||= follow(ctx.api, {
+      type: 'connections', load: () => ctx.api.get(PATH), pollMs: POLL_MS,
+      onValue: (d) => {
+        if (!ctx.alive() || !d) return;
+        data = d; readAt = now(); failedAt = null; failErr = null;
+        paint();
+        first();
+      },
+      onError: (e) => {
+        if (!ctx.alive()) return;
+        failedAt = now(); failErr = e;
         // nothing to show yet: say why in the panel (kept until a read works)
-        replace(list, h('p', { class: 'note co-p-empty' }, icon('warn', 'ico--sm'), ' ', errorWords(e).text));
-      }
-    }
-    paint();
-    tick();
+        if (!data) replace(list, h('p', { class: 'note co-p-empty' }, icon('warn', 'ico--sm'), ' ', errorWords(e).text));
+        tick();
+        first();
+      },
+    });
+    return firstValue;
   }
   function start() {
-    ctx.every(POLL_MS, () => { load(); });
+    load();
     ctx.every(1000, tick);
   }
   return { el, load, start };
@@ -343,15 +355,23 @@ export function overviewCard(ctx, admin) {
         : 'Every input and outside service the server keeps, in Settings: Integrations. Only an admin sees it.'),
       counts),
     h('span', { class: 'co-card-go' }, 'Open', icon('chev-r', 'ico--sm')));
-  async function load() {
-    if (!admin) return;
-    try {
-      const d = await ctx.api.get(PATH);
-      if (!ctx.alive()) return;
-      const t = d.totals || {};
-      replace(counts, ORDER.filter((s) => t[s] || s === 'live' || s === 'problem').map((s) =>
-        h('span', { class: 'co-total co-total--sm', dataset: { status: s } }, light(s), h('span', { class: 'co-t-n' }, n0(t[s] || 0)), h('span', { class: 'co-t-w' }, STATUS[s][0]))));
-    } catch (e) { if (e?.name === 'AbortError') throw e; /* the link still works */ }
+  // the counts follow `connections` events, changed in place (read every 10 s only while the stream is down)
+  function load() {
+    if (!admin) return Promise.resolve();
+    return new Promise((done) => {
+      follow(ctx.api, {
+        type: 'connections', load: () => ctx.api.get(PATH), pollMs: POLL_MS,
+        onValue: (d) => {
+          if (!ctx.alive() || !d) return;
+          const t = d.totals || {};
+          morphChildren(counts, ORDER.filter((s) => t[s] || s === 'live' || s === 'problem').map((s) =>
+            h('span', { class: 'co-total co-total--sm', dataset: { status: s } }, light(s), h('span', { class: 'co-t-n' }, n0(t[s] || 0)), h('span', { class: 'co-t-w' }, STATUS[s][0]))));
+          done();
+        },
+        // the link still works
+        onError: () => done(),
+      });
+    });
   }
   return { el, load };
 }

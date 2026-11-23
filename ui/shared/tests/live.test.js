@@ -90,6 +90,16 @@ test('stream down: polls; back up: reads once to catch up and stops polling', as
   f.stop();
 });
 
+test('status updates while still down keep the planned read', async () => {
+  const api = fakeApi('connecting');
+  const t = fakeTimers();
+  let loads = 0;
+  follow(api, { type: 'health', timers: t, load: async () => { loads++; return {}; }, pollMs: 5000 });
+  await tick();
+  for (let i = 0; i < 6; i++) { await t.advance(2000); api.setState(i % 2 ? 'connecting' : 'reconnecting'); }
+  assert.equal(loads, 3, 'a read every 5 s however often the stream retries');
+});
+
 test('pollMs as a function: slower when idle, none when null', async () => {
   const api = fakeApi('closed');
   const t = fakeTimers();
