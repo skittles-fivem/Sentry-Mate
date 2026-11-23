@@ -11,11 +11,12 @@ class OnlineByDefault(ServerCase):
     def test_config(self):
         t = self.c.get("/api/v1/maps/config")["tiles"]
         self.assertEqual(t["mode"], "online")
-        # never picked by an admin: satellite with names and roads, OpenStreetMap to switch to
-        self.assertTrue(t["online_template"].startswith("https://server.arcgisonline.com/"))
-        self.assertEqual((t["preset"], t["imagery"], len(t["overlays"])), ("satellite", True, 2))
-        self.assertEqual([s["id"] for s in t["styles"]], ["satellite", "osm"])
-        self.assertEqual(t["hosts"], ["server.arcgisonline.com", "tile.openstreetmap.org"])
+        # never picked by an admin: the OpenStreetMap street map, satellite (with names and roads) to switch to
+        self.assertTrue(t["online_template"].startswith("https://tile.openstreetmap.org/"))
+        self.assertEqual((t["preset"], t["imagery"], len(t["overlays"])), ("osm", False, 0))
+        self.assertEqual([s["id"] for s in t["styles"]], ["osm", "satellite"])
+        self.assertEqual([len(s["overlays"]) for s in t["styles"]], [0, 2])
+        self.assertEqual(t["hosts"], ["tile.openstreetmap.org", "server.arcgisonline.com"])
         self.assertEqual((t["offline_present"], t["offline_url"], t["offline_files"]), (False, None, []))
         self.c.error("GET", "/api/v1/maps/tiles/0/0/0", 404, "no_offline_map")
 
@@ -45,7 +46,7 @@ class OnlineByDefault(ServerCase):
         self.assertEqual(n["hosts"], ["basemap.nationalmap.gov"])
         self.c.error("PATCH", "/api/v1/settings", 422, "invalid", {"version": s["version"], "tiles": {"preset": "moon"}})
         self.c.json("PATCH", "/api/v1/settings", {"version": s["version"], "tiles": {
-            "preset": None, "labels": True, "styles": ["satellite", "osm"]}})
+            "preset": None, "labels": True, "styles": ["osm", "satellite"]}})
 
 
 class NoTiles(ServerCase):
@@ -58,7 +59,7 @@ class NoTiles(ServerCase):
         self.c.error("GET", "/api/v1/maps/tiles/3/1/2", 404, "no_offline_map")
 
     def test_an_admin_turns_openstreetmap_on(self):
-        # what the maps' "Use online map (OpenStreetMap)" button sends
+        # what the maps' "Use the online map" button sends (the OpenStreetMap default)
         cfg = self.c.get("/api/v1/maps/config")["tiles"]
         osm = next(p for p in cfg["presets"] if p["id"] == "osm")
         v = self.c.get("/api/v1/settings")["version"]

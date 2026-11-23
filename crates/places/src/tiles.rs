@@ -62,7 +62,7 @@ pub const ESRI_LABEL_URLS: &[&str] = &[
 ];
 
 /// The preset online tiles use until an admin picks one (also for servers still on the old implicit default).
-pub const DEFAULT_PRESET: &str = "satellite";
+pub const DEFAULT_PRESET: &str = "osm";
 
 /// The ready-made online tile servers (Settings → Display and units offers these and a custom address).
 pub const PRESETS: &[Preset] = &[

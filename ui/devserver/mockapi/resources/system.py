@@ -241,11 +241,11 @@ TILE_PRESETS = [
      "attribution": "Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)",
      "max_zoom": 17, "terms": "https://opentopomap.org/about", "overlays": [], "region": None},
 ]
-DEFAULT_PRESET = "satellite"
+DEFAULT_PRESET = "osm"
 
 
 def tile_chosen_id(t):
-    """As the real server's Tiles::chosen_id: the preset an admin picked, else satellite (also over the old
+    """As the real server's Tiles::chosen_id: the preset an admin picked, else the OpenStreetMap street map (also over the old
     implicit OpenStreetMap / OpenTopoMap default); an address of their own is `custom`."""
     p = t.get("preset")
     if p == "custom" or any(x["id"] == p for x in TILE_PRESETS):
@@ -276,7 +276,7 @@ def tile_style(t, sid):
 def tile_viewer_styles(t):
     first = tile_chosen_id(t)
     out = [s for s in [tile_style(t, first)] if s]
-    for sid in t.get("styles", ["satellite", "osm"]):
+    for sid in t.get("styles", ["osm", "satellite"]):
         if sid != first and (s := tile_style(t, sid)):
             out.append(s)
     return out
@@ -315,7 +315,7 @@ def maps_config(req):
                       "attribution": chosen["attribution"] if chosen else t["attribution"],
                       "max_zoom": chosen["max_zoom"] if chosen else t["max_zoom"],
                       "preset": tile_chosen_id(t), "labels": t.get("labels", True),
-                      "allowed_styles": list(t.get("styles", ["satellite", "osm"])),
+                      "allowed_styles": list(t.get("styles", ["osm", "satellite"])),
                       "overlays": chosen["overlays"] if online and chosen else [],
                       "imagery": bool(online and chosen and chosen["imagery"]),
                       "styles": tile_viewer_styles(t) if online else [],
