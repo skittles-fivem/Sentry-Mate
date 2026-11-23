@@ -8,7 +8,6 @@
 
 use serde::{Deserialize, Serialize};
 
-pub mod gps;
 pub mod off_can;
 pub mod vehicle;
 

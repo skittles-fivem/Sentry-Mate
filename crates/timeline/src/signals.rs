@@ -393,13 +393,6 @@ impl Cand {
         }
     }
 
-    /// [`Self::read`] without the DBC's own bounds (a value read with another layout than the DBC's).
-    pub fn read_unbounded(&self, v: f64) -> Option<f64> {
-        let mut c = self.clone();
-        c.bounds = None;
-        c.read(v)
-    }
-
     /// A configuration word's text: its value name, or `code_<n>` for a value the DBC has no name for.
     pub fn label(&self, v: f64) -> String {
         match self.labels.iter().find(|(k, _)| same(*k, v)) {

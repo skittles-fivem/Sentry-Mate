@@ -35,6 +35,7 @@ node --test ui/shared/tests/
 | [`tyres.js`](tyres.js) | `tyreView(now)`: the Now's four tyres against the recommended pressures (each against its axle's when the sensors' wheels are known, else against the lower one, as the server judges `tyre_low`), and `recommendedLine(now)`: "Recommended 2.90 bar (from CAN)." with where it comes from (CAN, the door placard for the car's wheel size, typed) |
 | [`password.js`](password.js) | `passwordAdvice(name, password)`: why a new password is easy to guess, in the server's words; pages warn with it and let the person go on |
 | [`maptiles.js`](maptiles.js) | Map tiles for every map: which tiles to draw (`GET /maps/config`: the offline map file, the online source, or none and why), raster paint for the theme and the person's map colours (dimmed, never inverted, in the dark theme), a plain style for an offline Protomaps vector file, the "No map tiles yet" note with an admin's one-click OpenStreetMap switch, the note with the cause when tiles fail, and the words of the Settings map rows |
+| [`devicesize.js`](devicesize.js) | The Interface size on this device: Automatic (the account's `interface_size`, the default) or 80, 90, 100, 110 or 125 % of the standard size, kept in this browser's storage under `sentrymate.device-size` (one key for every pack, never sent to the server) and winning over the account's size here only; `readDeviceSize`, `writeDeviceSize`, `deviceSizeOptions`, `deviceSizeNote`, `onDeviceSizeStorage` (another tab). Every pack's `boot.js` reads the same key before the first paint |
 | [`teslamate.js`](teslamate.js) | The local TeslaMate input's shared rules for every pack's Settings: Integrations section: state and error words, the drafts of the MQTT and database forms, the server's checks said first (the plain text rule, a kept password, the pin, the topic prefix), the PUT body and the changed car matches, the TLS tick's port switch (`tmTlsPort`: 1883 and 8883, only from the other default) and the Host and pin hints; and its notices for every pack's notices bar (`isTmNotice`, `tmNoticeFix`: the link to Settings: Integrations #teslamate, `TM_NOTICE_ACTION`: the link's words) |
 
 ### api.js
@@ -123,14 +124,17 @@ const days = buckets(period.from_ms, period.to_ms, 'day', car.time_zone);
 
 `ROUTES`, `PAGE_IDS`, `PERIOD_PAGES`, `CAR_PAGES`, `parseUrl(url)`, `buildUrl(page, { car, drive, charge,
 period, query })`, `parsePeriod(search)`, `periodQuery(period)`, `createStore(initial)`, `store`, `current()`,
-`subscribe(fn)`, `syncFromLocation()`, `navigate(href, { replace })`, `linkTo(page, params)`,
+`subscribe(fn)`, `syncFromLocation()`, `sameRoute(url)`, `navigate(href, { replace })`, `linkTo(page, params)`,
 `linkForCar(car)`, `setPeriod(period, { push })`, `setQuery(patch, { push })`, `startRouting()`,
 `tabPeriod()`, `lastCar()`, `rememberCar(id)`, `forgetCar(id)`.
 
 The car is in the path, the period in the query (`?preset=7d` or `?from=<ms>&to=<ms>`). A URL without a
 period uses the one chosen last in this tab; a page with neither uses its own default (`period` is null).
 `navigate()` removes `data-ready`. `startRouting()` reads the address, follows back and forward, and turns
-clicks on in-app links into `navigate()`; subscribe first, it notifies at once.
+clicks on in-app links into `navigate()`; subscribe first, it notifies at once. A step that only moves the
+`#hash` on the page shown (an in-page anchor, back / forward between anchors, `navigate()` to the same URL
+with another hash) is no new page: `data-ready` stays, the store does not change, the router scrolls to the
+element and the page can open the part holding it on `hashchange`.
 
 ```js
 import * as state from './shared/state.js';

@@ -35,6 +35,7 @@ pub mod reports;
 pub mod series;
 pub mod signals;
 pub mod software;
+pub mod storage;
 pub mod system;
 pub mod timeline;
 pub mod travel;

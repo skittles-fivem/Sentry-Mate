@@ -83,11 +83,6 @@ fn frame(t_ms: u64, values: &[(&str, f64)]) -> String {
 
 /// SMO's log of minute `i` of the trip.
 fn smo_minute(i: u64, trip: Trip) -> (String, Vec<u8>, Vec<u8>) {
-    smo_minute_shifted(i, trip, 0.0)
-}
-
-/// [`smo_minute`] with its longitude off by `shift` degrees (a decode mistake).
-fn smo_minute_shifted(i: u64, trip: Trip, shift: f64) -> (String, Vec<u8>, Vec<u8>) {
     let start = T0 + i * 60_000;
     let mut log = String::from("# canbridge v1 app=test\n");
     for k in 0..600u64 {
@@ -101,10 +96,7 @@ fn smo_minute_shifted(i: u64, trip: Trip, shift: f64) -> (String, Vec<u8>, Vec<u
         if k % 10 == 0 {
             log += &frame(t + 4, &[("UI_odometer", 12_345.0 + trip.km(s))]);
             log += &frame(t + 5, &[("UI_SOC", 70.0), ("UI_Range", 200.0)]);
-            log += &frame(
-                t + 6,
-                &[("GPSLatitude04F", LAT), ("GPSLongitude04F", trip.lon(s) + shift), ("GPSAccuracy04F", 5.0)],
-            );
+            log += &frame(t + 6, &[("GPSLatitude04F", LAT), ("GPSLongitude04F", trip.lon(s)), ("GPSAccuracy04F", 5.0)]);
         }
     }
     let name = format!("{KEY}_20260101T00{i:02}00Z_{}.log.xz", i + 1);
@@ -962,137 +954,4 @@ fn local_teslamates_energy_added_and_range_are_its_own_and_the_tesla_api_wins() 
         assert_eq!(v["car_est_range_km"], serde_json::Value::Null);
         assert_eq!(v["charge"]["added_kwh"], serde_json::Value::Null);
     });
-}
-
-/// A stretch of fixes far east at the same latitude (a longitude 16.78 degrees off, one bit of the field): no map,
-/// distance, drive end or stop shows it, and the fixes left out are counted.
-#[test]
-fn fixes_far_away_at_the_same_latitude_are_never_drawn_or_counted() {
-    rt().block_on(async {
-        let k = kit();
-        let car = api_car(&k);
-        let trip = Trip { a: 600, b: 1800 };
-        let mut v = api_readings(0, 2400, 10, trip);
-        // the drive's last two minutes: the longitude is off (a straight line east and a hook there)
-        for x in v.iter_mut().filter(|x| (1680..1800).contains(&((x.t_ms - T0) / 1000))) {
-            x.lon = x.lon.map(|l| l + 16.777216);
-        }
-        k.engine.api_points(car, v, vec![online(0, 2400)]);
-        k.engine.idle().await;
-        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
-        assert!(k.engine.stats().gps_fixes_dropped >= 12, "{:?}", k.engine.stats());
-
-        let far = |lon: f64| (lon - LON).abs() > 1.0;
-        let ds = drives(&k, car);
-        assert_eq!(ds.len(), 1, "{ds:#?}");
-        let d = &ds[0];
-        assert!((d.distance_km.unwrap() - 12.0).abs() < 0.4, "{d:?}");
-        let id: u64 = d.id.parse().unwrap();
-        let track = query::drives::track(&k.engine, car, id).unwrap();
-        let pts: Vec<_> = track.stretches.iter().flatten().collect();
-        assert!(pts.len() >= 100, "{}", pts.len());
-        assert!(!pts.iter().any(|p| far(p.lon)), "the drive's map");
-        let all = query::travel::tracks(&k.engine, &[car], &Period::all(), None).unwrap();
-        assert!(all.drives.iter().flat_map(|t| &t.lon).all(|&l| !far(l)), "the travel map");
-        let q = query::travel::VisitsQuery { period: Period::all(), ..Default::default() };
-        let visits = query::travel::visits(&k.engine, &[car], &q, &Paging::default()).unwrap();
-        assert!(!visits.items.is_empty());
-        assert!(visits.items.iter().all(|v| !far(v.lon) && (v.lat - LAT).abs() < 0.01), "the stops");
-    });
-}
-
-/// SMO's longitude shifted west by one bit of the field (made-up positions) while the Tesla API reports where the car
-/// is: SMO's fixes are not used, the drive's track and ends are the API's, and Data health names it.
-#[test]
-fn smo_gps_out_of_step_with_the_api_gives_way_and_is_named() {
-    rt().block_on(async {
-        let k = kit();
-        let trip = Trip { a: 70, b: 250 };
-        for i in 0..5 {
-            let (name, log, side) = smo_minute_shifted(i, trip, -16.777216);
-            upload(&k, &name, &log).await;
-            upload(&k, &format!("{name}.json"), &side).await;
-        }
-        k.engine.idle().await;
-        let car = k.db.car_for_key(KEY).unwrap().unwrap();
-        k.engine.api_points(car, api_readings(0, 300, 10, trip), vec![online(0, 300)]);
-        k.engine.idle().await;
-        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
-
-        let g = k.engine.gps_disagreement(car).expect("named");
-        assert_eq!((g.disagree, g.not_used), (Inputs::BOTH, Inputs::SMO));
-        let e = k.engine.clone();
-        let h = tokio::task::spawn_blocking(move || query::system::health(&e, car, &Period::all()))
-            .await
-            .unwrap()
-            .unwrap()
-            .body;
-        assert!(h.reasons.contains(&"gps_inputs_disagree"), "{:?}", h.reasons);
-        let json = serde_json::to_value(&h).unwrap();
-        assert_eq!(json["gps_disagreement"]["not_used"], serde_json::json!(["smo"]));
-
-        let ds = drives(&k, car);
-        assert_eq!(ds.len(), 1, "{ds:#?}");
-        let near = |lon: f64| (lon - LON).abs() < 0.5;
-        let d = &ds[0];
-        let track = query::drives::track(&k.engine, car, d.id.parse().unwrap()).unwrap();
-        let pts: Vec<_> = track.stretches.iter().flatten().collect();
-        assert!(!pts.is_empty() && pts.iter().all(|p| near(p.lon)), "the API's fixes only");
-        let q = query::travel::VisitsQuery { period: Period::all(), ..Default::default() };
-        let visits = query::travel::visits(&k.engine, &[car], &q, &Paging::default()).unwrap();
-        assert!(!visits.items.is_empty() && visits.items.iter().all(|v| near(v.lon)), "the stops");
-    });
-}
-
-/// The Screenmate's own GPS (0x04F on its internal bus, can3) sends a longitude 2^24 steps low (made-up positions):
-/// once the car has its own layout of that frame, a rebuild decodes the stored logs again and the drive is where
-/// the car was.
-#[test]
-fn a_cars_own_layout_of_the_screenmates_gps_frame_is_used_after_a_rebuild() {
-    rt().block_on(async {
-        let k = kit();
-        let trip = Trip { a: 70, b: 250 };
-        for i in 0..5 {
-            let (name, log, _) = smo_minute_shifted(i, trip, -16.777216);
-            // the GPS frames on the Screenmate's internal bus instead of the chassis bus
-            let text = String::from_utf8(lzma_decompress(&log)).unwrap().replace(" can1 04F#", " can3 04F#");
-            let mut xz = Vec::new();
-            lzma_rs::xz_compress(&mut text.as_bytes(), &mut xz).unwrap();
-            let start = T0 + i * 60_000;
-            let side = serde_json::json!({
-                "format": "canbridge-candump-xz/1", "start_wall_ms": start, "end_wall_ms": start + 60_000,
-                "closed_because": "rotate",
-                "bus": { "can0": "vehicle", "can1": "chassis", "can3": "screenmate-internal" },
-            });
-            upload(&k, &name, &xz).await;
-            upload(&k, &format!("{name}.json"), &serde_json::to_vec(&side).unwrap()).await;
-        }
-        k.engine.idle().await;
-        let car = k.db.car_for_key(KEY).unwrap().unwrap();
-        let lons = |k: &Kit| -> Vec<f64> {
-            let d = &drives(k, car)[0];
-            let t = query::drives::track(&k.engine, car, d.id.parse().unwrap()).unwrap();
-            t.stretches.iter().flatten().map(|p| p.lon).collect()
-        };
-        assert!(lons(&k).iter().all(|l| (l - LON).abs() > 10.0), "read with the DBC's layout: far west");
-
-        let layout: model::gps::GpsLayout = "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)".parse().unwrap();
-        let job = k.engine.set_gps_layout(car, Some(layout)).unwrap();
-        assert!(job.is_some(), "a change rebuilds the car");
-        k.engine.idle().await;
-        while k.engine.job(job.as_ref().unwrap().id).is_some_and(|j| j.status == engine::JobStatus::Running) {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        k.engine.idle().await;
-        assert_eq!(k.engine.gps_layout(car).unwrap(), Some(layout));
-        let after = lons(&k);
-        assert!(!after.is_empty() && after.iter().all(|l| (l - LON).abs() < 0.5), "{after:?}");
-        assert!(k.engine.set_gps_layout(car, Some(layout)).unwrap().is_none(), "the same layout again: nothing to do");
-    });
-}
-
-fn lzma_decompress(xz: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    lzma_rs::xz_decompress(&mut &xz[..], &mut out).unwrap();
-    out
 }

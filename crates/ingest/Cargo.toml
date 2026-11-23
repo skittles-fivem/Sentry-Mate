@@ -17,6 +17,7 @@ vault = { path = "../vault" }
 zeroize = "1"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
 base64 = "0.22"
+brotli = { version = "8", default-features = false, features = ["std"] }
 getrandom = { version = "0.3", features = ["std"] }
 hex = "0.4"
 http-body-util = "0.1"

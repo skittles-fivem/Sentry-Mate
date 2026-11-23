@@ -15,7 +15,8 @@ import * as state from '../shared/state.js';
 import { tile, btn, chip, note } from '../core/ui.js';
 import { segmented, toggle, field, form, setFieldError } from '../core/form.js';
 import { currentPrefs, onPrefs, savePref, isDark, onTheme } from '../core/prefs.js';
-import { SIZES, SIZE_MIN, SIZE_MAX, sizeState, setSize, sizeNote, display } from '../core/display.js';
+import { SIZES, SIZE_MIN, SIZE_MAX, sizeState, setSize, setDeviceSize, onSize, sizeNote, display } from '../core/display.js';
+import { deviceSizeOptions, deviceSizeNote } from '../shared/devicesize.js';
 import { currentAbout } from '../core/frame.js';
 import { sectionHead, facts } from '../core/bits.js';
 import { group, pickRow, ctlRow, infoRow, notSaved } from '../core/settings.js';
@@ -64,7 +65,7 @@ export async function mount(ctx) {
     packChoices(ctx.api, { fallback: PACKS, current: (currentPrefs() || {}).ui_pack || null }),
     ctx.api.list('cars', { sort: 'custom' }).all({ max: 200 }).catch(() => [])]);
   // satellite first, then the rest as the server lists them
-  const tilePresets = [...((mapCfg && mapCfg.tiles && mapCfg.tiles.presets) || [])].sort((a, b) => (b.kind === 'satellite') - (a.kind === 'satellite'));
+  const tilePresets = [...((mapCfg && mapCfg.tiles && mapCfg.tiles.presets) || [])].sort((a, b) => (b.id === 'osm') - (a.id === 'osm'));
   const regionNote = (p) => (p.region ? ` ${p.region === 'us' ? 'United States only' : `${p.region} only`}: elsewhere it shows nothing.` : '');
   const presetLine = (p) => `From ${presetHosts(p).join(' and ') || 'the tile server'}, down to zoom ${p.max_zoom}.${regionNote(p)}`;
   if (!ctx.alive()) return {};
@@ -92,6 +93,11 @@ export async function mount(ctx) {
   const follow = toggle({ label: 'Follow screen size', sub: 'Big screens such as a 4K monitor get larger text by themselves.', checked: sizeState().follow,
     onchange: (on) => { setSize({ follow: on }); save({ follow_screen: on }).catch(() => {}); sync(); } });
   const sizeLine = h('span', { class: 'row-sub' });
+  // kept in this browser only (shared/devicesize.js), never with the account
+  const deviceSeg = segmented({ label: null, name: 'Interface size on this device', value: sizeState().device ? String(sizeState().device) : 'auto', cls: 'seg--device',
+    options: deviceSizeOptions().map((o) => [o.value, o.value === 'auto' ? 'Auto' : o.label]), onchange: (v) => { setDeviceSize(v); sync(); } });
+  const deviceLine = h('span', { class: 'row-sub' });
+  ctx.onCleanup(onSize(() => sync()));
   const about = currentAbout();
   const packNow = (p0.ui_pack || (about && about.ui_pack && about.ui_pack.name ? about.ui_pack.name.toLowerCase() : 'pebble'));
   // every pack the server offers (GET /ui-packs), each with its short description
@@ -112,7 +118,9 @@ export async function mount(ctx) {
       ctlRow({ name: 'Map colours', sub: `${MAP_COLORS_TEXT} Satellite pictures are always shown as taken.`, control: mapColors, stack: true }),
     ]),
     group('Size', [
-      ctlRow({ name: 'Interface size', sub: null, control: h('div', { class: 'stepper', role: 'group', 'aria-label': 'Interface size' }, smaller, sizeValue, bigger) }),
+      ctlRow({ name: 'Interface size on this device', sub: 'This device only: kept in this browser, not with your account, so each computer can have its own size. Auto uses your account’s size below.', control: deviceSeg, stack: true }),
+      h('div', { class: 'row row-static set-ex-row' }, deviceLine),
+      ctlRow({ name: 'Interface size', sub: 'Your account’s size, on every device left at Auto.', control: h('div', { class: 'stepper', role: 'group', 'aria-label': 'Interface size' }, smaller, sizeValue, bigger) }),
       h('div', { class: 'row row-static set-ex-row' }, sizeLine),
       follow,
     ]),
@@ -191,6 +199,8 @@ export async function mount(ctx) {
     bigger.disabled = s.size >= SIZE_MAX;
     follow.set(s.follow);
     sizeLine.textContent = sizeNote();
+    deviceSeg.set(s.device ? String(s.device) : 'auto');
+    deviceLine.textContent = deviceSizeNote(s.device, { account: s.size });
     if (feet() !== drawnFeet) drawServer(srv);
   }
   ctx.onCleanup(onPrefs(sync));
@@ -349,12 +359,12 @@ export async function mount(ctx) {
     const tilesSeg = segmented({ name: 'Map tiles', value: s.tiles.mode, options: [['offline', 'Offline'], ['online', 'Online']],
       onchange: (v) => {
         if (v === 'online' && !tilePresets.length && !s.tiles.online_url) { tilesSeg.set(s.tiles.mode); setFieldError(tileUrl, 'Save an https:// tile address with {z}, {x} and {y} first, then choose Online.'); tileUrl.control.focus(); return; }
-        // online without an address of its own: the satellite preset (the default)
+        // online without an address of its own: the chosen preset (by default the OpenStreetMap street map)
         quick({ tiles: v === 'online' && chosenId !== 'custom' ? { mode: v, preset: chosenId } : { mode: v } }, () => tilesSeg.set(s.tiles.mode));
       } });
     tilesSeg.querySelectorAll('button').forEach((b) => { b.disabled = off; });
     const mt = (mapCfg && mapCfg.tiles) || {};
-    const chosenId = mt.preset || s.tiles.preset || (tilePresets.find((x) => x.url === s.tiles.online_url) || {}).id || (s.tiles.online_url ? 'custom' : 'satellite');
+    const chosenId = mt.preset || s.tiles.preset || (tilePresets.find((x) => x.url === s.tiles.online_url) || {}).id || (s.tiles.online_url ? 'custom' : 'osm');
     const tilePreset = tilePresets.find((x) => x.id === chosenId) || null;
     const tileSource = tilePresets.length ? pickRow({ name: 'Online map', sheetTitle: 'Online map',
       sub: tilePreset ? `${tilePreset.name}. ${presetLine(tilePreset)} Free, no key; its terms (${String(tilePreset.terms || '').replace(/^https:\/\//, '')}) ask for light use and its credit on every map.` : 'Your own tile address below. A preset fills in its address, credit and zoom.',
@@ -370,7 +380,7 @@ export async function mount(ctx) {
     const labelsRow = tilePreset && (tilePreset.overlays || []).length ? toggle({ label: 'Place names and roads', sub: LABELS_TEXT, checked: mt.labels !== false && s.tiles.labels !== false, disabled: off,
       onchange: (on) => quick({ tiles: { labels: on } }, () => labelsRow.set(!on)) }) : null;
     // the styles viewers may switch between (Map / Satellite)
-    const allowed = new Set(mt.allowed_styles || s.tiles.styles || ['satellite', 'osm']);
+    const allowed = new Set(mt.allowed_styles || s.tiles.styles || ['osm', 'satellite']);
     const styleRows = tilePresets.map((x) => {
       const t = toggle({ label: x.name, sub: `${x.kind === 'satellite' ? 'Satellite pictures' : 'A drawn map'}. ${presetLine(x)}`, checked: allowed.has(x.id) || x.id === chosenId, disabled: off || x.id === chosenId,
         onchange: (on) => {

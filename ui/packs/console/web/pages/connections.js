@@ -78,7 +78,7 @@ const barsKey = (c) => JSON.stringify((c.hourly || []).slice(-24).map((x) => [x.
 
 /**
  * overviewSection(ctx, { href }) -> { el, ready, totals() }. href(link): the address a row opens for its link (the
- * page turns its own anchors into the tab that holds them). The first answer is read before ready resolves; then
+ * link itself by default; an #anchor of the page it is on opens there in place). The first answer is read before ready resolves; then
  * every 10 s.
  */
 export function overviewSection(ctx, { href = (l) => l } = {}) {

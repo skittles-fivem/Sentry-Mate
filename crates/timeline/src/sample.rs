@@ -82,9 +82,6 @@ pub struct SampleBuilder {
     out: Vec<Sample>,
     vin: VinCollector,
     soc_check: SocCheck,
-    /// The car's own layout of the Screenmate's GPS frame (0x04F on its internal bus), when one is set: read with it
-    /// instead of the DBC's.
-    internal_gps: Option<model::gps::GpsLayout>,
 }
 
 impl SampleBuilder {
@@ -100,42 +97,6 @@ impl SampleBuilder {
             out: Vec::new(),
             vin: VinCollector::new(),
             soc_check: SocCheck::default(),
-            internal_gps: None,
-        }
-    }
-
-    /// Reads the Screenmate's own GPS frames (0x04F on its internal bus) with `layout` instead of the DBC's.
-    pub fn set_internal_gps(&mut self, layout: Option<model::gps::GpsLayout>) {
-        self.internal_gps = layout;
-    }
-
-    /// An internal-bus GPS frame read with the car's own layout: its latitude, longitude and accuracy (the DBC's
-    /// accuracy field when the layout has none). Values off the globe say "no fix" (they clear what was held).
-    fn internal_fix(&mut self, layout: model::gps::GpsLayout, frame: &logfmt::Frame) {
-        let bytes = frame.payload();
-        let lat = layout.lat.value(bytes);
-        let lon = layout.lon.value(bytes);
-        let whole = (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon);
-        let acc = match layout.accuracy {
-            Some(a) => Some(a.value(bytes)),
-            None => self
-                .dbc
-                .messages
-                .get(&frame.id)
-                .and_then(|m| m.signals.iter().find(|s| s.series == "GPSAccuracy04F"))
-                .and_then(|s| dbc::signal_value(bytes, s)),
-        };
-        let t = frame.time_us;
-        for (series, v) in [
-            ("GPSLatitude04F", whole.then_some(lat)),
-            ("GPSLongitude04F", whole.then_some(lon)),
-            ("GPSAccuracy04F", acc),
-        ] {
-            if let Some(cands) = self.table.by_series.get(series) {
-                for &i in cands {
-                    self.slots[i] = v.and_then(|v| self.table.cands[i].read_unbounded(v)).map(|v| (v, t));
-                }
-            }
         }
     }
 
@@ -163,13 +124,6 @@ impl SampleBuilder {
     /// A frame and every value the decoder gets from it.
     pub fn feed(&mut self, decoder: &mut dbc::Decoder, frame: &logfmt::Frame) {
         self.frame(frame);
-        if let Some(layout) = self.internal_gps
-            && frame.id == dbc::INTERNAL_MESSAGE
-            && decoder.message(frame).is_some_and(|(_, internal)| internal)
-        {
-            self.internal_fix(layout, frame);
-            return;
-        }
         if !std::ptr::eq(decoder.dbc(), self.dbc) {
             // a decoder of another DBC set: by the series' names
             for (sig, v) in decoder.decode(frame) {
@@ -491,17 +445,14 @@ impl SampleBuilder {
     }
 
     /// Latitude, longitude and accuracy of one message, the best with all three fresh. A position is kept only when
-    /// it is plausible: on the globe, not 0,0 or a placeholder ([`crate::real_fix`]), with a known accuracy, and
-    /// its latitude and longitude from the same frame (a frame cut short before the longitude leaves the one held
-    /// from an earlier frame, which is not where the car is now).
+    /// it is plausible: on the globe, not 0,0, and with a known accuracy.
     fn position(&self, end_us: u64) -> (Option<f64>, Option<f64>, Option<f64>) {
         let hold = self.params.gps_hold_ms.saturating_mul(1000);
         for &[la, lo, ac] in &self.table.gps {
             let (lat, lon, acc) =
                 (self.fresh(la, end_us, hold), self.fresh(lo, end_us, hold), self.fresh(ac, end_us, hold));
-            let one_frame = matches!((self.slots[la], self.slots[lo]), (Some((_, a)), Some((_, b))) if a == b);
             match (lat, lon, acc) {
-                (Some(lat), Some(lon), Some(acc)) if one_frame && crate::real_fix(lat, lon) => {
+                (Some(lat), Some(lon), Some(acc)) if !(lat == 0.0 && lon == 0.0) => {
                     return (Some(lat), Some(lon), Some(acc));
                 }
                 (_, _, Some(acc)) => return (None, None, Some(acc)),
@@ -640,66 +591,6 @@ mod tests {
         assert_eq!(s[3].lat, Some(10.5), "held for a missed frame");
         assert_eq!(s[4].lat, None, "a fix is held 2 s at most");
         assert_eq!((s[5].lat, s[5].gps_accuracy_m), (None, None));
-    }
-
-    #[test]
-    fn the_screenmates_gps_frame_is_read_with_the_cars_own_layout_when_it_has_one() {
-        // a made-up internal-bus 0x04F: latitude 10.5 where the DBC has it, longitude -20.25 as 29 bits at bit 27
-        // (not where the DBC reads it), accuracy where the DBC has it
-        let side = serde_json::json!({ "bus": { "can0": "chassis", "can3": "screenmate-internal" } });
-        let enc = |v: f64, w: u32| ((v * 1e6).round() as i64).rem_euclid(1i64 << w) as u64;
-        let word = enc(10.5, 27) | (enc(-20.25, 29) << 27) | (15u64 << 57);
-        let mut data = [0u8; 64];
-        data[..8].copy_from_slice(&word.to_le_bytes());
-        let frame = |s: u64| logfmt::Frame {
-            time_us: s * 1_000_000 + 200_000,
-            bus: 3,
-            id: 0x04F,
-            extended: false,
-            len: 8,
-            data,
-        };
-        let run = |layout: Option<model::gps::GpsLayout>| {
-            let mut d = dbc::Decoder::new(dbc::Profile::Tesla3Y, &side);
-            let mut b = SampleBuilder::new(dbc::Profile::Tesla3Y, SampleParams::default());
-            b.set_internal_gps(layout);
-            for s in 0..4 {
-                b.feed(&mut d, &frame(s));
-            }
-            b.finish().0
-        };
-        let own: model::gps::GpsLayout = "lat 0|27@1- (1e-6,0); lon 27|29@1- (1e-6,0)".parse().unwrap();
-        let s = run(Some(own));
-        let x = s.iter().find(|x| x.lat.is_some()).expect("a fix");
-        assert!((x.lat.unwrap() - 10.5).abs() < 1e-9 && (x.lon.unwrap() + 20.25).abs() < 1e-9, "{x:?}");
-        assert_eq!(x.gps_accuracy_m, Some(3.0), "the DBC's accuracy field");
-        // the DBC's layout reads another longitude from the same frame
-        let s = run(None);
-        assert!(s.iter().filter_map(|x| x.lon).all(|l| (l + 20.25).abs() > 1.0), "{s:?}");
-    }
-
-    #[test]
-    fn a_position_is_one_frames_latitude_and_longitude_and_never_a_placeholder() {
-        let mut b = SampleBuilder::new(dbc::Profile::Tesla3Y, SampleParams::default());
-        b.value(at(0.2), "DI_gear", 1.0);
-        // a whole fix, then a frame that gave only a new latitude (its longitude cut off)
-        b.value(at(1.2), "GPSLatitude04F", 10.5);
-        b.value(at(1.2), "GPSLongitude04F", 20.25);
-        b.value(at(1.2), "GPSAccuracy04F", 3.0);
-        b.value(at(2.2), "GPSLatitude04F", 10.6);
-        b.value(at(2.2), "GPSAccuracy04F", 3.0);
-        // the 28-bit field's lowest value as the longitude: a placeholder
-        b.value(at(3.2), "GPSLatitude04F", 10.6);
-        b.value(at(3.2), "GPSLongitude04F", -134.217728);
-        b.value(at(3.2), "GPSAccuracy04F", 3.0);
-        b.value(at(4.2), "GPSLatitude04F", 10.7);
-        b.value(at(4.2), "GPSLongitude04F", 20.3);
-        b.value(at(4.2), "GPSAccuracy04F", 3.0);
-        let (s, _) = b.finish();
-        assert_eq!((s[0].lat, s[0].lon), (Some(10.5), Some(20.25)));
-        assert_eq!((s[1].lat, s[1].lon), (None, None), "a new latitude is never paired with an old longitude");
-        assert_eq!((s[2].lat, s[2].lon), (None, None), "a placeholder is no position");
-        assert_eq!((s[3].lat, s[3].lon), (Some(10.7), Some(20.3)));
     }
 
     #[test]

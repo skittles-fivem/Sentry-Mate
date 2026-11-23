@@ -751,7 +751,7 @@ export async function mount(ctx) {
   const netSlot = h('div');
   const PURPOSE = {
     geocoding: ['Address lookup', 'Only when an admin turns online addresses on; positions are rounded first.', 'settings-display'],
-    tiles: ['Map pictures', 'Asked by each viewer’s browser when online tiles are on: the chosen map (satellite by default), its place names and roads, and the maps people may switch to.', 'settings-display'],
+    tiles: ['Map pictures', 'Asked by each viewer’s browser when online tiles are on: the chosen map (the OpenStreetMap street map by default), its place names and roads, and the maps people may switch to.', 'settings-display'],
     geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-display'],
     mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
     tesla: ['Tesla API', 'Only while a Tesla account is added and not paused: sign-in, the Owner API and its live stream (Tesla account, this page).', null],
@@ -870,6 +870,14 @@ export async function mount(ctx) {
   overview?.start();
   ctx.ready();
   if (aliasScroll) requestAnimationFrame(() => { if (ctx.alive()) scrollToEl(aliasScroll); });
+  // a link to a section of this page while the other tab is shown (#tesla typed or followed here): open its tab, land on it
+  ctx.on(window, 'hashchange', () => {
+    let el = null;
+    try { el = targetOf(decodeURIComponent(location.hash.slice(1) || '')); } catch { return; }
+    if (!el) return;
+    if (admin) { const t = overviewPanel.contains(el) ? 'overview' : details.contains(el) ? 'details' : null; if (t && t !== tab) showTab(t); }
+    requestAnimationFrame(() => { if (ctx.alive()) scrollToEl(el); });
+  });
 
   return {
     // back / forward: another tab is shown in place; another preview car builds the page again

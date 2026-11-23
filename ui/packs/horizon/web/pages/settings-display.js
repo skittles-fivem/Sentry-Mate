@@ -14,7 +14,7 @@ import { pageHead, panel } from '../core/page.js';
 import { field, showApiError } from '../core/form.js';
 import { getPrefs, savePrefs, isAdmin, onPrefs } from '../core/prefs.js';
 import { getInterface, onInterface } from '../core/display.js';
-import { sizePicker, followSwitch, sizeNote, themeButtons } from '../core/account.js';
+import { sizePicker, followSwitch, sizeNote, devicePicker, deviceNote, themeButtons } from '../core/account.js';
 import { flash } from '../core/flash.js';
 import { CHOICES as SKY_CHOICES, getSky, setSky, onSky } from '../core/sky.js';
 import { ago } from '../core/fmt.js';
@@ -113,6 +113,8 @@ export async function mount(ctx) {
     example);
 
   /* ---------- your look */
+  const dev = devicePicker('set-device');
+  const devNoteEl = h('p', { class: 'setting-note', id: 'set-device-note' }, deviceNote());
   const size = sizePicker('set-size');
   const follow = followSwitch('set-follow');
   const pctIn = h('input', { class: 'input input--sm', id: 'set-size-pct', type: 'number', min: '75', max: '200', step: '1', value: String(getInterface().size), 'aria-label': 'Interface size in percent' });
@@ -124,7 +126,7 @@ export async function mount(ctx) {
     await savePref({ interface_size: v }, 'Interface size');
   });
   const noteEl = h('p', { class: 'setting-note' }, sizeNote());
-  ctx.onCleanup(onInterface((i) => { size.sync(i); follow.sync(i); pctIn.value = String(i.size); noteEl.textContent = sizeNote(); }));
+  ctx.onCleanup(onInterface((i) => { dev.sync(i); devNoteEl.textContent = deviceNote(); size.sync(i); follow.sync(i); pctIn.value = String(i.size); noteEl.textContent = sizeNote(); }));
   const theme = themeButtons();
   // Horizon's background: kept in this browser only (a phone may want Calm while a desktop runs Full)
   const sky = h('div', { class: 'seg', role: 'group', 'aria-label': 'Background' },
@@ -183,7 +185,9 @@ export async function mount(ctx) {
     setting('Background', 'The sky behind the pages. Full: the setting sun, the stars and the grid running to the horizon, at most 30 frames a second, stopped while the tab is hidden. Calm: the same picture moving slowly (at most 12 frames a second). Off: a plain dusk sky. Auto picks Calm on phones.',
       [sky, skyNote]),
     setting('Map colours', `${MAP_COLORS_TEXT} It does not apply to satellite pictures: photos always show as taken, never dimmed.`, segMapColors),
-    setting('Interface size', 'Makes text, controls, tables, charts and maps bigger or smaller together. With Follow screen size on, a very large screen (a native 4K monitor) adds its own step on top. Browser zoom works on top of both.',
+    setting('Interface size on this device', 'Only this browser on this device: kept here, not with your account, so a laptop with large display scaling and a desktop monitor can each have their own size. Automatic uses your account\'s Interface size below. A fixed size draws everything at that percent of the standard size, with nothing added for large screens.',
+      [dev.el, devNoteEl]),
+    setting('Interface size', 'Your account\'s size, on every device left at Automatic. Makes text, controls, tables, charts and maps bigger or smaller together. With Follow screen size on, a very large screen (a native 4K monitor) adds its own step on top. Browser zoom works on top of both.',
       [size.el, h('div', { class: 'row' }, h('label', { class: 'faint', for: 'set-size-pct' }, 'Any size:'), pctIn, h('span', { class: 'faint' }, '%')), sizeErr,
         h('div', { class: 'switch-row switch-row--inline' }, follow.el, h('label', { for: 'set-follow' }, 'Follow screen size')), noteEl]),
     setting('Language', 'The text is in English for now. This sets how numbers and dates are written. "This browser\'s language" follows the language your browser asks for; the app tells the browser which language the page is in.',
@@ -291,10 +295,10 @@ export async function mount(ctx) {
     const gRound = field({ label: 'Round positions to (m)', name: 'grnd', path: 'geocode.rounding_m', type: 'number', value: g.rounding_m, hint: 'metres, from 0 to 1000, before an online lookup', attrs: { min: '0', max: '1000', step: '1', disabled: ro } });
     const gLang = field({ label: 'Address language', name: 'glang', path: 'geocode.language', value: g.language || 'en', hint: 'A code such as en, de, fr or pt-BR. Changing it looks every stored address up again.', attrs: { maxlength: '10', spellcheck: 'false', autocomplete: 'off', disabled: ro } });
     const tz = field({ label: 'Time zone for new cars', name: 'dtz', path: 'default_time_zone', value: server.default_time_zone || 'UTC', hint: 'A zone name such as America/Chicago. Type to search the list.', attrs: { list: 'sd-zones', disabled: ro, autocomplete: 'off', spellcheck: 'false' } });
-    // the online presets, satellite first (the default), then the admin's own address
+    // the online presets, the default (the OpenStreetMap street map) first, then the admin's own address
     const mt = maps?.tiles || {};
-    const tilePresets = [...(mt.presets || [])].sort((a, b) => (b.id === 'satellite') - (a.id === 'satellite'));
-    const presetId = mt.preset || t.preset || tilePresets.find((p) => p.url === t.online_url)?.id || (t.online_url ? 'custom' : 'satellite');
+    const tilePresets = [...(mt.presets || [])].sort((a, b) => (b.id === 'osm') - (a.id === 'osm'));
+    const presetId = mt.preset || t.preset || tilePresets.find((p) => p.url === t.online_url)?.id || (t.online_url ? 'custom' : 'osm');
     const tilePreset = tilePresets.find((p) => p.id === presetId) || null;
     const region = (p) => (p.region ? ` · ${p.region === 'US' ? 'United States only' : `${p.region} only`}` : '');
     const presetMeta = (p) => `${presetHosts(p).join(', ')} · up to zoom ${p.max_zoom}${region(p)}`;
@@ -366,7 +370,7 @@ export async function mount(ctx) {
             [sChoice('Address lookup', [['offline', 'Offline'], ['online', 'Online service']], g.mode, (v) => patch({ geocode: { mode: v } }, 'Address lookup', [gUrl])),
               geoStatus(), gUrl.el, gRound.el], ['web.settings.general.address-lookup', 'docs.env.tesla-api.nominatim-proxy']),
           setting('Address language', 'Street and place names are written in this language where the data has it; otherwise in the local language.', gLang.el, ['web.settings.general.address-language', 'web.settings.general.address-language-error', 'web.settings.general.address-language-invalid']),
-          setting('Map tiles', 'Offline tiles come from Sentry Mate itself. An online map (satellite pictures by default) is asked by each viewer’s browser for the map pictures, so it sees the map area and this server’s address (as Referer, which some tile servers such as OpenStreetMap need; never a page or a car); only turn it on if you accept that.',
+          setting('Map tiles', 'Offline tiles come from Sentry Mate itself. An online map (the OpenStreetMap street map by default) is asked by each viewer’s browser for the map pictures, so it sees the map area and this server’s address (as Referer, which some tile servers such as OpenStreetMap need; never a page or a car); only turn it on if you accept that.',
             [sChoice('Map tiles', [['offline', 'Offline'], ['online', 'Online source']], t.mode, (v) => patch({ tiles: { mode: v } }, 'Map tiles', [tUrl])), tileStatus(t), tSource, tTerms, tUrl.el, tAttr.el], 'web.shell.map-tiles'),
           tLabels, tStyles,
           offlineRow,

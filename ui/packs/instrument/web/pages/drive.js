@@ -232,10 +232,15 @@ export async function mount(ctx) {
     for (const b of colourSeg.querySelectorAll('[data-colour]')) b.setAttribute('aria-pressed', String(b.dataset.colour === kind));
     if (m && m.map.getLayer('route-line')) m.map.setPaintProperty('route-line', 'line-gradient', gradient(kind));
   }
+  // the page is ready once the map is made (not its tiles): its credit and style switch then sit at the map's foot and
+  // the overlays above them stay where they are
+  let mapMade = null;
+  const mapUp = new Promise((res) => { mapMade = res; });
   (async () => {
-    if (coords.length < 2) { mapEl.append(mapFallback('No route was recorded for this drive.')); return; }
+    if (coords.length < 2) { mapEl.append(mapFallback('No route was recorded for this drive.')); mapMade(); return; }
     try {
       m = await createMap(mapEl, ctx, { bounds: boundsOf(coords) });
+      mapMade();
       if (!m) return;
       await m.ready;
       if (!ctx.alive()) return;
@@ -246,7 +251,7 @@ export async function mount(ctx) {
       routePin(m, coords[0], 'A');
       routePin(m, coords[coords.length - 1], 'B');
       m.frame(() => m.map.fitBounds(boundsOf(coords), { padding: padClear(mapEl, legend, { left: 40, top: 24, right: 60, bottom: 50 }), maxZoom: 16, duration: 0 }));
-    } catch (e) { console.warn(e); replace(mapEl, mapFallback()); }
+    } catch (e) { console.warn(e); replace(mapEl, mapFallback()); mapMade(); }
   })();
   function hoverAt(i) {
     const lat = series.values.lat?.[i], lon = series.values.lon?.[i];
@@ -312,7 +317,7 @@ export async function mount(ctx) {
     return { df, block, target, valEl };
   });
   replace(chartsHost, blocks.map((b) => b.block));
-  ctx.ready();
+  mapUp.then(() => ctx.ready());
   const idle = () => blocks.forEach(({ df, valEl }) => { valEl.textContent = ''; });
   idle();
 

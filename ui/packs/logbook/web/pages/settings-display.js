@@ -16,7 +16,8 @@ import { choice, switchField, field, form, setFieldError, carOptions } from '../
 import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, LABELS_TEXT, STYLES_TEXT, presetHosts, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 import { currentPrefs, onPrefs } from '../core/prefs.js';
 import { savePref, currentAbout } from '../core/frame.js';
-import { SIZES, sizeState, setSize, sizeNote, display } from '../core/display.js';
+import { SIZES, sizeState, setSize, setDeviceSize, onSize, sizeNote, display } from '../core/display.js';
+import { deviceSizeOptions, deviceSizeNote } from '../shared/devicesize.js';
 import { packChoices, packLabel } from '../shared/packs.js';
 import { buildLabel, buildTitle, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 
@@ -128,6 +129,10 @@ export async function mount(ctx) {
     onchange: (v) => { setSize({ size: Number(v) }); save({ interface_size: Number(v) }); } });
   const follow = switchField({ label: 'Follow screen size', checked: sizeState().follow, onchange: (on) => { setSize({ follow: on }); save({ follow_screen: on }); } });
   const sizeNoteEl = h('p', { class: 'setting-note' });
+  // kept in this browser only (shared/devicesize.js), never with the account
+  const device = choice({ label: 'Interface size on this device', labelHidden: true, name: 'device_size_page', value: sizeState().device ? String(sizeState().device) : 'auto', cls: 'segmented-sizes',
+    options: deviceSizeOptions().map((o) => [o.value, o.value === 'auto' ? 'Automatic' : o.label.replace(/\u00a0/g, '')]), onchange: (v) => setDeviceSize(v) });
+  const deviceNoteEl = h('p', { class: 'setting-note' });
 
   const defaultLine = (el, kind, mine) => {
     const d = kind === 'range' ? srv.range : srv.units?.[kind];
@@ -164,10 +169,13 @@ export async function mount(ctx) {
     langEx.textContent = sample ? `Numbers and dates now look like this: ${sample}. Words stay in English.` : '';
     size.set(sizeState().size); follow.set(sizeState().follow);
     sizeNoteEl.textContent = sizeNote();
+    device.set(sizeState().device ? String(sizeState().device) : 'auto');
+    deviceNoteEl.textContent = deviceSizeNote(sizeState().device, { account: sizeState().size });
     if (srv && feet() !== drawnFeet) redraw(srv);
   };
   ctx.onCleanup(onPrefs(sync));
   ctx.onCleanup(display.onChange(sync));
+  ctx.onCleanup(onSize(sync));
   const mq = matchMedia('(prefers-color-scheme: dark)');
   mq.addEventListener('change', sync);
   ctx.onCleanup(() => mq.removeEventListener('change', sync));
@@ -233,7 +241,8 @@ export async function mount(ctx) {
       setting('Map colours', `${MAP_COLORS_TEXT} Satellite pictures are never dimmed, so this does not apply to them.`, mapColors),
       setting('Language', 'How dates, times and numbers are written (for example 1,234.5 or 1.234,5, and the first day of the week).', h('div', { class: 'lang-control' }, lang, langNote),
         { cover: ['shell.locale', 'web.settings.general.ui-language', 'web.shell.locale-negotiation'], extra: langEx }),
-      setting('Interface size', 'Text, controls, tables, charts and maps grow or shrink together. With “Follow screen size” on, big screens such as 4K monitors get larger text by themselves. Browser zoom works on top.', h('div', { class: 'size-control' }, size, follow, sizeNoteEl), { cls: 'setting-size' }),
+      setting('Interface size on this device', 'This device only: kept in this browser, not with your account, so a laptop with large display scaling and a desktop monitor can each have their own size. Automatic uses your account’s Interface size below; a fixed size draws everything at that percent of the standard size, with nothing added for big screens.', h('div', { class: 'size-control' }, device, deviceNoteEl), { cls: 'setting-size' }),
+      setting('Interface size', 'Your account’s size, on every device left at Automatic. Text, controls, tables, charts and maps grow or shrink together. With “Follow screen size” on, big screens such as 4K monitors get larger text by themselves. Browser zoom works on top.', h('div', { class: 'size-control' }, size, follow, sizeNoteEl), { cls: 'setting-size' }),
       setting('UI pack', 'The look of the whole app. Admins install other packs; your data and settings stay the same in every pack.',
         h('div', { class: 'lang-control' }, h('div', { class: 'pack-control' }, packSel, switchBtn), packNote)),
       setting('Main car', 'The car shown first on the pages that do not name one, such as the car overview opened from the menu. With none chosen, the car you looked at last is shown.',
@@ -520,9 +529,9 @@ export async function mount(ctx) {
         if (v === 'online' && !s.tiles.online_url && !tilePresets.length) return refuse(tiles, s.tiles.mode, tileUrlField, 'Save an https:// tile address with {z}, {x} and {y} here first; then choose Online tile server.');
         quick({ tiles: { mode: v } }, () => tiles.set(s.tiles.mode));
       } });
-    // the online preset in use (maps/config says which, the default satellite one when none was picked yet)
+    // the online preset in use (maps/config says which, the default street map when none was picked yet)
     const mt = (maps && maps.tiles) || {};
-    const presetId = mt.preset || s.tiles.preset || (tilePresets.find((x) => x.url === s.tiles.online_url) || {}).id || (s.tiles.online_url ? 'custom' : (tilePresets[0] || {}).id || 'custom');
+    const presetId = mt.preset || s.tiles.preset || (tilePresets.find((x) => x.url === s.tiles.online_url) || {}).id || (s.tiles.online_url ? 'custom' : (tilePresets.find((x) => x.id === 'osm') || tilePresets[0] || {}).id || 'custom');
     const tilePreset = tilePresets.find((x) => x.id === presetId) || null;
     let tileHost = null;
     try { tileHost = s.tiles.online_url ? new URL(s.tiles.online_url.replace(/\{[a-z]\}/g, '0')).host : null; } catch { tileHost = null; }
@@ -539,9 +548,9 @@ export async function mount(ctx) {
       h('div', { class: 'tiles-control' }, h('p', { class: 'setting-note' }, offlineSummary(maps && maps.tiles)), offlineFile,
         h('ol', { class: 'setting-note offline-steps' }, OFFLINE_STEPS.map((x) => h('li', null, x))), h('p', { class: 'setting-note' }, OFFLINE_NOTE)));
     offlineRow.id = OFFLINE_ANCHOR;
-    // the presets (satellite first), each with where its pictures come from, how deep it zooms and where it covers
+    // the presets (the default street map first), each with where its pictures come from, how deep it zooms and where it covers
     const presetNote = (x) => [presetHosts(x).join(', '), `zoom up to ${x.max_zoom}`, x.region ? `${x.region} only: elsewhere the map is blank` : null].filter(Boolean).join(' · ');
-    const sortedPresets = [...tilePresets].sort((a, b) => (a.kind === 'satellite' ? 0 : 1) - (b.kind === 'satellite' ? 0 : 1));
+    const sortedPresets = [...tilePresets].sort((a, b) => (a.id === 'osm' ? 0 : 1) - (b.id === 'osm' ? 0 : 1));
     const radios = [];
     const pickPreset = (v) => {
       for (const r of radios) r.checked = r.value === v;
@@ -633,7 +642,7 @@ export async function mount(ctx) {
         setting('Address details', 'Language, online service and rounding.', addr, { cls: 'setting-form' }),
         setting('Map tiles', `The pictures under every map. Credit: ${s.tiles.attribution || 'shown on the map'}; zoom up to ${s.tiles.max_zoom}.`, h('div', { class: 'tiles-control' }, tiles, tileNow), { cover: 'web.shell.map-tiles' }),
         offlineRow,
-        setting('Online map', 'Only used with online tiles. Satellite is the default; a preset fills in its address, credit and zoom, or type your own address below.', h('div', { class: 'tiles-control' }, tileSource, tileTerms, tileForm), { cls: 'setting-form' }),
+        setting('Online map', 'Only used with online tiles. The OpenStreetMap street map is the default; a preset fills in its address, credit and zoom, or type your own address below.', h('div', { class: 'tiles-control' }, tileSource, tileTerms, tileForm), { cls: 'setting-form' }),
         labelsSwitch ? setting('Place names and roads', LABELS_TEXT, labelsSwitch) : null,
         stylesList ? setting('Maps people can switch to', STYLES_TEXT, stylesList, { cls: 'setting-form' }) : null,
         setting('Outbound proxy', 'If this server may only reach the internet through a proxy: online address look-ups and map tiles the server downloads go through it. Viewers’ browsers loading online tiles use their own connection.',

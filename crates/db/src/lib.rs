@@ -31,7 +31,8 @@
 //! db/kv/                                       the key/value store (names hashed, see kv)
 //! db/cars/<id>/drives.* charges.* states.* updates.*   a car's tables (snapshot + journal)
 //! db/cars/<id>/seg/<series>.<can|tesla-api|teslamate>/<YYYY-MM-DD>.*     its time series per UTC day (see segment)
-//! db/cars/<id>/meta                            how far its days are packed
+//! db/cars/<id>/seg/<series>.<can|tesla-api|teslamate>/<YYYY-MM>.pack     a finished month's days in one file
+//! db/cars/<id>/meta                            how far its days are settled
 //! ```
 //!
 //! # Security
@@ -71,6 +72,13 @@
 //! day reads (unpack and decode, every field) in about 7 ms; the largest possible day (86,400 points, awake all
 //! day) in about 25 ms, some 19 ms of it the system handing over the 43 MB its points take in memory; the 4 fields
 //! a chart shows of that day read in about 8 ms ([`Db::read_fields`]).
+//!
+//! Finished months are then packed into one file a series ([`Db::compact_series`], see [`segment`]): the days'
+//! compressed bytes as they are, so nothing is unpacked or compressed again and every value reads as before. What
+//! it saves is what files cost: each takes whole blocks on disk and carries the vault's overhead, and many days are
+//! tiny. Measured on a made-up year of history of one car (8 series, 4.9 million points, every day settled): 1,843
+//! files of 11.6 MB taking 16.9 MB on disk become 187 files taking 12.1 MB; the pass took 0.2 s in 34 steps, none
+//! holding the car's lock longer than 18 ms; reading every point takes the same 3 s before and after.
 
 mod backup;
 mod cars;
@@ -83,7 +91,6 @@ mod journal;
 mod kv;
 mod logged;
 mod plain;
-mod readonly;
 mod rows;
 pub mod segment;
 mod table;
@@ -91,10 +98,9 @@ mod table;
 pub use backup::{BackupReport, RestoreReport};
 pub use codec::Level;
 pub use error::{Error, Result};
-pub use file::FORMAT_VERSION;
+pub use file::{FORMAT_VERSION, allocated};
 pub use fleet::{FleetCursor, FleetEntry, FleetPage, FleetQuery, Summary};
-pub use kv::{Kv, MAX_VALUE};
-pub use readonly::Reader;
+pub use kv::{BUNDLE_TARGET, Kv, KvCompacted, KvUsage, MAX_VALUE};
 pub use rows::{Cursor, Item, MAX_PAGE, Order, Page, Query, StateRow, Table, Tally, Totals, UpdateRow};
 pub use segment::{DAY_MS, DayInfo, END_MS, Fields, Point, keeping_days};
 
@@ -133,6 +139,9 @@ pub enum Crash {
     BeforeJournalRemoved,
     /// A car's table is written; its summary in the fleet is not yet.
     BeforeSummary,
+    /// A pack (a month of days, a bundle of key/value records) is in place; the loose files it took in are not yet
+    /// removed.
+    BeforeLooseRemoved,
 }
 
 #[derive(Debug, Clone)]
@@ -195,6 +204,17 @@ pub struct Deleted {
 pub struct Settled {
     pub tables: usize,
     pub days: usize,
+}
+
+/// What a step of [`Db::compact_series`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SeriesCompacted {
+    /// Days whose journal was folded in, or whose snapshot was packed again at the cold level.
+    pub days_folded: usize,
+    /// Days taken into (or dropped from) their month's pack.
+    pub days_packed: usize,
+    /// There is more to do: call again.
+    pub more: bool,
 }
 
 /// What a car's data is at, in this process: each number moves on (to a value never used before) when that part
@@ -766,11 +786,14 @@ impl Db {
     ) -> Result<Vec<P>> {
         let stream = stream.into();
         // days of a snapshot alone are unpacked without the car's lock, days with a journal under it; all are
-        // decoded after it, so several answers read one car at once
-        let dir = self.with_car(car, |_, _, dir| Ok(dir.to_path_buf()))?;
+        // decoded after it, so several answers read one car at once. Which days there are is looked up under it: a
+        // month being packed has its days as files or in the pack, and a listing in between could miss both
         let ctx = &self.inner.ctx;
-        let days = segment::plains::<P>(ctx, &dir, stream, from_ms, to_ms, &mut |files| {
-            self.with_car(car, |_, _, _| segment::journaled_plain::<P>(ctx, files))
+        let (dir, days) = self.with_car(car, |_, _, dir| {
+            Ok((dir.to_path_buf(), segment::days_in::<P>(ctx, dir, stream, from_ms, to_ms)?))
+        })?;
+        let days = segment::plains::<P>(ctx, &dir, stream, &days, &mut |day| {
+            self.with_car(car, |_, _, dir| segment::journaled_plain::<P>(ctx, dir, stream, day))
         })?;
         segment::points_of(days, from_ms, to_ms)
     }
@@ -785,12 +808,13 @@ impl Db {
         fields: &[&str],
     ) -> Result<Fields> {
         let stream = stream.into();
-        // days of a snapshot alone are unpacked without the car's lock, days with a journal under it; all are
-        // decoded after it, so several answers read one car at once
-        let dir = self.with_car(car, |_, _, dir| Ok(dir.to_path_buf()))?;
+        // as [`Db::read_points`]: a day with a journal under the car's lock, the others without it
         let ctx = &self.inner.ctx;
-        let days = segment::plains::<P>(ctx, &dir, stream, from_ms, to_ms, &mut |files| {
-            self.with_car(car, |_, _, _| segment::journaled_plain::<P>(ctx, files))
+        let (dir, days) = self.with_car(car, |_, _, dir| {
+            Ok((dir.to_path_buf(), segment::days_in::<P>(ctx, dir, stream, from_ms, to_ms)?))
+        })?;
+        let days = segment::plains::<P>(ctx, &dir, stream, &days, &mut |day| {
+            self.with_car(car, |_, _, dir| segment::journaled_plain::<P>(ctx, dir, stream, day))
         })?;
         segment::fields_of::<P>(days, from_ms, to_ms, fields)
     }
@@ -799,20 +823,20 @@ impl Db {
     /// (what was worked out from a day can be kept with it).
     pub fn day_stamps<P: Point>(&self, car: CarId, stream: impl Into<Stream>) -> Result<Vec<(u64, u64)>> {
         let stream = stream.into();
-        self.with_car(car, |_, _, dir| segment::day_stamps::<P>(dir, stream))
+        self.with_car(car, |db, _, dir| segment::day_stamps::<P>(&db.inner.ctx, dir, stream))
     }
 
     /// The days a series has.
     pub fn days<P: Point>(&self, car: CarId, stream: impl Into<Stream>) -> Result<Vec<DayInfo>> {
         let stream = stream.into();
-        self.with_car(car, |_, _, dir| segment::days::<P>(dir, stream))
+        self.with_car(car, |db, _, dir| segment::days::<P>(&db.inner.ctx, dir, stream))
     }
 
     /// One key of what the files of a series' days in `[from_ms, to_ms)` are now: it changes whenever a point in
     /// those days is written or removed (what was read from them can be kept with it).
     pub fn days_stamp<P: Point>(&self, car: CarId, stream: impl Into<Stream>, from_ms: u64, to_ms: u64) -> Result<u64> {
         let stream = stream.into();
-        self.with_car(car, |_, _, dir| segment::days_stamp::<P>(dir, stream, from_ms, to_ms))
+        self.with_car(car, |db, _, dir| segment::days_stamp::<P>(&db.inner.ctx, dir, stream, from_ms, to_ms))
     }
 
     /// Bytes a car's time series take on disk.
@@ -821,26 +845,59 @@ impl Db {
     }
 
     /// Housekeeping for a car (run when idle): packs its finished days (before `before_ms`) at the cold level and
-    /// folds its tables' journals.
+    /// folds its tables' journals. Every day before `before_ms` with a journal is folded, however old (a late
+    /// upload, an import into old days). The days stay files of their own: [`Db::compact_series`] also packs the
+    /// months.
     pub fn settle(&self, car: CarId, before_ms: u64) -> Result<Settled> {
-        let before = before_ms / DAY_MS * DAY_MS;
         self.with_car(car, |db, data, dir| {
-            let ctx = &db.inner.ctx;
-            let mut out = Settled::default();
-            let from = data.meta(ctx, dir)?.settled_before_ms;
-            if before > from {
-                for stream in Stream::ALL {
-                    out.days += segment::settle::<Sample>(ctx, dir, stream, from, before)?;
-                    out.days += segment::settle::<ChargePoint>(ctx, dir, stream, from, before)?;
-                }
-                data.meta(ctx, dir)?.settled_before_ms = before;
-                data.save_meta(ctx, dir)?;
-            }
+            let mut out =
+                Settled { days: db.compact_days(data, dir, before_ms, usize::MAX, false)?.days_folded, tables: 0 };
             out.tables += db.fold_table::<model::Drive>(data, car, dir)?;
             out.tables += db.fold_table::<model::Charge>(data, car, dir)?;
             out.tables += db.fold_table::<StateRow>(data, car, dir)?;
             out.tables += db.fold_table::<UpdateRow>(data, car, dir)?;
             Ok(out)
+        })
+    }
+
+    /// A pass over a car's time series, under its lock (see [`segment::compact`]); notes how far its days are
+    /// known to be settled, which later passes need not look at again.
+    fn compact_days(
+        &self,
+        data: &mut CarData,
+        dir: &Path,
+        before_ms: u64,
+        max_days: usize,
+        packing: bool,
+    ) -> Result<SeriesCompacted> {
+        let ctx = &self.inner.ctx;
+        let before = before_ms / DAY_MS * DAY_MS;
+        let known = data.meta(ctx, dir)?.settled_before_ms;
+        let c = segment::compact(ctx, dir, known, before, max_days, packing)?;
+        if c.known_cold_before != known {
+            data.meta(ctx, dir)?.settled_before_ms = c.known_cold_before;
+            data.save_meta(ctx, dir)?;
+        }
+        Ok(SeriesCompacted { days_folded: c.folded, days_packed: c.packed, more: c.more })
+    }
+
+    /// A step of compacting a car's time series, losslessly (run it again, with pauses, while it says `more`): at
+    /// most about `max_days` days of work under one hold of the car's lock, oldest first. First the days that ended
+    /// before `before_ms` are settled as [`Db::settle`] does (journals folded in, snapshots at the cold level); then
+    /// each month that ended before `before_ms` is packed into one file, its days' snapshots as they are (see
+    /// [`segment`]; a month is packed whole, so a step may go a month past `max_days`). Days of a month not over
+    /// stay files of their own. A crash at any point leaves every day readable; the next step carries on.
+    pub fn compact_series(&self, car: CarId, before_ms: u64, max_days: usize) -> Result<SeriesCompacted> {
+        self.with_car(car, |db, data, dir| db.compact_days(data, dir, before_ms, max_days, true))
+    }
+
+    /// How many days [`Db::compact_series`] would still fold or pack for a car (0: nothing to do). Cheap: listings
+    /// of its series' folders only. A snapshot not yet known to be at the cold level counts, though the pass may
+    /// find it is.
+    pub fn series_pending(&self, car: CarId, before_ms: u64) -> Result<usize> {
+        self.with_car(car, |db, data, dir| {
+            let known = data.meta(&db.inner.ctx, dir)?.settled_before_ms;
+            segment::pending(dir, known, before_ms / DAY_MS * DAY_MS)
         })
     }
 

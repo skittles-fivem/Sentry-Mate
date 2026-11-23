@@ -16,8 +16,13 @@
 // same formula: change both together.
 //
 // Canvases (uPlot charts) and maps draw in device pixels, so they need to hear when the root size or
-// the pixel ratio changes: display.onChange(fn). Two standard signals, no polling: a 1rem square
+// the pixel ratio changes: display.onChange(fn).
+//
+// The Interface size on this device (shared/devicesize.js: 80 to 125 %, or Automatic) is kept in this browser
+// only and wins here when set: Auto 1 and that size, whatever the account says. Two standard signals, no polling: a 1rem square
 // watched by a ResizeObserver in device pixels, and a resolution media query.
+
+import { readDeviceSize, writeDeviceSize, onDeviceSizeStorage } from '../shared/devicesize.js';
 
 const root = document.documentElement;
 
@@ -49,21 +54,38 @@ const clampSize = (v) => (Number.isFinite(+v) ? Math.max(SIZE_MIN, Math.min(SIZE
 const cached = readCache();
 let size = clampSize(cached?.size ?? 100);
 let follow = cached?.follow !== false;
+let device = readDeviceSize();
 const sizeListeners = new Set();
 
 /** Put the current Auto and Interface size on <html> (CSSOM, which the page's CSP allows). */
 export function applySize() {
   const auto = follow ? autoFactor() : 1;
-  root.style.setProperty('--auto', String(auto));
-  root.style.setProperty('--ui-size', String(size / 100));
+  root.style.setProperty('--auto', String(device ? 1 : auto));
+  root.style.setProperty('--ui-size', String((device || size) / 100));
+  if (device) root.dataset.uiDevice = String(device); else delete root.dataset.uiDevice;
   root.dataset.sized = '';
   writeCache();
-  for (const f of [...sizeListeners]) { try { f({ size, follow, auto }); } catch (e) { console.error(e); } }
+  for (const f of [...sizeListeners]) { try { f({ size, follow, auto, device }); } catch (e) { console.error(e); } }
   check();
 }
 
-/** { size, follow, auto }: the person's choice and the Auto factor of this screen. */
-export const sizeState = () => ({ size, follow, auto: follow ? autoFactor() : 1 });
+/**
+ * { size, follow, auto, device }: the account's choice, the Auto factor of this screen, and this browser's own
+ * size (null for Automatic), which wins when set.
+ */
+export const sizeState = () => ({ size, follow, auto: follow ? autoFactor() : 1, device });
+
+/**
+ * The Interface size on this device: 80, 90, 100, 110 or 125 (%), or null / 'auto' for Automatic (the
+ * account's size). Kept in this browser only, never saved to the account; applied at once.
+ */
+export function setDeviceSize(v) {
+  device = writeDeviceSize(v);
+  applySize();
+  return device;
+}
+// another tab of this browser changed it
+onDeviceSizeStorage((v) => { if (v !== device) { device = v; applySize(); } });
 /** Set the Interface size (percent) and Follow screen size; values that are not given stay. */
 export function setSize({ size: s = size, follow: f = follow } = {}) {
   const ns = clampSize(s), nf = f !== false;
@@ -136,6 +158,7 @@ export function sizeNote() {
   const pct = Math.round((display.rem / display.standard) * 100);
   const s = sizeState();
   const auto = Math.round(s.auto * 100);
+  if (device) return `Text on this screen: ${pct}% of standard. This device uses its own size (${device}%); your account’s size (${size}%) applies on your other devices.`;
   return follow
     ? `Text on this screen: ${pct}% of standard (Auto ${auto}% for this screen × size ${size}%).`
     : `Text on this screen: ${pct}% of standard (size ${size}%; not following the screen).`;

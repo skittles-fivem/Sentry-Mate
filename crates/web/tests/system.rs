@@ -170,11 +170,9 @@ async fn health_storage_and_the_servers_figures() {
             "unknown_ms",
             "logs_waiting",
             "rebuild_pending",
-            "gps_disagreement",
             "uploads_enabled",
         ],
     );
-    assert_eq!(h["gps_disagreement"], Value::Null, "SMO alone: nothing to compare: {h}");
     assert_eq!(h["car"], json!(car));
     assert_eq!(h["uploads_enabled"], json!(false), "no upload token: {h}");
     assert_eq!(h["keys"].as_array().unwrap().len(), 1, "{h}");
@@ -219,6 +217,72 @@ async fn health_storage_and_the_servers_figures() {
     assert!(ss["free_bytes"].as_u64().is_some(), "{ss}");
     assert!(ss["growth"].as_array().unwrap().len() <= 30);
     assert_eq!(code(&mut watch, "/api/v1/system/storage").await, (403, Some("not_allowed".into())));
+    // the Storage panel's detail: every category with its files and bytes, and compaction as it is
+    let d = ok(&mut admin, "/api/v1/system/storage/detail").await;
+    has(&d, &["categories", "total_bytes", "total_disk_bytes", "free_bytes", "compaction"]);
+    let cats = d["categories"].as_array().unwrap();
+    for c in cats {
+        has(c, &["key", "group", "label", "files", "bytes", "disk_bytes"]);
+    }
+    let keys: Vec<&str> = cats.iter().map(|c| c["key"].as_str().unwrap()).collect();
+    assert!(keys.contains(&"logs.raw") && keys.contains(&"logs.sidecars") && keys.contains(&"kv.engine"), "{keys:?}");
+    let disk: Vec<u64> = cats.iter().map(|c| c["disk_bytes"].as_u64().unwrap()).collect();
+    assert!(disk.windows(2).all(|w| w[0] >= w[1]), "largest first: {disk:?}");
+    assert_eq!(d["total_disk_bytes"].as_u64().unwrap(), disk.iter().sum::<u64>());
+    has(
+        &d["compaction"],
+        &[
+            "status",
+            "automatic",
+            "started_ms",
+            "finished_ms",
+            "step",
+            "done",
+            "total",
+            "last_saved_bytes",
+            "saved_bytes",
+        ],
+    );
+    assert_eq!(d["compaction"]["status"], json!("idle"), "{d}");
+    assert_eq!(d["compaction"]["finished_ms"], Value::Null, "no pass yet: {d}");
+    assert_eq!(code(&mut watch, "/api/v1/system/storage/detail").await, (403, Some("not_allowed".into())));
+    // Compact now: an admin's, in the background, recorded in the audit log; every answer reads the same after it
+    let r = watch.post("/api/v1/system/storage/compact", json!({})).await;
+    assert_eq!((r.status, r.code()), (403, Some("not_allowed".into())), "{}", r.text());
+    let health_before = ok(&mut admin, &format!("/api/v1/cars/{car}/health")).await;
+    let days_before = ok(&mut admin, &format!("/api/v1/cars/{car}/storage?kinds=series")).await;
+    let r = admin.post("/api/v1/system/storage/compact", json!({})).await;
+    assert_eq!(r.status, 202, "{}", r.text());
+    has(&r.json()["compaction"], &["status", "saved_bytes"]);
+    let mut done = Value::Null;
+    for _ in 0..600 {
+        done = ok(&mut admin, "/api/v1/system/storage/detail").await;
+        if done["compaction"]["status"] != json!("running") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(done["compaction"]["status"], json!("idle"), "{done}");
+    assert!(done["compaction"]["finished_ms"].as_u64().is_some(), "{done}");
+    assert!(done["compaction"]["last_saved_bytes"].as_u64().is_some(), "{done}");
+    let keys: Vec<&str> = done["categories"].as_array().unwrap().iter().map(|c| c["key"].as_str().unwrap()).collect();
+    assert!(
+        keys.contains(&"logs.packs") && !keys.contains(&"logs.sidecars"),
+        "the made-up days are long over: {keys:?}"
+    );
+    assert!(
+        done["total_disk_bytes"].as_u64().unwrap() < d["total_disk_bytes"].as_u64().unwrap(),
+        "smaller on disk: {} -> {}",
+        d["total_disk_bytes"],
+        done["total_disk_bytes"]
+    );
+    let health_after = ok(&mut admin, &format!("/api/v1/cars/{car}/health")).await;
+    assert_eq!(health_after["logs"], health_before["logs"], "the logs and their checks read as before");
+    let days_after = ok(&mut admin, &format!("/api/v1/cars/{car}/storage?kinds=series")).await;
+    let dates = |v: &Value| -> Vec<String> {
+        v["items"].as_array().unwrap().iter().map(|d| format!("{}|{}", d["date"], d["source"])).collect()
+    };
+    assert_eq!(dates(&days_after), dates(&days_before), "the same days are there");
     let sh = ok(&mut admin, "/api/v1/system/health").await;
     has(&sh, &["read_ms", "uptime_ms", "versions", "db", "ingest", "geocoder", "housekeeping_last_ms", "timings_ms"]);
     has(&sh["versions"], &["server", "api", "db_format", "timeline_rules", "import_mapping"]);

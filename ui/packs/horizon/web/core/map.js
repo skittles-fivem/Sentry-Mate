@@ -2,7 +2,7 @@
 // (shared/maptiles.js): GET /api/v1/maps/config -> the offline map file Sentry Mate serves (raster, or a
 // Protomaps vector file drawn with a plain style); the online source the owner turned on (only then does
 // the browser ask an outside server); otherwise no tiles: the map shows the track and markers on a plain
-// background under a "No map tiles yet" note (for an admin, a one-click satellite map switch). Tiles that
+// background under a "No map tiles yet" note (for an admin, a one-click online map switch). Tiles that
 // fail show a short note with the cause. In the dark theme raster tiles are dimmed (never inverted, so
 // streets, labels and water stay readable) unless the person chose original colours; satellite photos are
 // never dimmed, and the page's lines, outlines and markers get a dark halo over them. An interactive map
@@ -10,7 +10,7 @@
 // Maps stay sharp and in proportion: MapLibre reads the pixel ratio only in resize(), so the map is
 // resized when the pixel ratio or the root size changes; line widths and circle sizes added with
 // handle.addLayer(def, sized) are functions of rpx() and are set again; the camera framing (handle.frame)
-// runs again after a resize until the person moves the map. The attribution is text (escaped).
+// runs again after a resize until the person moves the map. The attribution is text, shown from the start.
 
 import * as api from '../shared/api.js';
 import { h, cssVar, esc, styleSheet } from '../shared/dom.js';
@@ -103,7 +103,13 @@ export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bo
     maxZoom: Math.max(src.maxZoom, 18),
     ...(bounds ? { bounds } : {}),
   });
-  if (src.template) map.addControl(new ml.AttributionControl({ compact: false }), 'bottom-right');
+  // the credit is the page's own text, there from the start: MapLibre's control fills in only once the tiles have
+  // loaded, after the page is ready, and the overlays above it would then move
+  const creditText = h('div', { class: 'maplibregl-ctrl-attrib-inner' });
+  const credit = h('div', { class: 'maplibregl-ctrl maplibregl-ctrl-attrib' }, creditText);
+  const setCredit = (s) => { creditText.textContent = s.attribution || ''; credit.classList.toggle('maplibregl-attrib-empty', !s.attribution); };
+  setCredit(src);
+  if (src.template) map.addControl({ onAdd: () => credit, onRemove: () => credit.remove() }, 'bottom-right');
   const errorNote = (text) => h('p', { class: 'map-note map-note--error', role: 'status' }, text);
   let offErrors = watchTileErrors(map, container, src, errorNote);
   if (interactive) map.addControl(new ml.NavigationControl({ showCompass: false }), 'top-right');
@@ -144,13 +150,16 @@ export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bo
     map.setMaxZoom(Math.max(src.maxZoom, 18));
     container.dataset.imagery = String(onImagery(src));
     handle.tiles = src;
+    setCredit(src);
     offErrors(); offErrors = watchTileErrors(map, container, src, errorNote);
     watchTilePolicy(src.template && !src.offline ? src.template : null);
   };
   const styleSwitch = interactive ? mapStyleSwitch(cfg, getPrefs(), {
     classes: { box: 'map-style maplibregl-ctrl', button: 'map-style-btn', active: 'is-active' },
     label: 'Map style',
-    onChange: (next) => { if (map.loaded() || map.isStyleLoaded()) swap(next); else map.once('load', () => swap(next)); },
+    // after 'load', not while the style is "loaded": map.loaded() and isStyleLoaded() read false while any tiles or
+    // sources are still loading, long after 'load' fired (which never fires again), and a pick then was lost
+    onChange: (next) => { ready.then(() => { if (ctx.alive()) swap(next); }); },
   }) : null;
   // bottom right, above the credit: the page's own cards sit at the top
   if (styleSwitch) map.addControl({ onAdd: () => styleSwitch, onRemove: () => styleSwitch.remove() }, 'bottom-right');

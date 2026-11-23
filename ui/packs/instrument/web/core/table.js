@@ -31,6 +31,11 @@ import { errorWords } from './states.js';
  *   autoMore,                           an API list: the next page loads as the foot scrolls into view
  *                                       (IntersectionObserver); the button stays, for the keyboard
  *   moreLabel,                          the button's words (default "Show more")
+ *   box,                                true or the box's accessible name: the rows scroll inside a box (the
+ *                                       page's CSS gives .tbl-box its height, from the start), and with autoMore
+ *                                       the next page loads as the end of the box scrolls into view; the box
+ *                                       is a focusable region (arrow keys scroll it), data-below while rows
+ *                                       are hidden under its bottom edge (for a fade)
  * }) -> { el, reload(params), setParams(patch), rows(), done() }
  *
  * A column's sort is the API's sort name (a string) for API lists, or true for local rows (sorted by
@@ -61,26 +66,49 @@ export function dataTable(ctx, opts) {
   const footText = h('span');
   const foot = h('div', { class: 'tbl-foot', hidden: true }, footText, moreBtn);
   const noteEl = opts.note ? h('p', { class: 'note tbl-note', cover: opts.noteCover || null }, opts.note) : null;
+  const boxEnd = opts.box ? h('div', { class: 'tbl-box-end', 'aria-hidden': 'true' }) : null;
+  const scroller = h('div', opts.box
+    ? { class: 'tbl-scroll tbl-box', tabindex: '0', role: 'region', 'aria-label': typeof opts.box === 'string' ? opts.box : opts.label || opts.title || null }
+    : { class: 'tbl-scroll' }, table, boxEnd);
   const el = h('section', { class: ['panel', 'tbl-panel', opts.cls], 'aria-label': opts.label || opts.title || null },
-    bar, noteEl, h('div', { class: 'tbl-scroll' }, table), foot);
+    bar, noteEl, scroller, foot);
   if (opts.cover) cover(el, opts.cover);
 
-  // autoMore: the foot is the sentinel. New rows go under the ones on screen (appended, never re-drawn), so
-  // nothing above moves; after each page, a foot still in view (a tall screen) asks for the next one.
-  const AHEAD = 240;
+  // autoMore: the foot is the sentinel (in a box: the end of the box, watched against the box). New rows go
+  // under the ones on screen (appended, never re-drawn), so nothing above moves; after each page, a foot
+  // still in view (a tall screen, a box not yet full) asks for the next one.
+  const AHEAD = opts.box ? 96 : 240;
   let watcher = null;
   if (opts.autoMore && opts.path && typeof IntersectionObserver === 'function') {
     watcher = new IntersectionObserver((entries) => {
       if (!ctx.alive()) { watcher.disconnect(); return; }
-      if (entries.some((e) => e.isIntersecting)) more();
-    }, { rootMargin: `0px 0px ${AHEAD}px 0px` });
-    watcher.observe(foot);
+      if (entries.some((e) => e.isIntersecting) && !foot.hidden) more();
+    }, { root: opts.box ? scroller : null, rootMargin: `0px 0px ${AHEAD}px 0px` });
+    watcher.observe(boxEnd || foot);
     ctx.onCleanup?.(() => watcher.disconnect());
   }
   function footNear() {
     if (!watcher || foot.hidden || !foot.isConnected) return false;
+    if (opts.box) {
+      const b = scroller.getBoundingClientRect();
+      return b.height > 0 && boxEnd.getBoundingClientRect().top < b.bottom + AHEAD;
+    }
     const r = foot.getBoundingClientRect();
     return r.height > 0 && r.top < (window.innerHeight || 0) + AHEAD && r.bottom > 0;
+  }
+  // a box: data-below while rows are hidden under its bottom edge
+  function boxEdge() {
+    if (!opts.box) return;
+    scroller.toggleAttribute('data-below', scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight > 1);
+  }
+  if (opts.box) {
+    scroller.addEventListener('scroll', boxEdge, { passive: true });
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(() => boxEdge());
+      ro.observe(scroller);
+      ro.observe(table);
+      ctx.onCleanup?.(() => ro.disconnect());
+    }
   }
 
   function sortParams() {
@@ -214,6 +242,7 @@ export function dataTable(ctx, opts) {
     if (!freshQuiet) {
       loaded = []; done = false; total = null;
       replace(tbody, skeleton());
+      if (opts.box) scroller.scrollTop = 0;   // a new list starts at its top
       foot.hidden = true;
       count.textContent = '';
     }

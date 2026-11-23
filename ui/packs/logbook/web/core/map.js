@@ -4,7 +4,7 @@
 // settings (GET /api/v1/maps/config, read by shared/maptiles.js): the offline map file Sentry Mate serves
 // (raster, or a Protomaps vector file in a plain style), else the online tile server the owner turned on,
 // else no tiles at all: the paper background with the routes and pins on it, under a "No map tiles yet"
-// note (for an admin, a one-click switch to the satellite map). Tiles that fail show their cause. Nothing else is
+// note (for an admin, a one-click switch to the online map). Tiles that fail show their cause. Nothing else is
 // ever fetched from outside. MapLibre is loaded on first use (vendor/maplibre-gl), with its worker from the
 // same folder. In the dark theme raster tiles are dimmed (not inverted) unless the person chose original
 // colours; the light theme shows the tile server's own colours.
@@ -161,8 +161,10 @@ export async function makeMap(ctx, el, { center = null, zoom = 13, bounds = null
   // Map / Satellite: redraws the tiles under the page's own layers, then the halos and the pins' edge
   const styleBox = src && styleSwitch ? mapStyleSwitch(cfg, currentPrefs(), {
     classes: { box: 'map-style', button: 'map-style-btn', active: 'is-active' },
-    onChange: (next) => {
-      if (!next || next.kind === 'none' || !map.isStyleLoaded()) return;
+    // after 'load', not while the style is "loaded": isStyleLoaded() reads false while any tiles or sources are
+    // still loading, and a pick then was dropped
+    onChange: (next) => loaded.then(() => {
+      if (ctx.signal.aborted || !next || next.kind === 'none') return;
       stopErrors();
       src = swapTiles(map, src, next, { rasterSize: tiles, dark: isDark(), paint: paintFor(next) });
       watchTilePolicy(src.offline ? null : src.template);
@@ -170,7 +172,7 @@ export async function makeMap(ctx, el, { center = null, zoom = 13, bounds = null
       restyleLines();
       stopErrors = watchTileErrors(map, el, src, errorNote);
       for (const fn of tileWatchers) fn(src);
-    },
+    }),
   }) : null;
   if (styleBox) el.append(styleBox);
   let readyTimer = 0;

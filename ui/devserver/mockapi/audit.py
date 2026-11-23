@@ -199,6 +199,7 @@ def seed(ds, now):
         (2 * DAY - HOUR, "alex", "sessions-revoked", "account:a3", None, "Ended 2 other sessions."),
         (DAY + 3 * HOUR, "admin", "drive-purpose-set", f"drive:c1:{dr3}", "c1", "Set the purpose of a drive of Comet to private."),
         (DAY + 2 * HOUR, "admin", "charge-cost-entered", f"charge:c1:{ch2}", "c1", "Entered a cost for a charge of Comet: 3.10 USD."),
+        (DAY + HOUR, "admin", "storage-compacted", "server:storage", None, "Started packing the stored data (Compact now)."),
         (DAY, S, "release-checked", "server:release", None, "Checked GitHub for a newer build."),
         (DAY - HOUR, "admin", "teslamate-local-car-matched", "teslamate:local", "c2", "Matched TeslaMate car Maple to Maple."),
         (20 * HOUR, "admin", "backup-made", "backup:b1", None, "Made a backup."),  # a code this list does not know

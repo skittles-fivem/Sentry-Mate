@@ -74,7 +74,9 @@ fn settings_are_checked() {
 #[test]
 fn every_preset_is_a_valid_online_source_with_its_credit() {
     use places::tiles::{DEFAULT_PRESET, PRESETS, preset};
-    assert_eq!(PRESETS[0].id, DEFAULT_PRESET, "satellite first: the default");
+    // the street map is the default; satellite is a style viewers can switch to
+    assert_eq!(preset(DEFAULT_PRESET).map(|p| p.kind), Some("map"));
+    assert_eq!(DEFAULT_PRESET, "osm");
     assert_eq!(preset("satellite_us").map(|p| p.max_zoom), Some(16));
     assert_eq!(preset("satellite").unwrap().hosts(), vec!["server.arcgisonline.com".to_string()]);
     for p in PRESETS {

@@ -556,8 +556,7 @@ impl Engine {
                         self.emit(Event::Fleet { car, change: "renamed", name: Some(c.name.clone()) });
                     }
                     let profile = dbc::Profile::from_name(c.profile().dbc_name());
-                    let gps = self.gps_layout(car)?;
-                    match timeline::read_log_with(&bytes, &side, profile, self.inner.opts.sample, gps) {
+                    match timeline::read_log(&bytes, &side, profile, self.inner.opts.sample) {
                         Ok(r) if other_vin(&c, r.vin.as_ref()) => {
                             tracing::warn!(
                                 "car {car}: log {name} names another car's VIN than the car's; it is left out"
@@ -753,8 +752,7 @@ impl Engine {
         let side: serde_json::Value =
             read(&format!("{name}.json"))?.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let profile = dbc::Profile::from_name(c.profile().dbc_name());
-        let gps = self.gps_layout(c.id)?;
-        Ok(timeline::read_log_with(&bytes, &side, profile, self.inner.opts.sample, gps).ok().map(|r| r.samples))
+        Ok(timeline::read_log(&bytes, &side, profile, self.inner.opts.sample).ok().map(|r| r.samples))
     }
 
     /// The car's newest values, from an input's samples. Each value keeps when it was recorded
@@ -876,22 +874,6 @@ impl Engine {
         }
         let by: Vec<(&[Sample], Input)> = by.iter().map(|(v, i)| (v.as_slice(), *i)).collect();
         let mut fused = timeline::fuse_ordered(&by, &order, fp);
-        self.inner.counters.gps_fixes_dropped.fetch_add(fused.fixes_dropped, Ordering::Relaxed);
-        if !fused.gps_disagree.is_empty() {
-            let seen = crate::GpsDisagreement {
-                disagree: fused.gps_disagree,
-                not_used: fused.gps_distrusted,
-                from_ms: from,
-                to_ms: to,
-            };
-            let mut m = crate::lock(&self.inner.gps_cross);
-            if m.get(&car).is_none_or(|x| x.to_ms <= to) {
-                if fused.gps_distrusted.contains(Input::Smo) {
-                    tracing::warn!(car, "SMO's GPS disagrees with the other inputs; its fixes are left out there");
-                }
-                m.insert(car, seen);
-            }
-        }
         fused.samples.retain(|s| s.t_ms >= from && s.t_ms < to);
         fused.marks.retain(|m| m.0 >= from && m.0 < to);
         let seen = records::api_between(db, car, meta, from, to)?;
