@@ -197,7 +197,19 @@ async fn start(
         "Started a full rebuild of {}: everything worked out made again from the stored data, beside the history in use.",
         of_words(app, &r)
     );
-    v.audit(app, "car-full-rebuild", audit_target(&r).as_deref(), &summary).await?;
+    match audit_target(&r) {
+        Some(t) => v.audit(app, "car-full-rebuild", Some(&t), &summary).await?,
+        // every car: the entry names no one car
+        None => {
+            v.mark_audited();
+            let (who, ip) = (v.name().to_string(), v.client().address);
+            let details = crate::ctx::audit_details(None, &summary);
+            app.blocking(move |app| {
+                Ok(app.accounts.audit().record(Some(&who), Some(ip), "car-full-rebuild", &details)?)
+            })
+            .await?;
+        }
+    }
     let mut out = read(app, car).await?;
     out["accepted"] = json!(true);
     Ok((StatusCode::ACCEPTED, Json(out)).into_response())

@@ -135,6 +135,7 @@ def seed(ds, now):
         (30 * DAY, "admin", "car-changed", "car:c2", "c2", "Changed Maple's time zone to America/Chicago."),
         (30 * DAY - HOUR, "admin", "car-settings-changed", "car:c3", "c3", "Changed Atlas's battery size when new to 87 kWh."),
         (29 * DAY, "admin", "car-rebuild", "car:c1", "c1", "Rebuilt drives, charges, states and visits of Comet from the stored logs (30 days)."),
+        (28 * DAY, "admin", "car-full-rebuild", "car:c1", "c1", "Started a full rebuild of Comet: everything worked out made again from the stored data, beside the history in use."),
         (29 * DAY - HOUR, "admin", "car-overlap", "car:c3", "c3", "Atlas shows live (SMO) history from Mar 2 to Mar 9."),
         (28 * DAY, "admin", "key-assigned", "key:c1:cbk_5b2e9f13", "c1", "Moved the CAN Bridge key cbk_5b2e9f13 to Comet."),
         (28 * DAY - MIN, "admin", "key-unassigned", "key:c2:cbk_5b2e9f13", "c2", "Moved the CAN Bridge key cbk_5b2e9f13 from Maple to Comet."),
