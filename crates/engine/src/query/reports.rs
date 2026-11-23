@@ -18,7 +18,7 @@ use super::{
 use crate::Engine;
 use crate::tz::{self, Period as P};
 use chrono_tz::Tz;
-use db::{StateRow, UpdateRow};
+use db::StateRow;
 use model::{Car, CarId, Charge, Drive, Source, State};
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -764,12 +764,9 @@ pub fn totals(e: &Engine, car: CarId, source: Option<&str>) -> QResult<Scoped<To
         k.kwh += kwh;
         Ok(true)
     })?;
-    // (no overlaps to settle: CAN logs give no updates, so every imported one counts)
-    let mut updates = 0u64;
-    overlapping::<UpdateRow>(e, car, 0, u64::MAX, src.map(super::SourceFilter::family), false, |_| {
-        updates += 1;
-        Ok(true)
-    })?;
+    // as the updates list shows them: an update both imports have counts once (live and imported updates are not
+    // settled against each other: every one of each counts)
+    let updates = super::software::shown_updates(e, car, src)?.len() as u64;
     for k in [&mut ac, &mut dc, &mut unknown_kind] {
         k.kwh = r(Some(k.kwh), 3).unwrap_or(0.0);
     }

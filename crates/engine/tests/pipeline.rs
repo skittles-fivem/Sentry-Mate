@@ -1240,7 +1240,8 @@ fn two_version_changes_in_one_update_give_one_rebuild() {
                 "docs/rebuilds.md#decode-2",
                 "docs/rebuilds.md#decode-3",
                 "docs/rebuilds.md#rules-2",
-                "docs/rebuilds.md#rules-3"
+                "docs/rebuilds.md#rules-3",
+                "docs/rebuilds.md#rules-4"
             ],
             "{:#?}",
             planned.causes

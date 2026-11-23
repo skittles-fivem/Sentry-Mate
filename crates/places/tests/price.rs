@@ -210,6 +210,37 @@ fn gaps_unsorted_points_and_odd_values() {
 /// `model`'s convention is battery power, positive out of the pack: a curve taken from it is negative while charging.
 /// It must cost the same as the same curve given as charge power (it used to cost nothing).
 #[test]
+fn a_curve_with_no_energy_under_it_prices_the_known_grid_energy() {
+    let t =
+        Tariff::new(&plan(0.30, vec![rate("Night", 0.10, &[0, 1, 2, 3, 4, 5, 6], "22:00", "06:00")]), "UTC").unwrap();
+    let s = utc(2026, 11, 16, 12, 0);
+    // every point further from the next than the longest stretch counted (polls far apart)
+    let sparse: Vec<ChargePoint> = (0..11).map(|i| point(s + i * 6 * 60_000, 10.0)).collect();
+    let c = t.charge_cost(&sparse, &CostOptions { grid_kwh: Some(10.0), ..CostOptions::default() });
+    assert!(close(c.total, 3.0), "{}", c.total);
+    assert!(close(c.kwh, 10.0) && c.curve_kwh == 0.0 && c.curve_kwh.is_sign_positive(), "{c:?}");
+    assert_eq!(c.gap_ms, HOUR);
+    assert_eq!(c.parts.len(), 1);
+    // every point at 0 kW (an API's whole kW of a slow charge)
+    let zero = flat(s, s + HOUR, 60_000, 0.0);
+    let c = t.charge_cost(&zero, &CostOptions { grid_kwh: Some(5.0), ..CostOptions::default() });
+    assert!(close(c.total, 1.5), "{}", c.total);
+    // at the price of the curve's start: the night rate
+    let night = flat(utc(2026, 11, 16, 23, 0), utc(2026, 11, 17, 0, 0), 60_000, 0.0);
+    let c = t.charge_cost(&night, &CostOptions { grid_kwh: Some(5.0), ..CostOptions::default() });
+    assert!(close(c.total, 0.5), "{}", c.total);
+    // with no grid energy known there is nothing to price, and the energy is a plain 0 (not -0)
+    let c = t.charge_cost(&sparse, &CostOptions::default());
+    assert!(c.total == 0.0 && c.kwh == 0.0 && c.kwh.is_sign_positive(), "{c:?}");
+    assert_eq!(serde_json::to_string(&c.kwh).unwrap(), "0.0");
+    // a curve with one hole still follows its own shape
+    let mut holed = flat(s, s + 30 * 60_000, 60_000, 10.0);
+    holed.extend(flat(s + 36 * 60_000, s + HOUR, 60_000, 10.0));
+    let c = t.charge_cost(&holed, &CostOptions { grid_kwh: Some(10.0), ..CostOptions::default() });
+    assert!(close(c.total, 3.0) && c.curve_kwh > 8.9, "{c:?}");
+}
+
+#[test]
 fn a_curve_in_battery_convention_costs_the_same() {
     let t = Tariff::new(&plan(0.10, vec![rate("Day", 0.30, ALL, "07:00", "19:00")]), "UTC").unwrap();
     let s = utc(2026, 11, 16, 6, 0);

@@ -40,8 +40,9 @@ pub(crate) fn find(seg: &[&Sample], drives: &[(usize, usize)], params: &Params) 
 }
 
 /// A charge from its samples (`s[0]` the first charging second, the last the last one); `before` are the samples
-/// before it since the last drive, for where the car is when the charge itself has no GPS fix.
-pub(crate) fn make(car: CarId, s: &[&Sample], before: &[&Sample], params: &Params) -> Option<Charge> {
+/// before it since the last drive, for where the car is when the charge itself has no GPS fix. `holds`: how long each
+/// of `s` counts across a gap in the energy sums (ms; empty: [`Params::max_hold_ms`] for all).
+pub(crate) fn make(car: CarId, s: &[&Sample], before: &[&Sample], params: &Params, holds: &[u64]) -> Option<Charge> {
     let (first, last) = (s.first()?, s.last()?);
     let (start_ms, end_ms) = (first.t_ms, last.t_ms + 1000);
     let charging: Vec<&Sample> = s.iter().copied().filter(|x| x.charging == Some(true)).collect();
@@ -56,10 +57,13 @@ pub(crate) fn make(car: CarId, s: &[&Sample], before: &[&Sample], params: &Param
     };
 
     let hold = params.max_hold_ms;
+    let hold_of = |i: usize| holds.get(i).copied().unwrap_or(hold);
     // into the pack, second by second: the charge power, else the pack's own power while it takes energy (a second
     // whose charging state came from another input has the pack's power but no charge power of its own)
     let pack_kw = |x: &Sample| x.charge_power_kw.or_else(|| x.battery_power_kw.map(|p| -p).filter(|p| *p > 0.0));
-    let pack = integrate_pieces(s, end_ms, hold, pack_kw, counters_in);
+    // (a second that says the car is not charging ends the reading before it: a pause in the charge)
+    let off = |x: &Sample| x.charging == Some(false);
+    let pack = integrate_pieces(s, end_ms, hold_of, pack_kw, off, counters_in);
     // into the pack: the lifetime counter where it covers the charge (from its first reading to its last, that second
     // included, with the pack's power before and after them), else the power integrated (read from the second before
     // the charge when there is one: the first charging second already counted)
@@ -89,13 +93,7 @@ pub(crate) fn make(car: CarId, s: &[&Sample], before: &[&Sample], params: &Param
     };
     // from the grid: what went into the onboard charger (AC only; a DC charger's own losses are out of sight)
     let grid = match kind {
-        Some(ChargeKind::Ac) => integrate_pieces(
-            s,
-            end_ms,
-            hold,
-            |x| x.charger_voltage_v.zip(x.charger_current_a).map(|(v, a)| v * a / 1000.0),
-            |_, _| None,
-        ),
+        Some(ChargeKind::Ac) => integrate_pieces(s, end_ms, hold_of, grid_kw, off, |_, _| None),
         _ => None,
     };
     let energy_used_kwh = grid.as_ref().map(|g| g.0);
@@ -144,6 +142,20 @@ pub(crate) fn make(car: CarId, s: &[&Sample], before: &[&Sample], params: &Param
         inputs: model::Inputs::SMO,
         rules_version: RULES_VERSION,
     })
+}
+
+/// One phase's power is not told from a whole number of phases below this (kW): the line's own power has 0.1 kW
+/// steps.
+const PHASES_FROM_KW: f64 = 0.5;
+
+/// The power on the AC line, kW: the charger's volts times amps, which are one phase's, times the phases in use.
+/// How many: the line's own power where the car sends it (coarse, so it only says how many times one phase's power
+/// it is), else the phase count the input gives, else one.
+fn grid_kw(x: &Sample) -> Option<f64> {
+    let one = x.charger_voltage_v.zip(x.charger_current_a).map(|(v, a)| v * a / 1000.0)?;
+    let by_line = x.extra.charger_line_kw.filter(|_| one >= PHASES_FROM_KW).map(|kw| (kw / one).round());
+    let phases = by_line.or(x.extra.charger_phases).filter(|n| (1.0..=3.0).contains(n)).unwrap_or(1.0);
+    Some(one * phases.round())
 }
 
 /// The part of a piece of the pack's power outside the lifetime counter's readings `[a, b]` (the second of `b`

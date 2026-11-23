@@ -131,6 +131,42 @@ pub(crate) fn all_updates(e: &Engine, car: CarId) -> QResult<Vec<UpdateRow>> {
     Ok(out)
 }
 
+/// The same install read by both imports, outside the spans both cover (one import has a hole there): rows of the
+/// two sites with the same version this close are one update (ms). No version is installed twice in a day.
+const TWIN_MS: u64 = 86_400_000;
+
+/// A car's update rows as the lists show them, oldest first: with every source, or every import, an update both
+/// imports have is one row, the site's that the span shows where both cover the time ([`Sites`]), else the earlier
+/// one of two of the same version within [`TWIN_MS`]. One source alone (`import:teslamate`, `smo`, ...) shows its
+/// own rows whatever was chosen.
+pub(crate) fn shown_updates(e: &Engine, car: CarId, filter: Option<super::SourceFilter>) -> QResult<Vec<UpdateRow>> {
+    let all = all_updates(e, car)?;
+    let settle = matches!(filter, None | Some(super::SourceFilter::Import(None)));
+    if !settle {
+        let keep = |u: &UpdateRow| filter.is_none_or(|f| f.keeps(u.update.source, u.update.inputs));
+        return Ok(all.into_iter().filter(keep).collect());
+    }
+    let two_sites = model::ImportSite::ALL.iter().all(|s| all.iter().any(|u| u.update.source.site() == Some(*s)));
+    let sites = if two_sites { super::system::Sites::new(e, car)? } else { super::system::Sites::default() };
+    let mut out: Vec<UpdateRow> = Vec::with_capacity(all.len());
+    for u in all {
+        let up = &u.update;
+        if !filter.is_none_or(|f| f.keeps(up.source, up.inputs)) || !sites.keeps(up.source, up.start_ms) {
+            continue;
+        }
+        let twin = up.source.site().filter(|_| !up.version.is_empty()).is_some_and(|site| {
+            out.iter()
+                .rev()
+                .take_while(|k| k.update.start_ms.saturating_add(TWIN_MS) >= up.start_ms)
+                .any(|k| k.update.source.site().is_some_and(|other| other != site) && k.update.version == up.version)
+        });
+        if !twin {
+            out.push(u);
+        }
+    }
+    Ok(out)
+}
+
 /// The version an update found from fingerprints shows, however it was named: typed on it (`owner`), else from a
 /// live input, else from another update to the same set (`build_match`); none when an admin cleared it.
 pub(crate) fn fw_version_of(
@@ -336,7 +372,7 @@ pub fn updates(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QRes
     let limit = paging.limit()?;
     let sig = format!("updates|{car}|{}", period.sig());
     let after = read_after(paging, &sig)?;
-    let all = all_updates(e, car)?;
+    let all = shown_updates(e, car, None)?;
     let shown = Shown::new(e, car, None)?;
     let sel: Vec<usize> = (0..all.len()).filter(|&i| (a..b).contains(&all[i].update.start_ms)).collect();
     let mut gaps: Vec<u64> = sel
@@ -450,6 +486,12 @@ pub fn set_version(e: &Engine, car: CarId, id: u64, version: Option<&str>) -> QR
     // a fingerprint update's row is written again with its name
     let all = if crate::firmware::is_fingerprint(id) { all_updates(e, car)? } else { all };
     let i = all.iter().position(|u| u.id == id).unwrap_or(i);
+    // among the updates the list shows (its neighbours there), unless it is one the list leaves out
+    let listed = shown_updates(e, car, None)?;
+    let (all, i) = match listed.iter().position(|u| u.id == id) {
+        Some(k) => (listed, k),
+        None => (all, i),
+    };
     Ok(UpdateOne { update: view(e, &c, &all, i, &shown)?, time_zone: c.time_zone.clone() })
 }
 
@@ -671,7 +713,7 @@ pub fn events(
         })?;
     }
     if has("software_changed") {
-        for u in all_updates(e, car)?.iter().rev() {
+        for u in shown_updates(e, car, None)?.iter().rev() {
             let Some(at) = u.update.end_ms.filter(|t| *t <= now) else { continue };
             if !(a..b).contains(&at) {
                 continue;

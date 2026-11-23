@@ -24,7 +24,10 @@ use serde::{Deserialize, Serialize};
 /// never was.
 /// 3: a charge's energy added and grid energy are measured over one span, or say they are not
 /// ([`model::Charge::energy_spans`]).
-pub const RULES_VERSION: u32 = 3;
+/// 4: a charge's grid energy counts every phase in use; a reading counts in an energy sum until the next second
+/// that has it, an API's for as long as an API's readings are apart ([`Params::api_max_hold_ms`]); a drive whose
+/// odometer was first read late or last read early has the GPS distance of the rest.
+pub const RULES_VERSION: u32 = 4;
 
 /// A drive's id: the car in the high 32 bits, its start (s since 1970) in the low ones. The same drive rebuilt keeps
 /// its id, and no two cars share one. (As a JSON number it is exact while car ids stay under 2^21; past that the API
@@ -58,8 +61,10 @@ pub struct Params {
     pub max_hold_ms: u64,
     /// GPS steps faster than this are a bad fix (km/h).
     pub max_gps_kmh: f64,
-    /// Where the samples come from the Tesla API alone (one every few seconds to a minute): a drive ends once the car
-    /// has been parked this long (ms), and a sample counts across a gap this long at most in sums (ms).
+    /// Where the samples come from an API alone (one every few seconds to two minutes): a drive ends once the car
+    /// has been parked this long (ms). In sums, a second with values from an API counts across a gap this long at
+    /// most (ms): longer than the slowest pace an API is read at (a reading every two minutes), so no part of a
+    /// charge or drive read at that pace is left out.
     #[serde(default = "api_park_ms")]
     pub api_park_ms: u64,
     #[serde(default = "api_max_hold_ms")]
@@ -71,7 +76,7 @@ fn api_park_ms() -> u64 {
 }
 
 fn api_max_hold_ms() -> u64 {
-    90_000
+    150_000
 }
 
 impl Params {
@@ -329,12 +334,30 @@ pub fn build(input: &Input<'_>, params: &Params) -> Timeline {
             }
             seg[i..=j].iter().fold(model::Inputs::NONE, |acc, s| acc.union(crate::fuse::inputs_at(marks, s.t_ms)))
         };
+        // how long each second's values count across a gap: an API's readings are far apart, so a second with
+        // values from one counts for longer than one of SMO's own
+        let holds: Vec<u64> = if marks.is_empty() {
+            Vec::new()
+        } else {
+            let api_hold = params.max_hold_ms.max(params.api_max_hold_ms);
+            seg.iter()
+                .map(|s| {
+                    if crate::fuse::inputs_at(marks, s.t_ms) == model::Inputs::SMO {
+                        params.max_hold_ms
+                    } else {
+                        api_hold
+                    }
+                })
+                .collect()
+        };
+        let holds_of = |i: usize, j: usize| if holds.is_empty() { &[][..] } else { &holds[i..=j] };
         let found = drives::find(seg, &api, params);
         let kept: Vec<(usize, usize)> = found
             .iter()
             .copied()
             .filter(|&(i, j)| {
-                match drives::make(car, &seg[i..=j], i.checked_sub(1).map(|k| seg[k]), &params_of(i, j)) {
+                let prev = i.checked_sub(1).map(|k| seg[k]);
+                match drives::make(car, &seg[i..=j], prev, &params_of(i, j), holds_of(i, j)) {
                     Some(mut d) => {
                         d.inputs = inputs_of(i, j);
                         t.drives.push(d);
@@ -347,7 +370,7 @@ pub fn build(input: &Input<'_>, params: &Params) -> Timeline {
         for (i, j) in charges::find(seg, &found, params) {
             // where the car is: samples since the last drive that ended before the charge
             let since = found.iter().filter(|&&(_, e)| e < i).map(|&(_, e)| e + 1).max().unwrap_or(0);
-            if let Some(mut c) = charges::make(car, &seg[i..=j], &seg[since..i], &params_of(i, j)) {
+            if let Some(mut c) = charges::make(car, &seg[i..=j], &seg[since..i], &params_of(i, j), holds_of(i, j)) {
                 c.inputs = inputs_of(i, j);
                 t.charge_points.extend(charges::points(&seg[i..=j]).into_iter().map(|p| (c.id, p)));
                 t.charges.push(c);

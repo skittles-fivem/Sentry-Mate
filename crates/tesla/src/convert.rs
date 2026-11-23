@@ -159,6 +159,10 @@ pub fn reading(v: &Value, now_ms: u64) -> Reading {
         (Some(a), Some(o)) if (-90.0..=90.0).contains(&a) && (-180.0..=180.0).contains(&o) => (Some(a), Some(o)),
         _ => (None, None),
     };
+    // the phases the current is on (the volts and amps are one phase's), while charging on AC
+    let charger_phases = f(v, "charge_state", "charger_phases")
+        .filter(|_| charging == Some(true) && fast != Some(true))
+        .and_then(model::api_phases);
     let tpms_bar = ["fl", "fr", "rl", "rr"].map(|w| f(v, "vehicle_state", &format!("tpms_pressure_{w}")));
     let sample = Sample {
         t_ms: at - at % 1000,
@@ -186,6 +190,7 @@ pub fn reading(v: &Value, now_ms: u64) -> Reading {
         // the API names each tyre's wheel
         extra: model::SampleExtra {
             tires_mapped: tpms_bar.iter().any(Option::is_some).then_some(true),
+            charger_phases,
             ..model::SampleExtra::default()
         },
         ..Sample::default()
@@ -350,6 +355,26 @@ mod tests {
         let o = reading(&none, 0).meta.off_can;
         assert_eq!((o.update_status.as_deref(), o.update_version), (Some(""), None));
         assert!(reading(&json!({}), 0).meta.off_can.is_empty());
+    }
+
+    #[test]
+    fn an_ac_charge_says_how_many_phases_its_current_is_on() {
+        let charge = |phases: Value| {
+            let v = json!({"charge_state": {"timestamp": 1_800_000_000_000u64, "charging_state": "Charging",
+                "fast_charger_present": false, "charger_power": 11, "charger_voltage": 230,
+                "charger_actual_current": 16, "charger_phases": phases}});
+            reading(&v, 5).sample
+        };
+        // the API says 2 for three phases
+        let s = charge(json!(2));
+        assert_eq!((s.charger_voltage_v, s.charger_current_a), (Some(230.0), Some(16.0)));
+        assert_eq!(s.extra.charger_phases, Some(3.0));
+        assert_eq!(charge(json!(3)).extra.charger_phases, Some(3.0));
+        assert_eq!(charge(json!(1)).extra.charger_phases, Some(1.0));
+        assert_eq!(charge(Value::Null).extra.charger_phases, None);
+        // not charging: no phases in use
+        let v = json!({"charge_state": {"charging_state": "Complete", "charger_phases": 2}});
+        assert_eq!(reading(&v, 5).sample.extra.charger_phases, None);
     }
 
     #[test]

@@ -258,6 +258,17 @@ pub struct CostEntry {
     /// With tiered prices: the billing cycle the charge was priced in.
     #[serde(default)]
     pub cycle: Option<TierCycle>,
+    /// What a place's price was worked out from (tariff costs made since this was kept): the charge's end and the
+    /// energy priced. A charge that has grown since (a late log) is priced again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub of: Option<PricedOf>,
+}
+
+/// The charge a tariff cost was worked out from: its end, and its energy (the grid's, else what went into the pack).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PricedOf {
+    pub end_ms: u64,
+    pub kwh: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
