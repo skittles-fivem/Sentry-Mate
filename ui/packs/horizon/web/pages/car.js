@@ -397,7 +397,7 @@ export async function mount(ctx) {
   }
 
   /* ---------- the map */
-  let map = null, marker = null, trailShown = false;
+  let map = null, marker = null, markerKey = null, trailShown = false;
   function paintPlace() {
     const loc = now.location || {};
     const lat = val(loc.lat), lon = val(loc.lon);
@@ -435,8 +435,14 @@ export async function mount(ctx) {
     const lat = val(loc.lat), lon = val(loc.lon);
     if (lat == null) return;
     const tone = n.stale || n.state === 'unknown' ? 'muted' : n.state === 'charging' ? 'warm' : n.state === 'asleep' ? 'asleep' : 'live';
+    const heading = n.state === 'driving' ? val(loc.heading_deg) : null;
+    // live values come every few seconds: the map is drawn again only when the car moved, turned or changed
+    // state (a map drawn again on a 4K screen takes longer than a frame and holds a scroll up)
+    const key = JSON.stringify([lon, lat, tone, heading]);
+    if (key === markerKey && marker) return;
+    markerKey = key;
     marker?.remove();
-    marker = carMarker(map, [lon, lat], { tone, heading: n.state === 'driving' ? val(loc.heading_deg) : null });
+    marker = carMarker(map, [lon, lat], { tone, heading });
     map.frame(() => map.map.jumpTo({ center: [lon, lat] }));
     if (n.state === 'driving' && n.drive?.drive_id && !trailShown) {
       trailShown = true;

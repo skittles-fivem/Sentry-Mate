@@ -551,6 +551,8 @@ def car_health(req):
     toks = [t for t in st.tokens.get(cid, []) if not t["revoked"]]
     waiting = sum(k["logs_waiting"] for k in keys)
     pending = any(rb.get("pending_until", 0) > req.now for rb in st.rebuilds.get(cid, []))
+    if req.app.cfg.rebuild_running and cid in req.app.ds.featured:
+        pending = True  # --rebuild-running: a rebuild that never ends
     if h is None:
         from ..live import list_item
         it = list_item(req.app, cid, req.now)

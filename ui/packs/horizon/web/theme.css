@@ -2,8 +2,10 @@
    - The background: a dusk sky with stars, a striped setting sun, wireframe mountains, haze and a neon grid
      floor (core/sky.js builds it; the floor is one canvas). Background: Auto, Full, Calm or Off (Settings:
      Display and units, kept in this browser).
-   - Readability: everything with text sits on solid, blurred glass (panels, the title plate, the toolbar, the
-     bars), never straight on the sky, so text keeps AA contrast over the sun as the page scrolls.
+   - Readability: everything with text sits on solid glass (panels, the title plate, the toolbar, the bars), never
+     straight on the sky, so text keeps AA contrast over the sun as the page scrolls. Only what stays put (the bars,
+     the dock, pop-ups) blurs what is behind it: boxes that scroll with the page are a little more solid instead,
+     since blurring them all on every frame of a scroll (and of the moving floor) stalled scrolling on a 4K screen.
    - Horizon's shapes: sharp corners, inset neon rings, corner brackets on panels, the hot magenta-to-orange
      gradient on the main button and on chosen segments, cyan glow on hover and focus.
    Every length is round(..., var(--e)) as in app.css, so boxes stay on whole pixels. */
@@ -118,13 +120,13 @@ body { font-feature-settings: normal; font-size: 0.9375rem; }
   position: relative; padding: round(1rem, var(--e)) round(1.25rem, var(--e));
   background: linear-gradient(180deg, var(--surface-panel-a), var(--surface-panel-b));
   border: 1px solid color-mix(in srgb, var(--mag) 40%, transparent); border-radius: var(--radius);
-  box-shadow: var(--shadow); backdrop-filter: var(--blur);
+  box-shadow: var(--shadow);
 }
 .page-head::before {
   content: ""; position: absolute; left: round(1.25rem, var(--e)); right: round(1.25rem, var(--e)); bottom: -1px; height: round(0.125rem, var(--e));
   background: var(--hot); box-shadow: var(--glow-mag);
 }
-.footer { background: var(--surface-bar); backdrop-filter: var(--blur); }
+.footer { background: var(--surface-bar); }
 .auth-card { backdrop-filter: var(--blur); }
 
 /* ------------------------------------------------------------------ the frame (the strip itself is in app.css) */
@@ -189,9 +191,9 @@ body { font-feature-settings: normal; font-size: 0.9375rem; }
 .filter-bar, .toolbar {
   padding: round(0.625rem, var(--e)) round(0.75rem, var(--e));
   background: linear-gradient(180deg, var(--surface-panel-a), var(--surface-panel-b));
-  border: 1px solid var(--line-2); border-radius: var(--radius); backdrop-filter: var(--blur);
+  border: 1px solid var(--line-2); border-radius: var(--radius);
 }
-.notices { background: var(--surface-bar); backdrop-filter: var(--blur); }
+.notices { background: var(--surface-bar); }
 
 /* section heads, notes and strips that sit between panels: on a plate of glass too */
 /* (":root" first: a page's own stylesheet loads after this file and must not take the glass away) */
@@ -199,7 +201,7 @@ body { font-feature-settings: normal; font-size: 0.9375rem; }
 .si-section > .note, .si-legend, .si-cards-wrap, .saving-note, .tv-cars, .hl-signals-note, .settings-divider) {
   padding: round(0.625rem, var(--e)) round(0.875rem, var(--e));
   background: linear-gradient(180deg, var(--surface-panel-a), var(--surface-panel-b));
-  border: 1px solid var(--line-2); border-radius: var(--radius-sm); backdrop-filter: var(--blur);
+  border: 1px solid var(--line-2); border-radius: var(--radius-sm);
 }
 :root .state-tile { background: linear-gradient(180deg, color-mix(in oklab, var(--dot) 12%, var(--surface-panel-a)), var(--surface-panel-b)); border-radius: var(--radius); }
 :root .si-card { background: var(--surface-card-b); }

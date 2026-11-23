@@ -9,7 +9,7 @@
 // info (the car's `vehicle` facts, each with its source; an admin corrects one with PATCH /cars/{car}) and Car
 // firmware (/cars/{car}/firmware), both in pages/car-facts.js.
 
-import { h, svg, replace } from '../shared/dom.js';
+import { h, svg, replace, replaceChanged } from '../shared/dom.js';
 import { format, parts, rangeLabel, rangeField, getUnits } from '../shared/units.js';
 import { formatTime, formatDate, formatDateTime, formatDuration, formatRelative, dayKey, formatDayKey, periodLabel } from '../shared/time.js';
 import { formatList } from '../shared/i18n.js';
@@ -124,12 +124,14 @@ export async function mount(ctx) {
   }
 
   const stateBox = h('div', { class: 'state-box' });
-  const drawState = () => replace(stateBox, stateLine(now, tz, placeKind()));
+  const drawState = () => replaceChanged(stateBox, stateLine(now, tz, placeKind()));
+  // drawn again on every live value: only the parts that changed are swapped (the map's section and the latest
+  // drive and charge stay where they are), so a page that scrolls while values arrive does not lay out again
   function draw() {
-    replace(head, header(car, now, tz, ctx.me && ctx.me.role === 'admin'));
-    replace(whereText, whereLines(now, tz, outsideMaps, currentVisit()));
+    replaceChanged(head, header(car, now, tz, ctx.me && ctx.me.role === 'admin'));
+    replaceChanged(whereText, whereLines(now, tz, outsideMaps, currentVisit()));
     drawState();
-    replace(live, staleBanner(now, tz), h('p', { class: 'lede' }, lede(now, tz)), stateBox, hero(car, now, tz), vitals(car, now, tz, ctx.me && ctx.me.role === 'admin'), awake(now), statusFlags(now, tz), offCan(now, tz), charging(now, tz, usualStart()), where, latest);
+    replaceChanged(live, staleBanner(now, tz), h('p', { class: 'lede' }, lede(now, tz)), stateBox, hero(car, now, tz), vitals(car, now, tz, ctx.me && ctx.me.role === 'admin'), awake(now), statusFlags(now, tz), offCan(now, tz), charging(now, tz, usualStart()), where, latest);
   }
   const vehicle = vehiclePanel(ctx, car);
   const firmware = firmwarePanel(ctx, car);

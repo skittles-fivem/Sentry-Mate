@@ -9,6 +9,7 @@
 | `pixel.js`, `stable.js`, `hover.js` | The in-page parts of `check.js --pixel`, `check.js --stable` and `check.js --hover`. |
 | `map-tiles.test.js` | `node --test ui/tools/map-tiles.test.js`: in all six packs, a page loaded with tiles offline shows OpenStreetMap tiles once an admin turns them on and the person moves to a map inside the app (the page loads itself again once, for the server's new policy), the same after a switch to OpenTopoMap, and every tile request carries only the page origin as Referer; and Settings: Maps and addresses and Settings: Cars at 360 px with a long zone name (America/Argentina/Buenos_Aires) keep the tile terms and the zone button for new cars inside the window. The tile servers are answered inside the browser; nothing leaves the machine. Skipped without Playwright. |
 | `server-update.test.js` | `node --test ui/tools/server-update.test.js`: a tab open across a server update in all six packs, in Chromium on the dev server: after `POST /__dev/new-build` and the tab coming back into view, a link to Data health loads that address in full and the page loads; a page module that fails once is loaded again with a full load; one that keeps failing says "Sentry Mate was updated or a file could not load" (`page_failed`, never "No answer from the server") with a Reload button, and the tab title and the trail name Data health, not the page before. `PACKS=a,b` runs only those. Skipped without Playwright. |
+| `scroll.js`, `scroll.test.js` | The scroll check: scrolls each pack's key pages (Data health, car, drives, charges, statistics, Settings: Server, logbook) with the mouse wheel on a 4K screen while a rebuild runs on the dev server (`--rebuild-running`), and fails a page with a frame over 50 ms; frame times, long tasks and a DevTools trace of each scroll. `node --test ui/tools/scroll.test.js` runs it at 1920x1080 at scale 2 (`SCROLL_PACKS`, `SCROLL_SIZES` to change). Skipped without Playwright. [Below](#the-scroll-check-scrolljs). |
 | `live-rows.test.js` | `node --test ui/tools/live-rows.test.js`: Pebble's Charges page in Chromium on the dev server (`--rows-every-s 2`) loads its list again on a `rows` event and draws a charge that was not there before, without loading the page again. Skipped without Playwright. |
 | `settings-server.test.js` | `node --test ui/tools/settings-server.test.js`: Settings: Server and access of both built-in packs in Chromium at phone size on the dev server: the CAN Bridge upload address breaks only after a slash or a colon, the certificate's names start with `localhost`, and with `--own-certificate` no "Make a new certificate" is offered; and the Storage panel of all six packs at desktop size: the categories grouped by kind, largest first, the CAN logs group opened to its categories by short name, with what compaction saved, "Compact now" with its progress and what it freed, a failed pass with the server's error, no panel for a watch account, and no more reads of the detail once the page is left. Skipped without Playwright. |
 
@@ -320,6 +321,40 @@ hovered after 240 s (a `note:` says so).
 What it cannot see: a hover that only acts after a delay longer than one frame, what is drawn inside a canvas or
 svg, an element out of the window or inside a box that scrolls it out of view, elements more than half a window
 away from the window, and a non-interactive element that changes on hover where no grid point falls.
+
+## The scroll check (`scroll.js`)
+
+```bash
+node ui/tools/scroll.js                                  # every pack, the key pages, at 3840x2160@1 and 1920x1080@2
+node ui/tools/scroll.js --packs instrument --pages health --sizes 3840x2160@1
+node ui/tools/scroll.js --packs horizon --add-style '.sky{display:none}'   # which rule makes painting slow?
+node ui/tools/scroll.js --json > scroll.json
+node --test ui/tools/scroll.test.js                      # the same as a test, at 1920x1080@2
+```
+
+Made for a report of a page that scrolled with only its scroll bar moving, then jumped: the browser had no time to
+draw while it scrolled. For each pack it starts the dev server with `--rebuild-running --sse-interval-ms 500
+--rows-every-s 1` (a rebuild that never ends: Data health says "Drives and charges are being rebuilt" and reads
+itself again, every featured car gets a `rows` event every second, live values come every 500 ms), opens each page,
+waits for it to be ready, then turns the wheel down the page and back up (`--steps` 30 each way, `--step-px` 100,
+`--step-ms` 50 apart). It records in the page the time between animation frames and the long tasks
+(PerformanceObserver `longtask`), and a DevTools trace of the scroll: the longest main-thread task and what took its
+time, and the time spent painting and rastering.
+
+| Option | Default | What it does |
+|---|---|---|
+| `--packs LIST\|all` | `all` | The packs. |
+| `--pages LIST` | `health,car,drives,charges,statistics,settings-server,logbook` | Page ids, as in `check.js`. |
+| `--sizes WxH@S,...` | `3840x2160@1,1920x1080@2` | Window sizes in CSS px at device scale S: both defaults are a 4K screen (at 100 % and at 200 %). |
+| `--max-frame-ms N` | `50` | A page fails with a frame longer than this (half a ms of slack: three 60 Hz frames read 50.1 ms). |
+| `--quiet-server` | off | No rebuild and normal live values (the dev server's defaults). |
+| `--server-args "..."` | none | More dev server flags. |
+| `--add-style CSS` | none | Adds CSS to each page before the scroll (the page's Content Security Policy is set aside for it). |
+| `--trace DIR` | none | Saves each scroll's trace (open it in the DevTools Performance panel). |
+| `--json` | off | One JSON object with every page's numbers. |
+
+The browser draws in software here (no GPU), so painting costs more than on most desktops: a page that keeps its
+frames under 50 ms here has room to spare on a graphics card. Results: [docs/plans/performance.md](../../docs/plans/performance.md#scrolling).
 
 ## Fixtures and the self-test
 

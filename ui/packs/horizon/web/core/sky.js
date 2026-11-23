@@ -4,7 +4,7 @@
 // Cost: everything but the floor is static (CSS and one SVG; the glow and the haze only fade with opacity).
 // The floor is ONE canvas covering only the part below the horizon, drawn at most 30 times a second (12 in
 // Calm), at devicePixelRatio capped at 1.5, with a single stroke per frame. It stops while the tab is hidden
-// and is a still picture under prefers-reduced-motion.
+// and while the page scrolls, and is a still picture under prefers-reduced-motion.
 //
 // Background setting, kept per browser (localStorage), not on the server: Auto (Full on computers and
 // tablets, Calm on phones), Full, Calm, Off (a plain dusk gradient).
@@ -17,7 +17,7 @@ const html = document.documentElement;
 // boot.js (window.uiRoot) read this browser's choice before the first paint
 const bootInfo = { SKY_KEY: window.uiRoot?.SKY_KEY || 'sentrymate.horizon.sky', skyChoice: window.uiRoot?.skyChoice || ((v) => (v === 'full' || v === 'calm' || v === 'off' ? v : 'auto')) };
 const still = matchMedia('(prefers-reduced-motion: reduce)');
-const S = { choice: bootInfo.skyChoice(html.dataset.skyChoice), mode: 'full', canvas: null, ctx: null, w: 0, h: 0, dpr: 1, phase: 0, raf: 0, last: 0, drawn: 0, frames: 0, holds: new Set() };
+const S = { choice: bootInfo.skyChoice(html.dataset.skyChoice), mode: 'full', canvas: null, ctx: null, w: 0, h: 0, dpr: 1, phase: 0, raf: 0, last: 0, drawn: 0, frames: 0, holds: new Set(), scrollingUntil: 0 };
 const subs = new Set();
 
 function phone() { return matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 600; }
@@ -120,6 +120,9 @@ function tick(t) {
   S.raf = 0;
   if (!moving()) return;
   const fps = S.mode === 'calm' ? 12 : 30;
+  // while the page scrolls the floor stands still: each new frame of it would make the browser paint the window
+  // again under the scrolling page; it goes on where it was once the scroll stops
+  if (t < S.scrollingUntil) { S.last = 0; S.raf = requestAnimationFrame(tick); return; }
   if (t - S.drawn >= 1000 / fps - 2) {
     const dt = S.last ? Math.min(0.1, (t - S.last) / 1000) : 0;
     S.last = t; S.drawn = t;
@@ -168,6 +171,8 @@ export function startSky() {
   apply();
   let t = 0;
   window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(fit, 120); });
+  // any scroll (the page or a box in it): passive, so it never holds the scroll up
+  document.addEventListener('scroll', () => { S.scrollingUntil = performance.now() + 250; }, { capture: true, passive: true });
   document.addEventListener('visibilitychange', run);
   still.addEventListener?.('change', apply);
   onTheme(paint);
