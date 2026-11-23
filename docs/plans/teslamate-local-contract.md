@@ -84,7 +84,8 @@ display name / VIN prefix when the DB is on (its `cars` table has `vin`, keep on
 
 Settings: Integrations, a "Local TeslaMate" section right after TeslaFi, anchor `#teslamate` (a tab where the pack
 has tabs). Forms for MQTT and database with a Test button each, the "Allow unencrypted (local network only)" tick
-(off by default, shown with a warning, only meaningful with a password and TLS off), status, car match table with
+(off by default, shown with a warning, only meaningful with a password and TLS off), TLS off on port 1883 by
+default (the TLS tick switches 1883 and 8883 while the port holds the other default), the pin shown only with TLS, status, car match table with
 Save matches visible when a suggestion is preselected, Pause, Remove. Source labels/filters: "Data from local
 TeslaMate".
 
