@@ -293,28 +293,21 @@ async fn accounts_cars_pause_poll_notices_and_removal() {
     // which car the vehicle is
     let cars = format!("{base}/cars");
     let v0 = a.version;
-    let r = admin
+    // the admin session alone, no password asked again; a watch account is refused
+    let mut watch = w.s.watch(&mut admin, &[w.car]).await;
+    let r = watch
         .put(&cars, json!({ "version": v0, "items": [{ "vehicle": "tv1", "match": format!("c{}", w.car) }] }))
         .await;
-    assert_eq!((r.status, r.code().as_deref()), (403, Some("password_needed")));
-    let r = admin
-        .put(&cars, json!({ "version": v0, "items": [{ "vehicle": "tv1", "match": "c999" }], "confirm_password": ADMIN_PASSWORD }))
-        .await;
+    assert_eq!(r.status, 403);
+    let r = admin.put(&cars, json!({ "version": v0, "items": [{ "vehicle": "tv1", "match": "c999" }] })).await;
     assert_eq!((r.status, r.code().as_deref()), (422, Some("invalid")));
     assert!(r.json()["error"]["fields"]["items.0.match"].is_string());
-    let r = admin
-        .put(&cars, json!({ "version": v0, "items": [{ "vehicle": "tv9", "match": "new" }], "confirm_password": ADMIN_PASSWORD }))
-        .await;
+    let r = admin.put(&cars, json!({ "version": v0, "items": [{ "vehicle": "tv9", "match": "new" }] })).await;
     assert_eq!((r.status, r.code().as_deref()), (422, Some("invalid")));
-    let r = admin
-        .put(&cars, json!({ "version": v0 + 7, "items": [{ "vehicle": "tv1", "match": "leave_out" }], "confirm_password": ADMIN_PASSWORD }))
-        .await;
+    let r = admin.put(&cars, json!({ "version": v0 + 7, "items": [{ "vehicle": "tv1", "match": "leave_out" }] })).await;
     assert_eq!((r.status, r.code().as_deref()), (409, Some("stale_version")));
     let r = admin
-        .put(
-            &cars,
-            json!({ "version": v0, "items": [{ "vehicle": "tv1", "match": format!("c{}", w.car) }], "confirm_password": ADMIN_PASSWORD }),
-        )
+        .put(&cars, json!({ "version": v0, "items": [{ "vehicle": "tv1", "match": format!("c{}", w.car) }] }))
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(r.json()["items"][0]["match"], format!("c{}", w.car));
@@ -386,7 +379,6 @@ async fn accounts_cars_pause_poll_notices_and_removal() {
     let n = admin.get("/api/v1/notices").await.json();
     let codes: Vec<&str> = n["items"].as_array().unwrap().iter().filter_map(|i| i["code"].as_str()).collect();
     assert!(codes.contains(&"tesla_sign_in_needed"), "{codes:?}");
-    let mut watch = w.s.watch(&mut admin, &[w.car]).await;
     let n = watch.get("/api/v1/notices").await.json();
     assert!(!n["items"].as_array().unwrap().iter().any(|i| i["code"] == "tesla_sign_in_needed"));
     assert_eq!(admin.get(&base).await.json()["status"], "sign_in_needed");

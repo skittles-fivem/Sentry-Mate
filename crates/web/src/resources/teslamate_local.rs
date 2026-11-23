@@ -7,12 +7,13 @@
 //! | `POST /integrations/teslamate/test` | `{ target, mqtt?, database? }`: tries a draft or the saved settings |
 //! | `GET`/`PUT /integrations/teslamate/cars` | PUT `{ version, items: [{ teslamate_car, match }] }` |
 //!
-//! All admin only, reads included (`/integrations` is in `policy::ADMIN_READS`). Every change asks for the admin's
-//! own password again (`confirm_password` or the `X-Sentry-Mate-Password` header) and, with two-step sign-in on, a
-//! code, and writes its own audit entry. No answer, audit entry or log line holds a password: the [`tmlocal`] crate
-//! keeps them sealed and its `Config` says only `password_set`. The crate's rules ([`tmlocal::validate`]) answer
-//! `422 plaintext_password` (a password over plain TCP without "Allow unencrypted") and `422 password_resend` (a
-//! kept password and a new host, port or TLS).
+//! All admin only, reads included (`/integrations` is in `policy::ADMIN_READS`). Adding, replacing, pausing or
+//! removing the settings asks for the admin's own password again (`confirm_password` or the `X-Sentry-Mate-Password`
+//! header) and, with two-step sign-in on, a code; a test and the car matches take the admin session alone (they store
+//! and reveal no credential). Every change writes its own audit entry. No answer, audit entry or log line holds a
+//! password: the [`tmlocal`] crate keeps them sealed and its `Config` says only `password_set`. The crate's rules
+//! ([`tmlocal::validate`]) answer `422 plaintext_password` (a password over plain TCP without "Allow unencrypted")
+//! and `422 password_resend` (a kept password and a new host, port or TLS).
 //!
 //! Nothing connects anywhere until an admin adds it: the service starts no task without its settings file.
 //!
@@ -632,14 +633,10 @@ async fn remove(
     Ok(Json(json!({ "deleted": true })))
 }
 
-/// `POST /integrations/teslamate/test` `{ target: "mqtt" | "database", mqtt?, database?, confirm_password, code? }`.
-async fn test(
-    State(app): State<AppState>,
-    Admin(v): Admin,
-    headers: HeaderMap,
-    body: JsonBody,
-) -> ApiResult<Json<Value>> {
-    body.only(&["target", "mqtt", "database", "confirm_password", "code"])?;
+/// `POST /integrations/teslamate/test` `{ target: "mqtt" | "database", mqtt?, database? }`: the admin session alone
+/// (it stores nothing and answers no password).
+async fn test(State(app): State<AppState>, Admin(v): Admin, body: JsonBody) -> ApiResult<Json<Value>> {
+    body.only(&["target", "mqtt", "database"])?;
     let target = match body.req_str("target")? {
         "mqtt" => tmlocal::Target::Mqtt,
         "database" => tmlocal::Target::Database,
@@ -657,7 +654,6 @@ async fn test(
         let field = if target == tmlocal::Target::Mqtt { "mqtt" } else { "database" };
         return Err(ApiError::bad_input(field, "Required: nothing is saved yet to test."));
     }
-    reconfirm(&app, &v, &body, &headers).await?;
     let r = s.test(target, draft, app.now()).await.map_err(|e| failed(&s, e))?;
     let out = word(&r);
     let part = if target == tmlocal::Target::Mqtt { "MQTT broker" } else { "database" };
@@ -680,14 +676,10 @@ async fn cars(State(app): State<AppState>, Admin(_): Admin) -> ApiResult<Json<Va
 }
 
 /// `PUT /integrations/teslamate/cars` `{ version, items: [{ teslamate_car, match }] }`: `match` is a car (`c3`),
-/// `"new"`, `"leave_out"` or `null`. Only a matched car gets TeslaMate's data.
-async fn put_cars(
-    State(app): State<AppState>,
-    Admin(v): Admin,
-    headers: HeaderMap,
-    body: JsonBody,
-) -> ApiResult<Json<Value>> {
-    body.only(&["version", "items", "confirm_password", "code"])?;
+/// `"new"`, `"leave_out"` or `null`. Only a matched car gets TeslaMate's data. The admin session alone: no password
+/// asked again (a match stores and reveals no credential); each change still writes its audit entry.
+async fn put_cars(State(app): State<AppState>, Admin(v): Admin, body: JsonBody) -> ApiResult<Json<Value>> {
+    body.only(&["version", "items"])?;
     let version = body.version()?;
     let Some(Value::Array(items)) = body.get("items") else {
         return Err(ApiError::bad_input("items", "Required: a list of { teslamate_car, match }."));
@@ -739,7 +731,6 @@ async fn put_cars(
         changes.push((tc, m));
     }
     bad.invalid()?;
-    reconfirm(&app, &v, &body, &headers).await?;
     {
         let (s, ch) = (s.clone(), changes.clone());
         app.blocking(move |_| s.set_matches(version, &ch).map_err(|e| failed(&s, e))).await?;

@@ -1,7 +1,7 @@
 // Tests for teslamate.js: the drafts and the server's rules (docs/ui-api.md, "Integrations: Local TeslaMate").
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tmDraft, tmCheck, tmPutBody, tmMatchChanges, tmPreselect } from '../teslamate.js';
+import { tmDraft, tmCheck, tmPutBody, tmMatchChanges, tmPreselect, tmTlsPort, TM_DEFAULTS, TM_MQTT_PORT } from '../teslamate.js';
 
 const mqtt = (v) => tmDraft('mqtt', { host: '192.0.2.10', port: '1883', tls: false, prefix: 'teslamate', ...v });
 
@@ -48,4 +48,18 @@ test('the local TeslaMate notices link to its section of Settings: Integrations'
   assert.equal(tmNoticeFix({ code: 'teslamate_quiet', fix_link: null }, '/x/settings/integrations?car=c1'), '/x/settings/integrations?car=c1#teslamate');
   assert.equal(tmNoticeFix({ code: 'teslamate_auth_failed', fix_link: '/settings/integrations#other' }), '/settings/integrations#teslamate');
   assert.match(TM_NOTICE_ACTION, /TeslaMate/);
+});
+
+test('MQTT starts with TLS off on 1883; the TLS tick moves the port only from the other default', () => {
+  assert.equal(TM_DEFAULTS.mqtt.port, TM_MQTT_PORT.plain);
+  assert.equal(TM_DEFAULTS.mqtt.tls, false);
+  assert.equal(tmTlsPort('mqtt', '1883', true), 8883);
+  assert.equal(tmTlsPort('mqtt', 1883, true), 8883);
+  assert.equal(tmTlsPort('mqtt', '8883', false), 1883);
+  assert.equal(tmTlsPort('mqtt', '8883', true), null);
+  assert.equal(tmTlsPort('mqtt', '1883', false), null);
+  assert.equal(tmTlsPort('mqtt', '18883', true), null);
+  assert.equal(tmTlsPort('mqtt', '', true), null);
+  assert.equal(tmTlsPort('database', '5432', true), null);
+  assert.equal(tmTlsPort('database', '1883', true), null);
 });

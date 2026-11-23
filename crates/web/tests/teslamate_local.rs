@@ -267,13 +267,21 @@ async fn off_until_added_plaintext_refused_then_added_and_removed() {
     assert_eq!((r.status, r.code().as_deref()), (422, Some("plaintext_password")), "{}", r.text());
     assert!(r.json()["error"]["fields"]["mqtt.password"].is_string());
     clean(&r);
+    let r = admin.post("/api/v1/integrations/teslamate/test", json!({ "target": "mqtt", "mqtt": mqtt })).await;
+    assert_eq!((r.status, r.code().as_deref()), (422, Some("plaintext_password")));
+    // a test and the car matches take no password, but stay admin only
+    let r = watch.post("/api/v1/integrations/teslamate/test", json!({ "target": "mqtt", "mqtt": mqtt })).await;
+    assert_eq!(r.status, 403);
+    let r = watch.put("/api/v1/integrations/teslamate/cars", json!({ "version": 0, "items": [] })).await;
+    assert_eq!(r.status, 403);
+    // a test that still names a password: an unknown field now
     let r = admin
         .post(
             "/api/v1/integrations/teslamate/test",
             json!({ "target": "mqtt", "mqtt": mqtt, "confirm_password": ADMIN_PASSWORD }),
         )
         .await;
-    assert_eq!((r.status, r.code().as_deref()), (422, Some("plaintext_password")));
+    assert_eq!((r.status, r.code().as_deref()), (400, Some("bad_input")));
     assert!(!w.svc.store().exists() && !w.svc.running());
 
     // other rules: a scheme in the host, a wildcard prefix, a pin without TLS
@@ -319,6 +327,11 @@ async fn off_until_added_plaintext_refused_then_added_and_removed() {
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!((r.json()["version"].clone(), r.json()["mqtt"]["password_set"].clone()), (json!(2), json!(true)));
 
+    // a test of the saved settings: the admin session alone (the port is closed, so it fails, but answers)
+    let r = admin.post("/api/v1/integrations/teslamate/test", json!({ "target": "mqtt" })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    clean(&r);
+
     // pause and resume
     let r = admin.patch(t, json!({ "version": 2, "paused": true, "confirm_password": ADMIN_PASSWORD })).await;
     assert_eq!(r.status, 200, "{}", r.text());
@@ -334,10 +347,13 @@ async fn off_until_added_plaintext_refused_then_added_and_removed() {
     let r = admin
         .put(
             "/api/v1/integrations/teslamate/cars",
-            json!({ "version": 3, "items": [{ "teslamate_car": "1", "match": format!("c{}", w.car) }], "confirm_password": ADMIN_PASSWORD }),
+            json!({ "version": 3, "items": [{ "teslamate_car": "1", "match": format!("c{}", w.car) }] }),
         )
         .await;
     assert_eq!((r.status, r.code().as_deref()), (422, Some("invalid")));
+    // no items changed: saved with the admin session alone
+    let r = admin.put("/api/v1/integrations/teslamate/cars", json!({ "version": 3, "items": [] })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
 
     // removed: the file is gone, nothing runs
     let r = admin.delete(t, json!({ "confirm_password": ADMIN_PASSWORD })).await;
