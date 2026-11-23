@@ -240,8 +240,8 @@ export async function mount(ctx) {
     const ro = !admin;
     const g = server.geocode || {}, t = server.tiles || {};
     const off = maps?.tiles?.offline_data_present ?? maps?.geocoding?.offline_data_present;
-    // the online presets, satellite first; the chosen one (or custom) from maps/config, else from the address
-    const presets = [...(maps?.tiles?.presets || [])].sort((a, b) => (b.kind === 'satellite') - (a.kind === 'satellite'));
+    // the online presets, the default street map first; the chosen one (or custom) from maps/config, else from the address
+    const presets = [...(maps?.tiles?.presets || [])].sort((a, b) => (b.id === 'osm') - (a.id === 'osm'));
     const chosenId = maps?.tiles?.preset || t.preset || presets.find((p) => p.url === t.online_url)?.id || 'custom';
     const preset = presets.find((p) => p.id === chosenId) || null;
     const labelsOn = maps?.tiles?.labels ?? t.labels ?? true;
@@ -281,7 +281,7 @@ export async function mount(ctx) {
         save: (v) => patchServer({ geocode: { language: v } }) },
       { key: 'tiles.mode', type: 'choice', value: t.mode, options: [['offline', 'offline'], ['online', 'online']], readOnly: ro, cover: 'web.shell.map-tiles',
         help: [t.mode === 'online' ? `Maps load pictures from the online source; its credit shows on every map: ${maps?.tiles?.attribution || t.attribution || '(none set)'}. ` : off ? 'An offline map file is installed: maps need nothing from outside. ' : 'No offline map file yet: maps draw routes and places on a plain grey ground, with a note (see tiles.offline_file). ',
-          'An online source (satellite by default) is asked by each viewer\'s browser, so it sees the map area and this server\'s address (as Referer: some tile servers refuse tiles without one), never a page or a car.'],
+          'An online source (the OpenStreetMap street map by default) is asked by each viewer\'s browser, so it sees the map area and this server\'s address (as Referer: some tile servers refuse tiles without one), never a page or a car.'],
         save: async (v) => { await patchServer({ tiles: { mode: v } }); tilesSaved(); } },
       (() => {
         // the offline map file: which is in use, (with several) which to use, and how to make one

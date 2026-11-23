@@ -543,13 +543,15 @@ async fn maps_and_addresses_say_what_the_server_has() {
     assert_eq!(m["tiles"]["mode"], "offline", "{m}");
     assert_eq!(m["tiles"]["online_template"], Value::Null, "{m}");
     has_keys(&m["tiles"], &["mode", "offline_url", "online_template", "attribution", "max_zoom", "presets"]);
-    // the ready-made online sources: satellite (the default) first, each with its credit, zoom and terms
+    // the ready-made online sources, each with its credit, zoom and terms: the street map (the default) and satellite
     let presets = m["tiles"]["presets"].as_array().unwrap();
-    assert_eq!(presets[0]["id"], "satellite", "{m}");
+    for id in ["osm", "satellite"] {
+        assert!(presets.iter().any(|p| p["id"] == id), "{id}: {m}");
+    }
     for p in presets {
         has_keys(p, &["id", "name", "short", "kind", "url", "attribution", "max_zoom", "terms", "overlays", "region"]);
     }
-    assert_eq!((&m["tiles"]["preset"], &m["tiles"]["styles"]), (&json!("satellite"), &json!([])), "{m}");
+    assert_eq!((&m["tiles"]["preset"], &m["tiles"]["styles"]), (&json!("osm"), &json!([])), "{m}");
     has_keys(&m["geocoding"], &["mode", "credit", "offline_data_present"]);
     let g = ok(&mut admin, "/api/v1/geocode/status").await;
     has_keys(&g, &["mode", "offline_data", "cache_size", "online"]);

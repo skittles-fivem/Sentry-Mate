@@ -749,7 +749,7 @@ export async function mount(ctx) {
   const netSlot = h('div');
   const PURPOSE = {
     geocoding: ['Address lookup', 'Only when an admin turns online addresses on; positions are rounded first.', 'settings-display'],
-    tiles: ['Map pictures', 'Asked by each viewer’s browser when online tiles are on: the chosen map (satellite by default), its place names and roads, and the maps people may switch to.', 'settings-display'],
+    tiles: ['Map pictures', 'Asked by each viewer’s browser when online tiles are on: the chosen map (the OpenStreetMap street map by default), its place names and roads, and the maps people may switch to.', 'settings-display'],
     geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-display'],
     mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
     tesla: ['Tesla API', 'Only while a Tesla account is added and not paused: sign-in, the Owner API and its live stream (Tesla account, this page).', null],
