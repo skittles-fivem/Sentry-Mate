@@ -17,7 +17,7 @@ import traceback
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import resources
+from . import resources, uploads
 from .config import Clock
 from .conventions import Req, Response, json_bytes, to_csv
 from .dataset import Dataset
@@ -284,6 +284,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 allow = ", ".join(sorted(route.handlers))
                 raise ApiError(405, "method_not_allowed", f"{path} answers {allow}.", headers={"Allow": allow})
             resources.moving.advance(app.store, app.clock.now())  # a move or restore here that finished
+            uploads.advance(app, app.clock.now())  # the made-up upload cadence (mockapi/uploads.py)
             session, cookie = self.session()
             if m != "GET" and self.headers.get(CSRF_HEADER) != "1":
                 raise csrf()
