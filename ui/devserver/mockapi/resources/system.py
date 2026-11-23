@@ -649,6 +649,56 @@ def rebuild(req):
             "logs_read": int(days * 1440 * 0.6), "took_ms": took}
 
 
+# ------------------------------------------------------------------ the car's own GPS layout
+
+# a layout as `sentry-mate gps-layout` prints it: "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)", with an
+# optional "; accuracy ..." field (docs/ui-api.md: /cars/{car}/gps-layout)
+_NUM = r"-?\d+(?:\.\d+)?(?:e-?\d+)?"
+_FIELD = rf"\d+\|\d+@[01][+-] \({_NUM},{_NUM}\)"
+_GPS_LAYOUT = re.compile(rf"lat {_FIELD}; lon {_FIELD}(?:; accuracy {_FIELD})?")
+
+
+def _gps_layouts(st):
+    if not hasattr(st, "gps_layouts"):
+        st.gps_layouts = {}
+    return st.gps_layouts
+
+
+def get_gps_layout(req):
+    return {"car": req.car, "layout": _gps_layouts(req.store).get(req.car)}
+
+
+def put_gps_layout(req):
+    st = req.store
+    body = req.json()
+    bad = {k: "Unknown field." for k in body if k != "layout"}
+    if bad:
+        raise bad_input(bad)
+    if "layout" not in body:
+        raise invalid({"layout": "Required: the layout, or null for the DBC's."})
+    layout = body["layout"]
+    if layout is not None:
+        if not isinstance(layout, str):
+            raise invalid({"layout": "Must be text or null."})
+        layout = layout.strip()
+        if not _GPS_LAYOUT.fullmatch(layout):
+            raise invalid({"layout": "Write it as sentry-mate gps-layout prints it: lat start|width@order sign "
+                                     "(scale,offset); lon ..."})
+    layouts = _gps_layouts(st)
+    if layouts.get(req.car) == layout:
+        return {"car": req.car, "layout": layout, "job": None}
+    with st.lock:
+        if layout is None:
+            layouts.pop(req.car, None)
+        else:
+            layouts[req.car] = layout
+    name = st.car_meta(req.car)["name"]
+    st.record(req.account, "car-gps-layout", f"car:{req.car}",
+              f"Set how {name}'s Screenmate GPS frames are read ({layout}); its history is rebuilt." if layout else
+              f"Set {name}'s Screenmate GPS frames to be read as the DBC says; its history is rebuilt.")
+    return {"car": req.car, "layout": layout, "job": st.new_id("rb")}
+
+
 # ------------------------------------------------------------------ overlaps
 
 
@@ -1042,6 +1092,7 @@ def register(router):
     router.add("/api/v1/ui-packs", GET=ui_packs)
     router.add("/api/v1/cars/{car}/health", GET=car_health)
     router.add("/api/v1/cars/{car}/rebuild", POST=rebuild, admin=("POST",))
+    router.add("/api/v1/cars/{car}/gps-layout", GET=get_gps_layout, PUT=put_gps_layout, admin=("GET", "PUT"))
     router.add("/api/v1/cars/{car}/overlaps", GET=get_overlaps, PATCH=patch_overlap, admin=("PATCH",))
     router.add("/api/v1/cars/{car}/storage", GET=car_storage)
     router.add("/api/v1/system/storage", GET=system_storage, admin=("GET",))
