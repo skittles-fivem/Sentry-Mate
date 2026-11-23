@@ -175,13 +175,13 @@ class Store:
             {"key": "cbk_8d41c0a2", "first_seen_ms": t0 - DAY + HOUR, "last_upload_ms": now - 70_000, "logs_waiting": 0,
              "car": "c1", "preferred": True, "device": "Screenmate One"},
             {"key": "cbk_5b2e9f13", "first_seen_ms": t0 + 120 * DAY, "last_upload_ms": now - 3 * DAY, "logs_waiting": 0,
-             "car": "c1", "preferred": False, "device": "Raspberry Pi logger"},
+             "car": "c1", "preferred": False, "device": "Pi logger"},
             {"key": "cbk_31f7e9b5", "first_seen_ms": t0, "last_upload_ms": now - 45_000, "logs_waiting": 0,
-             "car": "c2", "preferred": True, "device": "Screenmate One"},
+             "car": "c2", "preferred": True, "device": None},
             {"key": "cbk_c90a7716", "first_seen_ms": t0 + 30 * DAY, "last_upload_ms": now - 55 * HOUR,
-             "logs_waiting": 2, "car": "c3", "preferred": True, "device": "Screenmate One"},
+             "logs_waiting": 2, "car": "c3", "preferred": True, "device": None},
             {"key": "cbk_e04d6a58", "first_seen_ms": now - 3 * HOUR, "last_upload_ms": now - 20 * MIN,
-             "logs_waiting": 3, "car": None, "preferred": False, "device": "Screenmate One"},
+             "logs_waiting": 3, "car": None, "preferred": False, "device": None},
         ]
         self.keys = [k for k in self.keys if k["car"] is None or k["car"] in self.ds.featured]
         self.tokens = {c: v for c, v in self.tokens.items() if c in self.ds.featured}

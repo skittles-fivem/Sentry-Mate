@@ -48,6 +48,7 @@ pub const CODES: &[Code] = &[
     c("account-changed", A, Some("account"), "Changed an account"),
     c("account-created", A, Some("account"), "Added an account"),
     c("account-removed", A, Some("account"), "Removed an account"),
+    c("can-key-renamed", CARS, Some("key"), "Named a CAN Bridge key"),
     c(
         "can-logs-missing",
         CARS,

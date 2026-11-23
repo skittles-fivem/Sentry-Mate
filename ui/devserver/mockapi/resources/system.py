@@ -18,6 +18,7 @@ from .. import derive
 from ..conventions import Response, json_bytes, page
 from ..errors import ApiError, bad_input, conflict, invalid, not_found, stale_version
 from ..live import now_object
+from .fleet import device_label
 from ..util import DAY, HOUR, MIN, date_str, h01, local_date, r
 from .. import sources as SRC
 from .reports import gap_rows
@@ -602,7 +603,8 @@ def car_health(req):
         "car": cid, "time_zone": req.tz(), "healthy": not reasons, "reasons": reasons, "last_upload_ms": last_upload,
         "last_log_trust": trust,
         "keys": [{"key": k["key"], "last_upload_ms": k["last_upload_ms"], "preferred": k["preferred"],
-                  "device": k["device"], "logs_waiting": k["logs_waiting"]} for k in keys],
+                  "device": k["device"], "device_label": device_label(k), "logs_waiting": k["logs_waiting"]}
+                 for k in keys],
         "chain_gaps": chain, "dropped_frames": dropped, "unknown_spans": unknown,
         "unknown_ms": sum(((u["end_ms"] or req.now) - u["start_ms"]) for u in unknown),
         "logs_waiting": waiting, "missing_logs": missing, "rebuild_pending": pending, "gps_disagreement": None,
