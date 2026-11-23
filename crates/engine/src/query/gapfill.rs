@@ -47,13 +47,19 @@ impl<'e> Gaps<'e> {
         if filter.is_some() {
             return Ok(g);
         }
-        for site in ImportSite::ALL {
-            let d: BTreeSet<u64> =
-                e.db().days::<Sample>(car, Stream::of_site(site))?.into_iter().map(|d| d.start_ms).collect();
-            if !d.is_empty() {
-                g.days.push((site, d));
+        // (the import sites' days change only with imported points)
+        let days = e.memo(car, "import-sample-days", crate::memo::On::Imported, 0, || -> QResult<_> {
+            let mut out = Vec::new();
+            for site in ImportSite::ALL {
+                let d: BTreeSet<u64> =
+                    e.db().days::<Sample>(car, Stream::of_site(site))?.into_iter().map(|d| d.start_ms).collect();
+                if !d.is_empty() {
+                    out.push((site, d));
+                }
             }
-        }
+            Ok(out)
+        })?;
+        g.days = days.as_ref().clone();
         if g.days.is_empty() {
             return Ok(g);
         }

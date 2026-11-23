@@ -892,6 +892,53 @@ pub fn visit_days(e: &Engine, cars: &[CarId], q: &VisitsQuery, paging: &Paging) 
 
 // ---------------------------------------------------------------- tracks
 
+/// Days of points each of them keeps decoded (its drives follow one another, so their days are read again).
+const TRACK_KEPT_DAYS: usize = 12;
+
+/// The points of each drive's track (`(car, drive id, ..)`, in their order; none for a drive gone meanwhile): read
+/// on all cores, each a run of drives that follow one another, keeping the days it read decoded.
+fn drive_tracks(
+    e: &Engine,
+    drives: &[(CarId, u64, u64, u64, model::Source)],
+) -> QResult<Vec<Vec<super::drives::TrackPoint>>> {
+    let run = |part: &[(CarId, u64, u64, u64, model::Source)]| {
+        db::keeping_days(TRACK_KEPT_DAYS, || {
+            // each car's import gap filling, for all its tracks (it keeps the import's days it read)
+            let mut gaps: Vec<(CarId, super::gapfill::Gaps<'_>)> = Vec::new();
+            let mut out = Vec::with_capacity(part.len());
+            for &(car, id, ..) in part {
+                if !gaps.iter().any(|(c, _)| *c == car) {
+                    gaps.push((car, super::gapfill::Gaps::new(e, car, None)?));
+                }
+                let g = gaps.iter().find(|(c, _)| *c == car).map(|(_, g)| g);
+                out.push(match super::drives::track_with(e, car, id, g) {
+                    Ok(t) => t.stretches.into_iter().flatten().collect(),
+                    Err(QueryError::NotFound(_)) => Vec::new(),
+                    Err(x) => return Err(x),
+                });
+            }
+            Ok(out)
+        })
+    };
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    if threads < 2 || drives.len() < 2 * threads {
+        return run(drives);
+    }
+    let size = drives.len().div_ceil(threads);
+    let parts: Vec<QResult<Vec<Vec<super::drives::TrackPoint>>>> = std::thread::scope(|sc| {
+        let handles: Vec<_> = drives.chunks(size).map(|part| sc.spawn(move || run(part))).collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_else(|_| Err(QueryError::Engine(crate::Error::Store("a track failed".into())))))
+            .collect()
+    });
+    let mut out = Vec::with_capacity(drives.len());
+    for p in parts {
+        out.extend(p?);
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DriveTrack {
     pub car: CarRef,
@@ -948,15 +995,11 @@ pub fn tracks(e: &Engine, cars: &[CarId], period: &Period, max_points: Option<u6
     let spare = max - 2 * drives.len() as u64;
     let mut out = Vec::with_capacity(drives.len());
     let mut points = 0u64;
-    for (car, id, start, to, source) in drives {
+    let tracks = drive_tracks(e, &drives)?;
+    for ((car, id, start, to, source), pts) in drives.into_iter().zip(tracks) {
         let dur = (to - start).max(1000);
         let share = (spare as f64 * dur as f64 / total_ms as f64).floor() as u64;
         let want = (2 + share).min(dur / 1000 + 1).max(2) as usize;
-        let pts: Vec<super::drives::TrackPoint> = match super::drives::track(e, car, id) {
-            Ok(t) => t.stretches.into_iter().flatten().collect(),
-            Err(QueryError::NotFound(_)) => Vec::new(),
-            Err(x) => return Err(x),
-        };
         let picked: Vec<&super::drives::TrackPoint> = if pts.len() <= want {
             pts.iter().collect()
         } else {
