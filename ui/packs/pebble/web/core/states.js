@@ -24,6 +24,12 @@ export function loadingTiles(shape = 'default') {
     h('span', { class: 'ghost-line ghost-title' }), h('span', { class: 'ghost-line ghost-big' }), h('span', { class: 'ghost-line' })));
 }
 
+/** One grey tile that keeps a block's room until its own data is in: slot.replaceWith(tile) when it comes. */
+export const ghostTile = (w = 1, hh = 'h1') => loadingTiles([[w, hh]])[0];
+
+/** A grey box of a chart's size inside a tile, until the chart's data is in (taken out when it draws). */
+export const plotGhost = ({ short = false } = {}) => h('div', { class: ['plot-ghost', { 'plot-short': short }], 'aria-hidden': 'true' });
+
 /** 'No drives this week' with what to do: emptyTile({ icon, title, text, action, w }). */
 export function emptyTile({ icon: ic = 'spark', title, text = null, action = null, w = 'full', cover = null } = {}) {
   return h('section', { class: ['tile', 'tile-empty', `w-${w}`], cover },

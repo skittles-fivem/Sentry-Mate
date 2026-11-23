@@ -113,16 +113,13 @@ export async function mount(ctx) {
   let placeId = q.place || '';
   let text = q.q || '';
 
-  let states, act, overlaps;
-  try {
-    [states, act, overlaps] = await Promise.all([
-      ctx.api.get(`cars/${enc}/states`, { from_ms: from, to_ms: to, limit: 1 }),
-      ctx.api.get(`cars/${enc}/activity`, { from_ms: from ?? 0, to_ms: to }),
-      // spans where imported and live history both exist: only one side is listed for each
-      ctx.api.get(`cars/${enc}/overlaps`).then((o) => (o.items || []).filter((x) => x.start_ms < to && (from == null || x.end_ms > from))).catch(() => []),
-    ]);
-  } catch (e) { ctx.fail(e); return; }
-  if (!ctx.alive()) return;
+  // the states, the strip, the overlaps and the entries load at once; each block fills when its own answer is in
+  // (a loading line holds its place until then), so the list does not wait for the states above it
+  const statesP = ctx.api.get(`cars/${enc}/states`, { from_ms: from, to_ms: to, limit: 1 });
+  const actP = ctx.api.get(`cars/${enc}/activity`, { from_ms: from ?? 0, to_ms: to });
+  // spans where imported and live history both exist: only one side is listed for each
+  const overlapsP = ctx.api.get(`cars/${enc}/overlaps`).then((o) => (o.items || []).filter((x) => x.start_ms < to && (from == null || x.end_ms > from))).catch(() => []);
+  statesP.catch(() => {}); actP.catch(() => {}); // they fail the page below, as before
 
   const hd = head(ctx, { title: 'Timeline' });
   const btns = hd.querySelectorAll('.ph-btn');
@@ -146,8 +143,7 @@ export async function mount(ctx) {
   ctx.onCleanup(() => clearTimeout(tt));
 
   /* ---------- states now */
-  const share = states.share_pct || {};
-  const cur = states.current || {};
+  let cur = {};
   const live = { ...(car.now || {}) };
   const nowVal = h('span');
   const paintNow = () => {
@@ -155,7 +151,6 @@ export async function mount(ctx) {
     const since = live.since_ms ?? cur.since_ms;
     replace(nowVal, stateWord(st, { stale: !!live.stale }), since ? h('span', { class: 'muted' }, ` since ${when(since, tz)}`) : null);
   };
-  paintNow();
 
   /* ---------- the list */
   const list = h('div', { class: 'lines', role: 'list' });
@@ -204,7 +199,7 @@ export async function mount(ctx) {
   }
 
   // what the marks mean, and the overlaps in the range (where only one side is listed)
-  function srcNote() {
+  function srcNote(overlaps) {
     const key = (kind, label, site) => src({ sources: [{ kind, label, ...(site ? { site } : {}) }] });
     return [
       h('p', { class: 'note' }, 'data from: ', key('smo', 'Data from SMO'), ' smo (the CAN Bridge)  ', key('tesla_api', 'Data from the Tesla API'), ' the tesla api  ',
@@ -216,11 +211,15 @@ export async function mount(ctx) {
     ];
   }
 
-  const stripFrom = from ?? (act.items?.[0]?.start_ms ?? to - 86400000);
-  replace(ctx.view, h('div', { class: 'page', dataset: { page: 'timeline' }, cover: ['shots.states', 'shots.timeline'] },
-    hd,
-    h('div', { class: 'filt' }, h('span', { class: 'filt-p' }, 'filter>'), kindKeys, h('span', { class: 'filt-sel', cover: 'timeline.filter.address' }, placeSel), textIn),
-    section({ title: 'states' },
+  const statesBox = section({ title: 'states' }, loadingLine('loading the states'));
+  const paintStates = async () => {
+    const [states, act] = await Promise.all([statesP, actP]);
+    if (!ctx.alive()) return;
+    const share = states.share_pct || {};
+    cur = states.current || {};
+    paintNow();
+    const stripFrom = from ?? (act.items?.[0]?.start_ms ?? to - 86400000);
+    statesBox.replaceWith(section({ title: 'states' },
       kv([
         ['now', nowVal, { cover: 'states.stat.current' }],
         ['last change', states.last_change_ms ? [when(states.last_change_ms, tz), h('span', { class: 'muted' }, ` (${ago(states.last_change_ms)})`)] : null, { cover: 'states.stat.last_change' }],
@@ -230,12 +229,19 @@ export async function mount(ctx) {
         ['no data', [num(share.unknown, 'percent'), h('span', { class: 'muted' }, ' no log, paused or failed check')]],
       ]),
       note('The shares overlap on purpose: parked time includes asleep time.'),
-      stateStrip(ctx, act.items || [], stripFrom, to, tz, { cover: ['states.chart.states', 'states.chart.legend'] })),
+      stateStrip(ctx, act.items || [], stripFrom, to, tz, { cover: ['states.chart.states', 'states.chart.legend'] })));
+  };
+  const srcBox = h('div', null, srcNote([]));
+  const paintOverlaps = async () => { const o = await overlapsP; if (ctx.alive() && o.length) replace(srcBox, srcNote(o)); };
+  replace(ctx.view, h('div', { class: 'page', dataset: { page: 'timeline' }, cover: ['shots.states', 'shots.timeline'] },
+    hd,
+    h('div', { class: 'filt' }, h('span', { class: 'filt-p' }, 'filter>'), kindKeys, h('span', { class: 'filt-sel', cover: 'timeline.filter.address' }, placeSel), textIn),
+    statesBox,
     section({ title: 'entries', side: [count, csvLink], cover: ['timeline.table', 'projects.dash', 'timeline.row.drive', 'timeline.row.charging', 'timeline.row.parking', 'timeline.row.missing', 'timeline.row.parking_gap_overlap', 'timeline.row.updating',
       'timeline.col.start', 'timeline.col.end', 'timeline.col.action', 'timeline.col.start_address', 'timeline.col.end_address', 'timeline.col.odometer', 'timeline.col.duration', 'timeline.col.distance', 'timeline.col.range', 'timeline.col.range_diff', 'timeline.col.energy_diff', 'timeline.col.soc', 'timeline.col.soc_diff', 'timeline.col.temp',
       'timeline.link.trip_span', 'timeline.link.slot_details', 'timeline.link.geofence_start', 'timeline.link.geofence_end', 'timeline.link.place_cells_other_rows'] },
     note('newest first. A time opens that span as a trip; a [tag] opens the drive, charge or software page; a place opens the place editor. A gap is never counted as parked time; the text filter only hides rows.'),
-    srcNote(), list, foot),
+    srcBox, list, foot),
     section({ title: 'why a car stays awake' },
       kv([
         ['normal', 'After a drive the car stays awake for a while, then both buses go quiet and the line turns to [park] asleep. Short awake spells while parked are normal (the car checks its 12 V battery).', { cover: 'faq.no-sleep.log-timeline' }],
@@ -245,7 +251,10 @@ export async function mount(ctx) {
         ['other apps', 'Sentry Mate only listens to the car, and its own Tesla API reading never wakes it (an asleep car only shows in the car list). Another app that asks Tesla’s servers for data can wake it.', { cover: 'faq.no-sleep.other-loggers' }],
       ], { cols: 1, cls: 'kv--prose' }))));
 
-  await reload();
+  // GET states or activity failing fails the page (as before)
+  try {
+    await Promise.all([paintStates(), paintOverlaps(), reload()]);
+  } catch (e) { ctx.fail(e); return; }
   if (!ctx.alive()) return;
   ctx.ready();
 

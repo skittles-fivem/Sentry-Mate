@@ -83,6 +83,8 @@ function chargeTile(c, ctx, tz, carName) {
 export async function mount(ctx) {
   const car = ctx.car, tz = ctx.tz;
   const Q = ctx.query;
+  // the places (for the place filter) are asked for together with the cars, not after them
+  const placesP = ctx.api.page('places', { sort: 'visits' }, { limit: 200 }).then((p) => p.items || []).catch(() => []);
   let fleet = [];
   if (!car) { try { fleet = (await ctx.api.page('cars', { sort: 'name' }, { limit: 200 })).items || []; } catch { fleet = []; } }
   const carName = (cid) => fleet.find((c) => c.id === cid)?.name || null;
@@ -93,7 +95,7 @@ export async function mount(ctx) {
   const listParams = () => ({ ...base(), kind: f.kind || undefined, places: f.place || undefined, q: f.q || undefined, min_cost: f.min_cost ?? undefined, min_duration_min: f.min_dur ?? undefined, source: f.source || undefined });
   const statsParams = () => ({ ...base(), places: f.place || undefined, min_duration_min: f.min_dur ?? undefined });
   const write = () => ctx.setQuery({ kind: f.kind || null, place: f.place || null, q: f.q || null, min_cost: f.min_cost, min_dur: f.min_dur, source: f.source || null });
-  const places = await ctx.api.page('places', { sort: 'visits' }, { limit: 200 }).then((p) => p.items || []).catch(() => []);
+  const places = await placesP;
   if (!ctx.alive()) return {};
 
   /* ------------------------------------------------------------ the filter row and its sheet */

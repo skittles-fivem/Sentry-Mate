@@ -27,7 +27,7 @@ export async function mount(ctx) {
   const { period } = ctx;
   const q = ctx.query;
   let fleet = [];
-  try { fleet = (await ctx.api.page('cars', { sort: 'name' }, { limit: 200 })).items || []; } catch (e) { ctx.fail(e); return; }
+  try { fleet = (await ctx.api.page('cars', { sort: 'name' }, { limit: 200, maxAgeMs: 5000 })).items || []; } catch (e) { ctx.fail(e); return; }
   if (!ctx.alive()) return;
   const carById = new Map(fleet.map((c) => [c.id, c]));
   const chosen = !q.cars || q.cars === 'all' ? 'all' : q.cars.split(',').filter((c) => carById.has(c));

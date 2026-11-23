@@ -52,12 +52,12 @@ const LIMIT_WORDS = { pilot: 'the station', cable: 'the cable', car: 'the car' }
 export async function mount(ctx) {
   const car = ctx.car;
   const tz = ctx.tz;
-  const [nowRes, settings] = await Promise.all([
-    ctx.api.get(api.apiPath`cars/${car.id}/now`),
-    ctx.api.get('settings', null, { maxAgeMs: 300000 }).catch(() => null),
-  ]);
-  let now = nowRes;
-  const outsideMaps = !!(settings && settings.outside_links && settings.outside_links.maps);
+  // GET now and every other part start together; each part fills its own box when its answers are in, and a
+  // loading block of its size keeps its place until then (the period need not wait for /now, nor /now for it)
+  const nowP = ctx.api.get(api.apiPath`cars/${car.id}/now`);
+  const settingsP = ctx.api.get('settings', null, { maxAgeMs: 300000 }).catch(() => null);
+  nowP.catch(() => {}); // a failed /now fails the page below
+  let now = null, outsideMaps = false;
 
   // The live part is drawn again whenever a `now` event arrives; the map stays and its pin moves.
   const live = h('div', { class: 'now-main' });
@@ -123,14 +123,39 @@ export async function mount(ctx) {
     drawState();
     replace(live, staleBanner(now, tz), h('p', { class: 'lede' }, lede(now, tz)), stateBox, hero(car, now, tz), vitals(car, now, tz), awake(now), statusFlags(now, tz), offCan(now, tz), charging(now, tz, usualStart()), where, latest);
   }
+  const vehicle = vehiclePanel(ctx, car);
+  const firmware = firmwarePanel(ctx, car);
+  const grid = h('div', { class: 'now-grid' }, live, aside);
+  replace(head, loadingBlock(2));
+  replace(live, loadingBlock(10));
+  ctx.main.append(head, grid, periodBox, h('div', { class: 'car-facts' }, vehicle.el, firmware.el));
+
+  // Latest drive and charge (the charge card reads /now too).
+  const latestP = Promise.all([
+    ctx.api.page(api.apiPath`cars/${car.id}/drives`, null, { limit: 1 }),
+    ctx.api.page(api.apiPath`cars/${car.id}/charges`, null, { limit: 1 }),
+  ]).then(async ([d, c]) => {
+    const drive = d.items[0] || null;
+    let sketch = null;
+    if (drive) {
+      sketch = await ctx.api.get('tracks', { cars: car.id, from_ms: drive.start_ms, to_ms: (drive.end_ms ?? api.now()) + 1, max_points: 200 })
+        .then((t) => (t.drives || []).find((x) => x.drive === drive.id)).catch(() => null);
+    }
+    const n = await nowP.catch(() => null);
+    if (!n || !ctx.alive()) return;
+    replace(latest, driveCard(car, drive, sketch, tz), chargeCard(car, c.items[0] || null, n, tz));
+  }).catch((err) => replace(latest, errorView(err, { eyebrow: 'Latest drive and charge' })));
+  const periodP = drawPeriod(ctx, aside, periodBox);
+  const firmwareP = firmware.load();
+
+  [now, outsideMaps] = await Promise.all([nowP, settingsP.then((st) => !!(st && st.outside_links && st.outside_links.maps))]);
+  if (!ctx.alive()) return {};
+  grid.classList.add(`now-${now.state}`);
+  grid.classList.toggle('is-stale', !!now.stale);
   draw();
   // The time in the current state counts on by itself (a clock, not a request).
   const tick = setInterval(drawState, 30000);
   ctx.onCleanup(() => clearInterval(tick));
-  const vehicle = vehiclePanel(ctx, car);
-  const firmware = firmwarePanel(ctx, car);
-  ctx.main.append(head, h('div', { class: ['now-grid', `now-${now.state}`, { 'is-stale': !!now.stale }] }, live, aside), periodBox,
-    h('div', { class: 'car-facts' }, vehicle.el, firmware.el));
 
   // The map: where the car is, with a pin (an arrow along the heading when it is known).
   const lat = v(now.location?.lat), lon = v(now.location?.lon);
@@ -143,22 +168,7 @@ export async function mount(ctx) {
     }).catch((err) => replace(mapBox, h('p', { class: 'map-note' }, `The map did not load: ${err.message}`)))
     : (mapBox.append(h('p', { class: 'map-note' }, 'No position recorded yet.')), Promise.resolve());
 
-  // Latest drive and charge.
-  const latestP = Promise.all([
-    ctx.api.page(api.apiPath`cars/${car.id}/drives`, null, { limit: 1 }),
-    ctx.api.page(api.apiPath`cars/${car.id}/charges`, null, { limit: 1 }),
-  ]).then(async ([d, c]) => {
-    const drive = d.items[0] || null;
-    let sketch = null;
-    if (drive) {
-      sketch = await ctx.api.get('tracks', { cars: car.id, from_ms: drive.start_ms, to_ms: (drive.end_ms ?? api.now()) + 1, max_points: 200 })
-        .then((t) => (t.drives || []).find((x) => x.drive === drive.id)).catch(() => null);
-    }
-    replace(latest, driveCard(car, drive, sketch, tz), chargeCard(car, c.items[0] || null, now, tz));
-  }).catch((err) => replace(latest, errorView(err, { eyebrow: 'Latest drive and charge' })));
-
-  const periodP = drawPeriod(ctx, aside, periodBox);
-  await Promise.all([latestP, periodP, firmware.load()]);
+  await Promise.all([latestP, periodP, firmwareP]);
 
   // Live: values pushed by the server as the car sends them; nothing is re-queried on a timer.
   ctx.events(['now', 'rows'], (ev) => {
@@ -681,15 +691,24 @@ const periodParts = new WeakMap();
 async function drawPeriod(ctx, aside, box, { refresh = false } = {}) {
   const car = ctx.car, tz = ctx.tz, p = ctx.params;
   const label = periodLabel(ctx.period, tz, api.now());
-  const [tl, act, series, trip] = await Promise.allSettled([
-    ctx.api.page(api.apiPath`cars/${car.id}/timeline`, p, { limit: 40 }),
-    ctx.api.get(api.apiPath`cars/${car.id}/activity`, p),
-    ctx.api.get(api.apiPath`cars/${car.id}/series`, { ...p, fields: 'soc_pct,usable_soc_pct,range_km,ideal_range_km', max_points: 600 }),
-    ctx.api.get(api.apiPath`cars/${car.id}/trip`, p),
+  // each part draws when its own answers are in: the figures and entries, the strip, the battery chart, the charging chart
+  const settle = (pr) => pr.then((value) => ({ status: 'fulfilled', value }), (reason) => ({ status: 'rejected', reason }));
+  const tlP = settle(ctx.api.page(api.apiPath`cars/${car.id}/timeline`, p, { limit: 40 }));
+  const actP = settle(ctx.api.get(api.apiPath`cars/${car.id}/activity`, p));
+  const seriesP = settle(ctx.api.get(api.apiPath`cars/${car.id}/series`, { ...p, fields: 'soc_pct,usable_soc_pct,range_km,ideal_range_km', max_points: 600 }));
+  const tripP = settle(ctx.api.get(api.apiPath`cars/${car.id}/trip`, p));
+  const parts = periodBlocks(ctx, box, label, refresh);
+  await Promise.all([
+    Promise.all([tlP, tripP]).then(([tl, trip]) => { if (!ctx.signal.aborted) drawAside(ctx, aside, label, tl, trip); }),
+    actP.then((act) => { if (!ctx.signal.aborted) drawStrip(ctx, parts, act); }),
+    seriesP.then((series) => (ctx.signal.aborted ? null : drawBattery(ctx, parts, series))),
+    drawCharging(ctx, parts.charging).catch((err) => parts.charging.fill(errorView(err, { eyebrow: 'Charging' }))),
   ]);
-  if (ctx.signal.aborted) return;
+}
 
-  // The aside: the period's figures and its entries, newest first.
+/** The aside: the period's figures and its entries, newest first. */
+function drawAside(ctx, aside, label, tl, trip) {
+  const car = ctx.car, tz = ctx.tz;
   const t = trip.status === 'fulfilled' ? trip.value : null;
   const rows = tl.status === 'fulfilled' ? tl.value.items : [];
   const noDrives = t && !(t.drives || []).length ? 'no drives in this period' : 'not enough data';
@@ -703,17 +722,17 @@ async function drawPeriod(ctx, aside, box, { refresh = false } = {}) {
     rows.length ? h('ol', { class: 'tl' }, rows.map((r) => timelineRow(r, { car: car.id, tz, period: ctx.state.period }))) : empty({ title: 'Nothing recorded in this period.' }),
     h('a', { class: 'link-arrow', href: state.linkTo('timeline') }, rows.length >= 40 ? 'More on the timeline' : 'The period on the timeline', icon('arrowRight')));
 
-  // Below: the activity strip, the battery chart and the charging chart, each chart on one time axis.
-  const strip = act.status === 'fulfilled'
-    ? activityStrip(act.value, { tz, link: (s) => (s.ref && s.ref.drive ? state.buildUrl('drive', { car: car.id, drive: s.ref.drive }) : s.ref && s.ref.charge ? state.buildUrl('charge', { car: car.id, charge: s.ref.charge }) : null) })
-    : errorView(act.reason, { eyebrow: 'Activity' });
-  const rf = rangeField('range_km');
+}
+
+/** Below the aside: the activity strip, the battery chart and the charging chart, each chart on one time axis. */
+function periodBlocks(ctx, box, label, refresh) {
+  const car = ctx.car;
   // A refresh (a drive or charge started or ended) keeps the blocks on screen and draws new values into them,
   // so nothing goes blank and comes back; a new period builds them again.
   let parts = refresh ? periodParts.get(box) : null;
   if (parts && parts.label !== label) parts = null;
   if (!parts) {
-    parts = { label, strip: h('div', { class: 'period-strip' }) };
+    parts = { label, strip: h('div', { class: 'period-strip' }, loadingBlock(2)) };
     parts.battery = chartBlock(ctx, {
       title: 'Battery', note: 'asleep time shaded violet, unknown time shaded red; a line never crosses unknown time',
       link: h('a', { class: 'link-arrow', href: state.linkTo('battery'), cover: 'overview.link.charge_level' }, 'Battery history', icon('arrowRight')),
@@ -734,9 +753,19 @@ async function drawPeriod(ctx, aside, box, { refresh = false } = {}) {
       parts.battery.el, parts.charging.el,
       h('p', { class: 'note period-note' }, 'This part follows the period picker at the top and loads again by itself when a drive, charge or parked spell starts or ends; nothing is re-asked on a timer.'));
   }
-  const battery = parts.battery, chargingBox = parts.charging;
-  replace(parts.strip, strip);
+  return parts;
+}
 
+function drawStrip(ctx, parts, act) {
+  const car = ctx.car, tz = ctx.tz;
+  replace(parts.strip, act.status === 'fulfilled'
+    ? activityStrip(act.value, { tz, link: (s) => (s.ref && s.ref.drive ? state.buildUrl('drive', { car: car.id, drive: s.ref.drive }) : s.ref && s.ref.charge ? state.buildUrl('charge', { car: car.id, charge: s.ref.charge }) : null) })
+    : errorView(act.reason, { eyebrow: 'Activity' }));
+}
+
+async function drawBattery(ctx, parts, series) {
+  const battery = parts.battery;
+  const rf = rangeField('range_km');
   const draws = [];
   if (series.status === 'fulfilled' && series.value.t_ms.length) {
     const s = series.value;
@@ -756,7 +785,6 @@ async function drawPeriod(ctx, aside, box, { refresh = false } = {}) {
   } else {
     battery.fill(series.status === 'rejected' ? errorView(series.reason, { eyebrow: 'Battery' }) : empty({ title: 'No battery readings in this period.', text: 'Choose a longer period, or look at the Timeline for when data last arrived.' }));
   }
-  draws.push(drawCharging(ctx, chargingBox).catch((err) => chargingBox.fill(errorView(err, { eyebrow: 'Charging' }))));
   await Promise.all(draws);
 }
 
@@ -771,7 +799,7 @@ function chartBlock(ctx, { title, note, link, cover, csvName }) {
   const tz = ctx.tz;
   const legend = h('div', { class: 'legend', role: 'group', 'aria-label': `${title}: show or hide a chart`, cover: 'overview.chart.legend_toggle' });
   const readout = h('p', { class: 'readout chart-readout', 'aria-live': 'off' });
-  const charts = h('div', { class: 'charts' });
+  const charts = h('div', { class: 'charts' }, loadingBlock(4));
   const zoomBtn = h('button', { type: 'button', class: 'button button-quiet button-small', hidden: true, onclick: () => {
     if (!handle || !data || !data.fit) return;
     const zoomed = zoomBtn.dataset.zoomed === '1';

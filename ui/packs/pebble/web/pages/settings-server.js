@@ -49,7 +49,7 @@ export async function mount(ctx) {
   let [settings, network, notices, cars, accounts, sessions] = await Promise.all([
     ctx.api.get('settings'),
     admin ? ctx.api.get('network').catch(() => null) : null,
-    ctx.api.get('notices').then((r) => r.items || []).catch(() => []),
+    ctx.api.get('notices', null, { maxAgeMs: 5000 }).then((r) => r.items || []).catch(() => []), // the frame's answer of this load
     ctx.api.list('cars', { sort: 'custom' }).all({ max: 500 }).catch(() => []),
     admin ? ctx.api.list('accounts', {}).all({ max: 2000 }) : [],
     ctx.api.list('me/sessions', {}).all({ max: 500 }),

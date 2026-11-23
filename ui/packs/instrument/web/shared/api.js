@@ -337,7 +337,9 @@ export function createClient(options = {}) {
 
   /**
    * GET an API path; resolves to the parsed JSON (treat it as read-only: callers asking at the same time
-   * share it). opts: signal, maxAgeMs (reuse a result this young), timeoutMs, headers.
+   * share it). opts: signal, maxAgeMs (reuse a result this young), keep (keep this answer for callers that pass
+   * maxAgeMs, without reusing an older one: the frame's own reads, which a page loaded at the same time asks
+   * for again), timeoutMs, headers.
    */
   function get(path, params, opts = {}) {
     const href = url(path, params);
@@ -352,7 +354,7 @@ export function createClient(options = {}) {
       entry = { controller, refs: 0, settled: false, promise: null };
       const e = entry, w = writes;
       e.promise = exchange('GET', path, { params, signal: controller.signal, headers: opts.headers, accept: opts.accept || 'json', timeoutMs: opts.timeoutMs ?? readTimeoutMs })
-        .then((value) => { if (w === writes && (opts.maxAgeMs > 0 || cache.has(key))) cache.set(key, { at: localNow(), value }); return value; })
+        .then((value) => { if (w === writes && (opts.maxAgeMs > 0 || opts.keep || cache.has(key))) cache.set(key, { at: localNow(), value }); return value; })
         .finally(() => { e.settled = true; if (inflight.get(key) === e) inflight.delete(key); });
       e.promise.catch(() => {}); // a caller that left must not leave an unhandled rejection behind
       inflight.set(key, entry);

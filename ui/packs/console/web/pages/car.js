@@ -26,6 +26,7 @@ import { rpx } from '../core/display.js';
 import { stateStrip } from '../core/strip.js';
 import { src, via, inputsLine } from '../core/source.js';
 import { vehicleSection } from './vehicle.js';
+import { loadingLine } from '../core/states.js';
 
 export const id = 'car';
 export const title = () => 'Overview';
@@ -56,11 +57,12 @@ export async function mount(ctx) {
   let car = ctx.car;
   const cid = car.id;
   const enc = encodeURIComponent(cid);
+  // GET now and the period's calls start together; each part draws when its own answers are in, and a loading
+  // line holds its place until then
   let now, settings;
-  try {
-    [now, settings] = await Promise.all([ctx.api.get(`cars/${enc}/now`), ctx.api.get('settings', null, { maxAgeMs: 300000 }).catch(() => null)]);
-  } catch (e) { ctx.fail(e); return; }
-  if (!ctx.alive()) return;
+  const nowP = ctx.api.get(`cars/${enc}/now`);
+  const settingsP = ctx.api.get('settings', null, { maxAgeMs: 300000 }).catch(() => null);
+  nowP.catch(() => {}); // handled below
 
   const hd = head(ctx, { title: h('span', { cover: 'summary.header.name' }, car.name || `unnamed ${car.model || 'car'}`),
     extra: isSold(car) ? h('span', { class: 'muted ph-extra', title: 'Sold: its history stays; it is left out of the fleet list' }, tag('sold', 'muted'), car.sold_date ? ` on ${car.sold_date}` : '') : null });
@@ -84,6 +86,8 @@ export async function mount(ctx) {
       section({ title: 'where', cover: ['summary.map.position', 'summary.map.attribution', 'summary.map.zoom'] }, mapEl, mapTools),
       h('div', null, chargeBlock, whyBlock)),
     periodBlock, vehicle.el));
+  replace(nowBlock, loadingLine('loading the car'));
+  replace(periodBlock, section({ title: 'period' }, loadingLine('loading the period')));
 
   /* ---------- the lines at the top */
   function paintSub() {
@@ -391,13 +395,18 @@ export async function mount(ctx) {
     });
   }
 
-  paintSub(); paintNow(); paintCharge(); paintTools();
-  try { await paintPeriod(); } catch (e) {
+  const periodP = paintPeriod().catch((e) => {
     if (!ctx.alive()) return;
     replace(periodBlock, section({ title: 'period' }, h('p', { class: 'note' }, `-- the period could not be loaded: ${e.message} --`)));
-  }
+  });
+  try {
+    [now, settings] = await Promise.all([nowP, settingsP]);
+  } catch (e) { ctx.fail(e); return; }
   if (!ctx.alive()) return;
-  await mountMap();
+  paintSub(); paintNow(); paintCharge(); paintTools();
+  const mapP = mountMap();
+  await Promise.all([periodP, mapP]);
+  if (!ctx.alive()) return;
   if (!ctx.alive()) return;
   ctx.ready();
 

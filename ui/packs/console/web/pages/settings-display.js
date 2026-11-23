@@ -91,7 +91,7 @@ export async function mount(ctx) {
     ctx.api.get('maps/config').catch(() => null),
     packChoices(ctx.api, { fallback: PACKS, current: getPrefs()?.ui_pack || null }),
     ctx.api.get('release').catch(() => null),
-    ctx.api.get('cars', { sort: 'name', limit: 200 }).then((r) => r.items || []).catch(() => []),
+    ctx.api.get('cars', { sort: 'name', limit: 200 }, { maxAgeMs: 5000 }).then((r) => r.items || []).catch(() => []),
   ]);
   if (!ctx.alive()) return;
   const p = getPrefs() || {};

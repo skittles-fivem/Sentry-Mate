@@ -226,9 +226,10 @@ export async function mount(ctx) {
   }
 
   // namesFresh: after a 'fleet' event (car added, removed or renamed) the names are asked again, not cached
-  async function loadTop(namesFresh = false) {
+  // first: the page's first load, which reuses the frame's fleet/summary of this same moment
+  async function loadTop(namesFresh = false, first = false) {
     const [s, at, setup] = await Promise.all([
-      ctx.api.get('fleet/summary'),
+      ctx.api.get('fleet/summary', null, first ? { maxAgeMs: 5000 } : undefined),
       ctx.api.page('fleet/attention', {}, { limit: 8 }).catch(() => ({ items: [], next: null })),
       isAdmin() ? ctx.api.get('setup/status').catch(() => null) : Promise.resolve(null),
     ]);
@@ -289,7 +290,7 @@ export async function mount(ctx) {
   }
 
   try {
-    await Promise.all([loadTop(), table.ready]);
+    await Promise.all([loadTop(false, true), table.ready]);
   } catch (e) { ctx.fail(e); return; }
   ctx.ready();
 

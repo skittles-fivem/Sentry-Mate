@@ -46,7 +46,7 @@ export async function mount(ctx) {
   const needCar = !(ctx.state.car ?? state.lastCar());
   let [about, notices, settings, cars, rel] = await Promise.all([
     ctx.api.get('about', null, { maxAgeMs: 600000 }),
-    ctx.api.get('notices').then((r) => r.items).catch(() => getNotices()),
+    ctx.api.get('notices', null, { maxAgeMs: 5000 }).then((r) => r.items).catch(() => getNotices()),
     ctx.admin ? ctx.api.get('settings').catch(() => null) : null,
     needCar ? ctx.api.get('cars', { sort: 'name', limit: 200 }).then((r) => r.items || []).catch(() => null) : null,
     ctx.api.get('release').catch(() => null),

@@ -141,10 +141,14 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- whole-life parts */
 
   let bat = null, settings = null;
+  // the latest GET battery (the every-car table reuses it for this car) and the latest loadTop(), which the
+  // capacity chart and the lifetime totals wait for once their own answers are in (they draw with bat)
+  let batFetch = null, topP = Promise.resolve();
 
   async function loadTop() {
+    batFetch = ctx.api.get(api.apiPath`cars/${car.id}/battery`);
     const [b, s, eff] = await Promise.allSettled([
-      ctx.api.get(api.apiPath`cars/${car.id}/battery`),
+      batFetch,
       ctx.api.get(api.apiPath`cars/${car.id}/settings`),
       ctx.api.get(api.apiPath`cars/${car.id}/efficiency`, { from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms }),
     ]);
@@ -302,7 +306,9 @@ export async function mount(ctx) {
           }
           settings = saved;
           ctx.flash('Reference values saved. The health figures are worked out again.');
-          await Promise.all([loadTop(), drawCap()]);
+          const top = loadTop();
+          topP = top.catch(() => {});
+          await Promise.all([top, drawCap()]);
         },
       }));
   }
@@ -342,6 +348,7 @@ export async function mount(ctx) {
       if (!ctx.signal.aborted && my === capGen) replace(plot, errorView(err, { eyebrow: 'Capacity', retry: () => drawCap() }));
       return;
     }
+    await topP;
     if (my !== capGen || !ctx.alive()) return;
     // a car that never names its buffer has charge readings of usable energy only: draw those, said so
     const byFull = items.some((r) => num(r.full_pack_kwh));
@@ -426,6 +433,7 @@ export async function mount(ctx) {
       // filter takes, not the ones that gave rows, so each is asked on its own
       ...LIFE_KINDS.map((k) => ctx.api.get(api.apiPath`cars/${car.id}/totals`, { source: k })),
     ]);
+    await topP;
     if (!ctx.alive()) return;
     const L = (bat && bat.lifetime) || {};
     if (t.status === 'rejected') { replace(lifeBox, head('bt-life-title', 'Lifetime totals'), errorView(t.reason, { eyebrow: 'Lifetime totals', retry: () => drawLife() })); return; }
@@ -757,7 +765,7 @@ export async function mount(ctx) {
     moreCars.disabled = true;
     const got = await Promise.all(batch.map(async (c) => {
       const [b, l, p] = await Promise.allSettled([
-        ctx.api.get(api.apiPath`cars/${c.id}/battery`),
+        c.id === car.id && batFetch ? batFetch : ctx.api.get(api.apiPath`cars/${c.id}/battery`),
         ctx.api.get(api.apiPath`cars/${c.id}/battery-level`, { ...ctx.params, bucket: 'day', moving: 'false' }),
         ctx.api.get(api.apiPath`cars/${c.id}/parked`, { ...ctx.params, min_hours: opt.min_hours, limit: 1 }),
       ]);
@@ -796,8 +804,10 @@ export async function mount(ctx) {
   });
   ctx.onCleanup(() => clearTimeout(rowsTimer));
 
-  await loadTop();
-  await Promise.all([drawCap(), drawLife(), drawProj(), drawLevel(), drain.load().catch(() => {}), drawCars()]);
+  // every part loads at once and fills its own box (each keeps a loading block of its size until then)
+  const top = loadTop();
+  topP = top.catch(() => {});
+  await Promise.all([top, drawCap(), drawLife(), drawProj(), drawLevel(), drain.load().catch(() => {}), drawCars()]);
   ctx.ready();
 }
 
