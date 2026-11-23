@@ -1,6 +1,7 @@
 // Loading, empty and error states, the same everywhere.
 
 import { h } from '../shared/dom.js';
+import { PAGE_FAILED, isPageFailed } from '../shared/build.js';
 import { icon } from './icons.js';
 
 /** A shimmering bar: skel('text' | 'num' | 'title' | 'block', { width: '60%' }). */
@@ -31,6 +32,7 @@ export function errorWords(err) {
   if (s === 404) return { title: 'Not found', text: (err.message ? err.message + ' ' : '') + 'It may have been removed, or the link is wrong. A car you may not see looks the same.' };
   if (s === 401) return { title: 'Signed out', text: 'Your session ended. Sign in again to go on.' };
   if (s === 403) return { title: 'Not allowed', text: err.message || 'Your account may not do this. An admin can.' };
+  if (isPageFailed(err)) return { title: PAGE_FAILED.title, text: PAGE_FAILED.text };
   if (s === 0) return { title: 'No answer from the server', text: 'Check that Sentry Mate is running and this computer is on the same network, then try again.' };
   if (s === 429) return { title: 'Too many requests', text: 'Wait a moment, then try again.' };
   if (s >= 500) return { title: 'The server had a problem', text: 'Try again. If it keeps happening, look at Data health.' };
@@ -49,7 +51,7 @@ export function errorState(err, { retry = null, home = true, compact = false } =
     h('p', null, w.text),
     err?.code ? h('span', { class: 'empty-code' }, `${err.status || ''} ${err.code}`.trim()) : null,
     h('div', { class: 'row' },
-      retry ? h('button', { class: 'btn', type: 'button', onclick: retry }, icon('reset'), 'Try again') : null,
+      retry ? h('button', { class: 'btn', type: 'button', onclick: retry }, icon('reset'), isPageFailed(err) ? PAGE_FAILED.action : 'Try again') : null,
       home ? h('a', { class: 'btn btn--ghost', href: '/' }, icon('fleet'), 'All cars') : null));
 }
 

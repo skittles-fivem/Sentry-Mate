@@ -3,6 +3,7 @@
 
 import * as api from '../shared/api.js';
 import { h } from '../shared/dom.js';
+import { PAGE_FAILED, isPageFailed } from '../shared/build.js';
 
 /** 'loading drives' with a blinking caret. */
 export const loadingLine = (what = 'loading') => h('p', { class: 'loading', role: 'status' }, h('span', null, what), h('span', { class: 'caret', 'aria-hidden': 'true' }));
@@ -17,6 +18,7 @@ export const empty = (text, hint = null, attrs = {}) => h('div', { class: 'empty
 /** { tag, text }: what an error means, in plain words. */
 export function errorWords(err) {
   const e = err || {};
+  if (isPageFailed(e)) return { tag: 'updated', text: `${PAGE_FAILED.title}. ${PAGE_FAILED.text}` };
   if (e.status === 0 || e.code === 'network') return { tag: 'offline', text: 'The server does not answer. Check the network; the page tries again when it is back.' };
   if (e.code === 'timeout') return { tag: 'slow', text: 'The server took too long to answer. Try again.' };
   if (e.status === 401) return { tag: 'signed out', text: 'Your session ended. Sign in again.' };
@@ -35,6 +37,6 @@ export function errorBlock(err, { retry = null, home = true } = {}) {
     h('p', { class: 'errbox-line' }, h('span', { class: 'tag tag--bad' }, `[${w.tag}]`), ' ', w.text),
     err?.code && !api.isAbort(err) ? h('p', { class: 'errbox-code' }, `code: ${err.code}${err.status ? ` (http ${err.status})` : ''}`) : null,
     h('div', { class: 'acts' },
-      retry ? h('button', { class: 'btn btn--primary', type: 'button', onclick: retry }, 'retry') : null,
+      retry ? h('button', { class: 'btn btn--primary', type: 'button', onclick: retry }, isPageFailed(err) ? PAGE_FAILED.action.toLowerCase() : 'retry') : null,
       home ? h('a', { class: 'btn', href: '/' }, 'fleet') : null));
 }
