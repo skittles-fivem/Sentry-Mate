@@ -11,7 +11,7 @@
 
 import { h, replace } from '../shared/dom.js';
 import { formatNumber } from '../shared/i18n.js';
-import { TM_BASE, TM_DEFAULTS, MQTT_STATE, DB_STATE, UNENCRYPTED_LABEL, UNENCRYPTED_WARNING, tmErrorText, tmWords, tmStale, tmDraft, tmCheck, tmPutBody, tmMatchChanges, tmPreselect, tmMatchWords, tmHeadline } from '../shared/teslamate.js';
+import { TM_BASE, TM_DEFAULTS, TM_HOST_HINT, tmPinNote, tmTlsPort, MQTT_STATE, DB_STATE, UNENCRYPTED_LABEL, UNENCRYPTED_WARNING, tmErrorText, tmWords, tmStale, tmDraft, tmCheck, tmPutBody, tmMatchChanges, tmPreselect, tmMatchWords, tmHeadline } from '../shared/teslamate.js';
 import { section, kv, btn, note } from '../core/ui.js';
 import { table } from '../core/table.js';
 import { field, form } from '../core/form.js';
@@ -128,7 +128,7 @@ export function teslamateSection(ctx, { cars = [] } = {}) {
     const isDb = part === 'database';
     const p = (n) => `${part}.${n}`;
     const fEnabled = isDb ? field({ label: 'catch up from teslamate\'s database', name: 'enabled', path: p('enabled'), type: 'checkbox', value: saved.enabled, hint: 'Off by default. Reads TeslaMate\'s drives, charges and positions now and then, for what MQTT missed. A read-only database user is enough.' }) : null;
-    const fHost = field({ label: 'host', name: 'host', path: p('host'), value: saved.host || '', hint: isDb ? 'Where TeslaMate\'s PostgreSQL listens.' : 'The broker TeslaMate publishes to: a host name or IP address, without mqtt://.', attrs: { ...inAttrs, placeholder: '192.0.2.10' } });
+    const fHost = field({ label: 'host', name: 'host', path: p('host'), value: saved.host || '', hint: isDb ? 'Where TeslaMate\'s PostgreSQL listens.' : TM_HOST_HINT, attrs: { ...inAttrs, placeholder: '192.0.2.10' } });
     const fPort = field({ label: 'port', name: 'port', path: p('port'), type: 'number', value: saved.port, hint: isDb ? '5432 is PostgreSQL\'s usual port.' : '1883 without TLS, 8883 with.', attrs: { min: '1', max: '65535', step: '1' } });
     const fDb = isDb ? field({ label: 'database', name: 'database', path: p('database'), value: saved.database || '', hint: 'TeslaMate\'s is teslamate.', attrs: inAttrs }) : null;
     const fUser = field({ label: 'user', name: 'username', path: p('username'), value: saved.username || '', hint: isDb ? 'A user that may read TeslaMate\'s tables.' : 'Empty for a broker without accounts.', attrs: inAttrs });
@@ -137,7 +137,7 @@ export function teslamateSection(ctx, { cars = [] } = {}) {
     const fPrefix = !isDb ? field({ label: 'prefix', name: 'prefix', path: p('prefix'), value: saved.prefix || 'teslamate', hint: 'TeslaMate\'s MQTT_NAMESPACE, teslamate unless you changed it. The server subscribes to <prefix>/cars/+/#.', attrs: inAttrs }) : null;
     const fIv = isDb ? field({ label: 'every (s)', name: 'interval_s', path: p('interval_s'), type: 'number', value: saved.interval_s, hint: 'Seconds between catch-ups, from 60 to 86400. 300 is every five minutes.', attrs: { min: '60', max: '86400', step: '1' } }) : null;
     const fTls = field({ label: 'encrypt the connection (tls)', name: 'tls', path: p('tls'), type: 'checkbox', value: saved.tls, hint: isDb ? 'When TeslaMate\'s PostgreSQL offers TLS.' : 'When the broker offers TLS (usually on port 8883).' });
-    const fPin = field({ label: 'pin', name: 'pin_sha256', path: p('pin_sha256'), value: saved.pin_sha256 || '', hint: 'The SHA-256 of a host\'s own (self-signed) certificate: 64 hex digits, colons allowed. Empty: the certificate must be valid for the host.', attrs: inAttrs });
+    const fPin = field({ label: 'pinned certificate (sha-256)', name: 'pin_sha256', path: p('pin_sha256'), value: saved.pin_sha256 || '', hint: tmPinNote(part), attrs: inAttrs });
     const fPlain = field({ label: lower(UNENCRYPTED_LABEL), name: 'allow_unencrypted', path: p('allow_unencrypted'), type: 'checkbox', value: saved.allow_unencrypted, hint: 'Off by default. Needed only to send a password without TLS.' });
     fPlain.el.append(h('p', { class: 'note tone--warn tm-warn' }, tag('warn', 'warn'), ' ', UNENCRYPTED_WARNING));
     const fields = [fEnabled, fHost, fPort, fDb, fUser, fPass, fRemove, fPrefix, fIv, fTls, fPin, fPlain].filter(Boolean);
@@ -185,6 +185,8 @@ export function teslamateSection(ctx, { cars = [] } = {}) {
       fPlain.el.hidden = !on || tls;
       testBtn.hidden = !on;
     };
+    // TLS on moves the port from 1883 to 8883, off moves it back; a port typed by hand stays
+    fTls.input.addEventListener('change', () => { const to = tmTlsPort(part, fPort.input.value, fTls.input.checked); if (to != null) fPort.input.value = String(to); });
     fTls.input.addEventListener('change', sync);
     fEnabled?.input.addEventListener('change', sync);
     sync();

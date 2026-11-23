@@ -14,7 +14,7 @@ import { h, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import { formatDateTime } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
-import { TM_BASE, TM_DEFAULTS, MQTT_STATE, DB_STATE, UNENCRYPTED_LABEL, UNENCRYPTED_WARNING, tmErrorText, tmWords, tmDraft, tmCheck, tmPutBody, tmMatchChanges, tmPreselect, tmHeadline } from '../shared/teslamate.js';
+import { TM_BASE, TM_DEFAULTS, TM_HOST_HINT, tmPinNote, tmTlsPort, MQTT_STATE, DB_STATE, UNENCRYPTED_LABEL, UNENCRYPTED_WARNING, tmErrorText, tmWords, tmDraft, tmCheck, tmPutBody, tmMatchChanges, tmPreselect, tmHeadline } from '../shared/teslamate.js';
 import { section, figure, chip, button, icon, ago, errorView, empty } from '../core/ui.js';
 import { field, form, setFieldError } from '../core/form.js';
 import { dataTable } from '../core/table.js';
@@ -133,7 +133,7 @@ export function teslamatePart(ctx) {
     const isDb = part === 'database';
     const n = (x) => `${part}.${x}`;
     const fEnabled = isDb ? tick('Catch up from TeslaMate’s database', n('enabled'), saved.enabled, 'Off by default. Reads TeslaMate’s drives, charges and positions now and then, for what MQTT missed. A read-only database user is enough.') : null;
-    const fHost = field({ label: 'Host', name: n('host'), value: saved.host || '', hint: isDb ? 'Where TeslaMate’s PostgreSQL listens.' : 'The broker TeslaMate publishes to: a host name or IP address, without mqtt://.', attrs: { spellcheck: 'false', autocomplete: 'off', placeholder: '192.0.2.10' } });
+    const fHost = field({ label: 'Host', name: n('host'), value: saved.host || '', hint: isDb ? 'Where TeslaMate’s PostgreSQL listens.' : TM_HOST_HINT, attrs: { spellcheck: 'false', autocomplete: 'off', placeholder: '192.0.2.10' } });
     const fPort = field({ label: 'Port', name: n('port'), type: 'number', value: saved.port, hint: isDb ? '5432 is PostgreSQL’s usual port.' : '1883 without TLS, 8883 with.', attrs: { min: 1, max: 65535, step: 1 } });
     const fDb = isDb ? field({ label: 'Database', name: n('database'), value: saved.database || '', hint: 'TeslaMate’s is teslamate.', attrs: { spellcheck: 'false', autocomplete: 'off' } }) : null;
     const fUser = field({ label: 'User name', name: n('username'), value: saved.username || '', hint: isDb ? 'A user that may read TeslaMate’s tables.' : 'Empty for a broker without accounts.', attrs: { spellcheck: 'false', autocomplete: 'off' } });
@@ -142,7 +142,7 @@ export function teslamatePart(ctx) {
     const fPrefix = !isDb ? field({ label: 'Topic prefix', name: n('prefix'), value: saved.prefix || 'teslamate', hint: 'TeslaMate’s MQTT_NAMESPACE, teslamate unless you changed it. The server subscribes to <prefix>/cars/+/#.', attrs: { spellcheck: 'false', autocomplete: 'off' } }) : null;
     const fIv = isDb ? field({ label: 'Catch up every (seconds)', name: n('interval_s'), type: 'number', value: saved.interval_s, hint: 'From 60 to 86400. 300 is every five minutes.', attrs: { min: 60, max: 86400, step: 1 } }) : null;
     const fTls = tick('Encrypt the connection (TLS)', n('tls'), saved.tls, isDb ? 'When TeslaMate’s PostgreSQL offers TLS.' : 'When the broker offers TLS (usually on port 8883).');
-    const fPin = field({ label: 'Pinned certificate (SHA-256)', name: n('pin_sha256'), value: saved.pin_sha256 || '', hint: 'For a host with its own (self-signed) certificate: 64 hex digits, colons allowed. Empty: the certificate must be valid for the host.', attrs: { spellcheck: 'false', autocomplete: 'off' } });
+    const fPin = field({ label: 'Pinned certificate (SHA-256)', name: n('pin_sha256'), value: saved.pin_sha256 || '', hint: tmPinNote(part), attrs: { spellcheck: 'false', autocomplete: 'off' } });
     const fPlain = tick(UNENCRYPTED_LABEL, n('allow_unencrypted'), saved.allow_unencrypted, 'Off by default. Needed only to send a password without TLS.');
     const warn = h('p', { class: 'tesla-alert tm-warn', role: 'note' }, icon('warning'), UNENCRYPTED_WARNING);
     fPlain.append(warn);
@@ -197,6 +197,8 @@ export function teslamatePart(ctx) {
       fPlain.hidden = !on || tls;
       testBtn.hidden = !on;
     };
+    // TLS on moves the port from 1883 to 8883, off moves it back; a port typed by hand stays
+    fTls.control.addEventListener('change', () => { const to = tmTlsPort(part, fPort.control.value, fTls.control.checked); if (to != null) fPort.control.value = String(to); });
     fTls.control.addEventListener('change', sync);
     if (fEnabled) fEnabled.control.addEventListener('change', sync);
     sync();
