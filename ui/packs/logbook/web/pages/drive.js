@@ -338,7 +338,7 @@ export async function mount(ctx) {
         hasSet ? reading('Set, passenger', setText(val('setpoint_right_c', i))) : null,
         hasClimate ? reading('Climate', CLIMATE[val('climate', i)] || (val('climate', i) == null ? '—' : String(val('climate', i)))) : null,
         hasFan ? reading('Fan', val('fan_level', i) == null ? '—' : val('fan_level', i) === 0 ? 'off' : `step ${format(val('fan_level', i), 'number', { digits: 0 })} of 10`) : null,
-        hasTyres ? reading('Tyres', tyre.every((v) => v == null) ? '—' : [TYRES.map(([, , ab], k) => [h('abbr', { class: 'tyre-ab', title: TYRES[k][1] }, ab), ' ', format(tyre[k], 'pressure', { unit: false })]).flatMap((x, k) => (k ? [' · ', x] : [x])), ` ${unitLabel('pressure')}`]) : null,
+        hasTyres ? reading('Tyres', tyre.every((v) => v == null) ? '—' : [TYRES.map(([, , ab], k) => [h('abbr', { class: 'tyre-ab', title: TYRES[k][1] }, ab), ' ', format(tyre[k], 'pressure', { unit: false })]).flatMap((x, k) => (k ? [' · ', x] : [x])), ` ${unitLabel('pressure')}`], 'is-wide') : null,
         reading('Elevation', q(val('elevation_m', i), 'length')),
         reading('GPS', val('accuracy_m', i) == null ? '—' : ['within ', q(val('accuracy_m', i), 'length')])));
   };
