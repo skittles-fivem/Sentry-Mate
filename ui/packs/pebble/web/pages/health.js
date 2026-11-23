@@ -34,9 +34,6 @@ import { VERSION_SOURCE } from '../core/firmware.js';
 import { STATUS, STATUS_ORDER } from './connections.js';
 import { deviceText, keyRows } from './device-name.js';
 import { fullRebuildTile } from '../core/fullrebuild.js';
-import { gpsFitBlock } from '../shared/gpsfit.js';
-import { confirmSheet } from '../core/sheet.js';
-import { toast } from '../core/toast.js';
 import * as fr from '../shared/fullrebuild.js';
 import { follow, carOf, onRows, setAttr, FALLBACK_POLL_MS } from '../shared/live.js';
 import { morph, morphChildren, keepEl } from '../core/morph.js';
@@ -163,14 +160,6 @@ async function mountCar(ctx) {
   paintRebuild(null);
   // Rebuild all data (admins): everything worked out made again from the stored data, in the keys tile
   const full = ctx.admin ? fullRebuildTile(ctx, { car, label: 'Rebuild all data', bare: true, onStatus: paintRebuild }) : null;
-  // Find GPS layout (admins): in the notice that one input's positions are out of step; built once and kept in place
-  const gpsFit = ctx.admin ? gpsFitBlock({
-    api: ctx.api, car: car.id, alive: () => ctx.alive(), flash: (t, o) => toast(t, { kind: o?.kind === 'error' ? 'error' : 'ok' }),
-    confirm: (text, o) => confirmSheet({ title: o.title, text, yes: o.ok }),
-    errorText: (e) => errorWords(e).text, onApplied: () => ctx.alive() && ctx.reload(),
-    btnClass: 'btn btn-soft btn-sm', applyClass: 'btn btn-primary btn-sm', icon: (n) => icon(n),
-  }) : null;
-  if (gpsFit) ctx.onCleanup(() => gpsFit.stop());
 
   // each live tile is built by a function of its data: the first time it goes on the page, later ones are made
   // like it in place (core/morph.js: only the texts that changed are written)
@@ -198,8 +187,7 @@ async function mountCar(ctx) {
       reasons.length ? h('ul', { class: 'fixes' }, reasons.map((code) => {
         const r = REASONS[code] || [code, '', null];
         return h('li', { class: 'fix' }, h('b', null, r[0]), h('span', null, r[1]),
-          r[2] ? linkBtn(r[2], state.buildUrl('settings-cars', { car: car.id }), { icon: 'key', cls: 'fix-btn' }) : null,
-          code === 'gps_inputs_disagree' && gpsFit ? keepEl(gpsFit.el, 'gps-fit') : null);
+          r[2] ? linkBtn(r[2], state.buildUrl('settings-cars', { car: car.id }), { icon: 'key', cls: 'fix-btn' }) : null);
       })) : null);
   };
 

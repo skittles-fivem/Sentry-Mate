@@ -1,9 +1,20 @@
-// Icons from the sprite in index.html: icon('bolt') -> <svg class="ico"><use href="#i-bolt"/></svg>.
+// Icons from the sprite in index.html: icon('bolt') -> <svg class="ico" viewBox="0 0 24 24"> with a copy of the
+// shapes of <symbol id="i-bolt">.
+//
+// A copy, not a <use href="#i-bolt">: Safari (WebKit) lays the page out the moment a <use> is taken out of it, so a
+// part of a page drawn again (a live refresh swapping the page, a list's rows) was for that instant as short as the
+// page without it, the window was scrolled up to fit, and the reader was thrown back towards the top.
 import { svg } from '../shared/dom.js';
+
+const symbols = new Map(); // id -> the sprite's <symbol>, or null
 
 /** An icon from the sprite. cls adds classes ('ico--sm', 'ico--lg'). Decorative: hidden from screen readers. */
 export function icon(id, cls = '') {
-  return svg('svg', { class: ['ico', cls], 'aria-hidden': 'true', focusable: 'false' }, svg('use', { href: `#i-${id}` }));
+  let sym = symbols.get(id);
+  if (sym === undefined) { sym = document.getElementById(`i-${id}`); symbols.set(id, sym); }
+  const el = svg('svg', { class: ['ico', cls], viewBox: sym?.getAttribute('viewBox') || '0 0 24 24', 'aria-hidden': 'true', focusable: 'false' });
+  if (sym) for (const c of sym.childNodes) if (c.nodeType === 1) el.append(c.cloneNode(true));
+  return el;
 }
 
 /** The brand mark (the logo square with the pulse line). */

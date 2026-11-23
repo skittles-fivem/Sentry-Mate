@@ -46,7 +46,6 @@ pub mod compact;
 pub mod costs;
 pub mod firmware;
 pub mod full;
-pub mod gps_fit;
 pub mod importer;
 pub mod invoice_prices;
 pub mod invoices;
@@ -294,9 +293,6 @@ pub(crate) struct Inner {
     /// A run of the places' invoice prices is queued ([`invoice_prices::run`]); one runs at a time.
     pub(crate) invoice_prices_queued: std::sync::atomic::AtomicBool,
     pub(crate) invoice_prices_run: Mutex<()>,
-    /// The cars' GPS layout fits ([`gps_fit`]), and the one that runs (one at a time).
-    pub(crate) gps_fits: Mutex<gps_fit::Fits>,
-    pub(crate) gps_fit_one: Mutex<()>,
 }
 
 /// A stretch of a car's history where one input's GPS fixes disagreed with another's of the same moments by far
@@ -466,8 +462,6 @@ impl Engine {
                 invoice_gen: AtomicU64::new(0),
                 invoice_prices_queued: std::sync::atomic::AtomicBool::new(false),
                 invoice_prices_run: Mutex::new(()),
-                gps_fits: Mutex::default(),
-                gps_fit_one: Mutex::new(()),
                 opts,
             }),
         }

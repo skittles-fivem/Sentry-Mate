@@ -189,25 +189,3 @@
 /* boxed lists (core/table.js box): their rows' height */
 .page-health .hl-days .scroll-box { --box-row: round(2.875rem, var(--e)); }
 .page-health .hl-spans-box { --box-head: 0px; --box-row: round(4.125rem, var(--e)); }
-
-/* Find GPS layout (shared/gpsfit.js), in the notice that one input's positions are out of step (admins): every
-   row keeps its height in every state (not run, running, done, failed); long text ends in an ellipsis */
-.page-health .hl-fix .gf { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); min-width: 0; margin-top: round(0.5rem, var(--e)); padding-top: round(0.625rem, var(--e)); border-top: 1px dotted var(--rule); max-width: 62rem; }
-.page-health .gf-explain { margin: 0; font-size: var(--text-sm); color: var(--ink-2); }
-.page-health .gf-acts { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)); }
-.page-health .gf-bar-row { display: flex; align-items: center; gap: round(0.75rem, var(--e)); height: round(1.25rem, var(--e)); }
-.page-health .gf-bar { flex: 1 1 auto; height: round(0.5rem, var(--e)); border: 1px solid var(--rule); border-radius: round(0.25rem, var(--e)); background: var(--paper-sunk); overflow: hidden; }
-.page-health .gf-bar > i { display: block; height: 100%; width: var(--w, 0%); background: var(--accent); transition: width 0.6s ease; }
-.page-health .gf-pct { flex: none; width: 6ch; height: round(1.25rem, var(--e)); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; font-size: var(--text-sm); line-height: round(1.25rem, var(--e)); color: var(--ink-2); }
-.page-health .gf-head, .page-health .gf-notes { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; height: round(2.5rem, var(--e)); margin: 0; overflow: hidden; overflow-wrap: anywhere; font-size: var(--text-sm); line-height: round(1.25rem, var(--e)); color: var(--ink); }
-.page-health .gf-notes { color: var(--ink-3); }
-.page-health .gf-step { height: round(1.25rem, var(--e)); margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-sm); line-height: round(1.25rem, var(--e)); color: var(--ink-2); }
-.page-health .gf-rows { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); margin: 0; }
-.page-health .gf-row { display: grid; grid-template-columns: round(5.5rem, var(--e)) minmax(0, 1fr) minmax(0, round(12rem, var(--e))); gap: round(0.75rem, var(--e)); height: round(1.25rem, var(--e)); font-size: var(--text-sm); line-height: round(1.25rem, var(--e)); }
-.page-health .gf-row dt, .page-health .gf-row dd { margin: 0; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.page-health .gf-row dt { color: var(--ink-3); }
-.page-health .gf-layout { font-family: var(--mono); }
-.page-health .gf-err { text-align: right; color: var(--ink-2); font-variant-numeric: tabular-nums; }
-.page-health .gf[data-tone="warn"] .gf-head { color: var(--ochre); }
-.page-health .gf[data-tone="error"] .gf-head { color: var(--rust); }
-@media (prefers-reduced-motion: reduce) { .page-health .gf-bar > i { transition: none; } }

@@ -41,7 +41,7 @@ impl EngineRun {
         tokens: Option<Arc<ingest::Tokens>>,
         run: bool,
     ) -> Result<EngineRun, Fail> {
-        let db = db::Db::open(data, v.clone(), db::Options::default())?;
+        let db = db::Db::open(data, v, db::Options::default())?;
         let mut opts = engine::Options::default();
         if let Some(tz) = std::env::var("TZ").ok().map(|s| s.trim().to_string()).filter(|s| engine::tz::is_zone(s)) {
             opts.default_time_zone = tz;
@@ -67,8 +67,6 @@ impl EngineRun {
             engine.warm(None);
             // what is no longer written is packed when the server is idle (docs/plans/storage.md)
             engine.compact_automatically();
-            // `sentry-mate gps-layout` beside the server asks for its fit through the data folder
-            rt.spawn(engine::gps_fit::watch_requests(engine.clone(), data.to_path_buf(), v));
         }
         Ok(EngineRun { engine, rt: Some(rt) })
     }

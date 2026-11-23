@@ -127,15 +127,6 @@ fn day_files(dir: &Path, day: u64) -> Files {
     Files::named(dir, &day_name(day))
 }
 
-/// The files a day of a series is read from (its snapshot, its journal, its month's pack): what a reader of another
-/// process's files looks at before and after it reads the day, to see whether the day changed meanwhile
-/// ([`crate::Reader::day_points`]).
-pub(crate) fn day_paths<P: Point>(car_dir: &Path, stream: Stream, day: u64) -> [PathBuf; 3] {
-    let dir = series_dir::<P>(car_dir, stream);
-    let f = day_files(&dir, day);
-    [f.snap, f.log, Month::of(day).file(&dir)]
-}
-
 /// A day's points in memory.
 pub(crate) struct DayLog<P> {
     pub points: Vec<P>,

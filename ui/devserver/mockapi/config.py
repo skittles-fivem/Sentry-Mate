@@ -24,7 +24,6 @@ RELEASE_CHECK = ("off", "newer", "up_to_date", "error", "never", "checking")
 # --teslamate-trouble: the local TeslaMate starts in this trouble, with its admins' notice (resources/teslamate.py)
 # --full-rebuild: the full rebuild the server starts with (resources/fullrebuild.py)
 FULL_REBUILD = ("none", "running", "failed", "offered")
-GPS_FIT = ("none", "disagree", "running", "done")
 TESLAMATE_TROUBLE = ("none", "connection_refused", "auth_failed", "pin_mismatch", "quiet", "catchup_failed")
 
 
@@ -48,7 +47,6 @@ class Config:
     sse_interval_ms: int = 2000
     rows_every_s: float = 0
     rebuild_running: bool = False
-    gps_fit: str = "none"
     verbose: bool = False
     own_certificate: bool = False
     map_tiles: str = "online"
@@ -89,10 +87,6 @@ def parse_args(argv=None) -> Config:
     ap.add_argument("--rebuild-running", action="store_true",
                     help="every featured car's history is being rebuilt the whole time: its health says "
                          "rebuild_pending and it gets a `rows` event every second (or every --rows-every-s)")
-    ap.add_argument("--gps-fit", choices=GPS_FIT, default="none",
-                    help="every featured car's positions from one input are out of step (Data health's "
-                         "gps_inputs_disagree, with Find GPS layout for admins), and its GPS layout fit: not run "
-                         "(disagree), under way and never ending (running), or done with a layout found (done)")
     ap.add_argument("--verbose", action="store_true", help="log every request to stderr")
     ap.add_argument("--own-certificate", action="store_true",
                     help="run with the owner's own certificate (expiring in 12 days): no new one can be made here")
@@ -136,7 +130,7 @@ def parse_args(argv=None) -> Config:
                   move_state=a.move_state, move_peer_after_s=a.move_peer_after_s,
                   export_profile=a.export_profile, export_state=a.export_state,
                   freeze_clock=a.freeze_clock, sse_interval_ms=max(200, a.sse_interval_ms),
-                  rows_every_s=a.rows_every_s, rebuild_running=a.rebuild_running, gps_fit=a.gps_fit, verbose=a.verbose,
+                  rows_every_s=a.rows_every_s, rebuild_running=a.rebuild_running, verbose=a.verbose,
                   own_certificate=a.own_certificate, map_tiles=a.map_tiles,
                   release_check=a.release_check, teslamate_trouble=a.teslamate_trouble,
                   full_rebuild=a.full_rebuild, drives=a.drives)

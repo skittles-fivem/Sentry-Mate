@@ -34,8 +34,6 @@ import { sourceMark } from '../core/sources.js';
 import { overviewCard } from './integrations-overview.js';
 import { deviceText, renameButton } from './device-name.js';
 import { fullRebuild } from './rebuild-parts.js';
-import { gpsFitBlock } from '../shared/gpsfit.js';
-import { confirmDialog } from '../core/dialog.js';
 import * as fr from '../shared/fullrebuild.js';
 import { scrollBox } from '../shared/scrollbox.js';
 import { follow, carOf, onRows, FALLBACK_POLL_MS } from '../shared/live.js';
@@ -308,15 +306,6 @@ async function mountCar(ctx) {
       : lastHl && lastHl.rebuild_pending ? h('span', { class: 'hl-warn' }, 'Running') : 'Nothing pending');
   }
   const full = admin ? fullRebuild(ctx, { car, label: 'Rebuild all data', onStatus: paintRebuild }) : null;
-  // Find GPS layout (admin): in the notice that one input's positions are out of step; built once and moved along
-  // when the health is drawn again
-  const gpsFit = admin ? gpsFitBlock({
-    api, car: cid, alive: () => ctx.alive(), flash: (t, o) => ctx.flash(t, o),
-    confirm: (text, o) => confirmDialog({ title: o.title, text, yes: o.ok }),
-    errorText: (e) => errorWords(e).text, onApplied: () => loadHealth(),
-    btnClass: 'button button-small button-quiet', applyClass: 'button button-small',
-  }) : null;
-  ctx.onCleanup(() => gpsFit?.stop());
 
   const healthBox = h('div', { class: 'hl-health' }, loadingBlock(5));
   ctx.main.append(section({ title: 'Is data arriving?', note: 'checked now, over the period', cover: 'faq.stopped-recording', cls: 'hl-block', id: 'hl-health',
@@ -392,8 +381,7 @@ async function mountCar(ctx) {
         h('div', null,
           h('p', { class: 'hl-fix-title' }, r.title),
           r.text ? h('p', { class: 'hl-fix-text' }, r.text) : null,
-          r.fix ? h('a', { class: 'link-arrow', href: state.buildUrl(r.page, { car: cid }) }, r.fix, icon('arrowRight')) : null,
-          code === 'gps_inputs_disagree' && gpsFit ? keepEl(gpsFit.el, 'gps-fit') : null));
+          r.fix ? h('a', { class: 'link-arrow', href: state.buildUrl(r.page, { car: cid }) }, r.fix, icon('arrowRight')) : null));
     })) : null;
 
     const figs = figures([
