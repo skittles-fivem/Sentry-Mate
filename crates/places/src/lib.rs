@@ -31,6 +31,6 @@ pub use geo::{LatLon, distance_m};
 pub use geocode::{Address, AddressSource, GeocodeSettings, Geocoder, Mode};
 pub use geofence::{PlaceIndex, clamp_radius};
 pub use http::HttpOptions;
-pub use price::{ChargeCost, CostOptions, PriceError, Tariff, validate_plan};
+pub use price::{ChargeCost, CostOptions, PriceError, Tariff, Tier, Tiers, validate_plan, validate_tiers};
 pub use suggest::{Spot, SuggestOptions, Suggester, Suggestion, suggest};
 pub use tiles::MapTiles;
