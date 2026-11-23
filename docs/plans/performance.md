@@ -181,7 +181,9 @@ Caveats:
 
 # Plan: page speed with a long history
 
-Status (2026-11-23): measured; the first fixes are in (below), the rest are being worked on.
+Status (2026-11-23): done. On the owner-sized made-up history every page's calls answer within the target warm and
+after a restart; on a data folder never worked on before, the first calls of a few pages are slower while the
+background pass (below) is still working (statistics 2.5 s, temperatures 1.5 s, once).
 
 Pages were slow on a server with a long history (the owner's: one Model Y, about 2.7 million imported TeslaMate rows,
 mostly positions, plus TeslaFi imports, SMO uploads and TeslaMate and TeslaFi as live inputs): the Battery page sat on
@@ -230,59 +232,65 @@ kept in memory is gone) and **warm** (the faster of the next two). The tests:
   the table (keeps the data folder in `DIR` for the next run).
 
 The numbers below were taken with a server process (`serve`) and `curl`, one call at a time, on this container's 4
-cores (other builds sometimes ran at the same time: take them as about, ±20 %).
+cores (other builds sometimes ran at the same time: take them as about, ±20 %). "now" is the server after every change
+below; the first start ran with the background pass that starts with the server.
 
 ## The times (ms)
 
 | Call | origin/main: first start / restart / warm | now: first start / restart / warm |
 |---|---:|---:|
-| `cars/c1` | 6 / 7 / 6 | 7 / 7 / 6 |
-| `cars/c1/now` | 511 / 463 / 386 | 538 / 566 / 5 |
-| `cars/c1/activity?period=1d` | 1,260 / 1,205 / 1,189 | 4 / 4 / 3 |
-| `cars/c1/series?5 fields&period=1d&max_points=600` | 1,282 / 1,317 / 1,310 | 74 / 61 / 54 |
-| `cars/c1/timeline?limit=20` | 1,275 / 1,152 / 1,230 | 10 / 9 / 9 |
-| `cars/c1/health` | 96 / 91 / 100 | 88 / 89 / 75 |
-| `cars/c1/totals` | 484 / 411 / 440 | 5 / 6 / 4 |
-| `cars/c1/statistics?period=month&limit=12` | 12,353 / 11,686 / 10,823 | 5,981 / 6,353 / 4,663 |
-| `cars/c1/timeline?period=30d&limit=50` | 1,326 / 1,256 / 1,316 | 22 / 22 / 21 |
-| `cars/c1/states?period=30d` | 4 / 5 / 4 | 4 / 4 / 4 |
-| `cars/c1/activity?period=30d` | 1,340 / 1,215 / 1,221 | 5 / 5 / 5 |
-| `cars/c1/drives?limit=50` | 2,045 / 1,896 / 1,663 | 1,016 / 1,121 / 1,049 |
-| `cars/c1/drives?period=365d&limit=50` | 1,752 / 1,853 / 1,864 | 1,107 / 1,005 / 1,008 |
-| `cars/c1/drive-stats?period=365d` | 1,861 / 1,933 / 1,838 | 1,626 / 1,743 / 1,538 |
-| `cars/c1/gaps?limit=50` | 62 / 67 / 49 | 60 / 59 / 56 |
-| `cars/c1/charges?limit=50` | 3,573 / 3,169 / 3,325 | 1,356 / 1,305 / 1,035 |
-| `cars/c1/charging-stats?period=365d` | 4,394 / 3,416 / 3,491 | 1,271 / 1,244 / 1,075 |
-| `charging-stats/places?cars=c1` | 3,586 / 3,255 / 3,354 | 1,205 / 1,326 / 978 |
-| `cars/c1/charging-stats/dc-curve?period=365d` | 423 / 365 / 434 | 20 / 20 / 15 |
-| `cars/c1/battery` | 760 / 458 / 457 | 305 / 38 / 41 |
-| `cars/c1/battery/capacity?group=day&x=odometer&limit=500` | 521 / 396 / 436 | 65 / 68 / 84 |
-| `cars/c1/battery/capacity?group=month&x=odometer&limit=500` | 520 / 448 / 481 | 68 / 45 / 57 |
-| `cars/c1/battery-level?period=365d&bucket=day` | 2,718 / 2,560 / 2,449 | 1,372 / 1,391 / 688 |
-| `cars/c1/projected-range?period=365d` | 3,210 / 3,061 / 2,882 | 1,310 / 1,158 / 1,116 |
-| `cars/c1/parked?limit=12` | 1,692 / 1,469 / 1,577 | 335 / 329 / 344 |
-| `cars/c1/settings` | 5 / 5 / 5 | 6 / 5 / 5 |
-| `cars/c1/efficiency` | 2,482 / 2,302 / 2,064 | 297 / 294 / 295 |
-| `cars/c1/efficiency?period=365d` | 2,425 / 2,344 / 2,310 | 315 / 273 / 312 |
-| `cars/c1/temperatures?period=365d` | 2,823 / 2,768 / 2,803 | 943 / 801 / 950 |
-| `cars/c1/statistics?period=month` | 12,411 / 11,836 / 11,828 | 4,415 / 4,759 / 4,841 |
-| `cars/c1/statistics?period=year` | 12,807 / 11,551 / 11,644 | 4,633 / 4,646 / 4,896 |
-| `cars/c1/statistics?period=all` | 12,534 / 11,218 / 11,710 | 4,753 / 4,819 / 4,574 |
-| `cars/c1/mileage?group=month` | 429 / 468 / 396 | 6 / 7 / 5 |
-| `visits?cars=c1&limit=50` | 455 / 443 / 432 | 6 / 6 / 4 |
-| `visits/days?cars=c1` | 414 / 396 / 428 | 5 / 7 / 5 |
-| `tracks?cars=c1&period=30d&max_points=2000` | 83,333 / 76,860 / 77,282 | 1,760 / 1,883 / 1,863 |
-| `cars/c1/updates` | 424 / 419 / 420 | 4 / 5 / 4 |
-| `cars/c1/firmware` | 3 / 3 / 3 | 3 / 4 / 3 |
+| `cars/c1` | 6 / 7 / 6 | 8 / 6 / 6 |
+| `cars/c1/now` | 511 / 463 / 386 | 8 / 279 / 6 |
+| `cars/c1/activity?period=1d` | 1,260 / 1,205 / 1,189 | 9 / 6 / 4 |
+| `cars/c1/series?5 fields&period=1d&max_points=600` | 1,282 / 1,317 / 1,310 | 99 / 78 / 31 |
+| `cars/c1/timeline?limit=20` | 1,275 / 1,152 / 1,230 | 9 / 5 / 6 |
+| `cars/c1/health` | 96 / 91 / 100 | 72 / 75 / 44 |
+| `cars/c1/totals` | 484 / 411 / 440 | 11 / 43 / 5 |
+| `cars/c1/statistics?period=month&limit=12` | 12,353 / 11,686 / 10,823 | 2,512 / 561 / 44 |
+| `cars/c1/timeline?period=30d&limit=50` | 1,326 / 1,256 / 1,316 | 15 / 7 / 7 |
+| `cars/c1/states?period=30d` | 4 / 5 / 4 | 5 / 4 / 5 |
+| `cars/c1/activity?period=30d` | 1,340 / 1,215 / 1,221 | 7 / 6 / 7 |
+| `cars/c1/drives?limit=50` | 2,045 / 1,896 / 1,663 | 56 / 67 / 47 |
+| `cars/c1/drives?period=365d&limit=50` | 1,752 / 1,853 / 1,864 | 54 / 56 / 47 |
+| `cars/c1/drive-stats?period=365d` | 1,861 / 1,933 / 1,838 | 75 / 48 / 58 |
+| `cars/c1/gaps?limit=50` | 62 / 67 / 49 | 20 / 16 / 15 |
+| `cars/c1/charges?limit=50` | 3,573 / 3,169 / 3,325 | 16 / 17 / 17 |
+| `cars/c1/charging-stats?period=365d` | 4,394 / 3,416 / 3,491 | 14 / 11 / 11 |
+| `charging-stats/places?cars=c1` | 3,586 / 3,255 / 3,354 | 14 / 10 / 11 |
+| `cars/c1/charging-stats/dc-curve?period=365d` | 423 / 365 / 434 | 28 / 27 / 9 |
+| `cars/c1/battery` | 760 / 458 / 457 | 141 / 47 / 36 |
+| `cars/c1/battery/capacity?group=day&x=odometer&limit=500` | 521 / 396 / 436 | 114 / 74 / 70 |
+| `cars/c1/battery/capacity?group=month&x=odometer&limit=500` | 520 / 448 / 481 | 60 / 66 / 58 |
+| `cars/c1/battery-level?period=365d&bucket=day` | 2,718 / 2,560 / 2,449 | 785 / 32 / 31 |
+| `cars/c1/projected-range?period=365d` | 3,210 / 3,061 / 2,882 | 67 / 25 / 23 |
+| `cars/c1/parked?limit=12` | 1,692 / 1,469 / 1,577 | 44 / 29 / 25 |
+| `cars/c1/settings` | 5 / 5 / 5 | 26 / 16 / 13 |
+| `cars/c1/efficiency` | 2,482 / 2,302 / 2,064 | 40 / 33 / 37 |
+| `cars/c1/efficiency?period=365d` | 2,425 / 2,344 / 2,310 | 49 / 37 / 38 |
+| `cars/c1/temperatures?period=365d` | 2,823 / 2,768 / 2,803 | 1,494 / 18 / 14 |
+| `cars/c1/statistics?period=month` | 12,411 / 11,836 / 11,828 | 47 / 47 / 44 |
+| `cars/c1/statistics?period=year` | 12,807 / 11,551 / 11,644 | 43 / 45 / 43 |
+| `cars/c1/statistics?period=all` | 12,534 / 11,218 / 11,710 | 42 / 45 / 41 |
+| `cars/c1/mileage?group=month` | 429 / 468 / 396 | 6 / 6 / 6 |
+| `visits?cars=c1&limit=50` | 455 / 443 / 432 | 4 / 5 / 4 |
+| `visits/days?cars=c1` | 414 / 396 / 428 | 6 / 6 / 5 |
+| `tracks?cars=c1&period=30d&max_points=2000` | 83,333 / 76,860 / 77,282 | 228 / 304 / 193 |
+| `cars/c1/updates` | 424 / 419 / 420 | 4 / 5 / 3 |
+| `cars/c1/firmware` | 3 / 3 / 3 | 5 / 3 / 4 |
 | `cars/c1/firmware/history` | 428 / 414 / 417 | 4 / 4 / 3 |
-| `places` | 492 / 399 / 4 | 6 / 6 / 3 |
-| `places/suggestions` | 442 / 440 / 397 | 7 / 6 / 6 |
-| `cars/c1/storage` | 60 / 32 / 29 | 31 / 26 / 29 |
-| `cars/c1/gaps` | 54 / 60 / 63 | 60 / 58 / 57 |
-| `cars/c1/series?5 fields&period=1d&max_points=1000` | 1,284 / 1,329 / 1,306 | 46 / 39 / 34 |
-| `cars/c1/series?5 fields&period=30d&max_points=1000` | 2,312 / 2,126 / 2,213 | 838 / 722 / 712 |
-| `cars/c1/series?5 fields&period=365d&max_points=1000` | 9,831 / 9,206 / 9,458 | 4,613 / 5,105 / 4,783 |
-| `cars/c1/series?5 fields&period=all&max_points=1000` | 9,290 / 9,054 / 8,620 | 4,454 / 4,955 / 4,946 |
+| `places` | 492 / 399 / 4 | 7 / 11 / 4 |
+| `places/suggestions` | 442 / 440 / 397 | 7 / 8 / 8 |
+| `cars/c1/storage` | 60 / 32 / 29 | 33 / 33 / 28 |
+| `cars/c1/gaps` | 54 / 60 / 63 | 16 / 16 / 15 |
+| `cars/c1/series?5 fields&period=1d&max_points=1000` | 1,284 / 1,329 / 1,306 | 45 / 48 / 47 |
+| `cars/c1/series?5 fields&period=30d&max_points=1000` | 2,312 / 2,126 / 2,213 | 9 / 11 / 8 |
+| `cars/c1/series?5 fields&period=365d&max_points=1000` | 9,831 / 9,206 / 9,458 | 15 / 12 / 11 |
+| `cars/c1/series?5 fields&period=all&max_points=1000` | 9,290 / 9,054 / 8,620 | 16 / 15 / 12 |
+
+The budget test (`perf_pages_stay_within_their_budget`, the 4-month history, release, these 4 cores) passes: every
+call within 300 ms warm and 2 s cold, and each page's calls sent at once (as the packs send them) all answered within
+300 ms warm: car 26, timeline 10, drives 19, charges 7, battery 44, efficiency 10, statistics 11, travel 108,
+software 2, places 2, health 18, series 27 ms.
 
 ## What was slow, and what changed
 
@@ -291,16 +299,39 @@ cores (other builds sometimes ran at the same time: take them as about, ±20 %).
    imports have there: on every request of every page (0.1 s on 4 months, about 0.4 s here, and once per drive in
    `/tracks`: 77 s). The db now keeps a **version** of each car's data (live, imported, and the places and settings
    every car shares; in memory, moved on after each write, `db::Db::version`), and the engine keeps such parts while
-   the versions they were made at stay (`engine/src/memo.rs`): the shown sites and the live coverage of imported
-   history.
-2. **The same days read again and again.** A day of the time series is a sealed, compressed file; most answers read
-   whole days, several answers of a page read the same days, and a list reads a drive's or a charge's day once per
-   row. Day snapshots are now kept opened and unpacked in memory (`db/src/plain.rs`, 256 MB at most, the least
-   recently used let go first), each with its file's inode, size and change time: a day written again is a new file
-   (written whole and renamed into place), so it is read again.
-3. **The pages waited for their slowest call.** Battery and car in every pack (and efficiency, timeline, travel,
+   the versions they were made at stay (`engine/src/memo.rs`): the shown sites, the live coverage of imported
+   history, the import sites' days. Choosing between two imports that tie counts their positions by time only.
+2. **The same days read again and again, one at a time.** A day of the time series is a sealed, compressed file (with
+   a journal of the minutes written since, for a day written by the minute: no day is ever folded, `Db::settle` is
+   not called). Days are now kept opened and unpacked in memory (`db/src/plain.rs`: a quarter of the memory free for
+   them, the machine's or a container's, at most 4 GB, the least recently used let go first, looked at again every 3
+   s), each with its files' inode, size and change time: a day written again is a new file, so it is read again. A
+   day of a snapshot alone is unpacked without the car's lock, a day with a journal under it, and every day is decoded
+   outside it, so a page's calls (and the per-day work below) read one car side by side.
+3. **Long periods read every sample.** A series of 30 days or more, the battery level, the projected range and the
+   temperatures are summed from **parts kept per UTC day** (`query/dayparts.rs`: per hour for the series, per quarter
+   hour for the others; in memory and in the key/value store, namespace `day-parts`), each stamped with its day's
+   files (and the days beside it), the import sites, the flips, the gap filling switch: a day written again is worked
+   out again, the others never. Days not kept are worked out on every core.
+4. **Lists that read every row's samples.** A live charge's import-filled values are worked out once and kept (in
+   memory and in `charge-fill`; `FILL_VERSION` in `query/charges.rs` takes a new number when the rules change); the
+   statistics no longer run the whole `/parked` answer; parked spells' sample reads are kept while their days stay
+   the same; `/tracks` reads its drives on every core with one gap filling per car; health keeps its chain gaps while
+   the keys' records stay the same.
+5. **The battery page decoded logs and waited its turn.** The days' pack readings are worked out ahead
+   (`query/pack_logs.rs`: after the start once the engine is idle, every 10 minutes, and when an answer finds a day not
+   done), so `/battery`, `/battery/capacity`, `/battery-level`, `/projected-range` and `/efficiency` answer
+   without a turn of the answers that decode logs; only `/signals` and `/signals/latest` still take turns
+   (`ui/shared/api.js` sends at most two of those at once).
+6. **A first page after a start or an import made what it read.** A background pass (`engine/src/warm.rs`) runs the
+   long periods' answers for every car (most recently active first) once the logs waiting are decoded, and after an
+   import for its cars, so their parts are kept before a page asks.
+7. **The pages waited for their slowest call.** Battery and car in every pack (and efficiency, timeline, travel,
    charges, health where they waited on several calls) lay out at once with each block's room held, and fill each
    block when its own answers come. Requests asked twice on one load are asked once.
+
+Left open: `Db::settle` is never called, so a live car's days keep their journals (the first read of such a day
+replays it); folding them would make those reads cheaper still, at the cost of packing every finished day again.
 
 # More performance: logs, rebuilds, start-up, the always-on parts
 
