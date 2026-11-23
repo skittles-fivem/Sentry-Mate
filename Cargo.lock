@@ -1126,6 +1126,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "kept"
+version = "0.1.0"
+dependencies = [
+ "brotli",
+ "flate2",
+ "getrandom 0.3.4",
+ "lzma-rust2",
+ "sha2 0.10.9",
+ "synth",
+ "tempfile",
+ "thiserror",
+ "vault",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2878,6 +2893,7 @@ dependencies = [
  "hyper-util",
  "import",
  "ingest",
+ "kept",
  "model",
  "moving",
  "mqtt",
