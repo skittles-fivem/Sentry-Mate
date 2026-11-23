@@ -4,7 +4,8 @@
 // its upload tokens and CAN Bridge keys (with the outcome of its uploads), its time zone, battery
 // chemistry, reference values, free Supercharging as dated ranges, and its data sources (#data-sources: the
 // live inputs' priority order, gap filling from an import, a link to the overlaps). Every change saves at once
-// (PATCH with the object's version) and a short note confirms it.
+// (PATCH with the object's version) and a short note confirms it. The index also holds the time zone a new car
+// starts in (#default-tz: the server's default_time_zone).
 
 import { h, replace, setTitle as docTitle } from '../shared/dom.js';
 import * as state from '../shared/state.js';
@@ -140,6 +141,7 @@ async function mountIndex(ctx) {
 
   const waitPanel = admin ? waitingTable(ctx, waiting?.items || [], null, () => ctx.reload(), noCars) : null;
   const newTokens = admin ? newCarTokens(ctx, fresh?.items || [], noCars) : null;
+  const zone = defaultZonePanel(ctx, admin);
 
   replace(ctx.view,
     pageHead({ title: ctx.info.nav || ctx.info.title, purpose: ctx.info.purpose }),
@@ -151,10 +153,55 @@ async function mountIndex(ctx) {
       table ? table.el : null,
       noCars ? null : newTokens,
       waitPanel,
+      zone.el,
       noCars ? null : panel({ title: 'How a car appears', icon: 'info' }, howCarsAppear(admin))));
+  await zone.ready;
   if (table) await table.ready;
   if (!ctx.alive()) return;
   ctx.ready();
+}
+
+/* ---------------------------------------------------------------------- time zone for new cars (index) */
+
+/**
+ * The zone a new car starts in (#default-tz; the server's default_time_zone, PATCH /settings with its version).
+ * An admin changes it; others read it. Each car keeps its own zone after that.
+ */
+function defaultZonePanel(ctx, admin) {
+  const el = panel({ title: 'Time zone for new cars', icon: 'clock', id: 'default-tz', side: admin ? null : h('span', { class: 'faint' }, 'Read only') });
+  let server = null;
+  const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
+  const ZONES = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
+  async function save(zone, f) {
+    try {
+      server = await ctx.api.patch('settings', { version: server.version, default_time_zone: zone });
+      flash('Time zone for new cars saved.');
+    } catch (e) {
+      if (e?.name === 'AbortError') return;
+      if (e.status === 409) { server = await ctx.api.get('settings').catch(() => server); flash('Someone else changed the settings; this page shows theirs now.', { kind: 'info' }); }
+      else if (e.fields) { f.setError(Object.values(e.fields).join(' ')); return; }
+      else flash(`Could not save the time zone for new cars: ${errText(e)}`, { kind: 'error' });
+    }
+    if (ctx.alive()) paint();
+  }
+  function paint() {
+    if (!server) { replace(el, el.firstChild, h('p', { class: 'note' }, 'The server settings could not be read.')); return; }
+    const z = server.default_time_zone || 'UTC';
+    const f = field({ label: 'Time zone for new cars', name: 'sc-default-tz', path: 'default_time_zone', value: z, hint: 'A zone name such as America/Chicago. Type to search the list.', attrs: { list: 'sc-default-zones', disabled: !admin, autocomplete: 'off', spellcheck: 'false' } });
+    f.input.addEventListener('change', () => {
+      const v = f.input.value.trim();
+      if (!isValidZone(v)) { f.setError('Not a time zone this browser knows: pick one from the list, such as America/Chicago.'); return; }
+      save(v, f);
+    });
+    const row = setting('The zone a new car starts in', 'Its days, weeks and prices by time of day, until the car\'s position or someone sets its own. Each car keeps its own zone after that: open a car above to change it.',
+      [f.el, h('datalist', { id: 'sc-default-zones' }, ZONES.map((x) => h('option', { value: x }))),
+        browserZone && browserZone !== z && admin ? [h('button', { class: 'btn btn--sm', type: 'button', 'aria-label': `Use this browser's zone, ${browserZone}`, onclick: () => save(browserZone, f) }, icon('globe', 'ico--sm'), 'Use this browser’s zone'),
+          h('p', { class: 'setting-note' }, `This browser is in ${browserZone}.`)] : null]);
+    const head = el.firstChild;
+    replace(el, head, row);
+  }
+  const ready = ctx.api.get('settings').then((x) => { server = x; }).catch(() => null).then(() => { if (ctx.alive()) paint(); });
+  return { el, ready };
 }
 
 /* ---------------------------------------------------------------------- upload tokens for a new car (index) */

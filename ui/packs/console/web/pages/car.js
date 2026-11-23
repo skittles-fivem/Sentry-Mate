@@ -249,7 +249,7 @@ export async function mount(ctx) {
       h('button', { class: 'btn btn--quiet btn--line', type: 'button', cover: 'summary.map.fullscreen', onclick: () => (document.fullscreenElement ? document.exitFullscreen?.() : mapEl.requestFullscreen?.().catch(() => {})) }, document.fullscreenElement ? '[exit full screen]' : '[full screen]'),
       outside && lat != null
         ? h('a', { class: 'lnk', href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=17/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'noopener noreferrer external', cover: 'summary.map.external_link' }, 'openstreetmap')
-        : h('span', { class: 'muted', cover: 'summary.map.external_link', title: 'An admin can turn outside map links on in settings / display' }, 'outside map links off'));
+        : h('span', { class: 'muted', cover: 'summary.map.external_link', title: 'An admin can turn outside map links on in settings / maps' }, 'outside map links off'));
   }
   ctx.on(document, 'fullscreenchange', () => { paintTools(); map?.map.resize(); });
   async function mountMap() {

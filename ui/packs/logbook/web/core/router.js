@@ -43,6 +43,7 @@ export const MODULES = Object.freeze({
   'settings-cars': () => import('../pages/settings-cars.js'),
   'settings-display': () => import('../pages/settings-display.js'),
   'settings-integrations': () => import('../pages/settings-integrations.js'),
+  'settings-maps': () => import('../pages/settings-maps.js'),
   'settings-server': () => import('../pages/settings-server.js'),
   import: () => import('../pages/import.js'),
   health: () => import('../pages/health.js'),

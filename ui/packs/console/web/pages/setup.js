@@ -24,7 +24,7 @@ import { bareScreen, canSendSecrets, plainHttpLine } from '../core/bare.js';
 
 export const id = 'setup';
 
-// the browser's time zone goes with the first admin: new cars start in it (Settings: Display and units changes it)
+// the browser's time zone goes with the first admin: new cars start in it (settings/cars changes it)
 const browserZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined; } catch { return undefined; } };
 export const title = () => 'Set up';
 

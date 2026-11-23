@@ -750,15 +750,15 @@ export async function mount(ctx) {
   /* ---------- Network use */
   const netSlot = h('div');
   const PURPOSE = {
-    geocoding: ['Address lookup', 'Only when an admin turns online addresses on; positions are rounded first.', 'settings-display'],
-    tiles: ['Map pictures', 'Asked by each viewer’s browser when online tiles are on: the chosen map (satellite by default), its place names and roads, and the maps people may switch to.', 'settings-display'],
-    geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-display'],
+    geocoding: ['Address lookup', 'Only when an admin turns online addresses on; positions are rounded first.', 'settings-maps'],
+    tiles: ['Map pictures', 'Asked by each viewer’s browser when online tiles are on: the chosen map (satellite by default), its place names and roads, and the maps people may switch to.', 'settings-maps'],
+    geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-maps'],
     mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
     tesla: ['Tesla API', 'Only while a Tesla account is added and not paused: sign-in, the Owner API and its live stream (Tesla account, this page).', null],
     teslafi: ['TeslaFi API', 'Only while a TeslaFi token is added and not paused: reads your cars\' data from TeslaFi', null, 'teslafi', 'TeslaFi'],
     teslamate_mqtt: ['Local TeslaMate (MQTT)', 'Only while a local TeslaMate is added and not paused: subscribes to its topics, never publishes', null, 'teslamate', 'Local TeslaMate'],
     teslamate_db: ['Local TeslaMate (database)', 'Only while its database catch-up is on: reads what MQTT missed', null, 'teslamate', 'Local TeslaMate'],
-    release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-display'],
+    release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-server'],
     upload: ['CAN Bridge uploads', 'The car’s CAN Bridge sends its logs here.', null],
     web: ['This app and the API', 'Browsers, apps and the API.', null],
   };

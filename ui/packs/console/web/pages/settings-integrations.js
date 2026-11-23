@@ -579,15 +579,15 @@ export async function mount(ctx) {
 
   /* ---------- network */
   const PURPOSE = {
-    geocoding: ['address lookup', 'only while online addresses are on; positions rounded first', 'settings-display'],
-    tiles: ['map pictures', 'asked by each viewer\'s browser while online tiles are on', 'settings-display'],
-    geonames_download: ['place-name download', 'only when an admin asks for new offline place names', 'settings-display'],
+    geocoding: ['address lookup', 'only while online addresses are on; positions rounded first', 'settings-maps'],
+    tiles: ['map pictures', 'asked by each viewer\'s browser while online tiles are on', 'settings-maps'],
+    geonames_download: ['place-name download', 'only when an admin asks for new offline place names', 'settings-maps'],
     mqtt: ['mqtt broker', 'only while publishing is on (above)', null],
     tesla: ['tesla api', 'only while a Tesla account is added and not paused: sign-in, the Owner API and its live stream (tesla account, above)', null],
     teslafi: ['teslafi api', 'only while a TeslaFi token is added and not paused: reads your cars\' data from TeslaFi', '#teslafi'],
     teslamate_mqtt: ['local teslamate (mqtt)', 'only while a local TeslaMate is added and not paused: subscribes to its topics, never publishes', '#teslamate'],
     teslamate_db: ['local teslamate (database)', 'only while its database catch-up is on: reads what MQTT missed', '#teslamate'],
-    release_check: ['release check', 'asks whether a newer Sentry Mate exists, when on', 'settings-display'],
+    release_check: ['release check', 'asks whether a newer Sentry Mate exists, when on', 'settings-server'],
     upload: ['can bridge uploads', 'the car\'s CAN Bridge sends its logs here', null],
     web: ['this app and the api', 'browsers, apps and the api', null],
   };

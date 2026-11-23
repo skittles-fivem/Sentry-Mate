@@ -632,7 +632,7 @@ function whereLines(now, tz, outsideMaps, visit) {
     lat != null ? h('p', { class: 'where-coords', title: posTitle(L.lat) }, h('span', { class: 'mono' }, coordsText([lon, lat]), acc != null ? ` ± ${format(acc, 'length')}` : ''), valueMark(L.lat)) : null,
     h('p', { class: 'where-ext', cover: 'summary.map.external_link' }, outsideMaps && lat != null
       ? h('a', { href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=16/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'external noopener noreferrer' }, 'Open on OpenStreetMap')
-      : h('span', { class: 'note' }, 'Outside map links are off. An admin can turn them on in Settings: Display and units.')),
+      : h('span', { class: 'note' }, 'Outside map links are off. An admin can turn them on in Settings: Maps and addresses.')),
   ];
 }
 
