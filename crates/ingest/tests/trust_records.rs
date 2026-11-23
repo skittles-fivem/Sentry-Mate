@@ -291,6 +291,9 @@ async fn trust_records_of_the_format_before_are_read_and_moved_over() {
         override_use: false,
         judged_ms: 1,
         arrived_ms,
+        sha256: None,
+        length: None,
+        sidecar_sha256: None,
     };
     let mut book = Book {
         v: trust::RULES_VERSION,

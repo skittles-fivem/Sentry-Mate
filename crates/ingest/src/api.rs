@@ -1,12 +1,14 @@
 //! The upload API the CAN Bridge app speaks (Sentry Six Manager's `docs/can-bridge-api.md`):
 //!
-//! - `GET  /api/can/logs/ping`    the limits, formats, uploads to send at once (`maxParallel`) and the key this token
-//!   is tied to
-//! - `POST /api/can/logs/status`  `{ "names": [...] }` (up to 2000) → which are complete, partial or missing, and
-//!   for a complete one its `check` (`verified`, `failed` with a `check_reason`, or `pending`), read from the judge's
-//!   stored records
+//! - `GET  /api/can/logs/ping`    the limits, formats, uploads to send at once (`maxParallel`), the key this token
+//!   is tied to, and `wanted`: the logs (and sidecars) of that car the server is missing, oldest first, at most
+//!   [`crate::missing::WANTED_MAX`] (see [`crate::missing`])
+//! - `POST /api/can/logs/status`  `{ "names": [...], "not_held": [...] }` (up to 2000 each) → which are complete,
+//!   partial or missing, and for a complete one its `check` (`verified`, `failed` with a `check_reason`, or
+//!   `pending`), read from the judge's stored records. `not_held` (optional): wanted names the app no longer has
 //! - `POST /api/can/logs/<name>`  one chunk, with `Upload-Offset`, `Upload-Length`, `Upload-SHA256`; a log that
-//!   failed its check (or its sidecar) sent again replaces the stored copy
+//!   failed its check (or its sidecar) sent again replaces the stored copy; a wanted name with another SHA-256 than
+//!   it was stored with is refused (`409 wanted_mismatch`)
 //!
 //! HTTPS only (`403 https_only` otherwise), `Authorization: Bearer <token>`, every answer JSON, anything else 404.
 
@@ -352,6 +354,14 @@ async fn ping(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>, 
     let conn = conn_of(req.extensions().get::<Conn>())?;
     let token = authorize(&up, req.headers(), req.extensions().get::<TokenShown>().cloned(), conn).await?;
     open_for_uploads(&up, &token, conn)?;
+    let wanted = match token.vehicle_key.as_deref() {
+        Some(k) => up.judge.wanted(k).await.unwrap_or_else(|e| {
+            // not the key: the server's log is kept in the clear
+            tracing::warn!("CAN upload: could not read a car's missing logs: {e}");
+            Vec::new()
+        }),
+        None => Vec::new(),
+    };
     Ok(Json(serde_json::json!({
         "ok": true,
         "api": 1,
@@ -361,12 +371,16 @@ async fn ping(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>, 
         "maxSidecar": MAX_SIDECAR,
         "maxParallel": crate::server::MAX_PARALLEL_UPLOADS,
         "formats": logfmt::FORMATS,
+        "wanted": wanted,
     })))
 }
 
 #[derive(serde::Deserialize)]
 struct StatusBody {
     names: Vec<String>,
+    /// Wanted names (a ping's `wanted`) the app no longer has.
+    #[serde(default)]
+    not_held: Vec<String>,
 }
 
 async fn status(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>, ApiError> {
@@ -374,9 +388,9 @@ async fn status(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>
     let token = authorize(&up, req.headers(), req.extensions().get::<TokenShown>().cloned(), conn).await?;
     open_for_uploads(&up, &token, conn)?;
     let bad = || ApiError::new(400, "bad_request", "Send { \"names\": [...] } with up to 2000 names.");
-    let body = axum::body::to_bytes(req.into_body(), 1 << 20).await.map_err(|_| bad())?;
-    let StatusBody { names } = serde_json::from_slice(&body).map_err(|_| bad())?;
-    if names.len() > 2000 {
+    let body = axum::body::to_bytes(req.into_body(), 2 << 20).await.map_err(|_| bad())?;
+    let StatusBody { names, not_held } = serde_json::from_slice(&body).map_err(|_| bad())?;
+    if names.len() > 2000 || not_held.len() > 2000 {
         return Err(bad());
     }
     if token.vehicle_key.is_none() {
@@ -397,6 +411,16 @@ async fn status(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>
         }
     }
     let states = up.store.status(&names, token.vehicle_key.as_deref()).await;
+    // what the app holds of the car's missing logs (it asks about them), and what it no longer has
+    if let Some(k) = token.vehicle_key.as_deref() {
+        let of_car = |v: &[String]| -> Vec<String> {
+            v.iter().filter(|n| trust::LogName::parse(n).is_some_and(|l| l.vehicle_key == k)).cloned().collect()
+        };
+        if let Err(e) = up.judge.told_status(k, &of_car(&names), &of_car(&not_held)).await {
+            // not the key: the server's log is kept in the clear
+            tracing::warn!("CAN upload: could not update a car's missing logs: {e}");
+        }
+    }
     let checks = checks_of(&up, &states).await;
     let files: serde_json::Map<String, serde_json::Value> = states
         .into_iter()
@@ -466,6 +490,17 @@ async fn upload(AxState(up): St, Path(name): Path<String>, req: Request) -> Resu
         return Err(wrong_car());
     }
     let h = req.headers().clone();
+    // a log the server lost is taken back only as it was stored (a different file of its name is not that log)
+    let declared = h.get("upload-sha256").and_then(|v| v.to_str().ok()).unwrap_or("").trim().to_ascii_lowercase();
+    if let Some(want) = up.judge.wanted_sha256(&name).await
+        && !want.eq_ignore_ascii_case(&declared)
+    {
+        return Err(ApiError::new(
+            409,
+            "wanted_mismatch",
+            "This server lost its copy of this file and asked for it again, but this is a different file of its name.",
+        ));
+    }
     let offset = header_u64(&h, "upload-offset")
         .ok_or_else(|| ApiError::new(400, "bad_offset", "Upload-Offset must be a whole number of bytes."))?;
     let length = header_u64(&h, "upload-length")
