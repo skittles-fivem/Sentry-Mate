@@ -571,18 +571,17 @@ pub struct Placard {
 pub fn placard_pressure(v: &VehicleInfo) -> Option<Placard> {
     let m = v.model.value.as_deref().and_then(code_of_name)?;
     let (y, w) = (v.model_year.value?, v.wheel_in.value?);
-    tables()
-        .tyre_pressure
-        .iter()
-        .find(|r| in_models(&r.models, m) && r.years.contains(y) && r.wheel_in == w)
-        .map(|r| Placard {
+    tables().tyre_pressure.iter().find(|r| in_models(&r.models, m) && r.years.contains(y) && r.wheel_in == w).map(|r| {
+        Placard {
             front_kpa: r.front_kpa,
             rear_kpa: r.rear_kpa,
             wheel_in: r.wheel_in,
             wheel_from: v.wheel_in.source,
-            wheel_guess: v.wheel_in.source != Some(FactSource::Owner) && v.wheel_in.confidence != Some(Confidence::High),
+            wheel_guess: v.wheel_in.source != Some(FactSource::Owner)
+                && v.wheel_in.confidence != Some(Confidence::High),
             source: r.src.source,
-        })
+        }
+    })
 }
 
 fn in_models(models: &[char], m: char) -> bool {
