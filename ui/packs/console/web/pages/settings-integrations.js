@@ -23,6 +23,7 @@ import { src } from '../core/source.js';
 import { teslaSection } from './tesla.js';
 import { teslafiSection } from './teslafi.js';
 import { teslamateSection } from './teslamate.js';
+import { overviewSection, adminOnly } from './connections.js';
 
 export const id = 'settings-integrations';
 export const title = () => 'Settings: integrations';
@@ -189,8 +190,67 @@ const haPrefix = (topic) => { const p = String(topic || '').split('/'); return p
 const slug = (s) => String(s || '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'car';
 const prefixOk = (v) => !!v && !/[+#]/.test(v) && !v.startsWith('$') && !v.split('/').some((p) => !p);
 
+/* ---------------------------------------------------------------------- tabs: overview (first, the default) and set up */
+
+const TABS = [['overview', 'overview'], ['setup', 'set up']];
+
+// scroll to the element the address's #anchor names, under the command bar (as the router does after a mount)
+function scrollToHash(view) {
+  const id = location.hash.length > 1 ? decodeURIComponent(location.hash.slice(1)) : '';
+  const target = id ? document.getElementById(id) : null;
+  if (!target || !view.contains(target)) return;
+  const bar = document.getElementById('top')?.getBoundingClientRect().bottom || 0;
+  const sc = document.getElementById('scroller');
+  if (sc && sc.scrollHeight > sc.clientHeight && getComputedStyle(sc).overflowY !== 'visible') target.scrollIntoView({ block: 'start' });
+  else window.scrollTo(0, Math.max(0, Math.round(target.getBoundingClientRect().top + window.scrollY - bar - 8)));
+  for (const x of view.querySelectorAll('.is-target')) x.classList.remove('is-target');
+  target.classList.add('is-target');
+}
+
+function tabs(ctx, panels, { fallback }) {
+  const btns = {};
+  const bar = h('div', { class: 'keys tabs', role: 'tablist', 'aria-label': 'Integrations' }, TABS.map(([k, label]) => {
+    btns[k] = h('button', { class: 'key tab', type: 'button', role: 'tab', id: `tab-${k}`, 'aria-controls': k, 'aria-selected': 'false', tabindex: '-1',
+      onclick: () => { show(k); ctx.setQuery({ tab: k === fallback ? null : k }); } }, label);
+    return btns[k];
+  }));
+  bar.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    const i = TABS.findIndex(([k]) => k === cur);
+    const k = TABS[(i + (e.key === 'ArrowRight' ? 1 : TABS.length - 1)) % TABS.length][0];
+    e.preventDefault(); btns[k].click(); btns[k].focus();
+  });
+  let cur = null;
+  function show(k) {
+    if (k === cur) return;
+    cur = k;
+    for (const [t] of TABS) {
+      const on = t === k;
+      btns[t].setAttribute('aria-selected', String(on));
+      btns[t].tabIndex = on ? 0 : -1;
+      panels[t].hidden = !on;
+    }
+  }
+  // the tab for the address: the one holding the #anchor, else ?tab=, else the default
+  function pick() {
+    const id = location.hash.length > 1 ? decodeURIComponent(location.hash.slice(1)) : '';
+    if (id) for (const [t] of TABS) if (panels[t].id === id || panels[t].querySelector(`[id="${CSS.escape(id)}"]`)) return t;
+    const q = ctx.query?.tab;
+    return TABS.some(([t]) => t === q) ? q : fallback;
+  }
+  return { el: bar, show, pick, current: () => cur };
+}
+
+// a link of the overview to an anchor of this page: opens the set-up tab at it (so j / k and Enter work as well)
+const ownLink = (link) => {
+  const u = new URL(link, location.origin);
+  return u.pathname === state.buildUrl('settings-integrations') && u.hash ? `${u.pathname}?tab=setup${u.hash}` : link;
+};
+
 export async function mount(ctx) {
   const admin = ctx.admin;
+  // the overview's first read starts before everything else
+  const ov = admin ? overviewSection(ctx, { href: ownLink }) : null;
   const [cfg0, status0, net, cars] = await Promise.all([
     admin ? ctx.api.get('settings/mqtt').catch(() => null) : null,
     ctx.api.get('settings/mqtt/status').catch(() => null),
@@ -563,7 +623,10 @@ export async function mount(ctx) {
   const teslafi = teslafiSection(ctx, { cars: carList });
   const teslamate = teslamateSection(ctx, { cars: carList });
   const recipe = (t, cv, uses, text, s) => [statusTag(s), [h('b', null, t), ': ', text, h('span', { class: 'muted' }, ` uses ${uses.join(', ')}.`)], cv];
-  paint(ctx, head(ctx, { extra: h('span', { class: 'muted' }, headTag) }),
+  const ovPanel = h('div', { id: 'overview', class: 'tab-panel', role: 'tabpanel', 'aria-labelledby': 'tab-overview', hidden: true }, ov ? ov.el : adminOnly());
+  const setupPanel = h('div', { id: 'setup', class: 'tab-panel', role: 'tabpanel', 'aria-labelledby': 'tab-setup', hidden: true });
+  const tb = tabs(ctx, { overview: ovPanel, setup: setupPanel }, { fallback: admin ? 'overview' : 'setup' });
+  setupPanel.append(
     h('p', { class: 'note' }, 'Switches and single lines save at once (Enter saves, Esc undoes); the broker connection lines save together. Nothing leaves the server until publishing is on.'),
     tesla.el,
     teslafi.el,
@@ -609,7 +672,12 @@ export async function mount(ctx) {
         [tag('api', 'muted'), 'smart mirrors and wall screens: a status tile from soc, range, state and updated.', 'projects.magic-mirror'],
         [tag('mqtt', 'muted'), 'garage door openers that act on arrival and departure, by place: good for closing behind you, late for opening.', 'projects.geogdo'],
       ])));
+  paint(ctx, head(ctx, { extra: h('span', { class: 'muted' }, headTag) }), tb.el, ovPanel, setupPanel);
+  tb.show(tb.pick());
+  ctx.on(window, 'hashchange', () => { tb.show(tb.pick()); scrollToHash(ctx.view); });
   paintLog();
-  await Promise.all([valuesT?.ready, eventsT?.ready, netT?.ready, tesla.load(), teslafi.load(), teslamate.load(), ...(S.haTables || []).map((t) => t.ready)].filter(Boolean)).catch(() => {});
+  await Promise.all([ov?.ready, valuesT?.ready, eventsT?.ready, netT?.ready, tesla.load(), teslafi.load(), teslamate.load(), ...(S.haTables || []).map((t) => t.ready)].filter(Boolean)).catch(() => {});
   if (ctx.alive()) ctx.ready();
+  // ?tab= changed (a tab, or an overview row to an anchor of this page): the page stays, the tab changes
+  return { onQuery: () => { tb.show(tb.pick()); scrollToHash(ctx.view); } };
 }

@@ -864,6 +864,87 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 /* breaks only where the text has a <wbr> (after a colon or a slash), or a long name with none where it must */
 .cert-sha { word-break: normal; overflow-wrap: break-word; }
 
+/* the connections overview (settings/integrations, the overview tab, pages/connections.js): status lights, one
+   two-line row per connection with every column a fixed number of characters wide (the connection takes the rest),
+   so a live update or a ticking time never moves a column; 24 h bars in an SVG; cards on phones */
+.tabs { margin-bottom: calc(var(--g) * 2); }
+.key.tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.ov-light { white-space: nowrap; }
+.ov-dot { display: inline-block; vertical-align: top; width: var(--g); height: var(--g); margin: calc((var(--lh2) - var(--g)) / 2) var(--a2) 0 0; background: currentColor; border-radius: 1px; }
+.ov-light--live { color: var(--good); }
+.ov-light--idle { color: var(--c2); }
+.ov-light--paused { color: var(--warn); }
+.ov-light--off { color: var(--muted); }
+.ov-light--problem { color: var(--bad); }
+.ov-tot { display: flex; flex-wrap: wrap; column-gap: calc(var(--a2) * 3); row-gap: 0; margin-bottom: var(--g); }
+.ov-tot-i { white-space: nowrap; }
+.ov-tot-n { display: inline-block; vertical-align: top; min-width: calc(var(--a2) * 3); text-align: right; margin-right: var(--a2); font-weight: 600; }
+.ov-tot-w { color: var(--text); }
+.ov-read, .ov-err { white-space: nowrap; }
+.ov-read { display: inline-block; vertical-align: top; min-width: calc(var(--a2) * 16); text-align: right; }
+.ov-scroll { width: 100%; }
+.ov { width: 100%; border-collapse: separate; border-spacing: 0; white-space: nowrap; table-layout: fixed; }
+.ov th, .ov td { padding: var(--g2) var(--g); text-align: left; vertical-align: top; border-bottom: 1px solid var(--rule); line-height: var(--lh2); overflow: hidden; }
+.ov th:first-child, .ov td:first-child { padding-left: 0; }
+.ov th:last-child, .ov td:last-child { padding-right: 0; }
+.ov th { color: var(--muted); font-weight: 400; }
+.ov .num { text-align: right; }
+.ov tbody tr[data-href] { cursor: pointer; }
+.ov tbody tr:hover { background: var(--panel); }
+.ov tbody tr.is-sel { background: var(--sel); }
+.ov tbody tr:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.ov-ln { height: var(--lh2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-label { font-weight: 600; }
+.ov-lasterr--on { color: var(--muted); }
+.ov-row--problem .ov-lasterr--on { color: var(--bad); }
+/* widths in characters, plus the cell's padding (the first and last cells have one side) */
+.ov .ov-c-st { width: calc(var(--a2) * 22 + var(--g)); }
+.ov .ov-c-last { width: calc(var(--a2) * 18 + var(--g) * 2); }
+.ov .ov-c-pace { width: calc(var(--a2) * 21 + var(--g) * 2); }
+.ov .ov-c-day, .ov .ov-c-week { width: calc(var(--a2) * 12 + var(--g) * 2); }
+.ov .ov-c-up { width: calc(var(--a2) * 14 + var(--g) * 2); }
+.ov .ov-c-spk { width: calc(var(--a2) * 24 + var(--g) * 3); padding-left: calc(var(--g) * 2); }
+.ov-spk-box { height: calc(var(--lh2) * 2); }
+.ov-spk { display: block; width: calc(var(--a2) * 24); height: calc(var(--lh2) * 2); }
+.ov-bar--on { fill: var(--c1); }
+.ov-bar--err { fill: var(--bad); }
+.ov-bar--0 { fill: var(--rule-2); }
+.ov-ptitle { padding-top: calc(var(--g) * 2); }
+.ov--pb .ov-c-when { width: calc(var(--a2) * 24 + var(--g)); }
+.ov--pb .ov-c-conn { width: calc(var(--a2) * 28 + var(--g) * 2); }
+.ov--pb .ov-c-what { text-overflow: ellipsis; }
+.ov--pb .ov-c-dur { width: calc(var(--a2) * 12 + var(--g) * 2); }
+.ov--pb .ov-c-res { width: calc(var(--a2) * 10 + var(--g)); }
+.ov-prow--open .ov-c-what { color: var(--text); }
+.ov--pb td.ov-c-what { color: var(--muted); }
+.ov-pnone { margin: 0; }
+@media (max-width: 860px) {
+  .ov, .ov tbody { display: block; white-space: normal; }
+  .ov thead { display: none; }
+  .ov tbody tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--g); padding: var(--g); margin-bottom: var(--g); border: 1px solid var(--rule); border-radius: 2px; }
+  .ov tbody tr.is-sel { border-color: var(--accent); }
+  .ov th, .ov td, .ov th:first-child, .ov td:first-child, .ov th:last-child, .ov td:last-child { display: block; width: auto; padding: 0; border: 0; min-width: 0; }
+  .ov td[data-k]::before { content: attr(data-k); display: block; color: var(--muted); font-size: var(--fs1); line-height: var(--lh1); padding-top: var(--g2); }
+  .ov .num { text-align: left; }
+  .ov .ov-c-name { grid-column: 1 / -1; grid-row: 1; }
+  .ov td.ov-c-st { grid-column: 1 / -1; grid-row: 2; display: flex; column-gap: var(--a2); }
+  .ov .ov-c-st > .ov-ln:last-child::before { content: '- '; color: var(--muted); }
+  .ov .ov-c-st > .ov-ln { min-width: 0; }
+  .ov .ov-c-st > .ov-ln:first-child { flex: none; }
+  .ov td.ov-c-spk { padding: 0; }
+  .ov-spk { width: 100%; }
+  .ov-tot-n { min-width: calc(var(--a2) * 2); }
+  .ov--pb tbody tr { grid-template-columns: minmax(0, 1fr) auto; }
+  .ov--pb .ov-c-conn { grid-column: 1; grid-row: 1; font-weight: 600; }
+  .ov--pb .ov-c-res { grid-column: 2; grid-row: 1; }
+  .ov--pb .ov-c-what { grid-column: 1 / -1; grid-row: 2; white-space: normal; overflow-wrap: anywhere; }
+  .ov--pb .ov-c-when { grid-column: 1; grid-row: 3; }
+  .ov--pb .ov-c-dur { grid-column: 2; grid-row: 3; text-align: right; }
+  .ov--pb td.ov-c-dur::before { text-align: right; }
+  .ov-read { min-width: 0; }
+  .tabs .key { min-width: calc(var(--a2) * 12); }
+}
+
 /* ------------------------------------------------------------------ 7. states */
 .loading { color: var(--muted); padding-block: calc(var(--g) * 2); display: flex; align-items: center; gap: var(--a2); }
 .caret { display: inline-block; width: var(--a2); height: var(--tb2); background: var(--accent); vertical-align: top; animation: blink 1s steps(1) infinite; }
