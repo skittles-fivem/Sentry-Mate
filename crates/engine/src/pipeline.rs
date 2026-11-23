@@ -1069,6 +1069,8 @@ impl Engine {
         {
             let l = self.car_lock(car);
             let _held = lock(&l);
+            // updates stored before an install's fingerprint changes were one update are found again
+            self.fw_regroup(car)?;
             let dirty = records::dirty(db, car)?;
             if !dirty.is_empty() {
                 let mut meta = records::meta(db, car)?;

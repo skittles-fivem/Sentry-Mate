@@ -19,8 +19,12 @@
 //!
 //! **Updates.** Where a field's runs change value, the update came between the last time the old value was seen and
 //! the first time the new one was (each value's own times when one log saw both). Changes whose windows meet are one
-//! update (an update reflashes several modules while the car is parked): it is placed between the last span with the
-//! old set and the first with the new one. It becomes a row of the car's software updates ([`db::UpdateRow`], source
+//! step (an update reflashes several modules while the car is parked). After an install the modules restart and a
+//! fingerprint can change several times, even go back and forth, before the set settles: steps less than
+//! [`SETTLE_MS`] apart (and starting at most [`INSTALL_MS`] after the first new value was seen) are one install, one
+//! update, each field's change from its value before the install to its value after it (a value that went back is
+//! no change; an install that changed nothing is no update). It is placed between the last span with the old set
+//! and the first with the settled one. It becomes a row of the car's software updates ([`db::UpdateRow`], source
 //! live, input SMO, an id with [`FW_BIT`]), so the updates list, the timeline, MQTT's `software_changed` and the
 //! totals show it.
 //!
@@ -55,6 +59,15 @@ pub fn is_fingerprint(id: u64) -> bool {
 
 /// Logs with fingerprints this far apart (or more) are two awake spans.
 pub const SPAN_GAP_MS: u64 = 10 * 60_000;
+
+/// Fingerprint changes less than this after the last one are the same install: the set has not settled yet.
+pub const SETTLE_MS: u64 = 30 * 60_000;
+
+/// An install takes the changes that start at most this long after its first new value was seen.
+pub const INSTALL_MS: u64 = 60 * 60_000;
+
+/// How updates are found from the runs; a stored history found another way finds them again ([`Engine::fw_regroup`]).
+const GROUPING: u32 = 1;
 
 /// One distinct set of tallies (most logs of a day share one).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +162,9 @@ pub struct History {
     /// The bridge's `# firmware changed:` lines (a hint only), and the newest one's log.
     pub hints: u64,
     pub hint_last_ms: Option<u64>,
+    /// How its updates were found ([`GROUPING`]; 0: before installs were grouped).
+    #[serde(default)]
+    pub grouping: u32,
 }
 
 /// The versions an owner typed.
@@ -178,9 +194,12 @@ impl Key {
         Key { changes: ev.changes.clone(), from_ms: ev.from_ms, to_ms: ev.to_ms }
     }
 
-    /// Whether `ev` is the update this was: one of its changes, and a window that meets this one's.
+    /// Whether `ev` is the update this was: a window that meets this one's, and one of its changes (or, for the
+    /// changes of an install grouped since, a change of one of its fields).
     fn is(&self, ev: &FwEvent) -> bool {
-        self.from_ms <= ev.to_ms && ev.from_ms <= self.to_ms && self.changes.iter().any(|c| ev.changes.contains(c))
+        self.from_ms <= ev.to_ms
+            && ev.from_ms <= self.to_ms
+            && self.changes.iter().any(|c| ev.changes.iter().any(|e| e == c || e.field == c.field))
     }
 }
 
@@ -246,8 +265,12 @@ impl Names {
             if of.contains_key(&i) {
                 continue;
             }
-            let found =
-                self.keys.iter().find(|(id, k)| !taken.contains(id) && self.events.contains_key(id) && k.is(ev));
+            // several named updates grouped into one install since: a typed name over a cleared one, then the last
+            let found = self
+                .keys
+                .iter()
+                .filter(|(id, k)| !taken.contains(id) && self.events.contains_key(id) && k.is(ev))
+                .max_by_key(|(id, k)| (matches!(self.events.get(id), Some(Some(_))), k.to_ms, k.from_ms));
             if let Some((&id, _)) = found {
                 of.insert(i, id);
                 taken.insert(id);
@@ -414,6 +437,12 @@ fn set_hash(set: &BTreeMap<&str, u64>) -> String {
 
 /// The updates in a history's runs (see the module's notes), oldest first.
 pub(crate) fn events_of(car: CarId, runs: &BTreeMap<String, Vec<Run>>) -> Vec<FwEvent> {
+    events_settled(car, runs, SETTLE_MS)
+}
+
+/// The updates in the runs, steps less than `settle` apart one install (0: each step its own update, as updates were
+/// found before installs were grouped).
+fn events_settled(car: CarId, runs: &BTreeMap<String, Vec<Run>>, settle: u64) -> Vec<FwEvent> {
     struct C<'a> {
         field: &'a str,
         old: u64,
@@ -431,18 +460,61 @@ pub(crate) fn events_of(car: CarId, runs: &BTreeMap<String, Vec<Run>>) -> Vec<Fw
         }
     }
     changes.sort_by_key(|c| (c.to, c.from));
-    let mut groups: Vec<(u64, u64, Vec<C<'_>>)> = Vec::new();
+    // steps: changes whose windows meet (one reflash of several modules seen at once)
+    let mut steps: Vec<(u64, u64, Vec<C<'_>>)> = Vec::new();
     for c in changes {
-        match groups.iter_mut().rev().find(|g| c.from <= g.1 && c.to >= g.0) {
+        match steps.iter_mut().rev().find(|g| c.from <= g.1 && c.to >= g.0) {
             Some(g) => {
                 g.0 = g.0.max(c.from);
                 g.1 = g.1.min(c.to);
                 g.2.push(c);
             }
-            None => groups.push((c.from, c.to, vec![c])),
+            None => steps.push((c.from, c.to, vec![c])),
         }
     }
-    groups.sort_by_key(|g| (g.0, g.1));
+    steps.sort_by_key(|g| (g.0, g.1));
+    // installs: steps that follow each other before the set settled (the modules restarting after an install
+    // flap and report in turn), each field's change from its value before the first to its value after the last
+    struct Install<'a> {
+        from: u64,
+        to: u64,
+        first_to: u64,
+        steps: usize,
+        cs: Vec<C<'a>>,
+    }
+    let mut installs: Vec<Install<'_>> = Vec::new();
+    for (from, to, cs) in steps {
+        match installs.last_mut() {
+            Some(i) if from < i.to.saturating_add(settle) && from <= i.first_to.saturating_add(INSTALL_MS) => {
+                i.to = i.to.max(to);
+                i.steps += 1;
+                i.cs.extend(cs);
+            }
+            _ => installs.push(Install { from, to, first_to: to, steps: 1, cs }),
+        }
+    }
+    let mut groups: Vec<(u64, u64, Vec<C<'_>>)> = Vec::new();
+    for mut i in installs {
+        // one step: when all its changes were seen to have happened; more: from the last time the old set was
+        // seen to the first time the settled one was
+        if i.steps > 1 {
+            i.from = i.cs.iter().map(|c| c.from).min().unwrap_or(i.from);
+            i.to = i.cs.iter().map(|c| c.to).max().unwrap_or(i.to);
+        }
+        i.cs.sort_by_key(|c| (c.to, c.from));
+        let mut net: Vec<C<'_>> = Vec::new();
+        for c in i.cs {
+            match net.iter_mut().find(|n| n.field == c.field) {
+                Some(n) => n.new = c.new,
+                None => net.push(c),
+            }
+        }
+        // a value that went back to what it was is no change
+        net.retain(|c| c.old != c.new);
+        if !net.is_empty() {
+            groups.push((i.from, i.to, net));
+        }
+    }
     let mut used = BTreeSet::new();
     let mut out = Vec::new();
     for (from, to, mut cs) in groups {
@@ -560,6 +632,26 @@ impl Engine {
         self.fw_note_log(car, name, Some((&f, true)))
     }
 
+    /// Stores the car's fingerprint updates as they were found before an install's changes were one update (every
+    /// step its own update, the history marked as found that old way), for tests of [`Engine::fw_regroup`]. Takes the
+    /// car's lock.
+    #[doc(hidden)]
+    pub fn fw_store_ungrouped_for_tests(&self, car: CarId) -> Result<()> {
+        let l = self.car_lock(car);
+        let _held = lock(&l);
+        let db = &self.inner.db;
+        let mut h = history(db, car)?;
+        let events = events_settled(car, &h.runs, 0);
+        let mut n = names(db, car)?;
+        if n.follow(&h.events, &events) {
+            records::put(db, NS, &names_key(car), &n)?;
+        }
+        h.events = events;
+        h.grouping = 0;
+        records::put(db, NS, &history_key(car), &h)?;
+        self.fw_sync_rows(car, &h)
+    }
+
     /// Takes these logs (by name) out of the fingerprints: a key moved to another car, a window cleared. The car's
     /// lock is held. The history is made again from every day.
     pub(crate) fn fw_forget(&self, car: CarId, names: &[String]) -> Result<()> {
@@ -651,6 +743,8 @@ impl Engine {
     fn fw_finish(&self, car: CarId, mut h: History, force: bool) -> Result<()> {
         let events = events_of(car, &h.runs);
         let changed = events != h.events;
+        let force = force || h.grouping != GROUPING;
+        h.grouping = GROUPING;
         let db = &self.inner.db;
         if changed {
             let mut n = names(db, car)?;
@@ -665,6 +759,17 @@ impl Engine {
             self.fw_sync_rows(car, &h)?;
         }
         Ok(())
+    }
+
+    /// Finds the updates of a history stored before they were found the way they are now ([`GROUPING`]): the
+    /// changes of one install become one update, its name kept. One read when it is up to date. The car's lock is
+    /// held.
+    pub(crate) fn fw_regroup(&self, car: CarId) -> Result<()> {
+        let h = history(&self.inner.db, car)?;
+        if h.grouping == GROUPING || (h.runs.is_empty() && h.events.is_empty()) {
+            return Ok(());
+        }
+        self.fw_finish(car, h, true)
     }
 
     /// The car's update rows found from fingerprints made to match its history's updates (with their names).
@@ -797,7 +902,7 @@ mod tests {
 
     #[test]
     fn updates_group_changes_whose_windows_meet() {
-        let r = |v, a, b| Run { value: v, first_ms: a, last_ms: b };
+        let r = |v, a: u64, b: u64| Run { value: v, first_ms: a * U, last_ms: b * U };
         let mut runs = BTreeMap::new();
         runs.insert("BMS_appCrc".to_string(), vec![r(1, 0, 100), r(2, 200, 300)]);
         // seen a little later after the update (a module sends it later)
@@ -808,10 +913,10 @@ mod tests {
         runs.get_mut("BMS_appCrc").unwrap().push(r(3, 1000, 1100));
         let ev = events_of(7, &runs);
         assert_eq!(ev.len(), 2, "{ev:?}");
-        assert_eq!((ev[0].from_ms, ev[0].to_ms), (100, 200));
+        assert_eq!((ev[0].from_ms, ev[0].to_ms), (100 * U, 200 * U));
         let f: Vec<&str> = ev[0].changes.iter().map(|c| c.field.as_str()).collect();
         assert_eq!(f, vec!["BMS_appCrc", "DIR_applicationCrc"]);
-        assert_eq!((ev[1].from_ms, ev[1].to_ms, ev[1].changes.len()), (300, 1000, 1));
+        assert_eq!((ev[1].from_ms, ev[1].to_ms, ev[1].changes.len()), (300 * U, 1000 * U, 1));
         assert!(ev.iter().all(|e| is_fingerprint(e.id) && e.id >> 40 & 0x3F_FFFF == 7));
         assert_ne!(ev[0].set, ev[1].set);
         // the same runs, the same ids
@@ -824,7 +929,7 @@ mod tests {
 
     #[test]
     fn a_day_that_only_grows_extends_and_one_that_shrinks_does_not() {
-        let r = |v, a, b| Run { value: v, first_ms: a, last_ms: b };
+        let r = |v, a: u64, b: u64| Run { value: v, first_ms: a * U, last_ms: b * U };
         let mut old = DaySum::default();
         old.runs.insert("f".into(), vec![r(1, 10, 20)]);
         let mut new = old.clone();
@@ -839,6 +944,121 @@ mod tests {
     }
 
     const T: u64 = 1_767_225_600_000;
+    /// The unit of the small made-up times: 100 of them are an hour.
+    const U: u64 = 36_000;
+    const MIN: u64 = 60_000;
+
+    /// Made-up runs: per field, (value, first, last) in minutes after `T`.
+    /// One field's made-up runs: (value, first, last) in minutes after `T`.
+    type Field<'a> = (&'a str, &'a [(u64, i64, i64)]);
+
+    fn runs_of(fields: &[Field<'_>]) -> BTreeMap<String, Vec<Run>> {
+        let at = |m: i64| T.checked_add_signed(m * 60_000).unwrap();
+        fields
+            .iter()
+            .map(|(f, rs)| {
+                let rs = rs.iter().map(|&(value, a, b)| Run { value, first_ms: at(a), last_ms: at(b) }).collect();
+                (f.to_string(), rs)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn fingerprints_that_flap_after_an_install_are_one_update_with_the_settled_set() {
+        // parked from T: the front body controller's app CRC goes 06ac6a37 → 01b6621d → back → 01b6621d → 5e17c0de
+        // → 01b6621d over ten minutes while the modules restart; its boot CRC goes away and back; the battery's
+        // changes once, a little later; the rear drive unit's never
+        let (a, b, c) = (0x06ac_6a37, 0x01b6_621d, 0x5e17_c0de);
+        let runs = runs_of(&[
+            ("VCFRONT_infoAppCrc", &[(a, -120, 0), (b, 9, 10), (a, 11, 12), (b, 13, 14), (c, 15, 16), (b, 18, 600)]),
+            ("VCFRONT_infoBootCrc", &[(0x77, -120, 9), (0x78, 10, 11), (0x77, 13, 600)]),
+            ("BMS_appCrc", &[(0x11, -120, 0), (0x22, 20, 600)]),
+            ("DIR_applicationCrc", &[(0x99, -120, 600)]),
+        ]);
+        let ev = events_of(7, &runs);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!(
+            ev[0].changes,
+            vec![
+                Change { field: "BMS_appCrc".into(), old: 0x11, new: 0x22 },
+                Change { field: "VCFRONT_infoAppCrc".into(), old: a, new: b },
+            ],
+            "the boot CRC went back: no change"
+        );
+        // from the last time the old set was seen to the first time the settled one was
+        assert_eq!((ev[0].from_ms, ev[0].to_ms), (T, T + 20 * MIN));
+        // its set is the settled one: every field's value after it
+        let settled: BTreeMap<&str, u64> = [
+            ("BMS_appCrc", 0x22),
+            ("DIR_applicationCrc", 0x99),
+            ("VCFRONT_infoAppCrc", b),
+            ("VCFRONT_infoBootCrc", 0x77),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(ev[0].set, set_hash(&settled));
+        // one step at a time (as updates were found before): six of them
+        assert_eq!(events_settled(7, &runs, 0).len(), 5);
+    }
+
+    #[test]
+    fn a_value_that_flips_back_is_no_update_and_a_later_install_is_its_own() {
+        let (a, b) = (0x06ac_6a37, 0x01b6_621d);
+        // a flap alone: away and back within minutes
+        let runs = runs_of(&[("VCFRONT_infoAppCrc", &[(a, -60, 0), (b, 3, 4), (a, 6, 300)])]);
+        assert!(events_of(7, &runs).is_empty());
+        // a real update a week later, flapping too: two installs, one update
+        let week = 7 * 24 * 60;
+        let runs = runs_of(&[(
+            "VCFRONT_infoAppCrc",
+            &[
+                (a, -60, 0),
+                (b, 3, 4),
+                (a, 6, 300),
+                (b, week, week + 2),
+                (a, week + 4, week + 5),
+                (b, week + 8, 2 * week),
+            ],
+        )]);
+        let ev = events_of(7, &runs);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!((ev[0].changes[0].old, ev[0].changes[0].new), (a, b));
+        assert_eq!(ev[0].from_ms, T + 300 * MIN);
+        assert_eq!(ev[0].to_ms, T.checked_add_signed((week + 8) * 60_000).unwrap());
+        // changes a set has not settled from for half an hour are a new install
+        let runs = runs_of(&[("BMS_appCrc", &[(1, -60, 0), (2, 5, 40), (3, 75, 200)])]);
+        assert_eq!(events_of(7, &runs).len(), 2);
+        // nor does an install go on for ever: one change after another, 20 minutes apart, for two hours
+        let steps: Vec<(u64, i64, i64)> = (0..7).map(|i| (i + 1, i as i64 * 20, i as i64 * 20 + 1)).collect();
+        let runs = runs_of(&[("BMS_appCrc", &steps)]);
+        let ev = events_of(7, &runs);
+        assert_eq!(ev.len(), 2, "{ev:?}");
+        assert_eq!(ev.iter().map(|e| e.changes.len()).sum::<usize>(), 2);
+    }
+
+    #[test]
+    fn a_name_typed_on_one_of_an_installs_steps_stays_with_the_install() {
+        let (a, b, c) = (0x06ac_6a37, 0x01b6_621d, 0x5e17_c0de);
+        let runs = runs_of(&[
+            ("VCFRONT_infoAppCrc", &[(a, -120, 0), (b, 9, 10), (a, 11, 12), (c, 15, 16), (b, 18, 600)]),
+            ("BMS_appCrc", &[(0x11, -120, 0), (0x22, 20, 600)]),
+        ]);
+        let steps = events_settled(7, &runs, 0);
+        assert_eq!(steps.len(), 4, "{steps:?}");
+        // the owner cleared the first step's name and typed the version on the third (made-up versions)
+        let mut n = Names::default();
+        n.set(&steps[0], None);
+        n.set(&steps[2], Some("2026.44.1"));
+        let one = events_of(7, &runs);
+        assert_eq!(one.len(), 1);
+        assert!(n.follow(&steps, &one));
+        assert_eq!(n.lookup(&one[0]), Some(("2026.44.1".to_string(), "owner")));
+        assert!(!n.cleared(&one[0]));
+        // its settled set is named: a later update to the same set gets the name by itself
+        assert_eq!(n.sets.get(&one[0].set), Some(&("2026.44.1".to_string(), one[0].id)));
+        // the steps' names that did not move are kept, for when they come back; nothing more moves
+        assert!(!n.follow(&one, &one));
+    }
 
     #[test]
     fn an_update_inside_one_log_keeps_its_direction() {
@@ -897,7 +1117,7 @@ mod tests {
 
     #[test]
     fn a_name_follows_its_update_when_another_change_joins_it() {
-        let r = |v, a, b| Run { value: v, first_ms: a, last_ms: b };
+        let r = |v, a: u64, b: u64| Run { value: v, first_ms: a * U, last_ms: b * U };
         let mut runs = BTreeMap::new();
         runs.insert("BMS_appCrc".to_string(), vec![r(1, 0, 100), r(2, 200, 300)]);
         let one = events_of(7, &runs);
@@ -919,7 +1139,7 @@ mod tests {
 
     #[test]
     fn a_name_stays_with_its_update_when_an_earlier_one_with_the_same_changes_goes() {
-        let r = |v, a, b| Run { value: v, first_ms: a, last_ms: b };
+        let r = |v, a: u64, b: u64| Run { value: v, first_ms: a * U, last_ms: b * U };
         let mut runs = BTreeMap::new();
         runs.insert("BMS_appCrc".to_string(), vec![r(1, 0, 100), r(2, 200, 300), r(1, 400, 500), r(2, 600, 700)]);
         let all = events_of(7, &runs);
