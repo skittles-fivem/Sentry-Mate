@@ -981,3 +981,18 @@ arrivals at once (shuffled, sidecar sometimes first, a changed log, another key'
 with the very records one after the other gives, and the app is told the same; every answer from memory (book, chain,
 signers, last arrival, newest usable, counts, status checks, single records, waiting) equals a judge reading only the
 files, after arrivals, a sweep, a key trusted, all judged again, and a change by another process.
+
+### The rest of the server's work, measured and left as it is
+
+- **A car's logs through the engine** (`measure_engine`, 30 days, 2,341 logs, the section above): 24.9 s at the start
+  and 20.0 s for the car rebuilt whole before, 26.2 s and 21.1 s now (with a test run beside it): the same within the
+  noise. That work is one car's timeline, built window after window from what the windows before stored, and almost
+  all of it is the day records and samples read and written (decoding a log is under a millisecond of it), so it is
+  not spread over cores; several cars are worked on side by side as before (`Options::workers`). What changed for it
+  is that it no longer holds back the uploads (its own threads at nice 10, its record lookups from memory).
+- **Compaction** packs a car's finished days one at a time while it holds that car's upload lock, so days of one car
+  packed side by side would only wait for each other, and the automatic pass is meant to take a third of a core at
+  most. Left as it is.
+- **Page answers** that read every trust record of a key on each call now read them from memory: Data health's
+  counts, the Connections overview's token rows and Settings' key and token rows (`Judge::arrivals`: the first and
+  newest arrival and the logs waiting, instead of a copy of the whole book).
