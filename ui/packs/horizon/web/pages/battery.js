@@ -89,32 +89,40 @@ export async function mount(ctx) {
   };
   let first = null; // the car's first reading, for the All time period (see firstMs)
 
-  const [bat, totals, settings, eff, ...bySrc] = await Promise.all([
-    ctx.api.get(`${base}/battery`),
-    ctx.api.get(`${base}/totals`).catch(() => null),
-    ctx.api.get(`${base}/settings`).catch(() => null),
-    ctx.api.get(`${base}/efficiency`).catch(() => null),
-    // which inputs gave drives or charges at all: /totals names the inputs the filter takes, not the ones that gave rows
-    ...LIFE_KINDS.map((k) => ctx.api.get(`${base}/totals`, { source: k }).catch(() => null)),
-  ]);
-  if (!ctx.alive()) return;
-  const lifeKinds = LIFE_KINDS.filter((k, i) => bySrc[i] && ((bySrc[i].drives || 0) + (bySrc[i].charges || 0)) > 0);
-  const cap = bat.capacity || {}, life = bat.lifetime || {};
-  // /battery sends rated range; with the ideal preference it is turned into ideal range by the two energy
-  // factors (the same energy over a smaller factor), and stays labelled rated when a factor is missing
-  const fr = eff?.factor || {};
-  const toIdeal = getUnits().range === 'ideal' && fr.rated_wh_per_km > 0 && fr.ideal_wh_per_km > 0 ? fr.rated_wh_per_km / fr.ideal_wh_per_km : null;
-  const rng0 = bat.range || {};
-  const rangeWord = toIdeal ? 'ideal' : 'rated';
-  const rk = (km) => (km == null ? km : toIdeal ? km * toIdeal : km);
-  const rng = { ...rng0, full_now_km: rk(rng0.full_now_km), full_now_from_energy_km: rk(rng0.full_now_from_energy_km), full_new_km: rk(rng0.full_new_km), lost_km: rk(rng0.lost_km) };
+  // Every call starts at once and each section paints when its own answers are in: until then a panel of its
+  // kind with a grey block keeps its place, so the page shows what it has instead of waiting for the slowest call.
+  const batP = ctx.api.get(`${base}/battery`);
+  const effP = ctx.api.get(`${base}/efficiency`).catch(() => null);
+  const totalsP = ctx.api.get(`${base}/totals`).catch(() => null);
+  const settingsP = ctx.api.get(`${base}/settings`).catch(() => null);
+  // which inputs gave drives or charges at all: /totals names the inputs the filter takes, not the ones that gave rows
+  const bySrcP = Promise.all(LIFE_KINDS.map((k) => ctx.api.get(`${base}/totals`, { source: k }).catch(() => null)));
+  const uplotP = loadUPlot().catch(() => null);
+  // filled when GET battery (and efficiency) is in; the sections below read them then
+  let bat = {}, totals = null, settings = null, eff = null, lifeKinds = [], cap = {}, life = {}, fr = {}, toIdeal = null, rangeWord = 'rated', rng = {};
+  const batReady = Promise.all([batP, effP]).then(([b, e]) => {
+    bat = b; eff = e;
+    cap = bat.capacity || {}; life = bat.lifetime || {};
+    // /battery sends rated range; with the ideal preference it is turned into ideal range by the two energy
+    // factors (the same energy over a smaller factor), and stays labelled rated when a factor is missing
+    fr = eff?.factor || {};
+    toIdeal = getUnits().range === 'ideal' && fr.rated_wh_per_km > 0 && fr.ideal_wh_per_km > 0 ? fr.rated_wh_per_km / fr.ideal_wh_per_km : null;
+    const rng0 = bat.range || {};
+    rangeWord = toIdeal ? 'ideal' : 'rated';
+    const rk = (km) => (km == null ? km : toIdeal ? km * toIdeal : km);
+    rng = { ...rng0, full_now_km: rk(rng0.full_now_km), full_now_from_energy_km: rk(rng0.full_now_from_energy_km), full_new_km: rk(rng0.full_new_km), lost_km: rk(rng0.lost_km) };
+  });
+  const batSettled = batReady.catch(() => null);
+  const waitPanel = (title, ic, cls) => panel({ title, icon: ic, cls }, h('div', { class: 'skel skel--block', 'aria-hidden': 'true' }));
 
   /* ---------- the head */
   const periodBtn = (cv) => h('button', { class: 'btn btn--sm', type: 'button', cover: cv, title: 'Choose the period (shared by every page)', onclick: (e) => openPeriodPicker(e.currentTarget) },
     icon('calendar', 'ico--sm'), period.label, icon('chev-d', 'ico--sm'));
+  // the chemistry and the time of the readings come with GET battery; the line keeps its height until then
+  const chemEl = h('span', null, '\u00a0'), asOfEl = h('span', null, '\u00a0');
   const head = pageHead({
     eyebrow: car.name, title: 'Battery',
-    sub: [bat.chemistry?.value ? `${CHEM[bat.chemistry.value] || bat.chemistry.value} pack` : 'Pack chemistry not known', `Pack readings as of ${formatDateTime(bat.as_of_ms, tz, { now: now() })}`],
+    sub: [chemEl, asOfEl],
     purpose: 'Health, capacity and range describe the whole life of the car. Charge level, projected range and parked drain follow the period.',
     actions: [
       h('button', { class: 'btn switch-car-btn', type: 'button', onclick: openCarSwitcher, cover: ['bh.filter.car', 'cl.filter.car', 'pr.section.per_car', 'vd.section.per_car'], title: 'Show another car on this page' }, icon('car'), 'Switch car'),
@@ -154,56 +162,77 @@ export async function mount(ctx) {
         ['Buffer kept back by the car', format(cap.buffer_kwh, 'energy'), { icon: 'lock', title: 'Energy below 0 % that the car never lets you use' }],
       ]));
   }
-  paintNow();
-  ctx.events('now', (ev) => {
-    if (ev.data?.car !== cid) return;
-    const d = ev.data.now || {};
-    const v = (x) => (x && typeof x === 'object' && 'value' in x ? x.value : undefined);
-    const live = { soc: v(d.soc_pct), usable: v(d.usable_soc_pct), kwh: v(d.energy_remaining_kwh), limit: v(d.charge?.limit_pct) };
-    if (Object.values(live).some((x) => x != null)) paintNow(Object.fromEntries(Object.entries(live).filter(([, x]) => x != null)));
-  });
+  const paintTop = async () => {
+    await batReady;
+    if (!ctx.alive()) return;
+    replace(chemEl, bat.chemistry?.value ? `${CHEM[bat.chemistry.value] || bat.chemistry.value} pack` : 'Pack chemistry not known');
+    replace(asOfEl, `Pack readings as of ${formatDateTime(bat.as_of_ms, tz, { now: now() })}`);
+    paintNow();
+    ctx.events('now', (ev) => {
+      if (ev.data?.car !== cid) return;
+      const d = ev.data.now || {};
+      const v = (x) => (x && typeof x === 'object' && 'value' in x ? x.value : undefined);
+      const live = { soc: v(d.soc_pct), usable: v(d.usable_soc_pct), kwh: v(d.energy_remaining_kwh), limit: v(d.charge?.limit_pct) };
+      if (Object.values(live).some((x) => x != null)) paintNow(Object.fromEntries(Object.entries(live).filter(([, x]) => x != null)));
+    });
 
-  /* ---------- Capacity and health */
-  const health = cap.health_pct, warranty = cap.warranty_pct;
-  const factor = eff?.factor ? (toIdeal ? fr.ideal_wh_per_km : fr.rated_wh_per_km) : null;
-  const ring = healthRing(health, warranty);
-  const pk = bat.pack || {};
-  const packLine = pk.replaced_ms != null ? h('p', { class: 'note bat-note' }, icon('info', 'ico--sm'), ` Pack replaced on ${formatDate(pk.replaced_ms, tz, { weekday: false, month: 'long' })} (${pk.source === 'owner' ? 'typed by the owner' : "detected from the pack's readings"}).`) : null;
-  const notesEl = (bat.notes || []).filter((c) => NOTES[c]).map((c) => h('p', { class: ['note', 'bat-note', /cold|lfp/.test(c) && 'warn'] }, icon(/cold|lfp/.test(c) ? 'warn' : 'info', 'ico--sm'), NOTES[c]));
-  const capPanel = panel({ title: 'Capacity and health', icon: 'battery', cls: 'bat-cap', cover: 'shots.battery-health' },
-    h('div', { class: 'cap-body' },
-      h('div', { class: 'cap-ring', cover: ['bh.bar.health', 'bh.gauge.degradation'] }, ring,
-        h('div', { class: 'cap-ring-text' },
-          h('span', { class: 'cap-ring-val' }, health == null ? '—' : formatNumber(health, { maximumFractionDigits: 1 }), h('small', null, '%')),
-          h('span', { class: 'metric-label' }, 'Health'),
-          h('span', { class: 'cap-ring-sub' }, cap.degradation_pct == null ? 'Lost: not known' : `${formatNumber(cap.degradation_pct, { maximumFractionDigits: 1 })} % lost`))),
-      h('div', { class: 'cap-figs' },
-        metric('Usable now', cap.usable_kwh, 'energy', { cover: 'bh.capacity.usable_now', explain: cap.full_pack_kwh != null && cap.buffer_kwh != null ? `Full pack ${format(cap.full_pack_kwh, 'energy')} minus the ${format(cap.buffer_kwh, 'energy')} buffer the car keeps back; the pack’s own reading (${n0(cap.readings)} readings).` : `The pack’s own reading (${n0(cap.readings)} readings).`, why: 'The pack has not reported it' }),
-        metric('Usable when new', cap.new_kwh, 'energy', { cover: 'bh.capacity.usable_new', explain: cap.new_source ? `Source: ${NEW_SOURCE[cap.new_source] || cap.new_source}.` : null, why: 'Not known: type it under Reference values' }),
-        metric('Difference', cap.difference_kwh == null ? null : -cap.difference_kwh, 'energy', { cover: 'bh.capacity.difference', sign: true, explain: 'Usable now minus usable when new.', why: 'Needs a “when new” value' }),
-        metric(`Energy per ${unitLabel('range')} of range`, factor, 'efficiency', { cover: 'bh.stat.efficiency', explain: eff?.factor ? `How much energy one ${unitLabel('range')} of ${rangeWord} range stands for, from ${n0(eff.factor.readings)} pack readings. Used to turn energy into range.` : null, why: 'Not worked out yet' }),
-        metric('Cell voltage spread', bat.brick_spread_v == null ? null : h('span', { class: 'q' }, h('span', { class: 'q-v' }, formatNumber(bat.brick_spread_v * 1000, { maximumFractionDigits: 0 })), '\u00a0', h('span', { class: 'q-u' }, 'mV')), null, { explain: 'Highest minus lowest cell group: the pack’s balance. Under 30 mV is well balanced.', why: 'Not reported' }),
-      )),
-    h('div', { class: 'cap-explain', cover: ['bh.capacity.help', 'bh.gauge.degradation_help'] },
-      h('p', { class: 'note' }, icon('info', 'ico--sm'), ' Health is usable now as a share of usable when new. Both come from the battery management system, which reports the pack’s capacity every awake minute; nothing is worked out from range. It is a guide, not a lab test: it moves a little with temperature and with how long since the pack last balanced.'),
-      warranty != null ? h('p', { class: 'note' }, h('i', { class: 'k-warranty', 'aria-hidden': 'true' }), ` Warranty line: ${pct(warranty)} health. Above it the pack is inside the usual battery warranty threshold; the threshold is set under Reference values.`) : null,
-      packLine, notesEl));
+    /* ---------- Capacity and health */
+    const health = cap.health_pct, warranty = cap.warranty_pct;
+    const factor = eff?.factor ? (toIdeal ? fr.ideal_wh_per_km : fr.rated_wh_per_km) : null;
+    const ring = healthRing(health, warranty);
+    const pk = bat.pack || {};
+    const packLine = pk.replaced_ms != null ? h('p', { class: 'note bat-note' }, icon('info', 'ico--sm'), ` Pack replaced on ${formatDate(pk.replaced_ms, tz, { weekday: false, month: 'long' })} (${pk.source === 'owner' ? 'typed by the owner' : "detected from the pack's readings"}).`) : null;
+    const notesEl = (bat.notes || []).filter((c) => NOTES[c]).map((c) => h('p', { class: ['note', 'bat-note', /cold|lfp/.test(c) && 'warn'] }, icon(/cold|lfp/.test(c) ? 'warn' : 'info', 'ico--sm'), NOTES[c]));
+    const capPanel = panel({ title: 'Capacity and health', icon: 'battery', cls: 'bat-cap', cover: 'shots.battery-health' },
+      h('div', { class: 'cap-body' },
+        h('div', { class: 'cap-ring', cover: ['bh.bar.health', 'bh.gauge.degradation'] }, ring,
+          h('div', { class: 'cap-ring-text' },
+            h('span', { class: 'cap-ring-val' }, health == null ? '—' : formatNumber(health, { maximumFractionDigits: 1 }), h('small', null, '%')),
+            h('span', { class: 'metric-label' }, 'Health'),
+            h('span', { class: 'cap-ring-sub' }, cap.degradation_pct == null ? 'Lost: not known' : `${formatNumber(cap.degradation_pct, { maximumFractionDigits: 1 })} % lost`))),
+        h('div', { class: 'cap-figs' },
+          metric('Usable now', cap.usable_kwh, 'energy', { cover: 'bh.capacity.usable_now', explain: cap.full_pack_kwh != null && cap.buffer_kwh != null ? `Full pack ${format(cap.full_pack_kwh, 'energy')} minus the ${format(cap.buffer_kwh, 'energy')} buffer the car keeps back; the pack’s own reading (${n0(cap.readings)} readings).` : `The pack’s own reading (${n0(cap.readings)} readings).`, why: 'The pack has not reported it' }),
+          metric('Usable when new', cap.new_kwh, 'energy', { cover: 'bh.capacity.usable_new', explain: cap.new_source ? `Source: ${NEW_SOURCE[cap.new_source] || cap.new_source}.` : null, why: 'Not known: type it under Reference values' }),
+          metric('Difference', cap.difference_kwh == null ? null : -cap.difference_kwh, 'energy', { cover: 'bh.capacity.difference', sign: true, explain: 'Usable now minus usable when new.', why: 'Needs a “when new” value' }),
+          metric(`Energy per ${unitLabel('range')} of range`, factor, 'efficiency', { cover: 'bh.stat.efficiency', explain: eff?.factor ? `How much energy one ${unitLabel('range')} of ${rangeWord} range stands for, from ${n0(eff.factor.readings)} pack readings. Used to turn energy into range.` : null, why: 'Not worked out yet' }),
+          metric('Cell voltage spread', bat.brick_spread_v == null ? null : h('span', { class: 'q' }, h('span', { class: 'q-v' }, formatNumber(bat.brick_spread_v * 1000, { maximumFractionDigits: 0 })), '\u00a0', h('span', { class: 'q-u' }, 'mV')), null, { explain: 'Highest minus lowest cell group: the pack’s balance. Under 30 mV is well balanced.', why: 'Not reported' }),
+        )),
+      h('div', { class: 'cap-explain', cover: ['bh.capacity.help', 'bh.gauge.degradation_help'] },
+        h('p', { class: 'note' }, icon('info', 'ico--sm'), ' Health is usable now as a share of usable when new. Both come from the battery management system, which reports the pack’s capacity every awake minute; nothing is worked out from range. It is a guide, not a lab test: it moves a little with temperature and with how long since the pack last balanced.'),
+        warranty != null ? h('p', { class: 'note' }, h('i', { class: 'k-warranty', 'aria-hidden': 'true' }), ` Warranty line: ${pct(warranty)} health. Above it the pack is inside the usual battery warranty threshold; the threshold is set under Reference values.`) : null,
+        packLine, notesEl));
 
-  /* ---------- Full-charge range */
-  const rangePanel = panel({ title: 'Full-charge range', icon: 'gauge', cls: 'bat-range' },
-    h('div', { class: 'range-figs' },
-      metric('At 100 % now', rng.full_now_km, 'range', { size: 'lg', cover: 'bh.ranges.max_now', explain: `The ${rangeWord} range the car would show at a full charge${toIdeal ? ' (worked out from rated range with the two energy factors)' : ''}. From energy: ${format(rng.full_now_from_energy_km, 'range')}.`, why: 'Not enough readings' }),
-      metric('At 100 % when new', rng.full_new_km, 'range', { cover: 'bh.ranges.max_new', explain: rng.new_source ? `Source: ${RANGE_SOURCE[rng.new_source] || rng.new_source}.` : null, why: 'Not known: type it under Reference values' }),
-      metric('Range lost', rng.lost_km == null ? null : rng.lost_km, 'range', { cover: 'bh.ranges.lost', explain: rng.lost_km != null && rng.full_new_km ? `${formatNumber((rng.lost_km / rng.full_new_km) * 100, { maximumFractionDigits: 1 })} % of the range when new.` : 'When new minus now.', why: 'Needs a “when new” value' })),
-    h('div', { class: 'range-bar', role: 'img', 'aria-label': `Range now ${format(rng.full_now_km, 'range')} of ${format(rng.full_new_km, 'range')} when new`,
-      vars: { '--w': rng.full_new_km && rng.full_now_km ? `${Math.min(100, (rng.full_now_km / rng.full_new_km) * 100)}%` : '0%' } }, h('i')),
-    note('The car’s range estimate scales with its own energy factor, so it drops in step with capacity. Your real range depends on speed, weather and climate; see Efficiency.'));
+    /* ---------- Full-charge range */
+    const rangePanel = panel({ title: 'Full-charge range', icon: 'gauge', cls: 'bat-range' },
+      h('div', { class: 'range-figs' },
+        metric('At 100 % now', rng.full_now_km, 'range', { size: 'lg', cover: 'bh.ranges.max_now', explain: `The ${rangeWord} range the car would show at a full charge${toIdeal ? ' (worked out from rated range with the two energy factors)' : ''}. From energy: ${format(rng.full_now_from_energy_km, 'range')}.`, why: 'Not enough readings' }),
+        metric('At 100 % when new', rng.full_new_km, 'range', { cover: 'bh.ranges.max_new', explain: rng.new_source ? `Source: ${RANGE_SOURCE[rng.new_source] || rng.new_source}.` : null, why: 'Not known: type it under Reference values' }),
+        metric('Range lost', rng.lost_km == null ? null : rng.lost_km, 'range', { cover: 'bh.ranges.lost', explain: rng.lost_km != null && rng.full_new_km ? `${formatNumber((rng.lost_km / rng.full_new_km) * 100, { maximumFractionDigits: 1 })} % of the range when new.` : 'When new minus now.', why: 'Needs a “when new” value' })),
+      h('div', { class: 'range-bar', role: 'img', 'aria-label': `Range now ${format(rng.full_now_km, 'range')} of ${format(rng.full_new_km, 'range')} when new`,
+        vars: { '--w': rng.full_new_km && rng.full_now_km ? `${Math.min(100, (rng.full_now_km / rng.full_new_km) * 100)}%` : '0%' } }, h('i')),
+      note('The car’s range estimate scales with its own energy factor, so it drops in step with capacity. Your real range depends on speed, weather and climate; see Efficiency.'));
+    capWait.replaceWith(capPanel); rangeWait.replaceWith(rangePanel);
+  };
 
-  /* ---------- Lifetime totals */
-  const lifePanel = lifetimePanel();
+  /* ---------- Lifetime totals: GET totals (once per input too) */
+  const paintLife = async () => {
+    const [, t, by] = await Promise.all([batReady, totalsP, bySrcP]);
+    if (!ctx.alive()) return;
+    totals = t;
+    lifeKinds = LIFE_KINDS.filter((k, i) => by[i] && ((by[i].drives || 0) + (by[i].charges || 0)) > 0);
+    lifeWait.replaceWith(lifetimePanel());
+  };
 
-  /* ---------- Reference values */
-  const refPanel = referencePanel();
+  /* ---------- Reference values: GET settings */
+  const paintRef = async () => {
+    const [, s] = await Promise.all([batReady, settingsP]);
+    if (!ctx.alive()) return;
+    settings = s;
+    refWait.replaceWith(referencePanel());
+  };
+  const capWait = waitPanel('Capacity and health', 'battery', 'bat-cap'), rangeWait = waitPanel('Full-charge range', 'gauge', 'bat-range');
+  const lifeWait = waitPanel('Lifetime totals', 'odo', 'bat-life'), refWait = waitPanel('Reference values', 'settings', 'bat-ref');
+  nowSlot.append(h('div', { class: 'skel skel--block', 'aria-hidden': 'true' }));
 
   /* ---------- history sections (slots filled after the first paint) */
   const capChartSlot = h('div', { class: 'cap-chart-slot' });
@@ -224,23 +253,25 @@ export async function mount(ctx) {
     head,
     h('div', { class: 'bat-grid' },
       panel({ title: 'Now', icon: 'live', cls: 'bat-nowp', side: h('span', { class: 'faint' }, 'Live') }, nowSlot),
-      capPanel,
-      rangePanel, lifePanel,
-      capHist, refPanel),
+      capWait,
+      rangeWait, lifeWait,
+      capHist, refWait),
     h('div', { class: 'bat-history-head' },
       h('h2', { class: 'section-title' }, 'In the period'),
       periodBtn(['cl.filter.time_range', 'pr.filter.time_range', 'vd.filter.time_range']),
       h('span', { class: 'faint' }, `Times in the car’s zone. Shaded blue: asleep (the battery holds). Grey: unknown, no log.`)),
     clPanel, prPanel, vdSlot));
 
-  await loadUPlot().catch(() => null);
-  if (!ctx.alive()) return;
+  for (const slot of [capChartSlot, clSlot, prSlot, vdSlot]) slot.append(h('div', { class: 'skel skel--block', 'aria-hidden': 'true' }));
   const sync = `battery-${cid}`;
+  const uplot = (paint) => async () => { await uplotP; if (ctx.alive()) await paint(); };
+  // GET battery failing fails the page (as before); the history sections show their own errors
   await Promise.all([
-    paintCapacity().catch((e) => replace(capChartSlot, errorState(e, { compact: true, home: false, retry: () => paintCapacity() }))),
-    paintChargeLevel().catch((e) => replace(clSlot, errorState(e, { compact: true, home: false, retry: () => paintChargeLevel() }))),
-    paintProjected().catch((e) => replace(prSlot, errorState(e, { compact: true, home: false, retry: () => paintProjected() }))),
-    paintParked(),
+    paintTop(), paintLife(), paintRef(),
+    uplot(paintCapacity)().catch((e) => replace(capChartSlot, errorState(e, { compact: true, home: false, retry: () => paintCapacity() }))),
+    uplot(paintChargeLevel)().catch((e) => replace(clSlot, errorState(e, { compact: true, home: false, retry: () => paintChargeLevel() }))),
+    uplot(paintProjected)().catch((e) => replace(prSlot, errorState(e, { compact: true, home: false, retry: () => paintProjected() }))),
+    uplot(paintParked)(),
   ]);
   // ready once every section has its data: the charts and the parked list are part of the first render
   if (ctx.alive()) ctx.ready();
@@ -358,7 +389,10 @@ export async function mount(ctx) {
     // least-squares trend over the readings
     const fit = linFit(P);
     const ys3 = all.map((p) => (fit ? fit.a + fit.b * p.x : null));
+    await batSettled; // the capacity when new comes with GET battery
+    if (!ctx.alive()) return;
     const newKwh = cap.new_kwh;
+    const pk = bat.pack || {};
     const readout = h('span', { class: 'val' }, 'Point at a reading; click a per-charge reading to open that charge.');
     const plotEl = h('div', { class: 'chart chart--cap' });
     const proj = trend?.projection;
@@ -462,6 +496,8 @@ export async function mount(ctx) {
     const st = d.stats || {};
     const stat = (a) => { const f = a.filter((v) => v != null); if (!f.length) return null; return { mean: f.reduce((s, v) => s + v, 0) / f.length, min: Math.min(...f), max: Math.max(...f), last: f[f.length - 1] }; };
     const sU = stat(usable);
+    if (!d.band) await batSettled;
+    if (!ctx.alive()) return;
     const band = d.band || bat.band || {};
     const entries = [
       { key: 'soc', label: 'Battery', color: '--c-soc', index: 1, cover: 'cl.chart.battery_level', st: { mean: st.mean, min: st.min, max: st.max } },
