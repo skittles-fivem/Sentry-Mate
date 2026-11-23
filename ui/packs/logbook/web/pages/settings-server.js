@@ -32,7 +32,7 @@ import { bigCode, downloadText } from './move-parts.js';
 import { fullRebuild } from './rebuild-parts.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 import { serverUpdates, RELEASE_OFF_TEXT } from '../shared/release.js';
-import { compactionProgress } from '../shared/compaction.js';
+import { compactionProgress, laterCompaction } from '../shared/compaction.js';
 import { follow, jobOf, setAttr } from '../shared/live.js';
 import { morphChildren } from '../core/morph.js';
 
@@ -894,7 +894,7 @@ export async function mount(ctx) {
     }
     function follows() {
       live = follow(ctx.api, {
-        type: 'job', match: jobOf('compaction'), pick: (d) => d.status,
+        type: 'job', match: jobOf('compaction'), pick: (d) => laterCompaction(detail?.compaction, d.status), // (a failed pass keeps its reason)
         load: async () => {
           if (firstRead && detail) { firstRead = false; return detail.compaction || null; }
           firstRead = false;

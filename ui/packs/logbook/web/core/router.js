@@ -155,7 +155,6 @@ function stageIn(m, finishOld, busy) {
 // screen they would each push what is under them down (a phone: the page jumps while it loads).
 const FIRST_MS = 3000;
 const NOTICES_MS = 1500;
-const FONTS_MS = 1000;
 function firstBox(m, onCommit) {
   const r = m.getBoundingClientRect();
   const box = h('div', { class: m.className, 'aria-hidden': 'true', inert: '' });
@@ -248,8 +247,10 @@ function makeCtx(s, my, scope, cleanups, view = main(), stage = null, tracker = 
       // once the page is in <main> (a first draw waits for the notices bar, see mount)
       const then = () => {
         if (my !== token) return;
-        release();
+        // ready first, then the snap, in the same task: the snap lays the page just put in place out at once, and a
+        // live update that came in while it did would be drawn over the answers the page was ready with
         ready(id);
+        release();
         if (!jumped) { jumped = true; jumpToHash(); }
       };
       if (box) box.shown(then); else then();
@@ -324,10 +325,7 @@ async function mount(s, { live = false } = {}) {
     box: null,
     shown(then) {
       const go = () => { if (my !== token) return; fb.box?.commit(); then(); };
-      // in place once the fonts its words use are in too (at most FONTS_MS): a face that came in after the page was
-      // on screen would re-wrap its lines under the reader
-      const fonts = fb.box && document.fonts?.status === 'loading' ? Promise.race([document.fonts.ready, new Promise((r) => { setTimeout(r, FONTS_MS); })]) : null;
-      if (noticesIn || fonts) Promise.all([noticesIn, fonts]).then(go); else go();
+      if (noticesIn) noticesIn.then(go); else go();
     },
     now() { fb.box?.commit(); },
   };

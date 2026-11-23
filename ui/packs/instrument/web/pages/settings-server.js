@@ -13,7 +13,7 @@
 // confirms each one.
 
 import { h, replace, setVars } from '../shared/dom.js';
-import { compactionProgress } from '../shared/compaction.js';
+import { compactionProgress, laterCompaction } from '../shared/compaction.js';
 import * as state from '../shared/state.js';
 import { format } from '../shared/units.js';
 import { icon } from '../core/icons.js';
@@ -705,7 +705,7 @@ export async function mount(ctx) {
   const storReady = admin ? new Promise((res) => { storFirst = res; }) : null;
   if (storagePanel) {
     storLive = follow(ctx.api, {
-      type: 'job', match: jobOf('compaction'), pick: (d) => d.status,
+      type: 'job', match: jobOf('compaction'), pick: (d) => laterCompaction(S.storage?.compaction, d.status), // (a failed pass keeps its reason)
       load: () => ctx.api.get('system/storage/detail'),
       pollMs: () => (S.storage?.compaction?.status === 'running' ? 2000 : 30000),
       onValue: (v, how) => {

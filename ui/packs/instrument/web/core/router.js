@@ -199,30 +199,30 @@ function stageView(view, finishOld) {
 // that land near the screen are drawn in the box; the rest when they come near once in place (shared/lazy.js).
 const FIRST_MS = 3000;
 const NOTICES_MS = 3000;
-const FONTS_MS = 1000;
 function firstStage(view, onCommit) {
+  // drawn in the view itself, hidden (with the footer) while it is built, under a copy of the skeleton laid over it:
+  // the page lays itself out part by part as on screen, and putting it in place is only showing it (moving a whole
+  // page in from a box laid it all out again at once, and a live update that came in meanwhile was drawn over the
+  // answers it was ready with)
+  const root = document.documentElement;
   const r = view.getBoundingClientRect();
-  const stage = h('div', { class: view.className + ' view-stage', 'aria-hidden': 'true', inert: '' });
-  Object.assign(stage.style, {
-    position: 'fixed', top: '0', left: `${r.left}px`, width: `${r.width}px`, boxSizing: 'border-box', height: '100vh', overflow: 'hidden',
-    visibility: 'hidden', pointerEvents: 'none', zIndex: '-1',
+  const cover = h('div', { class: view.className + ' view-cover', 'aria-hidden': 'true' }, [...view.childNodes].map((n) => n.cloneNode(true)));
+  Object.assign(cover.style, {
+    position: 'absolute', top: `${r.top + window.scrollY}px`, left: `${r.left + window.scrollX}px`, width: `${r.width}px`, boxSizing: 'border-box',
+    minHeight: '0', pointerEvents: 'none', zIndex: '1',
   });
-  // where it lands: the view's top in the page, which opens at its top
-  stage.dataset.nearShift = String(Math.round(r.top + window.scrollY));
-  document.body.append(stage);
+  document.body.append(cover);
+  root.setAttribute('data-building', '');
   let done = false;
   const maxT = setTimeout(() => commit(), FIRST_MS);
+  const end = () => { done = true; clearTimeout(maxT); cover.remove(); root.removeAttribute('data-building'); };
   function commit() {
     if (done) return;
-    done = true;
-    clearTimeout(maxT);
-    holdScroll(view);
-    view.replaceChildren(...stage.childNodes);
-    stage.remove();
+    end();
     onCommit();
   }
-  const drop = () => { if (done) return; done = true; clearTimeout(maxT); stage.remove(); };
-  return { stage, commit, drop };
+  const drop = () => { if (!done) end(); };
+  return { stage: view, commit, drop };
 }
 
 // A page's API client that also counts its requests under way (a live refresh waits for them, see stageView).
@@ -404,21 +404,26 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
       shownOnce = true;
       if (refreshAsked) { refreshAsked = false; setTimeout(() => ctx.refresh(), 0); }
       st?.settle(() => scope.busy);
-      // put in place once the fonts its words use are in too (at most FONTS_MS): laid out in the box they load, and a
-      // face that came in after the page was on screen would re-wrap its lines under the reader
+      // ready (once the fonts the page uses are in: a late swap would re-flow the text it just drew) and one snap of
+      // what the page drew, after ready() too
+      const settle = (markFirst) => {
+        if (!alive()) return;
+        const fonts = document.fonts;
+        const loading = fonts && fonts.status === 'loading';
+        if (markFirst && !loading) markReady(id);
+        rec.release();
+        if (loading) fonts.ready.then(() => { if (alive()) markReady(id); });
+        else if (!markFirst) markReady(id);
+      };
       if (first) {
-        const fonts = document.fonts?.status === 'loading' ? Promise.race([document.fonts.ready, new Promise((r) => { setTimeout(r, FONTS_MS); })]) : null;
-        if (noticesIn || fonts) Promise.all([noticesIn, fonts]).then(() => { if (alive()) first.commit(); }); else first.commit();
+        // a first draw is put in place, said ready and snapped in one task, once the page's own code after ready() has
+        // run: the snap lays out the page just put in place, and a live update that came in meanwhile would be drawn
+        // over the answers the page was ready with
+        Promise.resolve(noticesIn).then(() => { if (!alive()) return; first.commit(); settle(true); });
       }
       frame.view().removeAttribute('aria-busy');
-      // at the next frame (the page's own code after ready() and the router's are done by then), once the fonts the
-      // page uses are in (a late swap would re-flow the text it just drew)
-      requestAnimationFrame(() => {
-        rec.release(); // what the page drew after ready() too: one snap, before the paint
-        const fonts = document.fonts;
-        if (fonts && fonts.status === 'loading') fonts.ready.then(() => { if (alive()) markReady(id); });
-        else if (alive()) markReady(id);
-      });
+      // otherwise at the next frame (the page's own code after ready() and the router's are done by then)
+      if (!first) requestAnimationFrame(() => settle(false));
     },
     fail(err, opts = {}) {
       if (api.isAbort(err) || !alive()) return;

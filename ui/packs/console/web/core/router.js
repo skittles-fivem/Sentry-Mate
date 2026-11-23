@@ -188,7 +188,6 @@ function stageView(view, finishOld) {
 // they would each push what is under them down (a phone: the page jumps while it loads).
 const FIRST_MS = 3000;
 const NOTICES_MS = 1500;
-const FONTS_MS = 1000;
 function firstStage(view, onCommit) {
   const r = view.getBoundingClientRect();
   const stage = h('div', { class: view.className, 'aria-hidden': 'true', inert: true, dataset: { offstage: '' } });
@@ -232,12 +231,13 @@ function counted(sc, tracker = null) {
 }
 
 // once the fonts the page uses are in (a late swap would re-flow the text it just drew), at the next frame
-function markWhenSettled(id, alive) {
-  requestAnimationFrame(() => {
+function markWhenSettled(id, alive, now = false) {
+  const mark = () => {
     const fonts = document.fonts;
     if (fonts && fonts.status === 'loading') fonts.ready.then(() => { if (alive()) markReady(id); });
     else if (alive()) markReady(id);
-  });
+  };
+  if (now) mark(); else requestAnimationFrame(mark);
 }
 
 function pageCss(id) { return pageSheet(id, new URL(`../pages/${id}.css`, import.meta.url).href); }
@@ -393,14 +393,11 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
       shownOnce = true;
       if (refreshAsked) { refreshAsked = false; setTimeout(() => ctx.refresh(), 0); }
       st?.settle(() => scope.busy);
-      // put in place once the fonts its words use are in too (at most FONTS_MS): laid out in the box as they load, and
-      // a face that came in after the page was on screen would re-wrap its lines under the reader
-      if (firstBox) {
-        const fonts = document.fonts?.status === 'loading' ? Promise.race([document.fonts.ready, new Promise((r) => { setTimeout(r, FONTS_MS); })]) : null;
-        if (noticesIn || fonts) Promise.all([noticesIn, fonts]).then(() => { if (alive()) firstBox.commit(); }); else firstBox.commit();
-      }
       frame.view().removeAttribute('aria-busy');
-      markWhenSettled(id, alive);
+      // a first draw is put in place and said ready in one task, once the page's own code after ready() has run (a live
+      // update that came in between would be drawn over the answers the page was ready with); otherwise at the next frame
+      if (firstBox) Promise.resolve(noticesIn).then(() => { if (!alive()) return; firstBox.commit(); markWhenSettled(id, alive, true); });
+      else markWhenSettled(id, alive);
     },
     fail(err, opts = {}) { if (api.isAbort(err) || !alive()) return; console.warn(err); showError(err, opts.retry === undefined ? undefined : opts.retry); },
     setTitle(...parts) { docTitle(...parts, car?.name); },

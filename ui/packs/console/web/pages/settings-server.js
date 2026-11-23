@@ -33,7 +33,7 @@ import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 import { exportModel, exportPollMs } from '../shared/exportjob.js';
 import { fullRebuild } from '../core/fullrebuild.js';
 import { serverUpdates, RELEASE_OFF_TEXT } from '../shared/release.js';
-import { compactionProgress } from '../shared/compaction.js';
+import { compactionProgress, laterCompaction } from '../shared/compaction.js';
 import { follow, jobOf } from '../shared/live.js';
 import { morphChildren } from '../core/morph.js';
 
@@ -608,7 +608,7 @@ export async function mount(ctx) {
   }
   function followStor() {
     storLive = follow(ctx.api, {
-      type: 'job', match: jobOf('compaction'), pick: (d) => d.status,
+      type: 'job', match: jobOf('compaction'), pick: (d) => laterCompaction(G.d?.compaction, d.status), // (a failed pass keeps its reason)
       load: async () => {
         // the page's own read of the detail stands for the first one
         if (firstStor && G.d) { firstStor = false; return G.d.compaction || null; }
