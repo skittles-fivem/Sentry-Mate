@@ -165,7 +165,7 @@ export async function mount(ctx) {
   const paintTop = async () => {
     await batReady;
     if (!ctx.alive()) return;
-    replace(chemEl, bat.chemistry?.value ? `${CHEM[bat.chemistry.value] || bat.chemistry.value} pack` : 'Pack chemistry not known');
+    replace(chemEl, bat.chemistry?.value ? `${CHEM[bat.chemistry.value] || bat.chemistry.value} pack${bat.chemistry?.confidence === 'low' ? ' (low confidence)' : ''}` : 'Pack chemistry not known');
     replace(asOfEl, `Pack readings as of ${formatDateTime(bat.as_of_ms, tz, { now: now() })}`);
     paintNow();
     ctx.events('now', (ev) => {
@@ -290,7 +290,8 @@ export async function mount(ctx) {
 
   function lifetimePanel() {
     const t = totals || {};
-    const mileage = t.odometer_last_km != null && t.odometer_first_km != null ? t.odometer_last_km - t.odometer_first_km : null;
+    // from the valid odometer readings only, never below 0 (the server picks them)
+    const mileage = t.driven_since_km ?? (t.odometer_last_km != null && t.odometer_first_km != null ? Math.max(0, t.odometer_last_km - t.odometer_first_km) : null);
     const inKwh = (life.ac_kwh || 0) + (life.dc_kwh || 0) + (life.regen_kwh || 0);
     const parts = [
       { key: 'ac', label: 'AC charging', kwh: life.ac_kwh, cls: 'p-ac' },
@@ -321,7 +322,7 @@ export async function mount(ctx) {
         h('div', { class: 'life-col' },
           h('h3', { class: 'life-h' }, icon('bolt', 'ico--sm'), 'Charging', h('a', { class: 'panel-link', href: ctx.link('charges', { period: { preset: 'all' } }), cover: 'bh.charging.link_stats' }, 'Charges', icon('chev-r', 'ico--sm'))),
           kv([
-            ['Charging sessions', `${n0(t.charges)}  (AC ${n0(t.ac?.charges)}, DC ${n0(t.dc?.charges)})`, { cover: 'bh.charging.count' }],
+            ['Charging sessions', `${n0(t.charges)}  (AC ${n0(t.ac?.charges)}, DC ${n0(t.dc?.charges)}${t.unknown_kind?.charges ? `, ${n0(t.unknown_kind.charges)} of no known kind` : ''})`, { cover: 'bh.charging.count' }],
             ['Energy added to the pack', format(t.energy_added_kwh, 'energy'), { cover: 'bh.charging.energy_added' }],
             ['Energy from the grid', h('span', null, format(t.energy_grid_kwh, 'energy'), t.grid_coverage_pct != null && t.grid_coverage_pct < 100 ? h('span', { class: 'faint' }, ` (measured for ${pct(t.grid_coverage_pct)} of energy)`) : null), { cover: 'bh.charging.energy_used' }],
             ['Charging efficiency', t.charging_efficiency_pct == null ? '— not measured' : pct(t.charging_efficiency_pct, 1), { cover: 'bh.charging.efficiency' }],

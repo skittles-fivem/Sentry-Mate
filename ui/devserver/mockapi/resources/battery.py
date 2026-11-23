@@ -74,8 +74,12 @@ def _charge_full(car, c):
 def _chemistry(req, h):
     s = (req.store.car_settings.get(h.car.id) or {}).get("battery_chemistry") or {}
     if s.get("setting") in ("lfp", "nca_nmc"):
-        return {"value": s["setting"], "source": "owner"}
-    return {"value": s.get("detected") or h.car.chemistry, "source": "detected"}
+        return {"value": s["setting"], "source": "owner", "confidence": None, "evidence": None}
+    # the build's detection, as the build card and Car settings show it
+    value = s.get("detected") or h.car.chemistry
+    return {"value": value, "source": "detected" if value else None,
+            "confidence": ("low" if h.car.vin_prefix[:1] in "57" else "medium") if value else None,
+            "evidence": s.get("evidence")}
 
 
 def lifetime(req, h):
@@ -139,7 +143,8 @@ def get_battery(req):
                                             "lost_km")},
                 "energy_now_kwh": None, "soc_pct": _v(n.get("soc_pct")), "usable_soc_pct": None,
                 "band": {"low_pct": 20, "high_pct": 80, "charge_limit_pct": None},
-                "chemistry": {"value": None, "source": None}, "brick_spread_v": None,
+                "chemistry": {"value": None, "source": None, "confidence": None, "evidence": None},
+                "brick_spread_v": None,
                 "lifetime": None, "notes": ["no_history"], "pack": _pack(req)}
     car = h.car
     n = now_object(req.app, req.car, req.now)
@@ -156,6 +161,10 @@ def get_battery(req):
     chem = _chemistry(req, h)
     soc = _v(n.get("soc_pct"))
     usable_soc = _v(n.get("usable_soc_pct"))
+    energy = _v(n.get("energy_remaining_kwh"))
+    if usable_soc is None and energy is not None and full - car.buffer_kwh > 0:
+        # the pack's energy above its buffer over its usable capacity, as the server works it out
+        usable_soc = r(min(100.0, max(0.0, (energy - car.buffer_kwh) / (full - car.buffer_kwh) * 100)), 1)
     notes = []
     notes.append({"owner": "new_value_typed", "early_bms": "new_value_from_early_readings",
                   "imported_charges": "new_value_from_imported_charges",
