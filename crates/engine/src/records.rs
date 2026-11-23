@@ -281,6 +281,12 @@ pub(crate) fn meta(db: &Db, car: CarId) -> Result<CarMeta> {
     Ok(get(db, NS, &car_key(car))?.unwrap_or_default())
 }
 
+/// A car's meta record (for readers outside the engine, such as the connections overview's upload counts): the
+/// defaults when the car has none yet.
+pub fn car_meta(db: &Db, car: CarId) -> Result<CarMeta> {
+    meta(db, car)
+}
+
 pub(crate) fn put_meta(db: &Db, car: CarId, m: &CarMeta) -> Result<()> {
     put(db, NS, &car_key(car), m)
 }

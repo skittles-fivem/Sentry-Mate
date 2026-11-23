@@ -131,6 +131,38 @@ impl Publisher {
     }
 }
 
+/// What the publisher is doing, for the connections overview ([`super::overview`]).
+pub(crate) struct PublisherView {
+    /// A publisher runs (none: MQTT off, or its settings could not start one).
+    pub running: bool,
+    pub connected: bool,
+    /// Messages the broker acknowledged since this publisher started.
+    pub delivered: u64,
+    /// The last error's code, words and when it was first seen.
+    pub last_error: Option<(String, String, u64)>,
+    pub last_used_ms: Option<u64>,
+}
+
+impl Publisher {
+    /// Looks at the counters (as `/status` does) and says what the publisher is doing.
+    pub(crate) fn view(&self, now_ms: u64) -> PublisherView {
+        self.observe(now_ms);
+        let stats = self.running().map(|m| m.stats());
+        let l = self.log().clone();
+        let last_error = match (l.last_error, l.last_error_ms) {
+            (Some(code), Some(at)) => Some((code, l.last_error_message.unwrap_or_default(), at)),
+            _ => None,
+        };
+        PublisherView {
+            running: stats.is_some(),
+            connected: stats.as_ref().is_some_and(|x| x.connected),
+            delivered: stats.as_ref().map_or(0, |x| x.delivered),
+            last_error,
+            last_used_ms: l.last_used_ms,
+        }
+    }
+}
+
 /// The ports the server listens on, for `/network` (handed over with `Builder::service`).
 #[derive(Debug, Clone, Copy)]
 pub struct Network {

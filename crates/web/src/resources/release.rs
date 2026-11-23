@@ -37,6 +37,15 @@ struct St {
     generation: u64,
 }
 
+/// The release check as the connections overview sees it ([`Checker::state`]).
+pub(crate) struct CheckState {
+    pub enabled: bool,
+    pub running: bool,
+    pub checked_ms: Option<u64>,
+    pub next_ms: Option<u64>,
+    pub error: Option<(release::ErrorCode, String)>,
+}
+
 /// The release check's state and its daily scheduler (one per server, on [`AppState::release`]).
 pub struct Checker {
     gh: GitHub,
@@ -183,6 +192,19 @@ impl Checker {
     pub fn newer(&self) -> Option<Newest> {
         let st = self.lock();
         (st.enabled && st.newer && st.error.is_none()).then(|| st.newest.clone()).flatten()
+    }
+
+    /// What the connections overview needs ([`super::overview`]): on, checking now, when it last checked and asks
+    /// next, and the last check's error (its code and words).
+    pub(crate) fn state(&self) -> CheckState {
+        let st = self.lock();
+        CheckState {
+            enabled: st.enabled,
+            running: st.running,
+            checked_ms: st.checked_ms,
+            next_ms: if st.enabled { st.next_ms } else { None },
+            error: st.error.as_ref().map(|e| (e.code, e.message.clone())),
+        }
     }
 
     /// The answer of `/release`.
