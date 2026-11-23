@@ -16,6 +16,7 @@ pub mod logs;
 pub mod mqtt;
 pub mod notices;
 pub mod now;
+pub mod overview;
 pub mod parked;
 pub mod places;
 pub mod release;
@@ -56,4 +57,5 @@ pub fn routes() -> Router<AppState> {
         .merge(teslafi::routes())
         .merge(teslamate_local::routes())
         .merge(release::routes())
+        .merge(overview::routes())
 }
