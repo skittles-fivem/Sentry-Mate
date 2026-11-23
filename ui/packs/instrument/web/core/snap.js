@@ -14,6 +14,9 @@
 // queries) always decides the layout and the snap only rounds it. It reads every size before it writes one.
 // While the router builds a page, the runs wait and one runs when it is drawn (holdSnap).
 
+// what the page is scrolled to is kept across a run (shared/dom.js holdScroll): a run puts back the sizes it gave and
+// measures them again, and Safari pulled a window scrolled to the end of the page up by a few pixels each time
+import { holdScroll } from '../shared/dom.js';
 // what a run changed: element -> { property: the inline value it had before }, so the next run can put it back
 const snapped = new Map();
 function put(e, prop, value) {
@@ -405,6 +408,7 @@ function cellLines(cells, lined) {
 const lists = () => ({ grids: [], tables: [], boxes: [], lined: [] });
 
 export function snapAll() {
+  holdScroll(document.body);
   restore();
   const l = lists();
   collect(document.body, l);
@@ -414,6 +418,7 @@ export function snapAll() {
 // Only the parts of the page in roots, after their content changed: the rest of the page is laid out as before
 // as long as each part keeps its size, so it keeps what the last run gave it (settled() below).
 function snapIn(roots) {
+  holdScroll(document.body);
   const was = roots.map((r) => sizeAt.get(r));
   restore(roots);
   const l = lists();
@@ -425,6 +430,7 @@ function snapIn(roots) {
 // Rows added under the ones a table had (the next page of a list): the table keeps its columns (fixed by the last
 // run), so only the new rows need whole heights, their cells' content centred and their lines on whole pixels.
 function snapRows(table, rows) {
+  holdScroll(document.body);
   const was = left.get(table);
   rowPass(rows);
   const lined = [];
