@@ -27,7 +27,7 @@ import * as session from './session.js';
 import { errorBlock, loadingPage } from './states.js';
 import { showPending } from './toast.js';
 import { getMe, getPrefs, isAdmin } from './prefs.js';
-import { watchLinks, warmModules, prefetchApi, pageSheet, pageSheetsOff, setStale } from '../shared/prefetch.js';
+import { watchLinks, warmModules, prefetchApi, pageSheet, pageSheetsOff, setStale, signedInHint } from '../shared/prefetch.js';
 import { resetRows } from './keys.js';
 
 let mounted = null;
@@ -52,6 +52,10 @@ export function startRouter() {
   state.subscribe((s) => queueMicrotask(() => onState(s)));
   state.startRouting();
   watchLinks(warm);
+  // the first page's module, car and first reads load while the session is checked, not after it (a signed-out
+  // browser's reads come back 401 and are forgotten; the sign-in page shows as it would)
+  const first = state.current();
+  if (first && signedInHint()) warm(first).catch(() => {});
 }
 
 // A link to s may be followed: load its page's module and style sheet, its car, and the first reads the page
@@ -329,6 +333,7 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
     ready() {
       if (!alive()) return;
       tracker?.close();
+      if (!pageInfo(id)?.bare) signedInHint(true);
       if (!warmedMain) { warmedMain = true; warmModules(MAIN.map((m) => () => pageModule(m))); }
       shownOnce = true;
       if (refreshAsked) { refreshAsked = false; setTimeout(() => ctx.refresh(), 0); }

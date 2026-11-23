@@ -223,6 +223,8 @@ Means over 6 packs x 8 pages (ms):
 | 4b + fresh answer first within 100 ms, `/me` once | 3204 | 1315 | 1078 | 289 | 507 | 652 | 495 | 145 |
 | 4c + idle warming 2 s after the first page | **2842** | 1286 | **783** | 252 | **437** | **415** | **293** | **140** |
 | all of it, rebased on origin/main `46e9d0f` | 3191 | 1351 | 1057 | 352 | 573 | 447 | 310 | 158 |
+| 6 + one whole-pixel snap per page drawn | 2857 | 1296 | 806 | 265 | 451 | 403 | 288 | 146 |
+| 7 + the first page warmed while the session is checked | 2877 | 1292 | **743** | 261 | 452 | **395** | **265** | **136** |
 
 - From the start to the end: phone cold 5.0 → 2.8 s, warm 2.2 → 0.78 s (first paint 0.44 → 0.25 s), in-app
   navigation 1.6 → 0.44 s; desktop cold 439 → 415 ms, warm 291 → 293 ms, navigation 242 → 140 ms. Warm loads now
@@ -237,8 +239,15 @@ Means over 6 packs x 8 pages (ms):
 - Tried and dropped, each measured: a static route of the service worker for `/_v/` files (warm loads fetched
   137 KiB again: a route's cache miss skips the worker's keeping), and leaving `/_v/` files to the browser's cache
   while online (warm first paint 1.0 s and 270 KiB: with a worker in place Chrome did not serve them from its cache).
-- **Not met yet:** phone warm 783 ms (target 500) and first paint 252 ms (200); desktop warm 293 ms (150) and
-  cold 415 ms (400, about at it); navigation 140 ms on the desktop (100) and 437 ms on the phone. What is left is
+- Step 6: the routers held the whole-pixel snap (`core/snap.js`) while a page was built, but let it go when the
+  page's `mount()` returned, before its data was in; every part drawn after, and every resize and font load (which
+  did not look at the hold), ran a snap of the whole page: 5 or 6 per load, 30 to 150 ms each on the slowed phone.
+  Now one, at `ready()`; maps and charts are never walked into. Step 7: the first page's module, car and first
+  reads start with the router (when a note in this browser says it was signed in), not after the session check.
+- A static route for `/_v/` files was tried once more, with the page telling the worker every file it loaded:
+  slower again (phone warm 1000 ms, cold 3935 ms), dropped.
+- **Not met yet:** phone warm 743 ms (target 500) and first paint 261 ms (200); desktop warm 265 ms (150);
+  navigation 136 ms on the desktop (100) and 452 ms on the phone. Desktop cold (395 ms) is within its 400. What is left is
   mostly the pages' own drawing (long tasks 408 ms per warm phone load) and the API round trips a warm load still
   waits for (TTU counts the last answer): the next steps would be drawing less on the first frame (`core/snap.js`'s
   whole-document passes, long lists), and not waiting on answers that are only below the fold.

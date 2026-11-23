@@ -31,7 +31,7 @@ import { errorState, statePanel, loadingPage } from './states.js';
 import { showPending } from './flash.js';
 import { getMe, getPrefs, isAdmin } from './prefs.js';
 import { holdSnap } from './snap.js';
-import { watchLinks, warmModules, prefetchApi, pageSheet, pageSheetsOff, setStale } from '../shared/prefetch.js';
+import { watchLinks, warmModules, prefetchApi, pageSheet, pageSheetsOff, setStale, signedInHint } from '../shared/prefetch.js';
 
 const BARE = new Set(['sign-in', 'setup']);
 // the main sections: their modules load when the browser is idle after the first page
@@ -58,6 +58,10 @@ export function startRouter() {
   state.subscribe((s) => queueMicrotask(() => onState(s)));
   state.startRouting();
   watchLinks(warm);
+  // the first page's module, car and first reads load while the session is checked, not after it (a signed-out
+  // browser's reads come back 401 and are forgotten; the sign-in page shows as it would)
+  const first = state.current();
+  if (first && signedInHint()) warm(first).catch(() => {});
 }
 
 // A link to s may be followed: load its page's module and style sheet, its car, and the first reads the page
@@ -340,6 +344,7 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
     ready() {
       if (!alive()) return;
       tracker?.close();
+      if (!BARE.has(id)) signedInHint(true);
       if (!warmedMain) { warmedMain = true; warmModules(MAIN.map((m) => () => pageModule(m))); }
       shownOnce = true;
       if (refreshAsked) { refreshAsked = false; setTimeout(() => ctx.refresh(), 0); }
@@ -398,7 +403,10 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
     ctx.fail(err);
   }
   if (!alive()) return;
-  requestAnimationFrame(rec.release); // (a page that never called ready())
+  // a page that never calls ready(): snapped all the same, a moment after its mount (a page that does is snapped
+  // once, at ready: its mount often returns before its data is in, and every part it draws after would otherwise
+  // start a whole-page snap of its own)
+  setTimeout(rec.release, 2000);
   if (live) { showPending(); return; }
   if (!keepScroll) {
     window.scrollTo(0, 0);

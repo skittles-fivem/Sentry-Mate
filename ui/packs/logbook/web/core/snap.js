@@ -307,13 +307,13 @@ function collect(root, into) {
     if (e.localName === 'table') { tables.push(e); return NodeFilter.FILTER_REJECT; }
     if (e.localName === 'svg' || e.localName === 'script' || e.localName === 'template') return NodeFilter.FILTER_REJECT;
     if (e.localName === 'details' && !e.open) return NodeFilter.FILTER_REJECT; // its content is not laid out
+    // a map or a chart draws its own boxes: neither it nor anything in it is looked at (nor styled, nor measured)
+    if (e.matches(NOT_BOXES)) return NodeFilter.FILTER_REJECT;
     const d = getComputedStyle(e).display;
     if (d === 'none') return NodeFilter.FILTER_REJECT;
     if (d === 'grid' || d === 'inline-grid') grids.push(e);
-    if (!e.closest(NOT_BOXES)) {
-      if (BOXES.has(d)) boxes.push(e);
-      lined.push(e);
-    }
+    if (BOXES.has(d)) boxes.push(e);
+    lined.push(e);
     return NodeFilter.FILTER_SKIP;
   };
   if (root !== document.body && accept(root) !== NodeFilter.FILTER_SKIP) return;
@@ -501,7 +501,8 @@ let restTimer = 0;
 function later() {
   if (queued) return;
   queued = true;
-  requestAnimationFrame(() => { queued = false; snapAll(); });
+  // (a resize or the fonts while a page is being built: one run, when it is drawn)
+  requestAnimationFrame(() => { queued = false; if (holds) held = true; else snapAll(); });
 }
 
 /** Starts keeping grids and tables on whole pixels: call once at start. */
@@ -514,6 +515,8 @@ export function watchTables() {
     // rows coming into and going out of a long list's window as it scrolls (shared/vlist.js, a [data-vl-body]):
     // once the scrolling rests, not every frame (the box keeps its size, so nothing outside it moves)
     const windowed = (n) => { const e = n.nodeType === 1 ? n : n.parentElement; return !!(e && e.closest('[data-vl-body]')); };
+    // a map or a chart changing inside (its markers, its canvases, its legend) changes nothing the snap looks at
+    const drawn = (n) => { const e = n.nodeType === 1 ? n : n.parentElement; return !!(e && e.closest(NOT_BOXES)); };
     let rest = false;
     // at once, in the same turn as the change: nothing can measure or paint the page in between; while the
     // router builds a page (holdSnap) once, when it is released
@@ -523,6 +526,7 @@ export function watchTables() {
     const changed = [];
     for (const m of list) {
       if (!(m.type === 'attributes' || el(m.addedNodes) || el(m.removedNodes) || inTable(m.target))) continue;
+      if (drawn(m.target)) continue;
       if (windowed(m.target)) { rest = true; continue; }
       changed.push(m);
     }

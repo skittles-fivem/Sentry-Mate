@@ -155,3 +155,17 @@ export function setStale(on) {
   if (on) el.setAttribute('data-stale', '');
   else el.removeAttribute('data-stale');
 }
+
+// A note in this browser that it was signed in at its last page (sentrymate.signed-in, nothing else: no name, no
+// token): a router warms the first page's reads at start only then, so a signed-out browser asks nothing that
+// would answer 401. Taken away on sign-out (offline.js clearServiceWorker) and by any 401.
+export const SIGNED_IN_KEY = 'sentrymate.signed-in';
+export function signedInHint(on) {
+  try {
+    const ls = globalThis.localStorage;
+    if (!ls) return false;
+    if (on === true) ls.setItem(SIGNED_IN_KEY, '1');
+    else if (on === false) ls.removeItem(SIGNED_IN_KEY);
+    return ls.getItem(SIGNED_IN_KEY) === '1';
+  } catch { return false; }
+}

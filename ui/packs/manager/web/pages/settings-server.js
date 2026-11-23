@@ -6,8 +6,9 @@
 // links to the item it changed), where the certificate (its names: Change names), the recovery key and
 // backups stand, the move to another server (a move code or an export file:
 // pages/settings-server-move.js) with Storage beside it: the space on disk by kind and what compaction saved
-// (GET /system/storage/detail), with "Compact now" (POST /system/storage/compact; while a pass runs the detail
-// is read again every 2 s), and the full rebuild of every car with its automatic run on a new server
+// (GET /system/storage/detail), with "Compact now" (POST /system/storage/compact; a pass's progress follows
+// `job` events of kind compaction and `storage` events: live events, polling only while the live stream is
+// down), and the full rebuild of every car with its automatic run on a new server
 // version (pages/full-rebuild.js). Changes are saved through the API with the object's version; a short note
 // confirms each one.
 
@@ -32,6 +33,8 @@ import { serverUpdates, RELEASE_OFF_TEXT } from '../shared/release.js';
 import { cover } from '../shared/dom.js';
 import { movePanel, showRecoveryKey, newRecoveryKey, markKeySaved, askPassword } from './settings-server-move.js';
 import { fullRebuild } from './full-rebuild.js';
+import { follow, jobOf } from '../shared/live.js';
+import { morphChildren } from '../core/morph.js';
 
 export const id = 'settings-server';
 export const css = true;
@@ -103,7 +106,6 @@ export async function mount(ctx) {
       admin ? ctx.api.list('trips', { limit: 500 }).all({ max: 5000 }).then((t) => { S.trips = t; }).catch(() => {}) : null,
       ctx.api.get('about', null, { maxAgeMs: 600000 }).then((a) => { S.about = a; }).catch(() => {}),
       ctx.api.get('release').then((r) => { S.release = r; }).catch(() => {}),
-      admin ? ctx.api.get('system/storage/detail').then((d) => { S.storage = d; }).catch((e) => { S.storageErr = e; }) : null,
     ]);
     Object.assign(S, { settings, network, notices: notices?.items || [], cars });
   } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }
@@ -578,8 +580,10 @@ export async function mount(ctx) {
   // A compact panel: one row of figures (on disk, free, saved by compaction, the last pass) and Compact now, then
   // the space by kind (shared/storage.js): one row per group with its size, a bar and its share; a group opens to
   // its categories by short name, at most five rows tall (the CSV has every category with the server's own
-  // label). "Compact now" starts a pass; while one runs (also one the server started by itself) the detail is read
-  // again every 2 s for its progress, and when it ends the groups are drawn again and a note says what was freed.
+  // label). "Compact now" starts a pass; while one runs (also one the server started by itself) its progress comes
+  // as `job` events of kind compaction (and the free space as `storage` events), changed in place; the detail is
+  // read at the start, after a reconnect, when a pass ends (the groups are drawn again and a note says what was
+  // freed) and, only while the live stream is down, every 2 s while a pass runs (30 s otherwise).
   const compactBtn = h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: () => compactNow() }, icon('reset', 'ico--sm'), 'Compact now');
   const storFigs = h('dl', { class: 'st-figs' });
   const storList = h('ul', { class: 'st-groups', 'aria-label': 'Space on disk by kind' });
@@ -613,7 +617,12 @@ export async function mount(ctx) {
   const storagePanel = admin ? panel({ title: 'Storage', icon: 'server', pad: true, cls: 'st', id: 'storage', side: h('span', { class: 'row st-side' }, storCsv, compactBtn) },
     storFigs, storLine, storList) : null;
   const fig = (label, value, title = null) => h('div', { class: 'st-fig', title }, h('dt', null, label), h('dd', null, value));
-  function paintGroups() {
+  let groupsSig = null;
+  function paintGroups(force = true) {
+    // a read of the detail that did not change the categories leaves the list as it is (opened groups, scroll)
+    const sig = JSON.stringify(S.storage?.categories || null) + (S.storageErr ? errText(S.storageErr) : '');
+    if (!force && sig === groupsSig) return;
+    groupsSig = sig;
     const groups = storageGroups(S.storage?.categories);
     if (!storOpenSet && groups.length) { storOpen.add(groups[0].group); storOpenSet = true; }  // the largest, open at first
     if (!groups.length) {
@@ -635,8 +644,7 @@ export async function mount(ctx) {
       return h('li', { class: ['st-group', open && 'is-open'] }, head, rows);
     }));
   }
-  let storTimer = null, storPollErr = null;
-  ctx.onCleanup(() => clearTimeout(storTimer));
+  let storPollErr = null;
   function paintStorage() {
     const d = S.storage;
     const c = d?.compaction || null;
@@ -644,20 +652,23 @@ export async function mount(ctx) {
     compactBtn.disabled = running || !c;
     const last = !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'Nothing left to pack';
     const num = (v) => (v == null ? DASH : bytes(v));
-    replace(storFigs,
+    morphChildren(storFigs, [
       fig('On disk', num(d?.total_disk_bytes), 'Everything below, as it lies on disk.'),
       fig('Free', num(d?.free_bytes), 'Room left on the disk for new data.'),
       fig('Saved', num(c?.saved_bytes), 'What compaction has freed in all.'),
-      fig('Last pass', last, c?.finished_ms != null ? `Finished ${dateTime(c.finished_ms, tz)} (${zone}).` : 'No pass has finished yet.'));
+      fig('Last pass', last, c?.finished_ms != null ? `Finished ${dateTime(c.finished_ms, tz)} (${zone}).` : 'No pass has finished yet.')]);
     const p = compactionProgress(c, { now: ctx.api.now?.() ?? Date.now(), bytes });
-    storLine.classList.toggle('is-running', running);
-    storLine.classList.toggle('is-bad', !running && c?.status === 'failed');
+    if (storLine.classList.contains('is-running') !== running) storLine.classList.toggle('is-running', running);
+    const bad = !running && c?.status === 'failed';
+    if (storLine.classList.contains('is-bad') !== bad) storLine.classList.toggle('is-bad', bad);
     if (running) {
       lead('run');
       say(prog.head, [p.stepOf, p.step].filter(Boolean).join(' · ') || 'Packing…');
-      prog.bar.classList.toggle('is-counting', p.counting);
-      setVars(prog.bar, { '--w': p.pct == null ? '0%' : `${p.pct.toFixed(1)}%` });
-      if (p.pct == null) prog.bar.removeAttribute('aria-valuenow'); else prog.bar.setAttribute('aria-valuenow', String(Math.round(p.pct)));
+      if (prog.bar.classList.contains('is-counting') !== !!p.counting) prog.bar.classList.toggle('is-counting', !!p.counting);
+      const w = p.pct == null ? '0%' : `${p.pct.toFixed(1)}%`;
+      if (prog.bar.style.getPropertyValue('--w') !== w) setVars(prog.bar, { '--w': w });
+      const now = p.pct == null ? null : String(Math.round(p.pct));
+      if (prog.bar.getAttribute('aria-valuenow') !== now) { if (now == null) prog.bar.removeAttribute('aria-valuenow'); else prog.bar.setAttribute('aria-valuenow', now); }
       say(prog.count, p.count);
       say(prog.info, [p.saved, p.rate, p.stalled ? null : p.eta, p.last].filter(Boolean).join(' · '));
       // the stall warning takes the estimate's place; the units left as they were, and a progress read that
@@ -665,7 +676,7 @@ export async function mount(ctx) {
       say(prog.err, [p.stall, p.errors, storPollErr ? `Could not read the progress just now: ${errText(storPollErr)}` : null].filter(Boolean).join(' '));
     } else {
       lead(c?.status === 'failed' ? 'bad' : 'idle');
-      if (c?.status === 'failed') replace(prog.head, h('b', null, 'The last pass failed: '), c.error || 'the server gave no reason.');
+      if (c?.status === 'failed') morphChildren(prog.head, [h('b', null, 'The last pass failed: '), c.error || 'the server gave no reason.']);
       else say(prog.head, !c ? 'The server did not say how compaction stands.'
         : c.automatic ? 'Compaction runs by itself when the server is idle; Compact now starts a pass at once.'
           : 'Compaction does not run by itself on this server; Compact now starts a pass.');
@@ -673,26 +684,51 @@ export async function mount(ctx) {
       say(prog.count, ''); say(prog.info, ''); say(prog.err, '');
     }
   }
-  function scheduleStorage() {
-    clearTimeout(storTimer);
-    if (S.storage?.compaction?.status === 'running') storTimer = setTimeout(pollStorage, 2000);
+  // the pass's state: from a read of the detail, a `job` event (its compaction object) or a `storage` event
+  let storRunning = false;
+  function takeCompaction(c, how) {
+    const ended = storRunning && c?.status !== 'running';
+    storRunning = c?.status === 'running';
+    paintStorage();
+    if (!ended) return;
+    const endNote = () => {
+      if (!ctx.alive()) return;
+      if (c?.status === 'failed') flash(`Compaction failed: ${c.error || 'the server gave no reason.'}`, { kind: 'error' });
+      else flash(c?.last_saved_bytes ? `Compaction is done: ${bytes(c.last_saved_bytes)} freed on disk.` : 'Compaction is done: nothing was left to pack.');
+    };
+    // what it freed changed the sizes: the detail is read again for them (not sent on the stream), then the note
+    if (how === 'event' && storLive) storLive.refresh().then(endNote, endNote);
+    else endNote();
   }
-  async function pollStorage() {
-    try {
-      const d = await ctx.api.get('system/storage/detail');
-      if (!ctx.alive()) return;
-      S.storage = d; storPollErr = null;
-      const c = d.compaction || {};
-      if (c.status !== 'running') {
-        paintGroups();
-        if (c.status === 'failed') flash(`Compaction failed: ${c.error || 'the server gave no reason.'}`, { kind: 'error' });
-        else flash(c.last_saved_bytes ? `Compaction is done: ${bytes(c.last_saved_bytes)} freed on disk.` : 'Compaction is done: nothing was left to pack.');
-      }
-    } catch (e) {
-      if (!ctx.alive()) return;
-      storPollErr = e;
-    }
-    paintStorage(); scheduleStorage();
+  let storLive = null;
+  let storFirst = null;
+  const storReady = admin ? new Promise((res) => { storFirst = res; }) : null;
+  if (storagePanel) {
+    storLive = follow(ctx.api, {
+      type: 'job', match: jobOf('compaction'), pick: (d) => d.status,
+      load: () => ctx.api.get('system/storage/detail'),
+      pollMs: () => (S.storage?.compaction?.status === 'running' ? 2000 : 30000),
+      onValue: (v, how) => {
+        if (!ctx.alive()) return;
+        if (how === 'load') { S.storage = v; S.storageErr = null; storPollErr = null; paintGroups(false); } else S.storage = { ...(S.storage || {}), compaction: v };
+        takeCompaction(S.storage?.compaction, how);
+        storFirst();
+      },
+      onError: (e) => {
+        if (!ctx.alive()) return;
+        if (S.storage) storPollErr = e; else { S.storageErr = e; paintGroups(false); }
+        paintStorage(); storFirst();
+      },
+    });
+    // the free space and the pass's state also come with the server's storage figures (no categories)
+    follow(ctx.api, {
+      type: 'storage',
+      onValue: (d) => {
+        if (!ctx.alive() || !d) return;
+        S.storage = { ...(S.storage || {}), free_bytes: d.free_bytes ?? S.storage?.free_bytes ?? null, compaction: d.compaction || S.storage?.compaction || null };
+        takeCompaction(S.storage.compaction, 'event');
+      },
+    });
   }
   async function compactNow() {
     compactBtn.disabled = true;
@@ -705,9 +741,11 @@ export async function mount(ctx) {
       if (!ctx.alive()) return;
       flash(`Could not start compaction: ${errText(e)}`, { kind: 'error' });
     }
-    paintStorage(); scheduleStorage();
+    takeCompaction(S.storage?.compaction, 'post');
+    // with the live stream down, the fallback reads start now (2 s apart while the pass runs)
+    if (storLive && !storLive.live) storLive.refresh();
   }
-  if (storagePanel) { paintGroups(); paintStorage(); scheduleStorage(); }
+  if (storagePanel) { paintGroups(); paintStorage(); }
 
   /* ---------------------------------------------------------------- moving to another server (admin) */
   const move = admin ? movePanel(ctx, { tz, zone: zoneText }) : null;
@@ -854,6 +892,7 @@ export async function mount(ctx) {
   if (auditTable) await auditTable.ready;
   if (move) await move.ready;
   if (full) await full.ready;
+  if (storReady) await storReady;
   if (!ctx.alive()) return;
   ctx.ready();
 }

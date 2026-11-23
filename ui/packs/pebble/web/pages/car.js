@@ -9,7 +9,8 @@
 // not on the CAN bus). What no CAN message carries (lock, windows, sunroof, the route, the software version and a
 // waiting update, the charge schedule) comes from now.off_can, the Tesla API's or TeslaFi's newest reading: each
 // with its input's mark, and Stale once it is past its age limit; a value no input has is a dash.
-// Live: `now` events update the tiles in place.
+// Live: `now` events update the tiles in place; `rows` events of the car (once a burst has passed) read the last
+// drive and charge, the strip and the period's summary again, written in place.
 //
 // Data: GET /api/v1/cars/{car}/now, /activity, /series (battery), /trip (the period's summary), /drives and
 // /charges (the latest of each, and the period's charges with their /curve), /settings (outside map links).
@@ -35,6 +36,8 @@ import { srcPill, viaMark, inputsLine } from '../core/source.js';
 const put = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false && k !== ''));
 import { vehicleTiles } from './vehicle-parts.js';
 import { historyHref, VERSION_SOURCE } from '../core/firmware.js';
+import { onRows } from '../shared/live.js';
+import { morph } from '../core/morph.js';
 
 // the door placard's pressure for a wheel size that is only a guess: say so, and (for an admin) link to where the
 // size is typed
@@ -101,7 +104,9 @@ export async function mount(ctx) {
   // Every call starts at once and each tile paints when its own answer is in; a grey tile of its size keeps its
   // room until then, so the live tiles show while the period's strip and charts are still on their way.
   const [nowP, ...rest] = firstReads(ctx);
-  const [actP, seriesP, tripP, lastDriveP, lastChargeP, settingsP] = rest.map(keep);
+  const [actP0, seriesP, tripP0, lastDriveP0, lastChargeP0, settingsP] = rest.map(keep);
+  // (the activity, trip and last drive and charge are read again in place when the car's rows change)
+  let actP = actP0, tripP = tripP0, lastDriveP = lastDriveP0, lastChargeP = lastChargeP0;
   let now = {};
   const refresh = btn('Refresh', { kind: 'soft', icon: 'refresh', iconOnly: true, cover: 'overview.control.refresh', onclick: () => ctx.reload() });
   ctx.head({ actions: [refresh] });
@@ -297,7 +302,9 @@ export async function mount(ctx) {
       h('a', { class: 'tile-link', href: `${state.buildUrl('software', { car: car.id })}#firmware` }, 'Car firmware'),
       h('a', { class: 'tile-link', href: historyHref(car.id) }, 'Module firmware history'));
   }
-  const driveS = ghostTile(1, 'h1'), chargeS = ghostTile(1, 'h1');
+  // the tiles on the page (grey ones until the first answer): a later answer is written into them in place
+  let driveS = ghostTile(1, 'h1'), chargeS = ghostTile(1, 'h1');
+  const put1 = (el, next) => (el.classList.contains('tile-ghost') || el.nodeName !== next.nodeName ? (el.replaceWith(next), next) : morph(el, next));
   const paintLast = async () => {
     const [lastDrive, lastCharge] = await Promise.all([lastDriveP, lastChargeP]);
     if (!ctx.alive()) return;
@@ -313,7 +320,7 @@ export async function mount(ctx) {
       h('p', { class: 'tile-line' }, `${format(c0.start_soc_pct, 'percent')} to ${format(c0.end_soc_pct, 'percent')}, ${c0.place ? c0.place.name : c0.address?.short || 'unnamed spot'}`),
       h('p', { class: 'tile-line' }, formatWhen(c0.start_ms, tz, api.now())))
       : tile({ w: 1, title: 'Last charge', icon: 'bolt', cls: 'tile-stat' }, note(lastCharge.error ? 'Charges did not load.' : 'No charge recorded yet.'));
-    driveS.replaceWith(tDrive); chargeS.replaceWith(tLastC);
+    driveS = put1(driveS, tDrive); chargeS = put1(chargeS, tLastC);
   };
   const tData = tile({ w: 1, title: 'Data', icon: 'pulse', cls: 'tile-stat', cover: ['summary.data.live_push', 'summary.data.restored_values', 'nr.dash.last-update', 'summary.data.prefs_snapshot'] });
   function drawData() {
@@ -331,18 +338,18 @@ export async function mount(ctx) {
   const tStrip = tile({ w: 'full', title: 'What it did', icon: 'timeline', side: periodBtn, cls: 'strip-tile', cover: ['overview.chart.states', 'overview.filter.car'] });
   const stripGhost = h('div', { class: 'strip-ghost', 'aria-hidden': 'true' });
   tStrip.append(stripGhost);
+  let stripParts = null;   // what the strip tile shows under its head
   const paintStrip = async () => {
     const act = await actP;
     if (!ctx.alive()) return;
     stripGhost.remove();
-    if (act.error) tStrip.append(note('The activity did not load.'));
-    else {
-      tStrip.append(strip(act, { tz, link: (s) => (s.ref?.drive ? state.buildUrl('drive', { car: car.id, drive: s.ref.drive }) : s.ref?.charge ? state.buildUrl('charge', { car: car.id, charge: s.ref.charge }) : null) }),
+    const parts = act.error ? [note('The activity did not load.')] : [strip(act, { tz, link: (s) => (s.ref?.drive ? state.buildUrl('drive', { car: car.id, drive: s.ref.drive }) : s.ref?.charge ? state.buildUrl('charge', { car: car.id, charge: s.ref.charge }) : null) }),
         h('p', { class: 'note' }, stripShares(act).slice(0, 4).map(([k, ms]) => `${({ driving: 'Driving', charging: 'Charging', online: 'Awake', online_vehicle_bus_only: 'Bus awake', asleep: 'Asleep', unknown: 'No data', updating: 'Updating' })[k] || k} ${dur(ms)}`).join(' · ')),
-        h('a', { class: 'tile-link', href: state.buildUrl('timeline', { car: car.id, period: ctx.state.period }), cover: 'overview.link.states' }, 'Open the timeline'));
-    }
+        h('a', { class: 'tile-link', href: state.buildUrl('timeline', { car: car.id, period: ctx.state.period }), cover: 'overview.link.states' }, 'Open the timeline')];
+    if (stripParts && stripParts.length === parts.length) stripParts = stripParts.map((el, i) => morph(el, parts[i]));
+    else { for (const el of stripParts || []) el.remove(); tStrip.append(...parts); stripParts = parts; }
   };
-  const sumS = ghostTile(2, 'h1');
+  let sumS = ghostTile(2, 'h1');
   const paintSum = async () => {
     const trip = await tripP;
     if (!ctx.alive()) return;
@@ -353,7 +360,7 @@ export async function mount(ctx) {
           h('div', null, h('span', { class: 'hero-k' }, 'Driving use'), num(trip.wh_per_km?.net, 'efficiency', { why: 'no drive' })),
           h('div', null, h('span', { class: 'hero-k' }, 'With parked use'), num(trip.wh_per_km?.gross, 'efficiency', { why: 'no drive' }))),
         note('Driving use counts only the drives; with parked use adds what the car used while parked.'));
-    sumS.replaceWith(tSum);
+    sumS = put1(sumS, tSum);
   };
 
   const tBatt = tile({ w: 2, title: 'Battery', icon: 'battery', cls: 'chart-tile', side: h('a', { class: 'tile-link', href: state.buildUrl('battery', { car: car.id, period: ctx.state.period }), cover: 'overview.link.charge_level' }, 'Battery page'),
@@ -433,6 +440,15 @@ export async function mount(ctx) {
   await Promise.all([paintNow(), paintLast(), paintStrip(), paintSum(), paintBattery(), drawCharging(ctx, tChart, sync)]);
   if (!ctx.alive()) return {};
   ctx.ready();
+  // a drive, charge or parked spell of the car started or ended: the period's parts read again, in place
+  onRows(ctx.api, { car: car.id, waitMs: 1500, run: () => {
+    if (!ctx.alive()) return;
+    actP = keep(ctx.api.get(api.apiPath`cars/${car.id}/activity`, P));
+    tripP = keep(ctx.api.get(api.apiPath`cars/${car.id}/trip`, P));
+    lastDriveP = keep(ctx.api.page(api.apiPath`cars/${car.id}/drives`, {}, { limit: 1 }));
+    lastChargeP = keep(ctx.api.page(api.apiPath`cars/${car.id}/charges`, {}, { limit: 1 }));
+    Promise.all([paintLast(), paintStrip(), paintSum()]).catch(() => {});
+  } });
   return {};
 }
 

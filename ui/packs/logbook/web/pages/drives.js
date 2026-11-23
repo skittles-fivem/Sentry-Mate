@@ -22,6 +22,7 @@ import { confirmDialog, popover } from '../core/dialog.js';
 import { choice } from '../core/form.js';
 import { placeLink, endLabel } from '../core/journal.js';
 import { SOURCE_FILTER, sourceFilter, SOURCE_WHY, isEstimated, rowTitle } from '../core/sources.js';
+import { onRows } from '../shared/live.js';
 
 export const id = 'drives';
 export const css = true;
@@ -198,12 +199,13 @@ export async function mount(ctx) {
 
   let pager = null, items = [], tracks = new Map(), sideMap = null, gen = 0;
   const picked = new Map();
-  async function loadList() {
+  // quiet: a live reload (the list stays as it is until the new one is in)
+  async function loadList(quiet = false) {
     const my = ++gen;
     pager = listPager(ctx, listParams());
     items = [];
     picked.clear();
-    replace(listBox, loadingBlock(6));
+    if (!quiet) replace(listBox, loadingBlock(6));
     replace(more);
     csv.setAttribute('href', ctx.api.csvUrl(api.apiPath`cars/${car.id}/drives`, listParams()));
     await more1(true, my);
@@ -401,6 +403,8 @@ export async function mount(ctx) {
   spanText();
   await Promise.all([loadList(), drawPatterns(ctx, patternsBody, f.exclude), drawMissing(ctx, missing)]);
   ctx.ready();
+  // a drive of the car started or ended (once a burst of `rows` has passed): the list loaded again in place
+  onRows(ctx.api, { car: car.id, waitMs: 2000, run: () => { if (ctx.alive()) loadList(true).catch(() => {}); } });
   return {
     async update(c, why) {
       if (why && why.prefs) {

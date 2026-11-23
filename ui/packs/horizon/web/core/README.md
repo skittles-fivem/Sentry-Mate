@@ -262,6 +262,7 @@ its field (`path` is the API's field path, `units.distance`) and the rest in the
 | `emptyState({ icon, title, text, action, warn })` | Empty: always say exactly why it is empty and how to change that. |
 | `errorState(err, { retry, home, compact })`, `errorWords(err)`, `statePanel(child)` | Errors: the cause in words and a way out. Prefer `ctx.fail(err)` for a page that cannot load. |
 | `core/flash.js` `flash(text, { kind: 'ok' \| 'info' \| 'error', next })` | A short note after an action. `next: true` shows it on the page you navigate to. |
+| `core/morph.js` `morphChildren(slot, nodes)`, `morph(el, to)`, `keepEl(el, name)` | Live figures in place: build the part again from new data and only the texts and attributes that changed are written (nothing moves). With `shared/live.js` `follow()`: live events, polling only while the live stream is down. |
 | `core/dialog.js` `openDialog({ title, body, actions })`, `confirmDialog(text, { danger, ok })` | Native `<dialog>`: focus moves in and back, Esc closes. |
 
 ### Formatting: `core/fmt.js` (on `shared/units.js` and `shared/time.js`)
