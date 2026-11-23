@@ -170,7 +170,7 @@ fn kit() -> Kit {
     let v = Arc::new(v);
     let store = Store::with_limits(data.join("can"), v.clone(), 0, 200_000, |_| u64::MAX);
     let db = db::Db::open(&data, v, db::Options::default()).unwrap();
-    let opts = Options { workers: 2, api_rebuild_ms: 0, ..Options::default() };
+    let opts = Options { workers: 2, api_rebuild_ms: 0, rebuild_settle_ms: 200, ..Options::default() };
     let engine = Engine::new(db.clone(), store.clone(), opts);
     let judge = Judge::new(store.clone()).on_judged(engine.listener());
     engine.start().unwrap();
@@ -1233,6 +1233,226 @@ fn a_cars_own_layout_of_the_screenmates_gps_frame_is_used_after_a_rebuild() {
         let after = lons(&k);
         assert!(!after.is_empty() && after.iter().all(|l| (l - LON).abs() < 0.5), "{after:?}");
         assert!(k.engine.set_gps_layout(car, Some(layout)).unwrap().is_none(), "the same layout again: nothing to do");
+    });
+}
+
+/// Minute `i` of the trip with its GPS frames on the Screenmate's internal bus (can3), its longitude 2^24 steps low.
+async fn send_internal_gps(k: &Kit, i: u64, trip: Trip) {
+    let (name, log, _) = smo_minute_shifted(i, trip, -16.777216);
+    let text = String::from_utf8(lzma_decompress(&log)).unwrap().replace(" can1 04F#", " can3 04F#");
+    let mut xz = Vec::new();
+    lzma_rs::xz_compress(&mut text.as_bytes(), &mut xz).unwrap();
+    let start = T0 + i * 60_000;
+    let side = serde_json::json!({
+        "format": "canbridge-candump-xz/1", "start_wall_ms": start, "end_wall_ms": start + 60_000,
+        "closed_because": "rotate",
+        "bus": { "can0": "vehicle", "can1": "chassis", "can3": "screenmate-internal" },
+    });
+    upload(k, &name, &xz).await;
+    upload(k, &format!("{name}.json"), &serde_json::to_vec(&side).unwrap()).await;
+}
+
+/// Saves the car's source order (as its settings page does).
+fn set_order(k: &Kit, car: u32, order: &[&str]) {
+    let now = serde_json::to_value(query::fleet::car_settings(&k.engine, car).unwrap()).unwrap();
+    let mut body = serde_json::Map::new();
+    body.insert("version".into(), now["version"].clone());
+    body.insert("source_order".into(), serde_json::json!(order));
+    query::fleet::patch_settings(&k.engine, car, &body).unwrap();
+}
+
+/// Waits for a rebuild job to end.
+async fn job_done(k: &Kit, id: u64) -> engine::Job {
+    for _ in 0..3000 {
+        k.engine.idle().await;
+        let j = k.engine.job(id).unwrap();
+        if j.status != engine::JobStatus::Running {
+            return j;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the job did not end");
+}
+
+/// Everything a car's history reads as, for comparing two builds of it: its drives and charges whole (positions,
+/// distances, energies, sources, ids), its states, and the SMO samples stored.
+fn history(k: &Kit, car: u32) -> serde_json::Value {
+    let ds = query::drives::drives(&k.engine, car, &Default::default(), &Paging::default()).unwrap().body.items;
+    let tracks: Vec<serde_json::Value> = ds
+        .iter()
+        .map(|d| serde_json::to_value(query::drives::track(&k.engine, car, d.id.parse().unwrap()).unwrap()).unwrap())
+        .collect();
+    let cs = query::charges::charges(&k.engine, &[car], &Default::default(), &Paging::default()).unwrap().items;
+    let states = query::timeline::states(&k.engine, car, &Period::all(), &Paging::first(500)).unwrap().body.items;
+    let smo = k.db.read_points::<Sample>(car, model::Stream::Smo, 0, u64::MAX).unwrap();
+    serde_json::json!({
+        "drives": serde_json::to_value(&ds).unwrap(),
+        "tracks": tracks,
+        "charges": serde_json::to_value(&cs).unwrap(),
+        "states": serde_json::to_value(&states).unwrap(),
+        "smo": serde_json::to_value(&smo).unwrap(),
+    })
+}
+
+/// A history without the rows' ids (and what points at them), to compare two builds whose ids may differ.
+fn without_ids(mut v: serde_json::Value) -> serde_json::Value {
+    fn strip(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(m) => {
+                for k in ["id", "drive", "charge"] {
+                    m.remove(k);
+                }
+                m.values_mut().for_each(strip);
+            }
+            serde_json::Value::Array(a) => a.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    strip(&mut v);
+    v
+}
+
+/// A GPS layout change reads the positions again of only the logs whose positions came from the Screenmate's own
+/// GPS frames: the other logs are not decoded again, and the history comes out exactly as a whole rebuild of the
+/// car makes it.
+#[test]
+fn a_gps_layout_change_rebuilds_positions_only() {
+    rt().block_on(async {
+        let k = kit();
+        let trip = Trip { a: 70, b: 250 };
+        // two minutes with the car's own GPS frames (chassis bus), three with the Screenmate's (internal bus)
+        for i in 0..2 {
+            send_smo(&k, i, trip).await;
+        }
+        for i in 2..5 {
+            send_internal_gps(&k, i, trip).await;
+        }
+        k.engine.idle().await;
+        let car = k.db.car_for_key(KEY).unwrap().unwrap();
+        let decoded = k.engine.stats().logs_decoded;
+        assert_eq!(decoded, 5);
+
+        let layout: model::gps::GpsLayout = "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)".parse().unwrap();
+        let job = k.engine.set_gps_layout(car, Some(layout)).unwrap().unwrap();
+        assert_eq!((job.kind.as_str(), job.causes[0].code.as_str()), ("positions", "gps_layout"), "{job:?}");
+        let done = job_done(&k, job.id).await;
+        assert_eq!(done.status, engine::JobStatus::Done, "{done:?}");
+        assert_eq!((done.done, done.total), (3, 3), "only the three logs with the Screenmate's GPS: {done:?}");
+        assert_eq!(k.engine.stats().logs_decoded - decoded, 3, "the other two were not decoded again");
+        assert!(!k.engine.rebuild_pending(car));
+        let narrow = history(&k, car);
+        let lons: Vec<f64> = narrow["smo"].as_array().unwrap().iter().filter_map(|p| p["lon"].as_f64()).collect();
+        assert!(!lons.is_empty() && lons.iter().all(|l| (l - LON).abs() < 0.5), "{lons:?}");
+
+        // the same as a whole rebuild of the car makes it
+        let whole = k.engine.rebuild(engine::Scope::car(car)).unwrap();
+        assert_eq!(job_done(&k, whole.id).await.done, 5);
+        assert_eq!(history(&k, car), narrow, "the narrow rebuild gives the whole rebuild's history");
+
+        // a second change: the logs are known now, none is read just to tell
+        let decoded = k.engine.stats().logs_decoded;
+        let job = k.engine.set_gps_layout(car, None).unwrap().unwrap();
+        assert_eq!(job_done(&k, job.id).await.done, 3);
+        assert_eq!(k.engine.stats().logs_decoded - decoded, 3);
+        let runs = k.engine.rebuild_history().unwrap();
+        assert_eq!(runs.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(), ["positions", "car", "positions"]);
+        assert_eq!(runs[0].causes[0].code, "gps_layout");
+    });
+}
+
+/// Saves in a row (a GPS layout set three times, the car's source order twice) are one rebuild of the car, and the
+/// same setting saved again while that one runs is one more after it, never one per save.
+#[test]
+fn repeated_settings_saves_give_one_coalesced_rebuild() {
+    rt().block_on(async {
+        let k = kit();
+        let trip = Trip { a: 70, b: 250 };
+        for i in 0..3 {
+            send_internal_gps(&k, i, trip).await;
+        }
+        k.engine.idle().await;
+        let car = k.db.car_for_key(KEY).unwrap().unwrap();
+        let before = k.engine.jobs().len();
+        let a: model::gps::GpsLayout = "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)".parse().unwrap();
+        let b: model::gps::GpsLayout = "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.0)".parse().unwrap();
+        let mut ids = Vec::new();
+        for l in [a, b, a] {
+            ids.push(k.engine.set_gps_layout(car, Some(l)).unwrap().unwrap().id);
+        }
+        for order in [
+            ["tesla_api", "smo", "teslafi_api", "teslamate_local"],
+            ["smo", "tesla_api", "teslafi_api", "teslamate_local"],
+        ] {
+            set_order(&k, car, &order);
+        }
+        assert!(ids.iter().all(|i| *i == ids[0]), "one job takes every save: {ids:?}");
+        let jobs = k.engine.jobs();
+        assert_eq!(jobs.len(), before + 1, "{jobs:#?}");
+        assert!(jobs[0].waiting, "it waits for the saves to settle: {:?}", jobs[0]);
+        assert_eq!(jobs[0].kind, "positions+inputs");
+        let codes: Vec<&str> = jobs[0].causes.iter().map(|c| c.code.as_str()).collect();
+        assert_eq!(codes, ["gps_layout", "source_order"]);
+        let done = job_done(&k, ids[0]).await;
+        assert_eq!(done.status, engine::JobStatus::Done, "{done:?}");
+        assert_eq!(done.done, 3);
+        let runs = k.engine.rebuild_history().unwrap();
+        assert_eq!(runs.len(), 1, "one rebuild in the history: {runs:#?}");
+
+        // while one runs, saves wait and are one job after it
+        let whole = k.engine.rebuild(engine::Scope::car(car)).unwrap();
+        let mut later = Vec::new();
+        for l in [b, a, b] {
+            later.push(k.engine.set_gps_layout(car, Some(l)).unwrap().unwrap().id);
+        }
+        assert!(later.iter().all(|i| *i == later[0]), "{later:?}");
+        job_done(&k, whole.id).await;
+        job_done(&k, later[0]).await;
+        assert!(k.engine.jobs().len() <= before + 3, "{:#?}", k.engine.jobs());
+        assert_eq!(k.engine.gps_layout(car).unwrap(), Some(b));
+    });
+}
+
+/// A source order change joins the car's inputs again without decoding a log: the history comes out exactly as a
+/// whole rebuild of the car makes it.
+#[test]
+fn a_source_order_change_joins_the_inputs_again_as_a_whole_rebuild_would() {
+    rt().block_on(async {
+        let k = kit();
+        let trip = Trip { a: 60, b: 1260 };
+        for i in 0..5 {
+            send_smo(&k, i, trip).await;
+        }
+        k.engine.idle().await;
+        let car = k.db.car_for_key(KEY).unwrap().unwrap();
+        k.engine.api_points(car, api_readings(0, 720, 30, trip), vec![online(0, 720)]);
+        let mut fi = api_readings(0, 1800, 60, trip);
+        for s in &mut fi {
+            s.speed_kmh = s.speed_kmh.map(|_| 40.0);
+        }
+        k.engine.feed_points(Input::TeslafiApi, car, fi, vec![online(0, 1800)]);
+        k.engine.idle().await;
+        let decoded = k.engine.stats().logs_decoded;
+        let ids_before: Vec<String> = drives(&k, car).into_iter().map(|d| d.id).collect();
+        set_order(&k, car, &["teslafi_api", "tesla_api", "smo", "teslamate_local"]);
+        let job = k.engine.jobs()[0].clone();
+        assert_eq!((job.kind.as_str(), job.causes[0].code.as_str()), ("inputs", "source_order"));
+        let done = job_done(&k, job.id).await;
+        assert_eq!(done.status, engine::JobStatus::Done, "{done:?}");
+        assert_eq!(k.engine.stats().logs_decoded, decoded, "no log decoded again");
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+        let narrow = history(&k, car);
+        assert_eq!(
+            drives(&k, car).into_iter().map(|d| d.id).collect::<Vec<_>>(),
+            ids_before,
+            "the drives keep their ids"
+        );
+
+        let whole = k.engine.rebuild(engine::Scope::car(car)).unwrap();
+        job_done(&k, whole.id).await;
+        assert_eq!(k.engine.stats().logs_decoded, decoded + 5);
+        // the same history; only a drive's id can differ: the narrow rebuild keeps the one the drive had (so what
+        // points at it stays with it), a whole rebuild makes it again from the first piece of the drive it builds
+        assert_eq!(without_ids(history(&k, car)), without_ids(narrow), "the whole rebuild's history");
     });
 }
 

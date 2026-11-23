@@ -278,6 +278,7 @@ class Contract(ServerCase):
             ("POST", "/api/v1/cars/{car}/gps-layout/fit", lambda: (None, {"days": 30}, None)),
             ("POST", "/api/v1/system/storage/compact", lambda: (None, None, None)),
             ("POST", "/api/v1/cars/{car}/full-rebuild", lambda: (None, {"confirm_password": "sentry-mate-dev"}, None)),
+            ("PATCH", "/api/v1/system/full-rebuild", lambda: (None, {"when": "pause"}, None)),
             ("DELETE", "/api/v1/system/full-rebuild", lambda: (None, {}, None)),
             ("POST", "/api/v1/system/full-rebuild", lambda: (None, {"confirm_password": "sentry-mate-dev"}, None)),
             ("PATCH", "/api/v1/cars/{car}/overlaps",

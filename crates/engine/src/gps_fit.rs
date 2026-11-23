@@ -880,7 +880,8 @@ impl Engine {
     /// is (`rebuild 34 %`).
     pub fn busy_words(&self) -> Option<String> {
         let r = self.full_rebuild_status().ok().flatten()?;
-        if !r.running() {
+        // one waiting (its grace, tonight) or paused takes nothing yet
+        if !r.running() || r.held(now_ms()) {
             return None;
         }
         let pct = |d: u64, t: u64| (t > 0).then(|| (d.min(t) * 100 / t) as u32);
