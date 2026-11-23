@@ -92,7 +92,8 @@ const KIND_TEXT = {
   geocode: 'Addresses already looked up, so each is looked up once.',
 };
 const VERSION_SOURCE = {
-  teslamate: 'imported from TeslaMate', tesla_api: 'the Tesla API', owner: 'typed by an admin', build_match: 'the same module builds as a named update',
+  teslamate: 'imported from TeslaMate', teslafi: 'imported from TeslaFi', teslafi_api: 'TeslaFi (read live)', teslamate_local: 'local TeslaMate (read live)',
+  tesla_api: 'the Tesla API', owner: 'typed by an admin', build_match: 'the same module builds as a named update',
 };
 
 /** A signal's unit (as its DBC names it) -> the kind of shared/units.js, so it follows the person's units. */

@@ -105,6 +105,11 @@ export const GAP_WORDS = Object.freeze({
 // a drive's start or end as words: its label, else its saved place or short address (a spot with no address known,
 // out of the offline address list's reach, has none of them)
 export const endLabel = (e) => (e && (e.label || (e.place && e.place.name) || (e.address && e.address.short))) || 'Unnamed spot';
+/** How a fingerprint update got its version, when not typed or imported: "named from local TeslaMate". */
+const NAMED_FROM = {
+  build_match: 'named from an earlier update with the same fingerprints', teslafi_api: 'named from TeslaFi',
+  teslamate_local: 'named from local TeslaMate', tesla_api: 'named from the Tesla API',
+};
 const placeOf = (p) => (p ? (p.place && p.place.name) || p.label || (typeof p.address === 'string' ? p.address : p.address && p.address.short) || 'an unnamed spot' : 'an unknown place');
 const placeEl = (p) => h('span', { class: 'tl-place' }, placeOf(p));
 const seg = (parts) => parts.filter(Boolean).flatMap((m, i) => { const s = h('span', { class: 'tl-seg' }, m); return i ? [sep(), s] : [s]; });
@@ -155,7 +160,7 @@ export function timelineRow(r, { car, tz, now = api.now(), full = false, period 
     href = `${state.buildUrl('software', { car, period })}${r.ref && r.ref.update ? `#update-${r.ref.update}` : ''}`;
     const fp = r.detected_by === 'fingerprint';
     title = [fp ? 'Tesla update installed' : 'Software changed', r.version ? `: ${r.version}` : ''];
-    meta = [fp ? (r.version ? (r.version_source === 'build_match' ? 'named from an earlier update with the same fingerprints' : null) : 'version not named yet') : formatDuration(len),
+    meta = [fp ? (r.version ? (NAMED_FROM[r.version_source] || null) : 'version not named yet') : formatDuration(len),
       fp && r.changed_modules && r.changed_modules.length ? `${r.changed_modules.length} ${r.changed_modules.length === 1 ? 'module' : 'modules'} changed` : null];
   }
   const awake = r.kind === 'parked' && r.awake_reasons && r.awake_reasons.length
