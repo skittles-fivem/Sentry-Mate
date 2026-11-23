@@ -15,7 +15,7 @@
 //       GET system/storage, system/health (admin), geocode/status, cars.
 // Live: a "rows" event for the car loads its health, gaps and totals again.
 
-import { h, svg, replace } from '../shared/dom.js';
+import { h, svg, replace, replaceChanged } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { format, convert, unitLabel, DASH } from '../shared/units.js';
@@ -360,7 +360,8 @@ async function mountCar(ctx) {
         ? 'Nothing is ever repaired by hand: drives, charges, states and visits of the period are worked out again from the stored logs. Typed names, purposes and prices stay.'
         : 'Nothing is ever repaired by hand: an admin can work drives and charges out again from the stored logs.'));
 
-    replace(healthBox, status, fixes, figs, h('div', { class: 'hl-cols' }, keyList, spanList), rebuild);
+    // read again on every `rows` event (every second while a rebuild runs): only what changed is swapped
+    replaceChanged(healthBox, status, fixes, figs, h('div', { class: 'hl-cols' }, keyList, spanList), rebuild);
   }
 
   /** Missing on the server: logs the server should have but no longer does, asked of the car again. Always the same rows. */
@@ -470,7 +471,7 @@ async function mountCar(ctx) {
   function drawTotals(all, can, ta, tm, sm) {
     sm = sm || {};
     const vs = VERSION_SOURCE[sm.current_version_source];
-    replace(totalsBox, figures([
+    replaceChanged(totalsBox, figures([
       figure('Logged distance', q(all.distance_km, 'distance'), `The sum of every recorded drive. ${split(can.distance_km, ta.distance_km, tm.distance_km, 'distance')}`, { cover: 'dbinfo.stat.logged_distance' }),
       figure('Odometer', q(all.odometer_last_km, 'odometer', { why: 'not sent yet' }), all.odometer_last_km != null && all.odometer_last_ms != null ? `Last read ${when(all.odometer_last_ms, tz)}; the car sends it while awake.` : 'The car sends it while awake.', { cover: 'dbinfo.stat.odometer' }),
       figure('Not logged', q(all.not_logged_km, 'distance', { why: 'needs two readings' }), 'The odometer’s change since the first reading minus the logged distance: driving nobody recorded.'),
@@ -502,7 +503,7 @@ async function mountCar(ctx) {
         { key: 'total', label: 'Rows', num: true, sort: true, cover: 'dbinfo.rows.row_count', cell: (r) => h('b', null, q(r.total, 'count')) },
       ],
     });
-    replace(rowsBox, t.el);
+    replaceChanged(rowsBox, t.el);
     t.load();
   }
 

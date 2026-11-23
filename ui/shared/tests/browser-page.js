@@ -1,6 +1,6 @@
 // Runs inside Chromium for browser.test.js, under the same Content-Security-Policy the dev server sends.
 // Each check pushes { name, ok, detail }; window.__results is set when all are done.
-import { h, svg, cover, ready, unready, failed, setTitle, quantity, setVars, safeUrl, readyPage, disclose } from './shared/dom.js';
+import { h, svg, cover, ready, unready, failed, setTitle, quantity, setVars, safeUrl, readyPage, disclose, replace, replaceChanged, markScrolling } from './shared/dom.js';
 import { setLocale, t } from './shared/i18n.js';
 import { setUnits } from './shared/units.js';
 import * as api from './shared/api.js';
@@ -24,6 +24,34 @@ async function run() {
   check('h wires event handlers', clicked.length === 1);
   check('CSS custom properties and styles go through CSSOM', getComputedStyle(el).getPropertyValue('--w').trim() === '42%' && getComputedStyle(el).minWidth === '48px', el.getAttribute('style'));
   check('cover marks item ids without repeats', cover(el, 'x.two', 'x.three').dataset.cover === 'x.one x.two x.three', el.dataset.cover);
+  // replaceChanged(): only the children that differ are swapped; a kept node, and one equal to it, stay
+  const slot = h('div');
+  const keep = h('section', null, 'map');
+  replace(slot, h('p', { class: 'x' }, 'one'), keep, h('p', null, 'three'));
+  const [p1, , p3] = slot.children;
+  const seen = [];
+  const mo = new MutationObserver((l) => seen.push(...l));
+  mo.observe(slot, { childList: true, subtree: true, characterData: true, attributes: true });
+  replaceChanged(slot, h('p', { class: 'x' }, 'one'), keep, h('p', null, 'three'));
+  await Promise.resolve();
+  check('replaceChanged leaves equal children alone', seen.length === 0 && slot.children[0] === p1 && slot.children[1] === keep && slot.children[2] === p3, seen.length);
+  replaceChanged(slot, h('p', { class: 'x' }, 'one'), keep, h('p', null, 'four'));
+  await Promise.resolve();
+  check('replaceChanged swaps only the child that changed', slot.children[0] === p1 && slot.children[1] === keep && slot.children[2] !== p3 && slot.textContent === 'onemapfour' && seen.length === 1, slot.outerHTML);
+  replaceChanged(slot, keep, 'and text', null);
+  check('replaceChanged with another count or order draws again', slot.childNodes.length === 2 && slot.firstChild === keep && slot.textContent === 'mapand text', slot.outerHTML);
+  mo.disconnect();
+  // markScrolling(): data-scrolling on the root while something scrolls, gone a moment after
+  const stopMark = markScrolling(60);
+  const scroller = h('div', { style: { height: '50px', overflow: 'auto' } }, h('div', { style: { height: '500px' } }));
+  document.body.append(scroller);
+  scroller.scrollTop = 100;
+  await new Promise((r) => setTimeout(r, 30));
+  const during = 'scrolling' in document.documentElement.dataset;
+  await new Promise((r) => setTimeout(r, 120));
+  check('markScrolling marks the root while a box scrolls, and not after', during && !('scrolling' in document.documentElement.dataset), during);
+  stopMark();
+  scroller.remove();
   // disclose(): a button that opens a small form in place, focus in and back out, Escape closes it
   const edit = h('button', { type: 'button' }, 'Edit');
   const box = h('form', null, h('label', { for: 'dz-in' }, 'Version'), h('input', { id: 'dz-in' }), h('button', { type: 'submit' }, 'Save'));

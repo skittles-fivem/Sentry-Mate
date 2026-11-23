@@ -1374,4 +1374,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { run, formatReport, selfTest, parseArgs, ROUTES, FRAME_SCREENS };
+module.exports = { run, formatReport, selfTest, parseArgs, ROUTES, FRAME_SCREENS, startServer, killChildren, TILE_HOSTS, BLANK_TILE };

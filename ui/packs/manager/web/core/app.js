@@ -5,6 +5,7 @@ import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { initFrame } from './frame.js';
 import { watchTables } from './snap.js';
+import { markScrolling } from '../shared/dom.js';
 import { startRouter } from './router.js';
 import * as session from './session.js';
 import { flash } from './flash.js';
@@ -34,6 +35,7 @@ api.on('events', (info) => { if (info?.state === 'signed_out') sessionEnded(); }
 
 initFrame();
 watchTables();
+markScrolling(); // data-scrolling: app.css pauses the endless pulses while the page scrolls
 // every face of the pack's fonts, loading from the start: a weight first used deep in a page (a bold figure, a
 // mono value) is in before that page says it is ready, so text never re-flows under the reader when it swaps in
 if (document.fonts?.load) {

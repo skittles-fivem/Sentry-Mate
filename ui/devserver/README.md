@@ -35,6 +35,7 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 | `--freeze-clock` | off | Keeps "now" fixed (stable screenshots and tests). |
 | `--sse-interval-ms N` | `2000` | How often live values are pushed on `/api/v1/events`. |
 | `--rows-every-s N` | `0` | Also sends every featured car a `rows` event every `N` seconds (all row kinds), as if its rows had changed, so the pages load their lists again (`ui/tools/check.js --stable` uses it). `0`: `rows` only when a drive, charge or parked spell really starts or ends. |
+| `--rebuild-running` | off | Every featured car's history is being rebuilt the whole time: `/cars/{car}/health` says `rebuild_pending` (so Data health reads itself again every few seconds) and the car gets a `rows` event every second (every `--rows-every-s` when that is given), as while a long rebuild rewrites its rows. `ui/tools/scroll.js` scrolls the pages in this state. |
 | `--verbose` | off | Logs every request to stderr. |
 
 ### UI packs
