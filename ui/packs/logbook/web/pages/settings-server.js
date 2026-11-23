@@ -9,7 +9,9 @@
 // say what was done in words and link to the item they changed (filtered by what and who, loaded as the
 // list scrolls), and Storage: the space on disk by category and what compaction saved
 // (GET /system/storage/detail), with "Compact now" (POST /system/storage/compact; while a pass runs the
-// detail is read again every 2 s, until the page is left). Every table has a Download CSV button.
+// detail is read again every 2 s, until the page is left). Every table has a Download CSV button. Admins also
+// get the full rebuild of every car (system/full-rebuild, its progress read again while it runs:
+// rebuild-parts.js) and its automatic switch (full_rebuild.auto, saved with the settings' version).
 
 import { h, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -22,6 +24,7 @@ import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { dateTime, date, zoneLabel, count } from '../core/format.js';
 import { moveBlock, askPassword } from './settings-move.js';
 import { bigCode, downloadText } from './move-parts.js';
+import { fullRebuild } from './rebuild-parts.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 
 export const id = 'settings-server';
@@ -476,6 +479,32 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- moving to another server (admin) */
   const mover = admin ? moveBlock(ctx, { network }) : null;
 
+  /* ---------------------------------------------------------------- full rebuild (admin) */
+  let full = null;
+  let fullSection = null;
+  if (admin) {
+    const autoOn = () => !settings.full_rebuild || settings.full_rebuild.auto !== false;
+    const auto = switchField({
+      label: 'Rebuild automatically when a new server version decodes the stored logs differently',
+      hint: 'On by default. Off: a notice offers the full rebuild instead, and you start it here.',
+      checked: autoOn(),
+      onchange: async (on) => {
+        try {
+          settings = await ctx.api.patch('settings', { version: settings.version, full_rebuild: { auto: on } });
+          ctx.flash('Saved for everyone on this server.');
+        } catch (err) {
+          if (err && (err.code === 'stale_version' || err.status === 409)) {
+            settings = await ctx.api.get('settings').catch(() => settings);
+            ctx.flash('Someone else changed the server settings meanwhile. The switch shows the saved setting now; make your change again.', { kind: 'error' });
+          } else ctx.flash(`Not saved: ${errText(err)}`, { kind: 'error' });
+          if (ctx.alive()) auto.set(autoOn());
+        }
+      },
+    });
+    full = fullRebuild(ctx, { carName: (c) => carName.get(c) || c, after: h('div', { class: 'fr-auto' }, auto) });
+    fullSection = section({ title: 'Full rebuild', note: 'every car’s history made again from the stored data', cls: 'ss-full', id: 'full-rebuild' }, full.el);
+  }
+
   /* ---------------------------------------------------------------- accounts (admin) */
   let accountsTable = null;
   let accountsSection = null;
@@ -809,17 +838,17 @@ export async function mount(ctx) {
     h('div', { class: 'ss-grid' },
       h('div', { class: 'ss-col' }, addressSection, namesSection, portsSection),
       h('div', { class: 'ss-col' }, accessSection, safetySection)),
-    mover ? mover.el : null, storageSection, accountsSection, sessionsSection, auditSection);
+    mover ? mover.el : null, fullSection, storageSection, accountsSection, sessionsSection, auditSection);
 
   try {
-    await Promise.all([portsTable && portsTable.load(), sessionsTable.load(), accountsTable && accountsTable.load(), auditTable && auditPrep.then(() => auditTable.load()), mover && mover.load(), storage && storage.load()]);
+    await Promise.all([portsTable && portsTable.load(), sessionsTable.load(), accountsTable && accountsTable.load(), auditTable && auditPrep.then(() => auditTable.load()), mover && mover.load(), storage && storage.load(), full && full.ready]);
   } catch (err) {
     if (!ctx.alive()) return undefined;
     throw err;
   }
   if (!ctx.alive()) return undefined;
   if (focusAccount) document.getElementById(`account-${focusAccount}`)?.scrollIntoView({ block: 'center' });
-  else if (location.hash === '#move') document.getElementById('move')?.scrollIntoView({ block: 'start' });
+  else if (location.hash === '#move' || location.hash === '#full-rebuild') document.getElementById(location.hash.slice(1))?.scrollIntoView({ block: 'start' });
   ctx.ready();
   return {};
 }

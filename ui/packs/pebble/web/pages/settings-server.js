@@ -11,7 +11,8 @@
 // lets the new server go on with what it copied. Data: settings, network, notices, accounts, me/sessions, audit,
 // system/move (+ /undo), system/exports, system/recovery-key/{show,new,saved}, system/storage/detail and
 // system/storage/compact. Polls once a second while a move or an export file is being made, and every 2 s
-// while a compaction pass runs (no event stream for these).
+// while a compaction pass runs (no event stream for these). A full rebuild of every car (system/full-rebuild,
+// its own tile: core/fullrebuild.js) with the switch for the automatic one (settings full_rebuild.auto).
 
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -26,6 +27,7 @@ import { checkRow, sectionHead, moreButton } from '../core/bits.js';
 import { group, infoRow, said, notSaved, askPassword, keySheet, tick } from '../core/settings.js';
 import { inOrder } from '../core/settings.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
+import { fullRebuildTile } from '../core/fullrebuild.js';
 import { bytes, bigCode, copyButton, downloadUrl, stepCards, progressBar, callout, PROBLEM } from './move-parts.js';
 import { exportModel, exportPollMs } from '../shared/exportjob.js';
 
@@ -516,6 +518,24 @@ export async function mount(ctx) {
     if (store && store.compaction && store.compaction.status === 'running') storeTimer = setTimeout(readStorage, 2000);
   }
 
+  /* ================================================================ full rebuild (admins) */
+  // every car's history made again from the stored data; the switch saves at once, as the other server settings
+  let fullT = null;
+  if (admin) {
+    const auto = toggle({ label: 'Automatic full rebuild', sub: 'Rebuild automatically when a new server version decodes the stored logs differently. Off: a notice offers it instead.',
+      checked: !settings.full_rebuild || settings.full_rebuild.auto !== false,
+      onchange: async (on) => {
+        try {
+          settings = await ctx.api.patch('settings', { version: settings.version, full_rebuild: { auto: on } });
+          ctx.toast(on ? 'Saved. A new server version rebuilds what it decodes differently.' : 'Saved. A notice offers a full rebuild instead.');
+        } catch (e) {
+          if (e && e.status === 409) { settings = await ctx.api.get('settings').catch(() => settings); ctx.toast('Someone else changed the server settings; this page shows theirs now.', { kind: 'info' }); } else ctx.toast(notSaved(e), { kind: 'error' });
+          if (ctx.alive()) auto.set(!settings.full_rebuild || settings.full_rebuild.auto !== false);
+        }
+      } });
+    fullT = fullRebuildTile(ctx, { carName: (c) => carName.get(c) || c, after: group(null, [auto]) });
+  }
+
   /* ================================================================ accounts (admins) */
   function carsPicker(current) {
     const all = toggle({ label: 'Every car, also cars that come later', checked: current === 'all' });
@@ -725,11 +745,11 @@ export async function mount(ctx) {
     const tiles = [hostingTile(), accessTile()];
     if (admin) tiles.push(namesTile(), certTile(), portsTile(), keyTile());
     tiles.push(sessionsTile());
-    if (admin) tiles.push(accountsTile(), moveBox, storeBox, auditT);
+    if (admin) tiles.push(accountsTile(), moveBox, fullT.el, storeBox, auditT);
     ctx.view.replaceChildren(...tiles.filter(Boolean));
   }
   if (admin) {
-    await Promise.all([readMove(), readExport(), readStorage()]);
+    await Promise.all([readMove(), readExport(), readStorage(), fullT.ready]);
     auditT = await auditTile();
     if (!ctx.alive()) return {};
     drawMove();

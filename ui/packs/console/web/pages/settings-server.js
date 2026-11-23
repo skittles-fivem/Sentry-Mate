@@ -3,9 +3,10 @@
 // Admins also: host names as a 'key = value' line, ports, the certificate and the recovery key (show again,
 // make new, say it is saved), moving to another server as numbered steps with a state tag and a run button
 // each (a move code, or an export file; carry on a stopped move; undo a move), output in a mono box; the
-// accounts, and the audit log; and storage: the space on disk by category (GET /system/storage/detail) and
-// compaction as a step with a run button (POST /system/storage/compact), its state in a mono box.
-// While a compaction pass runs the detail is read again every 2 s.
+// accounts, a full rebuild of every car (with its progress and the automatic run), and the audit log; and
+// storage: the space on disk by category (GET /system/storage/detail) and compaction as a step with a run
+// button (POST /system/storage/compact), its state in a mono box. While a compaction pass runs the detail is
+// read again every 2 s.
 // The move and the export file are read once a second while something runs (GET /system/move,
 // GET /system/exports/{id}); every dangerous action asks for the person's own password again.
 
@@ -25,6 +26,7 @@ import { signOut } from '../core/session.js';
 import { askPassword, copyBtn, codeOut, downloadKey, showOnce, STAY } from '../core/secret.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 import { exportModel, exportPollMs } from '../shared/exportjob.js';
+import { fullRebuild } from '../core/fullrebuild.js';
 
 export const id = 'settings-server';
 export const title = () => 'Settings: server';
@@ -500,6 +502,19 @@ export async function mount(ctx) {
     storTable.el,
   ] : null;
   if (admin) { paintStor(); scheduleStor(); }
+  /* ---------------------------------------------------------------- full rebuild (admin) */
+  // every car's history made again from the stored data, the cars made with an older decoding named
+  const full = admin ? fullRebuild(ctx, { carName: (c) => carName.get(c) || c }) : null;
+  const autoLine = admin && S.settings ? editLines([
+    { key: 'full_rebuild.auto', id: 'full-rebuild-auto', type: 'bool', value: S.settings.full_rebuild?.auto !== false,
+      help: 'Rebuild automatically when a new server version decodes the stored logs differently. Off: a notice offers it instead.',
+      save: async (v) => {
+        try { S.settings = await ctx.api.patch('settings', { version: S.settings.version, full_rebuild: { auto: v } }); } catch (e) {
+          if (e.status === 409) { S.settings = await ctx.api.get('settings'); throw new Error('Someone else changed the server settings first. Look again and save once more.'); }
+          throw e;
+        }
+      } },
+  ]) : null;
 
   /* ---------------------------------------------------------------- access, accounts, sessions, audit */
   const nAdmins = S.accounts.filter((a) => a.role === 'admin').length;
@@ -679,6 +694,8 @@ export async function mount(ctx) {
       note('For servers that can\'t reach each other, one that will be off before the new one starts, or a copy to keep. Uploads that arrive after it was made are not in it.'),
       expSlot,
       note('Neither way changes this server\'s data. Codes, passwords and keys travel only over https.')),
+    section({ title: 'full rebuild', id: 'full-rebuild', side: h('span', { class: 'muted' }, 'every car') },
+      full.el, autoLine?.el),
   ] : null;
   paint(ctx, head(ctx),
     section({ title: 'this address', cover: 'web.shell.hosting', side: h('span', { class: 'muted' }, `${loc.protocol}//${loc.host}/`) }, hostSlot),
@@ -699,6 +716,6 @@ export async function mount(ctx) {
     } catch (e) { if (!ctx.alive()) return; M.err = e; }
     paintMove(); paintExp(); schedule(); scheduleExp();
   }
-  await Promise.all([accounts?.ready, sessions.ready, audit?.ready].filter(Boolean)).catch(() => {});
+  await Promise.all([accounts?.ready, sessions.ready, audit?.ready, full?.ready].filter(Boolean)).catch(() => {});
   if (ctx.alive()) ctx.ready();
 }
