@@ -8,7 +8,8 @@
 //   API with a live try, and every car's data status.
 // Data: GET cars/{car}/health, /gaps, /totals?source=, /updates, /storage, /signals/latest; POST /rebuild (admin);
 // GET integrations/tesla/status, integrations/teslafi/status, integrations/teslamate (admin: the live inputs' tiles);
-// GET system/storage, system/health (admin), geocode/status, cars.
+// GET system/storage, system/health (admin), geocode/status, cars; GET integrations/overview (admin) for the
+// Connections overview tile on both routes, a link to Settings: Integrations (its Overview tab).
 
 import { h } from '../shared/dom.js';
 import { format, convert } from '../shared/units.js';
@@ -27,6 +28,7 @@ import { teslafiCarFacts } from './teslafi.js';
 import { teslamateCarFacts, teslamateHref } from './teslamate.js';
 import { TM_BASE, TM_SOURCE } from '../shared/teslamate.js';
 import { VERSION_SOURCE } from '../core/firmware.js';
+import { STATUS, STATUS_ORDER } from './connections.js';
 
 export const id = 'health';
 export const css = true;
@@ -100,7 +102,7 @@ async function mountCar(ctx) {
   ] });
   const bar = filterBar(ctx, { carCover: 'dbinfo.filter.car' }, h('span', { class: 'filter-note' }, 'Checks and gaps follow the period; totals and storage are all time.'));
 
-  const [hl, gaps, all, can, tm, upd, st, sig, tapi, tst, tfi, tfst, tmst] = await Promise.all([
+  const [hl, gaps, all, can, tm, upd, st, sig, tapi, tst, tfi, tfst, tmst, ov] = await Promise.all([
     ctx.api.get(`${base}/health`, fullPeriod(ctx.params)),
     ctx.api.page(`${base}/gaps`, ctx.params, { limit: 40 }).catch(() => ({ items: [] })),
     ctx.api.get(`${base}/totals`, { source: 'all' }).catch(() => ({})),
@@ -114,6 +116,7 @@ async function mountCar(ctx) {
     ctx.api.get(`${base}/totals`, { source: 'teslafi_api' }).catch(() => ({})),
     ctx.admin ? ctx.api.list('integrations/teslafi/status').all().catch(() => null) : Promise.resolve(null),
     ctx.admin ? ctx.api.get(TM_BASE).catch(() => null) : Promise.resolve(null),
+    ctx.admin ? ctx.api.get('integrations/overview').catch(() => null) : Promise.resolve(null),
   ]);
   if (!ctx.alive()) return {};
   if (hl.rebuild_pending) { const t = setTimeout(() => ctx.alive() && ctx.reload(), 4000); ctx.onCleanup(() => clearTimeout(t)); }
@@ -254,9 +257,29 @@ async function mountCar(ctx) {
   const sigT = tile({ w: 'full', title: 'Signals', icon: 'pulse', cls: 'sig-tile' },
     h('div', { class: 'page-bar' }, h('label', { class: 'search-pill' }, icon('search'), search), sortPills, count), listEl);
 
-  ctx.view.replaceChildren(bar, status, keysT, teslaT, teslafiT, teslamateT, logT, rowsT, ...tots, storeT, daysT, sigHead, sigT);
+  ctx.view.replaceChildren(bar, status, keysT, connTile(ctx, ov, car.id), teslaT, teslafiT, teslamateT, logT, rowsT, ...tots, storeT, daysT, sigHead, sigT);
   ctx.ready();
   return {};
+}
+
+/* ================================================================== both routes */
+
+/**
+ * The Connections overview tile: a link to Settings: Integrations (its Overview tab, the default) with the totals
+ * and, on a car's page, the status of that car's CAN Bridge. ov: GET integrations/overview, or null.
+ */
+function connTile(ctx, ov, carId = null) {
+  const t = ov && ov.totals;
+  const mine = ov && carId ? (ov.connections || []).find((c) => c.kind === 'smo' && c.car === carId) : null;
+  const bad = t ? t.problem || 0 : 0;
+  return tile({ w: 2, href: state.buildUrl('settings-integrations'), title: 'Connections overview', icon: 'plug', cls: ['hl-conn', bad ? 'is-warn' : null], cover: 'conn.overview.link',
+    side: icon('chevronRight', 'hl-conn-go') },
+    t ? h('ul', { class: 'hl-conn-tot' }, STATUS_ORDER.map((k) => h('li', { class: `is-${k}` }, h('b', null, n0(t[k] || 0)), ' ', STATUS[k][0].toLowerCase())))
+      : null,
+    mine ? h('p', { class: 'note' }, `This car’s CAN Bridge: ${STATUS[mine.status] ? STATUS[mine.status][0].toLowerCase() : mine.status}${mine.last_ok_ms != null ? `, last good contact ${formatDateTime(mine.last_ok_ms, ctx.tz, { now: api.now() })}` : ''}.`) : null,
+    note(t ? 'Every connection the server keeps, with its last good contact, counts, a 24 h sparkline and the problems of the last 7 days.'
+      : ctx.admin ? 'Every connection the server keeps (CAN Bridge, Tesla API, TeslaFi, local TeslaMate, MQTT, maps, address lookup, release check): live or not, counts and problems.'
+        : 'Every connection the server keeps, live or not, with counts and problems. Admins open it in Settings: Integrations.'));
 }
 
 /* ================================================================== the server */
@@ -264,11 +287,12 @@ async function mountCar(ctx) {
 async function mountSystem(ctx) {
   const admin = !!ctx.admin;
   ctx.head({ actions: [btn('Reload', { kind: 'soft', icon: 'refresh', iconOnly: true, onclick: () => ctx.reload() })] });
-  const [st, sh, geo] = admin ? await Promise.all([
+  const [st, sh, geo, ov] = admin ? await Promise.all([
     ctx.api.get('system/storage').catch((e) => ({ error: e })),
     ctx.api.get('system/health').catch((e) => ({ error: e })),
     ctx.api.get('geocode/status').catch(() => null),
-  ]) : [null, null, null];
+    ctx.api.get('integrations/overview').catch(() => null),
+  ]) : [null, null, null, null];
   const pager = ctx.api.pager('cars', { sort: 'name' }, { limit: 30 });
   await pager.more().catch(() => null);
   if (!ctx.alive()) return {};
@@ -318,6 +342,7 @@ async function mountSystem(ctx) {
   } else {
     tiles.push(tile({ w: 2, title: 'Checks', icon: 'lock' }, note(admin ? 'The server’s health could not be read.' : 'Uptime, versions, memory and timings are shown to admins only.')));
   }
+  tiles.push(connTile(ctx, ov));
   tiles.push(tile({ w: 2, title: 'Clock and health address', icon: 'clock' },
     h('p', { class: 'note', cover: 'faq.docker-timestamps' }, `Server clock: ${new Date(api.now()).toISOString().replace('T', ' ').slice(0, 19)} UTC. Times are stored in UTC; every page shows them in the car’s own time zone. The container’s log lines are in UTC unless its TZ variable says otherwise.`),
     h('div', { cover: 'web.health-api.health-check' },
