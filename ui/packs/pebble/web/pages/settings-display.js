@@ -15,7 +15,8 @@ import * as state from '../shared/state.js';
 import { tile, btn, chip, note } from '../core/ui.js';
 import { segmented, toggle, field, form, setFieldError } from '../core/form.js';
 import { currentPrefs, onPrefs, savePref, isDark, onTheme } from '../core/prefs.js';
-import { SIZES, SIZE_MIN, SIZE_MAX, sizeState, setSize, sizeNote, display } from '../core/display.js';
+import { SIZES, SIZE_MIN, SIZE_MAX, sizeState, setSize, setDeviceSize, onSize, sizeNote, display } from '../core/display.js';
+import { deviceSizeOptions, deviceSizeNote } from '../shared/devicesize.js';
 import { currentAbout } from '../core/frame.js';
 import { sectionHead, facts } from '../core/bits.js';
 import { group, pickRow, ctlRow, infoRow, notSaved } from '../core/settings.js';
@@ -92,6 +93,11 @@ export async function mount(ctx) {
   const follow = toggle({ label: 'Follow screen size', sub: 'Big screens such as a 4K monitor get larger text by themselves.', checked: sizeState().follow,
     onchange: (on) => { setSize({ follow: on }); save({ follow_screen: on }).catch(() => {}); sync(); } });
   const sizeLine = h('span', { class: 'row-sub' });
+  // kept in this browser only (shared/devicesize.js), never with the account
+  const deviceSeg = segmented({ label: null, name: 'Interface size on this device', value: sizeState().device ? String(sizeState().device) : 'auto', cls: 'seg--device',
+    options: deviceSizeOptions().map((o) => [o.value, o.value === 'auto' ? 'Auto' : o.label]), onchange: (v) => { setDeviceSize(v); sync(); } });
+  const deviceLine = h('span', { class: 'row-sub' });
+  ctx.onCleanup(onSize(() => sync()));
   const about = currentAbout();
   const packNow = (p0.ui_pack || (about && about.ui_pack && about.ui_pack.name ? about.ui_pack.name.toLowerCase() : 'pebble'));
   // every pack the server offers (GET /ui-packs), each with its short description
@@ -112,7 +118,9 @@ export async function mount(ctx) {
       ctlRow({ name: 'Map colours', sub: `${MAP_COLORS_TEXT} Satellite pictures are always shown as taken.`, control: mapColors, stack: true }),
     ]),
     group('Size', [
-      ctlRow({ name: 'Interface size', sub: null, control: h('div', { class: 'stepper', role: 'group', 'aria-label': 'Interface size' }, smaller, sizeValue, bigger) }),
+      ctlRow({ name: 'Interface size on this device', sub: 'This device only: kept in this browser, not with your account, so each computer can have its own size. Auto uses your account’s size below.', control: deviceSeg, stack: true }),
+      h('div', { class: 'row row-static set-ex-row' }, deviceLine),
+      ctlRow({ name: 'Interface size', sub: 'Your account’s size, on every device left at Auto.', control: h('div', { class: 'stepper', role: 'group', 'aria-label': 'Interface size' }, smaller, sizeValue, bigger) }),
       h('div', { class: 'row row-static set-ex-row' }, sizeLine),
       follow,
     ]),
@@ -191,6 +199,8 @@ export async function mount(ctx) {
     bigger.disabled = s.size >= SIZE_MAX;
     follow.set(s.follow);
     sizeLine.textContent = sizeNote();
+    deviceSeg.set(s.device ? String(s.device) : 'auto');
+    deviceLine.textContent = deviceSizeNote(s.device, { account: s.size });
     if (feet() !== drawnFeet) drawServer(srv);
   }
   ctx.onCleanup(onPrefs(sync));

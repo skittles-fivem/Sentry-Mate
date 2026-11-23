@@ -14,7 +14,8 @@ installed from a zip in Settings (planned; see [docs/plans/rust-can-logger.md](.
 | [`packs/manager`](packs/manager) | Simple: Sentry Manager's frame and look (a section card at the left with six sections: Car, Trips, Charging, Battery, Stats, Settings; the section's pages as pill tabs; flat graphite cards and one lime accent), in dark and a matching light theme, the car page with only the key things big and clear. On a phone the sections are a bar of icons along the top, tables turn into cards and every tap target is at least 44 px. Runs on `/api/v1`; how its pages are built: [`web/core/README.md`](packs/manager/web/core/README.md) |
 
 **Status: being built.** Desktop first: a 1280 px laptop up to a native 4K screen, browser zoom 50 to 200 %, and an
-Interface size setting. The packs only talk to `/api/v1`; until the Sentry Mate server serves it, the dev API server
+Interface size setting: the account's (follows the person to every screen) and, under it, one for this device only
+(Automatic or 80 to 125 %, kept in this browser; Settings: Display and units and the account menu). The packs only talk to `/api/v1`; until the Sentry Mate server serves it, the dev API server
 stands in for it, with made-up data (cars, drives, charges and places invented for the purpose, not anyone's real car).
 
 Preview a pack with the dev API server. It replaces `python3 -m http.server`, which cannot answer `/api/v1`:

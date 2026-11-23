@@ -161,9 +161,6 @@ pub struct EngineStats {
     pub failures: u64,
     pub decode_ms_total: u64,
     pub rebuild_ms_total: u64,
-    /// GPS fixes the timeline rebuilds left out since the server started (a placeholder, half a fix, or a jump
-    /// faster than a car drives from the fixes around it): rebuilding a window counts its fixes again.
-    pub gps_fixes_dropped: u64,
     pub last_error: Option<String>,
 }
 
@@ -176,7 +173,6 @@ struct Counters {
     failures: AtomicU64,
     decode_ms: AtomicU64,
     rebuild_ms: AtomicU64,
-    gps_fixes_dropped: AtomicU64,
 }
 
 pub(crate) enum Work {
@@ -538,7 +534,6 @@ impl Engine {
             failures: c.failures.load(Ordering::Relaxed),
             decode_ms_total: c.decode_ms.load(Ordering::Relaxed),
             rebuild_ms_total: c.rebuild_ms.load(Ordering::Relaxed),
-            gps_fixes_dropped: c.gps_fixes_dropped.load(Ordering::Relaxed),
             last_error: lock(&self.inner.last_error).clone(),
         }
     }

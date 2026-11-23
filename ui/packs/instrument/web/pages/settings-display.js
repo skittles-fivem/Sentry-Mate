@@ -14,7 +14,7 @@ import { pageHead, panel } from '../core/page.js';
 import { field, showApiError } from '../core/form.js';
 import { getPrefs, savePrefs, isAdmin, onPrefs } from '../core/prefs.js';
 import { getInterface, onInterface } from '../core/display.js';
-import { sizePicker, followSwitch, sizeNote, themeButtons } from '../core/account.js';
+import { sizePicker, followSwitch, sizeNote, devicePicker, deviceNote, themeButtons } from '../core/account.js';
 import { flash } from '../core/flash.js';
 import { ago } from '../core/fmt.js';
 import { buildLabel, buildTitle, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
@@ -112,6 +112,8 @@ export async function mount(ctx) {
     example);
 
   /* ---------- your look */
+  const dev = devicePicker('set-device');
+  const devNoteEl = h('p', { class: 'setting-note', id: 'set-device-note' }, deviceNote());
   const size = sizePicker('set-size');
   const follow = followSwitch('set-follow');
   const pctIn = h('input', { class: 'input input--sm', id: 'set-size-pct', type: 'number', min: '75', max: '200', step: '1', value: String(getInterface().size), 'aria-label': 'Interface size in percent' });
@@ -123,7 +125,7 @@ export async function mount(ctx) {
     await savePref({ interface_size: v }, 'Interface size');
   });
   const noteEl = h('p', { class: 'setting-note' }, sizeNote());
-  ctx.onCleanup(onInterface((i) => { size.sync(i); follow.sync(i); pctIn.value = String(i.size); noteEl.textContent = sizeNote(); }));
+  ctx.onCleanup(onInterface((i) => { dev.sync(i); devNoteEl.textContent = deviceNote(); size.sync(i); follow.sync(i); pctIn.value = String(i.size); noteEl.textContent = sizeNote(); }));
   const theme = themeButtons();
   const segMapColors = choice('Map colours', MAP_COLORS_CHOICES, p.map_colors || 'dimmed', (v) => savePref({ map_colors: v }, 'Map colours'));
   ctx.onCleanup(onPrefs((pp) => {
@@ -169,7 +171,9 @@ export async function mount(ctx) {
     setting('Theme', 'Light, dark, or follow this device. It is saved with your account, so every browser you sign in on uses it, and it is set before the page is drawn, so there is no flash.',
       [theme.el, h('p', { class: 'setting-note' }, 'Every page, chart and map has both a light and a dark look; screenshots in the help show either.')], ['shell.theme', 'web.settings.general.theme', 'shots.theme-note']),
     setting('Map colours', `${MAP_COLORS_TEXT} It does not apply to satellite pictures: photos always show as taken, never dimmed.`, segMapColors),
-    setting('Interface size', 'Makes text, controls, tables, charts and maps bigger or smaller together. With Follow screen size on, a very large screen (a native 4K monitor) adds its own step on top. Browser zoom works on top of both.',
+    setting('Interface size on this device', 'Only this browser on this device: kept here, not with your account, so a laptop with large display scaling and a desktop monitor can each have their own size. Automatic uses your account\'s Interface size below. A fixed size draws everything at that percent of the standard size, with nothing added for large screens.',
+      [dev.el, devNoteEl]),
+    setting('Interface size', 'Your account\'s size, on every device left at Automatic. Makes text, controls, tables, charts and maps bigger or smaller together. With Follow screen size on, a very large screen (a native 4K monitor) adds its own step on top. Browser zoom works on top of both.',
       [size.el, h('div', { class: 'row' }, h('label', { class: 'faint', for: 'set-size-pct' }, 'Any size:'), pctIn, h('span', { class: 'faint' }, '%')), sizeErr,
         h('div', { class: 'switch-row switch-row--inline' }, follow.el, h('label', { for: 'set-follow' }, 'Follow screen size')), noteEl]),
     setting('Language', 'The text is in English for now. This sets how numbers and dates are written. "This browser\'s language" follows the language your browser asks for; the app tells the browser which language the page is in.',

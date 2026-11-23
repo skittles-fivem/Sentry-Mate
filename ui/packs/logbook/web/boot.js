@@ -13,7 +13,11 @@
 // - "Follow screen size" (on by default) turns Auto on; off, Auto is 1.
 // - --ui-size is the person's Interface size, 75 to 200 % (default 100), whole numbers.
 // Both are stored with the person's preferences on the server; this browser keeps a copy only so this
-// first paint is right. core/display.js has the same formula and takes over once the page has started:
+// first paint is right.
+// - The Interface size on this device ('sentrymate.device-size', the same key in every pack; ui/shared/devicesize.js):
+//   80, 90, 100, 110 or 125 (%) kept in this browser only. When set it wins here: --auto 1 and --ui-size that
+//   size. Absent (Automatic, the default), the account's values above apply.
+// core/display.js has the same formula and takes over once the page has started:
 // change both together.
 (function () {
   var html = document.documentElement;
@@ -32,6 +36,8 @@
   var n = Math.round(Number(size.size));
   var pct = isFinite(n) && size.size != null ? Math.max(75, Math.min(200, n)) : 100;
   var follow = size.follow !== false;
+  var device = Math.round(Number(read('sentrymate.device-size')));
+  if ([80, 90, 100, 110, 125].indexOf(device) >= 0) { pct = device; follow = false; }
   html.style.setProperty('--auto', String(follow ? auto() : 1)); // CSSOM, which the CSP allows
   html.style.setProperty('--ui-size', String(pct / 100));
   var theme = read('logbook:theme');
