@@ -725,7 +725,7 @@ export async function mount(ctx) {
       type: 'storage',
       onValue: (d) => {
         if (!ctx.alive() || !d) return;
-        S.storage = { ...(S.storage || {}), free_bytes: d.free_bytes ?? S.storage?.free_bytes ?? null, compaction: d.compaction || S.storage?.compaction || null };
+        S.storage = { ...(S.storage || {}), free_bytes: d.free_bytes ?? S.storage?.free_bytes ?? null, compaction: d.compaction ? laterCompaction(S.storage?.compaction, d.compaction) : S.storage?.compaction || null };
         takeCompaction(S.storage.compaction, 'event');
       },
     });
