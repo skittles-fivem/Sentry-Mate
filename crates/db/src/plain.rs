@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use zeroize::Zeroizing;
 
 /// What a file was when it was read: a file written since is another file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct Stamp {
     ino: u64,
     len: u64,

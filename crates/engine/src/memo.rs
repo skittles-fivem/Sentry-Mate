@@ -34,7 +34,12 @@ type Slot = ((u64, u64, u64), u64, Arc<dyn Any + Send + Sync>);
 pub(crate) struct Memo {
     map: Mutex<HashMap<(CarId, &'static str, u64), Slot>>,
     tick: std::sync::atomic::AtomicU64,
+    /// Parts kept by a stamp of what they rest on (a day's files) rather than by the car's version.
+    stamped: Mutex<HashMap<(CarId, &'static str, u64), Slot>>,
 }
+
+/// Stamped parts kept at most; past it the oldest half goes.
+const MAX_STAMPED: usize = 8192;
 
 impl Memo {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<(CarId, &'static str, u64), Slot>> {
@@ -76,6 +81,48 @@ impl Engine {
         }
         m.insert(k, (at, tick, t.clone()));
         Ok(t)
+    }
+}
+
+impl Engine {
+    /// The part kept under `(car, name, key)` if it was kept with `stamp` (a key of what it was made from, such as a
+    /// day's files: [`db::Db::day_stamps`]).
+    pub(crate) fn stamped<T: Send + Sync + 'static>(
+        &self,
+        car: CarId,
+        name: &'static str,
+        key: u64,
+        stamp: u64,
+    ) -> Option<Arc<T>> {
+        let m = &self.inner.memo;
+        let mut map = m.stamped.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let slot = map.get_mut(&(car, name, key))?;
+        if slot.0 != (stamp, 0, 0) {
+            return None;
+        }
+        slot.1 = m.tick.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        slot.2.clone().downcast::<T>().ok()
+    }
+
+    /// Keeps `v` under `(car, name, key)` with `stamp` ([`Self::stamped`]).
+    pub(crate) fn keep_stamped<T: Send + Sync + 'static>(
+        &self,
+        car: CarId,
+        name: &'static str,
+        key: u64,
+        stamp: u64,
+        v: Arc<T>,
+    ) {
+        let m = &self.inner.memo;
+        let tick = m.tick.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut map = m.stamped.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if map.len() >= MAX_STAMPED {
+            let mut ticks: Vec<u64> = map.values().map(|s| s.1).collect();
+            ticks.sort_unstable();
+            let cut = ticks[ticks.len() / 2];
+            map.retain(|_, s| s.1 > cut);
+        }
+        map.insert((car, name, key), ((stamp, 0, 0), tick, v));
     }
 }
 

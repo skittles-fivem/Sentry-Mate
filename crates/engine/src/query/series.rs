@@ -6,7 +6,7 @@ use crate::Engine;
 use crate::pipeline::all_rows;
 use db::StateRow;
 use model::{CarId, Sample, State};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// The fields a series can have, and how each is read from a sample.
@@ -263,6 +263,16 @@ impl Acc {
         self.last = Some(v);
     }
 
+    /// An hour's values ([`SlotAcc`]), after those before it.
+    fn merge(&mut self, s: &SlotAcc) {
+        let SlotAcc(_, n, sum, lo, hi, last) = *s;
+        self.n += n;
+        self.sum += sum;
+        self.min = Some(self.min.map_or(lo, |m| m.min(lo)));
+        self.max = Some(self.max.map_or(hi, |m| m.max(hi)));
+        self.last = Some(last);
+    }
+
     fn get(&mut self, how: &str) -> Option<f64> {
         if self.n == 0 {
             return None;
@@ -334,8 +344,6 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
     // values kept per bucket for quantiles: all of them up to a budget for the whole answer, then an even thinning
     let keep = if quantiles { (4_000_000 / (n.max(1) * q.fields.len())).clamp(16, 4096) } else { 0 };
     let mut accs: Vec<Vec<Acc>> = vec![vec![Acc::default(); n]; q.fields.len()];
-    // a day at a time, only the days that have samples: the whole history never sits in memory at once
-    let mut days = std::collections::BTreeSet::new();
     let streams: Vec<model::Stream> = match source {
         None => model::Stream::ALL.to_vec(),
         Some(super::SourceFilter::Live) => model::Stream::LIVE.to_vec(),
@@ -348,85 +356,92 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
     };
     // with `source=all`: the live seconds, with what the chosen import fills; the import's own seconds where there is
     // no live history (and in the spans flipped to the imported side)
-    let gaps = super::gapfill::Gaps::new(e, car, source)?;
     let flipped = if source.is_none() { super::system::flipped_spans(e, car)? } else { Vec::new() };
-    let in_flipped = |t: u64| {
-        let i = flipped.partition_point(|s| s.1 <= t);
-        flipped.get(i).is_some_and(|s| s.0 <= t)
-    };
+    let ctx = DayCtx { source, streams, sites, flipped };
     // the streams that gave a point to the answer
     let mut gave = std::collections::BTreeSet::new();
     let mut by_field: Vec<std::collections::BTreeSet<model::Origin>> = vec![Default::default(); q.fields.len()];
     let bits: Vec<u64> = q.fields.iter().map(|f| timeline::gapfill::slot_bit(sample_field(f))).collect();
     let any_bit = bits.iter().fold(0, |a, b| a | b);
-    for &s in &streams {
-        days.extend(
-            e.db()
-                .days::<Sample>(car, s)?
-                .into_iter()
-                .map(|d| d.start_ms)
-                .filter(|&d| d.saturating_add(DAY) > a && d < b),
-        );
-    }
-    for day in days {
-        let (x, y) = (day.max(a), day.saturating_add(DAY).min(b));
-        let mut chunk: Vec<(Sample, Tag)> = Vec::new();
-        // SMO's and the APIs' seconds fused as the timeline is (inside SMO's coverage SMO's second, no API second
-        // beside it), never summed
-        let live = model::Stream::LIVE.iter().all(|s| streams.contains(s));
-        if live {
-            let lf = e.live_fused(car, x, y)?;
-            let mut pts = lf.samples;
-            if !flipped.is_empty() {
-                pts.retain(|p| !in_flipped(p.t_ms));
-            }
-            let tag_of = |t: u64| timeline::fuse::inputs_at(&lf.marks, t);
-            if source.is_none() {
-                let g = gaps.samples(pts, x, y, SERIES_COVER_MS, super::gapfill::Own::Always)?;
-                for p in g.samples.iter() {
-                    let mut tag = Tag::default();
-                    for (_, site, mask) in g.at(p.t_ms) {
-                        tag.imported[site.index()] |= mask;
-                    }
-                    if tag.imported.iter().all(|m| *m != u64::MAX) {
-                        tag.live = tag_of(p.t_ms);
-                    }
-                    chunk.push((p.clone(), tag));
+    let stamps = super::dayparts::Stamps::of(e, car)?;
+    // a day at a time, only the days that have samples: the whole history never sits in memory at once
+    let days = stamps.days(&ctx.streams, a, b);
+    let gaps = super::gapfill::Gaps::new(e, car, source)?;
+    if w.is_multiple_of(SLOT) && !quantiles {
+        // buckets of whole hours: each day's sums per hour, kept for the days the window holds whole (made again when
+        // the day's files, or those of the days beside it, change)
+        let key = day_key(e, car, &ctx)?;
+        let fuse = &e.inner.opts.fuse;
+        let near = fuse.lower_margin_ms().max(fuse.margin_ms() + SERIES_COVER_MS).div_ceil(DAY).max(1) * DAY;
+        // (kept for `source=all`, what the pages ask for; one source's are worked out each time)
+        let whole: Vec<(u64, u64)> = days
+            .iter()
+            .filter(|&&d| source.is_none() && d >= a && d.saturating_add(DAY) <= b)
+            .map(|&d| (d, stamps.of_days(d.saturating_sub(near), d.saturating_add(near), key)))
+            .collect();
+        let kept = super::dayparts::parts(
+            e,
+            car,
+            "series-day",
+            &whole,
+            || super::gapfill::Gaps::new(e, car, source),
+            |gaps, d| Ok(day_part(&day_chunk(e, car, &ctx, gaps, d, d + DAY)?, d)),
+        )?;
+        let mut kept = kept.into_iter().zip(whole.iter().map(|x| x.0)).peekable();
+        for day in days {
+            let part = match kept.peek() {
+                Some((_, d)) if *d == day => kept.next().map(|x| x.0),
+                _ => None,
+            };
+            let part = match part {
+                Some(p) => p,
+                None => {
+                    let (x, y) = (day.max(a), day.saturating_add(DAY).min(b));
+                    std::sync::Arc::new(day_part(&day_chunk(e, car, &ctx, &gaps, x, y)?, day))
                 }
-            } else {
-                chunk.extend(pts.into_iter().map(|p| {
-                    let live = tag_of(p.t_ms);
-                    (p, Tag { live, ..Tag::default() })
-                }));
-            }
-        }
-        for &s in &streams {
-            if live && model::Stream::LIVE.contains(&s) {
-                continue;
-            }
-            // (with `source=all` the import's points came with the live seconds)
-            if source.is_none() && s.is_imported() {
-                continue;
-            }
-            let mut pts = e.db().read_points::<Sample>(car, s, x, y)?;
-            if let Some(site) = s.origin().site() {
-                pts.retain(|p| sites.shows(site, p.t_ms));
-            }
-            chunk.extend(pts.into_iter().map(|p| (p, Tag::of_stream(s))));
-        }
-        chunk.sort_by_key(|(s, _)| s.t_ms);
-        for (s, tag) in &chunk {
-            let Some(i) = s.t_ms.checked_sub(first).and_then(|d| usize::try_from(d / w).ok()).filter(|&i| i < n) else {
-                continue;
             };
             for (fi, f) in q.fields.iter().enumerate() {
-                if let Some(v) = get(s, f).filter(|v| v.is_finite()) {
-                    accs[fi][i].add(v, keep);
-                    tag.origins(bits[fi], &mut by_field[fi]);
+                if let Some(slots) = part.fields.get(f.as_str()) {
+                    for s in slots {
+                        let t = day + u64::from(s.0) * SLOT;
+                        let Some(i) = t.checked_sub(first).and_then(|d| usize::try_from(d / w).ok()).filter(|&i| i < n)
+                        else {
+                            continue;
+                        };
+                        accs[fi][i].merge(s);
+                    }
+                }
+                if let Some(o) = part.origins.get(f.as_str()) {
+                    by_field[fi].extend(o.iter().filter_map(|w| origin_of_word(w)));
                 }
             }
-            // the inputs and imports that gave the answer a point
-            tag.gave(any_bit, &mut gave);
+            gave.extend(part.gave.iter().filter_map(|w| origin_of_word(w)));
+            for (word, mask) in &part.filled {
+                if mask & any_bit != 0
+                    && let Some(o) = origin_of_word(word)
+                {
+                    gave.insert(o);
+                }
+            }
+        }
+    } else {
+        for day in days {
+            let (x, y) = (day.max(a), day.saturating_add(DAY).min(b));
+            let chunk = day_chunk(e, car, &ctx, &gaps, x, y)?;
+            for (s, tag) in &chunk {
+                let Some(i) = s.t_ms.checked_sub(first).and_then(|d| usize::try_from(d / w).ok()).filter(|&i| i < n)
+                else {
+                    continue;
+                };
+                for (fi, f) in q.fields.iter().enumerate() {
+                    if let Some(v) = get(s, f).filter(|v| v.is_finite()) {
+                        accs[fi][i].add(v, keep);
+                        tag.origins(bits[fi], &mut by_field[fi]);
+                    }
+                }
+                // the inputs and imports that gave the answer a point
+                tag.gave(any_bit, &mut gave);
+            }
         }
     }
     let t_ms: Vec<u64> = (0..n as u64).map(|i| first + i * w).collect();
@@ -458,6 +473,194 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
     ))
 }
 
+/// Hours: what a long period's buckets are summed from (a bucket of whole hours holds whole slots, so its sums,
+/// minima, maxima and last values are those of its slots).
+const SLOT: u64 = 3_600_000;
+
+/// What a day of a series is read with: the source asked for and what it shows.
+struct DayCtx {
+    source: Option<super::SourceFilter>,
+    streams: Vec<model::Stream>,
+    sites: super::system::Sites,
+    flipped: Vec<(u64, u64)>,
+}
+
+/// A key of what a day's part rests on besides the days' files: the source, which import is shown where, the spans
+/// flipped to the imported side, whether imports fill gaps, how inputs are fused, and this part's own make-up (its
+/// name and number: a change to how a day is read or summed takes a new number, so kept days are made again).
+fn day_key(e: &Engine, car: CarId, ctx: &DayCtx) -> QResult<u64> {
+    let gap_sites = match ctx.source {
+        None => Some(super::system::Sites::new(e, car)?),
+        Some(_) => None,
+    };
+    let fill = super::fleet::gap_fill_on(e, car)?;
+    Ok(super::dayparts::key_of(&[
+        &"series-day 2",
+        &ctx.source,
+        &ctx.sites,
+        &gap_sites,
+        &ctx.flipped,
+        &fill,
+        &e.inner.opts.fuse,
+        &SERIES_COVER_MS,
+        &FIELDS,
+    ]))
+}
+
+/// The points of `[x, y)` (within one UTC day) of the series' source, in time order, each with where its values came
+/// from.
+fn day_chunk(
+    e: &Engine,
+    car: CarId,
+    ctx: &DayCtx,
+    gaps: &super::gapfill::Gaps<'_>,
+    x: u64,
+    y: u64,
+) -> QResult<Vec<(Sample, Tag)>> {
+    let (source, streams) = (ctx.source, &ctx.streams);
+    let in_flipped = |t: u64| {
+        let i = ctx.flipped.partition_point(|s| s.1 <= t);
+        ctx.flipped.get(i).is_some_and(|s| s.0 <= t)
+    };
+    let mut chunk: Vec<(Sample, Tag)> = Vec::new();
+    // SMO's and the APIs' seconds fused as the timeline is (inside SMO's coverage SMO's second, no API second
+    // beside it), never summed
+    let live = model::Stream::LIVE.iter().all(|s| streams.contains(s));
+    if live {
+        let lf = e.live_fused(car, x, y)?;
+        let mut pts = lf.samples;
+        if !ctx.flipped.is_empty() {
+            pts.retain(|p| !in_flipped(p.t_ms));
+        }
+        let tag_of = |t: u64| timeline::fuse::inputs_at(&lf.marks, t);
+        if source.is_none() {
+            let g = gaps.samples(pts, x, y, SERIES_COVER_MS, super::gapfill::Own::Always)?;
+            for p in g.samples.iter() {
+                let mut tag = Tag::default();
+                for (_, site, mask) in g.at(p.t_ms) {
+                    tag.imported[site.index()] |= mask;
+                }
+                if tag.imported.iter().all(|m| *m != u64::MAX) {
+                    tag.live = tag_of(p.t_ms);
+                }
+                chunk.push((p.clone(), tag));
+            }
+        } else {
+            chunk.extend(pts.into_iter().map(|p| {
+                let live = tag_of(p.t_ms);
+                (p, Tag { live, ..Tag::default() })
+            }));
+        }
+    }
+    for &s in streams {
+        if live && model::Stream::LIVE.contains(&s) {
+            continue;
+        }
+        // (with `source=all` the import's points came with the live seconds)
+        if source.is_none() && s.is_imported() {
+            continue;
+        }
+        let mut pts = e.db().read_points::<Sample>(car, s, x, y)?;
+        if let Some(site) = s.origin().site() {
+            pts.retain(|p| ctx.sites.shows(site, p.t_ms));
+        }
+        chunk.extend(pts.into_iter().map(|p| (p, Tag::of_stream(s))));
+    }
+    chunk.sort_by_key(|(s, _)| s.t_ms);
+    Ok(chunk)
+}
+
+/// One field's values in one hour of a day: `(hour, count, sum, min, max, last)`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+struct SlotAcc(
+    u8,
+    u64,
+    #[serde(with = "super::dayparts::exact")] f64,
+    #[serde(with = "super::dayparts::exact")] f64,
+    #[serde(with = "super::dayparts::exact")] f64,
+    #[serde(with = "super::dayparts::exact")] f64,
+);
+
+/// A UTC day of a series (or the part of it in the window), summed per hour: every field's values, and where they
+/// came from (origins by their stream's name on disk, which never changes).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct DayPart {
+    /// Per field with values: its hours with values, in order.
+    fields: BTreeMap<String, Vec<SlotAcc>>,
+    /// Per field with values: where they came from.
+    origins: BTreeMap<String, Vec<String>>,
+    /// Where the points came from, less the imports that only filled values (`filled`).
+    gave: Vec<String>,
+    /// Per import site: the values (mask bits) it filled in points that were not its own.
+    filled: BTreeMap<String, u64>,
+}
+
+fn origin_word(o: model::Origin) -> Option<&'static str> {
+    model::Stream::ALL.into_iter().find(|s| s.origin() == o).map(model::Stream::dir_name)
+}
+
+fn origin_of_word(w: &str) -> Option<model::Origin> {
+    model::Stream::ALL.into_iter().find(|s| s.dir_name() == w).map(model::Stream::origin)
+}
+
+/// The hourly sums of a day's points (`day` its start; the points all in it, in time order).
+fn day_part(chunk: &[(Sample, Tag)], day: u64) -> DayPart {
+    let slots = usize::try_from(DAY / SLOT).unwrap_or(24);
+    let mut accs: Vec<Vec<Acc>> = vec![vec![Acc::default(); slots]; FIELDS.len()];
+    let mut origins: Vec<std::collections::BTreeSet<model::Origin>> = vec![Default::default(); FIELDS.len()];
+    let bits: Vec<u64> = FIELDS.iter().map(|f| timeline::gapfill::slot_bit(sample_field(f))).collect();
+    let mut gave = std::collections::BTreeSet::new();
+    let mut filled = [0u64; SITES];
+    for (s, tag) in chunk {
+        let Some(h) = s.t_ms.checked_sub(day).and_then(|d| usize::try_from(d / SLOT).ok()).filter(|&h| h < slots)
+        else {
+            continue;
+        };
+        for (fi, f) in FIELDS.iter().enumerate() {
+            if let Some(v) = get(s, f).filter(|v| v.is_finite()) {
+                accs[fi][h].add(v, 0);
+                tag.origins(bits[fi], &mut origins[fi]);
+            }
+        }
+        // (the imports that filled fields asked for are added for the answer: `filled`)
+        tag.gave(0, &mut gave);
+        for (k, m) in tag.imported.iter().enumerate() {
+            if *m != u64::MAX {
+                filled[k] |= m;
+            }
+        }
+    }
+    let words = |o: &std::collections::BTreeSet<model::Origin>| -> Vec<String> {
+        o.iter().filter_map(|o| origin_word(*o)).map(str::to_string).collect()
+    };
+    let mut part = DayPart { gave: words(&gave), ..DayPart::default() };
+    for (fi, f) in FIELDS.iter().enumerate() {
+        let v: Vec<SlotAcc> = accs[fi]
+            .iter()
+            .enumerate()
+            .filter_map(|(h, a)| match (a.n, a.min, a.max, a.last) {
+                (1.., Some(lo), Some(hi), Some(last)) => {
+                    Some(SlotAcc(u8::try_from(h).unwrap_or(u8::MAX), a.n, a.sum, lo, hi, last))
+                }
+                _ => None,
+            })
+            .collect();
+        if !v.is_empty() {
+            part.fields.insert((*f).to_string(), v);
+        }
+        if !origins[fi].is_empty() {
+            part.origins.insert((*f).to_string(), words(&origins[fi]));
+        }
+    }
+    for (k, m) in filled.iter().enumerate() {
+        if *m != 0
+            && let Some(w) = origin_word(model::Origin::Import(model::ImportSite::ALL[k]))
+        {
+            part.filled.insert(w.to_string(), *m);
+        }
+    }
+    part
+}
 /// The streams with sample days meeting `[a, b)`, as origins (what a chart over that window draws from).
 pub(crate) fn origins_between(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec<model::Origin>> {
     let mut out = Vec::new();
