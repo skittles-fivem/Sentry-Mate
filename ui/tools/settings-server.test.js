@@ -4,11 +4,10 @@
 //   - with the owner's own certificate (--own-certificate) the page offers no "Make a new certificate" (the server
 //     refuses it there) and says how to change the files instead, also in the "certificate expires" row.
 // And its Storage panel in all six packs, at desktop size (admins only):
-//   - the categories of GET /system/storage/detail are grouped by kind, largest first, and the CAN logs group opens
-//     to its categories by short name, largest first; with the total, the free space, what compaction saved and
-//     its last pass, and the sentence that says compaction is lossless on hover (a title);
+//   - the categories of GET /system/storage/detail are listed largest first, with the total, the free space, what
+//     compaction saved and its last pass, and the sentence that says compaction is lossless;
 //   - "Compact now" posts, the progress shows ("Packing…" with the step and done of total, read again every 2 s),
-//     and when the pass ends the groups are drawn again (the day packs first) and a note says what was freed;
+//     and when the pass ends the list is drawn again (the day packs first) and a note says what was freed;
 //   - a failed pass shows the server's error; a watch account gets no panel and asks for no detail;
 //   - the reading stops when the page is left while a pass runs.
 // Run: node --test ui/tools/settings-server.test.js. Skipped when Playwright is not installed.
@@ -132,15 +131,6 @@ const ready = (page, id = 'settings-server') => page.waitForFunction((want) => d
 // the page's text with every run of white space as one space (a figure and its unit are separate elements)
 const bodyText = (page) => page.evaluate(() => document.body.innerText.replace(/\s+/g, ' '));
 const compactButton = (page) => page.getByRole('button', { name: /compact now/i });
-const LOGS = 'can logs (signed originals)';
-// the text of the groups by kind, lower case, white space as one space
-const groupsText = (page) => page.locator('.st-groups').first().evaluate((e) => e.innerText.replace(/\s+/g, ' ').toLowerCase());
-// the CAN logs group opened (open at first in most packs; closed at first in Pebble's tile)
-async function openLogs(page) {
-  const head = page.locator('button[aria-expanded]', { hasText: /can logs \(signed originals\)/i }).first();
-  if (await head.getAttribute('aria-expanded') !== 'true') await head.click();
-  await page.waitForFunction(() => [...document.querySelectorAll('button[aria-expanded="true"]')].some((b) => /can logs/i.test(b.textContent)));
-}
 
 for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'manager']) {
   test(`${pack}: Settings: Server, the Storage panel and Compact now`, { skip: !playwright && 'Playwright is not installed', timeout: 240000 }, async () => {
@@ -152,24 +142,20 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'ma
         let { page, context, errors, reads } = await openDesk(browser, server);
         await page.goto(`${server.origin}/settings/server`);
         await ready(page);
-        await openLogs(page);
-        let groups = await groupsText(page);
-        const raw = groups.indexOf('signed originals', groups.indexOf(LOGS) + LOGS.length);
-        const packs = groups.indexOf('packed by day');
+        let text = await bodyText(page);
+        const raw = text.indexOf('CAN logs as uploaded (signed originals)');
+        const packs = text.indexOf('CAN logs and sidecars as uploaded, packed by day');
         assert.ok(raw >= 0 && packs > raw, 'the logs as uploaded come first, then the day packs');
-        assert.ok(groups.indexOf('time series') > groups.indexOf('check results'), 'the groups largest first, the open group\'s rows under it');
-        assert.ok(groups.indexOf('drives and charges') > groups.indexOf('kept answers and records'), 'largest first');
-        assert.doesNotMatch(groups, /offline map tiles/, 'a closed group does not list its rows');
-        let text = (await bodyText(page)).toLowerCase();
+        assert.ok(text.indexOf('Offline map tiles') > packs, 'largest first');
+        assert.match(text, /kept answers and records/i, 'the group in plain words');
         assert.doesNotMatch(text, /\bkv\b/, 'no jargon');
-        assert.match(text, /saved:? 830 mb/, 'saved so far');
+        assert.match(text, /saved so far|saved 830 MB so far/i);
+        assert.match(text, /830 MB/, 'saved so far');
         assert.match(text, /9\.5 MB freed/i, 'what the last pass freed');
         assert.match(text, /runs by itself when the server is idle/i);
-        assert.match(text, /442 gb/, 'the free space');
-        assert.match(text, /21 gb/, 'the total on disk');
-        assert.match(await page.locator('[title*="losslessly"]').first().getAttribute('title'),
-          /losslessly: every value stays readable exactly, and the logs[’'] signed originals are kept byte for byte/i, 'on hover');
-        assert.equal(await page.locator('.st-rows:not([hidden]) > li').count() >= 4, true, 'the open group lists its categories');
+        assert.match(text, /442 GB/, 'the free space');
+        assert.match(text, /21 GB/, 'the total on disk');
+        assert.match(text, /losslessly: every value stays readable exactly, and the logs[’'] signed originals are kept byte for byte/i);
         assert.equal(reads.length, 1, 'idle: the detail is read once');
 
         // Compact now: progress, then the list again and what was freed
@@ -177,11 +163,10 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'ma
         await page.waitForFunction(() => /packing…\s*CAN logs, [\d,.]+ of [\d,.]+/i.test(document.body.innerText) || /step\s+CAN logs, [\d,.]+ of [\d,.]+/.test(document.body.innerText), null, { timeout: 15000 });
         assert.ok(await compactButton(page).isDisabled(), 'no second pass while one runs');
         await page.waitForFunction(() => /Compaction is done: 3\.0\sGB freed on disk\./.test(document.body.innerText), null, { timeout: 30000 });
-        text = (await bodyText(page)).toLowerCase();
-        groups = await groupsText(page);
-        assert.ok(groups.indexOf('packed by day') < groups.indexOf('signed originals', groups.indexOf(LOGS) + LOGS.length), 'the groups were drawn again: the day packs are the largest now');
-        assert.match(text, /3\.0 gb freed/, 'the last pass');
-        assert.match(text, /3\.9 gb/, 'saved so far grew');
+        text = await bodyText(page);
+        assert.ok(text.indexOf('CAN logs and sidecars as uploaded, packed by day') < text.indexOf('CAN logs as uploaded (signed originals)'), 'the list was drawn again: the day packs are the largest now');
+        assert.match(text, /3\.0 GB freed/i, 'the last pass');
+        assert.match(text, /3\.9 GB/, 'saved so far grew');
         assert.ok(await compactButton(page).isEnabled());
         const n = reads.length;
         await page.waitForTimeout(4500);

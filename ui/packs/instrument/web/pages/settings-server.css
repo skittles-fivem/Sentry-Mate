@@ -106,47 +106,12 @@
   .ss-name-input { width: 100%; }
 }
 
-/* the move and Storage side by side: half the width each on a desktop, one above the other when narrow */
-.ss-pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--gap); align-items: stretch; }
-.ss-pair > .panel { min-width: 0; }
-@container page (min-width: 62rem) {
-  .ss-pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-}
-@container page (max-width: 110rem) {
-  .ss-pair .mv-ways { grid-template-columns: minmax(0, 1fr); }
-}
-:root[data-phone] .ss-pair { grid-template-columns: minmax(0, 1fr); }
-
-/* storage: the figures in a row, how compaction stands, then the space by kind */
-.st-side { gap: round(0.5rem, var(--e)); flex-wrap: wrap; justify-content: flex-end; }
-.st-figs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: round(0.5rem, var(--e)); margin: 0; }
-.st-fig { min-width: 0; padding: round(0.5rem, var(--e)) round(0.625rem, var(--e)); border-radius: var(--radius-sm); background: var(--surface-sunken); border: 1px solid var(--line); cursor: help; }
-.st-fig dt { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
-.st-fig dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.ss-stor-line { display: flex; align-items: center; gap: round(0.5rem, var(--e)); margin: round(0.625rem, var(--e)) 0; min-height: round(1.5rem, var(--e)); color: var(--text-2); }
+/* storage: the figures, how compaction stands and what it does, then the table */
+.ss-stor { display: flex; flex-direction: column; gap: round(0.875rem, var(--e)); padding: round(1rem, var(--e)) round(1.25rem, var(--e)) round(1.125rem, var(--e)); border-bottom: 1px solid var(--line); }
+.ss-stor-line { display: flex; align-items: center; gap: round(0.5rem, var(--e)); margin: 0; min-height: round(1.5rem, var(--e)); color: var(--text-2); }
 .ss-stor-line b { color: var(--text); font-weight: 600; }
 .ss-stor-line > .ico, .ss-stor-line > .mv-spin { flex: none; }
 .ss-stor-line.is-bad > .ico { color: var(--warm); }
-.st-tip { flex: none; display: inline-grid; place-items: center; color: var(--text-3); cursor: help; }
-.st-groups { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
-.st-group { border-bottom: 1px solid var(--line); }
-.st-group-head { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(3rem, 6rem) auto round(2.75rem, var(--e)); align-items: center; gap: round(0.625rem, var(--e)); width: 100%; min-height: var(--tap, 2.5rem); padding: round(0.375rem, var(--e)) 0; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
-@media (hover: hover) { .st-group-head:hover .st-group-name { color: var(--live); } }
-.st-group-head > .ico { color: var(--text-3); }
-.st-group-name { font-weight: 600; overflow-wrap: anywhere; }
-.st-bar { width: 100%; }
-.st-group-size { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.st-group-share { text-align: right; white-space: nowrap; color: var(--text-3); font-variant-numeric: tabular-nums; }
-/* a group's categories: five rows at most, the rest scroll */
-.st-rows { list-style: none; margin: 0 0 round(0.5rem, var(--e)); padding: 0 0 0 round(1.625rem, var(--e)); max-height: calc(5 * round(2rem, var(--e))); overflow-y: auto; overscroll-behavior: contain; }
-.st-rows[hidden] { display: none; }
-.st-row { display: flex; align-items: center; justify-content: space-between; gap: round(0.75rem, var(--e)); min-height: round(2rem, var(--e)); color: var(--text-2); }
-.st-row-name { min-width: 0; overflow-wrap: anywhere; }
-.st-row-size { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.st-none { padding: round(0.75rem, var(--e)) 0; color: var(--text-2); }
-:root[data-phone] .st-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-:root[data-phone] .st-group-head { grid-template-columns: auto minmax(0, 1fr) auto round(2.75rem, var(--e)); }
-:root[data-phone] .st-bar { grid-column: 2 / -1; grid-row: 2; }
 
 /* moving to another server (pages/settings-server-move.js) */
 .mv-lead { color: var(--text-2); max-width: round(64rem, var(--e)); margin: 0 0 round(1rem, var(--e)); }

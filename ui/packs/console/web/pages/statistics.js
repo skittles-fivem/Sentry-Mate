@@ -32,6 +32,9 @@ const moneyLines = (list) => {
   return xs.length ? h('span', { class: 'money' }, xs.map((x, i) => [i ? ' ' : null, x.value != null && x.amount == null ? format({ amount: x.value, currency: x.currency }, 'price_energy') : formatMoney(x.amount, x.currency)])) : null;
 };
 
+// the total cost of a row: priced plus estimated, per currency (an older server sends only the priced cost)
+const totalOf = (r) => r.cost_total_by_currency || r.cost_by_currency || [];
+
 function defaultGroup(p) {
   if (p?.from_ms == null) return 'month';
   const d = (p.to_ms - p.from_ms) / DAY;
@@ -109,14 +112,18 @@ export async function mount(ctx) {
     const logged = sum(rows.map((r) => r.distance_logged_km));
     const used = sum(rows.map((r) => r.energy_used_kwh));
     const standing = sum(rows.map((r) => r.energy_standing_kwh));
-    const cost = new Map(), basis = new Map();
+    const cost = new Map(), est = new Map(), priced = new Map(), basis = new Map();
     for (const r of rows) {
-      for (const c of r.cost_by_currency || []) cost.set(c.currency, (cost.get(c.currency) || 0) + (c.amount || 0));
+      for (const c of totalOf(r)) cost.set(c.currency, (cost.get(c.currency) || 0) + (c.amount || 0));
+      for (const c of r.cost_by_currency || []) priced.set(c.currency, (priced.get(c.currency) || 0) + (c.amount || 0));
       for (const p of r.price_per_kwh || []) {
         const a = (r.cost_by_currency || []).find((c) => c.currency === p.currency)?.amount;
         if (a && p.value) basis.set(p.currency, (basis.get(p.currency) || 0) + a / p.value);
       }
+      for (const c of r.cost_estimated_by_currency || []) if (c.amount) est.set(c.currency, (est.get(c.currency) || 0) + c.amount);
     }
+    const days = Math.max(1, sum(rows.map((r) => (r.period_end_ms - r.period_start_ms) / DAY)));
+    const charges = sum(rows.map((r) => r.charges));
     const tW = sum(rows.map((r) => (r.outside_avg_c != null ? r.outside_avg_c * (r.time_driven_ms || 0) : 0)));
     const tMs = sum(rows.map((r) => (r.outside_avg_c != null ? r.time_driven_ms || 0 : 0)));
     let span = 0, recd = 0;
@@ -125,24 +132,38 @@ export async function mount(ctx) {
     const gross = logged > 0.1 ? ((used + standing) / logged) * 1000 : null;
     return {
       odo: odo.length ? sum(odo) : null, logged, used, standing, added: sum(rows.map((r) => r.energy_added_kwh)), grid: sum(rows.map((r) => r.energy_grid_kwh)),
-      ms: sum(rows.map((r) => r.time_driven_ms)), drives: sum(rows.map((r) => r.drives)), charges: sum(rows.map((r) => r.charges)),
+      ms: sum(rows.map((r) => r.time_driven_ms)), drives: sum(rows.map((r) => r.drives)), charges,
       cost: [...cost].map(([currency, amount]) => ({ currency, amount: Math.round(amount * 100) / 100 })),
-      ppk: [...basis].map(([currency, b]) => ({ currency, value: cost.get(currency) / b })),
+      ppk: [...basis].map(([currency, b]) => ({ currency, value: priced.get(currency) / b })),
+      est: [...est].map(([currency, amount]) => ({ currency, amount: Math.round(amount * 100) / 100 })),
+      priced: rows.some((r) => r.charges_priced != null) ? sum(rows.map((r) => r.charges_priced)) : null,
+      per100: logged > 1 ? [...cost].map(([currency, amount]) => ({ currency, amount: (amount / logged) * 100 })) : [],
+      perDay: [...cost].map(([currency, amount]) => ({ currency, amount: amount / days })),
+      odoDropped: sum(rows.map((r) => r.completeness?.odometer_dropped)),
       temp: tMs ? tW / tMs : null, net, gross, overhead: net && gross ? ((gross - net) / net) * 100 : null, recorded: span ? (recd / span) * 100 : null,
     };
   }
 
+  // 'priced 12 of 766 charges · $41.20 estimated · $3.10/100mi · $1.20/day'
+  const moneyT = (list, kind = 'money') => list.map((x) => (kind === 'money' ? formatMoney(x.amount, x.currency) : format({ amount: x.amount, currency: x.currency }, kind))).join(' ');
+  const costNote = (t) => [
+    t.priced != null ? `priced ${formatNumber(t.priced)} of ${formatNumber(t.charges)} charges` : null,
+    t.est.length ? `${moneyT(t.est)} estimated` : null,
+    t.per100.length ? moneyT(t.per100, 'money_per_distance') : null,
+    t.perDay.length ? `${moneyT(t.perDay)} per day` : null,
+  ].filter(Boolean).join(' · ');
+
   function paintTotals(t, rows) {
     const nothing = !rows.length;
     replace(totalsSlot, section({ title: 'totals', side: none(`${period.label}${multi ? `, ${scope}` : ''}`) }, kv([
-      ['distance', nothing ? none('no data in this range') : [num(t.odo, 'distance'), none(`  ${format(t.logged, 'distance')} logged`)]],
+      ['distance', nothing ? none('no data in this range') : [num(t.odo, 'distance'), none(`  ${format(t.logged, 'distance')} logged${t.odoDropped > 0 ? `; ${formatNumber(t.odoDropped)} odometer ${t.odoDropped === 1 ? 'reading' : 'readings'} left out` : ''}`)]],
       ['time driving', nothing ? none('—') : [formatDuration(t.ms), none(`  ${formatNumber(t.drives)} drives`)]],
       ['energy used', nothing ? none('—') : [num(t.used + t.standing, 'energy'), none(`  ${format(t.used, 'energy')} driving, ${format(t.standing, 'energy')} parked`)]],
       ['energy added', nothing ? none('—') : [num(t.added, 'energy'), none(`  ${formatNumber(t.charges)} charges${t.grid ? `, ${format(t.grid, 'energy')} from the grid` : ''}`)]],
       ['net', t.net != null ? num(t.net, 'efficiency') : none('not enough distance')],
       ['gross', t.gross != null ? [num(t.gross, 'efficiency'), t.overhead != null ? none(`  parked use adds ${pct(t.overhead)}`) : null] : none('not enough distance')],
       ['outside', t.temp != null ? [num(t.temp, 'temperature'), none('  while driving')] : none('no drive')],
-      ['cost', moneyLines(t.cost) ? [moneyLines(t.cost), t.ppk.length ? none('  ') : null, moneyLines(t.ppk), t.ppk.length ? none(' avg') : null] : none(t.charges ? 'no charge has a price' : 'no charge')],
+      ['total cost', moneyLines(t.cost) ? [moneyLines(t.cost), none(`  ${costNote(t)}`)] : none(t.charges ? 'no charge has a price' : 'no charge')],
       ['recorded', t.recorded != null ? [cellBar(t.recorded / 100, 20, t.recorded >= 99.5 ? 'accent' : 'warn'), ' ', pct(t.recorded, 1)] : none('—')],
     ])));
   }
@@ -154,7 +175,7 @@ export async function mount(ctx) {
     tbl = table(ctx, {
       title: `per ${NAME[group]}`, rows: sorted, csv: false, cover: 'statistics.table', sort: { key: 'period', dir: 'desc' }, limit: 400,
       rowHref: (r) => linkFor('trip', r),
-      note: `newest first${multi ? ', one row per car' : ''}. drives and charges count by their start. open a period as a trip; eff is the rated consumption over the measured one (above 100% beats the rating).`,
+      note: `newest first${multi ? ', one row per car' : ''}. drives and charges count by their start. open a period as a trip; eff is the rated consumption over the measured one (above 100% beats the rating); cost is priced plus estimated, * marks estimates or unpriced charges.`,
       columns: [
         { key: 'period', label: NAME[group], sort: true, firstDir: 'desc', ph: 'main', value: (r) => r.period_start_ms, cover: ['statistics.col.period', 'statistics.link.trip'],
           render: (r) => [h('a', { class: 'lnk-plain', href: linkFor('trip', r), cover: 'statistics.link.trip' }, periodText(r)), partOf(r, group, r.time_zone || carTz(r.car)) ? [' ', tag('part', 'muted')] : null] },
@@ -178,8 +199,15 @@ export async function mount(ctx) {
           render: (r) => countLink(r.charges, 'charges', r, 'statistics.link.charges'), total: T(() => formatNumber(t.charges)) },
         { key: 'per_charge', label: '/charge', num: true, sort: true, cover: 'statistics.col.avg_energy_per_charge', value: (r) => r.energy_per_charge_kwh, render: (r) => num(r.energy_per_charge_kwh, 'energy'),
           total: T(() => t.charges ? num(t.added / t.charges, 'energy') : null) },
-        { key: 'cost', label: 'cost', num: true, sort: true, ph: 'num', cover: 'statistics.col.costs', value: (r) => r.cost_by_currency?.[0]?.amount ?? null,
-          render: (r) => moneyLines(r.cost_by_currency) || (r.charges ? none('no price') : null), total: T(() => moneyLines(t.cost)) },
+        { key: 'cost', label: 'cost', num: true, sort: true, ph: 'num', cover: 'statistics.col.costs', value: (r) => totalOf(r)[0]?.amount ?? null,
+          render: (r) => {
+            const main = moneyLines(totalOf(r));
+            if (!main) return r.charges ? none('no price') : null;
+            const est = (r.cost_estimated_by_currency || []).filter((x) => x.amount);
+            // a one-character mark keeps the columns in the window; its title says what is estimated or unpriced
+            const sub = est.length ? `est. ${moneyT(est)}` : r.charges_priced != null && r.charges_priced < r.charges ? `${formatNumber(r.charges_priced)} of ${formatNumber(r.charges)} priced` : null;
+            return sub ? h('span', { title: sub }, main, none('*')) : main;
+          }, total: T(() => moneyLines(t.cost)) },
         { key: 'ppk', label: '/kwh', num: true, cover: 'statistics.col.cost_per_kwh', render: (r) => moneyLines(r.price_per_kwh), total: T(() => moneyLines(t.ppk)) },
         { key: 'p100', label: `/100${unitLabel('distance')}`, num: true, cover: 'statistics.col.cost_per_distance',
           render: (r) => { const xs = (r.cost_per_100km || []).filter((x) => x.amount != null); return xs.length ? xs.map((x, i) => [i ? ' ' : null, formatMoney(convert(x.amount, 'money_per_distance'), x.currency)]) : null; } },

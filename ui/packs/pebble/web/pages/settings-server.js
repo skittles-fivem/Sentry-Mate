@@ -14,8 +14,6 @@
 // while a compaction pass runs (no event stream for these).
 
 import { h } from '../shared/dom.js';
-import { downloadCsv } from '../shared/csv.js';
-import { storageGroups, shortName, shareText, groupWord, PACK_STEP } from '../shared/storage.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { formatDateTime, formatDate } from '../shared/time.js';
@@ -41,6 +39,9 @@ const ROLE_TEXT = {
   watch: 'Sees only the cars on its list, and changes only its own preferences and sessions.',
 };
 const PURPOSE = { web: 'Web pages and API', upload: 'CAN Bridge uploads' };
+// storage: the groups of the categories and the steps of a compaction pass, in plain words
+const STORE_GROUP = { logs: 'CAN logs', series: 'Time series', rows: 'Drives and charges', kv: 'Kept answers and records', imports: 'Imports', server: 'Server' };
+const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records' };
 /** Text that may break only after a slash, a colon or a dot (addresses, a SHA-256). */
 const breakable = (t) => String(t).split(/(?<=[/:.])/).map((part, i) => [i ? h('wbr') : null, part]);
 
@@ -420,18 +421,14 @@ export async function mount(ctx) {
   }
 
   /* ================================================================ storage and compaction (admins) */
-  // Two half tiles side by side: Storage (on disk, free, saved by compaction, the last pass, how compaction stands
-  // with what it does on hover, Compact now and the CSV) and the space by kind (shared/storage.js): one row per
-  // group with its size, a bar and its share; a group opens to its categories by short name, at most five rows
-  // tall (the CSV has every category with the server's own label). While a pass runs (also one the server
-  // started by itself) the detail is read again every 2 s, and when it ends a note says what was freed.
+  // The space on disk by category, largest first, and what compaction saved. "Compact now" starts a pass; while
+  // one runs (also one the server started by itself) the detail is read again every 2 s for its progress, and
+  // when it ends the list is drawn again and a note says what was freed.
   let store = null;       // GET /system/storage/detail
   let storeErr = null;    // why the last read failed
   let storeTimer = 0;
   ctx.onCleanup(() => clearTimeout(storeTimer));
   const storeBox = h('div', { class: 'contents' });
-  const storeOpen = new Set();   // the groups opened (all closed at first, so the two tiles are about as tall)
-  const LOSSLESS = 'Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs’ signed originals are kept byte for byte.';
   async function readStorage() {
     clearTimeout(storeTimer);
     const was = store && store.compaction && store.compaction.status;
@@ -453,56 +450,45 @@ export async function mount(ctx) {
     } catch (e) { if (api.isAbort(e) || !ctx.alive()) return; ctx.toast(`Compaction not started: ${(e && e.message) || 'the server did not answer'}`, { kind: 'error' }); }
     drawStorage();
   }
-  function storageTile() {
+  function compactionTile() {
     const c = (store && store.compaction) || null;
     const running = !!c && c.status === 'running';
     const failed = !!c && c.status === 'failed';
-    const tip = h('span', { class: 'st-tip', title: LOSSLESS, 'aria-label': LOSSLESS, role: 'img' }, icon('info'));
     const line = running
       ? said('info', h('b', null, 'Packing…'), ` ${PACK_STEP[c.step] || c.step || 'getting ready'}, `, c.total ? `${formatNumber(c.done || 0)} of ${formatNumber(c.total)}` : 'counting',
         storeErr ? ' (the progress could not be read just now)' : null)
       : failed ? said('warn', h('b', null, 'The last pass failed: '), c.error || 'the server gave no reason.')
-        : said('info', !c ? 'The server did not say how compaction stands.' : c.automatic ? 'Compaction runs by itself when the server is idle.' : 'Compaction does not run by itself here.');
-    line.append(tip);
-    const num = (k, v, title) => [h('span', { class: 'hero-k', title }, k), h('span', { class: 'st-num', title }, v)];
+        : said('info', !c ? 'The server did not say how compaction stands.'
+          : c.automatic ? 'Compaction runs by itself when the server is idle. Compact now starts a pass at once.'
+            : 'Compaction does not run by itself on this server. Compact now starts a pass.');
     return tile({ w: 2, title: 'Compaction', icon: 'refresh', id: 'storage',
       side: chip(running ? 'Packing' : failed ? 'Failed' : c ? 'Idle' : 'Not known', { tone: running ? 'sky' : failed ? 'sun' : c ? 'teal' : 'muted' }) },
-    h('div', { class: 'tile-nums st-nums' },
-      h('div', null, num('On disk', bytes(store ? store.total_disk_bytes : null), 'Everything on the right, as it lies on disk.')),
-      h('div', null, num('Free', store && store.free_bytes != null ? bytes(store.free_bytes) : 'Not known', 'Room left on the disk for new data.')),
-      h('div', null, num('Saved', bytes(c ? c.saved_bytes : null), 'What compaction has freed in all.')),
-      h('div', null, num('Last pass', !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'Nothing left to pack',
-        c && c.finished_ms != null ? `Finished ${when(c.finished_ms)}.` : 'No pass has finished yet.'))),
+    group(null, [
+      infoRow({ icon: 'check', name: 'Saved so far', sub: 'What compaction has freed in all.', side: h('span', { class: 'set-value' }, bytes(c ? c.saved_bytes : null)) }),
+      infoRow({ icon: 'clock', name: 'Last pass', sub: c && c.finished_ms != null ? `Finished ${when(c.finished_ms)}.` : 'No pass has finished yet.',
+        side: h('span', { class: 'set-value' }, !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'Nothing left to pack') }),
+    ]),
     h('div', { 'aria-live': 'polite' }, line),
-    h('div', { class: 'form-actions' },
-      btn('Compact now', { kind: 'primary', icon: 'refresh', disabled: running || !c, onclick: compactNow }),
-      btn('Download CSV', { kind: 'ghost', icon: 'download', onclick: () => downloadCsv('sentry-mate-storage-on-disk.csv', (store && store.categories) || [], [
-        { label: 'What', value: (x) => x.label }, { label: 'Kind', value: (x) => groupWord(x.group) }, { label: 'Key', value: (x) => x.key },
-        { label: 'Files', value: (x) => x.files }, { label: 'Size (bytes)', value: (x) => x.bytes }, { label: 'On disk (bytes)', value: (x) => x.disk_bytes }]) })));
+    h('div', { class: 'form-actions' }, btn('Compact now', { kind: 'primary', icon: 'refresh', disabled: running || !c, onclick: compactNow })),
+    note('Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs’ signed originals are kept byte for byte.'));
   }
   function spaceTile() {
-    const groups = storageGroups(store && store.categories);
-    return tile({ w: 2, title: 'Space by kind', icon: 'bars', side: chip(store && store.total_disk_bytes != null ? `${bytes(store.total_disk_bytes)} in all` : 'Not known', { tone: 'muted' }) },
-      groups.length
-        ? h('ul', { class: 'rows-list st-groups', 'aria-label': 'Space on disk by kind' }, groups.map((g) => {
-          const open = storeOpen.has(g.group);
-          const fill = h('span', { class: 'st-bar-fill' });
-          fill.style.setProperty('--w', String(Math.max(g.share > 0 ? 0.01 : 0, g.share)));
-          return h('li', { class: 'st-group' },
-            h('button', { class: 'row st-group-head', type: 'button', 'aria-expanded': String(open), onclick: () => {
-              if (storeOpen.has(g.group)) storeOpen.delete(g.group); else storeOpen.add(g.group);
-              drawStorage();
-            } },
-            icon(open ? 'chevronDown' : 'chevronRight', 'row-go'),
-            h('span', { class: 'row-text' }, h('span', { class: 'row-name' }, g.name), h('span', { class: 'st-bar', 'aria-hidden': 'true' }, fill)),
-            h('span', { class: 'row-side st-group-side' }, h('span', { class: 'set-value' }, bytes(g.disk_bytes)), h('span', { class: 'st-share' }, shareText(g.share)))),
-            h('ul', { class: 'st-rows', tabindex: '0', 'aria-label': g.name, hidden: !open },
-              g.rows.map((x) => h('li', { class: 'st-row', title: x.label }, h('span', { class: 'st-row-name' }, shortName(x)), h('span', { class: 'st-row-size' }, bytes(x.disk_bytes))))));
-        }))
-        : said('warn', 'The server did not say what takes the space', storeErr && storeErr.message ? `: ${storeErr.message}` : '.'));
+    const cats = (store && store.categories) || [];
+    return tile({ w: 2, title: 'Space on disk', icon: 'server', side: chip(store && store.total_disk_bytes != null ? `${bytes(store.total_disk_bytes)} in all` : 'Not known', { tone: 'muted' }) },
+      cats.length
+        ? group(null, [
+          cats.map((c) => infoRow({ name: c.label, sub: `${STORE_GROUP[c.group] || c.group} · ${formatNumber(c.files)} ${c.files === 1 ? 'file' : 'files'}`,
+            side: h('span', { class: 'set-value' }, bytes(c.disk_bytes)) })),
+          infoRow({ icon: 'server', name: 'All together', sub: 'Everything above, as it lies on disk.', side: h('span', { class: 'set-value' }, bytes(store.total_disk_bytes)) }),
+          infoRow({ icon: 'download', name: 'Free on the disk', sub: 'Room left for new data.', side: h('span', { class: 'set-value' }, store.free_bytes != null ? bytes(store.free_bytes) : 'Not known') }),
+        ])
+        : said('warn', 'The server did not say what takes the space', storeErr && storeErr.message ? `: ${storeErr.message}` : '.'),
+      note('What takes the space on disk, largest first, with the kind of data under each.'));
   }
   function drawStorage() {
-    storeBox.replaceChildren(sectionHead('Storage'), storageTile(), spaceTile());
+    storeBox.replaceChildren(
+      sectionHead('Storage', 'What takes the space on disk, and what compaction saved.'),
+      compactionTile(), spaceTile());
     clearTimeout(storeTimer);
     if (store && store.compaction && store.compaction.status === 'running') storeTimer = setTimeout(readStorage, 2000);
   }

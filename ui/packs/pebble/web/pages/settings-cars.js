@@ -47,6 +47,12 @@ const onOff = (v) => (v === true ? 'on' : v === false ? 'off' : 'not known');
 const sameList = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i]);
 const day = (ms, tz) => (ms == null ? 'never' : formatDate(ms, tz, { now: api.now() }));
 
+/** The currency a car's charges cost most in (the Charges list's totals), or null. */
+function topCurrency(list) {
+  const by = (list && list.totals && list.totals.cost_by_currency) || [];
+  return by.length ? by.reduce((a, b) => (b.amount > a.amount ? b : a)).currency : null;
+}
+
 function crumb(car) {
   return h('nav', { class: 'crumb', 'aria-label': 'Breadcrumb', cover: 'web.settings.car.breadcrumb' },
     h('a', { href: '/', class: 'place-link' }, 'Fleet'), icon('chevronRight'),
@@ -226,6 +232,9 @@ async function mountCar(ctx) {
   const carPath = api.apiPath`cars/${car.id}`;
   const setPath = api.apiPath`cars/${car.id}/settings`;
   let settings = await ctx.api.get(setPath);
+  if (!ctx.alive()) return {};
+  // the currency for an empty default price: the one the car's charges cost most in
+  const priceCur = (settings.default_price_per_kwh || {}).currency || topCurrency(await ctx.api.get(api.apiPath`cars/${car.id}/charges`, { limit: 1 }).catch(() => null));
   if (!ctx.alive()) return {};
   let carVersion = car.version;
 
@@ -461,11 +470,45 @@ async function mountCar(ctx) {
       ro ? null : h('div', { class: 'form-actions' }, btn('Add a range', { kind: 'soft', icon: 'plus', onclick: () => { ranges.push({ from_date: null, to_date: null }); drawRanges(); } })));
   }
   drawRanges();
+
+  /* ---------- the default price per kWh ({ value, currency } or null): Statistics estimates unpriced charges at it */
+  const dpBox = h('div', { class: 'contents' });
+  function drawPrice() {
+    const p = settings.default_price_per_kwh;
+    const val = field({ label: 'Price per kWh', name: 'dp-value', type: 'number', value: p ? p.value : '', attrs: { min: '0', max: '10', step: 'any', inputmode: 'decimal', placeholder: '0.15', disabled: ro } });
+    const cur = field({ label: 'Currency', name: 'dp-currency', value: (p && p.currency) || priceCur || '', attrs: { class: 'dp-cur', maxlength: '3', autocomplete: 'off', spellcheck: 'false', placeholder: 'USD', disabled: ro } });
+    const showErrs = (f) => {
+      setFieldError(val, f['default_price_per_kwh.value'] || null);
+      setFieldError(cur, f['default_price_per_kwh.currency'] || f.default_price_per_kwh || null);
+    };
+    const put = async (body, okText) => {
+      try { await patchSettings({ default_price_per_kwh: body }); ctx.toast(okText); drawPrice(); } catch (err) {
+        if (err.code === 'conflict') drawPrice();
+        if (err.fields) showErrs(err.fields); else ctx.toast(err.code === 'conflict' ? err.message : notSaved(err), { kind: 'error' });
+      }
+    };
+    const save = () => {
+      const raw = val.control.value.trim(), n = Number(raw), c = cur.control.value.trim().toUpperCase();
+      const bad = {};
+      if (raw === '' || !Number.isFinite(n) || n < 0 || n > 10) bad['default_price_per_kwh.value'] = 'A price from 0 to 10.';
+      if (!/^[A-Z]{3}$/.test(c)) bad['default_price_per_kwh.currency'] = 'Three letters, such as USD or EUR.';
+      showErrs(bad);
+      if (!Object.keys(bad).length) put({ value: n, currency: c }, `Saved: ${n} ${c} per kWh as the default price.`);
+    };
+    for (const f of [val, cur]) f.control.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
+    dpBox.replaceChildren(group('Default price per kWh', [h('div', { class: 'row row-static set-ctl is-stack' },
+      h('div', { class: 'dp-two' }, val, cur),
+      ro ? null : h('div', { class: 'form-actions' }, btn('Save', { kind: 'soft', cls: 'btn-sm', onclick: save }),
+        p ? btn('Clear', { kind: 'ghost', cls: 'btn-sm', onclick: () => put(null, 'Saved: no default price.') }) : null))],
+    { note: 'Charges without a price are estimated at it on Statistics, shown apart as estimated.' }));
+  }
+  drawPrice();
   const access = cfg.supercharging_access;
   const fsT = tile({ w: 2, title: 'Free Supercharging', icon: 'bolt', cover: 'web.settings.car.free-supercharging' },
     said('info', 'The car says Supercharging is: ', h('b', null, access && access.value != null ? yesNo(access.value) : 'not sent yet'), access && access.value != null ? ` (${access.source === 'vin' ? SOURCE.vin.toLowerCase() : (srcText(access) || SOURCE[access.source] || 'typed by an admin').replace(/^D/, 'd')})` : '', '. It does not say since when, so the dates are yours.'),
     fsBox,
-    note('Dated ranges in the car’s time zone. Sessions outside them keep their price, so turning this off later does not rewrite history.'));
+    note('Dated ranges in the car’s time zone. Sessions outside them keep their price, so turning this off later does not rewrite history.'),
+    dpBox);
 
   /* ---------- data sources */
   // GET .../settings: source_order (null = the default), source_order_default, inputs [{ kind, label, on, last_ms }] in

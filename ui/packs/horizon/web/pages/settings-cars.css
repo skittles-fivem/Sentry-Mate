@@ -54,6 +54,11 @@
 .sc-range-say { padding-bottom: round(0.4375rem, var(--e)); font-size: max(0.78125rem, var(--fs-floor)); }
 .sc-range-say.is-bad { color: var(--warm); }
 .sc-range .btn { margin-bottom: round(0.125rem, var(--e)); }
+.sc-price { display: flex; flex-wrap: wrap; align-items: flex-start; gap: round(0.5rem, var(--e)) round(0.875rem, var(--e)); }
+.settings-stack .setting-control .sc-price .form-row { width: auto; max-width: none; margin: 0; }
+.sc-price .form-row:first-child .input { width: round(9rem, var(--e)); }
+.sc-price .form-row:last-child .input { width: round(5.5rem, var(--e)); text-transform: uppercase; }
+.sc-price-acts { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)); }
 
 @container page (min-width: 108rem) {
   .sc-two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
@@ -116,6 +121,9 @@
 :root[data-phone] .sc-search, :root[data-phone] .sc-secret, :root[data-phone] .sc-range-f, :root[data-phone] .sc-range-f .input { width: 100%; }
 :root[data-phone] .sc-range { align-items: stretch; }
 :root[data-phone] .sc-range-f { flex: 1 1 100%; }
+:root[data-phone] .sc-price { width: 100%; }
+:root[data-phone] .sc-price .form-row { flex: 1 1 0; min-width: 0; }
+:root[data-phone] .sc-price .form-row .input { width: 100%; }
 :root[data-phone] .sc-acts { flex-wrap: wrap; }
 :root[data-phone="tall"] .settings-stack .kv-row { flex-direction: column; align-items: flex-start; gap: round(0.125rem, var(--e)); }
 :root[data-phone="tall"] .settings-stack .kv dd { margin: 0; text-align: left; white-space: normal; flex-wrap: wrap; }

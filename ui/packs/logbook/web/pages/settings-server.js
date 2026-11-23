@@ -7,17 +7,15 @@
 // here, saved with the settings' version), the ports, the certificate, the recovery key and backups,
 // the accounts (roles, car lists, two-step sign-in, a new password) and the audit log, whose entries
 // say what was done in words and link to the item they changed (filtered by what and who, loaded as the
-// list scrolls), and Storage beside the move: the space on disk by kind and what compaction saved
+// list scrolls), and Storage: the space on disk by category and what compaction saved
 // (GET /system/storage/detail), with "Compact now" (POST /system/storage/compact; while a pass runs the
 // detail is read again every 2 s, until the page is left). Every table has a Download CSV button.
 
-import { h, replace, setVars } from '../shared/dom.js';
-import { downloadCsv } from '../shared/csv.js';
-import { storageGroups, shortName, shareText, groupWord, PACK_STEP } from '../shared/storage.js';
+import { h, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { format } from '../shared/units.js';
-import { pageHead, section, empty, ago, flag, button, icon, note, sep, q } from '../core/ui.js';
+import { pageHead, section, empty, ago, flag, button, icon, note, sep, figure, figures, q } from '../core/ui.js';
 import { dataTable } from '../core/table.js';
 import { field, form, choice, switchField, setFieldError, soldPickRows } from '../core/form.js';
 import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
@@ -45,6 +43,9 @@ const isIpv4 = (s) => /^\d{1,3}(\.\d{1,3}){3}$/.test(s);
 const isLoopback = (s) => s === 'localhost' || s === '[::1]' || s === '::1' || /^127\./.test(s);
 const errText = (e) => (e && e.fields ? Object.values(e.fields).join(' ') : (e && e.message) || 'Something went wrong.');
 const bytes = (v) => q(v, 'bytes');
+// storage: the groups of the categories and the steps of a compaction pass, in plain words
+const STORE_GROUP = { logs: 'CAN logs', series: 'Time series', rows: 'Drives and charges', kv: 'Kept answers and records', imports: 'Imports', server: 'Server' };
+const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records' };
 
 /* ================================================================== small parts */
 
@@ -703,71 +704,53 @@ export async function mount(ctx) {
   }
 
   /* ---------------------------------------------------------------- storage and compaction (admin) */
-  // A compact block beside the move: one row of figures (on disk, free, saved by compaction, the last pass) and
-  // Compact now, then the space by kind (shared/storage.js): one row per group with its size, a bar and its share;
-  // a group opens to its categories by short name, at most five rows tall (the CSV has every category with the
-  // server's own label). While a pass runs (also one the server started by itself) the detail is read again every
-  // 2 s for its progress, and when it ends the groups are drawn again and a note says what was freed.
+  // The space on disk by category, largest first, and what compaction saved. "Compact now" starts a pass;
+  // while one runs (also one the server started by itself) the detail is read again every 2 s for its
+  // progress, and when it ends the table is drawn again and a note says what was freed.
   let storageSection = null;
   let storage = null;
   if (admin) {
     let detail = null, readErr = null, pollErr = null, timer = null;
     ctx.onCleanup(() => clearTimeout(timer));
-    const compactBtn = button('Compact now', { kind: 'primary', iconName: 'reset', cls: 'button-small', onclick: () => compactNow() });
-    const csvBtn = button('Download CSV', { iconName: 'download', cls: 'button-small', onclick: () => downloadCsv('sentry-mate-storage-on-disk.csv', (detail && detail.categories) || [], [
-      { label: 'What', value: (c) => c.label }, { label: 'Kind', value: (c) => groupWord(c.group) }, { label: 'Key', value: (c) => c.key },
-      { label: 'Files', value: (c) => c.files }, { label: 'Size (bytes)', value: (c) => c.bytes }, { label: 'On disk (bytes)', value: (c) => c.disk_bytes }]) });
-    const figsBox = h('dl', { class: 'st-figs' });
+    const compactBtn = button('Compact now', { kind: 'primary', iconName: 'reset', onclick: () => compactNow() });
+    const figsBox = h('div', { class: 'ss-stor-figs' });
     const line = h('p', { class: 'ss-stor-line', 'aria-live': 'polite' });
-    const list = h('ul', { class: 'st-groups', 'aria-label': 'Space on disk by kind' });
-    const open = new Set();
-    let opened = false;
-    const LOSSLESS = 'Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs’ signed originals are kept byte for byte.';
-    const fig = (label, value, title) => h('div', { class: 'st-fig', title }, h('dt', null, label), h('dd', null, value));
-    const drawGroups = () => {
-      const groups = storageGroups(detail && detail.categories);
-      if (!opened && groups.length) { open.add(groups[0].group); opened = true; }  // the largest, open at first
-      if (!groups.length) {
-        replace(list, h('li', { class: 'st-none' }, `The server did not say what takes the space${readErr ? `: ${errText(readErr)}` : '.'}`));
-        return;
-      }
-      replace(list, groups.map((g) => {
-        const isOpen = open.has(g.group);
-        const bar = h('span', { class: 'st-bar', 'aria-hidden': 'true' }, h('i'));
-        setVars(bar, { '--w': `${Math.max(g.share > 0 ? 1 : 0, g.share * 100).toFixed(1)}%` });
-        const rows = h('ul', { class: 'st-rows', tabindex: '0', 'aria-label': g.name, hidden: !isOpen },
-          g.rows.map((c) => h('li', { class: 'st-row', title: c.label },
-            h('span', { class: 'st-row-name' }, shortName(c)), h('span', { class: 'st-row-size' }, bytes(c.disk_bytes)))));
-        const head = h('button', { class: 'st-group-head', type: 'button', 'aria-expanded': String(isOpen), onclick: () => {
-          if (open.has(g.group)) open.delete(g.group); else open.add(g.group);
-          drawGroups();
-        } }, icon(isOpen ? 'chevronDown' : 'chevronRight'), h('span', { class: 'st-group-name' }, g.name), bar,
-        h('span', { class: 'st-group-size' }, bytes(g.disk_bytes)), h('span', { class: 'st-group-share' }, shareText(g.share)));
-        return h('li', { class: ['st-group', isOpen && 'is-open'] }, head, rows);
-      }));
-    };
+    const group = (c) => STORE_GROUP[c.group] || c.group;
+    const table = dataTable(ctx, {
+      rows: [], label: 'Space on disk by category', itemName: ['category', 'categories'], sort: { key: 'disk_bytes', dir: 'desc' }, cls: 'ss-stor-table',
+      caption: 'Largest first. Click a heading to sort.',
+      csv: { filename: 'sentry-mate-storage-on-disk.csv', columns: [{ label: 'What', value: (c) => c.label }, { label: 'Kind', value: group }, { label: 'Key', value: (c) => c.key },
+        { label: 'Files', value: (c) => c.files }, { label: 'Size (bytes)', value: (c) => c.bytes }, { label: 'On disk (bytes)', value: (c) => c.disk_bytes }] },
+      columns: [
+        { key: 'label', label: 'What it holds', th: true, sort: true, value: (c) => c.label,
+          cell: (c) => h('span', null, h('span', { class: 'cell-main' }, c.label), h('span', { class: 'cell-sub' }, group(c))) },
+        { key: 'files', label: 'Files', num: true, sort: true, value: (c) => c.files, cell: (c) => format(c.files, 'count') },
+        { key: 'disk_bytes', label: 'On disk', num: true, sort: true, value: (c) => c.disk_bytes, cell: (c) => bytes(c.disk_bytes) },
+      ],
+      empty: () => empty({ title: 'The server did not say what takes the space.', text: readErr ? errText(readErr) : 'Load the page again in a moment.' }),
+    });
     const draw = () => {
       const c = (detail && detail.compaction) || null;
       const running = !!c && c.status === 'running';
       compactBtn.disabled = running || !c;
-      const num = (v) => (v == null ? q(null, 'bytes', { why: 'not known' }) : bytes(v));
-      replace(figsBox,
-        fig('On disk', num(detail ? detail.total_disk_bytes : null), 'Everything below, as it lies on disk.'),
-        fig('Free', num(detail ? detail.free_bytes : null), 'Room left on the disk for new data.'),
-        fig('Saved', num(c ? c.saved_bytes : null), 'What compaction has freed in all.'),
-        fig('Last pass', !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? h('span', null, bytes(c.last_saved_bytes), ' freed') : 'Nothing left to pack',
-          c && c.finished_ms != null ? `Finished ${dateTime(c.finished_ms, tz)} (${zoneLabel(tz)}).` : 'No pass has finished yet.'));
-      const tip = h('span', { class: 'st-tip', title: LOSSLESS, 'aria-label': LOSSLESS, role: 'img' }, icon('info'));
+      replace(figsBox, figures([
+        figure('All together', bytes(detail ? detail.total_disk_bytes : null), 'Everything in the table below, as it lies on disk.'),
+        figure('Free on the disk', detail && detail.free_bytes != null ? bytes(detail.free_bytes) : q(null, 'bytes', { why: 'not known' }), 'Room left for new data.'),
+        figure('Saved so far', bytes(c ? c.saved_bytes : null), 'What compaction has freed in all.'),
+        figure('Last pass', !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? h('span', null, bytes(c.last_saved_bytes), h('span', { class: 'q-u' }, ' freed')) : 'Nothing left to pack',
+          c && c.finished_ms != null ? `Finished ${dateTime(c.finished_ms, tz)} (${zoneLabel(tz)}).` : 'No pass has finished yet.'),
+      ]));
       line.classList.toggle('ss-warn', !!c && c.status === 'failed');
       if (running) {
-        replace(line, h('span', null, h('strong', null, 'Packing…'), ` ${PACK_STEP[c.step] || c.step || 'getting ready'}, `,
+        replace(line, h('strong', null, 'Packing…'), ` ${PACK_STEP[c.step] || c.step || 'getting ready'}, `,
           c.total ? `${format(c.done ?? 0, 'count')} of ${format(c.total, 'count')}` : 'counting',
-          pollErr ? ` (the progress could not be read just now: ${errText(pollErr)})` : null), tip);
+          pollErr ? ` (the progress could not be read just now: ${errText(pollErr)})` : null);
       } else if (c && c.status === 'failed') {
-        replace(line, h('span', null, h('strong', null, 'The last pass failed: '), c.error || 'the server gave no reason.'), tip);
+        replace(line, h('strong', null, 'The last pass failed: '), c.error || 'the server gave no reason.');
       } else {
-        replace(line, h('span', null, !c ? 'The server did not say how compaction stands.'
-          : c.automatic ? 'Compaction runs by itself when the server is idle.' : 'Compaction does not run by itself here.'), tip);
+        replace(line, !c ? 'The server did not say how compaction stands.'
+          : c.automatic ? 'Compaction runs by itself when the server is idle; Compact now starts a pass at once.'
+            : 'Compaction does not run by itself on this server; Compact now starts a pass.');
       }
     };
     const schedule = () => { clearTimeout(timer); if (detail && detail.compaction && detail.compaction.status === 'running') timer = setTimeout(poll, 2000); };
@@ -778,7 +761,7 @@ export async function mount(ctx) {
         detail = d; pollErr = null;
         const c = d.compaction || {};
         if (c.status !== 'running') {
-          drawGroups();
+          table.setRows(d.categories || []);
           if (c.status === 'failed') ctx.flash(`Compaction failed: ${c.error || 'the server gave no reason.'}`, { kind: 'error' });
           else ctx.flash(c.last_saved_bytes ? `Compaction is done: ${format(c.last_saved_bytes, 'bytes')} freed on disk.` : 'Compaction is done: nothing was left to pack.');
         }
@@ -802,13 +785,16 @@ export async function mount(ctx) {
       draw(); schedule();
     }
     draw();
-    storageSection = section({ title: 'Storage', note: 'by kind', cls: 'ss-storage', id: 'storage', actions: [csvBtn, compactBtn] },
-      figsBox, line, list);
+    storageSection = section({ title: 'Storage', note: 'what takes the space on disk, and what compaction saved', cls: 'ss-storage', id: 'storage', actions: compactBtn },
+      figsBox, line,
+      note('Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs’ signed originals are kept byte for byte.'),
+      table.el);
     storage = {
       async load() {
         try { detail = await ctx.api.get('system/storage/detail'); } catch (err) { if (!ctx.alive()) return; readErr = err; }
         if (!ctx.alive()) return;
-        drawGroups(); draw(); schedule();
+        table.setRows((detail && detail.categories) || []);
+        draw(); schedule();
       },
     };
   }
@@ -823,9 +809,7 @@ export async function mount(ctx) {
     h('div', { class: 'ss-grid' },
       h('div', { class: 'ss-col' }, addressSection, namesSection, portsSection),
       h('div', { class: 'ss-col' }, accessSection, safetySection)),
-    // the move and Storage side by side (one above the other on a phone or a narrow window)
-    mover || storageSection ? h('div', { class: 'ss-pair' }, mover ? mover.el : null, storageSection) : null,
-    accountsSection, sessionsSection, auditSection);
+    mover ? mover.el : null, storageSection, accountsSection, sessionsSection, auditSection);
 
   try {
     await Promise.all([portsTable && portsTable.load(), sessionsTable.load(), accountsTable && accountsTable.load(), auditTable && auditPrep.then(() => auditTable.load()), mover && mover.load(), storage && storage.load()]);

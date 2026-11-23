@@ -31,22 +31,3 @@
   .au-who { order: 1; flex: 1 1 100%; max-width: none; justify-content: flex-start; text-align: left; color: var(--muted); padding-top: 0; }
   .au-box { height: min(round(30rem, var(--e)), 62svh); }
 }
-
-/* Storage (two half tiles): the figures, how compaction stands, then the space by kind: a row per group with a
-   bar under its name, opening to its categories, five rows at most, the rest scroll */
-.st-nums { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.st-num { font-size: var(--f16); line-height: var(--l16); font-weight: 800; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.st-nums [title] { cursor: help; }
-.st-tip { display: inline-grid; place-items: center; margin-left: var(--s2); color: var(--muted); cursor: help; vertical-align: middle; }
-.st-tip .ic { width: var(--ic-sm); height: var(--ic-sm); }
-.st-groups .st-group { display: flex; flex-direction: column; }
-.st-group-head .row-text { gap: var(--s1); }
-.st-bar { position: relative; display: block; height: round(0.375rem, var(--e)); border-radius: 999px; background: var(--card-alt); overflow: hidden; }
-.st-bar-fill { position: absolute; inset: 0; border-radius: inherit; background: var(--teal); transform: scaleX(var(--w, 0)); transform-origin: left; }
-.st-group-side { flex-direction: column; align-items: flex-end; gap: 0; }
-.st-share { font-size: var(--f13); line-height: var(--l13); color: var(--muted); font-variant-numeric: tabular-nums; }
-.st-rows { list-style: none; margin: 0 0 var(--s2); padding: 0 var(--s3) 0 calc(var(--s3) + var(--ic-sm) + var(--s3)); max-height: calc(5 * (var(--l14) + var(--s3))); overflow-y: auto; overscroll-behavior: contain; }
-.st-rows[hidden] { display: none; }
-.st-row { display: flex; justify-content: space-between; gap: var(--s3); padding: calc(var(--s3) / 2) 0; font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
-.st-row-name { min-width: 0; overflow-wrap: anywhere; }
-.st-row-size { flex: none; white-space: nowrap; color: var(--text); font-variant-numeric: tabular-nums; }

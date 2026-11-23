@@ -181,6 +181,33 @@ class Settings(ServerCase):
         self.assertEqual((sw["version"], sw["version_source"]), ("2025.45.8", "teslafi_api"))
 
 
+
+class DefaultPrice(ServerCase):
+    def test_default_price_per_kwh(self):
+        path = "/api/v1/cars/c1/settings"
+        s = self.c.get(path)
+        self.assertEqual(s["default_price_per_kwh"], {"value": 0.14, "currency": "USD"})
+        self.assertIsNone(self.c.get("/api/v1/cars/c2/settings")["default_price_per_kwh"])
+        # a lower-case currency is upper-cased
+        up = self.c.json("PATCH", path, {"version": s["version"], "default_price_per_kwh": {"value": 0.2, "currency": "eur"}})
+        self.assertEqual(up["default_price_per_kwh"], {"value": 0.2, "currency": "EUR"})
+        self.assertEqual(up["version"], s["version"] + 1)
+        v = up["version"]
+        for body, status, code, field in (
+                ({"value": 11, "currency": "USD"}, 422, "invalid", "default_price_per_kwh.value"),
+                ({"value": -0.1, "currency": "USD"}, 422, "invalid", "default_price_per_kwh.value"),
+                ({"value": "0.2", "currency": "USD"}, 400, "bad_input", "default_price_per_kwh.value"),
+                ({"value": 0.2, "currency": "US"}, 422, "invalid", "default_price_per_kwh.currency"),
+                ({"value": 0.2, "currency": "U5D"}, 422, "invalid", "default_price_per_kwh.currency"),
+                ({"value": 0.2}, 400, "bad_input", "default_price_per_kwh.currency"),
+                (0.2, 400, "bad_input", "default_price_per_kwh")):
+            e, _ = self.c.error("PATCH", path, status, code, body={"version": v, "default_price_per_kwh": body})
+            self.assertEqual(set(e["fields"]), {field}, body)
+        self.assertEqual(self.c.get(path)["version"], v)  # nothing saved
+        gone = self.c.json("PATCH", path, {"version": v, "default_price_per_kwh": None})
+        self.assertIsNone(gone["default_price_per_kwh"])
+        self.c.json("PATCH", path, {"version": gone["version"], "default_price_per_kwh": {"value": 0.14, "currency": "USD"}})
+
 class TokensAndKeys(ServerCase):
     def test_tokens(self):
         lst = self.c.get("/api/v1/cars/c1/upload-tokens")
