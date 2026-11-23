@@ -1035,8 +1035,13 @@ async function run(o) {
     let chromium;
     try { ({ chromium } = require('playwright')); } catch (e) { throw new StartError(`Playwright is not installed here: ${e.message.split('\n')[0]}`); }
     // --hover: with the scrollbars the window really has (Playwright hides them by default, and a scrollbar that
-    // comes and goes on hover moves the whole page)
-    try { browser = await chromium.launch(o.hover ? { ignoreDefaultArgs: ['--hide-scrollbars'] } : {}); } catch (e) { throw new StartError(`Chromium did not start: ${e.message.split('\n')[0]}`); }
+    // comes and goes on hover moves the whole page). A real server's self-signed certificate: the windows'
+    // ignoreHTTPSErrors does not reach the service worker's script fetch (it would fail with a console error), so
+    // this run's browser ignores certificate errors as a whole; every other host is still blocked or answered inside
+    // the browser
+    const real = Object.values(servers).some((x) => x && x.real);
+    const launch = { ...(o.hover ? { ignoreDefaultArgs: ['--hide-scrollbars'] } : {}), ...(real ? { args: ['--ignore-certificate-errors'] } : {}) };
+    try { browser = await chromium.launch(launch); } catch (e) { throw new StartError(`Chromium did not start: ${e.message.split('\n')[0]}`); }
     live.browsers.add(browser);
 
     const tasks = [];
