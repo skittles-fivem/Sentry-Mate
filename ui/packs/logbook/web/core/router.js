@@ -323,7 +323,9 @@ async function mount(s, { live = false } = {}) {
     const inst = await mod.mount(ctx);
     if (my !== token) { try { inst?.unmount?.(); } catch { /* left */ } return; }
     current.instance = inst || null;
-    release();
+    // a page that never calls ready() is snapped a moment after its mount; one that does, once at ready (its mount
+    // often returns before its data is in, and every part it draws after would start a whole-page snap of its own)
+    setTimeout(release, 2000);
     rec.shown = true;
     if (rec.changed) setTimeout(() => { if (my === token) mount(state.current(), { live: true }); }, 0);
     if (stage) { stage.settle(); return; }
