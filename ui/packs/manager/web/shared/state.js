@@ -5,7 +5,9 @@
 // The car is in the path (/cars/{car}/drives), the period in the query (?preset=7d or ?from=<ms>&to=<ms>).
 // parseUrl() and buildUrl() turn one into the other for every page id. The current state sits in a small
 // store (subscribe() to hear changes). The period also stays with the browser tab (sessionStorage), so a
-// menu link without one keeps it. The car a page shows when its URL names none is the person's own
+// menu link without one keeps it. The car overview is the exception (OWN_PERIOD_PAGES): it shows the car
+// live, so it opens on its own default unless its own address names a period; links to it carry none and a
+// period chosen on it stays out of the tab's memory. The car a page shows when its URL names none is the person's own
 // (`main_car`, else `last_car` in /me/preferences, kept with the account so every device agrees; see
 // preferredCar()); localStorage keeps a copy only for a fast first paint. Storage is a convenience only:
 // everything works without it. navigate() changes the URL and removes data-ready.
@@ -52,6 +54,13 @@ export const PAGE_IDS = Object.freeze([...new Set(ROUTES.map((r) => r.page))]);
 export const PERIOD_PAGES = Object.freeze(['car', 'timeline', 'drives', 'drive', 'trip', 'logbook', 'charges', 'charge', 'battery', 'efficiency', 'statistics', 'travel', 'software', 'health']);
 /** Pages tied to one car: switching car keeps the page. Detail pages go back to their list. */
 export const CAR_PAGES = Object.freeze(['car', 'timeline', 'drives', 'trip', 'logbook', 'charges', 'battery', 'efficiency', 'statistics', 'software', 'settings-cars', 'health']);
+/**
+ * Pages with a period of their own, not the tab's: the car overview (live values first, the period below). It
+ * opens on its default unless its address names a period (a deep link, or one picked there on this visit);
+ * links to it carry none, and a period picked there is not remembered for the other pages.
+ */
+export const OWN_PERIOD_PAGES = Object.freeze(['car']);
+const sharesPeriod = (page) => PERIOD_PAGES.includes(page) && !OWN_PERIOD_PAGES.includes(page);
 const DETAIL_PARENT = { drive: 'drives', charge: 'charges' };
 const STATE_KEYS = new Set(['preset', 'from', 'to']);
 
@@ -310,8 +319,9 @@ export const subscribe = (f) => store.subscribe(f);
 function stateFromUrl(u) {
   const s = parseUrl(u);
   const fromUrl = !!s.period;
-  const period = s.period || tabPeriod();
-  if (fromUrl) writeStore('sessionStorage', KEY_PERIOD, s.period);
+  const own = OWN_PERIOD_PAGES.includes(s.page);
+  const period = s.period || (own ? null : tabPeriod());
+  if (fromUrl && !own) writeStore('sessionStorage', KEY_PERIOD, s.period);
   if (s.car) writeStore('localStorage', KEY_CAR, s.car); // the fast copy; the router calls rememberCar() once the car loaded
   return { ...s, period, periodFromUrl: fromUrl };
 }
@@ -369,14 +379,23 @@ export function navigate(href, { replace = false } = {}) {
 }
 
 /**
+ * The tab's shared period as seen from the page now: the page's own on a page that shares it, the tab's
+ * memory on a page with a period of its own (OWN_PERIOD_PAGES), else null.
+ */
+export function sharedPeriod(s = store.get()) {
+  return OWN_PERIOD_PAGES.includes(s.page) ? tabPeriod() : s.period ?? null;
+}
+
+/**
  * The link to a page, carrying the current car (for car pages) and the chosen period (for period pages):
- * linkTo('drives') on /cars/c1/timeline?preset=7d -> '/cars/c1/drives?preset=7d'. params override.
+ * linkTo('drives') on /cars/c1/timeline?preset=7d -> '/cars/c1/drives?preset=7d'. params override. Links to
+ * the car overview carry no period (it has its own); links from it carry the tab's, not the overview's.
  * A car page without a car to carry uses the last car; with no car known it links to Fleet.
  */
 export function linkTo(page, params = {}) {
   const s = store.get();
   const car = params.car !== undefined ? params.car : (s.car ?? lastCar());
-  const period = params.period !== undefined ? params.period : PERIOD_PAGES.includes(page) ? s.period : null;
+  const period = params.period !== undefined ? params.period : sharesPeriod(page) ? sharedPeriod(s) : null;
   const needsCar = ROUTES.filter((r) => r.page === page).every((r) => r.keys.includes('car'));
   if (needsCar && !car) return buildUrl('fleet');
   return buildUrl(page, { ...params, car: CAR_PAGES.includes(page) || needsCar ? car : params.car ?? null, period });
@@ -388,20 +407,21 @@ export function linkTo(page, params = {}) {
  */
 export function linkForCar(car, s = store.get()) {
   const page = DETAIL_PARENT[s.page] || (CAR_PAGES.includes(s.page) ? s.page : 'car');
-  const period = PERIOD_PAGES.includes(page) ? s.period : null;
+  const period = sharesPeriod(page) ? sharedPeriod(s) : null;
   const query = s.page === page ? s.query : null;
   return buildUrl(page, { car, period, query });
 }
 
 /**
  * Choose a period: puts it in the URL (replacing the entry unless opts.push), in the tab's memory and in
- * the store. null clears it (the page's default applies again).
+ * the store. null clears it (the page's default applies again). On a page with a period of its own
+ * (OWN_PERIOD_PAGES) it goes only in the URL and the store.
  */
 export function setPeriod(period, { push = false } = {}) {
   const p = period == null ? null : normalizePeriod(period);
   if (period != null && !p) throw new RangeError('not a period');
-  writeStore('sessionStorage', KEY_PERIOD, p);
   const s = store.get();
+  if (!OWN_PERIOD_PAGES.includes(s.page)) writeStore('sessionStorage', KEY_PERIOD, p);
   const page = s.page && s.page !== 'not-found' ? s.page : null;
   if (!page) { store.set({ period: p, periodFromUrl: false }); return store.get(); }
   const href = buildUrl(page, { car: s.car, drive: s.drive, charge: s.charge, period: p, query: s.query });
