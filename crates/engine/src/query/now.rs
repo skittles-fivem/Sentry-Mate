@@ -431,8 +431,9 @@ pub fn published_now(e: &Engine, car: CarId) -> QResult<Option<Now>> {
     Ok(Some(n))
 }
 
-/// The car's values no CAN message carries at `now_ms`: the Tesla API's newest reading's and TeslaFi's newest poll's,
-/// fused ([`model::off_can::fuse`]: the Tesla API's first, each value stale after its age limit).
+/// The car's values no CAN message carries at `now_ms`: the Tesla API's newest reading's, TeslaFi's newest poll's and
+/// the local TeslaMate's, fused ([`model::off_can::fuse`]: in the car's `source_order`, by default the Tesla API's
+/// first, each value stale after its age limit).
 pub fn off_can_now(e: &Engine, car: CarId, now_ms: u64) -> QResult<model::OffCanNow> {
     use model::off_can::{Reading, fuse};
     let db = e.db();
@@ -448,7 +449,7 @@ pub fn off_can_now(e: &Engine, car: CarId, now_ms: u64) -> QResult<model::OffCan
             readings.push(Reading { input, at_ms: r.at_ms, values: &r.values });
         }
     }
-    Ok(fuse(now_ms, &readings))
+    Ok(fuse(now_ms, &readings, &e.source_order(car)))
 }
 
 /// The car's state now and since when it is in it ([`now_view`]'s `state` and `since_ms`, MQTT's `since`).
@@ -659,6 +660,9 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
                     v.push(InputNow { input: model::Origin::from(i).into(), last_ms: Some(t) });
                 }
             }
+            // in the order the car's inputs win in
+            let order = e.source_order(car);
+            v.sort_by_key(|x| model::Input::from_word(x.input.kind).map_or(usize::MAX, |i| order.rank(i)));
             v
         },
         buses,

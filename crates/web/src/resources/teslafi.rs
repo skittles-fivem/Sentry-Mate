@@ -164,6 +164,12 @@ pub fn notices(app: &AppState) -> Vec<Notice> {
     app.service::<TeslafiService>().map(|s| s.accounts().iter().filter_map(notice).collect()).unwrap_or_default()
 }
 
+/// Whether a vehicle of an account is matched to `car` (it is read for that car), for the car's data sources.
+pub fn feeds_car(app: &AppState, car: model::CarId) -> bool {
+    app.service::<TeslafiService>()
+        .is_ok_and(|s| s.accounts().iter().flat_map(|a| &a.cars).any(|c| c.matched == Some(Match::Car { car })))
+}
+
 /// The TeslaFi part of `/system/health`: accounts, matched cars, requests today, the last problem.
 pub fn health(app: &AppState) -> Value {
     let Ok(svc) = app.service::<TeslafiService>() else {

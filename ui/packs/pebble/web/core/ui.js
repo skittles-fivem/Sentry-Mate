@@ -80,6 +80,7 @@ const ICONS = {
   refresh: [P('M19.5 12a7.5 7.5 0 1 1-2.2-5.3'), P('M19.5 4v4.2h-4.2')],
   star: [P('m12 4 2.4 5 5.4.6-4 3.7 1.1 5.4L12 16l-4.9 2.7 1.1-5.4-4-3.7 5.4-.6L12 4Z')],
   filter: [P('M4 6h16M7 12h10M10 18h4')],
+  grip: [C(9, 6, 1.5, true), C(15, 6, 1.5, true), C(9, 12, 1.5, true), C(15, 12, 1.5, true), C(9, 18, 1.5, true), C(15, 18, 1.5, true)],
 };
 
 /** An icon: icon('bolt'). Decorative (aria-hidden): say what it means in text next to it. */

@@ -119,6 +119,9 @@ pub struct Input<'a> {
     /// The seconds of `samples` that are not SMO's alone ([`crate::Fused::marks`], sorted): the rows made from them
     /// name the Tesla API. Empty: every second is SMO's.
     pub marks: &'a [(u64, model::Inputs)],
+    /// The order the car's live inputs win in (its `source_order`): of two APIs that saw the car's state the same,
+    /// the higher one is named.
+    pub order: model::SourceOrder,
 }
 
 /// Frames lost in a log (`# dropped` lines), for marking what overlaps it.
@@ -280,7 +283,7 @@ pub fn build(input: &Input<'_>, params: &Params) -> Timeline {
     } else {
         model::Inputs::SMO
     };
-    let mut t = Timeline { states: with_api(smo, input.api, unknown_inputs), ..Timeline::default() };
+    let mut t = Timeline { states: with_api(smo, input.api, unknown_inputs, &input.order), ..Timeline::default() };
     let samples = sorted(input.samples, from_ms, to_ms);
 
     // the pieces between settled spans, cut again at their idle cut points

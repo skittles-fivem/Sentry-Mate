@@ -3,7 +3,7 @@
 use crate::records::{self, CarMeta, DAY_MS, LogEntry, Outcome};
 use crate::{Engine, Error, Event, NewKeys, Result, Work, lock, now_ms};
 use db::{Query, StateRow};
-use model::{Car, CarId, Charge, ChargePoint, Drive, Input, Inputs, Now, Sample, Source, StateSpan, Stream, VinInfo};
+use model::{Car, CarId, Charge, ChargePoint, Drive, Input, Now, Sample, Source, StateSpan, Stream, VinInfo};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -756,8 +756,8 @@ impl Engine {
 
     /// The car's newest values, from an input's samples. Each value keeps when it was recorded
     /// ([`records::now_at`]) and which input sent it ([`records::now_from`]); of two inputs the newer value wins, but
-    /// for the fast values (speed, power, gear, position) an SMO value beats the API's for a minute (the API's time
-    /// lags). The charge's kind and power (and its phases, current limit and its source, and the time to full) go once
+    /// for the fast values (speed, power, gear, position) the value of the input higher in the car's `source_order`
+    /// (by default SMO's over the API's) beats the lower one's for a minute (the API's time lags). The charge's kind and power (and its phases, current limit and its source, and the time to full) go once
     /// the newest values say the car is not charging, or it drives.
     pub(crate) fn note_now_from(&self, car: CarId, samples: &[Sample], input: Input) -> Result<()> {
         let Some(last) = samples.last() else { return Ok(()) };
@@ -774,8 +774,9 @@ impl Engine {
         if kept.is_none() {
             from.clear();
         }
+        let order = self.source_order(car);
         for s in samples {
-            overlay(&mut merged, s, &mut at, &mut from, input);
+            overlay(&mut merged, s, &mut at, &mut from, input, &order);
         }
         let at_ms = kept.as_ref().map_or(last.t_ms, |n| n.at_ms.max(last.t_ms));
         merged.t_ms = at_ms;
@@ -853,33 +854,20 @@ impl Engine {
         }
         logs.sort_by_key(|f| f.span());
         logs.dedup();
-        // SMO's samples and the Tesla API's, made one (the API's read a margin around the window, so a second inside
-        // it fuses as in a longer one)
+        // the live inputs' samples made one in the car's order (each read a margin around the window as its place
+        // asks, so a second inside it fuses as in a longer one)
         let fp = &self.inner.opts.fuse;
-        let smo = db.read_points::<Sample>(car, Stream::Smo, from, to)?;
-        let api = db.read_points::<Sample>(
-            car,
-            Stream::TeslaApi,
-            from.saturating_sub(fp.margin_ms()),
-            to.saturating_add(fp.margin_ms()),
-        )?;
-        let fi = db.read_points::<Sample>(
-            car,
-            Stream::TeslafiApi,
-            from.saturating_sub(fp.lower_margin_ms()),
-            to.saturating_add(fp.lower_margin_ms()),
-        )?;
-        let tm = db.read_points::<Sample>(
-            car,
-            Stream::TeslamateLocal,
-            from.saturating_sub(fp.lower_margin_ms()),
-            to.saturating_add(fp.lower_margin_ms()),
-        )?;
-        let mut fused = timeline::fuse_all(
-            &smo,
-            &[(&api, Inputs::TESLA_API), (&fi, Inputs::TESLAFI_API), (&tm, Inputs::TESLAMATE_LOCAL)],
-            fp,
-        );
+        let order = self.source_order(car);
+        let mut by = Vec::new();
+        for (rank, input) in order.iter().enumerate() {
+            let m = fp.read_margin_ms(input, rank);
+            by.push((
+                db.read_points::<Sample>(car, Stream::from(input), from.saturating_sub(m), to.saturating_add(m))?,
+                input,
+            ));
+        }
+        let by: Vec<(&[Sample], Input)> = by.iter().map(|(v, i)| (v.as_slice(), *i)).collect();
+        let mut fused = timeline::fuse_ordered(&by, &order, fp);
         fused.samples.retain(|s| s.t_ms >= from && s.t_ms < to);
         fused.marks.retain(|m| m.0 >= from && m.0 < to);
         let seen = records::api_between(db, car, meta, from, to)?;
@@ -892,6 +880,7 @@ impl Engine {
             holes: &holes,
             api: &seen,
             marks: &fused.marks,
+            order,
         };
         let t = timeline::build(&input, p);
         self.write_timeline(car, meta, from, to, t)?;
@@ -1243,29 +1232,22 @@ const FAST_FIELDS: &[&str] = &["lat", "lon", "gps_accuracy_m", "elevation_m", "s
 /// How long an SMO value of a fast field beats a newer API value (ms).
 const SMO_FAST_WINS_MS: u64 = 60_000;
 
-/// The order live inputs win in: SMO, then the Tesla API, then TeslaFi, then the local TeslaMate.
-fn input_rank(i: Input) -> u8 {
-    match i {
-        Input::Smo => 0,
-        Input::TeslaApi => 1,
-        Input::TeslafiApi => 2,
-        Input::TeslamateLocal => 3,
-    }
-}
-
-/// Whether `input`'s value of `field` recorded at `t` replaces the kept one.
+/// Whether `input`'s value of `field` recorded at `t` replaces the kept one (the inputs winning in `order`, the
+/// car's).
 fn newer(
     field: &str,
     t: u64,
     input: Input,
     at: &std::collections::BTreeMap<String, u64>,
     from: &std::collections::BTreeMap<String, Input>,
+    order: &model::SourceOrder,
 ) -> bool {
     let Some(&kept) = at.get(field) else { return true };
     let kept_from = from.get(field).copied().unwrap_or(Input::Smo);
     if kept_from != input && FAST_FIELDS.contains(&field) {
-        // the input that wins (SMO over the APIs, the Tesla API over TeslaFi) keeps its value a minute
-        return if input_rank(input) < input_rank(kept_from) {
+        // the input that wins (in the car's order: by default SMO over the APIs, the Tesla API over TeslaFi) keeps its
+        // value a minute
+        return if order.rank(input) < order.rank(kept_from) {
             t.saturating_add(SMO_FAST_WINS_MS) >= kept
         } else {
             t > kept.saturating_add(SMO_FAST_WINS_MS)
@@ -1282,6 +1264,7 @@ fn overlay(
     at: &mut std::collections::BTreeMap<String, u64>,
     from: &mut std::collections::BTreeMap<String, Input>,
     input: Input,
+    order: &model::SourceOrder,
 ) {
     let note = |field: &str,
                 at: &mut std::collections::BTreeMap<String, u64>,
@@ -1294,7 +1277,7 @@ fn overlay(
     };
     macro_rules! take {
         ($($f:ident),*) => { $(
-            if s.$f.is_some() && newer(stringify!($f), s.t_ms, input, at, from) {
+            if s.$f.is_some() && newer(stringify!($f), s.t_ms, input, at, from, order) {
                 to.$f = s.$f;
                 note(stringify!($f), at, from);
             }
@@ -1336,7 +1319,7 @@ fn overlay(
         at.remove(&old);
         from.remove(&old);
     }
-    if s.tpms_bar.iter().any(Option::is_some) && newer("tpms_bar", s.t_ms, input, at, from) {
+    if s.tpms_bar.iter().any(Option::is_some) && newer("tpms_bar", s.t_ms, input, at, from, order) {
         to.tpms_bar = s.tpms_bar;
         to.extra.tires_mapped = s.extra.tires_mapped;
         note("tpms_bar", at, from);
@@ -1345,7 +1328,7 @@ fn overlay(
     macro_rules! take_extra {
         ($($f:ident),*) => { $(
             let field = concat!("extra.", stringify!($f));
-            if s.extra.$f.is_some() && newer(field, s.t_ms, input, at, from) {
+            if s.extra.$f.is_some() && newer(field, s.t_ms, input, at, from, order) {
                 to.extra.$f = s.extra.$f;
                 note(field, at, from);
             }
@@ -1354,7 +1337,7 @@ fn overlay(
     macro_rules! take_extra_text {
         ($($f:ident),*) => { $(
             let field = concat!("extra.", stringify!($f));
-            if s.extra.$f.is_some() && newer(field, s.t_ms, input, at, from) {
+            if s.extra.$f.is_some() && newer(field, s.t_ms, input, at, from, order) {
                 to.extra.$f.clone_from(&s.extra.$f);
                 note(field, at, from);
             }

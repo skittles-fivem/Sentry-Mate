@@ -124,6 +124,8 @@ def now_object(app, car_id, t):
             inputs.append({**S.ref("tesla_api"), "last_ms": at - 45_000})
         elif offcan.api_input(app, car_id) == "teslafi_api":
             inputs.append({**S.ref("teslafi_api"), "last_ms": offcan.teslafi_read_ms(t)})
+    # in the car's input order (`source_order`), highest priority first
+    inputs.sort(key=S.rank(S.order_of(app.store, car_id)))
     obj["inputs"] = inputs
     obj["off_can"] = offcan.off_can(app, car_id, t, obj)
     return obj

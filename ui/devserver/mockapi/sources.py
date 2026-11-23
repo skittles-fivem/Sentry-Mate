@@ -9,6 +9,9 @@ every live row; Atlas (`c3`) has SMO and its TeslaMate import, and a TeslaFi imp
 history (imported rows are `source == "teslamate"`, the imported family; TeslaFi's carry `site = "teslafi"`); the
 synthetic cars have SMO. The data itself is the
 same as before; only the labels say which input gave it.
+
+A car's input order (`source_order` in /cars/{car}/settings, else `DEFAULT_ORDER`) is the order lists of origins
+follow (series `sources` and `value_sources`, /now `inputs`).
 """
 
 from __future__ import annotations
@@ -19,6 +22,32 @@ SITES = {"teslamate": "TeslaMate", "teslafi": "TeslaFi"}
 SHORT = {"smo": "SMO", "tesla_api": "the Tesla API", "teslafi_api": "TeslaFi", "teslamate_local": "local TeslaMate"}
 LABEL = {"smo": "Data from SMO", "tesla_api": "Data from the Tesla API", "teslafi_api": "Data from TeslaFi",
          "teslamate_local": "Data from local TeslaMate"}
+
+# the live inputs, highest priority first unless a car chooses its own order (`source_order` in its settings): where
+# two inputs both give a value at a time, the first one's is kept, and lists of origins follow the order
+INPUTS = ("smo", "tesla_api", "teslafi_api", "teslamate_local")
+DEFAULT_ORDER = list(INPUTS)
+INPUT_LABEL = {"smo": "SMO", "tesla_api": "Tesla API", "teslafi_api": "TeslaFi", "teslamate_local": "local TeslaMate"}
+ORDER_RULE = "List each input once: smo, tesla_api, teslafi_api, teslamate_local."
+
+
+def order_valid(v):
+    """Whether `v` is a `source_order`: each of the four live input words exactly once, in any order."""
+    return isinstance(v, list) and len(v) == len(INPUTS) and all(isinstance(x, str) for x in v) \
+        and sorted(v) == sorted(INPUTS)
+
+
+def order_of(st, car_id):
+    """A car's input order, highest priority first: its own choice, else the default."""
+    own = (st.car_settings.get(car_id) or {}).get("source_order") if st is not None else None
+    return list(own) if own else list(DEFAULT_ORDER)
+
+
+def rank(order):
+    """A sort key for origins (`{kind, ...}`) by an input order; imports come after every live input."""
+    pos = {k: i for i, k in enumerate(order)}
+    return lambda r: (pos.get(r["kind"], len(pos)), r.get("site") or "")
+
 
 # the words `source=` takes; `can` and `teslamate` are the old ones
 FILTER_WORDS = ("smo", "tesla_api", "teslafi_api", "teslamate_local", "import", "import:teslamate", "import:teslafi", "all", "can",

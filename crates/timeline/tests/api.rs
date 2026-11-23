@@ -83,6 +83,7 @@ fn a_drive_from_the_api_alone() {
         holes: &[],
         api: &facts,
         marks: &f.marks,
+        order: Default::default(),
     };
     let t = timeline::build(&input, &Params::default());
     assert_eq!(t.drives.len(), 1, "{:?}", t.drives);
@@ -112,6 +113,7 @@ fn one_drive_seen_by_both_is_one_row_naming_both() {
         holes: &[],
         api: &facts,
         marks: &f.marks,
+        order: Default::default(),
     };
     let t = timeline::build(&input, &Params::default());
     assert_eq!(t.drives.len(), 1);
@@ -140,6 +142,7 @@ fn smo_offline_mid_drive_the_api_fills_the_gap() {
         holes: &[],
         api: &facts,
         marks: &f.marks,
+        order: Default::default(),
     };
     let t = timeline::build(&input, &Params::default());
     assert_eq!(t.drives.len(), 1, "one drive across the gap: {:?}", t.drives);
@@ -175,6 +178,7 @@ fn the_api_fills_what_smo_does_not_know_and_never_overrules_its_frames() {
         holes: &[(T0 + 70 * M, T0 + 75 * M)],
         api: &facts,
         marks: &[],
+        order: Default::default(),
     };
     let t = timeline::build(&input, &Params::default());
     let s: Vec<(State, u64, u64, Inputs)> =
@@ -214,6 +218,7 @@ fn a_drive_from_teslafi_alone_names_teslafi_and_the_tesla_api_wins_over_it() {
         holes: &[],
         api: &facts,
         marks: &f.marks,
+        order: Default::default(),
     };
     let t = timeline::build(&input, &Params::default());
     assert_eq!(t.drives.len(), 1, "{:?}", t.drives);
@@ -249,6 +254,7 @@ fn states_name_the_api_that_saw_each_stretch() {
         holes: &[],
         api: &facts,
         marks: &[],
+        order: Default::default(),
     };
     let t = timeline::build(&input, &Params::default());
     let s: Vec<(State, u64, u64, Inputs)> =

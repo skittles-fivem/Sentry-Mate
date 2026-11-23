@@ -1,0 +1,19 @@
+/* Sentry Mate, "Pebble" UI pack: Settings: Cars, its own parts (the rest is .set-* in app.css). */
+
+/* Data sources (#data-sources): the live inputs in priority order, dragged by the grip or moved with the arrows */
+#data-sources { scroll-margin-top: var(--s4); }
+.ds-row { touch-action: pan-y; }
+.ds-grip { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.ds-grip .ic { width: var(--ic-sm); height: var(--ic-sm); }
+.ds-row.is-dragging { background: var(--card); box-shadow: var(--shadow); position: relative; z-index: 1; }
+.ds-row.is-dragging .ds-grip { cursor: grabbing; }
+.ds-rank { font-size: var(--f16); line-height: var(--l16); font-weight: 800; font-variant-numeric: tabular-nums; }
+.ds-row.is-off .row-name { color: var(--muted); }
+.ds-on { color: var(--teal); }
+.ds-off { color: var(--muted); }
+.ds-moves { gap: var(--s1); }
+.ds-fixed .row-name { color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) {
+  .ds-row { transition: background-color 120ms ease, box-shadow 120ms ease; }
+}
+html[data-form="phone"] .ds-link { min-height: var(--h-btn); }

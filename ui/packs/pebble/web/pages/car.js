@@ -128,7 +128,7 @@ export async function mount(ctx) {
             now.since_ms ? h('span', { class: 'muted' }, `since ${formatWhen(now.since_ms, tz, api.now())}`) : null),
           h('p', { class: 'hero-where' }, icon('pin'), whereWords),
           routeLine(),
-          inputsLine(now.inputs, { cls: 'car-inputs' }),
+          inputsLine(now.inputs, { cls: 'car-inputs', extra: ctx.admin ? h('a', { class: 'tile-link car-inputs-link', href: `${state.buildUrl('settings-cars', { car: car.id })}#data-sources` }, 'Change order', icon('chevronRight')) : null }),
           viaMark(now.soc_pct) ? h('p', { class: 'src-line' }, h('span', { class: 'hero-k' }, 'Battery level'), viaMark(now.soc_pct)) : null,
           now.stale ? h('p', { class: 'note' }, 'No upload for a while: these are the last known values.') : null)),
       h('div', { class: 'hero-nums' },

@@ -4,7 +4,9 @@
 // name and what it reports about itself with where each detail comes from (GET / PATCH /api/v1/cars/{car}), how
 // its uploads are doing with the next step (health, upload tokens, CAN Bridge keys), its tokens (made here, the
 // secret shown once in a sheet), the keys tied to it with a preferred one, keys no car has yet, its time zone, its
-// battery chemistry with the evidence, and free Supercharging as dated ranges (GET / PATCH .../settings). Every
+// battery chemistry with the evidence, free Supercharging as dated ranges, and its data sources (#data-sources: the
+// live inputs in priority order, dragged or moved with arrow buttons, and gap filling from imported history)
+// (GET / PATCH .../settings). Every
 // change saves at once with the object's version and a toast confirms it. Without a car: every car, the keys
 // waiting for a car, tokens for a new car, and how a car appears (the empty state).
 
@@ -17,7 +19,7 @@ import { tile, btn, chip, note, icon, stateTag, ago } from '../core/ui.js';
 import { srcPill, srcText } from '../core/source.js';
 import { emptyTile } from '../core/states.js';
 import { openSheet, confirmSheet, sheetRow } from '../core/sheet.js';
-import { field, segmented, setFieldError } from '../core/form.js';
+import { field, segmented, toggle, setFieldError } from '../core/form.js';
 import { remount } from '../core/router.js';
 import { checkRow, moreButton } from '../core/bits.js';
 import { group, infoRow, said, notSaved } from '../core/settings.js';
@@ -25,6 +27,7 @@ import { inOrder } from '../core/settings.js';
 import { copyButton } from './move-parts.js';
 
 export const id = 'settings-cars';
+export const css = true;
 export const shape = [['full', 'h1'], [2, 'h3'], [2, 'h3'], [2, 'h2'], [2, 'h2']];
 export const title = (ctx) => (ctx.car ? `${ctx.car.name}: settings` : 'Cars');
 
@@ -36,6 +39,12 @@ const CONFIG = [['trim', 'Trim'], ['drivetrain', 'Drivetrain'], ['performance_pa
 const FIX = { no_token: 'No upload token has been made yet.', token_unused: 'A token was made but no CAN Bridge has uploaded with it yet.', key_waiting: 'A CAN Bridge key waits for a car (below).', logs_waiting_trust: 'Some logs wait for a trust check.' };
 const yesNo = (v) => (v === true ? 'Yes' : v === false ? 'No' : v == null || v === '' ? '—' : String(v));
 const settingsUrl = (car) => state.buildUrl('settings-cars', car ? { car } : {});
+/** The four live inputs, highest priority first, when the server sends no order of its own. */
+const SRC_ORDER = ['smo', 'tesla_api', 'teslafi_api', 'teslamate_local'];
+const SRC_NAME = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'local TeslaMate' };
+const cap = (t) => String(t).charAt(0).toUpperCase() + String(t).slice(1);
+const onOff = (v) => (v === true ? 'on' : v === false ? 'off' : 'not known');
+const sameList = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i]);
 const day = (ms, tz) => (ms == null ? 'never' : formatDate(ms, tz, { now: api.now() }));
 
 function crumb(car) {
@@ -458,6 +467,144 @@ async function mountCar(ctx) {
     fsBox,
     note('Dated ranges in the car’s time zone. Sessions outside them keep their price, so turning this off later does not rewrite history.'));
 
+  /* ---------- data sources */
+  // GET .../settings: source_order (null = the default), source_order_default, inputs [{ kind, label, on, last_ms }] in
+  // that order, imports [{ site, label, from_ms, to_ms }], import_gap_fill (null = follow the server),
+  // import_gap_fill_on, import_gap_fill_default. PATCH takes source_order (all four once, or null) and import_gap_fill.
+  const dsBox = h('div', { class: 'contents' });
+  const dsNote = h('p', { class: 'form-error', role: 'status', hidden: true });
+  const known = new Map();
+  let pending = null; // the order shown while a save is on its way
+  let busy = false;
+  const defaultOrder = () => (Array.isArray(settings.source_order_default) && settings.source_order_default.length ? settings.source_order_default : SRC_ORDER);
+  const savedOrder = () => (Array.isArray(settings.source_order) && settings.source_order.length ? settings.source_order : defaultOrder());
+  const inputOf = (k) => known.get(k) || { kind: k, label: SRC_NAME[k] || k, on: false, last_ms: null };
+  const nameOf = (k) => cap(inputOf(k).label || SRC_NAME[k] || k);
+  const orderWords = (o) => o.map((k) => inputOf(k).label || SRC_NAME[k] || k).join(', ');
+  async function saveDs(body, okText, before) {
+    if (busy) return;
+    dsNote.hidden = true;
+    busy = true;
+    drawDs();
+    try {
+      await patchSettings(body);
+      ctx.toast(okText);
+    } catch (err) {
+      before?.();
+      dsNote.textContent = err.code === 'conflict' ? err.message : notSaved(err);
+      dsNote.hidden = false;
+    }
+    busy = false;
+    pending = null;
+    drawDs();
+  }
+  const saveOrder = (next) => {
+    if (busy) return;
+    if (sameList(next, savedOrder())) { pending = null; drawDs(); return; }
+    pending = next;
+    saveDs({ source_order: next }, `Saved: ${orderWords(next)}, highest first.`);
+  };
+  /** Drag by the grip (mouse, pen or touch): the row moves past a neighbour once the pointer is beyond its middle. */
+  function dragFrom(e, rowEl) {
+    if (busy || e.button > 0) return;
+    e.preventDefault();
+    const list = rowEl.parentElement;
+    const pid = e.pointerId;
+    rowEl.classList.add('is-dragging');
+    const rowsNow = () => [...list.querySelectorAll('.ds-row')];
+    const move = (ev) => {
+      const rows = rowsNow(), i = rows.indexOf(rowEl), prev = rows[i - 1], next = rows[i + 1];
+      const mid = (r) => { const b = r.getBoundingClientRect(); return b.top + b.height / 2; };
+      if (ev.pointerId !== pid) return;
+      // the neighbour moves, not the dragged row, so the row under the pointer stays in the page
+      if (prev && ev.clientY < mid(prev)) list.insertBefore(prev, rowEl.nextSibling);
+      else if (next && ev.clientY > mid(next)) list.insertBefore(next, rowEl);
+    };
+    const end = (ev) => {
+      if (ev.pointerId !== pid) return;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', end);
+      window.removeEventListener('pointercancel', end);
+      rowEl.classList.remove('is-dragging');
+      const next = rowsNow().map((r) => r.dataset.kind);
+      if (ev.type === 'pointercancel') { drawDs(); return; }
+      saveOrder(next);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
+  }
+  const stepBy = (order, k, by) => {
+    const i = order.indexOf(k), j = i + by;
+    if (i < 0 || j < 0 || j >= order.length) return order;
+    const next = [...order];
+    [next[i], next[j]] = [next[j], next[i]];
+    return next;
+  };
+  function drawDs() {
+    for (const i of settings.inputs || []) if (i && i.kind) known.set(i.kind, i);
+    const order = pending || savedOrder();
+    // keep the focus on the same control across a redraw (an arrow at the end of the list: the other arrow)
+    const a = document.activeElement;
+    const had = a && dsBox.contains(a) ? a.dataset.focus || null : null;
+    const rows = order.map((k, i) => {
+      const inp = inputOf(k);
+      const name = nameOf(k);
+      const last = inp.last_ms != null ? ['last data ', ago(inp.last_ms)] : 'no data yet';
+      const said = inp.label || SRC_NAME[k] || k;
+      const rowEl = h('div', { class: ['row', 'row-static', 'ds-row', { 'is-off': !inp.on }], role: 'listitem', dataset: { kind: k } },
+        admin ? h('span', { class: ['row-ic', 'ds-grip', inp.on ? 'tone-teal' : null], title: `Drag ${said} up or down`, 'aria-hidden': 'true', onpointerdown: (e) => dragFrom(e, rowEl) }, icon('grip'))
+          : h('span', { class: ['row-ic', 'ds-rank', inp.on ? 'tone-teal' : null], 'aria-hidden': 'true' }, String(i + 1)),
+        h('span', { class: 'row-text' }, h('span', { class: 'row-name' }, h('span', { class: 'sr-only' }, `${i + 1}. `), name),
+          h('span', { class: 'row-sub' }, h('b', { class: inp.on ? 'ds-on' : 'ds-off' }, inp.on ? 'On' : 'Off'), ' · ', last)),
+        admin ? h('span', { class: 'row-side ds-moves' },
+          btn(`Move ${said} up`, { kind: 'ghost', icon: 'chevronUp', iconOnly: true, cls: 'btn-sm', disabled: i === 0, attrs: { 'data-focus': `${k}:up` }, onclick: () => saveOrder(stepBy(order, k, -1)) }),
+          btn(`Move ${said} down`, { kind: 'ghost', icon: 'chevronDown', iconOnly: true, cls: 'btn-sm', disabled: i === order.length - 1, attrs: { 'data-focus': `${k}:down` }, onclick: () => saveOrder(stepBy(order, k, 1)) })) : null);
+      return rowEl;
+    });
+    const imports = Array.isArray(settings.imports) ? settings.imports : [];
+    const span = (im) => (im.from_ms != null && im.to_ms != null ? ` (${day(im.from_ms, ctx.tz)} to ${day(im.to_ms, ctx.tz)})` : '');
+    const impWords = imports.map((im) => `${im.label || 'Imported'}${span(im)}`).join(', ');
+    const lastRow = infoRow({ icon: 'lock', name: 'Imported history', cls: 'ds-fixed', sub: imports.length ? impWords : 'None yet' });
+    lastRow.setAttribute('role', 'listitem');
+    const isDefault = sameList(order, defaultOrder());
+    // gap filling: null follows the server's setting
+    const gfSet = settings.import_gap_fill ?? null;
+    const gfDefault = settings.import_gap_fill_default ?? null;
+    const gfOn = settings.import_gap_fill_on ?? gfSet ?? gfDefault;
+    const gap = toggle({
+      label: 'Fill gaps from imported history',
+      sub: imports.length ? `Uses ${impWords}. ${gfSet == null ? `Follows the server default: ${onOff(gfDefault)}.` : `Set for this car. Server default: ${onOff(gfDefault)}.`}` : 'No imported history',
+      checked: imports.length ? !!gfOn : false,
+      disabled: ro || !imports.length,
+      onchange: (on) => { if (busy) { gap.set(gfOn); return; } saveDs({ import_gap_fill: on }, on ? 'Saved: gaps are filled from imported history.' : 'Saved: gaps are not filled from imported history.', () => gap.set(gfOn)); },
+    });
+    gap.input.dataset.focus = 'gap';
+    const follow = admin && imports.length && gfSet != null
+      ? btn(`Follow the server default (${onOff(gfDefault)})`, { kind: 'soft', icon: 'reset', cls: 'btn-sm',
+        onclick: () => saveDs({ import_gap_fill: null }, `Saved: gap filling follows the server default (${onOff(gfDefault)}).`) }) : null;
+    dsBox.replaceChildren(...[
+      h('section', { class: 'rows set-group' },
+        h('h3', { class: 'rows-name' }, 'Live inputs, highest first'),
+        h('div', { class: 'rows-list ds-list', role: 'list', 'aria-label': 'Live inputs, highest priority first' }, rows, lastRow),
+        h('p', { class: 'set-note' }, admin ? 'Drag a row by its grip, or use the arrows. Imported history always comes after the live inputs.' : 'Imported history always comes after the live inputs. Only an admin can change the order.')),
+      admin && !isDefault ? h('div', { class: 'form-actions' }, btn('Reset to default order', { kind: 'soft', icon: 'reset', cls: 'btn-sm',
+        onclick: () => { if (busy) return; pending = defaultOrder(); saveDs({ source_order: null }, `Saved: the default order, ${orderWords(defaultOrder())}.`); } })) : null,
+      group('Gaps', [gap], { note: 'Where no live input has data, the imported history fills the hole. Where a live input has data, it is shown.' }),
+      follow ? h('div', { class: 'form-actions' }, follow) : null].filter(Boolean));
+    if (had) {
+      const same = [...dsBox.querySelectorAll('[data-focus]')].filter((el) => !el.disabled);
+      const kind = had.split(':')[0];
+      (same.find((el) => el.dataset.focus === had) || same.find((el) => el.dataset.focus.startsWith(`${kind}:`)))?.focus();
+    }
+  }
+  drawDs();
+  const dsT = tile({ w: 2, id: 'data-sources', title: 'Data sources', icon: 'pulse', side: ro ? chip('Read only', { tone: 'muted', icon: 'lock' }) : null },
+    note('When two sources cover the same time, the higher one wins, value by value.'),
+    dsBox, dsNote,
+    admin ? h('a', { class: 'tile-link ds-link', href: `${state.buildUrl('import')}#${encodeURIComponent(`overlaps-${car.id}`)}` }, 'Choose per span which source is shown', icon('chevronRight'))
+      : note('Which source is shown per span, where an import overlaps live history, is chosen by an admin on the Import page.'));
+
   /* ---------- put together */
   const cars = carsTile(ctx, car);
   await cars.load();
@@ -465,7 +612,7 @@ async function mountCar(ctx) {
   const bar = h('div', { class: 'page-bar w-full' }, crumb(car),
     h('span', { class: 'page-bar-end note' }, car.last_activity_ms ? ['Last heard ', ago(car.last_activity_ms)] : 'Not heard from yet'));
   const how = tile({ w: 2, title: 'How a new car appears', icon: 'spark', cover: 'web.settings.car.empty-state' }, howSteps());
-  ctx.view.replaceChildren(bar, carT, soldT, upT, tzT, batT, fsT, cars.el, how);
+  ctx.view.replaceChildren(bar, carT, soldT, upT, dsT, tzT, batT, fsT, cars.el, how);
   ctx.ready();
   return { update(c) { drawNow(); c.ready(); } };
 }

@@ -843,6 +843,8 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .src-inputs-k { color: var(--muted); }
 .src-in { white-space: nowrap; }
 .src-in > .src-b { margin-right: 0; }
+/* a lone link in a line of text (car: change order): on phones its tap area grows to the tap height, the line stays */
+@media (max-width: 860px) { .lnk--tap { position: relative; } .lnk--tap::after { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: var(--tap); transform: translateY(-50%); } }
 .tesla-acc { border-top: 1px solid var(--rule); padding-top: var(--g); margin-top: calc(var(--g) * 2); }
 .tesla-acc-head { display: flex; flex-wrap: wrap; gap: var(--g); align-items: baseline; }
 .tesla-acc-head > h3 { font-size: var(--fs2); line-height: var(--lh2); }

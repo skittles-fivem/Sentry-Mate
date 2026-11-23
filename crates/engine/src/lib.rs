@@ -377,6 +377,12 @@ impl Engine {
         self.inner.gap_fill.load(Ordering::SeqCst)
     }
 
+    /// The order a car's live inputs win in where two cover the same time: its `source_order` setting, else the
+    /// default (SMO, the Tesla API, TeslaFi, local TeslaMate).
+    pub fn source_order(&self, car: model::CarId) -> model::SourceOrder {
+        query::fleet::source_order_of(self, car)
+    }
+
     /// Turns import gap filling on or off server-wide (the server setting `import_gap_fill.enabled`).
     pub fn set_import_gap_fill(&self, on: bool) {
         self.inner.gap_fill.store(on, Ordering::SeqCst);

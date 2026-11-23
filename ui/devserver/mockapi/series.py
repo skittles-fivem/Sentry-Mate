@@ -57,7 +57,7 @@ def pieces(h, a, b, now, source):
 
 
 def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, explicit_aggs=True, bucket=None,
-          align=None, edges=None, sample_ms=None, fill=False):
+          align=None, edges=None, sample_ms=None, fill=False, order=None):
     """Columns { t_ms, values, bucket_ms, coverage_pct, state } for [a, b).
 
     `bucket` fixes the bucket size (else the smallest nice one for max_points); `align` is a moment
@@ -66,7 +66,8 @@ def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, e
     23 or 25 hours long when the clocks change); `bucket` is then only the size the answer names.
     `sample_ms` caps the sampling step inside long buckets (else a quarter bucket), for answers whose
     minima and maxima must hold every reading a finer series shows. `fill`: a live piece's value that is null
-    comes from its import's copy of the same time (mockapi/gapfill.py), and `value_sources` names it."""
+    comes from its import's copy of the same time (mockapi/gapfill.py), and `value_sources` names it. `order`: the
+    car's input order (`source_order`, else the default), which `sources` and `value_sources` follow."""
     b = min(b, now)
     if b <= a or (edges is not None and len(edges) < 2):
         return {"t_ms": [], "values": {f: [] for f in fields}, "bucket_ms": bucket or 1000, "coverage_pct": [],
@@ -203,10 +204,10 @@ def build(h, fields, a, b, max_points, aggs, now, source="all", value_fn=None, e
         else:
             states.append("unknown")
     _ = default
-    order = {"smo": 0, "tesla_api": 1, "import": 2}
-    gave.sort(key=lambda x: order[x["kind"]])
+    key = S.rank(order or S.DEFAULT_ORDER)
+    gave.sort(key=key)
     for f in by_field:
-        by_field[f].sort(key=lambda x: order[x["kind"]])
+        by_field[f].sort(key=key)
     return {"t_ms": t_ms, "values": values, "bucket_ms": bucket, "coverage_pct": coverage, "state": states,
             "sources": gave, "source_label": S.label_of(gave), "value_sources": by_field}
 

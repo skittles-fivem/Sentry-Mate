@@ -280,3 +280,6 @@
   .fw-field { grid-template-columns: minmax(0, 1fr); }
 }
 .car-head .car-sold-flag { vertical-align: middle; font-size: var(--micro); }
+.freshness-order { font-size: var(--small-2); margin-top: round(0.125rem, var(--e)); }
+.freshness-order a { color: var(--accent-strong); }
+@container page (width < 50rem) { .freshness-order a { display: inline-flex; align-items: center; min-height: round(2.5rem, var(--e)); } }

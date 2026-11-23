@@ -8,6 +8,7 @@
 - [How the bridge uploads](#how-the-bridge-uploads)
 - [Running next to TeslaMate and Sentry Six Manager](#running-next-to-teslamate-and-sentry-six-manager)
 - [Bringing in TeslaFi's history](#bringing-in-teslafis-history)
+- [Data sources](#data-sources)
 - [Bringing in the logs Sentry Six Manager already has](#bringing-in-the-logs-sentry-six-manager-already-has)
 
 ## Supported cars
@@ -225,20 +226,45 @@ over the end of a month is rebuilt whole on both sides. TeslaFi's own
 drive and charge lists (Drives → Drive Search And Download) are refused: they have no positions. TeslaFi's costs,
 tags and notes are not in its monthly files, so they don't come over.
 
+## Data sources
+
+A car's data can come from four live inputs: SMO (the CAN Bridge's logs), the Tesla API, TeslaFi's API and a local
+TeslaMate (its MQTT broker). Each is set up on its own page: a bridge key for SMO, a matched vehicle for the Tesla
+API and TeslaFi (Settings → Integrations), a matched TeslaMate car for local TeslaMate. Imported history (TeslaMate
+or TeslaFi) comes on top of them from the Import page.
+
+**Priority order** (Settings → Cars → Data sources, admins only, in the audit log): the order the car's live inputs
+win in. When two sources cover the same time, the higher one wins, value by value: its seconds are the car's
+seconds, and a value it did not send that second comes from the next one down that has it. At first it is SMO, the
+Tesla API, TeslaFi, local TeslaMate; any order of the four can be set (SMO need not be first), and "default" goes
+back to it. The same order picks the car's newest values on the car page and which input's lock, windows and
+update state are shown. A change rebuilds the car's history; the car shows "rebuild pending" until it is done.
+Imports always come after every live input.
+
+**Gap filling** (Settings → Cars: `import_gap_fill`): where no live input has a value at a time, the imported
+history shown for that span fills it, labelled "Imported from TeslaMate" (or TeslaFi). The car follows the server's
+setting (Settings → Server: `import_gap_fill`, on by default) until it sets its own.
+
+**Overlaps:** where live and imported history, or two imports, cover the same span, which side is shown is chosen per
+span (`GET /cars/{car}/overlaps`, from the Import page or the Timeline). See [Which history is
+shown](#which-history-is-shown).
+
 ## Which history is shown
 
 A car can have history of the same time from several places: SMO (the CAN Bridge's logs), the Tesla API, a TeslaMate
 import and a TeslaFi import. Every list, detail, total, chart, the timeline and the statistics show each drive and
 charge once, chosen in this order:
 
-1. **SMO.** Where SMO's logs cover a time, its data is used.
-2. **The Tesla API, then TeslaFi's API.** The Tesla API fills what SMO doesn't have (a value SMO doesn't send, or a
-   time SMO wasn't recording), and TeslaFi's API what both lack. Together they are the *live* history.
+1. **The live inputs, in the car's order.** By default SMO first: where SMO's logs cover a time, its data is used
+   ([Data sources](#data-sources) sets another order per car).
+2. **Then the Tesla API, TeslaFi's API and local TeslaMate.** The Tesla API fills what SMO doesn't have (a value SMO
+   doesn't send, or a time SMO wasn't recording), TeslaFi's API what both lack, and local TeslaMate what all three
+   lack. Together they are the *live* history.
 3. **One import per span.** Imported history is shown where there is no live history. Where a TeslaMate import and a
    TeslaFi import cover the same days, only one of them is shown there, never both: at first the one with more data
    in that span (more drives and charges; if they have the same, more positions; if those are equal too,
    TeslaMate's).
-4. **The import fills the gaps.** Where the live history (SMO, the Tesla API, TeslaFi's API) has nothing for a value
+4. **The import fills the gaps.** Where the live history (every live input) has nothing for a value
    at a time, the import chosen for that span (by rule 3 and the switch below) fills it: a temperature, the
    elevation and climb, a position (in a chart, and a stretch of a drive's track where the live data has a gap), the odometer, battery level or range
    at a drive's or charge's ends. The drive or charge is still the live one, shown once; only its missing values

@@ -1004,7 +1004,7 @@ export async function mount(ctx) {
     const ids = overlapCars();
     const tiles = ids.map((cid) => {
       const o = S.overlaps.get(cid);
-      const head = { w: 2, title: `Overlaps of ${carName(cid)}`, icon: 'timeline', side: o && o.items.length ? chip(`${count(o.items.length)} ${o.items.length === 1 ? 'span' : 'spans'}`) : null };
+      const head = { w: 2, id: `overlaps-${cid}`, title: `Overlaps of ${carName(cid)}`, icon: 'timeline', side: o && o.items.length ? chip(`${count(o.items.length)} ${o.items.length === 1 ? 'span' : 'spans'}`) : null };
       if (!o) return tile(head, said('info', 'Reading…'));
       if (o.err) return tile(head, said('bad', errorWords(o.err).text), btn('Try again', { kind: 'soft', icon: 'reset', onclick: loadOverlaps }));
       if (!o.items.length) return tile(head, said('ok', 'No overlap: no two histories of this car cover the same time.'));
