@@ -341,41 +341,129 @@ fn snapshot_plain(ctx: &Ctx, files: &Files) -> Result<Option<crate::plain::Plain
     Ok(Some(p))
 }
 
-/// Reads a day that has a journal: under the car's lock (a fold meanwhile would pair a snapshot with a journal of
-/// another generation). A day of a snapshot alone is read without it: the snapshot is replaced whole, by a rename.
-pub(crate) type Journaled<'a, P> = &'a mut dyn FnMut(Files) -> Result<Vec<P>>;
-
-/// A day's points, snapshot and journal (under the car's lock: see [`Journaled`]).
-pub(crate) fn journaled_points<P: Point>(ctx: &Ctx, files: Files) -> Result<Vec<P>> {
-    Ok(LoggedFile::<DayLog<P>>::read_state(ctx, files)?.points)
-}
-
-/// A day's points: from its snapshot alone (through the cache) when it has no journal, else through `journaled`.
-fn day_points<P: Point>(ctx: &Ctx, files: Files, journaled: Journaled<'_, P>) -> Result<Vec<P>> {
-    if !files.log.exists() {
-        let label = ctx.label(&files.snap);
-        return match snapshot_plain(ctx, &files)? {
-            Some(p) => Ok(DayLog::<P>::decode_state(&p.1).map_err(|e| e.in_file(&label))?.points),
-            None if files.log.exists() => journaled(files),
-            None => Ok(Vec::new()),
-        };
+/// A day with a journal, read whole (snapshot and journal) and kept in the same cache as an unpacked snapshot would
+/// be, while its journal is the same file (a write to the day appends to it, a fold replaces or removes it): days
+/// written by the minute (a live car's) are read again without opening every entry of their journal each time.
+/// `None`: the journal went meanwhile (the day is its snapshot alone now).
+pub(crate) fn journaled_plain<P: Point>(ctx: &Ctx, files: &Files) -> Result<Option<crate::plain::Plain>> {
+    let Some(st) = crate::plain::stamp(&files.log)? else { return Ok(None) };
+    if let Some(p) = ctx.plain.get(&files.log, st) {
+        return Ok(Some(p));
     }
-    journaled(files)
+    let state = LoggedFile::<DayLog<P>>::read_state(ctx, files.clone())?;
+    let p = Arc::new((0, zeroize::Zeroizing::new(state.encode_state()?)));
+    // kept only when the journal read is the one looked at (a day written meanwhile is read again next time)
+    if crate::plain::stamp(&files.log)? == Some(st) {
+        ctx.plain.put(&files.log, st, p.clone());
+    }
+    Ok(Some(p))
 }
 
-/// Every point of `[from, to)`, in time order.
-pub(crate) fn read<P: Point>(
+/// One day of a series unpacked: its body (the snapshot's, or the snapshot's and the journal's), through the cache,
+/// and the file it came from. Decoded afterwards, outside the car's lock ([`points_of`], [`fields_of`]), so reads of
+/// one car decode side by side.
+pub(crate) struct DayPlain {
+    label: String,
+    plain: crate::plain::Plain,
+}
+
+/// Unpacks a day that has a journal: under the car's lock (a fold meanwhile would pair a snapshot with a journal of
+/// another generation); see [`journaled_plain`]. A day of a snapshot alone is unpacked without it: the snapshot is
+/// only ever replaced whole, by a rename.
+pub(crate) type Journaled<'a> = &'a mut dyn FnMut(&Files) -> Result<Option<crate::plain::Plain>>;
+
+fn day_plain(ctx: &Ctx, files: &Files, journaled: Journaled<'_>) -> Result<Option<DayPlain>> {
+    if files.log.exists()
+        && let Some(plain) = journaled(files)?
+    {
+        return Ok(Some(DayPlain { label: ctx.label(&files.log), plain }));
+    }
+    if let Some(plain) = snapshot_plain(ctx, files)? {
+        return Ok(Some(DayPlain { label: ctx.label(&files.snap), plain }));
+    }
+    // (no snapshot: a journal begun meanwhile)
+    Ok(journaled(files)?.map(|plain| DayPlain { label: ctx.label(&files.log), plain }))
+}
+
+/// The days of `[from, to)` that have points, unpacked (those with a journal through `journaled`).
+pub(crate) fn plains<P: Point>(
     ctx: &Ctx,
     car_dir: &Path,
     source: Stream,
     from: u64,
     to: u64,
-    journaled: Journaled<'_, P>,
-) -> Result<Vec<P>> {
+    journaled: Journaled<'_>,
+) -> Result<Vec<DayPlain>> {
     let dir = series_dir::<P>(car_dir, source);
     let mut out = Vec::new();
     for day in days_in(&dir, from, to)? {
-        let pts = day_points::<P>(ctx, day_files(&dir, day), journaled)?;
+        out.extend(day_plain(ctx, &day_files(&dir, day), journaled)?);
+    }
+    Ok(out)
+}
+
+/// Days read last on this thread, decoded, while [`keeping_days`] runs: each with the unpacked body it came from
+/// (the same body while its file stays the same).
+struct KeptDays {
+    max: usize,
+    days: Vec<(crate::plain::Plain, Arc<dyn std::any::Any + Send + Sync>)>,
+}
+
+thread_local! {
+    static KEPT_DAYS: std::cell::RefCell<Option<KeptDays>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `f` with the last `n` days of points [`crate::Db::read_points`] reads on this thread kept decoded (while
+/// their files stay the same), for work that reads short stretches of the same days again and again (a track per
+/// drive of a month). Only `f`'s reads on this thread; nothing is kept after it.
+pub fn keeping_days<R>(n: usize, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<KeptDays>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let old = self.0.take();
+            KEPT_DAYS.with(|k| *k.borrow_mut() = old);
+        }
+    }
+    let _restore = Restore(KEPT_DAYS.with(|k| k.borrow_mut().replace(KeptDays { max: n.max(1), days: Vec::new() })));
+    f()
+}
+
+fn decode_day<P: Point>(d: &DayPlain) -> Result<Vec<P>> {
+    Ok(DayLog::<P>::decode_state(&d.plain.1).map_err(|e| e.in_file(&d.label))?.points)
+}
+
+/// A day's points through the days kept on this thread (`None`: none are kept).
+fn kept_day_points<P: Point>(d: &DayPlain) -> Result<Option<Arc<Vec<P>>>> {
+    let found = KEPT_DAYS.with(|k| {
+        k.borrow().as_ref().map(|k| k.days.iter().find(|x| Arc::ptr_eq(&x.0, &d.plain)).map(|x| x.1.clone()))
+    });
+    let Some(found) = found else { return Ok(None) };
+    if let Some(v) = found.and_then(|v| v.downcast::<Vec<P>>().ok()) {
+        return Ok(Some(v));
+    }
+    let v = Arc::new(decode_day::<P>(d)?);
+    KEPT_DAYS.with(|k| {
+        if let Some(k) = k.borrow_mut().as_mut() {
+            if k.days.len() >= k.max {
+                k.days.remove(0);
+            }
+            k.days.push((d.plain.clone(), v.clone()));
+        }
+    });
+    Ok(Some(v))
+}
+
+/// Every point of `[from, to)` of the days, in time order.
+pub(crate) fn points_of<P: Point>(days: Vec<DayPlain>, from: u64, to: u64) -> Result<Vec<P>> {
+    let mut out = Vec::new();
+    for d in days {
+        if let Some(pts) = kept_day_points::<P>(&d)? {
+            let a = pts.partition_point(|p| p.t_ms() < from);
+            let b = pts.partition_point(|p| p.t_ms() < to);
+            out.extend_from_slice(&pts[a..b.max(a)]);
+            continue;
+        }
+        let pts = decode_day::<P>(&d)?;
         let a = pts.partition_point(|p| p.t_ms() < from);
         let b = pts.partition_point(|p| p.t_ms() < to);
         out.extend(pts.into_iter().skip(a).take(b - a));
@@ -383,35 +471,12 @@ pub(crate) fn read<P: Point>(
     Ok(out)
 }
 
-/// Some fields of `[from, to)`, as columns. A day with nothing in its journal is read straight from its snapshot,
-/// decoding only those fields.
-pub(crate) fn read_fields<P: Point>(
-    ctx: &Ctx,
-    car_dir: &Path,
-    source: Stream,
-    from: u64,
-    to: u64,
-    names: &[&str],
-    journaled: Journaled<'_, P>,
-) -> Result<Fields> {
-    let cols = columns::field_columns::<P>(names)?;
-    let dir = series_dir::<P>(car_dir, source);
+/// Some fields of `[from, to)` of the days, as columns (only those fields decoded).
+pub(crate) fn fields_of<P: Point>(days: Vec<DayPlain>, from: u64, to: u64, names: &[&str]) -> Result<Fields> {
+    columns::field_columns::<P>(names)?;
     let mut out = Fields::new(names);
-    for day in days_in(&dir, from, to)? {
-        let files = day_files(&dir, day);
-        let fields = if files.log.exists() {
-            let points = day_points::<P>(ctx, files, journaled)?;
-            let mut f = Fields::new(names);
-            f.t_ms = points.iter().map(Point::t_ms).collect();
-            for ((_, v), c) in f.values.iter_mut().zip(&cols) {
-                *v = points.iter().map(|p| c.value(p)).collect();
-            }
-            f
-        } else {
-            let label = ctx.label(&files.snap);
-            let Some(p) = snapshot_plain(ctx, &files)? else { continue };
-            decode_fields::<P>(&p.1, names).map_err(|e| e.in_file(&label))?
-        };
+    for d in days {
+        let fields = decode_fields::<P>(&d.plain.1, names).map_err(|e| e.in_file(&d.label))?;
         out.extend_range(fields, from, to);
     }
     Ok(out)
@@ -425,22 +490,6 @@ pub(crate) fn days<P: Point>(car_dir: &Path, source: Stream) -> Result<Vec<DayIn
         let f = day_files(&dir, day);
         let size = |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len());
         out.push(DayInfo { date: day_name(day), start_ms: day * DAY_MS, bytes: size(&f.snap) + size(&f.log) });
-    }
-    Ok(out)
-}
-
-/// Per day of a series (its UTC start), a key of what its files are now (each one's inode, size and change time): it
-/// changes whenever the day is written, so what was worked out from a day can be kept with it.
-pub(crate) fn day_stamps<P: Point>(car_dir: &Path, source: Stream) -> Result<Vec<(u64, u64)>> {
-    use std::hash::{Hash, Hasher};
-    let dir = series_dir::<P>(car_dir, source);
-    let mut out = Vec::new();
-    for day in list_days(&dir)? {
-        let f = day_files(&dir, day);
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        crate::plain::stamp(&f.snap)?.hash(&mut h);
-        crate::plain::stamp(&f.log)?.hash(&mut h);
-        out.push((day * DAY_MS, h.finish()));
     }
     Ok(out)
 }
