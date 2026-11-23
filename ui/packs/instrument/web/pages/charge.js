@@ -6,7 +6,7 @@
 // (PUT/DELETE .../cost, admin) that survives rebuilds.
 
 import * as state from '../shared/state.js';
-import { h, replace, cssVar, cover } from '../shared/dom.js';
+import { h, replace, cssVar, cover, steady } from '../shared/dom.js';
 import { format, convert, unitLabel, getUnits, formatMoney } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, zoneName, dayRange, dayKey, DAY } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -208,7 +208,7 @@ export async function mount(ctx) {
 
   const chargePanel = h('section', { class: 'panel charts-panel', 'aria-label': 'Through the charge', cover: 'cd.chart.timeline' },
     h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('signals'), 'Through the charge'),
-      h('span', { class: 'row' }, timeEl, h('span', { class: 'faint zoom-hint' }, 'Drag across a chart to zoom; double-click for the whole session'), resetBtn, csvCurve('curve'))),
+      h('span', { class: 'row' }, steady(timeEl, t.map((v) => formatTime(v, tz, { seconds: true }))), h('span', { class: 'faint zoom-hint' }, 'Drag across a chart to zoom; double-click for the whole session'), resetBtn, csvCurve('curve'))),
     selBox, gapNote, chargeHost, h('p', { class: 'note' }, stepNote));
   const limitSeen = [...new Set(col('limit_source').filter((v) => v != null))];
   const supplyPanel = h('section', { class: 'panel charts-panel', 'aria-label': 'The supply' },

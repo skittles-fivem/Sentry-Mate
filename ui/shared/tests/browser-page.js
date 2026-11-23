@@ -1,6 +1,6 @@
 // Runs inside Chromium for browser.test.js, under the same Content-Security-Policy the dev server sends.
 // Each check pushes { name, ok, detail }; window.__results is set when all are done.
-import { h, svg, cover, ready, unready, failed, setTitle, quantity, setVars, safeUrl, readyPage } from './shared/dom.js';
+import { h, svg, cover, ready, unready, failed, setTitle, quantity, setVars, safeUrl, readyPage, steady, longest, textShapes } from './shared/dom.js';
 import { setLocale, t } from './shared/i18n.js';
 import { setUnits } from './shared/units.js';
 import * as api from './shared/api.js';
@@ -39,6 +39,35 @@ async function run() {
   setVars(el, { w: '10%' });
   check('setVars accepts names without --', el.style.getPropertyValue('--w') === '10%');
   check('tab title', setTitle('Drives', 'Model Y') === 'Drives · Model Y · Sentry Mate' && document.title === 'Drives · Model Y · Sentry Mate');
+  // steady: a readout in a box as wide as its longest text (the packs' CSS, here as a constructed sheet)
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync('.steady{display:inline-grid}.steady>*{grid-area:1/1}.steady-size{visibility:hidden}');
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  const val = h('b', { class: 'legend-val', cover: 'x.val', id: 'v1' }, '');
+  const row = h('div', { style: { display: 'flex', 'font-variant-numeric': 'tabular-nums' } }, h('span', null, 'Battery '), steady(val, ['12 %', '100 %', null, '—']), h('span', { class: 'after' }, ' next'));
+  document.body.append(row);
+  const after = row.querySelector('.after');
+  const xs = [];
+  for (const t of ['', '7 %', '100 %', '—']) { val.textContent = t; xs.push(after.getBoundingClientRect().left); }
+  const sizers = [...row.querySelectorAll('.steady-size')];
+  const sizer = sizers.find((x) => x.textContent === '000 %');
+  check('longest picks the longest text', longest(['a', null, 'abc', 'ab']) === 'abc' && longest(null) === '');
+  check('textShapes: digits as 0, each shape once, the longest kept', textShapes(['12 %', '34 %', '100 %', null, '']).join('|') === '00 %|000 %' && textShapes(['1', '22', '333'], 2).join('|') === '000|00');
+  check('steady keeps what follows a readout in place while its text changes', xs.every((x) => x === xs[0]) && xs[0] > row.firstChild.getBoundingClientRect().right, xs.join(' '));
+  check('steady sizes with unseen copies that are not items, targets or names', sizers.length === 3 && !!sizer && sizer.tagName === 'B' && sizer.classList.contains('legend-val')
+    && row.querySelector('.legend-val') === val && sizer.getAttribute('aria-hidden') === 'true' && !sizer.hasAttribute('data-cover') && !sizer.id && getComputedStyle(sizer).visibility === 'hidden', row.innerHTML);
+  // a narrow digit run against wide letters: the shape with the wider letters sizes the box
+  const word = h('span', null, 'x');
+  const row2 = h('div', { style: { display: 'flex' } }, steady(word, ['Mar 1', 'May 1', 'WWW 1']), h('span', { class: 'after2' }, 'next'));
+  document.body.append(row2);
+  const a2 = row2.querySelector('.after2');
+  const ys = [];
+  for (const t of ['Mar 1', 'WWW 1', 'iii 1']) { word.textContent = t; ys.push(a2.getBoundingClientRect().left); }
+  check('steady keeps the room of the widest shape, not only of the longest text', ys.every((y) => y === ys[0]), ys.join(' '));
+  row2.remove();
+  val.parentElement.fit(['1 000 000 %']);
+  check('steady fits new data', row.querySelectorAll('.steady-size').length === 1 && row.querySelector('.steady-size').textContent === '0 000 000 %' && after.getBoundingClientRect().left > xs[0]);
+  row.remove();
   ready('fleet');
   const r1 = document.documentElement.dataset.ready;
   unready();

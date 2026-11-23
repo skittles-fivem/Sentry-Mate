@@ -133,6 +133,51 @@ export function clear(el) { el.replaceChildren(); return el; }
 /** Replace every child with these. */
 export function replace(el, ...children) { el.replaceChildren(); return append(el, children); }
 
+/** The longest of some texts (null and undefined count as ''). */
+export function longest(texts) {
+  let w = '';
+  for (const t of texts ?? []) { const s = t == null ? '' : String(t); if (s.length > w.length) w = s; }
+  return w;
+}
+
+/**
+ * The shapes of some texts: each with its digits as 0 (readouts use tabular figures, so every digit is as wide),
+ * each shape once, at most max of them (the longest).
+ */
+export function textShapes(texts, max = 24) {
+  const seen = new Set();
+  for (const t of texts ?? []) if (t != null && t !== '') seen.add(String(t).replace(/[0-9]/g, '0'));
+  const out = [...seen];
+  if (out.length > max) out.sort((a, b) => b.length - a.length).length = max;
+  return out;
+}
+
+/**
+ * A readout whose text changes in place (the value under a chart's cursor, the day pointed at) in a box as wide as
+ * the widest text it can show, so a new value never moves what is beside or under it, and never wraps a line anew:
+ * steady(el, texts) puts el in a box (span.steady) followed by unseen copies of el (same tag and class, aria-hidden,
+ * class steady-size), one for each shape of texts (textShapes). All sit in one grid cell, so the box is as wide as
+ * the widest of them. Set el's text as before; box.fit(texts) sizes the box again for new data. (The copies come
+ * after el, so code that finds el by its class still finds el first.) Each pack styles .steady and .steady-size
+ * (app.css).
+ */
+export function steady(el, texts = []) {
+  const box = h('span', { class: 'steady' }, el);
+  box.fit = (t) => {
+    const shapes = textShapes(t);
+    box.replaceChildren(el, ...(shapes.length ? shapes : ['']).map((x) => {
+      const size = el.cloneNode(false);
+      for (const a of ['id', 'data-cover', 'title', 'role', 'aria-live']) size.removeAttribute(a);
+      size.classList.add('steady-size');
+      size.setAttribute('aria-hidden', 'true');
+      size.textContent = x;
+      return size;
+    }));
+    return box;
+  };
+  return box.fit(texts);
+}
+
 /** addEventListener that returns its own remover. */
 export function on(target, type, fn, opts) {
   target.addEventListener(type, fn, opts);

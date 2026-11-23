@@ -4,7 +4,7 @@
 // (the figures for the selection follow it), the drive's own figures, and the export as GPX or GeoJSON.
 
 import * as state from '../shared/state.js';
-import { h, replace, setVars, cssVar } from '../shared/dom.js';
+import { h, replace, setVars, cssVar, steady } from '../shared/dom.js';
 import { format, convert, unitLabel, getUnits, KM_PER_MI } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, zoneName, dayRange, dayKey, zonedParts } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -187,7 +187,7 @@ export async function mount(ctx) {
     h('div', { class: 'drive-layout' }, mapPanel, stats),
     h('section', { class: 'panel charts-panel', 'aria-label': 'Through the drive', cover: ['dd.chart.drive', 'dd.chart.drive.tooltip'] },
       h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('signals'), 'Through the drive'),
-        h('span', { class: 'row' }, timeEl, srcMark(series, { short: true }), h('span', { class: 'faint' }, 'Drag across a chart to zoom; double-click for the whole drive'), resetBtn,
+        h('span', { class: 'row' }, steady(timeEl, (series?.t_ms || []).map((t) => formatTime(t, tz, { seconds: true }))), srcMark(series, { short: true }), h('span', { class: 'faint' }, 'Drag across a chart to zoom; double-click for the whole drive'), resetBtn,
           csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'drive', day), series.t_ms.map((t, i) => Object.fromEntries([['t', t], ...[...fields, 'est_range_km'].map((f) => [f, series.values[f]?.[i] ?? null])])),
             [timeColumn('Time', 't', tz), column('Speed', 'speed_kph', 'speed'), column('Power', 'power_kw', 'power'), column('Battery', 'soc_pct', 'percent'), column('Usable', 'usable_soc_pct', 'percent'), column(ideal ? 'Ideal range' : 'Rated range', rk, 'range'), column('Estimated range (Sentry Mate)', 'est_range_km', 'range'), column('Energy left', 'energy_remaining_kwh', 'energy'), column('Elevation', 'elevation_m', 'length'), column('Outside', 'outside_c', 'temperature'), column('Cabin', 'cabin_c', 'temperature'), setColumn('Set left', 'setpoint_left_c'), setColumn('Set right', 'setpoint_right_c'), column('Climate', 'climate'), column('Fan step (0-10)', 'fan_level'), column('Battery heating', 'battery_heat_kw', 'power'), column('Odometer', 'odometer_km', 'odometer'), column('Latitude', 'lat'), column('Longitude', 'lon'), column('Accuracy', 'accuracy_m', 'length')]) }))),
       selBox, chartsHost),
