@@ -56,7 +56,8 @@
 .trip-split > i, .trip-split-legend i { background: var(--tc); }
 .trip-split > i[data-tone="asleep"], .trip-split-legend i[data-tone="asleep"] { background: var(--asleep-fill); }
 .trip-split > i[data-tone="none"], .trip-split-legend i[data-tone="none"] { background: var(--nodata-fill); }
-.trip-split-legend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(0.5rem, var(--e)) round(1.5rem, var(--e)); margin: 0 0 round(0.75rem, var(--e)); padding: 0; list-style: none; }
+/* two columns where each fits, else one (the panel is narrow beside the map on a laptop) */
+.trip-split-legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(round(16rem, var(--e)), 1fr)); gap: round(0.5rem, var(--e)) round(1.5rem, var(--e)); margin: 0 0 round(0.75rem, var(--e)); padding: 0; list-style: none; }
 .trip-split-legend li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto round(3rem, var(--e)); align-items: center; gap: round(0.5rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); }
 .trip-split-legend li i { width: round(0.75rem, var(--e)); height: round(0.75rem, var(--e)); border-radius: round(0.1875rem, var(--e)); }
 .trip-split-legend li b { color: var(--text); font-weight: 600; white-space: nowrap; }
@@ -93,13 +94,19 @@
 /* places are capped so every column fits the panel at a laptop width (the charges table has ten) */
 .trip-table .col-place .cell-text { max-width: round(13rem, var(--e)); }
 .trip-table--charges .col-place .cell-text { max-width: round(9rem, var(--e)); }
+.trip-table { container: trip-list / inline-size; }
+@container trip-list (max-width: 66rem) { :root:not([data-phone]) .trip-table .col-place .cell-text { max-width: round(9rem, var(--e)); } }
 .trip-table .tbl th { white-space: nowrap; }
 .trip-scroll-hint { display: flex; align-items: center; justify-content: flex-end; gap: round(0.25rem, var(--e)); margin: 0; padding: round(0.375rem, var(--e)) round(1.25rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
 .trip-scroll-hint[hidden] { display: none; }
 .trip-page .place-link:hover, .trip-page .cost-link:hover { color: var(--live); }
 .trip-page .cell-text > .cost-link { display: flex; flex-direction: row; white-space: nowrap; flex-wrap: nowrap; justify-content: flex-end; align-items: center; gap: round(0.25rem, var(--e)); overflow: visible; }
 .trip-page .cost-link .ico { color: var(--text-3); }
-.trip-page .cost-link.is-missing { color: var(--warm); }
+.trip-page .cost-link.is-missing { color: var(--text-3); }
+.trip-table .cost-pen { opacity: 0; }
+.trip-table tr:hover .cost-pen, .trip-table .cost-link:focus-visible .cost-pen { opacity: 1; }
+:root[data-phone] .trip-table .cost-pen { opacity: 1; }
+@media (hover: none) { .trip-table .cost-pen { opacity: 1; } }
 
 @container page (min-width: 100rem) {
   .trip-table--charges .col-place .cell-text { max-width: round(14rem, var(--e)); }

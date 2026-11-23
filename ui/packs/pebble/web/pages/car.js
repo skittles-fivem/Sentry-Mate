@@ -20,12 +20,11 @@ import { formatDate, formatWhen, formatDuration } from '../shared/time.js';
 import { formatList } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { tyreView, recommendedLine, wheelGuessLine, tyresTitle } from '../shared/tyres.js';
+import { tyreView, recommendedLine } from '../shared/tyres.js';
 import { tile, num, ring, stateTag, chip, btn, icon, note, ago } from '../core/ui.js';
 import { ghostTile, plotGhost } from '../core/states.js';
 import { openPeriod, rangeText } from '../core/period.js';
 import { mapTile, coordsText } from '../core/map.js';
-import { SPOT_ZOOM } from '../shared/maptiles.js';
 import { timeChart, spansOf } from '../core/chart.js';
 import { v, AWAKE_WORDS, endLabel, placeLink, strip, stripShares, facts, dur } from '../core/bits.js';
 import { srcPill, viaMark, inputsLine } from '../core/source.js';
@@ -34,13 +33,6 @@ import { srcPill, viaMark, inputsLine } from '../core/source.js';
 const put = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false && k !== ''));
 import { vehicleTiles } from './vehicle-parts.js';
 import { historyHref, VERSION_SOURCE } from '../core/firmware.js';
-
-// the door placard's pressure for a wheel size that is only a guess: say so, and (for an admin) link to where the
-// size is typed
-const wheelGuess = (now, anchor, admin) => {
-  const g = wheelGuessLine(now);
-  return g ? [' ', g.said, admin ? [' ', g.ask, ' ', h('a', { href: anchor }, g.action), '.'] : null] : null;
-};
 
 const withVia = (text, x) => { const m = viaMark(x); return m ? h('span', { class: 'src-line' }, text, m) : text; };
 /** The input mark of an off_can value ({ value, at_ms, sources, stale } or null), and Stale past its age limit. */
@@ -183,9 +175,9 @@ export async function mount(ctx) {
     put(tTyres, tTyres.firstChild,
       h('div', { class: 'tyres', role: 'img', 'aria-label': TYRES.map(([, n], i) => `${n} ${format(v(list[i]), 'pressure')}`).join(', ') },
         h('span', { class: 'tyres-car', 'aria-hidden': 'true' }), dots),
-      h('p', { class: ['tile-line', { 'is-warn': low }], cover: 'summary.flag.tire_pressure_warning', title: list.length ? tyresTitle(now) || null : null },
+      h('p', { class: ['tile-line', { 'is-warn': low }], cover: 'summary.flag.tire_pressure_warning' },
         !list.length ? `Tyre pressures: ${why(null)}.` : low ? 'A tyre is more than 10 % under its recommended pressure. ' : ty.front != null ? 'All near the recommended pressure. ' : '',
-        list.length ? recommendedLine(now) : '', list.length ? wheelGuess(now, '#vi-wheels', ctx.admin) : null));
+        list.length ? recommendedLine(now) : ''));
   }
 
   /* ---------------------------------------------------------------- status flags */
@@ -376,7 +368,7 @@ export async function mount(ctx) {
       lat != null && outside ? h('a', { class: 'tile-link', href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=16/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'noopener noreferrer', cover: 'summary.map.external_link' }, 'Open in a map', icon('external'))
         : h('span', { class: 'muted', cover: 'summary.map.external_link' }, 'Outside map links are off'));
     if (lat != null && lon != null) {
-      const m = await mapTile(ctx, mapBox, { center: [lon, lat], zoom: SPOT_ZOOM, fullscreen: true });
+      const m = await mapTile(ctx, mapBox, { center: [lon, lat], zoom: 14, fullscreen: true });
       if (!m) return;
       if (m.map) m.pin([lon, lat], { tone: now.state === 'charging' ? 'teal' : 'coral', title: car.name });
       await m.ready;

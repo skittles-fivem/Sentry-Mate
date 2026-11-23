@@ -11,7 +11,6 @@ import { formatNumber } from '../shared/i18n.js';
 import { head, section, note, link } from '../core/ui.js';
 import { num, tag } from '../core/fmt.js';
 import { safeMap } from '../core/map.js';
-import { trackBounds } from '../shared/tracks.js';
 import { loadUPlot, plot, line, timeAxis, valueAxis, cursor, readout } from '../core/chart.js';
 import { table, cellBar } from '../core/table.js';
 import { empty } from '../core/states.js';
@@ -252,7 +251,7 @@ export async function mount(ctx) {
       mp.marker(coords[0], 'map-pin map-pin--a');
       if (!live) mp.marker(coords[coords.length - 1], 'map-pin map-pin--b');
       cursorPin = mp.marker(coords[0], 'map-pin map-pin--cur is-off');
-      mp.fit(trackBounds(track?.features || []) || coords, { pad: 32 }); // without stray fixes
+      mp.fit(coords, { pad: 32 });
     }
   } else mapEl.append(h('p', { class: 'map-note' }, '-- no positions recorded for this drive --'));
   if (!ctx.alive()) return;

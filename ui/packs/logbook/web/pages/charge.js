@@ -483,7 +483,7 @@ function chargeFigures(c, { tz, going, end }) {
     dc
       ? figure('Energy drawn', q(null, 'energy', { why: 'unknown on DC' }), c.dc_inlet_kwh != null ? ['a fast charger’s grid side is out of sight; ', format(c.dc_inlet_kwh, 'energy'), ' reached the car’s inlet', c.fast_charger && c.fast_charger.billed_kwh != null ? [', billed ', format(c.fast_charger.billed_kwh, 'energy')] : ''] : 'a fast charger’s grid side is out of sight', { cover: 'cd.stat.energy_used' })
       : figure('Energy drawn', q(c.energy_grid_kwh, 'energy', { why: imported ? 'not in the imported row' : 'the car did not report it' }), c.losses_kwh != null ? ['from the AC line; ', format(c.losses_kwh, 'energy'), ' lost on the way in'] : 'from the AC line, by the car’s charger', { cover: 'cd.stat.energy_used' }),
-    figure('Efficiency', dc ? q(null, 'percent', { why: 'unknown on DC' }) : q(eff, 'percent', { why: 'needs the energy drawn' }),
+    figure('Efficiency', dc ? q(null, 'percent', { why: 'unknown on DC' }) : q(eff, 'percent', { why: c.efficiency_note || 'needs the energy drawn' }),
       dc ? 'needs the grid energy, which a fast charger does not send' : eff != null && eff > 100 ? [flag('Check', { kind: 'warn' }), ' above 100 %: a reading is off (often a three-phase line counted as one)'] : 'energy added ÷ energy drawn', { cover: 'cd.stat.efficiency' }),
     figure('Battery', h('span', { class: 'trio' },
       h('span', { cover: 'cd.stat.soc_start' }, h('span', { class: 'sr-only' }, 'start '), q(soc0, 'percent', { why: 'not recorded' })), h('span', { class: 'arrow', 'aria-hidden': 'true' }, ' → '),

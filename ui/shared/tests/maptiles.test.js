@@ -49,27 +49,3 @@ test('the offline map summary and file choices', () => {
   assert.equal(mt.offlineFileChoices({ offline_files: [{ name: 'a.pmtiles', bytes: 1 }] }), null);
   assert.equal(mt.bytesText(1500), '1.5 KB');
 });
-
-test('a map opens no deeper than its tiles are sharp, also after a switch', () => {
-  const sat = { kind: 'raster', template: 'https://a.example/{z}/{x}/{y}', maxZoom: 19, overlays: [] };
-  const us = { ...sat, maxZoom: 16 };
-  assert.equal(mt.sharpZoom(sat), 18);
-  assert.equal(mt.sharpZoom(us), 15);
-  assert.equal(mt.sharpZoom(us, 512), 16);
-  assert.equal(mt.sharpZoom({ kind: 'raster', maxZoom: 14 }), 13);
-  assert.equal(mt.sharpZoom({ kind: 'vector', maxZoom: 15 }), 22);
-  assert.equal(mt.sharpZoom(null), 22);
-  assert.ok(mt.SPOT_ZOOM >= 14 && mt.SPOT_ZOOM <= mt.sharpZoom(sat));
-  // a fake map: the switch to tiles that end sooner zooms out to them; a switch back keeps the zoom
-  const fake = (zoom) => ({ zoom, layers: [], sources: {}, getLayer: () => null, getSource: () => null, removeLayer() {}, removeSource() {},
-    getStyle() { return { layers: this.layers }; }, addSource(id, d) { this.sources[id] = d; }, addLayer(l) { this.layers.push(l); },
-    getZoom() { return this.zoom; }, jumpTo(o) { if (o.zoom != null) this.zoom = o.zoom; } });
-  const m = fake(17);
-  mt.swapTiles(m, sat, us);
-  assert.equal(m.zoom, 15);
-  mt.swapTiles(m, us, sat);
-  assert.equal(m.zoom, 15);
-  const same = fake(17);
-  mt.swapTiles(same, us, us);
-  assert.equal(same.zoom, 17, 'redrawing the same tiles moves nothing');
-});

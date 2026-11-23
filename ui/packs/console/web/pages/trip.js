@@ -14,10 +14,9 @@ import { carOptions } from '../core/carpick.js';
 import { num, tag, date } from '../core/fmt.js';
 import { table, cellBar } from '../core/table.js';
 import { safeMap } from '../core/map.js';
-import { trackBounds } from '../shared/tracks.js';
 import { loadUPlot, plot, line, timeAxis, valueAxis, cursor, readout } from '../core/chart.js';
 import { stateStrip } from '../core/strip.js';
-import { src, srcText, est as estTag } from '../core/source.js';
+import { src, rowTitle, est as estTag } from '../core/source.js';
 import { empty } from '../core/states.js';
 import { rpx } from '../core/display.js';
 import { placeLink } from './timeline.js';
@@ -122,7 +121,7 @@ export async function mount(ctx) {
   const legsT = table(ctx, {
     title: 'legs', rows: legs, csv: false, sort: null,
     cover: ['trip.drives.table', 'trip.charges.table'],
-    rowHref: legHref,
+    rowHref: legHref, rowTitle: (l) => rowTitle(l.d || l.c),
     columns: [
       { key: 'n', label: '#', num: true, render: (l) => h('span', { class: 'muted' }, String(l.n)), total: () => 'total' },
       { key: 'kind', label: 'leg', ph: 'main', render: (l) => (l.kind === 'drive' ? tag('drive', 'drive') : tag('charge', 'charge')) },
@@ -142,9 +141,9 @@ export async function mount(ctx) {
       { key: 'power', label: 'avg kW', num: true, cover: 'trip.charges.power_avg', render: (l) => (l.kind === 'charge' ? num(l.c.power_avg_kw, 'power') : false) },
       { key: 'range', label: 'range+', num: true, cover: 'trip.charges.range_added', render: (l) => (l.kind === 'charge' ? num(l.c.range_added_km, 'range') : false) },
       { key: 'cost', label: 'cost', num: true, cover: ['trip.charges.cost', 'trip.charges.link.cost'],
-        render: (l) => (l.kind === 'charge' ? (l.c.cost ? format(l.c.cost.amount, 'money', { currency: l.c.cost.currency }) : h('a', { class: 'lnk', href: legHref(l), title: 'set a price for this charge' }, 'set')) : false),
+        render: (l) => (l.kind === 'charge' ? (l.c.cost ? format(l.c.cost.amount, 'money', { currency: l.c.cost.currency })
+          : h('span', { class: 'nowrap' }, h('a', { class: 'lnk-plain tone--accent row-act', href: legHref(l), title: 'set a price for this charge' }, '[set] '), h('span', { class: 'muted', title: 'no price' }, '\u2014'))) : false),
         total: () => money(cost.by_currency) },
-      { key: 'from', label: 'data', title: 'where the data came from: smo, api (the Tesla API), imp (imported)', render: (l) => src(l.d || l.c), value: (l) => srcText(l.d || l.c) },
     ],
     empty: () => empty('no drives or charges in this range', 'pick a wider range or a shortcut above'),
   });
@@ -220,7 +219,7 @@ export async function mount(ctx) {
       if (mine.length) m.line('route', mine);
       for (const c of charges) if (c.position?.lat != null) m.marker([c.position.lon, c.position.lat], 'map-pin map-pin--warn');
       if (mine.length) { m.marker(mine[0][0], 'map-pin map-pin--a'); const lst = mine[mine.length - 1]; m.marker(lst[lst.length - 1], 'map-pin map-pin--b'); }
-      m.fit(trackBounds(tracks?.drives || [], marks.map((k) => [k.lon, k.lat])) || all, { pad: 32 }); // without stray fixes
+      m.fit(all, { pad: 32 });
     }
   }
   if (!ctx.alive()) return;

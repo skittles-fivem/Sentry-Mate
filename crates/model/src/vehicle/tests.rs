@@ -753,8 +753,6 @@ fn the_door_placard_gives_the_tyre_pressures_for_a_known_wheel_size() {
     let p = placard_pressure(&with_wheel(Some(20.0))).unwrap();
     assert_eq!((p.front_kpa, p.rear_kpa, p.wheel_in), (290.0, 290.0, 20));
     assert!(p.source.contains("Owner's Manual"), "{}", p.source);
-    // a typed size is no guess
-    assert_eq!((p.wheel_from, p.wheel_guess), (Some(FactSource::Owner), false));
     // a size the table has no row for (a Model Y on 18 in wheels in 2023): nothing guessed
     assert_eq!(placard_pressure(&with_wheel(Some(18.0))), None);
     // the size not known (this build came with 19 or 20 in): nothing guessed either
@@ -763,13 +761,4 @@ fn the_door_placard_gives_the_tyre_pressures_for_a_known_wheel_size() {
     assert_eq!(placard_pressure(&v), None);
     // no model known
     assert_eq!(placard_pressure(&vehicle_info(&VehicleInputs::default())), None);
-}
-
-#[test]
-fn a_placard_for_a_wheel_size_from_the_factory_tyre_is_a_guess() {
-    // the made-up Model Y prefix again; the gateway names a 21 in factory tyre, not the wheels the car has now
-    let can = CanBuild { tire_type: Some(18), ..CanBuild::default() };
-    let v = vehicle_info(&VehicleInputs { vin: Some("7SAYGDEE1PF".into()), can, ..VehicleInputs::default() });
-    let p = placard_pressure(&v).unwrap();
-    assert_eq!((p.wheel_in, p.wheel_from, p.wheel_guess), (21, Some(FactSource::Can), true));
 }

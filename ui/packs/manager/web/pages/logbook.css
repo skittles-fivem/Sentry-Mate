@@ -53,6 +53,9 @@
 .lb-where { max-width: round(11.5rem, var(--e)); }
 .lb-where .main, .lb-where .sub { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lb-pcell { max-width: round(15rem, var(--e)); }
+/* a narrower table (a laptop): the places and the purpose take less room, so every column fits without scrolling */
+.lb-table { container: lb-list / inline-size; }
+@container lb-list (max-width: 66rem) { .lb-where { max-width: round(7.5rem, var(--e)); } .lb-pcell { max-width: round(9rem, var(--e)); } }
 .lb-prow { display: flex; align-items: center; gap: round(0.5rem, var(--e)); flex-wrap: wrap; }
 .lb-rel { color: var(--text-2); }
 .lb-note { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: italic; }

@@ -22,7 +22,7 @@ import { h, cssVar, styleSheet } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import { display } from './display.js';
 import { isDark, onTheme, currentPrefs, onPrefs } from './prefs.js';
-import { tileChoice, rasterPaint, mapColors, tileSources, tileLayers, repaintTiles, swapTiles, sharpZoom, vectorGround, noTilesNote, watchTileErrors, onImagery, mapStyleSwitch, IMAGERY_HALO } from '../shared/maptiles.js';
+import { tileChoice, rasterPaint, mapColors, tileSources, tileLayers, repaintTiles, swapTiles, vectorGround, noTilesNote, watchTileErrors, onImagery, mapStyleSwitch, IMAGERY_HALO } from '../shared/maptiles.js';
 
 let lib = null;
 /** Load MapLibre once (module, worker and style sheet, all relative to this file); resolves once the style sheet applies. */
@@ -95,9 +95,6 @@ export async function makeMap(ctx, el, { center = null, zoom = 13, bounds = null
   el.classList.toggle('is-imagery', onImagery(src));
   const pad = () => Math.round(padding * display.scale);
   let tiles = tilePx();
-  // never opens deeper than the tiles are sharp (the satellite photos end sooner than the map)
-  zoom = Math.min(zoom, sharpZoom(src, tiles));
-  maxZoom = Math.min(maxZoom, sharpZoom(src, tiles));
   const paper = () => (src?.kind === 'vector' ? vectorGround(isDark()) : cssVar('--map-paper'));
   const style = () => ({
     version: 8,

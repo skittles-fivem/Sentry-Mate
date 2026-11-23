@@ -984,6 +984,11 @@ pub struct Charge {
     pub energy_added_kwh: Option<f64>,
     /// From the grid, where known (AC: the charger's input); losses = used − added.
     pub energy_used_kwh: Option<f64>,
+    /// How much of the charge each of the two energies was measured over, when that differs by more than a little
+    /// (one input's values cover only part of the charge): the two are then not compared, so the charge has no
+    /// efficiency or losses. Absent: both over the same span, or one of them not known (and on older rows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub energy_spans: Option<EnergySpans>,
     pub start_soc: Option<f64>,
     pub end_soc: Option<f64>,
     pub start_range_km: Option<f64>,
@@ -1004,6 +1009,21 @@ impl Charge {
     pub fn duration_min(&self) -> f64 {
         self.end_ms.saturating_sub(self.start_ms) as f64 / 60_000.0
     }
+
+    /// Whether the energy added and the grid energy can be compared (an efficiency, losses): both known and measured
+    /// over the same span ([`Charge::energy_spans`]).
+    pub fn energies_comparable(&self) -> bool {
+        self.energy_added_kwh.is_some() && self.energy_used_kwh.is_some() && self.energy_spans.is_none()
+    }
+}
+
+/// The time of a charge each of its energies was measured over (ms, inside the charge): the energy added
+/// (`added_ms`), the grid energy (`grid_ms`), and both at once (`both_ms`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EnergySpans {
+    pub added_ms: u64,
+    pub grid_ms: u64,
+    pub both_ms: u64,
 }
 
 /// A point of a charge curve.

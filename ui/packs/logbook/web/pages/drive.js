@@ -15,7 +15,6 @@ import { formatList } from '../shared/i18n.js';
 import { column, timeColumn, csvFilename, downloadCsv } from '../shared/csv.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { trackBounds } from '../shared/tracks.js';
 import { pageHead, q, figure, icon, sep, empty, errorWords, flag, button } from '../core/ui.js';
 import { makeMap, boundsOf } from '../core/map.js';
 import { stackedCharts } from '../core/chart.js';
@@ -271,7 +270,7 @@ export async function mount(ctx) {
   let marker = null, markerEl = null, m = null;
   let paintRoute = () => {};
   if (all.length > 1) {
-    m = await makeMap(ctx, mapBox, { bounds: trackBounds(lines) || boundsOf(all), padding: 56, maxZoom: 17, fullscreen: true });
+    m = await makeMap(ctx, mapBox, { bounds: boundsOf(all), padding: 56, maxZoom: 17, fullscreen: true });
     if (m) {
       await m.loaded;
       if (!ctx.alive()) return {};

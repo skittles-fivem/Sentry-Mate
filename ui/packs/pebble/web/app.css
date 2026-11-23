@@ -754,6 +754,12 @@ a.fpill { text-decoration: none; color: var(--text); }
 a.place-link:hover { color: var(--coral); text-decoration: underline; }
 .item-links { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); font-size: var(--f14); line-height: var(--l14); font-weight: 700; }
 .item-links:empty { display: none; }
+/* a list card's own edit link (set a cost) shows on hover or keyboard focus; on touch screens and phones it always shows */
+.item .row-act { opacity: 0; }
+.item:hover .row-act, .item:focus-within .row-act { opacity: 1; }
+@media (hover: none), (max-width: 760px) { .item .row-act { opacity: 1; } }
+.cost-none { display: inline-flex; align-items: center; gap: var(--s1); }
+.cost-set { display: inline-flex; align-items: center; justify-content: center; min-width: var(--l16); min-height: var(--l16); color: var(--coral); }
 .tile-foot { margin-top: auto; }
 
 /* the more row under a paged list */

@@ -16,7 +16,7 @@ import * as api from '../shared/api.js';
 import { h, cssVar, esc, styleSheet } from '../shared/dom.js';
 import { rpx, onChange, onTheme, getTheme } from './display.js';
 import { getPrefs, onPrefs } from './prefs.js';
-import { tileChoice, rasterPaint, dimmed, mapColors, tileSources, tileLayers, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles, sharpZoom } from '../shared/maptiles.js';
+import { tileChoice, rasterPaint, dimmed, mapColors, tileSources, tileLayers, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles } from '../shared/maptiles.js';
 
 let mlLoad = null;
 /**
@@ -98,8 +98,7 @@ export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bo
   watchTilePolicy(src.template && !src.offline ? src.template : null);
   if (!ctx.alive()) return null;
   const map = new ml.Map({
-    // never opens deeper than the tiles are sharp (the satellite photos end sooner than the map)
-    container, style: style(src), center, zoom: Math.min(zoom, sharpZoom(src)), attributionControl: false, interactive,
+    container, style: style(src), center, zoom, attributionControl: false, interactive,
     cooperativeGestures: false, dragRotate: false, pitchWithRotate: false, fadeDuration: 0, refreshExpiredTiles: false,
     maxZoom: Math.max(src.maxZoom, 18),
     ...(bounds ? { bounds } : {}),

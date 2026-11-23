@@ -95,9 +95,9 @@ export async function mount(ctx) {
     ['charging', h('span', { cover: 'web.charge-cost.duration' }, formatDuration(c.charging_ms), c.plugged_ms != null ? none(` plugged ${formatDuration(c.plugged_ms)}`) : null), { cover: 'cd.stat.duration' }],
     ['place', h('span', { cover: 'web.charge-cost.location' }, placeLink(c) || '—', c.place && c.address?.short ? none(` ${c.address.short}`) : null), { cover: 'cd.stat.location' }],
     ['added', h('span', { cover: 'web.charge-cost.energy' }, m(c.energy_added_kwh, 'energy'), estTag(c), none(' into the pack')), { cover: 'cd.stat.energy_added' }],
-    [ac ? 'drawn' : dc ? 'delivered' : 'drawn', ac ? [m(gridKwh, 'energy'), gridKwh != null ? none(` from the line, ${format(c.losses_kwh, 'energy')} lost`) : null]
+    [ac ? 'drawn' : dc ? 'delivered' : 'drawn', ac ? [m(gridKwh, 'energy'), gridKwh != null ? none(` from the line${c.losses_kwh != null ? `, ${format(c.losses_kwh, 'energy')} lost` : ''}`) : null]
       : dc ? [m(c.dc_inlet_kwh, 'energy'), none(c.fast_charger?.billed_kwh != null ? ` at the inlet; billed ${format(c.fast_charger.billed_kwh, 'energy')}` : ' at the inlet; the grid side is not sent')] : none('unknown whether ac or dc'), { cover: 'cd.stat.energy_used' }],
-    ['efficiency', c.efficiency_pct != null ? [pct(c.efficiency_pct), none(' added over drawn')] : none(dc ? 'unknown for dc: a fast charger’s grid side is not measured' : why), { cover: 'cd.stat.efficiency' }],
+    ['efficiency', c.efficiency_pct != null ? [pct(c.efficiency_pct), none(' added over drawn')] : none(dc ? 'unknown for dc: a fast charger’s grid side is not measured' : c.efficiency_note || why), { cover: 'cd.stat.efficiency' }],
     ['battery', h('span', { class: 'nowrap' }, h('span', { cover: 'cd.stat.soc_start' }, pct(c.start_soc_pct)), h('span', { class: 'arrow' }, ' -> '), h('span', { cover: 'cd.stat.soc_end' }, pct(c.end_soc_pct)),
       h('span', { class: 'muted', cover: 'cd.stat.soc_added' }, socAdded != null ? `  +${format(socAdded, 'percent')}` : ''))],
     ['range', h('span', null, h('span', { cover: 'cd.stat.range_start' }, num(c.start_range_km, 'range')), h('span', { class: 'arrow' }, ' -> '), h('span', { cover: 'cd.stat.range_end' }, num(c.end_range_km, 'range')),

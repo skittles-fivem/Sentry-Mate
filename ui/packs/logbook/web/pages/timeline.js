@@ -9,14 +9,13 @@
 
 import { h, replace } from '../shared/dom.js';
 import { format } from '../shared/units.js';
-import { trackBounds } from '../shared/tracks.js';
 import { formatTime, formatDate, formatDateTime, formatDuration, dayKey, formatDayKey, addDays, periodLabel } from '../shared/time.js';
 import { formatNumber, formatList, tn } from '../shared/i18n.js';
 import { downloadCsv, column, timeColumn } from '../shared/csv.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { pageHead, q, plus, figure, icon, empty, errorView, loadingBlock, button, stateLabel, flag, sep } from '../core/ui.js';
-import { sourceMark, sourceLabel, isImported, teslaOnly, ESTIMATED_WHY } from '../core/sources.js';
+import { sourceLabel, teslaOnly, ESTIMATED_WHY, rowTitle } from '../core/sources.js';
 import { activityStrip, placeLink, AWAKE_WORDS, GAP_WORDS, STRIP_NAMES } from '../core/journal.js';
 import { makeMap, boundsOf } from '../core/map.js';
 import { zoneLabel } from '../core/format.js';
@@ -314,7 +313,7 @@ export async function mount(ctx) {
       else sideMap.map.getSource('roads')?.setData({ type: 'FeatureCollection', features: [] });
       return;
     }
-    const bounds = trackBounds(drives) || boundsOf(lines.flatMap((l) => l.coords)); // without stray fixes
+    const bounds = boundsOf(lines.flatMap((l) => l.coords));
     if (!sideMap) {
       sideMap = await makeMap(c, mapBox, { bounds, padding: 28, maxZoom: 15 });
       if (!sideMap) return;
@@ -426,7 +425,7 @@ function placeA(p, cover) {
   const name = p.label || (p.place && p.place.name) || p.address || 'an unnamed spot';
   const href = placeLink(p);
   if (!href) return h('span', { class: 'tl-place' }, name);
-  return h('a', { class: 'tl-place tl-place-link', href, cover, 'aria-label': p.place ? `${name}: edit this place` : `${name}: name this place` }, name, icon('pin'));
+  return h('a', { class: 'tl-place tl-place-link', href, cover, 'aria-label': p.place ? `${name}: edit this place` : `${name}: name this place`, title: p.place ? `Edit ${p.place.name || name} in Places` : 'Save this spot as a place' }, name, icon('pin'));
 }
 
 function entry(r, { car, tz, now, period }) {
@@ -513,18 +512,17 @@ function entry(r, { car, tz, now, period }) {
   const endTime = going ? 'now' : dayKey(r.end_ms, tz) === dayKey(r.start_ms, tz) ? formatTime(r.end_ms, tz) : null;
   // the row's span, without making it the tab's period: Back and later pages keep the one chosen
   const tripHref = spanHref('trip', { car, from: r.start_ms, to: Math.max(end, r.start_ms + 60000) });
-  return h('li', { class: ['tl-item', `tl-${cls}`, { 'is-now': going }], dataset: { id: r.id } },
+  return h('li', { class: ['tl-item', `tl-${cls}`, { 'is-now': going }], dataset: { id: r.id }, title: rowTitle(r, { energy: r.kind !== 'update' && r.kind !== 'gap' }) || null },
     h('div', { class: 'tl-time' },
       h('a', { class: 'tl-start', href: tripHref, 'aria-label': `${formatTime(r.start_ms, tz)}: the Trip for this span` },
         h('time', { datetime: new Date(r.start_ms).toISOString() }, formatTime(r.start_ms, tz))),
       h('span', { class: 'tl-end' }, endTime ? `to ${endTime}` : [h('span', { class: 'tl-end-day' }, `to ${formatDate(r.end_ms, tz, { weekday: false, now })},`), formatTime(r.end_ms, tz)])),
     h('div', { class: 'tl-mark', 'aria-hidden': 'true' }),
     h('div', { class: 'tl-body' },
-      h('p', { class: 'tl-kind' }, KIND_WORD[r.kind] || r.kind, going ? ', still going' : '', isImported(r) ? [' ', flag('Imported')] : null),
+      h('p', { class: 'tl-kind' }, KIND_WORD[r.kind] || r.kind, going ? ', still going' : ''),
       h('p', { class: 'tl-title' }, title),
       h('dl', { class: 'tl-figs' }, figs.filter(Boolean)),
       extra,
-      sourceMark(r, { block: true, cls: 'tl-src' }),
       h('p', { class: 'tl-links' },
         detail ? h('span', { class: 'tl-detail', cover: 'timeline.link.slot_details' }, detail) : null,
         h('a', { href: tripHref, cover: 'timeline.link.trip_span' }, 'Trip for this span'))));
