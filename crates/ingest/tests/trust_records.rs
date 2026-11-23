@@ -435,3 +435,65 @@ async fn every_written_record_is_told_once_it_is_on_disk_and_waiting_ones_are_no
     assert_eq!(judge.rejudge_all(KEY).await.unwrap(), 1);
     assert_eq!(told.lock().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn failed_logs_judged_by_older_rules_are_judged_again_once() {
+    let t = setup();
+    let key = SigningKey::random(&mut rand_core::OsRng);
+    let logs = chain_of(&key, 4);
+    for (i, (name, log, side)) in logs.iter().enumerate() {
+        // log 2 changed after it was signed
+        let log = if i == 2 { b"changed minute".to_vec() } else { log.clone() };
+        store(&t, name, &log).await;
+        store(&t, &format!("{name}.json"), side).await;
+    }
+    let link = |i: usize| match trust::check(
+        &logs[i].0,
+        &hex::encode(Sha256::digest(&logs[i].1)),
+        logs[i].1.len() as u64,
+        &serde_json::from_slice(&logs[i].2).unwrap(),
+    ) {
+        trust::Check::Signed(l) => l,
+        other => panic!("{other:?}"),
+    };
+    let rec = |status, reason: Option<&str>, link| Record {
+        v: 1,
+        status,
+        reason: reason.map(str::to_string),
+        link,
+        override_use: false,
+        judged_ms: 1,
+        arrived_ms: 1,
+        sha256: None,
+        length: None,
+        sidecar_sha256: None,
+    };
+    // as an older version left them: log 1 judged before its sidecar came (and never again), log 2's file changed
+    let mut book = Book {
+        v: 1,
+        pin: Some(Pin { fingerprint: fp(&key), pinned_ms: 1, how: "first-signed-log".into() }),
+        new_key: None,
+        former: vec![],
+        logs: Default::default(),
+    };
+    book.logs.insert(logs[0].0.clone(), rec(Status::Verified, None, Some(link(0))));
+    book.logs.insert(logs[1].0.clone(), rec(Status::Failed, Some(trust::NOT_SIGNED_BUT_PAIRED), None));
+    book.logs.insert(logs[2].0.clone(), rec(Status::Failed, Some(trust::SHA256_DIFFERS), Some(link(2))));
+    book.logs.insert(logs[3].0.clone(), rec(Status::Verified, None, Some(link(3))));
+    let (file, label) = (t.can.join(KEY).join("trust.json"), format!("can/{KEY}/trust.json"));
+    t.store.vault().write_file(&file, &label, &serde_json::to_vec(&book).unwrap()).unwrap();
+
+    let judge = Judge::new(t.store.clone());
+    let done = judge.rejudge_old(KEY).await.unwrap().unwrap();
+    assert_eq!((done.judged, done.verified), (2, 1), "only the failed ones are judged again");
+    let after = judge.book(KEY).await;
+    assert_eq!(after.v, trust::RULES_VERSION);
+    assert_eq!(after.logs[&logs[1].0].status, Status::Verified, "its sidecar is here: verified");
+    // a log changed after signing still fails
+    let r = &after.logs[&logs[2].0];
+    assert_eq!((&r.status, r.reason.as_deref()), (&Status::Failed, Some(trust::SHA256_DIFFERS)));
+    assert_eq!(after.logs[&logs[3].0].judged_ms, 1, "a verified log is left as it was");
+    // once per key
+    assert_eq!(judge.rejudge_old(KEY).await.unwrap(), None);
+    assert_eq!(Judge::new(t.store.clone()).rejudge_old(KEY).await.unwrap(), None);
+}

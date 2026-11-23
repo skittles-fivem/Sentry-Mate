@@ -18,7 +18,7 @@ use axum::{Json, Router};
 use engine::Engine;
 use engine::query as q;
 use serde_json::{Value, json};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 /// When this server's web side started (its routes were made), for `uptime_ms`.
@@ -61,65 +61,10 @@ pub async fn scan_missing_logs(app: &AppState, gate: &gate::Gate) -> usize {
             return 0;
         }
     };
-    let now = app.now();
-    scan_edit(|s| {
-        *s = MissingScan {
-            state: "running",
-            keys_done: 0,
-            keys_total: keys.len(),
-            found: 0,
-            started_ms: Some(now),
-            finished_ms: None,
-        }
-    });
-    let found = scan_keys(app, gate, &e, keys).await;
-    let now = app.now();
-    scan_edit(|s| {
-        s.state = "done";
-        s.finished_ms = Some(now);
-        s.found = found;
-    });
-    found
-}
-
-/// The look for missing CAN logs as it is now (the live stream's `job` of kind `missing_scan`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize)]
-pub struct MissingScan {
-    /// `idle` (none since the start), `running`, `done`.
-    pub state: &'static str,
-    pub keys_done: usize,
-    pub keys_total: usize,
-    /// Logs newly found missing (in this look so far).
-    pub found: usize,
-    pub started_ms: Option<u64>,
-    pub finished_ms: Option<u64>,
-}
-
-static MISSING_SCAN: std::sync::Mutex<MissingScan> = std::sync::Mutex::new(MissingScan {
-    state: "idle",
-    keys_done: 0,
-    keys_total: 0,
-    found: 0,
-    started_ms: None,
-    finished_ms: None,
-});
-
-fn scan_edit(f: impl FnOnce(&mut MissingScan)) {
-    f(&mut MISSING_SCAN.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-}
-
-/// The look for missing CAN logs under way or the last one.
-pub fn missing_scan() -> MissingScan {
-    *MISSING_SCAN.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-async fn scan_keys(app: &AppState, gate: &gate::Gate, e: &Arc<Engine>, keys: Vec<String>) -> usize {
     let mut found = 0;
     for key in keys {
-        scan_edit(|s| s.found = found);
         // low priority: every other task goes first between keys
         tokio::task::yield_now().await;
-        let _count = KeyDone;
         let Some(pass) = through_gate(gate).await else { continue };
         let uploading = e.store().uploading(&key).await;
         let r = e.judge().scan_missing(&key, uploading).await;
@@ -136,28 +81,12 @@ async fn scan_keys(app: &AppState, gate: &gate::Gate, e: &Arc<Engine>, keys: Vec
             continue;
         }
         found += scan.new.len();
-        let (n, k) = (scan.new.len(), key.clone());
-        let _ = app
-            .blocking(move |app| {
-                let e = app.service::<Engine>()?;
-                let car = q::all_cars(&e)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .find(|&c| e.db().car(c).ok().flatten().is_some_and(|c| c.vehicle_keys.contains(&k)));
-                let logs = if n == 1 { "1 CAN log".to_string() } else { format!("{n} CAN logs") };
-                let (t, whose) = match car {
-                    Some(c) => (Some(target("car", Some(c), "")), app.car_name(c)),
-                    None => (None, "a CAN Bridge key not given to a car".to_string()),
-                };
-                let summary =
-                    format!("Found {logs} of {whose} missing on the server; asked the car to send them again");
-                let details = crate::ctx::audit_details(t.as_deref(), &summary);
-                if let Err(err) = app.accounts.audit().record(None, None, "can-logs-missing", &details) {
-                    tracing::warn!("audit: {err}");
-                }
-                Ok(())
-            })
-            .await;
+        let n = scan.new.len();
+        let logs = if n == 1 { "1 CAN log".to_string() } else { format!("{n} CAN logs") };
+        audit_key(app, &key, "can-logs-missing", move |whose| {
+            format!("Found {logs} of {whose} missing on the server; asked the car to send them again")
+        })
+        .await;
     }
     if found > 0 {
         tracing::info!("missing CAN logs: {found} found missing on the server; the cars are asked to send them again");
@@ -165,13 +94,75 @@ async fn scan_keys(app: &AppState, gate: &gate::Gate, e: &Arc<Engine>, keys: Vec
     found
 }
 
-/// Counts a key of the look as done however its turn ends.
-struct KeyDone;
+/// An audit entry by the server itself on the car a car key belongs to (`summary` is told the car's name, or what the
+/// key is when no car has it).
+async fn audit_key(
+    app: &AppState,
+    key: &str,
+    code: &'static str,
+    summary: impl FnOnce(String) -> String + Send + 'static,
+) {
+    let k = key.to_string();
+    let _ = app
+        .blocking(move |app| {
+            let e = app.service::<Engine>()?;
+            let car = q::all_cars(&e)
+                .unwrap_or_default()
+                .into_iter()
+                .find(|&c| e.db().car(c).ok().flatten().is_some_and(|c| c.vehicle_keys.contains(&k)));
+            let (t, whose) = match car {
+                Some(c) => (Some(target("car", Some(c), "")), app.car_name(c)),
+                None => (None, "a CAN Bridge key not given to a car".to_string()),
+            };
+            let details = crate::ctx::audit_details(t.as_deref(), &summary(whose));
+            if let Err(err) = app.accounts.audit().record(None, None, code, &details) {
+                tracing::warn!("audit: {err}");
+            }
+            Ok(())
+        })
+        .await;
+}
 
-impl Drop for KeyDone {
-    fn drop(&mut self) {
-        scan_edit(|s| s.keys_done += 1);
+/// Once at the start, before the first look for missing logs: each car key whose records were judged by older rules
+/// has its failed logs judged again by the rules of this version (`ingest::judge::Judge::rejudge_old`), each key
+/// through the data folder's write gate; nothing is sent again. A key with logs judged again gets an audit entry
+/// (`can-logs-rechecked`) on its car, saying how many verify now. Returns how many verify now.
+pub async fn rejudge_old_logs(app: &AppState, gate: &gate::Gate) -> u64 {
+    let Ok(e) = app.service::<Engine>() else { return 0 };
+    let keys = match e.judge().keys().await {
+        Ok(k) => k,
+        Err(err) => {
+            tracing::warn!("CAN log checks: the car keys could not be listed: {err}");
+            return 0;
+        }
+    };
+    let mut verified = 0;
+    for key in keys {
+        tokio::task::yield_now().await;
+        let Some(pass) = through_gate(gate).await else { continue };
+        let r = e.judge().rejudge_old(&key).await;
+        drop(pass);
+        let done = match r {
+            Ok(Some(d)) if d.judged > 0 => d,
+            Ok(_) => continue,
+            // not the key: the server's log is kept in the clear
+            Err(err) => {
+                tracing::warn!("CAN log checks: a car key's failed logs could not be judged again: {err}");
+                continue;
+            }
+        };
+        verified += done.verified;
+        let logs = |n: u64| if n == 1 { "1 CAN log".to_string() } else { format!("{n} CAN logs") };
+        let (judged, now) = (logs(done.judged), done.verified);
+        audit_key(app, &key, "can-logs-rechecked", move |whose| {
+            format!("Checked {judged} of {whose} that had failed their check again, by this version's rules: {now} verified now")
+        })
+        .await;
     }
+    if verified > 0 {
+        tracing::info!("CAN log checks: {verified} logs that had failed their check verify by this version's rules");
+    }
+    verified
 }
 
 pub fn routes() -> Router<AppState> {
@@ -454,27 +445,6 @@ fn free_bytes(dir: &std::path::Path) -> Option<u64> {
             return None;
         }
     }
-}
-
-/// A car's health as `/cars/{car}/health` gives it (its default period), for the live stream's `health` event.
-pub(crate) fn health_now(e: &Engine, car: model::CarId) -> q::QResult<Value> {
-    let mut h = q::system::health(e, car, &q::Period::new(None, None))?;
-    h.body.uploads_enabled = Some(uploads_enabled(e, car)?);
-    Ok(serde_json::to_value(&h).unwrap_or(Value::Null))
-}
-
-/// The server's storage figures as `/system/storage` gives them, with compaction as `/system/storage/detail` has
-/// it (no walk over the data folder), for the live stream's `storage` event.
-pub(crate) fn storage_now(e: &Engine, now_ms: u64) -> q::QResult<Value> {
-    let s = q::system::server_storage(e, now_ms)?;
-    let free = e.store().dir().parent().and_then(free_bytes);
-    let full_in_days = match (free, s.growth_per_day_bytes) {
-        (Some(f), Some(g)) if g > 0 => Some(f / g),
-        _ => None,
-    };
-    let mut v = serde_json::to_value(Storage { body: s, free_bytes: free, full_in_days }).unwrap_or(Value::Null);
-    v["compaction"] = serde_json::to_value(e.compaction()).unwrap_or(Value::Null);
-    Ok(v)
 }
 
 /// `/system/storage`: the engine's figures with the disk's free space.

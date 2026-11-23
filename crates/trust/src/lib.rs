@@ -29,7 +29,7 @@ pub const ALGORITHM: &str = "ECDSA-P256-SHA256";
 /// `prev_sha256` of the first log of a chain.
 pub const GENESIS_SHA: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 /// Version of these rules: records judged by an older one are judged again.
-pub const RULES_VERSION: u32 = 1;
+pub const RULES_VERSION: u32 = 2;
 /// The reason of a log that is signed and intact, but by a key other than the one its car key is paired with.
 pub const SIGNED_BY_ANOTHER_KEY: &str = "signed by another key";
 /// The reasons of a log whose bytes are not the ones its sidecar names (changed after signing, or cut).
