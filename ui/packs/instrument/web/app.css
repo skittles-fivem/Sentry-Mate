@@ -1233,6 +1233,8 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 /* a long list in a box of ten rows (core/table.js windowTable): the header stays, the rows scroll, only those in view
    are drawn; every row is one table row high (each cell holds at most two lines) */
 .vl-box { --vl-row: calc(round(3.375rem, var(--e)) + 1px); max-height: calc(round(2.625rem, var(--e)) + 1px + 10 * var(--vl-row)); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.vl-box--rows { max-height: calc(round(2.625rem, var(--e)) + 1px + var(--vl-rows) * var(--vl-row)); }
+:root[data-phone] .vl-box.vl-box--rows { max-height: calc(round(2.625rem, var(--e)) + 1px + var(--vl-rows) * var(--vl-row)); }
 .vl-box:focus-visible { outline-offset: round(-0.125rem, var(--e)); }
 .vl-table { table-layout: auto; }
 .vl-table > tbody > tr.vl-gap, .vl-table > tbody > tr.vl-gap:hover { background: none; }
