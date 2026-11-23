@@ -6,7 +6,7 @@
 
 import * as state from '../shared/state.js';
 import { tyreView, recommendedLine, wheelGuessLine, tyresTitle } from '../shared/tyres.js';
-import { h, svg, replace, cover, cssVar, quantity, steady } from '../shared/dom.js';
+import { h, svg, replace, redraw, cover, cssVar, quantity, steady } from '../shared/dom.js';
 import { format, getUnits, onUnitsChange, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDate, formatDateTime, zoneName, buckets } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -214,11 +214,14 @@ export async function mount(ctx) {
   replace(windowSlot, h('div', { class: 'window-head' }, h('h2', { class: 'section-title' }, 'The period')), h('section', { class: 'panel panel-pad' }, wait()), h('section', { class: 'panel panel-pad' }, wait()));
 
   /* ---------- header, banner */
+  // The parts below are drawn again every 2 s while live values come in. redraw() leaves every node that looks
+  // the same on the page, so the control that has the keyboard focus (Switch car, Timeline, Change order, Full
+  // screen, a link in a panel) is still there after an update. Their listeners read `now` when they run.
   function paintHead() {
     const n = now;
     const vin = car.vin_prefix;
     const trim = car.config?.trim;
-    replace(head, pageHead({
+    redraw(head, pageHead({
       cls: 'now-head',
       eyebrow: 'Overview',
       title: h('span', { cover: 'summary.header.name' }, car.name || `Unnamed ${car.model || 'car'}`),
@@ -240,7 +243,7 @@ export async function mount(ctx) {
   function paintInputs() {
     const ins = now.inputs || [];
     const api = ins.some((i) => i.kind === 'tesla_api');
-    replace(inputsSlot,
+    redraw(inputsSlot,
       ins.length ? inputsLine(ins, ago) : h('span', { class: 'src-inputs' }, h('span', { class: 'src-inputs-label' }, 'Live inputs'), h('span', { class: 'faint' }, 'none: no SMO log and no Tesla API reading yet')),
       ctx.admin ? panelLink(`${state.buildUrl('settings-cars', { car: cid })}#data-sources`, 'Change order', { class: 'panel-link now-inputs-order', title: 'Which input wins when two cover the same time: Settings: Cars, Data sources' }) : null,
       api ? h('span', { class: 'now-inputs-key' }, 'A value marked ', h('span', { class: 'src-via' }, h('i', { class: 'src-m src-m--tesla_api' }), h('span', null, 'API')), ' came from the Tesla API; the rest from SMO.') : null,
@@ -253,7 +256,7 @@ export async function mount(ctx) {
     // no data: no sample at all (an unknown state with fresh values is not "no data")
     const none = !n.at_ms;
     const show = n.stale || none;
-    replace(banner, h('div', {
+    redraw(banner, h('div', {
       class: ['stale-banner', none && 'stale-banner--offline'], role: 'status', hidden: !show,
       cover: ['summary.state.drive_offline', 'summary.data.restored_values'],
     }, icon(none ? 'question' : 'clock'),
@@ -287,7 +290,7 @@ export async function mount(ctx) {
     }
     if (val(n.flags?.reduced_range)) pills.push(h('span', { class: 'pill pill--lg pill--warm', title: 'Part of the charge is locked by the cold battery, so the real range is lower.' }, icon('thermo'), 'Reduced range: cold'));
     const [g, label] = gauge(soc, limit, tone);
-    replace(gaugeSlot,
+    redraw(gaugeSlot,
       h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('battery'), 'Battery'),
         h('span', { class: 'faint' }, n.state === 'driving' ? `Driving since ${formatTime(n.since_ms, tz)}` : `${stateLabel(n.state)} since ${when(n.since_ms, tz)}`)),
       h('div', { class: 'gauge-main' },
@@ -330,13 +333,13 @@ export async function mount(ctx) {
       rows.push(['Here since', when(n.since_ms, tz)], ['Charge port', CHARGE_STATUS[val(c.status)] || '—']);
     }
     rows.push(['Accuracy', format(val(loc.accuracy_m), 'length')], ['Position', aged(loc.lat, agoEl(at(loc.lat), tz), null)]);
-    replace(placeCard,
+    redraw(placeCard,
       h('div', { class: 'place-card-top' }, h('span', { class: ['place-icon', n.state === 'charging' && 'place-icon--warm', (n.stale || n.state === 'unknown') && 'place-icon--muted'] }, icon(n.state === 'driving' ? 'route' : loc.place ? 'home' : 'pin')),
         h('div', null, h('div', { class: 'place-name' }, placeName), detail ? h('div', { class: 'place-detail' }, detail) : null)),
       h('dl', { class: 'place-card-rows' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, v)])));
     const lat = val(loc.lat), lon = val(loc.lon);
     const outside = !!settings?.outside_links?.maps;
-    replace(mapTools,
+    redraw(mapTools,
       h('button', { class: 'btn btn--sm map-btn', type: 'button', cover: 'summary.map.fullscreen', onclick: () => toggleFull() }, icon('monitor', 'ico--sm'), document.fullscreenElement ? 'Back to the page' : 'Full screen'),
       outside && lat != null
         ? h('a', { class: 'btn btn--sm map-btn', href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=17/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'noopener noreferrer external', cover: 'summary.map.external_link' }, icon('ext', 'ico--sm'), 'Open in OpenStreetMap')
@@ -566,8 +569,8 @@ export async function mount(ctx) {
       metric('Time to full', val(chg.to_full_min) != null ? withVia(chg.to_full_min, quantity(val(chg.to_full_min) * 60000, 'duration')) : null, null, { size: 'sm', cover: ['summary.stat.remaining_time', 'nr.dash.time-to-full'], why: charging ? 'Not known yet' : 'No charge under way' }),
       metric('Done at', chg.finish_ms ? when(chg.finish_ms, tz) : null, null, { size: 'sm', cover: 'summary.stat.expected_finish', explain: chg.finish_ms ? `${formatDate(chg.finish_ms, tz, { weekday: false })}, ${zoneName(chg.finish_ms, tz)} (the car's time)` : null, why: charging ? 'Not known yet' : 'No charge under way' })));
 
-    replace(rowLive, temps, tyrePanel, vehicle, why);
-    replace(rowMore, chargePanel, flags, offPanel);
+    redraw(rowLive, temps, tyrePanel, vehicle, why);
+    redraw(rowMore, chargePanel, flags, offPanel);
   }
 
   // "usually starts at HH:MM here": the median start time of past charges at this place
@@ -595,7 +598,7 @@ export async function mount(ctx) {
     try {
       const pg = await todayRead(ctx);
       if (!ctx.alive()) return;
-      replace(todaySlot,
+      redraw(todaySlot,
         h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('timeline'), 'Today, newest first'), panelLink(state.buildUrl('timeline', { car: cid, period: { preset: '24h' } }), 'Timeline')),
         h('div', { class: 'today-tl-body' }, h('div', { class: 'tl-list today-tl-list' }, pg.items.length ? pg.items.map((r) => timelineRow(r, { car: cid, tz, compact: true })) : h('p', { class: 'note today-empty' }, 'Nothing yet today.'))));
     } catch { replace(todaySlot); }

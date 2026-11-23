@@ -6,7 +6,8 @@
 // from the API are always text, never markup, and pages work under the strict Content-Security-Policy:
 // no innerHTML, no inline style attributes (sizes go through CSSOM as CSS custom properties), no string
 // event handlers, no javascript: links. Also: cover() for coverage marking (data-cover) and ready() /
-// unready() / failed() for the page readiness contract (data-ready on <html>).
+// unready() / failed() for the page readiness contract (data-ready on <html>), and redraw() / keepFocus() for
+// parts drawn again on live updates.
 
 import { parts as unitParts } from './units.js';
 
@@ -132,6 +133,96 @@ export const frag = (...children) => append(globalThis.document.createDocumentFr
 export function clear(el) { el.replaceChildren(); return el; }
 /** Replace every child with these. */
 export function replace(el, ...children) { el.replaceChildren(); return append(el, children); }
+
+/* ------------------------------------------------------------------ drawing a live part again */
+
+const HOLDS_FOCUS = 'a[href], button, input, select, textarea, summary, [tabindex], [contenteditable]';
+// The element on the page (o) has every attribute the new drawing (n) has, with the same value, and no other.
+// Inline styles are compared by property: every one n sets is on o with that value; o may have more (a pack's
+// layout code, such as the whole-pixel snap, adds sizes to drawn elements after they are on the page).
+function sameAttrs(o, n) {
+  for (const x of n.attributes) {
+    if (x.name === 'style') {
+      for (const prop of n.style) if (o.style.getPropertyValue(prop) !== n.style.getPropertyValue(prop)) return false;
+    } else if (o.getAttributeNS(x.namespaceURI, x.localName) !== x.value) return false;
+  }
+  for (const x of o.attributes) if (x.name !== 'style' && !n.hasAttributeNS(x.namespaceURI, x.localName)) return false;
+  return true;
+}
+/** o (on the page) looks as n (drawn new) would: the same tags, attributes (sameAttrs) and text, all the way down. */
+function looksSame(o, n) {
+  if (o.nodeType !== n.nodeType) return false;
+  if (o.nodeType !== 1) return o.nodeValue === n.nodeValue;
+  if (o.localName !== n.localName || o.namespaceURI !== n.namespaceURI || o.childNodes.length !== n.childNodes.length || !sameAttrs(o, n)) return false;
+  for (let i = 0; i < o.childNodes.length; i++) if (!looksSame(o.childNodes[i], n.childNodes[i])) return false;
+  return true;
+}
+
+/** The path of child indexes from root down to el, or null when el is not inside root. */
+function pathTo(root, el) {
+  const path = [];
+  for (let e = el; e !== root; e = e.parentElement) {
+    if (!e || !e.parentElement) return null;
+    path.unshift([...e.parentElement.children].indexOf(e));
+  }
+  return path;
+}
+
+/**
+ * Run paint(), which draws part of root again, and give the keyboard focus back when it threw away the control
+ * that had it: the element at the same place in the new drawing gets the focus, if it is the same kind of
+ * element (without scrolling). A focus that paint() moved somewhere itself is left alone. For a paint that is a
+ * promise, the focus is given back when it settles. Returns what paint() returns.
+ */
+export function keepFocus(root, paint) {
+  const doc = root.ownerDocument || globalThis.document;
+  const was = doc.activeElement;
+  const path = was && was !== root && root.contains(was) ? pathTo(root, was) : null;
+  const back = () => {
+    if (!path || was.isConnected || (doc.activeElement && doc.activeElement !== doc.body)) return;
+    let e = root;
+    for (const i of path) e = e?.children[i];
+    if (e && e.localName === was.localName && typeof e.focus === 'function') e.focus({ preventScroll: true });
+  };
+  let out;
+  try { out = paint(); } catch (err) { back(); throw err; }
+  if (out && typeof out.then === 'function') return out.then((v) => { back(); return v; }, (err) => { back(); throw err; });
+  back();
+  return out;
+}
+
+function patch(parent, wanted) {
+  const old = [...parent.childNodes];
+  wanted.forEach((n, i) => {
+    const o = old[i];
+    if (!o) { parent.append(n); return; }
+    if (looksSame(o, n)) return;                                   // drawn the same: the node on the page stays
+    if (o.nodeType === 3 && n.nodeType === 3) { o.data = n.data; return; }
+    // a box that only differs inside: keep it and look at its children. A control, a box with other
+    // attributes and anything with a canvas (its picture is not in the DOM) is put in new.
+    if (o.nodeType === 1 && n.nodeType === 1 && o.localName === n.localName && sameAttrs(o, n)
+      && !o.matches(HOLDS_FOCUS) && !n.querySelector('canvas') && !o.querySelector('canvas')) {
+      patch(o, [...n.childNodes]);
+      return;
+    }
+    o.replaceWith(n);
+  });
+  for (const o of old.slice(wanted.length)) o.remove();
+}
+
+/**
+ * replace() for a part of a page that is drawn again and again (live values every few seconds): the children
+ * are built new as always, but a node that would look the same as the one on the page (tag, attributes, text
+ * and descendants; an inline style the page added after drawing does not count) is left on the page, and only what differs is put in. So a button or link whose
+ * text and attributes did not change is still the same element after the update, and keeps the keyboard focus,
+ * the hover and a screen reader's place. A control that did change is replaced, and the focus moves to the
+ * one at its place (keepFocus). The elements that stay keep their own event listeners: use it where the
+ * listeners do not close over the values drawn (they read the newest state when they run).
+ */
+export function redraw(el, ...children) {
+  const wanted = [...frag(children).childNodes];
+  return keepFocus(el, () => { patch(el, wanted); return el; });
+}
 
 // the nodes append() would add, without moving any of them yet (null when a fragment is among them)
 function flatNodes(children, out = []) {

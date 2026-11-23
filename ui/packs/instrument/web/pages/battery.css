@@ -80,6 +80,7 @@
 .acdc-bar > i + i { box-shadow: inset 1px 0 0 var(--bg-1); }
 .p-ac { background: var(--ac); }
 .p-dc { background: var(--dc); }
+.p-unknown { background: var(--text-3); }
 .p-regen { background: var(--regen); }
 .acdc-key { display: flex; flex-wrap: wrap; gap: round(0.25rem, var(--e)) round(1.5rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); }
 .acdc-key > span { display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); }

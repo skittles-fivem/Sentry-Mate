@@ -7,7 +7,7 @@
 // (PATCH with the object's version) and a short note confirms it. The index also holds the time zone a new car
 // starts in (#default-tz: the server's default_time_zone).
 
-import { h, replace, setTitle as docTitle } from '../shared/dom.js';
+import { h, replace, keepFocus, setTitle as docTitle } from '../shared/dom.js';
 import * as state from '../shared/state.js';
 import { invalidate } from '../shared/api.js';
 import { isValidZone, dayKey, zoneSourceText } from '../shared/time.js';
@@ -481,7 +481,8 @@ async function mountCar(ctx) {
     try { t = await ctx.api.post(`cars/${enc(cid)}/upload-tokens`, {}); } catch (e) { flash(`Could not make a token: ${errText(e)}`, { kind: 'error' }); return; }
     await showSecret(t, `Upload token for ${car().name}`, 'The first log sent with it ties the CAN Bridge key to this car.');
     S.tokens = (await ctx.api.get(`cars/${enc(cid)}/upload-tokens`, { limit: 100 }).catch(() => null))?.items || [t, ...S.tokens];
-    if (ctx.alive()) paintUploads();
+    // the panel is drawn again with the new token: the button that made it keeps the focus the dialog gave back
+    if (ctx.alive()) keepFocus(slots.uploads, paintUploads);
   }
 
   async function revokeToken(t) {

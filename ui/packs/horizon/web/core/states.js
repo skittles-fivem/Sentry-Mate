@@ -41,13 +41,14 @@ export function errorWords(err) {
 
 /**
  * An error state with the cause and a way out: errorState(err, { retry: () => ..., home: true }).
- * The error code is shown small, for a bug report.
+ * The error code is shown small, for a bug report. page: true when it is all the page shows (the router's
+ * error screen): its title is then the page's h1; inside a panel of a page it is an h3.
  */
-export function errorState(err, { retry = null, home = true, compact = false } = {}) {
+export function errorState(err, { retry = null, home = true, compact = false, page = false } = {}) {
   const w = errorWords(err);
   return h('div', { class: ['empty', compact && 'empty--compact'], role: 'alert' },
     h('div', { class: 'empty-icon empty-icon--warn' }, icon(err?.status === 404 ? 'question' : 'warn')),
-    h('h3', null, w.title),
+    h(page ? 'h1' : 'h3', { class: 'empty-title' }, w.title),
     h('p', null, w.text),
     err?.code ? h('span', { class: 'empty-code' }, `${err.status || ''} ${err.code}`.trim()) : null,
     h('div', { class: 'row' },

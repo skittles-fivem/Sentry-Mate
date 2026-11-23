@@ -250,9 +250,10 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
     // failed before the page was built: the trail and the title are this page's, never the one before
     if (!rec.ctx && !live) {
       frame.setCrumbs(frame.defaultCrumbs(s, info || null, shownCar));
-      if (info && id !== 'not-found') docTitle(info.title, shownCar?.name);
+      // (what is not there says so: the tab is not named after a page that is not shown)
+      if (info && id !== 'not-found') docTitle(err?.status === 404 ? 'Not found' : info.title, shownCar?.name);
     }
-    replace(view, statePanel(errorState(err, { retry, home: id !== 'fleet' && !BARE.has(id) })));
+    replace(view, statePanel(errorState(err, { retry, page: true, home: id !== 'fleet' && !BARE.has(id) })));
     rec.release();
     shown();
     frame.view().removeAttribute('aria-busy');

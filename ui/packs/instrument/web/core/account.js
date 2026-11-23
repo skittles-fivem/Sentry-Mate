@@ -136,8 +136,28 @@ export function roleText(me) {
 /** The menu element; the frame puts it in the page once and calls toggleAccountMenu(button). */
 export function accountMenu() {
   pop = h('div', { class: 'account-menu popover', popover: 'auto', role: 'dialog', 'aria-label': 'Your account and display' });
-  pop.addEventListener('toggle', (e) => { anchor?.setAttribute('aria-expanded', String(e.newState === 'open')); });
+  pop.addEventListener('toggle', (e) => {
+    anchor?.setAttribute('aria-expanded', String(e.newState === 'open'));
+    // closed (Escape, a press outside, a link in it): the focus goes back to the button, unless the person
+    // put it somewhere else with that press
+    if (e.newState === 'closed' && anchor?.isConnected && (!document.activeElement || document.activeElement === document.body || pop.contains(document.activeElement))) anchor.focus();
+  });
+  // the menu is a dialog at the end of the document: Tab stays in it while it is open, round and round
+  pop.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+    const all = controls();
+    if (!all.length) return;
+    const first = all[0], last = all[all.length - 1];
+    if (e.shiftKey && (document.activeElement === first || !pop.contains(document.activeElement))) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
   return pop;
+}
+
+/** The menu's controls a Tab stops at, in order (of a group of radio buttons only the one Tab reaches). */
+function controls() {
+  return [...pop.querySelectorAll('a[href], button, input, select, [tabindex]')]
+    .filter((el) => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length > 0);
 }
 
 export function toggleAccountMenu(button) {
@@ -145,5 +165,7 @@ export function toggleAccountMenu(button) {
   if (pop.matches(':popover-open')) { pop.hidePopover(); return; }
   fill();
   pop.showPopover();
+  // the menu sits at the end of the document, far from its button in Tab order: the focus moves into it
+  controls()[0]?.focus({ preventScroll: true });
   placePopover(pop, button, { side: 'above', align: 'start' });
 }
