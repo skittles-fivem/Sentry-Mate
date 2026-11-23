@@ -104,7 +104,7 @@ class Imports(ServerCase):
         self.assertEqual([x["match"] for x in c.get(f"{url}/cars")["items"]], ["c3", "leave_out"])  # still matchable
         self.assertEqual([x["id"] for x in c.get("/api/v1/imports")["items"]], [jid, "im1"])
         actions = [x["action"] for x in c.get("/api/v1/audit?limit=20")["items"]]
-        for want in ("import.create", "import.uploaded", "import.cars", "import.start"):
+        for want in ("import-created", "import-uploaded", "import-cars", "import-started"):
             self.assertIn(want, actions)
         d = c.json("DELETE", url)
         self.assertEqual((d["deleted"], d["id"]), (True, jid))

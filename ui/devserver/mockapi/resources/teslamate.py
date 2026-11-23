@@ -413,10 +413,15 @@ def test(req):
     reconfirm(req, body)
     code = _try(s, target)
     lat = 3 + len(s["host"] or "") % 7
+    part = "MQTT" if target == "mqtt" else "database"
     if code:
+        req.store.record(req.account, "teslamate-local-tested", "teslamate:local",
+                         f"Tested the local TeslaMate's {part}: {code.replace('_', ' ')}.")
         return {"ok": False, "error": code, "message": ERRORS[code], "latency_ms": None, "at_ms": req.now,
                 "cars_seen": []}
     seen = [c["teslamate_car"] for c in (t["cars"] or _seed_cars(req.now))]
+    req.store.record(req.account, "teslamate-local-tested", "teslamate:local",
+                     f"Tested the local TeslaMate's {part}: connected, saw {len(seen)} cars.")
     msg = (f"Connected and subscribed to {s['prefix']}/cars/+/#: {len(seen)} cars seen in 3 s."
            if target == "mqtt" else f"Connected: the database has TeslaMate's tables and {len(seen)} cars.")
     return {"ok": True, "error": None, "message": msg, "latency_ms": lat, "at_ms": req.now, "cars_seen": seen}
@@ -480,9 +485,10 @@ def put_cars(req):
                 continue
             c["match"] = m
             changed = True
-            st.record(req.account, "teslamate-local-car-matched", f"teslamate:local:{v}",
-                      f"TeslaMate car {c['display_name'] or v} " + what.get(m, f"is car {m}: it is read from now on")
-                      + ".", car=m if m not in what else None)
+            tm = c["display_name"] or v
+            st.record(req.account, "teslamate-local-car-matched", "teslamate:local",
+                      f"Matched TeslaMate car {tm} to {st.car_meta(m)['name']}." if m not in what else
+                      f"TeslaMate car {tm} {what[m]}.", car=m if m not in what else None)
         if changed:
             t["version"] += 1
             st.rev += 1
@@ -582,7 +588,7 @@ def fail(st, part, code, now):
         new = [x for x in _troubles(t, now) if x[0] not in before]
         st.rev += 1
     for trouble, _, _ in new:
-        st.record(None, NOTICES[trouble][1], "settings:teslamate_local", f"Local TeslaMate: {trouble.replace('_', ' ')}.")
+        st.record(None, NOTICES[trouble][1], "teslamate:local", f"Local TeslaMate: {trouble.replace('_', ' ')}.")
 
 
 def register(router):

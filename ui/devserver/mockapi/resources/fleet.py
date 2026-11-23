@@ -500,8 +500,7 @@ def patch_car(req):
             else:
                 over.setdefault("config", {})[k] = v
         over["version"] = meta["version"] + 1
-    what = ", ".join(sorted(k for k in body if k != "version"))
-    st.record(req.account, "car.update", f"car:{cid}", f"Changed {what} of {st.car_meta(cid)['name']}.")
+    st.record(req.account, "car-changed", f"car:{cid}", _car_change_words(meta["name"], body))
     if "name" in body:
         req.app.events.publish("fleet", {"car": cid, "change": "renamed", "name": over["name"]}, car=cid)
     if "sold" in body:
@@ -673,7 +672,7 @@ def patch_settings(req):
                 "id": st.new_id("rb"), "from_ms": a, "to_ms": req.now, "at_ms": req.now, "took_ms": 3000,
                 "pending_until": req.now + 3000, "kinds": ["drives", "charges", "states", "visits"],
                 "cause": "source_order"})
-    st.record(req.account, "car.settings", f"car:{req.car}",
+    st.record(req.account, "car-settings-changed", f"car:{req.car}",
               "Changed " + ", ".join(sorted(k for k in body if k != "version")) + ".")
     if reorder:
         req.app.events.publish("rows", {"car": req.car, "kinds": ["drives", "charges", "states", "visits"],
@@ -682,6 +681,23 @@ def patch_settings(req):
 
 
 # ------------------------------------------------------------------ upload tokens and CAN keys
+
+
+def _car_change_words(old_name, body):
+    """The server's words for a car change: "Renamed Comet to Comet II", "Changed Comet's time zone to
+    America/Chicago", "Changed Comet's: sold, paint"."""
+    parts = []
+    name = old_name
+    if "name" in body and body["name"].strip() != old_name:
+        name = body["name"].strip()
+        parts.append(f"Renamed {old_name} to {name}")
+    if "time_zone" in body:
+        parts.append(f"Changed {name}'s time zone to {body['time_zone'] or 'automatic'}")
+    rest = [k for k in sorted(body) if k not in ("version", "name", "time_zone", "config")]
+    rest += sorted(k for k in (body.get("config") or {}))
+    if rest:
+        parts.append(f"Changed {name}'s " + ", ".join(k.replace("_", " ") for k in rest))
+    return ("; ".join(parts) or f"Saved {name} unchanged") + "."
 
 
 def list_tokens(req):
@@ -695,7 +711,8 @@ def create_token(req):
     tok = {"id": st.new_id("t"), "created_ms": req.now, "revoked": False, "key": None, "last_upload_ms": None}
     with st.lock:
         st.tokens.setdefault(req.car, []).append(tok)
-    st.record(req.account, "token.create", f"car:{req.car}", f"Made an upload token for {st.car_meta(req.car)['name']}.")
+    st.record(req.account, "token-created", f"token:{req.car}:{tok['id']}",
+              f"Made the upload token {tok['id']} for {st.car_meta(req.car)['name']}.")
     out = dict(tok)
     out["secret"] = "smu_" + secrets.token_urlsafe(24)
     out["app"] = bridge_fields(req, out["secret"])
@@ -719,7 +736,8 @@ def revoke_token(req):
     t = _token(req)
     with req.store.lock:
         t["revoked"] = True
-    req.store.record(req.account, "token.revoke", f"car:{req.car}", f"Revoked upload token {t['id']}.")
+    req.store.record(req.account, "token-revoked", f"token:{req.car}:{t['id']}",
+                     f"Revoked the upload token {t['id']} of {req.store.car_meta(req.car)['name']}.")
     return dict(t, car=req.car)
 
 
@@ -734,7 +752,7 @@ def create_new_token(req):
     tok = {"id": st.new_id("t"), "created_ms": req.now, "revoked": False, "key": None, "last_upload_ms": None}
     with st.lock:
         st.new_car_tokens.append(tok)
-    st.record(req.account, "token.create", "server", "Made an upload token for a new car.")
+    st.record(req.account, "token-created", f"token:{tok['id']}", f"Made the upload token {tok['id']} for a new car.")
     out = dict(tok, car=None)
     out["secret"] = "smu_" + secrets.token_urlsafe(24)
     out["app"] = bridge_fields(req, out["secret"])
@@ -748,7 +766,7 @@ def revoke_new_token(req):
         raise not_found("no_such_token", "There is no such upload token waiting for a new car.")
     with req.store.lock:
         t["revoked"] = True
-    req.store.record(req.account, "token.revoke", "server", f"Revoked upload token {t['id']} (for a new car).")
+    req.store.record(req.account, "token-revoked", f"token:{t['id']}", f"Revoked the upload token {t['id']} of a new car.")
     return dict(t, car=None)
 
 
@@ -787,6 +805,7 @@ def patch_key(req):
         rule["car"] = "No such car."
     if rule:
         raise invalid(rule)
+    was = k["car"]
     with st.lock:
         if "car" in body:
             k["car"] = body["car"]
@@ -800,8 +819,22 @@ def patch_key(req):
                     other["preferred"] = other is k
         elif body.get("preferred") is False:
             k["preferred"] = False
-    st.record(req.account, "key.update", f"key:{k['key']}",
-              f"Key {k['key']}: car {k['car'] or 'none'}, preferred {'yes' if k['preferred'] else 'no'}.")
+    name = lambda c: st.car_meta(c)["name"] if c else "no car"  # noqa: E731
+    now_car = k["car"]
+    if "car" in body and was != now_car:
+        if was:
+            st.record(req.account, "key-unassigned", f"key:{was}:{k['key']}",
+                      f"Moved the CAN Bridge key {k['key']} from {name(was)} to {name(now_car)}.", car=was)
+        if now_car:
+            st.record(req.account, "key-assigned", f"key:{now_car}:{k['key']}",
+                      f"Moved the CAN Bridge key {k['key']} from {name(was)} to {name(now_car)}.", car=now_car)
+    elif "car" in body and now_car:
+        st.record(req.account, "key-assigned", f"key:{now_car}:{k['key']}",
+                  f"Kept the CAN Bridge key {k['key']} with {name(now_car)}.", car=now_car)
+    if "preferred" in body and now_car:
+        st.record(req.account, "key-preferred", f"key:{now_car}:{k['key']}",
+                  f"Made the CAN Bridge key {k['key']} {name(now_car)}'s preferred one." if k["preferred"] else
+                  f"The CAN Bridge key {k['key']} is no longer {name(now_car)}'s preferred one.", car=now_car)
     return k
 
 
