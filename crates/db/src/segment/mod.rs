@@ -455,6 +455,25 @@ pub(crate) fn journaled_plain<P: Point>(
     Ok(Some(p))
 }
 
+/// A day with a journal read whole for another process's files ([`crate::Reader`]): no cache, no cleaning up.
+/// `None`: the day has no journal.
+pub(crate) fn inspected_plain<P: Point>(
+    ctx: &Ctx,
+    car_dir: &Path,
+    source: Stream,
+    day: u64,
+) -> Result<Option<crate::plain::Plain>> {
+    let dir = series_dir::<P>(car_dir, source);
+    let files = day_files(&dir, day);
+    if !files.log.exists() {
+        return Ok(None);
+    }
+    // (its snapshot may be in the month's pack)
+    let elsewhere = || pack::elsewhere(ctx, &dir, day);
+    let state = LoggedFile::<DayLog<P>>::inspect_state_or(ctx, files, &elsewhere)?;
+    Ok(Some(Arc::new((0, zeroize::Zeroizing::new(state.encode_state()?)))))
+}
+
 /// One day of a series unpacked: its body (the snapshot's, or the snapshot's and the journal's), through the cache,
 /// and the file it came from. Decoded afterwards, outside the car's lock ([`points_of`], [`fields_of`]), so reads of
 /// one car decode side by side.

@@ -87,24 +87,29 @@ pub(crate) fn parse_gen_level(body: &[u8], label: &str) -> Result<(u64, u8)> {
 impl<S: Logged> LoggedFile<S> {
     /// Reads the snapshot and replays the journal, kept open to commit changes to.
     pub(crate) fn load(ctx: &Ctx, files: Files) -> Result<LoggedFile<S>> {
-        LoggedFile::load_as(ctx, files, true, &|| Ok(None))
+        LoggedFile::load_as(ctx, files, true, true, &|| Ok(None))
     }
 
     /// [`LoggedFile::load`], starting from the snapshot `elsewhere` finds when there is no snapshot file. The next
     /// fold writes the snapshot file, which then stands for the state (the one elsewhere is older).
     pub(crate) fn load_or(ctx: &Ctx, files: Files, elsewhere: Fallback<'_>) -> Result<LoggedFile<S>> {
-        LoggedFile::load_as(ctx, files, true, elsewhere)
+        LoggedFile::load_as(ctx, files, true, true, elsewhere)
     }
 
     /// Reads the state only (snapshot and journal), for a reader that commits nothing: the journal is opened
     /// read-only, so it is never cut or changed. The snapshot may be kept elsewhere (see [`LoggedFile::load_or`]).
     pub(crate) fn read_state_or(ctx: &Ctx, files: Files, elsewhere: Fallback<'_>) -> Result<S> {
-        Ok(LoggedFile::load_as(ctx, files, false, elsewhere)?.state)
+        Ok(LoggedFile::load_as(ctx, files, false, true, elsewhere)?.state)
     }
 
-    fn load_as(ctx: &Ctx, files: Files, to_commit: bool, elsewhere: Fallback<'_>) -> Result<LoggedFile<S>> {
-        // a reader changes nothing: another process (the running server) may own these files
-        if to_commit {
+    /// [`Self::read_state_or`] for another process's files ([`crate::Reader`]): not even a crash's leftovers (a
+    /// temporary file, a journal already folded) are cleaned up; the owner does that.
+    pub(crate) fn inspect_state_or(ctx: &Ctx, files: Files, elsewhere: Fallback<'_>) -> Result<S> {
+        Ok(LoggedFile::load_as(ctx, files, false, false, elsewhere)?.state)
+    }
+
+    fn load_as(ctx: &Ctx, files: Files, to_commit: bool, tidy: bool, elsewhere: Fallback<'_>) -> Result<LoggedFile<S>> {
+        if tidy {
             files.clean_temporary()?;
         }
         let snap_label = ctx.label(&files.snap);
@@ -134,10 +139,10 @@ impl<S: Logged> LoggedFile<S> {
         };
         if let Some((generation, entries, journal)) = found {
             if generation < lf.generation {
-                // folded into the snapshot already; a crash came before it was removed (a reader leaves it: the
-                // next writer removes it)
+                // folded into the snapshot already; a crash came before it was removed (another process's
+                // reader leaves it to the owner)
                 drop(journal);
-                if to_commit {
+                if tidy {
                     remove_if_exists(&lf.files.log)?;
                 }
             } else if generation > lf.generation {

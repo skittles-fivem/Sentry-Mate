@@ -29,7 +29,7 @@ impl Reader {
 
     /// The car's record as the fleet table has it now.
     pub fn car(&self, id: CarId) -> Result<Option<Car>> {
-        let fleet = LoggedFile::<Fleet>::read_state_or(&self.ctx, Files::named(&self.dir, "fleet"), &|| Ok(None))?;
+        let fleet = LoggedFile::<Fleet>::inspect_state_or(&self.ctx, Files::named(&self.dir, "fleet"), &|| Ok(None))?;
         Ok(fleet.get(id).map(|e| e.car.clone()))
     }
 
@@ -46,7 +46,7 @@ impl Reader {
         let ctx = &self.ctx;
         let days = segment::days_in::<P>(ctx, &car_dir, stream, from_ms, to_ms)?;
         let days = segment::plains::<P>(ctx, &car_dir, stream, &days, &mut |day| {
-            segment::journaled_plain::<P>(ctx, &car_dir, stream, day)
+            segment::inspected_plain::<P>(ctx, &car_dir, stream, day)
         })?;
         segment::points_of(days, from_ms, to_ms)
     }
