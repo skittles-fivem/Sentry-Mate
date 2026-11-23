@@ -238,7 +238,7 @@ export async function mount(ctx) {
       ]),
       h('dl', { class: 'bt-spec' },
         packWords(bat.pack, tz) ? h('div', null, h('dt', null, 'Pack'), h('dd', { dataset: { pack: 'replaced' } }, packWords(bat.pack, tz))) : null,
-        h('div', null, h('dt', null, 'Chemistry'), h('dd', null, bat.chemistry && bat.chemistry.value ? `${CHEM[bat.chemistry.value] || bat.chemistry.value}, ${CHEM_SOURCE[bat.chemistry.source] || bat.chemistry.source || ''}` : 'not known')),
+        h('div', null, h('dt', null, 'Chemistry'), h('dd', null, bat.chemistry && bat.chemistry.value ? `${CHEM[bat.chemistry.value] || bat.chemistry.value}, ${CHEM_SOURCE[bat.chemistry.source] || bat.chemistry.source || ''}${bat.chemistry?.confidence === 'low' ? ' (low confidence)' : ''}` : 'not known')),
         h('div', null, h('dt', null, 'Cell balance'), h('dd', null, num(bat.brick_spread_v) ? [q(bat.brick_spread_v * 1000, 'number', { digits: 0 }), ' mV between the highest and lowest cell group', bat.brick_spread_v > 0.05 ? flag('wide', { kind: 'warn' }) : ' (well balanced)'] : 'not sent by this car')),
         h('div', null, h('dt', null, 'Spread of readings'), h('dd', null, num(c.spread_kwh) ? ['±', q(c.spread_kwh / 2, 'energy', { digits: 2 }), ' around the median'] : '—'))),
       h('p', { class: 'note bt-help', cover: 'bh.capacity.help' },
@@ -445,7 +445,8 @@ export async function mount(ctx) {
       const named = [...(r.value.sources || []), ...(Array.isArray(T.sources) ? T.sources : [])].filter((x) => x && x.kind === k);
       return named.length ? named : [{ kind: k }];
     });
-    const since = num(T.odometer_last_km) && num(T.odometer_first_km) ? T.odometer_last_km - T.odometer_first_km : null;
+    // from the valid odometer readings only, never below 0 (the server picks them)
+    const since = num(T.driven_since_km) ? T.driven_since_km : num(T.odometer_last_km) && num(T.odometer_first_km) ? Math.max(0, T.odometer_last_km - T.odometer_first_km) : null;
     const jumps = g.status === 'fulfilled' ? g.value.filter((x) => num(x.odometer_jump_km) && x.odometer_jump_km > 0.05) : [];
     const gapList = g.status === 'rejected' ? h('p', { class: 'note' }, 'The gap list could not be loaded.')
       : jumps.length ? h('ol', { class: 'bt-gaps' }, jumps.slice(0, 6).map((x) => h('li', null,
@@ -474,7 +475,7 @@ export async function mount(ctx) {
         h('div', { class: 'bt-life-col' },
           h('h3', { class: 'bt-sub' }, 'Charging', pageLink2('Charges', 'charges', 'bh.charging.link_stats')),
           figures([
-            figure('Charging sessions', q(T.charges, 'count'), T.ac && T.dc ? `${formatNumber(T.ac.charges)} AC, ${formatNumber(T.dc.charges)} DC.` : null, { cover: 'bh.charging.count' }),
+            figure('Charging sessions', q(T.charges, 'count'), T.ac && T.dc ? `${formatNumber(T.ac.charges)} AC, ${formatNumber(T.dc.charges)} DC${T.unknown_kind?.charges ? `, ${formatNumber(T.unknown_kind.charges)} of no known kind` : ''}.` : null, { cover: 'bh.charging.count' }),
             figure('Equivalent full cycles', q(L.equivalent_cycles, 'number', { digits: 1, why: 'no counters yet' }), 'Energy the pack has given over its life, divided by its usable capacity when new.', { cover: 'bh.charging.cycles' }),
             figure('Energy added', q(T.energy_added_kwh, 'energy', { digits: 0 }), num(L.charged_kwh) ? ['Into the pack in logged charges; the pack’s own counters say ', q(L.charged_kwh, 'energy', { digits: 0 }), ' over its whole life.'] : 'Into the pack, in logged charges.', { cover: 'bh.charging.energy_added' }),
             figure('Drawn from chargers', q(T.energy_grid_kwh, 'energy', { digits: 0 }), num(T.grid_coverage_pct) ? `Metered for ${pctText(T.grid_coverage_pct)} of the energy added: AC only, a fast charger’s side is not measured.` : null, { cover: 'bh.charging.energy_used' }),
@@ -674,7 +675,7 @@ export async function mount(ctx) {
   const cold = (r) => !!r.cold;
   const drain = dataTable(ctx, {
     path: api.apiPath`cars/${car.id}/parked`, params: { ...ctx.params, min_hours: opt.min_hours }, limit: 50,
-    itemName: ['parked spell', 'parked spells'], cover: 'vd.table', label: 'Parked spells', sortAll: 5000,
+    itemName: ['parked spell', 'parked spells'], cover: 'vd.table', label: 'Parked spells', sortAll: 5000, cls: 'bt-drain', box: true, append: true, autoMore: true,
     caption: 'Newest first. Spells crossing the period’s edges are cut at them. The CSV holds every listed spell.',
     columns: [
       { key: 'start', label: 'Parked', th: true, cover: ['vd.col.start', 'vd.col.end', 'vd.link.start_details'], value: (r) => r.start_ms,

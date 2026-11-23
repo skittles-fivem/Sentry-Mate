@@ -7,7 +7,6 @@
 .fixes { display: flex; flex-direction: column; gap: var(--s3); margin: 0; padding: 0; list-style: none; }
 .fix { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); padding: var(--s3) var(--s4); border-radius: var(--r-sm); background: var(--sun-soft); font-size: var(--f14); line-height: var(--l14); }
 .fix b { font-weight: 800; }
-.hl-rebuild { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); padding-top: var(--s3); border-top: 1px solid var(--card-alt); }
 .log-k { color: var(--text); text-decoration: none; }
 a.log-k:hover { color: var(--coral); text-decoration: underline; }
 
@@ -61,3 +60,7 @@ html[data-form="phone"] .sig-msg { display: none; }
 .hl-conn-tot .is-idle { background: var(--sky-soft); color: var(--sky); }
 .hl-conn-tot .is-paused { background: var(--sun-soft); color: var(--sun); }
 .hl-conn-tot .is-problem { background: var(--bad-soft); color: var(--bad); }
+
+/* a bridge key's last upload and, for admins, its rename button */
+.hl-key-side { display: flex; align-items: center; gap: var(--s2); align-self: start; }
+.hl-keys .check-text { align-self: start; } /* the name's line stays by its dot when the button makes the row taller */

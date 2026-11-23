@@ -3,6 +3,9 @@ Sentry Mate browser-delivery measurement (made-up data only)
 
 Files
   compare.js   node compare.js before.json after.json [...]: a markdown table of runs side by side, and means
+  idle.js      what an open page costs while nothing is touched, on the dev API server (no seeded server needed):
+               node idle.js --pack horizon [--page /cars/c1] [--seconds 120] [--server-args "--rows-every-s 3"];
+               main-thread and whole-browser CPU, heap, DOM nodes and listeners over time (a leak shows as a rise)
   measure.js   the harness: per pack x page, a cold and a warm load on an emulated phone; writes JSON + a markdown table
   setup.js     first-run setup of a freshly seeded server (reads SETUP-CODE.txt, POST /api/v1/setup over HTTPS)
   settled.js   waits until the engine has decoded the seeded logs (drive/charge counts stop changing)
@@ -48,6 +51,10 @@ measure.js options
              after a hover and touchstart on it; else history.pushState + popstate), timed in the page's clock from the
              click to the new view ready (its data-ready set again by the page, the path the new one); rows "nav"
   --drive ID the drive page's drive (default: the car's first drive)
+  --device laptop (1440x900 at 1x, CPU 2x, no network throttling unless --latency)  --scroll (scroll the list: fps)
+  --pages logbook (also: the Logbook). rows ms / list ms: first list row painted, from navigation / from the list's
+  request; dom rows and nodes at the end. The dev server works too: --base http://127.0.0.1:PORT --user admin
+  --pass sentry-mate-dev (serve.py --drives 3000 for a long Logbook)
 
 What is measured (see the header of measure.js for detail)
   device   390x844 CSS px, deviceScaleFactor 3, isMobile, hasTouch (Android Chrome UA)

@@ -22,7 +22,7 @@ import { empty } from '../core/states.js';
 import { field, form } from '../core/form.js';
 import { openDialog } from '../core/dialog.js';
 import { toast } from '../core/toast.js';
-import { src, srcText } from '../core/source.js';
+import { rowTitle } from '../core/source.js';
 import { firmwarePanel, fingerprintUpdates, modWords, VERSION_SOURCE as SOURCE, versionTag } from './firmware.js';
 import { firmwareHistory } from './firmware-history.js';
 
@@ -95,6 +95,7 @@ export async function mount(ctx) {
   let summary = null;   // the newest page's summary: its last_update fills the empty state
   const updates = table(ctx, {
     title: 'versions', path, params: ctx.params, limit: 50, cover: 'updates.table', csvName: 'software updates',
+    box: 'Software updates', autoMore: true,
     side: reloadBtn,
     note: 'newest first. days on it, charges and full range are what the car did from the end of the update to the next one (or now).',
     columns: [
@@ -102,7 +103,9 @@ export async function mount(ctx) {
       { key: 'start', label: 'installed at', ph: 'sub', cover: 'updates.table.date',
         render: (r) => h('a', { class: 'lnk-plain', href: timelineHref(r), title: 'the timeline around it' }, `${formatDate(r.start_ms, tz, { weekday: false })} ${formatTime(r.start_ms, tz)}`) },
       { key: 'took', label: 'took', num: true, cover: 'updates.table.duration',
-        render: (r) => (r.end_ms == null ? [tag('running', 'warn'), ` ${formatDuration(r.duration_ms)}`] : formatDuration(r.duration_ms)) },
+        render: (r) => (r.end_ms == null ? [tag('running', 'warn'), ` ${formatDuration(r.duration_ms)}`]
+          : r.readings_gap ? h('span', { title: `no readings between ${dateTime(r.between_ms[0], tz)} and ${dateTime(r.between_ms[1], tz)}: installed somewhere in there` }, none('not known'))
+            : formatDuration(r.duration_ms)) },
       { key: 'days', label: 'days on it', num: true, ph: 'num',
         render: (r) => (daysOn(r) == null ? none('installing') : h('span', { class: 'n' }, formatNumber(daysOn(r), { maximumFractionDigits: 0 }), h('span', { class: 'u' }, ' d'))) },
       { key: 'since', label: 'after prev', num: true, cover: 'updates.table.since_previous',
@@ -113,8 +116,8 @@ export async function mount(ctx) {
         render: (r) => (r.charges ? link(state.buildUrl('charges', { car: cid, period: onVersion(r) }), formatNumber(r.charges)) : formatNumber(r.charges ?? 0)) },
       { key: 'range', label: 'range 100%', num: true, cover: 'updates.table.avg_range', render: (r) => num(r.full_range_km, 'range') },
       { key: 'pack', label: 'full pack', num: true, render: (r) => (r.full_pack_kwh == null ? none('not measured') : num(r.full_pack_kwh, 'energy')) },
-      { key: 'from', label: 'data', title: 'where the data came from: smo, api (the Tesla API), imp (imported)', render: (r) => src(r), value: (r) => srcText(r) },
     ],
+    rowTitle,
     empty: () => (ctx.period.preset !== 'all' && summary?.last_update
       ? empty(`no updates in this period; the last one was ${lastWords(summary.last_update)}`, allBtn())
       : empty('no updates in this range', ctx.period.preset === 'all' ? 'an update shows once the car installs one while recording, or with an imported history' : 'choose a longer range; all shows every update')),

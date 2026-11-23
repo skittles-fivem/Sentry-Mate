@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from ..errors import ApiError, bad_input, conflict, invalid, not_found
 from ..store import DEV_PASSWORD, DEV_TWO_STEP_CODE
 from ..util import DAY, MIN
+from . import invoices
 
 SIGN_IN_MS = 10 * MIN
 MAX_SIGN_INS = 5
@@ -236,26 +237,33 @@ def overview(req):
         "poll": poll, "polls": dict(PACES[poll], daily_cap=3000),
         "polls_today": sum(_polls_today(req, a) for a in t["accounts"].values()), "last_error": _last_error(t),
         "clients_built": t["clients_built"], "version": t["settings"]["version"],
+        "invoices": invoices.block(req, "tesla"),
     }
 
 
 def patch_overview(req):
     body = req.json()
-    _only(body, ("version", "poll", "confirm_password", "code"))
+    _only(body, ("version", "poll", "invoices", "confirm_password", "code"))
     poll = _str(body, "poll")
     if poll is not None and poll not in PACES:
         raise invalid({"poll": "Must be often, normal or gentle."})
+    inv = invoices.patch_value(body)
     reconfirm(req, body)
     st = req.store
     s = _t(req)["settings"]
     with st.lock:
         req.version_check(s["version"])
+        changed = False
         if poll is not None and poll != s["poll"]:
             s["poll"] = poll
-            s["version"] += 1
-            st.rev += 1
+            changed = True
             st.record(req.account, "tesla-poll-changed", "settings:tesla",
                       f"Set how often the Tesla API is asked to {poll}.")
+        if invoices.apply_patch(req, "tesla", inv):
+            changed = True
+        if changed:
+            s["version"] += 1
+            st.rev += 1
     return overview(req)
 
 

@@ -8,13 +8,16 @@
 // scope() gives a page its own client whose abort() cancels everything it started. Errors are ApiError
 // { status, code, message, fields }; a 401 also tells on('unauthorized') listeners (the frame shows
 // sign-in). events() follows /api/v1/events and reconnects with backoff. now() is the server's clock,
-// estimated from response headers, for period presets and "5 min ago".
+// estimated from response headers, for period presets and "5 min ago". Each answer's X-Sentry-Mate-Build goes to
+// build.js (a tab open across an update loads its next page in full).
+
+import { observeBuild, BUILD_HEADER } from './build.js';
 
 export const API_BASE = '/api/v1';
 export const CSRF_HEADER = 'X-Sentry-Mate';
 // Headers the server's clock is read from: an exact one if the server sends it, else the standard Date.
 export const NOW_HEADER = 'X-Sentry-Mate-Now-Ms';
-export const EVENT_TYPES = Object.freeze(['now', 'fleet', 'rows', 'prefs', 'notice']);
+export const EVENT_TYPES = Object.freeze(['now', 'fleet', 'rows', 'prefs', 'notice', 'job', 'health', 'connections', 'storage']);
 
 const DEFAULT_MESSAGES = {
   0: 'Could not reach the server. Check the connection and try again.',
@@ -272,6 +275,7 @@ export function createClient(options = {}) {
         throw new ApiError({ status: 0, code: 'network', method, path });
       }
       clock.observeHeaders(res.headers, sent, localNow());
+      observeBuild(res.headers?.get?.(BUILD_HEADER));
       markNet(true);
       if (res.status === 429 && method === 'GET' && attempt === 0) {
         const wait = parseRetryAfter(res.headers?.get?.('Retry-After'), clock.now());

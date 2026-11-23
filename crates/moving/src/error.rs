@@ -57,6 +57,8 @@ pub enum Error {
     MoveUnderWay(String),
     #[error("{0}")]
     Finished(String),
+    #[error("the export was cancelled")]
+    Cancelled,
 }
 
 impl From<vault::Error> for Error {

@@ -79,7 +79,8 @@ pub(crate) fn car(row: &Row<'_, '_>, id: i64, settings: Option<(Option<bool>, Op
     let vin_text = row.text(Car::vin);
     let vin = vin_text.as_deref().and_then(vin_info);
     let unreadable_vin = vin_text.is_some() && vin.is_none();
-    // The full VIN text is dropped here: only what `vin_info` kept goes on.
+    // The full VIN goes on only to tell cars of one prefix apart (the sink keeps a keyed hash of it, never the VIN).
+    let full_vin = vin.as_ref().and(vin_text.as_deref()).map(crate::rows::FullVin::new);
     drop(vin_text);
     let (lfp_battery, free_supercharging) = settings.unwrap_or((None, None));
     let car = TmCar {
@@ -95,6 +96,8 @@ pub(crate) fn car(row: &Row<'_, '_>, id: i64, settings: Option<(Option<bool>, Op
         lfp_battery,
         free_supercharging,
         added_ms: row.ms(Car::inserted_at),
+        full_vin,
+        needs_match: false,
     };
     (car, unreadable_vin)
 }
@@ -281,6 +284,7 @@ pub(crate) fn charge(
         kind,
         energy_added_kwh: row.f64(Cp::charge_energy_added),
         energy_used_kwh: row.f64(Cp::charge_energy_used),
+        energy_spans: None,
         start_soc: row.f64(Cp::start_battery_level),
         end_soc: row.f64(Cp::end_battery_level),
         start_range_km: row.f64(Cp::start_rated_range_km),

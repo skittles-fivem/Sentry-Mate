@@ -15,7 +15,7 @@ import { isValidZone, dayKey, zoneSourceText } from '../shared/time.js';
 import { convert, toMetric, unitLabel, format } from '../shared/units.js';
 import { head, paint, section, note, link, btn, kv } from '../core/ui.js';
 import { table } from '../core/table.js';
-import { editLines, saveError } from '../core/kvedit.js';
+import { editLines, editGroup, saveError } from '../core/kvedit.js';
 import { empty } from '../core/states.js';
 import { tag, stateWord, dateTime, date, time, ago, DASH } from '../core/fmt.js';
 import { toast } from '../core/toast.js';
@@ -23,6 +23,8 @@ import { confirmDialog } from '../core/dialog.js';
 import { copyBtn, showOnce } from '../core/secret.js';
 import { openCarSwitcher } from '../core/carswitch.js';
 import { src } from '../core/source.js';
+import { deviceName } from '../shared/devices.js';
+import { deviceText, renameBtn } from './device-name.js';
 
 export const id = 'settings-cars';
 export const css = true;
@@ -44,6 +46,12 @@ const srcTag = (v) => (Array.isArray(v?.sources) ? src(v, { typed: 'typed by an 
 const meta = (c) => [c.model, c.year].filter(Boolean).join(' ');
 const errMsg = (e) => saveError(e);
 const soldTag = (c) => h('span', { title: c.sold_date ? `Sold on ${c.sold_date}` : 'Sold' }, tag('sold', 'muted'));
+
+// the currency a car's charges cost most in (the Charges list's totals), or null
+function topCurrency(list) {
+  const by = list?.totals?.cost_by_currency || [];
+  return by.length ? by.reduce((a, b) => (b.amount > a.amount ? b : a)).currency : null;
+}
 
 function howCarsAppear(admin) {
   return h('ol', { class: 'howto' }, [
@@ -155,7 +163,7 @@ function waitingTable(ctx, rows, car, after, tz) {
     sort: { key: 'first', dir: 'desc' },
     columns: [
       { key: 'key', label: 'key', ph: 'main' },
-      { key: 'device', label: 'device', ph: 'sub', render: (k) => k.device || 'not reported' },
+      { key: 'device', label: 'device', ph: 'sub', render: (k) => [deviceText(k), ctx.admin ? [' ', renameBtn(ctx, k, () => after())] : null] },
       { key: 'first', label: 'first upload', sort: true, value: (k) => k.first_seen_ms, render: (k) => dateTime(k.first_seen_ms, tz) },
       { key: 'last', label: 'last upload', ph: 'sub', sort: true, value: (k) => k.last_upload_ms, render: (k) => (k.last_upload_ms ? ago(k.last_upload_ms) : 'never') },
       { key: 'logs_waiting', label: 'logs', num: true, ph: 'num', render: (k) => format(k.logs_waiting ?? 0, 'count') },
@@ -185,6 +193,8 @@ async function mountCar(ctx) {
       ctx.api.page('cars', { sort: 'custom' }, { limit: 8 }).catch(() => null),
     ]);
     Object.assign(S, { car, settings, tokens: tokens?.items || [], keys: keys?.items || [], waiting: waiting?.items || [], health, battery, cars: cars?.items || [], more: !!cars?.next });
+    // the currency for an empty default price: the one the car's charges cost most in
+    if (!S.currency) S.currency = settings.default_price_per_kwh?.currency || topCurrency(await ctx.api.get(`cars/${enc(cid)}/charges`, { limit: 1 }).catch(() => null));
   }
   await load(true);
   if (!ctx.alive()) return;
@@ -416,7 +426,7 @@ async function mountCar(ctx) {
     else { t = tag('ok', 'ok'); text = `Uploading: the last log arrived ${ago(last)}.`; }
     const more = [
       trust === 'verified' ? 'Its signature matches a key tied to this car.' : trust === 'unsigned' ? 'It carried no signature: kept, marked unsigned.' : trust === 'failed' ? 'It failed its check and was not used.' : null,
-      pref ? `Preferred key: ${pref.key}${pref.device ? ` (${pref.device})` : ''}.` : null,
+      pref ? `Preferred key: ${pref.key} (${deviceName(pref).text}).` : null,
       S.waiting.length ? `${S.waiting.length} key${S.waiting.length === 1 ? '' : 's'} waiting for a car below.` : null,
       hl?.logs_waiting ? `${hl.logs_waiting} logs wait to be checked.` : null,
     ].filter(Boolean).join(' ');
@@ -454,7 +464,7 @@ async function mountCar(ctx) {
         { key: 'id', label: 'token', ph: 'main' },
         { key: 'created', label: 'made', sort: true, ph: 'sub', value: (t) => t.created_ms, render: (t) => dateTime(t.created_ms, z) },
         { key: 'state', label: 'state', ph: 'num', render: tokenState },
-        { key: 'key', label: 'key it brought', ph: 'sub', render: (t) => t.key || h('span', { class: 'muted' }, t.revoked ? DASH : 'none yet') },
+        { key: 'key', label: 'key it brought', ph: 'sub', render: (t) => (t.key ? [t.key, ' ', deviceText(t)] : h('span', { class: 'muted' }, t.revoked ? DASH : 'none yet')) },
         { key: 'last', label: 'last upload', sort: true, value: (t) => t.last_upload_ms, render: (t) => (t.last_upload_ms ? ago(t.last_upload_ms) : 'never') },
         { key: 'act', label: '', grow: true, render: (t) => (t.revoked ? false : btn('revoke', () => revokeToken(t), { kind: 'danger' })) },
       ],
@@ -466,7 +476,7 @@ async function mountCar(ctx) {
       sort: { key: 'last', dir: 'desc' },
       columns: [
         { key: 'key', label: 'key', ph: 'main' },
-        { key: 'device', label: 'device', ph: 'sub', render: (k) => k.device || 'not reported' },
+        { key: 'device', label: 'device', ph: 'sub', render: (k) => [deviceText(k), ' ', renameBtn(ctx, k, (row) => { S.keys = S.keys.map((x) => (x.key === k.key ? { ...x, ...row } : x)); if (ctx.alive()) paintUploads(); })] },
         { key: 'first', label: 'first upload', sort: true, value: (k) => k.first_seen_ms, render: (k) => dateTime(k.first_seen_ms, z) },
         { key: 'last', label: 'last upload', sort: true, ph: 'sub', value: (k) => k.last_upload_ms, render: (k) => (k.last_upload_ms ? ago(k.last_upload_ms) : 'never') },
         { key: 'logs_waiting', label: 'logs waiting', num: true, render: (k) => format(k.logs_waiting ?? 0, 'count') },
@@ -632,7 +642,32 @@ async function mountCar(ctx) {
     replace(slots.free, section({ title: 'free supercharging', cover: 'web.settings.car.free-supercharging', side: ro ? null : btn('add a range', () => { ranges = [...ranges, { from_date: null, to_date: null }]; rows(); }) },
       h('p', { class: 'note' }, 'Supercharger sessions that start on a free day cost nothing; sessions outside keep their own cost. Days are the car\'s days, in its time zone. ',
         access?.value != null ? ['The car reports supercharging access: ', String(access.value), ' ', srcTag(access), '. That says what it may do now, not since when.'] : 'The car has not reported its supercharging access yet.'),
-      box, msg));
+      box, msg, priceLines()));
+  }
+
+  /* ---- the default price per kWh ({ value, currency } or null), saved together: Statistics estimates unpriced charges at it */
+  function priceLines() {
+    const p = S.settings.default_price_per_kwh;
+    const VAL = 'default_price_per_kwh.value', CUR = 'default_price_per_kwh.currency';
+    const g = editGroup({ label: 'save price', save: async () => {
+      const [v, c] = g.lines.map((l) => l.parsed());
+      if (v.error || c.error) throw Object.assign(new Error('price'), { fields: { [VAL]: v.error, [CUR]: c.error } });
+      if (v.value == null) throw Object.assign(new Error('price'), { fields: { [VAL]: 'a price from 0 to 10; clear forgets it' } });
+      if (c.value == null) throw Object.assign(new Error('price'), { fields: { [CUR]: 'three letters, such as USD or EUR' } });
+      await patchSettings({ default_price_per_kwh: { value: v.value, currency: c.value } });
+      toast('Default price per kWh saved.');
+      queueMicrotask(paintFree);
+    } });
+    const lines = editLines([
+      { key: 'default price per kWh', path: VAL, type: 'number', value: p ? p.value : '', group: g, cls: 'ke--short', readOnly: ro, attrs: { min: '0', max: '10', placeholder: '0.15' },
+        help: 'Charges without a price are estimated at it on Statistics, shown apart as estimated.',
+        after: p && !ro ? btn('clear', async () => {
+          try { await patchSettings({ default_price_per_kwh: null }); toast('Default price per kWh cleared.'); paintFree(); } catch (e) { g.message(errMsg(e)); }
+        }, { kind: 'quiet' }) : null },
+      { key: 'currency', path: CUR, type: 'text', value: p?.currency || S.currency || '', group: g, cls: 'ke--short', readOnly: ro, attrs: { maxlength: '3', placeholder: 'USD' },
+        parse: (t) => (t.trim() === '' ? { value: null } : /^[a-z]{3}$/i.test(t.trim()) ? { value: t.trim().toUpperCase() } : { error: 'three letters, such as USD or EUR' }) },
+    ]);
+    return [lines.el, g.bar];
   }
 
   repaint();

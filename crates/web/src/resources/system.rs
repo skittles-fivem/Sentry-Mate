@@ -18,7 +18,7 @@ use axum::{Json, Router};
 use engine::Engine;
 use engine::query as q;
 use serde_json::{Value, json};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 /// When this server's web side started (its routes were made), for `uptime_ms`.
@@ -61,10 +61,65 @@ pub async fn scan_missing_logs(app: &AppState, gate: &gate::Gate) -> usize {
             return 0;
         }
     };
+    let now = app.now();
+    scan_edit(|s| {
+        *s = MissingScan {
+            state: "running",
+            keys_done: 0,
+            keys_total: keys.len(),
+            found: 0,
+            started_ms: Some(now),
+            finished_ms: None,
+        }
+    });
+    let found = scan_keys(app, gate, &e, keys).await;
+    let now = app.now();
+    scan_edit(|s| {
+        s.state = "done";
+        s.finished_ms = Some(now);
+        s.found = found;
+    });
+    found
+}
+
+/// The look for missing CAN logs as it is now (the live stream's `job` of kind `missing_scan`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize)]
+pub struct MissingScan {
+    /// `idle` (none since the start), `running`, `done`.
+    pub state: &'static str,
+    pub keys_done: usize,
+    pub keys_total: usize,
+    /// Logs newly found missing (in this look so far).
+    pub found: usize,
+    pub started_ms: Option<u64>,
+    pub finished_ms: Option<u64>,
+}
+
+static MISSING_SCAN: std::sync::Mutex<MissingScan> = std::sync::Mutex::new(MissingScan {
+    state: "idle",
+    keys_done: 0,
+    keys_total: 0,
+    found: 0,
+    started_ms: None,
+    finished_ms: None,
+});
+
+fn scan_edit(f: impl FnOnce(&mut MissingScan)) {
+    f(&mut MISSING_SCAN.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+}
+
+/// The look for missing CAN logs under way or the last one.
+pub fn missing_scan() -> MissingScan {
+    *MISSING_SCAN.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+async fn scan_keys(app: &AppState, gate: &gate::Gate, e: &Arc<Engine>, keys: Vec<String>) -> usize {
     let mut found = 0;
     for key in keys {
+        scan_edit(|s| s.found = found);
         // low priority: every other task goes first between keys
         tokio::task::yield_now().await;
+        let _count = KeyDone;
         let Some(pass) = through_gate(gate).await else { continue };
         let uploading = e.store().uploading(&key).await;
         let r = e.judge().scan_missing(&key, uploading).await;
@@ -110,12 +165,22 @@ pub async fn scan_missing_logs(app: &AppState, gate: &gate::Gate) -> usize {
     found
 }
 
+/// Counts a key of the look as done however its turn ends.
+struct KeyDone;
+
+impl Drop for KeyDone {
+    fn drop(&mut self) {
+        scan_edit(|s| s.keys_done += 1);
+    }
+}
+
 pub fn routes() -> Router<AppState> {
     STARTED.get_or_init(Instant::now);
     Router::new()
         .route("/api/v1/about", get(about))
         .route("/api/v1/cars/{car}/health", get(health))
         .route("/api/v1/cars/{car}/rebuild", post(rebuild))
+        .route("/api/v1/cars/{car}/gps-layout", get(gps_layout).put(put_gps_layout))
         .route("/api/v1/cars/{car}/overlaps", get(overlaps).patch(flip_overlap))
         .route("/api/v1/cars/{car}/storage", get(car_storage))
         .route("/api/v1/system/storage", get(system_storage))
@@ -207,6 +272,7 @@ async fn rebuild(
     let e2 = e.clone();
     let job = app
         .blocking(move |_| {
+            super::full_rebuild::refuse_while_running(&e2)?;
             e2.rebuild(engine::Scope { car: Some(car), from_ms: from, to_ms: to })
                 .map_err(|x| ApiError::server(format!("starting the rebuild: {x}")))
         })
@@ -251,6 +317,51 @@ async fn rebuild(
         "logs_read": now.done,
         "logs_total": now.total,
         "took_ms": now.took_ms,
+    })))
+}
+
+/// `GET /cars/{car}/gps-layout`: the car's own layout of the Screenmate's GPS frame (0x04F on its internal bus) as
+/// `sentry-mate gps-layout` prints it, or null while the DBC's is used.
+async fn gps_layout(State(app): State<AppState>, CarParam(car): CarParam) -> ApiResult<Json<Value>> {
+    let e = app.service::<Engine>()?;
+    let l = app
+        .blocking(move |_| e.gps_layout(car).map_err(|x| ApiError::server(format!("reading the layout: {x}"))))
+        .await?;
+    Ok(Json(json!({ "car": ids::car(car), "layout": l.map(|l| l.to_string()) })))
+}
+
+/// `PUT /cars/{car}/gps-layout` `{ layout }`: the layout `sentry-mate gps-layout` printed (`lat 0|28@1- (1e-6,0);
+/// lon 28|28@1- (1e-6,0)`), or null for the DBC's. A change starts a whole rebuild of the car (its stored logs are
+/// decoded again); the answer names its `job`, null when nothing changed.
+async fn put_gps_layout(
+    State(app): State<AppState>,
+    v: Viewer,
+    CarParam(car): CarParam,
+    body: JsonBody,
+) -> ApiResult<Json<Value>> {
+    body.only(&["layout"])?;
+    let layout: Option<model::gps::GpsLayout> = match body.get("layout") {
+        None => return Err(ApiError::invalid("layout", "Required: the layout, or null for the DBC's.")),
+        Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.parse().map_err(|why: String| ApiError::invalid("layout", &why))?),
+        Some(_) => return Err(ApiError::invalid("layout", "Must be text or null.")),
+    };
+    let e = app.service::<Engine>()?;
+    let job = app
+        .blocking(move |_| e.set_gps_layout(car, layout).map_err(|x| ApiError::server(format!("the layout: {x}"))))
+        .await?;
+    if job.is_some() {
+        let name = app.car_name_now(car).await;
+        let summary = match layout {
+            Some(l) => format!("Set how {name}'s Screenmate GPS frames are read ({l}); its history is rebuilt."),
+            None => format!("Set {name}'s Screenmate GPS frames to be read as the DBC says; its history is rebuilt."),
+        };
+        v.audit(&app, "car-gps-layout", Some(&target("car", Some(car), "")), &summary).await?;
+    }
+    Ok(Json(json!({
+        "car": ids::car(car),
+        "layout": layout.map(|l| l.to_string()),
+        "job": job.map(|j| j.id.to_string()),
     })))
 }
 
@@ -343,6 +454,27 @@ fn free_bytes(dir: &std::path::Path) -> Option<u64> {
             return None;
         }
     }
+}
+
+/// A car's health as `/cars/{car}/health` gives it (its default period), for the live stream's `health` event.
+pub(crate) fn health_now(e: &Engine, car: model::CarId) -> q::QResult<Value> {
+    let mut h = q::system::health(e, car, &q::Period::new(None, None))?;
+    h.body.uploads_enabled = Some(uploads_enabled(e, car)?);
+    Ok(serde_json::to_value(&h).unwrap_or(Value::Null))
+}
+
+/// The server's storage figures as `/system/storage` gives them, with compaction as `/system/storage/detail` has
+/// it (no walk over the data folder), for the live stream's `storage` event.
+pub(crate) fn storage_now(e: &Engine, now_ms: u64) -> q::QResult<Value> {
+    let s = q::system::server_storage(e, now_ms)?;
+    let free = e.store().dir().parent().and_then(free_bytes);
+    let full_in_days = match (free, s.growth_per_day_bytes) {
+        (Some(f), Some(g)) if g > 0 => Some(f / g),
+        _ => None,
+    };
+    let mut v = serde_json::to_value(Storage { body: s, free_bytes: free, full_in_days }).unwrap_or(Value::Null);
+    v["compaction"] = serde_json::to_value(e.compaction()).unwrap_or(Value::Null);
+    Ok(v)
 }
 
 /// `/system/storage`: the engine's figures with the disk's free space.

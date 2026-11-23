@@ -17,7 +17,7 @@
 //!   `fields`), [`JsonBody`] (a JSON object of at most 1 MB).
 //! - **Answers**: [`ApiError`] is the one error shape; lists page with opaque, signed cursors ([`query`]); CSV with
 //!   [`csv`]; the audit log with [`Viewer::audit`] (every change a handler does not record itself is recorded as a
-//!   plain entry); security headers on every answer; `X-Sentry-Mate-Now-Ms` on every API answer.
+//!   plain entry); security headers on every answer; `X-Sentry-Mate-Now-Ms` on every API answer; `X-Sentry-Mate-Build` (the UI packs' build) on every answer.
 //! - **Live stream** ([`events`]): `/api/v1/events`, server-sent events from [`Events`], filtered per account.
 //! - **UI packs** ([`packs`]): the built-in packs embedded at build time, uploaded packs from a checked zip (sealed),
 //!   the pack chosen for everyone and each person's own, `/original`, a strict CSP.
@@ -57,6 +57,7 @@ pub mod error;
 pub mod events;
 pub mod heavy;
 pub mod ids;
+pub mod live;
 pub mod moving;
 pub mod packs;
 pub mod policy;

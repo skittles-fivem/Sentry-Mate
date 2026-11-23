@@ -30,7 +30,9 @@ test('not mapped: every tyre against the lower axle, so no false alarm', () => {
   assert.deepEqual(v.against, [250, 250, 250, 250]);
   assert.deepEqual(v.low, [false, false, false, false]);
   assert.match(sp(T.recommendedLine({ ...now({}), tyres_slots_mapped: false, tyre_recommended_kpa: W(250), tyre_recommended_rear_kpa: W(320), tyre_recommended_source: 'can' })),
-    /^Recommended 36 psi front, 46 psi rear \(from CAN\)\. Which wheel each sensor sits on is not known yet, so each tyre is judged against the lower one\.$/);
+    /^Recommended 36 psi front, 46 psi rear \(from CAN\)\.$/);
+  assert.match(sp(T.tyresTitle({ ...now({}), tyres_slots_mapped: false, tyre_recommended_kpa: W(250), tyre_recommended_rear_kpa: W(320), tyre_recommended_source: 'can' })),
+    /flagged; a cold morning .* Which wheel each sensor sits on is not known yet, so each tyre is judged against the lower one\.$/);
 });
 
 test('the server’s word on low wins', () => {
@@ -47,6 +49,23 @@ test('the line says where the recommended pressure comes from', () => {
     'Recommended 42 psi (from the door placard for 20″ wheels).');
   assert.equal(line({ tyre_recommended_kpa: W(276), tyre_recommended_source: 'owner' }), 'Recommended 40 psi (typed).');
   assert.equal(line({}), 'No recommended pressure known.');
-  assert.equal(sp(T.recommendedLine(now({ tyres_slots_mapped: false }))), 'No recommended pressure known. Which wheel each sensor sits on is not known yet.');
+  assert.equal(sp(T.recommendedLine(now({ tyres_slots_mapped: false }))), 'No recommended pressure known.');
+  assert.equal(T.tyresTitle(now({ tyres_slots_mapped: false })), 'Which wheel each sensor sits on is not known yet.');
+  assert.equal(T.tyresTitle(now({})), '');
   assert.equal(T.recommendedLine({ tyres_kpa: [null, null, null, null], tyres_slots_mapped: false }), 'No recommended pressure known.');
+});
+
+test('a placard wheel size that is only a guess says so and where to set it', () => {
+  psi();
+  const P = { value: 290, at_ms: null, sources: [] };
+  const placard = (o) => now({ tyres_slots_mapped: false, tyre_recommended_kpa: P, tyre_recommended_rear_kpa: P, tyre_recommended_source: 'placard',
+    tyre_recommended_wheel_in: 21, ...o });
+  assert.equal(sp(T.recommendedLine(placard({}))), 'Recommended 42 psi (from the door placard for 21″ wheels).');
+  assert.deepEqual(T.wheelGuessLine(placard({ tyre_recommended_wheel_from: 'can', tyre_recommended_wheel_guess: true })),
+    { said: 'Wheel size taken from the factory tyre.', ask: 'Not 21″?', action: 'Set the wheel size' });
+  assert.equal(T.wheelGuessLine(placard({ tyre_recommended_wheel_from: 'vin', tyre_recommended_wheel_guess: true })).said, 'Wheel size guessed from the VIN.');
+  assert.equal(T.wheelGuessLine(placard({ tyre_recommended_wheel_from: 'owner', tyre_recommended_wheel_guess: false })), null);
+  assert.equal(T.wheelGuessLine(placard({})), null, 'an older server says nothing of a guess');
+  // a size the server sends with a pressure that is not the placard's is not shown
+  assert.equal(T.wheelGuessLine(now({ tyre_recommended_kpa: W(290), tyre_recommended_source: 'can', tyre_recommended_wheel_in: 21, tyre_recommended_wheel_guess: true })), null);
 });

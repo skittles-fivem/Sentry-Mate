@@ -6,13 +6,16 @@
 //   1. asks core/session.js where the page may be shown (set-up first, then sign-in, then the page);
 //   2. loads the car for car pages (GET /cars/{car}); an unknown or hidden car shows "not found";
 //   3. works out the period in the car's time zone (the URL's, else the tab's, else the page's default);
-//   4. imports pages/<id>.js (and links pages/<id>.css while the page is mounted, if it says css = true);
+//   4. imports pages/<id>.js (and links pages/<id>.css while the page is mounted, if it says css = true) with
+//      shared/build.js's loadPage: after a server update the tab loads the address in full instead, and a
+//      file that fails is tried once more that way before the page says page_failed;
 //   5. calls mount(ctx). The page draws into ctx.view and calls ctx.ready() after its first render with
 //      data, or ctx.fail(err) when it cannot load. See core/README.md for ctx.
 // Leaving a page cancels everything it started (ctx.api, ctx.on, ctx.every, ctx.events, ctx.onCleanup).
 
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
+import { loadPage, reloadPage } from '../shared/build.js';
 import { h, replace, ready as markReady, failed as markFailed, unready, setTitle as docTitle, on } from '../shared/dom.js';
 import { resolvePeriod, periodParams } from '../shared/time.js';
 import { pageInfo } from './pages.js';
@@ -66,6 +69,9 @@ function onState(s) {
   mount(s, { keepScroll: samePage });
 }
 
+/** One function that runs both (each may be missing), or null. */
+const both = (a, b) => (a || b ? () => { a?.(); b?.(); } : null);
+
 // keep: a live refresh builds the new page off screen first (see stageView), so the old page's own clean-up
 // (charts and maps it removes) waits until the new one takes its place; its requests and events stop at once
 function unmountCurrent(keep = false) {
@@ -89,6 +95,9 @@ let staged = null;   // { stage, commit, drop }
 // keepOld: a newer live refresh takes over, and the page still on screen is cleaned up when that one commits
 function dropStage(keepOld = false) { const f = staged?.drop(keepOld) || null; staged = null; return f; }
 function stageView(view, finishOld) {
+  // the old page's clean-up is let go of once it is handed on or run: the new page keeps this stage as long as it
+  // lives, and would keep the page before it, and that one the page before, each with everything it drew
+  const takeOld = () => { const f = finishOld; finishOld = null; return f; };
   const r = view.getBoundingClientRect();
   const stage = h('div', { class: view.className + ' view-stage', 'aria-hidden': 'true', inert: '' });
   Object.assign(stage.style, {
@@ -107,7 +116,7 @@ function stageView(view, finishOld) {
     const path = [];
     for (let e = document.activeElement; e && e !== view && view.contains(e); e = e.parentElement) path.unshift([...e.parentElement.children].indexOf(e));
     view.replaceChildren(...nodes);
-    finishOld?.();
+    takeOld()?.();
     if (path.length) {
       let e = view;
       for (const i of path) e = e?.children[i];
@@ -127,7 +136,7 @@ function stageView(view, finishOld) {
     mo.observe(stage, { subtree: true, childList: true, attributes: true, characterData: true });
     again();
   }
-  const drop = (keepOld) => { if (done) return null; end(); if (keepOld) return finishOld; finishOld?.(); return null; };
+  const drop = (keepOld) => { if (done) return null; end(); const f = takeOld(); if (keepOld) return f; f?.(); return null; };
   staged = { stage, commit, settle, drop };
   return staged;
 }
@@ -152,9 +161,9 @@ function pageCss(id) {
   let link = document.head.querySelector(`link[data-page-css="${id}"]`);
   if (link) return Promise.resolve(href);
   link = h('link', { rel: 'stylesheet', href, dataset: { pageCss: id } });
-  const done = new Promise((resolve) => {
+  const done = new Promise((resolve, reject) => {
     link.addEventListener('load', () => resolve(href), { once: true });
-    link.addEventListener('error', () => resolve(href), { once: true });
+    link.addEventListener('error', () => { link.remove(); reject(new Error(`${href} did not load`)); }, { once: true });
   });
   document.head.append(link);
   return done;
@@ -165,12 +174,12 @@ function dropCss(keep) {
 
 async function mount(s, { keepScroll = false, live = false } = {}) {
   const my = ++seq;
-  const older = dropStage(live);
-  const finishMounted = unmountCurrent(live);
-  const finishOld = older || finishMounted ? () => { older?.(); finishMounted?.(); } : null;
+  // (the clean-up of what was there is handed to the stage alone: this page's own functions must not hold it)
+  let finishOld = both(dropStage(live), unmountCurrent(live));
   if (!live) unready();
   const id = s.page;
   const st = live ? stageView(frame.view(), finishOld) : null;
+  finishOld = null;
   const view = st ? st.stage : frame.view();
   const shown = () => { if (st) st.commit(); };
   const info = pageInfo(id);
@@ -183,8 +192,14 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   document.documentElement.dataset.screen = BARE.has(id) ? 'bare' : 'app';
   view.setAttribute('aria-busy', 'true');
 
+  let shownCar = null; // the car once loaded: the trail of a page that fails before it is built names it
   const showError = (err, retry = () => mount(state.current(), { keepScroll: true })) => {
     if (!alive()) return;
+    // failed before the page was built: the trail and the title are this page's, never the one before
+    if (!rec.ctx && !live) {
+      frame.setCrumbs(frame.defaultCrumbs(s, info || null, shownCar));
+      if (info && id !== 'not-found') docTitle(info.title, shownCar?.name);
+    }
     replace(view, statePanel(errorState(err, { retry, home: id !== 'fleet' && !BARE.has(id) })));
     shown();
     frame.view().removeAttribute('aria-busy');
@@ -230,6 +245,7 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
       return;
     }
     if (!alive()) return;
+    shownCar = car;
     state.rememberCar(car.id, { sold: state.isSold(car) }); // the car opened: the one to show next time
     setFallbackZone(car.time_zone);
   } else if (info.period) {
@@ -252,12 +268,15 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   // the page module and its style sheet
   let mod;
   try {
-    mod = await import(`../pages/${id}.js`);
-    if (mod.css) await pageCss(id);
+    mod = await loadPage(async () => {
+      const m = await import(`../pages/${id}.js`);
+      if (m.css) await pageCss(id);
+      return m;
+    });
   } catch (err) {
     if (!alive()) return;
     console.error(err);
-    showError(new api.ApiError({ status: 0, code: 'page_failed', message: 'This page could not be loaded. Reload the browser tab.' }));
+    showError(err, () => reloadPage());
     return;
   }
   if (!alive()) return;

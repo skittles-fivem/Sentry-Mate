@@ -36,6 +36,7 @@ export const SETTINGS_KEYS = Object.freeze([
   ['server.move', 'settings-server', 'move', 'move code new server'],
   ['server.export', 'settings-server', 'export', 'backup file'],
   ['server.certificate', 'settings-server', 'certificate', 'https tls'],
+  ['server.full_rebuild', 'settings-server', 'full-rebuild', 'full rebuild decode logs again history every car'],
   ['import.file', 'import', 'file', 'teslamate history'],
 ]);
 

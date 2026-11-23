@@ -133,6 +133,18 @@ impl PlainCache {
         Some(e.plain.clone())
     }
 
+    /// Forgets every day kept of the files under `dir` (a car's folder swapped for another: nothing read from the
+    /// old one is given again, even a file whose stamp the new one happens to share).
+    pub(crate) fn forget_under(&self, dir: &Path) {
+        let mut m = self.lock();
+        let gone: Vec<PathBuf> = m.files.keys().filter(|p| p.starts_with(dir)).cloned().collect();
+        for p in gone {
+            if let Some(e) = m.files.remove(&p) {
+                m.bytes -= e.plain.1.len() as u64;
+            }
+        }
+    }
+
     pub(crate) fn put(&self, file: &Path, stamp: Stamp, plain: Plain) {
         let size = plain.1.len() as u64;
         let mut m = self.lock();

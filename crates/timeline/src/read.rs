@@ -31,19 +31,32 @@ pub fn read_log(
     profile: dbc::Profile,
     params: SampleParams,
 ) -> Result<LogRead, logfmt::Error> {
+    read_log_with(xz, sidecar, profile, params, None)
+}
+
+/// [`read_log`], the Screenmate's own GPS frames read with the car's layout when it has one
+/// ([`SampleBuilder::set_internal_gps`]).
+pub fn read_log_with(
+    xz: &[u8],
+    sidecar: &serde_json::Value,
+    profile: dbc::Profile,
+    params: SampleParams,
+    internal_gps: Option<model::gps::GpsLayout>,
+) -> Result<LogRead, logfmt::Error> {
     let mut decoder = dbc::Decoder::new(profile, sidecar);
     let mut builder = SampleBuilder::new(profile, params);
+    builder.set_internal_gps(internal_gps);
     let mut facts = FactsCollector::new(LogFacts::from_sidecar(sidecar));
-    let mut firmware = FirmwareCollector::new();
-    logfmt::read_log(xz, logfmt::Limits::default(), |l| {
-        let line = logfmt::Line::parse(l);
-        if let logfmt::Line::Frame(f) = &line
+    // the vehicle bus as the sidecar's bus map names it, as the decoder reads it
+    let mut firmware = FirmwareCollector::on_buses(crate::firmware::vehicle_buses(decoder.buses()));
+    logfmt::read_lines(xz, logfmt::Limits::default(), |line| {
+        if let logfmt::Line::Frame(f) = line
             && builder.pending() < MAX_LOG_SAMPLES
         {
             builder.feed(&mut decoder, f);
         }
-        facts.line(&line);
-        firmware.line(&line);
+        facts.line(line);
+        firmware.line(line);
     })?;
     let (samples, vin) = builder.finish();
     Ok(LogRead { samples, facts: facts.finish(), vin, firmware: firmware.finish() })

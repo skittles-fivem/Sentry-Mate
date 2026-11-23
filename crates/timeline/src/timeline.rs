@@ -22,7 +22,9 @@ use serde::{Deserialize, Serialize};
 /// 2: a fix is one input's latitude and longitude, and fixes that cannot be real (a placeholder, or a jump faster
 /// than [`crate::MAX_FIX_KMH`] from the fixes around it) are left out, so no drive starts or ends where the car
 /// never was.
-pub const RULES_VERSION: u32 = 2;
+/// 3: a charge's energy added and grid energy are measured over one span, or say they are not
+/// ([`model::Charge::energy_spans`]).
+pub const RULES_VERSION: u32 = 3;
 
 /// A drive's id: the car in the high 32 bits, its start (s since 1970) in the low ones. The same drive rebuilt keeps
 /// its id, and no two cars share one. (As a JSON number it is exact while car ids stay under 2^21; past that the API

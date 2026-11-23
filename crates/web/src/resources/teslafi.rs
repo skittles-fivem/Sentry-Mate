@@ -49,12 +49,23 @@ pub const SETTING: &str = "teslafi";
 #[serde(default)]
 pub struct TeslafiSettings {
     pub poll: Pace,
+    /// Supercharger invoices (`/integrations/invoices`): off until an admin turns them on.
+    pub invoices: bool,
     pub version: u64,
+}
+
+impl TeslafiSettings {
+    /// The pollers' cadence: the pace, and whether they read invoices.
+    pub fn cadence(&self) -> teslafi::Cadence {
+        let mut c = self.poll.cadence();
+        c.invoices = self.invoices;
+        c
+    }
 }
 
 impl Default for TeslafiSettings {
     fn default() -> TeslafiSettings {
-        TeslafiSettings { poll: Pace::Normal, version: 1 }
+        TeslafiSettings { poll: Pace::Normal, invoices: false, version: 1 }
     }
 }
 
@@ -67,7 +78,7 @@ pub fn load_settings(e: &Engine) -> TeslafiSettings {
 pub fn options(e: &Engine) -> teslafi::Options {
     let mut o = teslafi::Options::default();
     o.proxy = super::tesla::proxy(e);
-    o.cadence = load_settings(e).poll.cadence();
+    o.cadence = load_settings(e).cadence();
     o.default_time_zone = e.options().default_time_zone.clone();
     o
 }
@@ -402,6 +413,7 @@ async fn overview(State(app): State<AppState>, Admin(_): Admin) -> ApiResult<Jso
             "last_error": last_error(&accounts),
             "clients_built": s.clients_built(),
             "tls": status.iter().find_map(|s| s.tls),
+            "invoices": super::invoices::teslafi_block(&e, &s, settings.invoices),
             "version": settings.version,
         })))
     })
@@ -415,8 +427,9 @@ async fn change_settings(
     headers: HeaderMap,
     body: JsonBody,
 ) -> ApiResult<Json<Value>> {
-    body.only(&["version", "poll", "confirm_password", "code"])?;
+    body.only(&["version", "poll", "invoices", "confirm_password", "code"])?;
     let version = body.version()?;
+    let invoices = body.bool("invoices")?;
     let pace = match body.str("poll")? {
         None => None,
         Some(p) => Some(Pace::parse(p).ok_or_else(|| ApiError::invalid("poll", "Must be often, normal or gentle."))?),
@@ -435,21 +448,33 @@ async fn change_settings(
             if let Some(p) = pace {
                 new.poll = p;
             }
+            if let Some(i) = invoices {
+                new.invoices = i;
+            }
             if new != old {
                 new.version = old.version + 1;
                 let value = serde_json::to_value(&new).map_err(ApiError::server)?;
                 e.db()
                     .set_setting(SETTING, value)
                     .map_err(|err| ApiError::server(format!("teslafi settings: {err}")))?;
-                s.set_cadence(new.poll.cadence());
+                s.set_cadence(new.cadence());
             }
             Ok((old, new))
         })
         .await?;
-    if new != old {
+    if new.invoices != old.invoices {
+        let summary = if new.invoices {
+            "Turned the charge costs from TeslaFi on."
+        } else {
+            "Turned the charge costs from TeslaFi off."
+        };
+        v.audit(&app, "teslafi-invoices-changed", Some(&target("settings", None, "teslafi-invoices")), summary).await?;
+    }
+    if new.poll != old.poll {
         let summary = format!("Set how often TeslaFi is read to {}.", new.poll.word());
         v.audit(&app, "teslafi-poll-changed", Some(&target("settings", None, "teslafi")), &summary).await?;
-    } else {
+    }
+    if new == old {
         v.mark_audited();
     }
     overview(State(app), Admin(v)).await
@@ -718,4 +743,12 @@ async fn put_cars(
         v.mark_audited();
     }
     cars(State(app), Admin(v), Path(id)).await
+}
+
+/// The charge costs block as `/integrations/teslafi` gives it now (`None` without the TeslaFi input).
+pub(crate) fn invoices_now(app: &AppState) -> Option<Value> {
+    let s = svc(app).ok()?;
+    let e = app.service::<Engine>().ok()?;
+    let settings = load_settings(&e);
+    Some(super::invoices::teslafi_block(&e, &s, settings.invoices))
 }

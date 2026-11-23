@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from .helpers import ServerCase
+from .helpers import NOW, ServerCase
 
 
 class BigFleet(ServerCase):
@@ -54,3 +54,25 @@ class BigFleet(ServerCase):
         self.assertEqual(sum(s["by_state"].values()), 199_999)
         a = self.c.get("/api/v1/fleet/attention?limit=20")
         self.assertEqual(len(a["items"]), 20)
+
+
+class LongLogbook(ServerCase):
+    """--drives 3000: this year's logbook of c1 holds over 2,000 drives, and its pages come back quickly."""
+
+    server_args = {"drives": 3000}
+
+    def test_pages_of_a_long_logbook(self):
+        year = NOW - 320 * 86_400_000
+        base = f"/api/v1/cars/c1/logbook?from_ms={year}"
+        t = time.perf_counter()
+        first = self.c.get(base + "&limit=40")
+        cold = time.perf_counter() - t
+        self.assertGreater(first["total"], 2000)
+        self.assertEqual(len(first["items"]), 40)
+        worst = 0.0
+        for off in (500, 1000, 1500, first["total"] - 40):
+            t = time.perf_counter()
+            d = self.c.get(f"{base}&limit=40&offset={off}")
+            worst = max(worst, time.perf_counter() - t)
+            self.assertEqual(d["items"][0]["seq"], off + 1)
+        self.assertLess(worst, 0.2, f"slowest kept page {worst * 1000:.0f} ms (first {cold * 1000:.0f} ms)")

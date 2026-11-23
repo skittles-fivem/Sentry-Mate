@@ -131,7 +131,7 @@ export async function mount(ctx) {
   async function paintTop() {
     await batReady;
     if (!ctx.alive()) return;
-    replace(chemEl, bat.chemistry?.value ? `${CHEM[bat.chemistry.value] || bat.chemistry.value}` : 'chemistry not known');
+    replace(chemEl, bat.chemistry?.value ? `${CHEM[bat.chemistry.value] || bat.chemistry.value}${bat.chemistry?.confidence === 'low' ? ' (low confidence)' : ''}` : 'chemistry not known');
     replace(readAt, `pack read ${formatDateTime(bat.as_of_ms, tz, { now: now(), weekday: false })}.  `);
     paintNow();
     ctx.events('now', (ev) => {
@@ -174,13 +174,14 @@ export async function mount(ctx) {
     if (!ctx.alive()) return;
     /* ---------- lifetime totals */
     const t = totals || {};
-    const mileage = t.odometer_last_km != null && t.odometer_first_km != null ? t.odometer_last_km - t.odometer_first_km : null;
+    // from the valid odometer readings only, never below 0 (the server picks them)
+    const mileage = t.driven_since_km ?? (t.odometer_last_km != null && t.odometer_first_km != null ? Math.max(0, t.odometer_last_km - t.odometer_first_km) : null);
     const inKwh = (life.ac_kwh || 0) + (life.dc_kwh || 0) + (life.regen_kwh || 0);
     const share = (k) => (inKwh ? ((k || 0) / inKwh) * 100 : 0);
     const lifeBlock = h('div', null,
       kv([
         ['odometer', num(t.odometer_last_km, 'odometer'), { cover: 'bh.drive.odometer' }],
-        ['charges', [n0(t.charges), none(`  ac ${n0(t.ac?.charges)}, dc ${n0(t.dc?.charges)}  `), link(ctx.link('charges', { period: { preset: 'all' } }), 'charges', { cover: 'bh.charging.link_stats' })], { cover: 'bh.charging.count' }],
+        ['charges', [n0(t.charges), none(`  ac ${n0(t.ac?.charges)}, dc ${n0(t.dc?.charges)}${t.unknown_kind?.charges ? `, ${n0(t.unknown_kind.charges)} of no known kind` : ''}  `), link(ctx.link('charges', { period: { preset: 'all' } }), 'charges', { cover: 'bh.charging.link_stats' })], { cover: 'bh.charging.count' }],
         ['driven since logging', num(mileage, 'distance'), { cover: 'bh.drive.mileage' }],
         ['added to the pack', num(t.energy_added_kwh, 'energy'), { cover: 'bh.charging.energy_added' }],
         ['logged in drives', [link(ctx.link('drives', { period: { preset: 'all' } }), format(t.distance_km, 'distance')), none(`  ${n0(t.drives)} drives  `), link(ctx.link('statistics'), 'statistics', { cover: 'bh.drive.link_stats' })], { cover: 'bh.drive.logged' }],
@@ -342,7 +343,7 @@ export async function mount(ctx) {
     const rows = [...items].reverse().map((it) => ({ ...it, health: newKwh && it.usable_kwh != null ? (it.usable_kwh / newKwh) * 100 : null,
       full_km: factor && it.usable_kwh != null ? (it.usable_kwh * 1000) / factor : null }));
     const tb = table(ctx, {
-      title: 'by month', rows, csv: false, sort: { key: 'month', dir: 'desc' }, limit: 36,
+      title: 'by month', rows, csv: false, sort: { key: 'month', dir: 'desc' }, limit: 36, box: 'Battery by month',
       note: `the monthly median of the pack’s readings. full range is usable capacity over the ${rangeWord} energy factor now${factor ? ` (${format(factor, 'efficiency', { digits: 1 })})` : ''}.`,
       columns: [
         { key: 'month', label: 'month', sort: true, ph: 'main', value: (r) => r.t_ms, render: (r) => dateFormat(tz, { month: 'short', year: 'numeric' }).format(r.t_ms) },
@@ -527,7 +528,7 @@ export async function mount(ctx) {
         h('span', { class: 'tbar' }, h('span', { class: 'muted' }, 'z'.repeat(na)), h('span', { class: 'tone--accent' }, '#'.repeat(n - na - nu)), h('span', { class: 'tone--bad' }, '?'.repeat(nu))), ' ', pct(a * 100));
     };
     const t = table(ctx, {
-      title: 'parked drain', path: `${base}/parked`, params: params(), csvName: 'parked drain', cover: ['vd.table', 'shots.vampire-drain'],
+      title: 'parked drain', path: `${base}/parked`, params: params(), csvName: 'parked drain', cover: ['vd.table', 'shots.vampire-drain'], box: 'Parked drain', autoMore: true,
       note: 'each stay parked off a charger at one spot. energy is measured at the pack, so small losses show that whole % steps hide. standby: z asleep, # awake, ? unknown (never counted as asleep).',
       columns: [
         { key: 'start', label: 'parked', ph: 'main', cover: ['vd.col.start', 'vd.link.start_details'], render: (r) => [h('a', { class: 'lnk-plain', href: tripHref(r), title: 'this span as a trip' }, formatDateTime(r.start_ms, tz, { now: now(), weekday: false })), none(` ${r.place?.name || r.address || ''}`)] },

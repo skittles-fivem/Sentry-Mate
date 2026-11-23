@@ -6,8 +6,9 @@
 // (PUT/DELETE .../cost, admin) that survives rebuilds.
 
 import * as state from '../shared/state.js';
-import { h, replace, cssVar, cover } from '../shared/dom.js';
+import { h, replace, cssVar, cover, steady } from '../shared/dom.js';
 import { format, convert, unitLabel, getUnits, formatMoney } from '../shared/units.js';
+import * as TI from '../shared/tiers.js';
 import { formatTime, formatDate, formatDuration, zoneName, dayRange, dayKey, DAY } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
@@ -22,6 +23,7 @@ import { createMap, carMarker, mapFallback } from '../core/map.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, colors, areaFill, hexA, chartFont } from '../core/chart.js';
 import { rpx } from '../core/display.js';
 import { srcMark, isImported, apiOnly, hasKind } from '../core/source.js';
+import { costFromWords, feeLabel, invoiceSourceLabel, chargeInvoicePdfUrl } from '../shared/invoices.js';
 
 export const id = 'charge';
 export const css = true;
@@ -34,7 +36,7 @@ const landedUrl = location.href;
 const CURRENCIES = ['USD', 'CAD', 'EUR', 'GBP', 'NOK', 'SEK', 'DKK', 'CHF', 'AUD', 'NZD', 'JPY', 'CNY'];
 const COST_SOURCE = {
   tariff: 'from the place price', manual: 'entered by hand', free_supercharging: 'free Supercharging on this car',
-  teslamate: 'imported from TeslaMate',
+  teslamate: 'imported from TeslaMate', tesla_invoice: costFromWords('tesla_invoice'), teslafi: costFromWords('teslafi'),
 };
 const LIMIT_WORDS = {
   station: "the charging station's pilot signal", cable: 'the cable', car: "the car's own maximum", setting: 'the current set on the screen',
@@ -145,7 +147,7 @@ export async function mount(ctx) {
   const eff = metric('Efficiency', c.efficiency_pct, 'percent', {
     cover: 'cd.stat.efficiency', digits: 1,
     explain: c.efficiency_pct != null ? `${format(c.losses_kwh, 'energy')} lost on the way${est ? ' (estimated)' : ''}${c.efficiency_pct > 100 ? '; above 100 % means a bad reading' : ''}` : null,
-    why: dc ? "Fast charge: the car cannot see the charger's own losses" : why,
+    why: dc ? "Fast charge: the car cannot see the charger's own losses" : c.efficiency_note || why,
   });
   const avgTemp = metric('Outside', c.outside_avg_c, 'temperature', { cover: 'cd.stat.avg_temp', explain: c.battery_avg_c != null ? `average; battery ${format(c.battery_avg_c, 'temperature')}` : 'average of the session', why });
   const socFrom = clamp(c.start_soc_pct ?? 0, 0, 100), socTo = clamp(c.end_soc_pct ?? 0, 0, 100);
@@ -208,7 +210,7 @@ export async function mount(ctx) {
 
   const chargePanel = h('section', { class: 'panel charts-panel', 'aria-label': 'Through the charge', cover: 'cd.chart.timeline' },
     h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('signals'), 'Through the charge'),
-      h('span', { class: 'row' }, timeEl, h('span', { class: 'faint zoom-hint' }, 'Drag across a chart to zoom; double-click for the whole session'), resetBtn, csvCurve('curve'))),
+      h('span', { class: 'row' }, steady(timeEl, t.map((v) => formatTime(v, tz, { seconds: true }))), h('span', { class: 'faint zoom-hint' }, 'Drag across a chart to zoom; double-click for the whole session'), resetBtn, csvCurve('curve'))),
     selBox, gapNote, chargeHost, h('p', { class: 'note' }, stepNote));
   const limitSeen = [...new Set(col('limit_source').filter((v) => v != null))];
   const supplyPanel = h('section', { class: 'panel charts-panel', 'aria-label': 'The supply' },
@@ -248,6 +250,7 @@ export async function mount(ctx) {
       isManual ? manualWhy : c.price_per_kwh?.value != null ? ` · ${format(c.price_per_kwh.value, 'price_energy', { currency: cost.currency })} over the ${c.price_per_kwh.basis === 'grid' ? 'energy drawn' : 'energy added to the pack'}` : '']
       : price ? 'The place has a price, but it gave no figure for this charge.' : c.place ? `${c.place.name} has no price yet: add one on Places, or enter the cost below.` : 'Not at a saved place with a price: enter the cost below, or save the spot as a place with a price.'),
     cost?.source === 'manual' ? tag('Entered by hand', 'warm') : null);
+  const invoices = invoiceFacts(c);
   const parts = (bd.parts || []).map((p) => ({ ...p }));
   // an entered cost shows the rate as it was entered, with what it was multiplied by
   if (isManual && parts.length === 1) {
@@ -258,10 +261,14 @@ export async function mount(ctx) {
   }
   if (bd.session_fee) parts.push({ rate: 'Session fee', per_kwh: null, per_minute: null, kwh: null, minutes: null, cost: bd.session_fee });
   const cur = cost?.currency || price?.currency || 'USD';
+  // tiered prices: each step with its range of the cycle's kWh, the split in one line, and the cycle
+  const stepName = (p) => (p.from_kwh != null ? `${p.rate}: ${TI.stepLabel(p.from_kwh, p.to_kwh)}` : p.rate);
+  const steps = TI.stepParts(bd);
+  const cycleNote = bd.cycle ? ` Tiered price: ${TI.splitText(steps, cur)}. This billing cycle (from ${formatDate(bd.cycle.start_ms, place?.time_zone || tz, { weekday: false })}) had ${format(bd.cycle.before_kwh, 'energy')} before this charge${price?.tiers?.base_kwh ? `, household use of ${format(price.tiers.base_kwh, 'energy')} included` : ''}; a time-of-use rate still sets the price of its hours.` : '';
   const breakdown = dataTable(ctx, {
     title: 'How the cost was made', icon: 'stats', rows: parts, cls: 'cost-table',
     columns: [
-      { key: 'rate', label: 'Rate', render: (p) => p.rate, csv: (p) => p.rate },
+      { key: 'rate', label: 'Rate', render: (p) => stepName(p), csv: (p) => stepName(p) },
       { key: 'per_kwh', label: 'Per kWh', num: true, render: (p) => (p.per_kwh != null ? rateText(p.per_kwh, 'price_energy', cur) : '—'), csv: (p) => p.per_kwh },
       { key: 'per_minute', label: 'Per minute', num: true, render: (p) => (p.per_minute != null ? rateText(p.per_minute, 'price_time', cur) : '—'), csv: (p) => p.per_minute },
       { key: 'kwh', label: 'Energy', num: true, render: (p) => format(p.kwh, 'energy'), csv: (p) => p.kwh },
@@ -270,15 +277,16 @@ export async function mount(ctx) {
     ],
     csv: { filename: csvFilename(car.name, 'charge', day, 'cost'), columns: [{ label: 'Rate', value: (p) => p.rate }, { label: `Per kWh (${cur})`, value: (p) => p.per_kwh }, { label: `Per minute (${cur})`, value: (p) => p.per_minute }, { label: 'Energy (kWh)', value: (p) => p.kwh }, { label: 'Minutes', value: (p) => p.minutes }, { label: `Cost (${cur})`, value: (p) => p.cost }] },
     empty: () => emptyState({ title: 'No parts', text: cost?.source === 'free_supercharging' ? 'Free Supercharging: nothing to pay.' : cost ? 'This cost is one amount with no rates.' : 'There is no cost to break down yet.' }),
-    note: cost?.source === 'tariff' ? `Each rate of the place price for the time it applied, in the car's time zone (${zone})${bd.gap_ms ? `; ${formatDuration(bd.gap_ms)} without data is priced at the rate around it` : ''}.` : null,
+    note: cost?.source === 'tesla_invoice' || cost?.source === 'teslafi' ? `The fees on the ${invoiceSourceLabel(cost.source === 'teslafi' ? 'teslafi' : 'tesla')}, as billed.`
+      : cost?.source === 'tariff' ? `Each rate of the place price for the time it applied, in the car's time zone (${zone})${bd.gap_ms ? `; ${formatDuration(bd.gap_ms)} without data is priced at the rate around it` : ''}.${cycleNote}` : null,
   });
 
   const facts = kv([
     ['When', h('span', { cover: 'web.charge-cost.dates' }, `${formatDate(t0, tz, { weekday: false })} ${formatTime(t0, tz)} – ${live ? 'now' : formatTime(t1, tz)} ${zone}`, otherZone ? h('span', { class: 'faint block' }, otherZone) : null)],
     ['Charging time', h('span', { cover: 'web.charge-cost.duration' }, formatDuration(c.charging_ms), h('span', { class: 'faint block' }, 'pauses under 3 min count as one charge'))],
     ['Energy', h('span', { cover: 'web.charge-cost.energy' }, `${format(c.energy_added_kwh, 'energy')} into the pack`,
-      h('span', { class: 'faint block' }, ac && gridKwh != null ? `${format(gridKwh, 'energy')} drawn, ${format(c.losses_kwh, 'energy')} lost` : dc ? `${format(c.dc_inlet_kwh, 'energy')} delivered; grid energy unknown` : 'energy drawn unknown'))],
-    ['Place', price ? `${placeLabel(c)}: ${[price.per_kwh != null ? format(price.per_kwh, 'price_energy', { currency: price.currency }) : null, price.per_minute != null ? format(price.per_minute, 'price_time', { currency: price.currency }) : null, (price.rates || []).length ? `${price.rates.length} time rates` : null, price.session_fee ? `${formatMoney(price.session_fee, price.currency)} per session` : null].filter(Boolean).join(', ') || 'priced'}` : `${placeLabel(c)}: no price`],
+      h('span', { class: 'faint block' }, ac && gridKwh != null ? `${format(gridKwh, 'energy')} drawn${c.losses_kwh != null ? `, ${format(c.losses_kwh, 'energy')} lost` : ''}` : dc ? `${format(c.dc_inlet_kwh, 'energy')} delivered; grid energy unknown` : 'energy drawn unknown'))],
+    ['Place', price ? `${placeLabel(c)}: ${[price.per_kwh != null ? format(price.per_kwh, 'price_energy', { currency: price.currency }) : null, price.tiers?.steps?.length ? TI.tiersSummary(price.tiers, price.currency) : null, price.per_minute != null ? format(price.per_minute, 'price_time', { currency: price.currency }) : null, (price.rates || []).length ? `${price.rates.length} time rates` : null, price.session_fee ? `${formatMoney(price.session_fee, price.currency)} per session` : null].filter(Boolean).join(', ') || 'priced'}` : `${placeLabel(c)}: no price`],
   ]);
 
   const editor = costEditor(ctx, { c, base, manual, cur, gridKwh, dc });
@@ -305,7 +313,7 @@ export async function mount(ctx) {
     h('section', { class: 'panel panel-pad cost-panel', 'aria-label': 'Cost', id: 'cost' },
       h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('book'), 'Cost')),
       h('div', { class: 'cost-grid' },
-        h('div', { class: 'cost-left' }, costHead, facts, breakdown.el),
+        h('div', { class: 'cost-left' }, costHead, invoices, facts, breakdown.el),
         editor)),
     h('div', { hidden: true, cover: 'web.charge-cost.not-found' }, emptyState({ title: 'No such charge', text: 'A charge number that does not exist, or one of a car your account may not see, gives this same answer.' }))));
   await breakdown.ready;
@@ -537,6 +545,30 @@ export async function mount(ctx) {
     };
   };
   mountPlot(curveHost, curveMake, data, ctx);
+}
+
+/* ---------- Supercharger invoices matched to the charge: the source, the site, the fees and the PDF */
+function feeText(f, cur) {
+  const usage = f.unit === 'kwh' ? format(f.usage, 'energy') : f.unit === 'min' ? formatDuration(f.usage * 60000) : null;
+  const rate = f.rate == null ? null : rateText(f.rate, f.unit === 'min' ? 'price_time' : 'price_energy', cur);
+  return `${feeLabel(f.kind)} ${formatMoney(f.amount, cur)}${usage && rate ? ` (${usage} × ${rate})` : ''}`;
+}
+function invoiceFacts(c) {
+  const list = Array.isArray(c.invoices) ? c.invoices : [];
+  const pdfs = list.filter((i) => i.pdf);
+  // always on the page (hidden when the charge has no invoice), so the layout and the coverage marks stay put
+  return h('div', { class: 'cost-invoice', hidden: !list.length, cover: 'inv.charge.source' },
+    list.map((i) => h('p', { class: 'cost-invoice-line' },
+      h('span', { class: 'cost-invoice-what' }, i.applied
+        ? `${invoiceSourceLabel(i.source)} · ${i.site}`
+        : `${invoiceSourceLabel(i.source)}: ${formatMoney(i.total, i.currency)} (an entered cost is used instead) · ${i.site}`),
+      h('span', { class: 'faint block' }, (i.fees || []).map((f) => feeText(f, i.currency)).join(' · ') || 'No fees listed'))),
+    pdfs.length ? h('p', { class: 'cost-invoice-pdf' }, pdfs.map((i, n) => h('a', {
+      class: 'btn btn--sm', href: chargeInvoicePdfUrl(c.car, c.id, i.id), download: i.invoice_name || '',
+      cover: n === 0 ? 'inv.charge.pdf' : null,
+    }, icon('download', 'ico--sm'), pdfs.length > 1 ? `Invoice (PDF) ${n + 1}` : 'Invoice (PDF)')))
+      : h('span', { hidden: true, cover: 'inv.charge.pdf' }, list.length ? 'The invoice (PDF) is not downloaded yet.' : ''),
+    list.length && !pdfs.length && list.some((i) => i.source === 'tesla') ? h('p', { class: 'note' }, 'The invoice (PDF) is not downloaded yet.') : null);
 }
 
 /* ---------- the cost editor: a total, a price per kWh or per minute, the currency and the energy basis */

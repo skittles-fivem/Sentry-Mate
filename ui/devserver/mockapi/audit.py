@@ -91,6 +91,11 @@ def seed(ds, now):
         (396 * DAY - 10 * MIN, "admin", "import-uploaded", "import:im1", None, "Uploaded every file of teslamate-backup-atlas.sql.xz; checking it."),
         (396 * DAY - 20 * MIN, "admin", "import-cars", "import:im1", None, "Matched the imported cars: Atlas to Atlas, Old Roadster left out."),
         (396 * DAY - 30 * MIN, "admin", "import-started", "import:im1", None, "Started importing teslamate-backup-atlas.sql.xz."),
+        (395 * DAY + HOUR, S, "import-rows-moved", None, "c2",
+         "Moved 1840 rows (11 drives, 3 charges), with the 1 cost and purpose entered on them, from Comet to Maple: "
+         "the import TeslaFi-2025.zip matched them to the wrong car."),
+        (395 * DAY + 50 * MIN, "admin", "import-rows-ignored", "import-hold:h0", None,
+         "Left aside 40 rows (1 drive) that wait for a car (kept)."),
         (395 * DAY, "admin", "import-discarded", "import:im0", None, "Discarded the import teslafi-export.csv (failed). History already imported stays."),
         (300 * DAY, "admin", "account-created", "account:a7", None, "Made the account sam (watch, sees Maple)."),
         (240 * DAY, "admin", "account-created", "account:a8", None, "Made the account jordan (admin, sees every car)."),
@@ -135,10 +140,13 @@ def seed(ds, now):
         (30 * DAY, "admin", "car-changed", "car:c2", "c2", "Changed Maple's time zone to America/Chicago."),
         (30 * DAY - HOUR, "admin", "car-settings-changed", "car:c3", "c3", "Changed Atlas's battery size when new to 87 kWh."),
         (29 * DAY, "admin", "car-rebuild", "car:c1", "c1", "Rebuilt drives, charges, states and visits of Comet from the stored logs (30 days)."),
+        (28 * DAY, "admin", "car-full-rebuild", "car:c1", "c1", "Started a full rebuild of Comet: everything worked out made again from the stored data, beside the history in use."),
+        (27 * DAY, "admin", "car-gps-layout", "car:c1", "c1", "Set how Comet's Screenmate GPS frames are read (lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)); its history is rebuilt."),
         (29 * DAY - HOUR, "admin", "car-overlap", "car:c3", "c3", "Atlas shows live (SMO) history from Mar 2 to Mar 9."),
         (28 * DAY, "admin", "key-assigned", "key:c1:cbk_5b2e9f13", "c1", "Moved the CAN Bridge key cbk_5b2e9f13 to Comet."),
         (28 * DAY - MIN, "admin", "key-unassigned", "key:c2:cbk_5b2e9f13", "c2", "Moved the CAN Bridge key cbk_5b2e9f13 from Maple to Comet."),
         (28 * DAY - 2 * MIN, "admin", "key-preferred", "key:c1:cbk_8d41c0a2", "c1", "Made the CAN Bridge key cbk_8d41c0a2 Comet's preferred one."),
+        (28 * DAY - 3 * MIN, "admin", "can-key-renamed", "key:c1:cbk_5b2e9f13", "c1", "Named the CAN Bridge key cbk_5b2e9f13 \u201cPi logger\u201d."),
         (27 * DAY, "admin", "token-created", "token:t40", None, "Made the upload token t40 for a new car."),
         (27 * DAY - HOUR, "admin", "token-revoked", "token:t40", None, "Revoked the upload token t40 of a new car."),
         (26 * DAY, "alex", "place-created", "place:p20", None, "Added the place Corner Bakery (12 drives and 0 charges now carry its name)."),
@@ -206,5 +214,12 @@ def seed(ds, now):
         (3 * HOUR, "admin", "release-checked", "server:release", None, "Checked GitHub for a newer build."),
         (2 * HOUR, "admin", "sign-in", "session:s7c04", None, "Signed in."),
     ]
+    # Supercharger invoices: only once the code list has them (the list is written from the real server's table)
+    e += [x for x in [
+        (61 * DAY, "jordan", "tesla-invoices-changed", "settings:tesla-invoices", None, "Turned Tesla Supercharger invoices on."),
+        (49 * DAY - HOUR, "admin", "teslafi-invoices-changed", "settings:teslafi-invoices", None, "Turned TeslaFi Supercharger invoices on."),
+        (48 * DAY, "admin", "teslafi-invoices-changed", "settings:teslafi-invoices", None, "Turned TeslaFi Supercharger invoices off."),
+        (11 * DAY, "admin", "invoices-downloaded", None, None, "Downloaded 41 Supercharger invoices as one file."),
+    ] if x[2] in GROUP_OF]
     return [(now - ago, who, action, target, car, summary, _ADDR.get(who) if who else None)
             for ago, who, action, target, car, summary in e]

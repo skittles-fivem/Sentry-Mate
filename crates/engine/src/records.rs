@@ -146,6 +146,9 @@ pub struct CarMeta {
     pub tmlocal_last_ms: Option<u64>,
     #[serde(default)]
     pub tmlocal_received_ms: Option<u64>,
+    /// The decoding the history was made with ([`crate::full::derived_version`]); none: made before it was kept.
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 impl CarMeta {
@@ -245,6 +248,9 @@ pub struct CostEntry {
     pub session_fee: Option<f64>,
     pub gap_ms: u64,
     pub at_ms: u64,
+    /// With tiered prices: the billing cycle the charge was priced in.
+    #[serde(default)]
+    pub cycle: Option<TierCycle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -253,6 +259,20 @@ pub struct CostPart {
     pub per_kwh: f64,
     pub kwh: f64,
     pub cost: f64,
+    /// A step of tiered prices: its range of the cycle's kWh (`to_kwh` `None`: no end).
+    #[serde(default)]
+    pub from_kwh: Option<f64>,
+    #[serde(default)]
+    pub to_kwh: Option<f64>,
+}
+
+/// The billing cycle of a charge priced by steps: `[start_ms, end_ms)`, and the cycle's kWh before it (the household's
+/// use plus the earlier charges at the place).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TierCycle {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub before_kwh: f64,
 }
 
 pub(crate) fn get<T: DeserializeOwned>(db: &Db, ns: &str, key: &str) -> Result<Option<T>> {
@@ -380,6 +400,16 @@ pub(crate) fn put_rebuild_mark(db: &Db, car: CarId, m: Option<&RebuildMark>) -> 
 
 pub(crate) fn waiting_keys(db: &Db) -> Result<BTreeMap<String, WaitingKey>> {
     Ok(get(db, NS, "keys/waiting")?.unwrap_or_default())
+}
+
+/// The names admins gave CAN Bridge keys (key → name). Kept apart from the cars, so a key keeps its name when it
+/// moves to another car or waits for one, and through every rebuild.
+pub(crate) fn key_names(db: &Db) -> Result<BTreeMap<String, String>> {
+    Ok(get(db, NS, "keys/names")?.unwrap_or_default())
+}
+
+pub(crate) fn put_key_names(db: &Db, m: &BTreeMap<String, String>) -> Result<()> {
+    put(db, NS, "keys/names", m)
 }
 
 /// Upload tokens made on a car's page (token id → car): their key goes to that car.

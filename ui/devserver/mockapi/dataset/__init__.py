@@ -94,6 +94,8 @@ class Dataset:
             spec.now_day_index = cfg.now_ms // DAY
             spec.live_drive = None
             spec.live_charge = None
+            # --drives: about that many drives for c1 (extra errands; the usual history has about 1150)
+            spec.errands_per_day = (max(0, getattr(cfg, "drives", 0) - 1150) / 2 / 380) if spec.id == "c1" else 0
             sim = Sim(spec, cfg.seed, cfg.now_ms, self.plan_end).run()
             overlaps = []
             if sim.can_from is not None and sim.tm_until is not None:

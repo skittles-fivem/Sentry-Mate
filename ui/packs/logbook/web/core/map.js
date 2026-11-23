@@ -4,7 +4,7 @@
 // settings (GET /api/v1/maps/config, read by shared/maptiles.js): the offline map file Sentry Mate serves
 // (raster, or a Protomaps vector file in a plain style), else the online tile server the owner turned on,
 // else no tiles at all: the paper background with the routes and pins on it, under a "No map tiles yet"
-// note (for an admin, a one-click switch to the satellite map). Tiles that fail show their cause. Nothing else is
+// note (for an admin, a one-click switch to the online map). Tiles that fail show their cause. Nothing else is
 // ever fetched from outside. MapLibre is loaded on first use (vendor/maplibre-gl), with its worker from the
 // same folder. In the dark theme raster tiles are dimmed (not inverted) unless the person chose original
 // colours; the light theme shows the tile server's own colours.
@@ -22,7 +22,7 @@ import { h, cssVar, styleSheet } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import { display } from './display.js';
 import { isDark, onTheme, currentPrefs, onPrefs } from './prefs.js';
-import { tileChoice, rasterPaint, mapColors, tileSources, tileLayers, repaintTiles, swapTiles, vectorGround, noTilesNote, watchTileErrors, onImagery, mapStyleSwitch, IMAGERY_HALO } from '../shared/maptiles.js';
+import { tileChoice, rasterPaint, mapColors, tileSources, tileLayers, repaintTiles, swapTiles, sharpZoom, vectorGround, noTilesNote, watchTileErrors, onImagery, mapStyleSwitch, IMAGERY_HALO } from '../shared/maptiles.js';
 
 let lib = null;
 /** Load MapLibre once (module, worker and style sheet, all relative to this file); resolves once the style sheet applies. */
@@ -95,6 +95,9 @@ export async function makeMap(ctx, el, { center = null, zoom = 13, bounds = null
   el.classList.toggle('is-imagery', onImagery(src));
   const pad = () => Math.round(padding * display.scale);
   let tiles = tilePx();
+  // never opens deeper than the tiles are sharp (the satellite photos end sooner than the map)
+  zoom = Math.min(zoom, sharpZoom(src, tiles));
+  maxZoom = Math.min(maxZoom, sharpZoom(src, tiles));
   const paper = () => (src?.kind === 'vector' ? vectorGround(isDark()) : cssVar('--map-paper'));
   const style = () => ({
     version: 8,

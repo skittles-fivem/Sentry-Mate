@@ -549,3 +549,118 @@ fn impossible_odometer_readings_are_dropped_in_the_files_units() {
     assert_eq!(km, [Some(25000.0), None, Some(25001.0), None, Some(25001.0)]);
     assert_eq!(r.skipped_values.values().sum::<u64>(), 2);
 }
+
+#[test]
+fn a_charge_that_resumes_counts_only_what_it_added() {
+    // plugged in once: 30 min at 11 kW, a 10 min pause (charge_energy_added holds its 5.5 kWh, as the car keeps it
+    // while it stays plugged in), then 60 min more. Two charges: 5.5 kWh and 11 kWh, not 5.5 and 16.5
+    let mut g = Gen::new(VIN1);
+    g.soc = 40.0;
+    let at = |m: i64| local("2023-03-01 09:00:00") + chrono::Duration::minutes(m);
+    g.poll(at(-2), Doing::Parked);
+    for m in 0..30 {
+        g.poll(at(m), Doing::Charge(11.0, false));
+    }
+    for m in 30..40 {
+        g.poll(at(m), Doing::ChargeDone);
+    }
+    for m in 40..100 {
+        g.poll(at(m), Doing::Charge(11.0, false));
+    }
+    g.poll(at(101), Doing::ChargeDone);
+    let mut s = Store::new(&[(VIN1, 3)]);
+    run(&mut s, g.take_csv().as_bytes(), &Options::default());
+    let charges = s.charges_of(3);
+    assert_eq!(charges.len(), 2, "{charges:#?}");
+    let (a, b) = (charges[0], charges[1]);
+    assert!((a.energy_added_kwh.unwrap() - 5.5).abs() < 0.01, "{:?}", a.energy_added_kwh);
+    // the counter rose from 5.5 to 16.5 over the second charge's polls (the first of them already 11 kW in)
+    assert!((b.energy_added_kwh.unwrap() - 11.0).abs() < 0.01, "{:?}", b.energy_added_kwh);
+    // so the pack's size from it is the made-up 75 kWh, and the energy added never tops the grid's over the charge
+    let usable = b.energy_added_kwh.unwrap() / (b.end_soc.unwrap() - b.start_soc.unwrap()) * 100.0;
+    assert!((60.0..90.0).contains(&usable), "{usable} kWh from {b:?}");
+    assert!(b.energy_added_kwh.unwrap() <= b.energy_used_kwh.unwrap() + 0.2, "{b:?}");
+}
+
+/// A file's rows with the VIN, vehicle id and name of the rows `pick` chooses replaced (`None`: left blank).
+fn retag(csv: &str, pick: impl Fn(&str) -> bool, vin: &str, id: impl Fn(&str) -> String, name: &str) -> String {
+    csv.lines()
+        .enumerate()
+        .map(|(i, l)| {
+            if i == 0 || !pick(l) {
+                return l.to_string();
+            }
+            let mut f: Vec<String> = l.split(',').map(String::from).collect();
+            // vin, display_name, vehicle_id (tf::HEADER)
+            let (v, n, k) = (33, 34, 35);
+            f[v] = vin.to_string();
+            f[n] = if name.is_empty() { String::new() } else { format!("\"{name}\"") };
+            f[k] = id(l);
+            f.join(",")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn day_of_line(l: &str) -> String {
+    l.split(',').nth(1).unwrap_or_default()[8..10].to_string()
+}
+
+#[test]
+fn rows_without_a_vin_under_a_new_id_each_day_go_with_the_car_they_carry_on_from() {
+    let mut g = Gen::new(VIN1);
+    for d in 1..=3 {
+        g.day(NaiveDate::from_ymd_opt(2023, 5, d).unwrap());
+    }
+    // asleep rows lose the VIN and name and get a made-up id of the day
+    let csv = retag(&g.take_csv(), |l| l.contains(",asleep,"), "", |l| format!("88{}", day_of_line(l)), "");
+    let mut s = Store::new(&[(VIN1, 1)]);
+    let r = run(&mut s, csv.as_bytes(), &Options::default());
+    let orphans: Vec<_> = r.groups.iter().filter(|g| !g.vin).collect();
+    assert_eq!(orphans.len(), 3, "{:?}", r.groups);
+    let lead = r.groups.iter().find(|g| g.vin).unwrap().tm_car;
+    assert!(orphans.iter().all(|g| g.joins == Some(lead) && !g.needs_match), "{orphans:?}");
+    // the run with the check's plan: every row in the one car
+    let mut s = Store::new(&[(VIN1, 1)]);
+    s.plan = r.groups.iter().map(|g| (g.tm_car, Some(1))).collect();
+    let r2 = run(&mut s, csv.as_bytes(), &Options::default());
+    assert_eq!((r2.cars, r2.rows_used, r2.rows_read), (1, r.rows_read, r.rows_read));
+    assert_eq!(s.drives_of(1).len(), 6);
+    assert_eq!(s.reports.len(), 1, "one car, one report");
+}
+
+#[test]
+fn rows_without_a_vin_whose_odometer_jumps_need_a_car() {
+    // an older car (made-up: 90,000 mi) in January without its VIN, a new id each day; the car with a VIN from
+    // February at 12,345 mi
+    let mut old = Gen::new(VIN2);
+    old.odo_mi = 90_000.0;
+    for d in 1..=3 {
+        old.day(NaiveDate::from_ymd_opt(2023, 1, d).unwrap());
+    }
+    let jan = retag(&old.take_csv(), |_| true, "", |l| format!("77{}", day_of_line(l)), "Old Car");
+    let mut g = Gen::new(VIN1);
+    g.day(NaiveDate::from_ymd_opt(2023, 2, 19).unwrap());
+    let feb = g.take_csv();
+    let z = zip(&[("TeslaFi12023.csv", jan.as_bytes()), ("TeslaFi22023.csv", feb.as_bytes())]);
+    let mut s = Store::new(&[(VIN1, 1)]);
+    let r = run(&mut s, &z, &Options::default());
+    let orphans: Vec<_> = r.groups.iter().filter(|g| !g.vin).collect();
+    // one name: one group (the name ties the days together)
+    assert_eq!(orphans.len(), 1, "{:?}", r.groups);
+    assert!(orphans[0].needs_match && orphans[0].joins.is_none(), "{:?}", orphans[0]);
+    // without its name each day is a group: the days carry on from one another, so one leads and the rest follow
+    let jan2 = retag(&jan, |_| true, "", |l| format!("77{}", day_of_line(l)), "");
+    let z = zip(&[("TeslaFi12023.csv", jan2.as_bytes()), ("TeslaFi22023.csv", feb.as_bytes())]);
+    let mut s = Store::new(&[(VIN1, 1)]);
+    let r = run(&mut s, &z, &Options::default());
+    let orphans: Vec<_> = r.groups.iter().filter(|g| !g.vin).collect();
+    assert_eq!(orphans.len(), 3, "{:?}", r.groups);
+    assert!(orphans.iter().all(|g| g.needs_match), "{orphans:?}");
+    let lead = orphans[0].tm_car;
+    assert_eq!(orphans[0].joins, None);
+    assert!(orphans[1..].iter().all(|g| g.joins == Some(lead)), "{orphans:?}");
+    // nothing of them went to the car with the VIN (the store has no car for them)
+    assert_eq!(s.drives_of(1).len(), 2);
+    assert!(s.drives.values().all(|d| d.start_odometer_km.is_none_or(|o| o < 30_000.0)));
+}

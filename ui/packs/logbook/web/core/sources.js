@@ -2,8 +2,9 @@
 //
 // Every row of the API names its inputs (docs/ui-api.md, Conventions, "Sources"): `sources` is a list of
 // { kind: 'smo' | 'tesla_api' | 'teslafi_api' | 'teslamate_local' | 'import', site?, label } and `source_label` says it in one line ("Data from SMO",
-// "Data from the Tesla API", "Imported from TeslaMate", "Data from SMO and the Tesla API"). The pages show that
-// line, small and quiet, beside the data; never instead of it. The old one-word `source` (can, teslamate,
+// "Data from the Tesla API", "Imported from TeslaMate", "Data from SMO and the Tesla API"). Detail pages show that
+// line, small and quiet, beside the data; list rows keep it out of their cells and carry it in the row's hover
+// title (rowTitle()), so a list reads as data only. The old one-word `source` (can, teslamate,
 // tesla_api) is read only when a row has no `sources` (a server from before them).
 
 import { h } from '../shared/dom.js';
@@ -91,6 +92,18 @@ export function estimatedWhy(r) {
   if (isImported(r)) return 'imported, worked out from range';
   if (teslaOnly(r)) return 'from the Tesla API’s power readings';
   return 'estimated';
+}
+
+/**
+ * A list row's hover title: the source line, then why the energy is estimated when it is (energy: false for rows
+ * without energy, such as software updates). Empty when nothing is known.
+ */
+export function rowTitle(r, { energy = true } = {}) {
+  if (!r) return '';
+  const bits = [];
+  if (sourcesOf(r).length || r.source_label) bits.push(sourceLabel(r));
+  if (energy && (isEstimated(r) || isImported(r))) bits.push(`Energy is estimated: ${estimatedWhy(r)}`);
+  return bits.join('. ');
 }
 
 /** The source filter: the words `source=` takes (the old `can` and `teslamate` read as `smo` and `import`). */

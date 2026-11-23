@@ -74,6 +74,7 @@ a file it can't read is on standard error.
 | `move cancel` | The old server: the code stops working. The new server: the move stops and what was copied is removed. |
 | `move undo` | The old server, after a move: takes uploads again (asks to type `yes`). Stop the new server first. |
 | `move finish --recovery-key` | A new server, last resort when the old one is gone: switches to what was copied. Asks for the recovery key. The last changes may be missing. |
+| `gps-layout --car CAR [--days N]` | Works out where the Screenmate's own GPS frame (0x04F on its internal bus) keeps latitude and longitude, from the car's stored logs of the last `N` days (default 30) and the positions its other inputs reported at the same moments. Prints layouts and errors in metres only: no position, time or place, so the output can be passed on. Runs beside the server and only reads. See [The Screenmate's GPS layout](#the-screenmates-gps-layout). |
 | `health` | Exit 0 when the upload port and the web port accept a TCP connection on 127.0.0.1 (only the upload port on a server whose data moved away), or while a move comes in. Docker's health check runs it. |
 | `--version` | Prints the version and build, for example `sentry-mate 0.1.0 (build-1001, sha-6f83191, 2026-11-17T19:06:35Z)`. A local build shows no build number. |
 
@@ -217,6 +218,33 @@ docker run --rm -v ~/sentry-mate-logs:/check:ro ghcr.io/skittles-fivem/sentry-ma
 It prints `signed and intact: key <fingerprint>, chain index <n>`, `not signed`, or `failed: <reason>` (exit 1), on
 standard output. A missing log or sidecar gives `sentry-mate: can't read <file>: No such file or directory (os error
 2)` on standard error (exit 1).
+
+## The Screenmate's GPS layout
+
+The Screenmate's own GPS receiver sends its position on the Screenmate's internal bus (`can3`) as message 0x04F,
+which Sentry Mate reads with the Model 3/Y DBC's layout (latitude `0|28@1- (1e-6,0)`, longitude
+`28|28@1- (1e-6,0)`). If a car's positions are far off but its Tesla API, TeslaFi or local TeslaMate positions are
+right (Data health says `gps_inputs_disagree`), the frame may carry them another way. Work it out on the server:
+
+```bash
+sudo docker exec -it sentry-mate /sentry-mate gps-layout --car c1
+```
+
+`c1` is the car as its pages' address names it (`/cars/c1/...`). It pairs each of the car's Screenmate GPS frames
+with the nearest position its other inputs reported (within 2 s, or the positions around it while the car stood),
+tries every layout of each field (start bit, 24 to 32 bits, Intel or Motorola, signed or not, decimal or binary
+steps, an offset of 0 or a power of two of the step), and prints, for latitude and longitude, the DBC's layout, the
+best and a runner-up, each with its median and 95th-percentile error. A layout is right when its 95th percentile is
+tens of metres; one of kilometres is not. Errors over 10 km show as `over 10 km`. It prints no position, time or
+place.
+
+It only reads: the stored logs as `log decode` reads them, and the db a day at a time while the data folder's writes
+pause for a moment (as an export's snapshot does). The car needs another input with positions for the same days,
+and a few minutes of driving.
+
+When it prints `layout: lat ...; lon ...` (a layout other than the DBC's), an admin sets it for the car with
+`PUT /api/v1/cars/c1/gps-layout` and `{"layout": "lat ...; lon ..."}` ([ui-api.md](ui-api.md)). The car's history
+is then rebuilt from the stored logs with it. `{"layout": null}` goes back to the DBC's layout (and rebuilds too).
 
 ## The vault
 
@@ -418,7 +446,7 @@ The keys folder:
 
 **From the web pages (no shell, no restart):** *Settings → Server and access → Certificate, recovery key and
 backups* shows the certificate's SHA-256, the names in it and the CAN Bridge upload address, each with *Copy*.
-*Make a new certificate* makes a new self-signed one for the names saved under *Host names for the certificate*
+*Make a new certificate* makes a new self-signed one for the names saved with *Change names* beside *Names in it*
 (and `localhost`), after your password (and the two-step code when you have it on). Both ports serve it at once,
 and it is kept across restarts. Then put the new SHA-256 in each CAN Bridge's upload settings: until then it refuses
 the server. Browsers ask again to accept the certificate. It is refused while a move code waits or a move or

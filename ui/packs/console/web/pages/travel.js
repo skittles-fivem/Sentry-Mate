@@ -14,6 +14,7 @@ import { carKeys as soldAwareKeys } from '../core/carpick.js';
 import { num, date, dateTime } from '../core/fmt.js';
 import { table, cellBar } from '../core/table.js';
 import { safeMap } from '../core/map.js';
+import { trackBounds } from '../shared/tracks.js';
 import { empty } from '../core/states.js';
 import { filterLine } from '../core/filterline.js';
 import { src, srcText } from '../core/source.js';
@@ -256,7 +257,7 @@ export async function mount(ctx) {
       m.map.on('click', 'cities', (e) => { const k = e.features?.[0]?.properties?.key; if (k) pickCity(k); });
       m.map.on('mouseenter', 'cities', () => { m.map.getCanvas().style.cursor = 'pointer'; });
       m.map.on('mouseleave', 'cities', () => { m.map.getCanvas().style.cursor = ''; });
-      m.fit(every, { pad: 32, maxZoom: 12 });
+      m.fit(trackBounds(tracks?.drives || [], pts.map((c) => [c.lon, c.lat])) || every, { pad: 32, maxZoom: 12 }); // without stray fixes
     }
   }
   if (!ctx.alive()) return;

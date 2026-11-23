@@ -61,6 +61,8 @@ pub const EXPORT_KEPT_MS: u64 = 24 * 3_600_000;
 pub const EXPORT_KEPT_MOST_MS: u64 = 7 * EXPORT_KEPT_MS;
 /// The pause of an export's snapshot waits at most this long for the writes under way.
 pub const EXPORT_WAIT: Duration = Duration::from_secs(30);
+/// An export (or its checksum) that did nothing for this long is `stalled` (the page says so).
+pub const EXPORT_STALL_MS: u64 = 60_000;
 
 /// What the move side needs of the program: the data and keys folders and the server's version.
 pub struct MoveSite {
@@ -147,6 +149,14 @@ struct ExportSlot {
     /// `None` while preparing.
     snapshot: Option<Arc<moving::Snapshot>>,
     error: Option<String>,
+    /// Why it failed: a code and what to do.
+    problem: Option<(&'static str, &'static str)>,
+    /// How far the making, then the checksum, got; cancelled when the slot goes.
+    watch: Arc<moving::Watch>,
+    /// The file's SHA-256, once worked out (after it is ready).
+    sha256: Option<String>,
+    /// Why the checksum could not be worked out.
+    checksum_error: Option<String>,
     sent_bytes: u64,
     /// When a download of it last started.
     last_download_ms: Option<u64>,
@@ -178,8 +188,8 @@ impl MoveSite {
     }
 
     /// Tests only: `f` is called (on a blocking thread, so it may wait) at these points: `restore-key-opened` (a
-    /// restore's recovery key opened its file, nothing begun yet) and `setup-ready` (`POST /setup`: the code is right
-    /// and nothing runs, the password not yet hashed).
+    /// restore's recovery key opened its file, nothing begun yet), `export-start` (an export file's job, before it
+    /// counts) and `setup-ready` (`POST /setup`: the code is right and nothing runs, the password not yet hashed).
     #[doc(hidden)]
     pub fn with_pause(mut self, f: impl Fn(&str) + Send + Sync + 'static) -> MoveSite {
         self.pause = Some(Arc::new(f));
@@ -437,6 +447,78 @@ async fn undo_move(State(app): State<AppState>, Admin(v): Admin, body: JsonBody)
 
 // ---------------------------------------------------------------- export files
 
+/// The step of making an export (1 to 3) of a watch's phase.
+fn export_step(p: moving::Phase) -> u64 {
+    match p {
+        moving::Phase::Counting => 1,
+        moving::Phase::Waiting => 2,
+        _ => 3,
+    }
+}
+
+/// A watch's progress as the API gives it: done and total, the speed, the time left, and whether it stalled.
+fn progress_view(seen: &moving::Seen, now: u64) -> Value {
+    let known = seen.bytes_total > 0 || seen.files_total > 0;
+    let percent = known.then(|| {
+        if seen.bytes_total > 0 {
+            (seen.bytes_done as f64 * 1000.0 / seen.bytes_total as f64).round() / 10.0
+        } else {
+            (seen.files_done as f64 * 1000.0 / seen.files_total.max(1) as f64).round() / 10.0
+        }
+    });
+    let per_s = seen.bytes_per_s;
+    let eta = match per_s {
+        Some(r) if r > 0 && known => Some(seen.bytes_total.saturating_sub(seen.bytes_done).div_ceil(r)),
+        _ => None,
+    };
+    let quiet = now.saturating_sub(seen.progress_ms);
+    // the moment between the snapshot's end and the file shown ready is still the snapshot's step
+    let phase = if seen.phase == moving::Phase::Done { "collecting" } else { seen.phase.name() };
+    json!({
+        "phase": phase,
+        "step": export_step(seen.phase),
+        "steps": 3,
+        "files_done": seen.files_done,
+        "files_total": known.then_some(seen.files_total),
+        "bytes_done": seen.bytes_done,
+        "bytes_total": known.then_some(seen.bytes_total),
+        "percent": percent,
+        "bytes_per_s": per_s,
+        "eta_s": eta,
+        "started_ms": seen.started_ms,
+        "phase_started_ms": seen.phase_ms,
+        "progress_ms": seen.progress_ms,
+        "quiet_ms": quiet,
+        "stalled": quiet >= EXPORT_STALL_MS,
+    })
+}
+
+/// What a failed export's error is: a code, and what the owner can do.
+fn export_problem(e: &moving::Error) -> (&'static str, &'static str) {
+    const AGAIN: &str = "Make the export again.";
+    match e {
+        moving::Error::NoSpace { .. } => ("no_space", "Free some space on the data disk, then make the export again."),
+        moving::Error::Io(io) if io.kind() == std::io::ErrorKind::StorageFull => {
+            ("no_space", "Free some space on the data disk, then make the export again.")
+        }
+        moving::Error::NoHardLinks(_) => (
+            "no_hard_links",
+            "Use a move code instead (it needs no hard links), or keep the data folder on a disk that has them.",
+        ),
+        moving::Error::Gate(gate::Refused::Busy) => (
+            "writes_busy",
+            "Something kept writing for 30 seconds (an import, a big upload): try again in a few minutes.",
+        ),
+        moving::Error::Gate(_) => ("server_stopping", "The server is stopping or moved: make the export once it runs."),
+        moving::Error::Changed(_) => ("changed", AGAIN),
+        moving::Error::Cancelled => ("cancelled", "Make a new one when you want it."),
+        moving::Error::Io(_) => {
+            ("disk", "The disk could not be read or written: look at the server's log, then make the export again.")
+        }
+        _ => ("server_error", "Look at the server's log, then make the export again."),
+    }
+}
+
 fn export_view(e: &ExportSlot, now: u64) -> Value {
     let expires = e.expires_ms();
     let state = match (&e.snapshot, &e.error) {
@@ -447,9 +529,41 @@ fn export_view(e: &ExportSlot, now: u64) -> Value {
         (Some(_), None) => "ready",
     };
     let snap = e.snapshot.as_ref().filter(|_| state == "ready");
+    let seen = e.watch.seen();
+    let progress = (state == "preparing").then(|| progress_view(&seen, now));
+    let checksum = snap.map(|_| {
+        let working = e.sha256.is_none() && e.checksum_error.is_none();
+        let mut c = if working && seen.phase == moving::Phase::Checking {
+            progress_view(&seen, now)
+        } else {
+            json!({ "bytes_done": null, "bytes_total": null, "percent": null, "bytes_per_s": null, "eta_s": null,
+                    "quiet_ms": null, "stalled": false })
+        };
+        c["state"] = json!(if e.sha256.is_some() {
+            "done"
+        } else if e.checksum_error.is_some() {
+            "failed"
+        } else {
+            "working"
+        });
+        c["error"] = json!(e.checksum_error);
+        c
+    });
+    let phase = match &progress {
+        Some(p) => p["phase"].as_str().unwrap_or("counting"),
+        None => state,
+    };
     json!({
         "id": e.id,
         "state": state,
+        "phase": phase,
+        "progress": progress,
+        "checksum": checksum,
+        "sha256": snap.and(e.sha256.as_ref()),
+        "problem": e.problem.filter(|_| state == "failed").map(|(code, what)| json!({
+            "code": code, "message": e.error, "what_to_do": what,
+        })),
+        "now_ms": now,
         "file_name": snap.map(|s| s.file_name()),
         "files": snap.map(|s| s.header().files),
         "bytes": snap.map(|s| s.header().bytes),
@@ -473,6 +587,7 @@ fn tidy_export(st: &mut SiteState, now: u64) {
         && e.snapshot.is_some()
         && now >= e.expires_ms()
     {
+        e.watch.cancel();
         e.snapshot = None;
         e.error = Some(EXPIRED.into());
     }
@@ -495,32 +610,62 @@ async fn make_export(State(app): State<AppState>, Admin(v): Admin, body: JsonBod
     let mut b = [0u8; 8];
     getrandom::fill(&mut b).map_err(|e| ApiError::server(format!("an id: {e}")))?;
     let id = format!("ex{}", hex::encode(b));
+    let watch = Arc::new(moving::Watch::new(app.clock.clone()));
     {
         let mut st = s.lock();
         if st.export.as_ref().is_some_and(|e| e.snapshot.is_none() && e.error.is_none()) {
             return Err(ApiError::conflict("export_preparing", "An export file is being made; wait for it."));
         }
-        // the one there was goes (its snapshot is removed when the last download of it ends)
+        // the one there was goes (its snapshot is removed when the last download of it ends; its checksum stops)
+        if let Some(old) = &st.export {
+            old.watch.cancel();
+        }
         st.export = Some(ExportSlot {
             id: id.clone(),
             made_ms: now,
             snapshot: None,
             error: None,
+            problem: None,
+            watch: watch.clone(),
+            sha256: None,
+            checksum_error: None,
             sent_bytes: 0,
             last_download_ms: None,
         });
     }
     let (s2, app2, id2) = (s.clone(), app.clone(), id.clone());
     tokio::task::spawn_blocking(move || {
+        s2.paused("export-start");
         let gate = gate::Gate::open(&s2.data);
-        let made = gate
-            .map_err(moving::Error::from)
-            .and_then(|g| moving::Snapshot::make(&s2.data, &app2.vault, &g, &s2.app_version, EXPORT_WAIT));
+        let made = gate.map_err(moving::Error::from).and_then(|g| {
+            moving::Snapshot::make_watched(&s2.data, &app2.vault, &g, &s2.app_version, EXPORT_WAIT, &watch)
+        });
+        let snap = {
+            let mut st = s2.lock();
+            let Some(e) = st.export.as_mut().filter(|e| e.id == id2) else { return };
+            match made {
+                Ok(snap) => {
+                    let snap = Arc::new(snap);
+                    e.snapshot = Some(snap.clone());
+                    snap
+                }
+                Err(err) => {
+                    tracing::warn!("an export file could not be made: {err}");
+                    e.problem = Some(export_problem(&err));
+                    e.error = Some(err.to_string());
+                    return;
+                }
+            }
+        };
+        // ready to download; its SHA-256 comes after, read once from the snapshot (nothing kept in memory)
+        let sha = snap.sha256(&app2.vault, &watch);
+        drop(snap);
         let mut st = s2.lock();
         if let Some(e) = st.export.as_mut().filter(|e| e.id == id2) {
-            match made {
-                Ok(snap) => e.snapshot = Some(Arc::new(snap)),
-                Err(err) => e.error = Some(err.to_string()),
+            match sha {
+                Ok(sha) => e.sha256 = Some(sha),
+                Err(moving::Error::Cancelled) => {}
+                Err(err) => e.checksum_error = Some(err.to_string()),
             }
         }
     });
@@ -542,17 +687,23 @@ async fn export_one(State(app): State<AppState>, Admin(_): Admin, Path(id): Path
     Ok(Json(export_view(the_export(&mut st, &id)?, now)))
 }
 
+/// Removes the export file; one being made is cancelled (it stops at its next file or MiB, and the writes it paused
+/// go on).
 async fn remove_export(State(app): State<AppState>, Admin(v): Admin, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let s = site(&app)?;
-    {
+    let cancelled = {
         let mut st = s.lock();
-        the_export(&mut st, &id)?;
+        let e = the_export(&mut st, &id)?;
+        let preparing = e.snapshot.is_none() && e.error.is_none();
+        e.watch.cancel();
         st.export = None;
-    }
+        preparing
+    };
     let d = s.data.clone();
     tokio::task::spawn_blocking(move || moving::export::remove_unused_snapshots(&d));
-    v.audit(&app, "export-removed", Some(&target("export", None, &id)), "Removed the export file.").await?;
-    Ok(Json(json!({ "deleted": true, "id": id })))
+    let words = if cancelled { "Cancelled the export file being made." } else { "Removed the export file." };
+    v.audit(&app, "export-removed", Some(&target("export", None, &id)), words).await?;
+    Ok(Json(json!({ "deleted": true, "id": id, "cancelled": cancelled })))
 }
 
 /// `bytes=a-` / `bytes=a-b` (one range).
@@ -1161,6 +1312,16 @@ async fn give_up_job(
     .await
 }
 
+/// The export file as `/system/exports/{export}` gives it now, if there is one (the live stream's `job` of kind
+/// `export`).
+pub(crate) fn export_now(app: &AppState) -> Option<Value> {
+    let s = site(app).ok()?;
+    let now = app.now();
+    let mut st = s.lock();
+    tidy_export(&mut st, now);
+    st.export.as_ref().map(|e| export_view(e, now))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -1186,3 +1347,4 @@ mod tests {
         assert!(s.key_work().is_some());
     }
 }
+

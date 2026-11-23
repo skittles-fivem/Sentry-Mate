@@ -1,12 +1,13 @@
 // Sentry Mate, "Pebble" UI pack: Health, two routes.
 // - /cars/{car}/health: is this car's data arriving and trusted (one check per row with a status word and its
-//   dot, the fix for each problem, the bridge keys, a rebuild for admins), the gaps and unknown time of the period
-//   as a log, what is recorded (totals and rows kept), what its data takes on disk, and every signal of its newest
-//   log in a list that sorts and scrolls on its own.
+//   dot, the fix for each problem, the bridge keys, Rebuild all data for admins with its progress), the gaps
+//   and unknown time of the period as a log, what is recorded (totals and rows kept), what its data takes on
+//   disk, and every signal of its newest log in a list that sorts and scrolls on its own.
 // - /system: the server's storage (total, free, growth, full in, by kind), the server's own checks (uptime,
 //   versions, memory, timings), the clock, the /health address for container checks, the one error shape of the
 //   API with a live try, and every car's data status.
-// Data: GET cars/{car}/health, /gaps, /totals?source=, /updates, /storage, /signals/latest; POST /rebuild (admin);
+// Data: GET cars/{car}/health, /gaps, /totals?source=, /updates, /storage, /signals/latest;
+// GET/POST cars/{car}/full-rebuild and DELETE system/full-rebuild (admin: Rebuild all data, in the keys tile);
 // GET integrations/tesla/status, integrations/teslafi/status, integrations/teslamate (admin: the live inputs' tiles);
 // GET system/storage, system/health (admin), geocode/status, cars; GET integrations/overview (admin) for the
 // Connections overview tile on both routes, a link to Settings: Integrations (its Overview tab).
@@ -19,9 +20,8 @@ import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { tile, btn, linkBtn, icon, note, stateTag, ago } from '../core/ui.js';
 import { emptyTile, errorWords, ghostTile, plotGhost } from '../core/states.js';
-import { confirmSheet } from '../core/sheet.js';
 import { bars } from '../core/chart.js';
-import { filterBar, statTile, checkRow, sectionHead, pills, moreButton, nums, facts } from '../core/bits.js';
+import { filterBar, statTile, checkRow, sectionHead, pills, moreButton, listBox, nums, facts } from '../core/bits.js';
 import { srcShort, srcPill } from '../core/source.js';
 import { teslaCarFacts, teslaAccountHref, lastErrorText } from './tesla.js';
 import { teslafiCarFacts } from './teslafi.js';
@@ -29,6 +29,9 @@ import { teslamateCarFacts, teslamateHref } from './teslamate.js';
 import { TM_BASE, TM_SOURCE } from '../shared/teslamate.js';
 import { VERSION_SOURCE } from '../core/firmware.js';
 import { STATUS, STATUS_ORDER } from './connections.js';
+import { deviceText, keyRows } from './device-name.js';
+import { fullRebuildTile } from '../core/fullrebuild.js';
+import * as fr from '../shared/fullrebuild.js';
 
 export const id = 'health';
 export const css = true;
@@ -127,6 +130,18 @@ async function mountCar(ctx) {
   if (hl.rebuild_pending) { const t = setTimeout(() => ctx.alive() && ctx.reload(), 4000); ctx.onCleanup(() => clearTimeout(t)); }
 
   /* ------------------------------------------------------------ the checks */
+  // the Rebuild row: a full rebuild of this car when one runs (its step), else the period rebuild's state
+  const rebuildRow = h('li', { class: 'check' });
+  const paintRebuild = (fs, ls) => {
+    const step = fs && fr.running(fs) && fs.this_car && ls ? ls[1].text : '';
+    const busy = !!step || !!hl.rebuild_pending;
+    rebuildRow.className = `check is-${busy ? 'warn' : 'ok'}`;
+    rebuildRow.replaceChildren(...checkRow({ name: 'Rebuild', sub: step ? `Full rebuild: ${step}` : 'Drives and charges from the logs', word: busy ? 'Running' : 'Idle' }).childNodes);
+  };
+  paintRebuild(null);
+  // Rebuild all data (admins): everything worked out made again from the stored data, in the keys tile
+  const full = ctx.admin ? fullRebuildTile(ctx, { car, label: 'Rebuild all data', bare: true, onStatus: paintRebuild }) : null;
+
   const reasons = hl.reasons || [];
   const trust = hl.last_log_trust || {};
   const tw = TRUST[trust.result];
@@ -145,7 +160,7 @@ async function mountCar(ctx) {
       checkRow({ name: 'Chain gaps', sub: 'Logs missing from the hash chain', word: n0(hl.chain_gaps_total ?? (hl.chain_gaps || []).length), level: (hl.chain_gaps || []).length ? 'warn' : 'ok' }),
       checkRow({ name: 'Dropped frames', sub: 'Times the bridge could not keep up', word: n0(hl.dropped_frames_total ?? (hl.dropped_frames || []).length), level: (hl.dropped_frames || []).length ? 'warn' : 'ok' }),
       checkRow({ name: 'Uploads', sub: 'From this car’s bridge', word: hl.uploads_enabled ? 'On' : 'Off', level: hl.uploads_enabled ? 'ok' : 'warn' }),
-      checkRow({ name: 'Rebuild', sub: 'Drives and charges from the logs', word: hl.rebuild_pending ? 'Running' : 'Idle', level: hl.rebuild_pending ? 'warn' : 'ok' })),
+      rebuildRow),
     reasons.length ? h('ul', { class: 'fixes' }, reasons.map((code) => {
       const r = REASONS[code] || [code, '', null];
       return h('li', { class: 'fix' }, h('b', null, r[0]), h('span', null, r[1]),
@@ -155,23 +170,11 @@ async function mountCar(ctx) {
   /* the keys and the rebuild */
   const keys = hl.keys || [];
   const keysT = tile({ w: 2, title: 'CAN Bridge keys', icon: 'key' },
-    keys.length ? h('ul', { class: 'checks' }, keys.map((k) => checkRow({ name: k.device || 'Unnamed device', sub: k.key, word: k.last_upload_ms != null ? ago(k.last_upload_ms) : 'Never',
-      level: k.logs_waiting ? 'warn' : k.last_upload_ms != null ? 'ok' : 'off', side: h('span', { class: 'check-word' }, k.preferred ? 'Preferred · ' : '', k.last_upload_ms != null ? ago(k.last_upload_ms) : 'never') })))
+    keys.length ? h('ul', { class: ['checks', 'hl-keys'] }, keyRows(ctx, keys, (k, rename) => checkRow({ name: deviceText(k), sub: k.key, word: k.last_upload_ms != null ? ago(k.last_upload_ms) : 'Never',
+      level: k.logs_waiting ? 'warn' : k.last_upload_ms != null ? 'ok' : 'off',
+      side: h('span', { class: 'hl-key-side' }, h('span', { class: 'check-word' }, k.preferred ? 'Preferred · ' : '', k.last_upload_ms != null ? ago(k.last_upload_ms) : 'never'), rename) })))
       : note('No key is tied to this car yet. Pair a CAN Bridge in car settings.'),
-    ctx.admin ? h('div', { class: 'hl-rebuild' },
-      btn('Rebuild this period', { kind: 'soft', icon: 'reset', onclick: (e) => rebuild(e.currentTarget) }),
-      note('Drives, charges, states and visits are worked out again from the stored logs. Typed names and prices stay.'))
-      : note('An admin can rebuild drives and charges from the stored logs.'));
-  async function rebuild(b) {
-    const ok = await confirmSheet({ title: 'Rebuild from the logs?', text: `Work out drives, charges, states and visits of ${car.name} again for this period.`, yes: 'Rebuild' });
-    if (!ok || !ctx.alive()) return;
-    b.disabled = true;
-    try {
-      const r = await ctx.api.post(`${base}/rebuild`, { from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms });
-      ctx.toast(`Rebuilt from ${n0(r.logs_read ?? 0)} logs in ${took(r.took_ms)}.`, { next: true });
-      ctx.reload();
-    } catch (e) { ctx.toast(errorWords(e).text, { kind: 'error' }); } finally { b.disabled = false; }
-  }
+    full ? full.el : note('An admin can rebuild all of this car’s data from the stored logs and API data.'));
 
   /* logs the server should have but lost: asked of the car again, and those the car no longer has either */
   const ml = hl.missing_logs || {};
@@ -193,9 +196,10 @@ async function mountCar(ctx) {
     ...spans.map((s) => ({ at: s.start_ms, end: s.end_ms, what: `Unknown: ${SPAN_REASONS[s.reason] || s.reason}` })),
   ].sort((a, b) => b.at - a.at).slice(0, 60);
   const logT = tile({ w: 2, title: 'Gaps in the period', icon: 'timeline' },
-    lines.length ? h('div', { class: 'log', role: 'list' }, lines.map((l) => h('div', { class: 'log-row', role: 'listitem' },
+    // the gaps and unknown spans scroll in a box about five lines high (at most: a short log leaves no empty box)
+    lines.length ? listBox(ctx, { fit: true, label: 'Gaps and unknown time in the period', cls: 'log-box' }, h('div', { class: 'log', role: 'list' }, lines.map((l) => h('div', { class: 'log-row', role: 'listitem' },
       h('a', { class: 'log-k', href: timelineAt(l.at, l.end ?? api.now()), title: 'Open the timeline here' }, `${when(l.at)}  ${l.what}`),
-      h('span', { class: 'log-v' }, l.end == null ? 'open' : formatDuration(l.end - l.at)))))
+      h('span', { class: 'log-v' }, l.end == null ? 'open' : formatDuration(l.end - l.at)))))).el
       : h('p', { class: 'lede' }, 'No gaps: every moment of the period is known.'),
     note('Newest first. A gap in which the odometer moved means a drive was not recorded.'));
 
@@ -277,7 +281,7 @@ async function mountCar(ctx) {
   listEl.append(plotGhost());
 
   ctx.view.replaceChildren(bar, status, keysT, missT, connTile(ctx, ov, car.id), teslaT, teslafiT, teslamateT, logT, rowsT, ...tots, storeT, daysT, sigHead, sigT);
-  sig = await sigP;
+  [sig] = await Promise.all([sigP, full?.ready]);
   if (!ctx.alive()) return {};
   paint();
   ctx.ready();

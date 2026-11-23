@@ -91,8 +91,10 @@ mod journal;
 mod kv;
 mod logged;
 mod plain;
+mod readonly;
 mod rows;
 pub mod segment;
+mod shadow;
 mod table;
 
 pub use backup::{BackupReport, RestoreReport};
@@ -101,6 +103,7 @@ pub use error::{Error, Result};
 pub use file::{FORMAT_VERSION, allocated};
 pub use fleet::{FleetCursor, FleetEntry, FleetPage, FleetQuery, Summary};
 pub use kv::{BUNDLE_TARGET, Kv, KvCompacted, KvUsage, MAX_VALUE};
+pub use readonly::Reader;
 pub use rows::{Cursor, Item, MAX_PAGE, Order, Page, Query, StateRow, Table, Tally, Totals, UpdateRow};
 pub use segment::{DAY_MS, DayInfo, END_MS, Fields, Point, keeping_days};
 
@@ -142,6 +145,8 @@ pub enum Crash {
     /// A pack (a month of days, a bundle of key/value records) is in place; the loose files it took in are not yet
     /// removed.
     BeforeLooseRemoved,
+    /// A switch to a shadow's car ([`Db::adopt_car`]): the old folder is moved out, the new one not yet in.
+    BetweenSwapRenames,
 }
 
 #[derive(Debug, Clone)]
@@ -327,13 +332,15 @@ impl Db {
     pub fn open(data: &Path, vault: Arc<Vault>, opts: Options) -> Result<Db> {
         let dir = data.join("db");
         std::fs::create_dir_all(dir.join("cars"))?;
+        let cars = OpenCars::new(opts.max_open_cars, opts.max_open_bytes);
+        let ctx = Arc::new(Ctx::new(vault, data.to_path_buf(), opts));
+        // a switch to a shadow's car a crash cut off (before the trash goes: the old folder waits there)
+        shadow::finish_adopt(&ctx, &dir)?;
         // cars removed before a crash finished deleting them
         let trash = dir.join("trash");
         if trash.exists() {
             std::fs::remove_dir_all(&trash)?;
         }
-        let cars = OpenCars::new(opts.max_open_cars, opts.max_open_bytes);
-        let ctx = Arc::new(Ctx::new(vault, data.to_path_buf(), opts));
         let files = Files::named(&dir, "fleet");
         if !files.snap.exists() && !files.log.exists() && std::fs::read_dir(dir.join("cars"))?.next().is_some() {
             // opened as empty, the next car made would get the first car's id, and its folder
@@ -428,6 +435,16 @@ impl Db {
         f.commit(&self.inner.ctx, FleetOp::Put(Box::new(FleetEntry { car, summary })))?;
         self.inner.versions.bump(id, true, true);
         Ok(())
+    }
+
+    /// A keyed hash of `text` for `purpose` (hex), with a key made from the vault's (the same after a restart or a
+    /// move): to tell values apart without keeping them, such as two cars' whole VINs.
+    pub fn keyed_tag(&self, purpose: &[u8], text: &str) -> String {
+        use hmac::{Hmac, Mac};
+        let key = self.inner.ctx.vault.derive_key(purpose);
+        let Ok(mut m) = <Hmac<sha2::Sha256> as Mac>::new_from_slice(&*key) else { return String::new() };
+        m.update(text.as_bytes());
+        m.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect()
     }
 
     pub fn car(&self, id: CarId) -> Result<Option<Car>> {

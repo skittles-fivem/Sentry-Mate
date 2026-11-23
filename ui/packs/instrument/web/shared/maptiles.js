@@ -142,6 +142,23 @@ export function tileSourceDef(choice, { rasterSize = 256, attribution = choice?.
   return { type: 'raster', tiles: [choice.template], tileSize: rasterSize, minzoom: choice.minZoom || 0, maxzoom: choice.maxZoom, attribution };
 }
 
+/**
+ * The deepest camera zoom at which the tiles are still drawn sharp (one tile pixel to one screen pixel at most).
+ * MapLibre zooms count 512 px tiles, while a source's max zoom counts its own tiles: a 256 px raster source reaches
+ * its max zoom one camera level earlier (max_zoom 19 is sharp up to camera zoom 18, the US satellite's 16 up to 15).
+ * Vector tiles are drawn, not scaled, so they stay sharp past their max zoom. 22 when there are no tiles.
+ */
+export function sharpZoom(choice, rasterSize = 256) {
+  if (!choice || choice.kind === 'none' || choice.kind === 'vector') return 22;
+  return (choice.maxZoom ?? 19) - Math.log2(512 / (rasterSize || 256));
+}
+
+/**
+ * The camera zoom a map of one spot (where a car is) opens at: its neighbourhood, with the streets around it. The
+ * map helpers open no deeper than sharpZoom of their tiles.
+ */
+export const SPOT_ZOOM = 15;
+
 /** The overlay source ids (names and roads over photos), in drawing order. */
 export const overlayIds = (choice) => (choice?.kind === 'raster' ? (choice.overlays || []).map((_, i) => `tiles-overlay-${i}`) : []);
 
@@ -181,7 +198,8 @@ export const tileLayerIds = (choice) => tileLayers(choice).map((l) => l.id);
 
 /**
  * Redraws a map with another tile choice (the person switched Map / Satellite): the old tile layers and sources go,
- * the new ones go under the page's own layers. Returns the new choice.
+ * the new ones go under the page's own layers. Returns the new choice. A switch to tiles that are blurry at the
+ * current zoom (satellite photos that end sooner) zooms out to their sharpZoom.
  */
 export function swapTiles(map, from, to, { rasterSize = 256, dark = false, paint = null, attribution } = {}) {
   for (const id of tileLayerIds(from)) if (map.getLayer(id)) map.removeLayer(id);
@@ -190,6 +208,8 @@ export function swapTiles(map, from, to, { rasterSize = 256, dark = false, paint
   const before = layers.find((l) => l.type !== 'background')?.id;
   for (const [id, def] of Object.entries(tileSources(to, { rasterSize, attribution }))) map.addSource(id, def);
   for (const l of tileLayers(to, { dark, paint })) map.addLayer(l, before);
+  const sharp = sharpZoom(to, rasterSize);
+  if (to !== from && typeof map.getZoom === 'function' && map.getZoom() > sharp) map.jumpTo({ zoom: sharp });
   return to;
 }
 
@@ -289,10 +309,10 @@ let meLoad = null;
 
 const role = () => { meLoad ??= api.get('me', null, { maxAgeMs: 60000 }).then((m) => m?.role || null, () => { meLoad = null; return null; }); return meLoad; };
 
-/** The preset a no-tiles note offers: the server's default (satellite), else OpenStreetMap. */
+/** The preset a no-tiles note offers: the server's default (the OpenStreetMap street map), else satellite. */
 const offeredPreset = (cfg) => {
   const ps = cfg?.tiles?.presets || [];
-  return ps.find((x) => x.id === 'satellite') || ps.find((x) => x.id === 'osm') || null;
+  return ps.find((x) => x.id === 'osm') || ps.find((x) => x.id === 'satellite') || null;
 };
 
 /** Every host a preset's pictures come from (its base and its overlays), each once. */
@@ -305,7 +325,7 @@ export function presetHosts(p) {
   return out;
 }
 
-/** Turns the default online preset on (satellite; Settings: Display and units does the same); resolves when saved. */
+/** Turns the default online preset on (the street map; Settings: Display and units does the same); resolves when saved. */
 export async function useOnlineMap() {
   const [cfg, server] = await Promise.all([api.get('maps/config'), api.get('settings')]);
   const p = offeredPreset(cfg);
@@ -328,15 +348,15 @@ export function noTilesNote(choice, { classes = {}, compact = false, onDone = ()
     h('p', { class: c.title }, 'No map tiles yet'), text, actions, err);
   const plain = () => {
     replace(actions,
-      h('button', { class: c.primary, type: 'button', onclick: ask }, 'Use online map (satellite)'),
+      h('button', { class: c.primary, type: 'button', onclick: ask }, 'Use the online map'),
       h('a', { class: c.secondary, href: OFFLINE_HELP }, 'Add an offline map file'));
   };
   const ask = async () => {
     err.hidden = true;
     const cfg = await api.get('maps/config', null, { maxAgeMs: 60000 }).catch(() => null);
     box.dataset.mapEmpty = 'confirm';
-    const hosts = presetHosts(offeredPreset(cfg) || { url: 'https://server.arcgisonline.com/' }).join(' and ');
-    replace(text, `Turn on the satellite map for everyone? Each viewer’s browser then loads the map pictures from ${hosts}, which sees the viewer’s IP address, this server’s address and the map area shown (never a car or a page). You can turn it off or pick another map in Settings: Display and units.`);
+    const hosts = presetHosts(offeredPreset(cfg) || { url: 'https://tile.openstreetmap.org/' }).join(' and ');
+    replace(text, `Turn on the online map for everyone? Each viewer’s browser then loads the map pictures from ${hosts}, which sees the viewer’s IP address, this server’s address and the map area shown (never a car or a page). You can turn it off or pick another map in Settings: Display and units.`);
     const yes = h('button', { class: c.primary, type: 'button', onclick: async () => {
       yes.disabled = true;
       try { await useOnlineMap(); replace(text, 'The online map is on. Loading it…'); actions.replaceChildren(); onDone(); } catch (e) { yes.disabled = false; err.hidden = false; err.textContent = `Could not turn the online map on: ${e?.message || e}`; }

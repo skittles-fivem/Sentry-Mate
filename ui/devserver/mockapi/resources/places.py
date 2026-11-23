@@ -173,7 +173,7 @@ def check_price(price, bad, rule):
     if not isinstance(price, dict):
         bad["price"] = "Must be an object or null."
         return None
-    known = ("currency", "per_kwh", "per_minute", "rates", "session_fee")
+    known = ("currency", "per_kwh", "per_minute", "rates", "session_fee", "tiers")
     for k in price:
         if k not in known:
             bad[f"price.{k}"] = "Unknown field."
@@ -221,10 +221,69 @@ def check_price(price, bad, rule):
         clean.append({"name": str(rt.get("name", "")).strip(), "per_kwh": rt.get("per_kwh"),
                       "per_minute": rt.get("per_minute"), "days": rt.get("days", "all"),
                       "from": rt.get("from", "00:00"), "to": rt.get("to", "24:00")})
-    if price.get("per_kwh") is None and price.get("per_minute") is None and not clean and fee is None:
+    tiers = check_tiers(price.get("tiers"), bad, rule)
+    if tiers is not None and price.get("per_kwh") is not None:
+        rule["price.per_kwh"] = "Tiered prices replace the price per kWh: send one or the other."
+    if price.get("per_kwh") is None and price.get("per_minute") is None and tiers is None and not clean and fee is None:
         rule["price"] = "Give a price per kWh, per minute, a rate or a session fee, or send null for no price."
     return {"currency": cur, "per_kwh": price.get("per_kwh"), "per_minute": price.get("per_minute"), "rates": clean,
-            "session_fee": fee}
+            "session_fee": fee, "tiers": tiers}
+
+
+def check_tiers(t, bad, rule):
+    """`price.tiers`: `{ steps: [{ from_kwh, per_kwh }], cycle_day, base_kwh }` or null."""
+    if t is None:
+        return None
+    if not isinstance(t, dict):
+        bad["price.tiers"] = "Must be an object or null."
+        return None
+    for k in t:
+        if k not in ("steps", "cycle_day", "base_kwh"):
+            bad[f"price.tiers.{k}"] = "Unknown field."
+    steps = t.get("steps")
+    if not isinstance(steps, list) or not all(isinstance(x, dict) for x in steps):
+        bad["price.tiers.steps"] = "Required: a list of steps."
+        steps = []
+    elif not 1 <= len(steps) <= 8:
+        rule["price.tiers.steps"] = "Give 1 to 8 steps."
+    clean, last = [], -1.0
+    for i, st in enumerate(steps):
+        p = f"price.tiers.steps.{i}"
+        for k in st:
+            if k not in ("from_kwh", "per_kwh"):
+                bad[f"{p}.{k}"] = "Unknown field."
+        fk, pk = st.get("from_kwh", 0), st.get("per_kwh")
+        if not _num(fk):
+            bad[f"{p}.from_kwh"] = "Must be a number."
+            fk = 0
+        elif i == 0 and fk != 0:
+            rule[f"{p}.from_kwh"] = "The first step starts at 0 kWh."
+        elif i > 0 and not last < fk <= 1_000_000:
+            rule[f"{p}.from_kwh"] = "Each step starts above the one before (up to 1,000,000 kWh)."
+        last = fk
+        if not _num(pk):
+            bad[f"{p}.per_kwh"] = "Required: a price per kWh."
+            pk = 0
+        elif not 0 <= pk <= 10:
+            rule[f"{p}.per_kwh"] = "Must be between 0 and 10."
+        clean.append({"from_kwh": fk, "per_kwh": pk})
+    day = t.get("cycle_day", 1)
+    if day is None:
+        day = 1
+    if not isinstance(day, int) or isinstance(day, bool):
+        bad["price.tiers.cycle_day"] = "Must be a whole number."
+        day = 1
+    elif not 1 <= day <= 28:
+        rule["price.tiers.cycle_day"] = "A day of the month from 1 to 28."
+    base = t.get("base_kwh", 0)
+    if base is None:
+        base = 0
+    if not _num(base):
+        bad["price.tiers.base_kwh"] = "Must be a number or null."
+        base = 0
+    elif not 0 <= base <= 1_000_000:
+        rule["price.tiers.base_kwh"] = "Between 0 and 1,000,000 kWh."
+    return {"steps": clean, "cycle_day": day, "base_kwh": base}
 
 
 def check_place(req, body, base=None):

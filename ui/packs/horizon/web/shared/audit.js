@@ -64,6 +64,8 @@ const BY_GROUP = {
     'car-changed': 'Changed a car',
     'car-settings-changed': 'Changed car settings',
     'car-rebuild': 'Rebuilt a car’s history',
+    'car-full-rebuild': 'Ran a full rebuild',
+    'car-gps-layout': 'Set how a car’s Screenmate GPS frames are read',
     'car-overlap': 'Found overlapping data',
     'can-logs-missing': 'Found CAN logs missing on the server',
     'charge-cost-entered': 'Entered a charge cost',
@@ -83,6 +85,7 @@ const BY_GROUP = {
     'key-assigned': 'Assigned a key',
     'key-unassigned': 'Unassigned a key',
     'key-preferred': 'Chose the preferred key',
+    'can-key-renamed': 'Named a key',
     'token-created': 'Made a car token',
     'token-revoked': 'Revoked a car token',
   },
@@ -97,6 +100,7 @@ const BY_GROUP = {
     'tesla-token-replaced': 'Replaced a Tesla token',
     'tesla-car-matched': 'Matched a Tesla car',
     'tesla-poll-changed': 'Changed the Tesla API pace',
+    'tesla-invoices-changed': 'Turned Tesla invoices on or off',
     'tesla-sign-in-needed': 'Tesla asked to sign in again',
     'tesla-account-error': 'Could not read a Tesla account',
     'teslafi-account-added': 'Added a TeslaFi account',
@@ -108,6 +112,8 @@ const BY_GROUP = {
     'teslafi-token-refused': 'TeslaFi refused the token',
     'teslafi-car-matched': 'Matched a TeslaFi car',
     'teslafi-poll-changed': 'Changed the TeslaFi pace',
+    'teslafi-invoices-changed': 'Turned TeslaFi invoice costs on or off',
+    'invoices-downloaded': 'Downloaded Supercharger invoices',
     'teslafi-account-error': 'Could not read a TeslaFi account',
     'teslamate-local-added': 'Connected the local TeslaMate',
     'teslamate-local-changed': 'Changed the local TeslaMate',
@@ -128,6 +134,8 @@ const BY_GROUP = {
     'import-discarded': 'Discarded an import',
     'import-cars': 'Chose the cars to import',
     'import-started': 'Ran an import',
+    'import-rows-moved': 'Moved imported rows to another car',
+    'import-rows-ignored': 'Left aside imported rows that wait for a car',
     'move-code-made': 'Made a move code',
     'move-cancelled': 'Cancelled a move',
     'move-undone': 'Undid a move',
@@ -172,6 +180,8 @@ const SETTINGS_ITEMS = {
   mqtt: ['MQTT settings', 'settings-integrations', '#mqtt'],
   tesla: ['Tesla API pace', 'settings-integrations', '#tesla'],
   teslafi: ['TeslaFi pace', 'settings-integrations', '#teslafi'],
+  'tesla-invoices': ['Tesla Supercharger invoices', 'settings-integrations', '#tesla'],
+  'teslafi-invoices': ['TeslaFi invoice costs', 'settings-integrations', '#teslafi'],
 };
 
 export function auditItem(row, ctx = {}) {
@@ -215,6 +225,7 @@ export function auditItem(row, ctx = {}) {
     }
     case 'place': return item('A place', ['places', { query: { place: parts[0] } }]);
     case 'import': return item('An import', ['import', {}]);
+    case 'import-hold': return item('Imported rows that wait for a car', ['import', {}]);
     case 'export': return item('An export', ['settings-server', {}], '#move');
     case 'move': return item('A move to another server', ['settings-server', {}], '#move');
     case 'account': {

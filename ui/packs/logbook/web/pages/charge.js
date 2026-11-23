@@ -13,6 +13,7 @@ import { format, unitLabel, rangeField, rangeLabel, formatMoney } from '../share
 import { formatTime, formatDate, formatDuration, dayKey, zoneName, MINUTE, DAY } from '../shared/time.js';
 import { formatList, formatNumber } from '../shared/i18n.js';
 import { column, timeColumn, csvFilename, downloadCsv } from '../shared/csv.js';
+import * as TI from '../shared/tiers.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { pageHead, q, figure, icon, sep, empty, errorWords, flag, chip } from '../core/ui.js';
@@ -25,6 +26,7 @@ import { field, form, choice, setFieldError } from '../core/form.js';
 import { confirmDialog } from '../core/dialog.js';
 import { remount } from '../core/router.js';
 import { browserZone } from '../core/format.js';
+import { appliedInvoice, unusedInvoices, invoiceSourceLabel, feeLabel, chargeInvoicePdfUrl } from '../shared/invoices.js';
 
 export const id = 'charge';
 export const css = true;
@@ -47,6 +49,7 @@ const LIMIT = Object.freeze({
 const COST_SOURCE = Object.freeze({
   tariff: 'Priced with the place’s price', manual: 'Entered by hand; kept through rebuilds',
   free_supercharging: 'Free Supercharging on this car', teslamate: 'Imported from TeslaMate',
+  tesla_invoice: 'From Tesla invoice', teslafi: 'From TeslaFi',
 });
 const MODE_WORDS = Object.freeze({ total: 'a total', per_kwh: 'a price per kWh', per_minute: 'a price per minute' });
 
@@ -434,6 +437,8 @@ function mapCostNote(c) {
   const src = c.cost && c.cost.source;
   if (src === 'manual') return '. A cost was entered by hand, so the place’s price is not used.';
   if (src === 'teslamate') return '. The cost was imported from TeslaMate, so the place’s price is not used.';
+  if (src === 'tesla_invoice') return '. The cost is Tesla’s invoice for the session, so the place’s price is not used.';
+  if (src === 'teslafi') return '. The cost is the one TeslaFi gave, so the place’s price is not used.';
   if (src === 'free_supercharging') return '. Supercharging was free for this car, so the place’s price is not used.';
   if (src === 'tariff') return '. The place’s price sets the cost unless one is entered below.';
   return c.place ? '. The place’s price would set the cost, but it has none: enter a cost below or give the place a price.' : '. No place here, so no price: enter a cost below or name the place with a price.';
@@ -483,7 +488,7 @@ function chargeFigures(c, { tz, going, end }) {
     dc
       ? figure('Energy drawn', q(null, 'energy', { why: 'unknown on DC' }), c.dc_inlet_kwh != null ? ['a fast charger’s grid side is out of sight; ', format(c.dc_inlet_kwh, 'energy'), ' reached the car’s inlet', c.fast_charger && c.fast_charger.billed_kwh != null ? [', billed ', format(c.fast_charger.billed_kwh, 'energy')] : ''] : 'a fast charger’s grid side is out of sight', { cover: 'cd.stat.energy_used' })
       : figure('Energy drawn', q(c.energy_grid_kwh, 'energy', { why: imported ? 'not in the imported row' : 'the car did not report it' }), c.losses_kwh != null ? ['from the AC line; ', format(c.losses_kwh, 'energy'), ' lost on the way in'] : 'from the AC line, by the car’s charger', { cover: 'cd.stat.energy_used' }),
-    figure('Efficiency', dc ? q(null, 'percent', { why: 'unknown on DC' }) : q(eff, 'percent', { why: 'needs the energy drawn' }),
+    figure('Efficiency', dc ? q(null, 'percent', { why: 'unknown on DC' }) : q(eff, 'percent', { why: c.efficiency_note || 'needs the energy drawn' }),
       dc ? 'needs the grid energy, which a fast charger does not send' : eff != null && eff > 100 ? [flag('Check', { kind: 'warn' }), ' above 100 %: a reading is off (often a three-phase line counted as one)'] : 'energy added ÷ energy drawn', { cover: 'cd.stat.efficiency' }),
     figure('Battery', h('span', { class: 'trio' },
       h('span', { cover: 'cd.stat.soc_start' }, h('span', { class: 'sr-only' }, 'start '), q(soc0, 'percent', { why: 'not recorded' })), h('span', { class: 'arrow', 'aria-hidden': 'true' }, ' → '),
@@ -502,6 +507,28 @@ function chargeFigures(c, { tz, going, end }) {
   ];
 }
 
+/**
+ * The charge's Supercharger invoices, under the cost: where it came from (the site and its fees, in a line), an
+ * invoice an entered cost won over, and a download link per invoice PDF. Both lines are always there (hidden when
+ * the charge has no invoice), so the page keeps its shape and the items are marked.
+ */
+function invoiceNotes(c, car, chargeId) {
+  const list = Array.isArray(c.invoices) ? c.invoices : [];
+  const used = appliedInvoice(c);
+  const usage = (f) => (f.usage == null ? '' : f.unit === 'kwh' ? ` for ${format(f.usage, 'energy')}` : f.unit === 'min' ? ` for ${formatDuration(f.usage * 60000)}` : '');
+  const fees = (i) => (i.fees || []).map((f) => `${feeLabel(f.kind).toLowerCase()} ${formatMoney(f.amount, i.currency)}${usage(f)}`).join(', ');
+  const lines = [];
+  if (used) lines.push(h('span', { class: 'inv-line' }, used.site || invoiceSourceLabel(used.source), fees(used) ? `: ${fees(used)}` : ''));
+  for (const i of unusedInvoices(c)) lines.push(h('span', { class: 'inv-line' }, `${invoiceSourceLabel(i.source)}: ${formatMoney(i.total, i.currency)} (an entered cost is used instead)`));
+  const pdfs = list.filter((i) => i.pdf);
+  return [
+    h('p', { class: 'fig-note inv-note', cover: 'inv.charge.source', hidden: !lines.length }, lines),
+    h('p', { class: 'fig-note inv-pdfs', cover: 'inv.charge.pdf', hidden: !pdfs.length },
+      pdfs.map((i, n) => h('a', { class: 'link-arrow', href: chargeInvoicePdfUrl(car.id, chargeId, i.id), download: true, title: i.invoice_name || null },
+        icon('download'), pdfs.length > 1 ? `Invoice ${n + 1} (PDF)` : 'Invoice (PDF)'))),
+  ];
+}
+
 /** The cost: what it is and how it was made, the breakdown per rate, and the editor (admins). */
 function costView(ctx, c, { tz, car, listUrl, place, onSaved }) {
   const cost = c.cost;
@@ -515,8 +542,11 @@ function costView(ctx, c, { tz, car, listUrl, place, onSaved }) {
     h('p', { class: 'cost-amount' }, cost ? formatMoney(cost.amount, cost.currency) : q(null, 'money', { why: 'no price' })),
     h('p', { class: 'fig-note' }, cost ? COST_SOURCE[cost.source] || cost.source : c.place ? `${c.place.name} has no price, and none was entered.` : 'No place with a price here, and none was entered.'),
     ppk && ppk.value != null && cur ? h('p', { class: 'fig-note' }, rateText(ppk.value, cur, 'price_energy'), ppk.basis === 'grid' ? ' over the energy drawn from the grid' : c.kind === 'dc' ? ' over the energy added to the pack (the grid side of a fast charger is not known)' : ' over the energy added to the pack, as entered') : null,
-    bd.gap_ms > 0 ? h('p', { class: 'fig-note' }, `${formatDuration(bd.gap_ms)} without data is priced from the energy at its ends.`) : null);
+    bd.gap_ms > 0 ? h('p', { class: 'fig-note' }, `${formatDuration(bd.gap_ms)} without data is priced from the energy at its ends.`) : null,
+    bd.cycle && cur ? h('p', { class: 'fig-note' }, `Tiered price: ${TI.splitText(TI.stepParts(bd), cur)}. This billing cycle (from ${formatDate(bd.cycle.start_ms, (place && place.time_zone) || tz)}) had ${format(bd.cycle.before_kwh, 'energy')} before this charge; a rate by time of day still sets the price of its hours.`) : null,
+    invoiceNotes(c, car, ctx.chargeId));
 
+  const stepName = (p) => (p.from_kwh != null ? `${p.rate}: ${TI.stepLabel(p.from_kwh, p.to_kwh)}` : p.rate);
   const rows = (bd.parts || []).map((p) => ({ ...p }));
   if (bd.session_fee != null) rows.push({ rate: 'Session fee', per_kwh: null, per_minute: null, kwh: null, minutes: null, cost: bd.session_fee, fee: true });
   const money = (v) => (v == null || !cur ? '—' : formatMoney(v, cur));
@@ -525,7 +555,7 @@ function costView(ctx, c, { tz, car, listUrl, place, onSaved }) {
     rows, itemName: ['line', 'lines'], label: 'Cost breakdown',
     caption: ['Total ', money(bd.total ?? (cost && cost.amount)), bd.mode === 'tariff' ? '; each rate over the time it applied' : ''],
     columns: [
-      { key: 'rate', label: 'Rate', th: true, cell: (r) => r.rate, value: (r) => r.rate },
+      { key: 'rate', label: 'Rate', th: true, cell: (r) => stepName(r), value: (r) => stepName(r) },
       { key: 'kwh', label: `Energy (${unitLabel('energy')})`, num: true, cell: (r) => (r.kwh == null ? '—' : format(r.kwh, 'energy', { unit: false })), value: (r) => r.kwh },
       { key: 'minutes', label: 'Time (min)', num: true, cell: (r) => (r.minutes == null ? '—' : format(r.minutes, 'number', { digits: 1 })), value: (r) => r.minutes },
       { key: 'per_kwh', label: 'Per kWh', num: true, cell: (r) => rate(r.per_kwh, 'price_energy'), value: (r) => r.per_kwh },
@@ -533,7 +563,7 @@ function costView(ctx, c, { tz, car, listUrl, place, onSaved }) {
       { key: 'cost', label: cur ? `Cost (${cur})` : 'Cost', num: true, cell: (r) => money(r.cost), value: (r) => r.cost },
     ],
     csv: { filename: csvFilename(car.name, 'charge', dayKey(c.start_ms, tz), 'cost'), columns: [
-      { label: 'Rate', value: (r) => r.rate }, { label: 'Energy (kWh)', value: (r) => r.kwh }, { label: 'Time (min)', value: (r) => r.minutes },
+      { label: 'Rate', value: (r) => stepName(r) }, { label: 'Energy (kWh)', value: (r) => r.kwh }, { label: 'Time (min)', value: (r) => r.minutes },
       { label: `Per kWh (${cur || ''})`, value: (r) => r.per_kwh }, { label: `Per minute (${cur || ''})`, value: (r) => r.per_minute }, { label: `Cost (${cur || ''})`, value: (r) => r.cost }] },
     cls: 'cost-table',
   }) : null;

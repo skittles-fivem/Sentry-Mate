@@ -34,6 +34,9 @@ use Case::*;
 
 /// Every change route (method, pattern) and how it is covered.
 const ROUTES: &[(&str, &str, Case)] = &[
+    ("POST", "/api/v1/cars/{car}/full-rebuild", Elsewhere("system.rs")),
+    ("POST", "/api/v1/system/full-rebuild", Elsewhere("system.rs")),
+    ("DELETE", "/api/v1/system/full-rebuild", Elsewhere("system.rs")),
     ("POST", "/api/v1/accounts", Walk),
     ("PATCH", "/api/v1/accounts/{account}", Walk),
     ("DELETE", "/api/v1/accounts/{account}", Walk),
@@ -103,6 +106,7 @@ const ROUTES: &[(&str, &str, Case)] = &[
     ("POST", "/api/v1/network/certificate", Elsewhere("settings.rs")),
     ("POST", "/api/v1/cars/{car}/rebuild", Walk),
     ("POST", "/api/v1/system/storage/compact", Walk),
+    ("PUT", "/api/v1/cars/{car}/gps-layout", Walk),
     ("PATCH", "/api/v1/cars/{car}/overlaps", Elsewhere("imports_overlap.rs")),
     ("PATCH", "/api/v1/settings", Walk),
     ("POST", "/api/v1/imports", Elsewhere("imports.rs")),
@@ -111,6 +115,7 @@ const ROUTES: &[(&str, &str, Case)] = &[
     ("PATCH", "/api/v1/imports/{import}/files/{index}", Elsewhere("imports_teslafi.rs")),
     ("PUT", "/api/v1/imports/{import}/cars", Elsewhere("imports.rs")),
     ("POST", "/api/v1/imports/{import}/start", Elsewhere("imports.rs")),
+    ("POST", "/api/v1/import-holds/{hold}", Elsewhere("imports_teslafi.rs")),
     ("PUT", "/api/v1/settings/mqtt", Elsewhere("settings.rs")),
     ("POST", "/api/v1/settings/mqtt/test", Elsewhere("settings.rs")),
     ("PATCH", "/api/v1/me/preferences", Walk),
@@ -456,6 +461,16 @@ async fn every_change_route_writes_a_readable_entry() {
     }
     w.send(&mut admin, "POST", "/api/v1/cars/{car}/rebuild", &format!("/api/v1/cars/{car}/rebuild"), json!({})).await;
     w.send(&mut admin, "POST", "/api/v1/system/storage/compact", "/api/v1/system/storage/compact", json!({})).await;
+    let layout = "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)";
+    let path = format!("/api/v1/cars/{car}/gps-layout");
+    let r = w.send(&mut admin, "PUT", "/api/v1/cars/{car}/gps-layout", &path, json!({ "layout": layout })).await;
+    assert_eq!(r["layout"], json!(layout), "{r}");
+    assert!(r["job"].is_string(), "a change rebuilds the car: {r}");
+    assert_eq!(admin.get(&path).await.json()["layout"], json!(layout));
+    let bad = admin.put(&path, json!({ "layout": "lat 0|28" })).await;
+    assert_eq!((bad.status, bad.code()), (422, Some("invalid".into())), "{}", bad.text());
+    let back = admin.put(&path, json!({ "layout": null })).await.json();
+    assert_eq!(back["layout"], Value::Null, "{back}");
 
     // a place
     let draft = json!({ "name": "Made-up office", "kind": "work", "lat": synth::TOWN.lat, "lon": synth::TOWN.lon,

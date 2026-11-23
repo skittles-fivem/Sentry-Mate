@@ -134,3 +134,12 @@
   .im-side { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(1.75rem, var(--e)) round(2.5rem, var(--e)); }
   .im-side > .im-aside-note { max-width: none; }
 }
+
+/* an import's rows moved to another car, and the rows that wait for one */
+.im-holds { display: grid; gap: round(0.75rem, var(--e)); }
+.im-moved-list, .im-lots { list-style: none; margin: 0; padding: 0; display: grid; gap: round(0.5rem, var(--e)); }
+.im-moved-list b { overflow-wrap: anywhere; }
+.im-lot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: round(0.5rem, var(--e)) round(1rem, var(--e)); padding: round(0.5rem, var(--e)) 0; border-top: 1px solid var(--rule); }
+.im-lot > span:first-child { display: grid; gap: round(0.125rem, var(--e)); min-width: 0; flex: 1 1 round(18rem, var(--e)); }
+.im-lot-go { display: flex; gap: round(0.5rem, var(--e)); align-items: center; flex-wrap: wrap; flex: 0 1 round(22rem, var(--e)); }
+.im-lot-go .im-select { width: auto; min-width: 0; flex: 1 1 round(12rem, var(--e)); }

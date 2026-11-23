@@ -20,6 +20,7 @@ import { icon } from '../core/icons.js';
 import { soldParts, soldOptions } from '../core/carswitch.js';
 import { pageHead, panel, panelLink, kv, tag, pill, note, csvButton, metric, figures } from '../core/page.js';
 import { dataTable } from '../core/table.js';
+import { scrollBox } from '../shared/scrollbox.js';
 import { field, form, showApiError } from '../core/form.js';
 import { emptyState, errorWords } from '../core/states.js';
 import { flash } from '../core/flash.js';
@@ -407,6 +408,8 @@ export async function mount(ctx) {
   const ERROR_WORDS = { connection_refused: 'the broker refused the connection', pin_mismatch: 'the certificate did not match the pin', no_host: 'no broker host set', tls_failed: 'TLS failed', auth_failed: 'user name or password refused' };
 
   const logSlot = h('div', { class: 'si-log' });
+  let logBox = null;   // the broker log's box of the last paint
+  ctx.onCleanup(() => logBox?.destroy());
   async function paintLog() {
     if (!admin) { replace(logSlot, note('The broker log (changes and tests) is shown to admins.')); return; }
     let rows = [];
@@ -422,10 +425,11 @@ export async function mount(ctx) {
       rows = rows.slice(0, 8);
     } catch (e) { if (e.name === 'AbortError') return; replace(logSlot, note('The broker log could not be read.')); return; }
     if (!ctx.alive()) return;
+    logBox?.destroy(); logBox = null;
     replace(logSlot,
       h('div', { class: 'si-log-head' }, h('h3', null, 'Broker log'), h('span', { class: 'faint' }, 'Changes and tests, last 90 days'),
         rows.length ? csvButton({ onClick: () => downloadCsv(csvFilename('sentry-mate', 'mqtt-log'), rows, [{ label: 'Time (UTC)', value: (r) => new Date(r.at_ms).toISOString() }, { label: 'Account', value: (r) => r.account }, { label: 'Action', value: (r) => r.action }, { label: 'What happened', value: (r) => r.summary }]) }) : null),
-      rows.length ? h('ol', { class: 'si-log-list' }, rows.map((r) => h('li', null, h('span', { class: 'faint nowrap' }, dateTime(r.at_ms, ctx.tz)), h('span', null, r.summary), h('span', { class: 'faint' }, r.account || '')))) : note('Nothing changed or tested in the last 90 days.'),
+      rows.length ? (logBox = scrollBox({ cls: 'si-log-box scroll-box--fit', label: 'Broker log' }, h('ol', { class: 'si-log-list' }, rows.map((r) => h('li', null, h('span', { class: 'faint nowrap' }, dateTime(r.at_ms, ctx.tz)), h('span', null, r.summary), h('span', { class: 'faint' }, r.account || '')))))).el : note('Nothing changed or tested in the last 90 days.'),
       h('a', { class: 'panel-link', href: buildUrl('settings-server') }, 'Whole audit log in Server and access', icon('chev-r', 'ico--sm')));
   }
 
@@ -682,7 +686,7 @@ export async function mount(ctx) {
   function paintEvents() {
     if (!carId) { eventsTable = null; replace(eventsSlot, emptyState({ icon: 'clock', title: 'No car yet', text: 'Events appear here once a car has uploaded logs.' })); return; }
     eventsTable = dataTable(ctx, {
-      title: 'Recent events', icon: 'clock', path: `cars/${enc(carId)}/events`, params: eventParams(), csvName: `events-${carId}`, label: 'Recent events', limit: 12,
+      title: 'Recent events', icon: 'clock', path: `cars/${enc(carId)}/events`, params: eventParams(), csvName: `events-${carId}`, label: 'Recent events', limit: 12, box: true, autoMore: true,
       note: 'The last 30 days, newest first, exactly as a subscriber to the event topic got them (positions only with location publishing on).',
       empty: () => emptyState({ icon: 'clock', title: 'No events in the last 30 days', text: 'This car did not drive, charge or change software in that time.' }),
       columns: [
@@ -751,7 +755,7 @@ export async function mount(ctx) {
   const netSlot = h('div');
   const PURPOSE = {
     geocoding: ['Address lookup', 'Only when an admin turns online addresses on; positions are rounded first.', 'settings-display'],
-    tiles: ['Map pictures', 'Asked by each viewer’s browser when online tiles are on: the chosen map (satellite by default), its place names and roads, and the maps people may switch to.', 'settings-display'],
+    tiles: ['Map pictures', 'Asked by each viewer’s browser when online tiles are on: the chosen map (the OpenStreetMap street map by default), its place names and roads, and the maps people may switch to.', 'settings-display'],
     geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-display'],
     mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
     tesla: ['Tesla API', 'Only while a Tesla account is added and not paused: sign-in, the Owner API and its live stream (Tesla account, this page).', null],

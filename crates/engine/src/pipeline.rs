@@ -57,7 +57,12 @@ pub(crate) fn status_word(s: &ingest::judge::Status) -> &'static str {
 /// distrusted, a log judged again, or the owner's "use it anyway" all change that), and it was decoded with these
 /// rules and this DBC set.
 pub(crate) fn fresh(e: &LogEntry, r: &ingest::judge::Record, profile: &str) -> bool {
-    e.usable == r.usable() && e.status == status_word(&r.status) && e.rules == records::rules() && e.profile == profile
+    e.rules == records::rules() && fresh_but_rules(e, r, profile)
+}
+
+/// [`fresh`] but for the rules it was made with (made with older ones, it is the same log checked the same way).
+pub(crate) fn fresh_but_rules(e: &LogEntry, r: &ingest::judge::Record, profile: &str) -> bool {
+    e.usable == r.usable() && e.status == status_word(&r.status) && e.profile == profile
 }
 
 /// How far before its name's start a left-out log's hole may begin, and how long after it it may end. A log holds a
@@ -390,6 +395,26 @@ impl Engine {
         Ok(())
     }
 
+    /// The names admins gave CAN Bridge keys (key → name).
+    pub fn key_names(&self) -> Result<std::collections::BTreeMap<String, String>> {
+        records::key_names(&self.inner.db)
+    }
+
+    /// Names a CAN Bridge key (`None`: forgets its name); whether that changed anything. The caller checks the name.
+    pub fn set_key_name(&self, key: &str, name: Option<&str>) -> Result<bool> {
+        let _one = lock(&self.inner.claim);
+        let db = &self.inner.db;
+        let mut m = records::key_names(db)?;
+        let changed = match name {
+            Some(n) => m.insert(key.to_string(), n.to_string()).as_deref() != Some(n),
+            None => m.remove(key).is_some(),
+        };
+        if changed {
+            records::put_key_names(db, &m)?;
+        }
+        Ok(changed)
+    }
+
     /// Makes `key` its car's preferred key (`true`), or no longer (`false`); the car's samples are written again so
     /// each second's source follows it.
     pub fn set_preferred(&self, key: &str, preferred: bool) -> Result<Option<CarId>> {
@@ -480,12 +505,15 @@ impl Engine {
         let l = self.car_lock(car);
         let _held = lock(&l);
         let _hot = crate::hot::Keep::new(self);
-        self.log_locked(car, key, name, false)
+        self.log_locked(car, key, name, false, true)
     }
 
     /// Works on one log of `car` (its lock held): decoded (or left out) and recorded, then the window it changes is
     /// rebuilt. A log already worked on the same way is left as it is unless `force`.
-    pub(crate) fn log_locked(&self, car: CarId, key: &str, name: &str, force: bool) -> Result<()> {
+    ///
+    /// `rebuild`: `false` leaves the window for [`Self::rebuild_dirty`] (it stays noted dirty, as when a crash came
+    /// between the two: several logs' windows are then rebuilt as one).
+    pub(crate) fn log_locked(&self, car: CarId, key: &str, name: &str, force: bool, rebuild: bool) -> Result<()> {
         let rt = self.handle()?;
         let db = &self.inner.db;
         let Some(record) = rt.block_on(self.inner.judge.record(key, name)) else { return Ok(()) };
@@ -556,7 +584,8 @@ impl Engine {
                         self.emit(Event::Fleet { car, change: "renamed", name: Some(c.name.clone()) });
                     }
                     let profile = dbc::Profile::from_name(c.profile().dbc_name());
-                    match timeline::read_log(&bytes, &side, profile, self.inner.opts.sample) {
+                    let gps = self.gps_layout(car)?;
+                    match timeline::read_log_with(&bytes, &side, profile, self.inner.opts.sample, gps) {
                         Ok(r) if other_vin(&c, r.vin.as_ref()) => {
                             tracing::warn!(
                                 "car {car}: log {name} names another car's VIN than the car's; it is left out"
@@ -641,6 +670,10 @@ impl Engine {
             Some(Outcome::Hole { .. }) => meta.holes = meta.holes.saturating_sub(1),
             None => {}
         }
+        // the first log of a history (a new car's, or one cleared whole) names the decoding it is made with
+        if meta.decoded == 0 && meta.holes == 0 {
+            meta.version = Some(crate::full::derived_version());
+        }
         if decoded {
             meta.decoded += 1;
         } else {
@@ -655,12 +688,14 @@ impl Engine {
         meta.last_arrived_ms = meta.last_arrived_ms.max(Some(record.arrived_ms));
         records::put_meta(db, car, &meta)?;
 
-        self.rebuild_span(car, &mut meta, span.0, span.1)?;
-        let mut dirty = records::dirty(db, car)?;
-        if let Some(i) = dirty.iter().position(|&s| s == span) {
-            dirty.remove(i);
+        if rebuild {
+            self.rebuild_span(car, &mut meta, span.0, span.1)?;
+            let mut dirty = records::dirty(db, car)?;
+            if let Some(i) = dirty.iter().position(|&s| s == span) {
+                dirty.remove(i);
+            }
+            records::put_dirty(db, car, &dirty)?;
         }
-        records::put_dirty(db, car, &dirty)?;
         if profile_changed && meta.decoded > 1 {
             // logs decoded before the VIN was seen used another DBC set
             self.send(Work::Reconcile { car: Some(car) });
@@ -752,7 +787,8 @@ impl Engine {
         let side: serde_json::Value =
             read(&format!("{name}.json"))?.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let profile = dbc::Profile::from_name(c.profile().dbc_name());
-        Ok(timeline::read_log(&bytes, &side, profile, self.inner.opts.sample).ok().map(|r| r.samples))
+        let gps = self.gps_layout(c.id)?;
+        Ok(timeline::read_log_with(&bytes, &side, profile, self.inner.opts.sample, gps).ok().map(|r| r.samples))
     }
 
     /// The car's newest values, from an input's samples. Each value keeps when it was recorded
@@ -1065,6 +1101,23 @@ impl Engine {
         Ok(out)
     }
 
+    /// Rebuilds the windows noted dirty for `car` (logs worked on whose windows wait, or a crash between a log's
+    /// writing and its rebuild), joined where they meet ([`join_spans`]), and clears the note.
+    pub(crate) fn rebuild_dirty(&self, car: CarId) -> Result<()> {
+        let db = &self.inner.db;
+        let l = self.car_lock(car);
+        let _held = lock(&l);
+        let dirty = records::dirty(db, car)?;
+        if dirty.is_empty() {
+            return Ok(());
+        }
+        let mut meta = records::meta(db, car)?;
+        for (a, b) in join_spans(dirty) {
+            self.rebuild_span(car, &mut meta, a, b)?;
+        }
+        records::put_dirty(db, car, &[])
+    }
+
     /// One car's comparison; `job` counts progress and can stop it.
     pub(crate) fn reconcile_car(&self, car: CarId, job: Option<&crate::jobs::JobState>) -> Result<()> {
         let _hot = crate::hot::Keep::new(self);
@@ -1087,15 +1140,8 @@ impl Engine {
             let _held = lock(&l);
             // updates stored before an install's fingerprint changes were one update are found again
             self.fw_regroup(car)?;
-            let dirty = records::dirty(db, car)?;
-            if !dirty.is_empty() {
-                let mut meta = records::meta(db, car)?;
-                for (a, b) in &dirty {
-                    self.rebuild_span(car, &mut meta, *a, *b)?;
-                }
-                records::put_dirty(db, car, &[])?;
-            }
         }
+        self.rebuild_dirty(car)?;
         let mut todo: Vec<(u64, String, String, ingest::judge::Record)> = Vec::new();
         for key in &c.vehicle_keys {
             let book = rt.block_on(self.inner.judge.book(key));
@@ -1111,7 +1157,11 @@ impl Engine {
         // only those not recorded the same way (read per day, so this is cheap)
         let mut day_cache: Option<(u32, std::sync::Arc<records::DayRec>)> = None;
         let profile = c.profile().dbc_name();
+        // a car whose history waits for a full rebuild (the server's decoding changed): its logs are not decoded
+        // again in place for the new rules alone, the full rebuild makes them again beside the old history
+        let hold = self.version_held(car);
         let mut wanted = Vec::new();
+        let mut bytes = 0;
         for (start, key, name, r) in todo {
             let d = records::day_of(start);
             if day_cache.as_ref().is_none_or(|(cd, _)| *cd != d) {
@@ -1119,29 +1169,91 @@ impl Engine {
             }
             let rec = day_cache.as_ref().map(|(_, r)| r);
             // also a log whose check changed while no one was told (a key distrusted, a log judged again)
-            let fresh = rec.and_then(|d| d.logs.get(&name)).is_some_and(|e| fresh(e, &r, profile));
+            let fresh = rec
+                .and_then(|d| d.logs.get(&name))
+                .is_some_and(|e| fresh(e, &r, profile) || (hold && fresh_but_rules(e, &r, profile)));
             if !fresh {
-                wanted.push((key, name));
+                let len = r.length.unwrap_or(0);
+                bytes += len;
+                wanted.push((key, name, len));
+            }
+        }
+        // logs judged before their length was kept: their size as stored (a job's bytes then add up to its logs')
+        if job.is_some() {
+            let unknown: Vec<String> = wanted.iter().filter(|w| w.2 == 0).map(|w| w.1.clone()).collect();
+            if !unknown.is_empty() {
+                let sizes: std::collections::HashMap<String, u64> = rt
+                    .block_on(self.inner.store.status(&unknown, None))
+                    .into_iter()
+                    .filter_map(|(n, st)| st.length.map(|l| (n, l)))
+                    .collect();
+                for w in &mut wanted {
+                    if w.2 == 0
+                        && let Some(l) = sizes.get(&w.1)
+                    {
+                        w.2 = *l;
+                        bytes += *l;
+                    }
+                }
             }
         }
         if let Some(j) = job {
-            j.add_total(wanted.len() as u64);
+            j.add_total(wanted.len() as u64, bytes);
         }
-        for (key, name) in wanted {
+        // the windows the logs change are rebuilt once per run of logs, not after each log (a window reaches back
+        // to the last settled point, and in a rebuild on to the car's newest data: far more than a log)
+        //
+        // Only where it gives the very timeline that a rebuild after every log gives: nothing of the timeline is
+        // stored yet at or after the first of these logs (a first start over a full store, a car rebuilt whole),
+        // and the car has no API input. Where logs fill a gap before rows that are there, a drive or charge keeps
+        // the id of the piece of it that was there first, and which piece that is depends on the windows rebuilt
+        // on the way: there every log's window is rebuilt as before. The same beside an API's samples: a rebuild
+        // builds rows from them ahead of the logs, and five made-up days with TeslaFi's API and local TeslaMate
+        // gave a drive another id when rebuilt per run (crates/sentry-mate/src/window_batch.rs).
+        let mut batch = self.inner.opts.window_batch.max(1);
+        if batch > 1 {
+            let first = wanted.first().and_then(|(_, name, _)| records::name_start_ms(name));
+            let meta = records::meta(db, car)?;
+            let apis = !(meta.api_days.is_empty() && meta.teslafi_days.is_empty() && meta.tmlocal_days.is_empty());
+            let ahead = match first {
+                Some(t) => {
+                    let q = db::Query { limit: 1, source: Some(Source::Live), ..db::Query::between(t, u64::MAX) };
+                    !(db.list::<StateRow>(car, &q)?.items.is_empty()
+                        && db.list::<Drive>(car, &q)?.items.is_empty()
+                        && db.list::<Charge>(car, &q)?.items.is_empty())
+                }
+                None => true,
+            };
+            if apis || ahead {
+                batch = 1;
+            }
+        }
+        let mut waiting = 0;
+        for (key, name, len) in wanted {
             if job.is_some_and(|j| j.cancelled()) {
+                self.rebuild_dirty(car)?;
                 return Ok(());
             }
             let l = self.car_lock(car);
             let held = lock(&l);
-            let r = self.log_locked(car, &key, &name, false);
+            let r = self.log_locked(car, &key, &name, false, batch == 1);
             drop(held);
             if let Err(e) = r {
+                if let Some(j) = job {
+                    j.log_failed(&name, e.to_string());
+                }
                 self.failed(&e);
             }
+            waiting += 1;
+            if batch > 1 && waiting >= batch {
+                waiting = 0;
+                self.rebuild_dirty(car)?;
+            }
             if let Some(j) = job {
-                j.step(self, Some(car));
+                j.step(self, Some(car), len);
             }
         }
+        self.rebuild_dirty(car)?;
         // Tesla API data stored and not built yet (a restart, or a rebuild of the car)
         {
             let l = self.car_lock(car);

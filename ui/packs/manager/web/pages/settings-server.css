@@ -62,8 +62,6 @@
 .ss-name-input { width: round(18rem, var(--e)); max-width: 100%; min-width: 0; }
 
 /* ports */
-.ss-port { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); flex-wrap: wrap; }
-.ss-port b { font-size: 1.0625rem; }
 .ss-gap { margin-top: round(0.875rem, var(--e)); }
 .ss .note + .note { margin-top: round(0.5rem, var(--e)); }
 
@@ -98,7 +96,7 @@
 .ss-carpick { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); margin-top: round(0.5rem, var(--e)); }
 .ss-carlist { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); max-height: round(14rem, var(--e)); overflow-y: auto; padding: round(0.5rem, var(--e)) round(0.625rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); }
 
-@container page (min-width: 108rem) {
+@container page (min-width: 64rem) {
   .ss-two { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
 }
 @container page (max-width: 50rem) {
@@ -106,12 +104,68 @@
   .ss-name-input { width: 100%; }
 }
 
-/* storage: the figures, how compaction stands and what it does, then the table */
-.ss-stor { display: flex; flex-direction: column; gap: round(0.875rem, var(--e)); padding: round(1rem, var(--e)) round(1.25rem, var(--e)) round(1.125rem, var(--e)); border-bottom: 1px solid var(--line); }
-.ss-stor-line { display: flex; align-items: center; gap: round(0.5rem, var(--e)); margin: 0; min-height: round(1.5rem, var(--e)); color: var(--text-2); }
+/* the move and Storage side by side: half the width each on a desktop, one above the other when narrow */
+.ss-pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--gap); align-items: stretch; }
+.ss-pair > .panel { min-width: 0; }
+@container page (min-width: 62rem) {
+  .ss-pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+@container page (max-width: 110rem) {
+  .ss-pair .mv-ways { grid-template-columns: minmax(0, 1fr); }
+}
+:root[data-phone] .ss-pair { grid-template-columns: minmax(0, 1fr); }
+
+/* storage: the figures in a row, how compaction stands, then the space by kind */
+.st-side { gap: round(0.5rem, var(--e)); flex-wrap: wrap; justify-content: flex-end; }
+.st-figs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: round(0.5rem, var(--e)); margin: 0; }
+.st-fig { min-width: 0; padding: round(0.5rem, var(--e)) round(0.625rem, var(--e)); border-radius: var(--radius-sm); background: var(--surface-sunken); border: 1px solid var(--line); cursor: help; }
+.st-fig dt { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
+.st-fig dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ss-stor-line { display: flex; align-items: center; gap: round(0.5rem, var(--e)); margin: round(0.625rem, var(--e)) 0; min-height: round(1.5rem, var(--e)); color: var(--text-2); }
 .ss-stor-line b { color: var(--text); font-weight: 600; }
 .ss-stor-line > .ico, .ss-stor-line > .mv-spin { flex: none; }
 .ss-stor-line.is-bad > .ico { color: var(--warm); }
+.st-tip { flex: none; display: inline-grid; place-items: center; color: var(--text-3); cursor: help; }
+.st-groups { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.st-group { border-bottom: 1px solid var(--line); }
+.st-group-head { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(3rem, 6rem) auto round(2.75rem, var(--e)); align-items: center; gap: round(0.625rem, var(--e)); width: 100%; min-height: var(--tap, 2.5rem); padding: round(0.375rem, var(--e)) 0; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+@media (hover: hover) { .st-group-head:hover .st-group-name { color: var(--live); } }
+.st-group-head > .ico { color: var(--text-3); }
+.st-group-name { font-weight: 600; overflow-wrap: anywhere; }
+.st-bar { width: 100%; }
+.st-group-size { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.st-group-share { text-align: right; white-space: nowrap; color: var(--text-3); font-variant-numeric: tabular-nums; }
+/* a group's categories: five rows at most, the rest scroll */
+.st-rows { list-style: none; margin: 0 0 round(0.5rem, var(--e)); padding: 0 0 0 round(1.625rem, var(--e)); max-height: calc(5 * round(2rem, var(--e))); overflow-y: auto; overscroll-behavior: contain; }
+.st-rows[hidden] { display: none; }
+.st-row { display: flex; align-items: center; justify-content: space-between; gap: round(0.75rem, var(--e)); min-height: round(2rem, var(--e)); color: var(--text-2); }
+.st-row-name { min-width: 0; overflow-wrap: anywhere; }
+.st-row-size { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.st-none { padding: round(0.75rem, var(--e)) 0; color: var(--text-2); }
+:root[data-phone] .st-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+:root[data-phone] .st-group-head { grid-template-columns: auto minmax(0, 1fr) auto round(2.75rem, var(--e)); }
+:root[data-phone] .st-bar { grid-column: 2 / -1; grid-row: 2; }
+/* the progress row of a compaction pass: one box of fixed size, idle or running (the head, the bar with the
+   count, the details, a warn line), its numbers in tabular figures so nothing wobbles as they change */
+.ss-prog {
+  --pl: round(1.25rem, var(--e)); --pg: round(0.375rem, var(--e)); --LH: var(--pl);
+  display: flex; flex-direction: column; gap: var(--pg); height: calc(4 * var(--pl) + 3 * var(--pg)); overflow: hidden;
+  font-size: max(0.8125rem, var(--fs-floor)); font-variant-numeric: tabular-nums; color: var(--text-2);
+}
+.ss-prog > * { flex: none; margin: 0; min-width: 0; }
+.ss-prog-head { display: flex; align-items: flex-start; gap: round(0.5rem, var(--e)); color: var(--text); }
+.ss-prog-head b { font-weight: 600; }
+.ss-prog-lead { display: flex; align-items: center; justify-content: center; flex: none; width: round(1.125rem, var(--e)); height: var(--pl); color: var(--text-3); }
+.ss-prog.is-bad .ss-prog-lead { color: var(--warm); }
+.ss-prog-text { min-width: 0; }
+.ss-prog.is-running .ss-prog-text, .ss-prog-count, .ss-prog-info, .ss-prog-err { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-prog.is-running .ss-prog-head { height: var(--pl); font-weight: 600; }
+.ss-prog-barrow { display: flex; align-items: center; gap: round(0.75rem, var(--e)); height: var(--pl); }
+.ss-prog-bar { flex: 1 1 auto; min-width: 0; }
+.ss-prog-bar.is-counting > i { width: 0; }
+.ss-prog-count { flex: none; max-width: 50%; color: var(--text); }
+.ss-prog-info, .ss-prog-err { height: var(--pl); }
+.ss-prog:not(.is-running) > :not(.ss-prog-head) { display: none; }
 
 /* moving to another server (pages/settings-server-move.js) */
 .mv-lead { color: var(--text-2); max-width: round(64rem, var(--e)); margin: 0 0 round(1rem, var(--e)); }
@@ -179,20 +233,58 @@
 .mv-undo b { color: var(--text); }
 
 /* the export file */
+/* the export file's status: the same rows in every state, each with its height kept, so the box never jumps */
+.xp { --xp-lh: round(1.25rem, var(--e)); display: grid; grid-template-rows: auto auto auto auto auto 1fr auto; gap: round(0.625rem, var(--e)); min-height: round(21.5rem, var(--e)); padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--glass); min-width: 0; }
+.xp--ok { border-color: var(--live-line); }
+.xp--warn { border-color: var(--warm-line); }
+.xp--error { border-color: var(--danger); }
+.xp-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: round(0.75rem, var(--e)); align-items: start; }
+.xp-ic { display: grid; place-items: center; width: round(1.75rem, var(--e)); height: round(1.75rem, var(--e)); border-radius: round(0.5rem, var(--e)); background: var(--glass-2); color: var(--live); }
+.xp--warn .xp-ic { color: var(--warm); }
+.xp--error .xp-ic { color: var(--danger); }
+.xp-titles { min-width: 0; }
+.xp-title { font-weight: 600; line-height: var(--xp-lh); overflow-wrap: anywhere; }
+.xp-sub { color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: var(--xp-lh); min-height: calc(2 * var(--xp-lh)); overflow-wrap: anywhere; }
+.xp-pct { font-variant-numeric: tabular-nums; font-weight: 600; line-height: var(--xp-lh); min-width: 4.5ch; text-align: right; color: var(--text); }
+.xp-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, auto); justify-content: space-between; gap: round(0.5rem, var(--e)); }
+.xp-step { display: flex; align-items: center; gap: round(0.375rem, var(--e)); min-width: 0; color: var(--text-3); font-size: max(0.78125rem, var(--fs-floor)); line-height: var(--xp-lh); }
+.xp-step-n { flex: none; display: grid; place-items: center; width: var(--xp-lh); height: var(--xp-lh); border-radius: 50%; border: 1px solid var(--line-2); font-size: max(0.6875rem, var(--fs-floor)); font-weight: 600; line-height: 1; }
+.xp-step--done { color: var(--text-2); }
+.xp-step--done .xp-step-n { background: var(--live-soft); border-color: var(--live-line); color: var(--live); }
+.xp-step--now { color: var(--text); font-weight: 600; }
+.xp-step--now .xp-step-n { background: var(--live); border-color: var(--live); color: var(--bg-0); }
+.xp-bar { height: round(0.5rem, var(--e)); }
+.xp-bar > i { transition: width 0.9s linear; }
+.xp-bar--unknown > i { width: 100%; opacity: 0.25; }
+.xp-line { color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: var(--xp-lh); min-height: var(--xp-lh); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.xp-note { align-self: start; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: var(--xp-lh); padding: round(0.5rem, var(--e)) round(0.625rem, var(--e)); border-radius: round(0.5rem, var(--e)); background: var(--surface-sunken); min-width: 0; }
+.xp-note b { color: var(--text); font-weight: 600; }
+.xp-note--warn { background: var(--warm-soft); }
+.xp-note--error { background: var(--danger-soft); }
+.xp-sha { display: block; overflow-wrap: anywhere; color: var(--text); font-size: max(0.75rem, var(--fs-floor)); }
+.xp-acts { flex-wrap: wrap; gap: round(0.5rem, var(--e)); }
+@media (prefers-reduced-motion: reduce) { .mv-bar > i, .xp-bar > i { transition: none; } }
 .mv-file { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); }
 .mv-file-name { display: flex; align-items: center; gap: round(0.5rem, var(--e)); font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
 .mv-file-name .ico { color: var(--live); flex: none; }
 .mv-file-meta { color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); }
 .mv-preparing { display: flex; align-items: center; gap: round(0.75rem, var(--e)); color: var(--text-2); }
 .mv-preparing b { color: var(--text); }
-.mv-spin { flex: none; width: round(1.25rem, var(--e)); height: round(1.25rem, var(--e)); border-radius: 50%; border: round(0.1875rem, var(--e)) solid var(--live-soft); border-top-color: var(--live); animation: mv-spin 0.9s linear infinite; }
+/* every busy ring is the size of an icon (round(1.125rem)), whatever holds it. The box that has the size does
+   not turn; its ring (::before, inset 0) does: Chromium can work a round(…, var(--e)) size out wrongly on an
+   element that is being animated, and the ring then grew to about four times its size now and then */
+.mv-spin { position: relative; display: inline-block; flex: none; box-sizing: border-box; width: round(1.125rem, var(--e)); height: round(1.125rem, var(--e)); min-width: round(1.125rem, var(--e)); max-width: round(1.125rem, var(--e)); vertical-align: middle; }
+.mv-spin::before { content: ""; position: absolute; inset: 0; box-sizing: border-box; border-radius: 50%; border: 2px solid var(--live-soft); border-top-color: var(--live); animation: mv-spin 0.9s linear infinite; }
 @keyframes mv-spin { to { transform: rotate(1turn); } }
-@media (prefers-reduced-motion: reduce) { .mv-spin { animation: none; } .mv-bar > i { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .mv-spin::before { animation: none; } .mv-bar > i { transition: none; } }
 
 @container page (max-width: 85.375rem) {
   .mv-ways { grid-template-columns: minmax(0, 1fr); }
 }
 @container page (max-width: 50rem) {
+  .xp { min-height: round(33rem, var(--e)); padding: round(0.75rem, var(--e)) round(0.875rem, var(--e)); }
+  .xp-steps { gap: round(0.375rem, var(--e)); }
+  .xp-step { gap: round(0.25rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); }
   .mv-steps { grid-template-columns: minmax(0, 1fr); gap: round(0.375rem, var(--e)); }
   .mv-step-t { flex-direction: row; flex-wrap: wrap; gap: 0 round(0.375rem, var(--e)); }
   .mv-code { font-size: 1.25rem; }
@@ -201,6 +293,8 @@
 
 /* a phone: controls as wide as the panel, key and value stacked, long values wrap */
 :root[data-phone] .ss .setting-control { align-items: stretch; }
+:root[data-phone] .ss-prog { height: calc(5 * var(--pl) + 3 * var(--pg)); }
+:root[data-phone] .ss-prog.is-running .ss-prog-info { height: calc(2 * var(--pl)); white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 :root[data-phone] .ss .setting-control > :is(.btn, .switch-row, .panel-link, .link-btn) { align-self: flex-start; }
 :root[data-phone] .ss .setting-control .form-row { max-width: none; }
 :root[data-phone] .ss .seg { display: flex; flex-wrap: wrap; width: 100%; max-width: 100%; }
@@ -214,5 +308,60 @@
 :root[data-phone] .ss-acts { flex-wrap: wrap; }
 :root[data-phone="tall"] .ss .kv-row { flex-direction: column; align-items: flex-start; gap: round(0.125rem, var(--e)); }
 :root[data-phone="tall"] .ss .kv dd { margin: 0; text-align: left; white-space: normal; }
-:root[data-phone] .ss-port { justify-content: flex-start; }
 :root[data-phone] .ss-carlist label { min-height: var(--tap); }
+
+/* the full rebuild block (pages/full-rebuild.js): the panel keeps one size in every state (idle, running, done,
+   failed): every line has its fixed height from the start and long text ends in an ellipsis */
+.fr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--gap); align-items: start; }
+.fr-about { min-width: 0; }
+.fr-explain { margin: 0 0 round(0.625rem, var(--e)); color: var(--text-2); }
+.fr-stale { margin: 0 0 round(0.625rem, var(--e)); color: var(--warm); }
+.fr-acts { margin-top: round(0.875rem, var(--e)); }
+.fr-panel { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); min-width: 0; padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--glass-2); }
+.fr-bar-row { display: flex; align-items: center; gap: round(0.75rem, var(--e)); height: round(1.25rem, var(--e)); }
+.fr-bar { flex: 1 1 auto; height: round(0.5rem, var(--e)); }
+.fr-bar > i { transition: width 0.9s linear; }
+.fr-pct { flex: none; width: 5ch; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); height: round(1.25rem, var(--e)); }
+.fr-lines { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); margin: 0; }
+.fr-line { display: grid; grid-template-columns: round(8rem, var(--e)) minmax(0, 1fr); gap: round(0.75rem, var(--e)); height: round(1.25rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
+.fr-line dt, .fr-line dd { margin: 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fr-line dt { color: var(--text-3); }
+.fr-line dd { color: var(--text); font-variant-numeric: tabular-nums; }
+.fr-line[data-tone="ok"] dd { color: var(--live); }
+.fr-line[data-tone="warn"] dd { color: var(--warm); }
+.fr-line[data-tone="error"] dd { color: var(--danger); }
+.fr-errors-box { padding-top: round(0.625rem, var(--e)); border-top: 1px solid var(--line); }
+.fr-errors-head { margin: 0 0 round(0.25rem, var(--e)); color: var(--text-3); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
+.fr-errors { display: flex; flex-direction: column; gap: round(0.125rem, var(--e)); margin: 0; padding: 0; list-style: none; }
+.fr-errors li { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; height: round(2.5rem, var(--e)); overflow: hidden; overflow-wrap: anywhere; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
+.fr-panel[data-tone="error"] .fr-errors li, .fr-panel[data-tone="warn"] .fr-errors li { color: var(--warm); }
+.fr-panel[data-tone="error"] .fr-errors li:last-child:not(:empty) { color: var(--danger); }
+.fr-intro { margin: 0 0 round(0.75rem, var(--e)); }
+@media (prefers-reduced-motion: reduce) { .fr-bar > i { transition: none; } }
+@container page (max-width: 85.375rem) {
+  .fr { grid-template-columns: minmax(0, 1fr); }
+}
+@container page (max-width: 50rem) {
+  .fr-line { grid-template-columns: round(6.5rem, var(--e)) minmax(0, 1fr); }
+  /* the state, the step and the speed take two lines on a narrow page (always, so the panel keeps its size) */
+  .fr-line[data-key="state"], .fr-line[data-key="phase"], .fr-line[data-key="rate"] { height: round(2.5rem, var(--e)); }
+  .fr-line[data-key="state"] dd, .fr-line[data-key="phase"] dd, .fr-line[data-key="rate"] dd { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; }
+}
+/* the full rebuild section of this page: the stale cars, the automatic run's switch */
+.ss-fr-stale { margin: round(0.875rem, var(--e)) 0 0; color: var(--warm); }
+#full-rebuild .setting { margin-top: round(1.25rem, var(--e)); padding-top: round(1.25rem, var(--e)); border-top: 1px solid var(--line); }
+#full-rebuild .switch-row--inline { justify-content: flex-start; margin: 0; padding: 0; }
+/* Server updates: this build, the newest published one, the last check; the switch's state and Check now */
+.ss-upd { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); }
+.ss-upd .kv { margin: 0; }
+.ss-upd .kv dd { white-space: normal; min-width: 0; max-width: 100%; }
+.ss-upd-val { display: inline-flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: round(0.375rem, var(--e)) round(0.5rem, var(--e)); min-width: 0; overflow-wrap: anywhere; }
+.ss-upd-val--error { color: var(--warm); }
+.ss-upd-val--off, .ss-upd-val--wait { color: var(--text-2); }
+.ss-upd-check { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); padding-top: round(0.75rem, var(--e)); border-top: 1px solid var(--line); }
+.ss-upd-on { margin: 0; flex: 1 1 round(16rem, var(--e)); color: var(--text-2); }
+.ss-upd-on b { color: var(--text); }
+.ss-upd-how { margin: 0; }
+.ss-names-btn, .ss-check .ss-names-btn { margin-left: auto; margin-top: 0; }
+.ss-names-dlg { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); }
+.ss-names-dlg > p { margin: 0; }

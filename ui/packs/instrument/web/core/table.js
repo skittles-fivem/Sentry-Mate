@@ -2,17 +2,16 @@
 // (sorted here), with a header that sorts, a "Show more" button, a count, and a Download CSV button on
 // every table. Rows can open a page (rowHref). Cells are built by the column's render(row), which
 // returns text or elements (never HTML).
-// Drawing stays cheap while lists load again (a rebuild sends `rows` events every second): with reuseRows, a row
-// whose data is the same as before keeps its element, and when no row changed the table is not touched at all. Rows the page
-// already has are drawn 200 at a time; the next 200 come as the foot scrolls into view (or "Show more").
 
 import * as state from '../shared/state.js';
 import { h, replace, cover } from '../shared/dom.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
+import { scrollBox } from '../shared/scrollbox.js';
 import { formatNumber, compareText } from '../shared/i18n.js';
 import { icon } from './icons.js';
 import { csvButton } from './page.js';
 import { errorWords } from './states.js';
+import { windowList, dayJumpMs } from '../shared/vlist.js';
 
 /**
  * dataTable(ctx, {
@@ -24,39 +23,35 @@ import { errorWords } from './states.js';
  *   onSort(sort),                      called when the person sorts by a header ({ key, dir })
  *   rowHref(row),                       a row opens this page
  *   rowClass(row),                      more classes for a row (a string, or null)
+ *   rowTitle(row),                      the row's hover title (e.g. where its data came from), or null
  *   empty(),                            what to show when there are no rows (say why)
  *   csv: true | false | { filename, columns: [{ label, value(row) }], all }   (true: the server's CSV;
  *                                       an object: CSV from the columns' csv specs, all: every page of an API list)
  *   side,                               more elements in the bar (filters, a note)
  *   onPage(page),                       after each API page (the first holds summary or totals)
  *   cover,                              item ids for the table panel
- *   note, noteCover,                    a line under the bar that explains the table (and its item ids)
+ *   note, noteCover, noteMore,          a line under the bar that explains the table (and its item ids);
+ *                                       noteMore: the longer explanation, as the line's hover title
  *   autoMore,                           an API list: the next page loads as the foot scrolls into view
  *                                       (IntersectionObserver); the button stays, for the keyboard
  *   moreLabel,                          the button's words (default "Show more")
- *   reuseRows,                          a row that loads again with the same data keeps its element (only for
- *                                       columns whose cells come from the row alone, not from other rows or state)
- *   box,                                true or the box's accessible name: the rows scroll inside a box (the
- *                                       page's CSS gives .tbl-box its height, from the start), and with autoMore
- *                                       the next page loads as the end of the box scrolls into view; the box
- *                                       is a focusable region (arrow keys scroll it), data-below while rows
- *                                       are hidden under its bottom edge (for a fade)
+ *   box,                                true or the box's accessible name: the rows scroll inside a box of about
+ *                                       five rows (shared/scrollbox.js; app.css .scroll-box gives it its height
+ *                                       from the start, the column header stays at its top); with autoMore the
+ *                                       next page loads as the end of the box comes near. Local rows, and an
+ *                                       API list whose first page holds it all, get a box only as high as its
+ *                                       rows, up to five (boxFit: true or false sets it for local rows)
  * }) -> { el, reload(params), setParams(patch), rows(), done() }
  *
  * A column's sort is the API's sort name (a string) for API lists, or true for local rows (sorted by
  * the value of row[key], or column.value(row)).
  */
-const LOCAL_STEP = 200; // rows the page already has, drawn at a time
-
 export function dataTable(ctx, opts) {
   const { columns, rowHref = null, limit = 50, csv = true } = opts;
   let params = { ...(opts.params || {}) };
   let sort = opts.sort ? { ...opts.sort } : null;
   let pager = null, loaded = [], done = false, total = null, busy = false, gen = 0;
   let fresh = false, freshQuiet = false, prevPager = null, answered = false;
-  let shownLocal = LOCAL_STEP; // rows the page already has: how many are drawn
-  // the row elements drawn last, by their data: a row that comes again unchanged keeps its element
-  let drawn = new Map();
 
   const count = h('span', { class: 'tbl-count', 'aria-live': 'polite' });
   // on a phone the rows are cards without the header, so the order is picked here (app.css shows it there)
@@ -75,50 +70,40 @@ export function dataTable(ctx, opts) {
   const moreBtn = h('button', { class: 'btn btn--sm', type: 'button', onclick: () => more() }, icon('chev-d', 'ico--sm'), opts.moreLabel || 'Show more');
   const footText = h('span');
   const foot = h('div', { class: 'tbl-foot', hidden: true }, footText, moreBtn);
-  const noteEl = opts.note ? h('p', { class: 'note tbl-note', cover: opts.noteCover || null }, opts.note) : null;
-  const boxEnd = opts.box ? h('div', { class: 'tbl-box-end', 'aria-hidden': 'true' }) : null;
-  const scroller = h('div', opts.box
-    ? { class: 'tbl-scroll tbl-box', tabindex: '0', role: 'region', 'aria-label': typeof opts.box === 'string' ? opts.box : opts.label || opts.title || null }
-    : { class: 'tbl-scroll' }, table, boxEnd);
+  const noteEl = opts.note ? h('p', { class: 'note tbl-note', cover: opts.noteCover || null, title: opts.noteMore || null }, opts.note) : null;
+  const scroller = h('div', { class: 'tbl-scroll' }, table);
+  // box: the rows scroll in a box of about five rows; with autoMore its end marker asks for the next page
+  const fit = opts.boxFit ?? !!opts.rows;
+  const box = opts.box ? scrollBox({
+    el: scroller, cls: ['tbl-box', fit && 'scroll-box--fit'], onCleanup: ctx.onCleanup,
+    label: typeof opts.box === 'string' ? opts.box : opts.label || opts.title || null,
+    onEnd: opts.autoMore && opts.path ? async () => {
+      if (busy || done || foot.hidden || !ctx.alive()) return false;
+      const n = loaded.length;
+      await more();
+      return loaded.length > n;
+    } : null,
+  }) : null;
   const el = h('section', { class: ['panel', 'tbl-panel', opts.cls], 'aria-label': opts.label || opts.title || null },
     bar, noteEl, scroller, foot);
   if (opts.cover) cover(el, opts.cover);
 
-  // autoMore: the foot is the sentinel (in a box: the end of the box, watched against the box). New rows go
-  // under the ones on screen (appended, never re-drawn), so nothing above moves; after each page, a foot
-  // still in view (a tall screen, a box not yet full) asks for the next one.
-  const AHEAD = opts.box ? 96 : 240;
+  // autoMore (no box): the foot is the sentinel. New rows go under the ones on screen (appended, never
+  // re-drawn), so nothing above moves; after each page, a foot still in view (a tall screen) asks for the next.
+  const AHEAD = 240;
   let watcher = null;
-  if (((opts.autoMore && opts.path) || opts.rows) && typeof IntersectionObserver === 'function') {
+  if (opts.autoMore && opts.path && !box && typeof IntersectionObserver === 'function') {
     watcher = new IntersectionObserver((entries) => {
       if (!ctx.alive()) { watcher.disconnect(); return; }
-      if (entries.some((e) => e.isIntersecting) && !foot.hidden) more();
-    }, { root: opts.box ? scroller : null, rootMargin: `0px 0px ${AHEAD}px 0px` });
-    watcher.observe(boxEnd || foot);
+      if (entries.some((e) => e.isIntersecting)) more();
+    }, { rootMargin: `0px 0px ${AHEAD}px 0px` });
+    watcher.observe(foot);
     ctx.onCleanup?.(() => watcher.disconnect());
   }
   function footNear() {
     if (!watcher || foot.hidden || !foot.isConnected) return false;
-    if (opts.box) {
-      const b = scroller.getBoundingClientRect();
-      return b.height > 0 && boxEnd.getBoundingClientRect().top < b.bottom + AHEAD;
-    }
     const r = foot.getBoundingClientRect();
     return r.height > 0 && r.top < (window.innerHeight || 0) + AHEAD && r.bottom > 0;
-  }
-  // a box: data-below while rows are hidden under its bottom edge
-  function boxEdge() {
-    if (!opts.box) return;
-    scroller.toggleAttribute('data-below', scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight > 1);
-  }
-  if (opts.box) {
-    scroller.addEventListener('scroll', boxEdge, { passive: true });
-    if (typeof ResizeObserver === 'function') {
-      const ro = new ResizeObserver(() => boxEdge());
-      ro.observe(scroller);
-      ro.observe(table);
-      ctx.onCleanup?.(() => ro.disconnect());
-    }
   }
 
   function sortParams() {
@@ -168,7 +153,7 @@ export function dataTable(ctx, opts) {
 
   function rowEl(r) {
     const href = rowHref ? rowHref(r) : null;
-    const tr = h('tr', { class: [href && 'is-link', opts.rowClass?.(r)] }, columns.map((c) => h('td', { class: [c.num && 'is-num', c.cls], dataset: { label: labelText(c) || null } }, c.render ? c.render(r) : r[c.key] ?? '—')));
+    const tr = h('tr', { class: [href && 'is-link', opts.rowClass?.(r)], title: opts.rowTitle?.(r) || null }, columns.map((c) => h('td', { class: [c.num && 'is-num', c.cls], dataset: { label: labelText(c) || null } }, c.render ? c.render(r) : r[c.key] ?? '—')));
     if (href) {
       tr.addEventListener('click', (e) => {
         if (e.defaultPrevented || e.target.closest('a, button, input, select, label')) return;
@@ -177,28 +162,6 @@ export function dataTable(ctx, opts) {
       });
     }
     return tr;
-  }
-
-  // the elements for rows: an unchanged row (the same data) keeps the element it had; append: rows added under
-  // the ones on screen (always new elements, never one taken from higher up)
-  const keyOf = (r) => { if (!opts.reuseRows) return null; try { return JSON.stringify(r); } catch (_) { return null; } };
-  function remember(k, tr) { if (k == null) return; if (!drawn.has(k)) drawn.set(k, []); drawn.get(k).push(tr); }
-  function rowEls(rows, append = false) {
-    const was = append ? null : drawn;
-    if (!append) drawn = new Map();
-    return rows.map((r) => {
-      const k = keyOf(r);
-      const list = was && k != null && opts.reuseRows ? was.get(k) : null;
-      const tr = list && list.length ? list.shift() : rowEl(r);
-      remember(k, tr);
-      return tr;
-    });
-  }
-  // the body shows exactly these rows: nothing is touched when they are the ones on screen already
-  function setBody(trs) {
-    const now = tbody.children;
-    if (now.length === trs.length && trs.every((tr, i) => now[i] === tr)) return;
-    tbody.replaceChildren(...trs);
   }
 
   function skeleton(n = 4) {
@@ -210,13 +173,6 @@ export function dataTable(ctx, opts) {
   }
 
   function setCount() {
-    if (opts.rows) {
-      const n = loaded.length, shown = Math.min(shownLocal, n);
-      count.textContent = `${formatNumber(n)} ${n === 1 ? 'row' : 'rows'}`;
-      foot.hidden = shown >= n;
-      footText.textContent = `Showing ${formatNumber(shown)} of ${formatNumber(n)}`;
-      return;
-    }
     const n = loaded.length;
     count.textContent = total != null ? `${formatNumber(total)} in all` : done ? `${formatNumber(n)} ${n === 1 ? 'row' : 'rows'}` : `${formatNumber(n)} shown`;
     foot.hidden = done || !n;
@@ -267,20 +223,10 @@ export function dataTable(ctx, opts) {
   function renderLocal() {
     loaded = sortedLocal();
     done = true; total = null;
-    if (loaded.length) setBody(rowEls(loaded.slice(0, shownLocal)));
-    else { drawn = new Map(); replace(tbody, emptyRow(opts.empty ? opts.empty() : h('div', { class: 'empty' }, h('h3', null, 'Nothing to show')))); }
+    replace(tbody, loaded.length ? loaded.map(rowEl) : emptyRow(opts.empty ? opts.empty() : h('div', { class: 'empty' }, h('h3', null, 'Nothing to show'))));
+    box?.edge();
     setCount();
     setCsv();
-  }
-  // the next rows of a long local list, under the ones on screen
-  function moreLocal() {
-    if (shownLocal >= loaded.length) return;
-    const from = shownLocal;
-    shownLocal += LOCAL_STEP;
-    const add = loaded.slice(from, shownLocal);
-    tbody.append(...rowEls(add, true));
-    setCount();
-    if (watcher && ctx.alive()) requestAnimationFrame(() => { if (footNear()) moreLocal(); });
   }
 
   // quiet (live refreshes, the default once the table has had an answer): the rows (or the empty state) on
@@ -292,7 +238,7 @@ export function dataTable(ctx, opts) {
     if (!freshQuiet) {
       loaded = []; done = false; total = null;
       replace(tbody, skeleton());
-      if (opts.box) scroller.scrollTop = 0;   // a new list starts at its top
+      box?.top();   // a new list starts at its top
       foot.hidden = true;
       count.textContent = '';
     }
@@ -303,7 +249,6 @@ export function dataTable(ctx, opts) {
   }
 
   async function more(my = gen) {
-    if (opts.rows) { moreLocal(); return; }
     if (busy || (done && !fresh) || !pager) return;
     busy = true;
     moreBtn.disabled = true;
@@ -312,13 +257,14 @@ export function dataTable(ctx, opts) {
       const items = (await pager.more()) || [];
       const pg = pager.last || { items, next: null };
       if (my !== gen || !ctx.alive()) return;
-      let first = false;
-      if (fresh) { fresh = false; first = true; loaded = []; total = null; if (freshQuiet) setCsv(); }
+      if (fresh) { fresh = false; loaded = []; total = null; tbody.replaceChildren(); if (freshQuiet) setCsv(); }
       loaded.push(...items);
-      // the first page replaces the rows on screen, keeping the elements of rows that did not change
-      if (first) setBody(rowEls(items)); else tbody.append(...rowEls(items, true));
+      tbody.append(...items.map(rowEl));
+      const first = !answered;
       answered = true;
       done = !pg.next;
+      // a box whose whole list came with the first page (before the page is shown) is only as high as its rows
+      if (box && first && done) scroller.classList.add('scroll-box--fit');
       if (pg.total != null) total = pg.total;
       if (!loaded.length) replace(tbody, emptyRow(opts.empty ? opts.empty(pg) : h('div', { class: 'empty' }, h('h3', null, 'Nothing in this period'))));
       setCount();
@@ -337,6 +283,7 @@ export function dataTable(ctx, opts) {
       // a stale load leaves busy alone: load() cleared it and the current load owns it now
       if (my === gen) { busy = false; moreBtn.disabled = false; }
     }
+    if (drew && my === gen && box && ctx.alive()) box.recheck();
     if (drew && my === gen && watcher && !done && ctx.alive()) requestAnimationFrame(() => { if (my === gen && !busy && !done && footNear()) more(); });
   }
 
@@ -381,4 +328,179 @@ export function cardLabels(table) {
     [...tr.children].forEach((td, i) => { if (names[i] && !td.dataset.label) td.dataset.label = names[i]; });
   }
   return table;
+}
+
+/**
+ * windowTable(ctx, {
+ *   title, icon, label, cls, cover, note,   as dataTable
+ *   path, params, limit,                    an API list paged by cursor and by offset ({ items, next, offset, total })
+ *   columns: [{ key, label, num, sort, render(row), title, cls, cover }],   sort: the API's sort name (a string)
+ *   sort: { key, dir }, firstSort,          the first order; the order "jump to a date" works in (firstSort.key)
+ *   rowHref(row), rowClass(row), empty(page),
+ *   search: { label, placeholder } | null,  a search field (the API's q), applied as typing pauses
+ *   jump: true,                             a "Jump to date" field (the API's at_ms), in the first order only
+ *   csv(params): href,                      the Download CSV link (the server's, every row the filters show)
+ *   onPage(page),                           after each answer (every one holds the totals of the whole list)
+ *   boxLabel,                               the box's accessible name
+ * }) -> { el, ready, setParams(patch), refresh(), total() }
+ *
+ * The rows sit in a box about ten rows high that scrolls under a header that stays: only the rows in view and a few
+ * more are in the page (shared/vlist.js), and they load from the API a chunk at a time as the box reaches them. The
+ * pack's CSS gives .vl-box its height and every row the same height.
+ */
+export function windowTable(ctx, opts) {
+  const { columns, rowHref = null } = opts;
+  let params = { ...(opts.params || {}) };
+  let sort = opts.sort ? { ...opts.sort } : null;
+  const base = opts.firstSort || opts.sort || null;
+  let total = null;
+
+  const count = h('span', { class: 'tbl-count', 'aria-live': 'polite' });
+  const csvSlot = h('span', { class: 'tbl-csv' });
+  const search = opts.search ? h('input', {
+    class: 'input input--sm vl-search', type: 'search', 'aria-label': opts.search.label || 'Search', placeholder: opts.search.placeholder || 'Search',
+    title: opts.search.title || null, value: params.q || '',
+  }) : null;
+  const jumpIn = opts.jump ? h('input', { class: 'input input--sm vl-jump-date', type: 'date', 'aria-label': 'Jump to date', title: 'Scroll the table to the first drive of this day' }) : null;
+  const jumpBtn = opts.jump ? h('button', { class: 'btn btn--sm', type: 'button', onclick: () => jump() }, 'Jump to date') : null;
+  const jumpBox = opts.jump ? h('span', { class: 'vl-jump' }, jumpIn, jumpBtn) : null;
+  const bar = h('div', { class: 'tbl-bar' },
+    opts.title ? h('h2', { class: 'panel-title' }, opts.icon ? icon(opts.icon) : null, opts.title) : h('span', { class: 'grow' }),
+    opts.side || null, search, jumpBox, count, csvSlot);
+  const thead = h('thead');
+  const tbody = h('tbody', { dataset: { vlBody: '' } });
+  const table = h('table', { class: 'tbl tbl--keep vl-table', 'aria-label': opts.label || opts.title || null }, thead, tbody);
+  const noteEl = opts.note ? h('p', { class: 'note tbl-note', cover: opts.noteCover || null }, opts.note) : null;
+  const box = h('div', { class: 'tbl-scroll tbl-box vl-box', tabindex: '0', role: 'region', 'aria-label': opts.boxLabel || opts.label || opts.title || null }, table);
+  const emptyBox = h('div', { class: 'vl-empty', hidden: true });
+  const el = h('section', { class: ['panel', 'tbl-panel', 'vl-panel', opts.cls], 'aria-label': opts.label || opts.title || null }, bar, noteEl, box, emptyBox);
+  if (opts.cover) cover(el, opts.cover);
+
+  const sortParams = () => {
+    const col = sort && columns.find((c) => c.key === sort.key);
+    return col && typeof col.sort === 'string' ? { sort: col.sort, dir: sort.dir } : {};
+  };
+  const query = () => ({ ...params, ...sortParams() });
+
+  function head() {
+    replace(thead, h('tr', null, columns.map((c) => {
+      const sorted = sort && sort.key === c.key;
+      const th = h('th', {
+        scope: 'col', class: [c.num && 'is-num', c.cls], title: c.title || null,
+        'aria-sort': sorted ? (sort.dir === 'asc' ? 'ascending' : 'descending') : null,
+      }, c.sort ? h('button', { class: 'tbl-sort', type: 'button', onclick: () => setSort(c.key) }, c.label, icon('chev-d')) : c.label);
+      if (c.cover) cover(th, c.cover);
+      return th;
+    })));
+  }
+
+  function rowEl(r, i) {
+    const href = rowHref ? rowHref(r) : null;
+    const tr = h('tr', { class: [href && 'is-link', opts.rowClass?.(r)], 'aria-rowindex': String(i + 2), dataset: { vlRow: String(i) } },
+      columns.map((c) => h('td', { class: [c.num && 'is-num', c.cls], dataset: { label: labelText(c) || null } }, c.render ? c.render(r) : r[c.key] ?? '—')));
+    if (href) {
+      tr.addEventListener('click', (e) => {
+        if (e.defaultPrevented || e.target.closest('a, button, input, select, label')) return;
+        if (window.getSelection && String(window.getSelection()).length) return;
+        state.navigate(href);
+      });
+    }
+    return tr;
+  }
+  const skelRow = (i) => h('tr', { class: 'tbl-skel', 'aria-rowindex': String(i + 2) }, columns.map(() => h('td', null, h('span', { class: 'skel' }))));
+  const gapRow = () => h('tr', null, h('td', { colspan: String(columns.length) }));
+
+  const list = windowList({
+    box, body: tbody, head: thead, limit: opts.limit || 50, overscan: 6, rowHeight: 55,
+    row: rowEl, placeholder: skelRow, spacer: gapRow,
+    load: (p) => ctx.api.get(opts.path, { ...query(), ...pick(p) }, { signal: p.signal }),
+    onPage: (pg) => { if (pg.total !== total) { total = pg.total; paintCount(); } opts.onPage?.(pg); },
+    onError: (e) => opts.onError?.(e),
+  });
+  ctx.onCleanup?.(() => list.destroy());
+
+  function paintCount() {
+    const n = total ?? 0;
+    count.textContent = `${formatNumber(n)} ${n === 1 ? 'row' : 'rows'}`;
+    table.setAttribute('aria-rowcount', String(n + 1));
+    box.hidden = !n;
+    emptyBox.hidden = !!n;
+    if (!n) replace(emptyBox, opts.empty ? opts.empty({ total: n }) : h('div', { class: 'empty' }, h('h3', null, 'Nothing to show')));
+    if (jumpBox) {
+      const can = !!n && sort && base && sort.key === base.key;
+      jumpIn.disabled = !can; jumpBtn.disabled = !can;
+      jumpBox.title = can ? '' : 'Jump to date works in the order of the drives (sort by number or date).';
+    }
+  }
+  function paintCsv() {
+    if (opts.csv) replace(csvSlot, csvButton({ href: opts.csv(query()), filename: csvFilename(ctx.car?.name || 'sentry-mate', opts.csvName || opts.title || 'table') }));
+  }
+
+  async function restart() {
+    total = null;
+    paintCsv();
+    const pg = await list.start();
+    if (pg) { total = pg.total; paintCount(); opts.onPage?.(pg); }
+    return pg;
+  }
+
+  function setSort(key) {
+    const col = columns.find((c) => c.key === key);
+    const dir = sort && sort.key === key ? (sort.dir === 'asc' ? 'desc' : 'asc') : (col.firstDir || (col.num ? 'desc' : 'asc'));
+    sort = { key, dir };
+    head();
+    restart().catch((e) => opts.onError?.(e));
+  }
+
+  async function jump() {
+    const key = jumpIn.value;
+    if (!key) { jumpIn.focus(); return; }
+    try {
+      const pg = await list.jump(dayJumpMs(key, ctx.tz, sort?.dir === 'desc'));
+      if (pg) { total = pg.total; paintCount(); box.focus({ preventScroll: true }); }
+    } catch (e) { opts.onError?.(e); }
+  }
+  jumpIn?.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); jump(); } });
+
+  if (search) {
+    let t = 0;
+    search.addEventListener('input', () => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        const v = search.value.trim();
+        if ((params.q || '') === v) return;
+        if (v) params.q = v; else delete params.q;
+        opts.onSearch?.(v);
+        restart().catch((e) => opts.onError?.(e));
+      }, 300);
+    });
+    ctx.onCleanup?.(() => clearTimeout(t));
+  }
+
+  head();
+  const ready = restart();
+
+  return {
+    el,
+    ready,
+    /** Change some filters (null removes one) and load again from the top. */
+    setParams(patch) {
+      for (const [k, v] of Object.entries(patch)) { if (v == null || v === '') delete params[k]; else params[k] = v; }
+      return restart();
+    },
+    /** The rows in view again (a live change), with nothing moving until they are in. */
+    refresh() { paintCsv(); return list.refresh().then((pg) => { if (pg) { total = pg.total; paintCount(); } return pg; }); },
+    total: () => total ?? 0,
+    params: () => query(),
+  };
+}
+
+// the paging parameters vlist asks with (offset, after or at_ms)
+function pick(p) {
+  const out = {};
+  if (p.after) out.after = p.after;
+  else if (p.at_ms != null) out.at_ms = p.at_ms;
+  else out.offset = p.offset || 0;
+  out.limit = p.limit;
+  return out;
 }

@@ -27,6 +27,10 @@ SETUP_ONLY = {("POST", "/api/v1/setup"), ("POST", "/api/v1/setup/claim"), ("POST
               ("DELETE", "/api/v1/setup/job")}
 DEV_KEY = "SMRK-DEVK-EY00-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000"
 VIN_RX = re.compile(r"[A-HJ-NPR-Z0-9]{17}")
+# answers that are files, not JSON
+PDF_OR_ZIP = {"/api/v1/cars/{car}/charges/{charge}/invoices/{invoice}/pdf": "application/pdf",
+              "/api/v1/integrations/invoices/{invoice}/pdf": "application/pdf",
+              "/api/v1/integrations/invoices/zip": "application/zip"}
 
 
 def _all_strings(obj, out):
@@ -53,10 +57,15 @@ class Contract(ServerCase):
             "charge": c.get("/api/v1/cars/c1/charges?limit=3")["items"][1]["id"],
             "update": c.get("/api/v1/cars/c1/updates")["items"][0]["id"],
             "place": "p1", "session": "s-older-1", "account": "a2", "token": "t12", "key": "cbk_5b2e9f13",
-            "trip": "tr1", "rule": "r1", "import": "im1", "index": "0", "tesla_account": "ta1", "sign_in": "si0",
+            "trip": "tr1", "rule": "r1", "import": "im1", "hold": "h1", "index": "0", "tesla_account": "ta1", "sign_in": "si0",
             "teslafi_account": "fa1", "z": "13", "x": "1310", "y": "3166",
             "export": c.json("POST", "/api/v1/system/exports", {"password": "sentry-mate-dev"}, expect=201)["id"],
         }
+        # a Supercharger session of c1 matched to a charge, with its invoice (PDF) kept
+        inv = next(i for i in c.get("/api/v1/integrations/invoices?matched=true&limit=200")["items"]
+                   if i["car"] == "c1" and i["pdf"])
+        cls.ids["invoice"] = inv["id"]
+        cls.invoice_charge = inv["charge"]
         cls.server.app.store.exports[cls.ids["export"]]["made_ms"] -= 10_000  # prepared
         cls.bodies = []
 
@@ -135,7 +144,15 @@ class Contract(ServerCase):
             if pattern == "/api/v1/events":
                 self.check_events(problems)
                 continue
+            if pattern == "/api/v1/cars/{car}/charges/{charge}/invoices/{invoice}/pdf":
+                path = self.fill(pattern, charge=self.invoice_charge)
             st, hd, raw, data = self.call("GET", path)
+            if pattern in PDF_OR_ZIP:
+                if st != 200 or hd.get("content-type") != PDF_OR_ZIP[pattern] or not raw.startswith(
+                        b"%PDF-1.4" if "pdf" in PDF_OR_ZIP[pattern] else b"PK") \
+                        or "attachment" not in (hd.get("content-disposition") or ""):
+                    problems.append(f"GET {path}: {st} {hd.get('content-type')}")
+                continue
             if pattern == "/api/v1/system/exports/{export}/file":
                 if st != 200 or hd.get("content-type") != "application/octet-stream" or not raw:
                     problems.append(f"GET {path}: {st} {hd.get('content-type')}")
@@ -256,7 +273,12 @@ class Contract(ServerCase):
             ("POST", "/api/v1/release/check", lambda: (None, {}, None) if c.json("PATCH", "/api/v1/settings", {
                 "version": c.get("/api/v1/settings")["version"], "release_check": {"enabled": True}}) else None),
             ("POST", "/api/v1/cars/{car}/rebuild", lambda: (None, {"from_ms": now - 2 * DAY}, None)),
+            ("PUT", "/api/v1/cars/{car}/gps-layout",
+             lambda: (None, {"layout": "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)"}, None)),
             ("POST", "/api/v1/system/storage/compact", lambda: (None, None, None)),
+            ("POST", "/api/v1/cars/{car}/full-rebuild", lambda: (None, {"confirm_password": "sentry-mate-dev"}, None)),
+            ("DELETE", "/api/v1/system/full-rebuild", lambda: (None, {}, None)),
+            ("POST", "/api/v1/system/full-rebuild", lambda: (None, {"confirm_password": "sentry-mate-dev"}, None)),
             ("PATCH", "/api/v1/cars/{car}/overlaps",
              lambda: (self.fill("/api/v1/cars/{car}/overlaps", car="c3"),
                       {"id": c.get("/api/v1/cars/c3/overlaps")["items"][0]["id"], "shown": "can"}, None)),
@@ -275,6 +297,7 @@ class Contract(ServerCase):
                       None, None)),
             ("DELETE", "/api/v1/imports/{import}",
              lambda: (self.fill("/api/v1/imports/{import}", **{"import": ctx["import"]}), None, None)),
+            ("POST", "/api/v1/import-holds/{hold}", lambda: (None, {"match": "c2"}, None)),
             ("PATCH", "/api/v1/integrations/tesla",
              lambda: (None, {"version": c.get("/api/v1/integrations/tesla")["version"], "poll": "gentle",
                              "confirm_password": "sentry-mate-dev"}, None)),

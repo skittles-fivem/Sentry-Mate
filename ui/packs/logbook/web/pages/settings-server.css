@@ -33,23 +33,21 @@
 .page-settings-server .ss-out-text { color: var(--ink-3); margin-top: round(0.1875rem, var(--e)); max-width: 70ch; font-size: var(--text-sm); --LH: round(calc(1.5 * 1em), 2px); }
 .page-settings-server .ss-out-action { margin-top: round(0.5rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.7 * 1em), 2px); }
 
-/* host names */
-.page-settings-server .ss-names { list-style: none; margin: 0 0 round(1rem, var(--e)); padding: 0; border-top: 1px solid var(--rule); }
-.page-settings-server .ss-name { display: flex; align-items: center; gap: round(0.75rem, var(--e)); padding: round(0.5rem, var(--e)) 0; border-bottom: 1px solid var(--rule); min-height: round(2.75rem, var(--e)); }
-.page-settings-server .ss-name-text { font-size: var(--text-sm); flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
-.page-settings-server .ss-name .button { margin-left: auto; }
-.page-settings-server .ss-add .field { min-width: 0; }
-.page-settings-server .ss-add .field-control { gap: round(0.75rem, var(--e)); }
-.page-settings-server .ss-add .field-input { flex: 1 1 auto; width: auto; min-width: 0; }
-.page-settings-server .ss-add-btn { flex: none; }
-.page-settings-server .ss-save { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.75rem, var(--e)); margin-top: round(0.75rem, var(--e)); }
-.page-settings-server .ss-details { margin-top: round(1.25rem, var(--e)); border-top: 1px solid var(--rule); padding-top: round(0.875rem, var(--e)); }
-.page-settings-server .ss-details summary { cursor: pointer; font-size: var(--text-sm); color: var(--accent-strong); }
-.page-settings-server .ss-details[open] summary { margin-bottom: round(0.75rem, var(--e)); }
-.page-settings-server .ss-steps { margin: 0; padding-left: round(1.25rem, var(--e)); display: grid; gap: round(0.5rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.6 * 1em), 2px); max-width: 70ch; }
+/* host names: the editor in the Change names dialog */
+.ss-names-block .ss-names { list-style: none; margin: 0 0 round(1rem, var(--e)); padding: 0; border-top: 1px solid var(--rule); }
+.ss-names-block .ss-name { display: flex; align-items: center; gap: round(0.75rem, var(--e)); padding: round(0.5rem, var(--e)) 0; border-bottom: 1px solid var(--rule); min-height: round(2.75rem, var(--e)); }
+.ss-names-block .ss-name-text { font-size: var(--text-sm); flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.ss-names-block .ss-name .button { margin-left: auto; }
+.ss-names-block .ss-add .field { min-width: 0; }
+.ss-names-block .ss-add .field-control { gap: round(0.75rem, var(--e)); }
+.ss-names-block .ss-add .field-input { flex: 1 1 auto; width: auto; min-width: 0; }
+.ss-names-block .ss-add-btn { flex: none; }
+.ss-names-block .ss-save { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.75rem, var(--e)); margin-top: round(0.75rem, var(--e)); }
+.ss-names-block .ss-details { margin-top: round(1.25rem, var(--e)); border-top: 1px solid var(--rule); padding-top: round(0.875rem, var(--e)); }
+.ss-names-block .ss-details summary { cursor: pointer; font-size: var(--text-sm); color: var(--accent-strong); }
+.ss-names-block .ss-details[open] summary { margin-bottom: round(0.75rem, var(--e)); }
+.ss-names-block .ss-steps { margin: 0; padding-left: round(1.25rem, var(--e)); display: grid; gap: round(0.5rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); --LH: round(calc(1.6 * 1em), 2px); max-width: 70ch; }
 
-/* ports */
-.page-settings-server .ss-port { font: 400 1.0625rem var(--serif); --LH: normal; line-height: var(--LH); font-variant-numeric: tabular-nums; }
 
 /* access */
 .page-settings-server .ss-me { padding: round(1rem, var(--e)) round(1.125rem, var(--e)); background: var(--accent-wash); border-radius: round(0.25rem, var(--e)); margin: round(0.25rem, var(--e)) 0 round(1.25rem, var(--e)); }
@@ -143,8 +141,9 @@
   .page-settings-server .ss-audit-log .ss-a-action, .page-settings-server .ss-audit-log .ss-a-summary, .page-settings-server .ss-audit-log .ss-a-item { grid-column: 1 / -1; }
   .page-settings-server .ss-audit-log .ss-a-action { font-weight: 600; }
   .page-settings-server .ss-audit-log .ss-a-summary { color: var(--ink-2); }
-  /* about three entries in the box */
-  .page-settings-server .ss-audit-log .ledger-box { height: min(round(30rem, var(--e)), 62svh); overflow-y: auto; }
+  /* the progress row: the figures may take two lines */
+  .page-settings-server .ss-cmp { grid-template-rows: var(--LH) round(0.375rem, var(--e)) calc(2 * var(--LH)) var(--LH); }
+  .page-settings-server .ss-cmp-facts { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 }
 
 /* Move to another server (pages/settings-move.js) */
@@ -193,9 +192,83 @@
 .ss-rk-dialog .ss-rk-go { display: flex; justify-content: flex-end; margin-top: round(0.75rem, var(--e)); }
 .ss-rk-dialog .ss-rk-note { color: var(--ink-3); font-size: var(--text-sm); margin-top: round(0.5rem, var(--e)); }
 
-/* storage: the figures, how compaction stands and what it does, then the table by category */
-.page-settings-server .ss-stor-line { margin: round(0.875rem, var(--e)) 0 round(0.375rem, var(--e)); min-height: 1lh; color: var(--ink-2); }
+/* the move and Storage side by side: half the width each on a desktop, one above the other when narrow */
+.page-settings-server .ss-pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 round(3.5rem, var(--e)); align-items: start; margin-top: round(2.5rem, var(--e)); }
+.page-settings-server .ss-pair > .block { min-width: 0; margin-top: 0; }
+.page-settings-server .ss-pair > .block + .block { margin-top: round(2.5rem, var(--e)); }
+@container page (width >= 62rem) {
+  .page-settings-server .ss-pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .page-settings-server .ss-pair > .block + .block { margin-top: 0; }
+}
+@container page (width < 110rem) { .page-settings-server .ss-pair .mv-ways { grid-template-columns: minmax(0, 1fr); } }
+:root[data-phone] .page-settings-server .ss-pair { grid-template-columns: minmax(0, 1fr); }
+:root[data-phone] .page-settings-server .ss-pair > .block + .block { margin-top: round(2.5rem, var(--e)); }
+
+/* storage: the figures in a row, how compaction stands, then the space by kind */
+.page-settings-server .ss-storage .block-actions { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)); justify-content: flex-end; }
+.page-settings-server .st-figs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.page-settings-server .st-fig { min-width: 0; padding: round(0.5rem, var(--e)) round(0.75rem, var(--e)); cursor: help; }
+.page-settings-server .st-fig + .st-fig { border-left: 1px solid var(--rule); }
+.page-settings-server .st-fig:first-child { padding-left: 0; }
+.page-settings-server .st-fig dt { font-size: var(--text-sm); color: var(--ink-3); }
+.page-settings-server .st-fig dd { margin: 0; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.page-settings-server .ss-stor-line { display: flex; align-items: center; gap: round(0.5rem, var(--e)); margin: round(0.75rem, var(--e)) 0; min-height: 1lh; color: var(--ink-2); }
 .page-settings-server .ss-stor-line strong { color: var(--ink); font-weight: 600; }
 .page-settings-server .ss-stor-line.ss-warn, .page-settings-server .ss-stor-line.ss-warn strong { color: var(--rust); }
+.page-settings-server .st-tip { flex: none; display: inline-grid; place-items: center; color: var(--ink-3); cursor: help; }
+.page-settings-server .st-tip .icon { width: round(1rem, var(--e)); height: round(1rem, var(--e)); }
+.page-settings-server .st-groups { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule-strong); }
+.page-settings-server .st-group { border-bottom: 1px solid var(--rule); }
+.page-settings-server .st-group-head { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(3rem, 6rem) auto round(2.75rem, var(--e)); align-items: center; gap: round(0.625rem, var(--e)); width: 100%; min-height: round(2.5rem, var(--e)); padding: round(0.375rem, var(--e)) 0; border: 0; background: none; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+@media (hover: hover) { .page-settings-server .st-group-head:hover .st-group-name { color: var(--accent); text-decoration: underline; } }
+.page-settings-server .st-group-head > .icon { width: round(1rem, var(--e)); height: round(1rem, var(--e)); color: var(--ink-3); }
+.page-settings-server .st-group-name { font-weight: 600; overflow-wrap: anywhere; }
+.page-settings-server .st-bar { position: relative; display: block; height: round(0.375rem, var(--e)); border-radius: 99px; background: var(--paper-sunk); overflow: hidden; }
+.page-settings-server .st-bar > i { position: absolute; inset: 0 auto 0 0; width: round(var(--w, 0%), 1px); background: var(--accent); }
+.page-settings-server .st-group-size, .page-settings-server .st-group-share { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.page-settings-server .st-group-share { color: var(--ink-3); }
+/* a group's categories: five rows at most, the rest scroll */
+.page-settings-server .st-rows { list-style: none; margin: 0 0 round(0.5rem, var(--e)); padding: 0 0 0 round(1.625rem, var(--e)); max-height: calc(5 * round(2rem, var(--e))); overflow-y: auto; overscroll-behavior: contain; }
+.page-settings-server .st-rows[hidden] { display: none; }
+.page-settings-server .st-row { display: flex; align-items: center; justify-content: space-between; gap: round(0.75rem, var(--e)); min-height: round(2rem, var(--e)); color: var(--ink-2); }
+.page-settings-server .st-row-name { min-width: 0; overflow-wrap: anywhere; }
+.page-settings-server .st-row-size { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.page-settings-server .st-none { padding: round(0.75rem, var(--e)) 0; color: var(--ink-2); }
+:root[data-phone] .page-settings-server .st-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+:root[data-phone] .page-settings-server .st-fig:nth-child(3) { border-left: 0; padding-left: 0; }
+:root[data-phone] .page-settings-server .st-fig:nth-child(n+3) { border-top: 1px solid var(--rule); }
+:root[data-phone] .page-settings-server .st-group-head { grid-template-columns: auto minmax(0, 1fr) auto round(2.75rem, var(--e)); }
+:root[data-phone] .page-settings-server .st-bar { grid-column: 2 / -1; grid-row: 2; }
+/* storage: the figures, how compaction stands and what it does, then the table by category */
+/* the compaction progress row: the same room idle or running (words, a bar, figures, a warning line), each line
+   cut with an ellipsis rather than wrapped, figures in tabular numbers so they do not wobble */
+.page-settings-server .ss-cmp {
+  display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--LH) round(0.375rem, var(--e)) var(--LH) var(--LH); row-gap: round(0.375rem, var(--e));
+  margin: round(0.875rem, var(--e)) 0 round(0.375rem, var(--e)); color: var(--ink-2); font-variant-numeric: tabular-nums;
+}
+.page-settings-server .ss-cmp > * { min-width: 0; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.page-settings-server .ss-cmp-head { grid-row: 1; display: flex; align-items: center; gap: round(0.5rem, var(--e)); }
+.page-settings-server .ss-cmp-head-t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.page-settings-server .ss-cmp-count { flex: none; color: var(--ink); }
+.page-settings-server .ss-cmp strong { color: var(--ink); font-weight: 600; }
+.page-settings-server .ss-cmp.ss-warn, .page-settings-server .ss-cmp.ss-warn strong { color: var(--rust); }
+.page-settings-server .ss-cmp-bar { grid-row: 2; display: block; height: 100%; border-radius: 999px; background: var(--rule); overflow: hidden; }
+.page-settings-server .ss-cmp-fill { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+.page-settings-server .ss-cmp-bar.is-counting .ss-cmp-fill { width: 0 !important; }
+.page-settings-server .ss-cmp-bar.is-stalled .ss-cmp-fill { background: var(--rust); }
+.page-settings-server .ss-cmp-facts { grid-row: 3; font-size: var(--text-s); color: var(--ink-3); }
+.page-settings-server .ss-cmp-warn { grid-row: 4; font-size: var(--text-s); color: var(--rust); }
 .page-settings-server .ss-stor-table { margin-top: round(0.75rem, var(--e)); }
 .page-settings-server .sort-mark { font-size: max(10px, 0.75em); }
+
+/* the Change names dialog (outside the page's own class) and Server updates */
+.ss-names-block .ss-state { font-size: var(--text-s); color: var(--ink-3); }
+.ss-names-block > .note { margin-bottom: round(1rem, var(--e)); }
+.page-settings-server .ss-names-btn { margin-left: auto; }
+.page-settings-server .ss-upd-facts { margin: 0; border-top: 1px solid var(--rule); }
+.page-settings-server .ss-upd-row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: round(0.25rem, var(--e)) round(1rem, var(--e)); padding: round(0.5rem, var(--e)) 0; border-bottom: 1px solid var(--rule); }
+.page-settings-server .ss-upd-row dt { font-size: var(--text-sm); color: var(--ink-2); }
+.page-settings-server .ss-upd-row dd { margin: 0 0 0 auto; text-align: right; overflow-wrap: anywhere; min-width: 0; }
+.page-settings-server .ss-upd--error { color: var(--rust); }
+.page-settings-server .ss-upd-on { margin-top: round(0.875rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); max-width: 70ch; }
+.page-settings-server .ss-upd-how { margin-top: round(0.5rem, var(--e)); }

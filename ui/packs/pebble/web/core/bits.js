@@ -11,6 +11,7 @@ import { dayKey, formatDayKey, formatTime, formatDuration, addDays, daysBetween,
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { icon, num, btn, tile } from './ui.js';
+import { scrollBox } from '../shared/scrollbox.js';
 import { display } from './display.js';
 import { openSwitcher } from './switcher.js';
 import { openPeriod, rangeText } from './period.js';
@@ -30,8 +31,9 @@ export const GAP_WORDS = Object.freeze({
 });
 export const PURPOSES = Object.freeze({ business: 'Business', private: 'Private', commute: 'Commute' });
 
-/** A drive's start or end in words: its label, saved place or short address. */
-export const endLabel = (e) => (e && (e.label || (e.place && e.place.name) || (typeof e.address === 'string' ? e.address : e.address && e.address.short))) || 'Unnamed spot';
+/** A drive's start or end in words: its label, saved place, short address, else its coordinates. */
+export const endLabel = (e) => (e && (e.label || (e.place && e.place.name) || (typeof e.address === 'string' ? e.address : e.address && e.address.short)))
+  || (e && e.lat != null && e.lon != null ? `${Number(e.lat).toFixed(4)}, ${Number(e.lon).toFixed(4)}` : 'Unnamed spot');
 /** The line under a place name: the street or area, when it says more than the name. */
 export function endSub(e) {
   if (!e) return null;
@@ -50,7 +52,7 @@ export function placeHref(e) {
 export function placeLink(e, { cover = null, still = false } = {}) {
   const href = still ? null : placeHref(e);
   const text = endLabel(e);
-  return href ? h('a', { class: 'place-link', href, cover, title: e.place ? `Edit ${text}` : 'Name this place' }, text) : h('span', { class: 'place-link', cover }, text);
+  return href ? h('a', { class: 'place-link', href, cover, title: e.place ? `Edit ${text}` : 'Save this spot as a place' }, text) : h('span', { class: 'place-link', cover }, text);
 }
 
 /** 'Today', 'Yesterday', a weekday within the week, else 'Tue, Nov 3'. */
@@ -148,11 +150,33 @@ export function soldPill(n, ontoggle) {
 /** A 'Show more' button for a paged list: more(async () => hasMore). Hidden when the list is done. */
 export function moreButton(load, { text = 'Show more' } = {}) {
   const b = btn(text, { kind: 'soft', icon: 'chevronDown', cls: 'more-btn' });
-  b.addEventListener('click', async () => {
+  const row = h('div', { class: 'more-row w-full' }, b);
+  // row.load(): what a click does (resolves true when there is more), never two at once; a box calls it too
+  let busy = null;
+  row.load = () => {
+    if (busy) return busy;
+    if (b.hidden || b.disabled || row.hidden || !row.isConnected) return Promise.resolve(false);
     b.disabled = true;
-    try { const left = await load(); b.hidden = !left; } catch { /* the toast says why */ } finally { b.disabled = false; }
-  });
-  return h('div', { class: 'more-row w-full' }, b);
+    busy = (async () => {
+      try { const left = await load(); b.hidden = !left; return !!left; } catch { return false; /* the toast says why */ } finally { b.disabled = false; busy = null; }
+    })();
+    return busy;
+  };
+  b.addEventListener('click', () => { row.load(); });
+  return row;
+}
+
+/**
+ * A long log-like list in a box about five rows high that scrolls by itself (shared/scrollbox.js; `.scroll-box`
+ * in app.css, rows set by --box-row and --box-rows):
+ *   listBox(ctx, { label, cls, fit, more }, ...children) -> { el, recheck(), top(), ... }
+ * fit: the rows are in hand: the box is at most that high, so a short list leaves no empty box. Without it the
+ * box has its height from the start (a list that loads later). more: a moreButton() row the page puts under the
+ * box: as the end of the box comes near its load runs, as a click would (the button stays, for the keyboard).
+ */
+export function listBox(ctx, { label = null, cls = null, fit = false, more = null } = {}, ...children) {
+  return scrollBox({ label, cls: [fit ? 'scroll-box--fit' : null, cls], onCleanup: (f) => ctx.onCleanup(f),
+    onEnd: more ? () => (typeof more.load === 'function' ? more.load() : false) : null }, ...children);
 }
 
 /** '12 min', '2 h 05 min'. */

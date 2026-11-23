@@ -89,6 +89,17 @@ pub(crate) struct Shown {
 }
 
 impl Shown {
+    /// A key of what it shows (a kept answer built with it rests on it).
+    pub(crate) fn key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        format!("{:?}", self.filter).hash(&mut h);
+        self.coverage.hash(&mut h);
+        self.sites.hash(&mut h);
+        crate::memo::key(&self.flips).hash(&mut h);
+        h.finish()
+    }
+
     pub(crate) fn new(e: &Engine, car: CarId, filter: Option<SourceFilter>) -> QResult<Shown> {
         let sites = match filter {
             None | Some(SourceFilter::Import(None)) => Sites::new(e, car)?,
@@ -408,12 +419,22 @@ fn site_counts(d: &Slots, c: &Slots) -> SiteCounts {
 }
 
 /// Spans (in start order) joined where they meet or are less than a minute apart.
-fn joined(mut v: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+fn joined(v: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+    joined_within(v, 60_000)
+}
+
+/// A hole in one import's history shorter than this is taken as covered when two imports are matched: TeslaFi does not
+/// poll for a while when it lets the car fall asleep, and a drive or charge in such a hole (seen by the other import)
+/// must still be in the span both imports cover, or both copies of it would be shown.
+const IMPORT_HOLE_MS: u64 = 2 * 3_600_000;
+
+/// Spans (in start order) joined where they meet or are less than `gap` apart.
+fn joined_within(mut v: Vec<(u64, u64)>, gap: u64) -> Vec<(u64, u64)> {
     v.sort_unstable();
     let mut out: Vec<(u64, u64)> = Vec::new();
     for (a, b) in v {
         match out.last_mut() {
-            Some(last) if a <= last.1.saturating_add(60_000) => last.1 = last.1.max(b),
+            Some(last) if a <= last.1.saturating_add(gap) => last.1 = last.1.max(b),
             _ => out.push((a, b)),
         }
     }
@@ -435,6 +456,12 @@ fn intersect(x: &[(u64, u64)], y: &[(u64, u64)]) -> Vec<(u64, u64)> {
         }
     }
     out
+}
+
+/// `[a, b)`, at least a millisecond long: a row or state that ends where it starts (one poll) still covers its moment,
+/// else no span of the other import could ever meet it, and its twin there would be shown beside it.
+fn at_least_a_moment(a: u64, b: u64) -> (u64, u64) {
+    (a, b.max(a.saturating_add(1)))
 }
 
 /// How many of the starts (in order) are in `[a, b)`.
@@ -490,7 +517,7 @@ fn import_pairs(e: &Engine, car: CarId, chosen: &[Flip]) -> QResult<Vec<Pair>> {
             && s.span.state != State::Unknown
             && let Some(r) = by.get_mut(site.index())
         {
-            r.cover.push((s.span.start_ms, s.span.end_ms.max(s.span.start_ms)));
+            r.cover.push(at_least_a_moment(s.span.start_ms, s.span.end_ms));
             r.starts.push(s.span.start_ms);
         }
         Ok(true)
@@ -504,7 +531,9 @@ fn import_pairs(e: &Engine, car: CarId, chosen: &[Flip]) -> QResult<Vec<Pair>> {
     ) -> QResult<()> {
         super::reports::overlapping::<T>(e, car, 0, u64::MAX, Some(Source::Teslamate), false, |r| {
             if let Some(s) = r.source().site().and_then(|site| by.get_mut(site.index())) {
-                let (a, b) = (r.start_ms(), r.end_ms());
+                // a row of one poll (TeslaFi's short drives and charges) ends where it starts: it still covers
+                // its moment, so the same drive from the other import meets it
+                let (a, b) = at_least_a_moment(r.start_ms(), r.end_ms());
                 s.cover.push((a, b));
                 s.starts.push(a);
                 if charge {
@@ -520,7 +549,7 @@ fn import_pairs(e: &Engine, car: CarId, chosen: &[Flip]) -> QResult<Vec<Pair>> {
     gather::<model::Drive>(e, car, &mut by, &mut reach, false)?;
     gather::<model::Charge>(e, car, &mut by, &mut reach, true)?;
     for r in &mut by {
-        r.cover = joined(std::mem::take(&mut r.cover));
+        r.cover = joined_within(std::mem::take(&mut r.cover), IMPORT_HOLE_MS);
         r.drives.sort_unstable();
         r.charges.sort_unstable();
         r.starts.sort_unstable();
@@ -843,7 +872,9 @@ pub struct KeyHealth {
     pub key: String,
     pub last_upload_ms: Option<u64>,
     pub preferred: bool,
+    /// The name an admin gave the key, and what pages call it (that name, else an automatic label).
     pub device: Option<String>,
+    pub device_label: String,
     pub logs_waiting: u64,
 }
 
@@ -1000,10 +1031,12 @@ fn verdict(e: &Engine, c: &model::Car, meta: &records::CarMeta, now: u64) -> QRe
     let mut waiting = 0u64;
     let mut last_upload: Option<u64> = None;
     let mut missing = MissingLogs::default();
+    let mut names = e.key_names()?;
     for key in &c.vehicle_keys {
         if let Ok(book) = rt.block_on(e.judge().missing(key)) {
             missing.add(&book.counts());
         }
+        let name = names.remove(key);
         let s = rt.block_on(e.judge().summary(key));
         let w = s.as_ref().map_or(0, |s| s.waiting as u64);
         waiting += w;
@@ -1014,7 +1047,8 @@ fn verdict(e: &Engine, c: &model::Car, meta: &records::CarMeta, now: u64) -> QRe
             key: key.clone(),
             last_upload_ms: lu,
             preferred: c.preferred_key.as_deref() == Some(key),
-            device: None,
+            device_label: super::keys::device_label(key, name.as_deref()),
+            device: name,
             logs_waiting: w,
         });
     }

@@ -23,6 +23,7 @@ import { field, segmented, toggle, setFieldError } from '../core/form.js';
 import { remount } from '../core/router.js';
 import { checkRow, moreButton } from '../core/bits.js';
 import { group, infoRow, said, notSaved } from '../core/settings.js';
+import { deviceText, keyRows } from './device-name.js';
 import { inOrder } from '../core/settings.js';
 import { copyButton } from './move-parts.js';
 
@@ -46,6 +47,12 @@ const cap = (t) => String(t).charAt(0).toUpperCase() + String(t).slice(1);
 const onOff = (v) => (v === true ? 'on' : v === false ? 'off' : 'not known');
 const sameList = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i]);
 const day = (ms, tz) => (ms == null ? 'never' : formatDate(ms, tz, { now: api.now() }));
+
+/** The currency a car's charges cost most in (the Charges list's totals), or null. */
+function topCurrency(list) {
+  const by = (list && list.totals && list.totals.cost_by_currency) || [];
+  return by.length ? by.reduce((a, b) => (b.amount > a.amount ? b : a)).currency : null;
+}
 
 function crumb(car) {
   return h('nav', { class: 'crumb', 'aria-label': 'Breadcrumb', cover: 'web.settings.car.breadcrumb' },
@@ -120,11 +127,11 @@ async function waitingRows(ctx, { car = null, onChange }) {
   };
   return {
     count: keys.length,
-    rows: keys.map((k) => infoRow({ icon: 'key', tone: 'sun', name: k.device || 'Logger not named', sub: `${k.key} · first ${day(k.first_seen_ms, ctx.tz)} · ${k.logs_waiting || 0} logs kept`,
-      side: ctx.admin ? btn(car ? `Tie to ${car.name}` : 'Choose the car', { kind: 'soft', icon: car ? 'check' : 'search', cls: 'btn-sm', onclick: async () => {
+    rows: keyRows(ctx, keys, (k, rename) => infoRow({ icon: 'key', tone: 'sun', name: deviceText(k), sub: `${k.key} · first ${day(k.first_seen_ms, ctx.tz)} · ${k.logs_waiting || 0} logs kept`,
+      side: ctx.admin ? [rename, btn(car ? `Tie to ${car.name}` : 'Choose the car', { kind: 'soft', icon: car ? 'check' : 'search', cls: 'btn-sm', onclick: async () => {
         const c = car || await pickCar(ctx, `Tie key ${k.key} to a car`);
         if (c) tie(k, c);
-      } }) : null })),
+      } })] : null })),
   };
 }
 
@@ -226,6 +233,9 @@ async function mountCar(ctx) {
   const carPath = api.apiPath`cars/${car.id}`;
   const setPath = api.apiPath`cars/${car.id}/settings`;
   let settings = await ctx.api.get(setPath);
+  if (!ctx.alive()) return {};
+  // the currency for an empty default price: the one the car's charges cost most in
+  const priceCur = (settings.default_price_per_kwh || {}).currency || topCurrency(await ctx.api.get(api.apiPath`cars/${car.id}/charges`, { limit: 1 }).catch(() => null));
   if (!ctx.alive()) return {};
   let carVersion = car.version;
 
@@ -353,15 +363,15 @@ async function mountCar(ctx) {
     ];
     upT = tile({ w: 2, title: 'Uploads, tokens and keys', icon: 'upload', cover: 'faq.car-missing.outcomes', side: btn('Make a token', { kind: 'primary', icon: 'plus', cls: 'btn-sm', onclick: makeToken }) },
       h('ul', { class: 'checks' }, checks.filter(Boolean)),
-      group('Upload tokens', toks.length ? toks.map((t) => infoRow({ icon: 'key', name: t.id, sub: `Made ${day(t.created_ms, ctx.tz)}${t.key ? ` · tied to ${t.key}` : ''}${t.last_upload_ms ? ` · last upload ${day(t.last_upload_ms, ctx.tz)}` : ''}`,
+      group('Upload tokens', toks.length ? toks.map((t) => infoRow({ icon: 'key', name: t.id, sub: `Made ${day(t.created_ms, ctx.tz)}${t.key ? ` · tied to ${t.device ? `${t.device} (${t.key})` : t.key}` : ''}${t.last_upload_ms ? ` · last upload ${day(t.last_upload_ms, ctx.tz)}` : ''}`,
         side: t.revoked ? chip('Revoked', { tone: 'muted' }) : [chip(t.key || t.last_upload_ms ? 'In use' : 'Not used yet', { tone: t.key || t.last_upload_ms ? 'teal' : 'sun' }),
           btn(`Revoke ${t.id}`, { kind: 'ghost', icon: 'close', iconOnly: true, cls: 'btn-sm', onclick: async () => {
             if (!await confirmSheet({ title: `Revoke token ${t.id}?`, text: 'The CAN Bridge that uses it stops uploading at its next request. Logs it sent stay.', yes: 'Revoke', danger: true })) return;
             act(() => ctx.api.del(api.apiPath`cars/${car.id}/upload-tokens/${t.id}`), `Token ${t.id} revoked.`)();
           } })] })) : [infoRow({ name: 'No upload token yet', sub: 'Make one and enter it in the CAN Bridge app.' })],
       { note: 'A token lets one CAN Bridge upload. It is shown once, and ties itself to the bridge’s key on the first upload.' }),
-      group('CAN Bridge keys', keys.length ? keys.map((k) => infoRow({ icon: 'chip', tone: k.preferred ? 'teal' : null, name: k.device || 'Logger not named', sub: `${k.key} · last upload ${day(k.last_upload_ms, ctx.tz)}${k.logs_waiting ? ` · ${k.logs_waiting} logs wait` : ''}`,
-        side: [k.preferred ? chip('Preferred', { tone: 'teal' }) : btn('Prefer', { kind: 'soft', cls: 'btn-sm', onclick: act(() => ctx.api.patch(api.apiPath`can-keys/${k.key}`, { preferred: true }), `Key ${k.key} is preferred now.`) }),
+      group('CAN Bridge keys', keys.length ? keyRows(ctx, keys, (k, rename) => infoRow({ icon: 'chip', tone: k.preferred ? 'teal' : null, name: deviceText(k), sub: `${k.key} · last upload ${day(k.last_upload_ms, ctx.tz)}${k.logs_waiting ? ` · ${k.logs_waiting} logs wait` : ''}`,
+        side: [rename, k.preferred ? chip('Preferred', { tone: 'teal' }) : btn('Prefer', { kind: 'soft', cls: 'btn-sm', onclick: act(() => ctx.api.patch(api.apiPath`can-keys/${k.key}`, { preferred: true }), `Key ${k.key} is preferred now.`) }),
           btn(`Untie ${k.key}`, { kind: 'ghost', icon: 'close', iconOnly: true, cls: 'btn-sm', onclick: async () => {
             if (!await confirmSheet({ title: `Untie key ${k.key}?`, text: 'Its new uploads wait for a car until it is tied again. History stays.', yes: 'Untie', danger: true })) return;
             act(() => ctx.api.patch(api.apiPath`can-keys/${k.key}`, { car: null }), `Key ${k.key} untied.`)();
@@ -461,11 +471,45 @@ async function mountCar(ctx) {
       ro ? null : h('div', { class: 'form-actions' }, btn('Add a range', { kind: 'soft', icon: 'plus', onclick: () => { ranges.push({ from_date: null, to_date: null }); drawRanges(); } })));
   }
   drawRanges();
+
+  /* ---------- the default price per kWh ({ value, currency } or null): Statistics estimates unpriced charges at it */
+  const dpBox = h('div', { class: 'contents' });
+  function drawPrice() {
+    const p = settings.default_price_per_kwh;
+    const val = field({ label: 'Price per kWh', name: 'dp-value', type: 'number', value: p ? p.value : '', attrs: { min: '0', max: '10', step: 'any', inputmode: 'decimal', placeholder: '0.15', disabled: ro } });
+    const cur = field({ label: 'Currency', name: 'dp-currency', value: (p && p.currency) || priceCur || '', attrs: { class: 'dp-cur', maxlength: '3', autocomplete: 'off', spellcheck: 'false', placeholder: 'USD', disabled: ro } });
+    const showErrs = (f) => {
+      setFieldError(val, f['default_price_per_kwh.value'] || null);
+      setFieldError(cur, f['default_price_per_kwh.currency'] || f.default_price_per_kwh || null);
+    };
+    const put = async (body, okText) => {
+      try { await patchSettings({ default_price_per_kwh: body }); ctx.toast(okText); drawPrice(); } catch (err) {
+        if (err.code === 'conflict') drawPrice();
+        if (err.fields) showErrs(err.fields); else ctx.toast(err.code === 'conflict' ? err.message : notSaved(err), { kind: 'error' });
+      }
+    };
+    const save = () => {
+      const raw = val.control.value.trim(), n = Number(raw), c = cur.control.value.trim().toUpperCase();
+      const bad = {};
+      if (raw === '' || !Number.isFinite(n) || n < 0 || n > 10) bad['default_price_per_kwh.value'] = 'A price from 0 to 10.';
+      if (!/^[A-Z]{3}$/.test(c)) bad['default_price_per_kwh.currency'] = 'Three letters, such as USD or EUR.';
+      showErrs(bad);
+      if (!Object.keys(bad).length) put({ value: n, currency: c }, `Saved: ${n} ${c} per kWh as the default price.`);
+    };
+    for (const f of [val, cur]) f.control.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
+    dpBox.replaceChildren(group('Default price per kWh', [h('div', { class: 'row row-static set-ctl is-stack' },
+      h('div', { class: 'dp-two' }, val, cur),
+      ro ? null : h('div', { class: 'form-actions' }, btn('Save', { kind: 'soft', cls: 'btn-sm', onclick: save }),
+        p ? btn('Clear', { kind: 'ghost', cls: 'btn-sm', onclick: () => put(null, 'Saved: no default price.') }) : null))],
+    { note: 'Charges without a price are estimated at it on Statistics, shown apart as estimated.' }));
+  }
+  drawPrice();
   const access = cfg.supercharging_access;
   const fsT = tile({ w: 2, title: 'Free Supercharging', icon: 'bolt', cover: 'web.settings.car.free-supercharging' },
     said('info', 'The car says Supercharging is: ', h('b', null, access && access.value != null ? yesNo(access.value) : 'not sent yet'), access && access.value != null ? ` (${access.source === 'vin' ? SOURCE.vin.toLowerCase() : (srcText(access) || SOURCE[access.source] || 'typed by an admin').replace(/^D/, 'd')})` : '', '. It does not say since when, so the dates are yours.'),
     fsBox,
-    note('Dated ranges in the car’s time zone. Sessions outside them keep their price, so turning this off later does not rewrite history.'));
+    note('Dated ranges in the car’s time zone. Sessions outside them keep their price, so turning this off later does not rewrite history.'),
+    dpBox);
 
   /* ---------- data sources */
   // GET .../settings: source_order (null = the default), source_order_default, inputs [{ kind, label, on, last_ms }] in

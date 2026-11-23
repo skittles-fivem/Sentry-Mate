@@ -3,7 +3,7 @@
 // mapTile(ctx, box, opts) draws a soft map inside a rounded box: the tiles from the server's map settings
 // (GET /api/v1/maps/config, read by shared/maptiles.js: the offline map file Sentry Mate serves, raster or a
 // Protomaps vector file in a plain style, else the online tile server the owner turned on, else none: only the
-// routes and pins on a plain ground under a "No map tiles yet" note, with a one-click satellite map switch for
+// routes and pins on a plain ground under a "No map tiles yet" note, with a one-click online map switch for
 // an admin), routes in the pack's series colours and round pins. Tiles that fail show their cause. The light
 // theme shows the tile server's own colours; the dark one dims them (never inverted, so streets, labels and
 // water stay readable) unless the person chose original colours. Satellite photos are never dimmed, and over
@@ -18,7 +18,7 @@ import { h, cssVar, styleSheet } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import { display } from './display.js';
 import { isDark, onTheme, currentPrefs, onPrefs } from './prefs.js';
-import { tileChoice, rasterPaint, mapColors, tileSources, tileLayers, repaintTiles, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles } from '../shared/maptiles.js';
+import { tileChoice, rasterPaint, mapColors, tileSources, tileLayers, repaintTiles, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles, sharpZoom } from '../shared/maptiles.js';
 
 let lib = null;
 /** Load MapLibre once (module, worker and style sheet, all relative to this file); resolves once the style sheet applies. */
@@ -102,6 +102,9 @@ export async function mapTile(ctx, box, { center = null, zoom = 13, bounds = nul
   box.toggleAttribute('data-imagery', onImagery(src));
   const pad = () => Math.round(padding * display.scale);
   let tiles = tilePx();
+  // never opens deeper than the tiles are sharp (the satellite photos end sooner than the map)
+  zoom = Math.min(zoom, sharpZoom(src, tiles));
+  maxZoom = Math.min(maxZoom, sharpZoom(src, tiles));
   const ground = () => (src?.kind === 'vector' ? vectorGround(isDark()) : cssVar('--map-ground'));
   const map = new ml.Map({
     container: box,

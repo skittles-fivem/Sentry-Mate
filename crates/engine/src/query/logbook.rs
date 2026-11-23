@@ -48,6 +48,63 @@ pub struct OwnPurpose {
     pub at_ms: u64,
 }
 
+/// The owner's purposes of `drives` (id, start) on `car`, to go with the drives to another car.
+pub(crate) fn read_purposes(
+    db: &db::Db,
+    car: CarId,
+    drives: &[(u64, u64)],
+) -> crate::Result<Vec<(u64, u64, OwnPurpose)>> {
+    let mut by_key: BTreeMap<String, Vec<(u64, u64)>> = BTreeMap::new();
+    for (id, start) in drives {
+        by_key.entry(purposes_key(car, *start)).or_default().push((*id, *start));
+    }
+    let mut out = Vec::new();
+    for (key, ids) in by_key {
+        let all: BTreeMap<u64, OwnPurpose> = records::get(db, NS, &key)?.unwrap_or_default();
+        for (id, start) in ids {
+            if let Some(p) = all.get(&id) {
+                out.push((id, start, p.clone()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Takes the owner's purposes of `drives` (id, start) off `car` (once they are on the car the drives went to).
+pub(crate) fn take_purposes(db: &db::Db, car: CarId, drives: &[(u64, u64)]) -> crate::Result<()> {
+    let _w = writing();
+    let mut by_key: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for (id, start) in drives {
+        by_key.entry(purposes_key(car, *start)).or_default().push(*id);
+    }
+    for (key, ids) in by_key {
+        let mut all: BTreeMap<u64, OwnPurpose> = records::get(db, NS, &key)?.unwrap_or_default();
+        let before = all.len();
+        for id in ids {
+            all.remove(&id);
+        }
+        if all.len() != before {
+            records::put(db, NS, &key, &all)?;
+        }
+    }
+    Ok(())
+}
+
+/// Puts purposes on `car`'s drives (id, start, purpose), as [`take_purposes`] took them.
+pub(crate) fn put_purposes(db: &db::Db, car: CarId, items: &[(u64, u64, OwnPurpose)]) -> crate::Result<()> {
+    let _w = writing();
+    let mut by_key: BTreeMap<String, Vec<(u64, OwnPurpose)>> = BTreeMap::new();
+    for (id, start, p) in items {
+        by_key.entry(purposes_key(car, *start)).or_default().push((*id, p.clone()));
+    }
+    for (key, v) in by_key {
+        let mut all: BTreeMap<u64, OwnPurpose> = records::get(db, NS, &key)?.unwrap_or_default();
+        all.extend(v);
+        records::put(db, NS, &key, &all)?;
+    }
+    Ok(())
+}
+
 /// A purpose rule: drives from `from_place` to `to_place` (null: no place) on `days` get `purpose`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Rule {
@@ -210,6 +267,7 @@ pub fn set_purpose(
     let mut all: BTreeMap<u64, OwnPurpose> = records::get(e.db(), NS, &key)?.unwrap_or_default();
     all.insert(d.id, own);
     records::put(e.db(), NS, &key, &all)?;
+    changed();
     Ok(())
 }
 
@@ -227,6 +285,7 @@ pub fn clear_purpose(e: &Engine, car: CarId, id: u64) -> QResult<bool> {
     } else {
         records::put(e.db(), NS, &key, &all)?;
     }
+    changed();
     Ok(had)
 }
 
@@ -294,6 +353,7 @@ pub fn add_rule(
     };
     all.items.push(rule.clone());
     records::put(e.db(), NS, &rules_key(car), &all)?;
+    changed();
     Ok(scoped(&c, rule))
 }
 
@@ -305,6 +365,7 @@ pub fn remove_rule(e: &Engine, car: CarId, id: &str) -> QResult<Rule> {
     let i = all.items.iter().position(|x| x.id == id).ok_or(QueryError::NotFound("no_such_rule"))?;
     let gone = all.items.remove(i);
     records::put(e.db(), NS, &rules_key(car), &all)?;
+    changed();
     Ok(gone)
 }
 
@@ -333,6 +394,8 @@ pub struct LogRow {
     pub in_progress: bool,
     /// The odometer distance between the end of the row before and the start of this one; null on the first row.
     pub continuity_gap_km: Option<f64>,
+    /// When the row before ended (null on the first row, or while it goes on): where a missing stretch starts.
+    pub prev_end_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -352,23 +415,82 @@ pub struct Logbook {
     pub truncated: bool,
 }
 
+/// Missing distance below this is rounding (the odometer and the logged start agree within 50 m).
+pub const GAP_KM: f64 = 0.05;
+
+/// The continuity check of the whole period (every row, whatever the filter).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Continuity {
+    /// Rows (drives) in the period.
+    pub rows: u64,
+    pub first_seq: Option<u64>,
+    pub first_start_odometer_km: Option<f64>,
+    pub last_seq: Option<u64>,
+    pub last_end_odometer_km: Option<f64>,
+    /// The sum of the drives' distances.
+    pub logged_km: f64,
+    /// The sum of the gaps over [`GAP_KM`].
+    pub missing_km: f64,
+    /// How many gaps over [`GAP_KM`].
+    pub gaps: u64,
+    /// The largest gaps (at most 4), largest first.
+    pub worst: Vec<LogRow>,
+}
+
+/// The period's logbook worked out once: kept (in [`Engine::memo`]) while the car's rows, places, settings, the
+/// shown sides of overlaps, the purposes and the rules stay the same, so paging through it, filtering it or exporting
+/// it reads no drive again and looks up no address again.
+#[derive(Debug, Clone, Default)]
+struct Book {
+    rows: Vec<LogRow>,
+    totals: BTreeMap<String, PurposeTotal>,
+    truncated: bool,
+    continuity: Continuity,
+    /// Rows per purpose (`none` for none).
+    counts: BTreeMap<String, u64>,
+    /// Rows each rule gave its purpose.
+    rules_used: BTreeMap<String, u64>,
+}
+
+/// Bumped by every change to purposes or rules (kept in the key/value store, not in the car's version).
+static CHANGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn changed() {
+    CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn text_of(v: &serde_json::Value, key: &str) -> Option<String> {
     v.get(key).and_then(serde_json::Value::as_str).map(str::to_string)
 }
 
-/// `/cars/{car}/logbook`: the period's drives oldest first (by start), as shown.
-pub fn logbook(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Logbook>> {
-    let c = car_of(e, car)?;
-    let x = super::drives::ctx(e, &c)?;
-    let mut purposes = Purposes::new(e, &c)?;
-    let (a, b) = period.bounds()?;
+/// A period that ends now (a page's "this year" sends its own now as `to_ms`, a new one each load) is kept as one that
+/// goes on: no drive starts after now, so the rows are the same and one kept answer serves every load.
+const NOW_SLACK_MS: u64 = 5 * 60_000;
+
+fn book(e: &Engine, c: &Car, a: u64, b: u64) -> QResult<std::sync::Arc<Book>> {
+    let b = if b >= crate::now_ms().saturating_sub(NOW_SLACK_MS) { u64::MAX } else { b };
+    let x = super::drives::ctx(e, c)?;
+    let shown = super::system::Shown::new(e, c.id, None)?;
+    let changes = CHANGES.load(std::sync::atomic::Ordering::Relaxed);
+    let extra = crate::memo::key(&(a, b, x.live, x.stopped, shown.key(), changes, &c.time_zone));
+    e.memo(c.id, "logbook", crate::memo::On::All, extra, || make_book(e, c, a, b, &x, &shown))
+}
+
+fn make_book(
+    e: &Engine,
+    c: &Car,
+    a: u64,
+    b: u64,
+    x: &super::drives::Ctx,
+    shown: &super::system::Shown,
+) -> QResult<Book> {
+    let mut purposes = Purposes::new(e, c)?;
     let mut totals: BTreeMap<String, PurposeTotal> =
         PURPOSES.iter().chain(&["none"]).map(|k| (k.to_string(), PurposeTotal::default())).collect();
     let mut rows = Vec::new();
-    let (mut seq, mut prev_end, mut truncated) = (0u64, None::<Option<f64>>, false);
-    let shown = super::system::Shown::new(e, car, None)?;
-    super::drives::each::<Drive>(e, car, a, b, None, &shown, false, |d| {
-        let v = super::drives::view(&c, &d, &x);
+    let (mut seq, mut prev_end, mut prev_end_ms, mut truncated) = (0u64, None::<Option<f64>>, None, false);
+    super::drives::each::<Drive>(e, c.id, a, b, None, shown, false, |d| {
+        let v = super::drives::view(c, &d, x);
         let p = purposes.of(e, &d, &v)?.unwrap_or(serde_json::Value::Null);
         let value = text_of(&p, "value");
         let t = totals.entry(value.clone().unwrap_or_else(|| "none".into())).or_default();
@@ -384,6 +506,8 @@ pub fn logbook(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Logboo
             None => None,
         };
         prev_end = Some(v.end_odometer_km);
+        let before = prev_end_ms;
+        prev_end_ms = v.end_ms;
         rows.push(LogRow {
             seq,
             drive: v.id.clone(),
@@ -406,19 +530,231 @@ pub fn logbook(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Logboo
             purpose_rule: text_of(&p, "rule"),
             in_progress: v.flags.in_progress,
             continuity_gap_km: r(gap, 3),
+            prev_end_ms: if seq == 1 { None } else { before },
         });
         Ok(true)
     })?;
     for t in totals.values_mut() {
         t.distance_km = r(Some(t.distance_km), 3).unwrap_or(0.0);
     }
-    // the period as it is: up to now at most; from its first drive when no start was given
+    let mut counts: BTreeMap<String, u64> = PURPOSES.iter().chain(&["none"]).map(|k| (k.to_string(), 0)).collect();
+    let mut rules_used = BTreeMap::new();
+    for x in &rows {
+        *counts.entry(x.purpose.clone().unwrap_or_else(|| "none".into())).or_default() += 1;
+        if let Some(rule) = &x.purpose_rule {
+            *rules_used.entry(rule.clone()).or_default() += 1;
+        }
+    }
+    let continuity = continuity_of(&rows);
+    Ok(Book { rows, totals, truncated, continuity, counts, rules_used })
+}
+
+fn continuity_of(rows: &[LogRow]) -> Continuity {
+    let gaps: Vec<&LogRow> = rows.iter().filter(|x| x.continuity_gap_km.is_some_and(|g| g > GAP_KM)).collect();
+    let mut worst = gaps.clone();
+    worst.sort_by(|a, b| b.continuity_gap_km.partial_cmp(&a.continuity_gap_km).unwrap_or(std::cmp::Ordering::Equal));
+    worst.truncate(4);
+    let (first, last) = (rows.first(), rows.last());
+    Continuity {
+        rows: rows.len() as u64,
+        first_seq: first.map(|x| x.seq),
+        first_start_odometer_km: first.and_then(|x| x.start_odometer_km),
+        last_seq: last.map(|x| x.seq),
+        last_end_odometer_km: last.and_then(|x| x.end_odometer_km),
+        logged_km: r(Some(rows.iter().map(|x| x.distance_km.unwrap_or(0.0)).sum()), 3).unwrap_or(0.0),
+        missing_km: r(Some(gaps.iter().map(|x| x.continuity_gap_km.unwrap_or(0.0)).sum()), 3).unwrap_or(0.0),
+        gaps: gaps.len() as u64,
+        worst: worst.into_iter().cloned().collect(),
+    }
+}
+
+/// The period as it is: up to now at most; from its first drive when no start was given.
+fn edges(period: &Period, a: u64, b: u64, rows: &[LogRow]) -> (u64, u64) {
     let to_ms = b.min(crate::now_ms()).max(a);
     let from_ms = match period.from_ms {
         Some(_) => a,
         None => rows.first().map_or(a, |x| x.start_ms.min(to_ms)),
     };
-    Ok(scoped(&c, Logbook { from_ms, to_ms, rows, totals_by_purpose: totals, truncated }))
+    (from_ms, to_ms)
+}
+
+/// `/cars/{car}/logbook`: the period's drives oldest first (by start), as shown.
+pub fn logbook(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Logbook>> {
+    let c = car_of(e, car)?;
+    let (a, b) = period.bounds()?;
+    let bk = book(e, &c, a, b)?;
+    let (from_ms, to_ms) = edges(period, a, b, &bk.rows);
+    Ok(scoped(
+        &c,
+        Logbook {
+            from_ms,
+            to_ms,
+            rows: bk.rows.clone(),
+            totals_by_purpose: bk.totals.clone(),
+            truncated: bk.truncated,
+        },
+    ))
+}
+
+/// The order of a logbook page: `seq` (by start, the default), `distance`, `gap` (missing distance before),
+/// `odometer` (at the start), `from`, `to` (the place, else the address) or `purpose`. Ties by `seq`; a missing value
+/// goes last either way.
+pub const LOGBOOK_SORTS: [&str; 7] = ["seq", "distance", "gap", "odometer", "from", "to", "purpose"];
+
+/// What a logbook page shows: its filters, order and where it starts.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LogQuery {
+    /// `business`, `commute`, `private` or `none`.
+    pub purpose: Option<String>,
+    /// Words that every shown row has in its places, addresses, relation or note (any case).
+    pub q: Option<String>,
+    /// Only rows after distance not logged (a gap over [`GAP_KM`]).
+    pub gaps: bool,
+    /// One of [`LOGBOOK_SORTS`] (`seq` when none).
+    pub sort: Option<String>,
+    pub desc: bool,
+    /// The first row (0 based, in the shown order).
+    pub offset: usize,
+    /// With `seq` only: start at the first row (in the shown order) on the far side of this time: starting at or after
+    /// it oldest first, before it newest first (the last row when none is).
+    pub at_ms: Option<u64>,
+    pub limit: usize,
+}
+
+/// A page of the logbook, with what the whole period says.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LogPage {
+    pub from_ms: u64,
+    pub to_ms: u64,
+    pub items: Vec<LogRow>,
+    /// Where `items` start among the shown rows (0 based).
+    pub offset: usize,
+    /// The rows the filters show.
+    pub total: usize,
+    /// Every row of the period.
+    pub count: usize,
+    /// Rows per purpose (`none`: without one), whatever the filters.
+    pub counts_by_purpose: BTreeMap<String, u64>,
+    pub totals_by_purpose: BTreeMap<String, PurposeTotal>,
+    pub continuity: Continuity,
+    /// Rows each rule gives its purpose, by rule id.
+    pub rules_used: BTreeMap<String, u64>,
+    pub truncated: bool,
+}
+
+fn checked(query: &LogQuery) -> QResult<()> {
+    if let Some(p) = &query.purpose
+        && !PURPOSES.contains(&p.as_str())
+        && p != "none"
+    {
+        return Err(QueryError::bad("purpose", "business, commute, private or none"));
+    }
+    if let Some(s) = &query.sort
+        && !LOGBOOK_SORTS.contains(&s.as_str())
+    {
+        return Err(QueryError::bad("sort", "seq, distance, gap, odometer, from, to or purpose"));
+    }
+    if query.at_ms.is_some() && query.sort.as_deref().is_some_and(|s| s != "seq") {
+        return Err(QueryError::bad("at_ms", "only in the order of the drives (sort=seq)"));
+    }
+    Ok(())
+}
+
+/// The rows a query shows, in its order.
+fn shown_rows<'a>(rows: &'a [LogRow], query: &LogQuery) -> Vec<&'a LogRow> {
+    let words: Vec<String> =
+        query.q.as_deref().unwrap_or("").split_whitespace().map(str::to_lowercase).collect::<Vec<_>>();
+    let has = |x: &LogRow| {
+        let fields = [&x.start_place, &x.end_place, &x.start_address, &x.end_address, &x.relation, &x.note];
+        let text: String = fields.iter().filter_map(|f| f.as_deref()).collect::<Vec<_>>().join("\u{1f}").to_lowercase();
+        words.iter().all(|w| text.contains(w.as_str()))
+    };
+    let mut out: Vec<&LogRow> = rows
+        .iter()
+        .filter(|x| query.purpose.as_deref().is_none_or(|p| x.purpose.as_deref().unwrap_or("none") == p))
+        .filter(|x| words.is_empty() || has(x))
+        .filter(|x| !query.gaps || x.continuity_gap_km.is_some_and(|g| g > GAP_KM))
+        .collect();
+    let text = |place: &Option<String>, address: &Option<String>| {
+        place.as_deref().or(address.as_deref()).map(str::to_lowercase)
+    };
+    use std::cmp::Ordering;
+    let desc = query.desc;
+    // a missing value last either way; ties by seq in the chosen direction
+    fn by<T: PartialOrd>(a: Option<T>, b: Option<T>, desc: bool) -> Ordering {
+        match (a, b) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(a), Some(b)) => {
+                let o = a.partial_cmp(&b).unwrap_or(Ordering::Equal);
+                if desc { o.reverse() } else { o }
+            }
+        }
+    }
+    let seq = |a: &LogRow, b: &LogRow| if desc { b.seq.cmp(&a.seq) } else { a.seq.cmp(&b.seq) };
+    match query.sort.as_deref().unwrap_or("seq") {
+        "distance" => out.sort_by(|a, b| by(a.distance_km, b.distance_km, desc).then_with(|| seq(a, b))),
+        "gap" => out.sort_by(|a, b| by(a.continuity_gap_km, b.continuity_gap_km, desc).then_with(|| seq(a, b))),
+        "odometer" => {
+            out.sort_by(|a, b| by(a.start_odometer_km, b.start_odometer_km, desc).then_with(|| seq(a, b)));
+        }
+        "from" => out.sort_by(|a, b| {
+            by(text(&a.start_place, &a.start_address), text(&b.start_place, &b.start_address), desc)
+                .then_with(|| seq(a, b))
+        }),
+        "to" => out.sort_by(|a, b| {
+            by(text(&a.end_place, &a.end_address), text(&b.end_place, &b.end_address), desc).then_with(|| seq(a, b))
+        }),
+        "purpose" => out.sort_by(|a, b| by(a.purpose.as_deref(), b.purpose.as_deref(), desc).then_with(|| seq(a, b))),
+        _ => out.sort_by(|a, b| seq(a, b)),
+    }
+    out
+}
+
+/// `/cars/{car}/logbook` a page at a time (`limit`, `offset` or the web side's cursor, `at_ms`), with the purpose
+/// filter, search words and an order, and the totals, counts and continuity check of the whole period.
+pub fn logbook_page(e: &Engine, car: CarId, period: &Period, query: &LogQuery) -> QResult<Scoped<LogPage>> {
+    let c = car_of(e, car)?;
+    checked(query)?;
+    let (a, b) = period.bounds()?;
+    let bk = book(e, &c, a, b)?;
+    let shown = shown_rows(&bk.rows, query);
+    let total = shown.len();
+    let offset = match query.at_ms {
+        Some(at) if query.desc => shown.iter().position(|x| x.start_ms < at),
+        Some(at) => shown.iter().position(|x| x.start_ms >= at),
+        None => Some(query.offset),
+    }
+    .unwrap_or(total.saturating_sub(1))
+    .min(total);
+    let items = shown.iter().skip(offset).take(query.limit.max(1)).map(|x| (*x).clone()).collect();
+    let (from_ms, to_ms) = edges(period, a, b, &bk.rows);
+    Ok(scoped(
+        &c,
+        LogPage {
+            from_ms,
+            to_ms,
+            items,
+            offset,
+            total,
+            count: bk.rows.len(),
+            counts_by_purpose: bk.counts.clone(),
+            totals_by_purpose: bk.totals.clone(),
+            continuity: bk.continuity.clone(),
+            rules_used: bk.rules_used.clone(),
+            truncated: bk.truncated,
+        },
+    ))
+}
+
+/// Every row a query shows, in its order (the CSV of a filtered table).
+pub fn logbook_rows(e: &Engine, car: CarId, period: &Period, query: &LogQuery) -> QResult<Vec<LogRow>> {
+    let c = car_of(e, car)?;
+    checked(query)?;
+    let (a, b) = period.bounds()?;
+    let bk = book(e, &c, a, b)?;
+    Ok(shown_rows(&bk.rows, query).into_iter().cloned().collect())
 }
 
 /// The logbook as a PDF (a plain table, landscape, times in the car's zone, the continuity warnings and the totals per
@@ -449,7 +785,7 @@ pub fn logbook_pdf(e: &Engine, car: CarId, period: &Period) -> QResult<(Vec<u8>,
         String::new(),
     ];
     for x in &book.body.rows {
-        if let Some(g) = x.continuity_gap_km.filter(|g| *g > 0.05) {
+        if let Some(g) = x.continuity_gap_km.filter(|g| *g > GAP_KM) {
             lines.push(format!("      ! {g:.1} km not logged before this drive"));
         }
         let from = x.start_place.as_deref().or(x.start_address.as_deref()).unwrap_or("-");
@@ -566,6 +902,90 @@ mod tests {
         assert!(day_matches("mon-fri", 0) && day_matches("mon-fri", 4) && !day_matches("mon-fri", 5));
         assert!(day_matches("fri-mon", 6) && day_matches("fri-mon", 0) && !day_matches("fri-mon", 2));
         assert!(day_matches("sat,sun", 5) && !day_matches("sat,sun", 1));
+    }
+
+    fn row(seq: u64, start_ms: u64, km: f64, gap: Option<f64>, purpose: Option<&str>, from: &str) -> LogRow {
+        LogRow {
+            seq,
+            drive: format!("d{seq}"),
+            start_ms,
+            end_ms: Some(start_ms + 600_000),
+            start_odometer_km: Some(1000.0 + seq as f64 * 10.0),
+            end_odometer_km: Some(1000.0 + seq as f64 * 10.0 + km),
+            distance_km: Some(km),
+            start_address: Some(format!("{from} Street 1")),
+            end_address: None,
+            start_place: None,
+            end_place: Some("Made-up Office".into()),
+            start_place_id: None,
+            end_place_id: None,
+            duration_ms: 600_000,
+            purpose: purpose.map(str::to_string),
+            relation: None,
+            note: (seq == 3).then(|| "Quarterly visit".to_string()),
+            purpose_source: purpose.map(|_| "owner".to_string()),
+            purpose_rule: None,
+            in_progress: false,
+            continuity_gap_km: gap,
+            prev_end_ms: (seq > 1).then_some(start_ms - 1),
+        }
+    }
+
+    fn sample() -> Vec<LogRow> {
+        vec![
+            row(1, 1_000, 5.0, None, Some("business"), "Elm"),
+            row(2, 2_000, 12.0, Some(0.0), None, "Oak"),
+            row(3, 3_000, 2.5, Some(4.2), Some("commute"), "Ash"),
+            row(4, 4_000, 30.0, Some(0.04), Some("business"), "Birch"),
+            row(5, 5_000, 1.0, Some(9.0), None, "Cedar"),
+        ]
+    }
+
+    fn seqs(rows: &[&LogRow]) -> Vec<u64> {
+        rows.iter().map(|x| x.seq).collect()
+    }
+
+    #[test]
+    fn filters_words_and_orders() {
+        let rows = sample();
+        let q = |purpose: Option<&str>, words: Option<&str>, sort: Option<&str>, desc: bool| LogQuery {
+            purpose: purpose.map(str::to_string),
+            q: words.map(str::to_string),
+            sort: sort.map(str::to_string),
+            desc,
+            ..LogQuery::default()
+        };
+        assert_eq!(seqs(&shown_rows(&rows, &q(None, None, None, false))), vec![1, 2, 3, 4, 5]);
+        assert_eq!(seqs(&shown_rows(&rows, &q(None, None, None, true))), vec![5, 4, 3, 2, 1]);
+        assert_eq!(seqs(&shown_rows(&rows, &q(Some("business"), None, None, false))), vec![1, 4]);
+        assert_eq!(seqs(&shown_rows(&rows, &q(Some("none"), None, None, false))), vec![2, 5]);
+        // every word, any case, in places, addresses or the note
+        assert_eq!(seqs(&shown_rows(&rows, &q(None, Some("QUARTERLY office"), None, false))), vec![3]);
+        assert_eq!(seqs(&shown_rows(&rows, &q(None, Some("street"), None, false))).len(), 5);
+        assert!(shown_rows(&rows, &q(None, Some("nowhere"), None, false)).is_empty());
+        assert_eq!(seqs(&shown_rows(&rows, &q(None, None, Some("distance"), true))), vec![4, 2, 1, 3, 5]);
+        let gaps = LogQuery { gaps: true, ..LogQuery::default() };
+        assert_eq!(seqs(&shown_rows(&rows, &gaps)), vec![3, 5]);
+        // no gap on the first row: last either way
+        assert_eq!(seqs(&shown_rows(&rows, &q(None, None, Some("gap"), true))), vec![5, 3, 4, 2, 1]);
+        assert_eq!(seqs(&shown_rows(&rows, &q(None, None, Some("gap"), false))), vec![2, 4, 3, 5, 1]);
+        assert_eq!(seqs(&shown_rows(&rows, &q(None, None, Some("from"), false))), vec![3, 4, 5, 1, 2]);
+        assert_eq!(seqs(&shown_rows(&rows, &q(None, None, Some("purpose"), false))), vec![1, 4, 3, 2, 5]);
+        assert!(checked(&q(Some("holiday"), None, None, false)).is_err());
+        assert!(checked(&q(None, None, Some("colour"), false)).is_err());
+        let at = LogQuery { at_ms: Some(1), sort: Some("distance".into()), ..LogQuery::default() };
+        assert!(checked(&at).is_err());
+    }
+
+    #[test]
+    fn the_continuity_check_of_the_whole_period() {
+        let c = continuity_of(&sample());
+        assert_eq!((c.rows, c.first_seq, c.last_seq, c.gaps), (5, Some(1), Some(5), 2));
+        assert_eq!((c.logged_km, c.missing_km), (50.5, 13.2));
+        assert_eq!(c.first_start_odometer_km, Some(1010.0));
+        assert_eq!(c.last_end_odometer_km, Some(1051.0));
+        assert_eq!(c.worst.iter().map(|x| x.seq).collect::<Vec<_>>(), vec![5, 3]);
+        assert_eq!(continuity_of(&[]), Continuity::default());
     }
 
     #[test]

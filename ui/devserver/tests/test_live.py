@@ -70,6 +70,22 @@ class Now(ServerCase):
         c = self.c.get(f"/api/v1/cars/c2/charges/{ch['charge_id']}")
         self.assertTrue(c["flags"]["in_progress"])
 
+    def test_c2_placard_wheel_size(self):
+        # the door placard's for a size taken from the factory tyre: a guess, until an admin types the size
+        n = self.c.get("/api/v1/cars/c2/now")
+        self.assertEqual((n["tyre_recommended_source"], n["tyre_recommended_wheel_in"]), ("placard", 18))
+        self.assertEqual((n["tyre_recommended_wheel_from"], n["tyre_recommended_wheel_guess"]), ("can", True))
+        car = self.c.get("/api/v1/cars/c2")
+        self.c.json("PATCH", "/api/v1/cars/c2", {"version": car["version"], "config": {"wheel_in": 19}})
+        n = self.c.get("/api/v1/cars/c2/now")
+        self.assertEqual(n["tyre_recommended_wheel_in"], 19)
+        self.assertEqual((n["tyre_recommended_wheel_from"], n["tyre_recommended_wheel_guess"]), ("owner", False))
+        car = self.c.get("/api/v1/cars/c2")
+        self.c.json("PATCH", "/api/v1/cars/c2", {"version": car["version"], "config": {"wheel_in": None}})
+        # a car that sends its own: no wheel size
+        n = self.c.get("/api/v1/cars/c1/now")
+        self.assertEqual((n["tyre_recommended_source"], n["tyre_recommended_wheel_from"], n["tyre_recommended_wheel_guess"]), ("can", None, None))
+
     def test_c3_is_silent(self):
         n = self.c.get("/api/v1/cars/c3/now")
         # its newest log ended parked: it stays parked (stale), not unknown
@@ -186,22 +202,6 @@ class ForcedRows(ServerCase):
         self.assertEqual(rows[0]["kinds"], ["charges", "drives", "states", "updates", "visits"])
         self.assertLess(rows[0]["from_ms"], rows[0]["to_ms"])
         self.assertIn("c2", {e["data"]["car"] for e in events if e["event"] == "rows"})
-
-
-class RebuildRunning(ServerCase):
-    server_args = {"freeze_clock": False, "rebuild_running": True}
-
-    def test_rebuild_never_ends_and_rows_come_every_second(self):
-        h = self.c.get("/api/v1/cars/c1/health")
-        self.assertTrue(h["rebuild_pending"])
-        self.assertIn("rebuild_pending", h["reasons"])
-        self.server.app.clock.advance(60_000)
-        self.assertTrue(self.c.get("/api/v1/cars/c1/health")["rebuild_pending"])
-        start = time.time()
-        events = read_events(self.server.port, self.c.cookie,
-                             lambda ev: len([e for e in ev if e["event"] == "rows" and e["data"]["car"] == "c1"]) >= 3)
-        self.assertGreaterEqual(len([e for e in events if e["event"] == "rows" and e["data"]["car"] == "c1"]), 3)
-        self.assertLess(time.time() - start, 5)
 
 
 class NoForcedRows(ServerCase):

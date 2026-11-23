@@ -1,20 +1,23 @@
 // Settings: Server and access (/settings/server): who can sign in, what each account may see, and how
-// the server is reached. Every visitor gets: the check of the address in this browser against the
+// the server is reached. Every visitor gets: Server updates (this build and the release check's last answer:
+// GET /about, GET /release; Check now for an admin, POST /release/check; the switch stays in Display and units), the check of the address in this browser against the
 // server's host names and port, how access works, and their own sessions (sign out one, all others, or
 // here). Admins also get the accounts (roles, car lists, two-step sign-in), the audit log (each entry
-// links to the item it changed), the host names for the certificate, the ports, and where the recovery
-// key and backups stand, the move to another server (a move code or an export file:
-// pages/settings-server-move.js), and Storage: the space on disk by category and what compaction saved
+// links to the item it changed), where the certificate (its names: Change names), the recovery key and
+// backups stand, the move to another server (a move code or an export file:
+// pages/settings-server-move.js) with Storage beside it: the space on disk by kind and what compaction saved
 // (GET /system/storage/detail), with "Compact now" (POST /system/storage/compact; while a pass runs the detail
-// is read again every 2 s). Changes are saved through the API with the object's version; a short note
+// is read again every 2 s), and the full rebuild of every car with its automatic run on a new server
+// version (pages/full-rebuild.js). Changes are saved through the API with the object's version; a short note
 // confirms each one.
 
-import { h, replace } from '../shared/dom.js';
+import { h, replace, setVars } from '../shared/dom.js';
+import { compactionProgress } from '../shared/compaction.js';
 import * as state from '../shared/state.js';
 import { format } from '../shared/units.js';
 import { icon } from '../core/icons.js';
 import { soldParts, soldToggle } from '../core/carswitch.js';
-import { pageHead, panel, kv, tag, pill, metric, figures } from '../core/page.js';
+import { pageHead, panel, kv, tag, pill, metric, figures, csvButton } from '../core/page.js';
 import { dataTable } from '../core/table.js';
 import { field, form } from '../core/form.js';
 import { emptyState, errorWords } from '../core/states.js';
@@ -22,9 +25,13 @@ import { flash } from '../core/flash.js';
 import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { signOut } from '../core/session.js';
 import { dateTime, date, agoEl, tzName, DASH } from '../core/fmt.js';
-import { timeColumn } from '../shared/csv.js';
+import { timeColumn, downloadCsv, csvFilename } from '../shared/csv.js';
+import { storageGroups, shortName, shareText, groupWord } from '../shared/storage.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
+import { serverUpdates, RELEASE_OFF_TEXT, RELEASE_SETTING } from '../shared/release.js';
+import { cover } from '../shared/dom.js';
 import { movePanel, showRecoveryKey, newRecoveryKey, markKeySaved, askPassword } from './settings-server-move.js';
+import { fullRebuild } from './full-rebuild.js';
 
 export const id = 'settings-server';
 export const css = true;
@@ -35,12 +42,8 @@ const ROLE_TEXT = {
   admin: 'Sees every car and every setting, and can change everything: accounts, cars, places, integrations, imports.',
   watch: 'Sees only the cars on its list and can change only its own preferences and sessions.',
 };
-const PURPOSE = { web: 'Web pages and API', upload: 'CAN Bridge uploads' };
 const errText = (e) => (e?.fields ? Object.values(e.fields).join(' ') : errorWords(e).text);
 const bytes = (v) => format(v, 'bytes');
-// storage: the groups of the categories and the steps of a compaction pass, in plain words
-const STORE_GROUP = { logs: 'CAN logs', series: 'Time series', rows: 'Drives and charges', kv: 'Kept answers and records', imports: 'Imports', server: 'Server' };
-const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records' };
 
 // a row: the label and its explanation on the left, the control on the right (the app's .setting)
 const setting = (titleText, text, control, cv = null) => h('div', { class: 'setting', cover: cv },
@@ -84,7 +87,7 @@ export async function mount(ctx) {
   const admin = ctx.admin;
   const me = ctx.me || {};
   const query = ctx.query || {};
-  const S = { settings: null, network: null, notices: [], accounts: [], cars: [], sessions: [], trips: [], storage: null, storageErr: null };
+  const S = { settings: null, network: null, notices: [], accounts: [], cars: [], sessions: [], trips: [], storage: null, storageErr: null, about: null, release: null };
 
   async function loadAccounts() { S.accounts = admin ? await ctx.api.list('accounts', { limit: 500 }).all({ max: 5000 }) : []; }
   async function loadSessions() { S.sessions = await ctx.api.list('me/sessions', { limit: 500 }).all({ max: 5000 }); }
@@ -98,6 +101,8 @@ export async function mount(ctx) {
       loadAccounts(),
       loadSessions(),
       admin ? ctx.api.list('trips', { limit: 500 }).all({ max: 5000 }).then((t) => { S.trips = t; }).catch(() => {}) : null,
+      ctx.api.get('about', null, { maxAgeMs: 600000 }).then((a) => { S.about = a; }).catch(() => {}),
+      ctx.api.get('release').then((r) => { S.release = r; }).catch(() => {}),
       admin ? ctx.api.get('system/storage/detail').then((d) => { S.storage = d; }).catch((e) => { S.storageErr = e; }) : null,
     ]);
     Object.assign(S, { settings, network, notices: notices?.items || [], cars });
@@ -145,27 +150,28 @@ export async function mount(ctx) {
       : savedOnly
         ? (certOwn()
           ? checkRow('info', `Host name ${here.host} is saved, not yet in the certificate`,
-            `The name is on the list below, but the certificate the server uses now is your own and names ${names.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until your certificate names it too.`,
+            `The name is on the server's list of names, but the certificate the server uses now is your own and names ${names.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until your certificate names it too.`,
             admin ? ownSteps() : null)
           : checkRow('info', `Host name ${here.host} is saved, not yet in the certificate`,
-            `The name is on the list below, but the certificate the server uses now names ${names.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until you make a new certificate: the button is here and under Certificate, recovery key and backups.`,
+            `The name is on the server's list of names, but the certificate the server uses now names ${names.join(', ') || 'no host'}. Browsers keep warning about ${here.host} until you make a new certificate: the button is here and under Certificate, recovery key and backups.`,
             admin ? h('button', { class: 'btn btn--sm', type: 'button', onclick: () => makeCertificate() }, icon('reset', 'ico--sm'), 'Make a new certificate') : null))
         : checkRow('warn', `Host name ${here.host} is not on the certificate`,
           `You opened Sentry Mate as ${here.host}, but the certificate names ${names.join(', ') || 'no host'}. Browsers warn about a name that is not on it. The CAN Bridge is not affected: it pins the certificate's SHA-256 and does not check names.`,
           admin ? h('button', { class: 'btn btn--sm', type: 'button', onclick: () => addName(here.host) }, icon('plus', 'ico--sm'), `Add ${here.host} to the names`) : null));
+    const portRow = (el) => cover(el, 'docs.env.web.port');
     if (webIn) {
-      rows.push(here.port === webIn.port
+      rows.push(portRow(here.port === webIn.port
         ? checkRow('ok', `Port ${here.port}`, `The same port the server listens on for the web pages (${webIn.port}).`)
-        : checkRow('info', `Port ${here.port}, server port ${webIn.port}`, `Your address uses port ${here.port}; the server listens on ${webIn.port} inside its container. A port mapping such as "${here.port}:${webIn.port}" in the compose file (or a proxy) joins the two. That is fine; it only matters when you write the address into another device.`));
+        : checkRow('info', `Port ${here.port}, server port ${webIn.port}`, `Your address uses port ${here.port}; the server listens on ${webIn.port} inside its container. A port mapping such as "${here.port}:${webIn.port}" in the compose file (or a proxy) joins the two. That is fine; it only matters when you write the address into another device.`)));
     } else {
-      rows.push(checkRow('info', `Port ${here.port}`, 'The port in your address. An admin sees the ports the server itself listens on.'));
+      rows.push(portRow(checkRow('info', `Port ${here.port}`, 'The port in your address. An admin sees the ports the server itself listens on.')));
     }
     rows.push(checkRow('ok', 'At the root of its address', `Sentry Mate always lives at / on its own host name or port, so links never need a path prefix. Behind a shared proxy, give it its own name (such as ${names[0] || 'sentry-mate.local'}) rather than a path.`));
     rows.push(checkRow('ok', 'Works from any address', 'Nothing to set up for each address: other sites can never use your sign-in (SameSite=Strict cookie, and every change carries a header they cannot set), so the page works under each of its names.'));
     replace(hostingBox, h('ul', { class: 'ss-checks' }, rows));
   }
 
-  /* ---------------------------------------------------------------- host names for the certificate */
+  /* ---------------------------------------------------------------- host names for the certificate (Change names, in a dialog) */
   const namesBox = h('div', { class: 'ss-names' });
   let draft = [...(S.settings.host_names || [])];
   const nameInput = h('input', { class: 'input ss-name-input', type: 'text', placeholder: 'sentry-mate.local', 'aria-label': 'Host name to add', autocomplete: 'off', spellcheck: 'false', disabled: !admin,
@@ -176,7 +182,7 @@ export async function mount(ctx) {
     const changed = JSON.stringify(draft) !== JSON.stringify(S.settings.host_names || []);
     saveNames.disabled = !admin || !changed || !draft.length;
     replace(namesBox,
-      h('ul', { class: 'ss-name-list', 'aria-label': 'Host names for the certificate' }, draft.map((n, i) => h('li', { class: 'ss-name' },
+      h('ul', { class: 'ss-name-list', 'aria-label': 'Names for the certificate' }, draft.map((n, i) => h('li', { class: 'ss-name' },
         h('span', { class: 'mono' }, n),
         n.toLowerCase() === here.host ? tag('this address', 'live') : null,
         admin ? h('button', { class: 'btn btn--ghost btn--icon btn--sm', type: 'button', 'aria-label': `Remove ${n}`, disabled: draft.length <= 1,
@@ -237,28 +243,9 @@ export async function mount(ctx) {
   function addName(n) {
     const saved = S.settings.host_names || [];
     if (saved.includes(n)) return;
-    if (saved.length >= 10) { flash('The certificate takes up to 10 names. Remove one under Host names first.', { kind: 'error' }); return; }
+    if (saved.length >= 10) { flash('The certificate takes up to 10 names. Remove one with Change names under Certificate first.', { kind: 'error' }); return; }
     putNames([...saved, n], { fromDraft: false });
   }
-
-  /* ---------------------------------------------------------------- ports */
-  const portRows = S.network?.inbound?.length
-    ? S.network.inbound.map((p) => [PURPOSE[p.purpose] || p.purpose, h('span', { class: 'ss-port' },
-      h('b', { class: 'mono' }, String(p.port)), p.tls ? pill('HTTPS, TLS 1.3', { tone: 'live', ic: 'lock' }) : pill('no TLS', { tone: 'warm', ic: 'warn' }))])
-    : [['Your address', h('span', { class: 'mono' }, String(here.port))]];
-  const upIn = S.network?.inbound?.find((x) => x.purpose === 'upload') || null;
-  const webPort = webIn ? webIn.port : null;
-  // the example mapping: the port in this address on the host, the web port inside the container
-  const hostPort = webPort != null && here.port !== webPort ? here.port : (webPort === 443 ? 8443 : 10443);
-  const portsPanel = panel({ title: 'Ports', icon: 'plug', pad: true, cover: 'docs.env.web.port' },
-    kv(portRows),
-    h('p', { class: 'note ss-gap' }, S.network
-      ? `${upIn ? 'Both ports speak' : 'The port speaks'} only HTTPS with TLS 1.3; there is no plain HTTP port to forget about.${upIn ? ` The upload port (${upIn.port}) takes only CAN Bridge uploads with a car's upload token, turns away wrong tokens after a few tries, and takes connections only while uploads are on: with uploads off it stays closed.` : ''}`
-      : 'An admin sees which ports the server listens on.'),
-    h('p', { class: 'note' }, webPort != null
-      ? ['To reach the web pages on another port of the host, change only the left number of the web port\'s mapping in the compose or TrueNAS file, for example ',
-        mono(`${hostPort}:${webPort}`), ` (host port ${hostPort}, web port ${webPort} inside the container), and use that number in the address.${upIn ? ` The upload port maps the same way, for example ${upIn.port}:${upIn.port}; a CAN Bridge then uses the left number.` : ''} The listening address stays 0.0.0.0 inside the container; the mapping decides what is reachable.`]
-      : 'To use another port on the host, change only the left number of the port mapping in the compose or TrueNAS file (host port:container port) and use that number in the address. The listening address stays 0.0.0.0 inside the container; the mapping decides what is reachable.'));
 
   /* ---------------------------------------------------------------- the certificate, the recovery key and backups */
   const cert = S.notices.find((n) => n.code === 'certificate_expiring');
@@ -297,8 +284,9 @@ export async function mount(ctx) {
       rows.push(h('div', { class: 'ss-fact' }, h('dt', null, 'SHA-256'), h('dd', null, v, copyValue(c.sha256, v))));
     }
     if (c?.names?.length) {
-      rows.push(h('div', { class: 'ss-fact' }, h('dt', null, 'Names in it'),
-        h('dd', null, h('ul', { class: 'ss-cert-names' }, c.names.map((n) => h('li', null, h('code', { class: 'mono ss-value' }, n)))))));
+      rows.push(h('div', { class: 'ss-fact', cover: 'docs.env.web.virtual-host' }, h('dt', null, 'Names in it'),
+        h('dd', null, h('ul', { class: 'ss-cert-names' }, c.names.map((n) => h('li', null, h('code', { class: 'mono ss-value' }, n)))),
+          admin ? h('button', { class: 'btn btn--ghost btn--sm ss-names-btn', type: 'button', onclick: () => changeNames() }, icon('settings', 'ico--sm'), 'Change names') : null)));
     }
     if (S.network?.upload_address) {
       const v = addressEl(S.network.upload_address);
@@ -324,7 +312,7 @@ export async function mount(ctx) {
         h('ul', { class: 'ss-newcert-list' },
           h('li', null, h('b', null, 'The SHA-256 changes. '), 'The CAN Bridge app\'s uploads are refused until you enter the new SHA-256 in its upload settings.'),
           h('li', null, h('b', null, 'Browsers ask again '), 'to accept the new certificate, on every device that opens these pages.'),
-          h('li', null, h('b', null, 'The names in it: '), h('span', { class: 'ss-newcert-names' }, names.map((n, i) => [i ? ', ' : '', h('code', { class: 'mono' }, n)])), '. Change them under Host names for the certificate first, if one is missing.'))),
+          h('li', null, h('b', null, 'The names in it: '), h('span', { class: 'ss-newcert-names' }, names.map((n, i) => [i ? ', ' : '', h('code', { class: 'mono' }, n)])), '. Change them first with Change names, if one is missing.'))),
       submit: 'Make a new certificate', danger: true,
       run: (cred) => ctx.api.post('network/certificate', cred),
     });
@@ -587,26 +575,66 @@ export async function mount(ctx) {
   }) : null;
 
   /* ---------------------------------------------------------------- storage and compaction (admin) */
-  // The space on disk by category, largest first, and what compaction saved. "Compact now" starts a pass;
-  // while one runs (also one the server started by itself) the detail is read again every 2 s for its
-  // progress, and when it ends the table is drawn again and a note says what was freed.
+  // A compact panel: one row of figures (on disk, free, saved by compaction, the last pass) and Compact now, then
+  // the space by kind (shared/storage.js): one row per group with its size, a bar and its share; a group opens to
+  // its categories by short name, at most five rows tall (the CSV has every category with the server's own
+  // label). "Compact now" starts a pass; while one runs (also one the server started by itself) the detail is read
+  // again every 2 s for its progress, and when it ends the groups are drawn again and a note says what was freed.
   const compactBtn = h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: () => compactNow() }, icon('reset', 'ico--sm'), 'Compact now');
-  const storFigs = h('div', { class: 'ss-stor-figs' });
-  const storLine = h('p', { class: 'ss-stor-line', 'aria-live': 'polite' });
-  const storageTable = admin ? dataTable(ctx, {
-    title: 'Storage', icon: 'server', rows: S.storage?.categories || [], label: 'Space on disk by category', csvName: 'storage on disk', cls: 'ss-storage',
-    note: 'What takes the space on disk, largest first, with the kind of data as a tag.',
-    side: [h('span', { class: 'faint' }, 'Admins only'), compactBtn],
-    sort: { key: 'disk_bytes', dir: 'desc' },
-    csv: { columns: [{ label: 'What', value: (c) => c.label }, { label: 'Kind', value: (c) => STORE_GROUP[c.group] || c.group }, { label: 'Key', value: (c) => c.key },
-      { label: 'Files', value: (c) => c.files }, { label: 'Size (bytes)', value: (c) => c.bytes }, { label: 'On disk (bytes)', value: (c) => c.disk_bytes }] },
-    columns: [
-      { key: 'label', label: 'What', sort: true, render: (c) => h('span', { class: 'row ss-acc' }, h('span', null, c.label), tag(STORE_GROUP[c.group] || c.group)) },
-      { key: 'files', label: 'Files', num: true, sort: true, render: (c) => format(c.files, 'count') },
-      { key: 'disk_bytes', label: 'On disk', num: true, sort: true, render: (c) => bytes(c.disk_bytes) },
-    ],
-    empty: () => emptyState({ icon: 'server', title: 'Not known', text: `The server did not say what takes the space${S.storageErr ? `: ${errText(S.storageErr)}` : '.'}` }),
-  }) : null;
+  const storFigs = h('dl', { class: 'st-figs' });
+  const storList = h('ul', { class: 'st-groups', 'aria-label': 'Space on disk by kind' });
+  const storOpen = new Set();
+  let storOpenSet = false;
+  const storCsv = csvButton({ onClick: () => downloadCsv(csvFilename('sentry-mate', 'storage on disk'), S.storage?.categories || [], [
+    { label: 'What', value: (c) => c.label }, { label: 'Kind', value: (c) => groupWord(c.group) }, { label: 'Key', value: (c) => c.key },
+    { label: 'Files', value: (c) => c.files }, { label: 'Size (bytes)', value: (c) => c.bytes }, { label: 'On disk (bytes)', value: (c) => c.disk_bytes }]) });
+  const LOSSLESS = 'Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs\' signed originals are kept byte for byte.';
+  const storTip = h('span', { class: 'st-tip', title: LOSSLESS, 'aria-label': LOSSLESS, role: 'img' }, icon('info', 'ico--sm'));
+  // the progress row: one box of fixed size, the same idle or running (nothing below it moves); its parts
+  // stay and only their words change
+  const prog = {
+    lead: h('span', { class: 'ss-prog-lead' }),
+    head: h('span', { class: 'ss-prog-text' }),
+    bar: h('div', { class: 'bar ss-prog-bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-label': 'Progress of this step' }, h('i')),
+    count: h('span', { class: 'ss-prog-count' }),
+    info: h('p', { class: 'ss-prog-info' }),
+    err: h('p', { class: 'ss-prog-err warn' }),
+  };
+  const storLine = h('div', { class: 'ss-prog' },
+    h('p', { class: 'ss-prog-head', 'aria-live': 'polite' }, prog.lead, prog.head, storTip),
+    h('div', { class: 'ss-prog-barrow' }, prog.bar, prog.count), prog.info, prog.err);
+  const say = (el, t) => { const s = t || ''; if (el.textContent !== s) el.textContent = s; el.title = s; };
+  let leadKind = null;
+  function lead(kind) {
+    if (leadKind === kind) return;
+    leadKind = kind;
+    replace(prog.lead, kind === 'run' ? h('span', { class: 'mv-spin', 'aria-hidden': 'true' }) : icon(kind === 'bad' ? 'warn' : 'info', 'ico--sm'));
+  }
+  const storagePanel = admin ? panel({ title: 'Storage', icon: 'server', pad: true, cls: 'st', id: 'storage', side: h('span', { class: 'row st-side' }, storCsv, compactBtn) },
+    storFigs, storLine, storList) : null;
+  const fig = (label, value, title = null) => h('div', { class: 'st-fig', title }, h('dt', null, label), h('dd', null, value));
+  function paintGroups() {
+    const groups = storageGroups(S.storage?.categories);
+    if (!storOpenSet && groups.length) { storOpen.add(groups[0].group); storOpenSet = true; }  // the largest, open at first
+    if (!groups.length) {
+      replace(storList, h('li', { class: 'st-none' }, `The server did not say what takes the space${S.storageErr ? `: ${errText(S.storageErr)}` : '.'}`));
+      return;
+    }
+    replace(storList, groups.map((g) => {
+      const open = storOpen.has(g.group);
+      const bar = h('span', { class: 'bar st-bar', 'aria-hidden': 'true' }, h('i'));
+      setVars(bar, { '--w': `${Math.max(g.share > 0 ? 1 : 0, g.share * 100).toFixed(1)}%` });
+      const rows = h('ul', { class: 'st-rows', tabindex: '0', 'aria-label': g.name, hidden: !open },
+        g.rows.map((c) => h('li', { class: 'st-row', title: c.label },
+          h('span', { class: 'st-row-name' }, shortName(c)), h('span', { class: 'st-row-size num' }, bytes(c.disk_bytes)))));
+      const head = h('button', { class: 'st-group-head', type: 'button', 'aria-expanded': String(open), onclick: () => {
+        if (storOpen.has(g.group)) storOpen.delete(g.group); else storOpen.add(g.group);
+        paintGroups();
+      } }, icon(open ? 'chev-d' : 'chev-r', 'ico--sm'), h('span', { class: 'st-group-name' }, g.name), bar,
+      h('span', { class: 'st-group-size num' }, bytes(g.disk_bytes)), h('span', { class: 'st-group-share num' }, shareText(g.share)));
+      return h('li', { class: ['st-group', open && 'is-open'] }, head, rows);
+    }));
+  }
   let storTimer = null, storPollErr = null;
   ctx.onCleanup(() => clearTimeout(storTimer));
   function paintStorage() {
@@ -615,25 +643,35 @@ export async function mount(ctx) {
     const running = c?.status === 'running';
     compactBtn.disabled = running || !c;
     const last = !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'Nothing left to pack';
-    replace(storFigs, figures([
-      metric('All together', d?.total_disk_bytes, 'bytes', { size: 'sm', why: 'Not known.', explain: 'Everything in the table, as it lies on disk.' }),
-      metric('Free on the disk', d?.free_bytes, 'bytes', { size: 'sm', why: 'Not known.', explain: 'Room left for new data.' }),
-      metric('Saved so far', c?.saved_bytes, 'bytes', { size: 'sm', why: 'Not known.', explain: 'What compaction has freed in all.' }),
-      metric('Last pass', last, null, { size: 'sm', explain: c?.finished_ms != null ? `Finished ${dateTime(c.finished_ms, tz)} (${zone}).` : 'No pass has finished yet.' }),
-    ]));
-    if (running) {
-      replace(storLine, h('span', { class: 'mv-spin', 'aria-hidden': 'true' }),
-        h('span', null, h('b', null, 'Packing…'), ` ${PACK_STEP[c.step] || c.step || 'getting ready'}, `,
-          c.total ? `${format(c.done ?? 0, 'count')} of ${format(c.total, 'count')}` : 'counting',
-          storPollErr ? ` (could not read the progress just now: ${errText(storPollErr)})` : null));
-    } else if (c?.status === 'failed') {
-      replace(storLine, icon('warn', 'ico--sm'), h('span', null, h('b', null, 'The last pass failed: '), c.error || 'the server gave no reason.'));
-    } else {
-      replace(storLine, icon('info', 'ico--sm'), h('span', null, !c ? 'The server did not say how compaction stands.'
-        : c.automatic ? 'Compaction runs by itself when the server is idle; Compact now starts a pass at once.'
-          : 'Compaction does not run by itself on this server; Compact now starts a pass.'));
-    }
+    const num = (v) => (v == null ? DASH : bytes(v));
+    replace(storFigs,
+      fig('On disk', num(d?.total_disk_bytes), 'Everything below, as it lies on disk.'),
+      fig('Free', num(d?.free_bytes), 'Room left on the disk for new data.'),
+      fig('Saved', num(c?.saved_bytes), 'What compaction has freed in all.'),
+      fig('Last pass', last, c?.finished_ms != null ? `Finished ${dateTime(c.finished_ms, tz)} (${zone}).` : 'No pass has finished yet.'));
+    const p = compactionProgress(c, { now: ctx.api.now?.() ?? Date.now(), bytes });
+    storLine.classList.toggle('is-running', running);
     storLine.classList.toggle('is-bad', !running && c?.status === 'failed');
+    if (running) {
+      lead('run');
+      say(prog.head, [p.stepOf, p.step].filter(Boolean).join(' · ') || 'Packing…');
+      prog.bar.classList.toggle('is-counting', p.counting);
+      setVars(prog.bar, { '--w': p.pct == null ? '0%' : `${p.pct.toFixed(1)}%` });
+      if (p.pct == null) prog.bar.removeAttribute('aria-valuenow'); else prog.bar.setAttribute('aria-valuenow', String(Math.round(p.pct)));
+      say(prog.count, p.count);
+      say(prog.info, [p.saved, p.rate, p.stalled ? null : p.eta, p.last].filter(Boolean).join(' · '));
+      // the stall warning takes the estimate's place; the units left as they were, and a progress read that
+      // failed, go on the warn line (cut with an ellipsis, never growing the row)
+      say(prog.err, [p.stall, p.errors, storPollErr ? `Could not read the progress just now: ${errText(storPollErr)}` : null].filter(Boolean).join(' '));
+    } else {
+      lead(c?.status === 'failed' ? 'bad' : 'idle');
+      if (c?.status === 'failed') replace(prog.head, h('b', null, 'The last pass failed: '), c.error || 'the server gave no reason.');
+      else say(prog.head, !c ? 'The server did not say how compaction stands.'
+        : c.automatic ? 'Compaction runs by itself when the server is idle; Compact now starts a pass at once.'
+          : 'Compaction does not run by itself on this server; Compact now starts a pass.');
+      prog.head.title = prog.head.textContent;
+      say(prog.count, ''); say(prog.info, ''); say(prog.err, '');
+    }
   }
   function scheduleStorage() {
     clearTimeout(storTimer);
@@ -646,7 +684,7 @@ export async function mount(ctx) {
       S.storage = d; storPollErr = null;
       const c = d.compaction || {};
       if (c.status !== 'running') {
-        storageTable.setRows(d.categories || []);
+        paintGroups();
         if (c.status === 'failed') flash(`Compaction failed: ${c.error || 'the server gave no reason.'}`, { kind: 'error' });
         else flash(c.last_saved_bytes ? `Compaction is done: ${bytes(c.last_saved_bytes)} freed on disk.` : 'Compaction is done: nothing was left to pack.');
       }
@@ -669,15 +707,107 @@ export async function mount(ctx) {
     }
     paintStorage(); scheduleStorage();
   }
-  if (storageTable) {
-    storageTable.el.id = 'storage';
-    storageTable.el.querySelector('.tbl-bar').after(h('div', { class: 'ss-stor' }, storFigs, storLine,
-      h('p', { class: 'note' }, 'Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs\' signed originals are kept byte for byte.')));
-    paintStorage(); scheduleStorage();
-  }
+  if (storagePanel) { paintGroups(); paintStorage(); scheduleStorage(); }
 
   /* ---------------------------------------------------------------- moving to another server (admin) */
   const move = admin ? movePanel(ctx, { tz, zone: zoneText }) : null;
+
+  /* ---------------------------------------------------------------- the full rebuild (admin) */
+  let fullPanel = null, full = null;
+  if (admin) {
+    // the cars whose history was made with another way of decoding (from the status), named
+    const staleLine = h('p', { class: 'ss-fr-stale', hidden: true });
+    const paintStale = (st) => {
+      const ids = st?.version?.stale_cars || [];
+      staleLine.textContent = ids.length
+        ? `Made with an older way of decoding the logs: ${ids.map((c) => carName.get(c) || c).join(', ')}. A full rebuild makes ${ids.length === 1 ? 'its history' : 'their histories'} again with this server's.`
+        : '';
+      staleLine.hidden = !ids.length;
+    };
+    full = fullRebuild(ctx, { carName: (c) => carName.get(c) || c, onStatus: paintStale });
+    // full_rebuild.auto: saved at once with the settings' version
+    const autoOn = () => S.settings.full_rebuild?.auto ?? true;
+    const autoState = h('label', { for: 'ss-fr-auto' }, autoOn() ? 'On' : 'Off');
+    const autoInput = h('input', { type: 'checkbox', id: 'ss-fr-auto', role: 'switch', checked: autoOn(),
+      'aria-label': 'Rebuild automatically when a new server version decodes the stored logs differently',
+      onchange: async () => {
+        const want = autoInput.checked;
+        autoInput.disabled = true;
+        try {
+          S.settings = await ctx.api.patch('settings', { version: S.settings.version, full_rebuild: { auto: want } });
+          flash(want ? 'Automatic full rebuild on.' : 'Automatic full rebuild off: a notice offers it instead.');
+        } catch (e) {
+          if (e.status === 409) {
+            S.settings = await ctx.api.get('settings').catch(() => S.settings);
+            flash('Someone else changed the server settings meanwhile; this page shows theirs now. Try again.', { kind: 'info' });
+          } else flash(`Could not save: ${errText(e)}`, { kind: 'error' });
+        } finally { autoInput.disabled = false; }
+        if (!ctx.alive()) return;
+        autoInput.checked = autoOn();
+        autoState.textContent = autoOn() ? 'On' : 'Off';
+      } });
+    fullPanel = panel({ title: 'Full rebuild', icon: 'reset', pad: true, id: 'full-rebuild' },
+      full.el, staleLine,
+      setting('Rebuild automatically', 'When a new server version decodes the stored logs differently, the cars whose history was made the old way are rebuilt by themselves at its start. Off, a notice offers it instead.',
+        h('div', { class: 'switch-row switch-row--inline' }, h('span', { class: 'switch' }, autoInput, h('i', { 'aria-hidden': 'true' })), autoState)));
+  }
+
+  // Change names: the list for the next certificate, saved here; then, if the server makes its own, a new one
+  async function changeNames() {
+    draft = [...(S.settings.host_names || [])];
+    nameInput.value = ''; nameErr.hidden = true;
+    paintNames();
+    const go = await openDialog({
+      title: 'Names for the certificate', wide: true,
+      body: h('div', { class: 'ss-names-dlg' },
+        h('p', null, 'The names (or addresses) people and devices use to reach this server. The server puts them in the certificate it makes, so browsers accept those names. A saved change goes into the next certificate it makes.'),
+        namesBox,
+        certOwn() ? h('p', { class: 'note' }, 'The server runs with your own certificate, so these names go only into a certificate it makes, not into yours. To have browsers accept another name, get a certificate that names it, put its ', mono('cert.pem'), ' and ', mono('key.pem'), ' in ', mono('data/tls'), ' and start the container again.') : null),
+      actions: certOwn() ? [{ label: 'Close', value: null }]
+        : [{ label: 'Close', value: null }, { label: 'Make a new certificate', value: 'cert', kind: 'primary' }],
+    });
+    if (go === 'cert' && ctx.alive()) makeCertificate();
+  }
+
+  /* ---------------------------------------------------------------- server updates (every visitor; Check now: admins) */
+  const updBox = h('div', { class: 'ss-upd' });
+  let updChecking = false, updTimer = null;
+  ctx.onCleanup(() => clearTimeout(updTimer));
+  async function updCheckNow() {
+    updChecking = true; paintUpdates();
+    try {
+      S.release = await ctx.api.post('release/check', {});
+      if (S.release?.status === 'error') flash(S.release.error?.message ? `Could not check: ${S.release.error.message}` : 'Could not check.', { kind: 'error' });
+    } catch (e) {
+      if (!ctx.alive()) return;
+      flash(e?.code === 'release_check_off' ? 'Not checked: the release check is off.' : `Not checked: ${errText(e)}`, { kind: 'error' });
+      S.release = await ctx.api.get('release').catch(() => S.release);
+    }
+    updChecking = false;
+    if (ctx.alive()) paintUpdates();
+  }
+  function paintUpdates() {
+    const u = serverUpdates(S.about, S.release, ctx.api.now());
+    const busy = updChecking || u.busy;
+    const turnOn = h('a', { class: 'link', href: `${state.buildUrl(RELEASE_SETTING.page)}#${RELEASE_SETTING.hash}` }, RELEASE_SETTING.text);
+    replace(updBox,
+      kv(u.rows.map((r) => [r.label, h('span', { class: ['ss-upd-val', `ss-upd-val--${r.tone || 'plain'}`] },
+        h('span', { class: r.key === 'this' ? 'mono' : null, title: r.title || null }, r.text),
+        r.badge ? pill(r.badge, { tone: r.tone === 'newer' ? 'warm' : 'live', ic: r.tone === 'newer' ? 'upload' : 'check' }) : null)])),
+      h('div', { class: 'ss-upd-check' },
+        h('p', { class: 'ss-upd-on' }, 'Release check: ', h('b', null, u.on ? 'On' : 'Off'), u.on ? '. Once a day the server asks GitHub whether a newer image is published.' : `. ${RELEASE_OFF_TEXT}`,
+          !u.on ? [' ', admin ? turnOn : 'An admin can turn it on.'] : null),
+        admin ? h('button', { class: 'btn btn--sm', type: 'button', disabled: !u.on || busy, title: u.on ? null : 'Turn the release check on first', onclick: updCheckNow },
+          icon('reset', 'ico--sm'), busy ? 'Checking…' : 'Check now') : null),
+      h('p', { class: 'note ss-upd-how' }, `${u.how} Steps for Docker and TrueNAS: `,
+        u.doc.href ? h('a', { class: 'link', href: u.doc.href, target: '_blank', rel: 'noopener noreferrer external' }, u.doc.text) : mono(u.doc.path), '.'));
+    if (S.release?.status === 'checking' && !updChecking) {
+      clearTimeout(updTimer);
+      updTimer = setTimeout(async () => { S.release = await ctx.api.get('release').catch(() => S.release); if (ctx.alive()) paintUpdates(); }, 4000);
+    }
+  }
+  paintUpdates();
+  const updatesPanel = panel({ title: 'Server updates', icon: 'upload', pad: true, id: 'updates' }, updBox);
 
   /* ---------------------------------------------------------------- the page */
   paintHosting();
@@ -685,24 +815,20 @@ export async function mount(ctx) {
   const hostPanel = panel({ title: 'How this server is reached', icon: 'globe', pad: true, cover: 'web.shell.hosting' },
     h('p', { class: 'ss-addr' }, 'This page: ', h('span', { class: 'mono' }, `${loc.protocol}//${loc.host}/`)),
     hostingBox);
-  const namesPanel = panel({ title: 'Host names for the certificate', icon: 'server', pad: true, cover: 'docs.env.web.virtual-host' },
-    setting('Names on the certificate', 'The names (or addresses) people and devices use to reach this server. The server puts them in the certificate it makes, so browsers accept those names. They are used when a certificate is made: to put a change in the running certificate, make a new one (see below).', namesBox));
-  if (certOwn()) {
-    namesPanel.append(h('p', { class: 'note ss-gap' }, 'The server runs with your own certificate, so these names go only into a certificate it makes, not into yours. To have browsers accept another name, get a certificate that names it, put its ', mono('cert.pem'), ' and ', mono('key.pem'), ' in ', mono('data/tls'), ' and start the container again.'));
-  }
-
   replace(ctx.view,
     pageHead({ title: ctx.info.nav || ctx.info.title, purpose: ctx.info.purpose }),
     h('div', { class: 'settings-stack ss' },
-      h('div', { class: 'ss-two' }, hostPanel, h('div', { class: 'ss-col' }, namesPanel, portsPanel)),
-      h('div', { class: 'ss-two' }, accessPanel, admin ? safety : null),
-      move ? move.el : null,
-      storageTable ? storageTable.el : null,
+      h('div', { class: 'ss-two' }, hostPanel, h('div', { class: 'ss-col' }, updatesPanel, accessPanel)),
+      admin ? safety : null,
+      fullPanel,
+      // the move and Storage side by side (one above the other on a phone or a narrow window)
+      move || storagePanel ? h('div', { class: 'ss-pair' }, move ? move.el : null, storagePanel) : null,
       accountsTable ? [goneNote, accountsTable.el] : null,
       sessionGone, sessionsTable.el,
       auditTable ? auditTable.el : null));
   if (auditTable) await auditTable.ready;
   if (move) await move.ready;
+  if (full) await full.ready;
   if (!ctx.alive()) return;
   ctx.ready();
 }

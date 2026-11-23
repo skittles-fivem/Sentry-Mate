@@ -9,6 +9,7 @@
 
 import { h } from '../shared/dom.js';
 import { format, formatMoney } from '../shared/units.js';
+import * as TI from '../shared/tiers.js';
 import { formatTime, formatDate, formatDuration, zoneName, dayKey, dayRange } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
@@ -20,6 +21,7 @@ import { mapTile } from '../core/map.js';
 import { timeChart, xyChart } from '../core/chart.js';
 import { statTile, facts, socBar, money } from '../core/bits.js';
 import { srcPill, estPill, isImported, isEstimated, apiOnly, EST_WHY } from '../core/source.js';
+import { appliedInvoice, unusedInvoices, invoiceSourceLabel, feeLabel, chargeInvoicePdfUrl } from '../shared/invoices.js';
 
 export const id = 'charge';
 export const css = true;
@@ -27,7 +29,7 @@ export const title = () => 'Charge';
 
 const FIELDS = 'power_kw,ac_line_kw,soc_pct,usable_soc_pct,range_km,battery_c,outside_c,heater_kw,ac_volts_v,ac_amps_a,pilot_a,phases,dc_volts_v,dc_amps_a';
 const KIND_WORDS = { ac: 'AC charge', dc: 'Fast charge (DC)', unknown: 'Charge' };
-const COST_SOURCE = { tariff: 'From the place price', manual: 'Entered by hand', free_supercharging: 'Free Supercharging', teslamate: 'Imported' };
+const COST_SOURCE = { tariff: 'From the place price', manual: 'Entered by hand', free_supercharging: 'Free Supercharging', teslamate: 'Imported', tesla_invoice: 'From Tesla invoice', teslafi: 'From TeslaFi' };
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'NZD', 'CHF', 'SEK', 'NOK', 'DKK', 'JPY', 'CNY'];
 const has = (l) => (l || []).some((x) => x != null);
 const placeName = (c) => c.place?.name || c.address?.short || 'Unnamed spot';
@@ -113,7 +115,7 @@ export async function mount(ctx) {
       h('p', { class: 'tile-line' }, cost ? COST_SOURCE[cost.source] || cost.source : ctx.admin ? 'enter it below' : 'no cost yet')),
     statTile({ label: 'Charging time', value: c.charging_ms, kind: 'duration', icon: 'clock', cover: 'cd.stat.duration', sub: c.plugged_ms != null ? `plugged in ${formatDuration(c.plugged_ms)}` : null }),
     statTile({ label: 'Average power', value: c.power_avg_kw, kind: 'power', icon: 'gauge', cover: 'cd.stat.avg_power', why, sub: c.power_max_kw != null ? `peak ${format(c.power_max_kw, 'power')}` : null }),
-    statTile({ label: 'Efficiency', value: c.efficiency_pct, kind: 'percent', icon: 'leaf', cover: 'cd.stat.efficiency', why: dc ? 'DC: the charger’s losses are not sent' : why, sub: c.efficiency_pct != null ? 'into the pack over drawn' : null }),
+    statTile({ label: 'Efficiency', value: c.efficiency_pct, kind: 'percent', icon: 'leaf', cover: 'cd.stat.efficiency', why: dc ? 'DC: the charger’s losses are not sent' : c.efficiency_note || why, sub: c.efficiency_pct != null ? 'into the pack over drawn' : null }),
     statTile({ label: 'Outside', value: c.outside_avg_c, kind: 'temperature', icon: 'thermo', cover: 'cd.stat.avg_temp', why, sub: c.battery_avg_c != null ? `battery ${format(c.battery_avg_c, 'temperature')}` : 'average' }),
     statTile({ label: 'Range per hour', value: c.range_per_hour_km, kind: 'range_rate', icon: 'route', why, sub: `${format(c.odometer_km, 'odometer')} on the clock` }),
   ];
@@ -138,12 +140,14 @@ export async function mount(ctx) {
     h('div', { class: 'cost-now' }, money(cost ? [cost] : [], { size: 'l', why: 'no cost yet' }),
       h('p', { class: 'tile-line' }, cost ? `${COST_SOURCE[cost.source] || cost.source}${c.price_per_kwh?.value != null ? ` · ${format({ amount: c.price_per_kwh.value, currency: cost.currency }, 'price_energy')} over the ${c.price_per_kwh.basis === 'grid' ? 'energy drawn' : 'energy added'}` : ''}`
         : c.place ? `${c.place.name} has no price yet: add one on Places, or enter the cost here.` : 'Not at a saved place with a price: enter the cost here.')),
+    invoiceLines(c, car.id, ctx.chargeId),
     facts([
       ['When', h('span', { cover: 'web.charge-cost.dates' }, `${formatDate(t0, tz, { weekday: false })} ${formatTime(t0, tz)} – ${live ? 'now' : formatTime(t1, tz)} ${zone}`)],
       ['Charging', h('span', { cover: 'web.charge-cost.duration' }, formatDuration(c.charging_ms))],
       ['Energy', h('span', { cover: 'web.charge-cost.energy' }, `${format(c.energy_added_kwh, 'energy')} added${c.energy_grid_kwh != null ? `, ${format(c.energy_grid_kwh, 'energy')} drawn` : ''}`)],
-      ...(bd.parts || []).map((p) => [p.rate || 'Rate', `${p.per_kwh != null ? `${format({ amount: p.per_kwh, currency: cur }, 'price_energy')} × ${format(p.kwh, 'energy')}` : p.per_minute != null ? `${format({ amount: p.per_minute, currency: cur }, 'price_time')} × ${formatNumber(p.minutes, { maximumFractionDigits: 1 })} min` : 'one amount'} = ${formatMoney(p.cost, cur)}`]),
+      ...(bd.parts || []).map((p) => [p.from_kwh != null ? `${p.rate}: ${TI.stepLabel(p.from_kwh, p.to_kwh)}` : p.rate || 'Rate', `${p.per_kwh != null ? `${format({ amount: p.per_kwh, currency: cur }, 'price_energy')} × ${format(p.kwh, 'energy')}` : p.per_minute != null ? `${format({ amount: p.per_minute, currency: cur }, 'price_time')} × ${formatNumber(p.minutes, { maximumFractionDigits: 1 })} min` : 'one amount'} = ${formatMoney(p.cost, cur)}`]),
       bd.session_fee ? ['Session fee', formatMoney(bd.session_fee, cur)] : null,
+      bd.cycle ? ['Tiered price', `${TI.splitText(TI.stepParts(bd), cur)}; the billing cycle from ${formatDate(bd.cycle.start_ms, place?.time_zone || tz, { weekday: false })} had ${format(bd.cycle.before_kwh, 'energy')} before this charge`] : null,
     ].filter(Boolean)),
     costEditor(ctx, { c, base, manual, cur }),
     h('p', { class: 'note', cover: 'web.charge-cost.not-found' }, 'A link to a charge that was rebuilt under a new number says so and points back to Charges.'));
@@ -209,6 +213,30 @@ export async function mount(ctx) {
   ctx.ready();
   if (ctx.query.edit === 'cost') { costT.scrollIntoView({ block: 'start' }); costT.querySelector('input, select')?.focus({ preventScroll: true }); }
   return {};
+}
+
+/**
+ * The charge's Supercharger invoices: where the cost came from with the site and its fees, and a download
+ * button per invoice PDF. Both are always in the tile (hidden when there is no invoice), so the item is there.
+ */
+function invoiceLines(c, car, charge) {
+  const list = Array.isArray(c.invoices) ? c.invoices : [];
+  const used = appliedInvoice(c);
+  const usage = (f) => (f.usage == null ? '' : f.unit === 'kwh' ? ` for ${format(f.usage, 'energy')}` : f.unit === 'min' ? ` for ${formatDuration(f.usage * 60000)}` : '');
+  const fees = (i) => (i.fees || []).map((f) => `${feeLabel(f.kind)} ${formatMoney(f.amount, i.currency)}${usage(f)}`).join(' · ');
+  const lines = [];
+  if (used) lines.push(h('span', null, h('b', null, used.site || invoiceSourceLabel(used.source)), fees(used) ? ` · ${fees(used)}` : ''));
+  for (const i of unusedInvoices(c)) lines.push(h('span', null, `${invoiceSourceLabel(i.source)}: ${formatMoney(i.total, i.currency)} (an entered cost is used instead)`));
+  const pdfs = list.filter((i) => i.pdf);
+  const links = pdfs.map((i, n) => {
+    const a = linkBtn(pdfs.length > 1 ? `Invoice ${n + 1} (PDF)` : 'Invoice (PDF)', chargeInvoicePdfUrl(car, charge, i.id), { kind: 'soft', icon: 'download' });
+    a.setAttribute('download', '');
+    if (i.invoice_name) a.title = i.invoice_name;
+    return a;
+  });
+  return h('div', { class: 'inv-box', hidden: !list.length },
+    h('p', { class: 'tile-line inv-lines', cover: 'inv.charge.source' }, lines),
+    h('div', { class: 'inv-pdfs', cover: 'inv.charge.pdf', hidden: !links.length }, links));
 }
 
 /** The cost editor: a total, a price per kWh or per minute, the currency and the energy basis. */

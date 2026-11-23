@@ -61,6 +61,7 @@ pub const ADMIN_READS: &[&str] = &[
     "/network",
     "/system",
     "/imports",
+    "/import-holds",
     "/logs",
     "/cars/{car}/logs",
     "/integrations",
@@ -307,7 +308,7 @@ pub async fn guard(State(app): State<AppState>, req: Request, next: Next) -> Res
 
 /// Headers on every answer: no sniffing, no framing, no referrer (pack files set their own:
 /// [`crate::packs::referrer_policy`]), HSTS, and on API answers no caching, a CSP that
-/// allows nothing, and the server's clock.
+/// allows nothing, and the server's clock; on every answer the build of the UI packs ([`crate::packs::Packs::build`]).
 pub async fn headers(State(app): State<AppState>, req: Request, next: Next) -> Response {
     let api = req.uri().path().starts_with("/api/");
     let mut res = next.run(req).await;
@@ -326,6 +327,7 @@ pub async fn headers(State(app): State<AppState>, req: Request, next: Next) -> R
     set("cross-origin-opener-policy", "same-origin");
     set("cross-origin-resource-policy", "same-origin");
     set("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+    set(crate::packs::BUILD_HEADER, app.packs.build());
     if api {
         set("cache-control", "no-store");
         set("content-security-policy", "default-src 'none'; frame-ancestors 'none'");

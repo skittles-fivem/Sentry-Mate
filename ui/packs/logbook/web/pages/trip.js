@@ -18,12 +18,13 @@ import { formatNumber, tn } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { pageHead, q, figure, icon, empty, errorView, loadingBlock, flag, button, sep } from '../core/ui.js';
+import { trackBounds } from '../shared/tracks.js';
+import { pageHead, q, figure, icon, empty, errorView, loadingBlock, button, sep } from '../core/ui.js';
 import { dataTable } from '../core/table.js';
 import { makeMap, boundsOf, coordsText } from '../core/map.js';
 import { stackedCharts } from '../core/chart.js';
 import { activityStrip, placeLink, STRIP_NAMES } from '../core/journal.js';
-import { sourceMark, sourceLabel, isImported, teslaOnly, ESTIMATED_WHY } from '../core/sources.js';
+import { sourceLabel, teslaOnly, ESTIMATED_WHY, rowTitle } from '../core/sources.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
 import { zoneLabel } from '../core/format.js';
 import { carOptions } from '../core/form.js';
@@ -351,27 +352,29 @@ export async function mount(ctx) {
     const href = still ? null : placeLink(p);
     const name = p.label || (p.address && p.address.short) || 'an unnamed spot';
     const sub = p.place && p.address && p.address.short ? h('span', { class: 'cell-sub' }, p.address.short) : null;
-    return [href ? h('a', { class: 'cell-main place-link', href, title: p.place ? `Edit ${p.place.name} in Places` : 'Name this spot in Places' }, name) : h('span', { class: 'cell-main' }, name), sub];
+    return [href ? h('a', { class: 'cell-main place-link', href, title: p.place ? `Edit ${p.place.name} in Places` : 'Save this spot as a place' }, name) : h('span', { class: 'cell-main' }, name), sub];
   };
   const pct = (v) => q(v, 'percent', { digits: 0 });
+  // start → end in one column (the CSV keeps both)
+  const socCell = (r) => h('span', { class: 'trip-soc' }, pct(r.start_soc_pct), ' → ', pct(r.end_soc_pct), r.end_ms == null ? h('span', { class: 'cell-sub' }, 'now') : null);
   const consumptionWhy = (d) => (d.end_ms == null ? 'still driving' : d.distance_km != null && d.distance_km < 1 ? 'too short to be reliable' : d.energy_kwh == null ? 'no pack reading' : 'not reliable');
   const drives = dataTable(ctx, {
     path: api.apiPath`cars/${car.id}/drives`, params: { ...win }, limit: 100, sort: { key: 'start', dir: 'asc' }, itemName: ['drive', 'drives'],
     label: 'Drives of the trip', cls: 'trip-drives',
     caption: 'In the order driven. Open a drive for its route and charts; a place opens in Places.',
     cover: ['trip.drives.table'],
+    rowTitle: (d) => rowTitle(d),
     empty: () => empty({ title: 'No drive started in this window.', text: 'Pick a longer window with the period picker, or one of the shortcuts above.' }),
     columns: [
       { key: 'start', label: 'Started', sort: 'start', th: true, firstDir: 'asc', cover: ['trip.drives.date', 'trip.drives.link.details'],
         cell: (d) => [h('a', { class: 'cell-main', href: link('drive', { drive: d.id }), title: 'Open the drive' }, formatTime(d.start_ms, tz)),
-          h('span', { class: 'cell-sub' }, formatDate(d.start_ms, tz, { now })), isImported(d) ? flag('Imported', { kind: 'estimated', title: `${sourceLabel(d)}: energy estimated from range` }) : null, sourceMark(d, { block: true, short: true })] },
+          h('span', { class: 'cell-sub' }, formatDate(d.start_ms, tz, { now }))] },
       { key: 'from', label: 'From', cover: ['trip.drives.start', 'trip.drives.link.geofence_start'], cell: (d) => placeCell(d.start) },
       { key: 'to', label: 'To', cover: ['trip.drives.destination', 'trip.drives.link.geofence_end'], cell: (d) => placeCell(d.end, d.end_ms == null) },
       { key: 'duration', label: 'Duration', sort: 'duration', num: true, cover: ['trip.drives.duration', 'trip.drives.link.duration_hint'], hint: 'Hours and minutes; the line under it is the same in minutes',
         cell: (d) => h('span', { title: `${h_mm(d.duration_ms)} (hours:minutes)` }, h('span', { class: 'cell-main' }, formatDuration(d.duration_ms)), h('span', { class: 'cell-sub' }, `${h_mm(d.duration_ms)} h:mm`)) },
       { key: 'distance', label: 'Distance', sort: 'distance', num: true, cover: 'trip.drives.distance', cell: (d) => q(d.distance_km, 'distance', { why: 'not read' }) },
-      { key: 'soc_start', label: 'Battery at start', num: true, cover: 'trip.drives.soc_start', cell: (d) => pct(d.start_soc_pct) },
-      { key: 'soc_end', label: 'Battery at end', num: true, cover: 'trip.drives.soc_end', cell: (d) => (d.end_ms == null ? [pct(d.end_soc_pct), h('span', { class: 'cell-sub' }, 'now')] : pct(d.end_soc_pct)) },
+      { key: 'soc', label: 'Battery', num: true, cover: ['trip.drives.soc_start', 'trip.drives.soc_end'], hint: 'Battery level at the start and the end', cell: socCell },
       { key: 'wh', label: 'Consumption', sort: 'wh_per_km', num: true, cover: 'trip.drives.consumption', hint: 'Net energy ÷ distance; blank with the reason when it would be unreliable',
         cell: (d) => (d.wh_per_km != null ? [q(d.wh_per_km, 'efficiency'), d.energy_basis === 'estimated' ? h('span', { class: 'cell-sub', title: teslaOnly(d) ? ESTIMATED_WHY : null }, 'estimated') : null] : q(null, 'efficiency', { why: consumptionWhy(d) })) },
     ],
@@ -384,13 +387,14 @@ export async function mount(ctx) {
     const a = c[rangeField('start_range_km')], b = c[rangeField('end_range_km')];
     return a != null && b != null ? b - a : c.range_added_km;
   };
+  // The cost, or "—" when unpriced; where the price came from is in the title. The "change"/"set" word shows on
+  // row hover or focus (always on touch screens and phones), so it does not repeat down the list.
   const costCell = (c) => {
-    const text = c.cost ? format({ amount: c.cost.amount, currency: c.cost.currency }, 'money') : 'No price';
-    const sub = c.cost ? COST_SOURCE[c.cost.source] || c.cost.source : c.place ? 'the place has no price' : 'not a saved place';
+    const text = c.cost ? format({ amount: c.cost.amount, currency: c.cost.currency }, 'money') : '—';
+    const why = c.cost ? `Cost from the ${COST_SOURCE[c.cost.source] || c.cost.source}` : c.place ? 'No price: the place has no price' : 'No price: not at a saved place';
     const href = link('charge', { charge: c.id, query: { edit: 'cost' } });
-    return [admin ? h('a', { class: ['cell-main', 'cost-link', { 'is-missing': !c.cost }], href, title: c.cost ? 'Change the cost of this charge' : 'Set the cost of this charge' }, text, h('span', { class: 'cost-edit' }, c.cost ? 'change' : 'set'))
-      : h('a', { class: ['cell-main', 'cost-link', { 'is-missing': !c.cost }], href: link('charge', { charge: c.id }), title: 'Open the charge to see how its cost was worked out' }, text),
-    h('span', { class: 'cell-sub' }, sub), admin ? null : h('span', { class: 'cell-sub cost-ro' }, 'an admin can edit it')];
+    return admin ? h('a', { class: ['cell-main', 'cost-link', { 'is-missing': !c.cost }], href, title: `${why}. ${c.cost ? 'Change the cost of this charge' : 'Set the cost of this charge'}` }, text, h('span', { class: 'cost-edit' }, c.cost ? 'change' : 'set'))
+      : h('a', { class: ['cell-main', 'cost-link', { 'is-missing': !c.cost }], href: link('charge', { charge: c.id }), title: `${why}. Open the charge to see how its cost was worked out; an admin can edit it` }, text);
   };
   const drawnCell = (c) => (c.energy_grid_kwh != null ? [q(c.energy_grid_kwh, 'energy'), h('span', { class: 'cell-sub' }, 'grid, metered')]
     : c.dc_inlet_kwh != null ? [q(c.dc_inlet_kwh, 'energy'), h('span', { class: 'cell-sub' }, 'charger, at the inlet')]
@@ -400,11 +404,12 @@ export async function mount(ctx) {
     label: 'Charges of the trip', cls: 'trip-charges',
     caption: admin ? 'In order. Open a charge for its curve; the cost opens its cost editor.' : 'In order. Open a charge for its curve and how its cost was worked out.',
     cover: ['trip.charges.table', 'trip.charges.link.cost'],
+    rowTitle: (c) => rowTitle(c),
     empty: () => empty({ title: 'No charge started in this window.', text: 'The car did not charge during the trip, or a charge started before it; pick a wider window to include it.' }),
     columns: [
       { key: 'start', label: 'Started', sort: 'start', th: true, firstDir: 'asc', cover: ['trip.charges.date', 'trip.charges.link.details'],
         cell: (c) => [h('a', { class: 'cell-main', href: link('charge', { charge: c.id }), title: 'Open the charge' }, formatTime(c.start_ms, tz)),
-          h('span', { class: 'cell-sub' }, `${formatDate(c.start_ms, tz, { now })}, ${(c.kind || '').toUpperCase() || 'kind not known'}`), sourceMark(c, { block: true, short: true })] },
+          h('span', { class: 'cell-sub' }, `${formatDate(c.start_ms, tz, { now })}, ${(c.kind || '').toUpperCase() || 'kind not known'}`)] },
       { key: 'place', label: 'Place', cover: ['trip.charges.location', 'trip.charges.link.geofence'],
         cell: (c) => placeCell({ ...c.position, place: c.place, address: c.address, label: (c.place && c.place.name) || (c.address && c.address.short) }) },
       { key: 'duration', label: 'Charging time', sort: 'duration', num: true, cover: 'trip.charges.duration',
@@ -415,8 +420,7 @@ export async function mount(ctx) {
       { key: 'power', label: 'Average power', cls: 'c-opt2', num: true, cover: 'trip.charges.power_avg', hint: 'Energy added ÷ charging time; slow under 20 kW, fast from 55 kW',
         cell: (c) => h('span', { class: ['pw', powerClass(c.power_avg_kw)] }, q(c.power_avg_kw, 'power', { why: 'too short' })) },
       { key: 'range', label: `${rangeLabel()} added`, cls: 'c-opt', num: true, cover: 'trip.charges.range_added', cell: (c) => q(rangeAdded(c), 'distance', { why: 'not read' }) },
-      { key: 'soc_start', label: 'Battery at start', num: true, cover: 'trip.charges.soc_start', cell: (c) => pct(c.start_soc_pct) },
-      { key: 'soc_end', label: 'Battery at end', num: true, cover: 'trip.charges.soc_end', cell: (c) => (c.end_ms == null ? [pct(c.end_soc_pct), h('span', { class: 'cell-sub' }, 'now')] : pct(c.end_soc_pct)) },
+      { key: 'soc', label: 'Battery', num: true, cover: ['trip.charges.soc_start', 'trip.charges.soc_end'], hint: 'Battery level at the start and the end', cell: socCell },
     ],
   });
 
@@ -448,19 +452,20 @@ export async function mount(ctx) {
   const tablesLoaded = Promise.all([drives.load(), charges.load()]);
 
   /* ------------------------------------------------------------ the map: drives, then the markers */
-  let tracks = [];
+  let tracks = [], trackDrives = [];
   let tracksErr = null;
   if (nDrives) {
     try {
       const r = await ctx.api.get('tracks', { cars: car.id, ...win, max_points: Math.min(200000, Math.max(4000, nDrives * 400)) });
-      tracks = (r.drives || []).map((d) => d.lon.map((x, i) => [x, d.lat[i]]).filter((c) => c[0] != null && c[1] != null)).filter((c) => c.length > 1);
+      trackDrives = r.drives || [];
+      tracks = trackDrives.map((d) => d.lon.map((x, i) => [x, d.lat[i]]).filter((c) => c[0] != null && c[1] != null)).filter((c) => c.length > 1);
     } catch (err) { if (ctx.signal.aborted) return {}; tracksErr = err; }
   }
   const markers = (t.markers || []).filter((m) => m.lat != null && m.lon != null);
   const allPts = [...tracks.flat(), ...markers.map((m) => [m.lon, m.lat])];
   let m = null, dot = null, dotEl = null;
   if (allPts.length) {
-    m = await makeMap(ctx, mapBox, { bounds: boundsOf(allPts), padding: 48, maxZoom: 15, fullscreen: true });
+    m = await makeMap(ctx, mapBox, { bounds: trackBounds(trackDrives, markers.map((k) => [k.lon, k.lat])) || boundsOf(allPts), padding: 48, maxZoom: 15, fullscreen: true });
     if (!ctx.alive()) return {};
     if (m) {
       await m.loaded;

@@ -33,6 +33,10 @@ pub const AUTO_RETRY: Duration = Duration::from_secs(10 * 60);
 const DAYS_A_TURN: usize = 16;
 /// How long a unit waits for the write gate (an export's snapshot holds it for a moment).
 const GATE_WAIT: Duration = Duration::from_secs(30);
+/// A pass that finished no unit for this long says it is stalled (a unit is seconds; the gate waits 30 s at most).
+pub const STALL_AFTER: Duration = Duration::from_secs(120);
+/// The steps of a pass, in order.
+pub const STEPS: [&str; 3] = ["logs", "series", "records"];
 const KEY: &str = "compaction";
 
 /// What a pass did.
@@ -66,7 +70,7 @@ pub enum Status {
 }
 
 /// Compaction as it is now, for the Storage panel.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Compaction {
     pub status: Status,
     /// It runs by itself when the server is idle.
@@ -78,6 +82,26 @@ pub struct Compaction {
     pub step: Option<&'static str>,
     pub done: u64,
     pub total: u64,
+    /// While running: `counting` (what the step has to do; `total` is 0 until it knows) or `packing`.
+    pub phase: Option<&'static str>,
+    /// While running: the step's place, 1 to [`STEPS`]'s length, and how many steps a pass has.
+    pub step_number: Option<u8>,
+    pub steps: u8,
+    /// While running: what `done` and `total` count, `days` (logs and series) or `records`.
+    pub unit: Option<&'static str>,
+    /// While running: what the pass freed on disk so far.
+    pub pass_saved_bytes: Option<u64>,
+    /// While running: units a second in this step (null before its first unit), and the time it still needs.
+    pub rate_per_s: Option<f64>,
+    pub eta_ms: Option<u64>,
+    /// While running: when the last unit finished, or the step began.
+    pub progress_ms: Option<u64>,
+    /// Running, and no unit finished for [`STALL_AFTER`].
+    pub stalled: bool,
+    /// Units of this pass (the last one's, when none runs) that could not be packed and were left exactly as they
+    /// were, and why the last of them could not.
+    pub unit_errors: u64,
+    pub last_unit_error: Option<String>,
     /// What the last finished pass freed, and all passes together.
     pub last_saved_bytes: Option<u64>,
     pub saved_bytes: u64,
@@ -92,6 +116,10 @@ struct Kept {
     last_saved_bytes: Option<u64>,
     saved_bytes: u64,
     error: Option<String>,
+    #[serde(default)]
+    unit_errors: u64,
+    #[serde(default)]
+    last_unit_error: Option<String>,
 }
 
 /// The pass under way, in memory.
@@ -103,6 +131,16 @@ pub(crate) struct Running {
     step: Option<&'static str>,
     done: u64,
     total: u64,
+    counting: bool,
+    /// When the step began, and when its last unit finished (or it began).
+    step_began: Option<Instant>,
+    progressed: Option<Instant>,
+    progressed_ms: u64,
+    /// Freed on disk so far by the steps finished, plus the step under way.
+    saved_before_step: u64,
+    saved_in_step: u64,
+    unit_errors: u64,
+    last_unit_error: Option<String>,
     thread: Option<std::thread::JoinHandle<()>>,
     /// When the last pass of this run ended, and whether it gave way before its end (or failed).
     finished: Option<Instant>,
@@ -122,6 +160,18 @@ fn tree_disk(dir: &Path) -> u64 {
         }
     }
     n
+}
+
+/// Units a second and the time left, from `done` of `total` in `elapsed` (none before the first unit).
+fn rate_and_eta(done: u64, total: u64, elapsed: Option<Duration>) -> (Option<f64>, Option<u64>) {
+    let Some(elapsed) = elapsed else { return (None, None) };
+    let secs = elapsed.as_secs_f64();
+    if done == 0 || secs <= 0.0 {
+        return (None, None);
+    }
+    let rate = done as f64 / secs;
+    let left = total.saturating_sub(done) as f64 / rate;
+    (Some((rate * 1000.0).round() / 1000.0), Some((left * 1000.0).round() as u64))
 }
 
 /// Between two units of a pass: lets go of the write gate, pauses (an automatic pass), and takes the gate again.
@@ -174,6 +224,12 @@ impl Engine {
     pub fn compaction(&self) -> Compaction {
         let kept = self.kept_compaction();
         let r = lock(&self.inner.compaction);
+        let live = r.running && r.step.is_some();
+        let (rate_per_s, eta_ms) = if live && !r.counting {
+            rate_and_eta(r.done, r.total, r.step_began.map(|t| t.elapsed()))
+        } else {
+            (None, None)
+        };
         Compaction {
             status: match (r.running, &kept.error) {
                 (true, _) => Status::Running,
@@ -186,17 +242,62 @@ impl Engine {
             step: r.step.filter(|_| r.running),
             done: if r.running { r.done } else { 0 },
             total: if r.running { r.total } else { 0 },
+            phase: live.then_some(if r.counting { "counting" } else { "packing" }),
+            step_number: r.step.filter(|_| live).and_then(|s| STEPS.iter().position(|x| *x == s)).map(|i| i as u8 + 1),
+            steps: STEPS.len() as u8,
+            unit: r.step.filter(|_| live).map(|s| if s == "records" { "records" } else { "days" }),
+            pass_saved_bytes: r.running.then_some(r.saved_before_step + r.saved_in_step),
+            rate_per_s,
+            eta_ms,
+            progress_ms: live.then_some(r.progressed_ms),
+            stalled: live && r.progressed.is_some_and(|t| t.elapsed() >= STALL_AFTER),
+            unit_errors: if r.running { r.unit_errors } else { kept.unit_errors },
+            last_unit_error: if r.running { r.last_unit_error.clone() } else { kept.last_unit_error },
             last_saved_bytes: kept.last_saved_bytes,
             saved_bytes: kept.saved_bytes,
             error: if r.running { None } else { kept.error },
         }
     }
 
-    fn progress(&self, step: &'static str, done: u64, total: u64) {
+    /// A step begins: counting what it has to do.
+    fn step_counting(&self, step: &'static str) {
         let mut r = lock(&self.inner.compaction);
+        r.saved_before_step += std::mem::take(&mut r.saved_in_step);
+        (r.step, r.done, r.total, r.counting) = (Some(step), 0, 0, true);
+        let now = Instant::now();
+        (r.step_began, r.progressed, r.progressed_ms) = (Some(now), Some(now), now_ms());
+    }
+
+    /// How far the step is: `done` of `total` units, and what it freed on disk so far. The rate is measured from
+    /// the moment it knew its total.
+    fn progress(&self, step: &'static str, done: u64, total: u64, saved_in_step: u64) {
+        let mut r = lock(&self.inner.compaction);
+        if r.step != Some(step) {
+            r.saved_before_step += std::mem::take(&mut r.saved_in_step);
+            r.step_began = Some(Instant::now());
+        }
+        if r.counting || r.step != Some(step) {
+            r.step_began = Some(Instant::now());
+        }
+        let moved = r.step != Some(step) || r.counting || done != r.done;
         r.step = Some(step);
+        r.counting = false;
         r.done = done;
         r.total = total.max(done);
+        r.saved_in_step = saved_in_step;
+        if moved {
+            r.progressed = Some(Instant::now());
+            r.progressed_ms = now_ms();
+        }
+    }
+
+    /// A unit that could not be packed (left exactly as it was).
+    fn unit_failed(&self, failed: u64, why: Option<String>) {
+        let mut r = lock(&self.inner.compaction);
+        r.unit_errors = failed;
+        if why.is_some() {
+            r.last_unit_error = why;
+        }
     }
 
     /// One pass, here and now (the caller's thread). `stop` is asked between units; `polite` pauses after each and
@@ -216,11 +317,21 @@ impl Engine {
             return Ok(out);
         }
         // the uploaded logs and sidecars of finished days
-        self.progress("logs", 0, 0);
+        self.step_counting("logs");
         let can = self.store().dir().to_path_buf();
         out.before_bytes += tree_disk(&can);
-        let packed = self.store().pack_finished(before_ms, &|| turns.next());
+        let packed = self.store().pack_finished_with_progress(before_ms, &|| turns.next(), &|p| {
+            self.progress("logs", p.days_done as u64, p.days_total as u64, p.saved_bytes);
+            if p.failed > 0 {
+                self.unit_failed(p.failed as u64, p.last_error.clone());
+            }
+        });
         out.after_bytes += tree_disk(&can);
+        // what the step freed as it lies on disk (whole blocks), now that it is over
+        {
+            let mut r = lock(&self.inner.compaction);
+            r.saved_in_step = out.before_bytes.saturating_sub(out.after_bytes);
+        }
         if packed.failed > 0 {
             tracing::warn!(
                 "compaction: {} day(s) of logs could not be packed and were left exactly as they were",
@@ -233,14 +344,17 @@ impl Engine {
         let cars = crate::query::all_cars(self).map_err(|e| crate::Error::Store(e.to_string()))?;
         let cars_dir = data.as_deref().map(|d| d.join("db").join("cars"));
         if !out.stopped {
+            self.step_counting("series");
             let mut total = 0;
             for &car in &cars {
                 total += self.db().series_pending(car, before_ms)? as u64;
             }
-            self.progress("series", 0, total);
+            self.progress("series", 0, total, 0);
+            let mut saved = 0u64;
             'cars: for &car in &cars {
                 let dir = cars_dir.as_ref().map(|d| d.join(car.to_string()));
-                out.before_bytes += dir.as_deref().map_or(0, tree_disk);
+                let car_before = dir.as_deref().map_or(0, tree_disk);
+                out.before_bytes += car_before;
                 loop {
                     let done = self.db().compact_series(car, before_ms, DAYS_A_TURN);
                     let done = match done {
@@ -250,7 +364,7 @@ impl Engine {
                         Err(e) => return Err(e.into()),
                     };
                     out.days += (done.days_folded + done.days_packed) as u64;
-                    self.progress("series", out.days, total);
+                    self.progress("series", out.days, total, saved);
                     if turns.next() {
                         out.stopped = true;
                         out.after_bytes += dir.as_deref().map_or(0, tree_disk);
@@ -265,20 +379,26 @@ impl Engine {
                         break;
                     }
                 }
-                out.after_bytes += dir.as_deref().map_or(0, tree_disk);
+                let car_after = dir.as_deref().map_or(0, tree_disk);
+                out.after_bytes += car_after;
+                saved += car_before.saturating_sub(car_after);
+                self.progress("series", out.days, total, saved);
             }
         }
         // the key/value store's records
         if !out.stopped {
             let kv_dir = data.as_deref().map(|d| d.join("db").join("kv"));
+            self.step_counting("records");
             let pending = self.db().kv().pending()?;
-            self.progress("records", 0, pending);
-            out.before_bytes += kv_dir.as_deref().map_or(0, tree_disk);
+            self.progress("records", 0, pending, 0);
+            let kv_before = kv_dir.as_deref().map_or(0, tree_disk);
+            out.before_bytes += kv_before;
             let kv = self.db().kv().compact(&|| turns.next())?;
-            out.after_bytes += kv_dir.as_deref().map_or(0, tree_disk);
+            let kv_after = kv_dir.as_deref().map_or(0, tree_disk);
+            out.after_bytes += kv_after;
             out.records = kv.records;
             out.stopped = kv.stopped;
-            self.progress("records", kv.records, pending);
+            self.progress("records", kv.records, pending, kv_before.saturating_sub(kv_after));
         }
         Ok(out)
     }
@@ -290,6 +410,10 @@ impl Engine {
         let mut kept = self.kept_compaction();
         kept.started_ms = Some(started);
         kept.finished_ms = Some(now_ms());
+        {
+            let run = lock(&self.inner.compaction);
+            (kept.unit_errors, kept.last_unit_error) = (run.unit_errors, run.last_unit_error.clone());
+        }
         match &r {
             Ok(c) => {
                 kept.error = None;
@@ -329,7 +453,10 @@ impl Engine {
                 r.running = true;
                 r.automatic = polite;
                 r.started_ms = now_ms();
-                (r.step, r.done, r.total) = (None, 0, 0);
+                (r.step, r.done, r.total, r.counting) = (None, 0, 0, false);
+                (r.step_began, r.progressed, r.progressed_ms) = (None, None, 0);
+                (r.saved_before_step, r.saved_in_step) = (0, 0);
+                (r.unit_errors, r.last_unit_error) = (0, None);
                 self.inner.compact_stop.store(false, Ordering::SeqCst);
                 let e = self.clone();
                 let spawned = std::thread::Builder::new().name("compaction".into()).spawn(move || {
@@ -550,6 +677,113 @@ mod tests {
         drop(e);
         let e = open(&data, &v);
         assert_eq!(read(&e, car), want2);
+    }
+
+    #[test]
+    fn rate_and_estimate_come_from_the_units_done() {
+        assert_eq!(rate_and_eta(0, 40, Some(Duration::from_secs(10))), (None, None), "no unit yet");
+        assert_eq!(rate_and_eta(5, 40, None), (None, None));
+        assert_eq!(rate_and_eta(10, 40, Some(Duration::from_secs(20))), (Some(0.5), Some(60_000)));
+        assert_eq!(rate_and_eta(40, 40, Some(Duration::from_secs(20))), (Some(2.0), Some(0)));
+    }
+
+    #[test]
+    fn a_pass_tells_its_step_units_bytes_and_last_progress_as_it_goes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        std::fs::create_dir_all(&data).unwrap();
+        let (v, _) = vault::Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
+        let e = open(&data, &Arc::new(v));
+        made_up(&e);
+        // as compact_start does, without its thread: every unit's end is seen through compaction()
+        {
+            let mut r = lock(&e.inner.compaction);
+            (r.running, r.started_ms) = (true, now_ms());
+        }
+        let seen = RefCell::new(Vec::<Compaction>::new());
+        let t0 = now_ms();
+        let done = e
+            .compact(
+                &|| {
+                    seen.borrow_mut().push(e.compaction());
+                    false
+                },
+                false,
+            )
+            .unwrap();
+        // the first ask comes before the first step; the made-up car has no uploaded logs, so the logs step has no
+        // unit to ask between (its progress is tested with the store's packing)
+        let seen: Vec<Compaction> = seen.into_inner().into_iter().filter(|c| c.step.is_some()).collect();
+        assert!(done.days > 0 && done.records > 0, "{done:?}");
+        let steps: Vec<&str> = seen.iter().filter_map(|c| c.step).collect();
+        let mut order = steps.clone();
+        order.dedup();
+        assert_eq!(order, ["series", "records"], "{steps:?}");
+        let mut saved = 0;
+        for c in &seen {
+            let step = c.step.unwrap();
+            assert_eq!(c.status, Status::Running);
+            assert_eq!(c.step_number, Some(STEPS.iter().position(|s| *s == step).unwrap() as u8 + 1));
+            assert_eq!(c.steps, 3);
+            assert_eq!(c.unit, Some(if step == "records" { "records" } else { "days" }));
+            assert!(c.done <= c.total, "{c:?}");
+            assert!(c.progress_ms.unwrap() >= t0 && c.progress_ms.unwrap() <= now_ms(), "{c:?}");
+            assert!(!c.stalled);
+            let pass_saved = c.pass_saved_bytes.unwrap();
+            assert!(pass_saved >= saved, "what the pass freed only grows: {saved} -> {c:?}");
+            saved = pass_saved;
+            if c.phase == Some("packing") && c.done > 0 {
+                assert!(c.rate_per_s.is_some_and(|r| r > 0.0) && c.eta_ms.is_some(), "{c:?}");
+            }
+        }
+        let series: Vec<&Compaction> = seen.iter().filter(|c| c.step == Some("series")).collect();
+        assert!(series.iter().all(|c| c.phase == Some("packing") && c.total > 0), "counted before the first unit");
+        assert!(series.windows(2).all(|w| w[0].done <= w[1].done), "the days done only grow");
+        assert!(series.last().unwrap().done > series[0].done);
+        let end = e.compaction();
+        assert!(end.pass_saved_bytes.unwrap() > 0 && end.pass_saved_bytes.unwrap() >= saved, "{end:?}");
+        assert_eq!(
+            (end.step, end.phase, end.done, end.total),
+            (Some("records"), Some("packing"), end.total, end.total)
+        );
+        // a unit that finished nothing for a while: stalled
+        {
+            let mut r = lock(&e.inner.compaction);
+            r.progressed = Instant::now().checked_sub(STALL_AFTER + Duration::from_secs(1));
+        }
+        assert!(e.compaction().stalled);
+        // not running: no progress fields
+        lock(&e.inner.compaction).running = false;
+        let idle = e.compaction();
+        assert_eq!(
+            (idle.phase, idle.step_number, idle.unit, idle.pass_saved_bytes, idle.rate_per_s, idle.eta_ms),
+            (None, None, None, None, None, None)
+        );
+        assert_eq!((idle.progress_ms, idle.stalled, idle.steps), (None, false, 3));
+    }
+
+    #[test]
+    fn units_left_as_they_were_are_told_and_kept_with_the_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        std::fs::create_dir_all(&data).unwrap();
+        let (v, _) = vault::Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
+        let e = open(&data, &Arc::new(v));
+        lock(&e.inner.compaction).running = true;
+        e.unit_failed(2, Some("the logs of 2026-01-02 of a car: damaged".into()));
+        let c = e.compaction();
+        assert_eq!(
+            (c.unit_errors, c.last_unit_error.as_deref()),
+            (2, Some("the logs of 2026-01-02 of a car: damaged"))
+        );
+        e.compact_and_keep(false);
+        lock(&e.inner.compaction).running = false;
+        let c = e.compaction();
+        assert_eq!(
+            (c.unit_errors, c.last_unit_error.as_deref()),
+            (2, Some("the logs of 2026-01-02 of a car: damaged"))
+        );
+        assert_eq!(c.status, Status::Idle, "a pass with units left as they were did not fail: {c:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

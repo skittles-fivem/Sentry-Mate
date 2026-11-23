@@ -188,6 +188,13 @@ await table.load();
   (a page with its own order control keeps it, and its URL, in step).
 - `num: true` right-aligns figures; `th: true` makes the cell the row's header; `rowAttrs(row)` adds a class or
   `data-` value to a row. The heads stick under the masthead while the rows scroll.
+- `windowLedger(ctx, { path, params, columns, sort, firstSort, search, jump, tools, onPage, empty })` is for a list of
+  thousands of rows (the log): the rows sit in a box ten rows high (`.vl-box`) that scrolls under its head, only the
+  rows in view and a few more are in the page (`shared/vlist.js`), and they load from the API a chunk at a time as the
+  box comes to them (by cursor when the chunk goes on from one already in, else by `offset`; Jump to date asks with
+  `at_ms`). Every row has the same height (`.vl-ledger`: two lines a cell, no wrapping). Sorting is the server's, the
+  search field sends `q`, Download CSV is the server's file with the same filters, and every answer goes to
+  `onPage`. `setParams(patch, { sort })` starts again from the top; `refresh()` loads the rows in view again quietly.
 
 ### `core/chart.js`: charts (uPlot)
 
@@ -414,13 +421,9 @@ Pages are checked with `node ui/tools/check.js --pixel` (see `ui/tools/README.md
     half a pixel (`translate`, or `position: relative` for an inline box) onto whole ones.
   It first takes back everything the last run set, so the CSS always decides the layout and the snap only
   rounds it. It runs again when the page adds or takes away elements, when text in a table changes, when a
-  snapped grid or table changes size (not when the run itself changed it) and when the fonts have loaded. A
-  whole run takes about 1 s on a page of 40,000 elements (it reads all sizes before it writes any), so after a
-  change of content only the boxes that hold it are snapped again (a card drawn again, a table's new rows),
-  unless one of them changed size other than by whole pixels: a page that reloads its cards while it scrolls
-  (a rebuild sends `rows` every second) stays under a frame. The parts that live values draw again keep
-  what did not change (`replaceChanged` in `shared/dom.js`), so most updates change nothing at all.
-- Mark a box the snap must leave alone with `data-nosnap` (maps and charts are left alone already).
+  snapped grid or table changes size (not when the run itself changed it) and when the fonts have loaded. It
+  takes about 1 s on a page of 40,000 elements: it reads all sizes before it writes any.
+- Mark a box the snap must leave alone with `data-nosnap` (maps, charts and the busy ring `.spin` are left alone already).
 - A box that sits in a line of text (an inline-flex pill or button) is a source of half pixels: in a table cell
   give it `vertical-align: top` or make it a block; in a flex row with `align-items: baseline`, let the words
   give the baseline and centre the icon with `align-self: center`.

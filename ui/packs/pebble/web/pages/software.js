@@ -21,12 +21,12 @@ import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { tile, num, chip, btn, icon, note } from '../core/ui.js';
-import { srcPill, hasKind } from '../core/source.js';
+import { rowTitle, hasKind } from '../core/source.js';
 import { MODULES, moduleName, HISTORY_ID, moduleList, fieldName, hexCode, isFingerprint, changesList, aroundDrives, betweenLine, namedLine, nameBox, VERSION_RX, VERSION_SOURCE as SOURCE, VERSION_CHIP as CHIP, VERSION_CHIP_SHORT } from '../core/firmware.js';
 import { emptyTile } from '../core/states.js';
 import { createSheet } from '../core/sheet.js';
 import { field, form } from '../core/form.js';
-import { filterBar, statTile, moreButton, facts, sectionHead, pills, dur } from '../core/bits.js';
+import { filterBar, statTile, moreButton, listBox, facts, sectionHead, pills, dur } from '../core/bits.js';
 
 export const id = 'software';
 export const css = true;
@@ -110,7 +110,7 @@ export async function mount(ctx) {
         : h('span', { class: 'sw-ver' }, r.version))
       : h('span', { class: 'sw-ver is-unknown' }, fp ? 'Not named yet' : 'Build changed');
     const canType = !fp && ctx.admin && (r.sources ? hasKind(r, 'smo') && r.version_source !== 'tesla_api' : r.source === 'can');
-    return tile({ w: 2, cls: ['item', 'sw-tile', { 'is-fp': fp }], id: `update-${r.id}`, label: fp ? `Tesla update installed, ${r.version || 'not named yet'}` : null },
+    const t = tile({ w: 2, cls: ['item', 'sw-tile', { 'is-fp': fp }], id: `update-${r.id}`, label: fp ? `Tesla update installed, ${r.version || 'not named yet'}` : null },
       h('div', { class: 'item-top' },
         h('span', { class: ['item-ic', fp ? 'tone-coral' : 'tone-sky'], 'aria-hidden': 'true' }, icon(fp ? 'download' : 'chip')),
         h('div', { class: 'item-text' },
@@ -123,7 +123,7 @@ export async function mount(ctx) {
           !r.version ? chip('Version not known', { tone: 'sun' }) : null)),
       fp ? namedLine(r) : null,
       h('div', { class: 'tile-nums sw-nums' },
-        h('div', { cover: 'updates.table.duration' }, h('span', { class: 'hero-k' }, going ? 'So far' : fp ? 'Window' : 'Took'), num(r.duration_ms, 'duration', { size: 's' })),
+        h('div', { cover: 'updates.table.duration' }, h('span', { class: 'hero-k' }, going ? 'So far' : fp ? 'Window' : 'Took'), num(r.duration_ms, 'duration', { size: 's', why: r.readings_gap ? 'no readings in between' : null })),
         h('div', { cover: 'updates.table.since_previous' }, h('span', { class: 'hero-k' }, 'After the one before'), num(r.since_previous_ms, 'duration', { size: 's', why: 'first one recorded' })),
         h('div', { cover: 'updates.table.charge_count' }, h('span', { class: 'hero-k' }, 'Charges on it'),
           r.charges ? h('a', { class: 'sw-link', href: state.buildUrl('charges', { car: car.id, period: onVersion(r) }) }, formatNumber(r.charges)) : h('span', { class: 'sw-link is-zero' }, '0')),
@@ -131,9 +131,12 @@ export async function mount(ctx) {
       fp ? betweenLine(ctx, car.id, r, around.get(r.id), tz) : null,
       fp ? changesList(r) : null,
       h('p', { class: 'item-sub' }, `Found by ${DETECTED[r.detected_by] || r.detected_by || 'the car'}${!fp && r.changed_modules?.length ? ` · changed: ${mods(r.changed_modules)}` : fp && r.changed_modules?.length ? ` · ${r.changed_modules.length} of 4 modules changed` : ''}${r.full_pack_kwh != null ? ` · full pack ${format(r.full_pack_kwh, 'energy')}` : ''}`),
-      h('p', { class: 'src-line' }, srcPill(r, { short: true })),
       fp ? nameBox(ctx, car.id, r, { onSaved: () => ctx.reload() }) : null,
       canType ? h('div', { class: 'item-links' }, btn(r.version ? 'Change the version' : 'Type the version', { kind: 'soft', icon: 'edit', onclick: (e) => editVersion(r, e.currentTarget) })) : null);
+    // where the data came from: the card's hover title, not a pill in it
+    const why = rowTitle(r);
+    if (why) t.title = why;
+    return t;
   }
 
   /* ------------------------------------------------------------ the car's firmware now */
@@ -181,6 +184,8 @@ export async function mount(ctx) {
     rowList.append(...got.map(histRow));
     return !hist.done;
   });
+  // the fingerprints scroll in a box about five rows high; the next ones load as its end comes near (or with Show more)
+  const histBox = listBox(ctx, { fit: true, label: 'Fingerprints, newest first', cls: 'fwh-box', more: histMore }, rowList);
 
   function laneSeg(s, i, pct) {
     const a = pct(s.from_ms), b = pct(s.to_ms ?? api.now());
@@ -241,10 +246,11 @@ export async function mount(ctx) {
     const d = hist.last || {};
     spanBody.replaceChildren(...drawLanes(d));
     rowList.replaceChildren(...hist.items.map(histRow));
-    listBody.replaceChildren(hist.items.length ? rowList
+    listBody.replaceChildren(hist.items.length ? histBox.el
       : note(hMod ? `${moduleName(hMod)}: no fingerprint recorded yet. Some cars do not send one from every module.` : `No fingerprint or imported version recorded for ${car.name} yet.`));
     histMore.hidden = hist.done;
     histMore.querySelector('button').hidden = false;
+    histBox.recheck();
   }
   // a new pager for the module filter (or a live reload, as many rows as are shown); the old rows stay until it answers
   let histSeq = 0;
@@ -260,7 +266,7 @@ export async function mount(ctx) {
     hist = next; histErr = err;
     drawHist();
   }
-  function pickModule(m) { hMod = m; readHist(); }
+  function pickModule(m) { hMod = m; readHist().then(() => histBox.top()); }
   let liveT = null;
   ctx.events(['rows'], (ev) => {
     if (ev.data?.car && ev.data.car !== car.id) return;

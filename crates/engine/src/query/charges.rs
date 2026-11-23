@@ -76,8 +76,12 @@ pub struct ChargeView {
     pub energy_added_kwh: Option<f64>,
     pub energy_grid_kwh: Option<f64>,
     pub dc_inlet_kwh: Option<f64>,
+    /// Grid energy less energy added, and their ratio: null unless both are known over the same span.
     pub losses_kwh: Option<f64>,
     pub efficiency_pct: Option<f64>,
+    /// Why `efficiency_pct` and `losses_kwh` are null although both energies are known (they were measured over
+    /// different parts of the charge), as a sentence to show with them; else null.
+    pub efficiency_note: Option<String>,
     pub cost: Option<Cost>,
     pub price_per_kwh: Option<PricePerKwh>,
     pub start_soc_pct: Option<f64>,
@@ -139,9 +143,14 @@ pub(crate) fn cost_of(e: &Engine, c: &Car, ch: &Charge) -> QResult<Option<CostEn
 /// cost holds), whatever cost was kept for it before.
 fn cost_live(e: &Engine, c: &Car, ch: &Charge, live: bool) -> QResult<Option<CostEntry>> {
     let kept = records::cost(e.db(), c.id, ch.id, ch.start_ms)?;
+    let typed = kept.as_ref().is_some_and(|k| k.source == "manual");
+    // a Supercharger invoice matched to it wins over every price; only a typed cost holds over it
+    if !typed && let Some(inv) = e.invoice_cost(c.id, ch)? {
+        return Ok(Some(inv));
+    }
     // free Supercharging (the car's settings) wins over a place price, kept or not; only a typed cost holds
     if ch.source == Source::Live
-        && kept.as_ref().is_none_or(|k| k.source != "manual")
+        && !typed
         && let Some(free) = costs::free_now(e, ch, &c.time_zone)
     {
         return Ok(Some(free));
@@ -383,6 +392,21 @@ fn filled_with(
     Ok(v)
 }
 
+/// A charge's energy added and grid energy `(added, grid)` where the two may be compared (its efficiency and losses,
+/// and the totals of charging efficiency over many charges): every page that shows an efficiency asks this, so a
+/// charge is in all of them or in none. Only an AC charge (a DC charger's grid side is out of sight, and an unknown
+/// kind may be DC), both energies known and above zero, and no more into the pack than came from the grid: more is two
+/// energies that were not measured over the same span by the same input (or one in the wrong unit), never a real
+/// charge, so it is left out rather than counted as an efficiency over 100 %. Nor a charge whose two energies cover
+/// different spans of it ([`Charge::energy_spans`]: its `efficiency_note` says why).
+pub(crate) fn compared_energies(ch: &Charge) -> Option<(f64, f64)> {
+    if ch.kind != Some(ChargeKind::Ac) || !ch.energies_comparable() {
+        return None;
+    }
+    let (added, grid) = (ch.energy_added_kwh?, ch.energy_used_kwh?);
+    (added.is_finite() && grid.is_finite() && added > 0.0 && grid > 0.0 && added <= grid).then_some((added, grid))
+}
+
 fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeView {
     let live = x.live == Some(ch.id);
     let ms = ch.end_ms.saturating_sub(ch.start_ms);
@@ -407,6 +431,7 @@ fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeV
         Some(PricePerKwh { value, basis })
     });
     let hours = ms as f64 / 3_600_000.0;
+    // compared only when measured over the same span
     let range_added = ch.end_range_km.zip(ch.start_range_km).map(|(b, a)| b - a);
     ChargeView {
         id: ch.id.to_string(),
@@ -429,8 +454,9 @@ fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeV
         energy_added_kwh: r(added, 3),
         energy_grid_kwh: r(grid, 3),
         dc_inlet_kwh: None,
-        losses_kwh: r(grid.zip(added).map(|(g, a)| g - a), 3),
-        efficiency_pct: r(grid.zip(added).filter(|(g, _)| *g > 0.0).map(|(g, a)| a / g * 100.0), 1),
+        losses_kwh: r(compared_energies(ch).map(|(a, g)| g - a), 3),
+        efficiency_pct: r(compared_energies(ch).map(|(a, g)| a / g * 100.0), 1),
+        efficiency_note: ch.energy_spans.filter(|_| grid.is_some() && added.is_some()).map(efficiency_note),
         cost,
         price_per_kwh,
         start_soc_pct: r(ch.start_soc, 1),
@@ -448,6 +474,21 @@ fn view_with(c: &Car, ch: &Charge, x: &Ctx, kept: Option<&CostEntry>) -> ChargeV
         has_gaps: false,
         flags: ChargeFlags { in_progress: live, gap_ms: 0 },
     }
+}
+
+/// Why a charge's energies are not compared ([`ChargeView::efficiency_note`]).
+fn efficiency_note(s: model::EnergySpans) -> String {
+    let min = |ms: u64| {
+        let s = ms.div_ceil(1000);
+        if s < 60 { format!("{s} s") } else { format!("{} min", (s + 30) / 60) }
+    };
+    format!(
+        "Not measured over the same time: the energy added covers {} of this charge and the grid energy {} \
+         ({} both), so no efficiency or losses are shown.",
+        min(s.added_ms),
+        min(s.grid_ms),
+        min(s.both_ms)
+    )
 }
 
 /// Calls `f` with each shown row of `car` whose start is in `[a, b)`, newest or oldest first, reading the db a page
@@ -1053,6 +1094,17 @@ pub struct BreakdownPart {
     pub kwh: Option<f64>,
     pub minutes: Option<f64>,
     pub cost: f64,
+    /// A step of tiered prices: its range of the cycle's kWh (`to_kwh` null: no end); null for other parts.
+    pub from_kwh: Option<f64>,
+    pub to_kwh: Option<f64>,
+}
+
+/// The billing cycle of a charge priced by steps, and the cycle's kWh before it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BreakdownCycle {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub before_kwh: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1061,8 +1113,10 @@ pub struct Breakdown {
     pub session_fee: Option<f64>,
     pub total: Option<f64>,
     pub gap_ms: u64,
+    /// Tiered prices: the billing cycle; null otherwise.
+    pub cycle: Option<BreakdownCycle>,
     /// `tariff` (each rate of the place's price), `total`, `per_kwh` or `per_minute` (typed in), or the cost's own
-    /// source (`teslamate`, `free_supercharging`); null without a cost.
+    /// source (`teslamate`, `free_supercharging`, `tesla_invoice`, `teslafi`); null without a cost.
     pub mode: Option<String>,
 }
 
@@ -1084,6 +1138,32 @@ pub struct ChargeDetail {
     pub cost_breakdown: Breakdown,
     pub manual_cost: Option<ManualCost>,
     pub gaps: Vec<Gap>,
+    /// The Supercharger sessions matched to it ([`crate::invoices`]), oldest first; empty without one.
+    pub invoices: Vec<InvoiceRef>,
+}
+
+/// A Supercharger session matched to a charge, as the charge's page shows it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct InvoiceRef {
+    /// The session's key (`tesla-...`), for its PDF (`.../invoices/{invoice}/pdf`).
+    pub id: String,
+    /// `tesla` or `teslafi`.
+    pub source: String,
+    pub site: Option<String>,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub total: Option<f64>,
+    pub currency: Option<String>,
+    pub kwh_billed: Option<f64>,
+    pub minutes_billed: Option<f64>,
+    pub idle_fee: Option<f64>,
+    pub fees: Vec<crate::invoices::Fee>,
+    /// The invoice's own file name.
+    pub invoice_name: Option<String>,
+    /// The PDF is kept here (else not given by the source, or not downloaded yet).
+    pub pdf: bool,
+    /// The charge's cost is this invoice's (false while a typed cost wins over it).
+    pub applied: bool,
 }
 
 /// `/cars/{car}/charges/{charge}`. The charges before and after it are read from the db from it outwards.
@@ -1130,10 +1210,13 @@ pub fn charge(e: &Engine, car: CarId, id: u64) -> QResult<ChargeDetail> {
                 ),
                 minutes: (k.mode.as_deref() == Some("per_minute")).then(|| (minutes * 10.0).round() / 10.0),
                 cost: k.amount,
+                from_kwh: None,
+                to_kwh: None,
             }],
             session_fee: None,
             total: Some(k.amount),
             gap_ms: 0,
+            cycle: None,
             mode: k.mode.clone(),
         },
         Some(k) => Breakdown {
@@ -1147,15 +1230,75 @@ pub fn charge(e: &Engine, car: CarId, id: u64) -> QResult<ChargeDetail> {
                     kwh: r(Some(p.kwh), 3),
                     minutes: None,
                     cost: (p.cost * 100.0).round() / 100.0,
+                    from_kwh: p.from_kwh,
+                    to_kwh: p.to_kwh,
                 })
                 .collect(),
             session_fee: k.session_fee,
             total: Some(k.amount),
             gap_ms: k.gap_ms,
+            cycle: k.cycle.as_ref().map(|c| BreakdownCycle {
+                start_ms: c.start_ms,
+                end_ms: c.end_ms,
+                before_kwh: (c.before_kwh * 1000.0).round() / 1000.0,
+            }),
             mode: Some(k.source.clone()),
         },
-        None => Breakdown { parts: Vec::new(), session_fee: None, total: None, gap_ms: 0, mode: None },
+        None => Breakdown { parts: Vec::new(), session_fee: None, total: None, gap_ms: 0, mode: None, cycle: None },
     };
+    let sessions = e.invoice_sessions_of(car, ch.id)?;
+    let applied = kept.as_ref().is_some_and(|k| k.source == "tesla_invoice" || k.source == "teslafi");
+    let cost_breakdown = match &kept {
+        // an invoice's fees: energy at its rate, minutes (idle, or billed by time) at theirs
+        Some(k) if applied => Breakdown {
+            parts: sessions
+                .iter()
+                .flat_map(|s| s.fees.iter())
+                .map(|f| BreakdownPart {
+                    rate: Some(
+                        match f.kind.as_str() {
+                            "charging" => "Charging",
+                            "idle" => "Idle fee",
+                            _ => "Other fee",
+                        }
+                        .into(),
+                    ),
+                    per_kwh: f.rate.filter(|_| f.unit.as_deref() == Some("kwh")),
+                    per_minute: f.rate.filter(|_| f.unit.as_deref() == Some("min")),
+                    kwh: f.usage.filter(|_| f.unit.as_deref() == Some("kwh")),
+                    minutes: f.usage.filter(|_| f.unit.as_deref() == Some("min")),
+                    cost: (f.amount * 100.0).round() / 100.0,
+                    from_kwh: None,
+                    to_kwh: None,
+                })
+                .collect(),
+            session_fee: None,
+            total: Some(k.amount),
+            gap_ms: 0,
+            cycle: None,
+            mode: Some(k.source.clone()),
+        },
+        _ => cost_breakdown,
+    };
+    let invoices = sessions
+        .iter()
+        .map(|s| InvoiceRef {
+            id: s.key.clone(),
+            source: s.source.clone(),
+            site: s.site.clone(),
+            start_ms: s.start_ms,
+            end_ms: s.end_ms,
+            total: s.total,
+            currency: s.currency.clone(),
+            kwh_billed: s.kwh_billed,
+            minutes_billed: s.minutes_billed,
+            idle_fee: s.idle_fee(),
+            fees: s.fees.clone(),
+            invoice_name: s.invoice_name.clone(),
+            pdf: s.pdf,
+            applied,
+        })
+        .collect();
     let manual_cost = kept.as_ref().filter(|k| k.source == "manual").map(|k| ManualCost {
         mode: k.mode.clone(),
         amount: k.entered,
@@ -1166,7 +1309,7 @@ pub fn charge(e: &Engine, car: CarId, id: u64) -> QResult<ChargeDetail> {
     let mut v = filled_with(e, &c, &ch, &x, kept.as_ref(), &fill)?;
     v.has_gaps = !gaps.is_empty();
     v.flags.gap_ms = covered_ms(&gaps);
-    Ok(ChargeDetail { charge: v, prev, next, cost_breakdown, manual_cost, gaps })
+    Ok(ChargeDetail { charge: v, prev, next, cost_breakdown, manual_cost, gaps, invoices })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1908,5 +2051,44 @@ mod tests {
         assert_eq!(inside[0].start_ms, 30);
         assert_eq!(covered_ms(&inside), 40);
         assert!(holes_in(&holes, 100, 200).is_empty());
+    }
+
+    #[test]
+    fn energies_are_compared_only_where_both_sides_can_be() {
+        let ch = |kind, added: Option<f64>, used: Option<f64>| Charge {
+            id: 1,
+            car: 1,
+            start_ms: 0,
+            end_ms: 3_600_000,
+            position: None,
+            place: None,
+            address: None,
+            kind,
+            energy_added_kwh: added,
+            energy_used_kwh: used,
+            start_soc: None,
+            end_soc: None,
+            start_range_km: None,
+            end_range_km: None,
+            power_max_kw: None,
+            outside_temp_avg_c: None,
+            battery_temp_avg_c: None,
+            cost: None,
+            energy_spans: None,
+            source: Source::Live,
+            inputs: model::Inputs::SMO,
+            rules_version: 0,
+        };
+        let ac = Some(ChargeKind::Ac);
+        assert_eq!(compared_energies(&ch(ac, Some(18.0), Some(20.0))), Some((18.0, 20.0)));
+        assert_eq!(compared_energies(&ch(ac, Some(20.0), Some(20.0))), Some((20.0, 20.0)));
+        // more into the pack than from the grid: not one span or one unit
+        assert_eq!(compared_energies(&ch(ac, Some(23.1), Some(20.0))), None);
+        assert_eq!(compared_energies(&ch(ac, Some(18.0), Some(0.0))), None);
+        // a DC charger's grid side is out of sight, an unknown kind may be DC
+        assert_eq!(compared_energies(&ch(Some(ChargeKind::Dc), Some(30.0), Some(31.0))), None);
+        assert_eq!(compared_energies(&ch(None, Some(18.0), Some(20.0))), None);
+        assert_eq!(compared_energies(&ch(ac, None, Some(20.0))), None);
+        assert_eq!(compared_energies(&ch(ac, Some(18.0), None)), None);
     }
 }

@@ -6,7 +6,7 @@ from .helpers import NOW, ServerCase
 
 CHARGE = {"id", "car", "start_ms", "end_ms", "charging_ms", "plugged_ms", "kind", "fast_charger", "place", "address",
           "position", "odometer_km", "energy_added_kwh", "energy_grid_kwh", "dc_inlet_kwh", "losses_kwh",
-          "efficiency_pct", "cost", "price_per_kwh", "start_soc_pct", "end_soc_pct", "start_range_km", "end_range_km",
+          "efficiency_pct", "efficiency_note", "cost", "price_per_kwh", "start_soc_pct", "end_soc_pct", "start_range_km", "end_range_km",
           "range_added_km", "range_per_hour_km", "power_max_kw", "power_avg_kw", "outside_avg_c", "battery_avg_c",
           "source", "has_gaps"}
 
@@ -59,7 +59,7 @@ class Charges(ServerCase):
     def test_detail_curve_and_manual_cost(self):
         x = self.c.get("/api/v1/cars/c1/charges?kind=dc&limit=3")["items"][1]
         d = self.c.get(f"/api/v1/cars/c1/charges/{x['id']}")
-        self.assertEqual(set(d["cost_breakdown"]), {"parts", "session_fee", "total", "gap_ms", "mode"})
+        self.assertEqual(set(d["cost_breakdown"]), {"parts", "session_fee", "total", "gap_ms", "mode", "cycle"})
         self.assertTrue(d["prev"])
         cv = self.c.get(f"/api/v1/cars/c1/charges/{x['id']}/curve")
         self.assertEqual(cv["step_ms"], 1000)  # 1 Hz
@@ -71,8 +71,10 @@ class Charges(ServerCase):
         self.assertEqual(up["cost"], {"amount": 12.5, "currency": "USD", "source": "manual"})
         self.c.error("PUT", f"/api/v1/cars/c1/charges/{x['id']}/cost", 422, "invalid",
                      body={"mode": "total", "amount": 5, "currency": "XYZ"})
+        self.assertEqual([i["applied"] for i in up["invoices"]], [False] * len(up["invoices"]))  # an entered cost wins
         back = self.c.json("DELETE", f"/api/v1/cars/c1/charges/{x['id']}/cost")
-        self.assertEqual(back["cost"]["source"], "tariff")
+        # back to the Tesla invoice matched to the charge, else the place price
+        self.assertEqual(back["cost"]["source"], "tesla_invoice" if d["invoices"] else "tariff")
 
     def test_stopped_mid_charge(self):
         g = self.c.get("/api/v1/cars/c1/charges?flags=gap&limit=500")["items"]

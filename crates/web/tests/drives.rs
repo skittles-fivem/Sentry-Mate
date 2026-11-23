@@ -352,6 +352,47 @@ async fn purposes_rules_logbook_and_saved_trips() {
     let lines = csv_lines(&r);
     assert_eq!(lines.len(), rows.len() + 1);
     assert!(lines[0].contains("continuity_gap_km"));
+    // a page at a time, by cursor, by offset or from a date; filters, counts and the whole period's check
+    let lbp = format!("/api/v1/cars/{car}/logbook");
+    let pg = ok(&mut watch, &format!("{lbp}?limit=2")).await;
+    assert_eq!((pg["offset"].as_u64(), pg["total"].as_u64()), (Some(0), Some(rows.len() as u64)));
+    assert_eq!(pg["count"].as_u64(), Some(rows.len() as u64));
+    assert_eq!(pg["items"].as_array().unwrap().len(), rows.len().min(2));
+    assert_eq!(pg["items"][0], rows[0]);
+    let counted: u64 = pg["counts_by_purpose"].as_object().unwrap().values().map(|v| v.as_u64().unwrap()).sum();
+    assert_eq!(counted as usize, rows.len());
+    assert_eq!(pg["continuity"]["rows"].as_u64(), Some(rows.len() as u64));
+    assert_eq!(pg["totals_by_purpose"], lb["totals_by_purpose"]);
+    if rows.len() > 2 {
+        let next = pg["next"].as_str().unwrap().to_string();
+        let pg2 = ok(&mut watch, &format!("{lbp}?limit=2&after={next}")).await;
+        assert_eq!((pg2["offset"].as_u64(), &pg2["items"][0]), (Some(2), &rows[2]));
+        // a cursor stays with its filters
+        assert_eq!(code(&mut watch, &format!("{lbp}?limit=2&purpose=none&after={next}")).await.0, 400);
+        let by = ok(&mut watch, &format!("{lbp}?limit=1&offset=2")).await;
+        assert_eq!(by["items"][0], rows[2]);
+        let at = rows[1]["start_ms"].as_u64().unwrap();
+        let from = ok(&mut watch, &format!("{lbp}?limit=5&at_ms={at}")).await;
+        assert_eq!((from["offset"].as_u64(), &from["items"][0]), (Some(1), &rows[1]));
+        let back = ok(&mut watch, &format!("{lbp}?limit=5&dir=desc&at_ms={at}")).await;
+        assert_eq!(back["items"][0], rows[0], "newest first: the first row before the time");
+    } else {
+        assert!(pg["next"].is_null());
+    }
+    let biz = ok(&mut watch, &format!("{lbp}?limit=50&purpose=business")).await;
+    assert_eq!(biz["total"], 1);
+    assert_eq!(biz["items"][0]["drive"], json!(id));
+    assert_eq!(ok(&mut watch, &format!("{lbp}?limit=50&q=quarterly")).await["total"], 1);
+    let gaps = ok(&mut watch, &format!("{lbp}?limit=500&gaps=true")).await;
+    assert_eq!(gaps["total"], pg["continuity"]["gaps"]);
+    let longest = ok(&mut watch, &format!("{lbp}?limit=1&sort=distance&dir=desc")).await;
+    let most = rows.iter().filter_map(|x| x["distance_km"].as_f64()).fold(0.0, f64::max);
+    assert_eq!(longest["items"][0]["distance_km"].as_f64(), Some(most));
+    assert_eq!(code(&mut watch, &format!("{lbp}?limit=5&sort=distance&at_ms=1")).await.0, 400);
+    assert_eq!(code(&mut watch, &format!("{lbp}?purpose=holiday")).await.0, 400);
+    assert_eq!(code(&mut watch, &format!("{lbp}?limit=0")).await.0, 400);
+    let r = watch.get(&format!("{lbp}?format=csv&purpose=business")).await;
+    assert_eq!((r.status, csv_lines(&r).len()), (200, 2));
     let r = watch.get(&format!("/api/v1/cars/{car}/logbook?format=pdf")).await;
     assert_eq!(r.status, 200);
     assert_eq!(r.header("content-type"), Some("application/pdf"));

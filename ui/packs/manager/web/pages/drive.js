@@ -4,11 +4,12 @@
 // (the figures for the selection follow it), the drive's own figures, and the export as GPX or GeoJSON.
 
 import * as state from '../shared/state.js';
-import { h, replace, setVars, cssVar } from '../shared/dom.js';
+import { h, replace, setVars, cssVar, steady } from '../shared/dom.js';
 import { format, convert, unitLabel, getUnits, KM_PER_MI } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, zoneName, dayRange, dayKey, zonedParts } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
+import { trackBounds } from '../shared/tracks.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel, metric, tag, csvButton } from '../core/page.js';
 import { createMap, routePin, boundsOf, padClear, mapFallback } from '../core/map.js';
@@ -187,7 +188,7 @@ export async function mount(ctx) {
     h('div', { class: 'drive-layout' }, mapPanel, stats),
     h('section', { class: 'panel charts-panel', 'aria-label': 'Through the drive', cover: ['dd.chart.drive', 'dd.chart.drive.tooltip'] },
       h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('signals'), 'Through the drive'),
-        h('span', { class: 'row' }, timeEl, srcMark(series, { short: true }), h('span', { class: 'faint' }, 'Drag across a chart to zoom; double-click for the whole drive'), resetBtn,
+        h('span', { class: 'row' }, steady(timeEl, (series?.t_ms || []).map((t) => formatTime(t, tz, { seconds: true }))), srcMark(series, { short: true }), h('span', { class: 'faint' }, 'Drag across a chart to zoom; double-click for the whole drive'), resetBtn,
           csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'drive', day), series.t_ms.map((t, i) => Object.fromEntries([['t', t], ...[...fields, 'est_range_km'].map((f) => [f, series.values[f]?.[i] ?? null])])),
             [timeColumn('Time', 't', tz), column('Speed', 'speed_kph', 'speed'), column('Power', 'power_kw', 'power'), column('Battery', 'soc_pct', 'percent'), column('Usable', 'usable_soc_pct', 'percent'), column(ideal ? 'Ideal range' : 'Rated range', rk, 'range'), column('Estimated range (Sentry Mate)', 'est_range_km', 'range'), column('Energy left', 'energy_remaining_kwh', 'energy'), column('Elevation', 'elevation_m', 'length'), column('Outside', 'outside_c', 'temperature'), column('Cabin', 'cabin_c', 'temperature'), setColumn('Set left', 'setpoint_left_c'), setColumn('Set right', 'setpoint_right_c'), column('Climate', 'climate'), column('Fan step (0-10)', 'fan_level'), column('Battery heating', 'battery_heat_kw', 'power'), column('Odometer', 'odometer_km', 'odometer'), column('Latitude', 'lat'), column('Longitude', 'lon'), column('Accuracy', 'accuracy_m', 'length')]) }))),
       selBox, chartsHost),
@@ -203,6 +204,8 @@ export async function mount(ctx) {
     const c = f.geometry?.coordinates || [];
     c.forEach((p, i) => { coords.push([p[0], p[1]]); props.speed.push(f.properties?.speed_kph?.[i] ?? null); props.power.push(f.properties?.power_kw?.[i] ?? null); });
   }
+  // the map frames the route without stray fixes (a jump to another state and back)
+  const routeBounds = trackBounds(track?.features || []) || boundsOf(coords);
   let m = null, hoverMarker = null;
   // a gradient along the route by speed or power, from stops at the share of the distance travelled
   const gradient = (kind) => {
@@ -239,7 +242,7 @@ export async function mount(ctx) {
   (async () => {
     if (coords.length < 2) { mapEl.append(mapFallback('No route was recorded for this drive.')); mapMade(); return; }
     try {
-      m = await createMap(mapEl, ctx, { bounds: boundsOf(coords) });
+      m = await createMap(mapEl, ctx, { bounds: routeBounds });
       mapMade();
       if (!m) return;
       await m.ready;
@@ -250,7 +253,7 @@ export async function mount(ctx) {
       m.addLayer({ ...line, id: 'route-line', paint: { 'line-gradient': gradient('speed') } }, { 'line-width': () => rpx(4.2) });
       routePin(m, coords[0], 'A');
       routePin(m, coords[coords.length - 1], 'B');
-      m.frame(() => m.map.fitBounds(boundsOf(coords), { padding: padClear(mapEl, legend, { left: 40, top: 24, right: 60, bottom: 50 }), maxZoom: 16, duration: 0 }));
+      m.frame(() => m.map.fitBounds(routeBounds, { padding: padClear(mapEl, legend, { left: 40, top: 24, right: 60, bottom: 50 }), maxZoom: 16, duration: 0 }));
     } catch (e) { console.warn(e); replace(mapEl, mapFallback()); mapMade(); }
   })();
   function hoverAt(i) {

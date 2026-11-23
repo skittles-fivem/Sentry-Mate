@@ -11,6 +11,7 @@ import { h, replace, cover } from '../shared/dom.js';
 import { format, formatMoney, unitLabel, convert, getUnits } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, zoneName, dayRange, dayKey, DAY } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
+import * as TI from '../shared/tiers.js';
 import { head, section, kv, note, link } from '../core/ui.js';
 import { num, tag } from '../core/fmt.js';
 import { safeMap } from '../core/map.js';
@@ -23,13 +24,14 @@ import { toast } from '../core/toast.js';
 import { placeLink } from './timeline.js';
 import { KIND, KIND_TONE } from './charges.js';
 import { src, est as estTag, kindsOf, apiOnly, isEstimated, EST_WHY } from '../core/source.js';
+import { appliedInvoice, unusedInvoices, invoiceSourceLabel, feeLabel, chargeInvoicePdfUrl } from '../shared/invoices.js';
 
 export const id = 'charge';
 export const title = () => 'Charge';
 
 const enc = encodeURIComponent;
 const CURRENCIES = ['USD', 'CAD', 'EUR', 'GBP', 'NOK', 'SEK', 'DKK', 'CHF', 'AUD', 'NZD', 'JPY', 'CNY'];
-const COST_SOURCE = { tariff: 'from the place price', manual: 'typed by hand', free_supercharging: 'free supercharging', teslamate: 'imported' };
+const COST_SOURCE = { tariff: 'from the place price', manual: 'typed by hand', free_supercharging: 'free supercharging', teslamate: 'imported', tesla_invoice: 'from tesla invoice', teslafi: 'from teslafi' };
 const LIMIT = { station: 'the station pilot', cable: 'the cable', car: 'the car’s maximum', setting: 'the set current' };
 const FIELDS = ['power_kw', 'ac_line_kw', 'soc_pct', 'usable_soc_pct', 'range_km', 'battery_c', 'outside_c', 'heater_kw',
   'ac_volts_v', 'ac_amps_a', 'pilot_a', 'phases', 'limit_source', 'dc_volts_v', 'dc_amps_a'];
@@ -95,9 +97,9 @@ export async function mount(ctx) {
     ['charging', h('span', { cover: 'web.charge-cost.duration' }, formatDuration(c.charging_ms), c.plugged_ms != null ? none(` plugged ${formatDuration(c.plugged_ms)}`) : null), { cover: 'cd.stat.duration' }],
     ['place', h('span', { cover: 'web.charge-cost.location' }, placeLink(c) || '—', c.place && c.address?.short ? none(` ${c.address.short}`) : null), { cover: 'cd.stat.location' }],
     ['added', h('span', { cover: 'web.charge-cost.energy' }, m(c.energy_added_kwh, 'energy'), estTag(c), none(' into the pack')), { cover: 'cd.stat.energy_added' }],
-    [ac ? 'drawn' : dc ? 'delivered' : 'drawn', ac ? [m(gridKwh, 'energy'), gridKwh != null ? none(` from the line, ${format(c.losses_kwh, 'energy')} lost`) : null]
+    [ac ? 'drawn' : dc ? 'delivered' : 'drawn', ac ? [m(gridKwh, 'energy'), gridKwh != null ? none(` from the line${c.losses_kwh != null ? `, ${format(c.losses_kwh, 'energy')} lost` : ''}`) : null]
       : dc ? [m(c.dc_inlet_kwh, 'energy'), none(c.fast_charger?.billed_kwh != null ? ` at the inlet; billed ${format(c.fast_charger.billed_kwh, 'energy')}` : ' at the inlet; the grid side is not sent')] : none('unknown whether ac or dc'), { cover: 'cd.stat.energy_used' }],
-    ['efficiency', c.efficiency_pct != null ? [pct(c.efficiency_pct), none(' added over drawn')] : none(dc ? 'unknown for dc: a fast charger’s grid side is not measured' : why), { cover: 'cd.stat.efficiency' }],
+    ['efficiency', c.efficiency_pct != null ? [pct(c.efficiency_pct), none(' added over drawn')] : none(dc ? 'unknown for dc: a fast charger’s grid side is not measured' : c.efficiency_note || why), { cover: 'cd.stat.efficiency' }],
     ['battery', h('span', { class: 'nowrap' }, h('span', { cover: 'cd.stat.soc_start' }, pct(c.start_soc_pct)), h('span', { class: 'arrow' }, ' -> '), h('span', { cover: 'cd.stat.soc_end' }, pct(c.end_soc_pct)),
       h('span', { class: 'muted', cover: 'cd.stat.soc_added' }, socAdded != null ? `  +${format(socAdded, 'percent')}` : ''))],
     ['range', h('span', null, h('span', { cover: 'cd.stat.range_start' }, num(c.start_range_km, 'range')), h('span', { class: 'arrow' }, ' -> '), h('span', { cover: 'cd.stat.range_end' }, num(c.end_range_km, 'range')),
@@ -179,16 +181,19 @@ export async function mount(ctx) {
   const cur = cost?.currency || price?.currency || 'USD';
   const parts = (bd.parts || []).map((p) => ({ ...p }));
   if (bd.session_fee) parts.push({ rate: 'session fee', cost: bd.session_fee });
+  const inv = invoiceRows(c, cid, chid);
   const costNow = kv([
     ['cost', h('span', null, cost ? h('b', null, formatMoney(cost.amount, cost.currency)) : none('no cost yet'), cost ? none(` ${COST_SOURCE[cost.source] || cost.source}`) : null,
       cost?.source === 'manual' ? [' ', tag('typed', 'warn')] : null), { cover: ['cd.stat.cost', 'web.charge-cost.current-cost'] }],
     ['per kwh', c.price_per_kwh?.value != null ? [format(c.price_per_kwh.value, 'price_energy', { currency: cost?.currency }), none(` of the ${c.price_per_kwh.basis === 'grid' ? 'energy drawn' : 'energy added'}`)]
       : none(c.place ? `${c.place.name} has no price yet: add one on places, or type the cost below` : 'not a saved place with a price: type the cost below')],
-  ], { cols: 1 });
+    ...inv.rows,
+    bd.cycle ? ['tiered', h('span', null, TI.splitText(TI.stepParts(bd), cur), none(`; the cycle from ${formatDate(bd.cycle.start_ms, c.place?.time_zone || tz, { weekday: false })} had ${format(bd.cycle.before_kwh, 'energy')} before it`))] : null,
+  ].filter(Boolean), { cols: 1 });
   const breakdown = table(ctx, {
     title: 'how the cost was made', rows: parts, csv: false,
     columns: [
-      { key: 'rate', label: 'rate', ph: 'main', render: (p) => String(p.rate || '').toLowerCase() },
+      { key: 'rate', label: 'rate', ph: 'main', render: (p) => String(p.from_kwh != null ? `${p.rate}: ${TI.stepLabel(p.from_kwh, p.to_kwh)}` : p.rate || '').toLowerCase() },
       { key: 'per_kwh', label: '/kwh', num: true, ph: 'sub', render: (p) => (p.per_kwh != null ? rateText(p.per_kwh, 'price_energy', cur) : null) },
       { key: 'per_minute', label: '/min', num: true, ph: 'sub', render: (p) => (p.per_minute != null ? rateText(p.per_minute, 'price_time', cur) : null) },
       { key: 'kwh', label: 'energy', num: true, render: (p) => (p.kwh != null ? num(p.kwh, 'energy') : null) },
@@ -227,7 +232,7 @@ export async function mount(ctx) {
         h('span', { class: 'chart-key' }, h('span', { class: 'chart-key-i chart-key-i--2' }, '. samples'), h('span', { class: 'chart-key-i chart-key-i--1' }, '-- mean'), dc ? h('span', { class: 'chart-key-i chart-key-i--3' }, '- - usual') : null)),
       pts.length > 1 ? [curveEl, curveRead.el] : empty('too few points to draw')),
     section({ title: 'cost', id: 'cost' },
-      h('div', { class: 'cols2' }, h('div', null, costNow, breakdown.el,
+      h('div', { class: 'cols2' }, h('div', null, costNow, inv.slots, breakdown.el,
         cost?.source === 'tariff' ? note(`each rate of the place price for the time it applied, in ${zone}${bd.gap_ms ? `; ${formatDuration(bd.gap_ms)} without data is priced at the rate around it` : ''}.`) : null), editor)),
     section({ title: 'samples' }, t.length ? [samplesBtn, samplesSlot] : empty('no samples')),
     h('div', { hidden: true, cover: 'web.charge-cost.not-found' }, empty('no such charge'))));
@@ -282,6 +287,28 @@ export async function mount(ctx) {
   } else mapEl.append(h('p', { class: 'map-note' }, '-- no position recorded for this charge --'));
   if (!ctx.alive()) return;
   ctx.ready();
+}
+
+/* ---------- the invoices of a charge (Supercharger invoices: Tesla's, or a cost TeslaFi gave) */
+// kv rows under the cost: the invoice (its site and fees), an invoice a typed cost won over, and the PDF links.
+// A charge without them gets hidden slots, so the items are always on the page.
+function invoiceRows(c, car, charge) {
+  const list = Array.isArray(c.invoices) ? c.invoices : [];
+  const used = appliedInvoice(c);
+  const usage = (f) => (f.usage == null ? null : f.unit === 'kwh' ? format(f.usage, 'energy') : f.unit === 'min' ? formatDuration(f.usage * 60000) : null);
+  const fees = (i) => (i.fees || []).map((f) => `${feeLabel(f.kind).toLowerCase()} ${formatMoney(f.amount, i.currency)}${usage(f) ? ` for ${usage(f)}` : ''}`).join(', ');
+  const word = (i) => invoiceSourceLabel(i.source).toLowerCase();
+  const rows = [];
+  if (used) rows.push([word(used), [used.site || '—', fees(used) ? none(`; ${fees(used)}`) : null], { cover: 'inv.charge.source' }]);
+  for (const i of unusedInvoices(c)) rows.push([word(i), [formatMoney(i.total, i.currency), none(' (an entered cost is used instead)')], { cover: 'inv.charge.source' }]);
+  const pdfs = list.filter((i) => i.pdf);
+  if (pdfs.length) {
+    rows.push(['invoice', h('span', null, pdfs.map((i, n) => [n ? ' ' : null,
+      h('a', { class: 'lnk', href: chargeInvoicePdfUrl(car, charge, i.id), download: true, title: i.invoice_name || null }, `invoice (pdf)${pdfs.length > 1 ? ` ${n + 1}` : ''}`)])), { cover: 'inv.charge.pdf' }]);
+  }
+  const slots = [!rows.some((r) => r[2].cover === 'inv.charge.source') ? h('span', { hidden: true, cover: 'inv.charge.source' }) : null,
+    !pdfs.length ? h('span', { hidden: true, cover: 'inv.charge.pdf' }) : null];
+  return { rows, slots };
 }
 
 /* ---------- the cost editor: a total, a price per kWh or per minute, the currency and the energy basis */

@@ -20,6 +20,7 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 | `--host` | `127.0.0.1` | Address to listen on. |
 | `--port` | `8000` | `0` picks a free port (read it from the printed line). |
 | `--cars N` | `3` | Fleet size. 1 to 3 are the featured cars; above 3 adds light synthetic cars `c4`..`cN`; `0` is an empty fleet. A large fleet's sort, search and attention indexes are built before the server listens (about 1.5 s for 200000 cars). |
+| `--drives N` | `0` | Gives `c1` about `N` drives in all (short errands from home added on most evenings; about 2,200 of them this year with `--drives 3000`), to try long lists (Logbook, Drives, Charges). `0`: the usual history, about 1,150. |
 | `--latency-ms N` | `0` | Waits this long before every `/api` answer (not the event stream). |
 | `--seed N` | `1` | Same seed and flags give the same data. |
 | `--signed-out` | off | Starts with no session, to test the sign-in page. |
@@ -28,14 +29,16 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 | `--now-ms MS` | `1794850200000` | The virtual "now" at start (2026-11-16 17:30 UTC). It then moves with real time. |
 | `--fresh` (or `--needs-setup`) | off | Starts as a fresh server: no accounts and nobody signed in, the first-run set-up page. The set-up code is `SETUP-DEV-0000`. See "First-run set-up and moving" below. |
 | `--move-state S` | `none` | Starts Settings: Server's "Move to another server" in state `S`: `offered`, `expired`, `copying`, `paused`, `moved` or `done` (screenshots; add `--freeze-clock` to hold it there). Not with `--fresh`. |
+| `--export P` | `quick` | How a new export file is made: `quick` (3 s), `slow` (18 GB in 2 min), `stall` (stops at 40 %, `stalled` a minute later) or `fail` (problem `no_space` at 55 %). |
+| `--export-state S` | `none` | An export file there at start: `preparing` (slow, a third collected), `stalled`, `failed` or `ready` (its SHA-256 worked out). Screenshots: add `--freeze-clock`. Not with `--fresh`. |
 | `--own-certificate` | off | Runs with the owner's own certificate (`certificate.own` in `/network`), expiring in 12 days: the `certificate_expiring` notice is up and `POST /network/certificate` is `409 own_certificate`. Without it the certificate is one the server made, which never expires soon. |
 | `--release-check off\|newer\|up_to_date\|error\|never\|checking` | `off` | The release check at start: off, or on with that result of the last check (`GET /api/v1/release`): a newer build (`9c1e7d3`, 4 changes, with the admins' `release_available` notice), up to date, GitHub's rate limit, not checked yet, or a check in flight. Turned on later in a session it finds the newer build. `/about` carries a made-up `build` (`0.1.0 · build 2f44a52`). |
 | `--teslamate-trouble none\|connection_refused\|auth_failed\|pin_mismatch\|quiet\|catchup_failed` | `none` | The local TeslaMate starts in that trouble with its admins' notice (`teslamate_connection_refused`, `teslamate_auth_failed`, `teslamate_pin_mismatch`, `teslamate_quiet`, `teslamate_catchup_failed`; the last turns the database catch-up on), linking to Settings: Integrations (#teslamate). In tests, `resources.teslamate.fail(store, part, code, now)` starts or ends one (`quiet` for a broker that stays connected and sends nothing). |
+| `--full-rebuild none\|running\|failed\|offered` | `none` | The full rebuild the server starts with (`/cars/{car}/full-rebuild`, `/system/full-rebuild`): one of every car under way (a long one, a few minutes in, with a log it could not decode), one that failed on the second car (no space left; the old history kept), or the first car's history made with an older decoding and `full_rebuild.auto` off (the `full_rebuild_offered` notice). One started from a page runs about three minutes a car on the virtual clock and ends done. |
 | `--move-peer-after-s N` | `15` | A made-up new server (`192.168.1.30`) claims a waiting move code `N` seconds after it is made, then copies, pauses, switches and is done in about 17 s. `0`: never. |
 | `--freeze-clock` | off | Keeps "now" fixed (stable screenshots and tests). |
 | `--sse-interval-ms N` | `2000` | How often live values are pushed on `/api/v1/events`. |
 | `--rows-every-s N` | `0` | Also sends every featured car a `rows` event every `N` seconds (all row kinds), as if its rows had changed, so the pages load their lists again (`ui/tools/check.js --stable` uses it). `0`: `rows` only when a drive, charge or parked spell really starts or ends. |
-| `--rebuild-running` | off | Every featured car's history is being rebuilt the whole time: `/cars/{car}/health` says `rebuild_pending` (so Data health reads itself again every few seconds) and the car gets a `rows` event every second (every `--rows-every-s` when that is given), as while a long rebuild rewrites its rows. `ui/tools/scroll.js` scrolls the pages in this state. |
 | `--verbose` | off | Logs every request to stderr. |
 
 ### UI packs
@@ -44,6 +47,11 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 `console`, `pebble`, `manager`; plus the `--pack` folder when it is another one), as the real server does. The `--pack` one is
 the pack chosen for everyone. A person's `ui_pack` preference picks the pack their browser is served from the next
 page load on, as on the real server; `null` goes back to the `--pack` one, and an unknown id is `422`.
+
+Every answer names the build of the interface in `X-Sentry-Mate-Build`, as the real server does. `POST
+/__dev/new-build` (the dev server only) stands for a server update: from then on every answer names a new build, so a
+tab open across it loads its next page in full (`ui/tools/server-update.test.js`). A file under a build's address
+(`/_v/<build>/core/app.js`) is the file of that path now, as the real server answers a tab loaded before an update.
 
 ### Signing in
 
@@ -123,6 +131,7 @@ each piece's own seed and never stored, so a year of data answers in a few hundr
 | Integrations (MQTT settings, status, preview, test; outside connections) | done |
 | Integrations: Overview (every connection with made-up hourly counters for 7 days and the week's problems; see below) | done |
 | Integrations: Tesla (accounts, sign-in at Tesla with a pasted address, refresh token, cars, pause, poll setting, status; nothing leaves the dev server) | done |
+| Integrations: Supercharger invoices (made-up sessions on the Supercharger charges, list and CSV, zip, PDFs, the `invoices` blocks and their PATCH; see below) | done |
 | Server, settings and health (notices, maps, data health, rebuild, overlaps, storage) | done |
 | Import (resumable upload, check, car matching, import, report) | done |
 | Moving and first-run setup (claim, start fresh, move here, restore, move code, undo, export file) | done |
@@ -152,6 +161,19 @@ hour's count grows, `last_ok_ms` and the open problem's `duration_ms` move on, a
 
 A large fleet lists the CAN Bridge of the first 50 cars only (`MAX_CAR_ROWS`); `totals` still counts every car
 (the cars not listed from the fleet's cached state counts), so `--cars 200000` answers in about 0.15 s.
+
+## Supercharger invoices
+
+`mockapi/resources/invoices.py`. Every Supercharger charge of `c1` and `c2` that ended an hour or more before
+`--now-ms` has a made-up Tesla session (`tesla-1000101` on, oldest first) matched to it, at a made-up site
+("Made-up Supercharger, Hilltown", "Sample Supercharger, Rivermouth"; one name per place): the charging fee (billed
+kWh at a made-up rate, CAD on Maple's Ontario stops), an idle fee on every fifth session, a tiny made-up PDF (every
+ninth one's is still waiting: `pdf: false`, `404 no_pdf`). Two more sessions of the account's third car are not
+matched. A matched charge's cost is the session's total (`cost.source: "tesla_invoice"`, `cost_breakdown.mode` the
+same, one part per fee) unless an admin entered a cost (`applied: false`). Tesla invoices start on (the made-up
+admin turned them on; the real default is off), TeslaFi's off and with no sessions (`gives_pdfs: false`, a
+`note`). `PATCH /integrations/tesla` or `/teslafi` with `invoices` asks for the password again like `poll`; turning
+them off stops the checks (`next_check_ms` null) and keeps what was fetched. The zip writes `invoices-downloaded`.
 
 ## First-run set-up and moving
 
@@ -197,8 +219,10 @@ After a move or a restore the server has the made-up accounts (`admin`, `watch`,
 sends `two_step: "000000"`) answers the move code once. After `--move-peer-after-s` the made-up new server claims it:
 `copying` (10 s, round 1, then round 2), `paused` (2 s), `moved` (2 s: the server takes no changes, `409 moved`),
 `done`. `POST /api/v1/system/move/undo { password, confirm: true }` takes it back. `POST /api/v1/system/exports
-{ password }` prepares a 4 MB made-up export file in 3 s; its `url` downloads it (with `Range`), and it restores
-on a `--fresh` dev server.
+{ password }` prepares a 4 MB made-up export file in 3 s (counting 0.5 s, waiting 0.3 s, collecting 2.2 s, then its
+SHA-256 in 2 s more); its `url` downloads it (with `Range`), and it restores on a `--fresh` dev server. `--export
+slow` makes it collect 18 GB in 2 min, `--export stall` stops it at 40 % (`stalled` a minute later, for ever; cancel
+it with `DELETE`), `--export fail` fails it at 55 % with problem `no_space`.
 
 **A new certificate**: `POST /api/v1/network/certificate { password }` answers `{ names, sha256, upload_address }`
 with `localhost` and the saved host names and a made-up SHA-256 (a new one each time), which `/network` shows from
@@ -285,5 +309,7 @@ They start servers in-process on free ports (about 45 s for all). They cover:
 - determinism, a 200,000-car fleet paged under 200 ms a page, and the event stream (with `--rows-every-s` at its pace).
 - storage in detail and compaction (`test_system.py`): categories largest first that add up, idle at start, a pass that
   runs for a few reads and moves the logs into the day packs, a second pass with nothing left, a failed pass, admin only.
+- Supercharger invoices (`test_invoices.py`): the sessions, the cost they give a charge (an entered one wins), the
+  PDFs, the zip, the list and its CSV, the blocks and their PATCH with the password asked again, admin only.
 - the integrations overview (`test_overview.py`): its shape, admin only, problems newest first with one open, 24
   hourly entries ending at the current hour, values that move in place, the capped car rows of a large fleet.

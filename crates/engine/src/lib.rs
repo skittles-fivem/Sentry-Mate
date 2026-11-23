@@ -45,7 +45,9 @@
 pub mod compact;
 pub mod costs;
 pub mod firmware;
+pub mod full;
 pub mod importer;
+pub mod invoices;
 pub mod jobs;
 mod pipeline;
 pub use pipeline::NEW_CAR_NAME;
@@ -54,6 +56,7 @@ mod memo;
 pub mod placing;
 pub mod query;
 pub mod records;
+pub mod rehome;
 pub mod tesla_in;
 pub mod tmlocal_catchup;
 pub mod tz;
@@ -85,6 +88,8 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("the engine is not running (Engine::start was not called)")]
     NotStarted,
+    #[error("{0}")]
+    Other(String),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -120,6 +125,11 @@ pub struct Options {
     pub api_rebuild_ms: u64,
     /// How SMO's and the Tesla API's samples are made one ([`timeline::fuse`]).
     pub fuse: timeline::FuseParams,
+    /// While a car's stored logs are worked through (at the start, after a rebuild was asked for), the windows of
+    /// the timeline they change are rebuilt once per this many logs, joined where they meet, instead of after every
+    /// log, where that gives the same timeline (nothing stored yet at or after the logs, no API input: a first
+    /// start over a full store, a car rebuilt whole). `1`: always after every log, as a log that arrives alone gets.
+    pub window_batch: usize,
 }
 
 impl Default for Options {
@@ -134,6 +144,7 @@ impl Default for Options {
             default_time_zone: "UTC".into(),
             api_rebuild_ms: 30_000,
             fuse: timeline::FuseParams::default(),
+            window_batch: 64,
         }
     }
 }
@@ -262,6 +273,18 @@ pub(crate) struct Inner {
     pub(crate) compaction: Mutex<compact::Running>,
     pub(crate) compact_stop: std::sync::atomic::AtomicBool,
     pub(crate) compact_auto: std::sync::atomic::AtomicBool,
+    /// The full rebuild under way ([`full`]); its record's changes, one at a time; a test's failure point.
+    pub(crate) full: Mutex<full::Full>,
+    pub(crate) full_start: Mutex<()>,
+    pub(crate) full_fail_at: Mutex<Option<full::Phase>>,
+    pub(crate) full_crash_at: Mutex<Option<full::Phase>>,
+    pub(crate) full_auto: std::sync::atomic::AtomicBool,
+    /// The cars whose history was made with another decoding ([`Engine::version_stale`]).
+    pub(crate) version_stale: Mutex<std::collections::HashSet<CarId>>,
+    /// The invoice sessions as kept ([`invoices`]), while none changes; one writer at a time; bumped by each write.
+    pub(crate) invoice_all: Mutex<Option<Arc<std::collections::BTreeMap<String, invoices::Session>>>>,
+    pub(crate) invoice_write: Mutex<()>,
+    pub(crate) invoice_gen: AtomicU64,
 }
 
 /// A stretch of a car's history where one input's GPS fixes disagreed with another's of the same moments by far
@@ -281,7 +304,30 @@ fn input_words<S: serde::Serializer>(i: &model::Inputs, s: S) -> Result<S::Ok, S
     s.collect_seq(i.iter().map(model::Input::word))
 }
 
+fn gps_layout_key(car: CarId) -> String {
+    format!("car/{car}/gps-layout")
+}
+
 impl Engine {
+    /// The car's own layout of the Screenmate's GPS frame (0x04F on its internal bus), when one is set: its logs
+    /// are decoded with it instead of the DBC's.
+    pub fn gps_layout(&self, car: CarId) -> Result<Option<model::gps::GpsLayout>> {
+        Ok(records::get::<Option<model::gps::GpsLayout>>(&self.inner.db, records::NS, &gps_layout_key(car))?.flatten())
+    }
+
+    /// Sets (or with `None` drops) the car's own layout of the Screenmate's GPS frame. When it changes, a whole
+    /// rebuild of the car starts (its stored logs are decoded again with it) and is returned.
+    pub fn set_gps_layout(&self, car: CarId, layout: Option<model::gps::GpsLayout>) -> Result<Option<jobs::Job>> {
+        if layout.is_some_and(|l| !l.lat.valid() || !l.lon.valid() || l.accuracy.is_some_and(|a| !a.valid())) {
+            return Err(Error::Store("a GPS field does not fit in 8 bytes".into()));
+        }
+        if self.gps_layout(car)? == layout {
+            return Ok(None);
+        }
+        records::put(&self.inner.db, records::NS, &gps_layout_key(car), &layout)?;
+        Ok(Some(self.rebuild(Scope::car(car))?))
+    }
+
     /// The newest stretch of the car's history whose inputs' GPS fixes disagreed (since the server started).
     pub fn gps_disagreement(&self, car: CarId) -> Option<GpsDisagreement> {
         lock(&self.inner.gps_cross).get(&car).copied()
@@ -396,6 +442,15 @@ impl Engine {
                 compaction: Mutex::default(),
                 compact_stop: std::sync::atomic::AtomicBool::new(false),
                 compact_auto: std::sync::atomic::AtomicBool::new(false),
+                full: Mutex::default(),
+                full_start: Mutex::new(()),
+                full_fail_at: Mutex::new(None),
+                full_crash_at: Mutex::new(None),
+                full_auto: std::sync::atomic::AtomicBool::new(true),
+                version_stale: Mutex::default(),
+                invoice_all: Mutex::new(None),
+                invoice_write: Mutex::new(()),
+                invoice_gen: AtomicU64::new(0),
                 opts,
             }),
         }
@@ -500,7 +555,11 @@ impl Engine {
         *lock(&self.inner.handle) = Some(handle.clone());
         let engine = self.clone();
         handle.spawn(async move { engine.run(rx).await });
+        // the cars whose history was made with another decoding: held for a full rebuild, not redone in place
+        self.check_versions();
         self.send(Work::Reconcile { car: None });
+        // a full rebuild a restart cut off carries on
+        self.full_resume();
         // the days' pack readings, worked out once idle (and again now and then)
         handle.spawn(query::pack_logs::passes(self.clone()));
         Ok(())

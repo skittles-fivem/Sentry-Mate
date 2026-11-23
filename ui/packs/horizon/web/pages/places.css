@@ -52,6 +52,13 @@
 .pl-map-card { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); max-width: round(20rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); }
 .pl-map-card strong { font-weight: 600; overflow-wrap: anywhere; }
 .pl-sugg { margin-bottom: 0; }
+.pl-sugg .col-where .cell-text { max-width: round(16rem, var(--e)); }
+/* narrower tables: the saved places lose the circle column (it is in the name's title and on the place's page)
+   and Delete keeps its icon; the suggestions lose the centre (in the place's title) */
+.places-page .tbl-panel { container: places-list / inline-size; }
+@container places-list (max-width: 80rem) { :root:not([data-phone]) .places-page .col-circle { display: none; } }
+@container places-list (max-width: 66rem) { :root:not([data-phone]) .places-page .pl-del-word { display: none; } .places-page .col-name .cell-text { max-width: round(11rem, var(--e)); } }
+@container places-list (max-width: 60rem) { :root:not([data-phone]) .pl-sugg .col-pos { display: none; } .pl-sugg .col-where .cell-text { max-width: round(13rem, var(--e)); } }
 
 /* editor */
 .pl-head { margin-bottom: round(0.25rem, var(--e)); }
@@ -87,6 +94,10 @@
 .pl-rate .input[aria-invalid="true"] { border-color: var(--danger); }
 .pl-rule { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--surface-sunken); font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.5 * 1em), 2px); color: var(--text-2); }
 .pl-formula { font-family: var(--font-mono); font-size: max(0.8125rem, var(--fs-floor)); color: var(--text); overflow-wrap: anywhere; white-space: pre-wrap; }
+.pl-tier { grid-template-columns: minmax(0, 1.4fr) repeat(2, minmax(0, 1fr)) auto; }
+.pl-tier .pl-rate-x { grid-column: auto; grid-row: auto; }
+.pl-tier-range strong { font-weight: 600; color: var(--text); padding-block: round(0.5rem, var(--e)); }
+.pl-example { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); }
 
 .pl-match, .pl-effect, .pl-reprice { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); }
 .pl-rule-line { font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.5 * 1em), 2px); color: var(--text-2); }
@@ -167,6 +178,9 @@
 :root[data-phone] .pl-rate { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 :root[data-phone] .pl-rate-name, :root[data-phone] .pl-rate-days { grid-column: 1 / -1; }
 :root[data-phone] .pl-rate-x { grid-column: 1 / -1; grid-row: auto; justify-self: end; }
+:root[data-phone] .pl-tier { grid-template-columns: repeat(2, minmax(0, 1fr)) auto; }
+:root[data-phone] .pl-tier-range { grid-column: 1 / -1; }
+:root[data-phone] .pl-tier .pl-rate-x { grid-column: auto; justify-self: end; }
 :root[data-phone] .pl-actions-bar > .btn { flex: 1 1 auto; }
 :root[data-phone] .pl-handle { width: round(1.5rem, var(--e)); height: round(1.5rem, var(--e)); }
 :root[data-phone] .pl-handle--edge { width: round(1.25rem, var(--e)); height: round(1.25rem, var(--e)); }

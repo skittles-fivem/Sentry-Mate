@@ -22,6 +22,8 @@ import { field, setFieldError, choice, switchField } from '../core/form.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
 import { zoneLabel, zoneShort, count } from '../core/format.js';
 import { remount } from '../core/router.js';
+import { deviceName } from '../shared/devices.js';
+import { deviceText, renameButton } from './device-name.js';
 
 export const id = 'settings-cars';
 export const css = true;
@@ -54,6 +56,12 @@ function setting(name, desc, control, { cover = null, cls = null } = {}) {
   return h('div', { class: ['sc-setting', cls], cover },
     h('div', { class: 'sc-setting-text' }, h('h3', { class: 'sc-setting-name' }, name), desc ? h('p', { class: 'sc-setting-desc' }, desc) : null),
     h('div', { class: 'sc-setting-control' }, control));
+}
+
+/** The currency a car's charges cost most in (the Charges list's totals), or null. */
+function topCurrency(list) {
+  const by = (list && list.totals && list.totals.cost_by_currency) || [];
+  return by.length ? by.reduce((a, b) => (b.amount > a.amount ? b : a)).currency : null;
 }
 
 function crumbs(car) {
@@ -253,16 +261,17 @@ function waitingTable(ctx, { car = null, onChange }) {
   return dataTable(ctx, {
     path: 'can-keys', params: { assigned: 'false' }, itemName: ['key waiting', 'keys waiting'], label: 'CAN Bridge keys waiting for a car',
     columns: [
-      { key: 'key', label: 'Key', th: true, cell: (k) => [h('span', { class: 'cell-main mono' }, k.key), h('span', { class: 'cell-sub' }, k.device || 'Logger not named')], value: (k) => k.key },
+      { key: 'key', label: 'Key', th: true, cell: (k) => [h('span', { class: 'cell-main mono' }, k.key), deviceText(k, 'cell-sub')], value: (k) => k.key },
       { key: 'first', label: 'First upload', cell: (k) => dateCell(k.first_seen_ms, ctx.tz), value: (k) => k.first_seen_ms },
       { key: 'last', label: 'Last upload', cell: (k) => dateCell(k.last_upload_ms, ctx.tz, true), value: (k) => k.last_upload_ms },
       { key: 'waiting', label: 'Logs kept', num: true, cell: (k) => count(k.logs_waiting || 0, 'log'), value: (k) => k.logs_waiting, hint: 'Logs it uploaded, kept until the key is tied to a car.' },
       { key: 'do', label: 'Tie to', cell: (k) => {
-        if (car) return button(`Tie to ${car.name}`, { onclick: () => assign(k, car.id, car.name) });
-        return button('Choose the car…', { iconName: 'search', cls: 'button-small', onclick: async () => {
-          const c = await pickCar(ctx, { title: `Tie key ${k.key} to a car`, text: `Find the car this logger is in (${k.device || 'logger not named'}). Every car is searched, however many there are.` });
+        const rename = renameButton(ctx, k, () => onChange?.());
+        if (car) return h('span', { class: 'dev-acts' }, button(`Tie to ${car.name}`, { onclick: () => assign(k, car.id, car.name) }), rename);
+        return h('span', { class: 'dev-acts' }, button('Choose the car…', { iconName: 'search', cls: 'button-small', onclick: async () => {
+          const c = await pickCar(ctx, { title: `Tie key ${k.key} to a car`, text: `Find the car this logger is in (${deviceName(k).text}). Every car is searched, however many there are.` });
           if (c) await assign(k, c.id, c.name || c.id);
-        } });
+        } }), rename);
       } },
     ],
     empty: () => empty({ title: 'No key is waiting.', text: 'Every CAN Bridge that uploads belongs to a car.' }),
@@ -523,10 +532,13 @@ async function mountCar(ctx) {
   const admin = ctx.me && ctx.me.role === 'admin';
   let car = ctx.car;
   const carPath = api.apiPath`cars/${car.id}`;
-  const [settings0, battery] = await Promise.all([
+  const [settings0, battery, chargeList] = await Promise.all([
     ctx.api.get(api.apiPath`cars/${car.id}/settings`),
     ctx.api.get(api.apiPath`cars/${car.id}/battery`).catch(() => null),
+    // the currency for an empty default price: the one the car's charges cost most in
+    ctx.api.get(api.apiPath`cars/${car.id}/charges`, { limit: 1 }).catch(() => null),
   ]);
+  const priceCur = topCurrency(chargeList);
   let settings = settings0;
   let carVersion = car.version;
   const ro = !admin;
@@ -692,7 +704,7 @@ async function mountCar(ctx) {
       columns: [
         { key: 'id', label: 'Token', th: true, cell: (t) => [h('span', { class: 'cell-main mono' }, t.id), h('span', { class: 'cell-sub' }, `made ${formatDate(t.created_ms, ctx.tz, { weekday: false, now: api.now() })}`)] },
         { key: 'status', label: 'State', cell: (t) => (t.revoked ? chip('Revoked') : t.key || t.last_upload_ms ? chip('In use', { kind: 'on' }) : chip('Not used yet', { kind: 'warn' })) },
-        { key: 'key', label: 'Tied to key', cell: (t) => (t.key ? h('span', { class: 'mono' }, t.key) : h('span', { class: 'cell-sub' }, t.revoked ? '—' : 'ties itself on the first upload')) },
+        { key: 'key', label: 'Tied to key', cell: (t) => (t.key ? [h('span', { class: 'cell-main mono' }, t.key), deviceText(t, 'cell-sub')] : h('span', { class: 'cell-sub' }, t.revoked ? '—' : 'ties itself on the first upload')) },
         { key: 'last', label: 'Last upload', cell: (t) => dateCell(t.last_upload_ms, ctx.tz, true) },
         { key: 'do', label: '', cell: (t) => (t.revoked ? '' : button('Revoke', { kind: 'quiet', cls: 'button-small', onclick: () => revoke(t) })) },
       ],
@@ -701,12 +713,12 @@ async function mountCar(ctx) {
     const keys = dataTable(ctx, {
       path: 'can-keys', params: { car: car.id }, itemName: ['key', 'keys'], label: `CAN Bridge keys tied to ${car.name}`,
       columns: [
-        { key: 'key', label: 'Key', th: true, cell: (k) => [h('span', { class: 'cell-main mono' }, k.key), h('span', { class: 'cell-sub' }, k.device || 'Logger not named')] },
+        { key: 'key', label: 'Key', th: true, cell: (k) => [h('span', { class: 'cell-main mono' }, k.key), deviceText(k, 'cell-sub')] },
         { key: 'first', label: 'First upload', cell: (k) => dateCell(k.first_seen_ms, ctx.tz) },
         { key: 'last', label: 'Last upload', cell: (k) => dateCell(k.last_upload_ms, ctx.tz, true) },
         { key: 'waiting', label: 'Logs waiting', num: true, cell: (k) => count(k.logs_waiting || 0, 'log'), hint: 'Logs waiting for their signature check.' },
         { key: 'pref', label: 'Preferred', cell: (k) => (k.preferred ? flag('Preferred') : button('Make preferred', { cls: 'button-small', onclick: () => prefer(k) })) },
-        { key: 'do', label: '', cell: (k) => button('Untie', { cls: 'button-small', onclick: () => untie(k) }) },
+        { key: 'do', label: '', cell: (k) => h('span', { class: 'dev-acts' }, renameButton(ctx, k, () => keys.reload()), button('Untie', { cls: 'button-small', onclick: () => untie(k) })) },
       ],
       empty: () => empty({ title: 'No CAN Bridge key is tied to this car yet.', text: 'A key ties itself when the bridge first uploads with one of this car’s tokens, or tie a waiting key below.' }),
     });
@@ -971,6 +983,37 @@ async function mountCar(ctx) {
     ranges.forEach((r, i) => { const p = rowProblem(r); if (p && fsNote && fsNote[0] === 'held') setFieldError(r.from_date ? fsEls[i].to : fsEls[i].from, p); });
   }
   drawRanges();
+
+  /* ---------- charging: the default price per kWh ({ value, currency } or null), for Statistics' estimates */
+  const dpBox = h('div', { class: 'sc-stack' });
+  function drawPrice() {
+    const p = settings.default_price_per_kwh;
+    const val = field({ label: 'Price per kWh', name: 'dp-value', type: 'number', value: p ? p.value : '', attrs: { min: '0', max: '10', step: 'any', inputmode: 'decimal', placeholder: '0.15', disabled: ro } });
+    const cur = field({ label: 'Currency', name: 'dp-currency', value: (p && p.currency) || priceCur || '', cls: 'sc-dp-cur', attrs: { maxlength: '3', autocomplete: 'off', spellcheck: 'false', placeholder: 'USD', disabled: ro } });
+    const showErrs = (f) => {
+      setFieldError(val, f['default_price_per_kwh.value'] || null);
+      setFieldError(cur, f['default_price_per_kwh.currency'] || f.default_price_per_kwh || null);
+    };
+    const put = async (body, okText) => {
+      try { await patchSettings({ default_price_per_kwh: body }); ctx.flash(okText); drawPrice(); syncRanges(); } catch (err) {
+        if (err && err.code === 'conflict') { drawPrice(); ctx.flash('Not saved: someone else changed the default price at the same time. It shows theirs now; make yours again if it is still needed.', { kind: 'error' }); return; }
+        if (err.fields) showErrs(err.fields); else ctx.flash(`Not saved: ${err.message}`, { kind: 'error' });
+      }
+    };
+    const save = () => {
+      const raw = val.control.value.trim(), n = Number(raw), c = cur.control.value.trim().toUpperCase();
+      const bad = {};
+      if (raw === '' || !Number.isFinite(n) || n < 0 || n > 10) bad['default_price_per_kwh.value'] = 'A price from 0 to 10.';
+      if (!/^[A-Z]{3}$/.test(c)) bad['default_price_per_kwh.currency'] = 'Three letters, such as USD or EUR.';
+      showErrs(bad);
+      if (!Object.keys(bad).length) put({ value: n, currency: c }, `Saved: the default price is ${n} ${c} per kWh.`);
+    };
+    for (const f of [val, cur]) f.control.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
+    replace(dpBox, h('div', { class: 'sc-dp-row' }, val, cur,
+      ro ? null : h('div', { class: 'sc-dp-acts' }, button('Save', { cls: 'button-small', onclick: save }),
+        p ? button('Clear', { cls: 'button-small', onclick: () => put(null, 'Saved: no default price.') }) : null)));
+  }
+  drawPrice();
   const chargingSection = section({ title: 'Charging', id: 'sc-chg', cover: 'web.settings.car.free-supercharging' },
     setting('Free Supercharging',
       'Dated ranges, in the car’s time zone. A Supercharger session that starts inside one gets a cost of zero, marked “free Supercharging”; sessions outside keep their price, so turning it off later does not rewrite history.',
@@ -980,6 +1023,7 @@ async function mountCar(ctx) {
         fromWords(access) ? h('span', { class: 'sc-quiet' }, ` (${fromWords(access)})`) : null,
         '. The car does not say since when, so the dates are yours.'),
         fsBox)),
+    setting('Default price per kWh', 'Charges without a price are estimated at it on Statistics, shown apart as estimated.', dpBox),
     h('p', { class: 'sc-more' }, h('a', { class: 'link-arrow', href: ctx.link('charges') }, 'Charges and their cost', icon('arrowRight'))));
 
   /* ---------- put it together */

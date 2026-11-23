@@ -26,6 +26,8 @@
 //!   keys KEY                      the signing keys a car key's logs name, and which one is trusted
 //!   keys trust KEY SIGNING-KEY    trust another signing key for a car key (asks first; --yes doesn't)
 //!   health                        exit 0 when the upload port answers, or a move comes in (for Docker)
+//!   gps-layout --car C [--days N] where the Screenmate's GPS frame keeps latitude and longitude, from the stored
+//!                                 logs and the other inputs' positions (only reads; prints no positions)
 //!
 //! A new server can also move in with no shell at all: `SENTRY_MATE_MOVE_FROM` and `SENTRY_MATE_MOVE_CODE` in its
 //! environment, and it brings the data in as it starts (`docs/plans/move-server.md`).
@@ -35,6 +37,7 @@ mod decode;
 #[cfg(test)]
 mod e2e;
 mod folders;
+mod gps_layout;
 #[cfg(any(test, feature = "dev-seed"))]
 mod history;
 mod keys;
@@ -48,6 +51,8 @@ mod seed;
 mod site;
 #[cfg(test)]
 mod testkit;
+#[cfg(test)]
+mod window_batch;
 
 use clap::{Parser, Subcommand};
 use ingest::server::{Identity, serve_tls, tls_dir};
@@ -162,6 +167,18 @@ enum Cmd {
     },
     /// Exit 0 when the upload port and the web port accept connections (or a move comes in, while it copies).
     Health,
+    /// Where the Screenmate's own GPS frame (0x04F on its internal bus) keeps latitude and longitude, worked out from
+    /// a car's stored logs and the positions its other inputs (Tesla API, TeslaFi, TeslaMate) reported at the same
+    /// moments. Prints layouts and errors in metres only (no positions or times), so it can be passed on. Runs beside
+    /// the server and only reads: `docker exec <container> /sentry-mate gps-layout --car c1`.
+    GpsLayout {
+        /// The car, as its pages' address names it (`c1`).
+        #[arg(long)]
+        car: String,
+        /// How many days back from now to read.
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=366))]
+        days: u32,
+    },
     /// Development only (not in the help, and only in a build with the `dev-seed` feature): made-up cars for trying
     /// the server without anyone's car.
     #[cfg(feature = "dev-seed")]
@@ -424,9 +441,11 @@ fn needs(cmd: &Cmd) -> Option<(bool, bool)> {
             Some((true, true))
         }
         Cmd::Move { cmd: MoveCmd::Status } => Some((false, false)),
-        Cmd::Log { cmd: LogCmd::Export { .. } | LogCmd::Decode { .. } } | Cmd::Chain { .. } | Cmd::Keys { .. } => {
-            Some((false, false))
-        }
+        // (the GPS layout fit only reads, pausing the writes a moment for each read of the db)
+        Cmd::Log { cmd: LogCmd::Export { .. } | LogCmd::Decode { .. } }
+        | Cmd::Chain { .. }
+        | Cmd::Keys { .. }
+        | Cmd::GpsLayout { .. } => Some((false, false)),
         #[cfg(feature = "dev-seed")]
         Cmd::Dev { cmd: DevCmd::Seed { .. } | DevCmd::History { .. } | DevCmd::Storage { .. } } => Some((true, false)),
         Cmd::Log { .. } | Cmd::Health => None,
@@ -535,6 +554,14 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
             let judge = Judge::new(store.clone());
             let out = std::io::stdout();
             return decode::run(&store, &judge, &name, any, model, &mut out.lock(), &mut std::io::stderr()).await;
+        }
+        Cmd::GpsLayout { car, days } => {
+            let Some(car) = gps_layout::parse_car(&car) else {
+                eprintln!("--car: a car as its pages' address names it, like c1");
+                return Ok(ExitCode::FAILURE);
+            };
+            let out = std::io::stdout();
+            return gps_layout::run(&data, &keys, car, days, &mut out.lock(), &mut std::io::stderr()).await;
         }
         Cmd::Log { cmd: LogCmd::Export { name } } => {
             let store = Store::new(can_dir(&data), Arc::new(Vault::open(&data, &keys)?));
@@ -1630,6 +1657,8 @@ async fn start_web(
     // a CAN export's logs are stored through the data folder's gate, as uploads are
     if let Ok(im) = app.service::<web::resources::imports::Imports>() {
         im.set_gate(gate.clone());
+        // imported rows an older server put on the wrong car are moved, once
+        web::resources::imports::spawn_rehome(&app);
     }
     let listener = tokio::net::TcpListener::bind((net.bind.as_str(), net.web)).await?;
     tracing::info!("web UI on https://{}:{}/ (TLS 1.3), the same certificate", net.bind, net.web);
@@ -1642,11 +1671,15 @@ async fn start_web(
         site::forward(&engine.engine, app.events.clone()),
         site::spawn_upkeep(app.clone(), announced),
         web::resources::mqtt::spawn(app.clone()),
+        // the live figures of the open pages (jobs, health, connections, storage) onto the live stream
+        web::live::spawn(app.clone()),
     ];
     // the logs the server lost are looked for after the start and once a day (not after a move away: no uploads)
     let mut tasks = tasks;
     if !moved {
         tasks.push(site::spawn_missing_scan(app.clone(), gate.clone()));
+        // a full rebuild's end into the audit log, and the one a new server version calls for started
+        tasks.push(web::resources::full_rebuild::spawn_watch(app.clone()));
     }
     // the Tesla API input reads cars only on a server that serves its data (not after a move away), and only for an
     // account an admin added: with none, nothing is started and nothing connects to Tesla

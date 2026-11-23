@@ -110,11 +110,39 @@ test('links carry the car and the chosen period; the car switcher keeps the page
   S.navigate(`/cars/c1/drives/${BIG}?preset=30d`);
   assert.equal(S.linkForCar('c2'), '/cars/c2/drives?preset=30d', 'a drive belongs to one car: go to the list');
   S.navigate('/places');
-  assert.equal(S.linkForCar('c2'), '/cars/c2?preset=30d', 'a page without a car goes to the overview, the tab period kept');
-  assert.equal(S.linkTo('car'), '/cars/c1?preset=30d', 'the last car is used when the page has none');
+  assert.equal(S.linkForCar('c2'), '/cars/c2', 'a page without a car goes to the overview, which has its own period');
+  assert.equal(S.linkTo('car'), '/cars/c1', 'the last car is used when the page has none');
   S.forgetCar('c1');
   S.store.set({ car: null });
   assert.equal(S.linkTo('drives'), '/', 'no car known: Fleet');
+});
+
+test('the car overview has its own period: none carried in, none remembered, deep links kept', () => {
+  // a custom period picked on a list page stays with the tab for the list pages only
+  S.navigate('/cars/c1/drives');
+  S.setPeriod({ from: 1794097101999, to: 1794108388476 });
+  assert.equal(S.linkTo('car'), '/cars/c1', 'no period carried into the overview');
+  assert.equal(S.linkTo('car', { car: 'c2' }), '/cars/c2');
+  // opening the overview without one: its own default, not the tab's custom period
+  const o = S.navigate('/cars/c1');
+  assert.deepEqual([o.page, o.period, o.periodFromUrl], ['car', null, false]);
+  // links from the overview carry the tab's period, not the overview's
+  assert.equal(S.linkTo('charges'), '/cars/c1/charges?from=1794097101999&to=1794108388476');
+  assert.equal(S.linkForCar('c2'), '/cars/c2');
+  // a period picked on the overview on this visit: in its address, not in the tab's memory
+  historyLog.length = 0;
+  const p = S.setPeriod('7d');
+  assert.deepEqual(historyLog.pop(), ['replace', '/cars/c1?preset=7d']);
+  assert.deepEqual([p.period, p.periodFromUrl], [{ preset: '7d' }, true]);
+  assert.deepEqual(S.tabPeriod(), { from: 1794097101999, to: 1794108388476 });
+  assert.equal(S.linkTo('drives'), '/cars/c1/drives?from=1794097101999&to=1794108388476');
+  // an explicit deep link still opens on its period, and is not remembered for the other pages
+  const d = S.navigate('/cars/c1?from=1000&to=2000');
+  assert.deepEqual([d.period, d.periodFromUrl], [{ from: 1000, to: 2000 }, true]);
+  assert.deepEqual(S.tabPeriod(), { from: 1794097101999, to: 1794108388476 });
+  const t = S.navigate('/cars/c1/timeline?preset=24h');
+  assert.deepEqual(t.period, { preset: '24h' });
+  assert.equal(S.navigate('/cars/c1').period, null, 'back on the overview: its own default again');
 });
 
 test('setPeriod and setQuery write the address without a navigation', () => {

@@ -88,16 +88,17 @@ class Settings(ServerCase):
         m = self.c.get("/api/v1/maps/config")
         self.assertEqual(m["tiles"]["mode"], "online")
         self.assertIn("{z}", m["tiles"]["online_template"])
-        # the ready-made sources, satellite (the default) first, each with its credit, zoom and terms
-        self.assertEqual(m["tiles"]["presets"][0]["id"], "satellite")
+        # the ready-made sources (the street map, the default, and satellite), each with its credit, zoom and terms
+        self.assertEqual(m["tiles"]["preset"], "osm")
+        self.assertTrue({"osm", "satellite"} <= {p["id"] for p in m["tiles"]["presets"]})
         for p in m["tiles"]["presets"]:
             self.assertEqual(set(p), {"id", "name", "short", "kind", "url", "attribution", "max_zoom", "terms",
                                       "overlays", "region"})
         # online tiles: the pages send their origin as Referer (OpenStreetMap blocks tiles without one), the API none
         st, hd, _ = self.c.request("GET", "/")
         self.assertEqual(hd["referrer-policy"], "strict-origin")
-        # the satellite default and the OpenStreetMap style viewers may switch to
-        self.assertIn("img-src 'self' data: blob: https://server.arcgisonline.com https://tile.openstreetmap.org;",
+        # the OpenStreetMap default and the satellite style viewers may switch to
+        self.assertIn("img-src 'self' data: blob: https://tile.openstreetmap.org https://server.arcgisonline.com;",
                       hd["content-security-policy"])
         st, hd, _ = self.c.request("GET", "/api/v1/me")
         self.assertEqual(hd["referrer-policy"], "no-referrer")
@@ -338,7 +339,11 @@ class StorageDetail(ServerCase):
         self.assertEqual(d["free_bytes"], self.c.get("/api/v1/system/storage")["free_bytes"])
         comp = d["compaction"]
         self.assertEqual(set(comp), {"status", "automatic", "started_ms", "finished_ms", "step", "done", "total",
-                                     "last_saved_bytes", "saved_bytes", "error"})
+                                     "last_saved_bytes", "saved_bytes", "error", "phase", "step_number", "steps",
+                                     "unit", "pass_saved_bytes", "rate_per_s", "eta_ms", "progress_ms", "stalled",
+                                     "unit_errors", "last_unit_error"})
+        self.assertEqual((comp["phase"], comp["step_number"], comp["steps"], comp["pass_saved_bytes"],
+                          comp["eta_ms"], comp["stalled"], comp["unit_errors"]), (None, None, 3, None, None, False, 0))
         # idle on the first load, and reading it again changes nothing (the pixel checks rely on it)
         self.assertEqual(comp["status"], "idle")
         self.assertIs(comp["automatic"], True)
@@ -357,6 +362,8 @@ class StorageDetail(ServerCase):
         self.assertEqual(set(r), {"compaction"})
         run = r["compaction"]
         self.assertEqual((run["status"], run["step"], run["done"], run["total"]), ("running", "logs", 0, 0))
+        self.assertEqual((run["phase"], run["step_number"], run["unit"], run["pass_saved_bytes"], run["progress_ms"],
+                          run["rate_per_s"], run["eta_ms"], run["stalled"]), ("counting", 1, "days", 0, NOW, None, None, False))
         self.assertEqual(run["started_ms"], NOW)
         # a second ask while it runs starts no second pass
         again = self.c.json("POST", "/api/v1/system/storage/compact", expect=202)["compaction"]
@@ -364,7 +371,7 @@ class StorageDetail(ServerCase):
         log = [x for x in self.c.get("/api/v1/audit?limit=5")["items"] if x["action"] == "storage-compacted"]
         self.assertEqual(len(log), 1, "the pass that started is in the audit log, once")
         self.assertEqual((log[0]["account"], log[0]["target"], log[0]["group"]), ("admin", "server:storage", "settings"))
-        seen, d = [], None
+        seen, d, saved_so_far = [], None, 0
         for _ in range(12):
             d = self.detail()
             comp = d["compaction"]
@@ -374,11 +381,22 @@ class StorageDetail(ServerCase):
             self.assertLessEqual(comp["done"], comp["total"])
             self.assertGreater(comp["total"], 0)
             self.assertEqual(d["categories"], before["categories"], "nothing moves until the pass is done")
+            self.assertEqual(comp["phase"], "packing")
+            self.assertEqual(comp["step_number"], ("logs", "series", "records").index(comp["step"]) + 1)
+            self.assertEqual(comp["unit"], "records" if comp["step"] == "records" else "days")
+            self.assertGreater(comp["rate_per_s"], 0)
+            self.assertGreaterEqual(comp["eta_ms"], 0)
+            self.assertLessEqual(comp["progress_ms"], NOW)
+            self.assertFalse(comp["stalled"])
+            self.assertGreaterEqual(comp["pass_saved_bytes"], saved_so_far)
+            saved_so_far = comp["pass_saved_bytes"]
             seen.append(comp["step"])
         self.assertEqual(seen, ["logs", "logs", "series", "records"])
         comp = d["compaction"]
         self.assertEqual(comp["status"], "idle")
         self.assertEqual(comp["finished_ms"], NOW)
+        self.assertEqual((comp["phase"], comp["pass_saved_bytes"], comp["eta_ms"]), (None, None, None))
+        self.assertGreater(saved_so_far, 0)
         after = {c["key"]: c for c in d["categories"]}
         # logs and sidecars as uploaded went into the day packs, and a few categories shrank
         for key in ("logs.raw", "logs.sidecars", "series.can.snapshots", "kv.engine", "kv.day-parts"):
@@ -417,6 +435,11 @@ class StorageDetail(ServerCase):
         self.assertEqual((comp["status"], comp["error"]), ("failed", "The disk is full."))
         run = self.c.json("POST", "/api/v1/system/storage/compact", expect=202)["compaction"]
         self.assertEqual((run["status"], run["error"]), ("running", None))
+        # a pass with no progress for two minutes says it is stalled
+        with self.server.app.store.lock:
+            self.server.app.store.compaction["progress_ms"] = NOW - 10 * 60_000
+        r = self.c.json("POST", "/api/v1/system/storage/compact", expect=202)["compaction"]
+        self.assertIs(r["stalled"], True)
 
 
 class BigFleetSystem(ServerCase):
@@ -521,6 +544,40 @@ class ReleaseCheck(ServerCase):
         self.c.json("PATCH", "/api/v1/settings", {"version": v, "release_check": {"enabled": False}})
         r = self.c.get("/api/v1/release")
         self.assertEqual((r["status"], r["checked_ms"]), ("off", None))
+
+
+class ServerUpdatesCard(ServerCase):
+    """What Settings: Server and access's Server updates card reads (GET /about `build`, GET /release) in each state
+    of --release-check it is shown in: check off, update available, up to date, check failed."""
+
+    def state(self, result, on=True):
+        st = self.server.app.store
+        v = self.c.get("/api/v1/settings")["version"]
+        self.c.json("PATCH", "/api/v1/settings", {"version": v, "release_check": {"enabled": on}})
+        st.release_result = result
+        st.release_checked_ms = NOW - 2 * 3600 * 1000 if on else None
+        return self.c.get("/api/v1/release")
+
+    def test_states(self):
+        b = self.c.get("/api/v1/about")["build"]
+        # this build: version, number and when it was built, the same in /about and in /release's `current`
+        self.assertEqual((b["version"], b["number"], b["dev"]), ("0.1.0", 41, False))
+        self.assertEqual(b["built_ms"], NOW - 2 * DAY)
+        r = self.state("newer", on=False)
+        self.assertEqual((r["enabled"], r["status"], r["checked_ms"], r["newest"]), (False, "off", None, None))
+        self.assertEqual((r["current"]["number"], r["current"]["built_ms"]), (b["number"], b["built_ms"]))
+        r = self.state("newer")
+        self.assertEqual((r["status"], r["checked_ms"], r["newest"]["build"]), ("newer", NOW - 2 * 3600 * 1000, 42))
+        self.assertGreater(r["newest"]["date_ms"], b["built_ms"])
+        r = self.state("up_to_date")
+        self.assertEqual((r["status"], r["newest"]["build"], r["newest"]["date_ms"]), ("up_to_date", 41, b["built_ms"]))
+        r = self.state("error")
+        self.assertEqual((r["status"], r["newest"]), ("error", None))
+        self.assertTrue(r["error"]["message"])
+        # Check now answers with the same object; while off it is refused with the code the card words
+        self.assertEqual(self.c.json("POST", "/api/v1/release/check", {})["status"], "error")
+        self.state("newer", on=False)
+        self.c.error("POST", "/api/v1/release/check", 409, "release_check_off", body={})
 
 
 class ReleaseCheckWatcher(ServerCase):

@@ -2,7 +2,7 @@
 // (shared/maptiles.js): GET /api/v1/maps/config -> the offline map file Sentry Mate serves (raster, or a
 // Protomaps vector file drawn with a plain style); the online source the owner turned on (only then does
 // the browser ask an outside server); otherwise no tiles: the map shows the track and markers on a plain
-// background under a "No map tiles yet" note (for an admin, a one-click satellite map switch). Tiles that
+// background under a "No map tiles yet" note (for an admin, a one-click online map switch). Tiles that
 // fail show a short note with the cause. In the dark theme raster tiles are dimmed (never inverted, so
 // streets, labels and water stay readable) unless the person chose original colours; satellite photos are
 // never dimmed, and the page's lines, outlines and markers get a dark halo over them. An interactive map
@@ -16,7 +16,7 @@ import * as api from '../shared/api.js';
 import { h, cssVar, esc, styleSheet } from '../shared/dom.js';
 import { rpx, onChange, onTheme, getTheme } from './display.js';
 import { getPrefs, onPrefs } from './prefs.js';
-import { tileChoice, rasterPaint, dimmed, mapColors, tileSources, tileLayers, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles } from '../shared/maptiles.js';
+import { tileChoice, rasterPaint, dimmed, mapColors, tileSources, tileLayers, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles, sharpZoom } from '../shared/maptiles.js';
 
 let mlLoad = null;
 /**
@@ -98,7 +98,8 @@ export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bo
   watchTilePolicy(src.template && !src.offline ? src.template : null);
   if (!ctx.alive()) return null;
   const map = new ml.Map({
-    container, style: style(src), center, zoom, attributionControl: false, interactive,
+    // never opens deeper than the tiles are sharp (the satellite photos end sooner than the map)
+    container, style: style(src), center, zoom: Math.min(zoom, sharpZoom(src)), attributionControl: false, interactive,
     cooperativeGestures: false, dragRotate: false, pitchWithRotate: false, fadeDuration: 0, refreshExpiredTiles: false,
     maxZoom: Math.max(src.maxZoom, 18),
     ...(bounds ? { bounds } : {}),

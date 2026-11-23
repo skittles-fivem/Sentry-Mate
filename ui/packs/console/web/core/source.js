@@ -8,6 +8,7 @@
 //   src(row)                  '[smo+api]' in the input colours, the full line as its title (tables, tight lines)
 //   src(row, { full: true })  '[smo+api] data from SMO and the Tesla API' (detail pages, chart heads)
 //   srcText(row)              the line as text (CSV, titles)
+//   rowTitle(row)             a list row's hover title: the line, plus why its energy is estimated
 //   est(row)                  '[est]' when the row's energy is estimated (Tesla API data alone), else null
 //   inputsLine(inputs)        the car's live inputs: 'live inputs  [smo] 1 min ago  [api] 2 min ago  [tfi] ...'
 //   via(value)                '[api]' after a live value the Tesla API sent ({ value, at_ms, sources }), else null
@@ -76,6 +77,13 @@ export const isEstimated = (r) => !!r && r.energy_basis === 'estimated';
 export const EST_WHY = 'Only the Tesla API saw this: its power readings (every few seconds to a minute) are summed, so the energy is estimated.';
 /** '[est]' for a row whose energy is an estimate, with why in its title. */
 export const est = (r) => (isEstimated(r) ? h('span', { class: 'tag tag--warn src-est', title: apiOnly(r) ? EST_WHY : 'This energy is estimated, not measured.' }, '[est]') : null);
+
+/** A list row's hover title: where its data came from, and why its energy is estimated (list rows show no marks). */
+export function rowTitle(r) {
+  const line = srcText(r);
+  const e = isEstimated(r) ? (apiOnly(r) ? `Energy is estimated: ${EST_WHY.charAt(0).toLowerCase()}${EST_WHY.slice(1)}` : 'Energy is estimated, not measured.') : null;
+  return [line ? `${line}.` : null, e].filter(Boolean).join(' ') || null;
+}
 
 /** '[api]' after a live value that came from an input other than SMO. */
 const SHOW_VIA = false;

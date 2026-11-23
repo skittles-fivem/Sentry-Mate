@@ -39,7 +39,7 @@ import { field, form } from '../core/form.js';
 import { flash } from '../core/flash.js';
 import { isAdmin } from '../core/prefs.js';
 import { q, DASH } from '../core/fmt.js';
-import { srcMark, hasKind } from '../core/source.js';
+import { srcTitle, hasKind } from '../core/source.js';
 
 export const id = 'software';
 export const css = true;
@@ -182,10 +182,10 @@ export async function mount(ctx) {
   function versionCell(r) {
     const src = SOURCE[r.version_source];
     const main = r.version
-      ? h('span', { class: 'sw-ver' }, notesOn && VERSION_RX.test(r.version)
+      // where the version came from is the title, not a tag in the row
+      ? h('span', { class: 'sw-ver', title: src ? `${src[2]}. ${src[1]}` : null }, notesOn && VERSION_RX.test(r.version)
         ? h('a', { class: 'link', href: notesHref(r.version), target: '_blank', rel: 'noopener noreferrer external', title: 'Release notes of this version on an outside site (opens in a new tab)' }, r.version, ' ', icon('ext', 'ico--sm'))
-        : r.version,
-      src ? tag(src[0], 'plain') : null)
+        : r.version)
       : h('span', { class: 'sw-ver is-unknown' }, r.detected_by === 'fingerprint' ? 'Tesla update installed' : 'Build changed', tag(r.detected_by === 'fingerprint' ? 'Not named yet' : 'Version not known', 'warm'));
     if (r.detected_by === 'fingerprint') {
       return h('span', { class: 'cell-text' }, main,
@@ -212,7 +212,8 @@ export async function mount(ctx) {
       key: 'duration', label: 'Took', num: true, cover: 'updates.table.duration', title: 'From the start of the update to its end, from the car’s own update status when recorded.',
       render: (r) => (r.end_ms == null
         ? h('span', { class: 'cell-text' }, pill('Installing', { tone: 'warm' }), h('span', { class: 'sub' }, `${formatDuration(r.duration_ms)} so far`))
-        : h('span', { class: 'cell-text' }, formatDuration(r.duration_ms), h('span', { class: 'sub' }, `ended ${formatTime(r.end_ms, tz)}`))),
+        : r.readings_gap ? h('span', { class: 'cell-text', title: 'No fingerprint readings for a day or more before the new ones: when it was installed in there is not known' }, h('span', { class: 'faint' }, 'not known'), h('span', { class: 'sub' }, `seen ${formatTime(r.end_ms, tz)}`))
+          : h('span', { class: 'cell-text' }, formatDuration(r.duration_ms), h('span', { class: 'sub' }, `ended ${formatTime(r.end_ms, tz)}`))),
       csv: { label: 'Took (minutes)', value: (r) => (r.duration_ms == null ? '' : Math.round(r.duration_ms / 6000) / 10) },
     },
     {
@@ -230,7 +231,8 @@ export async function mount(ctx) {
     { key: 'vsource', label: 'Version from', hidden: true, csv: { label: 'Version from', value: (r) => (SOURCE[r.version_source] ? SOURCE[r.version_source][0] : '') } },
     {
       key: 'source', label: 'Found by', title: 'How Sentry Mate knows about this update',
-      render: (r) => { const d = DETECTED[r.detected_by] || [r.detected_by, '']; return h('span', { class: 'cell-text', title: d[1] }, h('span', null, d[0]), h('span', { class: 'sub sub--src' }, srcMark(r, { short: true }) || 'From the car')); },
+      // where the data came from is in the row's hover title, not a line here
+      render: (r) => { const d = DETECTED[r.detected_by] || [r.detected_by, '']; return h('span', { title: d[1] }, d[0]); },
       csv: { label: 'Found by', value: (r) => (DETECTED[r.detected_by] ? DETECTED[r.detected_by][0] : r.detected_by) },
     },
     {
@@ -260,9 +262,10 @@ export async function mount(ctx) {
 
   let painted = false;
   const table = dataTable(ctx, {
-    title: 'Update history', icon: 'chip', path, params: ctx.params, limit: 50, cls: 'sw-table', cover: 'updates.table',
+    title: 'Update history', icon: 'chip', path, params: ctx.params, limit: 50, cls: 'sw-table', cover: 'updates.table', box: 'Updates', autoMore: true,
     csvName: 'software updates', csv: { all: true, columns: csvOf(columns) },
     columns: columns.filter((c) => !c.hidden),
+    rowTitle: (r) => srcTitle(r) || 'Data from the car',
     note: 'Newest first. Charges and range are what the car did while on each version: from the end of the update to the start of the next one (or now).',
     side: notesNote,
     empty: (pg) => (pg?.summary?.last_update?.start_ms != null && period.preset !== 'all' ? emptyState({
@@ -294,7 +297,7 @@ export async function mount(ctx) {
       title: 'Only a version someone named. After a build change the car runs software nobody has named yet; the last named version is shown under it.',
       render: (r) => (r.build_changed_since != null
         ? h('span', { class: 'cell-text' }, h('span', { class: 'sw-ver is-unknown' }, 'Not named yet'), h('span', { class: 'sub' }, r.version ? `last named ${r.version}` : 'none named before'))
-        : r.version ? h('span', { class: 'sw-ver' }, r.version, SOURCE[r.version_source] ? tag(SOURCE[r.version_source][0], 'plain') : null)
+        : r.version ? h('span', { class: 'sw-ver', title: SOURCE[r.version_source] ? SOURCE[r.version_source][2] : null }, r.version)
           : h('span', { class: 'sw-ver is-unknown' }, 'Not known')),
       csv: { label: 'Version now', value: (r) => (r.build_changed_since != null ? '' : r.version || '') },
     },
@@ -341,8 +344,8 @@ export async function mount(ctx) {
     if (driveCache.has(r.id)) return driveCache.get(r.id);
     const p = `cars/${enc(cid)}/drives`;
     const [b, a] = await Promise.all([
-      ctx.api.get(p, { to_ms: r.start_ms, sort: 'start', dir: 'desc', limit: 1 }).then((x) => x.items?.[0] || null).catch(() => null),
-      ctx.api.get(p, { from_ms: r.end_ms ?? r.start_ms, sort: 'start', dir: 'asc', limit: 1 }).then((x) => x.items?.[0] || null).catch(() => null),
+      ctx.api.get(p, { to_ms: r.between_ms?.[0] ?? r.start_ms, sort: 'start', dir: 'desc', limit: 1 }).then((x) => x.items?.[0] || null).catch(() => null),
+      ctx.api.get(p, { from_ms: r.between_ms?.[1] ?? r.end_ms ?? r.start_ms, sort: 'start', dir: 'asc', limit: 1 }).then((x) => x.items?.[0] || null).catch(() => null),
     ]);
     const out = { before: b, after: a };
     driveCache.set(r.id, out);
@@ -360,7 +363,9 @@ export async function mount(ctx) {
         near.after ? ['the drive of ', driveLink(near.after)] : 'now (no drive since)', '.'))
       : null;
     const seen = h('p', { class: 'sw-fp-between' }, icon('clock', 'ico--sm'),
-      h('span', null, `Old fingerprints last seen ${at(r.between_ms?.[0] ?? r.start_ms)}, new ones first seen ${at(r.between_ms?.[1] ?? r.end_ms)}.`));
+      h('span', null, r.readings_gap
+        ? `Installed between ${at(r.between_ms[0])} and ${at(r.between_ms[1])} (no readings in between): the old fingerprints were last seen then, the new ones first seen then.`
+        : `Old fingerprints last seen ${at(r.between_ms?.[0] ?? r.start_ms)}, new ones first seen ${at(r.between_ms?.[1] ?? r.end_ms)}.`));
     const byMod = new Map();
     for (const c of r.changes || []) { if (!byMod.has(c.module)) byMod.set(c.module, { name: c.module_name || MODULES[c.module] || c.module, rows: [] }); byMod.get(c.module).rows.push(c); }
     const changes = h('div', { class: 'sw-fp-changes', role: 'list', 'aria-label': 'Fingerprints that changed' },
@@ -520,7 +525,7 @@ export async function mount(ctx) {
       render: (r) => h('span', { class: 'cell-text' },
         h('span', { class: 'sw-fh-mod' }, r.kind === 'version' ? 'Car version' : r.module_name || MODULES[r.module] || r.module,
           r.current ? pill('Current', { tone: 'live' }) : null),
-        h('span', { class: 'sub' }, r.kind === 'version' ? `Version only · ${r.source_label || ''}` : r.source_label || '')),
+        r.kind === 'version' ? h('span', { class: 'sub' }, 'Version only') : null),
       csv: { label: 'Module', value: (r) => (r.kind === 'version' ? 'Car version' : r.module_name || r.module || '') },
     },
     {
@@ -551,10 +556,11 @@ export async function mount(ctx) {
   ];
   const fhStrip = h('div', { class: 'sw-fh-strip', 'aria-busy': 'true' }, h('span', { class: 'skel sw-fh-skel' }));
   const fhTable = dataTable(ctx, {
-    title: 'Module firmware history', icon: 'chip', path: fhPath, params: {}, limit: 50, cls: 'sw-fh', csvName: 'module firmware history',
+    title: 'Module firmware history', icon: 'chip', path: fhPath, params: {}, limit: 50, cls: 'sw-fh', csvName: 'module firmware history', box: 'Firmware fingerprints', autoMore: true,
     csv: { all: true, columns: csvOf(fhColumns) },
     columns: fhColumns.filter((c) => !c.hidden),
     rowClass: (r) => [r.kind === 'version' && 'sw-fh-vrow', r.current && 'is-current'].filter(Boolean).join(' ') || null,
+    rowTitle: (r) => r.source_label || null,
     note: 'Every fingerprint each module has had, newest first, and the version name it came with when someone named it. All also shows the car versions an import brought without module fingerprints.',
     empty: () => emptyState({ icon: 'chip', title: fhModule ? `No fingerprints of ${MODULES[fhModule] || fhModule} yet` : 'No firmware history yet',
       text: 'Fingerprints show once a log with them arrives from the car; imported versions show once a TeslaMate or TeslaFi history is imported.' }),

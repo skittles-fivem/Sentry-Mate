@@ -4,7 +4,8 @@
 //   - A move code (GET, POST, DELETE /system/move): the code is shown once, big, with Copy and when it
 //     stops working; then the new server's copy is followed live (once a second), and afterwards this
 //     server says where its data went, with "Undo the move" (POST /system/move/undo).
-//   - An export file (/system/exports): made in a few seconds, then downloaded as one file that opens with
+//   - An export file (/system/exports): made by the server in three steps, shown in a status panel of a fixed
+//     size (shared/exportjob.js: step, bar, x of y GB, speed, time left, stalled, failed, Cancel), then downloaded as one file that opens with
 //     the recovery key on the new server's first page.
 // Making a code, undoing a move and making an export ask for the password again (and the two-step code
 // when the account has it). The rules are in docs/ui-api.md ("Moving and first-run setup").
@@ -16,6 +17,7 @@ import { field, form } from '../core/form.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
 import { dateTime, count } from '../core/format.js';
 import { bytes, bigCode, copyButton, downloadUrl, stepList, progressBar, callout, PROBLEM } from './move-parts.js';
+import { exportModel, exportPollMs } from '../shared/exportjob.js';
 
 const OLD_STEPS = [
   ['copying', 'The new server copies everything', 'This server keeps taking uploads meanwhile, so nothing is missed.'],
@@ -78,6 +80,7 @@ export function moveBlock(ctx, { network = null } = {}) {
   let move = null;      // GET /system/move
   let shown = null;     // { id, text }: the code made on this page, shown until it is used or cancelled
   let exp = null;       // the ExportFile, or null
+  let expErr = null;    // the last read of it failed (the export goes on on the server)
   let fetchOnReady = null; // the export made on this page: downloaded once it is ready
   let moveTimer = 0;
   let expTimer = 0;
@@ -270,10 +273,10 @@ export function moveBlock(ctx, { network = null } = {}) {
     try {
       if (exp && exp.id) exp = await ctx.api.get(api.apiPath`system/exports/${exp.id}`);
       else { const r = await ctx.api.get('system/exports'); exp = (r.items || [])[0] || null; }
+      expErr = null;
     } catch (err) {
       if (api.isAbort(err)) return;
-      if (err && (err.code === 'no_such_export' || err.status === 404)) exp = null;
-      else { replace(exportBox, callout('warn', 'The export file could not be read.', h('p', null, err.message || 'No answer.'))); return; }
+      if (err && (err.code === 'no_such_export' || err.status === 404)) { exp = null; expErr = null; } else expErr = err;
     }
     drawExport();
   }
@@ -282,7 +285,7 @@ export function moveBlock(ctx, { network = null } = {}) {
     const out = await askPassword(ctx, {
       title: 'Make an export file',
       text: h('div', { class: 'dialog-text' },
-        h('p', null, 'One file with everything on this server. It takes a few seconds; uploads wait meanwhile (the CAN Bridge keeps them and sends them again).'),
+        h('p', null, 'One file with everything on this server, made in three steps: the server counts what goes in, waits for the writes under way, then takes a snapshot (uploads wait for that step; the CAN Bridge keeps them and sends them again). You can close the page meanwhile.'),
         h('p', null, 'It opens only with this server’s recovery key, and never holds the key file. A file made before is replaced.')),
       yes: 'Make the file',
       run: async (creds) => {
@@ -298,6 +301,15 @@ export function moveBlock(ctx, { network = null } = {}) {
     drawExport();
   }
 
+  async function cancelExport() {
+    const ok = exp && await confirmDialog({ title: 'Stop making the export file?', text: 'The server stops and keeps nothing of it. Uploads go on. You can make a new one at any time.', yes: 'Stop making it', no: 'Keep making it', danger: true });
+    if (!ok) return;
+    try { await ctx.api.del(api.apiPath`system/exports/${exp.id}`); ctx.flash('The export file was cancelled.'); }
+    catch (err) { if (!(err && err.status === 404)) { ctx.flash(`Not cancelled: ${err.message}`, { kind: 'error' }); return; } }
+    exp = null; fetchOnReady = null;
+    drawExport();
+  }
+
   async function deleteExport() {
     const ok = await confirmDialog({ title: 'Delete the export file?', text: 'The file is removed from this server. A copy you already downloaded is not touched.', yes: 'Delete the file', danger: true });
     if (!ok) return;
@@ -307,35 +319,49 @@ export function moveBlock(ctx, { network = null } = {}) {
     drawExport();
   }
 
+  // One panel with the same rows in every state (none, making, stalled, failed, ready), so it never jumps.
   function drawExport() {
     clearTimeout(expTimer);
     const e = exp;
-    const out = [];
-    if (!e || e.state === 'expired') {
-      if (e) out.push(callout('info', 'The last export file has expired.', h('p', null, `It was made ${dateTime(e.made_ms, tz)}. Make a new one.`)));
-      out.push(h('ol', { class: 'mv-list mv-list-num' },
-        h('li', null, 'Press ', h('strong', null, 'Download export file'), ' and type your password again. The file is ready in a few seconds.'),
-        h('li', null, 'Take the file to the new server (or keep it as a backup).'),
-        h('li', null, 'On the new server’s first page, choose ', h('strong', null, 'Restore from an export file'), ', choose the file and type this server’s recovery key.')),
-      h('div', { class: 'mv-actions' }, button('Download export file', { kind: 'primary', iconName: 'download', onclick: makeExport })));
-    } else if (e.state === 'preparing') {
-      out.push(callout('info', 'Making the export file…', h('p', null, 'A few seconds. Uploads wait meanwhile; the download starts by itself when it is ready.')),
-        h('div', { class: 'mv-bar mv-bar-busy', role: 'progressbar', 'aria-label': 'Making the export file' }, h('span', { class: 'mv-bar-fill' })));
-      expTimer = setTimeout(refreshExport, 1000);
-    } else {
-      if (fetchOnReady === e.id && e.url) { fetchOnReady = null; downloadUrl(e.url); ctx.flash(`The download of ${e.file_name} has started.`); }
-      out.push(h('div', { class: 'mv-file' },
-        h('p', { class: 'mv-file-name' }, e.file_name),
-        h('p', { class: 'mv-file-facts' }, [bytes(e.size), e.files != null ? count(e.files, 'file') : null, `made ${dateTime(e.made_ms, tz)}`].filter(Boolean).join(' · ')),
-        h('p', { class: 'mv-quiet' }, 'Kept on this server until ', dateTime(e.expires_ms, tz), ' (a day after the last download). A download that stops carries on.')),
-      h('div', { class: 'mv-actions' },
-        h('a', { class: 'button', href: e.url, download: e.file_name }, 'Download', ''),
-        button('Make a new one', { onclick: makeExport }),
-        button('Delete it', { kind: 'danger', onclick: deleteExport })),
-      e.skipped && e.skipped.length ? h('p', { class: 'mv-quiet' }, `Left out (this server cannot read ${e.skipped.length === 1 ? 'it' : 'them'}): `, e.skipped.map((x, i) => [i ? ', ' : null, h('code', { class: 'mono mv-mono' }, x.path)])) : null);
-    }
-    out.push(h('p', { class: 'mv-quiet' }, 'Without the recovery key the file is useless to anyone who takes it. Delete it once the new server runs.'));
-    replace(exportBox, out);
+    const m = exportModel(e);
+    const ready = m.kind === 'ready';
+    if (ready && fetchOnReady === e.id && e.url) { fetchOnReady = null; downloadUrl(e.url); ctx.flash(`The download of ${e.file_name} has started.`); }
+    const tone = m.tone === 'error' ? 'bad' : m.tone === 'warn' ? 'warn' : m.tone === 'ok' ? 'ok' : 'info';
+    const fill = h('span', { class: 'mv-bar-fill' });
+    fill.style.setProperty('--w', `${(m.percent ?? 0).toFixed(1)}%`);
+    let l1 = m.amount && m.files ? `${m.amount} · ${m.files}` : m.amount || m.files;
+    let l2 = m.speed;
+    if (ready) { l1 = h('code', { class: 'mono mv-mono' }, e.file_name); l2 = `Kept until ${dateTime(e.expires_ms, tz)} · ${e.sent_bytes ? `${bytes(e.sent_bytes)} downloaded so far` : 'not downloaded yet'}`; }
+    else if (m.kind === 'failed') { l1 = `Code: ${m.problem.code}`; l2 = ''; }
+    let say;
+    if (expErr) say = [h('strong', null, 'This page lost touch with the server. '), `It keeps asking; the export goes on there. (${expErr.message || 'No answer.'})`];
+    else if (m.warn) say = m.warn.text;
+    else if (m.problem) say = [h('strong', null, 'What to do: '), m.problem.todo];
+    else if (m.sha256) say = [h('strong', null, 'SHA-256 '), h('code', { class: 'mono mv-mono xp-sha' }, m.sha256)];
+    else if (m.checksum) say = m.checksum;
+    else if (m.kind === 'busy') say = 'You can close this page: the server goes on, and the page shows it again when you come back.';
+    else say = 'Seconds to minutes, most of it for the database. Uploads wait only for the last step.';
+    const acts = m.kind === 'busy' ? [button('Cancel', { onclick: cancelExport })]
+      : ready ? [h('a', { class: 'button', href: e.url, download: e.file_name }, 'Download'), button('Make a new one', { onclick: makeExport }), button('Delete it', { kind: 'danger', onclick: deleteExport })]
+        : [button(m.kind === 'failed' ? 'Make a new one' : 'Download export file', { kind: 'primary', iconName: 'download', onclick: makeExport })];
+    replace(exportBox,
+      h('div', { class: ['xp', `xp-${tone}`], role: 'group', 'aria-label': 'Export file status' },
+        h('div', { class: 'xp-top' },
+          h('div', { class: 'xp-titles' }, h('p', { class: 'xp-title' }, m.head), h('p', { class: 'xp-sub' }, m.sub)),
+          h('span', { class: 'xp-pct' }, m.percentText)),
+        h('ol', { class: 'xp-steps', 'aria-label': 'Steps of making the file' }, m.steps.map((st) =>
+          h('li', { class: ['xp-step', `xp-step-${st.state}`], 'aria-current': st.state === 'now' ? 'step' : null },
+            h('span', { class: 'xp-mark', 'aria-hidden': 'true' }, st.state === 'done' ? '✓' : String(st.n)), st.label))),
+        h('div', { class: ['mv-bar', 'xp-bar', `xp-bar-${tone}`, m.percent == null && m.kind === 'busy' && 'xp-bar-unknown'], role: 'progressbar', 'aria-label': 'Export file', 'aria-valuemin': '0', 'aria-valuemax': '100',
+          'aria-valuenow': m.percent == null ? null : String(Math.round(m.percent)), 'aria-valuetext': m.percentText || m.head }, fill),
+        h('p', { class: 'xp-line' }, l1),
+        h('p', { class: 'xp-line' }, l2),
+        h('div', { class: ['xp-say', `xp-say-${tone}`] }, h('p', null, say)),
+        h('div', { class: 'mv-actions xp-acts' }, acts)),
+      ready && e.skipped && e.skipped.length ? h('p', { class: 'mv-quiet' }, `Left out (this server cannot read ${e.skipped.length === 1 ? 'it' : 'them'}): `, e.skipped.map((x, i) => [i ? ', ' : null, h('code', { class: 'mono mv-mono' }, x.path)])) : null,
+      h('p', { class: 'mv-quiet' }, 'On the new server’s first page choose ', h('strong', null, 'Restore from an export file'), ', choose the file and type this server’s recovery key. Without the key the file is useless to anyone who takes it.'));
+    const ms = exportPollMs(e);
+    if (ms) expTimer = setTimeout(refreshExport, ms);
   }
 
   /* ---------------------------------------------------------------- put together */

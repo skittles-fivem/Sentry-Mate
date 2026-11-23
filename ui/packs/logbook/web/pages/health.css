@@ -47,8 +47,7 @@
 .page-health .hl-key-name { display: block; font: 400 1rem var(--serif); --LH: round(calc(1.35 * 1em), 2px); line-height: var(--LH); color: var(--ink); }
 .page-health .hl-key-side { display: grid; justify-items: end; text-align: right; font-size: var(--text-sm); }
 .page-health .hl-span a { font: 400 1rem var(--serif); --LH: round(calc(1.35 * 1em), 2px); line-height: var(--LH); color: var(--ink); }
-.page-health .hl-rebuild { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)) round(1.25rem, var(--e)); padding-top: round(0.25rem, var(--e)); }
-.page-health .hl-rebuild .note { margin: 0; }
+.page-health .hl-full { padding-top: round(0.25rem, var(--e)); }
 
 /* facts: a name on the left, the value and its explanation on the right */
 .page-health .hl-facts { margin: 0; border-top: 1px solid var(--rule); }
@@ -78,7 +77,7 @@
 .page-health .hl-total-v { font: 400 1.375rem var(--serif); --LH: round(calc(1.2 * 1em), 2px); line-height: var(--LH); color: var(--ink); }
 .page-health .hl-total-v .q-u { font-family: var(--sans); font-size: var(--small-2); margin-left: round(0.25rem, var(--e)); }
 .page-health .hl-kinds .cell-sub { max-width: round(34rem, var(--e)); }
-.page-health .hl-days .ledger-scroll { max-height: round(26rem, var(--e)); overflow-y: auto; --sticky-top: 0px; }
+.page-health .hl-days .ledger-scroll { --sticky-top: 0px; }   /* the box (core/table.js box) sets its height */
 
 /* growth bars: SVG in percentages of a box sized in rem */
 .page-health .hl-growth { display: grid; gap: round(0.5rem, var(--e)); }
@@ -183,3 +182,10 @@
   .page-health .co-card { grid-template-columns: minmax(0, 1fr); grid-template-areas: "title" "note" "totals"; }
   .page-health .co-card-totals { flex-wrap: wrap; }
 }
+
+/* a CAN Bridge key's name: quiet italics while it is the automatic label; its rename button (admins) */
+.page-health .hl-key-name .dev-auto { font-style: italic; }
+.page-health .hl-key-side .dev-rename { margin-top: round(0.375rem, var(--e)); }
+/* boxed lists (core/table.js box): their rows' height */
+.page-health .hl-days .scroll-box { --box-row: round(2.875rem, var(--e)); }
+.page-health .hl-spans-box { --box-head: 0px; --box-row: round(4.125rem, var(--e)); }

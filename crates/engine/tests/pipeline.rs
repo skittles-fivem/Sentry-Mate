@@ -778,12 +778,32 @@ fn a_new_key_whose_token_names_another_car_gets_a_car_of_its_own() {
         assert_ne!(a, b, "a token made for another car");
         assert_eq!(k.db.car_for_key(KEY3).unwrap(), Some(a), "a token made for the same car's name");
 
+        // an admin names the other car's logger before moving it: the name goes with the key
+        let unnamed = tokio::task::block_in_place(|| query::keys::key_row(&k.engine, KEY2)).unwrap();
+        assert_eq!(unnamed.device, None);
+        assert!(unnamed.device_label.starts_with("CAN Bridge key "), "{}", unnamed.device_label);
+        let name = |n: Option<&str>| query::keys::KeyChange { name: Some(n.map(String::from)), ..Default::default() };
+        for bad in ["   ", &"x".repeat(61), "two\nlines"] {
+            let e = tokio::task::block_in_place(|| query::keys::set_key(&k.engine, &[a, b], KEY2, &name(Some(bad))));
+            assert!(matches!(&e, Err(query::QueryError::Invalid { fields }) if fields.contains_key("name")), "{e:?}");
+        }
+        let row = tokio::task::block_in_place(|| {
+            query::keys::set_key(&k.engine, &[a, b], KEY2, &name(Some("  Pi logger in the boot ")))
+        })
+        .unwrap();
+        assert_eq!(
+            (row.device.as_deref(), row.device_label.as_str()),
+            (Some("Pi logger in the boot"), "Pi logger in the boot")
+        );
+        tokio::task::block_in_place(|| query::keys::set_key(&k.engine, &[a, b], KEY3, &name(Some("Screenmate"))))
+            .unwrap();
+
         // an admin moves the key back: it stays where it is put, and a key taken from its car waits
-        let change = query::keys::KeyChange { car: Some(Some(a)), preferred: None };
+        let change = query::keys::KeyChange { car: Some(Some(a)), preferred: None, name: None };
         let row = tokio::task::block_in_place(|| query::keys::set_key(&k.engine, &[a, b], KEY2, &change)).unwrap();
         assert_eq!(row.car.map(|c| c.0), Some(a));
         k.engine.idle().await;
-        let change = query::keys::KeyChange { car: Some(None), preferred: None };
+        let change = query::keys::KeyChange { car: Some(None), preferred: None, name: None };
         tokio::task::block_in_place(|| query::keys::set_key(&k.engine, &[a, b], KEY3, &change)).unwrap();
         k.engine.reconcile(None);
         k.engine.idle().await;
@@ -793,7 +813,35 @@ fn a_new_key_whose_token_names_another_car_gets_a_car_of_its_own() {
         })
         .unwrap();
         assert_eq!(waiting.items.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), vec![KEY3]);
-        let missing = query::keys::KeyChange { car: Some(Some(a)), preferred: None };
+        assert_eq!(waiting.items[0].device.as_deref(), Some("Screenmate"), "a waiting key keeps its name");
+
+        // the names hold through a rebuild of every car and a restart, in every answer that lists keys
+        let job = k.engine.rebuild(Scope::all()).unwrap();
+        k.engine.idle().await;
+        assert_eq!(k.engine.job(job.id).unwrap().status, engine::JobStatus::Done);
+        let again = Engine::new(k.db.clone(), k.store.clone(), Options::default());
+        again.start().unwrap();
+        again.idle().await;
+        let keys = tokio::task::block_in_place(|| {
+            query::keys::can_keys(&again, &[a, b], Some(true), Some(a), &Paging::default())
+        })
+        .unwrap();
+        let moved = keys.items.iter().find(|r| r.key == KEY2).expect("the moved key");
+        assert_eq!(moved.device.as_deref(), Some("Pi logger in the boot"));
+        let health = tokio::task::block_in_place(|| query::system::health(&again, a, &Period::all())).unwrap().body;
+        let h = health.keys.iter().find(|r| r.key == KEY2).expect("the moved key's health");
+        assert_eq!(
+            (h.device.as_deref(), h.device_label.as_str()),
+            (Some("Pi logger in the boot"), "Pi logger in the boot")
+        );
+        let other = health.keys.iter().find(|r| r.key == KEY).expect("the car's own key");
+        assert_eq!(other.device, None);
+        assert!(other.device_label.starts_with("CAN Bridge key "));
+        // and a name can be cleared
+        let row = tokio::task::block_in_place(|| query::keys::set_key(&again, &[a, b], KEY2, &name(None))).unwrap();
+        assert_eq!(row.device, None);
+        assert!(row.device_label.starts_with("CAN Bridge key "));
+        let missing = query::keys::KeyChange { car: Some(Some(a)), preferred: None, name: None };
         let e = tokio::task::block_in_place(|| query::keys::set_key(&k.engine, &[a, b], "000000000000", &missing));
         assert!(matches!(e, Err(query::QueryError::NotFound("no_such_key"))), "{e:?}");
     });
@@ -939,5 +987,155 @@ fn live_values_after_a_charge_are_not_the_charge_s_while_driving() {
         let list = query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default()).unwrap().items;
         assert_ne!(list[0].now.plugged, Some(true));
         assert_eq!(list[0].now.charge_power_kw, None);
+    });
+}
+
+/// The car's history as an older decoder would have made it: every position 20° west of where the logs put it.
+fn shift_west(db: &db::Db, car: u32) {
+    let mut s = db.read_points::<model::Sample>(car, model::Stream::Smo, 0, u64::MAX).unwrap();
+    for p in &mut s {
+        p.lon = p.lon.map(|l| l - 20.0);
+    }
+    db.write_points(car, model::Stream::Smo, 0, u64::MAX, &s).unwrap();
+    let mut ds = db.list::<model::Drive>(car, &db::Query::default()).unwrap().items;
+    for d in &mut ds {
+        for p in [&mut d.start, &mut d.end].into_iter().flatten() {
+            p.lon -= 20.0;
+        }
+    }
+    db.upsert(car, &ds).unwrap();
+}
+
+/// The SMO samples' longitudes and the drives' start longitudes.
+fn longitudes(e: &Engine, db: &db::Db, car: u32) -> (Vec<f64>, Vec<f64>) {
+    let s = db.read_points::<model::Sample>(car, model::Stream::Smo, 0, u64::MAX).unwrap();
+    let d = query::drives::drives(e, car, &Default::default(), &Paging::default()).unwrap().body.items;
+    (s.iter().filter_map(|p| p.lon).collect(), d.iter().filter_map(|d| d.start.lon).collect())
+}
+
+async fn full_done(e: &Engine) -> engine::full::FullRecord {
+    for _ in 0..2000 {
+        let r = e.full_rebuild_status().unwrap().unwrap();
+        if !r.running() {
+            e.idle().await;
+            return r;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the full rebuild did not end");
+}
+
+#[test]
+fn a_full_rebuild_makes_every_position_again_and_keeps_what_the_owner_entered() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let shape_before = shape(&k, car);
+        let ch: u64 = charges(&k, car)[0].id.parse().unwrap();
+        engine::costs::set_manual(&k.engine, car, ch, engine::costs::Mode::Total, 4.2, "EUR", false).unwrap();
+        let mut c = k.db.car(car).unwrap().unwrap();
+        c.name = "Made-up name".into();
+        k.db.update_car(c).unwrap();
+        // the history an older decoder made, and a working value kept from it
+        shift_west(&k.db, car);
+        k.engine.set_car_version(car, "decode-0.rules-0.dbc-00000000").unwrap();
+        assert_eq!(k.engine.version_stale(), vec![car]);
+        k.db.kv().put("day-parts", &format!("car/{car}/series/1"), b"stale").unwrap();
+        let (s, d) = longitudes(&k.engine, &k.db, car);
+        assert!(s.iter().chain(&d).all(|l| *l < -49.0), "{s:?} {d:?}");
+
+        let started = k.engine.full_rebuild(Some(car), engine::full::Reason::Owner, Some("admin".into())).unwrap();
+        assert!(started.running());
+        assert!(matches!(
+            k.engine.full_rebuild(None, engine::full::Reason::Owner, None),
+            Err(engine::full::StartError::Running(_))
+        ));
+        let r = full_done(&k.engine).await;
+        assert_eq!(r.status, engine::full::FullStatus::Done, "{r:#?}");
+        assert_eq!((r.logs_done, r.logs_total), (DAY.len() as u64, DAY.len() as u64), "{r:#?}");
+        assert!(r.bytes_done > 0 && r.bytes_done == r.bytes_total, "{r:#?}");
+        assert_eq!(r.days_done, r.days_total);
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+
+        let (s, d) = longitudes(&k.engine, &k.db, car);
+        assert!(!s.is_empty() && !d.is_empty());
+        assert!(s.iter().chain(&d).all(|l| (*l + 30.0).abs() < 0.01), "made again from the logs: {s:?} {d:?}");
+        assert_eq!(shape(&k, car), shape_before);
+        let cost = charges(&k, car)[0].cost.clone().expect("the typed cost");
+        assert_eq!((cost.amount, cost.source.as_str()), (4.2, "manual"));
+        assert_eq!(k.db.car(car).unwrap().unwrap().name, "Made-up name");
+        assert!(k.engine.version_stale().is_empty());
+        assert_eq!(engine::full::car_version(&k.db, car).unwrap(), Some(engine::full::derived_version()));
+        assert!(k.db.kv().get("day-parts", &format!("car/{car}/series/1")).unwrap().is_none(), "no stale part");
+        assert_eq!(k.db.shadow_bytes(engine::full::SHADOW), 0, "the shadow is gone");
+        assert_eq!(logs_of(&k.engine, car).iter().filter(|l| l.decoded == "decoded").count(), DAY.len());
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+    });
+}
+
+#[test]
+fn a_full_rebuild_that_fails_or_is_cancelled_leaves_the_history_as_it_was() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        shift_west(&k.db, car);
+        let wrong = longitudes(&k.engine, &k.db, car);
+        for phase in [engine::full::Phase::Decoding, engine::full::Phase::Days, engine::full::Phase::Switching] {
+            k.engine.full_rebuild_fail_at(Some(phase));
+            k.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+            let r = full_done(&k.engine).await;
+            assert_eq!(r.status, engine::full::FullStatus::Failed, "{r:#?}");
+            assert!(r.error.as_deref().is_some_and(|e| e.contains("for a test")), "{r:#?}");
+            assert_eq!(longitudes(&k.engine, &k.db, car), wrong, "failed at {phase:?}: the old history stays");
+            assert_eq!(k.db.shadow_bytes(engine::full::SHADOW), 0);
+        }
+        k.engine.full_rebuild_fail_at(None);
+        k.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+        assert!(k.engine.cancel_full_rebuild().unwrap());
+        let r = full_done(&k.engine).await;
+        assert_eq!(r.status, engine::full::FullStatus::Cancelled, "{r:#?}");
+        assert_eq!(longitudes(&k.engine, &k.db, car), wrong);
+        assert_eq!(k.db.shadow_bytes(engine::full::SHADOW), 0);
+    });
+}
+
+#[test]
+fn a_full_rebuild_cut_off_by_a_restart_carries_on() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        shift_west(&k.db, car);
+        for phase in [engine::full::Phase::Days, engine::full::Phase::Switching] {
+            k.engine.full_rebuild_crash_at(Some(phase));
+            k.engine.full_rebuild(Some(car), engine::full::Reason::Version, None).unwrap();
+            k.engine.idle().await;
+            let r = k.engine.full_rebuild_status().unwrap().unwrap();
+            assert!(r.running() && r.phase == phase, "{r:#?}");
+            assert!(longitudes(&k.engine, &k.db, car).0.iter().all(|l| *l < -49.0), "not switched yet");
+
+            // the server starts again: it carries on from there
+            let again = Engine::new(k.db.clone(), k.store.clone(), Options::default());
+            again.start().unwrap();
+            let r = full_done(&again).await;
+            assert_eq!(r.status, engine::full::FullStatus::Done, "{r:#?}");
+            assert_eq!(r.logs_done, r.logs_total, "{r:#?}");
+            assert!(longitudes(&again, &k.db, car).0.iter().all(|l| (*l + 30.0).abs() < 0.01));
+            shift_west(&k.db, car);
+        }
     });
 }

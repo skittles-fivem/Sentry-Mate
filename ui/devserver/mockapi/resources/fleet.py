@@ -521,9 +521,11 @@ def get_settings(req):
             "version": 1, "battery_chemistry": {"setting": "auto", "detected": None, "evidence": None},
             "free_supercharging": [], "capacity_new_kwh": None, "full_range_new_km": None,
             "warranty_threshold_pct": 70, "efficiency_wh_per_km_override": None, "software_version_typed": None,
-            "import_gap_fill": None, "pack_replaced_date": None, "pack_new_kwh": None})
+            "import_gap_fill": None, "pack_replaced_date": None, "pack_new_kwh": None,
+            "default_price_per_kwh": None})
     out = dict(s)
     out.setdefault("import_gap_fill", None)
+    out.setdefault("default_price_per_kwh", None)
     out.setdefault("pack_replaced_date", None)
     out.setdefault("pack_new_kwh", None)
     out["import_gap_fill_on"] = gapfill.on(st, req.car)
@@ -586,6 +588,24 @@ def _num_rule(body, k, lo, hi, rule, bad, allow_null=True):
         rule[k] = f"Must be between {lo} and {hi}."
 
 
+def _default_price_rule(v, rule, bad):
+    """`default_price_per_kwh`: { value 0 to 10, currency three letters } (null forgets it)."""
+    import re
+    k = "default_price_per_kwh"
+    if not isinstance(v, dict):
+        bad[k] = "Must be { value, currency } or null."
+        return
+    val, cur = v.get("value"), v.get("currency")
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        bad[k + ".value"] = "Must be a number."
+    elif not 0 <= val <= 10:
+        rule[k + ".value"] = "Must be between 0 and 10."
+    if not isinstance(cur, str):
+        bad[k + ".currency"] = "Must be a currency code such as USD."
+    elif not re.fullmatch(r"[A-Za-z]{3}", cur):
+        rule[k + ".currency"] = "Three letters, such as USD or EUR."
+
+
 def patch_settings(req):
     from ..util import parse_date
     st = req.store
@@ -595,7 +615,7 @@ def patch_settings(req):
     bad, rule = {}, {}
     known = ("version", "battery_chemistry", "free_supercharging", "capacity_new_kwh", "full_range_new_km",
              "warranty_threshold_pct", "efficiency_wh_per_km_override", "software_version_typed", "import_gap_fill",
-             "pack_replaced_date", "pack_new_kwh", "source_order")
+             "pack_replaced_date", "pack_new_kwh", "source_order", "default_price_per_kwh")
     for k in body:
         if k not in known:
             bad[k] = "Unknown field."
@@ -619,6 +639,8 @@ def patch_settings(req):
                     rule[f"free_supercharging.{i}.to_date"] = "A date as YYYY-MM-DD, or null for no end."
                 elif b is not None and b < a:
                     rule[f"free_supercharging.{i}.to_date"] = "Must not be before from_date."
+    if body.get("default_price_per_kwh") is not None:
+        _default_price_rule(body["default_price_per_kwh"], rule, bad)
     _num_rule(body, "capacity_new_kwh", 10, 250, rule, bad)
     _num_rule(body, "pack_new_kwh", 10, 250, rule, bad)
     if body.get("pack_replaced_date") is not None and parse_date(body["pack_replaced_date"]) is None:
@@ -660,6 +682,8 @@ def patch_settings(req):
                 s["battery_chemistry"] = dict(s["battery_chemistry"], setting=v["setting"])
             elif k == "software_version_typed":
                 s[k] = v.strip() if isinstance(v, str) else None
+            elif k == "default_price_per_kwh":
+                s[k] = {"value": float(v["value"]), "currency": v["currency"].upper()} if v is not None else None
             elif k == "source_order":
                 # the default is kept as null, so a car follows a later change of the default
                 s[k] = list(v) if v is not None and v != SRC.DEFAULT_ORDER else None
@@ -701,7 +725,7 @@ def _car_change_words(old_name, body):
 
 
 def list_tokens(req):
-    rows = req.store.tokens.get(req.car, [])
+    rows = [_tok_out(req.store, t) for t in req.store.tokens.get(req.car, [])]
     items, nxt = page(req, rows, key=lambda t: (t["created_ms"], t["id"]), reverse=True)
     return {"car": req.car, "time_zone": req.tz(), "items": items, "next": nxt}
 
@@ -713,7 +737,7 @@ def create_token(req):
         st.tokens.setdefault(req.car, []).append(tok)
     st.record(req.account, "token-created", f"token:{req.car}:{tok['id']}",
               f"Made the upload token {tok['id']} for {st.car_meta(req.car)['name']}.")
-    out = dict(tok)
+    out = _tok_out(st, tok)
     out["secret"] = "smu_" + secrets.token_urlsafe(24)
     out["app"] = bridge_fields(req, out["secret"])
     out["car"] = req.car
@@ -729,7 +753,7 @@ def _token(req):
 
 
 def get_token(req):
-    return dict(_token(req), car=req.car)
+    return _tok_out(req.store, _token(req), car=req.car)
 
 
 def revoke_token(req):
@@ -738,11 +762,11 @@ def revoke_token(req):
         t["revoked"] = True
     req.store.record(req.account, "token-revoked", f"token:{req.car}:{t['id']}",
                      f"Revoked the upload token {t['id']} of {req.store.car_meta(req.car)['name']}.")
-    return dict(t, car=req.car)
+    return _tok_out(req.store, t, car=req.car)
 
 
 def list_new_tokens(req):
-    rows = [dict(t, car=None) for t in req.store.new_car_tokens]
+    rows = [_tok_out(req.store, t, car=None) for t in req.store.new_car_tokens]
     items, nxt = page(req, rows, key=lambda t: (t["created_ms"], t["id"]), reverse=True)
     return {"items": items, "next": nxt}
 
@@ -753,7 +777,7 @@ def create_new_token(req):
     with st.lock:
         st.new_car_tokens.append(tok)
     st.record(req.account, "token-created", f"token:{tok['id']}", f"Made the upload token {tok['id']} for a new car.")
-    out = dict(tok, car=None)
+    out = _tok_out(st, tok, car=None)
     out["secret"] = "smu_" + secrets.token_urlsafe(24)
     out["app"] = bridge_fields(req, out["secret"])
     out["_created"] = True
@@ -767,7 +791,31 @@ def revoke_new_token(req):
     with req.store.lock:
         t["revoked"] = True
     req.store.record(req.account, "token-revoked", f"token:{t['id']}", f"Revoked the upload token {t['id']} of a new car.")
-    return dict(t, car=None)
+    return _tok_out(req.store, t, car=None)
+
+
+DEVICE_NAME_MAX = 60
+
+
+def device_label(k):
+    """The key's chosen name, else the server's automatic label: "CAN Bridge key" and the key's short id."""
+    if k.get("device"):
+        return k["device"]
+    tail = k["key"].rsplit("_", 1)[-1] or k["key"]
+    return f"CAN Bridge key {tail[:6]}"
+
+
+def key_out(k):
+    return dict(k, device=k.get("device"), device_label=device_label(k))
+
+
+def _tok_out(st, t, **extra):
+    """A token row; one tied to a key also names its device, as the key rows do."""
+    out = dict(t, **extra)
+    k = next((x for x in st.keys if x["key"] == t.get("key")), None) if t.get("key") else None
+    out["device"] = k.get("device") if k else None
+    out["device_label"] = device_label(k) if k else None
+    return out
 
 
 def list_keys(req):
@@ -781,7 +829,7 @@ def list_keys(req):
         if not req.ds.exists(car) or not st.sees(req.account, car):
             raise not_found("no_such_car", "There is no such car.")
         rows = [k for k in rows if k["car"] == car]
-    items, nxt = page(req, rows, key=lambda k: (k["first_seen_ms"], k["key"]), reverse=True)
+    items, nxt = page(req, [key_out(k) for k in rows], key=lambda k: (k["first_seen_ms"], k["key"]), reverse=True)
     return {"items": items, "next": nxt}
 
 
@@ -793,8 +841,10 @@ def patch_key(req):
     body = req.json()
     bad, rule = {}, {}
     for f in body:
-        if f not in ("car", "preferred"):
+        if f not in ("car", "preferred", "name"):
             bad[f] = "Unknown field."
+    if "name" in body and body["name"] is not None and not isinstance(body["name"], str):
+        bad["name"] = "Must be text or null."
     if "car" in body and body["car"] is not None and not isinstance(body["car"], str):
         bad["car"] = "Must be a car id or null."
     if "preferred" in body and not isinstance(body["preferred"], bool):
@@ -803,9 +853,15 @@ def patch_key(req):
         raise bad_input(bad)
     if body.get("car") is not None and (not req.ds.exists(body["car"]) or not st.sees(req.account, body["car"])):
         rule["car"] = "No such car."
+    new_name = body.get("name").strip() if isinstance(body.get("name"), str) else None
+    if "name" in body and body["name"] is not None and not 1 <= len(new_name) <= DEVICE_NAME_MAX:
+        rule["name"] = f"A name has 1 to {DEVICE_NAME_MAX} characters."
+    elif new_name and any(ord(ch) < 32 or 127 <= ord(ch) < 160 for ch in new_name):
+        rule["name"] = "A name is one line of text."
     if rule:
         raise invalid(rule)
     was = k["car"]
+    old_name = k.get("device")
     with st.lock:
         if "car" in body:
             k["car"] = body["car"]
@@ -819,6 +875,8 @@ def patch_key(req):
                     other["preferred"] = other is k
         elif body.get("preferred") is False:
             k["preferred"] = False
+        if "name" in body:
+            k["device"] = new_name
     name = lambda c: st.car_meta(c)["name"] if c else "no car"  # noqa: E731
     now_car = k["car"]
     if "car" in body and was != now_car:
@@ -835,7 +893,11 @@ def patch_key(req):
         st.record(req.account, "key-preferred", f"key:{now_car}:{k['key']}",
                   f"Made the CAN Bridge key {k['key']} {name(now_car)}'s preferred one." if k["preferred"] else
                   f"The CAN Bridge key {k['key']} is no longer {name(now_car)}'s preferred one.", car=now_car)
-    return k
+    if "name" in body and new_name != old_name:
+        st.record(req.account, "can-key-renamed", f"key:{now_car}:{k['key']}" if now_car else f"key:{k['key']}",
+                  f"Named the CAN Bridge key {k['key']} \u201c{new_name}\u201d." if new_name else
+                  f"Cleared the name of the CAN Bridge key {k['key']}.", car=now_car)
+    return key_out(k)
 
 
 def bridge_fields(req, secret):

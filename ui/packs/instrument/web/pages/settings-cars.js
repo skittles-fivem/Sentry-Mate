@@ -1,7 +1,7 @@
 // Settings: Cars (/settings/cars and /settings/cars/{car}): per-car settings, and how each car's CAN
 // Bridge is tied to it. Without a car: every car the account sees (searched and paged by the server),
 // keys waiting for a car, and how a car appears. With a car: its name, what it reports about itself,
-// its upload tokens and CAN Bridge keys (with the outcome of its uploads), its time zone, battery
+// its upload tokens and CAN Bridge keys (with the outcome of its uploads; an admin names a key, can-key-name.js), its time zone, battery
 // chemistry, reference values, free Supercharging as dated ranges, and its data sources (#data-sources: the
 // live inputs' priority order, gap filling from an import, a link to the overlaps). Every change saves at once
 // (PATCH with the object's version) and a short note confirms it.
@@ -22,6 +22,8 @@ import { openDialog, confirmDialog } from '../core/dialog.js';
 import { openCarSwitcher, SWITCH_KEYS } from '../core/carswitch.js';
 import { carChanged } from '../core/frame.js';
 import { dateTime, date, time, ago, agoEl, tzName, carMeta, statePill } from '../core/fmt.js';
+import { deviceText, deviceWords, renameKeyButton } from './can-key-name.js';
+import { deviceName } from '../shared/devices.js';
 
 export const id = 'settings-cars';
 export const css = true;
@@ -219,7 +221,8 @@ function waitingTable(ctx, rows, car, after, noCars = false) {
     sort: { key: 'first', dir: 'desc' },
     columns: [
       { key: 'key', label: 'Key', render: (k) => h('span', { class: 'mono' }, k.key), sort: true },
-      { key: 'device', label: 'Device', render: (k) => k.device || 'Not reported', sort: true },
+      { key: 'device', label: 'Device', value: deviceWords, csv: deviceWords, sort: true,
+        render: (k) => h('span', { class: 'row sc-dev' }, deviceText(k), renameKeyButton(ctx, k, ctx.admin, after)) },
       { key: 'first', label: 'First upload', value: (k) => k.first_seen_ms, sort: true, render: (k) => dateTime(k.first_seen_ms, tz), csv: (k) => k.first_seen_ms },
       { key: 'last', label: 'Last upload', value: (k) => k.last_upload_ms, sort: true, render: (k) => (k.last_upload_ms ? agoEl(k.last_upload_ms, tz) : 'Never'), csv: (k) => k.last_upload_ms ?? '' },
       { key: 'logs_waiting', label: 'Logs waiting', num: true, sort: true, render: (k) => format(k.logs_waiting ?? 0, 'count') },
@@ -238,7 +241,7 @@ function waitingTable(ctx, rows, car, after, noCars = false) {
 async function mountCar(ctx) {
   const admin = ctx.admin;
   const cid = ctx.car.id;
-  const S = { car: null, settings: null, tokens: [], keys: [], waiting: [], health: null, battery: null, cars: null };
+  const S = { car: null, settings: null, tokens: [], keys: [], waiting: [], health: null, battery: null, cars: null, currency: null };
 
   // first: the page's first load reuses the car the router read a moment ago; later loads ask again
   async function load(first = false) {
@@ -253,6 +256,8 @@ async function mountCar(ctx) {
       ctx.api.page('cars', { sort: 'custom', limit: 8 }).catch(() => null),
     ]);
     Object.assign(S, { car, settings, tokens: tokens?.items || [], keys: keys?.items || [], waiting: waiting?.items || [], health, battery, cars });
+    // the currency for an empty default price: the one the car's charges cost most in
+    if (!S.currency) S.currency = settings.default_price_per_kwh?.currency || topCurrency(await ctx.api.get(`cars/${enc(cid)}/charges`, { limit: 1 }).catch(() => null));
   }
   try { await load(true); } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }
   if (!ctx.alive()) return;
@@ -415,7 +420,7 @@ async function mountCar(ctx) {
       detail = '';
     }
     if (trust && tone === 'ok') detail += trust === 'verified' ? 'Its signature was checked and matches a key tied to this car. ' : trust === 'unsigned' ? 'It carried no signature, so it is kept but marked unsigned. ' : 'It failed its check and was not used. ';
-    if (pref) detail += `Preferred key: ${pref.key}${pref.device ? ` (${pref.device})` : ''}. `;
+    if (pref) detail += `Preferred key: ${pref.key}${deviceName(pref).named ? ` (${deviceName(pref).text})` : ''}. `;
     if (S.waiting.length) detail += `${S.waiting.length === 1 ? 'One key is' : `${S.waiting.length} keys are`} waiting for a car below. `;
     if (hl?.logs_waiting) detail += `${hl.logs_waiting} logs wait to be checked. `;
     return h('div', { class: ['sc-outcome', `sc-outcome--${tone}`], role: 'status', cover: 'faq.car-missing.outcomes' },
@@ -467,7 +472,7 @@ async function mountCar(ctx) {
         { key: 'created', label: 'Made', value: (t) => t.created_ms, sort: true, render: (t) => dateTime(t.created_ms, z), csv: (t) => t.created_ms },
         { key: 'state', label: 'State', value: (t) => (t.revoked ? 2 : t.last_upload_ms ? 0 : 1), sort: true,
           render: tokenState, csv: tokenStateText },
-        { key: 'key', label: 'Key it brought', render: (t) => (t.key ? h('span', { class: 'mono' }, t.key) : h('span', { class: 'faint' }, t.revoked ? '—' : 'None yet')) },
+        { key: 'key', label: 'Key it brought', render: (t) => (t.key ? [h('span', { class: 'mono' }, t.key), ' ', deviceText(t)] : h('span', { class: 'faint' }, t.revoked ? '—' : 'None yet')) },
         { key: 'last', label: 'Last upload', value: (t) => t.last_upload_ms, sort: true, render: (t) => (t.last_upload_ms ? agoEl(t.last_upload_ms, z) : 'Never'), csv: (t) => t.last_upload_ms ?? '' },
         { key: 'act', label: '', csv: false, render: (t) => (t.revoked ? null : h('button', { class: 'btn btn--sm btn--danger', type: 'button', onclick: () => revokeToken(t) }, icon('x', 'ico--sm'), 'Revoke')) },
       ],
@@ -479,7 +484,8 @@ async function mountCar(ctx) {
       sort: { key: 'last', dir: 'desc' },
       columns: [
         { key: 'key', label: 'Key', render: (k) => h('span', { class: 'mono' }, k.key), sort: true },
-        { key: 'device', label: 'Device', render: (k) => k.device || 'Not reported', sort: true },
+        { key: 'device', label: 'Device', value: deviceWords, csv: deviceWords, sort: true,
+          render: (k) => h('span', { class: 'row sc-dev' }, deviceText(k), renameKeyButton(ctx, k, admin, () => refresh())) },
         { key: 'first', label: 'First upload', value: (k) => k.first_seen_ms, sort: true, render: (k) => dateTime(k.first_seen_ms, z), csv: (k) => k.first_seen_ms },
         { key: 'last', label: 'Last upload', value: (k) => k.last_upload_ms, sort: true, render: (k) => (k.last_upload_ms ? agoEl(k.last_upload_ms, z) : 'Never'), csv: (k) => k.last_upload_ms ?? '' },
         { key: 'logs_waiting', label: 'Logs waiting', num: true, sort: true, render: (k) => format(k.logs_waiting ?? 0, 'count') },
@@ -721,7 +727,36 @@ async function mountCar(ctx) {
 
     replace(slots.charging, panel({ title: 'Charging', icon: 'bolt', cover: 'web.settings.car.free-supercharging' },
       setting('Free Supercharging', 'Tesla Supercharger sessions of this car that start on a free day cost nothing; sessions before or after keep their own cost, so a range never rewrites the rest of the history. Days are the car\'s days, in its time zone.',
-        [hint, list, msg, ro ? null : h('button', { class: 'btn btn--sm', type: 'button', onclick: () => paintRows([...ranges, { from_date: null, to_date: null }]) }, icon('plus', 'ico--sm'), 'Add a free range')])));
+        [hint, list, msg, ro ? null : h('button', { class: 'btn btn--sm', type: 'button', onclick: () => paintRows([...ranges, { from_date: null, to_date: null }]) }, icon('plus', 'ico--sm'), 'Add a free range')]),
+      priceSetting()));
+  }
+
+  /* ---- the default price per kWh ({ value, currency } or null): Statistics estimates unpriced charges at it */
+  function priceSetting() {
+    const p = S.settings.default_price_per_kwh;
+    const what = 'Default price per kWh';
+    const val = field({ label: 'Price per kWh', name: 'sc-dp-value', path: 'default_price_per_kwh.value', type: 'number', value: p ? String(p.value) : '',
+      attrs: { min: '0', max: '10', step: 'any', inputmode: 'decimal', placeholder: '0.15', disabled: ro } });
+    const cur = field({ label: 'Currency', name: 'sc-dp-currency', path: 'default_price_per_kwh.currency', value: p?.currency || S.currency || '',
+      attrs: { maxlength: '3', autocomplete: 'off', spellcheck: 'false', placeholder: 'USD', disabled: ro } });
+    const onErrs = (errs) => {
+      val.setError(errs['default_price_per_kwh.value'] || null);
+      cur.setError(errs['default_price_per_kwh.currency'] || errs.default_price_per_kwh || null);
+    };
+    const save = () => {
+      const raw = val.input.value.trim(), n = Number(raw), c = cur.input.value.trim().toUpperCase();
+      const bad = {};
+      if (raw === '' || !Number.isFinite(n) || n < 0 || n > 10) bad['default_price_per_kwh.value'] = 'A price from 0 to 10.';
+      if (!/^[A-Z]{3}$/.test(c)) bad['default_price_per_kwh.currency'] = 'Three letters, such as USD or EUR.';
+      onErrs(bad);
+      if (!Object.keys(bad).length) patchSettings({ default_price_per_kwh: { value: n, currency: c } }, what, onErrs);
+    };
+    for (const f of [val, cur]) f.input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
+    return setting(what, 'Charges without a price are estimated at it on Statistics, shown apart as estimated.',
+      [h('div', { class: 'sc-price' }, val.el, cur.el),
+        ro ? null : h('div', { class: 'sc-price-acts' },
+          h('button', { class: 'btn btn--sm', type: 'button', onclick: save }, 'Save'),
+          p ? h('button', { class: 'btn btn--sm btn--ghost', type: 'button', onclick: () => patchSettings({ default_price_per_kwh: null }, what, onErrs) }, 'Clear') : null)]);
   }
 
   /* ---- Data sources: the live inputs in their priority order, gap filling from an import, and the overlaps */
@@ -862,6 +897,12 @@ async function mountCar(ctx) {
 }
 
 // a calendar day (YYYY-MM-DD) as the ms of its midnight in UTC, to write it with the date formatter in UTC
+// the currency a car's charges cost most in (the Charges list's totals), or null
+function topCurrency(list) {
+  const by = list?.totals?.cost_by_currency || [];
+  return by.length ? by.reduce((a, b) => (b.amount > a.amount ? b : a)).currency : null;
+}
+
 function dayMs(d) {
   const [y, m, dd] = d.split('-').map(Number);
   return Date.UTC(y, m - 1, dd);

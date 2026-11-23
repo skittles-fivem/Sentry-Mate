@@ -8,6 +8,7 @@ import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
 import { format, convert, toMetric, unitLabel } from '../shared/units.js';
 import { formatNumber } from '../shared/i18n.js';
+import * as TI from '../shared/tiers.js';
 import { dayKey, dayStart, addDays } from '../shared/time.js';
 import { head, section, kv, note, link } from '../core/ui.js';
 import { num, tag, date } from '../core/fmt.js';
@@ -38,6 +39,7 @@ const priceText = (p) => {
   if (!p) return null;
   const parts = [];
   if (p.per_kwh != null) parts.push(`${format(p.per_kwh, 'money', { currency: p.currency })}/kWh`);
+  if (p.tiers?.steps?.length) parts.push(`${p.tiers.steps.length} kWh step${p.tiers.steps.length === 1 ? '' : 's'}`);
   if (p.per_minute != null) parts.push(`${format(p.per_minute, 'money', { currency: p.currency })}/min`);
   if (p.session_fee) parts.push(`+${format(p.session_fee, 'money', { currency: p.currency })}`);
   if (p.rates?.length) parts.push(`${p.rates.length} rate${p.rates.length === 1 ? '' : 's'}`);
@@ -149,9 +151,10 @@ export async function mount(ctx) {
     const d = {
       name: cur?.name || '', kind: cur?.kind || 'other', lat: cur?.lat ?? lat0, lon: cur?.lon ?? lon0,
       radius_m: cur?.radius_m ?? (Number.isFinite(+q.radius) ? +q.radius : R_NEW), time_zone: cur?.time_zone || '',
-      priced: !!p, mode: p ? (p.per_kwh != null && p.per_minute != null ? 'both' : p.per_minute != null ? 'minute' : 'kwh') : 'kwh',
+      priced: !!p, mode: p?.tiers ? 'tiers' : p ? (p.per_kwh != null && p.per_minute != null ? 'both' : p.per_minute != null ? 'minute' : 'kwh') : 'kwh',
       currency: p?.currency || 'USD', per_kwh: p?.per_kwh ?? null, per_minute: p?.per_minute ?? null, session_fee: p?.session_fee ?? null,
       rates: (p?.rates || []).map((r) => ({ ...r })),
+      tiers: TI.copyTiers(p?.tiers) || TI.newTiers(p?.per_kwh ?? null),
     };
     const L = unitLabel('length');
     const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
@@ -177,7 +180,38 @@ export async function mount(ctx) {
     const keySet = (opts, get, set) => h('span', { class: 'keys' }, opts.map(([v, l]) => h('button', { class: 'key', type: 'button', disabled: lock, 'aria-pressed': String(get() === v),
       onclick: (e) => { set(v); for (const b of e.currentTarget.parentElement.children) b.setAttribute('aria-pressed', String(b === e.currentTarget)); paintPrice(); changed(); } }, l)));
     const pricedKeys = keySet([[false, 'free or not tracked'], [true, 'priced']], () => d.priced, (v) => { d.priced = v; });
-    const modeKeys = keySet([['kwh', 'per kWh'], ['minute', 'per minute'], ['both', 'both']], () => d.mode, (v) => { d.mode = v; });
+    const modeKeys = keySet([['kwh', 'per kWh'], ['minute', 'per minute'], ['both', 'both'], ['tiers', 'tiered (per kWh steps)']], () => d.mode, (v) => { d.mode = v; });
+    // tiered prices: steps by the kWh used in a billing cycle
+    const tiersBox = h('div', { class: 'lines' });
+    const tiersMsg = h('p', { class: 'frm-msg', hidden: true, role: 'alert' });
+    const fCycle = field({ label: 'cycle from', name: 'cycle_day', hint: 'the billing cycle starts at midnight at the place', type: 'select', value: String(d.tiers.cycle_day || 1), path: 'price.tiers.cycle_day', options: TI.cycleChoices().map(([v, l]) => [v, l.toLowerCase()]), attrs: { disabled: lock } });
+    fCycle.input.addEventListener('change', () => { d.tiers.cycle_day = Number(fCycle.input.value); paintRule(); changed(); });
+    const fBase = field({ label: 'house use', name: 'base_kwh', hint: 'kWh the household uses per cycle, counted first', type: 'number', value: d.tiers.base_kwh || null, path: 'price.tiers.base_kwh', attrs: { min: '0', step: '1', placeholder: '0', disabled: lock } });
+    fBase.input.addEventListener('input', () => { d.tiers.base_kwh = numOrNull(fBase.input.value) ?? 0; paintRule(); changed(); });
+    function paintTiers() {
+      const st = d.tiers.steps;
+      replace(tiersBox, st.map((s, i) => {
+        const { from, to } = TI.stepRange(st, i);
+        const inp = (key, attrs) => { const el = h('input', { class: 'in in--cell', type: 'number', disabled: lock || attrs.fixed, 'aria-label': `${key === 'from_kwh' ? 'from kWh' : 'price per kWh'} of step ${i + 1}`, size: '7', ...attrs, fixed: undefined }); el.addEventListener('input', () => { s[key] = numOrNull(el.value); if (key === 'from_kwh') paintTierWords(); paintRule(); changed(); }); return el; };
+        return h('div', { class: 'pl-rate pl-tier' }, h('span', { class: 'muted pl-tier-words' }, `${i + 1}. ${TI.stepLabel(from, to).toLowerCase()}`),
+          h('span', { class: 'muted' }, 'from'), inp('from_kwh', { step: '1', min: '0', value: i === 0 ? 0 : s.from_kwh ?? '', fixed: i === 0 }), h('span', { class: 'muted' }, 'kWh at'),
+          inp('per_kwh', { step: '0.0001', value: s.per_kwh ?? '', placeholder: '/kWh' }),
+          lock || st.length <= 1 ? null : h('button', { class: 'btn btn--line muted', type: 'button', 'aria-label': `remove step ${i + 1}`, onclick: () => { st.splice(i, 1); st[0].from_kwh = 0; paintTiers(); paintRule(); changed(); } }, '[x]'));
+      }));
+    }
+    function paintTierWords() {
+      const st = d.tiers.steps;
+      tiersBox.querySelectorAll('.pl-tier-words').forEach((el, i) => { const { from, to } = TI.stepRange(st, i); el.textContent = `${i + 1}. ${TI.stepLabel(from, to).toLowerCase()}`; });
+    }
+    const tiersWrap = h('div', null, h('h3', { class: 'sub-title' }, 'steps per billing cycle', ' ', lock ? null : h('button', { class: 'btn btn--line tone--accent', type: 'button', onclick: () => {
+      const st = d.tiers.steps;
+      if (st.length >= TI.MAX_TIERS) return;
+      st.push({ from_kwh: (Number(st[st.length - 1]?.from_kwh) || 0) + 1000, per_kwh: null });
+      paintTiers(); paintRule(); changed();
+    } }, '[add a step]')),
+      tiersBox, tiersMsg,
+      fCycle.el, fBase.el,
+      note(`Each step’s price applies from its kWh on, counted from the cycle start: this place’s charging, every car, in time order. ${TI.BASE_USE_NOTE}`));
     const ratesBox = h('div', { class: 'lines' });
     const ruleEl = h('div', { class: 'mono-box pl-rule', cover: 'web.geofences.form.auto-cost' });
     const priceBody = h('div', { class: 'frm' });
@@ -189,20 +223,27 @@ export async function mount(ctx) {
         return h('div', { class: 'pl-rate' }, inp('name', { type: 'text', value: r.name || '', maxlength: '40', size: '10' }), days,
           inp('from', { type: 'text', value: r.from || '00:00', size: '5', inputmode: 'numeric', class: 'in in--cell in--time' }), h('span', { class: 'muted' }, '-'), inp('to', { type: 'text', value: r.to || '24:00', size: '5', inputmode: 'numeric', class: 'in in--cell in--time' }),
           d.mode !== 'minute' ? inp('per_kwh', { type: 'number', step: '0.0001', value: r.per_kwh ?? '', placeholder: '/kWh', size: '6' }) : null,
-          d.mode !== 'kwh' ? inp('per_minute', { type: 'number', step: '0.0001', value: r.per_minute ?? '', placeholder: '/min', size: '6' }) : null,
+          d.mode !== 'kwh' && d.mode !== 'tiers' ? inp('per_minute', { type: 'number', step: '0.0001', value: r.per_minute ?? '', placeholder: '/min', size: '6' }) : null,
           lock ? null : h('button', { class: 'btn btn--line muted', type: 'button', 'aria-label': `remove rate ${i + 1}`, onclick: () => { d.rates.splice(i, 1); paintRates(); changed(); } }, '[x]'));
       }) : h('p', { class: 'muted' }, '-- no time-of-use rates: one price all day --'));
     }
     function paintRule() {
       const c = d.currency, part = [];
-      if (d.mode !== 'minute') part.push(`kWh x ${d.per_kwh != null ? format(d.per_kwh, 'money', { currency: c }) : 'price per kWh'}`);
-      if (d.mode !== 'kwh') part.push(`minutes x ${d.per_minute != null ? format(d.per_minute, 'money', { currency: c }) : 'price per minute'}`);
+      if (d.mode === 'tiers') part.push('kWh in each step x that step’s price');
+      else if (d.mode !== 'minute') part.push(`kWh x ${d.per_kwh != null ? format(d.per_kwh, 'money', { currency: c }) : 'price per kWh'}`);
+      if (d.mode !== 'kwh' && d.mode !== 'tiers') part.push(`minutes x ${d.per_minute != null ? format(d.per_minute, 'money', { currency: c }) : 'price per minute'}`);
       part.push(d.session_fee != null ? `${format(d.session_fee, 'money', { currency: c })} fee` : 'session fee');
-      replace(ruleEl, h('p', null, `cost = ${part.join(' + ')}`));
+      const ex = d.mode === 'tiers' ? TI.workedExample(d.tiers, d.session_fee) : null;
+      const exOk = ex && ex.parts.length && ex.parts.every((x) => x.per_kwh != null);
+      replace(ruleEl, h('p', null, `cost = ${part.join(' + ')}`),
+        ex ? h('p', null, exOk ? `e.g. ${formatNumber(ex.kwh)} kWh from ${formatNumber(ex.before)} kWh into the cycle: ${TI.splitText(ex.parts, c)}${d.session_fee ? ` + ${format(d.session_fee, 'money', { currency: c })}` : ''} = ${format(ex.total, 'money', { currency: c })}` : 'e.g. -- give every step a price --') : null,
+        ex && d.rates.length ? h('p', { class: 'muted' }, 'time-of-use rates win their hours; their kWh still count toward the steps') : null);
     }
     function paintPrice() {
-      fKwh.el.hidden = d.mode === 'minute';
-      fMin.el.hidden = d.mode === 'kwh';
+      fKwh.el.hidden = d.mode === 'minute' || d.mode === 'tiers';
+      fMin.el.hidden = d.mode === 'kwh' || d.mode === 'tiers';
+      tiersWrap.hidden = d.mode !== 'tiers';
+      if (d.mode === 'tiers') paintTiers();
       priceBody.hidden = !d.priced;
       paintRates(); paintRule();
     }
@@ -210,9 +251,10 @@ export async function mount(ctx) {
       h('div', { class: 'fld', cover: 'web.geofences.form.billing-type' }, h('span', { class: 'fld-label' }, 'priced by:'), h('div', { class: 'fld-box' }, modeKeys)),
       h('div', { cover: 'web.geofences.form.cost-per-unit' }, fCur.el, fKwh.el, fMin.el),
       h('div', { cover: 'web.geofences.form.session-fee' }, fFee.el),
+      tiersWrap,
       h('p', { class: 'note', cover: 'web.geofences.form.negative-price' }, 'A price below zero is allowed: some tariffs pay you to charge at times of surplus. The session fee cannot be below zero.'),
       h('div', { cover: 'projects.agile' }, h('h3', { class: 'sub-title' }, 'time-of-use rates', ' ', lock ? null : h('button', { class: 'btn btn--line tone--accent', type: 'button', onclick: () => { d.rates.push({ name: d.rates.length ? `rate ${d.rates.length + 1}` : 'off-peak', days: 'all', from: '00:00', to: '07:00', per_kwh: null, per_minute: null }); paintRates(); changed(); } }, '[add a rate]')),
-        ratesBox, note('Rates follow the clock of the place’s time zone. Outside every rate the price above applies. Hourly tariffs are typed here as rates; nothing is fetched from outside.')),
+        ratesBox, note('Rates follow the clock of the place’s time zone. Outside every rate the price above (or the steps) applies. Hourly tariffs are typed here as rates; nothing is fetched from outside.')),
       ruleEl,
       note('A charge that ends inside the circle gets this cost by itself, worked out in 15 minute steps at the rate of each step. A cost typed on a charge by hand always wins.'));
     paintPrice();
@@ -234,24 +276,27 @@ export async function mount(ctx) {
       if (!Number.isFinite(d.lon) || Math.abs(d.lon) > 180) e.lon = 'A longitude from -180 to 180.';
       if (!Number.isFinite(d.radius_m) || d.radius_m < R_MIN || d.radius_m > R_MAX) e.radius_m = `From ${format(R_MIN, 'length')} to ${format(R_MAX, 'length')}.`;
       if (d.priced) {
-        for (const [k, v] of [['price.per_kwh', d.mode !== 'minute' ? d.per_kwh : null], ['price.per_minute', d.mode !== 'kwh' ? d.per_minute : null]]) if (v != null && (!Number.isFinite(v) || v < -10 || v > 100)) e[k] = 'From -10 to 100.';
+        if (d.mode === 'tiers') Object.assign(e, TI.tierErrors(d.tiers));
+        for (const [k, v] of [['price.per_kwh', d.mode !== 'minute' && d.mode !== 'tiers' ? d.per_kwh : null], ['price.per_minute', d.mode !== 'kwh' && d.mode !== 'tiers' ? d.per_minute : null]]) if (v != null && (!Number.isFinite(v) || v < -10 || v > 100)) e[k] = 'From -10 to 100.';
         if (d.session_fee != null && (!Number.isFinite(d.session_fee) || d.session_fee < 0 || d.session_fee > 1000)) e['price.session_fee'] = 'From 0 to 1,000.';
-        if ((d.mode === 'minute' ? d.per_minute : d.per_kwh) == null && d.session_fee == null && !d.rates.length) e['price.per_kwh'] = 'Type a price, a rate or a session fee, or pick free.';
+        if (d.mode !== 'tiers' && (d.mode === 'minute' ? d.per_minute : d.per_kwh) == null && d.session_fee == null && !d.rates.length) e['price.per_kwh'] = 'Type a price, a rate or a session fee, or pick free.';
         d.rates.forEach((r, i) => { if (!(r.name || '').trim() || !HM.test(r.from || '') || !HM.test(r.to || '') || r.from === r.to) e.rates = `Rate ${i + 1}: a name and times as HH:MM (24:00 ends the day), start and end apart.`; });
       }
       return e;
     }
     const showErrors = (e) => {
       for (const [k, f] of Object.entries(fields)) f.setError(e[k] || null);
-      const rest = Object.entries(e).filter(([k]) => !fields[k]).map(([, v]) => v);
+      const tierMsgs = Object.entries(e).filter(([k]) => k.startsWith('price.tiers')).map(([, v]) => v);
+      tiersMsg.hidden = !tierMsgs.length; replace(tiersMsg, [...new Set(tierMsgs)].join(' '));
+      const rest = Object.entries(e).filter(([k]) => !fields[k] && !k.startsWith('price.tiers')).map(([, v]) => v);
       formMsg.hidden = !rest.length; replace(formMsg, rest.join(' '));
     };
     const draftBody = () => {
       const b = { name: d.name.trim(), kind: d.kind, lat: d.lat, lon: d.lon, radius_m: Math.round(d.radius_m), price: null };
       if (d.time_zone) b.time_zone = d.time_zone;
       if (d.priced) {
-        const k = d.mode !== 'minute', m = d.mode !== 'kwh';
-        b.price = { currency: d.currency, per_kwh: k ? d.per_kwh : null, per_minute: m ? d.per_minute : null, session_fee: d.session_fee,
+        const k = d.mode !== 'minute', m = d.mode !== 'kwh' && d.mode !== 'tiers', tiered = d.mode === 'tiers';
+        b.price = { currency: d.currency, per_kwh: k && !tiered ? d.per_kwh : null, per_minute: m ? d.per_minute : null, session_fee: d.session_fee, tiers: tiered ? TI.tiersBody(d.tiers) : null,
           rates: d.rates.map((r) => ({ name: r.name.trim(), days: r.days || 'all', from: r.from, to: r.to, per_kwh: k ? r.per_kwh ?? null : null, per_minute: m ? r.per_minute ?? null : null })) };
       }
       return b;

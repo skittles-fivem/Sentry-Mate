@@ -18,6 +18,7 @@ from .. import derive
 from ..conventions import Response, json_bytes, page
 from ..errors import ApiError, bad_input, conflict, invalid, not_found, stale_version
 from ..live import now_object
+from .fleet import device_label
 from ..util import DAY, HOUR, MIN, date_str, h01, local_date, r
 from .. import sources as SRC
 from .reports import gap_rows
@@ -52,7 +53,7 @@ def patch_settings(req):
     req.version_check(cur["version"])
     bad, rule = {}, {}
     known = ("version", "units", "range", "car_order", "geocode", "tiles", "release_check", "outside_links",
-             "outbound", "host_names", "default_time_zone", "import_gap_fill")
+             "outbound", "host_names", "default_time_zone", "import_gap_fill", "full_rebuild")
     for k in body:
         if k not in known:
             bad[k] = "Unknown field."
@@ -116,6 +117,7 @@ def patch_settings(req):
     sub("outside_links", {"maps": bool, "release_notes": bool})
     sub("outbound", {"proxy": "str?"})
     sub("import_gap_fill", {"enabled": bool})
+    sub("full_rebuild", {"auto": bool})
     if "range" in body:
         if body["range"] not in ("rated", "ideal"):
             rule["range"] = "Must be rated or ideal."
@@ -239,11 +241,11 @@ TILE_PRESETS = [
      "attribution": "Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)",
      "max_zoom": 17, "terms": "https://opentopomap.org/about", "overlays": [], "region": None},
 ]
-DEFAULT_PRESET = "satellite"
+DEFAULT_PRESET = "osm"
 
 
 def tile_chosen_id(t):
-    """As the real server's Tiles::chosen_id: the preset an admin picked, else satellite (also over the old
+    """As the real server's Tiles::chosen_id: the preset an admin picked, else the OpenStreetMap street map (also over the old
     implicit OpenStreetMap / OpenTopoMap default); an address of their own is `custom`."""
     p = t.get("preset")
     if p == "custom" or any(x["id"] == p for x in TILE_PRESETS):
@@ -274,7 +276,7 @@ def tile_style(t, sid):
 def tile_viewer_styles(t):
     first = tile_chosen_id(t)
     out = [s for s in [tile_style(t, first)] if s]
-    for sid in t.get("styles", ["satellite", "osm"]):
+    for sid in t.get("styles", ["osm", "satellite"]):
         if sid != first and (s := tile_style(t, sid)):
             out.append(s)
     return out
@@ -313,7 +315,7 @@ def maps_config(req):
                       "attribution": chosen["attribution"] if chosen else t["attribution"],
                       "max_zoom": chosen["max_zoom"] if chosen else t["max_zoom"],
                       "preset": tile_chosen_id(t), "labels": t.get("labels", True),
-                      "allowed_styles": list(t.get("styles", ["satellite", "osm"])),
+                      "allowed_styles": list(t.get("styles", ["osm", "satellite"])),
                       "overlays": chosen["overlays"] if online and chosen else [],
                       "imagery": bool(online and chosen and chosen["imagery"]),
                       "styles": tile_viewer_styles(t) if online else [],
@@ -388,6 +390,8 @@ def notices(req):
         items += teslafi_notices(req)
         from .teslamate import notices as teslamate_notices
         items += teslamate_notices(req)
+        from .fullrebuild import notices as full_notices
+        items += full_notices(req)
     return {"items": items, "next": None}
 
 
@@ -547,8 +551,6 @@ def car_health(req):
     toks = [t for t in st.tokens.get(cid, []) if not t["revoked"]]
     waiting = sum(k["logs_waiting"] for k in keys)
     pending = any(rb.get("pending_until", 0) > req.now for rb in st.rebuilds.get(cid, []))
-    if req.app.cfg.rebuild_running and cid in req.app.ds.featured:
-        pending = True  # --rebuild-running: a rebuild that never ends
     if h is None:
         from ..live import list_item
         it = list_item(req.app, cid, req.now)
@@ -604,7 +606,8 @@ def car_health(req):
         "car": cid, "time_zone": req.tz(), "healthy": not reasons, "reasons": reasons, "last_upload_ms": last_upload,
         "last_log_trust": trust,
         "keys": [{"key": k["key"], "last_upload_ms": k["last_upload_ms"], "preferred": k["preferred"],
-                  "device": k["device"], "logs_waiting": k["logs_waiting"]} for k in keys],
+                  "device": k["device"], "device_label": device_label(k), "logs_waiting": k["logs_waiting"]}
+                 for k in keys],
         "chain_gaps": chain, "dropped_frames": dropped, "unknown_spans": unknown,
         "unknown_ms": sum(((u["end_ms"] or req.now) - u["start_ms"]) for u in unknown),
         "logs_waiting": waiting, "missing_logs": missing, "rebuild_pending": pending, "gps_disagreement": None,
@@ -615,6 +618,9 @@ def car_health(req):
 
 def rebuild(req):
     st = req.store
+    from .fullrebuild import status as full_status
+    if full_status(req)["state"] == "running":
+        raise ApiError(409, "full_rebuild_running", "A full rebuild is under way: it makes the whole history again.")
     body = req.json(required=False)
     bad = {k: "Unknown field." for k in body if k not in ("from_ms", "to_ms")}
     for k in ("from_ms", "to_ms"):
@@ -641,6 +647,56 @@ def rebuild(req):
     req.app.events.publish("rows", {"car": req.car, "kinds": job["kinds"], "from_ms": a, "to_ms": b}, car=req.car)
     return {"car": req.car, "job": job["id"], "status": "done", "from_ms": a, "to_ms": b, "kinds": job["kinds"],
             "logs_read": int(days * 1440 * 0.6), "took_ms": took}
+
+
+# ------------------------------------------------------------------ the car's own GPS layout
+
+# a layout as `sentry-mate gps-layout` prints it: "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)", with an
+# optional "; accuracy ..." field (docs/ui-api.md: /cars/{car}/gps-layout)
+_NUM = r"-?\d+(?:\.\d+)?(?:e-?\d+)?"
+_FIELD = rf"\d+\|\d+@[01][+-] \({_NUM},{_NUM}\)"
+_GPS_LAYOUT = re.compile(rf"lat {_FIELD}; lon {_FIELD}(?:; accuracy {_FIELD})?")
+
+
+def _gps_layouts(st):
+    if not hasattr(st, "gps_layouts"):
+        st.gps_layouts = {}
+    return st.gps_layouts
+
+
+def get_gps_layout(req):
+    return {"car": req.car, "layout": _gps_layouts(req.store).get(req.car)}
+
+
+def put_gps_layout(req):
+    st = req.store
+    body = req.json()
+    bad = {k: "Unknown field." for k in body if k != "layout"}
+    if bad:
+        raise bad_input(bad)
+    if "layout" not in body:
+        raise invalid({"layout": "Required: the layout, or null for the DBC's."})
+    layout = body["layout"]
+    if layout is not None:
+        if not isinstance(layout, str):
+            raise invalid({"layout": "Must be text or null."})
+        layout = layout.strip()
+        if not _GPS_LAYOUT.fullmatch(layout):
+            raise invalid({"layout": "Write it as sentry-mate gps-layout prints it: lat start|width@order sign "
+                                     "(scale,offset); lon ..."})
+    layouts = _gps_layouts(st)
+    if layouts.get(req.car) == layout:
+        return {"car": req.car, "layout": layout, "job": None}
+    with st.lock:
+        if layout is None:
+            layouts.pop(req.car, None)
+        else:
+            layouts[req.car] = layout
+    name = st.car_meta(req.car)["name"]
+    st.record(req.account, "car-gps-layout", f"car:{req.car}",
+              f"Set how {name}'s Screenmate GPS frames are read ({layout}); its history is rebuilt." if layout else
+              f"Set {name}'s Screenmate GPS frames to be read as the DBC says; its history is rebuilt.")
+    return {"car": req.car, "layout": layout, "job": st.new_id("rb")}
 
 
 # ------------------------------------------------------------------ overlaps
@@ -867,6 +923,12 @@ PACK_SHARE, PACK_RATIO = 0.8, 0.82
 SHRINK = {"series.can.snapshots": 0.18, "series.teslamate.snapshots": 0.12, "curves.can.snapshots": 0.1,
           "rows.snapshots": 0.06, "kv.engine": 0.22, "kv.day-parts": 0.3}
 COMPACT_STEPS = ("logs", "series", "records")
+COMPACT_UNIT = {"logs": "days", "series": "days", "records": "records"}
+STALL_MS = 120_000
+# the progress fields of a pass that is not running
+_IDLE_PROGRESS = {"phase": None, "step_number": None, "steps": 3, "unit": None, "pass_saved_bytes": None,
+                  "rate_per_s": None, "eta_ms": None, "progress_ms": None, "stalled": False, "unit_errors": 0,
+                  "last_unit_error": None}
 
 
 def _detail_base(req):
@@ -939,25 +1001,38 @@ def _compaction(req, advance=False):
         # the last pass the server ran by itself: three hours before the start, 42 s long
         t0 = req.app.cfg.now_ms - 3 * HOUR - 17 * MIN
         c = st.compaction = {"status": "idle", "automatic": True, "started_ms": t0, "finished_ms": t0 + 42_000,
-                             "step": None, "done": 0, "total": 0, "last_saved_bytes": 9_512_345,
+                             "step": None, "done": 0, "total": 0, **_IDLE_PROGRESS, "last_saved_bytes": 9_512_345,
                              "saved_bytes": int(system_storage(req)["kinds"][0]["bytes"] * 0.31 * (1 - PACK_RATIO)),
                              "error": None, "_passes": 0, "_tick": 0}
     if advance and c["status"] == "running":
         c["_tick"] += 1
         cats = {x["key"]: x for x in _detail_categories(req, c["_passes"])}
-        totals = {"logs": cats["logs.raw"]["files"], "series": cats["series.can.snapshots"]["files"],
+        # logs and series count days (a car's day of logs: its uploads of that day, about 1440 a day awake)
+        totals = {"logs": max(1, cats["logs.raw"]["files"] // 1440), "series": cats["series.can.snapshots"]["files"],
                   "records": cats["kv.engine"]["files"] + cats["kv.day-parts"]["files"]}
-        # the notches: logs counted and half done, logs done, series, records, finished
+        # the notches: logs counted and half done, logs done, series, records, finished; each notch is told as
+        # 40 s of work (whatever the clock does), so rate and estimate read the same on every run
         plan = [("logs", 0.45), ("logs", 1.0), ("series", 0.6), ("records", 0.5)]
         if c["_tick"] <= len(plan):
             step, share = plan[c["_tick"] - 1]
-            c.update(step=step, total=totals[step], done=int(totals[step] * share))
+            total = totals[step]
+            done = int(total * share)
+            before = _disk_total(req, c["_passes"])
+            freed = before - _disk_total(req, c["_passes"] + 1)
+            part = (c["_tick"] - 1 + share) / len(plan)
+            rate = done / 40.0 if done else None
+            c.update(step=step, total=total, done=done, phase="packing", step_number=COMPACT_STEPS.index(step) + 1,
+                     unit=COMPACT_UNIT[step], pass_saved_bytes=int(freed * part) if c["_passes"] == 0 else 0,
+                     rate_per_s=rate, eta_ms=int((total - done) / rate * 1000) if rate else None,
+                     progress_ms=req.now - 5_000, stalled=False)
         else:
             before = _disk_total(req, c["_passes"])
             c["_passes"] += 1
             saved = before - _disk_total(req, c["_passes"])
             c.update(status="idle", step=None, done=0, total=0, finished_ms=req.now, last_saved_bytes=saved,
-                     saved_bytes=c["saved_bytes"] + saved)
+                     saved_bytes=c["saved_bytes"] + saved, **_IDLE_PROGRESS)
+    if c["status"] == "running" and c.get("progress_ms") is not None:
+        c["stalled"] = req.now - c["progress_ms"] >= STALL_MS
     return {k: v for k, v in c.items() if not k.startswith("_")}
 
 
@@ -979,7 +1054,9 @@ def storage_compact(req):
         c = req.store.compaction
         started = c["status"] != "running"
         if started:
-            c.update(status="running", started_ms=req.now, step="logs", done=0, total=0, error=None, _tick=0)
+            c.update(status="running", started_ms=req.now, step="logs", done=0, total=0, error=None, _tick=0,
+                     **{**_IDLE_PROGRESS, "phase": "counting", "step_number": 1, "unit": "days",
+                        "pass_saved_bytes": 0, "progress_ms": req.now})
         comp = _compaction(req)
     if started:
         req.store.record(req.account, "storage-compacted", "server:storage", "Started packing the stored data (Compact now).")
@@ -1036,6 +1113,7 @@ def register(router):
     router.add("/api/v1/ui-packs", GET=ui_packs)
     router.add("/api/v1/cars/{car}/health", GET=car_health)
     router.add("/api/v1/cars/{car}/rebuild", POST=rebuild, admin=("POST",))
+    router.add("/api/v1/cars/{car}/gps-layout", GET=get_gps_layout, PUT=put_gps_layout, admin=("GET", "PUT"))
     router.add("/api/v1/cars/{car}/overlaps", GET=get_overlaps, PATCH=patch_overlap, admin=("PATCH",))
     router.add("/api/v1/cars/{car}/storage", GET=car_storage)
     router.add("/api/v1/system/storage", GET=system_storage, admin=("GET",))

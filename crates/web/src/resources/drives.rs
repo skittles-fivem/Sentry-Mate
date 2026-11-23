@@ -341,7 +341,9 @@ async fn drive_stats(State(app): State<AppState>, CarParam(car): CarParam, p: Pa
     crate::csv::answer(&p, "drive-stats", out)
 }
 
-/// `/cars/{car}/logbook?from_ms=&to_ms=&format=json|csv|pdf` (also `Accept: text/csv` or `application/pdf`).
+/// `/cars/{car}/logbook?from_ms=&to_ms=&format=json|csv|pdf` (also `Accept: text/csv` or `application/pdf`): every
+/// row. With `limit`, `after`, `offset` or `at_ms` (JSON) a page of it instead, and with `purpose=`, `q=`, `gaps=`,
+/// `sort=` and `dir=` only the rows they show, in that order (the CSV too: every row they show, sent as it is written).
 async fn logbook(
     State(app): State<AppState>,
     CarParam(car): CarParam,
@@ -360,11 +362,48 @@ async fn logbook(
         let (pdf, name) = run(&app, move |e| q::logbook::logbook_pdf(e, car, &per).map_err(failed)).await?;
         return Ok(file(pdf, "application/pdf", &name));
     }
-    let out = value(&app, move |e| q::logbook::logbook(e, car, &per)).await?;
+    let mut query = q::logbook::LogQuery {
+        purpose: p.one_of("purpose", &["business", "commute", "private", "none"])?.map(str::to_string),
+        q: text(&p, "q")?,
+        gaps: p.bool("gaps")?.unwrap_or(false),
+        sort: p.one_of("sort", &q::logbook::LOGBOOK_SORTS)?.map(str::to_string),
+        desc: p.one_of("dir", &["asc", "desc"])? == Some("desc"),
+        ..Default::default()
+    };
+    let filtered = query.purpose.is_some() || query.q.is_some() || query.gaps || query.sort.is_some() || query.desc;
     if format == "csv" {
-        let rows = out["rows"].as_array().cloned().unwrap_or_default();
-        return Ok(crate::csv::response(&format!("logbook-{}", ids::car(car)), crate::csv::rows(&rows)));
+        let name = format!("logbook-{}", ids::car(car));
+        let rows = run(&app, move |e| {
+            let rows = if filtered {
+                q::logbook::logbook_rows(e, car, &per, &query)
+            } else {
+                q::logbook::logbook(e, car, &per).map(|b| b.body.rows)
+            };
+            rows.map_err(failed)
+        })
+        .await?;
+        return Ok(crate::csv::stream(&name, rows));
     }
+    let paged = ["limit", "after", "offset", "at_ms"].iter().any(|k| p.has(k));
+    if !paged && !filtered {
+        let out = value(&app, move |e| q::logbook::logbook(e, car, &per)).await?;
+        return Ok(axum::Json(out).into_response());
+    }
+    let max = q::logbook::MAX_LOGBOOK_ROWS as u64;
+    let after: Option<u64> = app.cursor(&p)?;
+    query.limit = p.paging()?.limit;
+    query.offset = after.or(p.uint("offset", 0, max)?).unwrap_or(0) as usize;
+    query.at_ms = if after.is_some() { None } else { p.uint("at_ms", 0, crate::query::MAX_MS)? };
+    let mut out = value(&app, move |e| q::logbook::logbook_page(e, car, &per, &query)).await?;
+    let (offset, shown, total) = (
+        out["offset"].as_u64().unwrap_or(0),
+        out["items"].as_array().map_or(0, Vec::len) as u64,
+        out["total"].as_u64().unwrap_or(0),
+    );
+    out["next"] = match offset + shown < total {
+        true => Value::String(app.next_cursor(&p, &(offset + shown))?),
+        false => Value::Null,
+    };
     Ok(axum::Json(out).into_response())
 }
 

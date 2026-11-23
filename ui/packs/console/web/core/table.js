@@ -14,23 +14,34 @@
 //     columns: [{ key, label, num, sort, firstDir, render(row), value(row), title, cover, ph, desk, cls, total(page, rows) }],
 //     sort: { key, dir }, onSort({ key, dir }),
 //     rowHref(row), empty(), onPage(page), csv: true | false, csvName,
+//     rowTitle(row),                             the row's hover title (where its data came from: kept out of the cells)
 //     keep(row),                                 an API list: only the rows it says yes to are shown (and counted)
 //     filters,                                   controls put above the table
 //     autoMore: true, moreLabel,                 an API list: the next page also loads when the end of the table
 //                                                scrolls into view (the "more" button stays, for the keyboard)
-//     box: true | 'name',                        the rows (and the loading or empty line) scroll inside a box that the
-//                                                page's CSS gives its height (.tbl-box, from the start); with autoMore
-//                                                the next page loads as the end of the box comes near. The box is a
-//                                                focusable region (arrow keys scroll it), data-below while rows are
-//                                                hidden under its bottom edge (for a fade)
+//     box: true | 'name', boxRows,               the rows (and the loading or empty line) scroll in a box about five
+//                                                rows high (shared/scrollbox.js; .scroll-box in app.css, boxRows sets
+//                                                --box-rows): an API list has that height from the start and, with
+//                                                autoMore, loads the next page as the end of the box comes near; local
+//                                                rows are all drawn and the box is at most that high (.scroll-box--fit).
+//                                                The column header stays at the top while the rows scroll.
 //   });
 //   t.el; await t.ready; t.reload(params); t.rows();
+//
+// windowTable(ctx, opts): a long API list (paged by cursor and offset: { items, next, offset, total }) in a box about
+// ten rows high under a head line that stays; only the rows in view and a few more are in the page
+// (shared/vlist.js), loaded a chunk at a time as the box reaches them. Every row is one line high (two on a phone).
+// Takes title, side, cover, note, columns (sort: the API's sort name), sort, firstSort (the order "jump to a date"
+// works in), path, params, limit, rowHref, empty(), onPage(page), csvName, search ({ label, placeholder }), jump.
+// Returns { el, ready, setParams(patch), refresh(), total(), params() }.
 
 import { h, replace, cover as addCover } from '../shared/dom.js';
 import { compareText, formatNumber } from '../shared/i18n.js';
 import { csvFilename } from '../shared/csv.js';
 import { empty as emptyLine, loadingLine, errorWords } from './states.js';
 import { section } from './ui.js';
+import { scrollBox } from '../shared/scrollbox.js';
+import { windowList, dayJumpMs } from '../shared/vlist.js';
 
 export function table(ctx, opts) {
   const { rowHref = null, limit = 50 } = opts;
@@ -40,7 +51,8 @@ export function table(ctx, opts) {
   let params = { ...(opts.params || {}) };
   let sort = opts.sort ? { ...opts.sort } : null;
   let pager = null, items = [], gen = 0;
-  let localShown = limit;   // local rows: shown a page at a time too
+  const pageRows = opts.box && opts.rows ? Infinity : limit;   // local rows: a page at a time too (in a box: all, it scrolls)
+  let localShown = pageRows;
 
   const count = h('span', { class: 'tbl-count muted' });
   const csvSlot = h('span', { class: 'tbl-csv' });
@@ -55,12 +67,20 @@ export function table(ctx, opts) {
   const sortLine = h('label', { class: 'tbl-sortline' }, h('span', { class: 'muted' }, 'sort: '), sortSel);
   const sortable = columns.filter((c) => c.sort);
   const note = opts.note ? h('p', { class: 'note tbl-note', cover: opts.noteCover || null }, opts.note) : null;
-  const sentinel = opts.autoMore && !opts.rows ? h('div', { class: 'tbl-sentinel', 'aria-hidden': 'true' }) : null;
+  const sentinel = opts.autoMore && !opts.rows && !opts.box ? h('div', { class: 'tbl-sentinel', 'aria-hidden': 'true' }) : null;
   const box = opts.box
-    ? h('div', { class: 'tbl-scroll tbl-box', tabindex: '0', role: 'region', 'aria-label': typeof opts.box === 'string' ? opts.box : opts.label || opts.title || null }, tbl, status, sentinel)
+    ? scrollBox({
+      label: typeof opts.box === 'string' ? opts.box : opts.label || opts.title || null,
+      cls: ['tbl-scroll', 'tbl-box', opts.rows ? 'scroll-box--fit' : null], signal: ctx.signal, onCleanup: ctx.signal ? null : ctx.onCleanup,
+      onEnd: opts.autoMore && !opts.rows ? () => {
+        if (!ctx.alive() || !pager || pager.done || pager.loading || foot.hidden || moreBtn.disabled) return false;
+        return more().then(() => !!pager && !pager.done, () => false);
+      } : null,
+    }, tbl, status)
     : null;
+  if (box && opts.boxRows) box.el.style.setProperty('--box-rows', String(opts.boxRows));
   const body = box
-    ? [note, opts.filters || null, sortable.length ? sortLine : null, box, foot]
+    ? [note, opts.filters || null, sortable.length ? sortLine : null, box.el, foot]
     : [note, opts.filters || null, sortable.length ? sortLine : null, h('div', { class: 'tbl-scroll' }, tbl), status, sentinel, foot];
   const el = opts.bare
     ? h('div', { class: ['tbl-wrap', opts.wrapCls] }, body)
@@ -115,7 +135,7 @@ export function table(ctx, opts) {
 
   function rowEl(r) {
     const href = rowHref ? rowHref(r) : null;
-    const tr = h('tr', { dataset: { row: '', href: href || null } },
+    const tr = h('tr', { dataset: { row: '', href: href || null }, title: opts.rowTitle ? opts.rowTitle(r) || null : null },
       columns.map((c) => h('td', { class: colCls(c) }, cell(c, r))),
       h('td', { class: 'tbl-ph', colspan: String(columns.length) },
         h('div', { class: 'tbl-ph-main' }, phCols.main.map((c) => h('span', { class: 'tbl-ph-m' }, cell(c, r)))),
@@ -168,7 +188,7 @@ export function table(ctx, opts) {
   }
 
   async function more() {
-    if (opts.rows) { localShown += limit; paintLocal(); return; }
+    if (opts.rows) { localShown += pageRows; paintLocal(); return; }
     const g = gen;
     moreBtn.disabled = true;
     let got;
@@ -188,10 +208,9 @@ export function table(ctx, opts) {
 
   async function load({ quiet = false } = {}) {
     const g = ++gen;
-    if (opts.rows) { localShown = limit; paintLocal(); return; }
+    if (opts.rows) { localShown = pageRows; paintLocal(); box?.recheck(); return; }
     pager = ctx.api.pager(opts.path, { ...params, ...sortParams() }, { limit });
-    if (!quiet) { replace(tbody); replace(tfoot); tbl.hidden = true; foot.hidden = true; replace(status, loadingLine(`loading ${opts.title || 'rows'}`)); }
-    if (!quiet && box) box.scrollTop = 0;   // a new list starts at its top
+    if (!quiet) { replace(tbody); replace(tfoot); tbl.hidden = true; foot.hidden = true; replace(status, loadingLine(`loading ${opts.title || 'rows'}`)); box?.top(); }   // a new list starts at its top
     let got;
     try { got = await pager.more(); } catch (e) {
       if (g !== gen || !ctx.alive()) return;
@@ -215,20 +234,13 @@ export function table(ctx, opts) {
       if (!ctx.alive()) { io.disconnect(); return; }
       if (!entries.some((e) => e.isIntersecting) || !pager || pager.done || pager.loading || foot.hidden || moreBtn.disabled) return;
       more().then(recheck, () => {});
-    }, { root: box, rootMargin: `0px 0px ${box ? 96 : 300}px 0px` })
+    }, { rootMargin: '0px 0px 300px 0px' })
     : null;
-  function recheck() { if (io && ctx.alive() && pager && !pager.done) { io.unobserve(sentinel); io.observe(sentinel); } }
-  if (io) { io.observe(sentinel); ctx.signal?.addEventListener('abort', () => io.disconnect(), { once: true }); }
-  // a box: data-below while rows are hidden under its bottom edge
-  if (box) {
-    const edge = () => box.toggleAttribute('data-below', box.scrollHeight - box.scrollTop - box.clientHeight > 1);
-    box.addEventListener('scroll', edge, { passive: true });
-    if (typeof ResizeObserver === 'function') {
-      const ro = new ResizeObserver(edge);
-      ro.observe(box); ro.observe(tbl);
-      ctx.signal?.addEventListener('abort', () => ro.disconnect(), { once: true });
-    }
+  function recheck() {
+    if (box) { if (ctx.alive()) box.recheck(); return; }
+    if (io && ctx.alive() && pager && !pager.done) { io.unobserve(sentinel); io.observe(sentinel); }
   }
+  if (io) { io.observe(sentinel); ctx.signal?.addEventListener('abort', () => io.disconnect(), { once: true }); }
 
   head();
   const ready = load();
@@ -243,6 +255,160 @@ export function table(ctx, opts) {
     rows: () => (opts.rows ? sortedLocal() : kept(items)),
     last: () => pager?.last || null,
   };
+}
+
+export function windowTable(ctx, opts) {
+  const { rowHref = null } = opts;
+  const allCols = opts.columns;
+  const columns = allCols.filter((c) => c.desk !== false);
+  let params = { ...(opts.params || {}) };
+  let sort = opts.sort ? { ...opts.sort } : null;
+  const base = opts.firstSort || opts.sort || null;
+  let total = null;
+
+  const count = h('span', { class: 'tbl-count muted' });
+  const csvSlot = h('span', { class: 'tbl-csv' });
+  const thead = h('thead');
+  const tbody = h('tbody');
+  const tbl = h('table', { class: ['tbl', 'vl-table', opts.cls], 'aria-label': opts.label || opts.title || null }, thead, tbody);
+  const box = h('div', { class: 'tbl-scroll tbl-box vl-box', tabindex: '0', role: 'region', 'aria-label': opts.boxLabel || opts.label || opts.title || null }, tbl);
+  const status = h('div', { class: 'tbl-status', hidden: true });
+  const search = opts.search ? h('input', { class: 'in vl-search', type: 'search', 'aria-label': opts.search.label || 'search', placeholder: opts.search.placeholder || 'search', value: params.q || '' }) : null;
+  const jumpIn = opts.jump ? h('input', { class: 'in in--date vl-date', type: 'date', 'aria-label': 'jump to date', title: 'scroll the table to the first drive of this day' }) : null;
+  const jumpBtn = opts.jump ? h('button', { class: 'btn', type: 'button', onclick: () => jump() }, 'jump to date') : null;
+  const tools = search || jumpIn ? h('div', { class: 'vl-tools' },
+    search ? h('label', { class: 'vl-tool' }, h('span', { class: 'muted' }, 'find: '), search) : null,
+    jumpIn ? h('span', { class: 'vl-tool' }, jumpIn, jumpBtn) : null) : null;
+  const note = opts.note ? h('p', { class: 'note tbl-note', cover: opts.noteCover || null }, opts.note) : null;
+  const sortSel = h('select', { class: 'in tbl-sortsel', 'aria-label': 'Sort by' });
+  const sortable = columns.filter((c) => c.sort);
+  const sortLine = sortable.length ? h('label', { class: 'tbl-sortline' }, h('span', { class: 'muted' }, 'sort: '), sortSel) : null;
+  const el = section({ title: opts.title, cls: ['tbl-sec', 'vl-sec', opts.wrapCls], side: [opts.side || null, count, csvSlot] }, note, opts.filters || null, tools, sortLine, box, status);
+  if (opts.cover) addCover(el, ...[].concat(opts.cover));
+
+  const growKey = (columns.find((c) => c.grow) || columns.find((c) => c.cls === 'wrap-cell'))?.key;
+  const colCls = (c) => [c.num && 'num', c.cls, c.key === growKey && 'grow-col'];
+  const phCols = { main: allCols.filter((c) => c.ph === 'main'), sub: allCols.filter((c) => c.ph === 'sub'), num: allCols.filter((c) => c.ph === 'num') };
+  const sortParams = () => {
+    const col = sort && columns.find((c) => c.key === sort.key);
+    return col && typeof col.sort === 'string' ? { sort: col.sort, dir: sort.dir } : {};
+  };
+  const query = () => ({ ...params, ...sortParams() });
+
+  function head() {
+    replace(thead, h('tr', null, columns.map((c) => {
+      const on = sort && sort.key === c.key;
+      const label = c.sort
+        ? h('button', { class: 'tbl-sort', type: 'button', onclick: () => setSort(c.key), title: c.title || null },
+          c.label, on ? h('span', { class: 'tbl-dir', 'aria-hidden': 'true' }, sort.dir === 'asc' ? ' ^' : ' v') : null)
+        : h('span', { title: c.title || null }, c.label);
+      return h('th', { class: colCls(c), scope: 'col', cover: c.cover || null, 'aria-sort': on ? (sort.dir === 'asc' ? 'ascending' : 'descending') : null }, label);
+    })));
+    replace(sortSel, sortable.flatMap((c) => ['desc', 'asc'].map((d) => h('option', { value: `${c.key}:${d}`, selected: !!(sort && sort.key === c.key && sort.dir === d) },
+      `${typeof c.label === 'string' ? c.label : c.key} ${d === 'asc' ? '^' : 'v'}`))));
+  }
+  sortSel.addEventListener('change', () => { const [key, dir] = sortSel.value.split(':'); setSortTo({ key, dir }); });
+  function setSort(key) {
+    const col = columns.find((c) => c.key === key);
+    setSortTo({ key, dir: sort && sort.key === key ? (sort.dir === 'asc' ? 'desc' : 'asc') : (col.firstDir || (col.num ? 'desc' : 'asc')) });
+  }
+  function setSortTo(s) { sort = s; head(); opts.onSort?.({ ...sort }); restart().catch((e) => opts.onError?.(e)); }
+
+  const cell = (c, r) => { const v = c.render ? c.render(r) : r[c.key]; return v === false ? '' : v == null || v === '' ? h('span', { class: 'muted' }, '\u2014') : v; };
+  function rowEl(r, i) {
+    const href = rowHref ? rowHref(r) : null;
+    const tr = h('tr', { dataset: { row: '', href: href || null, vlRow: String(i) }, 'aria-rowindex': String(i + 2) },
+      columns.map((c) => h('td', { class: colCls(c) }, cell(c, r))),
+      h('td', { class: 'tbl-ph', colspan: String(columns.length) },
+        h('div', { class: 'tbl-ph-main' }, phCols.main.map((c) => h('span', { class: 'tbl-ph-m' }, cell(c, r)))),
+        phCols.sub.length ? h('div', { class: 'tbl-ph-sub' }, phCols.sub.map((c) => h('span', { class: 'tbl-ph-s' }, cell(c, r)))) : null,
+        phCols.num.length ? h('div', { class: 'tbl-ph-num' }, phCols.num.map((c) => h('span', { class: 'tbl-ph-n' }, cell(c, r)))) : null));
+    if (href) tr.addEventListener('click', (e) => { if (!(e.target instanceof Element) || e.target.closest('a, button, input, select, label')) return; ctx.navigate(href); });
+    return tr;
+  }
+  const skelRow = (i) => h('tr', { class: 'vl-skel', 'aria-rowindex': String(i + 2) },
+    columns.map((c) => h('td', { class: colCls(c) }, h('span', { class: 'muted' }, '...'))),
+    h('td', { class: 'tbl-ph', colspan: String(columns.length) }, h('div', { class: 'tbl-ph-main' }, h('span', { class: 'muted' }, '...'))));
+  const gapRow = () => h('tr', null, h('td', { colspan: String(columns.length + 1) }));
+
+  const list = windowList({
+    box, body: tbody, head: thead, limit: opts.limit || 50, overscan: 8, rowHeight: 24,
+    row: rowEl, placeholder: skelRow, spacer: gapRow,
+    load: (p) => ctx.api.get(opts.path, { ...query(), ...pick(p) }, { signal: p.signal }),
+    onPage: (pg) => { if (pg.total !== total) { total = pg.total; paintCount(); } opts.onPage?.(pg); },
+    onError: (e) => opts.onError?.(e),
+  });
+  ctx.signal?.addEventListener('abort', () => list.destroy(), { once: true });
+
+  function paintCount() {
+    const n = total ?? 0;
+    count.textContent = `${formatNumber(n)} ${n === 1 ? 'row' : 'rows'}`;
+    tbl.setAttribute('aria-rowcount', String(n + 1));
+    box.hidden = !n;
+    status.hidden = !!n;
+    replace(status, n ? null : (opts.empty ? opts.empty() : emptyLine('nothing here')));
+    if (sortLine) sortLine.hidden = n < 2;
+    if (jumpIn) {
+      const can = !!n && !!sort && !!base && sort.key === base.key;
+      jumpIn.disabled = !can; jumpBtn.disabled = !can;
+      jumpBtn.title = can ? '' : 'jump to date works in the order of the drives (sort by #)';
+    }
+  }
+  function paintCsv() {
+    if (opts.csv === false) return;
+    replace(csvSlot, h('a', { class: 'lnk', href: ctx.api.csvUrl(opts.path, query()), download: csvFilename(ctx.car?.name || 'sentry-mate', opts.csvName || opts.title || 'list'), cover: opts.csvCover || null }, opts.csvLabel || 'csv'));
+  }
+  async function restart() {
+    total = null;
+    paintCsv();
+    const pg = await list.start();
+    if (pg) { total = pg.total; paintCount(); opts.onPage?.(pg); }
+    return pg;
+  }
+  async function jump() {
+    if (!jumpIn.value) { jumpIn.focus(); return; }
+    try {
+      const pg = await list.jump(dayJumpMs(jumpIn.value, ctx.tz, sort?.dir === 'desc'));
+      if (pg) { total = pg.total; paintCount(); box.focus({ preventScroll: true }); }
+    } catch (e) { opts.onError?.(e); }
+  }
+  jumpIn?.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); jump(); } });
+  if (search) {
+    let t = 0;
+    search.addEventListener('input', () => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        const v = search.value.trim();
+        if ((params.q || '') === v) return;
+        if (v) params.q = v; else delete params.q;
+        restart().catch((e) => opts.onError?.(e));
+      }, 300);
+    });
+    ctx.signal?.addEventListener('abort', () => clearTimeout(t), { once: true });
+  }
+
+  head();
+  const ready = restart();
+  ready.catch(() => {});
+  return {
+    el, ready,
+    setParams(patch) {
+      for (const [k, v] of Object.entries(patch)) { if (v == null || v === '') delete params[k]; else params[k] = v; }
+      return restart();
+    },
+    refresh() { paintCsv(); return list.refresh().then((pg) => { if (pg) { total = pg.total; paintCount(); } return pg; }); },
+    total: () => total ?? 0,
+    params: () => query(),
+  };
+}
+
+// the paging parameters vlist asks with (offset, after or at_ms)
+function pick(p) {
+  const out = { limit: p.limit };
+  if (p.after) out.after = p.after;
+  else if (p.at_ms != null) out.at_ms = p.at_ms;
+  else out.offset = p.offset || 0;
+  return out;
 }
 
 /** A text bar cell: '########............ 62 %'-style, n cells of '#', the rest '.'. */

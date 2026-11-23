@@ -102,6 +102,12 @@ class Store:
         self.release_checked_ms = None if rc in ("off", "never") else now - 2 * 3_600_000
         self.mqtt = extras.mqtt(now)
         self.imports = extras.imports(now, ds.history("c3"))
+        # a TeslaFi import whose rows were checked again: a move, and rows that wait for a car
+        self.holds = {}
+        if self.imports and ds.exists("c1") and ds.exists("c2"):
+            job, self.holds = extras.teslafi_rehomed(now)
+            job["_holds"] = self.holds
+            self.imports[job["id"]] = job
         self.storage = extras.storage(now)
         self.compaction = None  # the compaction's state, made on the first read (resources/system.py)
         from .resources import moving
@@ -110,9 +116,13 @@ class Store:
         tesla.seed(self, now)  # the Tesla API input: one account, its cars
         from .resources import teslafi
         teslafi.seed(self, now)  # the TeslaFi input: one account, its car
+        from .resources import invoices
+        invoices.seed(self, now)  # Supercharger invoices: Tesla's on, TeslaFi's off
         from .resources import teslamate
         teslamate.seed(self, now)  # the local TeslaMate input: MQTT on, the database catch-up off, two cars
         teslamate.seed_trouble(self, getattr(cfg, "teslamate_trouble", "none"), now)  # --teslamate-trouble
+        from .resources import fullrebuild
+        fullrebuild.seed(self, cfg, now)  # --full-rebuild: none, running, failed or offered
 
     # ------------------------------------------------------------ seeding
     def seed_accounts(self, now):
@@ -154,6 +164,8 @@ class Store:
                 "software_version_typed": None,
                 "pack_replaced_date": None,
                 "pack_new_kwh": None,
+                # Comet's charges with no price (its Los Angeles hotel) are estimated at this on Statistics
+                "default_price_per_kwh": {"value": 0.14, "currency": "USD"} if cid == "c1" else None,
             }
             self.car_settings[cid] = s
             sold = getattr(car, "sold_date_days", None)
@@ -175,13 +187,13 @@ class Store:
             {"key": "cbk_8d41c0a2", "first_seen_ms": t0 - DAY + HOUR, "last_upload_ms": now - 70_000, "logs_waiting": 0,
              "car": "c1", "preferred": True, "device": "Screenmate One"},
             {"key": "cbk_5b2e9f13", "first_seen_ms": t0 + 120 * DAY, "last_upload_ms": now - 3 * DAY, "logs_waiting": 0,
-             "car": "c1", "preferred": False, "device": "Raspberry Pi logger"},
+             "car": "c1", "preferred": False, "device": "Pi logger"},
             {"key": "cbk_31f7e9b5", "first_seen_ms": t0, "last_upload_ms": now - 45_000, "logs_waiting": 0,
-             "car": "c2", "preferred": True, "device": "Screenmate One"},
+             "car": "c2", "preferred": True, "device": None},
             {"key": "cbk_c90a7716", "first_seen_ms": t0 + 30 * DAY, "last_upload_ms": now - 55 * HOUR,
-             "logs_waiting": 2, "car": "c3", "preferred": True, "device": "Screenmate One"},
+             "logs_waiting": 2, "car": "c3", "preferred": True, "device": None},
             {"key": "cbk_e04d6a58", "first_seen_ms": now - 3 * HOUR, "last_upload_ms": now - 20 * MIN,
-             "logs_waiting": 3, "car": None, "preferred": False, "device": "Screenmate One"},
+             "logs_waiting": 3, "car": None, "preferred": False, "device": None},
         ]
         self.keys = [k for k in self.keys if k["car"] is None or k["car"] in self.ds.featured]
         self.tokens = {c: v for c, v in self.tokens.items() if c in self.ds.featured}

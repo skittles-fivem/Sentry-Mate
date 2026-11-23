@@ -63,7 +63,7 @@
 .temp-axis-key { display: inline-flex; align-items: center; gap: round(0.3125rem, var(--e)); }
 .temp-axis-key i { width: round(0.75rem, var(--e)); height: round(0.5rem, var(--e)); border-radius: round(0.125rem, var(--e)); background: rgba(63, 224, 208, 0.2); }
 
-.tires { display: grid; grid-template-columns: minmax(0, 1fr) round(3.25rem, var(--e)) minmax(0, 1fr); grid-template-rows: auto auto; align-items: start; gap: round(0.5rem, var(--e)) round(0.375rem, var(--e)); }
+.tires { display: grid; grid-template-columns: minmax(0, 1fr) round(3.25rem, var(--e)) minmax(0, 1fr); grid-template-rows: auto auto; align-items: start; gap: round(0.5rem, var(--e)) round(0.25rem, var(--e)); }
 .tire { display: flex; flex-direction: column; gap: 1px; }
 .tire--r { align-items: flex-end; text-align: right; }
 .tire-pos { font-size: max(0.71875rem, var(--fs-floor)); color: var(--text-3); font-weight: 500; }

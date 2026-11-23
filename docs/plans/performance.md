@@ -193,108 +193,6 @@ what they took, and what was changed.
 **Target:** every page's API calls under 300 ms warm and under 2 s cold (the first call after the server started), in
 a release build on 4 cores, on that history.
 
-## Scrolling
-
-A report from a 4K desktop (Instrument, Data health, while drives and charges were being rebuilt): the scroll bar
-moved for a few seconds, then the page jumped to where it should be. The browser had no time to draw while it
-scrolled: the page was busy, or every frame cost too much to paint.
-
-### How it is measured
-
-`node ui/tools/scroll.js` ([ui/tools/README.md](../../ui/tools/README.md#the-scroll-check-scrolljs)):
-- **Server:** the dev server with `--rebuild-running --sse-interval-ms 500 --rows-every-s 1`. The rebuild never
-  ends, so Data health reads itself again, every featured car gets a `rows` event every second, and live values
-  come every 500 ms.
-- **Browser:** Chromium through Playwright, headless, drawing in software with no GPU. That is harder on painting
-  than most desktops.
-- **Screen:** a 4K screen, at 100 % (3840x2160 at scale 1) and at 200 % (1920x1080 at scale 2).
-- **Pages:** each pack's Data health, car, drives, charges, statistics, Settings: Server and logbook.
-- **Scroll:** 30 mouse-wheel steps of 100 px down, 50 ms apart, then the same back up.
-- **What is counted:** the time between animation frames (a page fails with one over 50 ms), long tasks, and a
-  DevTools trace of the scroll.
-- **Noise:** one run per row. A single frame of 66 to 166 ms on a page that is otherwise at 16 ms is often noise.
-
-Runs, on the same machine the same day:
-- **before:** origin/main `48ecb90`;
-- **after:** the changes below.
-
-### What was slow
-
-- **Instrument painted the whole window on every frame.**
-  - Every panel had a backdrop blur, and the top bar too.
-  - The page's glow was a body background fixed to the window, which the browser paints again on each frame of a
-    scroll.
-  - On Data health at 3840x2160 that was 17 s of raster in a 4-second scroll.
-- **Pages were busy on every update while a rebuild ran.**
-  - On each change of content `core/snap.js` snapped the whole page to whole pixels (Instrument, Horizon,
-    Manager, Logbook). That is 50 to 100 ms on a page of 2,000 elements, and again for each card that loaded.
-  - Its ResizeObserver started yet another whole run for each grid that had just been taken off the page.
-- **The logbook page (Instrument, Horizon, Manager) was rebuilt in one go on each `rows` event.**
-  - Every drive of the period went into one table, about 41,000 elements, in tasks of 1.2 to 1.5 s.
-- **Car pages drew the map again on every live value.**
-  - The marker and the map's position were redone each time, even when the car had not moved.
-  - The Logbook pack's car page laid its whole live column out again, the map's section included.
-- **Horizon's sky kept moving under the page.**
-  - The floor animates at 30 frames a second and the glow breathes, so the window is drawn again under a scrolling
-    page.
-
-### What changed
-
-- **`core/snap.js` (Instrument, Horizon, Manager, Logbook):**
-  - After a change of content, only the boxes that hold it are snapped again; rows added at the end of a table are
-    snapped on their own.
-  - The whole page is snapped again only when such a box changed size by something other than whole pixels.
-  - Grids taken off the page are left alone, and a box that is shown or hidden is watched too.
-- **Tables (Instrument, Horizon, Manager):**
-  - Rows the page already has are drawn 200 at a time, the next 200 as the foot scrolls into view.
-  - With `reuseRows` (the logbook, the gaps on Data health), a row that loads again with the same data keeps its
-    element, so a reload that changed nothing touches nothing.
-- **Data health:** draws its status card and its totals again only when they changed.
-- **Car pages:** move the map only when the car moved, turned or changed state.
-- **Logbook pack car page and Data health:** swap only the parts that changed (`replaceChanged`,
-  `ui/shared/dom.js`).
-- **Paint:**
-  - No backdrop blur on panels or the top bar; the top bar and Horizon's panels are a little more solid instead.
-  - The glow is a fixed layer of its own, painted once.
-  - While the page scrolls (`data-scrolling`, a passive listener) the pulsing dot, the car marker's halo and
-    Horizon's glow, haze and floor hold still.
-
-### Results
-
-Pages that pass (no frame over 50 ms): **40 of 84 before, 59 of 84 after.** The longest frame, and the longest
-long task (`-`: none), in ms:
-
-| Pack | Page | 3840x2160@1 before | after | 1920x1080@2 before | after |
-|---|---|---|---|---|---|
-| instrument | Data health | 750 (65) | 67 (-) | 183 (53) | 17 (-) |
-| instrument | car | 667 (255) | 200 (177) | 383 (269) | 217 (187) |
-| instrument | drives | 750 (54) | 83 (-) | 183 (-) | 33 (-) |
-| instrument | charges | 900 (-) | 83 (-) | 167 (-) | 17 (-) |
-| instrument | statistics | 850 (-) | 67 (-) | 150 (-) | 17 (-) |
-| instrument | Settings: Server | 733 (-) | 50 (-) | 233 (-) | 17 (-) |
-| instrument | logbook | 2100 (1279) | 50 (-) | 1967 (1309) | 50 (-) |
-| horizon | Data health | 250 (88) | 133 (-) | 167 (66) | 50 (-) |
-| horizon | logbook | 2017 (1238) | 133 (-) | 2017 (1250) | 50 (-) |
-| manager | logbook | 1950 (1305) | 33 (-) | 1900 (1160) | 33 (-) |
-| logbook | Data health | 117 (108) | 33 (-) | 117 (54) | 33 (-) |
-| logbook | car | 233 (184) | 100 (100) | 250 (222) | 167 (86) |
-
-Every page of every pack at 1920x1080@2 is at most 50 ms after, except these:
-
-| Pack | Page | Longest frame (ms) | Why |
-|---|---|---|---|
-| horizon, instrument, logbook, manager | car | 100 to 217 | The mock car is driving, so the map moves with it, and the map's WebGL is drawn in software here. |
-| console | car | 100 | Console's pages were not changed. |
-| console | logbook | 100 | Console's pages were not changed. |
-| manager | drives | 67 | One frame. |
-
-Still over 50 ms at 3840x2160@1:
-- **Horizon:** every page measured, 100 to 233 ms. The whole window is its sky: several layers that the software
-  renderer blends again on every frame of a scroll. With no sky, the same page keeps under 50 ms.
-- **Instrument:** its frames now sit at about 50 ms (three 60 Hz frames). The fixed glow layer is about one frame
-  of that.
-- **Logbook pack drives:** 92 long tasks, the same before and after; not looked into yet.
-
 ## The made-up history
 
 All of it is made up (no one's car):
@@ -482,6 +380,37 @@ as candump text), read one after the other on one core, the best of three runs. 
   about 1 MB) and logs of different cars are already read at once (one car's are read one after the other: each
   changes the car's timeline).
 
+
+### After that: the two things left
+
+Both of the things left above are now done, for columns logs (what the bridge sends by default):
+
+| An hour of driving (60 logs) | first | after the signals | now |
+|---|---:|---:|---:|
+| columns: unpack | 354 ms | 385 ms | 249 ms |
+| columns: read whole into 3,566 samples | 922 ms (794 ns a frame) | 600 ms | 341 ms (294 ns a frame) |
+| candump: read whole | 1,173 ms | 721 ms | 646 ms |
+
+1. **A columns log's frames are made straight from its columns** (`logfmt::read_lines`), without the text line in
+   between and its parsing. A frame is made that way only when its key reads as `can<n> <id>` (asked of the
+   line parser itself, once per key); any other key, and every line that is not a frame, goes through the text
+   as before. `decode_speed.rs`'s `lines_read_straight_from_columns_are_the_lines_parsed_from_text` reads a
+   made-up day in both formats and a body of odd keys and lines both ways (at six line limits, stopped early at
+   five places): the same lines, the same summary.
+2. **The unpacker is `lzma-rust2`**, the one a backup is imported with (no unsafe code without its `optimization`
+   feature, which is off), with the same limit on the xz window (64 MiB, xz's level 9; the bridge uses level 6).
+   Twice as fast on columns bodies, the same on candump text. `logfmt/tests/unpackers.rs` reads the same logs with
+   both unpackers: whole logs at four levels give the same bytes; of 4,222 damaged ones (cut short anywhere, a
+   byte changed, bytes after the stream) both refuse the same ones, but for 13 where a byte was changed that the
+   unpacker before never looked at (the range coder's first byte, always 0, and its last bytes): it gave the whole
+   text, this one refuses the log. No packer writes such a stream, and a stored log cannot come to hold one (it is
+   sealed, and was checked against its hash when it came). A log that cannot be unpacked is left out with the
+   reason as its text, and that text now is this unpacker's.
+
+The engine's workers (logs of different cars worked on at once) were already sized from the machine: half its
+cores, four at most. One car's logs are worked on one after the other by design, so more workers help a server
+with several cars catching up at once and nothing else; left as it is.
+
 ## CAN logs through the engine, and a car rebuilt whole
 
 **How it is measured.** `PERF_DAYS=30 cargo test --release -p sentry-mate measure_engine -- --ignored --nocapture`
@@ -554,3 +483,239 @@ What changed (nothing stored differently, nothing answered differently):
   a crash from losing a log's work; fewer of them is a change to that, not a speed-up.
 - **Start-up** with every log already worked on is the comparison of the store's logs with the day records: 0.03 s
   for these 30 days.
+
+### After that: a rebuild's windows once per run of logs
+
+The long windows above are now rebuilt once per 64 logs (`engine::Options::window_batch`), joined where they meet,
+instead of after every log, where that gives the very same timeline: nothing of the timeline is stored yet at or
+after the logs (a first start over a full store, a car rebuilt whole) and the car has no API input. A log that
+arrives alone, logs that fill a gap before rows already there, and a car with an API input get a window per log as
+before. It uses what a crash already left behind: a log's window is noted dirty before its samples are written, and
+windows left dirty are rebuilt at the next start.
+
+| 30 days, 2,341 logs | before this | now |
+|---|---:|---:|
+| the car rebuilt whole | 46.2 s (19.7 ms a log), 34.8 s of CPU | 25.4 s (10.9 ms a log), 17.0 s of CPU |
+| the logs found at the start | 38.7 s (16.5 ms a log) | 35.3 s (15.1 ms a log) |
+| memory at most: the logs / the rebuild | 101 MB / 138 MB | 100 MB / 114 MB |
+
+A rebuild of this car now takes a third of what it took at the start of this work (75.8 s).
+
+**Why not everywhere.** `crates/sentry-mate/src/window_batch.rs` puts the same made-up logs through two engines,
+one rebuilding after every log and one per run, and compares everything stored for the car (drives, charges, state
+spans, updates, charge curves, samples, the summary and newest values, the engine's record), after every step and
+after a rebuild: all logs at the start; every seventh log and a stretch of two hours filled in later; the second
+half before the first. A day runs with the tests; a week at runs of 7, 64 and all logs is run by hand
+(`cargo test --release -p sentry-mate windows_rebuilt -- --ignored`). Without the condition above, the week with
+its gaps filled later gave one drive with the same times and values and another id: a drive keeps the id of the
+piece of it that was stored first, and which piece that is depends on the windows rebuilt on the way. What points
+at a drive (its purpose, notes, costs) goes by that id, so there the windows stay one per log.
+
+**Beside an API input it is not the same either, so such a car stays as it was.** Tried by hand with the second
+condition taken out: the same logs beside a made-up TeslaMate import, TeslaFi's API and local TeslaMate over the
+same days. Two days came out the same; five days, rebuilt whole per run of 7 and of 64 logs, each gave one drive
+with the same times and values and another id (a rebuild builds rows from the API's samples ahead of the logs, and
+which piece of a drive is stored first depends on the windows on the way). With both conditions out, two days gave
+a drive without its start and end positions (which input's position is used is judged over the window). Rebuilding
+after every log is deterministic there: two such engines agreed on everything. So a car with TeslaFi or TeslaMate
+beside SMO gains nothing from this step; for it to, a drive's id would have to come from the data alone and not
+from what was stored before, which is a change to what a rebuild keeps and not a speed-up.
+
+## Start-up and the idle server, on the long history
+
+**How it is measured.** The long made-up history above (211 MB: 2.7 million imported positions, 1.7 million API
+samples, 5,695 SMO logs), `serve` started on it with a release build, the time until the web port answers, the
+CPU time and memory (`/proc/<pid>/stat`, `status`) until it goes quiet, then over an idle stretch, and the system
+calls of a minute idle (`strace -f -c`).
+
+| | |
+|---|---:|
+| the web port answers | 0.20 to 0.25 s after the process starts (0.24 to 0.28 s of CPU, 58 MB) |
+| a start after the history was made (nothing kept on disk yet of what the pages work out ahead) | quiet after about 20 s, 15.5 s of CPU, 968 MB of memory (1,029 MB at most) |
+| the next start | quiet after about 5 s, 1.5 s of CPU, 159 MB |
+| idle | 0.02 s of CPU in 30 s, 0.10 s in 120 s (under 0.1 % of a core); 7 threads |
+| a minute idle, in system calls | 316 `futex`, 382 `epoll_wait`, 140 `statx` (the look for a move coming in, once a second), 129 `read` |
+
+Nothing here needed changing: the vault opens and both ports listen in a quarter of a second whatever the history's
+size (the car's tables are read when first asked for), and the loops that run all the time (the look for a move once
+a second, the 1-minute sweep of logs waiting for their sidecar, the hourly ones) cost nothing that shows.
+
+One thing to know, from the page-speed work rather than this one: the first start on a long history works out the
+pages' long periods ahead and keeps the days it read in memory, up to a share of the machine's free memory (here,
+on a 15 GB machine, 968 MB stayed; the limit follows the machine's free memory, `db/src/plain.rs`).
+
+## MQTT
+
+**How it is measured.** `cargo test --release -p mqtt measure_a_sample -- --ignored --nocapture`: a car's newest
+values turned into the messages to send, as the publisher does for every `now` the engine gives it.
+
+| | |
+|---|---:|
+| the first time on a connection | 84 Home Assistant discovery configs and 23 values, 41.8 kB |
+| a sample with nothing new | 2.4 µs, no message |
+| a sample with the charge level and the time new | 2.8 µs, 2 messages |
+| a renamed car (every discovery config again) | 301 µs |
+
+Nothing needed changing: values are sent only when their text changed, the discovery configs only when the car's
+name or model did (or on a new connection), and a car's values waiting to be sent replace each other, so a burst of
+logs sends the last ones. What costs more than the publishing is working out the car's values for each event (2.4 ms
+after every log, above), which the live pages need too.
+
+## The pages while they stay open
+
+**How it is measured.** `node ui/tools/perf/idle.js --pack horizon` (new): a pack's car page in Chromium on the dev
+API server, live values every 2 s, left alone. Read from Chromium's own counters: how busy the main thread is
+(script, layout, style), the heap after a collection, the DOM nodes and listeners; and with `ps`, the CPU time of
+all of the browser's processes, so drawing counts too. The browser here draws without a graphics card (headless,
+software): on a machine with one the drawing costs far less, but it is what a small always-on display does.
+
+| The car page, 1440×900, a minute | main thread busy | of it script | all browser processes |
+|---|---:|---:|---:|
+| Horizon | 9.0 % | 0.7 % | 110 % of a core |
+| Instrument | 5.0 % | 1.4 % | 108 % |
+| Logbook | 6.7 % | 2.3 % | 8 % |
+| Manager | 1.9 % | 0.4 % | 8 % |
+| Console | 1.4 % | 0.2 % | 2 % |
+| Pebble | 0.6 % | 0.1 % | 2 % |
+
+**The scripts are not the cost.** Clocks, "… ago" texts and live values together are under 2.5 % of the main
+thread as script in every pack.
+
+**What costs is two endless animations under glass.** Instrument and Horizon blur what is behind their panels, bars
+and map cards (`backdrop-filter`). Two small things on the car page never stop moving: the ring around the "live"
+dot in the top bar, and the halo of the car's marker on the map. Each frame they draw, every blurred surface is
+blurred again. Measured on Instrument by switching one thing off at a time:
+
+| Instrument's car page | all browser processes |
+|---|---:|
+| as it is | 110 % of a core |
+| without the marker's halo | 40 % |
+| without any endless animation | 10 % |
+| with the animations, without the blur | 15 % |
+
+Manager has the same two animations and no blur in its default look: 8 %. Horizon without its CSS animations is at
+30 % (its floor canvas, drawn at most 30 times a second, is the rest).
+
+Left as it is, for the owner to decide: any fix changes what is seen. The choices are a halo and a ring that pulse
+a few times after each new value and then rest, or panels on the car page that do not blur, or nothing (with a
+graphics card the cost is small). Taking the blur off the map's own panel alone (the map covers it) was tried and
+changed nothing: the cards over the map blur too.
+
+### A page left open: the charts of every live refresh stayed in memory
+
+**How it is measured.** The same tool with the dev server sending list changes too
+(`--server-args "--sse-interval-ms 500 --rows-every-s 3"`): Horizon's car page left open for 30 minutes.
+
+| Horizon's car page | at the start | before, after 30 minutes | now, after 10 minutes |
+|---|---:|---:|---:|
+| heap after a collection | 6.7 MB | 88.2 MB (21.6 MB after the first 5) | 8.7 MB |
+| DOM nodes | 2,941 | 142,906 | 2,912 |
+| listeners | 193 | 22,917 | 190 |
+
+(Now the nodes stand at 2,912 at every look. The heap still rises slowly, about 0.3 MB in 200 s at a list change
+every 3 s: a few kB per refresh, probably the entries of the page's clean-up list, let go when the page is left.)
+
+It grew in a straight line, with every `rows` event (a drive, charge or parked spell started or ended: on a real
+server, about every log while the car is awake) and not with the live values. The car page draws its period again
+on such an event, charts included, into new boxes; the charts it replaced were never taken down. Each kept its
+size observer, its display and theme subscriptions, uPlot's listeners on the window and, through the page's
+clean-up list, its whole drawing, until the page was left. In 30 seconds with a list change every second:
+
+| The car page, 30 s, a `rows` event a second | nodes before | nodes now | listeners before | listeners now |
+|---|---:|---:|---:|---:|
+| Horizon | 3,189 → 6,697 | 2,914 → 2,912 | 237 → 819 | 178 → 178 |
+| Instrument | 3,288 → 6,796 | 3,940 → 3,025 | 235 → 805 | 187 → 182 |
+| Manager | 3,158 → 6,666 | 2,883 → 2,881 | 234 → 816 | 175 → 175 |
+| Logbook | 3,253 → 5,188 | 2,885 → 2,885 | 342 → 972 | 222 → 222 |
+| Console | 1,694 → 2,969 | 1,580 → 1,580 | 189 → 609 | 140 → 140 |
+| Pebble | 1,747 → 1,747 | (was fine) | 130 → 130 | |
+
+What changed: where a part of a page is swapped for its newly drawn copy (`core/stage.js`, `offstage`), the charts
+in the part that goes are taken down first; a chart that is taken down lets go of everything it held
+(`core/chart.js` in Horizon, Instrument, Manager and Console); and Logbook's stacked charts, which the page already
+took down before drawing them again, let go of their boxes and data then. What is drawn is the same.
+
+**The pages that are built again whole kept every page before them.** Timeline, Charges, Statistics and Trip (in
+Console: Charges and Statistics) answer a `rows` event by building the whole page again off screen and swapping it
+in (`core/router.js`, `stageView`). The new page kept, for as long as it lived, the function that cleans the old
+page up, and with it the old page; that one kept the page before it, and so on: a whole page of nodes more with
+every event. Every page of every pack was left open with a `rows` event every second for 24 seconds to find them
+(Pebble and Logbook: none), then with one every 8 seconds:
+
+| 90 s, a `rows` event every 8 s | nodes before | nodes now | listeners before | listeners now |
+|---|---:|---:|---:|---:|
+| Horizon, Timeline | 2,722 → 25,547 | 2,722 → 2,723 | 50 → 171 | 50 → 50 |
+| Horizon, Charges | 3,653 → 39,569 | 3,653 → 6,649 | 221 → 1,705 | 221 → 348 |
+
+Now the clean-up of the old page is let go of once it has run, in the four packs' routers. Where the count still
+rises once (Charges, Statistics, Trip: by one page) it stays there: three minutes of Horizon's Charges read 6,650
+nodes at every look after the first event. Checked the same way after the change: Timeline, Charges, Statistics,
+Trip and the car page of Horizon, Instrument and Manager, Charges, Statistics and the car page of Console, and
+Logbook's car page.
+
+## The image and the container's start
+
+The image is one static binary on an empty base, so its size is the binary's and its start is the process's.
+
+| | |
+|---|---:|
+| the binary (a release build here, glibc; the image's is musl) | 62.7 MB, 27.7 MB gzipped |
+| of it code | 28.9 MB |
+| of it built-in data | 24.3 MB: the six UI packs (11.5 MB once each; the 12.4 MB that are the same file in several packs are in the binary once), their brotli and gzip copies (6.4 MB), the DBC files |
+| start: the web port answers | 0.20 to 0.25 s (above) |
+
+Left as it is. The same file in several packs was thought to be in the binary several times (233 of the packs' 694
+files are copies: MapLibre, uPlot, the fonts, `ui/shared`); a build that names each file's bytes once came out the
+same size, the compiler already keeps one copy. The code is the larger half; link-time optimisation would shrink
+it and was taken out on purpose (`Cargo.toml`: 9 minutes per architecture in the image build).
+## The Logbook: a long list in a box
+
+The owner's Logbook (`/cars/c1/logbook`, This year) held 2,035 drives and stuttered on a 4K screen: every row of the
+period came in one answer and every row was drawn at once. Now the table sits in a box ten rows high whose header
+stays while the rows scroll; only the rows in view and a few on either side are in the page (`ui/shared/vlist.js`),
+and they load from the API 50 at a time as the box comes to them (by the `next` cursor of the chunk before, else by
+`offset`; Jump to date asks with `at_ms`). The purpose filter, the search, the order and the period go to the server;
+the totals, the counts per purpose, the continuity check and the rows per rule of the whole period come with every
+page; the CSV is the server's, every row (written as it is sent). The server works a period's rows out once (addresses,
+places, purposes, the continuity check) and keeps them while the car's data, places, settings, the shown sides of
+overlaps, purposes and rules stay the same (`docs/ui-api.md`, `/logbook`). Drives and Charges were checked the same
+way and left as they are: they already draw 25 to 50 rows a page (20 to 56 rows in the page with 3,000 drives).
+
+### How it is measured
+
+`ui/tools/perf/measure.js --device laptop --scroll --pages logbook,drives,charges` on the dev server
+(`serve.py --drives 3000 --freeze-clock`: car c1 with 3,104 made-up drives, 2,222 of them this year):
+- **Laptop:** 1440x900 at 1x, CPU 2x slower, no network throttling (a server on the home network).
+- **rows ms:** from navigation start until the first list row was painted; **list ms:** the same from the start of the
+  page's first `/logbook` request (the part this change is about: a page's own start-up comes before it).
+- **dom rows / nodes:** list rows and elements in the document after the load.
+- **fps:** the list (its box, else the page) scrolled 60 px a frame for 180 frames.
+- **Before:** origin/main `5424832` (the pages and the dev server's full answer), with only `--drives` added to its dev
+  server. **After:** this change. One run each, cold (a new profile) and warm; allow some noise.
+
+### Results (This year, 2,222 drives)
+
+| pack | dom rows before → after | nodes before → after | list ms cold before → after | list ms warm before → after | rows ms cold before → after | fps before → after |
+|---|---:|---:|---:|---:|---:|---:|
+| Instrument | 2,222 → 16 | 112,150 → 1,493 | 6,452 → 305 | 6,631 → 130 | 6,724 → 982 | 2 → 59 |
+| Horizon | 2,222 → 17 | 112,064 → 1,457 | 5,439 → 348 | 6,946 → 146 | 6,415 → 1,184 | 35 → 30 |
+| Simple | 2,222 → 17 | 112,040 → 1,433 | 5,207 → 328 | 4,682 → 119 | 6,686 → 1,035 | 12 → 58 |
+| Logbook | 102 → 18 | 5,088 → 1,416 | 747 → 419 | 509 → 206 | 1,282 → 1,167 | 60 → 48 |
+| Console | 200 → 18 | 8,883 → 1,018 | 372 → 215 | 433 → 83 | 983 → 815 | 60 → 60 |
+| Pebble | 60 → 16 | 2,333 → 804 | 255 → 331 | 112 → 69 | 800 → 903 | 60 → 60 |
+
+- The answer of the first rows: 1.14 MB (every row) → 27 KB (50 rows and the period's figures). On the dev server a page
+  of a period it keeps answers in about 3 ms; the first one of a period, about 20 ms (200 ms while c1 is driving: the
+  dev server works a car's year out again every 5 s while a drive goes on, so a cold load there pays it).
+- First rows under 300 ms from the list's request: every pack warm (69 to 206 ms); cold, Console only, the others 305 to
+  419 ms, of which about 200 ms is that dev server's working out of the year. Logbook, Console and Pebble drew a part
+  of the rows before (102, 200, 60, with Show more), so their cold times move little; the three that drew all 2,222
+  went from 5 to 7 s to about 0.3 s.
+- Scrolling: Instrument and Simple went from 2 and 12 fps to 58 to 59. Two things made it slow: every row drawn, and
+  the pack's whole-pixel snap (`core/snap.js`), which ran over the whole page on every row added; rows moving in and
+  out of a window now snap once the scrolling rests (150 ms). Horizon stays at 30 fps: under 8 ms a frame goes to
+  script, style and layout, and the rest is drawing its glass panel over the moving background, which it already caps at
+  30 frames a second. The Logbook pack scrolls at 48 to 55 fps: about 7 ms a frame goes to style, as its ledger rule for
+  every fifth row's line is matched again when a row comes in.
+- The pixel checks (`check.js --pixel`) pass on Logbook, Drives and Charges in all six packs at 1440x900, 3840x2160 and
+  390x844@3 with `--drives 3000`.

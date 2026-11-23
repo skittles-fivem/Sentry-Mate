@@ -110,7 +110,9 @@ export function betweenLine(ctx, carId, r, d, tz) {
         : before ? ['Installed after the drive ', drive(before), '; no drive with the new fingerprints yet.']
           : after ? ['Installed before the drive ', drive(after), '; no drive recorded with the old fingerprints.']
             : 'No drive recorded on either side of it.'),
-    h('p', { class: 'note' }, `Old fingerprints last seen ${a != null ? at(a) : 'not known'}; new ones first seen ${b != null ? at(b) : 'not known'}.`));
+    h('p', { class: 'note' }, r.readings_gap && a != null && b != null
+      ? `Installed between ${at(a)} and ${at(b)} (no readings in between): the old fingerprints were last seen then, the new ones first seen then.`
+      : `Old fingerprints last seen ${a != null ? at(a) : 'not known'}; new ones first seen ${b != null ? at(b) : 'not known'}.`));
 }
 
 /**
