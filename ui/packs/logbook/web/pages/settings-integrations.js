@@ -24,6 +24,7 @@ import { confirmDialog } from '../core/dialog.js';
 import { teslaPart, showTeslaHash } from './integrations-tesla.js';
 import { teslafiPart } from './integrations-teslafi.js';
 import { teslamatePart } from './integrations-teslamate.js';
+import { overviewPart } from './integrations-overview.js';
 
 export const id = 'settings-integrations';
 export const css = true;
@@ -269,6 +270,9 @@ function payloadParts(p) {
 
 export async function mount(ctx) {
   const admin = ctx.me && ctx.me.role === 'admin';
+  // the Connections overview (admins): its first read starts with the page's own
+  const overview = admin ? overviewPart(ctx) : null;
+  const overviewLoad = overview ? overview.load() : Promise.resolve();
   const [cfgFirst, statusFirst, netFirst, carsFirst] = await Promise.all([
     admin ? ctx.api.get('settings/mqtt') : Promise.resolve(null),
     ctx.api.get('settings/mqtt/status').catch((e) => { if (api.isAbort(e)) throw e; return null; }),
@@ -356,9 +360,30 @@ export async function mount(ctx) {
   const teslafi = teslafiPart(ctx);
   const teslamate = teslamatePart(ctx);
   const teslaLoad = Promise.all([tesla.load(), teslafi.load(), teslamate.load()]);
-  const onHash = () => showTeslaHash();
+  // A link to a part of the set-up (#tesla, #teslafi, #teslamate, #mqtt, #si-…) opens the tab that holds it.
+  const onHash = () => {
+    const t = hashTarget();
+    if (t && tabs && tabNow !== 'setup') showTab('setup', { fromHash: true });
+    if (t && !/^(tesla|teslafi)(-|$)/.test(t.id)) t.scrollIntoView({ block: 'start' });
+    showTeslaHash();
+    if (ctx.alive()) ctx.ready(); // (going to an anchor took data-ready away: the page is still ready)
+  };
   window.addEventListener('hashchange', onHash);
   ctx.onCleanup(() => window.removeEventListener('hashchange', onHash));
+
+  /* ---------------- the tabs (admins: Overview, then the set-up) */
+  let tabs = null;
+  let tabNow = 'overview';
+  const HASH_ALIAS = { mqtt: 'si-broker', broker: 'si-broker' };
+  // the element of the set-up a #part names (null when it names none, or nothing on the set-up tab)
+  function hashTarget() {
+    let k = '';
+    try { k = decodeURIComponent((location.hash || '').slice(1)); } catch { return null; }
+    if (!k) return null;
+    const t = document.getElementById(HASH_ALIAS[k] || k);
+    if (!t) return null;
+    return !setupPanel || setupPanel.contains(t) ? t : null;
+  }
 
   /* ---------------- the head */
   const headStatus = h('div', { class: 'si-head-status' });
@@ -960,15 +985,70 @@ export async function mount(ctx) {
     paintHead(); paintBroker(); paintStatus(); paintClient(); paintTopics(); paintCarPick(); paintValues(); paintHa(); paintEntities(); paintEvents(); paintNetwork(); paintWorks();
     return paintLog();
   }
-  ctx.main.append(
-    pageHead({ eyebrow: 'Settings', title: 'Integrations', deck: `${ctx.info.purpose} Nothing leaves this server until an admin turns it on, and the VIN is never sent.`, aside: headStatus }),
+  const setupParts = [
     jumpNav,
     h('p', { class: 'si-saving' }, icon('info'), ' Switches and single fields save at once and a short note confirms it; the broker connection saves with its button.'),
-    tesla.el, teslafi.el, teslamate.el, brokerSec, topicsSec, valuesSec, haSec, entSec, eventsSec, apiSec, netSec, worksSec);
+    tesla.el, teslafi.el, teslamate.el, brokerSec, topicsSec, valuesSec, haSec, entSec, eventsSec, apiSec, netSec, worksSec];
+  const head = pageHead({ eyebrow: 'Settings', title: 'Integrations', deck: `${ctx.info.purpose} Nothing leaves this server until an admin turns it on, and the VIN is never sent.`, aside: headStatus });
+  let setupPanel = null;
+  if (overview) {
+    const TABS = [['overview', 'Overview', 'is every connection working?'], ['setup', 'Set-up and details', 'inputs, publishing, network']];
+    const tabEls = {};
+    const panels = {
+      overview: h('div', { class: 'si-panel', id: 'si-panel-overview', role: 'tabpanel', 'aria-labelledby': 'si-tab-overview', tabindex: '-1' }, overview.el),
+      setup: h('div', { class: 'si-panel', id: 'si-panel-setup', role: 'tabpanel', 'aria-labelledby': 'si-tab-setup', tabindex: '-1' }, setupParts),
+    };
+    setupPanel = panels.setup;
+    const list = h('div', { class: 'si-tabs', role: 'tablist', 'aria-label': 'Integrations' },
+      TABS.map(([k, name, sub], i) => {
+        const b = h('button', {
+          type: 'button', class: 'si-tab', id: `si-tab-${k}`, role: 'tab', 'aria-controls': `si-panel-${k}`,
+          onclick: () => showTab(k),
+          onkeydown: (e) => {
+            const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+            if (!d) return;
+            e.preventDefault();
+            const nk = TABS[(i + d + TABS.length) % TABS.length][0];
+            showTab(nk); tabEls[nk].focus();
+          },
+        }, h('span', { class: 'si-tab-name' }, name), h('span', { class: 'si-tab-sub' }, sub));
+        tabEls[k] = b;
+        return b;
+      }));
+    tabs = { list, tabEls, panels };
+    ctx.main.append(head, list, panels.overview, panels.setup);
+  } else {
+    ctx.main.append(head,
+      h('p', { class: 'si-saving si-admin-only', cover: ['conn.overview.rows', 'conn.overview.status', 'conn.overview.sparkline', 'conn.overview.problems'] }, icon('info'), ' The connections overview (each connection’s status, its last 24 hours and the problems of the week) is shown to admins.'),
+      ...setupParts);
+  }
+  // The tab: Overview by default; ?tab=setup, or a #part of the set-up, opens the other one.
+  function showTab(k, { fromHash = false } = {}) {
+    if (!tabs) return;
+    tabNow = k;
+    for (const [n, b] of Object.entries(tabs.tabEls)) {
+      const on = n === k;
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+      b.tabIndex = on ? 0 : -1;
+      tabs.panels[n].hidden = !on;
+    }
+    if (k === 'overview') overview.start({ now: true }); else overview.stop();
+    // (setQuery puts the tab in the address and drops any #part, so a reload opens this tab)
+    if (!fromHash) ctx.setQuery({ tab: k === 'overview' ? null : k });
+  }
   // The broker log is in before the page says it is ready, so it does not push the client notes down later.
   const logLoad = paintAll();
-  await Promise.all([teslaLoad, logLoad.catch(() => {})]);
+  await Promise.all([teslaLoad, logLoad.catch(() => {}), overviewLoad]);
   if (!ctx.alive()) return {};
+  if (tabs) {
+    const first = hashTarget() ? 'setup' : ctx.query.tab === 'setup' ? 'setup' : 'overview';
+    tabNow = first;
+    for (const [n, b] of Object.entries(tabs.tabEls)) { b.setAttribute('aria-selected', n === first ? 'true' : 'false'); b.tabIndex = n === first ? 0 : -1; tabs.panels[n].hidden = n !== first; }
+    if (first === 'overview') overview.start();
+    // #mqtt (the overview's link to the broker) names the broker part
+    const t = hashTarget();
+    if (t && t.id !== (location.hash || '').slice(1)) { const st = setTimeout(() => { if (ctx.alive()) t.scrollIntoView({ block: 'start' }); }, 0); ctx.onCleanup(() => clearTimeout(st)); }
+  }
   // after the router has put focus on the page (it does so once mount returns), so the account keeps it
   const hashT = setTimeout(() => { if (ctx.alive()) showTeslaHash(); }, 0);
   ctx.onCleanup(() => clearTimeout(hashT));
