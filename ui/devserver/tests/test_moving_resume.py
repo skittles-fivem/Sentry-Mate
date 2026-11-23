@@ -86,7 +86,7 @@ class NewRecoveryKey(ServerCase):
         self.assertNotIn("recovery_key_unsaved", [n["code"] for n in c.get("/api/v1/notices")["items"]])
         c.error("POST", "/api/v1/system/recovery-key/show", 409, "recovery_key_saved", body={"password": PW})
         actions = {a["action"] for a in c.get("/api/v1/audit?limit=500")["items"]}
-        self.assertIn("recovery_key.new", actions)
+        self.assertIn("recovery-key-new", actions)
 
     def test_watch_may_not(self):
         w = self.server.client()

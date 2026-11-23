@@ -1,55 +1,58 @@
-/* Timeline: state meters, the strip, and the tape of entries (a side per day). */
+/* Timeline (pages/timeline.js): filters, the state summary, the strip, the rows. */
+.tl-filters { flex-wrap: wrap; }
+.tl-filters .seg { flex-wrap: wrap; }
+.tl-filters .field--search { width: round(18rem, var(--e)); }
+.tl-summary { margin-bottom: var(--gap); }
+.tl-summary .figures { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+@container page (max-width: 30rem) { .tl-summary .figures.figures { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.metric-value--sm { font-size: 1.125rem; white-space: normal; }
+.tl-rows { padding-bottom: round(0.25rem, var(--e)); overflow: hidden; }
+.tl-rows .tbl-bar { border-bottom: 0; }
+.tl-legend-note { padding: 0 round(1.375rem, var(--e)) round(0.5rem, var(--e)); }
+.tl-rows .day-head { border-top: 1px solid var(--line); }
+.tl-rows .day-head:first-child { border-top: 0; }
+.tl-rows .tl-item { grid-template-columns: round(11rem, var(--e)) round(1.375rem, var(--e)) minmax(0, 1fr) round(6.5rem, var(--e)) round(1.25rem, var(--e)); }
+.tl-skel { min-height: round(3.25rem, var(--e)); }
+.tl-help { margin-top: var(--gap); }
+.tl-help summary { display: flex; align-items: center; gap: round(0.5rem, var(--e)); cursor: pointer; font-weight: 600; color: var(--text-2); }
+.tl-help summary:hover { color: var(--text); }
+.help-list { display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); margin-top: round(0.875rem, var(--e)); max-width: round(60rem, var(--e)); color: var(--text-2); }
+.help-list b { color: var(--text); font-weight: 600; }
 
-.tl-meters { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1rem 1.25rem; margin-bottom: 0.75rem; }
-.tl-now { display: inline-flex; align-items: center; gap: 0.5rem; }
-.tl-now .lamp { width: 0.75rem; height: 0.75rem; }
-.tl-meter { display: grid; align-content: start; gap: 0.375rem; min-width: 0; }
-.tl-meter-bar { position: relative; display: block; height: 0.375rem; border-radius: 0.125rem; background: var(--well); box-shadow: inset 0 0 0 1px var(--ring-2); overflow: hidden; }
-.tl-meter-bar > i { position: absolute; inset: 0 auto 0 0; width: var(--w); background: linear-gradient(90deg, var(--cyan), var(--mag)); }
-.tl .chip[data-tone] .chip-dot { background: var(--tc); }
-.tl .chip[aria-pressed="true"] .chip-dot { background: var(--on-hot); }
-
-.tl-tape { display: grid; padding: 0.25rem 0 0.5rem; }
-.tl-skel { padding: 1rem 1.25rem; }
-.tl-day { display: grid; }
-.tl-day-head { display: flex; align-items: center; gap: 0.75rem; padding: 0.625rem 1.25rem;
-  background: var(--glass-solid); box-shadow: inset 0 -1px 0 var(--ring); }
-.tl-day-name { font: 700 var(--fs-sm)/1.4 var(--display); letter-spacing: 0.14em; text-transform: uppercase; color: var(--mag-ink); }
-.tl-side { display: grid; }
-.tl-row { display: grid; grid-template-columns: 6.5rem 2rem minmax(0, 1fr) 6rem; align-items: start; gap: 0 1rem; padding: 0.75rem 1.25rem; box-shadow: inset 0 -1px 0 var(--rule); }
-.tl-row:last-child { box-shadow: none; }
-.tl-row:hover { background: rgba(255, 63, 180, 0.05); }
-.tl-when { display: grid; gap: 0.125rem; text-decoration: none; font: 400 var(--fs-sm)/1.5 var(--mono); color: var(--ink); white-space: nowrap; }
-.tl-t1 { color: var(--ink-3); }
-.tl-when:hover .tl-t0 { color: var(--mag-ink); text-decoration: underline; }
-.tl-led { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: 50%; color: #120626; background: var(--tc); box-shadow: 0 0 0.625rem var(--tc); }
-.tl-row[data-tone="asleep"] .tl-led, .tl-row[data-tone="unknown"] .tl-led { box-shadow: none; }
-.tl-row[data-tone="unknown"] .tl-led { color: var(--ink); background: var(--well); box-shadow: inset 0 0 0 1px var(--st-unknown); }
-.tl-body { display: grid; gap: 0.25rem; min-width: 0; }
-.tl-what { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.625rem; line-height: 1.5; }
-.tl-kind { font: 700 var(--fs-xs)/1.4 var(--display); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink); text-decoration: none; }
-a.tl-kind { color: var(--cyan-ink); }
-a.tl-kind:hover { color: var(--mag-ink); text-decoration: underline; }
-.tl-nodata { color: var(--org-ink); }
-.tl-facts { font-size: var(--fs-sm); color: var(--ink-2); }
-.tl-awake { font-size: var(--fs-sm); color: var(--org-ink); }
-.tl-dur { font: 400 var(--fs-sm)/1.5 var(--mono); color: var(--ink-2); text-align: right; white-space: nowrap; }
-.tl-entries .trk-note { padding-bottom: 0.25rem; }
-.tl-help { padding: 0; }
-
-@container view (max-width: 76rem) { .tl-meters { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@container view (max-width: 40rem) {
-  .tl-meters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .tl-row { grid-template-columns: 2rem minmax(0, 1fr) auto; grid-template-areas: "led when dur" "led body body"; gap: 0.25rem 0.75rem; padding: 0.75rem 1rem; }
-  .tl-led { grid-area: led; }
-  .tl-when { grid-area: when; display: flex; gap: 0.5rem; }
-  .tl-t1::before { content: "to "; }
-  .tl-body { grid-area: body; }
-  .tl-dur { grid-area: dur; }
-  .tl-day-head { padding: 0.625rem 1rem; }
+@container page (max-width: 85.375rem) {
+  .tl-summary .figures { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
-.tl-src { margin: 0.125rem 0 0; display: flex; flex-wrap: wrap; gap: 0.375rem; }
-/* a Tesla update found from firmware fingerprints: its name, or that it has none yet, and Name it for admins */
-.tl-fw { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.625rem; min-width: 0; }
-.tl-fw-ver { font: 400 var(--fs-sm)/1.5 var(--mono); color: var(--ink); }
-.tl-fw-ver.is-unknown { font-family: var(--sans); color: var(--org-ink); }
+@container page (max-width: 76rem) {
+  .tl-rows .tl-item { grid-template-columns: round(8.5rem, var(--e)) round(1.125rem, var(--e)) minmax(0, 1fr) round(5rem, var(--e)) round(1rem, var(--e)); column-gap: round(0.625rem, var(--e)); padding: 0 round(1rem, var(--e)); }
+}
+.tl-car-src { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.375rem, var(--e)); margin-top: round(0.25rem, var(--e)); }
+.tl-fp { color: var(--live); font-weight: 500; }
+
+/* phone (<html data-phone>): the filters stack full width; each row puts its time and length on top, what
+   happened under it (wrapping, never cut), the rail on the left and a whole-tap chevron on the right */
+:root[data-phone] .tl-filters > * { flex: 1 1 100%; min-width: 0; }
+:root[data-phone] .tl-filters > .btn { flex: 0 1 auto; }
+:root[data-phone] .tl-filters .seg { display: flex; }
+:root[data-phone] .tl-filters .seg-btn { flex: 1 1 auto; }
+:root[data-phone] .tl-filters .select, :root[data-phone] .tl-filters .field--search { width: 100%; }
+:root[data-phone] .tl-rows .day-head { padding-left: round(1rem, var(--e)); padding-right: round(1rem, var(--e)); }
+:root[data-phone] .tl-rows .day-head h3 { font-size: max(0.875rem, var(--fs-floor)); }
+:root[data-phone] .tl-legend-note { padding-left: round(1rem, var(--e)); padding-right: round(1rem, var(--e)); overflow-wrap: anywhere; }
+:root[data-phone] .tl-rows .tl-item {
+  grid-template-columns: round(1.125rem, var(--e)) minmax(0, 1fr) auto var(--tap);
+  grid-template-rows: auto auto; column-gap: round(0.625rem, var(--e)); align-items: center;
+  padding: round(0.25rem, var(--e)) round(0.5rem, var(--e)) round(0.25rem, var(--e)) round(1rem, var(--e));
+}
+:root[data-phone] .tl-rows .tl-rail { grid-column: 1; grid-row: 1 / span 2; }
+:root[data-phone] .tl-rows .tl-time { grid-column: 2; grid-row: 1; flex-direction: row; flex-wrap: wrap; align-items: center; column-gap: round(0.375rem, var(--e)); min-height: var(--tap); margin-bottom: round(-0.5rem, var(--e)); white-space: normal; }
+/* the day heading above already names the day */
+:root[data-phone] .tl-rows .tl-day { display: none; }
+:root[data-phone] .tl-rows .tl-dur { grid-column: 3; grid-row: 1; }
+:root[data-phone] .tl-rows .tl-body { grid-column: 2 / span 2; grid-row: 2; padding: 0 0 round(0.5rem, var(--e)); }
+:root[data-phone] .tl-rows .row-chev { grid-column: 4; grid-row: 1 / span 2; align-self: stretch; align-items: center; justify-content: center; min-height: var(--tap); }
+:root[data-phone] .tl-rows .tl-body .title { flex-wrap: wrap; align-items: center; column-gap: round(0.625rem, var(--e)); white-space: normal; overflow: visible; }
+:root[data-phone] .tl-rows .tl-kind { align-items: center; min-height: var(--tap); margin-block: round(-0.25rem, var(--e)); }
+:root[data-phone] .tl-rows .tl-what { min-width: 0; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+:root[data-phone] .tl-rows .tl-body .detail { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+:root[data-phone] .tl-rows .tl-skel { grid-template-rows: auto; }
+:root[data-phone] .tl-help summary { min-height: var(--tap); }

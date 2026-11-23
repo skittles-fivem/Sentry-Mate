@@ -27,11 +27,12 @@ Bridge app at `https://<server>:10100/api/can/logs` with a token from **Settings
 | [Moving](docs/moving.md) | Another server in one step: a move code or an export file |
 | [Commands](docs/commands.md) | Every command, setting, port, limit and file |
 | [Security](docs/security.md) | Encryption at rest, accounts, what leaves the server |
-| [UI packs](ui/README.md) | The five built-in designs |
+| [UI packs](ui/README.md) | The six built-in designs |
 | [Development](docs/development.md) | Building, tests, CI, the crates |
 
 ## Licence
 
 None chosen yet. Bundled third-party files keep their own licences
-([DBC files](crates/dbc/files/README.md), [UI packs](ui/README.md)). Written from scratch; not affiliated with
+([DBC files](crates/dbc/files/README.md), [UI packs](ui/README.md); the time zone boundaries built into the
+server, from the `tzf-dist` crate, are timezone-boundary-builder's data from © OpenStreetMap contributors, ODbL). Written from scratch; not affiliated with
 TeslaMate, Tesla or Screenmate.

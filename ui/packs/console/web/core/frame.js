@@ -7,6 +7,7 @@
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { h, replace, cover, safeUrl } from '../shared/dom.js';
+import { buildLabel, buildTitle } from '../shared/release.js';
 import { pagesOf } from './pages.js';
 import { initNotices, loadNotices, onNotices, setOffline } from './notices.js';
 import { initToasts } from './toast.js';
@@ -126,7 +127,8 @@ function buildFoot() {
 async function loadAbout() {
   try {
     const a = await api.get('about', null, { maxAgeMs: 600000 });
-    els.version.textContent = `sentry-mate ${a.version} · ${String(a.ui_pack?.name || 'console').toLowerCase()} ${a.ui_pack?.version || ''}`.trim();
+    els.version.textContent = `sentry-mate ${buildLabel(a)} · ${String(a.ui_pack?.name || 'console').toLowerCase()} ${a.ui_pack?.version || ''}`.trim();
+    els.version.title = buildTitle(a);
   } catch { /* keeps the plain name */ }
 }
 
@@ -224,20 +226,14 @@ export async function update({ s, info, car, period, tz = null }) {
   if (car) names.set(car.id, slug(car.name || car.id));
   let carId = s.car || null;
   if (!carId && s.page !== 'sign-in' && s.page !== 'setup') {
-    carId = state.lastCar();
-    if (carId && !names.has(carId)) {
-      try { const c = await api.get(api.apiPath`cars/${carId}`, null, { maxAgeMs: 60000 }); names.set(c.id, slug(c.name || c.id)); } catch { carId = null; }
-      if (state.current() !== s) return;
-    }
-    if (!carId) {
-      // no car opened yet in this browser: the first car, so the link row has the car pages
-      try {
-        const p = await api.get('cars', { sort: 'name', limit: 20 }, { maxAgeMs: 60000 });
-        const c = (p.items || []).find((x) => !state.isSold(x)) || p.items?.[0];   // a sold car only when no other
-        if (c) { carId = c.id; names.set(c.id, slug(c.name || c.id)); }
-      } catch { /* no car pages then */ }
-      if (state.current() !== s) return;
-    }
+    // the person's preferred car (main car, else the last one opened, else the first car not sold)
+    try {
+      const p = await api.get('cars', { sort: 'name', limit: 200 }, { maxAgeMs: 60000 });
+      const items = p.items || [];
+      for (const x of items) names.set(x.id, slug(x.name || x.id));
+      carId = state.preferredCar(items);
+    } catch { carId = null; /* no car pages then */ }
+    if (state.current() !== s) return;
   }
   linkCar = carId;
   els.car.hidden = !carId;
@@ -246,7 +242,7 @@ export async function update({ s, info, car, period, tz = null }) {
   paintLinks(s, info, carId);
 }
 
-/** The car the link row and the keys use: the page's car, else the last one opened, else the first car. */
+/** The car the link row and the keys use: the page's car, else the person's preferred car (state.preferredCar). */
 export const navCar = () => state.current().car || linkCar;
 
 /** What the frame shows now: { car, page }. */

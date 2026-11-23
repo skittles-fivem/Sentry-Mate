@@ -38,3 +38,14 @@ test('the PUT body and the match changes', () => {
   const chosen = new Map(items.map((c) => [c.teslamate_car, tmPreselect(c)]));
   assert.deepEqual(tmMatchChanges(items, chosen), [{ teslamate_car: '1', match: 'c2' }]);
 });
+
+test('the local TeslaMate notices link to its section of Settings: Integrations', async () => {
+  const { TM_NOTICE_CODES, isTmNotice, tmNoticeFix, TM_NOTICE_ACTION } = await import('../teslamate.js');
+  assert.equal(TM_NOTICE_CODES.length, 5);
+  for (const code of TM_NOTICE_CODES) assert.ok(isTmNotice({ code }), code);
+  assert.ok(!isTmNotice({ code: 'teslafi_account_error' }) && !isTmNotice(null));
+  assert.equal(tmNoticeFix({ code: 'teslamate_quiet', fix_link: '/settings/integrations#teslamate' }), '/settings/integrations#teslamate');
+  assert.equal(tmNoticeFix({ code: 'teslamate_quiet', fix_link: null }, '/x/settings/integrations?car=c1'), '/x/settings/integrations?car=c1#teslamate');
+  assert.equal(tmNoticeFix({ code: 'teslamate_auth_failed', fix_link: '/settings/integrations#other' }), '/settings/integrations#teslamate');
+  assert.match(TM_NOTICE_ACTION, /TeslaMate/);
+});

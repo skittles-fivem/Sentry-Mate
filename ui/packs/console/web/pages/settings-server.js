@@ -21,7 +21,7 @@ import { toast } from '../core/toast.js';
 import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { signOut } from '../core/session.js';
 import { askPassword, copyBtn, codeOut, downloadKey, showOnce, STAY } from '../core/secret.js';
-import { teslaAccountHref } from './tesla.js';
+import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 
 export const id = 'settings-server';
 export const title = () => 'Settings: server';
@@ -41,13 +41,6 @@ const errText = (e) => (e?.fields ? Object.values(e.fields).join(' ') : e?.messa
 const ROLE = { admin: 'admin', watch: 'watch' };
 const PURPOSE = { web: 'web and api', upload: 'uploads' };
 const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
-// audit actions this page words (the rest show as the server names them)
-const ACTION = {
-  'tesla-account-added': 'tesla account added', 'tesla-account-removed': 'tesla account removed', 'tesla-account-paused': 'tesla account paused',
-  'tesla-account-resumed': 'tesla account resumed', 'tesla-account-changed': 'tesla account changed', 'tesla-token-replaced': 'tesla token replaced',
-  'tesla-car-matched': 'tesla car matched', 'tesla-poll-changed': 'tesla pace changed', 'tesla-sign-in-needed': 'tesla: sign in again',
-  'tesla-account-error': 'tesla account error', 'certificate-made': 'new certificate made',
-};
 const LIVE = new Set(['offered', 'copying', 'paused', 'moved']);
 
 /** A list of '[tag] text' lines. */
@@ -70,17 +63,18 @@ export async function mount(ctx) {
   const S = { settings: null, network: null, notices: [], accounts: [], cars: [], sessions: [] };
   const loadAccounts = async () => { S.accounts = admin ? await ctx.api.list('accounts', { limit: 500 }).all({ max: 5000 }) : []; };
   const loadSessions = async () => { S.sessions = await ctx.api.list('me/sessions', { limit: 500 }).all({ max: 5000 }); };
-  const [settings, network, notices, cars] = await Promise.all([
+  const [settings, network, notices, cars, trips] = await Promise.all([
     ctx.api.get('settings').catch(() => null),
     admin ? ctx.api.get('network').catch(() => null) : null,
     ctx.api.get('notices').catch(() => null),
     ctx.api.list('cars', { sort: 'custom', limit: 500 }).all({ max: 5000 }).catch(() => []),
+    admin ? ctx.api.list('trips', { limit: 500 }).all({ max: 2000 }).catch(() => []) : [],
     loadAccounts(), loadSessions(),
   ]);
   if (!ctx.alive()) return;
   Object.assign(S, { settings, network, notices: notices?.items || [], cars });
   const carName = new Map(S.cars.map((c) => [c.id, c.name]));
-  const clock = S.cars.find((c) => c.id === state.lastCar()) || S.cars[0] || null;
+  const clock = S.cars.find((c) => c.id === state.preferredCar(S.cars)) || null;
   const tz = clock?.time_zone || ctx.tz;
   const t = (ms) => (ms == null ? DASH : dateTime(ms, tz));
 
@@ -540,36 +534,40 @@ export async function mount(ctx) {
     try { await ctx.api.del('me/sessions'); toast('The other sessions were ended.'); await refreshSessions(); } catch (e) { toast(`Could not: ${errText(e)}`, { kind: 'error' }); }
   }
 
-  function target(tg, car) {
-    const i = String(tg || '').indexOf(':');
-    const kind = i < 0 ? tg : tg.slice(0, i), tid = i < 0 ? '' : tg.slice(i + 1);
-    const known = car && carName.has(car);
-    switch (kind) {
-      case 'drive': return known ? link(state.buildUrl('drive', { car, drive: tid }), `drive of ${carName.get(car)}`) : 'a drive';
-      case 'charge': return known ? link(state.buildUrl('charge', { car, charge: tid }), `charge of ${carName.get(car)}`) : 'a charge';
-      case 'update': return known ? link(state.buildUrl('software', { car }), `update of ${carName.get(car)}`) : 'a software update';
-      case 'car': return carName.has(tid) ? link(state.buildUrl('settings-cars', { car: tid }), carName.get(tid)) : 'a car no longer here';
-      case 'account': return `account ${S.accounts.find((x) => x.id === tid)?.name || tid}`;
-      case 'settings': return link(state.buildUrl(tid === 'mqtt' ? 'settings-integrations' : 'settings-display'), tid === 'mqtt' ? 'mqtt settings' : 'server defaults');
-      case 'place': return link(state.buildUrl('places', { query: { place: tid } }), 'a place');
-      case 'import': return link(state.buildUrl('import'), 'an import');
-      case 'key': return link(state.buildUrl('settings-cars'), `key ${tid}`);
-      case 'server': return tid === 'certificate' ? 'the certificate' : 'the server';
-      case 'tesla': { const acc = tid.split(':')[0]; return acc ? link(teslaAccountHref(acc), `tesla account ${acc}`) : link(`${state.buildUrl('settings-integrations')}#tesla`, 'the tesla input'); }
-      default: return tg || null;
-    }
+  // the audit log in words (shared/audit.js): the action (its code on hover), the item it changed, linked where
+  // it still exists; filtered by what (a group of actions) and who; ten entries, more as the end scrolls in
+  const lower1 = (t) => (t ? t[0].toLowerCase() + t.slice(1) : t);
+  const tripOf = new Map((trips || []).map((x) => [String(x.id), x]));
+  const itemCtx = { carName: (c) => carName.get(c), accountName: (a) => S.accounts.find((x) => x.id === a)?.name, trip: (x) => tripOf.get(String(x)) };
+  function target(e) {
+    const it = auditItem(e, itemCtx);
+    if (!it) return null;
+    if (!it.route || it.faint) return h('span', { class: 'muted' }, it.text);
+    return link(state.buildUrl(it.route[0], it.route[1] || {}) + (it.hash || ''), it.text);
   }
+  const auditF = { group: '', who: '' };
+  const auditParams = () => ({ ...(auditF.group ? { group: auditF.group } : {}), ...(auditF.who ? { who: auditF.who } : {}) });
+  const whatSel = h('select', { class: 'in', name: 'audit-group', 'aria-label': 'What' },
+    h('option', { value: '' }, 'what: all'), AUDIT_GROUPS.map((g) => h('option', { value: g.id }, `what: ${lower1(g.label)}`)));
+  const whoSel = h('select', { class: 'in', name: 'audit-who', 'aria-label': 'Who' },
+    h('option', { value: '' }, 'who: all'), [...new Set(S.accounts.map((a) => a.name))].sort((x, y) => x.localeCompare(y)).map((n) => h('option', { value: n }, `who: ${n}`)),
+    h('option', { value: '*server' }, 'who: the server'));
+  const refilter = () => { auditF.group = whatSel.value; auditF.who = whoSel.value; audit.reload(auditParams()); };
+  whatSel.addEventListener('change', refilter);
+  whoSel.addEventListener('change', refilter);
   const audit = admin ? table(ctx, {
-    title: 'audit log', path: 'audit', csvName: 'audit-log', label: 'Who changed what',
+    title: 'audit log', path: 'audit', limit: 10, csvName: 'audit-log', label: 'Who changed what', wrapCls: 'audit-sec',
     note: `Every change and sign-in, newest first. Times in ${tz}.`,
+    filters: h('div', { class: 'filt filt--audit' }, h('span', { class: 'filt-p' }, 'filter>'), h('span', { class: 'filt-sel' }, whatSel), h('span', { class: 'filt-sel' }, whoSel)),
+    autoMore: true, moreLabel: 'load more',
     columns: [
-      { key: 'at_ms', label: 'when', ph: 'sub', render: (e) => dateTime(e.at_ms, tz) },
-      { key: 'account', label: 'who', ph: 'num', render: (e) => e.account || h('span', { class: 'muted' }, 'server') },
-      { key: 'action', label: 'action', ph: 'main', render: (e) => (ACTION[e.action] ? h('span', { title: e.action }, ACTION[e.action]) : e.action) },
-      { key: 'target', label: 'item', render: (e) => target(e.target, e.car) },
+      { key: 'at_ms', label: 'when', ph: 'sub', cls: 'nowrap', render: (e) => dateTime(e.at_ms, tz) },
+      { key: 'account', label: 'who', ph: 'num', cls: 'nowrap', render: (e) => e.account || h('span', { class: 'muted' }, 'the server') },
+      { key: 'action', label: 'action', ph: 'main', render: (e) => h('span', { title: e.action }, lower1(actionLabel(e.action))) },
+      { key: 'target', label: 'item', ph: 'sub', render: (e) => target(e) },
       { key: 'summary', label: 'what happened', grow: true, ph: 'sub', render: (e) => e.summary || null },
     ],
-    empty: () => empty('nothing recorded yet'),
+    empty: () => empty(auditF.group || auditF.who ? 'no entry matches this what and who' : 'nothing recorded yet'),
   }) : null;
 
   /* ---------------------------------------------------------------- the page */

@@ -4,12 +4,14 @@
 // and how a car appears. With a car: name and what the car reports (each value with its source), upload
 // tokens and CAN Bridge keys with the outcome of the uploads, time zone, battery chemistry, reference values
 // and free Supercharging as dated ranges. Every line saves on its own (PATCH with the object's version).
+// Data sources: the car's live inputs in priority order (drag, or up / down), saved as source_order, and whether
+// imported history fills the gaps (import_gap_fill: true / false / null = the server's setting).
 // API: GET/PATCH cars/{car}, cars/{car}/settings; cars/{car}/upload-tokens, upload-tokens, can-keys (admin).
 
 import * as state from '../shared/state.js';
-import { h, replace } from '../shared/dom.js';
+import { h, replace, setVars } from '../shared/dom.js';
 import { invalidate } from '../shared/api.js';
-import { isValidZone, dayKey } from '../shared/time.js';
+import { isValidZone, dayKey, zoneSourceText } from '../shared/time.js';
 import { convert, toMetric, unitLabel, format } from '../shared/units.js';
 import { head, paint, section, note, link, btn, kv } from '../core/ui.js';
 import { table } from '../core/table.js';
@@ -23,6 +25,7 @@ import { openCarSwitcher } from '../core/carswitch.js';
 import { src } from '../core/source.js';
 
 export const id = 'settings-cars';
+export const css = true;
 export const title = (ctx) => (ctx.car ? `Settings: ${ctx.car.name || 'car'}` : 'Settings: cars');
 
 const enc = encodeURIComponent;
@@ -31,6 +34,9 @@ const CHEM = [['auto', 'auto'], ['lfp', 'lfp'], ['nca_nmc', 'nca/nmc']];
 const CHEM_WORDS = { lfp: 'LFP (iron phosphate)', nca_nmc: 'NCA / NMC (nickel)' };
 const CONFIG = [['trim', 'trim'], ['drivetrain', 'drivetrain'], ['performance_package', 'performance'], ['pack_kwh_code', 'pack code'], ['wheel', 'wheels'],
   ['paint', 'paint'], ['roof', 'roof'], ['spoiler', 'spoiler'], ['right_hand_drive', 'right-hand drive'], ['map_region', 'map region'], ['supercharging_access', 'supercharging']];
+const LIVE = ['smo', 'tesla_api', 'teslafi_api', 'teslamate_local'];
+const LIVE_LABEL = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'local TeslaMate' };
+const sameOrder = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i]);
 const yesNo = (v) => (v === true ? 'yes' : v === false ? 'no' : String(v));
 const oldTag = (s) => (SOURCE[s] ? tag(SOURCE[s][0], SOURCE[s][1]) : null);
 // a config value { value, source, sources }: where it came from; empty sources: an admin typed it
@@ -190,14 +196,14 @@ async function mountCar(ctx) {
   const patchCar = (body) => serial('car', async () => {
     try { S.car = await ctx.api.patch(`cars/${enc(cid)}`, { version: S.car.version, ...body }); } catch (e) { if (e.status === 409) throw await stale(); throw e; }
     invalidate('cars');
-    Object.assign(ctx.car, { name: S.car.name, time_zone: S.car.time_zone });
+    Object.assign(ctx.car, { name: S.car.name, time_zone: S.car.time_zone, time_zone_source: S.car.time_zone_source });
   });
   const patchSettings = (body) => serial('settings', async () => {
     try { S.settings = await ctx.api.patch(`cars/${enc(cid)}/settings`, { version: S.settings.version, ...body }); } catch (e) { if (e.status === 409) throw await stale(); throw e; }
   });
 
-  const slots = { top: h('div'), car: h('div'), sold: h('div'), uploads: h('div'), tz: h('div'), battery: h('div'), refs: h('div'), free: h('div') };
-  function repaint() { paintTop(); paintCar(); paintSold(); paintUploads(); paintTz(); paintBattery(); paintRefs(); paintFree(); }
+  const slots = { top: h('div'), car: h('div'), sources: h('div'), sold: h('div'), uploads: h('div'), tz: h('div'), battery: h('div'), refs: h('div'), free: h('div') };
+  function repaint() { paintTop(); paintCar(); paintSources(); paintSold(); paintUploads(); paintTz(); paintBattery(); paintRefs(); paintFree(); }
 
   /* ---- where this is, and the other cars */
   function paintTop() {
@@ -237,6 +243,136 @@ async function mountCar(ctx) {
         missing.length ? ` Not reported: ${missing.join(', ')}.` : ''),
       h('p', { class: 'note', cover: 'web.settings.car.empty-state' }, 'A new car appears by itself once its CAN Bridge has uploaded its first log, or when a vehicle of a Tesla account is matched to a new car under ',
         link(`${state.buildUrl('settings-integrations')}#tesla`, 'settings/integrations'), '. ', link(state.buildUrl('settings-cars'), 'how a car appears'), '.')));
+  }
+
+  /* ---- data sources: the live inputs in priority order, and gap filling from imported history */
+  let sourcesBusy = false;
+  function paintSources(problem = null) {
+    const s = S.settings;
+    if (!Array.isArray(s.source_order)) { replace(slots.sources); return; }   // an older server: no order to show
+    const order = s.source_order.filter((k) => LIVE.includes(k));
+    const def = Array.isArray(s.source_order_default) ? s.source_order_default : LIVE;
+    const byKind = new Map((Array.isArray(s.inputs) ? s.inputs : []).map((i) => [i.kind, i]));
+    const nameOf = (k) => byKind.get(k)?.label || LIVE_LABEL[k] || k;
+    const msg = h('p', { class: 'ke-msg', role: 'alert', hidden: true });
+    const say = (t) => { msg.hidden = !t; replace(msg, t || ''); };
+    const list = h('ol', { class: 'ds-list', 'aria-label': 'Live inputs, highest priority first' });
+
+    async function save(next, done, focus = null) {
+      if (sourcesBusy || sameOrder(next, order)) return;
+      sourcesBusy = true;
+      say(null);
+      rows(next);
+      let problem = null;
+      try {
+        await patchSettings({ source_order: next });
+        toast(done);
+      } catch (e) { problem = saveError(e, 'source_order'); }
+      sourcesBusy = false;
+      if (!ctx.alive()) return;
+      paintSources(problem);
+      if (focus) slots.sources.querySelector(`[data-ds="${focus}"]`)?.focus({ preventScroll: true });
+    }
+    const move = (k, d) => {
+      const i = order.indexOf(k), j = i + d;
+      if (i < 0 || j < 0 || j >= order.length) return;
+      const next = [...order];
+      [next[i], next[j]] = [next[j], next[i]];
+      const f = `${k}:${d < 0 && j > 0 ? 'up' : d > 0 && j < order.length - 1 ? 'dn' : 'grip'}`;
+      save(next, `${nameOf(k)} moved ${d < 0 ? 'up' : 'down'}: now ${j + 1} of ${order.length}.`, f);
+    };
+
+    // drag by the grip (mouse, pen and touch: pointer events, so a finger can drag too); the arrows on the grip move it too
+    function grip(k) {
+      const g = h('button', { class: 'btn btn--quiet ds-grip', type: 'button', dataset: { ds: `${k}:grip` }, title: 'Drag to change the order (or use the arrow keys)',
+        'aria-label': `Drag ${nameOf(k)} to change its place; arrow keys move it`, 'aria-keyshortcuts': 'ArrowUp ArrowDown', disabled: sourcesBusy }, '::');
+      g.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); move(k, e.key === 'ArrowUp' ? -1 : 1); }
+      });
+      g.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0 || sourcesBusy) return;
+        e.preventDefault();
+        // the rows stay where they are in the page (moving the dragged one would end the drag); only their shown
+        // place changes (--ds-at, the flex order), and the order is read from it when the pointer is let go
+        const li = g.closest('li');
+        const items = [...list.querySelectorAll('li[data-kind]')];
+        let at = items.indexOf(li);
+        const place = (ks) => { ks.forEach((x, i) => { setVars(x, { '--ds-at': String(i) }); x.querySelector('.ds-n').textContent = `${i + 1}.`; }); };
+        const shown = () => [...items].sort((a, b) => Number(a.style.getPropertyValue('--ds-at')) - Number(b.style.getPropertyValue('--ds-at')));
+        place(items);
+        g.setPointerCapture(e.pointerId);
+        li.classList.add('is-drag');
+        const onMove = (ev) => {
+          const others = shown().filter((x) => x !== li);
+          let to = others.findIndex((x) => { const r = x.getBoundingClientRect(); return ev.clientY < r.top + r.height / 2; });
+          if (to < 0) to = others.length;
+          if (to === at) return;
+          at = to;
+          others.splice(to, 0, li);
+          place(others);
+        };
+        const end = () => {
+          g.removeEventListener('pointermove', onMove); g.removeEventListener('pointerup', end); g.removeEventListener('pointercancel', end);
+          li.classList.remove('is-drag');
+          const next = shown().map((x) => x.dataset.kind);
+          if (sameOrder(next, order)) { rows(order); return; }
+          save(next, `Source order saved: ${next.map(nameOf).join(', ')}.`, `${k}:grip`);
+        };
+        g.addEventListener('pointermove', onMove); g.addEventListener('pointerup', end); g.addEventListener('pointercancel', end);
+      });
+      return g;
+    }
+    function rows(ks = order) {
+      replace(list, ks.map((k, i) => {
+        const inp = byKind.get(k);
+        const on = !!inp?.on;
+        return h('li', { class: ['ds-row', !on && 'ds-row--off'], dataset: { kind: k, row: '' } },
+          h('span', { class: 'ds-n', 'aria-hidden': 'true' }, `${i + 1}.`),
+          h('span', { class: 'ds-name' }, h('span', { class: 'src-b' }, '[', h('span', { class: ['src-k', `src-k--${k}`] }, { smo: 'smo', tesla_api: 'api', teslafi_api: 'tfi', teslamate_local: 'tml' }[k] || k), ']'), ` ${nameOf(k)}`),
+          h('span', { class: 'ds-on' }, on ? tag('on', 'ok') : tag('off', 'muted')),
+          h('span', { class: 'ds-last muted' }, inp?.last_ms != null ? `newest ${ago(inp.last_ms)}` : on ? 'nothing yet' : 'not set up here'),
+          ro ? null : h('span', { class: 'ds-acts' },
+            h('button', { class: 'btn btn--quiet', type: 'button', dataset: { ds: `${k}:up` }, disabled: i === 0 || sourcesBusy, 'aria-label': `Move ${nameOf(k)} up`, onclick: () => move(k, -1) }, 'up'),
+            h('button', { class: 'btn btn--quiet', type: 'button', dataset: { ds: `${k}:dn` }, disabled: i === ks.length - 1 || sourcesBusy, 'aria-label': `Move ${nameOf(k)} down`, onclick: () => move(k, 1) }, 'dn'),
+            grip(k)));
+      }), h('li', { class: 'ds-row ds-row--imp' },
+        h('span', { class: 'ds-n', 'aria-hidden': 'true' }, `${ks.length + 1}.`),
+        h('span', { class: 'ds-name' }, h('span', { class: 'src-b' }, '[', h('span', { class: 'src-k src-k--import' }, 'imp'), ']'), ' imported history'),
+        h('span', { class: 'ds-last muted' }, 'always after the live inputs')));
+    }
+    rows();
+    say(problem);
+
+    // gap filling: on, off or the server's setting (null)
+    const imports = Array.isArray(s.imports) ? s.imports : [];
+    const srvOn = s.import_gap_fill_default === true ? 'on' : s.import_gap_fill_default === false ? 'off' : 'not known';
+    const gfValue = s.import_gap_fill === true ? 'on' : s.import_gap_fill === false ? 'off' : 'server';
+    const z = tz();
+    const impText = imports.length ? imports.map((x) => `${x.label}${x.from_ms != null && x.to_ms != null ? ` (${date(x.from_ms, z)} to ${date(x.to_ms, z)})` : ''}`).join('; ') : null;
+    const gap = editLines([
+      { key: 'import_gap_fill', id: 'gap-fill', type: 'choice', value: gfValue, label: 'Fill gaps from imported history', readOnly: ro,
+        options: [['server', `server default: ${srvOn}`], ['on', 'on'], ['off', 'off']],
+        disabledOption: () => !imports.length,
+        show: (v) => (v === 'server' ? `server default: ${srvOn}` : v),
+        help: [h('b', null, 'Fill gaps from imported history'), ': where no live input recorded, the import fills in. ',
+          imports.length ? ['The imports it uses: ', impText, '. '] : h('span', { class: 'tone--warn' }, 'No imported history for this car. '),
+          imports.length ? `Now ${s.import_gap_fill_on ? 'on' : 'off'}${s.import_gap_fill == null ? ', as the server sets it' : ''}.` : 'Import a TeslaMate or TeslaFi history first.'],
+        save: async (v) => {
+          await patchSettings({ import_gap_fill: v === 'on' ? true : v === 'off' ? false : null });
+          toast(v === 'server' ? `Gap filling follows the server: ${srvOn}.` : `Gap filling from imported history: ${v}.`);
+          if (ctx.alive()) queueMicrotask(paintSources);
+        } },
+    ]);
+
+    const differs = !sameOrder(order, def);
+    replace(slots.sources, section({ title: 'data sources', id: 'data-sources',
+      side: ro ? h('span', { class: 'muted' }, 'set by an admin') : differs ? btn('reset to default order', () => save([...def], `Source order back to the default: ${def.map(nameOf).join(', ')}.`)) : h('span', { class: 'muted' }, 'default order') },
+      h('p', { class: 'note ds-why' }, 'When two sources cover the same time, the higher one wins, value by value. Imported history always comes after the live inputs.'),
+      list, msg,
+      gap.el,
+      h('p', { class: 'note' }, ro
+        ? [link(state.buildUrl('timeline', { car: cid }), 'Choose per span which source is shown', { class: 'lnk lnk--tap' }), ': the timeline marks where imported and live history overlap; an admin chooses in import.']
+        : [link(`${state.buildUrl('import')}#overlaps`, 'Choose per span which source is shown', { class: 'lnk lnk--tap' }), ' where imported and live history overlap.'])));
   }
 
   /* ---- sold: the car left the fleet; its history stays */
@@ -349,16 +485,20 @@ async function mountCar(ctx) {
   const ZONES = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
   function paintTz() {
     const z = S.car.time_zone || '';
+    const src = S.car.time_zone_source;
+    const srcText = zoneSourceText(src);
     const listId = `sc-zones-${cid}`;
     const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
     const now = ctx.api.now();
     const lines = editLines([
       { key: 'time_zone', id: 'time-zone', type: 'text', value: z, readOnly: ro, cover: 'docs.env.core.tz', attrs: { list: listId },
         parse: (t) => (isValidZone(t.trim()) ? { value: t.trim() } : { error: 'not a time zone this browser knows: pick one from the list, such as Europe/Amsterdam' }),
-        help: [`Days, ISO weeks, months, statistics and prices by time of day use this zone, wherever the server runs. A change regroups the whole history at once; nothing is lost. Now there: ${time(now, z || ctx.tz)}, ${date(now, z || ctx.tz)}.`],
-        after: browserZone && browserZone !== z && !ro ? btn(`use ${browserZone}`, async () => {
+        help: [srcText ? `${z} (${srcText})${src === 'owner' ? '' : ': type or pick a zone to set it for this car'}. ` : '', `Days, ISO weeks, months, statistics and prices by time of day use this zone, wherever the server runs. A change regroups the whole history at once; nothing is lost. Now there: ${time(now, z || ctx.tz)}, ${date(now, z || ctx.tz)}.`],
+        after: [src === 'owner' && !ro ? btn('automatic', async () => {
+          try { await patchCar({ time_zone: null }); toast('Time zone: worked out from the car’s position again.'); repaint(); } catch (e) { toast(errMsg(e), { kind: 'error' }); }
+        }) : null, browserZone && browserZone !== z && !ro ? btn(`use ${browserZone}`, async () => {
           try { await patchCar({ time_zone: browserZone }); toast(`Time zone saved: ${browserZone}.`); repaint(); } catch (e) { toast(errMsg(e), { kind: 'error' }); }
-        }) : null,
+        }) : null].filter(Boolean),
         save: async (v) => { await patchCar({ time_zone: v }); paintTop(); } },
     ]);
     replace(slots.tz, section({ title: 'time zone' }, lines.el, h('datalist', { id: listId }, ZONES.map((x) => h('option', { value: x })))));
@@ -419,7 +559,34 @@ async function mountCar(ctx) {
         save: (v) => patchSettings({ software_version_typed: v }) },
     ]);
     replace(slots.refs, section({ title: 'reference values', side: h('span', { class: 'muted' }, 'empty means worked out') }, lines.el,
-      note('Battery health compares today\'s capacity and range with these; without them it uses the earliest readings and says so.')));
+      note('Battery health compares today\'s capacity and range with these; without them it uses the earliest readings and says so.')),
+    tyreSection());
+  }
+
+  /* ---- the recommended tyre pressures, typed (config.tyre_pressure_front_kpa / _rear_kpa, kPa) */
+  function tyreSection() {
+    const cfg = S.car.config || {};
+    const unit = unitLabel('pressure');
+    const r2 = (x) => Math.round(x * 100) / 100;
+    const lo = Math.ceil(convert(100, 'pressure') * 100) / 100, hi = Math.floor(convert(600, 'pressure') * 100) / 100;
+    const line = (k, label, help) => {
+      const cur = cfg[k]?.value;
+      return { key: k, type: 'number', value: cur == null ? '' : String(r2(convert(cur, 'pressure'))), toText: (v) => (v == null ? '' : String(v)), unit, cls: 'ke--short', readOnly: ro,
+        help: `${help} ${lo} to ${hi} ${unit}, or empty.`,
+        parse: (t) => {
+          if (t.trim() === '') return { value: null };
+          const n = Number(t);
+          return Number.isFinite(n) && n >= lo && n <= hi ? { value: n } : { error: `a number from ${lo} to ${hi}, or empty` };
+        },
+        save: async (v) => { await patchCar({ config: { [k]: v == null ? null : Math.round(toMetric(v, 'pressure') * 10) / 10 } }); return undefined; },
+        label };
+    };
+    const lines = editLines([
+      line('tyre_pressure_front_kpa', 'recommended, front', 'The cold pressure on the door placard. Empty: what the car sends, else the placard\'s for its wheel size.'),
+      line('tyre_pressure_rear_kpa', 'recommended, rear', 'Empty: the front\'s when that is typed.'),
+    ]);
+    return section({ title: 'tyre pressure', side: h('span', { class: 'muted' }, 'typed beats the car') }, lines.el,
+      note('A tyre more than 10 % under its recommended pressure is flagged on the car page.'));
   }
 
   /* ---- free Supercharging as dated ranges */
@@ -471,7 +638,7 @@ async function mountCar(ctx) {
   paint(ctx, head(ctx, { title: 'Settings: car' }),
     slots.top,
     h('p', { class: 'note', cover: 'web.settings.car.autosave' }, ro ? 'These settings are changed by an admin; you can read them here.' : 'Each line saves on its own: Enter saves, Esc undoes. There is no save button for the page.'),
-    slots.car, slots.sold, slots.tz, slots.battery, slots.refs, slots.free, slots.uploads);
+    slots.car, slots.sources, slots.sold, slots.tz, slots.battery, slots.refs, slots.free, slots.uploads);
   ctx.events(['fleet'], (ev) => { if (ev.data?.car === cid && ((ev.data?.change === 'renamed' && ev.data.name !== S.car.name) || ev.data?.change === 'sold')) load().then(() => { if (ctx.alive()) repaint(); }).catch(() => {}); });
   await Promise.all(uploadTables.map((t) => t.ready));
   if (ctx.alive()) ctx.ready();

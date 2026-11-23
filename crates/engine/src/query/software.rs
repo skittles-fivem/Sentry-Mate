@@ -62,7 +62,8 @@ pub struct UpdateView {
     /// From the end of the update before.
     pub since_previous_ms: Option<u64>,
     pub version: Option<String>,
-    /// `teslamate`, `owner`, `build_match`, or null without a version.
+    /// `teslamate`, `teslafi`, `tesla_api`, `teslafi_api`, `teslamate_local` (a live input's version, named on a
+    /// fingerprint update a day or less after it), `owner`, `build_match`, or null without a version.
     pub version_source: Option<&'static str>,
     /// `ota_status`, `fingerprint`, `teslamate` or `tesla_api`.
     pub detected_by: &'static str,
@@ -94,6 +95,18 @@ pub struct UpdatesSummary {
     pub current_version_since_ms: Option<u64>,
     /// When the module builds changed after the current version was named (null: they did not, or no builds known).
     pub build_changed_since: Option<u64>,
+    /// The car's newest update whatever the period (null: none), so a period without one can say when it was.
+    pub last_update: Option<LastUpdate>,
+}
+
+/// [`UpdatesSummary::last_update`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LastUpdate {
+    pub id: String,
+    pub start_ms: u64,
+    pub end_ms: Option<u64>,
+    pub version: Option<String>,
+    pub version_source: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -104,7 +117,7 @@ pub struct Updates {
 }
 
 /// A car's update rows, oldest first (small: see the module's notes).
-fn all_updates(e: &Engine, car: CarId) -> QResult<Vec<UpdateRow>> {
+pub(crate) fn all_updates(e: &Engine, car: CarId) -> QResult<Vec<UpdateRow>> {
     let mut out = Vec::new();
     super::reports::overlapping::<UpdateRow>(e, car, 0, u64::MAX, None, false, |u| {
         out.push(u);
@@ -116,13 +129,21 @@ fn all_updates(e: &Engine, car: CarId) -> QResult<Vec<UpdateRow>> {
 
 /// The version an update shows and where it came from: typed by an admin, else imported. A fingerprint update's
 /// is its name ([`crate::firmware::name_of`]): `owner`, or `build_match` when its set was named on another.
-fn version_of(e: &Engine, car: CarId, u: &UpdateRow) -> QResult<(Option<String>, Option<&'static str>)> {
+pub(crate) fn version_of(e: &Engine, car: CarId, u: &UpdateRow) -> QResult<(Option<String>, Option<&'static str>)> {
     if crate::firmware::is_fingerprint(u.id) {
         let Some(ev) = super::firmware::event(e, car, u.id)? else { return Ok((None, None)) };
-        return Ok(match crate::firmware::name_of(e.db(), car, &ev)? {
-            Some((v, by)) => (Some(v), Some(if by == "auto" { "build_match" } else { "owner" })),
-            None => (None, None),
-        });
+        let (name, cleared) = crate::firmware::naming_of(e.db(), car, &ev)?;
+        // typed on it wins, and a name an admin cleared stays cleared
+        if let Some((v, "owner")) = &name {
+            return Ok((Some(v.clone()), Some("owner")));
+        }
+        if cleared {
+            return Ok((None, None));
+        }
+        if let Some((v, input)) = input_named(e, car, ev.from_ms, ev.to_ms)? {
+            return Ok((Some(v), Some(model::Origin::from(input).kind())));
+        }
+        return Ok(name.map_or((None, None), |(v, _)| (Some(v), Some("build_match"))));
     }
     if let Some(t) = typed(e, car, u.id)? {
         return Ok((Some(t.version), Some("owner")));
@@ -138,6 +159,43 @@ fn version_of(e: &Engine, car: CarId, u: &UpdateRow) -> QResult<(Option<String>,
         }
     });
     Ok((v, src))
+}
+
+/// How long after a fingerprint update a live input's new version still names it.
+pub(crate) const INPUT_NAME_WINDOW_MS: u64 = 24 * 3600 * 1000;
+
+/// The version a live input said the car ran after the update whose old fingerprints were last seen at `from_ms` and
+/// the new ones first at `to_ms`: the newest version an input started saying from `from_ms` until a day after `to_ms`
+/// that is not the one it said before `from_ms` (before `to_ms`, only one it changed to), from the inputs in the car's
+/// order (its `source_order`, [`Engine::source_order`]).
+fn input_named(e: &Engine, car: CarId, from_ms: u64, to_ms: u64) -> QResult<Option<(String, model::Input)>> {
+    let seen = crate::records::input_versions(e.db(), car)?;
+    let mut inputs: Vec<model::Input> = seen.iter().map(|s| s.input).collect();
+    let order = e.source_order(car);
+    inputs.sort_by_key(|&i| order.rank(i));
+    inputs.dedup();
+    let until = to_ms.saturating_add(INPUT_NAME_WINDOW_MS);
+    for input in inputs {
+        let mine: Vec<&crate::records::VersionSeen> = seen.iter().filter(|s| s.input == input).collect();
+        let before = mine.iter().rev().find(|s| s.first_ms < from_ms).map(|s| s.version.as_str());
+        // the newest one said in the window; one said before the new fingerprints were seen counts only as a change
+        // the input saw (its first version said then can still be the old one)
+        let changed = |k: usize| k.checked_sub(1).is_some_and(|j| mine[j].version != mine[k].version);
+        if let Some(s) = (0..mine.len())
+            .rev()
+            .find(|&k| {
+                let s = mine[k];
+                (from_ms..=until).contains(&s.first_ms)
+                    && before != Some(s.version.as_str())
+                    && (s.first_ms >= to_ms || changed(k))
+            })
+            .map(|k| mine[k])
+            && valid_version(&s.version)
+        {
+            return Ok(Some((s.version.clone(), input)));
+        }
+    }
+    Ok(None)
 }
 
 /// The row of `all[i]`: its version, the stretch until the next update, the charges in that stretch.
@@ -203,8 +261,31 @@ fn view(e: &Engine, c: &Car, all: &[UpdateRow], i: usize, shown: &Shown) -> QRes
     })
 }
 
-/// What the car runs now: the newest update's version, else the version an admin typed in the car's settings.
+/// What the car runs now: a version an admin typed on the newest update; else the version a live input reads (the
+/// inputs in their order) when it read it after the newest update started; else the newest update's version; else
+/// the version an admin typed in the car's settings.
 fn current(e: &Engine, c: &Car, all: &[UpdateRow]) -> QResult<(Option<String>, Option<&'static str>, Option<u64>)> {
+    let newest = match all.last() {
+        Some(u) => Some((u, version_of(e, c.id, u)?)),
+        None => None,
+    };
+    if let Some((u, (v, Some("owner")))) = &newest {
+        return Ok((v.clone(), Some("owner"), Some(u.update.end_ms.unwrap_or(u.update.start_ms))));
+    }
+    let live = super::now::off_can_now(e, c.id, crate::now_ms())?.version;
+    if let Some(l) = live.filter(|l| newest.as_ref().is_none_or(|(u, _)| l.at_ms >= u.update.start_ms)) {
+        let since = match &newest {
+            Some((u, (v, _))) if v.as_ref().is_none_or(|v| *v == l.value) => {
+                Some(u.update.end_ms.unwrap_or(u.update.start_ms))
+            }
+            _ => crate::records::input_versions(e.db(), c.id)?
+                .iter()
+                .rev()
+                .find(|s| s.input == l.input && s.version == l.value)
+                .map(|s| s.first_ms),
+        };
+        return Ok((Some(l.value), Some(model::Origin::from(l.input).kind()), since));
+    }
     if let Some(u) = all.last() {
         let (v, s) = version_of(e, c.id, u)?;
         let since = Some(u.update.end_ms.unwrap_or(u.update.start_ms));
@@ -267,6 +348,19 @@ pub fn updates(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QRes
         current_version_source: cs,
         current_version_since_ms: since,
         build_changed_since: build_changed_since(e, car, &all)?,
+        last_update: match all.last() {
+            Some(u) => {
+                let (version, version_source) = version_of(e, car, u)?;
+                Some(LastUpdate {
+                    id: u.id.to_string(),
+                    start_ms: u.update.start_ms,
+                    end_ms: u.update.end_ms,
+                    version,
+                    version_source,
+                })
+            }
+            None => None,
+        },
     };
     Ok(scoped(&c, Updates { items, next, summary }))
 }

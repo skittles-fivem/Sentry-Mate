@@ -1,68 +1,57 @@
-// States a page can be in besides "here is the data": loading, empty, error, offline and signed out.
-// Each says what is going on in plain words and offers a way on.
+// Loading, empty and error states, the same everywhere.
 
 import { h } from '../shared/dom.js';
-import { icon, hud, btn, linkBtn } from './ui.js';
+import { icon } from './icons.js';
 
-/** The loading picture the router shows until a page draws: a plate and `n` panels of placeholder lines. */
-export function loadingDeck(n = 3) {
-  const lines = (k) => Array.from({ length: k }, (_, i) => h('span', { class: 'skel skel--line', vars: { '--w': `${92 - i * 14}%` } }));
-  return h('div', { class: 'loading-deck', 'aria-label': 'Loading', role: 'status' },
-    h('div', { class: 'hud' }, h('span', { class: 'skel skel--title' }), lines(1)),
-    Array.from({ length: n }, (_, i) => h('div', { class: 'hud' }, lines(2), i === 0 ? h('span', { class: 'skel skel--block' }) : null)));
+/** A shimmering bar: skel('text' | 'num' | 'title' | 'block', { width: '60%' }). */
+export const skel = (kind = 'text', { width = null } = {}) => h('span', { class: ['skel', `skel--${kind}`], style: width ? { width } : null });
+
+/** A page that is loading: a title bar and a few empty panels (n, default 3). */
+export function loadingPage(n = 3) {
+  return h('div', { class: 'loading', 'aria-busy': 'true' },
+    h('div', { class: 'loading-head' }, skel('text', { width: '8rem' }), h('div', { class: 'row' }, skel('title'))),
+    h('div', { class: 'loading-grid' }, Array.from({ length: n }, () => h('div', { class: 'panel' }, skel('text'), h('br'), skel('num')))));
 }
 
-/** A state box: state({ icon, title, text, actions, tone: 'warn' | 'bad', code }). */
-export function state({ icon: ic = 'info', title, text, actions, tone, code } = {}) {
-  return h('div', { class: ['state', tone && `state--${tone}`] },
-    h('span', { class: 'state-ic' }, icon(ic, 'i--lg')),
-    h('h2', { class: 'state-title' }, title),
-    text ? h('p', { class: 'state-text' }, text) : null,
-    actions ? h('div', { class: 'row' }, actions) : null,
-    code ? h('p', { class: 'state-code' }, code) : null);
+/**
+ * An empty state: emptyState({ icon: 'route', title: 'No drives in this period', text: 'Pick a longer
+ * period.', action: h('a', { class: 'btn', href }, 'Show 90 days') }). Say exactly why it is empty.
+ */
+export function emptyState({ icon: ic = 'info', title, text = null, action = null, warn = false } = {}) {
+  return h('div', { class: 'empty' },
+    h('div', { class: ['empty-icon', warn && 'empty-icon--warn'] }, icon(ic)),
+    h('h3', null, title),
+    text ? h('p', null, text) : null,
+    action);
 }
 
-/** Empty: say exactly why there is nothing and how to change that. */
-export const emptyState = ({ icon: ic = 'info', title, text, actions } = {}) => state({ icon: ic, title, text, actions });
-
-/** An error in words: { title, text, icon, tone } for an ApiError (or anything thrown). */
+/** The words for an ApiError (or any error): { title, text }. */
 export function errorWords(err) {
   const s = err?.status;
-  if (s === 0 || err?.code === 'network' || err?.code === 'timeout') {
-    return { icon: 'signal', tone: 'warn', title: 'No signal from the server',
-      text: err?.code === 'timeout' ? 'The server took too long to answer. It may be busy; try again in a moment.' : 'This browser could not reach Sentry Mate. Check the network, or that the server is running, then try again.' };
-  }
-  if (s === 401) return { icon: 'lock', tone: 'warn', title: 'Signed out', text: 'Your session has ended. Sign in again to go on.' };
-  if (s === 403) return { icon: 'lock', tone: 'warn', title: 'Not for this account', text: err?.message || 'Your account may not do this. An admin can change what it may do.' };
-  if (s === 404) return { icon: 'search', tone: 'warn', title: 'Not found', text: err?.message || 'There is nothing at this address, or your account may not see it.' };
-  if (s === 409) return { icon: 'warn', tone: 'warn', title: 'Changed meanwhile', text: err?.message || 'Something changed while you were looking. Load the page again.' };
-  if (s === 429) return { icon: 'clock', tone: 'warn', title: 'Too many tries', text: `${err?.message || 'Wait a moment.'}${err?.retryAfterMs ? ` Try again in ${Math.ceil(err.retryAfterMs / 1000)} s.` : ''}` };
-  if (s >= 500) return { icon: 'server', tone: 'bad', title: 'The server hit a problem', text: err?.message || 'Something went wrong on the server. Try again; if it keeps happening, look at the server log.' };
-  return { icon: 'warn', tone: 'bad', title: 'That did not work', text: err?.message || 'Something went wrong. Try again.' };
+  if (s === 404) return { title: 'Not found', text: (err.message ? err.message + ' ' : '') + 'It may have been removed, or the link is wrong. A car you may not see looks the same.' };
+  if (s === 401) return { title: 'Signed out', text: 'Your session ended. Sign in again to go on.' };
+  if (s === 403) return { title: 'Not allowed', text: err.message || 'Your account may not do this. An admin can.' };
+  if (s === 0) return { title: 'No answer from the server', text: 'Check that Sentry Mate is running and this computer is on the same network, then try again.' };
+  if (s === 429) return { title: 'Too many requests', text: 'Wait a moment, then try again.' };
+  if (s >= 500) return { title: 'The server had a problem', text: 'Try again. If it keeps happening, look at Data health.' };
+  return { title: 'Could not load this', text: err?.message || 'Something went wrong. Try again.' };
 }
 
-/** The error state: errorState(err, { retry, home }) with Try again and All cars buttons. */
-export function errorState(err, { retry = null, home = true } = {}) {
+/**
+ * An error state with the cause and a way out: errorState(err, { retry: () => ..., home: true }).
+ * The error code is shown small, for a bug report.
+ */
+export function errorState(err, { retry = null, home = true, compact = false } = {}) {
   const w = errorWords(err);
-  const code = err?.code && err.status ? `${err.status} ${err.code}` : null;
-  return state({
-    ...w, code,
-    actions: [retry ? btn('Try again', retry, { kind: 'go', icon: 'arrow-r' }) : null, home ? linkBtn('All cars', '/', { icon: 'grid' }) : null],
-  });
+  return h('div', { class: ['empty', compact && 'empty--compact'], role: 'alert' },
+    h('div', { class: 'empty-icon empty-icon--warn' }, icon(err?.status === 404 ? 'question' : 'warn')),
+    h('h3', null, w.title),
+    h('p', null, w.text),
+    err?.code ? h('span', { class: 'empty-code' }, `${err.status || ''} ${err.code}`.trim()) : null,
+    h('div', { class: 'row' },
+      retry ? h('button', { class: 'btn', type: 'button', onclick: retry }, icon('reset'), 'Try again') : null,
+      home ? h('a', { class: 'btn btn--ghost', href: '/' }, icon('fleet'), 'All cars') : null));
 }
 
-/** Offline: the browser has no network at all. */
-export const offlineState = (retry) => state({
-  icon: 'signal', tone: 'warn', title: 'This device is offline',
-  text: 'The browser says there is no network. Pages come back by themselves when it returns.',
-  actions: retry ? btn('Try again', retry, { kind: 'go', icon: 'arrow-r' }) : null,
-});
-
-/** Signed out, with a Sign in button that comes back here. */
-export const signedOutState = (here = location.pathname + location.search) => state({
-  icon: 'lock', tone: 'warn', title: 'Signed out', text: 'Sign in again to see this page.',
-  actions: linkBtn('Sign in', `/sign-in?next=${encodeURIComponent(here)}`, { kind: 'go', icon: 'user' }),
-});
-
-/** A state inside a HUD panel (the router's error page). */
-export const statePanel = (child) => hud({ pad: false, cls: 'state-panel' }, child);
+/** A panel that holds only a state (empty or error), centred. */
+export const statePanel = (child) => h('section', { class: 'panel state-panel' }, child);

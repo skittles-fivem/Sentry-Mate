@@ -253,6 +253,8 @@ class Contract(ServerCase):
             ("POST", "/api/v1/settings/mqtt/test", lambda: (None, None, None)),
             ("PATCH", "/api/v1/settings", lambda: (None, {"version": c.get("/api/v1/settings")["version"],
                                                           "range": "rated"}, None)),
+            ("POST", "/api/v1/release/check", lambda: (None, {}, None) if c.json("PATCH", "/api/v1/settings", {
+                "version": c.get("/api/v1/settings")["version"], "release_check": {"enabled": True}}) else None),
             ("POST", "/api/v1/cars/{car}/rebuild", lambda: (None, {"from_ms": now - 2 * DAY}, None)),
             ("PATCH", "/api/v1/cars/{car}/overlaps",
              lambda: (self.fill("/api/v1/cars/{car}/overlaps", car="c3"),
@@ -415,11 +417,12 @@ class Contract(ServerCase):
         # every change is in the audit log
         audit = self.c.get("/api/v1/audit?limit=500")["items"]
         actions = {a["action"] for a in audit}
-        for want in ("account.create", "account.update", "account.delete", "token.create", "token.revoke",
-                     "drive.purpose", "purpose_rule.create", "trip.create", "charge.cost", "update.version",
-                     "place.create", "place.update", "place.delete", "mqtt.update", "settings.update",
-                     "car.rebuild", "car.overlap", "import.create", "import.start", "import.discard",
-                     "export.create", "export.delete", "move.code", "move.undo", "recovery_key.new", "recovery_key.shown", "recovery_key.saved",
+        for want in ("account-created", "account-removed", "token-created", "token-revoked",
+                     "drive-purpose-set", "purpose-rule-created", "trip-saved", "charge-cost-entered", "update-version",
+                     "place-created", "place-changed", "place-deleted", "mqtt-changed", "settings-changed",
+                     "car-rebuild", "car-overlap", "import-created", "import-started", "import-discarded",
+                     "export-made", "export-removed", "move-code-made", "move-undone", "recovery-key-new",
+                     "recovery-key-shown", "recovery-key-saved",
                      "tesla-poll-changed", "tesla-account-added", "tesla-account-changed", "tesla-car-matched",
                      "tesla-account-removed"):
             self.assertIn(want, actions)

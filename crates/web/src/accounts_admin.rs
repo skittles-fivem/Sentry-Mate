@@ -8,7 +8,7 @@
 //! | `GET`/`PATCH`/`DELETE /accounts/{account}` | PATCH with `version`: `role`, `cars`, `password` |
 //! | `DELETE /accounts/{account}/two-step` | turns another account's two-step sign-in off (a lost phone) |
 //! | `GET`/`PUT /two-step-policy` | `{ everyone, outside }` |
-//! | `GET /audit` | `{ items: [{ at_ms, account, action, target, summary, car, address }], next }` |
+//! | `GET /audit` | `{ items: [{ at_ms, account, action, group, target, summary, car, address }], next }`; `group=`, `who=` |
 //!
 //! An account is `{ id, name, role, cars, two_step, two_step_required, created_ms, version }`. Every change to an
 //! account asks for the acting admin's own password again (`confirm_password` in the body, or the
@@ -358,18 +358,21 @@ async fn audit(State(app): State<AppState>, Admin(_): Admin, q: Params) -> ApiRe
     let period = q.period(app.now(), None)?;
     let paging = q.paging()?;
     let start: Option<String> = app.cursor(&q)?;
+    let filter = AuditFilter::of(&q)?;
     let q2 = q.clone();
     app.blocking(move |app| {
         let audit = app.accounts.audit();
         let mut cursor = start;
         let mut items = Vec::new();
         let next: Option<String>;
-        // newest first: skip what is newer than the period, stop at what is older
+        // newest first: skip what is newer than the period, stop at what is older; a filtered list reads on until
+        // its page is full of matching entries
         'pages: loop {
-            let want = (paging.limit - items.len()).clamp(1, accounts::audit::MAX_PAGE);
-            let page = audit.list(want, cursor.as_deref())?;
-            let n = page.entries.len();
-            for (i, e) in page.entries.into_iter().enumerate() {
+            let want =
+                if filter.any() { 200 } else { (paging.limit - items.len()).clamp(1, accounts::audit::MAX_PAGE) };
+            let (entries, page_next) = audit.list_at(want, cursor.as_deref())?;
+            let n = entries.len();
+            for (i, (at, e)) in entries.into_iter().enumerate() {
                 if e.t_ms >= period.to_ms {
                     continue;
                 }
@@ -378,22 +381,28 @@ async fn audit(State(app): State<AppState>, Admin(_): Admin, q: Params) -> ApiRe
                     break 'pages;
                 }
                 let (target, summary, car) = split_details(&e.details);
+                let row = crate::audit_codes::readable(&e.action, target, car, summary);
+                let group = crate::audit_codes::group_of(&row.action);
+                if !filter.keeps(group, e.account.as_deref()) {
+                    continue;
+                }
                 items.push(json!({
                     "at_ms": e.t_ms,
                     "account": e.account,
-                    "action": e.action,
-                    "target": target,
-                    "summary": summary,
-                    "car": car,
+                    "action": row.action,
+                    "group": group,
+                    "target": row.target,
+                    "summary": row.summary,
+                    "car": row.car,
                     "address": e.address,
                 }));
-                // a page holds at most what is still wanted, so the list is full only at a page's last entry
-                if items.len() == paging.limit && i + 1 == n {
-                    next = page.next.clone();
+                if items.len() == paging.limit {
+                    // the last of a page that was the oldest: nothing after it
+                    next = if i + 1 == n && page_next.is_none() { None } else { Some(at) };
                     break 'pages;
                 }
             }
-            match page.next {
+            match page_next {
                 Some(c) if n > 0 => cursor = Some(c),
                 _ => {
                     next = None;
@@ -408,4 +417,54 @@ async fn audit(State(app): State<AppState>, Admin(_): Admin, q: Params) -> ApiRe
         Ok(Json(json!({ "items": items, "next": next })))
     })
     .await
+}
+
+/// The audit list's filters: `group=<id>[,<id>]` (see [`crate::audit_codes::GROUPS`], and `other`) and
+/// `who=<account name>` (`*server`: the entries the server wrote itself, with no account).
+struct AuditFilter {
+    groups: Option<Vec<String>>,
+    who: Option<Option<String>>,
+}
+
+impl AuditFilter {
+    fn of(q: &Params) -> ApiResult<AuditFilter> {
+        let groups = match q.get("group").map(str::trim).filter(|g| !g.is_empty()) {
+            None => None,
+            Some(text) => {
+                let mut list = Vec::new();
+                for g in text.split(',').map(str::trim).filter(|g| !g.is_empty()) {
+                    let known =
+                        g == crate::audit_codes::OTHER || crate::audit_codes::GROUPS.iter().any(|(id, _)| *id == g);
+                    if !known {
+                        let ids: Vec<&str> = crate::audit_codes::GROUPS.iter().map(|(id, _)| *id).collect();
+                        return Err(ApiError::bad_input(
+                            "group",
+                            &format!("Must be one of {}, other.", ids.join(", ")),
+                        ));
+                    }
+                    list.push(g.to_string());
+                }
+                Some(list)
+            }
+        };
+        let who = match q.get("who").map(str::trim).filter(|w| !w.is_empty()) {
+            None => None,
+            Some("*server") => Some(None),
+            Some(name) => Some(Some(name.to_string())),
+        };
+        Ok(AuditFilter { groups, who })
+    }
+
+    fn any(&self) -> bool {
+        self.groups.is_some() || self.who.is_some()
+    }
+
+    fn keeps(&self, group: &str, account: Option<&str>) -> bool {
+        self.groups.as_ref().is_none_or(|g| g.iter().any(|x| x == group))
+            && self.who.as_ref().is_none_or(|w| match (w, account) {
+                (None, None) => true,
+                (Some(w), Some(a)) => w.eq_ignore_ascii_case(a),
+                _ => false,
+            })
+    }
 }

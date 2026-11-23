@@ -134,18 +134,22 @@ class Software(ServerCase):
     def test_updates_and_versions(self):
         u = self.c.get("/api/v1/cars/c2/updates")
         self.assertEqual(u["summary"]["count"], 2)
-        unknown = u["items"][0]
-        self.assertIsNone(unknown["version"])
-        self.assertEqual(unknown["detected_by"], "fingerprint")
-        self.assertIsNone(unknown["named_by"])
-        self.assertEqual(u["summary"]["current_version"], "2025.44.25")
-        self.assertIsNotNone(u["summary"]["build_changed_since"])
-        self.c.error("PATCH", f"/api/v1/cars/c2/updates/{unknown['id']}", 422, "invalid", body={"version": "soon"})
-        d = self.c.json("PATCH", f"/api/v1/cars/c2/updates/{unknown['id']}", {"version": "2026.38.4"})
-        self.assertEqual((d["version"], d["version_source"]), ("2026.38.4", "owner"))
-        u = self.c.get("/api/v1/cars/c2/updates")
-        self.assertEqual(u["summary"]["current_version"], "2026.38.4")
+        newest = u["items"][0]
+        # named from the owner's local TeslaMate (the first new version it reported after the update)
+        self.assertEqual((newest["version"], newest["version_source"], newest["named_by"]),
+                         ("2026.44.1", "teslamate_local", "auto"))
+        self.assertEqual(newest["detected_by"], "fingerprint")
+        self.assertEqual((u["summary"]["current_version"], u["summary"]["current_version_source"]),
+                         ("2026.44.1", "teslamate_local"))
         self.assertIsNone(u["summary"]["build_changed_since"])
+        self.c.error("PATCH", f"/api/v1/cars/c2/updates/{newest['id']}", 422, "invalid", body={"version": "soon"})
+        d = self.c.json("PATCH", f"/api/v1/cars/c2/updates/{newest['id']}", {"version": "2026.38.4"})
+        self.assertEqual((d["version"], d["version_source"], d["named_by"]), ("2026.38.4", "owner", "owner"))
+        u = self.c.get("/api/v1/cars/c2/updates")
+        self.assertEqual((u["summary"]["current_version"], u["summary"]["current_version_source"]),
+                         ("2026.38.4", "owner"))
+        self.assertEqual((u["summary"]["last_update"]["version"], u["summary"]["last_update"]["version_source"]),
+                         ("2026.38.4", "owner"))
         now = self.c.get("/api/v1/cars/c2/now")
         self.assertEqual(now["software"]["version"], "2026.38.4")
         fv = self.c.get("/api/v1/fleet/versions")["items"]
@@ -154,8 +158,12 @@ class Software(ServerCase):
         self.assertEqual(self.c.get("/api/v1/fleet/versions?search=2025.45")["items"][0]["car"], "c3")
         tm = self.c.get("/api/v1/cars/c3/updates")["items"]
         self.assertTrue(any(x["version_source"] == "teslamate" for x in tm))
-        self.c.json("PATCH", f"/api/v1/cars/c2/updates/{unknown['id']}", {"version": None})
-        self.assertEqual(self.c.get("/api/v1/cars/c2/updates")["summary"]["current_version"], "2025.44.25")
+        # a cleared name stays cleared: the input does not name it again
+        d = self.c.json("PATCH", f"/api/v1/cars/c2/updates/{newest['id']}", {"version": None})
+        self.assertEqual((d["version"], d["version_source"], d["named_by"]), (None, None, None))
+        u = self.c.get("/api/v1/cars/c2/updates")
+        self.assertIsNone(u["summary"]["current_version"])  # local TeslaMate is not read for Maple yet
+        self.assertIsNotNone(u["summary"]["build_changed_since"])
 
     def test_firmware_and_fingerprint_updates(self):
         fw = self.c.get("/api/v1/cars/c2/firmware")
@@ -182,8 +190,14 @@ class Software(ServerCase):
             run = next(x for x in bms["history"] if x["first_seen_ms"] == u["end_ms"])
             self.assertEqual(run["hex"], c["new"])
             self.assertNotEqual(c["old"], c["new"])
-        self.assertEqual((named["version"], named["named_by"]), ("2025.44.25", "owner"))
-        self.assertEqual((unnamed["version"], unnamed["named_by"]), (None, None))
+        # local TeslaMate also reported 2025.44.25 after the first one, but the typed name wins
+        self.assertEqual((named["version"], named["version_source"], named["named_by"]), ("2025.44.25", "owner", "owner"))
+        self.assertEqual((unnamed["version"], unnamed["version_source"], unnamed["named_by"]),
+                         ("2026.44.1", "teslamate_local", "auto"))
+        hist = self.walk("/api/v1/cars/c2/firmware/history", limit=500)
+        marked = [x for x in hist if x["update"] and x["update"]["id"] == unnamed["id"]]
+        self.assertTrue(marked)
+        self.assertTrue(all(x["update"]["version_source"] == "teslamate_local" for x in marked))
         tl = self.c.get(f"/api/v1/cars/c2/timeline?kinds=update&from_ms={named['start_ms']}&limit=10")["items"]
         self.assertTrue(tl and all(r["detected_by"] == "fingerprint" and r["changed_modules"] for r in tl))
         self.assertEqual(self.c.get("/api/v1/cars/c1/firmware")["modules"][3]["fields"][0]["field"],
@@ -213,10 +227,78 @@ class Software(ServerCase):
         self.assertNotIn("start_latitude", ended)  # positions only when the owner turns location publishing on
         self.assertTrue(all(x["topic"] == "sentrymate/cars/c1/event" for x in d["items"]))
         sw = self.c.get("/api/v1/cars/c1/events?types=software_changed")["items"]
-        self.assertEqual(len(sw), 2)
+        self.assertEqual(len(sw), 3)  # one per software update of c1
         ch = self.c.get("/api/v1/cars/c2/events?types=charge_started&limit=1")["items"][0]
         self.assertEqual(ch["payload"]["place"], "Work garage")
         self.c.error("GET", "/api/v1/cars/c1/events?types=wake_up", 400, "bad_input")
+
+
+class SoftwareFromInputs(ServerCase):
+    """The current version and a fingerprint update's name from a live input (TeslaFi, local TeslaMate), typed
+    names winning, the car settings' typed version last, and `summary.last_update` whatever the period."""
+
+    def test_current_version_from_teslafi(self):
+        u = self.c.get("/api/v1/cars/c3/updates")
+        s = u["summary"]
+        self.assertEqual((s["current_version"], s["current_version_source"]), ("2025.45.8", "teslafi_api"))
+        newest = u["items"][0]
+        # TeslaFi first said 2025.45.8 eight days after the update: too late to name it, the build match stays
+        self.assertEqual((newest["version"], newest["version_source"], newest["named_by"]),
+                         ("2025.45.8", "build_match", "auto"))
+        self.assertEqual(s["current_version_since_ms"], newest["end_ms"])
+        sw = self.c.get("/api/v1/cars/c3/now")["software"]
+        self.assertEqual((sw["version"], sw["version_source"]), ("2025.45.8", "teslafi_api"))
+        fv = {x["car"]: x for x in self.c.get("/api/v1/fleet/versions")["items"]}
+        self.assertEqual((fv["c3"]["version"], fv["c3"]["version_source"]), ("2025.45.8", "teslafi_api"))
+        self.assertEqual(self.c.get("/api/v1/cars/c3/now")["off_can"]["version"]["sources"][0]["kind"], "teslafi_api")
+        # Comet has no input version: as before
+        c1 = self.c.get("/api/v1/cars/c1/updates")["summary"]
+        self.assertEqual((c1["current_version"], c1["current_version_source"]), ("2026.32.5", "build_match"))
+
+    def test_last_update_with_a_narrow_period(self):
+        every = self.c.get("/api/v1/cars/c3/updates?from_ms=0")
+        u = self.c.get(f"/api/v1/cars/c3/updates?from_ms={NOW - DAY}&to_ms={NOW}")
+        self.assertEqual((u["items"], u["summary"]["count"]), ([], 0))
+        top = every["items"][0]
+        self.assertEqual(u["summary"]["last_update"], {k: top[k] for k in
+                                                       ("id", "start_ms", "end_ms", "version", "version_source")})
+        self.assertEqual(u["summary"]["last_update"]["version"], "2025.45.8")
+        self.assertEqual(u["summary"]["current_version"], "2025.45.8")  # whatever the period
+
+    def test_maple_from_local_teslamate(self):
+        newest = self.c.get("/api/v1/cars/c2/updates")["items"][0]
+        self.assertEqual((newest["version_source"], newest["named_by"]), ("teslamate_local", "auto"))
+        self.assertNotIn("teslamate_local", [i["kind"] for i in self.c.get("/api/v1/cars/c2/now")["inputs"]])
+        # matched in Settings: Integrations: local TeslaMate is read for Maple from now on
+        base = "/api/v1/integrations/teslamate"
+        cars = self.c.get(base + "/cars")
+        self.c.json("PUT", base + "/cars", {"version": cars["version"], "items": [
+            {"teslamate_car": "1", "match": "c2"}], "confirm_password": "sentry-mate-dev"})
+        n = self.c.get("/api/v1/cars/c2/now")
+        self.assertIn("teslamate_local", [i["kind"] for i in n["inputs"]])
+        self.assertEqual((n["software"]["version"], n["software"]["version_source"]), ("2026.44.1", "teslamate_local"))
+        self.assertEqual(n["off_can"]["version"]["value"], "2026.44.1")
+        # typed on the newest update wins over the live input
+        self.c.json("PATCH", f"/api/v1/cars/c2/updates/{newest['id']}", {"version": "2026.44.2"})
+        s = self.c.get("/api/v1/cars/c2/updates")["summary"]
+        self.assertEqual((s["current_version"], s["current_version_source"]), ("2026.44.2", "owner"))
+        # cleared: the update stays without a name, the live input's version is the current one
+        self.c.json("PATCH", f"/api/v1/cars/c2/updates/{newest['id']}", {"version": None})
+        u = self.c.get("/api/v1/cars/c2/updates")
+        self.assertIsNone(u["items"][0]["version"])
+        self.assertEqual((u["summary"]["current_version"], u["summary"]["current_version_source"]),
+                         ("2026.44.1", "teslamate_local"))
+        self.assertEqual(u["summary"]["last_update"]["version"], None)
+        # not read any more, nothing names the newest update: the car settings' typed version
+        cars = self.c.get(base + "/cars")
+        self.c.json("PUT", base + "/cars", {"version": cars["version"], "items": [
+            {"teslamate_car": "1", "match": None}], "confirm_password": "sentry-mate-dev"})
+        s = self.c.get("/api/v1/cars/c2/updates")["summary"]
+        self.assertEqual((s["current_version"], s["current_version_source"]), (None, None))
+        st = self.c.get("/api/v1/cars/c2/settings")
+        self.c.json("PATCH", "/api/v1/cars/c2/settings", {"version": st["version"], "software_version_typed": "2026.44.1"})
+        s = self.c.get("/api/v1/cars/c2/updates")["summary"]
+        self.assertEqual((s["current_version"], s["current_version_source"]), ("2026.44.1", "owner"))
 
 
 class WatchReports(ServerCase):

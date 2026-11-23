@@ -1,0 +1,46 @@
+// Sentry Mate · Horizon UI pack · the entry module (index.html loads it after boot.js).
+// Builds the frame once, then lets the router mount pages. Everything else is in core/ and pages/.
+
+import * as api from '../shared/api.js';
+import * as state from '../shared/state.js';
+import { initFrame } from './frame.js';
+import { watchTables } from './snap.js';
+import { startRouter } from './router.js';
+import * as session from './session.js';
+import { flash } from './flash.js';
+import { startSky } from './sky.js';
+
+// a session that ends while a page is open (signed out in another tab, removed by an admin, expired):
+// go to sign-in and come back to this page afterwards
+function sessionEnded() {
+  const s = session.status();
+  if (!s?.signedIn) return;
+  session.signedOut();
+  flash('Your session ended. Sign in again to go on.', { kind: 'info', next: true });
+  const here = location.pathname + location.search;
+  state.navigate(`/sign-in?next=${encodeURIComponent(here)}`, { replace: true });
+}
+api.on('unauthorized', ({ method, path } = {}) => {
+  const p = String(path || '').replace(/^\/?(api\/v1\/)?/, '');
+  if (p.startsWith('session') || p.startsWith('setup')) return; // a wrong password is not a lost session
+  // A change that asks for the password and two-step code again answers 401 wrong_code for a missing or
+  // wrong code, with the session still there: ask the server before going to sign-in.
+  if (method && method !== 'GET' && method !== 'HEAD') {
+    api.get('me', null, { maxAgeMs: 0 }).then(() => {}, (e) => { if (e?.status === 401) sessionEnded(); });
+    return;
+  }
+  sessionEnded();
+});
+api.on('events', (info) => { if (info?.state === 'signed_out') sessionEnded(); });
+
+startSky();
+initFrame();
+watchTables();
+// every face of the pack's fonts, loading from the start: a weight first used deep in a page (a bold figure, a
+// mono value) is in before that page says it is ready, so text never re-flows under the reader when it swaps in
+if (document.fonts?.load) {
+  for (const f of ['400 1em "Chakra Petch"', '500 1em "Chakra Petch"', '600 1em "Chakra Petch"', '700 1em "Chakra Petch"',
+    '500 1em "Orbitron"', '700 1em "Orbitron"', '900 1em "Orbitron"', '400 1em "JetBrains Mono"']) document.fonts.load(f).catch(() => {});
+}
+
+startRouter();

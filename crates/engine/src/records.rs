@@ -18,6 +18,10 @@
 //! engine  car/<id>/api/<day>    what the Tesla API saw of the car's state that UTC day (spans, clipped to the day)
 //! engine  car/<id>/api_dirty    Tesla API data stored but not yet built into the timeline
 //! engine  car/<id>/api_meta     the Tesla API's newest values beside the samples (version, settings, charger)
+//! engine  car/<id>/teslamate_local_api_meta  local TeslaMate's (the energy added, the estimated range)
+//! engine  car/<id>/teslafi_off_can  TeslaFi's newest values no CAN message carries (lock, windows, update ...)
+//! engine  car/<id>/teslamate_local_off_can  the same from the owner's own TeslaMate
+//! engine  car/<id>/input_versions  the versions the API inputs said the car ran, a stretch per version
 //! engine  car/<id>/fw/...       the firmware fingerprints of the car's logs, their history and the updates found
 //!                               from them ([`crate::firmware`])
 //! ```
@@ -145,14 +149,60 @@ pub struct CarMeta {
 }
 
 impl CarMeta {
-    /// The days with state spans of one API input.
-    pub(crate) fn days_of(&mut self, input: model::Input) -> &mut BTreeSet<u32> {
+    /// The days with state spans, the newest data and when it came, of one API input (none for SMO, which keeps its
+    /// own in its logs). Every input is named, so a new one must be given its own fields here.
+    pub(crate) fn api_track(&mut self, input: model::Input) -> Option<ApiTrack<'_>> {
         match input {
-            model::Input::TeslafiApi => &mut self.teslafi_days,
-            model::Input::TeslamateLocal => &mut self.tmlocal_days,
-            _ => &mut self.api_days,
+            model::Input::Smo => None,
+            model::Input::TeslaApi => Some(ApiTrack {
+                days: &mut self.api_days,
+                last_ms: &mut self.api_last_ms,
+                received_ms: &mut self.api_received_ms,
+            }),
+            model::Input::TeslafiApi => Some(ApiTrack {
+                days: &mut self.teslafi_days,
+                last_ms: &mut self.teslafi_last_ms,
+                received_ms: &mut self.teslafi_received_ms,
+            }),
+            model::Input::TeslamateLocal => Some(ApiTrack {
+                days: &mut self.tmlocal_days,
+                last_ms: &mut self.tmlocal_last_ms,
+                received_ms: &mut self.tmlocal_received_ms,
+            }),
         }
     }
+
+    /// The days with state spans of one API input ([`Self::api_track`]).
+    pub(crate) fn api_days_of(&self, input: model::Input) -> Option<&BTreeSet<u32>> {
+        match input {
+            model::Input::Smo => None,
+            model::Input::TeslaApi => Some(&self.api_days),
+            model::Input::TeslafiApi => Some(&self.teslafi_days),
+            model::Input::TeslamateLocal => Some(&self.tmlocal_days),
+        }
+    }
+
+    /// The newest data of one API input (when it was recorded), and when it came.
+    pub(crate) fn api_times(&self, input: model::Input) -> (Option<u64>, Option<u64>) {
+        match input {
+            model::Input::Smo => (None, None),
+            model::Input::TeslaApi => (self.api_last_ms, self.api_received_ms),
+            model::Input::TeslafiApi => (self.teslafi_last_ms, self.teslafi_received_ms),
+            model::Input::TeslamateLocal => (self.tmlocal_last_ms, self.tmlocal_received_ms),
+        }
+    }
+
+    /// When any input's data last came: SMO's newest log or an API's newest reading.
+    pub(crate) fn received_ms(&self) -> Option<u64> {
+        model::Input::apis().map(|i| self.api_times(i).1).fold(self.last_arrived_ms, Option::max)
+    }
+}
+
+/// One API input's fields in [`CarMeta`].
+pub(crate) struct ApiTrack<'a> {
+    pub days: &'a mut BTreeSet<u32>,
+    pub last_ms: &'a mut Option<u64>,
+    pub received_ms: &'a mut Option<u64>,
 }
 
 /// A rebuild of a car under way (kept so a restart carries on with it).
@@ -229,6 +279,12 @@ fn car_key(car: CarId) -> String {
 
 pub(crate) fn meta(db: &Db, car: CarId) -> Result<CarMeta> {
     Ok(get(db, NS, &car_key(car))?.unwrap_or_default())
+}
+
+/// A car's meta record (for readers outside the engine, such as the connections overview's upload counts): the
+/// defaults when the car has none yet.
+pub fn car_meta(db: &Db, car: CarId) -> Result<CarMeta> {
+    meta(db, car)
 }
 
 pub(crate) fn put_meta(db: &Db, car: CarId, m: &CarMeta) -> Result<()> {
@@ -446,11 +502,14 @@ pub(crate) fn put_now_from(db: &Db, car: CarId, m: &BTreeMap<String, model::Inpu
 }
 
 fn api_key(car: CarId, input: model::Input, d: u32) -> String {
-    match input {
-        model::Input::TeslafiApi => format!("car/{car}/teslafi_api/{d}"),
-        model::Input::TeslamateLocal => format!("car/{car}/teslamate_local/{d}"),
-        _ => format!("car/{car}/api/{d}"),
-    }
+    // (the Tesla API's key was the first and keeps its short word; SMO has no API days, its key is never written)
+    let word = match input {
+        model::Input::Smo => "smo_api",
+        model::Input::TeslaApi => "api",
+        model::Input::TeslafiApi => "teslafi_api",
+        model::Input::TeslamateLocal => "teslamate_local",
+    };
+    format!("car/{car}/{word}/{d}")
 }
 
 /// One API input's state spans of one UTC day (the Tesla API's, or TeslaFi's kept apart).
@@ -527,11 +586,8 @@ pub(crate) fn api_between(
 ) -> Result<Vec<timeline::ApiSpan>> {
     let mut out = Vec::new();
     let days = day_of(from_ms)..=day_of(to_ms.saturating_sub(1).max(from_ms));
-    for (input, set) in [
-        (model::Input::TeslaApi, &meta.api_days),
-        (model::Input::TeslafiApi, &meta.teslafi_days),
-        (model::Input::TeslamateLocal, &meta.tmlocal_days),
-    ] {
+    for input in model::Input::apis() {
+        let Some(set) = meta.api_days_of(input) else { continue };
         for &d in set.range(days.clone()) {
             for a in api_day(db, car, input, d)? {
                 let (x, y) = (a.start_ms.max(from_ms), a.end_ms.min(to_ms));
@@ -558,7 +614,7 @@ pub(crate) fn put_api_dirty(db: &Db, car: CarId, spans: &[(u64, u64)]) -> Result
     put(db, NS, &key, &spans)
 }
 
-/// The Tesla API's newest values beside its samples, and the software version it last named.
+/// An API input's newest values beside its samples, and the software version it last named.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ApiMetaRec {
     #[serde(default)]
@@ -570,12 +626,111 @@ pub struct ApiMetaRec {
     pub version_seen_ms: Option<u64>,
 }
 
-pub(crate) fn api_meta(db: &Db, car: CarId) -> Result<ApiMetaRec> {
-    Ok(get(db, NS, &format!("car/{car}/api_meta"))?.unwrap_or_default())
+/// Where an input's newest values beside its samples are kept: `None` for SMO (it has none: its values are its
+/// samples). The Tesla API's keep their first key.
+fn api_meta_key(car: CarId, input: model::Input) -> Option<String> {
+    match input {
+        model::Input::Smo => None,
+        model::Input::TeslaApi => Some(format!("car/{car}/api_meta")),
+        model::Input::TeslafiApi => Some(format!("car/{car}/teslafi_api_meta")),
+        model::Input::TeslamateLocal => Some(format!("car/{car}/teslamate_local_api_meta")),
+    }
 }
 
-pub(crate) fn put_api_meta(db: &Db, car: CarId, m: &ApiMetaRec) -> Result<()> {
-    put(db, NS, &format!("car/{car}/api_meta"), m)
+/// An input's newest values beside its samples (empty for SMO, and before the input sent any).
+pub(crate) fn api_meta(db: &Db, car: CarId, input: model::Input) -> Result<ApiMetaRec> {
+    match api_meta_key(car, input) {
+        Some(k) => Ok(get(db, NS, &k)?.unwrap_or_default()),
+        None => Ok(ApiMetaRec::default()),
+    }
+}
+
+pub(crate) fn put_api_meta(db: &Db, car: CarId, input: model::Input, m: &ApiMetaRec) -> Result<()> {
+    match api_meta_key(car, input) {
+        Some(k) => put(db, NS, &k, m),
+        None => Ok(()),
+    }
+}
+
+/// TeslaFi's newest poll's values no CAN message carries, with TeslaFi's time of the poll.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TeslafiOffCan {
+    pub at_ms: u64,
+    pub values: model::OffCan,
+}
+
+/// Where an input's newest values no CAN message carries are kept: `None` for SMO (CAN has none of them) and the
+/// Tesla API (kept in its `api_meta`).
+fn off_can_key(car: CarId, input: model::Input) -> Option<String> {
+    match input {
+        model::Input::Smo | model::Input::TeslaApi => None,
+        model::Input::TeslafiApi => Some(format!("car/{car}/teslafi_off_can")),
+        model::Input::TeslamateLocal => Some(format!("car/{car}/teslamate_local_off_can")),
+    }
+}
+
+/// An input's newest values no CAN message carries (TeslaFi's, local TeslaMate's).
+pub(crate) fn off_can_of(db: &Db, car: CarId, input: model::Input) -> Result<TeslafiOffCan> {
+    match off_can_key(car, input) {
+        Some(k) => Ok(get(db, NS, &k)?.unwrap_or_default()),
+        None => Ok(TeslafiOffCan::default()),
+    }
+}
+
+pub(crate) fn put_off_can_of(db: &Db, car: CarId, input: model::Input, m: &TeslafiOffCan) -> Result<()> {
+    match off_can_key(car, input) {
+        Some(k) => put(db, NS, &k, m),
+        None => Ok(()),
+    }
+}
+
+/// One stretch of an API input saying the car ran `version`: the first and the last reading that said it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VersionSeen {
+    pub input: model::Input,
+    pub version: String,
+    pub first_ms: u64,
+    pub last_ms: u64,
+}
+
+/// How many stretches a car keeps (a car changes version a few dozen times a year).
+const VERSIONS_KEPT: usize = 400;
+
+fn versions_key(car: CarId) -> String {
+    format!("car/{car}/input_versions")
+}
+
+/// The versions the API inputs said the car ran, oldest first by `first_ms`.
+pub(crate) fn input_versions(db: &Db, car: CarId) -> Result<Vec<VersionSeen>> {
+    Ok(kept(db, NS, &versions_key(car))?.unwrap_or_default())
+}
+
+/// Notes that `input` read the car's version as `version` at `at_ms`: the input's stretch for it grows, or a new one
+/// starts when the version is not the one the input said last. A reading older than the input's newest stretch is
+/// left out (readings come in order; a late one says nothing new).
+pub(crate) fn note_input_version(db: &Db, car: CarId, input: model::Input, version: &str, at_ms: u64) -> Result<()> {
+    let version = version.trim();
+    if version.is_empty() || at_ms == 0 {
+        return Ok(());
+    }
+    let mut all = input_versions(db, car)?;
+    let last = all.iter_mut().filter(|s| s.input == input).max_by_key(|s| s.first_ms);
+    match last {
+        Some(s) if at_ms < s.first_ms => return Ok(()),
+        Some(s) if s.version == version => {
+            if at_ms <= s.last_ms {
+                return Ok(());
+            }
+            s.last_ms = at_ms;
+        }
+        Some(s) if at_ms <= s.last_ms => return Ok(()),
+        _ => all.push(VersionSeen { input, version: version.to_string(), first_ms: at_ms, last_ms: at_ms }),
+    }
+    all.sort_by_key(|s| (s.first_ms, s.input));
+    let over = all.len().saturating_sub(VERSIONS_KEPT);
+    all.drain(..over);
+    put(db, NS, &versions_key(car), &all)
 }
 
 #[cfg(test)]

@@ -196,6 +196,16 @@ def _last_method(text):
     return found[-1] if found else None
 
 
+def _names(tree, name):
+    """Whether a shape tree has a field `name` at any depth."""
+    if not isinstance(tree, dict):
+        return False
+    if "list" in tree and _names(tree["list"], name):
+        return True
+    keys = tree.get("keys") or {}
+    return name in keys or any(_names(v, name) for v in keys.values())
+
+
 def _response(notes, types, has_get):
     """(shape, columns flag, alias paths) of what GET answers, from the notes."""
     shape, columns, aliases = None, False, []
@@ -233,6 +243,8 @@ def _response(notes, types, has_get):
         explicit = prev.endswith("->") or is_cols or prev.endswith(":") or prev.endswith("plus") or \
             prev.endswith("and") or is_item or prev.endswith("GET") or re.search(r"-> rows\s*$", prev)
         bare_keys = not span.startswith(("{", "[")) and span.count(",") >= 3
+        if prev.endswith("and") and is_ident(span) and _names(shape, span.rstrip("?")):
+            continue  # prose about a field the shape has: "(`end_ms` null and `resolved` false while it lasts)"
         if not explicit and not span.startswith(("{", "[")) and not bare_keys:
             continue
         if is_item:

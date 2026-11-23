@@ -310,8 +310,9 @@ fn sign_ins_and_changes_are_audited_without_secrets() {
         actions,
         ["setup-code-made", "setup", "sign-in-failed", "sign-in-failed", "account-created", "role-changed"]
     );
-    assert_eq!(all[0].details, "kid: watch only to admin");
-    assert_eq!(all[1].details, "kid (watch only, 1 car)");
+    let kid_target = format!("[account:a{}] ", kid.id);
+    assert_eq!(all[0].details, format!("{kid_target}Changed the role of kid from watch only to admin."));
+    assert_eq!(all[1].details, format!("{kid_target}Added the account kid (watch only, 1 car)."));
     assert_eq!(all[2].account, None, "an unknown name typed is never kept");
     assert_eq!(all[3].account.as_deref(), Some("owner"));
     assert_eq!(all[3].address.as_deref(), Some(OUTSIDE));

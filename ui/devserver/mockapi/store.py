@@ -28,16 +28,13 @@ DEFAULT_PREFS = {
     "interface_size": 100,
     "follow_screen": True,
     "map_colors": "dimmed",
+    "map_style": "default",
     "ui_pack": None,
     "car_order": [],
     "pinned_cars": [],
+    "main_car": None,
+    "last_car": None,
 }
-
-
-def _audit_car(target, car):
-    if car:
-        return car
-    return target[4:] if isinstance(target, str) and target.startswith("car:") else None
 
 
 class Store:
@@ -66,7 +63,7 @@ class Store:
         self.fresh_start = cfg.needs_setup
         if not cfg.needs_setup:
             self._seed_accounts(now)
-        self.car_over = {}  # car id -> {name, time_zone, config: {key: value}, version}
+        self.car_over = {}  # car id -> {name, time_zone (the owner's; None: automatic), config: {key: value}, version}
         self.car_settings = {}
         self.tokens = {}  # car id -> [token rows]
         self.new_car_tokens = []  # upload tokens for a car that has not uploaded yet
@@ -97,6 +94,12 @@ class Store:
         # the owner's own certificate (--own-certificate): the only kind that expires soon (one the server makes
         # is valid until 4096), and the only kind no new one is made for
         self.cert_own = bool(getattr(cfg, "own_certificate", False))
+        # --release-check: the result the made-up check gives (resources/system.py release_state); a check turned
+        # on later in the session finds a newer build
+        rc = getattr(cfg, "release_check", "off")
+        self.release_result = "newer" if rc == "off" else rc
+        self.server_settings["release_check"]["enabled"] = rc != "off"
+        self.release_checked_ms = None if rc in ("off", "never") else now - 2 * 3_600_000
         self.mqtt = extras.mqtt(now)
         self.imports = extras.imports(now, ds.history("c3"))
         self.storage = extras.storage(now)
@@ -108,6 +111,7 @@ class Store:
         teslafi.seed(self, now)  # the TeslaFi input: one account, its car
         from .resources import teslamate
         teslamate.seed(self, now)  # the local TeslaMate input: MQTT on, the database catch-up off, two cars
+        teslamate.seed_trouble(self, getattr(cfg, "teslamate_trouble", "none"), now)  # --teslamate-trouble
 
     # ------------------------------------------------------------ seeding
     def seed_accounts(self, now):
@@ -197,16 +201,10 @@ class Store:
                                  "to_ms": day0 + 5 * DAY, "name": "Los Angeles in July"}
 
     def _seed_audit(self, now):
-        entries = [
-            (now - 400 * DAY, "admin", "account.create", "account:a2", "Made the watch account (sees Comet)."),
-            (now - 399 * DAY, "admin", "token.create", "car:c1", "Made an upload token for Comet."),
-            (now - 120 * DAY, "admin", "car.update", "car:c2", "Set the paint of Maple to Pearl White."),
-            (now - 3 * DAY, "watch", "session.start", "account:a2", "Signed in."),
-            (now - 2 * HOUR, "admin", "session.start", "account:a1", "Signed in."),
-        ]
-        for at, who, action, target, summary in entries:
-            self.audit.append({"at_ms": at, "account": who, "action": action, "target": target,
-                               "car": _audit_car(target, None), "summary": summary})
+        from .audit import seed
+        for at, who, action, target, car, summary, address in seed(self.ds, now):
+            self.audit.append({"at_ms": at, "account": who, "action": action, "target": target, "car": car,
+                               "summary": summary, "address": address})
 
     # ------------------------------------------------------------ ids, audit
     def new_id(self, prefix):
@@ -214,14 +212,18 @@ class Store:
             self.next_id += 1
             return f"{prefix}{self.next_id}"
 
-    def record(self, account, action, target, summary, car=None):
-        """car: the car the changed item belongs to (a drive's, a charge's, a trip's, an update's car);
-        a car:<id> target is its own car."""
+    def record(self, account, action, target, summary, car=None, address=None):
+        """car: the car the changed item belongs to (a drive's, a charge's, a trip's, an update's car, the car a
+        TeslaMate car was matched to); a target that names its car (car:<id>, drive:<car>:<id>, ...) gives it.
+        address: where the request came from (the dev server's own browser: 127.0.0.1); None for the server."""
+        from .audit import car_of
+        if address is None and account:
+            address = "127.0.0.1"
         with self.lock:
             self.rev += 1
             self.audit.append({"at_ms": self.clock.now(), "account": account["name"] if account else None,
-                               "action": action, "target": target, "car": _audit_car(target, car),
-                               "summary": summary})
+                               "action": action, "target": target, "car": car_of(target, car),
+                               "summary": summary, "address": address})
 
     # ------------------------------------------------------------ accounts and sessions
     def account_by_name(self, name):
@@ -294,6 +296,9 @@ class Store:
             # only cars this person may see (the server's order names every car; an account's list can shrink)
             for k in ("car_order", "pinned_cars"):
                 p[k] = [c for c in p[k] if self.ds.exists(c) and self.sees(account, c)]
+            for k in ("main_car", "last_car"):
+                if p.get(k) is not None and not (self.ds.exists(p[k]) and self.sees(account, p[k])):
+                    p[k] = None
             return p
 
     # ------------------------------------------------------------ cars
@@ -305,18 +310,23 @@ class Store:
             car = h.car
             base = {"name": car.name, "model": car.model, "year": car.year, "trim": car.trim,
                     "vin_prefix": car.vin_prefix, "profile": car.profile, "time_zone": car.time_zone,
+                    "time_zone_source": getattr(car, "time_zone_source", "position"),
                     "config": {k: {"value": v, "source": s} for k, (v, s) in car.config.items()},
                     "build": {"chemistry": car.chemistry, "full_now_kwh": car.full_now_kwh,
                               "buffer_kwh": car.buffer_kwh, "full_range_new_km": car.full_range_new_km}}
         else:
             sm = self.ds.synthetic.summary(int(car_id[1:]))
-            base = {k: sm[k] for k in ("name", "model", "year", "trim", "vin_prefix", "profile", "time_zone")}
+            base = {k: sm[k] for k in ("name", "model", "year", "trim", "vin_prefix", "profile", "time_zone",
+                                       "time_zone_source")}
             base["config"] = {"trim": {"value": sm["trim"], "source": "vin"}}
         base["version"] = over.get("version", 1)
         if "name" in over:
             base["name"] = over["name"]
-        if "time_zone" in over:
-            base["time_zone"] = over["time_zone"]
+        if over.get("time_zone"):
+            base["time_zone"], base["time_zone_source"] = over["time_zone"], "owner"
+        elif "time_zone" in over and base["time_zone_source"] == "owner":
+            # back to automatic: the made-up car's own zone, as if from its position
+            base["time_zone_source"] = "position"
         base["sold"] = bool(over.get("sold"))
         base["sold_date"] = over.get("sold_date") if base["sold"] else None
         for k, v in over.get("config", {}).items():

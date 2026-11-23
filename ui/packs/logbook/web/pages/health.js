@@ -28,6 +28,7 @@ import { confirmDialog } from '../core/dialog.js';
 import { stackedCharts } from '../core/chart.js';
 import { zoneLabel, count } from '../core/format.js';
 import { sourceMark } from '../core/sources.js';
+import { overviewCard } from './integrations-overview.js';
 
 export const id = 'health';
 export const css = true;
@@ -92,7 +93,8 @@ const KIND_TEXT = {
   geocode: 'Addresses already looked up, so each is looked up once.',
 };
 const VERSION_SOURCE = {
-  teslamate: 'imported from TeslaMate', tesla_api: 'the Tesla API', owner: 'typed by an admin', build_match: 'the same module builds as a named update',
+  teslamate: 'imported from TeslaMate', teslafi: 'imported from TeslaFi', teslafi_api: 'TeslaFi (read live)', teslamate_local: 'local TeslaMate (read live)',
+  tesla_api: 'the Tesla API', owner: 'typed by an admin', build_match: 'the same module builds as a named update',
 };
 
 /** A signal's unit (as its DBC names it) -> the kind of shared/units.js, so it follows the person's units. */
@@ -222,6 +224,18 @@ export async function mount(ctx) {
   return ctx.car ? mountCar(ctx) : mountSystem(ctx);
 }
 
+/** Connections (admins): a card to the Connections overview of Settings: Integrations, with the totals. */
+function connSection(ctx) {
+  if (!isAdmin(ctx)) {
+    ctx.main.append(section({ title: 'Connections', note: 'every input and outside connection', cls: 'hl-block', id: 'hl-conn' },
+      empty({ cover: 'conn.overview.link', title: 'For admins only.', text: 'The connections overview (is each input and outside connection live, and what went wrong this week) is shown to admins.' })));
+    return Promise.resolve(true);
+  }
+  const card = overviewCard(ctx, { href: state.buildUrl('settings-integrations') });
+  ctx.main.append(section({ title: 'Connections', note: 'every input and outside connection, for admins', cls: 'hl-block', id: 'hl-conn' }, card.el));
+  return card.load().then(() => true, () => false);
+}
+
 /* ================================================================== one car */
 
 async function mountCar(ctx) {
@@ -260,6 +274,7 @@ async function mountCar(ctx) {
   const healthBox = h('div', { class: 'hl-health' }, loadingBlock(5));
   ctx.main.append(section({ title: 'Is data arriving?', note: 'checked now, over the period', cover: 'faq.stopped-recording', cls: 'hl-block', id: 'hl-health',
     actions: h('a', { class: 'link-arrow', href: state.buildUrl('settings-cars', { car: cid }) }, 'Settings: Cars', icon('arrowRight')) }, healthBox));
+  const connCard = connSection(ctx);
 
   const loadHealth = guarded(ctx, 'Could not check the data', (v) => replace(healthBox, v), async () => {
     const hl = await ctx.api.get(base('health'), ctx.params);
@@ -644,7 +659,7 @@ async function mountCar(ctx) {
     aside.paint();
   });
 
-  await settleAll([loadHealth(), gapsTable.load(), loadTesla(), loadTotals(), loadStorage(), loadSignals()]);
+  await settleAll([loadHealth(), gapsTable.load(), loadTesla(), loadTotals(), loadStorage(), loadSignals(), connCard]);
   if (!ctx.alive()) return {};
   // start with the battery level drawn, so the chart is there before anything is chosen
   const first = signals.find((s) => s.series === 'soc_display' && s.has_series) || signals.find((s) => s.has_series);
@@ -762,6 +777,8 @@ async function mountSystem(ctx) {
       h('div', { class: 'field-control' }, h('span', { class: 'field-icon' }, icon('search')), carSearch)) }, carTable.el));
 
   /* ---------------------------------------------------------------- server health */
+
+  const connCard = connSection(ctx);
 
   const srvBox = h('div', { class: 'hl-srv' }, loadingBlock(5));
   ctx.main.append(section({ title: 'Server health', note: 'the server itself, now', cls: 'hl-block', id: 'hl-srv' }, srvBox));
@@ -884,7 +901,7 @@ async function mountSystem(ctx) {
     } finally { if (btn) btn.disabled = false; }
   }
 
-  await settleAll([loadStorage(), loadServer(), carTable.load(), errTable.load()]);
+  await settleAll([loadStorage(), loadServer(), carTable.load(), errTable.load(), connCard]);
   if (!ctx.alive()) return {};
   ctx.ready();
   return {};

@@ -8,7 +8,7 @@
 use crate::error::Error;
 use crate::settings::{Settings, Units};
 use crate::topics::{Topics, check_prefix};
-use model::{CarId, Charge, ChargeKind, Drive, Gear, Now, Position, SampleExtra, State};
+use model::{CarId, Charge, ChargeKind, Drive, Gear, Now, Position, SampleExtra, Sourced, State};
 use serde_json::{Map, Value, json};
 
 /// One MQTT message. Everything is sent at QoS 1 (at least once).
@@ -143,6 +143,42 @@ pub enum Field {
     Navigating,
     /// A software update installing.
     Installing,
+    /// The software version the car reports (an API input; the version text is not on CAN).
+    Version,
+    /// An update is waiting (available, scheduled, downloading or installing).
+    UpdateAvailable,
+    /// The waiting update's version.
+    UpdateVersion,
+    /// How much of the waiting update is downloaded, %.
+    UpdateDownload,
+    /// Locked, as an API input read it (never from a lock request).
+    Locked,
+    /// Any window open.
+    WindowsOpen,
+    WindowDriverFront,
+    WindowPassengerFront,
+    WindowDriverRear,
+    WindowPassengerRear,
+    /// The sunroof's position word (`closed`, `open`, `vent` ...).
+    SunroofState,
+    /// How far the sunroof is open, %.
+    SunroofOpen,
+    /// When a scheduled charge starts (ISO 8601, UTC).
+    ScheduledChargeStart,
+    /// The scheduled departure (ISO 8601, UTC).
+    ScheduledDeparture,
+    /// The navigation's destination.
+    RouteDestination,
+    /// Distance left on the route.
+    RouteDistance,
+    /// Minutes left on the route.
+    RouteMinutes,
+    /// The traffic delay on the route, minutes.
+    RouteTrafficDelay,
+    /// Since when the car is in its state (ISO 8601, UTC).
+    Since,
+    /// The trim, as Car settings shows it.
+    Trim,
     /// The Data health rule's verdict.
     Healthy,
     /// The gear is P.
@@ -156,7 +192,7 @@ pub enum Field {
 }
 
 impl Field {
-    pub const COUNT: usize = 65;
+    pub const COUNT: usize = 85;
     pub const ALL: [Field; Field::COUNT] = [
         Field::State,
         Field::Driving,
@@ -217,6 +253,26 @@ impl Field {
         Field::EnergyAtDestination,
         Field::Navigating,
         Field::Installing,
+        Field::Version,
+        Field::UpdateAvailable,
+        Field::UpdateVersion,
+        Field::UpdateDownload,
+        Field::Locked,
+        Field::WindowsOpen,
+        Field::WindowDriverFront,
+        Field::WindowPassengerFront,
+        Field::WindowDriverRear,
+        Field::WindowPassengerRear,
+        Field::SunroofState,
+        Field::SunroofOpen,
+        Field::ScheduledChargeStart,
+        Field::ScheduledDeparture,
+        Field::RouteDestination,
+        Field::RouteDistance,
+        Field::RouteMinutes,
+        Field::RouteTrafficDelay,
+        Field::Since,
+        Field::Trim,
         Field::Healthy,
         Field::InPark,
         Field::Updated,
@@ -287,6 +343,26 @@ impl Field {
             Field::EnergyAtDestination => "energy_at_destination",
             Field::Navigating => "navigating",
             Field::Installing => "installing",
+            Field::Version => "version",
+            Field::UpdateAvailable => "update_available",
+            Field::UpdateVersion => "update_version",
+            Field::UpdateDownload => "update_download",
+            Field::Locked => "locked",
+            Field::WindowsOpen => "windows_open",
+            Field::WindowDriverFront => "window_driver_front",
+            Field::WindowPassengerFront => "window_passenger_front",
+            Field::WindowDriverRear => "window_driver_rear",
+            Field::WindowPassengerRear => "window_passenger_rear",
+            Field::SunroofState => "sunroof_state",
+            Field::SunroofOpen => "sunroof_open",
+            Field::ScheduledChargeStart => "scheduled_charge_start",
+            Field::ScheduledDeparture => "scheduled_departure",
+            Field::RouteDestination => "route_destination",
+            Field::RouteDistance => "route_distance",
+            Field::RouteMinutes => "route_minutes",
+            Field::RouteTrafficDelay => "route_traffic_delay",
+            Field::Since => "since",
+            Field::Trim => "trim",
             Field::Healthy => "healthy",
             Field::InPark => "in_park",
             Field::Updated => "updated",
@@ -377,6 +453,7 @@ pub fn field_payload(layout: &Layout, field: Field, now: &Now, place: Option<&st
         return Some(String::new());
     }
     let x = &s.extra;
+    let o = &now.off_can;
     let name = |v: &Option<String>| v.as_deref().map(|t| clip(t, MAX_NAME).to_string());
     let tire = |i: usize| text(s.tpms_bar[i].map(|v| u.pressure(v)), u.pressure_decimals());
     match field {
@@ -445,7 +522,29 @@ pub fn field_payload(layout: &Layout, field: Field, now: &Now, place: Option<&st
             }
         }
         Field::Navigating => x.navigating.map(bool_text),
-        Field::Installing => x.update_installing.map(bool_text),
+        Field::Installing => {
+            x.update_installing.map(bool_text).or_else(|| api(&o.update_installing, |b| Some(bool_text(*b))))
+        }
+        Field::Version => api(&o.version, |v| Some(clip(v, MAX_NAME).to_string())),
+        Field::UpdateAvailable => api(&o.update_available, |b| Some(bool_text(*b))),
+        Field::UpdateVersion => api(&o.update_version, |v| Some(clip(v, MAX_NAME).to_string())),
+        Field::UpdateDownload => api(&o.update_download_pct, |p| text(Some(*p), 0)),
+        Field::Locked => api(&o.locked, |b| Some(bool_text(*b))),
+        Field::WindowsOpen => api(&o.windows_open, |b| Some(bool_text(*b))),
+        Field::WindowDriverFront => api(&o.windows[0], |b| Some(bool_text(*b))),
+        Field::WindowPassengerFront => api(&o.windows[1], |b| Some(bool_text(*b))),
+        Field::WindowDriverRear => api(&o.windows[2], |b| Some(bool_text(*b))),
+        Field::WindowPassengerRear => api(&o.windows[3], |b| Some(bool_text(*b))),
+        Field::SunroofState => api(&o.sunroof_state, |v| Some(clip(v, MAX_NAME).to_string())),
+        Field::SunroofOpen => api(&o.sunroof_pct, |p| text(Some(*p), 0)),
+        Field::ScheduledChargeStart => api(&o.scheduled_charge_start_ms, |t| Some(iso_utc(*t))),
+        Field::ScheduledDeparture => api(&o.scheduled_departure_ms, |t| Some(iso_utc(*t))),
+        Field::RouteDestination => api(&o.route_destination, |v| Some(clip(v, MAX_NAME).to_string())),
+        Field::RouteDistance => api(&o.route_km, |k| text(Some(u.distance(*k)), 1)),
+        Field::RouteMinutes => api(&o.route_min, |m| text(Some(*m), 0)),
+        Field::RouteTrafficDelay => api(&o.route_traffic_min, |m| text(Some(*m), 0)),
+        Field::Since => now.since_ms.filter(|t| *t > 0).map(iso_utc),
+        Field::Trim => name(&now.trim),
         Field::Healthy => now.healthy.map(bool_text),
         Field::InPark => s.gear.map(|g| bool_text(g == Gear::P)),
         Field::Updated => (now.at_ms > 0).then(|| iso_utc(now.at_ms)),
@@ -460,6 +559,47 @@ pub fn field_payload(layout: &Layout, field: Field, now: &Now, place: Option<&st
             }
             Value::Object(o).to_string()
         }),
+    }
+}
+
+/// An API input's value as text: `None` when no input gave it, empty when it is stale (which clears the broker's copy:
+/// the lock state of an hour ago is not the lock state).
+fn api<T>(v: &Option<Sourced<T>>, f: impl Fn(&T) -> Option<String>) -> Option<String> {
+    match v {
+        None => None,
+        Some(s) if s.stale => Some(String::new()),
+        Some(s) => f(&s.value),
+    }
+}
+
+/// Which input gave `field`'s value, when it was read and whether it is stale: for the values no CAN message carries
+/// (`None` for the others, and for `installing` while CAN says it).
+pub fn field_source(field: Field, now: &Now) -> Option<(model::Input, u64, bool)> {
+    let o = &now.off_can;
+    fn of<T>(v: &Option<Sourced<T>>) -> Option<(model::Input, u64, bool)> {
+        v.as_ref().map(|s| (s.input, s.at_ms, s.stale))
+    }
+    match field {
+        Field::Installing if now.sample.extra.update_installing.is_none() => of(&o.update_installing),
+        Field::Version => of(&o.version),
+        Field::UpdateAvailable => of(&o.update_available),
+        Field::UpdateVersion => of(&o.update_version),
+        Field::UpdateDownload => of(&o.update_download_pct),
+        Field::Locked => of(&o.locked),
+        Field::WindowsOpen => of(&o.windows_open),
+        Field::WindowDriverFront => of(&o.windows[0]),
+        Field::WindowPassengerFront => of(&o.windows[1]),
+        Field::WindowDriverRear => of(&o.windows[2]),
+        Field::WindowPassengerRear => of(&o.windows[3]),
+        Field::SunroofState => of(&o.sunroof_state),
+        Field::SunroofOpen => of(&o.sunroof_pct),
+        Field::ScheduledChargeStart => of(&o.scheduled_charge_start_ms),
+        Field::ScheduledDeparture => of(&o.scheduled_departure_ms),
+        Field::RouteDestination => of(&o.route_destination),
+        Field::RouteDistance => of(&o.route_km),
+        Field::RouteMinutes => of(&o.route_min),
+        Field::RouteTrafficDelay => of(&o.route_traffic_min),
+        _ => None,
     }
 }
 
@@ -706,6 +846,9 @@ pub(crate) mod tests {
         Now {
             range_estimated_km: None,
             healthy: None,
+            since_ms: None,
+            trim: None,
+            off_can: Box::default(),
             car,
             at_ms: 1_794_150_000_000,
             state: Some(State::Online),
@@ -1198,6 +1341,7 @@ pub(crate) mod tests {
             vin: None,
             profile_setting: None,
             time_zone: "UTC".into(),
+            time_zone_typed: Some(true),
             efficiency_wh_km: None,
             created_ms: 0,
             inputs: Default::default(),
@@ -1211,5 +1355,49 @@ pub(crate) mod tests {
             via: 0x405,
         });
         assert_eq!(CarInfo::of(&car).model.as_deref(), Some("Model Y 2022"));
+    }
+
+    #[test]
+    fn values_off_the_can_bus_come_from_the_api_inputs_and_clear_when_stale() {
+        use model::{Input, Sourced};
+        let layout = Layout::new(&Settings::default()).unwrap();
+        let src = |input, stale| (input, 1_800_000_000_000u64, stale);
+        fn sv<T>(value: T, (input, at_ms, stale): (Input, u64, bool)) -> Option<Sourced<T>> {
+            Some(Sourced { value, at_ms, input, stale })
+        }
+        let mut n = parked(1);
+        n.since_ms = Some(1_800_000_000_000);
+        n.trim = Some("Long Range".into());
+        n.off_can.locked = sv(true, src(Input::TeslaApi, false));
+        n.off_can.windows_open = sv(false, src(Input::TeslafiApi, false));
+        n.off_can.windows[0] = sv(false, src(Input::TeslafiApi, false));
+        n.off_can.version = sv("2026.32.5".to_string(), src(Input::TeslaApi, false));
+        n.off_can.update_available = sv(true, src(Input::TeslaApi, false));
+        n.off_can.update_installing = sv(false, src(Input::TeslaApi, false));
+        n.off_can.sunroof_pct = sv(15.0, src(Input::TeslaApi, true));
+        n.off_can.route_km = sv(16.093_44, src(Input::TeslaApi, false));
+        let got: std::collections::HashMap<String, String> = now_messages(&layout, &n, None)
+            .into_iter()
+            .map(|m| (m.topic.rsplit('/').next().unwrap_or_default().to_string(), m.payload))
+            .collect();
+        let at = |k: &str| got.get(k).map(String::as_str);
+        assert_eq!(at("locked"), Some("true"));
+        assert_eq!(at("windows_open"), Some("false"));
+        assert_eq!(at("window_driver_front"), Some("false"));
+        assert_eq!(at("window_passenger_front"), None, "not known: not published");
+        assert_eq!(at("version"), Some("2026.32.5"));
+        assert_eq!(at("update_available"), Some("true"));
+        assert_eq!(at("sunroof_open"), Some(""), "stale: cleared");
+        assert_eq!(at("route_distance"), Some("16.1"));
+        assert_eq!(at("since"), Some("2027-01-15T08:00:00+00:00"));
+        assert_eq!(at("trim"), Some("Long Range"));
+        assert_eq!(field_source(Field::Locked, &n), Some((Input::TeslaApi, 1_800_000_000_000, false)));
+        assert_eq!(field_source(Field::Soc, &n), None);
+        // installing: CAN's word first
+        assert_eq!(at("installing"), Some("false"));
+        assert_eq!(field_source(Field::Installing, &n).map(|s| s.0), Some(Input::TeslaApi));
+        n.sample.extra.update_installing = Some(true);
+        assert_eq!(field_payload(&layout, Field::Installing, &n, None).as_deref(), Some("true"));
+        assert_eq!(field_source(Field::Installing, &n), None);
     }
 }

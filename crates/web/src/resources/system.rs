@@ -56,6 +56,7 @@ async fn about(State(app): State<AppState>, v: Viewer, headers: axum::http::Head
     let licences: Vec<Value> = LICENCES.iter().map(|(n, l)| json!({ "name": n, "licence": l })).collect();
     Ok(Json(json!({
         "version": SERVER_VERSION,
+        "build": super::release::about_build(&app),
         "api_version": crate::API_VERSION,
         "ui_pack": pack,
         "links": { "source": null, "docs": "/help" },
@@ -69,7 +70,7 @@ async fn about(State(app): State<AppState>, v: Viewer, headers: axum::http::Head
 }
 
 /// Whether the car has an upload token that is not revoked.
-fn uploads_enabled(e: &Engine, car: model::CarId) -> q::QResult<bool> {
+pub(crate) fn uploads_enabled(e: &Engine, car: model::CarId) -> q::QResult<bool> {
     let mut paging = q::Paging { limit: Some(q::MAX_LIMIT), after: None };
     for _ in 0..100 {
         let page = q::keys::car_tokens(e, car, &paging)?;
@@ -147,9 +148,12 @@ async fn rebuild(
     let kinds = ["drives", "charges", "states", "visits"];
     let (a, b) = (now.from_ms, now.to_ms.min(app.now().max(now.from_ms.saturating_add(1))));
     let days = b.saturating_sub(a).div_ceil(86_400_000).max(1);
+    let name = app.car_name_now(car).await;
     let summary = match (from, to) {
-        (None, None) => "Rebuilt drives, charges, states and visits from the stored logs (the whole history).".into(),
-        _ => format!("Rebuilt drives, charges, states and visits from the stored logs ({days} days)."),
+        (None, None) => {
+            format!("Rebuilt {name}'s drives, charges, states and visits from the stored logs (the whole history).")
+        }
+        _ => format!("Rebuilt {name}'s drives, charges, states and visits from the stored logs ({days} days)."),
     };
     // (the engine's rebuild tells the live stream of each window it made again: no second `rows` event here)
     v.audit(&app, "car-rebuild", Some(&target("car", Some(car), "")), &summary).await?;
@@ -230,6 +234,7 @@ async fn flip_overlap(
         "Showing imported history for an overlap of live and imported history.".to_string()
     };
     // (the engine's flip tells the live stream which rows changed: no second `rows` event here)
+    let summary = format!("{} ({})", summary.trim_end_matches('.'), app.car_name_now(car).await) + ".";
     v.audit(&app, "car-overlap", Some(&target("car", Some(car), &id)), &summary).await?;
     if let Value::Object(m) = &mut list {
         m.insert("changed".into(), changed);

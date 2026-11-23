@@ -243,14 +243,20 @@ fn imported_span(e: &Engine, car: CarId) -> QResult<Option<(u64, u64)>> {
     Ok(join(ends::<model::Drive>(e, car)?, ends::<model::Charge>(e, car)?))
 }
 
-/// Where a row of `source` is counted: live 0, TeslaMate 1, TeslaFi 2; an imported row the lists show (of the site
-/// its span shows, where both imports cover it) also in [`SHOWN`].
+/// Where a row of `source` is counted: its place in [`Source::ALL`] (live 0, TeslaMate 1, TeslaFi 2); an imported row
+/// the lists show (of the site its span shows, where both imports cover it) also in [`SHOWN`].
 fn slot(source: Source) -> usize {
-    match source {
-        Source::Live => 0,
-        Source::Teslamate => 1,
-        Source::Teslafi => 2,
-    }
+    source.index()
+}
+
+/// The slot of an import site's rows ([`slot`]).
+fn import_slot(site: ImportSite) -> usize {
+    slot(Source::of_site(site))
+}
+
+/// The slots of every import site's rows.
+fn import_slots() -> Vec<usize> {
+    ImportSite::ALL.into_iter().map(import_slot).collect()
 }
 
 /// Counts each row of a table (of one source's family) into the span its start falls in, by its source ([`slot`]):
@@ -261,7 +267,7 @@ fn count_into<T: db::Item>(
     family: Source,
     spans: &[(u64, u64)],
     sites: &Sites,
-    counts: &mut [[u64; 4]],
+    counts: &mut [Slots],
 ) -> QResult<()> {
     let (Some(first), Some(last)) = (spans.first(), spans.last()) else { return Ok(()) };
     let mut q = db::Query::between(first.0, last.1).oldest_first().limit(db::MAX_PAGE);
@@ -296,16 +302,19 @@ fn count_into<T: db::Item>(
 
 /// The slot of the imported rows the lists show ([`slot`]): one per real drive or charge where both imports cover a
 /// span.
-const SHOWN: usize = 3;
+const SHOWN: usize = Source::ALL.len();
+
+/// A span's count per [`slot`], and the shown imported rows in [`SHOWN`].
+type Slots = [u64; SHOWN + 1];
 
 /// Drives and charges of a span from its counts: every import site's, one site's, the shown ones, or the live side's.
-fn counts_of(d: &[u64; 4], c: &[u64; 4], slots: &[usize]) -> Counts {
-    let sum = |v: &[u64; 4]| slots.iter().filter_map(|&k| v.get(k)).sum();
+fn counts_of(d: &Slots, c: &Slots, slots: &[usize]) -> Counts {
+    let sum = |v: &Slots| slots.iter().filter_map(|&k| v.get(k)).sum();
     Counts { drives: sum(d), charges: sum(c) }
 }
 
 /// A span's drives and charges, by source ([`slot`]).
-type SpanCounts = ([u64; 4], [u64; 4]);
+type SpanCounts = (Slots, Slots);
 
 /// The spans' counts of drives and charges, by source (the imported rows `sites` shows in [`SHOWN`]).
 fn span_counts(
@@ -315,7 +324,7 @@ fn span_counts(
     spans: &[(u64, u64)],
     sites: &Sites,
 ) -> QResult<Vec<SpanCounts>> {
-    let (mut d, mut c) = (vec![[0u64; 4]; spans.len()], vec![[0u64; 4]; spans.len()]);
+    let (mut d, mut c) = (vec![Slots::default(); spans.len()], vec![Slots::default(); spans.len()]);
     count_into::<model::Drive>(e, car, family, spans, sites, &mut d)?;
     count_into::<model::Charge>(e, car, family, spans, sites, &mut c)?;
     Ok(d.into_iter().zip(c).collect())
@@ -337,13 +346,13 @@ fn overlaps_of(
         .iter()
         .copied()
         .zip(imported)
-        .filter(|(_, (d, c))| counts_of(d, c, &[1, 2]) != Counts::default())
+        .filter(|(_, (d, c))| counts_of(d, c, &import_slots()) != Counts::default())
         .collect();
     // the CAN side counted over the overlaps only
     let live = span_counts(e, car, Source::Live, &held.iter().map(|h| h.0).collect::<Vec<_>>(), &Sites::default())?;
     let mut items = Vec::new();
     for (((a, b), (d, c)), (ld, lc)) in held.into_iter().zip(live) {
-        let sites = SiteCounts { teslamate: counts_of(&d, &c, &[1]), teslafi: counts_of(&d, &c, &[2]) };
+        let sites = site_counts(&d, &c);
         let origins: Vec<model::Origin> = std::iter::once(model::Origin::Smo)
             .chain(
                 [(ImportSite::Teslamate, &sites.teslamate), (ImportSite::Teslafi, &sites.teslafi)]
@@ -365,7 +374,7 @@ fn overlaps_of(
             live: Counts::default(),
             imported: Counts::default(),
             sites,
-            can: counts_of(&ld, &lc, &[0]),
+            can: counts_of(&ld, &lc, &[slot(Source::Live)]),
             teslamate: counts_of(&d, &c, &[SHOWN]),
             sources: super::source_refs(&origins),
             version,
@@ -386,11 +395,10 @@ struct Pair {
     reason: &'static str,
 }
 
-fn site_slot(site: ImportSite) -> usize {
-    match site {
-        ImportSite::Teslamate => 0,
-        ImportSite::Teslafi => 1,
-    }
+/// Each import site's drives and charges of a span ([`span_counts`]).
+fn site_counts(d: &Slots, c: &Slots) -> SiteCounts {
+    let of = |site| counts_of(d, c, &[import_slot(site)]);
+    SiteCounts { teslamate: of(ImportSite::Teslamate), teslafi: of(ImportSite::Teslafi) }
 }
 
 /// Spans (in start order) joined where they meet or are less than a minute apart.
@@ -466,14 +474,14 @@ fn import_pairs(e: &Engine, car: CarId, chosen: &[Flip]) -> QResult<Vec<Pair>> {
     if !both {
         return Ok(Vec::new());
     }
-    let mut by: [SiteRows; 2] = Default::default();
+    let mut by: [SiteRows; ImportSite::ALL.len()] = Default::default();
     // every drive and charge of either site: (start, end)
     let mut reach: Vec<(u64, u64)> = Vec::new();
     let family = Some(Source::Teslamate);
     super::reports::overlapping::<StateRow>(e, car, 0, u64::MAX, family, false, |s| {
         if let Some(site) = s.span.source.site()
             && s.span.state != State::Unknown
-            && let Some(r) = by.get_mut(site_slot(site))
+            && let Some(r) = by.get_mut(site.index())
         {
             r.cover.push((s.span.start_ms, s.span.end_ms.max(s.span.start_ms)));
             r.starts.push(s.span.start_ms);
@@ -483,12 +491,12 @@ fn import_pairs(e: &Engine, car: CarId, chosen: &[Flip]) -> QResult<Vec<Pair>> {
     fn gather<T: db::Item>(
         e: &Engine,
         car: CarId,
-        by: &mut [SiteRows; 2],
+        by: &mut [SiteRows; ImportSite::ALL.len()],
         reach: &mut Vec<(u64, u64)>,
         charge: bool,
     ) -> QResult<()> {
         super::reports::overlapping::<T>(e, car, 0, u64::MAX, Some(Source::Teslamate), false, |r| {
-            if let Some(s) = r.source().site().and_then(|site| by.get_mut(site_slot(site))) {
+            if let Some(s) = r.source().site().and_then(|site| by.get_mut(site.index())) {
                 let (a, b) = (r.start_ms(), r.end_ms());
                 s.cover.push((a, b));
                 s.starts.push(a);
@@ -562,7 +570,7 @@ fn pair_overlaps(e: &Engine, car: CarId, ch: &Choices, pairs: Vec<Pair>) -> QRes
     let mut items = Vec::new();
     for ((p, (d, c)), (ld, lc)) in pairs.into_iter().zip(imported).zip(live) {
         let word = |s: ImportSite| format!("import:{}", s.word());
-        let shown = [1 + site_slot(p.shown)];
+        let shown = [import_slot(p.shown)];
         items.push(Overlap {
             id: format!("imports:{}", p.start_ms),
             kind: "imports",
@@ -572,10 +580,10 @@ fn pair_overlaps(e: &Engine, car: CarId, ch: &Choices, pairs: Vec<Pair>) -> QRes
             shown_source: word(p.shown),
             default_source: word(p.default),
             default_reason: Some(p.reason),
-            live: counts_of(&ld, &lc, &[0]),
+            live: counts_of(&ld, &lc, &[slot(Source::Live)]),
             imported: counts_of(&d, &c, &shown),
-            sites: SiteCounts { teslamate: counts_of(&d, &c, &[1]), teslafi: counts_of(&d, &c, &[2]) },
-            can: counts_of(&ld, &lc, &[0]),
+            sites: site_counts(&d, &c),
+            can: counts_of(&ld, &lc, &[slot(Source::Live)]),
             teslamate: counts_of(&d, &c, &shown),
             sources: super::source_refs(&ImportSite::ALL.map(model::Origin::Import)),
             version: ch.changes + 1,

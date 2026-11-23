@@ -3,18 +3,20 @@
 // Tiles: GET /api/v1/maps/config, read by shared/maptiles.js. The offline map file comes from Sentry Mate
 // itself (raster, or a Protomaps vector file in a plain style); online tiles from the source the owner
 // turned on (only then does the browser ask an outside server); otherwise the map has no tiles: a plain land
-// colour, the track and the points, under a "No map tiles yet" note (for an admin, a one-click OpenStreetMap
+// colour, the track and the points, under a "No map tiles yet" note (for an admin, a one-click satellite map
 // switch). Tiles that fail show their cause. In the dark theme the raster is dimmed and mostly grey (never
-// inverted, so streets, labels and water stay readable) unless the person chose original colours; the light
-// theme shows the tile server's own colours. Colours are tokens (--map-*).
+// inverted, so streets, labels and water stay readable) unless the person chose original colours; satellite
+// pictures are never dimmed, and the lines, points and pins over them get a dark casing (IMAGERY_HALO); the light
+// theme shows the tile server's own colours. Colours are tokens (--map-*). When the admin allows more than one
+// online style, each map has a small Map / Satellite switch (top left) that redraws its tiles in place.
 // Line widths and point sizes are design px through rpx(); they are set again when the root size or the
 // pixel ratio changes, and the camera framing runs again after a resize until the person moves the map.
 
 import * as api from '../shared/api.js';
 import { h, cssVar, esc } from '../shared/dom.js';
 import { rpx, onChange, onTheme, getTheme } from './display.js';
-import { getPrefs, onPrefs } from './prefs.js';
-import { tileChoice, rasterPaint, mapColors, tileSourceDef, tileLayers, vectorGround, noTilesNote, watchTileErrors } from '../shared/maptiles.js';
+import { getPrefs, onPrefs, applyPrefs } from './prefs.js';
+import { tileChoice, rasterPaint, mapColors, tileSources, tileLayers, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles } from '../shared/maptiles.js';
 
 let mlLoad = null;
 /** Load MapLibre once (an ES module and its worker, both from this pack). */
@@ -45,29 +47,31 @@ export function watchTilePolicy(template) {
     location.reload();
   });
 }
-/** shared/maptiles.js tileChoice: { kind: 'raster' | 'vector' | 'none', offline, template, attribution, maxZoom, why } */
+async function mapsConfig() {
+  try { return await api.get('maps/config', null, { maxAgeMs: 300000 }); } catch { return null; }
+}
+/** shared/maptiles.js tileChoice (with the person's map style): { kind, offline, template, attribution, maxZoom, overlays, imagery, why } */
 export async function tileSource() {
-  let cfg = null;
-  try { cfg = await api.get('maps/config', null, { maxAgeMs: 300000 }); } catch { cfg = null; }
-  return tileChoice(cfg);
+  return tileChoice(await mapsConfig(), getPrefs());
 }
 
 const num = (name, fallback) => { const v = parseFloat(cssVar(name)); return Number.isFinite(v) ? v : fallback; };
 const isDark = () => getTheme().effective !== 'light';
 
+const tilePaint = (src, dark) => {
+  const tune = { saturation: num('--map-dim-saturation', -0.7), contrast: num('--map-dim-contrast', 0.18), min: num('--map-dim-min', 0.03), max: num('--map-dim-max', 0.55) };
+  return rasterPaint({ dark, colors: mapColors(getPrefs()), tune, imagery: src.imagery });
+};
+
 function baseLayers(src) {
   const dark = isDark();
   const layers = [{ id: 'land', type: 'background', paint: { 'background-color': src.kind === 'vector' ? vectorGround(dark) : cssVar('--map-land') } }];
-  const tune = { saturation: num('--map-dim-saturation', -0.7), contrast: num('--map-dim-contrast', 0.18), min: num('--map-dim-min', 0.03), max: num('--map-dim-max', 0.55) };
-  layers.push(...tileLayers(src, { dark, paint: rasterPaint({ dark, colors: mapColors(getPrefs()), tune }) }));
+  layers.push(...tileLayers(src, { dark, paint: tilePaint(src, dark) }));
   return layers;
 }
 
 function style(src) {
-  const sources = {};
-  const def = tileSourceDef(src, { attribution: esc(src.attribution) });
-  if (def) sources.tiles = def;
-  return { version: 8, sources, layers: baseLayers(src) };
+  return { version: 8, sources: tileSources(src, { attribution: esc(src.attribution) }), layers: baseLayers(src) };
 }
 
 /**
@@ -77,8 +81,9 @@ function style(src) {
  * Returns null when the page was left meanwhile. Throws when MapLibre cannot start (no WebGL): show
  * mapFallback() then.
  */
-export async function createMap(el, ctx, { center = [0, 0], zoom = 13, interactive = true } = {}) {
-  const [ml, src] = await Promise.all([loadMapLibre(), tileSource()]);
+export async function createMap(el, ctx, { center = [0, 0], zoom = 13, interactive = true, styleSwitch = true } = {}) {
+  const [ml, cfg] = await Promise.all([loadMapLibre(), mapsConfig()]);
+  let src = tileChoice(cfg, getPrefs());
   watchTilePolicy(src.template && !src.offline ? src.template : null);
   if (!ctx.alive()) return null;
   el.classList.add('map');
@@ -90,25 +95,46 @@ export async function createMap(el, ctx, { center = [0, 0], zoom = 13, interacti
   map.touchZoomRotate?.disableRotation();
   if (src.template) map.addControl(new ml.AttributionControl({ compact: false }), 'bottom-right');
   if (interactive) map.addControl(new ml.NavigationControl({ showCompass: false }), 'top-right');
-  el.dataset.tiles = src.kind;
+  const mark = () => { el.dataset.tiles = src.kind; el.classList.toggle('map--imagery', onImagery(src)); };
+  mark();
   if (src.kind === 'none') el.append(noTilesNote(src, { compact: el.clientHeight < 300, classes: { primary: 'btn btn--primary', secondary: 'btn btn--line' } }));
-  const offErrors = watchTileErrors(map, el, src, (text) => h('p', { class: 'map-note map-note--error', role: 'status' }, `-- ${text} --`));
+  const errNote = (text) => h('p', { class: 'map-note map-note--error', role: 'status' }, `-- ${text} --`);
+  let offErrors = watchTileErrors(map, el, src, errNote);
   const ready = new Promise((res) => map.once('load', res));
   map.on('error', (e) => console.warn('map', e?.error?.message || e));
 
+  // over satellite pictures the page's casings turn dark and a little wider (IMAGERY_HALO)
+  const img = () => onImagery(src);
+  const tokenColour = (tok) => (tok === '--map-land' && img() ? IMAGERY_HALO.casing : cssVar(tok));
   const sized = [];
   let framing = null, moved = false;
   map.on('movestart', (e) => { if (e.originalEvent instanceof Event) moved = true; });
   map.on('resize', () => { if (framing && !moved) framing(); });
-  const off = onChange(() => {
-    for (const [id, prop, f] of sized) if (map.getLayer(id)) map.setPaintProperty(id, prop, f());
-    map.resize();
-  });
+  const off = onChange(() => { resize(); map.resize(); });
   const repaint = () => { for (const l of baseLayers(src)) for (const [k, v] of Object.entries(l.paint)) if (map.getLayer(l.id)) map.setPaintProperty(l.id, k, v); };
-  const offTheme = onTheme(() => {
-    repaint();
-    for (const [id, prop, tok] of colours) if (map.getLayer(id)) map.setPaintProperty(id, prop, cssVar(tok));
-  });
+  const recolour = () => { for (const [id, prop, tok] of colours) if (map.getLayer(id)) map.setPaintProperty(id, prop, tokenColour(tok)); };
+  const resize = () => { for (const [id, prop, f] of sized) if (map.getLayer(id)) map.setPaintProperty(id, prop, f()); };
+  const offTheme = onTheme(() => { repaint(); recolour(); });
+  // the Map / Satellite switch (only when the admin allows two or more styles)
+  const sw = styleSwitch ? mapStyleSwitch(cfg, getPrefs(), {
+    classes: { box: 'map-style', button: 'map-style-btn', active: 'is-on' },
+    onChange: (next, s) => {
+      if (!map.isStyleLoaded()) { map.once('load', () => apply(next, s)); return; }
+      apply(next, s);
+    },
+  }) : null;
+  const apply = (next, s) => {
+    const dark = isDark();
+    src = swapTiles(map, src, next, { dark, paint: tilePaint(next, dark), attribution: esc(next.attribution) });
+    if (map.getLayer('land')) map.setPaintProperty('land', 'background-color', cssVar('--map-land'));
+    watchTilePolicy(src.template && !src.offline ? src.template : null);
+    offErrors(); offErrors = watchTileErrors(map, el, src, errNote);
+    map.setMaxZoom(Math.max(src.maxZoom, 18));
+    mark(); recolour(); resize();
+    const p = getPrefs();
+    if (p) applyPrefs({ ...p, map_style: s.id });
+  };
+  if (sw) el.append(sw);
   // the person's map colours (dimmed or original) change in place
   let colorsNow = mapColors(getPrefs());
   const offPrefs = onPrefs((p) => { if (mapColors(p) !== colorsNow) { colorsNow = mapColors(p); repaint(); } });
@@ -120,7 +146,7 @@ export async function createMap(el, ctx, { center = [0, 0], zoom = 13, interacti
   const layer = (def, size = {}, tokens = {}) => {
     const paint = { ...def.paint };
     for (const [p, f] of Object.entries(size)) { paint[p] = f(); sized.push([def.id, p, f]); }
-    for (const [p, tok] of Object.entries(tokens)) { paint[p] = cssVar(tok); colours.push([def.id, p, tok]); }
+    for (const [p, tok] of Object.entries(tokens)) { paint[p] = tokenColour(tok); colours.push([def.id, p, tok]); }
     map.addLayer({ ...def, paint });
   };
 
@@ -131,7 +157,7 @@ export async function createMap(el, ctx, { center = [0, 0], zoom = 13, interacti
       const multi = Array.isArray(coords[0]?.[0]);
       map.addSource(id, { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: multi ? 'MultiLineString' : 'LineString', coordinates: coords } } });
       layer({ id: `${id}-case`, type: 'line', source: id, layout: { 'line-cap': 'butt', 'line-join': 'miter' }, paint: {} },
-        { 'line-width': () => rpx(width + 2) }, { 'line-color': '--map-land' });
+        { 'line-width': () => rpx(width + (img() ? IMAGERY_HALO.casingWidth + 1 : 2)) }, { 'line-color': '--map-land' });
       layer({ id, type: 'line', source: id, layout: { 'line-cap': 'butt', 'line-join': 'miter' }, paint: dash ? { 'line-dasharray': dash } : {} },
         { 'line-width': () => rpx(width) }, { 'line-color': token });
     },
@@ -140,7 +166,7 @@ export async function createMap(el, ctx, { center = [0, 0], zoom = 13, interacti
       map.addSource(id, { type: 'geojson', data: { type: 'FeatureCollection', features: list.map((p) => ({ type: 'Feature', properties: p.props || {}, geometry: { type: 'Point', coordinates: [p.lon, p.lat] } })) } });
       const r = sizeBy ? ['interpolate', ['linear'], ['get', sizeBy.prop], sizeBy.min, rpx(size / 2), sizeBy.max, rpx(size)] : null;
       layer({ id, type: 'circle', source: id, paint: r ? { 'circle-radius': r } : {} },
-        { ...(r ? {} : { 'circle-radius': () => rpx(size / 2) }), 'circle-stroke-width': () => rpx(1.5) },
+        { ...(r ? {} : { 'circle-radius': () => rpx(size / 2) }), 'circle-stroke-width': () => rpx(img() ? 2 : 1.5) },
         { 'circle-color': token, 'circle-stroke-color': ring });
     },
     /** A circle of r metres (a flat fill and a 1.5 px edge); returns set(lon, lat, r) to move it. */
@@ -153,7 +179,9 @@ export async function createMap(el, ctx, { center = [0, 0], zoom = 13, interacti
       };
       map.addSource(id, { type: 'geojson', data: data(lon, lat, r) });
       layer({ id: `${id}-fill`, type: 'fill', source: id, paint: { 'fill-opacity': 0.14 } }, {}, { 'fill-color': token });
-      layer({ id: `${id}-edge`, type: 'line', source: id, paint: {} }, { 'line-width': () => rpx(1.5) }, { 'line-color': token });
+      // a dark casing under the edge, drawn only over satellite pictures
+      layer({ id: `${id}-case`, type: 'line', source: id, paint: {} }, { 'line-width': () => (img() ? rpx(1.5 + IMAGERY_HALO.casingWidth) : 0) }, { 'line-color': '--map-land' });
+      layer({ id: `${id}-edge`, type: 'line', source: id, paint: {} }, { 'line-width': () => rpx(img() ? 2 : 1.5) }, { 'line-color': token });
       return (lo, la, rr) => map.getSource(id)?.setData(data(lo, la, rr));
     },
     /** A marker element at [lon, lat] (a square in CSS). */

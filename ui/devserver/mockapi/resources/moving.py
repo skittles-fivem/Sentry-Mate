@@ -377,8 +377,8 @@ def post_move(req):
         st.move["code"] = {"id": cid, "made_ms": req.now, "expires_ms": req.now + CODE_VALID_MS, "anywhere": anywhere,
                            "wrong_tries": 0, "claim_at_ms": req.now + after if after else None}
         st.move["moved"] = None
-    st.record(req.account, "move.code", "server",
-              f"Made a move code ({cid}), valid 24 hours, {'from anywhere' if anywhere else 'home network only'}.")
+    st.record(req.account, "move-code-made", f"move:{cid}",
+              f"Made a move code, valid 24 hours, usable {'from anywhere' if anywhere else 'on the home network'}.")
     out = old_view(st, req.now)
     out["move_code"] = text
     out["_created"] = True
@@ -400,7 +400,7 @@ def delete_move(req):
             what = "revoked"
         st.move["code"] = None
     if what != "nothing":
-        st.record(req.account, "move.cancel", "server",
+        st.record(req.account, "move-cancelled", "move:" + ((c or {}).get("id") or "current"),
                   "Ended the move under way." if what == "ended" else "Cancelled the move code.")
     out = old_view(st, req.now)
     out["cancelled"] = what
@@ -420,7 +420,7 @@ def post_undo(req):
         raise conflict("not_moved", "This server has not moved; there is nothing to undo.")
     with st.lock:
         st.move = {"code": None, "moved": None, "cancelled": st.move["cancelled"], "undone_ms": req.now}
-    st.record(req.account, "move.undo", "server", "Undid the move: this server takes uploads again.")
+    st.record(req.account, "move-undone", "move:current", "Undid the move: this server takes uploads again.")
     return old_view(st, req.now)
 
 
@@ -506,7 +506,7 @@ def post_export(req):
     with st.lock:
         st.exports.clear()  # one export at a time: a new one replaces the one there was
         st.exports[eid] = e
-    st.record(req.account, "export.create", "server", "Made an export file.")
+    st.record(req.account, "export-made", f"export:{eid}", "Made an export file of the whole server.")
     out = export_view(e, req.now)
     out["_created"] = True
     return out
@@ -520,7 +520,7 @@ def delete_export(req):
     e = _export(req)
     with req.store.lock:
         req.store.exports.pop(e["id"], None)
-    req.store.record(req.account, "export.delete", "server", "Removed the export file.")
+    req.store.record(req.account, "export-removed", f"export:{e['id']}", "Removed the export file.")
     return {"deleted": True, "id": e["id"]}
 
 
@@ -556,7 +556,7 @@ def export_file(req):
     with req.store.lock:
         e["sent_bytes"] = min(size, e["sent_bytes"] + len(part))
         if e["last_download_ms"] is None:
-            req.store.record(req.account, "export.download", "server", "Downloaded the export file.")
+            req.store.record(req.account, "export-downloaded", f"export:{e['id']}", "Downloaded the export file.")
         e["last_download_ms"] = req.now
     return Response(status, part, "application/octet-stream", headers)
 
@@ -575,7 +575,7 @@ def post_recovery_show(req):
     if not _key_file_there(st):
         raise conflict("recovery_key_saved", "The recovery key file is gone: it was deleted once the key was saved, "
                                              "so nothing can show the key again. Use the copy you saved.")
-    st.record(req.account, "recovery_key.shown", "server", "Showed the recovery key from its file again.")
+    st.record(req.account, "recovery-key-shown", "server:recovery-key", "Showed the recovery key from its file again.")
     return {"recovery_key": st.recovery_key}
 
 
@@ -610,7 +610,7 @@ def post_recovery_new(req):
             st.notices.append({"code": "recovery_key_unsaved", "level": "info",
                                "message": "Save the vault recovery key file somewhere safe.", "since_ms": req.now,
                                "fix_link": "/settings/server"})
-    st.record(req.account, "recovery_key.new", "server", "Made a new recovery key; the old one stopped working.")
+    st.record(req.account, "recovery-key-new", "server:recovery-key", "Made a new recovery key; the old one stopped working.")
     return {"recovery_key": key, "made_ms": req.now, "_created": True}
 
 
@@ -626,7 +626,7 @@ def post_recovery_saved(req):
         st.notices = [n for n in st.notices if n["code"] != "recovery_key_unsaved"]
         st.recovery_key_saved = True
         st.recovery_key = None
-    st.record(req.account, "recovery_key.saved", "server", "Said the recovery key is saved; its file was removed.")
+    st.record(req.account, "recovery-key-saved", "server:recovery-key", "Said the recovery key is saved; its file was removed.")
     return {"saved": True}
 
 
@@ -783,9 +783,6 @@ def advance(st, now):
             if st.needs_setup:
                 st.seed_accounts(now)
                 st.needs_setup = False
-                kind = "Moved the data here from " + job["from"] if job["kind"] == "move_here" else \
-                    "Restored the export file " + job["file_name"]
-                st.record(None, "setup.done", "server", kind + ".")
 
 
 def _claim_ok(req):
@@ -862,7 +859,6 @@ def post_claim(req):
         st.setup["claim"] = {"token": token, "expires_ms": req.now + CLAIM_MS}  # an earlier claim ends
     req.set_cookie = set_setup_cookie(token, CLAIM_MS // 1000)
     req.setup_token = token
-    st.record(None, "setup.claim", "server", "Claimed the fresh server with the set-up code.")
     return get_setup(req)
 
 
@@ -891,7 +887,7 @@ def _first_admin(req, name, password, end_claim=True):
             st.notices.append({"code": "recovery_key_unsaved", "level": "info",
                                "message": "Save the vault recovery key file somewhere safe.", "since_ms": req.now,
                                "fix_link": "/settings/server"})
-    st.record(a, "setup.done", "account:a1", "Set up the first admin account.")
+    st.record(a, "setup", f"account:{a['id']}", f"Made the first admin account {a['name']}.")
     _signed_in(req, a)
     with st.lock:
         st.recovery_key = make_recovery_key()
@@ -982,7 +978,7 @@ def post_move_here(req):
            "forced_ms": None}
     with st.lock:
         st.setup["job"] = job
-    st.record(None, "setup.move_here", "server", f"Started moving the data here from {addr}.")
+    st.record(None, "setup-move-started", None, f"Started moving the data here from {addr}.")
     out = job_view(job, req.now)
     out["_created"] = True
     return out
@@ -1009,7 +1005,7 @@ def _resume_move(req, addr):
         job["scenario"] = None
         job["clock0_ms"] = req.now - NEW_CONNECT_MS - -(-NEW_COPY_MS * done // MOVE_BYTES)
         job["resumed_ms"] = req.now
-    st.record(None, "setup.move_resume", "server", f"Carried on moving the data here from {addr} with a new move code.")
+    st.record(None, "setup-move-resumed", None, f"Carried on moving the data here from {addr} with a new move code.")
     return job_view(job, req.now)
 
 
@@ -1042,7 +1038,7 @@ def post_move_finish(req):
                        fields={"recovery_key": "Doesn't open this data."})
     with st.lock:
         job["forced_ms"] = req.now
-    st.record(None, "setup.move_finish", "server", "Finished the move with the recovery key (old server gone).")
+    st.record(None, "setup-move-finished-forced", None, "Finished the move with the recovery key (old server gone).")
     return job_view(job, req.now)
 
 
@@ -1066,7 +1062,10 @@ def delete_job(req):
         raise conflict("finished", "It is switching to the data already; it finishes by itself.")
     with st.lock:
         st.setup["job"] = None
-    st.record(None, "setup.cancel", "server", "Cancelled the move or restore into this server.")
+    if job["kind"] == "restore":
+        st.record(None, "setup-restore-cancelled", None, f"Gave up restoring {job['file_name']}.")
+    else:
+        st.record(None, "setup-move-cancelled", None, f"Gave up moving the data here from {job['from']}.")
     return {"deleted": True, "id": job["id"]}
 
 
@@ -1124,7 +1123,7 @@ def post_restore(req):
            "received": 0, "uploaded_ms": None, "failed": None}
     with st.lock:
         st.setup["job"] = job
-    st.record(None, "setup.restore", "server", f"Started restoring {name} ({size} bytes).")
+    st.record(None, "setup-restore-started", None, f"Started restoring {name} ({size} bytes).")
     out = job_view(job, req.now)
     out["upload_url"] = "/api/v1/setup/restore"
     out["chunk_max_bytes"] = CHUNK_MAX

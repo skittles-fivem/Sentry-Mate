@@ -18,9 +18,10 @@
 //! 4. **Firmware fingerprints** ([`firmware`]): what the modules' info frames on the vehicle bus say about their
 //!    code (CRCs, git hashes), tallied per log; the engine confirms them per awake span and finds the updates.
 //!
-//! 5. **Live inputs** ([`fuse_all`]): SMO's samples, the Tesla API's and TeslaFi's made one stream before the timeline is
-//!    built, SMO's winning where it has data, the API's filling the rest; the API's view of the car's state fills
-//!    what SMO does not know ([`Input::api`]). Rows name the inputs that gave them.
+//! 5. **Live inputs** ([`fuse_ordered`]): SMO's samples, the Tesla API's, TeslaFi's and the local TeslaMate's made one
+//!    stream before the timeline is built, in the car's order (by default SMO first, [`fuse_all`]): the higher input
+//!    winning where it has data, value by value, the lower ones filling the rest; the API's view of the car's state
+//!    fills what SMO does not know ([`Input::api`]). Rows name the inputs that gave them.
 //!
 //! 6. **Import gap filling** ([`gapfill`]): where both live inputs have nothing for a value, the import shown for that
 //!    time fills it (samples and a live row's null fields), each filled value named.
@@ -45,7 +46,7 @@ mod window;
 
 pub use facts::{Closed, FactsCollector, LogFacts, NotRecorded};
 pub use firmware::{FirmwareCollector, LogFirmware};
-pub use fuse::{ApiSpan, ApiState, FuseParams, Fused, fuse, fuse_all};
+pub use fuse::{ApiSpan, ApiState, FuseParams, Fused, fuse, fuse_all, fuse_ordered};
 pub use read::{LogRead, MAX_LOG_SAMPLES, read_log};
 pub use sample::{SampleBuilder, SampleParams};
 pub use states::is_settled;

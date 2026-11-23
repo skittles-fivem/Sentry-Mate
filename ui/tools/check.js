@@ -45,7 +45,8 @@ const FIXTURES_DIR = path.join(TOOLS_DIR, 'fixtures');
 // another user. Without --out or UI_CHECK_OUT each run gets a new folder only this user can open (mkdtemp, 0700).
 const DEFAULT_OUT_PREFIX = path.join(os.tmpdir(), 'sentry-mate-ui-check-');
 const DEFAULT_SIZES = '1440x900,3840x2160';
-const TILE_HOST = 'tile.openstreetmap.org';
+// the preset tile servers (places::tiles::PRESETS): answered with a blank tile, never reached
+const TILE_HOSTS = new Set(['tile.openstreetmap.org', 'tile.opentopomap.org', 'server.arcgisonline.com', 'basemap.nationalmap.gov']);
 const MIN_TEXT_PX = 10;
 const OTHER_ID_GRACE_MS = 2000; // a data-ready value of another page, unchanged this long, ends the wait
 const QUIET_MS = 500; // "network idle": no request in flight for this long
@@ -596,7 +597,7 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
       const req = route.request();
       let u = null;
       try { u = new URL(req.url()); } catch (_) { /* odd URL */ }
-      if (u && u.protocol === 'https:' && u.host === TILE_HOST) {
+      if (u && u.protocol === 'https:' && TILE_HOSTS.has(u.host)) {
         res.tiles++;
         return route.fulfill({ status: 200, contentType: 'image/png', headers: { 'access-control-allow-origin': '*' }, body: BLANK_TILE }).catch(() => {});
       }
@@ -1218,7 +1219,7 @@ async function selfTest(o) {
 const HELP = `Usage: node ui/tools/check.js --pack <name or folder> [options]
        node ui/tools/check.js --self-test
 
-  --pack NAME|DIR        a pack in ui/packs (instrument, logbook, horizon, console, pebble) or a pack folder with web/
+  --pack NAME|DIR        a pack in ui/packs (instrument, logbook, horizon, console, pebble, manager) or a pack folder with web/
   --pages LIST|all       page ids, comma separated (default all: every page of the matrix plus sign-in, setup)
   --sizes WxH[@S],...    window sizes, @S a device scale (390x844@3 is a phone; default ${DEFAULT_SIZES})
   --out DIR              screenshots go to DIR/<pack>/ (default UI_CHECK_OUT, else a new private ${DEFAULT_OUT_PREFIX}XXXXXX)

@@ -132,18 +132,27 @@
 ## Map tiles
 
 Online tiles are off by default; Settings → Display and units turns them on and picks the source:
-**OpenStreetMap standard** (`tile.openstreetmap.org`), **OpenTopoMap** (`tile.opentopomap.org`) or your own
-`https://` address with `{z}`, `{x}` and `{y}`. Both ready-made sources are free, need no key and allow a web app
-to show their tiles with light use and their credit on the map; each map shows the credit in its corner, never
-folded away.
+**Satellite** (Esri World Imagery, `server.arcgisonline.com`, the default, with Esri's transparent place names,
+borders and roads layers from the same host on top unless "Place names and roads" is off), **Satellite, US only**
+(USGS The National Map imagery, `basemap.nationalmap.gov`, public domain, zoom 16 at most), **OpenStreetMap
+standard** (`tile.openstreetmap.org`), **OpenTopoMap** (`tile.opentopomap.org`) or your own `https://` address with
+`{z}`, `{x}` and `{y}`. The ready-made sources are free, need no key and allow a web app to show their tiles with
+light use and their credit on the map (Esri: "Imagery © Esri, Maxar, Earthstar Geographics, and the GIS User
+Community"); each map shows the credit in its corner, never folded away. A server whose admin never picked a source
+(including one still on the old OpenStreetMap default) uses Satellite.
 
+- **Viewers can switch Map / Satellite** on a map page, among the sources the admin allows ("Maps people can switch
+  to", Satellite and OpenStreetMap by default); each person's pick is remembered for them (`map_style`). Every host
+  of the chosen source and of each allowed one is listed in Settings → Integrations → Network ("Every connection",
+  the Outbound "Map pictures" row) and allowed in the pages' Content-Security-Policy (`img-src` and `connect-src`),
+  and no other.
 - **The browser asks the tile server itself**, as these sources' terms expect. OpenStreetMap's
   [tile usage policy](https://operations.osmfoundation.org/policies/tiles/) asks browsers to send a valid `Referer`
   and blocks tile requests without one ("403 Access blocked"), and it advises against putting a caching proxy in
   front of its servers. So while online tiles are on, the pack pages say `Referrer-Policy: strict-origin`: the tile
   server gets the page's origin (`https://sentry.example:10101`), never a path, a car, a drive or a query. API
   answers still say `no-referrer`, and with online tiles off every page does. The Content-Security-Policy lets the
-  pages reach only that one tile server, and links to other sites carry `noreferrer`.
+  pages reach only those tile servers, and links to other sites carry `noreferrer`.
 - **A page keeps the policy it was loaded with.** After an admin turns online tiles on or picks another source, a
   page that was already open still blocks the new tile server. Its maps notice the first blocked tile and load the
   page once more to get the new policy (not again for the same server within two minutes).
@@ -153,13 +162,15 @@ folded away.
   downloads, the credit "Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)").
 - OpenFreeMap is not offered: it serves vector tiles only, and the packs draw raster tiles.
 - **A map with no tiles says so.** With offline tiles and no map file (a new server), every map shows "No map tiles
-  yet" over its plain background: an admin gets "Use online map (OpenStreetMap)", which turns the OpenStreetMap
-  source on only after a confirm that says what the tile server then sees (each viewer's IP address, this server's
+  yet" over its plain background: an admin gets "Use online map (satellite)", which turns the Satellite source on
+  only after a confirm that says what the tile server then sees (each viewer's IP address, this server's
   address and the map area), and "Add an offline map file"; anyone else is told to ask an admin. Tiles that fail
   (403 blocked, 429, unreachable) show a short note with the cause: maps draw tiles as images, which say nothing
   about why they failed, so a map asks the same server for the same tile once more to read its status.
 - **Dark maps are dimmed, not inverted**: in the dark theme raster tiles are drawn darker so streets, labels and
   water stay readable. Each person can pick "original colours" instead (Settings → Display and units, Map colours).
+  Satellite pictures are never dimmed (photos would turn to mud); the car, routes and place outlines get a dark
+  edge so they stay clear on them.
 
 ### Offline map file
 
@@ -277,6 +288,29 @@ and optionally its PostgreSQL database to catch up on what MQTT missed.
 - Data from TeslaMate is not signed like SMO's logs. Every value says where it came from (`teslamate_local`, "Data
   from local TeslaMate"); SMO's, the Tesla API's and TeslaFi's data win over it where they cover the same time.
 
+## The release check
+
+The server can tell its admins when a newer image is published (Settings → Display and units, "Check for new
+releases"). It only says so: it never pulls, downloads or installs anything; updating stays `docker compose pull`.
+
+- **Off by default; an admin's switch.** Until it is on, the server makes no connection and no DNS lookup for it.
+  Turning it off stops it and drops what it learnt.
+- **When:** once at the switch (and at each start while on), then once a day, 24 hours after the last check (later
+  when GitHub's rate limit says to wait: no request goes before the time GitHub gave), and when an admin presses
+  "Check now".
+- **Only GitHub's API host, over TLS.** `api.github.com` on port 443, fixed in the program, with rustls and the
+  public web roots (TLS 1.3, or 1.2 if GitHub's edge offers only that); plain `http://` is never used, redirects are
+  never followed, answers are read up to 16 MB. Through the owner's HTTP proxy only when one is set in Settings
+  (`outbound.proxy`).
+- **What is sent, and nothing else:** `GET /repos/skittles-fivem/Sentry-Mate/actions/workflows/image.yml/runs?branch=main&status=success&per_page=1`
+  (the newest published image) and, when that is not this build,
+  `GET /repos/skittles-fivem/Sentry-Mate/compare/<this build's commit>...<the newest's commit>` (what changed),
+  with the headers `User-Agent: sentry-mate`, `Accept: application/vnd.github+json`, `X-GitHub-Api-Version` and
+  `If-None-Match` (the ETag of the last answer). No token, no cookie, no body, and no id of the server, a car or an
+  account. GitHub sees the server's (or the proxy's) address and this build's commit, which is public. A local build
+  (no commit) asks nothing.
+- `/network` lists it (`release_check`, `api.github.com`, on or off, last used).
+
 ## No way back without a backup
 
 This version writes growing files in a newer format (format 2) as soon as it opens them to add to, from its first
@@ -311,6 +345,10 @@ Every log is kept as uploaded, whatever its check says. Each gets one of these r
   today, one log at a time.
 - A log signed by another key is marked failed. `keys` lists that key. Check it in the app, then trust it with
   `keys trust` ([A new signing key](#a-new-signing-key)): its logs are verified from then on.
+- The app asks which logs arrived intact (`check` of `POST /api/can/logs/status`) and keeps a failed one. Its
+  **Resend all** sends it again under its name: that copy takes the failed one's place, the failed copy is kept in
+  `quarantine/` until the new one verifies, and the log's time stops being unknown once it does. A verified or
+  waiting log is never replaced ([Did each log arrive intact](cars-and-bridge.md#did-each-log-arrive-intact)).
 - A reinstalled bridge app or a new Screenmate has a new car key. Its uploads with the old token get
   `403 wrong_car`, so give it a new token. Its logs are kept under the new car key, which is paired by its own first
   signed log. Linking several car keys to one car is planned.

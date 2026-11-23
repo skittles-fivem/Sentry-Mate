@@ -6,7 +6,7 @@ carries its own `at_ms`: while the car sleeps, values keep the time they were la
 
 from __future__ import annotations
 
-from . import placing
+from . import offcan, placing
 from . import sources as S
 from .util import DAY, HOUR, MIN, r
 
@@ -53,31 +53,121 @@ def last_sample(h, tv):
     return None, None, None
 
 
+# How long after a fingerprint update a live input's new version still names it.
+INPUT_NAME_WINDOW_MS = 24 * HOUR
+
+
+def _in_order(app, car_id, inputs):
+    """`inputs` in the car's input order (`source_order`), highest priority first."""
+    order = S.order_of(app.store, car_id)
+    return sorted(set(inputs), key=lambda i: order.index(i) if i in order else len(order))
+
+
+def input_versions(h):
+    """[(input, version, first_ms)] in time order: each version a live input started reporting (made up, from the
+    car spec's `input_versions`; a record stays whatever the input's state is now)."""
+    got = getattr(h, "_input_versions", None)
+    if got is None:
+        from .dataset.segments import update_id
+        car = h.car
+        got = []
+        for inp, ver, seq, after_h in getattr(car, "input_versions", None) or ():
+            u = h.by_id.get(update_id(car.n, seq))
+            if u is not None:
+                got.append((inp, ver, u.end + int(after_h * HOUR)))
+        got.sort(key=lambda x: x[2])
+        h._input_versions = got
+    return got
+
+
+def input_named(app, h, from_ms, to_ms):
+    """(version, input) a live input started reporting from `from_ms` until a day after `to_ms` that is not the one
+    it said before `from_ms`, from the inputs in the car's order (`source_order`); else None."""
+    seen = input_versions(h)
+    until = to_ms + INPUT_NAME_WINDOW_MS
+    for inp in _in_order(app, h.car.id, (s[0] for s in seen)):
+        mine = [s for s in seen if s[0] == inp]
+        before = next((s[1] for s in reversed(mine) if s[2] < from_ms), None)
+        hit = next((s for s in mine if from_ms <= s[2] <= until), None)
+        if hit is not None and hit[1] != before:
+            return hit[1], inp
+    return None
+
+
+def teslamate_local_on(app, car_id):
+    """Whether the owner's local TeslaMate is read for this car now: on, not paused, no trouble, the car matched."""
+    t = getattr(app.store, "teslamate", None) or {}
+    if not t.get("enabled") or t.get("paused") or t.get("mqtt_error") or t.get("mqtt_quiet"):
+        return False
+    return any(c.get("match") == car_id for c in t.get("cars") or [])
+
+
+def live_version(app, h, t):
+    """(version, read at, input) the car's live input reads now, or None: the newest version that input reported
+    by t, while the input is read."""
+    seen = [s for s in input_versions(h) if s[2] <= t]
+    for inp in _in_order(app, h.car.id, (s[0] for s in seen)):
+        mine = [s for s in seen if s[0] == inp]
+        if not mine:
+            continue
+        if inp == "teslafi_api" and offcan.api_input(app, h.car.id) == "teslafi_api":
+            return mine[-1][1], offcan.teslafi_read_ms(t), inp
+        if inp == "teslamate_local" and teslamate_local_on(app, h.car.id):
+            return mine[-1][1], t - 30_000, inp
+    return None
+
+
 def software_at(app, h, t):
-    car = h.car
-    ver, src = car.first_version
-    since = h.first_ms
-    changed = None
-    for u in h.updates:
-        if u.start > t:
-            break
-        v, vs = update_version(app, u)
-        if v:
-            ver, src, since, changed = v, vs, u.end, None
+    """The car's software at t (crates/engine query/software.rs `current`): the version typed on the newest update;
+    else the live input's when it read it after the newest update started; else the newest update's; else the car
+    settings' typed version."""
+    ups = [u for u in h.updates if u.start <= t]
+    newest = ups[-1] if ups else None
+    nv, ns = update_version(app, newest) if newest else (None, None)
+    end = newest.end if newest else None
+    changed = end if newest and not nv else None
+    if newest and ns == "owner":
+        return {"version": nv, "version_source": "owner", "version_since_ms": end, "changed_since_ms": None}
+    live = live_version(app, h, t)
+    if live and (newest is None or live[1] >= newest.start):
+        v, _at, inp = live
+        if newest and (nv is None or nv == v):
+            since = end
         else:
-            changed = u.end
-    typed = (app.store.car_settings.get(car.id) or {}).get("software_version_typed")
+            since = next((s[2] for s in reversed(input_versions(h)) if s[0] == inp and s[1] == v), None)
+        return {"version": v, "version_source": inp, "version_since_ms": since, "changed_since_ms": None}
+    if nv:
+        return {"version": nv, "version_source": ns, "version_since_ms": end, "changed_since_ms": None}
+    if newest is None:
+        ver, src = h.car.first_version
+    else:
+        ver, src = None, None
+    typed = (app.store.car_settings.get(h.car.id) or {}).get("software_version_typed")
     if typed:
         ver, src = typed, "owner"
-    return {"version": ver, "version_source": src, "version_since_ms": since, "changed_since_ms": changed}
+    return {"version": ver, "version_source": src, "version_since_ms": end if newest else h.first_ms,
+            "changed_since_ms": changed}
+
+
+def is_fingerprint(u):
+    return u.source == "can" and u.detected_by == "fingerprint"
 
 
 def update_version(app, u):
-    """(version, version_source) of an update: the owner's, else one learned from the same build, else the dataset's."""
+    """(version, version_source) of an update (crates/engine query/software.rs `version_of`): the owner's typed one
+    (a name an owner cleared stays cleared); for one found from fingerprints, else the version a live input started
+    reporting around it, else one learned from the same build; else the dataset's."""
     st = app.store
-    own = st.update_versions.get(u.id)
-    if own is not None:
-        return own, "owner"
+    if u.id in st.update_versions:
+        own = st.update_versions[u.id]
+        return (own, "owner") if own is not None else (None, None)
+    if u.version_source == "owner":
+        return u.version, "owner"
+    if is_fingerprint(u):
+        h = app.ds.history(u.car.id)
+        named = input_named(app, h, u.start, u.end) if h is not None else None
+        if named:
+            return named
     learned = st.builds.get(u.build_id)
     if learned and learned["from_update"] != u.id:
         return learned["version"], "build_match"
@@ -122,7 +212,14 @@ def now_object(app, car_id, t):
         inputs.append({**S.ref("smo"), "last_ms": at})
         if car_id in ("c1", "c2"):
             inputs.append({**S.ref("tesla_api"), "last_ms": at - 45_000})
+        elif offcan.api_input(app, car_id) == "teslafi_api":
+            inputs.append({**S.ref("teslafi_api"), "last_ms": offcan.teslafi_read_ms(t)})
+        if teslamate_local_on(app, car_id):
+            inputs.append({**S.ref("teslamate_local"), "last_ms": t - 30_000})
+    # in the car's input order (`source_order`), highest priority first
+    inputs.sort(key=S.rank(S.order_of(app.store, car_id)))
     obj["inputs"] = inputs
+    obj["off_can"] = offcan.off_can(app, car_id, t, obj)
     return obj
 
 
@@ -246,6 +343,8 @@ def _now_object(app, car_id, t):
         "usable_soc_pct": W(vals.get("usable_soc_pct"), ts),
         "range_km": W(vals.get("range_km"), ts), "ideal_range_km": W(vals.get("ideal_range_km"), ts),
         "est_range_km": W(r(est, 1), ts), "est_basis": "wh_per_km_30d",
+        # the car's own estimate from an API input (the Tesla API's, else local TeslaMate's): none in the dev data
+        "car_est_range_km": None,
         "energy_remaining_kwh": W(vals.get("energy_remaining_kwh"), ts),
         "odometer_km": W(odo if odo is None else round(odo, 3), ts),
         "outside_c": W(vals.get("outside_c"), ts), "cabin_c": W(vals.get("cabin_c"), ts),
@@ -259,8 +358,7 @@ def _now_object(app, car_id, t):
             "address": addr,
         },
         "tyres_kpa": [W(vals.get(k), ts - 20_000) for k in ty_keys] if has_ty else None,
-        "tyres_slots_mapped": has_ty,
-        "tyre_recommended_kpa": W(car.tyre_rec_kpa, h.first_ms) if not legacy else None,
+        **tyres_now(car, meta, legacy, has_ty, [vals.get(k) for k in ty_keys], ts - 20_000, h.first_ms),
         "flags": flags,
         "charge": charge,
         "drive": drive,
@@ -268,6 +366,44 @@ def _now_object(app, car_id, t):
         "software": software_at(app, h, ts),
     }
     return obj
+
+
+# made-up variety: c2's sensors are not mapped yet and the car sends no recommended pressure (the door placard's for
+# its 18 in wheels is used); the other cars send theirs on CAN
+PLACARD_CARS = {"c2": 18}
+
+
+def tyres_now(car, meta, legacy, has_ty, kpa, tyres_at, rec_at):
+    """The Now's tyre fields: whether the slots are mapped, the recommended pressures (typed, else CAN, else the
+    door placard's), and the low flag (each tyre against its axle's, or the lower one while not mapped)."""
+    cfg = meta.get("config", {})
+    typed = [(cfg.get(k) or {}).get("value") if (cfg.get(k) or {}).get("source") == "owner" else None
+             for k in ("tyre_pressure_front_kpa", "tyre_pressure_rear_kpa")]
+    mapped = has_ty and car.id not in PLACARD_CARS
+    src = wheel = None
+    front = rear = None
+    if typed[0] is not None or typed[1] is not None:
+        front = typed[0] if typed[0] is not None else typed[1]
+        rear = typed[1] if typed[1] is not None else front
+        src = "owner"
+    elif car.id in PLACARD_CARS:
+        front = rear = 290.0
+        src, wheel = "placard", PLACARD_CARS[car.id]
+    elif not legacy:
+        front = rear = float(car.tyre_rec_kpa)
+        src = "can"
+
+    def rec(x):
+        if x is None:
+            return None
+        return W(x, rec_at) if src == "can" else {"value": x, "at_ms": None, "sources": []}
+
+    low = None
+    if has_ty and front is not None and None not in kpa:
+        against = [front, front, rear, rear] if mapped else [min(front, rear)] * 4
+        low = W(any(p < a * 0.9 for p, a in zip(kpa, against)), tyres_at)
+    return {"tyres_slots_mapped": bool(mapped), "tyre_recommended_kpa": rec(front), "tyre_recommended_rear_kpa": rec(rear),
+            "tyre_recommended_source": src, "tyre_recommended_wheel_in": wheel, "tyre_low": low}
 
 
 def charge_now(app, h, cur, seg, ts, tv, flags):
@@ -354,6 +490,7 @@ def list_item(app, car_id, t):
         sm = {k: v for k, v in sm.items() if not k.startswith("_")}
         sm["name"] = meta["name"]
         sm["time_zone"] = meta["time_zone"]
+        sm["time_zone_source"] = meta["time_zone_source"]
         sm["sources"] = [S.ref("smo")]
         sm["source_label"] = S.label_of(sm["sources"])
         return sm
@@ -364,7 +501,8 @@ def list_item(app, car_id, t):
     return {
         "id": car_id, "name": meta["name"], "model": meta["model"], "year": meta["year"],
         "vin_prefix": meta["vin_prefix"], "trim": meta["config"].get("trim", {}).get("value") or meta["trim"],
-        "profile": meta["profile"], "time_zone": meta["time_zone"], "last_activity_ms": last,
+        "profile": meta["profile"], "time_zone": meta["time_zone"], "time_zone_source": meta["time_zone_source"],
+        "last_activity_ms": last,
         "now": {
             "state": n["state"], "since_ms": n["since_ms"], "at_ms": n["at_ms"], "received_ms": n["received_ms"],
             "stale": n["stale"], "soc_pct": _v(n.get("soc_pct")), "range_km": _v(n.get("range_km")),
@@ -447,7 +585,7 @@ def attention(app, car_id, t, n=None):
                     since = probe
                     day += 1
                 out.append({"car": car_id, "code": "tyre_low", "since_ms": since,
-                            "detail": {"tyre": name, "pressure_kpa": w["value"], "recommended_kpa": rec}})
+                            "detail": {"tyre": name, "pressure_kpa": w["value"], "recommended_kpa": rec, "source": "can"}})
     return out
 
 
@@ -457,7 +595,7 @@ def _synthetic_detail(code, sm):
     if code == "upload_silence":
         return {"last_upload_ms": sm["now"]["received_ms"]}
     if code == "tyre_low":
-        return {"tyre": "rr", "pressure_kpa": 241.0, "recommended_kpa": 290}
+        return {"tyre": "rr", "pressure_kpa": 241.0, "recommended_kpa": 290, "source": "can"}
     if code == "door_open_asleep":
         return {"door": "rl"}
     if code == "trust_failed":

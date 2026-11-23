@@ -358,6 +358,18 @@ mod tests {
     }
 
     #[test]
+    fn source_takes_every_input_and_import_site() {
+        for i in model::Input::ALL {
+            let w = model::Origin::from(i).word();
+            assert!(SOURCE_WORDS.contains(&w.as_str()), "source={w} (a new input needs its word here)");
+        }
+        for site in model::ImportSite::ALL {
+            let w = model::Origin::Import(site).word();
+            assert!(SOURCE_WORDS.contains(&w.as_str()), "source={w} (a new import site needs its word here)");
+        }
+    }
+
+    #[test]
     fn getters_answer_400_with_the_field() {
         let q = p("limit=0&a=x%20y&b=1&c=yes&cars=c1,,c2&from_ms=10&to_ms=5");
         assert_eq!(q.paging().unwrap_err().fields.unwrap().keys().next().unwrap(), "limit");

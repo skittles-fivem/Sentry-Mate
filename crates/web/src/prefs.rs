@@ -1,10 +1,10 @@
 //! A person's preferences, `GET`/`PATCH /api/v1/me/preferences` (docs/ui-api.md): units, range, theme, language,
-//! interface size, follow screen, map colours, UI pack, car order and pinned cars.
+//! interface size, follow screen, map colours, UI pack, car order, pinned cars, the main car and the last car opened.
 //!
 //! Only what the person chose is kept (sealed, one small file per account); the rest comes from the server's
 //! defaults ([`crate::units::Defaults`]) at the time it is read, so a change of the defaults reaches everyone who
 //! didn't choose. The UI pack is kept with the account itself (the accounts crate), so serving a page never opens
-//! this file. `car_order` and `pinned_cars` only ever list cars the account sees.
+//! this file. `car_order`, `pinned_cars`, `main_car` and `last_car` only ever name cars the account sees.
 
 use crate::ctx::{JsonBody, Viewer};
 use crate::error::{ApiResult, Fields};
@@ -142,6 +142,15 @@ fn visible(app: &AppState, access: &CarAccess, list: Option<&Value>) -> Vec<Valu
         .unwrap_or_default()
 }
 
+/// One car id of the preferences (`main_car`, `last_car`), or null when unset or the account no longer sees it.
+fn visible_one(app: &AppState, access: &CarAccess, val: Option<&Value>) -> Value {
+    val.and_then(Value::as_str)
+        .and_then(ids::parse_car)
+        .filter(|c| access.allows(*c) && app.car_exists(*c))
+        .map(|c| Value::from(ids::car(c)))
+        .unwrap_or(Value::Null)
+}
+
 /// The whole preferences object of an account, as it is now (defaults filled in, hidden cars left out).
 pub fn view(app: &AppState, id: AccountId, access: &CarAccess) -> ApiResult<Value> {
     let own = app.prefs.own(id)?;
@@ -164,9 +173,12 @@ pub fn view(app: &AppState, id: AccountId, access: &CarAccess) -> ApiResult<Valu
         "interface_size": pick("interface_size", json!(100)),
         "follow_screen": pick("follow_screen", json!(true)),
         "map_colors": pick("map_colors", json!("dimmed")),
+        "map_style": pick("map_style", json!("default")),
         "ui_pack": pack.unwrap_or_else(|| crate::packs::pick_id(app, None)),
         "car_order": visible(app, access, Some(&order)),
         "pinned_cars": visible(app, access, own.get("pinned_cars")),
+        "main_car": visible_one(app, access, own.get("main_car")),
+        "last_car": visible_one(app, access, own.get("last_car")),
     }))
 }
 
@@ -188,10 +200,33 @@ const KEYS: &[&str] = &[
     "interface_size",
     "follow_screen",
     "map_colors",
+    "map_style",
     "ui_pack",
     "car_order",
     "pinned_cars",
+    "main_car",
+    "last_car",
 ];
+
+/// A preference in words, for the audit log ("Changed: text size, units").
+fn key_words(key: &str) -> &'static str {
+    match key {
+        "units" => "units",
+        "range" => "range",
+        "theme" => "theme",
+        "language" => "language",
+        "interface_size" => "text size",
+        "follow_screen" => "follow the screen",
+        "map_colors" => "map colors",
+        "map_style" => "map style",
+        "ui_pack" => "design",
+        "car_order" => "car order",
+        "pinned_cars" => "pinned cars",
+        "main_car" => "main car",
+        "last_car" => "last car shown",
+        _ => "other",
+    }
+}
 
 fn check_cars(
     app: &AppState,
@@ -260,6 +295,12 @@ async fn patch_prefs(
             rule.add(k, &format!("Must be one of: {}.", allowed.join(", ")));
         }
     }
+    if let Some(val) = body.get("map_style")
+        && !val.as_str().is_some_and(|s| s == "default" || places::tiles::preset(s).is_some())
+    {
+        let ids: Vec<&str> = places::tiles::PRESETS.iter().map(|p| p.id).collect();
+        rule.add("map_style", &format!("Must be default or one of: {}.", ids.join(", ")));
+    }
     if let Some(val) = body.get("language") {
         let ok = val
             .as_str()
@@ -294,6 +335,17 @@ async fn patch_prefs(
     }
     check_cars(&app, &v, &body, "car_order", MAX_CAR_ORDER, &mut bad, &mut rule);
     check_cars(&app, &v, &body, "pinned_cars", MAX_PINNED, &mut bad, &mut rule);
+    for k in ["main_car", "last_car"] {
+        match body.get(k) {
+            None | Some(Value::Null) => {}
+            Some(Value::String(c)) => {
+                if !ids::parse_car(c).is_some_and(|c| v.sees_existing(&app, c)) {
+                    rule.add(k, "Unknown car.");
+                }
+            }
+            Some(_) => bad.add(k, "Must be a car id, or null."),
+        }
+    }
     bad.bad_input()?;
     rule.invalid()?;
 
@@ -323,21 +375,35 @@ async fn patch_prefs(
                                 .unwrap_or_default();
                             own.insert(k, Value::Array(list));
                         }
+                        "main_car" | "last_car" if val.is_null() => {
+                            own.remove(&k);
+                        }
                         _ => {
                             own.insert(k, val);
                         }
                     }
                 }
                 if let Some(p) = pack_change {
-                    app.accounts.set_ui_pack(viewer.signed_in(), p.as_deref())?;
+                    // its own entry: `ui-pack-chosen`, naming the pack
+                    let shown = p.clone().unwrap_or_else(|| app.packs.chosen());
+                    let name = app.packs.meta(&shown).map_or_else(|| shown.clone(), |m| m.name);
+                    let said = match &p {
+                        Some(_) => format!("Chose the {name} design."),
+                        None => format!("Went back to the design chosen for everyone ({name})."),
+                    };
+                    app.accounts.set_ui_pack_said(viewer.signed_in(), p.as_deref(), &shown, &said)?;
                 }
                 Ok(())
             })?;
             view(app, id, viewer.cars())
         })
         .await?;
-    let summary = format!("Changed: {}.", changed.join(", "));
-    if app.prefs.needs_audit(v.id(), &summary, app.now()) {
+    // the pack has its own entry (`ui-pack-chosen`)
+    let mut words: Vec<&str> = changed.iter().filter(|k| *k != "ui_pack").map(|k| key_words(k)).collect();
+    words.sort_unstable();
+    words.dedup();
+    let summary = format!("Changed: {}.", words.join(", "));
+    if !words.is_empty() && app.prefs.needs_audit(v.id(), &summary, app.now()) {
         v.audit(&app, "preferences-changed", Some(&format!("account:{}", ids::account(v.id()))), &summary).await?;
     } else {
         v.mark_audited();

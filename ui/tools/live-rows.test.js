@@ -1,0 +1,73 @@
+// Live list updates in Chromium on the dev API server: Pebble's Charges page loads its list again when a
+// `rows` event says charges changed, and shows the new charge without a reload of the page.
+// The dev server sends a `rows` event for every kind every 2 s (--rows-every-s 2); the second answer for the
+// list gets one more charge at the top, and the test waits for it to be drawn.
+// Run: node --test ui/tools/live-rows.test.js. Skipped when Playwright is not installed.
+'use strict';
+
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const path = require('path');
+const { spawn } = require('child_process');
+
+const UI_DIR = path.dirname(__dirname);
+const REPO_DIR = path.dirname(UI_DIR);
+let playwright = null;
+try { playwright = require('playwright'); } catch { /* not installed: skip */ }
+
+function devServer(pack, extra) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('python3', [path.join(UI_DIR, 'devserver', 'serve.py'), '--pack', path.join(UI_DIR, 'packs', pack),
+      '--port', '0', '--freeze-clock', ...extra], { cwd: REPO_DIR, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '', err = '';
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`no dev server in 60 s: ${err}`)); }, 60000);
+    child.stderr.on('data', (d) => { err = (err + d).slice(-5000); });
+    child.stdout.on('data', (d) => {
+      out += d;
+      const m = /listening on (http:\/\/\S+?)\/?\s/.exec(out);
+      if (m) {
+        clearTimeout(timer);
+        resolve({ origin: m[1], stop: () => new Promise((r) => { child.once('exit', r); child.kill('SIGTERM'); }) });
+      }
+    });
+    child.once('exit', (code) => { clearTimeout(timer); reject(new Error(`the dev server stopped (${code}): ${err}`)); });
+  });
+}
+
+test('pebble: Charges loads its list again on a rows event and shows the new charge', { skip: !playwright && 'Playwright is not installed', timeout: 120000 }, async () => {
+  const browser = await playwright.chromium.launch();
+  const server = await devServer('pebble', ['--rows-every-s', '2']);
+  try {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const cars = await (await context.request.get(`${server.origin}/api/v1/cars`)).json();
+    const car = (cars.items || cars)[0].id;
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+
+    // The list itself is the request with limit=30 and no flags (the missing-data box and the statistics differ).
+    let listLoads = 0;
+    const NEW_ID = 'live-rows-new-charge';
+    await page.route((u) => u.pathname === `/api/v1/cars/${car}/charges` && u.searchParams.get('limit') === '30' && !u.searchParams.has('flags') && !u.searchParams.has('cursor'), async (route) => {
+      listLoads++;
+      const res = await route.fetch();
+      const body = await res.json();
+      if (listLoads > 1 && body.items?.length) body.items.unshift({ ...body.items[0], id: NEW_ID });
+      await route.fulfill({ response: res, json: body });
+    });
+
+    await page.goto(`${server.origin}/cars/${encodeURIComponent(car)}/charges`);
+    await page.waitForFunction(() => document.documentElement.dataset.ready === 'charges', null, { timeout: 30000 });
+    assert.equal(listLoads, 1, 'one list load before ready');
+    assert.equal(await page.locator(`a[href*="${NEW_ID}"]`).count(), 0);
+
+    await page.locator(`a[href*="${NEW_ID}"]`).first().waitFor({ state: 'attached', timeout: 20000 });
+    assert.ok(listLoads >= 2, `the list loaded again (${listLoads} loads)`);
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.ready), 'charges', 'the page itself did not load again');
+    assert.deepEqual(errors, []);
+    await context.close();
+  } finally {
+    await server.stop();
+    await browser.close();
+  }
+});

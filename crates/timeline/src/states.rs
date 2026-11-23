@@ -198,7 +198,12 @@ enum Seen {
 /// unknown). Where SMO says asleep only because no frames came after a quiet log, the car's values coming from the API
 /// say it was awake after all: online. Spans the API gave name it in their `inputs`. `unknown_inputs`: what an unknown
 /// span left names (a car with no SMO data names the API).
-pub(crate) fn with_api(spans: Vec<StateSpan>, api: &[crate::ApiSpan], unknown_inputs: model::Inputs) -> Vec<StateSpan> {
+pub(crate) fn with_api(
+    spans: Vec<StateSpan>,
+    api: &[crate::ApiSpan],
+    unknown_inputs: model::Inputs,
+    order: &model::SourceOrder,
+) -> Vec<StateSpan> {
     use crate::ApiState;
     let mut api: Vec<&crate::ApiSpan> =
         api.iter().filter(|a| a.end_ms > a.start_ms && a.state != ApiState::Offline).collect();
@@ -251,13 +256,9 @@ pub(crate) fn with_api(spans: Vec<StateSpan>, api: &[crate::ApiSpan], unknown_in
                 })
                 .collect();
             let seen = looks.iter().map(|l| l.0).min();
-            // the API that saw it: the Tesla API where both saw the same, else TeslaFi's
-            let by: Vec<model::Inputs> = looks.iter().filter(|l| Some(l.0) == seen).map(|l| l.1).collect();
-            let api_in = if by.iter().any(|i| i.contains(model::Input::TeslaApi)) {
-                model::Inputs::TESLA_API
-            } else {
-                by.iter().fold(model::Inputs::NONE, |a, i| a.union(*i))
-            };
+            // the API that saw it: of those that saw the same, the first in the order the car's inputs win in
+            let by = looks.iter().filter(|l| Some(l.0) == seen).fold(model::Inputs::NONE, |a, l| a.union(l.1));
+            let api_in = order.first_of(by.without_smo()).map_or(by, model::Inputs::from);
             let (state, inputs) = match (span.state, seen) {
                 (State::Asleep, Some(Seen::Data)) => (State::Online, api_in),
                 (State::Asleep, _) => (State::Asleep, span.inputs),

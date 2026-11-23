@@ -3,6 +3,8 @@
 
 .sw-page > .panel, .sw-page > .sw-summary { margin-bottom: var(--gap); }
 .sw-filters .filter-bar { margin-bottom: round(0.625rem, var(--e)); }
+/* a long custom period (a stale from/to in the address) wraps inside its button instead of pushing the page sideways */
+.sw-filters .filter-bar .btn { max-width: 100%; height: auto; min-height: round(2.25rem, var(--e)); padding-block: round(0.375rem, var(--e)); white-space: normal; text-align: start; }
 .sw-filters .note { display: flex; align-items: center; gap: round(0.375rem, var(--e)); margin: 0; }
 
 .sw-summary { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: var(--gap); }
@@ -99,3 +101,53 @@
   .sw-fw-row { grid-template-columns: minmax(0, 1fr); gap: round(0.125rem, var(--e)); }
   .sw-fw-val { flex-direction: row; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: round(0.125rem, var(--e)) round(0.5rem, var(--e)); margin: 0; text-align: left; }
 }
+
+/* Module firmware history: a module filter, the "versions over time" strip (one lane per module) and the table */
+.sw-fw-links { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.25rem, var(--e)) round(1rem, var(--e)); }
+.sw-fh { scroll-margin-top: round(5rem, var(--e)); }
+.sw-fh .tbl-bar { flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); }
+.sw-fh-top { display: flex; flex-direction: column; gap: round(1rem, var(--e)); padding: round(0.75rem, var(--e)) round(1.25rem, var(--e)) round(1rem, var(--e)); }
+.sw-fh-seg { flex-wrap: wrap; align-self: flex-start; max-width: 100%; }
+.sw-fh-seg .seg-btn { gap: round(0.375rem, var(--e)); }
+.sw-fh-strip { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); min-width: 0; }
+.sw-fh-skel { display: block; height: round(7rem, var(--e)); }
+.sw-fh-strip-title { margin: 0; }
+.sw-fh-lanes { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); }
+.sw-fh-lane { display: grid; grid-template-columns: round(13rem, var(--e)) minmax(0, 1fr); align-items: center; gap: round(0.75rem, var(--e)); min-width: 0; }
+.sw-fh-lane-name { display: flex; flex-direction: column; gap: round(0.125rem, var(--e)); min-width: 0; font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); --LH: round(calc(1.3 * 1em), 2px); }
+.sw-fh-lane-none { font-size: max(0.8125rem, var(--fs-floor)); }
+.sw-fh-track { position: relative; height: round(1.75rem, var(--e)); border-radius: var(--radius-sm); background: var(--surface-sunken); border: 1px solid var(--line); overflow: hidden; }
+.sw-fh-seg-bar { position: absolute; top: 0; bottom: 0; left: round(var(--x), 1px); width: max(round(var(--w), 1px), 2px); display: flex; align-items: center; padding: 0 round(0.375rem, var(--e)); background: var(--live-soft); overflow: hidden; }
+.sw-fh-seg-bar.is-alt { background: var(--glass-3); }
+.sw-fh-seg-bar.is-current { box-shadow: inset 0 0 0 1px var(--live-line); }
+.sw-fh-seg-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: max(0.75rem, var(--fs-floor)); color: var(--text); font-variant-numeric: tabular-nums; --LH: round(calc(1.2 * 1em), 2px); }
+.sw-fh-seg-bar.is-unnamed .sw-fh-seg-text { color: var(--text-3); }
+.sw-fh-tick { position: absolute; top: 0; bottom: 0; left: round(var(--x), 1px); width: 1px; background: var(--live); }
+.sw-fh-axis { display: flex; justify-content: space-between; gap: round(0.75rem, var(--e)); margin-left: round(13.75rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); font-variant-numeric: tabular-nums; }
+.sw-fh-mod { display: flex; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)); font-weight: 500; }
+.sw-hex--sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
+.sw-fh .sw-fh-vrow .sw-fh-mod { color: var(--text-2); font-weight: 400; }
+@container page (max-width: 50rem) {
+  .sw-fh-lane { grid-template-columns: minmax(0, 1fr); gap: round(0.25rem, var(--e)); }
+  .sw-fh-lane-name { flex-direction: row; flex-wrap: wrap; justify-content: space-between; gap: round(0.125rem, var(--e)) round(0.5rem, var(--e)); }
+  .sw-fh-axis { margin-left: 0; }
+}
+
+/* phone (<html data-phone>): cards read left to right and wrap instead of overlapping, links big
+   enough to tap, units no smaller than the text floor, and a name box that fills its row */
+:root[data-phone] .sw-page .tbl:not(.tbl--keep) .cell-text > * { white-space: normal; }
+:root[data-phone] .sw-page .tbl:not(.tbl--keep) .is-num .cell-text { align-items: flex-start; }
+:root[data-phone] .sw-page .sw-ver { flex-wrap: wrap; overflow-wrap: normal; row-gap: round(0.25rem, var(--e)); }
+:root[data-phone] .sw-page .tbl:not(.tbl--keep) td > a.link, :root[data-phone] .sw-page .tbl .cell-text > a.link { display: inline-flex; align-items: center; min-height: var(--tap); min-width: var(--tap); }
+:root[data-phone] .sw-page .q-u { font-size: max(0.86em, var(--fs-floor)); }
+:root[data-phone] .sw-fp-input { max-width: none; }
+:root[data-phone] .sw-fp-hexes { margin-left: 0; }
+:root[data-phone] .sw-fp-list { grid-template-columns: minmax(0, 1fr); }
+:root[data-phone] .sw-figs .metric-value, :root[data-phone] .sw-figs .metric-value .q { white-space: normal; }
+:root[data-phone] .sw-fh-top { padding-left: round(1rem, var(--e)); padding-right: round(1rem, var(--e)); }
+:root[data-phone] .sw-fh-seg { align-self: stretch; }
+:root[data-phone] .sw-fh-seg .seg-btn { flex: 0 1 auto; min-height: var(--tap); }
+:root[data-phone] .sw-fh-lane { grid-template-columns: minmax(0, 1fr); gap: round(0.25rem, var(--e)); }
+:root[data-phone] .sw-fh-lane-name { flex-direction: row; flex-wrap: wrap; justify-content: space-between; gap: round(0.125rem, var(--e)) round(0.5rem, var(--e)); }
+:root[data-phone] .sw-fh-track { height: round(2rem, var(--e)); }
+:root[data-phone] .sw-fh-axis { margin-left: 0; }

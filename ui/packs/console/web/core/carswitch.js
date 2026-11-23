@@ -29,7 +29,7 @@ export function openCarSwitcher() {
   const row = (c) => {
     const sold = state.isSold(c);
     return h('li', { class: ['pick-row', sold && 'pick-row--sold'], role: 'option', 'aria-selected': 'false' },
-      h('a', { class: 'pick-link', href: state.linkForCar(c.id), onclick: () => d.close() },
+      h('a', { class: 'pick-link', href: state.linkForCar(c.id), onclick: () => { state.rememberCar(c.id, { sold }); d.close(); } },
         h('span', { class: 'pick-main' }, c.name || c.id, c.id === here ? h('span', { class: 'muted' }, ' (open)') : null),
         sold ? h('span', { title: c.sold_date ? `Sold on ${c.sold_date}` : 'Sold' }, tag('sold', 'muted')) : stateWord(c.now?.state, { stale: c.now?.stale }),
         h('span', { class: 'pick-num' }, sold ? (c.sold_date || '') : numText(c.now?.soc_pct, 'percent'))));

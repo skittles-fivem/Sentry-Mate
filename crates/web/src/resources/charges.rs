@@ -185,6 +185,7 @@ async fn put_cost(
         q::charges::charge(e, car, id)
     })
     .await?;
+    let summary = summary.replace("for a charge:", &format!("for a charge of {}:", app.car_name_now(car).await));
     v.audit(&app, "charge-cost-entered", Some(&target("charge", Some(car), &id.to_string())), &summary).await?;
     Ok(Json(value))
 }
@@ -201,8 +202,14 @@ async fn delete_cost(
     let mut both = run(&app, move |e| Ok((costs::clear_manual(e, car, id)?, q::charges::charge(e, car, id)?))).await?;
     let (removed, value) = (both[0] == Value::Bool(true), both[1].take());
     if removed {
-        let summary = "Removed the entered cost of a charge; it has its own cost again.";
-        v.audit(&app, "charge-cost-removed", Some(&target("charge", Some(car), &id.to_string())), summary).await?;
+        let summary = format!(
+            "Removed the entered cost of a charge of {}; it has its own cost again.",
+            app.car_name_now(car).await
+        );
+        v.audit(&app, "charge-cost-removed", Some(&target("charge", Some(car), &id.to_string())), &summary).await?;
+    } else {
+        // there was no cost entered: nothing changed
+        v.mark_audited();
     }
     Ok(Json(value))
 }

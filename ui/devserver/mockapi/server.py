@@ -26,20 +26,29 @@ from .packs import Packs
 from .router import Router
 from .store import COOKIE, COOKIE_SIGNED_OUT, SETUP_COOKIE, Store
 
-def tile_origin(store):
-    """As the real server's tile_origins(): the online tile server's https origin, none while tiles are offline."""
+def tile_origins(store):
+    """As the real server's tile_origins(): the https origins of the chosen tile style and the styles viewers may
+    switch to (overlays too), none while tiles are offline."""
+    from .resources.system import tile_viewer_styles
     t = store.server_settings["tiles"]
-    url = t.get("online_url") or ""
-    if t["mode"] != "online" or not url.startswith("https://"):
-        return None
-    auth = re.split(r"[/?#]", url[len("https://"):], maxsplit=1)[0]
-    ok = auth and "@" not in auth and re.fullmatch(r"[A-Za-z0-9.-]+(:[0-9]{1,5})?", auth) and not auth.startswith((".", "-"))
-    return f"https://{auth.lower()}" if ok else None
+    if t["mode"] != "online":
+        return []
+    out = []
+    for s in tile_viewer_styles(t):
+        for url in [s["template"], *s["overlays"]]:
+            if not url.startswith("https://"):
+                continue
+            auth = re.split(r"[/?#]", url[len("https://"):], maxsplit=1)[0]
+            ok = auth and "@" not in auth and re.fullmatch(r"[A-Za-z0-9.-]+(:[0-9]{1,5})?", auth) \
+                and not auth.startswith((".", "-"))
+            if ok and f"https://{auth.lower()}" not in out:
+                out.append(f"https://{auth.lower()}")
+    return out
 
 
 def page_csp(store=None):
     """As the real server's csp(): the pages may load tiles only from the online tile server, named while it is on."""
-    extra = f" {o}" if store is not None and (o := tile_origin(store)) else ""
+    extra = "".join(f" {o}" for o in tile_origins(store)) if store is not None else ""
     return (f"default-src 'self'; img-src 'self' data: blob:{extra}; worker-src 'self' blob:; "
             f"style-src 'self'; script-src 'self'; connect-src 'self'{extra}; font-src 'self'; "
             "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
@@ -51,7 +60,7 @@ CSRF_HEADER = "X-Sentry-Mate"
 def page_referrer_policy(store):
     """As the real server: pages send their origin (never a path) to the tile server while online tiles are on, since
     OpenStreetMap's tile policy blocks tile requests without a Referer; otherwise no Referer at all."""
-    return "strict-origin" if tile_origin(store) else "no-referrer"
+    return "strict-origin" if tile_origins(store) else "no-referrer"
 MAX_BODY = 1 << 20
 # changes a moved server still takes: the move itself, export files, signing in and out
 # (and the recovery key file: shown again, or removed once saved; a new key is refused, as on the real server)

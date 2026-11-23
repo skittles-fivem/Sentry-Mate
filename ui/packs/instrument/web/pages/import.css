@@ -137,3 +137,21 @@
 .im-overlap .cell-text { display: flex; flex-direction: column; align-items: flex-start; --LH: round(1.25rem, 2px); }
 .im-overlap .cell-text .sub, .im-overlap .im-shown .sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); --LH: round(1rem, 2px); }
 .im-overlap .im-sides { --LH: round(1.25rem, 2px); }
+
+/* a phone: the trail as tall as a finger, the steps in two columns, wide cells across the card, key and value stacked */
+:root[data-phone] .im-trail a { min-height: var(--tap); display: inline-flex; align-items: center; }
+:root[data-phone] .im-steps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); }
+:root[data-phone] .im-step { padding-right: 0; }
+:root[data-phone] .im-step + .im-step::before { content: none; }
+:root[data-phone] .im-drop { padding: round(1rem, var(--e)); column-gap: round(0.75rem, var(--e)); }
+:root[data-phone] .im-select { min-width: 0; width: 100%; }
+:root[data-phone] .im-goes .select { flex: 1 1 100%; }
+:root[data-phone] .im .tbl:not(.tbl--keep) > tbody > tr > td.im-wide { grid-column: 1 / -1; }
+:root[data-phone] .im-sides, :root[data-phone] .im-shown .sub, :root[data-phone] .im-stamp { white-space: normal; }
+:root[data-phone] .im-seg { display: flex; flex-wrap: wrap; width: 100%; }
+:root[data-phone] .im-seg .seg-btn { flex: 1 1 auto; justify-content: center; white-space: normal; }
+:root[data-phone] .im .seg { flex-wrap: wrap; max-width: 100%; }
+:root[data-phone] .im-tdesc { max-width: none; }
+:root[data-phone="tall"] .im .kv-row { flex-direction: column; align-items: flex-start; gap: round(0.125rem, var(--e)); }
+:root[data-phone="tall"] .im .kv dd { margin: 0; text-align: left; white-space: normal; }
+:root[data-phone] .im-tf-fields { grid-template-columns: minmax(0, 1fr); }

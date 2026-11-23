@@ -9,7 +9,15 @@
 //! <can>/<vehicleKey>/uploading/<name>.part.json        what that upload promised: length, SHA-256, when it started
 //! <can>/<vehicleKey>/uploading/<name>.sealing          the finished file being sealed, renamed into place when done
 //! <can>/<vehicleKey>/uploading/<name>.part.to-v2       a part from before the vault's format 2 being written again
+//! <can>/<vehicleKey>/quarantine/<name>                 a log (or sidecar) that failed its check and was sent again:
+//!                                                      the first bad copy, kept (sealed under its own name's label)
+//!                                                      until the copy sent again verifies
 //! ```
+//!
+//! A finished file is never replaced, with one exception: a log that failed its check (and its sidecar) may be sent
+//! again under its name ([`Store::receive_replacing`], when the judge says so). The new copy arrives as any upload
+//! does, and only once its last byte is here and its SHA-256 matches is the bad copy linked into `quarantine/` and the
+//! new one renamed over it, so the name always holds one whole copy.
 //!
 //! Each file's label (its path under the data folder) is bound into its sealing, so a file moved or copied under
 //! another name doesn't open. What the bridge signed is the plaintext; it is checked after unsealing.
@@ -47,6 +55,8 @@ pub const STALE_PARTIAL_MS: u64 = 2 * 24 * 3600 * 1000;
 pub const CACHED_CARS: usize = 16_384;
 /// A car's folder of uploads still arriving.
 pub const UPLOADING: &str = "uploading";
+/// A car's folder of bad copies that were sent again.
+pub const QUARANTINE: &str = "quarantine";
 const COUNTS: &str = "counts.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -73,6 +83,9 @@ pub struct Received {
     pub complete: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub already: bool,
+    /// It took the place of a copy that failed its check (now in `quarantine/`).
+    #[serde(skip)]
+    pub replaced: bool,
     /// A sidecar that arrived with no log of its name stored: nothing bounds how many of those a car keeps (the logs
     /// per car don't count them), so its request counts against the token's rate.
     #[serde(skip)]
@@ -219,12 +232,17 @@ impl Inner {
             let len = vault::plaintext_len(m.len()).unwrap_or(0);
             return Ok(FileState { state: State::Complete, received: len, length: Some(len) });
         }
+        Ok(self.part_state(&p))
+    }
+
+    /// What has arrived of an upload under way (a new file's, or a replacement's): partial, or missing.
+    fn part_state(&self, p: &Paths) -> FileState {
         if p.part.exists() {
             // read only: an upload being written at this moment is neither cut nor changed
             let received = self.vault.records_read(&p.part, &p.part_label).map(|r| r.plain_len()).unwrap_or(0);
-            return Ok(FileState { state: State::Partial, received, length: self.meta(&p).map(|m| m.length) });
+            return FileState { state: State::Partial, received, length: self.meta(p).map(|m| m.length) };
         }
-        Ok(FileState { state: State::Missing, received: 0, length: None })
+        FileState { state: State::Missing, received: 0, length: None }
     }
 
     fn counts_file(&self, key: &str) -> (PathBuf, String) {
@@ -287,6 +305,7 @@ impl Inner {
         offset: u64,
         length: u64,
         sha256: &str,
+        replace: bool,
     ) -> Result<Received, ApiError> {
         let n = LogName::parse(name).ok_or_else(bad_name)?;
         if length == 0 {
@@ -313,12 +332,33 @@ impl Inner {
         }
         let _busy = Busy(self.clone(), p.file.clone());
 
-        let had = self.state_of(name)?;
+        let mut had = self.state_of(name)?;
+        let mut replacing = false;
         if had.state == State::Complete {
-            if had.length == Some(length) && self.hash_complete(&p.file, &p.label)?.0 == sha256 {
-                return Ok(Received { received: length, length, complete: true, already: true, orphan: false });
+            // a replacement under way (its part promised this file) goes on without hashing the stored copy again
+            let under_way =
+                replace && offset > 0 && self.meta(&p).is_some_and(|m| m.length == length && m.sha256 == sha256);
+            if !under_way {
+                if had.length == Some(length) && self.hash_complete(&p.file, &p.label)?.0 == sha256 {
+                    return Ok(Received {
+                        received: length,
+                        length,
+                        complete: true,
+                        already: true,
+                        replaced: false,
+                        orphan: false,
+                    });
+                }
+                if !replace {
+                    return Err(ApiError::new(
+                        409,
+                        "exists_different",
+                        "A different file with this name is already here.",
+                    ));
+                }
             }
-            return Err(ApiError::new(409, "exists_different", "A different file with this name is already here."));
+            replacing = true;
+            had = self.part_state(&p);
         }
         if had.state == State::Partial && had.length.is_some_and(|l| l != length) {
             return Err(ApiError::new(
@@ -346,7 +386,7 @@ impl Inner {
             let car_lock = self.locks.get(&p.key);
             let _car = lock(&car_lock);
             let logs = self.logs_of(&p.key, &p.car_dir, true)?;
-            if !n.sidecar && logs >= self.max_logs_per_car as u64 {
+            if !n.sidecar && !replacing && logs >= self.max_logs_per_car as u64 {
                 let max = self.max_logs_per_car;
                 return Err(ApiError::new(
                     507,
@@ -389,7 +429,7 @@ impl Inner {
         records.append(body)?;
         let received = records.plain_len();
         if received < length {
-            return Ok(Received { received, length, complete: false, already: false, orphan: false });
+            return Ok(Received { received, length, complete: false, already: false, replaced: false, orphan: false });
         }
 
         // the last byte: kept only if it is the file the app hashed, sealed again as a finished file
@@ -436,7 +476,23 @@ impl Inner {
         let car_lock = self.locks.get(&p.key);
         let _car = lock(&car_lock);
         // the count before this log is in place (a car counted from its folder now must not count it twice)
-        let before = if n.sidecar { None } else { Some(self.logs_of(&p.key, &p.car_dir, false)?) };
+        let before = if n.sidecar || replacing { None } else { Some(self.logs_of(&p.key, &p.car_dir, false)?) };
+        if replacing {
+            // the bad copy aside first (a link: the name holds the old copy until the new one is renamed over it); the
+            // first bad copy stays there, a later one is dropped
+            let q_dir = p.car_dir.join(QUARANTINE);
+            std::fs::create_dir_all(&q_dir)?;
+            let q = q_dir.join(name);
+            if q.exists() {
+                tracing::warn!("CAN upload: a log sent again replaced a bad copy; the first bad copy is kept");
+            } else if let Err(e) = std::fs::hard_link(&p.file, &q) {
+                discard(Some(tmp));
+                return Err(ApiError::server(e));
+            }
+            if let Ok(d) = std::fs::File::open(&q_dir) {
+                let _ = d.sync_all();
+            }
+        }
         std::fs::rename(tmp, &p.file)?;
         discard(None);
         if let Ok(d) = std::fs::File::open(&p.car_dir) {
@@ -455,7 +511,7 @@ impl Inner {
                 Some(log) => !self.paths(log)?.file.exists(),
                 None => true,
             };
-        Ok(Received { received, length, complete: true, already: false, orphan })
+        Ok(Received { received, length, complete: true, already: false, replaced: replacing, orphan })
     }
 
     /// Drops one car's unfinished uploads older than `max_age_ms`, and leftovers of a crash while sealing or while
@@ -618,8 +674,79 @@ impl Store {
         length: u64,
         sha256: &str,
     ) -> Result<Received, ApiError> {
+        self.receive_replacing(name, body, offset, length, sha256, false).await
+    }
+
+    /// [`Store::receive`], and with `replace` a file of this name that is here already is replaced by the new one
+    /// (only for a log that failed its check, or its sidecar: the caller asks the judge). The same bytes again are
+    /// still `already`; the bad copy goes to `quarantine/` once the new one has arrived whole.
+    pub async fn receive_replacing(
+        &self,
+        name: &str,
+        body: axum::body::Bytes,
+        offset: u64,
+        length: u64,
+        sha256: &str,
+        replace: bool,
+    ) -> Result<Received, ApiError> {
         let (inner, name, sha) = (self.0.clone(), name.to_string(), sha256.to_string());
-        blocking(move || inner.receive(&name, &body, offset, length, &sha)).await
+        blocking(move || inner.receive(&name, &body, offset, length, &sha, replace)).await
+    }
+
+    /// The logs (and sidecars) of a car key still arriving: the names of its `uploading/` parts.
+    pub async fn uploading(&self, key: &str) -> HashSet<String> {
+        if !crate::ledger::valid_key(key) {
+            return HashSet::new();
+        }
+        let dir = self.0.dir.join(key).join(UPLOADING);
+        blocking(move || {
+            Ok(std::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| e.file_name().to_str().and_then(|f| f.strip_suffix(".part")).map(str::to_string))
+                .collect())
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    /// The bad copies of a car key kept in `quarantine/` (log and sidecar names), in name order.
+    pub async fn quarantined(&self, key: &str) -> Vec<String> {
+        if !crate::ledger::valid_key(key) {
+            return Vec::new();
+        }
+        let dir = self.0.dir.join(key).join(QUARANTINE);
+        blocking(move || {
+            let mut v: Vec<String> = std::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| e.file_name().to_str().filter(|f| LogName::parse(f).is_some()).map(str::to_string))
+                .collect();
+            v.sort();
+            Ok(v)
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    /// A bad copy's plaintext, checked as it is unsealed (it keeps the label of its name). `Ok(None)`: none kept.
+    pub async fn read_quarantined(&self, name: &str) -> Result<Option<Zeroizing<Vec<u8>>>, ApiError> {
+        let inner = self.0.clone();
+        let (file, label) = self.0.file_of(name)?;
+        let q = file.parent().map(|car| car.join(QUARANTINE).join(name)).ok_or_else(bad_name)?;
+        blocking(move || inner.vault.read_file(&q, &label).map_err(vault_err)).await
+    }
+
+    /// Drops the bad copies of a log and its sidecar (its copy sent again verified). Returns how many were there.
+    pub async fn drop_quarantined(&self, log_name: &str) -> usize {
+        let Ok((file, _)) = self.0.file_of(log_name) else { return 0 };
+        let Some(q_dir) = file.parent().map(|car| car.join(QUARANTINE)) else { return 0 };
+        let names = [log_name.to_string(), format!("{log_name}.json")];
+        blocking(move || Ok(names.iter().filter(|n| std::fs::remove_file(q_dir.join(n)).is_ok()).count()))
+            .await
+            .unwrap_or(0)
     }
 
     /// A finished file's plaintext (a log or sidecar), checked as it is unsealed. `Ok(None)`: not here.
@@ -634,6 +761,11 @@ impl Store {
         let inner = self.0.clone();
         let (file, label) = self.0.file_of(name)?;
         blocking(move || inner.hash_complete(&file, &label)).await
+    }
+
+    /// Whether an upload of this name is under way (a part is here).
+    pub fn part_exists(&self, name: &str) -> bool {
+        self.0.paths(name).is_ok_and(|p| p.part.exists())
     }
 
     pub fn exists(&self, name: &str) -> bool {

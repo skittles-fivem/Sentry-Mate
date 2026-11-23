@@ -320,6 +320,20 @@ export function formatDateRange(fromMs, toMs, tz, { time = false, weekday = fals
   return typeof f.formatRange === 'function' ? f.formatRange(fromMs, toMs) : `${f.format(fromMs)} \u2013 ${f.format(toMs)}`;
 }
 
+/**
+ * Where a car's zone comes from (the `time_zone_source` of /cars), in words: 'set for this car' (owner), 'from the
+ * car's position' (position: worked out on the server, offline), "the server's default" (default: no zone set and
+ * no position known yet). Null for anything else.
+ */
+export function zoneSourceText(source) {
+  switch (source) {
+    case 'owner': return t('set for this car');
+    case 'position': return t('from the car’s position');
+    case 'default': return t('the server’s default');
+    default: return null;
+  }
+}
+
 /** The zone's short name at that instant ('CST', 'GMT+1'). */
 export function zoneName(ms, tz, { style = 'short' } = {}) {
   const p = dateFormat(tz, { timeZoneName: style }).formatToParts(ms).find((x) => x.type === 'timeZoneName');

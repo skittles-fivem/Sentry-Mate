@@ -104,8 +104,13 @@ BO_ 818 ID332BattBrickMinMax: 8 VehicleBus
 // 0x219: the tire data is on the vehicle bus now (can0), pages 0-5 in bits
 // 0-2. Page 5: the four pressures (0.025 bar, 2.50-2.58 bar cold); page 4: the
 // recommended pressures (2.9 bar = 42 psi). Which wheel each slot is, and
-// pages 0-3 (sensor ids?), are not known yet. On the chassis bus (can1) 0x219
+// pages 0-3 are not fully known yet. On the chassis bus (can1) 0x219
 // is now a counter: read there, all four tires showed 3.2 bar.
+// Which wheel each slot is: VCSEC_TPMSLocation0-3 on pages 0-3, copied as they
+// are (bits, scale, value names) from the base layout (Model3CAN.dbc 0x219, where
+// they are on pages m0-m3 too). Their bits are not checked on this firmware: the
+// sample builder trusts them only when the four name each wheel once (FL, FR,
+// RL, RR, no LOCATION_UNKNOWN), and keeps the slots unmapped otherwise.
 BO_ 537 ID219VCSEC_TPMSData: 8 VehicleBus
  SG_ VCSEC_TPMSDataIndex M : 0|3@1+ (1,0) [0|7] ""  Receiver
  SG_ VCSEC_TPMSPressure0 m5 : 16|8@1+ (0.025,0) [0|6.35] "bar"  Receiver
@@ -114,6 +119,10 @@ BO_ 537 ID219VCSEC_TPMSData: 8 VehicleBus
  SG_ VCSEC_TPMSPressure3 m5 : 40|8@1+ (0.025,0) [0|6.35] "bar"  Receiver
  SG_ VCSEC_TPMSRecommendedPressure0 m4 : 8|8@1+ (0.025,0) [0|6.35] "bar"  Receiver
  SG_ VCSEC_TPMSRecommendedPressure1 m4 : 16|8@1+ (0.025,0) [0|6.35] "bar"  Receiver
+ SG_ VCSEC_TPMSLocation0 m0 : 32|3@1+ (1,0) [0|4] ""  Receiver
+ SG_ VCSEC_TPMSLocation1 m1 : 32|3@1+ (1,0) [0|4] ""  Receiver
+ SG_ VCSEC_TPMSLocation2 m2 : 32|3@1+ (1,0) [0|4] ""  Receiver
+ SG_ VCSEC_TPMSLocation3 m3 : 32|3@1+ (1,0) [0|4] ""  Receiver
 
 // Layout unknown on this firmware (paged now, or not what the base says):
 // 0x312 BMS thermal: two kinds of frame (byte 0 00/80 and C9/A1); read flat,
@@ -169,6 +178,10 @@ VAL_ 818 BattBrickModelTMin332 0 "SNA" ;
 VAL_ 537 VCSEC_TPMSDataIndex 4 "RECOMMENDED" 5 "PRESSURES" ;
 VAL_ 537 VCSEC_TPMSRecommendedPressure0 255 "SNA" ;
 VAL_ 537 VCSEC_TPMSRecommendedPressure1 255 "SNA" ;
+VAL_ 537 VCSEC_TPMSLocation0 0 "LOCATION_FL" 1 "LOCATION_FR" 2 "LOCATION_RL" 3 "LOCATION_RR" 4 "LOCATION_UNKNOWN" ;
+VAL_ 537 VCSEC_TPMSLocation1 0 "LOCATION_FL" 1 "LOCATION_FR" 2 "LOCATION_RL" 3 "LOCATION_RR" 4 "LOCATION_UNKNOWN" ;
+VAL_ 537 VCSEC_TPMSLocation2 0 "LOCATION_FL" 1 "LOCATION_FR" 2 "LOCATION_RL" 3 "LOCATION_RR" 4 "LOCATION_UNKNOWN" ;
+VAL_ 537 VCSEC_TPMSLocation3 0 "LOCATION_FL" 1 "LOCATION_FR" 2 "LOCATION_RL" 3 "LOCATION_RR" 4 "LOCATION_UNKNOWN" ;
 
 CM_ SG_ 850 BMS_idealEnergyRemaining "Batt Ideal Remaining kWh";
 CM_ SG_ 850 BMS_expectedEnergyRemaining "Batt Expected Remaining kWh";
@@ -176,5 +189,9 @@ CM_ SG_ 537 VCSEC_TPMSPressure0 "Tire pressure, slot 1";
 CM_ SG_ 537 VCSEC_TPMSPressure1 "Tire pressure, slot 2";
 CM_ SG_ 537 VCSEC_TPMSPressure2 "Tire pressure, slot 3";
 CM_ SG_ 537 VCSEC_TPMSPressure3 "Tire pressure, slot 4";
-CM_ SG_ 537 VCSEC_TPMSRecommendedPressure0 "Recommended tire pressure 1";
-CM_ SG_ 537 VCSEC_TPMSRecommendedPressure1 "Recommended tire pressure 2";
+CM_ SG_ 537 VCSEC_TPMSRecommendedPressure0 "Recommended tire pressure, front";
+CM_ SG_ 537 VCSEC_TPMSRecommendedPressure1 "Recommended tire pressure, rear";
+CM_ SG_ 537 VCSEC_TPMSLocation0 "Wheel of tire pressure slot 1";
+CM_ SG_ 537 VCSEC_TPMSLocation1 "Wheel of tire pressure slot 2";
+CM_ SG_ 537 VCSEC_TPMSLocation2 "Wheel of tire pressure slot 3";
+CM_ SG_ 537 VCSEC_TPMSLocation3 "Wheel of tire pressure slot 4";

@@ -12,6 +12,7 @@
 // Data: GET/PUT/PATCH/DELETE integrations/teslamate, POST integrations/teslamate/test, PUT integrations/teslamate/cars.
 
 import { h } from '../shared/dom.js';
+import * as state from '../shared/state.js';
 import { formatDateTime } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { TM_BASE, TM_DEFAULTS, TM_SOURCE, MQTT_STATE, DB_STATE, UNENCRYPTED_LABEL, UNENCRYPTED_WARNING, tmErrorText, tmWords, tmStale, tmDraft, tmCheck, tmPutBody, tmMatchChanges, tmPreselect, tmMatchWords, tmHeadline } from '../shared/teslamate.js';
@@ -264,4 +265,30 @@ export function teslamateTiles(ctx, { cars = [] } = {}) {
   }
 
   return { el, load };
+}
+
+/** The link to the Local TeslaMate section of Settings: Integrations. */
+export const teslamateHref = () => `${state.buildUrl('settings-integrations')}#teslamate`;
+
+/**
+ * The facts of the local TeslaMate input for one car, for the car's Health page: [[name, value]], or null when no
+ * TeslaMate car is matched to it (or the input is not added). t: GET integrations/teslamate.
+ */
+export function teslamateCarFacts(ctx, t, carId) {
+  if (!t?.enabled) return null;
+  const c = (t.cars || []).find((x) => x.match === carId);
+  if (!c) return null;
+  const sm = t.status?.mqtt || {};
+  const sd = t.status?.database || {};
+  const now = ctx.api.now();
+  const when = (ms) => (ms ? formatDateTime(ms, ctx.tz, { now }) : 'None yet');
+  const err = sm.last_error || sd.last_error;
+  return [
+    ['TeslaMate car', `${c.display_name || 'Not named'} (its id ${c.teslamate_car})`],
+    ['MQTT', t.paused ? 'Paused' : (MQTT_STATE[sm.state] || [sm.state || 'Off'])[0]],
+    ['Its newest MQTT value', when(c.last_message_ms)],
+    ['Database catch-up', sd.state === 'off' || !sd.state ? 'Off: MQTT only' : `${(DB_STATE[sd.state] || [sd.state])[0]}${sd.last_sync_ms ? `, last ${formatDateTime(sd.last_sync_ms, ctx.tz, { now })}` : ''}`],
+    err ? [sm.last_error ? 'MQTT error' : 'Database error', tmErrorText(err)] : null,
+    ['Settings', h('a', { class: 'place-link', href: teslamateHref() }, 'Open local TeslaMate')],
+  ].filter(Boolean);
 }

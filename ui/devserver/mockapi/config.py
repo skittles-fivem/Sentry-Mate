@@ -16,6 +16,10 @@ MOVE_STATES = ("none", "offered", "expired", "copying", "paused", "moved", "done
 
 # --map-tiles: how the maps start (see parse_args)
 MAP_TILES = ("online", "none", "offline")
+# --release-check: off (the default), or on with this result of the last check (resources/system.py release_state)
+RELEASE_CHECK = ("off", "newer", "up_to_date", "error", "never", "checking")
+# --teslamate-trouble: the local TeslaMate starts in this trouble, with its admins' notice (resources/teslamate.py)
+TESLAMATE_TROUBLE = ("none", "connection_refused", "auth_failed", "pin_mismatch", "quiet", "catchup_failed")
 
 
 @dataclasses.dataclass
@@ -38,6 +42,8 @@ class Config:
     verbose: bool = False
     own_certificate: bool = False
     map_tiles: str = "online"
+    release_check: str = "off"
+    teslamate_trouble: str = "none"
 
 
 def parse_args(argv=None) -> Config:
@@ -68,6 +74,14 @@ def parse_args(argv=None) -> Config:
     ap.add_argument("--map-tiles", choices=MAP_TILES, default="online",
                     help="map tiles at start: online (OpenStreetMap, the default here), none (a new server: offline with "
                          "no map file, every map shows its 'No map tiles yet' note) or offline (a made-up offline map file)")
+    ap.add_argument("--release-check", choices=RELEASE_CHECK, default="off",
+                    help="the release check at start: off (the default), or on with the last check's result "
+                         "(newer: a newer build is ready; up_to_date; error: GitHub's rate limit; never: not checked "
+                         "yet; checking: a check in flight)")
+    ap.add_argument("--teslamate-trouble", choices=TESLAMATE_TROUBLE, default="none",
+                    help="the local TeslaMate starts in trouble, with its notice for admins: its broker refuses the "
+                         "connection, the user name or password, or has another certificate than the pinned one, goes "
+                         "quiet, or the database catch-up (then on) fails")
     a = ap.parse_args(argv)
     if a.cars < 0 or a.cars > 5_000_000:
         ap.error("--cars must be between 0 and 5000000")
@@ -86,7 +100,8 @@ def parse_args(argv=None) -> Config:
                   move_state=a.move_state, move_peer_after_s=a.move_peer_after_s,
                   freeze_clock=a.freeze_clock, sse_interval_ms=max(200, a.sse_interval_ms),
                   rows_every_s=a.rows_every_s, verbose=a.verbose,
-                  own_certificate=a.own_certificate, map_tiles=a.map_tiles)
+                  own_certificate=a.own_certificate, map_tiles=a.map_tiles,
+                  release_check=a.release_check, teslamate_trouble=a.teslamate_trouble)
 
 
 class Clock:

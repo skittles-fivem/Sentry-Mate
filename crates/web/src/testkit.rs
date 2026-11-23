@@ -75,9 +75,11 @@ impl TestServer {
             accounts::Accounts::open(data.join("accounts"), v.clone(), audit, options)
                 .unwrap_or_else(|e| panic!("{e}")),
         );
+        // the release check never reaches GitHub from a test: a stand-in that answers nothing, unless `f` gives one
         let b = AppState::builder(acc, v.clone(), data.join("web"))
             .setup_code_file(keys.join("SETUP-CODE.txt"))
-            .clock(clock.clone());
+            .clock(clock.clone())
+            .release_check(Arc::new(FakeGitHub::default()), release::Build::this());
         let app = f(b).build().unwrap_or_else(|e| panic!("{e}"));
         let setup_code = app.announce_setup().unwrap_or_else(|e| panic!("{e}")).unwrap_or_default();
         let id = ingest::server::Identity::load_or_create(&data.join("tls"), &[], &v).unwrap_or_else(|e| panic!("{e}"));
@@ -134,6 +136,34 @@ impl TestServer {
         let r = c.post("/api/v1/session", json!({ "name": WATCH, "password": WATCH_PASSWORD })).await;
         assert_eq!(r.status, 200, "sign-in: {}", r.text());
         c
+    }
+}
+
+/// A stand-in for GitHub's API for the release check: the answers it is given by path (with the query), every path
+/// asked kept; a path with no answer is "could not connect".
+#[derive(Default)]
+pub struct FakeGitHub {
+    pub answers: std::sync::Mutex<std::collections::HashMap<String, release::Answer>>,
+    pub asked: std::sync::Mutex<Vec<String>>,
+}
+
+impl FakeGitHub {
+    /// Answers `path` with `200` and `body`.
+    pub fn answer(&self, path: &str, body: Value) {
+        let a = release::Answer { status: 200, body: body.to_string().into(), ..release::Answer::default() };
+        self.answers.lock().unwrap().insert(path.to_string(), a);
+    }
+
+    pub fn asked(&self) -> Vec<String> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+impl release::Fetch for FakeGitHub {
+    fn get<'a>(&'a self, path: &'a str, _if_none_match: Option<&'a str>) -> release::http::FetchFuture<'a> {
+        self.asked.lock().unwrap().push(path.to_string());
+        let a = self.answers.lock().unwrap().get(path).cloned();
+        Box::pin(async move { a.ok_or(release::HttpError::Connect) })
     }
 }
 

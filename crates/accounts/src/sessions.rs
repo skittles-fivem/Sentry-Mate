@@ -113,7 +113,7 @@ pub(crate) fn new_token() -> Result<Zeroizing<String>> {
 
 /// A session's public id (for lists and "sign out that device"): derived from its hash, so it gives nothing away
 /// about the token and needs no storing.
-fn public_id(h: &Hash) -> String {
+pub(crate) fn public_id(h: &Hash) -> String {
     let mut d = Sha256::new();
     d.update(b"sentry-mate session id v1");
     d.update(h);

@@ -5,6 +5,7 @@
 // starts or ends (`rows` events).
 
 import * as state from '../shared/state.js';
+import { tyreView, recommendedLine } from '../shared/tyres.js';
 import { h, svg, replace, cover, cssVar, quantity } from '../shared/dom.js';
 import { format, getUnits, onUnitsChange, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDate, formatDateTime, zoneName, buckets } from '../shared/time.js';
@@ -51,6 +52,27 @@ const ACTIVITY = { driving: 'Driving', charging: 'Charging', online: 'Parked, aw
 const CLIMATE = { off: 'Off', on: 'On', precondition: 'Preconditioning', overheat_protect: 'Overheat protection' };
 const KEEP = { off: 'Off', on: 'Keep climate', dog: 'Dog mode', camp: 'Camp mode' };
 
+/* ------------------------------------------------------------------ values no CAN message carries */
+
+// `now.off_can`: each value { value, at_ms, sources: [{ kind, label }], stale } or null, from the Tesla API or
+// TeslaFi. Shown with its input's label and, once older than its limit, a stale mark with its age.
+const OFF_SHORT = { tesla_api: 'Tesla API', teslafi_api: 'TeslaFi' };
+const WINDOWS = [['driver_front', 'Driver front window'], ['passenger_front', 'Passenger front window'], ['driver_rear', 'Driver rear window'], ['passenger_rear', 'Passenger rear window']];
+const SUNROOF = { closed: 'Closed', open: 'Open', vent: 'Vent', calibrating: 'Calibrating' };
+function offSrc(pair) {
+  const s = pair?.sources?.[0];
+  if (!s) return null;
+  return h('span', { class: ['off-src', pair.stale && 'is-stale'], title: `${s.label}; read ${ago(pair.at_ms)}${pair.stale ? '. Older than its limit, so it may have changed since.' : ''}` },
+    h('i', { class: `src-m src-m--${s.kind}`, 'aria-hidden': 'true' }),
+    h('span', { class: 'off-src-word' }, OFF_SHORT[s.kind] || s.label),
+    pair.stale ? h('span', { class: 'off-stale' }, `stale · ${ago(pair.at_ms)}`) : null);
+}
+// a label, the value and where it came from; null when no input gives it (and `hide`), else a dash
+function offRow(label, pair, text, { hide = false, cover: cv = null } = {}) {
+  if (pair == null) return hide ? null : { label, value: h('span', { class: 'faint' }, '—'), src: null, cv };
+  return { label, value: h('span', { class: pair.stale ? 'off-old' : null }, text(pair.value)), src: offSrc(pair), cv };
+}
+
 /* ------------------------------------------------------------------ live values */
 
 // merge a `now` event (a delta) into the object we hold: { value, at_ms } pairs come whole
@@ -65,12 +87,16 @@ function merge(into, delta) {
 const at = (x) => (x && typeof x === 'object' && 'at_ms' in x ? x.at_ms : null);
 // the input a live value came from ({ value, at_ms, sources }): a small mark for any input but SMO (the Tesla API),
 // so a value the API sent is never mistaken for one measured on the car's bus. The live inputs line explains it.
+const SHOW_VIA = false;
 function via(pair) {
   const s = pair && typeof pair === 'object' ? pair.sources?.[0] : null;
-  if (!s || s.kind === 'smo') return null;
-  return h('span', { class: 'src-via', title: s.label || 'Data from the Tesla API' }, h('i', { class: `src-m src-m--${s.kind}`, 'aria-hidden': 'true' }), h('span', null, s.kind === 'tesla_api' ? 'API' : s.kind));
+  if (!s || s.kind === 'smo' || !SHOW_VIA) return null;
+  return h('span', { class: 'src-via', title: s.label || 'Data from the Tesla API' }, h('i', { class: `src-m src-m--${s.kind}`, 'aria-hidden': 'true' }), h('span', null, s.kind === 'tesla_api' ? 'API' : s.kind === 'teslafi_api' ? 'TeslaFi' : s.kind === 'teslamate_local' ? 'TeslaMate' : s.label || s.kind));
 }
-const withVia = (pair, content) => { const m = via(pair); return m ? h('span', { class: 'aged' }, content, m) : content; };
+// where a value came from is not shown beside it (the main view stays clean): its source is the value's hover title,
+// and the Live inputs line names the inputs
+const srcTitle = (pair) => { const x = pair && typeof pair === 'object' ? pair.sources?.[0] : null; return x && x.kind !== 'smo' ? (x.label || x.kind) : null; };
+const withVia = (pair, content) => { const t = srcTitle(pair); return t ? h('span', { class: 'aged', title: t }, content) : content; };
 // a value with its own age when it is older than the snapshot (a tyre read an hour ago), and its input
 function aged(pair, content, newest) {
   const t = at(pair);
@@ -176,6 +202,7 @@ export async function mount(ctx) {
     const api = ins.some((i) => i.kind === 'tesla_api');
     replace(inputsSlot,
       ins.length ? inputsLine(ins, ago) : h('span', { class: 'src-inputs' }, h('span', { class: 'src-inputs-label' }, 'Live inputs'), h('span', { class: 'faint' }, 'none: no SMO log and no Tesla API reading yet')),
+      ctx.admin ? panelLink(`${state.buildUrl('settings-cars', { car: cid })}#data-sources`, 'Change order', { class: 'panel-link now-inputs-order', title: 'Which input wins when two cover the same time: Settings: Cars, Data sources' }) : null,
       api ? h('span', { class: 'now-inputs-key' }, 'A value marked ', h('span', { class: 'src-via' }, h('i', { class: 'src-m src-m--tesla_api' }), h('span', null, 'API')), ' came from the Tesla API; the rest from SMO.') : null,
       car.sources?.length ? h('span', { class: 'now-inputs-hist' }, h('span', { class: 'faint' }, 'History: '), srcMark(car)) : null);
   }
@@ -341,21 +368,20 @@ export async function mount(ctx) {
         ? h('p', { class: 'setpoints', cover: 'overview.stat.driver_temp' }, `Climate ${(CLIMATE[val(f.climate)] || 'not known').toLowerCase()}`, h('span', { class: 'faint' }, val(f.climate) === 'off' ? ' · the car sends no set point while climate is off' : ' · no set point from this car'))
         : h('p', { class: 'setpoints', cover: 'overview.stat.driver_temp' }, 'Climate set to ', h('b', null, setp(n.setpoint_left_c) ?? '—'), ' left, ', h('b', null, setp(n.setpoint_right_c) ?? '—'), ' right', h('span', { class: 'faint' }, ` · climate ${(CLIMATE[val(f.climate)] || '—').toLowerCase()}`)));
 
-    // tyres: all four at all times, with the car's recommended pressure
-    const rec = val(n.tyre_recommended_kpa);
-    const tyres = (n.tyres_kpa || []).map((p) => val(p));
-    // flagged at 10 % under the recommended pressure: a cold morning takes a few percent off every tyre,
-    // a slow leak goes well past that (a TPMS warning starts at about 20 to 25 % under)
-    const LOW_SHARE = 0.1;
-    const low = (v) => v != null && rec != null && v < rec * (1 - LOW_SHARE);
+    // tyres: all four at all times, with the recommended pressure (the car's, typed, or the door placard's).
+    // Flagged at 10 % under it, as the server judges: a cold morning takes a few percent off every tyre, a slow
+    // leak goes well past that (a TPMS warning starts at about 20 to 25 % under)
+    const tv = tyreView(n);
+    const tyres = tv.kpa;
     const tyre = ([key, label], i, right) => {
       const v = tyres[i];
-      return h('div', { class: ['tire', right && 'tire--r', low(v) && 'is-low'] },
+      const isLow = tv.low[i] === true;
+      return h('div', { class: ['tire', right && 'tire--r', isLow && 'is-low'] },
         h('span', { class: 'tire-pos' }, label),
         h('span', { class: 'tire-val' }, aged(n.tyres_kpa?.[i], quantity(v, 'pressure', { why: v == null ? 'No reading' : null }), newest)),
-        low(v) ? h('span', { class: 'tire-note' }, `${format(rec - v, 'pressure')} under`) : null);
+        isLow ? h('span', { class: 'tire-note' }, `${format(tv.against[i] - v, 'pressure')} under`) : null);
     };
-    const wheel = (i) => (low(tyres[i]) ? 'wheel is-low' : 'wheel');
+    const wheel = (i) => (tv.low[i] === true ? 'wheel is-low' : 'wheel');
     const tyrePanel = panel({ title: 'Tyres', icon: 'tire', cover: 'summary.flag.tire_pressure_warning', side: h('span', { class: 'faint' }, agoEl(at(n.tyres_kpa?.[0]) ?? newest, tz)) },
       h('div', { class: 'tires' },
         tyre(TYRES[0], 0, false),
@@ -366,18 +392,19 @@ export async function mount(ctx) {
           svg('path', { class: 'glass', d: 'M15.5 36 Q32 28 48.5 36 L45.5 52 Q32 48 18.5 52 Z' }),
           svg('path', { class: 'glass', d: 'M18.5 86 Q32 90 45.5 86 L47.5 98 Q32 103 16.5 98 Z' })),
         tyre(TYRES[1], 1, true), tyre(TYRES[2], 2, false), tyre(TYRES[3], 3, true)),
-      h('p', { class: 'note tire-rec' }, rec != null
-        ? ['The car recommends ', h('b', null, format(rec, 'pressure')), `. A tyre more than 10 % under it (${format(rec * LOW_SHARE, 'pressure')}) is flagged; a cold morning alone takes a few percent off every tyre.`]
-        : "The car's recommended pressure has not been seen yet, so no tyre is flagged."),
-      !n.tyres_slots_mapped ? h('p', { class: 'note' }, 'Which wheel each sensor sits on is not confirmed yet.') : null);
+      h('p', { class: 'note tire-rec' }, recommendedLine(n), tv.front != null
+        ? ' A tyre more than 10 % under it is flagged; a cold morning alone takes a few percent off every tyre.'
+        : ' No tyre is flagged.'));
 
     // the car: 12 V, odometer, software, data age
     const sw = n.software || {};
-    const srcWord = { teslamate: 'imported from TeslaMate', tesla_api: 'read from the Tesla API', owner: 'typed by the owner', build_match: 'matched by its module builds' }[sw.version_source] || null;
-    const srcShort = { teslamate: 'TeslaMate import', tesla_api: 'the Tesla API', owner: 'typed by the owner', build_match: 'module builds' }[sw.version_source] || null;
+    const srcWord = { teslamate: 'imported from TeslaMate', teslafi: 'imported from TeslaFi', teslamate_local: 'read live from local TeslaMate', teslafi_api: 'read live from TeslaFi',
+      tesla_api: 'read from the Tesla API', owner: 'typed by the owner', build_match: 'matched by its module builds' }[sw.version_source] || null;
+    const srcShort = { teslamate: 'TeslaMate import', teslafi: 'TeslaFi import', teslamate_local: 'local TeslaMate', teslafi_api: 'TeslaFi',
+      tesla_api: 'the Tesla API', owner: 'typed by the owner', build_match: 'module builds' }[sw.version_source] || null;
     const swFrom = sw.version
       ? [srcShort, sw.version_since_ms ? `since ${formatDate(sw.version_since_ms, tz, { weekday: false })}` : null].filter(Boolean).join(', ')
-      : 'not on the CAN bus; the Tesla API, an import or you can give it (Software)';
+      : 'not on the CAN bus; TeslaMate, TeslaFi, the Tesla API, an import or you can give it (Software)';
     const speedV = val(n.speed_kph), powerV = val(n.power_kw);
     const vehicle = panel({ title: 'Vehicle', icon: 'car', cover: 'nr.dash.panel.car-status' },
       kv([
@@ -387,7 +414,9 @@ export async function mount(ctx) {
         ['Odometer', h('a', { class: 'link', href: ctx.link('statistics'), title: 'Distance over time on Statistics' }, format(val(n.odometer_km), 'odometer')), { icon: 'odo', cover: ['summary.stat.odometer', 'overview.stat.odometer', 'overview.link.mileage'] }],
         ['Software', h('a', { class: 'link', href: ctx.link('software'), title: srcWord ? `Version ${srcWord}` : 'Software history' }, sw.version || 'not known'), { icon: 'chip', cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates'] }],
         ['Version from', h('span', { class: 'sw-src' }, swFrom), { icon: 'info', title: 'The car does not send its version text; this is where Sentry Mate got it.' }],
-        ['Firmware', h('a', { class: 'link', href: `${ctx.link('software')}#firmware`, title: 'The fingerprints of the modules\' firmware, as the car sends them' }, 'Module fingerprints'), { icon: 'chip' }],
+        ['Firmware', h('span', { class: 'car-fw-links' },
+          h('a', { class: 'link', href: `${ctx.link('software')}#firmware`, title: 'The fingerprints of the modules\' firmware, as the car sends them' }, 'Module fingerprints'),
+          h('a', { class: 'link', href: `${ctx.link('software')}#firmware-history`, title: 'Every fingerprint each module has had, with the version it came with, over time' }, 'History')), { icon: 'chip' }],
         sw.changed_since_ms ? ['Software changed', h('span', { class: 'warn' }, `since ${when(sw.changed_since_ms, tz)}`), { icon: 'info', cover: 'summary.flag.software_update', title: "The car's module builds changed; the version text is not known yet." }]
           : ['Software changed', h('span', { class: 'faint' }, 'no change seen'), { icon: 'info', cover: 'summary.flag.software_update', title: "Shows when the car's module builds change after an update." }],
         ['Newest value', agoEl(n.at_ms, tz), { icon: 'live', cover: ['nr.dash.last-update', 'summary.data.live_push'], title: `Recorded ${n.at_ms ? formatDateTime(n.at_ms, tz) : '—'}. Logs arrive about ${n.delay_s ? Math.round(n.delay_s / 60) || 1 : 1} min after the car records them; this page updates by itself.` }],
@@ -433,7 +462,40 @@ export async function mount(ctx) {
           ['Centre display', yes(f.display_on, 'On', 'Off', false)],
           ['Parking brake', val(f.parking_brake) == null ? '—' : val(f.parking_brake) ? 'On' : 'Off'],
         ].map(flagPair)),
-      h('p', { class: 'note', cover: ['summary.flag.lock', 'summary.flag.windows_open'] }, anyDoor ? h('b', null, 'Something is open. ') : null, 'Locks and windows are not sent on the CAN bus, so they are not shown; doors, trunk, frunk and liftgate cover a car left open.'));
+      h('p', { class: 'note' }, anyDoor ? h('b', null, 'Something is open. ') : null, 'Doors, trunk, frunk and liftgate are read on the CAN bus. Locks and windows are not on it: they come from the Tesla API or TeslaFi, below, when the car has one.'));
+
+    // what no CAN message carries: from the Tesla API or TeslaFi, each value with its input and age
+    const o = n.off_can || {};
+    const w = o.windows || {}, rt = o.route || {};
+    const openWord = (v) => (v ? h('span', { class: 'warn' }, 'Open') : 'Closed');
+    const update = o.update_available == null ? null : {
+      ...o.update_available,
+      value: o.update_installing?.value ? `Installing${val(o.update_version) ? ` ${val(o.update_version)}` : ''}`
+        : o.update_available.value ? [val(o.update_version) || 'An update', ' waiting', val(o.update_download_pct) != null ? h('span', { class: 'faint' }, ` · ${pct(val(o.update_download_pct))} downloaded`) : null]
+          : 'None waiting',
+    };
+    const routeText = rt.destination ? [h('b', null, val(rt.destination)),
+      h('span', { class: 'faint' }, [val(rt.km) != null ? ` · ${format(val(rt.km), 'distance')}` : '', val(rt.minutes) != null ? ` · ${dur(val(rt.minutes) * 60000)} left` : '', val(rt.traffic_min) ? ` · ${dur(val(rt.traffic_min) * 60000)} lost to traffic` : ''].join(''))] : null;
+    const offRows = [
+      offRow('Locks', o.locked, (v) => (v ? 'Locked' : h('span', { class: 'warn' }, 'Unlocked')), { cover: 'summary.flag.lock' }),
+      offRow('Windows', o.windows_open, (v) => (v ? h('span', { class: 'warn' }, WINDOWS.filter(([k]) => val(w[k])).map(([, l]) => l.replace(/ window$/, '')).join(', ') || 'One is open') : 'All closed'), { cover: 'summary.flag.windows_open' }),
+      ...WINDOWS.map(([k, l]) => offRow(l, w[k], openWord, { hide: true })),
+      offRow('Sunroof', o.sunroof_state, (v) => [SUNROOF[v] || v, val(o.sunroof_pct) ? h('span', { class: 'faint' }, ` · ${pct(val(o.sunroof_pct))} open`) : null], { hide: true }),
+      offRow('Version reported', o.version, (v) => v),
+      offRow('Software update', update, (v) => v),
+      offRow('Scheduled charge start', o.scheduled_charge_start_ms, (v) => when(v, tz)),
+      offRow('Scheduled departure', o.scheduled_departure_ms, (v) => when(v, tz)),
+      routeText ? offRow('Route', rt.destination, () => routeText) : null,
+    ].filter(Boolean);
+    const offLabels = [...new Set(Object.values({ ...o, ...w, ...rt }).filter((x) => x && x.sources).map((x) => x.sources[0].label))];
+    const anyOff = offLabels.length > 0;
+    const offPanel = panel({ title: 'Locks, windows and software', icon: 'lock', cls: 'off-panel', side: h('span', { class: 'faint' }, anyOff ? offLabels.join(' · ') : 'Not on the CAN bus') },
+      anyOff ? h('dl', { class: 'off-grid' }, offRows.map((r) => {
+        const el = h('div', { class: 'off-pair' }, h('dt', null, r.label), h('dd', null, r.value, r.src));
+        if (r.cv) cover(el, r.cv);
+        return el;
+      })) : h('p', { class: 'note', cover: ['summary.flag.lock', 'summary.flag.windows_open'] }, 'No input gives these for this car now. No CAN message carries the locks, windows, sunroof, software version, waiting update, charge schedule or route; the Tesla API or TeslaFi can (', h('a', { class: 'link', href: state.buildUrl('settings-integrations', { car: cid }) }, 'Settings: Integrations'), ').'),
+      anyOff ? h('p', { class: 'note' }, 'Read by the car’s other inputs, never guessed (a lock request is not a lock state). A value marked stale is older than its limit (an hour for locks and windows, 10 min for a route) and may have changed.') : null);
 
     // charging now
     const chg = n.charge || {};
@@ -456,7 +518,7 @@ export async function mount(ctx) {
       metric('Done at', chg.finish_ms ? when(chg.finish_ms, tz) : null, null, { size: 'sm', cover: 'summary.stat.expected_finish', explain: chg.finish_ms ? `${formatDate(chg.finish_ms, tz, { weekday: false })}, ${zoneName(chg.finish_ms, tz)} (the car's time)` : null, why: charging ? 'Not known yet' : 'No charge under way' })));
 
     replace(rowLive, temps, tyrePanel, vehicle, why);
-    replace(rowMore, chargePanel, flags);
+    replace(rowMore, chargePanel, flags, offPanel);
   }
 
   // "usually starts at HH:MM here": the median start time of past charges at this place

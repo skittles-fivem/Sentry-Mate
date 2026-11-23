@@ -82,20 +82,23 @@ class Settings(ServerCase):
         # the watch account chose its own units and range: those stay
         w = watch.get("/api/v1/me/preferences")
         self.assertEqual((w["units"]["distance"], w["units"]["pressure"], w["range"]), ("mi", "psi", "ideal"))
-        self.assertIn("settings.update", [a["action"] for a in self.c.get("/api/v1/audit?limit=3")["items"]])
+        self.assertIn("settings-changed", [a["action"] for a in self.c.get("/api/v1/audit?limit=3")["items"]])
 
     def test_3_maps_geocode_notices_about(self):
         m = self.c.get("/api/v1/maps/config")
         self.assertEqual(m["tiles"]["mode"], "online")
         self.assertIn("{z}", m["tiles"]["online_template"])
-        # the ready-made sources, OpenStreetMap first, each with its credit, zoom and terms
-        self.assertEqual(m["tiles"]["presets"][0]["id"], "osm")
+        # the ready-made sources, satellite (the default) first, each with its credit, zoom and terms
+        self.assertEqual(m["tiles"]["presets"][0]["id"], "satellite")
         for p in m["tiles"]["presets"]:
-            self.assertEqual(set(p), {"id", "name", "url", "attribution", "max_zoom", "terms"})
+            self.assertEqual(set(p), {"id", "name", "short", "kind", "url", "attribution", "max_zoom", "terms",
+                                      "overlays", "region"})
         # online tiles: the pages send their origin as Referer (OpenStreetMap blocks tiles without one), the API none
         st, hd, _ = self.c.request("GET", "/")
         self.assertEqual(hd["referrer-policy"], "strict-origin")
-        self.assertIn("img-src 'self' data: blob: https://tile.openstreetmap.org;", hd["content-security-policy"])
+        # the satellite default and the OpenStreetMap style viewers may switch to
+        self.assertIn("img-src 'self' data: blob: https://server.arcgisonline.com https://tile.openstreetmap.org;",
+                      hd["content-security-policy"])
         st, hd, _ = self.c.request("GET", "/api/v1/me")
         self.assertEqual(hd["referrer-policy"], "no-referrer")
         g = self.c.get("/api/v1/geocode/status")
@@ -116,7 +119,7 @@ class Settings(ServerCase):
         self.c.json("PATCH", "/api/v1/settings", {"version": v, "release_check": {"enabled": True},
                                                   "tiles": {"mode": "offline"}})
         r = {x["code"]: x for x in self.c.get("/api/v1/notices")["items"]}["release_available"]
-        self.assertTrue(r["detail"]["notes_url"].startswith("https://"))
+        self.assertTrue(r["detail"]["notes_url"].startswith("https://github.com/"))
         m = self.c.get("/api/v1/maps/config")
         self.assertEqual((m["tiles"]["mode"], m["tiles"]["online_template"]), ("offline", None))
         st, hd, _ = self.c.request("GET", "/")
@@ -124,7 +127,7 @@ class Settings(ServerCase):
         # as the real server: a page may load tiles only from the source that is on (none while offline)
         self.assertNotIn("tile.openstreetmap.org", hd["content-security-policy"])
         v = self.c.get("/api/v1/settings")["version"]
-        self.c.json("PATCH", "/api/v1/settings", {"version": v, "tiles": {"mode": "online", "online_url": "https://tile.opentopomap.org/{z}/{x}/{y}.png"}})
+        self.c.json("PATCH", "/api/v1/settings", {"version": v, "tiles": {"mode": "online", "online_url": "https://tile.opentopomap.org/{z}/{x}/{y}.png", "styles": []}})
         st, hd, _ = self.c.request("GET", "/")
         self.assertIn("img-src 'self' data: blob: https://tile.opentopomap.org;", hd["content-security-policy"])
         self.assertNotIn("tile.openstreetmap.org", hd["content-security-policy"])
@@ -164,7 +167,7 @@ class Health(ServerCase):
         self.assertIn("rebuild_pending", h["reasons"])
         self.server.app.clock.advance(6000)
         self.assertFalse(self.c.get("/api/v1/cars/c1/health")["rebuild_pending"])
-        self.assertEqual(self.c.get("/api/v1/audit?limit=1")["items"][0]["action"], "car.rebuild")
+        self.assertEqual(self.c.get("/api/v1/audit?limit=1")["items"][0]["action"], "car-rebuild")
 
     def test_overlaps(self):
         o = self.c.get("/api/v1/cars/c3/overlaps")["items"]
@@ -229,7 +232,7 @@ class Health(ServerCase):
         d = self.c.json("PATCH", path, {"id": span["id"], "shown": "import:teslafi", "version": span["version"]})
         self.assertEqual(d["changed"]["shown_source"], "import:teslafi")
         self.assertEqual(d["changed"]["version"], span["version"] + 1)
-        self.assertEqual(self.c.get("/api/v1/audit?limit=1")["items"][0]["action"], "car.overlap")
+        self.assertEqual(self.c.get("/api/v1/audit?limit=1")["items"][0]["action"], "car-overlap")
         self.assertEqual(sources(), (n, {"teslafi"}))
         self.assertEqual(d["changed"]["imported"], span["sites"]["teslafi"])
         visits_point_at_shown_rows()
@@ -304,7 +307,7 @@ class UiPacks(ServerCase):
 
     def test_list_and_choice(self):
         r = self.c.get("/api/v1/ui-packs")
-        self.assertEqual([p["id"] for p in r["items"]], ["instrument", "logbook", "horizon", "console", "pebble"])
+        self.assertEqual([p["id"] for p in r["items"]], ["instrument", "logbook", "horizon", "console", "pebble", "manager"])
         self.assertEqual(r["chosen"], "instrument")
         self.assertEqual(r["default"], "instrument")
         for p in r["items"]:
@@ -327,3 +330,58 @@ class UiPacks(ServerCase):
             p = self.c.json("PATCH", "/api/v1/me/preferences", {"ui_pack": None})
         self.assertEqual(p["ui_pack"], "instrument")
         self.assertEqual(self.c.get("/api/v1/about")["ui_pack"]["name"], "Instrument")
+
+
+class ReleaseCheck(ServerCase):
+    """/about `build`, GET /release and POST /release/check: off by default, the switch saves, a check now, the
+    admins' `release_available` notice only while a newer build is found."""
+
+    def test_release_check(self):
+        b = self.c.get("/api/v1/about")["build"]
+        self.assertEqual((b["version"], b["short"], b["dev"]), ("0.1.0", "2f44a52", False))
+        self.assertEqual(b["commit"][:7], b["short"])
+        r = self.c.get("/api/v1/release")
+        self.assertEqual((r["enabled"], r["status"], r["newest"], r["next_ms"]), (False, "off", None, None))
+        self.assertEqual(r["current"]["short"], "2f44a52")
+        self.c.error("POST", "/api/v1/release/check", 409, "release_check_off", body={})
+        self.assertNotIn("release_available", {x["code"] for x in self.c.get("/api/v1/notices")["items"]})
+        v = self.c.get("/api/v1/settings")["version"]
+        s = self.c.json("PATCH", "/api/v1/settings", {"version": v, "release_check": {"enabled": True}})
+        self.assertTrue(s["release_check"]["enabled"])
+        r = self.c.get("/api/v1/release")
+        self.assertEqual(r["status"], "newer")
+        self.assertEqual(r["checked_ms"], NOW)
+        self.assertEqual(r["next_ms"], NOW + DAY)
+        nw = r["newest"]
+        self.assertEqual((nw["changes"], len(nw["titles"]), nw["more"]), (4, 4, 0))
+        self.assertTrue(nw["compare_url"].startswith("https://github.com/skittles-fivem/Sentry-Mate/compare/"))
+        self.assertIn("docker", r["pull"])
+        n = {x["code"]: x for x in self.c.get("/api/v1/notices")["items"]}["release_available"]
+        self.assertEqual((n["detail"]["commit"], n["detail"]["changes"]), (nw["commit"], 4))
+        self.assertEqual((b["number"], nw["build"]), (41, 42))
+        self.assertTrue(n["message"].startswith("A newer build is ready: build 42, "), n["message"])
+        self.assertNotIn(nw["short"], n["message"])
+        self.assertEqual(n["detail"]["notes_url"], nw["compare_url"])
+        self.server.app.store.release_result = "error"
+        r = self.c.json("POST", "/api/v1/release/check", {})
+        self.assertEqual((r["status"], r["error"]["code"]), ("error", "rate_limited"))
+        self.assertNotIn("release_available", {x["code"] for x in self.c.get("/api/v1/notices")["items"]})
+        self.server.app.store.release_result = "up_to_date"
+        r = self.c.json("POST", "/api/v1/release/check", {})
+        self.assertEqual((r["status"], r["newest"]["commit"], r["newest"]["changes"]), ("up_to_date", b["commit"], 0))
+        self.server.app.store.release_result = "newer"
+        v = self.c.get("/api/v1/settings")["version"]
+        self.c.json("PATCH", "/api/v1/settings", {"version": v, "release_check": {"enabled": False}})
+        r = self.c.get("/api/v1/release")
+        self.assertEqual((r["status"], r["checked_ms"]), ("off", None))
+
+
+class ReleaseCheckWatcher(ServerCase):
+    """A watch account sees the result but gets no notice and can't check now."""
+
+    server_args = {"role": "watch", "release_check": "newer"}
+
+    def test_watcher(self):
+        self.assertEqual(self.c.get("/api/v1/release")["status"], "newer")
+        self.assertNotIn("release_available", {x["code"] for x in self.c.get("/api/v1/notices")["items"]})
+        self.c.error("POST", "/api/v1/release/check", 403, "not_allowed", body={})

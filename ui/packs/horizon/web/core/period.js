@@ -1,47 +1,49 @@
-// The period dial in the console row: one picker for every page that has a period. Presets (24 h, 7 days,
-// 30 days, this year, all), whole days of your own choice, and steps back and forward. Days are the car's
-// days (its time zone). The choice goes into the address (?preset= or ?from=&to=) and stays with the tab,
-// so the next page opens with it. Hidden on pages without a period.
+// The shared period picker in the top bar: presets (24 h, 7 days, 30 days, this year, all), a custom
+// span of whole days, and steps back and forward. Days are the car's own days (its time zone). The
+// choice goes into the address (?preset= or ?from=&to=) and stays with the browser tab, so every page
+// that shows a period opens with it. The frame shows it only on pages with a period.
 
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
 import { PRESETS, presetLabel, shiftPeriod, dayRange, periodDays, formatDateRange, zoneName, dayKey } from '../shared/time.js';
-import { icon } from './ui.js';
-import { popover } from './layer.js';
+import { icon } from './icons.js';
+import { placePopover } from './popover.js';
 
-const HINT = { '24h': 'The last 24 hours', '7d': 'Today and 6 days before', '30d': 'Today and 29 days before', year: 'Since 1 January', all: 'Since the first data' };
-let el = null, face = null, back = null, fwd = null, pop = null;
-let cur = null;   // { period, tz }
+let root = null, btn = null, pop = null, prevBtn = null, nextBtn = null;
+let cur = null; // { period (resolved), tz }
 
-/** The dial element (the frame puts it in the console once). */
-export function periodDial() {
-  face = h('button', { class: 'dial-btn', type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', onclick: () => pop.toggle(face, { align: 'end' }) },
-    icon('calendar'), h('span', { class: 'dial-text' }, h('span', { class: 'dial-label' }), h('span', { class: 'dial-sub' })), icon('chev-d', 'i--sm'));
-  back = h('button', { class: 'dial-step', type: 'button', 'aria-label': 'Earlier period', title: 'Earlier period', onclick: () => step(-1) }, icon('chev-l'));
-  fwd = h('button', { class: 'dial-step', type: 'button', 'aria-label': 'Later period', title: 'Later period', onclick: () => step(1) }, icon('chev-r'));
-  pop = popover({ cls: 'period-pop', label: 'Choose the period', fill, align: 'end' });
-  el = h('div', { class: 'dial', role: 'group', 'aria-label': 'Period', hidden: true }, back, face, fwd);
-  return el;
+const SHORT = { '24h': '24 h', '7d': '7 days', '30d': '30 days', year: 'This year', all: 'All', custom: 'Custom' };
+
+/** The picker's element (the frame puts it in the top bar once). */
+export function periodPicker() {
+  btn = h('button', { class: 'period-btn', type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', onclick: toggle },
+    icon('calendar'), h('span', { class: 'period-text' }, h('span', { class: 'period-label' }), h('span', { class: 'period-sub' })),
+    icon('chev-d', 'ico--sm'));
+  prevBtn = h('button', { class: 'btn btn--ghost btn--icon period-step', type: 'button', 'aria-label': 'Earlier period', title: 'Earlier period', onclick: () => step(-1) }, icon('chev-l'));
+  nextBtn = h('button', { class: 'btn btn--ghost btn--icon period-step', type: 'button', 'aria-label': 'Later period', title: 'Later period', onclick: () => step(1) }, icon('chev-r'));
+  pop = h('div', { class: 'popover period-pop', popover: 'auto', role: 'dialog', 'aria-label': 'Choose the period' });
+  pop.addEventListener('toggle', (e) => { btn.setAttribute('aria-expanded', String(e.newState === 'open')); if (e.newState === 'open') fill(); });
+  root = h('div', { class: 'period', role: 'group', 'aria-label': 'Period' }, prevBtn, btn, nextBtn, pop);
+  return root;
 }
 
-/** Open the same picker from a button on a page. */
-export function openPeriod(anchor) { if (cur) pop.toggle(anchor || face, { align: anchor ? 'start' : 'end' }); }
-
-/** Show the page's period (resolved, in tz), or hide the dial (null). */
-export function showPeriod(period, tz) {
-  if (!el) return;
-  el.hidden = !period;
+/** Show the period of the page now (resolved, in tz), or hide the picker (null). */
+export function setPeriodShown(period, tz) {
+  if (!root) return;
+  root.hidden = !period;
   cur = period ? { period, tz } : null;
-  if (!period) { pop.hide(); return; }
+  if (!period) { if (pop.matches(':popover-open')) pop.hidePopover(); return; }
+  const label = period.preset === 'custom' ? 'Custom' : presetLabel(period.preset);
   const now = api.now();
   const span = period.from_ms != null ? formatDateRange(period.from_ms, Math.max(period.from_ms, (period.to_ms ?? now) - 1), tz, { year: true }) : 'Since the first data';
-  const custom = period.preset === 'custom';
-  face.querySelector('.dial-label').textContent = custom ? span : presetLabel(period.preset);
-  face.querySelector('.dial-sub').textContent = `${custom ? 'Your days' : span} · ${zoneName(now, tz)}`;
-  face.title = `${custom ? 'Your days' : presetLabel(period.preset)}: ${span}, in the car's time zone (${tz.replace(/_/g, ' ')})`;
-  back.disabled = !shiftPeriod(period, -1, { tz, now });
-  fwd.disabled = !shiftPeriod(period, 1, { tz, now }) || (period.to_ms != null && period.to_ms >= now - 1000);
+  btn.querySelector('.period-label').textContent = period.preset === 'custom' ? span : label;
+  btn.querySelector('.period-sub').textContent = `${period.preset === 'custom' ? 'Custom' : span} · ${zoneName(now, tz)}`;
+  btn.title = `${label}: ${span}, in the car's time zone (${tz.replace(/_/g, ' ')})`;
+  const back = shiftPeriod(period, -1, { tz, now });
+  const fwd = shiftPeriod(period, 1, { tz, now });
+  prevBtn.disabled = !back;
+  nextBtn.disabled = !fwd || (period.to_ms != null && period.to_ms >= now - 1000);
 }
 
 function step(n) {
@@ -49,40 +51,53 @@ function step(n) {
   const p = shiftPeriod(cur.period, n, { tz: cur.tz, now: api.now() });
   if (!p) return;
   const to = p.to_ms ?? p.to;
-  state.setPeriod({ from: p.from_ms ?? p.from, to: to != null && to >= api.now() ? null : to }, { push: true });
+  const from = p.from_ms ?? p.from;
+  // a step that reaches now becomes "until now" again
+  state.setPeriod({ from, to: to != null && to >= api.now() ? null : to }, { push: true });
 }
 
-function fill(box) {
+function toggle() {
+  if (pop.matches(':popover-open')) pop.hidePopover();
+  else { pop.showPopover(); placePopover(pop, btn, { align: 'end' }); }
+}
+
+/** Open the shared period picker from a button on a page (it is the same picker as in the top bar). */
+export function openPeriodPicker(anchor = null) {
+  if (!pop || !cur) return;
+  if (pop.matches(':popover-open')) { pop.hidePopover(); return; }
+  pop.showPopover();
+  placePopover(pop, anchor || btn, { align: anchor ? 'start' : 'end' });
+}
+
+function fill() {
   if (!cur) return;
   const { period, tz } = cur;
-  const now = api.now();
-  const presets = h('div', { class: 'presets' }, PRESETS.map((p) => h('button', {
-    class: 'preset', type: 'button', 'aria-pressed': String(period.preset === p),
-    onclick: () => { pop.hide(); state.setPeriod({ preset: p }, { push: true }); },
-  }, h('span', { class: 'preset-name' }, presetLabel(p)), h('span', { class: 'preset-sub' }, HINT[p] || ''))));
-  const days = period.from_ms != null ? periodDays(period, tz) : { from: dayKey(now - 29 * 86400000, tz), to: dayKey(now, tz) };
-  const today = dayKey(now, tz);
-  const from = h('input', { class: 'input', type: 'date', id: 'hz-from', value: days.from, max: today, required: true });
-  const to = h('input', { class: 'input', type: 'date', id: 'hz-to', value: days.to, max: today, required: true });
-  const err = h('p', { class: 'field-error', role: 'alert', hidden: true });
-  const own = h('form', {
-    class: 'span-days',
-    onsubmit: (e) => {
-      e.preventDefault();
-      let a = from.value, b = to.value;
-      if (!a || !b) { err.hidden = false; replace(err, icon('warn', 'i--sm'), h('span', null, 'Pick a first and a last day.')); return; }
-      if (a > b) [a, b] = [b, a];
-      const r = dayRange(a, b, tz);
-      pop.hide();
-      state.setPeriod({ from: r.from ?? r.from_ms, to: b >= today ? null : (r.to ?? r.to_ms) }, { push: true });
-    },
-  },
-  h('div', { class: 'field' }, h('label', { class: 'field-label', for: 'hz-from' }, 'First day'), from),
-  h('div', { class: 'field' }, h('label', { class: 'field-label', for: 'hz-to' }, 'Last day'), to),
-  err,
-  h('div', { class: 'form-acts' }, h('button', { class: 'btn btn--go btn--sm', type: 'submit' }, h('span', null, 'Show these days'))));
-  replace(box,
-    h('p', { class: 'pop-label' }, 'Presets'), presets,
-    h('p', { class: 'pop-label' }, 'Your own days'), own,
-    h('p', { class: 'acct-note' }, `Days run from midnight in the car's time zone, ${tz.replace(/_/g, ' ')} (${zoneName(now, tz)}).`));
+  const presets = h('div', { class: 'period-presets' }, PRESETS.map((p) => h('button', {
+    class: 'period-preset', type: 'button', 'aria-pressed': String(period.preset === p),
+    onclick: () => { pop.hidePopover(); state.setPeriod({ preset: p }, { push: true }); },
+  }, h('span', null, presetLabel(p)), h('span', { class: 'faint' }, SHORT[p]))));
+
+  const days = period.from_ms != null ? periodDays(period, tz) : { from: dayKey(api.now() - 29 * 86400000, tz), to: dayKey(api.now(), tz) };
+  const today = dayKey(api.now(), tz);
+  const fromIn = h('input', { class: 'input', type: 'date', value: days.from, max: today, id: 'period-from', required: true });
+  const toIn = h('input', { class: 'input', type: 'date', value: days.to, max: today, id: 'period-to', required: true });
+  const err = h('p', { class: 'form-error', role: 'alert', hidden: true });
+  const apply = (e) => {
+    e.preventDefault();
+    let a = fromIn.value, b = toIn.value;
+    if (!a || !b) { err.hidden = false; replace(err, icon('warn'), 'Pick a first and a last day.'); return; }
+    if (a > b) [a, b] = [b, a];
+    const r = dayRange(a, b, tz);
+    pop.hidePopover();
+    state.setPeriod({ from: r.from ?? r.from_ms, to: b >= today ? null : (r.to ?? r.to_ms) }, { push: true });
+  };
+  const custom = h('form', { class: 'period-custom', onsubmit: apply },
+    h('label', { class: 'form-label', for: 'period-from' }, 'First day'),
+    h('label', { class: 'form-label', for: 'period-to' }, 'Last day'),
+    fromIn, toIn, err,
+    h('div', { class: 'form-actions' }, h('button', { class: 'btn btn--primary btn--sm', type: 'submit' }, 'Show these days')));
+  replace(pop,
+    h('div', { class: 'account-menu-label' }, 'Period'),
+    presets, custom,
+    h('p', { class: 'period-tz' }, `Days start at midnight in the car's time zone, ${tz.replace(/_/g, ' ')} (${zoneName(api.now(), tz)}).`));
 }

@@ -1,346 +1,411 @@
-// The frame every page shares.
-//
-// Computers: the dashboard strip. The brand at the left, the six bands (Cars, Driving, Charging | Energy,
-// Reports, Set-up) on both sides, and in the middle the radio display: the page name, its band and channel,
-// the car and the live status. The arrows beside it tune to the previous or next page; the face opens the
-// scan box (type to find a page). Each band button opens its menu with a line per page. The account knob
-// at the right holds the size, look, background and sign out.
-// Phones: the same radio (swipe it to tune), a swipeable tuner bar with every page, and a round Quick knob.
-// Under the strip: the console row with the car cartridge (car switcher), the period dial and the car's
-// clock; then the server's notices; the footer has the version, the licences and the release notice.
-//
-// The router calls update() for every page it opens; pages reach the frame only through ctx.
+// The app frame every page shares: the sidebar (logo, page finder, car switcher, the menu grouped by
+// task, the account menu), the top bar (menu button, breadcrumb, the shared period picker, live status,
+// the car's clock), the notices bar, flash notes and the footer (version, licences, release notice).
+// On a phone (<html data-phone>, set by boot.js) the sidebar gives way to a dock at the bottom: the
+// period bar (upright phones) and a tab bar (All cars, Overview, Drives, Charges, Menu); the top bar
+// then holds the car and the account.
+// The router calls update() for every page it mounts; pages never touch the frame except through ctx
+// (ctx.setCrumbs, ctx.setTitle).
 
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
+import { buildLabel, buildTitle } from '../shared/release.js';
 import { h, replace, cover, safeUrl } from '../shared/dom.js';
 import { formatTime, zoneName } from '../shared/time.js';
-import { icon, logo, btn, lamp } from './ui.js';
-import { BANDS, inBand, station, band, tune, channel, DIAL, fullName } from './stations.js';
-import { popover, openDialog, initToasts } from './layer.js';
-import { periodDial, showPeriod } from './period.js';
-import { openCarPicker, openScan, CAR_KEYS } from './pickers.js';
-import { accountPanel } from './account.js';
+import { format } from '../shared/units.js';
+import { icon, brandMark } from './icons.js';
+import { GROUPS, pagesIn, pageInfo } from './pages.js';
+import { periodPicker, setPeriodShown } from './period.js';
+import { openFinder } from './finder.js';
+import { openCarSwitcher, SWITCH_KEYS } from './carswitch.js';
+import { accountMenu, toggleAccountMenu, roleText } from './account.js';
 import { initNotices, loadNotices, onNotices } from './notices.js';
-import { getMe, usePrefs } from './prefs.js';
+import { initFlash } from './flash.js';
+import { applyPrefs, getMe } from './prefs.js';
 import { onSession } from './session.js';
-import { refreshAgo, carLine, carStatus, stateWord } from './fmt.js';
+import { refreshAgo, stateLabel, carMeta } from './fmt.js';
 
-const $ = (id) => document.getElementById(id);
-const E = {};                 // the frame's elements
-let shown = { page: null, car: null, tz: null };
-let live = { state: 'connecting' };
+const $ = (sel) => document.querySelector(sel);
+const NAV_KEY = 'sentrymate.nav-collapsed';
+let els = {};
+let shown = { car: null, tz: null, page: null };
 let stopEvents = null;
 let started = false;
 
-/** The element pages draw into. */
-export const view = () => E.view || $('view');
+/** The element pages draw into (<main id="view">). */
+export const view = () => els.view || $('#view');
 
-/* ------------------------------------------------------------------ the dashboard strip */
+function collapsed() {
+  try { const v = JSON.parse(localStorage.getItem(NAV_KEY)); return new Set(Array.isArray(v) ? v : ['setup']); } catch { return new Set(['setup']); }
+}
+function setCollapsed(set) { try { localStorage.setItem(NAV_KEY, JSON.stringify([...set])); } catch { /* fine */ } }
 
-function bandButton(b) {
-  const pop = popover({
-    cls: 'band-pop', label: `${b.full || b.name} pages`, align: b.side === 'left' ? 'start' : 'end',
-    fill(el) {
-      const here = shown.page && (station(shown.page)?.parent || shown.page);
-      replace(el, h('p', { class: 'band-pop-head' }, icon(b.icon, 'i--sm'), b.full || b.name),
-        inBand(b.id).map((s) => {
-          const a = h('a', { class: 'station', href: state.linkTo(s.id), 'aria-current': s.id === here ? 'page' : null, onclick: () => pop.hide() },
-            icon(s.icon), h('span', { class: 'station-text' }, h('span', { class: 'station-name' }, fullName(s)), h('span', { class: 'station-line' }, s.line)),
-            h('span', { class: 'station-ch' }, `CH ${String(channel(s.id)).padStart(2, '0')}`));
-          return a;
-        }));
-    },
+/* ------------------------------------------------------------------ sidebar */
+
+function buildSidebar() {
+  const shut = collapsed();
+  const navLinks = new Map();
+  const groups = GROUPS.map((g) => {
+    const body = h('div', { class: 'nav-group-body', id: `nav-${g.id}` }, pagesIn(g.id).map((p) => {
+      const a = h('a', { class: 'nav-link', href: '/', dataset: { page: p.id }, title: p.desc },
+        icon(p.icon), h('span', null, p.nav || p.title),
+        p.id === 'fleet' ? h('span', { class: 'nav-count', id: 'nav-fleet-count' }) : null);
+      if (p.id === 'places') cover(a, 'shell.nav.geofences', 'web.shell.geofences-nav');
+      if (p.id === 'settings-cars') cover(a, 'shell.nav.settings', 'web.shell.settings-nav');
+      navLinks.set(p.id, a);
+      return a;
+    }));
+    const head = h('button', {
+      class: 'nav-group-head', type: 'button', 'aria-expanded': String(!shut.has(g.id)), 'aria-controls': `nav-${g.id}`, dataset: { group: g.id },
+      onclick: () => {
+        const open = head.getAttribute('aria-expanded') !== 'true';
+        head.setAttribute('aria-expanded', String(open));
+        const s = collapsed();
+        if (open) s.delete(g.id); else s.add(g.id);
+        setCollapsed(s);
+      },
+    }, h('span', null, g.title), h('span', { class: 'nav-group-current', 'aria-hidden': 'true' }), icon('chev-d'));
+    return h('div', { class: 'nav-group', dataset: { group: g.id } }, head, body);
   });
-  const b2 = h('button', { class: 'band-btn', type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', dataset: { band: b.id }, title: `${b.full || b.name}: ${inBand(b.id).map((s) => s.short || s.name).join(', ')}`,
-    onclick: () => pop.toggle(b2) },
-  icon(b.icon), h('span', { class: 'band-btn-label' }, b.name));
-  // the menus hold links to Places and to the settings: mark the buttons that open them
-  if (b.id === 'setup') cover(b2, 'shell.nav.geofences', 'web.shell.geofences-nav', 'shell.nav.settings', 'web.shell.settings-nav');
-  return b2;
+
+  const carBtn = h('button', { class: 'car-switch', type: 'button', 'aria-haspopup': 'dialog', title: 'Switch car', onclick: openCarSwitcher },
+    icon('car', 'car-switch-ico'),
+    h('span', { class: 'car-switch-dot', 'aria-hidden': 'true' }),
+    h('span', { class: 'car-switch-text' }, h('span', { class: 'car-switch-name' }, 'Choose a car'), h('span', { class: 'car-switch-sub' }, h('span', { class: 'car-switch-sub-text' }, 'No car open'))),
+    h('span', { class: 'kbd' }, SWITCH_KEYS.join(' ')));
+
+  const acct = h('button', { class: 'account', type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', onclick: (e) => toggleAccountMenu(e.currentTarget) },
+    h('span', { class: 'avatar', 'aria-hidden': 'true' }, '·'),
+    h('span', { class: 'account-text' }, h('span', { class: 'account-name' }, 'Account'), h('span', { class: 'account-role' })),
+    icon('chev-ud', 'account-chev'));
+
+  const side = $('#sidebar');
+  replace(side,
+    h('a', { class: 'brand', href: '/', 'aria-label': 'Sentry Mate: all cars', cover: ['shell.nav.home', 'web.shell.logo-home', 'web.shell.home-routing'] },
+      brandMark(), h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }, 'Sentry Mate'), h('span', { class: 'brand-sub' }, 'Car logger'))),
+    h('button', { class: 'finder-btn', type: 'button', onclick: () => openFinder(), title: 'Find a page (/)' }, icon('search'), h('span', null, 'Find a page'), h('span', { class: 'kbd' }, '/')),
+    h('div', { class: 'nav-section' }, h('span', { class: 'nav-label' }, 'Car'), carBtn),
+    h('nav', { class: 'nav', 'aria-label': 'Pages' }, groups),
+    h('div', { class: 'sidebar-foot' }, acct));
+  // the account menu lives outside the sidebar, which a phone hides
+  document.body.append(accountMenu());
+  Object.assign(els, { navLinks, carBtn, acct });
 }
 
-function buildDash() {
-  const brand = h('a', { class: 'brand', href: '/', 'aria-label': 'Sentry Mate: all cars', cover: ['shell.nav.home', 'web.shell.logo-home', 'web.shell.home-routing'] },
-    logo(), h('span', { class: 'brand-words' }, h('span', { class: 'brand-name chrome' }, 'Sentry Mate'), h('span', { class: 'brand-sub' }, 'Horizon')));
-  const left = h('div', { class: 'bands' }, BANDS.filter((b) => b.side === 'left').map(bandButton));
-  const right = h('div', { class: 'bands' }, BANDS.filter((b) => b.side === 'right').map(bandButton));
-
-  E.rBand = h('span', { class: 'radio-ch' });
-  E.rLive = h('span', { class: 'radio-live' }, h('span', { class: 'lamp', 'aria-hidden': 'true' }), h('span', { class: 'radio-live-text' }, 'TUNING'));
-  E.rName = h('span', { class: 'radio-name' }, 'Sentry Mate');
-  E.rSub = h('span', { class: 'radio-sub' }, ' ');
-  E.face = h('button', { class: 'radio-face', type: 'button', 'aria-label': 'Find a page', title: 'Find a page (/)', onclick: openScan },
-    h('span', { class: 'radio-band' }, E.rBand, E.rLive), E.rName, E.rSub);
-  E.seekL = h('button', { class: 'radio-seek', type: 'button', onclick: () => tuneBy(-1) }, icon('seek-l'));
-  E.seekR = h('button', { class: 'radio-seek', type: 'button', onclick: () => tuneBy(1) }, icon('seek-r'));
-  swipe(E.face);
-
-  const acctPop = popover({
-    cls: 'acct-pop', label: 'Your account and display', align: 'end',
-    fill(el, p) {
-      const panel = accountPanel(() => p.hide());
-      replace(el, panel.el);
-      el.addEventListener('hz-closed', panel.stop, { once: true });
-    },
-  });
-  E.acct = h('button', { class: 'acct-btn', type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', 'aria-label': 'Your account and display', title: 'Your account and display', onclick: () => acctPop.toggle(E.acct) }, '·');
-  const knob = h('button', { class: 'quick-knob', type: 'button', 'aria-haspopup': 'dialog', 'aria-label': 'Quick: pages, car, period and display', title: 'Quick', onclick: openQuick,
-    cover: ['shell.nav.mobile_menu', 'web.shell.menu-toggle'] }, icon('knob'));
-
-  replace($('dash'),
-    h('div', { class: 'dash-side dash-side--l' }, brand, left),
-    h('div', { class: 'radio', role: 'group', 'aria-label': 'Radio: this page' }, E.seekL, E.face, E.seekR),
-    h('div', { class: 'dash-side dash-side--r' }, right, h('span', { class: 'dash-end' }, E.acct, knob)));
-  E.bandBtns = [...$('dash').querySelectorAll('.band-btn')];
+function showCarInSidebar(car) {
+  for (const b of [els.carBtn, els.topCar]) if (b) showCarIn(b, car);
 }
-
-// swiping the radio face left or right tunes like the arrows
-function swipe(el) {
-  let x0 = null, y0 = null, moved = false;
-  el.addEventListener('pointerdown', (e) => { if (e.pointerType !== 'mouse') { x0 = e.clientX; y0 = e.clientY; moved = false; } });
-  el.addEventListener('pointerup', (e) => {
-    if (x0 == null) return;
-    const dx = e.clientX - x0, dy = e.clientY - y0;
-    x0 = null;
-    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.5) { moved = true; tuneBy(dx < 0 ? 1 : -1); }
-  });
-  el.addEventListener('click', (e) => { if (moved) { e.stopImmediatePropagation(); e.preventDefault(); moved = false; } }, true);
-}
-
-function tuneBy(step) {
-  const next = tune(shown.page || 'fleet', step);
-  if (next) state.navigate(state.linkTo(next.id));
-}
-
-function showRadio(info, car) {
-  const s = info ? station(info.id) : null;
-  const b = s ? band(s.band || station(s.parent)?.band) : null;
-  const ch = s ? channel(s.id) : null;
-  E.rBand.textContent = [ch ? `CH ${String(ch).padStart(2, '0')}` : 'CH --', b ? b.name.toUpperCase() : ''].filter(Boolean).join(' · ');
-  E.rName.textContent = s ? (s.parent ? `${s.name}` : s.name) : 'Not found';
-  E.rSub.textContent = car ? `${car.name} · ${stateWord(car.now?.state)}` : s ? s.line : 'No such page';
-  const prev = tune(shown.page || 'fleet', -1), next = tune(shown.page || 'fleet', 1);
-  E.seekL.setAttribute('aria-label', `Tune back to ${fullName(prev)} ([)`);
-  E.seekL.title = `${fullName(prev)} ([)`;
-  E.seekR.setAttribute('aria-label', `Tune on to ${fullName(next)} (])`);
-  E.seekR.title = `${fullName(next)} (])`;
-  for (const btnEl of E.bandBtns) btnEl.classList.toggle('is-on', !!b && btnEl.dataset.band === b.id);
-}
-
-function showLive(info) {
-  live = info || live;
-  const on = live.state === 'open';
-  const late = ['reconnecting', 'closed', 'unsupported'].includes(live.state);
-  E.rLive.classList.toggle('is-on', on);
-  E.rLive.classList.toggle('is-late', late);
-  E.rLive.querySelector('.radio-live-text').textContent = on ? 'LIVE' : late ? 'NO SIGNAL' : 'TUNING';
-  E.rLive.title = on ? 'Pages update by themselves when a new log has been read (about a minute after the car records it).'
-    : late ? `Live updates paused${live.retryInMs ? `, trying again in ${Math.ceil(live.retryInMs / 1000)} s` : ''}.` : 'Connecting to live updates.';
-}
-
-/* ------------------------------------------------------------------ the phone tuner and the Quick sheet */
-
-function buildTuner() {
-  const track = h('div', { class: 'tuner-track' }, BANDS.map((b) => [
-    h('span', { class: 'tune-band', 'aria-hidden': 'true' }, b.name),
-    inBand(b.id).map((s) => h('a', { class: 'tune', href: '/', dataset: { page: s.id } }, icon(s.icon), s.short || s.name)),
-  ]));
-  replace($('tuner'), track);
-  E.track = track;
-  E.tunes = [...track.querySelectorAll('.tune')];
-}
-
-function showTuner() {
-  const here = shown.page && (station(shown.page)?.parent || shown.page);
-  let on = null;
-  for (const a of E.tunes) {
-    a.setAttribute('href', state.linkTo(a.dataset.page));
-    if (a.dataset.page === here) { a.setAttribute('aria-current', 'page'); on = a; } else a.removeAttribute('aria-current');
-  }
-  // the station tuned to sits in the middle of the bar
-  if (on && E.track.clientWidth) {
-    const left = on.offsetLeft - (E.track.clientWidth - on.offsetWidth) / 2;
-    E.track.scrollTo({ left: Math.max(0, left), behavior: 'instant' });
-  }
-}
-
-function openQuick() {
-  let d = null;
-  const close = () => d?.close();
-  const panel = accountPanel(close);
-  const tile = (ic, text, f) => h('button', { class: 'btn', type: 'button', onclick: () => { close(); f(); } }, icon(ic), h('span', null, text));
-  d = openDialog({
-    title: 'Quick', cls: 'quick', onClose: panel.stop,
-    body: [
-      h('div', { class: 'quick-grid' },
-        tile('search', 'Find a page', openScan),
-        tile('car', 'Switch car', openCarPicker),
-        tile('grid', 'All cars', () => state.navigate('/')),
-        tile('sliders', 'Settings', () => state.navigate(state.linkTo('settings-display')))),
-      panel.el,
-    ],
-  });
-}
-
-/* ------------------------------------------------------------------ the console row */
-
-function buildConsole() {
-  E.cart = h('button', { class: 'cart', type: 'button', 'aria-haspopup': 'dialog', title: `Switch car (${CAR_KEYS})`, onclick: openCarPicker },
-    icon('car'), lamp('unknown'), h('span', { class: 'cart-text' }, h('span', { class: 'cart-name' }, 'Choose a car'), h('span', { class: 'cart-sub' }, 'No car open')),
-    icon('chev-d', 'i--sm'));
-  E.clock = h('span', { class: 'clock', hidden: true, title: "The car's own time" }, icon('clock'), h('span', { class: 'clock-text' }));
-  replace($('console'), E.cart, h('span', { class: 'console-grow' }), periodDial(), E.clock);
-}
-
-function showCar(car) {
-  const name = E.cart.querySelector('.cart-name'), sub = E.cart.querySelector('.cart-sub'), l = E.cart.querySelector('.lamp');
+function showCarIn(b, car) {
+  const name = b.querySelector('.car-switch-name'), sub = b.querySelector('.car-switch-sub-text'), dot = b.querySelector('.car-switch-dot');
   if (!car) {
     name.textContent = 'Choose a car';
     sub.textContent = 'No car open';
-    l.dataset.state = 'unknown';
-    l.classList.remove('is-stale');
-    E.cart.setAttribute('aria-label', 'Choose a car');
+    b.removeAttribute('data-state');
+    dot.classList.remove('is-stale');
     return;
   }
+  const n = car.now || {};
+  b.dataset.state = n.state || 'unknown';
   name.textContent = car.name;
-  sub.textContent = [carLine(car), carStatus(car)].filter(Boolean).join(' · ');
-  l.dataset.state = car.now?.state || 'unknown';
-  l.classList.toggle('is-stale', !!car.now?.stale);
-  E.cart.setAttribute('aria-label', `Car: ${car.name}, ${carStatus(car)}. Switch car`);
+  const sold = state.isSold(car);
+  sub.textContent = [carMeta(car), sold ? 'Sold' : n.stale ? 'last known: ' + stateLabel(n.state).toLowerCase() : stateLabel(n.state)].join(' · ');
+  dot.classList.toggle('is-stale', !!n.stale || sold);
+  b.setAttribute('aria-label', `Car: ${car.name}, ${stateLabel(n.state)}. Switch car`);
+}
+
+/* ------------------------------------------------------------------ top bar */
+
+function buildTopbar() {
+  const menuBtn = h('button', {
+    class: 'btn btn--ghost btn--icon menu-btn', type: 'button', 'aria-label': 'Menu: every page, with a short description',
+    title: 'Menu', onclick: () => openFinder(), cover: ['shell.nav.mobile_menu', 'web.shell.menu-toggle'],
+  }, icon('menu'));
+  const crumbs = h('nav', { class: 'crumbs', 'aria-label': 'Breadcrumb' });
+  const fresh = h('span', { class: 'freshness', title: 'Pages update by themselves when the server has processed a new log. Logs arrive about a minute after the car records them.' },
+    h('span', { class: 'live-dot', 'aria-hidden': 'true' }), icon('warn', 'freshness-late'), h('span', { class: 'freshness-text' }, 'Connecting'));
+  const clock = h('span', { class: 'clock', 'aria-label': "The car's local time" });
+  // a phone: the car and the account in the top bar (the sidebar is hidden there)
+  const topCar = h('button', { class: 'car-switch top-car', type: 'button', 'aria-haspopup': 'dialog', title: 'Switch car', onclick: openCarSwitcher },
+    h('span', { class: 'car-switch-dot', 'aria-hidden': 'true' }),
+    h('span', { class: 'car-switch-text' }, h('span', { class: 'car-switch-name' }, 'Choose a car'), h('span', { class: 'car-switch-sub' }, h('span', { class: 'car-switch-sub-text' }, 'No car open'))),
+    icon('chev-d', 'ico--sm top-car-chev'));
+  const topAcct = h('button', { class: 'top-acct', type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', 'aria-label': 'Your account and display', onclick: (e) => toggleAccountMenu(e.currentTarget) },
+    h('span', { class: 'avatar', 'aria-hidden': 'true' }, '·'));
+  const period = periodPicker();
+  const tools = h('div', { class: 'topbar-tools' }, period, fresh, clock, topAcct);
+  replace($('#topbar'),
+    h('div', { class: 'topbar-start' }, menuBtn, topCar, crumbs),
+    tools);
+  Object.assign(els, { crumbs, fresh, clock, topCar, topAcct, period, tools });
+}
+
+/* ------------------------------------------------------------------ the phone dock */
+
+// the pages in the tab bar; the last tab opens the menu with every page
+const TABS = [
+  { page: 'fleet', label: 'All cars', icon: 'fleet' },
+  { page: 'car', label: 'Overview', icon: 'gauge' },
+  { page: 'drives', label: 'Drives', icon: 'route' },
+  { page: 'charges', label: 'Charges', icon: 'bolt' },
+];
+
+function buildDock() {
+  const dock = $('#dock');
+  if (!dock) return;
+  const tabs = new Map();
+  const list = TABS.map((t) => {
+    const a = h('a', { class: 'tab', href: '/', dataset: { page: t.page } }, icon(t.icon), h('span', { class: 'tab-label' }, t.label));
+    tabs.set(t.page, a);
+    return a;
+  });
+  const more = h('button', { class: 'tab tab--menu', type: 'button', 'aria-haspopup': 'dialog', onclick: () => openFinder() },
+    icon('menu'), h('span', { class: 'tab-label' }, 'Menu'));
+  const periodSlot = h('div', { class: 'dock-period' });
+  replace(dock, periodSlot, h('nav', { class: 'tabbar', 'aria-label': 'Main pages' }, list, more));
+  Object.assign(els, { tabs, periodSlot, more });
+  placePeriod();
+  window.addEventListener('phonelayout', placePeriod);
+}
+
+// an upright phone: the period bar sits in the dock, in reach of the thumb; otherwise in the top bar
+function placePeriod() {
+  const p = els.period;
+  if (!p || !els.periodSlot) return;
+  const inDock = document.documentElement.dataset.phone === 'tall';
+  if (inDock && p.parentNode !== els.periodSlot) els.periodSlot.append(p);
+  else if (!inDock && p.parentNode !== els.tools) els.tools.prepend(p);
+}
+
+function showTabs(activePage) {
+  if (!els.tabs) return;
+  let any = false;
+  for (const [id, a] of els.tabs) {
+    a.setAttribute('href', state.linkTo(id));
+    const on = id === activePage;
+    any ||= on;
+    if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+  }
+  els.more.classList.toggle('is-current', !any && !!activePage);
+}
+
+function showFreshness(info) {
+  const f = els.fresh;
+  if (!f) return;
+  const t = f.querySelector('.freshness-text');
+  const late = info.state === 'reconnecting' || info.state === 'closed' || info.state === 'unsupported';
+  f.classList.toggle('is-late', late);
+  f.hidden = info.state === 'signed_out';
+  t.textContent = info.state === 'open' ? 'Live' : info.state === 'connecting' ? 'Connecting'
+    : info.state === 'reconnecting' ? `Live updates paused${info.retryInMs ? `, trying again in ${Math.ceil(info.retryInMs / 1000)} s` : ''}`
+      : 'Not live: reload to update';
 }
 
 function tickClock() {
-  if (!E.clock) return;
-  E.clock.hidden = !shown.tz;
-  if (shown.tz) E.clock.querySelector('.clock-text').textContent = `${formatTime(api.now(), shown.tz)} ${zoneName(api.now(), shown.tz)}`;
+  if (!els.clock) return;
+  const tz = shown.tz;
+  els.clock.hidden = !tz;
+  if (tz) els.clock.textContent = `${formatTime(api.now(), tz)} ${zoneName(api.now(), tz)}`;
 }
 
-/* ------------------------------------------------------------------ the footer */
-
-function buildFoot() {
-  E.ver = h('span', { class: 'foot-ver' }, 'Sentry Mate');
-  E.update = h('a', { class: 'foot-update', hidden: true, target: '_blank', rel: 'noopener noreferrer external', cover: ['shell.footer.update_available', 'web.shell.update-footer'] },
-    icon('arrow-r', 'i--sm'), h('span', null, 'A newer version is out'));
-  const legal = h('span', { class: 'foot-legal', cover: ['shell.footer.legal', 'web.shell.legal-footer'] },
-    'Bundled parts keep their own licences: MapLibre GL JS (BSD-3-Clause), uPlot (MIT), Orbitron and Chakra Petch (SIL Open Font License 1.1), JetBrains Mono (Apache-2.0). ',
-    h('a', { href: '/help#licences' }, 'Licences'), ' · ', h('a', { href: '/help#credits' }, 'Data credits'));
-  replace($('foot'), h('div', { class: 'foot-box' }, E.ver, legal, E.update));
+/** The breadcrumb: [{ label, href }]; the last one is the page itself. */
+export function setCrumbs(list) {
+  if (!els.crumbs) return;
+  const out = [];
+  list.filter(Boolean).forEach((c, i, all) => {
+    if (i) out.push(h('span', { class: 'sep', 'aria-hidden': 'true' }, '/'));
+    out.push(i === all.length - 1 || !c.href ? h('span', { 'aria-current': i === all.length - 1 ? 'page' : null }, c.label) : h('a', { href: c.href }, c.label));
+  });
+  replace(els.crumbs, out);
 }
 
-function showRelease(items) {
-  const n = items.find((x) => x.code === 'release_available');
-  E.update.hidden = !n;
-  if (!n) return;
-  E.update.querySelector('span').textContent = n.message || 'A newer version is out';
-  const link = safeUrl(n.detail?.url) || safeUrl(n.fix_link) || '/help';
-  E.update.setAttribute('href', link);
-  if (link.startsWith('/')) { E.update.removeAttribute('target'); E.update.setAttribute('rel', 'noopener'); }
+/** A page changed a car (renamed it, moved its time zone): the sidebar card and the clock follow at once. */
+export function carChanged(car) {
+  if (!car || shown.car?.id !== car.id) return;
+  shown.car = { ...shown.car, ...car };
+  if (car.time_zone) shown.tz = car.time_zone;
+  tickClock();
+  showCarInSidebar(shown.car);
+}
+
+/** The usual breadcrumb for a page: All cars / car / page. */
+export function defaultCrumbs(s, info, car) {
+  if (!info) return [{ label: 'Not found' }];
+  const fleet = { label: 'All cars', href: '/' };
+  if (info.id === 'fleet') return [{ label: 'All cars' }];
+  const group = GROUPS.find((g) => g.id === info.group);
+  const carCrumb = car ? { label: car.name, href: state.buildUrl('car', { car: car.id, period: s.period }) } : null;
+  if (info.id === 'car') return [fleet, { label: car?.name || 'Car' }];
+  if (info.parent) {
+    const parent = pageInfo(info.parent);
+    return [fleet, carCrumb, { label: parent.title, href: state.linkTo(info.parent) }, { label: info.title }];
+  }
+  if (car) return [fleet, carCrumb, { label: info.nav || info.title }];
+  return [group && group.id !== 'cars' ? { label: group.title } : fleet, { label: info.title }];
+}
+
+/* ------------------------------------------------------------------ footer */
+
+function buildFooter() {
+  const version = h('span', { class: 'footer-version' }, 'Sentry Mate');
+  const update = h('a', {
+    class: 'footer-update', hidden: true, target: '_blank', rel: 'noopener noreferrer external',
+    cover: ['shell.footer.update_available', 'web.shell.update-footer'],
+  }, icon('arrow-r'), h('span', null, 'A newer version is out'));
+  const legal = h('span', { class: 'footer-legal', cover: ['shell.footer.legal', 'web.shell.legal-footer'] },
+    'Bundled parts keep their own licences: MapLibre GL JS (BSD-3-Clause), uPlot (MIT), Inter (SIL Open Font License 1.1) and JetBrains Mono (Apache-2.0). ',
+    h('a', { href: '/help#licences' }, 'Licences and notices'), ' · ',
+    h('a', { href: '/help#credits' }, 'Data credits'));
+  replace($('#footer'), version, legal, h('span', { class: 'grow' }), update);
+  Object.assign(els, { version, update });
 }
 
 async function loadAbout() {
   try {
     const a = await api.get('about', null, { maxAgeMs: 600000 });
-    E.ver.textContent = `Sentry Mate ${a.version} · ${a.ui_pack?.name || 'Horizon'} ${a.ui_pack?.version || ''}`.trim();
-  } catch { /* the plain name stays */ }
+    els.version.textContent = `Sentry Mate ${buildLabel(a)} · ${a.ui_pack?.name || 'Instrument'} ${a.ui_pack?.version || ''}`.trim();
+    els.version.title = buildTitle(a);
+  } catch { /* the footer keeps the plain name */ }
 }
 
-/* ------------------------------------------------------------------ the account knob, live events, keys */
+// the opt-in release notice: also a link in the footer (the bar shows it too, until dismissed)
+function showRelease(items) {
+  const n = items.find((x) => x.code === 'release_available');
+  const u = els.update;
+  u.hidden = !n;
+  if (!n) return;
+  u.querySelector('span').textContent = n.message || 'A newer version is out';
+  const link = safeUrl(n.detail?.url) || safeUrl(n.fix_link) || '/help';
+  u.setAttribute('href', link);
+  if (link.startsWith('/')) { u.removeAttribute('target'); u.setAttribute('rel', 'noopener'); }
+}
+
+/* ------------------------------------------------------------------ the account, the car count */
 
 function showAccount() {
   const me = getMe();
-  E.acct.textContent = (me?.name || '·').slice(0, 1).toUpperCase();
+  const a = els.acct;
+  if (!a) return;
+  a.querySelector('.avatar').textContent = (me?.name || '?').slice(0, 1).toUpperCase();
+  if (els.topAcct) els.topAcct.querySelector('.avatar').textContent = a.querySelector('.avatar').textContent;
+  a.querySelector('.account-name').textContent = me?.name || 'Signed out';
+  a.querySelector('.account-role').textContent = roleText(me);
 }
 
-function startEvents() {
-  stopEvents?.();
-  stopEvents = api.events((ev) => {
-    if (ev.type === 'prefs' && ev.data) usePrefs(ev.data);
-    else if (ev.type === 'notice') loadNotices();
-    else if ((ev.type === 'now' && shown.car && ev.data?.car === shown.car.id) || (ev.type === 'fleet' && shown.car)) refreshCar();
-  }, { types: ['prefs', 'notice', 'fleet', 'now'] });
-}
-let carTimer = 0;
-function refreshCar() {
-  if (carTimer) return; // at most one look every 2 s, however fast live values come
-  carTimer = setTimeout(async () => {
-    carTimer = 0;
-    if (!shown.car) return;
-    try { shown.car = await api.get(api.apiPath`cars/${shown.car.id}`); showCar(shown.car); showRadio(station(shown.page), shown.carOfPage ? shown.car : null); } catch { /* keep the last one */ }
-  }, 2000);
-}
-
-async function lastCar() {
-  const id = state.lastCar();
+async function loadCarCount() {
   try {
-    if (id) return await api.get(api.apiPath`cars/${id}`, null, { maxAgeMs: 30000 });
-    return (await api.page('cars', { sort: 'custom', limit: 1 })).items[0] || null;
-  } catch (e) {
-    if (e.status === 404 && id) state.forgetCar(id);
+    const p = await api.get('fleet/summary', null, { maxAgeMs: 30000 });
+    const el = document.getElementById('nav-fleet-count');
+    if (el) el.textContent = format(p.cars, 'count');
+  } catch { /* the count is a convenience */ }
+}
+
+// the car shown in the sidebar on pages without a car: the person's preferred car (Main car, else the
+// last one looked at, else the first in their own order; shared/state.js preferredCar)
+async function lastCarForSidebar() {
+  const guess = state.lastCar();
+  try {
+    const p = await api.page('cars', { sort: 'custom', limit: 100 });
+    let items = p.items || [];
+    if (guess && p.next && !items.some((c) => c.id === guess)) {
+      // more cars than one page: the guessed car may be further down
+      try { items = [...items, await api.get(api.apiPath`cars/${guess}`, null, { maxAgeMs: 30000 })]; } catch (e) { if (e.status === 404) state.forgetCar(guess); }
+    }
+    const id = state.preferredCar(items);
+    return items.find((c) => c.id === id) || null;
+  } catch {
     return null;
   }
 }
 
+/* ------------------------------------------------------------------ live events */
+
+function startEvents() {
+  stopEvents?.();
+  stopEvents = api.events((ev) => {
+    if (ev.type === 'prefs' && ev.data) applyPrefs(ev.data);
+    else if (ev.type === 'notice') loadNotices();
+    else if (ev.type === 'fleet') { loadCarCount(); if (shown.car) refreshCar(); }
+    else if (ev.type === 'now' && shown.car && ev.data?.car === shown.car.id) refreshCar();
+  }, { types: ['prefs', 'notice', 'fleet', 'now'] });
+}
+let carTimer = 0;
+function refreshCar() {
+  if (carTimer) return; // at most one refresh every 2 s, also while live values keep coming
+  carTimer = setTimeout(async () => {
+    carTimer = 0;
+    if (!shown.car) return;
+    try { shown.car = await api.get(api.apiPath`cars/${shown.car.id}`); showCarInSidebar(shown.car); } catch { /* keep the last one */ }
+  }, 2000);
+}
+
+/* ------------------------------------------------------------------ keys */
+
 function onKey(e) {
-  if (document.documentElement.dataset.screen === 'bare' || e.altKey) return;
   const t = e.target;
   const typing = t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
-  if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); openCarPicker(); return; }
-  if (typing || e.metaKey || e.ctrlKey || document.querySelector('dialog[open]')) return;
-  if (e.key === '/') { e.preventDefault(); openScan(); }
-  else if (e.key === '[') { e.preventDefault(); tuneBy(-1); }
-  else if (e.key === ']') { e.preventDefault(); tuneBy(1); }
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+    if (document.documentElement.dataset.screen === 'bare') return;
+    e.preventDefault();
+    openCarSwitcher();
+  } else if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey && document.documentElement.dataset.screen !== 'bare') {
+    if (document.querySelector('dialog[open]')) return;
+    e.preventDefault();
+    openFinder();
+  }
 }
 
 /* ------------------------------------------------------------------ public */
 
 /** Build the frame once, before the first page. */
 export function initFrame() {
-  E.view = $('view');
-  buildDash();
-  buildTuner();
-  buildConsole();
-  buildFoot();
-  initNotices($('notices'));
-  initToasts($('toasts'));
+  els.view = $('#view');
+  buildSidebar();
+  buildTopbar();
+  buildDock();
+  buildFooter();
+  initNotices($('#notices'));
+  initFlash($('#flash'));
   onNotices(showRelease);
-  api.on('events', showLive);
-  showLive(api.eventsState());
+  api.on('events', showFreshness);
+  showFreshness(api.eventsState());
   document.addEventListener('keydown', onKey);
   setInterval(() => { tickClock(); refreshAgo(); }, 15000);
   onSession((s) => {
     showAccount();
-    if (s.signedIn && !started) { started = true; loadAbout(); loadNotices(); startEvents(); }
-    if (!s.signedIn) { started = false; stopEvents?.(); stopEvents = null; }
+    if (s.signedIn) {
+      if (!started) { started = true; loadAbout(); loadNotices(); loadCarCount(); startEvents(); }
+    } else {
+      started = false;
+      stopEvents?.(); stopEvents = null;
+    }
   });
 }
 
-/** A page renamed its car or moved its time zone: the cartridge, radio and clock follow at once. */
-export function carChanged(car) {
-  if (!car || shown.car?.id !== car.id) return;
-  shown.car = { ...shown.car, ...car };
-  if (car.time_zone) shown.tz = car.time_zone;
+/** The router tells the frame what page is shown: { s (state), info, car, period, tz }. */
+export async function update({ s, info, car, period, tz = null }) {
+  const page = info?.id || s.page;
+  const activePage = info?.parent || page;
+  for (const [id, a] of els.navLinks || []) {
+    a.setAttribute('href', state.linkTo(id));
+    if (id === activePage) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+  }
+  for (const g of document.querySelectorAll('.nav-group')) {
+    const has = pagesIn(g.dataset.group).some((p) => p.id === activePage);
+    g.classList.toggle('has-current', has);
+    const head = g.querySelector('.nav-group-head');
+    // the group holding the open page is always open
+    if (has && head.getAttribute('aria-expanded') === 'false') head.setAttribute('aria-expanded', 'true');
+  }
+  showTabs(activePage);
+  document.documentElement.toggleAttribute('data-has-period', !!period);
+  setPeriodShown(period, tz);
+  shown = { car, tz: tz || (car ? car.time_zone : null), page };
   tickClock();
-  showCar(shown.car);
-  showRadio(station(shown.page), shown.car);
+  if (car) showCarInSidebar(car);
+  else if (s.page !== 'sign-in' && s.page !== 'setup') {
+    const my = s;
+    const c = await lastCarForSidebar();
+    // a page without a car shows the last car's clock
+    if (state.current() === my) { showCarInSidebar(c); shown.car = c; if (c) { shown.tz = c.time_zone; tickClock(); } }
+  }
 }
-
-/** The router tells the frame what is shown: { page, info, car, period, tz }. */
-export async function update({ page, info, car, period, tz = null }) {
-  shown = { page, car, tz: tz || car?.time_zone || null, carOfPage: !!car };
-  showRadio(info, car);
-  showTuner();
-  showPeriod(period, shown.tz);
-  tickClock();
-  if (car) { showCar(car); return; }
-  if (page === 'sign-in' || page === 'setup') return;
-  // a page without a car shows the last car in the cartridge, and its clock
-  const my = state.current();
-  const c = await lastCar();
-  if (state.current() !== my) return;
-  shown.car = c;
-  showCar(c);
-  if (c && !shown.tz) { shown.tz = c.time_zone; tickClock(); }
-}
-
-export { DIAL };

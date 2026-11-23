@@ -9,6 +9,7 @@ import { PAGES } from './pages.js';
 import { openDialog } from './dialog.js';
 import { dateTime, numText, slug } from './fmt.js';
 import { defaultZone } from './router.js';
+import { navCar } from './frame.js';
 
 /** Settings keys: [key, page, anchor, words]. Pages give the line the same id, so the link lands on it. */
 export const SETTINGS_KEYS = Object.freeze([
@@ -23,6 +24,9 @@ export const SETTINGS_KEYS = Object.freeze([
   ['cars.name', 'settings-cars', 'name', 'rename'],
   ['cars.time_zone', 'settings-cars', 'time-zone', 'zone clock'],
   ['cars.upload_token', 'settings-cars', 'tokens', 'can bridge'],
+  ['integrations.overview', 'settings-integrations', 'overview', 'connections overview status live problems uptime errors'],
+  ['integrations.setup', 'settings-integrations', 'setup', 'set up connections accounts broker'],
+  ['integrations.tesla', 'settings-integrations', 'tesla', 'tesla account owner api sign in'],
   ['integrations.teslafi', 'settings-integrations', 'teslafi', 'teslafi token pace'],
   ['integrations.teslamate', 'settings-integrations', 'teslamate', 'local teslamate mqtt database'],
   ['integrations.mqtt', 'settings-integrations', 'mqtt', 'broker'],
@@ -53,7 +57,7 @@ export function fuzzy(q, text) {
 
 function pageItems() {
   const s = state.current();
-  const car = s.car ?? state.lastCar();
+  const car = s.car ?? navCar();   // the page's car, else the person's preferred car
   const out = [];
   for (const p of PAGES) {
     if (p.bare || p.id === 'drive' || p.id === 'charge') continue;
@@ -63,7 +67,7 @@ function pageItems() {
       out.push({ kind: 'page', label: 'system', href: '/system', path: 'system', words: 'server storage disk' });
       continue;
     }
-    const href = state.linkTo(p.id);
+    const href = state.linkTo(p.id, p.car && car ? { car } : {});
     out.push({ kind: 'page', label: p.id.replace('settings-', 'settings '), href, path: href.split('?')[0].slice(1) || 'fleet', words: `${p.name} ${p.words} ${p.desc}` });
   }
   for (const [key, page, anchor, words] of SETTINGS_KEYS) {
@@ -79,10 +83,10 @@ export function openPalette() {
   const base = pageItems();
   let cars = [], recent = [], sel = 0, shownItems = [];
   const s = state.current();
-  const car = s.car ?? state.lastCar();
+  const car = s.car ?? navCar();   // the page's car, else the person's preferred car
 
   const row = (it, i) => h('li', { class: 'pick-row', role: 'option', 'aria-selected': String(i === sel), id: `pal-${i}` },
-    h('a', { class: 'pick-link', href: it.href, onclick: () => d.close() },
+    h('a', { class: 'pick-link', href: it.href, onclick: () => { if (it.pick) state.rememberCar(it.pick.id, { sold: state.isSold(it.pick) }); d.close(); } },
       h('span', { class: ['pal-kind', `pal-kind--${it.kind}`] }, `[${it.kind}]`),
       h('span', { class: 'pick-main' }, it.label),
       h('span', { class: 'pal-path' }, it.path)));
@@ -114,7 +118,7 @@ export function openPalette() {
       // sold cars only when searched for (or the one open), marked sold
       const text = q.value.trim();
       cars = p.items.filter((c) => text || !state.isSold(c) || c.id === s.car)
-        .map((c) => ({ kind: 'car', label: state.isSold(c) ? `${c.name || c.id} (sold)` : c.name || c.id, href: state.linkForCar(c.id), path: `cars/${slug(c.name)}`, words: `${c.model || ''} ${c.id}${state.isSold(c) ? ' sold' : ''}` }));
+        .map((c) => ({ kind: 'car', pick: c, label: state.isSold(c) ? `${c.name || c.id} (sold)` : c.name || c.id, href: state.linkForCar(c.id), path: `cars/${slug(c.name)}`, words: `${c.model || ''} ${c.id}${state.isSold(c) ? ' sold' : ''}` }));
       paint();
     } catch { /* the list works without cars */ }
   }

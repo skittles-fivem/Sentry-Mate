@@ -16,7 +16,7 @@ import re
 
 from .. import derive
 from ..conventions import Response, page
-from ..errors import ApiError, bad_input, invalid, not_found, stale_version
+from ..errors import ApiError, bad_input, conflict, invalid, not_found, stale_version
 from ..live import now_object
 from ..util import DAY, HOUR, MIN, date_str, h01, local_date, r
 from .. import sources as SRC
@@ -91,8 +91,27 @@ def patch_settings(req):
     sub("units", UNITS)
     sub("geocode", {"mode": ("offline", "online"), "dataset": "str", "url": "str?", "language": "str",
                     "rounding_m": int})
+    tiles_body = body.get("tiles") if isinstance(body.get("tiles"), dict) else {}
     sub("tiles", {"mode": ("offline", "online"), "online_url": "str?", "attribution": "str", "max_zoom": int,
-                  "offline_file": "str?"})
+                  "offline_file": "str?", "preset": "str?", "labels": bool, "styles": "any"})
+    if "online_url" in tiles_body and "preset" not in tiles_body:
+        # an address without a preset: the preset it is, else the admin's own
+        p = next((x for x in TILE_PRESETS if x["url"] == new["tiles"].get("online_url")), None)
+        new["tiles"]["preset"] = p["id"] if p else "custom"
+    if "preset" in tiles_body and isinstance(tiles_body["preset"], str) and tiles_body["preset"] != "custom":
+        p = next((x for x in TILE_PRESETS if x["id"] == tiles_body["preset"]), None)
+        if p is None:
+            rule["tiles.preset"] = "One of: " + ", ".join(x["id"] for x in TILE_PRESETS) + ", custom, or null."
+        else:
+            new["tiles"].update(online_url=p["url"], attribution=p["attribution"], max_zoom=p["max_zoom"])
+    if "styles" in tiles_body:
+        v = tiles_body["styles"]
+        if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+            bad["tiles.styles"] = "Must be a list of preset ids."
+        elif any(x not in {p["id"] for p in TILE_PRESETS} for x in v):
+            rule["tiles.styles"] = "Preset ids only: " + ", ".join(x["id"] for x in TILE_PRESETS) + "."
+        else:
+            new["tiles"]["styles"] = list(dict.fromkeys(v))
     sub("release_check", {"enabled": bool})
     sub("outside_links", {"maps": bool, "release_notes": bool})
     sub("outbound", {"proxy": "str?"})
@@ -169,14 +188,20 @@ def patch_settings(req):
         new["version"] = cur["version"] + 1
         st.server_settings = new
         accounts = list(st.accounts.values())
-    st.record(req.account, "settings.update", "settings:server",
+    st.record(req.account, "settings-changed", "settings:server",
               "Changed the server settings: " + ", ".join(sorted(k for k in body if k != "version")) + ".")
     if any(cur[k] != new[k] for k in ("units", "range", "car_order")):
         # preferences default from these: everyone's (merged) preferences may have changed
         for a in accounts:
             req.app.events.publish("prefs", st.get_prefs(a), account_id=a["id"])
     if new["release_check"]["enabled"] and not cur["release_check"]["enabled"]:
-        req.app.events.publish("notice", release_notice(req))
+        # turning it on checks at once (the made-up check answers at once)
+        st.release_checked_ms = req.now
+        n = release_notice(req)
+        if n:
+            req.app.events.publish("notice", n)
+    elif cur["release_check"]["enabled"] and not new["release_check"]["enabled"]:
+        st.release_checked_ms = None  # off drops the result
     return copy.deepcopy(new)
 
 
@@ -189,14 +214,80 @@ def valid_zone(z):
 
 
 # the ready-made online tile sources, as the real server's places::tiles::PRESETS
-TILE_PRESETS = [
-    {"id": "osm", "name": "OpenStreetMap standard", "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-     "attribution": "© OpenStreetMap contributors", "max_zoom": 19,
-     "terms": "https://operations.osmfoundation.org/policies/tiles/"},
-    {"id": "opentopomap", "name": "OpenTopoMap (terrain)", "url": "https://tile.opentopomap.org/{z}/{x}/{y}.png",
-     "attribution": "Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)",
-     "max_zoom": 17, "terms": "https://opentopomap.org/about"},
+ESRI_LABELS = [
+    "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+    "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
 ]
+TILE_PRESETS = [
+    {"id": "satellite", "name": "Satellite (Esri World Imagery)", "short": "Satellite", "kind": "satellite",
+     "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+     "attribution": "Imagery © Esri, Maxar, Earthstar Geographics, and the GIS User Community", "max_zoom": 19,
+     "terms": "https://www.esri.com/en-us/legal/terms/full-master-agreement", "overlays": ESRI_LABELS,
+     "region": None},
+    {"id": "satellite_us", "name": "Satellite, US only (USGS National Map)", "short": "Satellite (US)",
+     "kind": "satellite",
+     "url": "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}",
+     "attribution": "Imagery: USGS The National Map (public domain)", "max_zoom": 16,
+     "terms": "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits", "overlays": [],
+     "region": "US"},
+    {"id": "osm", "name": "OpenStreetMap standard", "short": "Map", "kind": "map",
+     "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+     "attribution": "© OpenStreetMap contributors", "max_zoom": 19,
+     "terms": "https://operations.osmfoundation.org/policies/tiles/", "overlays": [], "region": None},
+    {"id": "opentopomap", "name": "OpenTopoMap (terrain)", "short": "Terrain", "kind": "map",
+     "url": "https://tile.opentopomap.org/{z}/{x}/{y}.png",
+     "attribution": "Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)",
+     "max_zoom": 17, "terms": "https://opentopomap.org/about", "overlays": [], "region": None},
+]
+DEFAULT_PRESET = "satellite"
+
+
+def tile_chosen_id(t):
+    """As the real server's Tiles::chosen_id: the preset an admin picked, else satellite (also over the old
+    implicit OpenStreetMap / OpenTopoMap default); an address of their own is `custom`."""
+    p = t.get("preset")
+    if p == "custom" or any(x["id"] == p for x in TILE_PRESETS):
+        return p
+    url = t.get("online_url")
+    m = next((x for x in TILE_PRESETS if x["url"] == url), None)
+    if url is None or (m and m["id"] in ("osm", "opentopomap")):
+        return DEFAULT_PRESET
+    return m["id"] if m else "custom"
+
+
+def tile_style(t, sid):
+    if sid == "custom":
+        if not t.get("online_url"):
+            return None
+        return {"id": "custom", "name": "Custom tile server", "short": "Map", "kind": "map",
+                "template": t["online_url"], "attribution": t["attribution"], "max_zoom": t["max_zoom"],
+                "overlays": [], "imagery": False, "region": None}
+    p = next((x for x in TILE_PRESETS if x["id"] == sid), None)
+    if p is None:
+        return None
+    return {"id": p["id"], "name": p["name"], "short": p["short"], "kind": p["kind"], "template": p["url"],
+            "attribution": p["attribution"], "max_zoom": p["max_zoom"],
+            "overlays": list(p["overlays"]) if t.get("labels", True) else [], "imagery": p["kind"] == "satellite",
+            "region": p["region"]}
+
+
+def tile_viewer_styles(t):
+    first = tile_chosen_id(t)
+    out = [s for s in [tile_style(t, first)] if s]
+    for sid in t.get("styles", ["satellite", "osm"]):
+        if sid != first and (s := tile_style(t, sid)):
+            out.append(s)
+    return out
+
+
+def tile_hosts(t):
+    out = []
+    for s in tile_viewer_styles(t):
+        for u in [s["template"], *s["overlays"]]:
+            h = re.sub(r"^https?://([^/:]+).*$", r"\1", u).lower()
+            if h not in out:
+                out.append(h)
+    return out
 
 
 # the made-up offline map file (--map-tiles offline): one raster file, as the real server reports a .pmtiles in data/maps
@@ -208,6 +299,8 @@ def maps_config(req):
     ss = req.store.server_settings
     t, g = ss["tiles"], ss["geocode"]
     present = req.store.map_file
+    online = t["mode"] == "online"
+    chosen = tile_style(t, tile_chosen_id(t))
     files = copy.deepcopy(MAP_FILES) if present else []
     return {"tiles": {"mode": t["mode"],
                       "offline_url": OFFLINE_TILE_URL if present and t["mode"] != "online" else None,
@@ -216,8 +309,15 @@ def maps_config(req):
                       "offline_files": files, "offline_kind": "raster" if present else None,
                       "offline_min_zoom": 0 if present else None, "offline_max_zoom": 16 if present else None,
                       "offline_bounds": [-122.6, 37.6, -122.3, 37.9] if present else None, "offline_error": None,
-                      "online_template": t["online_url"] if t["mode"] == "online" else None,
-                      "attribution": t["attribution"], "max_zoom": t["max_zoom"],
+                      "online_template": chosen["template"] if online and chosen else None,
+                      "attribution": chosen["attribution"] if chosen else t["attribution"],
+                      "max_zoom": chosen["max_zoom"] if chosen else t["max_zoom"],
+                      "preset": tile_chosen_id(t), "labels": t.get("labels", True),
+                      "allowed_styles": list(t.get("styles", ["satellite", "osm"])),
+                      "overlays": chosen["overlays"] if online and chosen else [],
+                      "imagery": bool(online and chosen and chosen["imagery"]),
+                      "styles": tile_viewer_styles(t) if online else [],
+                      "hosts": tile_hosts(t) if online else [],
                       "presets": copy.deepcopy(TILE_PRESETS)},
             "geocoding": {"mode": g["mode"], "credit": "GeoNames (CC BY 4.0)" if g["mode"] == "offline" else
                           "The address service set in Settings", "offline_data_present": True,
@@ -275,8 +375,9 @@ def notices(req):
             n["message"] = f"The HTTPS certificate expires in {days} days. Renew it in Settings > Server."
             n["detail"] = {"expires_ms": n.pop("expires_ms"), "days": days}
         items.append(n)
-    if req.store.server_settings["release_check"]["enabled"]:
-        items.append(release_notice(req))
+    rn = release_notice(req)
+    if rn:
+        items.append(rn)
     # the move is an admin's to read, like /system/move
     if req.is_admin:
         from .moving import move_notices
@@ -285,14 +386,110 @@ def notices(req):
         items += tesla_notices(req)
         from .teslafi import notices as teslafi_notices
         items += teslafi_notices(req)
+        from .teslamate import notices as teslamate_notices
+        items += teslamate_notices(req)
     return {"items": items, "next": None}
 
 
+# ------------------------------------------------------------------ build and release check
+
+# this build (made up): what the real server bakes in at image build (crates/release)
+BUILD = {"version": "0.1.0", "number": 41, "commit": "2f44a52c0e9b7d1a6f3e8c5b4a2d9e7f1c0b3a68", "short": "2f44a52",
+         "built_days_ago": 2, "dev": False}
+# the newest build on main the made-up check finds
+NEWEST = {"commit": "9c1e7d3b5a2f4e8c6d0b1a3f5e7c9d2b4a6f8e01", "short": "9c1e7d3", "build": 42, "days_ago": 1}
+NEWEST_TITLES = [
+    "Battery: one counter per stream, so imported days no longer stop the battery pages",
+    "Odometer: read the CAN odometer's \"not available\" as such, drop impossible readings",
+    "Charges: the place price follows a renamed place",
+    "Settings: the release check asks GitHub once a day when it is on",
+]
+PULL = "docker compose pull && docker compose up -d"
+IMAGE = "ghcr.io/skittles-fivem/sentry-mate:latest"
+REPO_URL = "https://github.com/skittles-fivem/Sentry-Mate"
+
+
+def build_info(req):
+    b = dict(BUILD)
+    b["built_ms"] = req.app.cfg.now_ms - b.pop("built_days_ago") * DAY
+    return b
+
+
+def release_state(req):
+    """GET /release: the release check's last result (docs/ui-api.md). Made up: the result is --release-check's."""
+    st = req.store
+    b = build_info(req)
+    current = {k: b[k] for k in ("commit", "short", "built_ms", "number")}
+    on = bool(st.server_settings["release_check"]["enabled"])
+    out = {"enabled": on, "status": "off", "checked_ms": None, "next_ms": None, "current": current, "newest": None,
+           "pull": PULL, "image": IMAGE, "error": None}
+    if not on:
+        return out
+    res = st.release_result
+    checked = st.release_checked_ms
+    out["checked_ms"] = checked
+    out["next_ms"] = (checked if checked is not None else req.now) + DAY
+    if res == "never" or (checked is None and res != "checking"):
+        out["status"] = "never"
+        out["checked_ms"] = None
+        return out
+    if res == "checking":
+        out["status"] = "checking"
+        return out
+    if res == "error":
+        out["status"] = "error"
+        out["error"] = {"code": "rate_limited",
+                        "message": "GitHub's rate limit for this address is used up; trying again in 40 minutes."}
+        out["next_ms"] = req.now + 40 * MIN
+        return out
+    newest_ms = req.app.cfg.now_ms - NEWEST["days_ago"] * DAY
+    if res == "up_to_date":
+        out["status"] = "up_to_date"
+        out["newest"] = {"commit": b["commit"], "short": b["short"], "date_ms": b["built_ms"], "build": b["number"],
+                         "changes": 0, "titles": [], "more": 0,
+                         "compare_url": f"{REPO_URL}/compare/{b['commit']}...{b['commit']}"}
+        return out
+    out["status"] = "newer"
+    out["newest"] = {"commit": NEWEST["commit"], "short": NEWEST["short"], "date_ms": newest_ms,
+                     "build": NEWEST["build"], "changes": len(NEWEST_TITLES), "titles": list(NEWEST_TITLES),
+                     "more": 0, "compare_url": f"{REPO_URL}/compare/{b['commit']}...{NEWEST['commit']}"}
+    return out
+
+
+def release_check_now(req):
+    """POST /release/check (admin): checks at once; 409 release_check_off while the check is off."""
+    if not req.store.server_settings["release_check"]["enabled"]:
+        raise conflict("release_check_off", "The release check is off. Turn it on in Settings: Display and units.")
+    if req.store.release_result != "checking":
+        req.store.release_checked_ms = req.now
+    req.store.record(req.account, "release-checked", "server:release", "Checked GitHub for a newer build.")
+    out = release_state(req)
+    n = release_notice(req)
+    if n:
+        req.app.events.publish("notice", n)
+    return out
+
+
 def release_notice(req):
-    """The opt-in release notice: shown only while the owner has the release check on."""
-    return {"code": "release_available", "level": "info", "message": "Sentry Mate 0.2.0 is out.",
-            "since_ms": req.app.cfg.now_ms - 2 * DAY, "fix_link": "/help#about",
-            "detail": {"version": "0.2.0", "notes_url": "https://example.org/sentry-mate/releases/0.2.0"}}
+    """The release notice, for admins only, while the check is on and found a newer build."""
+    if not req.is_admin:
+        return None
+    s = release_state(req)
+    if s["status"] != "newer":
+        return None
+    nw = s["newest"]
+    import datetime
+    d = datetime.datetime.fromtimestamp(nw["date_ms"] / 1000, datetime.timezone.utc)
+    # named by its number, as the real server does (crates/release Newest::summary); the commit is in `detail`
+    when = f"{d.strftime('%b')} {d.day}" + ("" if d.year == datetime.datetime.fromtimestamp(
+        req.app.cfg.now_ms / 1000, datetime.timezone.utc).year else f", {d.year}")
+    changes = "1 change" if nw["changes"] == 1 else f"{nw['changes']} changes"
+    number = f"build {nw['build']}" if nw.get("build") is not None else ""
+    msg = f"A newer build is ready: {', '.join(x for x in (number, when, changes) if x)}."
+    return {"code": "release_available", "level": "info", "message": msg,
+            "since_ms": nw["date_ms"], "fix_link": "/help#about",
+            "detail": {"version": nw["short"], "commit": nw["commit"], "build": nw["build"],
+                       "changes": nw["changes"], "notes_url": nw["compare_url"]}}
 
 
 def about(req):
@@ -302,6 +499,7 @@ def about(req):
     pack = {"id": m["id"], "name": m["name"], "version": m["version"], "api": m["api"], "original": False}
     return {
         "version": DEV_VERSION, "api_version": API_VERSION, "ui_pack": pack, "dev_server": True,
+        "build": build_info(req),
         "links": {"source": None, "docs": "/help"},
         "licence": {"name": None, "url": None},
         "licences": [{"name": "model3dbc (Tesla Model 3 and Y signal list)", "licence": "MIT"},
@@ -409,7 +607,7 @@ def rebuild(req):
            "pending_until": req.now + min(took, 5000), "kinds": ["drives", "charges", "states", "visits"]}
     with st.lock:
         st.rebuilds.setdefault(req.car, []).append(job)
-    st.record(req.account, "car.rebuild", f"car:{req.car}",
+    st.record(req.account, "car-rebuild", f"car:{req.car}",
               f"Rebuilt drives, charges, states and visits of {st.car_meta(req.car)['name']} "
               f"from the stored logs ({days} days).")
     req.app.events.publish("rows", {"car": req.car, "kinds": job["kinds"], "from_ms": a, "to_ms": b}, car=req.car)
@@ -508,7 +706,7 @@ def patch_overlap(req):
         what = f"the {'TeslaFi' if shown == 'teslafi' else 'TeslaMate'} import"
     else:
         what = f"{'live (SMO)' if shown == 'can' else 'imported TeslaMate'} history"
-    st.record(req.account, "car.overlap", f"car:{req.car}",
+    st.record(req.account, "car-overlap", f"car:{req.car}",
               f"Showing {what} from {date_str(o['start_ms'], req.tz())} to {date_str(o['end_ms'], req.tz())}.")
     req.app.events.publish("rows", {"car": req.car, "kinds": ["drives", "charges", "states", "visits"],
                                     "from_ms": o["start_ms"], "to_ms": o["end_ms"]}, car=req.car)
@@ -677,6 +875,8 @@ def register(router):
     router.add("/api/v1/geocode/status", GET=geocode_status)
     router.add("/api/v1/notices", GET=notices)
     router.add("/api/v1/about", GET=about)
+    router.add("/api/v1/release", GET=release_state)
+    router.add("/api/v1/release/check", POST=release_check_now, admin=("POST",))
     router.add("/api/v1/ui-packs", GET=ui_packs)
     router.add("/api/v1/cars/{car}/health", GET=car_health)
     router.add("/api/v1/cars/{car}/rebuild", POST=rebuild, admin=("POST",))

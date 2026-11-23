@@ -7,6 +7,7 @@ import { getUnits, format } from '../shared/units.js';
 import { isSupportedLocale, onLocaleChange } from '../shared/i18n.js';
 import { formatDate, isValidZone } from '../shared/time.js';
 import { buildUrl } from '../shared/state.js';
+import { soldParts, soldOptions } from '../core/carswitch.js';
 import { packChoices, packLabel } from '../shared/packs.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel } from '../core/page.js';
@@ -16,7 +17,8 @@ import { getInterface, onInterface } from '../core/display.js';
 import { sizePicker, followSwitch, sizeNote, themeButtons } from '../core/account.js';
 import { flash } from '../core/flash.js';
 import { ago } from '../core/fmt.js';
-import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
+import { buildLabel, buildTitle, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
+import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, LABELS_TEXT, STYLES_TEXT, presetHosts, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 
 export const id = 'settings-display';
 export const css = true;
@@ -62,13 +64,15 @@ async function savePref(patch, what) {
 
 export async function mount(ctx) {
   const admin = isAdmin();
-  let about = null, server = null, geo = null, maps = null, packList = null;
-  [about, server, geo, maps, packList] = await Promise.all([
+  let about = null, server = null, geo = null, maps = null, packList = null, release = null, cars = null;
+  [about, server, geo, maps, packList, release, cars] = await Promise.all([
     ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     ctx.api.get('settings').catch(() => null),
     ctx.api.get('geocode/status').catch(() => null),
     ctx.api.get('maps/config').catch(() => null),
     packChoices(ctx.api, { fallback: PACKS, current: getPrefs()?.ui_pack || 'instrument' }),
+    ctx.api.get('release').catch(() => null),
+    ctx.api.list('cars', { sort: 'custom', limit: 500 }).all({ max: 5000 }).catch(() => null),
   ]);
   if (!ctx.alive()) return;
   const p = getPrefs() || {};
@@ -127,6 +131,7 @@ export async function mount(ctx) {
     segMapColors.set(pp?.map_colors || 'dimmed');
     lang.value = pp?.language === 'en' ? 'en-US' : (pp?.language || 'auto');
     packSel.value = pp?.ui_pack || 'instrument';
+    paintMainCar(pp?.main_car ?? null);
     paintSwitch();
     paintLangExample();
   }));
@@ -142,6 +147,20 @@ export async function mount(ctx) {
   const switchNote = h('p', { class: 'setting-note', hidden: true }, 'The new pack is used the next time the app loads.');
   function paintSwitch() { const other = packSel.value !== packHere; switchBtn.hidden = !other; switchNote.hidden = !other; }
   paintSwitch();
+  // Main car: the car pages without one in the address show (Fleet's sidebar, Travel's days, links); none
+  // means the car looked at last. Sold cars wait in their own group unless one is the Main car.
+  const mainCarSel = h('select', { class: 'select', id: 'set-main-car', 'aria-label': 'Main car', disabled: !cars,
+    onchange: (e) => savePref({ main_car: e.target.value || null }, 'Main car') });
+  function paintMainCar(chosen) {
+    const opt = (c) => h('option', { value: c.id, selected: c.id === chosen }, c.name || c.id);
+    const { main, sold } = soldParts(cars || [], chosen ? [chosen] : []);
+    const missing = chosen && !(cars || []).some((c) => c.id === chosen);
+    replace(mainCarSel,
+      h('option', { value: '', selected: !chosen }, 'None (the car you looked at last)'),
+      main.map(opt), soldOptions(sold, opt),
+      missing ? h('option', { value: chosen, selected: true }, chosen) : null);
+  }
+  paintMainCar(p.main_car ?? null);
   // written with the app's own formatters, so it shows what the saved language really does
   const langExample = h('p', { class: 'setting-note' });
   const paintLangExample = () => replace(langExample, 'Example: ', h('b', null, format(1234.5, 'distance')), ', ', h('b', null, formatDate(ctx.api.now(), ctx.tz, { weekday: false, year: true })), '.');
@@ -149,7 +168,7 @@ export async function mount(ctx) {
   const look = panel({ title: 'Look and language', icon: 'monitor', side: h('span', { class: 'faint' }, 'Yours; follows you to every screen') },
     setting('Theme', 'Light, dark, or follow this device. It is saved with your account, so every browser you sign in on uses it, and it is set before the page is drawn, so there is no flash.',
       [theme.el, h('p', { class: 'setting-note' }, 'Every page, chart and map has both a light and a dark look; screenshots in the help show either.')], ['shell.theme', 'web.settings.general.theme', 'shots.theme-note']),
-    setting('Map colours', MAP_COLORS_TEXT, segMapColors),
+    setting('Map colours', `${MAP_COLORS_TEXT} It does not apply to satellite pictures: photos always show as taken, never dimmed.`, segMapColors),
     setting('Interface size', 'Makes text, controls, tables, charts and maps bigger or smaller together. With Follow screen size on, a very large screen (a native 4K monitor) adds its own step on top. Browser zoom works on top of both.',
       [size.el, h('div', { class: 'row' }, h('label', { class: 'faint', for: 'set-size-pct' }, 'Any size:'), pctIn, h('span', { class: 'faint' }, '%')), sizeErr,
         h('div', { class: 'switch-row switch-row--inline' }, follow.el, h('label', { for: 'set-follow' }, 'Follow screen size')), noteEl]),
@@ -157,7 +176,9 @@ export async function mount(ctx) {
       [lang, langExample],
       ['shell.locale', 'web.settings.general.ui-language', 'web.shell.locale-negotiation']),
     setting('UI pack', `The design of the whole app. ${about?.ui_pack?.name ? `This page is the ${about.ui_pack.name} pack ${about.ui_pack.version || ''}.` : ''} Your choice is used the next time the app loads where the server offers that pack.`,
-      [h('div', { class: 'row pack-row' }, packSel, switchBtn), switchNote]));
+      [h('div', { class: 'row pack-row' }, packSel, switchBtn), switchNote]),
+    setting('Main car', 'The car shown on pages without one in their address: the sidebar on All cars, the days on Travel, and links to car pages. With none, the car you looked at last is shown.',
+      [mainCarSel, cars ? null : h('p', { class: 'setting-note' }, 'The cars could not be read.')]));
 
   /* ---------- server defaults, addresses and maps */
   const serverPanel = h('div', { class: 'settings-server' });
@@ -181,6 +202,47 @@ export async function mount(ctx) {
     if (t.mode === 'online') return h('p', { class: 'setting-note' }, icon('globe', 'ico--sm'), ' Maps load pictures from the online source; its credit shows on every map: ', h('b', null, t.attribution || '(none set)'), '.');
     return h('p', { class: 'setting-note' }, icon(off ? 'check' : 'info', 'ico--sm'), off ? ' An offline map file is installed: maps need nothing from outside.' : ' No offline map file yet: maps draw routes and places on a plain background, with a note saying so. See Offline map file below.');
   }
+  // the release check (GET /release; POST /release/check for an admin): this build, the last answer, Check now
+  const releaseBox = h('div', { class: 'release-box' });
+  let checking = false, releaseTimer = null;
+  ctx.onCleanup(() => clearTimeout(releaseTimer));
+  async function refreshRelease() {
+    release = await ctx.api.get('release').catch(() => release);
+    if (ctx.alive()) paintRelease();
+  }
+  async function checkNow() {
+    checking = true; paintRelease();
+    try {
+      release = await ctx.api.post('release/check', {});
+      if (release?.status === 'error') flash(releaseStatus(release).text, { kind: 'error' });
+    } catch (e) {
+      if (e?.name === 'AbortError') return;
+      flash(e?.code === 'release_check_off' ? 'Not checked: the release check is off.' : `Not checked: ${e?.message || e}`, { kind: 'error' });
+      release = await ctx.api.get('release').catch(() => release);
+    } finally { checking = false; }
+    if (ctx.alive()) paintRelease();
+  }
+  function paintRelease() {
+    const now = ctx.api.now();
+    const st = release ? releaseStatus(release, now) : { tone: 'error', text: 'The release check could not be read from the server.' };
+    const when = release ? checkedAgo(release, now) : '';
+    const on = release ? !!release.enabled : !!server?.release_check?.enabled;
+    const busy = checking || release?.status === 'checking';
+    const newer = release?.status === 'newer';
+    const lines = newer ? changeLines(release.newest) : [];
+    const tone = { ok: 'ok', newer: 'ok', error: 'warn' }[st.tone] || 'faint';
+    replace(releaseBox,
+      h('p', { class: 'setting-note release-build' }, icon('server', 'ico--sm'), ' This build: ', h('span', { class: 'mono', title: buildTitle(about) || null }, buildLabel(about || {}, ctx.api.now()))),
+      h('p', { class: 'release-status', role: 'status' }, icon(st.tone === 'error' ? 'warn' : st.tone === 'ok' ? 'check' : st.tone === 'newer' ? 'upload' : 'clock', 'ico--sm'), ' ',
+        h('span', { class: tone }, busy && st.tone !== 'wait' ? 'Checking…' : st.text), when ? h('span', { class: 'faint' }, ` · ${when}`) : null),
+      lines.length ? h('ul', { class: 'setting-note release-titles' }, lines.map((x) => h('li', null, x))) : null,
+      newer && release.pull ? h('p', { class: 'setting-note release-pull' }, 'To update, run on the server: ', h('code', { class: 'mono' }, release.pull)) : null,
+      admin ? h('div', { class: 'release-actions' },
+        h('button', { class: 'btn btn--sm', type: 'button', disabled: !on || busy, title: on ? null : 'Turn the release check on first', onclick: checkNow }, icon('reset', 'ico--sm'), busy ? 'Checking…' : 'Check now')) : null);
+    if (release?.status === 'checking' && !checking) { clearTimeout(releaseTimer); releaseTimer = setTimeout(() => { if (ctx.alive()) refreshRelease(); }, 4000); }
+  }
+  paintRelease();
+
   function paintServer() {
     if (!server) { replace(serverPanel, panel({ title: 'Server defaults', icon: 'server' }, h('p', { class: 'note' }, 'The server settings could not be loaded. Your own choices above still work.'))); return; }
     const ro = !admin;
@@ -200,6 +262,14 @@ export async function mount(ctx) {
         return false;
       }
     };
+    // the release check's switch: saves at once, then the release answer is read again
+    const releaseInput = h('input', { type: 'checkbox', id: 'sd-release', role: 'switch', 'aria-label': 'Check for new releases', checked: !!server.release_check?.enabled, disabled: ro,
+      onchange: async () => {
+        const want = releaseInput.checked;
+        if (!(await patch({ release_check: { enabled: want } }, want ? 'Release check on' : 'Release check off'))) { releaseInput.checked = !!server.release_check?.enabled; return; }
+        await refreshRelease();
+      } });
+    const releaseSwitch = { el: h('span', { class: 'switch' }, releaseInput, h('i', { 'aria-hidden': 'true' })) };
     // a server choice: read-only (buttons disabled) for anyone but an admin
     const sChoice = (name, options, current, onPick) => choice(name, options, current, onPick, { readOnly: ro });
     const g = server.geocode || {}, t = server.tiles || {};
@@ -207,15 +277,35 @@ export async function mount(ctx) {
     const gRound = field({ label: 'Round positions to (m)', name: 'grnd', path: 'geocode.rounding_m', type: 'number', value: g.rounding_m, hint: 'metres, from 0 to 1000, before an online lookup', attrs: { min: '0', max: '1000', step: '1', disabled: ro } });
     const gLang = field({ label: 'Address language', name: 'glang', path: 'geocode.language', value: g.language || 'en', hint: 'A code such as en, de, fr or pt-BR. Changing it looks every stored address up again.', attrs: { maxlength: '10', spellcheck: 'false', autocomplete: 'off', disabled: ro } });
     const tz = field({ label: 'Time zone for new cars', name: 'dtz', path: 'default_time_zone', value: server.default_time_zone || 'UTC', hint: 'A zone name such as America/Chicago. Type to search the list.', attrs: { list: 'sd-zones', disabled: ro, autocomplete: 'off', spellcheck: 'false' } });
-    const tilePresets = maps?.tiles?.presets || [];
-    const tilePreset = tilePresets.find((p) => p.url === t.online_url) || null;
-    const tSource = tilePresets.length ? sChoice('Tile source', [...tilePresets.map((p) => [p.id, p.name]), ['custom', 'Custom address']], tilePreset ? tilePreset.id : 'custom', (v) => {
-      const p = tilePresets.find((x) => x.id === v);
-      if (p) return patch({ tiles: { online_url: p.url, attribution: p.attribution, max_zoom: p.max_zoom } }, 'Tile source', [tUrl, tAttr]);
-      tUrl.input.focus();
-      return true;
+    // the online presets, satellite first (the default), then the admin's own address
+    const mt = maps?.tiles || {};
+    const tilePresets = [...(mt.presets || [])].sort((a, b) => (b.id === 'satellite') - (a.id === 'satellite'));
+    const presetId = mt.preset || t.preset || tilePresets.find((p) => p.url === t.online_url)?.id || (t.online_url ? 'custom' : 'satellite');
+    const tilePreset = tilePresets.find((p) => p.id === presetId) || null;
+    const region = (p) => (p.region ? ` · ${p.region === 'US' ? 'United States only' : `${p.region} only`}` : '');
+    const presetMeta = (p) => `${presetHosts(p).join(', ')} · up to zoom ${p.max_zoom}${region(p)}`;
+    const presetOpt = (p) => h('span', { class: 'tp-opt' }, h('b', null, p.name), h('span', { class: 'tp-meta' }, presetMeta(p)));
+    const tSource = tilePresets.length ? sChoice('Online map', [...tilePresets.map((p) => [p.id, presetOpt(p)]), ['custom', h('span', { class: 'tp-opt' }, h('b', null, 'Custom address'), h('span', { class: 'tp-meta' }, 'Your own tile server, below'))]], presetId, (v) => {
+      if (v !== 'custom') return patch({ tiles: { mode: t.mode, preset: v } }, 'Online map', [tUrl, tAttr]);
+      if (!tUrl.input.value) { tUrl.input.focus(); return true; }
+      return patch({ tiles: { mode: t.mode, preset: 'custom' } }, 'Online map', [tUrl, tAttr]);
     }) : null;
-    const tTerms = tilePreset ? h('p', { class: 'setting-note' }, icon('info', 'ico--sm'), ` ${tilePreset.name}: free, no key. Its terms (`, ...breakable(tilePreset.terms.replace(/^https:\/\//, '')), ') ask for light use and its credit on every map.') : null;
+    tSource?.classList.add('seg--stack');
+    const tTerms = tilePreset ? h('p', { class: 'setting-note' }, icon('info', 'ico--sm'), ` ${tilePreset.name}: free, no key. Its terms (`, ...breakable(String(tilePreset.terms || '').replace(/^https:\/\//, '')), ') ask for light use and its credit on every map.', tilePreset.region === 'US' ? ' It has pictures of the United States only: elsewhere the map stays blank.' : '') : null;
+    // names and roads over the photos (only presets that have them)
+    const tLabels = tilePreset?.overlays?.length ? setting('Place names and roads', LABELS_TEXT,
+      sChoice('Place names and roads', [['true', 'On'], ['false', 'Off']], String(mt.labels ?? t.labels ?? true), (v) => patch({ tiles: { labels: v === 'true' } }, 'Place names and roads'))) : null;
+    // the maps viewers may switch to on a map page (Map / Satellite)
+    const allowed = new Set(mt.allowed_styles || t.styles || []);
+    const tStyles = tilePresets.length ? setting('Maps people can switch to', STYLES_TEXT,
+      h('div', { class: 'tp-styles', role: 'group', 'aria-label': 'Maps people can switch to' }, tilePresets.map((p) => {
+        const idText = `sd-style-${p.id}`;
+        const input = h('input', { type: 'checkbox', id: idText, checked: allowed.has(p.id), disabled: ro, onchange: async () => {
+          const next = tilePresets.filter((x) => (x.id === p.id ? input.checked : allowed.has(x.id))).map((x) => x.id);
+          if (!(await patch({ tiles: { styles: next } }, 'Maps people can switch to'))) input.checked = !input.checked;
+        } });
+        return h('div', { class: 'switch-row switch-row--inline tp-style' }, h('span', { class: 'switch' }, input, h('i', { 'aria-hidden': 'true' })), h('label', { for: idText }, p.short || p.name));
+      }))) : null;
     const tUrl = field({ label: 'Online tile address (https)', name: 'turl', path: 'tiles.online_url', value: t.online_url || '', hint: 'With {z}, {x} and {y} in it.', attrs: { placeholder: 'https://', disabled: ro } });
     // the offline map file: how to make one, which is in use, and (with several) which to use
     const tFiles = offlineFileChoices(maps?.tiles);
@@ -262,13 +352,17 @@ export async function mount(ctx) {
             [sChoice('Address lookup', [['offline', 'Offline'], ['online', 'Online service']], g.mode, (v) => patch({ geocode: { mode: v } }, 'Address lookup', [gUrl])),
               geoStatus(), gUrl.el, gRound.el], ['web.settings.general.address-lookup', 'docs.env.tesla-api.nominatim-proxy']),
           setting('Address language', 'Street and place names are written in this language where the data has it; otherwise in the local language.', gLang.el, ['web.settings.general.address-language', 'web.settings.general.address-language-error', 'web.settings.general.address-language-invalid']),
-          setting('Map tiles', 'Offline tiles come from Sentry Mate itself. An online source is asked by each viewer’s browser for the map pictures, so it sees the map area and this server’s address (as Referer, which OpenStreetMap needs; never a page or a car); only turn it on if you accept that.',
+          setting('Map tiles', 'Offline tiles come from Sentry Mate itself. An online map (satellite pictures by default) is asked by each viewer’s browser for the map pictures, so it sees the map area and this server’s address (as Referer, which some tile servers such as OpenStreetMap need; never a page or a car); only turn it on if you accept that.',
             [sChoice('Map tiles', [['offline', 'Offline'], ['online', 'Online source']], t.mode, (v) => patch({ tiles: { mode: v } }, 'Map tiles', [tUrl])), tileStatus(t), tSource, tTerms, tUrl.el, tAttr.el], 'web.shell.map-tiles'),
+          tLabels, tStyles,
           offlineRow,
           setting('Outside links', 'Links that open another site in a new tab, only when the viewer clicks them.',
             h('div', { class: 'row' },
               sChoice('Map links', [['false', 'No map links'], ['true', 'Map links']], String(!!server.outside_links?.maps), (v) => patch({ outside_links: { maps: v === 'true' } }, 'Map links')),
-              sChoice('Release notes', [['false', 'No release notes'], ['true', 'Release notes']], String(!!server.outside_links?.release_notes), (v) => patch({ outside_links: { release_notes: v === 'true' } }, 'Release-notes links')))))));
+              sChoice('Release notes', [['false', 'No release notes'], ['true', 'Release notes']], String(!!server.outside_links?.release_notes), (v) => patch({ outside_links: { release_notes: v === 'true' } }, 'Release-notes links')))))),
+      panel({ title: 'New releases', icon: 'upload', id: 'release-check', side: h('span', { class: 'faint' }, 'Off by default') },
+        setting('Check for new releases', 'Once a day the server asks GitHub whether a newer Sentry Mate image is published, and tells admins. Only that question goes out: no token, no car, no account. It never downloads or installs anything.',
+          [h('div', { class: 'switch-row switch-row--inline' }, releaseSwitch.el, h('label', { for: 'sd-release' }, server.release_check?.enabled ? 'On' : 'Off')), releaseBox])));
   }
   paintServer();
 

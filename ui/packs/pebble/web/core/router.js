@@ -180,7 +180,7 @@ async function mount(s) {
       throw err;
     }
     if (my !== token) return;
-    if (car) state.rememberCar(car.id);
+    if (car) state.rememberCar(car.id, { sold: !!car.sold });
     ctx.car = car;
     ctx.tz = (car && car.time_zone) || browserZone;
     ctx.period = resolveFor(ctx.info, s, ctx.tz);

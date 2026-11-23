@@ -22,6 +22,8 @@ import { chartOrNote, line, timeAxis, valueAxis, cursor, readout } from '../core
 import { rpx } from '../core/display.js';
 import { src, srcText } from '../core/source.js';
 import { teslaCarRows, lastErrorText } from './tesla.js';
+import { versionTag } from './firmware.js';
+import { totalsLine } from './connections.js';
 
 export const id = 'health';
 export const title = (ctx) => (ctx.car ? 'Health' : 'System');
@@ -126,7 +128,8 @@ async function mountCar(ctx) {
   const carBtn = hd.querySelectorAll('.ph-btn')[1];
   if (carBtn) cover(carBtn, 'dbinfo.filter.car');
   const reloadBtn = btn('[reload]', () => reloadAll(true), { kind: 'line', cover: 'dbinfo.control.refresh', title: 'read every figure again' });
-  const toolLine = h('p', { class: 'subline' }, readEl, '  ', reloadBtn, '  ', link(state.buildUrl('health'), 'system'), '  ', link(state.buildUrl('settings-cars', { car: cid }), 'settings/cars'));
+  const toolLine = h('p', { class: 'subline' }, readEl, '  ', reloadBtn, '  ', link(state.buildUrl('health'), 'system'), '  ', link(state.buildUrl('settings-cars', { car: cid }), 'settings/cars'),
+    admin ? ['  ', link(state.buildUrl('settings-integrations'), 'connections overview', { cover: 'conn.overview.link', title: 'every connection the server keeps: live, errors, problems' })] : null);
 
   /* ---------- status */
   const statusSlot = h('div', null, loadingLine('reading health'));
@@ -260,7 +263,7 @@ async function mountCar(ctx) {
       ['drives', [formatNumber(all.drives ?? 0), split(can.drives, api.drives, tm.drives, 'count')], { cover: 'dbinfo.stat.drive_count' }],
       ['charges', [formatNumber(all.charges ?? 0), split(can.charges, api.charges, tm.charges, 'count')], { cover: 'dbinfo.stat.charge_count' }],
       ['updates', [formatNumber(all.updates ?? 0), split(can.updates, api.updates, tm.updates, 'count')], { cover: 'dbinfo.stat.update_count' }],
-      ['software', sm?.current_version ? [link(state.buildUrl('software', { car: cid }), sm.current_version), sm.build_changed_since != null ? [' ', warn('changed since')] : null] : none('not known: the car does not send its version text'), { cover: 'dbinfo.stat.current_version' }],
+      ['software', sm?.current_version ? [link(state.buildUrl('software', { car: cid }), sm.current_version), versionTag(sm.current_version_source) ? [' ', versionTag(sm.current_version_source)] : null, sm.build_changed_since != null ? [' ', warn('changed since')] : null] : none('not known: the car does not send its version text'), { cover: 'dbinfo.stat.current_version' }],
     ]), counts.el);
   }
 
@@ -484,6 +487,23 @@ async function mountSystem(ctx) {
     replace(tailSlot, logTail(lines, tz));
   }
 
+  /* ---------- connections: the totals by status, and the way to the overview */
+  const connSlot = h('div', null, admin ? loadingLine('reading the connections') : null);
+  let connTot = null;
+  async function loadConn() {
+    if (!admin) { replace(connSlot, cover(locked('the connections overview'), 'conn.overview.link')); return; }
+    let ov = null;
+    try { ov = await ctx.api.get('integrations/overview'); } catch (e) { if (e.status !== 403 && e.status !== 404) throw e; }
+    if (!ctx.alive()) return;
+    const go = link(state.buildUrl('settings-integrations'), 'connections overview');
+    if (!ov) { replace(connSlot, h('p', { cover: 'conn.overview.link' }, go, none('  the overview could not be read'))); return; }
+    if (!connTot) {
+      connTot = totalsLine(ov.totals);
+      replace(connSlot, h('div', { cover: 'conn.overview.link' }, connTot.el,
+        h('p', null, go, none(ov.totals?.problem ? `  ${formatNumber(ov.totals.problem)} with a problem now: see what went wrong` : '  every connection the server keeps, how it is doing and what went wrong'))));
+    } else connTot.set(ov.totals);
+  }
+
   /* ---------- every car */
   const carSearch = h('input', { class: 'in in--search', type: 'search', placeholder: 'car name', 'aria-label': 'Find a car', spellcheck: 'false' });
   const cars = table(ctx, {
@@ -539,6 +559,7 @@ async function mountSystem(ctx) {
 
   replace(ctx.view, h('div', { class: 'page', dataset: { page: 'system' }, cover: 'shots.database-info' },
     hd, toolLine,
+    section({ title: 'connections' }, connSlot),
     section({ title: 'storage', cover: 'dbinfo.section.database' }, storeSlot),
     section({ title: 'server' }, srvSlot), tailSlot, clock,
     cars.el,
@@ -549,13 +570,13 @@ async function mountSystem(ctx) {
   async function reloadAll(say) {
     reloadBtn.disabled = true;
     try {
-      await Promise.all([loadStorage(), loadServer(), cars.reload()]);
+      await Promise.all([loadStorage(), loadServer(), loadConn(), cars.reload()]);
       readAt = ctx.api.now(); paintRead();
       if (say && ctx.alive()) toast('read again', { kind: 'info' });
     } catch (e) { if (ctx.alive()) toast(errorWords(e).text, { kind: 'error' }); } finally { reloadBtn.disabled = false; }
   }
 
-  try { await Promise.all([loadStorage(), loadServer(), cars.ready]); } catch (e) { if (ctx.alive()) ctx.fail(e); return; }
+  try { await Promise.all([loadStorage(), loadServer(), loadConn(), cars.ready]); } catch (e) { if (ctx.alive()) ctx.fail(e); return; }
   if (!ctx.alive()) return;
   ctx.ready();
 }

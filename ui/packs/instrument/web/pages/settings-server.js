@@ -21,6 +21,7 @@ import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { signOut } from '../core/session.js';
 import { dateTime, date, agoEl, tzName, DASH } from '../core/fmt.js';
 import { timeColumn } from '../shared/csv.js';
+import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 import { movePanel, showRecoveryKey, newRecoveryKey, markKeySaved, askPassword } from './settings-server-move.js';
 
 export const id = 'settings-server';
@@ -97,9 +98,10 @@ export async function mount(ctx) {
   if (!ctx.alive()) return;
 
   const carName = new Map(S.cars.map((c) => [c.id, c.name]));
-  // the zone the times on this page are in, named with them: the frame clock's (the last car's, else
-  // the first car's), else this browser's
-  const clockCar = S.cars.find((c) => c.id === state.lastCar()) || S.cars[0] || null;
+  // the zone the times on this page are in, named with them: the frame clock's (the preferred car's:
+  // Main car, else the last one opened), else this browser's
+  const clockId = state.preferredCar(S.cars);
+  const clockCar = S.cars.find((c) => c.id === clockId) || null;
   const tz = clockCar?.time_zone || ctx.tz;
   const zone = tzName(tz);
   const zoneText = clockCar?.time_zone ? `${zone}, ${clockCar.name}'s time zone like the clock at the top` : `${zone}, this browser's time zone`;
@@ -533,56 +535,48 @@ export async function mount(ctx) {
 
   /* ---------------------------------------------------------------- audit log (admin) */
   const accountName = (aid) => S.accounts.find((a) => a.id === aid)?.name;
-  // the changed item: a link where it still exists, else readable words (never a raw key)
-  function target(t, car = null) {
-    const i = String(t || '').indexOf(':');
-    const kind = i < 0 ? t : t.slice(0, i);
-    const tid = i < 0 ? '' : t.slice(i + 1);
-    const a = (href, text) => h('a', { class: 'link', href }, text);
-    const plain = (text) => h('span', null, text);
-    const onCar = car && carName.has(car) ? ` of ${carName.get(car)}` : '';
-    switch (kind) {
-      case 'drive': return car && carName.has(car) ? a(state.buildUrl('drive', { car, drive: tid }), `A drive${onCar}`) : plain('A drive');
-      case 'charge': return car && carName.has(car) ? a(state.buildUrl('charge', { car, charge: tid }), `A charge${onCar}`) : plain('A charge');
-      case 'update': return car && carName.has(car) ? a(state.buildUrl('software', { car }), `A software update${onCar}`) : plain('A software update');
-      case 'trip': {
-        const tr = S.trips.find((x) => x.id === tid);
-        const c = car || tr?.car;
-        if (!c || !carName.has(c)) return plain('A saved trip');
-        const text = tr?.name ? `Trip ${tr.name}` : `A saved trip of ${carName.get(c)}`;
-        return a(state.buildUrl('trip', { car: c, period: tr ? { from: tr.from_ms, to: tr.to_ms } : null }), text);
-      }
-      case 'server': return plain('The server');
-      case 'account': return a(state.buildUrl('settings-server', { query: { account: tid } }), `Account ${accountName(tid) || tid}`);
-      case 'session': return a(state.buildUrl('settings-server', { query: { session: tid } }), 'A session');
-      case 'car': return carName.has(tid) ? a(state.buildUrl('settings-cars', { car: tid }), carName.get(tid)) : h('span', { class: 'faint' }, 'A car no longer here');
-      case 'settings': return tid === 'mqtt' ? a(state.buildUrl('settings-integrations'), 'MQTT settings') : tid === 'tesla' ? a(`${state.buildUrl('settings-integrations')}#tesla`, 'Tesla API pace') : a(state.buildUrl('settings-display'), 'Server defaults');
-      case 'place': return a(state.buildUrl('places', { query: { place: tid } }), 'A place');
-      case 'import': return a(state.buildUrl('import'), 'An import');
-      case 'key': return a(state.buildUrl('settings-cars'), `CAN Bridge key ${tid}`);
-      // tesla:ta1 (an account), tesla:ta1:tv1 (one of its vehicles); settings:tesla is the poll pace
-      case 'tesla': { const acc = tid.split(':')[0]; return a(`${state.buildUrl('settings-integrations')}#tesla-${encodeURIComponent(acc)}`, tid.includes(':') ? 'A car of a Tesla account' : 'A Tesla account'); }
-      default: return h('span', { class: 'faint' }, t ? 'Another item' : DASH);
-    }
-  }
-  // the Tesla account's actions, in words (the code stays under them, for a search)
-  const ACTION_WORDS = {
-    'tesla-account-added': 'Tesla account added', 'tesla-account-removed': 'Tesla account removed', 'tesla-account-paused': 'Tesla account paused',
-    'tesla-account-resumed': 'Tesla account resumed', 'tesla-account-changed': 'Tesla account changed', 'tesla-token-replaced': 'Tesla token replaced',
-    'tesla-car-matched': 'Tesla car matched', 'tesla-poll-changed': 'Tesla API pace changed', 'tesla-sign-in-needed': 'Tesla asks to sign in again',
-    'tesla-account-error': 'Tesla account not read',
+  // the changed item in words (shared/audit.js), a link where it still exists
+  const itemCtx = {
+    carName: (cid) => carName.get(cid),
+    accountName,
+    trip: (tid) => S.trips.find((x) => x.id === tid),
   };
+  function itemEl(e) {
+    const it = auditItem(e, itemCtx);
+    if (!it) return h('span', { class: 'faint' }, DASH);
+    let href = null;
+    if (it.route) { try { href = state.buildUrl(it.route[0], it.route[1]) + (it.hash || ''); } catch { href = null; } }
+    return href ? h('a', { class: 'link', href }, it.text) : h('span', { class: it.faint ? 'faint' : null }, it.text);
+  }
+  // the filters: What (a group) and Who (an account, or the server itself); each change loads the first page again
+  const SERVER_WHO = '*server';
+  const whatPick = h('select', { class: 'select ss-audit-pick', 'aria-label': 'What' },
+    h('option', { value: '' }, 'Everything'), AUDIT_GROUPS.map((g) => h('option', { value: g.id }, g.label)));
+  const whoPick = h('select', { class: 'select ss-audit-pick', 'aria-label': 'Who' },
+    h('option', { value: '' }, 'Everyone'),
+    [...S.accounts].sort((x, y) => String(x.name).localeCompare(String(y.name))).map((a) => h('option', { value: a.name }, a.name)),
+    h('option', { value: SERVER_WHO }, 'The server'));
+  const auditFilters = h('span', { class: 'ss-audit-filters' },
+    h('label', { class: 'ss-audit-filter' }, h('span', { class: 'faint' }, 'What'), whatPick),
+    h('label', { class: 'ss-audit-filter' }, h('span', { class: 'faint' }, 'Who'), whoPick));
+  const filtered = () => !!(whatPick.value || whoPick.value);
+  const refilter = () => auditTable?.setParams({ group: whatPick.value || null, who: whoPick.value || null });
+  ctx.on(whatPick, 'change', refilter);
+  ctx.on(whoPick, 'change', refilter);
   const auditTable = admin ? dataTable(ctx, {
     title: 'Audit log', icon: 'book', path: 'audit', label: 'Who changed what', csvName: 'audit-log',
-    note: `Every change and every sign-in, newest first. The item links to what was changed, where it still exists. Times are in ${zoneText}.`,
+    limit: 10, autoMore: true, moreLabel: 'Load more', cls: 'ss-audit', side: auditFilters,
+    note: `Every change and every sign-in, newest first; more load as you scroll. The item links to what was changed, where it still exists. Times are in ${zoneText}.`,
     columns: [
-      { key: 'at_ms', label: `When (${zone})`, render: (e) => dateTime(e.at_ms, tz) },
+      { key: 'at_ms', label: `When (${zone})`, cls: 'ss-audit-when', render: (e) => dateTime(e.at_ms, tz) },
       { key: 'account', label: 'Who', render: (e) => (e.account ? h('b', null, e.account) : h('span', { class: 'faint' }, 'The server')) },
-      { key: 'action', label: 'Action', render: (e) => (ACTION_WORDS[e.action] ? h('span', { class: 'cell-text' }, h('span', null, ACTION_WORDS[e.action]), h('span', { class: 'sub mono' }, e.action)) : h('span', { class: 'mono ss-action' }, e.action)) },
-      { key: 'target', label: 'Item', render: (e) => target(e.target, e.car) },
-      { key: 'summary', label: 'What happened', render: (e) => e.summary || DASH },
+      { key: 'action', label: 'Action', render: (e) => h('span', { class: 'ss-action-label', title: e.action }, actionLabel(e.action)) },
+      { key: 'target', label: 'Item', render: itemEl },
+      { key: 'summary', label: 'What happened', cls: 'ss-audit-summary', render: (e) => e.summary || DASH },
     ],
-    empty: () => emptyState({ icon: 'book', title: 'Nothing recorded yet', text: 'Each sign-in and each change appears here as it happens.' }),
+    empty: () => (filtered()
+      ? emptyState({ icon: 'book', title: 'Nothing matches', text: 'No entry fits this What and Who. Choose Everything or Everyone to see more.' })
+      : emptyState({ icon: 'book', title: 'Nothing recorded yet', text: 'Each sign-in and each change appears here as it happens.' })),
   }) : null;
 
   /* ---------------------------------------------------------------- moving to another server (admin) */

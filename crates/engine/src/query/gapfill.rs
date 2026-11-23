@@ -215,12 +215,9 @@ impl Filled {
 /// The origin a source ref names.
 fn origin_of(r: &SourceRef) -> Option<Origin> {
     match r.kind {
-        "smo" => Some(Origin::Smo),
-        "tesla_api" => Some(Origin::TeslaApi),
-        "teslafi_api" => Some(Origin::TeslafiApi),
-        "teslamate_local" => Some(Origin::TeslamateLocal),
         "import" => r.site.and_then(ImportSite::from_word).map(Origin::Import),
-        _ => None,
+        // a live input's own word (`smo`, `tesla_api`, `teslafi_api`, `teslamate_local`)
+        k => model::Input::ALL.into_iter().map(Origin::from).find(|o| o.kind() == k),
     }
 }
 

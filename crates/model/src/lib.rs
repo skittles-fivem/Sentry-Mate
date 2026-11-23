@@ -8,7 +8,10 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod off_can;
 pub mod vehicle;
+
+pub use off_can::{OffCan, OffCanNow, Sourced};
 
 pub type CarId = u32;
 pub type DriveId = u64;
@@ -40,7 +43,16 @@ impl Source {
 
     /// Whether the row was imported (from any site).
     pub fn is_imported(self) -> bool {
-        self != Source::Live
+        self.site().is_some()
+    }
+
+    /// Its place in [`Source::ALL`], for per-source arrays (`[T; Source::ALL.len()]`).
+    pub const fn index(self) -> usize {
+        match self {
+            Source::Live => 0,
+            Source::Teslamate => 1,
+            Source::Teslafi => 2,
+        }
     }
 
     /// The site an imported row came from.
@@ -82,19 +94,33 @@ pub enum Input {
 }
 
 impl Input {
-    /// In the order they win where two cover the same time: SMO, then the Tesla API, then TeslaFi, then the local
-    /// TeslaMate.
+    /// Every input, in the order they win by default where two cover the same time (a car's [`SourceOrder`] may
+    /// set another): SMO, then the Tesla API, then TeslaFi, then the local TeslaMate.
     pub const ALL: [Input; 4] = [Input::Smo, Input::TeslaApi, Input::TeslafiApi, Input::TeslamateLocal];
 
-    fn bit(self) -> u8 {
+    /// The inputs other than SMO (the APIs), in [`Input::ALL`]'s order.
+    pub fn apis() -> impl Iterator<Item = Input> {
+        Input::ALL.into_iter().filter(|i| *i != Input::Smo)
+    }
+
+    /// Its place in [`Input::ALL`], for per-input arrays (`[T; Input::ALL.len()]`).
+    pub const fn index(self) -> usize {
         match self {
-            Input::Smo => 1,
-            Input::TeslaApi => 2,
-            Input::TeslafiApi => 4,
-            Input::TeslamateLocal => 8,
+            Input::Smo => 0,
+            Input::TeslaApi => 1,
+            Input::TeslafiApi => 2,
+            Input::TeslamateLocal => 3,
         }
     }
+
+    /// Its bit in [`Inputs`] (in memory only: a set is stored as words).
+    const fn bit(self) -> u8 {
+        1 << self.index()
+    }
 }
+
+// An input more than [`Inputs`] has bits for must widen it (it is stored as words, so that changes nothing on disk).
+const _: () = assert!(Input::ALL.len() <= u8::BITS as usize);
 
 /// A set of live inputs (stored as a list of words, `["smo", "tesla_api"]`). Empty on rows written before inputs were
 /// kept: a live row then counts as SMO, the only live input there was.
@@ -103,11 +129,12 @@ pub struct Inputs(u8);
 
 impl Inputs {
     pub const NONE: Inputs = Inputs(0);
-    pub const SMO: Inputs = Inputs(1);
-    pub const TESLA_API: Inputs = Inputs(2);
-    pub const BOTH: Inputs = Inputs(3);
-    pub const TESLAFI_API: Inputs = Inputs(4);
-    pub const TESLAMATE_LOCAL: Inputs = Inputs(8);
+    pub const SMO: Inputs = Inputs(Input::Smo.bit());
+    pub const TESLA_API: Inputs = Inputs(Input::TeslaApi.bit());
+    /// SMO and the Tesla API.
+    pub const BOTH: Inputs = Inputs(Input::Smo.bit() | Input::TeslaApi.bit());
+    pub const TESLAFI_API: Inputs = Inputs(Input::TeslafiApi.bit());
+    pub const TESLAMATE_LOCAL: Inputs = Inputs(Input::TeslamateLocal.bit());
 
     pub fn is_empty(&self) -> bool {
         self.0 == 0
@@ -132,10 +159,10 @@ impl Inputs {
 
     /// The inputs that are not SMO (the APIs).
     pub fn without_smo(self) -> Inputs {
-        Inputs(self.0 & !1)
+        Inputs(self.0 & !Input::Smo.bit())
     }
 
-    /// In a fixed order: SMO first.
+    /// In a fixed order ([`Input::ALL`]'s): SMO first.
     pub fn iter(self) -> impl Iterator<Item = Input> {
         Input::ALL.into_iter().filter(move |i| self.contains(*i))
     }
@@ -169,6 +196,97 @@ impl<'de> Deserialize<'de> for Inputs {
     }
 }
 
+impl Input {
+    /// The input's short name a page shows: "SMO", "Tesla API", "TeslaFi", "local TeslaMate".
+    pub fn name(self) -> &'static str {
+        match self {
+            Input::Smo => "SMO",
+            Input::TeslaApi => "Tesla API",
+            Input::TeslafiApi => "TeslaFi",
+            Input::TeslamateLocal => "local TeslaMate",
+        }
+    }
+
+    /// The input's word (`smo`, `tesla_api`, `teslafi_api`, `teslamate_local`).
+    pub fn word(self) -> &'static str {
+        match self {
+            Input::Smo => "smo",
+            Input::TeslaApi => "tesla_api",
+            Input::TeslafiApi => "teslafi_api",
+            Input::TeslamateLocal => "teslamate_local",
+        }
+    }
+
+    pub fn from_word(w: &str) -> Option<Input> {
+        Input::ALL.into_iter().find(|i| i.word() == w)
+    }
+}
+
+/// The order a car's live inputs win in where two cover the same time, highest first: every input once (the car's
+/// `source_order` setting; [`SourceOrder::default`] is [`Input::ALL`]: SMO, the Tesla API, TeslaFi, local
+/// TeslaMate). Imports always come after every live input. Stored as its words; a list that is not every input
+/// exactly once is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "Vec<Input>", into = "Vec<Input>")]
+pub struct SourceOrder([Input; Input::ALL.len()]);
+
+impl Default for SourceOrder {
+    fn default() -> SourceOrder {
+        SourceOrder(Input::ALL)
+    }
+}
+
+impl SourceOrder {
+    /// The order of `list`, when it names every input exactly once.
+    pub fn new(list: &[Input]) -> Option<SourceOrder> {
+        if list.len() != Input::ALL.len() || !Input::ALL.iter().all(|i| list.iter().filter(|x| *x == i).count() == 1) {
+            return None;
+        }
+        let mut out = Input::ALL;
+        for (slot, i) in out.iter_mut().zip(list) {
+            *slot = *i;
+        }
+        Some(SourceOrder(out))
+    }
+
+    /// Every input, highest first.
+    pub fn iter(&self) -> impl Iterator<Item = Input> + '_ {
+        self.0.iter().copied()
+    }
+
+    /// Where `i` stands (0: it wins over every other).
+    pub fn rank(&self, i: Input) -> usize {
+        self.0.iter().position(|x| *x == i).unwrap_or(self.0.len())
+    }
+
+    /// The first input of `set` in this order.
+    pub fn first_of(&self, set: Inputs) -> Option<Input> {
+        self.iter().find(|i| set.contains(*i))
+    }
+
+    /// The words, highest first.
+    pub fn words(&self) -> Vec<&'static str> {
+        self.iter().map(Input::word).collect()
+    }
+
+    pub fn is_default(&self) -> bool {
+        *self == SourceOrder::default()
+    }
+}
+
+impl TryFrom<Vec<Input>> for SourceOrder {
+    type Error = String;
+    fn try_from(v: Vec<Input>) -> Result<SourceOrder, String> {
+        SourceOrder::new(&v).ok_or_else(|| "a source order names every live input exactly once".to_string())
+    }
+}
+
+impl From<SourceOrder> for Vec<Input> {
+    fn from(o: SourceOrder) -> Vec<Input> {
+        o.0.to_vec()
+    }
+}
+
 /// A site history can be imported from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -179,6 +297,14 @@ pub enum ImportSite {
 
 impl ImportSite {
     pub const ALL: [ImportSite; 2] = [ImportSite::Teslamate, ImportSite::Teslafi];
+
+    /// Its place in [`ImportSite::ALL`], for tables with one slot per site.
+    pub fn index(self) -> usize {
+        match self {
+            ImportSite::Teslamate => 0,
+            ImportSite::Teslafi => 1,
+        }
+    }
 
     /// The word the API writes (`site`).
     pub fn word(self) -> &'static str {
@@ -334,7 +460,23 @@ impl Stream {
 
     /// Whether it holds imported points.
     pub fn is_imported(self) -> bool {
-        matches!(self, Stream::Teslamate | Stream::Teslafi)
+        match self {
+            Stream::Smo | Stream::TeslaApi | Stream::TeslafiApi | Stream::TeslamateLocal => false,
+            Stream::Teslamate | Stream::Teslafi => true,
+        }
+    }
+
+    /// Its place in [`Stream::ALL`], for per-stream arrays (`[T; Stream::ALL.len()]`). Never stored: a new stream
+    /// may take any place.
+    pub const fn index(self) -> usize {
+        match self {
+            Stream::Smo => 0,
+            Stream::TeslaApi => 1,
+            Stream::TeslafiApi => 2,
+            Stream::TeslamateLocal => 3,
+            Stream::Teslamate => 4,
+            Stream::Teslafi => 5,
+        }
     }
 
     /// The series directory's suffix.
@@ -439,8 +581,13 @@ pub struct Car {
     pub vin: Option<VinInfo>,
     /// `None`: automatic (from the VIN, else Model 3/Y).
     pub profile_setting: Option<CarProfile>,
-    /// IANA time zone, e.g. `America/Chicago` (days, tariffs and the UI's clock follow it).
+    /// IANA time zone, e.g. `America/Chicago` (days, tariffs and the UI's clock follow it), when the owner set it
+    /// ([`Car::typed_zone`]); otherwise only what the car started with, and the engine works the zone out.
     pub time_zone: String,
+    /// Whether the owner set `time_zone`. `None` on older records, which had no such notion: set unless it is
+    /// `UTC`, the zone every car started in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_zone_typed: Option<bool>,
     /// Wh per km at the wheels used for range figures, when known.
     pub efficiency_wh_km: Option<f64>,
     pub created_ms: u64,
@@ -474,6 +621,12 @@ impl VinInfo {
 }
 
 impl Car {
+    /// The time zone the owner set, if they did (an older record's `UTC` counts as not set).
+    pub fn typed_zone(&self) -> Option<&str> {
+        let typed = self.time_zone_typed.unwrap_or(self.time_zone != "UTC");
+        typed.then_some(self.time_zone.as_str())
+    }
+
     /// The DBC set in use: the setting, else what the VIN says, else Model 3/Y.
     pub fn profile(&self) -> CarProfile {
         if let Some(p) = self.profile_setting {
@@ -569,7 +722,9 @@ pub struct Sample {
     pub total_charge_kwh: Option<f64>,
     pub total_discharge_kwh: Option<f64>,
     pub lv_voltage_v: Option<f64>,
-    /// Tire pressures, bar: front left, front right, rear left, rear right.
+    /// Tire pressures, bar: front left, front right, rear left, rear right where the input names the wheels (the
+    /// APIs, the chassis bus's 0x31F, or 0x219 with its four slots' wheels known); else 0x219's four slots in the
+    /// car's own order, which wheel each is not known ([`SampleExtra::tires_mapped`] says which, where it is known).
     pub tpms_bar: [Option<f64>; 4],
     /// Body, build, comfort and charge-detail values (doors, modes, car configuration, charge limit ...). Kept out of
     /// the stored points: only the car's Now and MQTT use them. Absent in JSON when none is known.
@@ -654,8 +809,19 @@ pub struct SampleExtra {
     pub charger_phases: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_to_full_min: Option<f64>,
+    /// A tyre more than 10 % below its recommended pressure ([`tyre_low`]; the car's own warning where it sends one).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tire_low: Option<bool>,
+    /// The car's recommended (cold) tyre pressures, bar: front and rear axle (0x219 page 4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tire_recommended_front_bar: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tire_recommended_rear_bar: Option<f64>,
+    /// Whether [`Sample::tpms_bar`] is in wheel order (front left, front right, rear left, rear right): `true` when
+    /// the input names the wheels, `false` when the pressures are 0x219's slots and which wheel each is not known;
+    /// `None` with no pressures (or from an input that does not say).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tires_mapped: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub energy_at_destination_kwh: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -667,6 +833,45 @@ pub struct SampleExtra {
 impl SampleExtra {
     pub fn is_empty(&self) -> bool {
         *self == SampleExtra::default()
+    }
+}
+
+/// A tyre is low when its pressure is more than this far below its recommended (cold) pressure (0.1: 10 %).
+pub const TYRE_LOW_FRACTION: f64 = 0.1;
+
+/// Each of four tyre pressures judged against the recommended pressures (`recommended`: front, rear axle; any unit,
+/// the same as the pressures'): `Some(true)` when it is more than [`TYRE_LOW_FRACTION`] below, `Some(false)` when not,
+/// `None` when its pressure or its recommended one is not known. `mapped`: the pressures are in wheel order (front
+/// left, front right, rear left, rear right) and each is judged against its own axle's. Not mapped, which wheel each
+/// is is not known: every tyre is judged against the lower of the two (both needed), so a rear tyre at the rear's
+/// pressure is never called low against a higher front one. That gives no false alarm; a tyre between the two (low
+/// for the higher axle only) is missed.
+pub fn tyre_lows(pressures: &[Option<f64>; 4], recommended: [Option<f64>; 2], mapped: bool) -> [Option<bool>; 4] {
+    let against = tyre_against(recommended, mapped);
+    [0, 1, 2, 3].map(|i| pressures[i].zip(against[i]).map(|(p, r)| p < r * (1.0 - TYRE_LOW_FRACTION)))
+}
+
+/// The recommended pressure each of four tyres is judged against ([`tyre_lows`]): its axle's when `mapped`, else the
+/// lower of the two.
+pub fn tyre_against(recommended: [Option<f64>; 2], mapped: bool) -> [Option<f64>; 4] {
+    let recommended = recommended.map(|r| r.filter(|r| r.is_finite() && *r > 0.0));
+    let lower = match recommended {
+        [Some(a), Some(b)] => Some(a.min(b)),
+        _ => None,
+    };
+    [0, 1, 2, 3].map(|i| if mapped { recommended[i / 2] } else { lower })
+}
+
+/// Whether a tyre is low ([`tyre_lows`]): `true` when any is, `false` when all four are judged and none is, else not
+/// known.
+pub fn tyre_low(pressures: &[Option<f64>; 4], recommended: [Option<f64>; 2], mapped: bool) -> Option<bool> {
+    let lows = tyre_lows(pressures, recommended, mapped);
+    if lows.contains(&Some(true)) {
+        Some(true)
+    } else if lows.iter().all(|l| *l == Some(false)) {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -892,11 +1097,57 @@ pub struct Now {
     /// The Data health rule's verdict for the car's logger, when it was worked out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub healthy: Option<bool>,
+    /// Since when the car is in its state (the timeline's newest span, the drive's or charge's start), when it was
+    /// worked out (filled for MQTT, not stored).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_ms: Option<u64>,
+    /// The trim as Car settings shows it (filled for MQTT, not stored).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trim: Option<String>,
+    /// The values no CAN message carries, from the API inputs ([`off_can::fuse`]; filled for MQTT, not stored).
+    /// (Boxed: a car waiting for the broker keeps a small Now.)
+    #[serde(default, skip_serializing_if = "off_can_empty")]
+    pub off_can: Box<OffCanNow>,
+}
+
+#[allow(clippy::borrowed_box)]
+fn off_can_empty(o: &Box<OffCanNow>) -> bool {
+    o.is_empty()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The per-source, per-input and per-stream lists stay whole as variants are added: every variant once, at its
+    /// own index, each input with its own bit (an [`Inputs`] holds 8), and every stream live or imported.
+    #[test]
+    fn enum_lists_cover_every_variant() {
+        for (k, s) in Source::ALL.into_iter().enumerate() {
+            assert_eq!(s.index(), k);
+        }
+        for (k, s) in ImportSite::ALL.into_iter().enumerate() {
+            assert_eq!(s.index(), k);
+            assert_eq!(Source::of_site(s).site(), Some(s));
+            assert!(Stream::IMPORTED.contains(&Stream::of_site(s)));
+        }
+        assert!(Input::ALL.len() <= 8);
+        let mut bits = 0u8;
+        for i in Input::ALL {
+            assert_eq!(i.bit().count_ones(), 1);
+            assert_eq!(bits & i.bit(), 0, "{i:?} shares a bit");
+            bits |= i.bit();
+            assert!(Stream::LIVE.contains(&Stream::from(i)));
+            assert_eq!(Inputs::from(i).without_smo().is_empty(), i == Input::Smo);
+        }
+        assert_eq!(Stream::LIVE.len(), Input::ALL.len());
+        assert_eq!(Stream::IMPORTED.len(), ImportSite::ALL.len());
+        assert_eq!(Stream::LIVE.len() + Stream::IMPORTED.len(), Stream::ALL.len());
+        for s in Stream::ALL {
+            assert_eq!(Stream::LIVE.contains(&s), !s.is_imported());
+            assert_eq!(Stream::IMPORTED.contains(&s), s.is_imported());
+        }
+    }
 
     fn vin(model: Option<char>, year: Option<u16>, via: u32) -> VinInfo {
         VinInfo { vin_prefix: String::new(), model, year, plant: None, via }
@@ -919,6 +1170,7 @@ mod tests {
             vin: Some(vin(Some('S'), Some(2017), 0x508)),
             profile_setting: None,
             time_zone: "UTC".into(),
+            time_zone_typed: Some(true),
             efficiency_wh_km: None,
             created_ms: 0,
             inputs: Default::default(),
@@ -942,6 +1194,50 @@ mod tests {
         assert_eq!(plaid_2020_year_code.profile(), CarProfile::Tesla3Y, "position 8 = 6 is a refresh car");
         let truck = VinInfo::from_vin("7G2CEHEE8PF000004", 0x405).unwrap();
         assert_eq!((truck.model_name(), truck.profile()), (Some("Cybertruck"), CarProfile::Tesla3Y));
+    }
+
+    #[test]
+    fn enum_lists_cover_every_variant_in_index_order() {
+        for (i, s) in Stream::ALL.into_iter().enumerate() {
+            assert_eq!(s.index(), i, "{s:?}");
+            assert_eq!(Stream::LIVE.contains(&s), !s.is_imported(), "{s:?}: LIVE and IMPORTED split ALL");
+            assert_eq!(Stream::IMPORTED.contains(&s), s.is_imported(), "{s:?}");
+        }
+        assert_eq!(Stream::LIVE.len() + Stream::IMPORTED.len(), Stream::ALL.len());
+        let dirs: std::collections::HashSet<_> = Stream::ALL.iter().map(|s| s.dir_name()).collect();
+        assert_eq!(dirs.len(), Stream::ALL.len(), "every stream has its own directory");
+        for (i, x) in Input::ALL.into_iter().enumerate() {
+            assert_eq!(x.index(), i, "{x:?}");
+            assert_eq!(Stream::from(x), Stream::LIVE[i], "inputs and live streams win in the same order");
+        }
+        assert_eq!(Input::ALL.len(), Stream::LIVE.len());
+        for (i, s) in Source::ALL.into_iter().enumerate() {
+            assert_eq!(s.index(), i, "{s:?}");
+            assert_eq!(Stream::from(s).is_imported(), s.is_imported(), "{s:?}");
+        }
+        for site in ImportSite::ALL {
+            assert!(Stream::IMPORTED.contains(&Stream::of_site(site)));
+            assert_eq!(Source::of_site(site).site(), Some(site));
+        }
+        let all: Inputs = Input::ALL.into_iter().collect();
+        assert_eq!(all.iter().count(), Input::ALL.len(), "every input has its own bit");
+    }
+
+    #[test]
+    fn source_orders_name_every_input_once() {
+        let d = SourceOrder::default();
+        assert_eq!(d.words(), vec!["smo", "tesla_api", "teslafi_api", "teslamate_local"]);
+        assert_eq!(serde_json::to_string(&d).unwrap(), r#"["smo","tesla_api","teslafi_api","teslamate_local"]"#);
+        let o: SourceOrder = serde_json::from_str(r#"["tesla_api","smo","teslamate_local","teslafi_api"]"#).unwrap();
+        assert_eq!((o.rank(Input::TeslaApi), o.rank(Input::Smo), o.rank(Input::TeslafiApi)), (0, 1, 3));
+        assert_eq!(o.first_of(Inputs::BOTH), Some(Input::TeslaApi));
+        for bad in [r#"["smo","smo","teslafi_api","teslamate_local"]"#, r#"["smo","tesla_api","teslafi_api"]"#, "[]"] {
+            assert!(serde_json::from_str::<SourceOrder>(bad).is_err(), "{bad}");
+        }
+        for i in Input::ALL {
+            assert_eq!(Input::from_word(i.word()), Some(i));
+            assert_eq!(Origin::from(i).kind(), i.word());
+        }
     }
 
     #[test]

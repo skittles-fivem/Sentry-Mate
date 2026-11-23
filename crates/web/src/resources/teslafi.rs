@@ -164,6 +164,12 @@ pub fn notices(app: &AppState) -> Vec<Notice> {
     app.service::<TeslafiService>().map(|s| s.accounts().iter().filter_map(notice).collect()).unwrap_or_default()
 }
 
+/// Whether a vehicle of an account is matched to `car` (it is read for that car), for the car's data sources.
+pub fn feeds_car(app: &AppState, car: model::CarId) -> bool {
+    app.service::<TeslafiService>()
+        .is_ok_and(|s| s.accounts().iter().flat_map(|a| &a.cars).any(|c| c.matched == Some(Match::Car { car })))
+}
+
 /// The TeslaFi part of `/system/health`: accounts, matched cars, requests today, the last problem.
 pub fn health(app: &AppState) -> Value {
     let Ok(svc) = app.service::<TeslafiService>() else {
@@ -690,14 +696,23 @@ async fn put_cars(
             .find(|c| &c.vehicle == vehicle)
             .and_then(|c| c.display_name.clone())
             .unwrap_or_else(|| vehicle.clone());
-        let (car, what) = match m {
-            Some(Match::Car { car }) => (Some(*car), format!("is car {}: it is read from now on", ids::car(*car))),
-            Some(Match::New) => (None, "gets a new car of its own: it is read from now on".to_string()),
-            Some(Match::LeaveOut) => (None, "is left out: it is not read".to_string()),
-            None => (None, "is not matched to a car: it is not read".to_string()),
+        let car = match m {
+            Some(Match::Car { car }) => Some(*car),
+            _ => None,
         };
-        let t = target("teslafi", car, &format!("{}:{vehicle}", after.id));
-        let summary = format!("TeslaFi car {name} of the TeslaFi account {} {what}.", after.label);
+        let of = format!("of the TeslaFi account {}", after.label);
+        let summary = match (m, car) {
+            (_, Some(c)) => {
+                let car_name = app.blocking(move |app| Ok(app.car_name(c))).await?;
+                format!("Matched TeslaFi car {name} {of} to {car_name}: it is read from now on.")
+            }
+            (Some(Match::New), _) => {
+                format!("Matched TeslaFi car {name} {of} to a new car of its own: it is read from now on.")
+            }
+            (Some(Match::LeaveOut), _) => format!("Left TeslaFi car {name} {of} out: it is not read."),
+            _ => format!("Unmatched TeslaFi car {name} {of}: it is not read."),
+        };
+        let t = crate::ctx::target_of_car(&target("teslafi", None, &format!("{}:{vehicle}", after.id)), car);
         v.audit(&app, "teslafi-car-matched", Some(&t), &summary).await?;
         audited = true;
     }

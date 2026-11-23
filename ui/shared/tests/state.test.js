@@ -158,3 +158,43 @@ test('splitSold keeps the order and puts sold cars apart', async () => {
   assert.deepEqual(r.sold.map(c => c.id), ['c0']);
   assert.equal(isSold(null), false);
 });
+
+test('preferredCar: main car, else last car (not sold), else pinned, else the first not sold', () => {
+  const cars = [{ id: 'c1', sold: true }, { id: 'c2' }, { id: 'c3' }, { id: 'c4', sold: true }];
+  const P = (p) => ({ main_car: null, last_car: null, pinned_cars: [], car_order: [], ...p });
+  assert.equal(S.preferredCar(cars, P({ main_car: 'c3', last_car: 'c2' })), 'c3', 'the main car wins');
+  assert.equal(S.preferredCar(cars, P({ main_car: 'c4' })), 'c4', 'a main car is kept even when sold');
+  assert.equal(S.preferredCar(cars, P({ main_car: 'c9', last_car: 'c3' })), 'c3', 'a main car not seen is passed over');
+  assert.equal(S.preferredCar(cars, P({ last_car: 'c1', pinned_cars: ['c4', 'c3'] })), 'c3', 'a sold last car and sold pins are passed over');
+  assert.equal(S.preferredCar(cars, P({ last_car: 'c9', car_order: ['c1', 'c3'] })), 'c3', 'then the car order');
+  assert.equal(S.preferredCar(cars, P({})), 'c2', 'else the first not sold, never the imported old car');
+  assert.equal(S.preferredCar([{ id: 'c1', sold: true }], P({})), 'c1', 'only sold cars: the first');
+  assert.equal(S.preferredCar([], P({ main_car: 'c1' })), null);
+});
+
+test('rememberCar saves last_car once after quick picks, never a sold car picked implicitly', async () => {
+  const sent = [];
+  S.configureCarMemory({ delayMs: 10, save: async (id) => { sent.push(id); return { last_car: id, main_car: null, pinned_cars: [], car_order: [] }; } });
+  S.setCarPrefs({ main_car: null, last_car: 'c1', pinned_cars: [], car_order: [] });
+  S.rememberCar('c1');
+  S.rememberCar('c2');
+  S.rememberCar('c3');
+  S.rememberCar('c4', { sold: true, explicit: false });
+  await new Promise((r) => setTimeout(r, 40));
+  assert.deepEqual(sent, ['c3'], 'debounced: the newest pick only');
+  assert.equal(S.carPrefs().last_car, 'c3');
+  assert.equal(S.lastCar(), 'c3');
+  S.rememberCar('c3');
+  S.rememberCar('c4', { sold: true });
+  await S.flushCar();
+  assert.deepEqual(sent, ['c3', 'c4'], 'the same car again is not sent; a sold car opened explicitly is');
+  // another device chose: the server's word replaces the local copy; a main car wins over it
+  S.setCarPrefs({ main_car: 'c2', last_car: 'c1', pinned_cars: [], car_order: [] });
+  assert.equal(S.lastCar(), 'c2');
+  S.setCarPrefs({ main_car: null, last_car: 'c1', pinned_cars: [], car_order: [] });
+  assert.equal(S.lastCar(), 'c1');
+  S.configureCarMemory({ save: async () => { throw new Error('offline'); } });
+  S.rememberCar('c5');
+  await S.flushCar();
+  assert.equal(S.lastCar(), 'c5', 'a failed save keeps the local copy');
+});

@@ -1,37 +1,30 @@
-// Maps on MapLibre GL (vendor/maplibre-gl, loaded on first use), styled like a night radar: the tiles dimmed
-// and tinted indigo, routes as neon traces with a glow. Tiles come from GET /maps/config: Sentry Mate's own
-// offline tiles, or the online source an admin turned on (only then does the browser ask an outside server),
-// or none (the routes and markers on a plain background, with a note on how to turn tiles on).
-// MapLibre reads the pixel ratio only in resize(), so the map is resized when the pixel ratio, the root size
-// or the theme changes; line widths are functions of rpx() and set again; the camera framing runs again after
-// a resize until the person moves the map. The attribution is escaped text.
+// Maps on MapLibre GL (vendor/maplibre-gl, loaded on first use), with tiles chosen offline first
+// (shared/maptiles.js): GET /api/v1/maps/config -> the offline map file Sentry Mate serves (raster, or a
+// Protomaps vector file drawn with a plain style); the online source the owner turned on (only then does
+// the browser ask an outside server); otherwise no tiles: the map shows the track and markers on a plain
+// background under a "No map tiles yet" note (for an admin, a one-click satellite map switch). Tiles that
+// fail show a short note with the cause. In the dark theme raster tiles are dimmed (never inverted, so
+// streets, labels and water stay readable) unless the person chose original colours; satellite photos are
+// never dimmed, and the page's lines, outlines and markers get a dark halo over them. An interactive map
+// shows the Map / Satellite switch (under the zoom buttons) when the admin allows more than one style.
+// Maps stay sharp and in proportion: MapLibre reads the pixel ratio only in resize(), so the map is
+// resized when the pixel ratio or the root size changes; line widths and circle sizes added with
+// handle.addLayer(def, sized) are functions of rpx() and are set again; the camera framing (handle.frame)
+// runs again after a resize until the person moves the map. The attribution is text (escaped).
 
 import * as api from '../shared/api.js';
 import { h, cssVar, esc } from '../shared/dom.js';
-import { rpx, onRedraw, onTheme, getTheme } from './display.js';
+import { rpx, onChange, onTheme, getTheme } from './display.js';
 import { getPrefs, onPrefs } from './prefs.js';
-import { tileChoice, rasterPaint, dimmed, mapColors, tileSourceDef, tileLayers, vectorGround, noTilesNote, watchTileErrors } from '../shared/maptiles.js';
+import { tileChoice, rasterPaint, dimmed, mapColors, tileSources, tileLayers, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles } from '../shared/maptiles.js';
 
 let mlLoad = null;
-/**
- * Load MapLibre once (an ES module, its worker and its stylesheet, all from this pack). Resolves once the
- * stylesheet is in too: a map built before it lays its canvas and controls out in the flow for a moment,
- * which makes the box around it grow and shrink back.
- */
+/** Load MapLibre once (an ES module and its worker, both from this pack). */
 export function loadMapLibre() {
-  mlLoad ??= (() => {
-    let css = Promise.resolve();
-    if (!document.querySelector('link[data-maplibre]')) {
-      const link = h('link', { rel: 'stylesheet', href: '/vendor/maplibre-gl/maplibre-gl.css', dataset: { maplibre: '' } });
-      css = new Promise((r) => { link.addEventListener('load', r, { once: true }); link.addEventListener('error', r, { once: true }); });
-      document.head.append(link);
-    }
-    const js = import('../vendor/maplibre-gl/maplibre-gl.mjs').then((ml) => {
-      ml.setWorkerUrl(new URL('../vendor/maplibre-gl/maplibre-gl-worker.mjs', import.meta.url).href);
-      return ml;
-    });
-    return Promise.all([js, css]).then(([ml]) => ml);
-  })();
+  mlLoad ??= import('../vendor/maplibre-gl/maplibre-gl.mjs').then((ml) => {
+    ml.setWorkerUrl(new URL('../vendor/maplibre-gl/maplibre-gl-worker.mjs', import.meta.url).href);
+    return ml;
+  });
   return mlLoad;
 }
 
@@ -54,115 +47,230 @@ export function watchTilePolicy(template) {
     location.reload();
   });
 }
-/** The tiles to use (shared/maptiles.js tileChoice): { kind: 'raster' | 'vector' | 'none', offline, template, attribution, maxZoom, why }. */
+/** GET /maps/config (cached a few minutes), or null when it can't be read. */
+async function mapsConfig() {
+  try { return await api.get('maps/config', null, { maxAgeMs: 300000 }); } catch { return null; }
+}
+/** The tile set to use (shared/maptiles.js tileChoice, with the person's map style): { kind, offline, template, attribution, maxZoom, overlays, imagery, styleId, why }. */
 export async function tileSource() {
-  let cfg = null;
-  try { cfg = await api.get('maps/config', null, { maxAgeMs: 300000 }); } catch { cfg = null; }
-  return tileChoice(cfg);
+  return tileChoice(await mapsConfig(), getPrefs());
 }
 
-const num = (name, fallback) => { const v = parseFloat(cssVar(name)); return Number.isFinite(v) ? v : fallback; };
-const isDark = () => getTheme().look !== 'light';
-// in the dark theme the tiles are dimmed (never inverted) with the pack's violet tint over them; the light theme and
-// "original colours" show the tile server's own colours
-function baseStyle(src) {
+const isDark = () => getTheme().effective === 'dark';
+
+const cssNum = (name, fallback) => { const v = parseFloat(cssVar(name)); return Number.isFinite(v) ? v : fallback; };
+/** The raster paint for the theme and the person's map colours (satellite photos get the plain paint in tileLayers). */
+const tilePaint = (dark, colors) => rasterPaint({ dark, colors, tune: { saturation: cssNum('--map-dim-saturation', -0.25), contrast: cssNum('--map-dim-contrast', 0.12), min: cssNum('--map-dim-min', 0.04), max: cssNum('--map-dim-max', 0.66) } });
+/** The pack's blue tint, only over the dimmed look (original colours and satellite photos stay as drawn). */
+const tintPaint = (src, dark, colors) => ({ 'background-color': cssVar('--map-tint'), 'background-opacity': dimmed(dark, colors, src) && src.kind === 'raster' ? cssNum('--map-tint-opacity', 0.1) : 0 });
+
+function style(src) {
   const dark = isDark(), colors = mapColors(getPrefs());
-  const layers = [{ id: 'bg', type: 'background', paint: { 'background-color': src.kind === 'vector' ? vectorGround(dark) : cssVar('--map-bg') } }];
-  const sources = {};
-  const def = tileSourceDef(src, { attribution: esc(src.attribution) });
-  if (def) {
-    sources.tiles = def;
-    const tune = { saturation: num('--map-sat', -0.35), contrast: num('--map-contrast', 0.16), min: num('--map-bmin', 0.03), max: num('--map-bmax', 0.58) };
-    layers.push(...tileLayers(src, { dark, paint: rasterPaint({ dark, colors, tune }) }));
-    layers.push({ id: 'tint', type: 'background', paint: { 'background-color': cssVar('--map-tint'), 'background-opacity': dimmed(dark, colors) && src.kind === 'raster' ? num('--map-tint-a', 0.12) : 0 } });
+  const ground = src.kind === 'vector' ? vectorGround(dark) : cssVar('--map-bg');
+  const layers = [{ id: 'bg', type: 'background', paint: { 'background-color': ground } }];
+  const sources = tileSources(src, { attribution: esc(src.attribution) });
+  if (sources.tiles) {
+    // the base tiles, then the names and roads over photos (tiles-overlay-N), under the page's own layers
+    layers.push(...tileLayers(src, { dark, paint: tilePaint(dark, colors) }));
+    layers.push({ id: 'tint', type: 'background', paint: tintPaint(src, dark, colors) });
   }
   return { version: 8, sources, layers };
 }
 
 /**
- * A map in el (sized by CSS): const m = await createMap(el, ctx, { bounds, center, zoom, interactive });
- * await m.ready; m.addLayer(def, { 'line-width': () => rpx(4) }); m.frame(() => m.map.fitBounds(...)).
- * Returns null when the page was left meanwhile; throws when MapLibre cannot start (no WebGL).
+ * A map in container (sized by CSS):
+ *   const m = await createMap(el, ctx, { center: [lon, lat], zoom: 15, bounds, interactive: true });
+ *   await m.ready; m.addLayer({ id, type: 'line', source, paint }, { 'line-width': () => rpx(4) });
+ *   m.frame(() => m.map.fitBounds(b, { padding: rpx(30), duration: 0 }));
+ * Returns { map, ml, ready, addLayer, frame, tiles } or null when the page was left meanwhile.
+ * Throws when MapLibre cannot start (no WebGL): show mapFallback() then.
  */
-export async function createMap(el, ctx, { center = [0, 0], zoom = 12, bounds = null, interactive = true, fullscreen = false } = {}) {
-  const [ml, src] = await Promise.all([loadMapLibre(), tileSource()]);
+export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bounds = null, interactive = true } = {}) {
+  const [ml, cfg] = await Promise.all([loadMapLibre(), mapsConfig()]);
+  let src = tileChoice(cfg, getPrefs());
   watchTilePolicy(src.template && !src.offline ? src.template : null);
   if (!ctx.alive()) return null;
   const map = new ml.Map({
-    container: el, style: baseStyle(src), center, zoom, attributionControl: false, interactive,
-    dragRotate: false, pitchWithRotate: false, fadeDuration: 0, refreshExpiredTiles: false, maxZoom: Math.max(src.maxZoom, 18),
-    ...(bounds ? { bounds, fitBoundsOptions: { padding: rpx(32) } } : {}),
+    container, style: style(src), center, zoom, attributionControl: false, interactive,
+    cooperativeGestures: false, dragRotate: false, pitchWithRotate: false, fadeDuration: 0, refreshExpiredTiles: false,
+    maxZoom: Math.max(src.maxZoom, 18),
+    ...(bounds ? { bounds } : {}),
   });
   if (src.template) map.addControl(new ml.AttributionControl({ compact: false }), 'bottom-right');
+  const errorNote = (text) => h('p', { class: 'map-note map-note--error', role: 'status' }, text);
+  let offErrors = watchTileErrors(map, container, src, errorNote);
   if (interactive) map.addControl(new ml.NavigationControl({ showCompass: false }), 'top-right');
-  if (fullscreen) map.addControl(new ml.FullscreenControl({ container: el.parentElement || el }), 'top-right');
   map.touchZoomRotate?.disableRotation();
-  el.dataset.tiles = src.kind;
-  if (src.kind === 'none') el.append(noTilesNote(src, { compact: el.clientHeight < 300, classes: { primary: 'btn btn--sm btn--go', secondary: 'btn btn--sm btn--ghost' } }));
-  const offErrors = watchTileErrors(map, el, src, (text) => h('p', { class: 'map-note map-note--error', role: 'status' }, text));
+  container.dataset.tiles = src.kind;
+  container.dataset.imagery = String(onImagery(src));
+  if (src.kind === 'none') container.append(noTilesNote(src, { compact: container.clientHeight < 300, classes: { primary: 'btn btn--sm btn--primary', secondary: 'btn btn--sm btn--ghost' } }));
   const ready = new Promise((res) => map.once('load', res));
-  map.on('error', (e) => console.warn('map', e?.error?.message || e));
+  map.on('error', (e) => { console.warn('map', e && e.error ? e.error.message : e); });
 
   const sized = [];
-  let framing = null, moved = false;
-  map.on('movestart', (e) => { if (e.originalEvent instanceof Event) moved = true; });
-  map.on('resize', () => { if (framing && !moved) framing(); });
-  const offRedraw = onRedraw(() => {
-    for (const [id, prop, f] of sized) if (map.getLayer(id)) map.setPaintProperty(id, prop, f());
+  // [layer, paint property, value off photos, value over photos]: the halo the page's own layers get over satellite
+  const halo = [];
+  const paintHalo = () => {
+    const on = onImagery(src);
+    for (const [id, prop, plain, photo] of halo) if (map.getLayer(id)) map.setPaintProperty(id, prop, on ? photo() : plain());
+  };
+  let framing = null, userMoved = false;
+  map.on('movestart', (e) => { if (e.originalEvent instanceof Event) userMoved = true; });
+  map.on('resize', () => { if (framing && !userMoved) framing(); });
+  const off = onChange(() => {
+    for (const [id, prop, value] of sized) if (map.getLayer(id)) map.setPaintProperty(id, prop, value());
     map.resize();
     map.triggerRepaint();
   });
-  const repaint = () => { for (const l of baseStyle(src).layers) for (const [k, v] of Object.entries(l.paint)) if (map.getLayer(l.id)) map.setPaintProperty(l.id, k, v); };
-  const offTheme = onTheme(() => {
+  // a theme change recolours the base layers in place (setStyle would drop the page's own layers)
+  const repaint = () => {
+    for (const l of style(src).layers) for (const [k, v] of Object.entries(l.paint)) if (map.getLayer(l.id)) map.setPaintProperty(l.id, k, v);
+  };
+  // the Map / Satellite switch (only with two or more styles the admin allows): redraws the tiles in place
+  const swap = (next) => {
+    const dark = isDark();
+    src = swapTiles(map, src, next, { dark, paint: tilePaint(dark, mapColors(getPrefs())), attribution: esc(next.attribution) });
+    // the tint goes back on top of the new tiles, under the page's own layers
+    if (map.getLayer('tint')) map.moveLayer('tint', map.getStyle().layers.find((l) => l.id !== 'tint' && l.id !== 'bg' && !l.id.startsWith('tiles'))?.id);
     repaint();
-    for (const f of recolour) f();
-  });
-  // the person's map colours (dimmed or original) change in place
+    paintHalo();
+    map.setMaxZoom(Math.max(src.maxZoom, 18));
+    container.dataset.imagery = String(onImagery(src));
+    handle.tiles = src;
+    offErrors(); offErrors = watchTileErrors(map, container, src, errorNote);
+    watchTilePolicy(src.template && !src.offline ? src.template : null);
+  };
+  const styleSwitch = interactive ? mapStyleSwitch(cfg, getPrefs(), {
+    classes: { box: 'map-style maplibregl-ctrl', button: 'map-style-btn', active: 'is-active' },
+    label: 'Map style',
+    onChange: (next) => { if (map.loaded() || map.isStyleLoaded()) swap(next); else map.once('load', () => swap(next)); },
+  }) : null;
+  // bottom right, above the credit: the page's own cards sit at the top
+  if (styleSwitch) map.addControl({ onAdd: () => styleSwitch, onRemove: () => styleSwitch.remove() }, 'bottom-right');
+  // on a narrow map the credit (and the switch) take the whole bottom: the page's bottom-left overlay moves above
+  // them (--map-foot on the map's panel) and the camera keeps routes and markers clear of them
+  const foot = container.querySelector('.maplibregl-ctrl-bottom-right');
+  let footNow = 0;
+  const measureFoot = () => {
+    // a bottom-right overlay always sits above the credit and the switch
+    if (foot) container.parentElement?.style.setProperty('--map-foot-br', `${Math.ceil(foot.offsetHeight)}px`);
+    // on a phone the credit and the switch always take the bottom (the credit's text arrives after the map does, and
+    // the overlays must not jump up when it does)
+    const wide = !!document.documentElement.dataset.phone || (foot && foot.offsetWidth > container.clientWidth * 0.5);
+    const h2 = foot && wide ? Math.ceil(foot.offsetHeight) : 0;
+    if (h2 === footNow) return;
+    footNow = h2;
+    container.parentElement?.style.setProperty('--map-foot', `${h2}px`);
+    // with the page's bottom overlays now above the credit, keep their height clear too
+    const over = h2 ? Math.max(0, ...[...(container.parentElement?.querySelectorAll(':scope > .map-overlay--bl, :scope > .map-overlay--br') || [])].map((el) => el.offsetHeight)) : 0;
+    map.setPadding({ top: 0, left: 0, right: 0, bottom: over ? h2 + over : 0 });
+    if (framing && !userMoved) framing();
+  };
+  if (foot && typeof ResizeObserver === 'function') {
+    const ro = new ResizeObserver(() => measureFoot());
+    ro.observe(foot); ro.observe(container);
+    ctx.onCleanup(() => ro.disconnect());
+  }
+  measureFoot(); // at once, so the overlays start where they stay
+  const offTheme = onTheme(repaint);
+  // the person's map colours (dimmed or original) change in place too
   let colorsNow = mapColors(getPrefs());
   const offPrefs = onPrefs((p) => { if (mapColors(p) !== colorsNow) { colorsNow = mapColors(p); repaint(); } });
-  const recolour = [];
-  ctx.onCleanup(() => { offRedraw(); offTheme(); offPrefs(); offErrors(); map.remove(); });
-  return {
+  ctx.onCleanup(() => { off(); offTheme(); offPrefs(); offErrors(); map.remove(); });
+  const handle = {
     map, ml, ready, tiles: src,
+    /**
+     * Adds a page layer; sizedPaint values are functions of rpx(), set again on a resize. Over satellite photos a
+     * line gets a dark halo under it (its own casing layer, id-casing, turns dark instead when there is one) and a
+     * circle's stroke turns dark, so routes, outlines and dots stay clear on fields, forest and roofs alike.
+     */
     addLayer(def, sizedPaint = {}) {
       const paint = { ...def.paint };
-      for (const [prop, f] of Object.entries(sizedPaint)) { paint[prop] = f(); sized.push([def.id, prop, f]); }
+      for (const [prop, value] of Object.entries(sizedPaint)) { paint[prop] = value(); sized.push([def.id, prop, value]); }
+      const id = def.id;
+      if (def.type === 'line' && !/-(glow|casing|halo)$/.test(id)) {
+        const base = id.replace(/-line$/, '');
+        if (!map.getLayer(`${base}-casing`)) {
+          const w = sizedPaint['line-width'] || (() => (typeof paint['line-width'] === 'number' ? paint['line-width'] : 1));
+          const hw = () => w() + rpx(IMAGERY_HALO.casingWidth);
+          sized.push([`${id}-halo`, 'line-width', hw]);
+          halo.push([`${id}-halo`, 'line-opacity', () => 0, () => 0.85]);
+          map.addLayer({ id: `${id}-halo`, type: 'line', source: def.source, ...(def.filter ? { filter: def.filter } : {}), layout: { 'line-cap': 'round', 'line-join': 'round', ...(def.layout || {}) },
+            paint: { 'line-color': IMAGERY_HALO.casing, 'line-width': hw(), 'line-opacity': onImagery(src) ? 0.85 : 0 } });
+        }
+      }
+      if (def.type === 'line' && /-casing$/.test(id) && paint['line-color'] != null) {
+        const plain = paint['line-color'], op = paint['line-opacity'] ?? 1;
+        halo.push([id, 'line-color', () => plain, () => IMAGERY_HALO.casing], [id, 'line-opacity', () => op, () => 0.9]);
+      }
+      if (def.type === 'circle' && paint['circle-stroke-color'] != null) {
+        const plain = paint['circle-stroke-color'];
+        halo.push([id, 'circle-stroke-color', () => plain, () => IMAGERY_HALO.casing]);
+      }
       map.addLayer({ ...def, paint });
+      paintHalo();
     },
-    onRecolour(f) { recolour.push(f); },
+    /** f() places the camera; it runs now and again after resizes until the person moves the map. */
     frame(f) { framing = f; f(); },
   };
+  return handle;
 }
 
-/** What a map shows when it cannot be drawn. */
+/** What a map shows when it cannot be drawn (no WebGL, a library that did not load). */
 export const mapFallback = (text = 'The map could not be drawn in this browser.') => h('div', { class: 'map-fallback' }, text);
 
 /** [[west, south], [east, north]] around [lon, lat] points. */
 export function boundsOf(coords) {
   let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
   for (const [lo, la] of coords) { if (lo < w) w = lo; if (lo > e) e = lo; if (la < s) s = la; if (la > n) n = la; }
-  if (w === e) { w -= 0.005; e += 0.005; }
-  if (s === n) { s -= 0.005; n += 0.005; }
   return [[w, s], [e, n]];
 }
 
-/** A neon trace: glow, then the line. data: a LineString Feature or a FeatureCollection. */
-export function addTrace(m, id, data, { color = '--mag', width = 3.5, glow = true } = {}) {
-  m.map.addSource(id, { type: 'geojson', lineMetrics: true, data });
-  const line = { type: 'line', source: id, layout: { 'line-cap': 'round', 'line-join': 'round' } };
-  if (glow) m.addLayer({ ...line, id: `${id}-glow`, paint: { 'line-color': cssVar(color), 'line-opacity': 0.3 } }, { 'line-width': () => rpx(width * 4), 'line-blur': () => rpx(width * 2.5) });
-  m.addLayer({ ...line, id: `${id}-line`, paint: { 'line-color': cssVar(color) } }, { 'line-width': () => rpx(width) });
-  m.onRecolour(() => {
-    if (m.map.getLayer(`${id}-glow`)) m.map.setPaintProperty(`${id}-glow`, 'line-color', cssVar(color));
-    if (m.map.getLayer(`${id}-line`) && !m.map.getPaintProperty(`${id}-line`, 'line-gradient')) m.map.setPaintProperty(`${id}-line`, 'line-color', cssVar(color));
-  });
+/** Camera padding that keeps a card on top of the map clear, plus a margin (design px). */
+export function padClear(mapEl, card, { top = 30, right = 30, bottom = 30, left = 30, beside = false } = {}) {
+  const pad = { top: rpx(top), right: rpx(right), bottom: rpx(bottom), left: rpx(left) };
+  if (card) {
+    const m = mapEl.getBoundingClientRect(), c = card.getBoundingClientRect();
+    if (beside) pad.left = Math.max(pad.left, c.right - m.left + rpx(left));
+    else pad.top = Math.max(pad.top, c.bottom - m.top + rpx(top));
+  }
+  const w = mapEl.clientWidth, hh = mapEl.clientHeight;
+  if (pad.left + pad.right > w * 0.8) pad.left = Math.max(0, w * 0.8 - pad.right);
+  if (pad.top + pad.bottom > hh * 0.8) pad.top = Math.max(0, hh * 0.8 - pad.bottom);
+  return pad;
 }
 
-/** A lettered pin (A, B) or a dot marker; tone: mag | cyan | org | grn. */
-export function pin(m, lngLat, { text = '', tone = 'mag', title = null } = {}) {
-  const el = h('div', { class: ['pin', `pin--${tone}`, !text && 'pin--dot'], title, 'aria-hidden': title ? null : 'true' }, text);
+/** The car's marker. tone: live | warm (charging) | asleep | muted (stale, unknown). heading in degrees. */
+export function carMarker(m, lngLat, { tone = 'live', heading = null } = {}) {
+  const el = h('div', { class: ['car-marker', `car-marker--${tone}`], 'aria-hidden': 'true' });
+  if (heading != null) {
+    const ns = 'http://www.w3.org/2000/svg';
+    const s = document.createElementNS(ns, 'svg');
+    s.setAttribute('viewBox', '0 0 24 24');
+    s.setAttribute('class', 'car-marker-heading');
+    const p = document.createElementNS(ns, 'path');
+    p.setAttribute('d', 'M12 4 18.5 19 12 15.2 5.5 19z');
+    s.append(p);
+    el.append(s);
+    el.style.setProperty('--rot', `${heading}deg`);
+  }
   return new m.ml.Marker({ element: el }).setLngLat(lngLat).addTo(m.map);
 }
 
-/** Camera padding (design px). */
-export const pad = (n = 32) => ({ top: rpx(n), right: rpx(n), bottom: rpx(n), left: rpx(n) });
+/** An A or B pin at a route's start or end. */
+export function routePin(m, lngLat, letter) {
+  const el = h('div', { class: ['route-pin', `route-pin--${letter.toLowerCase()}`], 'aria-hidden': 'true' }, letter);
+  return new m.ml.Marker({ element: el }).setLngLat(lngLat).addTo(m.map);
+}
+
+/** A route line (glow, casing, a gradient along it). coords: [[lon, lat], ...]. */
+export function addRoute(m, coords, id = 'route', { thin = false } = {}) {
+  m.map.addSource(id, { type: 'geojson', lineMetrics: true, data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: coords } } });
+  const line = { type: 'line', source: id, layout: { 'line-cap': 'round', 'line-join': 'round' } };
+  m.addLayer({ ...line, id: `${id}-glow`, paint: { 'line-color': cssVar('--live'), 'line-opacity': 0.22 } },
+    { 'line-width': () => rpx(thin ? 9 : 16), 'line-blur': () => rpx(thin ? 4 : 8) });
+  m.addLayer({ ...line, id: `${id}-casing`, paint: { 'line-color': cssVar('--map-casing'), 'line-opacity': 0.85 } },
+    { 'line-width': () => rpx(thin ? 5 : 8) });
+  m.addLayer({ ...line, id: `${id}-line`, paint: { 'line-gradient': ['interpolate', ['linear'], ['line-progress'], 0, cssVar('--live-2'), 0.6, cssVar('--live'), 1, cssVar('--live-3')] } },
+    { 'line-width': () => rpx(thin ? 2.6 : 4.2) });
+}

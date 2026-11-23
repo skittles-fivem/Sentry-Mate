@@ -212,6 +212,7 @@ fn a_car_with_the_tesla_api_alone() {
         let trip = Trip { a: 600, b: 1800 };
         k.engine.api_points(car, api_readings(0, 2400, 30, trip), vec![online(0, 2400)]);
         k.engine.api_meta(
+            Input::TeslaApi,
             car,
             tesla::ApiMeta {
                 at_ms: T0 + 2_390_000,
@@ -262,6 +263,7 @@ fn a_car_with_the_tesla_api_alone() {
 
         // a new version is an update the API saw
         k.engine.api_meta(
+            Input::TeslaApi,
             car,
             tesla::ApiMeta { at_ms: T0 + 90_000_000, car_version: Some("2026.38.1".into()), ..Default::default() },
         );
@@ -680,5 +682,276 @@ fn a_used_car_takes_its_values_when_new_from_its_build() {
         query::fleet::patch_settings(&k.engine, car, body.as_object().unwrap()).unwrap();
         let b = query::battery::battery(&k.engine, car).unwrap().body;
         assert_eq!((b.capacity["new_kwh"].as_f64(), b.capacity["new_source"].as_str()), (Some(60.0), Some("owner")));
+    });
+}
+
+fn wall_ms() -> u64 {
+    u64::try_from(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()).unwrap()
+}
+
+/// A made-up `vehicle_data` answer read `at_ms`: locked, the windows closed, an update waiting.
+fn tesla_fixture(at_ms: u64) -> serde_json::Value {
+    serde_json::json!({
+        "vehicle_state": {"timestamp": at_ms, "car_version": "2026.32.5 0123abcd", "locked": true,
+                          "fd_window": 0, "fp_window": 0, "rd_window": 0, "rp_window": 0,
+                          "software_update": {"status": "available", "version": "2026.38.1", "download_perc": 0}},
+        "vehicle_config": {"trim_badging": "74d"}
+    })
+}
+
+/// A made-up TeslaFi poll (the account's zone UTC) at `at_ms`: unlocked, the rear passenger window open.
+fn teslafi_fixture(at_ms: u64) -> std::collections::BTreeMap<String, String> {
+    let date = chrono::DateTime::from_timestamp_millis(i64::try_from(at_ms).unwrap())
+        .unwrap()
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    [
+        ("data_id", "77"),
+        ("Date", date.as_str()),
+        ("carState", "Idling"),
+        ("car_version", "2026.32.5 0123abcd"),
+        ("locked", "0"),
+        ("fd_window", "0"),
+        ("fp_window", "0"),
+        ("rd_window", "0"),
+        ("rp_window", "1"),
+        ("newVersion", "2026.38.1"),
+        ("newVersionStatus", "Downloading"),
+        ("download_perc", "35"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect()
+}
+
+fn mqtt_topics(now: &model::Now) -> std::collections::BTreeMap<String, String> {
+    let layout = mqtt::render::Layout::new(&mqtt::Settings::default()).unwrap();
+    let pre = layout.topics.field(now.car, "");
+    mqtt::render::now_messages(&layout, now, None)
+        .into_iter()
+        .filter_map(|m| Some((m.topic.strip_prefix(&pre)?.to_string(), m.payload)))
+        .collect()
+}
+
+#[test]
+fn values_not_on_the_can_bus_come_from_the_tesla_api_and_teslafi_with_their_sources() {
+    use tesla::Sink as _;
+    use teslafi::Sink as _;
+    rt().block_on(async {
+        let k = kit();
+        let (tesla, fi) = (engine::TeslaSink::new(k.engine.clone()), engine::TeslafiSink::new(k.engine.clone()));
+        let wall = wall_ms();
+        let fi_poll = |at: u64| import::teslafi::feed::read(&teslafi_fixture(at), chrono_tz::Tz::UTC, None).unwrap();
+
+        // both inputs fresh: the Tesla API's values win, TeslaFi's fill nothing it already gave
+        let car = api_car(&k);
+        k.engine.api_points(car, api_readings(0, 600, 30, Trip { a: 10_000, b: 10_001 }), vec![online(0, 600)]);
+        tesla.meta(car, &tesla::convert::reading(&tesla_fixture(wall - 60_000), wall).meta).unwrap();
+        let p = fi_poll(wall - 30_000);
+        assert_eq!(p.off_can.locked, Some(false));
+        fi.off_can(car, p.t_ms, &p.off_can).unwrap();
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+
+        let n = query::now::published_now(&k.engine, car).unwrap().unwrap();
+        let o = &n.off_can;
+        let l = o.locked.as_ref().unwrap();
+        assert_eq!((l.value, l.input, l.stale), (true, Input::TeslaApi, false));
+        assert_eq!(o.windows_open.as_ref().map(|w| (w.value, w.input)), Some((false, Input::TeslaApi)));
+        assert_eq!(o.version.as_ref().map(|v| v.value.as_str()), Some("2026.32.5"));
+        assert_eq!(o.update_available.as_ref().map(|v| (v.value, v.input)), Some((true, Input::TeslaApi)));
+        assert_eq!(o.update_version.as_ref().map(|v| v.value.as_str()), Some("2026.38.1"));
+        assert_eq!(o.update_installing.as_ref().map(|v| v.value), Some(false));
+        assert!(n.since_ms.is_some(), "since when the car is in its state");
+        let detail = query::fleet::car(&k.engine, car).unwrap();
+        assert_eq!(n.trim.as_deref(), detail.config["trim"].value.as_str());
+        assert_eq!(n.trim.as_deref(), Some("74d"));
+
+        let view = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+        let oc = &view["off_can"];
+        assert_eq!(oc["locked"]["value"], true);
+        assert_eq!(oc["locked"]["stale"], false);
+        assert_eq!(oc["locked"]["at_ms"], wall - 60_000);
+        assert_eq!(oc["locked"]["sources"][0]["kind"], "tesla_api");
+        assert_eq!(oc["locked"]["sources"][0]["label"], "Data from the Tesla API");
+        assert_eq!(oc["windows"]["passenger_rear"]["value"], false);
+        assert_eq!(oc["windows_open"]["value"], false);
+        assert_eq!(oc["update_available"]["value"], true);
+        assert_eq!(oc["version"]["value"], "2026.32.5");
+        assert_eq!(oc["route"]["destination"], serde_json::Value::Null);
+        assert_eq!(oc["sunroof_state"], serde_json::Value::Null);
+
+        let t = mqtt_topics(&n);
+        assert_eq!(t.get("locked").map(String::as_str), Some("true"));
+        assert_eq!(t.get("windows_open").map(String::as_str), Some("false"));
+        assert_eq!(t.get("window_passenger_rear").map(String::as_str), Some("false"));
+        assert_eq!(t.get("version").map(String::as_str), Some("2026.32.5"));
+        assert_eq!(t.get("update_available").map(String::as_str), Some("true"));
+        assert_eq!(t.get("update_version").map(String::as_str), Some("2026.38.1"));
+        assert_eq!(t.get("trim").map(String::as_str), Some("74d"));
+        assert!(t.contains_key("since"));
+        assert!(!t.contains_key("route_destination"), "not known: not published");
+
+        // the Tesla API stopped reading the car two hours ago, TeslaFi polled it a minute ago: TeslaFi's lock state
+        // and windows win; the version stays current far longer
+        let car = api_car(&k);
+        k.engine.api_points(car, api_readings(0, 600, 30, Trip { a: 10_000, b: 10_001 }), vec![online(0, 600)]);
+        tesla.meta(car, &tesla::convert::reading(&tesla_fixture(wall - 7_200_000), wall).meta).unwrap();
+        let p = fi_poll(wall - 60_000);
+        fi.off_can(car, p.t_ms, &p.off_can).unwrap();
+        // an older TeslaFi poll after it: not kept
+        let old = fi_poll(wall - 3_000_000);
+        fi.off_can(car, old.t_ms, &model::OffCan { locked: Some(true), ..model::OffCan::default() }).unwrap();
+        k.engine.idle().await;
+        let n = query::now::published_now(&k.engine, car).unwrap().unwrap();
+        let o = &n.off_can;
+        assert_eq!(o.locked.as_ref().map(|l| (l.value, l.input, l.stale)), Some((false, Input::TeslafiApi, false)));
+        assert_eq!(o.windows_open.as_ref().map(|w| (w.value, w.input)), Some((true, Input::TeslafiApi)));
+        // (an update stays current 6 hours: the Tesla API's still wins there)
+        assert_eq!(
+            o.update_download_pct.as_ref().map(|w| (w.value, w.input, w.stale)),
+            Some((0.0, Input::TeslaApi, false))
+        );
+        assert_eq!(o.version.as_ref().map(|v| (v.input, v.stale)), Some((Input::TeslaApi, false)));
+        let view = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+        assert_eq!(view["off_can"]["locked"]["sources"][0]["kind"], "teslafi_api");
+        assert_eq!(view["off_can"]["locked"]["sources"][0]["label"], "Data from TeslaFi");
+        assert_eq!(view["off_can"]["windows"]["passenger_rear"]["value"], true);
+        let t = mqtt_topics(&n);
+        assert_eq!(t.get("locked").map(String::as_str), Some("false"));
+        assert_eq!(t.get("window_passenger_rear").map(String::as_str), Some("true"));
+
+        // only an old reading: its values kept, marked stale (sent empty on MQTT)
+        let car = api_car(&k);
+        k.engine.api_points(car, api_readings(0, 600, 30, Trip { a: 10_000, b: 10_001 }), vec![online(0, 600)]);
+        tesla.meta(car, &tesla::convert::reading(&tesla_fixture(wall - 7_200_000), wall).meta).unwrap();
+        k.engine.idle().await;
+        let n = query::now::published_now(&k.engine, car).unwrap().unwrap();
+        assert_eq!(n.off_can.locked.as_ref().map(|l| (l.value, l.stale)), Some((true, true)));
+        let view = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+        assert_eq!(view["off_can"]["locked"]["stale"], true);
+        assert_eq!(view["off_can"]["windows_open"]["stale"], true);
+        let t = mqtt_topics(&n);
+        assert_eq!(t.get("locked").map(String::as_str), Some(""), "stale: published empty");
+
+        // a car TeslaFi alone reads: its software version is TeslaFi's while no update row names one
+        let car = teslafi_car(&k);
+        k.engine.feed_points(
+            Input::TeslafiApi,
+            car,
+            api_readings(0, 600, 60, Trip { a: 10_000, b: 10_001 }),
+            vec![online(0, 600)],
+        );
+        let p = fi_poll(wall - 60_000);
+        fi.off_can(car, p.t_ms, &p.off_can).unwrap();
+        k.engine.idle().await;
+        let view = query::now::now_view(&k.engine, car).unwrap();
+        assert_eq!(view.software.version.as_deref(), Some("2026.32.5"));
+        assert_eq!(view.software.version_source, Some("teslafi_api"));
+        let v = serde_json::to_value(&view).unwrap();
+        assert_eq!(v["off_can"]["update_available"]["value"], true);
+        assert_eq!(v["off_can"]["update_installing"]["value"], false);
+        assert_eq!(v["off_can"]["update_download_pct"]["value"], 35.0);
+        assert_eq!(v["off_can"]["locked"]["sources"][0]["kind"], "teslafi_api");
+
+        // the owner's own TeslaMate: its MQTT values fill what TeslaFi did not give, tagged as local TeslaMate's
+        {
+            use tmlocal::Sink as _;
+            let tm = engine::TeslamateLocalSink::new(k.engine.clone());
+            let mut meta = tesla::ApiMeta { at_ms: wall - 30_000, ..tesla::ApiMeta::default() };
+            meta.off_can.locked = Some(true);
+            meta.off_can.windows_open = Some(true);
+            meta.off_can.route_destination = Some("Made-up Lake".into());
+            tm.meta(car, &meta);
+            k.engine.idle().await;
+            let n = query::now::published_now(&k.engine, car).unwrap().unwrap();
+            let o = &n.off_can;
+            assert_eq!(
+                o.locked.as_ref().map(|l| (l.value, l.input)),
+                Some((false, Input::TeslafiApi)),
+                "TeslaFi first"
+            );
+            assert_eq!(o.route_destination.as_ref().map(|r| r.input), Some(Input::TeslamateLocal));
+            let v = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+            assert_eq!(v["off_can"]["route"]["destination"]["sources"][0]["kind"], "teslamate_local");
+            assert_eq!(mqtt_topics(&n).get("route_destination").map(String::as_str), Some("Made-up Lake"));
+        }
+    });
+}
+
+/// Made-up samples of a parked car charging, one a minute over `[0, to_s)` after `start_ms`.
+fn charging_samples(start_ms: u64, to_s: u64) -> Vec<Sample> {
+    (0..to_s)
+        .step_by(60)
+        .map(|s| Sample {
+            t_ms: start_ms + s * 1000,
+            gear: Some(Gear::P),
+            speed_kmh: Some(0.0),
+            soc: Some(50.0 + s as f64 / 600.0),
+            charging: Some(true),
+            charge_power_kw: Some(11.0),
+            lat: Some(45.0),
+            lon: Some(-93.0),
+            ..Sample::default()
+        })
+        .collect()
+}
+
+#[test]
+fn local_teslamates_energy_added_and_range_are_its_own_and_the_tesla_api_wins() {
+    rt().block_on(async {
+        use tmlocal::Sink as _;
+        let k = kit();
+        let tm = engine::TeslamateLocalSink::new(k.engine.clone());
+        let new =
+            tesla::NewCar { vin_prefix: None, model: Some('3'), year: None, display_name: Some("Made-up".into()) };
+        let car = tm.new_car(&new).unwrap();
+        let start = wall_ms() - 600_000;
+        tm.points(car, &charging_samples(start, 600), &[]).unwrap();
+        k.engine.idle().await;
+        // local TeslaMate's MQTT values: the energy added, its estimated range, and a version (kept off CAN only)
+        let meta = tesla::ApiMeta {
+            at_ms: start + 590_000,
+            charge_energy_added_kwh: Some(12.345),
+            est_range_km: Some(301.26),
+            car_version: Some("2026.32.5".into()),
+            ..tesla::ApiMeta::default()
+        };
+        tm.meta(car, &meta);
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+        let v = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+        assert_eq!(v["state"], "charging", "{v}");
+        assert_eq!(v["charge"]["added_kwh"]["value"], 12.35);
+        assert_eq!(v["charge"]["added_kwh"]["sources"][0]["kind"], "teslamate_local");
+        assert_eq!(v["charge"]["added_kwh"]["sources"][0]["label"], "Data from local TeslaMate");
+        assert_eq!(v["charge"]["added_kwh"]["at_ms"], start + 590_000);
+        assert_eq!(v["car_est_range_km"]["value"], 301.3);
+        assert_eq!(v["car_est_range_km"]["sources"][0]["kind"], "teslamate_local");
+        // nothing of it is the Tesla API's: no update row from its version, no Tesla API input
+        let ups = query::software::updates(&k.engine, car, &Period::all(), &Paging::default()).unwrap().body.items;
+        assert!(ups.is_empty(), "{ups:?}");
+        assert!(!v.to_string().contains("tesla_api"), "{v}");
+
+        // the Tesla API's current reading wins, value by value; what it does not give stays local TeslaMate's
+        k.engine.api_meta(
+            Input::TeslaApi,
+            car,
+            tesla::ApiMeta { at_ms: start + 595_000, est_range_km: Some(280.0), ..tesla::ApiMeta::default() },
+        );
+        k.engine.idle().await;
+        let v = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+        assert_eq!(v["car_est_range_km"]["value"], 280.0);
+        assert_eq!(v["car_est_range_km"]["sources"][0]["kind"], "tesla_api");
+        assert_eq!(v["charge"]["added_kwh"]["sources"][0]["kind"], "teslamate_local");
+
+        // an old reading of local TeslaMate's is not the car's now
+        let car2 = tm.new_car(&new).unwrap();
+        tm.points(car2, &charging_samples(start, 600), &[]).unwrap();
+        tm.meta(car2, &tesla::ApiMeta { at_ms: start - 2 * 3_600_000, est_range_km: Some(250.0), ..meta });
+        k.engine.idle().await;
+        let v = serde_json::to_value(query::now::now_view(&k.engine, car2).unwrap()).unwrap();
+        assert_eq!(v["car_est_range_km"], serde_json::Value::Null);
+        assert_eq!(v["charge"]["added_kwh"], serde_json::Value::Null);
     });
 }

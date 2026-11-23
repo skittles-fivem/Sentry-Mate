@@ -1,7 +1,7 @@
 //! Server settings: `GET`/`PATCH /api/v1/settings` (docs/ui-api.md, "Server, settings and health").
 //!
 //! The server's defaults (units, range, car order) that everyone's preferences start from, where addresses and map
-//! tiles come from, the release check (none exists in this server yet: it stays off, and turning it on is `422`),
+//! tiles come from, the release check (off by default; [`super::release`]),
 //! links to other sites, the proxy for what the server fetches itself, and the host names the next certificate is
 //! made for (an empty list: the running certificate's names). Kept in the history's database (sealed with the vault)
 //! under the `server` setting; until a first change, every value is its default.
@@ -75,6 +75,116 @@ pub struct Tiles {
     pub max_zoom: u8,
     /// The offline map file to use, a `.pmtiles` name in the data folder's `maps/` (none: the largest there).
     pub offline_file: Option<String>,
+    /// The online preset an admin picked (`places::tiles::PRESETS` id, or `custom` for `online_url`); none: never
+    /// picked, so [`places::tiles::DEFAULT_PRESET`] applies (also over the old implicit OpenStreetMap default).
+    pub preset: Option<String>,
+    /// Place names and roads drawn over satellite pictures (presets that have such an overlay).
+    pub labels: bool,
+    /// The presets viewers may switch to on a map (Map / Satellite), besides the chosen one.
+    pub styles: Vec<String>,
+}
+
+/// One online map style the pages may draw: a preset, or the admin's own address (`custom`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TileStyle {
+    pub id: String,
+    pub name: String,
+    pub short: String,
+    /// `map` or `satellite`.
+    pub kind: String,
+    pub template: String,
+    pub attribution: String,
+    pub max_zoom: u8,
+    /// Transparent layers drawn on top (place names and roads), in order.
+    pub overlays: Vec<String>,
+    /// Aerial photos: pages never dim these in the dark theme.
+    pub imagery: bool,
+    pub region: Option<String>,
+}
+
+impl Tiles {
+    /// The style id in use: a preset's, or `custom`.
+    pub fn chosen_id(&self) -> String {
+        use places::tiles::{DEFAULT_PRESET, preset, preset_for_url};
+        match self.preset.as_deref() {
+            Some(id) if id == "custom" || preset(id).is_some() => id.into(),
+            _ => match self.online_url.as_deref() {
+                // the old default (OpenStreetMap, or OpenTopoMap) never picked as a preset: satellite now
+                None => DEFAULT_PRESET.into(),
+                Some(u) => match preset_for_url(u) {
+                    Some(p) if p.id == "osm" || p.id == "opentopomap" => DEFAULT_PRESET.into(),
+                    Some(p) => p.id.into(),
+                    None => "custom".into(),
+                },
+            },
+        }
+    }
+
+    /// The style for an id (`custom`: the admin's own address, when set).
+    pub fn style(&self, id: &str) -> Option<TileStyle> {
+        if id == "custom" {
+            let url = self.online_url.clone()?;
+            return Some(TileStyle {
+                id: "custom".into(),
+                name: "Custom tile server".into(),
+                short: "Map".into(),
+                kind: "map".into(),
+                template: url,
+                attribution: self.attribution.clone(),
+                max_zoom: self.max_zoom,
+                overlays: Vec::new(),
+                imagery: false,
+                region: None,
+            });
+        }
+        let p = places::tiles::preset(id)?;
+        Some(TileStyle {
+            id: p.id.into(),
+            name: p.name.into(),
+            short: p.short.into(),
+            kind: p.kind.into(),
+            template: p.url.into(),
+            attribution: p.attribution.into(),
+            max_zoom: p.max_zoom,
+            overlays: if self.labels { p.overlays.iter().map(|o| (*o).to_string()).collect() } else { Vec::new() },
+            imagery: p.kind == "satellite",
+            region: p.region.map(Into::into),
+        })
+    }
+
+    /// The style in use.
+    pub fn chosen(&self) -> Option<TileStyle> {
+        self.style(&self.chosen_id())
+    }
+
+    /// The styles a viewer may switch between: the chosen one first, then the other allowed presets.
+    pub fn viewer_styles(&self) -> Vec<TileStyle> {
+        let first = self.chosen_id();
+        let mut out: Vec<TileStyle> = self.chosen().into_iter().collect();
+        for id in &self.styles {
+            if *id != first
+                && let Some(s) = self.style(id)
+            {
+                out.push(s);
+            }
+        }
+        out
+    }
+
+    /// Every host the browsers load map pictures from while tiles are online (the chosen style first).
+    pub fn hosts(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for s in self.viewer_styles() {
+            for u in std::iter::once(&s.template).chain(s.overlays.iter()) {
+                if let Some(h) = host_of(u)
+                    && !out.contains(&h)
+                {
+                    out.push(h);
+                }
+            }
+        }
+        out
+    }
 }
 
 impl Default for Tiles {
@@ -85,6 +195,9 @@ impl Default for Tiles {
             attribution: places::tiles::OSM_TILE_CREDIT.into(),
             max_zoom: 19,
             offline_file: None,
+            preset: None,
+            labels: true,
+            styles: vec![places::tiles::DEFAULT_PRESET.into(), "osm".into()],
         }
     }
 }
@@ -170,11 +283,25 @@ impl ServerSettings {
 
     /// The origins the pages may load map tiles from: the online tile server's (none while tiles are offline).
     pub fn tile_origins(&self) -> Vec<String> {
-        match (self.tiles.mode.as_str(), self.tiles.online_url.as_deref()) {
-            ("online", Some(url)) => origin_of(url).into_iter().collect(),
-            _ => Vec::new(),
+        if self.tiles.mode != "online" {
+            return Vec::new();
         }
+        let mut out: Vec<String> = Vec::new();
+        for s in self.tiles.viewer_styles() {
+            for u in std::iter::once(&s.template).chain(s.overlays.iter()) {
+                if let Some(o) = origin_of(u)
+                    && !out.contains(&o)
+                {
+                    out.push(o);
+                }
+            }
+        }
+        out
     }
+}
+
+fn preset_ids() -> Vec<&'static str> {
+    places::tiles::PRESETS.iter().map(|p| p.id).collect()
 }
 
 /// `https://host[:port]` of an https address.
@@ -210,8 +337,6 @@ pub fn load(e: &Engine, cert_names: &[String]) -> ApiResult<ServerSettings> {
         None => Ok(ServerSettings { host_names: default_host_names(cert_names), ..ServerSettings::default() }),
     }
     .map(|mut s| {
-        // (no release check exists yet, whatever an older version saved)
-        s.release_check.enabled = false;
         // none saved: the default names
         if s.host_names.is_empty() {
             s.host_names = default_host_names(cert_names);
@@ -244,8 +369,8 @@ fn cert_host_name(n: &str) -> Option<String> {
     is_host_name(&n).then_some(n)
 }
 
-/// Makes the frame follow `s`: the preference defaults (pushing `prefs` events only when they changed) and the tile
-/// origins.
+/// Makes the frame follow `s`: the preference defaults (pushing `prefs` events only when they changed), the tile
+/// origins, the proxy, and the release check's switch.
 pub fn apply(app: &AppState, s: &ServerSettings) {
     let d = s.defaults();
     if app.defaults() != d {
@@ -259,6 +384,7 @@ pub fn apply(app: &AppState, s: &ServerSettings) {
     }
     super::tesla::follow_proxy(app, s.outbound.proxy.as_deref());
     super::teslafi::follow_proxy(app, s.outbound.proxy.as_deref());
+    app.release.follow(s.release_check.enabled, s.outbound.proxy.as_deref().and_then(tesla::Proxy::parse));
     if let Ok(e) = app.service::<Engine>() {
         e.set_import_gap_fill(s.import_gap_fill.enabled);
     }
@@ -604,7 +730,8 @@ fn patched(app: &AppState, v: &Viewer, cur: &ServerSettings, body: &JsonBody) ->
             new.geocode.rounding_m = u32::try_from(n.min(u64::from(u32::MAX))).unwrap_or(u32::MAX);
         }
     }
-    if let Some(m) = part(body, "tiles", &["mode", "online_url", "attribution", "max_zoom", "offline_file"], &mut bad) {
+    let tile_keys = ["mode", "online_url", "attribution", "max_zoom", "offline_file", "preset", "labels", "styles"];
+    if let Some(m) = part(body, "tiles", &tile_keys, &mut bad) {
         if let Some(w) = word(m, "tiles", "mode", TILE_MODES, &mut bad, &mut rule) {
             new.tiles.mode = w;
         }
@@ -620,6 +747,45 @@ fn patched(app: &AppState, v: &Viewer, cur: &ServerSettings, body: &JsonBody) ->
         if let Some(f) = text_or_null(m, "tiles", "offline_file", &mut bad) {
             new.tiles.offline_file = f.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
         }
+        if m.contains_key("online_url") && !m.contains_key("preset") {
+            // an address without a preset: the preset it is, else the admin's own
+            let id = new.tiles.online_url.as_deref().and_then(places::tiles::preset_for_url).map(|p| p.id);
+            new.tiles.preset = Some(id.unwrap_or("custom").into());
+        }
+        if let Some(p) = text_or_null(m, "tiles", "preset", &mut bad) {
+            match p.as_deref() {
+                None => new.tiles.preset = None,
+                Some("custom") => new.tiles.preset = Some("custom".into()),
+                Some(id) => match places::tiles::preset(id) {
+                    Some(pr) => {
+                        new.tiles.preset = Some(pr.id.into());
+                        new.tiles.online_url = Some(pr.url.into());
+                        new.tiles.attribution = pr.attribution.into();
+                        new.tiles.max_zoom = pr.max_zoom;
+                    }
+                    None => rule.add("tiles.preset", &format!("One of: {}, custom, or null.", preset_ids().join(", "))),
+                },
+            }
+        }
+        if let Some(b) = flag(m, "tiles", "labels", &mut bad) {
+            new.tiles.labels = b;
+        }
+        if let Some(v) = m.get("styles") {
+            match v.as_array().and_then(|a| a.iter().map(Value::as_str).collect::<Option<Vec<_>>>()) {
+                None => bad.add("tiles.styles", "Must be a list of preset ids."),
+                Some(list) => {
+                    let mut out: Vec<String> = Vec::new();
+                    for id in list {
+                        if places::tiles::preset(id).is_none() {
+                            rule.add("tiles.styles", &format!("Preset ids only: {}.", preset_ids().join(", ")));
+                        } else if !out.iter().any(|o| o == id) {
+                            out.push(id.into());
+                        }
+                    }
+                    new.tiles.styles = out;
+                }
+            }
+        }
     }
     if let Some(m) = part(body, "import_gap_fill", &["enabled"], &mut bad)
         && let Some(b) = flag(m, "import_gap_fill", "enabled", &mut bad)
@@ -629,11 +795,7 @@ fn patched(app: &AppState, v: &Viewer, cur: &ServerSettings, body: &JsonBody) ->
     if let Some(m) = part(body, "release_check", &["enabled"], &mut bad)
         && let Some(b) = flag(m, "release_check", "enabled", &mut bad)
     {
-        // no release check exists in this server yet: it stays off rather than look on and never run
-        if b {
-            rule.add("release_check.enabled", "This server has no release check yet, so it stays off.");
-        }
-        new.release_check.enabled = false;
+        new.release_check.enabled = b;
     }
     if let Some(m) = part(body, "outside_links", &["maps", "release_notes"], &mut bad) {
         if let Some(b) = flag(m, "outside_links", "maps", &mut bad) {
@@ -816,6 +978,26 @@ mod tests {
         assert_eq!(s.tiles.mode, "offline");
         assert!(s.tile_origins().is_empty());
         s.tiles.mode = "online".into();
-        assert_eq!(s.tile_origins(), vec!["https://tile.openstreetmap.org".to_string()]);
+        // satellite with names and roads by default, OpenStreetMap to switch to
+        assert_eq!(s.tiles.chosen_id(), "satellite");
+        assert_eq!(
+            s.tile_origins(),
+            vec!["https://server.arcgisonline.com".to_string(), "https://tile.openstreetmap.org".to_string()]
+        );
+        // a saved server from before (OpenStreetMap, never picked as a preset) moves to satellite; a picked one stays
+        let old: ServerSettings = serde_json::from_value(
+            serde_json::json!({ "tiles": { "mode": "online", "online_url": places::tiles::OSM_TILE_URL } }),
+        )
+        .unwrap();
+        assert_eq!(old.tiles.chosen_id(), "satellite");
+        s.tiles.preset = Some("osm".into());
+        assert_eq!(s.tiles.chosen().unwrap().template, places::tiles::OSM_TILE_URL);
+        s.tiles.preset = None;
+        s.tiles.online_url = Some("https://tiles.example.org/{z}/{x}/{y}.png".into());
+        assert_eq!(s.tiles.chosen_id(), "custom");
+        s.tiles.preset = Some("satellite_us".into());
+        s.tiles.styles = vec![];
+        assert_eq!(s.tiles.hosts(), vec!["basemap.nationalmap.gov".to_string()]);
+        assert_eq!(s.tiles.chosen().unwrap().max_zoom, 16);
     }
 }

@@ -345,7 +345,7 @@ impl Poll {
     }
 }
 
-const KM_PER_MI: f64 = 1.609_344;
+pub(crate) const KM_PER_MI: f64 = 1.609_344;
 
 fn round(x: f64, d: i32) -> f64 {
     let m = 10f64.powi(d);

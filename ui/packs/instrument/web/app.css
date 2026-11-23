@@ -660,6 +660,16 @@ ul { margin: 0; padding: 0; list-style: none; }
 .maplibregl-ctrl-attrib a { color: var(--text) !important; }
 .maplibregl-ctrl-attrib-button { display: none; }
 .maplibregl-ctrl-bottom-right .maplibregl-ctrl { margin: 0; }
+/* the Map / Satellite switch (shared/maptiles.js mapStyleSwitch), bottom right above the credit */
+.maplibregl-ctrl-bottom-right .maplibregl-ctrl.map-style { clear: both; display: flex; margin: 0 round(0.625rem, var(--e)) round(0.5rem, var(--e)) 0; gap: 1px; padding: round(0.1875rem, var(--e)); background: var(--surface-ctrl); border: 1px solid var(--line-2); border-radius: round(0.75rem, var(--e)); box-shadow: 0 round(0.625rem, var(--e)) round(1.5rem, var(--e)) round(-0.625rem, var(--e)) rgba(0, 0, 0, 0.7); backdrop-filter: blur(round(0.75rem, var(--e))); }
+.map-style-btn { width: calc-size(fit-content, round(up, size, 1px)); display: grid; place-items: center; height: round(1.75rem, var(--e)); padding: 0 round(0.625rem, var(--e)); border: 0; border-radius: round(0.5625rem, var(--e)); background: transparent; color: var(--text-2); font: inherit; font-size: max(0.75rem, var(--fs-floor)); font-weight: 500; --LH: round(calc(1 * 1em), 2px); white-space: nowrap; cursor: pointer; }
+.map-style-btn:hover { color: var(--text); background: rgba(146, 176, 236, 0.12); }
+.map-style-btn.is-active { color: var(--live); background: var(--live-soft); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--live) 35%, transparent); }
+.map-style-btn:focus-visible { outline: round(0.125rem, var(--e)) solid var(--live); outline-offset: round(-0.125rem, var(--e)); }
+/* over satellite photos: a dark edge round the markers, so they read on fields, forest, water and roofs alike */
+[data-imagery="true"] .car-marker::after { box-shadow: 0 0 0 round(0.1875rem, var(--e)) rgba(10, 14, 20, 0.85), 0 0 0 round(0.375rem, var(--e)) color-mix(in oklab, var(--m) 40%, transparent), 0 round(0.25rem, var(--e)) round(0.875rem, var(--e)) rgba(0, 0, 0, 0.7); }
+[data-imagery="true"] .car-marker-heading { fill: #0A0E14; }
+[data-imagery="true"] .route-pin, [data-imagery="true"] .pl-handle { box-shadow: 0 0 0 round(0.1875rem, var(--e)) rgba(10, 14, 20, 0.85), 0 round(0.25rem, var(--e)) round(0.75rem, var(--e)) rgba(0, 0, 0, 0.6); }
 .maplibregl-canvas:focus-visible { outline: round(0.125rem, var(--e)) solid var(--live); outline-offset: round(-0.125rem, var(--e)); }
 
 /* ------------------------------------------------------------------ state and series colours (last, so they win) */
@@ -734,7 +744,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 .map-overlay > * { pointer-events: auto; }
 .map-overlay--tl { top: round(1rem, var(--e)); left: round(1rem, var(--e)); }
 .map-overlay--tr { top: round(1rem, var(--e)); right: round(1rem, var(--e)); }
-.map-overlay--bl { bottom: round(1rem, var(--e)); left: round(1rem, var(--e)); }
+.map-overlay--bl { bottom: calc(round(1rem, var(--e)) + var(--map-foot, 0px)); left: round(1rem, var(--e)); }
 .glass-card {
   padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border-radius: round(1rem, var(--e)); border: 1px solid var(--line-2);
   background: linear-gradient(180deg, var(--surface-card-a), var(--surface-card-b));
@@ -1296,7 +1306,7 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 .hbar > i { position: absolute; inset: 0 auto 0 0; width: var(--w); border-radius: inherit; background: var(--live); opacity: 0.75; }
 .hbar-val { white-space: nowrap; color: var(--text-2); }
 
-.map-overlay--br { bottom: round(1.75rem, var(--e)); right: round(0.75rem, var(--e)); }
+.map-overlay--br { bottom: calc(round(0.5rem, var(--e)) + var(--map-foot-br, round(1.25rem, var(--e)))); right: round(0.75rem, var(--e)); }
 .chart-block[data-series] .chart-label .key i { background: var(--c); }
 
 /* ------------------------------------------------------------------ tiers (container queries on <body>, in rem)
@@ -1411,3 +1421,200 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 .sub--src .src { font-size: inherit; }
 .sub--src .src { flex: none; }
 .tbl td > .src { display: flex; font-size: inherit; }
+
+/* ------------------------------------------------------------------ phone (<html data-phone>, set by boot.js)
+   Following Sentry Manager's phone set-up: no sidebar, one compact bar of the main sections (here at the
+   bottom, in reach of the thumb), the page with 16 px side margins, tables as cards (core/table.js),
+   forms in one column, tap targets of at least 44 px, text of at least 14 px, fields at 16 px so iPhones
+   do not zoom into them, dialogs and menus as sheets from the bottom that fit above the keyboard, and the
+   notch and home bar kept clear (safe-area insets). No pull-to-refresh: pages update by themselves.
+   "tall": an upright phone, the period bar in the dock above the tabs. "short": a phone on its side, the
+   period in the top bar and a lower tab bar. Pages add their own phone rules under :root[data-phone]. */
+.top-car, .top-acct, .dock { display: none; }
+:root[data-phone] {
+  --fs-floor: 14px;
+  --tap: round(2.75rem, var(--e));
+  --tab-h: round(3.5rem, var(--e));
+  --dock-period-h: 0px;
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+  --dock-h: calc(var(--tab-h) + var(--dock-period-h) + var(--safe-b));
+  overscroll-behavior-y: none; /* no pull-to-refresh: live data arrives by itself */
+  -webkit-tap-highlight-color: transparent;
+}
+:root[data-phone="tall"][data-has-period] { --dock-period-h: round(3.75rem, var(--e)); }
+:root[data-phone="short"] { --tab-h: round(3rem, var(--e)); }
+:root[data-phone] body { font-size: max(0.875rem, var(--fs-floor)); }
+:root[data-phone] .app {
+  grid-template-columns: minmax(0, 1fr); background: none;
+  --gutter: max(round(1rem, var(--e)), var(--safe-l), var(--safe-r)); --gap: round(0.75rem, var(--e));
+  --view-pad-top: round(1.125rem, var(--e)); --view-pad-bottom: round(2rem, var(--e));
+  --topbar-h: calc(round(3.5rem, var(--e)) + 1px);
+}
+:root[data-phone] .sidebar { display: none; }
+:root[data-phone] .app > .main { padding-bottom: var(--dock-h); }
+:root[data-phone] .view--fill { height: max(calc(100dvh - var(--topbar-h) - var(--safe-t) - var(--dock-h)), round(26rem, var(--e))); }
+
+/* the top bar: the car (opens the switcher), live status, the account */
+:root[data-phone] .topbar { height: calc(var(--topbar-h) + var(--safe-t)); padding: var(--safe-t) var(--gutter) 0; gap: round(0.5rem, var(--e)); }
+:root[data-phone] .menu-btn, :root[data-phone] .crumbs, :root[data-phone] .clock { display: none; }
+:root[data-phone] .topbar-start { gap: 0; }
+:root[data-phone] .top-car {
+  display: flex; width: auto; max-width: 100%; min-width: 0; min-height: var(--tap); margin: 0; padding: round(0.25rem, var(--e)) round(0.625rem, var(--e)) round(0.25rem, var(--e)) round(0.75rem, var(--e));
+  gap: round(0.5rem, var(--e)); box-shadow: none; color: var(--text);
+}
+:root[data-phone] .topbar .top-car { justify-content: flex-start; gap: round(0.5rem, var(--e)); }
+:root[data-phone] .top-car .car-switch-text { position: static; width: auto; height: auto; overflow: hidden; clip: auto; white-space: nowrap; flex: 0 1 auto; }
+:root[data-phone] .top-car .car-switch-dot { position: static; margin: 0; }
+:root[data-phone] .top-car .car-switch-sub { font-size: max(0.75rem, var(--fs-floor)); }
+:root[data-phone] .top-car .car-switch-text { --LH: round(calc(1.2 * 1em), 2px); }
+.top-car-chev { color: var(--text-3); flex: none; }
+:root[data-phone] .topbar-tools { gap: round(0.375rem, var(--e)); }
+:root[data-phone] .freshness { min-width: round(1.5rem, var(--e)); justify-content: center; }
+:root[data-phone] .freshness-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+:root[data-phone] .top-acct {
+  display: grid; place-items: center; flex: none; width: var(--tap); height: var(--tap); margin-right: round(-0.375rem, var(--e)); padding: 0;
+  border: 0; border-radius: 50%; background: none; color: var(--text);
+}
+:root[data-phone] .top-acct[aria-expanded="true"] .avatar { box-shadow: 0 0 0 2px var(--live-line); }
+:root[data-phone="short"] .period-sub { display: none; }
+:root[data-phone="short"] .period-btn { max-width: round(14rem, var(--e)); }
+
+/* the dock: the period bar (upright) and the tab bar, over the page at the bottom */
+:root[data-phone] .dock {
+  display: flex; flex-direction: column; position: fixed; z-index: 40; left: 0; right: 0; bottom: 0;
+  padding: 0 var(--safe-r) var(--safe-b) var(--safe-l);
+  /* solid, so the page never shows through behind the tab labels */
+  background: var(--bg-1);
+  border-top: 1px solid var(--line);
+}
+.dock-period:empty, .dock-period:has(> .period[hidden]) { display: none; }
+.dock-period { display: flex; align-items: center; height: var(--dock-period-h); padding: 0 var(--gutter); border-bottom: 1px solid var(--line); }
+.dock-period .period { display: flex; width: 100%; gap: round(0.5rem, var(--e)); }
+.dock-period .period-btn { flex: 1; min-width: 0; max-width: none; justify-content: center; }
+.dock-period .period-text { min-width: 0; }
+.dock-period .period-sub { display: none; }
+.dock-period .period-label { overflow: hidden; text-overflow: ellipsis; }
+.tabbar { display: flex; height: var(--tab-h); }
+.tab {
+  flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: round(0.125rem, var(--e));
+  border: 0; background: none; padding: 0; color: var(--text-3); font: inherit; font-size: max(0.75rem, var(--fs-floor)); font-weight: 500;
+  --LH: round(calc(1.2 * 1em), 2px);
+}
+.tab .ico { width: round(1.375rem, var(--e)); height: round(1.375rem, var(--e)); }
+.tab-label { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tab[aria-current="page"], .tab.is-current { color: var(--live); }
+.tab:focus-visible { outline: 2px solid var(--live-line); outline-offset: -4px; border-radius: round(0.75rem, var(--e)); }
+:root[data-phone="short"] .tab { flex-direction: row; gap: round(0.5rem, var(--e)); }
+
+/* tap targets of 44 px, fields at 16 px (no zoom into a field on an iPhone) */
+:root[data-phone] .btn, :root[data-phone] .period-btn { min-height: var(--tap); font-size: max(0.875rem, var(--fs-floor)); }
+:root[data-phone] .btn--sm { height: var(--tap); }
+:root[data-phone] .btn--icon { width: var(--tap); min-width: var(--tap); }
+:root[data-phone] .period-step { width: var(--tap); height: var(--tap); }
+:root[data-phone] .seg-btn { min-height: var(--tap); }
+:root[data-phone] :is(.input, .select, select, textarea, input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"])) { min-height: var(--tap); font-size: max(1rem, 16px); }
+:root[data-phone] .input--sm { width: round(6.5rem, var(--e)); }
+:root[data-phone] .check, :root[data-phone] .switch-row { min-height: var(--tap); }
+:root[data-phone] .tbl-sort { min-height: var(--tap); }
+
+/* sheets: menus, pickers and dialogs come up from the bottom, as wide as the screen, and fit above the
+   keyboard (the page's height shrinks with it: interactive-widget=resizes-content in index.html) */
+:root[data-phone] :is(.popover, .account-menu) {
+  top: auto !important; left: 0 !important; right: 0; bottom: 0; width: auto; max-width: none;
+  max-height: calc(100dvh - var(--safe-t) - round(2.5rem, var(--e)));
+  padding-bottom: calc(round(0.875rem, var(--e)) + var(--safe-b)); padding-left: max(round(1rem, var(--e)), var(--safe-l)); padding-right: max(round(1rem, var(--e)), var(--safe-r));
+  border-radius: round(1.25rem, var(--e)) round(1.25rem, var(--e)) 0 0; border-width: 1px 0 0;
+  overscroll-behavior: contain;
+}
+:root[data-phone] :is(.dialog, .menu-panel, .switcher, dialog.dialog--advice) {
+  width: 100vw; max-width: 100vw; margin: auto 0 0; max-height: calc(100dvh - var(--safe-t) - round(1.5rem, var(--e)));
+  border-radius: round(1.25rem, var(--e)) round(1.25rem, var(--e)) 0 0; border-width: 1px 0 0;
+  padding-bottom: var(--safe-b); overscroll-behavior: contain;
+}
+:root[data-phone] .dialog-actions { flex-wrap: wrap; }
+:root[data-phone] .dialog-actions > .btn { flex: 1 1 auto; }
+:root[data-phone] .menu-groups { grid-template-columns: minmax(0, 1fr); }
+:root[data-phone] .sw-foot .sw-keys, :root[data-phone] .kbd { display: none; }
+:root[data-phone] .menu-item, :root[data-phone] .sw-opt, :root[data-phone] .period-preset { min-height: var(--tap); }
+:root[data-phone] .flash { top: calc(var(--topbar-h) + var(--safe-t) + round(0.5rem, var(--e))); }
+:root[data-phone] .footer { padding-left: var(--gutter); padding-right: var(--gutter); }
+:root[data-phone] .notice { padding-left: var(--gutter); padding-right: var(--gutter); }
+:root[data-phone] .notices { padding-top: var(--safe-t); }
+:root[data-phone] .notices:not([hidden]) + .topbar { padding-top: 0; height: var(--topbar-h); }
+/* nothing only on hover: what a hover would show is there to tap */
+@media (hover: none) {
+  .tbl tbody tr:hover { background: none; }
+}
+
+/* tables on a phone: each row a card (as in Sentry Manager): the first cell is its title across the top,
+   the others below in two columns with their column's name over them (td[data-label], core/table.js).
+   The order is picked in the table's bar (.tbl-sort-pick). A table that must stay a table (a matrix of
+   numbers) gets .tbl--keep: it scrolls sideways inside its panel with its first column held. */
+.tbl-sort-pick { display: none; }
+:root[data-phone] .tbl-sort-pick { display: block; flex: 1 1 round(10rem, var(--e)); min-width: 0; max-width: 100%; }
+:root[data-phone] .tbl-bar { flex-wrap: wrap; row-gap: round(0.5rem, var(--e)); padding-left: round(1rem, var(--e)); padding-right: round(1rem, var(--e)); }
+:root[data-phone] .tbl-bar .panel-title { flex: 1 0 100%; }
+:root[data-phone] .tbl-bar > .tbl-csv { margin-left: auto; }
+:root[data-phone] .tbl-foot { flex-wrap: wrap; padding-left: round(1rem, var(--e)); padding-right: round(1rem, var(--e)); }
+:root[data-phone] .tbl:not(.tbl--keep) :is(thead) { display: none; }
+:root[data-phone] .tbl:not(.tbl--keep), :root[data-phone] .tbl:not(.tbl--keep) > tbody { display: block; width: 100%; }
+:root[data-phone] .tbl:not(.tbl--keep) > tbody > tr {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(0.5rem, var(--e)) round(0.875rem, var(--e));
+  padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border-bottom: 1px solid var(--line);
+}
+:root[data-phone] .tbl:not(.tbl--keep) > tbody > tr:last-child { border-bottom: 0; }
+:root[data-phone] .tbl:not(.tbl--keep) > tbody > tr > td {
+  display: block; height: auto; min-width: 0; padding: 0; border: 0; text-align: left; white-space: normal; overflow-wrap: anywhere;
+}
+:root[data-phone] .tbl:not(.tbl--keep) > tbody > tr > td:first-child { grid-column: 1 / -1; font-size: max(0.9375rem, var(--fs-floor)); }
+:root[data-phone] .tbl:not(.tbl--keep) > tbody > tr > td[data-label]:not(:first-child)::before {
+  content: attr(data-label); display: block; margin-bottom: round(0.125rem, var(--e)); color: var(--text-3); font-size: max(0.75rem, var(--fs-floor)); font-weight: 500;
+}
+:root[data-phone] .tbl:not(.tbl--keep) > tbody > tr > td:empty { display: none; }
+:root[data-phone] .tbl:not(.tbl--keep) > tbody > tr.tbl-empty, :root[data-phone] .tbl:not(.tbl--keep) > tbody > tr.tbl-skel { display: block; }
+:root[data-phone] .tbl:not(.tbl--keep) > tbody > tr.tbl-skel > td { margin: round(0.375rem, var(--e)) 0; }
+:root[data-phone] .tbl:not(.tbl--keep) .main, :root[data-phone] .tbl:not(.tbl--keep) .sub { white-space: normal; overflow: visible; }
+:root[data-phone] .tbl:not(.tbl--keep) .cell-clip { max-width: none; }
+:root[data-phone] .tbl:not(.tbl--keep) td.is-num > .tag:only-child { margin-left: 0; }
+:root[data-phone] .tbl--keep th:first-child, :root[data-phone] .tbl--keep td:first-child { position: sticky; left: 0; z-index: 2; background: var(--panel-solid); }
+:root[data-phone] .tbl--keep th:first-child { z-index: 3; }
+
+/* shared parts on a phone: text of 14 px and more, and links and chips as tall as a finger */
+:root[data-phone] :is(.page-sub, .pill--lg, .mono, .tbl .main, .tbl .sub) { font-size: max(0.875rem, var(--fs-floor)); }
+/* a page head's sub-line of parts with dots between: one part a line, no dot (a dot left at a line's end reads as a stray mark) */
+:root[data-phone] .page-sub:has(> .sep) { flex-direction: column; align-items: flex-start; gap: round(0.25rem, var(--e)); }
+:root[data-phone] .page-sub > .sep { display: none; }
+:root[data-phone] .pill--lg { height: auto; min-height: round(2rem, var(--e)); }
+:root[data-phone] :is(.panel-link, .legend-chip, a.hbar-label, .link-btn) { min-height: var(--tap); display: inline-flex; align-items: center; }
+:root[data-phone] .hbars li { min-height: var(--tap); }
+:root[data-phone] .maplibregl-ctrl-group button { width: var(--tap) !important; height: var(--tap) !important; }
+:root[data-phone] .skip:not(:focus) { visibility: hidden; }
+
+:root[data-phone] .tbl a.main { display: flex; flex-direction: row; align-items: center; min-height: var(--tap); }
+:root[data-phone] .back { min-height: var(--tap); }
+:root[data-phone] .empty p { font-size: max(0.84375rem, var(--fs-floor)); }
+:root[data-phone] :is(.popover, .account-menu)::backdrop { background: var(--backdrop); }
+/* an icon in the dock takes no taps of its own: they go to its tab or button (and the page under the dock
+   counts as under the dock, not under an icon) */
+:root[data-phone] .dock :is(svg, .ico) { pointer-events: none; }
+/* bare screens (sign-in, set-up) have no dock either: its tabs lead to pages that need an account */
+:root[data-phone][data-screen="bare"] .dock { display: none; }
+:root[data-phone][data-screen="bare"] .app > .main { padding-bottom: var(--safe-b); }
+:root[data-phone] .map-style-btn { height: var(--tap); padding: 0 round(0.875rem, var(--e)); }
+/* the map's credit fills in once the map has loaded: on a phone its lines are kept from the start (two upright,
+   one on its side), so the switch above it and the page's cards over the map never move when it arrives */
+:root[data-phone="tall"] .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib { min-height: round(2.75rem, var(--e)); }
+:root[data-phone="short"] .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib { min-height: round(1.5rem, var(--e)); }
+:root[data-phone] .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib.maplibregl-attrib-empty { display: block; }
+/* with those heights the strip at the map's foot (the switch over the credit) is known before the map has loaded,
+   so the page's cards over the map sit above it from the first paint, not only once the map has measured it */
+:root[data-phone] { --map-foot-phone: calc(var(--tap) + 2 * round(0.1875rem, var(--e)) + 2px + round(0.5rem, var(--e)) + round(2.75rem, var(--e))); }
+:root[data-phone="short"] { --map-foot-phone: calc(var(--tap) + 2 * round(0.1875rem, var(--e)) + 2px + round(0.5rem, var(--e)) + round(1.5rem, var(--e))); }
+:root[data-phone] .map-panel > .map-overlay--br { bottom: calc(round(0.5rem, var(--e)) + var(--map-foot-phone)); }
+:root[data-phone] .map-panel > .map-overlay--bl { bottom: calc(round(1rem, var(--e)) + var(--map-foot-phone)); }
+/* and as wide as the map from the start: the credit is a strip across the map's foot, so it never grows sideways */
+:root[data-phone] .map-panel .maplibregl-ctrl-bottom-right { left: 0; }
+:root[data-phone] .map-panel .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib { float: none; clear: both; margin: 0; border-radius: 0; text-align: right; }

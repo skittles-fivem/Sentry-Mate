@@ -107,3 +107,51 @@
 .hl-tesla { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); margin-top: round(1.25rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
 .hl-tesla .hl-sub, .hl-tesla p { margin: 0; }
 .hl-tesla > .link { align-self: flex-start; display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); }
+
+/* phone (<html data-phone>): cards read left to right, what a desktop shows
+   on hover is written out, links are whole taps */
+.hl-phone-only { display: none; }
+:root[data-phone] .hl-phone-only { display: inline; }
+:root[data-phone] .cell-text > .hl-phone-only { display: block; }
+:root[data-phone] .hl-page .is-num .cell-text { align-items: flex-start; }
+/* the long lists (40 days, every signal) run with the page: a box that scrolls inside a scrolling page is hard to use by thumb */
+:root[data-phone] .hl-page :is(.hl-days, .hl-signals) .tbl-scroll { max-height: none; overflow-y: visible; }
+:root[data-phone] .hl-tot-figs .metric { min-width: 0; }
+:root[data-phone] .hl-tot-figs .metric-value { white-space: normal; overflow-wrap: anywhere; }
+:root[data-phone] .hl-kinds td:first-child { min-width: 0; }
+:root[data-phone] .hl-kinds .hl-wrap { max-width: none; }
+:root[data-phone] .hl-days td { white-space: normal; }
+:root[data-phone] .hl-page .q-u { font-size: max(0.86em, var(--fs-floor)); }
+:root[data-phone] .hl-tesla > .link { min-height: var(--tap); }
+:root[data-phone] .hl-key { grid-template-columns: auto minmax(0, 1fr); }
+:root[data-phone] .hl-key > .hl-key-r { grid-column: 2; align-items: flex-start !important; text-align: left; }
+:root[data-phone] .hl-page .field--search { width: 100%; }
+:root[data-phone] .hl-srv-cols .kv + .hl-sub { margin-top: round(1.25rem, var(--e)); }
+:root[data-phone] .hl-pre, :root[data-phone] .hl-code { overflow-wrap: anywhere; }
+:root[data-phone] .hl-page a.cell-text { min-height: var(--tap); justify-content: center; }
+
+/* the card that leads to the connections overview (pages/conn-overview.js overviewCard) */
+.hl-page > .co-card { margin-bottom: var(--gap); }
+.co-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: round(0.875rem, var(--e)); align-items: center; color: inherit; text-decoration: none; }
+.co-card:hover .co-card-title, .co-card:hover .co-card-go { color: var(--live); }
+.co-card:focus-visible { outline: 2px solid var(--live); outline-offset: 2px; }
+.co-card-ic { display: grid; place-items: center; width: round(2.5rem, var(--e)); height: round(2.5rem, var(--e)); border-radius: round(0.75rem, var(--e)); background: var(--glass-2); color: var(--live); }
+.co-card-ic .ico { width: round(1.25rem, var(--e)); height: round(1.25rem, var(--e)); }
+.co-card-text { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); min-width: 0; }
+.co-card-title { font-weight: 600; font-size: 0.9375rem; }
+.co-card-sub { color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.4 * 1em), 2px); }
+.co-card-counts { display: flex; flex-wrap: wrap; gap: round(0.375rem, var(--e)) round(0.875rem, var(--e)); }
+.co-card-counts:empty { display: none; }
+.co-card-go { display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); color: var(--text-2); font-weight: 500; white-space: nowrap; }
+.co-total--sm { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); }
+.co-total--sm .co-t-n { font-weight: 600; font-variant-numeric: tabular-nums; }
+.co-total--sm .co-t-w { color: var(--text-3); }
+.co-light { --dot: var(--st-unknown); display: inline-block; flex: none; width: round(0.5625rem, var(--e)); height: round(0.5625rem, var(--e)); border-radius: 50%; background: var(--dot); }
+.co-light[data-status="live"] { --dot: var(--live); }
+.co-light[data-status="idle"] { --dot: var(--st-asleep); }
+.co-light[data-status="paused"] { --dot: var(--warm); background: transparent; box-shadow: inset 0 0 0 round(0.15625rem, var(--e)) var(--dot); }
+.co-light[data-status="off"] { background: transparent; box-shadow: inset 0 0 0 round(0.125rem, var(--e)) var(--text-3); }
+.co-light[data-status="problem"] { --dot: var(--danger); }
+:root[data-phone] .co-card { grid-template-columns: minmax(0, 1fr); gap: round(0.5rem, var(--e)); }
+:root[data-phone] .co-card-ic { display: none; }
+:root[data-phone] .co-card-go { min-height: var(--tap); }

@@ -397,7 +397,7 @@ def _new_job(req, files):
          "finished_ms": None, "error": None, "cars": [], "report": None, "_files": fs}
     with st.lock:
         st.imports[jid] = j
-    st.record(req.account, "import.create", f"import:{jid}", f"Started uploading {name} ({total} bytes).")
+    st.record(req.account, "import-created", f"import:{jid}", f"Started uploading {name} ({total} bytes).")
     out = view(j)
     out["upload_url"] = out["files"][0]["upload_url"]
     out["chunk_max_bytes"] = 1024 * 1024 - 1024
@@ -487,7 +487,7 @@ def _patch_file(req, j, ix):
                              for c in extras.backup_cars(req.app.cfg.now_ms, req.ds.history("c3"))]
             st.rev += 1
     if j["status"] == "checking":
-        st.record(req.account, "import.uploaded", f"import:{j['id']}", "Uploaded every file; checking it.")
+        st.record(req.account, "import-uploaded", f"import:{j['id']}", "Uploaded every file; checking it.")
     out = view(j)
     out["offset"] = f["uploaded_bytes"]
     return out
@@ -537,7 +537,7 @@ def delete_import(req):
     j = _job(req)
     with st.lock:
         st.imports.pop(j["id"], None)
-    st.record(req.account, "import.discard", f"import:{j['id']}",
+    st.record(req.account, "import-discarded", f"import:{j['id']}",
               f"Discarded the import {j['name']} ({j['status']}). History already imported stays.")
     return {"deleted": True, "id": j["id"], "status": j["status"]}
 
@@ -597,7 +597,7 @@ def put_cars(req):
             known[x["tm_car"]]["match"] = x["match"]
         if j["status"] == "ready":
             j["report"] = _checked_report(req, j)
-    st.record(req.account, "import.cars", f"import:{j['id']}",
+    st.record(req.account, "import-cars", f"import:{j['id']}",
               "Matched imported cars: " + ", ".join(f"{x['tm_car']} -> {x['match']}" for x in rows) + ".")
     return get_cars(req)
 
@@ -652,7 +652,7 @@ def start(req):
         j["bytes_read"] = 0
         j["_import_start_ms"] = req.now
         j["_import_done_ms"] = req.now + IMPORT_MS
-    st.record(req.account, "import.start", f"import:{j['id']}", f"Started importing {j['name']}.")
+    st.record(req.account, "import-started", f"import:{j['id']}", f"Started importing {j['name']}.")
     return view(j)
 
 

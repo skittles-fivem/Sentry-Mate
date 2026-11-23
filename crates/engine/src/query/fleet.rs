@@ -40,7 +40,11 @@ pub struct CarItem {
     pub trim: Option<String>,
     /// The DBC set: `tesla-3y` or `tesla-sx-legacy`.
     pub profile: &'static str,
+    /// The zone the car's days and clocks follow ([`crate::Engine::car_zone`]).
     pub time_zone: String,
+    /// Where `time_zone` comes from: `owner` (set for the car), `position` (the zone of its newest position) or
+    /// `default` (the server's `default_time_zone`).
+    pub time_zone_source: &'static str,
     pub last_activity_ms: Option<u64>,
     pub now: CarNow,
     pub attention: Vec<&'static str>,
@@ -64,15 +68,7 @@ fn car_origins(x: &FleetEntry) -> Vec<model::Origin> {
     if inputs.contains(model::Input::Smo) || !x.car.vehicle_keys.is_empty() || older {
         out.push(model::Origin::Smo);
     }
-    if inputs.contains(model::Input::TeslaApi) {
-        out.push(model::Origin::TeslaApi);
-    }
-    if inputs.contains(model::Input::TeslafiApi) {
-        out.push(model::Origin::TeslafiApi);
-    }
-    if inputs.contains(model::Input::TeslamateLocal) {
-        out.push(model::Origin::TeslamateLocal);
-    }
+    out.extend(model::Input::apis().filter(|i| inputs.contains(*i)).map(model::Origin::from));
     for site in model::ImportSite::ALL {
         let s = t.of_site(site);
         if s.drives + s.charges > 0 {
@@ -112,8 +108,10 @@ fn last_judged(e: &Engine, car: CarId, meta: &records::CarMeta) -> QResult<Optio
 /// What a car's people should look at (`stopped_mid_drive`, `stopped_mid_charge`, `upload_silence`, `trust_failed`,
 /// `low_battery`), from its fleet entry and its log records. `upload_silence` and `trust_failed` follow the rules of
 /// `/cars/{car}/health`: nothing new (its newest log's data, else its last upload) for a day, and its newest judged
-/// log failed its check. Not said yet: `tyre_low` (the car's recommended pressure isn't read, and a threshold the
-/// server picked is not the car's) and `door_open_asleep` (the Now keeps no doors).
+/// log failed its check. `tyre_low`: a tyre of the Now more than 10 % under its recommended pressure (as the Now's
+/// `tyre_low`: typed, else the car's, else the door placard's; each tyre against the lower axle's while which wheel
+/// each sensor is is not known), with `{ tyre: "fl" | "fr" | "rl" | "rr" | null (not known), pressure_kpa,
+/// recommended_kpa, source }` for the lowest. Not said yet: `door_open_asleep` (the Now keeps no doors).
 pub fn attention_of(e: &Engine, x: &FleetEntry, meta: &records::CarMeta, now: u64) -> QResult<Vec<Noted>> {
     let mut out = Vec::new();
     // a sold car is not watched any more
@@ -128,6 +126,21 @@ pub fn attention_of(e: &Engine, x: &FleetEntry, meta: &records::CarMeta, now: u6
         } else if silent && n.sample.charging == Some(true) {
             out.push(Noted { code: "stopped_mid_charge", since_ms: Some(n.at_ms), detail });
         }
+    }
+    if let Some(n) = &x.summary.now
+        && let Some(t) = super::now::tyres_judged(e, x.car.id, &n.sample)?
+        && let Some(i) = t.lowest_low()
+    {
+        out.push(Noted {
+            code: "tyre_low",
+            since_ms: Some(n.at_ms),
+            detail: serde_json::json!({
+                "tyre": t.mapped.then(|| ["fl", "fr", "rl", "rr"][i]),
+                "pressure_kpa": t.kpa[i],
+                "recommended_kpa": t.against[i],
+                "source": t.recommended.source.word(),
+            }),
+        });
     }
     let last_seen = meta.newest_ms.or(meta.last_arrived_ms);
     if last_seen.is_none_or(|t| now.saturating_sub(t) > 24 * STALE_MS) {
@@ -165,6 +178,7 @@ pub(crate) fn item(e: &Engine, x: &FleetEntry, now: u64) -> CarItem {
     let n = x.summary.now.as_ref();
     let s = n.map(|n| &n.sample);
     let place = s.and_then(|s| s.lat.zip(s.lon)).and_then(|(a, b)| places.place_at(a, b));
+    let (zone, zone_source) = e.car_zone(c);
     CarItem {
         id: CarRef(c.id),
         name: c.name.clone(),
@@ -173,7 +187,8 @@ pub(crate) fn item(e: &Engine, x: &FleetEntry, now: u64) -> CarItem {
         vin_prefix: c.vin.as_ref().map(|v| v.vin_prefix.clone()),
         trim: None,
         profile: c.profile().dbc_name(),
-        time_zone: c.time_zone.clone(),
+        time_zone: zone,
+        time_zone_source: zone_source.word(),
         last_activity_ms: x.summary.last_activity_ms,
         sources: super::source_refs(&car_origins(x)),
         source_label: model::Origin::label_of(&car_origins(x)),
@@ -410,11 +425,12 @@ impl Configured {
     fn new(value: serde_json::Value, source: Option<&'static str>) -> Configured {
         let origin = match source {
             Some("can" | "vin") => Some(model::Origin::Smo),
-            Some("tesla_api") => Some(model::Origin::TeslaApi),
             Some(w) if model::ImportSite::from_word(w).is_some() => {
                 model::ImportSite::from_word(w).map(model::Origin::Import)
             }
-            _ => None,
+            // an API input's own word (`tesla_api`, `teslafi_api`)
+            Some(w) => model::Input::apis().map(model::Origin::from).find(|o| o.kind() == w),
+            None => None,
         };
         Configured { value, source, sources: origin.into_iter().map(super::SourceRef::from).collect() }
     }
@@ -443,7 +459,8 @@ pub struct CarDetail {
     #[serde(flatten)]
     pub item: CarItem,
     /// Every key of [`CONFIG_KEYS`], plus `model`, `year` and `plant` (the VIN's plant letter): each the value
-    /// [`CarDetail::vehicle`] settled on, in the words `config` has always used.
+    /// [`CarDetail::vehicle`] settled on, in the words `config` has always used; and the recommended tyre pressures
+    /// an admin typed (`tyre_pressure_front_kpa`, `tyre_pressure_rear_kpa`: null when none is).
     pub config: BTreeMap<&'static str, Configured>,
     /// Everything known of the car's build, each fact with its source and confidence.
     pub vehicle: VehicleInfo,
@@ -502,8 +519,7 @@ fn put_owner(e: &Engine, car: CarId, o: &Owner) -> QResult<()> {
 fn fill_page(e: &Engine, x: &FleetEntry, i: &mut CarItem, now: u64) -> QResult<()> {
     let meta = records::meta(e.db(), i.id.0)?;
     i.now.since_ms = meta.state_since_ms;
-    i.now.received_ms =
-        meta.last_arrived_ms.max(meta.api_received_ms).max(meta.teslafi_received_ms).max(meta.tmlocal_received_ms);
+    i.now.received_ms = meta.received_ms();
     i.attention = attention_of(e, x, &meta, now)?.into_iter().map(|a| a.code).collect();
     Ok(())
 }
@@ -533,7 +549,7 @@ fn vehicle_from(e: &Engine, c: &model::Car, o: &Owner, can: model::vehicle::CanB
     if matches!(o.settings.chemistry.as_str(), "lfp" | "nca_nmc") {
         owner.entry("chemistry".into()).or_insert_with(|| OwnerValue::Text(o.settings.chemistry.clone()));
     }
-    let api = records::api_meta(e.db(), c.id)?.meta;
+    let api = records::api_meta(e.db(), c.id, model::Input::TeslaApi)?.meta;
     let inputs = VehicleInputs {
         vin: c.vin.as_ref().map(|v| v.vin_prefix.clone()),
         can,
@@ -581,10 +597,82 @@ fn vehicle_defaults_of(e: &Engine, c: &model::Car, o: &Owner) -> QResult<Vehicle
     })
 }
 
+/// Where a car's recommended tyre pressures come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TyreSource {
+    /// An admin typed them (`config.tyre_pressure_front_kpa`, `_rear_kpa`).
+    Owner,
+    /// The car sent them (0x219 page 4).
+    Can,
+    /// The door placard's for the car's model, year and wheel size (`tyre_pressure.csv`).
+    Placard,
+}
+
+impl TyreSource {
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            TyreSource::Owner => "owner",
+            TyreSource::Can => "can",
+            TyreSource::Placard => "placard",
+        }
+    }
+}
+
+/// A car's recommended (cold) tyre pressures, kPa: front and rear axle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TyreRecommended {
+    pub front_kpa: f64,
+    pub rear_kpa: f64,
+    pub source: TyreSource,
+    /// The wheel size the placard's are for (placard only).
+    pub wheel_in: Option<u8>,
+}
+
+/// A car's recommended tyre pressures: what an admin typed (one alone is both axles'), else what the car sends
+/// (`can`, kPa: front and rear, both needed), else the door placard's for its build (its model, model year and
+/// wheel size all known; the build is only worked out when neither of the others is there).
+pub(crate) fn tyre_recommended(e: &Engine, car: CarId, can: [Option<f64>; 2]) -> QResult<Option<TyreRecommended>> {
+    let o = owner(e, car)?;
+    let typed = |k: &str| o.config.get(k).and_then(serde_json::Value::as_f64).filter(|x| x.is_finite() && *x > 0.0);
+    if let (f, r) = (typed("tyre_pressure_front_kpa"), typed("tyre_pressure_rear_kpa"))
+        && let Some(front) = f.or(r)
+    {
+        let rear = r.unwrap_or(front);
+        return Ok(Some(TyreRecommended {
+            front_kpa: front,
+            rear_kpa: rear,
+            source: TyreSource::Owner,
+            wheel_in: None,
+        }));
+    }
+    let can = can.map(|x| x.filter(|x| x.is_finite() && *x > 0.0));
+    if let [Some(front), Some(rear)] = can {
+        return Ok(Some(TyreRecommended { front_kpa: front, rear_kpa: rear, source: TyreSource::Can, wheel_in: None }));
+    }
+    let c = car_of(e, car)?;
+    let v = vehicle_of(e, &c, &o)?;
+    Ok(model::vehicle::placard_pressure(&v).map(|p| TyreRecommended {
+        front_kpa: p.front_kpa,
+        rear_kpa: p.rear_kpa,
+        source: TyreSource::Placard,
+        wheel_in: Some(p.wheel_in),
+    }))
+}
+
 /// [`VehicleDefaults`] of one car.
 pub(crate) fn vehicle_defaults(e: &Engine, car: CarId) -> QResult<VehicleDefaults> {
     let c = car_of(e, car)?;
     vehicle_defaults_of(e, &c, &owner(e, car)?)
+}
+
+/// The trim as Car settings shows it (`config.trim`): the build's trim when something names it.
+fn shown_trim(v: &VehicleInfo) -> Option<String> {
+    v.trim.value.clone().filter(|_| v.trim.source.is_some())
+}
+
+/// [`shown_trim`] of a car (its build worked out from the car's small records).
+pub(crate) fn trim_of(e: &Engine, c: &model::Car) -> QResult<Option<String>> {
+    Ok(shown_trim(&vehicle_of(e, c, &owner(e, c.id)?)?))
 }
 
 /// `/cars/{car}`.
@@ -635,10 +723,19 @@ pub fn car(e: &Engine, car: CarId) -> QResult<CarDetail> {
         };
         config.insert(k, shown);
     }
+    // the recommended tyre pressures an admin typed (kPa; the Now's `tyre_recommended_*` say what is used)
+    for k in ["tyre_pressure_front_kpa", "tyre_pressure_rear_kpa"] {
+        let typed = o.config.get(k).filter(|v| v.is_number()).cloned();
+        let shown = match typed {
+            Some(v) => Configured::new(v, Some(FactSource::Owner.word())),
+            None => Configured::new(serde_json::Value::Null, None),
+        };
+        config.insert(k, shown);
+    }
     let mut it = item(e, &x, now_ms());
     typed_over(&mut it, &o);
-    if let Some(t) = config.get("trim").and_then(|t| t.value.as_str()) {
-        it.trim = Some(t.to_string());
+    if let Some(t) = shown_trim(&vehicle) {
+        it.trim = Some(t);
     }
     fill_page(e, &x, &mut it, now_ms())?;
     Ok(CarDetail { item: it, config, vehicle, version: o.car_changes + 1, created_ms: c.created_ms })
@@ -746,7 +843,8 @@ fn owner_extra(path: &str, kind: OwnerKind, v: &serde_json::Value, errs: &mut Er
 }
 
 /// `PATCH /cars/{car}`: `{ version, name?, time_zone?, config? }` (each config key a value, or null to forget the
-/// one typed in). One change at a time; a stale `version` changes nothing.
+/// one typed in; `time_zone` an IANA zone the owner sets, or null or `auto` to have it worked out again). One
+/// change at a time; a stale `version` changes nothing.
 pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDetail>> {
     let mut errs = Errs::default();
     let version = errs.head(body, &["name", "time_zone", "config", "sold", "sold_date"]);
@@ -785,14 +883,16 @@ pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDeta
     };
     let zone = match body.get("time_zone") {
         None => None,
+        Some(serde_json::Value::Null) => Some(None),
+        Some(serde_json::Value::String(s)) if s.trim().eq_ignore_ascii_case("auto") => Some(None),
         Some(serde_json::Value::String(s)) => {
             if !crate::tz::is_zone(s.trim()) {
-                errs.rule("time_zone", "Not a known time zone (for example Europe/Amsterdam).");
+                errs.rule("time_zone", "Not a known time zone (for example Europe/Amsterdam), or null for automatic.");
             }
-            Some(s.trim().to_string())
+            Some(Some(s.trim().to_string()))
         }
         Some(_) => {
-            errs.bad("time_zone", "Must be text.");
+            errs.bad("time_zone", "Must be text or null.");
             None
         }
     };
@@ -833,7 +933,8 @@ pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDeta
     let _one = crate::lock(&e.inner.claim);
     // the car's record is read and written back under its own lock (the pipeline's VIN and key changes take it too)
     let record = crate::lock(&e.inner.car_record);
-    let mut c = car_of(e, car)?;
+    // (the stored record, not the zone worked out for it: it is written back)
+    let mut c = e.db().car(car)?.ok_or(QueryError::NoSuchCar)?;
     let mut o = owner(e, car)?;
     if errs.bad.is_empty()
         && let Some(v) = version
@@ -846,8 +947,13 @@ pub fn patch_car(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<CarDeta
     if let Some(n) = name {
         c.name = n;
     }
-    if let Some(z) = zone {
-        c.time_zone = z;
+    match zone {
+        Some(Some(z)) => {
+            c.time_zone = z;
+            c.time_zone_typed = Some(true);
+        }
+        Some(None) => c.time_zone_typed = Some(false),
+        None => {}
     }
     if let Some(b) = sold {
         o.sold = b;
@@ -908,6 +1014,10 @@ pub struct CarSettings {
     pub pack_replaced_date: Option<String>,
     #[serde(default)]
     pub pack_new_kwh: Option<f64>,
+    /// The order the car's live inputs win in where two cover the same time (null: the default, SMO, the Tesla API,
+    /// TeslaFi, local TeslaMate). Absent on records written before it was kept: the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_order: Option<model::SourceOrder>,
 }
 
 impl Default for CarSettings {
@@ -923,6 +1033,7 @@ impl Default for CarSettings {
             import_gap_fill: None,
             pack_replaced_date: None,
             pack_new_kwh: None,
+            source_order: None,
         }
     }
 }
@@ -930,6 +1041,12 @@ impl Default for CarSettings {
 /// Whether a car's import fills what its live history lacks: its own setting, else the server's.
 pub(crate) fn gap_fill_on(e: &Engine, car: CarId) -> QResult<bool> {
     Ok(settings_of(e, car)?.import_gap_fill.unwrap_or_else(|| e.import_gap_fill()))
+}
+
+/// The order a car's live inputs win in: its own setting, else the default (also for a car whose record can't be
+/// read: the fusion never fails over it).
+pub(crate) fn source_order_of(e: &Engine, car: CarId) -> model::SourceOrder {
+    settings_of(e, car).ok().and_then(|s| s.source_order).unwrap_or_default()
 }
 
 /// A car's settings as an admin set them (the defaults until then).
@@ -966,11 +1083,131 @@ pub struct SettingsView {
     pub full_range_new_km_default: Option<f64>,
     pub efficiency_wh_per_km_default: Option<f64>,
     pub defaults_source: Option<&'static str>,
+    /// The server's `import_gap_fill.enabled` (what a null `import_gap_fill` follows).
+    pub import_gap_fill_default: bool,
+    /// The order the car's live inputs win in, highest first (the car's choice, else the default), and the default.
+    pub source_order: Vec<&'static str>,
+    pub source_order_default: Vec<&'static str>,
+    /// Each live input, in `source_order`'s order: whether it is set up or feeding this car, and its newest data.
+    pub inputs: Vec<InputSetup>,
+    /// The car's imported history, by site (empty when none).
+    pub imports: Vec<ImportHeld>,
 }
 
-fn settings_view(e: &Engine, o: &Owner, d: VehicleDefaults) -> SettingsView {
+/// One live input of a car's settings (`inputs`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct InputSetup {
+    pub kind: &'static str,
+    pub label: &'static str,
+    /// Set up for or feeding this car: SMO with a bridge key or logs, an API that sent the car's data. (The web side
+    /// also counts a vehicle of the service linked to the car.)
+    pub on: bool,
+    pub last_ms: Option<u64>,
+}
+
+/// One import site's history of a car (`imports`): the first and last time it covers.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ImportHeld {
+    pub site: &'static str,
+    pub label: String,
+    pub from_ms: u64,
+    pub to_ms: u64,
+}
+
+/// The newest data of one live input of a car.
+fn input_last_ms(meta: &records::CarMeta, i: model::Input) -> Option<u64> {
+    match i {
+        model::Input::Smo => meta.newest_ms,
+        model::Input::TeslaApi | model::Input::TeslafiApi | model::Input::TeslamateLocal => meta.api_times(i).0,
+    }
+}
+
+/// Each live input of a car in the car's order, with whether the engine has it set up and its newest data.
+fn inputs_of(e: &Engine, c: &model::Car, order: &model::SourceOrder) -> QResult<Vec<InputSetup>> {
+    let meta = records::meta(e.db(), c.id)?;
+    Ok(order
+        .iter()
+        .map(|i| {
+            let on = match i {
+                model::Input::Smo => !c.vehicle_keys.is_empty() || c.inputs.contains(i) || meta.decoded > 0,
+                model::Input::TeslaApi | model::Input::TeslafiApi | model::Input::TeslamateLocal => {
+                    c.inputs.contains(i)
+                }
+            };
+            InputSetup { kind: i.word(), label: i.name(), on, last_ms: input_last_ms(&meta, i) }
+        })
+        .collect())
+}
+
+/// The span a car's imported points of `site` cover, from its sample stream (the first day's first point to the
+/// last day's last).
+fn import_points_span(e: &Engine, car: CarId, site: model::ImportSite) -> QResult<Option<(u64, u64)>> {
+    let stream = model::Stream::of_site(site);
+    let days = e.db().days::<model::Sample>(car, stream)?;
+    let (Some(first), Some(last)) = (days.first(), days.last()) else { return Ok(None) };
+    const DAY: u64 = 86_400_000;
+    let a = e.db().read_points::<model::Sample>(car, stream, first.start_ms, first.start_ms.saturating_add(DAY))?;
+    let b = e.db().read_points::<model::Sample>(car, stream, last.start_ms, last.start_ms.saturating_add(DAY))?;
+    let lo = a.iter().map(|s| s.t_ms).min();
+    let hi = b.iter().map(|s| s.t_ms).max();
+    Ok(lo.zip(hi).map(|(lo, hi)| (lo, hi.max(lo))))
+}
+
+/// The car's imported history, by site: where its points are, else where its rows are.
+fn imports_of(e: &Engine, car: CarId) -> QResult<Vec<ImportHeld>> {
+    let mut rows: Option<[Option<(u64, u64)>; model::ImportSite::ALL.len()]> = None;
+    let mut out = Vec::new();
+    for site in model::ImportSite::ALL {
+        let span = match import_points_span(e, car, site)? {
+            Some(s) => Some(s),
+            None => {
+                let has_rows = e.db().entry(car)?.is_some_and(|x| {
+                    let t = x.summary.tally.of_site(site);
+                    t.drives + t.charges > 0
+                });
+                if has_rows {
+                    if rows.is_none() {
+                        rows = Some(import_row_spans(e, car)?);
+                    }
+                    rows.as_ref().and_then(|r| r.get(site.index()).copied().flatten())
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some((from_ms, to_ms)) = span {
+            let label = model::Origin::Import(site).label();
+            out.push(ImportHeld { site: site.word(), label, from_ms, to_ms });
+        }
+    }
+    Ok(out)
+}
+
+/// Where each import site's drives and charges are (by [`model::ImportSite::index`]).
+fn import_row_spans(e: &Engine, car: CarId) -> QResult<[Option<(u64, u64)>; model::ImportSite::ALL.len()]> {
+    let mut by: [Option<(u64, u64)>; model::ImportSite::ALL.len()] = Default::default();
+    fn gather<T: db::Item>(
+        e: &Engine,
+        car: CarId,
+        by: &mut [Option<(u64, u64)>; model::ImportSite::ALL.len()],
+    ) -> QResult<()> {
+        super::reports::overlapping::<T>(e, car, 0, u64::MAX, Some(model::Source::Teslamate), false, |r| {
+            if let Some(slot) = r.source().site().and_then(|site| by.get_mut(site.index())) {
+                let (a, b) = (r.start_ms(), r.end_ms().max(r.start_ms()));
+                *slot = Some(slot.map_or((a, b), |(x, y)| (x.min(a), y.max(b))));
+            }
+            Ok(true)
+        })
+    }
+    gather::<model::Drive>(e, car, &mut by)?;
+    gather::<model::Charge>(e, car, &mut by)?;
+    Ok(by)
+}
+
+fn settings_view(e: &Engine, c: &model::Car, o: &Owner, d: VehicleDefaults) -> QResult<SettingsView> {
     let s = &o.settings;
-    SettingsView {
+    let order = s.source_order.unwrap_or_default();
+    Ok(SettingsView {
         version: o.settings_changes + 1,
         battery_chemistry: Chemistry { setting: s.chemistry.clone(), detected: None, evidence: None },
         free_supercharging: s.free_supercharging.clone(),
@@ -990,7 +1227,12 @@ fn settings_view(e: &Engine, o: &Owner, d: VehicleDefaults) -> SettingsView {
             || d.full_range_new_km.is_some()
             || d.efficiency_wh_per_km.is_some())
         .then_some(VehicleDefaults::SOURCE),
-    }
+        import_gap_fill_default: e.import_gap_fill(),
+        source_order: order.words(),
+        source_order_default: model::SourceOrder::default().words(),
+        inputs: inputs_of(e, c, &order)?,
+        imports: imports_of(e, c.id)?,
+    })
 }
 
 /// `GET /cars/{car}/settings`.
@@ -998,10 +1240,37 @@ pub fn car_settings(e: &Engine, car: CarId) -> QResult<Scoped<SettingsView>> {
     let c = car_of(e, car)?;
     let o = owner(e, car)?;
     let d = vehicle_defaults_of(e, &c, &o)?;
-    Ok(scoped(&c, settings_view(e, &o, d)))
+    Ok(scoped(&c, settings_view(e, &c, &o, d)?))
 }
 
 const CHEMISTRIES: &[&str] = &["auto", "lfp", "nca_nmc"];
+
+/// `source_order`: every live input's word exactly once (`Some(None)`: null, the default).
+fn source_order(v: &serde_json::Value, errs: &mut Errs) -> Option<Option<model::SourceOrder>> {
+    const WHAT: &str = "Must list smo, tesla_api, teslafi_api and teslamate_local, each once, highest first (or null for the default order).";
+    match v {
+        serde_json::Value::Null => Some(None),
+        serde_json::Value::Array(list) => {
+            let words: Option<Vec<model::Input>> =
+                list.iter().map(|w| w.as_str().and_then(model::Input::from_word)).collect();
+            match words.as_deref().and_then(model::SourceOrder::new) {
+                Some(o) => Some(Some(o)),
+                None => {
+                    errs.rule("source_order", WHAT);
+                    None
+                }
+            }
+        }
+        // (a wrong type breaks the same rule: 422, as the contract says)
+        serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_)
+        | serde_json::Value::Object(_) => {
+            errs.rule("source_order", WHAT);
+            None
+        }
+    }
+}
 const MAX_RANGES: usize = 100;
 
 /// A number field (`Some(None)`: null, when `nullable`) within `lo..=hi`.
@@ -1121,6 +1390,7 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
         "import_gap_fill",
         "pack_replaced_date",
         "pack_new_kwh",
+        "source_order",
     ];
     let version = errs.head(body, &known);
     let chemistry = match body.get("battery_chemistry") {
@@ -1186,10 +1456,12 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
         }
     };
     let pack_kwh = number(body, "pack_new_kwh", 10.0, 250.0, true, &mut errs);
-    let _one = crate::lock(&e.inner.claim);
+    let order = body.get("source_order").and_then(|v| source_order(v, &mut errs));
+    let one = crate::lock(&e.inner.claim);
     // the car's record is read and written back under its own lock (the pipeline's VIN and key changes take it too)
     let record = crate::lock(&e.inner.car_record);
-    let mut c = car_of(e, car)?;
+    // (the stored record, not the zone worked out for it: it is written back)
+    let mut c = e.db().car(car)?.ok_or(QueryError::NoSuchCar)?;
     let mut o = owner(e, car)?;
     if errs.bad.is_empty()
         && let Some(v) = version
@@ -1226,6 +1498,11 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
     if let Some(x) = pack_kwh {
         s.pack_new_kwh = x;
     }
+    // (null and the default list are the same order: no rebuild between them)
+    let order_changed = order.is_some_and(|x| x.unwrap_or_default() != s.source_order.unwrap_or_default());
+    if let Some(x) = order {
+        s.source_order = x;
+    }
     if let Some(x) = efficiency {
         let before = s.efficiency_wh_per_km_override;
         s.efficiency_wh_per_km_override = x;
@@ -1246,8 +1523,12 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
     drop(record);
     o.settings_changes += 1;
     put_owner(e, car, &o)?;
+    drop(one);
+    if order_changed {
+        e.rebuild_for_order(car)?;
+    }
     let d = vehicle_defaults_of(e, &c, &o)?;
-    Ok(Patched::Done(scoped(&c, settings_view(e, &o, d))))
+    Ok(Patched::Done(scoped(&c, settings_view(e, &c, &o, d)?)))
 }
 
 #[cfg(test)]
@@ -1261,6 +1542,37 @@ mod tests {
         assert!(software_version("2026.38.4") && software_version("2026.2") && software_version("2026.38.4.1"));
         assert!(!software_version("26.38") && !software_version("2026") && !software_version("2026.38.x"));
         assert!(date("2026-02-28").is_some() && date("2026-02-30").is_none() && date("2026-2-3").is_none());
+    }
+
+    #[test]
+    fn source_orders_are_kept_and_older_records_read_as_the_default() {
+        let old: CarSettings = serde_json::from_value(json!({
+            "chemistry": "auto", "free_supercharging": [], "capacity_new_kwh": null, "full_range_new_km": null,
+            "warranty_threshold_pct": 70.0, "efficiency_wh_per_km_override": null, "software_version_typed": null
+        }))
+        .unwrap();
+        assert_eq!(old.source_order, None);
+        assert!(!serde_json::to_string(&old).unwrap().contains("source_order"), "nothing written until one is set");
+        let order = model::SourceOrder::new(&[
+            model::Input::TeslaApi,
+            model::Input::Smo,
+            model::Input::TeslafiApi,
+            model::Input::TeslamateLocal,
+        ]);
+        let s = CarSettings { source_order: order, ..CarSettings::default() };
+        let back: CarSettings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.source_order, order);
+        let mut errs = Errs::default();
+        assert_eq!(source_order(&json!(null), &mut errs), Some(None));
+        assert_eq!(
+            source_order(&json!(["tesla_api", "smo", "teslafi_api", "teslamate_local"]), &mut errs),
+            Some(order)
+        );
+        for bad in [json!(["smo"]), json!("smo"), json!(["smo", "smo", "tesla_api", "teslafi_api"])] {
+            let mut errs = Errs::default();
+            assert_eq!(source_order(&bad, &mut errs), None);
+            assert!(errs.rule.contains_key("source_order") && errs.bad.is_empty(), "{bad}");
+        }
     }
 
     #[test]

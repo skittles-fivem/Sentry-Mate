@@ -1,0 +1,244 @@
+/* Sentry Mate · Horizon UI pack · theme.css: Horizon's look over the shared structure of app.css.
+   - The background: a dusk sky with stars, a striped setting sun, wireframe mountains, haze and a neon grid
+     floor (core/sky.js builds it; the floor is one canvas). Background: Auto, Full, Calm or Off (Settings:
+     Display and units, kept in this browser).
+   - Readability: everything with text sits on solid, blurred glass (panels, the title plate, the toolbar, the
+     bars), never straight on the sky, so text keeps AA contrast over the sun as the page scrolls.
+   - Horizon's shapes: sharp corners, inset neon rings, corner brackets on panels, the hot magenta-to-orange
+     gradient on the main button and on chosen segments, cyan glow on hover and focus.
+   Every length is round(..., var(--e)) as in app.css, so boxes stay on whole pixels. */
+
+/* ------------------------------------------------------------------ the background */
+:root { --hz: 64%; --sun: min(46vmin, 25rem); }
+html { background: var(--bg-0); }
+body { background: transparent; }
+.app { position: relative; z-index: 1; }
+.sky {
+  position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; contain: strict;
+  background: linear-gradient(180deg, #06031a 0%, #0f0730 22%, #2a0d55 40%, #5a1670 52%, #a9286f 59%, #ff6a4a calc(var(--hz) - 0.5%), #ff9a4a var(--hz), #2a0b4a var(--hz));
+}
+.sky > * { position: absolute; }
+.sky-stars {
+  inset: 0 0 calc(100% - var(--hz) + 18%) 0; opacity: 0.75;
+  background-image:
+    radial-gradient(1.2px 1.2px at 12% 18%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 28% 8%, #d8d2ff 50%, transparent 51%),
+    radial-gradient(1.4px 1.4px at 43% 26%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 61% 12%, #ffd6f0 50%, transparent 51%),
+    radial-gradient(1.2px 1.2px at 77% 22%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 89% 6%, #cfe9ff 50%, transparent 51%),
+    radial-gradient(1px 1px at 6% 40%, #fff 50%, transparent 51%), radial-gradient(1.3px 1.3px at 94% 36%, #fff 50%, transparent 51%),
+    radial-gradient(1px 1px at 52% 4%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 35% 44%, #ffe0f4 50%, transparent 51%),
+    radial-gradient(1px 1px at 18% 30%, #fff 50%, transparent 51%), radial-gradient(1.2px 1.2px at 70% 34%, #e6deff 50%, transparent 51%);
+}
+.sky-glow {
+  left: 50%; top: var(--hz); width: calc(var(--sun) * 3.4); height: calc(var(--sun) * 2.2); transform: translate(-50%, -62%);
+  background: radial-gradient(closest-side, rgba(255, 120, 90, 0.55), rgba(255, 63, 180, 0.22) 55%, transparent 100%); opacity: 0.8;
+}
+.sky-sun {
+  left: 50%; top: calc(var(--hz) - var(--sun) * 0.8); width: var(--sun); height: var(--sun); transform: translateX(-50%); border-radius: 50%;
+  background: linear-gradient(180deg, #fff3a0 0%, #ffd25a 22%, #ff9a3d 48%, #ff5a8a 72%, #ff3fb4 100%);
+  box-shadow: 0 0 3.75rem rgba(255, 150, 80, 0.45);
+  -webkit-mask-image: linear-gradient(180deg, #000 0 47%, transparent 47% 50%, #000 50% 57%, transparent 57% 61%, #000 61% 67%, transparent 67% 72.5%, #000 72.5% 77%, transparent 77% 83.5%, #000 83.5% 86.5%, transparent 86.5% 94%, #000 94%);
+  mask-image: linear-gradient(180deg, #000 0 47%, transparent 47% 50%, #000 50% 57%, transparent 57% 61%, #000 61% 67%, transparent 67% 72.5%, #000 72.5% 77%, transparent 77% 83.5%, #000 83.5% 86.5%, transparent 86.5% 94%, #000 94%);
+}
+.sky-mtn { left: 0; width: 100%; height: clamp(5rem, 17vh, 12rem); top: calc(var(--hz) - clamp(5rem, 17vh, 12rem)); }
+.sky-mtn .m-fill.near { fill: #0c0526; }
+.sky-mtn .m-fill.far { fill: #24093f; opacity: 0.92; }
+.sky-mtn .m-wire { fill: none; stroke: rgba(61, 240, 255, 0.4); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.sky-mtn .m-wire.far { stroke: rgba(255, 120, 200, 0.32); }
+.sky-mtn .m-ridge { fill: none; stroke: #ff3fb4; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.sky-mtn .m-ridge.far { stroke: rgba(255, 138, 61, 0.75); }
+.sky-haze { left: 0; right: 0; top: calc(var(--hz) - 7vh); height: 12vh; opacity: 0.85;
+  background: linear-gradient(180deg, transparent, rgba(255, 110, 170, 0.32) 55%, rgba(255, 160, 110, 0.38) 60%, transparent); }
+.sky-floor { left: 0; right: 0; top: var(--hz); bottom: 0; background: linear-gradient(180deg, #3a0d55 0%, #1a0838 22%, #0b0524 60%, #06031a 100%); }
+.sky-floor canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.sky-floor::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(180deg, #3a0d55 0%, rgba(58, 13, 85, 0.85) 6%, rgba(40, 10, 70, 0.35) 22%, transparent 45%), radial-gradient(70% 60% at 50% 110%, rgba(61, 240, 255, 0.22), transparent 70%); }
+.sky-scan { inset: 0; opacity: 0.3; background-image: repeating-linear-gradient(180deg, rgba(0, 0, 0, 0.18) 0 1px, transparent 1px 3px); }
+html.sky-moving .sky-glow { animation: hz-breathe 7s ease-in-out infinite; }
+html.sky-moving .sky-haze { animation: hz-haze 11s ease-in-out infinite; }
+@keyframes hz-breathe { 0%, 100% { opacity: 0.68; } 50% { opacity: 0.95; } }
+@keyframes hz-haze { 0%, 100% { opacity: 0.7; } 50% { opacity: 1; } }
+html[data-sky="calm"] .sky-scan { opacity: 0.16; }
+html[data-sky="off"] .sky { background: linear-gradient(180deg, #06031a, #120a33 70%, #1c0a3e); }
+html[data-sky="off"] .sky > :not(.sky-stars) { display: none; }
+html[data-sky="off"] .sky-stars { opacity: 0.35; }
+/* daybreak: a pale dawn over the same grid */
+:root[data-theme="light"] .sky { background: linear-gradient(180deg, #e9e2ff 0%, #f2dcff 30%, #ffd6ec 50%, #ffc6b0 calc(var(--hz) - 0.5%), #ffb38a var(--hz), #efe2ff var(--hz)); }
+:root[data-theme="light"] .sky-stars { display: none; }
+:root[data-theme="light"] .sky-sun { opacity: 0.85; }
+:root[data-theme="light"] .sky-glow { opacity: 0.45; }
+:root[data-theme="light"] .sky-mtn .m-fill.near { fill: #d9c6f7; }
+:root[data-theme="light"] .sky-mtn .m-fill.far { fill: #ecd9fb; }
+:root[data-theme="light"] .sky-mtn .m-wire { stroke: rgba(0, 111, 122, 0.3); }
+:root[data-theme="light"] .sky-mtn .m-ridge { stroke: #c2137d; }
+:root[data-theme="light"] .sky-floor { background: linear-gradient(180deg, #f0dcff 0%, #ece0ff 40%, #f4eeff 100%); }
+:root[data-theme="light"] .sky-floor::after { background: linear-gradient(180deg, #f0dcff 0%, rgba(240, 220, 255, 0.8) 8%, transparent 40%); }
+:root[data-theme="light"] .sky-scan { display: none; }
+:root[data-theme="light"][data-sky="off"] .sky { background: linear-gradient(180deg, #f4eeff, #ece0ff); }
+@media (max-width: 700px) { :root { --hz: 58%; --sun: min(62vw, 19rem); } }
+@media (orientation: landscape) and (max-height: 500px) { :root { --hz: 62%; --sun: 42vh; } }
+
+/* ------------------------------------------------------------------ type */
+body { font-feature-settings: normal; font-size: 0.9375rem; }
+.page-title {
+  font-family: var(--font-display); font-weight: 700; font-size: 1.625rem; letter-spacing: 0.04em; text-transform: uppercase;
+  background: var(--chrome); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: var(--text);
+}
+:root { --chrome: linear-gradient(180deg, #ffffff 0%, #eef0ff 36%, #c9c4f0 49%, #ffd2ef 53%, #ffffff 86%); }
+:root[data-theme="light"] { --chrome: linear-gradient(180deg, #3a1f78 0%, #1b0d3d 45%, #4a2a9a 52%, #2a145a 100%); }
+.panel-title, .nav-label, .eyebrow { font-family: var(--font-display); font-weight: 700; letter-spacing: 0.14em; }
+.panel-title .ico { color: var(--live); }
+.brand-name { font-family: var(--font-display); font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; font-size: 0.9375rem; }
+.brand-mark { filter: drop-shadow(0 0 round(0.625rem, var(--e)) rgba(255, 63, 180, 0.45)); }
+.brand-mark-grid { stroke: var(--live); }
+.auth-card h1 { letter-spacing: 0.03em; font-weight: 700; }
+
+/* ------------------------------------------------------------------ surfaces: solid glass for everything with text */
+.panel {
+  background: linear-gradient(180deg, var(--surface-panel-a), var(--surface-panel-b));
+  border: 1px solid color-mix(in srgb, var(--live) 26%, transparent);
+  box-shadow: var(--shadow);
+}
+:root[data-theme="light"] .panel { border-color: color-mix(in srgb, var(--live) 30%, transparent); }
+/* corner brackets, Horizon's HUD mark */
+.panel::after {
+  content: ""; position: absolute; inset: -1px; pointer-events: none; border-radius: inherit;
+  --c: var(--mag); --k: round(0.875rem, var(--e)); --t: round(0.125rem, var(--e));
+  background:
+    linear-gradient(var(--c), var(--c)) top left / var(--k) var(--t) no-repeat,
+    linear-gradient(var(--c), var(--c)) top left / var(--t) var(--k) no-repeat,
+    linear-gradient(var(--c), var(--c)) top right / var(--k) var(--t) no-repeat,
+    linear-gradient(var(--c), var(--c)) top right / var(--t) var(--k) no-repeat,
+    linear-gradient(var(--c), var(--c)) bottom left / var(--k) var(--t) no-repeat,
+    linear-gradient(var(--c), var(--c)) bottom left / var(--t) var(--k) no-repeat,
+    linear-gradient(var(--c), var(--c)) bottom right / var(--k) var(--t) no-repeat,
+    linear-gradient(var(--c), var(--c)) bottom right / var(--t) var(--k) no-repeat;
+}
+/* the title plate: the page head sits on glass too, so the title never lands on the sun */
+.page-head {
+  position: relative; padding: round(1rem, var(--e)) round(1.25rem, var(--e));
+  background: linear-gradient(180deg, var(--surface-panel-a), var(--surface-panel-b));
+  border: 1px solid color-mix(in srgb, var(--mag) 40%, transparent); border-radius: var(--radius);
+  box-shadow: var(--shadow); backdrop-filter: var(--blur);
+}
+.page-head::before {
+  content: ""; position: absolute; left: round(1.25rem, var(--e)); right: round(1.25rem, var(--e)); bottom: -1px; height: round(0.125rem, var(--e));
+  background: var(--hot); box-shadow: var(--glow-mag);
+}
+.footer { background: var(--surface-bar); backdrop-filter: var(--blur); }
+.auth-card { backdrop-filter: var(--blur); }
+
+/* ------------------------------------------------------------------ the frame */
+.app { background:
+  linear-gradient(90deg, transparent calc(var(--sidebar-w) - 1px), color-mix(in srgb, var(--mag) 40%, transparent) calc(var(--sidebar-w) - 1px), color-mix(in srgb, var(--mag) 40%, transparent) var(--sidebar-w), transparent var(--sidebar-w)),
+  linear-gradient(90deg, var(--surface-side) var(--sidebar-w), transparent var(--sidebar-w)); }
+.sidebar { backdrop-filter: var(--blur); }
+.topbar { border-bottom-color: color-mix(in srgb, var(--mag) 34%, transparent); }
+.nav-link { border-radius: var(--radius-sm); }
+.nav-link[aria-current="page"] {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--mag) 22%, transparent), color-mix(in srgb, var(--mag) 4%, transparent));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mag) 40%, transparent);
+}
+.nav-link[aria-current="page"]::before { background: var(--hot); box-shadow: var(--glow-mag); }
+.nav-link[aria-current="page"] .ico { color: var(--mag-ink); }
+.car-switch { border-radius: var(--radius); border-color: color-mix(in srgb, var(--live) 40%, transparent); background: var(--surface-card-a); }
+.car-switch:hover { border-color: var(--live); background: var(--surface-card-a); box-shadow: var(--glow-cyan); }
+.account { border-radius: var(--radius-sm); }
+.live-dot { background: var(--grn); box-shadow: 0 0 round(0.625rem, var(--e)) color-mix(in srgb, var(--grn) 60%, transparent); }
+.live-dot::after { border-color: color-mix(in srgb, var(--grn) 50%, transparent); }
+.clock { font-family: var(--font-mono); font-size: max(0.75rem, var(--fs-floor)); color: var(--live-3); text-shadow: var(--glow-cyan); }
+:root[data-theme="light"] .clock { color: var(--live); text-shadow: none; }
+
+/* ------------------------------------------------------------------ controls: Horizon's buttons and chips */
+.btn {
+  border-radius: var(--radius-sm); border-color: color-mix(in srgb, var(--live) 50%, transparent);
+  background: color-mix(in srgb, var(--live) 8%, var(--surface-ctrl)); font-weight: 600; letter-spacing: 0.02em;
+  transition: background 120ms, border-color 120ms, box-shadow 120ms;
+}
+.btn:hover { background: color-mix(in srgb, var(--live) 18%, var(--surface-ctrl)); border-color: var(--live); box-shadow: var(--glow-cyan); }
+.btn:active { transform: translateY(1px); }
+.btn--primary, .btn--primary:hover { background: var(--hot); border-color: transparent; color: var(--on-hot); box-shadow: var(--glow-mag); }
+.btn--primary:hover { filter: brightness(1.1); }
+.btn--danger { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 70%, transparent); color: var(--danger); }
+.btn--danger:hover { background: color-mix(in srgb, var(--danger) 22%, transparent); border-color: var(--danger); box-shadow: none; }
+.btn--ghost { background: transparent; border-color: transparent; }
+.btn--ghost:hover { background: rgba(var(--tint), 0.14); border-color: transparent; box-shadow: none; }
+.btn--sm { border-radius: var(--radius-xs); }
+.seg { border-radius: var(--radius-sm); background: var(--surface-sunken); border-color: var(--line-2); }
+.seg-btn { border-radius: var(--radius-xs); font-weight: 600; }
+.seg-btn:hover { background: rgba(var(--tint), 0.14); }
+.seg-btn[aria-pressed="true"] { background: var(--hot); color: var(--on-hot); box-shadow: none; }
+.seg-btn[aria-pressed="true"] .count { color: var(--on-hot); }
+.seg-btn[aria-pressed="true"] .dot { box-shadow: 0 0 0 1px var(--on-hot); }
+.input, .select { border-radius: var(--radius-sm); }
+.input:focus, .select:focus { border-color: var(--live); box-shadow: 0 0 0 round(0.1875rem, var(--e)) color-mix(in srgb, var(--live) 22%, transparent); }
+:focus-visible { outline-color: var(--live); }
+::selection { background: color-mix(in srgb, var(--mag) 35%, transparent); }
+.skip { background: var(--hot); color: var(--on-hot); }
+.key-chip, .kbd { border-radius: var(--radius-xs); }
+.panel-link:hover, .crumbs a:hover { color: var(--live); }
+
+/* filters and toolbars above a list: a plate of glass, so their labels never sit on the sky */
+.filter-bar, .toolbar {
+  padding: round(0.625rem, var(--e)) round(0.75rem, var(--e));
+  background: linear-gradient(180deg, var(--surface-panel-a), var(--surface-panel-b));
+  border: 1px solid var(--line-2); border-radius: var(--radius); backdrop-filter: var(--blur);
+}
+.notices { background: var(--surface-bar); backdrop-filter: var(--blur); }
+
+/* section heads, notes and strips that sit between panels: on a plate of glass too */
+/* (":root" first: a page's own stylesheet loads after this file and must not take the glass away) */
+:root :is(.window-head, .bat-history-head, .ef-section-head, .stats-head, .now-inputs, .vd-summary, .si-jump, .si-section-head,
+.si-section > .note, .si-legend, .si-cards-wrap, .saving-note, .tv-cars, .hl-signals-note, .settings-divider) {
+  padding: round(0.625rem, var(--e)) round(0.875rem, var(--e));
+  background: linear-gradient(180deg, var(--surface-panel-a), var(--surface-panel-b));
+  border: 1px solid var(--line-2); border-radius: var(--radius-sm); backdrop-filter: var(--blur);
+}
+:root .state-tile { background: linear-gradient(180deg, color-mix(in oklab, var(--dot) 12%, var(--surface-panel-a)), var(--surface-panel-b)); border-radius: var(--radius); }
+:root .si-card { background: var(--surface-card-b); }
+
+/* Orbitron is wide: it stays on headings and the hero gauges; figures in rows and tiles, names and versions
+   use Chakra Petch, so they fit the same boxes as in the shared layout */
+:root :is(.metric-value, .tire-val, .temp-val, .charge-soc b, .drive-soc b, .cost-amount, .head-stat dd, .state-tile-value,
+  .hl-total-val, .lb-total-km, .place-name, .recent-title, .tv-hover-name, .sw-version-text, .sw-fp-vname, .dialog-head h2) {
+  font-family: var(--font); font-weight: 600; letter-spacing: 0;
+}
+.page-title { overflow-wrap: anywhere; min-width: 0; }
+@container page (max-width: 40rem) {
+  .page-title { font-size: 1.25rem; letter-spacing: 0.02em; }
+}
+
+/* Chakra Petch sets figures a little wider than the shared layout was tuned for: keep lines that hold live
+   values from wrapping and unwrapping as the values change (no jumps) */
+:root .drive-soc span { white-space: nowrap; width: calc-size(max-content, round(up, size, 1px)); max-width: none; }
+:root .drive-soc > div.r > span { align-self: flex-end; }
+@container page (max-width: 36rem) {
+  :root .gauge-stats .q-u { flex-basis: 100%; margin-left: 0; } /* the unit always under the number on a phone */
+}
+
+/* ------------------------------------------------------------------ phone (<html data-phone>): Horizon's dock and sheets
+   The dock sits over the page and the sky: near-solid glass so the tab labels never read through to a card
+   or the sun behind them, the neon line on top like the top bar's, the chosen tab in cyan with the hot bar
+   over it. Sheets get the panels' glass and the magenta edge. */
+:root[data-phone] .dock {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-panel-a) 96%, var(--bg-0)), color-mix(in srgb, var(--surface-panel-b) 98%, var(--bg-0)));
+  border-top-color: color-mix(in srgb, var(--mag) 40%, transparent);
+  backdrop-filter: var(--blur);
+}
+:root[data-phone] .dock-period { border-bottom-color: var(--line-2); }
+:root[data-phone] .tab { position: relative; font-weight: 600; letter-spacing: 0.02em; }
+:root[data-phone] .tab[aria-current="page"], :root[data-phone] .tab.is-current { color: var(--live); text-shadow: var(--glow-cyan); }
+:root[data-phone] .tab[aria-current="page"]::before, :root[data-phone] .tab.is-current::before {
+  content: ""; position: absolute; top: 0; left: 50%; width: round(2rem, var(--e)); height: round(0.125rem, var(--e)); transform: translateX(-50%);
+  background: var(--hot); box-shadow: var(--glow-mag);
+}
+:root[data-theme="light"][data-phone] .tab[aria-current="page"], :root[data-theme="light"][data-phone] .tab.is-current { text-shadow: none; }
+:root[data-phone] :is(.popover, .account-menu, .dialog, .menu-panel, .switcher, dialog.dialog--advice) {
+  border-top-color: color-mix(in srgb, var(--mag) 45%, transparent);
+}
+:root[data-phone] .page-head { padding: round(0.875rem, var(--e)) round(1rem, var(--e)); }
+/* Chakra Petch at the phone's 14 px floor stands a pixel taller than the shared rows were tuned for: the
+   battery-level rows, the week map's hour labels and the set-up step numbers get room for it */
+:root[data-phone] .socmap { grid-auto-rows: round(1.125rem, var(--e)); }
+:root[data-phone] .socmap-y { --LH: round(1.125rem, 2px); }
+:root[data-phone] .weekmap-x { --LH: round(1.25rem, 2px); align-self: start; height: round(1.25rem, var(--e)); }
+:root[data-phone] .su-crumb-n { width: round(1.5rem, var(--e)); height: round(1.5rem, var(--e)); }

@@ -38,8 +38,9 @@ pub trait Sink: Send + Sync + 'static {
     /// What TeslaMate said that a `Sample` has no field for (locked, the software version and update, the scheduled
     /// charge start, ...), from MQTT, at most every [`map::META_EVERY_MS`] per car.
     fn meta(&self, _car: CarId, _meta: &ApiMeta) {}
-    /// The settings or status changed (for an audit entry or a notice).
-    fn changed(&self) {}
+    /// The settings or status changed (for an audit entry or a notice): `status` is the status now. Told on every
+    /// change of the settings, and when a [`Trouble`] begins, changes or ends (not again while it lasts).
+    fn changed(&self, _status: &Status) {}
 }
 
 /// TeslaMate cars kept at most (a wrong broker can't fill the settings with made-up ids).
@@ -315,6 +316,10 @@ pub struct MqttStatus {
     pub last_message_ms: Option<u64>,
     pub messages_today: u64,
     pub last_error: Option<ErrorInfo>,
+    /// Connected, but the broker has sent nothing for [`Options::quiet_after_ms`]: since when (its newest message,
+    /// else the connection). Cleared by the next message, and whenever the connection ends.
+    #[serde(skip)]
+    pub quiet_since_ms: Option<u64>,
     #[serde(skip)]
     day: u64,
 }
@@ -338,6 +343,111 @@ pub struct Status {
     /// The newest message of each TeslaMate car (by its id).
     #[serde(skip)]
     pub cars_last_message_ms: HashMap<String, u64>,
+}
+
+/// Something wrong with the input an admin should hear about (a notice), each with its own fix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Trouble {
+    /// The broker could not be reached: it refused the connection, did not answer, or its TLS handshake failed.
+    ConnectionRefused,
+    /// The broker refused the user name or password (or the subscription).
+    AuthFailed,
+    /// The broker's certificate does not have the pinned SHA-256.
+    PinMismatch,
+    /// Connected, but the broker sent nothing for [`Options::quiet_after_ms`].
+    Quiet,
+    /// The last database catch-up failed (whatever the cause).
+    CatchupFailed,
+}
+
+impl Trouble {
+    pub const ALL: [Trouble; 5] =
+        [Trouble::ConnectionRefused, Trouble::AuthFailed, Trouble::PinMismatch, Trouble::Quiet, Trouble::CatchupFailed];
+
+    /// The trouble's word: `connection_refused`, `auth_failed`, `pin_mismatch`, `quiet` or `catchup_failed`.
+    pub fn word(self) -> &'static str {
+        match self {
+            Trouble::ConnectionRefused => "connection_refused",
+            Trouble::AuthFailed => "auth_failed",
+            Trouble::PinMismatch => "pin_mismatch",
+            Trouble::Quiet => "quiet",
+            Trouble::CatchupFailed => "catchup_failed",
+        }
+    }
+
+    /// Which side it is on.
+    pub fn target(self) -> Target {
+        match self {
+            Trouble::ConnectionRefused | Trouble::AuthFailed | Trouble::PinMismatch | Trouble::Quiet => Target::Mqtt,
+            Trouble::CatchupFailed => Target::Database,
+        }
+    }
+
+    /// The MQTT trouble of a `last_error` code (`connection_refused`, `timeout`, `tls_failed`, `auth_failed`,
+    /// `pin_mismatch`); a code not known is taken as the broker not reached.
+    pub fn of_mqtt_code(code: &str) -> Trouble {
+        match code {
+            "auth_failed" => Trouble::AuthFailed,
+            "pin_mismatch" => Trouble::PinMismatch,
+            "connection_refused" | "timeout" | "tls_failed" => Trouble::ConnectionRefused,
+            other => {
+                tracing::debug!(code = other, "local TeslaMate: an MQTT error code not known");
+                Trouble::ConnectionRefused
+            }
+        }
+    }
+}
+
+/// A [`Trouble`] now, with its error (none for [`Trouble::Quiet`]) and since when.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Problem {
+    pub trouble: Trouble,
+    pub error: Option<ErrorInfo>,
+    pub since_ms: Option<u64>,
+}
+
+impl Status {
+    /// The MQTT side's trouble now: its connection failing (by its error), or connected and quiet.
+    pub fn mqtt_problem(&self) -> Option<Problem> {
+        let m = &self.mqtt;
+        match m.state {
+            MqttState::Error => m.last_error.as_ref().map(|e| Problem {
+                trouble: Trouble::of_mqtt_code(&e.code),
+                error: Some(e.clone()),
+                since_ms: Some(e.at_ms),
+            }),
+            MqttState::Connected => {
+                m.quiet_since_ms.map(|t| Problem { trouble: Trouble::Quiet, error: None, since_ms: Some(t) })
+            }
+            MqttState::Off | MqttState::Connecting | MqttState::Paused => None,
+        }
+    }
+
+    /// The database side's trouble now: the last catch-up failed (also while the next one runs).
+    pub fn db_problem(&self) -> Option<Problem> {
+        let d = &self.database;
+        match d.state {
+            DbState::Error | DbState::Syncing => d.last_error.as_ref().map(|e| Problem {
+                trouble: Trouble::CatchupFailed,
+                error: Some(e.clone()),
+                since_ms: Some(e.at_ms),
+            }),
+            DbState::Off | DbState::Ok | DbState::Paused => None,
+        }
+    }
+
+    /// Every trouble now, MQTT's first.
+    pub fn problems(&self) -> Vec<Problem> {
+        self.mqtt_problem().into_iter().chain(self.db_problem()).collect()
+    }
+}
+
+/// The trouble last told to the sink (another error of the same trouble, a refusal after a timeout, is not told
+/// again).
+type Told = Option<Trouble>;
+
+fn told_of(p: Option<&Problem>) -> Told {
+    p.map(|p| p.trouble)
 }
 
 fn err(f: &Failure, at_ms: u64) -> ErrorInfo {
@@ -398,7 +508,13 @@ pub struct Options {
     pub state_fresh_ms: u64,
     /// How long a test listens for TeslaMate's cars.
     pub test_listen: Duration,
+    /// Connected and nothing from the broker this long: it has gone quiet ([`Trouble::Quiet`]). TeslaMate sends
+    /// little while its cars sleep, so this is long.
+    pub quiet_after_ms: u64,
 }
+
+/// [`Options::quiet_after_ms`] by default: a day.
+pub const QUIET_AFTER_MS: u64 = 86_400_000;
 
 impl Default for Options {
     fn default() -> Self {
@@ -408,6 +524,7 @@ impl Default for Options {
             sample_every_ms: 1_000,
             state_fresh_ms: 3_600_000,
             test_listen: Duration::from_secs(3),
+            quiet_after_ms: QUIET_AFTER_MS,
         }
     }
 }
@@ -518,6 +635,7 @@ impl<S: Sink> Service<S> {
         {
             let mut st = lock(&self.inner.status);
             st.mqtt.connected_since_ms = None;
+            st.mqtt.quiet_since_ms = None;
             if c.paused {
                 st.mqtt.state = MqttState::Paused;
                 st.database.state = if c.database.enabled { DbState::Paused } else { DbState::Off };
@@ -545,6 +663,8 @@ impl<S: Sink> Service<S> {
             sent: HashMap::new(),
             every_ms: self.inner.opts.sample_every_ms,
             fresh_ms: self.inner.opts.state_fresh_ms,
+            quiet_after_ms: self.inner.opts.quiet_after_ms,
+            told: None,
         };
         tasks.push(rt.spawn(mqtt::run(broker, self.inner.opts.connect_timeout, self.inner.opts.backoff, live)));
         if c.database.enabled {
@@ -560,6 +680,7 @@ impl<S: Sink> Service<S> {
         let mut st = lock(&self.inner.status);
         st.mqtt.state = MqttState::Off;
         st.mqtt.connected_since_ms = None;
+        st.mqtt.quiet_since_ms = None;
         st.database.state = DbState::Off;
         st.database.next_sync_ms = None;
     }
@@ -582,7 +703,7 @@ impl<S: Sink> Service<S> {
         let c = self.inner.store.put(version, config, &draft.mqtt_password, &draft.db_password, now_ms)?;
         tracing::info!(version = c.version, "local TeslaMate settings saved");
         self.start();
-        self.inner.sink.changed();
+        self.inner.sink.changed(&self.status());
         Ok(c)
     }
 
@@ -590,7 +711,7 @@ impl<S: Sink> Service<S> {
     pub fn set_paused(&self, version: u64, paused: bool) -> Result<Config, ServiceError> {
         let (c, ()) = self.inner.store.update(Some(version), |c| c.paused = paused)?;
         self.start();
-        self.inner.sink.changed();
+        self.inner.sink.changed(&self.status());
         Ok(c)
     }
 
@@ -625,7 +746,7 @@ impl<S: Sink> Service<S> {
                 }
             }
         })?;
-        self.inner.sink.changed();
+        self.inner.sink.changed(&self.status());
         Ok(c)
     }
 
@@ -635,7 +756,7 @@ impl<S: Sink> Service<S> {
         self.stop();
         *lock(&self.inner.status) = Status::default();
         tracing::info!("local TeslaMate removed");
-        self.inner.sink.changed();
+        self.inner.sink.changed(&self.status());
         Ok(())
     }
 
@@ -774,9 +895,39 @@ struct Live<S: Sink> {
     sent: HashMap<String, (u64, Option<String>)>,
     every_ms: u64,
     fresh_ms: u64,
+    quiet_after_ms: u64,
+    /// The MQTT trouble last told to the sink.
+    told: Told,
 }
 
 impl<S: Sink> Live<S> {
+    /// Tells the sink when the MQTT side's trouble began, changed or ended.
+    fn tell_trouble(&mut self) {
+        let st = lock(&self.status).clone();
+        let now = told_of(st.mqtt_problem().as_ref());
+        if now != self.told {
+            self.told = now;
+            self.sink.changed(&st);
+        }
+    }
+
+    /// Connected and nothing came for [`Options::quiet_after_ms`]: the broker has gone quiet.
+    fn check_quiet(&mut self, now_ms: u64) {
+        {
+            let mut st = lock(&self.status);
+            if st.mqtt.state != MqttState::Connected || st.mqtt.quiet_since_ms.is_some() {
+                return;
+            }
+            let Some(last) = st.mqtt.last_message_ms.max(st.mqtt.connected_since_ms) else { return };
+            if now_ms.saturating_sub(last) < self.quiet_after_ms {
+                return;
+            }
+            st.mqtt.quiet_since_ms = Some(last);
+        }
+        tracing::warn!("local TeslaMate: its MQTT broker has sent nothing for a while");
+        self.tell_trouble();
+    }
+
     fn sync(&mut self) {
         let g = self.store.generation();
         if g == self.generation {
@@ -825,13 +976,15 @@ impl<S: Sink> mqtt::Handler for Live<S> {
         st.mqtt.state = MqttState::Connected;
         st.mqtt.connected_since_ms = Some(now_ms);
         st.mqtt.last_error = None;
+        st.mqtt.quiet_since_ms = None;
         drop(st);
         tracing::info!("local TeslaMate: connected to its MQTT broker");
+        self.tell_trouble();
     }
 
     fn message(&mut self, topic: &str, payload: &[u8], now_ms: u64) {
         let Some((id, name)) = map::split_topic(&self.config.mqtt.prefix, topic) else { return };
-        {
+        let was_quiet = {
             let mut st = lock(&self.status);
             let day = now_ms / 86_400_000;
             if st.mqtt.day != day {
@@ -843,6 +996,10 @@ impl<S: Sink> mqtt::Handler for Live<S> {
             if st.cars_last_message_ms.len() < MAX_CARS || st.cars_last_message_ms.contains_key(id) {
                 st.cars_last_message_ms.insert(id.to_string(), now_ms);
             }
+            st.mqtt.quiet_since_ms.take().is_some()
+        };
+        if was_quiet {
+            self.tell_trouble();
         }
         if self.config.car(id).is_none() {
             if self.config.cars.len() >= MAX_CARS {
@@ -855,7 +1012,8 @@ impl<S: Sink> mqtt::Handler for Live<S> {
                     c.cars.push(car);
                 }
             });
-            self.sink.changed();
+            let st = lock(&self.status).clone();
+            self.sink.changed(&st);
         }
         let payload = String::from_utf8_lossy(payload);
         let car = self.cars.entry(id.to_string()).or_default();
@@ -876,6 +1034,7 @@ impl<S: Sink> mqtt::Handler for Live<S> {
         if self.config.paused {
             return;
         }
+        self.check_quiet(now_ms);
         self.make_new_cars();
         for k in &self.config.cars {
             let Some(car) = match_car(k.matched) else { continue };
@@ -902,10 +1061,21 @@ impl<S: Sink> mqtt::Handler for Live<S> {
     }
 
     fn failed(&mut self, failure: &Failure, _retry_ms: u64) {
-        let mut st = lock(&self.status);
-        st.mqtt.state = MqttState::Error;
-        st.mqtt.connected_since_ms = None;
-        st.mqtt.last_error = Some(err(failure, mqtt::now_ms()));
+        {
+            let mut st = lock(&self.status);
+            // a broker that keeps failing the same way: since its first failure (not a new problem each try)
+            let at = st
+                .mqtt
+                .last_error
+                .as_ref()
+                .filter(|e| e.code == failure.code && st.mqtt.state == MqttState::Error)
+                .map_or_else(mqtt::now_ms, |e| e.at_ms);
+            st.mqtt.state = MqttState::Error;
+            st.mqtt.connected_since_ms = None;
+            st.mqtt.quiet_since_ms = None;
+            st.mqtt.last_error = Some(err(failure, at));
+        }
+        self.tell_trouble();
     }
 }
 
@@ -959,11 +1129,17 @@ fn merge_cars(store: &Store, seen: &[catchup::DbCar]) -> bool {
 /// One catch-up: the database's cars (for the match table), then, for the matched cars, a dump from each car's
 /// mark, stored as a TeslaMate import; the marks move on only once the sink stored it. The dump file is deleted
 /// whatever happened.
-async fn sync_once<S: Sink>(store: &Store, sink: &Arc<S>, c: &Config) -> Result<catchup::Counts, Failure> {
+async fn sync_once<S: Sink>(
+    store: &Store,
+    sink: &Arc<S>,
+    status: &Mutex<Status>,
+    c: &Config,
+) -> Result<catchup::Counts, Failure> {
     let cfg = catchup_config(&c.database, store.db_password().ok().flatten());
     let seen = catchup::test(&cfg).await.map_err(|e| db_failure(&e))?;
     if merge_cars(store, &seen) {
-        sink.changed();
+        let st = lock(status).clone();
+        sink.changed(&st);
     }
     let c = store.get().map_err(|e| Failure { code: "query_failed", message: e.to_string() })?;
     let pairs: Vec<(i64, CarId)> =
@@ -990,13 +1166,15 @@ async fn sync_once<S: Sink>(store: &Store, sink: &Arc<S>, c: &Config) -> Result<
 }
 
 async fn db_loop<S: Sink>(store: Store, sink: Arc<S>, status: Arc<Mutex<Status>>) {
+    // the database trouble last told to the sink
+    let mut told: Told = None;
     loop {
         let Ok(c) = store.get() else { return };
         if c.paused || !c.database.enabled {
             return;
         }
         lock(&status).database.state = DbState::Syncing;
-        let r = sync_once(&store, &sink, &c).await;
+        let r = sync_once(&store, &sink, &status, &c).await;
         let now = mqtt::now_ms();
         let next = now + c.database.interval_s.max(60) * 1000;
         {
@@ -1013,10 +1191,18 @@ async fn db_loop<S: Sink>(store: Store, sink: Arc<S>, status: Arc<Mutex<Status>>
                 }
                 Err(f) => {
                     tracing::warn!(code = f.code, "local TeslaMate: the database catch-up failed: {}", f.message);
+                    // failing the same way again: since its first failure
+                    let at = st.database.last_error.as_ref().filter(|e| e.code == f.code).map_or(now, |e| e.at_ms);
                     st.database.state = DbState::Error;
-                    st.database.last_error = Some(err(f, now));
+                    st.database.last_error = Some(err(f, at));
                 }
             }
+        }
+        let st = lock(&status).clone();
+        let now_told = told_of(st.db_problem().as_ref());
+        if now_told != told {
+            told = now_told;
+            sink.changed(&st);
         }
         tokio::time::sleep(Duration::from_millis(next.saturating_sub(mqtt::now_ms()))).await;
     }

@@ -73,18 +73,25 @@ fn settings_are_checked() {
 
 #[test]
 fn every_preset_is_a_valid_online_source_with_its_credit() {
-    use places::tiles::PRESETS;
-    assert_eq!(PRESETS[0].url, places::tiles::OSM_TILE_URL, "OpenStreetMap first: the default");
+    use places::tiles::{DEFAULT_PRESET, PRESETS, preset};
+    assert_eq!(PRESETS[0].id, DEFAULT_PRESET, "satellite first: the default");
+    assert_eq!(preset("satellite_us").map(|p| p.max_zoom), Some(16));
+    assert_eq!(preset("satellite").unwrap().hosts(), vec!["server.arcgisonline.com".to_string()]);
     for p in PRESETS {
-        let t = MapTiles {
-            mode: Mode::Online,
-            online_url: p.url.into(),
-            online_attribution: p.attribution.into(),
-            max_zoom: p.max_zoom,
-            ..MapTiles::default()
-        };
-        assert_eq!(t.validate(), Ok(()), "{}", p.id);
-        assert!(p.attribution.contains("OpenStreetMap"), "{}: OSM data needs its credit", p.id);
+        for url in std::iter::once(&p.url).chain(p.overlays.iter()) {
+            let t = MapTiles {
+                mode: Mode::Online,
+                online_url: (*url).into(),
+                online_attribution: p.attribution.into(),
+                max_zoom: p.max_zoom,
+                ..MapTiles::default()
+            };
+            assert_eq!(t.validate(), Ok(()), "{}: {url}", p.id);
+        }
+        if p.kind == "map" {
+            assert!(p.attribution.contains("OpenStreetMap"), "{}: OSM data needs its credit", p.id);
+        }
+        assert!(["map", "satellite"].contains(&p.kind), "{}", p.id);
         assert!(p.terms.starts_with("https://"), "{}", p.id);
     }
 }

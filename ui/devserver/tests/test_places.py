@@ -92,7 +92,7 @@ class PlacesWrite(ServerCase):
         self.assertEqual(self.c.get(f"/api/v1/places/{pid}")["counts"]["visits"], len(v))
         self.assertEqual(self.c.get("/api/v1/places/at?" + f"lat={LA['lat']}&lon={LA['lon']}")["place"]["id"], pid)
         audit = self.c.get("/api/v1/audit?limit=5")["items"]
-        self.assertEqual(audit[0]["action"], "place.create")
+        self.assertEqual(audit[0]["action"], "place-created")
 
     def test_2_rename_shows_everywhere(self):
         p = self.c.get("/api/v1/places/p31")

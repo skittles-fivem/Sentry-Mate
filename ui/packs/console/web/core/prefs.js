@@ -6,6 +6,7 @@
 import * as api from '../shared/api.js';
 import { setUnits } from '../shared/units.js';
 import { setLocale } from '../shared/i18n.js';
+import { setCarPrefs } from '../shared/state.js';
 import { applyInterface, applyTheme } from './display.js';
 
 let me = null;
@@ -22,6 +23,7 @@ export function onPrefs(f) { subs.add(f); return () => subs.delete(f); }
 export function applyPrefs(p) {
   if (!p) return;
   prefs = p;
+  setCarPrefs(p);
   setUnits(p);
   setLocale(p.language || 'auto');
   if (p.theme) applyTheme(p.theme);

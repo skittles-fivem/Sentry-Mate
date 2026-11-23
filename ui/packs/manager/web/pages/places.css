@@ -1,0 +1,174 @@
+/* Places (pages/places.js): the list (intro, filters, table, map of every circle, suggestions) and the
+   editor (map with the circle, which place wins, effect on history, details, price, reprice). */
+
+.places-page .pl-trail { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: round(0.25rem, var(--e)); }
+.places-page .pl-trail a { color: inherit; }
+.places-page .pl-trail a:hover { color: var(--live); }
+.places-page .pl-trail-name { color: var(--text-2); overflow-wrap: anywhere; }
+
+/* list: what places do */
+.pl-intro { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: round(1rem, var(--e)) round(1.75rem, var(--e)); margin-bottom: var(--gap); }
+.pl-intro-item { display: flex; gap: round(0.75rem, var(--e)); align-items: flex-start; min-width: 0; }
+.pl-intro-item > .ico { flex: none; width: round(1.125rem, var(--e)); height: 1lh; margin-top: 0; /* a box one line high: the drawing sits centred on the first line */ color: var(--live); }
+.pl-intro-item h3 { font-size: max(0.875rem, var(--fs-floor)); font-weight: 600; margin-bottom: round(0.25rem, var(--e)); }
+.pl-intro-item p { font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.5 * 1em), 2px); color: var(--text-2); }
+
+.pl-banner { display: flex; align-items: center; gap: round(0.75rem, var(--e)); padding: round(0.75rem, var(--e)) round(1rem, var(--e)); margin-bottom: var(--gap); border-radius: var(--radius-sm); border: 1px solid var(--warm-line); background: var(--warm-soft); font-size: max(0.84375rem, var(--fs-floor)); }
+.pl-banner[hidden] { display: none; }
+.pl-banner > .ico { color: var(--warm); flex: none; }
+.pl-banner p { flex: 1; min-width: 0; }
+.pl-empty { margin-bottom: var(--gap); }
+.pl-empty[hidden] { display: none; }
+
+/* list: table cells */
+.places-page .tbl-panel { margin-bottom: var(--gap); }
+.places-page .cell-text { display: flex; flex-direction: column; min-width: 0; --LH: round(calc(1.3 * 1em), 2px); }
+.places-page .cell-text > * { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.places-page .cell-text .sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
+.places-page .col-name .cell-text { max-width: round(13rem, var(--e)); }
+@container page (min-width: 108rem) { .places-page .col-name .cell-text { max-width: round(18rem, var(--e)); } }
+.places-page .tbl td.col-actions { width: 1%; }
+.pl-name { font-weight: 600; color: var(--text); }
+.pl-name:hover { color: var(--live); }
+.pl-kind { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); white-space: nowrap; color: var(--text-2); }
+.pl-kind .ico { color: var(--kc, var(--text-2)); }
+.pl-kind--home { --kc: var(--live); }
+.pl-kind--work { --kc: var(--live-2); }
+.pl-kind--charger { --kc: var(--c-charge); }
+.pl-kind--service { --kc: var(--warm); }
+.pl-actions { display: inline-flex; gap: round(0.375rem, var(--e)); white-space: nowrap; }
+/* history: charges, drives by car and stops in one cell */
+.pl-hist { display: flex; flex-direction: column; gap: round(0.125rem, var(--e)); --LH: round(calc(1.35 * 1em), 2px); white-space: nowrap; }
+.pl-hist .sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
+.places-page .col-name .sub .pl-kind { gap: round(0.25rem, var(--e)); color: inherit; }
+.places-page .col-name .sub .ico { width: round(0.8125rem, var(--e)); height: round(0.8125rem, var(--e)); }
+/* the Edit and Delete buttons stay in view when the table scrolls sideways */
+.places-page .tbl .pl-sticky { position: sticky; right: 0; background: var(--panel-solid); box-shadow: inset 1px 0 0 var(--line-2); }
+.places-page .tbl th.pl-sticky { z-index: 2; background: var(--panel-solid); }
+
+/* list: map and suggestions */
+.pl-lower { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: var(--gap); align-items: start; }
+.pl-map-panel { min-height: round(26rem, var(--e)); }
+.pl-map-card { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); max-width: round(20rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); }
+.pl-map-card strong { font-weight: 600; overflow-wrap: anywhere; }
+.pl-sugg { margin-bottom: 0; }
+
+/* editor */
+.pl-head { margin-bottom: round(0.25rem, var(--e)); }
+.pl-head .back { margin-bottom: round(0.5rem, var(--e)); }
+.pl-editor { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: var(--gap); align-items: start; }
+.pl-col { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+.pl-edit-map { min-height: round(30rem, var(--e)); }
+.pl-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(round(11rem, var(--e)), 1fr)); gap: round(0.875rem, var(--e)) round(1rem, var(--e)); align-items: start; }
+.pl-details .panel-head, .pl-price .panel-head { margin-bottom: round(0.25rem, var(--e)); }
+.pl-details, .pl-price { display: flex; flex-direction: column; gap: round(1rem, var(--e)); }
+.pl-addr { display: flex; align-items: center; gap: round(0.5rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); }
+.pl-addr .ico { color: var(--text-3); flex: none; }
+.pl-hint-line { display: flex; align-items: flex-start; gap: round(0.5rem, var(--e)); font-size: max(0.78125rem, var(--fs-floor)); --LH: round(calc(1.5 * 1em), 2px); color: var(--text-2); }
+.pl-hint-line > .ico { flex: none; margin-top: round(0.1875rem, var(--e)); color: var(--text-3); }
+.pl-hint-line.warn > .ico { color: var(--warm); }
+.pl-defaults { padding: round(0.625rem, var(--e)) round(0.75rem, var(--e)); border-radius: var(--radius-sm); background: var(--surface-sunken); border: 1px solid var(--line); }
+.pl-entry { font-size: max(0.75rem, var(--fs-floor)); }
+.pl-price-body { display: flex; flex-direction: column; gap: round(1rem, var(--e)); }
+.pl-price-body[hidden], .places-page .form-row[hidden] { display: none; }
+.pl-price .seg { flex-wrap: wrap; width: fit-content; max-width: 100%; }
+.pl-sub-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: round(0.5rem, var(--e)); margin-bottom: round(0.375rem, var(--e)); }
+.pl-sub-head h3, .pl-rule h3 { font-size: max(0.875rem, var(--fs-floor)); font-weight: 600; }
+.pl-rates-wrap { display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
+.pl-rates { display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); }
+.pl-rates-none { font-size: max(0.8125rem, var(--fs-floor)); }
+.pl-rate { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; align-items: end; gap: round(0.5rem, var(--e)) round(0.625rem, var(--e)); padding: round(0.75rem, var(--e)); border-radius: var(--radius-sm); background: var(--surface-sunken); border: 1px solid var(--line); }
+.pl-rate-cell { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); min-width: 0; font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
+.pl-rate-cell .input, .pl-rate-cell .select { width: 100%; }
+.pl-rate-name { grid-column: span 2; }
+.pl-rate-days { grid-column: span 3; }
+.pl-rate-x { grid-column: 5; grid-row: 2; }
+.pl-row--price { grid-template-columns: repeat(auto-fit, minmax(round(8.5rem, var(--e)), 1fr)); }
+.pl-rate .input[aria-invalid="true"] { border-color: var(--danger); }
+.pl-rule { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--surface-sunken); font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.5 * 1em), 2px); color: var(--text-2); }
+.pl-formula { font-family: var(--font-mono); font-size: max(0.8125rem, var(--fs-floor)); color: var(--text); overflow-wrap: anywhere; white-space: pre-wrap; }
+
+.pl-match, .pl-effect, .pl-reprice { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); }
+.pl-rule-line { font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.5 * 1em), 2px); color: var(--text-2); }
+.pl-ok { display: flex; align-items: center; gap: round(0.5rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); }
+.pl-ok .ico { color: var(--live); }
+.pl-overlap-list { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); margin: 0; padding-left: round(1.125rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); }
+.pl-overlap-list .tag { margin-left: round(0.5rem, var(--e)); }
+.pl-effect-figs { display: grid; grid-template-columns: repeat(auto-fill, minmax(round(10rem, var(--e)), 1fr)); gap: round(1rem, var(--e)) round(1.25rem, var(--e)); }
+.pl-effect-figs .metric { min-width: 0; }
+.pl-effect-figs .metric-value { overflow-wrap: anywhere; }
+.pl-examples { font-size: max(0.75rem, var(--fs-floor)); overflow-wrap: anywhere; }
+.pl-examples > p { margin-bottom: round(0.25rem, var(--e)); }
+.pl-example-list { list-style: none; display: flex; flex-direction: column; gap: round(0.1875rem, var(--e)); }
+.pl-example-list li { display: flex; align-items: center; gap: round(0.375rem, var(--e)); flex-wrap: wrap; }
+.pl-example-list .ico { color: var(--text-3); flex: none; }
+.pl-drill { font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.7 * 1em), 2px); }
+.pl-reprice-row { align-items: end; }
+.pl-only { font-size: max(0.8125rem, var(--fs-floor)); padding-bottom: round(0.5rem, var(--e)); }
+.pl-reprice-out:empty { display: none; }
+
+.pl-form > .form-message { margin-top: var(--gap); }
+.pl-actions-bar { position: sticky; bottom: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: round(0.625rem, var(--e)); margin-top: var(--gap); padding: round(0.75rem, var(--e)) round(1rem, var(--e)); border-radius: var(--radius); border: 1px solid var(--line-2); background: var(--panel-solid); }
+.pl-save-state { font-size: max(0.8125rem, var(--fs-floor)); }
+.pl-lock { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); flex-basis: 100%; font-size: max(0.8125rem, var(--fs-floor)); }
+
+/* the circle's handles on the map */
+.pl-handle { width: round(1.125rem, var(--e)); height: round(1.125rem, var(--e)); border-radius: 50%; border: round(0.1875rem, var(--e)) solid var(--map-casing); background: var(--live); box-shadow: 0 0 0 round(0.25rem, var(--e)) var(--live-soft); cursor: grab; }
+.pl-handle--edge { width: round(0.875rem, var(--e)); height: round(0.875rem, var(--e)); background: var(--bg-0); border-color: var(--live); box-shadow: none; cursor: ew-resize; }
+.pl-handle:active { cursor: grabbing; }
+
+@container page (max-width: 108rem) {
+  .pl-lower { grid-template-columns: minmax(0, 1fr); }
+}
+@container page (max-width: 85.375rem) {
+  .pl-intro { grid-template-columns: 1fr; }
+}
+@container page (max-width: 76rem) {
+  .pl-lower, .pl-editor { grid-template-columns: minmax(0, 1fr); }
+  .pl-edit-map { min-height: round(24rem, var(--e)); }
+}
+@container page (max-width: 50rem) {
+  .pl-map-panel, .pl-edit-map { min-height: round(18rem, var(--e)); }
+  .pl-actions-bar { position: static; }
+}
+@container page (min-width: 140rem) {
+  .pl-editor { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
+  .pl-edit-map { min-height: round(38rem, var(--e)); }
+  .pl-map-panel { min-height: round(32rem, var(--e)); }
+}
+
+/* a phone: the table scrolls sideways with its actions last, so a sticky actions column would sit on the names */
+@container page (max-width: 50rem) {
+  .places-page .tbl .pl-sticky { position: static; box-shadow: none; }
+}
+
+/* ------------------------------------------------------------ phone (<html data-phone>) */
+:root[data-phone] .places-page .pl-trail a { display: inline-flex; align-items: center; min-height: var(--tap); }
+:root[data-phone] .places-page .filter-bar .field--search { width: 100%; }
+:root[data-phone] .places-page .filter-bar .seg { flex-wrap: wrap; width: 100%; }
+:root[data-phone] .places-page .filter-bar .seg-btn { flex: 1 1 auto; }
+:root[data-phone] .pl-banner { flex-wrap: wrap; }
+/* the list as cards: the name heads the card, its actions run across the foot */
+:root[data-phone] .places-page .cell-text > *, :root[data-phone] .pl-hist { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+:root[data-phone] .places-page .col-name .cell-text { max-width: none; }
+:root[data-phone] .places-page a.pl-name { display: inline-flex; align-items: center; min-height: var(--tap); font-size: max(1rem, var(--fs-floor)); }
+:root[data-phone] .places-page .pl-hist a.link { display: inline-block; --LH: var(--tap); }
+:root[data-phone] .places-page .pl-hist { gap: 0; }
+:root[data-phone] .places-page .tbl:not(.tbl--keep) > tbody > tr > td.col-actions { grid-column: 1 / -1; width: auto; position: static; box-shadow: none; background: none; }
+:root[data-phone] .places-page .tbl:not(.tbl--keep) > tbody > tr > td.col-actions::before { display: none; }
+:root[data-phone] .places-page .pl-actions { display: flex; gap: round(0.5rem, var(--e)); }
+:root[data-phone] .places-page .pl-actions > .btn { flex: 1 1 0; justify-content: center; }
+:root[data-phone] .places-page .tbl td .mono { font-size: max(0.875rem, var(--fs-floor)); }
+/* maps: fit the width; in landscape no taller than most of the screen */
+:root[data-phone="short"] .pl-map-panel, :root[data-phone="short"] .pl-edit-map { min-height: min(round(18rem, var(--e)), 60dvh); height: 60dvh; }
+:root[data-phone] .pl-map-card { max-width: round(14rem, var(--e)); }
+/* the editor: one column of fields; rates stack */
+:root[data-phone] .pl-row, :root[data-phone] .pl-row--price { grid-template-columns: minmax(0, 1fr); }
+:root[data-phone] .pl-rate { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+:root[data-phone] .pl-rate-name, :root[data-phone] .pl-rate-days { grid-column: 1 / -1; }
+:root[data-phone] .pl-rate-x { grid-column: 1 / -1; grid-row: auto; justify-self: end; }
+:root[data-phone] .pl-actions-bar > .btn { flex: 1 1 auto; }
+:root[data-phone] .pl-handle { width: round(1.5rem, var(--e)); height: round(1.5rem, var(--e)); }
+:root[data-phone] .pl-handle--edge { width: round(1.25rem, var(--e)); height: round(1.25rem, var(--e)); }
+:root[data-phone] .places-page .tbl:not(.tbl--keep) td .nowrap { white-space: normal; overflow-wrap: anywhere; }
+:root[data-phone] .pl-actions-bar { position: static; }

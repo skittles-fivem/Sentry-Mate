@@ -47,7 +47,8 @@ async fn show(State(app): State<AppState>, Admin(v): Admin, body: JsonBody) -> A
             })
         })
         .await?;
-    v.audit(&app, "recovery-key-shown", None, "Showed the recovery key from its file again.").await?;
+    v.audit(&app, "recovery-key-shown", Some("server:recovery-key"), "Showed the recovery key from its file again.")
+        .await?;
     Ok(Json(json!({ "recovery_key": key.as_str() })))
 }
 
@@ -88,7 +89,13 @@ async fn new_key(State(app): State<AppState>, Admin(v): Admin, body: JsonBody) -
             Ok(rk)
         })
         .await?;
-    v.audit(&app, "recovery-key-new", None, "Made a new recovery key; the old one stopped working.").await?;
+    v.audit(
+        &app,
+        "recovery-key-new",
+        Some("server:recovery-key"),
+        "Made a new recovery key; the old one stopped working.",
+    )
+    .await?;
     let body = json!({ "recovery_key": key.as_str(), "made_ms": app.now() });
     Ok((StatusCode::CREATED, Json(body)).into_response())
 }
@@ -103,7 +110,13 @@ async fn saved(State(app): State<AppState>, Admin(v): Admin, body: JsonBody) -> 
         Err(e) => Err(ApiError::server(format!("the recovery key file: {e}"))),
     })
     .await?;
-    v.audit(&app, "recovery-key-saved", None, "Said the recovery key is saved; its file was removed.").await?;
+    v.audit(
+        &app,
+        "recovery-key-saved",
+        Some("server:recovery-key"),
+        "Said the recovery key is saved; its file was removed.",
+    )
+    .await?;
     Ok(Json(json!({ "saved": true })))
 }
 

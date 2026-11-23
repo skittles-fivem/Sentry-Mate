@@ -390,6 +390,10 @@ pub const OWNER_EXTRA_KEYS: &[(&str, OwnerKind)] = &[
     ("motors", OwnerKind::Whole(1.0, 4.0)),
     ("epa_range_km", OwnerKind::Number(10.0, 2000.0)),
     ("wheel_in", OwnerKind::Whole(14.0, 24.0)),
+    // the recommended cold tyre pressures as the owner reads them off the door placard (kPa): beat the car's own
+    // (0x219) and the placard table's; one alone is both axles'. Not a build fact: the Now reads them
+    ("tyre_pressure_front_kpa", OwnerKind::Number(100.0, 600.0)),
+    ("tyre_pressure_rear_kpa", OwnerKind::Number(100.0, 600.0)),
 ];
 
 /// Everything [`vehicle_info`] reads.
@@ -544,6 +548,29 @@ pub fn platform_of(prefix: &str) -> Option<&'static str> {
         '5' | '6' => Some("refresh"),
         _ => None,
     }
+}
+
+/// The recommended cold tyre pressures on the door placard of a car's model, model year and wheel size
+/// (`tyre_pressure.csv`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Placard {
+    pub front_kpa: f64,
+    pub rear_kpa: f64,
+    /// The wheel size it is for.
+    pub wheel_in: u8,
+    pub source: &'static str,
+}
+
+/// The door placard's pressures for the car's build: its model, model year and wheel size all known, and the table
+/// has that fitment; else `None` (no guess from a size the car may not have).
+pub fn placard_pressure(v: &VehicleInfo) -> Option<Placard> {
+    let m = v.model.value.as_deref().and_then(code_of_name)?;
+    let (y, w) = (v.model_year.value?, v.wheel_in.value?);
+    tables()
+        .tyre_pressure
+        .iter()
+        .find(|r| in_models(&r.models, m) && r.years.contains(y) && r.wheel_in == w)
+        .map(|r| Placard { front_kpa: r.front_kpa, rear_kpa: r.rear_kpa, wheel_in: r.wheel_in, source: r.src.source })
 }
 
 fn in_models(models: &[char], m: char) -> bool {

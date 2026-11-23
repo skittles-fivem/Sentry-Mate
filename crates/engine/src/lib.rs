@@ -187,13 +187,22 @@ pub(crate) enum Work {
         samples: Vec<model::Sample>,
         facts: Vec<timeline::ApiSpan>,
     },
+    /// An API input's values beside its samples ([`tesla_in`]).
     ApiMeta {
+        input: model::Input,
         car: CarId,
         meta: Box<tesla::ApiMeta>,
     },
     /// A car's stored Tesla API data to build into its timeline.
     ApiBuild {
         car: CarId,
+    },
+    /// An input's values no CAN message carries (TeslaFi's polls, local TeslaMate's MQTT) ([`tesla_in`]).
+    OffCan {
+        input: model::Input,
+        car: CarId,
+        at_ms: u64,
+        values: Box<model::OffCan>,
     },
 }
 
@@ -228,11 +237,63 @@ pub(crate) struct Inner {
     default_zone: RwLock<String>,
     /// Whether an import fills the values live history lacks (the server setting; a car's own setting wins).
     pub(crate) gap_fill: std::sync::atomic::AtomicBool,
+    /// Per car, the position its zone was last looked up at and the zone found there ([`Inner::car_zone`]).
+    zone_at: Mutex<HashMap<CarId, ZoneAt>>,
 }
+
+/// Where a car's zone was last looked up (latitude, longitude) and the zone found there.
+type ZoneAt = (f64, f64, Option<&'static str>);
+
+/// A car's zone is looked up again once its position moved this far (degrees, about a kilometre).
+const ZONE_MOVE_DEG: f64 = 0.01;
 
 impl Inner {
     pub(crate) fn default_zone(&self) -> String {
         self.default_zone.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// The zone a car's days and clocks follow, and where it comes from: the owner's, else the zone of its newest
+    /// position (its Now's, else its newest drive's end; looked up in the boundaries built in, never sent anywhere),
+    /// else the server's default.
+    pub(crate) fn car_zone(&self, c: &model::Car) -> (String, tz::ZoneSource) {
+        if let Some(z) = c.typed_zone() {
+            return tz::pick(Some(z), None, "");
+        }
+        let at = self.position_of(c.id);
+        let found = at.and_then(|(lat, lon)| {
+            let mut cache = lock(&self.zone_at);
+            match cache.get(&c.id) {
+                Some(&(a, b, z)) if (a - lat).abs() < ZONE_MOVE_DEG && (b - lon).abs() < ZONE_MOVE_DEG => z,
+                Some(_) | None => {
+                    let z = tz::zone_at(lat, lon);
+                    cache.insert(c.id, (lat, lon, z));
+                    z
+                }
+            }
+        });
+        tz::pick(None, found, &self.default_zone())
+    }
+
+    /// A car's newest known position.
+    fn position_of(&self, car: CarId) -> Option<(f64, f64)> {
+        let now = self.db.entry(car).ok().flatten().and_then(|x| x.summary.now);
+        if let Some(p) = now.and_then(|n| n.sample.lat.zip(n.sample.lon)) {
+            return Some(p);
+        }
+        let newest = self.db.list::<model::Drive>(car, &db::Query::default().limit(1)).ok()?.items.into_iter().next();
+        newest.and_then(|d| d.end.or(d.start)).map(|p| (p.lat, p.lon))
+    }
+
+    /// A car with `time_zone` the zone it follows ([`Inner::car_zone`]); `time_zone_typed` is written out, so
+    /// storing the car back keeps what the owner set (and an automatic zone automatic).
+    pub(crate) fn zoned(&self, mut c: model::Car) -> model::Car {
+        let (zone, source) = self.car_zone(&c);
+        c.time_zone_typed = Some(match source {
+            tz::ZoneSource::Owner => true,
+            tz::ZoneSource::Position | tz::ZoneSource::Default => false,
+        });
+        c.time_zone = zone;
+        c
     }
 
     pub(crate) fn outstanding_add(&self) {
@@ -279,6 +340,7 @@ impl Engine {
                 api_built: Mutex::new(HashMap::new()),
                 default_zone: RwLock::new(opts.default_time_zone.clone()),
                 gap_fill: std::sync::atomic::AtomicBool::new(true),
+                zone_at: Mutex::new(HashMap::new()),
                 opts,
             }),
         }
@@ -293,8 +355,14 @@ impl Engine {
         self.inner.default_zone()
     }
 
-    /// Sets the time zone new cars start in; `false` (and nothing changed) for a name that is not an IANA zone.
-    /// Cars already made keep theirs.
+    /// The zone a car's days and clocks follow (`America/Chicago`), and where it comes from: the owner's, else the
+    /// zone its newest position is in, else the server's default.
+    pub fn car_zone(&self, c: &model::Car) -> (String, tz::ZoneSource) {
+        self.inner.car_zone(c)
+    }
+
+    /// Sets the server's default time zone (a car with no zone set and no position known follows it); `false`
+    /// (and nothing changed) for a name that is not an IANA zone.
     pub fn set_default_time_zone(&self, zone: &str) -> bool {
         if !tz::is_zone(zone) {
             return false;
@@ -307,6 +375,12 @@ impl Engine {
     /// a car's own `import_gap_fill` setting wins over it).
     pub fn import_gap_fill(&self) -> bool {
         self.inner.gap_fill.load(Ordering::SeqCst)
+    }
+
+    /// The order a car's live inputs win in where two cover the same time: its `source_order` setting, else the
+    /// default (SMO, the Tesla API, TeslaFi, local TeslaMate).
+    pub fn source_order(&self, car: model::CarId) -> model::SourceOrder {
+        query::fleet::source_order_of(self, car)
     }
 
     /// Turns import gap filling on or off server-wide (the server setting `import_gap_fill.enabled`).
@@ -403,8 +477,9 @@ impl Engine {
                     Work::Log { key, name } => e.work_log(&key, &name),
                     Work::Reconcile { car } => e.work_reconcile(car),
                     Work::ApiData { input, car, samples, facts } => e.work_api_data(input, car, samples, facts),
-                    Work::ApiMeta { car, meta } => e.work_api_meta(car, *meta),
+                    Work::ApiMeta { input, car, meta } => e.work_api_meta(input, car, *meta),
                     Work::ApiBuild { car } => e.work_api_build(car),
+                    Work::OffCan { input, car, at_ms, values } => e.work_off_can(input, car, at_ms, *values),
                 };
                 if let Err(err) = r {
                     e.failed(&err);

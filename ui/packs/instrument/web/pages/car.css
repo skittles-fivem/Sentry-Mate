@@ -186,8 +186,10 @@
 .now-inputs:empty { display: none; }
 .now-inputs-key { color: var(--text-3); font-size: max(0.75rem, var(--fs-floor)); }
 .now-inputs-hist { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); margin-left: auto; font-size: max(0.75rem, var(--fs-floor)); }
-.src-via { display: inline-flex; align-items: center; gap: round(0.1875rem, var(--e)); margin-left: round(0.375rem, var(--e)); font-family: var(--font); font-size: max(0.625rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.04em; color: var(--src-api); vertical-align: middle; }
+.src-via { display: inline-flex; align-items: center; gap: round(0.1875rem, var(--e)); margin-left: round(0.375rem, var(--e)); font-family: var(--font); font-size: max(0.625rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.04em; color: var(--src-api); vertical-align: baseline; }
 .src-via .src-m { height: round(0.625rem, var(--e)); }
+/* the mark has no text, so the word gives the box its baseline: the mark stays centred and the word sits on the value's baseline */
+.src-via > span { align-self: baseline; }
 
 /* Vehicle info (pages/vehicle-info.js): the car's build facts, each with its source and confidence */
 .vi { margin-top: var(--gap); scroll-margin-top: round(5rem, var(--e)); }
@@ -224,3 +226,31 @@
 
 /* the head line: each part whole px wide (so the VIN chip after a long trim or tag sits on the pixel grid), and a long part wraps instead of running out */
 .now-head .page-sub > span { width: calc-size(fit-content, round(up, size, 1px)); min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+
+/* values no CAN message carries (now.off_can): from the Tesla API or TeslaFi, each with its input and a stale mark */
+.now-row--3 > .off-panel { grid-column: 1 / -1; }
+.off-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, round(26rem, var(--e))), 1fr)); gap: round(0.625rem, var(--e)) round(2rem, var(--e)); margin: 0 0 round(0.875rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); }
+.off-pair { display: flex; justify-content: space-between; align-items: baseline; gap: round(0.75rem, var(--e)); min-width: 0; padding-bottom: round(0.5rem, var(--e)); border-bottom: 1px solid var(--line); }
+.off-pair dt { flex: none; color: var(--text-3); }
+.off-pair dd { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: baseline; gap: round(0.125rem, var(--e)) round(0.5rem, var(--e)); min-width: 0; margin: 0; color: var(--text); font-weight: 500; text-align: right; overflow-wrap: anywhere; }
+.off-old { color: var(--text-2); }
+.off-src { display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); white-space: nowrap; font-size: max(0.6875rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.02em; color: var(--text-3); }
+.off-src .src-m { height: round(0.625rem, var(--e)); }
+.off-src-word, .off-stale { align-self: baseline; } /* the box's baseline is its words', not the mark's edge */
+.off-stale { padding: 0 round(0.3125rem, var(--e)); border: 1px solid var(--warm-line); border-radius: round(0.25rem, var(--e)); color: var(--warm); font-weight: 600; }
+
+/* phone (<html data-phone>): the place card sits above the map instead of over it (on a phone it would hide
+   most of the map and its zoom buttons); the map keeps a screenful's share of height, less in landscape */
+:root[data-phone] .now-hero .map-panel { display: flex; flex-direction: column; min-height: 0; }
+:root[data-phone] .now-hero .map-panel > .map { position: relative; inset: auto; order: 2; height: min(round(22rem, var(--e)), 60dvh); }
+:root[data-phone] .now-hero .map-panel > .map-overlay--tl { position: static; order: 1; padding: round(0.75rem, var(--e)); }
+:root[data-phone] .now-hero .map-panel > .map-overlay--tl:has(> .place-card:empty) { display: none; }
+:root[data-phone] .now-hero .place-card { min-width: 0; max-width: none; box-shadow: none; }
+:root[data-phone] .charge-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+:root[data-phone] .flag dd { white-space: normal; overflow-wrap: anywhere; }
+:root[data-phone] .now-hero .map-panel:fullscreen > .map { height: auto; flex: 1 1 auto; }
+:root[data-phone] .now-head .page-sub > span:has(> .trim-src) { display: inline-flex; align-items: baseline; justify-content: space-between; }
+:root[data-phone] .now-head .page-sub .trim-src { width: calc-size(fit-content, round(up, size, 1px)); }
+/* the Firmware row: the fingerprints now and their history (both on Software) */
+.car-fw-links, .vi-fw-links { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: round(0.25rem, var(--e)) round(0.75rem, var(--e)); }
+.vi-fw-links { align-items: center; justify-content: flex-end; }

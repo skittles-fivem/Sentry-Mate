@@ -1264,7 +1264,7 @@ export async function mount(ctx) {
     section({ title: 'Upload and import', note: 'Admins only · over HTTPS', cls: 'im-sec' },
       h('div', { class: 'im-two' }, jobBox, h('aside', { class: 'im-side' }, howTo, restartNote))),
     section({ title: 'Report', note: 'Counts and reasons only: no row values or positions', cls: 'im-sec' }, reportBox),
-    section({ title: 'Overlapping history', note: 'live and imported, and two imports', cls: 'im-sec' }, h('div', { class: 'im-two im-two-even' }, overlapWords, overlapBox)),
+    section({ title: 'Overlapping history', note: 'live and imported, and two imports', cls: 'im-sec', id: 'im-overlaps' }, h('div', { class: 'im-two im-two-even' }, overlapWords, overlapBox)),
     section({ title: 'Imports', note: 'Newest first', cls: 'im-sec' }, historyBox));
 
   if (S.job && ['checking', 'ready'].includes(S.job.status)) await loadMatch();

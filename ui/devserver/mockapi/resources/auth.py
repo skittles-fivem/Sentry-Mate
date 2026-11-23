@@ -57,7 +57,7 @@ def _signed_in(req, account):
     from ..server import set_cookie
     s = req.store.start_session(account, device="Browser")
     req.set_cookie = set_cookie(s["token"])
-    req.store.record(account, "session.start", f"account:{account['id']}", "Signed in.")
+    req.store.record(account, "sign-in", f"session:{s['id']}", "Signed in.")
     return s
 
 
@@ -75,6 +75,8 @@ def post_session(req):
     a = st.account_by_name(body["name"].strip())
     if a is None or not secrets.compare_digest(a["password"], body["password"]):
         _fail(st, key, addr)
+        st.record(a, "sign-in-failed", None, f"Wrong password for {a['name']}." if a else "Wrong name or password.",
+                  address=getattr(req, "client_ip", None) or "127.0.0.1")
         raise ApiError(401, "wrong_credentials", "That name and password do not match an account.")
     if a.get("two_step"):
         token = "pend_" + secrets.token_urlsafe(16)
@@ -98,6 +100,9 @@ def post_two_step(req):
             p["tries"] += 1
             if p["tries"] >= 5:
                 st.pending.pop(body["pending"], None)
+            who = st.accounts.get(p["account"])
+            st.record(who, "two-step-failed", None, f"Wrong two-step code for {who['name'] if who else 'an account'}.",
+                      address=getattr(req, "client_ip", None) or "127.0.0.1")
             raise ApiError(401, "wrong_code", "That code is not right.")
         st.pending.pop(body["pending"], None)
         a = st.accounts.get(p["account"])
@@ -113,7 +118,7 @@ def delete_session(req):
     req.store.end_session(token)
     req.app.events.end_session(token)
     req.set_cookie = clear_cookie()
-    req.store.record(req.account, "session.end", f"account:{req.account['id']}", "Signed out.")
+    req.store.record(req.account, "sign-out", f"session:{req.session['id']}", "Signed out.")
     return {"status": "signed_out"}
 
 
@@ -157,7 +162,8 @@ def delete_sessions(req):
                 req.app.events.end_session(s["_token"])
             n += 1
         st.session_rows[req.account["id"]] = []
-    st.record(req.account, "session.end_others", f"account:{req.account['id']}", f"Ended {n} other sessions.")
+    st.record(req.account, "sessions-revoked", f"account:{req.account['id']}",
+              "Ended 1 other session." if n == 1 else f"Ended {n} other sessions.")
     return {"ended": n}
 
 
@@ -182,7 +188,7 @@ def delete_one_session(req):
                 st.session_rows[req.account["id"]] = [x for x in rows if x["id"] != sid]
             if s["this_one"]:
                 req.set_cookie = clear_cookie()
-            st.record(req.account, "session.end", f"session:{sid}", "Ended a session.")
+            st.record(req.account, "session-revoked", f"session:{sid}", f"Ended a session ({s.get('device') or 'a browser'}).")
             return {"ended": 1, "id": sid}
     raise not_found("no_such_session", "There is no such session.")
 
@@ -197,12 +203,19 @@ def get_prefs(req):
     return req.store.get_prefs(req.account)
 
 
+# preference fields in words, as the server's audit summaries name them
+PREF_WORDS = {"units": "units", "range": "range kind", "theme": "theme", "language": "language",
+              "interface_size": "text size", "follow_screen": "follow the screen", "map_colors": "map colours",
+              "map_style": "map style", "car_order": "car order", "pinned_cars": "pinned cars", "main_car": "main car",
+              "last_car": "last car"}
+
+
 def patch_prefs(req):
     st = req.store
     body = req.json()
     bad, rule = {}, {}
-    allowed = {"units", "range", "theme", "language", "interface_size", "follow_screen", "map_colors", "ui_pack",
-               "car_order", "pinned_cars"}
+    allowed = {"units", "range", "theme", "language", "interface_size", "follow_screen", "map_colors", "map_style", "ui_pack",
+               "car_order", "pinned_cars", "main_car", "last_car"}
     for k in body:
         if k not in allowed:
             bad[k] = "Unknown field."
@@ -219,6 +232,11 @@ def patch_prefs(req):
     for k, vals in PREF_ENUMS.items():
         if k in body and body[k] not in vals:
             rule[k] = "Must be one of: " + ", ".join(vals) + "."
+    if "map_style" in body:
+        from .system import TILE_PRESETS
+        ids = [p["id"] for p in TILE_PRESETS]
+        if body["map_style"] != "default" and body["map_style"] not in ids:
+            rule["map_style"] = "Must be default or one of: " + ", ".join(ids) + "."
     if "language" in body and (not isinstance(body["language"], str) or not 2 <= len(body["language"]) <= 10):
         rule["language"] = "A language code such as en or de."
     if "interface_size" in body:
@@ -243,6 +261,12 @@ def patch_prefs(req):
                 rule[k] = f"At most {most} cars."
             elif any(not req.ds.exists(c) or not st.sees(req.account, c) for c in v):
                 rule[k] = "Unknown car in the list."
+    for k in ("main_car", "last_car"):
+        if k in body and body[k] is not None:
+            if not isinstance(body[k], str):
+                bad[k] = "Must be a car id, or null."
+            elif not req.ds.exists(body[k]) or not st.sees(req.account, body[k]):
+                rule[k] = "Unknown car."
     if bad:
         raise bad_input(bad)
     if rule:
@@ -256,8 +280,16 @@ def patch_prefs(req):
                 own[k] = list(dict.fromkeys(v))
             else:
                 own[k] = v
-    st.record(req.account, "preferences.update", f"account:{req.account['id']}",
-              "Changed preferences: " + ", ".join(sorted(body)) + ".")
+    if "ui_pack" in body:
+        packs = req.app.packs
+        pid = body["ui_pack"] or packs.served
+        name = (packs.get(pid) or {}).get("name") or pid
+        st.record(req.account, "ui-pack-chosen", f"ui-pack:{pid}",
+                  f"Chose the {name} design." if body["ui_pack"] else f"Went back to the design for everyone ({name}).")
+    rest = [k for k in body if k != "ui_pack"]
+    if rest:
+        st.record(req.account, "preferences-changed", f"account:{req.account['id']}",
+                  "Changed: " + ", ".join(PREF_WORDS.get(k, k.replace("_", " ")) for k in sorted(rest)) + ".")
     prefs = st.get_prefs(req.account)
     req.app.events.publish("prefs", prefs, account_id=req.account["id"])
     return prefs
@@ -333,7 +365,7 @@ def create_account(req):
          "version": 1}
     with st.lock:
         st.accounts[a["id"]] = a
-    st.record(req.account, "account.create", f"account:{a['id']}", f"Made the account {a['name']} ({a['role']}).")
+    st.record(req.account, "account-created", f"account:{a['id']}", f"Made the account {a['name']} ({a['role']}).")
     out = account_view(a)
     out["_created"] = True
     return out
@@ -394,9 +426,19 @@ def patch_account(req):
         if set(body) == {"version"}:
             return account_view(a)
         a["version"] += 1
-    changed = ", ".join(k for k in sorted(body) if k not in ("version", "password"))
-    st.record(req.account, "account.update", f"account:{a['id']}",
-              f"Changed the account {a['name']}: {changed or 'password'}.")
+    target = f"account:{a['id']}"
+    if "role" in body:
+        st.record(req.account, "role-changed", target, f"Made {a['name']} {'an admin' if a['role'] == 'admin' else 'a watch account'}.")
+    if "password" in body:
+        st.record(req.account, "password-changed", target, f"Changed the password of {a['name']}.")
+    if cars is not None:
+        seen = "every car" if cars == "all" else ", ".join(st.car_meta(c)["name"] for c in cars) or "no car"
+        st.record(req.account, "cars-changed", target, f"{a['name']} now sees {seen}.")
+    other = [k for k in sorted(body) if k in ("name", "two_step_required")]
+    if other:
+        words = {"name": "name", "two_step_required": "two-step sign-in needed"}
+        st.record(req.account, "account-changed", target,
+                  f"Changed the account {a['name']}: " + ", ".join(words[k] for k in other) + ".")
     if cars is not None and cars != old_cars:
         req.app.events.account_cars_changed(a, old_cars, cars, st.get_prefs(a))
     return account_view(a)
@@ -413,16 +455,28 @@ def delete_account(req):
             if s["account"]["id"] == a["id"]:
                 st.end_session(tok)
                 req.app.events.end_session(tok)
-    st.record(req.account, "account.delete", f"account:{a['id']}", f"Removed the account {a['name']}.")
+    st.record(req.account, "account-removed", f"account:{a['id']}", f"Removed the account {a['name']}.")
     return {"deleted": True, "id": a["id"]}
 
 
 def get_audit(req):
-    rows = list(req.store.audit)
-    for i, e in enumerate(rows):
+    """Newest first. group=<id>[,<id>] (an entry's group, "other" for a code the list lacks) and who=<account name>
+    (who=*server: the entries the server made itself) filter before paging, so every page is full."""
+    from ..audit import GROUPS, group_of
+    groups = req.list_param("group", allowed=GROUPS + ("other",))
+    who = req.q("who")
+    rows = []
+    for i, e in enumerate(req.store.audit):
         e.setdefault("_seq", i)
+        rows.append(dict(e, group=group_of(e["action"])))
     a, b = req.period()
     rows = [e for e in rows if a <= e["at_ms"] < b]
+    if groups:
+        rows = [e for e in rows if e["group"] in groups]
+    if who == "*server":
+        rows = [e for e in rows if e["account"] is None]
+    elif who:
+        rows = [e for e in rows if e["account"] is not None and e["account"].lower() == who.lower()]
     items, nxt = page(req, rows, key=lambda e: (e["at_ms"], e["_seq"]), reverse=True)
     return {"items": items, "next": nxt}
 

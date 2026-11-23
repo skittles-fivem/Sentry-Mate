@@ -1,0 +1,36 @@
+/* settings/cars/{car}: data sources, the live inputs in priority order (pages/settings-cars.js) */
+.ds-why { margin-top: 0; margin-bottom: var(--g); }
+.ds-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border-top: 1px solid var(--rule); }
+.ds-row {
+  display: grid; grid-template-columns: calc(var(--a2) * 3) calc(var(--a2) * 22) calc(var(--a2) * 5) minmax(0, 1fr) auto;
+  column-gap: var(--g); align-items: start; padding-block: var(--g2); border-bottom: 1px solid var(--rule); min-height: calc(var(--ctl) + var(--g));
+}
+.ds-n, .ds-name, .ds-on, .ds-last { line-height: var(--ctl); min-width: 0; }
+.ds-n { color: var(--muted); }
+.ds-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ds-last { overflow-wrap: anywhere; }
+.ds-row--off .ds-name { color: var(--muted); }
+.ds-row--imp .ds-last { grid-column: 3 / -1; }
+.ds-row--imp .ds-name { color: var(--muted); }
+.ds-acts { display: flex; gap: var(--g2); align-items: flex-start; }
+.ds-acts .btn { min-width: var(--ctl); }
+.ds-acts .btn--quiet:disabled { border-color: transparent; }
+.ds-grip { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.ds-row { order: var(--ds-at, 0); }   /* the shown place while a row is dragged */
+.ds-row--imp { order: 99; }
+.ds-row.is-drag { background: var(--sel); }
+.ds-row.is-drag .ds-grip { cursor: grabbing; color: var(--accent); }
+.ds-list + .ke-msg { margin-top: var(--g); }
+.ds-list + .ke-msg + .ke-list { border-top: 0; }
+
+@media (max-width: 860px) {
+  /* two lines: place, name and state; then the newest data and the buttons */
+  .ds-row { grid-template-columns: calc(var(--a2) * 3) minmax(0, 1fr) auto; row-gap: 0; min-height: 0; }
+  .ds-n, .ds-name, .ds-on, .ds-last { line-height: var(--lh2); }
+  .ds-n { grid-column: 1; grid-row: 1; }
+  .ds-name { grid-column: 2; grid-row: 1; }
+  .ds-on { grid-column: 3; grid-row: 1; text-align: right; }
+  .ds-last { grid-column: 2; grid-row: 2; align-self: center; }
+  .ds-acts { grid-column: 3; grid-row: 2; justify-content: flex-end; }
+  .ds-row--imp .ds-last { grid-column: 2 / -1; }
+}

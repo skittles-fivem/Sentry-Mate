@@ -574,6 +574,7 @@ fn a_key_moved_to_another_car_takes_its_history_with_it() {
                 vin: None,
                 profile_setting: None,
                 time_zone: "UTC".into(),
+                time_zone_typed: Some(true),
                 efficiency_wh_km: None,
                 created_ms: 0,
                 inputs: Default::default(),
@@ -610,6 +611,7 @@ fn a_new_key_goes_to_the_only_car_and_waits_when_there_are_several() {
             vin: None,
             profile_setting: None,
             time_zone: "UTC".into(),
+            time_zone_typed: Some(true),
             efficiency_wh_km: None,
             created_ms: 0,
             inputs: Default::default(),
@@ -855,6 +857,54 @@ fn failed_logs_are_unknown_for_their_own_minutes_whatever_their_sidecar_claims()
         assert!(h.unknown_spans.iter().any(|u| u.reason == "failed_check"), "{:?}", h.unknown_spans);
         let t = h.last_log_trust.expect("the newest judged log");
         assert_eq!((t.result.as_str(), t.log_start_ms), ("verified", Some(T0_MS + last * 60_000)));
+    });
+}
+
+#[test]
+fn a_failed_newest_log_sent_again_clears_its_problem_once_it_verifies() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        let mut signer = synth::Signer::from_seed(b"engine test resend");
+        let last = 4u64;
+        let mut newest = None;
+        for i in 0..=last {
+            let what = if i == 0 { Minute::Drive } else { Minute::Parked };
+            let (name, mut log, side) = minute_of(KEY, i, what, LON, (i == 0).then_some(VIN));
+            let mut side: serde_json::Value = serde_json::from_slice(&side).unwrap();
+            side["integrity"] = signer.sign(KEY, &name, &log);
+            if i == last {
+                newest = Some((name.clone(), log.clone()));
+                // the newest arrived changed
+                log.push(0);
+            }
+            upload(&k, &name, &log).await;
+            upload(&k, &format!("{name}.json"), &serde_json::to_vec(&side).unwrap()).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let health =
+            || tokio::task::block_in_place(|| query::system::health(&k.engine, car, &Period::all())).unwrap().body;
+        let h = health();
+        assert!(h.reasons.contains(&"trust_failed"), "{:?}", h.reasons);
+        assert!(h.unknown_spans.iter().any(|u| u.reason == "failed_check"), "{:?}", h.unknown_spans);
+
+        // "Resend all": the judge lets the failed log be replaced, and the copy sent again verifies
+        let (name, log) = newest.unwrap();
+        assert!(k.judge.replaceable(&name, Default::default()).await);
+        let sha = hex::encode(Sha256::digest(&log));
+        let r = k.store.receive_replacing(&name, log.clone().into(), 0, log.len() as u64, &sha, true).await.unwrap();
+        assert!(r.complete && r.replaced, "{r:?}");
+        let rec = k.judge.arrived(&name).await.unwrap().unwrap();
+        assert_eq!(rec.status, ingest::judge::Status::Verified);
+        k.engine.idle().await;
+        let h = health();
+        assert!(!h.reasons.contains(&"trust_failed"), "{:?}", h.reasons);
+        assert!(!h.unknown_spans.iter().any(|u| u.reason == "failed_check"), "{:?}", h.unknown_spans);
+        let t = h.last_log_trust.expect("the newest judged log");
+        assert_eq!((t.result.as_str(), t.log_start_ms), ("verified", Some(T0_MS + last * 60_000)));
+        // a verified log is not replaced
+        assert!(!k.judge.replaceable(&name, Default::default()).await);
     });
 }
 

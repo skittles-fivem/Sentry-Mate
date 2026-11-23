@@ -1,4 +1,4 @@
-//! Software: `/cars/{car}/updates[/{update}]`, `/cars/{car}/firmware`, `/fleet/versions`, `/cars/{car}/events`,
+//! Software: `/cars/{car}/updates[/{update}]`, `/cars/{car}/firmware[/history]`, `/fleet/versions`, `/cars/{car}/events`,
 //! over the engine's [`engine::query::software`] and [`engine::query::firmware`].
 //!
 //! Reads are for every account over the cars it sees (the guard has checked the `{car}` of the path; a hidden car
@@ -23,6 +23,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/cars/{car}/updates", get(updates))
         .route("/api/v1/cars/{car}/updates/{update}", axum::routing::patch(name_version))
         .route("/api/v1/cars/{car}/firmware", get(firmware))
+        .route("/api/v1/cars/{car}/firmware/history", get(firmware_history))
         .route("/api/v1/fleet/versions", get(versions))
         .route("/api/v1/cars/{car}/events", get(events))
 }
@@ -57,8 +58,8 @@ async fn name_version(
     .await
     .map(|v| (v.get(0).cloned().unwrap_or(Value::Null), v.get(1).cloned()))?;
     let summary = match &version {
-        Some(x) => format!("Named the software version of an update: {x}."),
-        None => "Forgot the typed software version of an update.".to_string(),
+        Some(x) => format!("Named the software version of an update of {}: {x}.", app.car_name_now(car).await),
+        None => format!("Forgot the typed software version of an update of {}.", app.car_name_now(car).await),
     };
     v.audit(&app, "update-version", Some(&target("update", Some(car), &id.to_string())), &summary).await?;
     let (from_ms, to_ms) = span.and_then(|s| Some((s.get(0)?.as_u64()?, s.get(1)?.as_u64()?))).unwrap_or((0, 0));
@@ -69,6 +70,12 @@ async fn name_version(
 /// `/cars/{car}/firmware`: the modules' firmware fingerprints.
 async fn firmware(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
     answer(&app, &p, "firmware", move |e| q::firmware::firmware(e, car)).await
+}
+
+/// `/cars/{car}/firmware/history`: every fingerprint each module has had, newest first, a page at a time.
+async fn firmware_history(State(app): State<AppState>, CarParam(car): CarParam, p: Params) -> ApiResult<Response> {
+    let module = text(&p, "module")?;
+    list_answer(&app, &p, "firmware-history", move |e, pg| q::firmware::history(e, car, module.as_deref(), pg)).await
 }
 
 async fn versions(State(app): State<AppState>, v: Viewer, p: Params) -> ApiResult<Response> {

@@ -18,6 +18,7 @@ model = { path = "../model" }
 moving = { path = "../moving" }
 mqtt = { path = "../mqtt" }
 places = { path = "../places" }
+release = { path = "../release" }
 tesla = { path = "../tesla" }
 teslafi = { path = "../teslafi" }
 tmlocal = { path = "../tmlocal" }

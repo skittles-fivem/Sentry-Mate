@@ -1,14 +1,19 @@
 //! The upload API the CAN Bridge app speaks (Sentry Six Manager's `docs/can-bridge-api.md`):
 //!
-//! - `GET  /api/can/logs/ping`    the limits, formats and the key this token is tied to
-//! - `POST /api/can/logs/status`  `{ "names": [...] }` (up to 2000) → which are complete, partial or missing
-//! - `POST /api/can/logs/<name>`  one chunk, with `Upload-Offset`, `Upload-Length`, `Upload-SHA256`
+//! - `GET  /api/can/logs/ping`    the limits, formats, uploads to send at once (`maxParallel`) and the key this token
+//!   is tied to
+//! - `POST /api/can/logs/status`  `{ "names": [...] }` (up to 2000) → which are complete, partial or missing, and
+//!   for a complete one its `check` (`verified`, `failed` with a `check_reason`, or `pending`), read from the judge's
+//!   stored records
+//! - `POST /api/can/logs/<name>`  one chunk, with `Upload-Offset`, `Upload-Length`, `Upload-SHA256`; a log that
+//!   failed its check (or its sidecar) sent again replaces the stored copy
 //!
 //! HTTPS only (`403 https_only` otherwise), `Authorization: Bearer <token>`, every answer JSON, anything else 404.
 
 use crate::error::ApiError;
 use crate::judge::Judge;
-use crate::store::{MAX_CHUNK, MAX_FILE, MAX_SIDECAR, Store};
+use crate::judge::{Status, UploadCheck};
+use crate::store::{FileState, MAX_CHUNK, MAX_FILE, MAX_SIDECAR, State, Store};
 use crate::tokens::{Token, Tokens};
 use axum::body::Bytes;
 use axum::extract::{Path, Request, State as AxState};
@@ -354,6 +359,7 @@ async fn ping(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>, 
         "maxChunk": MAX_CHUNK,
         "maxFile": MAX_FILE,
         "maxSidecar": MAX_SIDECAR,
+        "maxParallel": crate::server::MAX_PARALLEL_UPLOADS,
         "formats": logfmt::FORMATS,
     })))
 }
@@ -390,14 +396,54 @@ async fn status(AxState(up): St, req: Request) -> Result<Json<serde_json::Value>
             return Err(wrong_car());
         }
     }
-    let files: serde_json::Map<String, serde_json::Value> = up
-        .store
-        .status(&names, token.vehicle_key.as_deref())
-        .await
+    let states = up.store.status(&names, token.vehicle_key.as_deref()).await;
+    let checks = checks_of(&up, &states).await;
+    let files: serde_json::Map<String, serde_json::Value> = states
         .into_iter()
-        .map(|(n, s)| (n, serde_json::to_value(s).unwrap_or_default()))
+        .map(|(n, s)| {
+            let mut v = serde_json::to_value(&s).unwrap_or_default();
+            let log = n.strip_suffix(".json").unwrap_or(&n);
+            // `size` beside `length`, as the bridge app reads it: the whole file's size when known, else what is here
+            if let Some(o) = v.as_object_mut() {
+                o.insert("size".into(), s.length.unwrap_or(s.received).into());
+            }
+            if let (State::Complete, Some(c), Some(o)) = (&s.state, checks.get(log), v.as_object_mut()) {
+                o.insert("check".into(), c.word().into());
+                if let Some(r) = c.reason() {
+                    o.insert("check_reason".into(), r.into());
+                }
+            }
+            (n, v)
+        })
         .collect();
     Ok(Json(serde_json::json!({ "files": files })))
+}
+
+/// The check of the logs behind the complete names of a status answer (a sidecar's is its log's): per car key, one
+/// pass over its stored records. A sidecar whose log isn't here is pending.
+async fn checks_of(up: &Uploads, states: &[(String, FileState)]) -> HashMap<String, UploadCheck> {
+    let mut by_key: HashMap<String, Vec<String>> = HashMap::new();
+    for (name, st) in states {
+        if st.state != State::Complete {
+            continue;
+        }
+        let log = name.strip_suffix(".json").unwrap_or(name);
+        if let Some(n) = trust::LogName::parse(log) {
+            by_key.entry(n.vehicle_key.to_string()).or_default().push(log.to_string());
+        }
+    }
+    let mut out = HashMap::new();
+    for (key, mut logs) in by_key {
+        logs.sort_unstable();
+        logs.dedup();
+        let uploading = up.store.uploading(&key).await;
+        match up.judge.upload_checks(&key, &logs, uploading).await {
+            Ok(c) => out.extend(c),
+            // not the key: the server's log is kept in the clear
+            Err(e) => tracing::warn!("CAN upload: could not read a car's checks: {e}"),
+        }
+    }
+    out
 }
 
 fn header_u64(h: &HeaderMap, name: &str) -> Option<u64> {
@@ -470,13 +516,25 @@ async fn write_chunk(
             return Err(wrong_car());
         }
     }
-    let r = up.store.receive(name, body, offset, length, sha).await?;
-    if r.complete
-        && !r.already
-        && let Err(e) = up.judge.arrived(name).await
-    {
-        // not the name: it holds the car's key, and the server's log is kept in the clear
-        tracing::warn!("CAN upload: could not judge a log that arrived: {e}");
+    // a log that failed its check (or its sidecar) may be sent again: asked of the judge when the name is here
+    // already, at the first chunk (a replacement under way goes on: its part was allowed when it began)
+    let log_name = name.strip_suffix(".json").unwrap_or(name);
+    let replace = up.store.exists(name)
+        && ((offset > 0 && up.store.part_exists(name))
+            || up.judge.replaceable(log_name, up.store.uploading(vehicle_key).await).await);
+    let r = up.store.receive_replacing(name, body, offset, length, sha, replace).await?;
+    if r.complete && !r.already {
+        match up.judge.arrived(name).await {
+            // the copy sent again verified: the bad one is no longer kept
+            Ok(Some(rec)) if r.replaced && rec.status == Status::Verified => {
+                if up.store.drop_quarantined(log_name).await > 0 {
+                    tracing::info!("CAN upload: a log sent again verified; its bad copy was dropped");
+                }
+            }
+            Ok(Some(_) | None) => {}
+            // not the name: it holds the car's key, and the server's log is kept in the clear
+            Err(e) => tracing::warn!("CAN upload: could not judge a log that arrived: {e}"),
+        }
     }
     Ok(r)
 }

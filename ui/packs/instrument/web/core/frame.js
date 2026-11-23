@@ -1,11 +1,15 @@
 // The app frame every page shares: the sidebar (logo, page finder, car switcher, the menu grouped by
 // task, the account menu), the top bar (menu button, breadcrumb, the shared period picker, live status,
 // the car's clock), the notices bar, flash notes and the footer (version, licences, release notice).
+// On a phone (<html data-phone>, set by boot.js) the sidebar gives way to a dock at the bottom: the
+// period bar (upright phones) and a tab bar (All cars, Overview, Drives, Charges, Menu); the top bar
+// then holds the car and the account.
 // The router calls update() for every page it mounts; pages never touch the frame except through ctx
 // (ctx.setCrumbs, ctx.setTitle).
 
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
+import { buildLabel, buildTitle } from '../shared/release.js';
 import { h, replace, cover, safeUrl } from '../shared/dom.js';
 import { formatTime, zoneName } from '../shared/time.js';
 import { format } from '../shared/units.js';
@@ -82,14 +86,16 @@ function buildSidebar() {
     h('button', { class: 'finder-btn', type: 'button', onclick: () => openFinder(), title: 'Find a page (/)' }, icon('search'), h('span', null, 'Find a page'), h('span', { class: 'kbd' }, '/')),
     h('div', { class: 'nav-section' }, h('span', { class: 'nav-label' }, 'Car'), carBtn),
     h('nav', { class: 'nav', 'aria-label': 'Pages' }, groups),
-    h('div', { class: 'sidebar-foot' }, acct),
-    accountMenu());
+    h('div', { class: 'sidebar-foot' }, acct));
+  // the account menu lives outside the sidebar, which a phone hides
+  document.body.append(accountMenu());
   Object.assign(els, { navLinks, carBtn, acct });
 }
 
 function showCarInSidebar(car) {
-  const b = els.carBtn;
-  if (!b) return;
+  for (const b of [els.carBtn, els.topCar]) if (b) showCarIn(b, car);
+}
+function showCarIn(b, car) {
   const name = b.querySelector('.car-switch-name'), sub = b.querySelector('.car-switch-sub-text'), dot = b.querySelector('.car-switch-dot');
   if (!car) {
     name.textContent = 'Choose a car';
@@ -118,10 +124,68 @@ function buildTopbar() {
   const fresh = h('span', { class: 'freshness', title: 'Pages update by themselves when the server has processed a new log. Logs arrive about a minute after the car records them.' },
     h('span', { class: 'live-dot', 'aria-hidden': 'true' }), icon('warn', 'freshness-late'), h('span', { class: 'freshness-text' }, 'Connecting'));
   const clock = h('span', { class: 'clock', 'aria-label': "The car's local time" });
+  // a phone: the car and the account in the top bar (the sidebar is hidden there)
+  const topCar = h('button', { class: 'car-switch top-car', type: 'button', 'aria-haspopup': 'dialog', title: 'Switch car', onclick: openCarSwitcher },
+    h('span', { class: 'car-switch-dot', 'aria-hidden': 'true' }),
+    h('span', { class: 'car-switch-text' }, h('span', { class: 'car-switch-name' }, 'Choose a car'), h('span', { class: 'car-switch-sub' }, h('span', { class: 'car-switch-sub-text' }, 'No car open'))),
+    icon('chev-d', 'ico--sm top-car-chev'));
+  const topAcct = h('button', { class: 'top-acct', type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', 'aria-label': 'Your account and display', onclick: (e) => toggleAccountMenu(e.currentTarget) },
+    h('span', { class: 'avatar', 'aria-hidden': 'true' }, '·'));
+  const period = periodPicker();
+  const tools = h('div', { class: 'topbar-tools' }, period, fresh, clock, topAcct);
   replace($('#topbar'),
-    h('div', { class: 'topbar-start' }, menuBtn, crumbs),
-    h('div', { class: 'topbar-tools' }, periodPicker(), fresh, clock));
-  Object.assign(els, { crumbs, fresh, clock });
+    h('div', { class: 'topbar-start' }, menuBtn, topCar, crumbs),
+    tools);
+  Object.assign(els, { crumbs, fresh, clock, topCar, topAcct, period, tools });
+}
+
+/* ------------------------------------------------------------------ the phone dock */
+
+// the pages in the tab bar; the last tab opens the menu with every page
+const TABS = [
+  { page: 'fleet', label: 'All cars', icon: 'fleet' },
+  { page: 'car', label: 'Overview', icon: 'gauge' },
+  { page: 'drives', label: 'Drives', icon: 'route' },
+  { page: 'charges', label: 'Charges', icon: 'bolt' },
+];
+
+function buildDock() {
+  const dock = $('#dock');
+  if (!dock) return;
+  const tabs = new Map();
+  const list = TABS.map((t) => {
+    const a = h('a', { class: 'tab', href: '/', dataset: { page: t.page } }, icon(t.icon), h('span', { class: 'tab-label' }, t.label));
+    tabs.set(t.page, a);
+    return a;
+  });
+  const more = h('button', { class: 'tab tab--menu', type: 'button', 'aria-haspopup': 'dialog', onclick: () => openFinder() },
+    icon('menu'), h('span', { class: 'tab-label' }, 'Menu'));
+  const periodSlot = h('div', { class: 'dock-period' });
+  replace(dock, periodSlot, h('nav', { class: 'tabbar', 'aria-label': 'Main pages' }, list, more));
+  Object.assign(els, { tabs, periodSlot, more });
+  placePeriod();
+  window.addEventListener('phonelayout', placePeriod);
+}
+
+// an upright phone: the period bar sits in the dock, in reach of the thumb; otherwise in the top bar
+function placePeriod() {
+  const p = els.period;
+  if (!p || !els.periodSlot) return;
+  const inDock = document.documentElement.dataset.phone === 'tall';
+  if (inDock && p.parentNode !== els.periodSlot) els.periodSlot.append(p);
+  else if (!inDock && p.parentNode !== els.tools) els.tools.prepend(p);
+}
+
+function showTabs(activePage) {
+  if (!els.tabs) return;
+  let any = false;
+  for (const [id, a] of els.tabs) {
+    a.setAttribute('href', state.linkTo(id));
+    const on = id === activePage;
+    any ||= on;
+    if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+  }
+  els.more.classList.toggle('is-current', !any && !!activePage);
 }
 
 function showFreshness(info) {
@@ -198,11 +262,12 @@ function buildFooter() {
 async function loadAbout() {
   try {
     const a = await api.get('about', null, { maxAgeMs: 600000 });
-    els.version.textContent = `Sentry Mate ${a.version} · ${a.ui_pack?.name || 'Instrument'} ${a.ui_pack?.version || ''}`.trim();
+    els.version.textContent = `Sentry Mate ${buildLabel(a)} · ${a.ui_pack?.name || 'Instrument'} ${a.ui_pack?.version || ''}`.trim();
+    els.version.title = buildTitle(a);
   } catch { /* the footer keeps the plain name */ }
 }
 
-// the opt-in release notice: shown in the footer, not the notices bar
+// the opt-in release notice: also a link in the footer (the bar shows it too, until dismissed)
 function showRelease(items) {
   const n = items.find((x) => x.code === 'release_available');
   const u = els.update;
@@ -221,6 +286,7 @@ function showAccount() {
   const a = els.acct;
   if (!a) return;
   a.querySelector('.avatar').textContent = (me?.name || '?').slice(0, 1).toUpperCase();
+  if (els.topAcct) els.topAcct.querySelector('.avatar').textContent = a.querySelector('.avatar').textContent;
   a.querySelector('.account-name').textContent = me?.name || 'Signed out';
   a.querySelector('.account-role').textContent = roleText(me);
 }
@@ -233,15 +299,13 @@ async function loadCarCount() {
   } catch { /* the count is a convenience */ }
 }
 
-// the car shown in the sidebar on pages without a car: the last one opened
+// the car shown in the sidebar on pages without a car: the person's preferred car (Main car, else the last one opened)
 async function lastCarForSidebar() {
-  const id = state.lastCar();
   try {
-    if (id) return await api.get(api.apiPath`cars/${id}`, null, { maxAgeMs: 30000 });
-    const p = await api.page('cars', { sort: 'custom', limit: 10 });
-    return state.splitSold(p.items).active[0] || p.items[0] || null;
-  } catch (e) {
-    if (e.status === 404 && id) state.forgetCar(id);
+    const p = await api.page('cars', { sort: 'custom', limit: 50 }, { maxAgeMs: 30000 });
+    const id = state.preferredCar(p.items);
+    return p.items.find((c) => c.id === id) || null;
+  } catch {
     return null;
   }
 }
@@ -290,6 +354,7 @@ export function initFrame() {
   els.view = $('#view');
   buildSidebar();
   buildTopbar();
+  buildDock();
   buildFooter();
   initNotices($('#notices'));
   initFlash($('#flash'));
@@ -324,6 +389,8 @@ export async function update({ s, info, car, period, tz = null }) {
     // the group holding the open page is always open
     if (has && head.getAttribute('aria-expanded') === 'false') head.setAttribute('aria-expanded', 'true');
   }
+  showTabs(activePage);
+  document.documentElement.toggleAttribute('data-has-period', !!period);
   setPeriodShown(period, tz);
   shown = { car, tz: tz || (car ? car.time_zone : null), page };
   tickClock();

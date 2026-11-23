@@ -27,14 +27,15 @@ node --test ui/shared/tests/
 | [`api.js`](api.js) | The one client for `/api/v1`: reads, cursor paging, changes with the CSRF header, errors, sign-in prompts, live events, cancelling, the server's clock |
 | [`units.js`](units.js) | The person's units applied to the API's metric values; every number with its unit |
 | [`time.js`](time.js) | Dates and times in the car's time zone, ISO weeks, buckets, the period presets |
-| [`state.js`](state.js) | Page, car and period in the URL; the shared store; links that carry the car and period |
+| [`state.js`](state.js) | Page, car and period in the URL; the shared store; links that carry the car and period; the person's car when the URL names none (`setCarPrefs(prefs)`, `preferredCar(cars)`: main car, else last car not sold, else first pinned, else first not sold; `rememberCar(id, { sold, explicit })` saves `last_car`, debounced) |
 | [`i18n.js`](i18n.js) | `t()` with the English text as key; the locale for numbers and dates; `<html lang>` |
 | [`csv.js`](csv.js) | CSV built in the browser, for chart data that has no list resource |
 | [`dom.js`](dom.js) | `h()` and other safe DOM helpers; coverage marks; the readiness signal |
 | [`packs.js`](packs.js) | `packChoices(client, { fallback, current })`: the UI packs a person can choose (`GET /ui-packs`), with a short description each, the page's own list if the request fails |
+| [`tyres.js`](tyres.js) | `tyreView(now)`: the Now's four tyres against the recommended pressures (each against its axle's when the sensors' wheels are known, else against the lower one, as the server judges `tyre_low`), and `recommendedLine(now)`: "Recommended 2.90 bar (from CAN)." with where it comes from (CAN, the door placard for the car's wheel size, typed) |
 | [`password.js`](password.js) | `passwordAdvice(name, password)`: why a new password is easy to guess, in the server's words; pages warn with it and let the person go on |
 | [`maptiles.js`](maptiles.js) | Map tiles for every map: which tiles to draw (`GET /maps/config`: the offline map file, the online source, or none and why), raster paint for the theme and the person's map colours (dimmed, never inverted, in the dark theme), a plain style for an offline Protomaps vector file, the "No map tiles yet" note with an admin's one-click OpenStreetMap switch, the note with the cause when tiles fail, and the words of the Settings map rows |
-| [`teslamate.js`](teslamate.js) | The local TeslaMate input's shared rules for every pack's Settings: Integrations section: state and error words, the drafts of the MQTT and database forms, the server's checks said first (the plain text rule, a kept password, the pin, the topic prefix), the PUT body and the changed car matches |
+| [`teslamate.js`](teslamate.js) | The local TeslaMate input's shared rules for every pack's Settings: Integrations section: state and error words, the drafts of the MQTT and database forms, the server's checks said first (the plain text rule, a kept password, the pin, the topic prefix), the PUT body and the changed car matches; and its notices for every pack's notices bar (`isTmNotice`, `tmNoticeFix`: the link to Settings: Integrations #teslamate, `TM_NOTICE_ACTION`: the link's words) |
 
 ### api.js
 

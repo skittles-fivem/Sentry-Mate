@@ -177,3 +177,18 @@ export function tmHeadline(t) {
   if (m === 'connected') return [read === 1 ? 'Reading one car' : `Reading ${read} cars`, 'live'];
   return [MQTT_STATE[m]?.[0] || m || 'Off', MQTT_STATE[m]?.[1] || 'plain'];
 }
+
+/* ------------------------------------------------------------------ notices */
+
+/**
+ * The server's notices of a local TeslaMate in trouble (admins only; docs/ui-api.md, "Integrations: Local
+ * TeslaMate"): its broker refused the connection, the user name or password, or has another certificate than the
+ * pinned one; it went quiet; a database catch-up failed. Each links to Settings: Integrations (#teslamate).
+ */
+export const TM_NOTICE_CODES = Object.freeze(['teslamate_connection_refused', 'teslamate_auth_failed', 'teslamate_pin_mismatch', 'teslamate_quiet', 'teslamate_catchup_failed']);
+/** Whether a notice is one of the local TeslaMate's. */
+export const isTmNotice = (n) => !!n && TM_NOTICE_CODES.includes(n.code);
+/** The words of a local TeslaMate notice's link. */
+export const TM_NOTICE_ACTION = 'Open local TeslaMate';
+/** Where a local TeslaMate notice links: its section of Settings: Integrations, whatever `fix_link` says after #. */
+export const tmNoticeFix = (n, settings = '/settings/integrations') => `${String(n?.fix_link || settings).split('#')[0]}#teslamate`;

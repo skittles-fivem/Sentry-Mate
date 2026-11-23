@@ -129,6 +129,7 @@ async fn kit() -> Kit {
             vin: None,
             profile_setting: None,
             time_zone: "UTC".into(),
+            time_zone_typed: Some(true),
             efficiency_wh_km: None,
             created_ms: 1_790_000_000_000,
             inputs: Default::default(),

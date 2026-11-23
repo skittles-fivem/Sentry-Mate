@@ -318,6 +318,7 @@ fn a_recording_pause_is_unknown_even_after_a_quiet_log() {
         holes: &hole,
         api: &[],
         marks: &[],
+        order: Default::default(),
     };
     let with_hole = timeline::build(&input, &Params::default());
     assert_eq!(

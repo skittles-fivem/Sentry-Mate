@@ -93,6 +93,8 @@ function choose(o) {
 
 function go(id) {
   sheet.close();
+  const picked = (shown?.items || []).find((c) => c.id === id);
+  state.rememberCar(id, { sold: !!picked?.sold });
   state.navigate(state.linkForCar(id));
 }
 

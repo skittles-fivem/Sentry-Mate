@@ -8,6 +8,7 @@
 use crate::copy::{CopyHeader, Handler, RawRow, Take};
 use crate::links::{AddressBook, Ends, Procs, Route, Routes};
 use crate::map::{self, ChargeCtx, DriveCtx, Mapped};
+use crate::odo::{self, OdoCheck};
 use crate::report::{CarTally, Links, Report, Skip, TableReport, Tally, widen};
 use crate::rows::{
     AddressRow, Batch, ChargePointRow, ChargeRow, DriveRow, PlaceRow, PositionRow, Sink, StateRow, UpdateRow,
@@ -95,6 +96,8 @@ pub(crate) struct Emit<'s> {
     addresses: Vec<AddressRow>,
     current: Option<ColumnMap>,
     notes: Vec<&'static str>,
+    /// Each car slot's odometer readings so far ([`crate::odo`]).
+    odo: std::collections::HashMap<usize, OdoCheck>,
 }
 
 /// Where a row of a car goes, once it is let in.
@@ -133,6 +136,7 @@ impl<'s> Emit<'s> {
             addresses: Vec::new(),
             current: None,
             notes: Vec::new(),
+            odo: std::collections::HashMap::new(),
         }
     }
 
@@ -249,6 +253,13 @@ impl<'s> Emit<'s> {
             Mapped::Bad(col) => self.skip(t, Some(at.report), Skip::BadValue, Some(col)),
         }
         Ok(())
+    }
+
+    /// Counts a value dropped from a taken row.
+    fn skipped_values(&mut self, t: Table, why: Option<&'static str>) {
+        if let Some(w) = why {
+            self.table_report(t).skip_value(w);
+        }
     }
 
     fn push<T: Buffered>(&mut self, slot: usize, row: T) -> Result<(), Error> {
@@ -387,22 +398,29 @@ impl<'s> Emit<'s> {
                     self.ends.fill(id, &p);
                 }
                 let Some(at) = self.admit(t, id, row.i64(Pos::car_id), row.ms(Pos::date)) else { return Ok(()) };
-                let out = map::position(&row, id).map(|p| {
+                let odo = self.odo.entry(at.slot).or_default();
+                let mut dropped = None;
+                let out = map::position(&row, id).map(|mut p| {
                     let t = p.sample.t_ms;
+                    dropped = odo.keep(t, &mut p.sample.odometer_km);
                     (p, (t, t))
                 });
                 self.settle(t, id, &at, &row, out)?;
+                self.skipped_values(t, dropped);
             }
             Table::Drives => {
                 let Some(id) = self.id(t, row.req_i64(Drv::id)) else { return Ok(()) };
                 let Some(at) = self.admit(t, id, row.i64(Drv::car_id), row.ms(Drv::start_date)) else { return Ok(()) };
                 let car = self.routes.slots[at.slot].car;
                 let cx = DriveCtx { labels: &self.labels, ends: &self.ends, efficiency: at.efficiency };
-                let out = map::drive(&row, id, car, &cx, &mut self.notes).map(|d| {
+                let mut dropped = None;
+                let out = map::drive(&row, id, car, &cx, &mut self.notes).map(|mut d| {
+                    dropped = drive_odometer(&mut d.drive);
                     let span = (d.drive.start_ms, d.drive.end_ms);
                     (d, span)
                 });
                 self.settle(t, id, &at, &row, out)?;
+                self.skipped_values(t, dropped);
             }
             Table::ChargingProcesses => {
                 let Some(id) = self.id(t, row.req_i64(Cp::id)) else { return Ok(()) };
@@ -600,4 +618,28 @@ impl Handler for Emit<'_> {
     fn unreadable(&mut self) {
         self.warn("a COPY line couldn't be read: its rows were passed over".into());
     }
+}
+
+/// A drive's odometer readings, each on its own and the end against the start: an impossible one is dropped
+/// (TeslaMate's own distance is kept), and why is given.
+fn drive_odometer(d: &mut model::Drive) -> Option<&'static str> {
+    let mut why = None;
+    for km in [&mut d.start_odometer_km, &mut d.end_odometer_km] {
+        if let Some(v) = *km
+            && let Err(w) = odo::plausible(v)
+        {
+            *km = None;
+            why = Some(w);
+        }
+    }
+    if let (Some(a), Some(b)) = (d.start_odometer_km, d.end_odometer_km) {
+        let hours = d.end_ms.saturating_sub(d.start_ms) as f64 / 3_600_000.0;
+        let most = odo::SLACK_KM + odo::MAX_KMH * hours;
+        if b < a - odo::SLACK_KM || b - a > most {
+            d.start_odometer_km = None;
+            d.end_odometer_km = None;
+            why = Some(if b < a { odo::BACKWARDS } else { odo::JUMP });
+        }
+    }
+    why
 }

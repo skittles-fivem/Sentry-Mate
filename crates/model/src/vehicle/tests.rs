@@ -13,7 +13,7 @@ fn every_table_parses_and_every_row_names_its_source() {
     assert!(!t.wmi.is_empty() && !t.models.is_empty() && !t.body.is_empty() && !t.restraint.is_empty());
     assert!(!t.battery.is_empty() && !t.motor.is_empty() && t.years.len() == 30 && !t.plants.is_empty());
     assert!(t.epa.len() > 150 && !t.packs.is_empty() && !t.pack_codes.is_empty() && !t.wheels.is_empty());
-    assert!(!t.can_values.is_empty() && !t.trim_can.is_empty());
+    assert!(!t.can_values.is_empty() && !t.trim_can.is_empty() && !t.tyre_pressure.is_empty());
     for (name, text) in tables::FILES {
         let mut lines = text.lines().filter(|l| !l.trim().is_empty());
         let head = lines.next().unwrap();
@@ -738,4 +738,27 @@ fn only_sources_that_exist_are_named() {
             .collect();
     assert_eq!(words, ["owner", "can", "vin", "tesla_api", "teslamate"]);
     assert!(serde_json::from_str::<FactSource>("\"teslafi\"").is_err());
+}
+
+#[test]
+fn the_door_placard_gives_the_tyre_pressures_for_a_known_wheel_size() {
+    // a made-up Model Y prefix, model year 2023 (the VIN's)
+    let with_wheel = |w: Option<f64>| {
+        let mut owner = BTreeMap::new();
+        if let Some(w) = w {
+            owner.insert("wheel_in".to_string(), OwnerValue::Number(w));
+        }
+        vehicle_info(&VehicleInputs { vin: Some("7SAYGDEE1PF".into()), owner, ..VehicleInputs::default() })
+    };
+    let p = placard_pressure(&with_wheel(Some(20.0))).unwrap();
+    assert_eq!((p.front_kpa, p.rear_kpa, p.wheel_in), (290.0, 290.0, 20));
+    assert!(p.source.contains("Owner's Manual"), "{}", p.source);
+    // a size the table has no row for (a Model Y on 18 in wheels in 2023): nothing guessed
+    assert_eq!(placard_pressure(&with_wheel(Some(18.0))), None);
+    // the size not known (this build came with 19 or 20 in): nothing guessed either
+    let v = with_wheel(None);
+    assert_eq!(v.wheel_in.value, None, "{:?}", v.wheel_options_in);
+    assert_eq!(placard_pressure(&v), None);
+    // no model known
+    assert_eq!(placard_pressure(&vehicle_info(&VehicleInputs::default())), None);
 }

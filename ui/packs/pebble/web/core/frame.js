@@ -26,6 +26,8 @@ import { openPeriod, pillWords } from './period.js';
 import { openAccount, setAccount } from './account.js';
 import { applyPrefs } from './prefs.js';
 import { display, snap } from './display.js';
+import { buildLabel, buildTitle, releaseDismissed, dismissRelease } from '../shared/release.js';
+import { isTmNotice, tmNoticeFix, TM_NOTICE_ACTION } from '../shared/teslamate.js';
 
 let me = null;
 let about = null;
@@ -231,7 +233,15 @@ const TESLAFI_NOTICES = new Set(['teslafi_token_refused', 'teslafi_account_error
 function fixOf(n) {
   if (TESLA_NOTICES.has(n.code)) return `${String(n.fix_link || state.buildUrl('settings-integrations')).split('#')[0]}#tesla${n.detail?.account ? `-${encodeURIComponent(n.detail.account)}` : ''}`;
   if (TESLAFI_NOTICES.has(n.code)) return `${String(n.fix_link || state.buildUrl('settings-integrations')).split('#')[0]}#teslafi${n.detail?.account ? `-${encodeURIComponent(n.detail.account)}` : ''}`;
+  // a local TeslaMate notice opens its section
+  if (isTmNotice(n)) return tmNoticeFix(n, state.buildUrl('settings-integrations'));
   return n.fix_link || null;
+}
+function fixLabel(n) {
+  if (TESLA_NOTICES.has(n.code)) return 'Open the Tesla account';
+  if (TESLAFI_NOTICES.has(n.code)) return 'Open the TeslaFi account';
+  if (isTmNotice(n)) return TM_NOTICE_ACTION;
+  return n.code === 'release_available' ? 'About this release' : fixWords(n.fix_link);
 }
 
 function fixWords(link) {
@@ -242,14 +252,16 @@ function fixWords(link) {
 function drawNotices() {
   const box = document.getElementById('notices');
   const gone = dismissed();
-  const shown = notices.filter((n) => n.code !== 'release_available' && !gone.has(`${n.code}:${n.since_ms}`));
+  // the release notice (admins only) hides per browser by its build, the rest for this tab's session
+  const shown = notices.filter((n) => (n.code === 'release_available' ? !releaseDismissed(n) : !gone.has(`${n.code}:${n.since_ms}`)));
   box.hidden = !shown.length;
   box.replaceChildren(...shown.map((n) => h('div', { class: ['notice', `lv-${n.level || 'info'}`], role: n.level === 'error' ? 'alert' : null },
     h('span', { class: 'dot', 'aria-hidden': 'true' }),
     h('p', { class: 'notice-text' }, n.message),
-    fixOf(n) ? h('a', { class: 'btn btn-soft btn-sm', href: fixOf(n) }, h('span', { class: 'btn-text' }, TESLA_NOTICES.has(n.code) ? 'Open the Tesla account' : TESLAFI_NOTICES.has(n.code) ? 'Open the TeslaFi account' : fixWords(n.fix_link)), icon('arrowRight')) : null,
-    h('button', { type: 'button', class: 'btn btn-ghost btn-icon btn-sm', 'aria-label': 'Hide this notice for now', title: 'Hide for now', onclick: () => {
-      try { const s = dismissed(); s.add(`${n.code}:${n.since_ms}`); sessionStorage.setItem(DISMISS_KEY, JSON.stringify([...s])); } catch { /* fine */ }
+    fixOf(n) ? h('a', { class: 'btn btn-soft btn-sm', href: fixOf(n) }, h('span', { class: 'btn-text' }, fixLabel(n)), icon('arrowRight')) : null,
+    h('button', { type: 'button', class: 'btn btn-ghost btn-icon btn-sm', 'aria-label': n.code === 'release_available' ? 'Hide this release notice' : 'Hide this notice for now', title: n.code === 'release_available' ? 'Hide' : 'Hide for now', onclick: () => {
+      if (n.code === 'release_available') dismissRelease(n);
+      else try { const s = dismissed(); s.add(`${n.code}:${n.since_ms}`); sessionStorage.setItem(DISMISS_KEY, JSON.stringify([...s])); } catch { /* fine */ }
       drawNotices();
     } }, icon('close')))));
   drawFoot();
@@ -259,7 +271,7 @@ function drawFoot() {
   const release = notices.find((n) => n.code === 'release_available');
   const pack = about && about.ui_pack ? `${about.ui_pack.name || 'Pebble'} ${about.ui_pack.version || ''}`.trim() : 'Pebble';
   document.getElementById('foot').replaceChildren(
-    h('p', { class: 'foot-line' }, `Sentry Mate${about && about.version ? ` ${about.version}` : ''}`, h('span', { class: 'foot-sep', 'aria-hidden': 'true' }, '·'), `${pack} UI pack`,
+    h('p', { class: 'foot-line', title: buildTitle(about) || null }, `Sentry Mate${about ? ` ${buildLabel(about, api.now())}` : ''}`.trim(), h('span', { class: 'foot-sep', 'aria-hidden': 'true' }, '·'), `${pack} UI pack`,
       about && about.api_version ? [h('span', { class: 'foot-sep', 'aria-hidden': 'true' }, '·'), `API ${about.api_version}`] : null),
     h('p', { class: 'foot-line', cover: ['shell.footer.legal', 'web.shell.legal-footer'] },
       'Sentry Mate only reads from your cars.', h('span', { class: 'foot-sep', 'aria-hidden': 'true' }, '·'),

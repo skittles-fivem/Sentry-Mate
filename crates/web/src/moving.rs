@@ -391,21 +391,25 @@ async fn cancel_move(State(app): State<AppState>, Admin(v): Admin) -> ApiResult<
     let (out, what) = app
         .blocking(move |app| {
             let c = moving::old::cancel(&s.data, &app.vault).map_err(moving_error)?;
-            let what = match c {
-                moving::old::Cancelled::Nothing => "nothing",
-                moving::old::Cancelled::Revoked { .. } => "revoked",
-                moving::old::Cancelled::Ended { .. } => "ended",
+            let (what, id) = match c {
+                moving::old::Cancelled::Nothing => ("nothing", String::new()),
+                moving::old::Cancelled::Revoked { id } => ("revoked", id),
+                moving::old::Cancelled::Ended { id, .. } => ("ended", id),
             };
             let mut out = old_view(&s, app)?;
             if let Value::Object(m) = &mut out {
                 m.insert("cancelled".into(), json!(what));
             }
-            Ok((out, what))
+            Ok((out, (what, id)))
         })
         .await?;
-    if what != "nothing" {
+    let (what, id) = what;
+    if what == "nothing" {
+        // there was nothing to cancel: nothing changed
+        v.mark_audited();
+    } else {
         let summary = if what == "revoked" { "Revoked the move code." } else { "Ended the move under way." };
-        v.audit(&app, "move-cancelled", None, summary).await?;
+        v.audit(&app, "move-cancelled", Some(&target("move", None, &id)), summary).await?;
     }
     Ok(Json(out))
 }
@@ -419,13 +423,15 @@ async fn undo_move(State(app): State<AppState>, Admin(v): Admin, body: JsonBody)
     let s = site(&app)?;
     let out = app
         .blocking(move |app| {
-            if moving::old::undo(&s.data, &app.vault).map_err(moving_error)?.is_none() {
+            let Some(moved) = moving::old::undo(&s.data, &app.vault).map_err(moving_error)? else {
                 return Err(ApiError::conflict("not_moved", "This server has not moved."));
-            }
-            old_view(&s, app)
+            };
+            Ok((old_view(&s, app)?, moved.code_id))
         })
         .await?;
-    v.audit(&app, "move-undone", None, "Undid the move: this server takes uploads again.").await?;
+    let (out, id) = out;
+    v.audit(&app, "move-undone", Some(&target("move", None, &id)), "Undid the move: this server takes uploads again.")
+        .await?;
     Ok(Json(out))
 }
 
@@ -1031,7 +1037,8 @@ async fn move_here(
         } else {
             (StatusCode::CREATED, "setup-move-started", format!("Started moving the data here from {addr}."))
         };
-        app.accounts.audit().record(None, Some(conn.ip), what, &summary)?;
+        let details = crate::ctx::audit_details(Some(&job_target(&job)), &summary);
+        app.accounts.audit().record(None, Some(conn.ip), what, &details)?;
         Ok((status, Json(job)).into_response())
     })
     .await
@@ -1092,15 +1099,20 @@ async fn move_finish(
             .with_fields(serde_json::Map::from_iter([("recovery_key".into(), json!("Doesn't open this data."))])),
             e => moving_error(e),
         })?;
-        app.accounts.audit().record(
-            None,
-            Some(conn.ip),
-            "setup-move-finished-forced",
+        let job = job_view(app, &s)?.unwrap_or(Value::Null);
+        let details = crate::ctx::audit_details(
+            Some(&job_target(&job)),
             "Finished the move with the recovery key (old server gone).",
-        )?;
-        Ok(Json(job_view(app, &s)?.unwrap_or(Value::Null)))
+        );
+        app.accounts.audit().record(None, Some(conn.ip), "setup-move-finished-forced", &details)?;
+        Ok(Json(job))
     })
     .await
+}
+
+/// A move or restore under way here, as its audit entries name it (`move:<its id>`).
+pub(crate) fn job_target(job: &Value) -> String {
+    target("move", None, job["id"].as_str().unwrap_or("here"))
 }
 
 async fn setup_job(State(app): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Value>> {
@@ -1138,12 +1150,11 @@ async fn give_up_job(
             }
             moving::pull::cancel(&s.data, &s.keys).map_err(moving_error)?;
             let from = job["from"].as_str().unwrap_or("the old server");
-            app.accounts.audit().record(
-                None,
-                Some(conn.ip),
-                "setup-move-cancelled",
+            let details = crate::ctx::audit_details(
+                Some(&job_target(&job)),
                 &format!("Gave up moving the data here from {from}."),
-            )?;
+            );
+            app.accounts.audit().record(None, Some(conn.ip), "setup-move-cancelled", &details)?;
         }
         Ok(Json(json!({ "deleted": true, "id": job["id"] })))
     })

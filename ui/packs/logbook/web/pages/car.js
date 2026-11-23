@@ -15,7 +15,8 @@ import { formatTime, formatDate, formatDateTime, formatDuration, formatRelative,
 import { formatList } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { pageHead, q, plus, figure, chip, icon, stateMark, empty, errorView, loadingBlock, sep, ago, routeSketch } from '../core/ui.js';
+import { tyreView, recommendedLine } from '../shared/tyres.js';
+import { pageHead, q, plus, figure, chip, flag, icon, stateMark, empty, errorView, loadingBlock, sep, ago, routeSketch } from '../core/ui.js';
 import { column, timeColumn, csvFilename, downloadCsv } from '../shared/csv.js';
 import { makeMap, coordsText, boundsOf } from '../core/map.js';
 import { stackedCharts, spansFromStates } from '../core/chart.js';
@@ -117,10 +118,10 @@ export async function mount(ctx) {
   const stateBox = h('div', { class: 'state-box' });
   const drawState = () => replace(stateBox, stateLine(now, tz, placeKind()));
   function draw() {
-    replace(head, header(car, now, tz));
+    replace(head, header(car, now, tz, ctx.me && ctx.me.role === 'admin'));
     replace(whereText, whereLines(now, tz, outsideMaps, currentVisit()));
     drawState();
-    replace(live, staleBanner(now, tz), h('p', { class: 'lede' }, lede(now, tz)), stateBox, hero(car, now, tz), vitals(car, now, tz), awake(now), statusFlags(now, tz), charging(now, tz, usualStart()), where, latest);
+    replace(live, staleBanner(now, tz), h('p', { class: 'lede' }, lede(now, tz)), stateBox, hero(car, now, tz), vitals(car, now, tz), awake(now), statusFlags(now, tz), offCan(now, tz), charging(now, tz, usualStart()), where, latest);
   }
   draw();
   // The time in the current state counts on by itself (a clock, not a request).
@@ -189,7 +190,7 @@ export async function mount(ctx) {
 
 /* ------------------------------------------------------------------ the head and the story */
 
-function header(car, now, tz) {
+function header(car, now, tz, admin = false) {
   const cfg = car.config || {};
   const trim = cfg.trim && cfg.trim.value ? cfg.trim : null;
   const src = (s, list) => (Array.isArray(list) && list.length ? labelOf(list).replace(/^Data from/, 'from').replace(/^Imported/, 'imported')
@@ -215,6 +216,7 @@ function header(car, now, tz) {
         : sameDay ? `Measured ${formatTime(now.at_ms, tz, { seconds: true })}, received ${formatTime(now.received_ms, tz, { seconds: true })}${now.delay_s != null ? ` (${now.delay_s} s later)` : ''}`
           : `Last report ${formatDateTime(now.at_ms, tz, { now: api.now() })}`),
       inputsLine(now.inputs, { cls: 'freshness-inputs' }),
+      admin ? h('p', { class: 'freshness-order' }, h('a', { href: `${state.buildUrl('settings-cars', { car: car.id })}#data-sources` }, 'Change order')) : null,
       h('p', { class: 'freshness-note' }, 'Values usually arrive about 75 s after the car sends them; each shows its own time on hover and the input that sent it.')),
   });
 }
@@ -431,14 +433,14 @@ function vitals(car, now, tz) {
       row('Set points', bothNil ? q(null, 'temperature', { why: notSent }) : h('span', null, sp(now.setpoint_left_c), ' / ', sp(now.setpoint_right_c)), 'driver / passenger', { cover: 'overview.stat.driver_temp', measured: t(now.setpoint_left_c), src: now.setpoint_left_c })));
 
   const kpa = (now.tyres_kpa || []).map(v);
-  const rec = v(now.tyre_recommended_kpa);
-  const low = (p) => p != null && rec != null && p < rec * 0.9;
+  const tv = tyreView(now);
+  const lowAt = (i) => tv.low[i] === true;
   const pu = getUnits().pressure === 'psi' ? 'psi' : 'bar';
   const val = (p) => (p == null ? '—' : parts(p, 'pressure').number);
   const wheel = (x, y) => svg('rect', { class: 'tire-wheel', x, y, width: 9, height: 24, rx: 3 });
-  const reading = (p, x, y, anchor) => svg('text', { class: ['tire-value', { 'is-low': low(p) }], x, y, 'text-anchor': anchor }, val(p));
+  const reading = (i, x, y, anchor) => svg('text', { class: ['tire-value', { 'is-low': lowAt(i) }], x, y, 'text-anchor': anchor }, val(kpa[i]));
   const names = ['Front left', 'Front right', 'Rear left', 'Rear right'];
-  const lows = kpa.map((p, i) => (low(p) ? `${names[i]} ${format(p, 'pressure')}` : null)).filter(Boolean);
+  const lows = kpa.map((p, i) => (lowAt(i) ? `${tv.mapped ? names[i] : `Sensor ${i + 1}`} ${format(p, 'pressure')}` : null)).filter(Boolean);
   const tyres = h('section', { class: 'vital vital-tires', cover: 'summary.flag.tire_pressure_warning' }, h('h2', { class: 'label' }, 'Tyres', h('span', { class: 'label-note' }, pu)),
     kpa.length ? h('div', { class: 'tires-figure' },
       h('span', { class: 'tire-axle', 'aria-hidden': 'true' }, 'front'),
@@ -446,13 +448,16 @@ function vitals(car, now, tz) {
         svg('rect', { class: 'tire-body', x: 84, y: 19, width: 52, height: 116, rx: 22 }),
         svg('path', { class: 'tire-glass', d: 'M92 53c8-6 28-6 36 0M92 105c8 5 28 5 36 0' }),
         wheel(76, 33), wheel(135, 33), wheel(76, 99), wheel(135, 99),
-        reading(kpa[0], 64, 52, 'end'), reading(kpa[1], 156, 52, 'start'), reading(kpa[2], 64, 118, 'end'), reading(kpa[3], 156, 118, 'start')),
+        reading(0, 64, 52, 'end'), reading(1, 156, 52, 'start'), reading(2, 64, 118, 'end'), reading(3, 156, 118, 'start')),
       h('span', { class: 'tire-axle', 'aria-hidden': 'true' }, 'rear')) : h('p', { class: 'note' }, 'This car sends no tyre pressures.'),
-    h('p', { class: ['spec-foot', { 'is-low': lows.length }] }, lows.length ? `Low: ${formatList(lows)}` : kpa.length ? 'All four at or near the recommended pressure' : '',
-      rec != null ? ` · ${format(rec, 'pressure')} recommended by the car` : ''));
+    h('p', { class: ['spec-foot', { 'is-low': lows.length }] }, lows.length ? `Low: ${formatList(lows)}. ` : kpa.length && tv.front != null ? 'All four at or near the recommended pressure. ' : '',
+      kpa.length ? recommendedLine(now) : ''));
 
   const sw = now.software || {};
-  const swSrc = { teslamate: 'imported', tesla_api: 'from the Tesla API', owner: 'typed by the owner', build_match: 'matched by build' }[sw.version_source] || null;
+  const swSrc = {
+    teslamate: 'imported from TeslaMate', teslafi: 'imported from TeslaFi', teslafi_api: 'from TeslaFi', teslamate_local: 'from local TeslaMate',
+    tesla_api: 'from the Tesla API', owner: 'typed by the owner', build_match: 'matched by build',
+  }[sw.version_source] || null;
   const ideal = v(now.ideal_range_km);
   const carSpec = h('section', { class: 'vital' }, h('h2', { class: 'label' }, 'The car'),
     h('dl', { class: 'spec' },
@@ -491,7 +496,70 @@ function awake(now) {
       h('ul', { class: 'door-list' }, doors.map(([n, o]) => h('li', { class: ['door', { 'is-open': o === true }] }, h('span', null, n), h('span', { class: 'door-state' }, o == null ? 'not sent' : o ? 'Open' : 'Closed'))),
         lift != null ? h('li', { class: ['door', { 'is-open': lift > 2 }] }, h('span', null, 'Liftgate'), h('span', { class: 'door-state' }, lift > 2 ? `Open, ${Math.round(lift)}°` : 'Closed')) : null),
       h('p', { class: ['note', { 'is-warn': open.length && now.state === 'asleep' }] }, open.length ? `Open: ${formatList(open)}.` : 'All closed.'),
-      h('p', { class: 'note', cover: ['summary.flag.lock', 'summary.flag.windows_open'] }, 'Locks and windows: the car does not send these on its CAN bus, so they are left out.')));
+      h('p', { class: 'note' }, 'Locks and windows are not on the CAN bus: they are under “Not on the CAN bus” below, where the Tesla API or TeslaFi gives them.')));
+}
+
+/* ------------------------------------------------------------------ not on the CAN bus */
+
+const WINDOWS = [['driver_front', 'Driver front'], ['passenger_front', 'Passenger front'], ['driver_rear', 'Driver rear'], ['passenger_rear', 'Passenger rear']];
+const SUNROOF_WORDS = { closed: 'Closed', open: 'Open', vent: 'Vent', venting: 'Vent', comfort: 'Comfort', unknown: 'Not known' };
+
+/**
+ * What no CAN message carries (now.off_can): software and its update, lock and windows, sunroof, schedules and the
+ * route, each from the Tesla API or TeslaFi with its input and a stale mark once it is older than its limit. A value
+ * no input gave is a dash, never a guess (no lock state from a lock request).
+ */
+function offCan(now, tz) {
+  const o = now.off_can || {};
+  const w = o.windows || {};
+  const r = o.route || {};
+  const all = [o.version, o.update_available, o.update_version, o.update_download_pct, o.update_installing, o.locked, o.windows_open,
+    ...WINDOWS.map(([k]) => w[k]), o.sunroof_state, o.sunroof_pct, o.scheduled_charge_start_ms, o.scheduled_departure_ms, r.destination, r.km, r.minutes, r.traffic_min];
+  const covers = ['summary.flag.lock', 'summary.flag.windows_open'];
+  const head = h('h2', { class: 'label', id: 'offcan-title' }, 'Not on the CAN bus', h('span', { class: 'label-note' }, 'from the Tesla API or TeslaFi; hover a value for its time'));
+  if (all.every((x) => x == null)) {
+    return h('section', { class: 'off-can', 'aria-labelledby': 'offcan-title', cover: covers }, head,
+      h('p', { class: 'note' }, 'Software updates, lock, windows, sunroof, schedules and the route are not on the car’s CAN bus. A Tesla account or a TeslaFi token (Settings: Integrations) gives them; none has for this car.'));
+  }
+  const opts = { now: api.now() };
+  const dash = () => h('span', { class: 'nil' }, '—');
+  const show = (x, fn) => (x == null || v(x) == null ? dash() : fn(v(x)));
+  const item = (name, x, value, { warn = false, on = false, cover = null } = {}) => h('li', {
+    class: ['flag-item', { 'is-warn': warn && x && !x.stale, 'is-on': on && x && !x.stale, 'is-stale': !!(x && x.stale) }], cover,
+    title: x && x.at_ms ? `Read ${formatDateTime(x.at_ms, tz, { ...opts, seconds: true })}${x.stale ? ', too old to count on now' : ''}` : null },
+  h('span', { class: 'flag-name' }, name),
+  h('span', { class: 'flag-value' }, value, valueMark(x), x && x.stale ? flag('Stale', { kind: 'warn', title: 'Older than this value’s age limit; the broker gets it empty.' }) : null));
+  const group = (title, items) => h('div', { class: 'oc-group' }, h('h3', { class: 'oc-name' }, title), h('ul', { class: 'oc-list' }, items));
+  const yes = (t, f) => (b) => (b ? t : f);
+  const installing = v(o.update_installing), avail = v(o.update_available);
+  const updateWord = installing ? 'Installing' : avail == null ? null : avail ? 'Waiting' : 'None waiting';
+  const updateX = installing ? o.update_installing : o.update_available;
+  return h('section', { class: ['off-can', { 'is-stale': !!now.stale }], 'aria-labelledby': 'offcan-title', cover: covers }, head,
+    h('div', { class: 'oc-groups' },
+      group('Software', [
+        item('Version', o.version, show(o.version, (x) => h('span', { class: 'mono' }, x))),
+        item('Update', updateX, updateWord ? updateWord : dash(), { on: !!avail || !!installing }),
+        item('Update version', o.update_version, show(o.update_version, (x) => h('span', { class: 'mono' }, x))),
+        item('Downloaded', o.update_download_pct, show(o.update_download_pct, (x) => format(x, 'percent'))),
+      ]),
+      group('Lock and windows', [
+        item('Locked', o.locked, show(o.locked, yes('Locked', 'Unlocked')), { warn: v(o.locked) === false && now.state !== 'driving' }),
+        item('Any window open', o.windows_open, show(o.windows_open, yes('Yes', 'No')), { warn: !!v(o.windows_open) }),
+        ...WINDOWS.map(([k, n]) => item(n, w[k], show(w[k], yes('Open', 'Closed')), { warn: !!v(w[k]) })),
+      ]),
+      group('Sunroof and schedule', [
+        item('Sunroof', o.sunroof_state, show(o.sunroof_state, (x) => SUNROOF_WORDS[x] || x)),
+        item('Sunroof opening', o.sunroof_pct, show(o.sunroof_pct, (x) => format(x, 'percent'))),
+        item('Charge starts', o.scheduled_charge_start_ms, show(o.scheduled_charge_start_ms, (x) => formatDateTime(x, tz, opts))),
+        item('Departure', o.scheduled_departure_ms, show(o.scheduled_departure_ms, (x) => formatDateTime(x, tz, opts))),
+      ]),
+      group('Route', [
+        item('Destination', r.destination, show(r.destination, (x) => x)),
+        item('Distance left', r.km, show(r.km, (x) => q(x, 'distance'))),
+        item('Time left', r.minutes, show(r.minutes, (x) => formatDuration(x * 60000))),
+        item('Traffic delay', r.traffic_min, show(r.traffic_min, (x) => (x > 0 ? `+${formatDuration(x * 60000)}` : 'none'))),
+      ])),
+    h('p', { class: 'note' }, 'Never guessed from the CAN bus: a lock request is not the lock state, and a window switch press does not say open or closed.'));
 }
 
 /* ------------------------------------------------------------------ charging now */
@@ -524,7 +592,7 @@ function charging(now, tz, usual) {
     ['Still to add', off(v(ch.to_full_kwh), 'energy', idle), null, ch.to_full_kwh],
     ['Time to full', toMin != null ? formatDuration(toMin * 60000) : h('span', { class: 'nil' }, idle), ['summary.stat.remaining_time', 'nr.dash.time-to-full'], ch.to_full_min],
     ['Done at', finish ? formatDateTime(finish, tz, { now: api.now() }) : h('span', { class: 'nil' }, idle), 'summary.stat.expected_finish', null],
-    ['Scheduled start', sched, 'summary.stat.scheduled_charging', null],
+    ['Usual start', sched, 'summary.stat.scheduled_charging', null],
   ];
   const measured = (x) => (at(x) ? `Measured ${formatDateTime(at(x), tz, { now: api.now(), seconds: true })}` : null);
   return h('section', { class: ['charging-now', { 'is-idle': !plugged && !on, 'is-stale': !!now.stale }], 'aria-labelledby': 'charging-title', cover: 'nr.dash.panel.charge-status' },

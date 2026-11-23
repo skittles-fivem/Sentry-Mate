@@ -131,6 +131,38 @@ impl Publisher {
     }
 }
 
+/// What the publisher is doing, for the connections overview ([`super::overview`]).
+pub(crate) struct PublisherView {
+    /// A publisher runs (none: MQTT off, or its settings could not start one).
+    pub running: bool,
+    pub connected: bool,
+    /// Messages the broker acknowledged since this publisher started.
+    pub delivered: u64,
+    /// The last error's code, words and when it was first seen.
+    pub last_error: Option<(String, String, u64)>,
+    pub last_used_ms: Option<u64>,
+}
+
+impl Publisher {
+    /// Looks at the counters (as `/status` does) and says what the publisher is doing.
+    pub(crate) fn view(&self, now_ms: u64) -> PublisherView {
+        self.observe(now_ms);
+        let stats = self.running().map(|m| m.stats());
+        let l = self.log().clone();
+        let last_error = match (l.last_error, l.last_error_ms) {
+            (Some(code), Some(at)) => Some((code, l.last_error_message.unwrap_or_default(), at)),
+            _ => None,
+        };
+        PublisherView {
+            running: stats.is_some(),
+            connected: stats.as_ref().is_some_and(|x| x.connected),
+            delivered: stats.as_ref().map_or(0, |x| x.delivered),
+            last_error,
+            last_used_ms: l.last_used_ms,
+        }
+    }
+}
+
 /// The ports the server listens on, for `/network` (handed over with `Builder::service`).
 #[derive(Debug, Clone, Copy)]
 pub struct Network {
@@ -597,17 +629,46 @@ async fn preview(State(app): State<AppState>, v: Viewer, p: Params) -> ApiResult
                 None => first_car(app, &e, &v)?,
             };
             let Some(car) = car else {
-                return Ok(json!({ "car": null, "name": null, "units": units, "device": null, "messages": [], "ha_entities": [] }));
+                return Ok(json!({ "car": null, "name": null, "units": units, "device": null, "messages": [], "ha_entities": [], "inputs": [], "sources": {} }));
             };
             let info = car_info(&e, car)?.ok_or_else(ApiError::no_such_car)?;
             let layout = mqtt::Layout::new(&settings).map_err(|err| ApiError::server(format!("the MQTT layout: {err}")))?;
             let mut msgs = vec![mqtt::Message { topic: layout.topics.status(), payload: "online".into(), retain: true }];
+            // where each value no CAN message carries came from
+            let mut sources = Map::new();
             if let Some(now) = car_now(&e, car)? {
                 let place = place_name(&e, &now, &s.no_place_text);
                 // (the stored Now names its own car; topics are this car's)
                 let now = model::Now { car, ..now };
                 msgs.extend(mqtt::render::now_messages(&layout, &now, place.as_deref()));
+                for f in mqtt::render::Field::ALL {
+                    if let Some((input, at_ms, stale)) = mqtt::render::field_source(f, &now) {
+                        let r = engine::query::SourceRef::from(model::Origin::from(input));
+                        sources.insert(
+                            f.key().into(),
+                            json!({ "kind": r.kind, "label": r.label, "at_ms": at_ms, "stale": stale }),
+                        );
+                    }
+                }
             }
+            // the live inputs the car has data from (an older car that names none: SMO, when it has CAN keys)
+            let inputs: Vec<Value> = e
+                .db()
+                .car(car)
+                .map_err(db_err("reading a car"))?
+                .map(|c| {
+                    let mut i = c.inputs;
+                    if i.is_empty() && !c.vehicle_keys.is_empty() {
+                        i.insert(model::Input::Smo);
+                    }
+                    i.iter()
+                        .map(|i| {
+                            let r = engine::query::SourceRef::from(model::Origin::from(i));
+                            json!({ "kind": r.kind, "label": r.label })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             let mut entities = Vec::new();
             let mut device = Value::Null;
             if settings.discovery {
@@ -640,6 +701,8 @@ async fn preview(State(app): State<AppState>, v: Viewer, p: Params) -> ApiResult
                 "device": device,
                 "messages": messages_json(&msgs),
                 "ha_entities": entities,
+                "inputs": inputs,
+                "sources": sources,
             }))
         })
         .await?;
@@ -702,7 +765,8 @@ async fn network(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Valu
     let (mqtt_host, _, _) = broker_parts(&m.settings);
     let geo_host = ss.geocode.url.as_deref().and_then(server::host_of);
     let tiles_online = ss.tiles.mode == "online";
-    let tile_host = ss.tiles.online_url.as_deref().and_then(server::host_of);
+    let tile_hosts = ss.tiles.hosts();
+    let tile_host = tile_hosts.first().cloned();
     let geonames = server::host_of(places::geocode::download::DEFAULT_GEONAMES_URL);
     let mut inbound = Vec::new();
     if let Ok(n) = app.service::<Network>() {
@@ -715,11 +779,15 @@ async fn network(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Valu
         // no address lookup runs online in this server yet: listed, never used
         json!({ "purpose": "geocoding", "host": geo_host, "enabled": ss.geocode.mode == "online" && geo_host.is_some(), "last_used_ms": null }),
         // the viewers' browsers load the tiles, not the server
-        json!({ "purpose": "tiles", "host": if tiles_online { tile_host } else { None }, "enabled": tiles_online, "last_used_ms": null }),
+        // (every host of the chosen preset and the styles viewers may switch to, in `hosts`)
+        json!({
+            "purpose": "tiles", "host": if tiles_online { tile_host } else { None },
+            "hosts": if tiles_online { tile_hosts } else { Vec::new() },
+            "preset": ss.tiles.chosen_id(), "enabled": tiles_online, "last_used_ms": null,
+        }),
         json!({ "purpose": "geonames_download", "host": geonames, "enabled": false, "last_used_ms": null }),
         json!({ "purpose": "mqtt", "host": (!mqtt_host.is_empty()).then_some(mqtt_host), "enabled": m.settings.enabled, "last_used_ms": mqtt_used }),
-        // no release check exists in this server yet (`/settings` refuses turning it on)
-        json!({ "purpose": "release_check", "host": null, "enabled": false, "last_used_ms": null }),
+        super::release::network_row(&app),
     ];
     outbound.extend(tesla);
     outbound.extend(teslafi);

@@ -83,7 +83,8 @@ def featured_specs():
                 "pack_kwh_code": ("78", "can"), "wheel": ("19 in Gemini", "can"), "paint": ("Stealth Grey", "can"),
                 "roof": ("Glass", "can"), "spoiler": ("None", "can"), "right_hand_drive": (False, "can"),
                 "map_region": ("North America", "can"), "supercharging_access": ("Paid", "can")},
-        updates=[(-286, "2026.2.6", "owner", "fingerprint"), (-49, "2026.32.5", "build_match", "fingerprint")],
+        updates=[(-286, "2026.2.6", "owner", "fingerprint"), (-163, None, None, "fingerprint"),
+                 (-49, "2026.32.5", "build_match", "fingerprint")],
         first_version=("2025.26.7", "owner"),
         special={"road_trip": (-137, -133), "holiday": (-238, -230)},
         gaps=[  # (days before now, local hour, minutes, reason, mode)
@@ -98,7 +99,7 @@ def featured_specs():
     )
     c2 = CarSpec(
         id="c2", n=2, name="Maple", model="Model 3", year=2022, trim="RWD", vin_prefix="5YJ3E1EA0NF",
-        profile="tesla-3y", time_zone="America/Chicago", area=CHI, chemistry="lfp",
+        profile="tesla-3y", time_zone="America/Chicago", time_zone_source="owner", area=CHI, chemistry="lfp",
         full_new_kwh=60.5, full_start_kwh=60.0, full_now_kwh=59.3, buffer_kwh=2.5, full_range_new_km=438.0,
         rated_wh_per_km=132.0, ideal_factor=1.07, base_wh_per_km=138.0, mass_kg=1760, cda=0.51, crr=0.0090,
         charge_limit=100, home="p30", work="p31", home_ac=(230, 16, 3), dc_peak_kw=170, dc_knee=(0.10, 0.45),
@@ -109,6 +110,9 @@ def featured_specs():
                 "roof": ("Glass", "can"), "spoiler": ("None", "can"), "right_hand_drive": (False, "can"),
                 "map_region": ("North America", "can"), "supercharging_access": ("Paid", "can")},
         updates=[(-341, "2025.44.25", "owner", "fingerprint"), (-17, None, None, "fingerprint")],
+        # the versions a live input started reporting: (input, version, update seq, hours after that update's end).
+        # The owner's local TeslaMate: its first says the typed one (typed wins), its second names the newest update.
+        input_versions=[("teslamate_local", "2025.44.25", 1, 6.0), ("teslamate_local", "2026.44.1", 2, 4.0)],
         first_version=("2025.32.6", "owner"),
         special={"road_trip": (-95, -90), "leak_start": -21},
         gaps=[
@@ -131,9 +135,13 @@ def featured_specs():
                 "pack_kwh_code": ("90", "teslamate"), "wheel": ("21 in Arachnid", "owner"), "paint": ("Midnight Silver", "teslamate"),
                 "roof": (None, None), "spoiler": (None, None), "right_hand_drive": (False, "vin"),
                 "map_region": ("North America", "teslamate"), "supercharging_access": ("Free", "owner")},
-        updates=[(-860, "2024.20.9", "teslamate", "teslamate"), (-800, "2024.32.7", "teslamate", "teslamate"),
+        updates=[(-367, None, None, "fingerprint"),  # listed first: its seq makes it change every module
+                 (-860, "2024.20.9", "teslamate", "teslamate"), (-800, "2024.32.7", "teslamate", "teslamate"),
                  (-625, "2025.8.3", "teslamate", "teslamate"), (-511, "2025.20.6", "teslamate", "teslamate"),
                  (-308, "2025.45.8", "build_match", "fingerprint")],
+        # TeslaFi's polls first said 2025.45.8 eight days after the update: too late to name it (24 h), but it is
+        # the version TeslaFi reads now, so the current version comes from TeslaFi
+        input_versions=[("teslafi_api", "2025.45.8", 6, 8 * 24.0)],
         first_version=("2024.14.11", "teslamate"),
         special={"can_from": -398, "teslamate_until": -393, "silent_from_h": 55.0,
                  "teslafi_from": -430, "teslafi_until": -423},

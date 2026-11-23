@@ -58,6 +58,7 @@ async fn kit_with(per_minute: Option<u32>) -> Kit {
             }),
             profile_setting: None,
             time_zone: "Europe/Amsterdam".into(),
+            time_zone_typed: Some(true),
             efficiency_wh_km: None,
             created_ms: 1_790_000_000_000,
             inputs: Default::default(),

@@ -149,9 +149,10 @@ pub fn web_state(
     let events = web::Events::new();
     let tesla = Arc::new(web::resources::tesla::service(data, v.clone(), engine, audit.clone(), events.clone()));
     // the TeslaFi input: the same, nothing connects before an admin adds a TeslaFi token
-    let teslafi = Arc::new(web::resources::teslafi::service(data, v.clone(), engine, audit, events.clone()));
+    let teslafi = Arc::new(web::resources::teslafi::service(data, v.clone(), engine, audit.clone(), events.clone()));
     // the local TeslaMate: the same, nothing connects before an admin adds its settings
-    let teslamate_local = Arc::new(web::resources::teslamate_local::service(data, v.clone(), engine));
+    let teslamate_local =
+        Arc::new(web::resources::teslamate_local::service(data, v.clone(), engine, audit, events.clone()));
     let app = web::AppState::builder(acc, v, data.join("web"))
         .events(events)
         .service(tesla)
@@ -190,7 +191,8 @@ pub fn web_state(
     Ok(app)
 }
 
-/// The web server's upkeep, every minute: the accounts' "last seen" times written and what ended forgotten, and a
+/// The web server's upkeep, every minute: the accounts' "last seen" times written and what ended forgotten, the
+/// connections overview's counters and problems, and a
 /// new setup code once the last one ran out while no account exists. `announced`: the start made one just now (a
 /// new one at once would make it stop working).
 pub fn spawn_upkeep(app: web::AppState, announced: bool) -> tokio::task::JoinHandle<()> {
@@ -208,6 +210,8 @@ pub fn spawn_upkeep(app: web::AppState, announced: bool) -> tokio::task::JoinHan
                 if let Err(e) = a.accounts.maintain() {
                     tracing::warn!("accounts upkeep: {e}");
                 }
+                // the connections overview: its counters read, its problems looked at, saved when due
+                web::resources::overview::upkeep(&a);
                 if due && a.accounts.needs_setup() {
                     return match a.announce_setup() {
                         Ok(code) => code.is_some(),
@@ -227,10 +231,15 @@ pub fn spawn_upkeep(app: web::AppState, announced: bool) -> tokio::task::JoinHan
     })
 }
 
-/// Writes what the accounts gathered (on a stop).
+/// Writes what the accounts and the connections overview gathered (on a stop).
 pub async fn flush(app: &web::AppState) {
     let a = app.clone();
-    let _ = tokio::task::spawn_blocking(move || a.accounts.maintain()).await;
+    let _ = tokio::task::spawn_blocking(move || {
+        let r = a.accounts.maintain();
+        web::resources::overview::flush(&a);
+        r
+    })
+    .await;
 }
 
 /// Passes the engine's changes on to the web server's live stream. A `now` goes as the whole object and what

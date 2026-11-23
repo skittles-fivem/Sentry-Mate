@@ -1,19 +1,23 @@
 //! The Tesla API and TeslaFi's API as live inputs beside SMO. The `tesla` crate's poller hands the engine what it
 //! read ([`TeslaSink`]), the `teslafi` crate's what TeslaFi polled ([`TeslafiSink`]); the engine keeps each apart from
 //! SMO's data (its own sample stream, `tesla-api` or `teslafi-api`, and its own state spans) and builds the timeline
-//! from all of them at once ([`timeline::fuse_all`]): one drive seen by several inputs is one row naming them, SMO's
-//! values win where it has them, then the Tesla API's, then TeslaFi's, each filling what the one above did not send
-//! or the time it was offline. TeslaFi's samples go through the same steps as the Tesla API's, below; only its
+//! from all of them at once ([`timeline::fuse_ordered`]): one drive seen by several inputs is one row naming them, the
+//! inputs winning in the car's `source_order` (by default SMO's values where it has them, then the Tesla API's, then
+//! TeslaFi's, then the local TeslaMate's), each filling what the one above did not send or the time it was offline. TeslaFi's samples go through the same steps as the Tesla API's, below; only its
 //! values beside the samples (1, 3) are not taken (TeslaFi's software version and settings are left to the Tesla API
-//! and SMO).
+//! and SMO), but for the values no CAN message carries (3, below).
 //!
 //! 1. **Stored first** ([`Engine::api_points`], in the background): the samples to the car's `tesla-api` stream, what
 //!    the API saw of the car's state to day records, the span noted as waiting to be built, the car's Now.
 //! 2. **Built** at most every [`crate::Options::api_rebuild_ms`] per car (a car polled every half minute, or streaming
 //!    while driving, is not rebuilt for every reading): the windows the new data falls in, through the same rebuild a
 //!    late SMO log uses. Imported rows are never touched.
-//! 3. **Values beside the samples** ([`Engine::api_meta`]): the software version (a change is an update row), the car's
-//!    build (trim, paint, wheels: `config` with source `tesla_api`), the charge limit and the car's flags for Now.
+//! 3. **Values beside the samples** ([`Engine::api_meta`], kept per input): the software version (a change is an
+//!    update row naming the input), the car's build (trim, paint, wheels: `config` with source `tesla_api`), the
+//!    charge limit and the car's flags for Now. Local TeslaMate hands on only the energy added and the estimated
+//!    range this way ([`TeslamateLocalSink`]); its values carry its own input.
+//!    The values no CAN message carries (lock, windows, update, route ...) are kept from both inputs (TeslaFi's:
+//!    [`Engine::teslafi_off_can`]) and fused into the car's Now when it is read ([`crate::query::now::off_can_now`]).
 //!
 //! A car for a Tesla vehicle is one an admin picked ([`Engine::suggest_car`] names the one car with the same VIN
 //! prefix), or a new one ([`Engine::api_new_car`]). Restart-safe: what is stored and not built yet is built on the
@@ -121,7 +125,7 @@ impl tesla::Sink for TeslaSink {
     }
 
     fn meta(&self, car: CarId, meta: &tesla::ApiMeta) -> std::result::Result<(), tesla::SinkError> {
-        self.engine.api_meta(car, meta.clone());
+        self.engine.api_meta(Input::TeslaApi, car, meta.clone());
         Ok(())
     }
 
@@ -168,6 +172,11 @@ impl teslafi::Sink for TeslafiSink {
         Ok(())
     }
 
+    fn off_can(&self, car: CarId, at_ms: u64, values: &model::OffCan) -> std::result::Result<(), tesla::SinkError> {
+        self.engine.off_can(Input::TeslafiApi, car, at_ms, values.clone());
+        Ok(())
+    }
+
     fn other_live(&self, car: CarId) -> bool {
         self.engine.smo_live(car) || self.engine.tesla_api_live(car)
     }
@@ -179,11 +188,16 @@ impl teslafi::Sink for TeslafiSink {
     }
 }
 
+/// Told when local TeslaMate's settings or status change (a connection refused, a password refused, a pin that does
+/// not match, the broker gone quiet, a catch-up failed, and each of those ending), with its status now: the web side
+/// writes the audit entry and the notice.
+pub type TeslamateLocalHook = std::sync::Arc<dyn Fn(&tmlocal::Status) + Send + Sync>;
+
 /// The engine as the `tmlocal` crate (the owner's own TeslaMate) sees it.
 #[derive(Clone)]
 pub struct TeslamateLocalSink {
     pub engine: Engine,
-    pub on_change: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    pub on_change: Option<TeslamateLocalHook>,
 }
 
 impl TeslamateLocalSink {
@@ -215,9 +229,26 @@ impl tmlocal::Sink for TeslamateLocalSink {
         self.engine.teslamate_local_catch_up(dump, cars).map_err(|e| tesla::SinkError(e.to_string()))
     }
 
-    fn changed(&self) {
+    /// TeslaMate's values no CAN message carries (lock, version, update, schedule, windows, route), and the energy
+    /// added by the charge under way and the estimated range, all tagged as local TeslaMate's. The rest of what it
+    /// maps into the `ApiMeta` (its version text, its name) is left out there: the version is in the values no CAN
+    /// message carries, and the name is the admin's match.
+    fn meta(&self, car: CarId, meta: &tesla::ApiMeta) {
+        self.engine.off_can(Input::TeslamateLocal, car, meta.at_ms, meta.off_can.clone());
+        if meta.charge_energy_added_kwh.is_some() || meta.est_range_km.is_some() {
+            let kept = tesla::ApiMeta {
+                at_ms: meta.at_ms,
+                charge_energy_added_kwh: meta.charge_energy_added_kwh,
+                est_range_km: meta.est_range_km,
+                ..tesla::ApiMeta::default()
+            };
+            self.engine.api_meta(Input::TeslamateLocal, car, kept);
+        }
+    }
+
+    fn changed(&self, status: &tmlocal::Status) {
         if let Some(h) = &self.on_change {
-            h();
+            h(status);
         }
     }
 }
@@ -247,12 +278,42 @@ impl Engine {
             .is_some_and(|t| now_ms().saturating_sub(t) <= SMO_LIVE_MS)
     }
 
-    /// The Tesla API's values beside its samples: kept in the background; returns at once.
-    pub fn api_meta(&self, car: CarId, meta: tesla::ApiMeta) {
-        if crate::query::fleet::is_sold(self, car) {
+    /// An API input's values beside its samples (`input`: the Tesla API, or local TeslaMate's energy added and
+    /// estimated range): kept in the background, apart per input, so each value names the input it came from;
+    /// returns at once.
+    pub fn api_meta(&self, input: Input, car: CarId, meta: tesla::ApiMeta) {
+        if input == Input::Smo || crate::query::fleet::is_sold(self, car) {
             return;
         }
-        self.send(Work::ApiMeta { car, meta: Box::new(meta) });
+        self.send(Work::ApiMeta { input, car, meta: Box::new(meta) });
+    }
+
+    /// TeslaFi's values no CAN message carries, from its poll at `at_ms`: kept in the background; returns at once.
+    pub fn off_can(&self, input: Input, car: CarId, at_ms: u64, values: model::OffCan) {
+        if values.is_empty() || crate::query::fleet::is_sold(self, car) {
+            return;
+        }
+        self.send(Work::OffCan { input, car, at_ms, values: Box::new(values) });
+    }
+
+    /// Keeps an input's values no CAN message carries (its newest reading wins) and tells the car's Now.
+    pub(crate) fn work_off_can(&self, input: Input, car: CarId, at_ms: u64, values: model::OffCan) -> Result<()> {
+        {
+            let l = self.car_lock(car);
+            let _held = lock(&l);
+            let db = &self.inner.db;
+            if db.car(car)?.is_none() || records::off_can_of(db, car, input)?.at_ms > at_ms {
+                return Ok(());
+            }
+            if let Some(v) = values.version.as_deref() {
+                records::note_input_version(db, car, input, v, at_ms)?;
+            }
+            records::put_off_can_of(db, car, input, &records::TeslafiOffCan { at_ms, values })?;
+        }
+        if let Ok(now) = crate::query::now::now_view(self, car) {
+            self.emit(Event::Now { car, now: Box::new(now) });
+        }
+        Ok(())
     }
 
     /// Whether SMO sends live data for the car (its newest log came in the last few minutes).
@@ -321,6 +382,7 @@ impl Engine {
             vin,
             profile_setting: None,
             time_zone: self.inner.default_zone(),
+            time_zone_typed: Some(false),
             efficiency_wh_km: None,
             created_ms: now_ms(),
             inputs: Inputs::from(input),
@@ -364,6 +426,8 @@ impl Engine {
             db.write_points(car, stream, x, y, &merge_points(old, &samples))?;
         }
         let mut meta = records::meta(db, car)?;
+        // (SMO is not an API input: its data never comes this way)
+        let Some(track) = meta.api_track(input) else { return Ok(()) };
         for sp in &spans {
             let mut d = records::day_of(sp.start_ms);
             while d <= records::day_of(sp.end_ms - 1) {
@@ -371,21 +435,16 @@ impl Engine {
                 let part = ApiSpan { start_ms: sp.start_ms.max(lo), end_ms: sp.end_ms.min(hi), ..*sp };
                 let laid = records::lay_api(&records::api_day(db, car, input, d)?, &part);
                 records::put_api_day(db, car, input, d, &laid)?;
-                meta.days_of(input).insert(d);
+                track.days.insert(d);
                 d += 1;
             }
         }
+        if let Some(l) = samples.last() {
+            *track.last_ms = (*track.last_ms).max(Some(l.t_ms));
+        }
+        *track.received_ms = Some(now_ms());
         meta.first_ms = Some(meta.first_ms.map_or(a, |f| f.min(a)));
         meta.newest_ms = Some(meta.newest_ms.map_or(b, |n| n.max(b)));
-        let (last, received) = match input {
-            Input::TeslafiApi => (&mut meta.teslafi_last_ms, &mut meta.teslafi_received_ms),
-            Input::TeslamateLocal => (&mut meta.tmlocal_last_ms, &mut meta.tmlocal_received_ms),
-            _ => (&mut meta.api_last_ms, &mut meta.api_received_ms),
-        };
-        if let Some(l) = samples.last() {
-            *last = (*last).max(Some(l.t_ms));
-        }
-        *received = Some(now_ms());
         records::put_meta(db, car, &meta)?;
         let mut dirty = records::api_dirty(db, car)?;
         dirty.push((a, b));
@@ -454,26 +513,26 @@ impl Engine {
     /// builds again from it.
     pub(crate) fn api_span(&self, car: CarId) -> Result<Option<(u64, u64)>> {
         let meta = records::meta(&self.inner.db, car)?;
-        let first =
-            meta.api_days.first().into_iter().chain(meta.teslafi_days.first()).chain(meta.tmlocal_days.first()).min();
-        let last =
-            meta.api_days.last().into_iter().chain(meta.teslafi_days.last()).chain(meta.tmlocal_days.last()).max();
+        let days = || Input::apis().filter_map(|i| meta.api_days_of(i));
+        let first = days().filter_map(std::collections::BTreeSet::first).min();
+        let last = days().filter_map(std::collections::BTreeSet::last).max();
         match (first, last) {
             (Some(&a), Some(&b)) => Ok(Some((u64::from(a) * records::DAY_MS, (u64::from(b) + 1) * records::DAY_MS))),
             _ => Ok(None),
         }
     }
 
-    /// Keeps the API's values beside its samples: a new software version is an update row, a car still called "New
-    /// car" takes the name it has in the Tesla app, and the rest is kept for the car's `config` and Now.
-    pub(crate) fn work_api_meta(&self, car: CarId, meta: tesla::ApiMeta) -> Result<()> {
+    /// Keeps an API input's values beside its samples: a new software version is an update row (naming the input), a
+    /// car still called "New car" takes the name it has in the Tesla app, and the rest is kept for the car's `config`
+    /// and Now.
+    pub(crate) fn work_api_meta(&self, input: Input, car: CarId, meta: tesla::ApiMeta) -> Result<()> {
         let l = self.car_lock(car);
         let _held = lock(&l);
         let db = &self.inner.db;
         if db.car(car)?.is_none() {
             return Ok(());
         }
-        let mut rec = records::api_meta(db, car)?;
+        let mut rec = records::api_meta(db, car, input)?;
         if meta.at_ms < rec.meta.at_ms {
             return Ok(());
         }
@@ -483,16 +542,17 @@ impl Engine {
                 Some(_) => {
                     // installed after the last time the old one was named, by now
                     let start = rec.version_seen_ms.map_or(meta.at_ms, |t| t.saturating_add(1000)).min(meta.at_ms);
-                    self.put_api_update(car, start, Some(meta.at_ms), &v)?;
+                    self.put_api_update(input, car, start, Some(meta.at_ms), &v)?;
                 }
                 None => {
                     // the first version the API names: the car's current one, unless the car already has updates
                     let any = db.list::<UpdateRow>(car, &db::Query::default().limit(1))?.items.into_iter().next();
                     if any.is_none() {
-                        self.put_api_update(car, meta.at_ms, Some(meta.at_ms), &v)?;
+                        self.put_api_update(input, car, meta.at_ms, Some(meta.at_ms), &v)?;
                     }
                 }
             }
+            records::note_input_version(db, car, input, &v, meta.at_ms)?;
             rec.version = Some(v);
             rec.version_seen_ms = Some(meta.at_ms);
         }
@@ -508,14 +568,21 @@ impl Engine {
             }
         }
         rec.meta = meta;
-        records::put_api_meta(db, car, &rec)?;
+        records::put_api_meta(db, car, input, &rec)?;
         if let Ok(now) = crate::query::now::now_view(self, car) {
             self.emit(Event::Now { car, now: Box::new(now) });
         }
         Ok(())
     }
 
-    fn put_api_update(&self, car: CarId, start_ms: u64, end_ms: Option<u64>, version: &str) -> Result<()> {
+    fn put_api_update(
+        &self,
+        input: Input,
+        car: CarId,
+        start_ms: u64,
+        end_ms: Option<u64>,
+        version: &str,
+    ) -> Result<()> {
         let db = &self.inner.db;
         let id = timeline::drive_id(car, start_ms);
         let (a, b) = (start_ms, start_ms + 1);
@@ -531,7 +598,7 @@ impl Engine {
                 end_ms,
                 version: version.to_string(),
                 source: Source::Live,
-                inputs: Inputs::TESLA_API,
+                inputs: Inputs::from(input),
             },
         });
         rows.sort_by_key(|u| (u.update.start_ms, u.id));
@@ -545,27 +612,22 @@ impl Engine {
         Ok(self.live_fused(car, from_ms, to_ms)?.samples)
     }
 
-    /// [`Self::live_samples`] (SMO's, the Tesla API's and TeslaFi's API's) and the seconds that are not SMO's alone ([`timeline::Fused::marks`]).
+    /// [`Self::live_samples`] (SMO's, the Tesla API's, TeslaFi's API's and the local TeslaMate's, in the car's
+    /// order) and the seconds that are not SMO's alone ([`timeline::Fused::marks`]).
     pub(crate) fn live_fused(&self, car: CarId, from_ms: u64, to_ms: u64) -> Result<LiveFused> {
         let db = &self.inner.db;
         let p = &self.inner.opts.fuse;
-        let smo = db.read_points::<Sample>(car, Stream::Smo, from_ms, to_ms)?;
-        let (m, lm) = (p.margin_ms(), p.lower_margin_ms());
-        let api =
-            db.read_points::<Sample>(car, Stream::TeslaApi, from_ms.saturating_sub(m), to_ms.saturating_add(m))?;
-        let fi =
-            db.read_points::<Sample>(car, Stream::TeslafiApi, from_ms.saturating_sub(lm), to_ms.saturating_add(lm))?;
-        let tm = db.read_points::<Sample>(
-            car,
-            Stream::TeslamateLocal,
-            from_ms.saturating_sub(lm),
-            to_ms.saturating_add(lm),
-        )?;
-        let mut f = timeline::fuse_all(
-            &smo,
-            &[(&api, Inputs::TESLA_API), (&fi, Inputs::TESLAFI_API), (&tm, Inputs::TESLAMATE_LOCAL)],
-            p,
-        );
+        let order = self.source_order(car);
+        // each input's samples, read as far around the window as its place in the car's order fills seconds
+        let mut by = Vec::new();
+        for (rank, input) in order.iter().enumerate() {
+            let m = p.read_margin_ms(input, rank);
+            let pts =
+                db.read_points::<Sample>(car, Stream::from(input), from_ms.saturating_sub(m), to_ms.saturating_add(m))?;
+            by.push((pts, input));
+        }
+        let by: Vec<(&[Sample], Input)> = by.iter().map(|(v, i)| (v.as_slice(), *i)).collect();
+        let mut f = timeline::fuse_ordered(&by, &order, p);
         f.samples.retain(|s| s.t_ms >= from_ms && s.t_ms < to_ms);
         f.marks.retain(|(t, _)| *t >= from_ms && *t < to_ms);
         Ok(LiveFused { samples: f.samples, marks: f.marks })

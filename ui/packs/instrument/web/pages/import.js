@@ -15,7 +15,7 @@
 // as the job is ready, done or failed.
 
 import { h, replace, setVars } from '../shared/dom.js';
-import { buildUrl } from '../shared/state.js';
+import { buildUrl, preferredCar } from '../shared/state.js';
 import { toIsoZoned } from '../shared/time.js';
 import { format } from '../shared/units.js';
 import { icon } from '../core/icons.js';
@@ -962,7 +962,7 @@ export async function mount(ctx) {
   const timelineSlot = h('span', { class: 'im-tl' });
   function paintTimelineLink() {
     const done = S.jobs.filter((j) => j.status === 'done').flatMap((j) => counted(j.report?.cars).map((c) => c.match));
-    const car = S.cars.find((c) => c.id === S.overlaps[0]?.car) || S.cars.find((c) => done.includes(c.id)) || S.cars[0];
+    const car = S.cars.find((c) => c.id === S.overlaps[0]?.car) || S.cars.find((c) => done.includes(c.id)) || S.cars.find((c) => c.id === preferredCar(S.cars));
     replace(timelineSlot, car
       ? h('a', { class: 'link', href: buildUrl('timeline', { car: car.id }) }, S.cars.length > 1 ? `Timeline of ${car.name}` : 'Timeline')
       : 'Timeline of each car');
@@ -978,9 +978,9 @@ export async function mount(ctx) {
       { key: 'len', label: 'Length', num: true, sort: true, value: (o) => o.end_ms - o.start_ms, render: (o) => dur(o.end_ms - o.start_ms), csv: { label: 'Length (s)', value: (o) => Math.round((o.end_ms - o.start_ms) / 1000) } },
       { key: 'kind', label: 'Between', sort: true, value: (o) => kindOf(o), render: (o) => h('span', { class: 'cell-text' }, h('span', null, kindOf(o) === 'imports' ? 'Two imports' : 'Live and imported'), h('span', { class: 'sub' }, kindOf(o) === 'imports' ? 'TeslaMate and TeslaFi' : `${liveName(o)} and ${importName(o)}`)),
         csv: { label: 'Between', value: (o) => (kindOf(o) === 'imports' ? 'imports' : 'live') } },
-      { key: 'counts', label: 'Each side has', render: (o) => h('span', { class: 'im-sides' }, sidesOf(o).map(([v, l, n]) => h('span', { class: ['im-side', isShown(o, v) && 'is-shown'] }, h('b', null, l.replace(/ \(.*\)$/, '')), ` ${side(n)}`))),
+      { key: 'counts', label: 'Each side has', cls: 'im-wide', render: (o) => h('span', { class: 'im-sides' }, sidesOf(o).map(([v, l, n]) => h('span', { class: ['im-side', isShown(o, v) && 'is-shown'] }, h('b', null, l.replace(/ \(.*\)$/, '')), ` ${side(n)}`))),
         csv: { label: 'Each side has (drives, charges)', value: (o) => sidesOf(o).map(([, l, n]) => `${l}: ${side(n)}`).join('; ') } },
-      { key: 'shown', label: 'Shown', sort: true, value: (o) => shownOf(o), csv: { label: 'Shown (live, import, import:teslamate or import:teslafi)', value: (o) => shownOf(o) }, render: (o) => h('div', { class: 'im-shown' },
+      { key: 'shown', label: 'Shown', cls: 'im-wide', sort: true, value: (o) => shownOf(o), csv: { label: 'Shown (live, import, import:teslamate or import:teslafi)', value: (o) => shownOf(o) }, render: (o) => h('div', { class: 'im-shown' },
         ctx.admin ? h('div', { class: 'seg im-seg', role: 'group', 'aria-label': `Which history is shown for ${carName(o.car)} from ${dateTime(o.start_ms, zoneOf(o))}` },
           sidesOf(o).map(([v, l]) => h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': String(isShown(o, v)), onclick: () => flip(o, v) }, l)))
           : h('b', null, shownWord(o)),

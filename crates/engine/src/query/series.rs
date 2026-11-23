@@ -80,10 +80,10 @@ fn sample_field(f: &str) -> &str {
         "outside_c" => "outside_temp_c",
         "cabin_c" => "inside_temp_c",
         "battery_c" => "battery_temp_c",
-        "tyre_fl_kpa" => "tpms_bar_0",
-        "tyre_fr_kpa" => "tpms_bar_1",
-        "tyre_rl_kpa" => "tpms_bar_2",
-        "tyre_rr_kpa" => "tpms_bar_3",
+        "tyre_fl_kpa" => "tpms_bar",
+        "tyre_fr_kpa" => "tpms_bar",
+        "tyre_rl_kpa" => "tpms_bar",
+        "tyre_rr_kpa" => "tpms_bar",
         "accuracy_m" => "gps_accuracy_m",
         "lv_v" => "lv_voltage_v",
         other => other,
@@ -101,8 +101,11 @@ pub const SERIES_COVER_MS: u64 = 90_000;
 struct Tag {
     /// The live inputs of the point (none for an import's own second).
     live: model::Inputs,
-    imported: [u64; 2],
+    imported: [u64; SITES],
 }
+
+/// One mask per import site ([`model::ImportSite::index`]).
+const SITES: usize = model::ImportSite::ALL.len();
 
 impl Tag {
     fn of_stream(s: model::Stream) -> Tag {
@@ -113,7 +116,7 @@ impl Tag {
             model::Origin::TeslamateLocal => Tag { live: model::Inputs::TESLAMATE_LOCAL, ..Tag::default() },
             model::Origin::Import(site) => {
                 let mut t = Tag::default();
-                t.imported[site_index(site)] = u64::MAX;
+                t.imported[site.index()] = u64::MAX;
                 t
             }
         }
@@ -121,9 +124,9 @@ impl Tag {
 
     /// The origins of a value with this mask bit.
     fn origins(&self, bit: u64, out: &mut std::collections::BTreeSet<model::Origin>) {
-        let own: Vec<usize> = (0..2).filter(|&i| self.imported[i] == u64::MAX).collect();
+        let own: Vec<usize> = (0..SITES).filter(|&i| self.imported[i] == u64::MAX).collect();
         let by: Vec<usize> =
-            if own.is_empty() { (0..2).filter(|&i| self.imported[i] & bit != 0).collect() } else { own };
+            if own.is_empty() { (0..SITES).filter(|&i| self.imported[i] & bit != 0).collect() } else { own };
         if by.is_empty() {
             out.extend(self.live.iter().map(|i| model::Stream::from(i).origin()));
         }
@@ -147,10 +150,6 @@ impl Tag {
             }
         }
     }
-}
-
-fn site_index(site: model::ImportSite) -> usize {
-    model::ImportSite::ALL.iter().position(|s| *s == site).unwrap_or(0)
 }
 
 /// Fields whose plain column is the bucket's last value, not its mean (`climate` is text: only its last value means
@@ -387,7 +386,7 @@ pub fn series(e: &Engine, car: CarId, q: &SeriesQuery, now_ms: u64) -> QResult<S
                 for p in g.samples.iter() {
                     let mut tag = Tag::default();
                     for (_, site, mask) in g.at(p.t_ms) {
-                        tag.imported[site_index(*site)] |= mask;
+                        tag.imported[site.index()] |= mask;
                     }
                     if tag.imported.iter().all(|m| *m != u64::MAX) {
                         tag.live = tag_of(p.t_ms);

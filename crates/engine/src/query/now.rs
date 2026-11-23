@@ -38,6 +38,12 @@ fn v<T>(x: Option<T>, at: At) -> Option<V<T>> {
     x.map(|value| V { value, at_ms: at.0, origin: at.1 })
 }
 
+/// When an API input's values beside its samples were read, and that input: the source each value taken from them
+/// names (local TeslaMate's are never the Tesla API's).
+pub(crate) fn api_at(meta: &tesla::ApiMeta, input: model::Input) -> At {
+    At(meta.at_ms, model::Origin::from(input))
+}
+
 /// A live input with when its newest value was recorded.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct InputNow {
@@ -134,6 +140,9 @@ pub struct NowView {
     pub ideal_range_km: Option<V<f64>>,
     pub est_range_km: Option<V<f64>>,
     pub est_basis: Option<&'static str>,
+    /// The car's own range estimate (`est_battery_range`) as an API input reads it: the Tesla API's while its
+    /// reading is current, else local TeslaMate's; `sources` names the one.
+    pub car_est_range_km: Option<V<f64>>,
     pub energy_remaining_kwh: Option<V<f64>>,
     pub odometer_km: Option<V<f64>>,
     pub outside_c: Option<V<f64>>,
@@ -143,14 +152,168 @@ pub struct NowView {
     pub setpoint_right_c: Option<V<f64>>,
     pub lv_v: Option<V<f64>>,
     pub location: Option<Location>,
+    /// Front left, front right, rear left, rear right when `tyres_slots_mapped`; else 0x219's slots in the car's
+    /// own order.
     pub tyres_kpa: [Option<V<f64>>; 4],
     pub tyres_slots_mapped: bool,
-    pub tyre_recommended_kpa: Option<V<f64>>,
+    /// The recommended (cold) pressure, front axle, and the rear's: typed, else the car's (CAN), else the door
+    /// placard's for the car's wheel size (`tyre_recommended_source`).
+    pub tyre_recommended_kpa: Option<Recommended>,
+    pub tyre_recommended_rear_kpa: Option<Recommended>,
+    /// `owner`, `can` or `placard`.
+    pub tyre_recommended_source: Option<&'static str>,
+    /// The wheel size the placard's pressures are for (placard only).
+    pub tyre_recommended_wheel_in: Option<u8>,
+    /// A tyre more than 10 % under its recommended pressure (each against the lower axle's while the slots are not
+    /// mapped).
+    pub tyre_low: Option<V<bool>>,
     pub flags: serde_json::Value,
     pub charge: ChargeNow,
     pub drive: Option<DriveNow>,
     pub awake_reasons: Vec<&'static str>,
     pub software: Software,
+    /// The values no CAN message carries, from the API inputs ([`off_can_now`]).
+    pub off_can: OffCanView,
+}
+
+/// A value from an API input: `{ value, at_ms, sources: [{ kind, label }], stale }`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SV<T> {
+    pub value: T,
+    pub at_ms: u64,
+    pub sources: [super::SourceRef; 1],
+    /// Older than its age limit ([`model::off_can::max_age_ms`]).
+    pub stale: bool,
+}
+
+fn sv<T>(x: &Option<model::Sourced<T>>) -> Option<SV<T>>
+where
+    T: Clone,
+{
+    x.as_ref().map(|s| SV {
+        value: s.value.clone(),
+        at_ms: s.at_ms,
+        sources: [model::Origin::from(s.input).into()],
+        stale: s.stale,
+    })
+}
+
+fn svf(x: &Option<model::Sourced<f64>>, d: i32) -> Option<SV<f64>> {
+    sv(x).and_then(|s| Some(SV { value: r(Some(s.value), d)?, ..s }))
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct WindowsView {
+    pub driver_front: Option<SV<bool>>,
+    pub passenger_front: Option<SV<bool>>,
+    pub driver_rear: Option<SV<bool>>,
+    pub passenger_rear: Option<SV<bool>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RouteView {
+    pub destination: Option<SV<String>>,
+    pub km: Option<SV<f64>>,
+    pub minutes: Option<SV<f64>>,
+    pub traffic_min: Option<SV<f64>>,
+}
+
+/// [`NowView::off_can`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct OffCanView {
+    pub version: Option<SV<String>>,
+    pub update_available: Option<SV<bool>>,
+    pub update_version: Option<SV<String>>,
+    pub update_download_pct: Option<SV<f64>>,
+    pub update_installing: Option<SV<bool>>,
+    pub locked: Option<SV<bool>>,
+    pub windows_open: Option<SV<bool>>,
+    pub windows: WindowsView,
+    pub sunroof_state: Option<SV<String>>,
+    pub sunroof_pct: Option<SV<f64>>,
+    pub scheduled_charge_start_ms: Option<SV<u64>>,
+    pub scheduled_departure_ms: Option<SV<u64>>,
+    pub route: RouteView,
+}
+
+impl From<&model::OffCanNow> for OffCanView {
+    fn from(o: &model::OffCanNow) -> OffCanView {
+        let [fd, fp, rd, rp] = &o.windows;
+        OffCanView {
+            version: sv(&o.version),
+            update_available: sv(&o.update_available),
+            update_version: sv(&o.update_version),
+            update_download_pct: svf(&o.update_download_pct, 0),
+            update_installing: sv(&o.update_installing),
+            locked: sv(&o.locked),
+            windows_open: sv(&o.windows_open),
+            windows: WindowsView {
+                driver_front: sv(fd),
+                passenger_front: sv(fp),
+                driver_rear: sv(rd),
+                passenger_rear: sv(rp),
+            },
+            sunroof_state: sv(&o.sunroof_state),
+            sunroof_pct: svf(&o.sunroof_pct, 0),
+            scheduled_charge_start_ms: sv(&o.scheduled_charge_start_ms),
+            scheduled_departure_ms: sv(&o.scheduled_departure_ms),
+            route: RouteView {
+                destination: sv(&o.route_destination),
+                km: svf(&o.route_km, 1),
+                minutes: svf(&o.route_min, 0),
+                traffic_min: svf(&o.route_traffic_min, 0),
+            },
+        }
+    }
+}
+
+/// A recommended tyre pressure: `{ value, at_ms, sources }`, as a value read from the car when the car sent it;
+/// typed or the door placard's: `at_ms` null and `sources` empty.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Recommended {
+    pub value: f64,
+    pub at_ms: Option<u64>,
+    pub sources: Vec<super::SourceRef>,
+}
+
+/// A Now's tyres judged against the car's recommended pressures (kPa).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TyresJudged {
+    pub kpa: [Option<f64>; 4],
+    /// The pressures are in wheel order (front left, front right, rear left, rear right).
+    pub mapped: bool,
+    pub recommended: super::fleet::TyreRecommended,
+    /// The pressure each tyre is judged against: its axle's when mapped, else the lower of the two.
+    pub against: [Option<f64>; 4],
+    pub lows: [Option<bool>; 4],
+    pub low: Option<bool>,
+}
+
+impl TyresJudged {
+    /// The low tyre furthest under its pressure.
+    pub fn lowest_low(&self) -> Option<usize> {
+        let share = |i: usize| self.kpa[i].zip(self.against[i]).map_or(f64::INFINITY, |(p, r)| p / r);
+        (0..4).filter(|&i| self.lows[i] == Some(true)).min_by(|&a, &b| share(a).total_cmp(&share(b)))
+    }
+}
+
+/// The tyres of a Now's sample judged against the car's recommended pressures (typed, else the car's, else the door
+/// placard's); `None` when none is known. The pressures are taken as in wheel order only when the input said so
+/// (`extra.tires_mapped`): a Now kept before it was noted is not mapped.
+pub(crate) fn tyres_judged(e: &Engine, car: CarId, s: &Sample) -> QResult<Option<TyresJudged>> {
+    let can = [s.extra.tire_recommended_front_bar, s.extra.tire_recommended_rear_bar].map(kpa);
+    let Some(rec) = super::fleet::tyre_recommended(e, car, can)? else { return Ok(None) };
+    let kpa = s.tpms_bar.map(kpa);
+    let mapped = s.extra.tires_mapped == Some(true);
+    let recommended = [Some(rec.front_kpa), Some(rec.rear_kpa)];
+    Ok(Some(TyresJudged {
+        kpa,
+        mapped,
+        recommended: rec,
+        against: model::tyre_against(recommended, mapped),
+        lows: model::tyre_lows(&kpa, recommended, mapped),
+        low: model::tyre_low(&kpa, recommended, mapped),
+    }))
 }
 
 /// The state word of a Now: driving, charging, parked, asleep or unknown.
@@ -250,10 +413,104 @@ pub fn estimated_range_km(e: &Engine, car: CarId, s: &Sample, at: u64) -> QResul
 /// as MQTT publishes it. `None` before the car sent anything.
 pub fn published_now(e: &Engine, car: CarId) -> QResult<Option<Now>> {
     let Some(mut n) = e.db().entry(car)?.and_then(|x| x.summary.now) else { return Ok(None) };
+    n.sample.odometer_km = possible_odometer(n.sample.odometer_km);
     // (a figure that can't be worked out now is left out, not the whole Now)
     n.range_estimated_km = estimated_range_km(e, car, &n.sample, n.at_ms).ok().flatten();
     n.healthy = super::system::healthy(e, car).ok();
+    n.since_ms = state_now(e, car, Some(&n)).ok().and_then(|s| s.since_ms);
+    if let Ok(Some(c)) = e.db().car(car) {
+        n.trim = super::fleet::trim_of(e, &c).ok().flatten();
+    }
+    n.off_can = Box::new(off_can_now(e, car, now_ms())?);
+    // the tyre warning as the Now gives it: against the typed, the car's or the placard's pressures
+    if let Some(t) = tyres_judged(e, car, &n.sample).ok().flatten()
+        && t.low.is_some()
+    {
+        n.sample.extra.tire_low = t.low;
+    }
     Ok(Some(n))
+}
+
+/// The car's values no CAN message carries at `now_ms`: the Tesla API's newest reading's, TeslaFi's newest poll's and
+/// the local TeslaMate's, fused ([`model::off_can::fuse`]: in the car's `source_order`, by default the Tesla API's
+/// first, each value stale after its age limit).
+pub fn off_can_now(e: &Engine, car: CarId, now_ms: u64) -> QResult<model::OffCanNow> {
+    use model::off_can::{Reading, fuse};
+    let db = e.db();
+    let api = records::api_meta(db, car, model::Input::TeslaApi)?.meta;
+    let fi = records::off_can_of(db, car, model::Input::TeslafiApi)?;
+    let tm = records::off_can_of(db, car, model::Input::TeslamateLocal)?;
+    let mut readings = Vec::with_capacity(3);
+    if api.at_ms > 0 && !api.off_can.is_empty() {
+        readings.push(Reading { input: model::Input::TeslaApi, at_ms: api.at_ms, values: &api.off_can });
+    }
+    for (input, r) in [(model::Input::TeslafiApi, &fi), (model::Input::TeslamateLocal, &tm)] {
+        if r.at_ms > 0 && !r.values.is_empty() {
+            readings.push(Reading { input, at_ms: r.at_ms, values: &r.values });
+        }
+    }
+    Ok(fuse(now_ms, &readings, &e.source_order(car)))
+}
+
+/// The car's state now and since when it is in it ([`now_view`]'s `state` and `since_ms`, MQTT's `since`).
+pub(crate) struct StateNow {
+    pub state: &'static str,
+    /// The car's newest state spans, newest first.
+    pub spans: Vec<model::StateSpan>,
+    /// The live drive under way (while driving).
+    pub drive: Option<Drive>,
+    /// The live charge under way (while charging).
+    pub charge: Option<model::Charge>,
+    /// The drive's or charge's start, else the start of the newest span of the state the car is in.
+    pub since_ms: Option<u64>,
+}
+
+/// [`StateNow`] of the car whose stored Now is `n`.
+pub(crate) fn state_now(e: &Engine, car: CarId, n: Option<&Now>) -> QResult<StateNow> {
+    let db = e.db();
+    let at = n.map_or(0, |n| n.at_ms);
+    // the car's newest state spans, joined across the rows they are stored in (the newest row is often a stub at
+    // the end of the newest log)
+    let spans = super::timeline::newest_spans(e, car, 8)?;
+    let state = state_word_with(n, &spans);
+    let drive = if n.is_some_and(|n| n.driving) {
+        db.list::<Drive>(car, &db::Query { source: Some(Source::Live), ..db::Query::default().limit(1) })?
+            .items
+            .into_iter()
+            .next()
+            .filter(|d| d.end_ms + 120_000 >= at)
+    } else {
+        None
+    };
+    let charge = if n.is_some_and(|n| n.sample.charging == Some(true)) {
+        db.list::<model::Charge>(car, &db::Query { source: Some(Source::Live), ..db::Query::default().limit(1) })?
+            .items
+            .into_iter()
+            .next()
+            .filter(|ch| ch.end_ms + 300_000 >= at)
+    } else {
+        None
+    };
+    let want = match state {
+        "asleep" => Some(State::Asleep),
+        "unknown" => Some(State::Unknown),
+        "parked" => Some(State::Online),
+        _ => None,
+    };
+    let since_ms = match state {
+        "driving" => drive.as_ref().map(|d| d.start_ms),
+        "charging" => charge.as_ref().map(|ch| ch.start_ms),
+        _ => None,
+    }
+    .or_else(|| want.and_then(|w| spans.iter().find(|s| s.state == w)).map(|s| s.start_ms))
+    .or_else(|| spans.first().map(|s| s.start_ms));
+    Ok(StateNow { state, spans, drive, charge, since_ms })
+}
+
+/// No car reads past 2,000,000 km: a Now kept before the CAN odometer's "not available" (4,294,967 km) was read as
+/// such shows no odometer rather than that.
+fn possible_odometer(km: Option<f64>) -> Option<f64> {
+    km.filter(|k| (0.0..=2.0e6).contains(k))
 }
 
 /// The car's Now.
@@ -263,10 +520,10 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     let n = db.entry(car)?.and_then(|x| x.summary.now);
     let meta = records::meta(db, car)?;
     // when the newest data arrived: SMO's newest log, or the Tesla API's newest reading
-    let received_ms =
-        meta.last_arrived_ms.max(meta.api_received_ms).max(meta.teslafi_received_ms).max(meta.tmlocal_received_ms);
+    let received_ms = meta.received_ms();
     let now = now_ms();
-    let s: Sample = n.as_ref().map(|n| n.sample.clone()).unwrap_or_default();
+    let mut s: Sample = n.as_ref().map(|n| n.sample.clone()).unwrap_or_default();
+    s.odometer_km = possible_odometer(s.odometer_km);
     let at = n.as_ref().map_or(0, |n| n.at_ms);
     // each value at the time it was recorded (a value kept from an older log keeps its own time)
     let times = records::now_at(db, car)?;
@@ -274,15 +531,24 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
     let origin = |f: &str| from.get(f).map_or(model::Origin::Smo, |i| model::Origin::from(*i));
     let t = |f: &str| At(times.get(f).copied().unwrap_or(at), origin(f));
     let tm = |f: &str| t(f).0;
-    // the Tesla API's newest values beside its samples (charge limit, flags), while they are the car's newest
-    let api = records::api_meta(db, car)?;
-    let api_at = At(api.meta.at_ms, model::Origin::TeslaApi);
-    let api_fresh = api.meta.at_ms > 0 && api.meta.at_ms + STALE_MS >= at;
-    let m = api_fresh.then_some(&api.meta);
-    // the car's newest state spans, joined across the rows they are stored in (the newest row is often a stub at
-    // the end of the newest log)
-    let spans = super::timeline::newest_spans(e, car, 8)?;
-    let state = state_word_with(n.as_ref(), &spans);
+    // each API input's newest values beside its samples, while they are the car's newest, in the order inputs win
+    let fresh = |m: &tesla::ApiMeta| m.at_ms > 0 && m.at_ms + STALE_MS >= at;
+    let mut beside: Vec<(At, tesla::ApiMeta)> = Vec::new();
+    for input in model::Input::apis() {
+        let meta = records::api_meta(db, car, input)?.meta;
+        if fresh(&meta) {
+            beside.push((api_at(&meta, input), meta));
+        }
+    }
+    // the Tesla API's alone give the charge limit, the flags and the rest
+    let api = records::api_meta(db, car, model::Input::TeslaApi)?;
+    let api_at = api_at(&api.meta, model::Input::TeslaApi);
+    let m = fresh(&api.meta).then_some(&api.meta);
+    // a value more than one input gives: the first input's with one (the Tesla API's, then local TeslaMate's)
+    let first = |get: &dyn Fn(&tesla::ApiMeta) -> Option<f64>, d: i32| {
+        beside.iter().find_map(|(at, meta)| vf(get(meta), d, *at))
+    };
+    let StateNow { state, spans, drive, charge: current_charge, since_ms } = state_now(e, car, n.as_ref())?;
     let places = e.places();
     let location = match (s.lat, s.lon) {
         (Some(lat), Some(lon)) => Some(Location {
@@ -298,47 +564,14 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         _ => None,
     };
     let driving = n.as_ref().is_some_and(|n| n.driving);
-    let drive = if driving {
-        db.list::<Drive>(car, &db::Query { source: Some(Source::Live), ..db::Query::default().limit(1) })?
-            .items
-            .into_iter()
-            .next()
-            .filter(|d| d.end_ms + 120_000 >= at)
-            .map(|d| DriveNow {
-                drive_id: d.id.to_string(),
-                start_ms: d.start_ms,
-                distance_km: r(s.odometer_km.zip(d.start_odometer_km).map(|(a, b)| a - b).or(d.distance_km), 3),
-                energy_kwh: r(d.energy_used_kwh, 3),
-            })
-    } else {
-        None
-    };
+    let drive = drive.map(|d| DriveNow {
+        drive_id: d.id.to_string(),
+        start_ms: d.start_ms,
+        distance_km: r(s.odometer_km.zip(d.start_odometer_km).map(|(a, b)| a - b).or(d.distance_km), 3),
+        energy_kwh: r(d.energy_used_kwh, 3),
+    });
     let charging = s.charging == Some(true);
-    let current_charge = if charging {
-        db.list::<model::Charge>(car, &db::Query { source: Some(Source::Live), ..db::Query::default().limit(1) })?
-            .items
-            .into_iter()
-            .next()
-            .filter(|ch| ch.end_ms + 300_000 >= at)
-    } else {
-        None
-    };
-    let charge_start = current_charge.as_ref().map(|ch| ch.start_ms);
     let charge_id = current_charge.map(|ch| ch.id.to_string());
-    // since when: the drive's or charge's start, else the newest span of the state the car is in
-    let want = match state {
-        "asleep" => Some(State::Asleep),
-        "unknown" => Some(State::Unknown),
-        "parked" => Some(State::Online),
-        _ => None,
-    };
-    let since_ms = match state {
-        "driving" => drive.as_ref().map(|d| d.start_ms),
-        "charging" => charge_start,
-        _ => None,
-    }
-    .or_else(|| want.and_then(|w| spans.iter().find(|s| s.state == w)).map(|s| s.start_ms))
-    .or_else(|| spans.first().map(|s| s.start_ms));
     // the buses: those of the newest awake span while the car is awake, else none
     let awake_now = matches!(state, "driving" | "charging" | "parked");
     let online = spans.iter().find(|s| s.state == State::Online);
@@ -369,7 +602,7 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
             s.extra.charge_limit_source.as_deref().and_then(limit_source_word),
             t("extra.charge_limit_source"),
         ),
-        added_kwh: m.filter(|_| charging).and_then(|m| vf(m.charge_energy_added_kwh, 2, api_at)),
+        added_kwh: if charging { first(&|m| m.charge_energy_added_kwh, 2) } else { None },
         limit_pct: vf(s.extra.charge_limit_pct, 0, t("extra.charge_limit_pct"))
             .or_else(|| m.and_then(|m| vf(m.charge_limit_soc, 0, api_at))),
         to_full_kwh: None,
@@ -383,9 +616,27 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         reasons.push("charging");
     }
     let est_range = estimated_range_km(e, car, &s, at)?;
+    let tyres = tyres_judged(e, car, &s)?;
+    let recommended = |kpa: f64, field: &str| {
+        let src = tyres.as_ref().map(|t| t.recommended.source);
+        match src {
+            Some(super::fleet::TyreSource::Can) => {
+                let at = t(field);
+                Recommended { value: kpa, at_ms: Some(at.0), sources: vec![at.1.into()] }
+            }
+            _ => Recommended { value: kpa, at_ms: None, sources: Vec::new() },
+        }
+    };
     // the software the car runs: the newest update's version
     let update =
         db.list::<db::UpdateRow>(car, &db::Query::default().limit(1))?.items.into_iter().next().map(|u| u.update);
+    let off_can = off_can_now(e, car, now)?;
+    // no update row names a version, or an API input read the version after the newest update started: the version
+    // the input reads
+    let api_version = off_can
+        .version
+        .as_ref()
+        .filter(|v| update.as_ref().is_none_or(|u| u.version.is_empty() || v.at_ms >= u.start_ms));
     Ok(NowView {
         car: CarRef(car),
         time_zone: c.time_zone.clone(),
@@ -408,15 +659,14 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
             if let Some(t) = smo_last.filter(|_| n.is_some()) {
                 v.push(InputNow { input: model::Origin::Smo.into(), last_ms: Some(t) });
             }
-            if let Some(t) = meta.api_last_ms {
-                v.push(InputNow { input: model::Origin::TeslaApi.into(), last_ms: Some(t) });
+            for i in model::Input::apis() {
+                if let Some(t) = meta.api_times(i).0 {
+                    v.push(InputNow { input: model::Origin::from(i).into(), last_ms: Some(t) });
+                }
             }
-            if let Some(t) = meta.teslafi_last_ms {
-                v.push(InputNow { input: model::Origin::TeslafiApi.into(), last_ms: Some(t) });
-            }
-            if let Some(t) = meta.tmlocal_last_ms {
-                v.push(InputNow { input: model::Origin::TeslamateLocal.into(), last_ms: Some(t) });
-            }
+            // in the order the car's inputs win in
+            let order = e.source_order(car);
+            v.sort_by_key(|x| model::Input::from_word(x.input.kind).map_or(usize::MAX, |i| order.rank(i)));
             v
         },
         buses,
@@ -432,6 +682,7 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         ideal_range_km: vf(s.ideal_range_km, 1, t("ideal_range_km")),
         est_range_km: vf(est_range, 1, t("energy_remaining_kwh")),
         est_basis: est_range.map(|_| "wh_per_km_30d"),
+        car_est_range_km: first(&|m| m.est_range_km, 1),
         energy_remaining_kwh: vf(s.energy_remaining_kwh, 2, t("energy_remaining_kwh")),
         odometer_km: vf(s.odometer_km, 3, t("odometer_km")),
         outside_c: vf(s.outside_temp_c, 1, t("outside_temp_c")),
@@ -441,9 +692,17 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         setpoint_right_c: None,
         lv_v: vf(s.lv_voltage_v, 2, t("lv_voltage_v")),
         location,
-        tyres_kpa: [0, 1, 2, 3].map(|i| v(kpa(s.tpms_bar[i]), t(&format!("tpms_bar{i}")))),
-        tyres_slots_mapped: false,
-        tyre_recommended_kpa: None,
+        tyres_kpa: [0, 1, 2, 3].map(|i| v(kpa(s.tpms_bar[i]), t("tpms_bar"))),
+        tyres_slots_mapped: s.extra.tires_mapped == Some(true),
+        tyre_recommended_kpa: tyres
+            .as_ref()
+            .map(|x| recommended(x.recommended.front_kpa, "extra.tire_recommended_front_bar")),
+        tyre_recommended_rear_kpa: tyres
+            .as_ref()
+            .map(|x| recommended(x.recommended.rear_kpa, "extra.tire_recommended_rear_bar")),
+        tyre_recommended_source: tyres.as_ref().map(|x| x.recommended.source.word()),
+        tyre_recommended_wheel_in: tyres.as_ref().and_then(|x| x.recommended.wheel_in),
+        tyre_low: v(tyres.as_ref().and_then(|x| x.low), t("tpms_bar")),
         flags: {
             // the car's own word (CAN) first, the Tesla API's while its reading is current
             let x = &s.extra;
@@ -480,20 +739,32 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
         charge,
         drive,
         awake_reasons: reasons,
-        software: Software {
-            version: update.as_ref().map(|u| u.version.clone()).filter(|v| !v.is_empty()),
-            version_source: update.as_ref().and_then(|u| {
-                if let Some(site) = u.source.site() {
-                    Some(site.word())
-                } else if u.inputs.contains(model::Input::TeslaApi) {
-                    Some("tesla_api")
-                } else {
-                    None
-                }
-            }),
-            version_since_ms: update.as_ref().map(|u| u.end_ms.unwrap_or(u.start_ms)),
-            changed_since_ms: None,
+        software: match api_version {
+            Some(v) => Software {
+                version: Some(v.value.clone()),
+                version_source: Some(model::Origin::from(v.input).kind()),
+                version_since_ms: update
+                    .as_ref()
+                    .filter(|u| u.version.is_empty() || u.version == v.value)
+                    .map(|u| u.end_ms.unwrap_or(u.start_ms)),
+                changed_since_ms: None,
+            },
+            None => Software {
+                version: update.as_ref().map(|u| u.version.clone()).filter(|v| !v.is_empty()),
+                version_source: update.as_ref().and_then(|u| {
+                    if let Some(site) = u.source.site() {
+                        Some(site.word())
+                    } else if u.inputs.contains(model::Input::TeslaApi) {
+                        Some("tesla_api")
+                    } else {
+                        None
+                    }
+                }),
+                version_since_ms: update.as_ref().map(|u| u.end_ms.unwrap_or(u.start_ms)),
+                changed_since_ms: None,
+            },
         },
+        off_can: OffCanView::from(&off_can),
     })
 }
 
@@ -513,6 +784,9 @@ mod tests {
             place: None,
             range_estimated_km: None,
             healthy: None,
+            since_ms: None,
+            trim: None,
+            off_can: Box::default(),
         }
     }
 

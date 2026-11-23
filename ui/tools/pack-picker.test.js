@@ -1,5 +1,5 @@
 // The "UI pack" choice of Settings: Display and units in every built-in pack, in Chromium on the dev API server:
-//   - it offers every pack the server lists (GET /api/v1/ui-packs: five built-in ones), the one in use chosen;
+//   - it offers every pack the server lists (GET /api/v1/ui-packs: six built-in ones), the one in use chosen;
 //   - choosing Pebble saves it, "Switch now" reloads, and the reloaded page is the Pebble pack.
 // In the Pebble pack itself it first chooses Instrument, then Pebble again from there.
 // Run: node --test ui/tools/pack-picker.test.js. Skipped when Playwright is not installed.
@@ -14,7 +14,7 @@ const { spawn } = require('child_process');
 
 const UI_DIR = path.dirname(__dirname);
 const REPO_DIR = path.dirname(UI_DIR);
-const PACKS = ['instrument', 'logbook', 'horizon', 'console', 'pebble'];
+const PACKS = ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'manager'];
 const SHOTS = process.env.PACK_PICKER_SHOTS || null;
 let playwright = null;
 try { playwright = require('playwright'); } catch { /* not installed: skip */ }
@@ -89,7 +89,7 @@ for (const pack of PACKS) {
       await page.goto(`${server.origin}/settings/display`);
       await ready(page);
       const list = await choices(page, pack);
-      assert.equal(list.length, 5, `${pack} offers ${JSON.stringify(list)}`);
+      assert.equal(list.length, PACKS.length, `${pack} offers ${JSON.stringify(list)}`);
       const on = list.filter((c) => c.on);
       assert.equal(on.length, 1);
       if (pack === 'pebble') assert.match(on[0].v, /^Pebble/);
@@ -122,7 +122,7 @@ for (const pack of PACKS) {
       const about = await page.evaluate(() => fetch('/api/v1/about').then((r) => r.json()));
       assert.equal(about.ui_pack.name, 'Pebble');
       const again = await choices(page, 'pebble');
-      assert.equal(again.length, 5);
+      assert.equal(again.length, PACKS.length);
       assert.match(again.find((c) => c.on).v, /^Pebble/);
       assert.deepEqual(errors, []);
       await context.close();

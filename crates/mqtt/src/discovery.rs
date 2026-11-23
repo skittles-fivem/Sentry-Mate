@@ -158,6 +158,38 @@ const ENTITIES: &[Entity] = &[
     sensor(Field::EnergyAtDestination, "Energy at destination", "energy_storage", Unit::Energy),
     flag(Field::Navigating, "Navigating", "mdi:navigation"),
     binary(Field::Installing, "Software installing", "update"),
+    Entity { diagnostic: true, ..text(Field::Version, "Software version", "mdi:package-variant", &[]) },
+    binary(Field::UpdateAvailable, "Software update", "update"),
+    Entity { diagnostic: true, ..text(Field::UpdateVersion, "Update version", "mdi:package-up", &[]) },
+    number(Field::UpdateDownload, "Update downloaded", "mdi:download", Unit::Percent),
+    binary(Field::Locked, "Lock", "lock"),
+    binary(Field::WindowsOpen, "Windows", "window"),
+    binary(Field::WindowDriverFront, "Window driver front", "window"),
+    binary(Field::WindowPassengerFront, "Window passenger front", "window"),
+    binary(Field::WindowDriverRear, "Window driver rear", "window"),
+    binary(Field::WindowPassengerRear, "Window passenger rear", "window"),
+    text(Field::SunroofState, "Sunroof", "mdi:car-select", &[]),
+    number(Field::SunroofOpen, "Sunroof open", "mdi:car-select", Unit::Percent),
+    Entity {
+        device_class: Some("timestamp"),
+        state_class: None,
+        ..sensor(Field::ScheduledChargeStart, "Scheduled charge start", "timestamp", Unit::None)
+    },
+    Entity {
+        device_class: Some("timestamp"),
+        state_class: None,
+        ..sensor(Field::ScheduledDeparture, "Scheduled departure", "timestamp", Unit::None)
+    },
+    text(Field::RouteDestination, "Route destination", "mdi:map-marker-path", &[]),
+    sensor(Field::RouteDistance, "Route distance", "distance", Unit::Distance),
+    sensor(Field::RouteMinutes, "Route time left", "duration", Unit::Minutes),
+    sensor(Field::RouteTrafficDelay, "Route traffic delay", "duration", Unit::Minutes),
+    Entity {
+        device_class: Some("timestamp"),
+        state_class: None,
+        ..sensor(Field::Since, "State since", "timestamp", Unit::None)
+    },
+    Entity { diagnostic: true, ..text(Field::Trim, "Trim", "mdi:car-info", &[]) },
     Entity { diagnostic: true, ..flag(Field::Healthy, "Data healthy", "mdi:heart-pulse") },
     flag(Field::InPark, "In park", "mdi:alpha-p-box"),
     Entity {
@@ -237,8 +269,10 @@ pub fn configs(layout: &Layout, car: CarId, info: &crate::CarInfo) -> Vec<Messag
             o.insert("options".into(), json!(e.options));
         }
         if e.component == "binary_sensor" {
-            o.insert("payload_on".into(), "true".into());
-            o.insert("payload_off".into(), "false".into());
+            // Home Assistant's lock class is on when unlocked: the `locked` topic's true is its off
+            let (on, off) = if e.field == Field::Locked { ("false", "true") } else { ("true", "false") };
+            o.insert("payload_on".into(), on.into());
+            o.insert("payload_off".into(), off.into());
         }
         if e.diagnostic {
             o.insert("entity_category".into(), "diagnostic".into());

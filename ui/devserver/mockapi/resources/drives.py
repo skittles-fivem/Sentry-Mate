@@ -368,7 +368,8 @@ def put_purpose(req):
     with st.lock:
         st.purposes[d.id] = {"purpose": body["purpose"], "relation": body.get("relation"), "note": body.get("note"),
                              "at_ms": req.now}
-    st.record(req.account, "drive.purpose", f"drive:{d.id}", f"Set the purpose of a drive to {body['purpose']}.", car=req.car)
+    st.record(req.account, "drive-purpose-set", f"drive:{req.car}:{d.id}",
+              f"Set the purpose of a drive of {st.car_meta(req.car)['name']} to {body['purpose']}.", car=req.car)
     return get_drive(req)
 
 
@@ -377,7 +378,8 @@ def delete_purpose(req):
     st = req.store
     with st.lock:
         st.purposes.pop(d.id, None)
-    st.record(req.account, "drive.purpose", f"drive:{d.id}", "Removed the purpose of a drive.", car=req.car)
+    st.record(req.account, "drive-purpose-removed", f"drive:{req.car}:{d.id}",
+              f"Removed the purpose of a drive of {st.car_meta(req.car)['name']}.", car=req.car)
     return get_drive(req)
 
 
@@ -423,7 +425,7 @@ def create_rule(req):
            "purpose": body["purpose"]}
     with st.lock:
         st.rules.setdefault(req.car, []).append(row)
-    st.record(req.account, "purpose_rule.create", f"car:{req.car}", f"Added a purpose rule ({body['purpose']}).")
+    st.record(req.account, "purpose-rule-created", f"car:{req.car}", f"Added a purpose rule ({body['purpose']}).")
     return dict(row, _created=True)
 
 
@@ -442,7 +444,7 @@ def delete_rule(req):
         raise not_found("no_such_rule", "There is no such purpose rule.")
     with st.lock:
         st.rules[req.car] = [x for x in rows if x["id"] != rid]
-    st.record(req.account, "purpose_rule.delete", f"car:{req.car}", "Removed a purpose rule.")
+    st.record(req.account, "purpose-rule-removed", f"car:{req.car}", "Removed a purpose rule.")
     return {"deleted": True, "id": rid}
 
 
@@ -737,7 +739,7 @@ def create_trip(req):
          "to_ms": body["to_ms"], "name": body["name"].strip()}
     with st.lock:
         st.trips[t["id"]] = t
-    st.record(req.account, "trip.create", f"trip:{t['id']}", f"Saved the trip {t['name']}.", car=t["car"])
+    st.record(req.account, "trip-saved", f"trip:{t['id']}", f"Saved the trip {t['name']}.", car=t["car"])
     return dict(_trip_view(t), _created=True)
 
 
@@ -769,7 +771,7 @@ def patch_trip(req):
                 t[k] = body[k]
         if "name" in body:
             t["name"] = body["name"].strip()
-    st.record(req.account, "trip.update", f"trip:{t['id']}", f"Changed the trip {t['name']}.", car=t["car"])
+    st.record(req.account, "trip-changed", f"trip:{t['id']}", f"Changed the trip {t['name']}.", car=t["car"])
     return _trip_view(t)
 
 
@@ -778,7 +780,7 @@ def delete_trip(req):
     t = _trip(req)
     with st.lock:
         st.trips.pop(t["id"], None)
-    st.record(req.account, "trip.delete", f"trip:{t['id']}", f"Removed the trip {t['name']}.", car=t["car"])
+    st.record(req.account, "trip-removed", f"trip:{t['id']}", f"Removed the trip {t['name']}.", car=t["car"])
     return {"deleted": True, "id": t["id"]}
 
 

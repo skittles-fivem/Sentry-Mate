@@ -116,3 +116,94 @@ fn climate_navigation_update_and_tyres() {
     assert_eq!(x.energy_at_destination_kwh, None, "TRIP_TOO_LONG");
     assert_eq!(x.tire_low, Some(false), "all within 10 %");
 }
+
+/// Pressures to 0.001 bar (the DBC's 0.025 bar steps are not exact in binary).
+fn bar(p: [Option<f64>; 4]) -> [Option<f64>; 4] {
+    p.map(|x| x.map(|x| (x * 1000.0).round() / 1000.0))
+}
+
+/// 0x219 (override.dbc): page 4 the recommended pressures, page 5 the four slots' pressures, pages 0-3 each slot's
+/// wheel (`VCSEC_TPMSLocationN`: 0 FL, 1 FR, 2 RL, 3 RR, 4 LOCATION_UNKNOWN), once a second for `secs` seconds.
+/// `locs`: the location of each slot (`None`: that page is not sent).
+fn tpms(b: &mut Bench, secs: u32, rec: (f64, f64), slots: [f64; 4], locs: [Option<f64>; 4]) {
+    for s in 0..secs {
+        let t = f64::from(s) + 0.5;
+        b.send(t, 0, 0x219, &[("VCSEC_TPMSRecommendedPressure0", rec.0), ("VCSEC_TPMSRecommendedPressure1", rec.1)]);
+        let p = ["VCSEC_TPMSPressure0", "VCSEC_TPMSPressure1", "VCSEC_TPMSPressure2", "VCSEC_TPMSPressure3"];
+        b.send(t + 0.1, 0, 0x219, &[(p[0], slots[0]), (p[1], slots[1]), (p[2], slots[2]), (p[3], slots[3])]);
+        let names = ["VCSEC_TPMSLocation0", "VCSEC_TPMSLocation1", "VCSEC_TPMSLocation2", "VCSEC_TPMSLocation3"];
+        for (i, l) in locs.iter().enumerate() {
+            if let Some(l) = l {
+                b.send(t + 0.2 + 0.05 * i as f64, 0, 0x219, &[(names[i], *l)]);
+            }
+        }
+    }
+}
+
+#[test]
+fn the_recommended_pressures_are_read_and_a_full_location_mapping_puts_the_slots_in_wheel_order() {
+    let mut b = Bench::new();
+    // slot 0 is the rear right, 1 the front left, 2 the rear left, 3 the front right
+    tpms(&mut b, 6, (2.5, 3.2), [2.7, 2.5, 3.2, 2.525], [Some(3.0), Some(0.0), Some(2.0), Some(1.0)]);
+    let s = b.finish();
+    let x = &s[&3];
+    assert_eq!((x.extra.tire_recommended_front_bar, x.extra.tire_recommended_rear_bar), (Some(2.5), Some(3.2)));
+    assert_eq!(x.extra.tires_mapped, Some(true));
+    assert_eq!(
+        bar(x.tpms_bar),
+        [Some(2.5), Some(2.525), Some(3.2), Some(2.7)],
+        "front left, front right, rear left, rear right"
+    );
+    // the rear right at 2.7 bar is more than 10 % under the rear's 3.2 (it would not be under the front's 2.5)
+    assert_eq!(x.extra.tire_low, Some(true));
+}
+
+#[test]
+fn an_incomplete_unknown_or_doubled_mapping_leaves_the_slots_unmapped() {
+    for (why, locs) in [
+        ("slot 3's page not sent", [Some(3.0), Some(0.0), Some(2.0), None]),
+        ("LOCATION_UNKNOWN", [Some(3.0), Some(0.0), Some(4.0), Some(1.0)]),
+        ("two slots say the front left", [Some(0.0), Some(0.0), Some(2.0), Some(1.0)]),
+    ] {
+        let mut b = Bench::new();
+        tpms(&mut b, 6, (2.5, 3.2), [2.7, 2.5, 3.2, 2.525], locs);
+        let s = b.finish();
+        let x = &s[&3];
+        assert_eq!(x.extra.tires_mapped, Some(false), "{why}");
+        assert_eq!(bar(x.tpms_bar), [Some(2.7), Some(2.5), Some(3.2), Some(2.525)], "{why}: the car's slot order");
+        // which wheel each is is not known: every tyre against the lower (2.5 bar), none more than 10 % under it;
+        // the 2.7 bar tyre that is low for the rear is missed rather than a front one called low
+        assert_eq!(x.extra.tire_low, Some(false), "{why}");
+        assert_eq!(x.extra.tire_recommended_rear_bar, Some(3.2), "{why}");
+    }
+    // unmapped, a tyre more than 10 % under even the lower recommended pressure is low
+    let mut b = Bench::new();
+    tpms(&mut b, 6, (2.9, 3.1), [2.9, 2.5, 3.1, 3.1], [None; 4]);
+    let s = b.finish();
+    assert_eq!((s[&3].extra.tires_mapped, s[&3].extra.tire_low), (Some(false), Some(true)));
+}
+
+#[test]
+fn the_chassis_bus_named_wheels_are_mapped() {
+    let mut b = Bench::new();
+    for s in 0..6 {
+        let t = f64::from(s) + 0.5;
+        b.send(
+            t,
+            1,
+            0x31F,
+            &[
+                ("TPMSFLpressure31F", 2.9),
+                ("TPMSFRpressure31F", 2.875),
+                ("TPMSRLpressure31F", 2.85),
+                ("TPMSRRpressure31F", 2.5),
+            ],
+        );
+    }
+    let s = b.finish();
+    let x = &s[&3];
+    assert_eq!(bar(x.tpms_bar), [Some(2.9), Some(2.875), Some(2.85), Some(2.5)]);
+    assert_eq!(x.extra.tires_mapped, Some(true));
+    // no recommended pressure sent: no judgment
+    assert_eq!((x.extra.tire_recommended_front_bar, x.extra.tire_low), (None, None));
+}

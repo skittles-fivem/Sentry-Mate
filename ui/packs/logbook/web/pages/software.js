@@ -2,19 +2,22 @@
 //
 // The version a car runs now, its update history in the period, and the version every car runs. Honest
 // about what is known: the car never sends its version text, so a version is only ever what someone said
-// (imported from TeslaMate, typed by an admin, or learned from another update with exactly the same module
-// builds). An update seen only as changed module builds says "build changed" with the modules, never a guess.
+// (imported from a TeslaMate or TeslaFi backup, read live from TeslaFi, the owner's local TeslaMate or the
+// Tesla API, typed by an admin, or learned from another update with exactly the same module builds). An update seen only as changed module builds says "build changed" with the modules, never a guess.
 // A "Tesla update installed" (found from the firmware fingerprints the modules broadcast on CAN) is shown with
 // each changed fingerprint (old -> new, lowercase hex), the drives before and after it, and, for an admin, a box
 // to type its version (or clear it); the car's current fingerprints are on the car page (Car firmware).
 // Data:
 //   GET /cars/{car}/updates            the history in the period (newest first, paged, CSV from the server),
-//                                      with a summary in every page (count, median gap, the version now)
+//                                      with a summary in every page (count, median gap, the version now,
+//                                      and last_update: the newest update whatever the period, or null)
 //   PATCH /cars/{car}/updates/{id}     admin: type or forget the version an update installed
 //   GET /cars/{car}/drives             the drive before and the drive after a fingerprint update
 //   GET /fleet/versions                every car with its version (searched, paged by cursor, CSV)
+//   GET /cars/{car}/firmware/history   every fingerprint each module has had (paged, by module), with the
+//                                      "versions over time" spans of all of them
 //   GET /settings                      whether the owner allows release-notes links (outside_links)
-// Live: an update that starts or ends ("rows" events naming "updates") loads both lists again.
+// Live: an update that starts or ends ("rows" events naming "updates") loads the lists again.
 
 import { h, replace } from '../shared/dom.js';
 import { formatDate, formatTime, formatDateTime, formatDuration, periodLabel, HOUR, DAY } from '../shared/time.js';
@@ -25,7 +28,7 @@ import { pageHead, q, figure, icon, empty, flag, button, sep, loadingBlock, erro
 import { sourceMark, hasSmo, isImported } from '../core/sources.js';
 import { dataTable } from '../core/table.js';
 import { openDialog } from '../core/dialog.js';
-import { field, form } from '../core/form.js';
+import { field, form, choice } from '../core/form.js';
 import { zoneLabel } from '../core/format.js';
 
 export const id = 'software';
@@ -34,13 +37,23 @@ export const title = () => 'Software';
 
 const VERSION_RX = /^\d{4}\.\d{1,2}(\.\d{1,3}){0,2}$/;
 
-/** Where a version came from: [short name, the sentence that explains it]. */
+/**
+ * Where a version came from: [short name, the sentence that explains it, the words after "named" or in
+ * brackets ("from local TeslaMate")]. The live inputs (TeslaFi, local TeslaMate, Tesla API) name an update
+ * the car's fingerprints found when they report a new version within a day after it.
+ */
 const SOURCE = {
-  teslamate: ['Imported', 'Imported from TeslaMate with the version text it recorded.'],
-  tesla_api: ['Tesla API', 'The Tesla API named the version the car runs.'],
-  owner: ['Typed by an admin', 'An admin typed this version from the car’s screen.'],
-  build_match: ['Same fingerprints', 'Named from an earlier update with the same fingerprints.'],
+  teslamate: ['Imported from TeslaMate', 'Imported from a TeslaMate backup with the version text it recorded.', 'imported from TeslaMate'],
+  teslafi: ['Imported from TeslaFi', 'Imported from a TeslaFi backup with the version text it recorded.', 'imported from TeslaFi'],
+  teslafi_api: ['From TeslaFi', 'Read live from TeslaFi, which reported this version.', 'from TeslaFi'],
+  teslamate_local: ['From local TeslaMate', 'Read live from the owner’s local TeslaMate, which reported this version.', 'from local TeslaMate'],
+  tesla_api: ['From the Tesla API', 'The Tesla API named the version the car runs.', 'from the Tesla API'],
+  owner: ['Typed by an admin', 'An admin typed this version from the car’s screen.', 'typed by an admin'],
+  build_match: ['Same fingerprints', 'Named from an earlier update with the same fingerprints.', 'from an earlier update with the same fingerprints'],
 };
+/** The sources that are a live input reporting the version (not an import, a typed name or a build match). */
+const LIVE = new Set(['teslafi_api', 'teslamate_local', 'tesla_api']);
+const srcWords = (k) => (SOURCE[k] ? SOURCE[k][2] : 'from an unknown source');
 /** How an update was found. */
 const DETECTED = {
   ota_status: ['Update status', 'The car reported that it was installing an update.'],
@@ -91,7 +104,7 @@ export async function mount(ctx) {
   ctx.main.append(pageHead({
     eyebrow: h('span', { class: 'sw-scope' }, 'Reports', sep(), h('span', { class: 'sw-car-name', cover: 'updates.section.car_header' }, car.name || cid)),
     title: 'Software',
-    deck: 'Which version the car runs and when it changed. The car does not send its version text, so a version shows only when someone said what it is; otherwise the page says the software changed and which modules changed.',
+    deck: 'Which version the car runs and when it changed. The car does not send its version text, so a version shows only when an import, a live input (TeslaFi, TeslaMate, the Tesla API) or an admin said what it is; otherwise the page says the software changed and which modules changed.',
     aside: h('div', { class: 'sw-head-aside' }, reloadBtn, asOf),
     cover: 'shots.updates',
   }));
@@ -158,9 +171,9 @@ export async function mount(ctx) {
         : h('dl', { class: 'sw-facts' },
           changed
             ? fact('Last known version', last
-              ? [last, src ? ` (${src[0].toLowerCase()})` : '', ', ran ', lastFrom ? `from ${lastFrom} ` : '', `to ${formatDate(sm.build_changed_since, tz, { now, year: true })}`]
+              ? [last, src ? ` (${src[2]})` : '', ', ran ', lastFrom ? `from ${lastFrom} ` : '', `to ${formatDate(sm.build_changed_since, tz, { now, year: true })}`]
               : 'none: no version was ever named for this car')
-            : fact('Where it came from', src ? src[1] : 'Nobody has said yet: not imported, not typed, and no other car on the same build.'),
+            : fact('Where it came from', src ? src[1] : 'Nobody has said yet: not imported, not reported by a live input, not typed, and no other update on the same build.'),
           changed
             ? fact('Running since', [formatDateTime(sm.build_changed_since, tz, { now }), h('span', { class: 'sw-faint' }, ' (when the module builds changed)')])
             : fact('Running since', sm.current_version_since_ms != null ? formatDateTime(sm.current_version_since_ms, tz, { now }) : 'not known'),
@@ -168,7 +181,7 @@ export async function mount(ctx) {
       failed ? null : h('p', { class: 'note' }, changed
         ? `The module builds changed after ${last || 'the last known version'} was recorded, so the car now runs a version nobody has named. ${admin ? (newest ? 'Type it from the car’s screen.' : 'Type it from the car’s screen, on the newest update in the history below.') : 'An admin can type it from the car’s screen.'}`
         : v ? 'Sentry Mate never guesses a version; this one is what is written above.'
-          : 'The version is known once a TeslaMate history is imported, an admin types it, or another car on the same build has one.'),
+          : 'The version is known once a TeslaMate or TeslaFi history is imported, TeslaFi, a local TeslaMate or the Tesla API reports it, an admin types it, or an earlier update on the same build has one.'),
       failed ? button('Try again', { cls: 'button-small', iconName: 'reset', onclick: () => reloadAll(false).catch(() => {}) }) : null,
       !failed && admin && changed && newest ? button('Type the version', { cls: 'button-small', iconName: 'settings', onclick: () => editVersion(newest) }) : null);
     const n = sm.count ?? 0;
@@ -230,7 +243,7 @@ export async function mount(ctx) {
       value: (r) => r.since_previous_ms,
     },
     {
-      key: 'version', label: 'Version', cover: ['updates.table.version', 'updates.link.release_notes'], hint: 'Imported, typed by an admin, or the same build as an update with a known version. Never guessed.',
+      key: 'version', label: 'Version', cover: ['updates.table.version', 'updates.link.release_notes'], hint: 'Imported, reported by a live input (TeslaFi, TeslaMate, the Tesla API), typed by an admin, or the same build as an update with a known version. Never guessed.',
       cell: versionCell, value: (r) => r.version,
     },
     {
@@ -261,12 +274,24 @@ export async function mount(ctx) {
     path, params: ctx.params, limit: 50, columns, cls: 'sw-table', cover: 'updates.table', label: 'Update history',
     itemName: ['update', 'updates'],
     caption: 'Newest first. Charges and range are what the car did while on each version: from the end of the update to the start of the next one, or now.',
-    empty: () => empty({
-      title: 'No update in this period.',
-      text: ctx.period && ctx.period.preset === 'all'
-        ? `Nothing is recorded for ${car.name || cid} yet: an update shows once the car installs one while recording, or with an imported TeslaMate history.`
-        : 'No update started in this period. Choose a longer period with the period picker (All time shows every update).',
-    }),
+    empty: () => {
+      const all = ctx.period && ctx.period.preset === 'all';
+      const lu = !all && lastSummary && lastSummary.last_update;
+      if (lu && lu.start_ms != null) {
+        return empty({
+          title: ['No updates in this period; the last one was ', formatDate(lu.start_ms, tz, { now, year: true }), lu.version ? ` (${lu.version})` : '', '.'],
+          text: lu.version && SOURCE[lu.version_source] ? `Its version is ${srcWords(lu.version_source)}.` : null,
+          action: button('Show all time', { cls: 'button-small', iconName: 'calendar', onclick: () => state.setPeriod({ preset: 'all' }, { push: true }) }),
+          cls: 'sw-empty-last',
+        });
+      }
+      return empty({
+        title: 'No update in this period.',
+        text: all
+          ? `Nothing is recorded for ${car.name || cid} yet: an update shows once the car installs one while recording, or with an imported TeslaMate or TeslaFi history.`
+          : 'No update started in this period. Choose a longer period with the period picker (All time shows every update).',
+      });
+    },
     onRows: (_items, pg) => { rowsSeen = table.items || []; lastSummary = pg && pg.summary; drawSummary(lastSummary); },
   });
   const notesNote = h('p', { class: 'note sw-notes' }, icon('info'),
@@ -307,7 +332,8 @@ export async function mount(ctx) {
   function fpCard(r) {
     const nb = near.get(r.id) || {};
     const btw = r.between_ms || [r.start_ms, r.end_ms];
-    const named = r.version ? (r.named_by === 'auto' || r.version_source === 'build_match' ? 'auto' : 'owner') : null;
+    const named = !r.version ? null : r.version_source === 'owner' ? 'owner' : LIVE.has(r.version_source) ? 'live'
+      : r.named_by === 'auto' || r.version_source === 'build_match' ? 'auto' : SOURCE[r.version_source] ? 'other' : 'owner';
     const changes = r.changes || [];
     const byModule = new Map();
     for (const c of changes) { if (!byModule.has(c.module)) byModule.set(c.module, []); byModule.get(c.module).push(c); }
@@ -330,7 +356,7 @@ export async function mount(ctx) {
           if (!ctx.alive()) return;
           const after = (table.items || []).find((x) => x.id === r.id);
           ctx.flash(v ? `Saved: this Tesla update installed ${v}. Later updates to the same fingerprints are named by themselves.`
-            : after && after.version ? `The typed name is cleared. It is still ${after.version}, named from an earlier update with the same fingerprints.`
+            : after && after.version ? `The typed name is cleared. It is still ${after.version}, named ${srcWords(after.version_source)}.`
               : 'The name is cleared from this update and from the ones named after it.');
         } catch (e) {
           if (!ctx.alive() || api.isAbort(e)) return;
@@ -353,7 +379,9 @@ export async function mount(ctx) {
         h('p', { class: 'eyebrow' }, 'Tesla update installed'),
         h('h3', { class: ['sw-fp-title', { 'is-unknown': !r.version }], id: `sw-fp-t-${r.id}` }, r.version || 'Not named yet'),
         h('p', { class: 'sw-fp-named' }, named === 'auto' ? 'Named from an earlier update with the same fingerprints.'
-          : named === 'owner' ? 'Typed by an admin from the car’s screen.' : admin ? 'Type its version below.' : 'Not named yet: an admin can name it.')),
+          : named === 'live' ? `Named ${srcWords(r.version_source)}, which reported this version within a day after the update.${admin ? ' A typed version takes its place.' : ''}`
+            : named === 'other' ? `Named ${srcWords(r.version_source)}.`
+              : named === 'owner' ? 'Typed by an admin from the car’s screen.' : admin ? 'Type its version below.' : 'Not named yet: an admin can name it.')),
       h('dl', { class: 'sw-fp-facts' },
         h('div', null, h('dt', null, 'Installed between'), h('dd', null, `${formatDateTime(btw[0], tz, { now: api.now() })} and ${formatDateTime(btw[1], tz, { now: api.now() })}`,
           h('span', { class: 'sw-faint' }, ' (last old, first new fingerprint)'))),
@@ -383,6 +411,129 @@ export async function mount(ctx) {
   }
   ctx.main.append(fpSec);
 
+  /* ---------------------------------------------------------------- module firmware history */
+
+  // Every fingerprint each module has had (GET /cars/{car}/firmware/history), newest first and paged, with a
+  // filter by module, and a "versions over time" strip of all of them (the answer's spans over its range).
+  // Read-only for everyone: a watch account sees the same. Not tied to the period: it is the car's whole history.
+  const FW_MODULES = ['vcfront', 'bms', 'dir', 'dif'];
+  const histPath = api.apiPath`cars/${cid}/firmware/history`;
+  let fwModule = FW_MODULES.includes(ctx.query.fwm) ? ctx.query.fwm : 'all';
+  let fwAnswer = null;   // the newest first page: modules, spans, range
+  let fwFailed = false;
+  const fwDay = (ms) => formatDate(ms, tz, { now: api.now(), weekday: false, year: true });
+  const fwModName = (m) => (fwAnswer && (fwAnswer.modules || []).find((x) => x.id === m)?.name) || MODULES[m] || m;
+  const cellLabel = (t) => h('span', { class: 'fwh-cell-label', 'aria-hidden': 'true' }, t);
+  const fwhColumns = [
+    {
+      key: 'module', label: 'Module', th: true, hint: 'The module the fingerprint is from. A version row is a car version from an import, with no module fingerprints.',
+      cell: (r) => h('div', { class: 'cell-main fwh-module' },
+        h('span', { class: 'fwh-module-line' },
+          h('span', { class: 'fwh-module-name' }, r.kind === 'version' ? 'Car version' : r.module_name || fwModName(r.module)),
+          r.current ? flag('current', { kind: null, title: r.kind === 'version' ? 'The newest imported version.' : 'The fingerprint this module broadcasts now.' }) : null),
+        h('span', { class: 'cell-sub' }, r.source_label || (r.kind === 'version' ? 'Imported' : 'Data from SMO'))),
+    },
+    {
+      key: 'fingerprint', label: 'Fingerprint', hint: 'The module’s main fingerprint (its app checksum), lowercase hex, and the one before it.',
+      cell: (r) => (r.kind === 'version'
+        ? h('div', { class: 'cell-main' }, cellLabel('Fingerprint'), h('span', { class: 'sw-faint' }, 'none: an imported version only'))
+        : h('div', { class: 'cell-main' }, cellLabel('Fingerprint'),
+          h('span', { class: 'sw-hex fwh-hex mono' }, r.fingerprint || '—'),
+          h('span', { class: 'cell-sub' }, r.previous ? ['after ', h('span', { class: 'mono' }, r.previous)] : 'the first one seen'))),
+    },
+    {
+      key: 'seen', label: 'Seen', hint: 'From when it was first seen to when it was last seen, in the car’s time zone; “now” while it is current.',
+      cell: (r) => h('div', { class: 'cell-main' }, cellLabel('Seen'),
+        h('span', { class: 'fwh-dates' }, `${fwDay(r.first_seen_ms)} – ${r.current ? 'now' : fwDay(r.last_seen_ms)}`),
+        r.changed_in && r.changed_in.drive_id
+          ? h('a', { class: 'cell-sub', href: state.buildUrl('drive', { car: cid, drive: r.changed_in.drive_id }) }, 'First drive after the change')
+          : null),
+    },
+    {
+      key: 'duration', label: 'Ran for', num: true, hint: 'How long it ran: from first seen to last seen (a version row: to the next version, or now).',
+      cell: (r) => h('div', { class: 'cell-main' }, cellLabel('Ran for'), formatDuration(r.duration_ms),
+        gapWords(r.duration_ms) ? h('span', { class: 'cell-sub' }, gapWords(r.duration_ms)) : null),
+    },
+    {
+      key: 'version', label: 'Came with', hint: 'The version name of the update it came with, when someone named it. Never guessed.',
+      cell: (r) => h('div', { class: 'cell-main' }, cellLabel('Came with'),
+        r.version ? h('span', { class: 'sw-ver-text' }, r.version) : h('span', { class: 'sw-faint' }, 'unnamed'),
+        r.update && r.update.version_source && SOURCE[r.update.version_source] ? h('span', { class: 'cell-sub' }, SOURCE[r.update.version_source][0]) : null),
+    },
+  ];
+  const fwhTable = dataTable(ctx, {
+    path: histPath, params: fwModule === 'all' ? {} : { module: fwModule }, limit: 50, columns: fwhColumns, csv: false,
+    cls: 'fwh-table', label: 'Module firmware history', itemName: ['fingerprint', 'fingerprints'],
+    caption: 'Newest first. A fingerprint runs from the update that brought it to the next one.',
+    rowAttrs: (r) => ({ class: [r.kind === 'version' ? 'is-version' : null, r.current ? 'is-current' : null].filter(Boolean).join(' ') || null }),
+    empty: () => empty({
+      title: fwModule === 'all' ? 'No fingerprint recorded yet.' : `No fingerprint from the ${fwModName(fwModule).toLowerCase()} yet.`,
+      text: fwModule === 'all' ? 'They show once the car’s logs carry the modules’ info messages; some older cars send none.' : 'Choose All to see every module.',
+    }),
+    onRows: (_items, pg) => { if (pg && pg.spans) { fwAnswer = pg; fwFailed = false; } },
+  });
+  const fwFilter = choice({
+    label: 'Module', name: 'fwh-module', value: fwModule, cls: 'fwh-filter-options',
+    options: [['all', 'All'], ...FW_MODULES.map((m) => [m, MODULES[m] || m])],
+    onchange: (v) => {
+      fwModule = v;
+      ctx.setQuery({ fwm: v === 'all' ? null : v });
+      fwhTable.reload(v === 'all' ? {} : { module: v }).then(drawStrip).catch(() => {});
+    },
+  });
+  const stripBox = h('div', { class: 'fwh-strip-box' }, loadingBlock(2));
+
+  function drawStrip() {
+    if (!ctx.alive()) return;
+    const a = fwAnswer;
+    if (!a) {
+      replace(stripBox, h('p', { class: 'note' }, fwFailed ? 'The firmware history could not be loaded, so there is no strip.' : 'Loading…'));
+      return;
+    }
+    const range = a.range || {};
+    const spans = a.spans || [];
+    if (range.from_ms == null || !spans.length) {
+      replace(stripBox, h('p', { class: 'note' }, 'No fingerprint yet, so there is nothing to draw over time.'));
+      return;
+    }
+    const from = range.from_ms;
+    const to = Math.max(range.to_ms ?? from, ...spans.map((s) => s.to_ms ?? range.to_ms ?? from));
+    const span = Math.max(1, to - from);
+    const pct = (ms) => `${(Math.min(Math.max(ms, from), to) - from) / span * 100}%`;
+    const mods = (a.modules && a.modules.length ? a.modules : FW_MODULES.map((id) => ({ id })));
+    replace(stripBox,
+      h('div', { class: 'fwh-lanes', role: 'list', 'aria-label': 'Versions over time, one lane per module' },
+        mods.map((m) => {
+          const mine = spans.filter((s) => s.module === m.id);
+          const name = m.name || MODULES[m.id] || m.id;
+          return h('div', { class: ['fwh-lane', { 'is-picked': fwModule === m.id, 'is-dim': fwModule !== 'all' && fwModule !== m.id }], role: 'listitem' },
+            h('span', { class: 'fwh-lane-name' }, name,
+              h('span', { class: 'fwh-lane-count' }, `${formatNumber(m.fingerprints ?? mine.length)} ${(m.fingerprints ?? mine.length) === 1 ? 'fingerprint' : 'fingerprints'}`)),
+            h('div', { class: 'fwh-track' },
+              mine.length ? mine.map((s, i) => {
+                const end = s.to_ms ?? to;
+                const w = (Math.min(end, to) - Math.max(s.from_ms, from)) / span;
+                const tip = `${name}: ${s.fingerprint} · ${s.version || 'unnamed'} · ${fwDay(s.from_ms)} – ${s.current ? 'now' : fwDay(end)}`;
+                return h('span', {
+                  class: ['fwh-seg', `fwh-seg-${i % 2 ? 'b' : 'a'}`, { 'is-current': s.current, 'is-unnamed': !s.version }],
+                  style: { left: pct(s.from_ms), width: `${Math.max(0, w) * 100}%` }, title: tip, 'aria-label': tip,
+                }, w >= 0.07 ? h('span', { class: 'fwh-seg-label' }, s.version || 'unnamed') : null);
+              }) : h('span', { class: 'fwh-track-none' }, 'never seen'),
+              mine.slice(1).map((s) => h('span', { class: 'fwh-tick', style: { left: pct(s.from_ms) }, 'aria-hidden': 'true' }))));
+        })),
+      h('div', { class: 'fwh-axis' }, h('span', null, fwDay(from)), h('span', null, a.spans.some((s) => s.current) ? 'now' : fwDay(to))));
+  }
+
+  const fwhSec = h('section', { class: 'block fwh', id: 'sw-fwh', tabindex: '-1', 'aria-labelledby': 'sw-fwh-title' },
+    h('div', { class: 'block-head' },
+      h('h2', { class: 'label', id: 'sw-fwh-title' }, 'Module firmware history', h('span', { class: 'label-note' }, 'every fingerprint each module has had, all time'))),
+    h('p', { class: 'note fwh-lead' }, 'Each of the four main modules broadcasts a fingerprint of its code on the vehicle bus. Here is every one they have had, when it was seen and the version it came with, when someone named it. Not tied to the period. ',
+      h('a', { class: 'link-arrow', href: firmwareHref }, 'The car’s firmware now', icon('arrowRight'))),
+    h('div', { class: 'fwh-strip' }, h('h3', { class: 'fwh-sub' }, 'Versions over time'), stripBox),
+    h('div', { class: 'fwh-filter' }, fwFilter),
+    fwhTable.el);
+  ctx.main.append(fwhSec);
+
   ctx.main.append(h('section', { class: 'block sw-history', 'aria-labelledby': 'sw-hist-title' },
     h('div', { class: 'block-head' }, h('h2', { class: 'label', id: 'sw-hist-title' }, 'Update history', h('span', { class: 'label-note' }, `${car.name || cid}, ${periodLabel(ctx.period, tz, now)}`))),
     notesNote, table.el));
@@ -409,7 +560,7 @@ export async function mount(ctx) {
           ? h('span', { class: 'sw-ver' }, h('span', { class: 'sw-ver-text' }, r.version), SOURCE[r.version_source] ? flag(SOURCE[r.version_source][0], { title: SOURCE[r.version_source][1] }) : null)
           : h('div', { class: 'cell-main' },
             h('span', { class: 'sw-ver is-unknown' }, h('span', { class: 'sw-ver-text' }, r.build_changed_since != null ? 'Changed, not named yet' : 'Not known')),
-            r.version ? h('span', { class: 'cell-sub' }, `last known ${r.version}${SOURCE[r.version_source] ? ` (${SOURCE[r.version_source][0].toLowerCase()})` : ''}`) : null)),
+            r.version ? h('span', { class: 'cell-sub' }, `last known ${r.version}${SOURCE[r.version_source] ? ` (${SOURCE[r.version_source][2]})` : ''}`) : null)),
         value: (r) => r.version,
       },
       {
@@ -476,7 +627,7 @@ export async function mount(ctx) {
         closeIt = close;
         return [
           h('p', { class: 'note' }, r.changed_modules && r.changed_modules.length ? `Modules whose builds changed: ${moduleNames(r.changed_modules)}.` : 'No module list for this update.'),
-          r.version && r.version_source !== 'owner' ? h('p', { class: 'note' }, `Now shown as ${r.version} (${(SOURCE[r.version_source] || ['unknown source'])[0].toLowerCase()}). A typed version takes its place.`) : null,
+          r.version && r.version_source !== 'owner' ? h('p', { class: 'note' }, `Now shown as ${r.version} (${srcWords(r.version_source)}). A typed version takes its place.`) : null,
           f,
         ];
       },
@@ -489,7 +640,8 @@ export async function mount(ctx) {
   async function reloadAll(say, focusId = null) {
     reloadBtn.disabled = true;
     try {
-      await Promise.all([table.reload(), fleetTable.reload(), findNewest()]);
+      await Promise.all([table.reload(), fleetTable.reload(), findNewest(), fwhTable.reload().catch(() => {})]);
+      drawStrip();
       await neighbours(fpRows());
       if (!ctx.alive()) return;
       if (focusId) for (const i of fpBox.querySelectorAll('.sw-fp-input')) i.dataset.saved = '1';
@@ -512,13 +664,15 @@ export async function mount(ctx) {
 
   // Each list fails on its own: the table shows its error with Try again, and the other list stays.
   let historyFailed = false;
-  await Promise.all([table.load().catch(() => { historyFailed = true; }), fleetTable.load().catch(() => {}), findNewest()]);
+  await Promise.all([table.load().catch(() => { historyFailed = true; }), fleetTable.load().catch(() => {}), findNewest(),
+    fwhTable.load().catch(() => { fwFailed = true; })]);
+  drawStrip();
   await neighbours(fpRows());
   if (!ctx.alive()) return {};
   drawFp();
   // a link to one update (#update-<id>, from the timeline) opens it once the page is drawn
   const hashT = setTimeout(() => {
-    const t = /^#update-/.test(location.hash) ? document.getElementById(location.hash.slice(1)) : null;
+    const t = /^#(update-|sw-fwh$)/.test(location.hash) ? document.getElementById(location.hash.slice(1)) : null;
     if (t && ctx.alive()) { t.focus({ preventScroll: true }); t.scrollIntoView({ block: 'start' }); }
   }, 0);
   ctx.onCleanup(() => clearTimeout(hashT));

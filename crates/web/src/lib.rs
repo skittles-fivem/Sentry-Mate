@@ -48,6 +48,7 @@
 #![allow(clippy::result_large_err)]
 
 pub mod accounts_admin;
+pub mod audit_codes;
 pub mod auth;
 pub mod csv;
 pub mod ctx;
@@ -142,6 +143,10 @@ pub struct Inner {
     pub(crate) body_timeout: std::time::Duration,
     /// The answers that decode stored logs: a few at a time ([`heavy`]).
     pub heavy: heavy::Heavy,
+    /// The release check ([`resources::release`]); off until the settings turn it on.
+    pub release: Arc<resources::release::Checker>,
+    /// The connections overview's hourly counters and problem log ([`resources::overview`]), saved in `dir`.
+    pub overview: resources::overview::Tracker,
     services: HashMap<std::any::TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
@@ -166,6 +171,7 @@ pub struct Builder {
     requests_per_minute: u32,
     body_timeout: std::time::Duration,
     heavy: (usize, std::time::Duration),
+    release: Option<(Arc<dyn release::Fetch>, release::Build)>,
     services: HashMap<std::any::TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
@@ -222,6 +228,13 @@ impl Builder {
         self
     }
 
+    /// What the release check asks through, and the build it asks about (default: GitHub's API host, this build).
+    /// For tests: a stand-in that never reaches the network.
+    pub fn release_check(mut self, fetch: Arc<dyn release::Fetch>, build: release::Build) -> Builder {
+        self.release = Some((fetch, build));
+        self
+    }
+
     /// Hands the frame an engine part (one per type) that handlers read back with [`AppState::service`].
     pub fn service<T: Send + Sync + 'static>(mut self, s: Arc<T>) -> Builder {
         self.services.insert(std::any::TypeId::of::<T>(), s);
@@ -234,6 +247,15 @@ impl Builder {
         getrandom::fill(&mut key).map_err(std::io::Error::other)?;
         let packs = packs::Packs::open(self.dir.join("packs"), self.vault.clone())?;
         let prefs = prefs::Prefs::open(self.dir.join("prefs"), self.vault.clone())?;
+        let (fetch, build) = match self.release {
+            Some(r) => r,
+            None => (
+                Arc::new(release::Http::github().map_err(std::io::Error::other)?) as Arc<dyn release::Fetch>,
+                release::Build::this(),
+            ),
+        };
+        let release = Arc::new(resources::release::Checker::new(fetch, build, self.clock.clone()));
+        let overview = resources::overview::Tracker::open(&self.dir, self.vault.clone());
         Ok(AppState(Arc::new(Inner {
             accounts: self.accounts,
             vault: self.vault,
@@ -250,6 +272,8 @@ impl Builder {
             rate: policy::RateLimit::new(self.requests_per_minute),
             body_timeout: self.body_timeout,
             heavy: heavy::Heavy::new(self.heavy.0, self.heavy.1),
+            release,
+            overview,
             services: self.services,
         })))
     }
@@ -272,6 +296,7 @@ impl AppState {
             requests_per_minute: 1200,
             body_timeout: server::BODY_TIMEOUT,
             heavy: (heavy::RUNNING, heavy::WAIT),
+            release: None,
             services: HashMap::new(),
         }
     }
@@ -287,6 +312,22 @@ impl AppState {
             .get(&std::any::TypeId::of::<T>())
             .and_then(|s| s.clone().downcast::<T>().ok())
             .ok_or_else(|| ApiError::unavailable(std::any::type_name::<T>()))
+    }
+
+    /// A car's name for a sentence (the audit log's): its own name, else `car c3`. Reads the database: call it off
+    /// the async threads ([`AppState::blocking`]) where it can wait.
+    pub fn car_name(&self, car: CarId) -> String {
+        self.service::<engine::Engine>()
+            .ok()
+            .and_then(|e| e.db().car(car).ok().flatten())
+            .map(|c| c.name)
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| format!("car {}", ids::car(car)))
+    }
+
+    /// [`AppState::car_name`] from an async handler.
+    pub async fn car_name_now(&self, car: CarId) -> String {
+        self.blocking(move |app| Ok(app.car_name(car))).await.unwrap_or_else(|_| format!("car {}", ids::car(car)))
     }
 
     /// Whether a car exists (not whether someone may see it: [`Viewer::sees`]).

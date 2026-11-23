@@ -16,7 +16,7 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--pack DIR` | (required) | The UI pack; its `web/` folder is served at `/`. The built-in ones: `ui/packs/instrument`, `logbook`, `horizon`, `console`, `pebble`. |
+| `--pack DIR` | (required) | The UI pack; its `web/` folder is served at `/`. The built-in ones: `ui/packs/instrument`, `logbook`, `horizon`, `console`, `pebble`, `manager`. |
 | `--host` | `127.0.0.1` | Address to listen on. |
 | `--port` | `8000` | `0` picks a free port (read it from the printed line). |
 | `--cars N` | `3` | Fleet size. 1 to 3 are the featured cars; above 3 adds light synthetic cars `c4`..`cN`; `0` is an empty fleet. A large fleet's sort, search and attention indexes are built before the server listens (about 1.5 s for 200000 cars). |
@@ -29,6 +29,8 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 | `--fresh` (or `--needs-setup`) | off | Starts as a fresh server: no accounts and nobody signed in, the first-run set-up page. The set-up code is `SETUP-DEV-0000`. See "First-run set-up and moving" below. |
 | `--move-state S` | `none` | Starts Settings: Server's "Move to another server" in state `S`: `offered`, `expired`, `copying`, `paused`, `moved` or `done` (screenshots; add `--freeze-clock` to hold it there). Not with `--fresh`. |
 | `--own-certificate` | off | Runs with the owner's own certificate (`certificate.own` in `/network`), expiring in 12 days: the `certificate_expiring` notice is up and `POST /network/certificate` is `409 own_certificate`. Without it the certificate is one the server made, which never expires soon. |
+| `--release-check off\|newer\|up_to_date\|error\|never\|checking` | `off` | The release check at start: off, or on with that result of the last check (`GET /api/v1/release`): a newer build (`9c1e7d3`, 4 changes, with the admins' `release_available` notice), up to date, GitHub's rate limit, not checked yet, or a check in flight. Turned on later in a session it finds the newer build. `/about` carries a made-up `build` (`0.1.0 · build 2f44a52`). |
+| `--teslamate-trouble none\|connection_refused\|auth_failed\|pin_mismatch\|quiet\|catchup_failed` | `none` | The local TeslaMate starts in that trouble with its admins' notice (`teslamate_connection_refused`, `teslamate_auth_failed`, `teslamate_pin_mismatch`, `teslamate_quiet`, `teslamate_catchup_failed`; the last turns the database catch-up on), linking to Settings: Integrations (#teslamate). In tests, `resources.teslamate.fail(store, part, code, now)` starts or ends one (`quiet` for a broker that stays connected and sends nothing). |
 | `--move-peer-after-s N` | `15` | A made-up new server (`192.168.1.30`) claims a waiting move code `N` seconds after it is made, then copies, pauses, switches and is done in about 17 s. `0`: never. |
 | `--freeze-clock` | off | Keeps "now" fixed (stable screenshots and tests). |
 | `--sse-interval-ms N` | `2000` | How often live values are pushed on `/api/v1/events`. |
@@ -37,8 +39,8 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 
 ### UI packs
 
-`GET /api/v1/ui-packs` lists the five built-in packs of `ui/packs` (ids `instrument`, `logbook`, `horizon`,
-`console`, `pebble`; plus the `--pack` folder when it is another one), as the real server does. The `--pack` one is
+`GET /api/v1/ui-packs` lists the six built-in packs of `ui/packs` (ids `instrument`, `logbook`, `horizon`,
+`console`, `pebble`, `manager`; plus the `--pack` folder when it is another one), as the real server does. The `--pack` one is
 the pack chosen for everyone. A person's `ui_pack` preference picks the pack their browser is served from the next
 page load on, as on the real server; `null` goes back to the `--pack` one, and an unknown id is `422`.
 
@@ -74,8 +76,8 @@ start after the virtual clock are not shown yet, and the piece the clock is in i
 | Car | What it is | Story |
 |---|---|---|
 | `c1` Comet | Model Y 2025, Long Range AWD, NCA pack, `America/Los_Angeles` | Home in Noe Valley, work in Mission Bay (San Francisco). Weekday commutes, weekend outings, a road trip to Los Angeles in July with six Supercharger stops, a nine-day holiday parked at home (vampire drain), Sentry at work, scheduled home charging at 23:30 (1 phase, 32 A). **Driving at "now"** (home to Palo Alto). A drive and a charge that stopped mid-way, and a gap of every kind. |
-| `c2` Maple | Model 3 2022, RWD, LFP pack, `America/Chicago` | Home in Logan Square, work garage in River North (Chicago). Cold winters with reduced range days, home charging on 3 phases, public AC at work, a road trip to Toronto in August (DC in Michigan and in Ontario, costs in CAD). A slow leak in the rear left tyre for the last three weeks. **Charging at "now"** at work. |
-| `c3` Atlas | Model S 2017, 90D, old (legacy) CAN profile, `America/Los_Angeles` | East Bay. 16 months imported from TeslaMate (`source: "teslamate"`, estimated energy) that overlap 5 days of CAN rows, and a week of that history imported from TeslaFi as well (TeslaFi's copies of the same drives and charges, `source: "teslafi"`; with no live data there, one import is shown: TeslaMate's at first, flipped in `/overlaps`), free Supercharging, fewer decoded signals (no tyres, no set points). Its CAN Bridge went quiet about 55 hours before "now": the last log failed its check. |
+| `c2` Maple | Model 3 2022, RWD, LFP pack, `America/Chicago` | Home in Logan Square, work garage in River North (Chicago). Cold winters with reduced range days, home charging on 3 phases, public AC at work, a road trip to Toronto in August (DC in Michigan and in Ontario, costs in CAD). A slow leak in the rear left tyre for the last three weeks. **Charging at "now"** at work. Its newest software update (found from fingerprints, 17 days ago) is named `2026.44.1` from the owner's local TeslaMate (`version_source: "teslamate_local"`, `named_by: "auto"`), so that is its current version; once local TeslaMate's car 1 is matched to Maple, `/now` also reads it live there. |
+| `c3` Atlas | Model S 2017, 90D, old (legacy) CAN profile, `America/Los_Angeles` | East Bay. 16 months imported from TeslaMate (`source: "teslamate"`, estimated energy) that overlap 5 days of CAN rows, and a week of that history imported from TeslaFi as well (TeslaFi's copies of the same drives and charges, `source: "teslafi"`; with no live data there, one import is shown: TeslaMate's at first, flipped in `/overlaps`), free Supercharging, fewer decoded signals (no tyres, no set points). Its CAN Bridge went quiet about 55 hours before "now": the last log failed its check. Its current version `2025.45.8` is read live from TeslaFi (`current_version_source: "teslafi_api"`); TeslaFi first said it eight days after the update, too late to name it, so that update stays `build_match`. |
 | `c4`..`cN` | synthetic | Names, models, states and battery from the car's index only; lists elsewhere are empty but valid. |
 
 Where each row came from (`sources`, `source_label`, see `mockapi/sources.py`): `c1` has SMO and the Tesla API
@@ -85,7 +87,9 @@ synthetic cars have SMO. Only the labels differ: the made-up data is the same.
 
 Also present: places that overlap (Work and the Mission Bay Supercharger, Home and Noe Valley), charges with
 and without cost, two software changes per car (one known only as "software changed"), awake, asleep and
-vehicle-bus-only spells, attention items, upload tokens, a CAN Bridge key waiting to be assigned, an audit log,
+vehicle-bus-only spells, attention items, upload tokens, a CAN Bridge key waiting to be assigned, an audit log
+(about 118 made-up entries over 400 days by five people and the server, every code of `ui/shared/audit-codes.json`
+and one code no list knows, at 192.0.2.x addresses; `mockapi/audit.py`),
 saved trips and purpose rules, 40 places (some with prices by time of day), server and MQTT settings, notices (an
 unsaved recovery key; with `--own-certificate` also a certificate that expires in 12 days), a Tesla account (`ta1`, reading `c1` and `c2`, a third
 car not matched; every change asks for the password `sentry-mate-dev` again), the finished import that brought `c3`'s TeslaMate
@@ -116,6 +120,7 @@ each piece's own seed and never stored, so a year of data answers in a few hundr
 | Reports (statistics, mileage, totals, gaps, compare, stops and Travel, tracks, software, car events) | done |
 | Places (preview of a change, reprice, suggestions, the place at a point) | done |
 | Integrations (MQTT settings, status, preview, test; outside connections) | done |
+| Integrations: Overview (every connection with made-up hourly counters for 7 days and the week's problems; see below) | done |
 | Integrations: Tesla (accounts, sign-in at Tesla with a pasted address, refresh token, cars, pause, poll setting, status; nothing leaves the dev server) | done |
 | Server, settings and health (notices, maps, data health, rebuild, overlaps, storage) | done |
 | Import (resumable upload, check, car matching, import, report) | done |
@@ -123,6 +128,29 @@ each piece's own seed and never stored, so a year of data answers in a few hundr
 | Deliberately absent (no car commands, no wake, no Tesla token, no SQL, no VIN serial) | absent: `404` |
 
 Decisions on points the API document left open are at the end of `docs/ui-api.md` ("Decisions").
+
+## Integrations: Overview
+
+`GET /api/v1/integrations/overview` (admin; `watch` gets `403`, like every `/integrations` route) lists the CAN
+Bridge of each car (the sold car `c0` has none), the Tesla and TeslaFi accounts, local TeslaMate (MQTT, database),
+the MQTT broker, online map tiles, address lookup and the release check, in that order, from the mock's own state
+(`mockapi/resources/overview.py`). With the default flags: `c1` and `c2` live (driving, charging), `c3` in
+`problem` (`quiet`: its CAN Bridge has sent nothing since the log that failed its check, about 55 h before "now";
+the one open problem), TeslaFi `idle` (`parked`: it reads `c3`), the TeslaMate database, address lookup (offline)
+and the release check `off`. Synthetic cars are live when driving, charging or parked, else `idle` (`car_asleep`).
+`--teslamate-trouble`, `--release-check error`, a Tesla sign-in refused or TeslaFi token refused put that
+connection in `problem` with an open problem since its error.
+
+The hourly counters are worked out, never stored: a featured car's CAN Bridge sends a log a minute while the car
+is awake (nothing while it sleeps), the Tesla and TeslaFi counts follow their paces and their cars, the rest
+follow a day-time shape (Pacific time); the odd failed try is marked, and a try inside a problem counts as an
+error. The five resolved problems of the week (`c1`'s CAN Bridge offline for the afternoon two days before, as in
+its sources; Tesla, TeslaMate's broker, the MQTT broker, the tiles: 12 minutes to 6 hours) are fixed relative to
+`--now-ms`; `uptime` is the share of the period outside the connection's problems. On a running clock the current
+hour's count grows, `last_ok_ms` and the open problem's `duration_ms` move on, and the list keeps its order.
+
+A large fleet lists the CAN Bridge of the first 50 cars only (`MAX_CAR_ROWS`); `totals` still counts every car
+(the cars not listed from the fleet's cached state counts), so `--cars 200000` answers in about 0.15 s.
 
 ## First-run set-up and moving
 
@@ -189,6 +217,7 @@ mockapi/router.py        path patterns -> handlers per method, admin and public 
 mockapi/conventions.py   the request object, query parsing with field errors, cursor paging, CSV
 mockapi/errors.py        the one error shape
 mockapi/store.py         everything that can change (accounts, sessions, preferences, audit, overrides)
+mockapi/audit.py         the audit codes and groups (read from ui/shared/audit-codes.json) and the seeded log
 mockapi/rows.py          history pieces -> Drive, Charge and timeline rows (in progress, costs, purposes)
 mockapi/placing.py       places as they are now, the nearest-centre match, costs that stay put
 mockapi/derive.py        figures several sections share: odometer, stops (visits), parked spells, caching
@@ -243,3 +272,5 @@ They start servers in-process on free ports (about 45 s for all). They cover:
   the document and called with ids from the API; it fails on a missing resource, a 5xx or a missing field, on a route
   the document lacks, on anything under "Deliberately absent" that answers, and on a VIN serial in any answer;
 - determinism, a 200,000-car fleet paged under 200 ms a page, and the event stream (with `--rows-every-s` at its pace).
+- the integrations overview (`test_overview.py`): its shape, admin only, problems newest first with one open, 24
+  hourly entries ending at the current hour, values that move in place, the capped car rows of a large fleet.

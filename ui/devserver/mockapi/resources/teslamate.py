@@ -72,6 +72,19 @@ def seed(st, now):
     }
 
 
+def seed_trouble(st, trouble, now):
+    """--teslamate-trouble: the input starts in that trouble (an hour ago; quiet: for a day), its notice up."""
+    if trouble == "none":
+        return
+    if trouble == "catchup_failed":
+        st.teslamate["database"]["enabled"] = True
+        st.teslamate["db_error"] = ("query_failed", now - HOUR)
+    elif trouble == "quiet":
+        st.teslamate["mqtt_quiet"] = now - DAY
+    else:
+        st.teslamate["mqtt_error"] = (trouble, now - HOUR)
+
+
 def _t(req):
     return req.store.teslamate
 
@@ -121,6 +134,10 @@ def _mqtt_status(req, t):
     if t["mqtt_error"]:
         code, at_ms = t["mqtt_error"]
         return dict(base, state="error", last_error=_err(code, at_ms))
+    if t.get("mqtt_quiet"):
+        # connected, nothing since
+        return dict(base, state="connected", connected_since_ms=t["mqtt_quiet"] - DAY,
+                    last_message_ms=t["mqtt_quiet"], messages_today=0)
     last = now - now % 5_000 - 1_000
     midnight = now - now % DAY
     return dict(base, state="connected", connected_since_ms=max(t["added_ms"], now - 3 * HOUR - now % HOUR),
@@ -307,6 +324,7 @@ def put(req):
         added = not t["enabled"]
         t["mqtt"], t["database"] = new["mqtt"], new["database"]
         t["mqtt_error"] = (code, req.now) if (code := _try(new["mqtt"], "mqtt")) else None
+        t["mqtt_quiet"] = None
         t["db_error"] = ((code, req.now) if (code := _try(new["database"], "database")) else None) \
             if new["database"]["enabled"] else None
         if added:
@@ -395,10 +413,15 @@ def test(req):
     reconfirm(req, body)
     code = _try(s, target)
     lat = 3 + len(s["host"] or "") % 7
+    part = "MQTT" if target == "mqtt" else "database"
     if code:
+        req.store.record(req.account, "teslamate-local-tested", "teslamate:local",
+                         f"Tested the local TeslaMate's {part}: {code.replace('_', ' ')}.")
         return {"ok": False, "error": code, "message": ERRORS[code], "latency_ms": None, "at_ms": req.now,
                 "cars_seen": []}
     seen = [c["teslamate_car"] for c in (t["cars"] or _seed_cars(req.now))]
+    req.store.record(req.account, "teslamate-local-tested", "teslamate:local",
+                     f"Tested the local TeslaMate's {part}: connected, saw {len(seen)} cars.")
     msg = (f"Connected and subscribed to {s['prefix']}/cars/+/#: {len(seen)} cars seen in 3 s."
            if target == "mqtt" else f"Connected: the database has TeslaMate's tables and {len(seen)} cars.")
     return {"ok": True, "error": None, "message": msg, "latency_ms": lat, "at_ms": req.now, "cars_seen": seen}
@@ -462,9 +485,10 @@ def put_cars(req):
                 continue
             c["match"] = m
             changed = True
-            st.record(req.account, "teslamate-local-car-matched", f"teslamate:local:{v}",
-                      f"TeslaMate car {c['display_name'] or v} " + what.get(m, f"is car {m}: it is read from now on")
-                      + ".", car=m if m not in what else None)
+            tm = c["display_name"] or v
+            st.record(req.account, "teslamate-local-car-matched", "teslamate:local",
+                      f"Matched TeslaMate car {tm} to {st.car_meta(m)['name']}." if m not in what else
+                      f"TeslaMate car {tm} {what[m]}.", car=m if m not in what else None)
         if changed:
             t["version"] += 1
             st.rev += 1
@@ -496,11 +520,75 @@ def health(req):
             "last_message_ms": ms["last_message_ms"], "last_sync_ms": ds["last_sync_ms"]}
 
 
+# a notice per trouble: (code, audit action, part, words); the words take the error's own
+NOTICES = {
+    "connection_refused": ("teslamate_connection_refused", "teslamate-local-connection-refused", "mqtt",
+                           "The server cannot reach local TeslaMate's MQTT broker ({why}): its live values are not "
+                           "read. Check the host and port, and that the broker runs; the server tries again by "
+                           "itself."),
+    "auth_failed": ("teslamate_auth_failed", "teslamate-local-auth-failed", "mqtt",
+                    "Local TeslaMate's MQTT broker refused the user name or password ({why}): nothing is read from it "
+                    "until you give the right ones."),
+    "pin_mismatch": ("teslamate_pin_mismatch", "teslamate-local-pin-mismatch", "mqtt",
+                     "The certificate of local TeslaMate's MQTT broker does not have the pinned SHA-256 fingerprint, "
+                     "so the server does not connect. If the broker's certificate was renewed, pin the new one."),
+    "quiet": ("teslamate_quiet", "teslamate-local-quiet", "mqtt",
+              "Local TeslaMate's MQTT broker is connected but has sent nothing for {hours} hours: check that "
+              "TeslaMate runs and publishes to this broker under the topic prefix set (a car asleep for days sends "
+              "nothing either)."),
+    "catchup_failed": ("teslamate_catchup_failed", "teslamate-local-catchup-failed", "database",
+                       "The catch-up from local TeslaMate's database failed ({why}). It is tried again at the next "
+                       "interval; live values from MQTT still come."),
+}
+
+
+def _troubles(t, now):
+    """[(trouble, error code or None, since_ms)] of the input now, MQTT's first (as the server's Status::problems)."""
+    out = []
+    if not t["enabled"] or t["paused"]:
+        return out
+    if t["mqtt_error"]:
+        code, at_ms = t["mqtt_error"]
+        trouble = code if code in ("auth_failed", "pin_mismatch") else "connection_refused"
+        out.append((trouble, code, at_ms))
+    elif t.get("mqtt_quiet"):
+        out.append(("quiet", None, t["mqtt_quiet"]))
+    if t["database"]["enabled"] and t["db_error"]:
+        code, at_ms = t["db_error"]
+        out.append(("catchup_failed", code, at_ms))
+    return out
+
+
+def notices(req):
+    """For admins: the local TeslaMate in trouble (its broker refused, a password refused, a pin that does not
+    match, the broker gone quiet, a catch-up failed), each linking to Settings: Integrations (#teslamate)."""
+    out = []
+    for trouble, code, since in _troubles(_t(req), req.now):
+        ncode, _, part, words = NOTICES[trouble]
+        why = ERRORS[code].rstrip(".") if code else ""
+        why = why[:1].lower() + why[1:]
+        msg = words.format(why=why, hours=max(0, (req.now - since) // HOUR))
+        out.append({"code": ncode, "level": "warning", "message": msg, "since_ms": since,
+                    "fix_link": "/settings/integrations#teslamate", "detail": {"part": part, "error": code}})
+    return out
+
+
 def fail(st, part, code, now):
-    """For tests and the dev data: the MQTT broker or the database starts failing with `code`."""
+    """For tests and the dev data: the MQTT broker or the database starts failing with `code` (for MQTT, `quiet`: it
+    stays connected and sends nothing from now on); None ends it. A trouble that begins writes its audit entry."""
     with st.lock:
-        st.teslamate["mqtt_error" if part == "mqtt" else "db_error"] = (code, now) if code else None
+        t = st.teslamate
+        before = {x[0] for x in _troubles(t, now)}
+        if part == "mqtt" and code == "quiet":
+            t["mqtt_error"], t["mqtt_quiet"] = None, now
+        elif part == "mqtt":
+            t["mqtt_error"], t["mqtt_quiet"] = ((code, now) if code else None), None
+        else:
+            t["db_error"] = (code, now) if code else None
+        new = [x for x in _troubles(t, now) if x[0] not in before]
         st.rev += 1
+    for trouble, _, _ in new:
+        st.record(None, NOTICES[trouble][1], "teslamate:local", f"Local TeslaMate: {trouble.replace('_', ' ')}.")
 
 
 def register(router):
@@ -510,4 +598,4 @@ def register(router):
     router.add("/api/v1/integrations/teslamate/cars", GET=get_cars, PUT=put_cars, admin=admin_all)
 
 
-__all__ = ["register", "seed", "network_rows", "health", "fail"]
+__all__ = ["register", "seed", "network_rows", "health", "fail", "notices"]

@@ -13,7 +13,8 @@
 //   srcText(row)                 the line as text
 //   estPill(row)                 "Energy estimated" for a row the Tesla API alone saw (energy_basis), else null
 //   viaMark(value)               a small "Tesla API" mark after a live value that came from the Tesla API
-//   inputsLine(inputs)           the car's live inputs from /now: "Live inputs: SMO, 1 min ago · Tesla API, 2 min ago"
+//   inputsLine(inputs, { extra }) the car's live inputs from /now: "Live inputs: SMO, 1 min ago · Tesla API, 2 min ago",
+//                                extra (a link such as "Change order") at its end
 //   SOURCE_OPTIONS, sourceParam  the source filter: All, SMO, Tesla API, TeslaFi, Imported -> the API's source= value
 
 import { h } from '../shared/dom.js';
@@ -87,14 +88,16 @@ export function estPill(r, { text = 'Energy estimated' } = {}) {
 }
 
 /** A small mark after a live value that came from an input other than SMO ({ value, at_ms, sources }). */
+const SHOW_VIA = false;
 export function viaMark(val) {
   const s = val && typeof val === 'object' && Array.isArray(val.sources) ? val.sources[0] : null;
-  if (!s || s.kind === 'smo') return null;
+  // where a value came from is not marked beside it (the main view stays clean); the live inputs line names them
+  if (!s || s.kind === 'smo' || !SHOW_VIA) return null;
   return h('span', { class: 'src src-via', title: labelOf(s) }, dots([s.kind]), h('span', null, SHORT[s.kind] || s.kind));
 }
 
 /** The car's live inputs (/now inputs): which inputs it has and the newest value of each. */
-export function inputsLine(inputs, { cls = null, cover = null } = {}) {
+export function inputsLine(inputs, { cls = null, cover = null, extra = null } = {}) {
   const list = (Array.isArray(inputs) ? inputs : []).filter(Boolean);
   const now = api.now();
   return h('p', { class: ['src-inputs', cls], cover },
@@ -102,7 +105,8 @@ export function inputsLine(inputs, { cls = null, cover = null } = {}) {
     list.length ? list.map((i) => h('span', { class: 'src', title: i.label || null },
       dots([i.kind]),
       h('span', null, `${SHORT[i.kind] === 'Imported' ? i.label || 'Imported' : SHORT[i.kind] || i.label || i.kind}, ${i.last_ms != null ? `newest ${formatRelative(i.last_ms, now)}` : 'nothing yet'}`)))
-      : h('span', { class: 'muted' }, 'None yet: no SMO log and no Tesla API reading.'));
+      : h('span', { class: 'muted' }, 'None yet: no SMO log and no Tesla API reading.'),
+    extra);
 }
 
 /** The source filter: [value, words]. '' is every input. */

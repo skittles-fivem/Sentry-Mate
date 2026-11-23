@@ -119,7 +119,7 @@ class SyntheticFleet:
             "id": f"c{i}", "name": self.name(i), "model": model, "year": year,
             "vin_prefix": vin_prefix, "trim": trim,
             "profile": "tesla-sx-legacy" if model in ("Model S", "Model X") and year < 2021 else "tesla-3y",
-            "time_zone": tz, "last_activity_ms": last,
+            "time_zone": tz, "time_zone_source": "position" if i % 7 else "default", "last_activity_ms": last,
             "now": {
                 "state": st, "since_ms": since, "at_ms": at_ms, "received_ms": received,
                 "stale": now_ms - received > HOUR,

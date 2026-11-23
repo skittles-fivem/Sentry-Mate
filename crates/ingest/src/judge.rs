@@ -156,6 +156,88 @@ pub struct KeyChain {
     pub report: trust::ChainReport,
 }
 
+/// What the CAN Bridge app is told of a complete log: the `check` of `POST /api/can/logs/status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadCheck {
+    /// The file's SHA-256 is the sidecar's, the signature is the paired key's and its chain link fits the log before.
+    Verified,
+    /// It failed, and why. A failed log may be sent again under its name ([`crate::store::Store::receive_replacing`]).
+    Failed(Fault),
+    /// Not judged yet (no sidecar yet, or the log before it is still on its way): asked again next round.
+    Pending,
+}
+
+/// Why a log failed its check, in the app's words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fault {
+    /// Signed, but the signature, its key (another key than the paired one, another car key's) or its fields are wrong.
+    BadSignature,
+    /// Its chain link does not fit: the log before it is here but is not the one it names, failed its check, or is
+    /// missing although older logs of its chain are here (and nothing of it is on its way).
+    ChainBreak,
+    /// Not signed (or the bridge could not sign it).
+    Unsigned,
+    /// The file differs from what its sidecar names (SHA-256 or length).
+    Mismatch,
+}
+
+impl UploadCheck {
+    pub fn word(self) -> &'static str {
+        match self {
+            UploadCheck::Verified => "verified",
+            UploadCheck::Failed(_) => "failed",
+            UploadCheck::Pending => "pending",
+        }
+    }
+
+    /// The `check_reason` of a failed log.
+    pub fn reason(self) -> Option<&'static str> {
+        match self {
+            UploadCheck::Failed(f) => Some(f.word()),
+            UploadCheck::Verified | UploadCheck::Pending => None,
+        }
+    }
+}
+
+impl Fault {
+    pub fn word(self) -> &'static str {
+        match self {
+            Fault::BadSignature => "bad_signature",
+            Fault::ChainBreak => "chain_break",
+            Fault::Unsigned => "unsigned",
+            Fault::Mismatch => "mismatch",
+        }
+    }
+
+    /// The fault of a failed record's reason (the words of [`trust::check`] and [`trust::judge`]).
+    fn of(reason: Option<&str>) -> Fault {
+        match reason {
+            Some(r) if r == trust::SHA256_DIFFERS || r == trust::LENGTH_DIFFERS => Fault::Mismatch,
+            Some(r) if r == trust::NOT_SIGNED_BUT_PAIRED => Fault::Unsigned,
+            Some(r) if r == trust::BAD_CHAIN_INDEX || r == trust::BAD_CHAIN_FIELDS => Fault::ChainBreak,
+            // the signature, its key or its fields
+            Some(_) | None => Fault::BadSignature,
+        }
+    }
+}
+
+/// How long a status question waits for a key another task holds (a long judging) before it answers `pending`.
+pub const CHECK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What one pass over a key's records keeps of each log, to fit the chain links of the logs asked about.
+struct Seen {
+    /// Verified (`Some(true)`), waiting (`None`) or anything else (`Some(false)`).
+    good: Option<bool>,
+    /// Its chain index and SHA-256, when signed.
+    link: Option<(u64, [u8; 32])>,
+}
+
+fn sha_bytes(hex_sha: &str) -> Option<[u8; 32]> {
+    let mut out = [0u8; 32];
+    hex::decode_to_slice(hex_sha.to_ascii_lowercase(), &mut out).ok()?;
+    Some(out)
+}
+
 /// A log's record as it was just written: judged on arrival, by the sweep, judged again, or after its key was trusted.
 /// What [`Judge::on_judged`] is told (a log still waiting for its sidecar is not told).
 #[derive(Debug, Clone)]
@@ -725,7 +807,17 @@ impl Judge {
         if !ledger::valid_key(key) {
             return Err(bad_key());
         }
-        let _held = self.hold(key).await?;
+        let held = self.hold(key).await?;
+        self.read_held(held, key, f).await
+    }
+
+    /// [`Judge::read`] with the key already held.
+    async fn read_held<T: Send + 'static>(
+        &self,
+        _held: Held,
+        key: &str,
+        f: impl Fn(&Ledger, &Head) -> std::io::Result<T> + Send + Sync + 'static,
+    ) -> std::io::Result<T> {
         let f = Arc::new(f);
         let mut tries = 0;
         loop {
@@ -746,6 +838,101 @@ impl Judge {
                 }
             }
         }
+    }
+
+    /// The check of each of `logs` (a car key's log names) as the CAN Bridge app is told it, from the stored records
+    /// only (nothing is judged here): one pass over the key's records, whatever the number of names. `uploading`: the
+    /// logs of the key still arriving (a log whose previous one is among them is pending). A log with no record yet is
+    /// pending; so are all of them when the key is held longer than [`CHECK_WAIT`] (a long judging).
+    pub async fn upload_checks(
+        &self,
+        key: &str,
+        logs: &[String],
+        uploading: std::collections::HashSet<String>,
+    ) -> std::io::Result<std::collections::HashMap<String, UploadCheck>> {
+        use std::collections::{HashMap, HashSet};
+        if !ledger::valid_key(key) {
+            return Err(bad_key());
+        }
+        let pending = || logs.iter().map(|n| (n.clone(), UploadCheck::Pending)).collect::<HashMap<_, _>>();
+        let Ok(held) = tokio::time::timeout(CHECK_WAIT, self.hold(key)).await else {
+            return Ok(pending());
+        };
+        let wanted: Arc<HashSet<String>> = Arc::new(logs.iter().cloned().collect());
+        let (wait_ms, now) = (self.wait_ms, now_ms());
+        let w = wanted.clone();
+        let found = self
+            .read_held(held?, key, move |l, h| {
+                let mut seen: HashMap<Box<str>, Seen> = HashMap::new();
+                // the lowest chain index of each signing key so far, in name order (a log's older logs come before it)
+                let mut lowest: HashMap<String, u64> = HashMap::new();
+                let mut asked: Vec<(String, Record, bool)> = Vec::new();
+                l.for_each(h, |name, r| {
+                    let good = match r.status {
+                        Status::Verified => Some(true),
+                        Status::Waiting => None,
+                        Status::Failed | Status::CouldNotSign | Status::Unsigned => Some(false),
+                    };
+                    let link = r.link.as_ref().and_then(|k| sha_bytes(&k.sha256).map(|sha| (k.index, sha)));
+                    if w.contains(name) {
+                        let older = r.link.as_ref().is_some_and(|k| {
+                            lowest.iter().any(|(fp, &i)| i < k.index && same_fingerprint(fp, &k.key_fingerprint))
+                        });
+                        asked.push((name.to_string(), r.clone(), older));
+                    }
+                    if let Some(k) = r.link.as_ref() {
+                        let e = lowest.entry(k.key_fingerprint.clone()).or_insert(k.index);
+                        *e = (*e).min(k.index);
+                    }
+                    seen.insert(name.into(), Seen { good, link });
+                    ControlFlow::Continue(())
+                })?;
+                let fit = |r: &Record, older: bool| -> UploadCheck {
+                    let Some(k) = r.link.as_ref() else { return UploadCheck::Failed(Fault::ChainBreak) };
+                    if k.prev_name == "-" {
+                        return UploadCheck::Verified;
+                    }
+                    match seen.get(k.prev_name.as_str()) {
+                        Some(Seen { good: None, .. }) => UploadCheck::Pending,
+                        Some(Seen { good: Some(true), link: Some((i, sha)) }) => {
+                            let fits = i.checked_add(1) == Some(k.index) && sha_bytes(&k.prev_sha256) == Some(*sha);
+                            if fits { UploadCheck::Verified } else { UploadCheck::Failed(Fault::ChainBreak) }
+                        }
+                        Some(Seen { good: Some(true), link: None }) | Some(Seen { good: Some(false), .. }) => {
+                            UploadCheck::Failed(Fault::ChainBreak)
+                        }
+                        None if uploading.contains(&k.prev_name) => UploadCheck::Pending,
+                        // the first of its chain here (a chain received from its middle)
+                        None if !older => UploadCheck::Verified,
+                        // older logs of its chain are here but not the one before it: it may still come
+                        None if now.saturating_sub(r.arrived_ms) < wait_ms => UploadCheck::Pending,
+                        None => UploadCheck::Failed(Fault::ChainBreak),
+                    }
+                };
+                Ok(asked
+                    .into_iter()
+                    .map(|(name, r, older)| {
+                        let c = match r.status {
+                            Status::Verified => fit(&r, older),
+                            Status::Waiting => UploadCheck::Pending,
+                            Status::Unsigned | Status::CouldNotSign => UploadCheck::Failed(Fault::Unsigned),
+                            Status::Failed => UploadCheck::Failed(Fault::of(r.reason.as_deref())),
+                        };
+                        (name, c)
+                    })
+                    .collect::<HashMap<_, _>>())
+            })
+            .await?;
+        let mut all = pending();
+        all.extend(found);
+        Ok(all)
+    }
+
+    /// Whether a stored log failed its check, so that a new upload of its name (or its sidecar's) replaces it.
+    pub async fn replaceable(&self, log_name: &str, uploading: std::collections::HashSet<String>) -> bool {
+        let Some(n) = LogName::parse(log_name).filter(|n| !n.sidecar) else { return false };
+        let checks = self.upload_checks(n.vehicle_key, &[log_name.to_string()], uploading).await;
+        checks.is_ok_and(|c| matches!(c.get(log_name), Some(UploadCheck::Failed(_))))
     }
 
     /// A key's whole state with every record (its whole history: one key at a time).

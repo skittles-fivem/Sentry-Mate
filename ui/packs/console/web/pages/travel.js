@@ -32,6 +32,7 @@ export async function mount(ctx) {
   const carById = new Map(fleet.map((c) => [c.id, c]));
   const chosen = !q.cars || q.cars === 'all' ? 'all' : q.cars.split(',').filter((c) => carById.has(c));
   const viewCars = chosen === 'all' ? fleet.map((c) => c.id) : chosen;
+  if (chosen !== 'all' && viewCars.length === 1) state.rememberCar(viewCars[0], { sold: state.isSold(carById.get(viewCars[0])) });
   const carsParam = chosen === 'all' ? 'all' : viewCars.join(',');
   const multi = viewCars.length > 1;
   const carName = (cid) => carById.get(cid)?.name || cid;

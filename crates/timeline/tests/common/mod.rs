@@ -211,7 +211,17 @@ impl Car {
 /// The timeline of `[from, to)`.
 pub fn build(car: u32, from: u64, to: u64, samples: &[Sample], logs: &[LogFacts]) -> Timeline {
     timeline::build(
-        &Input { car, from_ms: from, to_ms: to, samples, logs, holes: &[], api: &[], marks: &[] },
+        &Input {
+            car,
+            from_ms: from,
+            to_ms: to,
+            samples,
+            logs,
+            holes: &[],
+            api: &[],
+            marks: &[],
+            order: Default::default(),
+        },
         &Params::default(),
     )
 }

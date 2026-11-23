@@ -382,7 +382,10 @@ async fn reprice(
         pq::reprice(e, &who.cars, id, from, to, only, dry)
     })
     .await?;
-    if !dry {
+    if dry {
+        // a dry run changes nothing
+        v.mark_audited();
+    } else {
         let n = value["repriced"].as_u64().unwrap_or(0);
         let summary = format!("Repriced {n} past charges at a place at its price now.");
         v.audit(&app, "place-repriced", Some(&target("place", None, &q::place_ref(id))), &summary).await?;
@@ -460,6 +463,7 @@ async fn maps_config(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<
         })
         .await?;
     let t = &st.tiles;
+    let chosen = t.chosen();
     let (offline_file, offline_error, header) = match &map {
         Some(Ok((name, a))) => (Some(name.clone()), None, Some(a.header.clone())),
         Some(Err(e)) => (None, Some(e.clone()), None),
@@ -472,9 +476,18 @@ async fn maps_config(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<
         "mode": t.mode,
         // offline tiles come from this server, while tiles are offline and a map file is there
         "offline_url": if !online && usable { Some(OFFLINE_TILE_URL) } else { None },
-        "online_template": if online { t.online_url.clone() } else { None },
-        "attribution": t.attribution,
-        "max_zoom": t.max_zoom,
+        "online_template": if online { chosen.as_ref().map(|c| c.template.clone()) } else { None },
+        "attribution": chosen.as_ref().map_or_else(|| t.attribution.clone(), |c| c.attribution.clone()),
+        "max_zoom": chosen.as_ref().map_or(t.max_zoom, |c| c.max_zoom),
+        // the style in use (a preset id or `custom`), its overlays (names and roads) and whether it is photos
+        "preset": t.chosen_id(),
+        "labels": t.labels,
+        "allowed_styles": t.styles,
+        "overlays": if online { chosen.as_ref().map(|c| c.overlays.clone()).unwrap_or_default() } else { Vec::new() },
+        "imagery": online && chosen.as_ref().is_some_and(|c| c.imagery),
+        // what a viewer's Map / Satellite switch offers (the chosen style first); none while tiles are offline
+        "styles": if online { t.viewer_styles() } else { Vec::new() },
+        "hosts": if online { t.hosts() } else { Vec::new() },
         "offline_present": present,
         "offline_data_present": present,
         "offline_file": offline_file,

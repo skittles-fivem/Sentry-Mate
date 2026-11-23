@@ -20,6 +20,8 @@ import { createPeriodPicker } from './period.js';
 import { currentPrefs, savePrefs, applyPrefs, onPrefs } from './prefs.js';
 import { SIZES, sizeState, setSize, sizeNote, display } from './display.js';
 import { flash } from './flash.js';
+import { buildLabel, buildTitle, releaseDismissed, dismissRelease } from '../shared/release.js';
+import { isTmNotice, tmNoticeFix, TM_NOTICE_ACTION } from '../shared/teslamate.js';
 
 const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 
@@ -212,23 +214,27 @@ let notices = [];
 function drawNotices() {
   const el = parts.notices;
   const gone = dismissed();
-  const shown = notices.filter((n) => n.code !== 'release_available' && !gone.has(`${n.code}:${n.since_ms}`));
+  // The release notice (admins only) is hidden per newer build in this browser; the others for this tab.
+  const shown = notices.filter((n) => (n.code === 'release_available' ? !releaseDismissed(n) : !gone.has(`${n.code}:${n.since_ms}`)));
   el.hidden = !shown.length;
   el.replaceChildren(...shown.map((n) => h('div', { class: ['notice', `notice-${n.level || 'info'}`], role: n.level === 'error' ? 'alert' : null },
     h('div', { class: 'wrap notice-row' },
       icon(n.level === 'info' ? 'info' : 'warning', 'icon notice-icon'),
       h('p', { class: 'notice-text' }, n.message),
-      n.fix_link ? h('a', { class: 'notice-fix', href: fixHref(n) }, /^tesla_/.test(n.code || '') ? 'Open the Tesla account' : fixWords(n.fix_link), icon('arrowRight')) : null,
-      h('button', { type: 'button', class: 'notice-close', 'aria-label': 'Hide this notice for now', onclick: () => {
+      n.fix_link ? h('a', { class: 'notice-fix', href: fixHref(n) }, /^tesla_/.test(n.code || '') ? 'Open the Tesla account' : isTmNotice(n) ? TM_NOTICE_ACTION : n.code === 'release_available' ? 'About this release' : fixWords(n.fix_link), icon('arrowRight')) : null,
+      h('button', { type: 'button', class: 'notice-close', 'aria-label': n.code === 'release_available' ? 'Hide this notice until a later build' : 'Hide this notice for now', onclick: () => {
+        if (n.code === 'release_available') { dismissRelease(n); drawNotices(); return; }
         try { const s = dismissed(); s.add(`${n.code}:${n.since_ms}`); sessionStorage.setItem(DISMISS_KEY, JSON.stringify([...s])); } catch { /* fine */ }
         drawNotices();
       } }, icon('close'))))));
   drawFooter();
 }
-/** A Tesla account's notice opens that account on Settings: Integrations (#tesla-<id>). */
+/** A Tesla account's notice opens that account on Settings: Integrations (#tesla-<id>), a local TeslaMate notice its
+ * section there (#teslamate). */
 function fixHref(n) {
   const acc = n && n.detail && n.detail.account;
   if (/^tesla_/.test(n.code || '') && acc && /^[A-Za-z0-9_-]+$/.test(acc)) return `${String(n.fix_link).split('#')[0]}#tesla-${acc}`;
+  if (isTmNotice(n)) return tmNoticeFix(n);
   return n.fix_link;
 }
 function fixWords(link) {
@@ -240,7 +246,7 @@ function drawFooter() {
   const release = notices.find((n) => n.code === 'release_available');
   const pack = about && about.ui_pack ? `${about.ui_pack.name || 'Logbook'} UI pack ${about.ui_pack.version || ''}`.trim() : 'Logbook UI pack';
   parts.footer.replaceChildren(h('div', { class: 'wrap colophon-row' },
-    h('p', { class: 'colophon-name' }, `Sentry Mate${about ? ` ${about.version}` : ''}`, h('span', { class: 'colophon-sep', 'aria-hidden': 'true' }, ' · '), pack,
+    h('p', { class: 'colophon-name', title: buildTitle(about) || null }, `Sentry Mate${about ? ` ${buildLabel(about)}` : ''}`, h('span', { class: 'colophon-sep', 'aria-hidden': 'true' }, ' · '), pack,
       about ? h('span', { class: 'colophon-api' }, ` · API ${about.api_version}`) : null),
     h('p', { class: 'colophon-legal', cover: ['shell.footer.legal', 'web.shell.legal-footer'] },
       'Sentry Mate only reads from your cars. ', h('a', { href: '/help#licence' }, 'Licence and notices'), ' · ', h('a', { href: '/help' }, 'Help')),

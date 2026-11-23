@@ -1,8 +1,7 @@
-// Help and about (/help): versions, the opt-in release notice, links, licences and notices, data credits,
+// Help and about (/help): versions, the opt-in release check, links, licences and notices, data credits,
 // and short answers to common questions.
-// GET /api/v1/about for the versions, licences and credits; GET /api/v1/notices for the release notice (only
-// there when the owner turned the release check on); GET /api/v1/settings (admins only) to say whether the
-// release check is on.
+// GET /api/v1/about for the versions (and this build), licences and credits; GET /api/v1/release for the
+// release check's last answer; GET /api/v1/settings (admins only) for whether release-notes links are allowed.
 
 import * as state from '../shared/state.js';
 import { h, replace, on } from '../shared/dom.js';
@@ -10,7 +9,7 @@ import { downloadCsv, csvFilename } from '../shared/csv.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel, kv, pill, csvButton, appLink } from '../core/page.js';
 import { getNotices, onNotices } from '../core/notices.js';
-import { date } from '../core/fmt.js';
+import { buildLabel, buildTitle, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 import { flash } from '../core/flash.js';
 
 export const id = 'help';
@@ -61,16 +60,16 @@ function lookupSentence(settings) {
 }
 
 /**
- * A link to the page an answer is about. Car pages need a car: with none chosen yet, use the only car if
- * there is exactly one, else say that a car must be chosen first (the link then goes to All cars).
+ * A link to the page an answer is about. Car pages need a car: without one in the address, use the preferred
+ * car (state.preferredCar), else say that a car must be chosen first (the link then goes to All cars).
  */
 function carLink(page, label, cars) {
-  let href = state.linkTo(page);
+  // with the car list (no car in the address), car pages open the preferred car: Main car, else the last opened
+  const pick = cars && cars.length ? state.preferredCar(cars) : null;
+  const usesCar = state.linkTo(page, { car: 'x' }) !== state.linkTo(page, { car: null });
+  let href = pick && usesCar ? state.linkTo(page, { car: pick }) : state.linkTo(page);
   let text = `Open ${label}`;
-  if (href === state.buildUrl('fleet') && page !== 'fleet') {
-    if (cars && cars.length === 1) href = state.linkTo(page, { car: cars[0].id });
-    else text = `Choose a car, then open ${label}`;
-  }
+  if (href === state.buildUrl('fleet') && page !== 'fleet') text = `Choose a car, then open ${label}`;
   return h('a', { class: 'link nowrap', href }, text, icon('chev-r', 'ico--sm'));
 }
 
@@ -101,15 +100,16 @@ function downloadText(filename, text) {
 }
 
 export async function mount(ctx) {
-  let about, notices, settings = null, cars = null;
-  const needCar = !(ctx.state.car ?? state.lastCar());
+  let about, notices, settings = null, cars = null, release = null;
+  const needCar = !ctx.state.car;
   try {
-    [about, notices, settings, cars] = await Promise.all([
+    [about, notices, settings, cars, release] = await Promise.all([
       ctx.api.get('about', null, { maxAgeMs: 600000 }),
       ctx.api.get('notices').then((r) => r.items).catch(() => getNotices()),
       ctx.admin ? ctx.api.get('settings').catch(() => null) : Promise.resolve(null),
-      // Only when no car is chosen yet: with exactly one car, links to car pages can name it.
-      needCar ? ctx.api.get('cars', { limit: 2 }).then((r) => r.items || []).catch(() => null) : Promise.resolve(null),
+      // Only without a car in the address: links to car pages name the preferred car.
+      needCar ? ctx.api.get('cars', { sort: 'custom', limit: 100 }, { maxAgeMs: 30000 }).then((r) => r.items || []).catch(() => null) : Promise.resolve(null),
+      ctx.api.get('release').catch(() => null),
     ]);
   } catch (e) { ctx.fail(e); return; }
   if (!ctx.alive()) return;
@@ -118,32 +118,48 @@ export async function mount(ctx) {
   const pack = about.ui_pack || {};
   const apiMismatch = pack.api != null && about.api_version != null && String(pack.api) !== String(about.api_version);
   const versionCell = h('div', { class: 'help-version' },
-    h('span', { class: 'help-version-main mono' }, about.version || '—'),
+    h('span', { class: 'help-version-main mono', title: buildTitle(about) || null }, buildLabel(about, ctx.api.now()) || '—'),
     about.dev_server ? pill('Dev server, made-up data', { tone: 'warm', ic: 'warn' }) : null);
 
   const releaseCell = h('div', { class: 'help-release' });
   const paintRelease = (list) => {
+    const now = ctx.api.now();
     const n = (list || []).find((x) => x.code === 'release_available');
-    const checkOn = settings?.release_check?.enabled;
-    const turnLink = ctx.admin ? appLink('settings-server', 'Release check in Settings: Server and access') : null;
-    if (n) {
+    const turnLink = ctx.admin ? h('a', { class: 'link', href: `${state.buildUrl('settings-display')}#release-check` }, 'Release check in Settings: Display and units') : null;
+    const st = release ? releaseStatus(release, now) : null;
+    const when = release ? checkedAgo(release, now) : '';
+    if (!release) {
+      replace(releaseCell, h('span', null, 'Could not read the release check'), h('span', { class: 'explain' }, 'The server did not answer; try again later.'));
+    } else if (release.status === 'newer') {
+      // the notes link only while an admin allows release-notes links (settings.outside_links.release_notes)
+      const notes = settings?.outside_links?.release_notes ? (n?.detail?.notes_url || release.newest?.compare_url) : null;
+      const lines = changeLines(release.newest);
       replace(releaseCell,
-        pill(n.message || 'A newer release is out', { tone: 'live', ic: 'upload' }),
-        h('span', { class: 'explain' }, n.since_ms ? `Reported ${date(n.since_ms, ctx.tz)}. ` : '', 'Your data stays as it is when you update the container.'),
+        h('span', { class: 'ok help-release-head' }, icon('upload', 'ico--sm'), ' ', st.text),
+        lines.length ? h('ul', { class: 'help-release-titles' }, lines.map((x) => h('li', null, x))) : null,
+        release.pull ? h('span', { class: 'explain' }, 'To update, run on the server: ', h('code', { class: 'mono help-release-pull' }, release.pull)) : null,
+        h('span', { class: 'explain' }, when ? `${when[0].toUpperCase()}${when.slice(1)}. ` : '', 'Your data stays as it is when you update the container.'),
+        isOutside(notes) ? h('span', { class: 'explain' }, outLink(notes, 'What changed')) : null,
         turnLink ? h('span', { class: 'explain' }, turnLink) : null);
-    } else if (checkOn === false) {
-      replace(releaseCell, h('span', null, 'Not checked'),
-        h('span', { class: 'explain' }, 'The release check is off, so Sentry Mate never asks the internet about new releases. ', turnLink));
-    } else if (checkOn === true) {
-      replace(releaseCell, h('span', { class: 'ok' }, 'This is the newest release'),
-        h('span', { class: 'explain' }, 'The release check is on and has found nothing newer. ', turnLink));
+    } else if (release.status === 'up_to_date') {
+      replace(releaseCell, h('span', { class: 'ok' }, 'Up to date'),
+        h('span', { class: 'explain' }, when ? `The release check is on and has found nothing newer; ${when}. ` : 'The release check is on and has found nothing newer. ', turnLink));
+    } else if (release.status === 'error') {
+      replace(releaseCell, h('span', { class: 'warn' }, st.text),
+        h('span', { class: 'explain' }, when ? `${when[0].toUpperCase()}${when.slice(1)}. ` : '', 'It tries again at the next daily check. ', turnLink));
+    } else if (release.status === 'never' || release.status === 'checking') {
+      replace(releaseCell, h('span', null, st.text),
+        h('span', { class: 'explain' }, 'The release check is on; its first answer shows here. ', turnLink));
     } else {
-      replace(releaseCell, h('span', null, 'No newer release reported'),
-        h('span', { class: 'explain' }, 'Shown only when an admin turns the release check on; until then Sentry Mate does not look.'));
+      replace(releaseCell, h('span', null, ctx.admin ? 'Not checked' : 'Off'),
+        h('span', { class: 'explain' }, 'The release check is off, so Sentry Mate never asks the internet about new releases. ', turnLink));
     }
   };
   paintRelease(notices);
-  ctx.onCleanup(onNotices((list) => { if (ctx.alive()) paintRelease(list); }));
+  ctx.onCleanup(onNotices(async (list) => {
+    release = await ctx.api.get('release').catch(() => release);
+    if (ctx.alive()) paintRelease(list);
+  }));
 
   const source = about.links?.source;
   const docs = about.links?.docs;

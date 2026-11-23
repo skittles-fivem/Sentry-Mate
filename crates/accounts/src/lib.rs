@@ -439,6 +439,16 @@ fn pending_hash(token: &str) -> Option<Hash> {
         .then(|| Sha256::digest(token.as_bytes()).into())
 }
 
+/// An account as an audit entry names it (`account:a3`, the id the web side shows).
+fn account_target(id: AccountId) -> String {
+    format!("account:a{id}")
+}
+
+/// A session as an audit entry names it (`session:<its listed id>`).
+fn session_target(id: &str) -> String {
+    format!("session:{id}")
+}
+
 fn role_name(r: Role) -> &'static str {
     match r {
         Role::Admin => "admin",
@@ -594,6 +604,19 @@ impl Accounts {
         self.audit.record(who, client.map(|c| c.address), action, details)
     }
 
+    /// An audit entry about an item (`account:a3`, `session:<id>`): kept as `[target] summary`, the way the web
+    /// side writes its own and reads them back.
+    fn record_on(
+        &self,
+        who: Option<&str>,
+        client: Option<&Client>,
+        action: &str,
+        target: &str,
+        summary: &str,
+    ) -> Result<()> {
+        self.record(who, client, action, &format!("[{}] {summary}", target.replace(']', ")")))
+    }
+
     /// The server's audit log.
     pub fn audit(&self) -> &Arc<Audit> {
         &self.audit
@@ -623,7 +646,7 @@ impl Accounts {
         let state = SetupState { sha256: sha256_hex(&symbols), expires_ms, file: code_file.to_path_buf() };
         let plain = serde_json::to_vec(&state).map_err(error::corrupt)?;
         self.vault.write_file(&self.dir.join("setup.sealed"), "accounts/setup", &plain)?;
-        self.record(None, None, "setup-code-made", "a setup code for the first admin")?;
+        self.record(None, None, "setup-code-made", "Made a setup code for the first admin.")?;
         Ok(SetupCode { code, expires_ms })
     }
 
@@ -653,7 +676,7 @@ impl Accounts {
         let given = sha256_hex(&normal_setup_code(code));
         if let Err(e) = self.check_setup_code(&given) {
             if matches!(e, Error::WrongSetupCode) {
-                self.record(None, Some(client), "setup-code-wrong", "")?;
+                self.record(None, Some(client), "setup-code-wrong", "Someone typed a wrong setup code.")?;
             }
             return Err(e.into());
         }
@@ -679,7 +702,8 @@ impl Accounts {
         drop(one);
         self.throttle.success(&keys);
         let ns = self.new_session(&s, client)?;
-        self.record(Some(&s.name), Some(client), "setup", "the first admin account was made")?;
+        let summary = format!("Set up the server: made the first admin account {}.", s.name);
+        self.record_on(Some(&s.name), Some(client), "setup", &account_target(s.id), &summary)?;
         Ok(ns)
     }
 
@@ -817,11 +841,12 @@ impl Accounts {
             // as it is now that the account's file has been read (see `repair_two_step_flag`)
             (Some(s), Some(phc)) if ok => (self.summary(s.id).unwrap_or(s), phc),
             (Some(s), _) => {
-                self.record(Some(&s.name), Some(client), "sign-in-failed", "wrong password")?;
+                let summary = format!("Typed a wrong password for {}.", s.name);
+                self.record_on(Some(&s.name), Some(client), "sign-in-failed", &account_target(s.id), &summary)?;
                 return Err(Error::WrongCredentials);
             }
             (None, _) => {
-                self.record(None, Some(client), "sign-in-failed", "no such account")?;
+                self.record(None, Some(client), "sign-in-failed", "Tried to sign in with a name that has no account.")?;
                 return Err(Error::WrongCredentials);
             }
         };
@@ -833,7 +858,8 @@ impl Accounts {
                 Ok(v) => v,
                 Err(e) => {
                     // counted as a failed try (it was counted when it began) and answered as a wrong password
-                    self.record(Some(&s.name), Some(client), "sign-in-refused", "two-step sign-in is required here")?;
+                    let summary = format!("Refused to sign {} in: two-step sign-in is required here.", s.name);
+                    self.record_on(Some(&s.name), Some(client), "sign-in-refused", &account_target(s.id), &summary)?;
                     return Err(if matches!(e, Error::TwoStepRequired) { Error::WrongCredentials } else { e });
                 }
             }
@@ -874,15 +900,16 @@ impl Accounts {
         };
         self.throttle.success(&keys);
         self.right_noted(&keys[1], now);
-        let details = if setup_only { "only to set up two-step sign-in" } else { "" };
-        self.record(Some(&s.name), Some(client), "sign-in", details)?;
+        let summary = if setup_only { "Signed in, only to set up two-step sign-in." } else { "Signed in." };
+        self.record_on(Some(&s.name), Some(client), "sign-in", &session_target(&ns.session.id), summary)?;
         Ok(SignIn::Done(Box::new(ns)))
     }
 
     /// A sign-in whose password was right when checked but has been changed since: no session, the answer a wrong
     /// password gets.
     fn password_changed_meanwhile(&self, s: &Summary, client: &Client) -> Error {
-        if let Err(e) = self.record(Some(&s.name), Some(client), "sign-in-failed", "the password changed meanwhile") {
+        let summary = format!("Could not sign {} in: the password changed meanwhile.", s.name);
+        if let Err(e) = self.record_on(Some(&s.name), Some(client), "sign-in-failed", &account_target(s.id), &summary) {
             return e;
         }
         Error::WrongCredentials
@@ -945,14 +972,15 @@ impl Accounts {
                 self.throttle.success(&keys);
                 // the password that let it this far may have changed since
                 let Some(ns) = self.new_session_checked(&s, client, checked)? else {
-                    self.record(Some(&s.name), Some(client), "sign-in-failed", "the password changed meanwhile")?;
+                    let summary = format!("Could not sign {} in: the password changed meanwhile.", s.name);
+                    self.record_on(Some(&s.name), Some(client), "sign-in-failed", &account_target(s.id), &summary)?;
                     return Err(Error::SignInExpired);
                 };
                 let how = match used {
-                    CodeUsed::Totp => "with a two-step code".to_string(),
-                    CodeUsed::Recovery { left } => format!("with a recovery code ({left} left)"),
+                    CodeUsed::Totp => "Signed in with a two-step code.".to_string(),
+                    CodeUsed::Recovery { left } => format!("Signed in with a recovery code ({left} left)."),
                 };
-                self.record(Some(&s.name), Some(client), "sign-in", &how)?;
+                self.record_on(Some(&s.name), Some(client), "sign-in", &session_target(&ns.session.id), &how)?;
                 Ok(ns)
             }
             None => {
@@ -968,7 +996,8 @@ impl Accounts {
                     p.remove(&h);
                 }
                 drop(p);
-                self.record(Some(&s.name), Some(client), "two-step-failed", "wrong two-step code")?;
+                let t = account_target(s.id);
+                self.record_on(Some(&s.name), Some(client), "two-step-failed", &t, "Typed a wrong two-step code.")?;
                 Err(if over { Error::SignInExpired } else { Error::WrongCode })
             }
         }
@@ -1049,12 +1078,8 @@ impl Accounts {
         let policy = self.two_step_policy();
         if !s.two_step && (policy.everyone || policy.outside) && !client.local {
             self.sessions.end(&h)?;
-            self.record(
-                Some(&s.name),
-                Some(client),
-                "signed-out",
-                "two-step sign-in is required outside the home network",
-            )?;
+            let summary = format!("Signed {} out: two-step sign-in is required outside the home network.", s.name);
+            self.record_on(Some(&s.name), Some(client), "signed-out", &session_target(&session.id), &summary)?;
             return Err(Error::TwoStepRequired);
         }
         let cars = self.with_account(s.id, |l| Ok(l.cars.clone()))?;
@@ -1074,7 +1099,8 @@ impl Accounts {
         let Some(h) = sessions::token_hash(token) else { return Ok(false) };
         let Some(account) = self.sessions.end(&h)? else { return Ok(false) };
         let name = self.summary(account).map(|s| s.name);
-        self.record(name.as_deref(), Some(client), "sign-out", "")?;
+        let t = session_target(&sessions::public_id(&h));
+        self.record_on(name.as_deref(), Some(client), "sign-out", &t, "Signed out.")?;
         Ok(true)
     }
 
@@ -1097,7 +1123,8 @@ impl Accounts {
         let ended = self.sessions.end_by_id(target, session_id)?;
         if ended {
             let name = self.summary(target).map(|s| s.name).unwrap_or_default();
-            self.record(Some(&by.account.name), Some(&by.client), "session-revoked", &format!("a device of {name}"))?;
+            let (t, summary) = (session_target(session_id), format!("Signed out a device of {name}."));
+            self.record_on(Some(&by.account.name), Some(&by.client), "session-revoked", &t, &summary)?;
         }
         Ok(ended)
     }
@@ -1108,7 +1135,15 @@ impl Accounts {
         let keep = (keep_current && target == by.account.id).then_some(&by.hash);
         let n = self.sessions.end_account(target, keep)?;
         let name = self.summary(target).map(|s| s.name).unwrap_or_default();
-        self.record(Some(&by.account.name), Some(&by.client), "sessions-revoked", &format!("{n} of {name}"))?;
+        let devices = if n == 1 { "1 device".to_string() } else { format!("{n} devices") };
+        let summary = format!("Signed out {devices} of {name}.");
+        self.record_on(
+            Some(&by.account.name),
+            Some(&by.client),
+            "sessions-revoked",
+            &account_target(target),
+            &summary,
+        )?;
         Ok(n)
     }
 
@@ -1134,7 +1169,8 @@ impl Accounts {
         drop(pass);
         drop(one);
         if !ok {
-            self.record(Some(&s.name), Some(&by.client), "confirm-failed", "wrong password given again")?;
+            let summary = "Typed a wrong password to confirm a change.";
+            self.record_on(Some(&s.name), Some(&by.client), "confirm-failed", &account_target(s.id), summary)?;
             return Err(Error::WrongPassword);
         }
         self.throttle.success(&keys);
@@ -1147,7 +1183,8 @@ impl Accounts {
                 None => None,
             };
             if used.is_none() {
-                self.record(Some(&s.name), Some(&by.client), "confirm-failed", "wrong two-step code")?;
+                let summary = "Typed a wrong two-step code to confirm a change.";
+                self.record_on(Some(&s.name), Some(&by.client), "confirm-failed", &account_target(s.id), summary)?;
                 return Err(Error::WrongCode);
             }
             self.throttle.success(&keys);
@@ -1203,8 +1240,8 @@ impl Accounts {
             Zeroizing::new(self.hasher.hash(new.password)?)
         };
         let s = self.insert(&name, &phc, new.role, new.cars)?;
-        let details = format!("{} ({}, {})", s.name, role_name(s.role), cars_words(s.cars));
-        self.record(Some(&actor.name), Some(&by.client), "account-created", &details)?;
+        let details = format!("Added the account {} ({}, {}).", s.name, role_name(s.role), cars_words(s.cars));
+        self.record_on(Some(&actor.name), Some(&by.client), "account-created", &account_target(s.id), &details)?;
         Ok(s.view())
     }
 
@@ -1226,7 +1263,8 @@ impl Accounts {
         lock(&self.cache).forget(target);
         self.sessions.end_account(target, None)?;
         lock(&self.pending).retain(|_, p| p.account != target);
-        self.record(Some(&actor.name), Some(&by.client), "account-removed", &s.name)?;
+        let summary = format!("Removed the account {}.", s.name);
+        self.record_on(Some(&actor.name), Some(&by.client), "account-removed", &account_target(s.id), &summary)?;
         Ok(())
     }
 
@@ -1247,11 +1285,11 @@ impl Accounts {
         if s.role == Role::Admin && idx.admins <= 1 {
             return Err(Error::LastAdmin);
         }
-        let details = format!("{}: {} to {}", s.name, role_name(s.role), role_name(role));
+        let details = format!("Changed the role of {} from {} to {}.", s.name, role_name(s.role), role_name(role));
         s.role = role;
         idx.put(&self.vault, s)?;
         drop(idx);
-        self.record(Some(&actor.name), Some(&by.client), "role-changed", &details)
+        self.record_on(Some(&actor.name), Some(&by.client), "role-changed", &account_target(target), &details)
     }
 
     /// Sets a new password: one's own (with the current password), or anyone's for an admin (with the admin's own).
@@ -1281,8 +1319,9 @@ impl Accounts {
         lock(&self.pending).retain(|_, p| p.account != target);
         let keep = own.then_some(&by.hash);
         let n = self.sessions.end_account(target, keep)?;
-        let details = format!("{} ({n} other sessions signed out)", s.name);
-        self.record(Some(&actor.name), Some(&by.client), "password-changed", &details)?;
+        let others = if n == 1 { "1 other device".to_string() } else { format!("{n} other devices") };
+        let details = format!("Changed the password of {} ({others} signed out).", s.name);
+        self.record_on(Some(&actor.name), Some(&by.client), "password-changed", &account_target(s.id), &details)?;
         Ok(n)
     }
 
@@ -1340,11 +1379,11 @@ impl Accounts {
             let mut idx = self.index_mut();
             let Some(mut s) = idx.by_id.get(&target).cloned() else { return Err(Error::NoSuchAccount) };
             s.cars = count;
-            let details = format!("{}: {}", s.name, cars_words(count));
+            let details = format!("Changed which cars {} sees: {}.", s.name, cars_words(count));
             idx.put(&self.vault, s)?;
             Ok(details)
         })?;
-        self.record(Some(&actor.name), Some(&by.client), "cars-changed", &details)
+        self.record_on(Some(&actor.name), Some(&by.client), "cars-changed", &account_target(target), &details)
     }
 
     /// Which cars an account sees.
@@ -1354,6 +1393,16 @@ impl Accounts {
 
     /// Chooses the interface (UI pack) for one's own account (`None`: the one chosen for everyone).
     pub fn set_ui_pack(&self, by: &SignedIn, pack: Option<&str>) -> Result<()> {
+        let said = match pack {
+            Some(p) => format!("Chose the {p} design."),
+            None => "Went back to the design chosen for everyone.".to_string(),
+        };
+        self.set_ui_pack_said(by, pack, pack.unwrap_or("everyone"), &said)
+    }
+
+    /// The same, with the audit entry's words: `target_pack` the pack its target names (`ui-pack:<id>`), `said` its
+    /// sentence ("Chose the Horizon design.", with the pack's own name).
+    pub fn set_ui_pack_said(&self, by: &SignedIn, pack: Option<&str>, target_pack: &str, said: &str) -> Result<()> {
         let pack = pack.map(valid_pack).transpose()?;
         let mut idx = self.index_mut();
         let Some(mut s) = idx.by_id.get(&by.account.id).cloned() else { return Err(Error::NotSignedIn) };
@@ -1364,8 +1413,7 @@ impl Accounts {
         let name = s.name.clone();
         idx.put(&self.vault, s)?;
         drop(idx);
-        let details = pack.unwrap_or_else(|| "the one for everyone".into());
-        self.record(Some(&name), Some(&by.client), "ui-pack-chosen", &details)
+        self.record_on(Some(&name), Some(&by.client), "ui-pack-chosen", &format!("ui-pack:{target_pack}"), said)
     }
 
     // ---- two-step sign-in
@@ -1419,12 +1467,14 @@ impl Accounts {
         );
         if let Err(e) = r {
             if matches!(e, Error::WrongCode) {
-                self.record(Some(&s.name), Some(&by.client), "two-step-failed", "wrong code while setting it up")?;
+                let summary = "Typed a wrong code while setting up two-step sign-in.";
+                self.record_on(Some(&s.name), Some(&by.client), "two-step-failed", &account_target(s.id), summary)?;
             }
             return Err(e);
         }
         self.throttle.success(&keys);
-        self.record(Some(&s.name), Some(&by.client), "two-step-on", "")?;
+        let t = account_target(s.id);
+        self.record_on(Some(&s.name), Some(&by.client), "two-step-on", &t, "Turned two-step sign-in on.")?;
         Ok(shown)
     }
 
@@ -1463,7 +1513,8 @@ impl Accounts {
             },
             |_| self.set_two_step_flag(target, false),
         )?;
-        self.record(Some(&actor.name), Some(&by.client), "two-step-off", &s.name)
+        let summary = format!("Turned two-step sign-in off for {}.", s.name);
+        self.record_on(Some(&actor.name), Some(&by.client), "two-step-off", &account_target(s.id), &summary)
     }
 
     /// New recovery codes for one's own account (the old ones stop working), shown once.
@@ -1479,7 +1530,8 @@ impl Accounts {
             sec.recovery = kept;
             Ok(())
         })?;
-        self.record(Some(&s.name), Some(&by.client), "recovery-codes-new", "")?;
+        let summary = "Made new recovery codes; the old ones stopped working.";
+        self.record_on(Some(&s.name), Some(&by.client), "recovery-codes-new", &account_target(s.id), summary)?;
         Ok(shown)
     }
 
@@ -1509,9 +1561,12 @@ impl Accounts {
         self.vault.write_file(&self.dir.join("policy.sealed"), "accounts/policy", &plain)?;
         *p = policy;
         drop(p);
-        let onoff = |b: bool| if b { "on" } else { "off" };
-        let details = format!("for everyone: {}, from outside: {}", onoff(policy.everyone), onoff(policy.outside));
-        self.record(Some(&actor.name), Some(&by.client), "two-step-policy", &details)
+        let details = match (policy.everyone, policy.outside) {
+            (true, _) => "Two-step sign-in is now required for everyone.",
+            (false, true) => "Two-step sign-in is now required from outside the home network.",
+            (false, false) => "Two-step sign-in is now required of no one.",
+        };
+        self.record_on(Some(&actor.name), Some(&by.client), "two-step-policy", "settings:server", details)
     }
 
     // ---- upkeep

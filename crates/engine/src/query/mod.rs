@@ -325,8 +325,9 @@ pub struct Scoped<T> {
 }
 
 /// The car, or `no_such_car`.
+/// A car, its `time_zone` the zone it follows ([`Engine::car_zone`]): not to be stored back as the owner's.
 pub(crate) fn car_of(e: &Engine, car: CarId) -> QResult<Car> {
-    e.db().car(car)?.ok_or(QueryError::NoSuchCar)
+    Ok(e.inner.zoned(e.db().car(car)?.ok_or(QueryError::NoSuchCar)?))
 }
 
 pub(crate) fn scoped<T>(c: &Car, body: T) -> Scoped<T> {
@@ -392,14 +393,9 @@ impl Sources {
             "can"
         } else if let Some(site) = site.filter(|_| imported) {
             site.word()
-        } else if origins.contains(&model::Origin::TeslaApi) {
-            "tesla_api"
-        } else if origins.contains(&model::Origin::TeslafiApi) {
-            "teslafi_api"
-        } else if origins.contains(&model::Origin::TeslamateLocal) {
-            "teslamate_local"
         } else {
-            "can"
+            // the first API in the order they win (`tesla_api`, `teslafi_api`, `teslamate_local`)
+            model::Input::apis().map(model::Origin::from).find(|o| origins.contains(o)).map_or("can", |o| o.kind())
         };
         Sources { source, sources: source_refs(origins), source_label: model::Origin::label_of(origins) }
     }
@@ -474,20 +470,8 @@ impl SourceFilter {
 pub(crate) fn filter_words(f: Option<SourceFilter>) -> (String, Vec<SourceRef>) {
     use model::{ImportSite, Origin};
     let (word, origins) = match f {
-        None => (
-            "all".to_string(),
-            vec![
-                Origin::Smo,
-                Origin::TeslaApi,
-                Origin::TeslafiApi,
-                Origin::TeslamateLocal,
-                Origin::Import(ImportSite::Teslamate),
-                Origin::Import(ImportSite::Teslafi),
-            ],
-        ),
-        Some(SourceFilter::Live) => {
-            ("live".into(), vec![Origin::Smo, Origin::TeslaApi, Origin::TeslafiApi, Origin::TeslamateLocal])
-        }
+        None => ("all".to_string(), model::Stream::ALL.map(model::Stream::origin).to_vec()),
+        Some(SourceFilter::Live) => ("live".into(), model::Stream::LIVE.map(model::Stream::origin).to_vec()),
         Some(SourceFilter::Smo) => ("smo".into(), vec![Origin::Smo]),
         Some(SourceFilter::TeslaApi) => ("tesla_api".into(), vec![Origin::TeslaApi]),
         Some(SourceFilter::TeslafiApi) => ("teslafi_api".into(), vec![Origin::TeslafiApi]),
@@ -646,6 +630,22 @@ mod tests {
         assert!(super::SourceFilter::Smo.keeps(Source::Live, Inputs::NONE));
         assert!(!super::SourceFilter::Smo.keeps(Source::Live, Inputs::from(Input::TeslaApi)));
         assert!(!super::SourceFilter::Smo.keeps(Source::Teslamate, Inputs::NONE));
+    }
+
+    /// Every live input has its own `source=` word, which reads its stream and keeps its rows: a new input must be
+    /// given one.
+    #[test]
+    fn every_input_has_a_source_word() {
+        for i in Input::ALL {
+            let o = model::Origin::from(i);
+            let f = super::parse_source(Some(o.kind())).unwrap().unwrap();
+            assert_eq!(f.streams(), vec![model::Stream::from(i)], "{i:?}");
+            assert!(f.keeps(Source::Live, Inputs::from(i)), "{i:?}");
+            assert_eq!(super::filter_words(Some(f)).1, super::source_refs(&[o]), "{i:?}");
+            assert_eq!(super::Sources::from_origins(&[o]).source, if i == Input::Smo { "can" } else { o.kind() });
+        }
+        let all = super::filter_words(None).1;
+        assert_eq!(all, super::source_refs(&model::Stream::ALL.map(model::Stream::origin)));
     }
 
     #[test]

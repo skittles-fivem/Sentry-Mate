@@ -134,3 +134,50 @@
   .tv-hover { display: none; }
   .tv-bars li { grid-template-columns: round(1.25rem, var(--e)) minmax(round(4rem, var(--e)), round(7rem, var(--e))) minmax(0, 1fr) auto; }
 }
+
+/* ------------------------------------------------------------ phone (<html data-phone>) */
+:root[data-phone] .tv-filters .filter-bar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(0.5rem, var(--e)); }
+:root[data-phone] .tv-filters .filter-bar > * { min-width: 0; max-width: none; }
+:root[data-phone] .tv-filters .filter-bar > :is(.field--search, .filter, .tv-city-chip) { grid-column: 1 / -1; }
+:root[data-phone] .tv-filters .filter-bar > .btn { justify-content: flex-start; }
+:root[data-phone] .tv-filters .filter-bar > .btn > .ico:last-child { margin-left: auto; }
+:root[data-phone] .tv-filters .filter { display: flex; flex-wrap: nowrap; }
+:root[data-phone] .tv-filters .filter > .select { flex: 1 1 0; min-width: 0; }
+:root[data-phone] .tv-filters .select, :root[data-phone] .tv-filters .filter > .select { width: 100%; max-width: none; }
+:root[data-phone] .tv-filters .filter-bar > .select { width: 100%; }
+:root[data-phone] .tv-pick-text { max-width: none; flex: 0 1 auto; min-width: 0; }
+:root[data-phone] .tv-pick-pop { width: auto; }
+:root[data-phone] .tv-pick-list { max-height: 40dvh; }
+:root[data-phone] .tv-city-chip { height: auto; min-height: var(--tap); flex-wrap: wrap; }
+:root[data-phone] .tv-city-chip .btn--icon { width: var(--tap); height: var(--tap); margin-left: auto; }
+:root[data-phone] .tv-filters .note { align-items: flex-start; }
+:root[data-phone] .tv-car { height: var(--tap); }
+:root[data-phone] .tv-cars-label { flex-basis: 100%; }
+/* the map: a tap on a dot shows its details over the foot of the map (the legend steps aside) */
+:root[data-phone] .tv-page .tv-hover:not([hidden]) { display: block; min-width: 0; max-width: none; }
+:root[data-phone] .tv-map-box .map-overlay--tr { top: auto; bottom: round(0.75rem, var(--e)); left: round(0.75rem, var(--e)); right: round(0.75rem, var(--e)); }
+:root[data-phone] .tv-map-box.has-card .map-overlay--tl { display: none; }
+:root[data-phone] .tv-hover-kv { margin: round(0.5rem, var(--e)) 0; gap: round(0.125rem, var(--e)) round(0.875rem, var(--e)); }
+:root[data-phone] .tv-hover-kv dd { overflow-wrap: anywhere; white-space: normal; }
+:root[data-phone] .tv-hover-btns { display: flex; gap: round(0.5rem, var(--e)); margin-top: round(0.5rem, var(--e)); }
+:root[data-phone] .tv-hover-btns > .btn { flex: 1 1 auto; justify-content: center; }
+:root[data-phone] .tv-map-head > .btn { flex: 0 1 auto; }
+:root[data-phone="short"] .tv-map-box { min-height: max(60dvh, round(17rem, var(--e))); }
+:root[data-phone="short"] .tv-legend { max-height: calc(max(60dvh, round(17rem, var(--e))) - round(2rem, var(--e))); overflow-y: auto; }
+/* the summary: two columns of figures */
+:root[data-phone] .tv-fig-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(1rem, var(--e)) round(1rem, var(--e)); }
+:root[data-phone] .tv-fig-grid .metric-value { font-size: 1.25rem; }
+/* tables as cards: names and links wrap and are big enough to tap */
+:root[data-phone] .tv-page .cell-text > * { white-space: normal; overflow-wrap: anywhere; }
+:root[data-phone] .tv-page a.sub { display: inline-flex; min-height: var(--tap); }
+:root[data-phone] .tv-page .tv-city-btn { min-width: var(--tap); }
+:root[data-phone] .tv-tbl td, :root[data-phone] .tv-tbl th { white-space: normal; }
+:root[data-phone] .tv-page .tv-wrap { min-width: 0; }
+:root[data-phone] .tv-page .select--sm { height: var(--tap); max-width: 100%; }
+:root[data-phone] .tv-col-filters { width: 100%; }
+:root[data-phone] .tv-col-filters > * { flex: 1 1 round(9rem, var(--e)); }
+:root[data-phone] .tv-find { width: auto; }
+:root[data-phone] .tv-page a.tv-count { display: inline-flex; align-items: center; min-height: var(--tap); min-width: var(--tap); }
+:root[data-phone] .tv-bars li { min-height: var(--tap); }
+:root[data-phone] .tv-bar-label.link-btn { min-height: var(--tap); }
+:root[data-phone] .tv-rank-panel .seg { flex-wrap: wrap; }

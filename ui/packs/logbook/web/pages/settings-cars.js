@@ -13,11 +13,12 @@
 import { h, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { isValidZone, formatDate, formatDateTime, formatTime, dayKey, formatDayKey } from '../shared/time.js';
+import { convert, toMetric, unitLabel } from '../shared/units.js';
+import { isValidZone, formatDate, formatDateTime, formatTime, dayKey, formatDayKey, zoneSourceText } from '../shared/time.js';
 import { pageHead, section, empty, errorView, ago, chip, flag, button, icon, stateMark, note, sep } from '../core/ui.js';
 import { labelOf } from '../core/sources.js';
 import { dataTable } from '../core/table.js';
-import { field, setFieldError, choice } from '../core/form.js';
+import { field, setFieldError, choice, switchField } from '../core/form.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
 import { zoneLabel, zoneShort, count } from '../core/format.js';
 import { remount } from '../core/router.js';
@@ -268,6 +269,186 @@ function waitingTable(ctx, { car = null, onChange }) {
   });
 }
 
+/* ------------------------------------------------------------------ data sources */
+
+const SOURCE_KINDS = ['smo', 'tesla_api', 'teslafi_api', 'teslamate_local'];
+const SOURCE_NAME = { smo: 'SMO', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'local TeslaMate' };
+
+/**
+ * Data sources (GET / PATCH .../settings source_order, import_gap_fill): the car's four live inputs in their
+ * priority order, each with whether it feeds the car and its newest data; an admin reorders them by dragging
+ * the grip or with the arrow buttons, and each move saves at once. Below: gap filling from imported history,
+ * the car's own choice or the server's, and the way to the per-span overlap choices (Import).
+ */
+function dataSources(ctx, { car, ro, getSettings, patchSettings }) {
+  const orderOf = (s) => {
+    if (Array.isArray(s.source_order) && s.source_order.length) return [...s.source_order];
+    const fromInputs = (s.inputs || []).map((i) => i.kind).filter((k) => SOURCE_KINDS.includes(k));
+    return fromInputs.length ? [...fromInputs, ...SOURCE_KINDS.filter((k) => !fromInputs.includes(k))] : [...SOURCE_KINDS];
+  };
+  const defaultOf = (s) => (Array.isArray(s.source_order_default) && s.source_order_default.length ? s.source_order_default : SOURCE_KINDS);
+  const inputOf = (s, kind) => (s.inputs || []).find((i) => i.kind === kind) || { kind, label: SOURCE_NAME[kind] || kind, on: false, last_ms: null };
+  const nameOf = (s, kind) => inputOf(s, kind).label || SOURCE_NAME[kind] || kind;
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  let shown = orderOf(getSettings()); // the order on screen (ahead of the server while a move saves)
+  let busy = false;
+  const list = h('ol', { class: 'sc-src-list', 'aria-label': 'Live inputs, highest priority first' });
+  const problem = h('p', { class: 'sc-fs-note sc-fs-note-conflict', role: 'status', hidden: true });
+  const resetBox = h('p', { class: 'sc-src-reset' });
+  const showProblem = (text) => { problem.hidden = !text; replace(problem, text ? [icon('warning'), ' ', text] : null); };
+
+  function moveButton(kind, dir, i) {
+    const name = nameOf(getSettings(), kind);
+    const label = `Move ${name} ${dir}`;
+    const off = dir === 'up' ? i === 0 : i === shown.length - 1;
+    return h('button', { type: 'button', class: ['button', 'button-quiet', 'sc-src-btn', `sc-src-${dir}`], 'aria-label': label, title: label, disabled: off,
+      onclick: () => { if (!busy) move(kind, dir === 'up' ? i - 1 : i + 1, dir); } },
+    icon('chevronDown', dir === 'up' ? 'icon sc-flip' : 'icon'));
+  }
+
+  function draw(focus = null) {
+    const s = getSettings();
+    replace(list, shown.map((kind, i) => {
+      const inp = inputOf(s, kind);
+      const li = h('li', { class: ['sc-src', { 'is-off': !inp.on, 'is-ro': ro }], dataset: { kind } },
+        h('span', { class: 'sc-src-rank', 'aria-hidden': 'true' }, String(i + 1)),
+        ro ? null : h('span', { class: 'sc-src-grip', 'aria-hidden': 'true', title: 'Drag to change the order', onpointerdown: (e) => startDrag(e, li) }, icon('menu')),
+        h('div', { class: 'sc-src-text' },
+          h('p', { class: 'sc-src-name' }, h('span', { class: 'src-dots', 'aria-hidden': 'true' }, h('span', { class: ['src-dot', `src-dot-${kind}`] })), nameOf(s, kind),
+            h('span', { class: 'sr-only' }, `, priority ${i + 1} of ${shown.length}`)),
+          h('p', { class: 'sc-src-status' }, inp.on ? chip('On', { kind: 'on' }) : chip('Off'), ' ',
+            h('span', { class: 'sc-src-age' }, inp.last_ms ? ['Newest data ', ago(inp.last_ms)] : 'No data yet'))),
+        ro ? null : h('div', { class: 'sc-src-move' }, moveButton(kind, 'up', i), moveButton(kind, 'down', i)));
+      return li;
+    }));
+    const def = defaultOf(s);
+    replace(resetBox, ro || same(shown, def) ? null : [
+      button('Reset to default order', { cls: 'button-small', iconName: 'reset', onclick: () => { if (!busy) save([...def], { reset: true }); } }),
+      h('span', { class: 'sc-quiet' }, ` ${def.map((k) => nameOf(s, k)).join(', ')}`)]);
+    resetBox.hidden = !resetBox.firstChild;
+    if (focus) {
+      const li = list.querySelector(`li[data-kind="${focus.kind}"]`);
+      const b = li && (li.querySelector(`.sc-src-${focus.dir}:not(:disabled)`) || li.querySelector('.sc-src-btn:not(:disabled)'));
+      b?.focus();
+    }
+  }
+
+  async function save(next, { reset = false, focus = null } = {}) {
+    const before = shown;
+    if (same(next, before)) return;
+    shown = next;
+    busy = true;
+    showProblem(null);
+    draw(focus);
+    try {
+      const s = await patchSettings({ source_order: reset ? null : next });
+      shown = orderOf(s);
+      const names = shown.map((k) => nameOf(s, k));
+      ctx.flash(reset ? `Saved: the default order again (${names.join(', ')}).` : `Saved: ${names[0]} first, then ${names.slice(1).join(', ')}.`);
+    } catch (err) {
+      shown = orderOf(getSettings());
+      if (err && err.code === 'conflict') {
+        ctx.flash(`Not saved: someone else changed the order of ${car.name}’s sources at the same time. That is what is shown now; change it again if yours is still needed.`, { kind: 'error' });
+      } else {
+        const msg = (err && err.fields && err.fields.source_order) || (err && err.message) || 'The server refused the order.';
+        showProblem(`Not saved: ${msg}`);
+        ctx.flash(`Not saved: ${msg}`, { kind: 'error' });
+      }
+    } finally {
+      busy = false;
+      draw(focus);
+      drawGap();
+    }
+  }
+  function move(kind, to, dir) {
+    const next = shown.filter((k) => k !== kind);
+    next.splice(to, 0, kind);
+    save(next, { focus: { kind, dir } });
+  }
+
+  /* Dragging by the grip: pointer events, so a mouse, a pen and a finger all work; the row moves as it goes. */
+  function startDrag(e, li) {
+    if (busy || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    e.preventDefault();
+    // Followed on the document: moving the row in the list would drop a pointer capture on its grip.
+    const id = e.pointerId;
+    li.classList.add('is-dragging');
+    const onMove = (ev) => {
+      if (ev.pointerId !== id) return;
+      ev.preventDefault();
+      const others = [...list.children].filter((x) => x !== li);
+      const before = others.find((x) => { const r = x.getBoundingClientRect(); return ev.clientY < r.top + r.height / 2; }) || null;
+      if (before !== li.nextElementSibling) list.insertBefore(li, before);
+    };
+    const end = (ev) => {
+      if (ev.pointerId !== id) return;
+      stop();
+      li.classList.remove('is-dragging');
+      const next = [...list.children].map((x) => x.dataset.kind);
+      if (ev.type === 'pointercancel' || same(next, shown)) { draw(); return; }
+      save(next);
+    };
+    const stop = () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', end);
+      document.removeEventListener('pointercancel', end);
+    };
+    document.addEventListener('pointermove', onMove, { passive: false });
+    document.addEventListener('pointerup', end);
+    document.addEventListener('pointercancel', end);
+    ctx.onCleanup(stop);
+  }
+
+  /* Gap filling: the car's own choice (true / false), or null to follow the server's setting. */
+  const gapSwitch = switchField({ label: 'Fill gaps from imported history', checked: false, onchange: (on) => saveGap(on) });
+  const gapUses = h('p', { class: 'sc-setting-note' });
+  const gapFollow = h('p', { class: 'sc-setting-note sc-src-follow' });
+  const onOff = (v) => (v ? 'on' : 'off');
+  function drawGap() {
+    const s = getSettings();
+    const imports = Array.isArray(s.imports) ? s.imports : [];
+    const def = s.import_gap_fill_default;
+    gapSwitch.set(imports.length ? !!s.import_gap_fill_on : false);
+    gapSwitch.input.disabled = ro || !imports.length || busy;
+    gapSwitch.classList.toggle('is-disabled', !imports.length);
+    const span = (i) => (i.from_ms != null && i.to_ms != null ? ` (${formatDate(i.from_ms, ctx.tz, { weekday: false, now: api.now() })} to ${formatDate(i.to_ms, ctx.tz, { weekday: false, now: api.now() })})` : '');
+    replace(gapUses, imports.length ? ['Uses: ', imports.map((i, n) => [n ? '; ' : null, h('strong', null, i.label || i.site), span(i)]), '.'] : 'No imported history: there is nothing to fill gaps from.');
+    const own = s.import_gap_fill === true || s.import_gap_fill === false;
+    replace(gapFollow, own
+      ? [`Set for this car${def == null ? '' : `. Server default: ${onOff(def)}`}. `, ro ? null : button('Follow the server default', { cls: 'button-small', onclick: () => saveGap(null) })]
+      : def == null ? 'Follows the server default.' : `Follows the server default: ${onOff(def)}.`);
+  }
+  async function saveGap(v) {
+    if (busy) return;
+    busy = true;
+    try {
+      const s = await patchSettings({ import_gap_fill: v });
+      ctx.flash(v == null ? `Saved: ${car.name} follows the server’s gap filling (${onOff(s.import_gap_fill_on)}).` : `Saved: gaps ${v ? 'are filled' : 'are not filled'} from imported history for ${car.name}.`);
+    } catch (err) {
+      if (err && err.code === 'conflict') ctx.flash(`Not saved: someone else changed gap filling for ${car.name} at the same time. That is what is shown now.`, { kind: 'error' });
+      else ctx.flash(`Not saved: ${(err && err.fields && err.fields.import_gap_fill) || (err && err.message)}`, { kind: 'error' });
+    } finally {
+      busy = false;
+      shown = orderOf(getSettings());
+      drawGap();
+      draw();
+    }
+  }
+
+  draw();
+  drawGap();
+  const overlaps = `${state.buildUrl('import', {})}#im-overlaps`;
+  return section({ title: 'Data sources', note: ro ? 'read only for your account' : 'which input wins', id: 'data-sources' },
+    setting('Priority of the live inputs',
+      'When two sources cover the same time, the higher one wins, value by value. Imported history always comes after the live inputs.',
+      h('div', { class: 'sc-stack sc-src-order' }, list, problem, resetBox, ro ? h('p', { class: 'sc-setting-note' }, 'An admin changes the order.') : null)),
+    setting('Gap filling',
+      'Where no live input has a value for a time, the imported history shown for that span fills it in: positions, charge levels, odometer and temperatures. Distance, energy and costs are never filled.',
+      h('div', { class: 'sc-stack sc-src-gap' }, gapSwitch, gapUses, gapFollow)),
+    ro ? null : h('p', { class: 'sc-more' }, h('a', { class: 'link-arrow', href: overlaps }, 'Choose per span which source is shown', icon('arrowRight'))));
+}
+
 function dateCell(ms, tz, withAgo = false) {
   if (ms == null) return h('span', { class: 'is-missing' }, 'never');
   return [h('span', { class: 'cell-main' }, formatDateTime(ms, tz, { weekday: false, now: api.now() })), withAgo ? h('span', { class: 'cell-sub' }, ago(ms)) : null];
@@ -434,6 +615,30 @@ async function mountCar(ctx) {
     [car.model, car.year].filter(Boolean).join(' ') || 'Model not known yet', car.trim ? [sep(), car.trim] : null,
     car.vin_prefix ? [sep(), 'VIN ', h('span', { class: 'mono' }, car.vin_prefix), h('span', { class: 'sc-quiet' }, ' (prefix only: model and year come from it)')] : null);
 
+  /* ---------- the recommended tyre pressures, typed (config.tyre_pressure_front_kpa / _rear_kpa, kPa) */
+  const pu = unitLabel('pressure');
+  const r2 = (x) => Math.round(x * 100) / 100;
+  const pLo = Math.ceil(convert(100, 'pressure') * 100) / 100, pHi = Math.floor(convert(600, 'pressure') * 100) / 100;
+  const tyreField = (k, label, hint) => {
+    const cur = cfg[k] ? cfg[k].value : null;
+    const f = field({ label: `${label} (${pu})`, name: k, type: 'number', value: cur == null ? '' : String(r2(convert(cur, 'pressure'))), hint: `${pLo} to ${pHi} ${pu}. ${hint}`,
+      attrs: { min: String(pLo), max: String(pHi), step: pu === 'psi' ? '1' : '0.05', disabled: ro } });
+    f.control.addEventListener('change', async () => {
+      const raw = f.control.value.trim();
+      const n = raw === '' ? null : Number(raw);
+      setFieldError(f, null);
+      if (n != null && (!Number.isFinite(n) || n < pLo || n > pHi)) { setFieldError(f, `A number from ${pLo} to ${pHi} ${pu}, or empty.`); return; }
+      try {
+        await patchCar({ config: { [k]: n == null ? null : Math.round(toMetric(n, 'pressure') * 10) / 10 } });
+        afterCarChange(n == null ? `Saved: ${label.toLowerCase()} is no longer typed.` : `Saved: ${label.toLowerCase()} ${n} ${pu}.`);
+      } catch (err) { if (carConflict(err, 'tyre pressure')) return; setFieldError(f, (err.fields && err.fields[`config.${k}`]) || err.message); }
+    });
+    return f;
+  };
+  const tyreControl = h('div', { class: 'sc-stack' },
+    tyreField('tyre_pressure_front_kpa', 'Front', 'The cold pressure on the door placard. Empty: what the car sends, else the placard’s for its wheel size.'),
+    tyreField('tyre_pressure_rear_kpa', 'Rear', 'Empty: the front’s when that is typed.'));
+
   /* ---------- sold */
   const sold = state.isSold(car);
   const soldWords = sold ? (car.sold_date ? `Sold on ${formatDayKey(car.sold_date, { weekday: false })}` : 'Sold (date not given)') : 'Not sold';
@@ -467,6 +672,7 @@ async function mountCar(ctx) {
     setting('Name', 'Sentry Mate never asks Tesla for a name: the car is called what you type here.', nameField),
     setting('Sold', 'A car you no longer have. Mark it sold to keep its history without listing it with the cars you drive.', soldControl, { cls: 'sc-setting-sold' }),
     setting('Model', null, facts),
+    setting('Recommended tyre pressure', 'A typed pressure beats the one the car sends. The car page flags a tyre more than 10 % under it.', tyreControl),
     h('div', { class: 'sc-config' }, h('h3', { class: 'sc-sub' }, 'What the car reports about itself'),
       note('Read from the car’s own configuration message on the CAN bus, else worked out from the VIN prefix.'), configTable.el));
 
@@ -592,31 +798,41 @@ async function mountCar(ctx) {
     };
   }
 
+  /* ---------- data sources: the live inputs' priority, and gap filling from an import */
+  const sourcesSection = dataSources(ctx, { car, ro, getSettings: () => settings, patchSettings });
+
   /* ---------- time zone */
-  const zones = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
+  const zones =(() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
   const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
   const tzField = field({ label: 'Time zone', name: 'time_zone', value: car.time_zone || '', hint: 'A name such as Europe/Amsterdam or America/Los_Angeles. Type to see the list.', attrs: { list: 'sc-zones', spellcheck: 'false', autocomplete: 'off', disabled: ro } });
   const zoneList = h('datalist', { id: 'sc-zones' }, zones.map((z) => h('option', { value: z })));
   const tzNow = h('p', { class: 'sc-setting-note' });
   const drawTzNow = () => {
     const tz = car.time_zone;
-    tzNow.textContent = tz && isValidZone(tz) ? `Now in ${zoneLabel(tz)}: ${formatTime(api.now(), tz)} ${zoneShort(tz)}, ${formatDayKey(dayKey(api.now(), tz), { weekday: true })}.` : 'Not set: times show in this browser’s zone.';
+    const src = zoneSourceText(car.time_zone_source);
+    tzNow.textContent = tz && isValidZone(tz) ? `${src ? `${zoneLabel(tz)} (${src})${car.time_zone_source === 'owner' ? '' : ': type or pick a zone to set it for this car'}. ` : ''}Now in ${zoneLabel(tz)}: ${formatTime(api.now(), tz)} ${zoneShort(tz)}, ${formatDayKey(dayKey(api.now(), tz), { weekday: true })}.` : 'Not set: times show in this browser’s zone.';
   };
   drawTzNow();
   const saveZone = async (v) => {
     setFieldError(tzField, null);
     if (!v || !isValidZone(v)) { setFieldError(tzField, 'Not a known time zone. Pick one from the list, for example Europe/Amsterdam.'); return; }
-    if (v === car.time_zone) return;
+    if (v === car.time_zone && car.time_zone_source === 'owner') return;
     try { await patchCar({ time_zone: v }); afterCarChange(`Saved: ${car.name} now uses ${v.replace(/_/g, ' ')}.`); }
     catch (err) { if (carConflict(err, 'time zone')) return; setFieldError(tzField, (err.fields && err.fields.time_zone) || err.message); }
   };
   tzField.control.addEventListener('change', () => saveZone(tzField.control.value.trim()));
   const useBrowser = browserZone && browserZone !== car.time_zone && !ro
     ? button(`Use this browser’s zone (${browserZone.replace(/_/g, ' ')})`, { cls: 'button-small', onclick: () => { tzField.control.value = browserZone; saveZone(browserZone); } }) : null;
+  const useAuto = car.time_zone_source === 'owner' && !ro
+    ? button('Work it out from the car’s position', { cls: 'button-small', onclick: async () => {
+      setFieldError(tzField, null);
+      try { await patchCar({ time_zone: null }); afterCarChange(`Saved: ${car.name} now takes its time zone from its position.`); }
+      catch (err) { if (carConflict(err, 'time zone')) return; setFieldError(tzField, (err.fields && err.fields.time_zone) || err.message); }
+    } }) : null;
   const tzSection = section({ title: 'Time zone', id: 'sc-tz', cover: 'docs.env.core.tz' },
     setting('The car’s time zone',
       'Days, weeks, months and the hours of time-of-use tariffs are counted in this zone, and every time of this car is shown in it. Times are stored in UTC, so a new zone regroups the history without changing it.',
-      h('div', { class: 'sc-stack' }, tzField, zoneList, tzNow, useBrowser)));
+      h('div', { class: 'sc-stack' }, tzField, zoneList, tzNow, useAuto, useBrowser)));
 
   /* ---------- battery */
   const bc = settings.battery_chemistry || { setting: 'auto' };
@@ -770,7 +986,7 @@ async function mountCar(ctx) {
     h('p', { class: 'sc-autosave' }, icon('check'), ro
       ? ' Your account can read these settings; an admin changes them.'
       : ' Every change saves at once, for everyone who sees this car; a short note at the top confirms it. There is no Save button.'),
-    carSection, uploads, tzSection, batterySection, chargingSection);
+    carSection, uploads, sourcesSection, tzSection, batterySection, chargingSection);
   ctx.main.append(
     pageHead({ eyebrow: crumbs(car), title: sold ? [car.name, ' ', flag('Sold')] : car.name, deck: ctx.info.purpose,
       aside: h('p', { class: 'sc-as-of' }, car.last_activity_ms ? ['Last heard ', ago(car.last_activity_ms)] : 'Not heard from yet') }),

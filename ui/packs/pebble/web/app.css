@@ -799,6 +799,16 @@ button.pin { cursor: pointer; width: var(--h-sm); height: var(--h-sm); }
 .map .maplibregl-ctrl.maplibregl-ctrl-attrib { background: color-mix(in srgb, var(--card) 85%, transparent); color: var(--muted); font-size: max(0.6875rem, 10px); line-height: max(14px, round(1rem, var(--e))); }
 .map .maplibregl-ctrl-attrib a { color: var(--text); }
 .map .maplibregl-ctrl-attrib-button { background-color: var(--card); }
+/* the Map / Satellite switch (shared/maptiles.js mapStyleSwitch): a small pill track over the map's top left */
+.map-style { position: absolute; z-index: 2; top: 10px; left: 10px; display: flex; gap: 2px; padding: 3px; border-radius: 999px; background: var(--card); box-shadow: var(--shadow); }
+.map-style-btn { height: calc(var(--h-sm) - 6px); padding: 0 var(--s3); border: 0; border-radius: 999px; background: transparent; color: var(--muted); font: inherit; font-size: var(--f13); line-height: var(--l13); font-weight: 700; cursor: pointer; white-space: nowrap; }
+.map-style-btn:hover { color: var(--text); }
+.map-style-btn.is-on { background: var(--coral-fill); color: var(--on-coral, #fff); }
+.map-style-btn:focus-visible { outline: 2px solid var(--focus, var(--coral-fill)); outline-offset: 1px; }
+.map[data-styles] .map-note-error { top: calc(10px + var(--h-sm) + var(--s2)); }
+/* over satellite photos: pins get a white ring and a dark edge, labels a firm shadow */
+.map[data-imagery] .pin-dot { box-shadow: 0 0 0 3px #ffffff, 0 0 0 5px rgba(10, 14, 20, 0.85), 0 2px 8px rgba(0, 0, 0, 0.55); }
+.map[data-imagery] .pin-label { box-shadow: 0 0 0 1px rgba(10, 14, 20, 0.6), 0 2px 8px rgba(0, 0, 0, 0.45); }
 
 /* charts: a legend of keys over one rounded plot */
 .chart-tile .tile-head { flex-wrap: wrap; }
@@ -1006,6 +1016,7 @@ html[data-form="phone"] .set-ctl .two { grid-template-columns: minmax(0, 1fr); }
 .iv-topics { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); }
 .iv-pay { font-size: var(--f14); line-height: var(--l14); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .iv-pay b { font-weight: 800; }
+.iv-pay.is-none { color: var(--muted); }
 .tile-intro { padding-top: var(--s4); padding-bottom: var(--s4); }
 /* settings pages: tiles keep their order, so a section heading never ends up under its own tiles */
 .bento.in-order { grid-auto-flow: row; }
@@ -1018,6 +1029,8 @@ html[data-form="phone"] .set-ctl .two { grid-template-columns: minmax(0, 1fr); }
 .src-dots { display: inline-flex; flex: none; gap: var(--s1); }
 .src-dot { width: round(0.5rem, var(--e)); height: round(0.5rem, var(--e)); border-radius: 50%; background: var(--tone); }
 .src.is-est { background: var(--sun-soft); color: var(--sun); }
+/* a value from the Tesla API or TeslaFi past its age limit (settings: integrations, car) */
+.src.is-stale { background: var(--sun-soft); color: var(--sun); }
 .src-via { min-height: 0; padding: 0 var(--s2); margin-left: var(--s2); }
 .src-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
 .src-inputs { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
@@ -1092,3 +1105,13 @@ html[data-form="phone"] .fw-change { flex-direction: column; align-items: flex-s
 .tm-form [hidden] { display: none; }
 .tm-tick > .set-said { margin-top: var(--s2); }
 .tm-test:empty { display: none; }
+
+/* the release check (Settings: Display, Help): the newer build's titles and the pull command */
+.rel-newer { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+.rel-titles { margin: 0; padding-left: var(--s5); font-size: var(--f14); line-height: var(--l14); color: var(--muted); overflow-wrap: anywhere; }
+.rel-titles li + li { margin-top: var(--s1); }
+.rel-pull { display: flex; flex-direction: column; gap: var(--s1); font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
+.rel-code { display: block; padding: var(--s2) var(--s3); border-radius: var(--r-sm); background: var(--card); color: var(--text); font-family: var(--mono); font-size: var(--f13); line-height: var(--l13); overflow-wrap: anywhere; user-select: all; }
+.rel-row { flex-wrap: wrap; }
+.rel-row .row-text { flex: 1 1 14em; }
+.rel-row .row-side { flex: none; }

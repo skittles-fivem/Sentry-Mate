@@ -31,6 +31,8 @@ pub struct FeedPoll {
     pub display_name: Option<String>,
     pub usable_soc: Option<f64>,
     pub energy_added_kwh: Option<f64>,
+    /// The values no CAN message carries, as the poll gave them ([`off_can`]).
+    pub off_can: model::OffCan,
     /// The units the values were read in.
     pub units: Option<Units>,
     /// Values there but not numbers, by column.
@@ -70,6 +72,66 @@ pub fn fields_of(o: &serde_json::Map<String, serde_json::Value>) -> BTreeMap<Str
     o.iter().filter_map(|(k, v)| Some((k.clone(), text_of(v)?))).collect()
 }
 
+/// A field's text, `None` when it is missing or no value (`""`, `NULL`, ...).
+fn field<'a>(fields: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
+    let v = fields.get(key)?.trim();
+    (!(v.is_empty()
+        || v.eq_ignore_ascii_case("none")
+        || v.eq_ignore_ascii_case("null")
+        || v.eq_ignore_ascii_case("nan")
+        || v.eq_ignore_ascii_case("<invalid>")))
+    .then_some(v)
+}
+
+fn field_num(fields: &BTreeMap<String, String>, key: &str) -> Option<f64> {
+    field(fields, key)?.parse::<f64>().ok().filter(|x| x.is_finite())
+}
+
+/// `1`/`0` (or `true`/`false`); anything else is no value.
+fn field_bool(fields: &BTreeMap<String, String>, key: &str) -> Option<bool> {
+    match field(fields, key)?.to_ascii_lowercase().as_str() {
+        "1" | "true" => Some(true),
+        "0" | "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn field_word(fields: &BTreeMap<String, String>, key: &str, n: usize) -> Option<String> {
+    field(fields, key).map(|v| v.chars().filter(|c| !c.is_control()).take(n).collect())
+}
+
+/// What one answer tells of the values no CAN message carries: the `vehicle_data` key names without their sections
+/// (`locked`, `fd_window`, `sun_roof_state`, `scheduled_charging_start_time`, `active_route_destination` ...), and
+/// TeslaFi's `newVersion` / `newVersionStatus` for the waiting update. `version`: the poll's software version;
+/// `distance`: what the answer's distances are in.
+pub fn off_can(fields: &BTreeMap<String, String>, version: Option<String>, distance: super::Distance) -> model::OffCan {
+    let km = |x: f64| match distance {
+        super::Distance::Mi => x * poll::KM_PER_MI,
+        super::Distance::Km => x,
+    };
+    let secs = |key: &str| field_num(fields, key).filter(|t| *t > 0.0 && t.fract() == 0.0).map(|t| t as u64 * 1000);
+    let window = |key: &str| field_num(fields, key).map(|n| n != 0.0);
+    model::OffCan {
+        version,
+        update_status: field_word(fields, "newVersionStatus", 32).map(|w| w.to_ascii_lowercase()),
+        update_version: field(fields, "newVersion")
+            .and_then(|w| w.split_whitespace().next())
+            .map(|w| w.chars().take(32).collect()),
+        update_download_pct: field_num(fields, "download_perc").filter(|p| (0.0..=100.0).contains(p)),
+        locked: field_bool(fields, "locked"),
+        windows: ["fd_window", "fp_window", "rd_window", "rp_window"].map(window),
+        windows_open: None,
+        sunroof_state: field_word(fields, "sun_roof_state", 32).map(|w| w.to_ascii_lowercase()),
+        sunroof_pct: field_num(fields, "sun_roof_percent_open").filter(|p| (0.0..=100.0).contains(p)),
+        scheduled_charge_start_ms: secs("scheduled_charging_start_time"),
+        scheduled_departure_ms: secs("scheduled_departure_time"),
+        route_destination: field_word(fields, "active_route_destination", 64),
+        route_km: field_num(fields, "active_route_miles_to_arrival").filter(|x| *x >= 0.0).map(km),
+        route_min: field_num(fields, "active_route_minutes_to_arrival").filter(|x| *x >= 0.0),
+        route_traffic_min: field_num(fields, "active_route_traffic_minutes_delay").filter(|x| *x >= 0.0),
+    }
+}
+
 /// Reads one answer (`fields`: its keys and text values) with `tz` for its wall time. `prev_ms`: the poll before,
 /// for the hour the clocks go back.
 pub fn read(fields: &BTreeMap<String, String>, tz: chrono_tz::Tz, prev_ms: Option<u64>) -> Result<FeedPoll, FeedError> {
@@ -96,7 +158,7 @@ pub fn read(fields: &BTreeMap<String, String>, tz: chrono_tz::Tz, prev_ms: Optio
         driving: p.driving() || p.moving(),
         charging: p.charging,
         sample,
-        version: p.version,
+        version: p.version.clone(),
         vin,
         display_name: row
             .text(Col::DisplayName)
@@ -104,6 +166,7 @@ pub fn read(fields: &BTreeMap<String, String>, tz: chrono_tz::Tz, prev_ms: Optio
             .filter(|n| !n.is_empty()),
         usable_soc: p.usable_soc,
         energy_added_kwh: p.energy_added_kwh,
+        off_can: off_can(fields, p.version, units.distance),
         units: Some(units),
         bad,
     })
@@ -185,6 +248,48 @@ mod tests {
         assert_eq!(p.sample.charge_kind, Some(ChargeKind::Dc));
         assert_eq!(p.sample.charge_power_kw, Some(120.0));
         assert!(read(&map(&[("carState", "Idling")]), tz, None).is_err(), "no Date: no poll");
+    }
+
+    #[test]
+    fn values_not_on_the_can_bus() {
+        let m = map(&[
+            ("Date", "2026-07-04 03:00:00"),
+            ("car_version", "2026.32.5 abcdef"),
+            ("newVersion", "2026.38.1 ffff"),
+            ("newVersionStatus", "Downloading"),
+            ("download_perc", "40"),
+            ("locked", "1"),
+            ("fd_window", "0"),
+            ("fp_window", "0"),
+            ("rd_window", "3"),
+            ("rp_window", "NULL"),
+            ("sun_roof_state", "Closed"),
+            ("sun_roof_percent_open", "0"),
+            ("scheduled_charging_start_time", "1800003600"),
+            ("scheduled_departure_time", ""),
+            ("active_route_destination", "Made-up Street 1"),
+            ("active_route_miles_to_arrival", "10"),
+            ("active_route_minutes_to_arrival", "14.5"),
+            ("active_route_traffic_minutes_delay", "NULL"),
+        ]);
+        let o = read(&m, chrono_tz::Tz::UTC, None).unwrap().off_can;
+        assert_eq!(o.version.as_deref(), Some("2026.32.5"));
+        assert_eq!(o.update_status.as_deref(), Some("downloading"));
+        assert_eq!(o.update_version.as_deref(), Some("2026.38.1"));
+        assert_eq!(o.update_download_pct, Some(40.0));
+        assert_eq!(o.locked, Some(true));
+        assert_eq!(o.windows, [Some(false), Some(false), Some(true), None]);
+        assert_eq!((o.sunroof_state.as_deref(), o.sunroof_pct), (Some("closed"), Some(0.0)));
+        assert_eq!((o.scheduled_charge_start_ms, o.scheduled_departure_ms), (Some(1_800_003_600_000), None));
+        assert_eq!(o.route_destination.as_deref(), Some("Made-up Street 1"));
+        assert!(o.route_km.is_some_and(|k| (k - 16.09344).abs() < 1e-9));
+        assert_eq!((o.route_min, o.route_traffic_min), (Some(14.5), None));
+        let bare = read(
+            &map(&[("Date", "2026-07-04 03:00:00"), ("locked", "NULL"), ("newVersionStatus", "")]),
+            chrono_tz::Tz::UTC,
+            None,
+        );
+        assert!(bare.unwrap().off_can.is_empty(), "NULL and empty are no value");
     }
 
     #[test]

@@ -203,6 +203,7 @@ pub struct MemSink {
     pub new_cars: Mutex<Vec<tesla::NewCar>>,
     pub other_live: Mutex<bool>,
     pub changed: Mutex<Vec<teslafi::AccountState>>,
+    pub off_can: Mutex<Vec<(u32, u64, model::OffCan)>>,
 }
 
 impl teslafi::Sink for MemSink {
@@ -213,6 +214,10 @@ impl teslafi::Sink for MemSink {
     }
     fn points(&self, car: u32, samples: &[model::Sample], facts: &[tesla::ApiFact]) -> Result<(), tesla::SinkError> {
         self.points.lock().unwrap().push((car, samples.to_vec(), facts.to_vec()));
+        Ok(())
+    }
+    fn off_can(&self, car: u32, at_ms: u64, values: &model::OffCan) -> Result<(), tesla::SinkError> {
+        self.off_can.lock().unwrap().push((car, at_ms, values.clone()));
         Ok(())
     }
     fn other_live(&self, _car: u32) -> bool {

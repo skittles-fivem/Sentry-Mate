@@ -8,7 +8,8 @@
 //   car's data status in one paged list.
 // API: GET cars/{car}/health, cars/{car}/gaps, cars/{car}/totals?source=, cars/{car}/updates (summary),
 // cars/{car}/storage, cars/{car}/signals/latest, cars/{car}/signals; POST cars/{car}/rebuild (admin);
-// GET system/storage, system/health (admin), cars, geocode/status.
+// GET system/storage, system/health (admin), cars, geocode/status, integrations/overview (admin: the counts on
+// the card that leads to the connections overview).
 // Live: "rows" events for the car load the health and gaps again.
 
 import * as state from '../shared/state.js';
@@ -30,6 +31,7 @@ import { flash } from '../core/flash.js';
 import { isAdmin } from '../core/prefs.js';
 import { timeChart, barChart } from '../core/chart.js';
 import { q, agoEl, statePill, stateLabel, DASH } from '../core/fmt.js';
+import { overviewCard } from './conn-overview.js';
 
 export const id = 'health';
 export const css = true;
@@ -355,7 +357,7 @@ async function mountCar(ctx) {
     columns: [
       { key: 'start', label: 'From', render: (g) => h('a', { class: 'main', href: timelineAt(cid, g.start_ms, g.end_ms ?? ctx.api.now()), title: 'Open the timeline at this gap' }, when(ctx, g.start_ms)), csv: { label: 'From (UTC)', value: (g) => iso(g.start_ms) } },
       { key: 'dur', label: 'Lasted', num: true, render: (g) => (g.end_ms == null ? pill('Still open', { tone: 'warm' }) : formatDuration(g.end_ms - g.start_ms)), csv: { label: 'Lasted (minutes)', value: (g) => (g.end_ms == null ? '' : Math.round((g.end_ms - g.start_ms) / 600) / 100) } },
-      { key: 'cause', label: 'Cause', render: (g) => { const c = GAP_CAUSES[g.cause] || [g.cause, '']; return h('span', { class: 'cell-text', title: c[1] }, h('span', null, c[0]), g.gap_reason ? h('span', { class: 'sub' }, SPAN_REASONS[g.gap_reason] || g.gap_reason) : null); }, csv: { label: 'Cause', value: (g) => [(GAP_CAUSES[g.cause] || [g.cause])[0], g.gap_reason ? SPAN_REASONS[g.gap_reason] || g.gap_reason : null].filter(Boolean).join(': ') } },
+      { key: 'cause', label: 'Cause', render: (g) => { const c = GAP_CAUSES[g.cause] || [g.cause, '']; return h('span', { class: 'cell-text', title: c[1] }, h('span', null, c[0]), g.gap_reason ? h('span', { class: 'sub' }, SPAN_REASONS[g.gap_reason] || g.gap_reason) : null, c[1] ? h('span', { class: 'sub hl-phone-only' }, c[1]) : null); }, csv: { label: 'Cause', value: (g) => [(GAP_CAUSES[g.cause] || [g.cause])[0], g.gap_reason ? SPAN_REASONS[g.gap_reason] || g.gap_reason : null].filter(Boolean).join(': ') } },
       { key: 'jump', label: 'Odometer moved', num: true, render: (g) => q(g.odometer_jump_km, 'distance', { why: 'not known' }), csv: column('Odometer moved', 'odometer_jump_km', 'distance') },
       { key: 'where', label: 'Where', render: (g) => h('span', { class: 'cell-text' }, g.from_place?.name || 'Unknown place', g.to_place && g.to_place.id !== g.from_place?.id ? h('span', { class: 'sub' }, `to ${g.to_place.name}`) : null), csv: { label: 'Where', value: (g) => g.from_place?.name || '' } },
       { key: 'source', label: 'Data from', render: (g) => srcMark(g, { short: true }) || DASH, csv: { label: 'Data from', value: (g) => srcText(g) } },
@@ -390,7 +392,8 @@ async function mountCar(ctx) {
 
   function paintTotals(all, can, apiT, tm, sm) {
     hasImport = ((tm?.drives || 0) + (tm?.charges || 0) + (tm?.updates || 0)) > 0;
-    const vSrc = { teslamate: 'imported from TeslaMate', tesla_api: 'read from the Tesla API', owner: 'typed by the owner', build_match: 'same module builds as a named update' };
+    const vSrc = { teslamate: 'imported from TeslaMate', teslafi: 'imported from TeslaFi', teslamate_local: 'read live from local TeslaMate', teslafi_api: 'read live from TeslaFi',
+      tesla_api: 'read from the Tesla API', owner: 'typed by the owner', build_match: 'same module builds as a named update' };
     replace(totalsSlot, figures([
       metric('Logged distance', all.distance_km, 'distance', { size: 'lg', cover: 'dbinfo.stat.logged_distance', explain: `The sum of every recorded drive. ${split(can.distance_km, apiT.distance_km, tm.distance_km, 'distance', all.distance_km)}` }),
       metric('Odometer', all.odometer_last_km, 'odometer', { size: 'lg', cover: 'dbinfo.stat.odometer', why: 'The car has not sent it yet.',
@@ -405,7 +408,7 @@ async function mountCar(ctx) {
         why: 'Not known yet.',
         explain: sm?.current_version
           ? `${vSrc[sm.current_version_source] ? `${vSrc[sm.current_version_source][0].toUpperCase()}${vSrc[sm.current_version_source].slice(1)}` : 'Known'}${sm.current_version_since_ms != null ? `, since ${when(ctx, sm.current_version_since_ms)}` : ''}.${sm.build_changed_since != null ? ' The software changed after that; the new version has no name yet.' : ''}`
-          : 'The car does not send its version text. It is known once imported, typed on the Software page, or matched by module builds. Never guessed.',
+          : 'The car does not send its version text. It is known once a live input (local TeslaMate, TeslaFi, the Tesla API) reports it, once imported, typed on the Software page, or matched by module builds. Never guessed.',
       }),
     ], 'hl-tot-figs'));
 
@@ -563,7 +566,8 @@ async function mountCar(ctx) {
 
   /* ---------- page */
   replace(ctx.view, root);
-  root.append(head, healthPanel, gapsTable.el,
+  const connCard = overviewCard(ctx, admin);
+  root.append(head, connCard.el, healthPanel, gapsTable.el,
     h('div', { class: 'hl-two' }, totalsPanel, countsSlot),
     storageSlot, sigTable.el, plotPanel);
 
@@ -586,7 +590,7 @@ async function mountCar(ctx) {
   });
 
   try {
-    await Promise.all([loadHealth(), loadTotals(), loadStorage(), loadSignals(), gapsTable.ready]);
+    await Promise.all([loadHealth(), loadTotals(), loadStorage(), loadSignals(), gapsTable.ready, connCard.load()]);
   } catch (e) {
     if (ctx.alive()) ctx.fail(e);
     return;
@@ -712,7 +716,9 @@ async function mountSystem(ctx) {
             kvRow('Cars open', `${formatNumber(sh.db?.open_cars ?? 0)} of ${formatNumber(sh.db?.cars ?? 0)}`, 'car', { title: 'Car stores kept open for quick answers.' }),
             kvRow('Open stores take', bytes(sh.db?.open_bytes), 'server'),
             kvRow('Cars kept in memory', formatNumber(sh.ingest?.cached_cars ?? 0), 'car'),
-            kvRow('Address look-ups', geo ? `${geo.mode === 'online' ? 'Online' : 'Offline'}, ${formatNumber(geo.cache_size ?? 0)} cached` : (sh.geocoder ? `${sh.geocoder.mode}, ${formatNumber(sh.geocoder.cache_size ?? 0)} cached` : DASH), 'globe',
+            kvRow('Address look-ups', [geo ? `${geo.mode === 'online' ? 'Online' : 'Offline'}, ${formatNumber(geo.cache_size ?? 0)} cached` : (sh.geocoder ? `${sh.geocoder.mode}, ${formatNumber(sh.geocoder.cache_size ?? 0)} cached` : DASH),
+              // the hit rate is the row's title on a desktop; a phone has no hover, so it is written out there
+              sh.geocoder?.hits_pct != null ? h('span', { class: 'hl-phone-only' }, ` · ${formatNumber(sh.geocoder.hits_pct, { maximumFractionDigits: 1 })} % from the cache`) : null], 'globe',
               { title: sh.geocoder?.hits_pct != null ? `${formatNumber(sh.geocoder.hits_pct, { maximumFractionDigits: 1 })} % answered from the cache` : null }),
           ])),
         h('div', null,
@@ -791,7 +797,8 @@ async function mountSystem(ctx) {
   ctx.onCleanup(() => clearTimeout(carTimer));
 
   replace(ctx.view, root);
-  root.append(head, storePanel, carTable.el, srvPanel, errTable.el,
+  const connCard = overviewCard(ctx, admin);
+  root.append(head, connCard.el, storePanel, carTable.el, srvPanel, errTable.el,
     h('p', { class: 'note hl-signals-note', cover: ['nr.dash.state-table', 'nr.dash.state-table.parameter', 'nr.dash.state-table.value', 'nr.dash.state-table.sort-scroll'] },
       icon('signals', 'ico--sm'), ' Every decoded signal of a car, with its value and a chart over time, is on that car’s data health page: open a car above.'));
 
@@ -807,7 +814,7 @@ async function mountSystem(ctx) {
   }
 
   try {
-    await Promise.all([loadStorage(), loadServer(), carTable.ready]);
+    await Promise.all([loadStorage(), loadServer(), carTable.ready, connCard.load()]);
   } catch (e) {
     if (ctx.alive()) ctx.fail(e);
     return;

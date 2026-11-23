@@ -290,7 +290,10 @@ EXTRA_KINDS = {"model": ("text",), "model_year": ("whole", 2008, 2045), "plant":
                "restraint": ("text",), "seats": ("whole", 1, 9), "battery_type": ("text",),
                "chemistry": ("word", ("lfp", "nca_nmc")), "nominal_kwh": ("number", 5, 300),
                "usable_kwh": ("number", 5, 300), "motors": ("whole", 1, 4), "epa_range_km": ("number", 10, 2000),
-               "wheel_in": ("whole", 14, 24)}
+               "wheel_in": ("whole", 14, 24),
+               # the recommended tyre pressures, typed (kPa): not build facts, so not in `vehicle` (the Now reads them)
+               "tyre_pressure_front_kpa": ("number", 100, 600), "tyre_pressure_rear_kpa": ("number", 100, 600)}
+TYRE_KEYS = ("tyre_pressure_front_kpa", "tyre_pressure_rear_kpa")
 VEHICLE_FACTS = ("maker", "built_in", "model", "model_year", "plant", "platform", "body", "restraint", "seats",
                  "battery_type", "chemistry", "pack", "pack_code", "nominal_kwh", "usable_kwh", "motors", "drive",
                  "performance", "trim", "epa_range_km", "wheel", "wheel_in", "paint", "roof", "spoiler", "steering",
@@ -421,6 +424,8 @@ def car_detail(req, cid=None):
     meta = st.car_meta(cid)
     it = typed_over(list_item(req.app, cid, req.now), meta)
     it["config"] = {k: config_value(meta["config"].get(k, {"value": None, "source": None})) for k in CONFIG_KEYS}
+    for k in TYRE_KEYS:
+        it["config"][k] = config_value(meta["config"].get(k, {"value": None, "source": None}))
     s = st.car_settings.get(cid) or {}
     it["vehicle"] = vehicle_info(meta, (s.get("battery_chemistry") or {}).get("setting", "auto"))
     it["version"] = meta["version"]
@@ -443,10 +448,15 @@ def patch_car(req):
         elif not 1 <= len(body["name"].strip()) <= 64:
             rule["name"] = "1 to 64 characters."
     if "time_zone" in body:
-        if not isinstance(body["time_zone"], str):
-            bad["time_zone"] = "Must be text."
-        elif not valid_zone(body["time_zone"]):
-            rule["time_zone"] = "Not a known time zone (for example Europe/Amsterdam)."
+        z = body["time_zone"]
+        if z is None or (isinstance(z, str) and z.strip().lower() == "auto"):
+            body["time_zone"] = None  # automatic again
+        elif not isinstance(z, str):
+            bad["time_zone"] = "Must be text or null."
+        elif not valid_zone(z.strip()):
+            rule["time_zone"] = "Not a known time zone (for example Europe/Amsterdam), or null for automatic."
+        else:
+            body["time_zone"] = z.strip()
     if "sold" in body and not isinstance(body["sold"], bool):
         bad["sold"] = "Must be true or false."
     if "sold_date" in body and body["sold_date"] is not None:
@@ -490,8 +500,7 @@ def patch_car(req):
             else:
                 over.setdefault("config", {})[k] = v
         over["version"] = meta["version"] + 1
-    what = ", ".join(sorted(k for k in body if k != "version"))
-    st.record(req.account, "car.update", f"car:{cid}", f"Changed {what} of {st.car_meta(cid)['name']}.")
+    st.record(req.account, "car-changed", f"car:{cid}", _car_change_words(meta["name"], body))
     if "name" in body:
         req.app.events.publish("fleet", {"car": cid, "change": "renamed", "name": over["name"]}, car=cid)
     if "sold" in body:
@@ -518,6 +527,12 @@ def get_settings(req):
     out.setdefault("pack_replaced_date", None)
     out.setdefault("pack_new_kwh", None)
     out["import_gap_fill_on"] = gapfill.on(st, req.car)
+    out["import_gap_fill_default"] = bool((st.server_settings.get("import_gap_fill") or {}).get("enabled", True))
+    # the live inputs, highest priority first (the car's `source_order`, else the default), and the imports
+    out["source_order"] = SRC.order_of(st, req.car)
+    out["source_order_default"] = list(SRC.DEFAULT_ORDER)
+    out["inputs"] = _inputs(req, out["source_order"])
+    out["imports"] = _imports(req)
     # what the car's build gives when the owner has typed nothing (the inputs' placeholders)
     h = req.history()
     car = h.car if h is not None else None
@@ -528,6 +543,35 @@ def get_settings(req):
     out["car"] = req.car
     out["time_zone"] = req.tz()
     return out
+
+
+def _inputs(req, order):
+    """One entry per live input word in the car's order: whether it feeds this car in the made-up data (as
+    /cars/{car}/now `inputs` says) and its newest data."""
+    from ..live import now_object
+    last = {}
+    try:
+        for x in now_object(req.app, req.car, req.now).get("inputs") or []:
+            last[x["kind"]] = x.get("last_ms")
+    except Exception:  # a car with no live values yet: every input off
+        last = {}
+    return [{"kind": k, "label": SRC.INPUT_LABEL[k], "on": k in last, "last_ms": last.get(k)} for k in order]
+
+
+def _imports(req):
+    """The car's imported history per site, oldest first: { site, label, from_ms, to_ms }."""
+    h = req.history()
+    if h is None:
+        return []
+    span = {}
+    for x in list(h.segs) + list(h.shadow):
+        site = SRC.site_of(x)
+        if site is None or x.start > req.now:
+            continue
+        a, b = span.get(site, (x.start, x.end))
+        span[site] = (min(a, x.start), max(b, min(x.end, req.now)))
+    return [{"site": k, "label": SRC.ref("import", k)["label"], "from_ms": a, "to_ms": b}
+            for k, (a, b) in sorted(span.items(), key=lambda kv: kv[1][0])]
 
 
 def _num_rule(body, k, lo, hi, rule, bad, allow_null=True):
@@ -551,7 +595,7 @@ def patch_settings(req):
     bad, rule = {}, {}
     known = ("version", "battery_chemistry", "free_supercharging", "capacity_new_kwh", "full_range_new_km",
              "warranty_threshold_pct", "efficiency_wh_per_km_override", "software_version_typed", "import_gap_fill",
-             "pack_replaced_date", "pack_new_kwh")
+             "pack_replaced_date", "pack_new_kwh", "source_order")
     for k in body:
         if k not in known:
             bad[k] = "Unknown field."
@@ -598,10 +642,15 @@ def patch_settings(req):
             rule["software_version_typed"] = "A version such as 2026.38.4."
     if "import_gap_fill" in body and body["import_gap_fill"] is not None and not isinstance(body["import_gap_fill"], bool):
         bad["import_gap_fill"] = "Must be true, false or null (the server's setting)."
+    if "source_order" in body and body["source_order"] is not None and not SRC.order_valid(body["source_order"]):
+        rule["source_order"] = SRC.ORDER_RULE
     if bad:
         raise bad_input(bad)
     if rule:
         raise invalid(rule)
+    reorder = "source_order" in body and SRC.order_of(st, req.car) != (body["source_order"] or SRC.DEFAULT_ORDER)
+    h = req.history()
+    a = h.first_ms if h is not None and h.first_ms is not None else req.now - 30 * 86_400_000
     with st.lock:
         s = st.car_settings[req.car]
         for k, v in body.items():
@@ -611,15 +660,44 @@ def patch_settings(req):
                 s["battery_chemistry"] = dict(s["battery_chemistry"], setting=v["setting"])
             elif k == "software_version_typed":
                 s[k] = v.strip() if isinstance(v, str) else None
+            elif k == "source_order":
+                # the default is kept as null, so a car follows a later change of the default
+                s[k] = list(v) if v is not None and v != SRC.DEFAULT_ORDER else None
             else:
                 s[k] = v
         s["version"] += 1
-    st.record(req.account, "car.settings", f"car:{req.car}",
+        if reorder:
+            # the server fuses the car's rows again in the new order: its health says rebuild_pending for a moment
+            st.rebuilds.setdefault(req.car, []).append({
+                "id": st.new_id("rb"), "from_ms": a, "to_ms": req.now, "at_ms": req.now, "took_ms": 3000,
+                "pending_until": req.now + 3000, "kinds": ["drives", "charges", "states", "visits"],
+                "cause": "source_order"})
+    st.record(req.account, "car-settings-changed", f"car:{req.car}",
               "Changed " + ", ".join(sorted(k for k in body if k != "version")) + ".")
+    if reorder:
+        req.app.events.publish("rows", {"car": req.car, "kinds": ["drives", "charges", "states", "visits"],
+                                        "from_ms": a, "to_ms": req.now}, car=req.car)
     return get_settings(req)
 
 
 # ------------------------------------------------------------------ upload tokens and CAN keys
+
+
+def _car_change_words(old_name, body):
+    """The server's words for a car change: "Renamed Comet to Comet II", "Changed Comet's time zone to
+    America/Chicago", "Changed Comet's: sold, paint"."""
+    parts = []
+    name = old_name
+    if "name" in body and body["name"].strip() != old_name:
+        name = body["name"].strip()
+        parts.append(f"Renamed {old_name} to {name}")
+    if "time_zone" in body:
+        parts.append(f"Changed {name}'s time zone to {body['time_zone'] or 'automatic'}")
+    rest = [k for k in sorted(body) if k not in ("version", "name", "time_zone", "config")]
+    rest += sorted(k for k in (body.get("config") or {}))
+    if rest:
+        parts.append(f"Changed {name}'s " + ", ".join(k.replace("_", " ") for k in rest))
+    return ("; ".join(parts) or f"Saved {name} unchanged") + "."
 
 
 def list_tokens(req):
@@ -633,7 +711,8 @@ def create_token(req):
     tok = {"id": st.new_id("t"), "created_ms": req.now, "revoked": False, "key": None, "last_upload_ms": None}
     with st.lock:
         st.tokens.setdefault(req.car, []).append(tok)
-    st.record(req.account, "token.create", f"car:{req.car}", f"Made an upload token for {st.car_meta(req.car)['name']}.")
+    st.record(req.account, "token-created", f"token:{req.car}:{tok['id']}",
+              f"Made the upload token {tok['id']} for {st.car_meta(req.car)['name']}.")
     out = dict(tok)
     out["secret"] = "smu_" + secrets.token_urlsafe(24)
     out["app"] = bridge_fields(req, out["secret"])
@@ -657,7 +736,8 @@ def revoke_token(req):
     t = _token(req)
     with req.store.lock:
         t["revoked"] = True
-    req.store.record(req.account, "token.revoke", f"car:{req.car}", f"Revoked upload token {t['id']}.")
+    req.store.record(req.account, "token-revoked", f"token:{req.car}:{t['id']}",
+                     f"Revoked the upload token {t['id']} of {req.store.car_meta(req.car)['name']}.")
     return dict(t, car=req.car)
 
 
@@ -672,7 +752,7 @@ def create_new_token(req):
     tok = {"id": st.new_id("t"), "created_ms": req.now, "revoked": False, "key": None, "last_upload_ms": None}
     with st.lock:
         st.new_car_tokens.append(tok)
-    st.record(req.account, "token.create", "server", "Made an upload token for a new car.")
+    st.record(req.account, "token-created", f"token:{tok['id']}", f"Made the upload token {tok['id']} for a new car.")
     out = dict(tok, car=None)
     out["secret"] = "smu_" + secrets.token_urlsafe(24)
     out["app"] = bridge_fields(req, out["secret"])
@@ -686,7 +766,7 @@ def revoke_new_token(req):
         raise not_found("no_such_token", "There is no such upload token waiting for a new car.")
     with req.store.lock:
         t["revoked"] = True
-    req.store.record(req.account, "token.revoke", "server", f"Revoked upload token {t['id']} (for a new car).")
+    req.store.record(req.account, "token-revoked", f"token:{t['id']}", f"Revoked the upload token {t['id']} of a new car.")
     return dict(t, car=None)
 
 
@@ -725,6 +805,7 @@ def patch_key(req):
         rule["car"] = "No such car."
     if rule:
         raise invalid(rule)
+    was = k["car"]
     with st.lock:
         if "car" in body:
             k["car"] = body["car"]
@@ -738,8 +819,22 @@ def patch_key(req):
                     other["preferred"] = other is k
         elif body.get("preferred") is False:
             k["preferred"] = False
-    st.record(req.account, "key.update", f"key:{k['key']}",
-              f"Key {k['key']}: car {k['car'] or 'none'}, preferred {'yes' if k['preferred'] else 'no'}.")
+    name = lambda c: st.car_meta(c)["name"] if c else "no car"  # noqa: E731
+    now_car = k["car"]
+    if "car" in body and was != now_car:
+        if was:
+            st.record(req.account, "key-unassigned", f"key:{was}:{k['key']}",
+                      f"Moved the CAN Bridge key {k['key']} from {name(was)} to {name(now_car)}.", car=was)
+        if now_car:
+            st.record(req.account, "key-assigned", f"key:{now_car}:{k['key']}",
+                      f"Moved the CAN Bridge key {k['key']} from {name(was)} to {name(now_car)}.", car=now_car)
+    elif "car" in body and now_car:
+        st.record(req.account, "key-assigned", f"key:{now_car}:{k['key']}",
+                  f"Kept the CAN Bridge key {k['key']} with {name(now_car)}.", car=now_car)
+    if "preferred" in body and now_car:
+        st.record(req.account, "key-preferred", f"key:{now_car}:{k['key']}",
+                  f"Made the CAN Bridge key {k['key']} {name(now_car)}'s preferred one." if k["preferred"] else
+                  f"The CAN Bridge key {k['key']} is no longer {name(now_car)}'s preferred one.", car=now_car)
     return k
 
 

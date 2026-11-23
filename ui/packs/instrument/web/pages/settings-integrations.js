@@ -8,9 +8,13 @@
 // status, the preview and the events of the cars they see. Changes: the switches and single fields save
 // at once (PUT settings/mqtt with the whole setting and its version); the connection has a Save button,
 // because host, port, TLS, pin and password are checked together.
+//
+// Admins get two tabs: Overview (every connection the server keeps, pages/conn-overview.js; the default) and
+// Details (everything above). The tab is in the address (?tab=details); a link to a section (#tesla,
+// #si-network, ...) opens the tab that holds it and scrolls there.
 
 import { h, replace } from '../shared/dom.js';
-import { buildUrl, lastCar } from '../shared/state.js';
+import { buildUrl, lastCar, preferredCar, rememberCar, isSold } from '../shared/state.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
 import { icon } from '../core/icons.js';
 import { soldParts, soldOptions } from '../core/carswitch.js';
@@ -24,6 +28,7 @@ import { dateTime, ago, num } from '../core/fmt.js';
 import { teslaSection } from './tesla-account.js';
 import { teslafiSection } from './teslafi-account.js';
 import { teslamateSection } from './teslamate-local.js';
+import { connectionsOverview } from './conn-overview.js';
 
 export const id = 'settings-integrations';
 export const css = true;
@@ -38,11 +43,20 @@ const STATUS = {
   published: ['Published', 'live', 'Sent now, retained, in the server units.'],
   logged: ['Logged, not yet sent', 'plain', 'Sentry Mate has the value (from the car or worked out); it is not its own topic yet.'],
   signal: ['Needs a new CAN signal', 'warm', 'The car sends it; Sentry Mate does not decode it yet. Nothing is guessed meanwhile.'],
-  none: ['Not on the CAN bus', 'plain', 'No message on the car’s buses carries it, so it is never published.'],
+  api: ['From Tesla API / TeslaFi', 'live', 'No CAN message carries it; the Tesla API or TeslaFi’s polls give it, tagged with where it came from, and it goes stale (sent empty) when the input stops.'],
+  none: ['Not on the CAN bus', 'plain', 'No message on the car’s buses carries it, and no other input gives it, so it is never published.'],
   never: ['Never published', 'plain', 'Left out on purpose.'],
   device: ['On the device', 'live', 'Sent once as part of the Home Assistant device, not as a topic.'],
 };
-const STATUS_ORDER = ['published', 'device', 'logged', 'signal', 'none', 'never'];
+const STATUS_ORDER = ['published', 'api', 'device', 'logged', 'signal', 'none', 'never'];
+// the live inputs other than SMO, as a status word names them
+const INPUT_WORD = { tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'TeslaMate' };
+// the inputs an `api` row can come from (all of them so far)
+const API_INPUTS = ['tesla_api', 'teslafi_api'];
+// what the owner's own TeslaMate gives too (one flag for the windows, no window of its own, no sunroof)
+const TM_KEYS = new Set(['version', 'update_available', 'update_version', 'locked', 'windows_open', 'scheduled_charge_start', 'route_destination', 'route_distance', 'route_minutes', 'route_traffic_delay']);
+const apiInputs = (keys) => ([].concat(keys ?? []).some((k) => TM_KEYS.has(k)) ? [...API_INPUTS, 'teslamate_local'] : API_INPUTS);
+const statusWord = (s, inputs = API_INPUTS) => (s === 'api' ? `From ${inputs.map((i) => INPUT_WORD[i] || i).join(' / ')}` : STATUS[s][0]);
 
 // unit kinds in the server's units (payloads are text in the server's units, not each person's)
 function unitText(kind, u) {
@@ -61,16 +75,16 @@ function unitText(kind, u) {
 const VALUES = [
   ['mqtt.display-name', null, 'Car name', null, 'device', 'Typed in Settings: Cars', 'The Home Assistant device name. Topics use the car id, so a rename never moves them.'],
   ['mqtt.state', 'state', 'State', null, 'published', 'The timeline', 'driving, charging, online, asleep or unknown. Unknown (no log, recording paused) is never called asleep.'],
-  ['mqtt.since', 'since', 'State since', 'ISO time, UTC', 'logged', 'The start of the timeline span', 'Exact to the CAN frame, not to a poll.'],
+  ['mqtt.since', 'since', 'State since', 'ISO time, UTC', 'published', 'The start of the timeline span', 'Exact to the CAN frame, not to a poll.'],
   ['mqtt.healthy', 'healthy', 'Logger healthy', 'true / false', 'published', 'The Data health rule', 'False when no log came while the car was awake, the newest log failed its check, or frames were lost in the last hour. See Data health.'],
-  ['mqtt.version', 'version', 'Software version', null, 'none', 'No version text on CAN', 'Instead: a software_changed event when module build ids change, with the version you typed (Software page).'],
-  ['mqtt.update-available', null, 'Update waiting', null, 'none', 'Only Tesla’s servers know', 'Left out.'],
-  ['mqtt.update-version', null, 'Waiting update version', null, 'none', 'Only Tesla’s servers know', 'Left out; the software_changed event tells you afterwards.'],
-  ['mqtt.download-perc', null, 'Update download %', '%', 'none', 'No progress on CAN', 'Left out.'],
-  ['mqtt.install-perc', 'installing', 'Update install %', 'true / false', 'published', 'Update status (0x343 VCRIGHT_OTAState)', 'No percentage on CAN: an installing true/false flag instead.'],
+  ['mqtt.version', 'version', 'Software version', null, 'api', 'The version the car reports to the Tesla API / TeslaFi', 'No version text on CAN. A software_changed event also comes when module build ids change.'],
+  ['mqtt.update-available', 'update_available', 'Update waiting', 'true / false', 'api', 'The update status the Tesla API / TeslaFi reads', 'Only Tesla’s servers know; not on CAN.'],
+  ['mqtt.update-version', 'update_version', 'Waiting update version', null, 'api', 'The waiting update, as the Tesla API / TeslaFi reads it', 'Not sent while none waits; the software_changed event tells you afterwards.'],
+  ['mqtt.download-perc', 'update_download', 'Update download %', '%', 'api', 'Download progress from the Tesla API / TeslaFi', 'No progress on CAN.'],
+  ['mqtt.install-perc', 'installing', 'Update install %', 'true / false', 'published', 'Update status (0x343), else the Tesla API / TeslaFi', 'No percentage on CAN: an installing true/false flag instead.'],
   ['mqtt.vin', null, 'VIN', null, 'never', 'Only the first 11 characters are ever kept', 'The VIN is never published, so a broker or Home Assistant never holds it.'],
   ['mqtt.model', null, 'Model', null, 'device', 'The VIN prefix', 'Model and year are the Home Assistant device model.'],
-  ['mqtt.trim-badging', 'trim', 'Trim', null, 'logged', 'The VIN prefix (drive units, battery)', 'Shown in Settings: Cars; the car configuration message can confirm it.'],
+  ['mqtt.trim-badging', 'trim', 'Trim', null, 'published', 'The VIN prefix (drive units, battery)', 'Shown in Settings: Cars; the car configuration message can confirm it.'],
   ['mqtt.exterior-color', 'paint', 'Paint', null, 'published', 'Car configuration (0x7FF GTW_exteriorColor)', 'Newer paints come as a bare code; you can type the name.'],
   ['mqtt.wheel-type', 'wheels', 'Wheels', null, 'published', 'Car configuration (0x7FF GTW_wheelType)', ''],
   ['mqtt.spoiler-type', 'spoiler', 'Spoiler', null, 'published', 'Car configuration (0x7FF GTW_spoilerType)', 'None or passive.'],
@@ -82,15 +96,15 @@ const VALUES = [
   ['mqtt.speed', 'speed', 'Speed', 'speed', 'published', 'Wheel speed (0x257)', ''],
   ['mqtt.heading', 'heading', 'Heading', '°', 'published', 'GPS heading (0x3D9 UI_gpsVehicleHeading, chassis bus)', 'Only while driving: the chassis bus is quiet when parked.'],
   ['mqtt.elevation', 'elevation', 'Elevation', 'elevation', 'published', 'The car’s GPS height (0x3D8)', 'Logged with every drive; from the car, no map lookup.'],
-  ['mqtt.locked', null, 'Locked', null, 'none', 'No lock state on CAN', 'Only a lock request exists, which is not the lock state. Never guessed.'],
+  ['mqtt.locked', 'locked', 'Locked', 'true / false', 'api', 'The lock state the Tesla API / TeslaFi reads', 'Never from a lock request: CAN only carries the request, which is not the lock state.'],
   ['mqtt.sentry-mode', 'sentry_mode', 'Sentry mode', 'true / false', 'published', 'Vehicle modes (0x284 UIsentryMode284)', ''],
-  ['mqtt.windows-open', null, 'Any window open', null, 'none', 'Only window switch presses on CAN', 'Left out: switch presses cannot tell open from closed.'],
-  ['mqtt.window-each', null, 'Each window', null, 'none', 'Only window switch presses on CAN', 'Left out.'],
+  ['mqtt.windows-open', 'windows_open', 'Any window open', 'true / false', 'api', 'The four windows as the Tesla API / TeslaFi reads them', 'CAN only has switch presses, which cannot tell open from closed. False only when all four read closed.'],
+  ['mqtt.window-each', ['window_driver_front', 'window_passenger_front', 'window_driver_rear', 'window_passenger_rear'], 'Each window', 'true / false', 'api', 'The Tesla API / TeslaFi (fd, fp, rd, rp)', 'Named by seat: driver front, passenger front, driver rear, passenger rear.'],
   ['mqtt.doors-open', 'doors_open', 'Any door open', 'true / false', 'published', 'Door latches (0x102, 0x103)', ''],
   ['mqtt.door-each', ['door_front_left', 'door_front_right', 'door_rear_left', 'door_rear_right'], 'Each door', 'true / false', 'published', 'Door latches (0x102 left, 0x103 right)', 'Named by side; right-hand drive comes from the car configuration.'],
-  ['mqtt.sun-roof-state', null, 'Sunroof position', null, 'none', 'No roof position on CAN', 'The roof type below instead.'],
+  ['mqtt.sun-roof-state', 'sunroof_state', 'Sunroof position', null, 'api', 'The Tesla API / TeslaFi', 'closed, open, vent … as the input says it. Only a car with a sunroof sends it; the roof type is below.'],
   ['mqtt.sun-roof-installed', 'roof', 'Roof type', null, 'published', 'Car configuration (0x7FF GTW_roofType)', 'Metal, fixed glass or panoramic.'],
-  ['mqtt.sun-roof-percent-open', null, 'Sunroof % open', '%', 'none', 'No roof position on CAN', 'Left out.'],
+  ['mqtt.sun-roof-percent-open', 'sunroof_open', 'Sunroof % open', '%', 'api', 'The Tesla API / TeslaFi', 'No roof position on CAN.'],
   ['mqtt.trunk-open', 'trunk_open', 'Trunk open', 'true / false', 'published', 'Trunk latch (0x103), liftgate (0x142)', 'A power liftgate also gives its angle.'],
   ['mqtt.frunk-open', 'frunk_open', 'Frunk open', 'true / false', 'published', 'Frunk latch (0x2E1 VCFRONT_frunkLatchStatus)', ''],
   ['mqtt.is-user-present', 'user_present', 'Someone in the car', 'true / false', 'published', 'Occupancy (0x3B3 UI_userPresent)', 'The user_present event is sent too, when someone is seen.'],
@@ -115,11 +129,12 @@ const VALUES = [
   ['mqtt.charger-voltage', 'charger_voltage', 'Charger voltage', 'V', 'published', 'AC line voltage (0x264), DC charger voltage', 'Sent while charging; also logged on every charge curve.'],
   ['mqtt.charge-current-request', 'charge_current_request', 'Current asked for', 'A', 'published', 'The current set on the screen (0x333)', ''],
   ['mqtt.charge-current-request-max', 'charge_current_limit', 'Current limit', 'A', 'published', 'Charger pilot, cable and car limits (0x21D, 0x13D)', 'Says which of the three limits applies.'],
-  ['mqtt.scheduled-charging-start-time', null, 'Scheduled charge start', null, 'none', 'Only schedule on/off flags on CAN', 'Instead: “plugged in, waiting” from the charge status, and the usual start time at that place from past charges.'],
+  ['mqtt.scheduled-charging-start-time', 'scheduled_charge_start', 'Scheduled charge start', 'ISO time, UTC', 'api', 'The charge schedule the Tesla API / TeslaFi reads', 'CAN only has the schedule on/off flags. Not sent while no start is set.'],
+  [null, 'scheduled_departure', 'Scheduled departure', 'ISO time, UTC', 'api', 'The departure the Tesla API / TeslaFi reads', 'The time set for off-peak charging and preconditioning to be done by.'],
   ['mqtt.time-to-full-charge', 'time_to_full', 'Time to full', 'min', 'published', 'Time remaining (0x132)', ''],
   ['mqtt.tpms-pressure', ['tire_pressure_fl', 'tire_pressure_fr', 'tire_pressure_rl', 'tire_pressure_rr'], 'Tyre pressures', 'pressure', 'published', 'Tyre sensors (0x219)', 'Front left, front right, rear left, rear right.'],
   ['mqtt.tpms-soft-warning', 'tire_low', 'Tyre pressure low', 'true / false', 'published', 'Pressure against the recommended pressure (0x219 page 4)', ''],
-  ['mqtt.active-route', null, 'Route (destination, distance, minutes, traffic)', null, 'none', 'Not on CAN', 'Only navigating and the energy at the destination are on CAN.'],
+  ['mqtt.active-route', ['route_destination', 'route_distance', 'route_minutes', 'route_traffic_delay'], 'Route (destination, distance, minutes, traffic)', 'distance, min', 'api', 'The active route the Tesla API / TeslaFi reads', 'While navigating: destination, distance left (server units), minutes left and minutes lost to traffic. Navigating and the energy at the destination come from CAN.'],
   ['mqtt.active-route-payload-routing', 'energy_at_destination', 'Energy at destination', 'kWh', 'published', 'Trip planning (0x082 UI_energyAtDestination)', 'While navigating; destination and minutes are not on CAN.'],
   ['mqtt.active-route-payload-idle', 'navigating', 'Navigating', 'true / false', 'published', 'Trip planning (0x082), map data (0x238)', 'A plain false with no destination, not an error text.'],
   ['mqtt.center-display-state', 'display_mode', 'Screen mode', null, 'published', 'Display on (0x00C), modes (0x284), keep climate (0x2F3)', 'Named modes: off, on, sentry, dog, camp. Not bare numbers.'],
@@ -132,14 +147,15 @@ const VALUES = [
   [null, 'battery_temp', 'Battery temperature', 'temperature', 'published', 'Cell temperatures', 'Sentry Mate extra.'],
   [null, 'lv_voltage', '12 V battery', 'V', 'published', 'Low-voltage battery', 'Sentry Mate extra.'],
   [null, 'updated', 'Last data', 'ISO time, UTC', 'published', 'The newest decoded frame', 'Every value set carries its time: read it before trusting a value.'],
-].map(([cid, keys, what, unitKind, status, source, why]) => ({ cid, keys: keys == null ? [] : Array.isArray(keys) ? keys : [keys], what, unitKind, status, source, why }));
+].map(([cid, keys, what, unitKind, status, source, why]) => ({ cid, keys: keys == null ? [] : Array.isArray(keys) ? keys : [keys], what, unitKind, status, source, why, inputs: status === 'api' ? apiInputs(keys) : null }));
 
 // Home Assistant: what it gets, per group, with the same statuses
 const ENTITY_GROUPS = [
   ['ha.entity.location-tracker', 'Device tracker', 'The car on the Home Assistant map, home or away by zone', 'location', 'published', 'Only with location publishing on. About 75 s behind live (one-minute logs and the upload).'],
-  ['ha.entity.active-route-tracker', 'Destination tracker', 'Where the car is navigating to', null, 'none', 'The destination is not on CAN.'],
-  ['ha.entity.status-sensors', 'Status sensors', 'State, Charging, Screen mode, Last data', 'state, charging, display_mode, updated', 'published', 'State since comes next; software version and waiting updates are not on CAN.'],
-  ['ha.entity.config-sensors', 'Build sensors', 'Paint, wheels, spoiler, roof', 'paint, wheels, spoiler, roof', 'published', 'Model and year are on the device already. Trim is not sent yet.'],
+  ['ha.entity.active-route-tracker', 'Destination tracker', 'Where the car is navigating to', null, 'none', 'The destination’s position is on no input Sentry Mate reads: the route gives its name (Route destination), not where it is.'],
+  ['ha.entity.status-sensors', 'Status sensors', 'State, State since, Charging, Screen mode, Last data', 'state, since, charging, display_mode, updated', 'published', 'Software version and waiting updates come from the Tesla API or TeslaFi (Software sensors).'],
+  [null, 'Software sensors', 'Software version, Software update, Update version, Update downloaded', 'version, update_available, update_version, update_download', 'api', 'Not on CAN; unknown in Home Assistant while the input’s reading is stale.'],
+  ['ha.entity.config-sensors', 'Build sensors', 'Paint, wheels, spoiler, roof, trim', 'paint, wheels, spoiler, roof, trim', 'published', 'Model and year are on the device already.'],
   ['ha.entity.motion-sensors', 'Motion sensors', 'Place, Gear, Power, Speed, Heading, Elevation', 'place, gear, power, speed, heading, elevation', 'published', 'Heading only while driving: the chassis bus is quiet when parked.'],
   ['ha.entity.parking-brake', 'In park', 'On while the gear is P', 'in_park', 'published', 'From the gear. The parking brake itself (0x228, 0x288) is on CAN as well.'],
   ['ha.entity.temperature-sensors', 'Temperature sensors', 'Inside, outside and battery temperature', 'inside_temp, outside_temp, battery_temp', 'published', 'Battery temperature is extra.'],
@@ -147,16 +163,18 @@ const ENTITY_GROUPS = [
   ['ha.entity.charging-sensors', 'Charging sensors', 'Battery, Usable level, Charge status, Limit, Charge power, Charger, Current, Voltage, Phases, Current asked for, Current limit, Time to full, Energy remaining', 'soc, soc_usable, charge_status, charge_limit, charge_power, charge_kind, charger_*, charge_current_*, time_to_full, energy_remaining', 'published', 'Current, voltage, phases and time to full are sent while charging.'],
   ['ha.entity.charge-energy-added.counter', 'Energy added counter', 'A running total for Home Assistant’s Energy view', 'charge_energy_added', 'published', 'Sent as the pack’s lifetime counter (total_increasing), which never resets, rather than a per-charge value that does.'],
   ['ha.entity.tpms-sensors', 'Tyre sensors', 'Four tyre pressures, Pressure low', 'tire_pressure_fl … rr, tire_low', 'published', 'Which sensor is which wheel is still to be confirmed on new firmware.'],
-  ['ha.entity.active-route-destination', 'Route destination', 'Destination name', null, 'none', 'Not on CAN.'],
+  ['ha.entity.active-route-destination', 'Route destination', 'Destination name', 'route_destination', 'api', 'Not on CAN.'],
   ['ha.entity.active-route-energy', 'Route energy', 'Navigating, Battery expected on arrival', 'navigating, energy_at_destination', 'published', 'Shown as a real 0; unavailable while not navigating.'],
-  ['ha.entity.active-route-distance', 'Route distance', 'Distance left', null, 'none', 'Not on CAN.'],
-  ['ha.entity.active-route-minutes', 'Route minutes', 'Minutes left', null, 'none', 'Not on CAN.'],
-  ['ha.entity.active-route-traffic', 'Route traffic', 'Minutes lost to traffic', null, 'none', 'Not on CAN.'],
-  ['ha.entity.binary-status', 'Health on/off', 'Logger healthy, Update installing, Service mode', 'healthy, installing, service_mode', 'published', 'A waiting update is not on CAN; the software_changed event says when one was installed.'],
-  ['ha.entity.binary-security', 'Security on/off', 'Doors (any and each), trunk, frunk, Sentry mode, someone in the car', 'doors_open, door_*, trunk_open, frunk_open, sentry_mode, user_present', 'published', 'Lock and windows are not on CAN and are never guessed.'],
+  ['ha.entity.active-route-distance', 'Route distance', 'Distance left', 'route_distance', 'api', 'Not on CAN.'],
+  ['ha.entity.active-route-minutes', 'Route minutes', 'Minutes left', 'route_minutes', 'api', 'Not on CAN.'],
+  ['ha.entity.active-route-traffic', 'Route traffic', 'Minutes lost to traffic', 'route_traffic_delay', 'api', 'Not on CAN.'],
+  ['ha.entity.binary-status', 'Health on/off', 'Logger healthy, Update installing, Service mode', 'healthy, installing, service_mode', 'published', 'Update installing is CAN’s flag, else the Tesla API’s or TeslaFi’s word; a waiting update is in Software sensors.'],
+  ['ha.entity.binary-security', 'Security on/off', 'Doors (any and each), trunk, frunk, Sentry mode, someone in the car', 'doors_open, door_*, trunk_open, frunk_open, sentry_mode, user_present', 'published', 'Lock and windows are their own group, from the Tesla API or TeslaFi.'],
+  [null, 'Lock and windows', 'Lock (Home Assistant’s lock class), Windows (any and each), Sunroof, Sunroof open', 'locked, windows_open, window_*, sunroof_state, sunroof_open', 'api', 'Never guessed from a lock request; unknown while the reading is stale.'],
+  [null, 'Charge schedule', 'Scheduled charge start, Scheduled departure', 'scheduled_charge_start, scheduled_departure', 'api', 'Timestamps; not on CAN.'],
   ['ha.entity.binary-climate-charge', 'Climate and charging on/off', 'Climate, preconditioning, cable, charge port', 'climate_on, preconditioning_*, plugged_in, charge_port_open', 'published', ''],
   ['ha.proximity', 'Distance to home', 'Home Assistant’s own proximity helper, fed by the device tracker', 'location', 'published', 'Needs location publishing on. Arrival is known about 75 s late.'],
-].map(([cid, what, gives, topics, status, why]) => ({ cid, what, gives, topics, status, why }));
+].map(([cid, what, gives, topics, status, why]) => ({ cid, what, gives, topics, status, why, inputs: status === 'api' ? apiInputs(topics) : null }));
 
 // the events: one topic, never retained, so a restart never repeats one
 const EVENTS = [
@@ -171,7 +189,7 @@ const EVENT_TYPES = EVENTS.map((e) => e[0]);
 
 /* ---------------------------------------------------------------------- small pieces */
 
-const statusTag = (s) => tag(STATUS[s][0], STATUS[s][1]);
+const statusTag = (s, inputs) => tag(statusWord(s, inputs), STATUS[s][1]);
 const code = (t) => h('code', { class: 'si-code' }, t);
 // a long topic or id: may break after each / or _, never inside a word
 const codeLong = (t) => h('code', { class: 'si-code si-code--long' }, String(t).split(/(?<=[/_])/).flatMap((part, i) => (i ? [h('wbr'), part] : [part])));
@@ -209,7 +227,8 @@ export async function mount(ctx) {
   if (!ctx.alive()) return;
 
   const carList = cars?.items || [];
-  // the preview car: the address's, else the frame's last car, else the first in the person's own order
+  // the preview car: the address's, else the preferred car (Main car, else the last opened, else the first
+  // in the person's own order)
   const findCar = async (id) => {
     if (!id) return null;
     const known = carList.find((c) => c.id === id);
@@ -221,8 +240,11 @@ export async function mount(ctx) {
     const wanted = ctx.query.car || null;
     extraCar = await findCar(wanted);
     if (wanted && !extraCar) carMissing = wanted;
-    if (!extraCar) extraCar = await findCar(lastCar());
-    if (!extraCar && carList.length) extraCar = (await ctx.api.page('cars', { sort: 'custom', limit: 1 }).catch(() => null))?.items?.[0] || carList[0];
+    if (!extraCar && carList.length) {
+      const all = (await ctx.api.page('cars', { sort: 'custom', limit: 100 }, { maxAgeMs: 30000 }).catch(() => null))?.items || carList;
+      const id = preferredCar(all);
+      extraCar = all.find((c) => c.id === id) || (await findCar(lastCar())) || carList[0];
+    }
   } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }
   if (!ctx.alive()) return;
   let carId = extraCar?.id || null;
@@ -466,6 +488,7 @@ export async function mount(ctx) {
     carId = next;
     extraCar = carList.find((c) => c.id === next) || { id: next, name: carSel.selectedOptions[0]?.textContent || next };
     replace(carNoteSlot);
+    rememberCar(next, { sold: isSold(extraCar) }); // picked from the server's list: a car this account sees
     ctx.setQuery({ car: carId });
     await loadPreview();
     if (!ctx.alive()) return;
@@ -485,17 +508,31 @@ export async function mount(ctx) {
       return { ...v, shown, unit: v.unitKind ? unitText(v.unitKind, u) : '' };
     });
   }
+  // whether the preview car has any input a row's value can come from (null: the preview does not say)
+  const hasInput = (r) => (!r.inputs || !Array.isArray(pv?.inputs) ? null : pv.inputs.some((i) => r.inputs.includes(i.kind)));
+  // where the value now published came from, for a value an API input gave: its label, and stale when it is
+  function sourceLine(r) {
+    const seen = new Map();
+    for (const k of r.keys) {
+      const src = pv?.sources?.[k];
+      if (src) seen.set(`${src.label}|${src.stale}`, src);
+    }
+    if (!seen.size) return null;
+    return h('span', { class: 'si-src' }, [...seen.values()].map((src) => h('span', { class: 'si-src-one', title: src.at_ms ? `Read ${ago(src.at_ms)}` : null },
+      h('i', { class: `src-m src-m--${src.kind}`, 'aria-hidden': 'true' }), src.label, src.stale ? h('span', { class: 'si-stale' }, 'stale') : null)));
+  }
   function payloadCell(r) {
     if (r.status === 'device') {
       const d = pv?.device;
       return h('span', { class: 'mono' }, r.cid === 'mqtt.model' ? d?.model || '—' : d?.name || pv?.name || '—');
     }
-    if (r.status !== 'published' || !r.keys.length) return h('span', { class: 'faint' }, '—');
+    if (!['published', 'api'].includes(r.status) || !r.keys.length) return h('span', { class: 'faint' }, '—');
     const any = r.shown.some(([, p]) => p !== undefined);
-    if (!any) return h('span', { class: 'faint' }, 'Not sent by this car yet');
-    return h('span', { class: 'si-payloads' }, r.shown.map(([k, p]) => h('span', { class: 'mono' }, r.shown.length > 1 ? h('span', { class: 'faint' }, `${k.replace(/^.*_/, '')} `) : null,
-      p === undefined ? '—' : p === '' ? h('span', { class: 'faint' }, '(empty)') : p.length > 60 ? `${p.slice(0, 57)}…` : p)));
+    if (!any) return h('span', { class: 'faint' }, r.status === 'api' && hasInput(r) === false ? 'No input gives this now' : 'Not sent by this car yet');
+    return h('span', { class: 'si-payloads' }, r.shown.map(([k, p]) => h('span', { class: 'mono' }, r.shown.length > 1 ? h('span', { class: 'faint' }, `${k.replace(/^(window|route)_/, '')} `) : null,
+      p === undefined ? '—' : p === '' ? h('span', { class: 'faint' }, '(empty)') : p.length > 60 ? `${p.slice(0, 57)}…` : p)), sourceLine(r));
   }
+  const srcCsv = (r) => [...new Set(r.keys.map((k) => pv?.sources?.[k]).filter(Boolean).map((x) => `${x.label}${x.stale ? ' (stale)' : ''}`))].join('; ');
   let valuesTable = null;
   function paintValues() {
     const rows = valueRows();
@@ -505,15 +542,15 @@ export async function mount(ctx) {
     } else replace(valuesSlot);
     valuesTable = dataTable(ctx, {
       title: 'Every value', icon: 'signals', rows, csvName: `mqtt-values-${carId || 'none'}`, label: 'Published values',
-      side: h('span', { class: 'faint' }, `${counts.published} published · ${counts.logged} logged · ${counts.signal} need a signal · ${counts.none + counts.never} left out`),
+      side: h('span', { class: 'faint' }, `${counts.published} published · ${counts.api} from Tesla API / TeslaFi · ${counts.logged} logged · ${counts.signal} need a signal · ${counts.none + counts.never} left out`),
       note: `Payloads are what a broker gets now for ${pv?.name || 'this car'}, as text in the server units (${unitText('distance', units())}, ${unitText('temperature', units())}, ${unitText('pressure', units())}): MQTT has one set of units for everyone. Sort by Status to group them.`,
       sort: { key: 'status', dir: 'asc' },
       columns: [
         { key: 'what', label: 'Value', sort: true, render: (r) => h('span', { class: 'si-what', cover: r.cid || null }, h('b', null, r.what), r.cid ? null : h('span', { class: 'faint' }, ' extra')), csv: (r) => r.what },
         { key: 'topic', label: 'Topic', value: (r) => r.keys[0] || '', sort: true, render: (r) => (r.keys.length ? h('span', { class: 'si-topics-cell' }, r.keys.map((k) => codeLong(k))) : h('span', { class: 'faint' }, 'no topic')), csv: (r) => r.keys.map((k) => `${ns()}/cars/${carId}/${k}`).join(' ') },
-        { key: 'payload', label: 'Payload now', render: payloadCell, csv: (r) => (r.status === 'published' ? r.shown.map(([, p]) => p ?? '').join(' ') : r.status === 'device' ? (r.cid === 'mqtt.model' ? pv?.device?.model : pv?.name) || '' : '') },
+        { key: 'payload', label: 'Payload now', render: payloadCell, csv: (r) => (['published', 'api'].includes(r.status) ? [r.shown.map(([, p]) => p ?? '').join(' '), srcCsv(r) ? `(${srcCsv(r)})` : ''].filter(Boolean).join(' ') : r.status === 'device' ? (r.cid === 'mqtt.model' ? pv?.device?.model : pv?.name) || '' : '') },
         { key: 'unit', label: 'Unit', cls: 'nowrap', render: (r) => r.unit || h('span', { class: 'faint' }, 'text'), csv: (r) => r.unit },
-        { key: 'status', label: 'Status', sort: true, value: (r) => STATUS_ORDER.indexOf(r.status), render: (r) => statusTag(r.status), csv: (r) => STATUS[r.status][0] },
+        { key: 'status', label: 'Status', sort: true, value: (r) => STATUS_ORDER.indexOf(r.status), render: (r) => statusTag(r.status, r.inputs || undefined), csv: (r) => statusWord(r.status, r.inputs || undefined) },
         { key: 'source', label: 'Comes from', sort: true, cls: 'si-wrap', render: (r) => h('span', null, r.source, r.why ? h('span', { class: 'si-why' }, r.why) : null), csv: (r) => `${r.source}${r.why ? `. ${r.why}` : ''}` },
       ],
     });
@@ -591,7 +628,7 @@ export async function mount(ctx) {
         { key: 'what', label: 'Group', sort: true, render: (r) => h('span', { cover: r.cid }, h('b', null, r.what)) },
         { key: 'gives', label: 'Entities', cls: 'si-wrap' },
         { key: 'topics', label: 'From topics', cls: 'si-wrap', render: (r) => (r.topics ? h('span', { class: 'mono' }, r.topics) : h('span', { class: 'faint' }, '—')) },
-        { key: 'status', label: 'Status', sort: true, value: (r) => STATUS_ORDER.indexOf(r.status), render: (r) => statusTag(r.status), csv: (r) => STATUS[r.status][0] },
+        { key: 'status', label: 'Status', sort: true, value: (r) => STATUS_ORDER.indexOf(r.status), render: (r) => statusTag(r.status, r.inputs || undefined), csv: (r) => statusWord(r.status, r.inputs || undefined) },
         { key: 'why', label: 'Notes', cls: 'si-wrap' },
       ],
     });
@@ -714,17 +751,19 @@ export async function mount(ctx) {
   const netSlot = h('div');
   const PURPOSE = {
     geocoding: ['Address lookup', 'Only when an admin turns online addresses on; positions are rounded first.', 'settings-display'],
-    tiles: ['Map pictures', 'Asked by each viewer’s browser when online tiles are on.', 'settings-display'],
+    tiles: ['Map pictures', 'Asked by each viewer’s browser when online tiles are on: the chosen map (satellite by default), its place names and roads, and the maps people may switch to.', 'settings-display'],
     geonames_download: ['Place-name download', 'Only when an admin asks for new offline place names.', 'settings-display'],
     mqtt: ['MQTT broker', 'Only while publishing is on (this page).', null],
     tesla: ['Tesla API', 'Only while a Tesla account is added and not paused: sign-in, the Owner API and its live stream (Tesla account, this page).', null],
     teslafi: ['TeslaFi API', 'Only while a TeslaFi token is added and not paused: reads your cars\' data from TeslaFi', null, 'teslafi', 'TeslaFi'],
     teslamate_mqtt: ['Local TeslaMate (MQTT)', 'Only while a local TeslaMate is added and not paused: subscribes to its topics, never publishes', null, 'teslamate', 'Local TeslaMate'],
     teslamate_db: ['Local TeslaMate (database)', 'Only while its database catch-up is on: reads what MQTT missed', null, 'teslamate', 'Local TeslaMate'],
-    release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-server'],
+    release_check: ['Release check', 'Asks whether a newer Sentry Mate exists, when turned on.', 'settings-display'],
     upload: ['CAN Bridge uploads', 'The car’s CAN Bridge sends its logs here.', null],
     web: ['This app and the API', 'Browsers, apps and the API.', null],
   };
+  // every host of a row: the map pictures name each server (the chosen map, its names and roads, the maps people may switch to)
+  const hostsOf = (r) => (Array.isArray(r.hosts) && r.hosts.length ? r.hosts : r.host ? [r.host] : []);
   function paintNetwork() {
     if (!net) { replace(netSlot, note(icon('lock', 'ico--sm'), admin ? ' The connection list could not be read.' : ' The list of connections is shown to admins. By default Sentry Mate makes no outbound connection at all.')); return; }
     const rows = [
@@ -737,7 +776,7 @@ export async function mount(ctx) {
       columns: [
         { key: 'dir', label: 'Way', sort: true, render: (r) => tag(r.dir === 'In' ? 'Inbound' : 'Outbound', r.dir === 'In' ? 'live' : 'plain'), csv: (r) => r.dir },
         { key: 'purpose', label: 'For', sort: true, render: (r) => h('span', null, h('b', null, PURPOSE[r.purpose]?.[0] || r.purpose), h('span', { class: 'si-why' }, PURPOSE[r.purpose]?.[1] || '')), csv: (r) => PURPOSE[r.purpose]?.[0] || r.purpose },
-        { key: 'host', label: 'Host or port', render: (r) => (r.port != null ? code(`port ${r.port}${r.tls ? ', TLS' : ''}`) : r.host ? code(r.host) : h('span', { class: 'faint' }, 'not set')), csv: (r) => r.host || (r.port != null ? `port ${r.port}` : '') },
+        { key: 'host', label: 'Host or port', render: (r) => (r.port != null ? code(`port ${r.port}${r.tls ? ', TLS' : ''}`) : hostsOf(r).length ? h('span', { class: 'si-hosts' }, hostsOf(r).map((x) => code(x))) : h('span', { class: 'faint' }, 'not set')), csv: (r) => hostsOf(r).join(' ') || (r.port != null ? `port ${r.port}` : '') },
         { key: 'enabled', label: 'State', sort: true, render: (r) => (r.enabled ? pill(r.dir === 'In' ? 'Open' : 'On', { tone: 'live' }) : pill('Off')), csv: (r) => (r.enabled ? 'on' : 'off') },
         { key: 'last_used_ms', label: 'Last used', num: true, sort: true, render: (r) => (r.last_used_ms ? h('span', { class: 'nowrap', title: dateTime(r.last_used_ms, ctx.tz) }, ago(r.last_used_ms)) : h('span', { class: 'faint' }, r.dir === 'In' ? 'always listening' : 'never')), csv: (r) => (r.last_used_ms ? new Date(r.last_used_ms).toISOString() : '') },
         { key: 'change', label: 'Change it', render: (r) => (PURPOSE[r.purpose]?.[3] ? h('a', { class: 'link', href: `${buildUrl('settings-integrations')}#${PURPOSE[r.purpose][3]}` }, PURPOSE[r.purpose][4]) : PURPOSE[r.purpose]?.[2] ? h('a', { class: 'link', href: buildUrl(PURPOSE[r.purpose][2]) }, 'Settings') : h('span', { class: 'faint' }, r.purpose === 'mqtt' || r.purpose === 'tesla' ? 'Above' : '—')), csv: false },
@@ -760,19 +799,85 @@ export async function mount(ctx) {
       works('Smart mirrors and wall screens', 'projects.magic-mirror', 'A status tile on a mirror or wall display, from MQTT or the API.', [code('soc'), ', ', code('range'), ', ', code('state'), ', ', code('updated'), '.']),
       works('Garage door openers', 'projects.geogdo', 'Openers that act on arrival and departure, for several cars, by zone or saved place. Values are about 75 s late: good for closing behind you, late for opening.', [code('location'), ', ', code('place'), ' and drive events.'])));
 
-  /* ---------- put it together */
-  replace(ctx.view,
-    pageHead({ title: ctx.info.title, purpose: ctx.info.purpose, actions: headSlot }),
+  /* ---------- put it together: for admins, the Overview and Details tabs */
+  const details = h('div', { class: 'si-tabpanel', id: 'si-details', role: admin ? 'tabpanel' : null, 'aria-labelledby': admin ? 'si-tab-details' : null, tabindex: admin ? '-1' : null },
     jumpNav,
     h('div', { class: 'si-stack' },
       h('p', { class: 'note saving-note' }, icon('check', 'ico--sm'), ' Switches and single fields save at once and a short note confirms it; the broker connection saves with its button. Nothing leaves the server until publishing is on.'),
       tesla.el, teslafi.el, teslamate.el, brokerPanel, topicsPanel, valuesPanel, haPanel, entitiesPanel, eventsPanel, apiPanel, netPanel, worksPanel));
+  // where a link to a section lands: its own id, or the name the API gives it (#mqtt is the broker)
+  const ALIAS = { mqtt: 'si-broker', broker: 'si-broker', network: 'si-network', overview: 'si-overview' };
+  const targetOf = (hash) => {
+    if (!hash) return null;
+    return ctx.view.querySelector(`#${CSS.escape(ALIAS[hash] || hash)}`);
+  };
+  let overview = null, tabs = null, tabBtns = null, overviewPanel = null, tab = 'details';
+  function scrollToEl(el) {
+    const bar = document.querySelector('.topbar')?.getBoundingClientRect().height || 0;
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    window.scrollTo(0, Math.max(0, el.getBoundingClientRect().top + window.scrollY - bar - rem));
+  }
+  function showTab(next) {
+    tab = next;
+    if (!tabs) return;
+    for (const [v, b] of Object.entries(tabBtns)) { b.setAttribute('aria-selected', String(v === next)); b.tabIndex = v === next ? 0 : -1; }
+    overviewPanel.hidden = next !== 'overview';
+    details.hidden = next !== 'details';
+  }
+  // a tab chosen here: in the address (replace; a row's link pushes, so Back returns to the overview)
+  function openTab(next, { push = false, target = null } = {}) {
+    showTab(next);
+    ctx.setQuery({ tab: next === 'overview' ? null : next }, { push });
+    if (target) {
+      const el = targetOf(target);
+      try { history.replaceState(history.state, '', `${location.pathname}${location.search}#${encodeURIComponent(target)}`); } catch { /* the address stays */ }
+      if (el) requestAnimationFrame(() => scrollToEl(el));
+    }
+  }
+  if (admin) {
+    overview = connectionsOverview(ctx, { onLocal: (hash) => openTab(hash === 'si-overview' ? 'overview' : 'details', { push: true, target: hash }) });
+    overviewPanel = h('div', { class: 'si-tabpanel', id: 'si-overview', role: 'tabpanel', 'aria-labelledby': 'si-tab-overview', tabindex: '-1' }, overview.el);
+    const tabBtn = (v, label, ic) => h('button', {
+      class: 'seg-btn', type: 'button', role: 'tab', id: `si-tab-${v}`, 'aria-controls': `si-${v}`,
+      onclick: () => { if (tab !== v) openTab(v); },
+      onkeydown: (e) => { if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { const o = v === 'overview' ? 'details' : 'overview'; openTab(o); tabBtns[o].focus(); e.preventDefault(); } },
+    }, icon(ic, 'ico--sm'), label);
+    tabBtns = { overview: tabBtn('overview', 'Overview', 'pulse'), details: tabBtn('details', 'Details', 'settings') };
+    tabs = h('div', { class: 'seg si-tabs', role: 'tablist', 'aria-label': 'Integrations' }, tabBtns.overview, tabBtns.details);
+  }
+  const notAdmin = admin ? null : h('p', { class: 'note si-admin-note', cover: ['conn.overview.rows', 'conn.overview.status', 'conn.overview.sparkline', 'conn.overview.problems'] },
+    icon('lock', 'ico--sm'), ' An admin also sees an overview of every connection the server keeps here: is it live, when it last worked, its errors and problems.');
+  replace(ctx.view,
+    pageHead({ title: ctx.info.title, purpose: ctx.info.purpose, actions: headSlot }),
+    tabs, notAdmin, overviewPanel, details);
+  // the tab: a link to a section of Details opens Details; else the address's (Overview by default)
+  const hash = decodeURIComponent(location.hash.slice(1) || '');
+  const hashEl = hash ? targetOf(hash) : null;
+  let aliasScroll = null;
+  if (admin) {
+    const fromHash = hashEl ? (overviewPanel.contains(hashEl) ? 'overview' : details.contains(hashEl) ? 'details' : null) : null;
+    showTab(fromHash || (ctx.query.tab === 'details' ? 'details' : 'overview'));
+    if (fromHash === 'details' && ctx.query.tab !== 'details') ctx.setQuery({ tab: 'details' });
+    if (fromHash === 'details') try { history.replaceState(history.state, '', `${location.pathname}${location.search}#${encodeURIComponent(hash)}`); } catch { /* kept */ }
+  }
+  // the router scrolls to an element with the hash's id itself; an alias (#mqtt) is scrolled to here
+  if (hashEl && hashEl.id !== hash) aliasScroll = hashEl;
   paintHead(); paintBroker(); paintStatus(); paintTopics(); paintValues(); paintHa(); paintEntities();
   eventsPanel.append(...eventsBody());
   paintEvents(); paintNetwork();
-  await Promise.all([valuesTable?.ready, eventsTable?.ready, paintLog(), tesla.load(), teslafi.load(), teslamate.load()].filter(Boolean));
+  await Promise.all([valuesTable?.ready, eventsTable?.ready, paintLog(), tesla.load(), teslafi.load(), teslamate.load(), overview?.load()].filter(Boolean));
   if (!ctx.alive()) return;
+  overview?.start();
   ctx.ready();
+  if (aliasScroll) requestAnimationFrame(() => { if (ctx.alive()) scrollToEl(aliasScroll); });
+
+  return {
+    // back / forward: another tab is shown in place; another preview car builds the page again
+    onQuery(query) {
+      if (query.car && query.car !== carId) { ctx.reload(); return; }
+      if (admin) showTab(query.tab === 'details' ? 'details' : 'overview');
+    },
+  };
 }
 
 // a discovery topic is <prefix>/<domain>/<node>/<key>/config, and the prefix may have several levels
