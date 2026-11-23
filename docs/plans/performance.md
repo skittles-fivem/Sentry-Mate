@@ -222,12 +222,15 @@ Means over 6 packs x 8 pages (ms):
 | 4 + in-app cache and prefetch | 3186 | 1328 | 1214 | 298 | 503 | 647 | 513 | 140 |
 | 4b + fresh answer first within 100 ms, `/me` once | 3204 | 1315 | 1078 | 289 | 507 | 652 | 495 | 145 |
 | 4c + idle warming 2 s after the first page | **2842** | 1286 | **783** | 252 | **437** | **415** | **293** | **140** |
+| all of it, rebased on origin/main `46e9d0f` | 3191 | 1351 | 1057 | 352 | 573 | 447 | 310 | 158 |
 
 - From the start to the end: phone cold 5.0 → 2.8 s, warm 2.2 → 0.78 s (first paint 0.44 → 0.25 s), in-app
   navigation 1.6 → 0.44 s; desktop cold 439 → 415 ms, warm 291 → 293 ms, navigation 242 → 140 ms. Warm loads now
   ask the network for no pack file and no `index.html` (0 KiB of files on the phone).
 - Step 2's run is on a newer origin/main (`cf81f68`, with other sessions' page and map changes): part of its cold
-  change is theirs.
+  change is theirs. The last row is the same changes on a still newer origin/main (`46e9d0f`: 84 more commits of
+  other sessions, among them the build check on every answer, windowed long lists and tiered prices); warm loads
+  there are slower again (783 → 1057 ms on the phone), which was not looked into yet.
 - Step 3 made little difference here (the dev server showed the long tasks of a cold car or charges page about
   halved; on the real server's pages the measured TTU did not move beyond noise). Long tasks per cold load overall:
   1142 → 638 ms.
