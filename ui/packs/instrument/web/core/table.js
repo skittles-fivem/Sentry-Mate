@@ -7,7 +7,7 @@
 // already has are drawn 200 at a time; the next 200 come as the foot scrolls into view (or "Show more").
 
 import * as state from '../shared/state.js';
-import { h, replace, cover } from '../shared/dom.js';
+import { h, replace, cover, holdScroll } from '../shared/dom.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
 import { scrollBox } from '../shared/scrollbox.js';
 import { formatNumber, compareText } from '../shared/i18n.js';
@@ -198,6 +198,7 @@ export function dataTable(ctx, opts) {
   function setBody(trs) {
     const now = tbody.children;
     if (now.length === trs.length && trs.every((tr, i) => now[i] === tr)) return;
+    holdScroll(tbody);
     tbody.replaceChildren(...trs);
   }
 
