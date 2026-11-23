@@ -16,7 +16,7 @@ path = "src/main.rs"
 [features]
 # The hidden `dev seed` command (made-up cars for development). Off in the image and every release build: a server
 # built with it can be filled with made-up cars whose signing keys come from a public seed.
-dev-seed = ["dep:synth"]
+dev-seed = ["dep:synth", "dep:import"]
 
 [dependencies]
 accounts = { path = "../accounts" }
@@ -24,6 +24,7 @@ db = { path = "../db" }
 dbc = { path = "../dbc" }
 engine = { path = "../engine" }
 gate = { path = "../gate" }
+import = { path = "../import", optional = true }
 moving = { path = "../moving" }
 ingest = { path = "../ingest" }
 logfmt = { path = "../logfmt" }
@@ -48,6 +49,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
 synth = { path = "../synth" }
+import = { path = "../import" }
 base64 = "0.22"
 lzma-rs = "0.3"
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
