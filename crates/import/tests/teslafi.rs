@@ -549,3 +549,35 @@ fn impossible_odometer_readings_are_dropped_in_the_files_units() {
     assert_eq!(km, [Some(25000.0), None, Some(25001.0), None, Some(25001.0)]);
     assert_eq!(r.skipped_values.values().sum::<u64>(), 2);
 }
+
+#[test]
+fn a_charge_that_resumes_counts_only_what_it_added() {
+    // plugged in once: 30 min at 11 kW, a 10 min pause (charge_energy_added holds its 5.5 kWh, as the car keeps it
+    // while it stays plugged in), then 60 min more. Two charges: 5.5 kWh and 11 kWh, not 5.5 and 16.5
+    let mut g = Gen::new(VIN1);
+    g.soc = 40.0;
+    let at = |m: i64| local("2023-03-01 09:00:00") + chrono::Duration::minutes(m);
+    g.poll(at(-2), Doing::Parked);
+    for m in 0..30 {
+        g.poll(at(m), Doing::Charge(11.0, false));
+    }
+    for m in 30..40 {
+        g.poll(at(m), Doing::ChargeDone);
+    }
+    for m in 40..100 {
+        g.poll(at(m), Doing::Charge(11.0, false));
+    }
+    g.poll(at(101), Doing::ChargeDone);
+    let mut s = Store::new(&[(VIN1, 3)]);
+    run(&mut s, g.take_csv().as_bytes(), &Options::default());
+    let charges = s.charges_of(3);
+    assert_eq!(charges.len(), 2, "{charges:#?}");
+    let (a, b) = (charges[0], charges[1]);
+    assert!((a.energy_added_kwh.unwrap() - 5.5).abs() < 0.01, "{:?}", a.energy_added_kwh);
+    // the counter rose from 5.5 to 16.5 over the second charge's polls (the first of them already 11 kW in)
+    assert!((b.energy_added_kwh.unwrap() - 11.0).abs() < 0.01, "{:?}", b.energy_added_kwh);
+    // so the pack's size from it is the made-up 75 kWh, and the energy added never tops the grid's over the charge
+    let usable = b.energy_added_kwh.unwrap() / (b.end_soc.unwrap() - b.start_soc.unwrap()) * 100.0;
+    assert!((60.0..90.0).contains(&usable), "{usable} kWh from {b:?}");
+    assert!(b.energy_added_kwh.unwrap() <= b.energy_used_kwh.unwrap() + 0.2, "{b:?}");
+}
