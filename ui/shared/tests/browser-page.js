@@ -107,6 +107,29 @@ async function run() {
   history.back();
   await sleep(100);
   check('back goes back', location.pathname === '/' && state.current().page === 'fleet', location.href);
+
+  // an in-page #anchor (the browser fires popstate for it): no re-route, data-ready stays, the page lands on it
+  const before = changes.length;
+  const spacer = h('div', {});
+  const part = h('section', {}, 'MQTT');
+  part.id = 'mqtt';
+  const toPart = h('a', { href: '#mqtt' }, 'MQTT');
+  document.body.append(toPart, spacer, part);
+  spacer.style.height = '3000px';
+  part.style.height = '3000px';
+  ready('fleet');
+  window.scrollTo(0, 0);
+  toPart.click();
+  await sleep(50);
+  check('an in-page anchor keeps data-ready and the store', location.hash === '#mqtt' && document.documentElement.dataset.ready === 'fleet' && changes.length === before && state.current().page === 'fleet', `${location.href} ${document.documentElement.dataset.ready} ${changes}`);
+  check('an in-page anchor lands on its part', Math.abs(part.getBoundingClientRect().top) < 2, String(part.getBoundingClientRect().top));
+  history.back();
+  await sleep(100);
+  check('back to no anchor keeps data-ready', location.hash === '' && document.documentElement.dataset.ready === 'fleet' && changes.length === before, `${location.href} ${document.documentElement.dataset.ready}`);
+  state.navigate('/#mqtt');
+  await sleep(50);
+  check('navigate() to the same page with a hash keeps data-ready', location.hash === '#mqtt' && document.documentElement.dataset.ready === 'fleet' && changes.length === before, `${location.href} ${document.documentElement.dataset.ready}`);
+  toPart.remove(); spacer.remove(); part.remove();
   stopRouting();
 
   check('no CSP violations', violations.length === 0 && !window.__pwned, violations.join('; '));

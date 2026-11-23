@@ -870,6 +870,14 @@ export async function mount(ctx) {
   overview?.start();
   ctx.ready();
   if (aliasScroll) requestAnimationFrame(() => { if (ctx.alive()) scrollToEl(aliasScroll); });
+  // a link to a section of this page while the other tab is shown (#tesla typed or followed here): open its tab, land on it
+  ctx.on(window, 'hashchange', () => {
+    let el = null;
+    try { el = targetOf(decodeURIComponent(location.hash.slice(1) || '')); } catch { return; }
+    if (!el) return;
+    if (admin) { const t = overviewPanel.contains(el) ? 'overview' : details.contains(el) ? 'details' : null; if (t && t !== tab) showTab(t); }
+    requestAnimationFrame(() => { if (ctx.alive()) scrollToEl(el); });
+  });
 
   return {
     // back / forward: another tab is shown in place; another preview car builds the page again

@@ -582,8 +582,7 @@ export async function mount(ctx) {
     if (target && !target.closest('[hidden]')) target.scrollIntoView({ block: 'start' });
   }
   // an in-page link (#tesla from a card): open the tab holding it, then land on it
-  // (the browser's popstate for it took data-ready away; the page is still ready)
-  ctx.on(window, 'hashchange', () => { if (!ctx.alive()) return; show(tabFor({})); land(); ctx.ready(); });
+  ctx.on(window, 'hashchange', () => { if (!ctx.alive()) return; show(tabFor({})); land(); });
 
   function draw() {
     statusEl = statusTile();
