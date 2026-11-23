@@ -40,8 +40,10 @@ node ui/tools/check.js --pack manager --pages drives,drive --allow-missing   # c
 ```
 
 The dev server serves `web/` at `/` and the made-up `/api/v1` (see `ui/devserver/README.md`). Any path that is
-not a file gets `index.html`, so every route works on reload. All paths in the pack are absolute (`/app.css`,
-`/pages/drives.css`), because pages live at deep URLs like `/cars/c1/drives/123`.
+not a file gets `index.html`, so every route works on reload. Paths in `index.html` are absolute (`/app.css`,
+`/core/app.js`), because pages live at deep URLs like `/cars/c1/drives/123`; paths inside the JS and CSS are relative
+to their own file (`url('fonts/x.woff2')`, `new URL('../pages/drives.css', import.meta.url)`), so they follow the
+server's versioned prefix (`/_v/<version>/...`) that `index.html` is rewritten to.
 
 ## Files
 

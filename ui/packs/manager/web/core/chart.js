@@ -12,21 +12,27 @@
 
 import { convert, unitLabel, format } from '../shared/units.js';
 import { formatTime, formatDate } from '../shared/time.js';
-import { cssVar } from '../shared/dom.js';
+import { cssVar, styleSheet } from '../shared/dom.js';
 import { formatNumber } from '../shared/i18n.js';
 import { rpx, onChange, onTheme, uplotRatio } from './display.js';
 
 let load = null;
-/** Load uPlot once; resolves to window.uPlot. */
+/**
+ * Load uPlot once (its script and its style sheet, both relative to this file); resolves to window.uPlot once the
+ * style sheet applies too, so no chart is laid out without it. Pages without a chart never load either.
+ */
 export function loadUPlot() {
-  load ??= window.uPlot ? Promise.resolve(window.uPlot) : new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = '/vendor/uplot/uPlot.iife.min.js';
-    s.onload = () => { uplotRatio.release(); resolve(window.uPlot); };
-    s.onerror = () => { uplotRatio.release(); load = null; reject(new Error('The chart library did not load.')); };
-    uplotRatio.capture(); // uPlot asks for its pixel-ratio media query while its script runs
-    document.head.append(s);
-  });
+  load ??= Promise.all([
+    window.uPlot ? window.uPlot : new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = new URL('../vendor/uplot/uPlot.iife.min.js', import.meta.url).href;
+      s.onload = () => { uplotRatio.release(); resolve(window.uPlot); };
+      s.onerror = () => { uplotRatio.release(); load = null; reject(new Error('The chart library did not load.')); };
+      uplotRatio.capture(); // uPlot asks for its pixel-ratio media query while its script runs
+      document.head.append(s);
+    }),
+    styleSheet(new URL('../vendor/uplot/uPlot.min.css', import.meta.url).href, { first: true }),
+  ]).then(([u]) => u);
   return load;
 }
 

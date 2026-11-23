@@ -69,12 +69,12 @@ let first = true;
 let shownCar = null; // the car the header shows
 let selfQuery = false;
 
-/** Load a page's own style sheet once (/pages/<id>.css); resolves when it applies. */
+/** Load a page's own style sheet once (pages/<id>.css); resolves when it applies. */
 function pageCss(id) {
   let link = document.head.querySelector(`link[data-page-css="${id}"]`);
   const wait = (l) => new Promise((r) => { l.addEventListener('load', r, { once: true }); l.addEventListener('error', r, { once: true }); });
   if (link) return link.sheet ? Promise.resolve() : wait(link);
-  link = h('link', { rel: 'stylesheet', href: `/pages/${id}.css`, dataset: { pageCss: id } });
+  link = h('link', { rel: 'stylesheet', href: new URL(`../pages/${id}.css`, import.meta.url).href, dataset: { pageCss: id } });
   const p = wait(link);
   document.head.append(link);
   return p;

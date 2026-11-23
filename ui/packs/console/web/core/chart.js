@@ -9,20 +9,26 @@
 //   before they reach a chart (shared/units.js convert); null stays null, so a line breaks over gaps.
 // - No legend of uPlot's own: a readout line under the chart shows the values at the cursor.
 
-import { h, cssVar, replace } from '../shared/dom.js';
+import { h, cssVar, replace, styleSheet } from '../shared/dom.js';
 import { formatTime, formatDate } from '../shared/time.js';
 import { rpx, onChange, onTheme } from './display.js';
 
 let load = null;
-/** Load uPlot once; resolves to window.uPlot. */
+/**
+ * Load uPlot once (its script and its style sheet, both relative to this file); resolves to window.uPlot once the
+ * style sheet applies too, so no chart is laid out without it. Pages without a chart never load either.
+ */
 export function loadUPlot() {
-  load ??= window.uPlot ? Promise.resolve(window.uPlot) : new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = '/vendor/uplot/uPlot.iife.min.js';
-    s.onload = () => resolve(window.uPlot);
-    s.onerror = () => { load = null; reject(new Error('The chart library did not load.')); };
-    document.head.append(s);
-  });
+  load ??= Promise.all([
+    window.uPlot ? window.uPlot : new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = new URL('../vendor/uplot/uPlot.iife.min.js', import.meta.url).href;
+      s.onload = () => resolve(window.uPlot);
+      s.onerror = () => { load = null; reject(new Error('The chart library did not load.')); };
+      document.head.append(s);
+    }),
+    styleSheet(new URL('../vendor/uplot/uPlot.min.css', import.meta.url).href, { first: true }),
+  ]).then(([u]) => u);
   return load;
 }
 
