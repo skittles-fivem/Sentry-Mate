@@ -1041,5 +1041,40 @@ fn smo_gps_out_of_step_with_the_api_gives_way_and_is_named() {
         let q = query::travel::VisitsQuery { period: Period::all(), ..Default::default() };
         let visits = query::travel::visits(&k.engine, &[car], &q, &Paging::default()).unwrap();
         assert!(!visits.items.is_empty() && visits.items.iter().all(|v| near(v.lon)), "the stops");
+
+        // the live position by the same word: the API's, with its own time and input, never SMO's
+        let live = |k: &Kit| {
+            let v = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+            let lon = &v["location"]["lon"];
+            (lon["value"].as_f64().unwrap(), lon["sources"][0]["kind"].as_str().unwrap().to_string(), v)
+        };
+        let (lon, kind, v) = live(&k);
+        assert!(near(lon) && kind == "tesla_api", "{}", v["location"]);
+        assert_eq!(v["location"]["lat"]["sources"][0]["kind"], "tesla_api");
+        let e = k.engine.clone();
+        let p =
+            tokio::task::spawn_blocking(move || query::now::published_now(&e, car)).await.unwrap().unwrap().unwrap();
+        assert!(p.sample.lon.is_some_and(near), "MQTT's location: {:?}", p.sample.lon);
+        // a newer SMO log still out of step: its fixes still left out of the live position
+        let (name, log, side) = smo_minute_shifted(5, trip, -16.777216);
+        upload(&k, &name, &log).await;
+        upload(&k, &format!("{name}.json"), &side).await;
+        k.engine.idle().await;
+        let (lon, kind, v) = live(&k);
+        assert!(near(lon) && kind == "tesla_api", "{}", v["location"]);
+
+        // the GPS layout put right: SMO's fixes agree with the API's again (most of the stretch compared) and are the
+        // live position once more
+        for i in 6..20 {
+            let (name, log, side) = smo_minute_shifted(i, trip, 0.0);
+            upload(&k, &name, &log).await;
+            upload(&k, &format!("{name}.json"), &side).await;
+        }
+        k.engine.idle().await;
+        k.engine.api_points(car, api_readings(360, 1200, 10, trip), vec![online(360, 1200)]);
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+        let (lon, kind, v) = live(&k);
+        assert!(near(lon) && kind == "smo", "{}", v["location"]);
     });
 }

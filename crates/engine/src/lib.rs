@@ -47,6 +47,7 @@ pub mod costs;
 pub mod firmware;
 pub mod importer;
 pub mod jobs;
+mod live_gps;
 mod pipeline;
 pub use pipeline::NEW_CAR_NAME;
 mod hot;

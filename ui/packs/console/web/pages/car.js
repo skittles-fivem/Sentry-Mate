@@ -245,7 +245,7 @@ export async function mount(ctx) {
     const outside = !!settings?.outside_links?.maps;
     const where = loc.place?.name || loc.address?.short || (now.state === 'driving' ? 'on the road' : lat != null ? 'not a saved place' : 'no position yet');
     replace(mapTools,
-      h('span', null, h('span', { class: 'muted' }, 'at '), where, val(loc.accuracy_m) != null ? h('span', { class: 'muted' }, ` ±${format(val(loc.accuracy_m), 'length')}`) : null),
+      h('span', { title: at(loc.lat) != null ? `position recorded ${ago(at(loc.lat))}${loc.lat.sources?.[0]?.label ? `; ${loc.lat.sources[0].label}` : ''}` : null }, h('span', { class: 'muted' }, 'at '), where, val(loc.accuracy_m) != null ? h('span', { class: 'muted' }, ` ±${format(val(loc.accuracy_m), 'length')}`) : null),
       h('button', { class: 'btn btn--quiet btn--line', type: 'button', cover: 'summary.map.fullscreen', onclick: () => (document.fullscreenElement ? document.exitFullscreen?.() : mapEl.requestFullscreen?.().catch(() => {})) }, document.fullscreenElement ? '[exit full screen]' : '[full screen]'),
       outside && lat != null
         ? h('a', { class: 'lnk', href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=17/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'noopener noreferrer external', cover: 'summary.map.external_link' }, 'openstreetmap')
