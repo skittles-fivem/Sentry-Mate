@@ -452,3 +452,151 @@ What changed (nothing stored differently, nothing answered differently):
   a crash from losing a log's work; fewer of them is a change to that, not a speed-up.
 - **Start-up** with every log already worked on is the comparison of the store's logs with the day records: 0.03 s
   for these 30 days.
+
+## Start-up and the idle server, on the long history
+
+**How it is measured.** The long made-up history above (211 MB: 2.7 million imported positions, 1.7 million API
+samples, 5,695 SMO logs), `serve` started on it with a release build, the time until the web port answers, the
+CPU time and memory (`/proc/<pid>/stat`, `status`) until it goes quiet, then over an idle stretch, and the system
+calls of a minute idle (`strace -f -c`).
+
+| | |
+|---|---:|
+| the web port answers | 0.20 to 0.25 s after the process starts (0.24 to 0.28 s of CPU, 58 MB) |
+| a start after the history was made (nothing kept on disk yet of what the pages work out ahead) | quiet after about 20 s, 15.5 s of CPU, 968 MB of memory (1,029 MB at most) |
+| the next start | quiet after about 5 s, 1.5 s of CPU, 159 MB |
+| idle | 0.02 s of CPU in 30 s, 0.10 s in 120 s (under 0.1 % of a core); 7 threads |
+| a minute idle, in system calls | 316 `futex`, 382 `epoll_wait`, 140 `statx` (the look for a move coming in, once a second), 129 `read` |
+
+Nothing here needed changing: the vault opens and both ports listen in a quarter of a second whatever the history's
+size (the car's tables are read when first asked for), and the loops that run all the time (the look for a move once
+a second, the 1-minute sweep of logs waiting for their sidecar, the hourly ones) cost nothing that shows.
+
+One thing to know, from the page-speed work rather than this one: the first start on a long history works out the
+pages' long periods ahead and keeps the days it read in memory, up to a share of the machine's free memory (here,
+on a 15 GB machine, 968 MB stayed; the limit follows the machine's free memory, `db/src/plain.rs`).
+
+## MQTT
+
+**How it is measured.** `cargo test --release -p mqtt measure_a_sample -- --ignored --nocapture`: a car's newest
+values turned into the messages to send, as the publisher does for every `now` the engine gives it.
+
+| | |
+|---|---:|
+| the first time on a connection | 84 Home Assistant discovery configs and 23 values, 41.8 kB |
+| a sample with nothing new | 2.4 µs, no message |
+| a sample with the charge level and the time new | 2.8 µs, 2 messages |
+| a renamed car (every discovery config again) | 301 µs |
+
+Nothing needed changing: values are sent only when their text changed, the discovery configs only when the car's
+name or model did (or on a new connection), and a car's values waiting to be sent replace each other, so a burst of
+logs sends the last ones. What costs more than the publishing is working out the car's values for each event (2.4 ms
+after every log, above), which the live pages need too.
+
+## The pages while they stay open
+
+**How it is measured.** `node ui/tools/perf/idle.js --pack horizon` (new): a pack's car page in Chromium on the dev
+API server, live values every 2 s, left alone. Read from Chromium's own counters: how busy the main thread is
+(script, layout, style), the heap after a collection, the DOM nodes and listeners; and with `ps`, the CPU time of
+all of the browser's processes, so drawing counts too. The browser here draws without a graphics card (headless,
+software): on a machine with one the drawing costs far less, but it is what a small always-on display does.
+
+| The car page, 1440×900, a minute | main thread busy | of it script | all browser processes |
+|---|---:|---:|---:|
+| Horizon | 9.0 % | 0.7 % | 110 % of a core |
+| Instrument | 5.0 % | 1.4 % | 108 % |
+| Logbook | 6.7 % | 2.3 % | 8 % |
+| Manager | 1.9 % | 0.4 % | 8 % |
+| Console | 1.4 % | 0.2 % | 2 % |
+| Pebble | 0.6 % | 0.1 % | 2 % |
+
+**The scripts are not the cost.** Clocks, "… ago" texts and live values together are under 2.5 % of the main
+thread as script in every pack.
+
+**What costs is two endless animations under glass.** Instrument and Horizon blur what is behind their panels, bars
+and map cards (`backdrop-filter`). Two small things on the car page never stop moving: the ring around the "live"
+dot in the top bar, and the halo of the car's marker on the map. Each frame they draw, every blurred surface is
+blurred again. Measured on Instrument by switching one thing off at a time:
+
+| Instrument's car page | all browser processes |
+|---|---:|
+| as it is | 110 % of a core |
+| without the marker's halo | 40 % |
+| without any endless animation | 10 % |
+| with the animations, without the blur | 15 % |
+
+Manager has the same two animations and no blur in its default look: 8 %. Horizon without its CSS animations is at
+30 % (its floor canvas, drawn at most 30 times a second, is the rest).
+
+Left as it is, for the owner to decide: any fix changes what is seen. The choices are a halo and a ring that pulse
+a few times after each new value and then rest, or panels on the car page that do not blur, or nothing (with a
+graphics card the cost is small). Taking the blur off the map's own panel alone (the map covers it) was tried and
+changed nothing: the cards over the map blur too.
+
+### A page left open: the charts of every live refresh stayed in memory
+
+**How it is measured.** The same tool with the dev server sending list changes too
+(`--server-args "--sse-interval-ms 500 --rows-every-s 3"`): Horizon's car page left open for 30 minutes.
+
+| Horizon's car page | at the start | before, after 30 minutes | now, after 10 minutes |
+|---|---:|---:|---:|
+| heap after a collection | 6.7 MB | 88.2 MB (21.6 MB after the first 5) | 8.7 MB |
+| DOM nodes | 2,941 | 142,906 | 2,912 |
+| listeners | 193 | 22,917 | 190 |
+
+(Now the nodes stand at 2,912 at every look. The heap still rises slowly, about 0.3 MB in 200 s at a list change
+every 3 s: a few kB per refresh, probably the entries of the page's clean-up list, let go when the page is left.)
+
+It grew in a straight line, with every `rows` event (a drive, charge or parked spell started or ended: on a real
+server, about every log while the car is awake) and not with the live values. The car page draws its period again
+on such an event, charts included, into new boxes; the charts it replaced were never taken down. Each kept its
+size observer, its display and theme subscriptions, uPlot's listeners on the window and, through the page's
+clean-up list, its whole drawing, until the page was left. In 30 seconds with a list change every second:
+
+| The car page, 30 s, a `rows` event a second | nodes before | nodes now | listeners before | listeners now |
+|---|---:|---:|---:|---:|
+| Horizon | 3,189 → 6,697 | 2,914 → 2,912 | 237 → 819 | 178 → 178 |
+| Instrument | 3,288 → 6,796 | 3,940 → 3,025 | 235 → 805 | 187 → 182 |
+| Manager | 3,158 → 6,666 | 2,883 → 2,881 | 234 → 816 | 175 → 175 |
+| Logbook | 3,253 → 5,188 | 2,885 → 2,885 | 342 → 972 | 222 → 222 |
+| Console | 1,694 → 2,969 | 1,580 → 1,580 | 189 → 609 | 140 → 140 |
+| Pebble | 1,747 → 1,747 | (was fine) | 130 → 130 | |
+
+What changed: where a part of a page is swapped for its newly drawn copy (`core/stage.js`, `offstage`), the charts
+in the part that goes are taken down first; a chart that is taken down lets go of everything it held
+(`core/chart.js` in Horizon, Instrument, Manager and Console); and Logbook's stacked charts, which the page already
+took down before drawing them again, let go of their boxes and data then. What is drawn is the same.
+
+**The pages that are built again whole kept every page before them.** Timeline, Charges, Statistics and Trip (in
+Console: Charges and Statistics) answer a `rows` event by building the whole page again off screen and swapping it
+in (`core/router.js`, `stageView`). The new page kept, for as long as it lived, the function that cleans the old
+page up, and with it the old page; that one kept the page before it, and so on: a whole page of nodes more with
+every event. Every page of every pack was left open with a `rows` event every second for 24 seconds to find them
+(Pebble and Logbook: none), then with one every 8 seconds:
+
+| 90 s, a `rows` event every 8 s | nodes before | nodes now | listeners before | listeners now |
+|---|---:|---:|---:|---:|
+| Horizon, Timeline | 2,722 → 25,547 | 2,722 → 2,723 | 50 → 171 | 50 → 50 |
+| Horizon, Charges | 3,653 → 39,569 | 3,653 → 6,649 | 221 → 1,705 | 221 → 348 |
+
+Now the clean-up of the old page is let go of once it has run, in the four packs' routers. Where the count still
+rises once (Charges, Statistics, Trip: by one page) it stays there: three minutes of Horizon's Charges read 6,650
+nodes at every look after the first event. Checked the same way after the change: Timeline, Charges, Statistics,
+Trip and the car page of Horizon, Instrument and Manager, Charges, Statistics and the car page of Console, and
+Logbook's car page.
+
+## The image and the container's start
+
+The image is one static binary on an empty base, so its size is the binary's and its start is the process's.
+
+| | |
+|---|---:|
+| the binary (a release build here, glibc; the image's is musl) | 62.7 MB, 27.7 MB gzipped |
+| of it code | 28.9 MB |
+| of it built-in data | 24.3 MB: the six UI packs (11.5 MB once each; the 12.4 MB that are the same file in several packs are in the binary once), their brotli and gzip copies (6.4 MB), the DBC files |
+| start: the web port answers | 0.20 to 0.25 s (above) |
+
+Left as it is. The same file in several packs was thought to be in the binary several times (233 of the packs' 694
+files are copies: MapLibre, uPlot, the fonts, `ui/shared`); a build that names each file's bytes once came out the
+same size, the compiler already keeps one copy. The code is the larger half; link-time optimisation would shrink
+it and was taken out on purpose (`Cargo.toml`: 9 minutes per architecture in the image build).

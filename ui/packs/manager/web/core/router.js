@@ -69,6 +69,9 @@ function onState(s) {
   mount(s, { keepScroll: samePage });
 }
 
+/** One function that runs both (each may be missing), or null. */
+const both = (a, b) => (a || b ? () => { a?.(); b?.(); } : null);
+
 // keep: a live refresh builds the new page off screen first (see stageView), so the old page's own clean-up
 // (charts and maps it removes) waits until the new one takes its place; its requests and events stop at once
 function unmountCurrent(keep = false) {
@@ -92,6 +95,9 @@ let staged = null;   // { stage, commit, drop }
 // keepOld: a newer live refresh takes over, and the page still on screen is cleaned up when that one commits
 function dropStage(keepOld = false) { const f = staged?.drop(keepOld) || null; staged = null; return f; }
 function stageView(view, finishOld) {
+  // the old page's clean-up is let go of once it is handed on or run: the new page keeps this stage as long as it
+  // lives, and would keep the page before it, and that one the page before, each with everything it drew
+  const takeOld = () => { const f = finishOld; finishOld = null; return f; };
   const r = view.getBoundingClientRect();
   const stage = h('div', { class: view.className + ' view-stage', 'aria-hidden': 'true', inert: '' });
   Object.assign(stage.style, {
@@ -110,7 +116,7 @@ function stageView(view, finishOld) {
     const path = [];
     for (let e = document.activeElement; e && e !== view && view.contains(e); e = e.parentElement) path.unshift([...e.parentElement.children].indexOf(e));
     view.replaceChildren(...nodes);
-    finishOld?.();
+    takeOld()?.();
     if (path.length) {
       let e = view;
       for (const i of path) e = e?.children[i];
@@ -130,7 +136,7 @@ function stageView(view, finishOld) {
     mo.observe(stage, { subtree: true, childList: true, attributes: true, characterData: true });
     again();
   }
-  const drop = (keepOld) => { if (done) return null; end(); if (keepOld) return finishOld; finishOld?.(); return null; };
+  const drop = (keepOld) => { if (done) return null; end(); const f = takeOld(); if (keepOld) return f; f?.(); return null; };
   staged = { stage, commit, settle, drop };
   return staged;
 }
@@ -168,12 +174,12 @@ function dropCss(keep) {
 
 async function mount(s, { keepScroll = false, live = false } = {}) {
   const my = ++seq;
-  const older = dropStage(live);
-  const finishMounted = unmountCurrent(live);
-  const finishOld = older || finishMounted ? () => { older?.(); finishMounted?.(); } : null;
+  // (the clean-up of what was there is handed to the stage alone: this page's own functions must not hold it)
+  let finishOld = both(dropStage(live), unmountCurrent(live));
   if (!live) unready();
   const id = s.page;
   const st = live ? stageView(frame.view(), finishOld) : null;
+  finishOld = null;
   const view = st ? st.stage : frame.view();
   const shown = () => { if (st) st.commit(); };
   const info = pageInfo(id);
