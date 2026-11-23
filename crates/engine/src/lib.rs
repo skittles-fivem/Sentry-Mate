@@ -54,6 +54,7 @@ mod memo;
 pub mod placing;
 pub mod query;
 pub mod records;
+pub mod rehome;
 pub mod tesla_in;
 pub mod tmlocal_catchup;
 pub mod tz;

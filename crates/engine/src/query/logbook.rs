@@ -48,6 +48,63 @@ pub struct OwnPurpose {
     pub at_ms: u64,
 }
 
+/// The owner's purposes of `drives` (id, start) on `car`, to go with the drives to another car.
+pub(crate) fn read_purposes(
+    db: &db::Db,
+    car: CarId,
+    drives: &[(u64, u64)],
+) -> crate::Result<Vec<(u64, u64, OwnPurpose)>> {
+    let mut by_key: BTreeMap<String, Vec<(u64, u64)>> = BTreeMap::new();
+    for (id, start) in drives {
+        by_key.entry(purposes_key(car, *start)).or_default().push((*id, *start));
+    }
+    let mut out = Vec::new();
+    for (key, ids) in by_key {
+        let all: BTreeMap<u64, OwnPurpose> = records::get(db, NS, &key)?.unwrap_or_default();
+        for (id, start) in ids {
+            if let Some(p) = all.get(&id) {
+                out.push((id, start, p.clone()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Takes the owner's purposes of `drives` (id, start) off `car` (once they are on the car the drives went to).
+pub(crate) fn take_purposes(db: &db::Db, car: CarId, drives: &[(u64, u64)]) -> crate::Result<()> {
+    let _w = writing();
+    let mut by_key: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for (id, start) in drives {
+        by_key.entry(purposes_key(car, *start)).or_default().push(*id);
+    }
+    for (key, ids) in by_key {
+        let mut all: BTreeMap<u64, OwnPurpose> = records::get(db, NS, &key)?.unwrap_or_default();
+        let before = all.len();
+        for id in ids {
+            all.remove(&id);
+        }
+        if all.len() != before {
+            records::put(db, NS, &key, &all)?;
+        }
+    }
+    Ok(())
+}
+
+/// Puts purposes on `car`'s drives (id, start, purpose), as [`take_purposes`] took them.
+pub(crate) fn put_purposes(db: &db::Db, car: CarId, items: &[(u64, u64, OwnPurpose)]) -> crate::Result<()> {
+    let _w = writing();
+    let mut by_key: BTreeMap<String, Vec<(u64, OwnPurpose)>> = BTreeMap::new();
+    for (id, start, p) in items {
+        by_key.entry(purposes_key(car, *start)).or_default().push((*id, p.clone()));
+    }
+    for (key, v) in by_key {
+        let mut all: BTreeMap<u64, OwnPurpose> = records::get(db, NS, &key)?.unwrap_or_default();
+        all.extend(v);
+        records::put(db, NS, &key, &all)?;
+    }
+    Ok(())
+}
+
 /// A purpose rule: drives from `from_place` to `to_place` (null: no place) on `days` get `purpose`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Rule {

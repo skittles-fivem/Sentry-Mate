@@ -261,6 +261,194 @@ pub struct Report {
     /// Each uploaded file's share, when several were imported as one ([`import_files`]); empty for one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uploads: Vec<Upload>,
+    /// The cars of the files as the rows told them apart ([`Group`]), each with what was worked out for it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<Group>,
+}
+
+/// Groups an import tells apart at most (rows past it are passed over as `too_many_cars`): a group a day of rows
+/// without a VIN for fifty years.
+pub const MAX_GROUPS: usize = 20_000;
+/// Polls of one car this close together are one spell of its data.
+pub const SPELL_GAP_MS: u64 = 30 * 60 * 1000;
+/// An odometer may read this much lower than an earlier reading of the same car (rounding, units) and still go on.
+pub const ODO_BACK_KM: f64 = 1.0;
+/// The most an odometer may run on between one car's polls for rows without a VIN to be taken as that car's.
+pub const ODO_GAP_KM: f64 = 50.0;
+
+/// A stretch of a group's rows: polls at most [`SPELL_GAP_MS`] apart, with the first and last odometer reading.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Spell {
+    pub first_ms: u64,
+    pub last_ms: u64,
+    pub first_odo_km: Option<f64>,
+    pub last_odo_km: Option<f64>,
+}
+
+/// One car of the files as the rows tell it: by VIN, else by the vehicle id or name rows of this import carry (never
+/// across to a car with another VIN). Rows without a VIN whose id and name show up nowhere with one are a group of
+/// their own (`needs_match`): some exports put a made-up id on such rows each day, so such a group goes with a car
+/// that showed a VIN only when that is plain from the rows ([`Group::continues`]): its odometer carries on from that
+/// car's and its time meets none of that car's. Otherwise it needs a car chosen (`joins` is `None`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Group {
+    /// The car number the sink was asked for it with ([`TmCar::tm_id`]).
+    pub tm_car: i64,
+    pub name: Option<String>,
+    /// Whether any of its rows had a VIN.
+    pub vin: bool,
+    /// Rows without a VIN tied to no car by their id or name.
+    pub needs_match: bool,
+    pub rows: u64,
+    pub first_ms: Option<u64>,
+    pub last_ms: Option<u64>,
+    /// The first and the last odometer reading.
+    pub first_odo_km: Option<f64>,
+    pub last_odo_km: Option<f64>,
+    /// The group (by `tm_car`) it goes with: one with a VIN its rows continue, or (no car showed a VIN) the first
+    /// group of rows without one, as such files are one car.
+    pub joins: Option<i64>,
+    /// Its spells, in time order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spells: Vec<Spell>,
+}
+
+impl Group {
+    fn note(&mut self, t: u64, odo: Option<f64>) {
+        self.rows += 1;
+        crate::report::widen(&mut self.first_ms, &mut self.last_ms, t);
+        if let Some(o) = odo {
+            if self.first_odo_km.is_none() {
+                self.first_odo_km = Some(o);
+            }
+            self.last_odo_km = Some(o);
+        }
+        match self.spells.last_mut() {
+            Some(sp) if t >= sp.last_ms && t - sp.last_ms <= SPELL_GAP_MS => {
+                sp.last_ms = t;
+                if odo.is_some() {
+                    sp.last_odo_km = odo;
+                    sp.first_odo_km = sp.first_odo_km.or(odo);
+                }
+            }
+            _ => self.spells.push(Spell { first_ms: t, last_ms: t, first_odo_km: odo, last_odo_km: odo }),
+        }
+    }
+
+    /// Its spells sorted and joined where they meet (files may come in any order).
+    fn tidy(&mut self) {
+        self.spells.sort_by_key(|s| (s.first_ms, s.last_ms));
+        let mut out: Vec<Spell> = Vec::with_capacity(self.spells.len());
+        for sp in self.spells.drain(..) {
+            match out.last_mut() {
+                Some(l) if sp.first_ms <= l.last_ms.saturating_add(SPELL_GAP_MS) => {
+                    if sp.last_ms >= l.last_ms {
+                        l.last_ms = sp.last_ms;
+                        if sp.last_odo_km.is_some() {
+                            l.last_odo_km = sp.last_odo_km;
+                        }
+                    }
+                    l.first_odo_km = l.first_odo_km.or(sp.first_odo_km);
+                }
+                _ => out.push(sp),
+            }
+        }
+        self.spells = out;
+        self.first_odo_km = self.spells.iter().find_map(|s| s.first_odo_km);
+        self.last_odo_km = self.spells.iter().rev().find_map(|s| s.last_odo_km);
+    }
+
+    /// Whether this group's rows plainly belong to `other`'s car: none of its spells meets one of `other`'s, and at
+    /// each spell the odometer carries on from `other`'s reading before it (no more than [`ODO_BACK_KM`] lower, no
+    /// more than [`ODO_GAP_KM`] higher) and on to `other`'s reading after it. At least one reading must be compared;
+    /// rows without an odometer prove nothing.
+    pub fn continues(&self, other: &Group) -> bool {
+        let fits = |earlier: f64, later: f64| later >= earlier - ODO_BACK_KM && later - earlier <= ODO_GAP_KM;
+        let mut compared = false;
+        for (j, sp) in self.spells.iter().enumerate() {
+            if other.spells.iter().any(|o| o.first_ms <= sp.last_ms && o.last_ms >= sp.first_ms) {
+                return false;
+            }
+            // only where the rows hand over from one group to the other: a reading of this group's own in between
+            // is the one this spell carries on from
+            let (prev_own, next_own) =
+                (j.checked_sub(1).map(|p| self.spells[p].last_ms), self.spells.get(j + 1).map(|n| n.first_ms));
+            let k = other.spells.partition_point(|o| o.last_ms < sp.first_ms);
+            let before = other.spells[..k]
+                .iter()
+                .rev()
+                .take_while(|o| prev_own.is_none_or(|p| o.last_ms > p))
+                .find_map(|o| o.last_odo_km);
+            let after = other.spells[k..]
+                .iter()
+                .take_while(|o| next_own.is_none_or(|n| o.first_ms < n))
+                .find_map(|o| o.first_odo_km);
+            if let (Some(b), Some(first)) = (before, sp.first_odo_km) {
+                if !fits(b, first) {
+                    return false;
+                }
+                compared = true;
+            }
+            if let (Some(a), Some(last)) = (after, sp.last_odo_km) {
+                if !fits(last, a) {
+                    return false;
+                }
+                compared = true;
+            }
+        }
+        compared
+    }
+}
+
+/// Works out where each group without a VIN goes ([`Group::joins`]): with the one group with a VIN whose odometer
+/// and time its rows plainly continue, else nowhere (a car is to be chosen for it). When no group showed a VIN at
+/// all, the file is one car without one: the groups go with the first.
+pub fn judge(groups: &mut [Group]) {
+    for g in groups.iter_mut() {
+        g.tidy();
+        g.joins = None;
+        if g.vin {
+            g.needs_match = false;
+        }
+    }
+    let with_vin: Vec<usize> = (0..groups.len()).filter(|&i| groups[i].vin).collect();
+    if with_vin.is_empty() {
+        let Some(first) = groups.iter().position(|g| g.needs_match) else { return };
+        let lead = groups[first].tm_car;
+        groups[first].needs_match = false;
+        for g in groups.iter_mut().skip(first + 1).filter(|g| g.needs_match) {
+            g.joins = Some(lead);
+            g.needs_match = false;
+        }
+        return;
+    }
+    for i in 0..groups.len() {
+        if !groups[i].needs_match {
+            continue;
+        }
+        let fits: Vec<i64> =
+            with_vin.iter().filter(|&&v| groups[i].continues(&groups[v])).map(|&v| groups[v].tm_car).collect();
+        if let [only] = fits.as_slice() {
+            groups[i].joins = Some(*only);
+            groups[i].needs_match = false;
+        }
+    }
+    // what is left needs a car: groups whose rows carry on from one another (a day each of the same car) are one,
+    // the earliest leading, so a car is chosen once for them
+    let mut left: Vec<usize> = (0..groups.len()).filter(|&i| groups[i].needs_match).collect();
+    left.sort_by_key(|&i| groups[i].first_ms);
+    let mut leads: Vec<(usize, Group)> = Vec::new();
+    for i in left {
+        let same = leads.iter_mut().rev().find(|(_, l)| groups[i].continues(l));
+        match same {
+            Some((lead, merged)) => {
+                merged.spells.extend(groups[i].spells.iter().copied());
+                merged.tidy();
+                groups[i].joins = Some(groups[*lead].tm_car);
+            }
+            None => leads.push((i, groups[i].clone())),
+        }
+    }
 }
 
 impl Report {
@@ -436,7 +624,11 @@ fn ix(t: Table) -> usize {
 struct Importer<'a> {
     sink: &'a mut dyn Sink,
     o: &'a Options,
+    /// `vin:…`, `id:…`, `name:…` (and `` for rows with none of them) → the group they are.
     keys: HashMap<String, usize>,
+    /// The cars as the rows tell them apart, and the slot each one's rows go to (several go to one when the sink
+    /// puts them in one car).
+    groups: Vec<(Group, usize)>,
     /// The VIN rows of a file's first lines show for a vehicle id or a name (`id:…`, `name:…`), for rows without one.
     hints: HashMap<String, String>,
     slots: Vec<Slot>,
@@ -570,6 +762,7 @@ impl<'a> Importer<'a> {
             sink,
             o,
             keys: HashMap::new(),
+            groups: Vec::new(),
             hints: HashMap::new(),
             slots: Vec::new(),
             report: Report::default(),
@@ -886,47 +1079,43 @@ impl Importer<'_> {
         }
     }
 
-    /// The car a row belongs to (asked of the sink the first time), `None` when it can't be taken. A car is known by
-    /// its VIN, else its vehicle id, else its name: a row without a VIN goes with the car whose rows had the same
-    /// vehicle id (or name), never to a car of its own.
-    fn slot_for(&mut self, row: &Row<'_>) -> Result<Option<usize>, Error> {
+    /// The group a row belongs to and the slot its rows go to (asked of the sink the first time), `None` when it
+    /// can't be taken. A car is known by its VIN, else by its vehicle id, else its name, as rows of this import show
+    /// them: a row without a VIN goes with the group whose rows had the same vehicle id (or name), and one whose id
+    /// and name show up nowhere else is a group of its own ([`Group::needs_match`]), never put with another car here.
+    fn slot_for(&mut self, row: &Row<'_>) -> Result<Option<(usize, usize)>, Error> {
         let (id, name) = (id_key(row), name_key(row));
-        let vin = row_vin(row).or_else(|| [&id, &name].into_iter().flatten().find_map(|k| self.hints.get(k)).cloned());
+        let shown = row_vin(row);
+        let vin = shown.clone().or_else(|| [&id, &name].into_iter().flatten().find_map(|k| self.hints.get(k)).cloned());
         let vin_key = vin.as_ref().map(|v| format!("vin:{v}"));
         let found = match &vin_key {
             Some(k) => self.keys.get(k).copied().or_else(|| {
                 // a car first seen without a VIN (none shown for it yet) with the same id
-                id.as_ref().and_then(|k| self.keys.get(k)).copied().filter(|&i| self.slots[i].tm.vin.is_none())
+                id.as_ref().and_then(|k| self.keys.get(k)).copied().filter(|&g| !self.groups[g].0.vin)
             }),
+            None if id.is_none() && name.is_none() => self.keys.get("").copied(),
             None => [&id, &name].into_iter().flatten().find_map(|k| self.keys.get(k)).copied(),
         };
-        // A row with no VIN (TeslaFi leaves it out while the car sleeps) and an id or name seen nowhere else: a
-        // TeslaFi export is one car, and some exports put a different, made-up id on such rows each day, so it goes
-        // with the one car that showed a VIN, else with the one car of rows without any VIN; never a car of its own.
-        let found = found.or_else(|| {
-            if vin_key.is_some() {
-                return None;
+        if let Some(g) = found {
+            if vin_key.is_some() && !self.groups[g].0.vin {
+                self.groups[g].0.vin = true;
+                self.groups[g].0.needs_match = false;
             }
-            let with_vin: Vec<usize> = (0..self.slots.len()).filter(|&i| self.slots[i].tm.vin.is_some()).collect();
-            match with_vin.as_slice() {
-                [only] => Some(*only),
-                [] => self.keys.get("").copied(),
-                _ => None,
+            let none = (id.is_none() && name.is_none() && vin_key.is_none()).then(String::new);
+            for k in [vin_key, id, name, none].into_iter().flatten() {
+                self.keys.entry(k).or_insert(g);
             }
-        });
-        if let Some(i) = found {
-            for k in [vin_key, id, name].into_iter().flatten() {
-                self.keys.entry(k).or_insert(i);
-            }
-            return Ok(Some(i));
+            return Ok(Some((self.groups[g].1, g)));
         }
-        if self.slots.len() >= self.o.max_cars {
+        if self.groups.len() >= MAX_GROUPS {
             return Ok(None);
         }
         let tm = TmCar {
-            tm_id: self.slots.len() as i64 + 1,
+            tm_id: self.groups.len() as i64 + 1,
             vin: vin.as_deref().and_then(vin_info),
             name: row.text(Col::DisplayName),
+            full_vin: vin.as_deref().filter(|v| vin_info(v).is_some()).map(crate::rows::FullVin::new),
+            needs_match: vin.is_none(),
             ..TmCar::default()
         };
         let target = self.sink.car(&tm).map_err(sink_err)?;
@@ -934,13 +1123,44 @@ impl Importer<'_> {
             Some(t) => (Some(t.car), t.state),
             None => (None, ImportState::default()),
         };
+        let g = self.groups.len();
+        let group = Group {
+            tm_car: tm.tm_id,
+            name: tm.name.clone(),
+            vin: vin.is_some(),
+            needs_match: tm.needs_match,
+            ..Group::default()
+        };
+        // a car the sink already has a slot for (it put both in one car): the rows go there
+        if let Some(i) = car.and_then(|c| self.slots.iter().position(|s| s.car == Some(c))) {
+            if self.slots[i].tm.vin.is_none() && tm.vin.is_some() {
+                self.slots[i].tm = tm;
+            }
+            self.groups.push((group, i));
+            let none = (id.is_none() && name.is_none() && vin_key.is_none()).then(String::new);
+            for k in [vin_key, id, name, none].into_iter().flatten() {
+                self.keys.entry(k).or_insert(g);
+            }
+            return Ok(Some((i, g)));
+        }
+        // (rows without a VIN tied to no car come as a group a day in some exports: they count apart)
+        if !tm.needs_match && self.slots.iter().filter(|s| !s.tm.needs_match).count() >= self.o.max_cars {
+            return Ok(None);
+        }
         let tf = base.teslafi.clone().unwrap_or_default();
         if tf.version != STATE_VERSION {
             return Err(Error::StateVersion(tf.version));
         }
-        let (tz, tz_from) = match (&self.o.time_zone, car.and_then(|c| self.sink.time_zone(c))) {
-            (Some(z), _) => (parse_tz(z).unwrap_or(chrono_tz::UTC), "setting"),
-            (None, Some(z)) if parse_tz(&z).is_some() => (parse_tz(&z).unwrap_or(chrono_tz::UTC), "car"),
+        // rows without a VIN are read in the zone of the one car with a VIN, if there is one (they are compared with
+        // its rows)
+        let vin_zone = match self.slots.iter().filter(|s| s.tm.vin.is_some()).collect::<Vec<_>>().as_slice() {
+            [one] if tm.needs_match => Some(one.tz),
+            _ => None,
+        };
+        let (tz, tz_from) = match (&self.o.time_zone, vin_zone, car.and_then(|c| self.sink.time_zone(c))) {
+            (Some(z), _, _) => (parse_tz(z).unwrap_or(chrono_tz::UTC), "setting"),
+            (None, Some(z), _) => (z, "car"),
+            (None, None, Some(z)) if parse_tz(&z).is_some() => (parse_tz(&z).unwrap_or(chrono_tz::UTC), "car"),
             _ => (parse_tz(&self.o.default_time_zone).unwrap_or(chrono_tz::UTC), "default"),
         };
         if self.report.time_zone.is_none() {
@@ -978,15 +1198,12 @@ impl Importer<'_> {
             warnings: Vec::new(),
             odo: crate::odo::OdoCheck::default(),
         });
-        // the one car of rows without a VIN: later such rows go with it whatever id or name they carry
-        if vin_key.is_none() {
-            self.keys.entry(String::new()).or_insert(i);
+        self.groups.push((group, i));
+        let none = (id.is_none() && name.is_none() && vin_key.is_none()).then(String::new);
+        for k in [vin_key, id, name, none].into_iter().flatten() {
+            self.keys.entry(k).or_insert(g);
         }
-        let keys = [vin_key, id, name].into_iter().flatten().collect::<Vec<_>>();
-        for k in keys {
-            self.keys.entry(k).or_insert(i);
-        }
-        Ok(Some(i))
+        Ok(Some((i, g)))
     }
 
     fn row(&mut self, h: &Header, line: &[u8], units: &Units) -> Result<(), Error> {
@@ -1015,11 +1232,20 @@ impl Importer<'_> {
             self.report.skip("bad_time");
             return Ok(());
         };
-        let Some(i) = self.slot_for(&row)? else {
+        let Some((i, g)) = self.slot_for(&row)? else {
             self.report.skip("too_many_cars");
             return Ok(());
         };
         if self.slots[i].car.is_none() {
+            // still noted for its group: where it goes is worked out from every group's rows
+            let s = &self.slots[i];
+            let prev = s.prev_ms;
+            if let Utc::One(t) | Utc::Repeated(t) = poll::to_utc(s.tz, local, prev) {
+                self.slots[i].prev_ms = Some(t);
+                let k = if units.distance == Distance::Mi { 1.609_344 } else { 1.0 };
+                let odo = row.num(Col::Odometer, &mut BTreeMap::new()).filter(|x| *x > 0.0).map(|x| x * k);
+                self.groups[g].0.note(t, odo);
+            }
             self.report.skip("car_left_out");
             self.slots[i].tally[ix(Table::Positions)].read += 1;
             self.slots[i].tally[ix(Table::Positions)].skip(crate::Skip::CarLeftOut);
@@ -1074,6 +1300,7 @@ impl Importer<'_> {
         if let Some(why) = s.odo.keep(t, &mut p.odometer_km) {
             *self.report.skipped_values.entry(why.to_string()).or_default() += 1;
         }
+        self.groups[g].0.note(t, p.odometer_km);
         let run = s.run.get_or_insert_with(Run::new);
         let mut out = Vec::new();
         run.push(&p, &mut out);
@@ -1330,6 +1557,9 @@ impl Importer<'_> {
                     .into(),
             );
         }
+        let mut groups: Vec<Group> = std::mem::take(&mut self.groups).into_iter().map(|(g, _)| g).collect();
+        judge(&mut groups);
+        self.report.groups = groups;
         let slots = std::mem::take(&mut self.slots);
         for s in slots {
             let report = CarReport {

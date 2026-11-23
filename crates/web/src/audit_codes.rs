@@ -72,6 +72,8 @@ pub const CODES: &[Code] = &[
     c("import-cars", IMP, Some("import"), "Matched the cars of an import"),
     c("import-created", IMP, Some("import"), "Started uploading an import"),
     c("import-discarded", IMP, Some("import"), "Discarded an import"),
+    c("import-rows-ignored", IMP, Some("import-hold"), "Left aside imported rows that wait for a car"),
+    c("import-rows-moved", IMP, None, "Moved imported rows to another car"),
     c("import-started", IMP, Some("import"), "Started an import"),
     c("import-uploaded", IMP, Some("import"), "Uploaded an import file"),
     c("key-assigned", CARS, Some("key"), "Gave a car a key"),
