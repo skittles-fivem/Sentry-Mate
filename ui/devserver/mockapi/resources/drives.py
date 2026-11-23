@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 
 from .. import sources as S
-from ..conventions import Response, page
+from ..conventions import Response, decode_cursor, encode_cursor, page
 from ..errors import bad_input, invalid, not_found
 from ..pdf import text_pdf
 from ..placing import drive_pids
@@ -541,6 +541,102 @@ def drive_stats(req):
 # ------------------------------------------------------------------ logbook
 
 
+GAP_KM = 0.05  # below 50 m the odometer and the logged start agree (rounding)
+LOGBOOK_SORTS = ("seq", "distance", "gap", "odometer", "from", "to", "purpose")
+
+
+def _logbook_book(req, h, a, b):
+    """The period's rows, totals and continuity check, kept while the data (and the drives started) stay the same,
+    so paging reads no drive again (as the real server keeps it)."""
+    drives = _drives(req, h, a, b)
+    live = any(in_progress(d, req.now) for d in drives[-2:])
+    key = (req.car, a, b, req.store.rev, len(drives), drives[-1].id if drives else None,
+           req.now // 5000 if live else None)
+    cache = req.app.cache.setdefault("logbook", {})
+    got = cache.get(key)
+    if got is not None:
+        return got
+    rows = []
+    totals = {k: {"drives": 0, "distance_km": 0.0} for k in PURPOSES + ("none",)}
+    prev_end, prev_end_ms = None, None
+    for i, d in enumerate(drives, 1):
+        x = cached_drive_row(req, h, d)
+        p = x["purpose"] or {}
+        gap = None
+        if prev_end is not None:
+            gap = r(max(0.0, x["start_odometer_km"] - prev_end), 3)
+        prev_end = x["end_odometer_km"]
+        rows.append({
+            "seq": i, "drive": d.id, "start_ms": x["start_ms"], "end_ms": x["end_ms"],
+            "start_odometer_km": x["start_odometer_km"], "end_odometer_km": x["end_odometer_km"],
+            "distance_km": x["distance_km"], "start_address": x["start"]["address"]["short"],
+            "end_address": x["end"]["address"]["short"],
+            "start_place": (x["start"]["place"] or {}).get("name"), "end_place": (x["end"]["place"] or {}).get("name"),
+            "start_place_id": (x["start"]["place"] or {}).get("id"), "end_place_id": (x["end"]["place"] or {}).get("id"),
+            "duration_ms": x["duration_ms"], "purpose": p.get("value"), "relation": p.get("relation"),
+            "note": p.get("note"), "purpose_source": p.get("source"), "purpose_rule": p.get("rule"),
+            "in_progress": x["end_ms"] is None, "continuity_gap_km": gap,
+            "prev_end_ms": prev_end_ms if i > 1 else None,
+        })
+        prev_end_ms = x["end_ms"]
+        t = totals[p.get("value") or "none"]
+        t["drives"] += 1
+        t["distance_km"] += x["distance_km"] or 0
+    for t in totals.values():
+        t["distance_km"] = r(t["distance_km"], 3)
+    counts = {k: 0 for k in PURPOSES + ("none",)}
+    used = {}
+    for x in rows:
+        counts[x["purpose"] or "none"] += 1
+        if x["purpose_rule"]:
+            used[x["purpose_rule"]] = used.get(x["purpose_rule"], 0) + 1
+    gaps = [x for x in rows if (x["continuity_gap_km"] or 0) > GAP_KM]
+    worst = sorted(gaps, key=lambda x: -x["continuity_gap_km"])[:4]
+    first, last = (rows[0], rows[-1]) if rows else (None, None)
+    continuity = {
+        "rows": len(rows), "first_seq": first and first["seq"],
+        "first_start_odometer_km": first and first["start_odometer_km"],
+        "last_seq": last and last["seq"], "last_end_odometer_km": last and last["end_odometer_km"],
+        "logged_km": r(sum(x["distance_km"] or 0 for x in rows), 3),
+        "missing_km": r(sum(x["continuity_gap_km"] for x in gaps), 3), "gaps": len(gaps), "worst": worst,
+    }
+    if len(cache) > 32:
+        cache.clear()
+    got = {"rows": rows, "totals": totals, "counts": counts, "rules_used": used, "continuity": continuity}
+    cache[key] = got
+    return got
+
+
+def _logbook_shown(req, rows):
+    """The rows the purpose filter and the search words show, in the asked order (ties by seq; null last)."""
+    purpose = req.enum("purpose", PURPOSES + ("none",))
+    words = (req.q("q") or "").lower().split()
+    sort = req.enum("sort", LOGBOOK_SORTS, "seq")
+    desc = req.enum("dir", ("asc", "desc"), "asc") == "desc"
+    out = []
+    for x in rows:
+        if purpose and (x["purpose"] or "none") != purpose:
+            continue
+        if words:
+            text = "\x1f".join(v for v in (x["start_place"], x["end_place"], x["start_address"], x["end_address"],
+                                            x["relation"], x["note"]) if v).lower()
+            if not all(w in text for w in words):
+                continue
+        out.append(x)
+    val = {
+        "seq": lambda x: x["seq"], "distance": lambda x: x["distance_km"], "gap": lambda x: x["continuity_gap_km"],
+        "odometer": lambda x: x["start_odometer_km"],
+        "from": lambda x: (x["start_place"] or x["start_address"] or "").lower() or None,
+        "to": lambda x: (x["end_place"] or x["end_address"] or "").lower() or None,
+        "purpose": lambda x: x["purpose"],
+    }[sort]
+    out.sort(key=lambda x: x["seq"], reverse=desc)
+    if sort != "seq":
+        known = sorted((x for x in out if val(x) is not None), key=val, reverse=desc)  # stable: ties keep seq order
+        out = known + [x for x in out if val(x) is None]
+    return out, sort, desc, purpose is not None or bool(words) or sort != "seq" or desc
+
+
 def logbook(req):
     h = req.history()
     a, b = req.period()
@@ -548,33 +644,12 @@ def logbook(req):
     if fmt == "csv":
         req.csv = True
     tz = req.tz()
-    rows = []
-    totals = {k: {"drives": 0, "distance_km": 0.0} for k in PURPOSES + ("none",)}
-    if h is not None:
-        prev_end = None
-        for i, d in enumerate([d for d in _drives(req, h, a, b)], 1):
-            x = cached_drive_row(req, h, d)
-            p = x["purpose"] or {}
-            gap = None
-            if prev_end is not None:
-                gap = r(max(0.0, x["start_odometer_km"] - prev_end), 3)
-            prev_end = x["end_odometer_km"]
-            rows.append({
-                "seq": i, "drive": d.id, "start_ms": x["start_ms"], "end_ms": x["end_ms"],
-                "start_odometer_km": x["start_odometer_km"], "end_odometer_km": x["end_odometer_km"],
-                "distance_km": x["distance_km"], "start_address": x["start"]["address"]["short"],
-                "end_address": x["end"]["address"]["short"],
-                "start_place": (x["start"]["place"] or {}).get("name"), "end_place": (x["end"]["place"] or {}).get("name"),
-                "start_place_id": (x["start"]["place"] or {}).get("id"), "end_place_id": (x["end"]["place"] or {}).get("id"),
-                "duration_ms": x["duration_ms"], "purpose": p.get("value"), "relation": p.get("relation"),
-                "note": p.get("note"), "purpose_source": p.get("source"), "purpose_rule": p.get("rule"),
-                "in_progress": x["end_ms"] is None, "continuity_gap_km": gap,
-            })
-            t = totals[p.get("value") or "none"]
-            t["drives"] += 1
-            t["distance_km"] += x["distance_km"] or 0
-    for t in totals.values():
-        t["distance_km"] = r(t["distance_km"], 3)
+    book = _logbook_book(req, h, a, b) if h is not None else {
+        "rows": [], "totals": {k: {"drives": 0, "distance_km": 0.0} for k in PURPOSES + ("none",)},
+        "counts": {k: 0 for k in PURPOSES + ("none",)}, "rules_used": {},
+        "continuity": {"rows": 0, "first_seq": None, "first_start_odometer_km": None, "last_seq": None,
+                       "last_end_odometer_km": None, "logged_km": 0.0, "missing_km": 0.0, "gaps": 0, "worst": []}}
+    rows, totals = book["rows"], book["totals"]
     if fmt == "pdf":
         meta = req.store.car_meta(req.car)
         lines = [f"{'#':>4} {'Start':16} {'End':5} {'Odo start km':>13} {'Odo end km':>12} {'km':>8}  "
@@ -586,7 +661,7 @@ def logbook(req):
                          f"{x['start_odometer_km']:>13.1f} {x['end_odometer_km']:>12.1f} {x['distance_km']:>8.1f}  "
                          f"{(x['start_place'] or x['start_address'])[:28]:28} {(x['end_place'] or x['end_address'])[:28]:28} "
                          f"{(x['purpose'] or '-'):9} {(x['note'] or '')[:30]}")
-            if x["continuity_gap_km"] and x["continuity_gap_km"] > 0.05:
+            if x["continuity_gap_km"] and x["continuity_gap_km"] > GAP_KM:
                 lines.append(f"     ! {x['continuity_gap_km']:.1f} km not logged before this drive")
         lines.append("")
         for k, t in totals.items():
@@ -594,7 +669,34 @@ def logbook(req):
         title = f"Logbook: {meta['name']} ({meta['vin_prefix']}), times in {tz}"
         return Response(200, text_pdf(title, lines), "application/pdf",
                         {"Content-Disposition": f'attachment; filename="logbook-{req.car}.pdf"'})
-    return {"car": req.car, "time_zone": tz, "rows": rows, "totals_by_purpose": totals}
+    shown, sort, desc, filtered = _logbook_shown(req, rows)
+    paged = any(req.q(k) is not None for k in ("limit", "after", "offset", "at_ms"))
+    if req.csv or not (paged or filtered):
+        return {"car": req.car, "time_zone": tz, "rows": shown if filtered else rows, "totals_by_purpose": totals}
+    # a page: by cursor (the offset it reaches), by offset, or from a date (seq order only)
+    limit = req.limit()
+    total = len(shown)
+    after = req.q("after")
+    at = None if after else req.int_param("at_ms", None, 0, 10 ** 15)
+    if at is not None and sort != "seq":
+        raise bad_input({"at_ms": "Only in the order of the drives (sort=seq)."})
+    if after:
+        k = decode_cursor(after, req.fingerprint())
+        if not (isinstance(k, (list, tuple)) and len(k) == 2 and k[0] == "o" and isinstance(k[1], int)):
+            raise bad_input({"after": "Not a cursor this server gave out."})
+        offset = k[1]
+    elif at is not None:
+        offset = next((i for i, x in enumerate(shown) if (x["start_ms"] < at if desc else x["start_ms"] >= at)),
+                      max(0, total - 1))
+    else:
+        offset = req.int_param("offset", 0, 0, 20000)
+    offset = min(offset, total)
+    items = shown[offset:offset + limit]
+    nxt = encode_cursor(["o", offset + len(items)], req.fingerprint()) if offset + len(items) < total else None
+    return {"car": req.car, "time_zone": tz, "from_ms": a, "to_ms": min(b, req.now), "items": items, "next": nxt,
+            "offset": offset, "total": total, "count": len(rows), "counts_by_purpose": book["counts"],
+            "totals_by_purpose": totals, "continuity": book["continuity"], "rules_used": book["rules_used"],
+            "truncated": False}
 
 
 # ------------------------------------------------------------------ trip report

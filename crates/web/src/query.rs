@@ -23,7 +23,8 @@ pub const MAX_LIMIT: usize = 500;
 pub const MAX_MS: u64 = 4_102_444_800_000;
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
 /// Parameters that are not filters: a cursor holds whatever they are.
-const NOT_FILTERS: &[&str] = &["limit", "after", "format"];
+/// Not filters: how much, from where (`offset`, `at_ms`: a place in the list, as `after`) and in what format.
+const NOT_FILTERS: &[&str] = &["limit", "after", "format", "offset", "at_ms"];
 
 /// A request's query: `name=value` pairs, percent-decoded, in order (a repeated name: the last one counts).
 #[derive(Debug, Clone, Default)]
