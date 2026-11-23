@@ -112,7 +112,8 @@ export function overviewSection(ctx, { href = (l) => l } = {}) {
   function rowFor(c) {
     const ln = (cls) => h('div', { class: ['ov-ln', cls] });
     const c1 = { word: h('div', { class: 'ov-ln' }), why: ln('muted') };
-    const c2 = { label: ln('ov-label'), err: ln('ov-lasterr muted') };
+    const c2 = { label: ln('ov-label'), name: h('span'), miss: h('span', { class: 'ov-miss tone--warn' }), err: ln('ov-lasterr muted') };
+    c2.label.append(c2.name, c2.miss);
     const c3 = { last: ln(), next: ln('muted') };
     const c4 = { pace: ln(), today: ln('muted') };
     const c5 = { pct: ln(), err: ln('muted') };
@@ -139,7 +140,7 @@ export function overviewSection(ctx, { href = (l) => l } = {}) {
   function fillRow(r, c) {
     r.conn = c;
     if (c.link) r.tr.dataset.href = href(c.link); else delete r.tr.dataset.href;
-    r.tr.setAttribute('aria-label', `${c.label}: ${c.status}, ${reasonText(c)}`);
+    r.tr.setAttribute('aria-label', `${c.label}: ${c.status}, ${reasonText(c)}${c.missing_logs > 0 ? `, ${c.missing_logs} logs missing` : ''}`);
     if (r.status !== c.status) {
       replace(r.c1.word, light(c.status));
       if (r.status) r.tr.classList.remove(`ov-row--${r.status}`);
@@ -147,7 +148,10 @@ export function overviewSection(ctx, { href = (l) => l } = {}) {
       r.status = c.status;
     }
     put(r.c1.why, reasonText(c));
-    put(r.c2.label, c.label);
+    put(r.c2.name, c.label);
+    // a CAN Bridge row: logs the server lost and asked the car for again (nothing when none)
+    put(r.c2.miss, c.missing_logs > 0 ? `  ${formatNumber(c.missing_logs)}${NB}missing` : '');
+    r.c2.miss.title = c.missing_logs > 0 ? 'logs the server lost and asked the car to send again (see the car\'s health page)' : '';
     const le = c.last_error;
     if (!le) put(r.c2.err, 'no error kept');
     r.c2.err.classList.toggle('ov-lasterr--on', !!le);
