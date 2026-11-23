@@ -22,7 +22,7 @@ import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { tile, num, chip, btn, icon, note } from '../core/ui.js';
 import { srcPill, hasKind } from '../core/source.js';
-import { MODULES, moduleName, HISTORY_ID, moduleList, fieldName, hexCode, isFingerprint, changesList, aroundDrives, betweenLine, namedLine, nameBox, VERSION_RX } from '../core/firmware.js';
+import { MODULES, moduleName, HISTORY_ID, moduleList, fieldName, hexCode, isFingerprint, changesList, aroundDrives, betweenLine, namedLine, nameBox, VERSION_RX, VERSION_SOURCE as SOURCE, VERSION_CHIP as CHIP, VERSION_CHIP_SHORT } from '../core/firmware.js';
 import { emptyTile } from '../core/states.js';
 import { createSheet } from '../core/sheet.js';
 import { field, form } from '../core/form.js';
@@ -33,9 +33,7 @@ export const css = true;
 export const shape = [['full', 'h1'], [2, 'h2'], [1, 'h1'], [1, 'h1'], [2, 'h2'], [2, 'h2']];
 export const title = () => 'Software';
 
-const SOURCE = { teslamate: 'imported from TeslaMate', owner: 'typed by the owner', build_match: 'named from an earlier update with the same fingerprints', tesla_api: 'from the Tesla API' };
-const DETECTED = { ota_status: 'the car’s update status', fingerprint: 'the modules’ firmware fingerprints', build_change: 'changed module builds', teslamate: 'the imported history', tesla_api: 'the Tesla API' };
-const CHIP = { teslamate: 'Imported', owner: 'Typed by the owner', build_match: 'Same fingerprints', tesla_api: 'From the Tesla API' };
+const DETECTED = { ota_status: 'the car’s update status', fingerprint: 'the modules’ firmware fingerprints', build_change: 'changed module builds', teslamate: 'the imported TeslaMate history', teslafi: 'the imported TeslaFi history', tesla_api: 'the Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'TeslaMate' };
 const mods = moduleList;
 const hexCls = (bits) => (bits >= 56 ? 'is-long' : null);
 
@@ -85,7 +83,7 @@ export async function mount(ctx) {
       ['Installing since', installing ? at(installing.start_ms) : null],
     ]),
     note(changed ? `The firmware fingerprints changed after ${v || 'the last known version'}, so the car runs a version nobody has named. ${ctx.admin ? 'Type it on the newest update below.' : 'An admin can type it below.'}`
-      : 'The car does not send its version text. A version is known once imported, read from the Tesla API, typed by an admin, or named from an earlier update with the same fingerprints. It is never guessed.'),
+      : 'The car does not send its version text. A version is known once imported, read from TeslaFi, TeslaMate or the Tesla API, typed by an admin (a typed one wins), or named from an earlier update with the same fingerprints. It is never guessed.'),
     h('a', { class: 'tile-link', href: '#firmware' }, 'Car firmware', icon('chevronDown')));
   const countT = statTile({ label: 'Updates', value: sm.count ?? 0, kind: 'count', icon: 'download', cover: 'updates.stat.count', sub: 'started in the period' });
   const gapT = statTile({ label: 'Typical gap', node: num(sm.median_gap_ms, 'duration', { why: 'needs two updates' }), icon: 'calendar', cover: 'updates.stat.median_gap', sub: 'median time between updates' });
@@ -121,7 +119,7 @@ export async function mount(ctx) {
           h('p', { class: 'item-sub', cover: 'updates.table.date' }, h('a', { href: timelineHref(r), title: 'Open the timeline around this update' }, `${formatDate(r.start_ms, tz, { now: api.now(), year: true })}, ${formatTime(r.start_ms, tz)}`))),
         h('span', { class: 'item-flags' },
           going ? chip('Installing', { tone: 'sun' }) : null,
-          r.version && SOURCE[r.version_source] ? chip(r.version_source === 'owner' ? 'Typed' : r.version_source === 'build_match' ? 'Same fingerprints' : r.version_source === 'tesla_api' ? 'Tesla API' : 'Imported', { tone: 'muted' }) : null,
+          r.version && SOURCE[r.version_source] ? chip(VERSION_CHIP_SHORT[r.version_source], { tone: 'muted', title: SOURCE[r.version_source] }) : null,
           !r.version ? chip('Version not known', { tone: 'sun' }) : null)),
       fp ? namedLine(r) : null,
       h('div', { class: 'tile-nums sw-nums' },
@@ -221,7 +219,7 @@ export async function mount(ctx) {
 
   function histRow(r) {
     const isVer = r.kind === 'version';
-    const ver = h('span', { class: ['fwh-ver', { 'is-unnamed': !r.version }] }, r.version || 'unnamed');
+    const ver = h('span', { class: ['fwh-ver', { 'is-unnamed': !r.version }], title: r.version && SOURCE[r.update?.version_source] ? `${r.version}, ${SOURCE[r.update.version_source]}` : null }, r.version || 'unnamed');
     return h('li', { class: ['fwh-row', { 'is-version': isVer, 'is-current': !!r.current }] },
       h('div', { class: 'fwh-main' },
         h('span', { class: 'fwh-mod' }, isVer ? 'Car version' : moduleName(r.module, r.module_name)),
@@ -295,7 +293,14 @@ export async function mount(ctx) {
   const more = moreButton(async () => { const n = pager.items.length; await pager.more(); await readAround(pager.items.slice(n)); if (!ctx.alive()) return false; draw(pager.items.slice(n)); return !pager.done; }, { text: 'Show earlier updates' });
   function draw(list) { for (const r of list) { const t = updateTile(r); listEnd.before(t); drawn.push(t); } }
   ctx.view.replaceChildren(bar, hero, countT, gapT, tell, fwHead, ...fwTiles, histHead, spanTile, histTile, histMore, listStart, listEnd);
-  if (!pager.items.length) {
+  const last = sm.last_update;
+  if (!pager.items.length && last && ctx.period?.preset !== 'all') {
+    // a narrow period (say one day carried over from another page): say when the last one was, and offer all time
+    listEnd.before(emptyTile({ icon: 'chip', cover: ['updates.table.version', 'updates.table.date', 'updates.table.duration', 'updates.table.since_previous', 'updates.table.charge_count', 'updates.table.avg_range'],
+      title: `No updates in this period; the last one was ${formatDate(last.end_ms ?? last.start_ms, tz, { now: api.now(), year: true })}${last.version ? ` (${last.version})` : ''}`,
+      text: 'All time shows it and every update before it.',
+      action: btn('Show all time', { kind: 'soft', icon: 'calendar', onclick: () => state.setPeriod({ preset: 'all' }, { push: true }) }) }));
+  } else if (!pager.items.length) {
     listEnd.before(emptyTile({ icon: 'chip', cover: ['updates.table.version', 'updates.table.date', 'updates.table.duration', 'updates.table.since_previous', 'updates.table.charge_count', 'updates.table.avg_range'], title: 'No updates in this period', text: ctx.period?.preset === 'all' ? `Nothing recorded for ${car.name} yet. An update shows once the car installs one while recording, or with an imported history.` : 'Pick a longer period above; All time shows every update.' }));
   } else {
     draw(pager.items);

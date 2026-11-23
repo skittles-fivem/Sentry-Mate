@@ -14,7 +14,7 @@ import { tag, dateTime, date, dur, DASH } from '../core/fmt.js';
 import { table } from '../core/table.js';
 import { empty, loadingLine } from '../core/states.js';
 import { src, srcText } from '../core/source.js';
-import { MODULE_WORDS, modWords, hexEl } from './firmware.js';
+import { MODULE_WORDS, modWords, hexEl, versionTag } from './firmware.js';
 
 const enc = encodeURIComponent;
 const none = (t) => h('span', { class: 'muted' }, t);
@@ -44,7 +44,7 @@ export function firmwareHistory(ctx) {
       { key: 'when', label: 'from .. to', ph: 'sub', render: span },
       { key: 'took', label: 'ran for', num: true, ph: 'num', render: (r) => dur(r.duration_ms) },
       { key: 'version', label: 'came with', ph: 'sub', grow: true,
-        render: (r) => (r.version ? h('b', null, r.version) : r.kind === 'version' ? none(DASH) : r.update ? none('unnamed') : none('first seen')) },
+        render: (r) => (r.version ? [h('b', null, r.version), r.update?.version_source && versionTag(r.update.version_source) ? [' ', versionTag(r.update.version_source)] : null] : r.kind === 'version' ? none(DASH) : r.update ? none('unnamed') : none('first seen')) },
       { key: 'from', label: 'data', title: 'where it came from: smo (the car\'s logs), imp (an imported history)', render: (r) => src(srcRow(r)), value: (r) => srcText(srcRow(r)) },
     ],
     empty: () => (module

@@ -26,6 +26,7 @@ import { teslaCarFacts, teslaAccountHref, lastErrorText } from './tesla.js';
 import { teslafiCarFacts } from './teslafi.js';
 import { teslamateCarFacts, teslamateHref } from './teslamate.js';
 import { TM_BASE, TM_SOURCE } from '../shared/teslamate.js';
+import { VERSION_SOURCE } from '../core/firmware.js';
 
 export const id = 'health';
 export const css = true;
@@ -186,7 +187,7 @@ async function mountCar(ctx) {
     statTile({ label: 'Software updates', value: all.updates ?? 0, kind: 'count', icon: 'download', cover: 'dbinfo.stat.update_count', sub: `${n0(tm.updates ?? 0)} imported` }),
     tile({ w: 1, title: 'Software version', icon: 'chip', cls: 'tile-stat', cover: 'dbinfo.stat.current_version', href: state.buildUrl('software', { car: car.id }) },
       h('span', { class: 'num num-m' }, h('span', { class: 'num-n' }, sm.current_version || '—')),
-      h('p', { class: 'tile-line' }, sm.current_version ? 'never guessed' : 'not known yet')),
+      h('p', { class: 'tile-line' }, sm.current_version ? (VERSION_SOURCE[sm.current_version_source] ? `${VERSION_SOURCE[sm.current_version_source]}, never guessed` : 'never guessed') : 'not known yet')),
   ];
   const rowKinds = [['Drives', 'drives'], ['Charges', 'charges'], ['Software updates', 'updates']];
   const rowsT = tile({ w: 2, title: 'Rows kept', icon: 'book', cover: 'dbinfo.table.row_counts' },

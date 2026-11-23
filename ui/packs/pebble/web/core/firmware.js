@@ -112,9 +112,35 @@ export function betweenLine(ctx, carId, r, d, tz) {
     h('p', { class: 'note' }, `Old fingerprints last seen ${a != null ? at(a) : 'not known'}; new ones first seen ${b != null ? at(b) : 'not known'}.`));
 }
 
-/** The line of an update named by itself, from an earlier one with the same fingerprints. */
-export const namedLine = (r) => (r && (r.named_by === 'auto' || r.version_source === 'build_match') && r.version
-  ? h('p', { class: 'fw-named' }, icon('copy'), h('span', null, 'Named from an earlier update with the same fingerprints.')) : null);
+/**
+ * Where a version name came from (version_source), every source the server sends:
+ * VERSION_SOURCE words for a line or a title, VERSION_CHIP a chip, VERSION_CHIP_SHORT the chip on an update tile.
+ */
+export const VERSION_SOURCE = {
+  owner: 'typed by the owner', build_match: 'named from an earlier update with the same fingerprints',
+  tesla_api: 'from the Tesla API', teslafi_api: 'from TeslaFi', teslamate_local: 'from TeslaMate',
+  teslamate: 'imported from TeslaMate', teslafi: 'imported from TeslaFi',
+};
+export const VERSION_CHIP = {
+  owner: 'Typed by the owner', build_match: 'Same fingerprints', tesla_api: 'From the Tesla API', teslafi_api: 'From TeslaFi',
+  teslamate_local: 'From TeslaMate', teslamate: 'Imported from TeslaMate', teslafi: 'Imported from TeslaFi',
+};
+export const VERSION_CHIP_SHORT = {
+  owner: 'Typed', build_match: 'Same fingerprints', tesla_api: 'Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'TeslaMate',
+  teslamate: 'TeslaMate import', teslafi: 'TeslaFi import',
+};
+/** The live inputs that name a fingerprint update with the version they reported after it, in a sentence. */
+const INPUT_NAME = { tesla_api: 'the Tesla API', teslafi_api: 'TeslaFi', teslamate_local: 'TeslaMate' };
+/** How an auto-named update got its name, as a sentence (null when it was typed or came with its source). */
+export const namedWords = (r) => (!r || !r.version || r.version_source === 'owner' || r.named_by === 'owner' ? null
+  : INPUT_NAME[r.version_source] ? `Named from ${INPUT_NAME[r.version_source]}: it reported this version after the update.`
+    : r.named_by === 'auto' || r.version_source === 'build_match' ? 'Named from an earlier update with the same fingerprints.' : null);
+
+/** The line of an update named by itself: from a live input that reported it, or from an earlier one with the same fingerprints. */
+export const namedLine = (r) => {
+  const w = namedWords(r);
+  return w ? h('p', { class: 'fw-named' }, icon(INPUT_NAME[r.version_source] ? 'download' : 'copy'), h('span', null, w)) : null;
+};
 
 let seq = 0;
 const NAME_WORDS = {
@@ -132,7 +158,7 @@ export function nameBox(ctx, carId, r, { onSaved = null } = {}) {
     return h('div', { class: 'fw-name is-read' },
       h('p', { class: 'fw-name-k' }, 'Version'),
       h('p', { class: ['fw-name-v', { 'is-unknown': !r.version }] }, r.version || 'Not named yet'),
-      h('p', { class: 'note' }, r.version ? (r.named_by === 'owner' ? 'Typed by an admin.' : r.named_by === 'auto' ? 'Named from an earlier update with the same fingerprints.' : 'Named by its source.') : 'An admin can type the version the car shows (Controls, Software) once it is known.'));
+      h('p', { class: 'note' }, r.version ? (r.named_by === 'owner' ? 'Typed by an admin.' : namedWords(r) || 'Named by its source.') : 'An admin can type the version the car shows (Controls, Software) once it is known.'));
   }
   const id = `fw-name-${++seq}`;
   const input = h('input', {
