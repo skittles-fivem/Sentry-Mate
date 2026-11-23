@@ -1153,3 +1153,56 @@ fn a_charge_whose_energies_cover_different_spans_shows_no_efficiency_and_says_wh
     let v = serde_json::to_value(&c).unwrap();
     assert!(v["efficiency_pct"].is_null() && v["efficiency_note"].is_string(), "{v}");
 }
+
+/// The Screenmate's own GPS (0x04F on its internal bus, can3) sends a longitude 2^24 steps low (made-up positions):
+/// once the car has its own layout of that frame, a rebuild decodes the stored logs again and the drive is where
+/// the car was.
+#[test]
+fn a_cars_own_layout_of_the_screenmates_gps_frame_is_used_after_a_rebuild() {
+    rt().block_on(async {
+        let k = kit();
+        let trip = Trip { a: 70, b: 250 };
+        for i in 0..5 {
+            let (name, log, _) = smo_minute_shifted(i, trip, -16.777216);
+            // the GPS frames on the Screenmate's internal bus instead of the chassis bus
+            let text = String::from_utf8(lzma_decompress(&log)).unwrap().replace(" can1 04F#", " can3 04F#");
+            let mut xz = Vec::new();
+            lzma_rs::xz_compress(&mut text.as_bytes(), &mut xz).unwrap();
+            let start = T0 + i * 60_000;
+            let side = serde_json::json!({
+                "format": "canbridge-candump-xz/1", "start_wall_ms": start, "end_wall_ms": start + 60_000,
+                "closed_because": "rotate",
+                "bus": { "can0": "vehicle", "can1": "chassis", "can3": "screenmate-internal" },
+            });
+            upload(&k, &name, &xz).await;
+            upload(&k, &format!("{name}.json"), &serde_json::to_vec(&side).unwrap()).await;
+        }
+        k.engine.idle().await;
+        let car = k.db.car_for_key(KEY).unwrap().unwrap();
+        let lons = |k: &Kit| -> Vec<f64> {
+            let d = &drives(k, car)[0];
+            let t = query::drives::track(&k.engine, car, d.id.parse().unwrap()).unwrap();
+            t.stretches.iter().flatten().map(|p| p.lon).collect()
+        };
+        assert!(lons(&k).iter().all(|l| (l - LON).abs() > 10.0), "read with the DBC's layout: far west");
+
+        let layout: model::gps::GpsLayout = "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)".parse().unwrap();
+        let job = k.engine.set_gps_layout(car, Some(layout)).unwrap();
+        assert!(job.is_some(), "a change rebuilds the car");
+        k.engine.idle().await;
+        while k.engine.job(job.as_ref().unwrap().id).is_some_and(|j| j.status == engine::JobStatus::Running) {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        k.engine.idle().await;
+        assert_eq!(k.engine.gps_layout(car).unwrap(), Some(layout));
+        let after = lons(&k);
+        assert!(!after.is_empty() && after.iter().all(|l| (l - LON).abs() < 0.5), "{after:?}");
+        assert!(k.engine.set_gps_layout(car, Some(layout)).unwrap().is_none(), "the same layout again: nothing to do");
+    });
+}
+
+fn lzma_decompress(xz: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    lzma_rs::xz_decompress(&mut &xz[..], &mut out).unwrap();
+    out
+}

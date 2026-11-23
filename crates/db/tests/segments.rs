@@ -251,3 +251,42 @@ fn days_read_while_they_are_written_folded_and_settled_never_fail() {
     let back: Vec<Sample> = t.db.read_points(car, Source::Live, day3, day3 + DAY_MS).unwrap();
     assert_eq!(back.len(), 3 * 3600);
 }
+
+/// Every file under a folder with its bytes (to tell whether anything changed).
+fn tree(dir: &std::path::Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                out.insert(p.clone(), std::fs::read(&p).unwrap());
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn a_reader_of_another_process_sees_what_was_written_and_changes_nothing() {
+    let t = test_db(Options { fold_min_bytes: 4_000, ..Options::default() });
+    let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
+    // a day whole (a snapshot) and the next one a minute at a time (a journal), as a running server leaves them
+    let first = samples(DAY0, 600);
+    t.db.write_points(car, Source::Teslamate, DAY0, DAY0 + DAY_MS, &first).unwrap();
+    let live = samples(DAY0 + DAY_MS, 180);
+    for minute in live.chunks(60) {
+        t.db.write_points(car, Source::Teslamate, minute[0].t_ms, minute[0].t_ms + 60_000, minute).unwrap();
+    }
+    let before = tree(&t.data.join("db"));
+    let r = db::Reader::new(&t.data, t.vault.clone());
+    assert_eq!(r.car(car).unwrap().map(|c| c.name), Some("Model Y".into()));
+    assert!(r.car(car + 1).unwrap().is_none());
+    let back: Vec<Sample> = r.points(car, model::Stream::Teslamate, 0, u64::MAX).unwrap();
+    assert_eq!(back, [first, live].concat());
+    assert_eq!(r.days::<Sample>(car, model::Stream::Teslamate, 0, u64::MAX).unwrap(), [DAY0, DAY0 + DAY_MS]);
+    assert!(r.points::<Sample>(car, model::Stream::TeslaApi, 0, u64::MAX).unwrap().is_empty());
+    assert_eq!(tree(&t.data.join("db")), before, "nothing written, cleaned or removed");
+}

@@ -116,6 +116,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/about", get(about))
         .route("/api/v1/cars/{car}/health", get(health))
         .route("/api/v1/cars/{car}/rebuild", post(rebuild))
+        .route("/api/v1/cars/{car}/gps-layout", get(gps_layout).put(put_gps_layout))
         .route("/api/v1/cars/{car}/overlaps", get(overlaps).patch(flip_overlap))
         .route("/api/v1/cars/{car}/storage", get(car_storage))
         .route("/api/v1/system/storage", get(system_storage))
@@ -252,6 +253,51 @@ async fn rebuild(
         "logs_read": now.done,
         "logs_total": now.total,
         "took_ms": now.took_ms,
+    })))
+}
+
+/// `GET /cars/{car}/gps-layout`: the car's own layout of the Screenmate's GPS frame (0x04F on its internal bus) as
+/// `sentry-mate gps-layout` prints it, or null while the DBC's is used.
+async fn gps_layout(State(app): State<AppState>, CarParam(car): CarParam) -> ApiResult<Json<Value>> {
+    let e = app.service::<Engine>()?;
+    let l = app
+        .blocking(move |_| e.gps_layout(car).map_err(|x| ApiError::server(format!("reading the layout: {x}"))))
+        .await?;
+    Ok(Json(json!({ "car": ids::car(car), "layout": l.map(|l| l.to_string()) })))
+}
+
+/// `PUT /cars/{car}/gps-layout` `{ layout }`: the layout `sentry-mate gps-layout` printed (`lat 0|28@1- (1e-6,0);
+/// lon 28|28@1- (1e-6,0)`), or null for the DBC's. A change starts a whole rebuild of the car (its stored logs are
+/// decoded again); the answer names its `job`, null when nothing changed.
+async fn put_gps_layout(
+    State(app): State<AppState>,
+    v: Viewer,
+    CarParam(car): CarParam,
+    body: JsonBody,
+) -> ApiResult<Json<Value>> {
+    body.only(&["layout"])?;
+    let layout: Option<model::gps::GpsLayout> = match body.get("layout") {
+        None => return Err(ApiError::invalid("layout", "Required: the layout, or null for the DBC's.")),
+        Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.parse().map_err(|why: String| ApiError::invalid("layout", &why))?),
+        Some(_) => return Err(ApiError::invalid("layout", "Must be text or null.")),
+    };
+    let e = app.service::<Engine>()?;
+    let job = app
+        .blocking(move |_| e.set_gps_layout(car, layout).map_err(|x| ApiError::server(format!("the layout: {x}"))))
+        .await?;
+    if job.is_some() {
+        let name = app.car_name_now(car).await;
+        let summary = match layout {
+            Some(l) => format!("Set how {name}'s Screenmate GPS frames are read ({l}); its history is rebuilt."),
+            None => format!("Set {name}'s Screenmate GPS frames to be read as the DBC says; its history is rebuilt."),
+        };
+        v.audit(&app, "car-gps-layout", Some(&target("car", Some(car), "")), &summary).await?;
+    }
+    Ok(Json(json!({
+        "car": ids::car(car),
+        "layout": layout.map(|l| l.to_string()),
+        "job": job.map(|j| j.id.to_string()),
     })))
 }
 

@@ -103,7 +103,10 @@ impl<S: Logged> LoggedFile<S> {
     }
 
     fn load_as(ctx: &Ctx, files: Files, to_commit: bool, elsewhere: Fallback<'_>) -> Result<LoggedFile<S>> {
-        files.clean_temporary()?;
+        // a reader changes nothing: another process (the running server) may own these files
+        if to_commit {
+            files.clean_temporary()?;
+        }
         let snap_label = ctx.label(&files.snap);
         let (state, generation, snap_bytes, snap_plain, snap_level) = match ctx.read(&files.snap)? {
             Some(b) => {
@@ -131,9 +134,12 @@ impl<S: Logged> LoggedFile<S> {
         };
         if let Some((generation, entries, journal)) = found {
             if generation < lf.generation {
-                // folded into the snapshot already; a crash came before it was removed
+                // folded into the snapshot already; a crash came before it was removed (a reader leaves it: the
+                // next writer removes it)
                 drop(journal);
-                remove_if_exists(&lf.files.log)?;
+                if to_commit {
+                    remove_if_exists(&lf.files.log)?;
+                }
             } else if generation > lf.generation {
                 return Err(Error::Damaged {
                     file: log_label,
