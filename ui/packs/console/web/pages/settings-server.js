@@ -3,7 +3,9 @@
 // Admins also: host names as a 'key = value' line, ports, the certificate and the recovery key (show again,
 // make new, say it is saved), moving to another server as numbered steps with a state tag and a run button
 // each (a move code, or an export file; carry on a stopped move; undo a move), output in a mono box; the
-// accounts, and the audit log.
+// accounts, and the audit log; and storage: the space on disk by category (GET /system/storage/detail) and
+// compaction as a step with a run button (POST /system/storage/compact), its state in a mono box.
+// While a compaction pass runs the detail is read again every 2 s.
 // The move and the export file are read once a second while something runs (GET /system/move,
 // GET /system/exports/{id}); every dangerous action asks for the person's own password again.
 
@@ -42,6 +44,9 @@ const ROLE = { admin: 'admin', watch: 'watch' };
 const PURPOSE = { web: 'web and api', upload: 'uploads' };
 const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
 const LIVE = new Set(['offered', 'copying', 'paused', 'moved']);
+// storage: the groups of the categories and the steps of a compaction pass, in plain words
+const STORE_GROUP = { logs: 'CAN logs', series: 'time series', rows: 'drives and charges', kv: 'kept answers and records', imports: 'imports', server: 'server' };
+const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records' };
 
 /** A list of '[tag] text' lines. */
 const lines = (rows, attrs = {}) => h('ul', { class: 'ln-list', ...attrs }, rows.filter(Boolean).map(([t, text, sub]) =>
@@ -63,6 +68,7 @@ export async function mount(ctx) {
   const S = { settings: null, network: null, notices: [], accounts: [], cars: [], sessions: [] };
   const loadAccounts = async () => { S.accounts = admin ? await ctx.api.list('accounts', { limit: 500 }).all({ max: 5000 }) : []; };
   const loadSessions = async () => { S.sessions = await ctx.api.list('me/sessions', { limit: 500 }).all({ max: 5000 }); };
+  const G = { d: null, err: null, pollErr: null };   // storage: the detail, why it could not be read
   const [settings, network, notices, cars, trips] = await Promise.all([
     ctx.api.get('settings').catch(() => null),
     admin ? ctx.api.get('network').catch(() => null) : null,
@@ -70,6 +76,7 @@ export async function mount(ctx) {
     ctx.api.list('cars', { sort: 'custom', limit: 500 }).all({ max: 5000 }).catch(() => []),
     admin ? ctx.api.list('trips', { limit: 500 }).all({ max: 2000 }).catch(() => []) : [],
     loadAccounts(), loadSessions(),
+    admin ? ctx.api.get('system/storage/detail').then((d) => { G.d = d; }).catch((e) => { G.err = e; }) : null,
   ]);
   if (!ctx.alive()) return;
   Object.assign(S, { settings, network, notices: notices?.items || [], cars });
@@ -402,6 +409,75 @@ export async function mount(ctx) {
       h('pre', { class: 'mono-box out-box', 'aria-label': 'Export output' }, out));
   }
 
+  /* ---------------------------------------------------------------- storage and compaction (admin) */
+  // what takes the space on disk, largest first, and compaction as one step: a state tag, a run button, its
+  // output in a mono box. While a pass runs (also one the server started by itself) the detail is read again
+  // every 2 s; when it ends the table is drawn again and a note says what was freed.
+  const storSlot = h('div', { 'aria-live': 'polite' });
+  let gt = null;
+  ctx.onCleanup(() => clearTimeout(gt));
+  const storTable = admin ? table(ctx, {
+    title: 'on disk by category', rows: G.d?.categories || [], csv: false, label: 'Space on disk by category', sort: { key: 'disk_bytes', dir: 'desc' },
+    note: 'largest first, with the kind of data.',
+    columns: [
+      { key: 'label', label: 'what', sort: true, ph: 'main', grow: true, cls: 'wrap-cell', render: (c) => c.label },
+      { key: 'group', label: 'kind', sort: true, ph: 'sub', value: (c) => STORE_GROUP[c.group] || c.group, render: (c) => h('span', { class: 'muted' }, STORE_GROUP[c.group] || c.group) },
+      { key: 'files', label: 'files', num: true, sort: true, render: (c) => count(c.files) },
+      { key: 'disk_bytes', label: 'on disk', num: true, sort: true, ph: 'num', render: (c) => bytes(c.disk_bytes), total: () => bytes(G.d?.total_disk_bytes) },
+    ],
+    empty: () => empty('not known', G.err ? `the server did not say what takes the space: ${errText(G.err)}` : 'the server did not say what takes the space'),
+  }) : null;
+  function paintStor() {
+    const d = G.d, c = d?.compaction || null;
+    const running = c?.status === 'running';
+    const failed = c?.status === 'failed';
+    const out = [
+      G.pollErr ? `! could not read the progress just now (${errText(G.pollErr)}); it keeps trying.` : null,
+      `state   ${c ? c.status : 'not known'}`,
+      `step    ${running ? `${PACK_STEP[c.step] || c.step || 'getting ready'}, ${c.total ? `${count(c.done ?? 0)} of ${count(c.total)}` : 'counting'}` : DASH}`,
+      failed ? `error   ${c.error || 'the server gave no reason'}` : null,
+      `saved   ${c ? `${bytes(c.saved_bytes)} so far` : DASH}`,
+      `last    ${!c || c.finished_ms == null ? 'no pass has finished yet' : `${t(c.finished_ms)}, ${c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'nothing left to pack'}`}`,
+      `auto    ${!c ? DASH : c.automatic ? 'runs by itself when the server is idle' : 'does not run by itself on this server'}`,
+      `on disk ${bytes(d?.total_disk_bytes)} in all, ${d?.free_bytes != null ? `${bytes(d.free_bytes)} free` : 'free space not known'}`,
+    ].filter(Boolean).join('\n');
+    replace(storSlot,
+      runs([
+        [!c ? 'off' : running ? 'running' : failed ? 'bad' : 'ok', running ? 'packing…' : 'pack what is no longer written',
+          'Packs data that is no longer written, losslessly: every value stays readable exactly, and the logs\' signed originals are kept byte for byte.',
+          btn('compact now', compactNow, { kind: 'primary', disabled: running || !c })],
+      ]),
+      h('pre', { class: 'mono-box out-box', 'aria-label': 'Compaction output' }, out));
+  }
+  function scheduleStor() { clearTimeout(gt); if (G.d?.compaction?.status === 'running') gt = setTimeout(refreshStor, 2000); }
+  async function refreshStor() {
+    try {
+      const d = await ctx.api.get('system/storage/detail');
+      if (!ctx.alive()) return;
+      G.d = d; G.pollErr = null;
+      const c = d.compaction || {};
+      if (c.status !== 'running') {
+        storTable.setRows(d.categories || []);
+        if (c.status === 'failed') toast(`Compaction failed: ${c.error || 'the server gave no reason'}`, { kind: 'error' });
+        else toast(c.last_saved_bytes ? `Compaction is done: ${bytes(c.last_saved_bytes)} freed on disk.` : 'Compaction is done: nothing was left to pack.');
+      }
+    } catch (e) { if (!ctx.alive()) return; G.pollErr = e; }
+    paintStor(); scheduleStor();
+  }
+  async function compactNow() {
+    try {
+      const r = await ctx.api.post('system/storage/compact');
+      if (!ctx.alive()) return;
+      G.d = { ...(G.d || {}), compaction: r.compaction }; G.pollErr = null;
+    } catch (e) { if (!ctx.alive()) return; toast(`Could not start compaction: ${errText(e)}`, { kind: 'error' }); }
+    paintStor(); scheduleStor();
+  }
+  const storage = admin ? [
+    section({ title: 'storage', id: 'storage', side: h('span', { class: 'muted' }, 'space on disk, and compaction') }, storSlot),
+    storTable.el,
+  ] : null;
+  if (admin) { paintStor(); scheduleStor(); }
+
   /* ---------------------------------------------------------------- access, accounts, sessions, audit */
   const nAdmins = S.accounts.filter((a) => a.role === 'admin').length;
   const access = section({ title: 'how access works', cover: 'web.shell.access-model' },
@@ -588,6 +664,7 @@ export async function mount(ctx) {
     section({ title: 'certificate and recovery key', id: 'certificate-in-use' }, certSlot, keySlot),
     access,
     moving,
+    storage,
     accounts?.el,
     sessions.el,
     audit?.el);

@@ -54,6 +54,7 @@ const BY_GROUP = {
     'ui-pack-removed': 'Removed a design',
     'certificate-made': 'Made a new certificate',
     'release-checked': 'Checked for a newer build',
+    'storage-compacted': 'Started packing the stored data',
     'recovery-key-shown': 'Showed the recovery key',
     'recovery-key-new': 'Made a new recovery key',
     'recovery-key-saved': 'Saved the recovery key',
