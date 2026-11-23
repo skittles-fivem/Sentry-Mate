@@ -112,7 +112,7 @@ pub use error::{Error, Result};
 pub use file::{FORMAT_VERSION, allocated};
 pub use fleet::{FleetCursor, FleetEntry, FleetPage, FleetQuery, Summary};
 pub use kv::{BUNDLE_TARGET, Kv, KvCompacted, KvUsage, MAX_VALUE};
-pub use readonly::Reader;
+pub use readonly::{DayRead, Reader, TRIES as READ_TRIES};
 pub use rows::{Cursor, Item, MAX_PAGE, Order, Page, Query, StateRow, Table, Tally, Totals, UpdateRow};
 pub use segment::{DAY_MS, DayInfo, END_MS, Fields, Point, keeping_days};
 
