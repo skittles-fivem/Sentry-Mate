@@ -342,8 +342,8 @@ async fn drive_stats(State(app): State<AppState>, CarParam(car): CarParam, p: Pa
 }
 
 /// `/cars/{car}/logbook?from_ms=&to_ms=&format=json|csv|pdf` (also `Accept: text/csv` or `application/pdf`): every
-/// row. With `limit`, `after`, `offset` or `at_ms` (JSON) a page of it instead, and with `purpose=`, `q=`, `sort=` and
-/// `dir=` only the rows they show, in that order (the CSV too: every row they show, sent as it is written).
+/// row. With `limit`, `after`, `offset` or `at_ms` (JSON) a page of it instead, and with `purpose=`, `q=`, `gaps=`,
+/// `sort=` and `dir=` only the rows they show, in that order (the CSV too: every row they show, sent as it is written).
 async fn logbook(
     State(app): State<AppState>,
     CarParam(car): CarParam,
@@ -365,11 +365,12 @@ async fn logbook(
     let mut query = q::logbook::LogQuery {
         purpose: p.one_of("purpose", &["business", "commute", "private", "none"])?.map(str::to_string),
         q: text(&p, "q")?,
+        gaps: p.bool("gaps")?.unwrap_or(false),
         sort: p.one_of("sort", &q::logbook::LOGBOOK_SORTS)?.map(str::to_string),
         desc: p.one_of("dir", &["asc", "desc"])? == Some("desc"),
         ..Default::default()
     };
-    let filtered = query.purpose.is_some() || query.q.is_some() || query.sort.is_some() || query.desc;
+    let filtered = query.purpose.is_some() || query.q.is_some() || query.gaps || query.sort.is_some() || query.desc;
     if format == "csv" {
         let name = format!("logbook-{}", ids::car(car));
         let rows = run(&app, move |e| {

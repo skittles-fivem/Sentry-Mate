@@ -547,7 +547,10 @@ LOGBOOK_SORTS = ("seq", "distance", "gap", "odometer", "from", "to", "purpose")
 
 def _logbook_book(req, h, a, b):
     """The period's rows, totals and continuity check, kept while the data (and the drives started) stay the same,
-    so paging reads no drive again (as the real server keeps it)."""
+    so paging reads no drive again (as the real server keeps it). A period that ends now (a page sends its own now as
+    to_ms) is kept as one that goes on, so every load shares one kept answer."""
+    if b >= req.now - 5 * 60_000:
+        b = 2 ** 62
     drives = _drives(req, h, a, b)
     live = any(in_progress(d, req.now) for d in drives[-2:])
     key = (req.car, a, b, req.store.rev, len(drives), drives[-1].id if drives else None,
@@ -611,11 +614,14 @@ def _logbook_shown(req, rows):
     """The rows the purpose filter and the search words show, in the asked order (ties by seq; null last)."""
     purpose = req.enum("purpose", PURPOSES + ("none",))
     words = (req.q("q") or "").lower().split()
+    gaps = req.bool_param("gaps", False)
     sort = req.enum("sort", LOGBOOK_SORTS, "seq")
     desc = req.enum("dir", ("asc", "desc"), "asc") == "desc"
     out = []
     for x in rows:
         if purpose and (x["purpose"] or "none") != purpose:
+            continue
+        if gaps and not (x["continuity_gap_km"] or 0) > GAP_KM:
             continue
         if words:
             text = "\x1f".join(v for v in (x["start_place"], x["end_place"], x["start_address"], x["end_address"],
@@ -634,7 +640,7 @@ def _logbook_shown(req, rows):
     if sort != "seq":
         known = sorted((x for x in out if val(x) is not None), key=val, reverse=desc)  # stable: ties keep seq order
         out = known + [x for x in out if val(x) is None]
-    return out, sort, desc, purpose is not None or bool(words) or sort != "seq" or desc
+    return out, sort, desc, purpose is not None or bool(words) or gaps or sort != "seq" or desc
 
 
 def logbook(req):

@@ -406,7 +406,12 @@ fn text_of(v: &serde_json::Value, key: &str) -> Option<String> {
     v.get(key).and_then(serde_json::Value::as_str).map(str::to_string)
 }
 
+/// A period that ends now (a page's "this year" sends its own now as `to_ms`, a new one each load) is kept as one that
+/// goes on: no drive starts after now, so the rows are the same and one kept answer serves every load.
+const NOW_SLACK_MS: u64 = 5 * 60_000;
+
 fn book(e: &Engine, c: &Car, a: u64, b: u64) -> QResult<std::sync::Arc<Book>> {
+    let b = if b >= crate::now_ms().saturating_sub(NOW_SLACK_MS) { u64::MAX } else { b };
     let x = super::drives::ctx(e, c)?;
     let shown = super::system::Shown::new(e, c.id, None)?;
     let changes = CHANGES.load(std::sync::atomic::Ordering::Relaxed);
@@ -546,6 +551,8 @@ pub struct LogQuery {
     pub purpose: Option<String>,
     /// Words that every shown row has in its places, addresses, relation or note (any case).
     pub q: Option<String>,
+    /// Only rows after distance not logged (a gap over [`GAP_KM`]).
+    pub gaps: bool,
     /// One of [`LOGBOOK_SORTS`] (`seq` when none).
     pub sort: Option<String>,
     pub desc: bool,
@@ -609,6 +616,7 @@ fn shown_rows<'a>(rows: &'a [LogRow], query: &LogQuery) -> Vec<&'a LogRow> {
         .iter()
         .filter(|x| query.purpose.as_deref().is_none_or(|p| x.purpose.as_deref().unwrap_or("none") == p))
         .filter(|x| words.is_empty() || has(x))
+        .filter(|x| !query.gaps || x.continuity_gap_km.is_some_and(|g| g > GAP_KM))
         .collect();
     let text = |place: &Option<String>, address: &Option<String>| {
         place.as_deref().or(address.as_deref()).map(str::to_lowercase)
@@ -899,6 +907,8 @@ mod tests {
         assert_eq!(seqs(&shown_rows(&rows, &q(None, Some("street"), None, false))).len(), 5);
         assert!(shown_rows(&rows, &q(None, Some("nowhere"), None, false)).is_empty());
         assert_eq!(seqs(&shown_rows(&rows, &q(None, None, Some("distance"), true))), vec![4, 2, 1, 3, 5]);
+        let gaps = LogQuery { gaps: true, ..LogQuery::default() };
+        assert_eq!(seqs(&shown_rows(&rows, &gaps)), vec![3, 5]);
         // no gap on the first row: last either way
         assert_eq!(seqs(&shown_rows(&rows, &q(None, None, Some("gap"), true))), vec![5, 3, 4, 2, 1]);
         assert_eq!(seqs(&shown_rows(&rows, &q(None, None, Some("gap"), false))), vec![2, 4, 3, 5, 1]);
