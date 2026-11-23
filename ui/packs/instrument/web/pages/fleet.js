@@ -33,6 +33,7 @@ function attention(a, car) {
     case 'stopped_mid_charge': return { text: 'Data stopped in the middle of a charge.', href: state.linkTo('charges', c), go: 'Charges' };
     case 'upload_silence': return { text: `No upload for ${d.last_upload_ms ? ago(d.last_upload_ms).replace(/ ago$/, '') : 'a long time'}. The CAN Bridge may be off or out of range.`, href: state.linkTo('health', c), go: 'Data health' };
     case 'trust_failed': return { text: `A log failed its check${d.reason ? ` (${String(d.reason).replace(/_/g, ' ')})` : ''}; its time shows as unknown.`, href: state.linkTo('health', c), go: 'Data health' };
+    case 'logs_missing': return { text: 'Some logs are missing on the server; the car was asked to send them again.', href: state.linkTo('health', c), go: 'Data health' };
     case 'low_battery': return { text: `Battery low: ${format(d.soc_pct, 'percent')}.`, href: state.linkTo('car', c), go: 'Overview' };
     case 'tyre_low': return { text: `${TYRE[d.tyre] || 'A'} tyre at ${format(d.pressure_kpa, 'pressure')}, ${format(d.recommended_kpa, 'pressure')} recommended.`, href: state.linkTo('car', c), go: 'Overview' };
     case 'door_open_asleep': return { text: `${DOOR[d.door] || 'A door'} open while the car sleeps.`, href: state.linkTo('car', c), go: 'Overview' };
@@ -46,6 +47,7 @@ const FIX = {
   token_unused: ['A token was made but never used', 'No CAN Bridge has uploaded with it yet. Check the server address and the token in the CAN Bridge app.'],
   key_waiting: ['A CAN Bridge key is waiting', 'A CAN Bridge is uploading with a key that is not tied to a car yet. Assign it to a car in Settings: Cars.'],
   logs_waiting_trust: ['Logs are waiting for trust', 'Some logs wait until their signing key is trusted. Trust the key in Settings: Cars.'],
+  logs_missing: ['Logs missing on the server', 'The server lost some logs and asked the car to send them again. They come in by themselves; the car’s Data health page says how many.'],
   import_running: ['An import is still running', 'Its cars appear when the import finishes. Follow it on the Import page.'],
 };
 

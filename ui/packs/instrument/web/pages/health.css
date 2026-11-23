@@ -155,3 +155,12 @@
 :root[data-phone] .co-card { grid-template-columns: minmax(0, 1fr); gap: round(0.5rem, var(--e)); }
 :root[data-phone] .co-card-ic { display: none; }
 :root[data-phone] .co-card-go { min-height: var(--tap); }
+
+/* missing on the server (in the right column under the unknown time) */
+.hl-missing { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); margin-top: round(1.25rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
+.hl-missing .hl-sub, .hl-missing p { margin: 0; }
+.hl-health-cols .hl-missing .kv { margin-top: 0; }
+.hl-missing-line { display: flex; align-items: center; gap: round(0.375rem, var(--e)); --LH: round(calc(1.4 * 1em), 2px); }
+.hl-missing-line > .ico { flex: none; }
+.hl-missing-line:not(.warn) > .ico { color: var(--text-3); }
+.hl-missing-line.warn { color: var(--warm); }
