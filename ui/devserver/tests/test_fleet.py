@@ -152,6 +152,29 @@ class Cars(ServerCase):
         self.assertIn("does not tell", ch["note"])
 
 
+class FleetVersionsCars(ServerCase):
+    """The versions of every car are the cars of /cars: none that is not there, and the sold car too."""
+
+    def check(self, c):
+        cars = [x["id"] for x in self.walk("/api/v1/cars", limit=100)]
+        rows = [x["car"] for x in self.walk("/api/v1/fleet/versions", limit=7)]
+        self.assertEqual(len(rows), len(set(rows)))
+        self.assertEqual(sorted(rows), sorted(cars))
+        for cid in rows[:5] + rows[-5:]:
+            self.assertEqual(c.get(f"/api/v1/cars/{cid}")["id"], cid)
+
+    def test_every_row_is_a_car_of_the_list(self):
+        self.check(self.c)
+
+
+class FleetVersionsCarsTwelve(FleetVersionsCars):
+    server_args = {"cars": 12}
+
+
+class FleetVersionsCarsTwo(FleetVersionsCars):
+    server_args = {"cars": 2}
+
+
 class VehicleInfoShape(unittest.TestCase):
     def test_the_year_note_of_a_build_year(self):
         from mockapi.resources.fleet import vehicle_info

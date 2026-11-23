@@ -132,6 +132,15 @@ async fn upload_check_match_import_and_discard() {
         )
         .await;
     assert_eq!((r.status, r.code()), (403, Some("csrf".into())));
+    // a file's name is one line of plain text
+    for name in ["made\u{0}up.sql", "made\r\nup.sql", "\u{202e}lqs.pu-edam"] {
+        let r = admin.post("/api/v1/imports", json!({ "bytes_total": 10, "name": name })).await;
+        assert_eq!((r.status, r.json()["error"]["fields"]["name"].as_str()), (422, Some("No control characters.")));
+        let files = json!([{ "name": "a.csv", "bytes_total": 5 }, { "name": name, "bytes_total": 5 }]);
+        let r = admin.post("/api/v1/imports", json!({ "files": files })).await;
+        assert_eq!(r.status, 422, "{}", r.text());
+        assert!(r.json()["error"]["fields"]["files.1.name"].is_string(), "{}", r.text());
+    }
     let r = admin.post("/api/v1/imports", json!({})).await;
     assert_eq!((r.status, r.code()), (400, Some("bad_input".into())));
     let r = admin.post("/api/v1/imports", json!({ "bytes_total": 0 })).await;
@@ -185,6 +194,9 @@ async fn upload_check_match_import_and_discard() {
     assert!(ready["report"]["tables"]["drives"]["read"].as_u64().unwrap() > 0, "{ready}");
     assert_eq!(ready["cars_to_match"], json!(1), "the car here is matched at first: {ready}");
     let cars = admin.get(&format!("/api/v1/imports/{id}/cars")).await.json();
+    let csv = admin.get(&format!("/api/v1/imports/{id}/cars?format=csv")).await;
+    assert!(csv.header("content-type").unwrap_or("").starts_with("text/csv"), "{}", csv.text());
+    assert_eq!(admin.get(&format!("/api/v1/imports/{id}/cars?format=xml")).await.status, 400);
     let items = cars["items"].as_array().unwrap().clone();
     assert_eq!(items.len(), 2, "{cars}");
     let three = items.iter().find(|c| c["vin_prefix"] == "5YJ3E1EA0KF").unwrap();

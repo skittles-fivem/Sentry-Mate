@@ -68,6 +68,7 @@ const ROUTES: &[(&str, &str, Case)] = &[
     ("PATCH", "/api/v1/setup/restore", Nothing("a chunk of the restore setup-restore-started announced")),
     ("POST", "/api/v1/ui-packs", Elsewhere("web.rs")),
     ("PUT", "/api/v1/ui-packs/chosen", Walk),
+    ("DELETE", "/api/v1/ui-packs/chosen", Elsewhere("ui_pack_uploads.rs")),
     ("DELETE", "/api/v1/ui-packs/{pack}", Elsewhere("web.rs")),
     ("PATCH", "/api/v1/integrations/tesla", Elsewhere("tesla.rs")),
     ("POST", "/api/v1/integrations/tesla/accounts", Elsewhere("tesla.rs")),

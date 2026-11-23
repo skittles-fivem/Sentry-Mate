@@ -478,6 +478,9 @@ async fn create(
             let size =
                 size.ok_or_else(|| ApiError::invalid(&format!("files.{i}.bytes_total"), "Between 1 byte and 64 GB."))?;
             let name: String = x.get("name").and_then(Value::as_str).unwrap_or("").trim().chars().take(200).collect();
+            if engine::query::not_plain_text(&name) {
+                return Err(ApiError::invalid(&format!("files.{i}.name"), "No control characters."));
+            }
             let name = if name.is_empty() { format!("file-{}", i + 1) } else { name };
             parts.push(Part { name, bytes_total: size, uploaded_bytes: 0 });
         }
@@ -493,6 +496,9 @@ async fn create(
         return Err(ApiError::invalid("bytes_total", "Between 1 byte and 64 GB."));
     }
     let name: String = body.str("name")?.unwrap_or("teslamate-backup.sql").trim().chars().take(200).collect();
+    if engine::query::not_plain_text(&name) {
+        return Err(ApiError::invalid("name", "No control characters."));
+    }
     let name = if name.is_empty() { "teslamate-backup.sql".to_string() } else { name };
     let name = match parts.as_slice() {
         [] => name,
@@ -1208,11 +1214,12 @@ fn checked(j: &Job) -> ApiResult<()> {
     Ok(())
 }
 
-async fn cars(State(app): State<AppState>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+async fn cars(State(app): State<AppState>, Path(id): Path<String>, q: Params) -> ApiResult<Response> {
+    q.wants_csv()?;
     with_jobs(&app, move |_, all| {
         let j = job(all, &id)?;
         checked(&j)?;
-        Ok(Json(json!({ "import": j.id, "items": car_rows(&j), "next": null })))
+        crate::csv::answer(&q, "import-cars", json!({ "import": j.id, "items": car_rows(&j), "next": null }))
     })
     .await
 }
@@ -1593,7 +1600,8 @@ fn move_said(e: &Engine, m: &engine::rehome::Move, why: &str) -> String {
 }
 
 /// `GET /import-holds`: every lot of imported rows that waits for a car (or waited), oldest first.
-async fn holds(State(app): State<AppState>) -> ApiResult<Json<Value>> {
+async fn holds(State(app): State<AppState>, q: Params) -> ApiResult<Response> {
+    q.wants_csv()?;
     let e = app.service::<Engine>()?;
     let items = app
         .blocking(move |_| {
@@ -1602,7 +1610,7 @@ async fn holds(State(app): State<AppState>) -> ApiResult<Json<Value>> {
                 .map(|v| v.iter().map(lot_view).collect::<Vec<_>>())
         })
         .await?;
-    Ok(Json(json!({ "items": items, "next": null })))
+    crate::csv::answer(&q, "import-holds", json!({ "items": items, "next": null }))
 }
 
 /// `POST /import-holds/{hold}` `{ match: car | "new" | "ignore" | "wait" }`: gives the lot's rows a car (a new one,

@@ -466,6 +466,21 @@ async fn purposes_rules_logbook_and_saved_trips() {
     let mut bad = trip.clone();
     bad["name"] = json!("  ");
     assert_eq!(watch.post("/api/v1/trips", bad).await.status, 422);
+    // a name is one line of plain text, as a place's is: no NUL, no line break, nothing that turns the text round
+    for name in
+        ["Made-up\u{0}weekend", "Made-up\r\nweekend", "\u{202e}dnekeew", "\u{2066}weekend\u{2069}", "a\u{2028}b"]
+    {
+        let mut bad = trip.clone();
+        bad["name"] = json!(name);
+        let r = watch.post("/api/v1/trips", bad).await;
+        assert_eq!(
+            (r.status, r.json()["error"]["fields"]["name"].as_str()),
+            (422, Some("No control characters.")),
+            "{name:?}"
+        );
+        let r = watch.patch(&format!("/api/v1/trips/{tid}"), json!({ "name": name })).await;
+        assert_eq!(r.status, 422, "{name:?}: {}", r.text());
+    }
     let mut bad = trip.clone();
     bad["from_ms"] = json!("yesterday");
     assert_eq!(watch.post("/api/v1/trips", bad).await.status, 400);

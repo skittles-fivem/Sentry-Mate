@@ -31,7 +31,7 @@
 //! | Route | Who | |
 //! |---|---|---|
 //! | `GET /ui-packs` | everyone | `{ items: [pack], chosen, default }` |
-//! | `POST /ui-packs` | admin | the zip as the body; password in `X-Sentry-Mate-Password`, two-step code in `X-Sentry-Mate-Code` -> 201 pack |
+//! | `POST /ui-packs` | admin | the zip as the body; password in `X-Sentry-Mate-Password` (UTF-8) or `X-Sentry-Mate-Password-Encoded` (percent-encoded), two-step code in `X-Sentry-Mate-Code` -> 201 pack |
 //! | `PUT /ui-packs/chosen` | admin | `{ pack, confirm_password, code }`: the pack for everyone |
 //! | `DELETE /ui-packs/{pack}` | admin | `{ confirm_password, code }`: an uploaded pack |
 //! | `GET /ui-packs/{pack}/download` | everyone | the pack as a zip, to start one's own from |
@@ -814,6 +814,9 @@ fn safe_path(p: &str) -> bool {
         && p.trim_end_matches('/').split('/').all(|seg| !seg.is_empty() && !seg.starts_with('.'))
 }
 
+/// The id no uploaded pack may have: `PUT /ui-packs/chosen` is the choice for everyone, not a pack.
+pub const RESERVED_ID: &str = "chosen";
+
 fn slug(name: &str) -> String {
     let mut s = String::new();
     for c in name.chars() {
@@ -846,15 +849,20 @@ pub fn check_zip(zip_bytes: &[u8]) -> ApiResult<Checked> {
             )));
         }
     }
-    // one folder around ui.json and web/ (as zipping a folder makes it) is fine
+    // one folder around ui.json and web/ (as zipping a folder makes it) is fine: a first folder is that one only
+    // when ui.json is in it (web/ alone is the pack's own folder, not a wrapping)
     let has_root_ui = entries.iter().any(|e| e.name == "ui.json");
     let prefix = if has_root_ui {
         String::new()
     } else {
-        let firsts: std::collections::HashSet<&str> = entries.iter().filter_map(|e| e.name.split('/').next()).collect();
-        match firsts.into_iter().next() {
-            Some(f) if entries.iter().all(|e| e.name.starts_with(&format!("{f}/"))) => format!("{f}/"),
-            _ => String::new(),
+        match entries.first().and_then(|e| e.name.split('/').next()) {
+            Some(f)
+                if entries.iter().all(|e| e.name.starts_with(&format!("{f}/")))
+                    && entries.iter().any(|e| !e.is_dir && e.name == format!("{f}/ui.json")) =>
+            {
+                format!("{f}/")
+            }
+            _ => return Err(refuse("The pack has no ui.json.".into())),
         }
     };
     let mut ui = None;
@@ -907,6 +915,9 @@ pub fn check_zip(zip_bytes: &[u8]) -> ApiResult<Checked> {
     let id = slug(&parsed.name);
     if id.is_empty() {
         f.add("name", "ui.json: the name needs letters or digits.");
+    }
+    if id == RESERVED_ID {
+        f.add("name", "ui.json: this name is taken by the server (/ui-packs/chosen): give the pack another name.");
     }
     f.invalid()?;
     let bytes = files.iter().map(|(_, d)| d.len() as u64).sum();
@@ -966,15 +977,17 @@ pub fn end_original(res: &mut Response, headers: &HeaderMap) {
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/ui-packs", get(list).post(upload).layer(DefaultBodyLimit::max(MAX_ZIP_BYTES + 1024)))
-        .route("/api/v1/ui-packs/chosen", put(choose))
+        // `chosen` is no pack's id ([`RESERVED_ID`]); one installed before that was checked can still be removed
+        .route("/api/v1/ui-packs/chosen", put(choose).delete(remove_reserved))
         .route("/api/v1/ui-packs/{pack}", delete(remove))
         .route("/api/v1/ui-packs/{pack}/download", get(download))
 }
 
-async fn list(State(app): State<AppState>, _v: Viewer) -> Json<Value> {
+async fn list(State(app): State<AppState>, _v: Viewer, q: crate::Params) -> ApiResult<Response> {
     let chosen = app.packs.chosen();
     let items: Vec<Value> = app.packs.list().iter().map(|m| m.json(&chosen)).collect();
-    Json(json!({ "items": items, "next": null, "chosen": chosen, "default": app.packs.default_id() }))
+    let answer = json!({ "items": items, "next": null, "chosen": chosen, "default": app.packs.default_id() });
+    crate::csv::answer(&q, "ui-packs", answer)
 }
 
 /// Asks the admin's password (and two-step code) again, off the async threads.
@@ -1045,6 +1058,16 @@ async fn remove(
     let summary = format!("Removed the {} design, version {} (zip SHA-256 {}).", meta.name, meta.version, meta.sha256);
     v.audit(&app, "ui-pack-removed", Some(&format!("ui-pack:{id}")), &summary).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
+}
+
+/// `DELETE /ui-packs/chosen`: the fixed route beside `/ui-packs/{pack}` answers for a pack with that id.
+async fn remove_reserved(
+    app: State<AppState>,
+    admin: Admin,
+    headers: HeaderMap,
+    body: JsonBody,
+) -> ApiResult<Json<Value>> {
+    remove(app, admin, Path(RESERVED_ID.to_string()), headers, body).await
 }
 
 async fn download(State(app): State<AppState>, _v: Viewer, Path(id): Path<String>) -> ApiResult<Response> {

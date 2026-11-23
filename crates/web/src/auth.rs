@@ -209,10 +209,11 @@ async fn sessions_of(app: &AppState, v: &Viewer) -> ApiResult<Vec<accounts::Sess
     app.blocking(move |app| Ok(app.accounts.sessions(v2.signed_in(), v2.id())?)).await
 }
 
-async fn my_sessions(State(app): State<AppState>, v: Viewer) -> ApiResult<Json<Value>> {
+async fn my_sessions(State(app): State<AppState>, v: Viewer, q: crate::Params) -> ApiResult<Response> {
+    q.wants_csv()?;
     let list = sessions_of(&app, &v).await?;
     let items: Vec<Value> = list.iter().map(|s| session_json(s, v.session_id())).collect();
-    Ok(Json(json!({ "items": items, "next": null })))
+    crate::csv::answer(&q, "sessions", json!({ "items": items, "next": null }))
 }
 
 async fn my_session(State(app): State<AppState>, v: Viewer, Path(id): Path<String>) -> ApiResult<Json<Value>> {

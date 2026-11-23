@@ -342,7 +342,7 @@ def _server_rows(req, now):
         c.last_ok_ms = now - now % 1000 - 1000
     out.append(c)
 
-    c = Conn("tiles", "tiles", "Online map tiles", "/settings/maps#map-tiles", "requests")
+    c = Conn("tiles", "tiles", "Online map tiles", "/settings/display#maps", "requests")
     if ss["tiles"]["mode"] == "online":
         c.rate = lambda a, b: int(350 * _day_shape(a, SERVER_ZONE) ** 2 * _noise(seed, "tiles", a) * part(a, b))
         c.last_ok_ms = now - now % MIN - 3 * MIN
@@ -350,7 +350,7 @@ def _server_rows(req, now):
         c.status, c.reason = "off", "offline_mode"
     out.append(c)
 
-    c = Conn("geocoding", "geocoding", "Address lookup", "/settings/maps#address-lookup", "requests")
+    c = Conn("geocoding", "geocoding", "Address lookup", "/settings/display#addresses", "requests")
     if ss["geocode"]["mode"] == "online" and ss["geocode"].get("url"):
         c.rate = lambda a, b: int(9 * _day_shape(a, SERVER_ZONE) * _noise(seed, "geo", a) * part(a, b))
         c.last_ok_ms = now - now % MIN - 40 * MIN
@@ -358,7 +358,7 @@ def _server_rows(req, now):
         c.status, c.reason = "off", "offline_mode"
     out.append(c)
 
-    c = Conn("release_check", "release_check", "Release check", "/settings/server#release-check", "requests")
+    c = Conn("release_check", "release_check", "Release check", "/settings/display#release", "requests")
     checked = st.release_checked_ms
     if ss["release_check"]["enabled"]:
         anchor = checked if checked is not None else req.app.cfg.now_ms - 2 * HOUR

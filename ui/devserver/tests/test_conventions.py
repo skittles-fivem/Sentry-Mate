@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import unittest
 
 from .helpers import NOW, PACK, ServerCase
@@ -112,9 +113,36 @@ class Throttle(ServerCase):
         for _ in range(5):
             c.error("POST", "/api/v1/session", 401, "wrong_credentials", body={"name": "watch", "password": "nope"})
         e, hd = c.error("POST", "/api/v1/session", 429, "throttled", body={"name": "watch", "password": "nope"})
-        self.assertGreaterEqual(int(hd["retry-after"]), 1)
-        # an unknown name gets the same answer as a wrong password
-        c.error("POST", "/api/v1/session", 401, "wrong_credentials", body={"name": "nobody", "password": "x" * 12})
+        # the first wait is 30 s, as on the real server
+        self.assertTrue(28 <= int(hd["retry-after"]) <= 30, hd["retry-after"])
+        # the address is counted too, whatever the name: the right password of another account waits as well
+        c.error("POST", "/api/v1/session", 429, "throttled", body={"name": "nobody", "password": "x" * 12})
+        c.error("POST", "/api/v1/session", 429, "throttled", body={"name": "admin", "password": "sentry-mate-dev"})
+        self.server.app.store.throttle.clear()
+
+    def test_an_unknown_name_is_a_wrong_password_and_a_right_one_clears_the_count(self):
+        c = self.server.client()
+        self.server.app.store.throttle.clear()
+        for _ in range(4):
+            c.error("POST", "/api/v1/session", 401, "wrong_credentials", body={"name": "nobody", "password": "x" * 12})
+        st, _, _ = c.request("POST", "/api/v1/session", {"name": "admin", "password": "sentry-mate-dev"})
+        self.assertEqual(st, 200)
+        c2 = self.server.client()
+        for _ in range(4):
+            c2.error("POST", "/api/v1/session", 401, "wrong_credentials", body={"name": "watch", "password": "nope"})
+        self.server.app.store.throttle.clear()
+
+    def test_the_wait_doubles_with_each_further_wrong_try(self):
+        from mockapi.resources import auth
+        store = self.server.app.store
+        store.throttle.clear()
+        keys = ("sign-in-name:someone", "sign-in-address:192.0.2.7")
+        waits = []
+        for _ in range(12):
+            auth._strike(store, keys)
+            waits.append(max(0, round(store.throttle[keys[0]]["until"] - time.monotonic())))
+        self.assertEqual(waits, [0, 0, 0, 0, 30, 60, 120, 240, 480, 900, 900, 900])
+        store.throttle.clear()
 
     def test_signed_out_is_401(self):
         c = self.server.client()
