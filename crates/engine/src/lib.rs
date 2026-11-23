@@ -245,6 +245,8 @@ pub(crate) struct Inner {
     pub(crate) memo: memo::Memo,
     /// The cars whose long periods wait to be worked out in the background ([`warm`]).
     pub(crate) warm: Mutex<warm::Warm>,
+    /// The cars whose days' pack readings are being worked out ([`query::pack_logs`]).
+    pub(crate) packs: query::pack_logs::Fills,
 }
 
 /// Where a car's zone was last looked up (latitude, longitude) and the zone found there.
@@ -349,6 +351,7 @@ impl Engine {
                 zone_at: Mutex::new(HashMap::new()),
                 memo: memo::Memo::default(),
                 warm: Mutex::default(),
+                packs: Default::default(),
                 opts,
             }),
         }
@@ -454,6 +457,8 @@ impl Engine {
         let engine = self.clone();
         handle.spawn(async move { engine.run(rx).await });
         self.send(Work::Reconcile { car: None });
+        // the days' pack readings, worked out once idle (and again now and then)
+        handle.spawn(query::pack_logs::passes(self.clone()));
         Ok(())
     }
 

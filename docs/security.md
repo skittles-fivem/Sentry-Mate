@@ -24,8 +24,8 @@
 - A log can't unpack to more than it is worth: at most 200 times its packed size (at least 1 MiB), 4 GB of candump
   text, a columns body of 64 MiB and 8 million frames. Real logs unpack to under 10 times their size, so a few
   kilobytes crafted to unpack to gigabytes are cut or refused (a refused log is a hole, never decoded again).
-- Pages that decode stored logs while they answer (signals, the battery pages, efficiency) take turns: at most 3
-  run at once for the whole server and 4 run or wait per account (`503 busy`, `429 throttled` beyond), a request
+- Pages that decode stored logs while they answer (signals; the battery pages and efficiency only for a day whose pack
+  values the server has not worked out ahead in time) take turns: at most 3 run at once for the whole server and 4 run or wait per account (`503 busy`, `429 throttled` beyond), a request
   that goes away stops its decoding, and one answer decodes at most 2 GiB of log lines. A watch account can't keep
   every core busy, or starve uploads and the engine.
 - Tokens are write-only: they can upload and ask which uploads arrived, nothing else. They are stored only as their

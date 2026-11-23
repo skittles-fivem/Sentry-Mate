@@ -136,8 +136,9 @@ fn profile_of(c: &Car) -> dbc::Profile {
 }
 
 /// The pack reading of one UTC record day (days since 1970): from the kept one while the day's logs are the same,
-/// else decoded (newest log first, until one has a full-pack value) and kept.
-fn day_pack(e: &Engine, c: &Car, d: u32) -> QResult<Option<PackReading>> {
+/// else from the logs' own readings (newest log first, until one has a full-pack value): kept from an earlier read of
+/// the log ([`super::pack_logs`]), else decoded now (unless the query may not decode); and kept.
+pub(crate) fn day_pack(e: &Engine, c: &Car, d: u32) -> QResult<Option<PackReading>> {
     let rec = records::day(e.db(), c.id, d)?;
     let mut logs: Vec<(&String, &records::LogEntry)> =
         rec.logs.iter().filter(|(_, en)| en.usable && matches!(en.outcome, Outcome::Decoded { .. })).collect();
@@ -160,9 +161,24 @@ fn day_pack(e: &Engine, c: &Car, d: u32) -> QResult<Option<PackReading>> {
         return Ok(kept.reading);
     }
     let profile = profile_of(c);
+    let profile_name = c.profile().dbc_name();
+    let of_logs = super::pack_logs::Kept::read(e, c.id, d)?;
     let mut reading = None;
-    for (n, _) in &logs {
-        if let Some(p) = decode_pack(e, profile, n)?
+    for (n, en) in &logs {
+        let p = match of_logs.get(n, en.done_ms, profile_name) {
+            Some(p) => Some(p),
+            None => {
+                if !super::pack_logs::may_decode() {
+                    return Err(super::pack_logs::not_done());
+                }
+                let p = decode_pack(e, profile, n)?;
+                if let Some(p) = &p {
+                    super::pack_logs::keep(e, c.id, d, n, en.done_ms, profile_name, en.span().1, p.clone())?;
+                }
+                p
+            }
+        };
+        if let Some(p) = p
             && p.full_pack_kwh.is_some()
         {
             reading = Some(p);
