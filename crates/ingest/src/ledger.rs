@@ -84,6 +84,8 @@ pub(crate) fn valid_key(key: &str) -> bool {
 /// One change to a key's trust state. The journal holds these; the head is what they add up to, minus the records.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "t", rename_all = "kebab-case")]
+// (most changes are a log's record: boxing it would only add an allocation to each)
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Change {
     Log {
         name: String,
@@ -745,6 +747,9 @@ mod tests {
             override_use: false,
             judged_ms: arrived_ms,
             arrived_ms,
+            sha256: None,
+            length: None,
+            sidecar_sha256: None,
         }
     }
 
