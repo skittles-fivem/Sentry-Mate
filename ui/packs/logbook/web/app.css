@@ -580,6 +580,23 @@ html.is-auth .main { min-height: 100vh; display: flex; align-items: flex-start; 
 .scroll-box:focus-visible { outline-offset: calc(-1 * var(--focus-w)); }
 .scroll-box-end { height: 1px; margin-top: -1px; }
 .ledger-box > .ledger-status { padding-top: round(0.75rem, var(--e)); }
+/* a long list in a box of ten rows (core/table.js windowLedger): the head stays, the rows scroll, only those in view
+   are drawn; every row is one height (each cell holds at most two lines, which do not wrap) */
+.vl-box { --vl-row: round(4.375rem, var(--e)); max-height: calc(round(2.375rem, var(--e)) + 10 * var(--vl-row)); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; border-bottom: 1px solid var(--rule); }
+.vl-box:focus-visible { outline: var(--focus-w) solid var(--accent); outline-offset: calc(-1 * var(--focus-w)); }
+.vl-box .ledger-table thead th { top: 0; }
+.vl-ledger tbody > tr:not(.vl-gap) { height: var(--vl-row); }
+.vl-ledger tbody > tr:not(.vl-gap) > * { white-space: nowrap; }
+.vl-ledger tbody > tr.vl-gap > td { height: var(--vl-h, 0px); padding: 0; border: 0; }
+.vl-ledger tbody > tr.vl-gap:hover > * { background: none; }
+.vl-ledger tbody tr:nth-child(5n) > * { border-bottom-color: var(--rule); }
+.vl-skel-bar { display: block; height: round(0.625rem, var(--e)); width: 70%; border-radius: round(0.125rem, var(--e)); background: var(--paper-sunk); }
+.vl-tools { flex-wrap: wrap; row-gap: round(0.5rem, var(--e)); }
+.vl-tools .vl-search { width: round(15rem, var(--e)); }
+.vl-jump { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); }
+.vl-tools .vl-count { margin: 0 0 0 auto; }
+.vl-tools [data-csv] { margin-left: 0; }
+.vl-caption { margin: 0 0 round(0.5rem, var(--e)); }
 .cell-main { display: block; font: 400 1.03125rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); text-decoration: none; }
 a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rule-strong); }
 .cell-sub { display: block; font-size: var(--small-2); color: var(--ink-3); margin-top: round(0.1875rem, var(--e)); }

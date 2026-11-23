@@ -11,6 +11,7 @@ import { formatNumber, compareText } from '../shared/i18n.js';
 import { icon } from './icons.js';
 import { csvButton } from './page.js';
 import { errorWords } from './states.js';
+import { windowList, dayJumpMs } from '../shared/vlist.js';
 
 /**
  * dataTable(ctx, {
@@ -327,4 +328,179 @@ export function cardLabels(table) {
     [...tr.children].forEach((td, i) => { if (names[i] && !td.dataset.label) td.dataset.label = names[i]; });
   }
   return table;
+}
+
+/**
+ * windowTable(ctx, {
+ *   title, icon, label, cls, cover, note,   as dataTable
+ *   path, params, limit,                    an API list paged by cursor and by offset ({ items, next, offset, total })
+ *   columns: [{ key, label, num, sort, render(row), title, cls, cover }],   sort: the API's sort name (a string)
+ *   sort: { key, dir }, firstSort,          the first order; the order "jump to a date" works in (firstSort.key)
+ *   rowHref(row), rowClass(row), empty(page),
+ *   search: { label, placeholder } | null,  a search field (the API's q), applied as typing pauses
+ *   jump: true,                             a "Jump to date" field (the API's at_ms), in the first order only
+ *   csv(params): href,                      the Download CSV link (the server's, every row the filters show)
+ *   onPage(page),                           after each answer (every one holds the totals of the whole list)
+ *   boxLabel,                               the box's accessible name
+ * }) -> { el, ready, setParams(patch), refresh(), total() }
+ *
+ * The rows sit in a box about ten rows high that scrolls under a header that stays: only the rows in view and a few
+ * more are in the page (shared/vlist.js), and they load from the API a chunk at a time as the box reaches them. The
+ * pack's CSS gives .vl-box its height and every row the same height.
+ */
+export function windowTable(ctx, opts) {
+  const { columns, rowHref = null } = opts;
+  let params = { ...(opts.params || {}) };
+  let sort = opts.sort ? { ...opts.sort } : null;
+  const base = opts.firstSort || opts.sort || null;
+  let total = null;
+
+  const count = h('span', { class: 'tbl-count', 'aria-live': 'polite' });
+  const csvSlot = h('span', { class: 'tbl-csv' });
+  const search = opts.search ? h('input', {
+    class: 'input input--sm vl-search', type: 'search', 'aria-label': opts.search.label || 'Search', placeholder: opts.search.placeholder || 'Search',
+    title: opts.search.title || null, value: params.q || '',
+  }) : null;
+  const jumpIn = opts.jump ? h('input', { class: 'input input--sm vl-jump-date', type: 'date', 'aria-label': 'Jump to date', title: 'Scroll the table to the first drive of this day' }) : null;
+  const jumpBtn = opts.jump ? h('button', { class: 'btn btn--sm', type: 'button', onclick: () => jump() }, 'Jump to date') : null;
+  const jumpBox = opts.jump ? h('span', { class: 'vl-jump' }, jumpIn, jumpBtn) : null;
+  const bar = h('div', { class: 'tbl-bar' },
+    opts.title ? h('h2', { class: 'panel-title' }, opts.icon ? icon(opts.icon) : null, opts.title) : h('span', { class: 'grow' }),
+    opts.side || null, search, jumpBox, count, csvSlot);
+  const thead = h('thead');
+  const tbody = h('tbody', { dataset: { vlBody: '' } });
+  const table = h('table', { class: 'tbl tbl--keep vl-table', 'aria-label': opts.label || opts.title || null }, thead, tbody);
+  const noteEl = opts.note ? h('p', { class: 'note tbl-note', cover: opts.noteCover || null }, opts.note) : null;
+  const box = h('div', { class: 'tbl-scroll tbl-box vl-box', tabindex: '0', role: 'region', 'aria-label': opts.boxLabel || opts.label || opts.title || null }, table);
+  const emptyBox = h('div', { class: 'vl-empty', hidden: true });
+  const el = h('section', { class: ['panel', 'tbl-panel', 'vl-panel', opts.cls], 'aria-label': opts.label || opts.title || null }, bar, noteEl, box, emptyBox);
+  if (opts.cover) cover(el, opts.cover);
+
+  const sortParams = () => {
+    const col = sort && columns.find((c) => c.key === sort.key);
+    return col && typeof col.sort === 'string' ? { sort: col.sort, dir: sort.dir } : {};
+  };
+  const query = () => ({ ...params, ...sortParams() });
+
+  function head() {
+    replace(thead, h('tr', null, columns.map((c) => {
+      const sorted = sort && sort.key === c.key;
+      const th = h('th', {
+        scope: 'col', class: [c.num && 'is-num', c.cls], title: c.title || null,
+        'aria-sort': sorted ? (sort.dir === 'asc' ? 'ascending' : 'descending') : null,
+      }, c.sort ? h('button', { class: 'tbl-sort', type: 'button', onclick: () => setSort(c.key) }, c.label, icon('chev-d')) : c.label);
+      if (c.cover) cover(th, c.cover);
+      return th;
+    })));
+  }
+
+  function rowEl(r, i) {
+    const href = rowHref ? rowHref(r) : null;
+    const tr = h('tr', { class: [href && 'is-link', opts.rowClass?.(r)], 'aria-rowindex': String(i + 2), dataset: { vlRow: String(i) } },
+      columns.map((c) => h('td', { class: [c.num && 'is-num', c.cls], dataset: { label: labelText(c) || null } }, c.render ? c.render(r) : r[c.key] ?? '—')));
+    if (href) {
+      tr.addEventListener('click', (e) => {
+        if (e.defaultPrevented || e.target.closest('a, button, input, select, label')) return;
+        if (window.getSelection && String(window.getSelection()).length) return;
+        state.navigate(href);
+      });
+    }
+    return tr;
+  }
+  const skelRow = (i) => h('tr', { class: 'tbl-skel', 'aria-rowindex': String(i + 2) }, columns.map(() => h('td', null, h('span', { class: 'skel' }))));
+  const gapRow = () => h('tr', null, h('td', { colspan: String(columns.length) }));
+
+  const list = windowList({
+    box, body: tbody, head: thead, limit: opts.limit || 50, overscan: 6, rowHeight: 55,
+    row: rowEl, placeholder: skelRow, spacer: gapRow,
+    load: (p) => ctx.api.get(opts.path, { ...query(), ...pick(p) }, { signal: p.signal }),
+    onPage: (pg) => { if (pg.total !== total) { total = pg.total; paintCount(); } opts.onPage?.(pg); },
+    onError: (e) => opts.onError?.(e),
+  });
+  ctx.onCleanup?.(() => list.destroy());
+
+  function paintCount() {
+    const n = total ?? 0;
+    count.textContent = `${formatNumber(n)} ${n === 1 ? 'row' : 'rows'}`;
+    table.setAttribute('aria-rowcount', String(n + 1));
+    box.hidden = !n;
+    emptyBox.hidden = !!n;
+    if (!n) replace(emptyBox, opts.empty ? opts.empty({ total: n }) : h('div', { class: 'empty' }, h('h3', null, 'Nothing to show')));
+    if (jumpBox) {
+      const can = !!n && sort && base && sort.key === base.key;
+      jumpIn.disabled = !can; jumpBtn.disabled = !can;
+      jumpBox.title = can ? '' : 'Jump to date works in the order of the drives (sort by number or date).';
+    }
+  }
+  function paintCsv() {
+    if (opts.csv) replace(csvSlot, csvButton({ href: opts.csv(query()), filename: csvFilename(ctx.car?.name || 'sentry-mate', opts.csvName || opts.title || 'table') }));
+  }
+
+  async function restart() {
+    total = null;
+    paintCsv();
+    const pg = await list.start();
+    if (pg) { total = pg.total; paintCount(); opts.onPage?.(pg); }
+    return pg;
+  }
+
+  function setSort(key) {
+    const col = columns.find((c) => c.key === key);
+    const dir = sort && sort.key === key ? (sort.dir === 'asc' ? 'desc' : 'asc') : (col.firstDir || (col.num ? 'desc' : 'asc'));
+    sort = { key, dir };
+    head();
+    restart().catch((e) => opts.onError?.(e));
+  }
+
+  async function jump() {
+    const key = jumpIn.value;
+    if (!key) { jumpIn.focus(); return; }
+    try {
+      const pg = await list.jump(dayJumpMs(key, ctx.tz, sort?.dir === 'desc'));
+      if (pg) { total = pg.total; paintCount(); box.focus({ preventScroll: true }); }
+    } catch (e) { opts.onError?.(e); }
+  }
+  jumpIn?.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); jump(); } });
+
+  if (search) {
+    let t = 0;
+    search.addEventListener('input', () => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        const v = search.value.trim();
+        if ((params.q || '') === v) return;
+        if (v) params.q = v; else delete params.q;
+        opts.onSearch?.(v);
+        restart().catch((e) => opts.onError?.(e));
+      }, 300);
+    });
+    ctx.onCleanup?.(() => clearTimeout(t));
+  }
+
+  head();
+  const ready = restart();
+
+  return {
+    el,
+    ready,
+    /** Change some filters (null removes one) and load again from the top. */
+    setParams(patch) {
+      for (const [k, v] of Object.entries(patch)) { if (v == null || v === '') delete params[k]; else params[k] = v; }
+      return restart();
+    },
+    /** The rows in view again (a live change), with nothing moving until they are in. */
+    refresh() { paintCsv(); return list.refresh().then((pg) => { if (pg) { total = pg.total; paintCount(); } return pg; }); },
+    total: () => total ?? 0,
+    params: () => query(),
+  };
+}
+
+// the paging parameters vlist asks with (offset, after or at_ms)
+function pick(p) {
+  const out = {};
+  if (p.after) out.after = p.after;
+  else if (p.at_ms != null) out.at_ms = p.at_ms;
+  else out.offset = p.offset || 0;
+  out.limit = p.limit;
+  return out;
 }
