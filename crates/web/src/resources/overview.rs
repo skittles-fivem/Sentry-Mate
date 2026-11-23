@@ -378,7 +378,8 @@ fn tesla_rows(app: &AppState) -> Vec<Row> {
             })
             .collect();
         r.car = if matched.len() == 1 { matched.first().copied() } else { None };
-        r.last_ok_ms = a.last_ok_ms.or(st.and_then(|s| s.last_ok_ms));
+        // the account's own copy is saved at most hourly: the poller's live status is newer while it runs
+        r.last_ok_ms = a.last_ok_ms.max(st.and_then(|s| s.last_ok_ms));
         r.pace = pace;
         r.cap = Some(cadence.daily_cap);
         if let Some(c) = cars.iter().filter(|c| c.next_poll_ms.is_some()).min_by_key(|c| c.next_poll_ms) {
@@ -443,7 +444,8 @@ fn teslafi_rows(app: &AppState) -> Vec<Row> {
                 _ => None,
             }
         });
-        r.last_ok_ms = a.last_ok_ms.or(st.and_then(|s| s.last_ok_ms));
+        // the account's own copy is saved at most hourly: the poller's live status is newer while it runs
+        r.last_ok_ms = a.last_ok_ms.max(st.and_then(|s| s.last_ok_ms));
         r.pace = pace;
         r.cap = Some(cadence.daily_cap);
         r.next_ms = st.and_then(|s| s.next_request_ms);
