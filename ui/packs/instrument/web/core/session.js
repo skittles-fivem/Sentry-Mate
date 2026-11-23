@@ -6,6 +6,7 @@
 // server, another tab signed out) sends the person to sign-in, keeping the page they were on.
 
 import * as api from '../shared/api.js';
+import { clearServiceWorker } from '../shared/offline.js';
 import { loadSession, clearSession, getMe } from './prefs.js';
 
 let known = null;        // null until checked: { needsSetup, signedIn }
@@ -88,5 +89,6 @@ export function signedOut() {
 /** Sign out on the server, then here. */
 export async function signOut() {
   try { await api.del('session'); } catch (e) { if (e.status !== 401) throw e; }
+  await clearServiceWorker();
   signedOut();
 }

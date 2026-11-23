@@ -7,6 +7,7 @@ import { initFrame } from './frame.js';
 import { watchTables } from './snap.js';
 import { startRouter } from './router.js';
 import * as session from './session.js';
+import { registerServiceWorker } from '../shared/offline.js';
 import { flash } from './flash.js';
 import { startSky } from './sky.js';
 
@@ -44,3 +45,5 @@ if (document.fonts?.load) {
 }
 
 startRouter();
+// after the first draw: the next load draws from what the service worker keeps
+registerServiceWorker();

@@ -66,6 +66,7 @@ pub mod recovery;
 pub mod resources;
 pub mod restore;
 pub mod server;
+pub mod sw;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 pub mod units;
@@ -406,8 +407,8 @@ impl AppState {
     }
 }
 
-/// The whole web side: the API under `/api/v1` (behind the guard), `/health`, `/original`, and the UI pack for
-/// every other path. Serve it with [`serve`].
+/// The whole web side: the API under `/api/v1` (behind the guard), `/health`, `/original`, `/sw.js`, and the UI
+/// pack for every other path. Serve it with [`serve`].
 pub fn router(app: AppState) -> Router {
     router_with(app, Router::new())
 }
@@ -431,6 +432,7 @@ pub fn router_with(app: AppState, extra: Router<AppState>) -> Router {
         .route("/health", get(|| async { axum::http::StatusCode::OK }))
         .route("/original", get(packs::original_on))
         .route("/original/off", get(packs::original_off))
+        .route("/sw.js", get(sw::script))
         .fallback(packs::fallback)
         .method_not_allowed_fallback(policy::method_not_allowed)
         .layer(axum::middleware::from_fn_with_state(app.clone(), policy::headers))
