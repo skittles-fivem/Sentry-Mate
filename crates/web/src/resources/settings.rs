@@ -228,6 +228,19 @@ impl Default for ImportGapFill {
     }
 }
 
+/// A new server version that decodes the stored logs differently rebuilds the cars made with the old one by itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FullRebuild {
+    pub auto: bool,
+}
+
+impl Default for FullRebuild {
+    fn default() -> FullRebuild {
+        FullRebuild { auto: true }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Outbound {
@@ -253,6 +266,7 @@ pub struct ServerSettings {
     /// first-run setup from the admin's browser or here: then new cars start in the container's `TZ`, else UTC.
     pub default_time_zone: Option<String>,
     pub import_gap_fill: ImportGapFill,
+    pub full_rebuild: FullRebuild,
     pub version: u64,
 }
 
@@ -270,6 +284,7 @@ impl Default for ServerSettings {
             host_names: Vec::new(),
             default_time_zone: None,
             import_gap_fill: ImportGapFill::default(),
+            full_rebuild: FullRebuild::default(),
             version: 1,
         }
     }
@@ -387,6 +402,7 @@ pub fn apply(app: &AppState, s: &ServerSettings) {
     app.release.follow(s.release_check.enabled, s.outbound.proxy.as_deref().and_then(tesla::Proxy::parse));
     if let Ok(e) = app.service::<Engine>() {
         e.set_import_gap_fill(s.import_gap_fill.enabled);
+        e.set_full_rebuild_auto(s.full_rebuild.auto);
     }
 }
 
@@ -492,6 +508,7 @@ async fn change(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiRe
         ("host names", before.host_names == after.host_names),
         ("default time zone", before.default_time_zone == after.default_time_zone),
         ("import gap filling", before.import_gap_fill == after.import_gap_fill),
+        ("automatic full rebuilds", before.full_rebuild == after.full_rebuild),
     ] {
         if !same {
             changed.push(k);
@@ -661,6 +678,7 @@ fn patched(app: &AppState, v: &Viewer, cur: &ServerSettings, body: &JsonBody) ->
         "host_names",
         "default_time_zone",
         "import_gap_fill",
+        "full_rebuild",
     ];
     for k in body.0.keys() {
         if !known.contains(&k.as_str()) {
@@ -791,6 +809,11 @@ fn patched(app: &AppState, v: &Viewer, cur: &ServerSettings, body: &JsonBody) ->
         && let Some(b) = flag(m, "import_gap_fill", "enabled", &mut bad)
     {
         new.import_gap_fill.enabled = b;
+    }
+    if let Some(m) = part(body, "full_rebuild", &["auto"], &mut bad)
+        && let Some(b) = flag(m, "full_rebuild", "auto", &mut bad)
+    {
+        new.full_rebuild.auto = b;
     }
     if let Some(m) = part(body, "release_check", &["enabled"], &mut bad)
         && let Some(b) = flag(m, "release_check", "enabled", &mut bad)

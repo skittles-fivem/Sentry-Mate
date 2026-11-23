@@ -70,6 +70,7 @@ async fn list(State(app): State<AppState>, v: crate::Viewer) -> ApiResult<axum::
                 out.extend(super::teslafi::notices(app));
                 out.extend(super::teslamate_local::notices(app));
                 out.extend(super::release::notices(app));
+                out.extend(super::full_rebuild::notices(app));
             }
             Ok(out)
         })

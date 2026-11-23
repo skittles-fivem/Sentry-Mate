@@ -617,3 +617,132 @@ async fn a_teslafi_import_overlaps_smo_like_a_teslamate_one() {
     let label = fleet["items"][0]["source_label"].as_str().unwrap().to_string();
     assert!(label.contains("TeslaMate and TeslaFi"), "{label}");
 }
+
+/// Waits for the full rebuild to end (watching the engine: the API would throttle a quick poll), then reads it.
+async fn full_state(e: &Engine, c: &mut Client, path: &str) -> Value {
+    for _ in 0..6000 {
+        if !e.full_rebuild_status().unwrap().is_some_and(|r| r.running()) {
+            return ok(c, path).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the full rebuild did not end");
+}
+
+fn full_entries(app: &web::AppState) -> Vec<String> {
+    let page = app.accounts.audit().list(500, None).unwrap();
+    page.entries.into_iter().filter(|r| r.action == "car-full-rebuild").map(|r| r.details).collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_full_rebuild_asks_the_password_again_runs_one_at_a_time_and_is_audited() {
+    let k = seeded().await;
+    let car = k.car.clone();
+    let path = format!("/api/v1/cars/{car}/full-rebuild");
+    let mut admin = k.s.admin().await;
+    let mut watch = k.s.watch(&mut admin, &[k.id]).await;
+    assert_eq!(watch.get(&path).await.status, 403, "admin only");
+    assert_eq!(watch.get("/api/v1/system/full-rebuild").await.status, 403);
+    let idle = ok(&mut admin, &path).await;
+    assert_eq!(idle["state"], "idle");
+    has(
+        &idle,
+        &[
+            "phase",
+            "logs",
+            "days",
+            "bytes",
+            "rate_bytes_per_s",
+            "eta_ms",
+            "last_progress_ms",
+            "stalled",
+            "errors",
+            "version",
+            "this_car",
+            "car_stale",
+        ],
+    );
+    assert_eq!(idle["version"]["auto"], true);
+
+    // the password again, or nothing starts
+    let r = admin.post(&path, json!({})).await;
+    assert_eq!((r.status, r.code().as_deref()), (403, Some("password_needed")));
+    let r = admin.post(&path, json!({ "confirm_password": "not it" })).await;
+    assert_eq!((r.status, r.code().as_deref()), (403, Some("wrong_password")));
+    assert_eq!(ok(&mut admin, &path).await["state"], "idle");
+
+    // one held under way (its worker stopped as a crash would): a second, and a rebuild, wait for it
+    k.engine.full_rebuild_crash_at(Some(engine::full::Phase::Switching));
+    let r = admin.post(&path, json!({ "confirm_password": web::testkit::ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 202, "{}", r.text());
+    assert_eq!(r.json()["this_car"], true);
+    k.engine.idle().await;
+    let held = ok(&mut admin, "/api/v1/system/full-rebuild").await;
+    assert_eq!((held["state"].as_str(), held["phase"].as_str()), (Some("running"), Some("switching")), "{held}");
+    assert!(held["logs"]["done"].as_u64().unwrap() > 0 && held["logs"]["done"] == held["logs"]["total"], "{held}");
+    let r =
+        admin.post("/api/v1/system/full-rebuild", json!({ "confirm_password": web::testkit::ADMIN_PASSWORD })).await;
+    assert_eq!((r.status, r.code().as_deref()), (409, Some("full_rebuild_running")));
+    let r = admin.post(&format!("/api/v1/cars/{car}/rebuild"), json!({})).await;
+    assert_eq!((r.status, r.code().as_deref()), (409, Some("full_rebuild_running")));
+    let notices = ok(&mut admin, "/api/v1/notices").await;
+    assert!(notices["items"].as_array().unwrap().iter().any(|n| n["code"] == "full_rebuild_running"), "{notices}");
+    let r = admin.delete("/api/v1/system/full-rebuild", json!({})).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["state"], "cancelled");
+    let r = admin.delete("/api/v1/system/full-rebuild", json!({})).await;
+    assert_eq!((r.status, r.code().as_deref()), (409, Some("full_rebuild_not_running")));
+    web::resources::full_rebuild::watch_once(&k.s.app);
+
+    // every car, to the end
+    let r =
+        admin.post("/api/v1/system/full-rebuild", json!({ "confirm_password": web::testkit::ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 202, "{}", r.text());
+    let done = full_state(&k.engine, &mut admin, "/api/v1/system/full-rebuild").await;
+    assert_eq!(done["state"], "done", "{done}");
+    assert_eq!((done["scope"].as_str(), done["cars_done"].as_u64()), (Some("all"), Some(1)));
+    assert!(done["finished_ms"].is_u64() && done["phase"].is_null());
+    k.engine.idle().await;
+    web::resources::full_rebuild::watch_once(&k.s.app);
+    web::resources::full_rebuild::watch_once(&k.s.app);
+    let entries = full_entries(&k.s.app);
+    assert_eq!(entries.len(), 4, "{entries:#?}");
+    assert!(entries.iter().any(|e| e.contains("Started a full rebuild of every car")), "{entries:#?}");
+    assert!(entries.iter().any(|e| e.contains("cancelled")), "{entries:#?}");
+    assert!(entries.iter().any(|e| e.contains("Full rebuild of every car done")), "{entries:#?}");
+    assert!(entries.iter().any(|e| e.starts_with(&format!("[car:{car}] Started a full rebuild"))), "{entries:#?}");
+    // the setting
+    let s = ok(&mut admin, "/api/v1/settings").await;
+    assert_eq!(s["full_rebuild"]["auto"], true);
+    let r =
+        admin.patch("/api/v1/settings", json!({ "version": s["version"], "full_rebuild": { "auto": false } })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert!(!k.engine.full_rebuild_auto());
+    assert_eq!(ok(&mut admin, &path).await["version"]["auto"], false);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_decoding_rebuilds_the_cars_made_with_the_old_one_by_itself_or_offers_it() {
+    let k = seeded().await;
+    let mut admin = k.s.admin().await;
+    k.engine.set_car_version(k.id, "decode-0.rules-0.dbc-00000000").unwrap();
+    // off: offered by a notice
+    k.engine.set_full_rebuild_auto(false);
+    web::resources::full_rebuild::watch_once(&k.s.app);
+    let v = ok(&mut admin, &format!("/api/v1/cars/{}/full-rebuild", k.car)).await;
+    assert_eq!((v["state"].as_str(), v["car_stale"].as_bool()), (Some("idle"), Some(true)), "{v}");
+    assert_eq!(v["version"]["stale_cars"], json!([k.car]));
+    let notices = ok(&mut admin, "/api/v1/notices").await;
+    assert!(notices["items"].as_array().unwrap().iter().any(|n| n["code"] == "full_rebuild_offered"), "{notices}");
+    // on: run at once, once
+    k.engine.set_full_rebuild_auto(true);
+    web::resources::full_rebuild::watch_once(&k.s.app);
+    let done = full_state(&k.engine, &mut admin, "/api/v1/system/full-rebuild").await;
+    assert_eq!((done["state"].as_str(), done["reason"].as_str()), (Some("done"), Some("version")), "{done}");
+    assert_eq!(done["version"]["stale_cars"], json!([]));
+    assert_eq!(done["by"], Value::Null);
+    k.engine.idle().await;
+    web::resources::full_rebuild::watch_once(&k.s.app);
+    let entries = full_entries(&k.s.app);
+    assert_eq!(entries.len(), 2, "started and done, by the server: {entries:#?}");
+}
