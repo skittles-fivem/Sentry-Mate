@@ -96,6 +96,11 @@ impl Viewer {
     /// by the guard.
     pub async fn audit(&self, app: &AppState, action: &str, target: Option<&str>, summary: &str) -> ApiResult<()> {
         self.0.audited.store(true, Ordering::Relaxed);
+        // every code is in the table, with an item when the table says it has one (tests/audit_log.rs walks them)
+        debug_assert!(
+            crate::audit_codes::find(action).is_some_and(|c| c.item.is_none() || target.is_some()),
+            "audit code {action} with target {target:?}: not as crate::audit_codes says"
+        );
         let (who, ip) = (self.name().to_string(), self.client().address);
         let (action, details) = (action.to_string(), audit_details(target, summary));
         app.blocking(move |app| Ok(app.accounts.audit().record(Some(&who), Some(ip), &action, &details)?)).await
@@ -105,7 +110,8 @@ impl Viewer {
         self.0.audited.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn mark_audited(&self) {
+    /// Says the request needs no audit entry (it changed nothing), so the guard writes none.
+    pub fn mark_audited(&self) {
         self.0.audited.store(true, Ordering::Relaxed);
     }
 
@@ -133,6 +139,15 @@ pub fn target(kind: &str, car: Option<CarId>, id: &str) -> String {
     }
 }
 
+/// A target that names its own item and the car it belongs to (`teslamate:local car=c1`: TeslaMate's car matched to
+/// c1): the item stays the target, the car makes the audit row's `car`.
+pub fn target_of_car(target: &str, car: Option<CarId>) -> String {
+    match car {
+        Some(c) => format!("{target} car={}", ids::car(c)),
+        None => target.to_string(),
+    }
+}
+
 /// How a target and a summary are kept in the audit log's one text field: `[target] summary`.
 pub(crate) fn audit_details(target: Option<&str>, summary: &str) -> String {
     match target {
@@ -146,7 +161,12 @@ pub(crate) fn split_details(details: &str) -> (Option<String>, String, Option<St
     if let Some(rest) = details.strip_prefix('[')
         && let Some((t, s)) = rest.split_once("] ")
     {
-        // `<kind>:<car>[:<id>]`: the second part, when it is a car id
+        // `<target> car=<car>` (an item of its own that belongs to a car: a car match), else `<kind>:<car>[:<id>]`:
+        // the second part, when it is a car id
+        if let Some((t, car)) = t.split_once(" car=") {
+            let car = ids::parse_car(car).map(ids::car);
+            return (Some(t.to_string()), s.to_string(), car);
+        }
         let car = t.split(':').nth(1).filter(|c| ids::parse_car(c).is_some()).map(str::to_string);
         return (Some(t.to_string()), s.to_string(), car);
     }

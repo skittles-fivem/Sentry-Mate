@@ -152,11 +152,47 @@ fn done<T>(r: q::fleet::Patched<T>) -> ApiResult<T> {
     }
 }
 
-/// What a change named, for the audit log (`name, time_zone`).
-fn changed(body: &serde_json::Map<String, Value>) -> String {
+/// A car field in words, for the audit log.
+fn field_words(key: &str) -> String {
+    match key {
+        "config" => "configuration".into(),
+        "time_zone" => "time zone".into(),
+        "battery_chemistry" => "battery chemistry".into(),
+        "free_supercharging" => "free Supercharging".into(),
+        "capacity_new_kwh" => "battery capacity when new".into(),
+        "full_range_new_km" => "full range when new".into(),
+        "warranty_threshold_pct" => "battery warranty threshold".into(),
+        "efficiency_wh_per_km_override" => "efficiency".into(),
+        "software_version_typed" => "software version".into(),
+        "import_gap_fill" => "import gap filling".into(),
+        "pack_replaced_date" => "battery replacement date".into(),
+        "pack_new_kwh" => "new battery's capacity".into(),
+        k => k.replace('_', " "),
+    }
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn and_list(parts: &[String]) -> String {
+    match parts {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// What a change did, for the audit log: "BingBong's time zone to America/Chicago", "BingBong's name to Blue".
+fn changed(car_name: &str, body: &serde_json::Map<String, Value>) -> String {
     let mut keys: Vec<&str> = body.keys().map(String::as_str).filter(|k| *k != "version").collect();
     keys.sort_unstable();
-    if keys.is_empty() { "nothing".into() } else { keys.join(", ") }
+    let parts: Vec<String> = keys
+        .iter()
+        .map(|k| match (*k, body.get(*k)) {
+            ("name" | "time_zone", Some(Value::String(v))) => format!("{} to {v}", field_words(k)),
+            ("time_zone", Some(Value::Null)) => "time zone to automatic".into(),
+            _ => field_words(k),
+        })
+        .collect();
+    if parts.is_empty() { format!("nothing of {car_name}") } else { format!("{car_name}'s {}", and_list(&parts)) }
 }
 
 /// `PATCH /cars/{car}` (admin): `{ version, name?, time_zone?, config? }`.
@@ -166,16 +202,16 @@ async fn patch_car(
     CarParam(car): CarParam,
     JsonBody(body): JsonBody,
 ) -> ApiResult<axum::Json<Value>> {
-    let what = changed(&body);
-    let r = app
+    let (r, what) = app
         .blocking(move |app| {
+            let what = changed(&app.car_name(car), &body);
             let e = app.service::<Engine>()?;
-            q::fleet::patch_car(&e, car, &body).map_err(failed)
+            Ok((q::fleet::patch_car(&e, car, &body).map_err(failed)?, what))
         })
         .await?;
     let d = done(r)?;
     let target = crate::ctx::target("car", Some(car), "");
-    v.audit(&app, "car-changed", Some(&target), &format!("Changed {what} of {}.", d.item.name)).await?;
+    v.audit(&app, "car-changed", Some(&target), &format!("Changed {what}.")).await?;
     Ok(axum::Json(serde_json::to_value(d).map_err(ApiError::server)?))
 }
 
@@ -223,15 +259,15 @@ async fn patch_settings(
     CarParam(car): CarParam,
     JsonBody(body): JsonBody,
 ) -> ApiResult<axum::Json<Value>> {
-    let what = changed(&body);
-    let r = app
+    let (r, what) = app
         .blocking(move |app| {
+            let what = changed(&app.car_name(car), &body);
             let e = app.service::<Engine>()?;
-            q::fleet::patch_settings(&e, car, &body).map_err(failed)
+            Ok((q::fleet::patch_settings(&e, car, &body).map_err(failed)?, what))
         })
         .await?;
     let s = with_links(&app, car, done(r)?);
     let target = crate::ctx::target("car", Some(car), "");
-    v.audit(&app, "car-settings-changed", Some(&target), &format!("Changed the car's {what}.")).await?;
+    v.audit(&app, "car-settings-changed", Some(&target), &format!("Changed {what}.")).await?;
     Ok(axum::Json(serde_json::to_value(s).map_err(ApiError::server)?))
 }

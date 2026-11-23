@@ -176,7 +176,13 @@ async fn audit_key(
     was: Option<CarId>,
     now: Option<CarId>,
 ) -> ApiResult<()> {
-    let name = |c: Option<CarId>| c.map_or_else(|| "no car".to_string(), web::ids::car);
+    let (was_name, now_name) = (car_words(app, was).await, car_words(app, now).await);
+    let name = |c: Option<CarId>| if c == was { was_name.clone() } else { now_name.clone() };
+    if change.car.is_none() && change.preferred.is_none() {
+        // nothing asked to change
+        v.mark_audited();
+        return Ok(());
+    }
     if change.car.is_some() && was != now {
         let summary = format!("Moved the CAN Bridge key {key} from {} to {}.", name(was), name(now));
         if let Some(old) = was {
@@ -201,9 +207,20 @@ async fn audit_key(
     Ok(())
 }
 
+/// A car's name for an audit sentence, or "no car".
+async fn car_words(app: &AppState, car: Option<CarId>) -> String {
+    match car {
+        Some(c) => app.car_name_now(c).await,
+        None => "no car".to_string(),
+    }
+}
+
 /// A token's audit entry: which token, and its car (or a new car).
 async fn audit_token(app: &AppState, v: &Viewer, action: &str, car: Option<CarId>, id: &str) -> ApiResult<()> {
-    let whose = car.map_or_else(|| "a new car".to_string(), web::ids::car);
+    let whose = match car {
+        Some(c) => app.car_name_now(c).await,
+        None => "a new car".to_string(),
+    };
     let summary = match action {
         "token-created" => format!("Made the upload token {id} for {whose}."),
         _ => format!("Revoked the upload token {id} of {whose}."),

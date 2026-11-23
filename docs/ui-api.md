@@ -348,69 +348,72 @@ America/Chicago", "Changed: text size, units", "Checked GitHub for a newer build
   `release-checked`, "Checked GitHub for a newer build"); any other stays `change` with a summary in words ("Changed
   ..."). An old `settings:teslamate_local` target reads `teslamate:local`.
 - **The codes** (`ui/shared/audit-codes.json` holds the same list, written from the server's table; a web test checks
-  the two agree). "The server:" marks entries the server writes in its own name (`account` null). The moves and
-  restores into a fresh server also write `setup-move-started`, `setup-move-resumed`, `setup-move-cancelled` and
-  `setup-move-finished-forced` (group `imports`, no item).
+  the two agree). "The server:" marks entries the server writes in its own name (`account` null).
 
 | Code | Group | Item | What it records |
 |---|---|---|---|
-| `confirm-failed` | `sign-ins` | none | A wrong password or two-step code given again to confirm a change. |
-| `session-revoked` | `sign-ins` | `session` | Ended one session (Settings: Server and access). |
-| `sessions-revoked` | `sign-ins` | `account` | Ended every other session of the account. |
-| `setup` | `sign-ins` | `account` | The first admin account was made with the set-up code. |
-| `setup-code-made` | `sign-ins` | none | The server made a set-up code for the first admin (a fresh server). |
-| `setup-code-wrong` | `sign-ins` | none | Someone gave a wrong set-up code. |
-| `sign-in` | `sign-ins` | `session` | Signed in (a new session). |
-| `sign-in-failed` | `sign-ins` | none | A wrong name or password (`account` set when the name is an account's). |
-| `sign-in-refused` | `sign-ins` | none | The right password from outside the home network for an account the two-step rule keeps at home. |
-| `sign-out` | `sign-ins` | `session` | Signed out (that session ended). |
-| `two-step-failed` | `sign-ins` | none | A wrong two-step code at sign-in. |
 | `account-changed` | `accounts` | `account` | Any other change of an account (its name, whether it needs two-step sign-in). |
 | `account-created` | `accounts` | `account` | Made an account. |
 | `account-removed` | `accounts` | `account` | Removed an account. |
-| `cars-changed` | `accounts` | `account` | Changed which cars an account sees. |
-| `password-changed` | `accounts` | `account` | Changed an account's password (one's own or by an admin). |
-| `recovery-codes-new` | `accounts` | `account` | Made new two-step recovery codes for an account. |
-| `role-changed` | `accounts` | `account` | Made an account admin or watch. |
-| `two-step-off` | `accounts` | `account` | Turned two-step sign-in off for an account. |
-| `two-step-on` | `accounts` | `account` | Turned two-step sign-in on for an account. |
-| `two-step-policy` | `accounts` | `settings` | Changed where the server needs two-step sign-in. |
-| `certificate-made` | `settings` | `server` | Made a new HTTPS certificate. |
-| `change` | `settings` | none | Old stored entries only: a change no code covers, worded from its route ("Changed ..."). |
-| `preferences-changed` | `settings` | `account` | Changed one's own preferences (the fields in words: "Changed: text size, units"). |
-| `recovery-key-new` | `settings` | `server` | Made a new recovery key (the old one stops working). |
-| `recovery-key-saved` | `settings` | `server` | Said the recovery key is saved (its file is removed). |
-| `recovery-key-shown` | `settings` | `server` | Showed the recovery key from its file again. |
-| `release-checked` | `settings` | `server` | Checked GitHub for a newer build. |
-| `settings-changed` | `settings` | `settings` | Changed the server settings. |
-| `ui-pack-chosen` | `settings` | `ui-pack` | Chose a design (UI pack), for oneself or for everyone. |
-| `ui-pack-installed` | `settings` | `ui-pack` | Uploaded a design. |
-| `ui-pack-removed` | `settings` | `ui-pack` | Removed an uploaded design. |
 | `car-changed` | `cars` | `car` | Changed a car (its name, time zone, sold date, configuration). |
 | `car-overlap` | `cars` | `car` | Chose which history a car shows where live and imported history overlap. |
 | `car-rebuild` | `cars` | `car` | Rebuilt a car's drives, charges, states and visits from the stored logs. |
 | `car-settings-changed` | `cars` | `car` | Changed a car's settings (battery, warranty, free Supercharging). |
+| `cars-changed` | `accounts` | `account` | Changed which cars an account sees. |
+| `certificate-made` | `settings` | `server` | Made a new HTTPS certificate. |
+| `change` | `settings` | none | Old stored entries only: a change no code covers, worded from its route ("Changed ..."). |
 | `charge-cost-entered` | `cars` | `charge` | Entered the cost of a charge. |
 | `charge-cost-removed` | `cars` | `charge` | Removed the entered cost of a charge (the place price applies again). |
+| `confirm-failed` | `sign-ins` | `account` | A wrong password or two-step code given again to confirm a change. |
 | `drive-purpose-removed` | `cars` | `drive` | Removed the purpose of a drive. |
 | `drive-purpose-set` | `cars` | `drive` | Set the purpose of a drive. |
+| `export-downloaded` | `imports` | `export` | Downloaded the export file. |
+| `export-made` | `imports` | `export` | Made an export file of the whole server. |
+| `export-removed` | `imports` | `export` | Removed the export file. |
+| `import-cars` | `imports` | `import` | Matched an import's cars. |
+| `import-created` | `imports` | `import` | Started uploading an import file. |
+| `import-discarded` | `imports` | `import` | Discarded an import (history already imported stays). |
+| `import-started` | `imports` | `import` | Started importing. |
+| `import-uploaded` | `imports` | `import` | Uploaded every file of an import; it is being checked. |
 | `key-assigned` | `cars` | `key` | A CAN Bridge key went to a car (or was kept with it). |
 | `key-preferred` | `cars` | `key` | Made a CAN Bridge key a car's preferred one (or no longer). |
 | `key-unassigned` | `cars` | `key` | A CAN Bridge key left a car. |
+| `move-cancelled` | `imports` | `move` | Cancelled the move code, or ended a move under way. |
+| `move-code-made` | `imports` | `move` | Made a move code (moving to another server). |
+| `move-undone` | `imports` | `move` | Undid a finished move: this server takes uploads again. |
+| `mqtt-changed` | `integrations` | `settings` | Changed the MQTT publishing settings. |
+| `mqtt-tested` | `integrations` | `settings` | Tested the MQTT broker. |
+| `password-changed` | `accounts` | `account` | Changed an account's password (one's own or by an admin). |
 | `place-changed` | `cars` | `place` | Changed a place. |
 | `place-created` | `cars` | `place` | Added a place. |
 | `place-deleted` | `cars` | `place` | Removed a place. |
 | `place-repriced` | `cars` | `place` | Repriced past charges at a place. |
+| `preferences-changed` | `settings` | `account` | Changed one's own preferences (the fields in words: "Changed: text size, units"). |
 | `purpose-rule-created` | `cars` | `car` | Added a purpose rule to a car. |
 | `purpose-rule-removed` | `cars` | `car` | Removed a purpose rule of a car. |
-| `token-created` | `cars` | `token` | Made an upload token. |
-| `token-revoked` | `cars` | `token` | Revoked an upload token. |
-| `trip-changed` | `cars` | `trip` | Changed a saved trip. |
-| `trip-removed` | `cars` | `trip` | Removed a saved trip. |
-| `trip-saved` | `cars` | `trip` | Saved a trip. |
-| `update-version` | `cars` | `update` | Typed (or forgot) the software version of an update. |
-| `mqtt-changed` | `integrations` | `settings` | Changed the MQTT publishing settings. |
-| `mqtt-tested` | `integrations` | `settings` | Tested the MQTT broker. |
+| `recovery-codes-new` | `accounts` | `account` | Made new two-step recovery codes for an account. |
+| `recovery-key-new` | `settings` | `server` | Made a new recovery key (the old one stops working). |
+| `recovery-key-saved` | `settings` | `server` | Said the recovery key is saved (its file is removed). |
+| `recovery-key-shown` | `settings` | `server` | Showed the recovery key from its file again. |
+| `release-checked` | `settings` | `server` | Checked GitHub for a newer build. |
+| `role-changed` | `accounts` | `account` | Made an account admin or watch. |
+| `session-revoked` | `sign-ins` | `session` | Ended one session (Settings: Server and access). |
+| `sessions-revoked` | `sign-ins` | `account` | Ended every other session of the account. |
+| `settings-changed` | `settings` | `settings` | Changed the server settings. |
+| `setup` | `sign-ins` | `account` | The first admin account was made with the set-up code. |
+| `setup-code-made` | `sign-ins` | none | The server made a set-up code for the first admin (a fresh server). |
+| `setup-code-wrong` | `sign-ins` | none | Someone gave a wrong set-up code. |
+| `setup-move-cancelled` | `imports` | `move` | Gave up moving the data here. |
+| `setup-move-finished-forced` | `imports` | `move` | Finished the move with the recovery key. |
+| `setup-move-resumed` | `imports` | `move` | Carried on moving the data here. |
+| `setup-move-started` | `imports` | `move` | Started moving the data here. |
+| `setup-restore-cancelled` | `imports` | `move` | A fresh server gave up restoring an export file. |
+| `setup-restore-started` | `imports` | `move` | A fresh server started restoring an export file. |
+| `sign-in` | `sign-ins` | `session` | Signed in (a new session). |
+| `sign-in-failed` | `sign-ins` | none | A wrong name or password (`account` set when the name is an account's). |
+| `sign-in-refused` | `sign-ins` | `account` | The right password from outside the home network for an account the two-step rule keeps at home. |
+| `sign-out` | `sign-ins` | `session` | Signed out (that session ended). |
+| `signed-out` | `sign-ins` | `session` | Was signed out: two-step sign-in is required outside the home network. |
 | `tesla-account-added` | `integrations` | `tesla` | Added a Tesla account. |
 | `tesla-account-changed` | `integrations` | `tesla` | Changed a Tesla account (its label). |
 | `tesla-account-error` | `integrations` | `tesla` | The server: a Tesla account keeps failing. |
@@ -429,7 +432,6 @@ America/Chicago", "Changed: text size, units", "Checked GitHub for a newer build
 | `teslafi-account-resumed` | `integrations` | `teslafi` | Resumed a TeslaFi account. |
 | `teslafi-car-matched` | `integrations` | `teslafi` | Matched a car of a TeslaFi account to a car (or left it out). |
 | `teslafi-poll-changed` | `integrations` | `settings` | Changed how often TeslaFi is asked. |
-| `teslafi-sign-in-needed` | `integrations` | `teslafi` | The server: a TeslaFi account needs signing in again. |
 | `teslafi-token-refused` | `integrations` | `teslafi` | The server: TeslaFi refused a TeslaFi account's token. |
 | `teslafi-token-replaced` | `integrations` | `teslafi` | Gave a TeslaFi account a new token. |
 | `teslamate-local-added` | `integrations` | `teslamate` | Added the local TeslaMate. |
@@ -444,19 +446,19 @@ America/Chicago", "Changed: text size, units", "Checked GitHub for a newer build
 | `teslamate-local-removed` | `integrations` | `teslamate` | Removed the local TeslaMate. |
 | `teslamate-local-resumed` | `integrations` | `teslamate` | Resumed the local TeslaMate. |
 | `teslamate-local-tested` | `integrations` | `teslamate` | Tested the local TeslaMate's MQTT broker or database. |
-| `export-downloaded` | `imports` | `export` | Downloaded the export file. |
-| `export-made` | `imports` | `export` | Made an export file of the whole server. |
-| `export-removed` | `imports` | `export` | Removed the export file. |
-| `import-cars` | `imports` | `import` | Matched an import's cars. |
-| `import-created` | `imports` | `import` | Started uploading an import file. |
-| `import-discarded` | `imports` | `import` | Discarded an import (history already imported stays). |
-| `import-started` | `imports` | `import` | Started importing. |
-| `import-uploaded` | `imports` | `import` | Uploaded every file of an import; it is being checked. |
-| `move-cancelled` | `imports` | `move` | Cancelled the move code, or ended a move under way. |
-| `move-code-made` | `imports` | `move` | Made a move code (moving to another server). |
-| `move-undone` | `imports` | `move` | Undid a finished move: this server takes uploads again. |
-| `setup-restore-cancelled` | `imports` | none | A fresh server gave up restoring an export file. |
-| `setup-restore-started` | `imports` | none | A fresh server started restoring an export file. |
+| `token-created` | `cars` | `token` | Made an upload token. |
+| `token-revoked` | `cars` | `token` | Revoked an upload token. |
+| `trip-changed` | `cars` | `trip` | Changed a saved trip. |
+| `trip-removed` | `cars` | `trip` | Removed a saved trip. |
+| `trip-saved` | `cars` | `trip` | Saved a trip. |
+| `two-step-failed` | `sign-ins` | `account` | A wrong two-step code at sign-in. |
+| `two-step-off` | `accounts` | `account` | Turned two-step sign-in off for an account. |
+| `two-step-on` | `accounts` | `account` | Turned two-step sign-in on for an account. |
+| `two-step-policy` | `accounts` | `settings` | Changed where the server needs two-step sign-in. |
+| `ui-pack-chosen` | `settings` | `ui-pack` | Chose a design (UI pack), for oneself or for everyone. |
+| `ui-pack-installed` | `settings` | `ui-pack` | Uploaded a design. |
+| `ui-pack-removed` | `settings` | `ui-pack` | Removed an uploaded design. |
+| `update-version` | `cars` | `update` | Typed (or forgot) the software version of an update. |
 
 ### Vehicle info
 

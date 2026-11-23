@@ -58,8 +58,8 @@ async fn name_version(
     .await
     .map(|v| (v.get(0).cloned().unwrap_or(Value::Null), v.get(1).cloned()))?;
     let summary = match &version {
-        Some(x) => format!("Named the software version of an update: {x}."),
-        None => "Forgot the typed software version of an update.".to_string(),
+        Some(x) => format!("Named the software version of an update of {}: {x}.", app.car_name_now(car).await),
+        None => format!("Forgot the typed software version of an update of {}.", app.car_name_now(car).await),
     };
     v.audit(&app, "update-version", Some(&target("update", Some(car), &id.to_string())), &summary).await?;
     let (from_ms, to_ms) = span.and_then(|s| Some((s.get(0)?.as_u64()?, s.get(1)?.as_u64()?))).unwrap_or((0, 0));

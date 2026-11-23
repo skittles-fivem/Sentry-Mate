@@ -240,7 +240,9 @@ async fn put_purpose(
     })
     .await?;
     let target = crate::ctx::target("drive", Some(car), &id.to_string());
-    v.audit(&app, "drive-purpose-set", Some(&target), &format!("Set the purpose of a drive to {what}.")).await?;
+    let name = app.car_name_now(car).await;
+    v.audit(&app, "drive-purpose-set", Some(&target), &format!("Set the purpose of a drive of {name} to {what}."))
+        .await?;
     Ok(axum::Json(out))
 }
 
@@ -259,7 +261,8 @@ async fn delete_purpose(
     })
     .await?;
     let target = crate::ctx::target("drive", Some(car), &id.to_string());
-    v.audit(&app, "drive-purpose-removed", Some(&target), "Removed the purpose of a drive.").await?;
+    let summary = format!("Removed the purpose of a drive of {}.", app.car_name_now(car).await);
+    v.audit(&app, "drive-purpose-removed", Some(&target), &summary).await?;
     Ok(axum::Json(out))
 }
 
@@ -306,7 +309,8 @@ async fn add_rule(
     let out =
         value(&app, move |e| q::logbook::add_rule(e, car, from.as_deref(), to.as_deref(), &days, &purpose)).await?;
     let target = crate::ctx::target("car", Some(car), "");
-    v.audit(&app, "purpose-rule-created", Some(&target), &format!("Added a purpose rule ({what}).")).await?;
+    let summary = format!("Added a purpose rule ({what}) for {}.", app.car_name_now(car).await);
+    v.audit(&app, "purpose-rule-created", Some(&target), &summary).await?;
     Ok((StatusCode::CREATED, axum::Json(out)))
 }
 
@@ -321,7 +325,11 @@ async fn remove_rule(
     let rid = id.clone();
     let gone = value(&app, move |e| q::logbook::remove_rule(e, car, &rid)).await?;
     let target = crate::ctx::target("car", Some(car), "");
-    let summary = format!("Removed a purpose rule ({}).", gone["purpose"].as_str().unwrap_or("?"));
+    let summary = format!(
+        "Removed a purpose rule ({}) of {}.",
+        gone["purpose"].as_str().unwrap_or("?"),
+        app.car_name_now(car).await
+    );
     v.audit(&app, "purpose-rule-removed", Some(&target), &summary).await?;
     Ok(axum::Json(json!({ "deleted": true, "id": id })))
 }

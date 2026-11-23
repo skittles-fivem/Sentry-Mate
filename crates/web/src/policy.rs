@@ -18,7 +18,8 @@
 //!   choice): a route nobody listed is admin-only, so a new route can't forget it.
 //!
 //! After the handler, a change that succeeded and that the handler did not record in the audit log itself is
-//! recorded as a plain entry (who, from where, the method and route).
+//! recorded as a plain `change` entry (who, from where, "Changed <route words>"): a safety net, every change route
+//! writes its own entry (see `audit_codes`).
 
 use crate::ctx::{CarParam, CarsParam, Viewer};
 use crate::error::ApiError;
@@ -99,27 +100,6 @@ pub fn access(method: &Method, pattern: &str) -> Access {
         return Access::Signed;
     }
     if WATCH_WRITES.iter().any(|(wm, wp)| *wm == m && *wp == p) { Access::Signed } else { Access::Admin }
-}
-
-/// Path parameters whose value is an id that may stand in the audit log (anything else, e.g. a session, stays as
-/// its `{name}`).
-const AUDITED_IDS: &[&str] = &[
-    "car", "key", "token", "account", "trip", "place", "import", "drive", "charge", "update", "rule", "export", "pack",
-];
-
-/// The route of a request for its plain audit entry: the pattern with each id of [`AUDITED_IDS`] filled in (at most
-/// 64 characters of each, nothing but letters, digits, `-`, `_` and `.`), so the entry says which key, token or car.
-fn concrete_route<'a>(pattern: &str, params: impl Iterator<Item = (&'a str, &'a str)>) -> String {
-    let mut out = pattern.to_string();
-    for (name, value) in params {
-        if !AUDITED_IDS.contains(&name) {
-            continue;
-        }
-        let clean: String =
-            value.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')).take(64).collect();
-        out = out.replacen(&format!("{{{name}}}"), &clean, 1);
-    }
-    out
 }
 
 /// The changes a server whose data moved away still takes (route patterns below `/api/v1`, and what is under them):
@@ -270,10 +250,8 @@ pub async fn guard(State(app): State<AppState>, req: Request, next: Next) -> Res
         return ApiError::admin_only().into_response();
     }
     // every car the request names
-    let mut route = pattern.clone();
     let mut named_car = None;
     if let Ok(raw) = RawPathParams::from_request_parts(&mut parts, &()).await {
-        route = concrete_route(&pattern, raw.iter());
         for (name, value) in raw.iter() {
             if name == "car" {
                 match ids::parse_car(value).filter(|c| v.sees_existing(&app, *c)) {
@@ -315,7 +293,10 @@ pub async fn guard(State(app): State<AppState>, req: Request, next: Next) -> Res
     }
     if is_change(&method) && res.status().is_success() && !v.audited() {
         v.mark_audited();
-        let summary = format!("{method} {route}");
+        // a safety net: every change route writes its own entry (tests/audit_log.rs), so this is a route that forgot
+        // to; it still says what changed in words, never the method and the path
+        tracing::warn!("web: {method} {pattern} changed something without an audit entry of its own");
+        let summary = crate::audit_codes::guard_summary(&pattern);
         let target = named_car.map(|c| crate::ctx::target("car", Some(c), ""));
         if let Err(e) = v.audit(&app, "change", target.as_deref(), &summary).await {
             tracing::error!("web: the audit log could not record {summary}: {e}");
@@ -426,27 +407,6 @@ impl RateLimit {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_plain_audit_entry_names_the_ids_of_the_request() {
-        let r = concrete_route(
-            "/api/v1/cars/{car}/upload-tokens/{token}",
-            [("car", "c2"), ("token", "335566a613da")].into_iter(),
-        );
-        assert_eq!(r, "/api/v1/cars/c2/upload-tokens/335566a613da");
-        assert_eq!(
-            concrete_route("/api/v1/can-keys/{key}", [("key", "49b1e84f2d85")].into_iter()),
-            "/api/v1/can-keys/49b1e84f2d85"
-        );
-        // a value that isn't an id is kept out, and so is its odd text
-        assert_eq!(
-            concrete_route("/api/v1/me/sessions/{session}", [("session", "s3cr3t")].into_iter()),
-            "/api/v1/me/sessions/{session}"
-        );
-        let long = "a".repeat(100);
-        let r = concrete_route("/api/v1/trips/{trip}", [("trip", format!("x y]\n{long}").as_str())].into_iter());
-        assert_eq!(r, format!("/api/v1/trips/xy{}", &long[..62]));
-    }
 
     #[test]
     fn rules() {

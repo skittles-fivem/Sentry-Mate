@@ -40,6 +40,9 @@ pub struct Entry {
     pub details: String,
 }
 
+/// An entry with the cursor of the entries older than it.
+pub type Placed = (String, Entry);
+
 /// A page of entries, newest first; `next` is the cursor for the page after it (`None`: that was the oldest).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Page {
@@ -173,6 +176,13 @@ impl Audit {
     /// A page of entries, newest first: `limit` of them (at most [`MAX_PAGE`]) from where `cursor` (a page's
     /// `next`) says, or from the newest.
     pub fn list(&self, limit: usize, cursor: Option<&str>) -> Result<Page> {
+        let (entries, next) = self.list_at(limit, cursor)?;
+        Ok(Page { entries: entries.into_iter().map(|(_, e)| e).collect(), next })
+    }
+
+    /// The same, each entry with the cursor of the entries older than it (to carry on just after it, for a list
+    /// that keeps only some entries), and the page's `next`.
+    pub fn list_at(&self, limit: usize, cursor: Option<&str>) -> Result<(Vec<Placed>, Option<String>)> {
         let limit = limit.clamp(1, MAX_PAGE);
         let (start_stem, mut end) = match cursor {
             Some(c) => {
@@ -208,14 +218,14 @@ impl Audit {
                 i += 1;
             })?;
             let first_taken = tail.front().map(|(i, _)| *i);
-            out.extend(tail.into_iter().rev().map(|(_, e)| e));
+            out.extend(tail.into_iter().rev().map(|(i, e)| (format!("{stem}:{i}"), e)));
             if out.len() == limit {
                 let at = first_taken.unwrap_or(0);
                 let older = at > 0 || parts.iter().any(|s| s < stem);
-                return Ok(Page { entries: out, next: older.then(|| format!("{stem}:{at}")) });
+                return Ok((out, older.then(|| format!("{stem}:{at}"))));
             }
         }
-        Ok(Page { entries: out, next: None })
+        Ok((out, None))
     }
 
     /// Hands each entry of a part to `each`, oldest first.

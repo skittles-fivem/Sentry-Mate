@@ -16,9 +16,6 @@ from .util import DAY, HOUR, MIN
 CODES_FILE = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "shared", "audit-codes.json"))
 GROUPS = ("sign-ins", "accounts", "settings", "cars", "integrations", "imports")
 
-# codes the server's moving.rs and restore.rs write that the list may not carry yet (they read "imports")
-_EXTRA = {"setup-move-started": "imports", "setup-move-resumed": "imports", "setup-move-cancelled": "imports",
-          "setup-move-finished-forced": "imports"}
 
 
 def load_codes():
@@ -31,7 +28,7 @@ def load_codes():
 
 
 CODES = load_codes()
-GROUP_OF = dict(_EXTRA, **{c["code"]: c["group"] for c in CODES})
+GROUP_OF = {c["code"]: c["group"] for c in CODES}
 
 
 def group_of(code):
@@ -117,7 +114,6 @@ def seed(ds, now):
         (48 * DAY, "admin", "teslafi-account-changed", "teslafi:fa1", None, "Renamed the TeslaFi account TeslaFi."),
         (47 * DAY, S, "teslafi-token-refused", "teslafi:fa1", None, "TeslaFi refused the token of the TeslaFi account TeslaFi."),
         (47 * DAY - HOUR, "admin", "teslafi-token-replaced", "teslafi:fa1", None, "Replaced the token of the TeslaFi account TeslaFi."),
-        (46 * DAY, S, "teslafi-sign-in-needed", "teslafi:fa1", None, "The TeslaFi account TeslaFi needs a new token."),
         (45 * DAY, S, "teslafi-account-error", "teslafi:fa1", None, "The TeslaFi account TeslaFi keeps failing: TeslaFi answered 502."),
         (44 * DAY, "admin", "teslafi-account-removed", "teslafi:fa9", None, "Removed the TeslaFi account Second TeslaFi."),
         (42 * DAY, "alex", "teslamate-local-added", "teslamate:local", None, "Added the local TeslaMate (MQTT 192.0.2.40:1883)."),
@@ -171,8 +167,8 @@ def seed(ds, now):
         (9 * DAY, "admin", "move-code-made", "move:mv3", None, "Made a move code, usable on the home network."),
         (9 * DAY - HOUR, "admin", "move-cancelled", "move:mv3", None, "Cancelled the move code."),
         (9 * DAY - 2 * HOUR, "admin", "move-undone", "move:mv2", None, "Undid the move: this server takes uploads again."),
-        (8 * DAY + 3 * HOUR, S, "setup-restore-started", None, None, "Started restoring sentry-mate-2026-10-01.smexport."),
-        (8 * DAY + 2 * HOUR, S, "setup-restore-cancelled", None, None, "Gave up restoring sentry-mate-2026-10-01.smexport."),
+        (8 * DAY + 3 * HOUR, S, "setup-restore-started", "move:rs1", None, "Started restoring sentry-mate-2026-10-01.smexport."),
+        (8 * DAY + 2 * HOUR, S, "setup-restore-cancelled", "move:rs1", None, "Gave up restoring sentry-mate-2026-10-01.smexport."),
         (8 * DAY, "admin", "change", None, None, "Changed the server's backup route"),
         # this week: day-to-day use
         (7 * DAY, "alex", "trip-saved", "trip:tr7", "c1", "Saved the trip Weekend at the coast."),
@@ -188,10 +184,16 @@ def seed(ds, now):
         (3 * DAY + HOUR, "watch", "sign-in", "session:s7a01", None, "Signed in."),
         (3 * DAY, "watch", "preferences-changed", "account:a2", None, "Changed: text size, units."),
         (3 * DAY - HOUR, "watch", "sign-out", "session:s7a01", None, "Signed out."),
-        (2 * DAY + 5 * HOUR, S, "sign-in-refused", None, None, "Refused a sign-in from outside for an account without two-step sign-in."),
-        (2 * DAY + 4 * HOUR, "alex", "two-step-failed", None, None, "Wrong two-step code for alex."),
+        (3 * DAY - 2 * HOUR, "watch", "signed-out", "session:s7a02", None, "Signed out: two-step sign-in is now required for this account."),
+        (120 * DAY, S, "setup-move-started", "move:mj1", None, "Started moving the data here from 192.0.2.40."),
+        (120 * DAY - HOUR, S, "setup-move-cancelled", "move:mj1", None, "Gave up moving the data here."),
+        (119 * DAY, S, "setup-move-started", "move:mj2", None, "Started moving the data here from 192.0.2.40."),
+        (119 * DAY - HOUR, S, "setup-move-resumed", "move:mj2", None, "Carried on moving the data here from 192.0.2.40."),
+        (119 * DAY - 2 * HOUR, S, "setup-move-finished-forced", "move:mj2", None, "Finished the move with the recovery key."),
+        (2 * DAY + 5 * HOUR, "watch", "sign-in-refused", "account:a2", None, "Refused a sign-in from outside for an account without two-step sign-in."),
+        (2 * DAY + 4 * HOUR, "alex", "two-step-failed", "account:a3", None, "Wrong two-step code for alex."),
         (2 * DAY + 3 * HOUR, "alex", "sign-in", "session:s7b02", None, "Signed in."),
-        (2 * DAY + 2 * HOUR, "alex", "confirm-failed", None, None, "Wrong password given again to confirm a change."),
+        (2 * DAY + 2 * HOUR, "alex", "confirm-failed", "account:a3", None, "Wrong password given again to confirm a change."),
         (2 * DAY, "alex", "session-revoked", "session:s6c03", None, "Ended a session (Safari on iPad)."),
         (2 * DAY - HOUR, "alex", "sessions-revoked", "account:a3", None, "Ended 2 other sessions."),
         (DAY + 3 * HOUR, "admin", "drive-purpose-set", f"drive:c1:{dr3}", "c1", "Set the purpose of a drive of Comet to private."),

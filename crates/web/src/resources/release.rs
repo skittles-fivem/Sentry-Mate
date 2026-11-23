@@ -283,7 +283,7 @@ async fn read(State(app): State<AppState>, _v: Viewer) -> ApiResult<Json<Value>>
     Ok(Json(app.release.view()))
 }
 
-async fn check(State(app): State<AppState>, _v: Viewer, body: JsonBody) -> ApiResult<Json<Value>> {
+async fn check(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiResult<Json<Value>> {
     body.only(&[])?;
     if !app.release.check_now().await {
         return Err(ApiError::conflict(
@@ -291,5 +291,6 @@ async fn check(State(app): State<AppState>, _v: Viewer, body: JsonBody) -> ApiRe
             "The release check is off; turn it on in the settings (Display and units) first.",
         ));
     }
+    v.audit(&app, "release-checked", Some("server:release"), "Checked GitHub for a newer build.").await?;
     Ok(Json(app.release.view()))
 }

@@ -1987,7 +1987,7 @@ async fn move_cmd(data: &Path, keys: &Path, port: u16, cmd: MoveCmd) -> Result<E
                     println!("No move code waiting and no move under way: nothing to cancel.")
                 }
                 Ok(moving::old::Cancelled::Revoked { id }) => println!("The move code {id} no longer works."),
-                Ok(moving::old::Cancelled::Ended { to }) => println!(
+                Ok(moving::old::Cancelled::Ended { to, .. }) => println!(
                     "The move to {to} ended: the code no longer works, and this server takes uploads as before. What {to} copied stays there until it is cancelled there too."
                 ),
                 Err(moving::Error::Finished(m)) => {

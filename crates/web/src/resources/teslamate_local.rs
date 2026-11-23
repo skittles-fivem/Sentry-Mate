@@ -22,7 +22,7 @@
 //! `TeslamateLocalSink::on_change`.
 
 use crate::accounts_admin::{confirm_code, confirm_password};
-use crate::ctx::{Admin, JsonBody, audit_details, target};
+use crate::ctx::{Admin, JsonBody, audit_details};
 use crate::events::{Event, Events};
 use crate::resources::notices::Notice;
 use crate::{ApiError, ApiResult, AppState, Fields, Viewer, ids};
@@ -78,7 +78,7 @@ pub fn service_with(
         };
         for p in new {
             let n = notice(p, now_ms());
-            let details = audit_details(Some(&target("settings", None, "teslamate_local")), &n.message);
+            let details = audit_details(Some(TARGET), &n.message);
             let (audit, what) = (audit.clone(), audit_action(p.trouble));
             let write = move || {
                 if let Err(e) = audit.record(None, None, what, &details) {
@@ -108,6 +108,9 @@ fn now_ms() -> u64 {
 
 /// Where every local TeslaMate notice sends the admin: its section of Settings: Integrations.
 pub const FIX_LINK: &str = "/settings/integrations#teslamate";
+
+/// What every audit entry about the local TeslaMate names: the connection (a car match also names the car).
+pub const TARGET: &str = "teslamate:local";
 
 /// The audit action written when a trouble begins.
 pub fn audit_action(t: Trouble) -> &'static str {
@@ -564,7 +567,7 @@ async fn put(State(app): State<AppState>, Admin(v): Admin, headers: HeaderMap, b
     } else {
         ("teslamate-local-changed", format!("Changed the local TeslaMate: {}.", describe(&c)))
     };
-    v.audit(&app, what, Some(&target("settings", None, "teslamate_local")), &summary).await?;
+    v.audit(&app, what, Some(TARGET), &summary).await?;
     let e = app.service::<Engine>()?;
     let out = app.blocking(move |_| Ok(answer(&e, &s))).await?;
     let status = if added { StatusCode::CREATED } else { StatusCode::OK };
@@ -596,7 +599,7 @@ async fn patch(
             } else {
                 ("teslamate-local-resumed", "Resumed the local TeslaMate.")
             };
-            v.audit(&app, what, Some(&target("settings", None, "teslamate_local")), summary).await?;
+            v.audit(&app, what, Some(TARGET), summary).await?;
         }
         _ => v.mark_audited(),
     }
@@ -625,7 +628,7 @@ async fn remove(
     }
     let summary = "Removed the local TeslaMate: its settings and passwords are deleted here; the history already \
                    stored stays.";
-    v.audit(&app, "teslamate-local-removed", Some(&target("settings", None, "teslamate_local")), summary).await?;
+    v.audit(&app, "teslamate-local-removed", Some(TARGET), summary).await?;
     Ok(Json(json!({ "deleted": true })))
 }
 
@@ -656,8 +659,12 @@ async fn test(
     }
     reconfirm(&app, &v, &body, &headers).await?;
     let r = s.test(target, draft, app.now()).await.map_err(|e| failed(&s, e))?;
-    v.mark_audited();
-    Ok(Json(word(&r)))
+    let out = word(&r);
+    let part = if target == tmlocal::Target::Mqtt { "MQTT broker" } else { "database" };
+    let how = if r.ok { "it answered" } else { "it did not answer as it should" };
+    let summary = format!("Tested the local TeslaMate's {part}: {how}.");
+    v.audit(&app, "teslamate-local-tested", Some(TARGET), &summary).await?;
+    Ok(Json(out))
 }
 
 // ---------------------------------------------------------------- cars
@@ -743,15 +750,23 @@ async fn put_cars(
         if k.and_then(|k| k.matched) == *m {
             continue;
         }
-        let name = k.and_then(|k| k.display_name.clone()).unwrap_or_else(|| format!("car {tc}"));
-        let (car, what) = match m {
-            Some(Match::Car { car }) => (Some(*car), format!("is car {}: it is read from now on", ids::car(*car))),
-            Some(Match::New) => (None, "gets a new car of its own: it is read from now on".to_string()),
-            Some(Match::LeaveOut) => (None, "is left out: it is not read".to_string()),
-            None => (None, "is not matched to a car: it is not read".to_string()),
+        let name = k.and_then(|k| k.display_name.clone()).unwrap_or_else(|| format!("number {tc}"));
+        let car = match m {
+            Some(Match::Car { car }) => Some(*car),
+            _ => None,
         };
-        let t = target("teslamate_local", car, tc);
-        let summary = format!("TeslaMate car {name} (id {tc}) of the local TeslaMate {what}.");
+        let summary = match (m, car) {
+            (_, Some(c)) => {
+                let car_name = app.blocking(move |app| Ok(app.car_name(c))).await?;
+                format!("Matched TeslaMate car {name} to {car_name}: it is read from now on.")
+            }
+            (Some(Match::New), _) => {
+                format!("Matched TeslaMate car {name} to a new car of its own: it is read from now on.")
+            }
+            (Some(Match::LeaveOut), _) => format!("Left TeslaMate car {name} out: it is not read."),
+            _ => format!("Unmatched TeslaMate car {name}: it is not read."),
+        };
+        let t = crate::ctx::target_of_car(TARGET, car);
         v.audit(&app, "teslamate-local-car-matched", Some(&t), &summary).await?;
         audited = true;
     }
