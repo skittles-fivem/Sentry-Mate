@@ -965,7 +965,7 @@ async fn dated_prices_are_kept_in_order_checked_and_price_alone_changes_the_one_
     assert_eq!(
         r.json()["prices"],
         json!([{ "from": null, "source": "typed", "price": {
-        "currency": "USD", "per_kwh": 0.3, "per_minute": null, "rates": [], "session_fee": null } }])
+        "currency": "USD", "per_kwh": 0.3, "per_minute": null, "rates": [], "session_fee": null, "tiers": null } }])
     );
 }
 
