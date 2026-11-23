@@ -154,11 +154,11 @@ impl Http {
     }
 
     /// `GET path` (`path` starts with `/`) with the token, its answer read up to [`CAP`] bytes.
-    pub(crate) async fn get(&self, path: &'static str, token: &Secret) -> Result<Answer, HttpError> {
+    pub(crate) async fn get(&self, path: &str, token: &Secret) -> Result<Answer, HttpError> {
         timeout(REQUEST_TIMEOUT, self.send(path, token)).await.map_err(|_| HttpError::Timeout)?
     }
 
-    async fn send(&self, path: &'static str, token: &Secret) -> Result<Answer, HttpError> {
+    async fn send(&self, path: &str, token: &Secret) -> Result<Answer, HttpError> {
         let origin = self.endpoint.origin.clone();
         if !path.starts_with('/') || !self.endpoint.allows(&origin) {
             return Err(HttpError::HostNotAllowed);

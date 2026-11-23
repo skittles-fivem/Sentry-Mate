@@ -41,6 +41,10 @@ pub trait Sink: Send + Sync + 'static {
     fn off_can(&self, car: CarId, at_ms: u64, values: &model::OffCan) -> Result<(), SinkError>;
     /// The account's state changed (for an audit entry or a notice).
     fn account_changed(&self, _account: &Account) {}
+    /// Charges with a cost from TeslaFi's log ([`crate::costs`]): kept, one per key. Returns how many were new.
+    fn invoices(&self, _found: &[tesla::invoices::Found]) -> Result<u64, SinkError> {
+        Ok(0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Default)]
@@ -70,6 +74,15 @@ pub struct Cadence {
     pub rate_limit_default_ms: u64,
     /// Two looks at the same state this close together make one span.
     pub fact_join_ms: u64,
+    /// Read the costs TeslaFi lists for its charges ([`crate::costs`]): off until an admin turns them on.
+    pub invoices: bool,
+    /// Requests for them at most a day, and the requests of the daily cap they always leave to the polls.
+    pub invoice_daily_cap: u64,
+    pub invoice_reserve: u64,
+    pub invoice_check_ms: u64,
+    pub invoice_after_charge_ms: u64,
+    pub invoice_error_first_ms: u64,
+    pub invoice_error_max_ms: u64,
 }
 
 impl Default for Cadence {
@@ -86,6 +99,13 @@ impl Default for Cadence {
             rate_limit_min_ms: 60_000,
             rate_limit_default_ms: 5 * 60_000,
             fact_join_ms: 15 * 60_000,
+            invoices: false,
+            invoice_daily_cap: 60,
+            invoice_reserve: 200,
+            invoice_check_ms: 24 * 3_600_000,
+            invoice_after_charge_ms: 30 * 60_000,
+            invoice_error_first_ms: 30 * 60_000,
+            invoice_error_max_ms: 24 * 3_600_000,
         }
     }
 }
@@ -423,6 +443,10 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             self.pacing.day = now_ms / 86_400_000;
             self.pacing.polls_today = 0;
         }
+        if now_ms / 86_400_000 != self.pacing.costs.day {
+            self.pacing.costs.day = now_ms / 86_400_000;
+            self.pacing.costs.requests_today = 0;
+        }
         let later = now_ms + self.cadence.idle_ms;
         if self.idle() {
             self.mode = Mode::Off;
@@ -440,6 +464,17 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             return Some(later);
         }
         if now_ms < self.next_ms {
+            // the charge costs only between the reads of the car, never instead of one
+            if let Some(t) = self.costs_due(now_ms) {
+                if t <= now_ms && now_ms + self.cadence.min_gap_ms <= self.next_ms {
+                    if let Err(t) = self.gate(now_ms) {
+                        return Some(t);
+                    }
+                    self.costs_step(now_ms).await;
+                    return Some((now_ms + self.cadence.min_gap_ms).min(self.next_ms).max(now_ms + 1));
+                }
+                return Some(self.next_ms.min(t.max(now_ms + 1)));
+            }
             return Some(self.next_ms);
         }
         if let Err(t) = self.gate(now_ms) {
@@ -451,7 +486,10 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             Ok(poll) => {
                 self.pacing.backoff_step = 0;
                 self.take(&poll, what, now_ms);
-                Some(self.next_ms.max(now_ms + self.cadence.min_gap_ms))
+                let gap = now_ms + self.cadence.min_gap_ms;
+                // the charge costs in the gap before the next read, when due
+                let costs = self.costs_due(now_ms).map_or(u64::MAX, |t| t.max(gap));
+                Some(self.next_ms.min(costs).max(gap))
             }
             Err(e) => Some(self.failed(&e, now_ms)),
         }
@@ -606,7 +644,13 @@ impl<F: Feed, S: Sink> Poller<F, S> {
         // the last poll awake is an old one: it says which car, not what the car does now
         if what == Read::Latest {
             self.car_state = p.car_state.clone();
-            self.mode = self.mode_of(&p);
+            let mode = self.mode_of(&p);
+            if self.mode == Mode::Charging && mode != Mode::Charging && self.cadence.invoices {
+                // a charge ended: TeslaFi lists its cost once Tesla billed it
+                let c = &mut self.pacing.costs;
+                c.next_check_ms = c.next_check_ms.min(now_ms + self.cadence.invoice_after_charge_ms);
+            }
+            self.mode = mode;
         }
         // a poll already handed on (the same id), or one older than it (the last awake poll asked for later): not
         // again
@@ -657,6 +701,99 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             gap
         };
         self.next_ms = now_ms + gap;
+    }
+}
+
+/// The charge costs ([`crate::costs`]): one request per tick, between the reads of the car.
+impl<F: Feed, S: Sink> Poller<F, S> {
+    fn costs_due(&self, now_ms: u64) -> Option<u64> {
+        let cad = &self.cadence;
+        if !cad.invoices || self.account.state != AccountState::Ok || self.matched().is_none() {
+            return None;
+        }
+        let c = &self.pacing.costs;
+        let midnight = (now_ms / 86_400_000 + 1) * 86_400_000;
+        if c.requests_today >= cad.invoice_daily_cap || self.pacing.polls_today + cad.invoice_reserve >= cad.daily_cap {
+            return Some(midnight);
+        }
+        let want = if c.backfill_done { c.next_check_ms } else { now_ms };
+        Some(want.max(c.wait_until_ms))
+    }
+
+    async fn costs_step(&mut self, now_ms: u64) {
+        let today = (now_ms / 86_400_000) as i64;
+        self.pacing.costs.requests_today += 1;
+        let (from, to) = if self.pacing.costs.backfill_done {
+            (today - crate::costs::CHECK_DAYS, today)
+        } else {
+            let before = self.pacing.costs.backfill_before.unwrap_or(today + 1);
+            ((before - crate::costs::CHUNK_DAYS).max(crate::costs::OLDEST_DAY), before - 1)
+        };
+        let answer = self.feed.charges(&self.token, from, to).await;
+        let records = match answer {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(account = %self.id, code = %e.code(), "teslafi charge costs request failed");
+                let message = match &e {
+                    FeedError::NotEnabled | FeedError::NotData => {
+                        "TeslaFi gave no charge log for this token".to_string()
+                    }
+                    other => other.to_string(),
+                };
+                let (first, max) = (self.cadence.invoice_error_first_ms, self.cadence.invoice_error_max_ms);
+                self.pacing.costs.note_error(err(e.code(), message, now_ms), first, max);
+                if let FeedError::RateLimited { retry_after_s } = e {
+                    let wait = retry_after_s.map_or(self.cadence.rate_limit_default_ms, |s| s.saturating_mul(1000));
+                    self.back_off(now_ms, Some(wait.max(self.cadence.rate_limit_min_ms)));
+                }
+                return;
+            }
+        };
+        let tz = self.tz();
+        let car = self.matched();
+        let vehicle = self.current.clone();
+        let found: Vec<tesla::invoices::Found> = records
+            .iter()
+            .filter_map(|r| crate::costs::session(r, tz))
+            .filter_map(|s| {
+                let id: String =
+                    s.id.chars().filter(|c| c.is_ascii_alphanumeric() || "_.-".contains(*c)).take(120).collect();
+                (!id.is_empty()).then(|| tesla::invoices::Found {
+                    key: format!("teslafi-{id}"),
+                    account: self.id.clone(),
+                    vehicle: vehicle.clone(),
+                    car,
+                    session: s,
+                })
+            })
+            .collect();
+        match self.sink.invoices(&found) {
+            Ok(n) => {
+                let c = &mut self.pacing.costs;
+                c.found += n;
+                c.errors = 0;
+                c.last_error = None;
+            }
+            Err(e) => {
+                tracing::warn!(account = %self.id, error = %e, "TeslaFi's charge costs could not be stored");
+                let (first, max) = (self.cadence.invoice_error_first_ms, self.cadence.invoice_error_max_ms);
+                self.pacing.costs.note_error(err("store_failed", "the costs could not be stored", now_ms), first, max);
+                return;
+            }
+        }
+        let c = &mut self.pacing.costs;
+        if c.backfill_done {
+            c.last_check_ms = Some(now_ms);
+            c.next_check_ms = now_ms + self.cadence.invoice_check_ms;
+        } else {
+            c.backfill_before = Some(from);
+            c.empty_chunks = if records.is_empty() { c.empty_chunks + 1 } else { 0 };
+            if c.empty_chunks >= 2 || from <= crate::costs::OLDEST_DAY {
+                c.backfill_done = true;
+                c.last_check_ms = Some(now_ms);
+                c.next_check_ms = now_ms + self.cadence.invoice_check_ms;
+            }
+        }
     }
 }
 
