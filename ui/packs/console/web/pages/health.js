@@ -24,6 +24,8 @@ import { src, srcText } from '../core/source.js';
 import { teslaCarRows, lastErrorText } from './tesla.js';
 import { versionTag } from './firmware.js';
 import { totalsLine } from './connections.js';
+import { deviceName } from '../shared/devices.js';
+import { deviceText, renameBtn } from './device-name.js';
 
 export const id = 'health';
 export const title = (ctx) => (ctx.car ? 'Health' : 'System');
@@ -177,7 +179,7 @@ async function mountCar(ctx) {
         ['dropped frames', status((hl.dropped_frames || []).length ? warn() : ok(), formatNumber((hl.dropped_frames || []).length), none(' times the bridge lost frames'))],
         ['uploads', hl.uploads_enabled ? status(ok(), 'accepted') : status(warn(), 'turned off for this car')],
         ['rebuild', hl.rebuild_pending ? status(tag('running', 'warn'), 'working out drives again') : status(ok(), 'nothing pending')],
-        ...keys.map((k, i) => [keys.length > 1 ? `bridge key ${i + 1}` : 'bridge key', h('span', null, k.preferred ? tag('preferred', 'accent') : null, k.preferred ? ' ' : null, k.device || 'unnamed', ' ', h('span', { class: 'muted break' }, k.key), '  ',
+        ...keys.map((k, i) => [keys.length > 1 ? `bridge key ${i + 1}` : 'bridge key', h('span', null, k.preferred ? tag('preferred', 'accent') : null, k.preferred ? ' ' : null, deviceText(k), admin ? [' ', renameBtn(ctx, k, (row) => { Object.assign(k, row); paintHealth(hl); }, { line: true })] : null, ' ', h('span', { class: 'muted break' }, k.key), '  ',
           k.last_upload_ms != null ? ago(k.last_upload_ms) : none('never uploaded'), k.logs_waiting ? [' ', warn(`${formatNumber(k.logs_waiting)} waiting`)] : null)]),
         keys.length ? null : ['bridge keys', status(warn(), 'none tied to this car: pair one on settings/cars')],
         ['data from', src(car, { full: true }) || none('no data yet')],
@@ -195,7 +197,7 @@ async function mountCar(ctx) {
     for (const g of hl.chain_gaps || []) lines.push({ ms: g.from_ms, tag: 'bad', tone: 'bad', text: `chain gap until ${formatDateTime(g.to_ms, tz, { now: ctx.api.now() })}` });
     for (const d of hl.dropped_frames || []) lines.push({ ms: d.start_ms, tag: 'warn', tone: 'warn', text: `dropped frames for ${formatDuration((d.end_ms ?? d.start_ms) - d.start_ms)}` });
     for (const s of spans) lines.push({ ms: s.start_ms, tag: 'warn', tone: 'warn', text: `unknown ${s.end_ms == null ? 'since then' : `for ${formatDuration(s.end_ms - s.start_ms)}`}: ${SPAN_REASONS[s.reason] || s.reason}` });
-    for (const k of keys) if (k.last_upload_ms != null) lines.push({ ms: k.last_upload_ms, tag: 'ok', tone: 'good', text: `upload from ${k.device || 'a bridge'}` });
+    for (const k of keys) if (k.last_upload_ms != null) lines.push({ ms: k.last_upload_ms, tag: 'ok', tone: 'good', text: `upload from ${deviceName(k).text}` });
     replace(tailSlot, logTail(lines, tz, { cover: 'faq.stopped-recording' }));
   }
 

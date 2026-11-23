@@ -183,3 +183,7 @@
   .page-health .co-card { grid-template-columns: minmax(0, 1fr); grid-template-areas: "title" "note" "totals"; }
   .page-health .co-card-totals { flex-wrap: wrap; }
 }
+
+/* a CAN Bridge key's name: quiet italics while it is the automatic label; its rename button (admins) */
+.page-health .hl-key-name .dev-auto { font-style: italic; }
+.page-health .hl-key-side .dev-rename { margin-top: round(0.375rem, var(--e)); }

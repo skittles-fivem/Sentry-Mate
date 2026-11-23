@@ -29,6 +29,7 @@ import { teslamateCarFacts, teslamateHref } from './teslamate.js';
 import { TM_BASE, TM_SOURCE } from '../shared/teslamate.js';
 import { VERSION_SOURCE } from '../core/firmware.js';
 import { STATUS, STATUS_ORDER } from './connections.js';
+import { deviceText, keyRows } from './device-name.js';
 
 export const id = 'health';
 export const css = true;
@@ -155,8 +156,9 @@ async function mountCar(ctx) {
   /* the keys and the rebuild */
   const keys = hl.keys || [];
   const keysT = tile({ w: 2, title: 'CAN Bridge keys', icon: 'key' },
-    keys.length ? h('ul', { class: 'checks' }, keys.map((k) => checkRow({ name: k.device || 'Unnamed device', sub: k.key, word: k.last_upload_ms != null ? ago(k.last_upload_ms) : 'Never',
-      level: k.logs_waiting ? 'warn' : k.last_upload_ms != null ? 'ok' : 'off', side: h('span', { class: 'check-word' }, k.preferred ? 'Preferred · ' : '', k.last_upload_ms != null ? ago(k.last_upload_ms) : 'never') })))
+    keys.length ? h('ul', { class: ['checks', 'hl-keys'] }, keyRows(ctx, keys, (k, rename) => checkRow({ name: deviceText(k), sub: k.key, word: k.last_upload_ms != null ? ago(k.last_upload_ms) : 'Never',
+      level: k.logs_waiting ? 'warn' : k.last_upload_ms != null ? 'ok' : 'off',
+      side: h('span', { class: 'hl-key-side' }, h('span', { class: 'check-word' }, k.preferred ? 'Preferred · ' : '', k.last_upload_ms != null ? ago(k.last_upload_ms) : 'never'), rename) })))
       : note('No key is tied to this car yet. Pair a CAN Bridge in car settings.'),
     ctx.admin ? h('div', { class: 'hl-rebuild' },
       btn('Rebuild this period', { kind: 'soft', icon: 'reset', onclick: (e) => rebuild(e.currentTarget) }),

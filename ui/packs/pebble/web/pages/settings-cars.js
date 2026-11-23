@@ -23,6 +23,7 @@ import { field, segmented, toggle, setFieldError } from '../core/form.js';
 import { remount } from '../core/router.js';
 import { checkRow, moreButton } from '../core/bits.js';
 import { group, infoRow, said, notSaved } from '../core/settings.js';
+import { deviceText, keyRows } from './device-name.js';
 import { inOrder } from '../core/settings.js';
 import { copyButton } from './move-parts.js';
 
@@ -120,11 +121,11 @@ async function waitingRows(ctx, { car = null, onChange }) {
   };
   return {
     count: keys.length,
-    rows: keys.map((k) => infoRow({ icon: 'key', tone: 'sun', name: k.device || 'Logger not named', sub: `${k.key} · first ${day(k.first_seen_ms, ctx.tz)} · ${k.logs_waiting || 0} logs kept`,
-      side: ctx.admin ? btn(car ? `Tie to ${car.name}` : 'Choose the car', { kind: 'soft', icon: car ? 'check' : 'search', cls: 'btn-sm', onclick: async () => {
+    rows: keyRows(ctx, keys, (k, rename) => infoRow({ icon: 'key', tone: 'sun', name: deviceText(k), sub: `${k.key} · first ${day(k.first_seen_ms, ctx.tz)} · ${k.logs_waiting || 0} logs kept`,
+      side: ctx.admin ? [rename, btn(car ? `Tie to ${car.name}` : 'Choose the car', { kind: 'soft', icon: car ? 'check' : 'search', cls: 'btn-sm', onclick: async () => {
         const c = car || await pickCar(ctx, `Tie key ${k.key} to a car`);
         if (c) tie(k, c);
-      } }) : null })),
+      } })] : null })),
   };
 }
 
@@ -360,8 +361,8 @@ async function mountCar(ctx) {
             act(() => ctx.api.del(api.apiPath`cars/${car.id}/upload-tokens/${t.id}`), `Token ${t.id} revoked.`)();
           } })] })) : [infoRow({ name: 'No upload token yet', sub: 'Make one and enter it in the CAN Bridge app.' })],
       { note: 'A token lets one CAN Bridge upload. It is shown once, and ties itself to the bridge’s key on the first upload.' }),
-      group('CAN Bridge keys', keys.length ? keys.map((k) => infoRow({ icon: 'chip', tone: k.preferred ? 'teal' : null, name: k.device || 'Logger not named', sub: `${k.key} · last upload ${day(k.last_upload_ms, ctx.tz)}${k.logs_waiting ? ` · ${k.logs_waiting} logs wait` : ''}`,
-        side: [k.preferred ? chip('Preferred', { tone: 'teal' }) : btn('Prefer', { kind: 'soft', cls: 'btn-sm', onclick: act(() => ctx.api.patch(api.apiPath`can-keys/${k.key}`, { preferred: true }), `Key ${k.key} is preferred now.`) }),
+      group('CAN Bridge keys', keys.length ? keyRows(ctx, keys, (k, rename) => infoRow({ icon: 'chip', tone: k.preferred ? 'teal' : null, name: deviceText(k), sub: `${k.key} · last upload ${day(k.last_upload_ms, ctx.tz)}${k.logs_waiting ? ` · ${k.logs_waiting} logs wait` : ''}`,
+        side: [rename, k.preferred ? chip('Preferred', { tone: 'teal' }) : btn('Prefer', { kind: 'soft', cls: 'btn-sm', onclick: act(() => ctx.api.patch(api.apiPath`can-keys/${k.key}`, { preferred: true }), `Key ${k.key} is preferred now.`) }),
           btn(`Untie ${k.key}`, { kind: 'ghost', icon: 'close', iconOnly: true, cls: 'btn-sm', onclick: async () => {
             if (!await confirmSheet({ title: `Untie key ${k.key}?`, text: 'Its new uploads wait for a car until it is tied again. History stays.', yes: 'Untie', danger: true })) return;
             act(() => ctx.api.patch(api.apiPath`can-keys/${k.key}`, { car: null }), `Key ${k.key} untied.`)();
