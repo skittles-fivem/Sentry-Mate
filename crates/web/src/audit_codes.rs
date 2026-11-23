@@ -55,6 +55,7 @@ pub const CODES: &[Code] = &[
         Some("car"),
         "Found CAN logs missing on the server and asked the car to send them again",
     ),
+    c("can-logs-rechecked", CARS, Some("car"), "Checked CAN logs that had failed their check again, by newer rules"),
     c("car-changed", CARS, Some("car"), "Changed a car"),
     c("car-full-rebuild", CARS, Some("car"), "Ran a full rebuild"),
     c("car-gps-layout", CARS, Some("car"), "Set how a car's Screenmate GPS frames are read"),

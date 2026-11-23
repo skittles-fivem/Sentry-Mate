@@ -157,6 +157,19 @@ class Health(ServerCase):
         old = self.c.get(f"/api/v1/cars/c1/health?from_ms={NOW - 400 * DAY}")
         self.assertGreaterEqual(len(old["unknown_spans"]), len(c1["unknown_spans"]))
 
+    def test_log_checks(self):
+        """Every log as the CAN Bridge app is told it, counted per check_reason, with the runs of failed logs."""
+        for cid in ("c1", "c2", "c3"):
+            lc = self.c.get(f"/api/v1/cars/{cid}/health")["log_checks"]
+            self.assertEqual(set(lc), {"verified", "pending", "failed", "mismatch", "bad_signature", "unsigned",
+                                       "chain_break", "failed_runs", "runs_total"})
+            self.assertEqual(lc["failed"], lc["mismatch"] + lc["bad_signature"] + lc["unsigned"] + lc["chain_break"])
+            self.assertEqual(lc["failed"], sum(r["logs"] for r in lc["failed_runs"]))
+            self.assertEqual(lc["runs_total"], len(lc["failed_runs"]))
+            for r in lc["failed_runs"]:
+                self.assertLessEqual(r["first_start_ms"], r["last_start_ms"])
+        self.assertGreater(self.c.get("/api/v1/cars/c3/health")["log_checks"]["failed"], 0)
+
     def test_rebuild(self):
         self.c.error("POST", "/api/v1/cars/c1/rebuild", 400, "bad_input", body={"from_ms": "yesterday"})
         self.c.error("POST", "/api/v1/cars/c1/rebuild", 422, "invalid", body={"from_ms": NOW, "to_ms": NOW - DAY})

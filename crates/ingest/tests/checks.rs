@@ -210,14 +210,22 @@ async fn each_reason_of_a_failed_log() {
     put(&t, &n5, &log_bytes(5)).await;
     assert_eq!(check_of(&t, &n5).await, failed("unsigned"));
 
-    // signed by the paired key, but naming a log before it that isn't the stored one
+    // signed by the paired key, but naming a log before it that is here, verified, and not the one it names
     let n6 = name(6);
-    let side = sidecar(&key, &n6, &log_bytes(6), 6, (&n5, &sha(b"not log five")));
+    let side = sidecar(&key, &n6, &log_bytes(6), 1, (&name(0), &sha(b"not log zero")));
     put(&t, &format!("{n6}.json"), &side).await;
     put(&t, &n6, &log_bytes(6)).await;
     assert_eq!(check_of(&t, &n6).await, failed("chain_break"));
     // its signature is fine: the judge's record says verified, the chain does not fit
     assert_eq!(t.up.judge.record(KEY, &n6).await.unwrap().status, ingest::judge::Status::Verified);
+
+    // signed by the paired key and naming the log before it, which failed its own check (could not sign): that is
+    // log 5's failure, not this one's
+    let n7 = name(7);
+    let side = sidecar(&key, &n7, &log_bytes(7), 7, (&n5, &sha(&log_bytes(5))));
+    put(&t, &format!("{n7}.json"), &side).await;
+    put(&t, &n7, &log_bytes(7)).await;
+    assert_eq!(check_of(&t, &n7).await, verified());
 }
 
 #[tokio::test]
@@ -255,7 +263,7 @@ async fn not_judged_yet_is_pending() {
 }
 
 #[tokio::test]
-async fn a_missing_link_becomes_a_chain_break_once_the_wait_is_over_and_a_first_log_is_not_one() {
+async fn a_missing_link_is_a_gap_not_a_failure_once_the_wait_is_over() {
     let t = setup(0).await;
     let key = car_key();
     // a chain received from its middle: its first log here names one never sent here
@@ -266,8 +274,15 @@ async fn a_missing_link_becomes_a_chain_break_once_the_wait_is_over_and_a_first_
     let f = status(&t, &[name(4), name(5), name(7)]).await;
     assert_eq!(f[name(4)]["check"], json!("verified"), "{f}");
     assert_eq!(f[name(5)]["check"], json!("verified"), "{f}");
-    assert_eq!((&f[name(7)]["check"], &f[name(7)]["check_reason"]), (&json!("failed"), &json!("chain_break")), "{f}");
-    // log 6 arrives after all: 7 fits now
+    // its own signature and file are fine: verified, starting a new segment; the chain report names the gap
+    assert_eq!(f[name(7)]["check"], json!("verified"), "{f}");
+    assert!(f[name(7)].get("check_reason").is_none(), "{f}");
+    let chain = t.up.judge.chain(KEY).await;
+    assert!(
+        chain.report.issues.iter().any(|i| matches!(i, trust::ChainIssue::Gap { from: 6, to: 6, .. })),
+        "{chain:?}"
+    );
+    // log 6 arrives after all: 7 fits it
     send(&t, &key, 6, &log_bytes(6)).await;
     assert_eq!(check_of(&t, &name(7)).await, verified());
 }
@@ -303,7 +318,7 @@ async fn a_failed_log_sent_again_replaces_its_copy_and_a_verified_one_is_never_o
     send(&t, &key, 2, &log_bytes(2)).await;
     let f = status(&t, &[name(1), name(2)]).await;
     assert_eq!((&f[name(1)]["check"], &f[name(1)]["check_reason"]), (&json!("failed"), &json!("mismatch")), "{f}");
-    assert_eq!(f[name(2)]["check_reason"], json!("chain_break"), "the log after a failed one does not fit: {f}");
+    assert_eq!(f[name(2)]["check"], json!("verified"), "the log after a failed one is not failed for it: {f}");
     let count = t.up.store.log_count(KEY).await.unwrap();
 
     // another bad copy: it takes the place of the first, which is kept aside; still failed
@@ -363,4 +378,199 @@ async fn a_failed_sidecar_is_replaced_too_and_a_pending_log_is_not() {
     assert_eq!(check_of(&t, &n2).await, pending());
     let (s, b) = put(&t, &n2, b"another file").await;
     assert_eq!((s, b["code"].as_str()), (StatusCode::CONFLICT, Some("exists_different")), "{b}");
+}
+
+/// The checks of logs `0..n`, as words (`verified`, `pending`, or `failed:<reason>`).
+async fn words(t: &T, n: u64) -> Vec<String> {
+    let names: Vec<String> = (0..n).map(name).collect();
+    let f = status(t, &names).await;
+    names
+        .iter()
+        .map(|k| match (f[k]["check"].as_str(), f[k]["check_reason"].as_str()) {
+            (Some("failed"), Some(r)) => format!("failed:{r}"),
+            (Some(c), _) => c.to_string(),
+            (None, _) => format!("{}", f[k]["state"]),
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_chain_with_one_bad_log_fails_that_log_alone() {
+    // no wait: a log that is missing is missing for good at once
+    let t = setup(0).await;
+    let key = car_key();
+    for i in 0..12 {
+        match i {
+            // changed after signing: a mismatch
+            3 => {
+                let mut b = log_bytes(3);
+                b[2] ^= 1;
+                send(&t, &key, 3, &b).await;
+            }
+            // never sent (the car no longer has it): a gap, never replaced
+            6 => {}
+            // not signed though the car is paired
+            9 => {
+                put(&t, &format!("{}.json", name(9)), br#"{"format":"canbridge-columns-xz/2"}"#).await;
+                put(&t, &name(9), &log_bytes(9)).await;
+            }
+            _ => send(&t, &key, i, &log_bytes(i)).await,
+        }
+    }
+    let w = words(&t, 12).await;
+    let mut want = vec!["verified".to_string(); 12];
+    want[3] = "failed:mismatch".into();
+    want[6] = "\"missing\"".into();
+    want[9] = "failed:unsigned".into();
+    assert_eq!(w, want, "only the bad logs fail; the ones after them start new segments");
+
+    // the chain report names each break once: the two failed logs and the gap
+    let chain = t.up.judge.chain(KEY).await.report;
+    let failed_at: Vec<u64> = chain
+        .issues
+        .iter()
+        .filter_map(|i| match i {
+            trust::ChainIssue::Failed { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(failed_at, [3], "{chain:?}");
+    let gaps: Vec<(u64, u64)> = chain
+        .issues
+        .iter()
+        .filter_map(|i| match i {
+            trust::ChainIssue::Gap { from, to, .. } => Some((*from, *to)),
+            _ => None,
+        })
+        .collect();
+    // (log 9 is not signed, so the paired key's chain has no log 9: a gap there too)
+    assert_eq!(gaps, [(6, 6), (9, 9)], "{chain:?}");
+    assert!(!chain.issues.iter().any(|i| matches!(i, trust::ChainIssue::Mismatch { .. })), "{chain:?}");
+
+    // the counts an owner passes on: no names, no keys
+    let c = t.up.judge.log_checks(KEY, Default::default()).await.unwrap();
+    assert_eq!((c.verified, c.pending, c.failed), (9, 0, 2), "{c:?}");
+    assert_eq!((c.mismatch, c.bad_signature, c.unsigned, c.chain_break), (1, 0, 1, 0), "{c:?}");
+    assert_eq!(c.runs_total, 2);
+    let starts = |i: u64| trust::LogName::parse(&name(i)).unwrap().started_ms;
+    assert_eq!(
+        c.failed_runs.iter().map(|r| (r.first_start_ms, r.last_start_ms, r.logs)).collect::<Vec<_>>(),
+        [(starts(3), starts(3), 1), (starts(9), starts(9), 1)]
+    );
+    let text = serde_json::to_string(&c).unwrap();
+    assert!(!text.contains(KEY) && !text.contains(".log.xz"), "{text}");
+
+    // a log that contradicts the verified log before it still fails: that is the one real chain break
+    let n12 = name(12);
+    let side = sidecar(&key, &n12, &log_bytes(12), 12, (&name(11), &sha(b"not log eleven")));
+    put(&t, &format!("{n12}.json"), &side).await;
+    put(&t, &n12, &log_bytes(12)).await;
+    assert_eq!(check_of(&t, &n12).await, failed("chain_break"));
+}
+
+#[tokio::test]
+async fn logs_arriving_out_of_order_are_pending_never_failed() {
+    let t = setup(60_000).await;
+    let key = car_key();
+    send(&t, &key, 0, &log_bytes(0)).await;
+    // 16 at once, finishing in any order: here newest first, then the odd ones, then the even ones
+    let mut order: Vec<u64> = (1..=16).rev().filter(|i| i % 3 == 0).collect();
+    order.extend((1..=16).filter(|i| i % 3 == 1));
+    order.extend((1..=16).filter(|i| i % 3 == 2));
+    // log 8 still arriving at the end of the first round: half of it is here
+    let b8 = log_bytes(8);
+    chunk(&t, &name(8), &b8, 0, &b8[..20]).await;
+    for &i in order.iter().filter(|&&i| i != 8) {
+        send(&t, &key, i, &log_bytes(i)).await;
+        let w = words(&t, 17).await;
+        assert!(w.iter().all(|c| !c.starts_with("failed")), "after log {i}: {w:?}");
+    }
+    let w = words(&t, 17).await;
+    assert_eq!(w[9], "pending", "the log before it is on its way: {w:?}");
+    // log 8's last bytes and its sidecar: every log fits now, judged again by the next question
+    let side = sidecar(&key, &name(8), &b8, 8, (&name(7), &sha(&log_bytes(7))));
+    put(&t, &format!("{}.json", name(8)), &side).await;
+    chunk(&t, &name(8), &b8, 20, &b8[20..]).await;
+    assert_eq!(words(&t, 17).await, vec!["verified".to_string(); 17]);
+}
+
+#[tokio::test]
+async fn a_log_judged_while_the_one_before_it_was_still_coming_is_told_again_when_it_comes() {
+    let t = setup(0).await;
+    let key = car_key();
+    send(&t, &key, 0, &log_bytes(0)).await;
+    send(&t, &key, 1, &log_bytes(1)).await;
+    // log 2 is sent long after log 3 (the wait is over): log 3 is verified meanwhile, not failed
+    send(&t, &key, 3, &log_bytes(3)).await;
+    assert_eq!(check_of(&t, &name(3)).await, verified());
+    let gaps = t.up.judge.chain(KEY).await.report.issues;
+    assert!(matches!(gaps.as_slice(), [trust::ChainIssue::Gap { from: 2, to: 2, .. }]), "one gap: {gaps:?}");
+    // log 2 comes: the chain is whole again
+    send(&t, &key, 2, &log_bytes(2)).await;
+    assert_eq!(words(&t, 4).await, vec!["verified".to_string(); 4]);
+    let chain = t.up.judge.chain(KEY).await.report;
+    assert!(chain.issues.is_empty() && chain.segments.len() == 1, "{chain:?}");
+}
+
+#[tokio::test]
+async fn judging_every_log_again_answers_the_stored_verdicts_or_pending_never_a_new_failure() {
+    let t = setup(60_000).await;
+    let key = car_key();
+    for i in 0..40 {
+        send(&t, &key, i, &log_bytes(i)).await;
+    }
+    let names: Vec<String> = (0..40).map(name).collect();
+    // a rebuild (or a newer version) judges every log again while the app keeps asking
+    let up = t.up.clone();
+    let again = tokio::spawn(async move {
+        for _ in 0..3 {
+            up.judge.rejudge_all(KEY).await.unwrap();
+        }
+    });
+    while !again.is_finished() {
+        let f = status(&t, &names).await;
+        for n in &names {
+            let c = f[n]["check"].as_str().unwrap();
+            assert!(c == "verified" || c == "pending", "{n}: {c}");
+        }
+        tokio::task::yield_now().await;
+    }
+    again.await.unwrap();
+    assert_eq!(words(&t, 40).await, vec!["verified".to_string(); 40]);
+
+    // a sidecar gone from the disk (a backup put back in part): judging again keeps the log's verdict
+    let side_file = t._dir.path().join("data/can").join(KEY).join(format!("{}.json", name(5)));
+    assert!(side_file.exists(), "{side_file:?}");
+    std::fs::remove_file(&side_file).unwrap();
+    t.up.judge.rejudge_all(KEY).await.unwrap();
+    assert_eq!(t.up.judge.record(KEY, &name(5)).await.unwrap().status, ingest::judge::Status::Verified);
+    assert_eq!(check_of(&t, &name(5)).await, verified());
+}
+
+#[tokio::test]
+async fn a_failed_log_sent_again_mends_the_chain_after_it() {
+    let t = setup(0).await;
+    let key = car_key();
+    send(&t, &key, 0, &log_bytes(0)).await;
+    // log 1 arrives without its sidecar, which comes after the wait: judged unsigned, so failed
+    put(&t, &name(1), &log_bytes(1)).await;
+    let mut cut = log_bytes(2);
+    cut.truncate(100);
+    send(&t, &key, 2, &cut).await;
+    for i in 3..6 {
+        send(&t, &key, i, &log_bytes(i)).await;
+    }
+    let w = words(&t, 6).await;
+    assert_eq!(&w[..3], ["verified", "failed:unsigned", "failed:mismatch"], "{w:?}");
+    assert!(w[3..].iter().all(|c| c == "verified"), "{w:?}");
+    assert!(!t.up.judge.chain(KEY).await.report.issues.is_empty());
+
+    // "Resend all": log 1's sidecar, and log 2 whole
+    let side = sidecar(&key, &name(1), &log_bytes(1), 1, (&name(0), &sha(&log_bytes(0))));
+    put(&t, &format!("{}.json", name(1)), &side).await;
+    assert_eq!(put(&t, &name(2), &log_bytes(2)).await.0, StatusCode::CREATED);
+    assert_eq!(words(&t, 6).await, vec!["verified".to_string(); 6]);
+    let chain = t.up.judge.chain(KEY).await.report;
+    assert!(chain.issues.is_empty(), "{chain:?}");
+    assert_eq!((chain.segments.len(), chain.count), (1, 6));
 }

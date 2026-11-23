@@ -75,6 +75,7 @@ a file it can't read is on standard error.
 | `move undo` | The old server, after a move: takes uploads again (asks to type `yes`). Stop the new server first. |
 | `move finish --recovery-key` | A new server, last resort when the old one is gone: switches to what was copied. Asks for the recovery key. The last changes may be missing. |
 | `gps-layout --car CAR [--days N]` | Works out where the Screenmate's own GPS frame (0x04F on its internal bus) keeps latitude and longitude, from the car's stored logs of the last `N` days (default 30) and the positions its other inputs reported at the same moments. Prints layouts and errors in metres only: no position, time or place, so the output can be passed on. Runs beside the server and only reads. See [The Screenmate's GPS layout](#the-screenmates-gps-layout). |
+| `log-checks --car CAR` | Every log of the car's CAN Bridge keys as the app is told it now (`verified`, `pending`, `failed` and each `check_reason`), counted, and the runs of failed logs by their start times (UTC). Prints no log name, car key or signing key, so the output can be passed on. Runs beside the server and only reads. See [Log checks](#log-checks). |
 | `health` | Exit 0 when the upload port and the web port accept a TCP connection on 127.0.0.1 (only the upload port on a server whose data moved away), or while a move comes in. Docker's health check runs it. |
 | `--version` | Prints the version and build, for example `sentry-mate 0.1.0 (build-1001, sha-6f83191, 2026-11-17T19:06:35Z)`. A local build shows no build number. |
 
@@ -130,6 +131,32 @@ It covers only logs signed by the key the car key is paired with, and names that
 `keys` lists it). Then: count, first and last index, issues (`gap`, `duplicate`, `failed`, `mismatch`,
 `reordered`), restarts and segments. A car key with no signed logs gives an empty report, with `signing_key` set to
 `null`. An unknown or mistyped car key gives `no car key <key> here` and exit 1.
+
+## Log checks
+
+When the CAN Bridge app says some logs failed their check, this says why, without sharing any data:
+
+```bash
+docker exec sentry-mate /sentry-mate log-checks --car c1
+```
+
+```text
+log checks of car c1 (1 CAN Bridge key), as the CAN Bridge app is told them now
+  verified          20380
+  pending               3
+  failed                7
+    mismatch            0
+    bad_signature       0
+    unsigned            5
+    chain_break         2
+runs of failed logs, by the logs' start times (UTC):
+  2026-11-07 14:00 to 2026-11-07 15:08  5 logs: unsigned 5
+  2026-11-08 00:00  2 logs: chain_break 2
+```
+
+The reasons are those of the upload API's `check_reason`
+([Did each log arrive intact](cars-and-bridge.md#did-each-log-arrive-intact)). Data health shows the same counts
+(`log_checks` of `/cars/{car}/health`). The car is the one in its pages' address (`/cars/c1/...`).
 
 ## Signing keys
 
