@@ -37,7 +37,7 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 | `--full-rebuild none\|running\|failed\|offered` | `none` | The full rebuild the server starts with (`/cars/{car}/full-rebuild`, `/system/full-rebuild`): one of every car under way (a long one, a few minutes in, with a log it could not decode), one that failed on the second car (no space left; the old history kept), or the first car's history made with an older decoding and `full_rebuild.auto` off (the `full_rebuild_offered` notice). One started from a page runs about three minutes a car on the virtual clock and ends done. |
 | `--move-peer-after-s N` | `15` | A made-up new server (`192.168.1.30`) claims a waiting move code `N` seconds after it is made, then copies, pauses, switches and is done in about 17 s. `0`: never. |
 | `--freeze-clock` | off | Keeps "now" fixed (stable screenshots and tests). |
-| `--sse-interval-ms N` | `2000` | How often live values are pushed on `/api/v1/events`. |
+| `--sse-interval-ms N` | `2000` | How often the cars' `now` values are pushed on `/api/v1/events` (the live figures `job`, `health`, `connections` and `storage` are looked at every 0.25 s; see "Live figures on the event stream"). |
 | `--rows-every-s N` | `0` | Also sends every featured car a `rows` event every `N` seconds (all row kinds), as if its rows had changed, so the pages load their lists again (`ui/tools/check.js --stable` uses it). `0`: `rows` only when a drive, charge or parked spell really starts or ends. |
 | `--rebuild-running` | off | Every featured car's history is being rebuilt the whole time: `/cars/{car}/health` says `rebuild_pending` (so Data health reads itself again every few seconds) and the car gets a `rows` event every second (every `--rows-every-s` when that is given), as while a long rebuild rewrites its rows. `ui/tools/scroll.js` scrolls the pages in this state. |
 | `--verbose` | off | Logs every request to stderr. |
@@ -179,6 +179,40 @@ admin turned them on; the real default is off), TeslaFi's off and with no sessio
 `note`). `PATCH /integrations/tesla` or `/teslafi` with `invoices` asks for the password again like `poll`; turning
 them off stops the checks (`next_check_ms` null) and keeps what was fetched. The zip writes `invoices-downloaded`.
 
+## Live figures on the event stream
+
+Besides `now`, `rows`, `fleet`, `prefs` and `notice`, `/api/v1/events` carries the live figures of the real server
+(`crates/web/src/live.rs`), worked out with the same handlers as their GET routes (`mockapi/events.py`,
+`EventHub.live_round`, every 0.25 s while a stream is open):
+
+| Event | Who gets it | `data` |
+|---|---|---|
+| `job` | admins | `{ kind, id, status }`: `full_rebuild` (id `""`, status = `GET /system/full-rebuild`), `compaction` (`""`, the `compaction` of `GET /system/storage/detail`), `export` (the export's id, `GET /system/exports/{id}`), `missing_scan` (`""`, `{ state, keys_done, keys_total, found, started_ms, finished_ms }`; always `idle` here), `import` (the import's id, `GET /imports/{id}`), `invoices` (`tesla` or `teslafi`, the `invoices` block of `/integrations/tesla` or `/teslafi`) |
+| `health` | streams that see the car | `{ car, health }`, health = `GET /cars/{car}/health` (featured cars) |
+| `connections` | admins | `GET /integrations/overview` |
+| `storage` | admins | `GET /system/storage` plus `compaction` |
+
+Each topic (a job's kind and id, a car's health, the connections, the storage) is sent when its value changed
+(a top-level `read_ms` left out of the comparison), at most every 0.5 s for a job, 1 s for health and connections,
+2 s for storage; a change that comes too soon goes at the next look. The first look after a stream opens (with no
+other stream open) sends every topic once; a stream that opens while others are open gets only later changes, as on
+the real server. With `--freeze-clock` nothing moves, so each topic is sent once.
+
+What moves on the virtual clock:
+
+- A full rebuild (`--full-rebuild running`, or one started from a page): `logs.done` and `bytes.done` rise together
+  while `decoding` (`days.total` known from the start, `days.done` 0), then `days`, `switching`, done. `percent`
+  is logs done of all while decoding, days done of all in `days`, 0 while copying, 100 while switching or done,
+  null otherwise; `rate_logs_per_s` and `rate_bytes_per_s` while decoding, `rate_days_per_s` in `days`; `eta_ms`
+  is logs left / logs per second while decoding, days left / days per second in `days`.
+- Uploads (`mockapi/uploads.py`): the preferred CAN Bridge key of each featured car that is driving or charging
+  uploads a made-up log every 30 s of the virtual clock (its key's and token's `last_upload_ms`), and the server's
+  `free_bytes` shrinks by 34.4 kB a log: `health` and `storage` change.
+- The overview's `last_ok_ms`, `next_ms` and today's counts move with the clock: `connections`.
+- A compaction started with `POST /system/storage/compact` moves one notch every 2 s while a stream is open (and at
+  each read of the detail, as before), five notches to done: `job` compaction and `storage`.
+- An export being prepared (`--export slow`, `--export-state preparing`): `job` export.
+
 ## First-run set-up and moving
 
 Everything runs on the virtual clock in a few seconds (frozen with `--freeze-clock`: tests move it on). Nothing is
@@ -262,7 +296,8 @@ mockapi/placing.py       places as they are now, the nearest-centre match, costs
 mockapi/derive.py        figures several sections share: odometer, stops (visits), parked spells, caching
 mockapi/live.py          the "now" object, the car list item, attention items
 mockapi/series.py        bucketed series that keep minima and maxima
-mockapi/events.py        the event hub behind /api/v1/events
+mockapi/events.py        the event hub behind /api/v1/events (now deltas, rows, and the live figures)
+mockapi/uploads.py       the made-up upload cadence of the live CAN Bridges (last uploads, free space)
 mockapi/dataset/         places, cars, routes, the day-by-day simulator, pieces, synthetic cars, extras
 mockapi/resources/       one module per section of docs/ui-api.md (Reports is reports, travel and software;
                          moving.py is first-run set-up, the move to another server and export files;
@@ -317,3 +352,8 @@ They start servers in-process on free ports (about 45 s for all). They cover:
   PDFs, the zip, the list and its CSV, the blocks and their PATCH with the password asked again, admin only.
 - the integrations overview (`test_overview.py`): its shape, admin only, problems newest first with one open, 24
   hourly entries ending at the current hour, values that move in place, the capped car rows of a large fleet.
+- the live figures on the event stream (`test_live_events.py`): a running full rebuild's `job` events with rising
+  `logs.done` and `bytes.done`, `days.total` known while decoding and `percent` matching the logs, one started from a
+  page through `decoding`, `days` and done, at most one `job` per topic every 0.5 s, `health` and `connections`
+  changing as the clock moves, a compaction sent as it moves on, each topic once with a frozen clock, and no
+  admin-only event (`job`, `connections`, `storage`) on a `watch` stream.
