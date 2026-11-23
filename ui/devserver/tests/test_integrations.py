@@ -239,10 +239,7 @@ class OffCanTopics(ServerCase):
         p, t = self.preview("c3")
         self.assertIn({"kind": "teslafi_api", "label": "Data from TeslaFi"}, p["inputs"])
         self.assertEqual(p["sources"]["window_driver_rear"]["kind"], "teslafi_api")
-        # Atlas's windows are from TeslaFi's last full poll, 6 h ago: stale, so published empty
-        self.assertTrue(p["sources"]["windows_open"]["stale"])
-        self.assertEqual((t["windows_open"], t["window_driver_rear"]), ("", ""))
-        self.assertEqual(t["locked"], "true")
+        self.assertEqual(t["windows_open"], "false")
 
     def test_smo_only_car(self):
         p, t = self.preview("c0")

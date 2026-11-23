@@ -234,6 +234,10 @@
 .off-pair dt { flex: none; color: var(--text-3); }
 .off-pair dd { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: baseline; gap: round(0.125rem, var(--e)) round(0.5rem, var(--e)); min-width: 0; margin: 0; color: var(--text); font-weight: 500; text-align: right; overflow-wrap: anywhere; }
 .off-old { color: var(--text-2); }
+.off-src { display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); white-space: nowrap; font-size: max(0.6875rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.02em; color: var(--text-3); }
+.off-src .src-m { height: round(0.625rem, var(--e)); }
+.off-src-word, .off-stale { align-self: baseline; } /* the box's baseline is its words', not the mark's edge */
+.off-stale { padding: 0 round(0.3125rem, var(--e)); border: 1px solid var(--warm-line); border-radius: round(0.25rem, var(--e)); color: var(--warm); font-weight: 600; }
 
 /* phone (<html data-phone>): the place card sits above the map instead of over it (on a phone it would hide
    most of the map and its zoom buttons); the map keeps a screenful's share of height, less in landscape */

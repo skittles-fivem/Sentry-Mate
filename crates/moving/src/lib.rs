@@ -32,6 +32,6 @@ pub mod pull;
 pub mod tree;
 
 pub use error::Error;
-pub use export::{Header, Snapshot};
+pub use export::{Header, Phase, Seen, Snapshot, Watch};
 pub use format::{Entry, size};
 pub use import::{ExportFile, Import, Options, Opts, Outcome, Pending, Progress, Resume, Staged, Switched};

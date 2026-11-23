@@ -24,6 +24,7 @@ import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { signOut } from '../core/session.js';
 import { askPassword, copyBtn, codeOut, downloadKey, showOnce, STAY } from '../core/secret.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
+import { exportModel, exportPollMs } from '../shared/exportjob.js';
 
 export const id = 'settings-server';
 export const title = () => 'Settings: server';
@@ -355,7 +356,9 @@ export async function mount(ctx) {
   }
 
   /* ---------------------------------------------------------------- export file */
-  function scheduleExp() { clearTimeout(et); if (M.exp?.state === 'preparing') et = setTimeout(refreshExp, 1000); }
+  // One box of a fixed size: the same lines in every state (none, making, stalled, failed, ready), so it never
+  // jumps as the export goes on. The words come from shared/exportjob.js.
+  function scheduleExp() { clearTimeout(et); const ms = exportPollMs(M.exp); if (ms) et = setTimeout(refreshExp, ms); }
   async function refreshExp() {
     try {
       const e = M.exp ? await ctx.api.get(`system/exports/${enc(M.exp.id)}`) : null;
@@ -363,7 +366,7 @@ export async function mount(ctx) {
       const was = M.exp?.state;
       M.exp = e; M.expErr = null;
       if (e && was === 'preparing' && e.state === 'ready' && M.want) { M.want = false; download(e); }
-    } catch (err) { if (!ctx.alive()) return; if (err.status === 404) M.exp = null; else M.expErr = err; }
+    } catch (err) { if (!ctx.alive()) return; if (err.status === 404) { M.exp = null; M.expErr = null; } else M.expErr = err; }
     paintExp(); scheduleExp();
   }
   function download(e) {
@@ -374,12 +377,17 @@ export async function mount(ctx) {
   }
   async function makeExport() {
     const r = await askPassword(ctx, { title: 'make an export file', submit: 'make the file',
-      intro: h('div', { class: 'hc' }, h('p', null, 'One file with everything, made in a few seconds (uploads wait for those seconds); then your browser downloads it.'),
+      intro: h('div', { class: 'hc' }, h('p', null, 'One file with everything, in three steps: count what goes in, wait for the writes under way, take the snapshot (uploads wait for that step). The box shows how far it got; you can close the page and come back. Then your browser downloads it.'),
         note('It opens only with this server\'s recovery key and never holds the key file, so without the key it is useless to anyone who takes it.')),
       run: (cred) => ctx.api.post('system/exports', cred).catch(async (e) => { if (e.code !== 'export_preparing') throw e; return (await ctx.api.get('system/exports')).items?.[0] || null; }) });
     if (!r || !ctx.alive()) return;
     M.exp = r; M.expErr = null; M.want = true;
     paintExp(); scheduleExp();
+  }
+  async function cancelExport() {
+    if (!M.exp || !(await confirmDialog('The server stops making the file and keeps nothing of it. Uploads go on.', { title: 'stop making the export file?', ok: 'stop it', danger: true }))) return;
+    try { await ctx.api.del(`system/exports/${enc(M.exp.id)}`); M.exp = null; M.want = false; toast('The export file was cancelled.', { kind: 'info' }); } catch (e) { toast(`Could not cancel it: ${errText(e)}`, { kind: 'error' }); }
+    if (ctx.alive()) { paintExp(); scheduleExp(); }
   }
   async function removeExport() {
     if (!(await confirmDialog('The file is removed from this server. A copy you downloaded stays where you put it.', { title: 'remove the export file?', ok: 'remove', danger: true }))) return;
@@ -388,25 +396,40 @@ export async function mount(ctx) {
   }
   function paintExp() {
     const e = M.exp;
-    const s = !e || e.state === 'expired' ? 'none' : e.state;
-    const out = [
-      M.expErr ? `! could not read the export: ${errText(M.expErr)}` : null,
-      e ? `file    ${e.file_name}` : 'file    none yet',
-      e ? `state   ${e.state}` : null,
-      e?.state === 'ready' ? `size    ${bytes(e.size)}, ${count(e.files)} files\nmade    ${t(e.made_ms)}\nkept    until ${t(e.expires_ms)}${e.sent_bytes ? `\nsent    ${bytes(e.sent_bytes)}` : ''}` : null,
-      e?.state === 'expired' ? `removed ${t(e.expires_ms)}: make a new one` : null,
-      e?.state === 'failed' ? `error   ${e.error || 'it could not be made'}` : null,
-    ].filter(Boolean).join('\n');
+    const m = exportModel(e);
+    const ready = m.kind === 'ready';
+    const stateTag = { none: ['none', 'muted'], expired: ['expired', 'muted'], busy: m.warn ? ['stalled', 'warn'] : ['running', 'accent'], failed: ['failed', 'bad'], ready: ['ready', 'ok'] }[m.kind];
+    const steps = m.steps.map((st) => `${st.state === 'done' ? '[x]' : st.state === 'now' ? '[>]' : '[ ]'} ${st.label.toLowerCase()}`).join('  ');
+    const tone = m.tone === 'error' ? 'bad' : m.tone === 'warn' ? 'warn' : 'accent';
+    let l1 = m.amount, l2 = m.files, l3 = m.speed, note1 = '';
+    if (ready) {
+      l1 = e.file_name; l2 = `kept until ${t(e.expires_ms)}`; l3 = e.sent_bytes ? `${bytes(e.sent_bytes)} downloaded so far` : 'not downloaded yet';
+      note1 = m.sha256 ? `sha-256 ${m.sha256}` : m.checksum.toLowerCase();
+    } else if (m.kind === 'failed') {
+      l1 = `code ${m.problem.code}`; l2 = ''; l3 = '';
+      note1 = `to do: ${m.problem.todo}`;
+    } else if (m.warn) note1 = `! ${m.warn.text}`;
+    else if (m.kind === 'busy') note1 = 'You can close this page: the server goes on.';
+    else note1 = 'Seconds to minutes, most of it for the database. Uploads wait only for the last step.';
+    if (M.expErr) note1 = `! lost touch with the server (${errText(M.expErr)}); it keeps trying.`;
+    const label = (k, v) => h('span', { class: 'xp-row' }, h('span', { class: 'xp-k' }, k), h('span', { class: 'xp-v' }, v || ' '));
+    const acts = m.kind === 'busy' ? [btn('cancel', cancelExport, { kind: 'quiet' })]
+      : ready ? [h('a', { class: 'btn btn--primary', href: e.url, download: e.file_name }, 'download'), btn('make a new one', makeExport), btn('remove', removeExport, { kind: 'quiet' })]
+        : m.kind === 'failed' ? [btn('make a new one', makeExport, { kind: 'primary' })]
+          : [btn('make the export file', makeExport, { kind: 'primary' })];
     replace(expSlot,
-      runs([
-        [s === 'none' || s === 'failed' ? 'todo' : s === 'preparing' ? 'running' : 'ok', 'make the export file', 'A snapshot of the whole server. Asks your password. A new one replaces the one there was.',
-          s === 'preparing' ? null : btn(s === 'ready' ? 'make a new one' : 'run', makeExport, { kind: s === 'ready' ? '' : 'primary' })],
-        [s === 'ready' ? (e.sent_bytes ? 'ok' : 'todo') : 'later', 'download it', 'A cut download carries on when you press download again. Kept a day after the last download, a week at most.',
-          s === 'ready' ? [h('a', { class: 'btn btn--primary', href: e.url, download: e.file_name }, 'download'), btn('remove', removeExport, { kind: 'quiet' })] : null],
-        [s === 'ready' && e.sent_bytes ? 'todo' : 'later', 'restore it on the new server', ['On its first page choose ', h('b', null, 'restore from an export file'), ', choose this file and type the recovery key.'], null],
-      ]),
-      skipped(e?.skipped),
-      h('pre', { class: 'mono-box out-box', 'aria-label': 'Export output' }, out));
+      h('div', { class: ['mono-box', 'out-box', 'xp-box', `xp-box--${m.kind}`], role: 'group', 'aria-label': 'Export file status' },
+        label('export', [tag(stateTag[0], stateTag[1]), ` ${m.head.toLowerCase()}`]),
+        label('step', m.kind === 'busy' ? m.sub.replace(/^Step /, '').toLowerCase() : m.sub),
+        label('', steps),
+        label('', [textBar(m.percent, { tone, label: m.percentText || m.head }), ` ${m.percentText}`]),
+        label(ready ? 'file' : m.kind === 'failed' ? 'why' : 'amount', l1),
+        label(ready ? 'kept' : m.kind === 'failed' ? '' : 'files', l2),
+        label(ready ? 'sent' : m.kind === 'failed' ? '' : 'speed', l3),
+        h('span', { class: ['xp-note', m.tone === 'warn' && 'xp-note--warn', m.tone === 'error' && 'xp-note--bad'] }, note1),
+        h('span', { class: 'acts xp-acts' }, acts)),
+      ready ? skipped(e?.skipped) : null,
+      note('On the new server: its first page, ', h('b', null, 'restore from an export file'), ', this file and the recovery key. A cut download carries on when you press download again.'));
   }
 
   /* ---------------------------------------------------------------- storage and compaction (admin) */

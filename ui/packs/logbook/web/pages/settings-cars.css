@@ -168,7 +168,3 @@
   .page-settings-cars .sc-src-reset .button, .page-settings-cars .sc-src-follow .button { --btn-h: round(2.5rem, var(--e)); }
 }
 .page-settings-cars .sc-src.is-ro { grid-template-columns: round(1.5rem, var(--e)) minmax(0, 1fr); padding-block: round(0.75rem, var(--e)); }
-
-/* a CAN Bridge key's name: quiet italics while it is the automatic label; its rename button beside the others */
-.page-settings-cars .dev-auto { font-style: italic; }
-.page-settings-cars .dev-acts { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); flex-wrap: wrap; }

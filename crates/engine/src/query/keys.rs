@@ -23,49 +23,6 @@ pub struct KeyRow {
     pub logs_waiting: u64,
     pub car: Option<CarRef>,
     pub preferred: bool,
-    /// The name an admin gave the key ("Screenmate in the car"), or none.
-    pub device: Option<String>,
-    /// What pages call the key: its name, else [`device_label`]'s automatic label.
-    pub device_label: String,
-}
-
-/// The most characters a key's name has (after trimming).
-pub const DEVICE_NAME_MAX: usize = 60;
-
-/// The short id of a key: its part after the last `_`, its first 6 characters.
-fn short_id(key: &str) -> String {
-    let tail = key.rsplit('_').next().filter(|t| !t.is_empty()).unwrap_or(key);
-    tail.chars().take(6).collect()
-}
-
-/// What a key is called: its name, else "CAN Bridge key" and its short id. The server learns nothing about the
-/// device from its uploads (the app and the Raspberry Pi logger send the same), so an unnamed key is told apart by
-/// its id.
-pub fn device_label(key: &str, name: Option<&str>) -> String {
-    match name {
-        Some(n) => n.to_string(),
-        None => match short_id(key) {
-            id if id.is_empty() => "CAN Bridge key".to_string(),
-            id => format!("CAN Bridge key {id}"),
-        },
-    }
-}
-
-/// A key's name, from the names admins gave.
-pub(crate) fn name_of(e: &Engine, key: &str) -> QResult<Option<String>> {
-    Ok(e.key_names()?.remove(key))
-}
-
-/// A name as typed, trimmed: one line of 1 to [`DEVICE_NAME_MAX`] characters; else why not.
-pub fn check_name(name: &str) -> Result<String, &'static str> {
-    let n = name.trim();
-    if n.is_empty() || n.chars().count() > DEVICE_NAME_MAX {
-        return Err("A name has 1 to 60 characters.");
-    }
-    if n.chars().any(char::is_control) {
-        return Err("A name is one line of text.");
-    }
-    Ok(n.to_string())
 }
 
 /// Every car's id, in order.
@@ -74,11 +31,9 @@ fn car_ids(e: &Engine) -> QResult<Vec<CarId>> {
 }
 
 /// A car's key, from its logs' records.
-fn car_key(e: &Engine, car: CarId, preferred: Option<&str>, key: &str, name: Option<String>) -> QResult<KeyRow> {
+fn car_key(e: &Engine, car: CarId, preferred: Option<&str>, key: &str) -> QResult<KeyRow> {
     let book = e.handle()?.block_on(e.judge().book(key));
     Ok(KeyRow {
-        device_label: device_label(key, name.as_deref()),
-        device: name,
         key: key.to_string(),
         first_seen_ms: book.logs.values().map(|r| r.arrived_ms).min(),
         last_upload_ms: book.logs.values().map(|r| r.arrived_ms).max(),
@@ -91,22 +46,18 @@ fn car_key(e: &Engine, car: CarId, preferred: Option<&str>, key: &str, name: Opt
 /// Every key: the cars' (of `visible`) and those waiting for a car.
 fn all_keys(e: &Engine, visible: &[CarId]) -> QResult<Vec<KeyRow>> {
     let db = e.db();
-    let mut names = e.key_names()?;
     let mut out = Vec::new();
     for car in car_ids(e)?.into_iter().filter(|c| visible.contains(c)) {
         let Some(c) = db.car(car)? else { continue };
         for k in &c.vehicle_keys {
-            out.push(car_key(e, car, c.preferred_key.as_deref(), k, names.remove(k))?);
+            out.push(car_key(e, car, c.preferred_key.as_deref(), k)?);
         }
     }
     for (key, w) in e.waiting_keys()? {
         if db.car_for_key(&key)?.is_some() {
             continue;
         }
-        let name = names.remove(&key);
         out.push(KeyRow {
-            device_label: device_label(&key, name.as_deref()),
-            device: name,
             key,
             first_seen_ms: Some(w.first_seen_ms),
             last_upload_ms: Some(w.last_upload_ms),
@@ -148,11 +99,9 @@ pub struct KeyChange {
     /// goes with it); `Some(None)`: take it from its car (it waits for an admin).
     pub car: Option<Option<CarId>>,
     pub preferred: Option<bool>,
-    /// `Some(Some(name))`: names the key (checked with [`check_name`]); `Some(None)`: forgets its name.
-    pub name: Option<Option<String>>,
 }
 
-/// `PATCH /can-keys/{key}`: assigns a key, sets the preferred key or names it. Unknown key: `no_such_key`; a car that isn't
+/// `PATCH /can-keys/{key}`: assigns a key or sets the preferred key. Unknown key: `no_such_key`; a car that isn't
 /// there (or that the caller does not see): `422 invalid`.
 pub fn set_key(e: &Engine, visible: &[CarId], key: &str, change: &KeyChange) -> QResult<KeyRow> {
     let db = e.db();
@@ -170,11 +119,6 @@ pub fn set_key(e: &Engine, visible: &[CarId], key: &str, change: &KeyChange) -> 
     {
         return Err(QueryError::NotFound("no_such_key"));
     }
-    let name = match &change.name {
-        Some(Some(n)) => Some(Some(check_name(n).map_err(|m| QueryError::invalid("name", m))?)),
-        Some(None) => Some(None),
-        None => None,
-    };
     if change.preferred == Some(true) && change.car == Some(None) {
         return Err(QueryError::invalid("preferred", "A key with no car can't be its car's preferred key."));
     }
@@ -189,9 +133,6 @@ pub fn set_key(e: &Engine, visible: &[CarId], key: &str, change: &KeyChange) -> 
         }
         e.set_preferred(key, p)?;
     }
-    if let Some(n) = name {
-        e.set_key_name(key, n.as_deref())?;
-    }
     key_row(e, key)
 }
 
@@ -200,14 +141,11 @@ pub fn key_row(e: &Engine, key: &str) -> QResult<KeyRow> {
     let db = e.db();
     if let Some(car) = db.car_for_key(key)? {
         let c = car_of(e, car)?;
-        return car_key(e, car, c.preferred_key.as_deref(), key, name_of(e, key)?);
+        return car_key(e, car, c.preferred_key.as_deref(), key);
     }
     let w = e.waiting_keys()?.get(key).cloned();
     let book = e.handle()?.block_on(e.judge().book(key));
-    let name = name_of(e, key)?;
     Ok(KeyRow {
-        device_label: device_label(key, name.as_deref()),
-        device: name,
         key: key.to_string(),
         first_seen_ms: w.as_ref().map(|w| w.first_seen_ms).or(book.logs.values().map(|r| r.arrived_ms).min()),
         last_upload_ms: w.as_ref().map(|w| w.last_upload_ms).or(book.logs.values().map(|r| r.arrived_ms).max()),
@@ -225,9 +163,6 @@ pub struct TokenRow {
     pub revoked: bool,
     /// The CAN Bridge key its first upload tied it to.
     pub key: Option<String>,
-    /// Its key's name and label, as the key rows give them (none while no key is tied).
-    pub device: Option<String>,
-    pub device_label: Option<String>,
     pub last_upload_ms: Option<u64>,
     pub car: Option<CarRef>,
 }
@@ -262,18 +197,11 @@ fn row(e: &Engine, t: &Token, car: Option<CarId>) -> QResult<TokenRow> {
         Some(k) => e.handle()?.block_on(e.judge().book(k)).logs.values().map(|r| r.arrived_ms).max(),
         None => None,
     };
-    let device = match &t.vehicle_key {
-        Some(k) => name_of(e, k)?,
-        None => None,
-    };
-    let device_label = t.vehicle_key.as_deref().map(|k| device_label(k, device.as_deref()));
     Ok(TokenRow {
         id: t.id.clone(),
         created_ms: t.created_ms,
         revoked: t.revoked,
         key: t.vehicle_key.clone(),
-        device,
-        device_label,
         last_upload_ms: last,
         car: car.map(CarRef),
     })

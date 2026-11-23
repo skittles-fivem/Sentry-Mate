@@ -920,6 +920,38 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
 @keyframes mv-busy { from { transform: translateX(-10%); } to { transform: translateX(240%); } }
 .mv-progress { display: grid; gap: round(0.5rem, var(--e)); }
 .mv-bar { height: round(0.5rem, var(--e)); border-radius: round(0.25rem, var(--e)); background: var(--paper-sunk); overflow: hidden; border: 1px solid var(--rule); }
+/* the export file's status: the same rows in every state, each keeping its height, so the panel never jumps */
+.xp { display: grid; grid-template-rows: auto auto auto auto auto 1fr auto; gap: round(0.625rem, var(--e)); min-height: round(22.5rem, var(--e)); padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border: 1px solid var(--rule); border-left-width: 3px; border-left-color: var(--slate); border-radius: round(0.25rem, var(--e)); background: var(--paper-raised); min-width: 0; }
+.xp-ok { border-left-color: var(--accent); }
+.xp-warn { border-left-color: var(--ochre); }
+.xp-bad { border-left-color: var(--rust); }
+.xp-top { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: round(0.75rem, var(--e)); align-items: start; }
+.xp-titles { min-width: 0; }
+.xp-title { font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+.xp-sub { color: var(--ink-3); min-height: calc(2 * var(--lh, 1.5em)); overflow-wrap: anywhere; }
+.xp-pct { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 4.5ch; text-align: right; color: var(--ink); }
+.xp-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, auto); justify-content: space-between; gap: round(0.5rem, var(--e)); }
+.xp-step { display: flex; align-items: center; gap: round(0.375rem, var(--e)); color: var(--ink-4); min-width: 0; }
+.xp-mark { display: grid; place-items: center; flex: none; width: round(1.25rem, var(--e)); height: round(1.25rem, var(--e)); border: 1px solid var(--rule); border-radius: 50%; font-size: max(0.75rem, 10px); line-height: 1; }
+.xp-step-done { color: var(--ink-3); }
+.xp-step-done .xp-mark { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
+.xp-step-now { color: var(--ink); }
+.xp-step-now .xp-mark { border-color: var(--accent); background: var(--accent); color: var(--paper-raised); }
+.xp-bar-warn .mv-bar-fill { background: var(--ochre); }
+.xp-bar-bad .mv-bar-fill { background: var(--rust); }
+.xp-bar-unknown .mv-bar-fill { width: 100%; opacity: 0.25; }
+.xp-line { color: var(--ink-2); font-variant-numeric: tabular-nums; min-height: var(--lh, 1.5em); overflow-wrap: anywhere; }
+.xp-say { align-self: start; padding: round(0.5rem, var(--e)) round(0.75rem, var(--e)); border-radius: round(0.25rem, var(--e)); background: var(--paper-sunk); color: var(--ink-2); min-width: 0; }
+.xp-say-warn { background: var(--ochre-wash); }
+.xp-say-bad { background: var(--rust-wash); }
+.xp-sha { display: block; overflow-wrap: anywhere; }
+.xp-acts { margin: 0; }
+@media (max-width: 40rem) {
+  .xp { min-height: round(30rem, var(--e)); padding: round(0.75rem, var(--e)) round(0.625rem, var(--e)); }
+  .xp-steps { gap: round(0.25rem, var(--e)); }
+  .xp-mark { width: round(1.125rem, var(--e)); height: round(1.125rem, var(--e)); }
+  .xp-step { gap: round(0.25rem, var(--e)); font-size: max(0.75rem, 10px); }
+}
 .mv-bar-fill { display: block; height: 100%; width: var(--w, 0%); background: var(--accent); transition: width 0.6s ease; }
 .mv-progress-text { display: flex; flex-wrap: wrap; gap: round(0.25rem, var(--e)) round(1rem, var(--e)); align-items: baseline; font-size: var(--text-sm); color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .mv-progress-pct { font: 400 1.25rem var(--serif); --LH: round(calc(1 * 1em), 2px); line-height: var(--LH); color: var(--ink); }

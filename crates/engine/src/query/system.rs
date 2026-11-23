@@ -843,9 +843,7 @@ pub struct KeyHealth {
     pub key: String,
     pub last_upload_ms: Option<u64>,
     pub preferred: bool,
-    /// The name an admin gave the key, and what pages call it (that name, else an automatic label).
     pub device: Option<String>,
-    pub device_label: String,
     pub logs_waiting: u64,
 }
 
@@ -999,12 +997,10 @@ fn verdict(e: &Engine, c: &model::Car, meta: &records::CarMeta, now: u64) -> QRe
     let mut waiting = 0u64;
     let mut last_upload: Option<u64> = None;
     let mut missing = MissingLogs::default();
-    let mut names = e.key_names()?;
     for key in &c.vehicle_keys {
         if let Ok(book) = rt.block_on(e.judge().missing(key)) {
             missing.add(&book.counts());
         }
-        let name = names.remove(key);
         let s = rt.block_on(e.judge().summary(key));
         let w = s.as_ref().map_or(0, |s| s.waiting as u64);
         waiting += w;
@@ -1015,8 +1011,7 @@ fn verdict(e: &Engine, c: &model::Car, meta: &records::CarMeta, now: u64) -> QRe
             key: key.clone(),
             last_upload_ms: lu,
             preferred: c.preferred_key.as_deref() == Some(key),
-            device_label: super::keys::device_label(key, name.as_deref()),
-            device: name,
+            device: None,
             logs_waiting: w,
         });
     }

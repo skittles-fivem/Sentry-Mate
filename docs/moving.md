@@ -78,7 +78,12 @@ the old server could not prove itself. Carrying on takes a code from the same ol
 ### On the old server: download an export file
 
 **Settings → Server and access → Download export file**, and your password again. The server prepares the file in
-a few seconds (uploads wait for those seconds), then the browser downloads it; a cut download carries on. The file
+three steps, shown with a bar, how much of how much, the speed and the time left: it counts what it will carry, waits
+for the writes under way, then takes the snapshot (uploads wait for this step; it takes seconds unless the database is
+large). Then the browser downloads it; a cut download carries on. You can close the page and come back: the file is
+still being made. **Cancel** stops it. If nothing moves for a minute the page says so; if it fails the page says why
+and what to do. Once the file is ready, the page shows its size and, a little later, its SHA-256: check a copy with
+`sha256sum` before you rely on it. The file
 is kept for a day after it was made or last downloaded, and a week at most. On the new server, choose **Restore
 from an export file** on the first page.
 

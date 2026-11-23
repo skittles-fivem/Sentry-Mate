@@ -35,6 +35,7 @@ node --test ui/shared/tests/
 | [`tyres.js`](tyres.js) | `tyreView(now)`: the Now's four tyres against the recommended pressures (each against its axle's when the sensors' wheels are known, else against the lower one, as the server judges `tyre_low`), and `recommendedLine(now)`: "Recommended 2.90 bar (from CAN)." with where it comes from (CAN, the door placard for the car's wheel size, typed) |
 | [`password.js`](password.js) | `passwordAdvice(name, password)`: why a new password is easy to guess, in the server's words; pages warn with it and let the person go on |
 | [`maptiles.js`](maptiles.js) | Map tiles for every map: which tiles to draw (`GET /maps/config`: the offline map file, the online source, or none and why), raster paint for the theme and the person's map colours (dimmed, never inverted, in the dark theme), a plain style for an offline Protomaps vector file, the "No map tiles yet" note with an admin's one-click OpenStreetMap switch, the note with the cause when tiles fail, and the words of the Settings map rows |
+| [`exportjob.js`](exportjob.js) | The export file's status in the same words on every pack (`exportModel(e)` of an ExportFile: the step, the bar's percentage, "7.7 GB of 18.4 GB", the files, the speed and the time left, the stalled warning, what went wrong and what to do, and once ready its size and SHA-256; every text slot always a string, so a panel of a fixed size draws the same rows in every state), and `exportPollMs(e)`: how soon to look again |
 | [`teslamate.js`](teslamate.js) | The local TeslaMate input's shared rules for every pack's Settings: Integrations section: state and error words, the drafts of the MQTT and database forms, the server's checks said first (the plain text rule, a kept password, the pin, the topic prefix), the PUT body and the changed car matches, the TLS tick's port switch (`tmTlsPort`: 1883 and 8883, only from the other default) and the Host and pin hints; and its notices for every pack's notices bar (`isTmNotice`, `tmNoticeFix`: the link to Settings: Integrations #teslamate, `TM_NOTICE_ACTION`: the link's words) |
 
 ### api.js
@@ -181,9 +182,6 @@ downloadCsv(csvFilename(car.name, 'battery-level'), rows, [timeColumn('Time', 't
 `on(target, type, fn)`, `esc`, `safeUrl`, `setVars(el, vars)`, `cssVar(name)`, `cover(el, ...ids)`,
 `ready(pageId)`, `unready()`, `failed(pageId)`, `readyPage()`, `setTitle(...parts)`, `quantity(value, kind,
 opts)`, `styleSheet(href, { first })` (adds a style sheet once, after the others or with `first` before them, and resolves when it has loaded: maps and charts await it).
-`disclose(button, part, { focus, onOpen, onClose })` opens a hidden part in place from a button (a name box behind "Edit"):
-aria-expanded and aria-controls on the button, the focus into the part when it opens and back to the button when
-it closes, Escape inside it closes it; returns `{ open(), close(), isOpen() }`.
 
 `h()` attributes: `class` (text, array or `{ name: on }`), `dataset`, `vars` (CSS custom properties, set through
 CSSOM), `style` (an object, CSSOM), `cover` (inventory item ids), `on<event>` functions, `value` / `checked`

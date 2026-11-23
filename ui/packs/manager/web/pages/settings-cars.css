@@ -126,6 +126,3 @@
 :root[data-phone] .sc-grip { width: round(2rem, var(--e)); height: var(--tap); }
 :root[data-phone] .sc-src-name { min-width: 0; flex: 1 1 100%; }
 :root[data-phone] .settings-stack .sc-order-foot > .btn { align-self: flex-start; }
-
-/* a key's Rename (can-key-name.js): on a phone the words line up with the name when the button wraps */
-:root[data-phone] .sc-dev > .key-rename { padding-inline: 0; }

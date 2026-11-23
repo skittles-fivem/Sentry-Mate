@@ -54,20 +54,23 @@ const KEEP = { off: 'Off', on: 'Keep climate', dog: 'Dog mode', camp: 'Camp mode
 
 /* ------------------------------------------------------------------ values no CAN message carries */
 
-// `now.off_can`: each value { value, at_ms, sources: [{ kind, label }], stale } or null, from the Tesla API, TeslaFi
-// or local TeslaMate. Where it came from and how old it is are the value's hover title, not words beside it.
+// `now.off_can`: each value { value, at_ms, sources: [{ kind, label }], stale } or null, from the Tesla API or
+// TeslaFi. Shown with its input's label and, once older than its limit, a stale mark with its age.
+const OFF_SHORT = { tesla_api: 'Tesla API', teslafi_api: 'TeslaFi' };
 const WINDOWS = [['driver_front', 'Driver front window'], ['passenger_front', 'Passenger front window'], ['driver_rear', 'Driver rear window'], ['passenger_rear', 'Passenger rear window']];
 const SUNROOF = { closed: 'Closed', open: 'Open', vent: 'Vent', calibrating: 'Calibrating' };
-// a value's input and age, for its hover title ("Data from TeslaFi, read 6 h ago; stale, may have changed")
-function offTitle(pair) {
+function offSrc(pair) {
   const s = pair?.sources?.[0];
   if (!s) return null;
-  return `${s.label}, read ${ago(pair.at_ms)}${pair.stale ? '; stale, may have changed since' : ''}`;
+  return h('span', { class: ['off-src', pair.stale && 'is-stale'], title: `${s.label}; read ${ago(pair.at_ms)}${pair.stale ? '. Older than its limit, so it may have changed since.' : ''}` },
+    h('i', { class: `src-m src-m--${s.kind}`, 'aria-hidden': 'true' }),
+    h('span', { class: 'off-src-word' }, OFF_SHORT[s.kind] || s.label),
+    pair.stale ? h('span', { class: 'off-stale' }, `stale · ${ago(pair.at_ms)}`) : null);
 }
-// a label and the value, its input and age in its title; null when no input gives it (and `hide`), else a dash
-function offRow(label, pair, text, { hide = false, cover: cv = null, title = null } = {}) {
-  if (pair == null) return hide ? null : { label, value: h('span', { class: 'faint' }, '—'), cv };
-  return { label, value: h('span', { class: pair.stale ? 'off-old' : null, title: [offTitle(pair), title].filter(Boolean).join('. ') || null }, text(pair.value)), cv };
+// a label, the value and where it came from; null when no input gives it (and `hide`), else a dash
+function offRow(label, pair, text, { hide = false, cover: cv = null } = {}) {
+  if (pair == null) return hide ? null : { label, value: h('span', { class: 'faint' }, '—'), src: null, cv };
+  return { label, value: h('span', { class: pair.stale ? 'off-old' : null }, text(pair.value)), src: offSrc(pair), cv };
 }
 
 /* ------------------------------------------------------------------ live values */
@@ -468,10 +471,6 @@ export async function mount(ctx) {
     const o = n.off_can || {};
     const w = o.windows || {}, rt = o.route || {};
     const openWord = (v) => (v ? h('span', { class: 'warn' }, 'Open') : 'Closed');
-    // each window by name only while one is read now: stale readings fold into the Windows row (its title says so)
-    const winRead = WINDOWS.map(([k]) => w[k]).filter(Boolean);
-    const winRows = winRead.some((x) => !x.stale);
-    const winHint = winRead.length && winRead[0].at_ms !== o.windows_open?.at_ms ? `Each window: ${offTitle(winRead[0])}` : null;
     const update = o.update_available == null ? null : {
       ...o.update_available,
       value: o.update_installing?.value ? `Installing${val(o.update_version) ? ` ${val(o.update_version)}` : ''}`
@@ -482,8 +481,8 @@ export async function mount(ctx) {
       h('span', { class: 'faint' }, [val(rt.km) != null ? ` · ${format(val(rt.km), 'distance')}` : '', val(rt.minutes) != null ? ` · ${dur(val(rt.minutes) * 60000)} left` : '', val(rt.traffic_min) ? ` · ${dur(val(rt.traffic_min) * 60000)} lost to traffic` : ''].join(''))] : null;
     const offRows = [
       offRow('Locks', o.locked, (v) => (v ? 'Locked' : h('span', { class: 'warn' }, 'Unlocked')), { cover: 'summary.flag.lock' }),
-      offRow('Windows', o.windows_open, (v) => (v ? h('span', { class: 'warn' }, WINDOWS.filter(([k]) => val(w[k])).map(([, l]) => l.replace(/ window$/, '')).join(', ') || 'One is open') : 'All closed'), { cover: 'summary.flag.windows_open', title: winRows ? null : winHint }),
-      ...(winRows ? WINDOWS.map(([k, l]) => offRow(l, w[k], openWord, { hide: true })) : []),
+      offRow('Windows', o.windows_open, (v) => (v ? h('span', { class: 'warn' }, WINDOWS.filter(([k]) => val(w[k])).map(([, l]) => l.replace(/ window$/, '')).join(', ') || 'One is open') : 'All closed'), { cover: 'summary.flag.windows_open' }),
+      ...WINDOWS.map(([k, l]) => offRow(l, w[k], openWord, { hide: true })),
       offRow('Sunroof', o.sunroof_state, (v) => [SUNROOF[v] || v, val(o.sunroof_pct) ? h('span', { class: 'faint' }, ` · ${pct(val(o.sunroof_pct))} open`) : null], { hide: true }),
       offRow('Version reported', o.version, (v) => v),
       offRow('Software update', update, (v) => v),
@@ -493,13 +492,13 @@ export async function mount(ctx) {
     ].filter(Boolean);
     const offLabels = [...new Set(Object.values({ ...o, ...w, ...rt }).filter((x) => x && x.sources).map((x) => x.sources[0].label))];
     const anyOff = offLabels.length > 0;
-    const offPanel = panel({ title: 'Locks, windows and software', icon: 'lock', cls: 'off-panel', side: anyOff ? null : h('span', { class: 'faint' }, 'Not on the CAN bus') },
+    const offPanel = panel({ title: 'Locks, windows and software', icon: 'lock', cls: 'off-panel', side: h('span', { class: 'faint' }, anyOff ? offLabels.join(' · ') : 'Not on the CAN bus') },
       anyOff ? h('dl', { class: 'off-grid' }, offRows.map((r) => {
-        const el = h('div', { class: 'off-pair' }, h('dt', null, r.label), h('dd', null, r.value));
+        const el = h('div', { class: 'off-pair' }, h('dt', null, r.label), h('dd', null, r.value, r.src));
         if (r.cv) cover(el, r.cv);
         return el;
       })) : h('p', { class: 'note', cover: ['summary.flag.lock', 'summary.flag.windows_open'] }, 'No input gives these for this car now. No CAN message carries the locks, windows, sunroof, software version, waiting update, charge schedule or route; the Tesla API or TeslaFi can (', h('a', { class: 'link', href: state.buildUrl('settings-integrations', { car: cid }) }, 'Settings: Integrations'), ').'),
-      anyOff ? h('p', { class: 'note' }, 'Read by the car’s other inputs, never guessed; point at a value for its input and age.') : null);
+      anyOff ? h('p', { class: 'note' }, 'Read by the car’s other inputs, never guessed (a lock request is not a lock state). A value marked stale is older than its limit (an hour for locks and windows, 10 min for a route) and may have changed.') : null);
 
     // charging now
     const chg = n.charge || {};

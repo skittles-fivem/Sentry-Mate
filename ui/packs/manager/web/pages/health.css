@@ -154,6 +154,3 @@
 .ov-chip[data-status="problem"] { color: var(--danger); font-weight: 600; }
 .ov-card--locked .ov-card-icon { background: var(--glass-2); color: var(--text-3); }
 .ov-card--locked:hover { border-color: var(--line); background: var(--panel-solid); }
-
-/* a key's Rename (can-key-name.js): on a phone the words line up with the name when the button wraps */
-:root[data-phone] .hl-key .main > .key-rename { padding-inline: 0; }

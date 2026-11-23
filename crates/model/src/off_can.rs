@@ -7,8 +7,7 @@
 //! value: the first input with a value
 //! that is not stale gives it; when every input's value is stale, the first one's is kept, marked stale. A value is
 //! stale once it is older than its age limit ([`max_age_ms`]): the lock state an hour after the input stopped
-//! reading the car is no longer the lock state. A window's own stale reading is left out when a current "any window
-//! open" covers it. Nothing is guessed: a value an input did not send is `None`.
+//! reading the car is no longer the lock state. Nothing is guessed: a value an input did not send is `None`.
 
 use crate::{Input, SourceOrder};
 use serde::{Deserialize, Serialize};
@@ -221,15 +220,6 @@ pub fn fuse(now_ms: u64, readings: &[Reading<'_>], order: &SourceOrder) -> OffCa
     for i in 0..4 {
         out.windows[i] = pick(&rs, Kind::Body, st, &|o| o.windows[i]);
     }
-    // a current "any window open" (local TeslaMate's one flag, or another input's four) covers a window's stale
-    // reading: that reading is left out rather than shown beside it
-    if out.windows_open.as_ref().is_some_and(|w| !w.stale) {
-        for w in &mut out.windows {
-            if w.as_ref().is_some_and(|w| w.stale) {
-                *w = None;
-            }
-        }
-    }
     out
 }
 
@@ -295,27 +285,6 @@ mod tests {
         );
         assert_eq!(n.locked.as_ref().map(|l| (l.value, l.input)), Some((false, Input::TeslafiApi)));
         assert_eq!(n.version.as_ref().map(|v| v.input), Some(Input::TeslaApi));
-    }
-
-    #[test]
-    fn a_current_any_window_value_covers_stale_windows() {
-        let now = 10 * H;
-        let fi = OffCan { windows: [Some(false); 4], version: Some("2026.44.1".into()), ..OffCan::default() };
-        let tm = OffCan { windows_open: Some(false), ..OffCan::default() };
-        let fi_old = Reading { input: Input::TeslafiApi, at_ms: now - 6 * H, values: &fi };
-        let tm_now = Reading { input: Input::TeslamateLocal, at_ms: now - 30_000, values: &tm };
-        let n = fuse(now, &[fi_old, tm_now], &SourceOrder::default());
-        let w = n.windows_open.as_ref().unwrap();
-        assert_eq!((w.value, w.input, w.stale), (false, Input::TeslamateLocal, false), "the current flag wins");
-        assert_eq!(n.windows, [None, None, None, None], "TeslaFi's 6 h old windows are left out");
-        // TeslaFi's windows alone, stale: kept, marked stale (the page folds them into the Windows row)
-        let n = fuse(now, &[fi_old], &SourceOrder::default());
-        assert!(n.windows.iter().all(|w| w.as_ref().is_some_and(|w| w.stale)));
-        assert!(n.windows_open.as_ref().is_some_and(|w| w.stale));
-        // current windows of their own stay beside a current flag
-        let fi_now = Reading { input: Input::TeslafiApi, at_ms: now - 60_000, values: &fi };
-        let n = fuse(now, &[fi_now, tm_now], &SourceOrder::default());
-        assert!(n.windows.iter().all(|w| w.as_ref().is_some_and(|w| !w.stale && w.input == Input::TeslafiApi)));
     }
 
     #[test]
