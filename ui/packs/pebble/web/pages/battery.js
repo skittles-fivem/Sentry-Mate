@@ -16,7 +16,7 @@ import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { tile, num, chip, icon, note, ring } from '../core/ui.js';
-import { emptyTile } from '../core/states.js';
+import { emptyTile, ghostTile, plotGhost } from '../core/states.js';
 import { field, form, segmented, toggle } from '../core/form.js';
 import { timeChart, xyChart } from '../core/chart.js';
 import { statTile, facts, filterBar, pills, splitBar, sectionHead, nums, moreButton, AWAKE_WORDS } from '../core/bits.js';
@@ -38,12 +38,11 @@ export async function mount(ctx) {
   const car = ctx.car, tz = ctx.tz, period = ctx.period;
   const base = api.apiPath`cars/${car.id}`;
   const keep = (p) => p.catch(() => null);
-  const [bat, totals, settings, eff] = await Promise.all([
-    ctx.api.get(`${base}/battery`), keep(ctx.api.get(`${base}/totals`)), keep(ctx.api.get(`${base}/settings`)), keep(ctx.api.get(`${base}/efficiency`)),
-  ]);
-  if (!ctx.alive()) return {};
-  const cap = bat.capacity || {}, rng = bat.range || {}, life = bat.lifetime || {}, band = bat.band || {};
-  const t = totals || {};
+  // Every call starts at once and each block paints when its own answers are in; until then a grey tile of its
+  // size keeps its room, so the page shows what it has and nothing jumps when the slow parts arrive.
+  const batP = ctx.api.get(`${base}/battery`);
+  const totalsP = keep(ctx.api.get(`${base}/totals`)), settingsP = keep(ctx.api.get(`${base}/settings`)), effP = keep(ctx.api.get(`${base}/efficiency`));
+  const batOrNull = keep(batP);
   const opt = {
     bucket: ctx.query.cl_bucket === 'hour' ? 'hour' : 'day', moving: ctx.query.cl_moving !== '0', window: ctx.query.cl_window === '30d' ? '30d' : '7d',
     prBucket: ['hour', 'day', 'week'].includes(ctx.query.pr_bucket) ? ctx.query.pr_bucket : 'auto', minH: Number(ctx.query.min_h) || 0,
@@ -52,73 +51,93 @@ export async function mount(ctx) {
   const bar = filterBar(ctx, { carCover: ['bh.filter.car', 'cl.filter.car', 'pr.section.per_car', 'vd.section.per_car'], periodCover: ['cl.filter.time_range', 'pr.filter.time_range', 'vd.filter.time_range'] },
     h('span', { class: 'filter-note' }, 'The level, the projected range and the parked drain follow the period; health and lifetime figures do not.'));
 
-  /* ------------------------------------------------------------ now: the level and the band */
-  const lo = band.low_pct ?? 20, hi = band.high_pct ?? 80;
-  const bandEl = h('div', { class: 'band', cover: 'bh.soc.band' },
-    h('span', { class: 'band-track', 'aria-hidden': 'true' }, h('span', { class: 'band-low' }), h('span', { class: 'band-ok' }), h('span', { class: 'band-fill' }), h('span', { class: 'band-limit' })),
-    h('span', { class: 'band-words' }, `Everyday band ${pct(lo)} to ${pct(hi)}${band.charge_limit_pct != null ? `; charge limit ${pct(band.charge_limit_pct)}` : ''}`));
-  bandEl.querySelector('.band-fill').style.setProperty('--v', String(Math.max(0, Math.min(1, (bat.soc_pct ?? 0) / 100))));
-  bandEl.querySelector('.band-ok').style.setProperty('--lo', String(lo / 100));
-  bandEl.querySelector('.band-ok').style.setProperty('--hi', String(hi / 100));
-  bandEl.querySelector('.band-limit').style.setProperty('--v', String((band.charge_limit_pct ?? hi) / 100));
-  const nowT = tile({ w: 2, title: 'Now', icon: 'battery', cls: 'bat-now' },
-    h('div', { class: 'bat-top' },
-      h('div', { cover: 'bh.soc.current' }, ring(bat.soc_pct, { label: 'Battery', size: 'l' })),
-      h('div', { class: 'bat-text' },
-        h('div', { cover: 'bh.bar.stored_energy' }, h('span', { class: 'hero-k' }, 'Stored energy'), num(bat.energy_now_kwh, 'energy', { size: 'l', why: 'not reported' }),
-          h('p', { class: 'tile-line' }, cap.usable_kwh ? `of ${format(cap.usable_kwh, 'energy')} usable when full` : 'usable energy in the pack now')),
-        h('p', { class: 'tile-line' }, `${CHEM[bat.chemistry?.value] || 'Chemistry not known'}${bat.chemistry ? `, ${bat.chemistry.source === 'owner' ? 'set by the owner' : 'detected'}` : ''}${bat.brick_spread_v != null ? ` · cells within ${format(bat.brick_spread_v * 1000, 'number', { digits: 0 })} mV` : ''}`))),
-    bandEl, bat.sources?.length ? h('p', { class: 'src-line' }, srcPill(bat)) : null);
+  const nowS = ghostTile(2, 'h3'), healthS = ghostTile(2, 'h3'), rangeS = ghostTile(2, 'h2'), driveS = ghostTile(2, 'h3'), chargeS = ghostTile(2, 'h3'), refS = ghostTile(2, 'h3');
+  const put = (slot, el) => { if (ctx.alive() && slot.parentNode) slot.replaceWith(el); };
 
-  /* ------------------------------------------------------------ health: capacity now vs new */
-  const factor = rangeLabel() === 'Ideal range' ? eff?.factor?.ideal_wh_per_km : eff?.factor?.rated_wh_per_km;
-  const healthT = tile({ w: 2, title: 'Capacity and health', icon: 'shield', cls: 'bat-health', cover: 'shots.battery-health' },
-    h('div', { class: 'bat-top' },
-      h('div', { cover: ['bh.bar.health', 'bh.gauge.degradation'] }, ring(cap.health_pct, { label: 'of new', size: 'l', tone: 'teal' })),
+  /* ------------------------------------------------------------ now, health, range: GET battery */
+  const paintBattery = async () => {
+    const [bat, eff] = await Promise.all([batP, effP]);
+    if (!ctx.alive()) return;
+    const cap = bat.capacity || {}, rng = bat.range || {}, band = bat.band || {};
+    /* now: the level and the band */
+    const lo = band.low_pct ?? 20, hi = band.high_pct ?? 80;
+    const bandEl = h('div', { class: 'band', cover: 'bh.soc.band' },
+      h('span', { class: 'band-track', 'aria-hidden': 'true' }, h('span', { class: 'band-low' }), h('span', { class: 'band-ok' }), h('span', { class: 'band-fill' }), h('span', { class: 'band-limit' })),
+      h('span', { class: 'band-words' }, `Everyday band ${pct(lo)} to ${pct(hi)}${band.charge_limit_pct != null ? `; charge limit ${pct(band.charge_limit_pct)}` : ''}`));
+    bandEl.querySelector('.band-fill').style.setProperty('--v', String(Math.max(0, Math.min(1, (bat.soc_pct ?? 0) / 100))));
+    bandEl.querySelector('.band-ok').style.setProperty('--lo', String(lo / 100));
+    bandEl.querySelector('.band-ok').style.setProperty('--hi', String(hi / 100));
+    bandEl.querySelector('.band-limit').style.setProperty('--v', String((band.charge_limit_pct ?? hi) / 100));
+    const nowT = tile({ w: 2, title: 'Now', icon: 'battery', cls: 'bat-now' },
+      h('div', { class: 'bat-top' },
+        h('div', { cover: 'bh.soc.current' }, ring(bat.soc_pct, { label: 'Battery', size: 'l' })),
+        h('div', { class: 'bat-text' },
+          h('div', { cover: 'bh.bar.stored_energy' }, h('span', { class: 'hero-k' }, 'Stored energy'), num(bat.energy_now_kwh, 'energy', { size: 'l', why: 'not reported' }),
+            h('p', { class: 'tile-line' }, cap.usable_kwh ? `of ${format(cap.usable_kwh, 'energy')} usable when full` : 'usable energy in the pack now')),
+          h('p', { class: 'tile-line' }, `${CHEM[bat.chemistry?.value] || 'Chemistry not known'}${bat.chemistry ? `, ${bat.chemistry.source === 'owner' ? 'set by the owner' : 'detected'}` : ''}${bat.brick_spread_v != null ? ` · cells within ${format(bat.brick_spread_v * 1000, 'number', { digits: 0 })} mV` : ''}`))),
+      bandEl, bat.sources?.length ? h('p', { class: 'src-line' }, srcPill(bat)) : null);
+
+    /* health: capacity now vs new */
+    const factor = rangeLabel() === 'Ideal range' ? eff?.factor?.ideal_wh_per_km : eff?.factor?.rated_wh_per_km;
+    const healthT = tile({ w: 2, title: 'Capacity and health', icon: 'shield', cls: 'bat-health', cover: 'shots.battery-health' },
+      h('div', { class: 'bat-top' },
+        h('div', { cover: ['bh.bar.health', 'bh.gauge.degradation'] }, ring(cap.health_pct, { label: 'of new', size: 'l', tone: 'teal' })),
+        nums([
+          ['Usable now', num(cap.usable_kwh, 'energy', { size: 'm', why: 'not reported' }), 'bh.capacity.usable_now'],
+          ['Usable when new', num(cap.new_kwh, 'energy', { size: 'm', why: 'type it below' }), 'bh.capacity.usable_new'],
+          ['Difference', num(cap.difference_kwh == null ? null : -cap.difference_kwh, 'energy', { size: 'm', why: 'needs a new value' }), 'bh.capacity.difference'],
+          [`Per ${unitLabel('range')} of range`, num(factor, 'efficiency', { size: 'm', why: 'not worked out yet' }), 'bh.stat.efficiency'],
+        ])),
+      h('p', { class: 'note', cover: ['bh.capacity.help', 'bh.gauge.degradation_help'] },
+        `Health is usable capacity now over usable when new (${NEW_SOURCE[cap.new_source] || 'not known'}). ${cap.degradation_pct != null ? `Down ${pct(cap.degradation_pct, 1)}; ` : ''}the warranty promises ${pct(cap.warranty_pct ?? 70)}. Usable is the full pack minus the ${format(cap.buffer_kwh, 'energy')} the car keeps back, from ${n0(cap.readings)} pack readings.`),
+      bat.pack?.replaced_ms != null ? note(`Pack replaced on ${formatDate(bat.pack.replaced_ms, tz, { weekday: false, month: 'long' })} (${bat.pack.source === 'owner' ? 'typed by the owner' : 'detected from the pack’s readings'}). Capacity and health cover the new pack only.`) : null);
+    const lostShare = rng.lost_km != null && rng.full_new_km ? (rng.lost_km / rng.full_new_km) * 100 : null;
+    const rangeT = tile({ w: 2, title: 'Full-charge range', icon: 'gauge' },
       nums([
-        ['Usable now', num(cap.usable_kwh, 'energy', { size: 'm', why: 'not reported' }), 'bh.capacity.usable_now'],
-        ['Usable when new', num(cap.new_kwh, 'energy', { size: 'm', why: 'type it below' }), 'bh.capacity.usable_new'],
-        ['Difference', num(cap.difference_kwh == null ? null : -cap.difference_kwh, 'energy', { size: 'm', why: 'needs a new value' }), 'bh.capacity.difference'],
-        [`Per ${unitLabel('range')} of range`, num(factor, 'efficiency', { size: 'm', why: 'not worked out yet' }), 'bh.stat.efficiency'],
-      ])),
-    h('p', { class: 'note', cover: ['bh.capacity.help', 'bh.gauge.degradation_help'] },
-      `Health is usable capacity now over usable when new (${NEW_SOURCE[cap.new_source] || 'not known'}). ${cap.degradation_pct != null ? `Down ${pct(cap.degradation_pct, 1)}; ` : ''}the warranty promises ${pct(cap.warranty_pct ?? 70)}. Usable is the full pack minus the ${format(cap.buffer_kwh, 'energy')} the car keeps back, from ${n0(cap.readings)} pack readings.`),
-    bat.pack?.replaced_ms != null ? note(`Pack replaced on ${formatDate(bat.pack.replaced_ms, tz, { weekday: false, month: 'long' })} (${bat.pack.source === 'owner' ? 'typed by the owner' : 'detected from the pack’s readings'}). Capacity and health cover the new pack only.`) : null);
-  const lostShare = rng.lost_km != null && rng.full_new_km ? (rng.lost_km / rng.full_new_km) * 100 : null;
-  const rangeT = tile({ w: 2, title: 'Full-charge range', icon: 'gauge' },
-    nums([
-      ['At 100 % now', num(rng.full_now_km, 'range', { size: 'l', why: 'not enough readings' }), 'bh.ranges.max_now'],
-      ['At 100 % when new', num(rng.full_new_km, 'range', { size: 'm', why: 'type it below' }), 'bh.ranges.max_new'],
-      ['Range lost', num(rng.lost_km, 'range', { size: 'm', why: 'needs a new value' }), 'bh.ranges.lost'],
-    ]),
-    note(`${rangeLabel()} at a full charge. From energy: ${format(rng.full_now_from_energy_km, 'range')}.${lostShare != null ? ` ${pct(lostShare, 1)} of the range when new; new is ${RANGE_SOURCE[rng.new_source] || 'not known'}.` : ''}`));
+        ['At 100 % now', num(rng.full_now_km, 'range', { size: 'l', why: 'not enough readings' }), 'bh.ranges.max_now'],
+        ['At 100 % when new', num(rng.full_new_km, 'range', { size: 'm', why: 'type it below' }), 'bh.ranges.max_new'],
+        ['Range lost', num(rng.lost_km, 'range', { size: 'm', why: 'needs a new value' }), 'bh.ranges.lost'],
+      ]),
+      note(`${rangeLabel()} at a full charge. From energy: ${format(rng.full_now_from_energy_km, 'range')}.${lostShare != null ? ` ${pct(lostShare, 1)} of the range when new; new is ${RANGE_SOURCE[rng.new_source] || 'not known'}.` : ''}`));
+    put(nowS, nowT); put(healthS, healthT); put(rangeS, rangeT);
+  };
 
-  /* ------------------------------------------------------------ lifetime totals */
-  const mileage = t.odometer_last_km != null && t.odometer_first_km != null ? t.odometer_last_km - t.odometer_first_km : null;
-  const driveT = tile({ w: 2, title: 'Driving, all time', icon: 'route', side: h('a', { class: 'tile-link', href: ctx.link('statistics'), cover: 'bh.drive.link_stats' }, 'Statistics', icon('chevronRight')) },
-    facts([
-      ['Odometer', format(t.odometer_last_km, 'odometer'), 'bh.drive.odometer'],
-      ['Driven since logging began', format(mileage, 'distance'), 'bh.drive.mileage'],
-      ['Logged in drives', `${format(t.distance_km, 'distance')} · ${n0(t.drives)} drives`, 'bh.drive.logged'],
-      ['Not logged', t.not_logged_km ? h('a', { href: state.buildUrl('health', { car: car.id, period: { preset: 'all' } }) }, `${format(t.not_logged_km, 'distance')}, see the gaps`) : format(t.not_logged_km ?? 0, 'distance'), 'bh.drive.data_lost'],
-      ['Energy driving', format(life.drive_kwh, 'energy')],
-      ['Won back braking', format(life.regen_kwh, 'energy')],
-    ]),
-    h('p', { class: 'note', cover: 'bh.drive.help' }, 'Not logged is distance the odometer moved while nothing was recorded. Health lists each gap.'));
-  const chargeT = tile({ w: 2, title: 'Charging, all time', icon: 'bolt', side: h('a', { class: 'tile-link', href: ctx.link('charges', { period: { preset: 'all' } }), cover: 'bh.charging.link_stats' }, 'Charges', icon('chevronRight')) },
-    facts([
-      ['Charging sessions', `${n0(t.charges)} (AC ${n0(t.ac?.charges)}, DC ${n0(t.dc?.charges)})`, 'bh.charging.count'],
-      ['Energy added to the pack', format(t.energy_added_kwh, 'energy'), 'bh.charging.energy_added'],
-      ['Energy from the grid', `${format(t.energy_grid_kwh, 'energy')}${t.grid_coverage_pct != null && t.grid_coverage_pct < 100 ? ` (measured for ${pct(t.grid_coverage_pct)})` : ''}`, 'bh.charging.energy_used'],
-      ['Charging efficiency', t.charging_efficiency_pct == null ? 'not measured' : pct(t.charging_efficiency_pct, 1), 'bh.charging.efficiency'],
-      ['Equivalent full cycles', life.equivalent_cycles == null ? '—' : formatNumber(life.equivalent_cycles, { maximumFractionDigits: 1 }), 'bh.charging.cycles'],
-    ]),
-    splitBar({ label: 'Charged by kind', total: format((life.ac_kwh || 0) + (life.dc_kwh || 0), 'energy'), cover: 'bh.chart.ac_dc',
-      parts: [{ name: 'AC', value: life.ac_kwh || 0, text: format(life.ac_kwh || 0, 'energy'), tone: 'c3' }, { name: 'DC', value: life.dc_kwh || 0, text: format(life.dc_kwh || 0, 'energy'), tone: 'c2' }] }),
-    h('p', { class: 'note', cover: 'bh.charging.help' }, 'Efficiency is energy into the pack over energy from the grid, for AC charges where both were measured. DC is left out, not counted as 100 %. A full cycle is one usable pack’s worth of charging.'));
+  /* ------------------------------------------------------------ lifetime totals: GET totals (and battery) */
+  const paintTotals = async () => {
+    const [bat, totals] = await Promise.all([batOrNull, totalsP]);
+    if (!ctx.alive()) return;
+    const t = totals || {}, life = (bat && bat.lifetime) || {};
+    const mileage = t.odometer_last_km != null && t.odometer_first_km != null ? t.odometer_last_km - t.odometer_first_km : null;
+    const driveT = tile({ w: 2, title: 'Driving, all time', icon: 'route', side: h('a', { class: 'tile-link', href: ctx.link('statistics'), cover: 'bh.drive.link_stats' }, 'Statistics', icon('chevronRight')) },
+      facts([
+        ['Odometer', format(t.odometer_last_km, 'odometer'), 'bh.drive.odometer'],
+        ['Driven since logging began', format(mileage, 'distance'), 'bh.drive.mileage'],
+        ['Logged in drives', `${format(t.distance_km, 'distance')} · ${n0(t.drives)} drives`, 'bh.drive.logged'],
+        ['Not logged', t.not_logged_km ? h('a', { href: state.buildUrl('health', { car: car.id, period: { preset: 'all' } }) }, `${format(t.not_logged_km, 'distance')}, see the gaps`) : format(t.not_logged_km ?? 0, 'distance'), 'bh.drive.data_lost'],
+        ['Energy driving', format(life.drive_kwh, 'energy')],
+        ['Won back braking', format(life.regen_kwh, 'energy')],
+      ]),
+      h('p', { class: 'note', cover: 'bh.drive.help' }, 'Not logged is distance the odometer moved while nothing was recorded. Health lists each gap.'));
+    const chargeT = tile({ w: 2, title: 'Charging, all time', icon: 'bolt', side: h('a', { class: 'tile-link', href: ctx.link('charges', { period: { preset: 'all' } }), cover: 'bh.charging.link_stats' }, 'Charges', icon('chevronRight')) },
+      facts([
+        ['Charging sessions', `${n0(t.charges)} (AC ${n0(t.ac?.charges)}, DC ${n0(t.dc?.charges)})`, 'bh.charging.count'],
+        ['Energy added to the pack', format(t.energy_added_kwh, 'energy'), 'bh.charging.energy_added'],
+        ['Energy from the grid', `${format(t.energy_grid_kwh, 'energy')}${t.grid_coverage_pct != null && t.grid_coverage_pct < 100 ? ` (measured for ${pct(t.grid_coverage_pct)})` : ''}`, 'bh.charging.energy_used'],
+        ['Charging efficiency', t.charging_efficiency_pct == null ? 'not measured' : pct(t.charging_efficiency_pct, 1), 'bh.charging.efficiency'],
+        ['Equivalent full cycles', life.equivalent_cycles == null ? '—' : formatNumber(life.equivalent_cycles, { maximumFractionDigits: 1 }), 'bh.charging.cycles'],
+      ]),
+      splitBar({ label: 'Charged by kind', total: format((life.ac_kwh || 0) + (life.dc_kwh || 0), 'energy'), cover: 'bh.chart.ac_dc',
+        parts: [{ name: 'AC', value: life.ac_kwh || 0, text: format(life.ac_kwh || 0, 'energy'), tone: 'c3' }, { name: 'DC', value: life.dc_kwh || 0, text: format(life.dc_kwh || 0, 'energy'), tone: 'c2' }] }),
+      h('p', { class: 'note', cover: 'bh.charging.help' }, 'Efficiency is energy into the pack over energy from the grid, for AC charges where both were measured. DC is left out, not counted as 100 %. A full cycle is one usable pack’s worth of charging.'));
+    put(driveS, driveT); put(chargeS, chargeT);
+  };
 
-  /* ------------------------------------------------------------ reference values */
-  const refT = referenceTile(ctx, { base, settings, cap, pack: bat.pack, tz });
+  /* ------------------------------------------------------------ reference values: GET settings (and battery) */
+  const paintReference = async () => {
+    const [bat, settings] = await Promise.all([batOrNull, settingsP]);
+    if (!ctx.alive()) return;
+    put(refS, referenceTile(ctx, { base, settings, cap: (bat && bat.capacity) || {}, pack: bat && bat.pack, tz }));
+  };
 
   /* ------------------------------------------------------------ charts and lists (filled below) */
   const capT = tile({ w: 2, title: 'Capacity over the car’s life', icon: 'bars', cls: 'chart-tile', cover: ['bh.chart.capacity_by_distance.points', 'bh.chart.capacity_by_distance.median'] });
@@ -129,7 +148,10 @@ export async function mount(ctx) {
   const vdBox = h('div', { class: 'contents' });
   const vdMore = h('div', { class: 'contents' });
 
-  ctx.view.replaceChildren(bar, nowT, healthT, rangeT, capT, driveT, chargeT, clT, prHead, prBox, vdHead, vdBox, vdMore, refT);
+  capT.append(plotGhost());
+  prBox.append(ghostTile(2, 'h2'), ghostTile(2, 'h2'));
+  vdBox.append(ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile(1, 'h1'));
+  ctx.view.replaceChildren(bar, nowS, healthS, rangeS, capT, driveS, chargeS, clT, prHead, prBox, vdHead, vdBox, vdMore, refS);
 
   /* capacity by distance: a dot per day, the monthly line */
   async function paintCapacity() {
@@ -137,9 +159,11 @@ export async function mount(ctx) {
       ctx.api.list(`${base}/battery/capacity`, { group: 'day', x: 'odometer' }, { limit: 500 }).all({ max: 3000 }).catch(() => []),
       ctx.api.get(`${base}/battery/capacity`, { group: 'month', x: 'odometer', limit: 500 }).catch(() => null),
     ]);
+    const bat = await batOrNull;
     if (!ctx.alive()) return;
+    capT.querySelector('.plot-ghost')?.remove();
     const m = (med?.items || []).filter((x) => x.odometer_km != null && x.usable_kwh != null).sort((a, b) => a.odometer_km - b.odometer_km);
-    const swapMs = bat.pack?.replaced_ms ?? null;
+    const swapMs = bat?.pack?.replaced_ms ?? null;
     if (!pts.length && !m.length) { capT.append(emptyTile({ icon: 'battery', title: 'No capacity readings yet', text: 'The pack reports its capacity while the car is awake.', w: 2 })); return; }
     await xyChart(ctx, capT, { label: 'Usable capacity against the odometer', xs: m.map((x) => x.odometer_km), xKind: 'odometer', yKind: 'energy', yFloor: null,
       // readings before the pack was replaced are the previous pack's: drawn grey
@@ -158,12 +182,14 @@ export async function mount(ctx) {
   const segB = segmented({ name: 'bucket', value: opt.bucket, cover: 'cl.control.bucket_width', options: [['hour', 'Hourly'], ['day', 'Daily']], onchange: (v) => { opt.bucket = v; ctx.setQuery({ cl_bucket: v === 'hour' ? v : null }); paintLevel(); } });
   const mov = toggle({ label: 'Moving lines', sub: 'Average, median and the 7.5 and 92.5 percentiles', checked: opt.moving, cover: 'cl.control.include_moving', onchange: (on) => { opt.moving = on; ctx.setQuery({ cl_moving: on ? null : '0' }); paintLevel(); } });
   const segW = segmented({ name: 'window', value: opt.window, cover: 'cl.control.window_width', options: [['7d', '7 days'], ['30d', '30 days']], onchange: (v) => { opt.window = v; ctx.setQuery({ cl_window: v === '30d' ? v : null }); paintLevel(); } });
+  clHost.append(plotGhost());
   clT.append(h('div', { class: 'cl-controls' }, segB, segW, mov), clHost, clStats);
   async function paintLevel() {
     const from = period.from_ms ?? api.now() - 365 * DAY, to = period.to_ms ?? api.now();
     const longSpan = to - from > 62 * DAY;
     const bucket = longSpan ? 'day' : opt.bucket;
     const d = await ctx.api.get(`${base}/battery-level`, { from_ms: from, to_ms: to, bucket, moving: opt.moving ? 'true' : 'false', window: opt.window }).catch((e) => ({ error: e }));
+    const band = (d.band ? null : (await batOrNull)?.band) || {};
     if (!ctx.alive()) return;
     clHost.replaceChildren();
     clStats.replaceChildren();
@@ -179,7 +205,7 @@ export async function mount(ctx) {
         { key: 'p92', name: '92.5th', kind: 'percent', values: mv.p92_5 || [], tone: 'c5', dashed: true, cover: 'cl.chart.moving_p925' },
       ] : []),
     ].map((s) => ({ ...s, axis: 'left', floor: 0 }));
-    const bl = d.band || { low_pct: lo, high_pct: hi };
+    const bl = d.band || { low_pct: band.low_pct ?? 20, high_pct: band.high_pct ?? 80 };
     await timeChart(ctx, clHost, { tz, t_ms: b.map((x) => x.t_ms), series, spans: d.spans || [], label: 'Charge level', yBand: { from: bl.low_pct, to: bl.high_pct } });
     const st = d.stats || {};
     clStats.append(
@@ -279,7 +305,8 @@ export async function mount(ctx) {
         `${format(r.soc_start_pct, 'percent')} → ${format(r.soc_end_pct, 'percent')}`));
   }
 
-  await Promise.all([paintCapacity(), paintLevel(), paintProjected(), paintParked()]);
+  // the battery block fails the page when GET battery does (as before); the rest show their own empty states
+  await Promise.all([paintBattery(), paintTotals(), paintReference(), paintCapacity(), paintLevel(), paintProjected(), paintParked()]);
   if (!ctx.alive()) return {};
   ctx.ready();
   return {};

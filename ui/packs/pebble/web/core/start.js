@@ -38,9 +38,9 @@ async function start() {
   const [about, cars, , notices] = await Promise.all([
     api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     // the count of the car pill leaves out sold cars (fleet/summary counts the unsold ones)
-    api.get('fleet/summary').then((x) => (x && typeof x.cars === 'number' ? { total: x.cars } : api.page('cars', null, { limit: 1 })), () => api.page('cars', null, { limit: 1 })).catch(() => null),
+    api.get('fleet/summary', null, { keep: true }).then((x) => (x && typeof x.cars === 'number' ? { total: x.cars } : api.page('cars', null, { limit: 1 })), () => api.page('cars', null, { limit: 1 })).catch(() => null),
     loadPrefs().catch(() => null),
-    api.get('notices').then((r) => r.items || [], () => null),
+    api.get('notices', null, { keep: true }).then((r) => r.items || [], () => null),
   ]);
   const carsCount = cars && typeof cars.total === 'number' ? cars.total : null;
   const frame = mountFrame({ me, about, carsCount, notices });

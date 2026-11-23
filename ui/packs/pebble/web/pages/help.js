@@ -63,7 +63,7 @@ const val = (t, cls = null) => h('span', { class: ['hp-val', cls] }, t);
 export async function mount(ctx) {
   const admin = ctx.admin;
   const [about, release, settings] = await Promise.all([
-    ctx.api.get('about'),
+    ctx.api.get('about', null, { maxAgeMs: 600000 }),
     ctx.api.get('release').catch(() => null),
     ctx.api.get('settings').catch(() => null),
   ]);

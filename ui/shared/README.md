@@ -50,6 +50,8 @@ started), `on('unauthorized' | 'network' | 'events', fn)`, `now()` (the server's
 - Every call takes `{ signal }`. The same GET asked for twice while the first is under way is sent once; a
   caller that leaves only stops waiting, and the request is cancelled when every caller has left.
 - `opts.maxAgeMs` reuses a result that young (for `me`, `me/preferences`); any change drops kept results.
+  `opts.keep` keeps an answer for later `maxAgeMs` callers without reusing an older one itself: the frame reads
+  `notices` with it, and a page loaded at the same moment asks with a short `maxAgeMs` instead of sending it again.
 - Errors are `ApiError { status, code, message, fields, retryAfterMs }`; `status` 0 is no answer (`code`
   `network` or `timeout`). A 401 also tells `on('unauthorized')` listeners. A read answered 429 with a short
   `Retry-After` (10 s or less) waits and tries once more by itself; changes are never repeated.

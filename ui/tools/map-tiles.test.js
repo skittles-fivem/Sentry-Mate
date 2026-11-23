@@ -191,6 +191,8 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble']) {
       await use.waitFor({ timeout: 10000 });
       assert.equal(await note.getByRole('link', { name: 'Add an offline map file' }).getAttribute('href'), '/settings/display#offline-map');
       await use.click();
+      // the confirm is drawn once maps/config is read: wait for it, not for the next frame
+      await page.waitForFunction(() => document.querySelector('.map-empty')?.dataset.mapEmpty === 'confirm', null, { timeout: 10000 });
       assert.match(await note.textContent(), /server\.arcgisonline\.com/, 'the confirm names the tile server');
       assert.match(await note.textContent(), /sees the viewer.s IP address/, 'the confirm says what the tile server sees');
       assert.equal(tiles.length, 0, 'nothing asked before the confirm');

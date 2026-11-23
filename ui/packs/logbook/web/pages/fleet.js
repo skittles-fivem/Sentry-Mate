@@ -69,7 +69,7 @@ export async function mount(ctx) {
   const pinned = new Set(prefs.pinned_cars || []);
   // The totals are the page; the "Needs a look" panel is extra, so its failure stays in the panel.
   const attnFirst = ctx.api.get('fleet/attention', { limit: 20 }).then((r) => ({ ok: r }), (err) => ({ err }));
-  const summary = await ctx.api.get('fleet/summary');
+  const summary = await ctx.api.get('fleet/summary', null, { maxAgeMs: 5000 }); // the frame's answer of this load
 
   if (!summary.cars && !summary.sold) return emptyFleet(ctx, isAdmin);
 

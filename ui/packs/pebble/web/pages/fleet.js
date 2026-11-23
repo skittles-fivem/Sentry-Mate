@@ -103,7 +103,7 @@ export async function mount(ctx) {
   const q = ctx.query;
   let sort = SORTS.some(([k]) => k === q.sort) ? q.sort : 'custom';
   const isAdmin = ctx.admin;
-  const summaryP = ctx.api.get('fleet/summary').catch(() => null);
+  const summaryP = ctx.api.get('fleet/summary', null, { maxAgeMs: 5000 }).catch(() => null); // the frame's answer of this load
   const attnP = ctx.api.get('fleet/attention', { limit: 50 }).then((r) => r.items || [], () => []);
   let pager = null;
   let attention = [];

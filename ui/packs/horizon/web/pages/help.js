@@ -105,7 +105,7 @@ export async function mount(ctx) {
   try {
     [about, notices, settings, cars, release] = await Promise.all([
       ctx.api.get('about', null, { maxAgeMs: 600000 }),
-      ctx.api.get('notices').then((r) => r.items).catch(() => getNotices()),
+      ctx.api.get('notices', null, { maxAgeMs: 5000 }).then((r) => r.items).catch(() => getNotices()),
       ctx.admin ? ctx.api.get('settings').catch(() => null) : Promise.resolve(null),
       // Only when no car is chosen yet: with exactly one car, links to car pages can name it.
       needCar ? ctx.api.get('cars', { limit: 2 }).then((r) => r.items || []).catch(() => null) : Promise.resolve(null),

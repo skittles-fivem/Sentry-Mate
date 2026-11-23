@@ -62,16 +62,11 @@ export async function mount(ctx) {
   const groupIndex = (tc) => Math.floor(tc / groupC());
   const inGroup = (x, g) => x.outside_avg_c != null && groupIndex(x.outside_avg_c) === Math.round(g.temp_c / groupC());
 
-  const [eff, temps] = await Promise.all([
-    ctx.api.get(`${base}/efficiency`, effParams()),
-    ctx.api.get(`${base}/temperatures`, ctx.params).catch((e) => ({ error: e })),
-  ]);
-  if (!ctx.alive()) return;
-
-  // "All" has no start: the charts start where the data does
-  const dataStart = temps.daily?.[0]?.t_ms ?? null;
-  const fromMs = period.from_ms ?? (dataStart ?? (eff.from_ms || now() - 30 * DAY)), toMs = Math.min(eff.to_ms ?? period.to_ms ?? now(), now());
-  const span = Math.max(1, toMs - fromMs);
+  // Both calls start at once; the page is laid out at once with a grey block in each part, the efficiency parts
+  // paint when GET efficiency is in and the temperature parts when both are (their time span needs both)
+  const effP = ctx.api.get(`${base}/efficiency`, effParams());
+  const tempsP = ctx.api.get(`${base}/temperatures`, ctx.params).catch((e) => ({ error: e }));
+  let eff = null, temps = {}, dataStart = null, fromMs = 0, toMs = 0, span = 1;
 
   /* ---------- head and filters */
   const periodBtn = h('button', { class: 'btn', type: 'button', cover: ['ef.filter.time_range', 'tp.filter.time_range'], title: 'Choose the period (shared by every page)', onclick: (e) => openPeriodPicker(e.currentTarget) },
@@ -127,23 +122,41 @@ export async function mount(ctx) {
       panel({ title: 'Outside temperature at each charge', icon: 'bolt', cls: 'tp-chg', side: tChgSide }, tChgSlot),
       panel({ title: 'Each day outside', icon: 'calendar', cls: 'tp-day', side: tDaySide }, tDaySlot))));
 
-  paintConsumption(eff);
-  paintFactor(eff);
-  paintByTemp(eff);
-  paintTempSummary();
-
-  const picker = paintCarsPicker();
-  if (opt.group != null) paintGroup(eff);
+  const wait = () => h('div', { class: 'skel skel--block', 'aria-hidden': 'true' });
+  for (const slot of [consSlot, factorSlot, byTempSlot, tSumSlot, tHistSlot, tChgSlot, tDaySlot]) slot.append(wait());
+  const uplotP = loadUPlot().catch(() => null);
   const sync = `temps-${cid}`;
-  await loadUPlot().catch(() => null);
-  if (!ctx.alive()) return;
-  await Promise.all([
+
+  const paintEff = async () => {
+    eff = await effP;
+    if (!ctx.alive()) return;
+    paintConsumption(eff);
+    paintFactor(eff);
+    paintByTemp(eff);
+  };
+  // GET efficiency failing fails the page (as before)
+  const effDone = paintEff();
+  const paintRest = async () => {
+    [, temps] = await Promise.all([effDone, tempsP]);
+    if (!ctx.alive()) return;
+    // "All" has no start: the charts start where the data does
+    dataStart = temps.daily?.[0]?.t_ms ?? null;
+    fromMs = period.from_ms ?? (dataStart ?? (eff.from_ms || now() - 30 * DAY)); toMs = Math.min(eff.to_ms ?? period.to_ms ?? now(), now());
+    span = Math.max(1, toMs - fromMs);
+    paintTempSummary();
+    const picker = paintCarsPicker();
+    if (opt.group != null) paintGroup(eff);
+    await uplotP;
+    if (!ctx.alive()) return;
+    await Promise.all([
     paintCompare().catch((e) => replace(compareSlot, panel({ title: 'Compare cars', icon: 'car', cls: 'ef-compare' }, errorState(e, { compact: true, home: false, retry: () => paintCompare() })))),
     paintHistory().catch((e) => replace(tHistSlot, errorState(e, { compact: true, home: false, retry: () => paintHistory() }))),
     paintCharges().catch((e) => replace(tChgSlot, errorState(e, { compact: true, home: false, retry: () => paintCharges() }))),
     paintDaily(),
     picker,
-  ]);
+    ]);
+  };
+  await Promise.all([effDone, paintRest()]);
   // ready once every section has its data: the charts and the car picker are part of the first render
   if (ctx.alive()) ctx.ready();
   return {};

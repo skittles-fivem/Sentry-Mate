@@ -256,7 +256,8 @@ function drawFooter() {
 }
 
 async function loadNotices() {
-  try { notices = (await api.get('notices')).items || []; } catch { notices = []; }
+  // kept: a page that lists the notices too reuses this answer
+  try { notices = (await api.get('notices', null, { keep: true })).items || []; } catch { notices = []; }
   drawNotices();
 }
 

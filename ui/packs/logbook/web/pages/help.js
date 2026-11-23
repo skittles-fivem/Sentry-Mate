@@ -64,7 +64,7 @@ const outside = { target: '_blank', rel: 'external noopener noreferrer' };
 export async function mount(ctx) {
   const admin = ctx.me && ctx.me.role === 'admin';
   const [about, release, settings] = await Promise.all([
-    ctx.api.get('about'),
+    ctx.api.get('about', null, { maxAgeMs: 600000 }),
     ctx.api.get('release').catch(() => null),
     ctx.api.get('settings').catch(() => null),
   ]);

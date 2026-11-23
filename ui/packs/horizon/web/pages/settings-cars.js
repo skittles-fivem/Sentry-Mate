@@ -236,9 +236,10 @@ async function mountCar(ctx) {
   const cid = ctx.car.id;
   const S = { car: null, settings: null, tokens: [], keys: [], waiting: [], health: null, battery: null, cars: null };
 
-  async function load() {
+  // first: the page's first load reuses the car the router read a moment ago; later loads ask again
+  async function load(first = false) {
     const [car, settings, tokens, keys, waiting, health, battery, cars] = await Promise.all([
-      ctx.api.get(`cars/${enc(cid)}`),
+      ctx.api.get(`cars/${enc(cid)}`, null, first ? { maxAgeMs: 5000 } : undefined),
       ctx.api.get(`cars/${enc(cid)}/settings`),
       admin ? ctx.api.get(`cars/${enc(cid)}/upload-tokens`, { limit: 100 }) : null,
       admin ? ctx.api.get('can-keys', { car: cid, limit: 100 }) : null,
@@ -249,7 +250,7 @@ async function mountCar(ctx) {
     ]);
     Object.assign(S, { car, settings, tokens: tokens?.items || [], keys: keys?.items || [], waiting: waiting?.items || [], health, battery, cars });
   }
-  try { await load(); } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }
+  try { await load(true); } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }
   if (!ctx.alive()) return;
 
   const car = () => S.car;

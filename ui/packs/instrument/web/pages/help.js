@@ -105,7 +105,7 @@ export async function mount(ctx) {
   try {
     [about, notices, settings, cars, release] = await Promise.all([
       ctx.api.get('about', null, { maxAgeMs: 600000 }),
-      ctx.api.get('notices').then((r) => r.items).catch(() => getNotices()),
+      ctx.api.get('notices', null, { maxAgeMs: 5000 }).then((r) => r.items).catch(() => getNotices()),
       ctx.admin ? ctx.api.get('settings').catch(() => null) : Promise.resolve(null),
       // Only without a car in the address: links to car pages name the preferred car.
       needCar ? ctx.api.get('cars', { sort: 'custom', limit: 100 }, { maxAgeMs: 30000 }).then((r) => r.items || []).catch(() => null) : Promise.resolve(null),
