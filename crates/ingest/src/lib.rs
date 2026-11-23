@@ -11,6 +11,7 @@ pub mod error;
 pub mod judge;
 mod ledger;
 pub mod missing;
+mod pack;
 pub mod server;
 pub mod store;
 pub mod tokens;
