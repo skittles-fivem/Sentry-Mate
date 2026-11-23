@@ -225,7 +225,7 @@ export async function mount(ctx) {
         vin ? h('span', null, 'VIN ', h('span', { class: 'key-chip', title: 'Only the VIN prefix is stored; the serial number never is.' }, vin)) : null,
       ],
       actions: [
-        h('button', { class: 'btn', type: 'button', onclick: openCarSwitcher, cover: 'overview.filter.car', title: 'Show another car on this page' }, icon('car'), 'Switch car'),
+        h('button', { class: 'btn switch-car-btn', type: 'button', onclick: openCarSwitcher, cover: 'overview.filter.car', title: 'Show another car on this page' }, icon('car'), 'Switch car'),
         h('a', { class: 'btn', href: ctx.link('timeline') }, icon('timeline'), 'Timeline'),
       ],
     }));

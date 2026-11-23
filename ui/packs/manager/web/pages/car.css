@@ -287,3 +287,13 @@ a.fact[href] .fact-label::after { content: "›"; margin-left: auto; color: var(
 :root[data-phone] .car-summary > .map-panel { height: min(round(18rem, var(--e)), 50dvh); }
 :root[data-phone] .details-bar { flex-direction: column; align-items: stretch; }
 :root[data-phone] .details-toggle { width: 100%; justify-content: center; }
+/* the State and Charging facts take the whole width (the other four stay two by two); every line under a
+   value wraps in full instead of ending in "…" (the State line: "Since today, 9:18 AM · for 12 min · 94 km/h ·
+   13.1 km so far") */
+:root[data-phone] :is(.fact--state, .fact--charge) { grid-column: 1 / -1; }
+:root[data-phone] .fact-sub { display: block; -webkit-line-clamp: none; height: auto; min-height: calc(2 * var(--LH)); overflow: visible; }
+/* the line under a value: up to three lines on a desktop, so the State line ("Since today, 9:18 AM · for 12 min ·
+   94 km/h · 13.1 km so far") is whole; the big values a little smaller, so "Unplugged" fits beside the map */
+:root:not([data-phone]) .fact { height: round(11.75rem, var(--e)); }
+:root:not([data-phone]) .fact-sub { -webkit-line-clamp: 3; height: round(3.75rem, var(--e)); }
+.fact-value { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }

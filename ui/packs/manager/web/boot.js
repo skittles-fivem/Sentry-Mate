@@ -93,6 +93,8 @@
   try { theme = JSON.parse(localStorage.getItem(THEME_KEY)) || 'device'; } catch (e) { /* storage blocked */ }
   apply(saved);
   applyTheme(theme);
+  // the section card collapsed to icons, as it was left (core/frame.js keeps it)
+  try { if (localStorage.getItem('sentrymate.manager.rail') === 'collapsed') root.setAttribute('data-rail', 'collapsed'); } catch (e) { /* storage blocked */ }
 
   window.uiRoot = {
     MIN: MIN, MAX: MAX, KEY: KEY, THEME_KEY: THEME_KEY,

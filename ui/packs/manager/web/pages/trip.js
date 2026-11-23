@@ -332,7 +332,7 @@ export async function mount(ctx) {
       eyebrow: `${car.name} · ${match ? 'Saved trip' : 'Trip'}`,
       title: titleText,
       sub: [`${formatDateRange(from, Math.max(from, to - 1), tz, { year: true })}`, format(dist.odometer_km ?? dist.drives_km, 'distance'), `${formatNumber(nDrives)} ${nDrives === 1 ? 'drive' : 'drives'}`, `${formatNumber(nCharges)} ${nCharges === 1 ? 'charge' : 'charges'}`, vsCar ? `beside ${vsCar.name}` : null],
-      actions: [h('button', { class: 'btn', type: 'button', onclick: openCarSwitcher }, icon('car'), 'Switch car'),
+      actions: [h('button', { class: 'btn switch-car-btn', type: 'button', onclick: openCarSwitcher }, icon('car'), 'Switch car'),
         h('a', { class: 'btn', href: state.buildUrl('drives', { car: cid, period: { from, to: ctx.period?.to_ms ?? null } }) }, icon('route'), 'These drives')],
     }),
     windowPanel,

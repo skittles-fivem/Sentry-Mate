@@ -270,7 +270,7 @@ export async function mount(ctx) {
   replace(root,
     pageHead({
       eyebrow: car.name, title: 'Timeline', sub: [period.label, `times in ${tz.replace(/_/g, ' ')}`],
-      actions: [h('button', { class: 'btn', type: 'button', onclick: openCarSwitcher, cover: ['timeline.filter.car', 'states.filter.car'] }, icon('car'), 'Switch car')],
+      actions: [h('button', { class: 'btn switch-car-btn', type: 'button', onclick: openCarSwitcher, cover: ['timeline.filter.car', 'states.filter.car'] }, icon('car'), 'Switch car')],
     }),
     h('div', { class: 'toolbar tl-filters' },
       h('button', { class: 'btn', type: 'button', onclick: (e) => openPeriodPicker(e.currentTarget), cover: ['timeline.control.time_range', 'states.control.time_range'] }, icon('calendar', 'ico--sm'), period.preset === 'custom' ? 'Custom period' : period.label, icon('chev-d', 'ico--sm')),

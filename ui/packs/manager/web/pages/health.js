@@ -206,7 +206,7 @@ async function mountCar(ctx) {
     sub: [period.label, readAtEl, `times in ${tz.replace(/_/g, ' ')}`],
     purpose: 'Whether this car’s data is arriving, complete and trusted, with the fix for anything that is not; what is recorded; and how much room it takes.',
     actions: [
-      h('button', { class: 'btn', type: 'button', cover: 'dbinfo.filter.car', onclick: openCarSwitcher,
+      h('button', { class: 'btn switch-car-btn', type: 'button', cover: 'dbinfo.filter.car', onclick: openCarSwitcher,
         title: 'Show another car. Everything on this page is about one car; the server’s storage is on Server and storage.' },
       icon('car', 'ico--sm'), car.name, icon('chev-d', 'ico--sm')),
       h('button', { class: 'btn', type: 'button', onclick: (e) => openPeriodPicker(e.currentTarget), title: 'The period of the gaps, dropped frames, unknown time and the signal chart. Totals are all-time.' },

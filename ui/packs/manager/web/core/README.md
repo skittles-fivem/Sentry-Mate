@@ -1,9 +1,13 @@
 # Simple pack: how to build a page
 
-The Simple pack is the Instrument pack's pages in a plainer frame, made to be easy to use: a header with six
-sections (Car, Trips, Charging, Battery, Stats, Settings) and the section's pages as tabs under it, instead of a
-sidebar of 18 pages. Its look is flat and calm (white or near-black cards with a hairline border on a quiet
-grey page, one blue accent), set at the end of `app.css` ("the Simple look").
+The Simple pack is the Instrument pack's pages in the frame and look of Sentry Manager (the owner's other app),
+made to be easy to use: a card at the left with six sections (Car, Trips, Charging, Battery, Stats, Settings)
+that collapses to icons, a line above the page with where you are ("Sentry Mate / Trips") and the tools, and the
+section's pages as a row of pill tabs, instead of a sidebar of 18 pages. Its look is Sentry Manager's "Flight
+Deck": flat graphite cards (16 px corners, 1 px borders) on a near-black page, one lime accent, Inter at 14 px with
+big bold page titles, 44 px buttons and fields with 10 px corners, toasts at the bottom right. Sentry Manager is
+dark only; the light theme is the same system on white (the lime darkened for text, kept bright as a fill). It is
+set at the end of `app.css` ("the Simple look"); Sentry Mate keeps its own name and mark.
 
 | Section | Tabs (page ids) | Short address |
 |---|---|---|
@@ -249,9 +253,10 @@ A place cell links to the place editor: `buildUrl('places', { query: { place: id
 ### The frame (for reference)
 
 `core/app.js` starts it; `core/router.js` mounts pages; `core/session.js` decides where the home address leads
-(set-up first, then sign-in with `?next=`, then the page); `core/frame.js` draws the header (brand, the six sections,
-Find a page, live status, the car's clock, car switcher, account menu), the tab row under it (the section's tabs, a
-detail page's trail, the period), the phone dock (period and the six sections), the notices bar (`core/notices.js`) and the footer; `core/finder.js` is the full menu with type-to-find; `core/account.js` the
+(set-up first, then sign-in with `?next=`, then the page); `core/frame.js` draws the section card at the left (brand, the six
+sections, Collapse: `<html data-rail="collapsed">`, kept in `localStorage` `sentrymate.manager.rail`), the line above
+the page ("Sentry Mate / section", or a detail page's trail; Find a page, live status, the car's clock, car switcher,
+account menu), the tab row under it (the section's tabs as pills, the period), the phone dock (the period), the notices bar (`core/notices.js`) and the footer; `core/finder.js` is the full menu with type-to-find; `core/account.js` the
 Interface size, Follow screen size and theme controls; `core/prefs.js` the account and preferences
 (`getMe`, `isAdmin`, `getPrefs`, `savePrefs(patch)`, `onPrefs`). Pages do not touch the frame except through `ctx`.
 
@@ -301,17 +306,19 @@ get more columns, not a narrow column in the middle.
 
 ## Phones
 
-The phone layout follows Sentry Manager's: one column, a compact bar of the six sections, tables as cards, 44 px tap targets, 16 px fields. `boot.js` sets `<html data-phone>` before the
+The phone layout follows Sentry Manager's: one column, the section card as a compact bar of icons along the top, tables as cards, 44 px tap targets, 16 px fields. `boot.js` sets `<html data-phone>` before the
 first paint, and again when the window changes:
 
 | `data-phone` | When | Frame |
 |---|---|---|
-| `tall` | the window is at most 48rem wide (an upright phone, a small tablet, a laptop at 200 %) | the dock at the bottom holds the period bar (pages with a period) and the tab bar |
-| `short` | at most 30rem high and 60rem wide (a phone on its side) | the period stays in the top bar; a lower tab bar |
+| `tall` | the window is at most 48rem wide (an upright phone, a small tablet, a laptop at 200 %) | the dock at the bottom holds the period bar (pages with a period); none without a period |
+| `short` | at most 30rem high and 60rem wide (a phone on its side) | the period stays in the tab row; no dock |
 | (none) | anything else | the desktop frame |
 
-- The header holds the menu button (the finder: every page), the car (opens the switcher), the live dot and the
-  account; the section's tabs are a strip under it that scrolls sideways; the six sections are a bar at the bottom. `window` gets a
+- The bar along the top holds the brand (hidden under 375 px, as in Sentry Manager), the six sections as icons
+  and the menu button (the finder: every page); under it the car (opens the switcher; a page's own "Switch car",
+  class `switch-car-btn`, is hidden on a phone), the live dot and the account; the section's tabs are a strip of
+  pills that scrolls sideways. `window` gets a
   `phonelayout` event when the attribute changes.
 - Tokens on a phone: `--fs-floor` 14px (text never below 14 px), `--tap` 44px, `--gutter` 16px (or the
   safe-area inset), `--dock-h` (the dock's height, the page keeps that much room at the bottom).

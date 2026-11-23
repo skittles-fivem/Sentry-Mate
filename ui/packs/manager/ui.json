@@ -1,6 +1,6 @@
 {
   "name": "Simple",
-  "description": "Simple and calm, like a well-run admin app: a header with six sections (Car, Trips, Charging, Battery, Stats, Settings) and tabs under each, the car's key facts big and clear, details one tap away. Light and dark, phone ready. Runs on /api/v1.",
+  "description": "Simple, in Sentry Manager's look: a section card with six sections (Car, Trips, Charging, Battery, Stats, Settings) and their pages as tabs, the car's key facts big and clear, details one tap away. Dark and light, phone ready. Runs on /api/v1.",
   "author": "Sentry Mate",
   "version": "0.1.0",
   "api": 1

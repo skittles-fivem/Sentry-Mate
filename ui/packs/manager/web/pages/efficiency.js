@@ -80,7 +80,7 @@ export async function mount(ctx) {
     eyebrow: car.name, title: 'Efficiency and temperatures',
     sub: [period.label, `Times and days in the car’s zone (${tz})`],
     purpose: 'How much energy driving takes, how the weather changes it, and the temperatures the car saw. Energy is measured by the pack, so no estimate is needed.',
-    actions: [h('button', { class: 'btn', type: 'button', onclick: openCarSwitcher, cover: 'tp.filter.car', title: 'Show another car on this page' }, icon('car'), 'Switch car')],
+    actions: [h('button', { class: 'btn switch-car-btn', type: 'button', onclick: openCarSwitcher, cover: 'tp.filter.car', title: 'Show another car on this page' }, icon('car'), 'Switch car')],
   });
 
   const segMin = segment(DIST_CHOICES.map((v) => [v, `${v} ${dUnit}`]), opt.minD, (v) => { opt.minD = v; ctx.setQuery({ min_d: v === 1 ? null : String(v), group: null }); opt.group = null; refreshEfficiency(); }, 'Minimum drive distance');

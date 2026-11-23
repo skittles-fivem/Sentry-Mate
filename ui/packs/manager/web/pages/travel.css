@@ -181,3 +181,4 @@
 :root[data-phone] .tv-bars li { min-height: var(--tap); }
 :root[data-phone] .tv-bar-label.link-btn { min-height: var(--tap); }
 :root[data-phone] .tv-rank-panel .seg { flex-wrap: wrap; }
+.tv-fig-grid .metric-value { white-space: normal; } /* a long figure wraps in its column */

@@ -337,7 +337,8 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   // a link to a section of a page (/cars/c1/charges?…#habits): open the page there
   const target = location.hash.length > 1 ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null;
   if (target && view.contains(target)) {
-    const bar = document.querySelector('.topbar')?.getBoundingClientRect().height || 0; // the sticky top bar
+    const tb = document.querySelector('.topbar');
+    const bar = tb && getComputedStyle(tb).position === 'sticky' ? tb.getBoundingClientRect().height : 0; // a sticky top bar
     const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
     window.scrollTo(0, Math.max(0, target.getBoundingClientRect().top + window.scrollY - bar - rem));
   }

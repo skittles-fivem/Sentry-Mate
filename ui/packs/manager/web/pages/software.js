@@ -99,7 +99,7 @@ export async function mount(ctx) {
       h('button', { class: 'btn', type: 'button', cover: 'updates.filter.time_range', onclick: (e) => openPeriodPicker(e.currentTarget),
         title: 'The period of the update list and its figures (the same picker as in the top bar). An update belongs to it when it started in it.' },
       icon('calendar', 'ico--sm'), period.label, icon('chev-d', 'ico--sm')),
-      h('button', { class: 'btn', type: 'button', cover: 'updates.filter.car', onclick: openCarSwitcher, title: 'Show another car on this page' },
+      h('button', { class: 'btn switch-car-btn', type: 'button', cover: 'updates.filter.car', onclick: openCarSwitcher, title: 'Show another car on this page' },
         icon('car', 'ico--sm'), car.name, icon('chev-d', 'ico--sm')),
       h('button', { class: 'btn btn--ghost', type: 'button', title: 'Every car with the version it runs, in one list (further down this page)',
         onclick: () => fleetTable.el.scrollIntoView({ behavior: 'smooth', block: 'start' }) }, icon('fleet', 'ico--sm'), 'Versions of every car')),

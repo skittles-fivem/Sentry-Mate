@@ -117,7 +117,7 @@ export async function mount(ctx) {
     sub: [bat.chemistry?.value ? `${CHEM[bat.chemistry.value] || bat.chemistry.value} pack` : 'Pack chemistry not known', `Pack readings as of ${formatDateTime(bat.as_of_ms, tz, { now: now() })}`],
     purpose: 'Health, capacity and range describe the whole life of the car. Charge level, projected range and parked drain follow the period.',
     actions: [
-      h('button', { class: 'btn', type: 'button', onclick: openCarSwitcher, cover: ['bh.filter.car', 'cl.filter.car', 'pr.section.per_car', 'vd.section.per_car'], title: 'Show another car on this page' }, icon('car'), 'Switch car'),
+      h('button', { class: 'btn switch-car-btn', type: 'button', onclick: openCarSwitcher, cover: ['bh.filter.car', 'cl.filter.car', 'pr.section.per_car', 'vd.section.per_car'], title: 'Show another car on this page' }, icon('car'), 'Switch car'),
       h('a', { class: 'btn', href: state.buildUrl('statistics', { query: { cars: 'all', metric: 'capacity' } }), title: 'Capacity and range of several cars side by side' }, icon('stats'), 'Compare cars'),
     ],
   });

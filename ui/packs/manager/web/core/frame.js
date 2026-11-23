@@ -1,10 +1,11 @@
-// The app frame every page shares, laid out like a plain admin app: a header with the brand, the six
-// sections (Car, Trips, Charging, Battery, Stats, Settings), "Find a page" (/), live status, the car's
-// clock, the car switcher and the account; under it a row with the open section's tabs (a trail on a
-// detail page) and the shared period picker; the notices bar, flash notes and the footer.
+// The app frame every page shares, laid out like Sentry Manager's: a card at the left with the brand and
+// the six sections (Car, Trips, Charging, Battery, Stats, Settings), which collapses to icons; beside it
+// a line with where you are ("Sentry Mate / Car", a detail page's trail) and the tools ("Find a page" (/),
+// live status, the car's clock, the car switcher, the account); under that the open section's tabs as a
+// row of pills and the shared period picker; the notices bar, flash notes and the footer.
 // Each section opens on the tab the person used last there (this browser). On a phone (<html
-// data-phone>, set by boot.js) the sections move to a bar at the bottom (with the period above it on an
-// upright phone), the tabs scroll sideways under the header, and the menu button opens every page.
+// data-phone>, set by boot.js) the card becomes one bar of icons along the top with the menu (every
+// page) at its end, the tabs scroll sideways, and the period sits at the bottom on an upright phone.
 // The router calls update() for every page it mounts; pages never touch the frame except through ctx
 // (ctx.setCrumbs, ctx.setTitle).
 
@@ -71,6 +72,11 @@ function carButton(cls) {
     icon('chev-d', 'ico--sm top-car-chev'));
 }
 
+const RAIL_KEY = 'sentrymate.manager.rail';
+
+// Laid out like Sentry Manager: a card at the left with the brand and the six sections (icons only once
+// collapsed, and a bar of icons along the top on a phone); beside it a line with where you are ("Sentry
+// Mate / Car") and the tools, then the open section's tabs and the period.
 function buildTopbar() {
   const sections = new Map();
   const nav = h('nav', { class: 'sections', 'aria-label': 'Sections' }, GROUPS.map((g) => {
@@ -79,11 +85,15 @@ function buildTopbar() {
     return a;
   }));
   const menuBtn = h('button', {
-    class: 'btn btn--ghost btn--icon menu-btn', type: 'button', 'aria-label': 'Menu: every section and page',
+    class: 'section menu-btn', type: 'button', 'aria-label': 'Menu: every section and page',
     title: 'Menu', onclick: () => openFinder(), cover: ['shell.nav.mobile_menu', 'web.shell.menu-toggle'],
-  }, icon('menu'));
+  }, icon('menu'), h('span', { class: 'section-label' }, 'Menu'));
   const brand = h('a', { class: 'brand', href: '/', 'aria-label': 'Sentry Mate: all cars', cover: ['shell.nav.home', 'web.shell.logo-home', 'web.shell.home-routing'] },
-    brandMark(), h('span', { class: 'brand-name' }, 'Sentry Mate'));
+    brandMark(), h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }, 'Sentry Mate'), h('span', { class: 'brand-sub' }, 'Car data')));
+  const collapse = h('button', { class: 'rail-collapse', type: 'button', 'aria-pressed': 'false', onclick: () => setRail(document.documentElement.dataset.rail !== 'collapsed') },
+    icon('chev-l'), h('span', null, 'Collapse'));
+  replace($('#rail'), h('div', { class: 'rail-card' }, brand, nav, menuBtn, collapse));
+
   const find = h('button', { class: 'finder-btn', type: 'button', onclick: () => openFinder(), title: 'Find a page (/)', 'aria-label': 'Find a page' },
     icon('search'), h('span', { class: 'finder-text' }, 'Find'), h('span', { class: 'kbd' }, '/'));
   const fresh = h('span', { class: 'freshness', title: 'Pages update by themselves when the server has processed a new log. Logs arrive about a minute after the car records them.' },
@@ -93,19 +103,37 @@ function buildTopbar() {
   const acct = h('button', { class: 'account', type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', 'aria-label': 'Your account and display', onclick: (e) => toggleAccountMenu(e.currentTarget) },
     h('span', { class: 'avatar', 'aria-hidden': 'true' }, '·'),
     h('span', { class: 'account-text' }, h('span', { class: 'account-name' }, 'Account'), h('span', { class: 'account-role' })));
-  const masthead = h('div', { class: 'masthead' },
-    h('div', { class: 'masthead-start' }, menuBtn, brand, nav),
-    h('div', { class: 'masthead-tools' }, find, fresh, clock, topCar, acct));
 
-  // the tabs of the open section, the trail of a detail page, and the period
-  const tabs = h('nav', { class: 'subtabs', 'aria-label': 'Pages of this section' });
+  // where you are: "Sentry Mate / Car", a detail page's trail after the app's name
+  const where = h('span', { class: 'where-section' });
   const crumbs = h('nav', { class: 'crumbs', 'aria-label': 'Breadcrumb' });
+  const crumb = h('div', { class: 'crumb' }, h('span', { class: 'crumb-app' }, 'Sentry Mate'), h('span', { class: 'sep', 'aria-hidden': 'true' }, '/'), where, crumbs);
+  const topline = h('div', { class: 'topline' }, crumb, h('div', { class: 'top-tools' }, find, fresh, clock, topCar, acct));
+
+  // the tabs of the open section and the period
+  const tabs = h('nav', { class: 'subtabs', 'aria-label': 'Pages of this section' });
   const period = periodPicker();
   const tools = h('div', { class: 'subbar-tools' }, period);
-  const subbar = h('div', { class: 'subbar' }, tabs, crumbs, tools);
-  replace($('#topbar'), masthead, subbar);
+  const subbar = h('div', { class: 'subbar' }, tabs, tools);
+  replace($('#topbar'), topline, subbar);
   document.body.append(accountMenu());
-  Object.assign(els, { sections, tabsNav: tabs, crumbs, fresh, clock, topCar, acct, period, tools, subbar });
+  Object.assign(els, { sections, tabsNav: tabs, crumbs, where, fresh, clock, topCar, acct, period, tools, subbar, collapse });
+  setRail(railSaved(), false);
+}
+
+function railSaved() {
+  try { return localStorage.getItem(RAIL_KEY) === 'collapsed'; } catch { return false; }
+}
+/** The section card at the left: full (names) or collapsed (icons), remembered in this browser. */
+function setRail(collapsed, save = true) {
+  const root = document.documentElement;
+  if (collapsed) root.dataset.rail = 'collapsed'; else delete root.dataset.rail;
+  if (els.collapse) {
+    els.collapse.setAttribute('aria-pressed', String(collapsed));
+    els.collapse.querySelector('span').textContent = collapsed ? 'Expand' : 'Collapse';
+    els.collapse.title = collapsed ? 'Show the section names' : 'Icons only';
+  }
+  if (save) try { localStorage.setItem(RAIL_KEY, collapsed ? 'collapsed' : 'open'); } catch { /* this visit */ }
 }
 
 function showCarInSidebar(car) {
@@ -155,20 +183,15 @@ function showSubtabs(section, activeTab) {
   }
 }
 
-/* ------------------------------------------------------------------ the phone dock: the period and the six sections */
+/* ------------------------------------------------------------------ the phone dock: the period */
 
 function buildDock() {
   const dock = $('#dock');
   if (!dock) return;
-  const tabs = new Map();
-  const list = GROUPS.map((g) => {
-    const a = h('a', { class: 'tab', href: '/', dataset: { section: g.id } }, icon(g.icon), h('span', { class: 'tab-label' }, g.short || g.title));
-    tabs.set(g.id, a);
-    return a;
-  });
+  // the sections are in the bar at the top (as in Sentry Manager); the dock holds the period, in reach of the thumb
   const periodSlot = h('div', { class: 'dock-period' });
-  replace(dock, periodSlot, h('nav', { class: 'tabbar', 'aria-label': 'Sections' }, list));
-  Object.assign(els, { tabs, periodSlot });
+  replace(dock, periodSlot);
+  Object.assign(els, { periodSlot });
   placePeriod();
   window.addEventListener('phonelayout', placePeriod);
 }
@@ -183,7 +206,7 @@ function placePeriod() {
 }
 
 function showSections(section, page) {
-  for (const map of [els.sections, els.tabs]) {
+  for (const map of [els.sections]) {
     for (const [id, a] of map || []) {
       // the open section links to its first tab; the others to where the person left them
       a.setAttribute('href', state.linkTo(id === section && page === 'fleet' ? 'fleet' : sectionPage(id)));
@@ -385,6 +408,7 @@ export async function update({ s, info, car, period, tz = null }) {
   if (section && tab && info?.group) rememberTab(section, tab);
   showSections(section, page);
   showSubtabs(section, tab);
+  if (els.where) els.where.textContent = GROUPS.find((g) => g.id === section)?.title || info?.title || '';
   // the trail shows only on a page inside a tab (a drive, a charge); a tab's own name is the tab
   document.documentElement.toggleAttribute('data-detail', !!info?.parent);
   document.documentElement.toggleAttribute('data-has-period', !!period);
