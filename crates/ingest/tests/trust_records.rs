@@ -364,7 +364,9 @@ async fn a_key_trusted_by_a_command_while_the_server_runs_is_seen_at_once() {
     assert_eq!(server.cached_heads(), 1);
     assert_eq!(car_files(&t), ["trust-0.journal", "trust.lock"], "only a journal so far: generation 0");
 
-    let command = Judge::new(t.store.clone());
+    server.chain(KEY).await;
+    assert_eq!(server.mirrored().0, 1, "once read, the server keeps the key's records in memory");
+    let command = Judge::alone(t.store.clone());
     let done = command.trust_key(KEY, &fp(&second)).await.unwrap();
     assert!(matches!(done, Trusted::Now { verified: 2, .. }), "{done:?}");
     drop(command);
@@ -376,7 +378,7 @@ async fn a_key_trusted_by_a_command_while_the_server_runs_is_seen_at_once() {
     assert_eq!(r.status, Status::Verified, "{r:?}");
     assert_eq!(server.summary(KEY).await.unwrap().pin.unwrap().fingerprint, fp(&second));
     // and a read of its own after another change by a command
-    let command = Judge::new(t.store.clone());
+    let command = Judge::alone(t.store.clone());
     command.trust_key(KEY, &fp(&first)).await.unwrap();
     assert_eq!(server.summary(KEY).await.unwrap().pin.unwrap().fingerprint, fp(&first));
     let (name, log, side) = &b[3];
@@ -496,4 +498,159 @@ async fn failed_logs_judged_by_older_rules_are_judged_again_once() {
     // once per key
     assert_eq!(judge.rejudge_old(KEY).await.unwrap(), None);
     assert_eq!(Judge::new(t.store.clone()).rejudge_old(KEY).await.unwrap(), None);
+}
+
+/// The same logs and sidecars, made up with a few bad ones among them: a changed file, another key's signature, an
+/// unsigned sidecar.
+fn mixed_chain(n: u32) -> Vec<(String, Vec<u8>, Vec<u8>)> {
+    let key = SigningKey::from_slice(&Sha256::digest(b"made-up key for many arrivals")).unwrap();
+    let other = SigningKey::from_slice(&Sha256::digest(b"made-up other key")).unwrap();
+    let mut out = chain_of(&key, n);
+    for (i, (name, log, side)) in out.iter_mut().enumerate() {
+        match i % 19 {
+            5 => log.push(b'!'),
+            11 => {
+                let prev = (log_name(i as u32 - 1), "00".repeat(32));
+                *side = signed(&other, name, log, i as u64, (&prev.0, &prev.1));
+            }
+            17 => *side = serde_json::to_vec(&json!({ "integrity": { "signed": false } })).unwrap(),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// What a record says of its log, without the times it was judged.
+fn verdicts(book: &Book) -> Vec<String> {
+    book.logs
+        .iter()
+        .map(|(n, r)| {
+            format!(
+                "{n} {:?} {:?} {:?} {:?} {:?} {:?} {}",
+                r.status, r.reason, r.link, r.sha256, r.length, r.sidecar_sha256, r.override_use
+            )
+        })
+        .collect()
+}
+
+/// Many logs of one car arriving at once (as a backlog sent 16 at a time does) are checked side by side and written
+/// together, and end up exactly as when they arrive one after the other: the same verdicts, the bad ones failed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn arrivals_at_once_are_judged_as_one_after_the_other_and_bad_ones_still_fail() {
+    let logs = mixed_chain(150);
+    // one after the other, by a judge with no memory shared
+    let one = setup();
+    let alone = Judge::alone(one.store.clone()).mirror_size(0);
+    for (name, log, side) in &logs {
+        arrive(&one, &alone, name, log).await;
+        arrive(&one, &alone, &format!("{name}.json"), side).await;
+    }
+    // all at once, in a shuffled order, the sidecar sometimes first (after the first log, which pairs the car: the
+    // first signed log to arrive sets the key, whatever the order)
+    let many = setup();
+    let judge = Arc::new(Judge::new(many.store.clone()));
+    arrive(&many, &judge, &logs[0].0, &logs[0].1).await;
+    arrive(&many, &judge, &format!("{}.json", logs[0].0), &logs[0].2).await;
+    let mut order: Vec<usize> = (1..logs.len()).collect();
+    order.reverse();
+    order.rotate_left(37);
+    let mut tasks = Vec::new();
+    // as many at once as the app sends
+    let slots = Arc::new(tokio::sync::Semaphore::new(16));
+    for i in order {
+        let (judge, store, (name, log, side)) = (judge.clone(), many.store.clone(), logs[i].clone());
+        let slots = slots.clone();
+        tasks.push(tokio::spawn(async move {
+            let _slot = slots.acquire().await.unwrap();
+            let side_name = format!("{name}.json");
+            let files = if i % 3 == 0 { [(side_name, side), (name, log)] } else { [(name, log), (side_name, side)] };
+            for (n, b) in files {
+                let sha = hex::encode(Sha256::digest(&b));
+                store.receive(&n, b.clone().into(), 0, b.len() as u64, &sha).await.unwrap();
+                judge.arrived(&n).await.unwrap();
+            }
+        }));
+    }
+    for t in tasks {
+        t.await.unwrap();
+    }
+    let (a, b) = (alone.book(KEY).await, judge.book(KEY).await);
+    assert_eq!(a.logs.len(), 150);
+    assert_eq!(verdicts(&a), verdicts(&b));
+    assert_eq!(a.pin.as_ref().map(|p| &p.fingerprint), b.pin.as_ref().map(|p| &p.fingerprint));
+    assert_eq!(a.new_key, b.new_key);
+    for (i, (name, ..)) in logs.iter().enumerate() {
+        // (an unsigned log of a paired car fails too)
+        let want = if matches!(i % 19, 5 | 11 | 17) { Status::Failed } else { Status::Verified };
+        assert_eq!(b.logs[name].status, want, "{name}");
+    }
+    // the app is told the same of every log
+    let names: Vec<String> = logs.iter().map(|l| l.0.clone()).collect();
+    let none = std::collections::HashSet::new;
+    let ca = alone.upload_checks(KEY, &names, none()).await.unwrap();
+    let cb = judge.upload_checks(KEY, &names, none()).await.unwrap();
+    assert_eq!(ca, cb);
+    assert_eq!(alone.log_checks(KEY, none()).await.unwrap(), judge.log_checks(KEY, none()).await.unwrap());
+}
+
+/// What a judge answers from the records it keeps in memory is what the files say: after arrivals, a sweep, a key
+/// trusted and every log judged again, each answer is compared with a judge reading only the files.
+#[tokio::test]
+async fn the_records_in_memory_are_the_records_on_disk() {
+    let t = setup();
+    let judge = Judge::new(t.store.clone()).wait_ms(0).compact_after(7);
+    let disk = || Judge::alone(t.store.clone()).mirror_size(0);
+    async fn same(judge: &Judge, disk: &Judge, what: &str) {
+        let none = std::collections::HashSet::new;
+        let (a, b) = (judge.book(KEY).await, disk.book(KEY).await);
+        assert_eq!(serde_json::to_value(&a).unwrap(), serde_json::to_value(&b).unwrap(), "{what}");
+        assert_eq!(judge.chain(KEY).await, disk.chain(KEY).await, "{what}");
+        assert_eq!(judge.signers(KEY).await.unwrap().keys, disk.signers(KEY).await.unwrap().keys, "{what}");
+        assert_eq!(judge.last_arrived(KEY).await.unwrap(), disk.last_arrived(KEY).await.unwrap(), "{what}");
+        let arr = judge.arrivals(KEY).await;
+        assert_eq!(arr, disk.arrivals(KEY).await, "{what}");
+        let times = || a.logs.values().map(|r| r.arrived_ms);
+        let waiting = a.logs.values().filter(|r| r.status == Status::Waiting).count() as u64;
+        assert_eq!((arr.first_ms, arr.last_ms, arr.waiting), (times().min(), times().max(), waiting), "{what}");
+        assert_eq!(judge.latest_usable(KEY, 9).await.unwrap(), disk.latest_usable(KEY, 9).await.unwrap(), "{what}");
+        assert_eq!(judge.log_checks(KEY, none()).await.unwrap(), disk.log_checks(KEY, none()).await.unwrap(), "{what}");
+        let names: Vec<String> = a.logs.keys().cloned().collect();
+        assert_eq!(
+            judge.upload_checks(KEY, &names, none()).await.unwrap(),
+            disk.upload_checks(KEY, &names, none()).await.unwrap(),
+            "{what}"
+        );
+        for n in names.iter().step_by(5) {
+            let (x, y) = (judge.record(KEY, n).await, disk.record(KEY, n).await);
+            assert_eq!(serde_json::to_value(x).unwrap(), serde_json::to_value(y).unwrap(), "{what}: {n}");
+        }
+        assert_eq!(judge.summary(KEY).await.unwrap().waiting, disk.summary(KEY).await.unwrap().waiting, "{what}");
+    }
+    let logs = mixed_chain(40);
+    for (name, log, side) in &logs[..20] {
+        arrive(&t, &judge, name, log).await;
+        arrive(&t, &judge, &format!("{name}.json"), side).await;
+    }
+    same(&judge, &disk(), "arrived").await;
+    assert_eq!(judge.mirrored().0, 1);
+    // logs without their sidecar, judged by the sweep
+    for (name, log, _) in &logs[20..30] {
+        arrive(&t, &judge, name, log).await;
+    }
+    same(&judge, &disk(), "waiting").await;
+    judge.sweep().await.unwrap();
+    same(&judge, &disk(), "swept").await;
+    for (name, log, side) in &logs[30..] {
+        arrive(&t, &judge, &format!("{name}.json"), side).await;
+        arrive(&t, &judge, name, log).await;
+    }
+    same(&judge, &disk(), "the rest").await;
+    let other = SigningKey::from_slice(&Sha256::digest(b"made-up other key")).unwrap();
+    judge.trust_key(KEY, &fp(&other)).await.unwrap();
+    same(&judge, &disk(), "another key trusted").await;
+    judge.rejudge_all(KEY).await.unwrap();
+    same(&judge, &disk(), "judged again").await;
+    // another process changes the files: the memory is not used until it is read again
+    Judge::alone(t.store.clone()).rejudge_all(KEY).await.unwrap();
+    same(&judge, &disk(), "judged again by another process").await;
 }

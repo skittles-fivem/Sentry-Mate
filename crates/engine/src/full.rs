@@ -515,7 +515,7 @@ impl Engine {
         };
         let e = self.clone();
         self.inner.outstanding_add();
-        rt.spawn_blocking(move || {
+        Engine::background(&rt, "full-rebuild", move || {
             match e.full_run() {
                 // (a test's crash: left as a stop of the server would leave it)
                 Err(err) if err.to_string().contains(CRASHED) => {}

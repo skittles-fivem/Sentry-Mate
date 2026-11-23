@@ -34,6 +34,8 @@ import { sourceMark } from '../core/sources.js';
 import { overviewCard } from './integrations-overview.js';
 import { deviceText, renameButton } from './device-name.js';
 import { fullRebuild } from './rebuild-parts.js';
+import { gpsFitBlock } from '../shared/gpsfit.js';
+import { confirmDialog } from '../core/dialog.js';
 import * as fr from '../shared/fullrebuild.js';
 import { scrollBox } from '../shared/scrollbox.js';
 import { follow, carOf, onRows, FALLBACK_POLL_MS } from '../shared/live.js';
@@ -306,6 +308,15 @@ async function mountCar(ctx) {
       : lastHl && lastHl.rebuild_pending ? h('span', { class: 'hl-warn' }, 'Running') : 'Nothing pending');
   }
   const full = admin ? fullRebuild(ctx, { car, label: 'Rebuild all data', onStatus: paintRebuild }) : null;
+  // Find GPS layout (admin): in the notice that one input's positions are out of step; built once and moved along
+  // when the health is drawn again
+  const gpsFit = admin ? gpsFitBlock({
+    api, car: cid, alive: () => ctx.alive(), flash: (t, o) => ctx.flash(t, o),
+    confirm: (text, o) => confirmDialog({ title: o.title, text, yes: o.ok }),
+    errorText: (e) => errorWords(e).text, onApplied: () => loadHealth(),
+    btnClass: 'button button-small button-quiet', applyClass: 'button button-small',
+  }) : null;
+  ctx.onCleanup(() => gpsFit?.stop());
 
   const healthBox = h('div', { class: 'hl-health' }, loadingBlock(5));
   ctx.main.append(section({ title: 'Is data arriving?', note: 'checked now, over the period', cover: 'faq.stopped-recording', cls: 'hl-block', id: 'hl-health',
@@ -381,12 +392,13 @@ async function mountCar(ctx) {
         h('div', null,
           h('p', { class: 'hl-fix-title' }, r.title),
           r.text ? h('p', { class: 'hl-fix-text' }, r.text) : null,
-          r.fix ? h('a', { class: 'link-arrow', href: state.buildUrl(r.page, { car: cid }) }, r.fix, icon('arrowRight')) : null));
+          r.fix ? h('a', { class: 'link-arrow', href: state.buildUrl(r.page, { car: cid }) }, r.fix, icon('arrowRight')) : null,
+          code === 'gps_inputs_disagree' && gpsFit ? keepEl(gpsFit.el, 'gps-fit') : null));
     })) : null;
 
     const figs = figures([
       figure('Last upload', hl.last_upload_ms != null ? ago(hl.last_upload_ms, { stale: now - hl.last_upload_ms > HOUR }) : q(null, 'count', { why: 'nothing yet' }),
-        hl.last_upload_ms != null ? `${when(hl.last_upload_ms, tz)}. ${now - hl.last_upload_ms > HOUR ? (reasons.includes('upload_silence') ? 'Over an hour ago: see the fix above.' : 'Over an hour ago, but the car is asleep: nothing to fix.') : 'Logs arrive as the car sends them.'}` : 'No log has arrived. Pair a CAN Bridge on Settings: Cars.'),
+        hl.last_upload_ms != null ? `${when(hl.last_upload_ms, tz)}: the CAN Bridge's last contact.${hl.newest_log_ms != null ? ` Newest log arrived ${when(hl.newest_log_ms, tz)}.` : ''} ${now - hl.last_upload_ms > HOUR ? (reasons.includes('upload_silence') ? 'Over an hour ago: see the fix above.' : 'Over an hour ago, but the car is asleep: nothing to fix.') : 'Logs arrive as the car sends them.'}` : 'No log has arrived. Pair a CAN Bridge on Settings: Cars.'),
       figure('Last log check', tw ? h('span', { class: `hl-${tw[1]}` }, tw[0]) : q(null, 'count', { why: 'none checked yet' }),
         [tw ? [tw[2], trust.reason ? ` Why: ${TRUST_REASONS[trust.reason] || trust.reason}.` : '', trust.log_start_ms != null ? ` The log from ${when(trust.log_start_ms, tz)}.` : ''].join('') : 'A log is checked as soon as it arrives.', logChecksText(hl.log_checks, formatNumber)].filter(Boolean).join(' ')),
       figure('Logs waiting', q(hl.logs_waiting ?? 0, 'count'), hl.logs_waiting ? 'Arrived, not read yet: their key is not trusted.' : 'Every log that arrived has been read.'),

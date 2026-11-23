@@ -46,6 +46,7 @@ pub mod compact;
 pub mod costs;
 pub mod firmware;
 pub mod full;
+pub mod gps_fit;
 pub mod importer;
 pub mod invoice_prices;
 pub mod invoices;
@@ -293,6 +294,9 @@ pub(crate) struct Inner {
     /// A run of the places' invoice prices is queued ([`invoice_prices::run`]); one runs at a time.
     pub(crate) invoice_prices_queued: std::sync::atomic::AtomicBool,
     pub(crate) invoice_prices_run: Mutex<()>,
+    /// The cars' GPS layout fits ([`gps_fit`]), and the one that runs (one at a time).
+    pub(crate) gps_fits: Mutex<gps_fit::Fits>,
+    pub(crate) gps_fit_one: Mutex<()>,
 }
 
 /// A stretch of a car's history where one input's GPS fixes disagreed with another's of the same moments by far
@@ -347,6 +351,10 @@ type ZoneAt = (f64, f64, Option<&'static str>);
 
 /// A car's zone is looked up again once its position moved this far (degrees, about a kilometre).
 const ZONE_MOVE_DEG: f64 = 0.01;
+
+/// How much lower the engine's background work runs than the server's other threads ([`Engine::background`]): the
+/// uploads' judging, the web pages. Compaction runs lower still (19).
+pub const BACKGROUND_NICE: i32 = 10;
 
 impl Inner {
     pub(crate) fn default_zone(&self) -> String {
@@ -462,6 +470,8 @@ impl Engine {
                 invoice_gen: AtomicU64::new(0),
                 invoice_prices_queued: std::sync::atomic::AtomicBool::new(false),
                 invoice_prices_run: Mutex::new(()),
+                gps_fits: Mutex::default(),
+                gps_fit_one: Mutex::new(()),
                 opts,
             }),
         }
@@ -534,6 +544,13 @@ impl Engine {
         self.inner.tokens.get()
     }
 
+    /// The last contact of each car key's CAN Bridge (its last request the upload server accepted), when tokens
+    /// were given: the upload server's live values when they share its contacts ([`ingest::Tokens::with_contacts`]),
+    /// else what it last saved. `None`: no tokens given (pages then go by when the newest log arrived).
+    pub fn contacts(&self) -> Option<&Arc<ingest::Contacts>> {
+        self.tokens().map(|t| t.contacts())
+    }
+
     /// What to give [`ingest::Judge::on_judged`]: it notes the log and returns at once.
     pub fn listener(&self) -> ingest::OnJudged {
         let (tx, outstanding) = (self.inner.tx.clone(), self.inner.outstanding.clone());
@@ -591,6 +608,26 @@ impl Engine {
         }
     }
 
+    /// Runs `f` on a thread of its own below the server's other threads (nice [`BACKGROUND_NICE`]): the decoding,
+    /// rebuilds and full rebuilds still take every core nothing else wants, but checking an upload or answering a
+    /// page goes first. On the blocking threads of `rt` should a thread not start.
+    pub(crate) fn background(rt: &tokio::runtime::Handle, name: &str, f: impl FnOnce() + Send + 'static) {
+        let job = Arc::new(Mutex::new(Some(f)));
+        let mine = job.clone();
+        let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
+            #[cfg(unix)]
+            let _ = rustix::process::nice(BACKGROUND_NICE);
+            if let Some(f) = lock(&mine).take() {
+                f();
+            }
+        });
+        if spawned.is_err()
+            && let Some(f) = lock(&job).take()
+        {
+            drop(rt.spawn_blocking(f));
+        }
+    }
+
     pub(crate) fn handle(&self) -> Result<tokio::runtime::Handle> {
         lock(&self.inner.handle).clone().ok_or(Error::NotStarted)
     }
@@ -607,7 +644,8 @@ impl Engine {
             let Ok(permit) = permits.clone().acquire_owned().await else { break };
             let e = self.clone();
             self.inner.counters.queued.fetch_add(1, Ordering::Relaxed);
-            tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Handle::current();
+            Engine::background(&rt, "engine-work", move || {
                 let r = match w {
                     Work::Log { key, name } => e.work_log(&key, &name),
                     Work::Reconcile { car } => e.work_reconcile(car),

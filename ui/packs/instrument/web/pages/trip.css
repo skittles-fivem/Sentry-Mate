@@ -133,4 +133,4 @@
 
 /* ------------------------------------------------------------ phone (<html data-phone>): the map fits the screen */
 :root[data-phone] .trip-map { min-height: round(22rem, var(--e)); }
-:root[data-phone="short"] .trip-map { min-height: max(60svh, round(15rem, var(--e))); }
+:root[data-phone="short"] .trip-map { min-height: max(60dvh, round(15rem, var(--e))); }

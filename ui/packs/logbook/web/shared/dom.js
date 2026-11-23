@@ -128,56 +128,10 @@ export function svg(tag, attrs, ...children) {
 export const text = (s) => globalThis.document.createTextNode(String(s ?? ''));
 /** A fragment of several children. */
 export const frag = (...children) => append(globalThis.document.createDocumentFragment(), children);
-// Where the page is scrolled, kept across the swaps of one task: scroll anchoring for the parts a page draws again.
-// Safari on iOS has no scroll anchoring of its own, so a part above the screen that is drawn again a line taller (a
-// list with a new row at its top, a total whose note wraps) moved everything on screen down; and Safari (WebKit) can
-// lay a page out in the middle of a swap (the old children out, the new ones not in yet) and scroll the window up to
-// fit that shorter page, throwing the reader towards the top. So the first swap of a part on the page in a task notes,
-// for each box that scrolls (the window, and any element marked data-scroll-box: a pack whose page scrolls inside a
-// fixed box), where it is scrolled and the block in the middle of what it shows; at the end of the task (a microtask,
-// before anything is painted) the box is scrolled by as much as that block moved, or back where it was when the block
-// itself was drawn again. A part built off the page (not connected, or in an [inert] staging box) costs nothing.
-let held = null;
-const FIXED = new Set(['fixed', 'sticky']);
-function anchorIn(doc, b) {
-  const win = b === doc.scrollingElement;
-  const view = doc.defaultView;
-  const r = win ? { left: 0, top: 0, width: view.innerWidth, height: view.innerHeight } : b.getBoundingClientRect();
-  let a = doc.elementFromPoint?.(r.left + r.width / 2, r.top + r.height / 2) || null;
-  // a block of the page, not a bar fixed over it
-  for (let x = a; x && x !== b && x !== doc.body; x = x.parentElement) if (FIXED.has(view.getComputedStyle(x).position)) { a = null; break; }
-  return a && b.contains(a) && a !== b ? a : null;
-}
-/** Keep what is on screen in place across the swaps of el's children in this task (see above). */
-export function holdScroll(el) {
-  if (held || !el?.isConnected || el.closest?.('[inert]')) return;
-  const doc = el.ownerDocument || globalThis.document;
-  const boxes = [];
-  const note = (b) => {
-    const t = b.scrollTop;
-    if (!(t > 0)) return;
-    const a = anchorIn(doc, b);
-    boxes.push([b, t, a, a ? a.getBoundingClientRect().top : 0]);
-  };
-  if (doc.scrollingElement) note(doc.scrollingElement);
-  for (const b of doc.querySelectorAll?.('[data-scroll-box]') || []) note(b);
-  held = boxes;
-  queueMicrotask(() => {
-    const list = held;
-    held = null;
-    for (const [b, t, a, at] of list) {
-      if (!b.isConnected) continue;
-      // the anchor's move on screen, plus what the box itself was scrolled meanwhile, is how far it moved in the page
-      const want = a?.isConnected ? t + (a.getBoundingClientRect().top - at) + (b.scrollTop - t) : t;
-      if (Math.abs(b.scrollTop - want) >= 1) b.scrollTop = want;
-    }
-  });
-}
-
 /** Remove every child. */
-export function clear(el) { holdScroll(el); el.replaceChildren(); return el; }
+export function clear(el) { el.replaceChildren(); return el; }
 /** Replace every child with these. */
-export function replace(el, ...children) { holdScroll(el); el.replaceChildren(); return append(el, children); }
+export function replace(el, ...children) { el.replaceChildren(); return append(el, children); }
 
 // the nodes append() would add, without moving any of them yet (null when a fragment is among them)
 function flatNodes(children, out = []) {
@@ -199,7 +153,6 @@ export function replaceChanged(el, ...children) {
   const next = flatNodes(children);
   const now = Array.from(el.childNodes);
   // a node that moves within el, or a different count: everything again
-  holdScroll(el);
   if (!next || next.length !== now.length || next.some((n, i) => n !== now[i] && n.parentNode === el)) {
     el.replaceChildren();
     return append(el, children);

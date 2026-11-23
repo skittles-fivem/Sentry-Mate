@@ -895,3 +895,89 @@ way and left as they are: they already draw 25 to 50 rows a page (20 to 56 rows 
   every fifth row's line is matched again when a row comes in.
 - The pixel checks (`check.js --pixel`) pass on Logbook, Drives and Charges in all six packs at 1440x900, 3840x2160 and
   390x844@3 with `--drives 3000`.
+
+## CAN log checks on a backlog, and "every ounce of hardware"
+
+What the owner saw: the CAN Bridge app said "Verified by Sentry Mate: 7,215 logs, 13,441 waiting for its check"
+for hours while a full rebuild ran and a backlog was being sent again (about 23,000 uploads that day).
+
+### How it is measured
+
+`JUDGE_LOGS=20000 cargo test --release -p ingest --test judge_speed measure_backlog -- --ignored --nocapture`
+(`crates/ingest/tests/judge_speed.rs`; 600 logs of it run with the tests): one made-up car key, 20,000 signed logs of
+16 KB in one chain, sent again out of order through the upload API, 16 at a time as the app does (the log, then its
+sidecar); the newest first, so the live chain after it can verify. Beside it, as on the server:
+
+- **the live chain:** a new log every 2 s after the backlog's newest, timed from its upload to `verified`;
+- **the app's status calls:** every 0.7 s (within the token's 1,200 calls in 10 minutes), up to 2,000 names: the
+  live logs not answered yet, then the backlog's, oldest first;
+- **the engine:** a `Judge` of its own over the same store (as `serve` has: the uploads' and the engine's), its
+  decode queue looking every judged log's record up, and a full rebuild reading the car's whole book, then every
+  log's record in turn, again and again.
+
+4 cores (Xeon 2.1 GHz), a disk where a sync takes about 40 µs. Times are wall time from the first upload.
+
+| 20,000 logs, 4 cores | before | now |
+|---|---:|---:|
+| every log of the backlog answered `verified` | 849 s (24 logs/s) | 84.5 to 94.7 s (211 to 237 logs/s) |
+| a live log's upload (log, then sidecar: judged when the sidecar is in) | | 78 ms median, 190 ms at most |
+| a live log, from its upload to `verified` in a status call (calls 0.7 s apart) | 979 ms median, 2.4 s at most | 359 to 431 ms median, 0.8 s at most |
+| a status call of up to 2,000 names | 438 ms median, 1.2 s at most | 34 ms median, 95 ms at most |
+| the engine's record lookups beside it | 57 a second | 7,430 to 7,970 a second |
+
+With the engine's reads made through the uploads' own judge (a first version of the measurement, lighter: a book read
+every 200 ms) the backlog took 124 s before; the engine's reads through the key's lock file are what made it 849 s,
+and on the owner's server, with 41,000 logs of that key and a full rebuild, longer still: every status call that
+waited more than 2 s for the key answered `pending` for all its names.
+
+### What was slow
+
+1. **One car's uploads took turns for everything.** An arrival held the car key (its lock in memory and its lock
+   file) while it read the sidecar, read and hashed the log, checked the signature and wrote its record with a sync:
+   one core, one log at a time per car.
+2. **Every read held the key and read the whole history.** A status call read every record of the key from disk
+   (unsealed and parsed: 41,000 on the owner's server), as did the check of a log sent again (`replaceable`), Data
+   health's counts and its "last upload". The engine's lookup of one record read the records file up to that log
+   (half of it on average) for every log decoded, and a rebuild read the whole book; with the key held all the
+   while, so uploads and status calls waited for them, and they for the uploads.
+3. **The uploads' judge and the engine's were strangers.** Two `Judge`s of the same folder in one process took
+   turns only through the key's lock file (a blocking `flock` on a blocking thread), each with its own heads.
+
+### What changed
+
+- **Checked on every core, written together** (`ingest/src/judge.rs`, `ingest/src/pool.rs`). An arrival's log and
+  sidecar are read (each once: the SHA-256 as the log is unsealed, nothing decoded) and checked against each other,
+  signature included, on the judges' own threads (one per core: `available_parallelism`), without holding the key.
+  Only the verdict against the pairing (pin, keys trusted before, the owner's overrides) and writing it hold the key,
+  and whoever holds it next writes every arrival checked meanwhile: one journal write and one sync for all of them,
+  each log's changes still whole in one sealed record (`vault::Records::append_each`, `Ledger::append_groups`). The
+  arrivals of one batch are judged in the order they came, each against the head the ones before left, so a batch
+  ends exactly as one arrival after the other would. A log or sidecar sent again or packed between its check and its
+  writing is checked again: the verdict is of the files as they are.
+- **The records in memory, read without the key.** Each key's records are kept in memory once read (all keys
+  together at most 250,000 records, about 1 KB each; a key with more is read from its files as before), changed with
+  the files when this process writes them, and read without holding the key while the files are the ones they were
+  made from (checked on every read: the head file's first bytes and the journal's size and time). A status call,
+  the engine's lookups, a whole book, Data health's counts and the missing-log scan no longer wait for an upload,
+  nor an upload for them. The owner's command (another process) changing the files is seen at the next read, which
+  then reads the files again.
+- **One memory per data folder.** Every `Judge` of a folder in the process shares its keys' locks, heads and
+  records; the uploads' and the engine's no longer meet at the lock file. (Tests use `Judge::alone` for "another
+  process".)
+- **The chain fitted from what is stored.** The chain check of a log is still worked out at every status call from
+  the stored SHA-256 and index of the log before it (nothing about the chain is stored with a log), so a log whose
+  log before it lands, or is sent again and verifies, is answered `verified` at the next call; with the records in
+  memory that pass costs a few milliseconds instead of a read of the whole history.
+- **A car judged again whole** (a key trusted, newer rules, the sweep of logs whose sidecar never came): the logs are
+  read and checked on every core, then judged in name order and written as before (all at once into the next
+  generation for a new pin).
+- **Judging first.** The judges' threads are theirs alone (a log that just arrived goes before a car judged again
+  whole). The engine's decoding, its rebuild jobs and the full rebuild run on threads of their own at nice 10
+  (`Engine::background`; compaction stays at 19): they still take every core nothing else wants, but checking an
+  upload and answering a page go first.
+
+Nothing is judged differently: the same rules, a changed, cut, unsigned or wrongly signed log still fails. Tests:
+arrivals at once (shuffled, sidecar sometimes first, a changed log, another key's signature, an unsigned sidecar) end
+with the very records one after the other gives, and the app is told the same; every answer from memory (book, chain,
+signers, last arrival, newest usable, counts, status checks, single records, waiting) equals a judge reading only the
+files, after arrivals, a sweep, a key trusted, all judged again, and a change by another process.

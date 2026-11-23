@@ -49,7 +49,7 @@
 
 /* ------------------------------------------------------------ phone (<html data-phone>) */
 :root[data-phone] .drive-layout > .map-panel { min-height: round(22rem, var(--e)); }
-:root[data-phone="short"] .drive-layout > .map-panel { min-height: max(60svh, round(15rem, var(--e))); }
+:root[data-phone="short"] .drive-layout > .map-panel { min-height: max(60dvh, round(15rem, var(--e))); }
 :root[data-phone] .drive-odo dd { overflow-wrap: anywhere; }
 :root[data-phone] .chart-note { margin-left: 0; }
 :root[data-phone] .selection { gap: round(0.75rem, var(--e)) round(1.25rem, var(--e)); }

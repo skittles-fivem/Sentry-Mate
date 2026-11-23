@@ -354,7 +354,7 @@ impl Judge {
         }
         let held = self.hold(key).await?;
         let head = self.take_head(key).await?;
-        let (ledger, h, store, f) = (self.ledger(key), head.clone(), self.store.clone(), self.missing_file(key));
+        let (ctx, h, store, f) = (self.ctx(), head.clone(), self.store.clone(), self.missing_file(key));
         let key_s = key.to_string();
         let now = now_ms();
         // a chain gap is one once the log that names it has been here as long as a log waits for its sidecar (the
@@ -376,30 +376,33 @@ impl Judge {
                 held_ms: None,
                 gone_ms: None,
             };
-            ledger.for_each(&h, |name, r| {
-                known.insert(name.into());
-                if !store.exists(name) {
-                    let (sha, len) = r.original();
-                    found.insert(name.to_string(), entry(r, sha.map(str::to_string), len));
-                }
-                let side = format!("{name}.json");
-                if r.had_sidecar() && !store.exists(&side) {
-                    found.insert(side, entry(r, r.sidecar_sha256.clone(), None));
-                }
-                if let Some(l) = r.link.as_ref() {
-                    let e = lowest.entry(l.key_fingerprint.clone()).or_insert(l.index);
-                    *e = (*e).min(l.index);
-                    if r.status == Status::Verified && l.prev_name != "-" {
-                        links.push((
-                            l.prev_name.clone(),
-                            l.prev_sha256.clone(),
-                            l.key_fingerprint.clone(),
-                            l.index,
-                            r.arrived_ms,
-                        ));
+            // (the key's records in memory when they are kept there)
+            ctx.view(&key_s, &h, |v| {
+                v.for_each(|name, r| {
+                    known.insert(name.into());
+                    if !store.exists(name) {
+                        let (sha, len) = r.original();
+                        found.insert(name.to_string(), entry(r, sha.map(str::to_string), len));
                     }
-                }
-                ControlFlow::Continue(())
+                    let side = format!("{name}.json");
+                    if r.had_sidecar() && !store.exists(&side) {
+                        found.insert(side, entry(r, r.sidecar_sha256.clone(), None));
+                    }
+                    if let Some(l) = r.link.as_ref() {
+                        let e = lowest.entry(l.key_fingerprint.clone()).or_insert(l.index);
+                        *e = (*e).min(l.index);
+                        if r.status == Status::Verified && l.prev_name != "-" {
+                            links.push((
+                                l.prev_name.clone(),
+                                l.prev_sha256.clone(),
+                                l.key_fingerprint.clone(),
+                                l.index,
+                                r.arrived_ms,
+                            ));
+                        }
+                    }
+                    ControlFlow::Continue(())
+                })
             })?;
             for (prev, prev_sha, fp, index, arrived_ms) in links {
                 let ours = LogName::parse(&prev).is_some_and(|n| n.vehicle_key == key_s && !n.sidecar);

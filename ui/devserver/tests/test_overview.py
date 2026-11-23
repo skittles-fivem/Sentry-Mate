@@ -13,7 +13,8 @@ PATH = "/api/v1/integrations/overview"
 KINDS = ("smo", "tesla", "teslafi", "teslamate_mqtt", "teslamate_db", "mqtt", "tiles", "geocoding", "release_check")
 STATUSES = ("live", "idle", "paused", "off", "problem")
 CONN_KEYS = {"id", "kind", "label", "car", "account", "status", "status_reason", "last_ok_ms", "next_ms", "pace",
-             "pace_s", "unit", "today", "day", "week", "uptime", "last_error", "hourly", "missing_logs", "link"}
+             "pace_s", "unit", "today", "day", "week", "uptime", "last_error", "hourly", "missing_logs",
+             "newest_log_ms", "link"}
 PROBLEM_KEYS = {"id", "connection", "kind", "label", "start_ms", "end_ms", "duration_ms", "resolved", "code",
                 "message"}
 

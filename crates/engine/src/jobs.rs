@@ -179,7 +179,7 @@ impl Engine {
         lock(&self.inner.jobs).insert(id, st.clone());
         let e = self.clone();
         self.inner.outstanding_add();
-        handle.spawn_blocking(move || {
+        Engine::background(&handle, "engine-rebuild", move || {
             let r = e.run_rebuild(&st);
             let status = match &r {
                 Err(err) => {
