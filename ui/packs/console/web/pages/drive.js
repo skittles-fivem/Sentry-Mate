@@ -12,6 +12,7 @@ import { head, section, note, link } from '../core/ui.js';
 import { num, tag } from '../core/fmt.js';
 import { safeMap } from '../core/map.js';
 import { trackBounds } from '../shared/tracks.js';
+import { nearNow } from '../shared/lazy.js';
 import { loadUPlot, plot, line, timeAxis, valueAxis, cursor, readout } from '../core/chart.js';
 import { table, cellBar } from '../core/table.js';
 import { empty } from '../core/states.js';
@@ -28,13 +29,26 @@ const exportName = (carName, ms, tz) => {
   return `${String(carName).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'car'}-drive-${p.year}-${z(p.month)}-${z(p.day)}-${z(p.hour)}${z(p.minute)}`;
 };
 
+// The page's reads; prefetch() warms the same ones when a link here is under the pointer.
+const driveBase = (ctx) => `cars/${encodeURIComponent(ctx.car.id)}/drives/${encodeURIComponent(ctx.state.drive)}`;
+const driveRead = (ctx) => ctx.api.get(driveBase(ctx), { speed_band_kph: getUnits().distance === 'mi' ? 10 * KM_PER_MI : 10 });
+const trackRead = (ctx) => ctx.api.get(`${driveBase(ctx)}/track`, { extensions: 'speed,power' });
+const seriesFields = (rk) => ['speed_kph', 'power_kw', 'soc_pct', rk, 'elevation_m', 'outside_c', 'cabin_c', 'setpoint_left_c', 'odometer_km', 'tyre_fl_kpa', 'tyre_fr_kpa', 'tyre_rl_kpa', 'tyre_rr_kpa', 'lat', 'lon', 'battery_heat_kw', 'climate', 'fan_level'];
+const seriesRead = (ctx, t0, t1, fields) => ctx.api.get(`cars/${encodeURIComponent(ctx.car.id)}/series`, { fields: fields.join(','), from_ms: t0, to_ms: t1 + 1000, max_points: 3600 });
+export async function prefetch(ctx) {
+  const [d] = await Promise.all([driveRead(ctx), trackRead(ctx), Promise.resolve().then(loadUPlot).catch(() => null)]);
+  if (!d) return;
+  const rk = getUnits().range === 'ideal' ? 'ideal_range_km' : 'range_km';
+  await seriesRead(ctx, d.start_ms, d.end_ms ?? ctx.api.now(), seriesFields(rk));
+}
+
 export async function mount(ctx) {
   const { car, tz } = ctx;
   const cid = car.id, did = ctx.state.drive;
   const base = `cars/${encodeURIComponent(cid)}/drives/${encodeURIComponent(did)}`;
   const mph = getUnits().distance === 'mi';
   let d;
-  try { d = await ctx.api.get(base, { speed_band_kph: mph ? 10 * KM_PER_MI : 10 }); } catch (e) {
+  try { d = await driveRead(ctx); } catch (e) {
     if (e.status === 404) e.message = 'There is no drive with this number for this car. It may have been rebuilt under a new number; find it on drives.';
     ctx.fail(e, { retry: null }); return;
   }
@@ -43,12 +57,12 @@ export async function mount(ctx) {
   const t0 = d.start_ms, t1 = d.end_ms ?? ctx.api.now();
   const ideal = getUnits().range === 'ideal';
   const rk = ideal ? 'ideal_range_km' : 'range_km';
-  const fields = ['speed_kph', 'power_kw', 'soc_pct', rk, 'elevation_m', 'outside_c', 'cabin_c', 'setpoint_left_c', 'odometer_km', 'tyre_fl_kpa', 'tyre_fr_kpa', 'tyre_rl_kpa', 'tyre_rr_kpa', 'lat', 'lon', 'battery_heat_kw', 'climate', 'fan_level'];
+  const fields = seriesFields(rk);
   let series, track;
   try {
     [series, track] = await Promise.all([
-      ctx.api.get(`cars/${encodeURIComponent(cid)}/series`, { fields: fields.join(','), from_ms: t0, to_ms: t1 + 1000, max_points: 3600 }),
-      ctx.api.get(`${base}/track`, { extensions: 'speed,power' }).catch(() => null),
+      seriesRead(ctx, t0, t1, fields),
+      trackRead(ctx).catch(() => null),
     ]);
   } catch (e) { ctx.fail(e); return; }
   if (!ctx.alive()) return;
@@ -246,14 +260,16 @@ export async function mount(ctx) {
   // the map: the route from the track, A and B, a square at the cursor
   const coords = (track?.features || []).flatMap((f) => f.geometry.coordinates.map((c) => [c[0], c[1]]));
   if (coords.length > 1) {
-    const mp = await safeMap(mapEl, ctx, { center: coords[0], zoom: 13 });
-    if (mp && ctx.alive()) {
+    const drawn = safeMap(mapEl, ctx, { center: coords[0], zoom: 13, lazy: true }).then((mp) => {
+      if (!mp || !ctx.alive()) return;
       mp.line('route', coords);
       mp.marker(coords[0], 'map-pin map-pin--a');
       if (!live) mp.marker(coords[coords.length - 1], 'map-pin map-pin--b');
       cursorPin = mp.marker(coords[0], 'map-pin map-pin--cur is-off');
       mp.fit(trackBounds(track?.features || []) || coords, { pad: 32 }); // without stray fixes
-    }
+    });
+    // a map below the fold is made when it comes near (core/map.js), and ready does not wait for it
+    if (nearNow(mapEl)) await drawn;
   } else mapEl.append(h('p', { class: 'map-note' }, '-- no positions recorded for this drive --'));
   if (!ctx.alive()) return;
   ctx.ready();

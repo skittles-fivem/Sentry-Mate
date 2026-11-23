@@ -81,15 +81,31 @@ function partOf(row, group, tz) {
   return cutStart && cutEnd ? 'part' : cutStart ? 'from' : 'to';
 }
 
+// The page's reads; prefetch() warms the first ones with the same calls when a link here is under the pointer.
+const groupOf = (q, period) => (GROUPS.some(([g]) => g === q.group) ? q.group : defaultGroup(period));
+const fleetRead = (ctx) => ctx.api.page('cars', { sort: 'name' }, { limit: 200 });
+const statsList = (ctx, path, group, carsParam) => ctx.api.list(path, { ...ctx.params, period: group, cars: carsParam }, { limit: 500 });
+const mileageList = (ctx, cid, group) => ctx.api.list(`cars/${enc(cid)}/mileage`, { ...ctx.params, group: group === 'all' ? 'month' : group }, { limit: 500 });
+const longestRead = (ctx, cid) => ctx.api.page(`cars/${enc(cid)}/drives`, { ...ctx.params, sort: 'distance', dir: 'desc' }, { limit: 1 });
+// one car's statistics (without a car, the cars the fleet has decide the queries)
+export function prefetch(ctx) {
+  const reads = [fleetRead(ctx)];
+  if (ctx.car) {
+    const cid = ctx.car.id, group = groupOf(ctx.query, ctx.period);
+    reads.push(statsList(ctx, `cars/${enc(cid)}/statistics`, group, null).all(), mileageList(ctx, cid, group).all(), longestRead(ctx, cid));
+  }
+  return Promise.all(reads);
+}
+
 export async function mount(ctx) {
   const { tz, period } = ctx;
   const fixedCar = ctx.car;
   const q = ctx.query;
-  let group = GROUPS.some(([g]) => g === q.group) ? q.group : defaultGroup(period);
+  let group = groupOf(q, period);
 
   /* ---------- which cars */
   let fleet = [];
-  try { fleet = (await ctx.api.page('cars', { sort: 'name' }, { limit: 200 })).items || []; } catch { fleet = fixedCar ? [fixedCar] : []; }
+  try { fleet = (await fleetRead(ctx)).items || []; } catch { fleet = fixedCar ? [fixedCar] : []; }
   if (!ctx.alive()) return;
   const carById = new Map(fleet.map((c) => [c.id, c]));
   if (fixedCar) carById.set(fixedCar.id, fixedCar);
@@ -308,7 +324,7 @@ export async function mount(ctx) {
     replace(totalsSlot, panel({ title: 'Totals for the period', icon: 'stats' }, h('div', { class: 'st-totals' }, Array.from({ length: 8 }, () => h('div', { class: 'metric' }, skel('text'), skel('num'))))));
     let rows;
     try {
-      rows = await ctx.api.list(statsPath, { ...ctx.params, period: group, cars: carsParam }, { limit: 500 }).all({ max: 20000 });
+      rows = await statsList(ctx, statsPath, group, carsParam).all({ max: 20000 });
     } catch (e) {
       if (my !== gen || !ctx.alive()) return;
       if (my === 1) { ctx.fail(e, { retry: () => ctx.reload() }); return; }
@@ -348,14 +364,13 @@ export async function mount(ctx) {
   const mileGroup = () => (group === 'all' ? 'month' : group);
   async function loadMileage() {
     return eachCar(async (cid) => {
-      const p = `cars/${enc(cid)}/mileage`;
       const pages = [];
-      for await (const pg of ctx.api.list(p, { ...ctx.params, group: mileGroup() }, { limit: 500 }).pages()) { pages.push(pg); if (pages.length > 40) break; }
+      for await (const pg of mileageList(ctx, cid, group).pages()) { pages.push(pg); if (pages.length > 40) break; }
       return { items: pages.flatMap((pg) => pg.items || []), projection: pages[0]?.projection || null };
     });
   }
   async function loadLongest() {
-    return eachCar(async (cid) => (await ctx.api.page(`cars/${enc(cid)}/drives`, { ...ctx.params, sort: 'distance', dir: 'desc' }, { limit: 1 }))?.items?.[0] || null);
+    return eachCar(async (cid) => (await longestRead(ctx, cid))?.items?.[0] || null);
   }
 
   /* ---------- totals */

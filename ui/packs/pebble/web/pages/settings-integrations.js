@@ -208,16 +208,25 @@ const prefixOf = (t) => { const p = String(t || '').split('/'); return p.length 
 const statusChip = (s, inputs) => chip(STATUS[s][0] ?? apiWord(inputs), { tone: STATUS[s][1] });
 const nsBad = (v) => !v || /[+#]/.test(v) || v.startsWith('$') || v.split('/').some((x) => !x);
 
+// The first reads; prefetch() warms the same ones when a link here is under the pointer.
+const firstReads = (ctx) => [
+  ctx.admin ? ctx.api.get('settings/mqtt') : Promise.resolve(null),
+  ctx.api.get('settings/mqtt/status'),
+  ctx.admin ? ctx.api.get('network') : Promise.resolve(null),
+  ctx.api.page('cars', { sort: 'custom' }, { limit: 12 }),
+  ctx.admin ? ctx.api.page('cars', { sort: 'name' }, { limit: 200 }) : Promise.resolve(null),
+];
+export function prefetch(ctx) { return Promise.all(firstReads(ctx)); }
+
 export async function mount(ctx) {
   inOrder(ctx);
   const admin = ctx.admin;
+  const r = firstReads(ctx);
+  const allP = r[4].then((x) => x?.items || [], () => null); // every car (admins), asked for with the rest
   let [cfg, status, net, cars] = await Promise.all([
-    admin ? ctx.api.get('settings/mqtt') : Promise.resolve(null),
-    ctx.api.get('settings/mqtt/status').catch(() => null),
-    admin ? ctx.api.get('network').catch(() => null) : Promise.resolve(null),
-    ctx.api.page('cars', { sort: 'custom' }, { limit: 12 }).then((r) => r.items || []).catch(() => []),
+    r[0], r[1].catch(() => null), r[2].catch(() => null), r[3].then((x) => x.items || []).catch(() => []),
   ]);
-  const allCars = admin ? await ctx.api.page('cars', { sort: 'name' }, { limit: 200 }).then((r) => r.items || []).catch(() => cars) : cars;
+  const allCars = admin ? (await allP) ?? cars : cars;
   const tesla = teslaTiles(ctx, { cars: allCars });
   const teslafi = teslafiTiles(ctx, { cars: allCars });
   const teslamate = teslamateTiles(ctx, { cars: allCars });

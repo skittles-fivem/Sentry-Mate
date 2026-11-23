@@ -53,26 +53,56 @@ const REASONS = {
 };
 const METHOD = { counter: 'pack counters', bms_energy: 'pack energy', range: 'from range (est)' };
 
+// The calls that start at once: [battery, efficiency, totals, settings]. prefetch() warms the same ones when a
+// link here is under the pointer.
+function firstReads(ctx) {
+  const base = `cars/${enc(ctx.car.id)}`;
+  return [ctx.api.get(`${base}/battery`), ctx.api.get(`${base}/efficiency`), ctx.api.get(`${base}/totals`), ctx.api.get(`${base}/settings`)];
+}
+// the section controls of the address, and the history sections' reads
+const optsOf = (q) => ({
+  capX: q.cap_x === 'time' ? 'time' : 'odometer',
+  capGroup: q.cap_group === 'day' ? 'day' : 'charge',
+  clBucket: q.cl_bucket === 'hour' || q.cl_bucket === 'day' ? q.cl_bucket : null,
+  clMoving: q.cl_moving !== '0',
+  clWindow: q.cl_window === '30d' ? '30d' : '7d',
+  prBucket: ['hour', 'day', 'week'].includes(q.pr_bucket) ? q.pr_bucket : 'auto',
+  minH: [0, 1, 3, 6, 12, 24].includes(Number(q.min_h)) ? Number(q.min_h) : 0,
+});
+const levelBucket = (opt, from, to) => (opt.clBucket && !(opt.clBucket === 'hour' && to - from > 62 * DAY) ? opt.clBucket : to - from <= 31 * DAY ? 'hour' : 'day');
+const levelRead = (ctx, opt, from, to) => ctx.api.get(`cars/${enc(ctx.car.id)}/battery-level`, { from_ms: from, to_ms: to, bucket: levelBucket(opt, from, to), moving: opt.clMoving ? 'true' : 'false', window: opt.clWindow });
+function projectedParams(ctx, opt, nowMs) {
+  const p = ctx.period, params = { ...ctx.params };
+  const span = (p.to_ms ?? nowMs) - (p.from_ms ?? nowMs - 365 * DAY);
+  const hourTooFine = span > 62 * DAY;
+  if (opt.prBucket !== 'auto' && !(opt.prBucket === 'hour' && hourTooFine)) params.bucket = opt.prBucket; else params.max_points = 600;
+  return { params, hourTooFine };
+}
+const parkedParams = (ctx, opt) => ({ ...ctx.params, ...(opt.minH ? { min_hours: opt.minH } : {}) });
+export function prefetch(ctx) {
+  const base = `cars/${enc(ctx.car.id)}`, opt = optsOf(ctx.query), p = ctx.period, now = ctx.api.now();
+  return Promise.all([
+    ...firstReads(ctx),
+    ctx.api.get(`${base}/battery/capacity`, { group: opt.capGroup, x: opt.capX, limit: 500 }), // the first pages of collect()
+    ctx.api.get(`${base}/battery/capacity`, { group: 'month', x: opt.capX, limit: 500 }),
+    p.from_ms != null ? levelRead(ctx, opt, p.from_ms, p.to_ms ?? now) : null,
+    ctx.api.get(`${base}/projected-range`, projectedParams(ctx, opt, now).params),
+    ctx.api.pager(`${base}/parked`, parkedParams(ctx, opt), { limit: 50 }).more(), // the parked table (50 a page)
+  ]);
+}
+
 export async function mount(ctx) {
   const car = ctx.car, cid = car.id, tz = ctx.tz, base = `cars/${enc(cid)}`;
   const period = ctx.period, q = ctx.query;
   const now = () => ctx.api.now();
-  const opt = {
-    capX: q.cap_x === 'time' ? 'time' : 'odometer',
-    capGroup: q.cap_group === 'day' ? 'day' : 'charge',
-    clBucket: q.cl_bucket === 'hour' || q.cl_bucket === 'day' ? q.cl_bucket : null,
-    clMoving: q.cl_moving !== '0',
-    clWindow: q.cl_window === '30d' ? '30d' : '7d',
-    prBucket: ['hour', 'day', 'week'].includes(q.pr_bucket) ? q.pr_bucket : 'auto',
-    minH: [0, 1, 3, 6, 12, 24].includes(Number(q.min_h)) ? Number(q.min_h) : 0,
-  };
+  const opt = optsOf(q);
 
   // Every call starts at once and each block draws when its own answers are in (a loading line holds its place
   // until then), so the page shows what it has instead of waiting for the slowest call.
-  const batP = ctx.api.get(`${base}/battery`);
-  const effP = ctx.api.get(`${base}/efficiency`).catch(() => null);
-  const totalsP = ctx.api.get(`${base}/totals`).catch(() => null);
-  const settingsP = ctx.api.get(`${base}/settings`).catch(() => null);
+  const [batP, effRead, totalsRead, settingsRead] = firstReads(ctx);
+  const effP = effRead.catch(() => null);
+  const totalsP = totalsRead.catch(() => null);
+  const settingsP = settingsRead.catch(() => null);
   // filled when GET battery (and efficiency) is in; the blocks below read them then
   let bat = {}, cap = {}, life = {}, fr = {}, toIdeal = null, rangeWord = 'rated', rng = {}, factor = null;
   const batReady = Promise.all([batP, effP]).then(([b, eff]) => {
@@ -365,8 +395,8 @@ export async function mount(ctx) {
     const from = period.from_ms ?? (await firstMs());
     const to = period.to_ms ?? now();
     const longSpan = to - from > 62 * DAY;
-    const bucket = opt.clBucket && !(opt.clBucket === 'hour' && longSpan) ? opt.clBucket : to - from <= 31 * DAY ? 'hour' : 'day';
-    const d = await ctx.api.get(`${base}/battery-level`, { from_ms: from, to_ms: to, bucket, moving: opt.clMoving ? 'true' : 'false', window: opt.clWindow });
+    const bucket = levelBucket(opt, from, to);
+    const d = await levelRead(ctx, opt, from, to);
     if (!ctx.alive()) return;
     const ctl = h('div', null,
       keyRow('bucket', [['hour', 'hour', longSpan ? 'hour is for ranges up to 62 days' : null], ['day', 'day']], bucket, (v) => { opt.clBucket = v; ctx.setQuery({ cl_bucket: v }); paintChargeLevel(); }, { cover: 'cl.control.bucket_width' }),
@@ -458,10 +488,7 @@ export async function mount(ctx) {
 
   /* ---------- projected range */
   async function paintProjected() {
-    const params = { ...ctx.params };
-    const span = (period.to_ms ?? now()) - (period.from_ms ?? now() - 365 * DAY);
-    const hourTooFine = span > 62 * DAY;
-    if (opt.prBucket !== 'auto' && !(opt.prBucket === 'hour' && hourTooFine)) params.bucket = opt.prBucket; else params.max_points = 600;
+    const { params, hourTooFine } = projectedParams(ctx, opt, now());
     const d = await ctx.api.get(`${base}/projected-range`, params);
     if (!ctx.alive()) return;
     const ctl = keyRow('resolution', [['auto', 'auto'], ['hour', 'hour', hourTooFine ? 'hour is for ranges up to 62 days' : null], ['day', 'day'], ['week', 'week']], hourTooFine && opt.prBucket === 'hour' ? 'auto' : opt.prBucket,
@@ -516,7 +543,7 @@ export async function mount(ctx) {
 
   /* ---------- parked drain */
   async function paintParked() {
-    const params = () => ({ ...ctx.params, ...(opt.minH ? { min_hours: opt.minH } : {}) });
+    const params = () => parkedParams(ctx, opt);
     const sumEl = h('div');
     const tripHref = (r) => state.buildUrl('trip', { car: cid, period: { from: r.start_ms, to: r.end_ms ?? now() } });
     const tlHref = (r) => state.buildUrl('timeline', { car: cid, period: { from: startOf(r.start_ms, 'day', tz), to: r.end_ms ?? now() } });

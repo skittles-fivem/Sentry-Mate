@@ -72,6 +72,25 @@ function autoGroup(period, now) {
   return days <= 45 ? 'day' : days <= 3 * 366 ? 'month' : 'year';
 }
 
+// The page's reads; prefetch() warms the first ones with the same calls when a link here is under the pointer.
+const fleetRead = (ctx) => ctx.api.list('cars', { sort: 'name' }, { limit: 200 });
+const queryGroup = (q) => (GROUPS.some(([k]) => k === q.group) ? q.group : null);
+const mileGroupOf = (g, period, now) => (g === 'all' ? autoGroup(period, now) === 'day' ? 'day' : 'month' : g);
+const statsList = (ctx, path, params, cars, period) => ctx.api.list(path, { ...params, cars, period }, { limit: 500 });
+const mileageList = (ctx, cid, params, group) => ctx.api.list(api.apiPath`cars/${cid}/mileage`, { ...params, group }, { limit: 500 });
+const longestRead = (ctx, cid, params) => ctx.api.get(api.apiPath`cars/${cid}/drives`, { ...params, sort: 'distance', dir: 'desc', limit: 1 });
+// one car's statistics (without a car, the cars the fleet has decide the queries)
+export function prefetch(ctx) {
+  const reads = [fleetRead(ctx).all()];
+  if (ctx.car) {
+    const now = api.now(), cid = ctx.car.id, path = api.apiPath`cars/${cid}/statistics`;
+    const g = queryGroup(ctx.query) || autoGroup(ctx.period, now);
+    reads.push(statsList(ctx, path, ctx.params, undefined, g).all(), g === 'all' ? null : statsList(ctx, path, ctx.params, undefined, 'all').all(),
+      mileageList(ctx, cid, ctx.params, mileGroupOf(g, ctx.period, now)).all(), longestRead(ctx, cid, ctx.params));
+  }
+  return Promise.all(reads);
+}
+
 export async function mount(ctx) {
   const fixedCar = ctx.car;
   const tz = ctx.tz;
@@ -80,7 +99,7 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- which cars */
 
   let fleet = [];
-  try { fleet = await ctx.api.list('cars', { sort: 'name' }, { limit: 200 }).all({ max: 2000 }); } catch (err) { if (ctx.signal.aborted) throw err; fleet = fixedCar ? [fixedCar] : []; }
+  try { fleet = await fleetRead(ctx).all({ max: 2000 }); } catch (err) { if (ctx.signal.aborted) throw err; fleet = fixedCar ? [fixedCar] : []; }
   const byId = new Map(fleet.map((c) => [c.id, c]));
   if (fixedCar) byId.set(fixedCar.id, fixedCar);
   const asked = idList(ctx.query.cars).filter((x) => byId.has(x));
@@ -118,7 +137,7 @@ export async function mount(ctx) {
   })();
   const paramsOf = (cid) => (zoneGroups.find((x) => x.ids.includes(cid)) || zoneGroups[0]).params;
 
-  let group = GROUPS.some(([k]) => k === ctx.query.group) ? ctx.query.group : null;
+  let group = queryGroup(ctx.query);
   // Several cars: lines from zero by default (odometers of different cars differ by tens of thousands).
   let odoScale = ctx.query.scale === 'odometer' ? 'odometer' : 'from';
   const groupNow = () => group || autoGroup(ctx.period, now);
@@ -206,7 +225,7 @@ export async function mount(ctx) {
     if (note) note.textContent = (g === 'all' ? 'the whole period, one row per car' : `one row per ${g === 'week' ? 'ISO week' : g}${multi ? ' and car' : ''}, newest first`) + extra;
   };
   // The rows of every zone group, newest first.
-  const statsRows = (period, max) => Promise.all(zoneGroups.map((zg) => ctx.api.list(statsPath, { ...zg.params, cars: zg.cars, period }, { limit: 500 }).all({ max })))
+  const statsRows = (period, max) => Promise.all(zoneGroups.map((zg) => statsList(ctx, statsPath, zg.params, zg.cars, period).all({ max })))
     .then((lists) => lists.flat().sort((a, b) => b.period_start_ms - a.period_start_ms || String(a.car).localeCompare(String(b.car))));
   /** The rows did not load: say so in the table, and mark what still shows another grouping as such. */
   function rowsFailed(err, g) {
@@ -223,13 +242,13 @@ export async function mount(ctx) {
   async function loadAll() {
     const my = ++gen;
     const g = groupNow();
-    const mileGroup = g === 'all' ? autoGroup(ctx.period, now) === 'day' ? 'day' : 'month' : g;
+    const mileGroup = mileGroupOf(g, ctx.period, now);
     const lineCars = viewCars.slice(0, MAX_LINES);
     const [rowsR, wholeR, mileR, longR] = await Promise.allSettled([
       statsRows(g, 20000),
       g === 'all' ? null : statsRows('all', 5000),
-      Promise.allSettled(lineCars.map((cid) => ctx.api.list(api.apiPath`cars/${cid}/mileage`, { ...paramsOf(cid), group: mileGroup }, { limit: 500 }).all({ max: 5000 }))),
-      Promise.allSettled(viewCars.slice(0, MAX_DRIVE_LOOKUPS).map((cid) => ctx.api.get(api.apiPath`cars/${cid}/drives`, { ...paramsOf(cid), sort: 'distance', dir: 'desc', limit: 1 }))),
+      Promise.allSettled(lineCars.map((cid) => mileageList(ctx, cid, paramsOf(cid), mileGroup).all({ max: 5000 }))),
+      Promise.allSettled(viewCars.slice(0, MAX_DRIVE_LOOKUPS).map((cid) => longestRead(ctx, cid, paramsOf(cid)))),
     ]);
     if (my !== gen || !ctx.alive()) return;
     if (rowsR.status === 'rejected') { if (!api.isAbort(rowsR.reason)) rowsFailed(rowsR.reason, g); return; }

@@ -16,7 +16,7 @@ import { head, section, kv, note, link } from '../core/ui.js';
 import { num, tag, date } from '../core/fmt.js';
 import { table, cellBar } from '../core/table.js';
 import { empty } from '../core/states.js';
-import { filterLine, dateSpan, numberOf } from '../core/filterline.js';
+import { filterLine, parseFilter, dateSpan, numberOf } from '../core/filterline.js';
 import { placeLink } from './timeline.js';
 import { isAdmin } from '../core/prefs.js';
 import { toast } from '../core/toast.js';
@@ -29,33 +29,44 @@ const KEYS = {
   place: 'a place at the start or end', at: 'start | end', source: SOURCE_KEY, flag: 'gap | live | cold', eff: 'plain | hill', not: 'places left out of the patterns',
 };
 
+// The places, and the list's query from a parsed filter line; prefetch() warms the first reads with the same
+// ones when a link here is under the pointer (the list newest first, as its start column sorts).
+const placesRead = (ctx) => ctx.api.list('places', { car: ctx.car.id, sort: 'drives' }, { limit: 200 }).all();
+const findPlaces = (places, v) => String(v || '').split(',').map((n) => n.trim().toLowerCase()).filter(Boolean)
+  .map((n) => places.find((p) => p.name.toLowerCase() === n) || places.find((p) => p.name.toLowerCase().startsWith(n)) || places.find((p) => p.id === n)).filter(Boolean);
+function listParams(ctx, p, places) {
+  const k = p.keys;
+  const pl = findPlaces(places, k.place);
+  const fl = { gap: 'gap', live: 'in_progress', cold: 'reduced_range' }[String(k.flag || '').toLowerCase()] || null;
+  return {
+    ...ctx.params,
+    places: pl.length ? pl.map((x) => x.id).join(',') : null,
+    place_side: pl.length && (k.at === 'start' || k.at === 'end') ? k.at : pl.length ? 'any' : null,
+    q: [p.text, k.place && !pl.length ? k.place : null].filter(Boolean).join(' ') || null,
+    min_distance_km: numberOf(k.min) != null ? +toMetric(numberOf(k.min), 'distance').toFixed(3) : null,
+    min_avg_kph: numberOf(k.speed) != null ? +toMetric(numberOf(k.speed), 'speed').toFixed(2) : null,
+    source: sourceWord(k.source),
+    flags: fl,
+    efficiency: String(k.eff || '').startsWith('hill') ? 'hill_corrected' : 'plain',
+  };
+}
+const patternsRead = (ctx, places, p) => ctx.api.get(`cars/${encodeURIComponent(ctx.car.id)}/drive-stats`, { ...ctx.params, exclude_places: findPlaces(places, p.keys.not).map((x) => x.id).join(',') || null });
+export async function prefetch(ctx) {
+  const path = `cars/${encodeURIComponent(ctx.car.id)}/drives`;
+  const [found] = await Promise.all([placesRead(ctx), ctx.api.pager(path, { ...ctx.params, flags: 'gap,in_progress' }, { limit: 20 }).more()]);
+  const places = found || [], p = parseFilter(ctx.query.f || '', KEYS);
+  await Promise.all([ctx.api.pager(path, { ...listParams(ctx, p, places), sort: 'start', dir: 'desc' }, { limit: 50 }).more(), patternsRead(ctx, places, p)]);
+}
+
 export async function mount(ctx) {
   const { car, tz, period } = ctx;
   const cid = car.id;
   const path = `cars/${encodeURIComponent(cid)}/drives`;
 
   let places = [];
-  try { places = await ctx.api.list('places', { car: cid, sort: 'drives' }, { limit: 200 }).all(); } catch { places = []; }
+  try { places = await placesRead(ctx); } catch { places = []; }
   if (!ctx.alive()) return;
-  const findPlaces = (v) => String(v || '').split(',').map((n) => n.trim().toLowerCase()).filter(Boolean)
-    .map((n) => places.find((p) => p.name.toLowerCase() === n) || places.find((p) => p.name.toLowerCase().startsWith(n)) || places.find((p) => p.id === n)).filter(Boolean);
-
-  const toParams = (p) => {
-    const k = p.keys;
-    const pl = findPlaces(k.place);
-    const fl = { gap: 'gap', live: 'in_progress', cold: 'reduced_range' }[String(k.flag || '').toLowerCase()] || null;
-    return {
-      ...ctx.params,
-      places: pl.length ? pl.map((x) => x.id).join(',') : null,
-      place_side: pl.length && (k.at === 'start' || k.at === 'end') ? k.at : pl.length ? 'any' : null,
-      q: [p.text, k.place && !pl.length ? k.place : null].filter(Boolean).join(' ') || null,
-      min_distance_km: numberOf(k.min) != null ? +toMetric(numberOf(k.min), 'distance').toFixed(3) : null,
-      min_avg_kph: numberOf(k.speed) != null ? +toMetric(numberOf(k.speed), 'speed').toFixed(2) : null,
-      source: sourceWord(k.source),
-      flags: fl,
-      efficiency: String(k.eff || '').startsWith('hill') ? 'hill_corrected' : 'plain',
-    };
-  };
+  const toParams = (p) => listParams(ctx, p, places);
   const fl = filterLine({
     keys: KEYS, check: { source: sourceCheck }, value: ctx.query.f || '', placeholder: 'from:2026-10 min:10km place:home', label: 'Filter the drives',
     cover: ['drives.filter.geofence', 'drives.filter.location', 'drives.filter.min_distance', 'drives.filter.min_speed', 'drives.setting.efficiency_method', 'ds.filter.exclude_locations'],
@@ -153,9 +164,9 @@ export async function mount(ctx) {
   /* ---------- driving patterns */
   const patterns = h('div', { cover: 'ds.empty_states' });
   async function loadPatterns(p = fl.parsed()) {
-    const left = findPlaces(p.keys.not);
+    const left = findPlaces(places, p.keys.not);
     let s;
-    try { s = await ctx.api.get(`cars/${encodeURIComponent(cid)}/drive-stats`, { ...ctx.params, exclude_places: left.map((x) => x.id).join(',') || null }); } catch (e) {
+    try { s = await patternsRead(ctx, places, p); } catch (e) {
       replace(patterns, section({ title: 'driving patterns' }, h('p', { class: 'note' }, `-- the patterns could not be loaded: ${e.message} --`)));
       return;
     }

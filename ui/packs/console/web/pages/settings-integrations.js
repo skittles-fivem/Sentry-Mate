@@ -241,16 +241,21 @@ function tabs(ctx, panels, { fallback }) {
   return { el: bar, show, pick, current: () => cur };
 }
 
+// The first reads; prefetch() warms the same ones when a link here is under the pointer.
+const firstReads = (ctx) => [
+  ctx.admin ? ctx.api.get('settings/mqtt') : Promise.resolve(null),
+  ctx.api.get('settings/mqtt/status'),
+  ctx.admin ? ctx.api.get('network') : Promise.resolve(null),
+  ctx.api.get('cars', { sort: 'name', limit: 100 }),
+];
+export function prefetch(ctx) { return Promise.all(firstReads(ctx)); }
+
 export async function mount(ctx) {
   const admin = ctx.admin;
   // the overview's first read starts before everything else
   const ov = admin ? overviewSection(ctx) : null;
-  const [cfg0, status0, net, cars] = await Promise.all([
-    admin ? ctx.api.get('settings/mqtt').catch(() => null) : null,
-    ctx.api.get('settings/mqtt/status').catch(() => null),
-    admin ? ctx.api.get('network').catch(() => null) : null,
-    ctx.api.get('cars', { sort: 'name', limit: 100 }).catch(() => ({ items: [] })),
-  ]);
+  const r = firstReads(ctx);
+  const [cfg0, status0, net, cars] = await Promise.all([r[0].catch(() => null), r[1].catch(() => null), r[2].catch(() => null), r[3].catch(() => ({ items: [] }))]);
   if (!ctx.alive()) return;
   let cfg = cfg0, status = status0;
   const carList = cars?.items || [];

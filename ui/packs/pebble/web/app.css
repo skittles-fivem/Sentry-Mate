@@ -1185,3 +1185,8 @@ html[data-form="phone"] .fw-change { flex-direction: column; align-items: flex-s
 .steady { display: inline-grid; font-variant-numeric: tabular-nums; }
 .steady > * { grid-area: 1 / 1; }
 .steady-size { visibility: hidden; }
+/* A kept answer on screen while the fresh one is asked for (core/router.js puts data-stale on the root): the page
+   is a little dimmed after a moment, so a quick check shows nothing. Only the opacity changes: nothing moves. */
+#main { transition: opacity 0.2s ease; }
+:root[data-stale] #main { opacity: 0.72; transition: opacity 0.3s ease 0.25s; }
+@media (prefers-reduced-motion: reduce) { #main, :root[data-stale] #main { transition: none; } }

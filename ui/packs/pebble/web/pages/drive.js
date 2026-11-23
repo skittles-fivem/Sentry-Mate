@@ -28,11 +28,21 @@ const FIELDS = 'speed_kph,power_kw,soc_pct,range_km,ideal_range_km,battery_heat_
 const nums = (l) => (l || []).map((x) => (typeof x === 'number' && Number.isFinite(x) ? x : null));
 const has = (l) => (l || []).some((x) => x != null);
 
+// The page's reads; prefetch() warms the same ones when a link here is under the pointer.
+const driveBase = (ctx) => api.apiPath`cars/${ctx.car.id}/drives/${ctx.driveId}`;
+const driveRead = (ctx) => ctx.api.get(driveBase(ctx), { speed_band_kph: unitLabel('speed') === 'mph' ? 16.09344 : 10 });
+const trackRead = (ctx) => ctx.api.get(`${driveBase(ctx)}/track`, { format: 'geojson' });
+const seriesRead = (ctx, d) => ctx.api.get(api.apiPath`cars/${ctx.car.id}/series`, { fields: FIELDS, from_ms: d.start_ms, to_ms: (d.end_ms ?? api.now()) + 1, max_points: 2000 });
+export async function prefetch(ctx) {
+  const [d] = await Promise.all([driveRead(ctx), trackRead(ctx)]);
+  if (d) await seriesRead(ctx, d);
+}
+
 export async function mount(ctx) {
   const car = ctx.car, tz = ctx.tz;
-  const base = api.apiPath`cars/${car.id}/drives/${ctx.driveId}`;
+  const base = driveBase(ctx);
   let d;
-  try { d = await ctx.api.get(base, { speed_band_kph: unitLabel('speed') === 'mph' ? 16.09344 : 10 }); } catch (err) {
+  try { d = await driveRead(ctx); } catch (err) {
     if (err && err.status === 404) {
       ctx.head({ title: 'No such drive' });
       ctx.view.replaceChildren(emptyTile({ icon: 'route', title: 'There is no drive with this number', text: 'It may have been rebuilt under a new number, or the link is wrong. Its route export says “not found” too.',
@@ -46,8 +56,8 @@ export async function mount(ctx) {
   const end = d.end_ms ?? api.now();
   const keep = (p) => p.catch((err) => ({ error: err }));
   const [track, s] = await Promise.all([
-    keep(ctx.api.get(`${base}/track`, { format: 'geojson' })),
-    keep(ctx.api.get(api.apiPath`cars/${car.id}/series`, { fields: FIELDS, from_ms: d.start_ms, to_ms: end + 1, max_points: 2000 })),
+    keep(trackRead(ctx)),
+    keep(seriesRead(ctx, d)),
   ]);
   if (!ctx.alive()) return {};
   const ser = s.error ? null : s;

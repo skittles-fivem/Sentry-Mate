@@ -101,6 +101,17 @@ forward or a link to other filters of the same page build it again, unless the p
 then that takes the new query (`ctx.query` is already updated), and the page is ready again when it resolves. A
 page that was left cannot change the address any more (`ctx.setQuery` does nothing then).
 
+Fast page changes: a page may export `prefetch(ctx)`. The router calls it when a link to the page is under the
+pointer for 50 ms, touched or focused, with the `ctx` that `mount` will get (car, period, params, query, state,
+me; `ctx.prefetching` is true), but its `ctx.api` only warms answers (`prefetchApi` in `shared/prefetch.js`). It must
+make the same calls as the page's first reads, so build them in one function both use (`firstReads(ctx)` in
+`pages/battery.js`): a call with other parameters warms an answer nobody asks for. The router also loads the page's
+module and style sheet then, and once the first page is drawn the main sections' modules load while the browser
+is idle. A page (not the settings forms) takes kept answers at once for the reads it makes before `ready()`; each is
+checked at the same time, `<html data-stale>` dims the page while one is on screen, and a page whose answers
+changed is built again in place, like a live refresh. On the first page after a reload the service worker's kept
+answers can come first the same way.
+
 ## `ctx`
 
 | Field | What it is |
@@ -136,6 +147,12 @@ reload tables (`t.reload()` keeps the rows on screen until the new ones are in) 
 paint skeletons or "loading" again; a part with charts that is drawn again uses `offstage(slot, build)`
 (`core/stage.js`), which builds it off screen and swaps it in at once; reserve the space of text that arrives later.
 Never poll on a timer for data.
+
+Below the fold: `mountPlot` builds a chart and `createMap(el, ctx, { lazy: true })` makes a map (and loads MapLibre) only when its box comes
+within a screen of view (`shared/lazy.js` `whenNear`), so the first paint draws only what is on screen. The box has
+its final height from CSS from the start, so nothing moves when it is drawn; `plot.u` is null until then and
+`setData` keeps the newest data. `createMap` waits until then, so a page that waits for its map before `ready()` does
+so only when `nearNow(el)` (`shared/lazy.js`) says it is near; ready never waits for a part below the fold.
 
 ## Core helpers
 

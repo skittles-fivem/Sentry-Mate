@@ -34,19 +34,51 @@ const CHEM = { lfp: 'LFP', nca_nmc: 'NCA or NMC' };
 const pct = (v, d) => format(v, 'percent', d != null ? { digits: d } : undefined);
 const n0 = (v) => (v == null ? '—' : formatNumber(v));
 
+// The calls that start at once: [battery, totals, settings, efficiency], and the capacity chart's. prefetch()
+// warms the same ones when a link here is under the pointer.
+function firstReads(ctx) {
+  const base = api.apiPath`cars/${ctx.car.id}`;
+  return [ctx.api.get(`${base}/battery`), ctx.api.get(`${base}/totals`), ctx.api.get(`${base}/settings`), ctx.api.get(`${base}/efficiency`)];
+}
+const capacityReads = (ctx) => {
+  const base = api.apiPath`cars/${ctx.car.id}`;
+  return [
+    ctx.api.list(`${base}/battery/capacity`, { group: 'day', x: 'odometer' }, { limit: 500 }).all({ max: 3000 }),
+    ctx.api.get(`${base}/battery/capacity`, { group: 'month', x: 'odometer', limit: 500 }),
+  ];
+};
+// the section controls of the address, and the period sections' reads
+const optsOf = (q) => ({
+  bucket: q.cl_bucket === 'hour' ? 'hour' : 'day', moving: q.cl_moving !== '0', window: q.cl_window === '30d' ? '30d' : '7d',
+  prBucket: ['hour', 'day', 'week'].includes(q.pr_bucket) ? q.pr_bucket : 'auto', minH: Number(q.min_h) || 0,
+});
+const levelSpan = (ctx) => { const p = ctx.period; return [p.from_ms ?? api.now() - 365 * DAY, p.to_ms ?? api.now()]; };
+const levelRead = (ctx, opt, from, to) => ctx.api.get(api.apiPath`cars/${ctx.car.id}/battery-level`, { from_ms: from, to_ms: to, bucket: to - from > 62 * DAY ? 'day' : opt.bucket, moving: opt.moving ? 'true' : 'false', window: opt.window });
+function projectedParams(ctx, opt) {
+  const p = ctx.period, params = { ...ctx.params };
+  const span = (p.to_ms ?? api.now()) - (p.from_ms ?? api.now() - 365 * DAY);
+  if (opt.prBucket !== 'auto' && !(opt.prBucket === 'hour' && span > 62 * DAY)) params.bucket = opt.prBucket; else params.max_points = 600;
+  return params;
+}
+const parkedParams = (ctx, opt) => ({ ...ctx.params, ...(opt.minH ? { min_hours: opt.minH } : {}) });
+export function prefetch(ctx) {
+  const base = api.apiPath`cars/${ctx.car.id}`, opt = optsOf(ctx.query);
+  return Promise.all([
+    ...firstReads(ctx), ...capacityReads(ctx), levelRead(ctx, opt, ...levelSpan(ctx)),
+    ctx.api.get(`${base}/projected-range`, projectedParams(ctx, opt)), ctx.api.pager(`${base}/parked`, parkedParams(ctx, opt), { limit: 12 }).more(),
+  ]);
+}
+
 export async function mount(ctx) {
   const car = ctx.car, tz = ctx.tz, period = ctx.period;
   const base = api.apiPath`cars/${car.id}`;
   const keep = (p) => p.catch(() => null);
   // Every call starts at once and each block paints when its own answers are in; until then a grey tile of its
   // size keeps its room, so the page shows what it has and nothing jumps when the slow parts arrive.
-  const batP = ctx.api.get(`${base}/battery`);
-  const totalsP = keep(ctx.api.get(`${base}/totals`)), settingsP = keep(ctx.api.get(`${base}/settings`)), effP = keep(ctx.api.get(`${base}/efficiency`));
+  const [batP, ...rest] = firstReads(ctx);
+  const [totalsP, settingsP, effP] = rest.map(keep);
   const batOrNull = keep(batP);
-  const opt = {
-    bucket: ctx.query.cl_bucket === 'hour' ? 'hour' : 'day', moving: ctx.query.cl_moving !== '0', window: ctx.query.cl_window === '30d' ? '30d' : '7d',
-    prBucket: ['hour', 'day', 'week'].includes(ctx.query.pr_bucket) ? ctx.query.pr_bucket : 'auto', minH: Number(ctx.query.min_h) || 0,
-  };
+  const opt = optsOf(ctx.query);
 
   const bar = filterBar(ctx, { carCover: ['bh.filter.car', 'cl.filter.car', 'pr.section.per_car', 'vd.section.per_car'], periodCover: ['cl.filter.time_range', 'pr.filter.time_range', 'vd.filter.time_range'] },
     h('span', { class: 'filter-note' }, 'The level, the projected range and the parked drain follow the period; health and lifetime figures do not.'));
@@ -156,10 +188,8 @@ export async function mount(ctx) {
 
   /* capacity by distance: a dot per day, the monthly line */
   async function paintCapacity() {
-    const [pts, med] = await Promise.all([
-      ctx.api.list(`${base}/battery/capacity`, { group: 'day', x: 'odometer' }, { limit: 500 }).all({ max: 3000 }).catch(() => []),
-      ctx.api.get(`${base}/battery/capacity`, { group: 'month', x: 'odometer', limit: 500 }).catch(() => null),
-    ]);
+    const [ptsP, medP] = capacityReads(ctx);
+    const [pts, med] = await Promise.all([ptsP.catch(() => []), medP.catch(() => null)]);
     const bat = await batOrNull;
     if (!ctx.alive()) return;
     capT.querySelector('.plot-ghost')?.remove();
@@ -186,10 +216,10 @@ export async function mount(ctx) {
   clHost.append(plotGhost());
   clT.append(h('div', { class: 'cl-controls' }, segB, segW, mov), clHost, clStats);
   async function paintLevel() {
-    const from = period.from_ms ?? api.now() - 365 * DAY, to = period.to_ms ?? api.now();
+    const [from, to] = levelSpan(ctx);
     const longSpan = to - from > 62 * DAY;
     const bucket = longSpan ? 'day' : opt.bucket;
-    const d = await ctx.api.get(`${base}/battery-level`, { from_ms: from, to_ms: to, bucket, moving: opt.moving ? 'true' : 'false', window: opt.window }).catch((e) => ({ error: e }));
+    const d = await levelRead(ctx, opt, from, to).catch((e) => ({ error: e }));
     const band = (d.band ? null : (await batOrNull)?.band) || {};
     if (!ctx.alive()) return;
     clHost.replaceChildren();
@@ -218,9 +248,7 @@ export async function mount(ctx) {
 
   /* projected range, three charts with one cursor */
   async function paintProjected() {
-    const params = { ...ctx.params };
-    const span = (period.to_ms ?? api.now()) - (period.from_ms ?? api.now() - 365 * DAY);
-    if (opt.prBucket !== 'auto' && !(opt.prBucket === 'hour' && span > 62 * DAY)) params.bucket = opt.prBucket; else params.max_points = 600;
+    const params = projectedParams(ctx, opt);
     const d = await ctx.api.get(`${base}/projected-range`, params).catch((e) => ({ error: e }));
     if (!ctx.alive()) return;
     const seg = segmented({ name: 'resolution', value: opt.prBucket, cover: 'pr.control.resolution', options: [['auto', 'Auto'], ['hour', 'Hour'], ['day', 'Day'], ['week', 'Week']],
@@ -254,7 +282,7 @@ export async function mount(ctx) {
 
   /* parked drain */
   async function paintParked() {
-    const params = { ...ctx.params, ...(opt.minH ? { min_hours: opt.minH } : {}) };
+    const params = parkedParams(ctx, opt);
     const pager = ctx.api.pager(`${base}/parked`, params, { limit: 12 });
     await pager.more().catch(() => null);
     if (!ctx.alive()) return;

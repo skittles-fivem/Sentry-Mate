@@ -20,6 +20,7 @@ import { dataTable } from '../core/table.js';
 import { emptyState } from '../core/states.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, colors, hexA, chartFont } from '../core/chart.js';
 import { createMap, mapFallback, boundsOf } from '../core/map.js';
+import { nearNow } from '../shared/lazy.js';
 import { openPeriodPicker } from '../core/period.js';
 import { placePopover } from '../core/popover.js';
 import { isAdmin } from '../core/prefs.js';
@@ -81,6 +82,46 @@ function tempColor(c, pal) {
   return pal.warm;
 }
 
+// The filters of the address, and the API queries they make: base (the period and the cars), the list's and
+// the statistics'. prefetch() warms the first reads with the same ones when a link here is under the pointer.
+const filtersOf = (q) => ({
+  places: q.places || '', place_kind: q.place_kind || '', kind: q.kind || '', q: q.q || '', min_cost: q.min_cost || '',
+  unpriced: q.unpriced === '1', min_dur: q.min_dur || '', source: filterWord(q.source), flags: q.flags || '',
+});
+const baseQuery = (ctx, carsParam) => ({ ...ctx.params, cars: carsParam });
+const listQuery = (ctx, f, carsParam) => ({
+  ...baseQuery(ctx, carsParam), places: f.places || null, place_kind: f.place_kind || null, kind: f.kind || null, q: f.q || null,
+  min_cost: f.min_cost !== '' ? f.min_cost : null, include_unpriced: f.min_cost !== '' && f.unpriced ? 'true' : null,
+  min_duration_min: f.min_dur || null, source: f.source || null, flags: f.flags || null,
+});
+const statsQuery = (ctx, f, carsParam) => ({ ...baseQuery(ctx, carsParam), places: f.places || null, min_duration_min: f.min_dur || null });
+const placesRead = (ctx) => ctx.api.page('places', { sort: 'visits' }, { limit: 200 });
+const fleetRead = (ctx) => ctx.api.page('cars', { sort: 'name' }, { limit: 200 });
+// the charging places' query, and the fast-charging curve of one car
+const placesQuery = (sp, cars) => ({ cars, from_ms: sp.from_ms, to_ms: sp.to_ms, places: sp.places, min_duration_min: sp.min_duration_min });
+const curveRead = (ctx, cid, f) => ctx.api.get(`cars/${enc(cid)}/charging-stats/dc-curve`, { from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms, places: f.places || null });
+// one car's charges (without a car, the cars the fleet has decide the queries)
+export function prefetch(ctx) {
+  const reads = [placesRead(ctx), fleetRead(ctx)];
+  if (ctx.car) {
+    const cid = ctx.car.id, f = filtersOf(ctx.query), sp = statsQuery(ctx, f, null);
+    const listPath = `cars/${enc(cid)}/charges`;
+    reads.push(
+      ctx.api.pager(listPath, { ...listQuery(ctx, f, null), sort: 'start', dir: 'desc' }, { limit: 25 }).more(), // the table, newest first
+      ctx.api.pager(listPath, { ...baseQuery(ctx, null), flags: 'gap,in_progress' }, { limit: 20 }).more(),
+      ctx.api.get(`cars/${enc(cid)}/charging-stats`, sp), ctx.api.list(listPath, sp, { limit: 500 }).all(),
+      ctx.api.get(`cars/${enc(cid)}/settings`));
+    // the places tables (no sort of their own), the places map, and the curve
+    const pp = placesQuery(sp, cid);
+    reads.push(
+      ctx.api.pager('charging-stats/places', { ...pp, sort: 'energy' }, { limit: 10 }).more(),
+      ctx.api.pager('charging-stats/places', { ...pp, sort: 'cost' }, { limit: 10 }).more(),
+      ctx.api.page('charging-stats/places', { ...pp, sort: 'energy' }, { limit: 200 }),
+      curveRead(ctx, cid, f));
+  }
+  return Promise.all(reads);
+}
+
 export async function mount(ctx) {
   const { tz, period } = ctx;
   const fixedCar = ctx.car;
@@ -88,11 +129,11 @@ export async function mount(ctx) {
   const now = () => ctx.api.now();
 
   // the places (for the place filter) are asked for together with the cars, not after them
-  const placesP = ctx.api.page('places', { sort: 'visits' }, { limit: 200 }).then((x) => x.items || [], () => []);
+  const placesP = placesRead(ctx).then((x) => x.items || [], () => []);
 
   /* ---------- which cars */
   let fleet = [];
-  try { fleet = (await ctx.api.page('cars', { sort: 'name' }, { limit: 200 })).items || []; } catch { fleet = fixedCar ? [fixedCar] : []; }
+  try { fleet = (await fleetRead(ctx)).items || []; } catch { fleet = fixedCar ? [fixedCar] : []; }
   if (!ctx.alive()) return;
   const carById = new Map(fleet.map((c) => [c.id, c]));
   if (fixedCar) carById.set(fixedCar.id, fixedCar);
@@ -107,17 +148,10 @@ export async function mount(ctx) {
   const fileBase = fixedCar ? fixedCar.name : scopeName;
 
   /* ---------- filters (in the address) */
-  const f = {
-    places: q.places || '', place_kind: q.place_kind || '', kind: q.kind || '', q: q.q || '', min_cost: q.min_cost || '',
-    unpriced: q.unpriced === '1', min_dur: q.min_dur || '', source: filterWord(q.source), flags: q.flags || '',
-  };
-  const base = () => ({ ...ctx.params, cars: carsParam });
-  const listParams = () => ({
-    ...base(), places: f.places || null, place_kind: f.place_kind || null, kind: f.kind || null, q: f.q || null,
-    min_cost: f.min_cost !== '' ? f.min_cost : null, include_unpriced: f.min_cost !== '' && f.unpriced ? 'true' : null,
-    min_duration_min: f.min_dur || null, source: f.source || null, flags: f.flags || null,
-  });
-  const statsParams = () => ({ ...base(), places: f.places || null, min_duration_min: f.min_dur || null });
+  const f = filtersOf(q);
+  const base = () => baseQuery(ctx, carsParam);
+  const listParams = () => listQuery(ctx, f, carsParam);
+  const statsParams = () => statsQuery(ctx, f, carsParam);
   const queryOf = () => ({
     places: f.places || null, place_kind: f.place_kind || null, kind: f.kind || null, q: f.q || null, min_cost: f.min_cost || null,
     unpriced: f.min_cost && f.unpriced ? '1' : null, min_dur: f.min_dur || null, source: f.source || null, flags: f.flags || null,
@@ -720,7 +754,7 @@ export async function mount(ctx) {
 
   /* charging places: a map and two paged tables */
   async function paintPlaces(sp) {
-    const pp = { cars: fixedCar ? fixedCar.id : sp.cars, from_ms: sp.from_ms, to_ms: sp.to_ms, places: sp.places, min_duration_min: sp.min_duration_min };
+    const pp = placesQuery(sp, fixedCar ? fixedCar.id : sp.cars);
     const placeCell = (p) => (p.place ? h('a', { class: 'main place-link', href: state.buildUrl('places', { query: { place: p.place } }), title: `Edit the place ${p.label}` }, p.label)
       : h('a', { class: 'main place-link', href: state.buildUrl('places', { query: { lat: p.lat.toFixed(5), lon: p.lon.toFixed(5), new: 1 } }), title: `${p.label}: save this spot as a place` }, p.label));
     const placeCol = (cv) => ({ key: 'label', label: 'Place', cover: cv, render: (p) => h('span', { class: 'cell-text' }, placeCell(p),
@@ -753,7 +787,7 @@ export async function mount(ctx) {
     const mapping = (async () => {
       if (!pts.length) { mapEl.append(h('div', { class: 'map-fallback' }, 'No charge in this period, so there is nothing to map.')); return; }
       let m;
-      try { m = await createMap(mapEl, ctx, { bounds: boundsOf(pts.map((p) => [p.lon, p.lat])), zoom: 10 }); } catch { replace(mapEl, mapFallback()); return; }
+      try { m = await createMap(mapEl, ctx, { bounds: boundsOf(pts.map((p) => [p.lon, p.lat])), zoom: 10, lazy: true }); } catch { replace(mapEl, mapFallback()); return; }
       if (!m) return;
       await m.ready;
       const max = Math.max(1, ...pts.map((p) => p.energy_added_kwh || 0));
@@ -776,7 +810,8 @@ export async function mount(ctx) {
       });
       m.frame(() => { if (pts.length === 1) m.map.jumpTo({ center: [pts[0].lon, pts[0].lat], zoom: 13 }); else m.map.fitBounds(boundsOf(pts.map((p) => [p.lon, p.lat])), { padding: rpx(36), duration: 0, maxZoom: 14 }); });
     })();
-    await Promise.all([byEnergy.ready, byCost.ready, mapping]);
+    // a map below the fold is made when it comes near (core/map.js): ready waits for it only when it is near now
+    await Promise.all([byEnergy.ready, byCost.ready, nearNow(mapEl) ? mapping : null]);
   }
 
   /* fast-charging curve (one car at a time) */
@@ -803,7 +838,7 @@ export async function mount(ctx) {
       h('div', { class: 'chart-head' }, h('span', { class: 'chart-title' }, `Power against battery level, every DC session${multi ? ` of ${carName(curveCar)}` : ''}`), h('span', { class: 'chart-side' }, read)),
       legend, h('div', { class: 'curve-wrap', cover: ['cs.chart.dc_curve_median', 'cs.link.dc_curve_details'] }, plotEl),
       h('p', { class: 'note' }, 'One dot per battery percent of each session, coloured by battery temperature (a cold pack charges slower). The line is this car’s median power at each percent. Point at a dot (or tap it) to see its session; click it, or tap it again, to open the charge.'));
-    try { data = await ctx.api.get(`cars/${enc(curveCar)}/charging-stats/dc-curve`, { from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms, places: f.places || null }); } catch (e) { replace(plotEl, h('p', { class: 'note warn' }, `The curve could not be loaded: ${e.message}`)); return; }
+    try { data = await curveRead(ctx, curveCar, f); } catch (e) { replace(plotEl, h('p', { class: 'note warn' }, `The curve could not be loaded: ${e.message}`)); return; }
     if (my !== statsGen || !ctx.alive()) return;
     const sessions = data.sessions || [];
     const idle = () => replace(read, sessions.length ? `${formatNumber(sessions.length)} DC ${sessions.length === 1 ? 'session' : 'sessions'}${data.median?.length ? `; median peak ${format(Math.max(...data.median.map((p) => p.power_kw)), 'power')}` : ''}` : 'no DC session');

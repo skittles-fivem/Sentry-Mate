@@ -26,6 +26,7 @@ import { ghostTile, plotGhost } from '../core/states.js';
 import { openPeriod, rangeText } from '../core/period.js';
 import { mapTile, coordsText } from '../core/map.js';
 import { SPOT_ZOOM } from '../shared/maptiles.js';
+import { nearNow } from '../shared/lazy.js';
 import { timeChart, spansOf } from '../core/chart.js';
 import { v, AWAKE_WORDS, endLabel, placeLink, strip, stripShares, facts, dur } from '../core/bits.js';
 import { srcPill, viaMark, inputsLine } from '../core/source.js';
@@ -71,19 +72,36 @@ const TYRES = [['fl', 'Front left'], ['fr', 'Front right'], ['rl', 'Rear left'],
 const CLIMATE = { off: 'Off', on: 'On', precondition: 'Preconditioning', overheat_protect: 'Overheat protection' };
 const KEEP = { off: 'Off', on: 'Keep climate on', dog: 'Dog mode', camp: 'Camp mode' };
 
+// The calls that start at once: [now, activity, series, trip, last drive, last charge, settings]. prefetch()
+// warms the same ones when a link here is under the pointer.
+function firstReads(ctx) {
+  const car = ctx.car, P = ctx.params;
+  return [
+    ctx.api.get(api.apiPath`cars/${car.id}/now`),
+    ctx.api.get(api.apiPath`cars/${car.id}/activity`, P),
+    ctx.api.get(api.apiPath`cars/${car.id}/series`, { ...P, fields: 'soc_pct,usable_soc_pct,range_km,ideal_range_km', max_points: 600 }),
+    ctx.api.get(api.apiPath`cars/${car.id}/trip`, P),
+    ctx.api.page(api.apiPath`cars/${car.id}/drives`, {}, { limit: 1 }),
+    ctx.api.page(api.apiPath`cars/${car.id}/charges`, {}, { limit: 1 }),
+    ctx.api.get('settings', null, { maxAgeMs: 60000 }),
+  ];
+}
+// the charging chart: the period's last charges and their curves
+const chargesRead = (ctx) => ctx.api.page(api.apiPath`cars/${ctx.car.id}/charges`, ctx.params, { limit: 8 });
+const curveRead = (ctx, c) => ctx.api.get(api.apiPath`cars/${ctx.car.id}/charges/${c.id}/curve`, { fields: 'power_kw,heater_kw,ac_volts_v,ac_amps_a,dc_volts_v,dc_amps_a', max_points: 240 });
+export async function prefetch(ctx) {
+  const [res] = await Promise.all([chargesRead(ctx), ...firstReads(ctx)]);
+  await Promise.all((res?.items || []).map((c) => curveRead(ctx, c)));
+}
+
 export async function mount(ctx) {
   const car = ctx.car, tz = ctx.tz;
   const P = ctx.params;
   const keep = (p) => p.catch((err) => ({ error: err }));
   // Every call starts at once and each tile paints when its own answer is in; a grey tile of its size keeps its
   // room until then, so the live tiles show while the period's strip and charts are still on their way.
-  const nowP = ctx.api.get(api.apiPath`cars/${car.id}/now`);
-  const actP = keep(ctx.api.get(api.apiPath`cars/${car.id}/activity`, P));
-  const seriesP = keep(ctx.api.get(api.apiPath`cars/${car.id}/series`, { ...P, fields: 'soc_pct,usable_soc_pct,range_km,ideal_range_km', max_points: 600 }));
-  const tripP = keep(ctx.api.get(api.apiPath`cars/${car.id}/trip`, P));
-  const lastDriveP = keep(ctx.api.page(api.apiPath`cars/${car.id}/drives`, {}, { limit: 1 }));
-  const lastChargeP = keep(ctx.api.page(api.apiPath`cars/${car.id}/charges`, {}, { limit: 1 }));
-  const settingsP = keep(ctx.api.get('settings', null, { maxAgeMs: 60000 }));
+  const [nowP, ...rest] = firstReads(ctx);
+  const [actP, seriesP, tripP, lastDriveP, lastChargeP, settingsP] = rest.map(keep);
   let now = {};
   const refresh = btn('Refresh', { kind: 'soft', icon: 'refresh', iconOnly: true, cover: 'overview.control.refresh', onclick: () => ctx.reload() });
   ctx.head({ actions: [refresh] });
@@ -376,10 +394,15 @@ export async function mount(ctx) {
       lat != null && outside ? h('a', { class: 'tile-link', href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=16/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'noopener noreferrer', cover: 'summary.map.external_link' }, 'Open in a map', icon('external'))
         : h('span', { class: 'muted', cover: 'summary.map.external_link' }, 'Outside map links are off'));
     if (lat != null && lon != null) {
-      const m = await mapTile(ctx, mapBox, { center: [lon, lat], zoom: SPOT_ZOOM, fullscreen: true });
-      if (!m) return;
-      if (m.map) m.pin([lon, lat], { tone: now.state === 'charging' ? 'teal' : 'coral', title: car.name });
-      await m.ready;
+      const drawn = (async () => {
+        const m = await mapTile(ctx, mapBox, { center: [lon, lat], zoom: SPOT_ZOOM, fullscreen: true, lazy: true });
+        if (!m) return;
+        if (m.map) m.pin([lon, lat], { tone: now.state === 'charging' ? 'teal' : 'coral', title: car.name });
+        await m.ready;
+      })();
+      // a map below the fold is made when it comes near (core/map.js), and ready does not wait for it
+      if (nearNow(mapBox)) await drawn;
+      else drawn.catch((err) => console.warn('map', err));
     } else {
       mapBox.append(h('p', { class: 'map-note' }, now.state === 'unknown' ? 'No recent log, so no position.' : 'The car has not sent its position yet.'));
     }
@@ -418,10 +441,10 @@ async function drawCharging(ctx, el, sync) {
   const car = ctx.car;
   let res;
   const done = () => el.querySelector('.plot-ghost')?.remove(); // the chart's grey room, until there is something to show
-  try { res = await ctx.api.page(api.apiPath`cars/${car.id}/charges`, ctx.params, { limit: 8 }); } catch { done(); el.append(note('The charges did not load.')); return; }
+  try { res = await chargesRead(ctx); } catch { done(); el.append(note('The charges did not load.')); return; }
   const list = (res.items || []).slice().sort((a, b) => a.start_ms - b.start_ms);
   if (!list.length) { done(); el.append(h('p', { class: 'lede chart-empty' }, 'No charge in this period.'), note('Pick a longer period to see power, energy, current, voltage and battery heating.')); return; }
-  const curves = await Promise.all(list.map((c) => ctx.api.get(api.apiPath`cars/${car.id}/charges/${c.id}/curve`, { fields: 'power_kw,heater_kw,ac_volts_v,ac_amps_a,dc_volts_v,dc_amps_a', max_points: 240 }).catch(() => null)));
+  const curves = await Promise.all(list.map((c) => curveRead(ctx, c).catch(() => null)));
   if (!ctx.alive()) return;
   const t = [], power = [], energy = [], heat = [], amps = [], volts = [];
   const gap = (ms) => { t.push(ms); power.push(null); energy.push(null); heat.push(null); amps.push(null); volts.push(null); };

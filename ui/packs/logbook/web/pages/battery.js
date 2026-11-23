@@ -82,6 +82,52 @@ const csvButton = (label, onclick, cover = null) => h('button', { type: 'button'
 const prefersIdeal = () => rangeField('range_km') !== 'range_km';
 const idealNote = (what) => (prefersIdeal() ? h('p', { class: 'note bt-rated-note' }, icon('info'), `You prefer ideal range; ${what} shows rated range, the only one kept for it.`) : null);
 
+// The section controls of the address, and the page's reads; prefetch() warms the first ones with the same
+// calls when a link here is under the pointer.
+const optsOf = (q) => ({
+  res: oneOf(RESOLUTIONS, q.res || '', ''),
+  bucket: oneOf(BUCKETS, q.bucket || '', ''),
+  moving: q.moving !== 'off',
+  window: oneOf(WINDOWS, q.window, '7d'),
+  group: oneOf(GROUPS, q.cap_group, 'charge'),
+  axis: oneOf(AXES, q.cap_x, 'odometer'),
+  min_hours: (() => { const n = parseFloat(q.min_hours); return Number.isFinite(n) && n >= 0 ? n : 1; })(),
+});
+// [battery, settings, efficiency]
+const topReads = (ctx) => [
+  ctx.api.get(api.apiPath`cars/${ctx.car.id}/battery`),
+  ctx.api.get(api.apiPath`cars/${ctx.car.id}/settings`),
+  ctx.api.get(api.apiPath`cars/${ctx.car.id}/efficiency`, { from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms }),
+];
+// [totals, gaps, totals of each input]: which inputs gave this car drives or charges at all (/totals' own sources
+// name every input the filter takes, not the ones that gave rows, so each is asked on its own)
+const lifeReads = (ctx) => [
+  ctx.api.get(api.apiPath`cars/${ctx.car.id}/totals`),
+  ctx.api.list(api.apiPath`cars/${ctx.car.id}/gaps`, {}, { limit: 200 }).all({ max: 2000 }),
+  ...LIFE_KINDS.map((k) => ctx.api.get(api.apiPath`cars/${ctx.car.id}/totals`, { source: k })),
+];
+const capList = (ctx, opt) => ctx.api.list(api.apiPath`cars/${ctx.car.id}/battery/capacity`, { group: opt.group, x: opt.axis }, { limit: 500 });
+const projRead = (ctx, opt) => ctx.api.get(api.apiPath`cars/${ctx.car.id}/projected-range`, { ...ctx.params, bucket: opt.res || undefined, max_points: 1000 });
+const levelRead = (ctx, opt) => ctx.api.get(api.apiPath`cars/${ctx.car.id}/battery-level`, { ...ctx.params, bucket: opt.bucket || undefined, moving: opt.moving ? 'true' : 'false', window: opt.window });
+// the parked spells, and a row of the every-car table (its car's battery, level and parked drain)
+const drainParams = (ctx, opt) => ({ ...ctx.params, min_hours: opt.min_hours });
+const carRowReads = (ctx, opt, c, bat = null) => [
+  bat || ctx.api.get(api.apiPath`cars/${c.id}/battery`),
+  ctx.api.get(api.apiPath`cars/${c.id}/battery-level`, { ...ctx.params, bucket: 'day', moving: 'false' }),
+  ctx.api.get(api.apiPath`cars/${c.id}/parked`, { ...drainParams(ctx, opt), limit: 1 }),
+];
+const fleetList = (ctx) => ctx.api.list('cars', { sort: 'name' }, { limit: 200 });
+export async function prefetch(ctx) {
+  const opt = optsOf(ctx.query);
+  const [fleet] = await Promise.all([
+    fleetList(ctx).all(), ...topReads(ctx), ...lifeReads(ctx), capList(ctx, opt).all(), projRead(ctx, opt), levelRead(ctx, opt),
+    ctx.api.pager(api.apiPath`cars/${ctx.car.id}/parked`, drainParams(ctx, opt), { limit: 50 }).more(),
+  ]);
+  // the every-car table's first ten rows (this car first when the list leaves it out)
+  const cars = (fleet || []).some((c) => c.id === ctx.car.id) ? fleet : [ctx.car, ...(fleet || [])];
+  await Promise.all(cars.slice(0, 10).flatMap((c) => carRowReads(ctx, opt, c)));
+}
+
 export async function mount(ctx) {
   const car = ctx.car;
   const tz = ctx.tz;
@@ -90,15 +136,7 @@ export async function mount(ctx) {
   const file = (...p) => csvFilename(car.name, ...p, ctx.period ? periodLabel(ctx.period, tz, api.now()) : null);
 
   // Section controls, from the address.
-  const opt = {
-    res: oneOf(RESOLUTIONS, ctx.query.res || '', ''),
-    bucket: oneOf(BUCKETS, ctx.query.bucket || '', ''),
-    moving: ctx.query.moving !== 'off',
-    window: oneOf(WINDOWS, ctx.query.window, '7d'),
-    group: oneOf(GROUPS, ctx.query.cap_group, 'charge'),
-    axis: oneOf(AXES, ctx.query.cap_x, 'odometer'),
-    min_hours: (() => { const n = parseFloat(ctx.query.min_hours); return Number.isFinite(n) && n >= 0 ? n : 1; })(),
-  };
+  const opt = optsOf(ctx.query);
   const remember = () => ctx.setQuery({
     res: opt.res || null, bucket: opt.bucket || null, moving: opt.moving ? null : 'off', window: opt.window === '7d' ? null : opt.window,
     cap_group: opt.group === 'charge' ? null : opt.group, cap_x: opt.axis === 'odometer' ? null : opt.axis, min_hours: opt.min_hours === 1 ? null : String(opt.min_hours),
@@ -146,12 +184,9 @@ export async function mount(ctx) {
   let batFetch = null, topP = Promise.resolve();
 
   async function loadTop() {
-    batFetch = ctx.api.get(api.apiPath`cars/${car.id}/battery`);
-    const [b, s, eff] = await Promise.allSettled([
-      batFetch,
-      ctx.api.get(api.apiPath`cars/${car.id}/settings`),
-      ctx.api.get(api.apiPath`cars/${car.id}/efficiency`, { from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms }),
-    ]);
+    const reads = topReads(ctx);
+    batFetch = reads[0];
+    const [b, s, eff] = await Promise.allSettled(reads);
     if (!ctx.alive()) return;
     settings = s.status === 'fulfilled' ? s.value : null;
     drawRef(s.status === 'rejected' ? s.reason : null);
@@ -340,7 +375,7 @@ export async function mount(ctx) {
         h('li', null, h('span', { class: 'bt-sw bt-sw-new', 'aria-hidden': 'true' }), 'full pack when new')),
       read, plot, proj);
     try {
-      const pager = ctx.api.list(api.apiPath`cars/${car.id}/battery/capacity`, { group: opt.group, x: opt.axis }, { limit: 500 });
+      const pager = capList(ctx, opt);
       let first = null;
       for await (const pg of pager.pages()) { if (!first) first = pg; items.push(...(pg.items || [])); if (items.length >= 5000) break; }
       trend = first && first.trend;
@@ -426,13 +461,7 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- lifetime totals */
 
   async function drawLife() {
-    const [t, g, ...bySrc] = await Promise.allSettled([
-      ctx.api.get(api.apiPath`cars/${car.id}/totals`),
-      ctx.api.list(api.apiPath`cars/${car.id}/gaps`, {}, { limit: 200 }).all({ max: 2000 }),
-      // which inputs gave this car drives or charges at all: /totals' own sources name every input the
-      // filter takes, not the ones that gave rows, so each is asked on its own
-      ...LIFE_KINDS.map((k) => ctx.api.get(api.apiPath`cars/${car.id}/totals`, { source: k })),
-    ]);
+    const [t, g, ...bySrc] = await Promise.allSettled(lifeReads(ctx));
     await topP;
     if (!ctx.alive()) return;
     const L = (bat && bat.lifetime) || {};
@@ -548,7 +577,7 @@ export async function mount(ctx) {
     });
     block.fill(loadingBlock(6));
     let d;
-    try { d = await ctx.api.get(api.apiPath`cars/${car.id}/projected-range`, { ...ctx.params, bucket: opt.res || undefined, max_points: 1000 }); } catch (err) {
+    try { d = await projRead(ctx, opt); } catch (err) {
       if (!ctx.signal.aborted) block.fill(errorView(err, { eyebrow: 'Projected range', retry: () => drawProj() }));
       return;
     }
@@ -607,7 +636,7 @@ export async function mount(ctx) {
     });
     block.fill(loadingBlock(5));
     let d;
-    try { d = await ctx.api.get(api.apiPath`cars/${car.id}/battery-level`, { ...ctx.params, bucket: opt.bucket || undefined, moving: opt.moving ? 'true' : 'false', window: opt.window }); } catch (err) {
+    try { d = await levelRead(ctx, opt); } catch (err) {
       if (!ctx.signal.aborted) block.fill(errorView(err, { eyebrow: 'Charge level', retry: () => drawLevel() }));
       return;
     }
@@ -674,7 +703,7 @@ export async function mount(ctx) {
   });
   const cold = (r) => !!r.cold;
   const drain = dataTable(ctx, {
-    path: api.apiPath`cars/${car.id}/parked`, params: { ...ctx.params, min_hours: opt.min_hours }, limit: 50,
+    path: api.apiPath`cars/${car.id}/parked`, params: drainParams(ctx, opt), limit: 50,
     itemName: ['parked spell', 'parked spells'], cover: 'vd.table', label: 'Parked spells', sortAll: 5000, cls: 'bt-drain', box: true, append: true, autoMore: true,
     caption: 'Newest first. Spells crossing the period’s edges are cut at them. The CSV holds every listed spell.',
     columns: [
@@ -765,11 +794,7 @@ export async function mount(ctx) {
     shown += batch.length;
     moreCars.disabled = true;
     const got = await Promise.all(batch.map(async (c) => {
-      const [b, l, p] = await Promise.allSettled([
-        c.id === car.id && batFetch ? batFetch : ctx.api.get(api.apiPath`cars/${c.id}/battery`),
-        ctx.api.get(api.apiPath`cars/${c.id}/battery-level`, { ...ctx.params, bucket: 'day', moving: 'false' }),
-        ctx.api.get(api.apiPath`cars/${c.id}/parked`, { ...ctx.params, min_hours: opt.min_hours, limit: 1 }),
-      ]);
+      const [b, l, p] = await Promise.allSettled(carRowReads(ctx, opt, c, c.id === car.id ? batFetch : null));
       return { id: c.id, name: c.name, model: c.model, year: c.year, bat: b.status === 'fulfilled' ? b.value : null, err: b.status === 'rejected', level: l.status === 'fulfilled' ? l.value : null, parked: p.status === 'fulfilled' ? p.value : null };
     }));
     if (!ctx.alive()) return;
@@ -779,7 +804,7 @@ export async function mount(ctx) {
     moreCars.hidden = shown >= fleet.length;
   }
   async function drawCars() {
-    try { fleet = await ctx.api.list('cars', { sort: 'name' }, { limit: 200 }).all({ max: 5000 }); } catch (err) {
+    try { fleet = await fleetList(ctx).all({ max: 5000 }); } catch (err) {
       if (ctx.signal.aborted) return;
       replace(carsBox, head('bt-cars-title', 'Every car'), errorView(err, { eyebrow: 'Every car', retry: () => drawCars() }));
       return;

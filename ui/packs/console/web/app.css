@@ -1310,3 +1310,8 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .steady { display: inline-grid; font-variant-numeric: tabular-nums; }
 .steady > * { grid-area: 1 / 1; }
 .steady-size { visibility: hidden; }
+/* A kept answer on screen while the fresh one is asked for (core/router.js puts data-stale on the root): the page
+   is a little dimmed after a moment, so a quick check shows nothing. Only the opacity changes: nothing moves. */
+#view { transition: opacity 0.2s ease; }
+:root[data-stale] #view { opacity: 0.72; transition: opacity 0.3s ease 0.25s; }
+@media (prefers-reduced-motion: reduce) { #view, :root[data-stale] #view { transition: none; } }
