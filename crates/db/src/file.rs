@@ -150,6 +150,35 @@ impl Ctx {
         Ok(())
     }
 
+    /// [`Ctx::write_atomic`] with a look at what was written before it takes the file's place: the temporary file
+    /// is read back from the disk and opened, and `check` is given its plaintext. If that fails the temporary file
+    /// is removed and `file` stays as it was.
+    pub(crate) fn write_checked(&self, file: &Path, plain: &[u8], check: &dyn Fn(&[u8]) -> Result<()>) -> Result<()> {
+        let label = self.label(file);
+        let sealed = self.vault.seal(&label, plain)?;
+        let dir = file.parent().ok_or_else(|| Error::invalid("a file needs a folder"))?;
+        std::fs::create_dir_all(dir)?;
+        let tmp = with_suffix(file, ".tmp");
+        {
+            let mut f = private_create(&tmp)?;
+            f.write_all(&sealed)?;
+            f.sync_all()?;
+        }
+        let read_back = || -> Result<()> {
+            let sealed = std::fs::read(&tmp)?;
+            let back = self.vault.open_sealed(&label, &sealed).map_err(|e| Error::from(e).in_file(&label))?;
+            check(&back)
+        };
+        if let Err(e) = read_back() {
+            remove_if_exists(&tmp)?;
+            return Err(e);
+        }
+        self.crash_point(Crash::BeforeRename)?;
+        std::fs::rename(&tmp, file)?;
+        sync_dir(dir);
+        Ok(())
+    }
+
     /// Reads and opens a whole sealed file. `Ok(None)`: there is no such file.
     pub(crate) fn read(&self, file: &Path) -> Result<Option<zeroize::Zeroizing<Vec<u8>>>> {
         let label = self.label(file);

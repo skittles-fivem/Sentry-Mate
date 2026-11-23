@@ -280,7 +280,7 @@ impl Engine {
                         Err(db::Error::NoSuchCar(_)) => break,
                         Err(e) => return Err(e.into()),
                     };
-                    out.days += (done.days_folded + done.days_packed) as u64;
+                    out.days += (done.days_folded + done.days_packed + done.days_recoded) as u64;
                     self.progress("series", out.days, total);
                     if turns.next() {
                         out.stopped = true;

@@ -27,6 +27,15 @@
 //! removes. Readers hold no lock for a day without a journal: they look for the day's own snapshot first and then in
 //! the pack, and the day is always in at least one of the two.
 //!
+//! **Days packed before there was the small form** (`level` 1: the quick columns, see [`super::columns`]) are written
+//! again by [`recode_month`], a few a turn: each is unpacked, its points encoded small and compressed at
+//! [`crate::Options::small`], and the pack written anew under the same rule (sealed to `<pack>.tmp`, synced, read
+//! back from disk, opened; every day written again is decoded from that copy and compared with the points the old
+//! pack gives, bit for bit, and every other day is compared byte for byte; then the rename). There is nothing to
+//! remove afterwards: a crash before the rename leaves the old pack, one after it the new. A day keeps its
+//! generation (its points are the same), and its `level` 2 says it is done, so a later pass sees it in the index
+//! and does not unpack it.
+//!
 //! Indexes are kept in memory by what the pack file was when read (only the file's first chunk is opened for one),
 //! so listing a series costs a `stat` per month; the few packs opened last are kept whole (wiped when let go), since
 //! a chart of a year reads a month's days one after the other.
@@ -39,7 +48,7 @@ use crate::file::{
     Ctx, HEADER, Kind, Which, check_header, header, private_create, remove_if_exists, sync_dir, with_suffix,
 };
 use crate::journal::Files;
-use crate::logged::{Elsewhere, LEVEL_COLD, Logged, LoggedFile, SNAP_HEAD, parse_gen_level};
+use crate::logged::{Elsewhere, LEVEL_COLD, LEVEL_SMALL, Logged, LoggedFile, SNAP_HEAD, parse_gen_level};
 use crate::plain::{Stamp, stamp};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -445,7 +454,7 @@ pub(crate) fn pack_month<P: Point>(ctx: &Ctx, dir: &Path, month: Month) -> Resul
             continue;
         }
         let Some(mut loose) = Loose::read(ctx, &files)? else { continue };
-        if loose.level != LEVEL_COLD {
+        if loose.level < LEVEL_COLD {
             // an emptied day, or one folded while it was written and never settled (a crash before that was noted)
             let snap_label = ctx.label(&files.snap);
             let plain = codec::decompress(loose.body()).map_err(|e| e.in_file(&snap_label))?;
@@ -579,6 +588,98 @@ fn write_checked(
     std::fs::rename(tmp, file)?;
     sync_dir(file.parent().unwrap_or(file));
     Ok(())
+}
+
+/// How many days of a month's pack are not yet in the small form (from its index alone).
+pub(crate) fn stale(ctx: &Ctx, dir: &Path, month: Month) -> Result<usize> {
+    Ok(index(ctx, dir, month)?.map_or(0, |i| i.entries.iter().filter(|e| e.level < LEVEL_SMALL).count()))
+}
+
+/// Unpacked bytes of days written again per call of [`recode_month`] at most (it holds the car's lock): a day of
+/// 86,400 points is about 2 MiB, some seconds of work.
+const RECODE_PLAIN_MAX: usize = 4 << 20;
+
+/// Writes the days of a month's pack that are not yet in the small form again (see the module docs), oldest first,
+/// at most `max_days` of them and about [`RECODE_PLAIN_MAX`] bytes. Returns how many it wrote again and whether
+/// more are left. Under the car's lock. A pack or a day in it that doesn't read is reported with the pack's name,
+/// and the pack stays as it is.
+pub(crate) fn recode_month<P: Point>(ctx: &Ctx, dir: &Path, month: Month, max_days: usize) -> Result<(usize, bool)> {
+    let file = month.file(dir);
+    let label = ctx.label(&file);
+    let tmp = with_suffix(&file, ".tmp");
+    remove_if_exists(&tmp)?;
+    let Some(plain) = ctx.read(&file)? else { return Ok((0, false)) };
+    let old = Opened::parse(plain, month, &label)?;
+    let stale = old.index.entries.iter().filter(|e| e.level < LEVEL_SMALL).count();
+    // the days written again: what they were, their points, their new bodies
+    let mut again: Vec<(Entry, Vec<P>, Vec<u8>)> = Vec::new();
+    let mut unpacked = 0;
+    for e in old.index.entries.iter().filter(|e| e.level < LEVEL_SMALL) {
+        if again.len() >= max_days.max(1) || unpacked >= RECODE_PLAIN_MAX {
+            break;
+        }
+        let body = old.body(e)?;
+        let plain = codec::decompress(body).map_err(|err| err.in_file(&label))?;
+        let points = DayLog::<P>::decode_state(&plain).map_err(|err| err.in_file(&label))?.points;
+        let small = codec::compress(&super::columns::encode_small(&points), ctx.opts.small)?;
+        unpacked += plain.len();
+        // a day that would not get smaller keeps its bytes, and is noted as done all the same
+        again.push((*e, points, if small.len() < body.len() { small } else { body.to_vec() }));
+    }
+    if again.is_empty() {
+        return Ok((0, false));
+    }
+    let new_body = |day: u64| again.iter().find(|a| a.0.day == day).map(|a| a.2.as_slice());
+    {
+        let mut parts: Vec<(u64, u64, u8, &[u8])> = Vec::with_capacity(old.index.entries.len());
+        for e in &old.index.entries {
+            parts.push(match new_body(e.day) {
+                Some(body) => (e.day, e.generation, LEVEL_SMALL, body),
+                None => (e.day, e.generation, e.level, old.body(e)?),
+            });
+        }
+        let sealed = ctx.vault.seal(&label, &build(&parts)?)?;
+        let mut f = private_create(&tmp)?;
+        f.write_all(&sealed)?;
+        f.sync_all()?;
+    }
+    let check = || -> Result<()> {
+        // what is on disk now, opened as the pack will be
+        let sealed = std::fs::read(&tmp)?;
+        let plain = ctx.vault.open_sealed(&label, &sealed).map_err(|e| Error::from(e).in_file(&label))?;
+        let new = Opened::parse(plain, month, &label)?;
+        let wrong = |day: u64| {
+            damaged(&label, format!("{} written again does not read back as it was; the pack was kept", day_name(day)))
+        };
+        if new.index.entries.len() != old.index.entries.len() {
+            return Err(damaged(&label, "written again, its days are not the ones it had; the pack was kept"));
+        }
+        for (e, was) in new.index.entries.iter().zip(&old.index.entries) {
+            let body = new.body(e).map_err(|_| wrong(was.day))?;
+            let ok = (e.day, e.generation) == (was.day, was.generation)
+                && match again.iter().find(|a| a.0.day == was.day) {
+                    Some((_, points, _)) => {
+                        let read = codec::decompress(body).and_then(|plain| DayLog::<P>::decode_state(&plain));
+                        e.level == LEVEL_SMALL
+                            && read.is_ok_and(|read| super::columns::same_points(&read.points, points))
+                    }
+                    None => e.level == was.level && old.body(was).is_ok_and(|b| b == body),
+                };
+            if !ok {
+                return Err(wrong(was.day));
+            }
+        }
+        Ok(())
+    };
+    if let Err(e) = check() {
+        remove_if_exists(&tmp)?;
+        return Err(e);
+    }
+    ctx.crash_point(Crash::BeforeRename)?;
+    std::fs::rename(&tmp, &file)?;
+    sync_dir(dir);
+    ctx.packs.forget(&file);
+    Ok((again.len(), again.len() < stale))
 }
 
 #[cfg(test)]

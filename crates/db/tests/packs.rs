@@ -222,7 +222,7 @@ fn packing_changes_no_value_and_gives_back_every_snapshots_bytes() {
     assert_eq!(before.samples[0].len(), 600 + 1 + 900 + 300 + 450 + 200 + 7200);
     let (sample_snaps, curve_snaps) = (snaps(&t, &sdir), snaps(&t, &cdir));
     assert_eq!(sample_snaps.len(), 8);
-    assert!(sample_snaps.values().all(|s| s.1 == 1), "settled: every day is cold");
+    assert!(sample_snaps.values().all(|s| s.1 == 2), "settled: every day is in the small form");
     assert_eq!(t.db.series_pending(car, APR10).unwrap(), 12);
     // days of a month that is not over stay as they are
     assert_eq!(t.db.compact_series(car, MAR1 - 1, 1000).unwrap(), SeriesCompacted::default());
@@ -487,7 +487,7 @@ fn settling_folds_late_writes_into_days_it_had_settled() {
     assert_eq!(t.db.series_pending(car, APR10).unwrap(), 12);
     assert_eq!(t.db.settle(car, APR10).unwrap().days, 1);
     assert!(names(&sdir, ".log").is_empty());
-    assert_eq!(snap_parts(&t, &sdir.join("2024-02-02.snap")).1, 1, "cold again");
+    assert_eq!(snap_parts(&t, &sdir.join("2024-02-02.snap")).1, 2, "settled again");
     assert_eq!(t.db.read_points::<Sample>(car, Source::Live, feb(2), feb(3)).unwrap(), day);
     assert_eq!(t.db.settle(car, APR10).unwrap().days, 0);
 

@@ -23,13 +23,16 @@ pub(crate) mod columns;
 pub(crate) mod pack;
 mod points;
 
-pub use columns::{Col, ColumnSize, Derived, Fields, Point, decode, decode_fields, describe, encode};
+pub use columns::{
+    Col, ColumnSize, Derived, Fields, Point, Tuning, decode, decode_fields, describe, encode, encode_small,
+    encode_tuned, same_points,
+};
 
 use crate::codec;
 use crate::error::{Error, Result};
 use crate::file::{Ctx, Kind, Which, check_header, header, remove_if_exists};
 use crate::journal::{Files, Journal};
-use crate::logged::{LEVEL_COLD, Logged, LoggedFile, append_only, snapshot_head};
+use crate::logged::{LEVEL_COLD, LEVEL_SMALL, Logged, LoggedFile, append_only, snapshot_head};
 use columns::{Reader, put_varint};
 use model::{ChargePoint, Sample, Stream};
 use pack::{Month, Packs};
@@ -182,6 +185,21 @@ impl<P: Point> Logged for DayLog<P> {
         let points = decode(b)?;
         check_sorted(&points)?;
         Ok(DayLog { points })
+    }
+
+    fn encode_cold(&self, ctx: &Ctx) -> Result<(Vec<u8>, u8, codec::Level)> {
+        match ctx.opts.small_columns {
+            true => Ok((columns::encode_small(&self.points), LEVEL_SMALL, ctx.opts.small)),
+            false => Ok((encode(&self.points), LEVEL_COLD, ctx.level(Which::Cold))),
+        }
+    }
+
+    fn settled_level(ctx: &Ctx) -> u8 {
+        if ctx.opts.small_columns { LEVEL_SMALL } else { LEVEL_COLD }
+    }
+
+    fn same_as(&self, other: &Self) -> Result<bool> {
+        Ok(columns::same_points(&self.points, &other.points))
     }
 
     fn fold_due(ctx: &Ctx, journal_bytes: u64, _entries: u64, snap_bytes: u64, _snap_plain: u64) -> bool {
@@ -673,20 +691,20 @@ pub(crate) fn bytes(car_dir: &Path) -> Result<u64> {
     Ok(total)
 }
 
-/// Settles a day (nothing left in its journal, its snapshot at the cold level). Returns whether there was anything
-/// to do.
+/// Settles a day (nothing left in its journal, its snapshot at the level finished days are kept at: the small form,
+/// see [`columns::encode_small`]). Returns whether there was anything to do.
 fn settle_day<P: Point>(ctx: &Ctx, dir: &Path, day: u64) -> Result<bool> {
     let files = day_files(dir, day);
     if !files.log.exists() {
         match snapshot_head(ctx, &files, Kind::Segment)? {
-            // folded while it was written, or emptied
-            Some((_, level, _)) if level != LEVEL_COLD => {}
-            // cold already, or in the month's pack (cold when it went in)
+            // folded while it was written, emptied, or written cold before there was the small form
+            Some((_, level, _)) if level < DayLog::<P>::settled_level(ctx) => {}
+            // settled already, or in the month's pack
             Some(_) | None => return Ok(false),
         }
     }
     let mut lf = load_day::<P>(ctx, dir, day)?;
-    if lf.settled() {
+    if lf.settled(ctx) {
         return Ok(false);
     }
     if !lf.state.points.is_empty() {
@@ -754,6 +772,8 @@ fn todo(dir: &Path, known_cold_before: u64, before: u64) -> Result<Todo> {
 pub(crate) struct Compacted {
     pub folded: usize,
     pub packed: usize,
+    /// Days of the months' packs written again in the small form.
+    pub recoded: usize,
     /// It stopped at `max_days` with work left.
     pub more: bool,
     /// Every day before this is now known to have nothing in its journal and a cold snapshot (or to be in a pack).
@@ -762,7 +782,9 @@ pub(crate) struct Compacted {
 
 /// One pass over every series of a car, at most about `max_days` of work, oldest first: settles the days that ended
 /// before `before` (see [`todo`]), then, when `packing` and with all of them settled, packs the months that ended
-/// before it ([`pack::pack_month`]; whole months, so the last one may go past `max_days`). Under the car's lock.
+/// before it ([`pack::pack_month`]; whole months, so the last one may go past `max_days`), and last writes the
+/// packs' days that are not yet in the small form again ([`pack::recode_month`]: days packed by a server before
+/// there was one). Under the car's lock.
 pub(crate) fn compact(
     ctx: &Ctx,
     car_dir: &Path,
@@ -771,7 +793,7 @@ pub(crate) fn compact(
     max_days: usize,
     packing: bool,
 ) -> Result<Compacted> {
-    let mut out = Compacted { folded: 0, packed: 0, more: false, known_cold_before };
+    let mut out = Compacted { folded: 0, packed: 0, recoded: 0, more: false, known_cold_before };
     // a step always gets somewhere
     let max_days = max_days.max(1);
     let mut fold: Vec<(u64, SeriesOf, Stream)> = Vec::new();
@@ -811,12 +833,37 @@ pub(crate) fn compact(
             };
         }
     }
+    if !ctx.opts.small_columns {
+        return Ok(out);
+    }
+    for (series, stream) in every_series() {
+        let dir = dir_of(car_dir, series.0, stream);
+        for month in listing(&dir)?.packs {
+            if pack::stale(ctx, &dir, month)? == 0 {
+                continue;
+            }
+            let done = out.folded + out.packed + out.recoded;
+            if done >= max_days {
+                out.more = true;
+                return Ok(out);
+            }
+            let (recoded, more) = match series.0 {
+                Series::Samples => pack::recode_month::<Sample>(ctx, &dir, month, max_days - done)?,
+                Series::Charge => pack::recode_month::<ChargePoint>(ctx, &dir, month, max_days - done)?,
+            };
+            out.recoded += recoded;
+            if more {
+                out.more = true;
+                return Ok(out);
+            }
+        }
+    }
     Ok(out)
 }
 
-/// How many days [`compact`] would still fold or pack, from listings alone (a snapshot file not yet known to be cold
-/// counts, though a look at it may find nothing to do).
-pub(crate) fn pending(car_dir: &Path, known_cold_before: u64, before: u64) -> Result<usize> {
+/// How many days [`compact`] would still fold, pack or write again in the small form, from listings and the packs'
+/// indexes alone (a snapshot file not yet known to be settled counts, though a look at it may find nothing to do).
+pub(crate) fn pending(ctx: &Ctx, car_dir: &Path, known_cold_before: u64, before: u64) -> Result<usize> {
     let mut n = 0;
     for (series, stream) in every_series() {
         let dir = dir_of(car_dir, series.0, stream);
@@ -830,6 +877,11 @@ pub(crate) fn pending(car_dir: &Path, known_cold_before: u64, before: u64) -> Re
             .filter(|d| !l.logs.contains(d) && l.snaps.contains(d) && Month::of(**d).end * DAY_MS <= before)
             .count();
         n += t.fold.len() + packable - both;
+        if ctx.opts.small_columns {
+            for month in l.packs {
+                n += pack::stale(ctx, &dir, month)?;
+            }
+        }
     }
     Ok(n)
 }

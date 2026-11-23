@@ -165,6 +165,11 @@ pub struct Options {
     pub hot: Level,
     pub warm: Level,
     pub cold: Level,
+    /// Finished days are kept in their smallest form by [`Db::settle`] and [`Db::compact_series`]: the columns of
+    /// [`segment::encode_small`], compressed at `small`. `false`: as servers before 2026-11-23 wrote them (the
+    /// quick columns at `cold`), for tests of folders they left.
+    pub small_columns: bool,
+    pub small: Level,
 }
 
 impl Default for Options {
@@ -177,6 +182,8 @@ impl Default for Options {
             hot: Level::HOT,
             warm: Level::WARM,
             cold: Level::COLD,
+            small_columns: true,
+            small: Level::SMALL,
         }
     }
 }
@@ -218,6 +225,8 @@ pub struct SeriesCompacted {
     pub days_folded: usize,
     /// Days taken into (or dropped from) their month's pack.
     pub days_packed: usize,
+    /// Days of a month's pack written again in the small form.
+    pub days_recoded: usize,
     /// There is more to do: call again.
     pub more: bool,
 }
@@ -879,13 +888,20 @@ impl Db {
     ) -> Result<SeriesCompacted> {
         let ctx = &self.inner.ctx;
         let before = before_ms / DAY_MS * DAY_MS;
-        let known = data.meta(ctx, dir)?.settled_before_ms;
+        // (a folder that got the small form later: its days are looked at once more)
+        let small = ctx.opts.small_columns;
+        let meta = data.meta(ctx, dir)?;
+        let known = if small { meta.small_before_ms } else { meta.settled_before_ms };
         let c = segment::compact(ctx, dir, known, before, max_days, packing)?;
         if c.known_cold_before != known {
-            data.meta(ctx, dir)?.settled_before_ms = c.known_cold_before;
+            let meta = data.meta(ctx, dir)?;
+            meta.settled_before_ms = meta.settled_before_ms.max(c.known_cold_before);
+            if small {
+                meta.small_before_ms = c.known_cold_before;
+            }
             data.save_meta(ctx, dir)?;
         }
-        Ok(SeriesCompacted { days_folded: c.folded, days_packed: c.packed, more: c.more })
+        Ok(SeriesCompacted { days_folded: c.folded, days_packed: c.packed, days_recoded: c.recoded, more: c.more })
     }
 
     /// A step of compacting a car's time series, losslessly (run it again, with pauses, while it says `more`): at
@@ -903,8 +919,10 @@ impl Db {
     /// find it is.
     pub fn series_pending(&self, car: CarId, before_ms: u64) -> Result<usize> {
         self.with_car(car, |db, data, dir| {
-            let known = data.meta(&db.inner.ctx, dir)?.settled_before_ms;
-            segment::pending(dir, known, before_ms / DAY_MS * DAY_MS)
+            let ctx = &db.inner.ctx;
+            let meta = data.meta(ctx, dir)?;
+            let known = if ctx.opts.small_columns { meta.small_before_ms } else { meta.settled_before_ms };
+            segment::pending(ctx, dir, known, before_ms / DAY_MS * DAY_MS)
         })
     }
 
