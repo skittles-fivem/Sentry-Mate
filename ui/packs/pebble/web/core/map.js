@@ -14,29 +14,22 @@
 // Line widths and padding are given in px at the standard size and follow the Interface size; a new theme
 // repaints the ground, the tiles and the lines.
 
-import { h, cssVar } from '../shared/dom.js';
+import { h, cssVar, styleSheet } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import { display } from './display.js';
 import { isDark, onTheme, currentPrefs, onPrefs } from './prefs.js';
 import { tileChoice, rasterPaint, mapColors, tileSources, tileLayers, repaintTiles, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles } from '../shared/maptiles.js';
 
 let lib = null;
-/** Load MapLibre once (module, worker and its style sheet). */
+/** Load MapLibre once (module, worker and style sheet, all relative to this file); resolves once the style sheet applies. */
 export function loadMapLibre() {
-  if (!lib) {
-    lib = (async () => {
-      if (!document.querySelector('link[data-maplibre]')) {
-        const link = h('link', { rel: 'stylesheet', href: '/vendor/maplibre-gl/maplibre-gl.css', dataset: { maplibre: '' } });
-        const done = new Promise((r) => { link.addEventListener('load', r, { once: true }); link.addEventListener('error', r, { once: true }); });
-        document.head.append(link);
-        await done;
-      }
-      const ml = await import('/vendor/maplibre-gl/maplibre-gl.mjs');
-      ml.setWorkerUrl(new URL('/vendor/maplibre-gl/maplibre-gl-worker.mjs', location.origin).href);
-      return ml;
-    })();
-    lib.catch(() => { lib = null; });
-  }
+  lib ??= Promise.all([
+    import('../vendor/maplibre-gl/maplibre-gl.mjs'),
+    styleSheet(new URL('../vendor/maplibre-gl/maplibre-gl.css', import.meta.url).href),
+  ]).then(([ml]) => {
+    ml.setWorkerUrl(new URL('../vendor/maplibre-gl/maplibre-gl-worker.mjs', import.meta.url).href);
+    return ml;
+  }).catch((e) => { lib = null; throw e; });
   return lib;
 }
 

@@ -68,7 +68,7 @@ let selfQuery = false;
 
 /** Load a page's own style sheet once (pages/<id>.css); resolves when it applies. */
 function pageCss(id) {
-  const href = `/pages/${id}.css`;
+  const href = new URL(`../pages/${id}.css`, import.meta.url).href;
   let link = document.head.querySelector(`link[data-page-css="${id}"]`);
   if (link) return link.sheet ? Promise.resolve() : new Promise((r) => { link.addEventListener('load', r, { once: true }); link.addEventListener('error', r, { once: true }); });
   link = h('link', { rel: 'stylesheet', href, dataset: { pageCss: id } });

@@ -57,7 +57,7 @@ function buildHead() {
   head.replaceChildren(
     h('div', { class: 'head-bar' },
       h('a', { class: 'brand', href: '/', 'aria-label': 'Sentry Mate: Fleet', cover: ['shell.nav.home', 'web.shell.logo-home', 'web.shell.home-routing'] },
-        h('img', { class: 'brand-mark', src: '/icon.svg', alt: '' }), h('span', { class: 'brand-name' }, 'Sentry Mate')),
+        h('img', { class: 'brand-mark', src: new URL('../icon.svg', import.meta.url).href, alt: '' }), h('span', { class: 'brand-name' }, 'Sentry Mate')),
       h('div', { class: 'head-bar-end' }, el.offline, el.clock, el.account)),
     h('div', { class: 'head-main' },
       h('div', { class: 'head-text' }, el.title, h('div', { class: 'head-meta' }, el.carPill, el.datePill)),

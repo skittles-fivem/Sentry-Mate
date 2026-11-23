@@ -83,7 +83,7 @@ export async function mount(ctx) {
     stopPoll();
     replace(box, h('section', { class: ['auth', 'su-card', { 'su-wide': wide }, cls], 'aria-labelledby': 'auth-title' },
       h('a', { class: 'brand auth-brand', href: '/', 'aria-label': 'Sentry Mate' },
-        h('img', { class: 'brand-mark', src: '/icon.svg', alt: '' }), h('span', { class: 'brand-name' }, 'Sentry Mate')),
+        h('img', { class: 'brand-mark', src: new URL('../icon.svg', import.meta.url).href, alt: '' }), h('span', { class: 'brand-name' }, 'Sentry Mate')),
       step ? h('p', { class: 'eyebrow su-step' }, step) : null,
       h('h1', { class: 'auth-title', id: 'auth-title' }, titleText),
       lede ? h('p', { class: 'auth-text' }, lede) : null,

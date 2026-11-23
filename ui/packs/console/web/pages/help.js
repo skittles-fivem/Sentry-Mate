@@ -48,7 +48,8 @@ export async function mount(ctx) {
     ctx.api.get('about', null, { maxAgeMs: 600000 }),
     ctx.api.get('notices', null, { maxAgeMs: 5000 }).then((r) => r.items).catch(() => getNotices()),
     ctx.admin ? ctx.api.get('settings').catch(() => null) : null,
-    needCar ? ctx.api.get('cars', { sort: 'name', limit: 200 }).then((r) => r.items || []).catch(() => null) : null,
+    // the frame has just read the same list (for the car link): its answer is reused
+    needCar ? ctx.api.get('cars', { sort: 'name', limit: 200 }, { maxAgeMs: 15000 }).then((r) => r.items || []).catch(() => null) : null,
     ctx.api.get('release').catch(() => null),
   ]);
   if (!ctx.alive()) return;

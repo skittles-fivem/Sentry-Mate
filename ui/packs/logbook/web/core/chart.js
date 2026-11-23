@@ -10,7 +10,7 @@
 // at the standard size and scaled with the interface size; a new root size or theme builds the charts
 // again, keeping the zoom. uPlot is loaded on first use (vendor/uplot), so pages without charts never load it.
 
-import { h, cssVar } from '../shared/dom.js';
+import { h, cssVar, styleSheet } from '../shared/dom.js';
 import { convert, unitLabel } from '../shared/units.js';
 import { formatNumber } from '../shared/i18n.js';
 import { dateFormat } from '../shared/time.js';
@@ -18,17 +18,18 @@ import { display } from './display.js';
 import { onTheme } from './prefs.js';
 
 let loading = null;
-/** Load uPlot (script and style sheet) once: resolves with the uPlot constructor. */
+/** Load uPlot (script and style sheet, relative to this file) once: resolves with the uPlot constructor once both are in. */
 export function loadUplot() {
-  if (window.uPlot) return Promise.resolve(window.uPlot);
   if (!loading) {
-    loading = new Promise((resolve, reject) => {
-      if (!document.querySelector('link[data-uplot]')) document.head.append(h('link', { rel: 'stylesheet', href: '/vendor/uplot/uPlot.min.css', dataset: { uplot: '' } }));
-      const s = h('script', { src: '/vendor/uplot/uPlot.iife.min.js' });
+    // the style sheet must apply before a chart is laid out, else its axes and readout jump into place
+    const css = styleSheet(new URL('../vendor/uplot/uPlot.min.css', import.meta.url).href);
+    const js = window.uPlot ? window.uPlot : new Promise((resolve, reject) => {
+      const s = h('script', { src: new URL('../vendor/uplot/uPlot.iife.min.js', import.meta.url).href });
       s.addEventListener('load', () => resolve(window.uPlot));
       s.addEventListener('error', () => { loading = null; reject(new Error('The chart library did not load.')); });
       document.head.append(s);
     });
+    loading = Promise.all([js, css]).then(([u]) => u);
   }
   return loading;
 }

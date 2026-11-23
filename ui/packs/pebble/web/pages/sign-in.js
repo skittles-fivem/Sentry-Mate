@@ -47,7 +47,7 @@ export function httpsNote() {
 export function authCard(...children) {
   return h('section', { class: 'auth-card', 'aria-labelledby': 'auth-title' },
     h('a', { class: 'brand auth-brand', href: '/', 'aria-label': 'Sentry Mate' },
-      h('img', { class: 'brand-mark', src: '/icon.svg', alt: '' }), h('span', { class: 'brand-name' }, 'Sentry Mate')),
+      h('img', { class: 'brand-mark', src: new URL('../icon.svg', import.meta.url).href, alt: '' }), h('span', { class: 'brand-name' }, 'Sentry Mate')),
     children);
 }
 
