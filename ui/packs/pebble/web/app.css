@@ -1232,3 +1232,8 @@ html[data-form="phone"] .fw-change { flex-direction: column; align-items: flex-s
 .dated-list li { display: flex; flex-wrap: wrap; gap: 0 var(--s3); padding: var(--s2) 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
 .dated-list li.is-now b { color: var(--coral); }
 .map-foot .set-price { margin-left: var(--s3); }
+/* A kept answer on screen while the fresh one is asked for (core/router.js puts data-stale on the root): the page
+   is a little dimmed after a moment, so a quick check shows nothing. Only the opacity changes: nothing moves. */
+#main { transition: opacity 0.2s ease; }
+:root[data-stale] #main { opacity: 0.72; transition: opacity 0.3s ease 0.25s; }
+@media (prefers-reduced-motion: reduce) { #main, :root[data-stale] #main { transition: none; } }

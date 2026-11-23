@@ -12,6 +12,7 @@
 // fonts have loaded. After a change of content only the boxes that hold it are snapped again (a card that loads
 // its figures again, a table's new rows), unless one of them changed size: then the whole page is. Each run first puts back what the last one set, so the CSS (its tiers and container
 // queries) always decides the layout and the snap only rounds it. It reads every size before it writes one.
+// While the router builds a page, the runs wait and one runs when it is drawn (holdSnap).
 
 // what a run changed: element -> { property: the inline value it had before }, so the next run can put it back
 const snapped = new Map();
@@ -482,6 +483,19 @@ function resized(entries) {
   }
 }
 
+// While a page is built (from kept answers, in one go) a run per change would take longer than the page itself:
+// holdSnap() holds the runs back, and the release function (call it once) runs one if anything changed.
+let holds = 0, held = false;
+export function holdSnap() {
+  holds++;
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    if (--holds === 0 && held) { held = false; snapAll(); }
+  };
+}
+
 let queued = false;
 let restTimer = 0;
 function later() {
@@ -501,7 +515,8 @@ export function watchTables() {
     // once the scrolling rests, not every frame (the box keeps its size, so nothing outside it moves)
     const windowed = (n) => { const e = n.nodeType === 1 ? n : n.parentElement; return !!(e && e.closest('[data-vl-body]')); };
     let rest = false;
-    // at once, in the same turn as the change: nothing can measure or paint the page in between
+    // at once, in the same turn as the change: nothing can measure or paint the page in between; while the
+    // router builds a page (holdSnap) once, when it is released
     // only the parts that changed (a card's figures, a table's rows): a run over the whole page lays it all out
     // several times, which on a big screen takes longer than a frame (scrolling stalls while a page reloads)
     // or a box shown or hidden (a table's "Show more" foot): it moves what is around it
@@ -513,6 +528,7 @@ export function watchTables() {
     }
     if (rest) { clearTimeout(restTimer); restTimer = setTimeout(later, 150); }
     if (!changed.length) return;
+    if (holds) { held = true; return; }
     const added = appendedRows(changed);
     if (added) { snapRows(added.table, added.rows); return; }
     const roots = changedRoots(changed);

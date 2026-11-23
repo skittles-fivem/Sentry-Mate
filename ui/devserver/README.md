@@ -76,7 +76,10 @@ Every change (POST, PUT, PATCH, DELETE) needs the header `X-Sentry-Mate: 1`, els
 Every answer carries a Content Security Policy like the real server's (pages may load tiles only from the online
 tile server, named only while online tiles are on), `X-Content-Type-Options: nosniff` and
 `Referrer-Policy: no-referrer` (pages: `strict-origin` while online tiles are on, as the real server, so
-OpenStreetMap's tile server sees a Referer); `/api/` answers also carry `Cache-Control: no-store`.
+OpenStreetMap's tile server sees a Referer). `/api/` answers carry `Cache-Control: no-store`, but for a
+successful `GET` with a JSON body, as the real server does (`crates/web/src/delivery.rs`): a weak `ETag` (a hash
+of the body), `Cache-Control: private, no-cache`, and `304` with no body when `If-None-Match` names the tag. Paths
+that may carry a secret (tokens, keys, set-up, `/me`, sessions, two-step, exports, the move) stay `no-store`.
 
 ## The made-up dataset
 

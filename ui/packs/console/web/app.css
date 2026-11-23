@@ -1353,3 +1353,8 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .pp-dialog { --pp-bg: var(--panel); --pp-line: var(--rule-2); --pp-text: var(--text); --pp-muted: var(--muted); --pp-accent: var(--accent); --pp-bad: var(--bad); --pp-radius: 2px; --pp-backdrop: rgba(5, 7, 10, 0.6); }
 .pl-dated-list { margin: 0 0 var(--g2); padding: 0; list-style: none; }
 .pl-dated-list li { overflow-wrap: anywhere; }
+/* A kept answer on screen while the fresh one is asked for (core/router.js puts data-stale on the root): the page
+   is a little dimmed after a moment, so a quick check shows nothing. Only the opacity changes: nothing moves. */
+#view { transition: opacity 0.2s ease; }
+:root[data-stale] #view { opacity: 0.72; transition: opacity 0.3s ease 0.25s; }
+@media (prefers-reduced-motion: reduce) { #view, :root[data-stale] #view { transition: none; } }

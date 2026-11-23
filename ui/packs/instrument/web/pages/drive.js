@@ -47,6 +47,20 @@ const exportName = (carName, ms, tz) => {
   return `${String(carName).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'car'}-drive-${p.year}-${z(p.month)}-${z(p.day)}-${z(p.hour)}${z(p.minute)}`;
 };
 
+// The page's reads; prefetch() warms the same ones when a link here is under the pointer.
+const driveBase = (ctx) => `cars/${encodeURIComponent(ctx.car.id)}/drives/${encodeURIComponent(ctx.state.drive)}`;
+// speed bands of 10 in the viewer's own unit: 10 km/h, or 10 mph (16.09344 km/h)
+const driveRead = (ctx) => ctx.api.get(driveBase(ctx), { speed_band_kph: getUnits().distance === 'mi' ? 10 * KM_PER_MI : 10 });
+const trackRead = (ctx) => ctx.api.get(`${driveBase(ctx)}/track`, { extensions: 'speed,power' });
+const seriesFields = (rk) => ['speed_kph', 'power_kw', 'soc_pct', 'usable_soc_pct', rk, 'energy_remaining_kwh', 'elevation_m', 'outside_c', 'cabin_c', 'setpoint_left_c', 'setpoint_right_c', 'odometer_km', 'tyre_fl_kpa', 'tyre_fr_kpa', 'tyre_rl_kpa', 'tyre_rr_kpa', 'lat', 'lon', 'accuracy_m', 'battery_heat_kw', 'climate', 'fan_level'];
+const seriesRead = (ctx, t0, t1, fields) => ctx.api.get(`cars/${encodeURIComponent(ctx.car.id)}/series`, { fields: fields.join(','), from_ms: t0, to_ms: t1 + 1000, max_points: 3600 });
+export async function prefetch(ctx) {
+  const [d] = await Promise.all([driveRead(ctx), trackRead(ctx), Promise.resolve().then(loadUPlot).catch(() => null)]);
+  if (!d) return;
+  const rk = getUnits().range === 'ideal' ? 'ideal_range_km' : 'range_km';
+  await seriesRead(ctx, d.start_ms, d.end_ms ?? ctx.api.now(), seriesFields(rk));
+}
+
 export async function mount(ctx) {
   const { car, tz } = ctx;
   const cid = car.id, did = ctx.state.drive;
@@ -54,7 +68,7 @@ export async function mount(ctx) {
   // speed bands of 10 in the viewer's own unit: 10 km/h, or 10 mph (16.09344 km/h)
   const mph = getUnits().distance === 'mi';
   let d;
-  try { d = await ctx.api.get(base, { speed_band_kph: mph ? 10 * KM_PER_MI : 10 }); } catch (e) {
+  try { d = await driveRead(ctx); } catch (e) {
     if (e.status === 404) e.message = 'There is no drive with this number for this car. It may have been rebuilt under a new number; find it on Drives.';
     ctx.fail(e, { retry: null }); return;
   }
@@ -63,11 +77,11 @@ export async function mount(ctx) {
   const t0 = d.start_ms, t1 = d.end_ms ?? ctx.api.now();
   const ideal = getUnits().range === 'ideal';
   const rk = ideal ? 'ideal_range_km' : 'range_km';
-  const fields = ['speed_kph', 'power_kw', 'soc_pct', 'usable_soc_pct', rk, 'energy_remaining_kwh', 'elevation_m', 'outside_c', 'cabin_c', 'setpoint_left_c', 'setpoint_right_c', 'odometer_km', 'tyre_fl_kpa', 'tyre_fr_kpa', 'tyre_rl_kpa', 'tyre_rr_kpa', 'lat', 'lon', 'accuracy_m', 'battery_heat_kw', 'climate', 'fan_level'];
+  const fields = seriesFields(rk);
   // uPlot loads with the data, so the charts are drawn with the page (their space never opens up later)
   const [series, track] = await Promise.all([
-    ctx.api.get(`cars/${encodeURIComponent(cid)}/series`, { fields: fields.join(','), from_ms: t0, to_ms: t1 + 1000, max_points: 3600 }),
-    ctx.api.get(`${base}/track`, { extensions: 'speed,power' }).catch(() => null),
+    seriesRead(ctx, t0, t1, fields),
+    trackRead(ctx).catch(() => null),
     loadUPlot(),
   ]);
   if (!ctx.alive()) return;

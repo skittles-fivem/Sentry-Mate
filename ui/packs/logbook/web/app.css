@@ -1092,3 +1092,8 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
   .pp-rate { grid-template-columns: 1fr 1fr; padding-bottom: 0.5rem; border-bottom: 1px solid var(--pp-line); }
 }
 .pp-dialog { --pp-bg: var(--paper-raised); --pp-line: var(--rule); --pp-text: var(--ink); --pp-muted: var(--ink-3); --pp-accent: var(--accent); --pp-bad: var(--rust); --pp-radius: 0.25rem; --pp-backdrop: rgba(28, 26, 22, 0.4); }
+/* A kept answer on screen while the fresh one is asked for (core/router.js puts data-stale on the root): the page
+   is a little dimmed after a moment, so a quick check shows nothing. Only the opacity changes: nothing moves. */
+#main { transition: opacity 0.2s ease; }
+:root[data-stale] #main { opacity: 0.72; transition: opacity 0.3s ease 0.25s; }
+@media (prefers-reduced-motion: reduce) { #main, :root[data-stale] #main { transition: none; } }

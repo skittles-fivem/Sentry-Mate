@@ -20,6 +20,7 @@ import { pageHead, q, plus, figure, chip, flag, icon, stateMark, empty, errorVie
 import { column, timeColumn, csvFilename, downloadCsv } from '../shared/csv.js';
 import { makeMap, coordsText, boundsOf } from '../core/map.js';
 import { SPOT_ZOOM } from '../shared/maptiles.js';
+import { nearNow } from '../shared/lazy.js';
 import { stackedCharts, spansFromStates } from '../core/chart.js';
 import { activityStrip, timelineRow, AWAKE_WORDS, endLabel } from '../core/journal.js';
 import { sourceMark, valueMark, inputsLine, labelOf } from '../core/sources.js';
@@ -57,13 +58,47 @@ const DOORS = [['fl', 'Front left door'], ['fr', 'Front right door'], ['rl', 'Re
 const CHARGE_WORDS = { disconnected: 'Not plugged in', no_power: 'Plugged in, no power from the station', about_to_charge: 'Plugged in, about to charge', charging: 'Charging', complete: 'Charge complete', stopped: 'Plugged in, charging stopped' };
 const LIMIT_WORDS = { pilot: 'the station', cable: 'the cable', car: 'the car' };
 
+// The first reads, made by mount() and warmed ahead by prefetch() (a link to this page under the pointer).
+const nowRead = (ctx) => ctx.api.get(api.apiPath`cars/${ctx.car.id}/now`);
+const settingsRead = (ctx) => ctx.api.get('settings', null, { maxAgeMs: 300000 });
+const latestReads = (ctx) => [
+  ctx.api.page(api.apiPath`cars/${ctx.car.id}/drives`, null, { limit: 1 }),
+  ctx.api.page(api.apiPath`cars/${ctx.car.id}/charges`, null, { limit: 1 }),
+];
+// the period: [timeline, activity, series, trip]
+function periodReads(ctx) {
+  const car = ctx.car, p = ctx.params;
+  return [
+    ctx.api.page(api.apiPath`cars/${car.id}/timeline`, p, { limit: 40 }),
+    ctx.api.get(api.apiPath`cars/${car.id}/activity`, p),
+    ctx.api.get(api.apiPath`cars/${car.id}/series`, { ...p, fields: 'soc_pct,usable_soc_pct,range_km,ideal_range_km', max_points: 600 }),
+    ctx.api.get(api.apiPath`cars/${car.id}/trip`, p),
+  ];
+}
+// the latest drive's route sketch, the open stop where the car is, the period's charges and their curves
+const sketchRead = (ctx, drive) => ctx.api.get('tracks', { cars: ctx.car.id, from_ms: drive.start_ms, to_ms: (drive.end_ms ?? api.now()) + 1, max_points: 200 });
+const visitRead = (ctx) => ctx.api.page('visits', { cars: ctx.car.id }, { limit: 1 });
+const chargesRead = (ctx) => ctx.api.page(api.apiPath`cars/${ctx.car.id}/charges`, ctx.params, { limit: 12 });
+const curveReads = (ctx, list) => {
+  const per = Math.max(60, Math.floor(1800 / list.length));
+  return list.map((c) => ctx.api.get(api.apiPath`cars/${ctx.car.id}/charges/${c.id}/curve`, { fields: 'power_kw,heater_kw,ac_volts_v,ac_amps_a,dc_volts_v,dc_amps_a', max_points: per }));
+};
+export async function prefetch(ctx) {
+  const [, , d, , , , , , res] = await Promise.all([
+    nowRead(ctx), settingsRead(ctx), ...latestReads(ctx), ...periodReads(ctx), chargesRead(ctx), visitRead(ctx),
+    ctx.api.get(api.apiPath`cars/${ctx.car.id}/firmware`), // the firmware panel (pages/car-facts.js)
+  ]);
+  const drive = d?.items?.[0];
+  await Promise.all([drive ? sketchRead(ctx, drive) : null, ...(res?.items?.length ? curveReads(ctx, res.items) : [])]);
+}
+
 export async function mount(ctx) {
   const car = ctx.car;
   const tz = ctx.tz;
   // GET now and every other part start together; each part fills its own box when its answers are in, and a
   // loading block of its size keeps its place until then (the period need not wait for /now, nor /now for it)
-  const nowP = ctx.api.get(api.apiPath`cars/${car.id}/now`);
-  const settingsP = ctx.api.get('settings', null, { maxAgeMs: 300000 }).catch(() => null);
+  const nowP = nowRead(ctx);
+  const settingsP = settingsRead(ctx).catch(() => null);
   nowP.catch(() => {}); // a failed /now fails the page below
   let now = null, outsideMaps = false;
 
@@ -116,7 +151,7 @@ export async function mount(ctx) {
     if (visitFor !== key) {
       visitFor = key;
       visit = undefined;
-      ctx.api.page('visits', { cars: car.id }, { limit: 1 })
+      visitRead(ctx)
         .then((r) => { if (visitFor !== key) return; const x = r.items[0]; visit = x && x.left_ms == null ? x : null; if (ctx.alive()) draw(); })
         .catch(() => { if (visitFor === key) { visit = null; if (ctx.alive()) draw(); } });
     }
@@ -141,14 +176,11 @@ export async function mount(ctx) {
   ctx.main.append(head, grid, periodBox, h('div', { class: 'car-facts' }, vehicle.el, firmware.el));
 
   // Latest drive and charge (the charge card reads /now too).
-  const latestP = Promise.all([
-    ctx.api.page(api.apiPath`cars/${car.id}/drives`, null, { limit: 1 }),
-    ctx.api.page(api.apiPath`cars/${car.id}/charges`, null, { limit: 1 }),
-  ]).then(async ([d, c]) => {
+  const latestP = Promise.all(latestReads(ctx)).then(async ([d, c]) => {
     const drive = d.items[0] || null;
     let sketch = null;
     if (drive) {
-      sketch = await ctx.api.get('tracks', { cars: car.id, from_ms: drive.start_ms, to_ms: (drive.end_ms ?? api.now()) + 1, max_points: 200 })
+      sketch = await sketchRead(ctx, drive)
         .then((t) => (t.drives || []).find((x) => x.drive === drive.id)).catch(() => null);
     }
     const n = await nowP.catch(() => null);
@@ -171,7 +203,7 @@ export async function mount(ctx) {
   const lat = v(now.location?.lat), lon = v(now.location?.lon);
   let marker = null;
   const mapReady = lat != null && lon != null
-    ? makeMap(ctx, mapBox, { center: [lon, lat], zoom: SPOT_ZOOM, fullscreen: true }).then(async (m) => {
+    ? makeMap(ctx, mapBox, { center: [lon, lat], zoom: SPOT_ZOOM, fullscreen: true, lazy: true }).then(async (m) => {
       if (!m) return;
       await m.loaded;
       marker = m.addPin([lon, lat], now.location.place ? now.location.place.name : null, 'pin-here');
@@ -191,7 +223,8 @@ export async function mount(ctx) {
     const la = v(now.location?.lat), lo = v(now.location?.lon);
     if (marker && la != null && lo != null) marker.setLngLat([lo, la]);
   });
-  await Promise.race([mapReady, new Promise((r) => setTimeout(r, 4000))]);
+  // a map below the fold (a phone) is made when it comes near (core/map.js), and ready does not wait for it
+  if (nearNow(mapBox)) await Promise.race([mapReady, new Promise((r) => setTimeout(r, 4000))]);
   ctx.ready();
   // a link to a panel (#car-firmware from Software, #car-vehicle) opens it once the page is drawn
   const hashT = setTimeout(() => {
@@ -711,10 +744,7 @@ async function drawPeriod(ctx, aside, box, { refresh = false } = {}) {
   const label = periodLabel(ctx.period, tz, api.now());
   // each part draws when its own answers are in: the figures and entries, the strip, the battery chart, the charging chart
   const settle = (pr) => pr.then((value) => ({ status: 'fulfilled', value }), (reason) => ({ status: 'rejected', reason }));
-  const tlP = settle(ctx.api.page(api.apiPath`cars/${car.id}/timeline`, p, { limit: 40 }));
-  const actP = settle(ctx.api.get(api.apiPath`cars/${car.id}/activity`, p));
-  const seriesP = settle(ctx.api.get(api.apiPath`cars/${car.id}/series`, { ...p, fields: 'soc_pct,usable_soc_pct,range_km,ideal_range_km', max_points: 600 }));
-  const tripP = settle(ctx.api.get(api.apiPath`cars/${car.id}/trip`, p));
+  const [tlP, actP, seriesP, tripP] = periodReads(ctx).map(settle);
   const parts = periodBlocks(ctx, box, label, refresh);
   await Promise.all([
     Promise.all([tlP, tripP]).then(([tl, trip]) => { if (!ctx.signal.aborted) drawAside(ctx, aside, label, tl, trip); }),
@@ -895,15 +925,14 @@ function chartBlock(ctx, { title, note, link, cover, csvName }) {
 /** The period's charges, their curves joined on one time axis, a gap between charges. */
 async function drawCharging(ctx, block) {
   const car = ctx.car;
-  const res = await ctx.api.page(api.apiPath`cars/${car.id}/charges`, ctx.params, { limit: 12 });
+  const res = await chargesRead(ctx);
   const list = res.items.slice().sort((a, b) => a.start_ms - b.start_ms);
   if (!list.length) {
     block.fill(empty({ title: 'No charge in this period.', text: 'Choose a longer period at the top to see charging power, energy, volts, amps and battery heating.' }));
     return;
   }
   const per = Math.max(60, Math.floor(1800 / list.length));
-  const curves = await Promise.all(list.map((c) => ctx.api.get(api.apiPath`cars/${car.id}/charges/${c.id}/curve`,
-    { fields: 'power_kw,heater_kw,ac_volts_v,ac_amps_a,dc_volts_v,dc_amps_a', max_points: per }).catch(() => null)));
+  const curves = await Promise.all(curveReads(ctx, list).map((p) => p.catch(() => null)));
   if (ctx.signal.aborted) return;
   const t = [], power = [], energy = [], volts = [], amps = [], heat = [], which = [];
   const gap = (ms) => { t.push(ms); power.push(null); energy.push(null); volts.push(null); amps.push(null); heat.push(null); which.push(null); };

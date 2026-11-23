@@ -214,15 +214,23 @@ function sw(idText, checked, labelText, onChange, disabled = false) {
 
 /* ====================================================================== the page */
 
+// The first reads; prefetch() warms the same ones when a link here is under the pointer.
+const firstReads = (ctx) => [
+  ctx.admin ? ctx.api.get('settings/mqtt') : Promise.resolve(null),
+  ctx.api.get('settings/mqtt/status'),
+  ctx.admin ? ctx.api.get('network') : Promise.resolve(null),
+  ctx.api.get('cars', { sort: 'name', limit: 100 }),
+];
+const preferredRead = (ctx) => ctx.api.page('cars', { sort: 'custom', limit: 100 }, { maxAgeMs: 30000 });
+export function prefetch(ctx) { return Promise.all([...firstReads(ctx), preferredRead(ctx)]); }
+
 export async function mount(ctx) {
   const admin = ctx.admin;
   let cfg = null, status = null, net = null, cars = null;
   try {
+    const r = firstReads(ctx);
     [cfg, status, net, cars] = await Promise.all([
-      admin ? ctx.api.get('settings/mqtt') : Promise.resolve(null),
-      ctx.api.get('settings/mqtt/status').catch(() => null),
-      admin ? ctx.api.get('network').catch(() => null) : Promise.resolve(null),
-      ctx.api.get('cars', { sort: 'name', limit: 100 }),
+      r[0], r[1].catch(() => null), r[2].catch(() => null), r[3],
     ]);
   } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }
   if (!ctx.alive()) return;
@@ -242,7 +250,7 @@ export async function mount(ctx) {
     extraCar = await findCar(wanted);
     if (wanted && !extraCar) carMissing = wanted;
     if (!extraCar && carList.length) {
-      const all = (await ctx.api.page('cars', { sort: 'custom', limit: 100 }, { maxAgeMs: 30000 }).catch(() => null))?.items || carList;
+      const all = (await preferredRead(ctx).catch(() => null))?.items || carList;
       const id = preferredCar(all);
       extraCar = all.find((c) => c.id === id) || (await findCar(lastCar())) || carList[0];
     }

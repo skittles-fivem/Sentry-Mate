@@ -2212,3 +2212,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   .pp-rate { grid-template-columns: 1fr 1fr; padding-bottom: 0.5rem; border-bottom: 1px solid var(--pp-line); }
 }
 .pp-dialog { --pp-bg: var(--surface-pop-a); --pp-line: var(--line-2); --pp-text: var(--text); --pp-muted: var(--text-2); --pp-accent: var(--live); --pp-bad: var(--danger); --pp-radius: 1rem; --pp-backdrop: var(--backdrop); }
+/* A kept answer on screen while the fresh one is asked for (core/router.js puts data-stale on the root): the page
+   is a little dimmed after a moment, so a quick check shows nothing. Only the opacity changes: nothing moves. */
+#view { transition: opacity 0.2s ease; }
+:root[data-stale] #view { opacity: 0.72; transition: opacity 0.3s ease 0.25s; }
+@media (prefers-reduced-motion: reduce) { #view, :root[data-stale] #view { transition: none; } }

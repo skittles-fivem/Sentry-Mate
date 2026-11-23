@@ -82,6 +82,17 @@ A new period calls `update(ctx, { period: true })` when the page has one, otherw
 again. A change of units, range or language calls `update(ctx, { prefs: true })`, or mounts again. A change of
 car, drive or charge always mounts again.
 
+Fast page changes: a page may export `prefetch(ctx)`. The router calls it when a link to the page is under the
+pointer for 50 ms, touched or focused, with the `ctx` that `mount` will get (car, period, params, query, state,
+me; `ctx.prefetching` is true), but its `ctx.api` only warms answers (`prefetchApi` in `shared/prefetch.js`). It must
+make the same calls as the page's first reads, so build them in one function both use (`topReads(ctx)` in
+`pages/battery.js`): a call with other parameters warms an answer nobody asks for. The router also loads the page's
+module and style sheet then, and once the first page is drawn the main sections' modules load while the browser
+is idle. A page (not the settings forms) takes kept answers at once for the reads it makes before `ready()`; each is
+checked at the same time, `<html data-stale>` dims the page while one is on screen, and a page whose answers
+changed is built again in place, like a live refresh. On the first page after a reload the service worker's kept
+answers can come first the same way.
+
 ### The page context (`ctx`)
 
 | Field | What it is |
@@ -219,6 +230,10 @@ await stackedCharts(ctx, box, {
 - Sizes: the chart fills its `.chart-box`, which CSS sizes in rem (`.chart-box { height: 8.125rem }`; give a row
   another height with `.chart-<key> .chart-box`). Fonts, padding and lines scale with the interface size;
   the charts rebuild on a new root size or theme; uPlot draws at the device pixel ratio by itself.
+- Below the fold: each chart is built, and `makeMap(ctx, el, { lazy: true })` makes its map (and loads MapLibre), only when its box comes
+  within a screen of view (`shared/lazy.js` `whenNear`), so the first paint draws only what is on screen. The box
+  has its height from CSS from the start, so nothing moves; a late chart takes the zoom of the others. A page waits
+  for a map before `ready()` only when `nearNow(box)` (`shared/lazy.js`) says it is near.
 - uPlot is loaded on first use (`loadUplot()`). `niceSplits`, `niceStep`, `chartColours()` are there for a
   page that draws its own uPlot chart; it must then follow the same rules.
 

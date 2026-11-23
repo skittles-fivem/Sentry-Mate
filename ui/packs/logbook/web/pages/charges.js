@@ -24,6 +24,7 @@ import { costSourceLabel } from '../shared/invoices.js';
 import { pageHead, q, figure, icon, empty, errorView, loadingBlock, flag, button, sep } from '../core/ui.js';
 import { dataTable } from '../core/table.js';
 import { makeMap, boundsOf } from '../core/map.js';
+import { nearNow } from '../shared/lazy.js';
 import { IMAGERY_HALO } from '../shared/maptiles.js';
 import { openDialog, confirmDialog, popover } from '../core/dialog.js';
 import { choice, soldPickRows } from '../core/form.js';
@@ -68,6 +69,45 @@ const csvButton = (label, onclick, cover = null) => h('button', { type: 'button'
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const p3 = (v) => `${v.toFixed(3)}%`;
 
+// The filters of the address, and the API queries they make: base (the period and the cars), the list's and
+// the statistics'. prefetch() warms the first reads with the same ones when a link here is under the pointer.
+const filtersOf = (q) => ({
+  places: idList(q.places), place_kind: oneOf(PLACE_KINDS, q.place_kind), kind: oneOf(TYPES, q.kind), q: q.q || '',
+  min_cost: posNum(q.min_cost), unpriced: q.unpriced === '1', min_dur: posNum(q.min_dur),
+  source: sourceFilter(q.source), flags: oneOf(FLAGS, q.flags), heat: q.heat === 'end' ? 'end' : 'start',
+});
+const baseQuery = (ctx, carsParam) => ({ ...ctx.params, cars: carsParam });
+const listQuery = (ctx, f, carsParam) => ({
+  ...baseQuery(ctx, carsParam), places: f.places.length ? f.places.join(',') : undefined, place_kind: f.place_kind || undefined, kind: f.kind || undefined, q: f.q || undefined,
+  min_cost: f.min_cost ?? undefined, include_unpriced: f.min_cost != null && f.unpriced ? 'true' : undefined,
+  min_duration_min: f.min_dur ?? undefined, source: f.source || undefined, flags: f.flags || undefined,
+});
+const statsQuery = (ctx, f, carsParam) => ({ ...baseQuery(ctx, carsParam), places: f.places.length ? f.places.join(',') : undefined, min_duration_min: f.min_dur ?? undefined });
+const fleetRead = (ctx) => ctx.api.list('cars', { sort: 'name' }, { limit: 200 });
+// the charging places' query, and one car's fast-charging curve
+const placesQuery = (sp, cars) => ({ cars, from_ms: sp.from_ms, to_ms: sp.to_ms, places: sp.places, min_duration_min: sp.min_duration_min });
+const curveRead = (ctx, cid, f) => ctx.api.get(api.apiPath`cars/${cid}/charging-stats/dc-curve`, { from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms, places: f.places.length ? f.places.join(',') : undefined });
+const placesRead = (ctx) => ctx.api.list('places', { sort: 'name' }, { limit: 200 });
+// one car's charges (without a car, the cars the fleet has decide the queries)
+export async function prefetch(ctx) {
+  const [, places] = await Promise.all([fleetRead(ctx).all(), placesRead(ctx).all()]);
+  if (!ctx.car) return;
+  const f = filtersOf(ctx.query), known = new Set((places || []).map((p) => p.id));
+  f.places = f.places.filter((x) => known.has(x));
+  const cid = ctx.car.id, listPath = api.apiPath`cars/${cid}/charges`, sp = statsQuery(ctx, f, undefined);
+  await Promise.all([
+    ctx.api.pager(listPath, { ...listQuery(ctx, f, undefined), sort: 'start', dir: 'desc' }, { limit: 50 }).more(), // the list, newest first
+    ctx.api.page(listPath, { ...baseQuery(ctx, undefined), flags: 'gap,in_progress' }, { limit: 20 }),
+    ctx.api.get(api.apiPath`cars/${cid}/charging-stats`, sp), ctx.api.list(listPath, sp, { limit: 500 }).all(),
+    ctx.api.get(api.apiPath`cars/${cid}/settings`),
+    // the places tables (8 a page), the places map, and the curve
+    ctx.api.pager('charging-stats/places', { ...placesQuery(sp, cid), sort: 'energy' }, { limit: 8 }).more(),
+    ctx.api.pager('charging-stats/places', { ...placesQuery(sp, cid), sort: 'cost' }, { limit: 8 }).more(),
+    ctx.api.list('charging-stats/places', { ...placesQuery(sp, cid), sort: 'energy' }, { limit: 200 }).all(),
+    curveRead(ctx, cid, f),
+  ]);
+}
+
 export async function mount(ctx) {
   const fixedCar = ctx.car;
   const tz = ctx.tz;
@@ -76,7 +116,7 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- which cars */
 
   let fleet = [];
-  try { fleet = await ctx.api.list('cars', { sort: 'name' }, { limit: 200 }).all({ max: 2000 }); } catch (err) { if (ctx.signal.aborted) throw err; fleet = fixedCar ? [fixedCar] : []; }
+  try { fleet = await fleetRead(ctx).all({ max: 2000 }); } catch (err) { if (ctx.signal.aborted) throw err; fleet = fixedCar ? [fixedCar] : []; }
   const byId = new Map(fleet.map((c) => [c.id, c]));
   if (fixedCar) byId.set(fixedCar.id, fixedCar);
   const asked = idList(ctx.query.cars).filter((x) => byId.has(x));
@@ -92,23 +132,15 @@ export async function mount(ctx) {
 
   /* ---------------------------------------------------------------- filters */
 
-  const f = {
-    places: idList(ctx.query.places), place_kind: oneOf(PLACE_KINDS, ctx.query.place_kind), kind: oneOf(TYPES, ctx.query.kind), q: ctx.query.q || '',
-    min_cost: posNum(ctx.query.min_cost), unpriced: ctx.query.unpriced === '1', min_dur: posNum(ctx.query.min_dur),
-    source: sourceFilter(ctx.query.source), flags: oneOf(FLAGS, ctx.query.flags), heat: ctx.query.heat === 'end' ? 'end' : 'start',
-  };
+  const f = filtersOf(ctx.query);
   let places = [], placesFailed = false;
-  try { places = await ctx.api.list('places', { sort: 'name' }, { limit: 200 }).all({ max: 2000 }); } catch (err) { if (ctx.signal.aborted) throw err; placesFailed = true; }
+  try { places = await placesRead(ctx).all({ max: 2000 }); } catch (err) { if (ctx.signal.aborted) throw err; placesFailed = true; }
   const placeById = new Map(places.map((p) => [p.id, p]));
   f.places = f.places.filter((x) => placeById.has(x));
 
-  const base = () => ({ ...ctx.params, cars: carsParam });
-  const listParams = () => ({
-    ...base(), places: f.places.length ? f.places.join(',') : undefined, place_kind: f.place_kind || undefined, kind: f.kind || undefined, q: f.q || undefined,
-    min_cost: f.min_cost ?? undefined, include_unpriced: f.min_cost != null && f.unpriced ? 'true' : undefined,
-    min_duration_min: f.min_dur ?? undefined, source: f.source || undefined, flags: f.flags || undefined,
-  });
-  const statsParams = () => ({ ...base(), places: f.places.length ? f.places.join(',') : undefined, min_duration_min: f.min_dur ?? undefined });
+  const base = () => baseQuery(ctx, carsParam);
+  const listParams = () => listQuery(ctx, f, carsParam);
+  const statsParams = () => statsQuery(ctx, f, carsParam);
   const filtered = () => !!(f.places.length || f.place_kind || f.kind || f.q || f.min_cost != null || f.min_dur != null || f.source || f.flags);
   const queryOf = () => ({
     places: f.places.length ? f.places.join(',') : null, place_kind: f.place_kind || null, kind: f.kind || null, q: f.q || null,
@@ -738,7 +770,7 @@ export async function mount(ctx) {
   /* charging places: a map and two paged tables */
   let placesUi = null;
   async function drawPlaces(sp, my) {
-    const pp = { cars: fixedCar ? fixedCar.id : sp.cars, from_ms: sp.from_ms, to_ms: sp.to_ms, places: sp.places, min_duration_min: sp.min_duration_min };
+    const pp = placesQuery(sp, fixedCar ? fixedCar.id : sp.cars);
     const placeCell = (p) => {
       const href = placeLink({ place: p.place ? { id: p.place } : null, lat: p.lat, lon: p.lon });
       return h('span', null, href ? h('a', { class: 'ch-place', href, title: p.place ? `Edit ${p.label} in Places` : 'Save this spot as a place' }, p.label) : p.label,
@@ -803,11 +835,16 @@ export async function mount(ctx) {
       return { type: 'FeatureCollection', features: ui.pts.map((p, i) => ({ type: 'Feature', properties: { i, r: 4 + 13 * Math.sqrt((p.energy_added_kwh || 0) / max) }, geometry: { type: 'Point', coordinates: [p.lon, p.lat] } })) };
     };
     if (ui.m) ui.m.map.getSource('ch-places')?.setData(features());
-    else if (pts.length) loads.push(drawMap());
+    else if (pts.length) {
+      // a map below the fold is made when it comes near (core/map.js): the stats wait for it only when it is near now
+      const drawn = drawMap();
+      if (nearNow(ui.mapEl)) loads.push(drawn);
+      else drawn.catch((err) => { if (!ctx.signal.aborted) replace(ui.mapEl, h('p', { class: 'map-note' }, `The map did not load: ${err.message}`)); });
+    }
     await Promise.all(loads);
 
     async function drawMap() {
-      const m = await makeMap(ctx, ui.mapEl, { bounds: boundsOf(ui.pts.map((p) => [p.lon, p.lat])), padding: 44, maxZoom: 14 });
+      const m = await makeMap(ctx, ui.mapEl, { bounds: boundsOf(ui.pts.map((p) => [p.lon, p.lat])), padding: 44, maxZoom: 14, lazy: true });
       if (!m) return;
       await m.loaded;
       if (ctx.signal.aborted) return;
@@ -847,7 +884,7 @@ export async function mount(ctx) {
     // The answer first, then the block is drawn once: the curve on screen stays until the new one is in.
     if (!curveBox.firstChild) replace(curveBox, loadingBlock(4));
     let data = { median: [], sessions: [] }, fail = null;
-    try { data = await ctx.api.get(api.apiPath`cars/${curveCar}/charging-stats/dc-curve`, { from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms, places: f.places.length ? f.places.join(',') : undefined }); } catch (err) {
+    try { data = await curveRead(ctx, curveCar, f); } catch (err) {
       if (ctx.signal.aborted) return;
       fail = err;
     }

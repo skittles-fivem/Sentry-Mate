@@ -24,8 +24,9 @@ node --test ui/shared/tests/
 
 | Module | What it is for |
 |---|---|
-| [`api.js`](api.js) | The one client for `/api/v1`: reads, cursor paging, changes with the CSRF header, errors, sign-in prompts, live events, cancelling, the server's clock |
+| [`api.js`](api.js) | The one client for `/api/v1`: reads, cursor paging, changes with the CSRF header, errors, sign-in prompts, live events, cancelling, the server's clock, the answers kept in the tab (below) |
 | [`build.js`](build.js) | Which build of the interface the server runs (`X-Sentry-Mate-Build` on every answer; api.js hands each one over, `watchBuild()` asks `/health` when the tab comes back into view and every 5 min) and `loadPage(load)`, which every router loads a page's module and style sheet with: once the build changed the tab loads the next address in full instead of importing into the old page, a file that fails is tried once more with a full load past the cache (`?_fresh=`, taken off the address again at once), and only then `pageFailedError()`: code `page_failed`, `PAGE_FAILED`'s words ("Sentry Mate was updated or a file could not load") with a Reload button (`reloadPage()`), never "No answer from the server" |
+| [`prefetch.js`](prefetch.js) | Page changes without waiting: `watchLinks(warm)` (a link under the pointer for 50 ms, touched or focused: the router warms its page), `warmModules(loaders)` (the main sections' modules while the browser is idle, not with Save-Data), `prefetchApi(api)` (the `ctx.api` a page's `prefetch(ctx)` gets: the same calls, only warming), `pageSheet(id, href)` / `pageSheetsOff(keep)` (a page's style sheet kept switched off once loaded), `setStale(on)` (`<html data-stale>`) |
 | [`units.js`](units.js) | The person's units applied to the API's metric values; every number with its unit |
 | [`time.js`](time.js) | Dates and times in the car's time zone, ISO weeks, buckets, the period presets |
 | [`state.js`](state.js) | Page, car and period in the URL; the shared store; links that carry the car and period; the person's car when the URL names none (`setCarPrefs(prefs)`, `preferredCar(cars)`: main car, else last car not sold, else first pinned, else first not sold; `rememberCar(id, { sold, explicit })` saves `last_car`, debounced) |
@@ -48,6 +49,8 @@ node --test ui/shared/tests/
 | [`prices.js`](prices.js) | A place's prices by date: the price in force on a day (`priceOnDay`: a typed price wins over one from Supercharger invoices), `pricesOf`, `priceLine`, `checkPrices` and `typedBody` for `PATCH /places/{place}` `{ prices }`, and the place price editor (`openPriceEditor`: a dialog listing the prices with add, edit and remove; `setPrice`: the "Set price" shortcut, saving an unsaved spot as a place first). Each pack passes its own class names and styles `.pp-*` |
 | [`teslamate.js`](teslamate.js) | The local TeslaMate input's shared rules for every pack's Settings: Integrations section: state and error words, the drafts of the MQTT and database forms, the server's checks said first (the plain text rule, a kept password, the pin, the topic prefix), the PUT body and the changed car matches, the TLS tick's port switch (`tmTlsPort`: 1883 and 8883, only from the other default) and the Host and pin hints; and its notices for every pack's notices bar (`isTmNotice`, `tmNoticeFix`: the link to Settings: Integrations #teslamate, `TM_NOTICE_ACTION`: the link's words) |
 | [`storage.js`](storage.js) | The Storage panel's words in every pack's Settings: Server and access: `storageGroups(categories)` (GET /system/storage/detail's categories grouped by kind, largest first, each with its size, files, share of the whole and its rows largest first), `shortName(c)` ("TeslaMate import: day series" from the key; the server's label when the key is not known), `shareText(share)` ("42%", "<1%"), `STORE_GROUP`, `groupWord(g)` and `PACK_STEP` (a compaction pass's steps) |
+| [`lazy.js`](lazy.js) | `whenNear(el, mount, { margin, root, signal })`: draw a chart, map or long list below the fold only when it comes within a screen of view (IntersectionObserver), at once when it is near already, without IntersectionObserver, inside a live refresh's off-screen box and before printing; returns cancel. The block keeps its final height from the start (CSS), so nothing moves when it is drawn |
+| [`offline.js`](offline.js) | `registerServiceWorker()`: the server's service worker (`/sw.js`, its rules in `crates/web/src/sw.js`) once the first page is drawn, over HTTPS only (the dev server has none), so a return visit draws from the kept page and files; `clearServiceWorker()`: drops everything it keeps, on sign-out |
 
 ### api.js
 
@@ -57,11 +60,27 @@ items, plus `.pages()` and `.all({ max })`), `pager(path, params, { limit })` (`
 params)`, `url(path, params)`, `apiPath` (tagged template that encodes ids), `events(onEvent, { types,
 onStatus, signal })` and `reconnectEvents()`, `scope()` (a client for one page; `abort()` cancels all it
 started), `on('unauthorized' | 'network' | 'events', fn)`, `now()` (the server's clock), `invalidate(prefix)`,
-`network()`, `eventsState()`, `ApiError`, `isAbort`, `createClient(options)` (for tests).
+`network()`, `eventsState()`, `prefetch(path, params, opts)`, `staleTracker({ worker, onStale, onFresh })`,
+`clearApiCache()`, `cacheSize()`, `ApiError`, `isAbort`, `createClient(options)` (for tests).
 
 - Every call takes `{ signal }`. The same GET asked for twice while the first is under way is sent once; a
   caller that leaves only stops waiting, and the request is cancelled when every caller has left.
-- `opts.maxAgeMs` reuses a result that young (for `me`, `me/preferences`); any change drops kept results.
+- Kept answers: every JSON answer to a GET is kept in the tab's memory (not across a reload) with its `ETag`,
+  by URL, accept and headers, up to 200 answers or 4 MB (the least recently used go first), unless the server
+  marks it `Cache-Control: no-store` (paths that may carry a secret: tokens, keys, set-up, `/me`, sessions,
+  exports...). A read with a kept answer asks again with `If-None-Match`; a `304` hands the kept answer over
+  without reading a body. A change that succeeds makes every kept answer be asked again before it is reused
+  (revalidation keeps it right); signing out (`DELETE session`), a 401 and `clearApiCache()` forget them all.
+- `prefetch()` warms the answer of a read a page is about to make (low priority, shared with the same read under
+  way, never throws); the page then takes it at once for 10 s (a change or a `rows` event ends that). A read with
+  a `to_ms` close to now (a period that ends now) takes the kept answer of the same read that ended a moment
+  earlier the same way, and sends its tag.
+- `opts.stale` (a `staleTracker()`): the read takes a kept answer at once and asks for the fresh one at the same
+  time; the tracker says when the first stale answer went out and when all have their fresh one (changed or not).
+  With `worker: true` (the first page after a reload, nothing kept yet) the read asks the service worker with
+  `X-Sentry-Mate-Stale-Ok: 1`; an answer marked `X-Sentry-Mate-Stale: <age ms>` is the worker's kept one, and the
+  fresh read follows. The routers use it for a page's first reads (not the settings forms).
+- `opts.maxAgeMs` reuses a result that young (for `me`, `me/preferences`); any change asks for kept results again.
   `opts.keep` keeps an answer for later `maxAgeMs` callers without reusing an older one itself: the frame reads
   `notices` with it, and a page loaded at the same moment asks with a short `maxAgeMs` instead of sending it again.
 - Errors are `ApiError { status, code, message, fields, retryAfterMs }`; `status` 0 is no answer (`code`

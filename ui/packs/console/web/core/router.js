@@ -9,6 +9,12 @@
 //   5. calls mount(ctx); the page draws into ctx.view and calls ctx.ready() once every table and chart of
 //      its first screen has drawn, or ctx.fail(err). See core/README.md for ctx.
 // Leaving a page cancels everything it started.
+//
+// Fast page changes: a link under the pointer (or touched, or focused) gets its page ready ahead (warm():
+// the module, the car and the page's own first reads, see prefetch() in core/README.md), and once the first
+// page is drawn the main sections' modules load while the browser is idle. A page that may show kept answers
+// (not the settings forms) takes them at once for its first reads; <html data-stale> marks them until they
+// are checked, and a page whose answers changed is built again in place, like a live refresh.
 
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
@@ -21,11 +27,18 @@ import * as session from './session.js';
 import { errorBlock, loadingPage } from './states.js';
 import { showPending } from './toast.js';
 import { getMe, getPrefs, isAdmin } from './prefs.js';
+import { watchLinks, warmModules, prefetchApi, pageSheet, pageSheetsOff, setStale } from '../shared/prefetch.js';
 import { resetRows } from './keys.js';
 
 let mounted = null;
 let seq = 0;
 let first = true;
+let warmedMain = false;
+// the main sections: their modules load when the browser is idle after the first page
+const MAIN = ['car', 'drives', 'drive', 'charges', 'battery', 'statistics', 'timeline', 'fleet'];
+// pages that may show kept answers at once (marked stale until checked): not forms
+const takesStale = (id) => !pageInfo(id)?.bare && !/^(settings-|import$|sign-in$|setup$)/.test(id);
+const pageModule = (id) => import(`../pages/${id}.js`);
 
 const periodKey = (p) => (p ? JSON.stringify(p) : '');
 const routeKey = (s) => [s.page, s.car, s.drive, s.charge, periodKey(s.period)].join('|');
@@ -38,6 +51,32 @@ export const defaultZone = () => fallbackZone;
 export function startRouter() {
   state.subscribe((s) => queueMicrotask(() => onState(s)));
   state.startRouting();
+  watchLinks(warm);
+}
+
+// A link to s may be followed: load its page's module and style sheet, its car, and the first reads the page
+// asks for (the page's own prefetch(ctx), with the same ctx mount() will get), so it draws at once.
+async function warm(s) {
+  const id = s.page;
+  const info = pageInfo(id);
+  if (!info || info.bare) return;
+  const modP = pageModule(id);
+  let car = null;
+  if (s.car) {
+    // a car page may show a map: its tile settings, as core/map.js reads them
+    api.prefetch('maps/config', null, { maxAgeMs: 300000 });
+    car = await api.prefetch(api.apiPath`cars/${s.car}`, null, { maxAgeMs: 15000 });
+    if (!car) return;
+  }
+  const tz = car?.time_zone || fallbackZone;
+  const period = info.period ? resolvePeriod(s.period ?? { preset: info.period }, { now: api.now(), tz, fallback: info.period }) : null;
+  const mod = await modP;
+  if (mod.css) pageSheet(id, new URL(`../pages/${id}.css`, import.meta.url).href, { on: false });
+  if (typeof mod.prefetch !== 'function') return;
+  await mod.prefetch({
+    id, info, state: s, query: s.query, car, carId: s.car, tz, period, params: period ? periodParams(period) : {},
+    api: prefetchApi(api), me: getMe(), prefs: getPrefs(), admin: isAdmin(), prefetching: true,
+  });
 }
 
 /** Build the current page again. */
@@ -71,6 +110,7 @@ function unmountCurrent(keep = false) {
   if (!mounted) return null;
   const m = mounted;
   mounted = null;
+  m.tracker?.stop();
   m.scope.abort();
   const finish = () => {
     try { m.instance?.unmount?.(); } catch (e) { console.error(e); }
@@ -109,6 +149,7 @@ function stageView(view, finishOld) {
     const path = [];
     for (let e = document.activeElement; e && e !== view && view.contains(e); e = e.parentElement) path.unshift([...e.parentElement.children].indexOf(e));
     view.replaceChildren(...nodes);
+    setStale(false); // the page built again has checked answers only
     takeOld()?.();
     if (path.length) {
       let e = view;
@@ -135,17 +176,19 @@ function stageView(view, finishOld) {
 }
 
 // A page's API client that also counts its requests under way (a live refresh waits for them, see stageView).
-function counted(sc) {
+// With a tracker its reads may take kept answers at once until the page is drawn (api.staleTracker).
+function counted(sc, tracker = null) {
   let n = 0;
   const track = (p) => { n++; const off = () => { n--; }; p.then(off, off); return p; };
+  const st = (o) => (tracker?.open ? { ...o, stale: tracker } : o);
   return {
     ...sc,
     get busy() { return n; },
     get aborted() { return sc.aborted; },
-    get: (...a) => track(sc.get(...a)),
-    page: (...a) => track(sc.page(...a)),
-    list: (...a) => { const l = sc.list(...a); const all = l.all.bind(l); return Object.assign(l, { all: (...b) => track(all(...b)) }); },
-    pager: (...a) => { const pg = sc.pager(...a); const more = pg.more.bind(pg); return Object.assign(pg, { more: (...b) => track(more(...b)) }); },
+    get: (path, params, o) => track(sc.get(path, params, st(o))),
+    page: (path, params, o) => track(sc.page(path, params, st(o))),
+    list: (path, params, o) => { const l = sc.list(path, params, st(o)); const all = l.all.bind(l); return Object.assign(l, { all: (...b) => track(all(...b)) }); },
+    pager: (path, params, o) => { const pg = sc.pager(path, params, st(o)); const more = pg.more.bind(pg); return Object.assign(pg, { more: (...b) => track(more(...b)) }); },
   };
 }
 
@@ -158,32 +201,35 @@ function markWhenSettled(id, alive) {
   });
 }
 
-function pageCss(id) {
-  if (document.head.querySelector(`link[data-page-css="${id}"]`)) return Promise.resolve();
-  const link = h('link', { rel: 'stylesheet', href: new URL(`../pages/${id}.css`, import.meta.url).href, dataset: { pageCss: id } });
-  const done = new Promise((resolve, reject) => {
-    link.addEventListener('load', resolve, { once: true });
-    link.addEventListener('error', () => { link.remove(); reject(new Error(`${link.href} did not load`)); }, { once: true });
-  });
-  document.head.append(link);
-  return done;
-}
-const dropCss = (keep) => { for (const l of document.head.querySelectorAll('link[data-page-css]')) if (l.dataset.pageCss !== keep) l.remove(); };
+function pageCss(id) { return pageSheet(id, new URL(`../pages/${id}.css`, import.meta.url).href); }
+const dropCss = pageSheetsOff;
 
 async function mount(s, { keepScroll = false, live = false } = {}) {
   const my = ++seq;
   // (the clean-up of what was there is handed to the stage alone: this page's own functions must not hold it)
   let finishOld = both(dropStage(live), unmountCurrent(live));
-  if (!live) { unready(); resetRows(); }
+  if (!live) { unready(); setStale(false); resetRows(); }
   const id = s.page;
   const st = live ? stageView(frame.view(), finishOld) : null;
   finishOld = null;
   const view = st ? st.stage : frame.view();
   const shown = () => { if (st) st.commit(); };
   const info = pageInfo(id);
-  const scope = counted(api.scope());
+  // kept answers at once for the first reads (after a reload: the service worker's); the page is built again
+  // in place when one of them changed
+  const tracker = !live && takesStale(id) ? api.staleTracker({
+    worker: first,
+    onStale: () => { if (alive()) setStale(true); },
+    onFresh: ({ changed, failed }) => {
+      if (!alive() || failed) return;
+      if (!changed) setStale(false);
+      else if (rec.ctx) rec.ctx.refresh();
+      else rec.changed = true; // the page gets it once it is there
+    },
+  }) : null;
+  const scope = counted(api.scope(), tracker);
   const cleanups = [];
-  const rec = { key: routeKey(s), queryKey: queryKey(s.query), ctx: null, instance: null, mod: null, cleanups, scope };
+  const rec = { key: routeKey(s), queryKey: queryKey(s.query), ctx: null, instance: null, mod: null, cleanups, scope, tracker };
   mounted = rec;
   const alive = () => mounted === rec && my === seq;
 
@@ -256,7 +302,7 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   let mod;
   try {
     mod = await loadPage(async () => {
-      const m = await import(`../pages/${id}.js`);
+      const m = await pageModule(id);
       if (m.css) await pageCss(id);
       return m;
     });
@@ -282,6 +328,8 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
     events(types, f) { return scope.events((ev) => { if (alive()) f(ev); }, { types: [].concat(types) }); },
     ready() {
       if (!alive()) return;
+      tracker?.close();
+      if (!warmedMain) { warmedMain = true; warmModules(MAIN.map((m) => () => pageModule(m))); }
       shownOnce = true;
       if (refreshAsked) { refreshAsked = false; setTimeout(() => ctx.refresh(), 0); }
       st?.settle(() => scope.busy);
@@ -310,6 +358,7 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
     },
   };
   rec.ctx = ctx;
+  if (rec.changed) ctx.refresh();
   docTitle(typeof mod.title === 'function' ? mod.title(ctx) : info.name, car?.name);
 
   try {

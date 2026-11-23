@@ -38,22 +38,38 @@ const placeCell = (p, cover) => {
   return href ? h('a', { class: 'tl-place-link', href, title: p.place ? `Edit the place ${p.place.name}` : 'Make this spot a place' }, placeLabel(p)) : h('span', null, placeLabel(p));
 };
 
+// The list filters of the address, and the API query they make.
+const filtersOf = (q) => ({
+  places: q.places || '', place_side: q.place_side || 'any', q: q.q || '', min_distance: q.min_distance || '', min_speed: q.min_speed || '',
+  source: filterWord(q.source), flags: q.flags || '', efficiency: q.efficiency || 'plain', exclude: q.exclude || '',
+});
+const listParams = (ctx, f) => ({
+  ...ctx.params,
+  places: f.places || null, place_side: f.places ? f.place_side : null, q: f.q || null,
+  min_distance_km: f.min_distance ? +toMetric(+f.min_distance, 'distance').toFixed(3) : null,
+  min_avg_kph: f.min_speed ? +toMetric(+f.min_speed, 'speed').toFixed(2) : null,
+  source: f.source || null, flags: f.flags || null, efficiency: f.efficiency,
+});
+const placesRead = (ctx) => ctx.api.list('places', { car: ctx.car.id, sort: 'drives' }, { limit: 200 }).all();
+const patternsRead = (ctx, f) => ctx.api.get(`cars/${encodeURIComponent(ctx.car.id)}/drive-stats`, { ...ctx.params, exclude_places: f.exclude || null });
+// the first reads, warmed ahead when a link here is under the pointer: the places, and the list's first page
+// as the table asks for it (newest first: the start column's sort)
+export function prefetch(ctx) {
+  const path = `cars/${encodeURIComponent(ctx.car.id)}/drives`;
+  const f = filtersOf(ctx.query);
+  return Promise.all([
+    placesRead(ctx), ctx.api.pager(path, { ...listParams(ctx, f), sort: 'start', dir: 'desc' }, { limit: 25 }).more(),
+    ctx.api.pager(path, { ...ctx.params, flags: 'gap,in_progress' }, { limit: 20 }).more(), patternsRead(ctx, f), // drives with missing data, the patterns
+  ]);
+}
+
 export async function mount(ctx) {
   const { car, tz, period } = ctx;
   const cid = car.id;
   const path = `cars/${encodeURIComponent(cid)}/drives`;
   const q = ctx.query;
-  const f = {
-    places: q.places || '', place_side: q.place_side || 'any', q: q.q || '', min_distance: q.min_distance || '', min_speed: q.min_speed || '',
-    source: filterWord(q.source), flags: q.flags || '', efficiency: q.efficiency || 'plain', exclude: q.exclude || '',
-  };
-  const apiParams = () => ({
-    ...ctx.params,
-    places: f.places || null, place_side: f.places ? f.place_side : null, q: f.q || null,
-    min_distance_km: f.min_distance ? +toMetric(+f.min_distance, 'distance').toFixed(3) : null,
-    min_avg_kph: f.min_speed ? +toMetric(+f.min_speed, 'speed').toFixed(2) : null,
-    source: f.source || null, flags: f.flags || null, efficiency: f.efficiency,
-  });
+  const f = filtersOf(q);
+  const apiParams = () => listParams(ctx, f);
 
   const root = h('div', { class: 'drives-page', cover: ['shots.drives', 'shots.drive-stats'] });
   replace(ctx.view, root);
@@ -61,7 +77,7 @@ export async function mount(ctx) {
   // places for the filters: every page of /places, with this car's counts, the places it drove to or from
   // most first. Places it never drove to are left out (a filter on them finds nothing), unless one is chosen.
   let allPlaces = [];
-  try { allPlaces = await ctx.api.list('places', { car: cid, sort: 'drives' }, { limit: 200 }).all(); } catch { allPlaces = []; }
+  try { allPlaces = await placesRead(ctx); } catch { allPlaces = []; }
   if (!ctx.alive()) return;
   const chosen = new Set([...(f.places ? f.places.split(',') : []), ...(f.exclude ? f.exclude.split(',') : [])]);
   const places = allPlaces.filter((p) => (p.counts?.drives || 0) > 0 || chosen.has(p.id));
@@ -338,7 +354,7 @@ export async function mount(ctx) {
   const patterns = h('section', { class: 'panel panel-pad patterns', 'aria-label': 'Driving patterns', cover: 'ds.empty_states' });
   async function loadPatterns() {
     let s;
-    try { s = await ctx.api.get(`cars/${encodeURIComponent(cid)}/drive-stats`, { ...ctx.params, exclude_places: f.exclude || null }); } catch (e) { replace(patterns, h('p', { class: 'note' }, `Patterns could not be loaded: ${e.message}`)); return; }
+    try { s = await patternsRead(ctx, f); } catch (e) { replace(patterns, h('p', { class: 'note' }, `Patterns could not be loaded: ${e.message}`)); return; }
     if (!ctx.alive()) return;
     // per_day is every day of the car from the later of the period start and its first data to the end (or now)
     const days = s.per_day || [];

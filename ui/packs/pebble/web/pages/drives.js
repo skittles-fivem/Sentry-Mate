@@ -64,20 +64,37 @@ export function driveTile(d, ctx, { w = 2, cover = null, links = true } = {}) {
   return t;
 }
 
+// The filters of the address, the list's query and the page's first reads; prefetch() warms the same ones when
+// a link here is under the pointer.
+const filtersOf = (Q) => ({
+  place: Q.place || '', side: ['start', 'end'].includes(Q.side) ? Q.side : 'any', q: Q.q || '',
+  min: Number(Q.min) > 0 ? Number(Q.min) : null, speed: Number(Q.speed) > 0 ? Number(Q.speed) : null,
+  eff: Q.eff === 'hill_corrected' ? 'hill_corrected' : 'plain', exclude: Q.exclude ? String(Q.exclude).split(',') : [],
+  source: sourceParam(Q.source),
+});
+const listQuery = (ctx, f) => ({
+  ...ctx.params, places: f.place || undefined, place_side: f.place ? f.side : undefined, q: f.q || undefined,
+  min_distance_km: f.min || undefined, min_avg_kph: f.speed || undefined, efficiency: f.eff, source: f.source || undefined,
+});
+const placesRead = (ctx) => ctx.api.list('places', { sort: 'name' }).all({ max: 300 });
+// [the list's first page, the patterns, drives with missing data]
+const loadReads = (ctx, f, p) => [
+  ctx.api.pager(api.apiPath`cars/${ctx.car.id}/drives`, p, { limit: 30 }),
+  ctx.api.get(api.apiPath`cars/${ctx.car.id}/drive-stats`, { ...ctx.params, exclude_places: f.exclude.length ? f.exclude.join(',') : undefined }),
+  ctx.api.page(api.apiPath`cars/${ctx.car.id}/drives`, { ...ctx.params, flags: 'gap,in_progress' }, { limit: 6 }),
+];
+export function prefetch(ctx) {
+  const f = filtersOf(ctx.query);
+  const [pager, ...rest] = loadReads(ctx, f, listQuery(ctx, f));
+  return Promise.all([placesRead(ctx), pager.more(), ...rest]);
+}
+
 export async function mount(ctx) {
   const car = ctx.car, tz = ctx.tz;
   const Q = ctx.query;
-  const f = {
-    place: Q.place || '', side: ['start', 'end'].includes(Q.side) ? Q.side : 'any', q: Q.q || '',
-    min: Number(Q.min) > 0 ? Number(Q.min) : null, speed: Number(Q.speed) > 0 ? Number(Q.speed) : null,
-    eff: Q.eff === 'hill_corrected' ? 'hill_corrected' : 'plain', exclude: Q.exclude ? String(Q.exclude).split(',') : [],
-    source: sourceParam(Q.source),
-  };
-  const placesP = ctx.api.list('places', { sort: 'name' }).all({ max: 300 }).catch(() => []);
-  const params = () => ({
-    ...ctx.params, places: f.place || undefined, place_side: f.place ? f.side : undefined, q: f.q || undefined,
-    min_distance_km: f.min || undefined, min_avg_kph: f.speed || undefined, efficiency: f.eff, source: f.source || undefined,
-  });
+  const f = filtersOf(Q);
+  const placesP = placesRead(ctx).catch(() => []);
+  const params = () => listQuery(ctx, f);
   const write = () => ctx.setQuery({ place: f.place || null, side: f.place && f.side !== 'any' ? f.side : null, q: f.q || null,
     min: f.min, speed: f.speed, eff: f.eff === 'plain' ? null : f.eff, exclude: f.exclude.length ? f.exclude.join(',') : null, source: f.source || null });
 
@@ -153,12 +170,9 @@ export async function mount(ctx) {
 
   async function load() {
     const p = params();
-    pager = ctx.api.pager(api.apiPath`cars/${car.id}/drives`, p, { limit: 30 });
-    const [, stats, inc] = await Promise.all([
-      pager.more(),
-      ctx.api.get(api.apiPath`cars/${car.id}/drive-stats`, { ...ctx.params, exclude_places: f.exclude.length ? f.exclude.join(',') : undefined }).catch(() => null),
-      ctx.api.page(api.apiPath`cars/${car.id}/drives`, { ...ctx.params, flags: 'gap,in_progress' }, { limit: 6 }).catch(() => null),
-    ]);
+    const [pg, statsP, incP] = loadReads(ctx, f, p);
+    pager = pg;
+    const [, stats, inc] = await Promise.all([pager.more(), statsP.catch(() => null), incP.catch(() => null)]);
     if (!ctx.alive()) return;
     const sm = pager.last?.summary || {};
     sumBox.replaceChildren(

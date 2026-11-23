@@ -204,6 +204,25 @@ class StaticAndHeaders(ServerCase):
         # the virtual clock, for the pages' "now" (api.js reads it)
         self.assertLess(abs(int(hd["x-sentry-mate-now-ms"]) - self.server.app.clock.now()), 5000)
 
+    def test_tags_and_304_as_the_real_server(self):
+        # a JSON GET: a weak tag, private no-cache, and 304 without a body when If-None-Match names it
+        st, hd, raw = self.c.request("GET", "/api/v1/cars/c1")
+        self.assertEqual(st, 200)
+        tag = hd["etag"]
+        self.assertTrue(tag.startswith('W/"'), tag)
+        self.assertEqual(hd["cache-control"], "private, no-cache")
+        st, hd, raw = self.c.request("GET", "/api/v1/cars/c1", headers={"If-None-Match": tag})
+        self.assertEqual((st, raw), (304, b""))
+        self.assertEqual(hd["etag"], tag)
+        st, hd, raw = self.c.request("GET", "/api/v1/cars/c1", headers={"If-None-Match": 'W/"other"'})
+        self.assertEqual(st, 200)
+        self.assertTrue(raw)
+        # a path that may carry a secret, an error and a change: no-store, untagged
+        for method, path in (("GET", "/api/v1/me"), ("GET", "/api/v1/nothing")):
+            st, hd, _ = self.c.request(method, path)
+            self.assertEqual(hd["cache-control"], "no-store", path)
+            self.assertNotIn("etag", hd, path)
+
     def test_health(self):
         st, hd, raw = self.server.client().request("GET", "/health")
         self.assertEqual((st, raw), (200, b""))

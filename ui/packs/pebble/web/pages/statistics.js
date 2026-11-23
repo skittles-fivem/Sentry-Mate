@@ -46,10 +46,21 @@ function costSub(r) {
   return r.charges_priced != null && r.charges && r.charges_priced < r.charges && totalOf(r).length ? `${n0(r.charges_priced)} of ${n0(r.charges)} priced` : null;
 }
 
+// The page's reads; prefetch() warms the first ones with the same calls when a link here is under the pointer.
+const groupOf = (ctx) => (GROUPS.some(([g]) => g === ctx.query.group) ? ctx.query.group : (ctx.period.preset === 'all' || ctx.period.preset === 'year' ? 'month' : 'week'));
+const statsPathOf = (car) => (car ? api.apiPath`cars/${car.id}/statistics` : 'statistics');
+const rowsRead = (ctx, group) => ctx.api.list(statsPathOf(ctx.car), { ...ctx.params, period: group, cars: ctx.car ? undefined : 'all' }, { limit: 500 }).all({ max: 5000 });
+const mileageRead = (ctx, group) => ctx.api.get(api.apiPath`cars/${ctx.car.id}/mileage`, { ...ctx.params, group: group === 'all' ? 'month' : group });
+const longestRead = (ctx) => ctx.api.page(api.apiPath`cars/${ctx.car.id}/drives`, { ...ctx.params, sort: 'distance', dir: 'desc' }, { limit: 1 });
+export function prefetch(ctx) {
+  const group = groupOf(ctx);
+  return Promise.all([rowsRead(ctx, group), ctx.car ? mileageRead(ctx, group) : null, ctx.car ? longestRead(ctx) : null, ctx.car ? ctx.api.get(api.apiPath`cars/${ctx.car.id}/totals`) : null]);
+}
+
 export async function mount(ctx) {
   const car = ctx.car, tz = ctx.tz, period = ctx.period;
-  const statsPath = car ? api.apiPath`cars/${car.id}/statistics` : 'statistics';
-  let group = GROUPS.some(([g]) => g === ctx.query.group) ? ctx.query.group : (period.preset === 'all' || period.preset === 'year' ? 'month' : 'week');
+  const statsPath = statsPathOf(car);
+  let group = groupOf(ctx);
 
   const seg = segmented({ name: 'One tile per', value: group, cover: 'statistics.control.time_range', options: GROUPS,
     onchange: (g) => { group = g; ctx.setQuery({ group: g }); load(); } });
@@ -154,8 +165,7 @@ export async function mount(ctx) {
   const clear = (t) => t.querySelectorAll(':scope > :not(.tile-head)').forEach((e) => e.remove());
   async function paintOdometer() {
     if (!car) { clear(odoT); odoT.append(h('div', { cover: 'mi.chart.odometer' }, note('Open one car to see its odometer over time.'))); return; }
-    const g = group === 'all' ? 'month' : group;
-    const m = await ctx.api.get(api.apiPath`cars/${car.id}/mileage`, { ...ctx.params, group: g }).catch(() => null);
+    const m = await mileageRead(ctx, group).catch(() => null);
     if (!ctx.alive()) return;
     const old = odoT.querySelector('.plot');
     const oldH = old ? odoT.offsetHeight : 0;
@@ -178,7 +188,7 @@ export async function mount(ctx) {
     const items = [];
     const odoRows = rows.filter((r) => r.distance_odometer_km);
     const [longest, totals] = await Promise.all([
-      car ? ctx.api.page(api.apiPath`cars/${car.id}/drives`, { ...ctx.params, sort: 'distance', dir: 'desc' }, { limit: 1 }).then((p) => p.items?.[0]).catch(() => null) : null,
+      car ? longestRead(ctx).then((p) => p.items?.[0]).catch(() => null) : null,
       car && odoRows.length ? ctx.api.get(api.apiPath`cars/${car.id}/totals`).catch(() => null) : null,
     ]);
     if (!ctx.alive()) return;
@@ -209,7 +219,7 @@ export async function mount(ctx) {
   }
 
   async function load() {
-    const rows = await ctx.api.list(statsPath, { ...ctx.params, period: group, cars: car ? undefined : 'all' }, { limit: 500 }).all({ max: 5000 }).catch((e) => ({ error: e }));
+    const rows = await rowsRead(ctx, group).catch((e) => ({ error: e }));
     if (!ctx.alive()) return;
     if (rows.error) { ctx.fail(rows.error, { retry: () => load() }); return; }
     paintTotals(rows);

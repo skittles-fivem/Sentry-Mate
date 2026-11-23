@@ -268,17 +268,23 @@ function payloadParts(p) {
 
 /* ================================================================== the page */
 
+// The first reads; prefetch() warms the same ones when a link here is under the pointer.
+const firstReads = (ctx, admin) => [
+  admin ? ctx.api.get('settings/mqtt') : Promise.resolve(null),
+  ctx.api.get('settings/mqtt/status'),
+  admin ? ctx.api.get('network') : Promise.resolve(null),
+  ctx.api.get('cars', { sort: 'name', limit: 100 }),
+];
+export function prefetch(ctx) { return Promise.all(firstReads(ctx, ctx.me && ctx.me.role === 'admin')); }
+
 export async function mount(ctx) {
   const admin = ctx.me && ctx.me.role === 'admin';
   // the Connections overview (admins): its first read starts with the page's own
   const overview = admin ? overviewPart(ctx) : null;
   const overviewLoad = overview ? overview.load() : Promise.resolve();
-  const [cfgFirst, statusFirst, netFirst, carsFirst] = await Promise.all([
-    admin ? ctx.api.get('settings/mqtt') : Promise.resolve(null),
-    ctx.api.get('settings/mqtt/status').catch((e) => { if (api.isAbort(e)) throw e; return null; }),
-    admin ? ctx.api.get('network').catch((e) => { if (api.isAbort(e)) throw e; return null; }) : Promise.resolve(null),
-    ctx.api.get('cars', { sort: 'name', limit: 100 }),
-  ]);
+  const r = firstReads(ctx, admin);
+  const orNull = (e) => { if (api.isAbort(e)) throw e; return null; };
+  const [cfgFirst, statusFirst, netFirst, carsFirst] = await Promise.all([r[0], r[1].catch(orNull), r[2].catch(orNull), r[3]]);
   let cfg = cfgFirst;
   let status = statusFirst;
   let net = netFirst;
