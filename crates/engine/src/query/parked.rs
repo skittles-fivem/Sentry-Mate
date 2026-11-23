@@ -527,6 +527,31 @@ fn stamp(days: &[(u64, u64)], lo: u64, hi: u64) -> u64 {
     h.finish()
 }
 
+/// Runs `f` over `jobs` split into stretches in order, one to each thread the machine has (a stretch of neighbours
+/// shares its days of samples; a few jobs run here), and gives what each stretch gave, in order.
+pub(crate) fn spread<J: Sync, V: Send>(jobs: &[J], f: impl Fn(&[J]) -> QResult<Vec<V>> + Sync) -> QResult<Vec<V>> {
+    /// Jobs a thread takes at least (fewer are not worth one).
+    const MIN_PER_THREAD: usize = 4;
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let n = cores.min(jobs.len() / MIN_PER_THREAD).max(1);
+    if n == 1 {
+        return f(jobs);
+    }
+    let per = jobs.len().div_ceil(n);
+    std::thread::scope(|s| {
+        let f = &f;
+        let hs: Vec<_> = jobs.chunks(per).map(|part| s.spawn(move || f(part))).collect();
+        let mut out = Vec::with_capacity(jobs.len());
+        for h in hs {
+            out.extend(
+                h.join()
+                    .map_err(|_| super::QueryError::Engine(crate::Error::Damaged("reading samples failed".into())))??,
+            );
+        }
+        Ok(out)
+    })
+}
+
 /// [`Sampler::at`] for each of `asks` (time, from, to), kept across answers while the days it reads stay the same.
 fn nearest(e: &Engine, car: CarId, asks: &[(u64, u64, u64)]) -> QResult<HashMap<(u64, u64, u64), Row>> {
     let mut out = HashMap::with_capacity(asks.len());
@@ -551,11 +576,10 @@ fn nearest(e: &Engine, car: CarId, asks: &[(u64, u64, u64)]) -> QResult<HashMap<
     if todo.is_empty() {
         return Ok(out);
     }
-    let mut s = Sampler::new(e, car, Source::Live, &END_FIELDS)?;
-    let mut found = Vec::with_capacity(todo.len());
-    for k in todo {
-        found.push((k, s.at(k.0, k.1, k.2)?));
-    }
+    let found = spread(&todo, |part| {
+        let mut s = Sampler::new(e, car, Source::Live, &END_FIELDS)?;
+        part.iter().map(|k| Ok((*k, s.at(k.0, k.1, k.2)?))).collect()
+    })?;
     let mut m = lock(&kept.near);
     if m.len() >= KEPT_MAX {
         m.clear();
@@ -598,8 +622,8 @@ fn read_all_whole(e: &Engine, car: CarId, spells: &mut [Spell]) -> QResult<()> {
             }
         }
     }
-    for k in todo {
-        let w = read_whole(e, car, k.0, k.1)?;
+    let found = spread(&todo, |part| part.iter().map(|k| Ok((*k, read_whole(e, car, k.0, k.1)?))).collect())?;
+    for (k, w) in found {
         got.insert(k, w);
         let mut m = lock(&kept.whole);
         if m.len() >= KEPT_MAX {

@@ -224,17 +224,46 @@ fn filled_charge(e: &Engine, car: CarId, ch: &Charge, fill: &super::gapfill::Gap
     if ch.source != Source::Live || !fill.is_on() {
         return fill_one(ch, fill);
     }
-    let kept = e.memo(car, "charges-filled", crate::memo::On::Imported, fill.key(), || {
-        Ok::<_, QueryError>(FillKept::default())
-    })?;
-    let lock = || kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let kept = fill_kept(e, car, fill)?;
     let key = crate::memo::key(ch);
-    if let Some(v) = lock().get(&key) {
+    if let Some(v) = lock_kept(&kept).get(&key) {
         return Ok(v.clone());
     }
+    let v = match fill_done(e, car, ch, fill)? {
+        (Some(v), _) => v,
+        (None, stamp) => make_fill(e, car, ch, fill, stamp)?,
+    };
+    keep_fill(&kept, key, v.clone());
+    Ok(v)
+}
+
+fn fill_kept(e: &Engine, car: CarId, fill: &super::gapfill::Gaps) -> QResult<Arc<FillKept>> {
+    e.memo(car, "charges-filled", crate::memo::On::Imported, fill.key(), || Ok::<_, QueryError>(FillKept::default()))
+}
+
+fn lock_kept(kept: &FillKept) -> std::sync::MutexGuard<'_, std::collections::HashMap<u64, FilledCharge>> {
+    kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn keep_fill(kept: &FillKept, key: u64, v: FilledCharge) {
+    let mut m = lock_kept(kept);
+    if m.len() >= FILL_KEPT {
+        m.clear();
+    }
+    m.insert(key, v);
+}
+
+/// A charge's fill kept across restarts, if what it was made from is the same; and the stamp of that.
+fn fill_done(
+    e: &Engine,
+    car: CarId,
+    ch: &Charge,
+    fill: &super::gapfill::Gaps,
+) -> QResult<(Option<FilledCharge>, String)> {
     let stamp = fill_stamp(e, car, ch, fill)?;
-    let db_key = format!("car/{car}/charge/{}", ch.id);
-    let done = records::kept::<FillDone>(e.db(), FILL_NS, &db_key)?.filter(|d| d.stamp == stamp).and_then(|d| {
+    // (one that cannot be read is made again)
+    let done = records::kept::<FillDone>(e.db(), FILL_NS, &fill_db_key(car, ch)).ok().flatten();
+    let done = done.filter(|d| d.stamp == stamp).and_then(|d| {
         let words: Option<Vec<_>> = d
             .filled
             .iter()
@@ -242,22 +271,62 @@ fn filled_charge(e: &Engine, car: CarId, ch: &Charge, fill: &super::gapfill::Gap
             .collect();
         Some(Arc::new((d.charge, super::gapfill::Filled(words?))))
     });
-    let v = match done {
-        Some(v) => v,
-        None => {
-            let v = fill_one(ch, fill)?;
-            let filled = v.1.0.iter().map(|(w, site)| ((*w).to_string(), *site)).collect();
-            // (a fill that cannot be kept, as on a full disk, is made again next time)
-            let _ = records::put(e.db(), FILL_NS, &db_key, &FillDone { stamp, charge: v.0.clone(), filled });
-            v
-        }
-    };
-    let mut m = lock();
-    if m.len() >= FILL_KEPT {
-        m.clear();
-    }
-    m.insert(key, v.clone());
+    Ok((done, stamp))
+}
+
+fn fill_db_key(car: CarId, ch: &Charge) -> String {
+    format!("car/{car}/charge/{}", ch.id)
+}
+
+/// Fills a charge and keeps the fill across restarts under `stamp`.
+fn make_fill(e: &Engine, car: CarId, ch: &Charge, fill: &super::gapfill::Gaps, stamp: String) -> QResult<FilledCharge> {
+    let v = fill_one(ch, fill)?;
+    let filled = v.1.0.iter().map(|(w, site)| ((*w).to_string(), *site)).collect();
+    // (a fill that cannot be kept, as on a full disk, is made again next time)
+    let _ = records::put(e.db(), FILL_NS, &fill_db_key(car, ch), &FillDone { stamp, charge: v.0.clone(), filled });
     Ok(v)
+}
+
+/// Makes ready the fills of the live charges of `car` starting in `[a, b)` that are not kept in memory: those kept
+/// across restarts are taken, the rest are filled on as many threads as the machine has (each with its own days of
+/// import samples, a stretch of neighbouring charges each), so that the pass over the rows that follows finds them
+/// all kept.
+pub(crate) fn prefill(e: &Engine, car: CarId, a: u64, b: u64, fill: &super::gapfill::Gaps) -> QResult<()> {
+    if !fill.is_on() || a >= b {
+        return Ok(());
+    }
+    let kept = fill_kept(e, car, fill)?;
+    let mut todo: Vec<(u64, Charge, String)> = Vec::new();
+    let mut q = db::Query::between(a, b).limit(db::MAX_PAGE).oldest_first();
+    q.source = Some(Source::Live);
+    loop {
+        let page = e.db().list::<Charge>(car, &q)?;
+        for ch in page.items {
+            if ch.source != Source::Live || ch.start_ms < a || ch.start_ms >= b {
+                continue;
+            }
+            let key = crate::memo::key(&ch);
+            if lock_kept(&kept).contains_key(&key) {
+                continue;
+            }
+            match fill_done(e, car, &ch, fill)? {
+                (Some(v), _) => keep_fill(&kept, key, v),
+                (None, stamp) => todo.push((key, ch, stamp)),
+            }
+        }
+        match page.next {
+            Some(c) => q.after = Some(c),
+            None => break,
+        }
+    }
+    super::parked::spread(&todo, |part| {
+        let fill = super::gapfill::Gaps::new(e, car, None)?;
+        for (key, ch, stamp) in part {
+            keep_fill(&kept, *key, make_fill(e, car, ch, &fill, stamp.clone())?);
+        }
+        Ok(Vec::<()>::new())
+    })?;
+    Ok(())
 }
 
 fn fill_one(ch: &Charge, fill: &super::gapfill::Gaps) -> QResult<FilledCharge> {
@@ -701,6 +770,7 @@ fn each_view(
         let x = ctx(e, &c)?;
         let shown = Shown::new(e, car, flt.source)?;
         let fill = super::gapfill::Gaps::new(e, car, flt.source)?;
+        prefill(e, car, a, b, &fill)?;
         let mut win = HoleWindow::default();
         let mut go = true;
         each::<Charge>(e, car, a, b, flt.source, &shown, newest_first, |ch| {
