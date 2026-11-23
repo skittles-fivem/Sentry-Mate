@@ -35,7 +35,8 @@ export function applyPrefs(p) {
 
 /** Read the account and its preferences; rejects with the ApiError (401 when nobody is signed in). */
 export async function loadSession() {
-  const [m, p] = await Promise.all([api.get('me'), api.get('me/preferences', null, { maxAgeMs: 0 })]);
+  // /me is kept: the map's tile settings (shared/maptiles.js) read it too
+  const [m, p] = await Promise.all([api.get('me', null, { keep: true }), api.get('me/preferences', null, { maxAgeMs: 0 })]);
   me = m;
   applyPrefs(p);
   return { me, prefs };
