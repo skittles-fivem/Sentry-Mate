@@ -767,6 +767,19 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .run-out { margin-top: var(--g); }
 .out-box { margin: var(--g) 0 0; }
 .out-box .code-out { margin-block: var(--g2); }
+/* the full rebuild (core/fullrebuild.js): a box of fixed size, every line there from the start, one line each */
+.hl-full { margin-top: var(--g); }
+.fr > .note + .note { margin-top: var(--g2); }
+.fr-acts { flex-wrap: nowrap; align-items: center; margin-top: var(--g); }
+.fr-acts > .btn { flex: none; }
+.fr-said { flex: 1 1 0; min-width: 0; line-height: var(--ctl); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fr-box { margin-top: var(--g); white-space: normal; }
+.fr-line { display: grid; grid-template-columns: calc(var(--a2) * 13) minmax(0, 1fr); gap: var(--g); height: var(--lh2); }
+.fr-line--bar { display: flex; gap: 0; white-space: pre; overflow: hidden; }
+.fr-k { color: var(--muted); white-space: nowrap; overflow: hidden; }
+.fr-v, .fr-err { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fr-errs { margin-top: var(--g2); padding-top: var(--g2); border-top: 1px solid var(--rule); height: calc(var(--lh2) * 3 + var(--g2) + 1px); }
+.fr-err { height: var(--lh2); color: var(--warn); }
 .ln-list { display: flex; flex-direction: column; border-top: 1px solid var(--rule); }
 .ln-list > li { display: grid; grid-template-columns: calc(var(--a2) * 16) minmax(0, 1fr); gap: var(--g); padding-block: var(--g2); border-bottom: 1px solid var(--rule); }
 .ln-list .tag { line-height: var(--lh2); }

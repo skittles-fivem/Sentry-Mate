@@ -63,6 +63,7 @@ const BY_GROUP = {
     'car-changed': 'Changed a car',
     'car-settings-changed': 'Changed car settings',
     'car-rebuild': 'Rebuilt a car’s history',
+    'car-full-rebuild': 'Ran a full rebuild',
     'car-overlap': 'Found overlapping data',
     'can-logs-missing': 'Found CAN logs missing on the server',
     'charge-cost-entered': 'Entered a charge cost',
