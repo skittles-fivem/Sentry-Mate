@@ -128,7 +128,28 @@ a pass with nothing to do takes well under a second.
 
 ## Looked at and left
 
-- **The xz logs themselves.** Signed originals: kept as uploaded.
+- **The xz logs themselves.** Signed originals: kept as uploaded, and the app keeps writing
+  `canbridge-columns-xz/2`. Re-packing them was measured (2026-11-23; nothing stored was changed) on the three
+  weeks of made-up logs at their real size: 1,598 logs, 54,905,160 bytes of xz, 361,324,326 bytes unpacked.
+
+  | the unpacked body, packed again (lossless) | against the xz as uploaded | time |
+  |---|---:|---|
+  | xz -9e, each log (80 logs) | -0.07 % | |
+  | brotli 9, each log (232 logs of 3 days) | +7.8 % (larger) | 3.8 s for 52 MB |
+  | brotli 11, each log | -5.6 % | 35 s for 52 MB (0.15 s a log) |
+  | brotli 11, a day's logs as one stream | -8.2 % | 57 s for 52 MB |
+  | xz -9e, a day's logs as one stream (7 days) | 4.8 % under xz -9e of each log | 8 s a day |
+
+  At best about 78 MB a car a year of about 955 MB, for some two hours of one core, and only by packing a day as
+  one stream (which the app, signing a log a minute, can't do; and a single log is then read by unpacking its
+  day). The day packs save about 167 MB a year on the same logs and keep every signed byte. A real log measured
+  before says the same (`rust-can-logger.md`, "Compression, measured on this log": the body at xz -9e is 0.04 %
+  smaller; the frame times are 58 % of it and each carries about 9 bits of real jitter; per-message time deltas
+  and XOR'd payloads came out larger). **Decided: no re-encoding of stored logs and no new upload format.** A
+  stored log could only be re-encoded without losing its signature if the server made the app's xz bytes again
+  bit for bit, which needs the app's exact encoder and a real log to try (liblzma at no preset gave back any of
+  80 made-up logs, but those are the generator's, not the app's). What would make logs smaller is what the app
+  records, which is the app's to decide and not lossless.
 - **zstd with trained dictionaries.** The db is pure Rust by choice (brotli was picked by measuring, see
   `crates/db`'s docs); the pure-Rust zstd encoders compress worse than brotli. What a dictionary would give small
   records (shared structure paid once) the bundles and day packs give by compressing them together.
