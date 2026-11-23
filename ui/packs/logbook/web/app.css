@@ -134,9 +134,9 @@ body { container: page / inline-size; }
 *, ::before, ::after { line-height: var(--LH); }
 /* what a closed <details> holds is not laid out at all (as browsers used to do), so nothing measures it */
 details:not([open]) > :not(summary) { display: none !important; }
-/* The page's scrollbar keeps its place whether the page is longer than the window or not, so a page that
-   grows or shrinks (a list loaded, a tooltip near the bottom) never moves sideways. */
-html { background: var(--paper); -webkit-text-size-adjust: 100%; scrollbar-gutter: stable; }
+/* The page always has its scrollbar (empty while the page fits the window), so a page that grows or shrinks (a list
+   loaded, a tooltip near the bottom) never moves sideways when one would come or go. */
+html { background: var(--paper); -webkit-text-size-adjust: 100%; overflow-y: scroll; }
 /* Keyboard focus never lands under the sticky masthead. */
 :root { --clear-top: calc(var(--masthead-h) + round(1rem, var(--e))); }
 :where(.main, .colophon, .notices) * { scroll-margin-top: var(--clear-top); }
