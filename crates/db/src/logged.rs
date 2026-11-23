@@ -74,8 +74,10 @@ pub(crate) struct Elsewhere {
     pub label: String,
     pub generation: u64,
     pub level: u8,
-    /// The compressed state: what follows the generation and level in a snapshot file.
-    pub body: Vec<u8>,
+    /// The state, unpacked: what a snapshot file holds compressed after its generation and level.
+    pub plain: Vec<u8>,
+    /// About what it takes where it is, compressed.
+    pub bytes: u64,
 }
 
 /// Looks for a snapshot kept elsewhere (`Ok(None)`: there is none).
@@ -138,9 +140,8 @@ impl<S: Logged> LoggedFile<S> {
             }
             None => match elsewhere()? {
                 Some(e) => {
-                    let plain = codec::decompress(&e.body).map_err(|err| err.in_file(&e.label))?;
-                    let state = S::decode_state(&plain).map_err(|err| err.in_file(&e.label))?;
-                    (state, e.generation, (SNAP_HEAD + e.body.len()) as u64, plain.len() as u64, e.level)
+                    let state = S::decode_state(&e.plain).map_err(|err| err.in_file(&e.label))?;
+                    (state, e.generation, SNAP_HEAD as u64 + e.bytes, e.plain.len() as u64, e.level)
                 }
                 None => (S::empty(), 0, 0, 0, LEVEL_WARM),
             },

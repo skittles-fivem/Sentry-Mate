@@ -79,6 +79,15 @@
 //! tiny. Measured on a made-up year of history of one car (8 series, 4.9 million points, every day settled): 1,843
 //! files of 11.6 MB taking 16.9 MB on disk become 187 files taking 12.1 MB; the pass took 0.2 s in 34 steps, none
 //! holding the car's lock longer than 18 ms; reading every point takes the same 3 s before and after.
+//!
+//! Finished days are then made as small as they go (2026-11-23, docs/plans/storage.md, "The stored series"): the
+//! small columns ([`segment::encode_small`]: scales for values converted from miles and °F, a scaled column that
+//! keeps its few odd values beside it, floats with any digits as integer deltas of their bits; brotli 11), and a
+//! month's days packed together in runs of about 2 MiB of columns, each run one stream. Every day written again is
+//! read back from the disk and compared with its points bit for bit before it replaces anything. Measured on a
+//! made-up history of one car (9 series, 5.1 million points): 11.7 MB of series become 1.8 MB; a first pass takes
+//! about 2 minutes of one core in steps that hold the car's lock for up to 3 s; reading every point takes 3.5 s
+//! (4.0 s before).
 
 mod backup;
 mod cars;
@@ -170,6 +179,10 @@ pub struct Options {
     /// quick columns at `cold`), for tests of folders they left.
     pub small_columns: bool,
     pub small: Level,
+    /// The days of a finished month are packed together, in runs of about this many bytes of columns compressed as
+    /// one ([`segment`], "pack"): a day is then read by unpacking its run. 0: each day by itself (and with
+    /// `small_columns` off).
+    pub group_bytes: usize,
 }
 
 impl Default for Options {
@@ -184,6 +197,7 @@ impl Default for Options {
             cold: Level::COLD,
             small_columns: true,
             small: Level::SMALL,
+            group_bytes: 2 << 20,
         }
     }
 }
@@ -225,7 +239,7 @@ pub struct SeriesCompacted {
     pub days_folded: usize,
     /// Days taken into (or dropped from) their month's pack.
     pub days_packed: usize,
-    /// Days of a month's pack written again in the small form.
+    /// Days of a month's pack written again in the small form, or together with their neighbours.
     pub days_recoded: usize,
     /// There is more to do: call again.
     pub more: bool,
@@ -778,8 +792,9 @@ impl Db {
             let first = segment::write(&db.inner.ctx, dir, stream, from_ms, to_ms, points)?;
             if let Some(day) = first {
                 let m = data.meta(&db.inner.ctx, dir)?;
-                if day * DAY_MS < m.settled_before_ms {
-                    m.settled_before_ms = day * DAY_MS;
+                if day * DAY_MS < m.settled_before_ms.max(m.small_before_ms) {
+                    m.settled_before_ms = m.settled_before_ms.min(day * DAY_MS);
+                    m.small_before_ms = m.small_before_ms.min(day * DAY_MS);
                     data.save_meta(&db.inner.ctx, dir)?;
                 }
             }

@@ -10,10 +10,13 @@
 //! A write replaces every point of a window. A window that covers whole days writes those days' snapshots
 //! directly; a part of a day is appended to its journal without reading the day (cheap enough to do every minute
 //! for every car), and the journal is folded into the day's snapshot once it is about as big as the snapshot.
-//! Folding while writing uses the warm level; [`crate::Db::settle`] packs finished days at the cold level, the smallest.
+//! Folding while writing uses the warm level and the quick columns; [`crate::Db::settle`] writes finished days in
+//! their smallest form (the small columns of [`columns`], compressed hardest), each read back and compared with the
+//! day bit for bit before it takes the old snapshot's place.
 //!
 //! A day's snapshot is its own file or, once its month is over and [`crate::Db::compact_series`] has passed, an
-//! entry of the month's pack: the same bytes, and a snapshot file always wins over the pack's entry for its day.
+//! entry of the month's pack (first the same bytes, then packed together with its neighbours: see [`pack`]), and a
+//! snapshot file always wins over the pack's entry for its day.
 //! Everything that looks at a day's snapshot looks in both places, the file first. A data folder without packs
 //! reads as it always did; nothing but that pass makes them. A day written after it was packed gets a journal and
 //! then a snapshot file again (the next pass takes it back into the pack); a day emptied while the pack holds it
@@ -440,10 +443,16 @@ fn snapshot_plain(ctx: &Ctx, dir: &Path, day: u64, files: &Files) -> Result<Opti
     }
     // the pack as it is now (written again since its index was read, it may have the day anew, or no more)
     let Some((e, opened)) = pack::find(ctx, dir, day)? else { return Ok(None) };
-    let plain = codec::decompress(opened.body(&e)?).map_err(|err| err.in_file(&label))?;
-    let p: crate::plain::Plain = Arc::new((e.generation, zeroize::Zeroizing::new(plain)));
-    ctx.plain.put(&key, e.stamp(), p.clone());
-    Ok(Some((p, label)))
+    // (a day packed together with others is unpacked with them: they are all kept, a page reads them next)
+    let mut found = None;
+    for (d, plain) in opened.unpack(&e)? {
+        let p: crate::plain::Plain = Arc::new((d.generation, zeroize::Zeroizing::new(plain)));
+        ctx.plain.put(&pack::plain_key(dir, d.day), d.stamp(), p.clone());
+        if d.day == day {
+            found = Some(p);
+        }
+    }
+    Ok(found.map(|p| (p, label)))
 }
 
 /// A day with a journal, read whole (snapshot and journal) and kept in the same cache as an unpacked snapshot would
@@ -626,7 +635,7 @@ pub(crate) fn days<P: Point>(ctx: &Ctx, car_dir: &Path, source: Stream) -> Resul
         let size = |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len());
         let snap = match std::fs::metadata(&f.snap) {
             Ok(m) => m.len(),
-            Err(_) => packs.entry(day)?.map_or(0, |e| e.len),
+            Err(_) => packs.entry(day)?.map_or(0, |e| e.bytes),
         };
         out.push(DayInfo { date: day_name(day), start_ms: day * DAY_MS, bytes: snap + size(&f.log) });
     }
@@ -692,32 +701,38 @@ pub(crate) fn bytes(car_dir: &Path) -> Result<u64> {
 }
 
 /// Settles a day (nothing left in its journal, its snapshot at the level finished days are kept at: the small form,
-/// see [`columns::encode_small`]). Returns whether there was anything to do.
-fn settle_day<P: Point>(ctx: &Ctx, dir: &Path, day: u64) -> Result<bool> {
+/// see [`columns::encode_small`]). Returns `None` when there was nothing to do, else about how many bytes of columns
+/// the day was.
+fn settle_day<P: Point>(ctx: &Ctx, dir: &Path, day: u64) -> Result<Option<u64>> {
     let files = day_files(dir, day);
     if !files.log.exists() {
         match snapshot_head(ctx, &files, Kind::Segment)? {
             // folded while it was written, emptied, or written cold before there was the small form
             Some((_, level, _)) if level < DayLog::<P>::settled_level(ctx) => {}
             // settled already, or in the month's pack
-            Some(_) | None => return Ok(false),
+            Some(_) | None => return Ok(None),
         }
     }
     let mut lf = load_day::<P>(ctx, dir, day)?;
     if lf.settled(ctx) {
-        return Ok(false);
+        return Ok(None);
     }
+    let bytes = lf.weight();
     if !lf.state.points.is_empty() {
         lf.fold(ctx, Which::Cold)?;
-        return Ok(true);
+        return Ok(Some(bytes));
     }
     if !lf.has_journal() && files.snap.exists() && pack::entry(ctx, dir, day)?.is_some() {
         // emptied, and its empty snapshot is there until the pack drops the day
-        return Ok(false);
+        return Ok(None);
     }
     empty_day(ctx, dir, day, lf)?;
-    Ok(true)
+    Ok(Some(bytes))
 }
+
+/// Bytes of columns folded per call of [`compact`] that also packs, about: a second or so of work under the car's
+/// lock (a day's columns are written several ways and compressed hard).
+const FOLD_PLAIN_MAX: u64 = 1 << 20;
 
 /// The two kinds of series, for the passes over every series of a car.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -780,11 +795,12 @@ pub(crate) struct Compacted {
     pub known_cold_before: u64,
 }
 
-/// One pass over every series of a car, at most about `max_days` of work, oldest first: settles the days that ended
+/// One pass over every series of a car, at most about `max_days` of work (and, when `packing`, about a second or two
+/// of it: [`FOLD_PLAIN_MAX`], [`pack::group_month`]), oldest first: settles the days that ended
 /// before `before` (see [`todo`]), then, when `packing` and with all of them settled, packs the months that ended
 /// before it ([`pack::pack_month`]; whole months, so the last one may go past `max_days`), and last writes the
-/// packs' days that are not yet in the small form again ([`pack::recode_month`]: days packed by a server before
-/// there was one). Under the car's lock.
+/// packs' days again that are not yet as small as they go: together with their neighbours ([`pack::group_month`]),
+/// or each in the small form ([`pack::recode_month`], when days are not packed together). Under the car's lock.
 pub(crate) fn compact(
     ctx: &Ctx,
     car_dir: &Path,
@@ -803,8 +819,10 @@ pub(crate) fn compact(
     }
     fold.sort_unstable_by_key(|f| (f.0, f.1));
     // looking at a snapshot's head is little work next to folding a day, but not none
+    let mut folded_bytes = 0;
     for (looked, (day, series, stream)) in fold.into_iter().enumerate() {
-        if out.folded >= max_days || looked >= max_days.saturating_mul(64) {
+        let long = packing && folded_bytes >= FOLD_PLAIN_MAX;
+        if out.folded >= max_days || looked >= max_days.saturating_mul(64) || long {
             out.more = true;
             out.known_cold_before = known_cold_before.max(day * DAY_MS);
             return Ok(out);
@@ -814,7 +832,8 @@ pub(crate) fn compact(
             Series::Samples => settle_day::<Sample>(ctx, &dir, day)?,
             Series::Charge => settle_day::<ChargePoint>(ctx, &dir, day)?,
         };
-        out.folded += usize::from(did);
+        out.folded += usize::from(did.is_some());
+        folded_bytes += did.unwrap_or(0);
     }
     out.known_cold_before = known_cold_before.max(before);
     if !packing {
@@ -836,6 +855,7 @@ pub(crate) fn compact(
     if !ctx.opts.small_columns {
         return Ok(out);
     }
+    let grouping = ctx.opts.group_bytes > 0;
     for (series, stream) in every_series() {
         let dir = dir_of(car_dir, series.0, stream);
         for month in listing(&dir)?.packs {
@@ -847,10 +867,18 @@ pub(crate) fn compact(
                 out.more = true;
                 return Ok(out);
             }
-            let (recoded, more) = match series.0 {
-                Series::Samples => pack::recode_month::<Sample>(ctx, &dir, month, max_days - done)?,
-                Series::Charge => pack::recode_month::<ChargePoint>(ctx, &dir, month, max_days - done)?,
+            // days not yet in the small form are first written again a few at a time, each by itself (the slow
+            // part: every column tried several ways); packing a month's days together is then one pass over them
+            let alone = !grouping || pack::below(ctx, &dir, month, LEVEL_SMALL)? > 0;
+            let (recoded, mut more) = match (series.0, alone) {
+                (Series::Samples, true) => pack::recode_month::<Sample>(ctx, &dir, month, max_days - done, grouping)?,
+                (Series::Charge, true) => {
+                    pack::recode_month::<ChargePoint>(ctx, &dir, month, max_days - done, grouping)?
+                }
+                (Series::Samples, false) => pack::group_month::<Sample>(ctx, &dir, month)?,
+                (Series::Charge, false) => pack::group_month::<ChargePoint>(ctx, &dir, month)?,
             };
+            more |= alone && grouping;
             out.recoded += recoded;
             if more {
                 out.more = true;

@@ -23,8 +23,9 @@ fn feb(day: u64) -> u64 {
 }
 
 fn quiet() -> Options {
-    // nothing folds by itself: tests decide when
-    Options { fold_min_bytes: 1 << 30, ..Options::default() }
+    // nothing folds by itself: tests decide when; and each day stays by itself in its month's pack, so a day's
+    // bytes can be followed into the pack (days packed together: tests/small.rs)
+    Options { fold_min_bytes: 1 << 30, group_bytes: 0, ..Options::default() }
 }
 
 /// A made-up charge curve: a point every 10 s from `t0`.
@@ -262,7 +263,7 @@ fn packing_changes_no_value_and_gives_back_every_snapshots_bytes() {
 #[test]
 fn a_folder_written_before_there_were_packs_reads_the_same_before_and_after_packing() {
     // written only by the paths that were there before packs: windows a minute at a time, whole days, an import
-    let mut t = test_db(Options { fold_min_bytes: 6_000, ..Options::default() });
+    let mut t = test_db(Options { fold_min_bytes: 6_000, group_bytes: 0, ..Options::default() });
     let car = t.db.create_car(new_car("Model 3", &[])).unwrap().id;
     let mut imported = Vec::new();
     for d in [0u64, 1, 2, 9, 15, 16, 40] {
@@ -334,7 +335,8 @@ fn the_stamps_of_untouched_days_stay_when_other_days_go_into_the_pack() {
     let pack = seg(&t, car, "samples.can").join("2024-02.pack");
     let file0 = std::fs::read(&pack).unwrap();
     let done = compact(&t.db, car, APR10);
-    assert_eq!((done.days_folded, done.days_packed), (1, 2));
+    // (the day with a journal, and the whole day written cold: both into the small form first)
+    assert_eq!((done.days_folded, done.days_packed), (2, 2));
     assert_ne!(std::fs::read(&pack).unwrap(), file0);
     let s2 = stamps(&t.db);
     assert_eq!(s2.len(), 9);
@@ -664,7 +666,7 @@ fn a_pack_of_another_version_or_with_a_wrong_index_is_reported() {
 
     // written by a newer Sentry Mate
     let mut newer = good.clone();
-    newer[5..7].copy_from_slice(&2u16.to_be_bytes());
+    newer[5..7].copy_from_slice(&3u16.to_be_bytes());
     put(&newer);
     t.reopen(quiet());
     for r in [
@@ -673,9 +675,10 @@ fn a_pack_of_another_version_or_with_a_wrong_index_is_reported() {
         t.db.compact_series(car, APR10, 1000).map(|_| ()),
     ] {
         match r {
-            Err(Error::Version { file, found: 2, supported }) => {
+            Err(Error::Version { file, found: 3, supported }) => {
                 assert_eq!(file, label);
-                assert_eq!(supported, db::FORMAT_VERSION);
+                // (a pack with days packed together is of the second version)
+                assert_eq!(supported, 2);
             }
             r => panic!("expected a version error, got {r:?}"),
         }

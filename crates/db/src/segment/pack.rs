@@ -14,6 +14,22 @@
 //! checked when a body is taken out; with the generation and length it also says what a day is in the pack whatever
 //! the file around it ([`crate::plain::Stamp::packed`]).
 //!
+//! **Days packed together** (version 2; a pack without any is written as version 1, as ever). A day's columns
+//! compressed by themselves start from nothing each day; a month's days compressed as one stream are a quarter to a
+//! half smaller (measured, docs/plans/storage.md). So [`group_month`] puts runs of neighbouring days together:
+//!
+//! ```text
+//! level 3   the first day of a run: its body is the run's stream, the columns of this day and of the days after it
+//!           that have level 4, one after the other, compressed as one; length and hash are the stream's
+//! level 4   another day of the run before it: no bytes of its own; length and hash are of its columns, unpacked
+//!           (the first day's columns are what is left of the stream before the others')
+//! ```
+//!
+//! A run holds about [`crate::Options::group_bytes`] of columns (2 MiB) at most, so reading one day unpacks at most
+//! that much (a few milliseconds), and the run's other days are kept unpacked with it, since a page reads them next
+//! ([`Opened::unpack`]). A run that loses a day (the day was written again, or emptied) is taken apart by
+//! [`pack_month`]: its other days stand by themselves again until [`group_month`] next passes.
+//!
 //! **A day's own snapshot always wins over the pack's entry for it**: a day written again after it was packed gets a
 //! journal (of the generation the pack keeps for it), which folds into a snapshot file of the next generation; the
 //! next pass takes that into the pack. A day emptied while a pack holds it keeps an empty snapshot file until the
@@ -28,13 +44,13 @@
 //! the pack, and the day is always in at least one of the two.
 //!
 //! **Days packed before there was the small form** (`level` 1: the quick columns, see [`super::columns`]) are written
-//! again by [`recode_month`], a few a turn: each is unpacked, its points encoded small and compressed at
-//! [`crate::Options::small`], and the pack written anew under the same rule (sealed to `<pack>.tmp`, synced, read
-//! back from disk, opened; every day written again is decoded from that copy and compared with the points the old
-//! pack gives, bit for bit, and every other day is compared byte for byte; then the rename). There is nothing to
-//! remove afterwards: a crash before the rename leaves the old pack, one after it the new. A day keeps its
-//! generation (its points are the same), and its `level` 2 says it is done, so a later pass sees it in the index
-//! and does not unpack it.
+//! again on the way, a few a turn: each is unpacked, its points encoded small, and the pack written anew under the
+//! same rule (sealed to `<pack>.tmp`, synced, read back from disk, opened; every day written again is decoded from
+//! that copy and compared with the points the old pack gives, bit for bit, a day only put together with others is
+//! compared with its columns byte for byte, and every other day with its bytes; then the rename). There is nothing
+//! to remove afterwards: a crash before the rename leaves the old pack, one after it the new. A day keeps its
+//! generation (its points are the same), and its `level` says it is done (3 or 4; 2 where days are not packed
+//! together, [`recode_month`]), so a later pass sees it in the index and does not unpack it.
 //!
 //! Indexes are kept in memory by what the pack file was when read (only the file's first chunk is opened for one),
 //! so listing a series costs a `stat` per month; the few packs opened last are kept whole (wiped when let go), since
@@ -45,7 +61,8 @@ use crate::Crash;
 use crate::codec;
 use crate::error::{Error, Result};
 use crate::file::{
-    Ctx, HEADER, Kind, Which, check_header, header, private_create, remove_if_exists, sync_dir, with_suffix,
+    Ctx, HEADER, Kind, Which, check_header, check_header_upto, header, private_create, remove_if_exists, sync_dir,
+    with_suffix,
 };
 use crate::journal::Files;
 use crate::logged::{Elsewhere, LEVEL_COLD, LEVEL_SMALL, Logged, LoggedFile, SNAP_HEAD, parse_gen_level};
@@ -108,17 +125,28 @@ impl Month {
     }
 }
 
+/// A day packed together with others (see the module docs): the first of a run, and another day of one.
+pub(crate) const LEVEL_GROUP: u8 = 3;
+pub(crate) const LEVEL_MEMBER: u8 = 4;
+/// The version of a pack that has days packed together.
+const VERSION_GROUPS: u16 = 2;
+
 /// A day in a pack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Entry {
     pub day: u64,
     pub generation: u64,
     pub level: u8,
-    /// Bytes of its body.
+    /// Bytes of its body (the first day of a run packed together: of the run's stream; another day of a run: of
+    /// its columns, unpacked).
     pub len: u64,
     pub hash: u64,
-    /// Where its body starts in the pack's plaintext.
+    /// About what the day takes in the pack (a day of a run: its share of the stream).
+    pub bytes: u64,
+    /// Where its body (or its run's stream) starts in the pack's plaintext.
     offset: usize,
+    /// A day of a run packed together: where the run's first day is among the entries, and how many days it has.
+    group: Option<(usize, usize)>,
 }
 
 impl Entry {
@@ -129,7 +157,7 @@ impl Entry {
 
     /// About what the day would take as a snapshot of its own.
     pub(crate) fn snapshot_len(&self) -> u64 {
-        self.len + SNAP_HEAD as u64
+        self.bytes + SNAP_HEAD as u64
     }
 }
 
@@ -160,7 +188,7 @@ fn damaged(label: &str, why: impl Into<String>) -> Error {
 /// Reads an index from a pack's plaintext (or its start, when `whole` is false). With the whole pack the bodies'
 /// lengths must add up to the file's.
 fn parse_index(plain: &[u8], month: Month, label: &str, whole: bool) -> Result<Index> {
-    let b = check_header(plain, Kind::SegmentPack, label)?;
+    let (version, b) = check_header_upto(plain, Kind::SegmentPack, label, VERSION_GROUPS)?;
     let count = usize::from(*b.first().ok_or_else(|| damaged(label, "pack index cut short"))?);
     if count > MAX_DAYS {
         return Err(damaged(label, "more days than a month has"));
@@ -168,20 +196,62 @@ fn parse_index(plain: &[u8], month: Month, label: &str, whole: bool) -> Result<I
     let table = b.get(1..1 + count * ENTRY).ok_or_else(|| damaged(label, "pack index cut short"))?;
     let mut offset = HEADER + 1 + count * ENTRY;
     let mut entries: Vec<Entry> = Vec::with_capacity(count);
-    for e in table.as_chunks::<ENTRY>().0 {
+    for (i, e) in table.as_chunks::<ENTRY>().0.iter().enumerate() {
         let u32_at = |i: usize| u64::from(u32::from_be_bytes([e[i], e[i + 1], e[i + 2], e[i + 3]]));
         let u64_at = |i: usize| {
             let mut v = [0u8; 8];
             v.copy_from_slice(&e[i..i + 8]);
             u64::from_be_bytes(v)
         };
-        let entry =
-            Entry { day: u32_at(0), generation: u64_at(4), level: e[12], len: u32_at(13), hash: u64_at(17), offset };
+        let len = u32_at(13);
+        let mut entry = Entry {
+            day: u32_at(0),
+            generation: u64_at(4),
+            level: e[12],
+            len,
+            hash: u64_at(17),
+            bytes: len,
+            offset,
+            group: None,
+        };
         if !(month.first..month.end).contains(&entry.day) || entries.last().is_some_and(|l| l.day >= entry.day) {
             return Err(damaged(label, "its days are not this month's, in order"));
         }
-        offset += entry.len as usize;
+        if entry.level >= LEVEL_GROUP && version < VERSION_GROUPS {
+            return Err(damaged(label, "days packed together in a pack that has none"));
+        }
+        match entry.level {
+            LEVEL_GROUP => {
+                entry.group = Some((i, 1));
+                offset += len as usize;
+            }
+            LEVEL_MEMBER => {
+                let first = entries
+                    .last()
+                    .and_then(|l| l.group)
+                    .map(|g| g.0)
+                    .ok_or_else(|| damaged(label, "a day packed together with none before it"))?;
+                entry.group = Some((first, 1));
+                entry.offset = entries[first].offset;
+            }
+            _ => offset += len as usize,
+        }
         entries.push(entry);
+    }
+    // each run's days know how many they are, and share its bytes
+    let mut i = 0;
+    while i < entries.len() {
+        let Some((first, _)) = entries[i].group else {
+            i += 1;
+            continue;
+        };
+        let days = entries[first..].iter().take_while(|e| e.group.map(|g| g.0) == Some(first)).count();
+        let share = entries[first].len / days as u64;
+        for e in &mut entries[first..first + days] {
+            e.group = Some((first, days));
+            e.bytes = share;
+        }
+        i = first + days;
     }
     if whole && offset != plain.len() {
         return Err(damaged(label, "its days' lengths don't add up to its own"));
@@ -189,27 +259,65 @@ fn parse_index(plain: &[u8], month: Month, label: &str, whole: bool) -> Result<I
     Ok(Index { entries })
 }
 
-/// A pack's plaintext for these days (day, generation, level, body), given in day order.
-fn build(parts: &[(u64, u64, u8, &[u8])]) -> Result<Zeroizing<Vec<u8>>> {
+/// A day to put in a pack.
+struct Part<'a> {
+    day: u64,
+    generation: u64,
+    level: u8,
+    /// Its body (the first day of a run packed together: the run's stream); none for another day of a run.
+    body: &'a [u8],
+    /// Another day of a run: the length and hash of its columns, unpacked.
+    member: Option<(u64, u64)>,
+}
+
+impl<'a> Part<'a> {
+    /// A day with a body of its own.
+    fn alone(day: u64, generation: u64, level: u8, body: &'a [u8]) -> Part<'a> {
+        Part { day, generation, level, body, member: None }
+    }
+
+    /// Another day of the run before it.
+    fn member(day: u64, generation: u64, len: u64, hash: u64) -> Part<'a> {
+        Part { day, generation, level: LEVEL_MEMBER, body: &[], member: Some((len, hash)) }
+    }
+
+    /// A day as a pack has it, with its body there (none for another day of a run).
+    fn kept(e: &Entry, body: &'a [u8]) -> Part<'a> {
+        match e.level {
+            LEVEL_MEMBER => Part::member(e.day, e.generation, e.len, e.hash),
+            _ => Part::alone(e.day, e.generation, e.level, body),
+        }
+    }
+}
+
+/// A pack's plaintext for these days, given in day order.
+fn build(parts: &[Part<'_>]) -> Result<Zeroizing<Vec<u8>>> {
     if parts.len() > MAX_DAYS {
         return Err(Error::invalid("a pack holds one month"));
     }
-    let bodies: usize = parts.iter().map(|p| p.3.len()).sum();
+    let bodies: usize = parts.iter().map(|p| p.body.len()).sum();
     let mut b = Zeroizing::new(Vec::with_capacity(INDEX_MAX + bodies));
     b.extend_from_slice(&header(Kind::SegmentPack));
+    if parts.iter().any(|p| p.level >= LEVEL_GROUP) {
+        b[5..7].copy_from_slice(&VERSION_GROUPS.to_be_bytes());
+    }
     b.push(parts.len() as u8);
-    for (day, generation, level, body) in parts {
-        let (Ok(day), Ok(len)) = (u32::try_from(*day), u32::try_from(body.len())) else {
+    for p in parts {
+        if (p.level == LEVEL_MEMBER) != p.member.is_some() || (p.member.is_some() && !p.body.is_empty()) {
+            return Err(Error::invalid("a day of a run packed with a body of its own"));
+        }
+        let (len, hash) = p.member.unwrap_or_else(|| (p.body.len() as u64, content_hash(p.body)));
+        let (Ok(day), Ok(len)) = (u32::try_from(p.day), u32::try_from(len)) else {
             return Err(Error::invalid("a day too large to pack"));
         };
         b.extend_from_slice(&day.to_be_bytes());
-        b.extend_from_slice(&generation.to_be_bytes());
-        b.push(*level);
+        b.extend_from_slice(&p.generation.to_be_bytes());
+        b.push(p.level);
         b.extend_from_slice(&len.to_be_bytes());
-        b.extend_from_slice(&content_hash(body).to_be_bytes());
+        b.extend_from_slice(&hash.to_be_bytes());
     }
-    for (_, _, _, body) in parts {
-        b.extend_from_slice(body);
+    for p in parts {
+        b.extend_from_slice(p.body);
     }
     Ok(b)
 }
@@ -227,18 +335,63 @@ impl Opened {
         Ok(Opened { index, label: label.to_string(), plain })
     }
 
-    /// A day's body as it is in the pack (not checked against its hash).
+    /// A day's body as it is in the pack (not checked against its hash); nothing for a day that has none of its own.
     fn raw(&self, e: &Entry) -> &[u8] {
-        self.plain.get(e.offset..e.offset + e.len as usize).unwrap_or(&[])
+        match e.level {
+            LEVEL_MEMBER => &[],
+            _ => self.plain.get(e.offset..e.offset + e.len as usize).unwrap_or(&[]),
+        }
     }
 
-    /// A day's body, checked against its hash.
+    /// A day's body (the first day of a run packed together: the run's stream), checked against its hash.
     pub(crate) fn body(&self, e: &Entry) -> Result<&[u8]> {
         let b = self.raw(e);
-        if b.len() as u64 != e.len || content_hash(b) != e.hash {
+        if e.level == LEVEL_MEMBER || b.len() as u64 != e.len || content_hash(b) != e.hash {
             return Err(damaged(&self.label, format!("the day {} in it is not what its index says", day_name(e.day))));
         }
         Ok(b)
+    }
+
+    /// The days packed together with a day (itself among them, in day order); a day by itself: only that day.
+    fn run(&self, e: &Entry) -> Vec<Entry> {
+        match e.group {
+            Some((first, days)) => {
+                self.index.entries.get(first..first + days).map(<[Entry]>::to_vec).unwrap_or_default()
+            }
+            None => vec![*e],
+        }
+    }
+
+    /// A day's columns unpacked, and those of the days packed together with it, in day order.
+    pub(crate) fn unpack(&self, e: &Entry) -> Result<Vec<(Entry, Vec<u8>)>> {
+        let run = self.run(e);
+        let Some(first) = run.first() else {
+            return Err(damaged(&self.label, format!("the day {} in it is in no run", day_name(e.day))));
+        };
+        let mut all = codec::decompress(self.body(first)?).map_err(|err| err.in_file(&self.label))?;
+        if run.len() == 1 {
+            return Ok(vec![(*first, all)]);
+        }
+        // the first day's columns are what the others leave
+        let others: u64 = run[1..].iter().map(|d| d.len).sum();
+        let Some(first_len) = (all.len() as u64).checked_sub(others) else {
+            let why = format!("the days packed with {} are not as long as its index says", day_name(first.day));
+            return Err(damaged(&self.label, why));
+        };
+        let mut out = Vec::with_capacity(run.len());
+        for d in run.iter().rev() {
+            let len = if d.day == first.day { first_len } else { d.len } as usize;
+            let plain = all.split_off(all.len() - len);
+            out.push((*d, plain));
+        }
+        out.reverse();
+        Ok(out)
+    }
+
+    /// One day's columns, unpacked.
+    fn unpack_day(&self, e: &Entry) -> Result<Vec<u8>> {
+        let found = self.unpack(e)?.into_iter().find(|(d, _)| d.day == e.day).map(|(_, plain)| plain);
+        found.ok_or_else(|| damaged(&self.label, format!("the day {} in it is in no run", day_name(e.day))))
     }
 }
 
@@ -400,8 +553,8 @@ pub(crate) fn plain_key(dir: &Path, day: u64) -> PathBuf {
 /// A packed day as a snapshot kept elsewhere, for [`LoggedFile::load_or`].
 pub(crate) fn elsewhere(ctx: &Ctx, dir: &Path, day: u64) -> Result<Option<Elsewhere>> {
     let Some((e, opened)) = find(ctx, dir, day)? else { return Ok(None) };
-    let body = opened.body(&e)?.to_vec();
-    Ok(Some(Elsewhere { label: opened.label.clone(), generation: e.generation, level: e.level, body }))
+    let plain = opened.unpack_day(&e)?;
+    Ok(Some(Elsewhere { label: opened.label.clone(), generation: e.generation, level: e.level, plain, bytes: e.bytes }))
 }
 
 /// A day's own snapshot file, read whole.
@@ -428,8 +581,12 @@ impl Loose {
 enum From {
     /// Its own snapshot file, taken in.
     Loose(Files, Loose),
-    /// The pack before.
+    /// The pack before: a day by itself, or the first day of a run packed together that stays whole (its stream).
     Pack(Entry),
+    /// The pack before: another day of a run that stays whole.
+    Member(Entry),
+    /// The pack before: a day of a run that is taken apart, by itself again (its columns, and them compressed).
+    Apart { generation: u64, plain: Vec<u8>, body: Vec<u8> },
 }
 
 /// Packs a month of a series (see the module docs): the days' own cold snapshots without a journal go into the
@@ -476,7 +633,10 @@ pub(crate) fn pack_month<P: Point>(ctx: &Ctx, dir: &Path, month: Month) -> Resul
     for (day, _, loose) in &taken {
         same &= match (old_entry(*day), &old) {
             (Some(e), Some(o)) => {
-                e.generation == loose.generation && e.level == loose.level && o.raw(&e) == loose.body()
+                e.group.is_none()
+                    && e.generation == loose.generation
+                    && e.level == loose.level
+                    && o.raw(&e) == loose.body()
             }
             (Some(_), None) | (None, Some(_)) | (None, None) => false,
         };
@@ -488,7 +648,34 @@ pub(crate) fn pack_month<P: Point>(ctx: &Ctx, dir: &Path, month: Month) -> Resul
         let mut days: Vec<(u64, From)> = Vec::new();
         if let Some(o) = &old {
             let replaced = |day: u64| taken.iter().any(|t| t.0 == day) || emptied_days.contains(&day);
-            days.extend(o.index.entries.iter().filter(|e| !replaced(e.day)).map(|e| (e.day, From::Pack(*e))));
+            // a run packed together stays whole unless a day comes or goes inside it; then each of its days
+            // stands by itself again
+            let changed = |run: &[Entry]| match (run.first(), run.last()) {
+                (Some(a), Some(b)) => {
+                    let inside = |day: u64| (a.day..=b.day).contains(&day);
+                    taken.iter().any(|t| inside(t.0)) || emptied_days.iter().any(|d| inside(*d))
+                }
+                _ => true,
+            };
+            let mut apart: HashMap<u64, Vec<u8>> = HashMap::new();
+            for e in o.index.entries.iter().filter(|e| !replaced(e.day)) {
+                let from = match e.group {
+                    None => From::Pack(*e),
+                    Some(_) if !changed(&o.run(e)) => match e.level {
+                        LEVEL_MEMBER => From::Member(*e),
+                        _ => From::Pack(*e),
+                    },
+                    Some(_) => {
+                        if !apart.contains_key(&e.day) {
+                            apart.extend(o.unpack(e)?.into_iter().map(|(d, plain)| (d.day, plain)));
+                        }
+                        let plain = apart.remove(&e.day).unwrap_or_default();
+                        let body = codec::compress(&plain, ctx.opts.small)?;
+                        From::Apart { generation: e.generation, plain, body }
+                    }
+                };
+                days.push((e.day, from));
+            }
         }
         days.extend(taken.into_iter().map(|(day, files, loose)| (day, From::Loose(files, loose))));
         days.sort_unstable_by_key(|d| d.0);
@@ -502,7 +689,7 @@ pub(crate) fn pack_month<P: Point>(ctx: &Ctx, dir: &Path, month: Month) -> Resul
         ctx.packs.forget(&file);
         loose_files.extend(days.into_iter().filter_map(|(_, from)| match from {
             From::Loose(files, _) => Some(files.snap),
-            From::Pack(_) => None,
+            From::Pack(_) | From::Member(_) | From::Apart { .. } => None,
         }));
     } else {
         loose_files.extend(taken.into_iter().map(|(_, files, _)| files.snap));
@@ -530,19 +717,21 @@ fn write_checked(
         match (from, old) {
             (From::Loose(_, loose), _) => Ok(loose.body().to_vec()),
             (From::Pack(e), Some(o)) => Ok(o.body(e)?.to_vec()),
-            (From::Pack(_), None) => Err(Error::invalid("a day from a pack that isn't there")),
+            (From::Member(_), Some(_)) => Ok(Vec::new()),
+            (From::Apart { body, .. }, _) => Ok(body.clone()),
+            (From::Pack(_) | From::Member(_), None) => Err(Error::invalid("a day from a pack that isn't there")),
         }
-    };
-    let head_of = |from: &From| match from {
-        From::Loose(_, loose) => (loose.generation, loose.level),
-        From::Pack(e) => (e.generation, e.level),
     };
     {
         let bodies = days.iter().map(|(_, from)| body_of(from)).collect::<Result<Vec<_>>>()?;
-        let parts: Vec<(u64, u64, u8, &[u8])> = days
+        let parts: Vec<Part<'_>> = days
             .iter()
             .zip(&bodies)
-            .map(|((day, from), body)| (*day, head_of(from).0, head_of(from).1, body.as_slice()))
+            .map(|((day, from), body)| match from {
+                From::Loose(_, loose) => Part::alone(*day, loose.generation, loose.level, body),
+                From::Pack(e) | From::Member(e) => Part::kept(e, body),
+                From::Apart { generation, .. } => Part::alone(*day, *generation, LEVEL_SMALL, body),
+            })
             .collect();
         let sealed = ctx.vault.seal(label, &build(&parts)?)?;
         let mut f = private_create(tmp)?;
@@ -561,17 +750,25 @@ fn write_checked(
             return Err(damaged(label, "its days are not the ones packed; nothing was removed"));
         }
         for (e, (day, from)) in new.index.entries.iter().zip(days) {
-            let packed = new.body(e).map_err(|_| wrong(*day))?;
             let ok = e.day == *day
                 && match from {
                     From::Loose(files, _) => {
                         // the day's snapshot, read from disk again
                         let again = Loose::read(ctx, files)?.ok_or_else(|| wrong(*day))?;
-                        (e.generation, e.level) == (again.generation, again.level) && packed == again.body()
+                        (e.generation, e.level) == (again.generation, again.level)
+                            && new.body(e).is_ok_and(|packed| packed == again.body())
                     }
                     From::Pack(was) => {
                         (e.generation, e.level) == (was.generation, was.level)
-                            && old.is_some_and(|o| o.body(was).is_ok_and(|b| b == packed))
+                            && old
+                                .is_some_and(|o| o.body(was).is_ok_and(|b| new.body(e).is_ok_and(|packed| b == packed)))
+                    }
+                    From::Member(was) => {
+                        (e.generation, e.level, e.len, e.hash) == (was.generation, was.level, was.len, was.hash)
+                    }
+                    From::Apart { generation, plain, .. } => {
+                        (e.generation, e.level) == (*generation, LEVEL_SMALL)
+                            && new.body(e).is_ok_and(|b| codec::decompress(b).is_ok_and(|p| p == *plain))
                     }
                 };
             if !ok {
@@ -590,24 +787,82 @@ fn write_checked(
     Ok(())
 }
 
-/// How many days of a month's pack are not yet in the small form (from its index alone).
+/// How many days of a month's pack are not yet as small as they go (from its index alone): not packed together
+/// with their neighbours or, where days are not packed together, not in the small form.
 pub(crate) fn stale(ctx: &Ctx, dir: &Path, month: Month) -> Result<usize> {
-    Ok(index(ctx, dir, month)?.map_or(0, |i| i.entries.iter().filter(|e| e.level < LEVEL_SMALL).count()))
+    if !ctx.opts.small_columns {
+        return Ok(0);
+    }
+    below(ctx, dir, month, if ctx.opts.group_bytes > 0 { LEVEL_GROUP } else { LEVEL_SMALL })
 }
 
-/// Unpacked bytes of days written again per call of [`recode_month`] at most (it holds the car's lock): a day of
-/// 86,400 points is about 2 MiB, some seconds of work.
-const RECODE_PLAIN_MAX: usize = 4 << 20;
+/// How many days of a month's pack are below a level (from its index alone).
+pub(crate) fn below(ctx: &Ctx, dir: &Path, month: Month, level: u8) -> Result<usize> {
+    Ok(index(ctx, dir, month)?.map_or(0, |i| i.entries.iter().filter(|e| e.level < level).count()))
+}
 
-/// Writes the days of a month's pack that are not yet in the small form again (see the module docs), oldest first,
-/// at most `max_days` of them and about [`RECODE_PLAIN_MAX`] bytes. Returns how many it wrote again and whether
-/// more are left. Under the car's lock. A pack or a day in it that doesn't read is reported with the pack's name,
-/// and the pack stays as it is.
-pub(crate) fn recode_month<P: Point>(ctx: &Ctx, dir: &Path, month: Month, max_days: usize) -> Result<(usize, bool)> {
+/// Unpacked bytes of days written again per call of [`recode_month`] or [`group_month`], about (they hold the
+/// car's lock): a second or two of work. A call always finishes the run of days it began, so it may go one run
+/// ([`crate::Options::group_bytes`]) past this.
+const RECODE_PLAIN_MAX: usize = 1 << 20;
+
+/// A pack written again in place of `file`, by the rule of the module docs: sealed to `tmp` and synced, read back
+/// from the disk and opened, `check` asked whether it is what the old pack was; then the rename. Anything that
+/// doesn't match removes `tmp` and leaves the pack as it is.
+fn replace_checked(
+    ctx: &Ctx,
+    file: &Path,
+    label: &str,
+    month: Month,
+    parts: &[Part<'_>],
+    check: &dyn Fn(&Opened) -> Result<()>,
+) -> Result<()> {
+    let tmp = with_suffix(file, ".tmp");
+    {
+        let sealed = ctx.vault.seal(label, &build(parts)?)?;
+        let mut f = private_create(&tmp)?;
+        f.write_all(&sealed)?;
+        f.sync_all()?;
+    }
+    let read_back = || -> Result<()> {
+        // what is on disk now, opened as the pack will be
+        let sealed = std::fs::read(&tmp)?;
+        let plain = ctx.vault.open_sealed(label, &sealed).map_err(|e| Error::from(e).in_file(label))?;
+        check(&Opened::parse(plain, month, label)?)
+    };
+    if let Err(e) = read_back() {
+        remove_if_exists(&tmp)?;
+        return Err(e);
+    }
+    ctx.crash_point(Crash::BeforeRename)?;
+    std::fs::rename(&tmp, file)?;
+    sync_dir(file.parent().unwrap_or(file));
+    ctx.packs.forget(file);
+    Ok(())
+}
+
+/// Whether a day a pack was written again around is in the new pack as it was in the old: its place in the index
+/// and its bytes.
+fn kept_as_it_was(new: &Opened, e: &Entry, old: &Opened, was: &Entry) -> bool {
+    (e.day, e.generation, e.level, e.len, e.hash) == (was.day, was.generation, was.level, was.len, was.hash)
+        && (e.level == LEVEL_MEMBER || old.body(was).is_ok_and(|b| new.body(e).is_ok_and(|n| n == b)))
+}
+
+/// Writes the days of a month's pack that are not yet in the small form again, each by itself (see the module
+/// docs), oldest first, at most `max_days` of them and about [`RECODE_PLAIN_MAX`] bytes. `for_now`: the days are
+/// packed together afterwards ([`group_month`]), so they are compressed lightly here. Returns how many it wrote
+/// again and whether more are left. Under the car's lock. A pack or a day in it that doesn't read is reported with
+/// the pack's name, and the pack stays as it is.
+pub(crate) fn recode_month<P: Point>(
+    ctx: &Ctx,
+    dir: &Path,
+    month: Month,
+    max_days: usize,
+    for_now: bool,
+) -> Result<(usize, bool)> {
     let file = month.file(dir);
     let label = ctx.label(&file);
-    let tmp = with_suffix(&file, ".tmp");
-    remove_if_exists(&tmp)?;
+    remove_if_exists(&with_suffix(&file, ".tmp"))?;
     let Some(plain) = ctx.read(&file)? else { return Ok((0, false)) };
     let old = Opened::parse(plain, month, &label)?;
     let stale = old.index.entries.iter().filter(|e| e.level < LEVEL_SMALL).count();
@@ -621,33 +876,24 @@ pub(crate) fn recode_month<P: Point>(ctx: &Ctx, dir: &Path, month: Month, max_da
         let body = old.body(e)?;
         let plain = codec::decompress(body).map_err(|err| err.in_file(&label))?;
         let points = DayLog::<P>::decode_state(&plain).map_err(|err| err.in_file(&label))?.points;
-        let small = codec::compress(&super::columns::encode_small(&points), ctx.opts.small)?;
+        let how = if for_now { ctx.opts.hot } else { ctx.opts.small };
+        let small = codec::compress(&super::columns::encode_small(&points), how)?;
         unpacked += plain.len();
         // a day that would not get smaller keeps its bytes, and is noted as done all the same
-        again.push((*e, points, if small.len() < body.len() { small } else { body.to_vec() }));
+        again.push((*e, points, if for_now || small.len() < body.len() { small } else { body.to_vec() }));
     }
     if again.is_empty() {
         return Ok((0, false));
     }
-    let new_body = |day: u64| again.iter().find(|a| a.0.day == day).map(|a| a.2.as_slice());
-    {
-        let mut parts: Vec<(u64, u64, u8, &[u8])> = Vec::with_capacity(old.index.entries.len());
-        for e in &old.index.entries {
-            parts.push(match new_body(e.day) {
-                Some(body) => (e.day, e.generation, LEVEL_SMALL, body),
-                None => (e.day, e.generation, e.level, old.body(e)?),
-            });
-        }
-        let sealed = ctx.vault.seal(&label, &build(&parts)?)?;
-        let mut f = private_create(&tmp)?;
-        f.write_all(&sealed)?;
-        f.sync_all()?;
+    let mut parts: Vec<Part<'_>> = Vec::with_capacity(old.index.entries.len());
+    for e in &old.index.entries {
+        parts.push(match again.iter().find(|a| a.0.day == e.day) {
+            Some((_, _, body)) => Part::alone(e.day, e.generation, LEVEL_SMALL, body),
+            None if e.level == LEVEL_MEMBER => Part::kept(e, &[]),
+            None => Part::kept(e, old.body(e)?),
+        });
     }
-    let check = || -> Result<()> {
-        // what is on disk now, opened as the pack will be
-        let sealed = std::fs::read(&tmp)?;
-        let plain = ctx.vault.open_sealed(&label, &sealed).map_err(|e| Error::from(e).in_file(&label))?;
-        let new = Opened::parse(plain, month, &label)?;
+    replace_checked(ctx, &file, &label, month, &parts, &|new: &Opened| {
         let wrong = |day: u64| {
             damaged(&label, format!("{} written again does not read back as it was; the pack was kept", day_name(day)))
         };
@@ -655,31 +901,146 @@ pub(crate) fn recode_month<P: Point>(ctx: &Ctx, dir: &Path, month: Month, max_da
             return Err(damaged(&label, "written again, its days are not the ones it had; the pack was kept"));
         }
         for (e, was) in new.index.entries.iter().zip(&old.index.entries) {
-            let body = new.body(e).map_err(|_| wrong(was.day))?;
-            let ok = (e.day, e.generation) == (was.day, was.generation)
-                && match again.iter().find(|a| a.0.day == was.day) {
-                    Some((_, points, _)) => {
-                        let read = codec::decompress(body).and_then(|plain| DayLog::<P>::decode_state(&plain));
-                        e.level == LEVEL_SMALL
-                            && read.is_ok_and(|read| super::columns::same_points(&read.points, points))
-                    }
-                    None => e.level == was.level && old.body(was).is_ok_and(|b| b == body),
-                };
+            let ok = match again.iter().find(|a| a.0.day == was.day) {
+                Some((_, points, _)) => {
+                    let read =
+                        new.body(e).and_then(codec::decompress).and_then(|plain| DayLog::<P>::decode_state(&plain));
+                    (e.day, e.generation, e.level) == (was.day, was.generation, LEVEL_SMALL)
+                        && read.is_ok_and(|read| super::columns::same_points(&read.points, points))
+                }
+                None => kept_as_it_was(new, e, &old, was),
+            };
             if !ok {
                 return Err(wrong(was.day));
             }
         }
         Ok(())
-    };
-    if let Err(e) = check() {
-        remove_if_exists(&tmp)?;
-        return Err(e);
-    }
-    ctx.crash_point(Crash::BeforeRename)?;
-    std::fs::rename(&tmp, &file)?;
-    sync_dir(dir);
-    ctx.packs.forget(&file);
+    })?;
     Ok((again.len(), again.len() < stale))
+}
+
+/// A day going into a run packed together: where it is among the old pack's entries, its columns (small), and
+/// its points if the columns were written anew for it (a day that was not yet in the small form).
+struct Grouped<P> {
+    at: usize,
+    plain: Vec<u8>,
+    points: Option<Vec<P>>,
+}
+
+/// Packs the days of a month's pack that stand by themselves together with their neighbours (see the module docs),
+/// oldest first: runs of days next to each other in the pack, each of about [`crate::Options::group_bytes`] of
+/// columns at most; a day not yet in the small form is encoded small on the way. About [`RECODE_PLAIN_MAX`] bytes a
+/// call. Returns how many days it packed together and whether more are left. Under the car's lock. A pack or a
+/// day in it that doesn't read is reported with the pack's name, and the pack stays as it is.
+pub(crate) fn group_month<P: Point>(ctx: &Ctx, dir: &Path, month: Month) -> Result<(usize, bool)> {
+    let file = month.file(dir);
+    let label = ctx.label(&file);
+    remove_if_exists(&with_suffix(&file, ".tmp"))?;
+    let Some(plain) = ctx.read(&file)? else { return Ok((0, false)) };
+    let old = Opened::parse(plain, month, &label)?;
+    let entries = &old.index.entries;
+    let stale = entries.iter().filter(|e| e.level < LEVEL_GROUP).count();
+    let mut runs: Vec<Vec<Grouped<P>>> = Vec::new();
+    let mut open: Vec<Grouped<P>> = Vec::new();
+    let (mut unpacked, mut open_bytes) = (0usize, 0usize);
+    for (at, e) in entries.iter().enumerate() {
+        if e.level >= LEVEL_GROUP {
+            // a run ends where days already packed together stand
+            if !open.is_empty() {
+                runs.push(std::mem::take(&mut open));
+            }
+            if unpacked >= RECODE_PLAIN_MAX {
+                break;
+            }
+            continue;
+        }
+        let was = codec::decompress(old.body(e)?).map_err(|err| err.in_file(&label))?;
+        let (plain, points) = match e.level < LEVEL_SMALL {
+            true => {
+                let points = DayLog::<P>::decode_state(&was).map_err(|err| err.in_file(&label))?.points;
+                (super::columns::encode_small(&points), Some(points))
+            }
+            false => (was, None),
+        };
+        if !open.is_empty() && open_bytes + plain.len() > ctx.opts.group_bytes {
+            runs.push(std::mem::take(&mut open));
+            if unpacked >= RECODE_PLAIN_MAX {
+                // (this day another time)
+                break;
+            }
+        }
+        if open.is_empty() {
+            open_bytes = 0;
+        }
+        unpacked += plain.len();
+        open_bytes += plain.len();
+        open.push(Grouped { at, plain, points });
+    }
+    if !open.is_empty() {
+        runs.push(open);
+    }
+    if runs.is_empty() {
+        return Ok((0, false));
+    }
+    let streams = runs
+        .iter()
+        .map(|run| {
+            let all: Vec<u8> = run.iter().flat_map(|d| d.plain.iter().copied()).collect();
+            codec::compress(&all, ctx.opts.small)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    // where each entry of the old pack goes: (run, place in it)
+    let place =
+        |at: usize| runs.iter().enumerate().find_map(|(r, run)| run.iter().position(|d| d.at == at).map(|i| (r, i)));
+    let mut parts: Vec<Part<'_>> = Vec::with_capacity(entries.len());
+    for (at, e) in entries.iter().enumerate() {
+        parts.push(match place(at) {
+            Some((r, 0)) => Part::alone(e.day, e.generation, LEVEL_GROUP, &streams[r]),
+            Some((r, i)) => {
+                let plain = &runs[r][i].plain;
+                Part::member(e.day, e.generation, plain.len() as u64, content_hash(plain))
+            }
+            None if e.level == LEVEL_MEMBER => Part::kept(e, &[]),
+            None => Part::kept(e, old.body(e)?),
+        });
+    }
+    replace_checked(ctx, &file, &label, month, &parts, &|new: &Opened| {
+        let wrong = |day: u64| {
+            let why =
+                format!("{} packed with its neighbours does not read back as it was; the pack was kept", day_name(day));
+            damaged(&label, why)
+        };
+        if new.index.entries.len() != entries.len() {
+            return Err(damaged(&label, "written again, its days are not the ones it had; the pack was kept"));
+        }
+        for (at, (e, was)) in new.index.entries.iter().zip(entries).enumerate() {
+            let ok = match place(at) {
+                // a run is looked at whole at its first day: every day's columns as they went in, and the points
+                // of the days encoded anew, bit for bit
+                Some((r, 0)) => {
+                    let read = new.unpack(e).map_err(|_| wrong(was.day))?;
+                    read.len() == runs[r].len()
+                        && read.iter().zip(&runs[r]).all(|((d, plain), day)| {
+                            let (old_day, points) = (&entries[day.at], &day.points);
+                            (d.day, d.generation) == (old_day.day, old_day.generation)
+                                && *plain == day.plain
+                                && points.as_ref().is_none_or(|points| {
+                                    DayLog::<P>::decode_state(plain)
+                                        .is_ok_and(|read| super::columns::same_points(&read.points, points))
+                                })
+                        })
+                }
+                Some(_) => (e.day, e.generation, e.level) == (was.day, was.generation, LEVEL_MEMBER),
+                None => kept_as_it_was(new, e, &old, was),
+            };
+            if !ok {
+                return Err(wrong(was.day));
+            }
+        }
+        Ok(())
+    })?;
+    let done: usize = runs.iter().map(Vec::len).sum();
+    Ok((done, done < stale))
 }
 
 #[cfg(test)]
@@ -706,14 +1067,15 @@ mod tests {
     fn a_pack_round_trips_and_a_wrong_one_is_told() {
         let m = Month::parse("2026-11").unwrap();
         let (a, b, c) = (vec![1u8; 300], Vec::new(), vec![7u8; 5]);
-        let parts: Vec<(u64, u64, u8, &[u8])> =
-            vec![(m.first, 3, 1, &a), (m.first + 4, 1, 1, &b), (m.end - 1, 9, 0, &c)];
+        let parts =
+            vec![Part::alone(m.first, 3, 1, &a), Part::alone(m.first + 4, 1, 1, &b), Part::alone(m.end - 1, 9, 0, &c)];
         let plain = build(&parts).unwrap();
+        assert_eq!(plain[5..7], [0, 1], "a pack without days packed together is of the first version");
         let o = Opened::parse(plain.clone(), m, "p").unwrap();
         assert_eq!(o.index.entries.len(), 3);
         for (e, p) in o.index.entries.iter().zip(&parts) {
-            assert_eq!((e.day, e.generation, e.level), (p.0, p.1, p.2));
-            assert_eq!(o.body(e).unwrap(), p.3);
+            assert_eq!((e.day, e.generation, e.level), (p.day, p.generation, p.level));
+            assert_eq!(o.body(e).unwrap(), p.body);
         }
         assert!(o.index.get(m.first + 1).is_none());
         // the start alone gives the same index
@@ -728,5 +1090,60 @@ mod tests {
         let o = Opened::parse(changed, m, "p").unwrap();
         assert!(o.body(&o.index.entries[2]).is_err());
         assert!(o.body(&o.index.entries[0]).is_ok());
+    }
+
+    #[test]
+    fn days_packed_together_come_apart_as_they_went_in() {
+        let m = Month::parse("2026-11").unwrap();
+        let days: Vec<Vec<u8>> = (0..5u8).map(|d| vec![d; 100 + usize::from(d) * 37]).collect();
+        let stream = codec::compress(&days[1..4].concat(), codec::Level::HOT).unwrap();
+        let (alone, last) = (
+            codec::compress(&days[0], codec::Level::HOT).unwrap(),
+            codec::compress(&days[4], codec::Level::HOT).unwrap(),
+        );
+        let member = |i: usize, generation| {
+            Part::member(m.first + i as u64, generation, days[i].len() as u64, content_hash(&days[i]))
+        };
+        let parts = vec![
+            Part::alone(m.first, 7, 2, &alone),
+            Part::alone(m.first + 1, 1, LEVEL_GROUP, &stream),
+            member(2, 2),
+            member(3, 3),
+            // a run of one day
+            Part::alone(m.first + 4, 4, LEVEL_GROUP, &last),
+        ];
+        let plain = build(&parts).unwrap();
+        assert_eq!(plain[5..7], [0, 2]);
+        let o = Opened::parse(plain.clone(), m, "p").unwrap();
+        for (i, e) in o.index.entries.iter().enumerate() {
+            assert_eq!(e.generation, [7, 1, 2, 3, 4][i]);
+            assert_eq!(o.unpack_day(e).unwrap(), days[i], "day {i}");
+            let together: Vec<u64> = o.unpack(e).unwrap().iter().map(|(d, _)| d.day - m.first).collect();
+            assert_eq!(together, [vec![0], vec![1, 2, 3], vec![1, 2, 3], vec![1, 2, 3], vec![4]][i]);
+        }
+        assert_eq!(o.index.entries[2].bytes, stream.len() as u64 / 3);
+        // the start alone gives the same index
+        let head = parse_index(&plain[..INDEX_MAX.min(plain.len())], m, "p", false).unwrap();
+        assert_eq!(head.entries, o.index.entries);
+        // a changed stream is told for every day of its run, and for no other
+        let mut changed = plain.clone();
+        let at = o.index.entries[1].offset + 3;
+        changed[at] ^= 1;
+        let bad = Opened::parse(changed, m, "p").unwrap();
+        for (i, e) in bad.index.entries.iter().enumerate() {
+            assert_eq!(bad.unpack_day(e).is_err(), (1..4).contains(&i), "day {i}");
+        }
+        // days packed together need the pack's second version; one of them needs a first day before it
+        let mut first_version = plain.to_vec();
+        first_version[5..7].copy_from_slice(&[0, 1]);
+        assert!(Opened::parse(Zeroizing::new(first_version), m, "p").is_err());
+        let mut later = plain.to_vec();
+        later[5..7].copy_from_slice(&[0, 3]);
+        assert!(matches!(Opened::parse(Zeroizing::new(later), m, "p"), Err(Error::Version { .. })));
+        assert!(build(&[member(2, 2)]).is_ok_and(|p| Opened::parse(p, m, "p").is_err()));
+        // lengths that ask for more than the stream holds
+        let long = vec![Part::alone(m.first + 1, 1, LEVEL_GROUP, &stream), Part::member(m.first + 2, 2, 10_000, 0)];
+        let o = Opened::parse(build(&long).unwrap(), m, "p").unwrap();
+        assert!(o.unpack_day(&o.index.entries[1]).is_err());
     }
 }
