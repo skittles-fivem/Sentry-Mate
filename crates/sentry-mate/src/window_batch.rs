@@ -206,6 +206,7 @@ async fn beside_apis(days: u32, batch: usize) {
         drive_step_s: 5,
         teslafi_days: 1,
         api_days: days,
+        tesla_days: 0,
     };
     for (k, side) in [&each, &run].into_iter().enumerate() {
         side.take(&all[..20]).await;
