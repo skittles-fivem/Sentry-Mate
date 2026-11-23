@@ -48,6 +48,7 @@ pub mod firmware;
 pub mod full;
 pub mod importer;
 pub mod invoices;
+pub mod invoice_prices;
 pub mod jobs;
 mod live_gps;
 mod pipeline;

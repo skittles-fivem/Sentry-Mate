@@ -13,7 +13,7 @@
 use super::drives::each;
 use super::system::Shown;
 use super::{Address, CarRef, List, Money, Paging, QResult, QueryError, paginate, place_ref, r};
-use crate::placing::{self, PlaceExtra, Places};
+use crate::placing::{self, DatedPrice, PlaceExtra, Places, PriceSource};
 use crate::records;
 use crate::{Engine, costs, now_ms, tz};
 use model::{CarId, Charge, Drive, Place, PlaceId, PlaceKind, PricePlan, Source};
@@ -77,7 +77,10 @@ pub struct PlaceView {
     pub lon: f64,
     pub radius_m: f64,
     pub time_zone: Option<String>,
+    /// The price in force today (a typed one, else one from invoices).
     pub price: Option<Price>,
+    /// Every dated price, oldest first.
+    pub prices: Vec<DatedPrice>,
     pub counts: Counts,
     pub last_visit_ms: Option<u64>,
     pub address: Option<Address>,
@@ -132,7 +135,7 @@ pub fn parse_days(s: &str) -> Option<Vec<u8>> {
 }
 
 /// The price a place shows: as the owner gave it, else the model's plan (an imported place).
-fn price_of(p: &Place, extra: Option<&PlaceExtra>) -> Option<Price> {
+pub(crate) fn price_of(p: &Place, extra: Option<&PlaceExtra>) -> Option<Price> {
     let plan = p.price.as_ref()?;
     if let Some(given) = extra.and_then(|x| x.price.clone()) {
         return Some(given);
@@ -158,8 +161,39 @@ fn price_of(p: &Place, extra: Option<&PlaceExtra>) -> Option<Price> {
     })
 }
 
+/// The plan charges are priced at, of a price as the API gives it (a price left out is 0: the checks see to it that
+/// no hour is left without one).
+pub fn plan_of(p: &Price) -> PricePlan {
+    PricePlan {
+        currency: p.currency.clone(),
+        // tiered prices: the first step's price stands for the place's (the steps price the charges)
+        per_kwh: p.per_kwh.or_else(|| p.tiers.as_ref().and_then(|t| t.steps.first()).map(|s| s.per_kwh)).unwrap_or(0.0),
+        rates: p
+            .rates
+            .iter()
+            .map(|rt| model::Rate {
+                name: rt.name.clone(),
+                per_kwh: rt.per_kwh.unwrap_or(0.0),
+                days: parse_days(&rt.days).unwrap_or_else(|| (0..7).collect()),
+                from: rt.from.clone(),
+                to: rt.to.clone(),
+            })
+            .collect(),
+        session_fee: p.session_fee,
+    }
+}
+
+/// Today in a place's time zone (UTC when it has none), `YYYY-MM-DD`.
+pub(crate) fn today(time_zone: Option<&str>) -> String {
+    tz::date_str(now_ms(), tz::zone(time_zone.unwrap_or("UTC")))
+}
+
+/// Most dated prices a place may have.
+pub const MAX_PRICES: usize = 50;
+
 pub(crate) fn view(p: &Place, places: &Places, counts: Counts, last: Option<u64>) -> PlaceView {
     let extra = places.extra(p.id);
+    let day = today(extra.and_then(|x| x.time_zone.as_deref()));
     PlaceView {
         id: place_ref(p.id),
         name: p.name.clone(),
@@ -168,7 +202,8 @@ pub(crate) fn view(p: &Place, places: &Places, counts: Counts, last: Option<u64>
         lon: p.lon,
         radius_m: p.radius_m,
         time_zone: extra.and_then(|x| x.time_zone.clone()),
-        price: price_of(p, extra),
+        price: places.price_on(p.id, &day).map(|d| d.price.clone()),
+        prices: places.prices(p.id).to_vec(),
         counts,
         last_visit_ms: last,
         address: extra
@@ -665,8 +700,7 @@ fn cost_pair(
         ch.position
             .as_ref()
             .and_then(|x| p.place_at(x.lat, x.lon))
-            .and_then(|pl| pl.price.as_ref())
-            .is_some_and(|pr| !pr.rates.is_empty())
+            .is_some_and(|pl| p.prices(pl.id).iter().any(|d| !d.price.rates.is_empty()))
     };
     let curve = if tou(before) || tou(after) { costs::curve_of(e, car, ch)? } else { Vec::new() };
     let now = match kept {
@@ -694,18 +728,8 @@ fn effect(
     let id_at = |p: &Places, pos: Option<&model::Position>| pos.and_then(|x| p.place_at(x.lat, x.lon)).map(|x| x.id);
     let in_focus = |id: Option<PlaceId>| id.is_some_and(|i| focus.contains(&i));
     let price_changed = |b: Option<PlaceId>, a: Option<PlaceId>| {
-        let of = |ps: &Places, i: PlaceId| {
-            ps.get(i).map(|p| {
-                let x = ps.extra(p.id);
-                (
-                    p.price.clone(),
-                    x.and_then(|x| x.per_minute),
-                    x.and_then(|x| x.price.as_ref()).and_then(|q| q.tiers.clone()),
-                )
-            })
-        };
-        let pb = b.and_then(|i| of(before, i));
-        let pa = a.and_then(|i| of(after, i));
+        let pb = b.map(|i| before.prices(i));
+        let pa = a.map(|i| after.prices(i));
         pb != pa
     };
     let now = now_ms();
@@ -807,7 +831,33 @@ pub struct Draft {
     pub radius_m: f64,
     /// `None`: the nearest known place's zone (else the car's).
     pub time_zone: Option<String>,
-    pub price: Option<Price>,
+    /// The prices an admin typed, each from its day (the invoice prices are the server's, kept beside them).
+    pub prices: Vec<DatedPrice>,
+    /// Which of `prices` the body sent as `price` (its field errors are named `price.…`; the others' `prices.N.…`).
+    pub price_at: Option<usize>,
+}
+
+impl Draft {
+    /// A draft with one price (or none), from the start: a body's `price`.
+    pub fn with_price(mut self, price: Option<Price>) -> Draft {
+        self.prices = price.into_iter().map(typed).collect();
+        self.price_at = (!self.prices.is_empty()).then_some(0);
+        self
+    }
+
+    /// The draft with a body's `prices`, when it sent them.
+    pub fn with_prices(mut self, prices: Option<Vec<DatedPrice>>) -> Draft {
+        if let Some(v) = prices {
+            self.prices = v;
+            self.price_at = None;
+        }
+        self
+    }
+}
+
+/// A typed price from the start.
+pub fn typed(price: Price) -> DatedPrice {
+    DatedPrice { from: None, source: PriceSource::Typed, price, invoice: None }
 }
 
 /// What may change in an edit (`None`: unchanged; `Some(None)` for time zone and price: none).
@@ -819,7 +869,11 @@ pub struct Patch {
     pub lon: Option<f64>,
     pub radius_m: Option<f64>,
     pub time_zone: Option<Option<String>>,
+    /// `price`: the typed price in force today replaced (one from the start when there is none), `Some(None)`
+    /// taking every typed price off.
     pub price: Option<Option<Price>>,
+    /// `prices`: the typed prices, the whole list.
+    pub prices: Option<Vec<DatedPrice>>,
 }
 
 impl Patch {
@@ -842,8 +896,32 @@ impl Patch {
         if let Some(v) = self.time_zone {
             d.time_zone = v;
         }
-        if let Some(v) = self.price {
-            d.price = v;
+        if let Some(v) = self.prices {
+            d.prices = v;
+            d.price_at = None;
+        }
+        match self.price {
+            None => {}
+            Some(None) => {
+                d.prices.clear();
+                d.price_at = None;
+            }
+            Some(Some(p)) => {
+                placing::sort_prices(&mut d.prices);
+                let day = today(d.time_zone.as_deref());
+                let at = d.prices.iter().rposition(|x| x.from.as_deref().is_none_or(|f| f <= day.as_str()));
+                let at = match at {
+                    Some(i) => {
+                        d.prices[i].price = p;
+                        i
+                    }
+                    None => {
+                        d.prices.insert(0, typed(p));
+                        0
+                    }
+                };
+                d.price_at = Some(at);
+            }
         }
     }
 
@@ -862,13 +940,18 @@ fn draft_of(p: &Place, places: &Places) -> Draft {
         lon: p.lon,
         radius_m: p.radius_m,
         time_zone: extra.and_then(|x| x.time_zone.clone()),
-        price: price_of(p, extra),
+        prices: places.prices(p.id).iter().filter(|x| x.source == PriceSource::Typed).cloned().collect(),
+        price_at: None,
     }
 }
 
-fn price_rules(p: &Price, bad: &mut BTreeMap<String, String>) {
+fn price_rules(p: &Price, pre: &str, bad: &mut BTreeMap<String, String>) {
     let mut add = |k: &str, why: &str| {
-        bad.insert(k.to_string(), why.to_string());
+        let k = match k.strip_prefix("price") {
+            Some(rest) => format!("{pre}{rest}"),
+            None => k.to_string(),
+        };
+        bad.insert(k, why.to_string());
     };
     if p.currency.len() != 3 || !p.currency.bytes().all(|b| b.is_ascii_uppercase()) {
         add("price.currency", "A currency code such as USD, CAD or EUR.");
@@ -1013,8 +1096,21 @@ pub fn check(d: &Draft) -> QResult<()> {
     if d.time_zone.as_deref().is_some_and(|z| !tz::is_zone(z)) {
         bad.insert("time_zone".into(), "Not a known time zone (for example America/Chicago).".into());
     }
-    if let Some(p) = &d.price {
-        price_rules(p, &mut bad);
+    if d.prices.len() > MAX_PRICES {
+        bad.insert("prices".into(), format!("At most {MAX_PRICES} prices."));
+    }
+    let mut days = std::collections::HashSet::new();
+    for (i, x) in d.prices.iter().enumerate() {
+        let pre = if d.price_at == Some(i) { "price".to_string() } else { format!("prices.{i}.price") };
+        price_rules(&x.price, &pre, &mut bad);
+        if let Some(f) = &x.from
+            && (f.len() != 10 || chrono::NaiveDate::parse_from_str(f, "%Y-%m-%d").is_err())
+        {
+            bad.insert(format!("prices.{i}.from"), "A date as YYYY-MM-DD, or null for from the start.".into());
+        }
+        if !days.insert(x.from.clone()) {
+            bad.insert(format!("prices.{i}.from"), "Another price starts on the same day.".into());
+        }
     }
     if bad.is_empty() { Ok(()) } else { Err(QueryError::Invalid { fields: bad }) }
 }
@@ -1028,30 +1124,25 @@ fn to_model(id: PlaceId, d: &Draft, extra: PlaceExtra) -> (Place, PlaceExtra) {
         _ => PlaceKind::Other,
     };
     let round6 = |x: f64| (x * 1e6).round() / 1e6;
-    let price = d.price.as_ref().map(|p| {
-        let mut p = p.clone();
-        for rt in &mut p.rates {
-            rt.name = rt.name.trim().to_string();
-        }
-        p
-    });
-    let plan = price.as_ref().map(|p| PricePlan {
-        currency: p.currency.clone(),
-        // tiered prices: the first step's price stands for the place's (the steps price the charges)
-        per_kwh: p.per_kwh.or_else(|| p.tiers.as_ref().and_then(|t| t.steps.first()).map(|s| s.per_kwh)).unwrap_or(0.0),
-        rates: p
-            .rates
-            .iter()
-            .map(|rt| model::Rate {
-                name: rt.name.clone(),
-                per_kwh: rt.per_kwh.unwrap_or(0.0),
-                days: parse_days(&rt.days).unwrap_or_else(|| (0..7).collect()),
-                from: rt.from.clone(),
-                to: rt.to.clone(),
-            })
-            .collect(),
-        session_fee: p.session_fee,
-    });
+    // the typed prices as sent, and the invoice prices the place has (the server's own)
+    let mut prices: Vec<DatedPrice> = d
+        .prices
+        .iter()
+        .filter(|x| x.source == PriceSource::Typed)
+        .map(|x| {
+            let mut x = x.clone();
+            for rt in &mut x.price.rates {
+                rt.name = rt.name.trim().to_string();
+            }
+            x.invoice = None;
+            x
+        })
+        .collect();
+    prices.extend(extra.prices.iter().filter(|x| x.source == PriceSource::Invoice).cloned());
+    placing::sort_prices(&mut prices);
+    // the model keeps the price in force today
+    let price = placing::price_on(&prices, &today(d.time_zone.as_deref())).map(|x| x.price.clone());
+    let plan = price.as_ref().map(plan_of);
     let place = Place {
         id,
         name: d.name.trim().to_string(),
@@ -1066,6 +1157,7 @@ fn to_model(id: PlaceId, d: &Draft, extra: PlaceExtra) -> (Place, PlaceExtra) {
         kind: (d.kind == "service").then(|| "service".to_string()),
         per_minute: price.as_ref().and_then(|p| p.per_minute),
         price,
+        prices,
         ..extra
     };
     (place, extra)
@@ -1279,6 +1371,42 @@ pub fn delete(e: &Engine, who: &Asker, id: PlaceId, version: Option<u64>) -> QRe
     Ok(Change::Done(Deleted { deleted: true, id: place_ref(id), name, effect }))
 }
 
+/// Keeps the invoice prices of the places ([`crate::invoice_prices`]): each place gets those in `want` (none when it is
+/// not there), next to its typed prices, which stay as they are. Answers the places whose invoice prices changed.
+/// Costs kept already stay put (nothing is frozen or repriced here).
+pub(crate) fn set_invoice_prices(e: &Engine, want: &HashMap<PlaceId, Vec<DatedPrice>>) -> QResult<Vec<PlaceId>> {
+    let _w = crate::lock(&WRITES);
+    let now = e.places();
+    let mut done = Vec::new();
+    for p in now.all() {
+        let have: Vec<&DatedPrice> =
+            now.prices(p.id).iter().filter(|x| x.source == PriceSource::Invoice).collect();
+        let new = want.get(&p.id).map_or(&[][..], Vec::as_slice);
+        if have.len() == new.len() && have.iter().zip(new).all(|(a, b)| *a == b) {
+            continue;
+        }
+        let mut extra = now.extra(p.id).cloned().unwrap_or_default();
+        let mut prices: Vec<DatedPrice> =
+            now.prices(p.id).iter().filter(|x| x.source == PriceSource::Typed).cloned().collect();
+        prices.extend(new.iter().cloned());
+        placing::sort_prices(&mut prices);
+        let in_force = placing::price_on(&prices, &today(extra.time_zone.as_deref())).map(|x| x.price.clone());
+        let mut place = p.clone();
+        place.price = in_force.as_ref().map(plan_of);
+        extra.per_minute = in_force.as_ref().and_then(|x| x.per_minute);
+        extra.price = in_force;
+        extra.prices = prices;
+        extra.version = extra.version.max(1) + 1;
+        e.db().update_place(place)?;
+        placing::set_extra(e.db(), p.id, Some(&extra))?;
+        done.push(p.id);
+    }
+    if !done.is_empty() {
+        changed(e, &every_car(e)?);
+    }
+    Ok(done)
+}
+
 /// What [`reprice`] did (or would do, `dry_run`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Repriced {
@@ -1411,7 +1539,7 @@ mod tests {
             lon: 2.0,
             radius_m: 100.0,
             time_zone: Some("Europe/Berlin".into()),
-            price: Some(Price {
+            prices: vec![typed(Price {
                 currency: "EUR".into(),
                 per_kwh: None,
                 per_minute: None,
@@ -1425,7 +1553,8 @@ mod tests {
                 }],
                 session_fee: None,
                 tiers: None,
-            }),
+            })],
+            price_at: Some(0),
         };
         check(&ok).unwrap();
         let bad = Draft {
@@ -1433,14 +1562,14 @@ mod tests {
             kind: "castle".into(),
             radius_m: 9.0,
             time_zone: Some("Mars/Base".into()),
-            price: Some(Price {
+            prices: vec![typed(Price {
                 currency: "eur".into(),
                 per_kwh: None,
                 per_minute: None,
                 rates: Vec::new(),
                 session_fee: None,
                 tiers: None,
-            }),
+            })],
             ..ok.clone()
         };
         let QueryError::Invalid { fields } = check(&bad).unwrap_err() else { unreachable!() };
@@ -1472,14 +1601,8 @@ mod tests {
             lon: 2.0,
             radius_m: 100.0,
             time_zone: None,
-            price: Some(Price {
-                currency: "EUR".into(),
-                per_kwh,
-                per_minute: None,
-                rates,
-                session_fee: None,
-                tiers: None,
-            }),
+            prices: vec![typed(Price { currency: "EUR".into(), per_kwh, per_minute: None, rates, session_fee: None, tiers: None })],
+            price_at: Some(0),
         };
         let weekdays = vec![
             rate("Night", "mon-fri", "22:00", "06:00", Some(0.1)),
