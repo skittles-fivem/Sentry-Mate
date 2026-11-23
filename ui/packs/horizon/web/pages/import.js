@@ -26,6 +26,7 @@ import { emptyState, errorWords } from '../core/states.js';
 import { flash } from '../core/flash.js';
 import { confirmDialog } from '../core/dialog.js';
 import { dateTime, date, time, dur, num, agoEl, DASH } from '../core/fmt.js';
+import { moveSummary, waiting, holdWhy, HOLD_ACTIONS, holdSaid, counted as nOf } from '../shared/rehome.js';
 import { srcMark } from '../core/source.js';
 
 export const id = 'import';
@@ -196,13 +197,14 @@ export async function mount(ctx) {
     return;
   }
 
-  const S = { jobs: [], cars: [], job: null, match: [], matchErr: null, overlaps: [] };
+  const S = { jobs: [], cars: [], job: null, match: [], matchErr: null, overlaps: [], holds: [], holdPick: new Map() };
   // files: the chosen File of each job file (by its index) still to send; sent: each file's offset while sending
   const up = { files: new Map(), sent: new Map(), active: false, paused: false, stop: false, failed: [], startedAt: 0, sentAt0: 0 };
 
   async function loadJobs() { S.jobs = await ctx.api.list('imports', { limit: 100 }).all({ max: 1000 }); }
+  async function loadHolds() { S.holds = (await ctx.api.get('import-holds'))?.items || []; }
   try {
-    const [, cars] = await Promise.all([loadJobs(), ctx.api.list('cars', { limit: 500 }).all({ max: 10000 })]);
+    const [, cars] = await Promise.all([loadJobs(), ctx.api.list('cars', { limit: 500 }).all({ max: 10000 }), loadHolds()]);
     S.cars = cars;
   } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }
   if (!ctx.alive()) return;
@@ -957,7 +959,7 @@ export async function mount(ctx) {
   }
   const stamp = (ms, z) => h('span', { class: 'cell-text im-stamp' }, h('span', null, date(ms, z, { year: true })), h('span', { class: 'sub' }, time(ms, z)));
   const zoneOf = (o) => S.cars.find((c) => c.id === o.car)?.time_zone || tz;
-  const side = (x) => (x ? `${num(x.drives)} drives, ${num(x.charges)} charges` : DASH);
+  const side = (x) => (x ? `${nOf(x.drives, 'drive', num)}, ${nOf(x.charges, 'charge', num)}` : DASH);
   // the Timeline is a car page: link a real car's (one with an overlap, else one an import brought history to, else the first)
   const timelineSlot = h('span', { class: 'im-tl' });
   function paintTimelineLink() {
@@ -1020,6 +1022,57 @@ export async function mount(ctx) {
     empty: () => emptyState({ icon: 'logs', title: 'No imports yet', text: 'Each file you upload is listed here with its state.' }),
   });
 
+  /* ---------------------------------------------------------------- rows that need a car */
+  const holdErr = h('p', { class: 'form-error im-err', hidden: true, role: 'alert' });
+  async function giveCar(x) {
+    const want = S.holdPick.get(x.hold) || 'wait';
+    holdErr.hidden = true;
+    try {
+      const out = await ctx.api.post(`import-holds/${enc(x.hold)}`, { match: want });
+      if (!ctx.alive()) return;
+      S.holdPick.delete(x.hold);
+      await Promise.all([loadHolds(), loadJobs()]);
+      if (out?.move) S.cars = await ctx.api.list('cars', { limit: 500 }).all({ max: 10000 });
+      if (!ctx.alive()) return;
+      pick();
+      flash(holdSaid(out, carName, num));
+    } catch (e) {
+      if (!ctx.alive()) return;
+      replace(holdErr, icon('warn', 'ico--sm'), errorWords(e).text); holdErr.hidden = false;
+    }
+    paintAll();
+  }
+  const holdsTable = dataTable(ctx, {
+    title: 'Rows that need a car', icon: 'car', rows: [], csvName: 'import-rows-need-a-car', label: 'Imported rows that wait for a car',
+    note: 'Rows an import could not put on a car for sure: they came without a VIN and their odometer or time does not carry on from any car of the file, or an older import put them on a car whose odometer says they are not its own. They are kept, in no car, until you choose one. Nothing is deleted.',
+    sort: { key: 'first_ms', dir: 'asc' },
+    columns: [
+      { key: 'first_ms', label: 'Rows', sort: true, render: (x) => h('span', { class: 'cell-text' }, h('b', null, x.name ? `Named ${x.name}` : 'No name'), h('span', { class: 'sub' }, x.first_ms != null ? `${date(x.first_ms, tz)} to ${date(x.last_ms, tz)}` : DASH)),
+        csv: { label: `From (ISO 8601, ${tz})`, value: (x) => toIsoZoned(x.first_ms, tz) } },
+      { key: 'rows', label: 'What', num: true, sort: true, render: (x) => h('span', { class: 'cell-text' }, `${num(x.rows)} rows`, h('span', { class: 'sub' }, x.odometer_km ? `${format(x.odometer_km[0], 'odometer')} to ${format(x.odometer_km[1], 'odometer')}` : `${nOf(x.drives, 'drive', num)}, ${nOf(x.charges, 'charge', num)}`)),
+        csv: { label: 'Rows', value: (x) => x.rows } },
+      { key: 'go', label: 'Goes to', cls: 'im-wide', csv: { label: 'State', value: (x) => x.status }, render: (x) => {
+        const cur = S.holdPick.get(x.hold) || (x.status === 'ignored' ? 'ignore' : '');
+        const sel = h('select', { class: 'input select im-select', 'aria-label': `Where the rows${x.name ? ` named ${x.name}` : ''} go`, onchange: (e) => { S.holdPick.set(x.hold, e.target.value); } },
+          h('option', { value: '', selected: !cur, disabled: true }, x.status === 'ignored' ? 'Left aside: choose a car' : 'Choose a car'),
+          S.cars.map((c) => h('option', { value: c.id, selected: cur === c.id }, c.name)),
+          HOLD_ACTIONS.map(([v, l]) => h('option', { value: v, selected: cur === v }, v === 'new' && x.name ? `A new car named ${x.name}` : l)));
+        return h('span', { class: 'row im-goes' }, sel, h('button', { class: 'btn btn--sm', type: 'button', onclick: () => giveCar(x) }, 'Apply'));
+      } },
+    ],
+    empty: () => emptyState({ icon: 'check', title: 'Every imported row has a car', text: 'Rows an import could not put on a car for sure would be listed here to choose their car.' }),
+  });
+  // each import whose rows moved or wait for a car, in one line
+  const movedList = h('ul', { class: 'im-moved-list', 'aria-label': 'Rows each import moved' });
+  const holdsPanel = panel({ title: 'Imported rows and their cars', icon: 'car', cls: 'im-holds', id: 'needs-car' }, movedList, holdErr, holdsTable.el);
+  function paintHolds() {
+    const lines = S.jobs.map((j) => [j, moveSummary(j, carName, num)]).filter(([, w]) => w);
+    replace(movedList, lines.map(([j, w]) => h('li', null, icon('info', 'ico--sm'), h('span', null, h('b', null, j.name), `: ${w}.`))));
+    movedList.hidden = !lines.length;
+    holdsTable.setRows(waiting(S.holds));
+    holdsPanel.hidden = !S.holds.length && !lines.length;
+  }
+
   /* ---------------------------------------------------------------- refresh */
   function setJob(j) {
     S.jobs = S.jobs.map((x) => (x.id === j.id ? { ...x, ...j } : x));
@@ -1037,7 +1090,7 @@ export async function mount(ctx) {
       setJob(fresh);
       lastRead = ctx.api.now();
       if (fresh.status !== was || ['checking', 'ready'].includes(fresh.status)) await loadMatch();
-      if (fresh.status === 'done' && was !== 'done') { await loadJobs(); S.cars = await ctx.api.list('cars', { limit: 500 }).all({ max: 10000 }); pick(); await loadOverlaps(); flash(isCan(fresh) ? 'Import done. The logs are in; their drives and charges show as they are decoded.' : 'Import done. The history shows on every page, marked as imported.'); }
+      if (fresh.status === 'done' && was !== 'done') { await Promise.all([loadJobs(), loadHolds()]); S.cars = await ctx.api.list('cars', { limit: 500 }).all({ max: 10000 }); pick(); await loadOverlaps(); flash(isCan(fresh) ? 'Import done. The logs are in; their drives and charges show as they are decoded.' : 'Import done. The history shows on every page, marked as imported.'); }
       if (fresh.status === 'failed' && was !== 'failed') flash('The import failed; see Upload for why.', { kind: 'error' });
     } catch (e) {
       if (!ctx.alive()) return;
@@ -1058,6 +1111,7 @@ export async function mount(ctx) {
   function paintAll() {
     paintSteps(); paintUpload(); paintProgress(); paintMatch(); paintReport();
     historyTable.setRows(S.jobs);
+    paintHolds();
     overlapTable.setRows(S.overlaps);
     paintTimelineLink();
     if (ageEl) replace(ageEl, lastRead ? h('span', { class: 'setting-note' }, 'read ', agoEl(lastRead, tz)) : null);
@@ -1078,6 +1132,7 @@ export async function mount(ctx) {
     carsWrap,
     reportTables,
     canWrap,
+    holdsPanel,
     overlapPanel));
   paintAll();
   ctx.ready();

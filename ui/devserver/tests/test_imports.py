@@ -21,7 +21,7 @@ def chunk(data, offset, total, sha=None):
 class Imports(ServerCase):
     def test_1_seeded_import_matches_history(self):
         items = self.c.get("/api/v1/imports")["items"]
-        self.assertEqual([x["id"] for x in items], ["im1"])
+        self.assertEqual([x["id"] for x in items], ["im1", "im2"])
         im = self.c.get("/api/v1/imports/im1")
         self.assertEqual(im["status"], "done")
         tm = self.c.get("/api/v1/cars/c3/totals?source=teslamate")
@@ -102,7 +102,7 @@ class Imports(ServerCase):
         self.assertEqual(rep["tables"]["cars"]["imported"], 1)
         self.assertEqual([x["tm_car"] for x in rep["cars"]], [1])  # the left-out car is not in the report
         self.assertEqual([x["match"] for x in c.get(f"{url}/cars")["items"]], ["c3", "leave_out"])  # still matchable
-        self.assertEqual([x["id"] for x in c.get("/api/v1/imports")["items"]], [jid, "im1"])
+        self.assertEqual([x["id"] for x in c.get("/api/v1/imports")["items"]], [jid, "im1", "im2"])
         actions = [x["action"] for x in c.get("/api/v1/audit?limit=20")["items"]]
         for want in ("import-created", "import-uploaded", "import-cars", "import-started"):
             self.assertIn(want, actions)
@@ -388,3 +388,25 @@ class WatchImports(ServerCase):
         self.c.error("GET", "/api/v1/imports/im1", 403, "not_allowed")
         self.c.error("GET", "/api/v1/imports/im1/cars", 403, "not_allowed")
         self.c.error("POST", "/api/v1/imports/im1/start", 403, "not_allowed")
+
+
+class ImportHolds(ServerCase):
+    def test_moves_and_rows_that_need_a_car(self):
+        c = self.c
+        im = c.get("/api/v1/imports/im2")
+        self.assertEqual([(m["kind"], m["to_car"]) for m in im["moves"]], [("rehomed", "c2"), ("rehomed", None)])
+        self.assertEqual([(h["hold"], h["status"]) for h in im["needs_car"]], [("h1", "waiting")])
+        rows = c.get("/api/v1/imports/im2/cars")["items"]
+        self.assertEqual([(r["match"], r["needs_car"]) for r in rows], [("c1", False), ("needs_car", True)])
+        self.assertEqual([h["hold"] for h in c.get("/api/v1/import-holds")["items"]], ["h1"])
+        c.error("POST", "/api/v1/import-holds/h9", 404, "no_such_hold", body={"match": "c2"})
+        c.error("POST", "/api/v1/import-holds/h1", 422, "invalid", body={"match": "c99"})
+        out = c.json("POST", "/api/v1/import-holds/h1", {"match": "ignore"})
+        self.assertEqual((out["hold"]["status"], out["move"]), ("ignored", None))
+        out = c.json("POST", "/api/v1/import-holds/h1", {"match": "c2"})
+        self.assertEqual((out["hold"]["status"], out["move"]["to_name"]), ("assigned", "Maple"))
+        c.error("POST", "/api/v1/import-holds/h1", 409, "already_assigned", body={"match": "wait"})
+        im = c.get("/api/v1/imports/im2")
+        self.assertEqual(im["moves"][-1]["kind"], "assigned")
+        log = c.get("/api/v1/audit?limit=20")["items"]
+        self.assertIn("import-rows-moved", [r["action"] for r in log])

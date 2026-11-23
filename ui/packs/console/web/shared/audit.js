@@ -128,6 +128,8 @@ const BY_GROUP = {
     'import-discarded': 'Discarded an import',
     'import-cars': 'Chose the cars to import',
     'import-started': 'Ran an import',
+    'import-rows-moved': 'Moved imported rows to another car',
+    'import-rows-ignored': 'Left aside imported rows that wait for a car',
     'move-code-made': 'Made a move code',
     'move-cancelled': 'Cancelled a move',
     'move-undone': 'Undid a move',
@@ -215,6 +217,7 @@ export function auditItem(row, ctx = {}) {
     }
     case 'place': return item('A place', ['places', { query: { place: parts[0] } }]);
     case 'import': return item('An import', ['import', {}]);
+    case 'import-hold': return item('Imported rows that wait for a car', ['import', {}]);
     case 'export': return item('An export', ['settings-server', {}], '#move');
     case 'move': return item('A move to another server', ['settings-server', {}], '#move');
     case 'account': {
