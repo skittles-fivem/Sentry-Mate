@@ -18,6 +18,7 @@ import { mapTile, boundsOf } from '../core/map.js';
 import { trackBounds } from '../shared/tracks.js';
 import { filterBar, placeHref, statTile, dur, soldPill } from '../core/bits.js';
 import { srcPill } from '../core/source.js';
+import { onRows } from '../shared/live.js';
 
 export const id = 'travel';
 export const css = true;
@@ -235,6 +236,8 @@ export async function mount(ctx) {
   await mapReady;
   if (!ctx.alive()) return {};
   ctx.ready();
+  // a car parked somewhere new (once a burst of `rows` has passed): the places read again
+  onRows(ctx.api, { waitMs: 3000, run: () => { if (ctx.alive()) load().catch(() => {}); } });
   return {};
 }
 

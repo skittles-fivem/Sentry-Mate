@@ -10,9 +10,10 @@
 // the accounts (roles, car lists, two-step sign-in, a new password) and the audit log, whose entries
 // say what was done in words and link to the item they changed (filtered by what and who, loaded as the
 // list scrolls), and Storage beside the move: the space on disk by kind and what compaction saved
-// (GET /system/storage/detail), with "Compact now" (POST /system/storage/compact; while a pass runs the
-// detail is read again every 2 s, until the page is left). Every table has a Download CSV button. Admins also
-// get the full rebuild of every car (system/full-rebuild, its progress read again while it runs:
+// (GET /system/storage/detail), with "Compact now" (POST /system/storage/compact; a pass follows `job` events
+// of kind compaction and the free space `storage` events: live events, polling the detail every 2 s while a
+// pass runs only while the live stream is down, until the page is left). Every table has a Download CSV button.
+// Admins also get the full rebuild of every car (system/full-rebuild, its progress from `job` events:
 // rebuild-parts.js) and its automatic switch (full_rebuild.auto, saved with the settings' version).
 
 import { h, replace, setVars } from '../shared/dom.js';
@@ -32,6 +33,8 @@ import { fullRebuild } from './rebuild-parts.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 import { serverUpdates, RELEASE_OFF_TEXT, RELEASE_SETTING } from '../shared/release.js';
 import { compactionProgress } from '../shared/compaction.js';
+import { follow, jobOf, setAttr } from '../shared/live.js';
+import { morphChildren } from '../core/morph.js';
 
 export const id = 'settings-server';
 export const css = true;
@@ -764,13 +767,12 @@ export async function mount(ctx) {
   // A compact block beside the move: one row of figures (on disk, free, saved by compaction, the last pass) and
   // Compact now, then the space by kind (shared/storage.js): one row per group with its size, a bar and its share;
   // a group opens to its categories by short name, at most five rows tall (the CSV has every category with the
-  // server's own label). While a pass runs (also one the server started by itself) the detail is read again every
-  // 2 s for its progress, and when it ends the groups are drawn again and a note says what was freed.
+  // server's own label). A pass (also one the server started by itself) follows its `job` events, written in
+  // place; when it ends the detail is read once, the groups are drawn again and a note says what was freed.
   let storageSection = null;
   let storage = null;
   if (admin) {
-    let detail = null, readErr = null, pollErr = null, timer = null;
-    ctx.onCleanup(() => clearTimeout(timer));
+    let detail = null, readErr = null, pollErr = null;
     const compactBtn = button('Compact now', { kind: 'primary', iconName: 'reset', cls: 'button-small', onclick: () => compactNow() });
     const csvBtn = button('Download CSV', { iconName: 'download', cls: 'button-small', onclick: () => downloadCsv('sentry-mate-storage-on-disk.csv', (detail && detail.categories) || [], [
       { label: 'What', value: (c) => c.label }, { label: 'Kind', value: (c) => groupWord(c.group) }, { label: 'Key', value: (c) => c.key },
@@ -788,16 +790,16 @@ export async function mount(ctx) {
     cmp.bar = h('span', { class: 'ss-cmp-bar', role: 'progressbar', 'aria-label': 'Compaction progress', 'aria-valuemin': '0', 'aria-valuemax': '100' }, cmp.fill);
     const line = h('div', { class: 'ss-cmp', 'aria-live': 'polite' },
       h('p', { class: 'ss-cmp-head' }, cmp.spin, cmp.head, cmp.count, storTip), cmp.bar, cmp.facts, cmp.warn);
-    const setLine = (el, ...kids) => { replace(el, ...kids); el.title = el.textContent.trim(); };
+    const setLine = (el, ...kids) => { morphChildren(el, kids); setAttr(el, 'title', el.textContent.trim()); };
     const fig = (label, value, title) => h('div', { class: 'st-fig', title }, h('dt', null, label), h('dd', null, value));
     const drawGroups = () => {
       const groups = storageGroups(detail && detail.categories);
       if (!opened && groups.length) { open.add(groups[0].group); opened = true; }  // the largest, open at first
       if (!groups.length) {
-        replace(list, h('li', { class: 'st-none' }, `The server did not say what takes the space${readErr ? `: ${errText(readErr)}` : '.'}`));
+        morphChildren(list, h('li', { class: 'st-none' }, `The server did not say what takes the space${readErr ? `: ${errText(readErr)}` : '.'}`));
         return;
       }
-      replace(list, groups.map((g) => {
+      morphChildren(list, groups.map((g) => {
         const isOpen = open.has(g.group);
         const bar = h('span', { class: 'st-bar', 'aria-hidden': 'true' }, h('i'));
         setVars(bar, { '--w': `${Math.max(g.share > 0 ? 1 : 0, g.share * 100).toFixed(1)}%` });
@@ -817,12 +819,12 @@ export async function mount(ctx) {
       const running = !!c && c.status === 'running';
       compactBtn.disabled = running || !c;
       const num = (v) => (v == null ? q(null, 'bytes', { why: 'not known' }) : bytes(v));
-      replace(figsBox,
+      morphChildren(figsBox, [
         fig('On disk', num(detail ? detail.total_disk_bytes : null), 'Everything below, as it lies on disk.'),
         fig('Free', num(detail ? detail.free_bytes : null), 'Room left on the disk for new data.'),
         fig('Saved', num(c ? c.saved_bytes : null), 'What compaction has freed in all.'),
         fig('Last pass', !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? h('span', null, bytes(c.last_saved_bytes), ' freed') : 'Nothing left to pack',
-          c && c.finished_ms != null ? `Finished ${dateTime(c.finished_ms, tz)} (${zoneLabel(tz)}).` : 'No pass has finished yet.'));
+          c && c.finished_ms != null ? `Finished ${dateTime(c.finished_ms, tz)} (${zoneLabel(tz)}).` : 'No pass has finished yet.')]);
       const p = compactionProgress(c, { now: api.now(), bytes: (n) => format(n, 'bytes') });
       const failed = !!c && c.status === 'failed';
       line.classList.toggle('is-running', p.running);
@@ -831,8 +833,9 @@ export async function mount(ctx) {
       cmp.bar.style.visibility = p.running ? '' : 'hidden';
       cmp.bar.classList.toggle('is-counting', p.counting);
       cmp.bar.classList.toggle('is-stalled', p.stalled);
-      cmp.fill.style.width = `${p.pct ?? 0}%`;
-      if (p.pct == null) cmp.bar.removeAttribute('aria-valuenow'); else cmp.bar.setAttribute('aria-valuenow', String(Math.round(p.pct)));
+      const w = `${p.pct ?? 0}%`;
+      if (cmp.fill.style.width !== w) cmp.fill.style.width = w;
+      setAttr(cmp.bar, 'aria-valuenow', p.pct == null ? null : String(Math.round(p.pct)));
       const pollWords = pollErr ? `The progress could not be read just now: ${errText(pollErr)}` : null;
       if (p.running) {
         setLine(cmp.head, h('strong', null, 'Packing…'), ' ', [p.stepOf, p.step].filter(Boolean).join(' · ') || 'getting ready');
@@ -851,23 +854,43 @@ export async function mount(ctx) {
         cmp.warn.classList.toggle('is-on', !!pollWords);
       }
     };
-    const schedule = () => { clearTimeout(timer); if (detail && detail.compaction && detail.compaction.status === 'running') timer = setTimeout(poll, 2000); };
-    async function poll() {
-      try {
-        const d = await ctx.api.get('system/storage/detail');
-        if (!ctx.alive()) return;
-        detail = d; pollErr = null;
-        const c = d.compaction || {};
-        if (c.status !== 'running') {
-          drawGroups();
-          if (c.status === 'failed') ctx.flash(`Compaction failed: ${c.error || 'the server gave no reason.'}`, { kind: 'error' });
-          else ctx.flash(c.last_saved_bytes ? `Compaction is done: ${format(c.last_saved_bytes, 'bytes')} freed on disk.` : 'Compaction is done: nothing was left to pack.');
-        }
-      } catch (err) {
-        if (!ctx.alive()) return;
-        pollErr = err;
+    // the pass: the page's own read of the detail first, then the `job` events and a read after a reconnect; a pass
+    // that ended reads the detail once (what it packed changed the groups), and the note comes with it
+    let live = null, firstRead = true, fresh = null;
+    function take(c, how) {
+      const ended = !!(detail && detail.compaction && detail.compaction.status === 'running') && (!c || c.status !== 'running');
+      if (ended && how === 'event') { live.refresh(); return; }
+      if (fresh) { detail = fresh; readErr = null; fresh = null; drawGroups(); }
+      detail = { ...(detail || {}), compaction: c };
+      pollErr = null;
+      if (ended && c) {
+        if (c.status === 'failed') ctx.flash(`Compaction failed: ${c.error || 'the server gave no reason.'}`, { kind: 'error' });
+        else ctx.flash(c.last_saved_bytes ? `Compaction is done: ${format(c.last_saved_bytes, 'bytes')} freed on disk.` : 'Compaction is done: nothing was left to pack.');
       }
-      draw(); schedule();
+      draw();
+    }
+    function follows() {
+      live = follow(ctx.api, {
+        type: 'job', match: jobOf('compaction'), pick: (d) => d.status,
+        load: async () => {
+          if (firstRead && detail) { firstRead = false; return detail.compaction || null; }
+          firstRead = false;
+          fresh = await ctx.api.get('system/storage/detail');
+          return fresh.compaction || null;
+        },
+        pollMs: (c) => (c && c.status === 'running' ? 2000 : null),
+        onValue: (c, how) => { if (ctx.alive()) take(c, how); },
+        onError: (err) => { if (!ctx.alive()) return; pollErr = err; draw(); },
+      });
+      // the free space on disk, from the `storage` events (no read of their own)
+      follow(ctx.api, {
+        type: 'storage',
+        onValue: (st) => {
+          if (!ctx.alive() || !st || st.free_bytes === (detail && detail.free_bytes)) return;
+          detail = { ...(detail || {}), free_bytes: st.free_bytes ?? null };
+          draw();
+        },
+      });
     }
     async function compactNow() {
       compactBtn.disabled = true;
@@ -880,7 +903,7 @@ export async function mount(ctx) {
         if (!ctx.alive()) return;
         ctx.flash(`Compaction not started: ${errText(err)}`, { kind: 'error' });
       }
-      draw(); schedule();
+      draw(); if (live) live.refresh();
     }
     draw();
     storageSection = section({ title: 'Storage', note: 'by kind', cls: 'ss-storage', id: 'storage', actions: [csvBtn, compactBtn] },
@@ -889,8 +912,9 @@ export async function mount(ctx) {
       async load() {
         try { detail = await ctx.api.get('system/storage/detail'); } catch (err) { if (!ctx.alive()) return; readErr = err; }
         if (!ctx.alive()) return;
-        drawGroups(); draw(); schedule();
+        drawGroups(); draw();
       },
+      follow: follows,
     };
   }
 
@@ -916,6 +940,7 @@ export async function mount(ctx) {
     throw err;
   }
   if (!ctx.alive()) return undefined;
+  if (storage) storage.follow();
   if (focusAccount) document.getElementById(`account-${focusAccount}`)?.scrollIntoView({ block: 'center' });
   else if (location.hash === '#move' || location.hash === '#full-rebuild') document.getElementById(location.hash.slice(1))?.scrollIntoView({ block: 'start' });
   ctx.ready();

@@ -18,6 +18,7 @@ import { tile, num, note } from '../core/ui.js';
 import { emptyTile, ghostTile, plotGhost } from '../core/states.js';
 import { timeChart, bars } from '../core/chart.js';
 import { filterBar, pills, sectionHead, nums, statTile } from '../core/bits.js';
+import { onRows } from '../shared/live.js';
 
 export const id = 'efficiency';
 export const css = true;
@@ -299,6 +300,8 @@ export async function mount(ctx) {
   await Promise.all([paintFirst(), paintTemps(), paintCharges()]);
   if (!ctx.alive()) return {};
   ctx.ready();
+  // a drive of the car started or ended (once a burst of `rows` has passed): the efficiency read again
+  onRows(ctx.api, { car: car.id, waitMs: 2000, run: () => { if (ctx.alive()) refresh().catch(() => {}); } });
   return {};
 }
 

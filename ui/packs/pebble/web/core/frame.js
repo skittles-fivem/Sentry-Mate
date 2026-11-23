@@ -28,6 +28,7 @@ import { applyPrefs } from './prefs.js';
 import { display, snap } from './display.js';
 import { buildLabel, buildTitle, releaseDismissed, dismissRelease } from '../shared/release.js';
 import { isTmNotice, tmNoticeFix, TM_NOTICE_ACTION } from '../shared/teslamate.js';
+import { liveWords, setText, setAttr } from '../shared/live.js';
 
 let me = null;
 let about = null;
@@ -48,7 +49,7 @@ function buildHead() {
   el.datePill = h('button', { type: 'button', class: 'pill date-pill', 'aria-haspopup': 'dialog', onclick: (e) => openPeriod(view.period, view.tz, e.currentTarget) },
     icon('calendar', 'pill-ic'), el.dateName, el.dateDates, icon('chevronDown', 'pill-caret'));
   el.actions = h('div', { class: 'head-actions', id: 'head-actions' });
-  el.offline = h('span', { class: 'chip tone-bad offline-chip', role: 'status', hidden: true }, icon('offline'), h('span', null, 'Offline, trying again'));
+  el.offline = h('span', { class: 'chip tone-bad offline-chip', role: 'status', hidden: true }, icon('offline'), el.offlineText = h('span', null, 'Offline, trying again'));
   el.account = h('button', { type: 'button', class: 'avatar-btn', 'aria-haspopup': 'dialog', 'aria-label': `You: ${me ? me.name : 'account'}`, title: me ? `${me.name}: look, links, sign out` : 'Account', onclick: (e) => openAccount(e.currentTarget) },
     h('span', { class: 'avatar', 'aria-hidden': 'true' }, initial(me && me.name)));
   el.clockTime = h('span', { class: 'head-clock-time' });
@@ -307,11 +308,20 @@ export function mountFrame(opts) {
     if (ev.type === 'notice') loadNotices();
     else if (ev.type === 'prefs' && ev.data) applyPrefs(ev.data);
   }, { types: ['notice', 'prefs'] });
-  api.on('network', (n) => {
-    const off = !n.ok;
+  // the offline chip: the server does not answer, or the live stream is down and figures are read every few
+  // seconds meanwhile (the stream's own words in its title)
+  const showLive = () => {
+    const off = api.network().ok === false;
+    const ev = api.eventsState();
+    const down = ev.state === 'reconnecting' || ev.state === 'unsupported';
     document.documentElement.classList.toggle('is-offline', off);
-    el.offline.hidden = !off;
-  });
+    setText(el.offlineText, off ? 'Offline, trying again' : ev.state === 'reconnecting' ? 'Reconnecting' : 'Not live');
+    setAttr(el.offline, 'title', off ? 'The server does not answer.' : down ? `${liveWords(ev).text}.` : null);
+    const hide = !off && !down;
+    if (el.offline.hidden !== hide) el.offline.hidden = hide;
+  };
+  api.on('network', showLive);
+  api.on('events', showLive);
   return { update, setHead };
 }
 

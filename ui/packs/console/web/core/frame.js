@@ -18,6 +18,7 @@ import { openAccountMenu } from './account.js';
 import { onSession } from './session.js';
 import { getMe, applyPrefs } from './prefs.js';
 import { slug } from './fmt.js';
+import { liveWords, setText, setAttr } from '../shared/live.js';
 import { formatTime, zoneName, isValidZone } from '../shared/time.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -172,10 +173,13 @@ function showLive() {
   const ev = api.eventsState();
   const off = net.ok === false;
   setOffline(off);
-  const [text, tone] = off ? ['[offline]', 'bad'] : ev.state === 'open' ? ['[live]', 'accent'] : ev.state === 'closed' ? ['[idle]', 'muted'] : ['[...]', 'muted'];
-  els.live.textContent = text;
-  els.live.className = `cmd-live tone--${tone}`;
-  els.live.title = off ? 'The server does not answer.' : ev.state === 'open' ? 'Pages update by themselves when the server has a new log.' : 'Connecting to live updates.';
+  // open: figures come as they change; reconnecting or not live: pages read them every few seconds meanwhile
+  const w = liveWords(ev);
+  const [text, tone] = off ? ['[offline]', 'bad'] : ev.state === 'open' ? ['[live]', 'accent'] : ev.state === 'closed' ? ['[idle]', 'muted']
+    : w.tone === 'wait' ? ['[...]', 'warn'] : ['[poll]', 'muted'];
+  setText(els.live, text);
+  setAttr(els.live, 'class', `cmd-live tone--${tone}`);
+  setAttr(els.live, 'title', off ? 'The server does not answer.' : ev.state === 'open' ? 'Live: pages update by themselves as figures change.' : ev.state === 'closed' ? 'Not following live updates.' : `${w.text}.`);
 }
 
 function startEvents() {

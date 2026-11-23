@@ -28,6 +28,7 @@ import { popover } from '../core/dialog.js';
 import { choice, soldPickRows } from '../core/form.js';
 import { niceSplits } from '../core/chart.js';
 import { zoneLabel } from '../core/format.js';
+import { onRows } from '../shared/live.js';
 
 // a tick label near an end of the axis lines up with that end instead of centring on it (it would stick out)
 const edgeTick = (x) => (x > 94 ? 'is-end' : x < 6 ? 'is-start' : null);
@@ -686,6 +687,8 @@ export async function mount(ctx) {
 
   await loadAll();
   ctx.ready();
+  // a car shown has new drives or charges (once a burst of `rows` has passed): loaded again, written in place
+  onRows(ctx.api, { waitMs: 1500, run: (d) => { if (ctx.alive() && viewCars.includes(d.car)) loadAll().catch(() => {}); } });
   return {};
 }
 

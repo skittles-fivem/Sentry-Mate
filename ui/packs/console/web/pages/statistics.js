@@ -396,6 +396,9 @@ export async function mount(ctx) {
   let timer = 0;
   ctx.onCleanup(() => clearTimeout(timer));
   // built again off screen and swapped in whole: the tables and charts never go back to loading lines
-  ctx.events('rows', () => { clearTimeout(timer); timer = setTimeout(() => ctx.refresh(), 1500); });
+  ctx.events('rows', (ev) => {
+    if (ev?.data?.car && !viewCars.includes(ev.data.car)) return;   // a car not shown
+    clearTimeout(timer); timer = setTimeout(() => ctx.refresh(), 1500);
+  });
   await load();
 }
