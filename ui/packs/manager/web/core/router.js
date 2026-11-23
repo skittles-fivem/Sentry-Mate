@@ -22,11 +22,12 @@
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { loadPage, reloadPage } from '../shared/build.js';
-import { h, replace, ready as markReady, failed as markFailed, unready, setTitle as docTitle, on } from '../shared/dom.js';
+import { h, replace, holdScroll, ready as markReady, failed as markFailed, unready, setTitle as docTitle, on } from '../shared/dom.js';
 import { resolvePeriod, periodParams } from '../shared/time.js';
 import { pageInfo } from './pages.js';
 import * as frame from './frame.js';
 import * as session from './session.js';
+import { noticesLoaded } from './notices.js';
 import { errorState, statePanel, loadingPage } from './states.js';
 import { showPending } from './flash.js';
 import { getMe, getPrefs, isAdmin } from './prefs.js';
@@ -162,6 +163,7 @@ function stageView(view, finishOld) {
     // the control that had the focus: the same place in the new page gets it back
     const path = [];
     for (let e = document.activeElement; e && e !== view && view.contains(e); e = e.parentElement) path.unshift([...e.parentElement.children].indexOf(e));
+    holdScroll(view);
     view.replaceChildren(...nodes);
     setStale(false); // the page built again has checked answers only
     takeOld()?.();
@@ -187,6 +189,39 @@ function stageView(view, finishOld) {
   const drop = (keepOld) => { if (done) return null; end(); const f = takeOld(); if (keepOld) return f; f?.(); return null; };
   staged = { stage, commit, settle, drop };
   return staged;
+}
+
+// A page drawn for the first time (not a live refresh) is built in an invisible box of the view's size too, while the
+// view shows the loading skeleton, and put in the view in one step when it says it is ready (or after FIRST_MS, a
+// slow page: what it draws after that is drawn in place). Its parts come in one by one as their answers arrive; on
+// screen they would each push what is under them down (a phone: the page jumps while it loads). Charts and maps
+// that land near the screen are drawn in the box; the rest when they come near once in place (shared/lazy.js).
+const FIRST_MS = 3000;
+const NOTICES_MS = 3000;
+const FONTS_MS = 1000;
+function firstStage(view, onCommit) {
+  const r = view.getBoundingClientRect();
+  const stage = h('div', { class: view.className + ' view-stage', 'aria-hidden': 'true', inert: '' });
+  Object.assign(stage.style, {
+    position: 'fixed', top: '0', left: `${r.left}px`, width: `${r.width}px`, boxSizing: 'border-box', height: '100vh', overflow: 'hidden',
+    visibility: 'hidden', pointerEvents: 'none', zIndex: '-1',
+  });
+  // where it lands: the view's top in the page, which opens at its top
+  stage.dataset.nearShift = String(Math.round(r.top + window.scrollY));
+  document.body.append(stage);
+  let done = false;
+  const maxT = setTimeout(() => commit(), FIRST_MS);
+  function commit() {
+    if (done) return;
+    done = true;
+    clearTimeout(maxT);
+    holdScroll(view);
+    view.replaceChildren(...stage.childNodes);
+    stage.remove();
+    onCommit();
+  }
+  const drop = () => { if (done) return; done = true; clearTimeout(maxT); stage.remove(); };
+  return { stage, commit, drop };
 }
 
 // A page's API client that also counts its requests under way (a live refresh waits for them, see stageView).
@@ -219,9 +254,15 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   const id = s.page;
   const st = live ? stageView(frame.view(), finishOld) : null;
   finishOld = null;
-  const view = st ? st.stage : frame.view();
-  const shown = () => { if (st) st.commit(); };
+  let view = st ? st.stage : frame.view();
+  let first = null; // the first draw's box (firstStage), once the page module is in
+  const shown = () => { if (st) st.commit(); first?.commit(); };
   const info = pageInfo(id);
+  // the dock's period bar is there from the first paint on a page with a period (core/frame.js fills it in)
+  if (!live) document.documentElement.toggleAttribute('data-has-period', !!info?.period);
+  // the first page of a visit waits for the notices bar (at most NOTICES_MS) before it shows its skeleton and itself:
+  // a bar that came in after them would push the whole page down
+  const noticesIn = firstMount && !BARE.has(id) ? Promise.race([noticesLoaded, new Promise((r) => { setTimeout(r, NOTICES_MS); })]) : null;
   // kept answers at once for the first reads (after a reload: the service worker's); the page is built again
   // in place when one of them changed
   const tracker = !live && takesStale(id) ? api.staleTracker({
@@ -282,7 +323,15 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
     return;
   }
 
-  if (!keepScroll || firstMount) replace(view, loadingPage(info.loading ?? 3));
+  // the tabs, and the period in the zone the page last had (the car's comes with the car): the bar has its final shape
+  // before the page under it is drawn
+  if (!live) frame.showPlace({ s, info, period: info.period ? resolvePeriod(s.period ?? { preset: info.period }, { now: api.now(), tz: fallbackZone, fallback: info.period }) : null, tz: fallbackZone });
+  // a new page opens at its top: once, when its skeleton (or, without one, the page) goes in, never after its mount
+  // returns (a page that goes on loading after it is shown would throw the reader back up the page)
+  let topped = false;
+  const toTop = () => { if (keepScroll || live || topped) return; topped = true; window.scrollTo(0, 0); };
+  if (noticesIn) noticesIn.then(() => { if (alive() && !frame.view().hasChildNodes()) { replace(frame.view(), loadingPage(info.loading ?? 3)); toTop(); } });
+  else if (!keepScroll || firstMount) { replace(view, loadingPage(info.loading ?? 3)); toTop(); }
 
   // the car of a car page
   let car = null;
@@ -335,6 +384,12 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   if (!alive()) return;
   dropCss(mod.css ? id : null);
   rec.mod = mod;
+  if (!live && !BARE.has(id)) {
+    // (once in place, the page's view is the view itself: what it looks up or draws later is there)
+    first = firstStage(frame.view(), () => { view = frame.view(); if (rec.ctx) rec.ctx.view = view; toTop(); });
+    cleanups.push(first.drop);
+    view = first.stage;
+  }
 
   let shownOnce = false, refreshAsked = false;
   const ctx = {
@@ -354,6 +409,12 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
       shownOnce = true;
       if (refreshAsked) { refreshAsked = false; setTimeout(() => ctx.refresh(), 0); }
       st?.settle(() => scope.busy);
+      // put in place once the fonts its words use are in too (at most FONTS_MS): laid out in the box they load, and a
+      // face that came in after the page was on screen would re-wrap its lines under the reader
+      if (first) {
+        const fonts = document.fonts?.status === 'loading' ? Promise.race([document.fonts.ready, new Promise((r) => { setTimeout(r, FONTS_MS); })]) : null;
+        if (noticesIn || fonts) Promise.all([noticesIn, fonts]).then(() => { if (alive()) first.commit(); }); else first.commit();
+      }
       frame.view().removeAttribute('aria-busy');
       // at the next frame (the page's own code after ready() and the router's are done by then), once the fonts the
       // page uses are in (a late swap would re-flow the text it just drew)
@@ -414,12 +475,12 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   setTimeout(rec.release, 2000);
   if (live) { showPending(); return; }
   if (!keepScroll) {
-    window.scrollTo(0, 0);
-    if (!firstMount) view.focus({ preventScroll: true });
+    toTop();
+    if (!firstMount) frame.view().focus({ preventScroll: true });
   }
   // a link to a section of a page (/cars/c1/charges?…#habits): open the page there
   const target = location.hash.length > 1 ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null;
-  if (target && view.contains(target)) {
+  if (target && frame.view().contains(target)) {
     const tb = document.querySelector('.topbar');
     const bar = tb && getComputedStyle(tb).position === 'sticky' ? tb.getBoundingClientRect().height : 0; // a sticky top bar
     const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;

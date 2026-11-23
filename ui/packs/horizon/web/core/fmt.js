@@ -53,7 +53,11 @@ export function agoEl(ms, tz = null) {
 export function refreshAgo(root = document) {
   for (const el of root.querySelectorAll('[data-ago]')) {
     const ms = Number(el.dataset.ago);
-    if (el.dataset.ago !== '' && Number.isFinite(ms)) el.textContent = ago(ms);
+    if (el.dataset.ago === '' || !Number.isFinite(ms)) continue;
+    // only when the words changed: a text written again, even the same, counts as a change in a table, and the
+    // whole-pixel snap would measure every list on the page again each time (a long signal list, every 15 s)
+    const t = ago(ms);
+    if (el.textContent !== t) el.textContent = t;
   }
 }
 

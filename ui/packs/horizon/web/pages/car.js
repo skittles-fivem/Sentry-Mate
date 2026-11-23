@@ -189,7 +189,7 @@ export async function mount(ctx) {
   const settingsP = settingsRead(ctx).catch(() => null);
   nowP.catch(() => {}); // handled below
 
-  const head = h('div');
+  const head = h('div', { class: 'now-head-slot' });
   const inputsSlot = h('div', { class: 'now-inputs' });
   const banner = h('div');
   const gaugeSlot = h('section', { class: 'panel gauge-panel', 'aria-label': 'Battery and range' });
