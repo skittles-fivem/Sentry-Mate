@@ -450,7 +450,8 @@ fn samples_in(e: &Engine, car: CarId, site: ImportSite, a: u64, b: u64) -> QResu
     for d in e.db().days::<model::Sample>(car, stream)? {
         let (x, y) = (d.start_ms.max(a), d.start_ms.saturating_add(DAY).min(b));
         if x < y {
-            n += e.db().read_points::<model::Sample>(car, stream, x, y)?.len() as u64;
+            // (their times alone: no field is decoded)
+            n += e.db().read_fields::<model::Sample>(car, stream, x, y, &[])?.t_ms.len() as u64;
         }
     }
     Ok(n)
