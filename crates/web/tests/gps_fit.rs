@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 //! Finding a car's Screenmate GPS layout through the API (`/cars/{car}/gps-layout/fit`, Data health's "Find GPS
 //! layout") and applying it (`PUT /cars/{car}/gps-layout`), over an engine with a made-up car: ten minutes of logs
-//! whose GPS frame carries the longitude 2^24 steps low, and its local TeslaMate positions (a made-up drive in the
-//! open sea). The answers hold layouts, counts and metres only.
+//! whose GPS frame carries the longitude off by a made-up offset that is no power of two of its steps, and its local
+//! TeslaMate positions (a made-up drive in the open sea). The answers hold layouts, counts and metres only.
 
 use engine::Engine;
 use model::gps::GpsField;
@@ -14,7 +14,7 @@ use std::time::Duration;
 use web::testkit::{Client, TestServer};
 
 const KEY: &str = "abcdef123456";
-const FOUND: &str = "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)";
+const FOUND: &str = "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.9234567)";
 
 struct EngineCars(db::Db);
 
@@ -95,7 +95,7 @@ async fn seeded() -> Seeded {
         .unwrap()
         .id;
     let lat = engine::gps_fit::dbc_field("GPSLatitude04F").unwrap();
-    let low = GpsField { offset: 16.777216, ..engine::gps_fit::dbc_field("GPSLongitude04F").unwrap() };
+    let low = GpsField { offset: 16.9234567, ..engine::gps_fit::dbc_field("GPSLongitude04F").unwrap() };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
     let t0 = (now - 2 * 86_400_000) / 60_000 * 60_000;
     let path = drive(600);
@@ -184,11 +184,21 @@ async fn an_admin_finds_the_layout_in_the_background_and_applies_it() {
         (Some(10), Some(0), Some(0))
     );
     assert!(res["pairs"].as_u64().unwrap() > 500, "{res}");
-    assert_eq!(res["sources"][0], json!({ "input": "teslamate-local", "positions": 600 }));
+    let local = &res["sources"][0];
+    assert_eq!((&local["input"], &local["positions"]), (&json!("teslamate-local"), &json!(600)), "{res}");
+    assert_eq!((&local["pairs"], &local["trimmed"], &local["left_out"]), (&res["pairs"], &json!(0), &Value::Null));
+    assert!(local["lon_p95_m"].as_f64().unwrap() < 5.0, "{res}");
+    // the line of the longitude's bits: the DBC's scale and the offset, constant
+    let line = &res["lon"]["line"];
+    assert_eq!(
+        (&line["bits"], &line["nominal"], &line["drift"]["constant"]),
+        (&json!("28|28@1-"), &json!(1e-6), &json!(true)),
+        "{res}"
+    );
     assert!(res["p95_m"].as_f64().unwrap() < 5.0 && res["median_m"].as_f64().is_some(), "{res}");
     // the DBC's longitude is far off: only "over 10 km" (null), never kilometres that would tell the latitude
     assert_eq!(res["lon"]["dbc"]["median_m"], Value::Null, "{res}");
-    assert_eq!(res["lon"]["best"]["layout"], json!("28|28@1- (1e-6,16.777216)"), "{res}");
+    assert_eq!(res["lon"]["best"]["layout"], json!("28|28@1- (1e-6,16.9234567)"), "{res}");
     assert_eq!(res["car"], json!(format!("c{}", k.car)));
     // no coordinates anywhere in the answer
     let text = done.to_string();
@@ -199,11 +209,19 @@ async fn an_admin_finds_the_layout_in_the_background_and_applies_it() {
 
     // Apply: the existing PUT, which rebuilds the car; the fit then says it is the layout in use
     let layout = format!("/api/v1/cars/c{}/gps-layout", k.car);
+    let before = admin.get(&layout).await.json();
+    assert_eq!((&before["layout"], &before["set_ms"]), (&Value::Null, &Value::Null), "{before}");
+    let t0 = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
     let r = admin.put(&layout, json!({ "layout": res["layout"] })).await;
     assert_eq!(r.status, 200, "{}", r.text());
     let applied = r.json();
     assert_eq!(applied["layout"], json!(FOUND));
     assert!(applied["job"].is_string(), "{applied}");
+    let set = applied["set_ms"].as_u64().expect("set_ms");
+    assert!(set >= t0, "{applied}");
+    // the GET says the same, watch-only accounts too
+    let now = admin.get(&layout).await.json();
+    assert_eq!((now["layout"].as_str(), now["set_ms"].as_u64()), (Some(FOUND), Some(set)), "{now}");
     let after = admin.get(&fit).await.json();
     assert_eq!((after["applied"].as_bool(), after["current"].as_str()), (Some(true), Some(FOUND)), "{after}");
     // applied again: nothing to do
@@ -212,6 +230,9 @@ async fn an_admin_finds_the_layout_in_the_background_and_applies_it() {
     // admins only; an unknown car is one
     let mut watch = k.s.watch(&mut admin, &[k.car]).await;
     assert_eq!(watch.get(&fit).await.status, 403);
+    let seen = watch.get(&layout).await;
+    assert_eq!((seen.status, seen.json()["set_ms"].as_u64()), (200, Some(set)), "{}", seen.text());
+    assert_eq!(watch.put(&layout, json!({ "layout": null })).await.status, 403);
     assert_eq!(watch.post(&fit, json!({})).await.status, 403);
     let other = format!("/api/v1/cars/c{}/gps-layout/fit", k.car + 9);
     assert_eq!(admin.post(&other, json!({})).await.status, 404);

@@ -32,9 +32,7 @@
 // ten rows high under a head line that stays; only the rows in view and a few more are in the page
 // (shared/vlist.js), loaded a chunk at a time as the box reaches them. Every row is one line high (two on a phone).
 // Takes title, side, cover, note, columns (sort: the API's sort name), sort, firstSort (the order "jump to a date"
-// works in), path, params, limit, rowHref, empty(), onPage(page), csvName, search ({ label, placeholder }), jump;
-// load({ ...params, sort: { key, dir }, offset, limit }) -> { items, next, offset, total } in place of path (a list
-// the page holds already, a chunk of it at once); rows: N, a box N rows high instead of about ten.
+// works in), path, params, limit, rowHref, empty(), onPage(page), csvName, search ({ label, placeholder }), jump.
 // Returns { el, ready, setParams(patch), refresh(), total(), params() }.
 
 import { h, replace, cover as addCover } from '../shared/dom.js';
@@ -211,10 +209,7 @@ export function table(ctx, opts) {
   async function load({ quiet = false } = {}) {
     const g = ++gen;
     if (opts.rows) { localShown = pageRows; paintLocal(); box?.recheck(); return; }
-    // a live refresh asks for as many rows as are on screen (at most a server page): the list keeps its length, so
-    // nothing below it moves and a page scrolled down the list is not cut back to the first page
-    const n = quiet && items ? Math.min(500, Math.max(limit, items.length)) : limit;
-    pager = ctx.api.pager(opts.path, { ...params, ...sortParams() }, { limit: n });
+    pager = ctx.api.pager(opts.path, { ...params, ...sortParams() }, { limit });
     if (!quiet) { replace(tbody); replace(tfoot); tbl.hidden = true; foot.hidden = true; replace(status, loadingLine(`loading ${opts.title || 'rows'}`)); box?.top(); }   // a new list starts at its top
     let got;
     try { got = await pager.more(); } catch (e) {
@@ -276,7 +271,7 @@ export function windowTable(ctx, opts) {
   const thead = h('thead');
   const tbody = h('tbody');
   const tbl = h('table', { class: ['tbl', 'vl-table', opts.cls], 'aria-label': opts.label || opts.title || null }, thead, tbody);
-  const box = h('div', { class: ['tbl-scroll tbl-box vl-box', opts.rows && 'vl-box--rows'], vars: opts.rows ? { '--vl-rows': String(opts.rows) } : null, tabindex: '0', role: 'region', 'aria-label': opts.boxLabel || opts.label || opts.title || null }, tbl);
+  const box = h('div', { class: 'tbl-scroll tbl-box vl-box', tabindex: '0', role: 'region', 'aria-label': opts.boxLabel || opts.label || opts.title || null }, tbl);
   const status = h('div', { class: 'tbl-status', hidden: true });
   const search = opts.search ? h('input', { class: 'in vl-search', type: 'search', 'aria-label': opts.search.label || 'search', placeholder: opts.search.placeholder || 'search', value: params.q || '' }) : null;
   const jumpIn = opts.jump ? h('input', { class: 'in in--date vl-date', type: 'date', 'aria-label': 'jump to date', title: 'scroll the table to the first drive of this day' }) : null;
@@ -339,7 +334,7 @@ export function windowTable(ctx, opts) {
   const list = windowList({
     box, body: tbody, head: thead, limit: opts.limit || 50, overscan: 8, rowHeight: 24,
     row: rowEl, placeholder: skelRow, spacer: gapRow,
-    load: (p) => (opts.load ? Promise.resolve(opts.load({ ...query(), sort: sort ? { ...sort } : null, ...pick(p) })) : ctx.api.get(opts.path, { ...query(), ...pick(p) }, { signal: p.signal })),
+    load: (p) => ctx.api.get(opts.path, { ...query(), ...pick(p) }, { signal: p.signal }),
     onPage: (pg) => { if (pg.total !== total) { total = pg.total; paintCount(); } opts.onPage?.(pg); },
     onError: (e) => opts.onError?.(e),
   });
@@ -360,7 +355,7 @@ export function windowTable(ctx, opts) {
     }
   }
   function paintCsv() {
-    if (opts.csv === false || !opts.path) return;
+    if (opts.csv === false) return;
     replace(csvSlot, h('a', { class: 'lnk', href: ctx.api.csvUrl(opts.path, query()), download: csvFilename(ctx.car?.name || 'sentry-mate', opts.csvName || opts.title || 'list'), cover: opts.csvCover || null }, opts.csvLabel || 'csv'));
   }
   async function restart() {

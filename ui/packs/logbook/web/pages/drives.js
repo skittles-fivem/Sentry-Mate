@@ -59,7 +59,7 @@ const listQuery = (ctx, f) => ({
   efficiency: f.basis === 'plain' ? undefined : f.basis, sort: f.sort, dir: 'desc',
 });
 const placesRead = (ctx) => ctx.api.list('places', { sort: 'name', car: ctx.car.id }, { limit: 200 });
-const listPager = (ctx, params, limit = 50) => ctx.api.pager(api.apiPath`cars/${ctx.car.id}/drives`, params, { limit });
+const listPager = (ctx, params) => ctx.api.pager(api.apiPath`cars/${ctx.car.id}/drives`, params, { limit: 50 });
 const patternsRead = (ctx, exclude) => ctx.api.get(api.apiPath`cars/${ctx.car.id}/drive-stats`, { ...ctx.params, exclude_places: exclude.length ? exclude.join(',') : undefined });
 const missingRead = (ctx) => ctx.api.page(api.apiPath`cars/${ctx.car.id}/drives`, { ...ctx.params, flags: 'gap,in_progress' }, { limit: 20 });
 // the routes of the drives listed (one request for the page)
@@ -202,12 +202,11 @@ export async function mount(ctx) {
   // quiet: a live reload (the list stays as it is until the new one is in)
   async function loadList(quiet = false) {
     const my = ++gen;
-    // a quiet reload (a drive started or ended) asks for as many drives as are shown (at most a server page), and
-    // keeps the line under the list until the new one is drawn: the list keeps its length, nothing under it moves
-    pager = listPager(ctx, listParams(), quiet ? Math.min(500, Math.max(50, items.length)) : 50);
+    pager = listPager(ctx, listParams());
     items = [];
     picked.clear();
-    if (!quiet) { replace(listBox, loadingBlock(6)); replace(more); }
+    if (!quiet) replace(listBox, loadingBlock(6));
+    replace(more);
     csv.setAttribute('href', ctx.api.csvUrl(api.apiPath`cars/${car.id}/drives`, listParams()));
     await more1(true, my);
   }

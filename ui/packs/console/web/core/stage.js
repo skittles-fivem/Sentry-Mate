@@ -8,7 +8,7 @@
 // style sheets give it the same layout; it is fixed, hidden and inert, so it is never seen, focused or
 // measured as part of the page. When build resolves (or throws) its children replace slot's.
 
-import { h, holdScroll } from '../shared/dom.js';
+import { h } from '../shared/dom.js';
 
 function shell(slot) {
   const chain = [];
@@ -47,7 +47,6 @@ export async function offstage(slot, build) {
       // the charts of the part that goes are taken down with it (core/chart.js keeps each on its box): left up,
       // each would keep its listeners, its observer and its whole drawing until the page is left
       for (const el of slot.querySelectorAll('*')) el.__smPlot?.destroy();
-      holdScroll(slot);
       slot.replaceChildren(...box.childNodes);
     }
     outer.remove();

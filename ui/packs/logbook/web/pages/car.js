@@ -21,7 +21,7 @@ import { column, timeColumn, csvFilename, downloadCsv } from '../shared/csv.js';
 import { makeMap, coordsText, boundsOf } from '../core/map.js';
 import { SPOT_ZOOM } from '../shared/maptiles.js';
 import { nearNow } from '../shared/lazy.js';
-import { stackedCharts, spansFromStates, offstage } from '../core/chart.js';
+import { stackedCharts, spansFromStates } from '../core/chart.js';
 import { activityStrip, timelineRow, AWAKE_WORDS, endLabel } from '../core/journal.js';
 import { sourceMark, valueMark, inputsLine, labelOf } from '../core/sources.js';
 import { vehiclePanel, firmwarePanel } from './car-facts.js';
@@ -882,16 +882,10 @@ function chartBlock(ctx, { title, note, link, cover, csvName }) {
       shown.map((r) => h('span', null, `${r.name} `, h('b', null, r.values[i] == null ? '—' : format(r.values[i], r.kind)))));
   }
   async function render() {
-    const old = handle;
-    handle = null;
+    if (handle) handle.destroy();
+    replace(charts);
     const rows = data.rows.filter((r) => !hidden.has(r.key));
-    // drawn again (new values on a live update, a chart shown or hidden) off screen and swapped in at once: emptied
-    // first, the block was as short as nothing until the charts were in, and the page under it moved
-    await offstage(charts, async (box) => {
-      replace(box);
-      handle = await stackedCharts(ctx, box, { tz, t_ms: data.t_ms, states: data.states, spans: data.spans || [], rows, onHover: hover });
-    });
-    old?.destroy();
+    handle = await stackedCharts(ctx, charts, { tz, t_ms: data.t_ms, states: data.states, spans: data.spans || [], rows, onHover: hover });
     zoomBtn.dataset.zoomed = '0';
     if (data.fit) zoomBtn.textContent = data.fitLabel;
   }

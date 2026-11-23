@@ -194,10 +194,6 @@ button { cursor: pointer; }
 .masthead { background: var(--paper); border-bottom: 3px double var(--rule-strong); position: sticky; top: 0; z-index: 30; }
 .masthead-row { display: flex; align-items: center; gap: round(1.5rem, var(--e)); height: var(--mast-row-h); }
 .masthead-slot { display: flex; min-width: 0; }
-/* the frame fills the masthead once the account is known (core/frame.js): the car switcher's and the period picker's
-   slots and the navigation have their height from the first paint, so the masthead never grows over the page */
-.masthead-slot:empty { min-height: round(2.75rem, var(--e)); }
-.primary-nav:empty { min-height: calc(var(--nav-h) + 1px); }
 .brand { display: inline-flex; align-items: center; gap: round(0.6875rem, var(--e)); text-decoration: none; color: var(--ink); flex: none; }
 .brand-mark { width: round(1.75rem, var(--e)); height: round(1.75rem, var(--e)); }
 .brand-mark-bg { fill: var(--accent); }
@@ -250,12 +246,8 @@ button { cursor: pointer; }
   background: transparent; color: var(--ink-2); font-size: var(--text-s); font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 .size-trigger:hover, .size-trigger[aria-expanded="true"], .account-trigger:hover, .account-trigger[aria-expanded="true"] { color: var(--ink); border-color: var(--ink-3); background: var(--paper-raised); }
-/* the glyph and the value whole px wide (Safari has no calc-size() for the button's own width): a button a fraction
-   wide was rounded up by core/snap.js, and on a phone the masthead's tools no longer fitted their line and went onto
-   a third one, pushing the page down */
-.size-trigger-glyph { font: 400 1rem var(--serif); --LH: round(calc(1 * 1em), 2px); line-height: var(--LH); width: round(up, 1.25em, 1px); text-align: center; }
+.size-trigger-glyph { font: 400 1rem var(--serif); --LH: round(calc(1 * 1em), 2px); line-height: var(--LH); }
 .size-trigger-value:empty { display: none; }
-.size-trigger-value { min-width: round(up, 2.75em, 1px); }
 .account-name { max-width: round(8rem, var(--e)); overflow: hidden; text-overflow: ellipsis; }
 .size-pop { right: 0; width: round(21rem, var(--e)); display: flex; flex-direction: column; gap: round(0.875rem, var(--e)); }
 .size-pop .choice { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); }
@@ -358,16 +350,11 @@ button { cursor: pointer; }
 .flash-info { border-color: var(--rule-strong); background: var(--paper-sunk); }
 .flash-info .flash-icon { color: var(--ink-3); }
 
-/* at least a screen high (the small one: a phone's toolbars shown), so the footer starts below the fold and is never
-   pushed down on screen as the page draws (the loading view, then the page) */
-.main { padding: round(2.375rem, var(--e)) 0 round(5.5rem, var(--e)); min-height: max(round(40rem, var(--e)), 100svh); }
+.main { padding: round(2.375rem, var(--e)) 0 round(5.5rem, var(--e)); min-height: round(40rem, var(--e)); }
 .main:focus { outline: none; }
 
 .colophon { border-top: 1px solid var(--rule); color: var(--ink-3); font-size: var(--small-2); }
 .colophon-row { display: grid; grid-template-columns: minmax(0, auto) minmax(15rem, 1fr) minmax(0, auto) auto; align-items: baseline; gap: round(0.5rem, var(--e)) round(2rem, var(--e)); padding: round(1.375rem, var(--e)) 0 round(1.875rem, var(--e)); }
-/* each on one line beside the others (their columns are as wide as they are): a column core/snap.js rounds a fraction
-   of a pixel narrower must not wrap it onto a second line, which made the footer a line taller and back */
-.colophon-name, .colophon-credit { white-space: nowrap; }
 .colophon-name { font-family: var(--serif); font-size: 0.875rem; color: var(--ink-2); }
 .colophon-api { font-family: var(--sans); font-size: var(--small-2); color: var(--ink-3); }
 .colophon-legal a, .colophon-update a { color: var(--ink-2); }
@@ -597,9 +584,6 @@ html.is-auth .main { min-height: 100vh; display: flex; align-items: flex-start; 
 /* a long list in a box of ten rows (core/table.js windowLedger): the head stays, the rows scroll, only those in view
    are drawn; every row is one height (each cell holds at most two lines, which do not wrap) */
 .vl-box { --vl-row: round(4.375rem, var(--e)); max-height: calc(round(2.375rem, var(--e)) + 10 * var(--vl-row)); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; border-bottom: 1px solid var(--rule); }
-/* a box N rows high under its head (core/table.js windowLedger, rows: N): the head and its rule, the rows, and the
-   box's own rules above and below */
-.vl-box--rows { max-height: calc(round(2.375rem, var(--e)) + 3px + var(--vl-rows) * var(--vl-row)); }
 .vl-box:focus-visible { outline: var(--focus-w) solid var(--accent); outline-offset: calc(-1 * var(--focus-w)); }
 .vl-box .ledger-table thead th { top: 0; }
 .vl-ledger tbody > tr:not(.vl-gap) { height: var(--vl-row); }
@@ -899,9 +883,6 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
   .main { padding-top: round(1.5rem, var(--e)); }
   .masthead-row { height: auto; min-height: var(--mast-row-h); flex-wrap: wrap; padding: round(0.625rem, var(--e)) 0; row-gap: round(0.625rem, var(--e)); }
   .masthead-tools { margin-left: auto; }
-  /* before the frame fills them in, the tools are as wide as they will be (the "Aa" and account buttons and the gap
-     between), so the masthead's lines break where they will from the first paint and it never grows over the page */
-  .masthead-tools:empty { width: calc(4 * round(0.6875rem, var(--e)) + 4px + round(up, 1.25rem, 1px) + round(1rem, var(--e)) + round(0.625rem, var(--e))); height: round(2rem, var(--e)); }
   .switcher-trigger, .period-trigger { width: auto; flex: 1 1 round(14rem, var(--e)); }
   .masthead-slot { flex: 1 1 round(14rem, var(--e)); }
   .masthead-slot > .pop-wrap { flex: 1 1 auto; min-width: 0; } /* the period box fills its slot, so it ends on a whole px */
@@ -913,7 +894,6 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
   .page-head { flex-wrap: wrap; row-gap: round(1rem, var(--e)); }
   .page-head-aside { text-align: left; }
   .colophon-row { grid-template-columns: minmax(0, 1fr); }
-  .colophon-name, .colophon-credit { white-space: normal; }
   .planned { grid-template-columns: minmax(0, 1fr); gap: round(1.5rem, var(--e)); }
   .chart-row { grid-template-columns: round(7rem, var(--e)) minmax(0, 1fr); }
 }

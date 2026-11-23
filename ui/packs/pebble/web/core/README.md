@@ -31,7 +31,7 @@ vendor/        MapLibre GL JS (BSD-3-Clause) and uPlot (MIT), for the map and ch
 | Module | What it does |
 |---|---|
 | `start.js` | Home routing: set-up first, then sign-in (`?next=`), then the page. Loads preferences and starts the frame and the router. |
-| `router.js` | Leaves the old page, shows grey tiles of the page's shape, loads the car and the period, calls `mount(ctx)`. The grey tiles stay until the page puts its own content in, and the view keeps their height until the page is ready, so a page never collapses and grows again while it loads. The page's part of the frame (header row, notices, grid, footer) stays hidden until its header is final (the car's name, its buttons, a title from its data with `headLater`; at most 2 s), so a header that grows never pushes the page down. A page drawn again from fresh answers keeps its header. |
+| `router.js` | Leaves the old page, shows grey tiles of the page's shape, loads the car and the period, calls `mount(ctx)`. The grey tiles stay until the page puts its own content in, and the view keeps their height until the page is ready, so a page never collapses and grows again while it loads. |
 | `frame.js` | The page header (brand, a clock with its time zone, account button, title, car pill, date-range pill, page buttons), the dock, the More sheet, notices, footer, offline chip. |
 | `pages.js` | The catalogue: title, dock and sheet label, icon, blurb, purpose, default period, car need. `DOCK` and `SHEET` order the navigation. |
 | `display.js` | Interface size (50 to 200 %), Follow screen size, `--dp`, and the bento grid in whole device pixels. `display.grid`, `display.onGrid(fn)`, `display.onChange(fn)`, `snap(px)`, `scrollToTop()`. |
@@ -59,7 +59,6 @@ import { emptyTile } from '../core/states.js';
 export const id = 'drives';
 export const css = true;                                  // optional: /pages/drives.css while shown
 export const shape = [['full', 'h1'], [2, 'h2'], [2, 'h2']]; // optional: grey tiles while it loads
-export const headLater = true;                            // optional: ctx.head() waits for data; shown once it is called
 export const title = (ctx) => 'Drives';                    // optional: the tab title
 
 export async function mount(ctx) {

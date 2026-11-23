@@ -601,7 +601,6 @@ export async function mount(ctx) {
     replace(daysTitle, city ? `${cityName(row, city)}${row && row.region ? `, ${row.region}` : ''}` : data.cities.error ? 'the city list is not loaded' : 'pick a city');
     if (!city && data.cities.error) { replace(daysBox, errorView(data.cities.error, { retry: () => loadAll(), eyebrow: 'Could not load the cities', title: 'The city list could not be loaded, so no city is chosen.', home: false })); return; }
     if (!city) { replace(daysBox, emptyStops()); return; }
-    if (await again(daysBox, 'days', params({ city }))) return;
     const dayLink = (r, page) => {
       const rz = rowTz(r);
       const from = dayStart(r.date, rz), to = dayStart(addDays(r.date, 1), rz);
@@ -623,24 +622,8 @@ export async function mount(ctx) {
       ].filter(Boolean),
       cls: 'tv-days-table',
     });
-    await swapIn(daysBox, t, 'days', params({ city }));
-  }
-
-  // A list drawn again (a live refresh, another city) loads its rows before it takes the old one's place: put in
-  // first, it was empty until they came, and everything under it moved up and back down. The first one goes in at
-  // once (its loading view shows).
-  // The same list with the same filters (a live refresh) loads its rows again in place instead, as many as it shows.
-  const lists = {};
-  async function swapIn(box, t, key, p) {
-    lists[key] = { t, p: JSON.stringify(p) };
-    if (!box.hasChildNodes()) { replace(box, t.el); return t.load(); }
-    try { await t.load(); } finally { if (ctx.alive()) replace(box, t.el); }
-  }
-  async function again(box, key, p) {
-    const l = lists[key];
-    if (!l || l.p !== JSON.stringify(p) || !box.contains(l.t.el)) return false;
-    await l.t.reload();
-    return true;
+    replace(daysBox, t.el);
+    await t.load();
   }
 
   /* ---------------------------------------------------------------- places visited */
@@ -690,8 +673,7 @@ export async function mount(ctx) {
 
   /* ---------------------------------------------------------------- recent stops */
 
-  async function drawStops() {
-    if (await again(stopsBox, 'stops', params({ sort: 'arrived_desc' }))) return;
+  function drawStops() {
     const t = dataTable(ctx, {
       path: 'visits', params: params({ sort: 'arrived_desc' }), limit: 25, itemName: ['stop', 'stops'], label: 'Recent stops',
       empty: () => emptyStops(),
@@ -711,7 +693,8 @@ export async function mount(ctx) {
       ].filter(Boolean),
       cls: 'tv-stops-table',
     });
-    return swapIn(stopsBox, t, 'stops', params({ sort: 'arrived_desc' }));
+    replace(stopsBox, t.el);
+    return t.load();
   }
 
   /* ---------------------------------------------------------------- the map */

@@ -6,7 +6,6 @@ import * as state from '../shared/state.js';
 import { initFrame } from './frame.js';
 import { watchTables } from './snap.js';
 import { markScrolling } from '../shared/dom.js';
-import { setLazy } from '../shared/lazy.js';
 import { startRouter } from './router.js';
 import * as session from './session.js';
 import { registerServiceWorker } from '../shared/offline.js';
@@ -35,9 +34,6 @@ api.on('unauthorized', ({ method, path } = {}) => {
 });
 api.on('events', (info) => { if (info?.state === 'signed_out') sessionEnded(); });
 
-// charts and maps below the fold are built when they come near (shared/lazy.js, off by default for now): their boxes
-// keep their height from the start, and the jump check (ui/tools/jumps.js) passes with it on
-setLazy(true);
 initFrame();
 watchTables();
 markScrolling(); // data-scrolling: app.css pauses the endless pulses while the page scrolls

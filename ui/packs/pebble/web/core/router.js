@@ -12,7 +12,6 @@
 //   export const id = 'drives';
 //   export const css = true;                        // optional: load /pages/drives.css first
 //   export const shape = [[2, 'h2'], [1, 'h1']];    // optional: the placeholder tiles while it loads
-//   export const headLater = true;                  // optional: its title or buttons come with its data (holdFrame)
 //   export function title(ctx) { return 'Drives'; }  // optional: the tab title's first part
 //   export async function mount(ctx) { ...; ctx.ready(); return { unmount() {}, update(ctx, why) {} }; }
 // update() is optional: without it a new period mounts the page again.
@@ -28,7 +27,7 @@
 import * as state from '../shared/state.js';
 import * as api from '../shared/api.js';
 import { loadPage, reloadPage, isPageFailed } from '../shared/build.js';
-import { h, ready, failed, unready, setTitle, cover, holdScroll } from '../shared/dom.js';
+import { h, ready, failed, unready, setTitle, cover } from '../shared/dom.js';
 import { periodParams } from '../shared/time.js';
 import { pageInfo, navId } from './pages.js';
 import { resolveFor } from './period.js';
@@ -88,28 +87,6 @@ let shownCar = null; // the car the header shows
 let selfQuery = false;
 let warmedMain = false;
 let staged = null; // a page drawn again in a hidden box: { box, commit, drop }
-let holding = null; // the hold of the page being shown (holdFrame)
-
-// A new page's part of the frame (its header row, the notices, the grid, the footer) stays hidden until its header is
-// final: the car's name in its pill, the page's own buttons, a title from its data (a page that sets its header once
-// its data is in says so with `export const headLater = true`). A header that changed after it was shown would push
-// the whole page down on a phone (a longer title wraps, a pill wraps to a new row). At most HOLD_MS: a slow answer
-// then shows the grey tiles and the header as they are.
-const HOLD_MS = 2000;
-function holdFrame() {
-  const root = document.documentElement;
-  const me = () => {
-    if (holding !== me) return;
-    holding = null;
-    clearTimeout(t);
-    root.removeAttribute('data-hold');
-  };
-  if (holding) holding();
-  holding = me;
-  root.setAttribute('data-hold', '');
-  const t = setTimeout(me, HOLD_MS);
-  return me;
-}
 
 /** Load a page's own style sheet once (pages/<id>.css, kept off while another page is shown); resolves when it applies. */
 function pageCss(id) { return pageSheet(id, new URL(`../pages/${id}.css`, import.meta.url).href); }
@@ -152,12 +129,7 @@ function stageIn(m, finishOld, busy) {
     if (done) return;
     const nodes = [...box.childNodes];
     end();
-    // (what is on screen stays where it is: the page drawn again may be taller or shorter above it)
-    holdScroll(m);
     m.replaceChildren(...nodes);
-    // once in place, the page's view is <main> itself: what it draws later (a live refresh of its list) goes there,
-    // not into the box that was taken away
-    staged_.onCommit?.();
     setStale(false);
     finishOld?.();
   }
@@ -173,7 +145,7 @@ function stageIn(m, finishOld, busy) {
     again();
   }
   const drop = (keepOld) => { if (done) return null; end(); if (keepOld) return finishOld; finishOld?.(); return null; };
-  const staged_ = staged = { box, commit, settle, drop, onCommit: null };
+  staged = { box, commit, settle, drop };
   return staged;
 }
 
@@ -224,7 +196,7 @@ function jumpToHash() {
   if (target) target.scrollIntoView({ block: 'start' });
 }
 
-function makeCtx(s, my, scope, cleanups, view = main(), stage = null, tracker = null, hold = null) {
+function makeCtx(s, my, scope, cleanups, view = main(), stage = null, tracker = null) {
   const id = s.page;
   let jumped = !!stage;
   const info = pageInfo(id === 'health' && !s.car ? 'system' : id) || pageInfo(id);
@@ -239,7 +211,6 @@ function makeCtx(s, my, scope, cleanups, view = main(), stage = null, tracker = 
     ready: () => {
       if (my !== token) return;
       tracker?.close();
-      hold?.();
       if (!warmedMain) { warmedMain = true; warmModules(MAIN.map((p) => MODULES[p])); }
       main().style.minHeight = '';
       ready(id);
@@ -251,9 +222,7 @@ function makeCtx(s, my, scope, cleanups, view = main(), stage = null, tracker = 
       console.warn(`page ${id}:`, err);
       main().removeAttribute('aria-busy');
       main().style.minHeight = '';
-      holdScroll(view);
       view.replaceChildren(errorTile(err, { retry }));
-      hold?.();
       stage?.commit();
       failed(id);
     },
@@ -263,7 +232,7 @@ function makeCtx(s, my, scope, cleanups, view = main(), stage = null, tracker = 
     /** The tab title: ctx.title('Home to Work') -> 'Home to Work · Comet · Sentry Mate'. */
     title: (...parts) => { if (my === token) setTitle(...parts, ctx.car ? ctx.car.name : null); },
     /** The page header: ctx.head({ title: 'Home to Work', actions: [button] }). */
-    head: (patch) => { if (my === token) { frame?.setHead(patch); hold?.(); } },
+    head: (patch) => { if (my === token) frame?.setHead(patch); },
     setQuery: (patch, opts) => {
       if (my !== token) return;
       selfQuery = true;
@@ -304,12 +273,9 @@ async function mount(s, { live = false } = {}) {
   const scope = counted(api.scope(), tracker);
   const stage = live ? stageIn(m, finishOld, () => scope.busy) : null;
   const cleanups = [];
-  const auth = AUTH_SCREENS.includes(id);
-  const hold = !live && !auth ? holdFrame() : null;
-  if (!live && auth) holding?.(); // (a sign-in screen has no header to wait for)
-  const ctx = makeCtx(s, my, scope, cleanups, stage ? stage.box : m, stage, tracker, hold);
-  if (stage) stage.onCommit = () => { ctx.view = ctx.main = m; };
+  const ctx = makeCtx(s, my, scope, cleanups, stage ? stage.box : m, stage, tracker);
   rec = current = { key: keyOf(s), id, ctx, instance: null, scope, cleanups, tracker, shown: false, changed: false };
+  const auth = AUTH_SCREENS.includes(id);
   if (!live) {
     document.documentElement.classList.toggle('is-auth', auth);
     document.documentElement.dataset.page = id;
@@ -324,7 +290,6 @@ async function mount(s, { live = false } = {}) {
       setTitle('Not found');
       m.replaceChildren(errorTile(Object.assign(new Error('There is no page at this address. The dock below leads to every page.'), { status: 404, code: 'not_found' })));
       m.removeAttribute('aria-busy');
-      hold?.();
       failed('not-found');
       return;
     }
@@ -350,8 +315,7 @@ async function mount(s, { live = false } = {}) {
     ctx.tz = (car && car.time_zone) || browserZone;
     ctx.period = resolveFor(ctx.info, s, ctx.tz);
     ctx.params = ctx.period ? periodParams(ctx.period) : {};
-    // (a page drawn again keeps its header: the one drawn again sets the same title and buttons when it is put in)
-    if (!auth) { frame?.update({ page: id, info: ctx.info, car, tz: ctx.tz, period: ctx.period, carsCount, keepHead: live }); if (car) shownCar = car; }
+    if (!auth) { frame?.update({ page: id, info: ctx.info, car, tz: ctx.tz, period: ctx.period, carsCount }); shownCar = car; }
     const mod = await modP;
     if (my !== token) return;
     if (mod.shape && !auth && !live) m.replaceChildren(...loadingTiles(mod.shape));
@@ -366,12 +330,7 @@ async function mount(s, { live = false } = {}) {
     const mo = new MutationObserver(unghost);
     mo.observe(m, { childList: true });
     let inst;
-    try {
-      const mounted = mod.mount(ctx);
-      // (its own buttons are in the header by now: what mount() does before its first await)
-      if (!mod.headLater) hold?.();
-      inst = await mounted;
-    } finally { if (my === token) { unghost(); m.style.minHeight = ''; } else mo.disconnect(); }
+    try { inst = await mod.mount(ctx); } finally { if (my === token) { unghost(); m.style.minHeight = ''; } else mo.disconnect(); }
     if (my !== token) { try { inst?.unmount?.(); } catch { /* left */ } return; }
     current.instance = inst || null;
     rec.shown = true;
@@ -384,7 +343,6 @@ async function mount(s, { live = false } = {}) {
   } catch (err) {
     if (my !== token || api.isAbort(err)) return;
     first = false;
-    hold?.();
     if (!auth && !ctx.car) frame?.update({ page: id, info: ctx.info, car: null, tz: ctx.tz, period: null, carsCount });
     // failed before the page was built: the tab's title is this page's, never the one before
     if (!current?.instance) setTitle(ctx.info ? ctx.info.title : id, ctx.car ? ctx.car.name : null);

@@ -2,7 +2,7 @@
 // - /cars/{car}/health: is this car's data arriving and trusted (one check per row with a status word and its
 //   dot, the fix for each problem, the bridge keys, Rebuild all data for admins with its progress), the gaps
 //   and unknown time of the period as a log, what is recorded (totals and rows kept), what its data takes on
-//   disk, and every signal of its newest log in a box five rows high that sorts and scrolls on its own.
+//   disk, and every signal of its newest log in a list that sorts and scrolls on its own.
 // - /system: the server's storage (total, free, growth, full in, by kind), the server's own checks (uptime,
 //   versions, memory, timings), the clock, the /health address for container checks, the one error shape of the
 //   API with a live try, and every car's data status.
@@ -16,14 +16,13 @@
 // gaps and totals again, in place, once a burst has passed. Reload reads the whole page again.
 
 import { h } from '../shared/dom.js';
-import { windowList } from '../shared/vlist.js';
 import { format, convert } from '../shared/units.js';
 import { formatDateTime, formatDuration, formatDayKey } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { tile, btn, linkBtn, icon, note, stateTag, ago } from '../core/ui.js';
-import { emptyTile, errorWords, ghostTile } from '../core/states.js';
+import { emptyTile, errorWords, ghostTile, plotGhost } from '../core/states.js';
 import { bars } from '../core/chart.js';
 import { filterBar, statTile, checkRow, sectionHead, pills, moreButton, listBox, nums, facts } from '../core/bits.js';
 import { srcShort, srcPill } from '../core/source.js';
@@ -35,7 +34,7 @@ import { VERSION_SOURCE } from '../core/firmware.js';
 import { STATUS, STATUS_ORDER } from './connections.js';
 import { deviceText, keyRows } from './device-name.js';
 import { fullRebuildTile } from '../core/fullrebuild.js';
-import { gpsFitBlock } from '../shared/gpsfit.js';
+import { gpsLayoutSection, hasCanData } from '../shared/gpsfit.js';
 import { confirmSheet } from '../core/sheet.js';
 import { toast } from '../core/toast.js';
 import * as fr from '../shared/fullrebuild.js';
@@ -128,6 +127,17 @@ async function mountCar(ctx) {
 
   // The signals of the newest log are decoded from the stored logs (the slowest answer by far): they load beside
   // the rest and fill their own tile when they are in. The other tiles wait in grey tiles of their size meanwhile.
+  // GPS layout: the layout this car's Screenmate GPS frames are read with, always shown for a car with SMO data (in
+  // the keys tile), with Find GPS layout and Reset to standard for admins (read-only for others); built once and
+  // kept in place (the fit opens under its line once used). Its first reads go with the page's.
+  const gpsLayout = gpsLayoutSection({
+    api: ctx.api, car: car.id, admin: !!ctx.admin, alive: () => ctx.alive(), when,
+    flash: (t, o) => toast(t, { kind: o?.kind === 'error' ? 'error' : 'ok' }),
+    confirm: (text, o) => confirmSheet({ title: o.title, text, yes: o.ok }),
+    errorText: (e) => errorWords(e).text, onApplied: () => ctx.alive() && ctx.reload(),
+    btnClass: 'btn btn-soft btn-sm', applyClass: 'btn btn-primary btn-sm', resetClass: 'btn btn-soft btn-sm', icon: (n) => icon(n),
+  });
+  ctx.onCleanup(() => gpsLayout.stop());
   const sigP = ctx.api.list(`${base}/signals/latest`, {}, { limit: 500 }).all({ max: 5000 }).catch(() => []);
   ctx.view.replaceChildren(bar, ghostTile(2, 'h3'), ghostTile(2, 'h2'), ghostTile(2, 'h2'), ghostTile(2, 'h2'), ghostTile(2, 'h2'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile(1, 'h1'), ghostTile('full', 'h3'));
   const [hl0, gaps0, all0, can0, tm0, upd0, st, tapi0, tst, tfi0, tfst, tmst, ov] = await Promise.all([
@@ -144,6 +154,7 @@ async function mountCar(ctx) {
     ctx.admin ? ctx.api.list('integrations/teslafi/status').all().catch(() => null) : Promise.resolve(null),
     ctx.admin ? ctx.api.get(TM_BASE).catch(() => null) : Promise.resolve(null),
     ctx.admin ? ctx.api.get('integrations/overview').catch(() => null) : Promise.resolve(null),
+    gpsLayout.ready,
   ]);
   if (!ctx.alive()) return {};
   // what the live parts are painted from: the health (its events), the gaps and the totals (read again on `rows`)
@@ -164,14 +175,6 @@ async function mountCar(ctx) {
   paintRebuild(null);
   // Rebuild all data (admins): everything worked out made again from the stored data, in the keys tile
   const full = ctx.admin ? fullRebuildTile(ctx, { car, label: 'Rebuild all data', bare: true, onStatus: paintRebuild }) : null;
-  // Find GPS layout (admins): in the notice that one input's positions are out of step; built once and kept in place
-  const gpsFit = ctx.admin ? gpsFitBlock({
-    api: ctx.api, car: car.id, alive: () => ctx.alive(), flash: (t, o) => toast(t, { kind: o?.kind === 'error' ? 'error' : 'ok' }),
-    confirm: (text, o) => confirmSheet({ title: o.title, text, yes: o.ok }),
-    errorText: (e) => errorWords(e).text, onApplied: () => ctx.alive() && ctx.reload(),
-    btnClass: 'btn btn-soft btn-sm', applyClass: 'btn btn-primary btn-sm', icon: (n) => icon(n),
-  }) : null;
-  if (gpsFit) ctx.onCleanup(() => gpsFit.stop());
 
   // each live tile is built by a function of its data: the first time it goes on the page, later ones are made
   // like it in place (core/morph.js: only the texts that changed are written)
@@ -200,7 +203,7 @@ async function mountCar(ctx) {
         const r = REASONS[code] || [code, '', null];
         return h('li', { class: 'fix' }, h('b', null, r[0]), h('span', null, r[1]),
           r[2] ? linkBtn(r[2], state.buildUrl('settings-cars', { car: car.id }), { icon: 'key', cls: 'fix-btn' }) : null,
-          code === 'gps_inputs_disagree' && gpsFit ? keepEl(gpsFit.el, 'gps-fit') : null);
+          code === 'gps_inputs_disagree' ? h('span', { class: 'fix-more' }, 'See GPS layout under CAN Bridge keys: Find GPS layout works out how this car’s Screenmate GPS frames should be read.') : null);
       })) : null);
   };
 
@@ -213,6 +216,7 @@ async function mountCar(ctx) {
         level: k.logs_waiting ? 'warn' : k.last_upload_ms != null ? 'ok' : 'off',
         side: h('span', { class: 'hl-key-side' }, h('span', { class: 'check-word' }, k.preferred ? 'Preferred · ' : '', k.last_upload_ms != null ? ago(k.last_upload_ms) : 'never'), rename) })))
         : note('No key is tied to this car yet. Pair a CAN Bridge in car settings.'),
+      hasCanData(car, hl) ? keepEl(gpsLayout.el, 'gps-layout') : null,
       keepEl(fullEl, 'full-rebuild'));
   };
 
@@ -305,47 +309,28 @@ async function mountCar(ctx) {
   let sort = 'name', sig = [];
   const search = h('input', { type: 'search', placeholder: 'Find a signal or value', 'aria-label': 'Find a signal', autocomplete: 'off' });
   const count = h('span', { class: 'filter-note' });
-  // The signals: a box five rows high that scrolls inside itself under a head that stays (a long list need not take a
-  // big part of the page), the search and the sort above it. Only the rows in view are drawn (shared/vlist.js), from
-  // the list the page holds; every row is one height (each line cut short, its whole text in its title).
-  let shown = [];
-  const busWord = (s) => (s.bus === 'chassis' ? 'chassis' : s.bus === 'vehicle' ? 'vehicle' : s.bus);
-  const sigRow = (s, i) => h('div', { class: 'sig-row', role: 'row', dataset: { vlRow: String(i) } },
-    h('span', { role: 'cell', class: 'sig-name', title: s.comment && s.comment !== s.series ? `${s.comment} (${s.series})` : s.series },
-      h('b', null, s.comment || s.series), h('span', { class: 'sig-id' }, s.series)),
-    h('span', { role: 'cell', class: 'sig-msg' }, `${s.message_id} · ${busWord(s)}`),
-    h('span', { role: 'cell', class: 'sig-val', title: text(s) }, text(s)));
-  const sigSkel = (i) => h('div', { class: 'sig-row is-skel', role: 'row', 'aria-hidden': 'true', dataset: { vlSkel: String(i) } },
-    h('span', { class: 'sig-name' }, h('b', null, '…')));
-  const sigHeadRow = h('div', { class: 'sig-row sig-head', role: 'row' }, h('span', { role: 'columnheader', cover: 'nr.dash.state-table.parameter' }, 'Signal'), h('span', { role: 'columnheader', class: 'sig-mh' }, 'Message'), h('span', { role: 'columnheader', cover: 'nr.dash.state-table.value' }, 'Value'));
-  const sigBody = h('div', { class: 'sig-body', role: 'rowgroup' });
-  const sigNone = h('p', { class: 'lede sig-none', hidden: true });
-  // (is-loading: the box is its full five rows high until the signals are in)
-  const listEl = h('div', { class: 'sig-list is-loading', role: 'table', 'aria-label': 'Signals (scrolls)', tabindex: '0', cover: ['nr.dash.state-table', 'nr.dash.state-table.sort-scroll'] }, sigHeadRow, sigBody, sigNone);
-  const sigList = windowList({
-    box: listEl, body: sigBody, head: sigHeadRow, limit: 100, overscan: 6, rowHeight: 56,
-    row: sigRow, placeholder: sigSkel, spacer: () => h('div', { class: 'vl-gap' }),
-    load: ({ offset = 0, limit = 100 }) => Promise.resolve({ items: shown.slice(offset, offset + limit), offset, total: shown.length, next: null }),
-  });
-  ctx.onCleanup(() => sigList.destroy());
+  const listEl = h('div', { class: 'sig-list', role: 'table', 'aria-label': 'Signals', tabindex: '0', cover: ['nr.dash.state-table', 'nr.dash.state-table.sort-scroll'] });
   const sortPills = pills({ label: 'Sort by', value: sort, options: [['name', 'Name'], ['value', 'Value'], ['message', 'Message'], ['at', 'Newest']], onchange: (v) => { sort = v; paint(); } });
   function paint() {
     const words = search.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
     let rows = sig.filter((s) => !words.length || words.every((w) => [s.series, s.comment, s.message_id, s.bus, s.unit, s.value_name, text(s)].filter(Boolean).join(' ').toLowerCase().includes(w)));
     const val = (s) => (s.value_name ? null : s.value == null ? null : kindOf(s) ? convert(s.value, kindOf(s)) : s.value);
     const cmp = { name: (a, b) => (a.comment || a.series).localeCompare(b.comment || b.series), value: (a, b) => (val(b) ?? -Infinity) - (val(a) ?? -Infinity), message: (a, b) => `${a.bus}${a.message_id}`.localeCompare(`${b.bus}${b.message_id}`), at: (a, b) => (b.at_ms || 0) - (a.at_ms || 0) }[sort];
-    shown = rows.slice().sort(cmp);
-    count.textContent = words.length ? `${n0(shown.length)} of ${n0(sig.length)}` : `${n0(sig.length)} signals`;
-    sigNone.hidden = !!shown.length;
-    sigNone.textContent = shown.length ? '' : sig.length ? 'No signal matches.' : 'Signals show once the first log is decoded.';
-    // (the box keeps its full height until its rows are in: the window of rows is worked out from that height)
-    return sigList.start().finally(() => listEl.classList.remove('is-loading'));
+    rows = rows.slice().sort(cmp);
+    count.textContent = words.length ? `${n0(rows.length)} of ${n0(sig.length)}` : `${n0(sig.length)} signals`;
+    listEl.replaceChildren(
+      h('div', { class: 'sig-row sig-head', role: 'row' }, h('span', { role: 'columnheader', cover: 'nr.dash.state-table.parameter' }, 'Signal'), h('span', { role: 'columnheader' }, 'Message'), h('span', { role: 'columnheader', cover: 'nr.dash.state-table.value' }, 'Value')),
+      ...(rows.length ? rows.slice(0, 400).map((s) => h('div', { class: 'sig-row', role: 'row' },
+        h('span', { role: 'cell', class: 'sig-name' }, h('b', null, s.comment || s.series), h('span', { class: 'sig-id' }, s.series)),
+        h('span', { role: 'cell', class: 'sig-msg' }, `${s.message_id} · ${s.bus === 'chassis' ? 'chassis' : s.bus === 'vehicle' ? 'vehicle' : s.bus}`),
+        h('span', { role: 'cell', class: 'sig-val' }, text(s)))) : [h('p', { class: 'lede sig-none' }, sig.length ? 'No signal matches.' : 'Signals show once the first log is decoded.')]));
   }
   let timer = 0;
   ctx.on(search, 'input', () => { clearTimeout(timer); timer = setTimeout(() => ctx.alive() && paint(), 150); });
   ctx.onCleanup(() => clearTimeout(timer));
   const sigT = tile({ w: 'full', title: 'Signals', icon: 'pulse', cls: 'sig-tile' },
     h('div', { class: 'page-bar' }, h('label', { class: 'search-pill' }, icon('search'), search), sortPills, count), listEl);
+  listEl.append(plotGhost());
 
   let status = statusOf(), keysT = keysOf(), missT = missOf(), rowsT = rowsOf(), tots = totsOf();
   let logSig = JSON.stringify(logLines());
@@ -401,6 +386,7 @@ async function mountCar(ctx) {
     type: 'health', match: carOf(car.id), pick: (d) => d.health,
     load: () => {
       if (firstHealth) { firstHealth = false; return Promise.resolve(hl0); }
+      gpsLayout.load().catch(() => {});
       return ctx.api.get(`${base}/health`, fullPeriod(ctx.params));
     },
     pollMs: (v) => (v?.rebuild_pending ? 3000 : FALLBACK_POLL_MS),
@@ -425,8 +411,7 @@ async function mountCar(ctx) {
   });
   [sig] = await Promise.all([sigP, full?.ready]);
   if (!ctx.alive()) return {};
-  await paint();
-  if (!ctx.alive()) return {};
+  paint();
   ctx.ready();
   return {};
 }

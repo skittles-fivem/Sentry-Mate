@@ -8,7 +8,7 @@
 // when plugging in and when charging stops, the charging places on a map and the fast-charging curve.
 // Data: GET /api/v1/cars/{car}/charges (paged, totals), /charging-stats, /charging-stats/places, /charging-stats/dc-curve.
 
-import { h, holdScroll } from '../shared/dom.js';
+import { h } from '../shared/dom.js';
 import { format, formatMoney, unitLabel } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -164,7 +164,7 @@ export async function mount(ctx) {
         btn('Show charges', { kind: 'primary', onclick: () => { f.place = fPlace.control.value; f.q = fQ.control.value.trim(); f.min_cost = n(fCost); f.min_dur = n(fDur); f.source = fSrc.querySelector('[aria-checked="true"]')?.dataset.value || ''; sheet.close(); apply(); } }))));
   }
   fill();
-  async function apply() { write(); drawNote(); await both(); ctx.ready(); }
+  async function apply() { write(); drawNote(); await Promise.all([loadList(), loadStats()]); ctx.ready(); }
 
   /* ------------------------------------------------------------ totals, missing data, the list */
   const sumBox = h('div', { class: 'contents' });
@@ -208,15 +208,11 @@ export async function mount(ctx) {
   // Each load has its own pager and draws only if no later load (a filter change, a live update) started
   // meanwhile, so an older answer never overwrites a newer one and the old list stays until the new one is in.
   let listSeq = 0;
-  // live: a live refresh asks for as many charges as are shown (at most a server page), so a list opened further with
-  // "Show earlier charges" is not cut back to its first page under the person reading it
-  async function loadList({ live = false } = {}) {
+  async function loadList() {
     const seq = ++listSeq;
-    const p = ctx.api.pager(listPath, listParams(), { limit: live && pager ? Math.min(500, Math.max(30, pager.items.length)) : 30 });
+    const p = ctx.api.pager(listPath, listParams(), { limit: 30 });
     const [, inc] = await Promise.all([p.more(), ctx.api.page(listPath, { ...base(), flags: 'gap,in_progress' }, { limit: 6 }).catch(() => null)]);
     if (!ctx.alive() || seq !== listSeq) return;
-    // what is on screen stays where it is while the parts above it are drawn again (shared/dom.js)
-    holdScroll(ctx.view);
     pager = p;
     drawSummary(pager.last?.totals);
     drawIncomplete(inc);
@@ -228,28 +224,20 @@ export async function mount(ctx) {
     } else drawFrom(0);
   }
 
-  /** The list and the statistics, read at once; the statistics drawn after the list. */
-  function both() { const l = loadList(); return Promise.all([l, loadStats({ after: l })]); }
-
   /* ------------------------------------------------------------ statistics */
   const statsBox = h('div', { class: 'contents', cover: 'shots.charging-stats' });
   let heatSide = Q.heat === 'end' ? 'end' : 'start';
-  // after: the list's load; the statistics under the list are drawn once it is in, so the list never comes in above
-  // them and pushes them down the screen
-  async function loadStats({ after = null } = {}) {
+  async function loadStats() {
     const sp = statsParams();
     let s, rows;
     try {
       [s, rows] = await Promise.all([ctx.api.get(statsPath, sp), ctx.api.list(listPath, sp, { limit: 500 }).all({ max: 3000 })]);
-      await after?.catch(() => {});
     } catch (err) {
       if (!ctx.alive()) return;
-      holdScroll(ctx.view);
       statsBox.replaceChildren(sectionHead('Charging statistics'), emptyTile({ icon: 'warning', title: 'The statistics did not load', text: err.message }));
       return;
     }
     if (!ctx.alive()) return;
-    holdScroll(ctx.view);
     rows = rows.filter((c) => c.start_soc_pct != null).sort((a, b) => a.start_ms - b.start_ms);
     const ppk = s.price_per_kwh || {};
     const c100 = s.cost_per_100km || {};
@@ -407,18 +395,11 @@ export async function mount(ctx) {
 
   drawNote();
   drawSummary(null);
-  // the page goes in once its list is in (the grey tiles until then): drawn on the page, the tile of charges with
-  // missing data would come in above the list's head and push it and what is under it down
-  const parts = h('div', null, bar, sumBox, incBox, listHead, listStart, statsBox);
-  const listP = loadList();
-  const statsP = loadStats({ after: listP });
-  await listP.catch(() => {});
-  if (!ctx.alive()) return {};
-  ctx.view.replaceChildren(...parts.childNodes);
-  await Promise.all([listP, statsP]);
+  ctx.view.replaceChildren(bar, sumBox, incBox, listHead, listStart, statsBox);
+  await Promise.all([loadList(), loadStats()]);
   if (!ctx.alive()) return {};
   ctx.ready();
   // A charge started or ended (or a rebuild): load the list again; a failed live reload keeps what is shown.
-  ctx.events(['rows'], (ev) => { if (ev.data?.kinds && !ev.data.kinds.includes('charges')) return; if (car && ev.data?.car && ev.data.car !== car.id) return; loadList({ live: true }).catch(() => {}); });
-  return { onQuery: async () => { await both(); } };
+  ctx.events(['rows'], (ev) => { if (ev.data?.kinds && !ev.data.kinds.includes('charges')) return; if (car && ev.data?.car && ev.data.car !== car.id) return; loadList().catch(() => {}); });
+  return { onQuery: async () => { await Promise.all([loadList(), loadStats()]); } };
 }
