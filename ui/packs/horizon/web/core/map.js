@@ -157,7 +157,9 @@ export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bo
   const styleSwitch = interactive ? mapStyleSwitch(cfg, getPrefs(), {
     classes: { box: 'map-style maplibregl-ctrl', button: 'map-style-btn', active: 'is-active' },
     label: 'Map style',
-    onChange: (next) => { if (map.loaded() || map.isStyleLoaded()) swap(next); else map.once('load', () => swap(next)); },
+    // after 'load', not while the style is "loaded": map.loaded() and isStyleLoaded() read false while any tiles or
+    // sources are still loading, long after 'load' fired (which never fires again), and a pick then was lost
+    onChange: (next) => { ready.then(() => { if (ctx.alive()) swap(next); }); },
   }) : null;
   // bottom right, above the credit: the page's own cards sit at the top
   if (styleSwitch) map.addControl({ onAdd: () => styleSwitch, onRemove: () => styleSwitch.remove() }, 'bottom-right');
