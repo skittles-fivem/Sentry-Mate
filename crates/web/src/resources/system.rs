@@ -204,6 +204,7 @@ async fn rebuild(
     let e2 = e.clone();
     let job = app
         .blocking(move |_| {
+            super::full_rebuild::refuse_while_running(&e2)?;
             e2.rebuild(engine::Scope { car: Some(car), from_ms: from, to_ms: to })
                 .map_err(|x| ApiError::server(format!("starting the rebuild: {x}")))
         })

@@ -1620,6 +1620,8 @@ async fn start_web(
     let mut tasks = tasks;
     if !moved {
         tasks.push(site::spawn_missing_scan(app.clone(), gate.clone()));
+        // a full rebuild's end into the audit log, and the one a new server version calls for started
+        tasks.push(web::resources::full_rebuild::spawn_watch(app.clone()));
     }
     // the Tesla API input reads cars only on a server that serves its data (not after a move away), and only for an
     // account an admin added: with none, nothing is started and nothing connects to Tesla

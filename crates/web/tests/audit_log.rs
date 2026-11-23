@@ -34,6 +34,9 @@ use Case::*;
 
 /// Every change route (method, pattern) and how it is covered.
 const ROUTES: &[(&str, &str, Case)] = &[
+    ("POST", "/api/v1/cars/{car}/full-rebuild", Elsewhere("system.rs")),
+    ("POST", "/api/v1/system/full-rebuild", Elsewhere("system.rs")),
+    ("DELETE", "/api/v1/system/full-rebuild", Elsewhere("system.rs")),
     ("POST", "/api/v1/accounts", Walk),
     ("PATCH", "/api/v1/accounts/{account}", Walk),
     ("DELETE", "/api/v1/accounts/{account}", Walk),
