@@ -138,6 +138,51 @@ test('the same read asked for twice at once is sent once', async () => {
   assert.equal(f.calls.length, 3, 'a finished read is not kept unless asked');
 });
 
+test('reads in flight are shared only when URL, accept and headers match; changes are never shared', async () => {
+  const gate = deferred();
+  const f = fakeFetch((url, init) => gate.promise.then(() => json(200, { url, accept: init.headers.Accept, lang: init.headers['X-Lang'] ?? null })));
+  const api = createClient({ fetch: f });
+  // three callers at once, headers given in another order and case: one request
+  const same = [
+    api.get('cars/c1/drives', { limit: 50 }, { headers: { 'X-Lang': 'en', 'X-Other': '1' } }),
+    api.get('cars/c1/drives', { limit: 50 }, { headers: { 'x-other': '1', 'x-lang': 'en' } }),
+    api.page('cars/c1/drives', {}, { limit: 50, headers: { 'X-Other': '1', 'X-Lang': 'en' } }),
+  ];
+  // another header value, another accept, no headers: each its own request
+  const other = api.get('cars/c1/drives', { limit: 50 }, { headers: { 'X-Lang': 'de', 'X-Other': '1' } });
+  const csv = api.get('cars/c1/drives', { limit: 50 }, { accept: 'csv' });
+  const plain = api.get('cars/c1/drives', { limit: 50 });
+  // changes at the same path at once: each sent
+  const posts = [api.post('cars/c1/drives', { a: 1 }), api.post('cars/c1/drives', { a: 1 })];
+  await tick();
+  const gets = f.calls.filter((c) => c.init.method === 'GET');
+  assert.equal(gets.length, 4, 'one shared read, plus the other header, the CSV and the plain one');
+  assert.equal(f.calls.filter((c) => c.init.method === 'POST').length, 2, 'changes are never shared');
+  gate.resolve();
+  const answers = await Promise.all(same);
+  for (const a of answers) {
+    assert.equal(a.lang, 'en');
+    assert.match(a.url, /\/api\/v1\/cars\/c1\/drives\?limit=50$/);
+  }
+  assert.equal((await other).lang, 'de');
+  assert.equal(typeof (await csv), 'string', 'the CSV caller gets text, not the JSON answer');
+  assert.equal((await plain).lang, null);
+  await Promise.all(posts);
+  // once answered, the next read is sent again (nothing is kept unless maxAgeMs asks)
+  await api.get('cars/c1/drives', { limit: 50 }, { headers: { 'X-Lang': 'en', 'X-Other': '1' } });
+  assert.equal(f.calls.filter((c) => c.init.method === 'GET').length, 5);
+  // a caller asking after a change started does not join a read from before it
+  const gate2 = deferred();
+  const g = fakeFetch((url, init) => (init.method === 'GET' ? gate2.promise.then(() => json(200, { n: g.calls.length })) : json(204)));
+  const api2 = createClient({ fetch: g });
+  const before = api2.get('me');
+  await api2.patch('me/preferences', { theme: 'dark' });
+  const after = api2.get('me');
+  gate2.resolve();
+  await Promise.all([before, after]);
+  assert.equal(g.calls.filter((c) => c.init.method === 'GET').length, 2);
+});
+
 test('cancelling: one caller leaving does not cancel the others; the last one leaving cancels the request', async () => {
   const f = fakeFetch(hanging);
   const api = createClient({ fetch: f });

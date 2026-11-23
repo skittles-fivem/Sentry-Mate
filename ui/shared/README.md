@@ -177,7 +177,7 @@ downloadCsv(csvFilename(car.name, 'battery-level'), rows, [timeColumn('Time', 't
 `h(tag, attrs, ...children)`, `svg(tag, attrs, ...children)`, `append`, `text`, `frag`, `clear`, `replace`,
 `on(target, type, fn)`, `esc`, `safeUrl`, `setVars(el, vars)`, `cssVar(name)`, `cover(el, ...ids)`,
 `ready(pageId)`, `unready()`, `failed(pageId)`, `readyPage()`, `setTitle(...parts)`, `quantity(value, kind,
-opts)`.
+opts)`, `styleSheet(href, { first })` (adds a style sheet once, after the others or with `first` before them, and resolves when it has loaded: maps and charts await it).
 
 `h()` attributes: `class` (text, array or `{ name: on }`), `dataset`, `vars` (CSS custom properties, set through
 CSSOM), `style` (an object, CSSOM), `cover` (inventory item ids), `on<event>` functions, `value` / `checked`
