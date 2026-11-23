@@ -557,9 +557,9 @@ export async function mount(ctx) {
   whoSel.addEventListener('change', refilter);
   const audit = admin ? table(ctx, {
     title: 'audit log', path: 'audit', limit: 10, csvName: 'audit-log', label: 'Who changed what', wrapCls: 'audit-sec',
-    note: `Every change and sign-in, newest first. Times in ${tz}.`,
+    note: `Every change and sign-in, newest first; five at a time, more as you scroll the list. Times in ${tz}.`,
     filters: h('div', { class: 'filt filt--audit' }, h('span', { class: 'filt-p' }, 'filter>'), h('span', { class: 'filt-sel' }, whatSel), h('span', { class: 'filt-sel' }, whoSel)),
-    autoMore: true, moreLabel: 'load more',
+    autoMore: true, moreLabel: 'load more', box: 'Audit log entries',
     columns: [
       { key: 'at_ms', label: 'when', ph: 'sub', cls: 'nowrap', render: (e) => dateTime(e.at_ms, tz) },
       { key: 'account', label: 'who', ph: 'num', cls: 'nowrap', render: (e) => e.account || h('span', { class: 'muted' }, 'the server') },

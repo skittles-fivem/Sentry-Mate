@@ -23,7 +23,8 @@ follow the server's versioned prefix (`/_v/<version>/...`) that `index.html` is 
 
 ```
 index.html     the frame's elements only: #top (#cmd, #links), #notices, #view, #foot, #toasts
-boot.js        runs before the first paint: Interface size, Follow screen size and theme from this browser's copy
+boot.js        runs before the first paint: Interface size (this device's own size from sentrymate.device-size when
+               set, else the account's), Follow screen size and theme from this browser's copy
 app.css        sizes, colours, base, frame, components, states, dialogs, bare screens, phone, motion
 fonts/         JetBrains Mono and IBM Plex Sans (Latin), with OFL.txt
 vendor/        MapLibre GL JS and uPlot (licences next to them), loaded by the pages that draw maps and charts
@@ -56,7 +57,7 @@ pages/<id>.js  one module per page id, plus sign-in and setup; pages/<id>.css wh
 | `fmt.js` | `num(value, kind)` (number with its unit muted), `numText`, `time`, `date`, `dateTime`, `when`, `dur`, `ago`, `range`, `slug`, `stateWord`, `tag`. |
 | `bare.js` | The sign-in and set-up box: centred both ways on whole pixels; `canSendSecrets()` and the plain-HTTP line. |
 | `stage.js` | `offstage(slot, build)`: a part of a page drawn again on a live update is built in an invisible box of the same width (charts and all) and swapped in at once. |
-| `table.js` | `table(ctx, opts)`: dense text tables from an API list (server sort and paging, csv) or local rows, a totals row, `data-row` rows, the two-line phone rows (`ph: 'main' \| 'sub' \| 'num'`); `cellBar(frac, cells)`. |
+| `table.js` | `table(ctx, opts)`: dense text tables from an API list (server sort and paging, csv) or local rows, a totals row, `data-row` rows, the two-line phone rows (`ph: 'main' \| 'sub' \| 'num'`); `autoMore`, and `box` for rows that scroll in a box of their own (`.tbl-box`, its height from the page's CSS; the audit log); `cellBar(frac, cells)`. |
 | `chart.js` | uPlot: `loadUPlot`, `plot(el, ctx, make, data, { onCursor })`, `line(label, n)` (series n: c1 solid, c2 / c3 dashed), `timeAxis(tz)`, `valueAxis(fmt)`, `cursor(syncKey)`, `readout()`, `chartOrNote`. |
 | `map.js` | MapLibre in a flat grey style: `createMap` / `safeMap(el, ctx, opts)` with `line`, `points`, `circle`, `marker`, `fit`, `frame`. |
 | `strip.js` | `stateStrip(ctx, items, from, to, tz)`: the state strip, one character per cell. |

@@ -521,9 +521,9 @@ export async function mount(ctx) {
 
   /* ================================================================ audit log (admins) */
   // Each entry in words (shared/audit.js): what was done (its code on hover), who, when, what happened and the
-  // item it changed, linked where it still exists. Filters: what (a group of actions) and who. Ten entries
-  // first; the next ten when the end of the list scrolls into view, or with Load more. New entries go under
-  // the ones on screen, which stay as they are.
+  // item it changed, linked where it still exists. Filters: what (a group of actions) and who. The list scrolls
+  // in a box about five entries high (its height set from the start); ten entries first, the next ten as the
+  // end of the box comes near, or with Load more. New entries go under the ones on screen, which stay as they are.
   let auditT = null;
   async function auditTile() {
     const trips = new Map((await ctx.api.list('trips', {}).all({ max: 2000 }).catch(() => [])).map((t) => [String(t.id), t]));
@@ -551,6 +551,15 @@ export async function mount(ctx) {
     const list = h('div', { class: 'rows-list au-list', role: 'list', 'aria-label': 'Audit log entries' });
     const status = h('div', { class: 'au-status' });
     const sentinel = h('div', { class: 'au-sentinel', 'aria-hidden': 'true' });
+    // the box: a focusable region (arrow keys scroll it), data-below while entries are hidden under its bottom edge
+    const box = h('div', { class: 'au-box', tabindex: '0', role: 'region', 'aria-label': 'Audit log entries' }, status, list, sentinel);
+    const edge = () => box.toggleAttribute('data-below', box.scrollHeight - box.scrollTop - box.clientHeight > 1);
+    box.addEventListener('scroll', edge, { passive: true });
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(edge);
+      ro.observe(box); ro.observe(list);
+      ctx.onCleanup(() => ro.disconnect());
+    }
     const moreBtn = btn('Load more', { kind: 'soft', icon: 'chevronDown', cls: 'more-btn', onclick: () => more() });
     const moreRow = h('div', { class: 'more-row' }, moreBtn);
     const csv = linkBtn('Download CSV', ctx.api.csvUrl('audit', params()), { kind: 'ghost', icon: 'download', cls: 'btn-sm' });
@@ -586,6 +595,7 @@ export async function mount(ctx) {
       const got = await pager.more().catch((e) => { if (g === gen && ctx.alive()) status.replaceChildren(said('warn', `The log did not load: ${(e && e.message) || 'the server did not answer'}`)); return null; });
       if (g !== gen || !ctx.alive() || !got) return;
       list.replaceChildren(...got.map(rowOf));
+      box.scrollTop = 0;   // new filters: the list starts at its top
       list.hidden = !got.length;
       status.replaceChildren(got.length ? '' : said('info', F.group || F.who ? 'No entry matches this what and who.' : 'Nothing recorded yet.'));
       shown();
@@ -595,7 +605,7 @@ export async function mount(ctx) {
       ? new IntersectionObserver((entries) => {
         if (!ctx.alive()) { io.disconnect(); return; }
         if (entries.some((x) => x.isIntersecting) && !moreRow.hidden && !moreBtn.disabled) more();
-      }, { rootMargin: '0px 0px 300px 0px' })
+      }, { root: box, rootMargin: '0px 0px 96px 0px' })
       : null;
     function recheck() { if (io && ctx.alive() && pager && !pager.done) { io.unobserve(sentinel); io.observe(sentinel); } }
     const refilter = () => { F.group = what.control.value; F.who = who.control.value; first(); };
@@ -606,7 +616,7 @@ export async function mount(ctx) {
     return tile({ w: 'full', title: 'Audit log', icon: 'book', side: csv, cls: 'au-tile' },
       note(`Every change and every sign-in, newest first. Times in ${tz.replace(/_/g, ' ')}. An item opens where it still exists.`),
       h('div', { class: 'au-filters' }, what, who),
-      status, list, sentinel, moreRow);
+      box, moreRow);
   }
 
   /* ================================================================ put together */
