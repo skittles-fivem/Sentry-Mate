@@ -17,7 +17,6 @@ import { timelineRow } from './timeline.js';
 import { createMap, carMarker, addRoute, padClear, mapFallback } from '../core/map.js';
 import { SPOT_ZOOM } from '../shared/maptiles.js';
 import { offstage } from '../core/stage.js';
-import { nearNow } from '../shared/lazy.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, colors, areaFill, hexA } from '../core/chart.js';
 import { activityStrip } from '../core/strip.js';
 import { openCarSwitcher } from '../core/carswitch.js';
@@ -356,7 +355,7 @@ export async function mount(ctx) {
     const lat = val(loc.lat), lon = val(loc.lon);
     if (lat == null || lon == null) { mapEl.append(mapFallback('No position recorded yet.')); return; }
     try {
-      map = await createMap(mapEl, ctx, { center: [lon, lat], zoom: SPOT_ZOOM, lazy: true });
+      map = await createMap(mapEl, ctx, { center: [lon, lat], zoom: SPOT_ZOOM, lazy: true, afterReady: true });
       if (!map) return;
       await map.ready;
       if (!ctx.alive()) return;
@@ -834,12 +833,12 @@ export async function mount(ctx) {
   paintHead(); paintInputs(); paintBanner(); paintGauge(); paintPlace(); paintLive();
   ctx.setTitle('Overview');
   const todayP = paintToday();
-  // the map is in place before ready, so its controls do not move the page once it is on screen; a map below the
-  // fold (a phone) is made when it comes near, and ready does not wait for it
-  const mapP = mountMap();
-  await Promise.all([windowP, todayP, nearNow(mapEl) ? mapP : null]);
+  await Promise.all([windowP, todayP]);
   if (!ctx.alive()) return;
   ctx.ready();
+  // the map (MapLibre's setup is the largest piece of work on this page) is made after ready, once it is in view,
+  // in its box of a fixed size with its overlays already there: nothing on the page moves when it comes
+  mountMap();
   learnSchedule();
 
   // live values: merge `now` deltas, draw again at most every 2 s
