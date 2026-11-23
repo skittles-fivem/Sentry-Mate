@@ -29,7 +29,7 @@ async function start() {
     return startRouter({});
   }
   let me = null;
-  try { me = await api.get('me'); } catch (err) {
+  try { me = await api.get('me', null, { keep: true }); } catch (err) { // kept: the map's tile settings read it too
     if (!(err && err.status === 401)) throw err;
   }
   if (!me) {
