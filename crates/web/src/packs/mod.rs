@@ -21,7 +21,9 @@
 //!   listings. Text files in brotli or gzip when the browser accepts it ([`compress`]: the built-in packs' copies
 //!   made at build time). `index.html` (`Cache-Control: no-cache`) loads the pack's files under
 //!   `/_v/<version>/`, cached for good ([`IMMUTABLE`]), and preloads the modules the first page needs ([`index`]);
-//!   any other address of a file is `no-cache`. A path with no file extension that is no file gets `index.html` (the pages'
+//!   any other address of a file is `no-cache` (an old version's address too: it gives the current file, so a tab
+//!   open across an update keeps working). Every answer says which build of the packs the server runs
+//!   ([`BUILD_HEADER`]). A path with no file extension that is no file gets `index.html` (the pages'
 //!   own routes); `mock-api.js` and the like are never served.
 //!
 //! The API (all under `/api/v1`):
@@ -387,6 +389,22 @@ pub struct Packs {
     /// A lock per pack being loaded: one load, shared by every request that waits for it.
     loading: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     loads: std::sync::atomic::AtomicU64,
+    /// Which build of the built-in packs this server runs ([`Packs::build`]).
+    build: String,
+}
+
+/// The header every answer carries with [`Packs::build`].
+pub const BUILD_HEADER: &str = "x-sentry-mate-build";
+
+fn build_of(builtin: &[Arc<Loaded>]) -> String {
+    let mut h = Sha256::new();
+    for b in builtin {
+        h.update(b.meta.id.as_bytes());
+        h.update(b"\0");
+        h.update(b.version.as_bytes());
+        h.update(b"\0");
+    }
+    hex::encode(&h.finalize()[..8])
 }
 
 /// Drops the packs used longest ago until at most [`CACHED_PACKS`] and [`CACHED_BYTES`] are left (the last one
@@ -470,6 +488,7 @@ impl Packs {
                 DEFAULT_PACK.to_string()
             }
         };
+        let build = build_of(&builtin);
         let packs = Packs {
             dir,
             vault,
@@ -479,11 +498,19 @@ impl Packs {
             cache: Mutex::new(Vec::new()),
             loading: Mutex::new(HashMap::new()),
             loads: std::sync::atomic::AtomicU64::new(0),
+            build,
         };
         if !packs.usable(&packs.chosen()) {
             *packs.chosen.write().unwrap_or_else(|e| e.into_inner()) = packs.default_id();
         }
         Ok(packs)
+    }
+
+    /// Which build of the interface this server runs: a short hash of every built-in pack's version, so it changes
+    /// with any of their files (a new image). Every answer carries it in [`BUILD_HEADER`]: a tab opened before an
+    /// update sees it change and loads its next page in full instead of mixing its old modules with new files.
+    pub fn build(&self) -> &str {
+        &self.build
     }
 
     fn default_id(&self) -> String {
@@ -1091,7 +1118,9 @@ pub const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
 /// A pack file for a request path (see the module's notes). Under `/_v/<version>/` of the pack's current version a
 /// file is cached for good ([`IMMUTABLE`]); everything else (`index.html` above all, and a version that is no longer
-/// the pack's) is checked again every time (`no-cache`, `ETag`, `304`). A file is sent in brotli or gzip when the
+/// the pack's) is checked again every time (`no-cache`, `ETag`, `304`). An unknown or old version gives the current
+/// file of that path, never `404`: a tab open across an update keeps loading (and its next page loads in full once
+/// it sees [`BUILD_HEADER`] change). A file is sent in brotli or gzip when the
 /// request accepts it and a compressed copy is smaller.
 pub fn serve_file(app: &AppState, pack: &Loaded, path: &str, headers: &HeaderMap) -> Response {
     let decoded = match percent_encoding::percent_decode_str(path).decode_utf8() {
