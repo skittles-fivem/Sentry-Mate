@@ -1,6 +1,8 @@
 //! Serving the web side: TLS 1.3 only (the rustls settings come from the server's certificate, the same one the
-//! upload port uses: `ingest::server::Identity::tls_config`), HTTP/1.1, with connection guards: a TLS handshake
-//! within 15 s, headers within 20 s, a JSON body within [`BODY_TIMEOUT`] (`408` and the connection closed: see
+//! upload port uses: `ingest::server::Identity::tls_config`), HTTP/2 when the browser offers it (ALPN `h2`, one
+//! connection for every request of a tab) and HTTP/1.1 with keep-alive otherwise, with connection guards: a TLS
+//! handshake within 15 s, headers within 20 s (HTTP/1.1; an HTTP/2 connection that stops answering its pings is
+//! closed), a JSON body within [`BODY_TIMEOUT`] (`408` and the connection closed: see
 //! [`crate::ctx::read_body`]), a request answered within 10 minutes (a stream, once started, runs on), idle
 //! connections closed after the keep-alive.
 //!
@@ -12,7 +14,7 @@
 use crate::error::ApiError;
 use axum::Router;
 use axum::response::IntoResponse;
-use hyper_util::rt::{TokioIo, TokioTimer};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -32,6 +34,11 @@ pub const HEADER_TIMEOUT: Duration = Duration::from_secs(20);
 /// A JSON request body arrives within this ([`crate::Builder::body_timeout`] changes it).
 pub const BODY_TIMEOUT: Duration = Duration::from_secs(30);
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+/// Requests at once on one HTTP/2 connection.
+pub const MAX_STREAMS: u32 = 128;
+/// An HTTP/2 connection is pinged this often when quiet, and closed when a ping isn't answered within
+/// [`HEADER_TIMEOUT`].
+pub const PING_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Where a request came from, set on every request by [`serve`]. A request without it (not from [`serve`]) is
 /// refused by the guard: the API answers over TLS only.
@@ -108,9 +115,12 @@ fn take_slot(slots: &Arc<Mutex<Slots>>, ip: IpAddr) -> Option<(ConnSlot, Arc<Not
 }
 
 /// Serves `app` ([`crate::router`]) on `listener` over TLS until this future is dropped, which also ends every
-/// connection it opened. `tls` must allow TLS 1.3 only and offer `http/1.1`.
+/// connection it opened. `tls` must allow TLS 1.3 only; the web port offers `h2` and `http/1.1` with it, whatever
+/// it offered.
 pub async fn serve(listener: TcpListener, tls: Arc<rustls::ServerConfig>, app: Router) -> std::io::Result<()> {
-    let acceptor = tokio_rustls::TlsAcceptor::from(tls);
+    let mut tls = (*tls).clone();
+    tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
     let slots = Arc::new(Mutex::new(Slots::default()));
     let mut conns = tokio::task::JoinSet::new();
     loop {
@@ -150,12 +160,22 @@ pub async fn serve(listener: TcpListener, tls: Arc<rustls::ServerConfig>, app: R
                         }
                     }
                 });
-                let mut http = hyper::server::conn::http1::Builder::new();
-                http.timer(TokioTimer::new())
-                    .header_read_timeout(HEADER_TIMEOUT)
-                    .keep_alive(true)
-                    .max_buf_size(64 * 1024);
-                let _ = http.serve_connection(TokioIo::new(stream), service).await;
+                if stream.get_ref().1.alpn_protocol() == Some(b"h2".as_slice()) {
+                    let mut http = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
+                    http.timer(TokioTimer::new())
+                        .max_concurrent_streams(MAX_STREAMS)
+                        .max_header_list_size(64 * 1024)
+                        .keep_alive_interval(Some(PING_INTERVAL))
+                        .keep_alive_timeout(HEADER_TIMEOUT);
+                    let _ = http.serve_connection(TokioIo::new(stream), service).await;
+                } else {
+                    let mut http = hyper::server::conn::http1::Builder::new();
+                    http.timer(TokioTimer::new())
+                        .header_read_timeout(HEADER_TIMEOUT)
+                        .keep_alive(true)
+                        .max_buf_size(64 * 1024);
+                    let _ = http.serve_connection(TokioIo::new(stream), service).await;
+                }
             };
             // closed to make room for a newer anonymous connection: dropping `run` ends it
             tokio::select! {
