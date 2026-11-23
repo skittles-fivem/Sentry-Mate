@@ -51,6 +51,10 @@ measure.js options
              after a hover and touchstart on it; else history.pushState + popstate), timed in the page's clock from the
              click to the new view ready (its data-ready set again by the page, the path the new one); rows "nav"
   --drive ID the drive page's drive (default: the car's first drive)
+  --device laptop (1440x900 at 1x, CPU 2x, no network throttling unless --latency)  --scroll (scroll the list: fps)
+  --pages logbook (also: the Logbook). rows ms / list ms: first list row painted, from navigation / from the list's
+  request; dom rows and nodes at the end. The dev server works too: --base http://127.0.0.1:PORT --user admin
+  --pass sentry-mate-dev (serve.py --drives 3000 for a long Logbook)
 
 What is measured (see the header of measure.js for detail)
   device   390x844 CSS px, deviceScaleFactor 3, isMobile, hasTouch (Android Chrome UA)
