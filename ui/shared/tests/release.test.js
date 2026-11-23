@@ -6,18 +6,24 @@ import * as R from '../release.js';
 const load = async () => R;
 const NOW = Date.UTC(2026, 10, 22, 12);
 
-test('build label: build, short commit and date; a local build says dev', async () => {
+test('build label: build number and date, the commit only in the title; no number says dev', async () => {
   const r = await load();
-  const about = { version: '0.1.0', build: { version: '0.1.0', short: '2f44a52', built_ms: Date.UTC(2026, 10, 22), dev: false } };
-  assert.equal(r.buildLabel(about, NOW), '0.1.0 · build 2f44a52 · Nov 22');
-  assert.equal(r.buildLabel({ version: '0.1.0', build: { version: '0.1.0', dev: true, short: null } }, NOW), '0.1.0 · dev build');
+  const about = { version: '0.1.0', build: { version: '0.1.0', number: 41, short: '2f44a52', built_ms: Date.UTC(2026, 10, 22), dev: false } };
+  assert.equal(r.buildLabel(about, NOW), '0.1.0 · build 41 · Nov 22');
+  assert.equal(r.buildTitle(about), 'commit 2f44a52');
+  assert.equal(r.buildLabel({ version: '0.1.0', build: { version: '0.1.0', dev: true, number: null, short: null } }, NOW), '0.1.0 · dev build');
+  assert.equal(r.buildTitle({ build: { dev: true } }), '');
+  // a commit but no number: still a dev build by its label
+  assert.equal(r.buildLabel({ version: '0.1.0', build: { version: '0.1.0', number: null, short: '2f44a52', dev: false } }, NOW), '0.1.0 · dev build');
   assert.equal(r.buildDate(Date.UTC(2025, 0, 3), NOW), 'Jan 3, 2025');
 });
 
 test('release status texts', async () => {
   const r = await load();
-  const newest = { short: '9c1e7d3', date_ms: Date.UTC(2026, 10, 21), changes: 4, titles: ['a'], more: 2 };
-  assert.equal(r.releaseStatus({ status: 'newer', newest }, NOW).text, 'A newer build is ready: 9c1e7d3, Nov 21, 4 changes');
+  const newest = { short: '9c1e7d3', build: 42, date_ms: Date.UTC(2026, 10, 21), changes: 4, titles: ['a'], more: 2 };
+  assert.equal(r.releaseStatus({ status: 'newer', newest }, NOW).text, 'A newer build is ready: build 42, Nov 21, 4 changes');
+  assert.equal(r.newestTitle(newest), 'commit 9c1e7d3');
+  assert.equal(r.newestText({ ...newest, build: null, changes: 1 }, NOW), 'Nov 21, 1 change');
   assert.equal(r.releaseStatus({ status: 'up_to_date' }, NOW).text, 'Up to date');
   assert.equal(r.releaseStatus({ status: 'error', error: { message: 'rate limited' } }, NOW).text, 'Could not check: rate limited');
   assert.equal(r.releaseStatus({ status: 'off' }, NOW).tone, 'off');

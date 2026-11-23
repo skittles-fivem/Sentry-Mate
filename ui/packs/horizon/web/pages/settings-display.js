@@ -18,7 +18,7 @@ import { flash } from '../core/flash.js';
 import { CHOICES as SKY_CHOICES, getSky, setSky, onSky } from '../core/sky.js';
 import { ago } from '../core/fmt.js';
 import { soldParts, soldOptions } from '../core/carswitch.js';
-import { buildLabel, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
+import { buildLabel, buildTitle, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, LABELS_TEXT, STYLES_TEXT, presetHosts, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 
 export const id = 'settings-display';
@@ -243,7 +243,7 @@ export async function mount(ctx) {
     const lines = newer ? changeLines(release.newest) : [];
     const tone = { ok: 'ok', newer: 'ok', error: 'warn' }[st.tone] || 'faint';
     replace(releaseBox,
-      h('p', { class: 'setting-note release-build' }, icon('server', 'ico--sm'), ' This build: ', h('span', { class: 'mono' }, buildLabel(about || {}, ctx.api.now()))),
+      h('p', { class: 'setting-note release-build' }, icon('server', 'ico--sm'), ' This build: ', h('span', { class: 'mono', title: buildTitle(about) || null }, buildLabel(about || {}, ctx.api.now()))),
       h('p', { class: 'release-status', role: 'status' }, icon(st.tone === 'error' ? 'warn' : st.tone === 'ok' ? 'check' : st.tone === 'newer' ? 'upload' : 'clock', 'ico--sm'), ' ',
         h('span', { class: tone }, busy && st.tone !== 'wait' ? 'Checking…' : st.text), when ? h('span', { class: 'faint' }, ` · ${when}`) : null),
       lines.length ? h('ul', { class: 'setting-note release-titles' }, lines.map((x) => h('li', null, x))) : null,

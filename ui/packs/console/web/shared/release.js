@@ -1,6 +1,7 @@
 // The build this server runs and the release check's answer (docs/ui-api.md: /about `build`, /release), in the
-// same words on every pack: "0.1.0 · build 2f44a52 · Nov 22", "Up to date", "A newer build is ready: 9c1e7d3,
-// Nov 21, 4 changes", "Could not check: ...". Plus the per-browser dismissal of the release notice, keyed by the
+// same words on every pack: "0.1.0 · build 41 · Nov 22", "Up to date", "A newer build is ready: build 42,
+// Nov 21, 4 changes", "Could not check: ...". Builds are named by their number (the Image workflow's run); the
+// commit is only in a hover title (buildTitle, newestTitle) and the change list. Plus the per-browser dismissal of the release notice, keyed by the
 // newer build's commit (a later build shows again). Pure functions apart from the dismissal (localStorage, every
 // access wrapped: a private window or blocked storage just never remembers).
 
@@ -14,12 +15,15 @@ export function buildDate(ms, nowMs = Date.now()) {
   return d.getUTCFullYear() === new Date(nowMs).getUTCFullYear() ? day : `${day}, ${d.getUTCFullYear()}`;
 }
 
-/** "0.1.0 · build 2f44a52 · Nov 22"; a local build: "0.1.0 · dev build". `about` is GET /about's answer. */
+const buildNumber = (n) => (Number.isSafeInteger(n) && n >= 0 ? n : null);
+
+/** "0.1.0 · build 41 · Nov 22"; a build with no number (a local one): "0.1.0 · dev build". `about` is GET /about. */
 export function buildLabel(about, nowMs = Date.now()) {
   const b = about?.build;
   const version = b?.version || about?.version || '';
-  if (!b || b.dev || !b.short) return `${version} · dev build`.replace(/^ · /, '');
-  const parts = [version, `build ${b.short}`];
+  const n = b && !b.dev ? buildNumber(b.number) : null;
+  if (n == null) return `${version} · dev build`.replace(/^ · /, '');
+  const parts = [version, `build ${n}`];
   if (Number.isFinite(b.built_ms)) parts.push(buildDate(b.built_ms, nowMs));
   return parts.filter(Boolean).join(' · ');
 }
@@ -29,16 +33,26 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 /** "4 changes" / "1 change". */
 export const changesText = (n) => plural(Number(n) || 0, 'change', 'changes');
 
-/** "9c1e7d3, Nov 21, 4 changes" for GET /release's `newest`. */
+/** The hover title of this build: "commit 2f44a52" (empty for a local build). Put it on the element showing buildLabel. */
+export function buildTitle(about) {
+  const b = about?.build;
+  return b && !b.dev && b.short ? `commit ${b.short}` : '';
+}
+
+/** "build 42, Nov 21, 4 changes" for GET /release's `newest` (no number known: "Nov 21, 4 changes"). */
 export function newestText(newest, nowMs = Date.now()) {
   if (!newest) return '';
-  return [newest.short, buildDate(newest.date_ms, nowMs), changesText(newest.changes)].filter(Boolean).join(', ');
+  const n = buildNumber(newest.build);
+  return [n == null ? '' : `build ${n}`, buildDate(newest.date_ms, nowMs), changesText(newest.changes)].filter(Boolean).join(', ');
 }
+
+/** The hover title of a newer build: "commit 9c1e7d3". */
+export const newestTitle = (newest) => (newest?.short ? `commit ${newest.short}` : '');
 
 /**
  * The one-line status of GET /release: { tone: 'off'|'wait'|'ok'|'newer'|'error', text }.
  *   off: "Off" · never: "Not checked yet" · checking: "Checking…" · up_to_date: "Up to date"
- *   newer: "A newer build is ready: 9c1e7d3, Nov 21, 4 changes" · error: "Could not check: <message>"
+ *   newer: "A newer build is ready: build 42, Nov 21, 4 changes" · error: "Could not check: <message>"
  */
 export function releaseStatus(r, nowMs = Date.now()) {
   switch (r?.status) {

@@ -18,7 +18,7 @@ import { currentPrefs, onPrefs } from '../core/prefs.js';
 import { savePref, currentAbout } from '../core/frame.js';
 import { SIZES, sizeState, setSize, sizeNote, display } from '../core/display.js';
 import { packChoices, packLabel } from '../shared/packs.js';
-import { buildLabel, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
+import { buildLabel, buildTitle, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 
 export const id = 'settings-display';
 export const css = true;
@@ -310,7 +310,7 @@ export async function mount(ctx) {
       onclick: checkNow,
     }) : null;
     replace(relBox,
-      h('p', { class: 'setting-note release-build' }, `This build: ${buildLabel(about || {})}`),
+      h('p', { class: 'setting-note release-build', title: buildTitle(about) || null }, `This build: ${buildLabel(about || {})}`),
       h('p', { class: ['setting-note', 'release-status', `release-${st.tone}`] }, st.text, ago ? ` · ${ago}` : ''),
       lines.length ? h('ul', { class: 'setting-note release-titles' }, lines.map((x) => h('li', null, x))) : null,
       rel && rel.status === 'newer' && rel.pull ? h('p', { class: 'setting-note release-pull' }, 'To update: ', h('code', { class: 'mono' }, rel.pull)) : null,

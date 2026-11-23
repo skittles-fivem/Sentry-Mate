@@ -20,7 +20,7 @@ import { currentAbout } from '../core/frame.js';
 import { sectionHead, facts } from '../core/bits.js';
 import { group, pickRow, ctlRow, infoRow, notSaved } from '../core/settings.js';
 import { inOrder, said } from '../core/settings.js';
-import { buildLabel } from '../shared/release.js';
+import { buildLabel, buildTitle } from '../shared/release.js';
 import { relState, relNewer } from '../core/release.js';
 import { packChoices } from '../shared/packs.js';
 import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, LABELS_TEXT, STYLES_TEXT, offlineSummary, offlineFileChoices, showOfflineHelp, presetHosts } from '../shared/maptiles.js';
@@ -258,7 +258,7 @@ export async function mount(ctx) {
         h('span', { class: 'row-text' }, said(st.kind, st.text), st.ago ? h('span', { class: 'row-sub' }, st.ago[0].toUpperCase() + st.ago.slice(1)) : null),
         nowBtn ? h('span', { class: 'row-side' }, nowBtn) : null),
       newer ? h('div', { class: 'row row-static' }, newer) : null,
-      h('div', { class: 'row row-static' }, h('span', { class: 'row-text' }, h('span', { class: 'row-sub' }, `This build: ${buildLabel(currentAbout(), api.now())}`))));
+      h('div', { class: 'row row-static' }, h('span', { class: 'row-text' }, h('span', { class: 'row-sub', title: buildTitle(currentAbout()) || null }, `This build: ${buildLabel(currentAbout(), api.now())}`))));
     // a check in flight finishes within seconds: look again, while this page is open
     if (checking) relPoll = setTimeout(() => { if (ctx.alive()) loadRelease(); }, 3000);
   }

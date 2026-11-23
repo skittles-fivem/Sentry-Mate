@@ -11,7 +11,7 @@ import { sectionHead } from '../core/bits.js';
 import { PAGES } from '../core/pages.js';
 import { group, infoRow } from '../core/settings.js';
 import * as api from '../shared/api.js';
-import { buildLabel } from '../shared/release.js';
+import { buildLabel, buildTitle } from '../shared/release.js';
 import { relState, relNewer } from '../core/release.js';
 
 export const id = 'help';
@@ -111,7 +111,7 @@ export async function mount(ctx) {
   const aboutTile = tile({ w: 2, title: 'About', icon: 'info', id: 'about' },
     h('p', { class: 'hp-lede' }, 'Sentry Mate keeps your car’s history on your own server, from what the CAN Bridge records.'),
     group(null, [
-      infoRow({ icon: 'server', tone: 'coral', name: 'Sentry Mate', sub: about.dev_server ? 'The dev server: every car and figure is made up.' : 'The server this page talks to.', side: val(buildLabel(about, api.now()) || '—', 'hp-mono'), cover: 'web.settings.about.version', cls: 'hp-build' }),
+      infoRow({ icon: 'server', tone: 'coral', name: 'Sentry Mate', sub: about.dev_server ? 'The dev server: every car and figure is made up.' : 'The server this page talks to.', side: h('span', { title: buildTitle(about) || null }, val(buildLabel(about, api.now()) || '—', 'hp-mono')), cover: 'web.settings.about.version', cls: 'hp-build' }),
       infoRow({ icon: 'chip', name: 'API version', sub: 'What the UI packs read.', side: val(String(about.api_version ?? '—'), 'hp-mono') }),
       infoRow({ icon: 'spark', name: `UI pack: ${pack.name || 'Pebble'}`, sub: pack.api == null ? 'It names no API version.' : mismatch ? `Made for API ${pack.api}, the server speaks ${about.api_version}: some parts may not work.` : `Made for API ${pack.api}, the one this server speaks.`, tone: mismatch ? 'sun' : null, side: val(pack.version || '—', 'hp-mono') }),
       infoRow({ icon: 'refresh', tone: relTone, name: 'Newer release', sub: relSub, cover: 'web.settings.about.update-available', cls: status === 'newer' ? 'hp-rel' : null, side: relSide }),

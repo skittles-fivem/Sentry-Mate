@@ -20,7 +20,7 @@ import { createPeriodPicker } from './period.js';
 import { currentPrefs, savePrefs, applyPrefs, onPrefs } from './prefs.js';
 import { SIZES, sizeState, setSize, sizeNote, display } from './display.js';
 import { flash } from './flash.js';
-import { buildLabel, releaseDismissed, dismissRelease } from '../shared/release.js';
+import { buildLabel, buildTitle, releaseDismissed, dismissRelease } from '../shared/release.js';
 import { isTmNotice, tmNoticeFix, TM_NOTICE_ACTION } from '../shared/teslamate.js';
 
 const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
@@ -246,7 +246,7 @@ function drawFooter() {
   const release = notices.find((n) => n.code === 'release_available');
   const pack = about && about.ui_pack ? `${about.ui_pack.name || 'Logbook'} UI pack ${about.ui_pack.version || ''}`.trim() : 'Logbook UI pack';
   parts.footer.replaceChildren(h('div', { class: 'wrap colophon-row' },
-    h('p', { class: 'colophon-name' }, `Sentry Mate${about ? ` ${buildLabel(about)}` : ''}`, h('span', { class: 'colophon-sep', 'aria-hidden': 'true' }, ' · '), pack,
+    h('p', { class: 'colophon-name', title: buildTitle(about) || null }, `Sentry Mate${about ? ` ${buildLabel(about)}` : ''}`, h('span', { class: 'colophon-sep', 'aria-hidden': 'true' }, ' · '), pack,
       about ? h('span', { class: 'colophon-api' }, ` · API ${about.api_version}`) : null),
     h('p', { class: 'colophon-legal', cover: ['shell.footer.legal', 'web.shell.legal-footer'] },
       'Sentry Mate only reads from your cars. ', h('a', { href: '/help#licence' }, 'Licence and notices'), ' · ', h('a', { href: '/help' }, 'Help')),

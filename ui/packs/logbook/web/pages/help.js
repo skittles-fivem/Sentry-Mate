@@ -9,7 +9,7 @@ import { pageHead, icon, ago, flag } from '../core/ui.js';
 import { PAGES } from '../core/pages.js';
 import { parseUrl } from '../shared/state.js';
 import { now } from '../shared/api.js';
-import { buildLabel, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
+import { buildLabel, buildTitle, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 
 export const id = 'help';
 export const css = true;
@@ -76,7 +76,7 @@ export async function mount(ctx) {
 
   const packMismatch = pack.api != null && String(pack.api) !== String(about.api_version);
   const aboutList = h('dl', { class: 'about-list' },
-    row('Sentry Mate', h('span', { class: 'mono' }, buildLabel(about) || '—'),
+    row('Sentry Mate', h('span', { class: 'mono', title: buildTitle(about) || null }, buildLabel(about) || '—'),
       about.dev_server ? 'The dev server: every car and figure is made up.' : 'The server this page talks to.', 'web.settings.about.version'),
     row('API version', h('span', { class: 'mono' }, String(about.api_version ?? '—')), 'The version of the web API the UI packs read.'),
     row('UI pack', `${pack.name || 'Logbook'} ${pack.version || ''}`.trim(),

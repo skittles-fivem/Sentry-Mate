@@ -26,7 +26,7 @@ import { openPeriod, pillWords } from './period.js';
 import { openAccount, setAccount } from './account.js';
 import { applyPrefs } from './prefs.js';
 import { display, snap } from './display.js';
-import { buildLabel, releaseDismissed, dismissRelease } from '../shared/release.js';
+import { buildLabel, buildTitle, releaseDismissed, dismissRelease } from '../shared/release.js';
 import { isTmNotice, tmNoticeFix, TM_NOTICE_ACTION } from '../shared/teslamate.js';
 
 let me = null;
@@ -271,7 +271,7 @@ function drawFoot() {
   const release = notices.find((n) => n.code === 'release_available');
   const pack = about && about.ui_pack ? `${about.ui_pack.name || 'Pebble'} ${about.ui_pack.version || ''}`.trim() : 'Pebble';
   document.getElementById('foot').replaceChildren(
-    h('p', { class: 'foot-line' }, `Sentry Mate${about ? ` ${buildLabel(about, api.now())}` : ''}`.trim(), h('span', { class: 'foot-sep', 'aria-hidden': 'true' }, '·'), `${pack} UI pack`,
+    h('p', { class: 'foot-line', title: buildTitle(about) || null }, `Sentry Mate${about ? ` ${buildLabel(about, api.now())}` : ''}`.trim(), h('span', { class: 'foot-sep', 'aria-hidden': 'true' }, '·'), `${pack} UI pack`,
       about && about.api_version ? [h('span', { class: 'foot-sep', 'aria-hidden': 'true' }, '·'), `API ${about.api_version}`] : null),
     h('p', { class: 'foot-line', cover: ['shell.footer.legal', 'web.shell.legal-footer'] },
       'Sentry Mate only reads from your cars.', h('span', { class: 'foot-sep', 'aria-hidden': 'true' }, '·'),
