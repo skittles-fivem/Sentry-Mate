@@ -209,10 +209,7 @@ export function table(ctx, opts) {
   async function load({ quiet = false } = {}) {
     const g = ++gen;
     if (opts.rows) { localShown = pageRows; paintLocal(); box?.recheck(); return; }
-    // a live refresh asks for as many rows as are on screen (at most a server page): the list keeps its length, so
-    // nothing below it moves and a page scrolled down the list is not cut back to the first page
-    const n = quiet && items ? Math.min(500, Math.max(limit, items.length)) : limit;
-    pager = ctx.api.pager(opts.path, { ...params, ...sortParams() }, { limit: n });
+    pager = ctx.api.pager(opts.path, { ...params, ...sortParams() }, { limit });
     if (!quiet) { replace(tbody); replace(tfoot); tbl.hidden = true; foot.hidden = true; replace(status, loadingLine(`loading ${opts.title || 'rows'}`)); box?.top(); }   // a new list starts at its top
     let got;
     try { got = await pager.more(); } catch (e) {

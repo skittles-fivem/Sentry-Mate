@@ -2,8 +2,21 @@
 //! then each log is worked on again in time order, as if it had just arrived. Imported TeslaMate rows are never taken
 //! out. A job runs in the background, counts its progress, and can be cancelled; a restart carries on with it (the car
 //! keeps a mark until its logs are all done again, and [`Engine::reconcile`] picks the rest up).
+//!
+//! **One rebuild per car at a time, asks joined.** A job not started yet takes in every later ask for its car (or,
+//! one of every car, for any car): its period widened, its work and causes added. A rebuild a saved setting asks for
+//! waits [`crate::Options::rebuild_settle_ms`] first (each later ask moves that on), so a few saves in a row are one
+//! rebuild; one asked for while the car's job runs waits for it to end, and the asks meanwhile are one job after it.
+//!
+//! **Only what changed.** A job does the least that gives the same history ([`What`]): a car's GPS layout changed,
+//! only its logs whose positions came from the Screenmate's own GPS frames are decoded again (the rest read the same
+//! whatever the layout); a car's source order changed, its windows are built again from what is stored (the order
+//! only says which input wins when they are joined), nothing decoded again. Each is noted on the car before its job
+//! starts and cleared once done, so a restart in between does it then ([`records::Redo`]).
 
-use crate::records::{self, RebuildMark};
+use crate::history::Run;
+use crate::records::{self, Outcome, RebuildMark, Redo};
+use crate::versions::Cause;
 use crate::{Engine, Event, Result, lock, now_ms};
 use model::CarId;
 use serde::Serialize;
@@ -51,14 +64,61 @@ pub struct Job {
     pub finished_ms: Option<u64>,
     pub took_ms: Option<u64>,
     pub error: Option<String>,
+    /// What it does: `car` (the history made again from the logs), else `positions` and/or `inputs` ([`What`]).
+    pub kind: String,
+    /// Why it runs (every ask it took in).
+    pub causes: Vec<Cause>,
+    /// Not started yet: it waits for asks to settle, or for the car's job under way to end.
+    pub waiting: bool,
+}
+
+/// What a job does for its cars.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct What {
+    /// Everything worked out from the logs in the period, made again (covers the rest).
+    pub whole: bool,
+    /// Only the logs whose positions came from the Screenmate's own GPS frames, decoded again.
+    pub positions: bool,
+    /// The windows built again from what is stored (the inputs joined again), nothing decoded again.
+    pub inputs: bool,
+}
+
+impl What {
+    pub const WHOLE: What = What { whole: true, positions: false, inputs: false };
+    pub const POSITIONS: What = What { whole: false, positions: true, inputs: false };
+    pub const INPUTS: What = What { whole: false, positions: false, inputs: true };
+
+    fn join(self, o: What) -> What {
+        What { whole: self.whole || o.whole, positions: self.positions || o.positions, inputs: self.inputs || o.inputs }
+    }
+
+    pub fn word(self) -> String {
+        if self.whole {
+            return "car".into();
+        }
+        let mut v = Vec::new();
+        if self.positions {
+            v.push("positions");
+        }
+        if self.inputs {
+            v.push("inputs");
+        }
+        v.join("+")
+    }
 }
 
 pub(crate) struct JobState {
     id: u64,
     car: Option<CarId>,
-    from_ms: u64,
-    to_ms: u64,
-    started_ms: u64,
+    from_ms: AtomicU64,
+    to_ms: AtomicU64,
+    started_ms: AtomicU64,
+    what: Mutex<What>,
+    causes: Mutex<Vec<Cause>>,
+    /// Started (no longer takes in later asks).
+    started: AtomicBool,
+    /// It does not start before this (ms).
+    settle_until: AtomicU64,
     done: AtomicU64,
     total: AtomicU64,
     cancel: AtomicBool,
@@ -126,6 +186,7 @@ impl JobState {
     pub(crate) fn for_full(car: CarId) -> JobState {
         let mut s = JobState::new(0, Some(car), 0, u64::MAX);
         s.full = true;
+        s.started.store(true, Ordering::SeqCst);
         s
     }
 
@@ -133,9 +194,13 @@ impl JobState {
         JobState {
             id,
             car,
-            from_ms,
-            to_ms,
-            started_ms: now_ms(),
+            from_ms: AtomicU64::new(from_ms),
+            to_ms: AtomicU64::new(to_ms),
+            started_ms: AtomicU64::new(now_ms()),
+            what: Mutex::new(What::WHOLE),
+            causes: Mutex::new(Vec::new()),
+            started: AtomicBool::new(false),
+            settle_until: AtomicU64::new(0),
             done: AtomicU64::new(0),
             total: AtomicU64::new(0),
             cancel: AtomicBool::new(false),
@@ -150,37 +215,80 @@ impl JobState {
         }
     }
 
+    fn period(&self) -> (u64, u64) {
+        (self.from_ms.load(Ordering::SeqCst), self.to_ms.load(Ordering::SeqCst))
+    }
+
     fn view(&self) -> Job {
         let finished_ms = *lock(&self.finished_ms);
+        let (from_ms, to_ms) = self.period();
+        let started_ms = self.started_ms.load(Ordering::SeqCst);
         Job {
             id: self.id,
             car: self.car,
             status: *lock(&self.status),
             done: self.done.load(Ordering::SeqCst),
             total: self.total.load(Ordering::SeqCst),
-            from_ms: self.from_ms,
-            to_ms: self.to_ms,
-            started_ms: self.started_ms,
+            from_ms,
+            to_ms,
+            started_ms,
             finished_ms,
-            took_ms: finished_ms.map(|f| f.saturating_sub(self.started_ms)),
+            took_ms: finished_ms.map(|f| f.saturating_sub(started_ms)),
             error: lock(&self.error).clone(),
+            kind: lock(&self.what).word(),
+            causes: lock(&self.causes).clone(),
+            waiting: !self.started.load(Ordering::SeqCst),
         }
+    }
+
+    /// A later ask taken in (not started yet): its period, work and cause added; `settle`: the start moved on.
+    fn take_in(&self, from_ms: u64, to_ms: u64, what: What, cause: Cause, settle_until: u64) {
+        self.from_ms.fetch_min(from_ms, Ordering::SeqCst);
+        self.to_ms.fetch_max(to_ms, Ordering::SeqCst);
+        {
+            let mut w = lock(&self.what);
+            *w = w.join(what);
+        }
+        Cause::add(&mut lock(&self.causes), cause);
+        self.settle_until.fetch_max(settle_until, Ordering::SeqCst);
     }
 }
 
 impl Engine {
-    /// Starts a rebuild in the background and returns at once.
+    /// Starts a rebuild in the background and returns at once (an admin's: the history of the period made again).
     pub fn rebuild(&self, scope: Scope) -> Result<Job> {
+        self.rebuild_because(scope, What::WHOLE, Cause::owner(None), false)
+    }
+
+    /// Asks for a rebuild of `what` over `scope`, for `cause`: a job of the car (or of every car) that has not
+    /// started yet takes it in; else a new one starts once the car's job under way ended (and, with `settle`, once
+    /// [`crate::Options::rebuild_settle_ms`] passed with no later ask). Returns the job that will do it.
+    pub fn rebuild_because(&self, scope: Scope, what: What, cause: Cause, settle: bool) -> Result<Job> {
         let handle = self.handle()?;
-        let id = self.inner.next_job.fetch_add(1, Ordering::SeqCst);
         let (from_ms, to_ms) =
             (scope.from_ms.unwrap_or(0), scope.to_ms.unwrap_or(u64::MAX).max(scope.from_ms.unwrap_or(0)));
-        let st = Arc::new(JobState::new(id, scope.car, from_ms, to_ms));
-        lock(&self.inner.jobs).insert(id, st.clone());
+        let settle_until = if settle { now_ms().saturating_add(self.inner.opts.rebuild_settle_ms) } else { 0 };
+        let st = {
+            let mut pending = lock(&self.inner.pending_jobs);
+            let waiting = pending.get(&scope.car).or_else(|| scope.car.and(pending.get(&None))).cloned();
+            if let Some(st) = waiting {
+                st.take_in(from_ms, to_ms, what, cause, settle_until);
+                return Ok(st.view());
+            }
+            let id = self.inner.next_job.fetch_add(1, Ordering::SeqCst);
+            let st = Arc::new(JobState::new(id, scope.car, from_ms, to_ms));
+            *lock(&st.what) = what;
+            lock(&st.causes).push(cause);
+            st.settle_until.store(settle_until, Ordering::SeqCst);
+            pending.insert(scope.car, st.clone());
+            lock(&self.inner.jobs).insert(id, st.clone());
+            st
+        };
         let e = self.clone();
         self.inner.outstanding_add();
+        let job = st.clone();
         handle.spawn_blocking(move || {
-            let r = e.run_rebuild(&st);
+            let r = if e.job_wait(&st) { e.run_rebuild(&st) } else { Ok(()) };
             let status = match &r {
                 Err(err) => {
                     *lock(&st.error) = Some(err.to_string());
@@ -190,44 +298,104 @@ impl Engine {
                 Ok(()) if st.cancelled() => JobStatus::Cancelled,
                 Ok(()) => JobStatus::Done,
             };
+            let finished = now_ms();
             *lock(&st.status) = status;
-            *lock(&st.finished_ms) = Some(now_ms());
+            *lock(&st.finished_ms) = Some(finished);
             let v = st.view();
+            e.note_rebuild(Run {
+                kind: v.kind.clone(),
+                cars: v.car.into_iter().collect(),
+                all: v.car.is_none(),
+                causes: v.causes.clone(),
+                state: match status {
+                    JobStatus::Failed => "failed",
+                    JobStatus::Cancelled => "cancelled",
+                    _ => "done",
+                }
+                .into(),
+                started_ms: v.started_ms,
+                finished_ms: finished,
+                logs: v.done,
+            });
             e.emit(Event::Job { job: v.id, car: v.car, status, done: v.done, total: v.total });
             e.inner.outstanding_sub();
         });
-        Ok(self.job(id).unwrap_or_else(|| unreachable_job(id)))
+        Ok(job.view())
+    }
+
+    /// Waits until the job may start (its settle time passed, no job of its cars under way), then takes it out of
+    /// the jobs that take in later asks. `false`: cancelled before it started.
+    fn job_wait(&self, st: &Arc<JobState>) -> bool {
+        loop {
+            if st.cancelled() {
+                let mut pending = lock(&self.inner.pending_jobs);
+                if pending.get(&st.car).is_some_and(|p| Arc::ptr_eq(p, st)) {
+                    pending.remove(&st.car);
+                }
+                return false;
+            }
+            let now = now_ms();
+            let until = st.settle_until.load(Ordering::SeqCst);
+            if now < until {
+                std::thread::sleep(std::time::Duration::from_millis((until - now).min(100)));
+                continue;
+            }
+            if self.job_busy(st) {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                continue;
+            }
+            let mut pending = lock(&self.inner.pending_jobs);
+            // (an ask taken in just now moved the start on)
+            if st.settle_until.load(Ordering::SeqCst) > now_ms() {
+                continue;
+            }
+            if pending.get(&st.car).is_some_and(|p| Arc::ptr_eq(p, st)) {
+                pending.remove(&st.car);
+            }
+            st.started_ms.store(now_ms(), Ordering::SeqCst);
+            st.started.store(true, Ordering::SeqCst);
+            return true;
+        }
+    }
+
+    /// Whether another job of the same car (or of every car) has started and runs.
+    fn job_busy(&self, st: &JobState) -> bool {
+        lock(&self.inner.jobs).values().any(|j| {
+            j.id != st.id
+                && j.started.load(Ordering::SeqCst)
+                && *lock(&j.status) == JobStatus::Running
+                && (j.car.is_none() || st.car.is_none() || j.car == st.car)
+        })
     }
 
     fn run_rebuild(&self, st: &JobState) -> Result<()> {
         let db = &self.inner.db;
         let cars: Vec<CarId> = match st.car {
             Some(c) => vec![c],
-            None => {
-                let mut out = Vec::new();
-                let mut q = db::FleetQuery { search: None, limit: 500, after: None };
-                loop {
-                    let page = db.fleet(&q)?;
-                    out.extend(page.cars.iter().map(|e| e.car.id));
-                    match page.next {
-                        Some(n) => q.after = Some(n),
-                        None => break,
-                    }
-                }
-                out
-            }
+            None => crate::query::all_cars(self).map_err(|e| crate::Error::Other(e.to_string()))?,
         };
+        let what = *lock(&st.what);
+        let (from_ms, to_ms) = st.period();
+        let started_ms = st.started_ms.load(Ordering::SeqCst);
         for car in cars {
             if st.cancelled() {
                 break;
             }
+            if !what.whole {
+                if what.positions {
+                    self.redo_positions(car, Some(st))?;
+                }
+                if what.inputs && !st.cancelled() {
+                    self.redo_inputs(car, Some(st))?;
+                }
+                continue;
+            }
             {
                 let l = self.car_lock(car);
                 let _held = lock(&l);
-                let mut mark =
-                    RebuildMark { from_ms: st.from_ms, to_ms: st.to_ms, started_ms: st.started_ms, cleared: false };
+                let mut mark = RebuildMark { from_ms, to_ms, started_ms, cleared: false };
                 records::put_rebuild_mark(db, car, Some(&mark))?;
-                self.clear_window(car, st.from_ms, st.to_ms)?;
+                self.clear_window(car, from_ms, to_ms)?;
                 mark.cleared = true;
                 records::put_rebuild_mark(db, car, Some(&mark))?;
             }
@@ -238,8 +406,127 @@ impl Engine {
                 self.send(crate::Work::Reconcile { car: Some(car) });
                 break;
             }
+            // (the whole history made again: the narrow rebuilds noted are done with it)
+            if from_ms == 0 && to_ms == u64::MAX {
+                records::put_redo(db, car, Redo::Positions, false)?;
+                records::put_redo(db, car, Redo::Inputs, false)?;
+            }
         }
         Ok(())
+    }
+
+    /// The narrow rebuild of a GPS layout's change, when one is noted on the car: its logs whose positions came from
+    /// the Screenmate's own GPS frames decoded again (each rebuilding the window it changes, as a log that arrives
+    /// does); the rest read the same whatever the layout and are left. A log decoded before that was noted is read
+    /// once (nothing written) to tell.
+    pub(crate) fn redo_positions(&self, car: CarId, job: Option<&JobState>) -> Result<()> {
+        let db = &self.inner.db;
+        if !records::redo(db, car, Redo::Positions)? {
+            return Ok(());
+        }
+        let Some(c) = db.car(car)? else { return Ok(()) };
+        let mut wanted = Vec::new();
+        let mut bytes = 0;
+        for d in records::meta(db, car)?.days {
+            let rec = records::day(db, car, d)?;
+            let mut learned = Vec::new();
+            for (name, e) in &rec.logs {
+                if !matches!(e.outcome, Outcome::Decoded { .. }) {
+                    continue;
+                }
+                let uses = match e.internal_gps {
+                    Some(u) => u,
+                    None => {
+                        let u = self.log_uses_internal_gps(&c, name)?;
+                        learned.push((name.clone(), u));
+                        u
+                    }
+                };
+                if uses {
+                    wanted.push((e.key.clone(), name.clone()));
+                }
+            }
+            if !learned.is_empty() {
+                let l = self.car_lock(car);
+                let _held = lock(&l);
+                let mut rec = records::day(db, car, d)?;
+                for (name, u) in learned {
+                    if let Some(e) = rec.logs.get_mut(&name) {
+                        e.internal_gps = Some(u);
+                    }
+                }
+                records::put_day(db, car, d, &rec)?;
+            }
+        }
+        if let Some(j) = job {
+            let rt = self.handle()?;
+            for (key, name) in &wanted {
+                bytes += rt.block_on(self.inner.judge.record(key, name)).and_then(|r| r.length).unwrap_or(0);
+            }
+            j.add_total(wanted.len() as u64, bytes);
+        }
+        for (key, name) in wanted {
+            if job.is_some_and(JobState::cancelled) {
+                return Ok(());
+            }
+            let l = self.car_lock(car);
+            let held = lock(&l);
+            let r = self.log_locked(car, &key, &name, true, true);
+            drop(held);
+            if let Err(e) = r {
+                if let Some(j) = job {
+                    j.log_failed(&name, e.to_string());
+                }
+                self.failed(&e);
+            }
+            if let Some(j) = job {
+                j.step(self, Some(car), 0);
+            }
+        }
+        records::put_redo(db, car, Redo::Positions, false)
+    }
+
+    /// Whether a stored log's positions come from the Screenmate's own GPS frames (read, nothing written).
+    fn log_uses_internal_gps(&self, c: &model::Car, name: &str) -> Result<bool> {
+        let rt = self.handle()?;
+        let read = |n: &str| rt.block_on(self.inner.store.read(n)).map_err(|e| crate::Error::Store(e.to_string()));
+        let Some(bytes) = read(name)? else { return Ok(false) };
+        let side: serde_json::Value =
+            read(&format!("{name}.json"))?.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let profile = dbc::Profile::from_name(c.profile().dbc_name());
+        Ok(timeline::read_log(&bytes, &side, profile, self.inner.opts.sample).is_ok_and(|r| r.internal_gps))
+    }
+
+    /// The narrow rebuild of a source order's change, when one is noted on the car: every window of its history
+    /// built again from what is stored, in time order (the order says which input wins where they are joined; the
+    /// samples each input stored stay as they are), nothing decoded again.
+    pub(crate) fn redo_inputs(&self, car: CarId, job: Option<&JobState>) -> Result<()> {
+        let db = &self.inner.db;
+        if !records::redo(db, car, Redo::Inputs)? {
+            return Ok(());
+        }
+        let meta = records::meta(db, car)?;
+        let api = self.api_span(car)?;
+        let first = [meta.first_ms, api.map(|a| a.0)].into_iter().flatten().min();
+        // the newest data of any input (an API's days reach to their end: its newest reading)
+        let newest = model::Input::apis().map(|i| meta.api_times(i).0).fold(meta.newest_ms, Option::max);
+        if let (Some(a), Some(b)) = (first, newest) {
+            let mut at = a;
+            while at <= b {
+                if job.is_some_and(JobState::cancelled) {
+                    return Ok(());
+                }
+                // (the car's lock per window: logs that arrive meanwhile wait one window at most)
+                let l = self.car_lock(car);
+                let _held = lock(&l);
+                let mut meta = records::meta(db, car)?;
+                // a UTC day at a time (its window reaches on to the settled points around it, as a log's does)
+                let end = (at / records::DAY_MS + 1) * records::DAY_MS;
+                let (_, to) = self.rebuild_span(car, &mut meta, at, end.min(b.saturating_add(1)))?;
+                at = to.max(end);
+            }
+        }
+        records::put_redo(db, car, Redo::Inputs, false)
     }
 
     /// A job as it is now (kept until the engine stops).
@@ -266,41 +553,24 @@ impl Engine {
         }
     }
 
-    /// Rebuilds a car's whole history after a change to the order its live inputs win in (its `source_order`): noted
-    /// pending at once (a restart before the job carries it out does it then), then rebuilt in the background as a
-    /// change of preferred key is.
+    /// Rebuilds a car's history after a change to the order its live inputs win in (its `source_order`): noted
+    /// on the car at once (a restart before the job carries it out does it then), then its windows built again in
+    /// the background ([`Engine::redo_inputs`]); saves in a row are one rebuild.
     pub(crate) fn rebuild_for_order(&self, car: CarId) -> Result<()> {
-        {
-            let l = self.car_lock(car);
-            let _held = lock(&l);
-            let mark = RebuildMark { from_ms: 0, to_ms: u64::MAX, started_ms: now_ms(), cleared: false };
-            records::put_rebuild_mark(&self.inner.db, car, Some(&mark))?;
-        }
+        records::put_redo(&self.inner.db, car, Redo::Inputs, true)?;
         if self.handle().is_ok() {
-            self.rebuild(Scope::car(car))?;
+            self.rebuild_because(Scope::car(car), What::INPUTS, Cause::source_order(), true)?;
         }
         Ok(())
     }
 
-    /// Whether a car has a rebuild under way (or one a restart cut off).
+    /// Whether a car has a rebuild under way (or one asked for, or one a restart cut off).
     pub fn rebuild_pending(&self, car: CarId) -> bool {
-        records::rebuild_mark(&self.inner.db, car).ok().flatten().is_some()
-            || !records::dirty(&self.inner.db, car).unwrap_or_default().is_empty()
-    }
-}
-
-fn unreachable_job(id: u64) -> Job {
-    Job {
-        id,
-        car: None,
-        status: JobStatus::Running,
-        done: 0,
-        total: 0,
-        from_ms: 0,
-        to_ms: 0,
-        started_ms: now_ms(),
-        finished_ms: None,
-        took_ms: None,
-        error: None,
+        let db = &self.inner.db;
+        records::rebuild_mark(db, car).ok().flatten().is_some()
+            || !records::dirty(db, car).unwrap_or_default().is_empty()
+            || records::redo(db, car, Redo::Positions).unwrap_or(false)
+            || records::redo(db, car, Redo::Inputs).unwrap_or(false)
+            || lock(&self.inner.pending_jobs).keys().any(|k| k.is_none() || *k == Some(car))
     }
 }

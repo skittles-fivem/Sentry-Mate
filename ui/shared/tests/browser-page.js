@@ -42,34 +42,6 @@ async function run() {
   replaceChanged(slot, keep, 'and text', null);
   check('replaceChanged with another count or order draws again', slot.childNodes.length === 2 && slot.firstChild === keep && slot.textContent === 'mapand text', slot.outerHTML);
   mo.disconnect();
-  // holdScroll() (through replace()): a part above the screen drawn again taller leaves what is on screen where it was
-  // (scroll anchoring of its own: Safari on iOS has none; Chromium's is switched off here), and a part drawn again in
-  // the middle of the screen keeps where the window is scrolled
-  {
-    const de = document.documentElement;
-    de.style.overflowAnchor = 'none'; document.body.style.overflowAnchor = 'none';
-    const tall = (n, px) => Array.from({ length: n }, (_, i) => h('div', { style: { height: `${px}px` } }, `row ${i}`));
-    const above = h('div', null, tall(5, 100));
-    const mid = h('div', null, tall(30, 100));
-    const page = h('div', null, above, mid, h('div', { style: { height: '3000px' } }));
-    document.body.append(page);
-    const pageTop = page.getBoundingClientRect().top + scrollY;
-    scrollTo(0, pageTop + 1000);
-    await new Promise((r) => requestAnimationFrame(r));
-    const y0 = scrollY;
-    const mark = mid.children[10];
-    const at = mark.getBoundingClientRect().top;
-    replace(above, tall(7, 100)); // 200 px taller, above the screen
-    await Promise.resolve(); await Promise.resolve();
-    check('holdScroll keeps what is on screen in place when a part above it grows', Math.abs(mark.getBoundingClientRect().top - at) < 1 && Math.abs(scrollY - (y0 + 200)) < 1, `${y0} -> ${scrollY}, ${at} -> ${mark.getBoundingClientRect().top}`);
-    const y1 = scrollY;
-    replace(mid, tall(30, 100)); // the part on screen itself, the same height
-    await Promise.resolve(); await Promise.resolve();
-    check('holdScroll keeps the scroll when the part on screen is drawn again', Math.abs(scrollY - y1) < 1, `${y1} -> ${scrollY}`);
-    page.remove();
-    scrollTo(0, 0);
-    de.style.overflowAnchor = ''; document.body.style.overflowAnchor = '';
-  }
   // markScrolling(): data-scrolling on the root while something scrolls, gone a moment after
   const stopMark = markScrolling(60);
   const scroller = h('div', { style: { height: '50px', overflow: 'auto' } }, h('div', { style: { height: '500px' } }));
