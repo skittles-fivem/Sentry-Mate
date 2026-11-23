@@ -134,9 +134,7 @@ body { container: page / inline-size; }
 *, ::before, ::after { line-height: var(--LH); }
 /* what a closed <details> holds is not laid out at all (as browsers used to do), so nothing measures it */
 details:not([open]) > :not(summary) { display: none !important; }
-/* The page's scrollbar keeps its place whether the page is longer than the window or not, so a page that
-   grows or shrinks (a list loaded, a tooltip near the bottom) never moves sideways. */
-html { background: var(--paper); -webkit-text-size-adjust: 100%; scrollbar-gutter: stable; }
+html { background: var(--paper); -webkit-text-size-adjust: 100%; }
 /* Keyboard focus never lands under the sticky masthead. */
 :root { --clear-top: calc(var(--masthead-h) + round(1rem, var(--e))); }
 :where(.main, .colophon, .notices) * { scroll-margin-top: var(--clear-top); }
@@ -944,8 +942,3 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
 .deck > .src-block { flex-basis: 100%; }
-
-/* a readout whose text changes in place sits in a box as wide as its longest text (shared/dom.js steady) */
-.steady { display: inline-grid; font-variant-numeric: tabular-nums; }
-.steady > * { grid-area: 1 / 1; }
-.steady-size { visibility: hidden; }

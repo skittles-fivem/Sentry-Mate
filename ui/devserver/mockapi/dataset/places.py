@@ -18,9 +18,15 @@ def _addr(short, street, neighbourhood, locality, region, country):
     }
 
 
-def _price(currency, per_kwh, rates=None, per_minute=None, session_fee=None):
+def _price(currency, per_kwh, rates=None, per_minute=None, session_fee=None, tiers=None):
     return {"currency": currency, "per_kwh": per_kwh, "per_minute": per_minute,
-            "rates": rates or [], "session_fee": session_fee}
+            "rates": rates or [], "session_fee": session_fee, "tiers": tiers}
+
+
+# Made-up block prices: the first 1,000 kWh of a billing cycle at 0.16, the next 1,000 at 0.10, the rest at 0.05;
+# the cycle starts on the 1st, and the house on the same meter uses about 900 kWh a cycle before the car.
+_HOME_CHI_TIERS = {"steps": [{"from_kwh": 0, "per_kwh": 0.16}, {"from_kwh": 1000, "per_kwh": 0.10},
+                             {"from_kwh": 2000, "per_kwh": 0.05}], "cycle_day": 1, "base_kwh": 900}
 
 
 _HOME_SF_RATES = [
@@ -106,7 +112,7 @@ PLACES = [
     # --- Chicago (car c2) and its road trip to Toronto
     _p("p30", "Home", "home", 41.92310, -87.70930, 60, CHI,
        _addr("N Kedzie Ave, Logan Square", "N Kedzie Ave", "Logan Square", "Chicago", "Illinois", US),
-       _price("USD", 0.17)),
+       _price("USD", None, tiers=_HOME_CHI_TIERS)),
     _p("p31", "Work garage", "work", 41.89240, -87.63450, 120, CHI,
        _addr("N LaSalle Dr, River North", "N LaSalle Dr", "River North", "Chicago", "Illinois", US),
        _price("USD", 0.30, session_fee=0.50)),

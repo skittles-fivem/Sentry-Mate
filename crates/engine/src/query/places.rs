@@ -63,6 +63,9 @@ pub struct Price {
     pub per_minute: Option<f64>,
     pub rates: Vec<Rate>,
     pub session_fee: Option<f64>,
+    /// Tiered prices: steps by kWh used in the billing cycle, for the hours no rate covers (in place of `per_kwh`).
+    #[serde(default)]
+    pub tiers: Option<places::Tiers>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -151,6 +154,7 @@ fn price_of(p: &Place, extra: Option<&PlaceExtra>) -> Option<Price> {
             })
             .collect(),
         session_fee: plan.session_fee,
+        tiers: None,
     })
 }
 
@@ -669,9 +673,9 @@ fn cost_pair(
         Some(k) => Some(k),
         // it keeps having no cost
         None if costs::kept_none(e, car, ch.id)? => None,
-        None => costs::price_in(before, ch, &curve, tz),
+        None => costs::price_in(e, before, ch, &curve, tz),
     };
-    Ok((now, costs::price_in(after, ch, &curve, tz)))
+    Ok((now, costs::price_in(e, after, ch, &curve, tz)))
 }
 
 /// The effect of going from `before` to `after` for the drives and charges of `cars`, where `focus` are the places
@@ -690,8 +694,18 @@ fn effect(
     let id_at = |p: &Places, pos: Option<&model::Position>| pos.and_then(|x| p.place_at(x.lat, x.lon)).map(|x| x.id);
     let in_focus = |id: Option<PlaceId>| id.is_some_and(|i| focus.contains(&i));
     let price_changed = |b: Option<PlaceId>, a: Option<PlaceId>| {
-        let pb = b.and_then(|i| before.get(i)).map(|p| (&p.price, before.extra(p.id).and_then(|x| x.per_minute)));
-        let pa = a.and_then(|i| after.get(i)).map(|p| (&p.price, after.extra(p.id).and_then(|x| x.per_minute)));
+        let of = |ps: &Places, i: PlaceId| {
+            ps.get(i).map(|p| {
+                let x = ps.extra(p.id);
+                (
+                    p.price.clone(),
+                    x.and_then(|x| x.per_minute),
+                    x.and_then(|x| x.price.as_ref()).and_then(|q| q.tiers.clone()),
+                )
+            })
+        };
+        let pb = b.and_then(|i| of(before, i));
+        let pa = a.and_then(|i| of(after, i));
         pb != pa
     };
     let now = now_ms();
@@ -905,12 +919,46 @@ fn price_rules(p: &Price, bad: &mut BTreeMap<String, String>) {
             add(&k("per_kwh"), "Give the rate a price per kWh or per minute.");
         }
     }
+    if let Some(t) = &p.tiers {
+        tier_rules(t, &mut add);
+        if p.per_kwh.is_some() {
+            add("price.per_kwh", "Tiered prices replace the price per kWh: send one or the other.");
+        }
+    }
+    let own = p.per_kwh.is_some() || p.per_minute.is_some() || p.tiers.is_some();
     // the hours no rate covers are at the place's own price: without one they would be free, not unknown
-    if p.per_kwh.is_none() && p.per_minute.is_none() && !p.rates.is_empty() && !rates_cover_week(&p.rates) {
+    if !own && !p.rates.is_empty() && !rates_cover_week(&p.rates) {
         add("price.per_kwh", "The rates leave some hours of the week out: give a price per kWh for those hours.");
     }
-    if p.per_kwh.is_none() && p.per_minute.is_none() && p.rates.is_empty() && p.session_fee.is_none() {
+    if !own && p.rates.is_empty() && p.session_fee.is_none() {
         add("price", "Give a price per kWh, per minute, a rate or a session fee, or send null for no price.");
+    }
+}
+
+/// The rules of tiered prices, each on its own field (`price.tiers.steps.N.from_kwh` and so on).
+fn tier_rules(t: &places::Tiers, add: &mut impl FnMut(&str, &str)) {
+    use places::price::{MAX_CYCLE_DAY, MAX_PER_KWH, MAX_TIER_KWH, MAX_TIERS};
+    if t.steps.is_empty() || t.steps.len() > MAX_TIERS {
+        add("price.tiers.steps", "Give 1 to 8 steps.");
+    }
+    let mut last = -1.0f64;
+    for (i, s) in t.steps.iter().enumerate() {
+        let k = |f: &str| format!("price.tiers.steps.{i}.{f}");
+        if i == 0 && s.from_kwh != 0.0 {
+            add(&k("from_kwh"), "The first step starts at 0 kWh.");
+        } else if i > 0 && !(s.from_kwh.is_finite() && s.from_kwh > last && s.from_kwh <= MAX_TIER_KWH) {
+            add(&k("from_kwh"), "Each step starts above the one before (up to 1,000,000 kWh).");
+        }
+        last = s.from_kwh;
+        if !(s.per_kwh.is_finite() && (0.0..=MAX_PER_KWH).contains(&s.per_kwh)) {
+            add(&k("per_kwh"), "Must be between 0 and 10.");
+        }
+    }
+    if !(1..=MAX_CYCLE_DAY).contains(&t.cycle_day) {
+        add("price.tiers.cycle_day", "A day of the month from 1 to 28.");
+    }
+    if !(t.base_kwh.is_finite() && (0.0..=MAX_TIER_KWH).contains(&t.base_kwh)) {
+        add("price.tiers.base_kwh", "Between 0 and 1,000,000 kWh.");
     }
 }
 
@@ -988,7 +1036,8 @@ fn to_model(id: PlaceId, d: &Draft, extra: PlaceExtra) -> (Place, PlaceExtra) {
     });
     let plan = price.as_ref().map(|p| PricePlan {
         currency: p.currency.clone(),
-        per_kwh: p.per_kwh.unwrap_or(0.0),
+        // tiered prices: the first step's price stands for the place's (the steps price the charges)
+        per_kwh: p.per_kwh.or_else(|| p.tiers.as_ref().and_then(|t| t.steps.first()).map(|s| s.per_kwh)).unwrap_or(0.0),
         rates: p
             .rates
             .iter()
@@ -1288,13 +1337,13 @@ pub fn reprice(
             let old = match &kept {
                 Some(k) => Some(k.clone()),
                 None if costs::kept_none(e, car, ch.id)? => None,
-                None => costs::price_in(&places, &ch, &curve, &tz),
+                None => costs::price_in(e, &places, &ch, &curve, &tz),
             };
             if only_without_cost && old.is_some() {
                 return Ok(true);
             }
             out.charges += 1;
-            let new = costs::price_in(&places, &ch, &curve, &tz);
+            let new = costs::price_in(e, &places, &ch, &curve, &tz);
             for (box_, c) in [(&mut before, &old), (&mut after, &new)] {
                 if let Some(c) = c {
                     *box_.entry(c.currency.clone()).or_default() += c.amount;
@@ -1373,6 +1422,7 @@ mod tests {
                     to: "24:00".into(),
                 }],
                 session_fee: None,
+                tiers: None,
             }),
         };
         check(&ok).unwrap();
@@ -1387,6 +1437,7 @@ mod tests {
                 per_minute: None,
                 rates: Vec::new(),
                 session_fee: None,
+                tiers: None,
             }),
             ..ok.clone()
         };
@@ -1419,7 +1470,14 @@ mod tests {
             lon: 2.0,
             radius_m: 100.0,
             time_zone: None,
-            price: Some(Price { currency: "EUR".into(), per_kwh, per_minute: None, rates, session_fee: None }),
+            price: Some(Price {
+                currency: "EUR".into(),
+                per_kwh,
+                per_minute: None,
+                rates,
+                session_fee: None,
+                tiers: None,
+            }),
         };
         let weekdays = vec![
             rate("Night", "mon-fri", "22:00", "06:00", Some(0.1)),

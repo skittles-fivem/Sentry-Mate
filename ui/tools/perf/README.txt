@@ -39,9 +39,15 @@ repository), D=$P/data, K=$P/keys.
 
 measure.js options
   --base URL (https://127.0.0.1:10101)  --user owner  --pass '...'  --car c1 (default: first car)
-  --packs instrument,logbook,horizon,console,pebble,manager   --pages car,drives,charges,battery,settings
+  --packs instrument,logbook,horizon,console,pebble,manager
+  --pages car,drives,drive,charges,battery,statistics,settings,settings-integrations
   --out FILE.json  --md FILE.md  --label NAME  --timeout 90000  --quiet 500
   --cpu 4  --latency 150  --no-throttle  --warm-pause MS  --verbose (every request in the JSON)
+  --desktop  1440x900 at 1x, no touch, no CPU or network throttling
+  --nav      after the first page's warm load, in-app navigation to each other page (the pack's own link clicked,
+             after a hover and touchstart on it; else history.pushState + popstate), timed in the page's clock from the
+             click to the new view ready (its data-ready set again by the page, the path the new one); rows "nav"
+  --drive ID the drive page's drive (default: the car's first drive)
 
 What is measured (see the header of measure.js for detail)
   device   390x844 CSS px, deviceScaleFactor 3, isMobile, hasTouch (Android Chrome UA)
@@ -66,7 +72,8 @@ What is measured (see the header of measure.js for detail)
   dup GETs    identical API GET URLs (path+query) requested more than once during the load (SSE excluded): sum of n-1
 
 Page paths (all packs share ui/packs/*/web/shared/state.js ROUTES):
-  car /cars/{car}, drives /cars/{car}/drives, charges /cars/{car}/charges, battery /cars/{car}/battery,
+  car /cars/{car}, drives /cars/{car}/drives, drive /cars/{car}/drives/{drive}, charges /cars/{car}/charges,
+  battery /cars/{car}/battery, statistics /cars/{car}/statistics, settings-integrations /settings/integrations,
   settings /settings/display ("Settings: Display and units"; no pack has a plain /settings route of its own,
   manager's 'settings' hub page id aside)
 The pack is chosen per account with PATCH /api/v1/me/preferences {ui_pack: "<id>"} (set back to null at the end).

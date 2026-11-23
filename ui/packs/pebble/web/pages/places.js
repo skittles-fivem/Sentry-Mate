@@ -11,6 +11,7 @@ import { h } from '../shared/dom.js';
 import { format, convert, toMetric, unitLabel, formatMoneyList } from '../shared/units.js';
 import { formatDate } from '../shared/time.js';
 import { formatNumber, tn } from "../shared/i18n.js";
+import * as TI from "../shared/tiers.js";
 import * as api from '../shared/api.js';
 import { tile, chip, btn, icon, note } from '../core/ui.js';
 import { emptyTile, errorWords } from '../core/states.js';
@@ -33,6 +34,7 @@ function priceText(p) {
   const cur = p.currency || '';
   const parts = [];
   if (p.per_kwh != null) parts.push(`${format(p.per_kwh, 'price_energy', { currency: cur })}`);
+  if (p.tiers?.steps?.length) parts.push(TI.tiersSummary(p.tiers, cur));
   if (p.per_minute != null) parts.push(`${format(p.per_minute, 'price_time', { currency: cur })}`);
   if (p.session_fee != null) parts.push(`${format(p.session_fee, 'money', { currency: cur })} a session`);
   if (p.rates?.length) parts.push(`${p.rates.length} time-of-day rate${p.rates.length > 1 ? 's' : ''}`);
@@ -106,12 +108,13 @@ export async function mount(ctx) {
     lat: field({ label: 'Latitude', name: 'lat', type: 'number', attrs: { step: 'any', inputmode: 'decimal' } }),
     lon: field({ label: 'Longitude', name: 'lon', type: 'number', attrs: { step: 'any', inputmode: 'decimal' } }),
     radius: field({ label: `Circle (${unitLabel('length')})`, name: 'radius', type: 'number', attrs: { step: '1', inputmode: 'numeric' }, hint: 'From 10 to 5000 m. A circle a little bigger than the car park works best.' }),
-    billing: segmented({ label: 'Charging price', name: 'billing', value: 'none', options: [['none', 'No price'], ['kwh', 'Per kWh'], ['minute', 'Per minute']], cover: 'web.geofences.form.billing-type', onchange: () => showPrice() }),
+    billing: segmented({ label: 'Charging price', name: 'billing', value: 'none', options: [['none', 'No price'], ['kwh', 'Per kWh'], ['minute', 'Per minute'], ['tiers', 'Tiered (per kWh steps)']], cover: 'web.geofences.form.billing-type', onchange: () => showPrice() }),
     unit: field({ label: 'Price per unit', name: 'unit', type: 'number', attrs: { step: 'any', inputmode: 'decimal' }, cover: ['web.geofences.form.cost-per-unit', 'web.geofences.form.negative-price'], hint: 'A price below zero is allowed: some tariffs pay you to charge at times.' }),
     fee: field({ label: 'Session fee', name: 'fee', type: 'number', attrs: { step: 'any', inputmode: 'decimal', min: '0' }, cover: 'web.geofences.form.session-fee', hint: 'Added once to each charge here. Leave empty for none.' }),
     currency: field({ label: 'Currency', name: 'currency', attrs: { maxlength: 3, autocomplete: 'off' }, hint: 'Three letters, for example USD or EUR.' }),
   };
   const ratesBox = h('div', { class: 'rates', cover: 'projects.agile' });
+  const tiersBox = h('div', { class: 'rates tiers' });
   const mapEl = h('div', { class: 'map map-short' });
   const effect = h('div', { class: 'effect', 'aria-live': 'polite', cover: 'web.geofences.form.relabel-history' });
   const reprice = h('div', { class: 'effect', cover: 'web.geofences.form.retro-costs' });
@@ -121,7 +124,7 @@ export async function mount(ctx) {
   const delBtn = btn('Delete', { kind: 'danger', icon: 'trash', cover: 'web.geofences.list.delete', onclick: () => remove() });
   const backBtn = btn('Back to places', { kind: 'soft', icon: 'chevronLeft', cover: 'web.geofences.form.back', onclick: () => sheet.close() });
   const checkBtn = btn('What would change?', { kind: 'soft', icon: 'search', onclick: () => preview() });
-  const priceBox = h('div', { class: 'form price-box' }, f.unit, f.fee, f.currency, h('p', { class: 'hint', cover: 'web.geofences.form.auto-cost' }, 'Charges that start here from now on get this price by themselves. Past charges keep theirs until you apply the price to them.'), ratesBox);
+  const priceBox = h('div', { class: 'form price-box' }, f.unit, tiersBox, f.fee, f.currency, h('p', { class: 'hint', cover: 'web.geofences.form.auto-cost' }, 'Charges that start here from now on get this price by themselves. Past charges keep theirs until you apply the price to them.'), ratesBox);
   const formEl = h('div', { class: 'form', cover: ['web.geofences.form.entry-from-dashboards', 'web.geofences.form.defaults'] },
     f.crumb, missing, f.name, f.kind,
     h('div', { class: 'field', cover: 'web.geofences.form.position-map' }, h('span', { class: 'label' }, 'Where'), mapEl, h('p', { class: 'hint' }, 'Tap the map to move the centre.')),
@@ -155,9 +158,55 @@ export async function mount(ctx) {
       } }), btn('Cancel', { kind: 'ghost', onclick: drawRates })));
     ratesBox.replaceChildren(h('span', { class: 'label' }, 'New rate'), box);
   }
+  /* tiered prices: steps by the kWh used in a billing cycle */
+  let tiers = TI.newTiers();
+  const tierExample = h('div', { class: 'tier-example', 'aria-live': 'polite' });
+  function drawTierExample() {
+    const cur$ = val(f.currency).toUpperCase() || 'USD';
+    const fee = val(f.fee) === '' ? null : Number(val(f.fee));
+    const ex = TI.workedExample(tiers, fee);
+    const ok = ex.parts.length && ex.parts.every((x) => x.per_kwh != null);
+    tierExample.replaceChildren(h('span', { class: 'label' }, 'How a charge here is costed'),
+      h('p', { class: 'hint' }, `kWh in each step × that step’s price${fee ? ' + the session fee' : ''}.`),
+      ok ? h('p', { class: 'tier-sum' }, `A ${formatNumber(ex.kwh)} kWh charge from ${formatNumber(ex.before)} kWh into the cycle: ${TI.splitText(ex.parts, cur$)}${fee ? ` + ${format(fee, 'money', { currency: cur$ })}` : ''} = ${format(ex.total, 'money', { currency: cur$ })}`)
+        : h('p', { class: 'hint' }, 'Give every step a price to see an example.'),
+      rates.length ? h('p', { class: 'hint' }, 'A rate by time of day wins its hours; its kWh still count toward the steps.') : null);
+  }
+  function drawTiers() {
+    const st = tiers.steps;
+    const rows = st.map((s, i) => {
+      const { from, to } = TI.stepRange(st, i);
+      const fFrom = field({ label: 'From kWh', name: `tfrom${i}`, type: 'number', value: i === 0 ? '0' : String(s.from_kwh ?? ''), attrs: { step: '1', min: '0', inputmode: 'numeric' } });
+      const fPer = field({ label: 'Price per kWh', name: `tper${i}`, type: 'number', value: s.per_kwh != null ? String(s.per_kwh) : '', attrs: { step: 'any', inputmode: 'decimal', placeholder: 'e.g. 0.16' } });
+      fFrom.control.disabled = !admin || i === 0; fPer.control.disabled = !admin;
+      fFrom.control.addEventListener('input', () => { s.from_kwh = fFrom.control.value === '' ? null : Number(fFrom.control.value); words.textContent = TI.stepLabel(TI.stepRange(st, i).from, TI.stepRange(st, i).to); drawTierExample(); });
+      fFrom.control.addEventListener('change', () => drawTiers());
+      fPer.control.addEventListener('input', () => { s.per_kwh = fPer.control.value === '' ? null : Number(fPer.control.value); drawTierExample(); });
+      const words = h('span', { class: 'row-sub' }, TI.stepLabel(from, to));
+      return h('li', { class: 'rate tier' },
+        h('span', { class: 'rate-text' }, h('span', { class: 'row-name' }, `Step ${i + 1}`), words),
+        admin && st.length > 1 ? btn(`Remove step ${i + 1}`, { kind: 'ghost', icon: 'close', iconOnly: true, onclick: () => { st.splice(i, 1); st[0].from_kwh = 0; drawTiers(); } }) : null,
+        h('div', { class: 'two tier-fields' }, fFrom, fPer));
+    });
+    const cycle = field({ label: 'Billing cycle starts', name: 'tcycle', type: 'select', options: TI.cycleChoices(), value: String(tiers.cycle_day || 1) });
+    const base = field({ label: 'Household use per cycle (kWh)', name: 'tbase', type: 'number', value: tiers.base_kwh ? String(tiers.base_kwh) : '', attrs: { step: '1', min: '0', inputmode: 'numeric', placeholder: '0' }, hint: TI.BASE_USE_NOTE });
+    cycle.control.disabled = !admin; base.control.disabled = !admin;
+    cycle.control.addEventListener('change', () => { tiers.cycle_day = Number(cycle.control.value); drawTierExample(); });
+    base.control.addEventListener('input', () => { tiers.base_kwh = base.control.value === '' ? 0 : Number(base.control.value); drawTierExample(); });
+    tiersBox.replaceChildren(h('span', { class: 'label' }, 'Steps per billing cycle'),
+      h('p', { class: 'hint' }, 'Each step’s price applies from its kWh on, counted from the start of the cycle: this place’s charging, every car, in time order.'),
+      h('ul', { class: 'rate-list' }, rows),
+      admin && st.length < TI.MAX_TIERS ? btn('Add a step', { kind: 'soft', icon: 'plus', onclick: () => { st.push({ from_kwh: (Number(st[st.length - 1]?.from_kwh) || 0) + 1000, per_kwh: null }); drawTiers(); } }) : null,
+      cycle, base, tierExample);
+    drawTierExample();
+  }
+  for (const x of [f.fee, f.currency]) x.control.addEventListener('input', () => drawTierExample());
   function showPrice() {
     const b = f.billing.querySelector('[aria-checked="true"]')?.dataset.value || 'none';
     priceBox.hidden = b === 'none';
+    f.unit.hidden = b === 'tiers';
+    tiersBox.hidden = b !== 'tiers';
+    if (b === 'tiers') drawTiers();
     f.unit.querySelector('.label').textContent = b === 'minute' ? 'Price per minute' : 'Price per kWh';
   }
 
@@ -176,7 +225,8 @@ export async function mount(ctx) {
     f.lon.control.value = lon != null ? String(lon) : '';
     f.radius.control.value = String(Math.round(convert(p ? p.radius_m : 100, 'length')));
     const pr = p?.price;
-    f.billing.set(!pr ? 'none' : pr.per_minute != null && pr.per_kwh == null ? 'minute' : 'kwh');
+    f.billing.set(!pr ? 'none' : pr.tiers ? 'tiers' : pr.per_minute != null && pr.per_kwh == null ? 'minute' : 'kwh');
+    tiers = TI.copyTiers(pr?.tiers) || TI.newTiers(pr?.per_kwh ?? null);
     f.unit.control.value = pr ? String(pr.per_kwh ?? pr.per_minute ?? '') : '';
     f.fee.control.value = pr?.session_fee != null ? String(pr.session_fee) : '';
     f.currency.control.value = pr?.currency || 'USD';
@@ -217,7 +267,8 @@ export async function mount(ctx) {
     return {
       name: val(f.name), kind: f.kind.control.value, lat: Number(val(f.lat)), lon: Number(val(f.lon)),
       radius_m: Math.round(toMetric(Number(val(f.radius)) || 100, 'length')),
-      price: b === 'none' ? null : { currency: val(f.currency).toUpperCase() || 'USD', per_kwh: b === 'kwh' ? unit : null, per_minute: b === 'minute' ? unit : null, session_fee: fee, rates },
+      price: b === 'none' ? null : { currency: val(f.currency).toUpperCase() || 'USD', per_kwh: b === 'kwh' ? unit : null, per_minute: b === 'minute' ? unit : null, session_fee: fee, rates,
+        tiers: b === 'tiers' ? TI.tiersBody(tiers) : null },
     };
   }
   function check(d) {
@@ -225,7 +276,8 @@ export async function mount(ctx) {
     if (!d.name) bad.push('Give the place a name.');
     if (!Number.isFinite(d.lat) || !Number.isFinite(d.lon) || val(f.lat) === '') bad.push('Pick where it is: tap the map or type the position.');
     if (d.radius_m < 10 || d.radius_m > 5000) bad.push('The circle must be from 10 to 5000 m.');
-    if (d.price && d.price.per_kwh == null && d.price.per_minute == null && d.price.session_fee == null && !rates.length) bad.push('Type a price, or choose No price.');
+    if (d.price?.tiers) bad.push(...new Set(Object.values(TI.tierErrors(d.price.tiers))));
+    else if (d.price && d.price.per_kwh == null && d.price.per_minute == null && d.price.session_fee == null && !rates.length) bad.push('Type a price, or choose No price.');
     return bad;
   }
   function showErr(text) { err.textContent = text; err.hidden = !text; }
