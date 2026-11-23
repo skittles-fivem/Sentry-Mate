@@ -24,6 +24,12 @@
 //! live, input SMO, an id with [`FW_BIT`]), so the updates list, the timeline, MQTT's `software_changed` and the
 //! totals show it.
 //!
+//! **Gaps.** The window is the readings next to the change: the last day with the old set and the first with the new
+//! one. When a whole UTC day between them has no readings at all (the logs had none, or none came), the window says
+//! only that the update came somewhere in there: the event is marked [`FwEvent::gap`] and its row does not stretch
+//! over the days nobody read; it is placed where the new set was first seen (start and end both), so the timeline
+//! shows no update of days and the list no install time.
+//!
 //! **Names.** An owner can type the version of an update (`2025.38.6`): it is kept for that update and for its new
 //! fingerprint set (every field's value after it), so a later update to the same set gets the name by itself
 //! (`named_by: "auto"`). Clearing an update's name keeps it without one, even when its set is named elsewhere.
@@ -137,6 +143,23 @@ pub struct FwEvent {
     pub changes: Vec<Change>,
     /// The fingerprint set after it (every field's value), hashed: what a typed version names.
     pub set: String,
+    /// No readings at all between `from_ms` and `to_ms` for a whole UTC day or more: when in there it came is not
+    /// known (see the module's notes).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gap: bool,
+}
+
+impl FwEvent {
+    /// Where its update row goes: the window, or, across a gap, the first time the new set was seen.
+    pub fn row_span(&self) -> (u64, u64) {
+        if self.gap { (self.to_ms, self.to_ms) } else { (self.from_ms, self.to_ms) }
+    }
+}
+
+/// Whether a whole UTC day between `from_ms` and `to_ms` had no readings (`days`: the days that had some).
+pub(crate) fn gap_between(days: &BTreeSet<u32>, from_ms: u64, to_ms: u64) -> bool {
+    let (a, b) = (records::day_of(from_ms), records::day_of(to_ms));
+    b > a.saturating_add(1) && (a.saturating_add(1)..b).any(|d| !days.contains(&d))
 }
 
 /// A car's fingerprint history.
@@ -412,8 +435,8 @@ fn set_hash(set: &BTreeMap<&str, u64>) -> String {
     hex::encode(&h.finalize()[..8])
 }
 
-/// The updates in a history's runs (see the module's notes), oldest first.
-pub(crate) fn events_of(car: CarId, runs: &BTreeMap<String, Vec<Run>>) -> Vec<FwEvent> {
+/// The updates in a history's runs (see the module's notes), oldest first; `days` are the days with readings.
+pub(crate) fn events_of(car: CarId, runs: &BTreeMap<String, Vec<Run>>, days: &BTreeSet<u32>) -> Vec<FwEvent> {
     struct C<'a> {
         field: &'a str,
         old: u64,
@@ -478,6 +501,7 @@ pub(crate) fn events_of(car: CarId, runs: &BTreeMap<String, Vec<Run>>) -> Vec<Fw
             to_ms: to,
             changes: cs.iter().map(|c| Change { field: c.field.to_string(), old: c.old, new: c.new }).collect(),
             set: set_hash(&after),
+            gap: gap_between(days, from, to),
         });
     }
     out
@@ -649,7 +673,7 @@ impl Engine {
 
     /// Finds the updates of `h`, writes it, and makes the update rows match when they changed (or `force`).
     fn fw_finish(&self, car: CarId, mut h: History, force: bool) -> Result<()> {
-        let events = events_of(car, &h.runs);
+        let events = events_of(car, &h.runs, &h.days);
         let changed = events != h.events;
         let db = &self.inner.db;
         if changed {
@@ -678,8 +702,8 @@ impl Engine {
                 id: ev.id,
                 update: Update {
                     car,
-                    start_ms: ev.from_ms,
-                    end_ms: Some(ev.to_ms),
+                    start_ms: ev.row_span().0,
+                    end_ms: Some(ev.row_span().1),
                     version,
                     source: Source::Live,
                     inputs: Inputs::SMO,
@@ -806,7 +830,7 @@ mod tests {
         runs.insert("BMS_bootCrc".to_string(), vec![r(9, 0, 300)]);
         // a second update much later
         runs.get_mut("BMS_appCrc").unwrap().push(r(3, 1000, 1100));
-        let ev = events_of(7, &runs);
+        let ev = events_of(7, &runs, &BTreeSet::new());
         assert_eq!(ev.len(), 2, "{ev:?}");
         assert_eq!((ev[0].from_ms, ev[0].to_ms), (100, 200));
         let f: Vec<&str> = ev[0].changes.iter().map(|c| c.field.as_str()).collect();
@@ -815,11 +839,11 @@ mod tests {
         assert!(ev.iter().all(|e| is_fingerprint(e.id) && e.id >> 40 & 0x3F_FFFF == 7));
         assert_ne!(ev[0].set, ev[1].set);
         // the same runs, the same ids
-        assert_eq!(events_of(7, &runs), ev);
+        assert_eq!(events_of(7, &runs, &BTreeSet::new()), ev);
         // no change: no update
         runs.remove("BMS_appCrc");
         runs.remove("DIR_applicationCrc");
-        assert!(events_of(7, &runs).is_empty());
+        assert!(events_of(7, &runs, &BTreeSet::new()).is_empty());
     }
 
     #[test]
@@ -852,7 +876,7 @@ mod tests {
         let mut all = s.runs["BMS_appCrc"].clone();
         all.push(Run { value: 0x10, first_ms: T + 86_400_000, last_ms: T + 86_455_000 });
         runs.insert("BMS_appCrc".to_string(), join(all));
-        let ev = events_of(7, &runs);
+        let ev = events_of(7, &runs, &BTreeSet::new());
         assert_eq!(ev.len(), 1, "{ev:?}");
         assert_eq!(ev[0].changes, vec![Change { field: "BMS_appCrc".into(), old: 0x20, new: 0x10 }]);
     }
@@ -889,7 +913,7 @@ mod tests {
             ]
         );
         assert_eq!(s.runs["BMS_bootCrc"], vec![Run { value: 9, first_ms: T, last_ms: T + 55_000 }]);
-        let ev = events_of(7, &s.runs);
+        let ev = events_of(7, &s.runs, &BTreeSet::new());
         assert_eq!(ev.len(), 1, "{ev:?}");
         assert_eq!((ev[0].from_ms, ev[0].to_ms), (T + 20_000, T + 25_000));
         assert_eq!((ev[0].changes[0].old, ev[0].changes[0].new), (0x20, 0x10));
@@ -900,12 +924,12 @@ mod tests {
         let r = |v, a, b| Run { value: v, first_ms: a, last_ms: b };
         let mut runs = BTreeMap::new();
         runs.insert("BMS_appCrc".to_string(), vec![r(1, 0, 100), r(2, 200, 300)]);
-        let one = events_of(7, &runs);
+        let one = events_of(7, &runs, &BTreeSet::new());
         let mut n = Names::default();
         n.set(&one[0], Some("2025.38.6"));
         // a late log confirms one more changed field whose window meets the update's: a new id and set
         runs.insert("DIR_applicationCrc".to_string(), vec![r(5, 0, 100), r(6, 200, 300)]);
-        let two = events_of(7, &runs);
+        let two = events_of(7, &runs, &BTreeSet::new());
         assert_eq!(two.len(), 1);
         assert!(two[0].id != one[0].id && two[0].set != one[0].set);
         assert!(n.follow(&one, &two));
@@ -922,19 +946,47 @@ mod tests {
         let r = |v, a, b| Run { value: v, first_ms: a, last_ms: b };
         let mut runs = BTreeMap::new();
         runs.insert("BMS_appCrc".to_string(), vec![r(1, 0, 100), r(2, 200, 300), r(1, 400, 500), r(2, 600, 700)]);
-        let all = events_of(7, &runs);
+        let all = events_of(7, &runs, &BTreeSet::new());
         assert_eq!(all.len(), 3);
         let mut n = Names::default();
         n.set(&all[0], Some("2026.2.6"));
         n.set(&all[2], Some("2026.8.1"));
         // the first update's logs go (a window cleared): the third's changes (1 → 2) now take the first's id
         runs.insert("BMS_appCrc".to_string(), vec![r(2, 200, 300), r(1, 400, 500), r(2, 600, 700)]);
-        let left = events_of(7, &runs);
+        let left = events_of(7, &runs, &BTreeSet::new());
         assert_eq!(left.len(), 2);
         assert_eq!(left[1].id, all[0].id, "the same changes, no salt now");
         assert!(n.follow(&all, &left));
         assert_eq!(n.lookup(&left[1]), Some(("2026.8.1".to_string(), "owner")));
         assert_eq!(n.lookup(&left[0]), None);
+    }
+
+    #[test]
+    fn a_window_over_days_without_readings_is_a_gap_and_its_row_does_not_stretch() {
+        const DAY: u64 = 86_400_000;
+        let r = |v, a, b| Run { value: v, first_ms: a, last_ms: b };
+        // old set last read on day 0 at 22:53, new set first read on day 15 at 00:19; nothing read in between
+        let (x, y) = (T + 22 * 3_600_000 + 53 * 60_000, T + 15 * DAY + 19 * 60_000);
+        let mut runs = BTreeMap::new();
+        runs.insert("VCFRONT_infoAppCrc".to_string(), vec![r(0x1111_0001, T - 5 * DAY, x), r(0x1111_0002, y, y + DAY)]);
+        runs.insert("BMS_appCrc".to_string(), vec![r(0x2222_0001, T - 5 * DAY, x), r(0x2222_0002, y, y + DAY)]);
+        runs.insert("BMS_bootCrc".to_string(), vec![r(0x3333_0001, T - 5 * DAY, y + DAY)]);
+        let d0 = records::day_of(T);
+        let mut days: BTreeSet<u32> = (d0 - 5..=d0).chain(d0 + 15..=d0 + 16).collect();
+        let ev = events_of(7, &runs, &days);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!((ev[0].from_ms, ev[0].to_ms, ev[0].gap), (x, y, true));
+        assert_eq!(ev[0].changes.len(), 2);
+        // its row: where the new set was first seen, not fifteen days of installing
+        assert_eq!(ev[0].row_span(), (y, y));
+        // readings on every day between: the window is what it is, not a gap
+        days.extend(d0 + 1..d0 + 15);
+        let ev = events_of(7, &runs, &days);
+        assert_eq!((ev[0].gap, ev[0].row_span()), (false, (x, y)));
+        // overnight (the next day) is never a gap, even with nothing read in between
+        assert!(!gap_between(&BTreeSet::new(), x, T + DAY + 8 * 3_600_000));
+        // one whole day without readings is
+        assert!(gap_between(&BTreeSet::new(), x, T + 2 * DAY + 60_000));
     }
 
     #[test]
