@@ -160,7 +160,9 @@ function makeRow(ctx) {
   const mark = statusMark('off');
   const label = h('span', { class: 'co-label' });
   const go = h('span', { class: 'co-go', 'aria-hidden': 'true' }, icon('arrowRight'));
-  const reason = h('span', { class: 'co-reason' });
+  const reasonText0 = h('span');
+  const missing = h('span', { class: 'co-missing' });
+  const reason = h('span', { class: 'co-reason' }, reasonText0, missing);
   const errLine = h('span', { class: 'co-err' }, h('span', { class: 'co-err-k' }), relEl(''), h('span', null));
   const lastOk = relEl('co-v');
   const next = h('span', { class: 'co-s' }, h('span', null, 'next '), relEl(''));
@@ -190,7 +192,10 @@ function makeRow(ctx) {
     setClass(el, 'is-problem', c.status === 'problem');
     setStatus(mark, c.status);
     setText(label, c.label);
-    setText(reason, reasonText(c));
+    setText(reasonText0, reasonText(c));
+    const nm = c.missing_logs || 0;
+    setText(missing, nm > 0 ? ` · ${count(nm)} ${nm === 1 ? 'log' : 'logs'} missing` : '');
+    if (nm > 0) missing.title = 'Logs missing on the server; the car was asked to send them again.'; else missing.removeAttribute('title');
     const e = c.last_error;
     const [ek, eat, emsg] = errLine.children;
     setText(ek, e ? 'Last error ' : 'No error kept');
