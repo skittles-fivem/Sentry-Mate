@@ -62,8 +62,6 @@
 .ss-name-input { width: round(18rem, var(--e)); max-width: 100%; min-width: 0; }
 
 /* ports */
-.ss-port { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); flex-wrap: wrap; }
-.ss-port b { font-size: 1.0625rem; }
 .ss-gap { margin-top: round(0.875rem, var(--e)); }
 .ss .note + .note { margin-top: round(0.5rem, var(--e)); }
 
@@ -98,7 +96,7 @@
 .ss-carpick { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); margin-top: round(0.5rem, var(--e)); }
 .ss-carlist { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); max-height: round(14rem, var(--e)); overflow-y: auto; padding: round(0.5rem, var(--e)) round(0.625rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); }
 
-@container page (min-width: 108rem) {
+@container page (min-width: 64rem) {
   .ss-two { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
 }
 @container page (max-width: 50rem) {
@@ -214,5 +212,19 @@
 :root[data-phone] .ss-acts { flex-wrap: wrap; }
 :root[data-phone="tall"] .ss .kv-row { flex-direction: column; align-items: flex-start; gap: round(0.125rem, var(--e)); }
 :root[data-phone="tall"] .ss .kv dd { margin: 0; text-align: left; white-space: normal; }
-:root[data-phone] .ss-port { justify-content: flex-start; }
 :root[data-phone] .ss-carlist label { min-height: var(--tap); }
+
+/* Server updates: this build, the newest published one, the last check; the switch's state and Check now */
+.ss-upd { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); }
+.ss-upd .kv { margin: 0; }
+.ss-upd .kv dd { white-space: normal; min-width: 0; max-width: 100%; }
+.ss-upd-val { display: inline-flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: round(0.375rem, var(--e)) round(0.5rem, var(--e)); min-width: 0; overflow-wrap: anywhere; }
+.ss-upd-val--error { color: var(--warm); }
+.ss-upd-val--off, .ss-upd-val--wait { color: var(--text-2); }
+.ss-upd-check { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); padding-top: round(0.75rem, var(--e)); border-top: 1px solid var(--line); }
+.ss-upd-on { margin: 0; flex: 1 1 round(16rem, var(--e)); color: var(--text-2); }
+.ss-upd-on b { color: var(--text); }
+.ss-upd-how { margin: 0; }
+.ss-names-btn, .ss-check .ss-names-btn { margin-left: auto; margin-top: 0; }
+.ss-names-dlg { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); }
+.ss-names-dlg > p { margin: 0; }

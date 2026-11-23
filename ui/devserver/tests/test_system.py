@@ -523,6 +523,40 @@ class ReleaseCheck(ServerCase):
         self.assertEqual((r["status"], r["checked_ms"]), ("off", None))
 
 
+class ServerUpdatesCard(ServerCase):
+    """What Settings: Server and access's Server updates card reads (GET /about `build`, GET /release) in each state
+    of --release-check it is shown in: check off, update available, up to date, check failed."""
+
+    def state(self, result, on=True):
+        st = self.server.app.store
+        v = self.c.get("/api/v1/settings")["version"]
+        self.c.json("PATCH", "/api/v1/settings", {"version": v, "release_check": {"enabled": on}})
+        st.release_result = result
+        st.release_checked_ms = NOW - 2 * 3600 * 1000 if on else None
+        return self.c.get("/api/v1/release")
+
+    def test_states(self):
+        b = self.c.get("/api/v1/about")["build"]
+        # this build: version, number and when it was built, the same in /about and in /release's `current`
+        self.assertEqual((b["version"], b["number"], b["dev"]), ("0.1.0", 41, False))
+        self.assertEqual(b["built_ms"], NOW - 2 * DAY)
+        r = self.state("newer", on=False)
+        self.assertEqual((r["enabled"], r["status"], r["checked_ms"], r["newest"]), (False, "off", None, None))
+        self.assertEqual((r["current"]["number"], r["current"]["built_ms"]), (b["number"], b["built_ms"]))
+        r = self.state("newer")
+        self.assertEqual((r["status"], r["checked_ms"], r["newest"]["build"]), ("newer", NOW - 2 * 3600 * 1000, 42))
+        self.assertGreater(r["newest"]["date_ms"], b["built_ms"])
+        r = self.state("up_to_date")
+        self.assertEqual((r["status"], r["newest"]["build"], r["newest"]["date_ms"]), ("up_to_date", 41, b["built_ms"]))
+        r = self.state("error")
+        self.assertEqual((r["status"], r["newest"]), ("error", None))
+        self.assertTrue(r["error"]["message"])
+        # Check now answers with the same object; while off it is refused with the code the card words
+        self.assertEqual(self.c.json("POST", "/api/v1/release/check", {})["status"], "error")
+        self.state("newer", on=False)
+        self.c.error("POST", "/api/v1/release/check", 409, "release_check_off", body={})
+
+
 class ReleaseCheckWatcher(ServerCase):
     """A watch account sees the result but gets no notice and can't check now."""
 

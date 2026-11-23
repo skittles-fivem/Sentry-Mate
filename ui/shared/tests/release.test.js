@@ -47,3 +47,32 @@ test('dismissal is per commit and survives blocked storage', async () => {
   r.dismissRelease(n);
   if (had) Object.defineProperty(globalThis, 'localStorage', had); else delete globalThis.localStorage;
 });
+
+test('server updates card: this build, the newest, last checked, in every state of the check', async () => {
+  const r = await load();
+  const about = { version: '0.1.0', build: { version: '0.1.0', number: 41, short: '2f44a52', built_ms: Date.UTC(2026, 10, 20), dev: false }, links: { source: null } };
+  const row = (u, k) => u.rows.find((x) => x.key === k);
+  const off = r.serverUpdates(about, { enabled: false, status: 'off', checked_ms: null }, NOW);
+  assert.equal(off.on, false);
+  assert.equal(row(off, 'this').text, '0.1.0 · build 41');
+  assert.equal(row(off, 'this').title, 'commit 2f44a52');
+  assert.equal(row(off, 'built').text, 'Nov 20');
+  assert.equal(row(off, 'newest').tone, 'off');
+  assert.equal(row(off, 'checked').text, '—');
+  const newest = { short: '9c1e7d3', build: 42, date_ms: Date.UTC(2026, 10, 21), changes: 4 };
+  const newer = r.serverUpdates(about, { enabled: true, status: 'newer', checked_ms: NOW - 2 * 3600e3, newest }, NOW);
+  assert.deepEqual([row(newer, 'newest').text, row(newer, 'newest').badge, row(newer, 'newest').title], ['build 42, Nov 21, 4 changes', 'Newer', 'commit 9c1e7d3']);
+  assert.equal(row(newer, 'checked').text, '2 h ago');
+  const same = r.serverUpdates(about, { enabled: true, status: 'up_to_date', checked_ms: NOW, newest: { build: 41, date_ms: Date.UTC(2026, 10, 20), changes: 0 } }, NOW);
+  assert.deepEqual([row(same, 'newest').text, row(same, 'newest').badge], ['build 41, Nov 20', 'Up to date']);
+  assert.equal(row(same, 'checked').text, 'just now');
+  const failed = r.serverUpdates(about, { enabled: true, status: 'error', checked_ms: NOW, error: { message: 'rate limited' } }, NOW);
+  assert.deepEqual([row(failed, 'newest').text, failed.tone], ['Could not check: rate limited', 'error']);
+  const never = r.serverUpdates(about, { enabled: true, status: 'never', checked_ms: null }, NOW);
+  assert.equal(row(never, 'checked').text, 'Not yet');
+  assert.equal(r.serverUpdates(about, { enabled: true, status: 'checking' }, NOW).busy, true);
+  assert.equal(row(r.serverUpdates(about, null, NOW), 'newest').tone, 'error');
+  assert.equal(row(r.serverUpdates({ version: '0.1.0', build: { dev: true } }, null, NOW), 'this').text, '0.1.0 · dev build');
+  assert.equal(off.doc.href, null);
+  assert.equal(r.updatingDoc({ links: { source: 'https://example.org/owner/app/' } }).href, 'https://example.org/owner/app/blob/main/docs/install.md#updating');
+});
