@@ -529,9 +529,9 @@ export async function mount(ctx) {
         if (v === 'online' && !s.tiles.online_url && !tilePresets.length) return refuse(tiles, s.tiles.mode, tileUrlField, 'Save an https:// tile address with {z}, {x} and {y} here first; then choose Online tile server.');
         quick({ tiles: { mode: v } }, () => tiles.set(s.tiles.mode));
       } });
-    // the online preset in use (maps/config says which, the default street map when none was picked yet)
+    // the online preset in use (maps/config says which, the default satellite one when none was picked yet)
     const mt = (maps && maps.tiles) || {};
-    const presetId = mt.preset || s.tiles.preset || (tilePresets.find((x) => x.url === s.tiles.online_url) || {}).id || (s.tiles.online_url ? 'custom' : (tilePresets.find((x) => x.id === 'osm') || tilePresets[0] || {}).id || 'custom');
+    const presetId = mt.preset || s.tiles.preset || (tilePresets.find((x) => x.url === s.tiles.online_url) || {}).id || (s.tiles.online_url ? 'custom' : (tilePresets[0] || {}).id || 'custom');
     const tilePreset = tilePresets.find((x) => x.id === presetId) || null;
     let tileHost = null;
     try { tileHost = s.tiles.online_url ? new URL(s.tiles.online_url.replace(/\{[a-z]\}/g, '0')).host : null; } catch { tileHost = null; }
@@ -548,9 +548,9 @@ export async function mount(ctx) {
       h('div', { class: 'tiles-control' }, h('p', { class: 'setting-note' }, offlineSummary(maps && maps.tiles)), offlineFile,
         h('ol', { class: 'setting-note offline-steps' }, OFFLINE_STEPS.map((x) => h('li', null, x))), h('p', { class: 'setting-note' }, OFFLINE_NOTE)));
     offlineRow.id = OFFLINE_ANCHOR;
-    // the presets (the default street map first), each with where its pictures come from, how deep it zooms and where it covers
+    // the presets (satellite first), each with where its pictures come from, how deep it zooms and where it covers
     const presetNote = (x) => [presetHosts(x).join(', '), `zoom up to ${x.max_zoom}`, x.region ? `${x.region} only: elsewhere the map is blank` : null].filter(Boolean).join(' · ');
-    const sortedPresets = [...tilePresets].sort((a, b) => (a.id === 'osm' ? 0 : 1) - (b.id === 'osm' ? 0 : 1));
+    const sortedPresets = [...tilePresets].sort((a, b) => (a.kind === 'satellite' ? 0 : 1) - (b.kind === 'satellite' ? 0 : 1));
     const radios = [];
     const pickPreset = (v) => {
       for (const r of radios) r.checked = r.value === v;
@@ -642,7 +642,7 @@ export async function mount(ctx) {
         setting('Address details', 'Language, online service and rounding.', addr, { cls: 'setting-form' }),
         setting('Map tiles', `The pictures under every map. Credit: ${s.tiles.attribution || 'shown on the map'}; zoom up to ${s.tiles.max_zoom}.`, h('div', { class: 'tiles-control' }, tiles, tileNow), { cover: 'web.shell.map-tiles' }),
         offlineRow,
-        setting('Online map', 'Only used with online tiles. The OpenStreetMap street map is the default; a preset fills in its address, credit and zoom, or type your own address below.', h('div', { class: 'tiles-control' }, tileSource, tileTerms, tileForm), { cls: 'setting-form' }),
+        setting('Online map', 'Only used with online tiles. Satellite is the default; a preset fills in its address, credit and zoom, or type your own address below.', h('div', { class: 'tiles-control' }, tileSource, tileTerms, tileForm), { cls: 'setting-form' }),
         labelsSwitch ? setting('Place names and roads', LABELS_TEXT, labelsSwitch) : null,
         stylesList ? setting('Maps people can switch to', STYLES_TEXT, stylesList, { cls: 'setting-form' }) : null,
         setting('Outbound proxy', 'If this server may only reach the internet through a proxy: online address look-ups and map tiles the server downloads go through it. Viewers’ browsers loading online tiles use their own connection.',

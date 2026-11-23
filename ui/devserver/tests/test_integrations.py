@@ -115,8 +115,8 @@ class Mqtt(ServerCase):
         self.assertEqual(set(out), {"geocoding", "tiles", "geonames_download", "mqtt", "release_check", "tesla",
                                     "teslafi", "teslamate_mqtt", "teslamate_db"})
         self.assertFalse(out["geocoding"]["enabled"])  # offline address lookup: nothing leaves
-        self.assertEqual(out["tiles"]["host"], "tile.openstreetmap.org")
-        self.assertEqual(out["tiles"]["hosts"], ["tile.openstreetmap.org", "server.arcgisonline.com"])
+        self.assertEqual(out["tiles"]["host"], "server.arcgisonline.com")
+        self.assertEqual(out["tiles"]["hosts"], ["server.arcgisonline.com", "tile.openstreetmap.org"])
         self.assertEqual({x["purpose"] for x in net["inbound"]}, {"web", "upload"})
         v = self.c.get("/api/v1/settings")["version"]
         self.c.json("PATCH", "/api/v1/settings", {"version": v, "release_check": {"enabled": True},

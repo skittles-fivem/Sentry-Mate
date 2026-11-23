@@ -209,7 +209,7 @@ the same as 568:568.
    in **Settings → Display and units** (off by default: no browser asks an
    outside server until then) and pick a source (OpenStreetMap standard,
    OpenTopoMap or your own address). Until then every map says "No map
-   tiles yet", and for an admin offers "Use the online map" (OpenStreetMap) in
+   tiles yet", and for an admin offers "Use online map (OpenStreetMap)" in
    one click (after a confirm). See [Map tiles](security.md#map-tiles).
 
 If it doesn't start, the log says why and what to do. For example `Sentry

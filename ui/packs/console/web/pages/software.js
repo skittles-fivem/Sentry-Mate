@@ -102,7 +102,9 @@ export async function mount(ctx) {
       { key: 'start', label: 'installed at', ph: 'sub', cover: 'updates.table.date',
         render: (r) => h('a', { class: 'lnk-plain', href: timelineHref(r), title: 'the timeline around it' }, `${formatDate(r.start_ms, tz, { weekday: false })} ${formatTime(r.start_ms, tz)}`) },
       { key: 'took', label: 'took', num: true, cover: 'updates.table.duration',
-        render: (r) => (r.end_ms == null ? [tag('running', 'warn'), ` ${formatDuration(r.duration_ms)}`] : formatDuration(r.duration_ms)) },
+        render: (r) => (r.end_ms == null ? [tag('running', 'warn'), ` ${formatDuration(r.duration_ms)}`]
+          : r.readings_gap ? h('span', { title: `no readings between ${dateTime(r.between_ms[0], tz)} and ${dateTime(r.between_ms[1], tz)}: installed somewhere in there` }, none('not known'))
+            : formatDuration(r.duration_ms)) },
       { key: 'days', label: 'days on it', num: true, ph: 'num',
         render: (r) => (daysOn(r) == null ? none('installing') : h('span', { class: 'n' }, formatNumber(daysOn(r), { maximumFractionDigits: 0 }), h('span', { class: 'u' }, ' d'))) },
       { key: 'since', label: 'after prev', num: true, cover: 'updates.table.since_previous',

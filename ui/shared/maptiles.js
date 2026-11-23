@@ -289,10 +289,10 @@ let meLoad = null;
 
 const role = () => { meLoad ??= api.get('me', null, { maxAgeMs: 60000 }).then((m) => m?.role || null, () => { meLoad = null; return null; }); return meLoad; };
 
-/** The preset a no-tiles note offers: the server's default (the OpenStreetMap street map), else satellite. */
+/** The preset a no-tiles note offers: the server's default (satellite), else OpenStreetMap. */
 const offeredPreset = (cfg) => {
   const ps = cfg?.tiles?.presets || [];
-  return ps.find((x) => x.id === 'osm') || ps.find((x) => x.id === 'satellite') || null;
+  return ps.find((x) => x.id === 'satellite') || ps.find((x) => x.id === 'osm') || null;
 };
 
 /** Every host a preset's pictures come from (its base and its overlays), each once. */
@@ -305,7 +305,7 @@ export function presetHosts(p) {
   return out;
 }
 
-/** Turns the default online preset on (the street map; Settings: Display and units does the same); resolves when saved. */
+/** Turns the default online preset on (satellite; Settings: Display and units does the same); resolves when saved. */
 export async function useOnlineMap() {
   const [cfg, server] = await Promise.all([api.get('maps/config'), api.get('settings')]);
   const p = offeredPreset(cfg);
@@ -328,15 +328,15 @@ export function noTilesNote(choice, { classes = {}, compact = false, onDone = ()
     h('p', { class: c.title }, 'No map tiles yet'), text, actions, err);
   const plain = () => {
     replace(actions,
-      h('button', { class: c.primary, type: 'button', onclick: ask }, 'Use the online map'),
+      h('button', { class: c.primary, type: 'button', onclick: ask }, 'Use online map (satellite)'),
       h('a', { class: c.secondary, href: OFFLINE_HELP }, 'Add an offline map file'));
   };
   const ask = async () => {
     err.hidden = true;
     const cfg = await api.get('maps/config', null, { maxAgeMs: 60000 }).catch(() => null);
     box.dataset.mapEmpty = 'confirm';
-    const hosts = presetHosts(offeredPreset(cfg) || { url: 'https://tile.openstreetmap.org/' }).join(' and ');
-    replace(text, `Turn on the online map for everyone? Each viewer’s browser then loads the map pictures from ${hosts}, which sees the viewer’s IP address, this server’s address and the map area shown (never a car or a page). You can turn it off or pick another map in Settings: Display and units.`);
+    const hosts = presetHosts(offeredPreset(cfg) || { url: 'https://server.arcgisonline.com/' }).join(' and ');
+    replace(text, `Turn on the satellite map for everyone? Each viewer’s browser then loads the map pictures from ${hosts}, which sees the viewer’s IP address, this server’s address and the map area shown (never a car or a page). You can turn it off or pick another map in Settings: Display and units.`);
     const yes = h('button', { class: c.primary, type: 'button', onclick: async () => {
       yes.disabled = true;
       try { await useOnlineMap(); replace(text, 'The online map is on. Loading it…'); actions.replaceChildren(); onDone(); } catch (e) { yes.disabled = false; err.hidden = false; err.textContent = `Could not turn the online map on: ${e?.message || e}`; }
