@@ -109,7 +109,7 @@ impl Tiles {
         match self.preset.as_deref() {
             Some(id) if id == "custom" || preset(id).is_some() => id.into(),
             _ => match self.online_url.as_deref() {
-                // the old default (OpenStreetMap, or OpenTopoMap) never picked as a preset: satellite now
+                // never picked as a preset (also the old implicit OpenStreetMap or OpenTopoMap default): the street map
                 None => DEFAULT_PRESET.into(),
                 Some(u) => match preset_for_url(u) {
                     Some(p) if p.id == "osm" || p.id == "opentopomap" => DEFAULT_PRESET.into(),
@@ -197,7 +197,7 @@ impl Default for Tiles {
             offline_file: None,
             preset: None,
             labels: true,
-            styles: vec![places::tiles::DEFAULT_PRESET.into(), "osm".into()],
+            styles: vec![places::tiles::DEFAULT_PRESET.into(), "satellite".into()],
         }
     }
 }
@@ -978,20 +978,20 @@ mod tests {
         assert_eq!(s.tiles.mode, "offline");
         assert!(s.tile_origins().is_empty());
         s.tiles.mode = "online".into();
-        // satellite with names and roads by default, OpenStreetMap to switch to
-        assert_eq!(s.tiles.chosen_id(), "satellite");
+        // the OpenStreetMap street map by default, satellite (with names and roads) to switch to
+        assert_eq!(s.tiles.chosen_id(), "osm");
         assert_eq!(
             s.tile_origins(),
-            vec!["https://server.arcgisonline.com".to_string(), "https://tile.openstreetmap.org".to_string()]
+            vec!["https://tile.openstreetmap.org".to_string(), "https://server.arcgisonline.com".to_string()]
         );
-        // a saved server from before (OpenStreetMap, never picked as a preset) moves to satellite; a picked one stays
+        // a saved server from before (OpenStreetMap, never picked as a preset) gets the default; a picked one stays
         let old: ServerSettings = serde_json::from_value(
             serde_json::json!({ "tiles": { "mode": "online", "online_url": places::tiles::OSM_TILE_URL } }),
         )
         .unwrap();
-        assert_eq!(old.tiles.chosen_id(), "satellite");
-        s.tiles.preset = Some("osm".into());
-        assert_eq!(s.tiles.chosen().unwrap().template, places::tiles::OSM_TILE_URL);
+        assert_eq!(old.tiles.chosen_id(), "osm");
+        s.tiles.preset = Some("satellite".into());
+        assert_eq!(s.tiles.chosen().unwrap().template, places::tiles::ESRI_IMAGERY_URL);
         s.tiles.preset = None;
         s.tiles.online_url = Some("https://tiles.example.org/{z}/{x}/{y}.png".into());
         assert_eq!(s.tiles.chosen_id(), "custom");
