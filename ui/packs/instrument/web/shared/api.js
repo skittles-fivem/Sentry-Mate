@@ -25,7 +25,7 @@ export const API_BASE = '/api/v1';
 export const CSRF_HEADER = 'X-Sentry-Mate';
 // Headers the server's clock is read from: an exact one if the server sends it, else the standard Date.
 export const NOW_HEADER = 'X-Sentry-Mate-Now-Ms';
-export const EVENT_TYPES = Object.freeze(['now', 'fleet', 'rows', 'prefs', 'notice']);
+export const EVENT_TYPES = Object.freeze(['now', 'fleet', 'rows', 'prefs', 'notice', 'job', 'health', 'connections', 'storage']);
 // The service worker answers a read with this header at once from its memory, when it has the answer, and
 // marks that answer with STALE_HEADER (its age in ms). Without it (or without a worker) the read is fresh.
 export const STALE_OK_HEADER = 'X-Sentry-Mate-Stale-Ok';
