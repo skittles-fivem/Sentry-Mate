@@ -77,11 +77,14 @@ pub(crate) struct Ctx {
     pub data: PathBuf,
     crash: Mutex<Option<Crash>>,
     pub opts: crate::Options,
+    /// Day snapshots read last, opened and unpacked.
+    pub plain: crate::plain::PlainCache,
 }
 
 impl Ctx {
     pub(crate) fn new(vault: Arc<Vault>, data: PathBuf, opts: crate::Options) -> Ctx {
-        Ctx { vault, data, crash: Mutex::new(None), opts }
+        let plain = crate::plain::PlainCache::new(opts.max_cached_bytes);
+        Ctx { vault, data, crash: Mutex::new(None), opts, plain }
     }
 
     /// A file's label: its path under the data folder, with `/` between parts.
