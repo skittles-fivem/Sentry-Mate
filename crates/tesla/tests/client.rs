@@ -195,3 +195,42 @@ async fn a_refresh_answer_without_a_new_token_keeps_the_old_one() {
     assert_eq!(s.store().credentials(&a.id).unwrap().refresh.expose(), "made-up-refresh-0");
     s.stop();
 }
+
+#[tokio::test]
+async fn charging_history_and_an_invoice_pdf_over_http2() {
+    let f = Fake::start(true).await;
+    f.add_refresh("r0");
+    let h = http(&f);
+    let t = tesla::auth::refresh(&h, &Secret::new("r0")).await.unwrap();
+    let c = Client::new(h.clone());
+    let page = json!({"data": [{"sessionId": 42, "vin": VIN_A, "siteLocationName": "Made-up Supercharger",
+        "chargeStartDateTime": "2026-07-27T11:43:45-07:00", "chargeStopDateTime": "2026-07-27T12:08:35-07:00",
+        "fees": [{"feeType": "CHARGING", "currencyCode": "USD", "rateBase": 0.46, "usageBase": 40, "totalDue": 18.4,
+                  "netDue": 18.4, "uom": "kwh"}],
+        "invoices": [{"fileName": "MADE-UP.pdf", "contentId": "made-up-42"}]}]});
+    f.can("/mobile-app/charging/history", 200, vec![], page.to_string());
+    let vin = tesla::FullVin::new(VIN_A);
+    let p = c.charging_history(&t.access, &vin, 0).await.unwrap();
+    assert_eq!((p.records, p.sessions[0].total), (1, Some(18.4)));
+    f.can(
+        "/mobile-app/charging/invoice/made-up-42",
+        200,
+        vec![("content-type", "application/pdf".into())],
+        "%PDF-1.4 made up".into(),
+    );
+    let pdf = c.invoice_pdf(&t.access, "made-up-42", Some(&vin)).await.unwrap();
+    assert!(pdf.starts_with(b"%PDF-"));
+    // not a PDF: not taken
+    f.can("/mobile-app/charging/invoice/made-up-43", 200, vec![], "<html>sign in</html>".into());
+    assert_eq!(c.invoice_pdf(&t.access, "made-up-43", None).await.unwrap_err(), ApiError::BadAnswer);
+    // a refused history is the API's error, never a wake or anything else
+    f.can("/mobile-app/charging/history", 403, vec![], String::new());
+    assert_eq!(c.charging_history(&t.access, &vin, 1).await.unwrap_err(), ApiError::Forbidden);
+    let seen = f.seen();
+    let hist: Vec<_> = seen.iter().filter(|s| s.path == "/mobile-app/charging/history").collect();
+    assert_eq!(hist.len(), 2);
+    assert!(hist[0].query.contains("pageNo=0") && hist[0].query.contains("operationName=getChargingHistoryV2"));
+    assert_eq!(hist[0].bearer.as_deref(), Some(t.access.expose()));
+    assert!(seen.iter().all(|s| s.method == "GET" || s.path == "/oauth2/v3/token"));
+    assert!(seen.iter().all(|s| !s.path.contains("wake") && !s.path.contains("command")));
+}

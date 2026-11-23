@@ -12,6 +12,7 @@ pub mod auth;
 pub mod convert;
 pub mod hosts;
 pub mod http;
+pub mod invoices;
 pub mod poller;
 pub mod secret;
 pub mod store;
@@ -303,8 +304,19 @@ impl<S: Sink> Service<S> {
 
     /// Every host the stored accounts may connect to (empty when there is no account).
     pub fn hosts(&self) -> Vec<String> {
-        let mut h: Vec<String> =
-            self.accounts().iter().flat_map(|a| (self.opts().endpoints)(a.region).hosts()).collect();
+        let opts = self.opts();
+        let mut h: Vec<String> = self
+            .accounts()
+            .iter()
+            .flat_map(|a| {
+                let e = (opts.endpoints)(a.region);
+                let mut h = e.hosts();
+                if opts.cadence.invoices {
+                    h.extend(e.invoice_host());
+                }
+                h
+            })
+            .collect();
         h.sort();
         h.dedup();
         h
@@ -312,6 +324,16 @@ impl<S: Sink> Service<S> {
 
     pub fn accounts(&self) -> Vec<Account> {
         self.inner.store.list()
+    }
+
+    /// How far an account's Supercharger invoices are read (saved by its poller after each request).
+    pub fn invoice_progress(&self, id: &str) -> Result<invoices::Progress, ServiceError> {
+        Ok(self.inner.store.invoice_progress(id)?)
+    }
+
+    /// Whether an account's region has a host for the charging history (China has none).
+    pub fn invoices_available(&self, region: Region) -> bool {
+        (self.opts().endpoints)(region).ownership.is_some()
     }
 
     pub fn account(&self, id: &str) -> Result<Account, ServiceError> {
