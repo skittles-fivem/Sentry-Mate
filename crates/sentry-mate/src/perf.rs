@@ -322,11 +322,10 @@ async fn run(data: &Path, keys: &Path, fresh: bool) -> (Vec<Row>, Vec<f64>, Vec<
     s.task.abort();
     let _ = s.task.await;
     let mut s = start(data, keys, false).await;
-    let car = settled_car(&mut s.c).await;
+    let _ = settled_car(&mut s.c).await;
     let mut restart = Vec::new();
     for r in &rows {
-        let _ = r.page;
-        restart.push(time(&mut s.c, &r.path.replace(&format!("/cars/{car}/"), &format!("/cars/{car}/"))).await);
+        restart.push(time(&mut s.c, &r.path).await);
     }
     s.task.abort();
     let _ = s.task.await;
