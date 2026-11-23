@@ -47,19 +47,39 @@ impl<'e> Gaps<'e> {
         if filter.is_some() {
             return Ok(g);
         }
-        for site in ImportSite::ALL {
-            let d: BTreeSet<u64> =
-                e.db().days::<Sample>(car, Stream::of_site(site))?.into_iter().map(|d| d.start_ms).collect();
-            if !d.is_empty() {
-                g.days.push((site, d));
+        // (the import sites' days change only with imported points)
+        let days = e.memo(car, "import-sample-days", crate::memo::On::Imported, 0, || -> QResult<_> {
+            let mut out = Vec::new();
+            for site in ImportSite::ALL {
+                let d: BTreeSet<u64> =
+                    e.db().days::<Sample>(car, Stream::of_site(site))?.into_iter().map(|d| d.start_ms).collect();
+                if !d.is_empty() {
+                    out.push((site, d));
+                }
             }
-        }
+            Ok(out)
+        })?;
+        g.days = days.as_ref().clone();
         if g.days.is_empty() {
             return Ok(g);
         }
         g.sites = Sites::new(e, car)?;
         g.on = super::fleet::gap_fill_on(e, car)?;
         Ok(g)
+    }
+
+    /// A key of what the filling rests on besides the imported samples themselves (whether it is on, which import
+    /// shows where, the import days): with the car's imported data version, what a kept fill was made from.
+    pub(crate) fn key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (self.on, &self.sites, &self.days).hash(&mut h);
+        h.finish()
+    }
+
+    /// Whether values are filled.
+    pub(crate) fn is_on(&self) -> bool {
+        self.on
     }
 
     /// One site's samples of a UTC day (read once, a few days kept).

@@ -35,8 +35,14 @@ mod decode;
 #[cfg(test)]
 mod e2e;
 mod folders;
+#[cfg(any(test, feature = "dev-seed"))]
+mod history;
 mod keys;
 mod migrate;
+#[cfg(test)]
+mod perf;
+#[cfg(test)]
+mod perf_engine;
 #[cfg(any(test, feature = "dev-seed"))]
 mod seed;
 mod site;
@@ -195,6 +201,29 @@ enum DevCmd {
         /// them; synth's own first day (2026-03-02) when left out.
         #[arg(long, value_parser = seed::parse_day)]
         start: Option<u64>,
+    },
+    /// A long made-up history for the first car (or a new one): a TeslaMate import of about a year (about 3 million
+    /// positions), a TeslaFi import, and TeslaFi's API and local TeslaMate as live inputs over its last weeks. Run
+    /// after `dev seed` (its car gets the history). For timing the pages (docs/plans/performance.md).
+    History {
+        /// The day the history ends (YYYY-MM-DD, UTC, not included).
+        #[arg(long, value_parser = seed::parse_day)]
+        end: u64,
+        #[arg(long, default_value_t = 330)]
+        days: u32,
+        #[arg(long, default_value_t = 1300)]
+        drives: u32,
+        #[arg(long, default_value_t = 500)]
+        charges: u32,
+        /// Seconds between TeslaMate's positions while driving.
+        #[arg(long, default_value_t = 1)]
+        drive_step: u64,
+        #[arg(long, default_value_t = 60)]
+        teslafi_days: u32,
+        #[arg(long, default_value_t = 30)]
+        api_days: u32,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
     },
 }
 
@@ -393,7 +422,7 @@ fn needs(cmd: &Cmd) -> Option<(bool, bool)> {
             Some((false, false))
         }
         #[cfg(feature = "dev-seed")]
-        Cmd::Dev { cmd: DevCmd::Seed { .. } } => Some((true, false)),
+        Cmd::Dev { cmd: DevCmd::Seed { .. } | DevCmd::History { .. } } => Some((true, false)),
         Cmd::Log { .. } | Cmd::Health => None,
     }
 }
@@ -554,6 +583,28 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
                 Ok(pass)
             };
             seed::run(&store, &judge, &tokens, &o, &enter, &mut std::io::stdout()).await?;
+        }
+        #[cfg(feature = "dev-seed")]
+        Cmd::Dev { cmd: DevCmd::History { end, days, drives, charges, drive_step, teslafi_days, api_days, seed } } => {
+            let _lock = take_server_lock(&data).await?;
+            let v = Arc::new(Vault::open(&data, &keys)?);
+            refuse_writes(&data, &v)?;
+            let db = db::Db::open(&data, v.clone(), db::Options::default())?;
+            let engine = engine::Engine::new(db, Store::new(can_dir(&data), v), engine::Options::default());
+            engine.start()?;
+            let o = history::Options {
+                days,
+                end_ms: end,
+                seed,
+                drives,
+                charges,
+                drive_step_s: drive_step.max(1),
+                teslafi_days,
+                api_days,
+            };
+            let t = Instant::now();
+            let c = history::run(&engine, &o).await?;
+            println!("{c:?} in {:.1} s", t.elapsed().as_secs_f64());
         }
         Cmd::Health => {
             // a move coming in keeps the upload port closed until it switches: healthy meanwhile
@@ -1565,6 +1616,11 @@ async fn start_web(
         site::spawn_upkeep(app.clone(), announced),
         web::resources::mqtt::spawn(app.clone()),
     ];
+    // the logs the server lost are looked for after the start and once a day (not after a move away: no uploads)
+    let mut tasks = tasks;
+    if !moved {
+        tasks.push(site::spawn_missing_scan(app.clone(), gate.clone()));
+    }
     // the Tesla API input reads cars only on a server that serves its data (not after a move away), and only for an
     // account an admin added: with none, nothing is started and nothing connects to Tesla
     let tesla = app.service::<web::resources::tesla::TeslaService>().ok();

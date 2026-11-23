@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
-//! The answers that decode stored CAN logs (`/signals`, `/signals/latest`, the battery pages) run a few at a time: a
-//! watch account firing them without end can't keep every core busy, nor queue more than a few of its own.
+//! The answers that decode stored CAN logs (`/signals`, `/signals/latest`) run a few at a time: a watch account firing
+//! them without end can't keep every core busy, nor queue more than a few of its own. The battery pages read the
+//! pack's values the server works out ahead: they never wait for a turn.
 
 use engine::Engine;
 use model::CarId;
@@ -68,14 +69,23 @@ async fn log_decoding_answers_take_turns() {
 
     // the server's one turn is someone else's: the watch account waits, then is told the server is busy
     let held = s.app.heavy.turn(u64::MAX).await.unwrap();
-    let paths = [
-        signals.clone(),
-        format!("/api/v1/cars/{car}/signals/latest"),
+    // the battery pages decode nothing (the days' pack values are worked out ahead, or when one asks): no turn
+    for path in [
         format!("/api/v1/cars/{car}/battery"),
         format!("/api/v1/cars/{car}/battery/capacity"),
         format!("/api/v1/cars/{car}/battery-level"),
         format!("/api/v1/cars/{car}/projected-range"),
         format!("/api/v1/cars/{car}/efficiency"),
+    ] {
+        let t = std::time::Instant::now();
+        let r = as_watch().get(&path).await;
+        assert_eq!(r.status, 200, "{path}: {}", r.text());
+        assert!(t.elapsed() < Duration::from_secs(3), "{path} did not wait for the turn");
+    }
+    let paths = [
+        signals.clone(),
+        format!("/api/v1/cars/{car}/signals/latest"),
+        format!("/api/v1/cars/{car}/signals?series=BMS_nominalFullPackEnergy&from_ms=0&to_ms=4102444799999"),
     ];
     let mut tries = Vec::new();
     for (i, path) in paths.into_iter().enumerate() {

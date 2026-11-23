@@ -63,6 +63,8 @@ impl EngineRun {
         {
             let _in = rt.enter();
             engine.start()?;
+            // the long periods' day parts, worked out in the background once the logs waiting are decoded
+            engine.warm(None);
         }
         Ok(EngineRun { engine, rt: Some(rt) })
     }
@@ -227,6 +229,18 @@ pub fn spawn_upkeep(app: web::AppState, announced: bool) -> tokio::task::JoinHan
             if matches!(r, Ok(true)) {
                 announced_ms = Some(now);
             }
+        }
+    })
+}
+
+/// Looks for the CAN logs the server should have but no longer does (`ingest::missing`): a while after the start, in
+/// the background, then once a day. What it finds the cars are asked for in their next ping.
+pub fn spawn_missing_scan(app: web::AppState, gate: gate::Gate) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        tokio::time::sleep(web::resources::system::MISSING_SCAN_DELAY).await;
+        loop {
+            web::resources::system::scan_missing_logs(&app, &gate).await;
+            tokio::time::sleep(Duration::from_millis(ingest::missing::SCAN_EVERY_MS)).await;
         }
     })
 }

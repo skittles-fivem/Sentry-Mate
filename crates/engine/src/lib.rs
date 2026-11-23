@@ -48,12 +48,15 @@ pub mod importer;
 pub mod jobs;
 mod pipeline;
 pub use pipeline::NEW_CAR_NAME;
+mod hot;
+mod memo;
 pub mod placing;
 pub mod query;
 pub mod records;
 pub mod tesla_in;
 pub mod tmlocal_catchup;
 pub mod tz;
+mod warm;
 
 pub use tesla_in::{TeslaSink, TeslafiSink, TeslamateLocalSink};
 
@@ -239,6 +242,14 @@ pub(crate) struct Inner {
     pub(crate) gap_fill: std::sync::atomic::AtomicBool,
     /// Per car, the position its zone was last looked up at and the zone found there ([`Inner::car_zone`]).
     zone_at: Mutex<HashMap<CarId, ZoneAt>>,
+    /// Answers' parts kept while their data stays the same.
+    pub(crate) memo: memo::Memo,
+    /// The cars whose long periods wait to be worked out in the background ([`warm`]).
+    pub(crate) warm: Mutex<warm::Warm>,
+    /// The cars whose days' pack readings are being worked out ([`query::pack_logs`]).
+    pub(crate) packs: query::pack_logs::Fills,
+    /// The SMO samples of the days being worked on ([`hot`]).
+    pub(crate) hot: Mutex<hot::Hot>,
 }
 
 /// Where a car's zone was last looked up (latitude, longitude) and the zone found there.
@@ -341,6 +352,10 @@ impl Engine {
                 default_zone: RwLock::new(opts.default_time_zone.clone()),
                 gap_fill: std::sync::atomic::AtomicBool::new(true),
                 zone_at: Mutex::new(HashMap::new()),
+                memo: memo::Memo::default(),
+                warm: Mutex::default(),
+                packs: Default::default(),
+                hot: Mutex::new(hot::Hot::default()),
                 opts,
             }),
         }
@@ -446,6 +461,8 @@ impl Engine {
         let engine = self.clone();
         handle.spawn(async move { engine.run(rx).await });
         self.send(Work::Reconcile { car: None });
+        // the days' pack readings, worked out once idle (and again now and then)
+        handle.spawn(query::pack_logs::passes(self.clone()));
         Ok(())
     }
 

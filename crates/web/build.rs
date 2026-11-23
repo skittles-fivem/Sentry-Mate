@@ -4,8 +4,40 @@
 //! Left out on purpose: files only the pack's developers use (`README.md` notes, a `mock-api.js` or other `mock`
 //! files, tests), so the real server never serves them.
 
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+
+#[path = "src/packs/compress.rs"]
+#[allow(dead_code)]
+mod compress;
+
+/// The brotli and gzip copies of a file (by the SHA-256 of its bytes), made once and kept in `OUT_DIR` so a rebuild
+/// after one file changed compresses only that file. `None` for a file that stays as it is.
+fn precompress(cache: &Path, path: &Path, rel: &str) -> std::io::Result<Option<(String, PathBuf, PathBuf)>> {
+    if !compress::compressible(rel) {
+        return Ok(None);
+    }
+    let data = std::fs::read(path)?;
+    if data.len() < compress::MIN_BYTES {
+        return Ok(None);
+    }
+    let sum = hex::encode(Sha256::digest(&data));
+    let (br, gz) = (cache.join(format!("{sum}.br")), cache.join(format!("{sum}.gz")));
+    if !br.is_file() || !gz.is_file() {
+        let (b, g) = (compress::brotli(&data, 11), compress::gzip(&data, 9));
+        if !compress::worth(data.len(), b.len()) {
+            return Ok(None);
+        }
+        let tmp = cache.join(format!("{sum}.tmp"));
+        std::fs::write(&tmp, &g)?;
+        std::fs::rename(&tmp, &gz)?;
+        std::fs::write(&tmp, &b)?;
+        std::fs::rename(&tmp, &br)?;
+    }
+    Ok(Some((sum, br, gz)))
+}
 
 fn dev_only(rel: &str) -> bool {
     let name = rel.rsplit('/').next().unwrap_or(rel);
@@ -50,6 +82,10 @@ fn main() -> std::io::Result<()> {
     let packs = manifest.join("../../ui/packs");
     println!("cargo:rerun-if-changed={}", packs.display());
     println!("cargo:rerun-if-changed=build.rs");
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").map_err(std::io::Error::other)?);
+    let cache = out_dir.join("precompressed");
+    std::fs::create_dir_all(&cache)?;
+    let mut packed: BTreeMap<String, (PathBuf, PathBuf)> = BTreeMap::new();
     let mut code = String::from("pub static PACKS: &[BuiltinPack] = &[\n");
     let mut dirs: Vec<_> = std::fs::read_dir(&packs)
         .map_err(|e| std::io::Error::other(format!("the built-in UI packs ({}): {e}", packs.display())))?
@@ -72,6 +108,9 @@ fn main() -> std::io::Result<()> {
         )
         .map_err(std::io::Error::other)?;
         for (rel, path) in files {
+            if let Some((sum, br, gz)) = precompress(&cache, &path, &rel)? {
+                packed.insert(sum, (br, gz));
+            }
             let abs = path.canonicalize()?;
             writeln!(code, "        ({rel:?}, include_bytes!({:?})),", abs.display().to_string())
                 .map_err(std::io::Error::other)?;
@@ -79,6 +118,18 @@ fn main() -> std::io::Result<()> {
         code.push_str("    ] },\n");
     }
     code.push_str("];\n");
-    let out = PathBuf::from(std::env::var("OUT_DIR").map_err(std::io::Error::other)?).join("builtin_packs.rs");
+    // one copy of each, though the same file is in several packs (the vendored libraries, ui/shared)
+    code.push_str("pub static PRECOMPRESSED: &[(&str, &[u8], &[u8])] = &[\n");
+    for (sum, (br, gz)) in &packed {
+        writeln!(
+            code,
+            "    ({sum:?}, include_bytes!({:?}), include_bytes!({:?})),",
+            br.display().to_string(),
+            gz.display().to_string()
+        )
+        .map_err(std::io::Error::other)?;
+    }
+    code.push_str("];\n");
+    let out = out_dir.join("builtin_packs.rs");
     std::fs::write(out, code)
 }

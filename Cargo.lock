@@ -1946,6 +1946,7 @@ dependencies = [
  "engine",
  "gate",
  "hex",
+ "import",
  "ingest",
  "logfmt",
  "lzma-rs",
@@ -2363,6 +2364,7 @@ dependencies = [
  "model",
  "serde",
  "serde_json",
+ "synth",
 ]
 
 [[package]]
@@ -2856,6 +2858,7 @@ dependencies = [
  "accounts",
  "axum",
  "base64 0.22.1",
+ "brotli",
  "bytes",
  "chrono",
  "crc32fast",

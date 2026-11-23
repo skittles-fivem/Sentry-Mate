@@ -10,7 +10,7 @@
 // The plot fills a box app.css sizes (15 rem, 200 px on a phone) and follows it; fonts and line widths follow the
 // Interface size; a new theme or root size builds the chart again with the same zoom. uPlot loads on first use.
 
-import { h, cssVar } from '../shared/dom.js';
+import { h, cssVar, styleSheet } from '../shared/dom.js';
 import { convert, unitLabel, format } from '../shared/units.js';
 import { formatNumber } from '../shared/i18n.js';
 import { dateFormat } from '../shared/time.js';
@@ -23,15 +23,9 @@ export function loadUplot() {
   if (!loading) {
     // the script and its stylesheet: a chart drawn before the stylesheet applies lays its axes out wrong, and they
     // jump into place when it arrives, so both must be in first
-    const css = new Promise((resolve) => {
-      let link = document.querySelector('link[data-uplot]');
-      if (link?.sheet) { resolve(); return; }
-      if (!link) { link = h('link', { rel: 'stylesheet', href: '/vendor/uplot/uPlot.min.css', dataset: { uplot: '' } }); document.head.append(link); }
-      link.addEventListener('load', () => resolve(), { once: true });
-      link.addEventListener('error', () => resolve(), { once: true });
-    });
+    const css = styleSheet(new URL('../vendor/uplot/uPlot.min.css', import.meta.url).href);
     const js = new Promise((resolve, reject) => {
-      const s = h('script', { src: '/vendor/uplot/uPlot.iife.min.js' });
+      const s = h('script', { src: new URL('../vendor/uplot/uPlot.iife.min.js', import.meta.url).href });
       s.addEventListener('load', () => resolve(window.uPlot));
       s.addEventListener('error', () => { loading = null; reject(new Error('The chart library did not load.')); });
       document.head.append(s);

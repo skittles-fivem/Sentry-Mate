@@ -13,18 +13,25 @@
 // runs again after a resize until the person moves the map. The attribution is text (escaped).
 
 import * as api from '../shared/api.js';
-import { h, cssVar, esc } from '../shared/dom.js';
+import { h, cssVar, esc, styleSheet } from '../shared/dom.js';
 import { rpx, onChange, onTheme, getTheme } from './display.js';
 import { getPrefs, onPrefs } from './prefs.js';
 import { tileChoice, rasterPaint, dimmed, mapColors, tileSources, tileLayers, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles } from '../shared/maptiles.js';
 
 let mlLoad = null;
-/** Load MapLibre once (an ES module and its worker, both from this pack). */
+/**
+ * Load MapLibre once (an ES module, its worker and its style sheet, all from this pack). Resolves only once the
+ * style sheet applies, so no map is drawn without it (its controls would jump into place). Pages without a map
+ * never load any of it.
+ */
 export function loadMapLibre() {
-  mlLoad ??= import('../vendor/maplibre-gl/maplibre-gl.mjs').then((ml) => {
+  mlLoad ??= Promise.all([
+    import('../vendor/maplibre-gl/maplibre-gl.mjs'),
+    styleSheet(new URL('../vendor/maplibre-gl/maplibre-gl.css', import.meta.url).href, { first: true }),
+  ]).then(([ml]) => {
     ml.setWorkerUrl(new URL('../vendor/maplibre-gl/maplibre-gl-worker.mjs', import.meta.url).href);
     return ml;
-  });
+  }).catch((e) => { mlLoad = null; throw e; });
   return mlLoad;
 }
 

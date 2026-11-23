@@ -131,8 +131,9 @@ function anySignal(signals) {
   return c.signal;
 }
 
-/** The reads that decode stored logs (they take turns on the server). */
-const HEAVY_PATH = /^\/cars\/[^/]+\/(signals(\/latest)?|battery(\/capacity)?|battery-level|projected-range|efficiency)$/;
+/** The reads that decode stored logs (they take turns on the server). The battery and efficiency reads use the
+ * days' pack values the server works out ahead: they do not take turns (docs/ui-api.md). */
+const HEAVY_PATH = /^\/cars\/[^/]+\/signals(\/latest)?$/;
 
 /**
  * A client. The module's own exports use one made with the defaults; tests and special pages can make
@@ -255,11 +256,13 @@ export function createClient(options = {}) {
     if (signal) { if (signal.aborted) throw abortError(signal); signal.addEventListener('abort', onAbort, { once: true }); }
     const timer = timeoutMs > 0 ? setT(() => { timedOut = true; ctl.abort(); }, timeoutMs) : null;
 
+    // a read is always asked again, but with the tag of the answer the browser kept: an unchanged answer comes
+    // back as 304 with no body (the browser hands the kept one over); a change is never kept
     for (let attempt = 0; ; attempt++) {
       const sent = localNow();
       let res;
       try {
-        res = await doFetch(href, { method, headers: h, body: payload, signal: ctl.signal, credentials: 'same-origin', cache: 'no-store' });
+        res = await doFetch(href, { method, headers: h, body: payload, signal: ctl.signal, credentials: 'same-origin', cache: method === 'GET' ? 'no-cache' : 'no-store' });
       } catch (err) {
         clearT(timer);
         signal?.removeEventListener('abort', onAbort);
@@ -335,13 +338,24 @@ export function createClient(options = {}) {
     });
   }
 
+  // the request headers that change the answer, in one order: names in lower case, sorted
+  function headerKey(headers) {
+    if (!headers) return '';
+    const e = Object.entries(headers).map(([k, v]) => [String(k).toLowerCase(), String(v)]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    return e.length ? ' ' + JSON.stringify(e) : '';
+  }
+
   /**
    * GET an API path; resolves to the parsed JSON (treat it as read-only: callers asking at the same time
-   * share it). opts: signal, maxAgeMs (reuse a result this young), timeoutMs, headers.
+   * share it). Identical reads in flight (same URL, same accept, same headers) are sent once and every
+   * caller gets the one answer; only GETs are shared, never a change or the event stream.
+   * opts: signal, maxAgeMs (reuse a result this young), keep (keep this answer for callers that pass
+   * maxAgeMs, without reusing an older one: the frame's own reads, which a page loaded at the same time asks
+   * for again), timeoutMs, headers.
    */
   function get(path, params, opts = {}) {
     const href = url(path, params);
-    const key = 'GET ' + href + ' ' + (opts.accept || 'json');
+    const key = 'GET ' + href + ' ' + (opts.accept || 'json') + headerKey(opts.headers);
     if (opts.maxAgeMs > 0) {
       const hit = cache.get(key);
       if (hit && localNow() - hit.at <= opts.maxAgeMs) return Promise.resolve(hit.value);
@@ -352,7 +366,7 @@ export function createClient(options = {}) {
       entry = { controller, refs: 0, settled: false, promise: null };
       const e = entry, w = writes;
       e.promise = exchange('GET', path, { params, signal: controller.signal, headers: opts.headers, accept: opts.accept || 'json', timeoutMs: opts.timeoutMs ?? readTimeoutMs })
-        .then((value) => { if (w === writes && (opts.maxAgeMs > 0 || cache.has(key))) cache.set(key, { at: localNow(), value }); return value; })
+        .then((value) => { if (w === writes && (opts.maxAgeMs > 0 || opts.keep || cache.has(key))) cache.set(key, { at: localNow(), value }); return value; })
         .finally(() => { e.settled = true; if (inflight.get(key) === e) inflight.delete(key); });
       e.promise.catch(() => {}); // a caller that left must not leave an unhandled rejection behind
       inflight.set(key, entry);

@@ -5,7 +5,7 @@
 // starts or ends (`rows` events).
 
 import * as state from '../shared/state.js';
-import { tyreView, recommendedLine } from '../shared/tyres.js';
+import { tyreView, recommendedLine, wheelGuessLine, tyresTitle } from '../shared/tyres.js';
 import { h, svg, replace, cover, cssVar, quantity } from '../shared/dom.js';
 import { format, getUnits, onUnitsChange, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDate, formatDateTime, zoneName, buckets } from '../shared/time.js';
@@ -145,14 +145,12 @@ export async function mount(ctx) {
   const root = h('div', { class: 'car-page', cover: ['shots.web-interface', 'shots.overview'] });
   replace(ctx.view, root);
 
+  // GET now and the period's calls start together: the period paints when its answers are in, the live part when
+  // /now is in, and grey blocks keep each part's place until then
   let now, settings = null;
-  try {
-    [now, settings] = await Promise.all([
-      ctx.api.get(`cars/${encodeURIComponent(cid)}/now`),
-      ctx.api.get('settings', null, { maxAgeMs: 300000 }).catch(() => null),
-    ]);
-  } catch (e) { ctx.fail(e); return; }
-  if (!ctx.alive()) return;
+  const nowP = ctx.api.get(`cars/${encodeURIComponent(cid)}/now`);
+  const settingsP = ctx.api.get('settings', null, { maxAgeMs: 300000 }).catch(() => null);
+  nowP.catch(() => {}); // handled below
 
   const head = h('div');
   const inputsSlot = h('div', { class: 'now-inputs' });
@@ -212,6 +210,12 @@ export async function mount(ctx) {
     h('div', { class: 'details-bar' }, toggle,
       h('span', { class: 'details-hint' }, 'Battery gauge, temperatures, tyres, doors, charging, the period’s charts and the car’s build')),
     details);
+  const wait = () => h('div', { class: 'skel skel--block', 'aria-hidden': 'true' });
+  replace(head, h('div', { class: 'page-head now-head' }, h('div', { class: 'page-head-text' }, h('span', { class: 'eyebrow' }, 'Overview'), h('span', { class: 'skel skel--title', 'aria-hidden': 'true' }))));
+  replace(gaugeSlot, wait());
+  replace(todaySlot, wait());
+  replace(rowLive, h('section', { class: 'panel panel-pad' }, wait()), h('section', { class: 'panel panel-pad' }, wait()));
+  replace(windowSlot, h('div', { class: 'window-head' }, h('h2', { class: 'section-title' }, 'The period')), h('section', { class: 'panel panel-pad' }, wait()), h('section', { class: 'panel panel-pad' }, wait()));
 
   /* ---------- header, banner */
   function paintHead() {
@@ -483,6 +487,11 @@ export async function mount(ctx) {
         isLow ? h('span', { class: 'tire-note' }, `${format(tv.against[i] - v, 'pressure')} under`) : null);
     };
     const wheel = (i) => (tv.low[i] === true ? 'wheel is-low' : 'wheel');
+    // the placard's size only a guess: say so, and where an admin sets it (the Vehicle info panel below)
+    const wheelGuess = (now) => {
+      const g = wheelGuessLine(now);
+      return g ? [' ', g.said, ctx.admin ? [' ', g.ask, ' ', h('a', { href: '#vehicle-info' }, g.action), '.'] : null] : null;
+    };
     const tyrePanel = panel({ title: 'Tyres', icon: 'tire', cover: 'summary.flag.tire_pressure_warning', side: h('span', { class: 'faint' }, agoEl(at(n.tyres_kpa?.[0]) ?? newest, tz)) },
       h('div', { class: 'tires' },
         tyre(TYRES[0], 0, false),
@@ -493,9 +502,7 @@ export async function mount(ctx) {
           svg('path', { class: 'glass', d: 'M15.5 36 Q32 28 48.5 36 L45.5 52 Q32 48 18.5 52 Z' }),
           svg('path', { class: 'glass', d: 'M18.5 86 Q32 90 45.5 86 L47.5 98 Q32 103 16.5 98 Z' })),
         tyre(TYRES[1], 1, true), tyre(TYRES[2], 2, false), tyre(TYRES[3], 3, true)),
-      h('p', { class: 'note tire-rec' }, recommendedLine(n), tv.front != null
-        ? ' A tyre more than 10 % under it is flagged; a cold morning alone takes a few percent off every tyre.'
-        : ' No tyre is flagged.'));
+      h('p', { class: 'note tire-rec', title: tyresTitle(n) || null }, recommendedLine(n), tv.front != null ? wheelGuess(n) : ' No tyre is flagged.'));
 
     // the car: 12 V, odometer, software, data age
     const sw = n.software || {};
@@ -875,17 +882,21 @@ export async function mount(ctx) {
   }
 
   /* ---------- first draw, then live */
-  paintHead(); paintInputs(); paintBanner(); paintFacts(); paintDrive(); paintGauge(); paintPlace(); paintLive();
-  ctx.setTitle('Overview');
-  try {
-    await Promise.all([paintWindow(), loadDrive(), paintToday()]);
-  } catch (e) {
+  const windowP = paintWindow().catch((e) => {
     if (!ctx.alive()) return;
     replace(windowSlot, panel({ title: 'The period', icon: 'stats' }, h('p', { class: 'note' }, `The charts could not be loaded: ${e.message}`)));
-  }
+  });
+  try {
+    [now, settings] = await Promise.all([nowP, settingsP]);
+  } catch (e) { ctx.fail(e); return; }
+  if (!ctx.alive()) return;
+  paintHead(); paintInputs(); paintBanner(); paintFacts(); paintDrive(); paintGauge(); paintPlace(); paintLive();
+  ctx.setTitle('Overview');
+  // the map is in place before ready, so its controls do not move the page once it is on screen
+  const mapP = mountMap();
+  await Promise.all([windowP, loadDrive(), paintToday(), mapP]);
   if (!ctx.alive()) return;
   ctx.ready();
-  mountMap();
   learnSchedule();
 
   // live values: merge `now` deltas, draw again at most every 2 s

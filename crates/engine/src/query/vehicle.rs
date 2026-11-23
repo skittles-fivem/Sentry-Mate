@@ -54,7 +54,7 @@ fn decode_build(e: &Engine, profile: dbc::Profile, name: &str) -> QResult<Option
 
 /// The build readings of one UTC record day: the kept ones while the day's logs are the same, else decoded and kept.
 fn day_build(e: &Engine, c: &Car, d: u32) -> QResult<Option<CanBuild>> {
-    let rec = records::day(e.db(), c.id, d)?;
+    let rec = records::day_shared(e.db(), c.id, d)?;
     let mut logs: Vec<(&String, &records::LogEntry)> =
         rec.logs.iter().filter(|(_, en)| en.usable && matches!(en.outcome, Outcome::Decoded { .. })).collect();
     if logs.is_empty() {
@@ -77,9 +77,20 @@ fn day_build(e: &Engine, c: &Car, d: u32) -> QResult<Option<CanBuild>> {
     }
     let profile = dbc::Profile::from_name(c.profile().dbc_name());
     let mut can = CanBuild::default();
-    for (n, _) in &logs {
-        if let Some(b) = decode_build(e, profile, n)? {
-            can.fill_from(&b);
+    for (n, en) in &logs {
+        // a log's own readings are kept in memory as it was worked on: the day's newest logs change with every
+        // log that arrives, and only the new one is read then
+        let (log, at) = (crate::memo::key(n), crate::memo::key(&(en.done_ms, &en.profile, profile.name())));
+        let b = match e.stamped::<Option<CanBuild>>(c.id, "vehicle-build-log", log, at) {
+            Some(b) => b,
+            None => {
+                let b = std::sync::Arc::new(decode_build(e, profile, n)?);
+                e.keep_stamped(c.id, "vehicle-build-log", log, at, b.clone());
+                b
+            }
+        };
+        if let Some(b) = &*b {
+            can.fill_from(b);
         }
     }
     records::put(e.db(), NS, &key, &BuildDay { stamp, can: can.clone() })?;

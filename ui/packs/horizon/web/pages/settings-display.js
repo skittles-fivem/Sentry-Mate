@@ -6,7 +6,8 @@ import { h, replace } from '../shared/dom.js';
 import { getUnits, format } from '../shared/units.js';
 import { isSupportedLocale, onLocaleChange } from '../shared/i18n.js';
 import { formatDate, isValidZone } from '../shared/time.js';
-import { buildUrl, isSold } from '../shared/state.js';
+import { buildUrl } from '../shared/state.js';
+import { soldParts, soldOptions } from '../core/carswitch.js';
 import { packChoices, packLabel } from '../shared/packs.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel } from '../core/page.js';
@@ -17,7 +18,6 @@ import { sizePicker, followSwitch, sizeNote, themeButtons } from '../core/accoun
 import { flash } from '../core/flash.js';
 import { CHOICES as SKY_CHOICES, getSky, setSky, onSky } from '../core/sky.js';
 import { ago } from '../core/fmt.js';
-import { soldParts, soldOptions } from '../core/carswitch.js';
 import { buildLabel, buildTitle, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, LABELS_TEXT, STYLES_TEXT, presetHosts, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 
@@ -25,7 +25,7 @@ export const id = 'settings-display';
 export const css = true;
 
 // used only when the server's list of packs can't be read
-const PACKS = [['instrument', 'Instrument'], ['logbook', 'Logbook'], ['horizon', 'Horizon'], ['console', 'Console'], ['pebble', 'Pebble']];
+const PACKS = [['instrument', 'Instrument'], ['logbook', 'Logbook'], ['horizon', 'Horizon'], ['console', 'Console'], ['pebble', 'Pebble'], ['manager', 'Simple']];
 const LOCALES = [['auto', "This browser's language"], ['en-US', 'English (United States)'], ['en-GB', 'English (United Kingdom)'], ['de-DE', 'German number and date style'], ['fr-FR', 'French number and date style'], ['nl-NL', 'Dutch number and date style']].filter(([v]) => v === 'auto' || isSupportedLocale(v));
 
 // A language code as address data names it: en, de, pt-BR, zh-Hant.
@@ -65,7 +65,7 @@ async function savePref(patch, what) {
 
 export async function mount(ctx) {
   const admin = isAdmin();
-  let about = null, server = null, geo = null, maps = null, packList = null, release = null, cars = [];
+  let about = null, server = null, geo = null, maps = null, packList = null, release = null, cars = null;
   [about, server, geo, maps, packList, release, cars] = await Promise.all([
     ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     ctx.api.get('settings').catch(() => null),
@@ -73,7 +73,7 @@ export async function mount(ctx) {
     ctx.api.get('maps/config').catch(() => null),
     packChoices(ctx.api, { fallback: PACKS, current: getPrefs()?.ui_pack || 'instrument' }),
     ctx.api.get('release').catch(() => null),
-    ctx.api.list('cars', { sort: 'custom', limit: 500 }).all({ max: 5000 }).catch(() => []),
+    ctx.api.list('cars', { sort: 'custom', limit: 500 }).all({ max: 5000 }).catch(() => null),
   ]);
   if (!ctx.alive()) return;
   const p = getPrefs() || {};
@@ -143,7 +143,7 @@ export async function mount(ctx) {
     segMapColors.set(pp?.map_colors || 'dimmed');
     lang.value = pp?.language === 'en' ? 'en-US' : (pp?.language || 'auto');
     packSel.value = pp?.ui_pack || 'instrument';
-    paintMainCar(pp?.main_car || '');
+    paintMainCar(pp?.main_car ?? null);
     paintSwitch();
     paintLangExample();
   }));
@@ -159,26 +159,28 @@ export async function mount(ctx) {
   const switchNote = h('p', { class: 'setting-note', hidden: true }, 'The new pack is used the next time the app loads.');
   function paintSwitch() { const other = packSel.value !== packHere; switchBtn.hidden = !other; switchNote.hidden = !other; }
   paintSwitch();
-  // the Main car: what pages without a car in the address show (else the car looked at last); sold cars
-  // wait in their own group unless chosen
-  const carOpt = (c) => h('option', { value: c.id }, isSold(c) ? `${c.name} (sold)` : c.name);
-  const mainCar = h('select', { class: 'select', id: 'set-main-car', 'aria-label': 'Main car', onchange: async (e) => {
-    if (!(await savePref({ main_car: e.target.value || null }, 'Main car'))) paintMainCar(getPrefs()?.main_car || '');
-  } });
-  function paintMainCar(v) {
-    const { main, sold } = soldParts(cars, [v]);
-    replace(mainCar, h('option', { value: '' }, 'None (the car you looked at last)'), main.map(carOpt), soldOptions(sold, carOpt));
-    mainCar.value = cars.some((c) => c.id === v) ? v : '';
+  // Main car: the car pages without one in the address show (Fleet's sidebar, Travel's days, links); none
+  // means the car looked at last. Sold cars wait in their own group unless one is the Main car.
+  const mainCarSel = h('select', { class: 'select', id: 'set-main-car', 'aria-label': 'Main car', disabled: !cars,
+    onchange: (e) => savePref({ main_car: e.target.value || null }, 'Main car') });
+  function paintMainCar(chosen) {
+    const opt = (c) => h('option', { value: c.id, selected: c.id === chosen }, c.name || c.id);
+    const { main, sold } = soldParts(cars || [], chosen ? [chosen] : []);
+    const missing = chosen && !(cars || []).some((c) => c.id === chosen);
+    replace(mainCarSel,
+      h('option', { value: '', selected: !chosen }, 'None (the car you looked at last)'),
+      main.map(opt), soldOptions(sold, opt),
+      missing ? h('option', { value: chosen, selected: true }, chosen) : null);
   }
-  paintMainCar(p.main_car || '');
+  paintMainCar(p.main_car ?? null);
   // written with the app's own formatters, so it shows what the saved language really does
   const langExample = h('p', { class: 'setting-note' });
   const paintLangExample = () => replace(langExample, 'Example: ', h('b', null, format(1234.5, 'distance')), ', ', h('b', null, formatDate(ctx.api.now(), ctx.tz, { weekday: false, year: true })), '.');
   paintLangExample();
   const look = panel({ title: 'Look and language', icon: 'monitor', side: h('span', { class: 'faint' }, 'Yours; follows you to every screen') },
-    setting('Theme', 'Light, dark, or follow this device. It is saved with your account, so every browser you sign in on uses it, and it is set before the page is drawn, so there is no flash.',
+    setting('Theme', 'Light, dark, or follow this device. Saved with your account, so every browser you sign in on uses it.',
       [theme.el, h('p', { class: 'setting-note' }, 'Every page, chart and map has both a light and a dark look; screenshots in the help show either.')], ['shell.theme', 'web.settings.general.theme', 'shots.theme-note']),
-    setting('Background', 'The sky behind the pages. Full: the setting sun, the stars and the grid running to the horizon, at most 30 frames a second, stopped while the tab is hidden. Calm: the same picture moving slowly. Off: a plain dusk sky. Auto picks Calm on phones.',
+    setting('Background', 'The sky behind the pages. Full: the setting sun, the stars and the grid running to the horizon, at most 30 frames a second, stopped while the tab is hidden. Calm: the same picture moving slowly (at most 12 frames a second). Off: a plain dusk sky. Auto picks Calm on phones.',
       [sky, skyNote]),
     setting('Map colours', `${MAP_COLORS_TEXT} It does not apply to satellite pictures: photos always show as taken, never dimmed.`, segMapColors),
     setting('Interface size', 'Makes text, controls, tables, charts and maps bigger or smaller together. With Follow screen size on, a very large screen (a native 4K monitor) adds its own step on top. Browser zoom works on top of both.',
@@ -189,7 +191,8 @@ export async function mount(ctx) {
       ['shell.locale', 'web.settings.general.ui-language', 'web.shell.locale-negotiation']),
     setting('UI pack', `The design of the whole app. ${about?.ui_pack?.name ? `This page is the ${about.ui_pack.name} pack ${about.ui_pack.version || ''}.` : ''} Your choice is used the next time the app loads where the server offers that pack.`,
       [h('div', { class: 'row pack-row' }, packSel, switchBtn), switchNote]),
-    cars.length > 1 ? setting('Main car', 'The car shown on pages that are not about one car (the sidebar, Travel, Help, Settings). With None, it is the car you looked at last, on any device.', mainCar) : null);
+    setting('Main car', 'The car shown on pages without one in their address: the sidebar on All cars, the days on Travel, and links to car pages. With none, the car you looked at last is shown.',
+      [mainCarSel, cars ? null : h('p', { class: 'setting-note' }, 'The cars could not be read.')]));
 
   /* ---------- server defaults, addresses and maps */
   const serverPanel = h('div', { class: 'settings-server' });
@@ -378,7 +381,7 @@ export async function mount(ctx) {
   paintServer();
 
   replace(ctx.view,
-    pageHead({ title: ctx.info.title, purpose: ctx.info.purpose }),
+    pageHead({ title: ctx.info.nav || ctx.info.title, purpose: ctx.info.purpose }),
     h('div', { class: 'settings-stack' },
       h('p', { class: 'note saving-note', cover: 'web.settings.general.autosave' }, icon('check', 'ico--sm'), ' Every change here is saved at once; there is no Save button. A short note confirms it, and your choices follow you to every browser you sign in on.'),
       h('div', { class: 'settings-pair' }, units, look), serverPanel));

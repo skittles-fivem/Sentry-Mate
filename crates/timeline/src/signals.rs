@@ -407,6 +407,9 @@ impl Cand {
 pub(crate) struct Table {
     /// The candidates of each series (one series can feed two fields: the charge status).
     pub by_series: HashMap<&'static str, Vec<usize>>,
+    /// The same by message: of each message with a wanted signal, those signals (their place in the message, in its
+    /// order) with their candidates and whether they are the Screenmate's own position ([`dbc::INTERNAL_SERIES`]).
+    pub by_message: HashMap<u32, Vec<Wanted>>,
     pub cands: Vec<Cand>,
     /// Candidates by field, best first.
     pub fields: Vec<Vec<usize>>,
@@ -414,6 +417,14 @@ pub(crate) struct Table {
     pub gps: Vec<[usize; 3]>,
     /// Wanted series the set doesn't have or whose unit isn't known (for tests and notes).
     pub missing: Vec<&'static str>,
+}
+
+/// One wanted signal of a message ([`Table::by_message`]).
+#[derive(Debug)]
+pub(crate) struct Wanted {
+    pub signal: usize,
+    pub cands: Vec<usize>,
+    pub internal: bool,
 }
 
 fn not_available(name: &str) -> bool {
@@ -574,6 +585,20 @@ fn build(profile: dbc::Profile) -> Table {
     for group in GPS_GROUPS {
         if let [Some(a), Some(b), Some(c)] = group.map(|n| t.by_series.get(n).and_then(|v| v.first().copied())) {
             t.gps.push([a, b, c]);
+        }
+    }
+    for m in profile.dbc().messages.values() {
+        let wanted: Vec<Wanted> = m
+            .signals
+            .iter()
+            .enumerate()
+            .filter_map(|(signal, s)| {
+                let cands = t.by_series.get(s.series.as_str())?.clone();
+                Some(Wanted { signal, cands, internal: dbc::INTERNAL_SERIES.contains(&s.series.as_str()) })
+            })
+            .collect();
+        if !wanted.is_empty() {
+            t.by_message.insert(m.id, wanted);
         }
     }
     t

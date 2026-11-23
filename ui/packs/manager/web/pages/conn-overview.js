@@ -108,6 +108,9 @@ function connRow(c, tz, now) {
   const word = slot('ov-word');
   const reason = slot('ov-reason');
   const status = h('span', { class: 'ov-status' }, light(c.status), word);
+  // CAN Bridge rows: logs the server lost and asked the car for again (nothing shown at 0 or on other rows)
+  const missing = slot('ov-missing');
+  missing.title = 'CAN logs the server should have but no longer does; it asked the car to send them again. See the car’s Data health page.';
   const lastOk = slot('ov-v ov-time');
   const next = slot('ov-sub ov-time');
   const pace = slot('ov-v');
@@ -126,7 +129,7 @@ function connRow(c, tz, now) {
   const err = h('p', { class: 'ov-err' }, icon('warn', 'ico--sm'), h('span', null, 'Last error ', errWhen, ': ', errText));
   const label = slot('ov-label');
   const el = h('a', { class: 'ov-row', href: packLink(c.link) || '#', dataset: { id: c.id, status: c.status } },
-    h('div', { class: 'ov-cell ov-main' }, label, h('span', { class: 'ov-line', cover: 'conn.overview.status' }, status, reason)),
+    h('div', { class: 'ov-cell ov-main' }, label, h('span', { class: 'ov-line', cover: 'conn.overview.status' }, status, reason, missing)),
     cell('Last good contact', lastOk, next),
     cell('Pace', pace, paceSub),
     cell('Today', today, todaySub),
@@ -147,6 +150,8 @@ function connRow(c, tz, now) {
     setText(word, STATUS_WORD[x.status] || x.status);
     status.title = STATUS_HELP[x.status] || '';
     setText(reason, reasonText(x.status_reason) || (x.status === 'live' ? 'working' : ''));
+    missing.hidden = !(x.missing_logs > 0);
+    setText(missing, x.missing_logs > 0 ? `${formatNumber(x.missing_logs)} missing` : '');
     setText(pace, x.pace ? PACE[x.pace] || x.pace : x.pace_s != null ? 'Steady' : x.status === 'off' ? 'Off' : 'As it comes');
     setText(paceSub, x.pace_s != null ? `every ${formatDuration(x.pace_s * 1000)}` : 'no fixed wait');
     const t = x.today || {};

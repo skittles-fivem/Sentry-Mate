@@ -243,6 +243,43 @@ class Health(ServerCase):
         self.assertEqual(sources(), (n, {"teslamate"}))
 
 
+class MissingLogs(ServerCase):
+    """The "Missing on the server" figures (ingest::missing): car c2 with 3 logs asked of the car again."""
+
+    KEYS = {"count", "oldest_ms", "found_ms", "asked", "asked_ms", "gone", "gone_oldest_ms", "scanned_ms"}
+
+    def test_a_car_with_three_wanted_logs(self):
+        h = self.c.get("/api/v1/cars/c2/health")
+        m = h["missing_logs"]
+        self.assertEqual(set(m), self.KEYS)
+        self.assertEqual(m["count"], 3)
+        self.assertTrue(m["asked"])
+        self.assertEqual(m["gone"], 1)
+        self.assertLess(m["oldest_ms"], m["found_ms"])
+        self.assertLessEqual(m["found_ms"], m["asked_ms"])
+        self.assertLessEqual(m["scanned_ms"], NOW)
+        self.assertIn("logs_missing", h["reasons"])
+        self.assertFalse(h["healthy"])
+
+    def test_nothing_missing_elsewhere(self):
+        m = self.c.get("/api/v1/cars/c1/health")["missing_logs"]
+        self.assertEqual((m["count"], m["gone"], m["asked"], m["oldest_ms"]), (0, 0, False, None))
+        self.assertIsNotNone(m["scanned_ms"])
+
+    def test_the_connections_overview_counts_them(self):
+        rows = self.c.get("/api/v1/integrations/overview")["connections"]
+        by_id = {r["id"]: r for r in rows}
+        self.assertEqual(by_id["smo:c2"]["missing_logs"], 3)
+        self.assertEqual(by_id["smo:c1"]["missing_logs"], 0)
+        self.assertTrue(all(r["missing_logs"] is None for r in rows if r["kind"] != "smo"))
+
+    def test_the_scan_is_in_the_audit_log(self):
+        rows = [r for r in self.walk("/api/v1/audit?group=cars", limit=100) if r["action"] == "can-logs-missing"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["group"], "cars")
+        self.assertEqual(rows[0]["car"], "c2")
+
+
 class Storage(ServerCase):
     def test_storage_adds_up(self):
         per_car = {}

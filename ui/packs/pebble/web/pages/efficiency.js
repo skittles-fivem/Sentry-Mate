@@ -15,7 +15,7 @@ import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { tile, num, note } from '../core/ui.js';
-import { emptyTile } from '../core/states.js';
+import { emptyTile, ghostTile, plotGhost } from '../core/states.js';
 import { timeChart, bars } from '../core/chart.js';
 import { filterBar, pills, sectionHead, nums, statTile } from '../core/bits.js';
 
@@ -43,17 +43,15 @@ export async function mount(ctx) {
   const minKm = () => r3(toMetric(minD, 'distance'));
   const effParams = () => ({ ...ctx.params, min_distance_km: minKm(), temp_group_c: groupC });
 
-  // the drives (for use by speed) come with the rest, so the efficiency tiles are all there at once and do not push
-  // the temperature tiles down when they arrive
+  // Every call starts at once and each part paints when its own answers are in; grey tiles keep their room until
+  // then. The drives (for use by speed) come with the efficiency tiles, so those are all there at once.
   const drivesOf = () => ctx.api.list(`${base}/drives`, { ...ctx.params, min_distance_km: minKm(), sort: 'start', dir: 'desc' }, { limit: 200 }).all({ max: 3000 }).catch(() => []);
-  const [eff, temps, drives0] = await Promise.all([
-    ctx.api.get(`${base}/efficiency`, effParams()),
-    ctx.api.get(`${base}/temperatures`, ctx.params).catch((e) => ({ error: e })),
-    drivesOf(),
-  ]);
-  if (!ctx.alive()) return {};
+  const effP = ctx.api.get(`${base}/efficiency`, effParams());
+  const tempsP = ctx.api.get(`${base}/temperatures`, ctx.params).catch((e) => ({ error: e }));
+  const drivesP = drivesOf();
+  let temps = {};
   const now = api.now();
-  const fromMs = period.from_ms ?? temps.daily?.[0]?.t_ms ?? now - 30 * DAY;
+  let fromMs = period.from_ms ?? now - 30 * DAY;
   const toMs = Math.min(period.to_ms ?? now, now);
 
   /* ------------------------------------------------------------ the filter row */
@@ -68,6 +66,10 @@ export async function mount(ctx) {
   const histT = tile({ w: 'full', title: 'Over time', icon: 'timeline', cls: 'chart-tile' });
   const chgT = tile({ w: 2, title: 'Outside at each charge', icon: 'bolt', cls: 'chart-tile' });
   const dayT = tile({ w: 2, title: 'Each day outside', icon: 'calendar', cls: 'chart-tile', cover: ['tp.chart.daily_envelope', 'tp.chart.daily_coverage'] });
+  effBox.append(ghostTile(2, 'h3'), ghostTile(2, 'h2'), ghostTile(2, 'h3'), ghostTile(2, 'h3'));
+  sumT.append(plotGhost({ short: true }));
+  for (const t of [histT, chgT, dayT]) t.append(plotGhost({ short: t !== histT }));
+  const unghost = (t) => t.querySelector(':scope > .plot-ghost')?.remove();
   ctx.view.replaceChildren(bar, effBox, tempHead, sumT, histT, chgT, dayT);
 
   /* ------------------------------------------------------------ efficiency */
@@ -174,6 +176,7 @@ export async function mount(ctx) {
 
   /* ------------------------------------------------------------ temperatures: the summary */
   function paintSummary() {
+    unghost(sumT);
     if (temps.error) { sumT.append(note('The temperatures could not be read. Reload the page to try again.')); return; }
     const miss = temps.missing_ms || {};
     const span = Math.max(1, toMs - fromMs);
@@ -205,6 +208,7 @@ export async function mount(ctx) {
   async function paintHistory() {
     const d = await ctx.api.get(`${base}/series`, { fields: 'outside_c,cabin_c,battery_c,setpoint_left_c,climate', ...ctx.params, from_ms: fromMs, to_ms: toMs, max_points: 800 }).catch((e) => ({ error: e }));
     if (!ctx.alive()) return;
+    unghost(histT);
     const ts = d.t_ms || [], v = d.values || {};
     const climate = v.climate || [];
     const set = (v.setpoint_left_c || []).map((x, i) => (climate[i] === 'on' || climate[i] === true ? x : null));
@@ -227,6 +231,7 @@ export async function mount(ctx) {
   async function paintCharges() {
     const items = await ctx.api.list(`${base}/charges`, { ...ctx.params, sort: 'start', dir: 'asc' }, { limit: 200 }).all({ max: 3000 }).catch(() => []);
     if (!ctx.alive()) return;
+    unghost(chgT);
     const list = items.filter((c) => c.start_ms != null && c.outside_avg_c != null).sort((a, b) => a.start_ms - b.start_ms);
     if (!list.length) {
       chgT.append(h('div', { cover: 'tp.chart.charging_outside' }, emptyTile({ icon: 'bolt', title: items.length ? 'No charge has an outside temperature' : 'No charges this period', text: items.length ? 'The car sent no outside temperature while charging.' : 'Charges that start in the period show here.', w: 2 })));
@@ -243,6 +248,7 @@ export async function mount(ctx) {
 
   /* ------------------------------------------------------------ each day outside */
   function paintDaily() {
+    unghost(dayT);
     const days = (temps.daily || []);
     const help = h('p', { class: 'note', cover: 'tp.chart.daily_envelope_help' }, 'The thin line runs from the day’s lowest to its highest reading; the box holds the middle 70 % of readings. The bar under each day is how much of it the car was awake: trust a day with a short bar less.');
     if (!days.some((x) => x.max_c != null)) {
@@ -279,10 +285,18 @@ export async function mount(ctx) {
       read, help);
   }
 
-  paintSummary();
-  paintDaily();
-  paintEff(eff, drives0);
-  await Promise.all([paintHistory(), paintCharges()]);
+  // the temperatures: the summary, each day, and the readings over time (an All time period starts at their first day)
+  const paintTemps = async () => {
+    temps = await tempsP;
+    if (!ctx.alive()) return;
+    if (period.from_ms == null) fromMs = temps.daily?.[0]?.t_ms ?? fromMs;
+    paintSummary();
+    paintDaily();
+    await paintHistory();
+  };
+  // GET efficiency failing fails the page (as before)
+  const paintFirst = async () => { const [eff, drives0] = await Promise.all([effP, drivesP]); if (ctx.alive()) paintEff(eff, drives0); };
+  await Promise.all([paintFirst(), paintTemps(), paintCharges()]);
   if (!ctx.alive()) return {};
   ctx.ready();
   return {};

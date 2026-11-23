@@ -56,6 +56,15 @@ pub struct Record {
     pub judged_ms: u64,
     /// When the log itself arrived (for the sidecar wait).
     pub arrived_ms: u64,
+    /// The log's SHA-256 and length as it was judged (records from before these were kept have none: a signed one's
+    /// link names them). What a log the server lost must match when it is sent again ([`crate::missing`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<u64>,
+    /// The SHA-256 of its sidecar as it was judged, `None` when it was judged without one (or before this was kept).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidecar_sha256: Option<String>,
 }
 
 impl Record {
@@ -65,6 +74,17 @@ impl Record {
     }
 
     /// The key that signed it, when its signature checks out (verified, or failed only for being another key's).
+    /// The log's SHA-256 and length as it was stored: kept with the record, else its signed link's.
+    pub fn original(&self) -> (Option<&str>, Option<u64>) {
+        let link = self.link.as_ref();
+        (self.sha256.as_deref().or(link.map(|l| l.sha256.as_str())), self.length.or(link.map(|l| l.length)))
+    }
+
+    /// Whether the log had a sidecar when it was judged.
+    pub fn had_sidecar(&self) -> bool {
+        self.sidecar_sha256.is_some() || self.link.is_some()
+    }
+
     pub fn signed_by(&self) -> Option<&str> {
         let good = self.status == Status::Verified
             || (self.status == Status::Failed && self.reason.as_deref() == Some(SIGNED_BY_ANOTHER_KEY));
@@ -254,11 +274,11 @@ pub struct Judged {
 pub type OnJudged = Arc<dyn Fn(&Judged) + Send + Sync>;
 
 pub struct Judge {
-    dir: PathBuf,
-    store: Store,
+    pub(crate) dir: PathBuf,
+    pub(crate) store: Store,
     heads: Mutex<Lru<Head>>,
     locks: KeyLocks<tokio::sync::Mutex<()>>,
-    wait_ms: u64,
+    pub(crate) wait_ms: u64,
     compact_after: usize,
     on_judged: Option<OnJudged>,
 }
@@ -272,12 +292,14 @@ fn bad_key() -> std::io::Error {
 }
 
 /// A key held by this process: its lock in memory, then its lock file (released in that order's reverse).
-struct Held {
+pub(crate) struct Held {
     _file: ledger::Locked,
     _one: tokio::sync::OwnedMutexGuard<()>,
 }
 
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> std::io::Result<T> + Send + 'static) -> std::io::Result<T> {
+pub(crate) async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> std::io::Result<T> + Send + 'static,
+) -> std::io::Result<T> {
     tokio::task::spawn_blocking(f).await.map_err(std::io::Error::other)?
 }
 
@@ -341,12 +363,12 @@ impl Judge {
         self.locks.len()
     }
 
-    fn ledger(&self, key: &str) -> Ledger {
+    pub(crate) fn ledger(&self, key: &str) -> Ledger {
         Ledger::new(&self.dir, key, self.store.vault().clone())
     }
 
     /// Holds a key: one task of this process at a time, and one process at a time (its lock file), until dropped.
-    async fn hold(&self, key: &str) -> std::io::Result<Held> {
+    pub(crate) async fn hold(&self, key: &str) -> std::io::Result<Held> {
         let one = self.locks.get(key).lock_owned().await;
         let ledger = self.ledger(key);
         let file = blocking(move || ledger.lock()).await?;
@@ -355,7 +377,7 @@ impl Judge {
 
     /// The key's head (the caller holds the key): from memory while the files are as it last saw them, else from
     /// disk (another process changed them, or it isn't in memory).
-    async fn take_head(&self, key: &str) -> std::io::Result<Head> {
+    pub(crate) async fn take_head(&self, key: &str) -> std::io::Result<Head> {
         let cached = self.heads.lock().unwrap_or_else(PoisonError::into_inner).take(key);
         let ledger = self.ledger(key);
         blocking(move || {
@@ -372,7 +394,7 @@ impl Judge {
         .await
     }
 
-    fn put_head(&self, key: &str, head: Head) {
+    pub(crate) fn put_head(&self, key: &str, head: Head) {
         self.heads.lock().unwrap_or_else(PoisonError::into_inner).put(key.to_string(), head);
     }
 
@@ -436,6 +458,18 @@ impl Judge {
         let log_name = name.strip_suffix(".json").unwrap_or(name).to_string();
         let key = n.vehicle_key.to_string();
         let _held = self.hold(&key).await?;
+        let r = self.arrived_held(&key, &log_name, n.sidecar).await;
+        // a log (or sidecar) the server had lost, back as it was: off the list of those it asks the car for
+        if let Err(e) = self.missing_arrived(&key, name, r.as_ref().ok().and_then(Option::as_ref)).await {
+            // not the name: it holds the car's key, and the server's log is kept in the clear
+            tracing::warn!("CAN upload: could not update a car's missing logs: {e}");
+        }
+        r
+    }
+
+    /// [`Judge::arrived`] with the key held.
+    async fn arrived_held(&self, key: &str, log_name: &str, sidecar: bool) -> std::io::Result<Option<Record>> {
+        let (key, log_name) = (key.to_string(), log_name.to_string());
         let mut head = self.take_head(&key).await?;
         if !self.store.exists(&log_name) {
             self.put_head(&key, head);
@@ -444,7 +478,7 @@ impl Judge {
         // when the log came: from the waiting list, or (a sidecar after its log was judged without it) its record
         let arrived_ms = match head.waiting.get(&log_name) {
             Some(&t) => Some(t),
-            None if n.sidecar => {
+            None if sidecar => {
                 let (ledger, h, name) = (self.ledger(&key), head.clone(), log_name.clone());
                 blocking(move || ledger.lookup(&h, &name)).await?.map(|r| r.arrived_ms)
             }
@@ -478,6 +512,7 @@ impl Judge {
             return Ok(None);
         }
         let side_bytes = self.store.read(&format!("{log_name}.json")).await.ok().flatten();
+        let sidecar_sha256 = side_bytes.as_ref().map(|b| hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&b[..])));
         let waited = now_ms().saturating_sub(arrived_ms) >= self.wait_ms;
         let Some(side) = side_bytes
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
@@ -491,6 +526,9 @@ impl Judge {
                 override_use: false,
                 judged_ms: now_ms(),
                 arrived_ms,
+                sha256: None,
+                length: None,
+                sidecar_sha256: None,
             };
             return Ok(Some((r.clone(), vec![Change::Log { name: log_name.to_string(), record: r }])));
         };
@@ -532,7 +570,18 @@ impl Judge {
             Verdict::Unsigned => (Status::Unsigned, None),
         };
         let override_use = head.overrides.contains(log_name);
-        let r = Record { v: trust::RULES_VERSION, status, reason, link, override_use, judged_ms: now_ms(), arrived_ms };
+        let r = Record {
+            v: trust::RULES_VERSION,
+            status,
+            reason,
+            link,
+            override_use,
+            judged_ms: now_ms(),
+            arrived_ms,
+            sha256: Some(sha),
+            length: Some(len),
+            sidecar_sha256,
+        };
         changes.push(Change::Log { name: log_name.to_string(), record: r.clone() });
         Ok(Some((r, changes)))
     }
@@ -947,6 +996,13 @@ impl Judge {
         })
         .await
         .unwrap_or_else(|_| Book { v: trust::RULES_VERSION, ..Book::default() })
+    }
+
+    /// Where a key's records are: its generation and the changes written since (every record written, every
+    /// pairing changed, moves it on), without reading them. What is worked out of a key's records can be kept while
+    /// this stays the same. `None` for a key with nothing here.
+    pub async fn changes(&self, key: &str) -> Option<(u64, usize)> {
+        self.read(key, |_, h| Ok((h.generation, h.journal_len))).await.ok()
     }
 
     /// A key's pairing and how many logs wait, without reading its records.

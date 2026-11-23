@@ -29,7 +29,7 @@ async function start() {
     return startRouter({});
   }
   let me = null;
-  try { me = await api.get('me'); } catch (err) {
+  try { me = await api.get('me', null, { keep: true }); } catch (err) { // kept: the map's tile settings read it too
     if (!(err && err.status === 401)) throw err;
   }
   if (!me) {
@@ -39,7 +39,7 @@ async function start() {
   const [about, cars] = await Promise.all([
     api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
     // the cars not sold (the masthead's "3 cars · search"); sold ones are behind the switcher's own toggle
-    api.get('fleet/summary').catch(() => null),
+    api.get('fleet/summary', null, { keep: true }).catch(() => null), // the fleet page reuses it
     loadPrefs().catch(() => null),
   ]);
   const frame = mountFrame({ me, about });

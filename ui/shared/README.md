@@ -50,6 +50,8 @@ started), `on('unauthorized' | 'network' | 'events', fn)`, `now()` (the server's
 - Every call takes `{ signal }`. The same GET asked for twice while the first is under way is sent once; a
   caller that leaves only stops waiting, and the request is cancelled when every caller has left.
 - `opts.maxAgeMs` reuses a result that young (for `me`, `me/preferences`); any change drops kept results.
+  `opts.keep` keeps an answer for later `maxAgeMs` callers without reusing an older one itself: the frame reads
+  `notices` with it, and a page loaded at the same moment asks with a short `maxAgeMs` instead of sending it again.
 - Errors are `ApiError { status, code, message, fields, retryAfterMs }`; `status` 0 is no answer (`code`
   `network` or `timeout`). A 401 also tells `on('unauthorized')` listeners. A read answered 429 with a short
   `Retry-After` (10 s or less) waits and tries once more by itself; changes are never repeated.
@@ -175,7 +177,7 @@ downloadCsv(csvFilename(car.name, 'battery-level'), rows, [timeColumn('Time', 't
 `h(tag, attrs, ...children)`, `svg(tag, attrs, ...children)`, `append`, `text`, `frag`, `clear`, `replace`,
 `on(target, type, fn)`, `esc`, `safeUrl`, `setVars(el, vars)`, `cssVar(name)`, `cover(el, ...ids)`,
 `ready(pageId)`, `unready()`, `failed(pageId)`, `readyPage()`, `setTitle(...parts)`, `quantity(value, kind,
-opts)`.
+opts)`, `styleSheet(href, { first })` (adds a style sheet once, after the others or with `first` before them, and resolves when it has loaded: maps and charts await it).
 
 `h()` attributes: `class` (text, array or `{ name: on }`), `dataset`, `vars` (CSS custom properties, set through
 CSSOM), `style` (an object, CSSOM), `cover` (inventory item ids), `on<event>` functions, `value` / `checked`

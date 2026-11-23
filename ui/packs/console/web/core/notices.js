@@ -56,7 +56,8 @@ function render() {
 
 /** Load the notices (at start, after a `notice` event, after signing in). */
 export async function loadNotices() {
-  try { items = (await api.get('notices')).items || []; } catch { items = []; }
+  // kept: a page that lists the notices too reuses this answer
+  try { items = (await api.get('notices', null, { keep: true })).items || []; } catch { items = []; }
   render();
   for (const f of [...subs]) { try { f(items); } catch (e) { console.error(e); } }
   return items;

@@ -21,8 +21,10 @@ web/
   fonts/            Charter (serif) and Inter (sans)
 ```
 
-Paths in the pack are absolute (`/core/start.js`, `/vendor/...`), because pages live at addresses such as
-`/cars/c1/drives`.
+Paths in `index.html` are absolute (`/core/start.js`, `/app.css`), because pages live at addresses such as
+`/cars/c1/drives`. Paths inside the JS and CSS are relative to their own file (`url('fonts/x.woff2')`,
+`new URL('../vendor/...', import.meta.url)`), so they follow the server's versioned prefix (`/_v/<version>/...`)
+that `index.html` is rewritten to.
 
 Run it on the dev API server (made-up data, no outside network):
 

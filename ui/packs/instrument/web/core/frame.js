@@ -318,8 +318,19 @@ function startEvents() {
     if (ev.type === 'prefs' && ev.data) applyPrefs(ev.data);
     else if (ev.type === 'notice') loadNotices();
     else if (ev.type === 'fleet') { loadCarCount(); if (shown.car) refreshCar(); }
-    else if (ev.type === 'now' && shown.car && ev.data?.car === shown.car.id) refreshCar();
+    else if (ev.type === 'now' && shown.car && ev.data?.car === shown.car.id) liveCar(ev.data.now);
   }, { types: ['prefs', 'notice', 'fleet', 'now'] });
+}
+// A live `now` delta carries what the side bar shows of the car (its state, and whether it is stale): take it from
+// the event instead of asking for the car again, which would repeat the router's GET of the page being loaded.
+function liveCar(d) {
+  if (!d || !shown.car) return;
+  const n = { ...(shown.car.now || {}) };
+  let changed = false;
+  for (const k of ['state', 'stale', 'since_ms']) if (k in d && d[k] !== n[k]) { n[k] = d[k]; changed = true; }
+  if (!changed) return;
+  shown.car = { ...shown.car, now: n };
+  showCarInSidebar(shown.car);
 }
 let carTimer = 0;
 function refreshCar() {

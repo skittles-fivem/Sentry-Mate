@@ -153,7 +153,7 @@ function markWhenSettled(id, alive) {
 
 function pageCss(id) {
   if (document.head.querySelector(`link[data-page-css="${id}"]`)) return Promise.resolve();
-  const link = h('link', { rel: 'stylesheet', href: `/pages/${id}.css`, dataset: { pageCss: id } });
+  const link = h('link', { rel: 'stylesheet', href: new URL(`../pages/${id}.css`, import.meta.url).href, dataset: { pageCss: id } });
   const done = new Promise((resolve) => { link.addEventListener('load', resolve, { once: true }); link.addEventListener('error', resolve, { once: true }); });
   document.head.append(link);
   return done;

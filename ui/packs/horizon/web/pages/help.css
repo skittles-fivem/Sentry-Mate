@@ -61,3 +61,6 @@
 :root[data-phone] .licence-list li { grid-template-columns: minmax(0, 1fr); }
 :root[data-phone] .licence-list a { grid-column: 1; grid-row: auto; justify-self: start; align-self: start; display: inline-flex; align-items: center; min-height: var(--tap); }
 :root[data-phone] .qa-tools .field--search { flex: 1 1 100%; width: auto; }
+/* the licence link on the line of its licence (their bottoms meet, also when the licence line wraps) */
+.licence-list a { align-self: end; }
+:root[data-phone] .licence-list a { align-self: start; }

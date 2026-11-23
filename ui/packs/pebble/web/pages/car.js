@@ -20,8 +20,9 @@ import { formatDate, formatWhen, formatDuration } from '../shared/time.js';
 import { formatList } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { tyreView, recommendedLine } from '../shared/tyres.js';
+import { tyreView, recommendedLine, wheelGuessLine, tyresTitle } from '../shared/tyres.js';
 import { tile, num, ring, stateTag, chip, btn, icon, note, ago } from '../core/ui.js';
+import { ghostTile, plotGhost } from '../core/states.js';
 import { openPeriod, rangeText } from '../core/period.js';
 import { mapTile, coordsText } from '../core/map.js';
 import { timeChart, spansOf } from '../core/chart.js';
@@ -32,6 +33,13 @@ import { srcPill, viaMark, inputsLine } from '../core/source.js';
 const put = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false && k !== ''));
 import { vehicleTiles } from './vehicle-parts.js';
 import { historyHref, VERSION_SOURCE } from '../core/firmware.js';
+
+// the door placard's pressure for a wheel size that is only a guess: say so, and (for an admin) link to where the
+// size is typed
+const wheelGuess = (now, anchor, admin) => {
+  const g = wheelGuessLine(now);
+  return g ? [' ', g.said, admin ? [' ', g.ask, ' ', h('a', { href: anchor }, g.action), '.'] : null] : null;
+};
 
 const withVia = (text, x) => { const m = viaMark(x); return m ? h('span', { class: 'src-line' }, text, m) : text; };
 /** The input mark of an off_can value ({ value, at_ms, sources, stale } or null), and Stale past its age limit. */
@@ -66,17 +74,16 @@ export async function mount(ctx) {
   const car = ctx.car, tz = ctx.tz;
   const P = ctx.params;
   const keep = (p) => p.catch((err) => ({ error: err }));
-  const [now0, act, series, trip, lastDrive, lastCharge, settings] = await Promise.all([
-    ctx.api.get(api.apiPath`cars/${car.id}/now`),
-    keep(ctx.api.get(api.apiPath`cars/${car.id}/activity`, P)),
-    keep(ctx.api.get(api.apiPath`cars/${car.id}/series`, { ...P, fields: 'soc_pct,usable_soc_pct,range_km,ideal_range_km', max_points: 600 })),
-    keep(ctx.api.get(api.apiPath`cars/${car.id}/trip`, P)),
-    keep(ctx.api.page(api.apiPath`cars/${car.id}/drives`, {}, { limit: 1 })),
-    keep(ctx.api.page(api.apiPath`cars/${car.id}/charges`, {}, { limit: 1 })),
-    keep(ctx.api.get('settings', null, { maxAgeMs: 60000 })),
-  ]);
-  if (!ctx.alive()) return {};
-  let now = now0;
+  // Every call starts at once and each tile paints when its own answer is in; a grey tile of its size keeps its
+  // room until then, so the live tiles show while the period's strip and charts are still on their way.
+  const nowP = ctx.api.get(api.apiPath`cars/${car.id}/now`);
+  const actP = keep(ctx.api.get(api.apiPath`cars/${car.id}/activity`, P));
+  const seriesP = keep(ctx.api.get(api.apiPath`cars/${car.id}/series`, { ...P, fields: 'soc_pct,usable_soc_pct,range_km,ideal_range_km', max_points: 600 }));
+  const tripP = keep(ctx.api.get(api.apiPath`cars/${car.id}/trip`, P));
+  const lastDriveP = keep(ctx.api.page(api.apiPath`cars/${car.id}/drives`, {}, { limit: 1 }));
+  const lastChargeP = keep(ctx.api.page(api.apiPath`cars/${car.id}/charges`, {}, { limit: 1 }));
+  const settingsP = keep(ctx.api.get('settings', null, { maxAgeMs: 60000 }));
+  let now = {};
   const refresh = btn('Refresh', { kind: 'soft', icon: 'refresh', iconOnly: true, cover: 'overview.control.refresh', onclick: () => ctx.reload() });
   ctx.head({ actions: [refresh] });
 
@@ -175,9 +182,9 @@ export async function mount(ctx) {
     put(tTyres, tTyres.firstChild,
       h('div', { class: 'tyres', role: 'img', 'aria-label': TYRES.map(([, n], i) => `${n} ${format(v(list[i]), 'pressure')}`).join(', ') },
         h('span', { class: 'tyres-car', 'aria-hidden': 'true' }), dots),
-      h('p', { class: ['tile-line', { 'is-warn': low }], cover: 'summary.flag.tire_pressure_warning' },
+      h('p', { class: ['tile-line', { 'is-warn': low }], cover: 'summary.flag.tire_pressure_warning', title: list.length ? tyresTitle(now) || null : null },
         !list.length ? `Tyre pressures: ${why(null)}.` : low ? 'A tyre is more than 10 % under its recommended pressure. ' : ty.front != null ? 'All near the recommended pressure. ' : '',
-        list.length ? recommendedLine(now) : ''));
+        list.length ? recommendedLine(now) : '', list.length ? wheelGuess(now, '#vi-wheels', ctx.admin) : null));
   }
 
   /* ---------------------------------------------------------------- status flags */
@@ -271,18 +278,24 @@ export async function mount(ctx) {
       h('a', { class: 'tile-link', href: `${state.buildUrl('software', { car: car.id })}#firmware` }, 'Car firmware'),
       h('a', { class: 'tile-link', href: historyHref(car.id) }, 'Module firmware history'));
   }
-  const d0 = lastDrive.error ? null : lastDrive.items?.[0];
-  const tDrive = d0 ? tile({ w: 1, title: 'Last drive', icon: 'route', href: state.buildUrl('drive', { car: car.id, drive: d0.id }), cls: 'tile-stat' },
-    num(d0.distance_km, 'distance'),
-    h('p', { class: 'tile-line' }, `${endLabel(d0.start)} to ${d0.end_ms ? endLabel(d0.end) : 'now'}`),
-    h('p', { class: 'tile-line' }, formatWhen(d0.start_ms, tz, api.now())))
-    : tile({ w: 1, title: 'Last drive', icon: 'route', cls: 'tile-stat' }, note(lastDrive.error ? 'Drives did not load.' : 'No drive recorded yet.'));
-  const c0 = lastCharge.error ? null : lastCharge.items?.[0];
-  const tLastC = c0 ? tile({ w: 1, title: 'Last charge', icon: 'bolt', href: state.buildUrl('charge', { car: car.id, charge: c0.id }), cls: 'tile-stat' },
-    num(c0.energy_added_kwh, 'energy'),
-    h('p', { class: 'tile-line' }, `${format(c0.start_soc_pct, 'percent')} to ${format(c0.end_soc_pct, 'percent')}, ${c0.place ? c0.place.name : c0.address?.short || 'unnamed spot'}`),
-    h('p', { class: 'tile-line' }, formatWhen(c0.start_ms, tz, api.now())))
-    : tile({ w: 1, title: 'Last charge', icon: 'bolt', cls: 'tile-stat' }, note(lastCharge.error ? 'Charges did not load.' : 'No charge recorded yet.'));
+  const driveS = ghostTile(1, 'h1'), chargeS = ghostTile(1, 'h1');
+  const paintLast = async () => {
+    const [lastDrive, lastCharge] = await Promise.all([lastDriveP, lastChargeP]);
+    if (!ctx.alive()) return;
+    const d0 = lastDrive.error ? null : lastDrive.items?.[0];
+    const tDrive = d0 ? tile({ w: 1, title: 'Last drive', icon: 'route', href: state.buildUrl('drive', { car: car.id, drive: d0.id }), cls: 'tile-stat' },
+      num(d0.distance_km, 'distance'),
+      h('p', { class: 'tile-line' }, `${endLabel(d0.start)} to ${d0.end_ms ? endLabel(d0.end) : 'now'}`),
+      h('p', { class: 'tile-line' }, formatWhen(d0.start_ms, tz, api.now())))
+      : tile({ w: 1, title: 'Last drive', icon: 'route', cls: 'tile-stat' }, note(lastDrive.error ? 'Drives did not load.' : 'No drive recorded yet.'));
+    const c0 = lastCharge.error ? null : lastCharge.items?.[0];
+    const tLastC = c0 ? tile({ w: 1, title: 'Last charge', icon: 'bolt', href: state.buildUrl('charge', { car: car.id, charge: c0.id }), cls: 'tile-stat' },
+      num(c0.energy_added_kwh, 'energy'),
+      h('p', { class: 'tile-line' }, `${format(c0.start_soc_pct, 'percent')} to ${format(c0.end_soc_pct, 'percent')}, ${c0.place ? c0.place.name : c0.address?.short || 'unnamed spot'}`),
+      h('p', { class: 'tile-line' }, formatWhen(c0.start_ms, tz, api.now())))
+      : tile({ w: 1, title: 'Last charge', icon: 'bolt', cls: 'tile-stat' }, note(lastCharge.error ? 'Charges did not load.' : 'No charge recorded yet.'));
+    driveS.replaceWith(tDrive); chargeS.replaceWith(tLastC);
+  };
   const tData = tile({ w: 1, title: 'Data', icon: 'pulse', cls: 'tile-stat', cover: ['summary.data.live_push', 'summary.data.restored_values', 'nr.dash.last-update', 'summary.data.prefs_snapshot'] });
   function drawData() {
     const u = getUnits();
@@ -297,72 +310,104 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- the period: strip, summary, charts */
   const periodBtn = h('button', { type: 'button', class: 'fpill', cover: 'overview.control.time_range', onclick: (e) => openPeriod(ctx.period, tz, e.currentTarget) }, icon('calendar'), rangeText(ctx.period, tz));
   const tStrip = tile({ w: 'full', title: 'What it did', icon: 'timeline', side: periodBtn, cls: 'strip-tile', cover: ['overview.chart.states', 'overview.filter.car'] });
-  if (act.error) tStrip.append(note('The activity did not load.'));
-  else {
-    tStrip.append(strip(act, { tz, link: (s) => (s.ref?.drive ? state.buildUrl('drive', { car: car.id, drive: s.ref.drive }) : s.ref?.charge ? state.buildUrl('charge', { car: car.id, charge: s.ref.charge }) : null) }),
-      h('p', { class: 'note' }, stripShares(act).slice(0, 4).map(([k, ms]) => `${({ driving: 'Driving', charging: 'Charging', online: 'Awake', online_vehicle_bus_only: 'Bus awake', asleep: 'Asleep', unknown: 'No data', updating: 'Updating' })[k] || k} ${dur(ms)}`).join(' · ')),
-      h('a', { class: 'tile-link', href: state.buildUrl('timeline', { car: car.id, period: ctx.state.period }), cover: 'overview.link.states' }, 'Open the timeline'));
-  }
-  const tSum = trip.error ? tile({ w: 2, title: 'This period', icon: 'trip' }, note('The summary did not load.'))
-    : tile({ w: 2, title: 'This period', icon: 'trip', cls: 'sum-tile', cover: ['overview.stat.distance_logged', 'overview.stat.consumption_net', 'overview.stat.consumption_gross'] },
-      h('div', { class: 'sum-nums' },
-        h('div', null, h('span', { class: 'hero-k' }, 'Distance'), num(trip.distance?.drives_km, 'distance')),
-        h('div', null, h('span', { class: 'hero-k' }, 'Driving use'), num(trip.wh_per_km?.net, 'efficiency', { why: 'no drive' })),
-        h('div', null, h('span', { class: 'hero-k' }, 'With parked use'), num(trip.wh_per_km?.gross, 'efficiency', { why: 'no drive' }))),
-      note('Driving use counts only the drives; with parked use adds what the car used while parked.'));
+  const stripGhost = h('div', { class: 'strip-ghost', 'aria-hidden': 'true' });
+  tStrip.append(stripGhost);
+  const paintStrip = async () => {
+    const act = await actP;
+    if (!ctx.alive()) return;
+    stripGhost.remove();
+    if (act.error) tStrip.append(note('The activity did not load.'));
+    else {
+      tStrip.append(strip(act, { tz, link: (s) => (s.ref?.drive ? state.buildUrl('drive', { car: car.id, drive: s.ref.drive }) : s.ref?.charge ? state.buildUrl('charge', { car: car.id, charge: s.ref.charge }) : null) }),
+        h('p', { class: 'note' }, stripShares(act).slice(0, 4).map(([k, ms]) => `${({ driving: 'Driving', charging: 'Charging', online: 'Awake', online_vehicle_bus_only: 'Bus awake', asleep: 'Asleep', unknown: 'No data', updating: 'Updating' })[k] || k} ${dur(ms)}`).join(' · ')),
+        h('a', { class: 'tile-link', href: state.buildUrl('timeline', { car: car.id, period: ctx.state.period }), cover: 'overview.link.states' }, 'Open the timeline'));
+    }
+  };
+  const sumS = ghostTile(2, 'h1');
+  const paintSum = async () => {
+    const trip = await tripP;
+    if (!ctx.alive()) return;
+    const tSum = trip.error ? tile({ w: 2, title: 'This period', icon: 'trip' }, note('The summary did not load.'))
+      : tile({ w: 2, title: 'This period', icon: 'trip', cls: 'sum-tile', cover: ['overview.stat.distance_logged', 'overview.stat.consumption_net', 'overview.stat.consumption_gross'] },
+        h('div', { class: 'sum-nums' },
+          h('div', null, h('span', { class: 'hero-k' }, 'Distance'), num(trip.distance?.drives_km, 'distance')),
+          h('div', null, h('span', { class: 'hero-k' }, 'Driving use'), num(trip.wh_per_km?.net, 'efficiency', { why: 'no drive' })),
+          h('div', null, h('span', { class: 'hero-k' }, 'With parked use'), num(trip.wh_per_km?.gross, 'efficiency', { why: 'no drive' }))),
+        note('Driving use counts only the drives; with parked use adds what the car used while parked.'));
+    sumS.replaceWith(tSum);
+  };
 
   const tBatt = tile({ w: 2, title: 'Battery', icon: 'battery', cls: 'chart-tile', side: h('a', { class: 'tile-link', href: state.buildUrl('battery', { car: car.id, period: ctx.state.period }), cover: 'overview.link.charge_level' }, 'Battery page'),
     cover: ['overview.chart.charge_level', 'overview.control.shared_crosshair'] });
   const tChart = tile({ w: 2, title: 'Charging in this period', icon: 'bolt', cls: 'chart-tile', side: h('a', { class: 'tile-link', href: state.buildUrl('charges', { car: car.id, period: ctx.state.period }), cover: 'overview.link.charging_stats' }, 'Charges page'),
     cover: ['overview.chart.charging_details.power', 'overview.chart.charging_details.energy', 'overview.chart.charging_details.ac_current', 'overview.chart.charging_details.ac_voltage', 'overview.chart.charging_details.battery_heater'] });
 
-  drawHero(); drawSmall(); drawTyres(); drawFlags(); drawAwake(); drawCharge(); drawSoft(); drawData();
-  ctx.view.replaceChildren(hero, where, tSpeed, tOut, tIn, tOdo, tCharge, tTyres, tFlags, tAwake, tSoft, tDrive, tLastC, tData, tStrip, tSum, tBatt, tChart,
+  // the tiles drawn from /now wait in grey tiles of their size; they go in together when /now is in
+  const live = [[hero, 2, 'h3'], [where, 2, 'h3'], [tSpeed, 1, 'h1'], [tOut, 1, 'h1'], [tIn, 1, 'h1'], [tOdo, 1, 'h1'], [tCharge, 2, 'h3'], [tTyres, 2, 'h2'],
+    [tFlags, 2, 'h3'], [tAwake, 2, 'h1'], [tSoft, 1, 'h1'], [tData, 1, 'h1']].map(([el, w, hh]) => [el, ghostTile(w, hh)]);
+  const slotOf = new Map(live);
+  tBatt.append(plotGhost());
+  tChart.append(plotGhost());
+  ctx.view.replaceChildren(slotOf.get(hero), slotOf.get(where), slotOf.get(tSpeed), slotOf.get(tOut), slotOf.get(tIn), slotOf.get(tOdo), slotOf.get(tCharge), slotOf.get(tTyres),
+    slotOf.get(tFlags), slotOf.get(tAwake), slotOf.get(tSoft), driveS, chargeS, slotOf.get(tData), tStrip, sumS, tBatt, tChart,
     ...vehicleTiles(ctx, car, { onChanged: () => ctx.reload() }));
 
-  /* the map: the car's spot, an outside link when the owner allows it */
-  const lat = v(now.location?.lat), lon = v(now.location?.lon);
-  let mapReady = Promise.resolve();
-  const outside = !settings.error && settings.outside_links?.maps;
-  whereFoot.append(
-    h('span', null, now.location?.place ? placeLink({ place: now.location.place, lat, lon }) : now.location?.address?.short || (lat != null ? coordsText(lon, lat) : 'Position not known')),
-    lat != null && outside ? h('a', { class: 'tile-link', href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=16/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'noopener noreferrer', cover: 'summary.map.external_link' }, 'Open in a map', icon('external'))
-      : h('span', { class: 'muted', cover: 'summary.map.external_link' }, 'Outside map links are off'));
-  if (lat != null && lon != null) {
-    const m = await mapTile(ctx, mapBox, { center: [lon, lat], zoom: 14, fullscreen: true });
-    if (!m) return {};
-    if (m.map) m.pin([lon, lat], { tone: now.state === 'charging' ? 'teal' : 'coral', title: car.name });
-    mapReady = m.ready;
-  } else {
-    mapBox.append(h('p', { class: 'map-note' }, now.state === 'unknown' ? 'No recent log, so no position.' : 'The car has not sent its position yet.'));
-  }
+  /* the live tiles and the map: GET now (and settings for the outside link) */
+  const paintNow = async () => {
+    now = await nowP;
+    if (!ctx.alive()) return;
+    drawHero(); drawSmall(); drawTyres(); drawFlags(); drawAwake(); drawCharge(); drawSoft(); drawData();
+    for (const [el, slot] of live) slot.replaceWith(el);
+    ctx.events(['now'], (ev) => {
+      const d = ev.data || {};
+      if (d.car !== car.id || !d.now) return;
+      now = mergeNow(now, d.now);
+      drawHero(); drawSmall(); drawTyres(); drawFlags(); drawAwake(); drawCharge(); drawSoft(); drawData();
+      hero.querySelector('.ring-arc')?.classList.add('no-anim');
+    });
+    /* the map: the car's spot, an outside link when the owner allows it */
+    const lat = v(now.location?.lat), lon = v(now.location?.lon);
+    const settings = await settingsP;
+    if (!ctx.alive()) return;
+    const outside = !settings.error && settings.outside_links?.maps;
+    whereFoot.append(
+      h('span', null, now.location?.place ? placeLink({ place: now.location.place, lat, lon }) : now.location?.address?.short || (lat != null ? coordsText(lon, lat) : 'Position not known')),
+      lat != null && outside ? h('a', { class: 'tile-link', href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=16/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'noopener noreferrer', cover: 'summary.map.external_link' }, 'Open in a map', icon('external'))
+        : h('span', { class: 'muted', cover: 'summary.map.external_link' }, 'Outside map links are off'));
+    if (lat != null && lon != null) {
+      const m = await mapTile(ctx, mapBox, { center: [lon, lat], zoom: 14, fullscreen: true });
+      if (!m) return;
+      if (m.map) m.pin([lon, lat], { tone: now.state === 'charging' ? 'teal' : 'coral', title: car.name });
+      await m.ready;
+    } else {
+      mapBox.append(h('p', { class: 'map-note' }, now.state === 'unknown' ? 'No recent log, so no position.' : 'The car has not sent its position yet.'));
+    }
+  };
 
   /* the charts: battery over the period, the period's charges joined; one cursor */
   const sync = `car-${car.id}-${Date.now()}`;
-  const charts = [];
-  if (series.error || !series.t_ms?.length) tBatt.append(note(series.error ? 'The battery chart did not load.' : 'No battery values in this period.'));
-  else {
-    const rv = series.values;
-    charts.push(timeChart(ctx, tBatt, {
-      tz, t_ms: series.t_ms, states: series.state, spans: spansOf(series.t_ms, series.state, series.bucket_ms), sync, label: 'Battery', cover: 'overview.chart.legend_toggle',
-      series: [
-        { key: 'soc', name: 'Battery', kind: 'percent', values: rv.soc_pct, tone: 'c1', fill: true, floor: 0 },
-        { key: 'range', name: rangeLabel(), kind: 'range', values: getUnits().range === 'ideal' ? rv.ideal_range_km : rv.range_km, tone: 'c2', dashed: true, floor: 0 },
-      ],
-    }));
-  }
-  if (!series.error && series.sources?.length) tBatt.append(h('p', { class: 'src-line' }, srcPill(series)));
-  charts.push(drawCharging(ctx, tChart, sync));
-  await Promise.all([...charts, mapReady]);
+  const paintBattery = async () => {
+    const series = await seriesP;
+    if (!ctx.alive()) return;
+    tBatt.querySelector('.plot-ghost')?.remove();
+    const charts = [];
+    if (series.error || !series.t_ms?.length) tBatt.append(note(series.error ? 'The battery chart did not load.' : 'No battery values in this period.'));
+    else {
+      const rv = series.values;
+      charts.push(timeChart(ctx, tBatt, {
+        tz, t_ms: series.t_ms, states: series.state, spans: spansOf(series.t_ms, series.state, series.bucket_ms), sync, label: 'Battery', cover: 'overview.chart.legend_toggle',
+        series: [
+          { key: 'soc', name: 'Battery', kind: 'percent', values: rv.soc_pct, tone: 'c1', fill: true, floor: 0 },
+          { key: 'range', name: rangeLabel(), kind: 'range', values: getUnits().range === 'ideal' ? rv.ideal_range_km : rv.range_km, tone: 'c2', dashed: true, floor: 0 },
+        ],
+      }));
+    }
+    if (!series.error && series.sources?.length) tBatt.append(h('p', { class: 'src-line' }, srcPill(series)));
+    await Promise.all(charts);
+  };
+  // GET now failing fails the page (as before); every other tile shows its own "did not load"
+  await Promise.all([paintNow(), paintLast(), paintStrip(), paintSum(), paintBattery(), drawCharging(ctx, tChart, sync)]);
   if (!ctx.alive()) return {};
-
-  ctx.events(['now'], (ev) => {
-    const d = ev.data || {};
-    if (d.car !== car.id || !d.now) return;
-    now = mergeNow(now, d.now);
-    drawHero(); drawSmall(); drawTyres(); drawFlags(); drawAwake(); drawCharge(); drawSoft(); drawData();
-    hero.querySelector('.ring-arc')?.classList.add('no-anim');
-  });
   ctx.ready();
   return {};
 }
@@ -371,9 +416,10 @@ export async function mount(ctx) {
 async function drawCharging(ctx, el, sync) {
   const car = ctx.car;
   let res;
-  try { res = await ctx.api.page(api.apiPath`cars/${car.id}/charges`, ctx.params, { limit: 8 }); } catch { el.append(note('The charges did not load.')); return; }
+  const done = () => el.querySelector('.plot-ghost')?.remove(); // the chart's grey room, until there is something to show
+  try { res = await ctx.api.page(api.apiPath`cars/${car.id}/charges`, ctx.params, { limit: 8 }); } catch { done(); el.append(note('The charges did not load.')); return; }
   const list = (res.items || []).slice().sort((a, b) => a.start_ms - b.start_ms);
-  if (!list.length) { el.append(h('p', { class: 'lede chart-empty' }, 'No charge in this period.'), note('Pick a longer period to see power, energy, current, voltage and battery heating.')); return; }
+  if (!list.length) { done(); el.append(h('p', { class: 'lede chart-empty' }, 'No charge in this period.'), note('Pick a longer period to see power, energy, current, voltage and battery heating.')); return; }
   const curves = await Promise.all(list.map((c) => ctx.api.get(api.apiPath`cars/${car.id}/charges/${c.id}/curve`, { fields: 'power_kw,heater_kw,ac_volts_v,ac_amps_a,dc_volts_v,dc_amps_a', max_points: 240 }).catch(() => null)));
   if (!ctx.alive()) return;
   const t = [], power = [], energy = [], heat = [], amps = [], volts = [];
@@ -391,6 +437,7 @@ async function drawCharging(ctx, el, sync) {
       amps.push((dc ? V.dc_amps_a?.[i] : V.ac_amps_a?.[i]) ?? null); volts.push((dc ? V.dc_volts_v?.[i] : V.ac_volts_v?.[i]) ?? null);
     });
   });
+  done();
   if (!t.length) { el.append(note('These charges have no recorded curve.')); return; }
   await timeChart(ctx, el, {
     tz: ctx.tz, t_ms: t, sync: `${sync}-c`, label: 'Charging',

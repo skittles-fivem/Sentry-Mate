@@ -7,8 +7,8 @@
 import * as api from '../shared/api.js';
 import { setUnits } from '../shared/units.js';
 import { setLocale } from '../shared/i18n.js';
-import { setCarPrefs } from '../shared/state.js';
 import { applyInterface, applyTheme } from './display.js';
+import { setCarPrefs } from '../shared/state.js';
 
 let me = null;
 let prefs = null;
@@ -28,7 +28,7 @@ export function onPrefs(f) { subs.add(f); return () => subs.delete(f); }
 export function applyPrefs(p) {
   if (!p) return;
   prefs = p;
-  setCarPrefs(p); // main_car / last_car: the car pages without a car in the address show
+  setCarPrefs(p); // main_car / last_car: the car pages without one in the address show
   setUnits(p);
   setLocale(p.language || 'auto'); // also sets <html lang>: en-GB, or the language the text is really in
   if (p.theme) applyTheme(p.theme);
@@ -43,7 +43,8 @@ export function applyPrefs(p) {
  * nobody is signed in).
  */
 export async function loadSession() {
-  const [m, p] = await Promise.all([api.get('me'), api.get('me/preferences', null, { maxAgeMs: 0 })]);
+  // /me is kept: the map's tile settings (shared/maptiles.js) read it too
+  const [m, p] = await Promise.all([api.get('me', null, { keep: true }), api.get('me/preferences', null, { maxAgeMs: 0 })]);
   me = m;
   applyPrefs(p);
   return { me, prefs };

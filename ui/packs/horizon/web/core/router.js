@@ -148,7 +148,7 @@ function counted(sc) {
 
 // pages/<id>.css, linked while the page is mounted; resolves when it has loaded (no unstyled flash)
 function pageCss(id) {
-  const href = `/pages/${id}.css`;
+  const href = new URL(`../pages/${id}.css`, import.meta.url).href;
   let link = document.head.querySelector(`link[data-page-css="${id}"]`);
   if (link) return Promise.resolve(href);
   link = h('link', { rel: 'stylesheet', href, dataset: { pageCss: id } });
@@ -203,6 +203,10 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   if (!alive()) return;
   if (gate.redirect) { state.navigate(gate.redirect, { replace: true }); return; }
 
+  // a section's own short address (/trips, /charging, /stats, /settings ...): its last tab, or its first
+  const sec = id === 'not-found' && /^\/(car|trips|charging|battery|stats|settings)\/?$/.exec(s.path);
+  if (sec) { state.navigate(state.linkTo(frame.sectionPage(sec[1])), { replace: true }); return; }
+
   if (id === 'not-found' || !info) {
     frame.update({ s, info: null, car: null, period: null });
     docTitle('Not found');
@@ -226,16 +230,17 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
       return;
     }
     if (!alive()) return;
-    state.rememberCar(car.id, { sold: state.isSold(car) }); // the car loaded: the person looked at it
+    state.rememberCar(car.id, { sold: state.isSold(car) }); // the car opened: the one to show next time
     setFallbackZone(car.time_zone);
-  } else if (info.period && state.lastCar()) {
-    // a page with a period but no car (Travel): days are the last car's days
+  } else if (info.period) {
+    // a page with a period but no car (Travel): days are the preferred car's days (Main car, else the last opened)
     try {
-      const last = await scope.get(api.apiPath`cars/${state.lastCar()}`, null, { maxAgeMs: 60000 });
-      setFallbackZone(last.time_zone);
+      const p = await scope.page('cars', { sort: 'custom', limit: 50 }, { maxAgeMs: 60000 });
+      const id = state.preferredCar(p.items);
+      const pick = p.items.find((c) => c.id === id);
+      if (pick?.time_zone) setFallbackZone(pick.time_zone);
     } catch (err) {
       if (api.isAbort(err) || !alive()) return;
-      if (err.status === 404) state.forgetCar(state.lastCar());
     }
     if (!alive()) return;
   }
@@ -334,7 +339,8 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   // a link to a section of a page (/cars/c1/charges?…#habits): open the page there
   const target = location.hash.length > 1 ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null;
   if (target && view.contains(target)) {
-    const bar = document.querySelector('.topbar')?.getBoundingClientRect().height || 0; // the sticky top bar
+    const tb = document.querySelector('.topbar');
+    const bar = tb && getComputedStyle(tb).position === 'sticky' ? tb.getBoundingClientRect().height : 0; // a sticky top bar
     const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
     window.scrollTo(0, Math.max(0, target.getBoundingClientRect().top + window.scrollY - bar - rem));
   }

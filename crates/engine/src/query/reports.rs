@@ -331,6 +331,7 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
         Ok(true)
     })?;
     let cx = super::charges::ctx(e, c)?;
+    super::charges::prefill(e, car, wa, wb, &gaps)?;
     each::<Charge>(e, car, wa, wb, None, &shown, false, |ch| {
         if let Some(i) = slot_of(slots, ch.start_ms) {
             let v = super::charges::view_filled(e, c, &ch, &cx, &gaps)?;
@@ -383,7 +384,7 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
     let meta = crate::records::meta(e.db(), car)?;
     let (d0, d1) = (crate::records::day_of(wa).saturating_sub(1), crate::records::day_of(wb.saturating_sub(1).max(wa)));
     for &d in meta.days.range(d0..=d1) {
-        for en in crate::records::day(e.db(), car, d)?.logs.values() {
+        for en in crate::records::day_shared(e.db(), car, d)?.logs.values() {
             if let crate::records::Outcome::Decoded { facts, .. } = &en.outcome
                 && facts.dropped > 0
             {
@@ -398,17 +399,13 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
         }
     }
     // energy lost while parked, by the spell's start
-    let mut pg = Paging::first(super::MAX_LIMIT);
-    for _ in 0..1000 {
-        let page = super::parked::parked(e, car, &Period::new(Some(wa), Some(wb)), None, &pg)?;
-        for s in &page.body.items {
-            if let (Some(i), Some(kwh)) = (slot_of(slots, s.start_ms), s.energy_kwh) {
-                acc[i].stand = Some(acc[i].stand.unwrap_or(0.0) + kwh);
-            }
-        }
-        match page.body.next {
-            Some(n) => pg.after = Some(n),
-            None => break,
+    // (only their starts and energies: none is read whole)
+    let mut spells = super::parked::spells(e, c, wa, wb, None)?.0;
+    // summed newest first, as the parked list gives them
+    spells.sort_by(|x, y| cmp_key(&(x.start_ms as f64, x.id.clone()), &(y.start_ms as f64, y.id.clone()), true));
+    for s in &spells {
+        if let (Some(i), Some(kwh)) = (slot_of(slots, s.start_ms), s.energy_kwh) {
+            acc[i].stand = Some(acc[i].stand.unwrap_or(0.0) + kwh);
         }
     }
     let mut rows = Vec::with_capacity(slots.len());

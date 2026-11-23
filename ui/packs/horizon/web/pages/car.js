@@ -5,16 +5,16 @@
 // starts or ends (`rows` events).
 
 import * as state from '../shared/state.js';
-import { tyreView, recommendedLine } from '../shared/tyres.js';
+import { tyreView, recommendedLine, wheelGuessLine, tyresTitle } from '../shared/tyres.js';
 import { h, svg, replace, cover, cssVar, quantity } from '../shared/dom.js';
 import { format, getUnits, onUnitsChange, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDate, formatDateTime, zoneName, buckets } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel, panelLink, metric, kv, csvButton } from '../core/page.js';
-import { statePill, stateLabel, ago, agoEl, when, dur, val, TYRES } from '../core/fmt.js';
+import { statePill, stateLabel, ago, agoEl, when, dur, val, TYRES, STATES } from '../core/fmt.js';
 import { timelineRow } from './timeline.js';
-import { createMap, carMarker, addRoute, padClear, mapFallback } from '../core/map.js';
+import { createMap, carMarker, addRoute, mapFallback } from '../core/map.js';
 import { offstage } from '../core/stage.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, colors, areaFill, hexA } from '../core/chart.js';
 import { activityStrip } from '../core/strip.js';
@@ -145,33 +145,77 @@ export async function mount(ctx) {
   const root = h('div', { class: 'car-page', cover: ['shots.web-interface', 'shots.overview'] });
   replace(ctx.view, root);
 
+  // GET now and the period's calls start together: the period paints when its answers are in, the live part when
+  // /now is in, and grey blocks keep each part's place until then
   let now, settings = null;
-  try {
-    [now, settings] = await Promise.all([
-      ctx.api.get(`cars/${encodeURIComponent(cid)}/now`),
-      ctx.api.get('settings', null, { maxAgeMs: 300000 }).catch(() => null),
-    ]);
-  } catch (e) { ctx.fail(e); return; }
-  if (!ctx.alive()) return;
+  const nowP = ctx.api.get(`cars/${encodeURIComponent(cid)}/now`);
+  const settingsP = ctx.api.get('settings', null, { maxAgeMs: 300000 }).catch(() => null);
+  nowP.catch(() => {}); // handled below
 
   const head = h('div');
   const inputsSlot = h('div', { class: 'now-inputs' });
   const banner = h('div');
   const gaugeSlot = h('section', { class: 'panel gauge-panel', 'aria-label': 'Battery and range' });
   const mapEl = h('div', { class: 'map', role: 'img', 'aria-label': `Map: where ${car.name} is` });
-  const placeCard = h('div', { class: 'glass-card place-card' });
-  const mapTools = h('div', { class: 'map-overlay map-overlay--bl map-tools' });
+  const mapTools = h('div', { class: 'map-overlay map-overlay--tl map-tools' });
   const mapPanel = h('section', { class: 'panel map-panel', 'aria-label': 'Where the car is', cover: ['summary.map.position', 'summary.map.attribution', 'summary.map.zoom'] },
-    mapEl, h('div', { class: 'map-overlay map-overlay--tl' }, placeCard), mapTools);
+    mapEl, mapTools);
   const todaySlot = h('section', { class: 'panel today-tl', 'aria-label': "Today's timeline" });
   const rowLive = h('div', { class: 'now-row' });
   const rowMore = h('div', { class: 'now-row now-row--3' });
   const windowSlot = h('div', { class: 'car-window' });
 
-  replace(root, head, inputsSlot, banner,
-    h('div', { class: 'now-hero' }, gaugeSlot, mapPanel, todaySlot),
+  // the six key facts, big and plain; each keeps its place and size while live values arrive
+  const fact = (key, label, ic, tag = 'div') => {
+    const el = h(tag, { class: ['fact', `fact--${key}`], role: tag === 'div' ? 'group' : null, 'aria-label': tag === 'div' ? label : null });
+    const value = h('div', { class: 'fact-value' }), sub = h('div', { class: 'fact-sub' }), foot = h('div', { class: 'fact-foot' });
+    el.append(h('div', { class: 'fact-label' }, icon(ic, 'ico--sm'), h('span', null, label)), value, foot, sub);
+    return { el, value, sub, foot };
+  };
+  const F = {
+    battery: fact('battery', 'Battery', 'battery'),
+    range: fact('range', 'Range', 'gauge'),
+    state: fact('state', 'State', 'clock'),
+    where: fact('where', 'Where', 'pin'),
+    drive: fact('drive', 'Last drive', 'route', 'a'),
+    charge: fact('charge', 'Charging', 'bolt'),
+  };
+  const facts = h('div', { class: 'facts' }, Object.values(F).map((f) => f.el));
+
+  // everything else sits behind one control, closed at first; the choice is kept in this browser
+  const KEY = 'sentrymate.horizon.car-details';
+  let open = false;
+  try { open = localStorage.getItem(KEY) === 'open'; } catch { /* no storage: closed */ }
+  const details = h('div', { class: 'car-details', id: 'car-details', hidden: !open });
+  const toggleText = h('span');
+  const toggleIcon = h('span', { class: 'details-chev' }, icon('chev-d'));
+  const toggle = h('button', { class: 'btn details-toggle', type: 'button', 'aria-controls': 'car-details', 'aria-expanded': String(open) }, toggleIcon, toggleText);
+  const paintToggle = () => { toggle.setAttribute('aria-expanded', String(open)); toggleText.textContent = open ? 'Hide details' : 'Show all details'; };
+  paintToggle();
+  toggle.addEventListener('click', () => {
+    open = !open;
+    details.hidden = !open;
+    paintToggle();
+    try { localStorage.setItem(KEY, open ? 'open' : 'closed'); } catch { /* kept for this visit only */ }
+    // charts drawn while closed take their real size now
+    if (open) requestAnimationFrame(() => { for (const pl of Object.values(plots)) pl?.rebuild?.(); });
+  });
+
+  replace(details, inputsSlot,
+    h('div', { class: 'now-hero' }, gaugeSlot, todaySlot),
     h('div', { class: 'now-panels' }, rowLive, rowMore),
     windowSlot, vehicleInfoPanel(ctx));
+  replace(root, head, banner,
+    h('div', { class: 'car-summary' }, facts, mapPanel),
+    h('div', { class: 'details-bar' }, toggle,
+      h('span', { class: 'details-hint' }, 'Battery gauge, temperatures, tyres, doors, charging, the period’s charts and the car’s build')),
+    details);
+  const wait = () => h('div', { class: 'skel skel--block', 'aria-hidden': 'true' });
+  replace(head, h('div', { class: 'page-head now-head' }, h('div', { class: 'page-head-text' }, h('span', { class: 'eyebrow' }, 'Overview'), h('span', { class: 'skel skel--title', 'aria-hidden': 'true' }))));
+  replace(gaugeSlot, wait());
+  replace(todaySlot, wait());
+  replace(rowLive, h('section', { class: 'panel panel-pad' }, wait()), h('section', { class: 'panel panel-pad' }, wait()));
+  replace(windowSlot, h('div', { class: 'window-head' }, h('h2', { class: 'section-title' }, 'The period')), h('section', { class: 'panel panel-pad' }, wait()), h('section', { class: 'panel panel-pad' }, wait()));
 
   /* ---------- header, banner */
   function paintHead() {
@@ -185,12 +229,11 @@ export async function mount(ctx) {
       titleExtra: h('span', { cover: 'summary.stat.status' }, statePill(n.state, { lg: true, stale: n.stale })),
       sub: [
         h('span', { cover: 'summary.header.model', title: 'Model and year come from the VIN prefix.' }, [car.model, car.year].filter(Boolean).join(' · ') || 'Model not known yet'),
-        trim?.value ? h('span', { cover: 'summary.header.trim', title: `Trim: ${trim.value}, from ${trim.source === 'can' ? "the car's own configuration message" : trim.source === 'owner' ? 'the owner' : trim.source === 'vin' ? 'the VIN prefix' : trim.source === 'tesla_api' ? 'the Tesla API' : 'the TeslaMate import'}` }, trim.value, h('span', { class: 'trim-src' }, { can: 'from SMO', vin: 'from the VIN', owner: 'typed by the owner', teslamate: 'imported from TeslaMate', tesla_api: 'from the Tesla API' }[trim.source] || 'source not known')) : h('span', { cover: 'summary.header.trim' }, 'Trim not known yet'),
+        trim?.value ? h('span', { cover: 'summary.header.trim', title: `Trim: ${trim.value}, from ${trim.source === 'can' ? "the car's own configuration message" : trim.source === 'owner' ? 'the owner' : trim.source === 'vin' ? 'the VIN prefix' : trim.source === 'tesla_api' ? 'the Tesla API' : 'the TeslaMate import'}` }, trim.value, h('span', { class: 'trim-src' }, { can: 'from the car', vin: 'from the VIN', owner: 'typed by the owner', teslamate: 'imported from TeslaMate', tesla_api: 'from the Tesla API' }[trim.source] || 'source not known')) : h('span', { cover: 'summary.header.trim' }, 'Trim not known yet'),
         vin ? h('span', null, 'VIN ', h('span', { class: 'key-chip', title: 'Only the VIN prefix is stored; the serial number never is.' }, vin)) : null,
-        h('span', { cover: 'summary.stat.status' }, `${stateLabel(n.state)} since ${n.since_ms ? when(n.since_ms, tz) : '—'}`, n.since_ms ? h('span', { class: 'faint' }, ` (${dur(Math.max(0, ctx.api.now() - n.since_ms))})`) : null),
       ],
       actions: [
-        h('button', { class: 'btn', type: 'button', onclick: openCarSwitcher, cover: 'overview.filter.car', title: 'Show another car on this page' }, icon('car'), 'Switch car'),
+        h('button', { class: 'btn switch-car-btn', type: 'button', onclick: openCarSwitcher, cover: 'overview.filter.car', title: 'Show another car on this page' }, icon('car'), 'Switch car'),
         h('a', { class: 'btn', href: ctx.link('timeline') }, icon('timeline'), 'Timeline'),
       ],
     }));
@@ -270,30 +313,92 @@ export async function mount(ctx) {
         h('span', { class: 'faint' }, n.est_basis === 'wh_per_km_30d' ? ' · energy left over the last 30 days’ consumption' : ' · from energy left and recent consumption')));
   }
 
+  /* ---------- the six facts */
+  let lastDrive;  // undefined: not loaded; null: none
+  function paintFacts() {
+    const n = now, c = n.charge || {}, loc = n.location || {};
+    const stale = n.stale || n.state === 'unknown';
+    const soc = val(n.soc_pct);
+    const ideal = getUnits().range === 'ideal';
+    const rangePair = ideal ? n.ideal_range_km : n.range_km;
+    const limit = val(c.limit_pct);
+    const charging = n.state === 'charging';
+    const plugged = val(c.plugged);
+    const sinceMs = n.since_ms;
+    const forTime = sinceMs ? dur(Math.max(0, ctx.api.now() - sinceMs)) : null;
+
+    // battery: the level and a bar
+    replace(F.battery.value, soc != null ? quantity(soc, 'percent', { digits: 0 }) : '—');
+    replace(F.battery.foot, h('div', { class: ['bar', 'fact-bar', charging ? 'bar--warm' : soc != null && soc < 20 ? 'bar--low' : null], role: 'img', 'aria-label': `Battery ${pct(soc)}` },
+      h('i', { vars: { '--w': `${clamp(soc ?? 0, 0, 100).toFixed(1)}%` } }),
+      limit != null ? h('b', { class: 'fact-bar-limit', vars: { '--x': `${clamp(limit, 0, 100).toFixed(1)}%` }, title: `Charge limit ${pct(limit)}` }) : null));
+    const kwh = val(n.energy_remaining_kwh);
+    F.battery.sub.textContent = kwh != null ? `${format(kwh, 'energy')} in the battery` : stale ? 'Last known level' : 'Level now';
+    F.battery.el.classList.toggle('is-low', soc != null && soc < 20);
+
+    // range
+    replace(F.range.value, val(rangePair) != null ? quantity(val(rangePair), 'range', { digits: 0 }) : '—');
+    const est = val(n.est_range_km);
+    F.range.sub.textContent = est != null ? `About ${format(est, 'range', { digits: 0 })} the way you drive lately` : `${ideal ? 'Ideal' : 'Rated'} range shown by the car`;
+
+    // state, since when
+    replace(F.state.value, h('span', { class: 'fact-state', dataset: { state: STATES[n.state] ? n.state : 'unknown' } }, h('i', { class: 'fact-dot', 'aria-hidden': 'true' }), stateLabel(n.state)));
+    const extra = n.state === 'driving'
+      ? [val(n.speed_kph) != null ? format(val(n.speed_kph), 'speed') : null, n.drive?.distance_km != null ? `${format(n.drive.distance_km, 'distance')} so far` : null]
+      : [];
+    F.state.sub.textContent = [sinceMs ? `Since ${when(sinceMs, tz).replace(/^(Today|Yesterday)\b/, (w) => w.toLowerCase())}` : 'Not known since when', forTime ? `for ${forTime}` : null, ...extra].filter(Boolean).join(' · ') + (n.stale ? ' · old data' : '');
+    F.state.el.classList.toggle('is-stale', !!stale);
+
+    // where
+    const plat = val(loc.lat), plon = val(loc.lon);
+    const known = plat != null && plon != null;
+    const name = loc.place?.name || loc.address?.short || (n.state === 'driving' ? 'On the road' : known ? 'Not a saved place' : 'No position yet');
+    const area = [loc.address?.locality, loc.address?.region].filter(Boolean).join(', ');
+    F.where.value.textContent = name;
+    F.where.value.title = name;
+    F.where.sub.textContent = (loc.place ? loc.address?.short || area : area) || (known ? `${plat.toFixed(4)}, ${plon.toFixed(4)}` : 'The car has not sent a position');
+
+    // charging now, else the plug and the limit
+    F.charge.el.classList.toggle('is-charging', charging);
+    if (charging) {
+      replace(F.charge.value, val(c.power_kw) != null ? quantity(val(c.power_kw), 'power') : 'Charging');
+      const toFull = val(c.to_full_min);
+      F.charge.sub.textContent = [toFull != null ? `Full in ${dur(toFull * 60000)}` : 'Time to full not known yet', limit != null ? `to ${pct(limit)}` : null].filter(Boolean).join(' · ');
+    } else {
+      replace(F.charge.value, val(c.status) === 'complete' ? 'Done' : plugged ? 'Plugged in' : plugged === false ? 'Unplugged' : 'Not known');
+      F.charge.sub.textContent = limit != null ? `Charge limit ${pct(limit)}` : plugged ? 'Charge limit not sent yet' : 'Charge limit shows when plugged in';
+    }
+  }
+
+  function paintDrive() {
+    const d = lastDrive;
+    const el = F.drive.el;
+    if (!d) {
+      el.removeAttribute('href');
+      F.drive.value.textContent = d === null ? 'None yet' : '—';
+      F.drive.sub.textContent = d === null ? 'No drive recorded for this car' : 'Could not be loaded';
+      return;
+    }
+    el.href = state.buildUrl('drive', { car: cid, drive: d.id });
+    el.title = 'Open this drive';
+    replace(F.drive.value, quantity(d.distance_km, 'distance', { digits: 1 }));
+    const route = [d.start?.place?.name || d.start?.address?.short, d.end?.place?.name || d.end?.address?.short].filter(Boolean).join(' → ');
+    F.drive.sub.textContent = [when(d.start_ms, tz), route].filter(Boolean).join(' · ');
+  }
+  // the newest finished drive: one small page of the drives list, newest first
+  async function loadDrive() {
+    try {
+      const pg = await ctx.api.page(`cars/${encodeURIComponent(cid)}/drives`, {}, { limit: 3 });
+      if (!ctx.alive()) return;
+      lastDrive = pg.items.find((d) => d.end_ms != null) ?? null;
+    } catch { lastDrive = lastDrive || undefined; }
+    if (ctx.alive()) paintDrive();
+  }
+
   /* ---------- the map */
   let map = null, marker = null, trailShown = false;
   function paintPlace() {
-    const n = now, loc = n.location || {};
-    const plat = val(loc.lat), plon = val(loc.lon);
-    const known = plat != null && plon != null;
-    const placeName = loc.place?.name || loc.address?.short || (n.state === 'driving' ? 'On the road' : known ? 'Not a saved place' : 'No position yet');
-    const area = [loc.address?.locality, loc.address?.region].filter(Boolean).join(', ');
-    const detail = loc.place ? loc.address?.short : area || (known && !loc.address?.short ? `${plat.toFixed(5)}, ${plon.toFixed(5)}` : '');
-    const c = n.charge || {};
-    const rows = [];
-    if (n.state === 'driving') {
-      rows.push(['Started', formatTime(n.drive?.start_ms ?? n.since_ms, tz)], ['This drive', `${format(n.drive?.distance_km, 'distance')} · ${dur((n.at_ms || 0) - (n.drive?.start_ms ?? n.since_ms))}`]);
-    } else if (n.state === 'charging') {
-      rows.push(['Charging since', formatTime(n.since_ms, tz)]);
-      if (c.finish_ms) rows.push([`Reaches ${pct(val(c.limit_pct))}`, `about ${when(c.finish_ms, tz)}`]);
-    } else {
-      rows.push(['Here since', when(n.since_ms, tz)], ['Charge port', CHARGE_STATUS[val(c.status)] || '—']);
-    }
-    rows.push(['Accuracy', format(val(loc.accuracy_m), 'length')], ['Position', aged(loc.lat, agoEl(at(loc.lat), tz), null)]);
-    replace(placeCard,
-      h('div', { class: 'place-card-top' }, h('span', { class: ['place-icon', n.state === 'charging' && 'place-icon--warm', (n.stale || n.state === 'unknown') && 'place-icon--muted'] }, icon(n.state === 'driving' ? 'route' : loc.place ? 'home' : 'pin')),
-        h('div', null, h('div', { class: 'place-name' }, placeName), detail ? h('div', { class: 'place-detail' }, detail) : null)),
-      h('dl', { class: 'place-card-rows' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, v)])));
+    const loc = now.location || {};
     const lat = val(loc.lat), lon = val(loc.lon);
     const outside = !!settings?.outside_links?.maps;
     replace(mapTools,
@@ -331,7 +436,7 @@ export async function mount(ctx) {
     const tone = n.stale || n.state === 'unknown' ? 'muted' : n.state === 'charging' ? 'warm' : n.state === 'asleep' ? 'asleep' : 'live';
     marker?.remove();
     marker = carMarker(map, [lon, lat], { tone, heading: n.state === 'driving' ? val(loc.heading_deg) : null });
-    map.frame(() => map.map.jumpTo({ center: [lon, lat], padding: { ...padClear(mapEl, placeCard, { left: 4, top: 30, right: 0, bottom: 0, beside: true }), top: rpx(30) } }));
+    map.frame(() => map.map.jumpTo({ center: [lon, lat] }));
     if (n.state === 'driving' && n.drive?.drive_id && !trailShown) {
       trailShown = true;
       ctx.api.get(`cars/${encodeURIComponent(cid)}/drives/${encodeURIComponent(n.drive.drive_id)}/track`, { simplify_m: 5 }).then((t) => {
@@ -382,6 +487,11 @@ export async function mount(ctx) {
         isLow ? h('span', { class: 'tire-note' }, `${format(tv.against[i] - v, 'pressure')} under`) : null);
     };
     const wheel = (i) => (tv.low[i] === true ? 'wheel is-low' : 'wheel');
+    // the placard's size only a guess: say so, and where an admin sets it (the Vehicle info panel below)
+    const wheelGuess = (now) => {
+      const g = wheelGuessLine(now);
+      return g ? [' ', g.said, ctx.admin ? [' ', g.ask, ' ', h('a', { href: '#vehicle-info' }, g.action), '.'] : null] : null;
+    };
     const tyrePanel = panel({ title: 'Tyres', icon: 'tire', cover: 'summary.flag.tire_pressure_warning', side: h('span', { class: 'faint' }, agoEl(at(n.tyres_kpa?.[0]) ?? newest, tz)) },
       h('div', { class: 'tires' },
         tyre(TYRES[0], 0, false),
@@ -392,9 +502,7 @@ export async function mount(ctx) {
           svg('path', { class: 'glass', d: 'M15.5 36 Q32 28 48.5 36 L45.5 52 Q32 48 18.5 52 Z' }),
           svg('path', { class: 'glass', d: 'M18.5 86 Q32 90 45.5 86 L47.5 98 Q32 103 16.5 98 Z' })),
         tyre(TYRES[1], 1, true), tyre(TYRES[2], 2, false), tyre(TYRES[3], 3, true)),
-      h('p', { class: 'note tire-rec' }, recommendedLine(n), tv.front != null
-        ? ' A tyre more than 10 % under it is flagged; a cold morning alone takes a few percent off every tyre.'
-        : ' No tyre is flagged.'));
+      h('p', { class: 'note tire-rec', title: tyresTitle(n) || null }, recommendedLine(n), tv.front != null ? wheelGuess(n) : ' No tyre is flagged.'));
 
     // the car: 12 V, odometer, software, data age
     const sw = n.software || {};
@@ -414,10 +522,12 @@ export async function mount(ctx) {
         ['Odometer', h('a', { class: 'link', href: ctx.link('statistics'), title: 'Distance over time on Statistics' }, format(val(n.odometer_km), 'odometer')), { icon: 'odo', cover: ['summary.stat.odometer', 'overview.stat.odometer', 'overview.link.mileage'] }],
         ['Software', h('a', { class: 'link', href: ctx.link('software'), title: srcWord ? `Version ${srcWord}` : 'Software history' }, sw.version || 'not known'), { icon: 'chip', cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates'] }],
         ['Version from', h('span', { class: 'sw-src' }, swFrom), { icon: 'info', title: 'The car does not send its version text; this is where Sentry Mate got it.' }],
-        ['Firmware', h('span', null, h('a', { class: 'link', href: `${ctx.link('software')}#firmware`, title: 'The fingerprints of the modules\' firmware, as the car sends them' }, 'Module fingerprints'), ' · ',
-          h('a', { class: 'link', href: `${ctx.link('software')}#firmware-history`, title: 'Every fingerprint each module has had, with the version it came with' }, 'History')), { icon: 'chip' }],
+        ['Firmware', h('span', { class: 'car-fw-links' },
+          h('a', { class: 'link', href: `${ctx.link('software')}#firmware`, title: 'The fingerprints of the modules\' firmware, as the car sends them' }, 'Module fingerprints'),
+          h('a', { class: 'link', href: `${ctx.link('software')}#firmware-history`, title: 'Every fingerprint each module has had, with the version it came with, over time' }, 'History')), { icon: 'chip' }],
         sw.changed_since_ms ? ['Software changed', h('span', { class: 'warn' }, `since ${when(sw.changed_since_ms, tz)}`), { icon: 'info', cover: 'summary.flag.software_update', title: "The car's module builds changed; the version text is not known yet." }]
           : ['Software changed', h('span', { class: 'faint' }, 'no change seen'), { icon: 'info', cover: 'summary.flag.software_update', title: "Shows when the car's module builds change after an update." }],
+        ['Position', h('span', null, aged(n.location?.lat, agoEl(at(n.location?.lat), tz), null), val(n.location?.accuracy_m) != null ? h('span', { class: 'faint' }, ` · within ${format(val(n.location.accuracy_m), 'length')}`) : null), { icon: 'pin', title: 'When the position was recorded, and how close it is' }],
         ['Newest value', agoEl(n.at_ms, tz), { icon: 'live', cover: ['nr.dash.last-update', 'summary.data.live_push'], title: `Recorded ${n.at_ms ? formatDateTime(n.at_ms, tz) : '—'}. Logs arrive about ${n.delay_s ? Math.round(n.delay_s / 60) || 1 : 1} min after the car records them; this page updates by itself.` }],
         ['Log received', agoEl(n.received_ms, tz), { icon: 'upload' }],
       ]),
@@ -772,18 +882,21 @@ export async function mount(ctx) {
   }
 
   /* ---------- first draw, then live */
-  paintHead(); paintInputs(); paintBanner(); paintGauge(); paintPlace(); paintLive();
-  ctx.setTitle('Overview');
-  try {
-    await paintWindow();
-  } catch (e) {
+  const windowP = paintWindow().catch((e) => {
     if (!ctx.alive()) return;
     replace(windowSlot, panel({ title: 'The period', icon: 'stats' }, h('p', { class: 'note' }, `The charts could not be loaded: ${e.message}`)));
-  }
+  });
+  try {
+    [now, settings] = await Promise.all([nowP, settingsP]);
+  } catch (e) { ctx.fail(e); return; }
+  if (!ctx.alive()) return;
+  paintHead(); paintInputs(); paintBanner(); paintFacts(); paintDrive(); paintGauge(); paintPlace(); paintLive();
+  ctx.setTitle('Overview');
+  // the map is in place before ready, so its controls do not move the page once it is on screen
+  const mapP = mountMap();
+  await Promise.all([windowP, loadDrive(), paintToday(), mapP]);
   if (!ctx.alive()) return;
   ctx.ready();
-  mountMap();
-  paintToday();
   learnSchedule();
 
   // live values: merge `now` deltas, draw again at most every 2 s
@@ -796,14 +909,14 @@ export async function mount(ctx) {
     // plugged in, unplugged or moved: learn the usual start time for the place it is at now
     if (plugKey() !== before && !(scheduleHint && scheduleFor === now.location?.place?.id)) learnSchedule();
     if (pend) return;
-    pend = setTimeout(() => { pend = 0; if (!ctx.alive()) return; paintHead(); paintInputs(); paintBanner(); paintGauge(); paintPlace(); paintLive(); placeMarker(); }, 2000);
+    pend = setTimeout(() => { pend = 0; if (!ctx.alive()) return; paintHead(); paintInputs(); paintBanner(); paintFacts(); paintGauge(); paintPlace(); paintLive(); placeMarker(); }, 2000);
   });
   let rowsT = 0;
   ctx.events('rows', (ev) => {
     if (ev.data?.car !== cid) return;
     clearTimeout(rowsT);
-    rowsT = setTimeout(() => { if (ctx.alive()) { paintWindow().catch(() => {}); paintToday(); } }, 1500);
+    rowsT = setTimeout(() => { if (ctx.alive()) { paintWindow().catch(() => {}); paintToday(); loadDrive(); } }, 1500);
   });
   ctx.onCleanup(() => { clearTimeout(pend); clearTimeout(rowsT); });
-  ctx.onCleanup(onUnitsChange(() => { paintGauge(); paintPlace(); paintLive(); paintWindow().catch(() => {}); }));
+  ctx.onCleanup(onUnitsChange(() => { paintFacts(); paintDrive(); paintGauge(); paintPlace(); paintLive(); paintWindow().catch(() => {}); }));
 }

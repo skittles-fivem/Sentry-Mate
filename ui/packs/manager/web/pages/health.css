@@ -106,6 +106,9 @@
 /* the Tesla API rows of a car (pages/tesla-account.js teslaCarStatus) */
 .hl-tesla { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); margin-top: round(1.25rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
 .hl-tesla .hl-sub, .hl-tesla p { margin: 0; }
+.hl-missing { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); margin-top: round(1.25rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
+.hl-missing .hl-sub, .hl-missing p { margin: 0; }
+.hl-health-cols .hl-missing .kv { margin-top: 0; }
 .hl-tesla > .link { align-self: flex-start; display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); }
 
 /* phone (<html data-phone>): cards read left to right, what a desktop shows

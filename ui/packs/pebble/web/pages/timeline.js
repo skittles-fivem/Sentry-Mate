@@ -16,7 +16,7 @@ import { formatList } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { tile, num, stateTag, chip, icon, note } from '../core/ui.js';
-import { emptyTile } from '../core/states.js';
+import { emptyTile, ghostTile } from '../core/states.js';
 import { spanHref } from '../core/period.js';
 import { AWAKE_WORDS, GAP_WORDS, endLabel, placeLink, byDay, dayHead, strip, stripShares, filterBar, moreButton, dur } from '../core/bits.js';
 import { srcPill } from '../core/source.js';
@@ -97,11 +97,9 @@ export async function mount(ctx) {
   const qk = String(ctx.query.kinds || '').split(',').filter((k) => KIND[k]);
   const kinds = new Set(qk.length ? qk : KINDS.map(([k]) => k));
   let qtext = ctx.query.q || '';
-  const [states, act] = await Promise.all([
-    ctx.api.get(api.apiPath`cars/${car.id}/states`, { ...ctx.params, limit: 1 }).catch(() => null),
-    ctx.api.get(api.apiPath`cars/${car.id}/activity`, ctx.params).catch(() => null),
-  ]);
-  if (!ctx.alive()) return {};
+  // the state tile, the strip and the list load at once; each fills its own grey tile when its answer is in
+  const statesP = ctx.api.get(api.apiPath`cars/${car.id}/states`, { ...ctx.params, limit: 1 }).catch(() => null);
+  const actP = ctx.api.get(api.apiPath`cars/${car.id}/activity`, ctx.params).catch(() => null);
 
   const kindPills = h('div', { class: 'pills', role: 'group', 'aria-label': 'Show these kinds', cover: ['timeline.filter.action', 'timeline.table.column_filter'] },
     KINDS.map(([k, name, ic]) => h('button', { type: 'button', class: 'fpill fpill-ic', 'aria-pressed': String(kinds.has(k)), cover: k === 'gap' ? ['timeline.row.missing', 'timeline.row.parking_gap_overlap'] : k === 'update' ? 'timeline.row.updating' : null, onclick: (e) => {
@@ -118,21 +116,32 @@ export async function mount(ctx) {
   const write = () => ctx.setQuery({ kinds: kinds.size === KINDS.length ? null : [...kinds].join(','), q: qtext || null });
 
   // the state tile and the strip
-  const cur = states?.current;
-  const share = states?.share_pct || {};
-  const stTile = tile({ w: 2, title: 'Now', icon: 'pulse', cls: 'tl-state', cover: ['states.stat.current', 'shots.states'] },
-    h('p', { class: 'tl-state-now' }, stateTag(car.now?.state || 'unknown', { stale: !!car.now?.stale }), cur?.since_ms ? h('span', { class: 'muted' }, ` since ${formatTime(cur.since_ms, tz)}`) : null),
-    h('div', { class: 'tl-shares' },
-      h('div', { cover: 'states.stat.parked_pct' }, h('span', { class: 'hero-k' }, 'Parked'), num(share.parked, 'percent')),
-      h('div', null, h('span', { class: 'hero-k' }, 'Asleep'), num(share.asleep, 'percent')),
-      h('div', null, h('span', { class: 'hero-k' }, 'Awake'), num(share.awake, 'percent')),
-      h('div', { cover: 'states.stat.last_change' }, h('span', { class: 'hero-k' }, 'Last change'), h('span', { class: 'tl-change' }, states?.last_change_ms ? formatTime(states.last_change_ms, tz) : '—'))));
+  const stGhost = ghostTile(2, 'h2'), stripGhost = ghostTile('full', 'h1');
+  const paintStates = async () => {
+    const states = await statesP;
+    if (!ctx.alive()) return;
+    const cur = states?.current;
+    const share = states?.share_pct || {};
+    const stTile = tile({ w: 2, title: 'Now', icon: 'pulse', cls: 'tl-state', cover: ['states.stat.current', 'shots.states'] },
+      h('p', { class: 'tl-state-now' }, stateTag(car.now?.state || 'unknown', { stale: !!car.now?.stale }), cur?.since_ms ? h('span', { class: 'muted' }, ` since ${formatTime(cur.since_ms, tz)}`) : null),
+      h('div', { class: 'tl-shares' },
+        h('div', { cover: 'states.stat.parked_pct' }, h('span', { class: 'hero-k' }, 'Parked'), num(share.parked, 'percent')),
+        h('div', null, h('span', { class: 'hero-k' }, 'Asleep'), num(share.asleep, 'percent')),
+        h('div', null, h('span', { class: 'hero-k' }, 'Awake'), num(share.awake, 'percent')),
+        h('div', { cover: 'states.stat.last_change' }, h('span', { class: 'hero-k' }, 'Last change'), h('span', { class: 'tl-change' }, states?.last_change_ms ? formatTime(states.last_change_ms, tz) : '—'))));
+    stGhost.replaceWith(stTile);
+  };
   const awake = tile({ w: 2, title: 'Why it stayed awake', icon: 'sun', cls: 'tl-awake', cover: ['faq.no-sleep.log-timeline', 'faq.no-sleep.state-image', 'faq.no-sleep.accessory', 'faq.no-sleep.mcu1', 'faq.no-sleep.other-loggers'] },
     note('Each stop below says how long the car slept and what kept it awake: Sentry, climate, someone inside, accessory power or a door. '),
     note('Other apps that poll the car keep it awake too; Sentry Mate only listens to the CAN bus, so it never wakes the car. Older cars with the first media computer sleep less.'));
-  const stripTile = tile({ w: 'full', title: 'States', icon: 'timeline', cls: 'strip-tile', cover: ['states.chart.states', 'states.chart.legend', 'projects.dash'] },
-    act ? strip(act, { tz, link: (s) => (s.ref?.drive ? state.buildUrl('drive', { car: car.id, drive: s.ref.drive }) : s.ref?.charge ? state.buildUrl('charge', { car: car.id, charge: s.ref.charge }) : null) }) : note('The states did not load.'),
-    act ? note(stripShares(act).slice(0, 4).map(([k, ms]) => `${({ driving: 'Driving', charging: 'Charging', online: 'Awake', online_vehicle_bus_only: 'Bus awake', asleep: 'Asleep', unknown: 'No data', updating: 'Updating' })[k] || k} ${dur(ms)}`).join(' · ')) : null);
+  const paintStrip = async () => {
+    const act = await actP;
+    if (!ctx.alive()) return;
+    const stripTile = tile({ w: 'full', title: 'States', icon: 'timeline', cls: 'strip-tile', cover: ['states.chart.states', 'states.chart.legend', 'projects.dash'] },
+      act ? strip(act, { tz, link: (s) => (s.ref?.drive ? state.buildUrl('drive', { car: car.id, drive: s.ref.drive }) : s.ref?.charge ? state.buildUrl('charge', { car: car.id, charge: s.ref.charge }) : null) }) : note('The states did not load.'),
+      act ? note(stripShares(act).slice(0, 4).map(([k, ms]) => `${({ driving: 'Driving', charging: 'Charging', online: 'Awake', online_vehicle_bus_only: 'Bus awake', asleep: 'Asleep', unknown: 'No data', updating: 'Updating' })[k] || k} ${dur(ms)}`).join(' · ')) : null);
+    stripGhost.replaceWith(stripTile);
+  };
 
   const listStart = h('div', { class: 'tl-list-start w-full', cover: ['timeline.table', 'shots.timeline'] }, h('h2', { class: 'sr-only' }, 'Everything, newest first'));
   let pager = null;
@@ -176,8 +185,9 @@ export async function mount(ctx) {
     }
     drawFrom(0);
   }
-  ctx.view.replaceChildren(bar, stTile, awake, stripTile, listStart, more);
-  await reload();
+  ctx.view.replaceChildren(bar, stGhost, awake, stripGhost, listStart, ghostTile('full', 'h1'), ghostTile('full', 'h1'), more);
+  await Promise.all([paintStates(), paintStrip(), reload()]);
+  if (!ctx.alive()) return {};
   ctx.ready();
   return { onQuery: async () => { await reload(); } };
 }

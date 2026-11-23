@@ -199,6 +199,15 @@ impl Dbc {
 /// A signal's raw (unscaled) bits, summed as JavaScript does (in floating point, in the same order), so values of
 /// over 53 bits come out the same as Sentry Six Manager's. `None` when the frame is too short.
 pub fn raw_bits(bytes: &[u8], sig: &Signal) -> Option<f64> {
+    if sig.length <= 53 {
+        // every bit fits a float exactly: the sum below is the same whole number, taken out with integers
+        return raw_bits_exact(bytes, sig);
+    }
+    raw_bits_summed(bytes, sig)
+}
+
+/// [`raw_bits`] bit by bit in floating point (signals of over 53 bits, and what the quick way is tested against).
+fn raw_bits_summed(bytes: &[u8], sig: &Signal) -> Option<f64> {
     let mut value = 0f64;
     if sig.little {
         // Intel: bits counted from the least significant bit of byte 0 upward
@@ -226,6 +235,35 @@ pub fn raw_bits(bytes: &[u8], sig: &Signal) -> Option<f64> {
     Some(value)
 }
 
+/// [`raw_bits`] of a signal of at most 53 bits.
+fn raw_bits_exact(bytes: &[u8], sig: &Signal) -> Option<f64> {
+    let len = sig.length;
+    if len == 0 {
+        return Some(0.0);
+    }
+    let mut raw = 0u64;
+    if sig.little {
+        // bits start..start+len, the lowest first: at most 8 bytes, the first's low bits shifted out
+        let first = (sig.start >> 3) as usize;
+        let last = ((sig.start + len - 1) >> 3) as usize;
+        let span = bytes.get(first..=last)?;
+        let mut wide = 0u128;
+        for (i, b) in span.iter().enumerate() {
+            wide |= u128::from(*b) << (8 * i);
+        }
+        raw = ((wide >> (sig.start & 7)) as u64) & ((1u64 << len) - 1);
+    } else {
+        let mut bit = sig.start;
+        for _ in 0..len {
+            let byte = *bytes.get((bit >> 3) as usize)?;
+            raw = (raw << 1) | u64::from((byte >> (bit & 7)) & 1);
+            bit = if bit & 7 == 0 { bit + 15 } else { bit - 1 };
+        }
+    }
+    let value = if sig.signed && raw >= 1u64 << (len - 1) { raw as i64 - (1i64 << len) } else { raw as i64 };
+    Some(value as f64)
+}
+
 /// A signal's value in a frame: raw × factor + offset.
 pub fn signal_value(bytes: &[u8], sig: &Signal) -> Option<f64> {
     raw_bits(bytes, sig).map(|raw| raw * sig.factor + sig.offset)
@@ -233,19 +271,34 @@ pub fn signal_value(bytes: &[u8], sig: &Signal) -> Option<f64> {
 
 /// Every signal a frame carries (multiplexed ones by the frame's multiplexer value).
 pub fn decode_frame<'m>(msg: &'m Message, bytes: &[u8]) -> Vec<(&'m Signal, f64)> {
-    let mux_value = msg.mux.and_then(|i| raw_bits(bytes, &msg.signals[i]));
+    let mux_value = msg.mux_value(bytes);
     let mut out = Vec::with_capacity(msg.signals.len());
     for sig in &msg.signals {
-        if let Mux::Value(v) = sig.mux
-            && mux_value != Some(v as f64)
-        {
-            continue;
-        }
-        if let Some(v) = signal_value(bytes, sig).filter(|v| v.is_finite()) {
+        if let Some(v) = sig.value_in(bytes, mux_value) {
             out.push((sig, v));
         }
     }
     out
+}
+
+impl Message {
+    /// The value of the frame's multiplexer signal (which page of the message it is), when the message has one.
+    pub fn mux_value(&self, bytes: &[u8]) -> Option<f64> {
+        self.mux.and_then(|i| raw_bits(bytes, &self.signals[i]))
+    }
+}
+
+impl Signal {
+    /// The signal's value in a frame of its message, as [`decode_frame`] gives it: `None` when the frame is another
+    /// page (`mux_value` is the message's [`Message::mux_value`]), too short, or the value is not finite.
+    pub fn value_in(&self, bytes: &[u8], mux_value: Option<f64>) -> Option<f64> {
+        if let Mux::Value(v) = self.mux
+            && mux_value != Some(v as f64)
+        {
+            return None;
+        }
+        signal_value(bytes, self).filter(|v| v.is_finite())
+    }
 }
 
 /// The DBC sets.
@@ -389,6 +442,18 @@ pub struct Decoder {
     internal: Vec<String>,
     /// When a car bus last sent [`INTERNAL_MESSAGE`] (ms).
     car_sent: Option<f64>,
+    /// What each interface seen so far is (a log has a few), worked out at its first frame.
+    roles: Vec<(u8, Role)>,
+}
+
+/// What an interface (`can0`, `can1`, ...) is to the decoder.
+enum Role {
+    /// One of the car's buses, by its DBC name.
+    Car(String),
+    /// A Screenmate internal bus.
+    Internal,
+    /// Not in the bus map: its frames are left.
+    Other,
 }
 
 impl Decoder {
@@ -398,6 +463,7 @@ impl Decoder {
             buses: bus_map(sidecar, profile),
             internal: internal_buses(sidecar),
             car_sent: None,
+            roles: Vec::new(),
         }
     }
 
@@ -410,34 +476,131 @@ impl Decoder {
     }
 
     /// The signals of one frame, as (signal, value). Empty when it isn't decoded on its bus.
-    pub fn decode(&mut self, frame: &logfmt::Frame) -> Vec<(&'static Signal, f64)> {
-        let iface = format!("can{}", frame.bus);
-        let Some(msg) = self.dbc.messages.get(&frame.id) else { return Vec::new() };
-        let t = frame.time_us as f64 / 1000.0;
-        let only_internal = match self.buses.get(&iface) {
-            Some(want) => {
-                if &msg.bus != want {
-                    return Vec::new();
-                }
-                if frame.id == INTERNAL_MESSAGE {
-                    self.car_sent = Some(t);
-                }
-                false
-            }
+    /// The message a frame carries, when its interface is one of the car's buses and the message is that bus's (or
+    /// the Screenmate's own position on an internal bus, while the car sends none: `true` then, and only
+    /// [`INTERNAL_SERIES`] count). Every frame of a log goes through here, in order: the car's own position frames
+    /// are noted.
+    pub fn message(&mut self, frame: &logfmt::Frame) -> Option<(&'static Message, bool)> {
+        let msg = self.dbc.messages.get(&frame.id)?;
+        let role = match self.roles.iter().find(|(bus, _)| *bus == frame.bus) {
+            Some((_, role)) => role,
             None => {
-                if frame.id != INTERNAL_MESSAGE || !self.internal.contains(&iface) {
-                    return Vec::new();
-                }
-                if self.car_sent.is_some_and(|c| (t - c).abs() < INTERNAL_YIELD_MS) {
-                    return Vec::new();
-                }
-                true
+                let iface = format!("can{}", frame.bus);
+                let role = match self.buses.get(&iface) {
+                    Some(want) => Role::Car(want.clone()),
+                    None if self.internal.contains(&iface) => Role::Internal,
+                    None => Role::Other,
+                };
+                self.roles.push((frame.bus, role));
+                &self.roles[self.roles.len() - 1].1
             }
         };
+        match role {
+            Role::Car(want) => {
+                if &msg.bus != want {
+                    return None;
+                }
+                if frame.id == INTERNAL_MESSAGE {
+                    self.car_sent = Some(frame.time_us as f64 / 1000.0);
+                }
+                Some((msg, false))
+            }
+            Role::Internal => {
+                if frame.id != INTERNAL_MESSAGE {
+                    return None;
+                }
+                let t = frame.time_us as f64 / 1000.0;
+                if self.car_sent.is_some_and(|c| (t - c).abs() < INTERNAL_YIELD_MS) {
+                    return None;
+                }
+                Some((msg, true))
+            }
+            Role::Other => None,
+        }
+    }
+
+    pub fn decode(&mut self, frame: &logfmt::Frame) -> Vec<(&'static Signal, f64)> {
+        let Some((msg, only_internal)) = self.message(frame) else { return Vec::new() };
         let mut out = decode_frame(msg, frame.payload());
         if only_internal {
             out.retain(|(s, _)| INTERNAL_SERIES.contains(&s.series.as_str()));
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
+    use super::*;
+
+    /// The quick way of taking a signal's bits out gives what the bit-by-bit sum gives: every signal of both sets,
+    /// on made-up payloads (all zero, all one, mixed), whole and cut short.
+    #[test]
+    fn the_quick_bits_are_the_summed_bits() {
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let mut checked = 0u32;
+        for profile in [Profile::Tesla3Y, Profile::TeslaSxLegacy] {
+            for msg in profile.dbc().messages.values() {
+                let size = (msg.size as usize).clamp(1, 64);
+                for round in 0..40 {
+                    let mut bytes = vec![0u8; size];
+                    match round {
+                        0 => {}
+                        1 => bytes.fill(0xFF),
+                        _ => bytes.iter_mut().for_each(|b| *b = next() as u8),
+                    }
+                    for cut in [size, size.saturating_sub(1), size / 2, 0] {
+                        for sig in &msg.signals {
+                            let slow = raw_bits_summed(&bytes[..cut], sig);
+                            assert_eq!(raw_bits(&bytes[..cut], sig), slow, "{} in {:03X}", sig.name, msg.id);
+                            if sig.length <= 53 {
+                                checked += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 100_000, "{checked}");
+        // made-up layouts the files may not have: every start and length, both byte orders, signed and not
+        for start in 0..64u32 {
+            for length in 0..=64u32 {
+                for (little, signed) in [(true, false), (true, true), (false, false), (false, true)] {
+                    let sig = Signal {
+                        name: String::new(),
+                        series: String::new(),
+                        message: String::new(),
+                        message_id: 0,
+                        bus: String::new(),
+                        start,
+                        length,
+                        little,
+                        signed,
+                        factor: 1.0,
+                        offset: 0.0,
+                        min: 0.0,
+                        max: 0.0,
+                        unit: String::new(),
+                        mux: Mux::None,
+                        values: None,
+                        comment: None,
+                    };
+                    for _ in 0..8 {
+                        let bytes = next().to_le_bytes();
+                        for cut in [8, 5, 1] {
+                            let slow = raw_bits_summed(&bytes[..cut], &sig);
+                            assert_eq!(raw_bits(&bytes[..cut], &sig), slow, "{start}|{length} {little} {signed}");
+                        }
+                    }
+                }
+            }
+        }
     }
 }

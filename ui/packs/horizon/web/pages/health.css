@@ -9,7 +9,7 @@
 .hl-page a.cell-text { color: inherit; text-decoration: none; }
 .hl-page a.cell-text:hover .main { color: var(--live); }
 .hl-wrap { white-space: normal; max-width: round(40rem, var(--e)); --LH: round(calc(1.4 * 1em), 2px); }
-.hl-sub { margin: 0 0 round(0.625rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
+.hl-sub { margin: 0 0 round(0.625rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); font-weight: 600; color: var(--text-2); }
 .hl-page .tbl-bar { flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); }
 .hl-page .field--search { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); width: round(18rem, var(--e)); max-width: 100%; }
 .hl-page .field--search .input { width: 100%; min-width: 0; }
@@ -21,7 +21,7 @@
 .hl-status-ic { display: grid; place-items: center; width: round(2.5rem, var(--e)); height: round(2.5rem, var(--e)); border-radius: round(0.75rem, var(--e)); background: var(--glass-2); color: var(--live); }
 .hl-status.is-warn .hl-status-ic { color: var(--warm); }
 .hl-status-ic .ico { width: round(1.375rem, var(--e)); height: round(1.375rem, var(--e)); }
-.hl-status-head { font-family: var(--font-display); font-size: 1.375rem; font-weight: 500; letter-spacing: -0.01em; }
+.hl-status-head { font-size: 1.25rem; font-weight: 600; letter-spacing: -0.01em; }
 .hl-status .explain { margin: round(0.25rem, var(--e)) 0 0; display: block; }
 
 .hl-fixes { list-style: none; margin: 0 0 round(1rem, var(--e)); padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(round(22rem, var(--e)), 1fr)); gap: round(0.625rem, var(--e)); }
@@ -38,6 +38,21 @@
 .hl-key > .ico { color: var(--text-3); }
 .hl-key-r { align-items: flex-end !important; text-align: right; }
 .hl-span-list li { font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.4 * 1em), 2px); }
+/* Missing on the server: logs the server lost and asked the car for again */
+.hl-missing { margin-top: round(1.25rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
+.hl-miss-card { display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); padding: round(0.75rem, var(--e)) round(0.875rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); }
+.hl-miss-card.is-warn { border-color: var(--warm-line); }
+.hl-miss-top { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.25rem, var(--e)) round(0.625rem, var(--e)); }
+.hl-miss-ic { display: grid; place-items: center; width: round(1.75rem, var(--e)); height: round(1.75rem, var(--e)); border-radius: var(--radius-sm); background: var(--live-soft); color: var(--live); }
+.hl-miss-card.is-warn .hl-miss-ic { background: var(--warm-soft); color: var(--warm); }
+.hl-miss-n { font-family: var(--font-display); font-size: 1.125rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+.hl-miss-what { color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); }
+.hl-miss-lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); }
+.hl-miss-lines li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: round(0.5rem, var(--e)); align-items: start; font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); --LH: round(calc(1.4 * 1em), 2px); }
+/* as tall as a line, so the glyph sits centred on the first line and tops line up */
+.hl-miss-lines li > .ico { color: var(--text-3); height: var(--LH); }
+.hl-miss-lines li.warn { color: var(--warm); }
+.hl-miss-lines li.warn > .ico { color: var(--warm); }
 .hl-rebuild { display: flex; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.875rem, var(--e)); margin-top: round(1.25rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
 .hl-rebuild .note { margin: 0; }
 
@@ -130,25 +145,24 @@
 :root[data-phone] .hl-pre, :root[data-phone] .hl-code { overflow-wrap: anywhere; }
 :root[data-phone] .hl-page a.cell-text { min-height: var(--tap); justify-content: center; }
 
-/* the Connections overview card (admins; pages/connections-overview.js connectionsCard) */
-.co-card { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: round(0.75rem, var(--e)) round(1.5rem, var(--e)); align-items: center; }
-.co-card-text { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); min-width: 0; }
-.co-card-text .panel-title, .co-card-text .note { margin: 0; }
-.co-card-totals { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(1.125rem, var(--e)); }
-.co-card-totals[hidden] { display: none; }
-.co-card .co-light { --dot: var(--text-3); display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); white-space: nowrap; color: var(--text-2); }
-.co-card .co-light[data-st="live"] { --dot: var(--live); }
-.co-card .co-light[data-st="idle"] { --dot: var(--st-asleep); }
-.co-card .co-light[data-st="paused"] { --dot: var(--warm); }
-.co-card .co-light[data-st="problem"] { --dot: var(--danger); }
-.co-card .co-light > i { width: round(0.625rem, var(--e)); height: round(0.625rem, var(--e)); border-radius: 50%; background: var(--dot); box-shadow: 0 0 round(0.5rem, var(--e)) var(--dot); flex: none; }
-.co-card .co-light[data-st="off"] > i { background: transparent; box-shadow: inset 0 0 0 round(0.125rem, var(--e)) var(--dot); }
-.co-card-n { font-family: var(--font-display); font-weight: 700; font-size: 1.125rem; color: var(--text); font-variant-numeric: tabular-nums; }
-.co-card .co-light[data-st="problem"] .co-word { color: var(--danger); }
-.co-card-link { justify-self: end; }
-@container page (max-width: 76rem) {
-  .co-card { grid-template-columns: minmax(0, 1fr) auto; }
-  .co-card-text { grid-column: 1 / -1; }
-}
-:root[data-phone] .co-card { grid-template-columns: minmax(0, 1fr); }
-:root[data-phone] .co-card-link { justify-self: stretch; justify-content: center; }
+/* the Connections overview card (pages/conn-overview.js overviewCard): a link to Settings: Integrations, Overview */
+.hl-ov-slot { margin-bottom: var(--gap); }
+.ov-card { display: flex; align-items: center; gap: round(0.875rem, var(--e)); padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel-solid); color: inherit; text-decoration: none; }
+.ov-card:hover { border-color: var(--line-2); background: var(--glass-2); }
+.ov-card:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.ov-card > .ico { flex: none; color: var(--text-3); }
+.ov-card-icon { flex: none; display: grid; place-items: center; width: round(2.5rem, var(--e)); height: round(2.5rem, var(--e)); border-radius: var(--radius-sm); background: var(--live-soft); color: var(--live); }
+.ov-card-body { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); min-width: 0; flex: 1 1 auto; }
+.ov-card-title { font-weight: 600; color: var(--text); }
+.ov-card-text { color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); }
+.ov-chips { display: flex; flex-wrap: wrap; gap: round(0.375rem, var(--e)) round(0.875rem, var(--e)); margin-top: round(0.125rem, var(--e)); }
+.ov-chip { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); font-variant-numeric: tabular-nums; }
+.ov-card .ov-light { display: inline-block; flex: none; width: round(0.5rem, var(--e)); height: round(0.5rem, var(--e)); border-radius: 50%; background: var(--ov-c, var(--text-3)); }
+.ov-chip[data-status="live"] { --ov-c: var(--live); }
+.ov-chip[data-status="idle"] { --ov-c: var(--info, var(--st-parked)); }
+.ov-chip[data-status="paused"] { --ov-c: var(--warm); }
+.ov-chip[data-status="off"] { --ov-c: var(--text-3); }
+.ov-chip[data-status="problem"] { --ov-c: var(--danger); }
+.ov-chip[data-status="problem"] { color: var(--danger); font-weight: 600; }
+.ov-card--locked .ov-card-icon { background: var(--glass-2); color: var(--text-3); }
+.ov-card--locked:hover { border-color: var(--line); background: var(--panel-solid); }

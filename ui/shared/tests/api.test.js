@@ -138,6 +138,51 @@ test('the same read asked for twice at once is sent once', async () => {
   assert.equal(f.calls.length, 3, 'a finished read is not kept unless asked');
 });
 
+test('reads in flight are shared only when URL, accept and headers match; changes are never shared', async () => {
+  const gate = deferred();
+  const f = fakeFetch((url, init) => gate.promise.then(() => json(200, { url, accept: init.headers.Accept, lang: init.headers['X-Lang'] ?? null })));
+  const api = createClient({ fetch: f });
+  // three callers at once, headers given in another order and case: one request
+  const same = [
+    api.get('cars/c1/drives', { limit: 50 }, { headers: { 'X-Lang': 'en', 'X-Other': '1' } }),
+    api.get('cars/c1/drives', { limit: 50 }, { headers: { 'x-other': '1', 'x-lang': 'en' } }),
+    api.page('cars/c1/drives', {}, { limit: 50, headers: { 'X-Other': '1', 'X-Lang': 'en' } }),
+  ];
+  // another header value, another accept, no headers: each its own request
+  const other = api.get('cars/c1/drives', { limit: 50 }, { headers: { 'X-Lang': 'de', 'X-Other': '1' } });
+  const csv = api.get('cars/c1/drives', { limit: 50 }, { accept: 'csv' });
+  const plain = api.get('cars/c1/drives', { limit: 50 });
+  // changes at the same path at once: each sent
+  const posts = [api.post('cars/c1/drives', { a: 1 }), api.post('cars/c1/drives', { a: 1 })];
+  await tick();
+  const gets = f.calls.filter((c) => c.init.method === 'GET');
+  assert.equal(gets.length, 4, 'one shared read, plus the other header, the CSV and the plain one');
+  assert.equal(f.calls.filter((c) => c.init.method === 'POST').length, 2, 'changes are never shared');
+  gate.resolve();
+  const answers = await Promise.all(same);
+  for (const a of answers) {
+    assert.equal(a.lang, 'en');
+    assert.match(a.url, /\/api\/v1\/cars\/c1\/drives\?limit=50$/);
+  }
+  assert.equal((await other).lang, 'de');
+  assert.equal(typeof (await csv), 'string', 'the CSV caller gets text, not the JSON answer');
+  assert.equal((await plain).lang, null);
+  await Promise.all(posts);
+  // once answered, the next read is sent again (nothing is kept unless maxAgeMs asks)
+  await api.get('cars/c1/drives', { limit: 50 }, { headers: { 'X-Lang': 'en', 'X-Other': '1' } });
+  assert.equal(f.calls.filter((c) => c.init.method === 'GET').length, 5);
+  // a caller asking after a change started does not join a read from before it
+  const gate2 = deferred();
+  const g = fakeFetch((url, init) => (init.method === 'GET' ? gate2.promise.then(() => json(200, { n: g.calls.length })) : json(204)));
+  const api2 = createClient({ fetch: g });
+  const before = api2.get('me');
+  await api2.patch('me/preferences', { theme: 'dark' });
+  const after = api2.get('me');
+  gate2.resolve();
+  await Promise.all([before, after]);
+  assert.equal(g.calls.filter((c) => c.init.method === 'GET').length, 2);
+});
+
 test('cancelling: one caller leaving does not cancel the others; the last one leaving cancels the request', async () => {
   const f = fakeFetch(hanging);
   const api = createClient({ fetch: f });
@@ -224,6 +269,21 @@ test('kept results are reused while young and dropped by any change', async () =
   assert.equal((await api.get('me', null, { maxAgeMs: 5000 })).n, 4);
   api.invalidate('me');
   assert.equal((await api.get('me', null, { maxAgeMs: 5000 })).n, 5);
+});
+
+test('keep stores an answer for later maxAgeMs callers but never reuses an old one itself', async () => {
+  let n = 0;
+  let local = 1000;
+  const api = createClient({ fetch: fakeFetch(() => json(200, { n: ++n })), localNow: () => local });
+  assert.equal((await api.get('notices')).n, 1);
+  assert.equal((await api.get('notices', null, { maxAgeMs: 5000 })).n, 2, 'a plain read is not kept');
+  assert.equal((await api.get('fleet/summary', null, { keep: true })).n, 3);
+  local += 1000;
+  assert.equal((await api.get('fleet/summary', null, { keep: true })).n, 4, 'keep itself always asks again');
+  local += 1000;
+  assert.equal((await api.get('fleet/summary', null, { maxAgeMs: 5000 })).n, 4, 'a page loaded with it reuses the kept answer');
+  local += 10000;
+  assert.equal((await api.get('fleet/summary', null, { maxAgeMs: 5000 })).n, 5, 'too old: asked again');
 });
 
 test('the server clock is read from the response headers', async () => {
@@ -341,7 +401,7 @@ test('live events stop with the page scope', () => {
 test('reads that decode stored logs go at most two at a time; others are not held up; a cancelled wait leaves', async () => {
   const open = [];
   const f = fakeFetch((url, init) => {
-    if (!/battery|signals|efficiency|projected/.test(url)) return json(200, { ok: url });
+    if (!/signals/.test(url)) return json(200, { ok: url });
     const d = deferred();
     open.push({ url, d });
     init.signal.addEventListener('abort', () => d.reject(new DOMException('aborted', 'AbortError')), { once: true });
@@ -349,29 +409,30 @@ test('reads that decode stored logs go at most two at a time; others are not hel
   });
   const api = createClient({ fetch: f, timeoutMs: 0 });
   const heavy = (p) => f.calls.filter((c) => c.url.includes(p)).length;
-  const a = api.get('cars/c1/battery');
-  const b = api.get('cars/c1/battery-level', { bucket: 'day' });
-  const c = api.get('cars/c2/battery');
+  const a = api.get('cars/c1/signals');
+  const b = api.get('cars/c1/signals/latest', { search: 'BMS' });
+  const c = api.get('cars/c2/signals/latest');
   const ctl = new AbortController();
   const d = api.get('cars/c2/signals', {}, { signal: ctl.signal });
-  const e = api.get('cars/c3/efficiency');
+  const e = api.get('cars/c3/signals');
   await tick();
   assert.equal(open.length, 2, 'two sent');
   assert.equal(heavy('/cars/c2/'), 0, 'the third and fourth wait');
   assert.deepEqual(await api.get('cars/c1/drives'), { ok: '/api/v1/cars/c1/drives' }, 'a light read goes at once');
+  assert.deepEqual(await api.get('cars/c1/battery'), { ok: '/api/v1/cars/c1/battery' }, 'the battery reads do not wait');
   ctl.abort();
   await assert.rejects(d, (x) => isAbort(x));
   open[0].d.resolve(json(200, { n: 1 }));
   assert.deepEqual(await a, { n: 1 });
   await tick();
   assert.equal(open.length, 3, 'the next one in line went');
-  assert.ok(open[2].url.startsWith('/api/v1/cars/c2/battery'));
+  assert.ok(open[2].url.startsWith('/api/v1/cars/c2/signals/latest'));
   open[1].d.resolve(json(200, { n: 2 }));
   open[2].d.resolve(json(200, { n: 3 }));
   assert.deepEqual(await b, { n: 2 });
   assert.deepEqual(await c, { n: 3 });
   await tick();
-  assert.equal(heavy('/signals'), 0, 'the cancelled one was never sent');
+  assert.equal(f.calls.filter((x) => x.url === '/api/v1/cars/c2/signals').length, 0, 'the cancelled one was never sent');
   assert.equal(open.length, 4);
   open[3].d.resolve(json(200, { n: 4 }));
   assert.deepEqual(await e, { n: 4 });

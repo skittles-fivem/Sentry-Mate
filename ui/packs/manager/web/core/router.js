@@ -148,7 +148,7 @@ function counted(sc) {
 
 // pages/<id>.css, linked while the page is mounted; resolves when it has loaded (no unstyled flash)
 function pageCss(id) {
-  const href = `/pages/${id}.css`;
+  const href = new URL(`../pages/${id}.css`, import.meta.url).href;
   let link = document.head.querySelector(`link[data-page-css="${id}"]`);
   if (link) return Promise.resolve(href);
   link = h('link', { rel: 'stylesheet', href, dataset: { pageCss: id } });

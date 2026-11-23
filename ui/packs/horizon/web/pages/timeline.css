@@ -56,3 +56,7 @@
 :root[data-phone] .tl-rows .tl-body .detail { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
 :root[data-phone] .tl-rows .tl-skel { grid-template-rows: auto; }
 :root[data-phone] .tl-help summary { min-height: var(--tap); }
+/* a desktop: the place list keeps one width whatever its names (they load after the page), and the text box
+   takes the rest of the line, so the filters stay on one line and nothing moves when the places arrive */
+:root:not([data-phone]) .tl-filters > span > .select { width: round(13rem, var(--e)); }
+:root:not([data-phone]) .tl-filters .field--search { flex: 1 1 round(12rem, var(--e)); width: auto; min-width: round(12rem, var(--e)); max-width: round(22.5rem, var(--e)); }

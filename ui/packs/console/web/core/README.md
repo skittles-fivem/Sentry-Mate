@@ -15,7 +15,9 @@ python3 ui/tools/sync_shared.py --check                                  # the s
 ```
 
 `--fresh` (or `--needs-setup`) on the dev server shows the set-up screen, `--signed-out` the sign-in screen.
-All paths in the pack are absolute (`/app.css`, `/pages/drives.js`): pages live at deep addresses.
+Paths in `index.html` are absolute (`/app.css`, `/core/app.js`): pages live at deep addresses. Paths inside the JS
+and CSS are relative to their own file (`url('fonts/x.woff2')`, `new URL('../vendor/...', import.meta.url)`), so they
+follow the server's versioned prefix (`/_v/<version>/...`) that `index.html` is rewritten to.
 
 ## Files
 

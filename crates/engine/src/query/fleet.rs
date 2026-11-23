@@ -91,7 +91,7 @@ pub struct Noted {
 /// from the newest day that has one (the db's small key/value records, not the car's store).
 fn last_judged(e: &Engine, car: CarId, meta: &records::CarMeta) -> QResult<Option<(u64, String, Option<String>)>> {
     for &d in meta.days.iter().rev() {
-        let rec = records::day(e.db(), car, d)?;
+        let rec = records::day_shared(e.db(), car, d)?;
         let newest = rec
             .logs
             .iter()
@@ -626,6 +626,10 @@ pub(crate) struct TyreRecommended {
     pub source: TyreSource,
     /// The wheel size the placard's are for (placard only).
     pub wheel_in: Option<u8>,
+    /// Where that wheel size comes from (placard only): `owner`, `can`, `vin`, `tesla_api` or `teslamate`.
+    pub wheel_from: Option<&'static str>,
+    /// That wheel size is a guess the owner may correct (placard only).
+    pub wheel_guess: Option<bool>,
 }
 
 /// A car's recommended tyre pressures: what an admin typed (one alone is both axles'), else what the car sends
@@ -643,11 +647,20 @@ pub(crate) fn tyre_recommended(e: &Engine, car: CarId, can: [Option<f64>; 2]) ->
             rear_kpa: rear,
             source: TyreSource::Owner,
             wheel_in: None,
+            wheel_from: None,
+            wheel_guess: None,
         }));
     }
     let can = can.map(|x| x.filter(|x| x.is_finite() && *x > 0.0));
     if let [Some(front), Some(rear)] = can {
-        return Ok(Some(TyreRecommended { front_kpa: front, rear_kpa: rear, source: TyreSource::Can, wheel_in: None }));
+        return Ok(Some(TyreRecommended {
+            front_kpa: front,
+            rear_kpa: rear,
+            source: TyreSource::Can,
+            wheel_in: None,
+            wheel_from: None,
+            wheel_guess: None,
+        }));
     }
     let c = car_of(e, car)?;
     let v = vehicle_of(e, &c, &o)?;
@@ -656,6 +669,8 @@ pub(crate) fn tyre_recommended(e: &Engine, car: CarId, can: [Option<f64>; 2]) ->
         rear_kpa: p.rear_kpa,
         source: TyreSource::Placard,
         wheel_in: Some(p.wheel_in),
+        wheel_from: p.wheel_from.map(model::vehicle::FactSource::word),
+        wheel_guess: Some(p.wheel_guess),
     }))
 }
 

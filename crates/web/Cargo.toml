@@ -33,8 +33,8 @@ getrandom = { version = "0.3", features = ["std"] }
 hex = "0.4"
 hmac = "0.12"
 http = "1"
-hyper = { version = "1", features = ["http1", "server"] }
-hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
+hyper = { version = "1", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "http1", "http2"] }
 percent-encoding = "2"
 rustix = { version = "1", features = ["fs"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
@@ -49,6 +49,14 @@ zeroize = "1"
 ingest = { path = "../ingest", optional = true }
 tempfile = { version = "3", optional = true }
 
+brotli = { version = "8", default-features = false, features = ["std"] }
+
+[build-dependencies]
+brotli = { version = "8", default-features = false, features = ["std"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+hex = "0.4"
+sha2 = "0.10"
+
 [dev-dependencies]
 synth = { path = "../synth" }
 # made-up TeslaFi files (the import crate's test generator)
@@ -57,6 +65,8 @@ db = { path = "../db" }
 # its own test server (web::testkit) in the tests here
 web = { path = ".", features = ["testkit"] }
 http-body-util = "0.1"
+# an HTTP/2 client for the web port's h2 test
+hyper = { version = "1", features = ["client", "http2"] }
 tempfile = "3"
 # a small MQTT broker in the publisher's tests (rumqttc's packet codec)
 rumqttc = { version = "0.25", default-features = false, features = ["use-rustls-no-provider"] }

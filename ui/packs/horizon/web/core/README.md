@@ -1,11 +1,33 @@
 # Horizon pack: how to build a page
 
-This is the guide for writing pages in the Horizon UI pack. Horizon has the same structure, frame and pages as
-the Instrument pack (a left menu with the car switcher, a breadcrumb bar with the period, panels, tables and
-charts); its own look is one theme layer on top: the tokens in `app.css` (the dusk and daybreak palettes, Orbitron,
-Chakra Petch and JetBrains Mono) and `theme.css` (the sky, the solid glass under text, sharp corners, corner
-brackets, the hot gradient on main buttons and chosen segments). A page change made in Instrument can be copied
-here as is. Read it with the page plan
+The Horizon pack is the Simple pack's structure and pages in Horizon's synthwave look: a dashboard strip along the
+top (the brand, the six sections Car, Trips, Charging, Battery, Stats, Settings as buttons with an icon over the
+name, and the tools), under it where you are ("Sentry Mate / Trips") and the section's pages as a row of tabs.
+The look (neon magenta, hot orange, electric cyan and chrome on deep indigo; sharp HUD panels of dense glass with
+a thin neon outline and corner brackets; Orbitron headings, Chakra Petch text) is set at the end of `app.css`
+("the Horizon look") and in `theme.css`; the background (a dusk sky, a striped setting sun, wireframe mountains,
+scanlines and a canvas grid floor) is `core/sky.js`, with the Background setting (Auto, Full, Calm, Off) in
+Settings: Display and units, kept in this browser. Every text sits on glass, never straight on the sky. On a
+phone the strip becomes Simple's bar of icons with the menu at its end. Sentry Mate keeps its own name and mark.
+
+| Section | Tabs (page ids) | Short address |
+|---|---|---|
+| Car | Overview (`car`), Timeline, Software (`software`, software and firmware), All cars (`fleet`) | `/car` |
+| Trips | Drives (and a drive), Trip, Logbook, Travel, Places | `/trips` |
+| Charging | Charges (and a charge, with costs) | `/charging` |
+| Battery | Battery, Efficiency | `/battery` |
+| Stats | Statistics | `/stats` |
+| Settings | Cars, Display and units, Integrations, Server and access, Import, Data health, Help | `/settings` |
+
+- Every page keeps the address it has in the other packs (`/cars/c1/drives`, `/settings/display`, ...), so old
+  links and bookmarks open the same page, now as a tab of its section. The sections and tabs come from
+  `core/pages.js` (`GROUPS` are the sections, a page's `group` its section, `tab` its name as a tab).
+- A section opens on the tab used last in it (this browser, `localStorage` `sentrymate.manager.tabs`); a
+  section's short address (`/trips`) does the same. The `/` key and the menu button still find every page.
+- The Overview shows the car's key facts big (battery, range, state, where, last drive, charging); the rest
+  is one tap away behind "Show all details".
+
+This is the guide for writing pages in the Simple UI pack. Read it with the page plan
 ([`docs/parity/ui-parity.md`](../../../../../docs/parity/ui-parity.md)) and the API
 ([`docs/ui-api.md`](../../../../../docs/ui-api.md)). Everything a page needs is here: the module shape, the
 `ctx` it gets, every core helper, the design tokens and classes, coverage marks, readiness, and the rules.
@@ -13,22 +35,22 @@ here as is. Read it with the page plan
 ## Run it
 
 ```bash
-python3 ui/devserver/serve.py --pack ui/packs/horizon --port 8000      # then open http://127.0.0.1:8000/
-node ui/tools/check.js --pack horizon --pages drives,drive --allow-missing   # check pages
+python3 ui/devserver/serve.py --pack ui/packs/manager --port 8000      # then open http://127.0.0.1:8000/
+node ui/tools/check.js --pack manager --pages drives,drive --allow-missing   # check pages
 ```
 
 The dev server serves `web/` at `/` and the made-up `/api/v1` (see `ui/devserver/README.md`). Any path that is
-not a file gets `index.html`, so every route works on reload. All paths in the pack are absolute (`/app.css`,
-`/pages/drives.css`), because pages live at deep URLs like `/cars/c1/drives/123`.
+not a file gets `index.html`, so every route works on reload. Paths in `index.html` are absolute (`/app.css`,
+`/core/app.js`), because pages live at deep URLs like `/cars/c1/drives/123`; paths inside the JS and CSS are relative
+to their own file (`url('fonts/x.woff2')`, `new URL('../pages/drives.css', import.meta.url)`), so they follow the
+server's versioned prefix (`/_v/<version>/...`) that `index.html` is rewritten to.
 
 ## Files
 
 ```
-index.html          shell markup only: the icon sprite, #sky, #sidebar, #notices, #topbar, #view, #footer, #flash
-boot.js             runs in <head> before the first paint: Interface size, theme and Background from this browser's copy
+index.html          shell markup only: the icon sprite, #notices, #topbar (header and tab row), #view, #footer, #dock, #flash
+boot.js             runs in <head> before the first paint: Interface size and theme from this browser's copy
 app.css             tokens, light theme, root size, base, frame, shared components, tiers
-theme.css           Horizon's look over app.css: the sky, glass under every text, buttons, chips, glows
-fonts/              Orbitron, Chakra Petch, JetBrains Mono (SIL OFL; LICENSE-*.txt)
 manifest.webmanifest, icons/   the app can be installed (home screen, standalone window)
 core/               the frame and the helpers (this folder)
 pages/<id>.js       one module per page id (and sign-in, setup); pages/<id>.css when the page needs its own rules
@@ -97,7 +119,7 @@ page that was left cannot change the address any more (`ctx.setQuery` does nothi
 | `onCleanup(fn)`, `on(target, type, fn)`, `every(ms, fn)`, `events(types, fn)` | Clean-up, listeners, timers and live events that end with the page. |
 | `setTitle(...parts)` | The tab title: `setTitle('Drive Nov 15, 12:17 PM')` gives `Drive Nov 15, 12:17 PM · Comet · Sentry Mate`. |
 | `setCrumbs([{ label, href }])` | The breadcrumb in the top bar (the router sets a usual one). |
-| `frame.carChanged(car)` | (`core/frame.js`) After a page renamed a car or changed its time zone: the sidebar car card and the top-bar clock follow at once. |
+| `frame.carChanged(car)` | (`core/frame.js`) After a page renamed a car or changed its time zone: the header's car button and clock follow at once. |
 | `link(page, params)` | A link that carries the car and period (`state.linkTo`). |
 | `setQuery(patch)` | Puts filters in the address (`null` removes one) without rebuilding the page. |
 | `navigate(href)`, `reload()` | Go somewhere; build this page again (keeps the scroll). |
@@ -107,7 +129,7 @@ page that was left cannot change the address any more (`ctx.setQuery` does nothi
 Live data: `ctx.events('now', (ev) => ...)` gets `now` deltas (`ev.data = { car, now }`, merge field by field);
 `ctx.events('rows', ...)` fires when a drive, charge, parked spell or gap starts or ends (reload the page's lists).
 
-Stillness (the owner's rule, checked by `node ui/tools/check.js --pack horizon --stable`): a page must not jump,
+Stillness (the owner's rule, checked by `node ui/tools/check.js --pack manager --stable`): a page must not jump,
 and nothing may show up, go away and come back, on first load or while live data arrives. So: call `ctx.ready()`
 only after every section has its data and its charts (load uPlot with the data, not after ready); on a `rows` event
 reload tables (`t.reload()` keeps the rows on screen until the new ones are in) or call `ctx.refresh()`, never
@@ -234,9 +256,10 @@ A place cell links to the place editor: `buildUrl('places', { query: { place: id
 ### The frame (for reference)
 
 `core/app.js` starts it; `core/router.js` mounts pages; `core/session.js` decides where the home address leads
-(set-up first, then sign-in with `?next=`, then the page); `core/frame.js` draws the sidebar (menu grouped by task,
-car switcher, account menu), the top bar (menu button, breadcrumb, period, live status, the car's clock), the notices
-bar (`core/notices.js`) and the footer; `core/finder.js` is the full menu with type-to-find; `core/account.js` the
+(set-up first, then sign-in with `?next=`, then the page); `core/frame.js` draws the section card at the left (brand, the six
+sections, Collapse: `<html data-rail="collapsed">`, kept in `localStorage` `sentrymate.manager.rail`), the line above
+the page ("Sentry Mate / section", or a detail page's trail; Find a page, live status, the car's clock, car switcher,
+account menu), the tab row under it (the section's tabs as pills, the period), the phone dock (the period), the notices bar (`core/notices.js`) and the footer; `core/finder.js` is the full menu with type-to-find; `core/account.js` the
 Interface size, Follow screen size and theme controls; `core/prefs.js` the account and preferences
 (`getMe`, `isAdmin`, `getPrefs`, `savePrefs(patch)`, `onPrefs`). Pages do not touch the frame except through `ctx`.
 
@@ -254,10 +277,6 @@ page's CSS or JS, read the token (`cssVar('--live')` in JS).
 | `--st-driving`, `--st-charging`, `--st-parked`, `--st-asleep`, `--st-unknown`, `--asleep-fill`, `--nodata-fill` | Car states (always with a label); asleep is hatched, unknown grey |
 | `--c-speed`, `--c-power`, `--c-regen`, `--c-soc`, `--c-elev`, `--c-charge`, `--chart-grid`, `--chart-zero` | Chart series |
 | `--radius`, `--radius-sm`, `--gap`, `--gutter`, `--fs-floor` | Shape, spacing, the 10 px text floor |
-| `--mag`, `--mag-ink`, `--org`, `--grn`, `--violet`, `--hot`, `--on-hot`, `--glow-cyan`, `--glow-mag`, `--surface-panel-a/b` | Horizon's accents: magenta, the hot gradient and the text on it, glows, the panel glass |
-
-Text never sits straight on the sky: put it in a `.panel` (or another surface with a `--surface-*` background).
-The sky is bright where the sun is, so loose text there would fail contrast.
 
 Classes to use: `.panel .panel-pad .panel-head .panel-title .panel-link` (panels), `.page-head .page-title .page-sub
 .eyebrow .page-actions .back` (head), `.metric .metric-label .metric-value .explain .figures` (figures), `.btn
@@ -290,18 +309,19 @@ get more columns, not a narrow column in the middle.
 
 ## Phones
 
-The phone layout follows Sentry Manager's: one column, a compact bar of the main sections instead of the
-sidebar, tables as cards, 44 px tap targets, 16 px fields. `boot.js` sets `<html data-phone>` before the
+The phone layout follows Sentry Manager's: one column, the section card as a compact bar of icons along the top, tables as cards, 44 px tap targets, 16 px fields. `boot.js` sets `<html data-phone>` before the
 first paint, and again when the window changes:
 
 | `data-phone` | When | Frame |
 |---|---|---|
-| `tall` | the window is at most 48rem wide (an upright phone, a small tablet, a laptop at 200 %) | the dock at the bottom holds the period bar (pages with a period) and the tab bar |
-| `short` | at most 30rem high and 60rem wide (a phone on its side) | the period stays in the top bar; a lower tab bar |
+| `tall` | the window is at most 48rem wide (an upright phone, a small tablet, a laptop at 200 %) | the dock at the bottom holds the period bar (pages with a period); none without a period |
+| `short` | at most 30rem high and 60rem wide (a phone on its side) | the period stays in the tab row; no dock |
 | (none) | anything else | the desktop frame |
 
-- The sidebar is hidden; the top bar holds the car (opens the switcher), the live dot and the account. The tab
-  bar has All cars, Overview, Drives, Charges and Menu (the finder: every page). `window` gets a
+- The bar along the top holds the brand (hidden under 375 px, as in Sentry Manager), the six sections as icons
+  and the menu button (the finder: every page); under it the car (opens the switcher; a page's own "Switch car",
+  class `switch-car-btn`, is hidden on a phone), the live dot and the account; the section's tabs are a strip of
+  pills that scrolls sideways. `window` gets a
   `phonelayout` event when the attribute changes.
 - Tokens on a phone: `--fs-floor` 14px (text never below 14 px), `--tap` 44px, `--gutter` 16px (or the
   safe-area inset), `--dock-h` (the dock's height, the page keeps that much room at the bottom).
@@ -315,7 +335,7 @@ first paint, and again when the window changes:
   the order. A table a page builds itself with class `tbl` gets its captions from `cardLabels(table)`; a
   matrix of numbers that must stay a table gets `tbl--keep` (scrolls sideways in its panel, first column held).
 - A page's own phone rules go in its `pages/<id>.css` under `:root[data-phone]` (they never change the
-  desktop). Check with `node ui/tools/check.js --pack instrument --sizes 390x844@3,360x780@3,844x390@3,1440x900 --pixel`.
+  desktop). Check with `node ui/tools/check.js --pack manager --sizes 390x844@3,360x780@3,844x390@3,1440x900 --pixel`.
 
 ## Coverage marks and readiness
 
@@ -327,7 +347,7 @@ first paint, and again when the window changes:
 - Frame items are marked by the frame; a page marks only its own page's items.
 - `ctx.ready()` after the first render with data; `ctx.fail(err)` when the page cannot load. Charts and maps may
   finish after `ready()`.
-- Check with `node ui/tools/check.js --pack horizon --pages <id> --sizes 1440x900,3840x2160`: it reports missing
+- Check with `node ui/tools/check.js --pack manager --pages <id> --sizes 1440x900,3840x2160`: it reports missing
   items, console and page errors, CSP violations, failed API calls, outside requests, overflow and small text, and
   saves screenshots. Look at the screenshots.
 

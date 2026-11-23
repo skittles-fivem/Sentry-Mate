@@ -68,7 +68,7 @@ export async function mount(ctx) {
   const head = pageHead({
     eyebrow: car.name, title: 'Logbook',
     sub: [period.label, `times in ${tz.replace(/_/g, ' ')}`, 'distances by odometer'],
-    purpose: 'Every drive of the period with its odometer readings, addresses and purpose, numbered for a tax or expense claim. The continuity check shows where distance was driven without a log, so the rows add up to the odometer.',
+    purpose: 'Every drive of the period with its odometer readings, addresses and purpose, numbered for a tax or expense claim. The odometer check shows where distance was driven without a log, so the rows add up to the odometer.',
     actions: [pdfLink],
   });
 
@@ -92,7 +92,7 @@ export async function mount(ctx) {
       }, icon('car', 'ico--sm'), car.name, icon('chev-d', 'ico--sm')),
       h('span', { class: 'lb-filter-label' }, 'Purpose'), seg),
     h('p', { class: 'note' }, icon('info', 'ico--sm'),
-      ' One car per logbook, as a tax office asks. The purpose filter narrows the table and its CSV only; totals, numbers and the continuity check always cover the whole period.'));
+      ' One car per logbook, as a tax office asks. The purpose filter narrows the table and its CSV only; totals, numbers and the odometer check always cover the whole period.'));
 
   /* ---------- totals per purpose and export */
   const totalsSlot = h('div', { class: 'lb-totals' });
@@ -107,7 +107,7 @@ export async function mount(ctx) {
 
   /* ---------- continuity */
   const contSlot = h('div');
-  const contPanel = panel({ title: 'Continuity check', icon: 'odo', cls: 'lb-cont' }, contSlot);
+  const contPanel = panel({ title: 'Odometer check', icon: 'odo', cls: 'lb-cont' }, contSlot);
 
   function paintTotals() {
     const rows = data?.rows || [];
@@ -233,7 +233,7 @@ export async function mount(ctx) {
       render: purposeCell, csv: false,
     },
     {
-      key: 'continuity_gap_km', label: 'Continuity', num: true, sort: true, title: 'The continuity check: distance the odometer moved since the drive before, with no log. Opens the timeline at that time.',
+      key: 'continuity_gap_km', label: 'Not logged', num: true, sort: true, title: 'The odometer check: distance the odometer moved since the drive before, with no log. Opens the timeline at that time.',
       render: continuityCell, csv: false,
     },
   ];

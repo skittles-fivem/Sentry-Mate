@@ -82,6 +82,7 @@ mod global;
 mod journal;
 mod kv;
 mod logged;
+mod plain;
 mod rows;
 pub mod segment;
 mod table;
@@ -93,7 +94,7 @@ pub use file::FORMAT_VERSION;
 pub use fleet::{FleetCursor, FleetEntry, FleetPage, FleetQuery, Summary};
 pub use kv::{Kv, MAX_VALUE};
 pub use rows::{Cursor, Item, MAX_PAGE, Order, Page, Query, StateRow, Table, Tally, Totals, UpdateRow};
-pub use segment::{DAY_MS, DayInfo, END_MS, Fields, Point};
+pub use segment::{DAY_MS, DayInfo, END_MS, Fields, Point, keeping_days};
 
 use cars::{CarData, OpenCars};
 use file::{Ctx, Which};
@@ -138,6 +139,9 @@ pub struct Options {
     pub max_open_cars: usize,
     /// Bytes of open tables at most, across the open cars.
     pub max_open_bytes: u64,
+    /// Bytes of day snapshots kept opened and unpacked at most (days read again soon, by the same page or the next):
+    /// a quarter of the memory free for them, up to this (`db/src/plain.rs`); 0 keeps none.
+    pub max_cached_bytes: u64,
     /// A journal is folded into its snapshot once it has at least this many bytes (and about as many as the
     /// snapshot).
     pub fold_min_bytes: u64,
@@ -152,6 +156,7 @@ impl Default for Options {
         Options {
             max_open_cars: 64,
             max_open_bytes: 256 << 20,
+            max_cached_bytes: 4 << 30,
             fold_min_bytes: 64 << 10,
             hot: Level::HOT,
             warm: Level::WARM,
@@ -190,7 +195,54 @@ pub struct Settled {
     pub days: usize,
 }
 
+/// What a car's data is at, in this process: each number moves on (to a value never used before) when that part
+/// changes. In memory only, starting again at a restart: for caches kept in memory, keyed by what they were made
+/// from ([`Db::version`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct Version {
+    /// The car's live rows and points (SMO, the APIs, local TeslaMate) and its record.
+    pub live: u64,
+    /// Its imported rows and points (TeslaMate's, TeslaFi's) and its record.
+    pub imported: u64,
+    /// The places and the server's settings (every car's answers name places).
+    pub shared: u64,
+}
+
+/// The counters behind [`Version`].
+#[derive(Default)]
+struct Versions {
+    next: AtomicU64,
+    cars: Mutex<HashMap<CarId, (u64, u64)>>,
+    shared: AtomicU64,
+}
+
+impl Versions {
+    fn bump(&self, car: CarId, live: bool, imported: bool) {
+        let n = self.next.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut m = self.cars.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let e = m.entry(car).or_default();
+        if live {
+            e.0 = n;
+        }
+        if imported {
+            e.1 = n;
+        }
+    }
+
+    fn bump_shared(&self) {
+        let n = self.next.fetch_add(1, Ordering::Relaxed) + 1;
+        self.shared.store(n, Ordering::Relaxed);
+    }
+
+    fn of(&self, car: CarId) -> Version {
+        let m = self.cars.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (live, imported) = m.get(&car).copied().unwrap_or_default();
+        Version { live, imported, shared: self.shared.load(Ordering::Relaxed) }
+    }
+}
+
 struct Inner {
+    versions: Versions,
     ctx: Arc<Ctx>,
     dir: PathBuf,
     fleet: Mutex<LoggedFile<Fleet>>,
@@ -272,6 +324,7 @@ impl Db {
         let kv = Kv::new(ctx.clone(), dir.join("kv"));
         Ok(Db {
             inner: Arc::new(Inner {
+                versions: Versions::default(),
                 ctx,
                 dir,
                 fleet: Mutex::new(fleet),
@@ -282,6 +335,11 @@ impl Db {
                 tables_read: AtomicU64::new(0),
             }),
         })
+    }
+
+    /// What a car's data is at now (see [`Version`]).
+    pub fn version(&self, car: CarId) -> Version {
+        self.inner.versions.of(car)
     }
 
     /// Makes the next matching step fail as a crash would (tests only).
@@ -344,7 +402,10 @@ impl Db {
         let mut f = lock(&self.inner.fleet)?;
         let summary = f.state.get(car.id).ok_or(Error::NoSuchCar(car.id))?.summary.clone();
         Db::check_keys(&f.state, &car)?;
-        f.commit(&self.inner.ctx, FleetOp::Put(Box::new(FleetEntry { car, summary })))
+        let id = car.id;
+        f.commit(&self.inner.ctx, FleetOp::Put(Box::new(FleetEntry { car, summary })))?;
+        self.inner.versions.bump(id, true, true);
+        Ok(())
     }
 
     pub fn car(&self, id: CarId) -> Result<Option<Car>> {
@@ -391,6 +452,7 @@ impl Db {
         }
         drop(data);
         self.inner.cars.forget(id);
+        self.inner.versions.bump(id, true, true);
         Ok(true)
     }
 
@@ -497,7 +559,9 @@ impl Db {
         if rows.is_empty() {
             return Ok(());
         }
-        self.with_car(car, |db, data, dir| {
+        let imported = rows.iter().any(|r| r.source().is_imported());
+        let live = rows.iter().any(|r| !r.source().is_imported());
+        let r = self.with_car(car, |db, data, dir| {
             let t = db.table::<T>(data, car, dir)?;
             let mut delta = Tally::default();
             let mut last = None;
@@ -512,7 +576,9 @@ impl Db {
             let w = t.weight();
             data.set_weight(T::TABLE, w);
             db.bump(car, &delta, last)
-        })
+        });
+        self.inner.versions.bump(car, live, imported);
+        r
     }
 
     /// Replaces the CAN rows that start in `[from_ms, to_ms)` with `rows` (which must start there too), all or
@@ -539,7 +605,9 @@ impl Db {
         }
         let rows = dedup(rows);
         let new_ids: HashSet<u64> = rows.iter().map(Item::id).collect();
-        self.with_car(car, |db, data, dir| {
+        let imported = source.is_imported() || rows.iter().any(|r| r.source().is_imported());
+        let live = !source.is_imported() || rows.iter().any(|r| !r.source().is_imported());
+        let r = self.with_car(car, |db, data, dir| {
             let t = db.table::<T>(data, car, dir)?;
             let del = t.state.starting_in(from_ms, to_ms, source);
             let del_ids: HashSet<u64> = del.iter().copied().collect();
@@ -569,12 +637,14 @@ impl Db {
             data.set_weight(T::TABLE, w);
             db.bump(car, &delta, last)?;
             Ok(gone)
-        })
+        });
+        self.inner.versions.bump(car, live, imported);
+        r
     }
 
     /// Removes rows by id. Returns how many there were.
     pub fn delete<T: Item>(&self, car: CarId, ids: &[u64]) -> Result<usize> {
-        self.with_car(car, |db, data, dir| {
+        let r = self.with_car(car, |db, data, dir| {
             let t = db.table::<T>(data, car, dir)?;
             let mut delta = Tally::default();
             let mut del = Vec::new();
@@ -596,7 +666,9 @@ impl Db {
             data.set_weight(T::TABLE, w);
             db.bump(car, &delta, None)?;
             Ok(n)
-        })
+        });
+        self.inner.versions.bump(car, true, true);
+        r
     }
 
     pub fn get<T: Item>(&self, car: CarId, id: u64) -> Result<Option<T>> {
@@ -664,7 +736,7 @@ impl Db {
         points: &[P],
     ) -> Result<()> {
         let stream = stream.into();
-        self.with_car(car, |db, data, dir| {
+        let r = self.with_car(car, |db, data, dir| {
             let first = segment::write(&db.inner.ctx, dir, stream, from_ms, to_ms, points)?;
             if let Some(day) = first {
                 let m = data.meta(&db.inner.ctx, dir)?;
@@ -677,7 +749,9 @@ impl Db {
                 Some(p) => db.bump(car, &Tally::default(), Some(p.t_ms())),
                 None => Ok(()),
             }
-        })
+        });
+        self.inner.versions.bump(car, !stream.is_imported(), stream.is_imported());
+        r
     }
 
     /// The points of a series in `[from_ms, to_ms)`, in time order.
@@ -689,7 +763,14 @@ impl Db {
         to_ms: u64,
     ) -> Result<Vec<P>> {
         let stream = stream.into();
-        self.with_car(car, |db, _, dir| segment::read(&db.inner.ctx, dir, stream, from_ms, to_ms))
+        // days of a snapshot alone are unpacked without the car's lock, days with a journal under it; all are
+        // decoded after it, so several answers read one car at once
+        let dir = self.with_car(car, |_, _, dir| Ok(dir.to_path_buf()))?;
+        let ctx = &self.inner.ctx;
+        let days = segment::plains::<P>(ctx, &dir, stream, from_ms, to_ms, &mut |files| {
+            self.with_car(car, |_, _, _| segment::journaled_plain::<P>(ctx, files))
+        })?;
+        segment::points_of(days, from_ms, to_ms)
     }
 
     /// Some fields of a series in `[from_ms, to_ms)`, as columns (what a chart draws; faster than whole points).
@@ -702,13 +783,34 @@ impl Db {
         fields: &[&str],
     ) -> Result<Fields> {
         let stream = stream.into();
-        self.with_car(car, |db, _, dir| segment::read_fields::<P>(&db.inner.ctx, dir, stream, from_ms, to_ms, fields))
+        // days of a snapshot alone are unpacked without the car's lock, days with a journal under it; all are
+        // decoded after it, so several answers read one car at once
+        let dir = self.with_car(car, |_, _, dir| Ok(dir.to_path_buf()))?;
+        let ctx = &self.inner.ctx;
+        let days = segment::plains::<P>(ctx, &dir, stream, from_ms, to_ms, &mut |files| {
+            self.with_car(car, |_, _, _| segment::journaled_plain::<P>(ctx, files))
+        })?;
+        segment::fields_of::<P>(days, from_ms, to_ms, fields)
+    }
+
+    /// Per day of a series (its UTC start), a key of what its files are now: it changes whenever the day is written
+    /// (what was worked out from a day can be kept with it).
+    pub fn day_stamps<P: Point>(&self, car: CarId, stream: impl Into<Stream>) -> Result<Vec<(u64, u64)>> {
+        let stream = stream.into();
+        self.with_car(car, |_, _, dir| segment::day_stamps::<P>(dir, stream))
     }
 
     /// The days a series has.
     pub fn days<P: Point>(&self, car: CarId, stream: impl Into<Stream>) -> Result<Vec<DayInfo>> {
         let stream = stream.into();
         self.with_car(car, |_, _, dir| segment::days::<P>(dir, stream))
+    }
+
+    /// One key of what the files of a series' days in `[from_ms, to_ms)` are now: it changes whenever a point in
+    /// those days is written or removed (what was read from them can be kept with it).
+    pub fn days_stamp<P: Point>(&self, car: CarId, stream: impl Into<Stream>, from_ms: u64, to_ms: u64) -> Result<u64> {
+        let stream = stream.into();
+        self.with_car(car, |_, _, dir| segment::days_stamp::<P>(dir, stream, from_ms, to_ms))
     }
 
     /// Bytes a car's time series take on disk.
@@ -792,31 +894,37 @@ impl Db {
     /// Adds a place; its id is given here. Returns the place as kept.
     pub fn add_place(&self, mut place: Place) -> Result<Place> {
         Db::check_place(&place)?;
-        self.places_mut(|ctx, p| {
+        let r = self.places_mut(|ctx, p| {
             place.id = p.state.next_id;
             p.commit(ctx, PlaceOp::Put(place.clone()))?;
             Ok(place)
-        })
+        });
+        self.inner.versions.bump_shared();
+        r
     }
 
     pub fn update_place(&self, place: Place) -> Result<()> {
         Db::check_place(&place)?;
-        self.places_mut(|ctx, p| {
+        let r = self.places_mut(|ctx, p| {
             if !p.state.places.contains_key(&place.id) {
                 return Err(Error::invalid(format!("no place {}", place.id)));
             }
             p.commit(ctx, PlaceOp::Put(place))
-        })
+        });
+        self.inner.versions.bump_shared();
+        r
     }
 
     pub fn remove_place(&self, id: PlaceId) -> Result<bool> {
-        self.places_mut(|ctx, p| {
+        let r = self.places_mut(|ctx, p| {
             if !p.state.places.contains_key(&id) {
                 return Ok(false);
             }
             p.commit(ctx, PlaceOp::Remove(id))?;
             Ok(true)
-        })
+        });
+        self.inner.versions.bump_shared();
+        r
     }
 
     fn settings_mut<R>(&self, f: impl FnOnce(&Ctx, &mut LoggedFile<Settings>) -> Result<R>) -> Result<R> {
@@ -841,17 +949,21 @@ impl Db {
     }
 
     pub fn set_setting(&self, key: &str, value: serde_json::Value) -> Result<()> {
-        self.settings_mut(|ctx, s| s.commit(ctx, SettingOp::Set(key.to_string(), value)))
+        let r = self.settings_mut(|ctx, s| s.commit(ctx, SettingOp::Set(key.to_string(), value)));
+        self.inner.versions.bump_shared();
+        r
     }
 
     pub fn remove_setting(&self, key: &str) -> Result<bool> {
-        self.settings_mut(|ctx, s| {
+        let r = self.settings_mut(|ctx, s| {
             if !s.state.values.contains_key(key) {
                 return Ok(false);
             }
             s.commit(ctx, SettingOp::Remove(key.to_string()))?;
             Ok(true)
-        })
+        });
+        self.inner.versions.bump_shared();
+        r
     }
 
     /// The key/value store for other parts.

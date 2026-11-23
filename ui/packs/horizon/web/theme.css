@@ -1,4 +1,4 @@
-/* Sentry Mate · Horizon UI pack · theme.css: Horizon's look over the shared structure of app.css.
+/* Sentry Mate · Horizon UI pack · theme.css: Horizon's look over Simple's structure in app.css.
    - The background: a dusk sky with stars, a striped setting sun, wireframe mountains, haze and a neon grid
      floor (core/sky.js builds it; the floor is one canvas). Background: Auto, Full, Calm or Off (Settings:
      Display and units, kept in this browser).
@@ -127,26 +127,34 @@ body { font-feature-settings: normal; font-size: 0.9375rem; }
 .footer { background: var(--surface-bar); backdrop-filter: var(--blur); }
 .auth-card { backdrop-filter: var(--blur); }
 
-/* ------------------------------------------------------------------ the frame */
-.app { background:
-  linear-gradient(90deg, transparent calc(var(--sidebar-w) - 1px), color-mix(in srgb, var(--mag) 40%, transparent) calc(var(--sidebar-w) - 1px), color-mix(in srgb, var(--mag) 40%, transparent) var(--sidebar-w), transparent var(--sidebar-w)),
-  linear-gradient(90deg, var(--surface-side) var(--sidebar-w), transparent var(--sidebar-w)); }
-.sidebar { backdrop-filter: var(--blur); }
-.topbar { border-bottom-color: color-mix(in srgb, var(--mag) 34%, transparent); }
-.nav-link { border-radius: var(--radius-sm); }
-.nav-link[aria-current="page"] {
-  background: linear-gradient(90deg, color-mix(in srgb, var(--mag) 22%, transparent), color-mix(in srgb, var(--mag) 4%, transparent));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mag) 40%, transparent);
-}
-.nav-link[aria-current="page"]::before { background: var(--hot); box-shadow: var(--glow-mag); }
-.nav-link[aria-current="page"] .ico { color: var(--mag-ink); }
-.car-switch { border-radius: var(--radius); border-color: color-mix(in srgb, var(--live) 40%, transparent); background: var(--surface-card-a); }
-.car-switch:hover { border-color: var(--live); background: var(--surface-card-a); box-shadow: var(--glow-cyan); }
+/* ------------------------------------------------------------------ the frame (the strip itself is in app.css) */
+.brand-name { background: var(--chrome); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: var(--text); letter-spacing: 0.24em; }
+.top-car, .finder-btn, .subtab, .period-btn { border-radius: var(--radius-sm); }
+.top-car { border-color: color-mix(in srgb, var(--live) 40%, transparent); background: var(--panel); }
+.top-car:hover { border-color: var(--live); background: var(--panel-2); box-shadow: var(--glow-cyan); }
+.finder-btn:hover { border-color: var(--live); color: var(--text); }
 .account { border-radius: var(--radius-sm); }
+.avatar { border-radius: var(--radius-sm); background: linear-gradient(160deg, var(--avatar-a), var(--avatar-b)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mag) 50%, transparent); }
 .live-dot { background: var(--grn); box-shadow: 0 0 round(0.625rem, var(--e)) color-mix(in srgb, var(--grn) 60%, transparent); }
 .live-dot::after { border-color: color-mix(in srgb, var(--grn) 50%, transparent); }
-.clock { font-family: var(--font-mono); font-size: max(0.75rem, var(--fs-floor)); color: var(--live-3); text-shadow: var(--glow-cyan); }
+:root[data-theme="light"] .live-dot { box-shadow: none; }
+.clock { font-family: var(--font-mono); font-size: max(0.8125rem, var(--fs-floor)); color: var(--live-3); text-shadow: var(--glow-cyan); }
 :root[data-theme="light"] .clock { color: var(--live); text-shadow: none; }
+.crumb-app { font-family: var(--font-display); font-weight: 700; font-size: max(0.75rem, var(--fs-floor)); letter-spacing: 0.14em; text-transform: uppercase; color: var(--mag-ink); }
+/* the open section's tabs: dark glass chips, the open one lit by the hot gradient */
+.subtab { background: var(--panel); border-color: var(--border-strong); letter-spacing: 0.02em; }
+.subtab:hover { background: var(--panel-2); border-color: var(--live); box-shadow: var(--glow-cyan); }
+.subtab[aria-current="page"], .subtab[aria-current="page"]:hover { background: var(--hot); border-color: transparent; color: var(--on-hot); box-shadow: var(--glow-mag); }
+.period-btn { background: var(--panel); }
+.period-btn:hover, .period-btn[aria-expanded="true"] { border-color: var(--live); box-shadow: var(--glow-cyan); }
+.bar > i { background: linear-gradient(90deg, var(--live), var(--mag)); }
+.switch input:checked + i { background: var(--hot); }
+.flash-note { border-radius: var(--radius-sm); background: var(--surface-pop-a); border-left-color: var(--mag); backdrop-filter: var(--blur); }
+.notice { border-radius: var(--radius-sm); }
+.switcher, .menu-panel, .dialog, .popover, .account-menu { background: linear-gradient(180deg, var(--surface-pop-a), var(--surface-pop-b)); border-color: color-mix(in srgb, var(--live) 34%, transparent); border-radius: var(--radius); }
+.sw-opt[aria-selected="true"] { background: color-mix(in srgb, var(--mag) 16%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mag) 50%, transparent); }
+.menu-group h3 { font-family: var(--font-display); letter-spacing: 0.12em; text-transform: uppercase; color: var(--mag-ink); }
+.tbl th { font-family: var(--font); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
 
 /* ------------------------------------------------------------------ controls: Horizon's buttons and chips */
 .btn {
@@ -161,11 +169,11 @@ body { font-feature-settings: normal; font-size: 0.9375rem; }
 .btn--danger { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 70%, transparent); color: var(--danger); }
 .btn--danger:hover { background: color-mix(in srgb, var(--danger) 22%, transparent); border-color: var(--danger); box-shadow: none; }
 .btn--ghost { background: transparent; border-color: transparent; }
-.btn--ghost:hover { background: rgba(var(--tint), 0.14); border-color: transparent; box-shadow: none; }
+.btn--ghost:hover { background: color-mix(in srgb, var(--tint) 14%, transparent); border-color: transparent; box-shadow: none; }
 .btn--sm { border-radius: var(--radius-xs); }
 .seg { border-radius: var(--radius-sm); background: var(--surface-sunken); border-color: var(--line-2); }
 .seg-btn { border-radius: var(--radius-xs); font-weight: 600; }
-.seg-btn:hover { background: rgba(var(--tint), 0.14); }
+.seg-btn:hover { background: color-mix(in srgb, var(--tint) 14%, transparent); }
 .seg-btn[aria-pressed="true"] { background: var(--hot); color: var(--on-hot); box-shadow: none; }
 .seg-btn[aria-pressed="true"] .count { color: var(--on-hot); }
 .seg-btn[aria-pressed="true"] .dot { box-shadow: 0 0 0 1px var(--on-hot); }
@@ -187,7 +195,7 @@ body { font-feature-settings: normal; font-size: 0.9375rem; }
 
 /* section heads, notes and strips that sit between panels: on a plate of glass too */
 /* (":root" first: a page's own stylesheet loads after this file and must not take the glass away) */
-:root :is(.window-head, .bat-history-head, .ef-section-head, .stats-head, .now-inputs, .vd-summary, .si-jump, .si-section-head,
+:root :is(.details-bar, .window-head, .bat-history-head, .ef-section-head, .stats-head, .now-inputs, .vd-summary, .si-jump, .si-section-head,
 .si-section > .note, .si-legend, .si-cards-wrap, .saving-note, .tv-cars, .hl-signals-note, .settings-divider) {
   padding: round(0.625rem, var(--e)) round(0.875rem, var(--e));
   background: linear-gradient(180deg, var(--surface-panel-a), var(--surface-panel-b));
@@ -203,6 +211,8 @@ body { font-feature-settings: normal; font-size: 0.9375rem; }
   font-family: var(--font); font-weight: 600; letter-spacing: 0;
 }
 .page-title { overflow-wrap: anywhere; min-width: 0; }
+/* a chip in the title (the car's state) keeps its own colours: the chrome fill is for the title's words only */
+.page-title :is(.pill, .tag) { -webkit-text-fill-color: currentColor; font-family: var(--font); letter-spacing: 0.02em; text-transform: none; vertical-align: middle; }
 @container page (max-width: 40rem) {
   .page-title { font-size: 1.25rem; letter-spacing: 0.02em; }
 }
@@ -215,23 +225,14 @@ body { font-feature-settings: normal; font-size: 0.9375rem; }
   :root .gauge-stats .q-u { flex-basis: 100%; margin-left: 0; } /* the unit always under the number on a phone */
 }
 
-/* ------------------------------------------------------------------ phone (<html data-phone>): Horizon's dock and sheets
-   The dock sits over the page and the sky: near-solid glass so the tab labels never read through to a card
-   or the sun behind them, the neon line on top like the top bar's, the chosen tab in cyan with the hot bar
-   over it. Sheets get the panels' glass and the magenta edge. */
+/* ------------------------------------------------------------------ phone (<html data-phone>)
+   The bar of icons keeps the strip's look (app.css); the dock holds only the period, on near-solid glass with
+   the neon line on top. Sheets get the panels' glass and the magenta edge. */
 :root[data-phone] .dock {
   background: linear-gradient(180deg, color-mix(in srgb, var(--surface-panel-a) 96%, var(--bg-0)), color-mix(in srgb, var(--surface-panel-b) 98%, var(--bg-0)));
   border-top-color: color-mix(in srgb, var(--mag) 40%, transparent);
   backdrop-filter: var(--blur);
 }
-:root[data-phone] .dock-period { border-bottom-color: var(--line-2); }
-:root[data-phone] .tab { position: relative; font-weight: 600; letter-spacing: 0.02em; }
-:root[data-phone] .tab[aria-current="page"], :root[data-phone] .tab.is-current { color: var(--live); text-shadow: var(--glow-cyan); }
-:root[data-phone] .tab[aria-current="page"]::before, :root[data-phone] .tab.is-current::before {
-  content: ""; position: absolute; top: 0; left: 50%; width: round(2rem, var(--e)); height: round(0.125rem, var(--e)); transform: translateX(-50%);
-  background: var(--hot); box-shadow: var(--glow-mag);
-}
-:root[data-theme="light"][data-phone] .tab[aria-current="page"], :root[data-theme="light"][data-phone] .tab.is-current { text-shadow: none; }
 :root[data-phone] :is(.popover, .account-menu, .dialog, .menu-panel, .switcher, dialog.dialog--advice) {
   border-top-color: color-mix(in srgb, var(--mag) 45%, transparent);
 }

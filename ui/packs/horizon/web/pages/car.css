@@ -1,8 +1,54 @@
-/* Car overview (pages/car.js): the gauge, the map, the live panels, the period's charts.
-   Built from the Instrument prototype's "now" page. */
+/* Car overview (pages/car.js): six key facts and the map at the top; the gauge, the live panels and the
+   period's charts behind "Show all details". */
+
+/* the six facts beside the map; every fact keeps one height, so live values never move the page */
+.car-summary { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: var(--gap); margin-bottom: var(--gap); }
+.facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--gap); }
+.fact {
+  display: grid; grid-template-rows: auto auto auto auto; align-content: start; min-width: 0; height: round(10.5rem, var(--e));
+  padding: round(1rem, var(--e)) round(1.125rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-solid); box-shadow: var(--shadow); color: var(--text);
+}
+a.fact { text-decoration: none; }
+a.fact[href]:hover { border-color: var(--line-3); }
+a.fact[href]:hover .fact-label::after { color: var(--live); }
+a.fact[href] .fact-label::after { content: "›"; margin-left: auto; color: var(--text-3); font-size: 1.125rem; --LH: round(1rem, 2px); }
+.fact-label { display: flex; align-items: center; gap: round(0.375rem, var(--e)); font-size: max(0.875rem, var(--fs-floor)); font-weight: 500; color: var(--text-2); --LH: round(1.25rem, 2px); }
+.fact-label .ico { color: var(--text-3); }
+.fact-value { margin-top: round(0.5rem, var(--e)); font-size: 2rem; font-weight: 600; letter-spacing: -0.015em; --LH: round(2.5rem, 2px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fact-value .q-u { margin-left: round(0.125rem, var(--e)); font-size: 0.5em; font-weight: 500; color: var(--text-2); letter-spacing: 0; }
+.fact-foot { height: round(0.375rem, var(--e)); margin: round(0.25rem, var(--e)) 0 round(0.375rem, var(--e)); }
+.fact-foot:empty { visibility: hidden; }
+.fact-bar { overflow: visible; }
+.fact-bar > i { background: var(--live); }
+.fact-bar.bar--warm > i { background: var(--warm); }
+.fact-bar.bar--low > i { background: var(--danger); }
+.fact-bar-limit { position: absolute; top: round(-0.1875rem, var(--e)); bottom: round(-0.1875rem, var(--e)); left: round(calc(var(--x) - 1px), 1px); width: round(0.125rem, var(--e)); border-radius: 1px; background: var(--text-2); }
+/* the line under a value: up to two lines, always two lines high */
+.fact-sub { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; height: round(2.5rem, var(--e)); overflow: hidden; overflow-wrap: anywhere; font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); --LH: round(1.25rem, 2px); }
+.fact--where .fact-value { font-size: 1.625rem; }
+.fact-state { display: inline-flex; align-items: center; gap: round(0.625rem, var(--e)); }
+.fact-dot { flex: none; width: round(0.75rem, var(--e)); height: round(0.75rem, var(--e)); border-radius: 50%; background: var(--st-unknown); }
+.fact-state[data-state="driving"] .fact-dot { background: var(--st-driving); }
+.fact-state[data-state="charging"] .fact-dot { background: var(--st-charging); }
+.fact-state[data-state="parked"] .fact-dot { background: var(--st-parked); }
+.fact-state[data-state="asleep"] .fact-dot { background: var(--st-asleep); }
+.fact.is-stale .fact-dot { background: transparent; box-shadow: inset 0 0 0 round(0.125rem, var(--e)) var(--st-unknown); }
+.fact.is-charging { border-color: var(--warm-line); }
+.fact.is-charging .fact-label .ico { color: var(--warm); }
+.fact.is-low .fact-value { color: var(--danger); }
+.car-summary > .map-panel { min-height: 0; height: auto; }
+/* the one control for everything else */
+.details-bar { display: flex; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(1rem, var(--e)); margin: 0 0 var(--gap); }
+.details-toggle { gap: round(0.5rem, var(--e)); font-weight: 600; }
+.details-chev { display: inline-flex; transition: transform 0.15s ease; }
+.details-toggle[aria-expanded="true"] .details-chev { transform: rotate(180deg); }
+.details-hint { color: var(--text-3); font-size: max(0.8125rem, var(--fs-floor)); }
+.car-details { padding-top: round(0.25rem, var(--e)); }
+
 .now-head .page-title { display: flex; align-items: center; gap: round(0.875rem, var(--e)); }
 .now-head .page-title > span { display: flex; align-items: center; } /* the pill sits in the middle of the line, on whole px */
 .now-hero { display: grid; grid-template-columns: minmax(round(23.75rem, var(--e)), 5fr) minmax(0, 7fr); gap: var(--gap); margin-bottom: var(--gap); }
+.now-hero > .today-tl { display: flex; }
 /* --g is the gauge's width; everything in the gauge is a fraction of it (the SVG's lines are in its
    viewBox units and follow it), so one value scales the whole instrument. The gauge and its status pills
    are one group (.gauge-main); spare height goes between the group and the stats. */
@@ -14,33 +60,20 @@
 /* the charge-limit number: HTML on the dial (a g x g box), so it keeps the smallest-text floor */
 .gauge-marks { position: absolute; top: 0; left: 0; width: var(--g); height: var(--g); pointer-events: none; }
 .gauge-limit-label { position: absolute; left: var(--x); top: var(--y); transform: translate(-50%, -50%); font-size: max(calc(var(--g) * 0.03667), var(--fs-floor)); font-weight: 600; --LH: round(calc(1 * 1em), 2px); color: var(--text-2); }
-.gauge-track { fill: none; stroke: rgba(var(--tint), 0.12); stroke-width: 14; stroke-linecap: round; }
-.gauge-fill { fill: none; stroke: url(#g-gauge-live); stroke-width: 14; stroke-linecap: round; filter: drop-shadow(0 0 round(0.625rem, var(--e)) color-mix(in srgb, var(--live) 45%, transparent)); }
-.gauge--charging .gauge-fill { stroke: url(#g-gauge-warm); filter: drop-shadow(0 0 round(0.75rem, var(--e)) color-mix(in srgb, var(--warm) 50%, transparent)); }
+.gauge-track { fill: none; stroke: color-mix(in oklab, var(--tint) 12%, transparent); stroke-width: 14; stroke-linecap: round; }
+.gauge-fill { fill: none; stroke: var(--live); stroke-width: 14; stroke-linecap: round; }
+.gauge--charging .gauge-fill { stroke: var(--warm); }
 .gauge--low .gauge-fill { stroke: var(--danger); filter: none; }
-.gauge-tick { stroke: rgba(var(--tint), 0.3); stroke-width: 1.5; }
-.gauge-tick--major { stroke: rgba(var(--tint), 0.55); stroke-width: 2; }
+.gauge-tick { stroke: color-mix(in oklab, var(--tint) 30%, transparent); stroke-width: 1.5; }
+.gauge-tick--major { stroke: color-mix(in oklab, var(--tint) 55%, transparent); stroke-width: 2; }
 .gauge-limit { stroke: var(--text); stroke-width: 3; stroke-linecap: round; }
 .gauge-center { position: absolute; top: calc(var(--g) * 0.26667); left: 0; right: 0; display: flex; flex-direction: column; align-items: center; text-align: center; }
-.gauge-soc { font-family: var(--font-display); font-weight: 300; font-size: calc(var(--g) * 0.28); --LH: round(calc(0.95 * 1em), 2px); letter-spacing: -0.045em; }
+.gauge-soc { font-family: var(--font-display); font-weight: 500; font-size: calc(var(--g) * 0.28); --LH: round(calc(0.95 * 1em), 2px); letter-spacing: -0.045em; }
 .gauge-soc sup { font-size: calc(var(--g) * 0.1); font-weight: 300; vertical-align: top; position: relative; top: calc(var(--g) * 0.03333); margin-left: round(0.125rem, var(--e)); color: var(--text-2); letter-spacing: 0; }
 .gauge-range { margin-top: calc(var(--g) * 0.02667); font-family: var(--font-display); font-size: calc(var(--g) * 0.08); font-weight: 500; letter-spacing: -0.01em; }
 .gauge-range .unit { font-family: var(--font); font-size: calc(var(--g) * 0.04667); color: var(--text-2); margin-left: round(0.25rem, var(--e)); }
 .gauge-caption { font-size: max(calc(var(--g) * 0.04), var(--fs-floor)); color: var(--text-3); margin-top: round(0.125rem, var(--e)); }
 .gauge-status { display: flex; justify-content: center; gap: round(0.5rem, var(--e)); flex-wrap: wrap; margin-bottom: round(1rem, var(--e)); }
-/* battery through today: shown on large screens when the gauge panel has height to spare */
-.gauge-today { display: none; flex-direction: column; min-height: 0; margin-bottom: round(1rem, var(--e)); }
-.gauge-today-head { display: flex; justify-content: space-between; align-items: baseline; gap: round(0.75rem, var(--e)); margin-bottom: round(0.5rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
-.gauge-today-head b { color: var(--text); font-weight: 600; }
-.gauge-today-plot { position: relative; flex: 1; min-height: round(4rem, var(--e)); border-bottom: 1px solid var(--line-2); background: repeating-linear-gradient(180deg, transparent 0 calc(25% - 1px), var(--chart-grid) calc(25% - 1px) 25%); }
-.gauge-today-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-.gauge-today-y { position: absolute; left: 0; top: var(--y); margin-top: round(0.25rem, var(--e)); font-size: max(0.6875rem, var(--fs-floor)); --LH: round(calc(1 * 1em), 2px); color: var(--text-3); }
-.gauge-today-area { fill: url(#g-soc-today); stroke: none; }
-.gauge-today-line { fill: none; stroke: var(--c-soc); stroke-width: 2; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.gauge-today-now { stroke: var(--text); stroke-width: 2; vector-effect: non-scaling-stroke; }
-.gauge-today-strip { position: relative; height: round(0.375rem, var(--e)); margin-top: round(0.375rem, var(--e)); border-radius: 99px; overflow: hidden; background: rgba(var(--tint), 0.08); }
-.gauge-today-strip > i { --x0: round(var(--x), 1px); --x1: round(calc(var(--x) + var(--w)), 1px); position: absolute; top: 0; bottom: 0; left: var(--x0); width: max(1px, calc(var(--x1) - var(--x0))); background: var(--dot); }
-.gauge-today-axis { display: flex; justify-content: space-between; margin-top: round(0.375rem, var(--e)); font-size: max(0.6875rem, var(--fs-floor)); color: var(--text-3); }
 .gauge-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin-top: auto; padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
 .gauge-stats .metric { padding: 0 round(0.875rem, var(--e)); }
 .gauge-stats .metric + .metric { border-left: 1px solid var(--line); }
@@ -56,12 +89,12 @@
 .temp-label { font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); }
 .temp-val { font-family: var(--font-display); font-size: 1.375rem; font-weight: 500; text-align: right; white-space: nowrap; }
 /* a plain reading scale, not a control: thin track, shaded normal range, a 2 px tick for the value */
-.temp-scale { position: relative; height: round(0.25rem, var(--e)); border-radius: 99px; background: rgba(var(--tint), 0.12); }
-.temp-band { position: absolute; top: round(-0.125rem, var(--e)); bottom: round(-0.125rem, var(--e)); left: round(var(--x), 1px); width: round(var(--w), 1px); border-radius: round(0.125rem, var(--e)); background: color-mix(in srgb, var(--live) 20%, transparent); }
+.temp-scale { position: relative; height: round(0.25rem, var(--e)); border-radius: 99px; background: color-mix(in oklab, var(--tint) 12%, transparent); }
+.temp-band { position: absolute; top: round(-0.125rem, var(--e)); bottom: round(-0.125rem, var(--e)); left: round(var(--x), 1px); width: round(var(--w), 1px); border-radius: round(0.125rem, var(--e)); background: color-mix(in oklab, var(--live) 20%, transparent); }
 .temp-tick { position: absolute; top: round(-0.3125rem, var(--e)); bottom: round(-0.3125rem, var(--e)); left: round(calc(var(--x) - 1px), 1px); width: round(0.125rem, var(--e)); border-radius: 1px; background: var(--text); }
 .temp-axis { display: flex; justify-content: space-between; align-items: center; margin-top: round(0.625rem, var(--e)); font-size: max(0.6875rem, var(--fs-floor)); color: var(--text-3); }
 .temp-axis-key { display: inline-flex; align-items: center; gap: round(0.3125rem, var(--e)); }
-.temp-axis-key i { width: round(0.75rem, var(--e)); height: round(0.5rem, var(--e)); border-radius: round(0.125rem, var(--e)); background: color-mix(in srgb, var(--live) 20%, transparent); }
+.temp-axis-key i { width: round(0.75rem, var(--e)); height: round(0.5rem, var(--e)); border-radius: round(0.125rem, var(--e)); background: color-mix(in oklab, var(--live) 20%, transparent); }
 
 .tires { display: grid; grid-template-columns: minmax(0, 1fr) round(3.25rem, var(--e)) minmax(0, 1fr); grid-template-rows: auto auto; align-items: start; gap: round(0.5rem, var(--e)) round(0.375rem, var(--e)); }
 .tire { display: flex; flex-direction: column; gap: 1px; }
@@ -75,20 +108,20 @@
 .tire--r .tire-val .q.is-missing { align-items: flex-end; }
 .tire-val .q.is-missing > .q-why { margin-left: 0; }
 .tire-note { display: inline-flex; align-items: center; gap: round(0.25rem, var(--e)); white-space: nowrap; font-size: max(0.71875rem, var(--fs-floor)); color: var(--warm); }
-.car-top { grid-column: 2; grid-row: 1 / span 2; width: round(3.25rem, var(--e)); height: round(6rem, var(--e)); }
+.tires .car-top { grid-column: 2; grid-row: 1 / span 2; width: round(3.25rem, var(--e)); height: round(6rem, var(--e)); }
 .tire-rec { margin-top: round(0.875rem, var(--e)); padding-top: round(0.75rem, var(--e)); border-top: 1px solid var(--line); }
 .tire-rec b { color: var(--text); font-weight: 600; }
 .sw-src { font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); font-weight: 400; }
-.car-top .body { fill: rgba(var(--tint), 0.08); stroke: rgba(var(--tint), 0.4); stroke-width: 1.4; }
-.car-top .glass { fill: rgba(var(--tint), 0.16); }
-.car-top .wheel { fill: color-mix(in srgb, var(--text) 75%, transparent); }
-.car-top .wheel.is-low { fill: var(--warm); }
+.tires .car-top .body { fill: color-mix(in oklab, var(--tint) 8%, transparent); stroke: color-mix(in oklab, var(--tint) 40%, transparent); stroke-width: 1.4; }
+.tires .car-top .glass { fill: color-mix(in oklab, var(--tint) 16%, transparent); }
+.tires .car-top .wheel { fill: color-mix(in oklab, var(--tint) 55%, transparent); }
+.tires .car-top .wheel.is-low { fill: var(--warm); }
 /* today's timeline (beside the map on large screens) */
 .today-tl { display: none; flex-direction: column; min-height: 0; padding: round(1.25rem, var(--e)) 0 round(0.5rem, var(--e)); }
 .today-tl .panel-head { padding: 0 round(1.375rem, var(--e)); margin-bottom: round(0.5rem, var(--e)); }
 /* the list scrolls inside the panel; the panel takes the hero's height, it never sets it */
 .today-tl-body { position: relative; flex: 1; min-height: round(12rem, var(--e)); }
-.today-tl-list { position: absolute; inset: 0; overflow-y: auto; scrollbar-color: rgba(var(--tint), 0.25) transparent; }
+.today-tl-list { position: absolute; inset: 0; overflow-y: auto; scrollbar-color: color-mix(in oklab, var(--tint) 25%, transparent) transparent; }
 .today-tl .tl-item { grid-template-columns: minmax(0, round(6.5rem, var(--e))) round(1.125rem, var(--e)) minmax(0, 1fr) auto round(1rem, var(--e)); column-gap: round(0.75rem, var(--e)); min-height: round(3.25rem, var(--e)); padding: 0 round(1.375rem, var(--e)); }
 .today-tl .tl-time { font-size: max(0.75rem, var(--fs-floor)); white-space: normal; --LH: round(calc(1.3 * 1em), 2px); }
 .tl-time > span { white-space: nowrap; }
@@ -112,8 +145,8 @@
 .aged-note { color: var(--text-3); font-size: max(0.75rem, var(--fs-floor)); font-family: var(--font); font-weight: 400; }
 
 /* the map: tools at the bottom left */
-.map-tools { display: flex; gap: round(0.5rem, var(--e)); align-items: center; }
-.map-btn { background: var(--surface-ctrl); backdrop-filter: blur(round(0.75rem, var(--e))); }
+.map-tools { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)); align-items: center; max-width: calc(100% - round(5rem, var(--e))); } /* clear of the zoom buttons at the top right */
+.map-btn { background: var(--surface-ctrl); }
 .map-chip { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); height: round(1.875rem, var(--e)); padding: 0 round(0.625rem, var(--e)); border-radius: round(0.5rem, var(--e)); background: var(--surface-attrib); color: var(--text-3); font-size: max(0.75rem, var(--fs-floor)); }
 .map-panel:fullscreen { border-radius: 0; }
 
@@ -154,19 +187,20 @@
   .charge-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @container page (max-width: 76rem) {
+  .car-summary { grid-template-columns: minmax(0, 1fr); }
+  .car-summary > .map-panel { height: round(20rem, var(--e)); }
   .now-hero { grid-template-columns: minmax(0, 1fr); }
-  .now-hero .map-panel { min-height: round(24rem, var(--e)); }
   .now-row--3 { grid-template-columns: minmax(0, 1fr); }
   .window-figures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 /* tight: under 50rem of window (200 % browser zoom on a 1280 to 1440 px laptop): one panel per row */
 @container page (max-width: 50rem) {
+  .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fact--battery { order: 1; } .fact--range { order: 2; } .fact--state { order: 3; } .fact--charge { order: 4; }
+  .fact--drive { order: 5; grid-column: 1 / -1; } .fact--where { order: 6; grid-column: 1 / -1; }
   .now-row:not(.now-row--3), .now-row--2 { grid-template-columns: minmax(0, 1fr); }
 }
 @container page (min-width: 140rem) {
-  /* gauge | map | today's timeline side by side */
-  .now-hero { grid-template-columns: minmax(round(24rem, var(--e)), 4.2fr) minmax(0, 7.6fr) minmax(round(24rem, var(--e)), 4.2fr); }
-  .today-tl { display: flex; }
   .now-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .now-row--3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .chart--batt { height: round(18rem, var(--e)); }
@@ -193,14 +227,13 @@
 
 /* Vehicle info (pages/vehicle-info.js): the car's build facts, each with its source and confidence */
 .vi { margin-top: var(--gap); scroll-margin-top: round(5rem, var(--e)); }
-.vi-links { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: round(0.25rem, var(--e)) round(1rem, var(--e)); }
 .vi-intro { margin: 0 0 round(1rem, var(--e)); max-width: round(64rem, var(--e)); --LH: round(calc(1.5 * 1em), 2px); }
 .vi-alert { display: flex; align-items: flex-start; gap: round(0.5rem, var(--e)); margin-bottom: round(1rem, var(--e)); padding: round(0.75rem, var(--e)) round(1rem, var(--e)); border: 1px solid var(--warm-line); border-radius: var(--radius-sm); background: var(--warm-soft); font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.5 * 1em), 2px); }
 .vi-alert > .ico { flex: none; color: var(--warm); }
 .vi-dis-list { margin: round(0.25rem, var(--e)) 0 0; padding-left: round(1.125rem, var(--e)); }
 .vi-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, round(24rem, var(--e))), 1fr)); gap: var(--gap); }
 .vi-group { min-width: 0; }
-.vi-group-title { display: flex; align-items: center; gap: round(0.5rem, var(--e)); margin: 0 0 round(0.5rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-2); }
+.vi-group-title { display: flex; align-items: center; gap: round(0.5rem, var(--e)); margin: 0 0 round(0.5rem, var(--e)); font-size: max(0.875rem, var(--fs-floor)); font-weight: 600; color: var(--text); }
 .vi-group-title .ico { color: var(--text-3); }
 .vi-list { margin: 0; }
 .vi-row { display: grid; grid-template-columns: minmax(0, 9.5rem) minmax(0, 1fr) auto; align-items: start; gap: round(0.75rem, var(--e)); padding: round(0.5rem, var(--e)) 0; border-top: 1px solid var(--line); }
@@ -242,13 +275,28 @@
 
 /* phone (<html data-phone>): the place card sits above the map instead of over it (on a phone it would hide
    most of the map and its zoom buttons); the map keeps a screenful's share of height, less in landscape */
-:root[data-phone] .now-hero .map-panel { display: flex; flex-direction: column; min-height: 0; }
-:root[data-phone] .now-hero .map-panel > .map { position: relative; inset: auto; order: 2; height: min(round(22rem, var(--e)), 60dvh); }
-:root[data-phone] .now-hero .map-panel > .map-overlay--tl { position: static; order: 1; padding: round(0.75rem, var(--e)); }
-:root[data-phone] .now-hero .map-panel > .map-overlay--tl:has(> .place-card:empty) { display: none; }
-:root[data-phone] .now-hero .place-card { min-width: 0; max-width: none; box-shadow: none; }
 :root[data-phone] .charge-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 :root[data-phone] .flag dd { white-space: normal; overflow-wrap: anywhere; }
-:root[data-phone] .now-hero .map-panel:fullscreen > .map { height: auto; flex: 1 1 auto; }
 :root[data-phone] .now-head .page-sub > span:has(> .trim-src) { display: inline-flex; align-items: baseline; justify-content: space-between; }
 :root[data-phone] .now-head .page-sub .trim-src { width: calc-size(fit-content, round(up, size, 1px)); }
+/* the Firmware row: the fingerprints now and their history (both on Software) */
+.car-fw-links, .vi-fw-links { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: round(0.25rem, var(--e)) round(0.75rem, var(--e)); }
+.vi-fw-links { align-items: center; justify-content: flex-end; }
+
+/* phone: the facts two by two, a little smaller; the map a screenful's share under them */
+:root[data-phone] .fact { height: auto; padding: round(0.75rem, var(--e)) round(0.875rem, var(--e)); }
+:root[data-phone] .fact-sub { height: calc(2 * var(--LH)); }
+:root[data-phone] .fact-value { margin-top: round(0.25rem, var(--e)); font-size: 1.5rem; --LH: round(2rem, 2px); }
+:root[data-phone] .car-summary > .map-panel { height: min(round(18rem, var(--e)), 50dvh); }
+:root[data-phone] .details-bar { flex-direction: column; align-items: stretch; }
+:root[data-phone] .details-toggle { width: 100%; justify-content: center; }
+/* the State and Charging facts take the whole width (the other four stay two by two); every line under a
+   value wraps in full instead of ending in "…" (the State line: "Since today, 9:18 AM · for 12 min · 94 km/h ·
+   13.1 km so far") */
+:root[data-phone] :is(.fact--state, .fact--charge) { grid-column: 1 / -1; }
+:root[data-phone] .fact-sub { display: block; -webkit-line-clamp: none; height: auto; min-height: calc(2 * var(--LH)); overflow: visible; }
+/* the line under a value: up to three lines on a desktop, so the State line ("Since today, 9:18 AM · for 12 min ·
+   94 km/h · 13.1 km so far") is whole; the big values a little smaller, so "Unplugged" fits beside the map */
+:root:not([data-phone]) .fact { height: round(11.75rem, var(--e)); }
+:root:not([data-phone]) .fact-sub { -webkit-line-clamp: 3; height: round(3.75rem, var(--e)); }
+.fact-value { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }

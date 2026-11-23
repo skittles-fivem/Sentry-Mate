@@ -134,14 +134,15 @@ export async function mount(ctx) {
   const root = h('div', { class: 'timeline-page', cover: ['shots.states', 'shots.timeline'] });
   replace(ctx.view, root);
 
-  const [states, act, overlaps] = await Promise.all([
-    ctx.api.get(`cars/${encodeURIComponent(cid)}/states`, { from_ms: from, to_ms: to, limit: 1 }),
-    // /activity defaults to the last 24 hours without a start: ask for the whole history when the period has none
-    ctx.api.get(`cars/${encodeURIComponent(cid)}/activity`, { from_ms: from ?? 0, to_ms: to }),
-    // spans where imported and live history both exist: only one side is listed for each
-    ctx.api.get(`cars/${encodeURIComponent(cid)}/overlaps`).then((r) => (r.items || []).filter((o) => (to == null || o.start_ms < to) && (from == null || o.end_ms > from))).catch(() => []),
-  ]);
-  if (!ctx.alive()) return;
+  // The states, the strip, the overlaps and the entries load at once; each panel fills when its own answer is in
+  // (a grey block keeps its place until then), so the list does not wait for the summary above it.
+  const statesP = ctx.api.get(`cars/${encodeURIComponent(cid)}/states`, { from_ms: from, to_ms: to, limit: 1 });
+  // /activity defaults to the last 24 hours without a start: ask for the whole history when the period has none
+  const actP = ctx.api.get(`cars/${encodeURIComponent(cid)}/activity`, { from_ms: from ?? 0, to_ms: to });
+  // spans where imported and live history both exist: only one side is listed for each
+  const overlapsP = ctx.api.get(`cars/${encodeURIComponent(cid)}/overlaps`).then((r) => (r.items || []).filter((o) => (to == null || o.start_ms < to) && (from == null || o.end_ms > from))).catch(() => []);
+  statesP.catch(() => {}); actP.catch(() => {}); // they fail the page below, as before
+  const waitPanel = (title, ic, cls) => panel({ title, icon: ic, cls }, h('div', { class: 'skel skel--block', 'aria-hidden': 'true' }));
 
   // filters
   const kindBtns = h('div', { class: 'seg', role: 'group', 'aria-label': 'Kinds of entry', cover: ['timeline.filter.action', 'timeline.table.column_filter'] },
@@ -163,8 +164,7 @@ export async function mount(ctx) {
   ctx.onCleanup(() => clearTimeout(tt));
 
   // state summary
-  const share = states.share_pct || {};
-  const cur = states.current || {};
+  let cur = {};
   // Now: the car's own state (driving, charging, parked, asleep, unknown) from the live data, else /states
   const nowSlot = h('span', { class: 'metric-value' });
   const nowExplain = h('span', { class: 'explain' });
@@ -176,27 +176,41 @@ export async function mount(ctx) {
     nowExplain.textContent = [since ? `since ${when(since, tz)}` : null, live.stale ? 'last known; no upload for over an hour' : null,
       st === 'unknown' ? 'no recent log, so the state is not known (not the same as asleep)' : null].filter(Boolean).join(' · ');
   }
-  paintNow();
-  const summary = panel({ title: 'States', icon: 'park', cls: 'tl-summary' },
-    h('div', { class: 'figures' },
-      h('div', { class: 'metric', cover: 'states.stat.current' }, h('span', { class: 'metric-label' }, 'Now'), nowSlot, nowExplain),
-      h('div', { class: 'metric', cover: 'states.stat.last_change' }, h('span', { class: 'metric-label' }, 'Last change'), h('span', { class: 'metric-value metric-value--sm' }, states.last_change_ms ? when(states.last_change_ms, tz) : '—'), h('span', { class: 'explain' }, states.last_change_ms ? ago(states.last_change_ms) : '')),
-      h('div', { class: 'metric', cover: 'states.stat.parked_pct' }, h('span', { class: 'metric-label' }, 'Parked'), h('span', { class: 'metric-value' }, format(share.parked, 'percent')), h('span', { class: 'explain' }, 'of the known time, not driving')),
-      h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Asleep'), h('span', { class: 'metric-value' }, format(share.asleep, 'percent')), h('span', { class: 'explain' }, 'both buses quiet')),
-      h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Awake'), h('span', { class: 'metric-value' }, format(share.awake, 'percent')), h('span', { class: 'explain' }, 'driving included')),
-      h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Unknown'), h('span', { class: 'metric-value' }, format(share.unknown, 'percent')), h('span', { class: 'explain' }, 'no log, paused or failed check'))),
-    h('p', { class: 'note' }, 'The shares overlap on purpose (parked time includes asleep time), so they need not add up to 100 %.'));
+  const summaryWait = waitPanel('States', 'park', 'tl-summary');
+  const paintSummary = async () => {
+    const states = await statesP;
+    if (!ctx.alive()) return;
+    const share = states.share_pct || {};
+    cur = states.current || {};
+    paintNow();
+    const summary = panel({ title: 'States', icon: 'park', cls: 'tl-summary' },
+      h('div', { class: 'figures' },
+        h('div', { class: 'metric', cover: 'states.stat.current' }, h('span', { class: 'metric-label' }, 'Now'), nowSlot, nowExplain),
+        h('div', { class: 'metric', cover: 'states.stat.last_change' }, h('span', { class: 'metric-label' }, 'Last change'), h('span', { class: 'metric-value metric-value--sm' }, states.last_change_ms ? when(states.last_change_ms, tz) : '—'), h('span', { class: 'explain' }, states.last_change_ms ? ago(states.last_change_ms) : '')),
+        h('div', { class: 'metric', cover: 'states.stat.parked_pct' }, h('span', { class: 'metric-label' }, 'Parked'), h('span', { class: 'metric-value' }, format(share.parked, 'percent')), h('span', { class: 'explain' }, 'of the known time, not driving')),
+        h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Asleep'), h('span', { class: 'metric-value' }, format(share.asleep, 'percent')), h('span', { class: 'explain' }, 'the car was sleeping')),
+        h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Awake'), h('span', { class: 'metric-value' }, format(share.awake, 'percent')), h('span', { class: 'explain' }, 'driving included')),
+        h('div', { class: 'metric' }, h('span', { class: 'metric-label' }, 'Unknown'), h('span', { class: 'metric-value' }, format(share.unknown, 'percent')), h('span', { class: 'explain' }, 'nothing recorded, or data not trusted'))),
+      h('p', { class: 'note' }, 'The shares overlap on purpose (parked time includes asleep time), so they need not add up to 100 %.'));
+    summaryWait.replaceWith(summary);
+  };
 
-  const stripFrom = from ?? (act.items?.[0]?.start_ms ?? to - 86400000);
-  const stripCsv = csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'activity', period.label), act.items || [], [
-    { label: 'State', value: (s) => (STRIP_KINDS[s.kind] || STRIP_KINDS.unknown).label },
-    timeColumn('Start', 'start_ms', tz), timeColumn('End', 'end_ms', tz),
-    { label: 'Duration (min)', value: (s) => (s.end_ms != null ? Math.round((s.end_ms - s.start_ms) / 60000) : null) },
-    { label: 'Data from', value: (s) => srcText(s) },
-  ]) });
-  const strip = panel({ title: 'What the car did', icon: 'timeline', cls: 'tl-panel', side: [stripCsv], cover: ['states.chart.states', 'states.chart.legend'] },
-    activityStrip(act.items || [], stripFrom, to, { tz, now: ctx.api.now(), size: 'lg', kinds: ['driving', 'charging', 'online', 'online_vehicle_bus_only', 'asleep', 'updating', 'unknown'] }),
-    from == null && act.items?.length ? h('p', { class: 'note' }, `The whole history, from the first data on ${formatDate(stripFrom, tz, { year: true })}.`) : null);
+  const stripWait = waitPanel('What the car did', 'timeline', 'tl-panel');
+  const paintStrip = async () => {
+    const act = await actP;
+    if (!ctx.alive()) return;
+    const stripFrom = from ?? (act.items?.[0]?.start_ms ?? to - 86400000);
+    const stripCsv = csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'activity', period.label), act.items || [], [
+      { label: 'State', value: (s) => (STRIP_KINDS[s.kind] || STRIP_KINDS.unknown).label },
+      timeColumn('Start', 'start_ms', tz), timeColumn('End', 'end_ms', tz),
+      { label: 'Duration (min)', value: (s) => (s.end_ms != null ? Math.round((s.end_ms - s.start_ms) / 60000) : null) },
+      { label: 'Data from', value: (s) => srcText(s) },
+    ]) });
+    const strip = panel({ title: 'What the car did', icon: 'timeline', cls: 'tl-panel', side: [stripCsv], cover: ['states.chart.states', 'states.chart.legend'] },
+      activityStrip(act.items || [], stripFrom, to, { tz, now: ctx.api.now(), size: 'lg', kinds: ['driving', 'charging', 'online', 'online_vehicle_bus_only', 'asleep', 'updating', 'unknown'] }),
+      from == null && act.items?.length ? h('p', { class: 'note' }, `The whole history, from the first data on ${formatDate(stripFrom, tz, { year: true })}.`) : null);
+    stripWait.replaceWith(strip);
+  };
 
   // the list
   const list = h('div', { class: 'tl-list', role: 'list' });
@@ -260,27 +274,33 @@ export async function mount(ctx) {
       h('li', { cover: 'faq.no-sleep.mcu1' }, h('b', null, 'Older Model S and X. '), 'Cars with the older media computer sleep less deeply and wake more often; expect more awake time than on newer cars.'),
       h('li', { cover: 'faq.no-sleep.other-loggers' }, h('b', null, 'Other apps. '), 'Sentry Mate only listens to the car, so it never keeps it awake. An app that asks Tesla’s servers for the car’s data can wake it; check the parked rows for awake spells when such an app runs.')));
 
+  const ovNote = h('p', { class: 'note tl-legend-note warn', hidden: true });
+  const paintOverlaps = async () => {
+    const overlaps = await overlapsP;
+    if (!ctx.alive() || !overlaps.length) return;
+    replace(ovNote, icon('info', 'ico--sm'), ' ',
+      overlaps.map((o, i) => [i ? '; ' : '', `${dateTime(o.start_ms, tz)} to ${dateTime(o.end_ms, tz)}: ${o.shown_source === 'live' ? 'live data' : 'imported history'} is shown (both exist)`]),
+      '. ', h('a', { class: 'link', href: state.buildUrl('import') + '#overlaps' }, 'Choose which side in Import'), '.');
+    ovNote.hidden = false;
+  };
   function overlapNote() {
     const where = h('p', { class: 'note tl-legend-note tl-src-note' }, 'Each entry says where its data came from: ', h('span', { class: 'src-key' },
       srcMark({ sources: [{ kind: 'smo', label: 'SMO (the car\'s CAN Bridge)' }] }), srcMark({ sources: [{ kind: 'tesla_api', label: 'the Tesla API' }] }), srcMark({ sources: [{ kind: 'import', site: 'teslamate', label: 'an import (TeslaMate)' }] })),
       car.sources?.length ? h('span', { class: 'tl-car-src' }, h('span', null, `${car.name}, all its history:`), srcMark(car)) : null);
-    if (!overlaps.length) return where;
-    return [where, h('p', { class: 'note tl-legend-note warn' }, icon('info', 'ico--sm'), ' ',
-      overlaps.map((o, i) => [i ? '; ' : '', `${dateTime(o.start_ms, tz)} to ${dateTime(o.end_ms, tz)}: ${o.shown_source === 'live' ? 'live data' : 'imported history'} is shown (both exist)`]),
-      '. ', h('a', { class: 'link', href: state.buildUrl('import') + '#overlaps' }, 'Choose which side in Import'), '.')];
+    return [where, ovNote];
   }
 
   replace(root,
     pageHead({
       eyebrow: car.name, title: 'Timeline', sub: [period.label, `times in ${tz.replace(/_/g, ' ')}`],
-      actions: [h('button', { class: 'btn', type: 'button', onclick: openCarSwitcher, cover: ['timeline.filter.car', 'states.filter.car'] }, icon('car'), 'Switch car')],
+      actions: [h('button', { class: 'btn switch-car-btn', type: 'button', onclick: openCarSwitcher, cover: ['timeline.filter.car', 'states.filter.car'] }, icon('car'), 'Switch car')],
     }),
     h('div', { class: 'toolbar tl-filters' },
       h('button', { class: 'btn', type: 'button', onclick: (e) => openPeriodPicker(e.currentTarget), cover: ['timeline.control.time_range', 'states.control.time_range'] }, icon('calendar', 'ico--sm'), period.preset === 'custom' ? 'Custom period' : period.label, icon('chev-d', 'ico--sm')),
       kindBtns,
       h('span', { cover: ['timeline.filter.address'] }, placeSel),
       h('label', { class: 'field field--search' }, icon('search'), textIn)),
-    summary, strip,
+    summaryWait, stripWait,
     h('section', { class: 'panel tl-rows', 'aria-label': 'Entries', cover: ['timeline.table', 'projects.dash', 'timeline.row.drive', 'timeline.row.charging', 'timeline.row.parking', 'timeline.row.missing', 'timeline.row.parking_gap_overlap', 'timeline.row.updating',
       'timeline.col.start', 'timeline.col.end', 'timeline.col.action', 'timeline.col.start_address', 'timeline.col.end_address', 'timeline.col.odometer', 'timeline.col.duration', 'timeline.col.distance', 'timeline.col.range', 'timeline.col.range_diff', 'timeline.col.energy_diff', 'timeline.col.soc', 'timeline.col.soc_diff', 'timeline.col.temp',
       'timeline.link.trip_span', 'timeline.link.slot_details', 'timeline.link.geofence_start', 'timeline.link.geofence_end', 'timeline.link.place_cells_other_rows'] },
@@ -289,7 +309,10 @@ export async function mount(ctx) {
     overlapNote(), list, foot),
     help);
 
-  await reload();
+  // GET states or activity failing fails the page (as before)
+  try {
+    await Promise.all([paintSummary(), paintStrip(), paintOverlaps(), reload()]);
+  } catch (e) { ctx.fail(e); return; }
   if (!ctx.alive()) return;
   ctx.ready();
 

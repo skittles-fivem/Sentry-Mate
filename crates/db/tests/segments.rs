@@ -180,3 +180,74 @@ fn charge_points(t0: u64, n: u64) -> Vec<ChargePoint> {
         .map(|i| ChargePoint { t_ms: t0 + i * 1000, power_kw: Some(11.0), soc: Some(50.0), ..ChargePoint::default() })
         .collect()
 }
+
+#[test]
+fn a_day_read_again_after_a_write_has_the_new_points_and_versions_move_on() {
+    let t = test_db(Options::default());
+    let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
+    let v0 = t.db.version(car);
+    // a whole day, written whole (a snapshot), read twice: the second read comes from the kept day
+    let day = samples(DAY0, 600);
+    t.db.write_points(car, Source::Live, DAY0, DAY0 + DAY_MS, &day).unwrap();
+    let v1 = t.db.version(car);
+    assert!(v1.live > v0.live && v1.imported == v0.imported, "{v0:?} {v1:?}");
+    for _ in 0..2 {
+        assert_eq!(t.db.read_points::<Sample>(car, Source::Live, DAY0, DAY0 + DAY_MS).unwrap(), day);
+        let f = t.db.read_fields::<Sample>(car, Source::Live, DAY0, DAY0 + DAY_MS, &["soc"]).unwrap();
+        assert_eq!(f.t_ms.len(), 600);
+    }
+    // the day written whole again with other values: read again, never the kept one
+    let mut again = samples(DAY0, 300);
+    for s in &mut again {
+        s.soc = Some(12.0);
+    }
+    t.db.write_points(car, Source::Live, DAY0, DAY0 + DAY_MS, &again).unwrap();
+    assert!(t.db.version(car).live > v1.live);
+    assert_eq!(t.db.read_points::<Sample>(car, Source::Live, DAY0, DAY0 + DAY_MS).unwrap(), again);
+    let f = t.db.read_fields::<Sample>(car, Source::Live, DAY0, DAY0 + DAY_MS, &["soc"]).unwrap();
+    assert_eq!(f.t_ms.len(), 300);
+    assert!(f.values[0].1.iter().all(|v| *v == Some(12.0)));
+    // an imported day moves only the imported part; a place moves the shared part
+    let v2 = t.db.version(car);
+    t.db.write_points(car, Source::Teslamate, DAY0, DAY0 + DAY_MS, &day).unwrap();
+    let v3 = t.db.version(car);
+    assert!(v3.imported > v2.imported && v3.live == v2.live && v3.shared == v2.shared, "{v2:?} {v3:?}");
+}
+
+#[test]
+fn days_read_while_they_are_written_folded_and_settled_never_fail() {
+    let t = test_db(Options { fold_min_bytes: 2_000, ..Options::default() });
+    let car = t.db.create_car(new_car("Model Y", &[])).unwrap().id;
+    // two days already whole (snapshots alone, read without the car's lock), a third written a minute at a time
+    let old = samples(DAY0, 2 * 86_400 / 60);
+    t.db.write_points(car, Source::Live, DAY0, DAY0 + 2 * DAY_MS, &old).unwrap();
+    let day3 = DAY0 + 2 * DAY_MS;
+    let all = samples(day3, 3 * 3600);
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let n_old = old.len();
+    std::thread::scope(|s| {
+        let (db, done) = (&t.db, &done);
+        s.spawn(move || {
+            for (i, minute) in all.chunks(60).enumerate() {
+                let (from, to) = (minute[0].t_ms, minute[0].t_ms + 60_000);
+                db.write_points(car, Source::Live, from, to, minute).unwrap();
+                if i % 40 == 39 {
+                    db.settle(car, day3 + DAY_MS).unwrap();
+                }
+            }
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        for _ in 0..3 {
+            s.spawn(move || {
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    let pts: Vec<Sample> = db.read_points(car, Source::Live, DAY0, day3 + DAY_MS).unwrap();
+                    assert!(pts.windows(2).all(|p| p[0].t_ms < p[1].t_ms));
+                    let f = db.read_fields::<Sample>(car, Source::Live, DAY0, day3 + DAY_MS, &["soc"]).unwrap();
+                    assert!(f.t_ms.len() >= n_old);
+                }
+            });
+        }
+    });
+    let back: Vec<Sample> = t.db.read_points(car, Source::Live, day3, day3 + DAY_MS).unwrap();
+    assert_eq!(back.len(), 3 * 3600);
+}

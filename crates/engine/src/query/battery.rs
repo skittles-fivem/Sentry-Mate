@@ -136,9 +136,10 @@ fn profile_of(c: &Car) -> dbc::Profile {
 }
 
 /// The pack reading of one UTC record day (days since 1970): from the kept one while the day's logs are the same,
-/// else decoded (newest log first, until one has a full-pack value) and kept.
-fn day_pack(e: &Engine, c: &Car, d: u32) -> QResult<Option<PackReading>> {
-    let rec = records::day(e.db(), c.id, d)?;
+/// else from the logs' own readings (newest log first, until one has a full-pack value): kept from an earlier read of
+/// the log ([`super::pack_logs`]), else decoded now (unless the query may not decode); and kept.
+pub(crate) fn day_pack(e: &Engine, c: &Car, d: u32) -> QResult<Option<PackReading>> {
+    let rec = records::day_shared(e.db(), c.id, d)?;
     let mut logs: Vec<(&String, &records::LogEntry)> =
         rec.logs.iter().filter(|(_, en)| en.usable && matches!(en.outcome, Outcome::Decoded { .. })).collect();
     if logs.is_empty() {
@@ -160,9 +161,24 @@ fn day_pack(e: &Engine, c: &Car, d: u32) -> QResult<Option<PackReading>> {
         return Ok(kept.reading);
     }
     let profile = profile_of(c);
+    let profile_name = c.profile().dbc_name();
+    let of_logs = super::pack_logs::Kept::read(e, c.id, d)?;
     let mut reading = None;
-    for (n, _) in &logs {
-        if let Some(p) = decode_pack(e, profile, n)?
+    for (n, en) in &logs {
+        let p = match of_logs.get(n, en.done_ms, profile_name) {
+            Some(p) => Some(p),
+            None => {
+                if !super::pack_logs::may_decode() {
+                    return Err(super::pack_logs::not_done());
+                }
+                let p = decode_pack(e, profile, n)?;
+                if let Some(p) = &p {
+                    super::pack_logs::keep(e, c.id, d, n, en.done_ms, profile_name, en.span().1, p.clone())?;
+                }
+                p
+            }
+        };
+        if let Some(p) = p
             && p.full_pack_kwh.is_some()
         {
             reading = Some(p);
@@ -330,25 +346,204 @@ fn each_sample(
                 .filter(|&d| d.saturating_add(DAY) > a && d < b),
         );
     }
-    let mut row = vec![None; names.len()];
     for day in days {
         let (x, y) = (day.max(a), day.saturating_add(DAY).min(b));
-        let mut rows: Vec<(u64, Vec<Option<f64>>)> = Vec::new();
-        for s in model::Stream::ALL {
-            let cols = e.db().read_fields::<Sample>(car, s, x, y, names)?;
-            for (i, &t) in cols.t_ms.iter().enumerate() {
-                for (k, (_, col)) in cols.values.iter().enumerate() {
-                    row[k] = col.get(i).copied().flatten().filter(|v| v.is_finite());
-                }
-                rows.push((t, row.clone()));
-            }
-        }
-        rows.sort_by_key(|x| x.0);
-        for (t, v) in &rows {
-            f(*t, v);
-        }
+        each_sample_of_day(e, car, x, y, names, &mut f)?;
     }
     Ok(())
+}
+
+/// [`each_sample`] of `[x, y)`, within one UTC day.
+fn each_sample_of_day(
+    e: &Engine,
+    car: CarId,
+    x: u64,
+    y: u64,
+    names: &[&str],
+    mut f: impl FnMut(u64, &[Option<f64>]),
+) -> QResult<()> {
+    let mut row = vec![None; names.len()];
+    let mut rows: Vec<(u64, Vec<Option<f64>>)> = Vec::new();
+    for s in model::Stream::ALL {
+        let cols = e.db().read_fields::<Sample>(car, s, x, y, names)?;
+        for (i, &t) in cols.t_ms.iter().enumerate() {
+            for (k, (_, col)) in cols.values.iter().enumerate() {
+                row[k] = col.get(i).copied().flatten().filter(|v| v.is_finite());
+            }
+            rows.push((t, row.clone()));
+        }
+    }
+    rows.sort_by_key(|x| x.0);
+    for (t, v) in &rows {
+        f(*t, v);
+    }
+    Ok(())
+}
+
+/// 15 minutes: the slots samples are summed in for long periods. Local days and hours start on one in every time
+/// zone in use, so a bucket of them holds whole slots.
+const RAW_SLOT: u64 = 900_000;
+
+/// The sample fields the slots sum.
+const RAW_NAMES: [&str; 8] = [
+    "soc",
+    "soc_bms",
+    "range_km",
+    "energy_remaining_kwh",
+    "odometer_km",
+    "outside_temp_c",
+    "inside_temp_c",
+    "battery_temp_c",
+];
+
+/// One value's readings in a slot: how many, their sum, the lowest and the highest.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+struct Sum4(
+    u64,
+    #[serde(with = "super::dayparts::exact")] f64,
+    #[serde(with = "super::dayparts::exact")] f64,
+    #[serde(with = "super::dayparts::exact")] f64,
+);
+
+impl Sum4 {
+    fn add(&mut self, v: f64) {
+        if self.0 == 0 {
+            (self.2, self.3) = (v, v);
+        } else {
+            (self.2, self.3) = (self.2.min(v), self.3.max(v));
+        }
+        self.0 += 1;
+        self.1 += v;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+
+    fn mean(&self) -> Option<(f64, u64)> {
+        (self.0 > 0).then_some((self.1, self.0))
+    }
+}
+
+/// The car's samples in a slot (every stream, as [`each_sample`] gives them), summed: what `/battery-level`,
+/// `/projected-range` and `/temperatures` take from them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct RawSlot {
+    /// Where the slot starts (or the part of it read, when a period starts inside it).
+    t: u64,
+    #[serde(default, skip_serializing_if = "Sum4::is_empty")]
+    soc: Sum4,
+    #[serde(default, skip_serializing_if = "Sum4::is_empty")]
+    soc_bms: Sum4,
+    /// The range over the battery % (of at least 10 %), times 100.
+    #[serde(default, skip_serializing_if = "Sum4::is_empty")]
+    full: Sum4,
+    /// The energy over the battery % (of at least 10 %), and 1 over it (so a buffer can be taken off): `(n, Σ en/soc,
+    /// Σ 1/soc)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    energy: Option<Energy>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "super::dayparts::exact_opt")]
+    odometer: Option<f64>,
+    #[serde(default, skip_serializing_if = "Sum4::is_empty")]
+    outside: Sum4,
+    #[serde(default, skip_serializing_if = "Sum4::is_empty")]
+    cabin: Sum4,
+    #[serde(default, skip_serializing_if = "Sum4::is_empty")]
+    battery: Sum4,
+}
+
+/// `(n, Σ en/soc, Σ 1/soc)` ([`RawSlot::energy`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+struct Energy(u64, #[serde(with = "super::dayparts::exact")] f64, #[serde(with = "super::dayparts::exact")] f64);
+
+impl RawSlot {
+    fn add(&mut self, v: &[Option<f64>]) {
+        let (soc, soc_bms, rg, en, odo) = (v[0], v[1], v[2], v[3], v[4]);
+        if let Some(s) = soc {
+            self.soc.add(s);
+        }
+        if let Some(s) = soc_bms {
+            self.soc_bms.add(s);
+        }
+        let s10 = soc.filter(|s| *s >= 10.0);
+        if let Some((rg, s)) = rg.zip(s10) {
+            self.full.add(rg / s * 100.0);
+        }
+        if let Some((en, s)) = en.zip(s10) {
+            let x = self.energy.get_or_insert(Energy(0, 0.0, 0.0));
+            x.0 += 1;
+            x.1 += en / s;
+            x.2 += 1.0 / s;
+        }
+        if let Some(o) = odo {
+            self.odometer = Some(o);
+        }
+        if let Some(t) = v[5] {
+            self.outside.add(t);
+        }
+        if let Some(t) = v[6] {
+            self.cabin.add(t);
+        }
+        if let Some(t) = v[7] {
+            self.battery.add(t);
+        }
+    }
+}
+
+/// The slots of the car's samples in `[x, y)` (within one UTC day starting `day`), in time order.
+fn raw_slots_of(e: &Engine, car: CarId, day: u64, x: u64, y: u64) -> QResult<Vec<RawSlot>> {
+    let mut out: Vec<RawSlot> = Vec::new();
+    each_sample_of_day(e, car, x, y, &RAW_NAMES, |t, v| {
+        let start = (day + t.saturating_sub(day) / RAW_SLOT * RAW_SLOT).max(x);
+        if out.last().is_none_or(|s| s.t != start) {
+            out.push(RawSlot { t: start, ..RawSlot::default() });
+        }
+        if let Some(s) = out.last_mut() {
+            s.add(v);
+        }
+    })?;
+    Ok(out)
+}
+
+/// The car's samples of `[a, b)` summed per [`RAW_SLOT`] (each slot also cut at `cut`, so no slot holds samples on
+/// both sides of it), in time order. A UTC day the period holds whole is kept, with a stamp of that day's files.
+fn raw_slots(e: &Engine, car: CarId, a: u64, b: u64, cut: Option<u64>) -> QResult<Vec<RawSlot>> {
+    if a >= b {
+        return Ok(Vec::new());
+    }
+    let stamps = super::dayparts::Stamps::of(e, car)?;
+    let days = stamps.days(&model::Stream::ALL, a, b);
+    // (a new number when what a slot holds or how it is read changes: kept days are made again)
+    let key = super::dayparts::key_of(&[&"raw-slots 2", &RAW_NAMES, &RAW_SLOT]);
+    let whole: Vec<(u64, u64)> = days
+        .iter()
+        .filter(|&&d| d >= a && d.saturating_add(DAY) <= b && cut.is_none_or(|c| c <= d || c >= d + DAY))
+        .map(|&d| (d, stamps.of_days(d, d, key)))
+        .collect();
+    let kept =
+        super::dayparts::parts(e, car, "raw-slots", &whole, || Ok(()), |_, d| raw_slots_of(e, car, d, d, d + DAY))?;
+    let mut kept = kept.into_iter().zip(whole.iter().map(|x| x.0)).peekable();
+    let mut out = Vec::new();
+    for day in days {
+        if let Some((p, _)) = kept.next_if(|(_, d)| *d == day) {
+            out.extend(p.iter().cloned());
+            continue;
+        }
+        let (x, y) = (day.max(a), day.saturating_add(DAY).min(b));
+        match cut.filter(|&c| c > x && c < y) {
+            Some(c) => {
+                out.extend(raw_slots_of(e, car, day, x, c)?);
+                out.extend(raw_slots_of(e, car, day, c, y)?);
+            }
+            None => out.extend(raw_slots_of(e, car, day, x, y)?),
+        }
+    }
+    Ok(out)
+}
+
+/// Whether every edge starts a slot (so buckets between them hold whole slots).
+fn on_slots(edges: &[u64]) -> bool {
+    edges.iter().all(|t| t.is_multiple_of(RAW_SLOT))
 }
 
 /// The first day with samples (either source), as the start of a period without `from_ms`.
@@ -1376,8 +1571,8 @@ pub fn battery_level(e: &Engine, car: CarId, q: &LevelQuery, now_ms: u64) -> QRe
     let mut sums = vec![(0.0f64, 0u64); starts.len()];
     let mut day_sums = vec![(0.0f64, 0u64); mov_edges.len().saturating_sub(1)];
     let (mut bi, mut di) = (0usize, 0usize);
-    each_sample(e, car, read_from, end, &["soc"], |t, v| {
-        let Some(soc) = v[0] else { return };
+    // `soc` readings (summed: `n` of them) at `t`
+    let mut add = |t: u64, soc: f64, n: u64| {
         if !day_sums.is_empty() {
             while di + 1 < mov_edges.len() && mov_edges[di + 1] <= t {
                 di += 1;
@@ -1386,7 +1581,7 @@ pub fn battery_level(e: &Engine, car: CarId, q: &LevelQuery, now_ms: u64) -> QRe
                 && t >= mov_edges[di]
             {
                 d.0 += soc;
-                d.1 += 1;
+                d.1 += n;
             }
         }
         if t < starts[0] || t < a {
@@ -1399,9 +1594,23 @@ pub fn battery_level(e: &Engine, car: CarId, q: &LevelQuery, now_ms: u64) -> QRe
             && t < edge_of(bi)
         {
             x.0 += soc;
-            x.1 += 1;
+            x.1 += n;
         }
-    })?;
+    };
+    if on_slots(&day_edges) && on_slots(&mov_edges) && on_slots(&starts) {
+        // buckets of whole slots: the slots' sums (cut where the period starts, the moving lines reading before it)
+        for s in raw_slots(e, car, read_from, end, Some(a))? {
+            if let Some((sum, n)) = s.soc.mean() {
+                add(s.t, sum, n);
+            }
+        }
+    } else {
+        each_sample(e, car, read_from, end, &["soc"], |t, v| {
+            if let Some(soc) = v[0] {
+                add(t, soc, 1);
+            }
+        })?;
+    }
     let buckets: Vec<LevelBucket> = starts
         .iter()
         .zip(&sums)
@@ -1574,42 +1783,66 @@ pub fn projected_range(e: &Engine, car: CarId, q: &RangeQuery, now_ms: u64) -> Q
     let mut acc = vec![vec![(0.0f64, 0u64); k]; starts.len()];
     let mut bi = 0usize;
     let edge = |i: usize| edges[i + 1];
-    each_sample(e, car, starts[0].min(lo), end, &names, |t, v| {
+    // the bucket of a reading at `t`
+    let mut bucket = |t: u64| {
         if t < starts[0] {
-            return;
+            return None;
         }
         while bi + 1 < starts.len() && edge(bi) <= t {
             bi += 1;
         }
-        if t >= edge(bi) {
-            return;
-        }
-        let (rg, soc, en) = (v[0], v[1].filter(|s| *s >= 10.0), v[2]);
-        let vals = [
-            rg.zip(soc).map(|(rg, s)| rg / s * 100.0),
-            en.zip(soc)
-                .zip(rated)
-                .filter(|(_, w)| *w > 0.0)
-                .map(|((en, s), w)| (en - buffer.unwrap_or(0.0)) / s * 100.0 * 1000.0 / w),
-            None,
-            v[1],
-            v[3],
-            v[4],
-            v[5],
-            v[6],
-        ];
-        for (j, x) in vals.iter().enumerate() {
-            if let Some(x) = x {
-                let a = &mut acc[bi][j];
-                if RANGE_FIELDS[j] == "odometer_km" {
-                    *a = (*x, 1);
-                } else {
-                    a.0 += x;
-                    a.1 += 1;
+        (t < edge(bi)).then_some(bi)
+    };
+    if on_slots(&edges) {
+        // buckets of whole slots: the slots' sums
+        for s in raw_slots(e, car, starts[0].min(lo), end, None)? {
+            let Some(bi) = bucket(s.t) else { continue };
+            let energy = s
+                .energy
+                .zip(rated.filter(|w| *w > 0.0))
+                .map(|(Energy(n, en, inv), w)| ((en - buffer.unwrap_or(0.0) * inv) * 100.0 * 1000.0 / w, n));
+            let vals =
+                [s.full.mean(), energy, None, s.soc.mean(), s.soc_bms.mean(), None, s.outside.mean(), s.battery.mean()];
+            for (j, x) in vals.iter().enumerate() {
+                if let Some((sum, n)) = x {
+                    acc[bi][j].0 += sum;
+                    acc[bi][j].1 += n;
                 }
             }
+            if let Some(o) = s.odometer {
+                acc[bi][5] = (o, 1);
+            }
         }
-    })?;
+    } else {
+        each_sample(e, car, starts[0].min(lo), end, &names, |t, v| {
+            let Some(bi) = bucket(t) else { return };
+            let (rg, soc, en) = (v[0], v[1].filter(|s| *s >= 10.0), v[2]);
+            let vals = [
+                rg.zip(soc).map(|(rg, s)| rg / s * 100.0),
+                en.zip(soc)
+                    .zip(rated)
+                    .filter(|(_, w)| *w > 0.0)
+                    .map(|((en, s), w)| (en - buffer.unwrap_or(0.0)) / s * 100.0 * 1000.0 / w),
+                None,
+                v[1],
+                v[3],
+                v[4],
+                v[5],
+                v[6],
+            ];
+            for (j, x) in vals.iter().enumerate() {
+                if let Some(x) = x {
+                    let a = &mut acc[bi][j];
+                    if RANGE_FIELDS[j] == "odometer_km" {
+                        *a = (*x, 1);
+                    } else {
+                        a.0 += x;
+                        a.1 += 1;
+                    }
+                }
+            }
+        })?;
+    }
     let mut values: BTreeMap<String, Vec<Option<f64>>> = BTreeMap::new();
     for (j, f) in RANGE_FIELDS.iter().enumerate() {
         let digits = if *f == "odometer_km" { 3 } else { 2 };
@@ -1912,6 +2145,71 @@ impl MinMax {
         self.sum += v;
         self.n += 1;
     }
+
+    /// A slot's readings ([`Sum4`]).
+    fn merge(&mut self, s: &Sum4) {
+        if s.0 > 0 {
+            self.min = Some(self.min.map_or(s.2, |m| m.min(s.2)));
+            self.max = Some(self.max.map_or(s.3, |m| m.max(s.3)));
+            self.sum += s.1;
+            self.n += s.0;
+        }
+    }
+}
+
+/// The 15 % and 85 % quantiles of the outside temperature of `[x, y)`, every reading of every stream.
+/// The 15 % and 85 % quantiles of a day's outside temperature.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+struct TempQ(
+    #[serde(with = "super::dayparts::exact_opt")] Option<f64>,
+    #[serde(with = "super::dayparts::exact_opt")] Option<f64>,
+);
+
+fn temp_quantiles_of(e: &Engine, car: CarId, x: u64, y: u64) -> QResult<TempQ> {
+    let mut vals: Vec<f64> = Vec::new();
+    each_sample(e, car, x, y, &["outside_temp_c"], |_, v| {
+        if let Some(t) = v[0] {
+            vals.push(t);
+        }
+    })?;
+    vals.sort_by(f64::total_cmp);
+    Ok(TempQ(quantile(&vals, 0.15), quantile(&vals, 0.85)))
+}
+
+/// Per local day (`edges[i]..edges[i + 1]`, within `[lo, end)`), the 15 % and 85 % quantiles of the outside
+/// temperature. A day the period holds whole is kept, with a stamp of the files of the UTC days it meets.
+fn temp_quantiles(e: &Engine, car: CarId, edges: &[u64], lo: u64, end: u64) -> QResult<Vec<TempQ>> {
+    let n = edges.len().saturating_sub(1);
+    let stamps = super::dayparts::Stamps::of(e, car)?;
+    let mut out = vec![TempQ::default(); n];
+    let mut whole: Vec<(u64, u64)> = Vec::new();
+    let mut at: Vec<usize> = Vec::new();
+    for i in 0..n {
+        let (x, y) = (edges[i].max(lo), edges[i + 1].min(end));
+        if y <= x || stamps.days(&model::Stream::ALL, x, y).is_empty() {
+            continue;
+        }
+        if edges[i] >= lo && edges[i + 1] <= end {
+            let key = super::dayparts::key_of(&[&"temp-quantiles 2", &edges[i + 1]]);
+            whole.push((edges[i], stamps.of_days(edges[i] / DAY * DAY, (edges[i + 1] - 1) / DAY * DAY, key)));
+            at.push(i);
+        } else {
+            out[i] = temp_quantiles_of(e, car, x, y)?;
+        }
+    }
+    let next = |t: u64| edges.get(edges.partition_point(|&m| m <= t)).copied().unwrap_or(t);
+    let kept = super::dayparts::parts(
+        e,
+        car,
+        "temp-quantiles",
+        &whole,
+        || Ok(()),
+        |_, t| temp_quantiles_of(e, car, t, next(t)),
+    )?;
+    for (i, q) in at.into_iter().zip(kept) {
+        out[i] = *q;
+    }
+    Ok(out)
 }
 
 /// `/cars/{car}/temperatures` (default the whole history): every reading, so the lowest and highest are true; the
@@ -1970,50 +2268,69 @@ pub fn temperatures(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QRe
     let known_pct = r(Some(span.saturating_sub(asleep + unknown) as f64 * 100.0 / span as f64), 1).unwrap_or(0.0);
     let mut all = [MinMax::default(); 3];
     let mut daily = Vec::with_capacity(days);
-    let mut cur: Option<usize> = None;
-    let mut day_vals: Vec<f64> = Vec::new();
-    let mut day_mm = MinMax::default();
-    let flush = |i: usize, vals: &mut Vec<f64>, mm: &mut MinMax, daily: &mut Vec<TempDay>, awake: &[u64]| {
-        vals.sort_by(f64::total_cmp);
+    let push = |i: usize, mm: &MinMax, q: (Option<f64>, Option<f64>), daily: &mut Vec<TempDay>| {
         let (x, y) = (edges[i].max(lo), edges[i + 1].min(end));
         let len = y.saturating_sub(x);
         daily.push(TempDay {
             date: crate::tz::date_str(edges[i], tz),
             t_ms: edges[i],
             min_c: r(mm.min, 1),
-            p15_c: r(quantile(vals, 0.15), 1),
-            p85_c: r(quantile(vals, 0.85), 1),
+            p15_c: r(q.0, 1),
+            p85_c: r(q.1, 1),
             max_c: r(mm.max, 1),
             coverage_pct: r((len > 0).then(|| awake[i] as f64 * 100.0 / len as f64), 1).unwrap_or(0.0),
         });
-        vals.clear();
-        *mm = MinMax::default();
     };
-    each_sample(e, car, lo, end, &["outside_temp_c", "inside_temp_c", "battery_temp_c"], |t, v| {
-        for k in 0..3 {
-            if let Some(x) = v[k] {
-                all[k].add(x);
+    if on_slots(&edges) {
+        // local days of whole slots: the slots' sums, and each day's quantiles (kept per day)
+        let mut mm = vec![MinMax::default(); days];
+        for s in raw_slots(e, car, lo, end, None)? {
+            all[0].merge(&s.outside);
+            all[1].merge(&s.cabin);
+            all[2].merge(&s.battery);
+            let i = edges.partition_point(|&m| m <= s.t).saturating_sub(1).min(days - 1);
+            mm[i].merge(&s.outside);
+        }
+        let qs = temp_quantiles(e, car, &edges, lo, end)?;
+        for i in 0..days {
+            push(i, &mm[i], (qs[i].0, qs[i].1), &mut daily);
+        }
+    } else {
+        let mut cur: Option<usize> = None;
+        let mut day_vals: Vec<f64> = Vec::new();
+        let mut day_mm = MinMax::default();
+        let flush = |i: usize, vals: &mut Vec<f64>, mm: &mut MinMax, daily: &mut Vec<TempDay>| {
+            vals.sort_by(f64::total_cmp);
+            push(i, mm, (quantile(vals, 0.15), quantile(vals, 0.85)), daily);
+            vals.clear();
+            *mm = MinMax::default();
+        };
+        each_sample(e, car, lo, end, &["outside_temp_c", "inside_temp_c", "battery_temp_c"], |t, v| {
+            for k in 0..3 {
+                if let Some(x) = v[k] {
+                    all[k].add(x);
+                }
             }
-        }
-        let i = edges.partition_point(|&m| m <= t).saturating_sub(1).min(days - 1);
-        // the days before this one are done (those without samples too)
-        while cur.is_none_or(|c| c < i) {
-            if let Some(c) = cur {
-                flush(c, &mut day_vals, &mut day_mm, &mut daily, &awake);
+            let i = edges.partition_point(|&m| m <= t).saturating_sub(1).min(days - 1);
+            // the days before this one are done (those without samples too)
+            while cur.is_none_or(|c| c < i) {
+                if let Some(c) = cur {
+                    flush(c, &mut day_vals, &mut day_mm, &mut daily);
+                }
+                cur = Some(cur.map_or(0, |c| c + 1));
             }
-            cur = Some(cur.map_or(0, |c| c + 1));
+            if let Some(x) = v[0] {
+                day_vals.push(x);
+                day_mm.add(x);
+            }
+        })?;
+        let from = cur.map_or(0, |c| {
+            flush(c, &mut day_vals, &mut day_mm, &mut daily);
+            c + 1
+        });
+        for i in from..days {
+            flush(i, &mut day_vals, &mut day_mm, &mut daily);
         }
-        if let Some(x) = v[0] {
-            day_vals.push(x);
-            day_mm.add(x);
-        }
-    })?;
-    let from = cur.map_or(0, |c| {
-        flush(c, &mut day_vals, &mut day_mm, &mut daily, &awake);
-        c + 1
-    });
-    for i in from..days {
-        flush(i, &mut day_vals, &mut day_mm, &mut daily, &awake);
     }
     let stat = |m: &MinMax| TempStat {
         min_c: r(m.min, 1),

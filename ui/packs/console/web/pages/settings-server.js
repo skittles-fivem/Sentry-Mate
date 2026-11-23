@@ -66,7 +66,7 @@ export async function mount(ctx) {
   const [settings, network, notices, cars, trips] = await Promise.all([
     ctx.api.get('settings').catch(() => null),
     admin ? ctx.api.get('network').catch(() => null) : null,
-    ctx.api.get('notices').catch(() => null),
+    ctx.api.get('notices', null, { maxAgeMs: 5000 }).catch(() => null), // the frame's answer of this load
     ctx.api.list('cars', { sort: 'custom', limit: 500 }).all({ max: 5000 }).catch(() => []),
     admin ? ctx.api.list('trips', { limit: 500 }).all({ max: 2000 }).catch(() => []) : [],
     loadAccounts(), loadSessions(),

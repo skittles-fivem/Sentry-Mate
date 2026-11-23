@@ -115,6 +115,9 @@ function card(c, tz) {
   const row = (label, k, cls) => h('div', { class: 'cn-fact' }, h('dt', null, label), dd(k, cls));
   refs.light = h('span', { class: 'cn-light', 'aria-hidden': 'true' });
   refs.word = h('span', { class: 'cn-word' });
+  // CAN Bridge rows: logs the server lost and asked the car for again (a chip in the top row, hidden at 0)
+  refs.miss = chip('', { tone: 'sun' });
+  refs.miss.classList.add('cn-miss');
   refs.reason = h('p', { class: 'cn-reason' });
   refs.lastOk = h('dd');
   refs.next = h('dd');
@@ -126,6 +129,7 @@ function card(c, tz) {
   const el = tile({ w: 2, href: c.link || null, cls: 'cn-card', cover: 'conn.overview.rows' },
     h('div', { class: 'cn-top' },
       h('h3', { class: 'cn-label' }, c.label),
+      refs.miss,
       h('span', { class: 'cn-status', cover: 'conn.overview.status' }, refs.light, refs.word),
       c.link ? icon('chevronRight', 'cn-go') : null),
     refs.reason,
@@ -146,6 +150,10 @@ function card(c, tz) {
     for (const k of STATUS_ORDER) el.classList.toggle(`is-${k}`, k === st);
     setText(refs.word, STATUS[st][0]);
     setText(refs.reason, reasonText(x));
+    const miss = x.kind === 'smo' && x.missing_logs > 0 ? x.missing_logs : 0;
+    refs.miss.hidden = !miss;
+    setText(refs.miss.lastChild, miss ? `${n0(miss)} missing` : '');
+    refs.miss.title = miss ? `${n0(miss)} ${miss === 1 ? 'log is' : 'logs are'} missing on the server; the car was asked to send ${miss === 1 ? 'it' : 'them'} again` : '';
     setRel(refs.lastOk, x.last_ok_ms, x.status === 'off' ? 'None: it is off' : 'None in 7 days');
     setRel(refs.next, x.next_ms, x.status === 'off' || x.status === 'paused' ? 'None planned' : x.unit === 'messages' ? 'When it has news' : 'When there is something', { future: true });
     setText(refs.pace, x.pace ? `${PACE[x.pace] || cap1(x.pace)}${x.pace_s != null ? `, every ${formatDuration(x.pace_s * 1000)}` : ''}`

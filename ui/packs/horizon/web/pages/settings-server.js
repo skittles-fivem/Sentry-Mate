@@ -87,7 +87,7 @@ export async function mount(ctx) {
     const [settings, network, notices, cars] = await Promise.all([
       ctx.api.get('settings'),
       admin ? ctx.api.get('network').catch(() => null) : null,
-      ctx.api.get('notices').catch(() => null),
+      ctx.api.get('notices', null, { maxAgeMs: 5000 }).catch(() => null), // the frame's answer of this load
       ctx.api.list('cars', { sort: 'custom', limit: 500 }).all({ max: 5000 }).catch(() => []),
       loadAccounts(),
       loadSessions(),
@@ -98,9 +98,10 @@ export async function mount(ctx) {
   if (!ctx.alive()) return;
 
   const carName = new Map(S.cars.map((c) => [c.id, c.name]));
-  // the zone the times on this page are in, named with them: the frame clock's (the person's preferred
-  // car's), else this browser's
-  const clockCar = S.cars.find((c) => c.id === state.preferredCar(S.cars)) || null;
+  // the zone the times on this page are in, named with them: the frame clock's (the preferred car's:
+  // Main car, else the last one opened), else this browser's
+  const clockId = state.preferredCar(S.cars);
+  const clockCar = S.cars.find((c) => c.id === clockId) || null;
   const tz = clockCar?.time_zone || ctx.tz;
   const zone = tzName(tz);
   const zoneText = clockCar?.time_zone ? `${zone}, ${clockCar.name}'s time zone like the clock at the top` : `${zone}, this browser's time zone`;
@@ -153,7 +154,7 @@ export async function mount(ctx) {
       rows.push(checkRow('info', `Port ${here.port}`, 'The port in your address. An admin sees the ports the server itself listens on.'));
     }
     rows.push(checkRow('ok', 'At the root of its address', `Sentry Mate always lives at / on its own host name or port, so links never need a path prefix. Behind a shared proxy, give it its own name (such as ${names[0] || 'sentry-mate.local'}) rather than a path.`));
-    rows.push(checkRow('ok', 'Works from any address', 'There is no list of allowed origins to keep in step: the session cookie is never sent by other sites (SameSite=Strict) and every change carries a header other sites cannot set, so the page works under each of its names.'));
+    rows.push(checkRow('ok', 'Works from any address', 'Nothing to set up for each address: other sites can never use your sign-in (SameSite=Strict cookie, and every change carries a header they cannot set), so the page works under each of its names.'));
     replace(hostingBox, h('ul', { class: 'ss-checks' }, rows));
   }
 
@@ -594,7 +595,7 @@ export async function mount(ctx) {
   }
 
   replace(ctx.view,
-    pageHead({ title: ctx.info.title, purpose: ctx.info.purpose }),
+    pageHead({ title: ctx.info.nav || ctx.info.title, purpose: ctx.info.purpose }),
     h('div', { class: 'settings-stack ss' },
       h('div', { class: 'ss-two' }, hostPanel, h('div', { class: 'ss-col' }, namesPanel, portsPanel)),
       h('div', { class: 'ss-two' }, accessPanel, admin ? safety : null),

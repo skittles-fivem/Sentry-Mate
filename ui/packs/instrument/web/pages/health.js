@@ -71,6 +71,11 @@ const REASONS = {
     text: 'They arrived from a key nobody has approved yet. Approve or assign the key and they are read at once.',
     fix: 'Approve the key', page: 'settings-cars',
   },
+  logs_missing: {
+    title: 'Logs missing on the server',
+    text: 'The server lost some logs it had recorded and asked the car to send them again. They come in by themselves when the CAN Bridge has them; see Missing on the server below.',
+    fix: null, page: null,
+  },
   rebuild_pending: {
     title: 'Drives and charges are being rebuilt',
     text: 'They are worked out again from the stored logs. This page reads the figures again every few seconds until it is done; nothing needs doing.',
@@ -319,7 +324,34 @@ async function mountCar(ctx) {
       h('span', { class: 'note' }, 'Nothing is ever repaired by hand: drives, charges, states and visits are worked out again from the stored logs for the period.'))
       : h('p', { class: 'note' }, 'An admin can rebuild drives and charges from the stored logs.');
 
-    replace(healthSlot, status, fixes, figs, h('div', { class: 'hl-health-cols' }, h('div', null, keyList, flags, teslaBlock()), spanList), rebuild);
+    replace(healthSlot, status, fixes, figs, h('div', { class: 'hl-health-cols' }, h('div', null, keyList, flags, teslaBlock()), h('div', null, spanList, missingBlock(hl.missing_logs || {}))), rebuild);
+  }
+
+  // logs the server recorded but no longer has: how many, since when, whether the car was asked again, and the
+  // ones the car no longer has either (lost for good: unknown time on the timeline). Always shown.
+  function missingBlock(m) {
+    const n = m.count || 0, gone = m.gone || 0;
+    const checked = m.scanned_ms != null ? `Last checked ${when(ctx, m.scanned_ms)}. The server looks at start-up and once a day.` : 'Not checked yet. The server looks at start-up and once a day.';
+    const head = h('h3', { class: 'hl-sub' }, 'Missing on the server');
+    if (!n) {
+      return h('div', { class: 'hl-missing' },
+        head, kv([kvRow('Missing logs', 'None', 'logs')]),
+        h('p', { class: 'note hl-missing-line' }, icon('check', 'ico--sm'), h('span', null, 'Every log the server recorded is here.')),
+        h('p', { class: 'note' }, checked));
+    }
+    return h('div', { class: 'hl-missing' },
+      head,
+      kv([
+        kvRow('Missing logs', h('span', { class: 'warn' }, `${formatNumber(n)} ${n === 1 ? 'log' : 'logs'}`), 'logs', { title: 'CAN logs (and the files that go with them) the server recorded but no longer has.' }),
+        kvRow('Oldest', when(ctx, m.oldest_ms), 'clock'),
+        kvRow('Found missing', when(ctx, m.found_ms), 'search'),
+      ]),
+      m.asked
+        ? h('p', { class: 'note hl-missing-line' }, icon('upload', 'ico--sm'), h('span', null, `Asked the car to send them again${m.asked_ms != null ? ` (${when(ctx, m.asked_ms)})` : ''}. They come in by themselves.`))
+        : h('p', { class: 'note hl-missing-line' }, icon('clock', 'ico--sm'), h('span', null, 'The car is asked to send them again the next time it connects.')),
+      gone ? h('p', { class: 'note hl-missing-line warn' }, icon('warn', 'ico--sm'),
+        h('span', null, `The car no longer has ${formatNumber(gone)} of these either: lost for good, shown as unknown time. Oldest ${when(ctx, m.gone_oldest_ms)}.`)) : null,
+      h('p', { class: 'note' }, checked));
   }
 
   // the Tesla API rows of this car: shown to admins (the status is admin only); others get a plain line

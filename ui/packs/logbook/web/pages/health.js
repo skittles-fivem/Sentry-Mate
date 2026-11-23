@@ -53,6 +53,11 @@ const REASONS = {
     text: 'They came from a key nobody has approved for this car yet. Approve or assign the key and they are read at once; nothing has to be uploaded again.',
     fix: 'Approve the key', page: 'settings-cars',
   },
+  logs_missing: {
+    title: 'Logs missing on the server',
+    text: 'The server lost some logs and asked the car to send them again. They are read as they arrive; any the car no longer has either stay unknown time. See Missing on the server below.',
+    fix: null, page: null,
+  },
   rebuild_pending: {
     title: 'Drives and charges are being rebuilt',
     text: 'They are being worked out again from the stored logs. The figures settle within a few seconds; nothing needs doing.',
@@ -341,7 +346,8 @@ async function mountCar(ctx) {
       spans.length ? h('ul', { class: 'hl-list' }, spans.map((s) => h('li', { class: 'hl-span' },
         h('a', { href: timelineAt(cid, s.start_ms, s.end_ms ?? now), title: 'Open the timeline at this time' }, when(s.start_ms, tz)),
         h('span', { class: 'cell-sub' }, s.end_ms == null ? 'still unknown' : `for ${formatDuration(s.end_ms - s.start_ms)}`, ' · ', SPAN_REASONS[s.reason] || s.reason || 'reason not known'))))
-        : note('None: every moment of the period is known (driving, charging, parked or asleep).'));
+        : note('None: every moment of the period is known (driving, charging, parked or asleep).'),
+      missingCard(hl.missing_logs || {}));
 
     const rebuild = h('div', { class: 'hl-rebuild' },
       admin ? button(`Rebuild ${periodWords.toLowerCase()}`, { iconName: 'reset', cls: 'button-small', onclick: (e) => rebuildNow(e.currentTarget), title: 'Work out drives, charges, states and visits again from the stored logs.' }) : null,
@@ -350,6 +356,25 @@ async function mountCar(ctx) {
         : 'Nothing is ever repaired by hand: an admin can work drives and charges out again from the stored logs.'));
 
     replace(healthBox, status, fixes, figs, h('div', { class: 'hl-cols' }, keyList, spanList), rebuild);
+  }
+
+  /** Missing on the server: logs the server should have but no longer does, asked of the car again. Always the same rows. */
+  function missingCard(m) {
+    const n = m.count || 0;
+    const gone = m.gone || 0;
+    return [
+      h('h3', { class: 'hl-sub hl-sub-gap', id: 'hl-missing' }, 'Missing on the server'),
+      facts([
+        ['Missing', n ? h('span', { class: 'hl-warn' }, count(n, 'log')) : h('span', { class: 'hl-ok' }, 'None'),
+          n ? `CAN logs (and their sidecars) the server should have but no longer does${m.found_ms != null ? `; found ${when(m.found_ms, tz)}` : ''}.` : 'Every log the server recorded is here.'],
+        ['Oldest missing', n && m.oldest_ms != null ? when(m.oldest_ms, tz) : DASH, n ? 'When the oldest of them starts.' : 'Nothing is missing.'],
+        ['Sent again', !n ? 'Nothing to ask' : m.asked ? 'Asked the car to send them again' : h('span', { class: 'hl-warn' }, 'Not asked yet'),
+          !n ? 'The car is asked only for logs the server lost.' : m.asked ? `${m.asked_ms != null ? `Asked ${when(m.asked_ms, tz)}. ` : ''}Each is read as it arrives.` : 'The car is asked the next time it uploads.'],
+        ['Lost for good', gone ? h('span', { class: 'hl-warn' }, `The car no longer has ${formatNumber(gone)} of these either`) : 'None',
+          gone ? `Their time shows as unknown time on the timeline${m.gone_oldest_ms != null ? `; the oldest from ${when(m.gone_oldest_ms, tz)}` : ''}.` : 'Nothing is lost for good.'],
+        ['Last checked', m.scanned_ms != null ? when(m.scanned_ms, tz) : 'Not checked yet', 'The server looks at start-up and once a day.'],
+      ], { cls: 'hl-missing' }),
+    ];
   }
 
   async function rebuildNow(btn) {
@@ -750,7 +775,7 @@ async function mountSystem(ctx) {
   /* ---------------------------------------------------------------- every car */
 
   const carSearch = h('input', { class: 'field-input', type: 'search', id: 'hl-car-search', placeholder: 'Find a car by name, model or VIN', autocomplete: 'off' });
-  const DATA_BAD = new Set(['upload_silence', 'trust_failed', 'logs_waiting_trust']);
+  const DATA_BAD = new Set(['upload_silence', 'trust_failed', 'logs_waiting_trust', 'logs_missing']);
   const carTable = dataTable(ctx, {
     path: 'cars', params: {}, limit: 50, itemName: ['car', 'cars'], sort: { key: 'name', dir: 'asc' }, cls: 'hl-cars', label: 'Every car',
     cover: 'faq.stopped-recording',

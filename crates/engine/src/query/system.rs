@@ -49,12 +49,18 @@ fn choices(e: &Engine, car: CarId) -> QResult<Choices> {
 }
 
 /// The import site shown in each span both imports cover (by start, apart): elsewhere every site's rows are shown.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Hash)]
 pub(crate) struct Sites(Vec<(u64, u64, ImportSite)>);
 
 impl Sites {
     pub(crate) fn new(e: &Engine, car: CarId) -> QResult<Sites> {
-        Ok(Sites::of(&import_pairs(e, car, &choices(e, car)?.sites)?))
+        // worked out again only when the imports or the choices change (it may read every position both imports
+        // have where they overlap)
+        let ch = choices(e, car)?;
+        let kept = e.memo(car, "import-sites", crate::memo::On::Imported, crate::memo::key(&ch.sites), || {
+            Ok::<_, QueryError>(Sites::of(&import_pairs(e, car, &ch.sites)?))
+        })?;
+        Ok((*kept).clone())
     }
 
     fn of(pairs: &[Pair]) -> Sites {
@@ -95,7 +101,7 @@ impl Shown {
         if filter.is_some() || !imported {
             return Ok(Shown { filter, coverage: Vec::new(), flips: Vec::new(), sites });
         }
-        Ok(Shown { filter, coverage: imported_coverage(e, car)?, flips: flips(e, car)?, sites })
+        Ok(Shown { filter, coverage: imported_coverage(e, car)?.to_vec(), flips: flips(e, car)?, sites })
     }
 
     /// Whether a row of `source` from `inputs`, starting at `t`, is shown.
@@ -444,7 +450,8 @@ fn samples_in(e: &Engine, car: CarId, site: ImportSite, a: u64, b: u64) -> QResu
     for d in e.db().days::<model::Sample>(car, stream)? {
         let (x, y) = (d.start_ms.max(a), d.start_ms.saturating_add(DAY).min(b));
         if x < y {
-            n += e.db().read_points::<model::Sample>(car, stream, x, y)?.len() as u64;
+            // (their times alone: no field is decoded)
+            n += e.db().read_fields::<model::Sample>(car, stream, x, y, &[])?.t_ms.len() as u64;
         }
     }
     Ok(n)
@@ -592,12 +599,13 @@ fn pair_overlaps(e: &Engine, car: CarId, ch: &Choices, pairs: Vec<Pair>) -> QRes
     Ok(items)
 }
 
-/// The CAN coverage where imported history exists (none when nothing was imported).
-fn imported_coverage(e: &Engine, car: CarId) -> QResult<Vec<(u64, u64)>> {
-    match imported_span(e, car)? {
+/// The CAN coverage where imported history exists (none when nothing was imported); kept while the car's data
+/// stays the same.
+fn imported_coverage(e: &Engine, car: CarId) -> QResult<std::sync::Arc<Vec<(u64, u64)>>> {
+    e.memo(car, "imported-coverage", crate::memo::On::All, 0, || match imported_span(e, car)? {
         Some((lo, hi)) => can_coverage(e, car, lo, hi),
         None => Ok(Vec::new()),
-    }
+    })
 }
 
 /// The live spans flipped to show the imported side (in order, apart): a series shows the import there.
@@ -607,7 +615,8 @@ pub(crate) fn flipped_spans(e: &Engine, car: CarId) -> QResult<Vec<(u64, u64)>> 
         return Ok(Vec::new());
     }
     Ok(imported_coverage(e, car)?
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|s| chosen_for(&fl, s.0, s.1).is_some_and(|f| f.shown == "teslamate"))
         .collect())
 }
@@ -617,7 +626,8 @@ fn all_overlaps(e: &Engine, car: CarId) -> QResult<Vec<Overlap>> {
     let ch = choices(e, car)?;
     let pairs = import_pairs(e, car, &ch.sites)?;
     let sites = Sites::of(&pairs);
-    let mut items = overlaps_of(e, car, &imported_coverage(e, car)?, &flips(e, car)?, &sites, ch.changes + 1)?;
+    let mut items =
+        overlaps_of(e, car, imported_coverage(e, car)?.as_slice(), &flips(e, car)?, &sites, ch.changes + 1)?;
     items.extend(pair_overlaps(e, car, &ch, pairs)?);
     Ok(items)
 }
@@ -666,7 +676,7 @@ pub fn set_overlap(
         let pairs = import_pairs(e, car, &ch.sites)?;
         pair_overlaps(e, car, &ch, pairs)?.into_iter().find(|o| o.start_ms == start).ok_or_else(none)?
     } else {
-        let span = imported_coverage(e, car)?.into_iter().find(|s| s.0 == start).ok_or_else(none)?;
+        let span = imported_coverage(e, car)?.iter().copied().find(|s| s.0 == start).ok_or_else(none)?;
         let sites = Sites::new(e, car)?;
         overlaps_of(e, car, &[span], &flips(e, car)?, &sites, ch.changes + 1)?.into_iter().next().ok_or_else(none)?
     };
@@ -777,11 +787,11 @@ pub fn logs(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QResult
         _ => None,
     };
     let mut items = Vec::with_capacity(found.len());
-    let mut day_cache: Option<(u32, records::DayRec)> = None;
+    let mut day_cache: Option<(u32, std::sync::Arc<records::DayRec>)> = None;
     for (start, name, key, rec) in found {
         let d = records::day_of(start);
         if day_cache.as_ref().is_none_or(|(x, _)| *x != d) {
-            day_cache = Some((d, records::day(e.db(), car, d)?));
+            day_cache = Some((d, records::day_shared(e.db(), car, d)?));
         }
         let entry = day_cache.as_ref().and_then(|(_, r)| r.logs.get(&name));
         let (decoded, samples, dropped, buses, from, to) = match entry.map(|x| &x.outcome) {
@@ -854,7 +864,7 @@ pub struct UnknownSpan {
 fn last_judged(e: &Engine, car: CarId, meta: &records::CarMeta) -> QResult<Option<LastTrust>> {
     let db = e.db();
     for &d in meta.days.iter().rev() {
-        let rec = records::day(db, car, d)?;
+        let rec = records::day_shared(db, car, d)?;
         let newest = rec
             .logs
             .iter()
@@ -908,9 +918,64 @@ pub struct Health {
     pub unknown_spans_total: u64,
     pub unknown_ms: u64,
     pub logs_waiting: u64,
+    /// The logs the server should have but no longer does (see `ingest::missing`), over all the car's keys.
+    pub missing_logs: MissingLogs,
     pub rebuild_pending: bool,
     /// The web server fills this from the upload settings.
     pub uploads_enabled: Option<bool>,
+}
+
+/// The "Missing on the server" figures of a car: logs (and sidecars) its keys' records or chains say were here and
+/// are no longer, from the last scan.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct MissingLogs {
+    /// Still asked of the car (a ping's `wanted`).
+    pub count: u64,
+    /// The start (from its name) of the oldest of those.
+    pub oldest_ms: Option<u64>,
+    /// When the first of those was found missing.
+    pub found_ms: Option<u64>,
+    /// Whether the car has been asked to send them again, and when it first was.
+    pub asked: bool,
+    pub asked_ms: Option<u64>,
+    /// The car no longer has these either: lost for good (their time shows as unknown).
+    pub gone: u64,
+    pub gone_oldest_ms: Option<u64>,
+    /// When the server last looked (null before its first look).
+    pub scanned_ms: Option<u64>,
+}
+
+fn earliest(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+impl MissingLogs {
+    fn add(&mut self, c: &ingest::missing::Counts) {
+        self.count += c.wanted;
+        self.gone += c.gone;
+        self.oldest_ms = earliest(self.oldest_ms, c.oldest_ms);
+        self.gone_oldest_ms = earliest(self.gone_oldest_ms, c.gone_oldest_ms);
+        self.found_ms = earliest(self.found_ms, c.found_ms);
+        self.asked_ms = earliest(self.asked_ms, c.asked_ms);
+        self.asked = self.asked_ms.is_some();
+        self.scanned_ms = self.scanned_ms.max(c.scanned_ms);
+    }
+}
+
+/// The missing-logs figures of a car, over its keys.
+pub fn missing_logs(e: &Engine, car: CarId) -> QResult<MissingLogs> {
+    let c = car_of(e, car)?;
+    let rt = e.handle()?;
+    let mut m = MissingLogs::default();
+    for key in &c.vehicle_keys {
+        if let Ok(book) = rt.block_on(e.judge().missing(key)) {
+            m.add(&book.counts());
+        }
+    }
+    Ok(m)
 }
 
 /// What the Data health verdict rests on: the car's keys and their uploads, the newest judged log, and the reasons
@@ -921,6 +986,7 @@ struct Verdict {
     last_upload: Option<u64>,
     last_trust: Option<LastTrust>,
     rebuild_pending: bool,
+    missing: MissingLogs,
     reasons: Vec<&'static str>,
 }
 
@@ -930,7 +996,11 @@ fn verdict(e: &Engine, c: &model::Car, meta: &records::CarMeta, now: u64) -> QRe
     let mut keys = Vec::new();
     let mut waiting = 0u64;
     let mut last_upload: Option<u64> = None;
+    let mut missing = MissingLogs::default();
     for key in &c.vehicle_keys {
+        if let Ok(book) = rt.block_on(e.judge().missing(key)) {
+            missing.add(&book.counts());
+        }
         let s = rt.block_on(e.judge().summary(key));
         let w = s.as_ref().map_or(0, |s| s.waiting as u64);
         waiting += w;
@@ -961,7 +1031,11 @@ fn verdict(e: &Engine, c: &model::Car, meta: &records::CarMeta, now: u64) -> QRe
     if rebuild_pending {
         reasons.push("rebuild_pending");
     }
-    Ok(Verdict { keys, waiting, last_upload, last_trust, rebuild_pending, reasons })
+    // logs the server lost and has asked the car for (those the car no longer has either are only shown)
+    if missing.count > 0 {
+        reasons.push("logs_missing");
+    }
+    Ok(Verdict { keys, waiting, last_upload, last_trust, rebuild_pending, missing, reasons })
 }
 
 /// Whether the car's data is healthy by the Data health rule (`healthy` of `/cars/{car}/health`): uploads within a
@@ -983,7 +1057,8 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
     // the last 30 days of the car's data (a car that stopped uploading still shows its last month)
     let end = meta.newest_ms.map_or(now, |n| n.saturating_add(1).min(now));
     let (a, b) = period.window(30 * 86_400_000, end)?;
-    let Verdict { keys, waiting, last_upload, last_trust, rebuild_pending, reasons } = verdict(e, &c, &meta, now)?;
+    let Verdict { keys, waiting, last_upload, last_trust, rebuild_pending, missing, reasons } =
+        verdict(e, &c, &meta, now)?;
     let mut why: Vec<Why> = Vec::new();
     let mut chain_gaps = Newest::new();
     for (x, y) in super::timeline::chain_gaps(e, car)? {
@@ -1061,6 +1136,7 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
             unknown_spans: unknown.rows.into_iter().collect(),
             unknown_ms,
             logs_waiting: waiting,
+            missing_logs: missing,
             rebuild_pending,
             uploads_enabled: None,
         },

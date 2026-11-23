@@ -15,7 +15,7 @@
 // as the job is ready, done or failed.
 
 import { h, replace, setVars } from '../shared/dom.js';
-import { buildUrl } from '../shared/state.js';
+import { buildUrl, preferredCar } from '../shared/state.js';
 import { toIsoZoned } from '../shared/time.js';
 import { format } from '../shared/units.js';
 import { icon } from '../core/icons.js';
@@ -185,8 +185,8 @@ export async function mount(ctx) {
     h('span', { 'aria-current': 'page' }, 'Import'));
   const head = pageHead({
     eyebrow: trail, title: 'Import history',
-    sub: ['Admins only', 'TeslaMate backup (plain, gzip or xz), TeslaFi data download (CSV months, several at once, or a .zip) or Sentry Six Manager CAN export (.zip)', 'times in ' + tz],
-    purpose: 'Brings in the history TeslaMate or TeslaFi recorded before the CAN Bridge, from TeslaMate\'s own backup file or TeslaFi\'s data download, or the CAN Bridge logs Sentry Six Manager already has, from its CAN export bundle. The whole file is checked before anything is stored, and running it again stores nothing twice.',
+    sub: ['Admins only', 'From TeslaMate, TeslaFi or Sentry Six Manager', 'times in ' + tz],
+    purpose: 'Bring in the history recorded before the CAN Bridge: a TeslaMate backup, a TeslaFi data download, or a Sentry Six Manager CAN export. The whole file is checked before anything is stored, and importing the same file again adds nothing twice.',
   });
 
   if (!ctx.admin) {
@@ -962,7 +962,7 @@ export async function mount(ctx) {
   const timelineSlot = h('span', { class: 'im-tl' });
   function paintTimelineLink() {
     const done = S.jobs.filter((j) => j.status === 'done').flatMap((j) => counted(j.report?.cars).map((c) => c.match));
-    const car = S.cars.find((c) => c.id === S.overlaps[0]?.car) || S.cars.find((c) => done.includes(c.id)) || S.cars[0];
+    const car = S.cars.find((c) => c.id === S.overlaps[0]?.car) || S.cars.find((c) => done.includes(c.id)) || S.cars.find((c) => c.id === preferredCar(S.cars));
     replace(timelineSlot, car
       ? h('a', { class: 'link', href: buildUrl('timeline', { car: car.id }) }, S.cars.length > 1 ? `Timeline of ${car.name}` : 'Timeline')
       : 'Timeline of each car');

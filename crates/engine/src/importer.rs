@@ -113,6 +113,8 @@ impl<'a> DbSink<'a> {
     /// Tells the pages what changed (call once the import is done).
     pub fn finish(&self) {
         for &car in &self.touched {
+            // the days the import brought, worked out ahead for the pages' long periods
+            self.engine.warm(Some(car));
             let (a, b) = self.spans.get(&car).copied().unwrap_or((0, u64::MAX));
             self.engine.emit(Event::Rows {
                 car,

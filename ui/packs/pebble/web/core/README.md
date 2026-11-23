@@ -38,7 +38,7 @@ vendor/        MapLibre GL JS (BSD-3-Clause) and uPlot (MIT), for the map and ch
 | `sheet.js` | Bottom sheets on a modal `<dialog>` (focus stays inside, Esc closes, 220 ms slide): `createSheet`, `openSheet`, `confirmSheet`, `sheetRow`, `sheetGroup`. |
 | `switcher.js`, `period.js`, `account.js` | The car switcher (also Ctrl K), the period sheet and `resolveFor()`, the account sheet. |
 | `toast.js` | `toast(text, { kind: 'ok' \| 'info' \| 'error', next })`, above the dock. |
-| `states.js` | `loadingTiles(shape)`, `emptyTile()`, `errorTile()`, `errorWords()`. |
+| `states.js` | `loadingTiles(shape)`, `emptyTile()`, `errorTile()`, `errorWords()`; `ghostTile(w, h)` (one grey tile that keeps a block's room until its own data is in: `slot.replaceWith(tile)`) and `plotGhost()` (a chart's room inside a tile). |
 | `form.js` | `field()`, `form()`, `toggle()` (an on / off row), `segmented()`. |
 | `ui.js` | Icons, `btn`, `linkBtn`, `chip`, `stateTag`, `num` (number and unit on one baseline), `ring` (SOC ring), `tile`, `note`, `ago`. |
 | `map.js` | `mapTile(ctx, box, opts)`: MapLibre in a rounded box, tiles from `/maps/config` (offline first), routes in the series colours, round pins, a place circle. |
@@ -112,6 +112,8 @@ States: Driving coral, Charging teal, Parked sky, Asleep muted, Offline bad (`st
 - Mark what does an inventory item with `cover: '<item id>'`; frame items are marked by the frame.
 - `ctx.ready()` once tiles and charts have drawn; `ctx.fail(err)` when the page cannot load.
 - Empty states say why and what to do ("No drives this week"); loading shows grey tiles of the final size.
+- Start every call at once and let each tile paint when its own answer is in (a `ghostTile` in its place until
+  then); `ctx.ready()` once they all have. Never hold the whole page back for its slowest call.
 - Pages stay still (`ui/tools/check.js --stable`): live `now` events are merged into what is shown (a `{ value, at_ms }` pair sent as only `{ at_ms }` keeps its value), a live reload keeps the old content until the new answers are in, and a page goes in with its tiles already filled where they would push the rest down.
 - Motion (tile press, the dock pill, ring fill, sheets) is off with `prefers-reduced-motion`.
 - No inline styles, `innerHTML`, `fetch` or outside requests; units and dates only through `shared/`.

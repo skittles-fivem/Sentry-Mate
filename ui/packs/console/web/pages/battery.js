@@ -67,28 +67,34 @@ export async function mount(ctx) {
     minH: [0, 1, 3, 6, 12, 24].includes(Number(q.min_h)) ? Number(q.min_h) : 0,
   };
 
-  const [bat, totals, settings, eff] = await Promise.all([
-    ctx.api.get(`${base}/battery`),
-    ctx.api.get(`${base}/totals`).catch(() => null),
-    ctx.api.get(`${base}/settings`).catch(() => null),
-    ctx.api.get(`${base}/efficiency`).catch(() => null),
-  ]);
-  if (!ctx.alive()) return;
-  const cap = bat.capacity || {}, life = bat.lifetime || {};
-  const fr = eff?.factor || {};
-  const toIdeal = getUnits().range === 'ideal' && fr.rated_wh_per_km > 0 && fr.ideal_wh_per_km > 0 ? fr.rated_wh_per_km / fr.ideal_wh_per_km : null;
-  const rangeWord = toIdeal ? 'ideal' : 'rated';
-  const rk = (km) => (km == null ? km : toIdeal ? km * toIdeal : km);
-  const rng0 = bat.range || {};
-  const rng = { ...rng0, full_now_km: rk(rng0.full_now_km), full_now_from_energy_km: rk(rng0.full_now_from_energy_km), full_new_km: rk(rng0.full_new_km), lost_km: rk(rng0.lost_km) };
-  const factor = toIdeal ? fr.ideal_wh_per_km : fr.rated_wh_per_km;
+  // Every call starts at once and each block draws when its own answers are in (a loading line holds its place
+  // until then), so the page shows what it has instead of waiting for the slowest call.
+  const batP = ctx.api.get(`${base}/battery`);
+  const effP = ctx.api.get(`${base}/efficiency`).catch(() => null);
+  const totalsP = ctx.api.get(`${base}/totals`).catch(() => null);
+  const settingsP = ctx.api.get(`${base}/settings`).catch(() => null);
+  // filled when GET battery (and efficiency) is in; the blocks below read them then
+  let bat = {}, cap = {}, life = {}, fr = {}, toIdeal = null, rangeWord = 'rated', rng = {}, factor = null;
+  const batReady = Promise.all([batP, effP]).then(([b, eff]) => {
+    bat = b; cap = bat.capacity || {}; life = bat.lifetime || {};
+    fr = eff?.factor || {};
+    toIdeal = getUnits().range === 'ideal' && fr.rated_wh_per_km > 0 && fr.ideal_wh_per_km > 0 ? fr.rated_wh_per_km / fr.ideal_wh_per_km : null;
+    rangeWord = toIdeal ? 'ideal' : 'rated';
+    const rk = (km) => (km == null ? km : toIdeal ? km * toIdeal : km);
+    const rng0 = bat.range || {};
+    rng = { ...rng0, full_now_km: rk(rng0.full_now_km), full_now_from_energy_km: rk(rng0.full_now_from_energy_km), full_new_km: rk(rng0.full_new_km), lost_km: rk(rng0.lost_km) };
+    factor = toIdeal ? fr.ideal_wh_per_km : fr.rated_wh_per_km;
+  });
+  const batSettled = batReady.catch(() => null);
 
   /* ---------- head */
-  const hd = head(ctx, { extra: h('span', { class: 'ph-extra muted' }, bat.chemistry?.value ? `${CHEM[bat.chemistry.value] || bat.chemistry.value}` : 'chemistry not known') });
+  const chemEl = h('span', { class: 'ph-extra muted' });
+  const hd = head(ctx, { extra: chemEl });
   const [periodBtn, carBtn] = hd.querySelectorAll('.ph-btn');
   if (periodBtn) periodBtn.dataset.cover = 'cl.filter.time_range pr.filter.time_range vd.filter.time_range';
   if (carBtn) carBtn.dataset.cover = 'bh.filter.car cl.filter.car pr.section.per_car vd.section.per_car';
-  const sub = h('p', { class: 'subline' }, none(`pack read ${formatDateTime(bat.as_of_ms, tz, { now: now(), weekday: false })}.  the first blocks are the car’s whole life; from "charge level" on they follow the range.  `),
+  const readAt = none('');
+  const sub = h('p', { class: 'subline' }, readAt, none('the first blocks are the car’s whole life; from "charge level" on they follow the range.  '),
     link(state.buildUrl('statistics', { query: { cars: 'all' } }), 'every car'));
 
   /* ---------- now */
@@ -118,84 +124,110 @@ export async function mount(ctx) {
       ['buffer', [num(cap.buffer_kwh, 'energy'), none('  below 0%, never usable')]],
     ]));
   }
-  paintNow();
-  ctx.events('now', (ev) => {
-    if (ev.data?.car !== cid) return;
-    const d = ev.data.now || {};
-    const v = (x) => (x && typeof x === 'object' && 'value' in x ? x.value : undefined);
-    const live = Object.fromEntries(Object.entries({ soc: v(d.soc_pct), usable: v(d.usable_soc_pct), kwh: v(d.energy_remaining_kwh), limit: v(d.charge?.limit_pct) }).filter(([, x]) => x != null));
-    if (Object.keys(live).length) paintNow(live);
-  });
+  /* ---------- the whole-life blocks, each drawn when its answers are in */
+  const waitSec = (title, side) => section({ title, side }, loadingLine(`loading ${title}`));
+  const capWait = waitSec('capacity and health'), rangeWait = waitSec('full-charge range'), lifeWait = waitSec('lifetime totals', none('whole life')), refWait = waitSec('reference values');
+  replace(nowSlot, loadingLine('loading the battery'));
+  async function paintTop() {
+    await batReady;
+    if (!ctx.alive()) return;
+    replace(chemEl, bat.chemistry?.value ? `${CHEM[bat.chemistry.value] || bat.chemistry.value}` : 'chemistry not known');
+    replace(readAt, `pack read ${formatDateTime(bat.as_of_ms, tz, { now: now(), weekday: false })}.  `);
+    paintNow();
+    ctx.events('now', (ev) => {
+      if (ev.data?.car !== cid) return;
+      const d = ev.data.now || {};
+      const v = (x) => (x && typeof x === 'object' && 'value' in x ? x.value : undefined);
+      const live = Object.fromEntries(Object.entries({ soc: v(d.soc_pct), usable: v(d.usable_soc_pct), kwh: v(d.energy_remaining_kwh), limit: v(d.charge?.limit_pct) }).filter(([, x]) => x != null));
+      if (Object.keys(live).length) paintNow(live);
+    });
 
-  /* ---------- capacity and health, range */
-  const health = cap.health_pct, warranty = cap.warranty_pct;
-  const hTone = health == null ? 'accent' : warranty != null && health < warranty ? 'bad' : health < (warranty ?? 70) + 5 ? 'warn' : 'accent';
-  const capBlock = kv([
-    ['health', health != null ? [textBar(health, { tone: hTone, label: `health ${pct(health, 1)}` }), ' ', h('b', null, pct(health, 1)), none(cap.degradation_pct != null ? `  ${formatNumber(cap.degradation_pct, { maximumFractionDigits: 1 })}% lost` : '')] : none('needs a "when new" value'), { cover: ['bh.bar.health', 'bh.gauge.degradation'] }],
-    ['warranty line', warranty != null ? [pct(warranty), none(health != null ? (health >= warranty ? '  above it' : '  below it') : '')] : none('not set')],
-    ['usable now', [num(cap.usable_kwh, 'energy'), none(cap.full_pack_kwh != null ? `  full pack ${format(cap.full_pack_kwh, 'energy')} minus the buffer, ${n0(cap.readings)} readings` : '')], { cover: 'bh.capacity.usable_now' }],
-    ['usable new', cap.new_kwh != null ? [num(cap.new_kwh, 'energy'), none(cap.new_source ? `  ${NEW_SOURCE[cap.new_source] || cap.new_source}` : '')] : none('not known: type it under reference values'), { cover: 'bh.capacity.usable_new' }],
-    ['difference', cap.difference_kwh != null ? num(-cap.difference_kwh, 'energy', { sign: true }) : none('needs a "when new" value'), { cover: 'bh.capacity.difference' }],
-    [`per ${unitLabel('range')} ${rangeWord}`, factor != null ? [num(factor, 'efficiency', { digits: 1 }), none(`  from ${n0(fr.readings)} readings`)] : none('not worked out yet'), { cover: 'bh.stat.efficiency' }],
-    ['brick spread', bat.brick_spread_v != null ? [h('span', { class: 'n' }, formatNumber(bat.brick_spread_v * 1000, { maximumFractionDigits: 0 }), h('span', { class: 'u' }, ' mV')), none(bat.brick_spread_v < 0.03 ? '  well balanced' : '  over 30 mV')] : none('not reported')],
-  ]);
-  const rangeBlock = kv([
-    ['at 100% now', [num(rng.full_now_km, 'range'), none(`  ${rangeWord}; from energy ${format(rng.full_now_from_energy_km, 'range')}`)], { cover: 'bh.ranges.max_now' }],
-    ['at 100% new', rng.full_new_km != null ? [num(rng.full_new_km, 'range'), none(rng.new_source ? `  ${RANGE_SOURCE[rng.new_source] || rng.new_source}` : '')] : none('not known'), { cover: 'bh.ranges.max_new' }],
-    ['range lost', rng.lost_km != null ? [num(rng.lost_km, 'range'), rng.full_new_km ? none(`  ${formatNumber((rng.lost_km / rng.full_new_km) * 100, { maximumFractionDigits: 1 })}% of new`) : null] : none('needs a "when new" value'), { cover: 'bh.ranges.lost' }],
-    ['now of new', rng.full_new_km && rng.full_now_km ? [textBar(Math.min(100, (rng.full_now_km / rng.full_new_km) * 100)), ' ', pct((rng.full_now_km / rng.full_new_km) * 100, 1)] : none('—')],
-  ]);
-
-  /* ---------- lifetime totals */
-  const t = totals || {};
-  const mileage = t.odometer_last_km != null && t.odometer_first_km != null ? t.odometer_last_km - t.odometer_first_km : null;
-  const inKwh = (life.ac_kwh || 0) + (life.dc_kwh || 0) + (life.regen_kwh || 0);
-  const share = (k) => (inKwh ? ((k || 0) / inKwh) * 100 : 0);
-  const lifeBlock = h('div', null,
-    kv([
-      ['odometer', num(t.odometer_last_km, 'odometer'), { cover: 'bh.drive.odometer' }],
-      ['charges', [n0(t.charges), none(`  ac ${n0(t.ac?.charges)}, dc ${n0(t.dc?.charges)}  `), link(ctx.link('charges', { period: { preset: 'all' } }), 'charges', { cover: 'bh.charging.link_stats' })], { cover: 'bh.charging.count' }],
-      ['driven since logging', num(mileage, 'distance'), { cover: 'bh.drive.mileage' }],
-      ['added to the pack', num(t.energy_added_kwh, 'energy'), { cover: 'bh.charging.energy_added' }],
-      ['logged in drives', [link(ctx.link('drives', { period: { preset: 'all' } }), format(t.distance_km, 'distance')), none(`  ${n0(t.drives)} drives  `), link(ctx.link('statistics'), 'statistics', { cover: 'bh.drive.link_stats' })], { cover: 'bh.drive.logged' }],
-      ['from the grid', [num(t.energy_grid_kwh, 'energy'), t.grid_coverage_pct != null && t.grid_coverage_pct < 100 ? none(`  measured for ${pct(t.grid_coverage_pct)} of it`) : null], { cover: 'bh.charging.energy_used' }],
-      ['not logged', t.not_logged_km ? [h('span', { class: t.not_logged_km > 1 ? 'tone--warn' : null }, format(t.not_logged_km, 'distance')), '  ', link(state.buildUrl('health', { car: cid, period: { preset: 'all' } }), 'the gaps')] : num(t.not_logged_km, 'distance'), { cover: 'bh.drive.data_lost' }],
-      ['charging efficiency', t.charging_efficiency_pct != null ? pct(t.charging_efficiency_pct, 1) : none('not measured'), { cover: 'bh.charging.efficiency' }],
-      ['full cycles', life.equivalent_cycles != null ? [formatNumber(life.equivalent_cycles, { maximumFractionDigits: 1 }), none('  energy charged over usable capacity')] : '—', { cover: 'bh.charging.cycles' }],
-    ]),
-    h('p', { class: 'note', cover: 'bh.drive.help' }, 'not logged is distance the odometer moved while nothing was recorded; each gap is on health.'),
-    h('p', { class: 'note', cover: 'bh.charging.help' }, 'charging efficiency is energy into the pack over energy from the grid, for ac charges where both were measured; dc chargers do not report their grid side, so they are left out.'),
-    h('div', { class: 'blk', cover: 'bh.chart.ac_dc' }, h('h3', { class: 'sub-title' }, 'energy into the pack, by source'),
-      kv([['ac charging', life.ac_kwh], ['dc fast', life.dc_kwh], ['regen', life.regen_kwh]].map(([l, k], i) => [l, [cellBar(share(k) / 100, 20, ['accent', 'warn', 'text'][i]), ' ', pct(share(k)), none(`  ${format(k, 'energy')}`)]]), { cols: 1 }),
-      note(`from the pack’s lifetime counters (${life.basis || 'pack counters'}), so it covers years before logging. out: ${format(life.drive_kwh, 'energy')} driving, ${format(life.standing_kwh, 'energy')} parked.`)));
-
-  /* ---------- reference values */
-  const refBlock = (() => {
-    const s = settings || {};
-    const can = !!ctx.admin && !!settings;
-    const rUnit = unitLabel('range');
-    const capF = field({ label: 'new kwh', name: 'capacity_new_kwh', type: 'number', value: s.capacity_new_kwh, hint: 'usable capacity when new, 10 to 250. empty: from the earliest readings.', attrs: { min: 10, max: 250, step: 0.1, inputmode: 'decimal', disabled: !can, size: '8' } });
-    const rngF = field({ label: `new ${rUnit}`, name: 'full_range_new_km', type: 'number', value: s.full_range_new_km == null ? null : Math.round(convert(s.full_range_new_km, 'range')), hint: 'full-charge range when new. empty: the median full range of the first 30 days.', attrs: { min: 1, step: 1, inputmode: 'numeric', disabled: !can, size: '8' } });
-    const warF = field({ label: 'warranty %', name: 'warranty_threshold_pct', type: 'number', value: s.warranty_threshold_pct, hint: 'warranty threshold: the health your warranty promises, often 70.', attrs: { min: 50, max: 100, step: 1, inputmode: 'numeric', disabled: !can, size: '8' } });
-    capF.el.dataset.cover = 'bh.setting.capacity_new_override';
-    rngF.el.dataset.cover = 'bh.setting.range_new_override';
-    let version = s.version;
-    const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
-    const f = form({ fields: [capF, rngF, warF], cls: 'frm--narrow', submit: 'save reference values', async onSubmit(v) {
-      if (!can) return;
-      const r = numOrNull(v.full_range_new_km);
-      const res = await ctx.api.patch(`${base}/settings`, { version, capacity_new_kwh: numOrNull(v.capacity_new_kwh), full_range_new_km: r == null ? null : Math.round(toMetric(r, 'range') * 10) / 10, warranty_threshold_pct: numOrNull(v.warranty_threshold_pct) });
-      version = res.version;
-      toast('reference values saved; health and range use them now', { kind: 'ok', next: true });
-      ctx.reload();
-    } });
-    if (!can) f.submitButton.disabled = true;
-    return section({ title: 'reference values', side: link(state.buildUrl('settings-cars', { car: cid }), 'settings/cars') },
-      h('p', { class: 'note', cover: 'bh.setting.override_help' }, 'typed once for this car and checked when saved: the figures from its papers or first weeks. they set what "when new" means for health and range lost.'),
-      f.el,
-      !settings ? note('the car settings could not be read, so they cannot be changed here.') : !ctx.admin ? note('only an admin can change these.') : null,
-      bat.chemistry ? note(`chemistry: ${CHEM[bat.chemistry.value] || 'not known'}, ${bat.chemistry.source === 'owner' ? 'set by the owner' : 'detected from the pack'}.`) : null);
-  })();
+    /* ---------- capacity and health, range */
+    const health = cap.health_pct, warranty = cap.warranty_pct;
+    const hTone = health == null ? 'accent' : warranty != null && health < warranty ? 'bad' : health < (warranty ?? 70) + 5 ? 'warn' : 'accent';
+    const capBlock = kv([
+      ['health', health != null ? [textBar(health, { tone: hTone, label: `health ${pct(health, 1)}` }), ' ', h('b', null, pct(health, 1)), none(cap.degradation_pct != null ? `  ${formatNumber(cap.degradation_pct, { maximumFractionDigits: 1 })}% lost` : '')] : none('needs a "when new" value'), { cover: ['bh.bar.health', 'bh.gauge.degradation'] }],
+      ['warranty line', warranty != null ? [pct(warranty), none(health != null ? (health >= warranty ? '  above it' : '  below it') : '')] : none('not set')],
+      ['usable now', [num(cap.usable_kwh, 'energy'), none(cap.full_pack_kwh != null ? `  full pack ${format(cap.full_pack_kwh, 'energy')} minus the buffer, ${n0(cap.readings)} readings` : '')], { cover: 'bh.capacity.usable_now' }],
+      ['usable new', cap.new_kwh != null ? [num(cap.new_kwh, 'energy'), none(cap.new_source ? `  ${NEW_SOURCE[cap.new_source] || cap.new_source}` : '')] : none('not known: type it under reference values'), { cover: 'bh.capacity.usable_new' }],
+      ['difference', cap.difference_kwh != null ? num(-cap.difference_kwh, 'energy', { sign: true }) : none('needs a "when new" value'), { cover: 'bh.capacity.difference' }],
+      [`per ${unitLabel('range')} ${rangeWord}`, factor != null ? [num(factor, 'efficiency', { digits: 1 }), none(`  from ${n0(fr.readings)} readings`)] : none('not worked out yet'), { cover: 'bh.stat.efficiency' }],
+      ['brick spread', bat.brick_spread_v != null ? [h('span', { class: 'n' }, formatNumber(bat.brick_spread_v * 1000, { maximumFractionDigits: 0 }), h('span', { class: 'u' }, ' mV')), none(bat.brick_spread_v < 0.03 ? '  well balanced' : '  over 30 mV')] : none('not reported')],
+    ]);
+    const rangeBlock = kv([
+      ['at 100% now', [num(rng.full_now_km, 'range'), none(`  ${rangeWord}; from energy ${format(rng.full_now_from_energy_km, 'range')}`)], { cover: 'bh.ranges.max_now' }],
+      ['at 100% new', rng.full_new_km != null ? [num(rng.full_new_km, 'range'), none(rng.new_source ? `  ${RANGE_SOURCE[rng.new_source] || rng.new_source}` : '')] : none('not known'), { cover: 'bh.ranges.max_new' }],
+      ['range lost', rng.lost_km != null ? [num(rng.lost_km, 'range'), rng.full_new_km ? none(`  ${formatNumber((rng.lost_km / rng.full_new_km) * 100, { maximumFractionDigits: 1 })}% of new`) : null] : none('needs a "when new" value'), { cover: 'bh.ranges.lost' }],
+      ['now of new', rng.full_new_km && rng.full_now_km ? [textBar(Math.min(100, (rng.full_now_km / rng.full_new_km) * 100)), ' ', pct((rng.full_now_km / rng.full_new_km) * 100, 1)] : none('—')],
+    ]);
+    const pk = bat.pack || {};
+    const packLine = pk.replaced_ms != null ? h('p', { class: 'note', dataset: { pack: 'replaced' } }, tag('pack', 'muted'), ' ',
+      `Pack replaced on ${formatDate(pk.replaced_ms, tz, { weekday: false })} (${pk.source === 'owner' ? 'typed by the owner' : "detected from the pack's readings"}).`) : null;
+    const notes = (bat.notes || []).filter((c) => NOTES[c]).map((c) => h('p', { class: 'note' }, /cold|lfp/.test(c) ? tag('warn', 'warn') : tag('info', 'muted'), ' ', NOTES[c]));
+    capWait.replaceWith(section({ title: 'capacity and health' }, capBlock,
+      h('p', { class: 'note', cover: ['bh.capacity.help', 'bh.gauge.degradation_help'] }, 'health is usable now over usable when new, both from the battery management system (it reports capacity every awake minute; nothing from range). a guide, not a lab test: it moves with temperature and balancing.'),
+      packLine, notes));
+    rangeWait.replaceWith(section({ title: 'full-charge range' }, rangeBlock, note('the range estimate scales with the car’s energy factor, so it drops in step with capacity. real range depends on speed, weather and climate: see efficiency.')));
+  }
+  async function paintLife() {
+    const [, totals] = await Promise.all([batReady, totalsP]);
+    if (!ctx.alive()) return;
+    /* ---------- lifetime totals */
+    const t = totals || {};
+    const mileage = t.odometer_last_km != null && t.odometer_first_km != null ? t.odometer_last_km - t.odometer_first_km : null;
+    const inKwh = (life.ac_kwh || 0) + (life.dc_kwh || 0) + (life.regen_kwh || 0);
+    const share = (k) => (inKwh ? ((k || 0) / inKwh) * 100 : 0);
+    const lifeBlock = h('div', null,
+      kv([
+        ['odometer', num(t.odometer_last_km, 'odometer'), { cover: 'bh.drive.odometer' }],
+        ['charges', [n0(t.charges), none(`  ac ${n0(t.ac?.charges)}, dc ${n0(t.dc?.charges)}  `), link(ctx.link('charges', { period: { preset: 'all' } }), 'charges', { cover: 'bh.charging.link_stats' })], { cover: 'bh.charging.count' }],
+        ['driven since logging', num(mileage, 'distance'), { cover: 'bh.drive.mileage' }],
+        ['added to the pack', num(t.energy_added_kwh, 'energy'), { cover: 'bh.charging.energy_added' }],
+        ['logged in drives', [link(ctx.link('drives', { period: { preset: 'all' } }), format(t.distance_km, 'distance')), none(`  ${n0(t.drives)} drives  `), link(ctx.link('statistics'), 'statistics', { cover: 'bh.drive.link_stats' })], { cover: 'bh.drive.logged' }],
+        ['from the grid', [num(t.energy_grid_kwh, 'energy'), t.grid_coverage_pct != null && t.grid_coverage_pct < 100 ? none(`  measured for ${pct(t.grid_coverage_pct)} of it`) : null], { cover: 'bh.charging.energy_used' }],
+        ['not logged', t.not_logged_km ? [h('span', { class: t.not_logged_km > 1 ? 'tone--warn' : null }, format(t.not_logged_km, 'distance')), '  ', link(state.buildUrl('health', { car: cid, period: { preset: 'all' } }), 'the gaps')] : num(t.not_logged_km, 'distance'), { cover: 'bh.drive.data_lost' }],
+        ['charging efficiency', t.charging_efficiency_pct != null ? pct(t.charging_efficiency_pct, 1) : none('not measured'), { cover: 'bh.charging.efficiency' }],
+        ['full cycles', life.equivalent_cycles != null ? [formatNumber(life.equivalent_cycles, { maximumFractionDigits: 1 }), none('  energy charged over usable capacity')] : '—', { cover: 'bh.charging.cycles' }],
+      ]),
+      h('p', { class: 'note', cover: 'bh.drive.help' }, 'not logged is distance the odometer moved while nothing was recorded; each gap is on health.'),
+      h('p', { class: 'note', cover: 'bh.charging.help' }, 'charging efficiency is energy into the pack over energy from the grid, for ac charges where both were measured; dc chargers do not report their grid side, so they are left out.'),
+      h('div', { class: 'blk', cover: 'bh.chart.ac_dc' }, h('h3', { class: 'sub-title' }, 'energy into the pack, by source'),
+        kv([['ac charging', life.ac_kwh], ['dc fast', life.dc_kwh], ['regen', life.regen_kwh]].map(([l, k], i) => [l, [cellBar(share(k) / 100, 20, ['accent', 'warn', 'text'][i]), ' ', pct(share(k)), none(`  ${format(k, 'energy')}`)]]), { cols: 1 }),
+        note(`from the pack’s lifetime counters (${life.basis || 'pack counters'}), so it covers years before logging. out: ${format(life.drive_kwh, 'energy')} driving, ${format(life.standing_kwh, 'energy')} parked.`)));
+    lifeWait.replaceWith(section({ title: 'lifetime totals', side: none('whole life') }, lifeBlock));
+  }
+  async function paintRef() {
+    const [, settings] = await Promise.all([batReady, settingsP]);
+    if (!ctx.alive()) return;
+    /* ---------- reference values */
+    const refBlock = (() => {
+      const s = settings || {};
+      const can = !!ctx.admin && !!settings;
+      const rUnit = unitLabel('range');
+      const capF = field({ label: 'new kwh', name: 'capacity_new_kwh', type: 'number', value: s.capacity_new_kwh, hint: 'usable capacity when new, 10 to 250. empty: from the earliest readings.', attrs: { min: 10, max: 250, step: 0.1, inputmode: 'decimal', disabled: !can, size: '8' } });
+      const rngF = field({ label: `new ${rUnit}`, name: 'full_range_new_km', type: 'number', value: s.full_range_new_km == null ? null : Math.round(convert(s.full_range_new_km, 'range')), hint: 'full-charge range when new. empty: the median full range of the first 30 days.', attrs: { min: 1, step: 1, inputmode: 'numeric', disabled: !can, size: '8' } });
+      const warF = field({ label: 'warranty %', name: 'warranty_threshold_pct', type: 'number', value: s.warranty_threshold_pct, hint: 'warranty threshold: the health your warranty promises, often 70.', attrs: { min: 50, max: 100, step: 1, inputmode: 'numeric', disabled: !can, size: '8' } });
+      capF.el.dataset.cover = 'bh.setting.capacity_new_override';
+      rngF.el.dataset.cover = 'bh.setting.range_new_override';
+      let version = s.version;
+      const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
+      const f = form({ fields: [capF, rngF, warF], cls: 'frm--narrow', submit: 'save reference values', async onSubmit(v) {
+        if (!can) return;
+        const r = numOrNull(v.full_range_new_km);
+        const res = await ctx.api.patch(`${base}/settings`, { version, capacity_new_kwh: numOrNull(v.capacity_new_kwh), full_range_new_km: r == null ? null : Math.round(toMetric(r, 'range') * 10) / 10, warranty_threshold_pct: numOrNull(v.warranty_threshold_pct) });
+        version = res.version;
+        toast('reference values saved; health and range use them now', { kind: 'ok', next: true });
+        ctx.reload();
+      } });
+      if (!can) f.submitButton.disabled = true;
+      return section({ title: 'reference values', side: link(state.buildUrl('settings-cars', { car: cid }), 'settings/cars') },
+        h('p', { class: 'note', cover: 'bh.setting.override_help' }, 'typed once for this car and checked when saved: the figures from its papers or first weeks. they set what "when new" means for health and range lost.'),
+        f.el,
+        !settings ? note('the car settings could not be read, so they cannot be changed here.') : !ctx.admin ? note('only an admin can change these.') : null,
+        bat.chemistry ? note(`chemistry: ${CHEM[bat.chemistry.value] || 'not known'}, ${bat.chemistry.source === 'owner' ? 'set by the owner' : 'detected from the pack'}.`) : null);
+    })();
+    refWait.replaceWith(refBlock);
+  }
 
   /* ---------- slots */
   const capSlot = h('div', null, loadingLine('loading capacity readings'));
@@ -203,25 +235,16 @@ export async function mount(ctx) {
   const clSlot = h('div', null, loadingLine('loading charge level'));
   const prSlot = h('div', null, loadingLine('loading projected range'));
   const vdSlot = h('div', null, loadingLine('loading parked spells'));
-  const pk = bat.pack || {};
-  const packLine = pk.replaced_ms != null ? h('p', { class: 'note', dataset: { pack: 'replaced' } }, tag('pack', 'muted'), ' ',
-    `Pack replaced on ${formatDate(pk.replaced_ms, tz, { weekday: false })} (${pk.source === 'owner' ? 'typed by the owner' : "detected from the pack's readings"}).`) : null;
-  const notes = (bat.notes || []).filter((c) => NOTES[c]).map((c) => h('p', { class: 'note' }, /cold|lfp/.test(c) ? tag('warn', 'warn') : tag('info', 'muted'), ' ', NOTES[c]));
-
   replace(ctx.view, h('div', { class: 'page', dataset: { page: 'battery' } },
     hd, sub,
     h('div', { cover: 'shots.battery-health' },
       h('div', { class: 'cols2' },
         section({ title: 'now', side: none('live') }, nowSlot),
-        section({ title: 'capacity and health' }, capBlock,
-          h('p', { class: 'note', cover: ['bh.capacity.help', 'bh.gauge.degradation_help'] }, 'health is usable now over usable when new, both from the battery management system (it reports capacity every awake minute; nothing from range). a guide, not a lab test: it moves with temperature and balancing.'),
-          packLine, notes)),
-      h('div', { class: 'cols2' },
-        section({ title: 'full-charge range' }, rangeBlock, note('the range estimate scales with the car’s energy factor, so it drops in step with capacity. real range depends on speed, weather and climate: see efficiency.')),
-        section({ title: 'lifetime totals', side: none('whole life') }, lifeBlock)),
+        capWait),
+      h('div', { class: 'cols2' }, rangeWait, lifeWait),
       section({ title: 'capacity against the odometer', cover: ['bh.chart.capacity_by_distance.points', 'bh.chart.capacity_by_distance.median'] }, capSlot),
       monthSlot,
-      refBlock),
+      refWait),
     section({ title: 'charge level', cover: ['cl.chart.charge_level', 'shots.charge-level'], side: none('in the range') }, clSlot),
     section({ title: 'projected full-charge range', cover: 'shots.projected-range', side: none('in the range') }, prSlot),
     vdSlot));
@@ -248,7 +271,9 @@ export async function mount(ctx) {
   /* ---------- capacity scatter and the month table */
   async function paintCapacity() {
     const [pts, med] = await Promise.all([collect(`${base}/battery/capacity`, { group: opt.capGroup, x: opt.capX }), collect(`${base}/battery/capacity`, { group: 'month', x: opt.capX })]);
+    await batSettled; // the capacity when new comes with GET battery
     if (!ctx.alive()) return;
+    const pk = bat.pack || {};
     const rows = [keyRow('x', [['odometer', 'odometer'], ['time', 'date']], opt.capX, (v) => { opt.capX = v; ctx.setQuery({ cap_x: v === 'time' ? v : null }); paintCapacity(); }),
       keyRow('one dot per', [['charge', 'charge'], ['day', 'day']], opt.capGroup, (v) => { opt.capGroup = v; ctx.setQuery({ cap_group: v === 'day' ? v : null }); paintCapacity(); })];
     paintMonths(med.items);
@@ -358,6 +383,8 @@ export async function mount(ctx) {
     const lim = ts.map((tt) => { let v = null; for (const l of limits) { if (l.t_ms <= tt + bms) v = l.pct; else break; } return v; });
     const stat = (a) => { const f = (a || []).filter((v) => v != null); return f.length ? { mean: f.reduce((s, v) => s + v, 0) / f.length, min: Math.min(...f), max: Math.max(...f) } : null; };
     const st = d.stats || {};
+    if (!d.band) await batSettled;
+    if (!ctx.alive()) return;
     const band = d.band || bat.band || {};
     const lo = band.low_pct ?? 20, hi = band.high_pct ?? 80;
     const lines = [
@@ -531,7 +558,8 @@ export async function mount(ctx) {
   }
 
   const guard = (slot, fn) => fn().catch((e) => { if (ctx.alive()) replace(slot, errorBlock(e, { retry: () => guard(slot, fn), home: false })); });
-  await Promise.all([guard(capSlot, paintCapacity), guard(clSlot, paintChargeLevel), guard(prSlot, paintProjected), guard(vdSlot, paintParked)]);
+  // GET battery failing fails the page (as before); the other blocks show their own errors
+  await Promise.all([paintTop(), paintLife(), paintRef(), guard(capSlot, paintCapacity), guard(clSlot, paintChargeLevel), guard(prSlot, paintProjected), guard(vdSlot, paintParked)]);
   if (!ctx.alive()) return;
   ctx.ready();
 }

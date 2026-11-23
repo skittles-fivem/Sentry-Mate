@@ -42,6 +42,7 @@ const REASONS = {
   upload_silence: ['no log has arrived for a while', 'check the bridge has power and a network, and that its key still uploads. nothing is lost while the car sleeps.', 'settings-cars'],
   trust_failed: ['the last log failed its check', 'its signature or chain did not match, so its data is kept apart. pair the bridge again if its key changed.', 'settings-cars'],
   logs_waiting_trust: ['logs wait for a key to be trusted', 'approve or assign the key and they are read at once.', 'settings-cars'],
+  logs_missing: ['logs missing on the server', 'the server lost some logs and asked the car to send them again; see missing on the server below.', null],
   rebuild_pending: ['drives and charges are being rebuilt', 'worked out again from the stored logs; this page reads again until it is done.', null],
 };
 const TRUST = { verified: ['verified', 'good'], unsigned: ['unsigned', 'warn'], failed: ['failed', 'bad'] };
@@ -133,6 +134,7 @@ async function mountCar(ctx) {
 
   /* ---------- status */
   const statusSlot = h('div', null, loadingLine('reading health'));
+  const missSlot = h('div', null, loadingLine('reading health'));
   const tailSlot = h('div');
   let pendingT = 0, wasPending = false;
   ctx.onCleanup(() => clearTimeout(pendingT));
@@ -184,6 +186,8 @@ async function mountCar(ctx) {
         none('  drives, charges, states and visits are worked out again from the stored logs; typed names and prices stay.'))
         : note('an admin can rebuild drives and charges from the stored logs.'));
 
+    paintMissing(hl.missing_logs || {});
+
     const lines = [];
     if (hl.last_upload_ms != null) lines.push({ ms: hl.last_upload_ms, tag: silent ? 'warn' : 'ok', tone: silent ? 'warn' : 'good', text: 'last log arrived' });
     if (trust.log_start_ms != null && tw) lines.push({ ms: trust.log_start_ms, tag: tw[1] === 'good' ? 'ok' : tw[1], tone: tw[1], text: `log check: ${tw[0]}${trust.reason ? `, ${TRUST_REASONS[trust.reason] || trust.reason}` : ''}` });
@@ -192,6 +196,25 @@ async function mountCar(ctx) {
     for (const s of spans) lines.push({ ms: s.start_ms, tag: 'warn', tone: 'warn', text: `unknown ${s.end_ms == null ? 'since then' : `for ${formatDuration(s.end_ms - s.start_ms)}`}: ${SPAN_REASONS[s.reason] || s.reason}` });
     for (const k of keys) if (k.last_upload_ms != null) lines.push({ ms: k.last_upload_ms, tag: 'ok', tone: 'good', text: `upload from ${k.device || 'a bridge'}` });
     replace(tailSlot, logTail(lines, tz, { cover: 'faq.stopped-recording' }));
+  }
+
+  // logs the server should have but no longer does (it looks at start-up and once a day): the same five lines always
+  function paintMissing(m) {
+    const at = (ms) => formatDateTime(ms, tz, { now: ctx.api.now() });
+    const n = m.count ?? 0, gone = m.gone ?? 0;
+    const logs = (k) => `${formatNumber(k)} ${k === 1 ? 'log' : 'logs'}`;
+    replace(missSlot, kv([
+      ['missing', n ? status(warn(), logs(n), none(' (with their sidecars) the server should have but no longer does'))
+        : status(ok(), 'none', none(' every log the server recorded is here'))],
+      ['oldest', n && m.oldest_ms != null ? h('span', null, at(m.oldest_ms), m.found_ms != null ? none(`  found missing ${at(m.found_ms)}`) : null) : none(DASH)],
+      ['asked the car', !n ? none('nothing to ask for')
+        : m.asked ? status(tag('asked', 'accent'), 'asked the car to send them again', m.asked_ms != null ? none(` ${at(m.asked_ms)}`) : null)
+          : status(warn(), 'not asked yet', none(' the car is asked when it next connects'))],
+      ['lost for good', gone ? status(bad(), `the car no longer has ${formatNumber(gone)} of these either`, m.gone_oldest_ms != null ? none(`  oldest ${at(m.gone_oldest_ms)}`) : null)
+        : none(n ? 'none so far' : DASH)],
+      ['timeline', gone ? status(warn(), 'their time shows as unknown time') : none(n ? 'filled in once the car sends them' : DASH)],
+      ['last checked', m.scanned_ms != null ? h('span', null, at(m.scanned_ms), none('  at start-up and once a day')) : none('not checked yet')],
+    ], { cols: 1 }));
   }
 
   // the Tesla API rows of this car: admins see what the server asks Tesla; others a plain line
@@ -362,7 +385,7 @@ async function mountCar(ctx) {
 
   replace(ctx.view, h('div', { class: 'page', dataset: { page: 'health' }, cover: 'shots.database-info' },
     hd, toolLine,
-    section({ title: 'status' }, statusSlot), tailSlot, gaps.el,
+    section({ title: 'status' }, statusSlot), section({ title: 'missing on the server' }, missSlot), tailSlot, gaps.el,
     section({ title: 'what is recorded', side: none('all time, not the range') }, totalsSlot),
     storageSlot, sigTable.el, section({ title: 'one signal over the range' }, plotSlot)));
 

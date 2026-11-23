@@ -46,6 +46,7 @@ const FIX = {
   token_unused: ['A token was made but never used', 'No CAN Bridge has uploaded with it yet. Check the server address and the token in the CAN Bridge app.'],
   key_waiting: ['A CAN Bridge key is waiting', 'A CAN Bridge is uploading with a key that is not tied to a car yet. Assign it to a car in Settings: Cars.'],
   logs_waiting_trust: ['Logs are waiting for trust', 'Some logs wait until their signing key is trusted. Trust the key in Settings: Cars.'],
+  logs_missing: ['Logs missing on the server', 'The server lost some logs and asked the car to send them again. Logs the car no longer has either stay unknown time.'],
   import_running: ['An import is still running', 'Its cars appear when the import finishes. Follow it on the Import page.'],
 };
 
@@ -226,9 +227,10 @@ export async function mount(ctx) {
   }
 
   // namesFresh: after a 'fleet' event (car added, removed or renamed) the names are asked again, not cached
-  async function loadTop(namesFresh = false) {
+  // first: the page's first load, which reuses the frame's fleet/summary of this same moment
+  async function loadTop(namesFresh = false, first = false) {
     const [s, at, setup] = await Promise.all([
-      ctx.api.get('fleet/summary'),
+      ctx.api.get('fleet/summary', null, first ? { maxAgeMs: 5000 } : undefined),
       ctx.api.page('fleet/attention', {}, { limit: 8 }).catch(() => ({ items: [], next: null })),
       isAdmin() ? ctx.api.get('setup/status').catch(() => null) : Promise.resolve(null),
     ]);
@@ -289,7 +291,7 @@ export async function mount(ctx) {
   }
 
   try {
-    await Promise.all([loadTop(), table.ready]);
+    await Promise.all([loadTop(false, true), table.ready]);
   } catch (e) { ctx.fail(e); return; }
   ctx.ready();
 

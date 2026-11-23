@@ -54,16 +54,12 @@ export async function mount(ctx) {
   const effParams = () => ({ ...ctx.params, min_distance_km: minKm(), temp_group_c: groupC() });
   const inGroup = (x, g) => x.outside_avg_c != null && Math.floor(x.outside_avg_c / groupC()) === Math.round(g.temp_c / groupC());
 
-  const [eff, temps, fleetPg] = await Promise.all([
-    ctx.api.get(`${base}/efficiency`, effParams()),
-    ctx.api.get(`${base}/temperatures`, ctx.params).catch((e) => ({ error: e })),
-    ctx.api.page('cars', { sort: 'name' }, { limit: 100 }).catch(() => ({ items: [] })),
-  ]);
-  if (!ctx.alive()) return;
-  const dataStart = temps.daily?.[0]?.t_ms ?? null;
-  const fromMs = period.from_ms ?? (dataStart ?? (eff.from_ms || now() - 30 * DAY));
-  const toMs = Math.min(eff.to_ms ?? period.to_ms ?? now(), now());
-  const span = Math.max(1, toMs - fromMs);
+  // The three calls start at once and the page is laid out at once: the car keys fill in with the car list, the
+  // efficiency blocks with GET efficiency, and the temperature blocks once both answers are in (their span needs both)
+  const effP = ctx.api.get(`${base}/efficiency`, effParams());
+  const tempsP = ctx.api.get(`${base}/temperatures`, ctx.params).catch((e) => ({ error: e }));
+  const fleetP = ctx.api.page('cars', { sort: 'name' }, { limit: 100 }).catch(() => ({ items: [] }));
+  let eff = null, temps = {}, dataStart = null, fromMs = 0, toMs = 0, span = 1;
 
   /* ---------- head and the choice lines */
   const hd = head(ctx);
@@ -79,8 +75,9 @@ export async function mount(ctx) {
   const minRow = keyRow('shortest', DIST.map((v) => [v, `${v} ${dUnit}`]), opt.minD, (v) => { opt.minD = v; opt.group = null; ctx.setQuery({ min_d: v === 1 ? null : String(v), group: null }); refresh(); },
     { cover: 'ef.filter.min_distance', title: 'drives shorter than this are left out of net consumption, the bands and the daily line' });
   const stepRow = keyRow('band', TSTEP[fahr ? 'f' : 'c'].map((v) => [v, `${v} ${tUnit}`]), opt.tgW, (v) => { opt.tgW = v; opt.group = null; ctx.setQuery({ tg_w: v === (fahr ? 10 : 5) ? null : String(v), group: null }); refresh(); });
+  const carsKeys = (fleetPg) => {
   const others = (fleetPg.items || []).filter((c) => c.id !== cid);
-  const carsRow = h('div', { class: 'st-switch', cover: 'ef.section.per_car' }, h('span', { class: 'muted' }, 'compare> '),
+  return [
     others.length ? h('span', { class: 'keys keys--inline', role: 'group', 'aria-label': 'Cars to compare' }, carKeys(others, (c) => h('button', { class: 'key', type: 'button', 'aria-pressed': String(opt.cars.includes(c.id)),
       onclick: (e) => {
         const on = e.currentTarget.getAttribute('aria-pressed') !== 'true';
@@ -88,16 +85,18 @@ export async function mount(ctx) {
         opt.cars = on ? [...new Set([...opt.cars, c.id])] : opt.cars.filter((x) => x !== c.id);
         ctx.setQuery({ cars: opt.cars.length ? opt.cars.join(',') : null });
         paintCompare().catch((err) => replace(compareSlot, errorBlock(err, { home: false })));
-      } }, c.name), { keep: opt.cars })) : none('only one car'));
+      } }, c.name), { keep: opt.cars })) : none('only one car')];
+  };
+  const carsRow = h('div', { class: 'st-switch', cover: 'ef.section.per_car' }, h('span', { class: 'muted' }, 'compare> '), h('span', null, '\u00a0'));
   const filterNote = note('drives count when they start in the range. the shortest-drive filter applies to net, logged distance, the bands and the daily line; gross and the parked share take every drive.');
 
-  const consSlot = h('div');
+  const consSlot = h('div', null, loadingLine('loading consumption'));
   const tempSlot = h('div');
   const groupSlot = h('div');
   const speedSlot = h('div', null, loadingLine('loading drives'));
   const factorSlot = h('div');
   const compareSlot = h('div');
-  const tSumSlot = h('div');
+  const tSumSlot = h('div', null, loadingLine('loading temperatures'));
   const histSlot = h('div', null, loadingLine('loading temperatures'));
   const chgSlot = h('div');
   const daySlot = h('div');
@@ -449,18 +448,30 @@ export async function mount(ctx) {
     } });
   }
 
-  paintCons(eff); paintTemp(eff); paintFactor(eff); paintTempSummary();
-  if (opt.group != null) paintGroup(eff);
-  await loadUPlot().catch(() => null);
-  if (!ctx.alive()) return;
+  const uplotP = loadUPlot().catch(() => null);
   const guard = (slot, p) => p.catch((e) => { if (ctx.alive()) replace(slot, errorBlock(e, { home: false })); });
-  await Promise.all([
-    paintSpeed(),
+  const paintCars = async () => { const pg = await fleetP; if (ctx.alive()) replace(carsRow, h('span', { class: 'muted' }, 'compare> '), carsKeys(pg)); };
+  // GET efficiency failing fails the page (as before)
+  const effDone = effP.then((e) => { eff = e; if (ctx.alive()) { paintCons(eff); paintTemp(eff); paintFactor(eff); } });
+  const paintRest = async () => {
+    [, temps] = await Promise.all([effDone, tempsP]);
+    if (!ctx.alive()) return;
+    dataStart = temps.daily?.[0]?.t_ms ?? null;
+    fromMs = period.from_ms ?? (dataStart ?? (eff.from_ms || now() - 30 * DAY));
+    toMs = Math.min(eff.to_ms ?? period.to_ms ?? now(), now());
+    span = Math.max(1, toMs - fromMs);
+    paintTempSummary();
+    if (opt.group != null) paintGroup(eff);
+    await uplotP;
+    if (!ctx.alive()) return;
+    await Promise.all([
     guard(compareSlot, paintCompare()),
     window.uPlot ? guard(histSlot, paintHistory()) : null,
     window.uPlot ? guard(chgSlot, paintCharges()) : null,
     window.uPlot ? Promise.resolve().then(paintDaily) : null,
-  ]);
+    ]);
+  };
+  await Promise.all([paintCars(), effDone, uplotP.then(() => (ctx.alive() ? paintSpeed() : null)), paintRest()]);
   if (!ctx.alive()) return;
   ctx.ready();
 }

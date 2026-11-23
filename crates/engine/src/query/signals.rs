@@ -121,7 +121,7 @@ fn sentinel(sig: &dbc::Signal, v: f64) -> bool {
 fn newest_log(e: &Engine, car: CarId) -> QResult<Option<String>> {
     let meta = records::meta(e.db(), car)?;
     for &d in meta.days.iter().rev() {
-        let rec = records::day(e.db(), car, d)?;
+        let rec = records::day_shared(e.db(), car, d)?;
         let best = rec
             .logs
             .iter()

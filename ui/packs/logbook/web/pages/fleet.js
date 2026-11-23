@@ -54,6 +54,7 @@ const FIX_WORDS = {
   token_unused: ['A token was made but never used', 'Check that the CAN Bridge app has the token and can reach this server.'],
   key_waiting: ['A CAN Bridge key is waiting', 'A CAN Bridge uploaded logs with a key no car has yet. Assign it to a car in Settings: Cars.'],
   logs_waiting_trust: ['Logs are waiting for trust', 'Uploaded logs wait until their key is trusted. Trust the key in Settings: Cars.'],
+  logs_missing: ['Logs missing on the server', 'The server lost some logs and asked the car to send them again. See Data health.'],
   import_running: ['An import is running', 'Cars from the TeslaMate import appear when it is done. See Import.'],
 };
 
@@ -69,7 +70,7 @@ export async function mount(ctx) {
   const pinned = new Set(prefs.pinned_cars || []);
   // The totals are the page; the "Needs a look" panel is extra, so its failure stays in the panel.
   const attnFirst = ctx.api.get('fleet/attention', { limit: 20 }).then((r) => ({ ok: r }), (err) => ({ err }));
-  const summary = await ctx.api.get('fleet/summary');
+  const summary = await ctx.api.get('fleet/summary', null, { maxAgeMs: 5000 }); // the frame's answer of this load
 
   if (!summary.cars && !summary.sold) return emptyFleet(ctx, isAdmin);
 

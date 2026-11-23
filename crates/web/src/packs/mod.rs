@@ -17,8 +17,11 @@
 //!   ([`CACHED_PACKS`], [`CACHED_BYTES`]). A download's zip is built once per loaded pack and shared.
 //! - **Served** with a strict CSP (scripts and styles only from the pack's own files, no inline scripts, connections
 //!   and images only to the server and the tile server, `wasm-unsafe-eval` for packs written in Rust,
-//!   `frame-ancestors 'none'`), exact MIME types, `nosniff`, `ETag`s (`Cache-Control: no-cache`, `304` when
-//!   unchanged), no directory listings. A path with no file extension that is no file gets `index.html` (the pages'
+//!   `frame-ancestors 'none'`), exact MIME types, `nosniff`, `ETag`s (`304` when unchanged), no directory
+//!   listings. Text files in brotli or gzip when the browser accepts it ([`compress`]: the built-in packs' copies
+//!   made at build time). `index.html` (`Cache-Control: no-cache`) loads the pack's files under
+//!   `/_v/<version>/`, cached for good ([`IMMUTABLE`]), and preloads the modules the first page needs ([`index`]);
+//!   any other address of a file is `no-cache`. A path with no file extension that is no file gets `index.html` (the pages'
 //!   own routes); `mock-api.js` and the like are never served.
 //!
 //! The API (all under `/api/v1`):
@@ -35,6 +38,8 @@
 //! installed_ms, chosen }`.
 
 pub mod builtin;
+pub mod compress;
+pub mod index;
 pub mod zip;
 
 use crate::accounts_admin::{confirm_code, confirm_password};
@@ -166,11 +171,121 @@ struct UiJson {
     api: u32,
 }
 
-/// A file ready to serve.
+/// A file ready to serve, with its compressed copies: the built-in packs' made at build time, the others the first
+/// time someone asks for one ([`compress`]).
 pub struct PackFile {
     pub bytes: Bytes,
     pub etag: String,
     pub mime: &'static str,
+    br: std::sync::OnceLock<Option<Bytes>>,
+    gz: std::sync::OnceLock<Option<Bytes>>,
+}
+
+/// An encoding a file is sent in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Encoding {
+    Identity,
+    Brotli,
+    Gzip,
+}
+
+impl Encoding {
+    /// The best one the request accepts (`Accept-Encoding`), brotli first.
+    pub fn accepted(headers: &HeaderMap) -> (bool, bool) {
+        let mut br = false;
+        let mut gz = false;
+        for v in headers.get_all(header::ACCEPT_ENCODING).iter().filter_map(|v| v.to_str().ok()) {
+            for part in v.split(',') {
+                let mut it = part.split(';');
+                let name = it.next().unwrap_or("").trim().to_ascii_lowercase();
+                let refused = it.any(|p| {
+                    p.trim().strip_prefix("q=").and_then(|q| q.trim().parse::<f32>().ok()).is_some_and(|q| q <= 0.0)
+                });
+                if refused {
+                    continue;
+                }
+                match name.as_str() {
+                    "br" => br = true,
+                    "gzip" | "x-gzip" => gz = true,
+                    "*" => {
+                        br = true;
+                        gz = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        (br, gz)
+    }
+
+    pub fn name(self) -> Option<&'static str> {
+        match self {
+            Encoding::Identity => None,
+            Encoding::Brotli => Some("br"),
+            Encoding::Gzip => Some("gzip"),
+        }
+    }
+}
+
+/// Brotli and gzip copies of a file, by the SHA-256 of its bytes.
+type Copies = HashMap<&'static str, (&'static [u8], &'static [u8])>;
+
+/// The build-time copies of the built-in packs' files.
+fn precompressed() -> &'static Copies {
+    static TABLE: std::sync::LazyLock<Copies> =
+        std::sync::LazyLock::new(|| builtin::PRECOMPRESSED.iter().map(|(sum, br, gz)| (*sum, (*br, *gz))).collect());
+    &TABLE
+}
+
+impl PackFile {
+    fn new(path: &str, bytes: Bytes, etag: String, mime: &'static str, sum: &[u8]) -> PackFile {
+        let f = PackFile { bytes, etag, mime, br: std::sync::OnceLock::new(), gz: std::sync::OnceLock::new() };
+        if !compress::compressible(path) || f.bytes.len() < compress::MIN_BYTES {
+            let _ = f.br.set(None);
+            let _ = f.gz.set(None);
+        } else if let Some((br, gz)) = precompressed().get(hex::encode(sum).as_str()) {
+            let _ = f.br.set(Some(Bytes::from_static(br)));
+            let _ = f.gz.set(Some(Bytes::from_static(gz)));
+        }
+        f
+    }
+
+    /// The copy to send for a request that accepts `br` / `gzip`, made now if it wasn't yet (a large file at a
+    /// quicker brotli level: it is made while a request waits).
+    pub fn encoded(&self, (br, gz): (bool, bool)) -> (Encoding, Bytes) {
+        let raw = &self.bytes;
+        if br {
+            let quality = if raw.len() <= 128 << 10 { 11 } else { 5 };
+            let c = self.br.get_or_init(|| {
+                let b = compress::brotli(raw, quality);
+                compress::worth(raw.len(), b.len()).then(|| Bytes::from(b))
+            });
+            if let Some(c) = c {
+                return (Encoding::Brotli, c.clone());
+            }
+        }
+        if gz {
+            let c = self.gz.get_or_init(|| {
+                let g = compress::gzip(raw, 9);
+                compress::worth(raw.len(), g.len()).then(|| Bytes::from(g))
+            });
+            if let Some(c) = c {
+                return (Encoding::Gzip, c.clone());
+            }
+        }
+        (Encoding::Identity, raw.clone())
+    }
+
+    /// Whether the file is sent compressed to a request that accepts it (so its answers vary by `Accept-Encoding`).
+    fn may_compress(&self) -> bool {
+        !matches!(self.br.get(), Some(None)) || !matches!(self.gz.get(), Some(None))
+    }
+
+    fn size(&self) -> u64 {
+        let copy =
+            |c: &std::sync::OnceLock<Option<Bytes>>| c.get().and_then(|c| c.as_ref()).map_or(0, |b| b.len() as u64);
+        self.bytes.len() as u64 + copy(&self.br) + copy(&self.gz)
+    }
 }
 
 /// A pack in memory: its files by path under `web/`; files it doesn't have come from `base`.
@@ -179,22 +294,52 @@ pub struct Loaded {
     pub ui_json: Bytes,
     pub files: HashMap<String, PackFile>,
     pub base: Option<Arc<Loaded>>,
+    /// A hash of every file it serves (its own and its base's): the `/_v/<version>/` its pages load their files
+    /// under, cached for good ([`index`]).
+    pub version: String,
+    /// The `index.html` it serves: its own (or its base's) with the files it loads under `/_v/<version>/` and the
+    /// modules the first page needs preloaded ([`index::rewrite`]).
+    pub index: Option<PackFile>,
     /// The pack as a zip (its own files), built the first time someone downloads it.
     zip: std::sync::OnceLock<Bytes>,
 }
 
 impl Loaded {
     fn new(meta: Meta, ui_json: Bytes, list: Vec<(String, Bytes)>, base: Option<Arc<Loaded>>) -> Loaded {
-        let files = list
+        let files: HashMap<String, PackFile> = list
             .into_iter()
             .filter_map(|(path, bytes)| {
                 let mime = mime(&path)?;
                 let sum = Sha256::digest(&bytes);
                 let etag = format!("\"{}-{}\"", meta.id, hex::encode(&sum[..12]));
-                Some((path, PackFile { bytes, etag, mime }))
+                let f = PackFile::new(&path, bytes, etag, mime, &sum);
+                Some((path, f))
             })
             .collect();
-        Loaded { meta, ui_json, files, base, zip: std::sync::OnceLock::new() }
+        let mut h = Sha256::new();
+        let mut names: Vec<&String> = files.keys().collect();
+        names.sort();
+        for n in names {
+            h.update(n.as_bytes());
+            h.update([0]);
+            h.update(files[n].etag.as_bytes());
+        }
+        if let Some(b) = &base {
+            h.update(b.version.as_bytes());
+        }
+        let version = hex::encode(&h.finalize()[..8]);
+        let source = files.get("index.html").or_else(|| base.as_ref().and_then(|b| b.files.get("index.html")));
+        let index = source.map(|src| {
+            let has = |p: &str| files.contains_key(p) || base.as_ref().is_some_and(|b| b.files.contains_key(p));
+            let read =
+                |p: &str| files.get(p).or_else(|| base.as_ref().and_then(|b| b.files.get(p))).map(|f| f.bytes.clone());
+            let html = index::rewrite(&String::from_utf8_lossy(&src.bytes), &version, &has, &read);
+            let bytes = Bytes::from(html);
+            let sum = Sha256::digest(&bytes);
+            let etag = format!("\"{}-{}\"", meta.id, hex::encode(&sum[..12]));
+            PackFile::new("index.html", bytes, etag, "text/html; charset=utf-8", &sum)
+        });
+        Loaded { meta, ui_json, files, base, version, index, zip: std::sync::OnceLock::new() }
     }
 
     /// The pack as a zip (`ui.json` and `web/`), built once and shared by every download of it.
@@ -216,7 +361,7 @@ impl Loaded {
 
     /// The bytes it holds in memory (its own files, and its zip once built).
     fn size(&self) -> u64 {
-        let files: u64 = self.files.values().map(|f| f.bytes.len() as u64).sum();
+        let files: u64 = self.files.values().chain(self.index.as_ref()).map(PackFile::size).sum();
         files + self.ui_json.len() as u64 + self.zip.get().map_or(0, |z| z.len() as u64)
     }
 
@@ -941,13 +1086,26 @@ pub async fn fallback(State(app): State<AppState>, req: Request) -> Response {
     serve_file(&app, &pack, &path, &headers)
 }
 
-/// A pack file for a request path (see the module's notes).
+/// How long a file under `/_v/<version>/` is kept: its address changes whenever any file of the pack does.
+pub const IMMUTABLE: &str = "public, max-age=31536000, immutable";
+
+/// A pack file for a request path (see the module's notes). Under `/_v/<version>/` of the pack's current version a
+/// file is cached for good ([`IMMUTABLE`]); everything else (`index.html` above all, and a version that is no longer
+/// the pack's) is checked again every time (`no-cache`, `ETag`, `304`). A file is sent in brotli or gzip when the
+/// request accepts it and a compressed copy is smaller.
 pub fn serve_file(app: &AppState, pack: &Loaded, path: &str, headers: &HeaderMap) -> Response {
     let decoded = match percent_encoding::percent_decode_str(path).decode_utf8() {
         Ok(p) => p.into_owned(),
         Err(_) => return plain(StatusCode::NOT_FOUND, "Not found"),
     };
     let rel = decoded.trim_start_matches('/');
+    let (rel, versioned) = match rel.strip_prefix(index::PREFIX.trim_start_matches('/')) {
+        Some(rest) => match rest.split_once('/') {
+            Some((v, rest)) => (rest, v == pack.version),
+            None => return plain(StatusCode::NOT_FOUND, "Not found"),
+        },
+        None => (rel, false),
+    };
     let rel = if rel.is_empty() { "index.html" } else { rel };
     if rel.contains("..") || rel.contains('\\') || rel.contains("//") || rel.contains('\0') {
         return plain(StatusCode::NOT_FOUND, "Not found");
@@ -956,32 +1114,54 @@ pub fn serve_file(app: &AppState, pack: &Loaded, path: &str, headers: &HeaderMap
     if NEVER_SERVED.contains(&name) {
         return plain(StatusCode::NOT_FOUND, "Not found");
     }
-    let file = match pack.file(rel) {
-        Some(f) => f,
-        // the pages' own routes (/cars/c1/drives): no extension, no file
-        None if !name.contains('.') && !rel.ends_with('/') => match pack.file("index.html") {
+    let page = rel == "index.html" || (!name.contains('.') && !rel.ends_with('/') && pack.file(rel).is_none());
+    let file = if page {
+        match &pack.index {
             Some(f) => f,
             None => return plain(StatusCode::NOT_FOUND, "Not found"),
-        },
-        None => return plain(StatusCode::NOT_FOUND, "Not found"),
+        }
+    } else {
+        match pack.file(rel) {
+            Some(f) => f,
+            None => return plain(StatusCode::NOT_FOUND, "Not found"),
+        }
     };
-    let etag = if pack.files.contains_key(rel) || pack.base.is_none() {
+    let etag = if page || pack.files.contains_key(rel) || pack.base.is_none() {
         file.etag.clone()
     } else {
         format!("\"{}-{}", pack.meta.id, file.etag.trim_start_matches('"'))
     };
+    let (encoding, body) = file.encoded(Encoding::accepted(headers));
+    // each encoding is its own representation, with its own tag
+    let etag = match encoding.name() {
+        Some(e) => format!("{}.{e}\"", etag.trim_end_matches('"')),
+        None => etag,
+    };
     let fresh = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.split(',').any(|t| t.trim() == etag || t.trim() == "*"));
-    let mut res = if fresh { StatusCode::NOT_MODIFIED.into_response() } else { file.bytes.clone().into_response() };
+        .is_some_and(|v| v.split(',').any(|t| t.trim().trim_start_matches("W/") == etag || t.trim() == "*"));
+    let mut res = if fresh { StatusCode::NOT_MODIFIED.into_response() } else { body.into_response() };
     let h = res.headers_mut();
     if let Ok(v) = HeaderValue::from_str(&etag) {
         h.insert(header::ETAG, v);
     }
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(file.mime));
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-    h.insert(header::VARY, HeaderValue::from_static("Cookie"));
+    if let Some(e) = encoding.name() {
+        h.insert(header::CONTENT_ENCODING, HeaderValue::from_static(e));
+    }
+    let immutable = versioned && !page;
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static(if immutable { IMMUTABLE } else { "no-cache" }));
+    // which pack a path gives depends on who asks, except under the pack's own version
+    let vary = match (immutable, file.may_compress()) {
+        (true, true) => Some("Accept-Encoding"),
+        (true, false) => None,
+        (false, true) => Some("Cookie, Accept-Encoding"),
+        (false, false) => Some("Cookie"),
+    };
+    if let Some(v) = vary {
+        h.insert(header::VARY, HeaderValue::from_static(v));
+    }
     let tiles = app.tiles();
     if let Ok(v) = HeaderValue::from_str(&csp(&tiles)) {
         h.insert(header::CONTENT_SECURITY_POLICY, v);
@@ -1077,7 +1257,7 @@ mod tests {
             installed_ms: None,
         };
         let big = |id: &str| {
-            let files = vec![("index.html".to_string(), Bytes::from(vec![0u8; (CACHED_BYTES / 3 + 1) as usize]))];
+            let files = vec![("big.png".to_string(), Bytes::from(vec![0u8; (CACHED_BYTES / 3 + 1) as usize]))];
             Arc::new(Loaded::new(meta(id), Bytes::new(), files, None))
         };
         let mut c = vec![big("a"), big("b"), big("c")];

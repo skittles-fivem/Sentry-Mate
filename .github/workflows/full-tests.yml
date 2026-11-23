@@ -6,8 +6,10 @@ name: Full tests
 # a push, so that a push to main takes about 5 minutes; this runs the rest
 # once a week (Monday 03:17 UTC) and by hand (Actions > Full tests > Run
 # workflow). It publishes nothing and holds no token that can write.
-# The two measurements in crates/db/tests/compression.rs (measure_*) are left
-# out: they are for a --release run by hand, not checks.
+# The measurements (measure_*: crates/db/tests/compression.rs, the pages'
+# times in crates/sentry-mate/src/perf.rs) are left out: they are for a
+# --release run by hand, not checks. The pages' time budget (perf_*) runs in
+# a release build of its own.
 # Every action is pinned to a full commit id (its version in the comment);
 # crates/sentry-mate/tests/repo_hygiene.rs fails on an unpinned one.
 
@@ -41,4 +43,6 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo test --workspace --locked --no-fail-fast -- --include-ignored --skip measure_
+      - run: cargo test --workspace --locked --no-fail-fast -- --include-ignored --skip measure_ --skip perf_
+      # the pages' time budget on a 4-month made-up history (docs/plans/performance.md): a release build
+      - run: cargo test --release --locked -p sentry-mate perf_ -- --ignored --nocapture
