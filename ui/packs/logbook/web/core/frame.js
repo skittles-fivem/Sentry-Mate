@@ -7,7 +7,7 @@
 // The router calls update(view) for every page; everything else here keeps itself up to date (live
 // notices and preferences from /api/v1/events, ages and the clock on a timer).
 
-import { h } from '../shared/dom.js';
+import { h, holdScroll } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import { clearServiceWorker } from '../shared/offline.js';
 import * as state from '../shared/state.js';
@@ -228,6 +228,8 @@ function drawNotices() {
   const gone = dismissed();
   // The release notice (admins only) is hidden per newer build in this browser; the others for this tab.
   const shown = notices.filter((n) => (n.code === 'release_available' ? !releaseDismissed(n) : !gone.has(`${n.code}:${n.since_ms}`)));
+  // (a notice that comes or goes while the page is read keeps what is on screen in place, shared/dom.js)
+  holdScroll(el);
   el.hidden = !shown.length;
   el.replaceChildren(...shown.map((n) => h('div', { class: ['notice', `notice-${n.level || 'info'}`], role: n.level === 'error' ? 'alert' : null },
     h('div', { class: 'wrap notice-row' },
@@ -267,10 +269,15 @@ function drawFooter() {
     h('p', { class: 'colophon-credit' }, about && about.data_credits && about.data_credits[0] ? about.data_credits[0].text : 'Map data © OpenStreetMap contributors')));
 }
 
+let firstDone = null;
+/** Resolves once the notices were loaded the first time and are in the bar (or could not be loaded). */
+export const noticesLoaded = new Promise((resolve) => { firstDone = resolve; });
+
 async function loadNotices() {
   // kept: a page that lists the notices too reuses this answer
   try { notices = (await api.get('notices', null, { keep: true })).items || []; } catch { notices = []; }
   drawNotices();
+  firstDone();
 }
 
 /* ------------------------------------------------------------------ the clock */
