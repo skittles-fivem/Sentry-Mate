@@ -1,7 +1,7 @@
 //! Working on one log: its car, its decoding, the window of the timeline it changes, the car's Now.
 
 use crate::records::{self, CarMeta, DAY_MS, LogEntry, Outcome};
-use crate::{Engine, Error, Event, NewKeys, Result, Work, lock, now_ms};
+use crate::{Engine, Error, Event, NewKeys, Result, Work, live_gps, lock, now_ms};
 use db::{Query, StateRow};
 use model::{Car, CarId, Charge, ChargePoint, Drive, Input, Now, Sample, Source, StateSpan, Stream, VinInfo};
 use std::sync::atomic::Ordering;
@@ -775,9 +775,39 @@ impl Engine {
         if kept.is_none() {
             from.clear();
         }
+        // SMO's fixes out of step with an API's (a rebuild's word, else its newest fix against the APIs' newest): an
+        // API's position, never SMO's
+        let verdict = records::smo_gps(db, car)?;
+        let smo_out = if verdict.is_some() {
+            live_gps::smo_out(verdict, None, None)
+        } else {
+            let smo_fix = if input == Input::Smo {
+                samples.iter().rev().find_map(live_gps::fix_of)
+            } else if from.contains_key("lat") {
+                None
+            } else {
+                let t = at.get("lat").copied().unwrap_or(merged.t_ms);
+                live_gps::fix_of(&Sample { t_ms: t, ..merged.clone() })
+            };
+            let api = if input == Input::Smo { None } else { live_gps::newest_fix_in(samples, input) };
+            let api = match (smo_fix, api) {
+                (None, _) => None,
+                (Some(_), Some(a)) => Some(a),
+                (Some(_), None) => live_gps::newest_api_fix(self, car)?,
+            };
+            live_gps::smo_out(None, smo_fix, api.as_ref().and_then(|a| live_gps::fix_of(&a.0)))
+        };
+        if smo_out && !from.contains_key("lat") && merged.lat.is_some() {
+            let api = live_gps::newest_api_fix(self, car)?;
+            live_gps::put_api_position(&mut merged, &mut at, &mut from, api.as_ref());
+        }
         let order = self.source_order(car);
         for s in samples {
-            overlay(&mut merged, s, &mut at, &mut from, input, &order);
+            if smo_out && input == Input::Smo {
+                overlay(&mut merged, &live_gps::without_position(s), &mut at, &mut from, input, &order);
+            } else {
+                overlay(&mut merged, s, &mut at, &mut from, input, &order);
+            }
         }
         let at_ms = kept.as_ref().map_or(last.t_ms, |n| n.at_ms.max(last.t_ms));
         merged.t_ms = at_ms;
@@ -874,6 +904,28 @@ impl Engine {
         }
         let by: Vec<(&[Sample], Input)> = by.iter().map(|(v, i)| (v.as_slice(), *i)).collect();
         let mut fused = timeline::fuse_ordered(&by, &order, fp);
+        self.inner.counters.gps_fixes_dropped.fetch_add(fused.fixes_dropped, Ordering::Relaxed);
+        // the car's live position by the same word on SMO's fixes as its history's
+        if fused.gps_distrusted.contains(Input::Smo) {
+            self.note_smo_gps(car, false, to)?;
+        } else if fused.gps_agree.contains(Input::Smo) {
+            self.note_smo_gps(car, true, to)?;
+        }
+        if !fused.gps_disagree.is_empty() {
+            let seen = crate::GpsDisagreement {
+                disagree: fused.gps_disagree,
+                not_used: fused.gps_distrusted,
+                from_ms: from,
+                to_ms: to,
+            };
+            let mut m = crate::lock(&self.inner.gps_cross);
+            if m.get(&car).is_none_or(|x| x.to_ms <= to) {
+                if fused.gps_distrusted.contains(Input::Smo) {
+                    tracing::warn!(car, "SMO's GPS disagrees with the other inputs; its fixes are left out there");
+                }
+                m.insert(car, seen);
+            }
+        }
         fused.samples.retain(|s| s.t_ms >= from && s.t_ms < to);
         fused.marks.retain(|m| m.0 >= from && m.0 < to);
         let seen = records::api_between(db, car, meta, from, to)?;
@@ -1069,6 +1121,8 @@ impl Engine {
         {
             let l = self.car_lock(car);
             let _held = lock(&l);
+            // updates stored before an install's fingerprint changes were one update are found again
+            self.fw_regroup(car)?;
             let dirty = records::dirty(db, car)?;
             if !dirty.is_empty() {
                 let mut meta = records::meta(db, car)?;

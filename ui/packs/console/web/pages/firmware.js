@@ -12,11 +12,12 @@
 // api) reported within a day after it (named_by "auto", version_source the input). A typed name always wins.
 //
 //   firmwarePanel(ctx)          { el, ready, reload() }: ## car firmware, one table per module
-//   fingerprintUpdates(ctx, o)  { el, ready, reload() }: ## tesla updates installed, a block per update with a name box
+//   fingerprintUpdates(ctx, o)  { el, ready, reload(), open(id) }: ## tesla updates installed, a block per update with
+//                               its name and, for an admin, [edit] that opens a name box in place
 //   MODULE_WORDS, modWords(ids) the modules' names in the page's words
 
 import * as state from '../shared/state.js';
-import { h, replace } from '../shared/dom.js';
+import { h, replace, disclose } from '../shared/dom.js';
 import { formatNumber } from '../shared/i18n.js';
 import { section, note, link, btn, kv } from '../core/ui.js';
 import { tag, dateTime, ago, dur, DASH } from '../core/fmt.js';
@@ -128,6 +129,7 @@ export function fingerprintUpdates(ctx, { onNamed = null } = {}) {
   const around = new Map();   // update id -> { before, after } drives
   const tables = [];
   let busy = false;
+  const boxes = new Map();   // update id -> its name box's disclose()
 
   async function drivesAround(u) {
     const key = `${u.id}:${u.start_ms}:${u.end_ms}`;
@@ -141,6 +143,7 @@ export function fingerprintUpdates(ctx, { onNamed = null } = {}) {
     return v;
   }
 
+  // the name is shown in the block; [edit] ([name it] while it has none) opens the box in place, esc or [cancel] closes it
   function nameBox(u) {
     const input = h('input', { class: 'in fw-name-in', type: 'text', value: u.version || '', size: '14', maxlength: '20', autocomplete: 'off', spellcheck: 'false',
       inputmode: 'decimal', placeholder: '2026.38.4', 'aria-label': `Version of the Tesla update installed ${dateTime(u.end_ms, tz)}`, 'aria-describedby': `fw-hint-${u.id}` });
@@ -148,19 +151,24 @@ export function fingerprintUpdates(ctx, { onNamed = null } = {}) {
     const say = (t) => { msg.hidden = !t; replace(msg, t || ''); };
     const save = h('button', { class: 'btn btn--primary', type: 'submit' }, 'save');
     const clear = btn('clear', () => send(null), { title: 'forget the typed version', disabled: !u.version });
+    const cancel = btn('cancel', () => dz.close({ focus: true }), { title: 'close without saving (esc)' });
+    const edit = h('button', { class: 'btn btn--line tone--accent fw-edit', type: 'button', id: `fw-edit-${u.id}`, title: u.version ? 'type another version for this update' : 'type the version this update installed' },
+      u.version ? '[edit]' : '[name it]');
     async function send(v) {
       if (busy) return;
       if (v != null && !VERSION_RX.test(v)) { say('A version as the car\'s screen shows it, like 2026.38.4.'); input.focus(); return; }
+      if (v == null && !u.version) { say('Type the version first, like 2026.38.4.'); input.focus(); return; }
       busy = true; save.disabled = clear.disabled = true; say(null);
       try {
         await ctx.api.patch(`${path}/${enc(u.id)}`, { version: v });
         if (!ctx.alive()) return;
         toast(v ? `Saved: this update installed ${v}. Later updates with the same fingerprints get it too.` : 'The version is cleared.', { kind: 'ok' });
         busy = false;
+        dz.close();
         await reload(true);
         if (!ctx.alive()) return;
-        // the block was drawn again: the focus goes back to this update's box
-        document.getElementById(`fw-in-${u.id}`)?.focus({ preventScroll: true });
+        // the block was drawn again: the focus goes back to this update's [edit]
+        document.getElementById(`fw-edit-${u.id}`)?.focus({ preventScroll: true });
         onNamed?.();
       } catch (e) {
         if (!ctx.alive()) return;
@@ -169,9 +177,12 @@ export function fingerprintUpdates(ctx, { onNamed = null } = {}) {
       } finally { busy = false; save.disabled = false; clear.disabled = !u.version; }
     }
     const f = h('form', { class: 'fw-name', novalidate: true, onsubmit: (e) => { e.preventDefault(); const v = input.value.trim(); send(v || null); } },
-      h('label', { class: 'fw-name-k muted', for: `fw-in-${u.id}` }, 'version'), input, h('span', { class: 'acts' }, save, clear));
+      h('label', { class: 'fw-name-k muted', for: `fw-in-${u.id}` }, 'version'), input, h('span', { class: 'acts' }, save, clear, cancel));
     input.id = `fw-in-${u.id}`;
-    return h('div', null, f, h('p', { class: 'fld-hint', id: `fw-hint-${u.id}` }, 'As the car\'s screen shows it (Controls, Software), e.g. 2026.38.4. Empty, or clear, forgets it. Later updates to the same fingerprints are named by themselves.'), msg);
+    const part = h('div', { class: 'fw-name-box', id: `fw-box-${u.id}` }, f, h('p', { class: 'fld-hint', id: `fw-hint-${u.id}` }, 'As the car\'s screen shows it (Controls, Software), e.g. 2026.38.4. Empty, or clear, forgets it. Later updates to the same fingerprints are named by themselves.'), msg);
+    const dz = disclose(edit, part, { focus: input, onClose: () => { input.value = u.version || ''; say(null); } });
+    boxes.set(u.id, dz);
+    return { edit, part };
   }
 
   function block(u, dr) {
@@ -188,11 +199,12 @@ export function fingerprintUpdates(ctx, { onNamed = null } = {}) {
       empty: () => empty('no field listed'),
     });
     tables.push(t);
+    const box = ctx.admin ? nameBox(u) : null;
     const dl = (d) => (d ? link(state.buildUrl('drive', { car: cid, drive: d.id }), driveWords(d, tz)) : none('none in the logs'));
     return h('div', { class: 'fw-upd', id: `upd-${u.id}`, dataset: { row: '' } },
       h('p', { class: 'fw-upd-head' }, tag('installed', 'accent'), ' ', h('b', null, 'Tesla update installed'), ' ', h('span', { class: 'muted' }, dateTime(u.end_ms, tz))),
       kv([
-        ['version', named],
+        ['version', box ? [named, ' ', box.edit] : named],
         u.version && u.named_by === 'auto' ? ['named', none(VERSION_SOURCE_WORDS[u.version_source] || 'named from an earlier update with the same fingerprints')] : null,
         ['between', [h('span', { class: 'muted' }, 'last drive before '), dl(dr.before)]],
         ['and', [h('span', { class: 'muted' }, 'first drive after '), dl(dr.after)]],
@@ -201,8 +213,9 @@ export function fingerprintUpdates(ctx, { onNamed = null } = {}) {
         ['build id', u.build_id ? hexEl(u.build_id) : none(DASH)],
         ['timeline', link(state.buildUrl('timeline', { car: cid, period: { from: u.start_ms - 3600000, to: u.end_ms + 3600000 } }), 'around it')],
       ], { cols: 1 }),
+      box ? box.part : null,
       t.el,
-      ctx.admin ? nameBox(u) : note(tag('admin', 'muted'), u.version ? ' Only an admin can change the name.' : ' Only an admin can name it.'));
+      box ? null : note(tag('admin', 'muted'), u.version ? ' Only an admin can change the name.' : ' Only an admin can name it.'));
   }
 
   async function reload(force = false) {
@@ -216,12 +229,13 @@ export function fingerprintUpdates(ctx, { onNamed = null } = {}) {
     const found = list.filter((u) => u.detected_by === 'fingerprint');
     const s = sig(found);
     if (s === last && !force) return;
-    // someone is typing a name: wait, so the box does not change under them
-    if (!force && last != null && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+    // a name box is open (someone is typing a name): wait, so the box does not change under them
+    if (!force && last != null && [...boxes.values()].some((b) => b.isOpen())) return;
     const drs = await Promise.all(found.slice(0, 30).map(drivesAround));
     if (!ctx.alive()) return;
     last = s; rows = found;
     tables.length = 0;
+    boxes.clear();
     replace(side, found.length ? `${formatNumber(found.length)} in this range` : 'none in this range');
     replace(body,
       note('Found from the modules\' fingerprints: the old ones were last seen at the start of the window, the new ones first seen at its end. The car does not send the version text: teslafi, local teslamate or the tesla api name it when they report it, or an admin types it once (typed wins); the server then names every later update with the same fingerprints.'),
@@ -230,5 +244,6 @@ export function fingerprintUpdates(ctx, { onNamed = null } = {}) {
       found.length > 30 ? note(`The newest 30 of ${formatNumber(found.length)} are shown; a shorter range shows older ones.`) : null);
     await Promise.all(tables.map((t) => t.ready)).catch(() => {});
   }
-  return { el, ready: reload(), reload, rows: () => rows };
+  // open(id): opens that update's name box (the [edit] in the versions table)
+  return { el, ready: reload(), reload, rows: () => rows, open: (id) => boxes.get(id)?.open() };
 }

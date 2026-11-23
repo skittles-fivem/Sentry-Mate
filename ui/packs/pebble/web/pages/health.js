@@ -45,6 +45,7 @@ const REASONS = {
   upload_silence: ['No log has arrived for a while', 'Check that the CAN Bridge has power and a network, and that its key still uploads. Nothing is lost while the car sleeps.', 'Check the keys'],
   trust_failed: ['The last log failed its check', 'Its signature or hash chain did not match, so its data is kept apart. Pair the bridge again if its key changed.', 'Pair again'],
   logs_waiting_trust: ['Logs wait for a key to be trusted', 'They came from a key nobody has approved yet. Approve it and they are read at once.', 'Approve the key'],
+  gps_inputs_disagree: ['Positions from one input are out of step', 'One input’s GPS positions are far from the other inputs’ positions at the same moments, more than lag or noise explains (often a decoding problem). Its positions are not used there; the other inputs’ positions are. The rest of its data is still used.', null],
   logs_missing: ['Logs missing on the server', 'The server lost some logs and asked the car to send them again. Nothing needs doing; see Missing on the server below.', null],
   rebuild_pending: ['Drives and charges are being rebuilt', 'This page reads again every few seconds until it is done. Nothing needs doing.', null],
 };

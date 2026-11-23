@@ -513,6 +513,7 @@ const FIX_NOW = {
   token_unused: 'A token was made but no CAN Bridge has uploaded with it yet.',
   key_waiting: 'A CAN Bridge key is waiting for a car (below).',
   logs_waiting_trust: 'Some logs wait for a trust check.',
+  gps_inputs_disagree: 'One input’s GPS positions are out of step with the others’; its positions are not used there.',
   logs_missing: 'Some logs are missing on the server; the car was asked to send them again.',
 };
 

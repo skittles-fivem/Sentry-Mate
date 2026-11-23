@@ -6,6 +6,12 @@
 //   node measure.js --base https://127.0.0.1:10101 --user owner --pass 'correct horse battery staple' \
 //     [--packs instrument,logbook,...] [--pages car,drives,charges,battery,settings] \
 //     [--out results.json] [--md results.md] [--label baseline] [--timeout 90000] [--quiet 500]
+//     [--desktop] [--nav]
+//
+//   --desktop  a 1440 x 900 desktop (deviceScaleFactor 1, no touch) with no CPU or network throttling
+//   --nav      after the warm load of the car page, in-app navigation to every other page of --pages (a click on the
+//              pack's own link to it where there is one, else the router's history.pushState + popstate), each
+//              timed from the click to the new view being ready (rows with phase "nav")
 //
 // Conditions (stated in the output too):
 //   CPU      Emulation.setCPUThrottlingRate { rate: 4 }
@@ -44,7 +50,7 @@ const BASE = (args.base || 'https://127.0.0.1:10101').replace(/\/$/, '');
 const USER = args.user || 'owner';
 const PASS = args.pass || process.env.SM_PASS || 'correct horse battery staple';
 const PACKS = (args.packs || 'instrument,logbook,horizon,console,pebble,manager').split(',');
-const PAGES = (args.pages || 'car,drives,charges,battery,settings').split(',');
+const PAGES = (args.pages || 'car,drives,drive,charges,battery,statistics,settings,settings-integrations').split(',');
 const TIMEOUT = Number(args.timeout || 90000);
 const QUIET = Number(args.quiet || 500);
 const LABEL = args.label || 'run';
@@ -53,8 +59,11 @@ const MD = args.md || OUT.replace(/\.json$/, '') + '.md';
 
 const NET = { offline: false, latency: Number(args.latency || 150), downloadThroughput: Math.round(1.6e6 * 0.9 / 8), uploadThroughput: Math.round(750e3 * 0.9 / 8) };
 const CPU = Number(args.cpu || 4);
-const DEVICE = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true,
-  userAgent: 'Mozilla/5.0 (Linux; Android 13; Phone) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36' };
+const DESKTOP = !!args.desktop;
+if (DESKTOP) args['no-throttle'] = true;
+const DEVICE = DESKTOP ? { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false }
+  : { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true,
+    userAgent: 'Mozilla/5.0 (Linux; Android 13; Phone) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36' };
 
 // every pack shares ui/packs/*/web/shared/state.js's ROUTES; "settings" is Settings: Display and units
 const PATHS = {
@@ -62,7 +71,10 @@ const PATHS = {
   drives: (c) => `/cars/${c}/drives`,
   charges: (c) => `/cars/${c}/charges`,
   battery: (c) => `/cars/${c}/battery`,
+  drive: (c, d) => `/cars/${c}/drives/${d}`,
+  statistics: (c) => `/cars/${c}/statistics`,
   settings: () => '/settings/display',
+  'settings-integrations': () => '/settings/integrations',
 };
 
 const READY_SELECTOR_BLOCKERS = '[aria-busy="true"], .loading, .page--loading, .lb-loading, .loading-grid, .loading-head, .skeleton, [class*="skeleton"]';
@@ -83,6 +95,7 @@ const INIT = `(() => {
     if (!v) blocker = 'no view';
     else if (v.getAttribute('aria-busy') === 'true') blocker = 'view aria-busy';
     else if (!v.firstElementChild || (v.textContent || '').trim().length < 2) blocker = 'view empty';
+    else if (window.__perf.navTo && (location.pathname !== window.__perf.navTo || !document.documentElement.dataset.ready)) blocker = 'old view';
     else { const b = v.querySelector(BLOCK); if (b) blocker = 'placeholder: ' + (b.getAttribute('aria-busy') === 'true' ? '[aria-busy]' : '.' + String(b.className).split(' ').join('.')); }
     const ready = blocker === null;
     if (ready && !window.__perf.ready) window.__perf.readyAt = performance.now();
@@ -201,6 +214,60 @@ async function load(page, cdp, url) {
   };
 }
 
+// An in-app navigation: the pack's own link to `target` clicked where one is on the page (a touchstart/hover first,
+// as a person's finger or mouse gives), else the router told through history.pushState + popstate. Timed in the
+// page's clock from the click to the new view being ready (its data-ready cleared before the click: the new page sets
+// it when it has drawn, and until then, or on the old path, the view is not ready). Bytes and requests are counted from the click until the network is
+// quiet.
+async function navigate(page, cdp, base, target) {
+  const reqs = []; let lastActivity = Date.now(); const pw = new Set();
+  const ctx = page.context();
+  const pwReq = (q) => { if (!isSse(q.url()) && !q.url().startsWith('data:')) { pw.add(q); reqs.push(q); lastActivity = Date.now(); } };
+  const pwEnd = (q) => { if (pw.delete(q)) lastActivity = Date.now(); };
+  ctx.on('request', pwReq); ctx.on('requestfinished', pwEnd); ctx.on('requestfailed', pwEnd);
+  const t0 = Date.now();
+  const via = await page.evaluate((to) => {
+    delete document.documentElement.dataset.ready;
+    window.__perf.ready = false; window.__perf.readyAt = null; window.__perf.navTo = to;
+    const links = [...document.querySelectorAll('a[href]')].filter((a) => {
+      try { const u = new URL(a.href, location.href); return u.origin === location.origin && u.pathname === to; } catch (e) { return false; }
+    });
+    const visible = links.find((a) => { const r = a.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+    window.__perf.navStart = performance.now();
+    if (visible) {
+      visible.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false }));
+      visible.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      visible.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+      try { visible.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true })); } catch (e) {}
+      visible.click();
+      return 'link';
+    }
+    history.pushState(null, '', to);
+    window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+    return 'pushState';
+  }, target);
+  let timedOut = false;
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 50));
+    let ready = false;
+    try { ready = await page.evaluate(() => (window.__perfCheck && window.__perfCheck(), !!(window.__perf && window.__perf.ready))); } catch (e) { /* navigating */ }
+    if (ready && pw.size <= 0 && Date.now() - lastActivity >= QUIET) break;
+    if (Date.now() - t0 > TIMEOUT) { timedOut = true; break; }
+  }
+  ctx.off('request', pwReq); ctx.off('requestfinished', pwEnd); ctx.off('requestfailed', pwEnd);
+  const m = await page.evaluate(() => { const p = window.__perf; const r = { readyAt: p.readyAt, start: p.navStart, blocker: p.blocker, path: location.pathname }; p.navTo = null; return r; }).catch((e) => ({ error: String(e) }));
+  const sizes = [];
+  for (const q of reqs) { try { const z = await q.sizes(); sizes.push(z.responseBodySize + z.responseHeadersSize); } catch (e) { sizes.push(0); } }
+  const isApi = (q) => new URL(q.url()).pathname.startsWith('/api/');
+  return {
+    url: target, final_path: m.path, via, timed_out: timedOut, blocker: timedOut ? m.blocker : null,
+    ttu_ms: m.readyAt != null && m.start != null ? Math.round(m.readyAt - m.start) : null, fcp_ms: null,
+    bytes: sizes.reduce((a, b) => a + b, 0), requests: reqs.length, requests_static: reqs.filter((q) => !isApi(q)).length,
+    requests_api: reqs.filter(isApi).length, not_modified: 0, dup_api_gets: 0, dup_api_list: [], protocols: {},
+    long_tasks: null, long_tasks_ms: null,
+  };
+}
+
 async function main() {
   const browser = await chromium.launch({ args: ['--ignore-certificate-errors'] });
   // one sign-in for the whole run (the server limits right-password sign-ins per minute)
@@ -210,11 +277,13 @@ async function main() {
   if (!s.ok()) throw new Error('sign-in: ' + s.status() + ' ' + (await s.text()));
   const cars = await (await auth.request.get(BASE + '/api/v1/cars', { headers: h })).json();
   const car = args.car || cars.items[0].id;
+  const drives = await (await auth.request.get(BASE + `/api/v1/cars/${car}/drives?limit=5`, { headers: h })).json().catch(() => ({ items: [] }));
+  const drive = args.drive || (drives.items && drives.items[0] && drives.items[0].id);
   const cookies = (await auth.storageState()).cookies;
   const about = await (await auth.request.get(BASE + '/api/v1/about', { headers: h })).json().catch(() => ({}));
   const results = { label: LABEL, base: BASE, when: new Date().toISOString(), server_version: about.version || null,
     build: about.build || null, car, cars: cars.items.length,
-    conditions: { cpu_throttling_rate: CPU, network: NET, device: { ...DEVICE, userAgent: undefined }, quiet_ms: QUIET, timeout_ms: TIMEOUT,
+    conditions: { desktop: DESKTOP, throttled: !args['no-throttle'], cpu_throttling_rate: CPU, network: NET, device: { ...DEVICE, userAgent: undefined }, quiet_ms: QUIET, timeout_ms: TIMEOUT,
       ttu: 'max(main view ready: content, no aria-busy, no placeholders; last resource responseEnd excl. /api/v1/events), after ' + QUIET + ' ms network quiet',
       warm: 'second page.goto of the same URL in the same page and persistent profile (fresh profile folder per pack/page) (HTTP cache warm; packs answer Cache-Control: no-cache, so 304 revalidations)' },
     runs: [] };
@@ -223,7 +292,7 @@ async function main() {
     if (!pr.ok()) { console.error(`pack ${pack}: ${pr.status()} ${await pr.text()}`); continue; }
     const got = (await pr.json()).ui_pack;
     for (const pg of PAGES) {
-      const url = BASE + PATHS[pg](car);
+      const url = BASE + PATHS[pg](car, drive);
       // a persistent profile in a new empty folder: an empty disk cache, like a phone's browser (an incognito
       // context's in-memory cache does not keep maplibre-gl.mjs, 1.1 MB, for the warm load)
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-perf-'));
@@ -245,6 +314,16 @@ async function main() {
         results.runs.push(row);
         console.log(`${pack.padEnd(10)} ${pg.padEnd(8)} ${phase} ttu=${r.ttu_ms}ms fcp=${r.fcp_ms}ms ${(r.bytes / 1024).toFixed(1)}KiB req=${r.requests_static}+${r.requests_api}api dup=${r.dup_api_gets} lt=${r.long_tasks}/${r.long_tasks_ms}ms ${JSON.stringify(r.protocols)}${r.timed_out ? ' TIMEOUT ' + r.blocker : ''}`);
       }
+      if (args.nav && pg === PAGES[0]) {
+        for (const to of PAGES.slice(1)) {
+          const r = await navigate(page, cdp, BASE, PATHS[to](car, drive));
+          const row = { pack, pack_served: got, page: to, phase: 'nav', ...r };
+          results.runs.push(row);
+          console.log(`${pack.padEnd(10)} ${to.padEnd(8)} nav ttu=${r.ttu_ms}ms via=${r.via} ${(r.bytes / 1024).toFixed(1)}KiB req=${r.requests_static}+${r.requests_api}api${r.timed_out ? ' TIMEOUT ' + r.blocker : ''}`);
+          // back to the first page, ready, before the next one
+          await navigate(page, cdp, BASE, PATHS[PAGES[0]](car, drive));
+        }
+      }
       await ctx.close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -260,7 +339,8 @@ function table(res) {
   const c = res.conditions;
   let s = `# ${res.label}: browser delivery per pack and page\n\n`;
   s += `Server ${res.server_version || '?'} at ${res.base}, ${res.when}. Car ${res.car} (${res.cars} cars).\n`;
-  s += `Phone 390x844 @3x, CPU x${c.cpu_throttling_rate}, network latency ${c.network.latency} ms, down ${c.network.downloadThroughput} B/s, up ${c.network.uploadThroughput} B/s.\n`;
+  s += c.desktop ? 'Desktop 1440x900 @1x, no CPU or network throttling.\n'
+    : `Phone 390x844 @3x, CPU x${c.cpu_throttling_rate}, network latency ${c.network.latency} ms, down ${c.network.downloadThroughput} B/s, up ${c.network.uploadThroughput} B/s.\n`;
   s += `TTU = ${c.ttu}. Warm = ${c.warm}.\n\n`;
   s += '| pack | page | phase | TTU ms | FCP ms | KiB | static req | api req | 304 | dup GETs | long tasks (n / ms) | proto |\n';
   s += '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|\n';
@@ -269,8 +349,9 @@ function table(res) {
   }
   // per pack means
   s += '\n| pack | phase | mean TTU ms | mean KiB | mean requests | total dup GETs |\n|---|---|---:|---:|---:|---:|\n';
-  for (const p of [...new Set(res.runs.map((r) => r.pack))]) for (const ph of ['cold', 'warm']) {
+  for (const p of [...new Set(res.runs.map((r) => r.pack))]) for (const ph of ['cold', 'warm', 'nav']) {
     const rs = res.runs.filter((r) => r.pack === p && r.phase === ph);
+    if (!rs.length) continue;
     const mean = (f) => rs.reduce((a, r) => a + (f(r) || 0), 0) / rs.length;
     s += `| ${p} | ${ph} | ${Math.round(mean((r) => r.ttu_ms))} | ${mean((r) => r.bytes / 1024).toFixed(1)} | ${mean((r) => r.requests).toFixed(1)} | ${rs.reduce((a, r) => a + r.dup_api_gets, 0)} |\n`;
   }

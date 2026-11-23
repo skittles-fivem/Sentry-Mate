@@ -143,9 +143,7 @@
 
 /* ------------------------------------------------------------------ 4. base */
 *, *::before, *::after { box-sizing: border-box; }
-/* The page's scrollbar keeps its place whether the page is longer than the window or not, so a page that
-   grows or shrinks (a list loaded, a tooltip near the bottom) never moves sideways. */
-html { background: var(--bg); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scrollbar-gutter: stable; }
+html { background: var(--bg); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   margin: 0; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column;
   background: var(--bg); color: var(--text);
@@ -1195,6 +1193,10 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .ov-shown { display: flex; flex-direction: column; align-items: flex-start; row-gap: var(--g2); white-space: normal; }
 .ov-shown > .muted { max-width: calc(var(--a2) * 40); }
 .veh-note { display: block; }
+.veh-note[hidden] { display: none; }
+.veh-v--low { color: var(--muted); }
+.veh-info { display: none; }
+@media (hover: none) { .veh-info { display: inline-flex; } }
 .tbl .tf-car-col { width: calc(var(--a2) * 48); min-width: calc(var(--a2) * 48); max-width: calc(var(--a2) * 48); white-space: normal; }
 .tesla-sel.tf-sel { max-width: none; }
 /* the local teslamate block (#teslamate) */
@@ -1207,11 +1209,3 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .rel-titles { margin: 0; padding-left: calc(var(--g) * 2); list-style: '- '; color: var(--muted); overflow-wrap: anywhere; }
 .rel-pull { user-select: all; }
 .rel-help { display: flex; flex-direction: column; row-gap: var(--g2); min-width: 0; overflow-wrap: anywhere; }
-
-/* a readout whose text changes in place sits in a box as wide as its longest text (shared/dom.js steady) */
-.steady { display: inline-grid; font-variant-numeric: tabular-nums; }
-.steady > * { grid-area: 1 / 1; }
-.steady-size { visibility: hidden; }
-/* a chart is never the browser's scroll anchor: its cursor line comes and goes under the mouse, and the page
-   would scroll to keep it in place */
-.uplot, .uplot * { overflow-anchor: none; }

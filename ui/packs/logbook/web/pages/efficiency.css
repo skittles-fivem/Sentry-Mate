@@ -101,9 +101,6 @@
 .page-efficiency .ef-sw-cov { height: round(0.5rem, var(--e)); background: var(--chart-sunk); box-shadow: inset 0 round(-0.25rem, var(--e)) 0 var(--slate); }
 .page-efficiency .ef-sw-car { width: round(0.75rem, var(--e)); height: round(0.75rem, var(--e)); border-radius: 50%; background: var(--swatch); }
 .page-efficiency .ef-readout { min-height: round(1.75rem, var(--e)); justify-content: flex-start; padding: round(0.25rem, var(--e)) 0; }
-/* With a mouse the readout keeps one line's height whatever it holds: a longer one runs over the top of the chart
-   under it, as a tooltip would, instead of pushing the chart and the page down. (On a touch screen it wraps.) */
-@media (hover: hover) and (pointer: fine) { .page-efficiency .ef-readout { height: calc(round(1.75rem, var(--e)) + 2 * round(0.25rem, var(--e))); position: relative; z-index: 2; } }
 .page-efficiency .ef-hist .chart-box { height: round(7.5rem, var(--e)); }
 .page-efficiency .ef-cmp-charts .chart-box { height: round(11rem, var(--e)); }
 
@@ -159,7 +156,3 @@
 .page-efficiency .sort-mark { font-size: max(10px, 0.75em); }
 /* day axes: each label starts at its day's midnight, with a short tick there */
 .page-efficiency .ef-x-days span, .page-efficiency .ef-x-days span:first-child, .page-efficiency .ef-x-days span:last-child { left: round(var(--x), 1px); transform: none; padding-left: round(0.25rem, var(--e)); border-left: 1px solid var(--ink-3); }
-
-/* Not a scroll anchor: pointing at its charts rewrites the readouts in it, and the browser then scrolled the page
-   by a pixel or two each time, so the page crept up while the mouse moved. */
-.page-efficiency .ef-temps { overflow-anchor: none; }

@@ -83,6 +83,11 @@ fn frame(t_ms: u64, values: &[(&str, f64)]) -> String {
 
 /// SMO's log of minute `i` of the trip.
 fn smo_minute(i: u64, trip: Trip) -> (String, Vec<u8>, Vec<u8>) {
+    smo_minute_shifted(i, trip, 0.0)
+}
+
+/// [`smo_minute`] with its longitude off by `shift` degrees (a decode mistake).
+fn smo_minute_shifted(i: u64, trip: Trip, shift: f64) -> (String, Vec<u8>, Vec<u8>) {
     let start = T0 + i * 60_000;
     let mut log = String::from("# canbridge v1 app=test\n");
     for k in 0..600u64 {
@@ -96,7 +101,10 @@ fn smo_minute(i: u64, trip: Trip) -> (String, Vec<u8>, Vec<u8>) {
         if k % 10 == 0 {
             log += &frame(t + 4, &[("UI_odometer", 12_345.0 + trip.km(s))]);
             log += &frame(t + 5, &[("UI_SOC", 70.0), ("UI_Range", 200.0)]);
-            log += &frame(t + 6, &[("GPSLatitude04F", LAT), ("GPSLongitude04F", trip.lon(s)), ("GPSAccuracy04F", 5.0)]);
+            log += &frame(
+                t + 6,
+                &[("GPSLatitude04F", LAT), ("GPSLongitude04F", trip.lon(s) + shift), ("GPSAccuracy04F", 5.0)],
+            );
         }
     }
     let name = format!("{KEY}_20260101T00{i:02}00Z_{}.log.xz", i + 1);
@@ -953,5 +961,120 @@ fn local_teslamates_energy_added_and_range_are_its_own_and_the_tesla_api_wins() 
         let v = serde_json::to_value(query::now::now_view(&k.engine, car2).unwrap()).unwrap();
         assert_eq!(v["car_est_range_km"], serde_json::Value::Null);
         assert_eq!(v["charge"]["added_kwh"], serde_json::Value::Null);
+    });
+}
+
+/// A stretch of fixes far east at the same latitude (a longitude 16.78 degrees off, one bit of the field): no map,
+/// distance, drive end or stop shows it, and the fixes left out are counted.
+#[test]
+fn fixes_far_away_at_the_same_latitude_are_never_drawn_or_counted() {
+    rt().block_on(async {
+        let k = kit();
+        let car = api_car(&k);
+        let trip = Trip { a: 600, b: 1800 };
+        let mut v = api_readings(0, 2400, 10, trip);
+        // the drive's last two minutes: the longitude is off (a straight line east and a hook there)
+        for x in v.iter_mut().filter(|x| (1680..1800).contains(&((x.t_ms - T0) / 1000))) {
+            x.lon = x.lon.map(|l| l + 16.777216);
+        }
+        k.engine.api_points(car, v, vec![online(0, 2400)]);
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+        assert!(k.engine.stats().gps_fixes_dropped >= 12, "{:?}", k.engine.stats());
+
+        let far = |lon: f64| (lon - LON).abs() > 1.0;
+        let ds = drives(&k, car);
+        assert_eq!(ds.len(), 1, "{ds:#?}");
+        let d = &ds[0];
+        assert!((d.distance_km.unwrap() - 12.0).abs() < 0.4, "{d:?}");
+        let id: u64 = d.id.parse().unwrap();
+        let track = query::drives::track(&k.engine, car, id).unwrap();
+        let pts: Vec<_> = track.stretches.iter().flatten().collect();
+        assert!(pts.len() >= 100, "{}", pts.len());
+        assert!(!pts.iter().any(|p| far(p.lon)), "the drive's map");
+        let all = query::travel::tracks(&k.engine, &[car], &Period::all(), None).unwrap();
+        assert!(all.drives.iter().flat_map(|t| &t.lon).all(|&l| !far(l)), "the travel map");
+        let q = query::travel::VisitsQuery { period: Period::all(), ..Default::default() };
+        let visits = query::travel::visits(&k.engine, &[car], &q, &Paging::default()).unwrap();
+        assert!(!visits.items.is_empty());
+        assert!(visits.items.iter().all(|v| !far(v.lon) && (v.lat - LAT).abs() < 0.01), "the stops");
+    });
+}
+
+/// SMO's longitude shifted west by one bit of the field (made-up positions) while the Tesla API reports where the car
+/// is: SMO's fixes are not used, the drive's track and ends are the API's, and Data health names it.
+#[test]
+fn smo_gps_out_of_step_with_the_api_gives_way_and_is_named() {
+    rt().block_on(async {
+        let k = kit();
+        let trip = Trip { a: 70, b: 250 };
+        for i in 0..5 {
+            let (name, log, side) = smo_minute_shifted(i, trip, -16.777216);
+            upload(&k, &name, &log).await;
+            upload(&k, &format!("{name}.json"), &side).await;
+        }
+        k.engine.idle().await;
+        let car = k.db.car_for_key(KEY).unwrap().unwrap();
+        k.engine.api_points(car, api_readings(0, 300, 10, trip), vec![online(0, 300)]);
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+
+        let g = k.engine.gps_disagreement(car).expect("named");
+        assert_eq!((g.disagree, g.not_used), (Inputs::BOTH, Inputs::SMO));
+        let e = k.engine.clone();
+        let h = tokio::task::spawn_blocking(move || query::system::health(&e, car, &Period::all()))
+            .await
+            .unwrap()
+            .unwrap()
+            .body;
+        assert!(h.reasons.contains(&"gps_inputs_disagree"), "{:?}", h.reasons);
+        let json = serde_json::to_value(&h).unwrap();
+        assert_eq!(json["gps_disagreement"]["not_used"], serde_json::json!(["smo"]));
+
+        let ds = drives(&k, car);
+        assert_eq!(ds.len(), 1, "{ds:#?}");
+        let near = |lon: f64| (lon - LON).abs() < 0.5;
+        let d = &ds[0];
+        let track = query::drives::track(&k.engine, car, d.id.parse().unwrap()).unwrap();
+        let pts: Vec<_> = track.stretches.iter().flatten().collect();
+        assert!(!pts.is_empty() && pts.iter().all(|p| near(p.lon)), "the API's fixes only");
+        let q = query::travel::VisitsQuery { period: Period::all(), ..Default::default() };
+        let visits = query::travel::visits(&k.engine, &[car], &q, &Paging::default()).unwrap();
+        assert!(!visits.items.is_empty() && visits.items.iter().all(|v| near(v.lon)), "the stops");
+
+        // the live position by the same word: the API's, with its own time and input, never SMO's
+        let live = |k: &Kit| {
+            let v = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+            let lon = &v["location"]["lon"];
+            (lon["value"].as_f64().unwrap(), lon["sources"][0]["kind"].as_str().unwrap().to_string(), v)
+        };
+        let (lon, kind, v) = live(&k);
+        assert!(near(lon) && kind == "tesla_api", "{}", v["location"]);
+        assert_eq!(v["location"]["lat"]["sources"][0]["kind"], "tesla_api");
+        let e = k.engine.clone();
+        let p =
+            tokio::task::spawn_blocking(move || query::now::published_now(&e, car)).await.unwrap().unwrap().unwrap();
+        assert!(p.sample.lon.is_some_and(near), "MQTT's location: {:?}", p.sample.lon);
+        // a newer SMO log still out of step: its fixes still left out of the live position
+        let (name, log, side) = smo_minute_shifted(5, trip, -16.777216);
+        upload(&k, &name, &log).await;
+        upload(&k, &format!("{name}.json"), &side).await;
+        k.engine.idle().await;
+        let (lon, kind, v) = live(&k);
+        assert!(near(lon) && kind == "tesla_api", "{}", v["location"]);
+
+        // the GPS layout put right: SMO's fixes agree with the API's again (most of the stretch compared) and are the
+        // live position once more
+        for i in 6..20 {
+            let (name, log, side) = smo_minute_shifted(i, trip, 0.0);
+            upload(&k, &name, &log).await;
+            upload(&k, &format!("{name}.json"), &side).await;
+        }
+        k.engine.idle().await;
+        k.engine.api_points(car, api_readings(360, 1200, 10, trip), vec![online(360, 1200)]);
+        k.engine.idle().await;
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
+        let (lon, kind, v) = live(&k);
+        assert!(near(lon) && kind == "smo", "{}", v["location"]);
     });
 }
