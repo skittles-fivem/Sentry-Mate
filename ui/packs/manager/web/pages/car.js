@@ -498,11 +498,13 @@ export async function mount(ctx) {
 
     // the car: 12 V, odometer, software, data age
     const sw = n.software || {};
-    const srcWord = { teslamate: 'imported from TeslaMate', tesla_api: 'read from the Tesla API', owner: 'typed by the owner', build_match: 'matched by its module builds' }[sw.version_source] || null;
-    const srcShort = { teslamate: 'TeslaMate import', tesla_api: 'the Tesla API', owner: 'typed by the owner', build_match: 'module builds' }[sw.version_source] || null;
+    const srcWord = { teslamate: 'imported from TeslaMate', teslafi: 'imported from TeslaFi', teslamate_local: 'read live from local TeslaMate', teslafi_api: 'read live from TeslaFi',
+      tesla_api: 'read from the Tesla API', owner: 'typed by the owner', build_match: 'matched by its module builds' }[sw.version_source] || null;
+    const srcShort = { teslamate: 'TeslaMate import', teslafi: 'TeslaFi import', teslamate_local: 'local TeslaMate', teslafi_api: 'TeslaFi',
+      tesla_api: 'the Tesla API', owner: 'typed by the owner', build_match: 'module builds' }[sw.version_source] || null;
     const swFrom = sw.version
       ? [srcShort, sw.version_since_ms ? `since ${formatDate(sw.version_since_ms, tz, { weekday: false })}` : null].filter(Boolean).join(', ')
-      : 'not on the CAN bus; the Tesla API, an import or you can give it (Software)';
+      : 'not on the CAN bus; TeslaMate, TeslaFi, the Tesla API, an import or you can give it (Software)';
     const speedV = val(n.speed_kph), powerV = val(n.power_kw);
     const vehicle = panel({ title: 'Vehicle', icon: 'car', cover: 'nr.dash.panel.car-status' },
       kv([
