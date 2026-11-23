@@ -50,10 +50,16 @@ test('pebble: Charges loads its list again on a rows event and shows the new cha
     const NEW_ID = 'live-rows-new-charge';
     await page.route((u) => u.pathname === `/api/v1/cars/${car}/charges` && u.searchParams.get('limit') === '30' && !u.searchParams.has('flags') && !u.searchParams.has('cursor'), async (route) => {
       listLoads++;
-      const res = await route.fetch();
+      // asked without the kept answer's tag (the page's cache revalidates; a 304 would carry no list to change),
+      // and answered without a tag (the changed list is not the server's)
+      const headers = { ...route.request().headers() };
+      delete headers['if-none-match'];
+      const res = await route.fetch({ headers });
       const body = await res.json();
       if (listLoads > 1 && body.items?.length) body.items.unshift({ ...body.items[0], id: NEW_ID });
-      await route.fulfill({ response: res, json: body });
+      const out = { ...res.headers() };
+      delete out.etag;
+      await route.fulfill({ status: 200, headers: out, json: body });
     });
 
     await page.goto(`${server.origin}/cars/${encodeURIComponent(car)}/charges`);
