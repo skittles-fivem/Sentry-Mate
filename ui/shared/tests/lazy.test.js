@@ -1,7 +1,7 @@
 // Tests for lazy.js: a block mounts when it comes near the screen, at once when it is near already, without
 // IntersectionObserver, inside an off-screen staging box and before printing; cancel stops it; a page that
 // scrolls inside a box watches that box.
-import { test, beforeEach, afterEach } from 'node:test';
+import { describe, test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { define } from './fake-browser.js';
@@ -34,6 +34,14 @@ class FakeIO {
   fire(isIntersecting) { if (!this.off) this.cb(this.targets.map((target) => ({ target, isIntersecting }))); }
 }
 
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
+const runFrames = () => { const f = frames.splice(0); for (const x of f) x?.(); };
+
+const html = () => globalThis.document.documentElement;
+
+// (in a suite: the fake globals below are this file's alone, not every test's of the run)
+describe('lazy.js', () => {
 beforeEach(() => {
   observers = []; frames = [];
   define('innerHeight', 800);
@@ -44,11 +52,6 @@ beforeEach(() => {
   define('getComputedStyle', (e) => ({ overflowY: e.overflowY }));
 });
 afterEach(() => { define('IntersectionObserver', FakeIO); });
-
-const tick = () => new Promise((r) => setTimeout(r, 0));
-const runFrames = () => { const f = frames.splice(0); for (const x of f) x?.(); };
-
-const html = () => globalThis.document.documentElement;
 
 test('while the page is first drawn a block on screen mounts at once, one within a screen below just after', async () => {
   delete html().dataset.ready;
@@ -226,4 +229,5 @@ test('blocks that come near together are drawn one per task', async () => {
   await tick();
   await tick();
   assert.deepEqual(order, [1, 2, 3]);
+});
 });
