@@ -405,7 +405,7 @@ export async function mount(ctx) {
       h('button', { class: 'btn btn--sm map-btn', type: 'button', cover: 'summary.map.fullscreen', onclick: () => toggleFull() }, icon('monitor', 'ico--sm'), document.fullscreenElement ? 'Back to the page' : 'Full screen'),
       outside && lat != null
         ? h('a', { class: 'btn btn--sm map-btn', href: `https://www.openstreetmap.org/?mlat=${lat.toFixed(5)}&mlon=${lon.toFixed(5)}#map=17/${lat.toFixed(5)}/${lon.toFixed(5)}`, target: '_blank', rel: 'noopener noreferrer external', cover: 'summary.map.external_link' }, icon('ext', 'ico--sm'), 'Open in OpenStreetMap')
-        : h('span', { class: 'map-chip', cover: 'summary.map.external_link', title: 'Links to outside map sites are off. An admin can turn them on in Settings: Display and units.' }, icon('lock', 'ico--sm'), 'Outside map links off'));
+        : h('span', { class: 'map-chip', cover: 'summary.map.external_link', title: 'Links to outside map sites are off. An admin can turn them on in Settings: Maps and addresses.' }, icon('lock', 'ico--sm'), 'Outside map links off'));
   }
   function toggleFull() {
     if (document.fullscreenElement) document.exitFullscreen?.();

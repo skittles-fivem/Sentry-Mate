@@ -199,3 +199,15 @@
 .page-settings-server .ss-stor-line.ss-warn, .page-settings-server .ss-stor-line.ss-warn strong { color: var(--rust); }
 .page-settings-server .ss-stor-table { margin-top: round(0.75rem, var(--e)); }
 .page-settings-server .sort-mark { font-size: max(10px, 0.75em); }
+
+/* Server updates: the release check's switch, this build, its last answer, the changes and the pull command, Check now */
+.page-settings-server .ss-release-row { scroll-margin-top: round(5rem, var(--e)); }
+.page-settings-server .ss-release-row .switch-field { margin: round(0.25rem, var(--e)) 0 round(0.5rem, var(--e)); }
+.page-settings-server .ss-release { margin-top: round(0.75rem, var(--e)); min-width: 0; }
+.page-settings-server .ss-release-facts dd .mono { overflow-wrap: anywhere; }
+.page-settings-server .ss-release-newer { color: var(--accent-strong); font-weight: 600; }
+.page-settings-server .ss-release-error { color: var(--rust); }
+.page-settings-server .ss-release-titles { margin: round(0.75rem, var(--e)) 0 0; padding-left: round(1.25rem, var(--e)); list-style: disc; display: grid; gap: round(0.25rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); overflow-wrap: anywhere; max-width: 70ch; }
+.page-settings-server .ss-release-pull { margin-top: round(0.75rem, var(--e)); font-size: var(--text-sm); color: var(--ink-2); overflow-wrap: anywhere; }
+.page-settings-server .ss-release-pull .ss-code { user-select: all; }
+.page-settings-server .ss-release-actions { margin-top: round(1rem, var(--e)); }

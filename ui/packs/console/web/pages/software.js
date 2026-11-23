@@ -122,7 +122,7 @@ export async function mount(ctx) {
   });
   const notesLine = h('p', { class: 'note', cover: 'updates.link.release_notes' }, notesOn
     ? 'a known version links to its release notes on an outside site; nothing is sent until you open one.'
-    : ['release-note links are off, so nothing leaves this server. ', ctx.admin ? 'turn them on in ' : 'an admin can turn them on in ', link(state.buildUrl('settings-display'), 'settings/display'), '.']);
+    : ['release-note links are off, so nothing leaves this server. ', ctx.admin ? 'turn them on in ' : 'an admin can turn them on in ', link(`${state.buildUrl('settings-maps')}#outside-links`, 'settings/maps'), '.']);
 
   const search = h('input', { class: 'in in--search', type: 'search', placeholder: 'car or version', 'aria-label': 'Find a car or version', spellcheck: 'false' });
   const fleet = table(ctx, {

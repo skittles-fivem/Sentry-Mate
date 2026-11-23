@@ -8,6 +8,7 @@
 // While a compaction pass runs the detail is read again every 2 s.
 // The move and the export file are read once a second while something runs (GET /system/move,
 // GET /system/exports/{id}); every dangerous action asks for the person's own password again.
+// Server updates (#server-updates): this build and the release check (#release-check; see updatesSection).
 
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
@@ -24,6 +25,7 @@ import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { signOut } from '../core/session.js';
 import { askPassword, copyBtn, codeOut, downloadKey, showOnce, STAY } from '../core/secret.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
+import { buildLabel, buildTitle, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 
 export const id = 'settings-server';
 export const title = () => 'Settings: server';
@@ -60,6 +62,69 @@ function runs(steps, attrs = {}) {
       h('span', { class: 'run-n' }, `${i + 1}.`), h('span', { class: 'run-tag' }, tag(...T[st] || [st, 'muted'])),
       h('div', { class: 'run-body' }, h('p', { class: 'run-head' }, headText), text ? h('p', { class: 'run-text' }, text) : null, out || null),
       h('div', { class: 'run-acts' }, acts || null))));
+}
+
+/**
+ * server updates (#server-updates): this build, release_check.enabled (#release-check, PATCH /settings with its
+ * version; an admin's, others read) and the last answer (GET /release), with check now (POST /release/check).
+ * S holds the page's settings, which a save replaces. -> { el, ready }
+ */
+function updatesSection(ctx, S, admin) {
+  let release = null, about = null, checking = false, timer = null;
+  ctx.onCleanup(() => clearTimeout(timer));
+  const box = h('div', { class: 'rel-box' });
+  const refresh = async () => { release = await ctx.api.get('release').catch(() => release); if (ctx.alive()) paintBox(); };
+  async function checkNow() {
+    checking = true; paintBox();
+    try {
+      release = await ctx.api.post('release/check', {});
+      if (release?.status === 'error') toast(releaseStatus(release).text, { kind: 'error' });
+    } catch (e) {
+      if (e?.name === 'AbortError') return;
+      toast(e?.code === 'release_check_off' ? 'not checked: the release check is off' : `not checked: ${errText(e)}`, { kind: 'error' });
+      release = await ctx.api.get('release').catch(() => release);
+    } finally { checking = false; }
+    if (ctx.alive()) paintBox();
+  }
+  function paintBox() {
+    const now = ctx.api.now();
+    const st = release ? releaseStatus(release, now) : { tone: 'error', text: 'Could not read the release check from the server' };
+    const when = release ? checkedAgo(release, now) : '';
+    const on = release ? !!release.enabled : !!S.settings?.release_check?.enabled;
+    const busy = checking || release?.status === 'checking';
+    const newer = release?.status === 'newer';
+    const titles = newer ? changeLines(release.newest) : [];
+    const word = { ok: ['ok', 'ok'], newer: ['new', 'accent'], error: ['err', 'bad'], wait: ['wait', 'muted'], off: ['off', 'muted'] }[st.tone] || ['off', 'muted'];
+    replace(box,
+      h('p', { class: 'rel-line' }, h('span', { class: 'muted' }, 'this build: '), h('span', { class: 'mono', title: buildTitle(about) || null }, buildLabel(about || {}, now))),
+      h('p', { class: 'rel-line', role: 'status' }, busy ? [tag('wait', 'muted'), ' Checking…'] : [tag(...word), ' ', st.text], when ? h('span', { class: 'muted' }, ` · ${when}`) : null),
+      titles.length ? h('ul', { class: 'rel-titles' }, titles.map((x) => h('li', null, x))) : null,
+      newer && release.pull ? h('p', { class: 'rel-line' }, h('span', { class: 'muted' }, 'to update, on the server: '), h('code', { class: 'mono rel-pull' }, release.pull)) : null,
+      admin ? h('div', { class: 'rel-acts' }, btn(busy ? 'checking…' : 'check now', checkNow, { disabled: !on || busy, title: on ? null : 'Turn release_check.enabled on first' })) : null);
+    if (release?.status === 'checking' && !checking) { clearTimeout(timer); timer = setTimeout(() => { if (ctx.alive()) refresh(); }, 4000); }
+  }
+  const rel = editLines([
+    { key: 'release_check.enabled', id: 'release-check', type: 'bool', value: !!S.settings?.release_check?.enabled, readOnly: !admin || !S.settings,
+      help: 'Check for new releases: once a day the server asks GitHub whether a newer Sentry Mate image is published, and tells admins. Only that question goes out (no token, no car, no account); it never downloads or installs anything.',
+      save: async (v) => {
+        try { S.settings = await ctx.api.patch('settings', { version: S.settings.version, release_check: { enabled: v } }); } catch (e) {
+          if (e.status === 409) {
+            S.settings = await ctx.api.get('settings').catch(() => S.settings);
+            rel.line('release_check.enabled').set(!!S.settings?.release_check?.enabled);
+            throw new Error('Someone else changed the server settings first; the line shows theirs now. Try again.');
+          }
+          throw e;
+        }
+        await refresh();
+      } },
+  ]);
+  paintBox();
+  const ready = Promise.all([
+    ctx.api.get('release').catch(() => null),
+    ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
+  ]).then(([r, a]) => { release = r; about = a; if (ctx.alive()) paintBox(); });
+  const el = section({ title: 'server updates', id: 'server-updates', side: h('span', { class: 'muted' }, admin ? 'off by default' : 'set by an admin; read only') }, rel.el, box);
+  return { el, ready };
 }
 
 export async function mount(ctx) {
@@ -646,6 +711,9 @@ export async function mount(ctx) {
     empty: () => empty(auditF.group || auditF.who ? 'no entry matches this what and who' : 'nothing recorded yet'),
   }) : null;
 
+  /* ---------------------------------------------------------------- server updates */
+  const updates = updatesSection(ctx, S, admin);
+
   /* ---------------------------------------------------------------- the page */
   paintHosting();
   const moving = admin ? [
@@ -663,6 +731,7 @@ export async function mount(ctx) {
     ports,
     section({ title: 'certificate and recovery key', id: 'certificate-in-use' }, certSlot, keySlot),
     access,
+    updates.el,
     moving,
     storage,
     accounts?.el,
@@ -676,6 +745,6 @@ export async function mount(ctx) {
     } catch (e) { if (!ctx.alive()) return; M.err = e; }
     paintMove(); paintExp(); schedule(); scheduleExp();
   }
-  await Promise.all([accounts?.ready, sessions.ready, audit?.ready].filter(Boolean)).catch(() => {});
+  await Promise.all([accounts?.ready, sessions.ready, audit?.ready, updates.ready].filter(Boolean)).catch(() => {});
   if (ctx.alive()) ctx.ready();
 }

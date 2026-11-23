@@ -3,28 +3,28 @@
 // Your own choices first (GET / PATCH /api/v1/me/preferences): theme (Auto, Light, Dark), units, rated or ideal
 // range, language, the main car (none: the car looked at last), interface size and the UI pack. Each is a
 // rounded list row; a picker opens a sheet, and the change saves at once and shows on every page, with an example in the chosen unit next to it.
-// Below a divider, what an admin sets for everyone (GET / PATCH /api/v1/settings): default units, address lookup
-// and its status (GET /api/v1/geocode/status), map tiles, the outbound proxy, outside links and the release check.
+// Map style picks among the maps an admin offers (GET /api/v1/maps/config). Below a divider, what an admin sets
+// for everyone (GET / PATCH /api/v1/settings): the default units and range. Where maps and addresses come from
+// (with the outbound proxy and outside links) is in Settings: Maps and addresses, the release check in Settings:
+// Server, the time zone for new cars in Settings: Cars; old links to those sections lead there (state.movedUrl).
 
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
 import { getLocale, isSupportedLocale } from '../shared/i18n.js';
-import { format, getUnits, FT_PER_M } from '../shared/units.js';
-import { formatDateTime, isValidZone } from '../shared/time.js';
+import { format } from '../shared/units.js';
+import { formatDateTime } from '../shared/time.js';
 import * as state from '../shared/state.js';
-import { tile, btn, chip, note } from '../core/ui.js';
-import { segmented, toggle, field, form, setFieldError } from '../core/form.js';
+import { tile, btn, chip, note, icon } from '../core/ui.js';
+import { segmented, toggle } from '../core/form.js';
 import { currentPrefs, onPrefs, savePref, isDark, onTheme } from '../core/prefs.js';
 import { SIZES, SIZE_MIN, SIZE_MAX, sizeState, setSize, setDeviceSize, onSize, sizeNote, display } from '../core/display.js';
 import { deviceSizeOptions, deviceSizeNote } from '../shared/devicesize.js';
 import { currentAbout } from '../core/frame.js';
-import { sectionHead, facts } from '../core/bits.js';
+import { sectionHead } from '../core/bits.js';
 import { group, pickRow, ctlRow, infoRow, notSaved } from '../core/settings.js';
-import { inOrder, said } from '../core/settings.js';
-import { buildLabel, buildTitle } from '../shared/release.js';
-import { relState, relNewer } from '../core/release.js';
+import { inOrder } from '../core/settings.js';
 import { packChoices } from '../shared/packs.js';
-import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, LABELS_TEXT, STYLES_TEXT, offlineSummary, offlineFileChoices, showOfflineHelp, presetHosts } from '../shared/maptiles.js';
+import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, mapStyles, pickStyle } from '../shared/maptiles.js';
 
 export const id = 'settings-display';
 export const shape = [[2, 'h3'], [2, 'h3'], [2, 'h2'], [2, 'h2']];
@@ -44,30 +44,15 @@ const WORDS = { distance: { km: 'kilometres', mi: 'miles' }, temperature: { c: '
 function langName(tag) {
   try { const n = new Intl.DisplayNames(['en'], { type: 'language' }).of(tag); return n && n !== tag ? n : null; } catch { return null; }
 }
-/** An address language as typed: a canonical code, or what is wrong in plain words. */
-function checkLang(raw) {
-  const v = String(raw || '').trim();
-  if (!v) return { error: 'Type a language code such as en, de or fr.' };
-  if (!/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(v) || !isSupportedLocale(v)) return { error: `“${v}” is not a language code. Use a code such as en, de or fr.` };
-  return { code: Intl.getCanonicalLocales(v)[0] };
-}
-const hostOf = (u) => { try { return new URL(String(u).replace(/\{[a-z]\}/g, '0')).host; } catch { return null; } };
-/** Field paths come as geocode.language: put them under the form's own field names. */
-const strip = (err, prefix, rename = {}) => {
-  if (err && err.fields) err.fields = Object.fromEntries(Object.entries(err.fields).map(([k, m]) => { const n = k.replace(prefix, ''); return [rename[n] || n, m]; }));
-  return err;
-};
-
 export async function mount(ctx) {
+  // an old link to a section that moved (/settings/display#map-tiles): open it where it is now
+  const moved = state.movedUrl(location.href);
+  if (moved) { state.navigate(moved, { replace: true }); return {}; }
   inOrder(ctx);
   const admin = ctx.admin;
-  let [srv, geo, mapCfg, packList, cars] = await Promise.all([ctx.api.get('settings'), ctx.api.get('geocode/status').catch(() => null), ctx.api.get('maps/config').catch(() => null),
+  let [srv, mapCfg, packList, cars] = await Promise.all([ctx.api.get('settings'), ctx.api.get('maps/config').catch(() => null),
     packChoices(ctx.api, { fallback: PACKS, current: (currentPrefs() || {}).ui_pack || null }),
     ctx.api.list('cars', { sort: 'custom' }).all({ max: 200 }).catch(() => [])]);
-  // satellite first, then the rest as the server lists them
-  const tilePresets = [...((mapCfg && mapCfg.tiles && mapCfg.tiles.presets) || [])].sort((a, b) => (b.kind === 'satellite') - (a.kind === 'satellite'));
-  const regionNote = (p) => (p.region ? ` ${p.region === 'us' ? 'United States only' : `${p.region} only`}: elsewhere it shows nothing.` : '');
-  const presetLine = (p) => `From ${presetHosts(p).join(' and ') || 'the tile server'}, down to zoom ${p.max_zoom}.${regionNote(p)}`;
   if (!ctx.alive()) return {};
   const p0 = currentPrefs() || {};
   const save = (patch) => savePref(patch).catch((err) => { ctx.toast(notSaved(err), { kind: 'error' }); throw err; });
@@ -111,11 +96,20 @@ export async function mount(ctx) {
     onpick: (v) => save({ ui_pack: v }).then(() => { switchRow.hidden = v === packHere; if (v !== packHere) ctx.toast('UI pack saved. Switch now, or it is used the next time the app loads.', { kind: 'info' }); }) });
   const mapColors = segmented({ label: null, name: 'Map colours', value: p0.map_colors || 'dimmed', options: MAP_COLORS_CHOICES,
     onchange: (v) => save({ map_colors: v }).then(() => saved('Map colours')).catch(() => mapColors.set((currentPrefs() || {}).map_colors || 'dimmed')) });
+  // the person's map style: Map, Satellite, ... among the maps an admin lets people switch to
+  const styles = mapStyles(mapCfg);
+  const mapStyle = styles.length > 1 ? segmented({ label: null, name: 'Map style', value: (pickStyle(mapCfg, p0) || {}).id, options: styles.map((x) => [x.id, x.short || x.name]),
+    onchange: (v) => save({ map_style: v }).then(() => saved('Map style')).catch(() => mapStyle.set((pickStyle(mapCfg, currentPrefs() || {}) || {}).id)) }) : null;
+  const mapStyleRow = mapStyle
+    ? ctlRow({ name: 'Map style', sub: 'The map you see on map pages, among the ones an admin offers. The switch on a map page changes it too.', control: mapStyle, stack: true })
+    : infoRow({ name: 'Map style', sub: mapCfg && mapCfg.tiles && mapCfg.tiles.mode === 'online' ? 'This server offers one map, so there is nothing to pick.' : 'Maps come from this server’s offline map, so there is one map to show.' });
+  mapStyleRow.id = 'map-style';
   const lookT = tile({ w: 2, title: 'Look', icon: 'sun', cover: ['shell.theme', 'web.settings.general.theme'] },
     group(null, [
       ctlRow({ name: 'Theme', sub: 'Auto follows your device, day and night.', control: theme, stack: true }),
       h('div', { class: 'row row-static set-ex-row' }, themeEx),
       ctlRow({ name: 'Map colours', sub: `${MAP_COLORS_TEXT} Satellite pictures are always shown as taken.`, control: mapColors, stack: true }),
+      mapStyleRow,
     ]),
     group('Size', [
       ctlRow({ name: 'Interface size on this device', sub: 'This device only: kept in this browser, not with your account, so each computer can have its own size. Auto uses your account’s size below.', control: deviceSeg, stack: true }),
@@ -175,6 +169,7 @@ export async function mount(ctx) {
     const u = pr.units || {};
     theme.set(pr.theme || 'device');
     mapColors.set(pr.map_colors || 'dimmed');
+    if (mapStyle) mapStyle.set((pickStyle(mapCfg, pr) || {}).id);
     const dark = isDark();
     themeEx.textContent = (pr.theme || 'device') === 'device'
       ? `Your device asks for ${dark ? 'dark' : 'light'} now, so the pages are ${dark ? 'dark' : 'light'}. It is set before a page draws, so it never flashes.`
@@ -201,30 +196,30 @@ export async function mount(ctx) {
     sizeLine.textContent = sizeNote();
     deviceSeg.set(s.device ? String(s.device) : 'auto');
     deviceLine.textContent = deviceSizeNote(s.device, { account: s.size });
-    if (feet() !== drawnFeet) drawServer(srv);
   }
   ctx.onCleanup(onPrefs(sync));
   ctx.onCleanup(display.onChange(sync));
   ctx.onCleanup(onTheme(sync));
 
   /* ------------------------------------------------------------ for everyone */
+  // a row that opens another settings page (at a section)
+  const moreRow = (page, ic, name, sub, hash = '') => h('a', { class: 'row', href: `${state.buildUrl(page)}${hash}` },
+    h('span', { class: 'row-ic', 'aria-hidden': 'true' }, icon(ic)),
+    h('span', { class: 'row-text' }, h('span', { class: 'row-name' }, name), h('span', { class: 'row-sub' }, sub)),
+    h('span', { class: 'row-side' }, icon('chevronRight', 'row-go')));
   const divider = sectionHead(admin ? 'For everyone on this server' : 'Set by an admin for everyone',
     admin ? 'Your own choices above win over these for you. A default changes it for everyone who has not chosen their own.' : 'Your own choices above win over these. Only an admin can change what is below.',
     { cover: 'web.settings.general.divider' });
   const serverBox = h('div', { class: 'contents' });
-  const feet = () => getUnits().distance === 'mi';
-  let drawnFeet = feet();
 
   async function patch(body) {
     try {
       const next = await ctx.api.patch('settings', { version: srv.version, ...body });
-      if (body.geocode || body.outbound) geo = await ctx.api.get('geocode/status').catch(() => geo);
-      if (body.tiles) mapCfg = await ctx.api.get('maps/config').catch(() => mapCfg);
       ctx.toast('Saved for everyone on this server.');
       if (ctx.alive()) drawServer(next);
       return next;
     } catch (err) {
-      if (err && err.code === 'stale_version') {
+      if (err && (err.code === 'stale_version' || err.status === 409)) {
         ctx.toast('Someone changed these settings meanwhile; they are shown fresh now. Make your change again.', { kind: 'info' });
         const fresh = await ctx.api.get('settings');
         if (ctx.alive()) drawServer(fresh);
@@ -235,47 +230,8 @@ export async function mount(ctx) {
   }
   const quick = (body, undo) => patch(body).catch((err) => { undo(); ctx.toast(notSaved(err), { kind: 'error' }); });
 
-  // the release check: GET /release's answer, drawn under the switch; "Check now" (admins) asks again
-  let release = await ctx.api.get('release').catch(() => null);
-  let relBox = null; // the group's list: the switch, then the rows drawn here
-  let relToggle = null;
-  let relBusy = false;
-  let relPoll = null;
-  const loadRelease = async () => {
-    const r = await ctx.api.get('release').catch(() => null);
-    if (!ctx.alive()) return;
-    if (r) release = r;
-    drawRel();
-  };
-  async function checkNow() {
-    relBusy = true; drawRel();
-    try { release = await ctx.api.post('release/check', {}); }
-    catch (err) { ctx.toast(`Not checked: ${err && err.message ? err.message : 'the server did not answer.'}`, { kind: 'error' }); }
-    relBusy = false;
-    if (ctx.alive()) drawRel();
-  }
-  function drawRel() {
-    if (!relBox) return;
-    clearTimeout(relPoll);
-    const r = release;
-    const st = r ? relState(r) : { kind: 'bad', text: 'The server did not say how the release check went.', ago: '' };
-    const off = !r || !r.enabled || r.status === 'off';
-    const checking = !!r && r.status === 'checking';
-    const nowBtn = admin ? btn(relBusy ? 'Checking…' : 'Check now', { kind: 'soft', icon: 'refresh', disabled: off || checking || relBusy, onclick: checkNow }) : null;
-    const newer = relNewer(r);
-    relBox.replaceChildren(relToggle,
-      h('div', { class: 'row row-static rel-row' },
-        h('span', { class: 'row-text' }, said(st.kind, st.text), st.ago ? h('span', { class: 'row-sub' }, st.ago[0].toUpperCase() + st.ago.slice(1)) : null),
-        nowBtn ? h('span', { class: 'row-side' }, nowBtn) : null),
-      newer ? h('div', { class: 'row row-static' }, newer) : null,
-      h('div', { class: 'row row-static' }, h('span', { class: 'row-text' }, h('span', { class: 'row-sub', title: buildTitle(currentAbout()) || null }, `This build: ${buildLabel(currentAbout(), api.now())}`))));
-    // a check in flight finishes within seconds: look again, while this page is open
-    if (checking) relPoll = setTimeout(() => { if (ctx.alive()) loadRelease(); }, 3000);
-  }
-
   function drawServer(s) {
     srv = s;
-    drawnFeet = feet();
     const off = !admin;
     const ro = off ? chip('Read only', { tone: 'muted', icon: 'lock' }) : null;
 
@@ -283,178 +239,18 @@ export async function mount(ctx) {
       ['distance', 'Distance', DIST], ['temperature', 'Temperature', TEMP], ['pressure', 'Tyre pressure', PRESS],
     ].map(([k, name, opts]) => pickRow({ name, value: s.units[k], options: opts, disabled: off, onpick: (v) => quick({ units: { [k]: v } }, () => {}) }));
     const defRange = pickRow({ name: 'Range', value: s.range, options: RANGE, disabled: off, onpick: (v) => quick({ range: v }, () => {}) });
-    // the time zone new cars start in
-    const zones = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
-    const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
-    const tzF = field({ label: 'Time zone for new cars', name: 'default_time_zone', value: s.default_time_zone || 'UTC', hint: 'A name such as America/Chicago. Type to see the list.', attrs: { list: 'sd-zones', spellcheck: 'false', autocomplete: 'off', disabled: off } });
-    const saveZone = async (v) => {
-      setFieldError(tzF, null);
-      if (!v || !isValidZone(v)) { setFieldError(tzF, 'Not a known time zone. Pick one from the list, for example America/Chicago.'); return; }
-      if (v === s.default_time_zone) return;
-      try { await patch({ default_time_zone: v }); } catch (err) { setFieldError(tzF, (err.fields && err.fields.default_time_zone) || notSaved(err)); }
-    };
-    tzF.control.addEventListener('change', () => saveZone(tzF.control.value.trim()));
     const defaultsT = tile({ w: 2, title: 'Defaults for everyone', icon: 'person', side: ro },
       group(null, [...defs, defRange]),
-      note('For people who have not chosen their own. The distance unit can start from the one a car reports from its own screen settings.'),
-      tzF, h('datalist', { id: 'sd-zones' }, zones.map((z) => h('option', { value: z }))),
-      browserZone && browserZone !== s.default_time_zone && !off ? h('div', { class: 'form-actions' }, btn(`Use ${browserZone.replace(/_/g, ' ')}`, { kind: 'soft', icon: 'pin', onclick: () => { tzF.control.value = browserZone; saveZone(browserZone); } })) : null,
-      note(['The zone a new car starts in. Each car keeps its own: ', h('a', { href: state.buildUrl('settings-cars'), class: 'place-link' }, 'Settings: Cars'), '.']));
+      note('For people who have not chosen their own. The distance unit can start from the one a car reports from its own screen settings.'));
 
-    // address lookup
-    const g = geo || {};
-    const od = g.offline_data;
-    const lookup = segmented({ name: 'Address lookup', value: s.geocode.mode, options: [['offline', 'Offline'], ['online', 'Online']],
-      onchange: (v) => {
-        const body = { mode: v };
-        if (v === 'online') {
-          const typed = String(urlF.control.value || '').trim();
-          if (typed && typed !== (s.geocode.url || '')) {
-            if (!/^https:\/\/[^\s/]+/.test(typed)) { lookup.set(s.geocode.mode); setFieldError(urlF, 'Use an https:// address here, then choose Online.'); urlF.control.focus(); return; }
-            body.url = typed;
-          } else if (!s.geocode.url) { lookup.set(s.geocode.mode); setFieldError(urlF, 'Type the https:// address of the address service here first, then choose Online again.'); urlF.control.focus(); return; }
-        }
-        quick({ geocode: body }, () => lookup.set(s.geocode.mode));
-      } });
-    lookup.querySelectorAll('button').forEach((b) => { b.disabled = off; });
-    const geoFacts = facts([
-      ['In use', g.mode ? (g.mode === 'online' ? 'The online service below' : 'Offline place names') : 'Not known: no answer'],
-      ['Offline names', od && typeof od === 'object' ? (od.present ? `${od.name || 'present'}${od.places != null ? `, ${format(od.places, 'count')} places` : ''}` : 'not installed') : od ? 'present' : null],
-      ['Kept addresses', g.cache_size != null ? `${format(g.cache_size, 'count')} looked up before` : null],
-      ['Rounding', `${format(s.geocode.rounding_m, 'length')} before a position leaves the server`],
-      ['Online service', g.online && g.online.last_error ? `last error: ${g.online.last_error}` : s.geocode.mode === 'online' ? 'no error' : null],
-    ]);
-    const langF = field({ label: 'Address language', name: 'language', value: s.geocode.language || '', hint: 'A code such as en, de or fr. Street and place names are written in it where the data has it.', attrs: { maxlength: '10', spellcheck: 'false', autocomplete: 'off', disabled: off, list: 'sd-langs' } });
-    const langNm = h('p', { class: 'hint' });
-    const showName = () => { const r = checkLang(langF.control.value); langNm.textContent = r.code ? `${langName(r.code) || r.code}` : ''; };
-    langF.control.addEventListener('input', () => { showName(); setFieldError(langF, null); });
-    langF.append(langNm);
-    showName();
-    const urlF = field({ label: 'Online service address', name: 'url', value: s.geocode.url || '', hint: 'Only used with Online. Positions are rounded first; nothing is sent while lookup is offline.', attrs: { placeholder: 'https://…', spellcheck: 'false', autocomplete: 'off', disabled: off } });
-    urlF.control.addEventListener('input', () => setFieldError(urlF, null));
-    const maxRound = drawnFeet ? Math.round(1000 * FT_PER_M) : 1000;
-    const roundF = field({ label: `Round positions to (${drawnFeet ? 'feet' : 'metres'})`, name: 'rounding', type: 'number', value: s.geocode.rounding_m == null ? '' : drawnFeet ? Math.round(s.geocode.rounding_m * FT_PER_M) : s.geocode.rounding_m,
-      hint: `0 to ${format(maxRound, 'count')}. Larger tells the service less about where the car was.`, attrs: { min: '0', max: String(maxRound), step: '1', disabled: off } });
-    const addrForm = form({
-      fields: [langF, urlF, roundF], submitLabel: 'Save address settings',
-      extra: h('datalist', { id: 'sd-langs' }, ['en', 'de', 'fr', 'nl', 'nb', 'sv', 'da', 'fi', 'es', 'it', 'pt', 'pl', 'cs', 'ja', 'ko', 'zh'].map((c) => h('option', { value: c }, langName(c) || c))),
-      cover: ['web.settings.general.address-language', 'web.settings.general.address-language-error', 'web.settings.general.address-language-invalid'],
-      onsubmit: async (v) => {
-        const r = checkLang(v.language);
-        const bad = {};
-        if (r.error) bad.language = r.error;
-        const url = String(v.url || '').trim();
-        if (url && !/^https:\/\/[^\s/]+/.test(url)) bad.url = 'Use an https:// address, or leave it empty.';
-        if (v.rounding == null || !Number.isInteger(v.rounding) || v.rounding < 0 || v.rounding > maxRound) bad.rounding = `A whole number from 0 to ${format(maxRound, 'count')}.`;
-        if (Object.keys(bad).length) throw Object.assign(new Error('Not saved: check the fields marked.'), { fields: bad });
-        try { await patch({ geocode: { language: r.code, url: url || null, rounding_m: drawnFeet ? Math.min(1000, Math.round(v.rounding / FT_PER_M)) : v.rounding } }); } catch (err) { throw strip(err, /^geocode\./, { rounding_m: 'rounding' }); }
-      },
-    });
-    if (off) addrForm.submitButton.hidden = true;
-    const addrT = tile({ w: 2, title: 'Addresses', icon: 'pin', side: ro, cover: 'web.settings.general.address-lookup' },
-      group(null, [ctlRow({ name: 'Address lookup', sub: `Offline uses the place names on this server (${s.geocode.dataset || 'built in'}); nothing leaves it. Online asks the service below, rounded, and keeps each answer.`, control: lookup, stack: true })]),
-      geoFacts, addrForm);
-
-    // map tiles
-    const tilesSeg = segmented({ name: 'Map tiles', value: s.tiles.mode, options: [['offline', 'Offline'], ['online', 'Online']],
-      onchange: (v) => {
-        if (v === 'online' && !tilePresets.length && !s.tiles.online_url) { tilesSeg.set(s.tiles.mode); setFieldError(tileUrl, 'Save an https:// tile address with {z}, {x} and {y} first, then choose Online.'); tileUrl.control.focus(); return; }
-        // online without an address of its own: the satellite preset (the default)
-        quick({ tiles: v === 'online' && chosenId !== 'custom' ? { mode: v, preset: chosenId } : { mode: v } }, () => tilesSeg.set(s.tiles.mode));
-      } });
-    tilesSeg.querySelectorAll('button').forEach((b) => { b.disabled = off; });
-    const mt = (mapCfg && mapCfg.tiles) || {};
-    const chosenId = mt.preset || s.tiles.preset || (tilePresets.find((x) => x.url === s.tiles.online_url) || {}).id || (s.tiles.online_url ? 'custom' : 'satellite');
-    const tilePreset = tilePresets.find((x) => x.id === chosenId) || null;
-    const tileSource = tilePresets.length ? pickRow({ name: 'Online map', sheetTitle: 'Online map',
-      sub: tilePreset ? `${tilePreset.name}. ${presetLine(tilePreset)} Free, no key; its terms (${String(tilePreset.terms || '').replace(/^https:\/\//, '')}) ask for light use and its credit on every map.` : 'Your own tile address below. A preset fills in its address, credit and zoom.',
-      value: tilePreset ? tilePreset.id : 'custom', disabled: off,
-      options: [...tilePresets.map((x) => [x.id, x.name, presetLine(x)]), ['custom', 'Custom address', 'Your own https:// tile address, typed below']],
-      sheetNote: 'Each viewer’s browser loads the map pictures from the hosts named, which see the viewer’s IP address, this server’s address and the map area shown.',
-      onpick: (v) => {
-        // a custom address is typed and saved in the form below (saved as preset "custom")
-        if (v === 'custom') { tileSource.set(tilePreset ? tilePreset.id : 'custom'); tileUrl.control.focus(); setFieldError(tileUrl, 'Type your own https:// tile address here, then save it.'); return; }
-        return quick({ tiles: { preset: v } }, () => tileSource.set(tilePreset ? tilePreset.id : 'custom'));
-      } }) : null;
-    // place names and roads over the photos, for a preset that has them
-    const labelsRow = tilePreset && (tilePreset.overlays || []).length ? toggle({ label: 'Place names and roads', sub: LABELS_TEXT, checked: mt.labels !== false && s.tiles.labels !== false, disabled: off,
-      onchange: (on) => quick({ tiles: { labels: on } }, () => labelsRow.set(!on)) }) : null;
-    // the styles viewers may switch between (Map / Satellite)
-    const allowed = new Set(mt.allowed_styles || s.tiles.styles || ['satellite', 'osm']);
-    const styleRows = tilePresets.map((x) => {
-      const t = toggle({ label: x.name, sub: `${x.kind === 'satellite' ? 'Satellite pictures' : 'A drawn map'}. ${presetLine(x)}`, checked: allowed.has(x.id) || x.id === chosenId, disabled: off || x.id === chosenId,
-        onchange: (on) => {
-          const next = tilePresets.map((y) => y.id).filter((id) => (id === x.id ? on : allowed.has(id)));
-          quick({ tiles: { styles: next } }, () => t.set(!on));
-        } });
-      return t;
-    });
-    const tileUrl = field({ label: 'Online tile address', name: 'online_url', value: s.tiles.online_url || '', hint: 'An https:// address with {z}, {x} and {y} in it.', attrs: { spellcheck: 'false', autocomplete: 'off', placeholder: 'https://…/{z}/{x}/{y}.png', disabled: off } });
-    tileUrl.control.addEventListener('input', () => setFieldError(tileUrl, null));
-    const tileForm = form({
-      fields: [tileUrl,
-        field({ label: 'Credit shown on the map', name: 'attribution', value: s.tiles.attribution || '', hint: 'Who made the map pictures, as their licence asks.', attrs: { disabled: off } }),
-        field({ label: 'Deepest zoom', name: 'max_zoom', type: 'number', value: s.tiles.max_zoom ?? '', hint: '1 to 22.', attrs: { min: '1', max: '22', step: '1', disabled: off } })],
-      submitLabel: 'Save tile settings',
-      onsubmit: async (v) => {
-        const bad = {};
-        const url = String(v.online_url || '').trim();
-        if (url && !(/^https:\/\//.test(url) && ['{z}', '{x}', '{y}'].every((x) => url.includes(x)))) bad.online_url = 'An https:// address with {z}, {x} and {y} in it.';
-        if (v.max_zoom == null || !Number.isInteger(v.max_zoom) || v.max_zoom < 1 || v.max_zoom > 22) bad.max_zoom = 'A whole number from 1 to 22.';
-        if (Object.keys(bad).length) throw Object.assign(new Error('Not saved: check the fields marked.'), { fields: bad });
-        try { await patch({ tiles: { online_url: url || null, attribution: String(v.attribution || '').trim(), max_zoom: v.max_zoom, ...(url && !tilePresets.some((x) => x.url === url) ? { preset: 'custom' } : {}) } }); } catch (err) { throw strip(err, /^tiles\./); }
-      },
-    });
-    if (off) tileForm.submitButton.hidden = true;
-    // the offline map file: which is in use, (with several) which to use, and how to make one
-    const fileOpts = offlineFileChoices(mapCfg && mapCfg.tiles);
-    const fileSeg = fileOpts ? segmented({ name: 'Offline map file', value: s.tiles.offline_file || '', options: fileOpts,
-      onchange: (v) => quick({ tiles: { offline_file: v || null } }, () => fileSeg.set(s.tiles.offline_file || '')) }) : null;
-    if (fileSeg) fileSeg.querySelectorAll('button').forEach((b) => { b.disabled = off; });
-    const offlineGroup = group('Offline map file', [
-      fileSeg ? ctlRow({ name: 'In use', sub: offlineSummary(mapCfg && mapCfg.tiles), control: fileSeg, stack: true })
-        : h('div', { class: 'row row-static' }, h('span', { class: 'row-text' }, h('span', { class: 'row-name' }, 'In use'), h('span', { class: 'row-sub' }, offlineSummary(mapCfg && mapCfg.tiles)))),
-      h('div', { class: 'row row-static' }, h('span', { class: 'row-text' }, h('span', { class: 'row-sub' }, 'A map of your own area kept on this server: maps then need nothing from outside, and no viewer’s browser asks another site for tiles.'),
-        h('ol', { class: 'row-sub offline-steps' }, OFFLINE_STEPS.map((x) => h('li', null, x))), h('span', { class: 'row-sub' }, OFFLINE_NOTE))),
-    ], { id: OFFLINE_ANCHOR });
-    const mapsT = tile({ w: 2, title: 'Maps', icon: 'map', side: ro, cover: 'web.shell.map-tiles' },
-      group(null, [ctlRow({ name: 'Map tiles', sub: s.tiles.mode === 'online'
-        ? `Online, from ${(mt.hosts && mt.hosts.length ? mt.hosts : [hostOf(s.tiles.online_url) || 'the tile server below']).join(', ')}. Each viewer’s browser asks them for the map pictures, sending this server’s address as Referer (tile servers ask for it; never a page or a car).`
-        : 'Offline: maps are drawn from the offline map file on this server; without one, maps show routes and pins on a plain ground, with a note.', control: tilesSeg, stack: true }),
-      tileSource, labelsRow]),
-      tileForm,
-      tilePresets.length ? group('Maps people can switch to', styleRows, { note: `${STYLES_TEXT} The default is always on.` }) : null,
-      offlineGroup);
-
-    // proxy
-    const proxyF = field({ label: 'Proxy address', name: 'proxy', value: (s.outbound && s.outbound.proxy) || '', hint: 'For example http://proxy.lan:3128 or socks5://proxy.lan:1080, with no name or password in it. Empty: connect directly.', attrs: { placeholder: 'http://…', spellcheck: 'false', autocomplete: 'off', disabled: off } });
-    const proxyForm = form({
-      fields: [proxyF], submitLabel: 'Save proxy',
-      onsubmit: async (v) => {
-        const url = String(v.proxy || '').trim();
-        if (url && !/^(https?|socks5):\/\/[A-Za-z0-9.-]+(:\d{1,5})?\/?$/.test(url)) throw Object.assign(new Error('Not saved: check the fields marked.'), { fields: { proxy: 'http, https or socks5, a host name and a port, nothing else.' } });
-        try { await patch({ outbound: { proxy: url || null } }); } catch (err) { throw strip(err, /^outbound\./); }
-      },
-    });
-    if (off) proxyForm.submitButton.hidden = true;
-    const proxyT = tile({ w: 2, title: 'Outbound proxy', icon: 'globe', side: ro, cover: 'docs.env.tesla-api.nominatim-proxy' },
-      note(s.outbound && s.outbound.proxy ? `Now: through ${hostOf(s.outbound.proxy) || 'the proxy'}. Online address look-ups and map tiles the server downloads go through it.` : 'Now: none. The server connects directly, and only when online look-ups or tile downloads are on.'),
-      proxyForm);
-
-    // outside links and the release check
-    const maps = toggle({ label: 'Links to an outside map', sub: 'Open a spot in another map site, only when clicked.', checked: !!s.outside_links.maps, disabled: off, onchange: (on) => quick({ outside_links: { maps: on } }, () => maps.set(s.outside_links.maps)) });
-    const notes = toggle({ label: 'Release-notes links', sub: 'Link a new version to its notes on another site.', checked: !!s.outside_links.release_notes, disabled: off, onchange: (on) => quick({ outside_links: { release_notes: on } }, () => notes.set(s.outside_links.release_notes)) });
-    const rel = toggle({ label: 'Check for new releases', sub: 'Asks GitHub once a day for the newest published build; nothing else is sent. Off by default.', checked: !!s.release_check.enabled, disabled: off,
-      onchange: (on) => quick({ release_check: { enabled: on } }, () => rel.set(s.release_check.enabled)).then(loadRelease) });
-    const relGroup = group('Release check', [rel], { id: 'release' });
-    relToggle = rel;
-    relBox = relGroup.querySelector('.rows-list');
-    drawRel();
-    const linksT = tile({ w: 2, title: 'Outside links', icon: 'external', side: ro },
-      group(null, [maps, notes]), relGroup,
-      note('Off by default: nothing on a page sends you to another site unless an admin allows it.'));
-
-    serverBox.replaceChildren(defaultsT, addrT, mapsT, proxyT, linksT);
+    // what an admin sets for everyone, elsewhere now
+    const elsewhereT = tile({ w: 2, title: 'More for everyone', icon: 'server' },
+      group(null, [
+        moreRow('settings-maps', 'map', 'Maps and addresses', 'Map tiles, the offline map, address lookup and outside links.'),
+        moreRow('settings-cars', 'car', 'Time zone for new cars', 'In Settings: Cars.', '#default-tz'),
+        moreRow('settings-server', 'upload', 'Server updates', 'The release check, in Settings: Server.', '#release-check'),
+      ]));
+    serverBox.replaceChildren(defaultsT, elsewhereT);
   }
   drawServer(srv);
   sync();
@@ -462,11 +258,10 @@ export async function mount(ctx) {
   ctx.view.replaceChildren(lookT, unitsT, langT,
     tile({ w: 2, title: 'Where these live', icon: 'info' },
       group(null, [
-        infoRow({ icon: 'person', name: 'Yours alone', sub: 'Theme, units, range, language, size and pack follow your account to every device.' }),
-        infoRow({ icon: 'server', name: 'The server’s', sub: 'Defaults, addresses and maps below are one setting for everyone.' }),
+        infoRow({ icon: 'person', name: 'Yours alone', sub: 'Theme, map colours and style, units, range, language, size and pack follow your account to every device.' }),
+        infoRow({ icon: 'server', name: 'The server’s', sub: 'The defaults below are one setting for everyone.' }),
       ])),
     divider, serverBox);
-  showOfflineHelp(document.getElementById(OFFLINE_ANCHOR));
   ctx.ready();
   return { update: (c) => { sync(); c.ready(); } };
 }

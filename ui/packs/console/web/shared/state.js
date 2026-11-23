@@ -36,6 +36,7 @@ export const ROUTES = Object.freeze([
   ['settings-cars', '/settings/cars/:car'],
   ['settings-cars', '/settings/cars'],
   ['settings-display', '/settings/display'],
+  ['settings-maps', '/settings/maps'],
   ['settings-integrations', '/settings/integrations'],
   ['settings-server', '/settings/server'],
   ['import', '/settings/import'],
@@ -45,6 +46,47 @@ export const ROUTES = Object.freeze([
   ['sign-in', '/sign-in'],
   ['setup', '/setup'],
 ].map(([page, pattern]) => Object.freeze({ page, pattern, keys: (pattern.match(/:(\w+)/g) || []).map((k) => k.slice(1)) })));
+
+/**
+ * Sections that moved to another page, by their old address: '<page>#<anchor>' -> [page, anchor]. Settings:
+ * Display and units once held the server-wide map, address and release settings and the time zone for new
+ * cars; old links and bookmarks to those sections open them where they are now (see movedUrl).
+ */
+export const MOVED = Object.freeze({
+  'settings-display#map-tiles': ['settings-maps', 'map-tiles'],
+  'settings-display#tiles-preset': ['settings-maps', 'map-tiles'],
+  'settings-display#maps': ['settings-maps', 'map-tiles'],
+  'settings-display#maps-title': ['settings-maps', 'map-tiles'],
+  'settings-display#tiles-labels': ['settings-maps', 'place-names'],
+  'settings-display#place-names': ['settings-maps', 'place-names'],
+  'settings-display#tiles-styles': ['settings-maps', 'map-styles'],
+  'settings-display#map-styles': ['settings-maps', 'map-styles'],
+  'settings-display#offline-map': ['settings-maps', 'offline-map'],
+  'settings-display#geocoding': ['settings-maps', 'address-lookup'],
+  'settings-display#address-lookup': ['settings-maps', 'address-lookup'],
+  'settings-display#addresses': ['settings-maps', 'address-lookup'],
+  'settings-display#address-language': ['settings-maps', 'address-language'],
+  'settings-display#outside-links': ['settings-maps', 'outside-links'],
+  'settings-display#release': ['settings-server', 'release-check'],
+  'settings-display#release-check': ['settings-server', 'release-check'],
+  'settings-display#release-check-on': ['settings-server', 'release-check'],
+  'settings-display#default-tz': ['settings-cars', 'default-tz'],
+});
+
+/**
+ * Where an old address now lives: movedUrl('/settings/display#map-tiles') -> '/settings/maps#map-tiles', or
+ * null when the address has not moved. The query is kept.
+ */
+export function movedUrl(u) {
+  const { path, search, hash } = splitUrl(u);
+  const m = matchRoute(path);
+  if (!m || !hash) return null;
+  let anchor;
+  try { anchor = decodeURIComponent(hash.slice(1)); } catch { return null; }
+  const to = MOVED[`${m.page}#${anchor}`];
+  if (!to) return null;
+  return `${ROUTES.find((r) => r.page === to[0] && !r.keys.length).pattern}${search}#${to[1]}`;
+}
 
 /** Every page id with a route (the frame has none of its own). */
 export const PAGE_IDS = Object.freeze([...new Set(ROUTES.map((r) => r.page))]);

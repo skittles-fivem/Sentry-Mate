@@ -32,6 +32,7 @@ const QA = [
   ['What is the difference between asleep and unknown?', 'Asleep means the car went quiet and the CAN Bridge saw it. Unknown means no log covers that time. Unknown is never counted as asleep, and charts never draw a value across it.', 'timeline', 'timeline'],
   ['Does Sentry Mate wake the car?', 'No. It only listens to what the car sends anyway, so it never wakes the car, keeps it awake or sends it a command.', 'car', 'car overview'],
   ['Where do I change units, or rated against ideal range?', 'Each person picks units and the range once; every page then uses them. The server keeps metric values, so changing units never changes your data.', 'settings-display', 'settings/display'],
+  ['Where do maps and addresses come from?', 'From this server by default: an offline map file and bundled place names, so nothing is looked up on another site. An admin can choose an online map (satellite pictures, for example), which maps people may switch to, and an online address service, for everyone.', 'settings-maps', 'settings/maps'],
   ['How do I pick the dates a page shows?', 'The range on the right of the header line. It works in the car\'s own time zone and stays when you change page or car.', 'statistics', 'statistics'],
   ['Can I take my data out?', 'Yes. Tables have a csv link that uses your units, and drives can be saved as GPX tracks.', 'drives', 'drives'],
   ['Can I bring my TeslaMate history?', 'Yes. An admin imports a TeslaMate backup. Imported rows say imported from TeslaMate, and where they overlap with live data (SMO or the Tesla API) you choose which is shown.', 'import', 'import'],
@@ -60,7 +61,7 @@ export async function mount(ctx) {
   const paintRelease = (list) => {
     const now = ctx.api.now();
     const n = (list || []).find((x) => x.code === 'release_available');
-    const to = ctx.admin ? [' ', link(`${state.buildUrl('settings-display')}#release-check`, 'settings/display')] : null;
+    const to = ctx.admin ? [' ', link(`${state.buildUrl('settings-server')}#release-check`, 'settings/server')] : null;
     const when = rel ? checkedAgo(rel, now) : '';
     const ago = when ? h('span', { class: 'muted' }, ` (${when})`) : null;
     const st = rel ? releaseStatus(rel, now) : null;
@@ -122,13 +123,13 @@ export async function mount(ctx) {
     note('Each part keeps its own licence. The full texts open as plain files from this server, never from another site.'));
 
   const credits = about.data_credits || [];
-  const lookup = !settings ? 'Where maps and addresses come from is set by an admin in settings/display.'
+  const lookup = !settings ? ['Where maps and addresses come from is set by an admin in ', link(state.buildUrl('settings-maps'), 'settings/maps'), '.']
     : settings.tiles?.mode !== 'online' && settings.geocode?.mode !== 'online' ? 'Maps and addresses come from data stored on this server; nothing is looked up on another site.'
       : `${settings.tiles?.mode === 'online' ? `Map tiles come from ${hostOf(settings.tiles.online_url) || 'an outside tile service'}` : 'Map tiles come from this server'}; ${settings.geocode?.mode === 'online' ? `addresses are looked up at ${hostOf(settings.geocode.url) || 'an outside service'}` : 'addresses come from this server'}.`;
   const creditSec = section({ title: 'data credits' },
     credits.length ? h('ul', { class: 'ln-list' }, credits.map((c) => h('li', null, tag('data', 'muted'), h('span', { class: 'ln-list-t' }, `${c.name}: ${c.text}${c.licence ? ` (${c.licence})` : ''}`))))
       : note('This server uses no outside data that needs a credit.'),
-    note(lookup));
+    note(lookup, settings ? [' Change it in ', link(state.buildUrl('settings-maps'), 'settings/maps'), '.'] : null));
 
   const carLink = (page, words) => {
     let href = state.linkTo(page);

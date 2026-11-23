@@ -135,8 +135,9 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'ma
   });
 }
 
-// Settings: Display and units at phone width, with a long browser zone name: the "Use this browser's zone" button
-// and the tile source's terms note stay inside the window (they ran up to 88 px past it).
+// Settings: Maps and addresses and Settings: Cars at phone width, with a long browser zone name: the tile source's
+// terms note and the "Use this browser's zone" button (time zone for new cars) stay inside the window (they ran up
+// to 88 px past it when both were on Settings: Display and units).
 for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'manager']) {
   test(`${pack}: the zone button and the tile terms fit a 360 px phone`, { skip: !playwright && 'Playwright is not installed', timeout: 120000 }, async () => {
     const browser = await playwright.chromium.launch();
@@ -145,17 +146,21 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'ma
       const context = await browser.newContext({ viewport: { width: 360, height: 800 }, timezoneId: 'America/Argentina/Buenos_Aires' });
       await context.route((u) => !u.href.startsWith(server.origin), (route) => route.abort());
       const page = await context.newPage();
-      await page.goto(`${server.origin}/settings/display`);
-      await page.waitForFunction(() => document.documentElement.dataset.ready === 'settings-display', null, { timeout: 30000 });
-      const out = await page.evaluate(() => {
-        const W = document.documentElement.clientWidth;
-        const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-        const mine = [...document.querySelectorAll('button, p, span, small, div')]
-          .filter((e) => e.children.length <= 3 && (/browser.s zone/i.test(e.textContent) || /free, no key/i.test(e.textContent) || e.textContent.includes(zone) || e.textContent.includes(zone.replace(/_/g, ' '))) && e.textContent.length < 300);
-        return { found: mine.length, wide: mine.filter((e) => e.getBoundingClientRect().right > W + 0.5).map((e) => `${e.tagName} ${e.textContent.trim().slice(0, 60)} (${Math.round(e.getBoundingClientRect().right)} px)`) };
-      });
-      assert.ok(out.found > 0, 'the zone button or the terms note is on the page');
-      assert.deepEqual(out.wide, [], 'past the right edge of a 360 px window');
+      let found = 0;
+      for (const [path, ready] of [['/settings/maps', 'settings-maps'], ['/settings/cars', 'settings-cars']]) {
+        await page.goto(`${server.origin}${path}`);
+        await page.waitForFunction((id) => document.documentElement.dataset.ready === id, ready, { timeout: 30000 });
+        const out = await page.evaluate(() => {
+          const W = document.documentElement.clientWidth;
+          const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          const mine = [...document.querySelectorAll('button, p, span, small, div')]
+            .filter((e) => [...e.children].filter((c) => c.localName !== 'wbr').length <= 3 && (/browser.s zone/i.test(e.textContent) || /free, no key/i.test(e.textContent) || e.textContent.includes(zone) || e.textContent.includes(zone.replace(/_/g, ' '))) && e.textContent.length < 300);
+          return { found: mine.length, wide: mine.filter((e) => e.getBoundingClientRect().right > W + 0.5).map((e) => `${e.tagName} ${e.textContent.trim().slice(0, 60)} (${Math.round(e.getBoundingClientRect().right)} px)`) };
+        });
+        found += out.found;
+        assert.deepEqual(out.wide, [], `${path}: past the right edge of a 360 px window`);
+      }
+      assert.ok(found > 0, 'the zone button or the terms note is on the pages');
       await context.close();
     } finally {
       await server.stop();
@@ -189,7 +194,7 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'ma
       assert.match(await note.textContent(), /No map tiles yet/);
       const use = note.getByRole('button', { name: 'Use online map (satellite)' });
       await use.waitFor({ timeout: 10000 });
-      assert.equal(await note.getByRole('link', { name: 'Add an offline map file' }).getAttribute('href'), '/settings/display#offline-map');
+      assert.equal(await note.getByRole('link', { name: 'Add an offline map file' }).getAttribute('href'), '/settings/maps#offline-map');
       await use.click();
       // the confirm is drawn once maps/config is read: wait for it, not for the next frame
       await page.waitForFunction(() => document.querySelector('.map-empty')?.dataset.mapEmpty === 'confirm', null, { timeout: 10000 });

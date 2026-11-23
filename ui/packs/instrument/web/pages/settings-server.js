@@ -7,7 +7,7 @@
 // pages/settings-server-move.js), and Storage: the space on disk by category and what compaction saved
 // (GET /system/storage/detail), with "Compact now" (POST /system/storage/compact; while a pass runs the detail
 // is read again every 2 s). Changes are saved through the API with the object's version; a short note
-// confirms each one.
+// confirms each one. Server updates: this build and the release check (#release-check; see updatesPanel).
 
 import { h, replace } from '../shared/dom.js';
 import * as state from '../shared/state.js';
@@ -24,6 +24,7 @@ import { signOut } from '../core/session.js';
 import { dateTime, date, agoEl, tzName, DASH } from '../core/fmt.js';
 import { timeColumn } from '../shared/csv.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
+import { buildLabel, buildTitle, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 import { movePanel, showRecoveryKey, newRecoveryKey, markKeySaved, askPassword } from './settings-server-move.js';
 
 export const id = 'settings-server';
@@ -76,6 +77,79 @@ function copyValue(text, valueEl, label = 'Copy') {
         said.textContent = 'Selected: press Ctrl+C (on a phone, tap Copy) to copy it.';
       }
     } }, icon('check', 'ico--sm'), label), said);
+}
+
+/**
+ * Server updates (#server-updates): this build, the release check's switch (#release-check, PATCH /settings
+ * release_check; an admin's) and its last answer (GET /release), with Check now (POST /release/check). S holds the
+ * page's settings, which the switch replaces with the saved ones.
+ */
+function updatesPanel(ctx, S, admin) {
+  let release = null, about = null, checking = false, timer = null;
+  ctx.onCleanup(() => clearTimeout(timer));
+  const box = h('div', { class: 'release-box' });
+  const input = h('input', { type: 'checkbox', id: 'ss-release', role: 'switch', 'aria-label': 'Check for new releases', checked: !!S.settings?.release_check?.enabled, disabled: !admin,
+    onchange: async () => {
+      const want = input.checked;
+      try {
+        S.settings = await ctx.api.patch('settings', { version: S.settings.version, release_check: { enabled: want } });
+        flash(want ? 'Release check on saved.' : 'Release check off saved.');
+      } catch (e) {
+        if (e?.name === 'AbortError') return;
+        if (e.status === 409) S.settings = await ctx.api.get('settings').catch(() => S.settings);
+        flash(e.status === 409 ? 'Someone else changed the settings; this page shows theirs now.' : `Could not save: ${errText(e)}`, { kind: e.status === 409 ? 'info' : 'error' });
+      }
+      if (!ctx.alive()) return;
+      input.checked = !!S.settings?.release_check?.enabled;
+      onOff.textContent = input.checked ? 'On' : 'Off';
+      await refresh();
+    } });
+  const onOff = h('label', { for: 'ss-release' }, input.checked ? 'On' : 'Off');
+  async function refresh() {
+    release = await ctx.api.get('release').catch(() => release);
+    if (ctx.alive()) paint();
+  }
+  async function checkNow() {
+    checking = true; paint();
+    try {
+      release = await ctx.api.post('release/check', {});
+      if (release?.status === 'error') flash(releaseStatus(release).text, { kind: 'error' });
+    } catch (e) {
+      if (e?.name === 'AbortError') return;
+      flash(e?.code === 'release_check_off' ? 'Not checked: the release check is off.' : `Not checked: ${errText(e)}`, { kind: 'error' });
+      release = await ctx.api.get('release').catch(() => release);
+    } finally { checking = false; }
+    if (ctx.alive()) paint();
+  }
+  function paint() {
+    const now = ctx.api.now();
+    const st = release ? releaseStatus(release, now) : { tone: 'error', text: 'The release check could not be read from the server.' };
+    const when = release ? checkedAgo(release, now) : '';
+    const on = release ? !!release.enabled : !!S.settings?.release_check?.enabled;
+    const busy = checking || release?.status === 'checking';
+    const newer = release?.status === 'newer';
+    const lines = newer ? changeLines(release.newest) : [];
+    const tone = { ok: 'ok', newer: 'ok', error: 'warn' }[st.tone] || 'faint';
+    replace(box,
+      h('p', { class: 'setting-note release-build' }, icon('server', 'ico--sm'), ' This build: ', h('span', { class: 'mono', title: buildTitle(about) || null }, buildLabel(about || {}, now))),
+      h('p', { class: 'release-status', role: 'status' }, icon(st.tone === 'error' ? 'warn' : st.tone === 'ok' ? 'check' : st.tone === 'newer' ? 'upload' : 'clock', 'ico--sm'), ' ',
+        h('span', { class: tone }, busy && st.tone !== 'wait' ? 'Checking…' : st.text), when ? h('span', { class: 'faint' }, ` · ${when}`) : null),
+      lines.length ? h('ul', { class: 'setting-note release-titles' }, lines.map((x) => h('li', null, x))) : null,
+      newer && release.pull ? h('p', { class: 'setting-note release-pull' }, 'To update, run on the server: ', h('code', { class: 'mono' }, release.pull)) : null,
+      admin ? h('div', { class: 'release-actions' },
+        h('button', { class: 'btn btn--sm', type: 'button', disabled: !on || busy, title: on ? null : 'Turn the release check on first', onclick: checkNow }, icon('reset', 'ico--sm'), busy ? 'Checking…' : 'Check now')) : null);
+    if (release?.status === 'checking' && !checking) { clearTimeout(timer); timer = setTimeout(() => { if (ctx.alive()) refresh(); }, 4000); }
+  }
+  const ready = Promise.all([
+    ctx.api.get('release').catch(() => null),
+    ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
+  ]).then(([r, a]) => { release = r; about = a; if (ctx.alive()) paint(); });
+  paint();
+  const el = panel({ title: 'Server updates', icon: 'upload', pad: true, id: 'server-updates', side: h('span', { class: 'faint' }, admin ? 'Off by default' : 'Read only') },
+    setting('Check for new releases', 'Once a day the server asks GitHub whether a newer Sentry Mate image is published, and tells admins. Only that question goes out: no token, no car, no account. It never downloads or installs anything.',
+      [h('div', { class: 'switch-row switch-row--inline' }, h('span', { class: 'switch' }, input, h('i', { 'aria-hidden': 'true' })), onOff), box]));
+  el.querySelector('.setting').id = 'release-check';
+  return { el, ready };
 }
 
 /* ====================================================================== the page */
@@ -679,6 +753,9 @@ export async function mount(ctx) {
   /* ---------------------------------------------------------------- moving to another server (admin) */
   const move = admin ? movePanel(ctx, { tz, zone: zoneText }) : null;
 
+  /* ---------------------------------------------------------------- server updates */
+  const updates = updatesPanel(ctx, S, admin);
+
   /* ---------------------------------------------------------------- the page */
   paintHosting();
   paintNames();
@@ -695,7 +772,8 @@ export async function mount(ctx) {
     pageHead({ title: ctx.info.title, purpose: ctx.info.purpose }),
     h('div', { class: 'settings-stack ss' },
       h('div', { class: 'ss-two' }, hostPanel, h('div', { class: 'ss-col' }, namesPanel, portsPanel)),
-      h('div', { class: 'ss-two' }, accessPanel, admin ? safety : null),
+      h('div', { class: 'ss-two' }, accessPanel, admin ? safety : updates.el),
+      admin ? updates.el : null,
       move ? move.el : null,
       storageTable ? storageTable.el : null,
       accountsTable ? [goneNote, accountsTable.el] : null,
@@ -703,6 +781,7 @@ export async function mount(ctx) {
       auditTable ? auditTable.el : null));
   if (auditTable) await auditTable.ready;
   if (move) await move.ready;
+  await updates.ready;
   if (!ctx.alive()) return;
   ctx.ready();
 }

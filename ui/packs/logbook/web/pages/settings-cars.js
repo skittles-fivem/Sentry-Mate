@@ -8,7 +8,8 @@
 // chemistry with the evidence, and free Supercharging as dated ranges (GET / PATCH .../settings). An admin
 // marks a car sold, with an optional date, or not sold again (PATCH sold, sold_date).
 // Every change saves at once, with the object's version, and a short note confirms it.
-// Without a car: the car list, keys waiting for a car, and how a car appears (the empty state).
+// Without a car: the car list, keys waiting for a car, how a car appears (the empty state), and the time zone a
+// new car starts in (#default-tz: the server's default_time_zone, PATCH /api/v1/settings with its version).
 
 import { h, replace } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -475,7 +476,9 @@ async function mountIndex(ctx) {
       h('p', { class: 'empty-text' }, 'A car appears here when its SMO (CAN Bridge) uploads its first log, or once a Tesla account is added in Settings: Integrations and its car matched; you name it then.'),
       howCarsAppear(),
       fixes.length ? h('p', { class: 'note' }, `Now: ${fixes.map((f) => FIX_NOW[f.cause] || f.cause).join(' ')}`) : null);
-    ctx.main.append(head, box);
+    const zone = defaultZone(ctx, admin);
+    ctx.main.append(head, box, zone.el);
+    await zone.load();
     if (admin) {
       const nt = newCarTokens(ctx);
       ctx.main.append(nt.el);
@@ -502,10 +505,64 @@ async function mountIndex(ctx) {
     waiting = waitingTable(ctx, { onChange: () => waiting.reload() });
     mainCol.append(fresh.el, section({ title: 'Keys waiting for a car', note: 'a CAN Bridge uploading with a key no car has yet' }, waiting.el));
   }
+  const zone = defaultZone(ctx, admin);
+  mainCol.append(zone.el);
   ctx.main.append(head, h('div', { class: 'sc-layout' }, rail.el, mainCol));
-  await Promise.all([rail.table.load(), waiting ? waiting.load() : null, fresh ? fresh.load() : null]);
+  await Promise.all([rail.table.load(), waiting ? waiting.load() : null, fresh ? fresh.load() : null, zone.load()]);
   ctx.ready();
   return {};
+}
+
+/**
+ * The time zone a new car starts in (#default-tz: the server's default_time_zone, PATCH /settings with its
+ * version). An admin changes it; others read it. Each car keeps its own zone after that. Returns { el, load }.
+ */
+function defaultZone(ctx, admin) {
+  const zones = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
+  const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
+  let srv = null, loaded = false;
+  const slot = h('div');
+  const el = section({ title: 'Time zone for new cars', note: admin ? 'for everyone on this server' : 'read only for your account', id: 'default-tz', cls: 'sc-default-tz' }, slot);
+  function draw() {
+    if (!loaded) return;
+    if (!srv) { replace(slot, note('The server settings could not be read, so the time zone for new cars is not known.')); return; }
+    const zone = srv.default_time_zone || 'UTC';
+    const tzField = field({ label: 'Time zone for new cars', name: 'default_time_zone', value: zone, hint: 'A name such as America/Chicago. Type to see the list.', attrs: { list: 'sc-default-zones', spellcheck: 'false', autocomplete: 'off', disabled: !admin } });
+    const save = async (v) => {
+      setFieldError(tzField, null);
+      if (!v || !isValidZone(v)) { setFieldError(tzField, 'Not a known time zone. Pick one from the list, for example America/Chicago.'); return; }
+      if (v === srv.default_time_zone) return;
+      try {
+        srv = await ctx.api.patch('settings', { version: srv.version, default_time_zone: v });
+        ctx.flash(`Saved: new cars start in ${v.replace(/_/g, ' ')}.`);
+      } catch (err) {
+        if (err && (err.code === 'stale_version' || err.status === 409)) {
+          srv = await ctx.api.get('settings').catch(() => srv);
+          ctx.flash('Someone else changed the server settings meanwhile; the zone shown is the saved one now. Make your change again.', { kind: 'info' });
+        } else {
+          setFieldError(tzField, (err && err.fields && (err.fields.default_time_zone || Object.values(err.fields).join(' '))) || `Not saved: ${(err && err.message) || err}`);
+          return;
+        }
+      }
+      if (ctx.alive()) draw();
+    };
+    tzField.control.addEventListener('change', () => save(tzField.control.value.trim()));
+    const useBrowser = admin && browserZone && browserZone !== zone
+      ? button(`Use this browser’s zone (${browserZone.replace(/_/g, ' ')})`, { cls: 'button-small', onclick: () => { tzField.control.value = browserZone; save(browserZone); } }) : null;
+    replace(slot, setting('The zone a new car starts in',
+      'Its days, weeks and the hours of time-of-use tariffs, until its position gives it one or someone sets its own. Each car keeps its own zone after that: choose a car to change it.',
+      h('div', { class: 'sc-stack' }, tzField, h('datalist', { id: 'sc-default-zones' }, zones.map((z) => h('option', { value: z }))),
+        h('p', { class: 'sc-setting-note' }, `Now: ${zone.replace(/_/g, ' ')} (${zoneLabel(zone)}).${admin ? '' : ' Set by an admin; shown here to read.'}`), useBrowser)));
+  }
+  draw();
+  return {
+    el,
+    async load() {
+      try { srv = await ctx.api.get('settings'); } catch (err) { if (api.isAbort(err)) throw err; srv = null; }
+      loaded = true;
+      if (ctx.alive()) draw();
+    },
+  };
 }
 
 const FIX_NOW = {

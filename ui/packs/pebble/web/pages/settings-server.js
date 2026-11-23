@@ -12,6 +12,9 @@
 // system/move (+ /undo), system/exports, system/recovery-key/{show,new,saved}, system/storage/detail and
 // system/storage/compact. Polls once a second while a move or an export file is being made, and every 2 s
 // while a compaction pass runs (no event stream for these).
+// - Everyone: Server updates (#server-updates): this build (GET about) and the release check's switch
+//   (#release-check; PATCH settings release_check, an admin's) with its last answer (GET release) and, for an
+//   admin, Check now (POST release/check); read again every 3 s while a check runs.
 
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -26,6 +29,9 @@ import { checkRow, sectionHead, moreButton } from '../core/bits.js';
 import { group, infoRow, said, notSaved, askPassword, keySheet, tick } from '../core/settings.js';
 import { inOrder } from '../core/settings.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
+import { buildLabel, buildTitle } from '../shared/release.js';
+import { relState, relNewer } from '../core/release.js';
+import { currentAbout } from '../core/frame.js';
 import { bytes, bigCode, copyButton, downloadUrl, stepCards, progressBar, callout, PROBLEM } from './move-parts.js';
 
 export const id = 'settings-server';
@@ -45,6 +51,69 @@ const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records' 
 /** Text that may break only after a slash, a colon or a dot (addresses, a SHA-256). */
 const breakable = (t) => String(t).split(/(?<=[/:.])/).map((part, i) => [i ? h('wbr') : null, part]);
 
+/**
+ * Server updates (#server-updates): the release check's switch (#release-check), its last answer and this build.
+ * S holds the page's settings (S.get / S.set), which the switch replaces with the saved ones. -> { el, ready }
+ */
+function updatesTile(ctx, S, admin) {
+  let release = null, about = currentAbout(), busy = false, poll = null;
+  ctx.onCleanup(() => clearTimeout(poll));
+  const sw = toggle({ label: 'Check for new releases', sub: 'Once a day the server asks GitHub for the newest published build and tells admins. Only that question goes out: no token, no car, no account. It never downloads or installs anything.',
+    checked: !!(S.get().release_check || {}).enabled, disabled: !admin,
+    onchange: async (on) => {
+      try {
+        S.set(await ctx.api.patch('settings', { version: S.get().version, release_check: { enabled: on } }));
+        ctx.toast(on ? 'Release check on. Saved for everyone on this server.' : 'Release check off. Saved for everyone on this server.');
+      } catch (e) {
+        if (e && (e.status === 409 || e.code === 'stale_version')) {
+          S.set(await ctx.api.get('settings').catch(() => S.get()));
+          ctx.toast('Someone changed these settings meanwhile; they are shown fresh now. Make your change again.', { kind: 'info' });
+        } else ctx.toast(notSaved(e), { kind: 'error' });
+      }
+      if (!ctx.alive()) return;
+      sw.set(!!(S.get().release_check || {}).enabled);
+      await load();
+    } });
+  sw.id = 'release-check';
+  const list = group(null, [sw]);
+  const rows = list.querySelector('.rows-list');
+  async function load() {
+    const r = await ctx.api.get('release').catch(() => null);
+    if (!ctx.alive()) return;
+    if (r) release = r;
+    paint();
+  }
+  async function checkNow() {
+    busy = true; paint();
+    try { release = await ctx.api.post('release/check', {}); }
+    catch (e) { if (api.isAbort(e)) return; ctx.toast(e && e.code === 'release_check_off' ? 'Not checked: the release check is off.' : `Not checked: ${(e && e.message) || 'the server did not answer.'}`, { kind: 'error' }); }
+    busy = false;
+    if (ctx.alive()) paint();
+  }
+  function paint() {
+    clearTimeout(poll);
+    const r = release;
+    const st = r ? relState(r) : { kind: 'bad', text: 'The server did not say how the release check went.', ago: '' };
+    const off = r ? !r.enabled || r.status === 'off' : !(S.get().release_check || {}).enabled;
+    const checking = !!r && r.status === 'checking';
+    const nowBtn = admin ? btn(busy || checking ? 'Checking…' : 'Check now', { kind: 'soft', icon: 'refresh', disabled: off || checking || busy, onclick: checkNow }) : null;
+    const newer = relNewer(r);
+    rows.replaceChildren(sw,
+      h('div', { class: 'row row-static rel-row' },
+        h('span', { class: 'row-text' }, said(st.kind, st.text), st.ago ? h('span', { class: 'row-sub' }, st.ago[0].toUpperCase() + st.ago.slice(1)) : null),
+        nowBtn ? h('span', { class: 'row-side' }, nowBtn) : null),
+      newer ? h('div', { class: 'row row-static' }, newer) : null,
+      h('div', { class: 'row row-static' }, h('span', { class: 'row-text' }, h('span', { class: 'row-sub', title: buildTitle(about) || null }, `This build: ${buildLabel(about || {}, api.now())}`))));
+    // a check in flight finishes within seconds: look again, while this page is open
+    if (checking) poll = setTimeout(() => { if (ctx.alive()) load(); }, 3000);
+  }
+  paint();
+  const ready = Promise.all([ctx.api.get('release').catch(() => null), ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null)])
+    .then(([r, a]) => { release = r; if (a) about = a; if (ctx.alive()) paint(); });
+  const el = tile({ w: 2, title: 'Server updates', icon: 'upload', id: 'server-updates', side: admin ? chip('Off by default', { tone: 'muted' }) : chip('Read only', { tone: 'muted', icon: 'lock' }) }, list);
+  return { el, ready };
+}
+
 export async function mount(ctx) {
   inOrder(ctx);
   const admin = ctx.admin;
@@ -61,6 +130,7 @@ export async function mount(ctx) {
   ]);
   if (!ctx.alive()) return {};
   const carName = new Map(cars.map((c) => [c.id, c.name]));
+  const updates = updatesTile(ctx, { get: () => settings, set: (x) => { settings = x; } }, admin);
 
   /* ================================================================ how this server is reached */
   const here = { https: location.protocol === 'https:', host: location.hostname.toLowerCase(), port: Number(location.port || (location.protocol === 'https:' ? 443 : 80)) };
@@ -701,7 +771,7 @@ export async function mount(ctx) {
   function draw() {
     const tiles = [hostingTile(), accessTile()];
     if (admin) tiles.push(namesTile(), certTile(), portsTile(), keyTile());
-    tiles.push(sessionsTile());
+    tiles.push(sessionsTile(), updates.el);
     if (admin) tiles.push(accountsTile(), moveBox, storeBox, auditT);
     ctx.view.replaceChildren(...tiles.filter(Boolean));
   }
@@ -711,6 +781,8 @@ export async function mount(ctx) {
     if (!ctx.alive()) return {};
     drawMove();
   }
+  await updates.ready;
+  if (!ctx.alive()) return {};
   draw();
   ctx.ready();
   return {};
