@@ -156,6 +156,8 @@ class Store:
                 "software_version_typed": None,
                 "pack_replaced_date": None,
                 "pack_new_kwh": None,
+                # Comet's charges with no price (its Los Angeles hotel) are estimated at this on Statistics
+                "default_price_per_kwh": {"value": 0.14, "currency": "USD"} if cid == "c1" else None,
             }
             self.car_settings[cid] = s
             sold = getattr(car, "sold_date_days", None)

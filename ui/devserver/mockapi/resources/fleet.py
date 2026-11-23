@@ -521,9 +521,11 @@ def get_settings(req):
             "version": 1, "battery_chemistry": {"setting": "auto", "detected": None, "evidence": None},
             "free_supercharging": [], "capacity_new_kwh": None, "full_range_new_km": None,
             "warranty_threshold_pct": 70, "efficiency_wh_per_km_override": None, "software_version_typed": None,
-            "import_gap_fill": None, "pack_replaced_date": None, "pack_new_kwh": None})
+            "import_gap_fill": None, "pack_replaced_date": None, "pack_new_kwh": None,
+            "default_price_per_kwh": None})
     out = dict(s)
     out.setdefault("import_gap_fill", None)
+    out.setdefault("default_price_per_kwh", None)
     out.setdefault("pack_replaced_date", None)
     out.setdefault("pack_new_kwh", None)
     out["import_gap_fill_on"] = gapfill.on(st, req.car)
@@ -586,6 +588,24 @@ def _num_rule(body, k, lo, hi, rule, bad, allow_null=True):
         rule[k] = f"Must be between {lo} and {hi}."
 
 
+def _default_price_rule(v, rule, bad):
+    """`default_price_per_kwh`: { value 0 to 10, currency three letters } (null forgets it)."""
+    import re
+    k = "default_price_per_kwh"
+    if not isinstance(v, dict):
+        bad[k] = "Must be { value, currency } or null."
+        return
+    val, cur = v.get("value"), v.get("currency")
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        bad[k + ".value"] = "Must be a number."
+    elif not 0 <= val <= 10:
+        rule[k + ".value"] = "Must be between 0 and 10."
+    if not isinstance(cur, str):
+        bad[k + ".currency"] = "Must be a currency code such as USD."
+    elif not re.fullmatch(r"[A-Za-z]{3}", cur):
+        rule[k + ".currency"] = "Three letters, such as USD or EUR."
+
+
 def patch_settings(req):
     from ..util import parse_date
     st = req.store
@@ -595,7 +615,7 @@ def patch_settings(req):
     bad, rule = {}, {}
     known = ("version", "battery_chemistry", "free_supercharging", "capacity_new_kwh", "full_range_new_km",
              "warranty_threshold_pct", "efficiency_wh_per_km_override", "software_version_typed", "import_gap_fill",
-             "pack_replaced_date", "pack_new_kwh", "source_order")
+             "pack_replaced_date", "pack_new_kwh", "source_order", "default_price_per_kwh")
     for k in body:
         if k not in known:
             bad[k] = "Unknown field."
@@ -619,6 +639,8 @@ def patch_settings(req):
                     rule[f"free_supercharging.{i}.to_date"] = "A date as YYYY-MM-DD, or null for no end."
                 elif b is not None and b < a:
                     rule[f"free_supercharging.{i}.to_date"] = "Must not be before from_date."
+    if body.get("default_price_per_kwh") is not None:
+        _default_price_rule(body["default_price_per_kwh"], rule, bad)
     _num_rule(body, "capacity_new_kwh", 10, 250, rule, bad)
     _num_rule(body, "pack_new_kwh", 10, 250, rule, bad)
     if body.get("pack_replaced_date") is not None and parse_date(body["pack_replaced_date"]) is None:
@@ -660,6 +682,8 @@ def patch_settings(req):
                 s["battery_chemistry"] = dict(s["battery_chemistry"], setting=v["setting"])
             elif k == "software_version_typed":
                 s[k] = v.strip() if isinstance(v, str) else None
+            elif k == "default_price_per_kwh":
+                s[k] = {"value": float(v["value"]), "currency": v["currency"].upper()} if v is not None else None
             elif k == "source_order":
                 # the default is kept as null, so a car follows a later change of the default
                 s[k] = list(v) if v is not None and v != SRC.DEFAULT_ORDER else None
