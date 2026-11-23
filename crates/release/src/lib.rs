@@ -1,4 +1,4 @@
-//! The release check (docs/security.md, "What the server sends out"): which build this is ([`Build`], baked in at
+//! The release check (docs/security.md, "What the server sends out"): which build this is ([`Build`], made by the binary at
 //! compile time from SENTRY_MATE_BUILD, SENTRY_MATE_COMMIT and SENTRY_MATE_DATE, as `--version` shows it), and the
 //! question to GitHub's API whether a newer image is published ([`GitHub::check`]).
 //!
@@ -34,14 +34,12 @@ pub struct Build {
 }
 
 impl Build {
-    /// This program's own build.
-    pub fn this() -> Build {
-        Build::from_parts(
-            env!("CARGO_PKG_VERSION"),
-            option_env!("SENTRY_MATE_BUILD"),
-            option_env!("SENTRY_MATE_COMMIT"),
-            option_env!("SENTRY_MATE_DATE"),
-        )
+    /// A build of this version with no image build's number, commit or date: a local (dev) build. The binary
+    /// (crates/sentry-mate) makes its own build with [`Build::from_parts`] from SENTRY_MATE_BUILD, SENTRY_MATE_COMMIT
+    /// and SENTRY_MATE_DATE: they change every image build, so they are read there, in the last crate built, and not
+    /// here, where every crate that uses this one (web) would be built again for them.
+    pub fn local() -> Build {
+        Build::from_parts(env!("CARGO_PKG_VERSION"), None, None, None)
     }
 
     /// A build from the three values as given to `cargo build`; one that is not digits / 40 hex / an RFC 3339 date is

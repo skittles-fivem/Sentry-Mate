@@ -1957,6 +1957,7 @@ dependencies = [
  "p256",
  "rand_core 0.6.4",
  "rcgen",
+ "release",
  "rustix",
  "rustls",
  "serde",
