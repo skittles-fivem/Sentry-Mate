@@ -392,6 +392,7 @@ export async function mount(ctx) {
     await batSettled; // the capacity when new comes with GET battery
     if (!ctx.alive()) return;
     const newKwh = cap.new_kwh;
+    const pk = bat.pack || {};
     const readout = h('span', { class: 'val' }, 'Point at a reading; click a per-charge reading to open that charge.');
     const plotEl = h('div', { class: 'chart chart--cap' });
     const proj = trend?.projection;

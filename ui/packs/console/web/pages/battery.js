@@ -273,6 +273,7 @@ export async function mount(ctx) {
     const [pts, med] = await Promise.all([collect(`${base}/battery/capacity`, { group: opt.capGroup, x: opt.capX }), collect(`${base}/battery/capacity`, { group: 'month', x: opt.capX })]);
     await batSettled; // the capacity when new comes with GET battery
     if (!ctx.alive()) return;
+    const pk = bat.pack || {};
     const rows = [keyRow('x', [['odometer', 'odometer'], ['time', 'date']], opt.capX, (v) => { opt.capX = v; ctx.setQuery({ cap_x: v === 'time' ? v : null }); paintCapacity(); }),
       keyRow('one dot per', [['charge', 'charge'], ['day', 'day']], opt.capGroup, (v) => { opt.capGroup = v; ctx.setQuery({ cap_group: v === 'day' ? v : null }); paintCapacity(); })];
     paintMonths(med.items);
