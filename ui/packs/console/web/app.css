@@ -895,6 +895,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .ov tbody tr:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .ov-ln { height: var(--lh2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ov-label { font-weight: 600; }
+.ov-miss { font-weight: 400; white-space: pre; }
 .ov-lasterr--on { color: var(--muted); }
 .ov-row--problem .ov-lasterr--on { color: var(--bad); }
 /* widths in characters, plus the cell's padding (the first and last cells have one side) */
