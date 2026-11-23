@@ -179,7 +179,7 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
         h('ul', { class: 'tf-pace-opts' }, PACE.map(([v, l, w]) => h('li', { class: poll === v ? 'is-on' : null },
           h('b', null, l), poll === v ? ' (now)' : '', `: ${paceLine(w)}.`))),
         h('dl', { class: 'ta-pace-list' },
-          [['A driving car', p.driving_s], ['A charging car', p.charging_s], ['A parked car', p.parked_s], ['An asleep car', p.asleep_s], ['SMO or Tesla API live', p.other_live_s]]
+          [['A driving car', p.driving_s], ['A charging car', p.charging_s], ['A parked car', p.parked_s], ['An asleep car', p.asleep_s]]
             .map(([l, s]) => h('div', null, h('dt', null, l), h('dd', null, l.endsWith('live') ? `at most every ${secs(s)}` : `every ${secs(s)}`)))),
         h('p', { class: 'setting-note' }, `${PACE.find((x) => x[0] === poll)?.[3] || ''} Whatever the pace: at most one request every 10 s and ${num(cap)} a day per account, TeslaFi's requests to slow down are always obeyed, and after an error it waits 60 s, doubling up to 15 minutes. These reads come from TeslaFi's own database: they never wake the car.`)));
   }

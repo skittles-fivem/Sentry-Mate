@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import http.server
 import mimetypes
-import re
 import os
+import re
 import socketserver
 import sys
 import threading
@@ -98,6 +98,15 @@ class App:
         resources.register_all(self.router)
         self.packs = Packs(cfg.pack)
         self.web_root = os.path.realpath(os.path.join(cfg.pack, "web"))
+        # Which build of the interface the server runs (X-Sentry-Mate-Build on every answer, as the real server).
+        # POST /__dev/new-build stands for an update: a tab open across it sees another build.
+        self.build = "devbuild00000001"
+        self.builds = 1
+
+    def new_build(self):
+        self.builds += 1
+        self.build = f"devbuild{self.builds:08d}"
+        return self.build
 
     def root_for(self, session):
         """The web folder this browser is served: the person's own `ui_pack`, else the --pack one."""
@@ -160,6 +169,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", page_csp(self.app.store))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer" if api else page_referrer_policy(self.app.store))
+        self.send_header("X-Sentry-Mate-Build", self.app.build)
         if api:
             self.send_header("Cache-Control", "no-store")
             # The virtual clock, so pages count "5 min ago" and the period presets from the dataset's "now".
@@ -227,8 +237,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if method in ("GET", "HEAD"):
                     return self.send(200, b"", None, api=True)
                 return self.send(405, b"", None, {"Allow": "GET, HEAD"}, api=True)
+            if path == "/__dev/new-build":  # the dev server only: stands for a server update (README.md)
+                if method != "POST":
+                    return self.send(405, b"", None, {"Allow": "POST"}, api=True)
+                return self.send(200, json_bytes({"build": self.app.new_build()}), "application/json; charset=utf-8",
+                                 api=True)
             if path.startswith("/api/"):
                 return self.api(method, path, parts.query)
+            # a file under a build's address (/_v/<build>/core/app.js): the file of that path now, as the real
+            # server answers a tab loaded before an update
+            m = re.match(r"^/_v/[^/]+(/.*)$", path)
+            if m:
+                path = m.group(1)
             return self.static(method, path)
         except Exception as e:  # last line of defence: answer 500 in the one error shape
             traceback.print_exception(e)

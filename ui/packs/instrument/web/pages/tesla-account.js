@@ -207,7 +207,7 @@ export function teslaSection(ctx, { cars = [] } = {}) {
         h('div', { class: 'ta-pace-head' }, h('span', { class: 'metric-label' }, 'How often Tesla is asked'), paceSeg),
         h('dl', { class: 'ta-pace-list' },
           [['A parked, awake car', p.parked_s], ['A charging car', p.charging_s], ['A driving car', p.driving_s], ['A driving car with Tesla\'s live stream', p.driving_streaming_s],
-            ['The list of cars (asleep cars)', p.list_s], ['Any car while its SMO is live', p.smo_live_s]].map(([l, s]) => h('div', null, h('dt', null, l), h('dd', null, `every ${secs(s)}`)))),
+            ['The list of cars (asleep cars)', p.list_s]].map(([l, s]) => h('div', null, h('dt', null, l), h('dd', null, `every ${secs(s)}`)))),
         h('p', { class: 'setting-note' }, 'In every pace an asleep car is never woken (only the list of cars is read), and an awake car with nothing going on is left alone so it can fall asleep. At most one request a second goes to Tesla per account.')));
   }
   async function setPace(v) {

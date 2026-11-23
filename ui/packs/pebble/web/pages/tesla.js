@@ -199,7 +199,6 @@ export function teslaTiles(ctx, { cars = [] } = {}) {
         ['Driving', `every ${secs(p.driving_s)}`],
         ['Driving, with Tesla’s live stream', `every ${secs(p.driving_streaming_s)}`],
         ['The car list (all an asleep car gets)', `every ${secs(p.list_s)}`],
-        ['Any car while its SMO sends', `every ${secs(p.smo_live_s)}`],
         ['Requests a day', `at most ${formatNumber(p.daily_cap ?? 3000)} per account`],
       ]),
       note('At every pace an asleep car is never woken (only the list of cars is read), and an awake car with nothing going on is left alone so it can fall asleep. A faster pace gives finer drives and charges from the API and uses more of the day’s requests.'));
