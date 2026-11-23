@@ -1188,7 +1188,9 @@ impl Engine {
         // stored yet at or after the first of these logs (a first start over a full store, a car rebuilt whole),
         // and the car has no API input. Where logs fill a gap before rows that are there, a drive or charge keeps
         // the id of the piece of it that was there first, and which piece that is depends on the windows rebuilt
-        // on the way: there, and beside an API's samples (not tried), every log's window is rebuilt as before.
+        // on the way: there every log's window is rebuilt as before. The same beside an API's samples: a rebuild
+        // builds rows from them ahead of the logs, and five made-up days with TeslaFi's API and local TeslaMate
+        // gave a drive another id when rebuilt per run (crates/sentry-mate/src/window_batch.rs).
         let mut batch = self.inner.opts.window_batch.max(1);
         if batch > 1 {
             let first = wanted.first().and_then(|(_, name, _)| records::name_start_ms(name));
