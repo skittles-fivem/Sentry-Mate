@@ -70,6 +70,11 @@ const REASONS = {
     text: 'They arrived from a key nobody has approved yet. Approve or assign the key and they are read at once.',
     fix: 'Approve the key', page: 'settings-cars',
   },
+  logs_missing: {
+    title: 'Logs missing on the server',
+    text: 'The server lost some logs and asked the car to send them again. They come in by themselves when the car has them; see Missing on the server below.',
+    fix: null, page: null,
+  },
   rebuild_pending: {
     title: 'Drives and charges are being rebuilt',
     text: 'They are worked out again from the stored logs. This page reads the figures again every few seconds until it is done; nothing needs doing.',
@@ -318,7 +323,38 @@ async function mountCar(ctx) {
       h('span', { class: 'note' }, 'Works out drives, charges, states and visits again from the stored logs of the period. Nothing is edited by hand.'))
       : h('p', { class: 'note' }, 'An admin can rebuild drives and charges from the stored logs.');
 
-    replace(healthSlot, status, fixes, figs, h('div', { class: 'hl-health-cols' }, h('div', null, keyList, flags, teslaBlock()), spanList), rebuild);
+    replace(healthSlot, status, fixes, figs, h('div', { class: 'hl-health-cols' }, h('div', null, keyList, flags, teslaBlock()), h('div', null, spanList, missingBlock(hl.missing_logs))), rebuild);
+  }
+
+  // the CAN logs the server should have but no longer does, which it asked the car to send again
+  // (always shown: "None" and when it last looked when nothing is missing)
+  function missingBlock(m) {
+    m = m || {};
+    const n = m.count || 0;
+    const gone = m.gone || 0;
+    const nLogs = (v) => `${formatNumber(v)} ${v === 1 ? 'log' : 'logs'}`;
+    const line = (ic, text, cls = null) => h('li', { class: cls }, icon(ic, 'ico--sm'), h('span', null, text));
+    const lines = [];
+    if (n > 0) {
+      if (m.found_ms != null) lines.push(line('search', `Found missing ${when(ctx, m.found_ms)}.`));
+      lines.push(m.asked
+        ? line('upload', `Asked the car to send them again${m.asked_ms != null ? `, ${when(ctx, m.asked_ms)}` : ''}.`)
+        : line('clock', 'The car has not been asked for them yet.'));
+    }
+    if (gone > 0) {
+      lines.push(line('warn', `The car no longer has ${formatNumber(gone)} of these either: lost for good, ${gone === 1 ? 'its' : 'their'} time shows as unknown time${m.gone_oldest_ms != null ? `. Oldest from ${when(ctx, m.gone_oldest_ms)}` : ''}.`, 'warn'));
+    }
+    lines.push(line('reset', m.scanned_ms != null ? `Last checked ${when(ctx, m.scanned_ms)}. The server looks at start-up and once a day.` : 'Not checked yet. The server looks at start-up and once a day.'));
+    return h('div', { class: 'hl-missing' },
+      h('h3', { class: 'hl-sub' }, 'Missing on the server'),
+      h('div', { class: ['hl-miss-card', n > 0 ? 'is-warn' : 'is-ok'] },
+        h('div', { class: 'hl-miss-top' },
+          h('span', { class: 'hl-miss-ic' }, icon(n > 0 ? 'warn' : 'check', 'ico--sm')),
+          h('span', { class: 'hl-miss-n' }, n > 0 ? nLogs(n) : 'None'),
+          h('span', { class: 'hl-miss-what' }, n > 0
+            ? (m.oldest_ms != null ? `oldest from ${when(ctx, m.oldest_ms)}` : 'not on the server')
+            : 'Every log the server recorded is here.')),
+        h('ul', { class: 'hl-miss-lines' }, lines)));
   }
 
   // the Tesla API rows of this car: shown to admins (the status is admin only); others get a plain line

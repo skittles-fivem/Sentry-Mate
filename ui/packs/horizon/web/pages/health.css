@@ -38,6 +38,21 @@
 .hl-key > .ico { color: var(--text-3); }
 .hl-key-r { align-items: flex-end !important; text-align: right; }
 .hl-span-list li { font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.4 * 1em), 2px); }
+/* Missing on the server: logs the server lost and asked the car for again */
+.hl-missing { margin-top: round(1.25rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
+.hl-miss-card { display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); padding: round(0.75rem, var(--e)) round(0.875rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); }
+.hl-miss-card.is-warn { border-color: var(--warm-line); }
+.hl-miss-top { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.25rem, var(--e)) round(0.625rem, var(--e)); }
+.hl-miss-ic { display: grid; place-items: center; width: round(1.75rem, var(--e)); height: round(1.75rem, var(--e)); border-radius: var(--radius-sm); background: var(--live-soft); color: var(--live); }
+.hl-miss-card.is-warn .hl-miss-ic { background: var(--warm-soft); color: var(--warm); }
+.hl-miss-n { font-family: var(--font-display); font-size: 1.125rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+.hl-miss-what { color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); }
+.hl-miss-lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); }
+.hl-miss-lines li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: round(0.5rem, var(--e)); align-items: start; font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); --LH: round(calc(1.4 * 1em), 2px); }
+/* as tall as a line, so the glyph sits centred on the first line and tops line up */
+.hl-miss-lines li > .ico { color: var(--text-3); height: var(--LH); }
+.hl-miss-lines li.warn { color: var(--warm); }
+.hl-miss-lines li.warn > .ico { color: var(--warm); }
 .hl-rebuild { display: flex; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.875rem, var(--e)); margin-top: round(1.25rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
 .hl-rebuild .note { margin: 0; }
 
