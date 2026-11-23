@@ -36,7 +36,7 @@ export function firmwareHistory(ctx) {
 
   const span = (r) => [dateTime(r.first_seen_ms, tz), h('span', { class: 'muted' }, ' .. '), r.current ? h('b', null, 'now') : dateTime(r.last_seen_ms, tz)];
   const t = table(ctx, {
-    bare: true, path, params: {}, limit: LIMIT, csv: false, label: 'Module firmware history, newest first', box: true, autoMore: true,
+    bare: true, path, params: {}, limit: LIMIT, csv: false, label: 'Module firmware history, newest first',
     columns: [
       { key: 'module', label: 'module', ph: 'main',
         render: (r) => [r.kind === 'version' ? [tag('version', 'muted'), ' car version'] : modName(r.module, r.module_name), r.current ? [' ', tag('current', 'accent')] : null] },

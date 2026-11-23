@@ -876,7 +876,7 @@ export async function mount(ctx) {
       const now = api.now();
       const t = dataTable(ctx, {
         path: api.apiPath`cars/${carId}/events`, params: { from_ms: now - 30 * DAY, to_ms: now + 60_000, types: EVENT_TYPES.join(',') }, limit: 10,
-        itemName: ['event', 'events'], label: 'Recent events', box: true, append: true, autoMore: true,
+        itemName: ['event', 'events'], label: 'Recent events',
         caption: `last 30 days for ${(pv && pv.name) || carId}, newest first`,
         empty: () => empty({ title: 'No event in the last 30 days.', text: 'This car did not drive, charge or change software in that time.' }),
         columns: [

@@ -27,7 +27,6 @@ import { flash } from '../core/flash.js';
 import { rpx } from '../core/display.js';
 import { srcMark, sourceOptions, filterWord } from '../core/source.js';
 import { soldParts, soldToggle } from '../core/carswitch.js';
-import { costSourceLabel } from '../shared/invoices.js';
 
 export const id = 'charges';
 export const css = true;
@@ -39,7 +38,7 @@ const KIND_HELP = {
   dc: 'DC: a fast charger fed the pack directly. Its grid side is not measured, so efficiency is unknown.',
   unknown: 'Unknown: the charge port did not say AC or DC for this session (often imported history). It is never counted as DC.',
 };
-const COST_SOURCE = { tariff: 'place price', manual: 'typed by hand', free_supercharging: 'free Supercharging', teslamate: 'imported', tesla_invoice: 'Tesla invoice', teslafi: 'from TeslaFi' };
+const COST_SOURCE = { tariff: 'place price', manual: 'typed by hand', free_supercharging: 'free Supercharging', teslamate: 'imported' };
 const PLACE_KINDS = [['', 'Any kind of place'], ['home', 'Home'], ['work', 'Work'], ['charger', 'Public charger'], ['service', 'Service'], ['other', 'Other place'], ['none', 'Not a saved place']];
 // device pixels per CSS pixel of a uPlot canvas
 const pxr = (u) => (u.width ? u.ctx.canvas.width / u.width : globalThis.devicePixelRatio || 1);
@@ -271,9 +270,8 @@ export async function mount(ctx) {
   const costCell = (c) => {
     const edit = state.buildUrl('charge', { car: c.car, charge: c.id, query: { edit: 'cost' } });
     const txt = c.cost ? formatMoney(c.cost.amount, c.cost.currency) : 'No price';
-    const from = c.cost ? costSourceLabel(c.cost.source) : '';
-    return h('span', { class: 'cell-text cell-num', title: from || null, cover: 'inv.charges.cost-source' },
-      isAdmin() ? h('a', { class: ['main', 'cost-link', !c.cost && 'is-missing'], href: edit, title: c.cost ? `${from ? `${from}. ` : ''}Change the cost of this charge` : 'Set a cost for this charge' }, txt, ' ', icon('settings', 'ico--sm'))
+    return h('span', { class: 'cell-text cell-num' },
+      isAdmin() ? h('a', { class: ['main', 'cost-link', !c.cost && 'is-missing'], href: edit, title: c.cost ? 'Change the cost of this charge' : 'Set a cost for this charge' }, txt, ' ', icon('settings', 'ico--sm'))
         : h('span', { class: ['main', !c.cost && 'faint'] }, txt),
       h('span', { class: 'sub' }, c.cost ? COST_SOURCE[c.cost.source] || c.cost.source : c.place ? 'the place has no price' : 'not a saved place'));
   };

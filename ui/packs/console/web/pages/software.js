@@ -95,7 +95,6 @@ export async function mount(ctx) {
   let summary = null;   // the newest page's summary: its last_update fills the empty state
   const updates = table(ctx, {
     title: 'versions', path, params: ctx.params, limit: 50, cover: 'updates.table', csvName: 'software updates',
-    box: 'Software updates', autoMore: true,
     side: reloadBtn,
     note: 'newest first. days on it, charges and full range are what the car did from the end of the update to the next one (or now).',
     columns: [

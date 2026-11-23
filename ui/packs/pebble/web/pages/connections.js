@@ -17,7 +17,6 @@ import { formatNumber } from '../shared/i18n.js';
 import { format } from '../shared/units.js';
 import { tile, chip, note, icon } from '../core/ui.js';
 import { errorWords } from '../core/states.js';
-import { listBox } from '../core/bits.js';
 
 const POLL_MS = 10000;
 
@@ -189,13 +188,11 @@ function totalsTile() {
   return { el, set: (t) => { for (const k of STATUS_ORDER) setText(nums[k], n0(t && t[k])); } };
 }
 
-function problemsTile(ctx, tz) {
+function problemsTile(tz) {
   const list = h('ul', { class: 'cn-probs' });
-  // a long week scrolls in a box about five rows high (its head stays at the top); a short one leaves no empty box
-  const head = h('div', { class: 'cn-prob cn-prob-head', 'aria-hidden': 'true' }, h('span', null, 'When'), h('span', null, 'Connection'), h('span', null, 'What happened'), h('span', null, 'How long'), h('span', null, 'Now'));
-  const box = listBox(ctx, { fit: true, label: 'Problems in the last 7 days', cls: 'cn-probs-box' }, head, list);
   const el = tile({ w: 'full', title: 'Problems in the last 7 days', icon: 'warning', cls: 'cn-probs-tile', cover: 'conn.overview.problems' },
-    box.el,
+    h('div', { class: 'cn-prob cn-prob-head', 'aria-hidden': 'true' }, h('span', null, 'When'), h('span', null, 'Connection'), h('span', null, 'What happened'), h('span', null, 'How long'), h('span', null, 'Now')),
+    list,
     note('Each began when a connection went to problem and ended when it left it.'));
   let key = null;
   const rows = new Map();
@@ -215,7 +212,6 @@ function problemsTile(ctx, tz) {
           h('span', { class: 'cn-prob-st' }, chip(p.resolved ? 'Resolved' : 'Ongoing', { tone: p.resolved ? 'teal' : 'bad' })));
       }));
       if (!(probs || []).length) list.append(h('li', { class: 'cn-prob-none' }, 'No problem in the last 7 days: every connection kept working.'));
-      box.recheck();
     }
     for (const p of probs || []) { const d = rows.get(p.id); if (d) setText(d, p.resolved ? formatDuration(p.duration_ms) : `${formatDuration(p.duration_ms)} so far`); }
   }
@@ -248,7 +244,7 @@ export function connectionsOverview(ctx) {
       return;
     }
     totals = totalsTile();
-    probs = problemsTile(ctx, tz);
+    probs = problemsTile(tz);
     cards = new Map();
     for (const c of data.connections || []) cards.set(c.id, card(c, tz));
     idsKey = (data.connections || []).map((c) => c.id).join(',');

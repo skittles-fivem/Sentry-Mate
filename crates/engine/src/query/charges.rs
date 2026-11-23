@@ -139,14 +139,9 @@ pub(crate) fn cost_of(e: &Engine, c: &Car, ch: &Charge) -> QResult<Option<CostEn
 /// cost holds), whatever cost was kept for it before.
 fn cost_live(e: &Engine, c: &Car, ch: &Charge, live: bool) -> QResult<Option<CostEntry>> {
     let kept = records::cost(e.db(), c.id, ch.id, ch.start_ms)?;
-    let typed = kept.as_ref().is_some_and(|k| k.source == "manual");
-    // a Supercharger invoice matched to it wins over every price; only a typed cost holds over it
-    if !typed && let Some(inv) = e.invoice_cost(c.id, ch)? {
-        return Ok(Some(inv));
-    }
     // free Supercharging (the car's settings) wins over a place price, kept or not; only a typed cost holds
     if ch.source == Source::Live
-        && !typed
+        && kept.as_ref().is_none_or(|k| k.source != "manual")
         && let Some(free) = costs::free_now(e, ch, &c.time_zone)
     {
         return Ok(Some(free));
@@ -1067,7 +1062,7 @@ pub struct Breakdown {
     pub total: Option<f64>,
     pub gap_ms: u64,
     /// `tariff` (each rate of the place's price), `total`, `per_kwh` or `per_minute` (typed in), or the cost's own
-    /// source (`teslamate`, `free_supercharging`, `tesla_invoice`, `teslafi`); null without a cost.
+    /// source (`teslamate`, `free_supercharging`); null without a cost.
     pub mode: Option<String>,
 }
 
@@ -1089,32 +1084,6 @@ pub struct ChargeDetail {
     pub cost_breakdown: Breakdown,
     pub manual_cost: Option<ManualCost>,
     pub gaps: Vec<Gap>,
-    /// The Supercharger sessions matched to it ([`crate::invoices`]), oldest first; empty without one.
-    pub invoices: Vec<InvoiceRef>,
-}
-
-/// A Supercharger session matched to a charge, as the charge's page shows it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct InvoiceRef {
-    /// The session's key (`tesla-...`), for its PDF (`.../invoices/{invoice}/pdf`).
-    pub id: String,
-    /// `tesla` or `teslafi`.
-    pub source: String,
-    pub site: Option<String>,
-    pub start_ms: u64,
-    pub end_ms: u64,
-    pub total: Option<f64>,
-    pub currency: Option<String>,
-    pub kwh_billed: Option<f64>,
-    pub minutes_billed: Option<f64>,
-    pub idle_fee: Option<f64>,
-    pub fees: Vec<crate::invoices::Fee>,
-    /// The invoice's own file name.
-    pub invoice_name: Option<String>,
-    /// The PDF is kept here (else not given by the source, or not downloaded yet).
-    pub pdf: bool,
-    /// The charge's cost is this invoice's (false while a typed cost wins over it).
-    pub applied: bool,
 }
 
 /// `/cars/{car}/charges/{charge}`. The charges before and after it are read from the db from it outwards.
@@ -1187,56 +1156,6 @@ pub fn charge(e: &Engine, car: CarId, id: u64) -> QResult<ChargeDetail> {
         },
         None => Breakdown { parts: Vec::new(), session_fee: None, total: None, gap_ms: 0, mode: None },
     };
-    let sessions = e.invoice_sessions_of(car, ch.id)?;
-    let applied = kept.as_ref().is_some_and(|k| k.source == "tesla_invoice" || k.source == "teslafi");
-    let cost_breakdown = match &kept {
-        // an invoice's fees: energy at its rate, minutes (idle, or billed by time) at theirs
-        Some(k) if applied => Breakdown {
-            parts: sessions
-                .iter()
-                .flat_map(|s| s.fees.iter())
-                .map(|f| BreakdownPart {
-                    rate: Some(
-                        match f.kind.as_str() {
-                            "charging" => "Charging",
-                            "idle" => "Idle fee",
-                            _ => "Other fee",
-                        }
-                        .into(),
-                    ),
-                    per_kwh: f.rate.filter(|_| f.unit.as_deref() == Some("kwh")),
-                    per_minute: f.rate.filter(|_| f.unit.as_deref() == Some("min")),
-                    kwh: f.usage.filter(|_| f.unit.as_deref() == Some("kwh")),
-                    minutes: f.usage.filter(|_| f.unit.as_deref() == Some("min")),
-                    cost: (f.amount * 100.0).round() / 100.0,
-                })
-                .collect(),
-            session_fee: None,
-            total: Some(k.amount),
-            gap_ms: 0,
-            mode: Some(k.source.clone()),
-        },
-        _ => cost_breakdown,
-    };
-    let invoices = sessions
-        .iter()
-        .map(|s| InvoiceRef {
-            id: s.key.clone(),
-            source: s.source.clone(),
-            site: s.site.clone(),
-            start_ms: s.start_ms,
-            end_ms: s.end_ms,
-            total: s.total,
-            currency: s.currency.clone(),
-            kwh_billed: s.kwh_billed,
-            minutes_billed: s.minutes_billed,
-            idle_fee: s.idle_fee(),
-            fees: s.fees.clone(),
-            invoice_name: s.invoice_name.clone(),
-            pdf: s.pdf,
-            applied,
-        })
-        .collect();
     let manual_cost = kept.as_ref().filter(|k| k.source == "manual").map(|k| ManualCost {
         mode: k.mode.clone(),
         amount: k.entered,
@@ -1247,7 +1166,7 @@ pub fn charge(e: &Engine, car: CarId, id: u64) -> QResult<ChargeDetail> {
     let mut v = filled_with(e, &c, &ch, &x, kept.as_ref(), &fill)?;
     v.has_gaps = !gaps.is_empty();
     v.flags.gap_ms = covered_ms(&gaps);
-    Ok(ChargeDetail { charge: v, prev, next, cost_breakdown, manual_cost, gaps, invoices })
+    Ok(ChargeDetail { charge: v, prev, next, cost_breakdown, manual_cost, gaps })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

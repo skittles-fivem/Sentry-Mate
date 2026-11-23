@@ -747,8 +747,7 @@ fn effect(
                 return Ok(true);
             }
             let kept = records::cost(e.db(), car, ch.id, ch.start_ms)?;
-            // a typed cost, and an invoice's, are not the place's to change
-            if kept.as_ref().is_some_and(|k| k.source == "manual") || e.invoice_cost(car, &ch)?.is_some() {
+            if kept.as_ref().is_some_and(|k| k.source == "manual") {
                 return Ok(true);
             }
             if in_focus(a) {
@@ -1282,8 +1281,7 @@ pub fn reprice(
                 return Ok(true);
             }
             let kept = records::cost(e.db(), car, ch.id, ch.start_ms)?;
-            // a typed cost, and an invoice's, are not the place's to change
-            if kept.as_ref().is_some_and(|k| k.source == "manual") || e.invoice_cost(car, &ch)?.is_some() {
+            if kept.as_ref().is_some_and(|k| k.source == "manual") {
                 return Ok(true);
             }
             let curve = costs::curve_of(e, car, &ch)?;

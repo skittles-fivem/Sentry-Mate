@@ -14,7 +14,6 @@ import { formatTime, formatDate, formatDuration } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { costSourceLabel } from '../shared/invoices.js';
 import { tile, num, chip, btn, icon, note } from '../core/ui.js';
 import { emptyTile } from '../core/states.js';
 import { createSheet } from '../core/sheet.js';
@@ -31,7 +30,7 @@ export const title = () => 'Charges';
 
 const KIND = { ac: 'AC', dc: 'DC', unknown: 'Unknown' };
 const KIND_TONE = { ac: 'teal', dc: 'sky', unknown: 'muted' };
-const COST_SOURCE = { tariff: 'place price', manual: 'typed by hand', free_supercharging: 'free Supercharging', teslamate: 'imported', tesla_invoice: 'Tesla invoice', teslafi: 'from TeslaFi' };
+const COST_SOURCE = { tariff: 'place price', manual: 'typed by hand', free_supercharging: 'free Supercharging', teslamate: 'imported' };
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const pct = (v) => format(v, 'percent');
 const placeName = (c) => c?.place?.name || c?.address?.short || 'Unnamed spot';
@@ -61,8 +60,8 @@ function chargeTile(c, ctx, tz, carName) {
     h('div', { class: 'item-nums' },
       h('span', { cover: 'charges.table.energy_added' }, num(c.energy_added_kwh, 'energy', { size: 's' })),
       h('span', { cover: 'charges.table.duration' }, num(c.charging_ms, 'duration', { size: 's' })),
-      h('span', { cover: ['charges.table.cost', 'charges.link.set_cost', 'inv.charges.cost-source'], title: c.cost ? costSourceLabel(c.cost.source) || null : null },
-        ctx.admin ? h('a', { class: ['cost-link', { 'is-missing': !c.cost }], href: costHref, title: c.cost ? [costSourceLabel(c.cost.source), 'Change the cost'].filter(Boolean).join('. ') : 'Set a cost' },
+      h('span', { cover: ['charges.table.cost', 'charges.link.set_cost'] },
+        ctx.admin ? h('a', { class: ['cost-link', { 'is-missing': !c.cost }], href: costHref, title: c.cost ? 'Change the cost' : 'Set a cost' },
           c.cost ? formatMoney(c.cost.amount, c.cost.currency) : 'Set a cost')
           : h('span', { class: ['cost-link', { 'is-missing': !c.cost }] }, c.cost ? formatMoney(c.cost.amount, c.cost.currency) : 'No price'))),
     socBar(c.start_soc_pct, c.end_soc_pct, { cover: ['charges.table.start_soc', 'charges.table.end_soc'] }),

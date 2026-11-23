@@ -416,7 +416,7 @@ Pages are checked with `node ui/tools/check.js --pixel` (see `ui/tools/README.md
   rounds it. It runs again when the page adds or takes away elements, when text in a table changes, when a
   snapped grid or table changes size (not when the run itself changed it) and when the fonts have loaded. It
   takes about 1 s on a page of 40,000 elements: it reads all sizes before it writes any.
-- Mark a box the snap must leave alone with `data-nosnap` (maps, charts and the busy ring `.spin` are left alone already).
+- Mark a box the snap must leave alone with `data-nosnap` (maps and charts are left alone already).
 - A box that sits in a line of text (an inline-flex pill or button) is a source of half pixels: in a table cell
   give it `vertical-align: top` or make it a block; in a flex row with `align-items: baseline`, let the words
   give the baseline and centre the icon with `align-self: center`.

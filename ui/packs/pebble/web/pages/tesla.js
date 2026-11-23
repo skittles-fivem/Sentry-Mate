@@ -27,7 +27,6 @@ import { field, segmented } from '../core/form.js';
 import { errorWords } from '../core/states.js';
 import { facts } from '../core/bits.js';
 import { group, infoRow, pickRow, said, askPassword, tick } from '../core/settings.js';
-import { invoicesTile, invoicesSlot, loadUnmatched } from './invoices-tile.js';
 
 const enc = encodeURIComponent;
 const BASE = 'integrations/tesla';
@@ -132,7 +131,7 @@ export const teslaAccountHref = (id) => `${state.buildUrl('settings-integrations
  */
 export function teslaTiles(ctx, { cars = [] } = {}) {
   const el = h('div', { class: 'contents' });
-  let ov = null, accounts = [], status = [], carRows = {}, unmatched = null;
+  let ov = null, accounts = [], status = [], carRows = {};
   const carName = (id) => cars.find((c) => c.id === id)?.name || id;
 
   const head = () => h('div', { class: 'section-head w-full', id: 'tesla' },
@@ -142,7 +141,7 @@ export function teslaTiles(ctx, { cars = [] } = {}) {
   async function load() {
     if (!ctx.admin) {
       el.replaceChildren(head(), tile({ w: 2, title: 'Tesla account', icon: 'key', side: chip('Admins only', { tone: 'muted' }) },
-        said('info', 'Only an admin sees and changes the Tesla account: its status, its cars and how often Tesla is asked. Every page still says where its data came from (SMO, the Tesla API or an import).')), invoicesSlot('tesla'));
+        said('info', 'Only an admin sees and changes the Tesla account: its status, its cars and how often Tesla is asked. Every page still says where its data came from (SMO, the Tesla API or an import).')));
       return;
     }
     try {
@@ -155,13 +154,11 @@ export function teslaTiles(ctx, { cars = [] } = {}) {
       carRows = Object.fromEntries(accounts.map((a, i) => [a.id, rows[i] || { items: a.cars || [], version: a.version }]));
     } catch (e) {
       if (e?.name === 'AbortError') return;
-      el.replaceChildren(head(), tile({ w: 2, title: 'Tesla account', icon: 'key', side: chip('Not read', { tone: 'bad' }) }, said('bad', 'The Tesla account could not be read: ', errorWords(e).text)), invoicesSlot('tesla'));
+      el.replaceChildren(head(), tile({ w: 2, title: 'Tesla account', icon: 'key', side: chip('Not read', { tone: 'bad' }) }, said('bad', 'The Tesla account could not be read: ', errorWords(e).text)));
       return;
     }
     if (!ctx.alive()) return;
-    unmatched = await loadUnmatched(ctx, 'tesla', ov);
-    if (!ctx.alive()) return;
-    el.replaceChildren(head(), statusTile(), paceTile(), invoicesTile(ctx, { source: 'tesla', ov, unmatched, setOn: setInvoices }), ...accounts.flatMap((a) => [accountTile(a), carsTile(a)]), addTile());
+    el.replaceChildren(head(), statusTile(), paceTile(), ...accounts.flatMap((a) => [accountTile(a), carsTile(a)]), addTile());
   }
   const reload = async (msg) => { if (msg) ctx.toast(msg); await load(); };
   /** After a password sheet: nothing when closed; a stale page is read again, with why; else msg and read again. */
@@ -205,14 +202,6 @@ export function teslaTiles(ctx, { cars = [] } = {}) {
         ['Requests a day', `at most ${formatNumber(p.daily_cap ?? 3000)} per account`],
       ]),
       note('At every pace an asleep car is never woken (only the list of cars is read), and an awake car with nothing going on is left alone so it can fall asleep. A faster pace gives finer drives and charges from the API and uses more of the day’s requests.'));
-  }
-  async function setInvoices(on, sw) {
-    const r = await askPassword(ctx, {
-      title: on ? 'Turn Supercharger invoices on' : 'Turn Supercharger invoices off', yes: on ? 'Turn on' : 'Turn off', hint: HINT,
-      text: on ? 'The server reads each Supercharger session from Tesla’s charging history, older ones first, and keeps its invoice (PDF). Its cost becomes the charge’s cost; an entered cost still wins.' : 'No more invoices are fetched. The costs and invoices already kept stay.',
-      run: guarded((cred) => ctx.api.patch(BASE, withPw(cred, { version: ov.version, invoices: on }))),
-    });
-    if (!(await after(r, on ? 'Supercharger invoices on.' : 'Supercharger invoices off.'))) sw.set(!on);
   }
   async function setPace(v, seg) {
     if (v === ov.poll) return;

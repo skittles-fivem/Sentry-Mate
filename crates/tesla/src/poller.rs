@@ -43,22 +43,6 @@ pub trait Sink: Send + Sync + 'static {
     fn meta(&self, car: CarId, meta: &ApiMeta) -> Result<(), SinkError>;
     /// The account's state changed (for an audit entry or an event).
     fn account_changed(&self, _account: &Account) {}
-    /// Supercharger sessions read from the charging history: kept (one per key). Returns how many were new.
-    fn invoices(&self, _found: &[crate::invoices::Found]) -> Result<u64, SinkError> {
-        Ok(0)
-    }
-    /// Whether a session is kept already.
-    fn invoice_known(&self, _key: &str) -> bool {
-        false
-    }
-    /// The sessions of the account whose PDF is not kept yet: `(key, invoice id, vehicle)`, oldest first.
-    fn invoice_pdfs_wanted(&self, _account: &str) -> Vec<(String, String, Option<String>)> {
-        Vec::new()
-    }
-    /// Keeps a session's PDF; `false`: not taken (no such session, or not a PDF).
-    fn invoice_pdf(&self, _key: &str, _pdf: &[u8]) -> Result<bool, SinkError> {
-        Ok(false)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -125,17 +109,6 @@ pub struct Cadence {
     pub stream_drain_ms: u64,
     /// Two looks at the same state this close together make one span.
     pub fact_join_ms: u64,
-    /// Read Supercharger invoices ([`crate::invoices`]): off until an admin turns them on.
-    pub invoices: bool,
-    /// Invoice requests at most a day, and the requests of the daily cap they always leave to the cars.
-    pub invoice_daily_cap: u64,
-    pub invoice_reserve: u64,
-    /// The daily check for new sessions, and the look soon after a DC charge ends.
-    pub invoice_check_ms: u64,
-    pub invoice_after_dc_ms: u64,
-    /// After an invoice error: the first wait, doubling up to the longest.
-    pub invoice_error_first_ms: u64,
-    pub invoice_error_max_ms: u64,
 }
 
 impl Default for Cadence {
@@ -158,13 +131,6 @@ impl Default for Cadence {
             refused_retry_ms: 60 * 60_000,
             stream_drain_ms: 5_000,
             fact_join_ms: 5 * 60_000,
-            invoices: false,
-            invoice_daily_cap: 300,
-            invoice_reserve: 500,
-            invoice_check_ms: 24 * 3_600_000,
-            invoice_after_dc_ms: 20 * 60_000,
-            invoice_error_first_ms: 30 * 60_000,
-            invoice_error_max_ms: 24 * 3_600_000,
         }
     }
 }
@@ -265,8 +231,6 @@ struct CarPoll {
     stream: Option<StreamHandle>,
     stream_refusals: u8,
     last_error: Option<ErrorInfo>,
-    /// Charging at a DC charger (its end is when Tesla bills the session).
-    dc: bool,
 }
 
 impl CarPoll {
@@ -289,7 +253,6 @@ impl CarPoll {
             stream: None,
             stream_refusals: 0,
             last_error: None,
-            dc: false,
         }
     }
 
@@ -343,12 +306,6 @@ pub struct Poller<T: Tesla, S: Sink, St: Streamer> {
     saved_pacing: Pacing,
     /// The time of the last tick, for the status.
     now_ms: u64,
-    /// The full VINs the product list gave (by Tesla's id of the vehicle), in memory only: the charging history is
-    /// asked by VIN.
-    vins: std::collections::HashMap<String, crate::FullVin>,
-    /// How far the invoices are read, and as last saved.
-    inv: crate::invoices::Progress,
-    inv_saved: crate::invoices::Progress,
 }
 
 impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
@@ -368,7 +325,6 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
             Err(StoreError::NotFound) => return Err(StoreError::NotFound),
             Err(_) => Pacing::default(),
         };
-        let inv = store.invoice_progress(id).unwrap_or_default();
         let mut p = Poller {
             id: id.to_string(),
             store,
@@ -395,9 +351,6 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
             token_lifetime_ms: pacing.token_lifetime_ms,
             saved_pacing: pacing,
             now_ms: 0,
-            vins: std::collections::HashMap::new(),
-            inv: inv.clone(),
-            inv_saved: inv,
         };
         p.rebuild_cars();
         Ok(p)
@@ -685,25 +638,8 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
         let next = self.tick_inner(now_ms).await;
         if next.is_some() {
             self.save_pacing();
-            self.save_invoices();
         }
         next
-    }
-
-    fn save_invoices(&mut self) {
-        if self.inv == self.inv_saved {
-            return;
-        }
-        match self.store.set_invoice_progress(&self.id, &self.inv) {
-            Ok(()) => self.inv_saved = self.inv.clone(),
-            Err(StoreError::NotFound) => {}
-            Err(e) => tracing::warn!(account = %self.id, error = %e, "the Tesla invoices' progress could not be saved"),
-        }
-    }
-
-    /// How far the invoices are read.
-    pub fn invoice_progress(&self) -> &crate::invoices::Progress {
-        &self.inv
     }
 
     async fn tick_inner(&mut self, now_ms: u64) -> Option<u64> {
@@ -713,10 +649,6 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
         if now_ms / 86_400_000 != self.day {
             self.day = now_ms / 86_400_000;
             self.polls_today = 0;
-        }
-        if now_ms / 86_400_000 != self.inv.day {
-            self.inv.day = now_ms / 86_400_000;
-            self.inv.requests_today = 0;
         }
         let later = now_ms + self.cadence.list_ms;
         if self.idle() {
@@ -776,25 +708,10 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
                 Err(t) => soonest(t),
             };
         }
-        // the invoices last: only when no car is due
-        let inv_due = self.invoice_due(now_ms);
-        if inv_due.is_some_and(|t| t <= now_ms) {
-            if let Err(t) = self.gate(now_ms) {
-                return soonest(t);
-            }
-            self.inv.requests_today += 1;
-            return match self.invoice_step(now_ms).await {
-                Ok(()) => Some(now_ms + self.cadence.min_gap_ms),
-                Err(t) => soonest(t),
-            };
-        }
         let needs_list = self.cars.iter().any(|c| c.data_due().is_none() || c.mode == Mode::LettingSleep);
         let mut next = due.map_or(u64::MAX, |(t, _)| t);
         if needs_list {
             next = next.min(self.list_next_ms);
-        }
-        if let Some(t) = inv_due {
-            next = next.min(t);
         }
         if next == u64::MAX {
             next = later;
@@ -917,11 +834,6 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
         self.backoff_step = 0;
         self.list_next_ms = now_ms + self.cadence.list_ms;
         self.set_state(AccountState::Ok, None, now_ms);
-        for v in &list {
-            if let Some(vin) = &v.vin {
-                self.vins.insert(v.id.clone(), vin.clone());
-            }
-        }
         self.note_vehicles(&list);
         for i in 0..self.cars.len() {
             let Some(v) = list.iter().find(|v| v.id == self.cars[i].tesla_id) else {
@@ -1029,15 +941,6 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
         }
         let cad = self.cadence.clone();
         let c = &mut self.cars[i];
-        if r.activity.charging && r.meta.fast_charger_type.is_some() {
-            c.dc = true;
-        } else if !r.activity.charging && c.dc {
-            // a DC charge ended: Tesla bills it shortly
-            c.dc = false;
-            if cad.invoices {
-                self.inv.soon(now_ms, cad.invoice_after_dc_ms);
-            }
-        }
         c.state = CarState::Online;
         c.last_data_ms = Some(now_ms);
         c.last_error = None;
@@ -1154,264 +1057,5 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
         if let Ok(mut s) = status.lock() {
             *s = None;
         }
-    }
-}
-
-/// A PDF to download: the session's key, Tesla's id of the invoice, the vehicle.
-type PdfWanted = (String, String, Option<String>);
-
-/// The invoice reads ([`crate::invoices`]): one request per tick, after the cars, within the day's caps.
-impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
-    /// The vehicles whose history can be read now: (Tesla's id, this server's id, the car it is matched to).
-    fn invoice_vehicles(&self) -> Vec<(String, String, Option<CarId>)> {
-        self.account
-            .cars
-            .iter()
-            .filter(|c| c.matched != Some(Match::LeaveOut) && self.vins.contains_key(&c.tesla_id))
-            .map(|c| {
-                let car = match c.matched {
-                    Some(Match::Car { car }) => Some(car),
-                    _ => None,
-                };
-                (c.tesla_id.clone(), c.vehicle.clone(), car)
-            })
-            .collect()
-    }
-
-    fn invoice_pdf_next(&self, now_ms: u64) -> Option<(u64, PdfWanted)> {
-        self.sink
-            .invoice_pdfs_wanted(&self.id)
-            .into_iter()
-            .map(|w| {
-                let at = self.inv.pdf_failed.get(&w.0).map_or(now_ms, |(t, _)| *t);
-                (at, w)
-            })
-            .filter(|(at, _)| *at != u64::MAX)
-            .min_by_key(|(at, _)| *at)
-    }
-
-    /// When the next invoice request is due (none: invoices off, nothing to read, or no VIN known yet).
-    fn invoice_due(&self, now_ms: u64) -> Option<u64> {
-        let cad = &self.cadence;
-        if !cad.invoices || self.account.state != AccountState::Ok {
-            return None;
-        }
-        self.creds.access.as_ref()?;
-        self.http_ownership()?;
-        let vehicles = self.invoice_vehicles();
-        if vehicles.is_empty() {
-            return None;
-        }
-        let midnight = (now_ms / 86_400_000 + 1) * 86_400_000;
-        if self.inv.requests_today >= cad.invoice_daily_cap || self.polls_today + cad.invoice_reserve >= cad.daily_cap {
-            return Some(midnight);
-        }
-        let ids: Vec<String> = vehicles.iter().map(|v| v.0.clone()).collect();
-        let want = if self.inv.backfilling(&ids) || !self.inv.checking.is_empty() {
-            now_ms
-        } else {
-            let pdf = self.invoice_pdf_next(now_ms).map_or(u64::MAX, |(t, _)| t.max(now_ms));
-            self.inv.next_check_ms.min(pdf)
-        };
-        Some(want.max(self.inv.wait_until_ms))
-    }
-
-    fn http_ownership(&self) -> Option<()> {
-        // a China account has no host for the charging history: never asked
-        (self.account.region == crate::Region::Global).then_some(())
-    }
-
-    /// The sessions of a page as the sink takes them.
-    fn found(&self, page: &crate::invoices::Page, asked: &str) -> Vec<crate::invoices::Found> {
-        page.sessions
-            .iter()
-            .filter_map(|s| {
-                let key = crate::invoices::key_of(&s.id)?;
-                let tid = s
-                    .vin
-                    .as_ref()
-                    .and_then(|v| self.vins.iter().find(|(_, x)| *x == v).map(|(t, _)| t.clone()))
-                    .unwrap_or_else(|| asked.to_string());
-                let c = self.account.cars.iter().find(|c| c.tesla_id == tid);
-                let car = c.and_then(|c| match c.matched {
-                    Some(Match::Car { car }) => Some(car),
-                    _ => None,
-                });
-                Some(crate::invoices::Found {
-                    key,
-                    account: self.id.clone(),
-                    vehicle: c.map(|c| c.vehicle.clone()),
-                    car,
-                    session: s.clone(),
-                })
-            })
-            .collect()
-    }
-
-    /// A history or PDF request failed. Never changes the account's state: the cars go on being read.
-    fn invoice_error(&mut self, e: &ApiError, now_ms: u64) -> Result<(), u64> {
-        match e {
-            ApiError::Unauthorized if !self.unauthorized_once => {
-                self.unauthorized_once = true;
-                self.force_refresh = true;
-                Ok(())
-            }
-            ApiError::RateLimited { retry_after_s } => {
-                let wait = self.rate_wait(*retry_after_s);
-                self.note_error(err("rate_limited", "Tesla asked us to wait", now_ms));
-                self.inv.note_error(err("rate_limited", "Tesla asked us to wait", now_ms), wait, wait);
-                Err(self.back_off(now_ms, Some(wait)))
-            }
-            other => {
-                let message = match other {
-                    ApiError::Forbidden | ApiError::Unauthorized => {
-                        "Tesla refuses this account's charging history".to_string()
-                    }
-                    ApiError::EndpointGone | ApiError::NotFound => {
-                        "Tesla's charging history is not there for this account".to_string()
-                    }
-                    o => o.to_string(),
-                };
-                tracing::warn!(account = %self.id, code = other.code(), "tesla invoice request failed");
-                let (first, max) = (self.cadence.invoice_error_first_ms, self.cadence.invoice_error_max_ms);
-                self.inv.note_error(err(other.code(), message, now_ms), first, max);
-                Ok(())
-            }
-        }
-    }
-
-    /// Reads one page, keeps its sessions: `(records on the page, keys, new sessions)`.
-    async fn invoice_page(
-        &mut self,
-        access: &crate::Secret,
-        tid: &str,
-        page: u32,
-        now_ms: u64,
-    ) -> Result<Option<(usize, Vec<String>, u64)>, u64> {
-        let Some(vin) = self.vins.get(tid).cloned() else { return Ok(None) };
-        let answer = self.tesla.charging_history(access, &vin, page).await;
-        self.drain_streams();
-        let p = match answer {
-            Ok(p) => p,
-            Err(e) => {
-                // pages may count from 1: a refused page 0 says so
-                let refused = matches!(e, ApiError::NotFound | ApiError::Tesla { status: 400..=499 });
-                if page == 0 && self.inv.first_page.is_none() && refused {
-                    self.inv.first_page = Some(1);
-                    for b in self.inv.backfill.values_mut() {
-                        b.next_page = b.next_page.max(1);
-                    }
-                    for p in self.inv.checking.values_mut() {
-                        *p = (*p).max(1);
-                    }
-                    return Ok(None);
-                }
-                self.invoice_error(&e, now_ms)?;
-                return Ok(None);
-            }
-        };
-        self.unauthorized_once = false;
-        if self.inv.first_page.is_none() {
-            self.inv.first_page = Some(page);
-        }
-        let found = self.found(&p, tid);
-        let keys: Vec<String> = found.iter().map(|f| f.key.clone()).collect();
-        let fresh = found.iter().filter(|f| !self.sink.invoice_known(&f.key)).count() as u64;
-        match self.sink.invoices(&found) {
-            Ok(_) => self.inv.note_ok(),
-            Err(e) => {
-                tracing::warn!(account = %self.id, error = %e, "Tesla invoices could not be stored");
-                let (first, max) = (self.cadence.invoice_error_first_ms, self.cadence.invoice_error_max_ms);
-                self.inv.note_error(err("store_failed", "the sessions could not be stored", now_ms), first, max);
-                return Ok(None);
-            }
-        }
-        Ok(Some((p.records, keys, fresh)))
-    }
-
-    async fn invoice_step(&mut self, now_ms: u64) -> Result<(), u64> {
-        let Some(access) = self.creds.access.clone() else { return Ok(()) };
-        let vehicles = self.invoice_vehicles();
-        let first = self.inv.first_page.unwrap_or(0);
-        let page_size = crate::invoices::PAGE_SIZE as usize;
-        // 1. the backfill: every page of each vehicle's history, once
-        if let Some((tid, _, _)) = vehicles.iter().find(|v| !self.inv.backfill.get(&v.0).is_some_and(|b| b.done)) {
-            let tid = tid.clone();
-            let page = self
-                .inv
-                .backfill
-                .entry(tid.clone())
-                .or_insert_with(|| crate::invoices::Backfill { next_page: first, ..Default::default() })
-                .next_page;
-            let Some((records, keys, fresh)) = self.invoice_page(&access, &tid, page, now_ms).await? else {
-                return Ok(());
-            };
-            let first = self.inv.first_page.unwrap_or(first);
-            let b = self.inv.backfill.entry(tid).or_default();
-            let again = !keys.is_empty() && keys == b.last_page;
-            b.found += fresh;
-            b.done = records < page_size || again || page.saturating_sub(first) + 1 >= crate::invoices::MAX_PAGES;
-            b.last_page = keys;
-            b.next_page = page + 1;
-            if self.inv.backfill.values().all(|b| b.done) && self.inv.last_check_ms.is_none() {
-                self.inv.last_check_ms = Some(now_ms);
-                self.inv.next_check_ms = now_ms + self.cadence.invoice_check_ms;
-            }
-            return Ok(());
-        }
-        // 2. the daily check (or the look after a DC charge): the first pages, until one brings nothing new
-        if !self.inv.checking.is_empty() || now_ms >= self.inv.next_check_ms {
-            if self.inv.checking.is_empty() {
-                self.inv.checking = vehicles.iter().map(|v| (v.0.clone(), first)).collect();
-            }
-            let Some((tid, page)) = self.inv.checking.iter().next().map(|(t, p)| (t.clone(), *p)) else {
-                return Ok(());
-            };
-            if !self.vins.contains_key(&tid) {
-                self.inv.checking.remove(&tid);
-                return Ok(());
-            }
-            let Some((records, _, fresh)) = self.invoice_page(&access, &tid, page, now_ms).await? else {
-                return Ok(());
-            };
-            let first = self.inv.first_page.unwrap_or(first);
-            if fresh == 0 || records < page_size || page.saturating_sub(first) + 1 >= crate::invoices::CHECK_PAGES {
-                self.inv.checking.remove(&tid);
-            } else {
-                self.inv.checking.insert(tid, page + 1);
-            }
-            if self.inv.checking.is_empty() {
-                self.inv.last_check_ms = Some(now_ms);
-                self.inv.next_check_ms = now_ms + self.cadence.invoice_check_ms;
-            }
-            return Ok(());
-        }
-        // 3. the PDFs not kept yet, oldest first
-        let Some((_, (key, id, vehicle))) = self.invoice_pdf_next(now_ms) else { return Ok(()) };
-        let vin = vehicle
-            .and_then(|v| self.account.cars.iter().find(|c| c.vehicle == v))
-            .and_then(|c| self.vins.get(&c.tesla_id).cloned());
-        let answer = self.tesla.invoice_pdf(&access, &id, vin.as_ref()).await;
-        self.drain_streams();
-        match answer {
-            Ok(pdf) => match self.sink.invoice_pdf(&key, &pdf) {
-                Ok(true) => {
-                    self.inv.pdf_failed.remove(&key);
-                    self.inv.note_ok();
-                }
-                Ok(false) | Err(_) => self.pdf_failed(&key, now_ms),
-            },
-            Err(e @ (ApiError::Unauthorized | ApiError::RateLimited { .. })) => self.invoice_error(&e, now_ms)?,
-            Err(ApiError::Http(e)) => self.invoice_error(&ApiError::Http(e), now_ms)?,
-            Err(_) => self.pdf_failed(&key, now_ms),
-        }
-        Ok(())
-    }
-
-    /// An invoice Tesla would not give (or that is not a PDF): tried again a day later, at most a few times.
-    fn pdf_failed(&mut self, key: &str, now_ms: u64) {
-        let tries = self.inv.pdf_failed.get(key).map_or(0, |(_, n)| *n) + 1;
-        let at = if tries >= crate::invoices::PDF_TRIES { u64::MAX } else { now_ms + crate::invoices::PDF_RETRY_MS };
-        self.inv.pdf_failed.insert(key.to_string(), (at, tries));
     }
 }

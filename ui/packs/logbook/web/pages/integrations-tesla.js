@@ -22,7 +22,6 @@ import { section, figure, chip, button, icon, ago, errorView, empty } from '../c
 import { field, form, choice, setFieldError, carOptions } from '../core/form.js';
 import { openDialog } from '../core/dialog.js';
 import { dataTable } from '../core/table.js';
-import { invoicesPart, invoicesSlot, loadUnmatched } from './integrations-invoices.js';
 
 /* ------------------------------------------------------------------ words */
 
@@ -154,7 +153,7 @@ export function teslaPart(ctx) {
   const tz = ctx.tz;
   const slot = h('div', { class: 'tesla' });
   const el = section({ title: 'Tesla account', note: 'a second live input beside SMO, admins only', id: 'tesla', cls: 'si-sec tesla-sec' }, slot);
-  let over = null, accounts = [], status = [], cars = [], loadErr = null, unmatched = null;
+  let over = null, accounts = [], status = [], cars = [], loadErr = null;
   let signIn = null; // { sign_in, url, expires_ms, region }
   const carName = (cid) => (cars.find((c) => c.id === cid) || {}).name || cid;
 
@@ -168,7 +167,6 @@ export function teslaPart(ctx) {
         ctx.api.get('cars', { sort: 'name', limit: 500 }).catch((e) => { if (api.isAbort(e)) throw e; return { items: [] }; }),
       ]);
       over = o; accounts = a.items || []; status = s.items || []; cars = c.items || []; loadErr = null;
-      unmatched = await loadUnmatched(ctx, 'tesla', over);
     } catch (e) {
       if (api.isAbort(e)) throw e;
       loadErr = e;
@@ -199,16 +197,15 @@ export function teslaPart(ctx) {
   /* ---------------- drawing */
   function draw() {
     if (!admin) {
-      replace(slot, h('p', { class: 'si-lead' }, 'Sentry Mate can also read cars from a Tesla account, through the Tesla Owner API, as a second live input beside SMO. Only admins see and change it.'), invoicesSlot('tesla'));
+      replace(slot, h('p', { class: 'si-lead' }, 'Sentry Mate can also read cars from a Tesla account, through the Tesla Owner API, as a second live input beside SMO. Only admins see and change it.'));
       return;
     }
-    if (loadErr) { replace(slot, errorView(loadErr, { title: 'The Tesla account settings could not be loaded.', retry: () => again(), home: false, eyebrow: 'Tesla account' }), invoicesSlot('tesla')); return; }
+    if (loadErr) { replace(slot, errorView(loadErr, { title: 'The Tesla account settings could not be loaded.', retry: () => again(), home: false, eyebrow: 'Tesla account' })); return; }
     replace(slot,
       h('p', { class: 'si-lead' },
         'Beside SMO, Sentry Mate can read your cars from Tesla’s Owner API, the unofficial API Tesla’s own app uses. It only reads: it never wakes a car or sends it a command, and no page ever shows a Tesla token. ',
         over.enabled ? null : h('strong', null, 'Off until an account is added: until then the server makes no connection to Tesla at all.')),
       overview(),
-      invoicesPart(ctx, { source: 'tesla', over, unmatched, ask: (opts) => askAgain(ctx, opts), again }),
       accounts.length ? h('div', { class: 'tesla-accounts' }, accounts.map(accountCard)) : null,
       addPart(),
       statusPart());

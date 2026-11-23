@@ -97,7 +97,6 @@ const BY_GROUP = {
     'tesla-token-replaced': 'Replaced a Tesla token',
     'tesla-car-matched': 'Matched a Tesla car',
     'tesla-poll-changed': 'Changed the Tesla API pace',
-    'tesla-invoices-changed': 'Turned Tesla invoices on or off',
     'tesla-sign-in-needed': 'Tesla asked to sign in again',
     'tesla-account-error': 'Could not read a Tesla account',
     'teslafi-account-added': 'Added a TeslaFi account',
@@ -109,8 +108,6 @@ const BY_GROUP = {
     'teslafi-token-refused': 'TeslaFi refused the token',
     'teslafi-car-matched': 'Matched a TeslaFi car',
     'teslafi-poll-changed': 'Changed the TeslaFi pace',
-    'teslafi-invoices-changed': 'Turned TeslaFi invoice costs on or off',
-    'invoices-downloaded': 'Downloaded Supercharger invoices',
     'teslafi-account-error': 'Could not read a TeslaFi account',
     'teslamate-local-added': 'Connected the local TeslaMate',
     'teslamate-local-changed': 'Changed the local TeslaMate',
@@ -175,8 +172,6 @@ const SETTINGS_ITEMS = {
   mqtt: ['MQTT settings', 'settings-integrations', '#mqtt'],
   tesla: ['Tesla API pace', 'settings-integrations', '#tesla'],
   teslafi: ['TeslaFi pace', 'settings-integrations', '#teslafi'],
-  'tesla-invoices': ['Tesla Supercharger invoices', 'settings-integrations', '#tesla'],
-  'teslafi-invoices': ['TeslaFi invoice costs', 'settings-integrations', '#teslafi'],
 };
 
 export function auditItem(row, ctx = {}) {

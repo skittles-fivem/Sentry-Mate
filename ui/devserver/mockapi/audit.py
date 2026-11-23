@@ -206,12 +206,5 @@ def seed(ds, now):
         (3 * HOUR, "admin", "release-checked", "server:release", None, "Checked GitHub for a newer build."),
         (2 * HOUR, "admin", "sign-in", "session:s7c04", None, "Signed in."),
     ]
-    # Supercharger invoices: only once the code list has them (the list is written from the real server's table)
-    e += [x for x in [
-        (61 * DAY, "jordan", "tesla-invoices-changed", "settings:tesla-invoices", None, "Turned Tesla Supercharger invoices on."),
-        (49 * DAY - HOUR, "admin", "teslafi-invoices-changed", "settings:teslafi-invoices", None, "Turned TeslaFi Supercharger invoices on."),
-        (48 * DAY, "admin", "teslafi-invoices-changed", "settings:teslafi-invoices", None, "Turned TeslaFi Supercharger invoices off."),
-        (11 * DAY, "admin", "invoices-downloaded", None, None, "Downloaded 41 Supercharger invoices as one file."),
-    ] if x[2] in GROUP_OF]
     return [(now - ago, who, action, target, car, summary, _ADDR.get(who) if who else None)
             for ago, who, action, target, car, summary in e]

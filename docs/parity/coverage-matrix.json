@@ -10587,51 +10587,6 @@
    "data_status": "have",
    "inventory": "web-admin",
    "page_name": "Data health and storage"
-  },
-  {
-   "id": "inv.charge.source",
-   "tab": "web.invoices",
-   "page": "charge",
-   "section": "Cost",
-   "data_status": "have",
-   "inventory": "invoices",
-   "page_name": "Charge detail"
-  },
-  {
-   "id": "inv.charge.pdf",
-   "tab": "web.invoices",
-   "page": "charge",
-   "section": "Cost",
-   "data_status": "have",
-   "inventory": "invoices",
-   "page_name": "Charge detail"
-  },
-  {
-   "id": "inv.charges.cost-source",
-   "tab": "web.invoices",
-   "page": "charges",
-   "section": "Charge list",
-   "data_status": "have",
-   "inventory": "invoices",
-   "page_name": "Charges"
-  },
-  {
-   "id": "inv.settings.tesla",
-   "tab": "web.invoices",
-   "page": "settings-integrations",
-   "section": "Tesla: Supercharger invoices",
-   "data_status": "have",
-   "inventory": "invoices",
-   "page_name": "Settings: Integrations"
-  },
-  {
-   "id": "inv.settings.teslafi",
-   "tab": "web.invoices",
-   "page": "settings-integrations",
-   "section": "TeslaFi: Supercharger invoices",
-   "data_status": "have",
-   "inventory": "invoices",
-   "page_name": "Settings: Integrations"
   }
  ],
  "unmapped": []

@@ -134,7 +134,9 @@ body { container: page / inline-size; }
 *, ::before, ::after { line-height: var(--LH); }
 /* what a closed <details> holds is not laid out at all (as browsers used to do), so nothing measures it */
 details:not([open]) > :not(summary) { display: none !important; }
-html { background: var(--paper); -webkit-text-size-adjust: 100%; }
+/* The page's scrollbar keeps its place whether the page is longer than the window or not, so a page that
+   grows or shrinks (a list loaded, a tooltip near the bottom) never moves sideways. */
+html { background: var(--paper); -webkit-text-size-adjust: 100%; scrollbar-gutter: stable; }
 /* Keyboard focus never lands under the sticky masthead. */
 :root { --clear-top: calc(var(--masthead-h) + round(1rem, var(--e))); }
 :where(.main, .colophon, .notices) * { scroll-margin-top: var(--clear-top); }
@@ -172,11 +174,6 @@ button { cursor: pointer; }
   border: 1px solid var(--rule-strong); border-bottom-width: 2px; border-radius: round(0.25rem, var(--e)); background: var(--paper-raised);
 }
 .icon { width: round(1rem, var(--e)); height: round(1rem, var(--e)); flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-/* busy: a ring the size of an icon wherever it is (never sized by what holds it). The box stays still at the
-   icon size; the ring inside it (::before) turns once a second, so the box's size is never worked out mid-turn */
-.spin { display: inline-block; flex: none; position: relative; box-sizing: border-box; width: round(1rem, var(--e)); height: round(1rem, var(--e)); min-width: round(1rem, var(--e)); vertical-align: middle; }
-.spin::before { content: ''; position: absolute; inset: 0; box-sizing: border-box; border: 2px solid var(--rule-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
 
 /* The page's column: 77.5rem on a 1440 laptop, growing with the window (86%) up to 98rem; on wide
    screens the whole window less 4rem gutters. */
@@ -563,21 +560,6 @@ html.is-auth .main { min-height: 100vh; display: flex; align-items: flex-start; 
 .ledger-foot { display: flex; justify-content: center; padding-top: round(1.125rem, var(--e)); }
 .ledger-status:empty { display: none; }
 .ledger-sentinel { height: 1px; margin-top: -1px; }
-/* a long log-like list in a box (shared/scrollbox.js, core/table.js box): its heads and five rows high, high
-   from the start, so the page never grows while rows load; the heads stay at the top, a fade at the bottom while
-   there are more under it. A row is a main line and a line under it; a list of other rows sets --box-row (one
-   row) or --box-rows (how many). Rows in hand
-   (.scroll-box--fit) make a box at most that high, so a short list leaves no empty room. */
-.scroll-box {
-  --box-rows: 5; --box-head: round(2.4375rem, var(--e)); --box-row: round(4.375rem, var(--e));
-  height: calc(var(--box-head) + var(--box-rows) * var(--box-row) + 1px); overflow-y: auto; scrollbar-gutter: stable;
-}
-.scroll-box--fit { height: auto; max-height: calc(var(--box-head) + var(--box-rows) * var(--box-row) + 1px); }
-.scroll-box .ledger-table thead th { top: 0; }
-.scroll-box[data-below] { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - round(2.5rem, var(--e))), rgb(0 0 0 / 0.2)); mask-image: linear-gradient(to bottom, #000 calc(100% - round(2.5rem, var(--e))), rgb(0 0 0 / 0.2)); }
-.scroll-box:focus-visible { outline-offset: calc(-1 * var(--focus-w)); }
-.scroll-box-end { height: 1px; margin-top: -1px; }
-.ledger-box > .ledger-status { padding-top: round(0.75rem, var(--e)); }
 .cell-main { display: block; font: 400 1.03125rem var(--serif); --LH: round(calc(1.3 * 1em), 2px); line-height: var(--LH); color: var(--ink); text-decoration: none; }
 a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rule-strong); }
 .cell-sub { display: block; font-size: var(--small-2); color: var(--ink-3); margin-top: round(0.1875rem, var(--e)); }
@@ -899,9 +881,6 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
      takes the whole line, and a long row of choices wraps */
   .ledger-scroll { overflow-x: auto; }
   .page-head-aside { flex: 1 1 100%; min-width: 0; }
-  /* a box on a phone: a shorter one, about three entries (rows stack there, so their height varies) */
-  .scroll-box { height: min(round(26rem, var(--e)), 60svh); }
-  .scroll-box--fit { height: auto; max-height: min(round(26rem, var(--e)), 60svh); }
   .segmented { flex-wrap: wrap; max-width: 100%; }
 }
 
@@ -965,3 +944,8 @@ a.cell-main:hover { text-decoration: underline; text-decoration-color: var(--rul
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
 .deck > .src-block { flex-basis: 100%; }
+
+/* a readout whose text changes in place sits in a box as wide as its longest text (shared/dom.js steady) */
+.steady { display: inline-grid; font-variant-numeric: tabular-nums; }
+.steady > * { grid-area: 1 / 1; }
+.steady-size { visibility: hidden; }

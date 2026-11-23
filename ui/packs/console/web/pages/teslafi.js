@@ -23,7 +23,6 @@ import { errorWords } from '../core/states.js';
 import { tag, dateTime, time, ago, DASH } from '../core/fmt.js';
 import { toast } from '../core/toast.js';
 import { askPassword } from '../core/secret.js';
-import { invoicesBlock, invoicesSlot, loadUnmatched } from './invoices-block.js';
 
 const enc = encodeURIComponent;
 const BASE = 'integrations/teslafi';
@@ -93,14 +92,14 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
     note('A third live input beside SMO and the Tesla API, for owners who pay for TeslaFi: this server reads TeslaFi\'s own polls of the car from TeslaFi\'s API with your TeslaFi token. It only reads: never a wake or a command, so the car is not kept awake and TeslaFi\'s monthly command limit is not used. Off until an admin adds a token. Where SMO or the Tesla API saw the same time, theirs win; the rest says data from TeslaFi.'),
     body);
 
-  let ov = null, accounts = [], status = [], carRows = {}, unmatched = null;
+  let ov = null, accounts = [], status = [], carRows = {};
   const carName = (id) => cars.find((c) => c.id === id)?.name || id;
   const tables = [];
 
   async function load() {
     if (!admin) {
       replace(side, tag('admins only', 'muted'));
-      replace(body, note(tag('admin', 'muted'), ' Only an admin sees and changes the TeslaFi token: its status, its car and how often TeslaFi is asked. Every page still says where its data came from, ', h('span', { class: 'src' }, h('span', { class: 'src-b' }, '[', h('span', { class: 'src-k src-k--teslafi_api' }, 'tfi'), ']')), ' for data from TeslaFi.'), invoicesSlot('teslafi'));
+      replace(body, note(tag('admin', 'muted'), ' Only an admin sees and changes the TeslaFi token: its status, its car and how often TeslaFi is asked. Every page still says where its data came from, ', h('span', { class: 'src' }, h('span', { class: 'src-b' }, '[', h('span', { class: 'src-k src-k--teslafi_api' }, 'tfi'), ']')), ' for data from TeslaFi.'));
       return;
     }
     try {
@@ -114,11 +113,9 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
     } catch (e) {
       if (e?.name === 'AbortError') return;
       replace(side, tag('not read', 'bad'));
-      replace(body, h('p', { class: 'note tone--bad' }, 'TeslaFi\'s settings could not be read: ', errorWords(e).text), invoicesSlot('teslafi'));
+      replace(body, h('p', { class: 'note tone--bad' }, 'TeslaFi\'s settings could not be read: ', errorWords(e).text));
       return;
     }
-    if (!ctx.alive()) return;
-    unmatched = await loadUnmatched(ctx, 'teslafi', ov);
     if (!ctx.alive()) return;
     paint();
     await Promise.all(tables.map((t) => t.ready)).catch(() => {});
@@ -148,7 +145,7 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
     tables.length = 0;
     replace(side, !ov.enabled ? tag('off until a token is added', 'muted')
       : ov.cars ? tag(`reading ${formatNumber(ov.cars)} ${ov.cars === 1 ? 'car' : 'cars'}`, 'ok') : tag('no car matched yet', 'warn'));
-    replace(body, statusBlock(), invoicesBlock(ctx, { source: 'teslafi', ov, unmatched, fk, setOn: (on) => keep([`inv-teslafi:${on ? 'on' : 'off'}`], () => setInvoices(on))() }), addBlock(), accounts.map(accountBlock));
+    replace(body, statusBlock(), addBlock(), accounts.map(accountBlock));
   }
 
   function statusBlock() {
@@ -179,14 +176,6 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
         ['per day', [formatNumber(p.daily_cap ?? 1500), h('span', { class: 'muted' }, ' requests a token, then none until midnight UTC')]],
       ]),
       note('Often reads about as fast as TeslaFi itself refreshes (up to 6,000 requests a day per token); normal and gentle stay within 1,500. In every pace at most one request goes out every 10 s per token, TeslaFi\'s own waits (Retry-After) and the back-off after errors are kept, and the car is never woken: these reads come from TeslaFi\'s own database.'));
-  }
-  async function setInvoices(on) {
-    const r = await askPassword(ctx, {
-      title: `supercharger invoices: ${on ? 'on' : 'off'}`, submit: on ? 'turn invoices on' : 'turn invoices off',
-      intro: note(on ? 'The server reads the cost TeslaFi gives for each Supercharger session. It becomes the charge\'s cost; a typed cost still wins. TeslaFi gives no PDFs.' : 'No more invoices are fetched. The costs and invoices already kept stay.'),
-      run: async (cred) => { try { return await ctx.api.patch(BASE, withPw(cred, { version: ov.version, invoices: on })); } catch (e) { throw fail(e); } },
-    });
-    if (r) await reload(on ? 'Supercharger invoices on.' : 'Supercharger invoices off.');
   }
   async function setPace(v) {
     if (v === (ov.poll || 'normal')) return;

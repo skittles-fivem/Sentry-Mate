@@ -54,11 +54,6 @@
 .cost-now .metric-label { flex-basis: 100%; }
 .cost-amount { font-family: var(--font-display); font-size: 2.25rem; font-weight: 500; --LH: round(calc(1.1 * 1em), 2px); }
 .cost-now .explain { flex: 1 1 round(14rem, var(--e)); }
-.cost-invoice { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); }
-.cost-invoice[hidden] { display: none; }
-.cost-invoice p { margin: 0; }
-.cost-invoice-what { font-weight: 600; }
-.cost-invoice-pdf { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)); }
 .cost-left .tbl-panel { background: transparent; border: 0; box-shadow: none; padding: 0; }
 .cost-edit { padding: round(1.125rem, var(--e)) round(1.25rem, var(--e)); border-radius: var(--radius); background: var(--surface-sunken); border: 1px solid var(--line); }
 .cost-edit-title { margin: 0 0 round(0.375rem, var(--e)); font-size: 1rem; font-weight: 600; }

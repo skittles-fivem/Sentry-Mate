@@ -112,9 +112,7 @@ access, admins) runs the same pass without the pauses. On the long history a fir
 a pass with nothing to do takes well under a second.
 
 **The API:** `GET /api/v1/system/storage/detail` (categories, totals, free space, compaction as it is) and
-`POST /api/v1/system/storage/compact` (`docs/ui-api.md`). While a pass runs it tells its step (1 of 3), whether it is
-still counting, units done of the total, what it freed so far, its rate and the time the step still needs, when it
-last got on (stalled after 2 minutes without a unit) and the units it left as they were.
+`POST /api/v1/system/storage/compact` (`docs/ui-api.md`).
 
 ## Tests
 

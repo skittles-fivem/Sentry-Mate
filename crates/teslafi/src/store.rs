@@ -120,9 +120,6 @@ pub struct Pacing {
     /// compared by its id only until one has been read in the new zone.
     #[serde(default)]
     pub poll_zone: Option<String>,
-    /// How far TeslaFi's charge costs are read ([`crate::costs`]).
-    #[serde(default)]
-    pub costs: crate::costs::Progress,
 }
 
 impl Pacing {

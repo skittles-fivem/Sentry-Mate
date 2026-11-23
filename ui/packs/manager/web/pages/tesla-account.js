@@ -22,7 +22,6 @@ import { emptyState, errorWords } from '../core/states.js';
 import { flash } from '../core/flash.js';
 import { dateTime, ago, num, dur, time, tzName } from '../core/fmt.js';
 import { askPassword } from './settings-server-move.js';
-import { invoicesBlock, loadUnmatched } from './invoices-block.js';
 
 const enc = encodeURIComponent;
 const BASE = 'integrations/tesla';
@@ -125,13 +124,13 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     h('p', { class: 'note' }, 'A second live input beside SMO: this server can sign in to a Tesla account and read its cars from Tesla\'s Owner API (the one Tesla\'s own app uses). It only reads: it never wakes a car or sends it a command. Off until an admin adds an account; before that the server makes no connection to Tesla at all. Pages then say for every row whether its data came from SMO, the Tesla API, or both.'),
     body);
 
-  let ov = null, accounts = [], status = [], carRows = {}, unmatched = [];
+  let ov = null, accounts = [], status = [], carRows = {};
   const carName = (id) => cars.find((c) => c.id === id)?.name || id;
 
   async function load() {
     if (!admin) {
       replace(headPill, pill('Admins only'));
-      replace(body, h('div', { class: 'panel panel-pad' }, note(icon('lock', 'ico--sm'), ' Only an admin sees and changes the Tesla account: its status, its cars and how often Tesla is asked. Every page still says where its data came from (SMO, the Tesla API or an import).')), h('div', { hidden: true, cover: 'inv.settings.tesla' }));
+      replace(body, h('div', { class: 'panel panel-pad' }, note(icon('lock', 'ico--sm'), ' Only an admin sees and changes the Tesla account: its status, its cars and how often Tesla is asked. Every page still says where its data came from (SMO, the Tesla API or an import).')));
       return;
     }
     try {
@@ -139,8 +138,7 @@ export function teslaSection(ctx, { cars = [] } = {}) {
         ctx.api.get(BASE),
         ctx.api.list(`${BASE}/accounts`).all().catch(() => []),
         ctx.api.list(`${BASE}/status`).all().catch(() => []),
-        loadUnmatched(ctx, 'tesla'),
-      ]).then(([a, b, c, d]) => { unmatched = d; return [a, b, c]; });
+      ]);
       const rows = await Promise.all(accounts.map((a) => ctx.api.get(`${BASE}/accounts/${enc(a.id)}/cars`).catch(() => null)));
       carRows = Object.fromEntries(accounts.map((a, i) => [a.id, rows[i] || { items: a.cars || [], version: a.version }]));
     } catch (e) {
@@ -182,7 +180,6 @@ export function teslaSection(ctx, { cars = [] } = {}) {
           : matched ? pill('No car is read now', { tone: 'warm', lg: true }) : pill('No car matched yet', { tone: 'warm', lg: true }));
     replace(body,
       h('div', { class: 'ta-grid' }, statusPanel(), addPanel()),
-      invoicesBlock(ctx, { source: 'tesla', ov, base: BASE, unmatched, guarded, withPw, after }),
       accounts.length ? accounts.map(accountPanel) : null);
   }
 

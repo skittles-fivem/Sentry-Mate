@@ -23,7 +23,6 @@ import { errorWords } from '../core/states.js';
 import { tag, dateTime, time, ago, dur, DASH } from '../core/fmt.js';
 import { toast } from '../core/toast.js';
 import { askPassword } from '../core/secret.js';
-import { invoicesBlock, invoicesSlot, loadUnmatched } from './invoices-block.js';
 
 const enc = encodeURIComponent;
 const BASE = 'integrations/tesla';
@@ -122,14 +121,14 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     note('A second live input beside SMO: this server can sign in to a Tesla account and read its cars from Tesla\'s Owner API (the one Tesla\'s own app uses). It only reads: it never wakes a car or sends it a command. Off until an admin adds an account; before that the server makes no connection to Tesla at all. Every page then says whether its data came from SMO, the Tesla API, or both.'),
     body);
 
-  let ov = null, accounts = [], status = [], carRows = {}, unmatched = null;
+  let ov = null, accounts = [], status = [], carRows = {};
   const carName = (id) => cars.find((c) => c.id === id)?.name || id;
   const tables = [];
 
   async function load() {
     if (!admin) {
       replace(side, tag('admins only', 'muted'));
-      replace(body, note(tag('admin', 'muted'), ' Only an admin sees and changes the Tesla account: its status, its cars and how often Tesla is asked. Every page still says where its data came from (SMO, the Tesla API or an import).'), invoicesSlot('tesla'));
+      replace(body, note(tag('admin', 'muted'), ' Only an admin sees and changes the Tesla account: its status, its cars and how often Tesla is asked. Every page still says where its data came from (SMO, the Tesla API or an import).'));
       return;
     }
     try {
@@ -143,11 +142,9 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     } catch (e) {
       if (e?.name === 'AbortError') return;
       replace(side, tag('not read', 'bad'));
-      replace(body, h('p', { class: 'note tone--bad' }, 'The Tesla account could not be read: ', errorWords(e).text), invoicesSlot('tesla'));
+      replace(body, h('p', { class: 'note tone--bad' }, 'The Tesla account could not be read: ', errorWords(e).text));
       return;
     }
-    if (!ctx.alive()) return;
-    unmatched = await loadUnmatched(ctx, 'tesla', ov);
     if (!ctx.alive()) return;
     paint();
     await Promise.all(tables.map((t) => t.ready)).catch(() => {});
@@ -182,7 +179,7 @@ export function teslaSection(ctx, { cars = [] } = {}) {
     tables.length = 0;
     replace(side, !ov.enabled ? tag('off until an account is added', 'muted')
       : ov.cars ? tag(`reading ${formatNumber(ov.cars)} ${ov.cars === 1 ? 'car' : 'cars'}`, 'ok') : tag('no car matched yet', 'warn'));
-    replace(body, statusBlock(), invoicesBlock(ctx, { source: 'tesla', ov, unmatched, fk, setOn: (on) => keep([`inv-tesla:${on ? 'on' : 'off'}`], () => setInvoices(on))() }), addBlock(), accounts.map(accountBlock));
+    replace(body, statusBlock(), addBlock(), accounts.map(accountBlock));
   }
 
   /* ---------- the input as a whole */
@@ -212,14 +209,6 @@ export function teslaSection(ctx, { cars = [] } = {}) {
         ['car list', [`every ${secs(p.list_s)}`, h('span', { class: 'muted' }, ' all an asleep car gets')]],
       ]),
       note('In every pace an asleep car is never woken (only the list of cars is read), and an awake car with nothing going on is left alone so it can fall asleep. At most one request a second goes to Tesla per account.'));
-  }
-  async function setInvoices(on) {
-    const r = await askPassword(ctx, {
-      title: `supercharger invoices: ${on ? 'on' : 'off'}`, submit: on ? 'turn invoices on' : 'turn invoices off',
-      intro: note(on ? 'The server reads each Supercharger session from Tesla\'s charging history (older ones first, then new ones as they come) and keeps its invoice (PDF). Its cost becomes the charge\'s cost; a typed cost still wins.' : 'No more invoices are fetched. The costs and invoices already kept stay.'),
-      run: async (cred) => { try { return await ctx.api.patch(BASE, withPw(cred, { version: ov.version, invoices: on })); } catch (e) { throw fail(e); } },
-    });
-    if (r) await reload(on ? 'Supercharger invoices on.' : 'Supercharger invoices off.');
   }
   async function setPace(v) {
     if (v === ov.poll) return;

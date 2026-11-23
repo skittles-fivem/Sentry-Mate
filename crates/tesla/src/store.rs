@@ -182,9 +182,6 @@ struct AccountFile {
     tokens: TokensFile,
     #[serde(default)]
     pacing: Pacing,
-    /// How far the invoices are read ([`crate::invoices`]).
-    #[serde(default)]
-    invoices: crate::invoices::Progress,
 }
 
 const DIR: &str = "tesla/accounts";
@@ -273,19 +270,6 @@ impl Store {
         Ok(())
     }
 
-    /// How far the account's invoices are read (default when never read).
-    pub fn invoice_progress(&self, id: &str) -> Result<crate::invoices::Progress, StoreError> {
-        Ok(self.read(id)?.invoices)
-    }
-
-    /// Saves how far the invoices are read. Changes neither the account's version nor the generation.
-    pub fn set_invoice_progress(&self, id: &str, p: &crate::invoices::Progress) -> Result<(), StoreError> {
-        let _g = self.inner.lock.lock().unwrap_or_else(|p| p.into_inner());
-        let mut f = self.read(id)?;
-        f.invoices = p.clone();
-        self.write_quiet(&f)
-    }
-
     /// The poller's saved pacing (default when never saved).
     pub fn pacing(&self, id: &str) -> Result<Pacing, StoreError> {
         Ok(self.read(id)?.pacing)
@@ -332,12 +316,7 @@ impl Store {
         let next = self.ids().iter().filter_map(|i| i[2..].parse::<u64>().ok()).max().unwrap_or(0) + 1;
         account.id = format!("ta{next}");
         account.version = 1;
-        self.write(&AccountFile {
-            account: account.clone(),
-            tokens: tokens_file(creds),
-            pacing: Pacing::default(),
-            invoices: crate::invoices::Progress::default(),
-        })?;
+        self.write(&AccountFile { account: account.clone(), tokens: tokens_file(creds), pacing: Pacing::default() })?;
         Ok(account)
     }
 
@@ -363,12 +342,7 @@ impl Store {
         let out = change(&mut account, &mut creds);
         account.id = id.to_string();
         account.version += 1;
-        self.write(&AccountFile {
-            account: account.clone(),
-            tokens: tokens_file(&creds),
-            pacing: f.pacing,
-            invoices: f.invoices,
-        })?;
+        self.write(&AccountFile { account: account.clone(), tokens: tokens_file(&creds), pacing: f.pacing })?;
         Ok((account, out))
     }
 

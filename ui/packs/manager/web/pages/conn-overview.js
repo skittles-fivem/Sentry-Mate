@@ -7,7 +7,6 @@
 // clock; their boxes have a fixed width, so nothing beside them moves.
 
 import { h, svg, replace } from '../shared/dom.js';
-import { scrollBox } from '../shared/scrollbox.js';
 import { formatDateTime, formatDuration, formatTime } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { icon } from '../core/icons.js';
@@ -235,15 +234,12 @@ export function overviewTab(ctx, { first }) {
   note('Every connection the server keeps. Open a row for its settings or details. Times are relative to the server’s clock; the bars are the last 24 hours, one per hour, red where something failed.'),
   head, listEl);
   const probList = h('ol', { class: 'ov-probs' });
-  // a long week of problems scrolls in a box of about five rows, its header held at the top (app.css .scroll-box)
-  const probBox = scrollBox({ cls: 'ov-probs-box scroll-box--fit', label: 'Problems in the last 7 days', onCleanup: ctx.onCleanup },
-    h('div', { class: 'ov-probhead', 'aria-hidden': 'true' }, ['When', 'Connection', 'What happened', 'How long', 'Now'].map((t) => h('span', null, t))),
-    probList);
   const probEmpty = h('div', { class: 'ov-probs-empty' }, emptyState({ icon: 'check', title: 'No problems in the last 7 days', text: 'Every connection that was on worked as expected all week.' }));
   const probPanel = panel({ title: 'Problems in the last 7 days', icon: 'warn', cls: 'ov-prob-panel', cover: 'conn.overview.problems',
     side: h('span', { class: 'faint' }, 'Newest first') },
   note('A problem begins when a connection goes to Problem and ends when it leaves it.'),
-  probBox.el, probEmpty);
+  h('div', { class: 'ov-probhead', 'aria-hidden': 'true' }, ['When', 'Connection', 'What happened', 'How long', 'Now'].map((t) => h('span', null, t))),
+  probList, probEmpty);
   const errSlot = h('div', { class: 'ov-error' });
   errSlot.hidden = true;
   const el = h('div', { class: 'ov' }, errSlot, totalsEl, connPanel, probPanel);
@@ -283,8 +279,8 @@ export function overviewTab(ctx, { first }) {
     }
     for (const [id, r] of probs) if (!pseen.has(id)) { r.el.remove(); probs.delete(id); }
     probEmpty.hidden = probs.size > 0;
-    probBox.el.hidden = probs.size === 0;
-    probBox.edge();
+    probList.hidden = probs.size === 0;
+    probPanel.querySelector('.ov-probhead').hidden = probs.size === 0;
   }
   let readMs = null;
   function tick() {

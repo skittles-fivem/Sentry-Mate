@@ -5,7 +5,6 @@
 - [Security](#security)
 - [The Tesla API input](#the-tesla-api-input)
 - [The TeslaFi input](#the-teslafi-input)
-- [Supercharger invoices](#supercharger-invoices)
 - [The local TeslaMate input](#the-local-teslamate-input)
 - [No way back without a backup](#no-way-back-without-a-backup)
 - [Privacy](#privacy)
@@ -72,8 +71,6 @@
     [The Tesla API input](#the-tesla-api-input).
   - **TeslaFi**: to `www.teslafi.com` only, once an admin adds a TeslaFi token. See
     [The TeslaFi input](#the-teslafi-input).
-  - **Supercharger invoices**: to `ownership.tesla.com` (Tesla) and TeslaFi's charge log, only once an admin turns
-    them on in Settings → Integrations. See [Supercharger invoices](#supercharger-invoices).
   - **Local TeslaMate**: to the owner's own TeslaMate MQTT broker (`teslamate_mqtt`) and, when turned on, its
     database (`teslamate_db`), at the host and port an admin typed, once an admin adds them. See
     [The local TeslaMate input](#the-local-teslamate-input).
@@ -267,44 +264,6 @@ given; this server only reads what TeslaFi stored. How to add the token is in
   too, so the old one stops working there as well.
 - Data from TeslaFi is not signed like SMO's logs. Every row and value says where it came from (`teslafi_api`, "Data
   from TeslaFi"), and SMO's and the Tesla API's data win over it where they cover the same time.
-
-## Supercharger invoices
-
-The server can fetch your paid Supercharger sessions, their costs and their invoices (PDF), to price your DC charges
-with what Tesla billed. Each input has its own switch (Settings → Integrations, "Supercharger invoices"), **off until
-an admin turns it on** (the password asked again, an audit entry written): before that nothing below is fetched.
-
-- **From Tesla**, with the Tesla account's own Owner API tokens (no new sign-in), from one more of Tesla's hosts,
-  fixed in the program: `ownership.tesla.com` (the host Tesla's app reads its charging history from; global accounts
-  only: no public source names one for China, where Tesla's charging history is not open yet). Two reads, both
-  `GET`, nothing else:
-  - a page of a car's charging history: `/mobile-app/charging/history?vin=<the car's VIN>&deviceLanguage=en&
-    deviceCountry=US&operationName=getChargingHistoryV2&pageNo=N&pageSize=50`. The VIN goes to Tesla because Tesla
-    asks for it by VIN; it is held in memory only (from the car list) and never kept or logged here;
-  - an invoice's PDF: `/mobile-app/charging/invoice/<Tesla's id of it>` (with the same language, country and VIN).
-  The records are the shape Tesla documents for its Fleet API's charging history (`sessionId`, `siteLocationName`,
-  start and stop times, `fees` with their currency, rates, amounts billed and owed, `invoices` with `contentId`).
-  Tesla does not document this route for Owner API tokens; if Tesla refuses it, the status says so and the cars go
-  on being read as before.
-- **From TeslaFi**: TeslaFi's documented API (`feed.php`) has no command for charges, costs or invoices, and TeslaFi
-  documents no way to download the Supercharger invoices it fetches for its own pages. The server reads TeslaFi's
-  charge log, `GET /history.php?command=charges&dateFrom=<date>&dateTo=<date>` (the path made of two dates only,
-  the token in the `Authorization` header as for the polls), and takes the cost TeslaFi lists for each charge. No
-  PDFs come from TeslaFi.
-- **Paced, under the caps.** One request at a time, in the input's own pace and gap between requests, counted in its
-  daily cap, after the car's own reads (never instead of one), and never more than 300 a day for Tesla (60 for
-  TeslaFi) or into the last 500 (200) requests of the daily cap. The first time, the whole history is read page by
-  page (resumable: a restart goes on where it was); then once a day, and soon after a DC charge (TeslaFi: a charge)
-  ends. An error waits half an hour, doubling up to a day; Tesla's or TeslaFi's `Retry-After` is followed.
-- **Kept sealed, once.** Each session (one per Tesla session id or TeslaFi charge id) and each PDF (at most 4 MiB,
-  only a file that is a PDF) is kept in the server's database, sealed with the vault like everything else, and moves
-  and is backed up with it. It is kept as it came: rebuilding the cars' history never changes it, and a full rebuild
-  matches it again.
-- **Who sees it.** A charge's invoice, and its PDF, are shown to whoever may see that car; the list of every session,
-  its CSV and the zip of all PDFs are for admins (the zip writes an audit entry).
-- **What it changes:** a session is matched to the car's DC charge it overlaps in time (with ten minutes of slack;
-  and within 400 m where TeslaFi gives where it was), and that charge then costs what the invoice says. A cost an
-  admin typed always wins over it. A session with no charge is listed, never dropped.
 
 ## The local TeslaMate input
 

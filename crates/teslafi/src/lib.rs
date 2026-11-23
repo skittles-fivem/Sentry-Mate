@@ -8,7 +8,6 @@
 //! the vault ([`store`]) and never logs or returns it ([`Secret`]).
 
 pub mod api;
-pub mod costs;
 pub mod hosts;
 pub mod http;
 pub mod poller;

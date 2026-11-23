@@ -1,11 +1,9 @@
 //! The Owner API reads this crate makes, and nothing else: the product list (`GET /api/1/products`, which does
 //! not wake a car), and one car's data (`GET /api/1/vehicles/{id}/vehicle_data`, only asked of a car that is
-//! already online). There is no wake-up, no command and no other path anywhere in this crate. With invoices on
-//! ([`crate::invoices`]), also a vehicle's charging history and an invoice's PDF, from Tesla's ownership host.
+//! already online). There is no wake-up, no command and no other path anywhere in this crate.
 
 use crate::auth::{self, AuthError, Tokens};
-use crate::http::{Body, CAP_DATA, CAP_HISTORY, CAP_LIST, CAP_PDF, Http, HttpError};
-use crate::invoices;
+use crate::http::{Body, CAP_DATA, CAP_LIST, Http, HttpError};
 use crate::secret::{FullVin, Secret};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,13 +11,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 /// Every path this crate requests (tests check the fake server saw nothing else).
-pub const PATHS: [&str; 5] = [
-    "/oauth2/v3/token",
-    "/api/1/products",
-    "/api/1/vehicles/{id}/vehicle_data",
-    "/mobile-app/charging/history",
-    "/mobile-app/charging/invoice/{id}",
-];
+pub const PATHS: [&str; 3] = ["/oauth2/v3/token", "/api/1/products", "/api/1/vehicles/{id}/vehicle_data"];
 
 /// What a car is doing, as Tesla's list says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -143,24 +135,6 @@ pub trait Tesla: Send + Sync + 'static {
         location: bool,
     ) -> impl Future<Output = Result<Value, ApiError>> + Send;
     fn refresh(&self, refresh: &Secret) -> impl Future<Output = Result<Tokens, AuthError>> + Send;
-    /// A page of a vehicle's charging history ([`invoices::history_path`]). Not there: [`ApiError::EndpointGone`].
-    fn charging_history(
-        &self,
-        _access: &Secret,
-        _vin: &FullVin,
-        _page: u32,
-    ) -> impl Future<Output = Result<invoices::Page, ApiError>> + Send {
-        async { Err(ApiError::EndpointGone) }
-    }
-    /// An invoice's PDF.
-    fn invoice_pdf(
-        &self,
-        _access: &Secret,
-        _id: &str,
-        _vin: Option<&FullVin>,
-    ) -> impl Future<Output = Result<Vec<u8>, ApiError>> + Send {
-        async { Err(ApiError::EndpointGone) }
-    }
 }
 
 /// The Owner API over [`Http`].
@@ -227,32 +201,6 @@ impl Tesla for Client {
 
     async fn refresh(&self, refresh: &Secret) -> Result<Tokens, AuthError> {
         auth::refresh(&self.http, refresh).await
-    }
-
-    async fn charging_history(&self, access: &Secret, vin: &FullVin, page: u32) -> Result<invoices::Page, ApiError> {
-        let Some(origin) = self.http.endpoints().ownership.clone() else { return Err(ApiError::EndpointGone) };
-        let path = invoices::history_path(vin, page).ok_or(ApiError::NotFound)?;
-        let a = self
-            .http
-            .request(&origin, false, &path, Some(access), Body::None, CAP_HISTORY)
-            .await
-            .map_err(ApiError::Http)?;
-        check(a.status, a.retry_after_s)?;
-        let v: Value = serde_json::from_slice(&a.body).map_err(|_| ApiError::BadAnswer)?;
-        invoices::page(&v).ok_or(ApiError::BadAnswer)
-    }
-
-    async fn invoice_pdf(&self, access: &Secret, id: &str, vin: Option<&FullVin>) -> Result<Vec<u8>, ApiError> {
-        let Some(origin) = self.http.endpoints().ownership.clone() else { return Err(ApiError::EndpointGone) };
-        let path = invoices::invoice_path(id, vin).ok_or(ApiError::NotFound)?;
-        let a = self
-            .http
-            .request_accept(&origin, false, &path, Some(access), Body::None, CAP_PDF, "application/pdf")
-            .await
-            .map_err(ApiError::Http)?;
-        check(a.status, a.retry_after_s)?;
-        // a PDF, whatever the header says (Tesla documents the type loosely); anything else is not taken
-        if a.body.starts_with(b"%PDF-") { Ok(a.body.to_vec()) } else { Err(ApiError::BadAnswer) }
     }
 }
 

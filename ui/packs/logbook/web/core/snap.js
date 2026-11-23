@@ -215,8 +215,7 @@ function baselinePlan(row) {
 
 // boxes that can carry a size, and the ones left alone: maps and charts draw their own boxes
 const BOXES = new Set(['block', 'inline-block', 'flex', 'inline-flex', 'grid', 'inline-grid', 'flow-root', 'list-item']);
-// a busy ring keeps its icon size: never grown (its ring turns inside it)
-const NOT_BOXES = '.maplibregl-map, .uplot, .spin, [data-nosnap]';
+const NOT_BOXES = '.maplibregl-map, .uplot, [data-nosnap]';
 
 // grows each box that ends between two device pixels to the next one (read them all, then write); false when
 // none needed it

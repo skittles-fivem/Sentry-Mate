@@ -12,7 +12,6 @@
 // per currency and never added across currencies.
 
 import * as state from '../shared/state.js';
-import { costSourceLabel } from '../shared/invoices.js';
 import { h, replace } from '../shared/dom.js';
 import { format, formatMoney, unitLabel, rangeLabel } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, buckets, bucketKey } from '../shared/time.js';
@@ -37,7 +36,7 @@ export const id = 'charges';
 const enc = encodeURIComponent;
 export const KIND = { ac: 'ac', dc: 'dc', unknown: '?' };
 export const KIND_TONE = { ac: 'accent', dc: 'warn', unknown: 'muted' };
-const COST_SOURCE = { tariff: 'place price', manual: 'typed', free_supercharging: 'free', teslamate: 'imported', tesla_invoice: 'invoice', teslafi: 'teslafi' };
+const COST_SOURCE = { tariff: 'place price', manual: 'typed', free_supercharging: 'free', teslamate: 'imported' };
 const KEYS = {
   place: 'saved places (place:home,work)', kind: 'ac | dc | unknown', at: 'home | work | charger | service | other | none',
   cost: 'lowest cost (cost:5)', unpriced: 'with cost: keep charges with no price', dur: 'shortest charging time in min', source: SOURCE_KEY, flag: 'gap | live',
@@ -162,11 +161,9 @@ export async function mount(ctx) {
   const costCell = (c) => {
     const txt = c.cost ? formatMoney(c.cost.amount, c.cost.currency) : 'set';
     const src = c.cost ? h('span', { class: 'muted' }, ` ${COST_SOURCE[c.cost.source] || c.cost.source}`) : null;
-    // the hover title names where the cost came from (Place price, From Tesla invoice, ...)
-    const from = c.cost ? costSourceLabel(c.cost.source) || null : null;
     return isAdmin()
-      ? h('span', { class: 'nowrap', title: from, cover: 'inv.charges.cost-source' }, h('a', { class: ['lnk-plain', !c.cost && 'tone--accent'], href: state.buildUrl('charge', { car: c.car, charge: c.id, query: { edit: 'cost' } }), title: c.cost ? `${from ? `${from}. ` : ''}Change the cost` : 'set a cost for this charge' }, c.cost ? txt : '[set]'), src)
-      : h('span', { class: 'nowrap', title: from, cover: 'inv.charges.cost-source' }, c.cost ? txt : none('no price'), src);
+      ? h('span', { class: 'nowrap' }, h('a', { class: ['lnk-plain', !c.cost && 'tone--accent'], href: state.buildUrl('charge', { car: c.car, charge: c.id, query: { edit: 'cost' } }), title: c.cost ? 'change the cost' : 'set a cost for this charge' }, c.cost ? txt : '[set]'), src)
+      : h('span', { class: 'nowrap' }, c.cost ? txt : none('no price'), src);
   };
   const columns = [
     multi ? { key: 'car', label: 'car', ph: 'sub', render: (c) => carName(c.car) } : null,

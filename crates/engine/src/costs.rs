@@ -2,8 +2,7 @@
 //! else the car's; a session fee and a price per minute where set) from its curve, the energy taken from the grid
 //! where known. Once a charge has ended its cost is kept ([`records::CostEntry`]) and stays put: rebuilding the
 //! charge, or changing the place's price, does not change it. A price change reaches past charges only through
-//! [`reprice`], and a cost typed in ([`set_manual`]) is never repriced. A charge matched to a Supercharger invoice
-//! ([`crate::invoices`]) costs what the invoice says, over any price; a typed cost still wins over it.
+//! [`reprice`], and a cost typed in ([`set_manual`]) is never repriced.
 
 use crate::query::{CarRef, QueryError};
 use crate::records::{self, CostEntry, CostPart};
@@ -22,14 +21,8 @@ pub fn settle(
 ) -> Result<Option<CostEntry>> {
     let db = &e.inner.db;
     let kept = records::cost(db, car, ch.id, ch.start_ms)?;
-    let typed = kept.as_ref().is_some_and(|k| k.source == "manual");
-    // an invoice's cost is worked out from the invoice whenever it is read (never kept with the charge): only a
-    // typed cost wins over it
-    if !typed && let Some(inv) = e.invoice_cost(car, ch)? {
-        return Ok(Some(inv));
-    }
     if ch.source == Source::Live
-        && !typed
+        && kept.as_ref().is_none_or(|k| k.source != "manual")
         && let Some(free) = free_now(e, ch, car_tz)
     {
         return Ok(Some(free));
@@ -428,10 +421,7 @@ pub fn reprice(
             }
             out.charges += 1;
             let kept = records::cost(db, car, ch.id, ch.start_ms)?;
-            if kept.as_ref().is_some_and(|k| k.source == "manual")
-                || only_without_cost && kept.is_some()
-                || e.invoice_cost(car, &ch)?.is_some()
-            {
+            if kept.as_ref().is_some_and(|k| k.source == "manual") || only_without_cost && kept.is_some() {
                 out.unchanged += 1;
                 continue;
             }

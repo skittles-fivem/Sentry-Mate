@@ -21,7 +21,6 @@ import { formatNumber } from '../shared/i18n.js';
 import { section, figure, chip, button, icon, ago, errorView, empty } from '../core/ui.js';
 import { field, choice, carOptions } from '../core/form.js';
 import { dataTable } from '../core/table.js';
-import { invoicesPart, invoicesSlot, loadUnmatched } from './integrations-invoices.js';
 import { askAgain } from './integrations-tesla.js';
 import { zoneLabel } from '../core/format.js';
 
@@ -101,7 +100,7 @@ export function teslafiPart(ctx) {
   const tz = ctx.tz;
   const slot = h('div', { class: 'tesla teslafi' });
   const el = section({ title: 'TeslaFi', note: 'a third live input, for TeslaFi subscribers, admins only', id: 'teslafi', cls: 'si-sec tesla-sec' }, slot);
-  let over = null, accounts = [], status = [], cars = [], loadErr = null, unmatched = null;
+  let over = null, accounts = [], status = [], cars = [], loadErr = null;
   const carName = (cid) => (cars.find((c) => c.id === cid) || {}).name || cid;
   const ask = (opts) => askAgain(ctx, { input: 'the TeslaFi input', errorText: teslafiErrorText, ...opts });
 
@@ -115,7 +114,6 @@ export function teslafiPart(ctx) {
         ctx.api.get('cars', { sort: 'name', limit: 500 }, { maxAgeMs: 60000 }).catch((e) => { if (api.isAbort(e)) throw e; return { items: [] }; }),
       ]);
       over = o; accounts = a.items || []; status = s.items || []; cars = c.items || []; loadErr = null;
-      unmatched = await loadUnmatched(ctx, 'teslafi', over);
     } catch (e) {
       if (api.isAbort(e)) throw e;
       loadErr = e;
@@ -139,16 +137,15 @@ export function teslafiPart(ctx) {
 
   function draw() {
     if (!admin) {
-      replace(slot, h('p', { class: 'si-lead' }, 'Sentry Mate can also read a car from TeslaFi, with the owner’s TeslaFi token, as a third live input beside SMO and the Tesla API (“Data from TeslaFi”). Only admins see and change it; no page ever shows the token.'), invoicesSlot('teslafi'));
+      replace(slot, h('p', { class: 'si-lead' }, 'Sentry Mate can also read a car from TeslaFi, with the owner’s TeslaFi token, as a third live input beside SMO and the Tesla API (“Data from TeslaFi”). Only admins see and change it; no page ever shows the token.'));
       return;
     }
-    if (loadErr) { replace(slot, errorView(loadErr, { title: 'The TeslaFi settings could not be loaded.', retry: () => again(), home: false, eyebrow: 'TeslaFi' }), invoicesSlot('teslafi')); return; }
+    if (loadErr) { replace(slot, errorView(loadErr, { title: 'The TeslaFi settings could not be loaded.', retry: () => again(), home: false, eyebrow: 'TeslaFi' })); return; }
     replace(slot,
       h('p', { class: 'si-lead' },
         'If you pay for TeslaFi, Sentry Mate can read the polls TeslaFi already makes of your car (about one a minute while it is awake). They come from TeslaFi’s own database, so reading them never wakes the car and never counts against TeslaFi’s command limit. Where SMO or the Tesla API cover the same time, their values win. ',
         over.enabled ? null : h('strong', null, 'Off until a token is added: until then the server makes no connection to TeslaFi at all.')),
       overview(),
-      invoicesPart(ctx, { source: 'teslafi', over, unmatched, ask: ask, again }),
       accounts.length ? h('div', { class: 'tesla-accounts' }, accounts.map(accountCard)) : null,
       addPart(),
       statusPart());

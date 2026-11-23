@@ -105,19 +105,6 @@ pub struct PackReport {
     pub stopped: bool,
 }
 
-/// How far a packing pass is, told after each day (for the Storage panel's progress).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PackProgress {
-    /// Days looked at so far (packed, or left as they were), of all the days the pass has to pack.
-    pub days_done: usize,
-    pub days_total: usize,
-    /// Bytes stored before minus after, of the days packed so far.
-    pub saved_bytes: u64,
-    /// Days that could not be packed so far, and why the last one could not.
-    pub failed: usize,
-    pub last_error: Option<String>,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum PackError {
     #[error("{0}")]
@@ -667,7 +654,7 @@ impl Inner {
         Ok(report)
     }
 
-    fn pack_finished(&self, before_ms: u64, stop: &dyn Fn() -> bool, progress: &dyn Fn(&PackProgress)) -> PackReport {
+    fn pack_finished(&self, before_ms: u64, stop: &dyn Fn() -> bool) -> PackReport {
         let mut report = PackReport::default();
         let mut keys: Vec<String> = std::fs::read_dir(&self.dir)
             .into_iter()
@@ -677,36 +664,26 @@ impl Inner {
             .filter(|k| crate::ledger::valid_key(k))
             .collect();
         keys.sort();
-        // counted first (one listing per car), so the progress has a total from the first day on
-        let days: Vec<(String, String, Vec<String>)> = keys
-            .iter()
-            .flat_map(|key| self.loose_days(key, Some(before_ms)).into_iter().map(move |(d, n)| (key.clone(), d, n)))
-            .collect();
-        let mut told = PackProgress { days_total: days.len(), ..PackProgress::default() };
-        progress(&told);
-        for (key, day, names) in days {
-            if stop() {
-                report.stopped = true;
-                return report;
-            }
-            match self.pack_day(&key, &day, names) {
-                Ok(r) => {
-                    report.days += r.days;
-                    report.files += r.files;
-                    report.before_bytes += r.before_bytes;
-                    report.after_bytes += r.after_bytes;
+        for key in keys {
+            for (day, names) in self.loose_days(&key, Some(before_ms)) {
+                if stop() {
+                    report.stopped = true;
+                    return report;
                 }
-                Err(e) => {
-                    report.failed += 1;
-                    // not the key: the server's log is kept in the clear
-                    tracing::warn!("CAN logs: the logs of {day} of a car were not packed: {e}");
-                    told.last_error = Some(format!("the logs of {day} of a car: {e}"));
+                match self.pack_day(&key, &day, names) {
+                    Ok(r) => {
+                        report.days += r.days;
+                        report.files += r.files;
+                        report.before_bytes += r.before_bytes;
+                        report.after_bytes += r.after_bytes;
+                    }
+                    Err(e) => {
+                        report.failed += 1;
+                        // not the key: the server's log is kept in the clear
+                        tracing::warn!("CAN logs: the logs of {day} of a car were not packed: {e}");
+                    }
                 }
             }
-            told.days_done += 1;
-            told.saved_bytes = report.before_bytes.saturating_sub(report.after_bytes);
-            told.failed = report.failed;
-            progress(&told);
         }
         report
     }
@@ -1324,17 +1301,7 @@ impl Store {
     /// by car and day by day; `stop` is asked before each day. A day that fails is left as it was and counted in
     /// `failed`. Call it from a blocking thread.
     pub fn pack_finished(&self, before_ms: u64, stop: &dyn Fn() -> bool) -> PackReport {
-        self.0.pack_finished(before_ms, stop, &|_| {})
-    }
-
-    /// [`Store::pack_finished`], telling `progress` how far it is: once the days are counted, then after each day.
-    pub fn pack_finished_with_progress(
-        &self,
-        before_ms: u64,
-        stop: &dyn Fn() -> bool,
-        progress: &dyn Fn(&PackProgress),
-    ) -> PackReport {
-        self.0.pack_finished(before_ms, stop, progress)
+        self.0.pack_finished(before_ms, stop)
     }
 
     /// The UTC days (`YYYY-MM-DD`) a car key has packs of, with each pack file's bytes as stored, in day order.

@@ -241,30 +241,9 @@ async fn health_storage_and_the_servers_figures() {
             "total",
             "last_saved_bytes",
             "saved_bytes",
-            "phase",
-            "step_number",
-            "steps",
-            "unit",
-            "pass_saved_bytes",
-            "rate_per_s",
-            "eta_ms",
-            "progress_ms",
-            "stalled",
-            "unit_errors",
-            "last_unit_error",
         ],
     );
     assert_eq!(d["compaction"]["status"], json!("idle"), "{d}");
-    assert_eq!(
-        (
-            &d["compaction"]["phase"],
-            &d["compaction"]["pass_saved_bytes"],
-            &d["compaction"]["stalled"],
-            &d["compaction"]["steps"]
-        ),
-        (&Value::Null, &Value::Null, &json!(false), &json!(3)),
-        "no progress while no pass runs: {d}"
-    );
     assert_eq!(d["compaction"]["finished_ms"], Value::Null, "no pass yet: {d}");
     assert_eq!(code(&mut watch, "/api/v1/system/storage/detail").await, (403, Some("not_allowed".into())));
     // Compact now: an admin's, in the background, recorded in the audit log; every answer reads the same after it
@@ -278,17 +257,8 @@ async fn health_storage_and_the_servers_figures() {
     let mut done = Value::Null;
     for _ in 0..600 {
         done = ok(&mut admin, "/api/v1/system/storage/detail").await;
-        let c = &done["compaction"];
-        if c["status"] != json!("running") {
+        if done["compaction"]["status"] != json!("running") {
             break;
-        }
-        // while it runs: its step, how far, what it freed so far and when it last got on
-        if c["step"].is_string() {
-            assert!(["counting", "packing"].contains(&c["phase"].as_str().unwrap()), "{c}");
-            assert!((1..=3).contains(&c["step_number"].as_u64().unwrap()), "{c}");
-            assert!(["days", "records"].contains(&c["unit"].as_str().unwrap()), "{c}");
-            assert!(c["progress_ms"].as_u64().is_some() && c["pass_saved_bytes"].as_u64().is_some(), "{c}");
-            assert!(c["done"].as_u64().unwrap() <= c["total"].as_u64().unwrap(), "{c}");
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }

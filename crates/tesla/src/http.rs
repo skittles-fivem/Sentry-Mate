@@ -35,9 +35,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) const CAP_TOKEN: usize = 32 * 1024;
 pub(crate) const CAP_LIST: usize = 256 * 1024;
 pub(crate) const CAP_DATA: usize = 512 * 1024;
-/// A page of the charging history, and an invoice's PDF.
-pub(crate) const CAP_HISTORY: usize = 2 * 1024 * 1024;
-pub(crate) const CAP_PDF: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HttpError {
@@ -101,8 +98,6 @@ impl Proxy {
 pub(crate) struct Answer {
     pub status: u16,
     pub retry_after_s: Option<u64>,
-    #[allow(dead_code)]
-    pub content_type: Option<String>,
     pub body: Bytes,
 }
 
@@ -232,26 +227,11 @@ impl Http {
         body: Body<'_>,
         cap: usize,
     ) -> Result<Answer, HttpError> {
-        self.request_accept(origin, post, path, bearer, body, cap, "application/json").await
+        timeout(REQUEST_TIMEOUT, self.send(origin, post, path, bearer, body, cap))
+            .await
+            .map_err(|_| HttpError::Timeout)?
     }
 
-    /// [`Http::request`] asking for another type (an invoice's PDF).
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn request_accept(
-        &self,
-        origin: &Origin,
-        post: bool,
-        path: &str,
-        bearer: Option<&Secret>,
-        body: Body<'_>,
-        cap: usize,
-        accept: &'static str,
-    ) -> Result<Answer, HttpError> {
-        let wait = if cap > CAP_DATA { REQUEST_TIMEOUT * 3 } else { REQUEST_TIMEOUT };
-        timeout(wait, self.send(origin, post, path, bearer, body, cap, accept)).await.map_err(|_| HttpError::Timeout)?
-    }
-
-    #[allow(clippy::too_many_arguments)]
     async fn send(
         &self,
         origin: &Origin,
@@ -260,7 +240,6 @@ impl Http {
         bearer: Option<&Secret>,
         body: Body<'_>,
         cap: usize,
-        accept: &'static str,
     ) -> Result<Answer, HttpError> {
         if !path.starts_with('/') {
             return Err(HttpError::HostNotAllowed);
@@ -275,7 +254,7 @@ impl Http {
             .method(if post { "POST" } else { "GET" })
             .uri(format!("{}{}", origin.https(), path))
             .header(UA, USER_AGENT)
-            .header(ACCEPT, accept);
+            .header(ACCEPT, "application/json");
         if let Some(t) = bearer {
             let mut v = HeaderValue::from_str(&format!("Bearer {}", t.expose())).map_err(|_| HttpError::Protocol)?;
             v.set_sensitive(true);
@@ -296,16 +275,11 @@ impl Http {
             resp.headers().get(name).and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok())
         };
         let retry_after_s = wait("retry-after").or_else(|| wait("ratelimit-reset"));
-        let content_type = resp
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.split(';').next().unwrap_or_default().trim().to_ascii_lowercase());
         let body = Limited::new(resp.into_body(), cap).collect().await.map_err(|e| {
             if e.downcast_ref::<LengthLimitError>().is_some() { HttpError::TooLarge } else { HttpError::Protocol }
         })?;
         tracing::debug!(host = %origin.host, status, "tesla request");
-        Ok(Answer { status, retry_after_s, content_type, body: body.to_bytes() })
+        Ok(Answer { status, retry_after_s, body: body.to_bytes() })
     }
 }
 

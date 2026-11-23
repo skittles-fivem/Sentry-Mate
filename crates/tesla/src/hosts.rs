@@ -39,10 +39,6 @@ pub const GLOBAL_HOSTS: [&str; 3] = ["auth.tesla.com", "owner-api.teslamotors.co
 /// are polled only.
 pub const CHINA_HOSTS: [&str; 2] = ["auth.tesla.cn", "owner-api.vn.cloud.tesla.cn"];
 
-/// Tesla's ownership host, where Tesla's app reads the charging history and its invoices (global accounts only, and
-/// only once an admin turned invoices on: [`crate::invoices`]).
-pub const OWNERSHIP_HOST: &str = "ownership.tesla.com";
-
 /// One HTTPS (or WSS) server: host and port.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Origin {
@@ -85,8 +81,6 @@ pub struct Endpoints {
     pub api: Origin,
     /// The streaming websocket (`/streaming/`), where there is one.
     pub stream: Option<Origin>,
-    /// The charging history and its invoices, where there is a host for them.
-    pub ownership: Option<Origin>,
     pub(crate) roots: Roots,
 }
 
@@ -97,7 +91,6 @@ impl std::fmt::Debug for Endpoints {
             .field("auth", &self.auth.authority())
             .field("api", &self.api.authority())
             .field("stream", &self.stream.as_ref().map(Origin::authority))
-            .field("ownership", &self.ownership.as_ref().map(Origin::authority))
             .finish()
     }
 }
@@ -111,7 +104,6 @@ impl Endpoints {
                 auth: Origin::tesla(GLOBAL_HOSTS[0]),
                 api: Origin::tesla(GLOBAL_HOSTS[1]),
                 stream: Some(Origin::tesla(GLOBAL_HOSTS[2])),
-                ownership: Some(Origin::tesla(OWNERSHIP_HOST)),
                 roots: Roots::Public,
             },
             Region::China => Endpoints {
@@ -119,7 +111,6 @@ impl Endpoints {
                 auth: Origin::tesla(CHINA_HOSTS[0]),
                 api: Origin::tesla(CHINA_HOSTS[1]),
                 stream: None,
-                ownership: None,
                 roots: Roots::Public,
             },
         }
@@ -134,20 +125,13 @@ impl Endpoints {
         Endpoints {
             region: Region::Global,
             auth: api.clone(),
-            ownership: Some(api.clone()),
             api,
             stream: stream_port.map(|port| Origin { host: host.to_string(), port }),
             roots: Roots::Only(Arc::new(certs)),
         }
     }
 
-    /// The host of the charging history and its invoices, where there is one (asked only with invoices on).
-    pub fn invoice_host(&self) -> Option<String> {
-        self.ownership.as_ref().map(|o| o.host.clone())
-    }
-
-    /// Every host this account may connect to, for the settings page ("connects only to ..."), the invoices' host
-    /// not included ([`Endpoints::invoice_host`]).
+    /// Every host this account may connect to, for the settings page ("connects only to ...").
     pub fn hosts(&self) -> Vec<String> {
         let mut h = vec![self.auth.host.clone(), self.api.host.clone()];
         h.extend(self.stream.as_ref().map(|s| s.host.clone()));
@@ -157,10 +141,7 @@ impl Endpoints {
 
     /// Whether `origin` is one of this account's servers (checked again before every connection).
     pub(crate) fn allows(&self, origin: &Origin) -> bool {
-        *origin == self.auth
-            || *origin == self.api
-            || self.stream.as_ref() == Some(origin)
-            || self.ownership.as_ref() == Some(origin)
+        *origin == self.auth || *origin == self.api || self.stream.as_ref() == Some(origin)
     }
 
     /// The `issuer` Tesla names in the sign-in callback.
@@ -207,8 +188,5 @@ mod tests {
         assert!(!g.allows(&Origin { host: "example.com".into(), port: 443 }));
         assert!(!g.allows(&Origin { host: "auth.tesla.com".into(), port: 8443 }));
         assert!(g.allows(&Origin { host: "owner-api.teslamotors.com".into(), port: 443 }));
-        assert_eq!(g.invoice_host().as_deref(), Some("ownership.tesla.com"));
-        assert!(g.allows(&Origin { host: "ownership.tesla.com".into(), port: 443 }));
-        assert!(c.invoice_host().is_none());
     }
 }

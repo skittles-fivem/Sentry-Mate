@@ -134,16 +134,6 @@ pub fn off_can(fields: &BTreeMap<String, String>, version: Option<String>, dista
 
 /// Reads one answer (`fields`: its keys and text values) with `tz` for its wall time. `prev_ms`: the poll before,
 /// for the hour the clocks go back.
-/// A TeslaFi local time (`2026-07-04 03:00:00`, the forms its polls use) in the account's zone, as ms since the
-/// epoch (none for a time that is not one, or skipped by a clock change).
-pub fn local_ms(s: &str, tz: chrono_tz::Tz) -> Option<u64> {
-    let local = poll::parse_local(s)?;
-    match poll::to_utc(tz, local, None) {
-        Utc::One(t) | Utc::Repeated(t) => Some(t),
-        Utc::Skipped => None,
-    }
-}
-
 pub fn read(fields: &BTreeMap<String, String>, tz: chrono_tz::Tz, prev_ms: Option<u64>) -> Result<FeedPoll, FeedError> {
     let row = Row::Map(fields);
     let local = row.text(Col::Date).as_deref().and_then(poll::parse_local).ok_or(FeedError::NoTime)?;

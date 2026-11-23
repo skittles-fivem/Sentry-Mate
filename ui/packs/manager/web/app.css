@@ -270,7 +270,9 @@ html { font-size: calc(100% * var(--ui-auto) * var(--ui-scale)); }
 *, ::before, ::after { line-height: var(--LH); }
 /* what a closed <details> holds is not laid out at all (as browsers used to do), so nothing measures it */
 details:not([open]) > :not(summary) { display: none; }
-html { background: var(--bg-0); }
+/* The page's scrollbar keeps its place whether the page is longer than the window or not, so a page that
+   grows or shrinks (a list loaded, a tooltip near the bottom) never moves sideways. */
+html { background: var(--bg-0); scrollbar-gutter: stable; }
 [hidden] { display: none !important; }
 body {
   container: page / inline-size;
@@ -918,7 +920,14 @@ a.tl-kind:hover { color: var(--live); }
 .chart-label .swatch { flex: none; width: round(0.875rem, var(--e)); height: round(0.1875rem, var(--e)); border-radius: round(0.125rem, var(--e)); background: var(--c); }
 .chart-label .name { font-weight: 600; color: var(--text); }
 .chart-label .chart-unit { font-weight: 500; color: var(--text-3); }
-.chart-label .val { margin-left: auto; color: var(--text-2); }
+/* the value under the cursor fills the rest of the label's line, right-aligned, on one line: a new value changes only
+   its text, never the label's size or where it wraps */
+.chart-label .val { flex: 1 1 round(12rem, var(--e)); min-width: 0; margin-left: auto; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); }
+/* the same for a readout in a panel's head (Power against battery %): the head's right side keeps its width */
+.panel-head > .row:has(> .val) { flex: 1 1 0; min-width: 0; justify-content: flex-end; flex-wrap: nowrap; }
+.panel-head > .row > .val { flex: 1 1 0; min-width: 0; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); }
+/* with the mouse away the readout is empty and still one line high (a zero-width space), so a value never adds a line */
+:is(.chart-label, .panel-head > .row) > .val:empty::before { content: "\200b"; }
 .chart-label .val b { color: var(--text); font-weight: 600; }
 .chart-label .val .regen { color: var(--text); }
 .chart-label .key { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); color: var(--text-3); margin-left: round(0.375rem, var(--e)); }
@@ -1190,23 +1199,6 @@ th[aria-sort] .tbl-sort .ico { opacity: 1; color: var(--live); }
 th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 .tbl-foot { display: flex; align-items: center; justify-content: space-between; gap: round(0.75rem, var(--e)); min-height: round(3rem, var(--e)); padding: round(0.5rem, var(--e)) round(1.25rem, var(--e)); border-top: 1px solid var(--line); background: var(--surface-foot); font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-3); }
 .tbl-foot[hidden] { display: none; }
-
-/* a long log-like list in a box of a header row and five rows that scrolls by itself (shared/scrollbox.js;
-   dataTable's box option). The box has its height from the start, so the page never grows while rows load;
-   a list whose length is known at once (.scroll-box--fit) is only as high as it needs, up to the same five
-   rows. A list whose rows are not one table row tall sets --box-row (and --box-head: 0px without a header
-   row). The column header stays at the top while the rows scroll, on an opaque ground; a fade at the bottom
-   says rows are hidden under it (data-below). */
-.scroll-box {
-  --box-head: calc(round(2.375rem, var(--e)) + 1px); --box-row: calc(round(3.375rem, var(--e)) + 1px); --box-rows: 5;
-  --box-h: calc(var(--box-head) + var(--box-rows) * var(--box-row));
-  height: var(--box-h); overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable;
-}
-.scroll-box--fit { height: auto; max-height: var(--box-h); }
-.scroll-box[data-below] { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - round(2.5rem, var(--e))), rgb(0 0 0 / 0.2)); mask-image: linear-gradient(to bottom, #000 calc(100% - round(2.5rem, var(--e))), rgb(0 0 0 / 0.2)); }
-.scroll-box:focus-visible { outline-offset: round(-0.125rem, var(--e)); }
-.scroll-box-end { height: 1px; margin-top: -1px; }
-.scroll-box .tbl thead th { position: sticky; top: 0; z-index: 2; background: linear-gradient(var(--panel), var(--panel)), var(--panel-solid); }
 .tbl-skel td { height: calc(round(3.375rem, var(--e)) - 2 * round(0.375rem, var(--e))); }
 .tbl-skel .skel { height: round(0.625rem, var(--e)); width: 70%; }
 .tbl-empty td { padding: 0; }
@@ -1582,8 +1574,6 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 :root[data-phone] .tbl-bar > .tbl-csv { margin-left: auto; }
 :root[data-phone] .tbl-foot { flex-wrap: wrap; padding-left: round(1rem, var(--e)); padding-right: round(1rem, var(--e)); }
 :root[data-phone] .tbl:not(.tbl--keep) :is(thead) { display: none; }
-:root[data-phone] .scroll-box { --box-h: min(round(30rem, var(--e)), 62svh); }
-:root[data-phone] .tbl-box { border-top: 1px solid var(--border, var(--line)); }
 :root[data-phone] .tbl:not(.tbl--keep), :root[data-phone] .tbl:not(.tbl--keep) > tbody { display: block; width: 100%; }
 :root[data-phone] .tbl:not(.tbl--keep) > tbody > tr {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(0.5rem, var(--e)) round(0.875rem, var(--e));
@@ -2129,3 +2119,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 :root[data-phone] .notice > a.btn { grid-column: 2 / -1; grid-row: 2; justify-self: start; max-width: 100%; white-space: normal; }
 :root[data-phone] .notice > button.btn { grid-column: 3; grid-row: 1; }
 .footer-legal { max-width: round(56rem, var(--e)); } /* a readable line, as Sentry Manager keeps its notes */
+
+/* a readout whose text changes in place sits in a box as wide as its longest text (shared/dom.js steady) */
+.steady { display: inline-grid; font-variant-numeric: tabular-nums; }
+.steady > * { grid-area: 1 / 1; }
+.steady-size { visibility: hidden; }

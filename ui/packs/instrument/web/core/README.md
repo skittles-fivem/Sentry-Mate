@@ -148,18 +148,10 @@ server's CSV for API lists (same filters and sort), else CSV built from the rows
 `csv: column('Distance', 'distance_km', 'distance')` from `shared/csv.js` names the unit in the header).
 An API list that should download readable columns instead of the server's file passes `csv: { all: true }`
 (every page of the list, built from the columns' `csv` specs; `csv: {}` takes only the rows shown).
-`autoMore: true` also loads the next page as the foot scrolls into view. `box: true` (or the box's accessible name)
-puts a long log-like list in a box of a header row and five rows that scrolls by itself (`scrollBox` from
-`shared/scrollbox.js`: a focusable region, `data-below` and a fade while rows are hidden under its bottom edge, the
-column header sticky at its top). `app.css` gives `.scroll-box` its height from the start, so the page never grows
-while rows load; with `autoMore` the next page loads as the end of the box comes near, and Show more stays under
-the box for the keyboard. Local rows, and an API list whose first page holds all of it, get `.scroll-box--fit`:
-only as high as the rows, up to five. A list that is not a table uses `scrollBox({ cls, label }, list)` itself and
-sets `--box-row` (and `--box-head: 0px`) when its rows are not one table row tall. The CSV still has every row.
-Boxed: the update and firmware histories (Software), the gaps, unknown time and storage by day (Data health), the
-problems of the Connections overview, the broker log and recent events (Settings: Integrations), parked drain
-(Battery), the storage categories and the audit log (Settings: Server and access). Drives, Charges and Logbook
-stay full-page lists.
+`autoMore: true` also loads the next page as the foot scrolls into view. `box: true` (or the box's name) puts the
+rows in a box that scrolls by itself, a focusable region whose height the page's CSS gives `.tbl-box` from the
+start; with `autoMore` the next page then loads as the end of the box comes near, and the box has `data-below`
+while rows are hidden under its bottom edge (for a fade). The audit log of Settings: Server and access uses it.
 
 ### `core/chart.js`: charts on uPlot
 

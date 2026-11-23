@@ -42,8 +42,6 @@
 .si-log-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .si-log-list li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: round(0.75rem, var(--e)); padding: round(0.4375rem, var(--e)) 0; border-top: 1px solid var(--line); align-items: baseline; }
 .si-log-list li > span:nth-child(2) { overflow-wrap: anywhere; }
-/* the broker log scrolls in a box of about five entries */
-.si-log-box { --box-head: 0px; --box-row: calc(round(2.125rem, var(--e)) + 1px); }
 .si-client { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); }
 .si-client p { color: var(--text-2); margin: 0; }
 
@@ -110,7 +108,6 @@
 @container page (max-width: 50rem) {
   .si-tree-row { grid-template-columns: minmax(0, 1fr); }
   .si-log-list li { grid-template-columns: minmax(0, 1fr); gap: round(0.125rem, var(--e)); }
-  .si-log-box { --box-row: calc(round(4.5rem, var(--e)) + 1px); }
   .si-wrap { min-width: round(11rem, var(--e)); }
 }
 
@@ -287,9 +284,6 @@
 
 /* problems */
 .co-probs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-/* the box: rows of two lines (the connection and its message) */
-.co-probs-box { --box-head: 0px; --box-row: calc(round(1.25rem, var(--e)) + 2 * round(1.25rem, var(--e)) + round(0.125rem, var(--e)) + 1px); }
-.co-probs-box[hidden] { display: none; }
 .co-prob { display: grid; grid-template-columns: round(10.5rem, var(--e)) minmax(0, 1fr) round(8rem, var(--e)) round(5.5rem, var(--e)); gap: round(0.875rem, var(--e)); align-items: baseline; padding: round(0.625rem, var(--e)) round(0.75rem, var(--e)); border-bottom: 1px solid var(--line); }
 .co-prob[data-state="ongoing"] { background: var(--danger-soft); border-radius: var(--radius-sm); }
 .co-p-when { color: var(--text-2); font-variant-numeric: tabular-nums; }
@@ -335,18 +329,3 @@
 /* overview: a CAN Bridge row's logs missing on the server, beside its name (no line of its own) */
 .co-nameline { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.25rem, var(--e)) round(0.5rem, var(--e)); min-width: 0; }
 .co-miss { flex: none; height: round(1.125rem, var(--e)); }
-
-/* Supercharger invoices, in the Tesla and TeslaFi sections (pages/invoices-block.js) */
-.inv-block { display: flex; flex-direction: column; gap: round(0.875rem, var(--e)); margin-top: var(--gap); min-width: 0; }
-.inv-block .panel-head { margin: 0; }
-.inv-block .switch-row { margin-top: 0; padding: 0; justify-content: flex-start; }
-.inv-block > .note, .inv-block > .si-last-error { margin: 0; }
-.inv-downloads { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.625rem, var(--e)); }
-.inv-month { display: inline-flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)); }
-.inv-unmatched { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); }
-.inv-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); }
-.inv-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: round(0.75rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); }
-.inv-list .faint { white-space: nowrap; }
-.inv-list .num { font-variant-numeric: tabular-nums; text-align: right; }
-:root[data-phone] .inv-list li { grid-template-columns: minmax(0, 1fr) auto; }
-:root[data-phone] .inv-list li .faint { grid-column: 1; grid-row: 2; }

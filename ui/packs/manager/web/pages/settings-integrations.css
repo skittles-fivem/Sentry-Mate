@@ -42,8 +42,6 @@
 .si-log-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .si-log-list li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: round(0.75rem, var(--e)); padding: round(0.4375rem, var(--e)) 0; border-top: 1px solid var(--line); align-items: baseline; }
 .si-log-list li > span:nth-child(2) { overflow-wrap: anywhere; }
-/* the broker log scrolls in a box of about five entries */
-.si-log-box { --box-head: 0px; --box-row: calc(round(2.125rem, var(--e)) + 1px); }
 .si-client { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); }
 .si-client p { color: var(--text-2); margin: 0; }
 
@@ -110,7 +108,6 @@
 @container page (max-width: 50rem) {
   .si-tree-row { grid-template-columns: minmax(0, 1fr); }
   .si-log-list li { grid-template-columns: minmax(0, 1fr); gap: round(0.125rem, var(--e)); }
-  .si-log-box { --box-row: calc(round(4.5rem, var(--e)) + 1px); }
   .si-wrap { min-width: round(11rem, var(--e)); }
 }
 
@@ -292,10 +289,6 @@
 /* problems */
 .ov-prob-panel .note { margin: 0 0 round(0.75rem, var(--e)); }
 .ov-probs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-/* the box: the header row held at its top, rows of two lines (more on a narrower page) */
-.ov-probs-box { --box-head: round(1.6875rem, var(--e)); --box-row: round(3.9375rem, var(--e)); }
-.ov-probs-box[hidden] { display: none; }
-.ov-probs-box .ov-probhead { position: sticky; top: 0; z-index: 1; background: linear-gradient(var(--panel), var(--panel)), var(--panel-solid); }
 .ov-probhead, .ov-prob { display: grid; grid-template-columns: minmax(round(9rem, var(--e)), 1fr) minmax(round(10rem, var(--e)), 1.2fr) minmax(0, 3fr) minmax(round(7rem, var(--e)), 0.8fr) minmax(round(8rem, var(--e)), 0.8fr); gap: round(0.25rem, var(--e)) round(0.875rem, var(--e)); align-items: start; }
 .ov-probhead { padding: 0 round(0.75rem, var(--e)) round(0.5rem, var(--e)); color: var(--text-3); font-size: max(0.75rem, var(--fs-floor)); font-weight: 500; border-bottom: 1px solid var(--line); }
 .ov-prob { padding: round(0.625rem, var(--e)) round(0.75rem, var(--e)); border-bottom: 1px solid var(--line); }
@@ -316,7 +309,6 @@
   .ov-prob { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(0.5rem, var(--e)) round(0.875rem, var(--e)); padding: round(0.75rem, var(--e)) 0; }
   .ov-prob .ov-what { grid-column: 1 / -1; }
   .ov-prob[data-resolved="false"] { box-shadow: none; }
-  .ov-probs-box { --box-head: 0px; --box-row: calc(round(6.5rem, var(--e)) + 1px); }
   .ov-totals { grid-template-columns: repeat(auto-fit, minmax(round(7rem, var(--e)), 1fr)); }
 }
 :root[data-phone] .ov-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(0.5rem, var(--e)); }
@@ -327,18 +319,3 @@
 :root[data-phone] .ov-err .ico { margin-top: 0; }
 :root[data-phone] .si-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
 :root[data-phone] .si-tabs .seg-btn { width: auto; justify-content: center; min-height: var(--tap); }
-
-/* Supercharger invoices, in the Tesla and TeslaFi sections (pages/invoices-block.js) */
-.inv-block { display: flex; flex-direction: column; gap: round(0.875rem, var(--e)); margin-top: var(--gap); min-width: 0; }
-.inv-block .panel-head { margin: 0; }
-.inv-block .switch-row { margin-top: 0; padding: 0; justify-content: flex-start; }
-.inv-block > .note, .inv-block > .si-last-error { margin: 0; }
-.inv-downloads { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.625rem, var(--e)); }
-.inv-month { display: inline-flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)); }
-.inv-unmatched { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); }
-.inv-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); }
-.inv-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: round(0.75rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); }
-.inv-list .faint { white-space: nowrap; }
-.inv-list .num { font-variant-numeric: tabular-nums; text-align: right; }
-:root[data-phone] .inv-list li { grid-template-columns: minmax(0, 1fr) auto; }
-:root[data-phone] .inv-list li .faint { grid-column: 1; grid-row: 2; }

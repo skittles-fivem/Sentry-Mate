@@ -38,8 +38,6 @@
 .hl-key > .ico { color: var(--text-3); }
 .hl-key-r { align-items: flex-end !important; text-align: right; }
 .hl-span-list li { font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.4 * 1em), 2px); }
-/* the unknown spans scroll in a box of about five lines */
-.hl-span-box { --box-head: 0px; --box-row: round(1.75rem, var(--e)); }
 .hl-rebuild { display: flex; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.875rem, var(--e)); margin-top: round(1.25rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
 .hl-rebuild .note { margin: 0; }
 

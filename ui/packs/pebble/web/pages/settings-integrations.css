@@ -78,10 +78,3 @@ html[data-form="phone"] .cn-prob-conn { grid-column: 1; grid-row: 2; }
 html[data-form="phone"] .cn-prob-what { grid-column: 1 / -1; grid-row: 3; }
 html[data-form="phone"] .cn-prob-dur { grid-column: 1 / -1; grid-row: 4; color: var(--muted); font-size: var(--f13); line-height: var(--l13); }
 .cn-read { min-height: var(--l14); }
-
-/* the problems scroll in a box (core/bits.js listBox) about five rows high, the head staying at its top */
-.cn-probs-box { --box-row: round(3.3125rem, var(--e)); --box-pad: calc(var(--s3) + var(--l13) + var(--s3)); padding: 0 var(--s4); }
-.cn-probs-box > .cn-prob-head { position: sticky; top: 0; z-index: 1; padding: var(--s3) 0; background: var(--well); border-bottom: 1px solid var(--card-alt); }
-.cn-probs-box .cn-probs > .cn-prob:first-child { border-top: 0; }
-html[data-form="phone"] .cn-probs-box { --box-rows: 3; --box-row: calc(2 * var(--s3) + 2 * var(--l13) + 2 * var(--l14) + 3 * var(--s1) + 1px); --box-pad: var(--s3); }
-html[data-form="phone"] .cn-probs-box .cn-probs { padding-top: var(--s3); }
