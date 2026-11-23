@@ -4,14 +4,16 @@
 // make new, say it is saved), moving to another server as numbered steps with a state tag and a run button
 // each (a move code, or an export file; carry on a stopped move; undo a move), output in a mono box; the
 // accounts, a full rebuild of every car (with its progress and the automatic run), and the audit log; and
-// storage: the space on disk by category (GET /system/storage/detail) and compaction as a step with a run
-// button (POST /system/storage/compact), its state in a mono box. While a compaction pass runs the detail is
-// read again every 2 s.
+// storage beside the move: the space on disk by kind (GET /system/storage/detail) and compaction with a run
+// button (POST /system/storage/compact), its state in one line.
+// While a compaction pass runs the detail is read again every 2 s.
 // The move and the export file are read once a second while something runs (GET /system/move,
 // GET /system/exports/{id}); every dangerous action asks for the person's own password again.
 
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
+import { downloadCsv } from '../shared/csv.js';
+import { storageGroups, shortName, shareText, groupWord, PACK_STEP } from '../shared/storage.js';
 import { format } from '../shared/units.js';
 import { head, paint, section, note, link, btn, kv, textBar } from '../core/ui.js';
 import { carKeys } from '../core/carpick.js';
@@ -47,9 +49,6 @@ const ROLE = { admin: 'admin', watch: 'watch' };
 const PURPOSE = { web: 'web and api', upload: 'uploads' };
 const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
 const LIVE = new Set(['offered', 'copying', 'paused', 'moved']);
-// storage: the groups of the categories and the steps of a compaction pass, in plain words
-const STORE_GROUP = { logs: 'CAN logs', series: 'time series', rows: 'drives and charges', kv: 'kept answers and records', imports: 'imports', server: 'server' };
-const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records' };
 
 /** A list of '[tag] text' lines. */
 const lines = (rows, attrs = {}) => h('ul', { class: 'ln-list', ...attrs }, rows.filter(Boolean).map(([t, text, sub]) =>
@@ -435,44 +434,61 @@ export async function mount(ctx) {
   }
 
   /* ---------------------------------------------------------------- storage and compaction (admin) */
-  // what takes the space on disk, largest first, and compaction as one step: a state tag, a run button, its
-  // output in a mono box. While a pass runs (also one the server started by itself) the detail is read again
-  // every 2 s; when it ends the table is drawn again and a note says what was freed.
+  // beside the move: on disk, free, saved by compaction and the last pass in one key: value block, how compaction
+  // stands in one line (what it does on hover), and the space by kind (shared/storage.js): one line per group
+  // with a text bar, its size and share; a group opens to its categories by short name, at most five lines tall
+  // (the CSV has every category with the server's own label). While a pass runs (also one the server started by
+  // itself) the detail is read again every 2 s; when it ends the groups are drawn again and a note says what was freed.
   const storSlot = h('div', { 'aria-live': 'polite' });
+  const storList = h('ul', { class: 'st-groups', 'aria-label': 'Space on disk by kind' });
+  const storOpen = new Set();
+  let storOpened = false;
   let gt = null;
   ctx.onCleanup(() => clearTimeout(gt));
-  const storTable = admin ? table(ctx, {
-    title: 'on disk by category', rows: G.d?.categories || [], csv: false, label: 'Space on disk by category', sort: { key: 'disk_bytes', dir: 'desc' },
-    note: 'largest first, with the kind of data.',
-    columns: [
-      { key: 'label', label: 'what', sort: true, ph: 'main', grow: true, cls: 'wrap-cell', render: (c) => c.label },
-      { key: 'group', label: 'kind', sort: true, ph: 'sub', value: (c) => STORE_GROUP[c.group] || c.group, render: (c) => h('span', { class: 'muted' }, STORE_GROUP[c.group] || c.group) },
-      { key: 'files', label: 'files', num: true, sort: true, render: (c) => count(c.files) },
-      { key: 'disk_bytes', label: 'on disk', num: true, sort: true, ph: 'num', render: (c) => bytes(c.disk_bytes), total: () => bytes(G.d?.total_disk_bytes) },
-    ],
-    empty: () => empty('not known', G.err ? `the server did not say what takes the space: ${errText(G.err)}` : 'the server did not say what takes the space'),
-  }) : null;
+  const LOSSLESS = 'Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs\' signed originals are kept byte for byte.';
+  const compactBtn = btn('compact now', () => compactNow(), { kind: 'primary' });
+  const storCsv = btn('csv', () => downloadCsv('sentry-mate-storage-on-disk.csv', G.d?.categories || [], [
+    { label: 'What', value: (c) => c.label }, { label: 'Kind', value: (c) => groupWord(c.group) }, { label: 'Key', value: (c) => c.key },
+    { label: 'Files', value: (c) => c.files }, { label: 'Size (bytes)', value: (c) => c.bytes }, { label: 'On disk (bytes)', value: (c) => c.disk_bytes }]),
+  { title: 'Download every category as CSV' });
+  function paintGroups() {
+    const groups = storageGroups(G.d?.categories);
+    if (!storOpened && groups.length) { storOpen.add(groups[0].group); storOpened = true; }  // the largest, open at first
+    if (!groups.length) {
+      replace(storList, h('li', { class: 'st-none muted' }, G.err ? `the server did not say what takes the space: ${errText(G.err)}` : 'the server did not say what takes the space'));
+      return;
+    }
+    replace(storList, groups.map((g) => {
+      const open = storOpen.has(g.group);
+      const rows = h('ul', { class: 'st-rows', tabindex: '0', 'aria-label': g.name, hidden: !open },
+        g.rows.map((c) => h('li', { class: 'st-row', title: c.label }, h('span', { class: 'st-row-name' }, shortName(c)), h('span', { class: 'st-row-size' }, bytes(c.disk_bytes)))));
+      const head = h('button', { class: 'st-group-head', type: 'button', 'aria-expanded': String(open), onclick: () => {
+        if (storOpen.has(g.group)) storOpen.delete(g.group); else storOpen.add(g.group);
+        paintGroups();
+      } }, h('span', { class: 'st-caret muted', 'aria-hidden': 'true' }, open ? 'v' : '>'), h('span', { class: 'st-group-name' }, g.name.toLowerCase()),
+      textBar(g.share * 100, { cells: 10 }), h('span', { class: 'st-group-size' }, bytes(g.disk_bytes)), h('span', { class: 'st-group-share muted' }, shareText(g.share)));
+      return h('li', { class: 'st-group' }, head, rows);
+    }));
+  }
   function paintStor() {
     const d = G.d, c = d?.compaction || null;
     const running = c?.status === 'running';
     const failed = c?.status === 'failed';
-    const out = [
-      G.pollErr ? `! could not read the progress just now (${errText(G.pollErr)}); it keeps trying.` : null,
-      `state   ${c ? c.status : 'not known'}`,
-      `step    ${running ? `${PACK_STEP[c.step] || c.step || 'getting ready'}, ${c.total ? `${count(c.done ?? 0)} of ${count(c.total)}` : 'counting'}` : DASH}`,
-      failed ? `error   ${c.error || 'the server gave no reason'}` : null,
-      `saved   ${c ? `${bytes(c.saved_bytes)} so far` : DASH}`,
-      `last    ${!c || c.finished_ms == null ? 'no pass has finished yet' : `${t(c.finished_ms)}, ${c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'nothing left to pack'}`}`,
-      `auto    ${!c ? DASH : c.automatic ? 'runs by itself when the server is idle' : 'does not run by itself on this server'}`,
-      `on disk ${bytes(d?.total_disk_bytes)} in all, ${d?.free_bytes != null ? `${bytes(d.free_bytes)} free` : 'free space not known'}`,
-    ].filter(Boolean).join('\n');
+    compactBtn.disabled = running || !c;
+    const tip = h('span', { class: 'st-tip muted', title: LOSSLESS, 'aria-label': LOSSLESS, role: 'img' }, '[?]');
     replace(storSlot,
-      runs([
-        [!c ? 'off' : running ? 'running' : failed ? 'bad' : 'ok', running ? 'packing…' : 'pack what is no longer written',
-          'Packs data that is no longer written, losslessly: every value stays readable exactly, and the logs\' signed originals are kept byte for byte.',
-          btn('compact now', compactNow, { kind: 'primary', disabled: running || !c })],
+      kv([
+        ['on disk', bytes(d?.total_disk_bytes)],
+        ['free', d?.free_bytes != null ? bytes(d.free_bytes) : 'not known'],
+        ['saved', c ? bytes(c.saved_bytes) : DASH],
+        ['last pass', !c || c.finished_ms == null ? 'not yet' : h('span', { title: `finished ${t(c.finished_ms)}` }, c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'nothing left to pack')],
       ]),
-      h('pre', { class: 'mono-box out-box', 'aria-label': 'Compaction output' }, out));
+      h('p', { class: ['st-line', failed && 'st-line--bad'] },
+        tag(!c ? '-' : running ? 'running' : failed ? 'bad' : 'ok', !c ? 'muted' : running ? 'running' : failed ? 'bad' : 'ok'), ' ',
+        running ? `packing… ${PACK_STEP[c.step] || c.step || 'getting ready'}, ${c.total ? `${count(c.done ?? 0)} of ${count(c.total)}` : 'counting'}`
+          : failed ? `the last pass failed: ${c.error || 'the server gave no reason'}`
+            : !c ? 'the server did not say how compaction stands' : c.automatic ? 'compaction runs by itself when the server is idle' : 'compaction does not run by itself here',
+        G.pollErr ? ` (could not read the progress just now: ${errText(G.pollErr)})` : null, ' ', tip));
   }
   function scheduleStor() { clearTimeout(gt); if (G.d?.compaction?.status === 'running') gt = setTimeout(refreshStor, 2000); }
   async function refreshStor() {
@@ -482,7 +498,7 @@ export async function mount(ctx) {
       G.d = d; G.pollErr = null;
       const c = d.compaction || {};
       if (c.status !== 'running') {
-        storTable.setRows(d.categories || []);
+        paintGroups();
         if (c.status === 'failed') toast(`Compaction failed: ${c.error || 'the server gave no reason'}`, { kind: 'error' });
         else toast(c.last_saved_bytes ? `Compaction is done: ${bytes(c.last_saved_bytes)} freed on disk.` : 'Compaction is done: nothing was left to pack.');
       }
@@ -490,6 +506,7 @@ export async function mount(ctx) {
     paintStor(); scheduleStor();
   }
   async function compactNow() {
+    compactBtn.disabled = true;
     try {
       const r = await ctx.api.post('system/storage/compact');
       if (!ctx.alive()) return;
@@ -497,11 +514,10 @@ export async function mount(ctx) {
     } catch (e) { if (!ctx.alive()) return; toast(`Could not start compaction: ${errText(e)}`, { kind: 'error' }); }
     paintStor(); scheduleStor();
   }
-  const storage = admin ? [
-    section({ title: 'storage', id: 'storage', side: h('span', { class: 'muted' }, 'space on disk, and compaction') }, storSlot),
-    storTable.el,
-  ] : null;
-  if (admin) { paintStor(); scheduleStor(); }
+  const storage = admin
+    ? section({ title: 'storage', id: 'storage', cls: 'st', side: [storCsv, compactBtn] }, storSlot, storList)
+    : null;
+  if (admin) { paintGroups(); paintStor(); scheduleStor(); }
   /* ---------------------------------------------------------------- full rebuild (admin) */
   // every car's history made again from the stored data, the cars made with an older decoding named
   const full = admin ? fullRebuild(ctx, { carName: (c) => carName.get(c) || c }) : null;
@@ -694,17 +710,18 @@ export async function mount(ctx) {
       note('For servers that can\'t reach each other, one that will be off before the new one starts, or a copy to keep. Uploads that arrive after it was made are not in it.'),
       expSlot,
       note('Neither way changes this server\'s data. Codes, passwords and keys travel only over https.')),
-    section({ title: 'full rebuild', id: 'full-rebuild', side: h('span', { class: 'muted' }, 'every car') },
-      full.el, autoLine?.el),
   ] : null;
+  const fullSec = admin ? section({ title: 'full rebuild', id: 'full-rebuild', side: h('span', { class: 'muted' }, 'every car') },
+    full.el, autoLine?.el) : null;
   paint(ctx, head(ctx),
     section({ title: 'this address', cover: 'web.shell.hosting', side: h('span', { class: 'muted' }, `${loc.protocol}//${loc.host}/`) }, hostSlot),
     names ? section({ title: 'host names' }, names.el) : null,
     ports,
     section({ title: 'certificate and recovery key', id: 'certificate-in-use' }, certSlot, keySlot),
     access,
-    moving,
-    storage,
+    // the move and storage side by side (one above the other on a phone or a narrow window)
+    moving || storage ? h('div', { class: 'cols2 ss-pair' }, h('div', null, moving), h('div', null, storage)) : null,
+    fullSec,
     accounts?.el,
     sessions.el,
     audit?.el);

@@ -1240,3 +1240,27 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .rel-titles { margin: 0; padding-left: calc(var(--g) * 2); list-style: '- '; color: var(--muted); overflow-wrap: anywhere; }
 .rel-pull { user-select: all; }
 .rel-help { display: flex; flex-direction: column; row-gap: var(--g2); min-width: 0; overflow-wrap: anywhere; }
+
+/* settings/server: the move and storage side by side (pages/settings-server.js); storage's groups by kind, each a
+   button that opens its categories, five lines at most, the rest scroll */
+@media (max-width: 1100px) { .ss-pair { grid-template-columns: minmax(0, 1fr); } }
+.st .kv { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.st .kv-row { grid-template-columns: calc(var(--a2) * 10) minmax(0, 1fr); }
+.st-line { margin: var(--g) 0; overflow-wrap: anywhere; }
+.st-line--bad { color: var(--bad); }
+.st-tip { cursor: help; }
+.st-groups { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
+.st-group { border-bottom: 1px solid var(--rule); }
+.st-group-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto calc(var(--a2) * 8) calc(var(--a2) * 5); align-items: baseline; column-gap: var(--g); width: 100%; padding-block: var(--g2); border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.st-group-head:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+@media (hover: hover) { .st-group-head:hover .st-group-name { color: var(--accent); } }
+.st-group-name { overflow-wrap: anywhere; }
+.st-group-size, .st-group-share { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.st-rows { list-style: none; margin: 0 0 var(--g2); padding: 0 0 0 calc(var(--a2) * 2); max-height: calc(5 * var(--lh2) + 5 * var(--g2)); overflow-y: auto; overscroll-behavior: contain; }
+.st-rows[hidden] { display: none; }
+.st-row { display: flex; justify-content: space-between; gap: var(--g); padding-block: calc(var(--g2) / 2); color: var(--muted); }
+.st-row-name { min-width: 0; overflow-wrap: anywhere; }
+.st-row-size { flex: none; white-space: nowrap; color: var(--text); font-variant-numeric: tabular-nums; }
+.st-none { padding-block: var(--g2); }
+:root[data-phone] .st-group-head { grid-template-columns: auto minmax(0, 1fr) auto calc(var(--a2) * 5); }
+:root[data-phone] .st-group-head > .tbar { grid-column: 2 / -1; grid-row: 2; }
