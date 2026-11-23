@@ -130,6 +130,7 @@ each piece's own seed and never stored, so a year of data answers in a few hundr
 | Integrations (MQTT settings, status, preview, test; outside connections) | done |
 | Integrations: Overview (every connection with made-up hourly counters for 7 days and the week's problems; see below) | done |
 | Integrations: Tesla (accounts, sign-in at Tesla with a pasted address, refresh token, cars, pause, poll setting, status; nothing leaves the dev server) | done |
+| Integrations: Supercharger invoices (made-up sessions on the Supercharger charges, list and CSV, zip, PDFs, the `invoices` blocks and their PATCH; see below) | done |
 | Server, settings and health (notices, maps, data health, rebuild, overlaps, storage) | done |
 | Import (resumable upload, check, car matching, import, report) | done |
 | Moving and first-run setup (claim, start fresh, move here, restore, move code, undo, export file) | done |
@@ -159,6 +160,19 @@ hour's count grows, `last_ok_ms` and the open problem's `duration_ms` move on, a
 
 A large fleet lists the CAN Bridge of the first 50 cars only (`MAX_CAR_ROWS`); `totals` still counts every car
 (the cars not listed from the fleet's cached state counts), so `--cars 200000` answers in about 0.15 s.
+
+## Supercharger invoices
+
+`mockapi/resources/invoices.py`. Every Supercharger charge of `c1` and `c2` that ended an hour or more before
+`--now-ms` has a made-up Tesla session (`tesla-1000101` on, oldest first) matched to it, at a made-up site
+("Made-up Supercharger, Hilltown", "Sample Supercharger, Rivermouth"; one name per place): the charging fee (billed
+kWh at a made-up rate, CAD on Maple's Ontario stops), an idle fee on every fifth session, a tiny made-up PDF (every
+ninth one's is still waiting: `pdf: false`, `404 no_pdf`). Two more sessions of the account's third car are not
+matched. A matched charge's cost is the session's total (`cost.source: "tesla_invoice"`, `cost_breakdown.mode` the
+same, one part per fee) unless an admin entered a cost (`applied: false`). Tesla invoices start on (the made-up
+admin turned them on; the real default is off), TeslaFi's off and with no sessions (`gives_pdfs: false`, a
+`note`). `PATCH /integrations/tesla` or `/teslafi` with `invoices` asks for the password again like `poll`; turning
+them off stops the checks (`next_check_ms` null) and keeps what was fetched. The zip writes `invoices-downloaded`.
 
 ## First-run set-up and moving
 
@@ -294,5 +308,7 @@ They start servers in-process on free ports (about 45 s for all). They cover:
 - determinism, a 200,000-car fleet paged under 200 ms a page, and the event stream (with `--rows-every-s` at its pace).
 - storage in detail and compaction (`test_system.py`): categories largest first that add up, idle at start, a pass that
   runs for a few reads and moves the logs into the day packs, a second pass with nothing left, a failed pass, admin only.
+- Supercharger invoices (`test_invoices.py`): the sessions, the cost they give a charge (an entered one wins), the
+  PDFs, the zip, the list and its CSV, the blocks and their PATCH with the password asked again, admin only.
 - the integrations overview (`test_overview.py`): its shape, admin only, problems newest first with one open, 24
   hourly entries ending at the current hour, values that move in place, the capped car rows of a large fleet.

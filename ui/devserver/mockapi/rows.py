@@ -186,6 +186,11 @@ def charge_cost(app, car_id, c, f, now, pricing=None):
                          "cost": round(amount, 2)}], "session_fee": None, "total": round(amount, 2),
               "gap_ms": gap_ms, "mode": mode}
         return cost, ppk, bd
+    if pricing is None:  # a Tesla invoice matched to the charge (a preview or a reprice prices by the place)
+        from .resources import invoices
+        inv = invoices.charge_cost(app, c, f, gap_ms)
+        if inv is not None:
+            return inv
     if c.source == "teslamate":
         if c.tm_cost is None:
             return None, None, {"parts": [], "session_fee": None, "total": None, "gap_ms": gap_ms, "mode": None}
