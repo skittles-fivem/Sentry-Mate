@@ -721,7 +721,7 @@ export async function mount(ctx) {
       csv: { label: 'Awake reasons', value: (r) => [(r.cold ? 'cold pack' : null), ...(r.awake_reasons || []).map((x) => REASONS[x] || x)].filter(Boolean).join('; ') } },
       ];
     const t = dataTable(ctx, {
-      title: 'Parked drain', icon: 'park', path: `${base}/parked`, params: params(), cls: 'vd-table', csvName: 'parked-drain',
+      title: 'Parked drain', icon: 'park', path: `${base}/parked`, params: params(), cls: 'vd-table', csvName: 'parked-drain', box: 'Parked spells', autoMore: true,
       // the CSV is built here from every spell (all pages), with readable times, the chosen units and reasons
       csv: false,
       side: h('span', { class: 'vd-side' }, h('label', { class: 'vd-min' }, h('span', { class: 'faint' }, 'Show'), minSel),

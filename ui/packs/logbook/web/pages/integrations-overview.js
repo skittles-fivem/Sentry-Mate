@@ -14,6 +14,7 @@ import * as api from '../shared/api.js';
 import { format } from '../shared/units.js';
 import { formatDateTime, formatDuration, formatRelative } from '../shared/time.js';
 import { section, icon, empty, errorView, errorWords } from '../core/ui.js';
+import { scrollBox } from '../shared/scrollbox.js';
 
 const POLL_MS = 10000;
 const NBSP = ' ';
@@ -299,7 +300,9 @@ export function overviewPart(ctx) {
   const listBox = h('div', { class: 'co-box' }, head, list);
 
   const probList = h('ol', { class: 'co-probs' });
-  const probBox = h('div', { class: 'co-probs-box' }, probList);
+  // a long week of problems scrolls in a box about five high (at most: a short list leaves no empty room)
+  const probScroll = scrollBox({ cls: 'scroll-box--fit co-probs-scroll', label: 'Problems in the last 7 days', signal: ctx.signal }, probList);
+  const probBox = h('div', { class: 'co-probs-box' }, probScroll.el);
   const probs = new Map();
 
   const body = h('div', { class: 'co-body' },
@@ -328,10 +331,11 @@ export function overviewPart(ctx) {
       for (const p of list2) next.set(p.id, probs.get(p.id) || makeProblem(ctx));
       probs.clear();
       for (const [k, v] of next) probs.set(k, v);
-      if (list2.length) replace(probBox, probList); else replace(probBox, empty({ title: 'No problem in the last 7 days.', text: 'Every connection either worked or was off, paused or quiet as expected all week.' }));
+      if (list2.length) replace(probBox, probScroll.el); else replace(probBox, empty({ title: 'No problem in the last 7 days.', text: 'Every connection either worked or was off, paused or quiet as expected all week.' }));
       replace(probList, [...probs.values()].map((r) => r.el));
     }
     for (const p of list2) probs.get(p.id).paint(p);
+    probScroll.recheck();
   }
 
   function paint() {

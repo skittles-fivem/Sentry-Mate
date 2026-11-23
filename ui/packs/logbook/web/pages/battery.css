@@ -181,3 +181,6 @@
 /* rated range only: a note for someone who prefers ideal */
 .page-battery .bt-rated-note { display: flex; gap: round(0.5rem, var(--e)); align-items: flex-start; margin-top: round(0.75rem, var(--e)); }
 .page-battery .bt-rated-note .icon { flex: none; width: round(1rem, var(--e)); height: round(1rem, var(--e)); color: var(--ink-3); margin-top: round(0.125rem, var(--e)); }
+
+/* the parked spells scroll in a box (core/table.js box): its rows are three lines */
+.page-battery .bt-drain .scroll-box { --box-head: round(2.5625rem, var(--e)); --box-row: round(5.75rem, var(--e)); }

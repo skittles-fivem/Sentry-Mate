@@ -15,7 +15,7 @@
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
 import { downloadCsv } from '../shared/csv.js';
-import { storageGroups, shortName, shareText, groupWord, PACK_STEP } from '../shared/storage.js';
+import { storageGroups, shortName, shareText, groupWord } from '../shared/storage.js';
 import { format } from '../shared/units.js';
 import { head, paint, section, note, link, btn, kv, textBar } from '../core/ui.js';
 import { carKeys } from '../core/carpick.js';
@@ -32,6 +32,7 @@ import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 import { exportModel, exportPollMs } from '../shared/exportjob.js';
 import { fullRebuild } from '../core/fullrebuild.js';
 import { serverUpdates, RELEASE_OFF_TEXT, RELEASE_SETTING } from '../shared/release.js';
+import { compactionProgress } from '../shared/compaction.js';
 
 export const id = 'settings-server';
 export const title = () => 'Settings: server';
@@ -51,6 +52,7 @@ const errText = (e) => (e?.fields ? Object.values(e.fields).join(' ') : e?.messa
 const ROLE = { admin: 'admin', watch: 'watch' };
 const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
 const LIVE = new Set(['offered', 'copying', 'paused', 'moved']);
+const lower1 = (t) => (t ? t[0].toLowerCase() + t.slice(1) : t);
 
 /** A list of '[tag] text' lines. */
 const lines = (rows, attrs = {}) => h('ul', { class: 'ln-list', ...attrs }, rows.filter(Boolean).map(([t, text, sub]) =>
@@ -513,25 +515,47 @@ export async function mount(ctx) {
       return h('li', { class: 'st-group' }, head, rows);
     }));
   }
+  // the progress row: always three lines (four on a phone), the same idle or running, so nothing below moves;
+  // each line is cut with an ellipsis (the whole text in its title) rather than growing
+  const ln = (cls, ...kids) => {
+    const el = h('div', { class: ['cmp-ln', cls] }, ...kids);
+    el.title = el.textContent.trim() || '';
+    return el;
+  };
+  function progressRow(c) {
+    const p = compactionProgress(c, { now: ctx.api.now?.() ?? Date.now(), bytes });
+    const dot = h('span', { class: 'sep muted' }, '  ·  ');
+    const join = (parts) => parts.filter(Boolean).flatMap((x, i) => (i ? [dot.cloneNode(true), x] : [x]));
+    const warnLine = G.pollErr ? `could not read the progress just now (${errText(G.pollErr)}); it keeps trying.` : p.errors;
+    if (!p.running) {
+      const failed = c?.status === 'failed';
+      return h('div', { class: 'cmp', 'aria-label': 'Compaction progress' },
+        ln('cmp-head', h('span', { class: 'spin spin--off', 'aria-hidden': 'true' }), failed ? tag('failed', 'bad') : tag(c ? 'idle' : 'not known', 'muted'), ' ',
+          failed ? `the last pass stopped: ${c.error || 'the server gave no reason'}` : !c ? 'the server did not say' : 'no pass is running'),
+        ln('cmp-bar', textBar(0, { cells: 20, tone: 'muted', label: 'not running' }), ' ', h('span', { class: 'muted' }, c?.finished_ms != null ? `last pass ${t(c.finished_ms)}` : 'no pass has finished yet')),
+        ln('cmp-more muted', c?.finished_ms != null ? (c.last_saved_bytes ? `it freed ${bytes(c.last_saved_bytes)}` : 'it found nothing left to pack') : DASH),
+        ln('cmp-warn tone--warn', warnLine || ''));
+    }
+    return h('div', { class: 'cmp cmp--on', 'aria-label': 'Compaction progress' },
+      ln('cmp-head', h('span', { class: 'spin', 'aria-hidden': 'true' }), join([p.stepOf ? h('b', null, p.stepOf) : null, p.step || 'getting ready'])),
+      ln('cmp-bar', textBar(p.pct ?? 0, { cells: 20, tone: p.stalled ? 'warn' : 'accent', label: p.counting ? 'counting' : null }), ' ', h('span', { class: 'n' }, p.count)),
+      ln('cmp-more', join([p.saved, p.rate, p.stalled ? h('span', { class: 'tone--warn' }, lower1(p.stall)) : p.eta, p.stalled ? null : p.last].map((x) => (typeof x === 'string' ? h('span', { class: 'muted' }, lower1(x)) : x)))),
+      ln('cmp-warn tone--warn', lower1(warnLine) || ''));
+  }
   function paintStor() {
     const d = G.d, c = d?.compaction || null;
     const running = c?.status === 'running';
-    const failed = c?.status === 'failed';
     compactBtn.disabled = running || !c;
     const tip = h('span', { class: 'st-tip muted', title: LOSSLESS, 'aria-label': LOSSLESS, role: 'img' }, '[?]');
     replace(storSlot,
       kv([
         ['on disk', bytes(d?.total_disk_bytes)],
         ['free', d?.free_bytes != null ? bytes(d.free_bytes) : 'not known'],
-        ['saved', c ? bytes(c.saved_bytes) : DASH],
+        ['saved', [c ? bytes(c.saved_bytes) : DASH, ' ', tip]],
+        ['runs', !c ? DASH : c.automatic ? 'compaction runs by itself when the server is idle' : 'compaction does not run by itself here'],
         ['last pass', !c || c.finished_ms == null ? 'not yet' : h('span', { title: `finished ${t(c.finished_ms)}` }, c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'nothing left to pack')],
       ]),
-      h('p', { class: ['st-line', failed && 'st-line--bad'] },
-        tag(!c ? '-' : running ? 'running' : failed ? 'bad' : 'ok', !c ? 'muted' : running ? 'running' : failed ? 'bad' : 'ok'), ' ',
-        running ? `packing… ${PACK_STEP[c.step] || c.step || 'getting ready'}, ${c.total ? `${count(c.done ?? 0)} of ${count(c.total)}` : 'counting'}`
-          : failed ? `the last pass failed: ${c.error || 'the server gave no reason'}`
-            : !c ? 'the server did not say how compaction stands' : c.automatic ? 'compaction runs by itself when the server is idle' : 'compaction does not run by itself here',
-        G.pollErr ? ` (could not read the progress just now: ${errText(G.pollErr)})` : null, ' ', tip));
+      progressRow(c));
   }
   function scheduleStor() { clearTimeout(gt); if (G.d?.compaction?.status === 'running') gt = setTimeout(refreshStor, 2000); }
   async function refreshStor() {
@@ -709,7 +733,6 @@ export async function mount(ctx) {
 
   // the audit log in words (shared/audit.js): the action (its code on hover), the item it changed, linked where
   // it still exists; filtered by what (a group of actions) and who; ten entries, more as the end scrolls in
-  const lower1 = (t) => (t ? t[0].toLowerCase() + t.slice(1) : t);
   const tripOf = new Map((trips || []).map((x) => [String(x.id), x]));
   const itemCtx = { carName: (c) => carName.get(c), accountName: (a) => S.accounts.find((x) => x.id === a)?.name, trip: (x) => tripOf.get(String(x)) };
   function target(e) {

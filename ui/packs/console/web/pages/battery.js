@@ -343,7 +343,7 @@ export async function mount(ctx) {
     const rows = [...items].reverse().map((it) => ({ ...it, health: newKwh && it.usable_kwh != null ? (it.usable_kwh / newKwh) * 100 : null,
       full_km: factor && it.usable_kwh != null ? (it.usable_kwh * 1000) / factor : null }));
     const tb = table(ctx, {
-      title: 'by month', rows, csv: false, sort: { key: 'month', dir: 'desc' }, limit: 36,
+      title: 'by month', rows, csv: false, sort: { key: 'month', dir: 'desc' }, limit: 36, box: 'Battery by month',
       note: `the monthly median of the pack’s readings. full range is usable capacity over the ${rangeWord} energy factor now${factor ? ` (${format(factor, 'efficiency', { digits: 1 })})` : ''}.`,
       columns: [
         { key: 'month', label: 'month', sort: true, ph: 'main', value: (r) => r.t_ms, render: (r) => dateFormat(tz, { month: 'short', year: 'numeric' }).format(r.t_ms) },
@@ -528,7 +528,7 @@ export async function mount(ctx) {
         h('span', { class: 'tbar' }, h('span', { class: 'muted' }, 'z'.repeat(na)), h('span', { class: 'tone--accent' }, '#'.repeat(n - na - nu)), h('span', { class: 'tone--bad' }, '?'.repeat(nu))), ' ', pct(a * 100));
     };
     const t = table(ctx, {
-      title: 'parked drain', path: `${base}/parked`, params: params(), csvName: 'parked drain', cover: ['vd.table', 'shots.vampire-drain'],
+      title: 'parked drain', path: `${base}/parked`, params: params(), csvName: 'parked drain', cover: ['vd.table', 'shots.vampire-drain'], box: 'Parked drain', autoMore: true,
       note: 'each stay parked off a charger at one spot. energy is measured at the pack, so small losses show that whole % steps hide. standby: z asleep, # awake, ? unknown (never counted as asleep).',
       columns: [
         { key: 'start', label: 'parked', ph: 'main', cover: ['vd.col.start', 'vd.link.start_details'], render: (r) => [h('a', { class: 'lnk-plain', href: tripHref(r), title: 'this span as a trip' }, formatDateTime(r.start_ms, tz, { now: now(), weekday: false })), none(` ${r.place?.name || r.address || ''}`)] },

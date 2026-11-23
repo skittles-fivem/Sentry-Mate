@@ -1007,7 +1007,8 @@ def _compaction(req, advance=False):
     if advance and c["status"] == "running":
         c["_tick"] += 1
         cats = {x["key"]: x for x in _detail_categories(req, c["_passes"])}
-        totals = {"logs": cats["logs.raw"]["files"], "series": cats["series.can.snapshots"]["files"],
+        # logs and series count days (a car's day of logs: its uploads of that day, about 1440 a day awake)
+        totals = {"logs": max(1, cats["logs.raw"]["files"] // 1440), "series": cats["series.can.snapshots"]["files"],
                   "records": cats["kv.engine"]["files"] + cats["kv.day-parts"]["files"]}
         # the notches: logs counted and half done, logs done, series, records, finished; each notch is told as
         # 40 s of work (whatever the clock does), so rate and estimate read the same on every run

@@ -33,6 +33,7 @@ import { overviewCard } from './integrations-overview.js';
 import { deviceText, renameButton } from './device-name.js';
 import { fullRebuild } from './rebuild-parts.js';
 import * as fr from '../shared/fullrebuild.js';
+import { scrollBox } from '../shared/scrollbox.js';
 
 export const id = 'health';
 export const css = true;
@@ -360,9 +361,10 @@ async function mountCar(ctx) {
 
     const spanList = h('div', { class: 'hl-col' },
       h('h3', { class: 'hl-sub' }, 'Unknown time in the period'),
-      spans.length ? h('ul', { class: 'hl-list' }, spans.map((s) => h('li', { class: 'hl-span' },
+      // a long period's spans scroll in a box about five high (at most: a short list leaves no empty room)
+      spans.length ? scrollBox({ cls: 'scroll-box--fit hl-spans-box', label: 'Unknown time in the period', signal: ctx.signal }, h('ul', { class: 'hl-list' }, spans.map((s) => h('li', { class: 'hl-span' },
         h('a', { href: timelineAt(cid, s.start_ms, s.end_ms ?? now), title: 'Open the timeline at this time' }, when(s.start_ms, tz)),
-        h('span', { class: 'cell-sub' }, s.end_ms == null ? 'still unknown' : `for ${formatDuration(s.end_ms - s.start_ms)}`, ' · ', SPAN_REASONS[s.reason] || s.reason || 'reason not known'))))
+        h('span', { class: 'cell-sub' }, s.end_ms == null ? 'still unknown' : `for ${formatDuration(s.end_ms - s.start_ms)}`, ' · ', SPAN_REASONS[s.reason] || s.reason || 'reason not known'))))).el
         : note('None: every moment of the period is known (driving, charging, parked or asleep).'),
       missingCard(hl.missing_logs || {}));
 
@@ -396,7 +398,7 @@ async function mountCar(ctx) {
   /* ---------------------------------------------------------------- gaps */
 
   const gapsTable = dataTable(ctx, {
-    path: base('gaps'), params: ctx.params, itemName: ['gap', 'gaps'], cls: 'hl-gaps', label: 'Gaps in the period',
+    path: base('gaps'), params: ctx.params, itemName: ['gap', 'gaps'], cls: 'hl-gaps', label: 'Gaps in the period', box: true, append: true, autoMore: true,
     caption: 'Newest first. A gap in which the odometer moved is a drive nobody recorded. Open one on the timeline.',
     columns: [
       { key: 'start', label: 'From', th: true, cell: (g) => h('a', { class: 'cell-main', href: timelineAt(cid, g.start_ms, g.end_ms ?? api.now()), title: 'Open the timeline at this gap' }, when(g.start_ms, tz)) },
@@ -510,7 +512,7 @@ async function mountCar(ctx) {
     const k = kindsTable(ctx, st.kinds, st.total_bytes, { parts: [car.name || cid, 'storage by kind'], label: 'Storage by kind' });
     const labels = Object.fromEntries((st.kinds || []).map((x) => [x.kind, x.label]));
     const days = dataTable(ctx, {
-      path: base('storage'), params: {}, limit: 30, itemName: ['day', 'days'], cls: 'hl-days', label: 'Storage by day',
+      path: base('storage'), params: {}, limit: 30, itemName: ['day', 'days'], cls: 'hl-days', label: 'Storage by day', box: true, append: true, autoMore: true,
       caption: 'Newest first, only days with data, in the car’s own days.',
       columns: [
         { key: 'date', label: 'Day', th: true, cell: (r) => h('a', { class: 'cell-main', href: state.buildUrl('timeline', { car: cid, period: { from: dayStart(r.date, tz), to: dayStart(r.date, tz) + DAY } }), title: 'Open this day on the timeline' }, formatDayKey(r.date)) },

@@ -9,6 +9,7 @@
 // API: GET integrations/overview.
 
 import { h, svg, replace } from '../shared/dom.js';
+import { scrollBox } from '../shared/scrollbox.js';
 import { buildUrl } from '../shared/state.js';
 import { formatNumber } from '../shared/i18n.js';
 import { formatDuration } from '../shared/time.js';
@@ -252,6 +253,8 @@ export function connectionsOverview(ctx, { onLocal }) {
 
   const probs = new Map();
   const probList = h('ol', { class: 'co-probs' });
+  // a long week of problems scrolls in a box of about five rows (app.css .scroll-box)
+  const probBox = scrollBox({ cls: 'co-probs-box scroll-box--fit', label: 'Problems in the last 7 days', onCleanup: ctx.onCleanup }, probList);
   const probEmpty = h('p', { class: 'note co-p-empty', hidden: true }, icon('check', 'ico--sm'), ' No problems in the last 7 days.');
   const probCount = h('span', { class: 'faint co-p-count' });
   const connOf = (id) => data?.connections?.find((c) => c.id === id) || null;
@@ -262,7 +265,7 @@ export function connectionsOverview(ctx, { onLocal }) {
       h('p', { class: 'note co-note' }, 'Every connection the server keeps. Idle means quiet as expected (the car asleep or parked), not broken. Open a row for its settings or its car’s data health. Read again every 10 s.'),
       h('div', { class: 'co-table' }, head, list)),
     panel({ title: 'Problems in the last 7 days', icon: 'warn', cls: 'co-prob-panel', side: probCount, cover: 'conn.overview.problems' },
-      probList, probEmpty,
+      probBox.el, probEmpty,
       note('A problem begins when a connection goes to Problem and ends when it leaves it. Times on this computer’s clock.')));
 
   function paint() {
@@ -287,7 +290,8 @@ export function connectionsOverview(ctx, { onLocal }) {
     }
     ps.forEach((p) => probs.get(p.id).paint(p, t));
     probEmpty.hidden = ps.length > 0;
-    probList.hidden = !ps.length;
+    probBox.el.hidden = !ps.length;
+    probBox.edge();
     const open = ps.filter((p) => !p.resolved).length;
     setText(probCount, ps.length ? `${open} ongoing · ${ps.length} in all` : 'None');
     tick();

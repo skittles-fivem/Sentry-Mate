@@ -38,6 +38,8 @@
 .hl-key > .ico { color: var(--text-3); }
 .hl-key-r { align-items: flex-end !important; text-align: right; }
 .hl-span-list li { font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.4 * 1em), 2px); }
+/* the unknown spans scroll in a box of about five lines */
+.hl-span-box { --box-head: 0px; --box-row: round(1.75rem, var(--e)); }
 /* Missing on the server: logs the server lost and asked the car for again */
 .hl-missing { margin-top: round(1.25rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
 .hl-miss-card { display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); padding: round(0.75rem, var(--e)) round(0.875rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); }

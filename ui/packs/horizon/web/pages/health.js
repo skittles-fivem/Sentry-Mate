@@ -24,6 +24,7 @@ import { formatNumber } from '../shared/i18n.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel, metric, figures, pill, tag, kv, csvButton, panelLink } from '../core/page.js';
 import { dataTable } from '../core/table.js';
+import { scrollBox } from '../shared/scrollbox.js';
 import { emptyState, errorWords } from '../core/states.js';
 import { openCarSwitcher } from '../core/carswitch.js';
 import { openPeriodPicker } from '../core/period.js';
@@ -283,6 +284,8 @@ async function mountCar(ctx) {
     wasPending = !!hl.rebuild_pending;
   }
 
+  let spanBox = null;   // the unknown spans' box of the last paint (its observers end when it is drawn anew)
+  ctx.onCleanup(() => spanBox?.destroy());
   function paintHealth(hl) {
     const trust = hl.last_log_trust || {};
     const tw = TRUST[trust.result];
@@ -338,12 +341,13 @@ async function mountCar(ctx) {
         : h('p', { class: 'note' }, 'No key is tied to this car yet. Pair a CAN Bridge on Settings: Cars.'));
 
     // unknown spans
+    spanBox?.destroy(); spanBox = null;
     const spanList = h('div', { class: 'hl-spans' },
       h('h3', { class: 'hl-sub' }, 'Unknown time in the period'),
-      spans.length ? h('ul', { class: 'hl-span-list' }, spans.map((s) => h('li', null,
+      spans.length ? (spanBox = scrollBox({ cls: 'hl-span-box scroll-box--fit', label: 'Unknown time in the period' }, h('ul', { class: 'hl-span-list' }, spans.map((s) => h('li', null,
         h('a', { class: 'link', href: timelineAt(cid, s.start_ms, s.end_ms ?? ctx.api.now()), title: 'Open the timeline at this time' }, when(ctx, s.start_ms)),
         h('span', { class: 'faint' }, s.end_ms == null ? ' · still unknown' : ` · ${formatDuration(s.end_ms - s.start_ms)}`),
-        h('span', null, ` · ${SPAN_REASONS[s.reason] || s.reason}`))))
+        h('span', null, ` · ${SPAN_REASONS[s.reason] || s.reason}`)))))).el
         : h('p', { class: 'note' }, 'None: every moment of the period is known (driving, charging, parked or asleep).'));
 
     lastPending = !!hl.rebuild_pending;
@@ -402,7 +406,7 @@ async function mountCar(ctx) {
 
   /* ---------- gaps */
   const gapsTable = dataTable(ctx, {
-    title: 'Gaps in the period', icon: 'timeline', path: `${base}/gaps`, params: ctx.params, cls: 'hl-gaps', csvName: `gaps ${period.preset || ''}`, csv: { all: true },
+    title: 'Gaps in the period', icon: 'timeline', path: `${base}/gaps`, params: ctx.params, cls: 'hl-gaps', box: 'Gaps', autoMore: true, csvName: `gaps ${period.preset || ''}`, csv: { all: true },
     note: 'Times with no usable data, newest first. A gap in which the odometer moved means a drive was not recorded. Open one on the timeline.',
     columns: [
       { key: 'start', label: 'From', render: (g) => h('a', { class: 'main', href: timelineAt(cid, g.start_ms, g.end_ms ?? ctx.api.now()), title: 'Open the timeline at this gap' }, when(ctx, g.start_ms)), csv: { label: 'From (UTC)', value: (g) => iso(g.start_ms) } },
@@ -490,7 +494,7 @@ async function mountCar(ctx) {
     const kt = kindsTable(ctx, st.kinds, st.total_bytes, { title: `What ${car.name}’s data takes`, csvName: 'storage by kind', coverIds: ['dbinfo.table.sizes'] });
     const labels = Object.fromEntries((st.kinds || []).map((k) => [k.kind, k.label]));
     const days = dataTable(ctx, {
-      title: 'By day', icon: 'calendar', path: `${base}/storage`, params: {}, limit: 40, cls: 'hl-days', csvName: 'storage by day', csv: { all: true },
+      title: 'By day', icon: 'calendar', path: `${base}/storage`, params: {}, limit: 40, cls: 'hl-days', box: 'Storage by day', autoMore: true, csvName: 'storage by day', csv: { all: true },
       note: 'Newest first, only days with data. The days are the car’s own days.',
       columns: [
         { key: 'date', label: 'Day', render: (r) => h('a', { class: 'main', href: state.buildUrl('timeline', { car: cid, period: { from: dayStart(r.date, tz), to: dayStart(r.date, tz) + 24 * HOUR } }), title: 'Open this day on the timeline' }, formatDayKey(r.date)), csv: { label: 'Day', value: (r) => r.date } },

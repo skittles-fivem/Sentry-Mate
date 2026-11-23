@@ -17,7 +17,7 @@
 
 import { h, replace, setVars } from '../shared/dom.js';
 import { downloadCsv } from '../shared/csv.js';
-import { storageGroups, shortName, shareText, groupWord, PACK_STEP } from '../shared/storage.js';
+import { storageGroups, shortName, shareText, groupWord } from '../shared/storage.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { format } from '../shared/units.js';
@@ -31,6 +31,7 @@ import { bigCode, downloadText } from './move-parts.js';
 import { fullRebuild } from './rebuild-parts.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 import { serverUpdates, RELEASE_OFF_TEXT, RELEASE_SETTING } from '../shared/release.js';
+import { compactionProgress } from '../shared/compaction.js';
 
 export const id = 'settings-server';
 export const css = true;
@@ -775,11 +776,19 @@ export async function mount(ctx) {
       { label: 'What', value: (c) => c.label }, { label: 'Kind', value: (c) => groupWord(c.group) }, { label: 'Key', value: (c) => c.key },
       { label: 'Files', value: (c) => c.files }, { label: 'Size (bytes)', value: (c) => c.bytes }, { label: 'On disk (bytes)', value: (c) => c.disk_bytes }]) });
     const figsBox = h('dl', { class: 'st-figs' });
-    const line = h('p', { class: 'ss-stor-line', 'aria-live': 'polite' });
     const list = h('ul', { class: 'st-groups', 'aria-label': 'Space on disk by kind' });
     const open = new Set();
     let opened = false;
     const LOSSLESS = 'Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs’ signed originals are kept byte for byte.';
+    const storTip = h('span', { class: 'st-tip', title: LOSSLESS, 'aria-label': LOSSLESS, role: 'img' }, icon('info'));
+    // the progress row: its room is the same idle or running (a line of words, a bar, a line of figures and a
+    // warning line), so nothing below it moves; each line is cut with an ellipsis (the whole text in its title)
+    const cmp = { spin: h('span', { class: 'spin', 'aria-hidden': 'true' }), head: h('span', { class: 'ss-cmp-head-t' }), count: h('span', { class: 'ss-cmp-count' }),
+      fill: h('span', { class: 'ss-cmp-fill' }), facts: h('p', { class: 'ss-cmp-facts' }), warn: h('p', { class: 'ss-cmp-warn' }) };
+    cmp.bar = h('span', { class: 'ss-cmp-bar', role: 'progressbar', 'aria-label': 'Compaction progress', 'aria-valuemin': '0', 'aria-valuemax': '100' }, cmp.fill);
+    const line = h('div', { class: 'ss-cmp', 'aria-live': 'polite' },
+      h('p', { class: 'ss-cmp-head' }, cmp.spin, cmp.head, cmp.count, storTip), cmp.bar, cmp.facts, cmp.warn);
+    const setLine = (el, ...kids) => { replace(el, ...kids); el.title = el.textContent.trim(); };
     const fig = (label, value, title) => h('div', { class: 'st-fig', title }, h('dt', null, label), h('dd', null, value));
     const drawGroups = () => {
       const groups = storageGroups(detail && detail.categories);
@@ -814,17 +823,32 @@ export async function mount(ctx) {
         fig('Saved', num(c ? c.saved_bytes : null), 'What compaction has freed in all.'),
         fig('Last pass', !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? h('span', null, bytes(c.last_saved_bytes), ' freed') : 'Nothing left to pack',
           c && c.finished_ms != null ? `Finished ${dateTime(c.finished_ms, tz)} (${zoneLabel(tz)}).` : 'No pass has finished yet.'));
-      const tip = h('span', { class: 'st-tip', title: LOSSLESS, 'aria-label': LOSSLESS, role: 'img' }, icon('info'));
-      line.classList.toggle('ss-warn', !!c && c.status === 'failed');
-      if (running) {
-        replace(line, h('span', null, h('strong', null, 'Packing…'), ` ${PACK_STEP[c.step] || c.step || 'getting ready'}, `,
-          c.total ? `${format(c.done ?? 0, 'count')} of ${format(c.total, 'count')}` : 'counting',
-          pollErr ? ` (the progress could not be read just now: ${errText(pollErr)})` : null), tip);
-      } else if (c && c.status === 'failed') {
-        replace(line, h('span', null, h('strong', null, 'The last pass failed: '), c.error || 'the server gave no reason.'), tip);
+      const p = compactionProgress(c, { now: api.now(), bytes: (n) => format(n, 'bytes') });
+      const failed = !!c && c.status === 'failed';
+      line.classList.toggle('is-running', p.running);
+      line.classList.toggle('ss-warn', failed);
+      cmp.spin.style.visibility = p.running ? '' : 'hidden';
+      cmp.bar.style.visibility = p.running ? '' : 'hidden';
+      cmp.bar.classList.toggle('is-counting', p.counting);
+      cmp.bar.classList.toggle('is-stalled', p.stalled);
+      cmp.fill.style.width = `${p.pct ?? 0}%`;
+      if (p.pct == null) cmp.bar.removeAttribute('aria-valuenow'); else cmp.bar.setAttribute('aria-valuenow', String(Math.round(p.pct)));
+      const pollWords = pollErr ? `The progress could not be read just now: ${errText(pollErr)}` : null;
+      if (p.running) {
+        setLine(cmp.head, h('strong', null, 'Packing…'), ' ', [p.stepOf, p.step].filter(Boolean).join(' · ') || 'getting ready');
+        setLine(cmp.count, p.count);
+        setLine(cmp.facts, [p.saved, p.rate, p.stalled ? null : p.eta, p.stalled ? null : p.last].filter(Boolean).join(' · '));
+        setLine(cmp.warn, p.stalled ? p.stall : p.errors || pollWords || '');
+        cmp.warn.classList.toggle('is-on', !!(p.stalled || p.errors || pollWords));
       } else {
-        replace(line, h('span', null, !c ? 'The server did not say how compaction stands.'
-          : c.automatic ? 'Compaction runs by itself when the server is idle.' : 'Compaction does not run by itself here.'), tip);
+        if (failed) setLine(cmp.head, h('strong', null, 'The last pass failed: '), c.error || 'the server gave no reason.');
+        else setLine(cmp.head, !c ? 'The server did not say how compaction stands.'
+          : c.automatic ? 'Compaction runs by itself when the server is idle; Compact now starts a pass at once.'
+            : 'Compaction does not run by itself on this server; Compact now starts a pass.');
+        setLine(cmp.count, '');
+        setLine(cmp.facts, '');
+        setLine(cmp.warn, pollWords || '');
+        cmp.warn.classList.toggle('is-on', !!pollWords);
       }
     };
     const schedule = () => { clearTimeout(timer); if (detail && detail.compaction && detail.compaction.status === 'running') timer = setTimeout(poll, 2000); };

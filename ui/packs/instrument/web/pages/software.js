@@ -262,7 +262,7 @@ export async function mount(ctx) {
 
   let painted = false;
   const table = dataTable(ctx, {
-    title: 'Update history', icon: 'chip', path, params: ctx.params, limit: 50, cls: 'sw-table', cover: 'updates.table',
+    title: 'Update history', icon: 'chip', path, params: ctx.params, limit: 50, cls: 'sw-table', cover: 'updates.table', box: 'Updates', autoMore: true,
     csvName: 'software updates', csv: { all: true, columns: csvOf(columns) },
     columns: columns.filter((c) => !c.hidden),
     rowTitle: (r) => srcTitle(r) || 'Data from the car',
@@ -556,7 +556,7 @@ export async function mount(ctx) {
   ];
   const fhStrip = h('div', { class: 'sw-fh-strip', 'aria-busy': 'true' }, h('span', { class: 'skel sw-fh-skel' }));
   const fhTable = dataTable(ctx, {
-    title: 'Module firmware history', icon: 'chip', path: fhPath, params: {}, limit: 50, cls: 'sw-fh', csvName: 'module firmware history',
+    title: 'Module firmware history', icon: 'chip', path: fhPath, params: {}, limit: 50, cls: 'sw-fh', csvName: 'module firmware history', box: 'Firmware fingerprints', autoMore: true,
     csv: { all: true, columns: csvOf(fhColumns) },
     columns: fhColumns.filter((c) => !c.hidden),
     rowClass: (r) => [r.kind === 'version' && 'sw-fh-vrow', r.current && 'is-current'].filter(Boolean).join(' ') || null,

@@ -145,6 +145,27 @@
 :root[data-phone] .st-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 :root[data-phone] .st-group-head { grid-template-columns: auto minmax(0, 1fr) auto round(2.75rem, var(--e)); }
 :root[data-phone] .st-bar { grid-column: 2 / -1; grid-row: 2; }
+/* the progress row of a compaction pass: one box of fixed size, idle or running (the head, the bar with the
+   count, the details, a warn line), its numbers in tabular figures so nothing wobbles as they change */
+.ss-prog {
+  --pl: round(1.25rem, var(--e)); --pg: round(0.375rem, var(--e)); --LH: var(--pl);
+  display: flex; flex-direction: column; gap: var(--pg); height: calc(4 * var(--pl) + 3 * var(--pg)); overflow: hidden;
+  font-size: max(0.8125rem, var(--fs-floor)); font-variant-numeric: tabular-nums; color: var(--text-2);
+}
+.ss-prog > * { flex: none; margin: 0; min-width: 0; }
+.ss-prog-head { display: flex; align-items: flex-start; gap: round(0.5rem, var(--e)); color: var(--text); }
+.ss-prog-head b { font-weight: 600; }
+.ss-prog-lead { display: flex; align-items: center; justify-content: center; flex: none; width: round(1.125rem, var(--e)); height: var(--pl); color: var(--text-3); }
+.ss-prog.is-bad .ss-prog-lead { color: var(--warm); }
+.ss-prog-text { min-width: 0; }
+.ss-prog.is-running .ss-prog-text, .ss-prog-count, .ss-prog-info, .ss-prog-err { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-prog.is-running .ss-prog-head { height: var(--pl); font-weight: 600; }
+.ss-prog-barrow { display: flex; align-items: center; gap: round(0.75rem, var(--e)); height: var(--pl); }
+.ss-prog-bar { flex: 1 1 auto; min-width: 0; }
+.ss-prog-bar.is-counting > i { width: 0; }
+.ss-prog-count { flex: none; max-width: 50%; color: var(--text); }
+.ss-prog-info, .ss-prog-err { height: var(--pl); }
+.ss-prog:not(.is-running) > :not(.ss-prog-head) { display: none; }
 
 /* moving to another server (pages/settings-server-move.js) */
 .mv-lead { color: var(--text-2); max-width: round(64rem, var(--e)); margin: 0 0 round(1rem, var(--e)); }
@@ -243,6 +264,19 @@
 .xp-sha { display: block; overflow-wrap: anywhere; color: var(--text); font-size: max(0.75rem, var(--fs-floor)); }
 .xp-acts { flex-wrap: wrap; gap: round(0.5rem, var(--e)); }
 @media (prefers-reduced-motion: reduce) { .mv-bar > i, .xp-bar > i { transition: none; } }
+.mv-file { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); }
+.mv-file-name { display: flex; align-items: center; gap: round(0.5rem, var(--e)); font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
+.mv-file-name .ico { color: var(--live); flex: none; }
+.mv-file-meta { color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); }
+.mv-preparing { display: flex; align-items: center; gap: round(0.75rem, var(--e)); color: var(--text-2); }
+.mv-preparing b { color: var(--text); }
+/* every busy ring is the size of an icon (round(1.125rem)), whatever holds it. The box that has the size does
+   not turn; its ring (::before, inset 0) does: Chromium can work a round(…, var(--e)) size out wrongly on an
+   element that is being animated, and the ring then grew to about four times its size now and then */
+.mv-spin { position: relative; display: inline-block; flex: none; box-sizing: border-box; width: round(1.125rem, var(--e)); height: round(1.125rem, var(--e)); min-width: round(1.125rem, var(--e)); max-width: round(1.125rem, var(--e)); vertical-align: middle; }
+.mv-spin::before { content: ""; position: absolute; inset: 0; box-sizing: border-box; border-radius: 50%; border: 2px solid var(--live-soft); border-top-color: var(--live); animation: mv-spin 0.9s linear infinite; }
+@keyframes mv-spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) { .mv-spin::before { animation: none; } .mv-bar > i { transition: none; } }
 
 @container page (max-width: 85.375rem) {
   .mv-ways { grid-template-columns: minmax(0, 1fr); }
@@ -259,6 +293,8 @@
 
 /* a phone: controls as wide as the panel, key and value stacked, long values wrap */
 :root[data-phone] .ss .setting-control { align-items: stretch; }
+:root[data-phone] .ss-prog { height: calc(5 * var(--pl) + 3 * var(--pg)); }
+:root[data-phone] .ss-prog.is-running .ss-prog-info { height: calc(2 * var(--pl)); white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 :root[data-phone] .ss .setting-control > :is(.btn, .switch-row, .panel-link, .link-btn) { align-self: flex-start; }
 :root[data-phone] .ss .setting-control .form-row { max-width: none; }
 :root[data-phone] .ss .seg { display: flex; flex-wrap: wrap; width: 100%; max-width: 100%; }

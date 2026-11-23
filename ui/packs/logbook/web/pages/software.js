@@ -273,7 +273,7 @@ export async function mount(ctx) {
 
   let lastSummary = null;
   const table = dataTable(ctx, {
-    path, params: ctx.params, limit: 50, columns, cls: 'sw-table', cover: 'updates.table', label: 'Update history',
+    path, params: ctx.params, limit: 50, columns, cls: 'sw-table', cover: 'updates.table', label: 'Update history', box: true, append: true, autoMore: true,
     itemName: ['update', 'updates'],
     rowTitle: (r) => rowTitle(r, { energy: false }),
     caption: 'Newest first. Charges and range are what the car did while on each version: from the end of the update to the start of the next one, or now.',
@@ -479,7 +479,7 @@ export async function mount(ctx) {
   ];
   const fwhTable = dataTable(ctx, {
     path: histPath, params: fwModule === 'all' ? {} : { module: fwModule }, limit: 50, columns: fwhColumns, csv: false,
-    cls: 'fwh-table', label: 'Module firmware history', itemName: ['fingerprint', 'fingerprints'],
+    cls: 'fwh-table', label: 'Module firmware history', itemName: ['fingerprint', 'fingerprints'], box: true, append: true, autoMore: true,
     caption: 'Newest first. A fingerprint runs from the update that brought it to the next one.',
     rowAttrs: (r) => ({ class: [r.kind === 'version' ? 'is-version' : null, r.current ? 'is-current' : null].filter(Boolean).join(' ') || null }),
     rowTitle: (r) => r.source_label || (r.kind === 'version' ? 'Imported' : 'Data from SMO'),

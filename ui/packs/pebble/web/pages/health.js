@@ -21,7 +21,7 @@ import * as state from '../shared/state.js';
 import { tile, btn, linkBtn, icon, note, stateTag, ago } from '../core/ui.js';
 import { emptyTile, errorWords, ghostTile, plotGhost } from '../core/states.js';
 import { bars } from '../core/chart.js';
-import { filterBar, statTile, checkRow, sectionHead, pills, moreButton, nums, facts } from '../core/bits.js';
+import { filterBar, statTile, checkRow, sectionHead, pills, moreButton, listBox, nums, facts } from '../core/bits.js';
 import { srcShort, srcPill } from '../core/source.js';
 import { teslaCarFacts, teslaAccountHref, lastErrorText } from './tesla.js';
 import { teslafiCarFacts } from './teslafi.js';
@@ -196,9 +196,10 @@ async function mountCar(ctx) {
     ...spans.map((s) => ({ at: s.start_ms, end: s.end_ms, what: `Unknown: ${SPAN_REASONS[s.reason] || s.reason}` })),
   ].sort((a, b) => b.at - a.at).slice(0, 60);
   const logT = tile({ w: 2, title: 'Gaps in the period', icon: 'timeline' },
-    lines.length ? h('div', { class: 'log', role: 'list' }, lines.map((l) => h('div', { class: 'log-row', role: 'listitem' },
+    // the gaps and unknown spans scroll in a box about five lines high (at most: a short log leaves no empty box)
+    lines.length ? listBox(ctx, { fit: true, label: 'Gaps and unknown time in the period', cls: 'log-box' }, h('div', { class: 'log', role: 'list' }, lines.map((l) => h('div', { class: 'log-row', role: 'listitem' },
       h('a', { class: 'log-k', href: timelineAt(l.at, l.end ?? api.now()), title: 'Open the timeline here' }, `${when(l.at)}  ${l.what}`),
-      h('span', { class: 'log-v' }, l.end == null ? 'open' : formatDuration(l.end - l.at)))))
+      h('span', { class: 'log-v' }, l.end == null ? 'open' : formatDuration(l.end - l.at)))))).el
       : h('p', { class: 'lede' }, 'No gaps: every moment of the period is known.'),
     note('Newest first. A gap in which the odometer moved means a drive was not recorded.'));
 

@@ -26,7 +26,7 @@ import { MODULES, moduleName, HISTORY_ID, moduleList, fieldName, hexCode, isFing
 import { emptyTile } from '../core/states.js';
 import { createSheet } from '../core/sheet.js';
 import { field, form } from '../core/form.js';
-import { filterBar, statTile, moreButton, facts, sectionHead, pills, dur } from '../core/bits.js';
+import { filterBar, statTile, moreButton, listBox, facts, sectionHead, pills, dur } from '../core/bits.js';
 
 export const id = 'software';
 export const css = true;
@@ -184,6 +184,8 @@ export async function mount(ctx) {
     rowList.append(...got.map(histRow));
     return !hist.done;
   });
+  // the fingerprints scroll in a box about five rows high; the next ones load as its end comes near (or with Show more)
+  const histBox = listBox(ctx, { fit: true, label: 'Fingerprints, newest first', cls: 'fwh-box', more: histMore }, rowList);
 
   function laneSeg(s, i, pct) {
     const a = pct(s.from_ms), b = pct(s.to_ms ?? api.now());
@@ -244,10 +246,11 @@ export async function mount(ctx) {
     const d = hist.last || {};
     spanBody.replaceChildren(...drawLanes(d));
     rowList.replaceChildren(...hist.items.map(histRow));
-    listBody.replaceChildren(hist.items.length ? rowList
+    listBody.replaceChildren(hist.items.length ? histBox.el
       : note(hMod ? `${moduleName(hMod)}: no fingerprint recorded yet. Some cars do not send one from every module.` : `No fingerprint or imported version recorded for ${car.name} yet.`));
     histMore.hidden = hist.done;
     histMore.querySelector('button').hidden = false;
+    histBox.recheck();
   }
   // a new pager for the module filter (or a live reload, as many rows as are shown); the old rows stay until it answers
   let histSeq = 0;
@@ -263,7 +266,7 @@ export async function mount(ctx) {
     hist = next; histErr = err;
     drawHist();
   }
-  function pickModule(m) { hMod = m; readHist(); }
+  function pickModule(m) { hMod = m; readHist().then(() => histBox.top()); }
   let liveT = null;
   ctx.events(['rows'], (ev) => {
     if (ev.data?.car && ev.data.car !== car.id) return;

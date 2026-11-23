@@ -675,7 +675,7 @@ export async function mount(ctx) {
   const cold = (r) => !!r.cold;
   const drain = dataTable(ctx, {
     path: api.apiPath`cars/${car.id}/parked`, params: { ...ctx.params, min_hours: opt.min_hours }, limit: 50,
-    itemName: ['parked spell', 'parked spells'], cover: 'vd.table', label: 'Parked spells', sortAll: 5000,
+    itemName: ['parked spell', 'parked spells'], cover: 'vd.table', label: 'Parked spells', sortAll: 5000, cls: 'bt-drain', box: true, append: true, autoMore: true,
     caption: 'Newest first. Spells crossing the period’s edges are cut at them. The CSV holds every listed spell.',
     columns: [
       { key: 'start', label: 'Parked', th: true, cover: ['vd.col.start', 'vd.col.end', 'vd.link.start_details'], value: (r) => r.start_ms,

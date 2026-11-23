@@ -494,6 +494,25 @@ html[data-form="phone"] dialog.sheet.is-center { padding: 0 var(--s4); }
 .rows + .rows, .rows + .sheet-note + .rows { margin-top: var(--s5); }
 .rows-name { padding: 0 var(--s2) var(--s2); font-size: var(--f14); line-height: var(--l14); font-weight: 700; color: var(--muted); }
 .rows-list { display: flex; flex-direction: column; gap: var(--s1); margin: 0; padding: var(--s1); list-style: none; border-radius: var(--r-card); background: var(--well); }
+/* a long log-like list in a box (core/bits.js listBox, shared/scrollbox.js): five rows high, high from the start
+   (a list in hand, .scroll-box--fit: at most that high), so the page never grows while rows load; it scrolls by
+   itself, with a fade at the bottom while there are more under it. A row is a .row of two lines; a list of other
+   rows sets --box-row (one row with the gap under it) or --box-rows (how many). A phone: about three. */
+.scroll-box {
+  --box-rows: 5; --box-row: calc(max(var(--h-btn) + var(--s3), var(--s2) * 2 + var(--l16) + var(--l14)) + var(--s1)); --box-pad: var(--s1);
+  height: calc(var(--box-rows) * var(--box-row) + var(--box-pad)); overflow-y: auto; scrollbar-gutter: stable; border-radius: var(--r-card); background: var(--well);
+}
+.scroll-box--fit { height: auto; max-height: calc(var(--box-rows) * var(--box-row) + var(--box-pad)); }
+.scroll-box > .rows-list { border-radius: 0; background: transparent; }
+.scroll-box[data-below] { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - round(2.5rem, var(--e))), rgb(0 0 0 / 0.2)); mask-image: linear-gradient(to bottom, #000 calc(100% - round(2.5rem, var(--e))), rgb(0 0 0 / 0.2)); }
+.scroll-box:focus-visible { outline-offset: -3px; }
+.scroll-box-end { height: 1px; margin-top: -1px; }
+html[data-form="phone"] .scroll-box { --box-rows: 3; }
+/* busy: a ring the size of an icon wherever it is (never sized by what holds it). The box stays still at the
+   icon size; the ring inside it (::before) turns, so the box's size is never worked out mid-turn */
+.spin { display: inline-block; flex: none; position: relative; box-sizing: border-box; width: var(--ic); height: var(--ic); min-width: var(--ic); vertical-align: middle; }
+.spin::before { content: ''; position: absolute; inset: 0; box-sizing: border-box; border: 3px solid var(--card-alt); border-top-color: var(--coral-fill); border-radius: 50%; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .rows-card { display: flex; flex-direction: column; gap: var(--s4); padding: var(--s4); margin-bottom: var(--s2); border-radius: var(--r-card); background: var(--well); }
 .row {
   display: flex; align-items: center; gap: var(--s3); width: 100%; min-height: calc(var(--h-btn) + var(--s3)); padding: var(--s2) var(--s3);
@@ -995,6 +1014,10 @@ html[data-form="phone"] .brand-name { font-size: var(--f14); line-height: var(--
 .log { margin: 0; padding: var(--s3) var(--s4); border-radius: var(--r-ctl); background: var(--well); font-family: var(--mono); font-size: var(--f13); line-height: var(--l13); white-space: pre-wrap; overflow-wrap: anywhere; max-height: round(22rem, var(--e)); overflow: auto; }
 .log-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--s3); }
 .log-row + .log-row { margin-top: var(--s1); }
+/* a log in a box (core/bits.js listBox): the box scrolls and gives the background, five lines high */
+.log-box { --box-row: calc(var(--l13) + var(--s1)); --box-pad: calc(2 * var(--s3) - var(--s1)); border-radius: var(--r-ctl); }
+.log-box > .log { max-height: none; overflow: visible; background: transparent; border-radius: 0; }
+html[data-form="phone"] .log-box { --box-rows: 5; --box-row: calc(2 * var(--l13) + var(--s1)); }
 .log-v { text-align: right; font-variant-numeric: tabular-nums; }
 .log-k { color: var(--muted); }
 
