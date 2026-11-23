@@ -57,9 +57,7 @@ RUN find crates -name '*.rs' -exec touch {} + \
 # same Rust image with the same command, keeping its build folder between
 # runs, and passes a folder laid out like this stage in its place
 # (build-contexts: binary=...): then the two stages above are not run.
-# A plain `docker build .` builds them, as before, with the packs' scripts as
-# they are in ui/packs; the Image workflow's binary serves them bundled and
-# minified (build-binary.sh runs ui/tools/bundle first).
+# A plain `docker build .` builds them, as before.
 FROM scratch AS binary
 COPY --from=build /src/target/release/sentry-mate /sentry-mate
 COPY --from=build /out/ /out/

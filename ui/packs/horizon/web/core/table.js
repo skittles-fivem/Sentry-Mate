@@ -2,9 +2,6 @@
 // (sorted here), with a header that sorts, a "Show more" button, a count, and a Download CSV button on
 // every table. Rows can open a page (rowHref). Cells are built by the column's render(row), which
 // returns text or elements (never HTML).
-// Drawing stays cheap while lists load again (a rebuild sends `rows` events every second): with reuseRows, a row
-// whose data is the same as before keeps its element, and when no row changed the table is not touched at all. Rows the page
-// already has are drawn 200 at a time; the next 200 come as the foot scrolls into view (or "Show more").
 
 import * as state from '../shared/state.js';
 import { h, replace, cover } from '../shared/dom.js';
@@ -34,8 +31,6 @@ import { errorWords } from './states.js';
  *   autoMore,                           an API list: the next page loads as the foot scrolls into view
  *                                       (IntersectionObserver); the button stays, for the keyboard
  *   moreLabel,                          the button's words (default "Show more")
- *   reuseRows,                          a row that loads again with the same data keeps its element (only for
- *                                       columns whose cells come from the row alone, not from other rows or state)
  *   box,                                true or the box's accessible name: the rows scroll inside a box (the
  *                                       page's CSS gives .tbl-box its height, from the start), and with autoMore
  *                                       the next page loads as the end of the box scrolls into view; the box
@@ -46,17 +41,12 @@ import { errorWords } from './states.js';
  * A column's sort is the API's sort name (a string) for API lists, or true for local rows (sorted by
  * the value of row[key], or column.value(row)).
  */
-const LOCAL_STEP = 200; // rows the page already has, drawn at a time
-
 export function dataTable(ctx, opts) {
   const { columns, rowHref = null, limit = 50, csv = true } = opts;
   let params = { ...(opts.params || {}) };
   let sort = opts.sort ? { ...opts.sort } : null;
   let pager = null, loaded = [], done = false, total = null, busy = false, gen = 0;
   let fresh = false, freshQuiet = false, prevPager = null, answered = false;
-  let shownLocal = LOCAL_STEP; // rows the page already has: how many are drawn
-  // the row elements drawn last, by their data: a row that comes again unchanged keeps its element
-  let drawn = new Map();
 
   const count = h('span', { class: 'tbl-count', 'aria-live': 'polite' });
   // on a phone the rows are cards without the header, so the order is picked here (app.css shows it there)
@@ -89,7 +79,7 @@ export function dataTable(ctx, opts) {
   // still in view (a tall screen, a box not yet full) asks for the next one.
   const AHEAD = opts.box ? 96 : 240;
   let watcher = null;
-  if (((opts.autoMore && opts.path) || opts.rows) && typeof IntersectionObserver === 'function') {
+  if (opts.autoMore && opts.path && typeof IntersectionObserver === 'function') {
     watcher = new IntersectionObserver((entries) => {
       if (!ctx.alive()) { watcher.disconnect(); return; }
       if (entries.some((e) => e.isIntersecting) && !foot.hidden) more();
@@ -179,28 +169,6 @@ export function dataTable(ctx, opts) {
     return tr;
   }
 
-  // the elements for rows: an unchanged row (the same data) keeps the element it had; append: rows added under
-  // the ones on screen (always new elements, never one taken from higher up)
-  const keyOf = (r) => { if (!opts.reuseRows) return null; try { return JSON.stringify(r); } catch (_) { return null; } };
-  function remember(k, tr) { if (k == null) return; if (!drawn.has(k)) drawn.set(k, []); drawn.get(k).push(tr); }
-  function rowEls(rows, append = false) {
-    const was = append ? null : drawn;
-    if (!append) drawn = new Map();
-    return rows.map((r) => {
-      const k = keyOf(r);
-      const list = was && k != null && opts.reuseRows ? was.get(k) : null;
-      const tr = list && list.length ? list.shift() : rowEl(r);
-      remember(k, tr);
-      return tr;
-    });
-  }
-  // the body shows exactly these rows: nothing is touched when they are the ones on screen already
-  function setBody(trs) {
-    const now = tbody.children;
-    if (now.length === trs.length && trs.every((tr, i) => now[i] === tr)) return;
-    tbody.replaceChildren(...trs);
-  }
-
   function skeleton(n = 4) {
     return Array.from({ length: n }, () => h('tr', { class: 'tbl-skel', 'aria-hidden': 'true' }, columns.map(() => h('td', null, h('span', { class: 'skel' })))));
   }
@@ -210,13 +178,6 @@ export function dataTable(ctx, opts) {
   }
 
   function setCount() {
-    if (opts.rows) {
-      const n = loaded.length, shown = Math.min(shownLocal, n);
-      count.textContent = `${formatNumber(n)} ${n === 1 ? 'row' : 'rows'}`;
-      foot.hidden = shown >= n;
-      footText.textContent = `Showing ${formatNumber(shown)} of ${formatNumber(n)}`;
-      return;
-    }
     const n = loaded.length;
     count.textContent = total != null ? `${formatNumber(total)} in all` : done ? `${formatNumber(n)} ${n === 1 ? 'row' : 'rows'}` : `${formatNumber(n)} shown`;
     foot.hidden = done || !n;
@@ -267,20 +228,9 @@ export function dataTable(ctx, opts) {
   function renderLocal() {
     loaded = sortedLocal();
     done = true; total = null;
-    if (loaded.length) setBody(rowEls(loaded.slice(0, shownLocal)));
-    else { drawn = new Map(); replace(tbody, emptyRow(opts.empty ? opts.empty() : h('div', { class: 'empty' }, h('h3', null, 'Nothing to show')))); }
+    replace(tbody, loaded.length ? loaded.map(rowEl) : emptyRow(opts.empty ? opts.empty() : h('div', { class: 'empty' }, h('h3', null, 'Nothing to show'))));
     setCount();
     setCsv();
-  }
-  // the next rows of a long local list, under the ones on screen
-  function moreLocal() {
-    if (shownLocal >= loaded.length) return;
-    const from = shownLocal;
-    shownLocal += LOCAL_STEP;
-    const add = loaded.slice(from, shownLocal);
-    tbody.append(...rowEls(add, true));
-    setCount();
-    if (watcher && ctx.alive()) requestAnimationFrame(() => { if (footNear()) moreLocal(); });
   }
 
   // quiet (live refreshes, the default once the table has had an answer): the rows (or the empty state) on
@@ -303,7 +253,6 @@ export function dataTable(ctx, opts) {
   }
 
   async function more(my = gen) {
-    if (opts.rows) { moreLocal(); return; }
     if (busy || (done && !fresh) || !pager) return;
     busy = true;
     moreBtn.disabled = true;
@@ -312,11 +261,9 @@ export function dataTable(ctx, opts) {
       const items = (await pager.more()) || [];
       const pg = pager.last || { items, next: null };
       if (my !== gen || !ctx.alive()) return;
-      let first = false;
-      if (fresh) { fresh = false; first = true; loaded = []; total = null; if (freshQuiet) setCsv(); }
+      if (fresh) { fresh = false; loaded = []; total = null; tbody.replaceChildren(); if (freshQuiet) setCsv(); }
       loaded.push(...items);
-      // the first page replaces the rows on screen, keeping the elements of rows that did not change
-      if (first) setBody(rowEls(items)); else tbody.append(...rowEls(items, true));
+      tbody.append(...items.map(rowEl));
       answered = true;
       done = !pg.next;
       if (pg.total != null) total = pg.total;

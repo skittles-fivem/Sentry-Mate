@@ -1,7 +1,6 @@
 // Car overview, the Vehicle info panel (#vehicle-info): everything the server knows of the car's build
-// (GET /cars/{car} `vehicle`). A row shows the label, the value and Change; where the fact came from (the car's CAN
-// configuration, the VIN, the Tesla API, the owner, an import), how sure it is and the evidence are in the row's
-// hover title, the info toggle (touch screens) and the Change dialog. A low-confidence value is muted with a faint ?. Two inputs that disagree are listed; a fact nothing says
+// (GET /cars/{car} `vehicle`), each fact with where it came from (the car's CAN configuration, the VIN, the
+// Tesla API, the owner, an import) and how sure it is. Two inputs that disagree are listed; a fact nothing says
 // is "unknown", never guessed. An admin can type a value over any fact the server takes from the owner
 // (PATCH /cars/{car} { version, config: { key: value } }; null forgets the typed value).
 
@@ -81,17 +80,7 @@ const GROUPS = [
 const LABEL = Object.fromEntries(GROUPS.flatMap(([, , rows]) => rows.map(([k, l]) => [k, l])));
 const WORDS = Object.fromEntries(GROUPS.flatMap(([, , rows]) => rows.map(([k, , w]) => [k, w])));
 const words = (k, v) => (v == null ? null : WORDS[k] ? WORDS[k](v) : typeof v === 'boolean' ? yesNo(v) : typeof v === 'object' ? JSON.stringify(v) : String(v));
-// where a fact came from, how sure and the evidence, as sentences (the hover title, the info toggle, the dialog)
-const howLines = (f, dis) => {
-  if (!f || f.value == null) return ['Nothing says it.'];
-  const conf = CONFIDENCE[f.confidence];
-  return [
-    f.source === 'owner' ? 'Typed by an admin here.' : `From ${FACT_SOURCE[f.source]?.[1]?.replace(/^The /, 'the ') || f.source || 'a source not known'}.`,
-    conf ? `${conf[0][0].toUpperCase()}${conf[0].slice(1)} confidence: ${conf[2]}.` : null,
-    f.note ? `${f.note.replace(/\.?$/, '.')}` : null,
-    dis ? 'Two inputs disagree on it (see above).' : null,
-  ].filter(Boolean);
-};
+const srcChip = (s) => (s ? h('span', { class: ['vi-src', `vi-src--${s}`], title: FACT_SOURCE[s]?.[1] || s }, FACT_SOURCE[s]?.[0] || s) : null);
 
 /**
  * The panel. ctx: the car page's. Returns the panel element; it paints from ctx.car and reads the car again
@@ -112,7 +101,8 @@ export function vehicleInfoPanel(ctx) {
     const disOf = new Map(dis.map((d) => [d.field, d]));
     const unknownCodes = v.unknown_codes || [];
     replace(body,
-      h('p', { class: 'note vi-intro' }, `How this car was built, as the server works it out. Hover a fact for its source${ctx.admin ? '; Change types the right value' : ''}.`),
+      h('p', { class: 'note vi-intro' }, 'What the server knows of this car\'s build, worked out here from the VIN prefix, the car\'s own configuration on its CAN bus, the Tesla API, an import and what an admin typed. Nothing is looked up elsewhere. Each fact says where it came from and how sure it is; a fact nothing tells stays unknown.',
+        ctx.admin ? ' Change one to type the right value: it beats every other source.' : ' Only an admin can correct a fact.'),
       dis.length ? h('div', { class: 'vi-alert', role: 'note' }, icon('warn', 'ico--sm'), h('div', null,
         h('b', null, dis.length === 1 ? 'Two inputs disagree. ' : `Inputs disagree on ${dis.length} facts. `),
         h('ul', { class: 'vi-dis-list' }, dis.map((d) => h('li', null, h('b', null, `${LABEL[d.field] || d.field}: `),
@@ -128,25 +118,24 @@ export function vehicleInfoPanel(ctx) {
         v.wheel_options_in?.length ? h('p', { class: 'vi-meta' }, h('span', { class: 'faint' }, 'Factory wheel sizes: '), v.wheel_options_in.map((x) => `${x} in`).join(', ')) : null,
         unknownCodes.length ? h('p', { class: 'vi-meta' }, h('span', { class: 'faint' }, 'Codes the tables do not know (no value given for them): '),
           unknownCodes.map((u, i) => [i ? '; ' : '', `${LABEL[u.field] || u.field}: ${u.code} at ${u.at} (${FACT_SOURCE[u.source]?.[0] || u.source})`])) : null,
-        (v.notes || []).map((n) => h('p', { class: 'vi-meta' }, n))));
+        (v.notes || []).map((n) => h('p', { class: 'vi-meta' }, n)),
+        h('p', { class: 'vi-key' }, h('span', { class: 'faint' }, 'Sources: '), Object.entries(FACT_SOURCE).filter(([k]) => k !== 'teslafi').map(([k, [w, l]]) => h('span', { class: 'vi-key-item' }, srcChip(k), ` ${l.replace(/^The /, 'the ')}`)))));
   }
 
   function factRow(k, label, f, edit, dis) {
     const has = f && f.value != null;
-    const low = has && f.confidence === 'low';
-    const how = howLines(f, dis);
+    const conf = CONFIDENCE[f?.confidence];
     const btn = ctx.admin && edit ? h('button', { class: 'btn btn--ghost btn--sm vi-edit', type: 'button', 'aria-label': `Change ${label}`, title: `Type the right ${label.toLowerCase()}`, onclick: () => change(k, label, f, edit) }, icon('settings', 'ico--sm'), 'Change') : null;
-    const detail = h('p', { class: 'vi-detail', hidden: true }, how.join(' '));
-    const info = h('button', { class: 'btn btn--ghost btn--sm vi-info', type: 'button', 'aria-expanded': 'false', 'aria-label': `Where the ${label.toLowerCase()} comes from`,
-      onclick: (e) => { const open = detail.hidden; detail.hidden = !open; e.currentTarget.setAttribute('aria-expanded', String(open)); } }, icon('info', 'ico--sm'));
-    return h('div', { class: ['vi-row', dis && 'has-dis'], title: how.join('\n') },
+    return h('div', { class: ['vi-row', dis && 'has-dis'] },
       h('dt', { class: 'vi-label' }, label),
       h('dd', { class: 'vi-val' },
-        h('span', { class: ['vi-value', !has && 'is-unknown', low && 'is-low'] }, has ? words(k, f.value) : 'unknown',
-          low ? h('span', { class: 'vi-q', 'aria-hidden': 'true' }, '?') : null, low ? h('span', { class: 'sr-only' }, ' (low confidence)') : null,
-          dis ? [' ', tag('disagree', 'warm')] : null),
-        detail),
-      h('span', { class: 'vi-acts' }, info, btn));
+        h('span', { class: ['vi-value', !has && 'is-unknown'] }, has ? words(k, f.value) : 'unknown'),
+        h('span', { class: 'vi-how' },
+          has ? srcChip(f.source) : h('span', { class: 'faint' }, 'nothing says it'),
+          has && conf ? h('span', { class: ['vi-conf', `vi-conf--${f.confidence}`], title: conf[2] }, `${conf[0]} confidence`) : null,
+          dis ? tag('disagree', 'warm') : null),
+        f?.note ? h('span', { class: 'vi-note' }, f.note) : null),
+      btn);
   }
 
   async function change(k, label, f, edit) {
@@ -195,9 +184,8 @@ export function vehicleInfoPanel(ctx) {
         await save(x);
       },
     });
-    const now = f?.value != null ? `Now ${words(k, f.value)}.` : 'Now unknown: no source says it.';
-    await openDialog({ title: `${label} of ${car.name}`, body: [h('p', { class: 'note' }, now, ' A value you type beats every other source until you forget it.'),
-      f?.value != null ? h('p', { class: 'note vi-dlg-how' }, howLines(f).join(' ')) : null, fl.el], actions: [] });
+    const now = f?.value != null ? `Now ${words(k, f.value)}, ${FACT_SOURCE[f.source]?.[1]?.replace(/^The /, 'the ').replace(/^Typed/, 'typed') || 'source not known'}.` : 'Now unknown: no source says it.';
+    await openDialog({ title: `${label} of ${car.name}`, body: [h('p', { class: 'note' }, now, ' A value you type beats every other source until you forget it.'), fl.el], actions: [] });
     return done;
   }
 

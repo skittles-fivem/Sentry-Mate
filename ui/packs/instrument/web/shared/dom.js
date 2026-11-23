@@ -133,102 +133,55 @@ export function clear(el) { el.replaceChildren(); return el; }
 /** Replace every child with these. */
 export function replace(el, ...children) { el.replaceChildren(); return append(el, children); }
 
-// the nodes append() would add, without moving any of them yet (null when a fragment is among them)
-function flatNodes(children, out = []) {
-  for (const c of children) {
-    if (Array.isArray(c)) { if (!flatNodes(c, out)) return null; continue; }
-    if (c == null || c === false || c === true || c === '') continue;
-    if (typeof c === 'object' && 'nodeType' in c) { if (c.nodeType === 11) return null; out.push(c); continue; }
-    out.push(globalThis.document.createTextNode(String(c)));
-  }
-  return out;
-}
-/**
- * Like replace(), for parts drawn again on every live update: a child that is the same as the one already in its
- * place (the node itself, or isEqualNode: the same tags, attributes and text) stays, and only the others are
- * swapped, so the page lays out, snaps and paints only what changed. Event handlers are not compared: use it for
- * children whose handlers do not depend on the values drawn.
- */
-export function replaceChanged(el, ...children) {
-  const next = flatNodes(children);
-  const now = Array.from(el.childNodes);
-  // a node that moves within el, or a different count: everything again
-  if (!next || next.length !== now.length || next.some((n, i) => n !== now[i] && n.parentNode === el)) {
-    el.replaceChildren();
-    return append(el, children);
-  }
-  for (let i = 0; i < next.length; i++) {
-    if (next[i] !== now[i] && !now[i].isEqualNode(next[i])) el.replaceChild(next[i], now[i]);
-  }
-  return el;
+/** The longest of some texts (null and undefined count as ''). */
+export function longest(texts) {
+  let w = '';
+  for (const t of texts ?? []) { const s = t == null ? '' : String(t); if (s.length > w.length) w = s; }
+  return w;
 }
 
 /**
- * While the page or a box in it scrolls, and for `ms` after, the root element carries data-scrolling. CSS pauses
- * endless animations with it (a pulsing dot, a halo), so a frame of a scroll only moves what is painted already
- * instead of drawing them again too. The listener is passive (it never holds a scroll up), and the attribute
- * changes twice per scroll, not on every scroll event. Call once at start; returns a remover.
+ * The shapes of some texts: each with its digits as 0 (readouts use tabular figures, so every digit is as wide),
+ * each shape once, at most max of them (the longest).
  */
-export function markScrolling(ms = 200) {
-  const root = globalThis.document.documentElement;
-  let t = 0;
-  const end = () => { t = 0; delete root.dataset.scrolling; };
-  const onScroll = () => {
-    if (!t) root.dataset.scrolling = '';
-    else clearTimeout(t);
-    t = setTimeout(end, ms);
+export function textShapes(texts, max = 24) {
+  const seen = new Set();
+  for (const t of texts ?? []) if (t != null && t !== '') seen.add(String(t).replace(/[0-9]/g, '0'));
+  const out = [...seen];
+  if (out.length > max) out.sort((a, b) => b.length - a.length).length = max;
+  return out;
+}
+
+/**
+ * A readout whose text changes in place (the value under a chart's cursor, the day pointed at) in a box as wide as
+ * the widest text it can show, so a new value never moves what is beside or under it, and never wraps a line anew:
+ * steady(el, texts) puts el in a box (span.steady) followed by unseen copies of el (same tag and class, aria-hidden,
+ * class steady-size), one for each shape of texts (textShapes). All sit in one grid cell, so the box is as wide as
+ * the widest of them. Set el's text as before; box.fit(texts) sizes the box again for new data. (The copies come
+ * after el, so code that finds el by its class still finds el first.) Each pack styles .steady and .steady-size
+ * (app.css).
+ */
+export function steady(el, texts = []) {
+  const box = h('span', { class: 'steady' }, el);
+  box.fit = (t) => {
+    const shapes = textShapes(t);
+    box.replaceChildren(el, ...(shapes.length ? shapes : ['']).map((x) => {
+      const size = el.cloneNode(false);
+      for (const a of ['id', 'data-cover', 'title', 'role', 'aria-live']) size.removeAttribute(a);
+      size.classList.add('steady-size');
+      size.setAttribute('aria-hidden', 'true');
+      size.textContent = x;
+      return size;
+    }));
+    return box;
   };
-  globalThis.document.addEventListener('scroll', onScroll, { capture: true, passive: true });
-  return () => { globalThis.document.removeEventListener('scroll', onScroll, { capture: true }); if (t) { clearTimeout(t); end(); } };
+  return box.fit(texts);
 }
 
 /** addEventListener that returns its own remover. */
 export function on(target, type, fn, opts) {
   target.addEventListener(type, fn, opts);
   return () => target.removeEventListener(type, fn, opts);
-}
-
-let discloseSeq = 0;
-/**
- * A button that opens a part of the page in place (a small form behind an "Edit" button). The part starts
- * hidden; the button carries aria-expanded and aria-controls. Clicking the button opens it (or closes it again);
- * opening moves the focus to `focus` (an element, or a function that returns one: the first control by
- * default); Escape inside the part closes it, and closing gives the focus back to the button when the focus was
- * inside the part. onOpen() and onClose() run after each change. Returns { open({ focus }), close({ focus }), isOpen() }:
- * open({ focus: false }) opens it again after a redraw without moving the focus.
- */
-export function disclose(button, part, { focus = null, onOpen = null, onClose = null } = {}) {
-  if (!part.id) part.id = `disclose-${++discloseSeq}`;
-  button.setAttribute('aria-controls', part.id);
-  button.setAttribute('aria-expanded', 'false');
-  part.hidden = true;
-  const target = () => (typeof focus === 'function' ? focus() : focus)
-    || part.querySelector('input:not([type="hidden"]), select, textarea, button, [href], [tabindex]:not([tabindex="-1"])');
-  const isOpen = () => !part.hidden;
-  function open({ focus: into = true } = {}) {
-    if (isOpen()) return;
-    part.hidden = false;
-    button.setAttribute('aria-expanded', 'true');
-    if (into) target()?.focus();
-    onOpen?.();
-  }
-  function close({ focus: back = null } = {}) {
-    if (!isOpen()) return;
-    const doc = part.ownerDocument || globalThis.document;
-    const inside = part.contains(doc.activeElement);
-    part.hidden = true;
-    button.setAttribute('aria-expanded', 'false');
-    if (back ?? inside) button.focus();
-    onClose?.();
-  }
-  button.addEventListener('click', () => (isOpen() ? close({ focus: true }) : open()));
-  part.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || e.defaultPrevented) return;
-    e.preventDefault();
-    e.stopPropagation(); // a dialog around it stays open
-    close({ focus: true });
-  });
-  return { open, close, isOpen };
 }
 
 const sheets = new Map();

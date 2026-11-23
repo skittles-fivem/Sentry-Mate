@@ -109,7 +109,7 @@
 
 /* surfaces that are not plain glass: the frame's bars, menus, inputs, cards on maps */
 :root {
-  --surface-bar: rgba(7, 11, 21, 0.94);
+  --surface-bar: rgba(7, 11, 21, 0.72);
   --surface-side: rgba(8, 13, 25, 0.88);
   --surface-side-solid: #080D19;
   --surface-side-top: rgba(20, 30, 54, 0.35);
@@ -206,7 +206,7 @@
   --chart-zero: rgba(15, 24, 40, 0.3);
   --shadow: inset 0 1px 0 var(--hi), 0 round(1.125rem, var(--e)) round(2.25rem, var(--e)) round(-1.5rem, var(--e)) rgba(20, 40, 80, 0.28);
 
-  --surface-bar: rgba(244, 247, 251, 0.95);
+  --surface-bar: rgba(244, 247, 251, 0.82);
   --surface-side: rgba(255, 255, 255, 0.78);
   --surface-side-solid: #F7F9FC;
   --surface-side-top: rgba(220, 232, 250, 0.6);
@@ -268,17 +268,9 @@ html { font-size: calc(100% * var(--ui-auto) * var(--ui-scale)); }
 *, ::before, ::after { line-height: var(--LH); }
 /* what a closed <details> holds is not laid out at all (as browsers used to do), so nothing measures it */
 details:not([open]) > :not(summary) { display: none; }
-html { background: var(--bg-0); }
-/* the page's glow, on a layer of its own that stays put: a body background fixed to the window is painted again on
-   every frame of a scroll, over the whole window (slow on a 4K screen), while a fixed layer is painted once */
-html::before {
-  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
-  background:
-    radial-gradient(round(68.75rem, var(--e)) round(38.75rem, var(--e)) at 8% -12%, var(--glow-a), transparent 62%),
-    radial-gradient(round(56.25rem, var(--e)) round(40rem, var(--e)) at 104% -6%, var(--glow-b), transparent 60%),
-    radial-gradient(round(50rem, var(--e)) round(32.5rem, var(--e)) at 62% 112%, var(--glow-c), transparent 60%),
-    linear-gradient(180deg, var(--bg-1), var(--bg-0));
-}
+/* The page always has its scrollbar (empty while the page fits the window), so a page that grows or shrinks (a list
+   loaded, a tooltip near the bottom) never moves sideways when one would come or go. */
+html { background: var(--bg-0); overflow-y: scroll; }
 [hidden] { display: none !important; }
 body {
   container: page / inline-size;
@@ -287,6 +279,12 @@ body {
   font-size: 0.875rem;
   --LH: round(calc(1.45 * 1em), 2px);
   color: var(--text);
+  background:
+    radial-gradient(round(68.75rem, var(--e)) round(38.75rem, var(--e)) at 8% -12%, var(--glow-a), transparent 62%),
+    radial-gradient(round(56.25rem, var(--e)) round(40rem, var(--e)) at 104% -6%, var(--glow-b), transparent 60%),
+    radial-gradient(round(50rem, var(--e)) round(32.5rem, var(--e)) at 62% 112%, var(--glow-c), transparent 60%),
+    linear-gradient(180deg, var(--bg-1), var(--bg-0));
+  background-attachment: fixed;
   font-feature-settings: "cv11", "ss03";
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
@@ -414,8 +412,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 .topbar {
   position: sticky; top: 0; z-index: 30; height: var(--topbar-h);
   display: flex; align-items: center; justify-content: space-between; gap: round(1.25rem, var(--e)); padding: 0 var(--gutter);
-  background: var(--surface-bar); /* nearly solid instead of blurred: the bar stays put while the page scrolls under
-     it, and blurring what passes under it on every frame of a scroll was most of what slowed scrolling at 4K */
+  background: var(--surface-bar); backdrop-filter: blur(round(1.125rem, var(--e))) saturate(150%);
   border-bottom: 1px solid var(--line);
 }
 .crumbs { display: flex; align-items: center; gap: round(0.5rem, var(--e)); min-width: 0; font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-3); }
@@ -432,7 +429,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 .freshness.is-late .freshness-late { display: block; }
 .clock { font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-2); padding-left: round(1rem, var(--e)); border-left: 1px solid var(--line); }
 .live-dot { position: relative; width: round(0.5rem, var(--e)); height: round(0.5rem, var(--e)); border-radius: 50%; background: var(--live); box-shadow: 0 0 round(0.625rem, var(--e)) var(--live-glow); }
-.live-dot::after { content: ""; position: absolute; will-change: transform, opacity; inset: round(-0.25rem, var(--e)); border-radius: 50%; border: 1px solid var(--live-line); animation: pulse 2.4s ease-out infinite; }
+.live-dot::after { content: ""; position: absolute; inset: round(-0.25rem, var(--e)); border-radius: 50%; border: 1px solid var(--live-line); animation: pulse 2.4s ease-out infinite; }
 @keyframes pulse { 0% { transform: scale(0.6); opacity: 1; } 100% { transform: scale(1.8); opacity: 0; } }
 
 /* no max-width: wide screens get more columns and side panels (see "xwide"), not a narrow column in the middle */
@@ -504,8 +501,7 @@ ul { margin: 0; padding: 0; list-style: none; }
   position: relative; min-width: 0;
   background: linear-gradient(180deg, rgba(146, 176, 236, 0.072), rgba(146, 176, 236, 0.032));
   border: 1px solid var(--line); border-radius: var(--radius);
-  box-shadow: var(--shadow); /* no backdrop blur: over the plain glow it showed nothing, and blurring every panel on
-     every frame of a scroll stalled it on a 4K screen */
+  box-shadow: var(--shadow); backdrop-filter: var(--blur);
 }
 .panel-pad { padding: round(1.125rem, var(--e)) round(1.25rem, var(--e)); }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: round(0.75rem, var(--e)); margin-bottom: round(0.875rem, var(--e)); }
@@ -769,7 +765,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 .coords { font-size: max(0.71875rem, var(--fs-floor)); color: var(--text-2); padding: round(0.375rem, var(--e)) round(0.625rem, var(--e)); border-radius: round(0.625rem, var(--e)); }
 
 .car-marker { --m: var(--live); --ring: var(--marker-ring); position: relative; width: round(1.5rem, var(--e)); height: round(1.5rem, var(--e)); }
-.car-marker::before { content: ""; position: absolute; will-change: transform, opacity; inset: round(-0.875rem, var(--e)); border-radius: 50%; background: radial-gradient(circle, color-mix(in oklab, var(--m) 38%, transparent), transparent 65%); animation: halo 2.6s ease-in-out infinite; }
+.car-marker::before { content: ""; position: absolute; inset: round(-0.875rem, var(--e)); border-radius: 50%; background: radial-gradient(circle, color-mix(in oklab, var(--m) 38%, transparent), transparent 65%); animation: halo 2.6s ease-in-out infinite; }
 .car-marker::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--m); border: round(0.1875rem, var(--e)) solid var(--ring); box-shadow: 0 0 0 round(0.25rem, var(--e)) color-mix(in oklab, var(--m) 30%, transparent), 0 round(0.25rem, var(--e)) round(0.875rem, var(--e)) rgba(0, 0, 0, 0.6); }
 .car-marker--warm { --m: var(--warm); --ring: #FFF4DE; }
 .car-marker--asleep { --m: var(--st-asleep); --ring: #E4E5FF; }
@@ -777,9 +773,6 @@ ul { margin: 0; padding: 0; list-style: none; }
 .car-marker--asleep::before, .car-marker--muted::before { animation: none; opacity: 0.5; }
 .car-marker-heading { position: absolute; z-index: 1; left: 50%; top: 50%; width: round(0.8125rem, var(--e)); height: round(0.8125rem, var(--e)); margin: round(-0.40625rem, var(--e)) 0 0 round(-0.40625rem, var(--e)); fill: var(--bg-1); transform: rotate(var(--rot, 0deg)); }
 @keyframes halo { 0%, 100% { transform: scale(0.85); opacity: 0.9; } 50% { transform: scale(1.15); opacity: 0.5; } }
-/* while the page scrolls (core/app.js sets data-scrolling) the endless pulses hold still: each of their frames
-   would make the browser draw the window again under the scrolling page */
-:root[data-scrolling] .live-dot::after, :root[data-scrolling] .car-marker::before, :root[data-scrolling] .gauge--charging .gauge-fill { animation-play-state: paused; }
 .route-legend { display: flex; flex-direction: column; min-width: round(16.875rem, var(--e)); }
 .route-end { display: grid; grid-template-columns: round(1.375rem, var(--e)) 1fr auto; gap: round(0.75rem, var(--e)); align-items: center; }
 /* A and B: the same pins as on the map */
@@ -925,7 +918,14 @@ a.tl-kind:hover { color: var(--live); }
 .chart-label .swatch { flex: none; width: round(0.875rem, var(--e)); height: round(0.1875rem, var(--e)); border-radius: round(0.125rem, var(--e)); background: var(--c); }
 .chart-label .name { font-weight: 600; color: var(--text); }
 .chart-label .chart-unit { font-weight: 500; color: var(--text-3); }
-.chart-label .val { margin-left: auto; color: var(--text-2); }
+/* the value under the cursor fills the rest of the label's line, right-aligned, on one line: a new value changes only
+   its text, never the label's size or where it wraps */
+.chart-label .val { flex: 1 1 round(12rem, var(--e)); min-width: 0; margin-left: auto; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); }
+/* the same for a readout in a panel's head (Power against battery %): the head's right side keeps its width */
+.panel-head > .row:has(> .val) { flex: 1 1 0; min-width: 0; justify-content: flex-end; flex-wrap: nowrap; }
+.panel-head > .row > .val { flex: 1 1 0; min-width: 0; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); }
+/* with the mouse away the readout is empty and still one line high (a zero-width space), so a value never adds a line */
+:is(.chart-label, .panel-head > .row) > .val:empty::before { content: "\200b"; }
 .chart-label .val b { color: var(--text); font-weight: 600; }
 .chart-label .val .regen { color: var(--text); }
 .chart-label .key { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); color: var(--text-3); margin-left: round(0.375rem, var(--e)); }
@@ -1630,3 +1630,11 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 /* and as wide as the map from the start: the credit is a strip across the map's foot, so it never grows sideways */
 :root[data-phone] .map-panel .maplibregl-ctrl-bottom-right { left: 0; }
 :root[data-phone] .map-panel .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib { float: none; clear: both; margin: 0; border-radius: 0; text-align: right; }
+
+/* a readout whose text changes in place sits in a box as wide as its longest text (shared/dom.js steady) */
+.steady { display: inline-grid; font-variant-numeric: tabular-nums; }
+.steady > * { grid-area: 1 / 1; }
+.steady-size { visibility: hidden; }
+/* a chart is never the browser's scroll anchor: its cursor line comes and goes under the mouse, and the page
+   would scroll to keep it in place */
+.uplot, .uplot * { overflow-anchor: none; }

@@ -76,8 +76,10 @@
 .habit-block { margin-top: round(1.25rem, var(--e)); padding-top: round(1.125rem, var(--e)); border-top: 1px solid var(--line); }
 .chart-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(1rem, var(--e)); margin-bottom: round(0.625rem, var(--e)); font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-3); }
 .chart-title { color: var(--text-2); font-weight: 600; }
-.chart-side { display: inline-flex; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.875rem, var(--e)); }
-.chart-read { color: var(--text-3); }
+/* the readout fills a box of its own on one line, so pointing at the chart changes only its text: nothing beside or
+   under it moves, and the head never wraps anew */
+.chart-side { display: inline-flex; flex: 1 1 round(20rem, var(--e)); min-width: 0; justify-content: flex-end; align-items: center; gap: round(0.5rem, var(--e)) round(0.875rem, var(--e)); }
+.chart-read { flex: 1 1 0; min-width: 0; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-3); }
 .chart-read b { color: var(--text); font-weight: 600; }
 .legend-chip--static { cursor: default; }
 .legend-chip--static:hover { border-color: var(--line); color: var(--text-2); }
@@ -95,7 +97,8 @@
 .socmap-cell.has { background: color-mix(in srgb, var(--live) calc(18% + var(--a) * 82%), transparent); }
 .socmap-cell.has.is-end { background: color-mix(in srgb, var(--c-soc) calc(18% + var(--a) * 82%), transparent); }
 .socmap-cell.over:not(.has), .socmap-cell.under:not(.has) { background: var(--surface-sunken); }
-.socmap-hl { grid-column: var(--col); grid-row: 1 / span 10; border-radius: 3px; box-shadow: 0 0 0 1px var(--text-2); pointer-events: none; }
+/* over the cells, out of the flow: placed in the grid, it would push the cells along */
+.socmap-hl { position: absolute; inset: 0; grid-column: var(--col); grid-row: 1 / span 10; border-radius: 3px; box-shadow: 0 0 0 1px var(--text-2); pointer-events: none; }
 .socmap-hl[hidden] { display: none; }
 .socmap-axis { display: grid; grid-template-columns: round(4.25rem, var(--e)) repeat(var(--n), minmax(0, 1fr)); gap: 2px; margin-top: round(0.375rem, var(--e)); }
 .socmap-x { grid-column: var(--col) / span var(--span); font-size: max(0.6875rem, var(--fs-floor)); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -189,9 +192,11 @@
 :root[data-phone] .charges-page .cost-link { min-height: var(--tap); }
 :root[data-phone] .charges-page .stats-scope { min-width: 0; }
 :root[data-phone] .charges-page .panel-side { justify-content: flex-start; }
-:root[data-phone] .charges-page .chart-read { overflow-wrap: anywhere; }
+:root[data-phone] .charges-page .chart-read { white-space: normal; overflow-wrap: anywhere; }
 :root[data-phone="tall"] .weekmap-x { grid-column: span 6; }
 :root[data-phone="tall"] .weekmap-x:nth-child(odd) { display: none; }
+/* one line, whatever cell is pointed at: the note never changes height */
+.week-read { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .week-read b { color: var(--text); font-weight: 600; }
 :root[data-phone] .charges-page .places-map { height: min(round(22rem, var(--e)), 60dvh); }
 :root[data-phone] .charges-page .curve-chart { height: min(round(17rem, var(--e)), 60dvh); }

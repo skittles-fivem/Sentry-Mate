@@ -7,7 +7,7 @@
 // the same window. Saved trips (GET/POST/PATCH/DELETE /trips) belong to the account.
 
 import * as state from '../shared/state.js';
-import { h, replace, cssVar } from '../shared/dom.js';
+import { h, replace, cssVar, steady } from '../shared/dom.js';
 import { format, formatMoney, convert, unitLabel, getUnits, rangeLabel } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, formatDateRange, zoneName, dayKey, addDays, dayRange, startOf, DAY } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -264,7 +264,7 @@ export async function mount(ctx) {
     [timeColumn('Time', 't', tz), column('State', 'state'), column('Battery', 'soc', 'percent'), column(rangeLabel(), 'range', 'range'), column('Elevation', 'elev', 'length')]);
   const chartsPanel = h('section', { class: 'panel trip-charts', 'aria-label': 'Battery and elevation', cover: 'trip.control.zoom' },
     h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('battery'), 'Battery and elevation'),
-      h('span', { class: 'row' }, chartTime, srcMark(series, { short: true }), h('span', { class: 'faint' }, 'Drag across a chart to make that span the trip'), csvButton({ onClick: seriesCsv }))),
+      h('span', { class: 'row' }, steady(chartTime, (series?.t_ms || []).map((v) => `${formatDate(v, tz, { year: false })}, ${formatTime(v, tz)}`)), srcMark(series, { short: true }), h('span', { class: 'faint' }, 'Drag across a chart to make that span the trip'), csvButton({ onClick: seriesCsv }))),
     h('div', { class: 'chart-block', dataset: { series: 'batt' }, cover: ['trip.chart.battery.soc', 'trip.chart.battery.range'] },
       h('div', { class: 'chart-label' }, h('span', { class: 'name' }, 'Battery', h('span', { class: 'chart-unit' }, ' · % and ', unitLabel('range'))),
         h('span', { class: 'key' }, h('i', { vars: { '--c': 'var(--c-soc)' } }), 'Battery %'),

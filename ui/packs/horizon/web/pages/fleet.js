@@ -46,7 +46,6 @@ const FIX = {
   token_unused: ['A token was made but never used', 'No CAN Bridge has uploaded with it yet. Check the server address and the token in the CAN Bridge app.'],
   key_waiting: ['A CAN Bridge key is waiting', 'A CAN Bridge is uploading with a key that is not tied to a car yet. Assign it to a car in Settings: Cars.'],
   logs_waiting_trust: ['Logs are waiting for trust', 'Some logs wait until their signing key is trusted. Trust the key in Settings: Cars.'],
-  gps_inputs_disagree: ['Positions from one input are out of step', 'One input’s GPS positions are far from the others’ at the same moments; its positions are not used there. See Data health.'],
   logs_missing: ['Logs missing on the server', 'The server lost some logs and asked the car to send them again. See Data health.'],
   import_running: ['An import is still running', 'Its cars appear when the import finishes. Follow it on the Import page.'],
 };

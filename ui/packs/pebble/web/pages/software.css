@@ -35,7 +35,7 @@ a.sw-link:hover { text-decoration: underline; }
 .fwh-seg-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--f13); line-height: var(--l13); font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
 .fwh-seg.is-unnamed .fwh-seg-label { color: var(--muted); font-weight: 500; }
 .fwh-tick { position: absolute; top: 0; bottom: 0; left: calc(round(calc(var(--a) * 100%), 1px) - 1px); width: 2px; background: var(--card); }
-.fwh-axis { display: flex; justify-content: space-between; gap: var(--s3); font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
+.fwh-axis { display: flex; justify-content: space-between; gap: var(--s3); font-size: var(--f13); line-height: var(--l13); color: var(--muted); }
 .fwh-list-tile .pills { margin-bottom: var(--s2); }
 .fwh-rows { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
 .fwh-row { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr) minmax(0, 2fr); align-items: start; gap: var(--s1) var(--s4); padding: var(--s3) 0; border-top: 1px solid var(--card-alt); }
@@ -43,7 +43,7 @@ a.sw-link:hover { text-decoration: underline; }
 .fwh-main, .fwh-when { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s1); min-width: 0; }
 .fwh-mod { font-size: var(--f14); line-height: var(--l14); font-weight: 700; }
 .fwh-dates { font-size: var(--f14); line-height: var(--l14); font-variant-numeric: tabular-nums; }
-.fwh-dur { font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
+.fwh-dur { font-size: var(--f13); line-height: var(--l13); color: var(--muted); }
 .fwh-side { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s2); min-width: 0; }
 .fwh-ver { font-size: var(--f14); line-height: var(--l14); font-weight: 800; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .fwh-ver.is-unnamed { color: var(--muted); font-weight: 500; font-style: italic; }

@@ -1,0 +1,44 @@
+/* Checker fixture: hover. fleet: every hover and focus changes only colour, opacity, shadow and transform, and
+   tooltips sit in an overlay; drives: each case below moves something on hover or focus, on purpose. Both pages
+   are shorter than the window, so a page scrollbar that comes on hover would move everything. */
+* { box-sizing: border-box; }
+html { font: 16px/1.4 system-ui, sans-serif; color: #1b1f24; background: #f6f7f9; }
+body { margin: 0; }
+.frame { display: flex; gap: 24px; align-items: baseline; padding: 12px 24px; background: #fff; border-bottom: 1px solid #d8dce1; }
+.nav { display: flex; gap: 16px; }
+.nav a:hover { color: #2c6fbb; }
+.title { margin: 0; font-size: 20px; }
+main { padding: 24px; }
+.card { position: relative; background: #fff; border: 1px solid #d8dce1; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.card h2 { margin: 0 0 8px; font-size: 18px; }
+.row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.btn { padding: 4px 12px; border: 1px solid #8a939e; border-radius: 6px; background: #fff; font: inherit; }
+table { border-collapse: collapse; }
+td { padding: 4px 12px; border-bottom: 1px solid #d8dce1; }
+.chart { display: block; width: 320px; height: 80px; background: #eef1f4; }
+.input { padding: 4px 8px; border: 1px solid #8a939e; border-radius: 6px; font: inherit; }
+.scroll { position: relative; width: 320px; height: 90px; overflow: auto; border: 1px solid #d8dce1; }
+.scroll p { margin: 0 0 4px; }
+.edit { display: none; }
+
+/* fleet: the right way */
+.ok .btn:hover { background: #e8eef6; border-color: #2c6fbb; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2); transform: translateY(-1px); }
+.ok tr:hover td { background: #f0f4f9; }
+.ok .input:focus { outline: none; border-color: #2c6fbb; box-shadow: 0 0 0 3px rgba(44, 111, 187, 0.25); }
+.ok .tip { position: absolute; left: 0; top: 0; padding: 2px 6px; background: #1b1f24; color: #fff; font-size: 12px; pointer-events: none; opacity: 0; }
+.ok .tip.on { opacity: 1; }
+.ok .read { display: inline-block; width: 12ch; text-align: right; font-variant-numeric: tabular-nums; }
+.ok .edit-ok { opacity: 0; }
+.ok .row:hover .edit-ok { opacity: 1; }
+
+/* drives: wrong on purpose */
+.bad .btn.bold:hover { font-weight: 700; }               /* the buttons beside it move */
+.bad tr.pad:hover td { padding-top: 8px; }               /* the rows under it move */
+.bad .row.icon:hover .edit { display: inline; }          /* an edit icon that takes room */
+.bad .input.thick:focus { border-width: 3px; }           /* focus: a thicker border */
+.bad .tip-flow { margin: 4px 0 0; font-size: 12px; }     /* a chart tooltip in the flow, under the chart */
+.bad .scroll-tip { display: none; position: absolute; left: 0; top: 70px; width: 200px; height: 60px; background: #ffe; }
+.bad .scroll-host:hover .scroll-tip { display: block; }  /* a box that gets a scrollbar on hover */
+.bad .low-tip { display: none; position: absolute; left: 0; top: 100%; width: 200px; height: 3000px; background: #ffe; }
+.bad .low:hover .low-tip { display: block; }             /* a tooltip that makes the page longer: a page scrollbar */
+.bad .low { position: relative; display: inline-block; }

@@ -4,7 +4,7 @@
 //   node ui/tools/check.js --pack instrument [--pages fleet,car,...|all] [--sizes 1440x900,3840x2160]
 //        [--out DIR] [--server-args "<dev server flags>"] [--json] [--allow-missing] [--full]
 //        [--fixture-matrix FILE] [--ready-timeout-ms N] [--idle-timeout-ms N] [--jobs N]
-//        [--car ID] [--drive ID] [--charge ID] [--pixel] [--stable [SECONDS]] [--stable-fast]
+//        [--car ID] [--drive ID] [--charge ID] [--pixel] [--stable [SECONDS]] [--stable-fast] [--hover]
 //        [--base https://HOST:PORT --user NAME (--password PW | --password-file FILE)]
 //   node ui/tools/check.js --self-test
 //
@@ -19,6 +19,8 @@
 // overlapping or hidden, sideways scroll; and saves a screenshot with the bad boxes outlined.
 // With --stable it stays on each ready page while the dev server sends live updates (ui/tools/stable.js) and
 // fails a page whose layout shifts, whose blocks move or whose elements and loading texts come and go.
+// With --hover it moves the mouse over a grid of points, every interactive element and every chart, focuses every
+// element that takes focus (ui/tools/hover.js), and fails a page where anything outside what is hovered moves.
 // With --base it starts no dev server: it signs in to a real `sentry-mate serve` (made-up data only),
 // accepting that server's self-signed certificate for this run only.
 // See ui/tools/README.md. Plain Node (CommonJS) plus Playwright; nothing else.
@@ -34,6 +36,7 @@ const zlib = require('zlib');
 const { spawn } = require('child_process');
 const { pixelChecks, pixelOutline, pixelOutlineRemove } = require('./pixel');
 const { stableInit, stableCollect, stableOutline, stableOutlineRemove } = require('./stable');
+const { hoverRun } = require('./hover');
 
 const TOOLS_DIR = __dirname;
 const UI_DIR = path.dirname(TOOLS_DIR);
@@ -67,6 +70,12 @@ const STABLE_PACE = {
   // --stable-fast: live values every 0.5 s and rows every 3 s
   fast: ['--sse-interval-ms', '500', '--rows-every-s', '3'],
 };
+
+// --hover: what moves by more than HOVER.tol CSS px while the mouse is on something else fails; a grid of
+// cols x rows points per window, at most perKind elements of one kind (a row, a cell of a column) and
+// chartPoints across each chart (two rows of them), at most maxScreens windows down the page
+const HOVER = { tol: 0.5, grid: [10, 6], perKind: 4, maxTargets: 600, chartPoints: 10, maxElements: 12000, maxScreens: 6, budgetMs: 240000, maxFindings: LIST_CAP };
+const HOVER_LINES = 10; // hover findings listed per size in the readable report
 
 // Page id -> routes (contract 3). A page with two routes (health) is loaded at both; its own items
 // may sit on either one, the frame items must be on each.
@@ -563,7 +572,7 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
   const res = {
     size: size.label, ready: { ok: false, value: null, ms: null, landed: null, reason: null },
     missing: [], foreign: [], unknown: [], console: [], pageErrors: [], csp: [], apiFailures: [], outside: [],
-    overflow: null, smallText: null, pixel: null, stable: null, shot: null, fullShot: null, tiles: 0, notes: [], loadError: null,
+    overflow: null, smallText: null, pixel: null, stable: null, hover: null, shot: null, fullShot: null, tiles: 0, notes: [], loadError: null,
     _tokens: new Set(), _dropped: {},
   };
   if (entry.problem) { res.loadError = entry.problem; res.ready.reason = 'not_loaded'; return finish(); }
@@ -756,6 +765,28 @@ async function checkOne(browser, server, entry, size, sizeIndex, o, outDir) {
       }
     }
 
+    // --hover: the mouse over a grid of points, every interactive element and every chart, then focus on each
+    // element that takes it: nothing outside what is hovered may move
+    if (o.hover && !res.loadError && res.ready.ok) {
+      try {
+        res.hover = await within(HOVER.budgetMs + 60000, hoverRun(page, HOVER), 'hovering');
+        if (res.hover.truncated) res.notes.push(`hover: stopped after ${Math.round(HOVER.budgetMs / 1000)} s; not everything was hovered`);
+        if (res.hover.findings.length) {
+          const base = path.join(outDir, `${entry.key}-${size.label}-hover`);
+          const boxes = [];
+          for (const f of res.hover.findings) for (const m of f.moved.slice(0, 3)) boxes.push({ n: f.n, kind: 'hover', ...m.box });
+          await within(10000, page.evaluate(stableOutline, boxes), 'outlining').catch(() => {});
+          try {
+            await page.screenshot({ path: base + '.png', fullPage: true, animations: 'disabled', caret: 'hide', timeout: 30000 });
+            res.hover.shot = base + '.png';
+          } catch (e) { res.notes.push(`no hover screenshot: ${clip(e.message.split('\n')[0], 200)}`); }
+          await within(10000, page.evaluate(stableOutlineRemove), 'removing the outlines').catch(() => {});
+        }
+      } catch (e) {
+        res.hover = { error: clip(e.message.split('\n')[0], 200) };
+      }
+    }
+
     // measure the page
     try {
       const dom = await within(30000, page.evaluate(pageChecks, { minPx: MIN_TEXT_PX, maxElements: 10 }), 'measuring the page');
@@ -826,6 +857,7 @@ function failures(r, o) {
   if (r.smallText && r.smallText.count) f.push('smallText');
   if (o.pixel && (!r.pixel || r.pixel.count)) f.push('pixel');
   if (o.stable && !r.loadError && r.ready.ok && stableFails(r.stable)) f.push('stable');
+  if (o.hover && !r.loadError && r.ready.ok && (!r.hover || r.hover.error || r.hover.count)) f.push('hover');
   return f;
 }
 
@@ -906,7 +938,9 @@ async function run(o) {
 
     let chromium;
     try { ({ chromium } = require('playwright')); } catch (e) { throw new StartError(`Playwright is not installed here: ${e.message.split('\n')[0]}`); }
-    try { browser = await chromium.launch(); } catch (e) { throw new StartError(`Chromium did not start: ${e.message.split('\n')[0]}`); }
+    // --hover: with the scrollbars the window really has (Playwright hides them by default, and a scrollbar that
+    // comes and goes on hover moves the whole page)
+    try { browser = await chromium.launch(o.hover ? { ignoreDefaultArgs: ['--hide-scrollbars'] } : {}); } catch (e) { throw new StartError(`Chromium did not start: ${e.message.split('\n')[0]}`); }
     live.browsers.add(browser);
 
     const tasks = [];
@@ -939,6 +973,7 @@ async function run(o) {
       allowMissing: !!o.allowMissing,
       pixel: !!o.pixel,
       stable: o.stable ? { seconds: o.stableSeconds, pace: o.stableFast ? 'fast' : 'normal', maxShift: STABLE_MAX_SHIFT } : null,
+      hover: o.hover ? { tol: HOVER.tol, grid: HOVER.grid } : null,
       pages,
       pass: pages.every((p) => p.pass),
     };
@@ -970,6 +1005,8 @@ const STABLE_COLUMNS = [
   ['moved', (s) => (!s.stable || s.stable.error ? '?' : s.stable.movedCount)],
   ['flicker', (s) => (!s.stable || s.stable.error ? '?' : s.stable.togglingCount)],
 ];
+
+const HOVER_COLUMN = ['hover', (s) => (!s.hover || s.hover.error ? '?' : s.hover.count)];
 
 const listOf = (arr, n, f = String) => arr.slice(0, n).map(f).join(', ') + (arr.length > n ? `, and ${arr.length - n} more` : '');
 
@@ -1008,6 +1045,7 @@ function details(s, pageId) {
     if (s.pixel.count > PIXEL_LINES) d.push(`pixel: and ${s.pixel.count - PIXEL_LINES} more${s.pixel.count > s.pixel.findings.length ? ` (${s.pixel.findings.length} in --json)` : ' (all in --json)'}`);
   }
   if (s.stable) d.push(...stableDetails(s.stable));
+  if (s.hover) d.push(...hoverDetails(s.hover));
   for (const n of s.notes) d.push(`note: ${n}`);
   if (s.dropped) d.push(`not listed: ${Object.entries(s.dropped).map(([k, n]) => `${n} more ${k}`).join(', ')}`);
   return d;
@@ -1035,6 +1073,21 @@ function stableDetails(st) {
 }
 
 // One line per size under the table: the watch itself (how long, what arrived, the time from the first paint).
+function hoverDetails(h) {
+  if (h.error) return [`hover: could not hover: ${h.error}`];
+  const d = [];
+  const px = (v) => `${v > 0 ? '+' : ''}${v}`;
+  const what = (m) => [m.dx && `x ${px(m.dx)}`, m.dy && `y ${px(m.dy)}`, m.dw && `width ${px(m.dw)}`, m.dh && `height ${px(m.dh)}`].filter(Boolean).join(', ');
+  for (const f of h.findings.slice(0, HOVER_LINES)) {
+    const how = f.kind === 'focus' ? 'focus on' : f.kind === 'point' ? 'the mouse at' : f.kind === 'chart' ? 'the mouse on the chart' : 'hover on';
+    const page = [f.scrolled && 'the page scrolled', f.scrollbar && 'a page scrollbar came or went', f.stays && 'and it stayed so with the mouse away'].filter(Boolean);
+    d.push(`hover: ${f.n}. ${how} ${f.target} (${f.x}, ${f.y}) moved ${listOf(f.moved, 2, (m) => `${m.selector} (${what(m)} px)`)}${f.count > f.moved.length ? ` (${f.count} in all)` : ''}${page.length ? '; ' + page.join(', ') : ''}`);
+  }
+  if (h.findings.length > HOVER_LINES) d.push(`hover: and ${h.findings.length - HOVER_LINES} more (--json)`);
+  if (h.shot) d.push(`hover: outlined in ${rel(h.shot)}`);
+  return d;
+}
+
 function stableSummary(s) {
   const st = s.stable;
   if (!st || st.error) return null;
@@ -1056,7 +1109,7 @@ function formatReport(rep) {
     if (p.pass) pass++;
     if (warned) warn++;
     L.push(`${p.pass ? (warned ? 'WARN' : 'PASS') : 'FAIL'}  ${p.id}  ${p.url}`);
-    const cols = [...COLUMNS, ...(rep.pixel ? [PIXEL_COLUMN] : []), ...(rep.stable ? STABLE_COLUMNS : [])];
+    const cols = [...COLUMNS, ...(rep.pixel ? [PIXEL_COLUMN] : []), ...(rep.stable ? STABLE_COLUMNS : []), ...(rep.hover ? [HOVER_COLUMN] : [])];
     const rows = [cols.map(([h]) => h), ...p.sizes.map((s) => cols.map(([, f]) => String(f(s))))];
     const widths = cols.map((_, i) => Math.max(...rows.map((r) => r[i].length)));
     for (const r of rows) L.push('  ' + r.map((c, i) => c.padEnd(widths[i])).join('  ').trimEnd());
@@ -1204,6 +1257,31 @@ async function selfTest(o) {
   expect('stable: the report has shift, moved and flicker columns and says why', /shift {2}moved {2}flicker/.test(formatReport(sb)) && /stable: moved main#view > section\.card by \+\d+(\.\d)? px/.test(formatReport(sb)) && /stable: flicker [^\n]*p\.loading appeared and went away again/.test(formatReport(sb)));
   expect('stable: no stability column or watch without --stable', ok.pages.every((p) => p.sizes.every((s) => s.stable === null)) && !/ flicker\n/.test(formatReport(ok)));
 
+  // --hover: the hStill page passes, each case on the moving page is found (with what moved and by how much)
+  const hv = await run({
+    ...common, packDir: path.join(FIXTURES_DIR, 'pack-hover'), pages: 'fleet,drives', sizes: parseSizes('1280x800,1600x1000'),
+    full: false, hover: true, serverArgs: ['--freeze-clock'],
+  });
+  const hStill = find(hv, 'fleet'), hMoves = find(hv, 'drives');
+  const hf = (s) => (s.hover && s.hover.findings) || [];
+  const hfound = (s, kind, target, moved, test) => hf(s).some((f) => f.kind === kind && f.target.includes(target) && (!moved || f.moved.some((m) => m.selector.includes(moved) && (!test || test(m)))));
+  expect('hover: something was hovered, focused and swept on each page (elements, grid points, chart points, focus)', [hStill, hMoves].every((p) => every(p, (s) => s.hover && s.hover.targets >= 5 && s.hover.points >= 1 && s.hover.charts >= 10 && s.hover.focused >= 3)));
+  expect(`hover: the hStill page passes (colour, shadow, transform, an overlay tooltip, a readout of fixed width, opacity)${hStill && !hStill.pass ? ` (got: ${hStill.sizes.flatMap((s) => (s.hover ? hoverDetails(s.hover) : ['no hover']).map((l) => `${s.size} ${l}`)).join('; ')})` : ''}`, hStill && hStill.pass);
+  expect('hover: the moving page fails on hover only', hMoves && !hMoves.pass && every(hMoves, (s) => s.fails.join() === 'hover'));
+  const hwant = [
+    ['a button that turns bold moves the one beside it', (s) => hfound(s, 'element', 'button.btn.bold', 'button.btn:nth-of-type(2)', (m) => m.dx > 0.5)],
+    ['a row whose padding grows moves the rows under it', (s) => hfound(s, 'element', 'tr.pad', 'tr.pad:nth-of-type(2)', (m) => m.dy === 4)],
+    ['an edit icon that takes room moves the text after it', (s) => hfound(s, 'element', 'div.row.icon', 'div.row.icon:nth-of-type(2) > span:nth-of-type(2)', (m) => m.dx > 5)],
+    ['a chart tooltip in the flow hMoves what is under the chart', (s) => hfound(s, 'chart', 'svg.chart', 'section.card.bad > p', (m) => m.dy > 5)],
+    ['a box that gets a scrollbar on hover narrows what is in it', (s) => hfound(s, 'element', 'div.scroll-host', 'div.scroll-host', (m) => m.dw < -5)],
+    ['a tooltip that makes the page longer brings a page scrollbar', (s) => hf(s).some((f) => f.target.includes('span.low') && f.scrollbar)],
+    ['focus: a thicker border hMoves what is beside the field', (s) => hfound(s, 'focus', 'input.input.thick', 'span', (m) => m.dx > 1)],
+  ];
+  for (const [what, test] of hwant) expect(`hover: ${what}`, every(hMoves, test));
+  expect('hover: an outlined screenshot of what moved', every(hMoves, (s) => s.hover.shot && fs.existsSync(s.hover.shot)) && every(hStill, (s) => !s.hover.shot));
+  expect('hover: the report has a hover column and says what moved', / hover\n/.test(formatReport(hv)) && /hover: \d+\. hover on [^\n]*button\.btn\.bold[^\n]* moved [^\n]*\(x \+\d/.test(formatReport(hv)));
+  expect('hover: no hover column or check without --hover', ok.pages.every((p) => p.sizes.every((s) => s.hover === null)) && !/ hover\n/.test(formatReport(ok)));
+
   const failed = checks.filter((c) => !c.ok);
   const L = checks.map((c) => `${c.ok ? 'ok  ' : 'FAIL'}  ${c.what}`);
   L.push('', failed.length ? `self-test failed: ${failed.length} of ${checks.length} checks` : `self-test passed: ${checks.length} checks`);
@@ -1212,8 +1290,9 @@ async function selfTest(o) {
     if (!ok.pass) L.push('pack-ok report:', formatReport(ok));
     L.push('pack-pixel report:', formatReport(px));
     L.push('pack-stable report:', formatReport(sb));
+    L.push('pack-hover report:', formatReport(hv));
   }
-  return { pass: failed.length === 0, text: L.join('\n') + '\n', reports: { ok, bad, pixel: px, stable: sb } };
+  return { pass: failed.length === 0, text: L.join('\n') + '\n', reports: { ok, bad, pixel: px, stable: sb, hover: hv } };
 }
 
 // ------------------------------------------------------------------ command line
@@ -1241,6 +1320,9 @@ const HELP = `Usage: node ui/tools/check.js --pack <name or folder> [options]
                          live updates, and fail it when its layout shifts (more than ${STABLE_MAX_SHIFT}), a block moves more
                          than 1 px, or an element or loading text comes and goes more than once
   --stable-fast          with --stable: live values every 0.5 s and list changes every 3 s (else every 2 s and 10 s)
+  --hover                also move the mouse over a grid of points, every interactive element and every chart, and
+                         focus each element that takes focus, and fail the page when anything outside what is
+                         hovered moves or changes size by more than ${HOVER.tol} px (the dev server's clock is frozen)
   --device-size N        the Interface size on this device (80, 90, 100, 110, 125; else auto): kept in each window's storage
   --base URL             a real sentry-mate serve (https://127.0.0.1:PORT) instead of the dev server; its
                          self-signed certificate is accepted for this run only (see ui/tools/README.md)
@@ -1267,7 +1349,7 @@ function parseArgs(argv) {
   const o = {
     pack: null, pages: 'all', sizes: DEFAULT_SIZES, out: null, serverArgs: '', json: false, allowMissing: false,
     full: false, pixel: false, fixtureMatrix: null, selfTest: false, readyTimeoutMs: '20000', idleTimeoutMs: '10000', jobs: '2',
-    car: null, drive: null, charge: null, help: false, stable: false, stableSeconds: STABLE_DEFAULT_S, stableFast: false, base: null, user: null, password: null, passwordFile: null,
+    car: null, drive: null, charge: null, help: false, stable: false, hover: false, stableSeconds: STABLE_DEFAULT_S, stableFast: false, base: null, user: null, password: null, passwordFile: null,
   };
   const values = {
     '--pack': 'pack', '--pages': 'pages', '--sizes': 'sizes', '--out': 'out', '--server-args': 'serverArgs',
@@ -1276,7 +1358,7 @@ function parseArgs(argv) {
     '--base': 'base', '--user': 'user', '--password': 'password', '--password-file': 'passwordFile',
     '--device-size': 'deviceSize',
   };
-  const flags = { '--json': 'json', '--allow-missing': 'allowMissing', '--full': 'full', '--pixel': 'pixel', '--self-test': 'selfTest', '--help': 'help', '-h': 'help', '--stable-fast': 'stableFast' };
+  const flags = { '--json': 'json', '--allow-missing': 'allowMissing', '--full': 'full', '--pixel': 'pixel', '--self-test': 'selfTest', '--help': 'help', '-h': 'help', '--stable-fast': 'stableFast', '--hover': 'hover' };
   for (let i = 0; i < argv.length; i++) {
     let a = argv[i];
     let v;
@@ -1317,6 +1399,8 @@ function parseArgs(argv) {
   o.serverArgs = splitArgs(o.serverArgs);
   if (o.stableFast && !o.stable) throw new UsageError('--stable-fast goes with --stable');
   if (o.stable && o.serverArgs.includes('--freeze-clock')) throw new UsageError('--stable needs the dev server\'s clock to run: leave out --freeze-clock');
+  // --hover alone: nothing changes by itself while the mouse moves
+  if (o.hover && !o.stable && !o.base && !o.serverArgs.includes('--freeze-clock')) o.serverArgs = ['--freeze-clock', ...o.serverArgs];
   // the pace of live updates goes first, so --server-args can still change it
   if (o.stable && !o.base) o.serverArgs = [...STABLE_PACE[o.stableFast ? 'fast' : 'normal'], ...o.serverArgs];
   o.matrixFile = o.fixtureMatrix ? path.resolve(o.fixtureMatrix) : MATRIX_FILE;
@@ -1357,7 +1441,7 @@ async function main() {
   o.log = (line) => process.stderr.write(line + '\n');
   if (o.selfTest) {
     const r = await selfTest(o);
-    if (o.json) process.stdout.write(JSON.stringify({ pass: r.pass, ok: r.reports.ok, bad: r.reports.bad, pixel: r.reports.pixel, stable: r.reports.stable }, null, 2) + '\n');
+    if (o.json) process.stdout.write(JSON.stringify({ pass: r.pass, ok: r.reports.ok, bad: r.reports.bad, pixel: r.reports.pixel, stable: r.reports.stable, hover: r.reports.hover }, null, 2) + '\n');
     else process.stdout.write(r.text);
     return r.pass ? 0 : 1;
   }
@@ -1374,4 +1458,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { run, formatReport, selfTest, parseArgs, ROUTES, FRAME_SCREENS, startServer, killChildren, TILE_HOSTS, BLANK_TILE };
+module.exports = { run, formatReport, selfTest, parseArgs, ROUTES, FRAME_SCREENS };

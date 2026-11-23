@@ -70,11 +70,6 @@ const REASONS = {
     text: 'They arrived from a key nobody has approved yet. Approve or assign the key and they are read at once.',
     fix: 'Approve the key', page: 'settings-cars',
   },
-  gps_inputs_disagree: {
-    title: 'Positions from one input are out of step',
-    text: 'One input’s GPS positions are far from the other inputs’ positions at the same moments, more than lag or noise explains (often a decoding problem). Its positions are not used there; the other inputs’ positions are. The rest of its data is still used.',
-    fix: null, page: null,
-  },
   logs_missing: {
     title: 'Logs missing on the server',
     text: 'The server lost some logs and asked the car to send them again. They come in by themselves when the car has them; see Missing on the server below.',
@@ -239,7 +234,6 @@ async function mountCar(ctx) {
   let wasPending = false;
   ctx.onCleanup(() => clearTimeout(pendingTimer));
   let teslaRows = null;
-  let healthKey = null;
   async function loadHealth() {
     const [hl, ts] = await Promise.all([
       ctx.api.get(`${base}/health`, fullPeriod(ctx.params)),
@@ -248,10 +242,7 @@ async function mountCar(ctx) {
     ]);
     if (!ctx.alive()) return;
     teslaRows = ts;
-    // while a rebuild runs this is read every few seconds: the card is drawn again only when something in it
-    // changed (from_ms and to_ms move with the clock and are not shown)
-    const key = JSON.stringify([{ ...hl, from_ms: null, to_ms: null }, ts]);
-    if (key !== healthKey) { healthKey = key; paintHealth(hl); }
+    paintHealth(hl);
     clearTimeout(pendingTimer);
     pendingTimer = null;
     if (hl.rebuild_pending) {
@@ -397,7 +388,6 @@ async function mountCar(ctx) {
   /* ---------- gaps */
   const gapsTable = dataTable(ctx, {
     title: 'Gaps in the period', icon: 'timeline', path: `${base}/gaps`, params: ctx.params, cls: 'hl-gaps', csvName: `gaps ${period.preset || ''}`, csv: { all: true },
-    reuseRows: true, // reloads on every `rows` event (each second while a rebuild runs): unchanged rows stay as they are
     note: 'Times with no usable data, newest first. A gap in which the odometer moved means a drive was not recorded. Open one on the timeline.',
     columns: [
       { key: 'start', label: 'From', render: (g) => h('a', { class: 'main', href: timelineAt(cid, g.start_ms, g.end_ms ?? ctx.api.now()), title: 'Open the timeline at this gap' }, when(ctx, g.start_ms)), csv: { label: 'From (UTC)', value: (g) => iso(g.start_ms) } },
@@ -415,7 +405,6 @@ async function mountCar(ctx) {
   const countsSlot = h('div');
   const totalsPanel = panel({ title: 'What is recorded', icon: 'stats', cls: 'hl-totals', side: h('span', { class: 'faint' }, 'All time, not the period') }, totalsSlot);
 
-  let totalsKey = null;
   async function loadTotals() {
     const [all, can, api, tm, upd] = await Promise.all([
       ctx.api.get(`${base}/totals`, { source: 'all' }),
@@ -425,10 +414,6 @@ async function mountCar(ctx) {
       ctx.api.get(`${base}/updates`, { limit: 1 }).catch(() => null),
     ]);
     if (!ctx.alive()) return;
-    // read again on every `rows` event: drawn again only when a figure changed
-    const key = JSON.stringify([all, can, api, tm, upd?.summary || null]);
-    if (key === totalsKey) return;
-    totalsKey = key;
     paintTotals(all, can, api, tm, upd?.summary || null);
   }
 

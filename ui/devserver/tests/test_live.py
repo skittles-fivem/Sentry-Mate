@@ -188,22 +188,6 @@ class ForcedRows(ServerCase):
         self.assertIn("c2", {e["data"]["car"] for e in events if e["event"] == "rows"})
 
 
-class RebuildRunning(ServerCase):
-    server_args = {"freeze_clock": False, "rebuild_running": True}
-
-    def test_rebuild_never_ends_and_rows_come_every_second(self):
-        h = self.c.get("/api/v1/cars/c1/health")
-        self.assertTrue(h["rebuild_pending"])
-        self.assertIn("rebuild_pending", h["reasons"])
-        self.server.app.clock.advance(60_000)
-        self.assertTrue(self.c.get("/api/v1/cars/c1/health")["rebuild_pending"])
-        start = time.time()
-        events = read_events(self.server.port, self.c.cookie,
-                             lambda ev: len([e for e in ev if e["event"] == "rows" and e["data"]["car"] == "c1"]) >= 3)
-        self.assertGreaterEqual(len([e for e in events if e["event"] == "rows" and e["data"]["car"] == "c1"]), 3)
-        self.assertLess(time.time() - start, 5)
-
-
 class NoForcedRows(ServerCase):
     server_args = {"freeze_clock": True}
 

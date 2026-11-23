@@ -182,14 +182,6 @@ downloadCsv(csvFilename(car.name, 'battery-level'), rows, [timeColumn('Time', 't
 `on(target, type, fn)`, `esc`, `safeUrl`, `setVars(el, vars)`, `cssVar(name)`, `cover(el, ...ids)`,
 `ready(pageId)`, `unready()`, `failed(pageId)`, `readyPage()`, `setTitle(...parts)`, `quantity(value, kind,
 opts)`, `styleSheet(href, { first })` (adds a style sheet once, after the others or with `first` before them, and resolves when it has loaded: maps and charts await it).
-`disclose(button, part, { focus, onOpen, onClose })` opens a hidden part in place from a button (a name box behind "Edit"):
-aria-expanded and aria-controls on the button, the focus into the part when it opens and back to the button when
-it closes, Escape inside it closes it; returns `{ open(), close(), isOpen() }`.
-`replaceChanged(el, ...children)` is `replace()` for parts drawn again on every live update: a child equal to the
-one already in its place (the node itself, or `isEqualNode`) stays and only the others are swapped, so nothing is
-laid out, snapped or painted again for a value that did not change (handlers are not compared). `markScrolling(ms)`
-(once at start) sets `<html data-scrolling>` while the page or a box in it scrolls and `ms` after (passive), so CSS
-can pause endless animations during a scroll.
 
 `h()` attributes: `class` (text, array or `{ name: on }`), `dataset`, `vars` (CSS custom properties, set through
 CSSOM), `style` (an object, CSSOM), `cover` (inventory item ids), `on<event>` functions, `value` / `checked`
