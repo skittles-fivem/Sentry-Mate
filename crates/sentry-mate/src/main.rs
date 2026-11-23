@@ -225,6 +225,12 @@ enum DevCmd {
         #[arg(long, default_value_t = 1)]
         seed: u64,
     },
+    /// What the data folder takes on disk by category, as a table (docs/plans/storage.md). With `--compact`, packs
+    /// everything that can be packed first (what the server does when idle) and prints what that saved.
+    Storage {
+        #[arg(long)]
+        compact: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -422,7 +428,7 @@ fn needs(cmd: &Cmd) -> Option<(bool, bool)> {
             Some((false, false))
         }
         #[cfg(feature = "dev-seed")]
-        Cmd::Dev { cmd: DevCmd::Seed { .. } | DevCmd::History { .. } } => Some((true, false)),
+        Cmd::Dev { cmd: DevCmd::Seed { .. } | DevCmd::History { .. } | DevCmd::Storage { .. } } => Some((true, false)),
         Cmd::Log { .. } | Cmd::Health => None,
     }
 }
@@ -605,6 +611,27 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
             let t = Instant::now();
             let c = history::run(&engine, &o).await?;
             println!("{c:?} in {:.1} s", t.elapsed().as_secs_f64());
+        }
+        #[cfg(feature = "dev-seed")]
+        Cmd::Dev { cmd: DevCmd::Storage { compact } } => {
+            let _lock = take_server_lock(&data).await?;
+            let v = Arc::new(Vault::open(&data, &keys)?);
+            let db = db::Db::open(&data, v.clone(), db::Options::default())?;
+            let engine = engine::Engine::new(db, Store::new(can_dir(&data), v), engine::Options::default());
+            if compact {
+                refuse_writes(&data, engine.store().vault())?;
+                let t = Instant::now();
+                let r = engine.compact(&|| false, false)?;
+                println!("compacted in {:.1} s: {r:?}", t.elapsed().as_secs_f64());
+            }
+            let cats = engine::query::storage::categories(&engine)?;
+            println!("| category | files | bytes | on disk |\n|---|---:|---:|---:|");
+            let (mut f, mut b, mut d) = (0, 0, 0);
+            for c in &cats {
+                println!("| `{}` | {} | {} | {} |", c.key, c.files, c.bytes, c.disk_bytes);
+                (f, b, d) = (f + c.files, b + c.bytes, d + c.disk_bytes);
+            }
+            println!("| **total** | {f} | {b} | {d} |");
         }
         Cmd::Health => {
             // a move coming in keeps the upload port closed until it switches: healthy meanwhile
