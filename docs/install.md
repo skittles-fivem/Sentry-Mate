@@ -199,14 +199,14 @@ the same as 568:568.
 7. Check the time zone. Set-up takes your browser's time zone as the one
    new cars start in (days, weeks and prices by time of day are counted in
    it, and every page shows the car's times in it). Change it in
-   **Settings → Display and units** ("Time zone for new cars"). Each car
+   **Settings → Cars** ("Time zone for new cars"). Each car
    keeps its own after that, in **Settings → Cars** → the car → **Time
    zone**; the clock in the page header names the zone the page shows
    (`2:52 PM CST`).
 
 8. To see map pictures under the routes, either add an offline map file
    (below: nothing leaves the server) or have an admin turn on online tiles
-   in **Settings → Display and units** (off by default: no browser asks an
+   in **Settings → Maps and addresses** (off by default: no browser asks an
    outside server until then) and pick a source (OpenStreetMap standard,
    OpenTopoMap or your own address). Until then every map says "No map
    tiles yet", and for an admin offers "Use the online map" (OpenStreetMap) in
@@ -860,7 +860,7 @@ The compose and TrueNAS files set everything. The environment variables it
 reads, and what each does, are in [Settings](commands.md#settings). Times in
 the log are UTC. `TZ` (an IANA zone such as `America/Chicago`) only sets the
 zone new cars start in until one is saved, at set-up from the first admin's
-browser or in **Settings → Display and units**.
+browser or in **Settings → Cars**.
 
 ## Offline map
 
@@ -882,7 +882,7 @@ it in.
    `--maxzoom=14` makes it smaller, with less detail close in.
 3. Copy `my-area.pmtiles` into the `maps` folder of the data folder (`./data/maps/` with the compose file; make the
    folder if it is not there, owned by the same user as the rest of the data folder).
-4. In **Settings → Display and units**, Map tiles is **Offline** (the default). The "Offline map file" row names the
+4. In **Settings → Maps and addresses**, Map tiles is **Offline** (the default). The "Offline map file" row names the
    file in use at once; no restart. With several files the largest is used, or the one you pick there.
 
 A Protomaps file is a vector map: the pages draw land, water, parks, roads and buildings in a plain style, without

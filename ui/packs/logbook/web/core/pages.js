@@ -11,7 +11,7 @@ export const GROUPS = Object.freeze([
   Object.freeze({ id: "driving", name: "Driving", pages: Object.freeze(["drives", "trip", "logbook"]) }),
   Object.freeze({ id: "battery", name: "Battery and energy", pages: Object.freeze(["charges", "battery", "efficiency"]) }),
   Object.freeze({ id: "reports", name: "Reports", pages: Object.freeze(["statistics", "travel", "software"]) }),
-  Object.freeze({ id: "setup", name: "Set-up", pages: Object.freeze(["places", "settings-cars", "settings-display", "settings-integrations", "settings-server", "import", "health", "help"]) }),
+  Object.freeze({ id: "setup", name: "Set-up", pages: Object.freeze(["places", "settings-cars", "settings-display", "settings-integrations", "settings-maps", "settings-server", "import", "health", "help"]) }),
 ]);
 
 export const PAGES = Object.freeze({
@@ -236,24 +236,25 @@ export const PAGES = Object.freeze({
     id: "settings-cars", name: "Settings: Cars", group: "setup", period: null, car: "optional", detail: false,
     blurb: "Per-car settings and how each CAN Bridge is tied to it.",
     purpose: "Per-car settings, and how each car's CAN Bridge is tied to it.",
-    keywords: "upload token key bridge pairing time zone chemistry lfp supercharging",
+    keywords: "upload token key bridge pairing time zone new cars default zone chemistry lfp supercharging",
     sections: [
       ["Car and switcher", "Car picker, name, and an empty state that explains how a car appears."],
       ["Upload tokens and keys", "Upload tokens (made here, shown once), CAN Bridge keys tied to the car, a preferred key when two record at once, and keys waiting to be assigned, each with first and last upload."],
       ["Time zone", "The car's time zone, used for days, weeks and tariffs."],
+      ["Time zone for new cars", "The zone a new car starts in (the server's default), on the page without a car; an admin changes it."],
       ["Battery", "Chemistry: automatic (with the evidence), LFP, or NCA/NMC."],
       ["Charging", "Free Supercharging as a dated range, with the car's own entitlement shown as a hint."],
     ],
   }),
   "settings-display": Object.freeze({
     id: "settings-display", name: "Settings: Display and units", group: "setup", period: null, car: "none", detail: false,
-    blurb: "Units, theme, language, interface size and maps, per person.",
-    purpose: "How numbers, words and maps look, per person, with server defaults set by an admin.",
-    keywords: "units miles km fahrenheit psi bar theme dark light language size zoom addresses tiles",
+    blurb: "Your units, theme, language, map style and interface size.",
+    purpose: "How numbers, words and maps look to you: your own choices, and the size on this device.",
+    keywords: "units miles km fahrenheit psi bar theme dark light language size zoom map colours style satellite pack main car",
     sections: [
       ["Units and range", "Distance, temperature and pressure units, and rated or ideal range."],
-      ["Look and language", "Light, dark or device theme, interface language, interface size, and UI pack."],
-      ["Addresses and maps", "Address lookup: offline (bundled place names) or an online service with rounding and a cache; address language; map tiles offline or an online source with its credit."],
+      ["Look and language", "Light, dark or device theme, map colours and map style, interface language, interface size (also on this device only), UI pack and main car."],
+      ["Server defaults", "The units and range for accounts that have not chosen, set by an admin."],
       ["Saving", "Changes save at once; per-person choices override the server defaults."],
     ],
   }),
@@ -274,13 +275,29 @@ export const PAGES = Object.freeze({
       ["Works with", "Notes on using the published values with route planners, garage doors, desk gauges and smart mirrors."],
     ],
   }),
+  "settings-maps": Object.freeze({
+    id: "settings-maps", name: "Settings: Maps and addresses", group: "setup", period: null, car: "none", detail: false,
+    blurb: "Map tiles, the offline map and address lookup, for everyone.",
+    purpose: "Where maps and addresses come from, for everyone on this server.",
+    keywords: "map tiles satellite offline map file pmtiles online tile server credit attribution place names roads overlay styles address lookup geocoding nominatim rounding address language proxy outside links release notes",
+    sections: [
+      ["Map tiles", "Offline (from this server) or an online source: a preset such as satellite pictures, or your own address with its credit and zoom."],
+      ["Place names and roads", "Town names, borders and roads drawn over satellite pictures."],
+      ["Maps people can switch to", "The online maps each person may pick on a map page."],
+      ["Offline map file", "Which offline map file is in use, and how to make one for your area."],
+      ["Address lookup", "Offline (bundled place names) or an online service with rounding and a cache, its status, and the outbound proxy."],
+      ["Address language", "The language street and place names are written in."],
+      ["Outside links", "Whether pages may link to an outside map and to release notes."],
+    ],
+  }),
   "settings-server": Object.freeze({
     id: "settings-server", name: "Settings: Server and access", group: "setup", period: null, car: "none", detail: false,
-    blurb: "Accounts, roles, sessions, the audit log and HTTPS.",
-    purpose: "Who can sign in, what they may see, and how the server is reached.",
-    keywords: "accounts users password sign out sessions audit certificate https recovery key backup",
+    blurb: "Accounts, roles, sessions, the audit log, HTTPS and updates.",
+    purpose: "Who can sign in, what they may see, how the server is reached, and its updates.",
+    keywords: "accounts users password sign out sessions audit certificate https recovery key backup release check new version update",
     sections: [
       ["Access and hosting", "Accounts with Admin and Watch-only roles, per-account car lists, two-step sign-in, sessions (sign out here or everywhere), the audit log, host names for the certificate, the HTTPS port, and backups and the recovery key."],
+      ["Server updates", "This build, and the release check: once a day, if on, ask whether a newer Sentry Mate exists, with Check now."],
     ],
   }),
   "import": Object.freeze({

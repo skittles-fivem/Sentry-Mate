@@ -2,8 +2,8 @@
 //
 // Who can sign in, what they may see, how the server is reached, and moving it, as rounded tiles:
 // - Everyone: how this address is reached (HTTPS, host name, port), Server updates (this build and the release
-//   check's last answer: about, release; Check now for an admin, release/check; the switch stays in Display and
-//   units), how access works, and their own sessions.
+//   check's last answer: about, release; Check now and the release check's switch for an admin, release/check,
+//   settings release_check), how access works, and their own sessions.
 // - Admins also: the certificate (its names changed in a sheet: Change names) and the recovery key (show it again,
 //   make a new one, say it is saved), the move to another server as numbered step cards (with a move code, or
 //   with an export file: the current card holds the one clear button and what it printed), the accounts (an edit
@@ -32,7 +32,7 @@ import { group, infoRow, said, notSaved, askPassword, keySheet, tick } from '../
 import { inOrder } from '../core/settings.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 import { fullRebuildTile } from '../core/fullrebuild.js';
-import { serverUpdates, RELEASE_OFF_TEXT, RELEASE_SETTING } from '../shared/release.js';
+import { serverUpdates, RELEASE_OFF_TEXT } from '../shared/release.js';
 import { compactionProgress } from '../shared/compaction.js';
 import { bytes, bigCode, copyButton, downloadUrl, stepCards, progressBar, callout, PROBLEM } from './move-parts.js';
 import { exportModel, exportPollMs } from '../shared/exportjob.js';
@@ -163,6 +163,26 @@ export async function mount(ctx) {
   }
   const UPD_TONE = { newer: 'sun', ok: 'teal', error: 'coral', wait: 'muted', off: 'muted' };
   const UPD_ICON = { this: 'server', built: 'calendar', newest: 'upload', checked: 'clock' };
+  // the release check's switch (#release-check, PATCH /settings release_check with the settings' version; an
+  // admin's, read only for others): made once, kept across the page's redraws
+  const relSw = toggle({ label: 'Check for new releases', sub: 'Once a day the server asks GitHub for the newest published build and tells admins. Only that question goes out: no token, no car, no account. It never downloads or installs anything.',
+    checked: !!(settings.release_check || {}).enabled, disabled: !admin,
+    onchange: async (on) => {
+      try {
+        settings = await ctx.api.patch('settings', { version: settings.version, release_check: { enabled: on } });
+        ctx.toast(on ? 'Release check on. Saved for everyone on this server.' : 'Release check off. Saved for everyone on this server.');
+      } catch (e) {
+        if (e && (e.status === 409 || e.code === 'stale_version')) {
+          settings = await ctx.api.get('settings').catch(() => settings);
+          ctx.toast('Someone changed these settings meanwhile; they are shown fresh now. Make your change again.', { kind: 'info' });
+        } else ctx.toast(notSaved(e), { kind: 'error' });
+      }
+      if (!ctx.alive()) return;
+      relSw.set(!!(settings.release_check || {}).enabled);
+      release = await ctx.api.get('release').catch(() => release);
+      if (ctx.alive()) draw();
+    } });
+  relSw.id = 'release-check';
   function updatesTile() {
     const u = serverUpdates(about, release, api.now());
     const busy = updChecking || u.busy;
@@ -171,9 +191,10 @@ export async function mount(ctx) {
       updTimer = setTimeout(async () => { release = await ctx.api.get('release').catch(() => release); if (ctx.alive()) draw(); }, 4000);
     }
     return tile({ w: 2, title: 'Server updates', icon: 'upload', id: 'updates', side: chip(u.on ? 'Check on' : 'Check off', { tone: u.on ? 'teal' : 'muted' }) },
+      group(null, [relSw]),
       group(null, u.rows.map((r) => infoRow({ icon: UPD_ICON[r.key], name: r.label,
         side: h('span', { class: ['set-value', 'upd-val', r.tone && `is-${r.tone}`], title: r.title || null }, r.text, r.badge ? chip(r.badge, { tone: UPD_TONE[r.tone] }) : null) }))),
-      u.on ? null : said('info', `The release check is off. ${RELEASE_OFF_TEXT} `, admin ? h('a', { class: 'place-link', href: `${state.buildUrl(RELEASE_SETTING.page)}#${RELEASE_SETTING.hash}` }, RELEASE_SETTING.text) : 'An admin can turn it on.'),
+      u.on ? null : said('info', `The release check is off. ${RELEASE_OFF_TEXT} `, admin ? 'Turn it on with the switch above.' : 'An admin can turn it on.'),
       note(`${u.how} Steps for Docker and TrueNAS: `, u.doc.href ? h('a', { class: 'place-link', href: u.doc.href, target: '_blank', rel: 'noopener noreferrer external' }, u.doc.text) : h('code', { class: 'set-mono' }, u.doc.path), '.'),
       admin ? h('div', { class: 'form-actions' }, btn(busy ? 'Checking…' : 'Check now', { kind: 'soft', icon: 'refresh', disabled: !u.on || busy, title: u.on ? null : 'Turn the release check on first', onclick: updCheckNow })) : null);
   }

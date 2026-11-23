@@ -134,8 +134,8 @@
 
 ## Map tiles
 
-Online tiles are off by default; Settings → Display and units turns them on and picks the source:
-**OpenStreetMap standard** (`tile.openstreetmap.org`, the default), **Satellite** (Esri World Imagery,
+Online tiles are off by default; Settings → Maps and addresses (an admin's page) turns them on and picks the
+source: **OpenStreetMap standard** (`tile.openstreetmap.org`, the default), **Satellite** (Esri World Imagery,
 `server.arcgisonline.com`, with Esri's transparent place names, borders and roads layers from the same host on top
 unless "Place names and roads" is off), **Satellite, US only** (USGS The National Map imagery,
 `basemap.nationalmap.gov`, public domain, zoom 16 at most), **OpenTopoMap** (`tile.opentopomap.org`) or your own
@@ -186,7 +186,7 @@ and the pages' policy names no outside host.
 - **Sentry Mate never downloads a map.** An admin makes the file (for example a Protomaps extract of their area,
   made on their own computer with the `pmtiles` tool: [install.md](install.md#offline-map)) and copies it into
   `data/maps/`. Any `*.pmtiles` there counts; the largest is used unless an admin picks another in Settings →
-  Display and units (`tiles.offline_file`, a plain file name: no folders, no `..`).
+  Maps and addresses (`tiles.offline_file`, a plain file name: no folders, no `..`).
 - The file is only read: its header and directories are checked (version 3, plain or gzip directories, sizes
   bounded) before a tile is served, and a damaged file is named in Settings instead of served.
 - A Protomaps (vector) file is drawn in a plain style without names (the server serves no fonts); a raster
@@ -338,8 +338,8 @@ and optionally its PostgreSQL database to catch up on what MQTT missed.
 
 ## The release check
 
-The server can tell its admins when a newer image is published (Settings → Display and units, "Check for new
-releases"). It only says so: it never pulls, downloads or installs anything; updating stays `docker compose pull`.
+The server can tell its admins when a newer image is published (Settings → Server and access, Server updates,
+"Check for new releases"). It only says so: it never pulls, downloads or installs anything; updating stays `docker compose pull`.
 
 - **Off by default; an admin's switch.** Until it is on, the server makes no connection and no DNS lookup for it.
   Turning it off stops it and drops what it learnt.

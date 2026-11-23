@@ -55,7 +55,7 @@ function build() {
     h('section', { class: 'rows' }, h('h3', { class: 'rows-name' }, 'Look'),
       h('div', { class: 'rows-card' }, theme, device, deviceLine, stepper, sizeLine), h('div', { class: 'rows-list' }, follow)),
     sheetGroup('Go to', [
-      sheetRow({ href: '/settings/display', icon: 'sun', name: 'Display and units', sub: 'Units, language, UI pack' }),
+      sheetRow({ href: '/settings/display', icon: 'sun', name: 'Display and units', sub: 'Units, language, map style, UI pack' }),
       admin ? sheetRow({ href: '/settings/server', icon: 'server', name: 'Server and access', sub: 'Accounts, sessions, moving' }) : null,
       sheetRow({ href: '/help', icon: 'help', name: 'Help and about' }),
     ].filter(Boolean)),

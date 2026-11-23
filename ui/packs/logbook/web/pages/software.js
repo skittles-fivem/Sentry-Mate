@@ -301,7 +301,7 @@ export async function mount(ctx) {
     h('span', null, notesOn
       ? 'A known version links to its release notes on an outside site, opened in a new tab by your own click; this server sends nothing.'
       : ['Release-notes links are off, so nothing leaves this server. ', admin ? 'Turn them on in ' : 'An admin can turn them on in ',
-        h('a', { href: state.buildUrl('settings-display') }, 'Settings: Display and units'), '.']));
+        h('a', { href: `${state.buildUrl('settings-maps')}#outside-links` }, 'Settings: Maps and addresses'), '.']));
   /* ---------------------------------------------------------------- Tesla updates installed (fingerprints) */
 
   const drivesPath = api.apiPath`cars/${cid}/drives`;

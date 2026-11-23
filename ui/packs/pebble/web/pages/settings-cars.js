@@ -8,7 +8,8 @@
 // live inputs in priority order, dragged or moved with arrow buttons, and gap filling from imported history)
 // (GET / PATCH .../settings). Every
 // change saves at once with the object's version and a toast confirms it. Without a car: every car, the keys
-// waiting for a car, tokens for a new car, and how a car appears (the empty state).
+// waiting for a car, tokens for a new car, the time zone a new car starts in (#default-tz: the server's
+// default_time_zone, PATCH /api/v1/settings with its version; an admin's, others read), and how a car appears.
 
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -196,7 +197,48 @@ export async function mount(ctx) {
 
 /* ------------------------------------------------------------------ /settings/cars */
 
+/**
+ * The zone a new car starts in (#default-tz): the server's default_time_zone. An admin changes it (PATCH /settings
+ * with its version); others read it. Each car keeps its own zone after that. -> { el, ready }
+ */
+function defaultZoneTile(ctx) {
+  const off = !ctx.admin;
+  const zones = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return []; } })();
+  const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
+  const el = tile({ w: 2, title: 'Time zone for new cars', icon: 'clock', id: 'default-tz', side: off ? chip('Read only', { tone: 'muted', icon: 'lock' }) : null });
+  const body = h('div', { class: 'contents' });
+  el.append(body);
+  let srv = null;
+  function draw() {
+    if (!srv) { body.replaceChildren(note('The server settings could not be read.')); return; }
+    const z = srv.default_time_zone || 'UTC';
+    const f = field({ label: 'Time zone for new cars', name: 'default_time_zone', value: z, hint: 'A name such as America/Chicago. Type to see the list.', attrs: { list: 'sc-default-zones', spellcheck: 'false', autocomplete: 'off', disabled: off } });
+    const save = async (v) => {
+      setFieldError(f, null);
+      if (!v || !isValidZone(v)) { setFieldError(f, 'Not a known time zone. Pick one from the list, for example America/Chicago.'); return; }
+      if (v === srv.default_time_zone) return;
+      try {
+        srv = await ctx.api.patch('settings', { version: srv.version, default_time_zone: v });
+        ctx.toast(`New cars start in ${v.replace(/_/g, ' ')}. Saved for everyone on this server.`);
+      } catch (err) {
+        if (err && (err.status === 409 || err.code === 'stale_version')) {
+          srv = await ctx.api.get('settings').catch(() => srv);
+          ctx.toast('Someone changed these settings meanwhile; they are shown fresh now. Make your change again.', { kind: 'info' });
+        } else { setFieldError(f, (err.fields && err.fields.default_time_zone) || notSaved(err)); return; }
+      }
+      if (ctx.alive()) draw();
+    };
+    f.control.addEventListener('change', () => save(f.control.value.trim()));
+    body.replaceChildren(f, h('datalist', { id: 'sc-default-zones' }, zones.map((x) => h('option', { value: x }))),
+      browserZone && browserZone !== z && !off ? h('div', { class: 'form-actions' }, btn(`Use ${browserZone.replace(/_/g, ' ')}`, { kind: 'soft', icon: 'pin', onclick: () => { f.control.value = browserZone; save(browserZone); } })) : null,
+      note('The zone a new car starts in: its days, weeks and prices by time of day. Each car keeps its own after that: open a car to change it.'));
+  }
+  const ready = ctx.api.get('settings').then((x) => { srv = x; }).catch(() => null).then(() => { if (ctx.alive()) draw(); });
+  return { el, ready };
+}
+
 async function mountIndex(ctx) {
+  const zone = defaultZoneTile(ctx);
   const status = await ctx.api.get('setup/status');
   if (!ctx.alive()) return {};
   const bar = h('div', { class: 'page-bar w-full' }, crumb(null));
@@ -218,6 +260,8 @@ async function mountIndex(ctx) {
     const w = await waitingRows(ctx, { onChange: () => remount() });
     tiles.push(tile({ w: 2, title: 'Keys waiting for a car', icon: 'key' }, w.count ? group(null, w.rows) : said('ok', 'No key is waiting: every CAN Bridge that uploads belongs to a car.')));
   }
+  tiles.push(zone.el);
+  await zone.ready;
   if (!ctx.alive()) return {};
   ctx.view.replaceChildren(...tiles.filter(Boolean));
   ctx.ready();

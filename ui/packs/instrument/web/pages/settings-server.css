@@ -350,7 +350,7 @@
 /* the full rebuild section of this page: the stale cars, the automatic run's switch */
 .ss-fr-stale { margin: round(0.875rem, var(--e)) 0 0; color: var(--warm); }
 #full-rebuild .setting { margin-top: round(1.25rem, var(--e)); padding-top: round(1.25rem, var(--e)); border-top: 1px solid var(--line); }
-#full-rebuild .switch-row--inline { justify-content: flex-start; margin: 0; padding: 0; }
+#full-rebuild .switch-row--inline, #release-check .switch-row--inline { justify-content: flex-start; margin: 0; padding: 0; }
 /* Server updates: this build, the newest published one, the last check; the switch's state and Check now */
 .ss-upd { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); }
 .ss-upd .kv { margin: 0; }

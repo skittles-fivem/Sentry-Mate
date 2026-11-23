@@ -3,8 +3,8 @@
 // Who can sign in, what each account may see, and how the server is reached. Everyone gets: the check
 // of the address in this browser against the certificate's host names and the server's web port, with
 // a plain explanation of every mismatch; Server updates (this build and the release check's last answer:
-// GET /about, GET /release; Check now for an admin, POST /release/check; the switch stays in Display and
-// units); how access works; the account they are signed in with; and their own sessions (sign out one, every
+// GET /about, GET /release; Check now and the release check's switch for an admin, POST /release/check and PATCH /settings);
+// how access works; the account they are signed in with; and their own sessions (sign out one, every
 // other one, or here). Admins also get: the certificate (its host names changed in a dialog, saved with the
 // settings' version), the recovery key and backups,
 // the accounts (roles, car lists, two-step sign-in, a new password) and the audit log, whose entries
@@ -30,7 +30,7 @@ import { moveBlock, askPassword } from './settings-move.js';
 import { bigCode, downloadText } from './move-parts.js';
 import { fullRebuild } from './rebuild-parts.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
-import { serverUpdates, RELEASE_OFF_TEXT, RELEASE_SETTING } from '../shared/release.js';
+import { serverUpdates, RELEASE_OFF_TEXT } from '../shared/release.js';
 import { compactionProgress } from '../shared/compaction.js';
 
 export const id = 'settings-server';
@@ -291,7 +291,7 @@ export async function mount(ctx) {
         h('dd', { class: r.tone ? `ss-upd--${r.tone}` : null }, h('span', { title: r.title || null }, r.text), r.badge ? [' ', flag(r.badge)] : null)))),
       h('p', { class: 'ss-upd-on' }, h('strong', null, `The release check is ${u.on ? 'on' : 'off'}. `),
         u.on ? 'Once a day the server asks GitHub whether a newer image is published.' : RELEASE_OFF_TEXT,
-        !u.on ? [' ', admin ? h('a', { href: `${state.buildUrl(RELEASE_SETTING.page)}#${RELEASE_SETTING.hash}` }, `${RELEASE_SETTING.text}.`) : 'An admin can turn it on.'] : null),
+        !u.on ? [' ', admin ? 'Turn it on with the switch above.' : 'An admin can turn it on.'] : null),
       h('p', { class: 'note ss-upd-how' }, `${u.how} Steps for Docker and TrueNAS: `, u.doc.href ? h('a', { href: u.doc.href, target: '_blank', rel: 'noopener noreferrer external' }, u.doc.text) : mono(u.doc.path), '.'),
       admin ? h('p', { class: 'ss-cert-act' }, button(busy ? 'Checking…' : 'Check now', { iconName: 'reset', disabled: !u.on || busy, title: u.on ? null : 'Turn the release check on first', onclick: updCheckNow })) : null);
     if (release && release.status === 'checking' && !updChecking) {
@@ -299,8 +299,31 @@ export async function mount(ctx) {
       updTimer = setTimeout(async () => { release = await ctx.api.get('release').catch(() => release); if (ctx.alive()) drawUpdates(); }, 4000);
     }
   }
+  // the release check's switch (#release-check, PATCH /settings release_check with the settings' version; an
+  // admin's, read only for others): it lives here, beside what the check answered
+  const relSwitch = switchField({ label: 'Check for new releases', checked: !!(settings.release_check && settings.release_check.enabled),
+    onchange: async (on) => {
+      try {
+        settings = await ctx.api.patch('settings', { version: settings.version, release_check: { enabled: on } });
+        ctx.flash(on ? 'Release check on, for this server.' : 'Release check off: the server asks nothing.');
+      } catch (err) {
+        if (err && (err.code === 'stale_version' || err.status === 409)) {
+          settings = await ctx.api.get('settings').catch(() => settings);
+          ctx.flash('Someone else changed the server settings meanwhile; the switch shows the saved one now.', { kind: 'info' });
+        } else ctx.flash(`Not saved: ${errText(err)}`, { kind: 'error' });
+      }
+      if (!ctx.alive()) return;
+      relSwitch.set(settings.release_check && settings.release_check.enabled);
+      release = await ctx.api.get('release').catch(() => release);
+      if (ctx.alive()) drawUpdates();
+    } });
+  relSwitch.input.disabled = !admin;
   drawUpdates();
-  const updatesSection = section({ title: 'Server updates', cls: 'ss-updates', id: 'updates' }, updBox);
+  const updatesSection = section({ title: 'Server updates', cls: 'ss-updates', id: 'updates' },
+    h('div', { class: 'ss-release-row', id: 'release-check' },
+      h('p', { class: 'ss-lede' }, 'Once a day the server asks GitHub whether a newer Sentry Mate image is published, and tells admins. Only that question goes out: no token, no car, no account. It never downloads or installs anything.'),
+      relSwitch),
+    updBox);
 
   /* ---------------------------------------------------------------- how access works */
   const myCars = ctx.me && ctx.me.cars === 'all' ? null : ((ctx.me && ctx.me.cars) || []);

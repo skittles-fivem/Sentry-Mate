@@ -1,6 +1,6 @@
 // settings/server: who can sign in and how the server is reached, and moving it.
 // Everyone: the check of this address (https, host name, port), server updates (this build and the release check's
-// last answer: GET /about, GET /release; check now for an admin; the switch stays in display and units), how access
+// last answer: GET /about, GET /release; check now and the release check's switch for an admin), how access
 // works, their own sessions.
 // Admins also: the certificate (its names changed in a dialog as a 'key = value' line) and the recovery key (show again,
 // make new, say it is saved), moving to another server as numbered steps with a state tag and a run button
@@ -31,7 +31,7 @@ import { askPassword, copyBtn, codeOut, downloadKey, showOnce, STAY } from '../c
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 import { exportModel, exportPollMs } from '../shared/exportjob.js';
 import { fullRebuild } from '../core/fullrebuild.js';
-import { serverUpdates, RELEASE_OFF_TEXT, RELEASE_SETTING } from '../shared/release.js';
+import { serverUpdates, RELEASE_OFF_TEXT } from '../shared/release.js';
 import { compactionProgress } from '../shared/compaction.js';
 
 export const id = 'settings-server';
@@ -178,7 +178,7 @@ export async function mount(ctx) {
     replace(updSlot,
       kv(u.rows.map((r) => [r.label.toLowerCase(), [h('span', { title: r.title || null }, r.text), r.badge ? [' ', tag(r.badge.toLowerCase(), UPD_TAG[r.tone] || 'muted')] : null]]), { cols: 1 }),
       lines([[tag(u.on ? 'on' : 'off', u.on ? 'ok' : 'muted'), u.on ? 'release check: once a day the server asks GitHub whether a newer image is published.' : `release check: ${RELEASE_OFF_TEXT}`,
-        !u.on ? (admin ? [' ', link(`${state.buildUrl(RELEASE_SETTING.page)}#${RELEASE_SETTING.hash}`, RELEASE_SETTING.text.toLowerCase())] : ' An admin can turn it on.') : null]]),
+        !u.on ? (admin ? ' turn it on with release_check.enabled above.' : ' An admin can turn it on.') : null]]),
       admin ? h('div', { class: 'acts' }, btn(busy ? 'checking…' : 'check now', updCheckNow, { disabled: !u.on || busy, title: u.on ? null : 'Turn the release check on first' })) : null,
       note(`${u.how} Steps for Docker and TrueNAS: `, u.doc.href ? h('a', { class: 'lnk', href: u.doc.href, target: '_blank', rel: 'noopener noreferrer external' }, u.doc.text) : h('span', { class: 'prompt' }, u.doc.path), '.'));
     if (S.release?.status === 'checking' && !updChecking) {
@@ -187,6 +187,23 @@ export async function mount(ctx) {
     }
   }
   paintUpdates();
+  // the release check's switch (#release-check, PATCH /settings with its version; an admin's, others read)
+  const relLine = S.settings ? editLines([
+    { key: 'release_check.enabled', id: 'release-check', type: 'bool', value: !!S.settings.release_check?.enabled, readOnly: !admin,
+      help: 'Check for new releases: once a day the server asks GitHub whether a newer Sentry Mate image is published, and tells admins. Only that question goes out (no token, no car, no account); it never downloads or installs anything.',
+      save: async (v) => {
+        try { S.settings = await ctx.api.patch('settings', { version: S.settings.version, release_check: { enabled: v } }); } catch (e) {
+          if (e.status === 409) {
+            S.settings = await ctx.api.get('settings').catch(() => S.settings);
+            relLine.line('release_check.enabled').set(!!S.settings?.release_check?.enabled);
+            throw new Error('Someone else changed the server settings first; the line shows theirs now. Try again.');
+          }
+          throw e;
+        }
+        S.release = await ctx.api.get('release').catch(() => S.release);
+        if (ctx.alive()) paintUpdates();
+      } },
+  ]) : null;
 
   /* ---------------------------------------------------------------- certificate and recovery key */
   const cert = S.notices.find((n) => n.code === 'certificate_expiring');
@@ -782,7 +799,7 @@ export async function mount(ctx) {
   paint(ctx, head(ctx),
     h('div', { class: 'cols2' },
       section({ title: 'this address', cover: 'web.shell.hosting', side: h('span', { class: 'muted' }, `${loc.protocol}//${loc.host}/`) }, hostSlot),
-      h('div', null, section({ title: 'server updates', id: 'updates' }, updSlot), access)),
+      h('div', null, section({ title: 'server updates', id: 'updates' }, relLine?.el, updSlot), access)),
     section({ title: 'certificate and recovery key', id: 'certificate-in-use' }, certSlot, keySlot),
     access,
     // the move and storage side by side (one above the other on a phone or a narrow window)

@@ -258,7 +258,7 @@ export async function mount(ctx) {
   const notesNote = h('p', { class: 'note sw-notes', cover: 'updates.link.release_notes' }, icon(notesOn ? 'ext' : 'lock', 'ico--sm'), ' ',
     h('span', null, notesOn ? 'A known version links to its release notes on an outside site. Nothing is sent until you click one.'
       : `Release-notes links are off, so nothing leaves this server. ${admin ? 'Turn them on in ' : 'An admin can turn them on in '}`,
-    !notesOn ? h('a', { class: 'link', href: state.buildUrl('settings-display') }, 'Settings: Display and units') : null, !notesOn ? '.' : null));
+    !notesOn ? h('a', { class: 'link', href: `${state.buildUrl('settings-maps')}#outside-links` }, 'Settings: Maps and addresses') : null, !notesOn ? '.' : null));
 
   let painted = false;
   const table = dataTable(ctx, {

@@ -22,7 +22,7 @@ import * as api from './api.js';
 import { h, replace } from './dom.js';
 
 /** Where Settings: Display and units explains adding an offline map file. */
-export const OFFLINE_HELP = '/settings/display#offline-map';
+export const OFFLINE_HELP = '/settings/maps#offline-map';
 
 /** The dimmed dark rendering (a pack may tune it): darker, a little less colour, a little more contrast. */
 export const DIM = { saturation: -0.25, contrast: 0.12, min: 0.04, max: 0.66 };

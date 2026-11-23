@@ -26,7 +26,22 @@ test('every page id builds a URL that parses back to the same page and ids', () 
     for (const k of ['car', 'drive', 'charge']) assert.equal(back[k], args[k] ?? null, `${href} ${k}`);
   }
   assert.ok(S.PAGE_IDS.includes('settings-integrations'));
-  assert.equal(S.PAGE_IDS.length, 24, '22 pages plus sign-in and set-up');
+  assert.equal(S.PAGE_IDS.length, 25, '23 pages plus sign-in and set-up');
+});
+
+test('old addresses of moved sections lead to where they are now', () => {
+  assert.equal(S.movedUrl('/settings/display#map-tiles'), '/settings/maps#map-tiles');
+  assert.equal(S.movedUrl('/settings/display#offline-map'), '/settings/maps#offline-map');
+  assert.equal(S.movedUrl('https://sm.example/settings/display?x=1#tiles-labels'), '/settings/maps?x=1#place-names');
+  assert.equal(S.movedUrl('/settings/display#release-check'), '/settings/server#release-check');
+  assert.equal(S.movedUrl('/settings/display#default-tz'), '/settings/cars#default-tz');
+  assert.equal(S.movedUrl('/settings/display#units'), null);
+  assert.equal(S.movedUrl('/settings/display'), null);
+  assert.equal(S.movedUrl('/settings/maps#map-tiles'), null);
+  for (const [from, [page, anchor]] of Object.entries(S.MOVED)) {
+    assert.ok(S.PAGE_IDS.includes(from.split('#')[0]) && S.PAGE_IDS.includes(page), from);
+    assert.ok(anchor && !S.MOVED[`${page}#${anchor}`], `${from} leads to a section that moved again`);
+  }
 });
 
 test('ids with any characters are encoded in the path and decoded back', () => {

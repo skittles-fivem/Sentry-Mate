@@ -211,7 +211,7 @@ function navigation(navEl) {
 }
 
 /** Shorter tab names inside a group ('Settings: Cars' -> 'Cars' under Set-up). */
-const shortName = (id) => ({ 'settings-cars': 'Cars', 'settings-display': 'Display and units', 'settings-integrations': 'Integrations', 'settings-server': 'Server and access', health: 'Data health', efficiency: 'Efficiency and temperatures', help: 'Help' }[id] || PAGES[id].name);
+const shortName = (id) => ({ 'settings-cars': 'Cars', 'settings-display': 'Display and units', 'settings-integrations': 'Integrations', 'settings-maps': 'Maps and addresses', 'settings-server': 'Server and access', health: 'Data health', efficiency: 'Efficiency and temperatures', help: 'Help' }[id] || PAGES[id].name);
 function safeLink(id) { try { return state.linkTo(id); } catch { return '/'; } }
 
 /* ------------------------------------------------------------------ notices and footer */

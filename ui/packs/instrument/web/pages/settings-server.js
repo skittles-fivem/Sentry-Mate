@@ -1,6 +1,6 @@
 // Settings: Server and access (/settings/server): who can sign in, what each account may see, and how
 // the server is reached. Every visitor gets: Server updates (this build and the release check's last answer:
-// GET /about, GET /release; Check now for an admin, POST /release/check; the switch stays in Display and units), the check of the address in this browser against the
+// GET /about, GET /release; Check now and the release check's switch for an admin, POST /release/check, PATCH /settings release_check), the check of the address in this browser against the
 // server's host names and port, how access works, and their own sessions (sign out one, all others, or
 // here). Admins also get the accounts (roles, car lists, two-step sign-in), the audit log (each entry
 // links to the item it changed), where the certificate (its names: Change names), the recovery key and
@@ -28,7 +28,7 @@ import { dateTime, date, agoEl, tzName, DASH } from '../core/fmt.js';
 import { timeColumn, downloadCsv, csvFilename } from '../shared/csv.js';
 import { storageGroups, shortName, shareText, groupWord } from '../shared/storage.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
-import { serverUpdates, RELEASE_OFF_TEXT, RELEASE_SETTING } from '../shared/release.js';
+import { serverUpdates, RELEASE_OFF_TEXT } from '../shared/release.js';
 import { cover } from '../shared/dom.js';
 import { movePanel, showRecoveryKey, newRecoveryKey, markKeySaved, askPassword } from './settings-server-move.js';
 import { fullRebuild } from './full-rebuild.js';
@@ -789,14 +789,13 @@ export async function mount(ctx) {
   function paintUpdates() {
     const u = serverUpdates(S.about, S.release, ctx.api.now());
     const busy = updChecking || u.busy;
-    const turnOn = h('a', { class: 'link', href: `${state.buildUrl(RELEASE_SETTING.page)}#${RELEASE_SETTING.hash}` }, RELEASE_SETTING.text);
     replace(updBox,
       kv(u.rows.map((r) => [r.label, h('span', { class: ['ss-upd-val', `ss-upd-val--${r.tone || 'plain'}`] },
         h('span', { class: r.key === 'this' ? 'mono' : null, title: r.title || null }, r.text),
         r.badge ? pill(r.badge, { tone: r.tone === 'newer' ? 'warm' : 'live', ic: r.tone === 'newer' ? 'upload' : 'check' }) : null)])),
       h('div', { class: 'ss-upd-check' },
         h('p', { class: 'ss-upd-on' }, 'Release check: ', h('b', null, u.on ? 'On' : 'Off'), u.on ? '. Once a day the server asks GitHub whether a newer image is published.' : `. ${RELEASE_OFF_TEXT}`,
-          !u.on ? [' ', admin ? turnOn : 'An admin can turn it on.'] : null),
+          !u.on ? [' ', admin ? 'Turn it on with the switch above.' : 'An admin can turn it on.'] : null),
         admin ? h('button', { class: 'btn btn--sm', type: 'button', disabled: !u.on || busy, title: u.on ? null : 'Turn the release check on first', onclick: updCheckNow },
           icon('reset', 'ico--sm'), busy ? 'Checking…' : 'Check now') : null),
       h('p', { class: 'note ss-upd-how' }, `${u.how} Steps for Docker and TrueNAS: `,
@@ -806,8 +805,34 @@ export async function mount(ctx) {
       updTimer = setTimeout(async () => { S.release = await ctx.api.get('release').catch(() => S.release); if (ctx.alive()) paintUpdates(); }, 4000);
     }
   }
+  // the release check's switch (#release-check, PATCH /settings release_check with the settings' version; an
+  // admin's, read only for others): it lives here, beside what the check answered
+  const relOn = () => !!S.settings?.release_check?.enabled;
+  const relState = h('label', { for: 'ss-release' }, relOn() ? 'On' : 'Off');
+  const relInput = h('input', { type: 'checkbox', id: 'ss-release', role: 'switch', 'aria-label': 'Check for new releases', checked: relOn(), disabled: !admin || !S.settings,
+    onchange: async () => {
+      const want = relInput.checked;
+      relInput.disabled = true;
+      try {
+        S.settings = await ctx.api.patch('settings', { version: S.settings.version, release_check: { enabled: want } });
+        flash(want ? 'Release check on.' : 'Release check off.');
+      } catch (e) {
+        if (e.status === 409) {
+          S.settings = await ctx.api.get('settings').catch(() => S.settings);
+          flash('Someone else changed the server settings meanwhile; this page shows theirs now. Try again.', { kind: 'info' });
+        } else flash(`Could not save: ${errText(e)}`, { kind: 'error' });
+      } finally { relInput.disabled = false; }
+      if (!ctx.alive()) return;
+      relInput.checked = relOn();
+      relState.textContent = relOn() ? 'On' : 'Off';
+      S.release = await ctx.api.get('release').catch(() => S.release);
+      if (ctx.alive()) paintUpdates();
+    } });
+  const relRow = setting('Check for new releases', 'Once a day the server asks GitHub whether a newer Sentry Mate image is published, and tells admins. Only that question goes out: no token, no car, no account. It never downloads or installs anything.',
+    h('div', { class: 'switch-row switch-row--inline' }, h('span', { class: 'switch' }, relInput, h('i', { 'aria-hidden': 'true' })), relState));
+  relRow.id = 'release-check';
   paintUpdates();
-  const updatesPanel = panel({ title: 'Server updates', icon: 'upload', pad: true, id: 'updates' }, updBox);
+  const updatesPanel = panel({ title: 'Server updates', icon: 'upload', pad: true, id: 'updates' }, relRow, updBox);
 
   /* ---------------------------------------------------------------- the page */
   paintHosting();
