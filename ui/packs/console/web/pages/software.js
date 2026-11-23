@@ -88,7 +88,7 @@ export async function mount(ctx) {
       : h('span', { class: 'tone--warn' }, r.detected_by === 'fingerprint' ? 'tesla update installed' : 'build changed'),
     r.version && SOURCE[r.version_source] ? [' ', versionTag(r.version_source)] : null,
     ctx.admin && r.source === 'can' ? [' ', r.detected_by === 'fingerprint'
-      ? h('a', { class: 'btn btn--line tone--accent', href: `#upd-${r.id}`, title: 'name it below, with what changed' }, r.version ? '[edit]' : '[name it]')
+      ? h('a', { class: 'btn btn--line tone--accent', href: `#upd-${r.id}`, title: 'name it below, with what changed', onclick: () => setTimeout(() => fpUpdates.open(r.id), 0) }, r.version ? '[edit]' : '[name it]')
       : h('button', { class: 'btn btn--line tone--accent', type: 'button', onclick: () => editVersion(r) }, r.version ? '[edit]' : '[type it]')] : null);
 
   let painted = false;

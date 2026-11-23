@@ -12,9 +12,11 @@
 // - Live: an update that starts or ends ("rows" events with kind "updates") loads the lists again.
 // - Tesla updates installed: an update found from the modules' firmware fingerprints (detected_by
 //   "fingerprint") has its own card (#fingerprint-updates): which fields changed (old hex -> new hex), between
-//   which drives it was installed (the last drive with the old set, the first with the new one), and for an admin
-//   a box to name the version (PATCH; empty forgets it). An auto-named one says it was named from an earlier
-//   update with the same fingerprints, or from the live input that reported the version within a day after it.
+//   which drives it was installed (the last drive with the old set, the first with the new one), and its name (or
+//   "Not named yet") with where the name came from. An admin's "Name it" / "Edit name" opens a box in place to
+//   type the version (PATCH; Clear forgets it; Escape or Cancel closes it, a save closes it). An auto-named one
+//   says it was named from an earlier update with the same fingerprints, or from the live input that reported the
+//   version within a day after it.
 // - Car firmware (#firmware): GET /cars/{car}/firmware, each module's fingerprints as lowercase hex and when the
 //   current value was first seen. The car page links here.
 // - Module firmware history (#firmware-history): GET /cars/{car}/firmware/history, every fingerprint each module
@@ -22,7 +24,7 @@
 //   with the other lists on "rows" events with kind "updates". The car page links here.
 
 import * as state from '../shared/state.js';
-import { h, replace, cover, setVars } from '../shared/dom.js';
+import { h, replace, cover, setVars, disclose } from '../shared/dom.js';
 import { column } from '../shared/csv.js';
 import { formatDate, formatTime, formatDateTime, formatDuration, HOUR } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -367,17 +369,19 @@ export async function mount(ctx) {
         h('dl', { class: 'sw-fp-rows' }, m.rows.map((c) => h('div', { class: 'sw-fp-row' },
           h('dt', { class: 'sw-fp-field' }, c.field),
           h('dd', { class: 'sw-fp-hexes' }, hexEl(c.old), h('span', { class: 'sw-fp-arrow', 'aria-label': 'became' }, '→'), hexEl(c.new))))))));
-    const namedWord = !r.version ? 'Not named yet: the car does not send the version\'s name.'
+    const namedWord = !r.version ? 'The car does not send the version\'s name.'
       : inputNamed(r) ? `${inputNamed(r)}: it reported this version within a day after the update.`
         : NAMED[r.named_by] || (SOURCE[r.version_source]?.[1] ?? '');
-    let box = null, input = null;
+    // the name shows on the card; an admin's "Edit name" / "Name it" opens the box in place (Escape or Cancel closes it)
+    let box = null, input = null, editBtn = null, dz = null;
     if (admin) {
       const fid = `fp-name-${r.id}`;
-      input = h('input', { class: 'input mono sw-fp-input', id: fid, type: 'text', value: r.version || '', placeholder: '2026.38.4', autocomplete: 'off', spellcheck: 'false', inputmode: 'decimal',
+      input = h('input', { class: 'input sw-fp-input', id: fid, type: 'text', value: r.version || '', placeholder: '2026.38.4', autocomplete: 'off', spellcheck: 'false', inputmode: 'decimal',
         pattern: '\\d{4}\\.\\d{1,2}(\\.\\d{1,3}){0,2}', 'aria-describedby': `${fid}-hint ${fid}-err` });
       const err = h('p', { class: 'form-error', id: `${fid}-err`, role: 'alert', hidden: true });
       const save = h('button', { class: 'btn btn--primary btn--sm', type: 'submit' }, icon('check', 'ico--sm'), 'Save name');
       const clear = h('button', { class: 'btn btn--ghost btn--sm', type: 'button', hidden: !r.version, title: 'Forget the name typed for this update' }, icon('x', 'ico--sm'), 'Clear');
+      const cancel = h('button', { class: 'btn btn--ghost btn--sm', type: 'button', title: 'Close the box without saving (Escape)' }, 'Cancel');
       const showErr = (t) => { err.hidden = !t; replace(err, t ? [icon('warn'), t] : null); input.toggleAttribute('aria-invalid', !!t); };
       input.addEventListener('input', () => showErr(null));
       const send = async (v) => {
@@ -385,29 +389,36 @@ export async function mount(ctx) {
         try {
           await ctx.api.patch(`${path}/${enc(r.id)}`, { version: v });
           if (!ctx.alive()) return;
-          fpCards.delete(r.id); input.blur();
+          dz.close();
+          fpCards.delete(r.id);
           flash(v ? `Named: this update installed ${v}. Later updates to the same fingerprints get the name too.` : 'The name is cleared.');
           echoUntil = Date.now() + 5000;
           await reloadAll(false);
+          // the card was drawn again: the focus goes back to its Edit button
+          if (ctx.alive()) document.getElementById(`fp-${r.id}`)?.querySelector('.sw-fp-edit')?.focus({ preventScroll: true });
         } catch (e) {
           if (e?.name === 'AbortError') return;
           showErr(e?.fields?.version || (e?.code === 'no_such_update' ? 'This update is not there any more (the logs were read again). The list now shows the updates there are.' : e?.message || 'Could not save the name.'));
           if (e?.code === 'no_such_update') reloadAll(false);
         } finally { save.disabled = clear.disabled = false; }
       };
-      box = h('form', { class: 'sw-fp-name', novalidate: '', onsubmit: (e) => {
+      box = h('form', { class: 'sw-fp-name', id: `${fid}-box`, novalidate: '', onsubmit: (e) => {
         e.preventDefault();
         const v = input.value.trim();
         if (!v) { if (r.version) send(null); else showErr('Type the version as the car\'s screen shows it, such as 2026.38.4.'); return; }
         if (!VERSION_RX.test(v)) { showErr('A version looks like 2026.38.4: the year, a dot and one to three numbers.'); return; }
-        if (v === r.version) { showErr('That is the name it has already.'); return; }
+        if (v === r.version && r.named_by === 'owner') { showErr('That is the name it has already.'); return; }
         send(v);
       } },
       h('label', { class: 'form-label', for: fid }, r.version ? 'Version name' : 'Name this version'),
-      h('div', { class: 'sw-fp-name-row' }, input, save, clear),
+      h('div', { class: 'sw-fp-name-row' }, input, save, clear, cancel),
       h('p', { class: 'form-hint', id: `${fid}-hint` }, 'As the car\'s screen shows it (Controls, Software), such as 2026.38.4. Clear forgets it.'),
       err);
       clear.addEventListener('click', () => send(null));
+      editBtn = h('button', { class: 'btn btn--sm btn--ghost sw-fp-edit', type: 'button', title: r.version ? 'Type another name for this update' : 'Type the version this update installed' },
+        icon('settings', 'ico--sm'), r.version ? 'Edit name' : 'Name it');
+      dz = disclose(editBtn, box, { focus: input, onClose: () => { input.value = r.version || ''; showErr(null); } });
+      cancel.addEventListener('click', () => dz.close({ focus: true }));
     }
     const el = h('article', { class: 'sw-fp-card', id: `fp-${r.id}` },
       h('div', { class: 'sw-fp-head' },
@@ -415,13 +426,15 @@ export async function mount(ctx) {
         h('span', { class: 'sw-fp-when' }, formatDate(r.end_ms ?? r.start_ms, tz, { year: true }))),
       h('div', { class: 'sw-fp-ver' },
         h('span', { class: ['sw-fp-vname', !r.version && 'is-unknown'] }, r.version || 'Not named yet'),
-        r.version && SOURCE[r.version_source] ? tag(r.named_by === 'auto' && !inputNamed(r) ? 'Same fingerprints' : SOURCE[r.version_source][0], 'plain') : null),
+        r.version && SOURCE[r.version_source] ? tag(r.named_by === 'auto' && !inputNamed(r) ? 'Same fingerprints' : SOURCE[r.version_source][0], 'plain') : null,
+        editBtn),
       h('p', { class: 'sw-fp-named faint' }, namedWord),
+      box,
       between, seen,
       h('p', { class: 'sw-fp-sub metric-label' }, `${(r.changes || []).length} ${(r.changes || []).length === 1 ? 'fingerprint' : 'fingerprints'} changed in ${byMod.size} ${byMod.size === 1 ? 'module' : 'modules'}`),
       changes,
-      box || h('p', { class: 'note sw-fp-ro' }, icon('lock', 'ico--sm'), ' Only an admin can name an update.'));
-    return { el, input };
+      admin ? null : h('p', { class: 'note sw-fp-ro' }, icon('lock', 'ico--sm'), ' Only an admin can name an update.'));
+    return { el, input, isOpen: () => !!dz?.isOpen() };
   }
 
   async function paintFingerprints(rows) {
@@ -433,10 +446,10 @@ export async function mount(ctx) {
       keep.add(r.id);
       const key = JSON.stringify([r, nears[i].before?.id, nears[i].after?.id]);
       const old = fpCards.get(r.id);
-      // a card being typed in is left alone; an unchanged one is kept as it is
-      if (old && (old.key === key || (old.input && (document.activeElement === old.input || old.input.value.trim() !== (old.version || ''))))) return old.el;
+      // a card whose name box is open is left alone; an unchanged one is kept as it is
+      if (old && (old.key === key || old.isOpen())) return old.el;
       const c = fpCard(r, nears[i]);
-      fpCards.set(r.id, { key, el: c.el, input: c.input, version: r.version });
+      fpCards.set(r.id, { key, el: c.el, isOpen: c.isOpen });
       return c.el;
     });
     for (const k of [...fpCards.keys()]) if (!keep.has(k)) fpCards.delete(k);
