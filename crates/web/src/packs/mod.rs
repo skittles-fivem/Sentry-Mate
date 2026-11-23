@@ -227,9 +227,12 @@ impl Encoding {
     }
 }
 
-/// The build-time copies of the built-in packs' files, by the SHA-256 of their bytes.
-fn precompressed() -> &'static HashMap<&'static str, (&'static [u8], &'static [u8])> {
-    static TABLE: std::sync::LazyLock<HashMap<&'static str, (&'static [u8], &'static [u8])>> =
+/// Brotli and gzip copies of a file, by the SHA-256 of its bytes.
+type Copies = HashMap<&'static str, (&'static [u8], &'static [u8])>;
+
+/// The build-time copies of the built-in packs' files.
+fn precompressed() -> &'static Copies {
+    static TABLE: std::sync::LazyLock<Copies> =
         std::sync::LazyLock::new(|| builtin::PRECOMPRESSED.iter().map(|(sum, br, gz)| (*sum, (*br, *gz))).collect());
     &TABLE
 }
