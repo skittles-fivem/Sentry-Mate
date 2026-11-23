@@ -4,6 +4,7 @@
   {"code":"account-removed","group":"accounts","item":"account"},
   {"code":"can-logs-missing","group":"cars","item":"car"},
   {"code":"car-changed","group":"cars","item":"car"},
+  {"code":"car-full-rebuild","group":"cars","item":null},
   {"code":"car-overlap","group":"cars","item":"car"},
   {"code":"car-rebuild","group":"cars","item":"car"},
   {"code":"car-settings-changed","group":"cars","item":"car"},

@@ -19,6 +19,8 @@ MAP_TILES = ("online", "none", "offline")
 # --release-check: off (the default), or on with this result of the last check (resources/system.py release_state)
 RELEASE_CHECK = ("off", "newer", "up_to_date", "error", "never", "checking")
 # --teslamate-trouble: the local TeslaMate starts in this trouble, with its admins' notice (resources/teslamate.py)
+# --full-rebuild: the full rebuild the server starts with (resources/fullrebuild.py)
+FULL_REBUILD = ("none", "running", "failed", "offered")
 TESLAMATE_TROUBLE = ("none", "connection_refused", "auth_failed", "pin_mismatch", "quiet", "catchup_failed")
 
 
@@ -44,6 +46,7 @@ class Config:
     map_tiles: str = "online"
     release_check: str = "off"
     teslamate_trouble: str = "none"
+    full_rebuild: str = "none"
 
 
 def parse_args(argv=None) -> Config:
@@ -82,6 +85,10 @@ def parse_args(argv=None) -> Config:
                     help="the local TeslaMate starts in trouble, with its notice for admins: its broker refuses the "
                          "connection, the user name or password, or has another certificate than the pinned one, goes "
                          "quiet, or the database catch-up (then on) fails")
+    ap.add_argument("--full-rebuild", choices=FULL_REBUILD, default="none",
+                    help="start with a full rebuild of every car under way (running: a long one, a third through), "
+                         "one that failed on the second car (failed), or the first car's history made with an older "
+                         "decoding and the automatic run off (offered: the notice offers one)")
     a = ap.parse_args(argv)
     if a.cars < 0 or a.cars > 5_000_000:
         ap.error("--cars must be between 0 and 5000000")
@@ -101,7 +108,8 @@ def parse_args(argv=None) -> Config:
                   freeze_clock=a.freeze_clock, sse_interval_ms=max(200, a.sse_interval_ms),
                   rows_every_s=a.rows_every_s, verbose=a.verbose,
                   own_certificate=a.own_certificate, map_tiles=a.map_tiles,
-                  release_check=a.release_check, teslamate_trouble=a.teslamate_trouble)
+                  release_check=a.release_check, teslamate_trouble=a.teslamate_trouble,
+                  full_rebuild=a.full_rebuild)
 
 
 class Clock:
