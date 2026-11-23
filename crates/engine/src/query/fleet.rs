@@ -665,6 +665,54 @@ pub(crate) fn vehicle_defaults(e: &Engine, car: CarId) -> QResult<VehicleDefault
     vehicle_defaults_of(e, &c, &owner(e, car)?)
 }
 
+/// What the car's data says of its pack's chemistry, the owner's setting left out.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DetectedChemistry {
+    /// `lfp` or `nca_nmc`.
+    pub value: &'static str,
+    /// `low`, `medium` or `high`.
+    pub confidence: Option<&'static str>,
+    /// What it rests on, in words.
+    pub evidence: Option<String>,
+}
+
+/// The chemistry the car's build gives (its VIN, its CAN configuration, an import), as the build card shows it but
+/// without the owner's word: Car settings' `battery_chemistry.detected` and `/battery`'s chemistry (while the setting
+/// is automatic) both show this one, so the pages never disagree.
+fn detected_chemistry(e: &Engine, c: &model::Car, o: &Owner) -> QResult<Option<DetectedChemistry>> {
+    let mut o = o.clone();
+    o.settings.chemistry = "auto".into();
+    o.config.remove("chemistry");
+    let f = vehicle_of(e, c, &o)?.chemistry;
+    let value = match f.value.as_deref() {
+        Some("lfp") => "lfp",
+        Some("nca_nmc") => "nca_nmc",
+        _ => return Ok(None),
+    };
+    let confidence = f.confidence.map(|x| match x {
+        model::vehicle::Confidence::Low => "low",
+        model::vehicle::Confidence::Medium => "medium",
+        model::vehicle::Confidence::High => "high",
+    });
+    Ok(Some(DetectedChemistry { value, confidence, evidence: f.note }))
+}
+
+/// The chemistry a car's pages use: the owner's setting (`lfp`, `nca_nmc`), else what its data says
+/// ([`detected_chemistry`]). `(value, source: "owner" | "detected", the detection)`.
+pub(crate) fn chemistry_of(
+    e: &Engine,
+    car: CarId,
+) -> QResult<(Option<&'static str>, Option<&'static str>, Option<DetectedChemistry>)> {
+    let c = car_of(e, car)?;
+    let o = owner(e, car)?;
+    let found = detected_chemistry(e, &c, &o)?;
+    Ok(match o.settings.chemistry.as_str() {
+        "lfp" => (Some("lfp"), Some("owner"), found),
+        "nca_nmc" => (Some("nca_nmc"), Some("owner"), found),
+        _ => (found.as_ref().map(|f| f.value), found.as_ref().map(|_| "detected"), found),
+    })
+}
+
 /// The trim as Car settings shows it (`config.trim`): the build's trim when something names it.
 fn shown_trim(v: &VehicleInfo) -> Option<String> {
     v.trim.value.clone().filter(|_| v.trim.source.is_some())
@@ -1209,7 +1257,14 @@ fn settings_view(e: &Engine, c: &model::Car, o: &Owner, d: VehicleDefaults) -> Q
     let order = s.source_order.unwrap_or_default();
     Ok(SettingsView {
         version: o.settings_changes + 1,
-        battery_chemistry: Chemistry { setting: s.chemistry.clone(), detected: None, evidence: None },
+        battery_chemistry: {
+            let found = detected_chemistry(e, c, o)?;
+            Chemistry {
+                setting: s.chemistry.clone(),
+                detected: found.as_ref().map(|f| f.value),
+                evidence: found.and_then(|f| f.evidence),
+            }
+        },
         free_supercharging: s.free_supercharging.clone(),
         capacity_new_kwh: s.capacity_new_kwh,
         full_range_new_km: s.full_range_new_km,
