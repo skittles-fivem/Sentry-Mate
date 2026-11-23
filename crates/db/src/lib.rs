@@ -94,7 +94,7 @@ pub use file::FORMAT_VERSION;
 pub use fleet::{FleetCursor, FleetEntry, FleetPage, FleetQuery, Summary};
 pub use kv::{Kv, MAX_VALUE};
 pub use rows::{Cursor, Item, MAX_PAGE, Order, Page, Query, StateRow, Table, Tally, Totals, UpdateRow};
-pub use segment::{DAY_MS, DayInfo, END_MS, Fields, Point};
+pub use segment::{DAY_MS, DayInfo, END_MS, Fields, Point, keeping_days};
 
 use cars::{CarData, OpenCars};
 use file::{Ctx, Which};
@@ -139,8 +139,7 @@ pub struct Options {
     pub max_open_cars: usize,
     /// Bytes of open tables at most, across the open cars.
     pub max_open_bytes: u64,
-    /// Bytes of day snapshots kept opened and unpacked at most (days read again soon, by the same page or the next):
-    /// a quarter of the memory free for them, up to this (`db/src/plain.rs`); 0 keeps none.
+    /// Bytes of day snapshots kept opened and unpacked at most (days read again soon, by the same page or the next).
     pub max_cached_bytes: u64,
     /// A journal is folded into its snapshot once it has at least this many bytes (and about as many as the
     /// snapshot).
@@ -156,7 +155,7 @@ impl Default for Options {
         Options {
             max_open_cars: 64,
             max_open_bytes: 256 << 20,
-            max_cached_bytes: 4 << 30,
+            max_cached_bytes: 256 << 20,
             fold_min_bytes: 64 << 10,
             hot: Level::HOT,
             warm: Level::WARM,
@@ -763,13 +762,14 @@ impl Db {
         to_ms: u64,
     ) -> Result<Vec<P>> {
         let stream = stream.into();
-        // days of a snapshot alone are read (opened, unpacked) without holding the car's lock, so several answers
-        // read one car at once; a day with a journal is read under it
+        // days of a snapshot alone are unpacked without the car's lock, days with a journal under it; all are
+        // decoded after it, so several answers read one car at once
         let dir = self.with_car(car, |_, _, dir| Ok(dir.to_path_buf()))?;
         let ctx = &self.inner.ctx;
-        segment::read(ctx, &dir, stream, from_ms, to_ms, &mut |files| {
-            self.with_car(car, |_, _, _| segment::journaled_points::<P>(ctx, files))
-        })
+        let days = segment::plains::<P>(ctx, &dir, stream, from_ms, to_ms, &mut |files| {
+            self.with_car(car, |_, _, _| segment::journaled_plain::<P>(ctx, files))
+        })?;
+        segment::points_of(days, from_ms, to_ms)
     }
 
     /// Some fields of a series in `[from_ms, to_ms)`, as columns (what a chart draws; faster than whole points).
@@ -782,25 +782,20 @@ impl Db {
         fields: &[&str],
     ) -> Result<Fields> {
         let stream = stream.into();
-        // as [`Db::read_points`]: a day with a journal under the car's lock, the others without it
+        // days of a snapshot alone are unpacked without the car's lock, days with a journal under it; all are
+        // decoded after it, so several answers read one car at once
         let dir = self.with_car(car, |_, _, dir| Ok(dir.to_path_buf()))?;
         let ctx = &self.inner.ctx;
-        segment::read_fields::<P>(ctx, &dir, stream, from_ms, to_ms, fields, &mut |files| {
-            self.with_car(car, |_, _, _| segment::journaled_points::<P>(ctx, files))
-        })
+        let days = segment::plains::<P>(ctx, &dir, stream, from_ms, to_ms, &mut |files| {
+            self.with_car(car, |_, _, _| segment::journaled_plain::<P>(ctx, files))
+        })?;
+        segment::fields_of::<P>(days, from_ms, to_ms, fields)
     }
 
     /// The days a series has.
     pub fn days<P: Point>(&self, car: CarId, stream: impl Into<Stream>) -> Result<Vec<DayInfo>> {
         let stream = stream.into();
         self.with_car(car, |_, _, dir| segment::days::<P>(dir, stream))
-    }
-
-    /// Per day of a series (its UTC start), a key of what its files are now: it changes whenever the day is written
-    /// (what was worked out from a day can be kept with it).
-    pub fn day_stamps<P: Point>(&self, car: CarId, stream: impl Into<Stream>) -> Result<Vec<(u64, u64)>> {
-        let stream = stream.into();
-        self.with_car(car, |_, _, dir| segment::day_stamps::<P>(dir, stream))
     }
 
     /// Bytes a car's time series take on disk.
