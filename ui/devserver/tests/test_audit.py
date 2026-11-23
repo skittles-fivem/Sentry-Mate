@@ -8,7 +8,6 @@ import json
 import os
 
 from .helpers import ROOT, ServerCase
-from mockapi.store import DEV_PASSWORD as PW
 
 CODES_FILE = os.path.normpath(os.path.join(ROOT, "..", "shared", "audit-codes.json"))
 GROUPS = ("sign-ins", "accounts", "settings", "cars", "integrations", "imports")
@@ -134,7 +133,7 @@ class AuditWrites(ServerCase):
         base = "/api/v1/integrations/teslamate"
         cars = self.c.get(base + "/cars")
         self.c.json("PUT", base + "/cars", {"version": cars["version"], "items": [
-            {"teslamate_car": "1", "match": "c2"}], "confirm_password": PW})
+            {"teslamate_car": "1", "match": "c2"}]})
         top = self.top()
         self.assertEqual((top["action"], top["target"], top["car"]), ("teslamate-local-car-matched", "teslamate:local", "c2"))
         self.assertEqual(top["summary"], "Matched TeslaMate car Made-up Car to Maple.")
