@@ -564,7 +564,8 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .u-hz .u-cursor-y { border-bottom: 1px solid var(--rule-2); }
 
 /* maps: flat grey, square markers, flat controls */
-.map { position: relative; height: calc(var(--g) * 40); border: 1px solid var(--rule); background: var(--map-land); overflow: hidden; }
+/* whole pixels wide: with the page's scrollbar gutter a half of the page can end on a half pixel */
+.map { position: relative; width: round(down, 100%, 1px); height: calc(var(--g) * 40); border: 1px solid var(--rule); background: var(--map-land); overflow: hidden; }
 .map--sm { height: calc(var(--g) * 28); }
 .map--lg { height: calc(var(--g) * 56); }
 .map-note { position: absolute; left: var(--g); top: var(--g); z-index: 2; margin: 0; padding: 0 var(--g2); background: var(--panel); color: var(--muted); font-size: var(--fs1); line-height: var(--lh1); }

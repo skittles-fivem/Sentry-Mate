@@ -136,7 +136,8 @@ body { container: page / inline-size; }
 details:not([open]) > :not(summary) { display: none !important; }
 /* The page's scrollbar keeps its place whether the page is longer than the window or not, so a page that
    grows or shrinks (a list loaded, a tooltip near the bottom) never moves sideways. */
-html { background: var(--paper); -webkit-text-size-adjust: 100%; scrollbar-gutter: stable; }
+/* (on both edges: the centred page keeps its whole-pixel place, as the window less two gutters stays even) */
+html { background: var(--paper); -webkit-text-size-adjust: 100%; scrollbar-gutter: stable both-edges; }
 /* Keyboard focus never lands under the sticky masthead. */
 :root { --clear-top: calc(var(--masthead-h) + round(1rem, var(--e))); }
 :where(.main, .colophon, .notices) * { scroll-margin-top: var(--clear-top); }
