@@ -7,7 +7,8 @@
 //   (uptime, versions, memory, timings, the /health address), the one error shape of the API, and every
 //   car's data status in one paged list.
 // API: GET cars/{car}/health, cars/{car}/gaps, cars/{car}/totals?source=, cars/{car}/updates (summary),
-// cars/{car}/storage, cars/{car}/signals/latest, cars/{car}/signals; POST cars/{car}/rebuild (admin);
+// cars/{car}/storage, cars/{car}/signals/latest, cars/{car}/signals; POST cars/{car}/rebuild (admin),
+// PATCH can-keys/{key} (admin: a key's name, can-key-name.js);
 // GET system/storage, system/health (admin), cars, geocode/status.
 // Live: "rows" events for the car load the health and gaps again.
 
@@ -31,6 +32,7 @@ import { isAdmin } from '../core/prefs.js';
 import { timeChart, barChart } from '../core/chart.js';
 import { q, agoEl, statePill, stateLabel, DASH } from '../core/fmt.js';
 import { overviewCard } from './conn-overview.js';
+import { deviceText, renameKeyButton } from './can-key-name.js';
 
 export const id = 'health';
 export const css = true;
@@ -302,7 +304,8 @@ async function mountCar(ctx) {
       h('h3', { class: 'hl-sub' }, 'CAN Bridge keys'),
       keys.length ? h('ul', { class: 'hl-key-list' }, keys.map((k) => h('li', { class: 'hl-key' },
         icon('lock', 'ico--sm'),
-        h('span', { class: 'cell-text' }, h('span', { class: 'main' }, k.device || 'Unnamed device', k.preferred ? tag('Preferred', 'live') : null),
+        h('span', { class: 'cell-text' }, h('span', { class: 'main' }, deviceText(k), k.preferred ? tag('Preferred', 'live') : null,
+          renameKeyButton(ctx, k, admin, () => loadHealth().catch(() => {}))),
           h('span', { class: 'sub mono' }, k.key)),
         h('span', { class: 'cell-text hl-key-r' }, k.last_upload_ms != null ? agoEl(k.last_upload_ms, tz) : h('span', { class: 'faint' }, 'never uploaded'),
           h('span', { class: ['sub', k.logs_waiting ? 'warn' : null] }, k.logs_waiting ? `${formatNumber(k.logs_waiting)} waiting` : 'none waiting')))))
