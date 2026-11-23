@@ -77,13 +77,14 @@ pub fn status_json(e: &Engine, r: Option<&FullRecord>, now_ms: u64) -> Value {
         return json!({
             "state": "idle", "id": null, "scope": null, "cars": [], "car": null, "cars_done": 0, "cars_total": 0,
             "reason": null, "phase": null, "logs": { "done": 0, "total": 0 }, "days": { "done": 0, "total": 0 },
-            "bytes": { "done": 0, "total": 0, "copied": 0 }, "rate_bytes_per_s": null, "eta_ms": null,
+            "bytes": { "done": 0, "total": 0, "copied": 0 }, "percent": null, "rate_bytes_per_s": null,
+            "rate_logs_per_s": null, "rate_days_per_s": null, "eta_ms": null,
             "started_ms": null, "finished_ms": null, "last_progress_ms": null, "stalled": false, "errors": [],
             "error": null, "by": null, "version": version,
         });
     };
     let running = r.running();
-    let (rate, eta) = if running { r.rate(now_ms) } else { (None, None) };
+    let rates = if running { r.rates(now_ms) } else { engine::full::Rates::default() };
     let errors: Vec<Value> = r
         .errors
         .iter()
@@ -102,8 +103,11 @@ pub fn status_json(e: &Engine, r: Option<&FullRecord>, now_ms: u64) -> Value {
         "logs": { "done": r.logs_done, "total": r.logs_total },
         "days": { "done": r.days_done, "total": r.days_total },
         "bytes": { "done": r.bytes_done, "total": r.bytes_total, "copied": r.bytes_copied },
-        "rate_bytes_per_s": rate,
-        "eta_ms": eta,
+        "percent": percent(r),
+        "rate_bytes_per_s": rates.bytes_per_s,
+        "rate_logs_per_s": rates.logs_per_s,
+        "rate_days_per_s": rates.days_per_s,
+        "eta_ms": rates.eta_ms,
         "started_ms": r.started_ms,
         "finished_ms": r.finished_ms,
         "last_progress_ms": r.last_progress_ms,
@@ -113,6 +117,20 @@ pub fn status_json(e: &Engine, r: Option<&FullRecord>, now_ms: u64) -> Value {
         "by": r.by,
         "version": version,
     })
+}
+
+/// How far the phase under way is, 0..=100: the logs decoded of all while decoding, then the days worked out of
+/// all; 100 once done or while switching; `None` before the first log (and when none ran).
+pub fn percent(r: &FullRecord) -> Option<u64> {
+    let of = |done: u64, total: u64| (total > 0).then(|| (100 * done.min(total)) / total);
+    match (r.status, r.phase) {
+        (FullStatus::Done, _) => Some(100),
+        (FullStatus::Running, Phase::Decoding) => of(r.logs_done, r.logs_total),
+        (FullStatus::Running, Phase::Days) => of(r.days_done, r.days_total),
+        (FullStatus::Running, Phase::Switching) => Some(100),
+        (FullStatus::Running, Phase::Queued | Phase::Copying) => Some(0),
+        _ => None,
+    }
 }
 
 async fn read(app: &AppState, car: Option<CarId>) -> ApiResult<Value> {

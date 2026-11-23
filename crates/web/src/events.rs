@@ -10,6 +10,8 @@
 //! - When an admin changes an account's car list ([`Event::AccountCars`]), that account's streams get `fleet`
 //!   `added` / `removed` per car (or one `list_changed` with `car: null` when more than 100 changed, or when the
 //!   list was or becomes "every car"), then a `prefs` event.
+//! - `job`, `health`, `connections`, `storage`: live figures ([`crate::live`]), each sent when it changed and at
+//!   most a few times a second; jobs, connections and storage to admins only, a car's health to whoever sees it.
 //! - A stream ends when its session ends, or when the two-step rules limit its account to setting up two-step
 //!   sign-in (checked at once on [`Event::SessionsEnded`] and [`Event::PolicyChanged`], and with every keep-alive),
 //!   and when it falls [`LAG_LIMIT`] events behind (it would miss a delta): the browser reconnects and loads again.
@@ -72,6 +74,9 @@ pub enum Event {
     /// Sessions of this account ended (signed out, revoked, password changed, account removed), or its two-step
     /// sign-in was turned off: its streams check their session again.
     SessionsEnded { account: AccountId },
+    /// A live figure changed ([`crate::live`]): `job`, `health`, `connections` or `storage`, sent as `data` to the
+    /// streams that see `car` (every stream when none), only admins' when `admins_only`.
+    Live { name: &'static str, car: Option<CarId>, admins_only: bool, data: Arc<Value> },
     /// The two-step rules changed: every stream checks its session again (one that is now limited to setting up
     /// two-step sign-in, or not let in from where it is, ends).
     PolicyChanged,
@@ -201,6 +206,11 @@ impl St {
             }
             Event::Notice { notice, admins_only } if self.admin || !admins_only => {
                 vec![frame("notice", self.next_id(), notice)]
+            }
+            Event::Live { name, car, admins_only, data }
+                if (self.admin || !admins_only) && car.is_none_or(|c| self.access.allows(c)) =>
+            {
+                vec![frame(name, self.next_id(), data)]
             }
             Event::Prefs { account } if *account == me => self.prefs_frame().await.into_iter().collect(),
             Event::DefaultsChanged => self.prefs_frame().await.into_iter().collect(),

@@ -197,27 +197,37 @@ impl FullRecord {
 
     /// Bytes a second of the logs decoded in this run of the phase, and the time left (ms) at that rate.
     pub fn rate(&self, now: u64) -> (Option<f64>, Option<u64>) {
+        let r = self.rates(now);
+        (r.bytes_per_s, r.eta_ms)
+    }
+
+    /// The speeds of this run of the phase (logs and their bytes while decoding, days in the days step) and the time
+    /// the phase has left: by the logs left at the logs' speed while decoding (the same measure as the percent
+    /// shown), by the days left in the days step.
+    pub fn rates(&self, now: u64) -> Rates {
         let secs = now.saturating_sub(self.phase_started_ms) as f64 / 1000.0;
+        let per_s = |done: u64| (secs >= 1.0 && done > 0).then(|| done as f64 / secs);
+        let left_ms = |left: u64, rate: Option<f64>| rate.map(|r| ((left as f64 / r) * 1000.0) as u64);
         match self.phase {
             Phase::Decoding => {
-                let done = self.bytes_done.saturating_sub(self.base_bytes);
-                if secs < 1.0 || done == 0 {
-                    return (None, None);
+                let logs = per_s(self.logs_done.saturating_sub(self.base_logs));
+                Rates {
+                    bytes_per_s: logs.and(per_s(self.bytes_done.saturating_sub(self.base_bytes))),
+                    logs_per_s: logs,
+                    days_per_s: None,
+                    eta_ms: left_ms(self.logs_total.saturating_sub(self.logs_done), logs),
                 }
-                let rate = done as f64 / secs;
-                let left = self.bytes_total.saturating_sub(self.bytes_done) as f64 / rate;
-                (Some(rate), Some((left * 1000.0) as u64))
             }
             Phase::Days => {
-                let done = self.days_done.saturating_sub(self.base_days);
-                if secs < 1.0 || done == 0 {
-                    return (None, None);
+                let days = per_s(self.days_done.saturating_sub(self.base_days));
+                Rates {
+                    bytes_per_s: None,
+                    logs_per_s: None,
+                    days_per_s: days,
+                    eta_ms: left_ms(self.days_total.saturating_sub(self.days_done), days),
                 }
-                let rate = done as f64 / secs;
-                let left = self.days_total.saturating_sub(self.days_done) as f64 / rate;
-                (None, Some((left * 1000.0) as u64))
             }
-            Phase::Queued | Phase::Copying | Phase::Switching => (None, None),
+            Phase::Queued | Phase::Copying | Phase::Switching => Rates::default(),
         }
     }
 
@@ -231,6 +241,15 @@ impl FullRecord {
             self.errors.push(FullError { car, log, message, at_ms: now_ms() });
         }
     }
+}
+
+/// How fast a full rebuild's phase goes ([`FullRecord::rates`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Rates {
+    pub bytes_per_s: Option<f64>,
+    pub logs_per_s: Option<f64>,
+    pub days_per_s: Option<f64>,
+    pub eta_ms: Option<u64>,
 }
 
 /// Asking for one while another runs.
@@ -651,6 +670,13 @@ impl Engine {
         }
         if r.phase != Phase::Days {
             self.full_phase(Phase::Decoding)?;
+            // the days the days step will go over, as the car's history has them now (counted again exactly when the
+            // step starts): the page shows them from the start
+            let days = records::meta(db, car)?.days.len() as u64;
+            self.full_edit(|r| {
+                r.days_done = r.base_days;
+                r.days_total = r.base_days + days;
+            })?;
             let job = Arc::new(JobState::for_full(car));
             lock(&self.inner.full).job = Some(job.clone());
             let res = se.reconcile_car(car, Some(&job));

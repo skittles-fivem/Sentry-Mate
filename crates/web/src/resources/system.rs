@@ -18,7 +18,7 @@ use axum::{Json, Router};
 use engine::Engine;
 use engine::query as q;
 use serde_json::{Value, json};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 /// When this server's web side started (its routes were made), for `uptime_ms`.
@@ -61,10 +61,65 @@ pub async fn scan_missing_logs(app: &AppState, gate: &gate::Gate) -> usize {
             return 0;
         }
     };
+    let now = app.now();
+    scan_edit(|s| {
+        *s = MissingScan {
+            state: "running",
+            keys_done: 0,
+            keys_total: keys.len(),
+            found: 0,
+            started_ms: Some(now),
+            finished_ms: None,
+        }
+    });
+    let found = scan_keys(app, gate, &e, keys).await;
+    let now = app.now();
+    scan_edit(|s| {
+        s.state = "done";
+        s.finished_ms = Some(now);
+        s.found = found;
+    });
+    found
+}
+
+/// The look for missing CAN logs as it is now (the live stream's `job` of kind `missing_scan`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize)]
+pub struct MissingScan {
+    /// `idle` (none since the start), `running`, `done`.
+    pub state: &'static str,
+    pub keys_done: usize,
+    pub keys_total: usize,
+    /// Logs newly found missing (in this look so far).
+    pub found: usize,
+    pub started_ms: Option<u64>,
+    pub finished_ms: Option<u64>,
+}
+
+static MISSING_SCAN: std::sync::Mutex<MissingScan> = std::sync::Mutex::new(MissingScan {
+    state: "idle",
+    keys_done: 0,
+    keys_total: 0,
+    found: 0,
+    started_ms: None,
+    finished_ms: None,
+});
+
+fn scan_edit(f: impl FnOnce(&mut MissingScan)) {
+    f(&mut MISSING_SCAN.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+}
+
+/// The look for missing CAN logs under way or the last one.
+pub fn missing_scan() -> MissingScan {
+    *MISSING_SCAN.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+async fn scan_keys(app: &AppState, gate: &gate::Gate, e: &Arc<Engine>, keys: Vec<String>) -> usize {
     let mut found = 0;
     for key in keys {
+        scan_edit(|s| s.found = found);
         // low priority: every other task goes first between keys
         tokio::task::yield_now().await;
+        let _count = KeyDone;
         let Some(pass) = through_gate(gate).await else { continue };
         let uploading = e.store().uploading(&key).await;
         let r = e.judge().scan_missing(&key, uploading).await;
@@ -108,6 +163,15 @@ pub async fn scan_missing_logs(app: &AppState, gate: &gate::Gate) -> usize {
         tracing::info!("missing CAN logs: {found} found missing on the server; the cars are asked to send them again");
     }
     found
+}
+
+/// Counts a key of the look as done however its turn ends.
+struct KeyDone;
+
+impl Drop for KeyDone {
+    fn drop(&mut self) {
+        scan_edit(|s| s.keys_done += 1);
+    }
 }
 
 pub fn routes() -> Router<AppState> {
@@ -390,6 +454,27 @@ fn free_bytes(dir: &std::path::Path) -> Option<u64> {
             return None;
         }
     }
+}
+
+/// A car's health as `/cars/{car}/health` gives it (its default period), for the live stream's `health` event.
+pub(crate) fn health_now(e: &Engine, car: model::CarId) -> q::QResult<Value> {
+    let mut h = q::system::health(e, car, &q::Period::new(None, None))?;
+    h.body.uploads_enabled = Some(uploads_enabled(e, car)?);
+    Ok(serde_json::to_value(&h).unwrap_or(Value::Null))
+}
+
+/// The server's storage figures as `/system/storage` gives them, with compaction as `/system/storage/detail` has
+/// it (no walk over the data folder), for the live stream's `storage` event.
+pub(crate) fn storage_now(e: &Engine, now_ms: u64) -> q::QResult<Value> {
+    let s = q::system::server_storage(e, now_ms)?;
+    let free = e.store().dir().parent().and_then(free_bytes);
+    let full_in_days = match (free, s.growth_per_day_bytes) {
+        (Some(f), Some(g)) if g > 0 => Some(f / g),
+        _ => None,
+    };
+    let mut v = serde_json::to_value(Storage { body: s, free_bytes: free, full_in_days }).unwrap_or(Value::Null);
+    v["compaction"] = serde_json::to_value(e.compaction()).unwrap_or(Value::Null);
+    Ok(v)
 }
 
 /// `/system/storage`: the engine's figures with the disk's free space.
