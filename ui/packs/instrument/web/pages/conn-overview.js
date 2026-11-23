@@ -132,7 +132,9 @@ function connRow(onLink) {
   const lt = light('off'), word = h('span', { class: 'co-word' }), reason = h('span', { class: 'co-s co-reason' });
   st.append(h('span', { class: 'co-k' }, 'Status'), h('span', { class: 'co-v co-stline' }, lt, word), reason);
   const label = h('span', { class: 'co-label' }), pace = h('span', { class: 'co-s' }), err = h('span', { class: 'co-err' });
-  const name = h('div', { class: 'co-c co-name' }, label, pace, err);
+  // CAN Bridge rows: logs the server lost and asked the car for again (a small warm tag, only when there are some)
+  const miss = h('span', { class: 'tag tag--warm co-miss', hidden: true });
+  const name = h('div', { class: 'co-c co-name' }, h('span', { class: 'co-nameline' }, label, miss), pace, err);
   const contact = cell('co-contact', 'Last contact');
   const today = cell('co-today', 'Today');
   const bar = h('span', { class: 'bar co-bar', 'aria-hidden': 'true' }, h('i'));
@@ -152,6 +154,10 @@ function connRow(onLink) {
     setText(reason, reasonText(c));
     setAttr(st, 'title', STATUS[c.status]?.[1] || '');
     setText(label, c.label);
+    const nMiss = c.kind === 'smo' && c.missing_logs > 0 ? c.missing_logs : 0;
+    miss.hidden = !nMiss;
+    setText(miss, nMiss ? `${n0(nMiss)} missing` : '');
+    setAttr(miss, 'title', nMiss ? `${n0(nMiss)} ${nMiss === 1 ? 'log is' : 'logs are'} missing on the server; the car was asked to send ${nMiss === 1 ? 'it' : 'them'} again.` : '');
     setText(pace, `${cap(UNIT[c.unit]?.[1] || 'tries')} · ${paceText(c)}`);
     const capN = c.today?.cap;
     setText(today.v, capN != null ? `${n0(c.today?.count)} of ${n0(capN)}` : n0(c.today?.count));
