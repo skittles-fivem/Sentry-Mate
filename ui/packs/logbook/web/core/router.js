@@ -67,7 +67,8 @@ export const AUTH_SCREENS = Object.freeze(['sign-in', 'setup']);
 // the main sections: their modules load when the browser is idle after the first page
 const MAIN = ['car', 'drives', 'drive', 'charges', 'battery', 'statistics', 'timeline', 'fleet'];
 // pages that may show kept answers at once (marked stale until checked): not forms
-const takesStale = (id) => !AUTH_SCREENS.includes(id) && !/^(settings-|import$)/.test(id);
+// kept answers first are off for now: redrawing with the fresh answer made phone pages jump
+const takesStale = () => false;
 
 const main = () => document.getElementById('main');
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);

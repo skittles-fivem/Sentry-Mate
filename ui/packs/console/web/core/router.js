@@ -37,7 +37,8 @@ let warmedMain = false;
 // the main sections: their modules load when the browser is idle after the first page
 const MAIN = ['car', 'drives', 'drive', 'charges', 'battery', 'statistics', 'timeline', 'fleet'];
 // pages that may show kept answers at once (marked stale until checked): not forms
-const takesStale = (id) => !pageInfo(id)?.bare && !/^(settings-|import$|sign-in$|setup$)/.test(id);
+// kept answers first are off for now: redrawing with the fresh answer made phone pages jump
+const takesStale = () => false;
 const pageModule = (id) => import(`../pages/${id}.js`);
 
 const periodKey = (p) => (p ? JSON.stringify(p) : '');

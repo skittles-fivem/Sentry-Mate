@@ -101,6 +101,10 @@ export function nearNow(el, { margin = 1, root = undefined } = {}) {
  * Call mount() once el is near the screen (see the top of this file). Returns cancel(): after it, mount is never
  * called. Pages cancel on leaving: ctx.onCleanup(whenNear(el, draw)), or pass { signal }.
  */
+let LAZY_OFF = true;
+/** Turns building-when-near on or off (off for now; tests turn it on). */
+export const setLazy = (on = true) => { LAZY_OFF = !on; };
+
 export function whenNear(el, mount, { margin = 1, root = undefined, signal = null } = {}) {
   let done = false, io = null, frame = 0, tries = 0, staged = 0;
   const entry = {
@@ -115,7 +119,8 @@ export function whenNear(el, mount, { margin = 1, root = undefined, signal = nul
     signal?.removeEventListener?.('abort', stop);
   }
   if (signal?.aborted) return () => {};
-  if (typeof globalThis.IntersectionObserver !== 'function') { mount(); return () => {}; }
+  // built at once for now: a block built when scrolled near moved the content below it on phones
+  if (LAZY_OFF || typeof globalThis.IntersectionObserver !== 'function') { mount(); return () => {}; }
   signal?.addEventListener?.('abort', stop);
   pending.add(entry);
   hookPrint();
