@@ -143,6 +143,20 @@ fn parse_frame(l: &[u8]) -> Option<Frame> {
 }
 
 /// `key=value` fields of a comment, as numbers.
+/// What a columns log's key (`can0 123`: all of a frame's line between its time and its `#`) says of its frames:
+/// the interface, the id and whether the id is an extended one, as [`parse_frame`] reads them from a line with
+/// that key; `None` when a line with it is not a frame's (or may not be one with every data).
+pub(crate) fn frame_key(key: &[u8]) -> Option<(u8, u32, bool)> {
+    // a key with a `#` of its own would end the id early: by the text
+    if key.contains(&b'#') {
+        return None;
+    }
+    let mut line = b"(0.000000) ".to_vec();
+    line.extend_from_slice(key);
+    line.push(b'#');
+    parse_frame(&line).map(|f| (f.bus, f.id, f.extended))
+}
+
 fn field(text: &str, key: &str) -> Option<i64> {
     text.split_whitespace().find_map(|w| w.strip_prefix(key)?.strip_prefix('=')?.parse().ok())
 }

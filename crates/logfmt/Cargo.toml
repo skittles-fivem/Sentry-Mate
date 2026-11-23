@@ -10,10 +10,14 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-lzma-rs = "0.3"
+# Unpacks as it is read, holding only the xz window; without its "optimization" feature the crate forbids unsafe
+# code (the unpacker `import` uses for a backup).
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
 thiserror = "2"
 
 [dev-dependencies]
 sha2 = "0.10"
 hex = "0.4"
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "encoder"] }
+# (the unpacker used before: the tests read the same logs with both)
+lzma-rs = "0.3"
