@@ -150,12 +150,13 @@ def charge_cost(app, c, f, gap_ms):
         parts.append({"rate": {"charging": "Charging", "idle": "Idle fee"}.get(fee["kind"], "Other fee"),
                       "per_kwh": per_kwh, "per_minute": per_min,
                       "kwh": fee["usage"] if per_kwh is not None else None,
-                      "minutes": fee["usage"] if per_min is not None else None, "cost": fee["amount"]})
+                      "minutes": fee["usage"] if per_min is not None else None, "cost": fee["amount"],
+                      "from_kwh": None, "to_kwh": None})
     added = f["added"]
     cost = {"amount": s["total"], "currency": s["currency"], "source": "tesla_invoice"}
     ppk = {"value": round(s["total"] / added, 4), "basis": "pack"} if added else None
     return cost, ppk, {"parts": parts, "session_fee": None, "total": s["total"], "gap_ms": gap_ms,
-                       "mode": "tesla_invoice"}
+                       "mode": "tesla_invoice", "cycle": None}
 
 
 def refs(app, charge_id, manual):

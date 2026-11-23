@@ -57,7 +57,7 @@ class Invoices(ServerCase):
         self.assertEqual(d["cost_breakdown"]["mode"], "tesla_invoice")
         self.assertEqual(d["cost_breakdown"]["parts"][0]["rate"], "Charging")
         self.assertEqual(set(d["cost_breakdown"]["parts"][0]),
-                         {"rate", "per_kwh", "per_minute", "kwh", "minutes", "cost"})
+                         {"rate", "per_kwh", "per_minute", "kwh", "minutes", "cost", "from_kwh", "to_kwh"})
         self.assertEqual(len(d["invoices"]), 1)
         ref = d["invoices"][0]
         self.assertTrue(ref["applied"])
