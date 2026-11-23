@@ -55,6 +55,7 @@ pub mod records;
 pub mod tesla_in;
 pub mod tmlocal_catchup;
 pub mod tz;
+mod warm;
 
 pub use tesla_in::{TeslaSink, TeslafiSink, TeslamateLocalSink};
 
@@ -242,6 +243,8 @@ pub(crate) struct Inner {
     zone_at: Mutex<HashMap<CarId, ZoneAt>>,
     /// Answers' parts kept while their data stays the same.
     pub(crate) memo: memo::Memo,
+    /// The cars whose long periods wait to be worked out in the background ([`warm`]).
+    pub(crate) warm: Mutex<warm::Warm>,
 }
 
 /// Where a car's zone was last looked up (latitude, longitude) and the zone found there.
@@ -345,6 +348,7 @@ impl Engine {
                 gap_fill: std::sync::atomic::AtomicBool::new(true),
                 zone_at: Mutex::new(HashMap::new()),
                 memo: memo::Memo::default(),
+                warm: Mutex::default(),
                 opts,
             }),
         }

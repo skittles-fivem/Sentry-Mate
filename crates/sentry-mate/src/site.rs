@@ -63,6 +63,8 @@ impl EngineRun {
         {
             let _in = rt.enter();
             engine.start()?;
+            // the long periods' day parts, worked out in the background once the logs waiting are decoded
+            engine.warm(None);
         }
         Ok(EngineRun { engine, rt: Some(rt) })
     }

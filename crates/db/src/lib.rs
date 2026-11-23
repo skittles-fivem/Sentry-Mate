@@ -139,7 +139,8 @@ pub struct Options {
     pub max_open_cars: usize,
     /// Bytes of open tables at most, across the open cars.
     pub max_open_bytes: u64,
-    /// Bytes of day snapshots kept opened and unpacked at most (days read again soon, by the same page or the next).
+    /// Bytes of day snapshots kept opened and unpacked at most (days read again soon, by the same page or the next):
+    /// a quarter of the memory free for them, up to this (`db/src/plain.rs`); 0 keeps none.
     pub max_cached_bytes: u64,
     /// A journal is folded into its snapshot once it has at least this many bytes (and about as many as the
     /// snapshot).
@@ -155,7 +156,7 @@ impl Default for Options {
         Options {
             max_open_cars: 64,
             max_open_bytes: 256 << 20,
-            max_cached_bytes: 256 << 20,
+            max_cached_bytes: 4 << 30,
             fold_min_bytes: 64 << 10,
             hot: Level::HOT,
             warm: Level::WARM,

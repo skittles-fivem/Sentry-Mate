@@ -1,8 +1,8 @@
 //! Parts of answers worked out a UTC day at a time (a series' sums per hour, a day's temperatures...) and kept with a
 //! stamp of the files they were read from ([`db::Db::day_stamps`] of every stream, and a key of what else they rest
 //! on): in memory ([`Engine::stamped`]) and in the sealed key/value store ([`NS`]), so a long period reads only the
-//! days written since (today, mostly), also after a restart. Days not kept are worked out a few at a time, in
-//! parallel. A kept part is only ever a cache: it is made again whenever it is missing, unreadable or stale.
+//! days written since (today, mostly), also after a restart. Days not kept are worked out on every core at
+//! once. A kept part is only ever a cache: it is made again whenever it is missing, unreadable or stale.
 
 use super::QResult;
 use crate::Engine;
@@ -17,9 +17,6 @@ use std::sync::Arc;
 pub const NS: &str = "day-parts";
 
 pub(crate) const DAY: u64 = 86_400_000;
-
-/// Threads a request works on missing days with at most.
-const THREADS: usize = 4;
 
 /// Each stream's day stamps of a car's samples, read once per answer.
 pub(crate) struct Stamps(Vec<(Stream, BTreeMap<u64, u64>)>);
@@ -121,7 +118,7 @@ fn write_kept<T: Serialize>(e: &Engine, key: &str, stamp: u64, part: &T) {
 }
 
 /// The part of each of `want` (`(key, stamp)`, a key being a day's start, or that and more): kept in memory, else in
-/// the key/value store, else made by `make(state, key)` (on a few threads at once, each with its own `state` from
+/// the key/value store, else made by `make(state, key)` (on every core at once, each with its own `state` from
 /// `init`) and kept. In the order of `want`.
 pub(crate) fn parts<T, S>(
     e: &Engine,
@@ -137,7 +134,8 @@ where
     let mut out: Vec<Option<Arc<T>>> = want.iter().map(|&(k, st)| e.stamped::<T>(car, name, k, st)).collect();
     let missing: Vec<usize> = (0..want.len()).filter(|&i| out[i].is_none()).collect();
     if !missing.is_empty() {
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, THREADS);
+        // every core: the days are apart, and reading them no longer holds the car's lock
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
         let threads = threads.min(missing.len());
         let one = |state: &mut Option<S>, i: usize| -> QResult<Arc<T>> {
             let (k, st) = want[i];
