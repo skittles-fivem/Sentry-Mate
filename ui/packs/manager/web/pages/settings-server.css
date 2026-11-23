@@ -14,6 +14,10 @@
 .ss-check-head { font-weight: 600; overflow-wrap: anywhere; }
 .ss-check-text { color: var(--text-2); margin-top: round(0.125rem, var(--e)); max-width: round(52rem, var(--e)); }
 .ss-check .btn { margin-top: round(0.5rem, var(--e)); }
+/* a long button label wraps rather than widening the page (a phone at a large Interface size); the button grows */
+.ss-check .btn { max-width: 100%; white-space: normal; text-align: center; height: auto; min-height: round(1.875rem, var(--e)); padding-block: round(0.25rem, var(--e)); }
+/* on a phone such a label can wrap: no icon beside it, so the lines stay centred in the button */
+:root[data-phone] .ss-check .btn > .ico { display: none; }
 .ss-keyacts { flex-wrap: wrap; gap: round(0.5rem, var(--e)); margin-top: round(0.5rem, var(--e)); }
 .ss-check .ss-keyacts > .btn { margin-top: 0; } /* the row keeps the space above, so each button is centred in it */
 .ss-code { font-size: max(0.8125rem, var(--fs-floor)); padding: 0 round(0.25rem, var(--e)); border-radius: round(0.25rem, var(--e)); background: var(--glass-2); overflow-wrap: anywhere; }
@@ -21,33 +25,33 @@
 .ss-addr .mono { color: var(--text); }
 
 /* the certificate in use: its SHA-256, names and upload address, each to copy */
-.ss-cert { display: flex; flex-direction: column; gap: 0.625rem; margin-top: 0.625rem; min-width: 0; }
-.ss-facts { display: flex; flex-direction: column; gap: 0.625rem; margin: 0; }
-.ss-fact { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+.ss-cert { display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); margin-top: round(0.625rem, var(--e)); min-width: 0; }
+.ss-facts { display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); margin: 0; }
+.ss-fact { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); min-width: 0; }
 .ss-fact dt, .ss-fact-label { margin: 0; font-size: max(0.75rem, var(--fs-floor)); font-weight: 500; color: var(--text-3); }
-.ss-fact dd { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem 0.625rem; min-width: 0; }
-.ss-value { font-size: max(0.875rem, var(--fs-floor)); padding: 0.25rem 0.5rem; border-radius: 0.375rem; background: var(--glass-2); color: var(--text); user-select: all; min-width: 0; max-width: 100%; }
+.ss-fact dd { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: round(0.375rem, var(--e)) round(0.625rem, var(--e)); min-width: 0; }
+.ss-value { font-size: max(0.875rem, var(--fs-floor)); padding: round(0.25rem, var(--e)) round(0.5rem, var(--e)); border-radius: round(0.375rem, var(--e)); background: var(--glass-2); color: var(--text); user-select: all; min-width: 0; max-width: 100%; }
 /* an address breaks only between its parts (after a slash or a colon), never at the hyphen of a host name; a part
    wider than the line on its own still wraps inside */
 .ss-address-part { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
-.ss-sha { display: inline-flex; flex-wrap: wrap; column-gap: 0; line-height: 1.6; }
+.ss-sha { display: inline-flex; flex-wrap: wrap; column-gap: 0; line-height: round(calc(1.6 * 1em), 1px); }
 .ss-sha-group { white-space: nowrap; }
-.ss-fact--big .ss-sha { font-size: max(1rem, var(--fs-floor)); padding: 0.5rem 0.75rem; }
-.ss-cert-names { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.ss-fact--big .ss-sha { font-size: max(1rem, var(--fs-floor)); padding: round(0.5rem, var(--e)) round(0.75rem, var(--e)); }
+.ss-cert-names { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: round(0.375rem, var(--e)); }
 .ss-cert-names .ss-value { overflow-wrap: anywhere; }
-.ss-copy { display: inline-flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.ss-copy { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); flex-wrap: wrap; }
 .ss-check .ss-copy .btn { margin-top: 0; }
 .ss-copied { color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); }
 .ss-copied:empty { display: none; }
-.ss-cert-need { display: flex; align-items: flex-start; gap: 0.375rem; margin: 0; color: var(--text-2); }
-.ss-cert-need .ico { flex: none; margin-top: 0.1875rem; color: var(--text-3); }
+.ss-cert-need { display: flex; align-items: flex-start; gap: round(0.375rem, var(--e)); margin: 0; color: var(--text-2); }
+.ss-cert-need .ico { flex: none; margin-top: round(0.1875rem, var(--e)); color: var(--text-3); }
 .ss-cert-own { margin: 0; color: var(--text-2); }
-.ss-newcert { display: flex; flex-direction: column; gap: 0.75rem; }
+.ss-newcert { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); }
 .ss-newcert p { margin: 0; }
-.ss-newcert-list { list-style: disc; margin: 0; padding-left: 1.25rem; display: flex; flex-direction: column; gap: 0.5rem; color: var(--text-2); }
+.ss-newcert-list { list-style: disc; margin: 0; padding-left: round(1.25rem, var(--e)); display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); color: var(--text-2); }
 .ss-newcert-list b { color: var(--text); }
 .ss-newcert-names .mono { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
-.ss-newcert + form, .ss-newcert + .form { margin-top: 1rem; }
+.ss-newcert + form, .ss-newcert + .form { margin-top: round(1rem, var(--e)); }
 
 /* host names */
 .ss-names { display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); width: 100%; }
@@ -81,10 +85,6 @@
 .ss-audit .tbl-foot .btn { flex: none; }
 .ss-audit-when { white-space: nowrap; }
 .ss-audit-summary { overflow-wrap: anywhere; }
-.ss-gone { display: flex; align-items: center; gap: round(0.375rem, var(--e)); margin: 0; }
-
-/* the account dialog */
-.ss-carpick { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); margin-top: round(0.5rem, var(--e)); }
 /* the audit log scrolls in a box of five rows (the header and five rows; on a phone about three cards),
    high from the start; the next entries load as its end comes near, and a fade at the bottom says more are
    under it */
@@ -92,6 +92,10 @@
 .ss-audit .tbl-box[data-below] { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - round(2.5rem, var(--e))), rgb(0 0 0 / 0.2)); mask-image: linear-gradient(to bottom, #000 calc(100% - round(2.5rem, var(--e))), rgb(0 0 0 / 0.2)); }
 .ss-audit .tbl-box:focus-visible { outline-offset: round(-0.125rem, var(--e)); }
 .ss-audit .tbl-box-end { height: 1px; margin-top: -1px; }
+.ss-gone { display: flex; align-items: center; gap: round(0.375rem, var(--e)); margin: 0; }
+
+/* the account dialog */
+.ss-carpick { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); margin-top: round(0.5rem, var(--e)); }
 .ss-carlist { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); max-height: round(14rem, var(--e)); overflow-y: auto; padding: round(0.5rem, var(--e)) round(0.625rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); }
 
 @container page (min-width: 108rem) {
@@ -203,11 +207,11 @@
 :root[data-phone] .ss-audit-filters { flex: 1 0 100%; display: grid; grid-template-columns: 1fr 1fr; }
 :root[data-phone] .ss-audit-filter { flex-direction: column; align-items: stretch; gap: round(0.25rem, var(--e)); min-width: 0; }
 :root[data-phone] .ss-audit-pick { max-width: none; width: 100%; min-width: 0; }
+:root[data-phone] .ss-audit .tbl-box { height: min(round(30rem, var(--e)), 62svh); border-top: 1px solid var(--line); }
 :root[data-phone] .ss .seg-btn { flex: 1 1 auto; justify-content: center; }
 :root[data-phone] .ss-name-add { flex-wrap: wrap; }
 :root[data-phone] .ss-name-input { width: 100%; flex: 1 1 100%; }
 :root[data-phone] .ss-acts { flex-wrap: wrap; }
-:root[data-phone] .ss-audit .tbl-box { height: min(round(30rem, var(--e)), 62svh); border-top: 1px solid var(--line); }
 :root[data-phone="tall"] .ss .kv-row { flex-direction: column; align-items: flex-start; gap: round(0.125rem, var(--e)); }
 :root[data-phone="tall"] .ss .kv dd { margin: 0; text-align: left; white-space: normal; }
 :root[data-phone] .ss-port { justify-content: flex-start; }
