@@ -6,9 +6,10 @@ pasted `tesla://auth/callback?code=...&state=<state>` (or the `void` one) is tak
 refresh token is "checked" by its look alone. A token that starts with `refused` plays one Tesla refuses
 (`422 tesla_refused`), one that starts with `unreachable` plays Tesla being down (`502 tesla_unreachable`).
 
-Every change but starting a sign-in asks for the admin's own password again (`confirm_password` or the
-`X-Sentry-Mate-Password` header) and, for an admin with two-step sign-in on, a code (`code` or
-`X-Sentry-Mate-Code`; the dev code is 000000), like the real server. No answer ever holds a token.
+Every change but starting a sign-in and the car matches asks for the admin's own password again
+(`confirm_password` or the `X-Sentry-Mate-Password` header) and, for an admin with two-step sign-in on, a code
+(`code` or `X-Sentry-Mate-Code`; the dev code is 000000), like the real server; the car matches take the admin
+session alone. No answer ever holds a token.
 """
 
 from __future__ import annotations
@@ -473,7 +474,7 @@ def get_cars(req):
 
 def put_cars(req):
     body = req.json()
-    _only(body, ("version", "items", "confirm_password", "code"))
+    _only(body, ("version", "items"))
     a = _account(req)
     rows = body.get("items")
     if not isinstance(rows, list) or not all(isinstance(x, dict) for x in rows):
@@ -505,7 +506,6 @@ def put_cars(req):
         changes.append((v, m))
     if bad:
         raise invalid(bad)
-    reconfirm(req, body)
     with st.lock:
         req.version_check(a["version"])
         taken = {c["match"]: o["id"] for o in st.tesla["accounts"].values() if o["id"] != a["id"]

@@ -5,8 +5,9 @@
 // admin adds a token. It only reads (TeslaFi's latest poll and its last poll awake): no wake, no command, and no page
 // ever shows the token. This part shows the input's state (on or off, its host, the pace, requests today, TLS), adds
 // a token, sets the pace (Gentle, Normal, Often), and per account its status, the car TeslaFi polls and which car
-// here it is, the zone TeslaFi's times are in, pause and resume, a new token, removing it, and its errors. Every change asks for the admin's own password
-// again (and the two-step code), as the Tesla account part does.
+// here it is, the zone TeslaFi's times are in, pause and resume, a new token, removing it, and its errors. Every change but saving the match asks for the
+// admin's own password again (and the two-step code), as the Tesla account part does; the match takes the admin's
+// session alone (it stores and shows no token).
 //
 // API: GET / PATCH integrations/teslafi (the pace), GET / POST integrations/teslafi/accounts, PATCH / DELETE
 // integrations/teslafi/accounts/{id}, PUT integrations/teslafi/accounts/{id}/cars, GET integrations/teslafi/status,
@@ -297,11 +298,10 @@ export function teslafiPart(ctx) {
         const items = list.map((c) => ({ vehicle: c.vehicle, match: chosen.get(c.vehicle) || null }));
         const changes = items.filter((x) => x.match !== (list.find((c) => c.vehicle === x.vehicle).match ?? null));
         if (!changes.length) { ctx.flash('Nothing changed in the match.', { kind: 'info' }); return; }
-        const out = await ask({
-          title: 'Save the match?', yes: 'Save',
-          text: 'A TeslaFi car matched to a car here, or to a new car, is read from now on; one left out or not decided is not read.',
-          run: (creds) => ctx.api.put(api.apiPath`integrations/teslafi/accounts/${a.id}/cars`, { version: a.version, items: changes, ...creds }),
-        });
+        // the admin's session alone: no password asked again
+        save.disabled = true;
+        let out = null;
+        try { out = await ctx.api.put(api.apiPath`integrations/teslafi/accounts/${a.id}/cars`, { version: a.version, items: changes }); } catch (e) { if (api.isAbort(e)) return; ctx.flash(teslafiErrorText(e), { kind: 'error' }); } finally { save.disabled = false; }
         if (out) ctx.flash('The match was saved.');
         await again(`save-${a.id}`, `teslafi-${a.id}`);
       },

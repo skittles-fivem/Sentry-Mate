@@ -2,14 +2,14 @@
 // as a live input. The server subscribes to TeslaMate's MQTT topics (read only: it never publishes) and, when an
 // admin turns it on, catches up from TeslaMate's PostgreSQL database now and then. Off until an admin adds it.
 //
-// Admins only, reading included. Every change, and every test, asks for the admin's own password again (and the
+// Admins only, reading included. Adding, saving, pausing and removing ask for the admin's own password again (and the
 // two-step code), like the TeslaFi section: askPassword() from settings-server-move.js, sent as confirm_password and
-// code. The rules and words shared by every pack are in shared/teslamate.js.
+// code. A test and saving the car matches take the admin's session alone: they store and show no password. The rules and words shared by every pack are in shared/teslamate.js.
 //
 // API: GET/PUT/PATCH/DELETE integrations/teslamate, POST integrations/teslamate/test, PUT integrations/teslamate/cars.
 
 import { h, replace } from '../shared/dom.js';
-import { TM_BASE, TM_DEFAULTS, TM_HOST_HINT, tmPinNote, tmTlsPort, MQTT_STATE, DB_STATE, UNENCRYPTED_LABEL, UNENCRYPTED_WARNING, tmErrorText, tmWords, tmStale, tmDraft, tmCheck, tmPutBody, tmMatchChanges, tmPreselect, tmMatchWords, tmHeadline } from '../shared/teslamate.js';
+import { TM_BASE, TM_DEFAULTS, TM_HOST_HINT, tmPinNote, tmTlsPort, MQTT_STATE, DB_STATE, UNENCRYPTED_LABEL, UNENCRYPTED_WARNING, tmErrorText, tmWords, tmStale, tmDraft, tmCheck, tmPutBody, tmMatchChanges, tmPreselect, tmHeadline } from '../shared/teslamate.js';
 import { icon } from '../core/icons.js';
 import { kv, tag, pill, note, metric, figures } from '../core/page.js';
 import { field, form } from '../core/form.js';
@@ -73,6 +73,14 @@ export function teslamateSection(ctx, { cars = [] } = {}) {
       }
       throw e;
     }
+  };
+  // a test and the car matches: the admin's session alone, no password asked again; other errors in a flash
+  const direct = async (b, fn, f = null) => {
+    b.disabled = true;
+    try { return await guarded(fn, f)(); } catch (e) {
+      if (e?.name !== 'AbortError') flash(errorWords(e).text, { kind: 'error' });
+      return null;
+    } finally { b.disabled = false; }
   };
 
   function paint() {
@@ -176,13 +184,11 @@ export function teslamateSection(ctx, { cars = [] } = {}) {
       if (isDb) d.enabled = true;
       const bad = tmCheck(part, d, t.enabled ? saved : null);
       if (Object.keys(bad).length) { f.setErrors(bad); return; }
-      const r = await askPassword(ctx, {
-        title: `Test the ${PART_NAME[part]} connection`, submit: 'Test',
-        intro: h('p', { class: 'note' }, isDb ? 'Connects to the database with these settings and looks for TeslaMate\'s tables. Nothing is saved.' : 'Connects to the broker with these settings and listens a few seconds for TeslaMate\'s cars. It subscribes only and publishes nothing; nothing is saved.'),
-        run: guarded((cred) => ctx.api.post(`${TM_BASE}/test`, withPw(cred, { target: part, [part]: d })), f),
-      });
+      replace(testOut, h('p', { class: 'setting-note' }, isDb ? 'Testing: connecting to the database and looking for TeslaMate\'s tables. Nothing is saved.' : 'Testing: connecting to the broker and listening a few seconds for TeslaMate\'s cars. It subscribes only and publishes nothing; nothing is saved.'));
+      const r = await direct(testBtn, () => ctx.api.post(`${TM_BASE}/test`, { target: part, [part]: d }), f);
+      if (!r || r.fieldErr || r.stale) replace(testOut);
       if (!r || r.fieldErr) return;
-      if (r.stale) { flash(r.stale, { kind: 'info' }); return; }
+      if (r.stale) { flash(r.stale, { kind: 'info' }); await load(); return; }
       replace(testOut, h('p', { class: ['si-test-line', 'tm-test-line', r.ok ? 'ok' : 'warn'] }, icon(r.ok ? 'check' : 'warn', 'ico--sm'), h('span', null,
         r.ok ? r.message : (tmErrorText({ code: r.error, message: r.message }) || 'It did not work') + '.',
         r.ok && r.latency_ms != null ? ` ${num(r.latency_ms)} ms.` : '',
@@ -225,11 +231,7 @@ export function teslamateSection(ctx, { cars = [] } = {}) {
     saveBtn.addEventListener('click', async () => {
       const ch = tmMatchChanges(items, chosen());
       if (!ch.length) return;
-      const r = await askPassword(ctx, {
-        title: 'Match the TeslaMate cars', submit: 'Save matches',
-        intro: h('ul', { class: 'si-list' }, ch.map((c) => { const it = items.find((x) => x.teslamate_car === c.teslamate_car); return h('li', null, h('b', null, it?.display_name || `TeslaMate car ${c.teslamate_car}`), ': ', tmMatchWords(c.match, carName)); })),
-        run: guarded((cred) => ctx.api.put(`${TM_BASE}/cars`, withPw(cred, { version: t.version, items: ch }))),
-      });
+      const r = await direct(saveBtn, () => ctx.api.put(`${TM_BASE}/cars`, { version: t.version, items: ch }));
       await after(r, 'Matches saved.');
     });
     const rows = items.map((c) => {

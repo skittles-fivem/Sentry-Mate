@@ -9,8 +9,9 @@
 // Admins only, reading included. Tiles: the input's status (on or off, its host, TLS, requests today, the last
 // error), its pace (Gentle / Normal / Often, PATCH integrations/teslafi), adding a token, and per account a tile with its status and actions
 // (pause or resume, a new token, its time zone, rename, remove) and a tile of its cars, each matched to a car here,
-// a new car or left out, with what the server does for it now. Every change asks for the admin's own password
-// again (and the two-step code): askPassword(). Each account tile has the id teslafi-<account>.
+// a new car or left out, with what the server does for it now. Every change but saving the matches asks for the
+// admin's own password again (and the two-step code): askPassword(); the matches take the admin's session alone (they
+// store and show no token). Each account tile has the id teslafi-<account>.
 //
 // Data: GET/PATCH integrations/teslafi, GET/POST integrations/teslafi/accounts, GET/PATCH/DELETE
 // integrations/teslafi/accounts/{id}, GET/PUT integrations/teslafi/accounts/{id}/cars, GET integrations/teslafi/status.
@@ -367,11 +368,10 @@ export function teslafiTiles(ctx, { cars = [] } = {}) {
     async function saveMatches() {
       const ch = changed();
       if (!ch.length || doubled().length) return;
-      const r = await askPassword(ctx, {
-        title: `Match the car of ${a.label}`, yes: 'Save the matches', hint: HINT,
-        text: h('ul', { class: 'set-list' }, ch.map((c) => { const v = picked.get(c.vehicle); return h('li', null, h('b', null, nameOf(c)), ': ', v === 'new' ? 'a new car here, read from now on' : v === 'leave_out' ? 'left out, not read' : !v ? 'not decided, not read' : `${carName(v)}, read from now on`); })),
-        run: guarded((cred) => ctx.api.put(`${BASE}/accounts/${enc(a.id)}/cars`, withPw(cred, { version: data.version ?? a.version, items: ch.map((c) => ({ vehicle: c.vehicle, match: picked.get(c.vehicle) || null })) }))),
-      });
+      // the admin's session alone: no password asked again (a match stores and shows no token)
+      save.disabled = true;
+      let r = null;
+      try { r = await guarded(() => ctx.api.put(`${BASE}/accounts/${enc(a.id)}/cars`, { version: data.version ?? a.version, items: ch.map((c) => ({ vehicle: c.vehicle, match: picked.get(c.vehicle) || null })) }))(); } catch (e) { if (e?.name !== 'AbortError') ctx.toast(errorWords(e).text, { kind: 'error' }); } finally { save.disabled = false; }
       await after(r, 'Matches saved.');
     }
     sync();
