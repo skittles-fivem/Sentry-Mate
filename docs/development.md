@@ -80,8 +80,10 @@ light day).
 CI is [`.github/workflows/image.yml`](../.github/workflows/image.yml). It runs on a push to `main` that changes code
 (a push that changes only `README.md`, `docs/` or `truenas/` runs nothing), and by hand (*Actions → Image → Run
 workflow*). The owner's limit is 5 minutes for the whole run.
-First the gates (above), once: the fast set in its four parts, and `cargo fmt` with clippy (both commands) beside
-them on a machine of its own.
+First the gates (above), once: the fast set in its four parts (on five machines: `web` on two), and `cargo fmt` with
+clippy (both commands) beside them on a machine of its own. Each part builds its test binaries once and
+[`.github/run-tests.py`](../.github/run-tests.py) runs them as many at a time as the machine has cores, with the doc
+tests beside them; the log ends with the slowest binaries.
 
 What is known about that limit, from the Image workflow's runs (ubuntu-latest, 4 cores):
 
@@ -101,6 +103,42 @@ What is known about that limit, from the Image workflow's runs (ubuntu-latest, 4
   image or with no kept folder builds everything once.
 - Everything else takes about 80 seconds (the jobs starting, the image check about 20 s, the push by digest under
   10 s, the tags about 15 s).
+- Runs 78 to 80 took 7.5 to 10.5 minutes again, with half an hour and more from a push to `latest` while pushes
+  came every few minutes (a newer push cancelled the running build). Three causes, found with the build's
+  `--timings` and the logs:
+  - The kept build folder was dropped every other run. rustc leaves a crate's previous incremental session beside
+    the new one (it removes it only at that crate's next build), so the folder kept two of each crate built: 2.9 GB
+    after run 77, 3.9 GB after run 78, past the 3 GB limit, and run 79 built everything from nothing (8 minutes per
+    arch, dependencies too). `build-binary.sh` now keeps only each crate's newest session (1.2 of 1.7 GB on a test
+    folder); the kept folder stayed at 2.2 GB (`target/`) and 0.2 GB (cargo's home) over runs 81 to 88.
+  - The build number, commit and date were read with `option_env!` in the `release` crate, which `web` uses, so
+    `release`, `web` and `sentry-mate` were built again for every new number. The binary reads them now and hands
+    them to `web`: a new number alone builds again only `sentry-mate` (8 s on 4 cores, measured with a kept folder).
+  - The tests ran their binaries one at a time: `web` 5.1 minutes (about 2 to build, 3 of tests, `audit_log` 46 s
+    and `charges` 35 s the slowest). Now several at a time, and `web` on two machines (`--part 1/2`, `--part 2/2`:
+    the binaries dealt out by their times in run 85, `--slow` in `image.yml`).
+  A newer push to `main` now waits for the running build instead of cancelling it, so every build that starts
+  moves `latest` and keeps its folder. The other causes looked at made no difference: the UI bundle keeps its
+  sources' times (its folder too), so it does not build `web` again by itself; the Rust image, its toolchain path
+  and `RUSTFLAGS` are the same each run; the dependencies are not built again with a kept folder.
+- Measured on the throwaway branch `ci-speed` (runs by hand; for this only, it kept and read a build folder of its
+  own, so each push built on the one before, as on `main`). From the run's start to the last tag:
+
+  | Run | What changed since the kept build | Binary build (amd64 / arm64) | Slowest units | Slowest tests job | Whole run |
+  |---|---|---|---|---|---|
+  | 81 | `web`'s builder, `release`, the binary (this change) | 193 / 196 s | web 116 s, sentry-mate 54 s | tests (web) 3.4 min | 4.8 min |
+  | 83 | `engine`: a log line | 52 / 52 s | | tests (import) 4.2 min (the doc tests built the libraries again) | 4.5 min |
+  | 84 | `web`: a log line | 65 / 85 s | web 32 s, sentry-mate 13 s | tests (import) 3.3 min | 3.4 min |
+  | 85 | `ui/packs`: one file | 88 / 94 s | | tests (web) 3.6 min | 4.1 min |
+  | 88 | all of the above with `web` on two machines, and `engine`: a log line | 88 / 51 s | web 47 s, engine 19 s, sentry-mate 15 s (amd64, from run 84's folder); sentry-mate 18 s, engine 15 s (arm64) | tests (web 2) 3.3 min, tests (import) 3.2 min | 3.7 min |
+
+  Main's run 80 took 7.1 minutes (an incremental build of 5 minutes: 83 files changed). The builds of the image
+  jobs (`build`) end at 2.5 to 3.3 minutes now; the tests decide the run. Not taken: a Docker layer cache (the image's
+  build takes 4 s: two layers), an npm cache (`npm ci` takes 2 s), `actions/cache` in place of the kept artifact
+  (its download and unpack take 30 to 40 s and the build job is no longer the slowest), sccache or a cache of the
+  workspace crates for the tests (a change to `engine` or `web` builds most of them again anyway), merging the two
+  clippy commands (the one without `dev-seed` checks the binary as released; clippy ends at about 2.5 minutes, before
+  the tests).
 
 The times of each job are on the run's page (*Actions → Image*).
 
