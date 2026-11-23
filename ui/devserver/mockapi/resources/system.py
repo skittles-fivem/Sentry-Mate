@@ -21,6 +21,7 @@ from ..live import now_object
 from .fleet import device_label
 from ..util import DAY, HOUR, MIN, date_str, h01, local_date, r
 from .. import sources as SRC
+from ..uploads import free_bytes
 from .reports import gap_rows
 
 DEV_VERSION = "0.1.0-dev"
@@ -909,9 +910,10 @@ def system_storage(req):
     days = sorted(d for d in growth if d < today)[-30:]
     rows = [{"date": d, "bytes": growth[d] + SYNTHETIC_PER_DAY * n_syn} for d in days]
     per_day = sum(g["bytes"] for g in rows) / len(rows) if rows else 0
-    return {"kinds": kinds, "total_bytes": sum(k["bytes"] for k in kinds), "free_bytes": s["free_bytes"],
+    free = free_bytes(req.app, req.now)
+    return {"kinds": kinds, "total_bytes": sum(k["bytes"] for k in kinds), "free_bytes": free,
             "growth": rows, "growth_per_day_bytes": int(per_day),
-            "full_in_days": int(s["free_bytes"] / per_day) if per_day else None}
+            "full_in_days": int(free / per_day) if per_day else None}
 
 
 # ------------------------------------------------------------------ storage in detail, and compaction
@@ -1042,7 +1044,7 @@ def storage_detail(req):
         comp = _compaction(req, advance=True)
         cats = _detail_categories(req, req.store.compaction["_passes"])
     return {"categories": cats, "total_bytes": sum(c["bytes"] for c in cats),
-            "total_disk_bytes": sum(c["disk_bytes"] for c in cats), "free_bytes": req.store.storage["free_bytes"],
+            "total_disk_bytes": sum(c["disk_bytes"] for c in cats), "free_bytes": free_bytes(req.app, req.now),
             "compaction": comp}
 
 
