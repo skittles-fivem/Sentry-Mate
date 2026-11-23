@@ -9,6 +9,7 @@ import { format, convert, unitLabel, getUnits, KM_PER_MI } from '../shared/units
 import { formatTime, formatDate, formatDuration, zoneName, dayRange, dayKey, zonedParts } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
+import { trackBounds } from '../shared/tracks.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel, metric, tag, csvButton } from '../core/page.js';
 import { createMap, routePin, boundsOf, padClear, mapFallback } from '../core/map.js';
@@ -203,6 +204,8 @@ export async function mount(ctx) {
     const c = f.geometry?.coordinates || [];
     c.forEach((p, i) => { coords.push([p[0], p[1]]); props.speed.push(f.properties?.speed_kph?.[i] ?? null); props.power.push(f.properties?.power_kw?.[i] ?? null); });
   }
+  // the map frames the route without stray fixes (a jump to another state and back)
+  const routeBounds = trackBounds(track?.features || []) || boundsOf(coords);
   let m = null, hoverMarker = null;
   // a gradient along the route by speed or power, from stops at the share of the distance travelled
   const gradient = (kind) => {
@@ -239,7 +242,7 @@ export async function mount(ctx) {
   (async () => {
     if (coords.length < 2) { mapEl.append(mapFallback('No route was recorded for this drive.')); mapMade(); return; }
     try {
-      m = await createMap(mapEl, ctx, { bounds: boundsOf(coords) });
+      m = await createMap(mapEl, ctx, { bounds: routeBounds });
       mapMade();
       if (!m) return;
       await m.ready;
@@ -250,7 +253,7 @@ export async function mount(ctx) {
       m.addLayer({ ...line, id: 'route-line', paint: { 'line-gradient': gradient('speed') } }, { 'line-width': () => rpx(4.2) });
       routePin(m, coords[0], 'A');
       routePin(m, coords[coords.length - 1], 'B');
-      m.frame(() => m.map.fitBounds(boundsOf(coords), { padding: padClear(mapEl, legend, { left: 40, top: 24, right: 60, bottom: 50 }), maxZoom: 16, duration: 0 }));
+      m.frame(() => m.map.fitBounds(routeBounds, { padding: padClear(mapEl, legend, { left: 40, top: 24, right: 60, bottom: 50 }), maxZoom: 16, duration: 0 }));
     } catch (e) { console.warn(e); replace(mapEl, mapFallback()); mapMade(); }
   })();
   function hoverAt(i) {

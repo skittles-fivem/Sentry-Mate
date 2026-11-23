@@ -15,6 +15,7 @@ import { pageHead, panel, panelLink, metric, kv, csvButton } from '../core/page.
 import { statePill, stateLabel, ago, agoEl, when, dur, val, TYRES, STATES } from '../core/fmt.js';
 import { timelineRow } from './timeline.js';
 import { createMap, carMarker, addRoute, mapFallback } from '../core/map.js';
+import { SPOT_ZOOM } from '../shared/maptiles.js';
 import { offstage } from '../core/stage.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, colors, areaFill, hexA } from '../core/chart.js';
 import { activityStrip } from '../core/strip.js';
@@ -418,7 +419,7 @@ export async function mount(ctx) {
     const lat = val(loc.lat), lon = val(loc.lon);
     if (lat == null || lon == null) { mapEl.append(mapFallback('No position recorded yet.')); return; }
     try {
-      map = await createMap(mapEl, ctx, { center: [lon, lat], zoom: now.state === 'driving' ? 13 : 15.6 });
+      map = await createMap(mapEl, ctx, { center: [lon, lat], zoom: SPOT_ZOOM });
       if (!map) return;
       await map.ready;
       if (!ctx.alive()) return;

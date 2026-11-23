@@ -14,6 +14,7 @@ import * as state from '../shared/state.js';
 import { tile, num, chip, icon, note } from '../core/ui.js';
 import { emptyTile } from '../core/states.js';
 import { mapTile, boundsOf } from '../core/map.js';
+import { trackBounds } from '../shared/tracks.js';
 import { timeChart, spansOf } from '../core/chart.js';
 import { placeLink, byDay, dayHead, socBar, filterBar, strip, statTile, dur, facts } from '../core/bits.js';
 import { srcPill, estPill } from '../core/source.js';
@@ -151,7 +152,7 @@ export async function mount(ctx) {
   const all = lines.flat();
   let m = null;
   if (all.length > 1) {
-    m = await mapTile(ctx, mapBox, { bounds: boundsOf(all), padding: 40 });
+    m = await mapTile(ctx, mapBox, { bounds: trackBounds(tracks.error ? [] : tracks.drives || []) || boundsOf(all), padding: 40 });
     if (!m) return {};
     if (m.map) {
       m.routes('legs', lines, 'c1');

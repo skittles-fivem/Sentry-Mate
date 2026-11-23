@@ -12,6 +12,7 @@ import { format, formatMoney, convert, unitLabel, getUnits, rangeLabel } from '.
 import { formatTime, formatDate, formatDuration, formatDateRange, zoneName, dayKey, addDays, dayRange, startOf, DAY } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
+import { trackBounds } from '../shared/tracks.js';
 import { icon } from '../core/icons.js';
 import { spotText } from '../core/fmt.js';
 import { pageHead, panel, metric, csvButton } from '../core/page.js';
@@ -385,9 +386,11 @@ export async function mount(ctx) {
       geometry: { type: 'LineString', coordinates: d.lon.map((lo, i) => [lo, d.lat[i]]).filter((p) => p[0] != null && p[1] != null) } })).filter((f) => f.geometry.coordinates.length > 1);
     const marks = (trip.markers || []).filter((k) => k.lat != null && k.lon != null);
     const all = [...lines.flatMap((f) => f.geometry.coordinates), ...marks.map((k) => [k.lon, k.lat])];
+    // framed without stray fixes (a jump to another state and back)
+    const fit = trackBounds(tracks?.drives || [], marks.map((k) => [k.lon, k.lat])) || boundsOf(all);
     if (!all.length) { mapEl.append(mapFallback(nDrives ? 'No positions were recorded for these drives.' : 'Nothing was driven in this window, so there is no route.')); return; }
     try {
-      m = await createMap(mapEl, ctx, { bounds: boundsOf(all) });
+      m = await createMap(mapEl, ctx, { bounds: fit });
       if (!m) return;
       await m.ready;
       if (!ctx.alive()) return;
@@ -406,7 +409,7 @@ export async function mount(ctx) {
       const s = marks.find((k) => k.kind === 'start'), e = [...marks].reverse().find((k) => k.kind === 'end');
       if (s) routePin(m, [s.lon, s.lat], 'A');
       if (e) routePin(m, [e.lon, e.lat], 'B');
-      m.frame(() => m.map.fitBounds(boundsOf(all), { padding: padClear(mapEl, mapLegend, { left: 40, top: 24, right: 60, bottom: 56, beside: true }), maxZoom: 15, duration: 0 }));
+      m.frame(() => m.map.fitBounds(fit, { padding: padClear(mapEl, mapLegend, { left: 40, top: 24, right: 60, bottom: 56, beside: true }), maxZoom: 15, duration: 0 }));
     } catch (err) { console.warn(err); replace(mapEl, mapFallback()); }
   })();
   function hoverAt(i) {

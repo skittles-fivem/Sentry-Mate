@@ -20,6 +20,7 @@ import { formatNumber } from '../shared/i18n.js';
 import { head, section, kv, textBar, link, note } from '../core/ui.js';
 import { num, stateWord, ago, when, dur, tag, date } from '../core/fmt.js';
 import { safeMap } from '../core/map.js';
+import { SPOT_ZOOM } from '../shared/maptiles.js';
 import { offstage } from '../core/stage.js';
 import { chartOrNote, line, timeAxis, valueAxis, cursor, readout } from '../core/chart.js';
 import { rpx } from '../core/display.js';
@@ -256,7 +257,7 @@ export async function mount(ctx) {
     const loc = now.location || {};
     const lat = val(loc.lat), lon = val(loc.lon);
     if (lat == null || lon == null) { mapEl.append(h('p', { class: 'map-note' }, '-- no position recorded yet --')); return; }
-    map = await safeMap(mapEl, ctx, { center: [lon, lat], zoom: now.state === 'driving' ? 13 : 15 });
+    map = await safeMap(mapEl, ctx, { center: [lon, lat], zoom: SPOT_ZOOM });
     if (!map || !ctx.alive()) return;
     placePin();
   }

@@ -14,6 +14,7 @@ import { carOptions } from '../core/carpick.js';
 import { num, tag, date } from '../core/fmt.js';
 import { table, cellBar } from '../core/table.js';
 import { safeMap } from '../core/map.js';
+import { trackBounds } from '../shared/tracks.js';
 import { loadUPlot, plot, line, timeAxis, valueAxis, cursor, readout } from '../core/chart.js';
 import { stateStrip } from '../core/strip.js';
 import { src, srcText, est as estTag } from '../core/source.js';
@@ -219,7 +220,7 @@ export async function mount(ctx) {
       if (mine.length) m.line('route', mine);
       for (const c of charges) if (c.position?.lat != null) m.marker([c.position.lon, c.position.lat], 'map-pin map-pin--warn');
       if (mine.length) { m.marker(mine[0][0], 'map-pin map-pin--a'); const lst = mine[mine.length - 1]; m.marker(lst[lst.length - 1], 'map-pin map-pin--b'); }
-      m.fit(all, { pad: 32 });
+      m.fit(trackBounds(tracks?.drives || [], marks.map((k) => [k.lon, k.lat])) || all, { pad: 32 }); // without stray fixes
     }
   }
   if (!ctx.alive()) return;
