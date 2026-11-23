@@ -331,6 +331,7 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
         Ok(true)
     })?;
     let cx = super::charges::ctx(e, c)?;
+    super::charges::prefill(e, car, wa, wb, &gaps)?;
     each::<Charge>(e, car, wa, wb, None, &shown, false, |ch| {
         if let Some(i) = slot_of(slots, ch.start_ms) {
             let v = super::charges::view_filled(e, c, &ch, &cx, &gaps)?;
