@@ -82,6 +82,7 @@ const BY_GROUP = {
     'key-assigned': 'Assigned a key',
     'key-unassigned': 'Unassigned a key',
     'key-preferred': 'Chose the preferred key',
+    'can-key-renamed': 'Named a key',
     'token-created': 'Made a car token',
     'token-revoked': 'Revoked a car token',
   },
