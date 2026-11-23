@@ -1399,4 +1399,38 @@ mod tests {
         assert_eq!(&up.file("core/app.js").unwrap().bytes[..], b"import { f } from './fmt.js'; f();");
         assert_eq!(&up.file("core/fmt.js").unwrap().bytes[..], b"export const f = () => 2;");
     }
+
+    #[test]
+    fn each_built_in_index_is_small_and_inlines_no_script() {
+        // nothing to wait for before the first paint but the files it names (HTTP/2 push is gone from browsers, and
+        // hyper sends no 103 Early Hints: the modules are named with modulepreload instead)
+        for b in builtin::PACKS {
+            let list = b.files.iter().map(|(p, d)| (p.to_string(), Bytes::from_static(d))).collect();
+            let bundle = b.bundle.iter().map(|(p, d)| (p.to_string(), Bytes::from_static(d))).collect();
+            let meta = Meta {
+                id: b.id.into(),
+                name: b.id.into(),
+                description: String::new(),
+                author: String::new(),
+                version: "1".into(),
+                api: 1,
+                builtin: true,
+                sha256: String::new(),
+                files: 0,
+                bytes: 0,
+                installed_ms: None,
+            };
+            let pack = Loaded::bundled(meta, Bytes::new(), list, bundle);
+            let index = pack.index.as_ref().unwrap();
+            let html = String::from_utf8_lossy(&index.bytes);
+            for (i, _) in html.match_indices("<script") {
+                let tag = &html[i..i + html[i..].find('>').unwrap()];
+                assert!(tag.contains(" src="), "{}: an inline script ({tag})", b.id);
+            }
+            assert!(!html.contains(" onload=") && !html.contains(" onclick="), "{}: an inline handler", b.id);
+            assert!(html.contains("rel=\"modulepreload\""), "{}: its first modules are preloaded", b.id);
+            let (_, br) = index.encoded((true, true));
+            assert!(br.len() <= 8 << 10, "{}: index.html is {} bytes compressed", b.id, br.len());
+        }
+    }
 }
