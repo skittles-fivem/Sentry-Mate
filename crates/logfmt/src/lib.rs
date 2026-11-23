@@ -21,6 +21,10 @@ pub const FORMAT_COLUMNS: &str = "canbridge-columns-xz/2";
 pub const FORMATS: [&str; 2] = [FORMAT_CANDUMP, FORMAT_COLUMNS];
 /// A log may always unpack to this much, whatever its packed size ([`Limits::max_ratio`]).
 pub const RATIO_FLOOR: u64 = 1 << 20;
+/// The largest xz window taken (the dictionary plus the unpacker's own state), KiB: xz's largest level (-9, 64 MiB)
+/// and a little room, as for a backup that is imported. The bridge packs at level 6 (8 MiB at most). A log packed
+/// with a larger window is refused rather than allowed to take that much memory.
+pub const XZ_MAX_WINDOW_KIB: u32 = (64 << 10) + 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -105,7 +109,7 @@ enum Mode {
 }
 
 /// Receives the unpacked bytes: finds the format from the first bytes, splits text into lines as they come.
-struct Sink<'f, F: FnMut(&[u8]) -> bool> {
+struct Sink<'f, F: FnMut(&[u8]) -> bool + ?Sized> {
     mode: Mode,
     limits: Limits,
     partial: Vec<u8>,
@@ -117,7 +121,7 @@ struct Sink<'f, F: FnMut(&[u8]) -> bool> {
     on_line: &'f mut F,
 }
 
-impl<F: FnMut(&[u8]) -> bool> Sink<'_, F> {
+impl<F: FnMut(&[u8]) -> bool + ?Sized> Sink<'_, F> {
     /// Text, up to the unpack limit: past it the rest is dropped and unpacking stops.
     fn text_limited(&mut self, buf: &[u8]) -> io::Result<()> {
         if self.truncated {
@@ -197,7 +201,7 @@ impl<F: FnMut(&[u8]) -> bool> Sink<'_, F> {
     }
 }
 
-impl<F: FnMut(&[u8]) -> bool> Write for Sink<'_, F> {
+impl<F: FnMut(&[u8]) -> bool + ?Sized> Write for Sink<'_, F> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match &mut self.mode {
             Mode::Detect(head) => {
@@ -242,37 +246,9 @@ pub fn read_log(xz: &[u8], limits: Limits, mut on_line: impl FnMut(&[u8])) -> Re
 
 /// [`read_log`], stopping (unpacking no further) once `on_line` returns false; the summary is then `truncated`.
 pub fn read_log_while(xz: &[u8], limits: Limits, mut on_line: impl FnMut(&[u8]) -> bool) -> Result<Summary, Error> {
-    let limits = limits.for_packed(xz.len());
-    let mut sink = Sink {
-        mode: Mode::Detect(Vec::with_capacity(32)),
-        limits,
-        partial: Vec::new(),
-        skipping: false,
-        total: 0,
-        truncated: false,
-        lines: 0,
-        skipped: 0,
-        on_line: &mut on_line,
-    };
-    let mut input = io::BufReader::new(xz);
-    if let Err(e) = lzma_rs::xz_decompress(&mut input, &mut sink) {
-        let stopped = matches!(&e, lzma_rs::error::Error::IoError(io) if io.get_ref().is_some_and(|i| i.is::<Stop>()));
-        if !stopped {
-            if let lzma_rs::error::Error::IoError(io) = &e
-                && io.get_ref().is_some_and(|i| i.is::<Error>())
-            {
-                return Err(Error::ColumnsTooLarge(limits.max_columns_body));
-            }
-            return Err(Error::Xz(e.to_string()));
-        }
-    }
-    // a body shorter than the magic
-    if let Mode::Detect(head) = &mut sink.mode {
-        let head = std::mem::take(head);
-        let _ = sink.decide(head);
-    }
-    let format = match std::mem::replace(&mut sink.mode, Mode::Text) {
-        Mode::Columns(body) => {
+    match unpack(xz, limits, &mut on_line)? {
+        Unpacked::Text(summary) => Ok(summary),
+        Unpacked::Columns(body, limits) => {
             let max = limits.max_line;
             let (mut lines, mut skipped) = (0u64, 0u64);
             let whole = columns::decode_until(&body, limits.max_frames, |l| {
@@ -284,15 +260,136 @@ pub fn read_log_while(xz: &[u8], limits: Limits, mut on_line: impl FnMut(&[u8]) 
                 }
                 true
             })?;
-            return Ok(Summary { format: Format::Columns, lines, skipped_long_lines: skipped, truncated: !whole });
+            Ok(Summary { format: Format::Columns, lines, skipped_long_lines: skipped, truncated: !whole })
         }
+    }
+}
+
+/// [`read_log_while`] with every line read ([`Line::parse`]): the same lines in the same order and the same
+/// summary. A columns log's frames are made straight from its columns, without the text line in between (a frame
+/// is what [`Line::parse`] gives for the line it stands for: a key that is not `can<n> <id>` goes through the
+/// text).
+pub fn read_lines_while(xz: &[u8], limits: Limits, mut on: impl FnMut(&Line<'_>) -> bool) -> Result<Summary, Error> {
+    match unpack(xz, limits, &mut |l| on(&Line::parse(l)))? {
+        Unpacked::Text(summary) => Ok(summary),
+        Unpacked::Columns(body, limits) => {
+            let max = limits.max_line;
+            let (mut lines, mut skipped) = (0u64, 0u64);
+            // each key read once: the interface, id and kind of id of its frames, or none (then by the text)
+            let mut keys: Vec<Option<Option<(u8, u32, bool)>>> = Vec::new();
+            let mut text = Vec::with_capacity(160);
+            let whole = columns::parts_until(&body, limits.max_frames, |p| match p {
+                columns::Part::Note(l) => {
+                    if l.len() > max {
+                        skipped += 1;
+                    } else if !l.is_empty() {
+                        lines += 1;
+                        return on(&Line::parse(l));
+                    }
+                    true
+                }
+                columns::Part::Frame { time_us, key, text: k, data } => {
+                    if columns::frame_line_len(time_us, k, data) > max {
+                        skipped += 1;
+                        return true;
+                    }
+                    lines += 1;
+                    if keys.len() <= key {
+                        keys.resize(key + 1, None);
+                    }
+                    let known = *keys[key].get_or_insert_with(|| line::frame_key(k));
+                    match known {
+                        Some((bus, id, extended)) if data.len() <= 64 => {
+                            let mut f = Frame { time_us, bus, id, extended, len: data.len() as u8, data: [0u8; 64] };
+                            f.data[..data.len()].copy_from_slice(data);
+                            on(&Line::Frame(f))
+                        }
+                        _ => {
+                            columns::frame_line(&mut text, time_us, k, data);
+                            on(&Line::parse(&text))
+                        }
+                    }
+                }
+            })?;
+            Ok(Summary { format: Format::Columns, lines, skipped_long_lines: skipped, truncated: !whole })
+        }
+    }
+}
+
+/// [`read_lines_while`] to the end.
+pub fn read_lines(xz: &[u8], limits: Limits, mut on: impl FnMut(&Line<'_>)) -> Result<Summary, Error> {
+    read_lines_while(xz, limits, |l| {
+        on(l);
+        true
+    })
+}
+
+/// What [`unpack`] found.
+enum Unpacked {
+    /// Candump text: its lines were given, this is its summary.
+    Text(Summary),
+    /// A columns log: its body (nothing was given yet) and the limits for its size.
+    Columns(Vec<u8>, Limits),
+}
+
+/// Unpacks a log, giving a text log's lines as they come; a columns log's body is handed back whole.
+fn unpack(xz: &[u8], limits: Limits, on_line: &mut dyn FnMut(&[u8]) -> bool) -> Result<Unpacked, Error> {
+    let limits = limits.for_packed(xz.len());
+    let mut sink = Sink {
+        mode: Mode::Detect(Vec::with_capacity(32)),
+        limits,
+        partial: Vec::new(),
+        skipping: false,
+        total: 0,
+        truncated: false,
+        lines: 0,
+        skipped: 0,
+        on_line,
+    };
+    // (unpacked a piece at a time: the reader holds the xz window, the sink above takes each piece as it comes)
+    let mut reader = lzma_rust2::XzReader::new_mem_limit(xz, false, XZ_MAX_WINDOW_KIB);
+    let mut piece = vec![0u8; 64 << 10];
+    loop {
+        let n = match io::Read::read(&mut reader, &mut piece) {
+            Ok(0) => {
+                // one stream and nothing after it, as before
+                if !reader.into_inner().is_empty() {
+                    return Err(Error::Xz("data after the xz stream".into()));
+                }
+                break;
+            }
+            Ok(n) => n,
+            Err(e) => return Err(Error::Xz(e.to_string())),
+        };
+        if let Err(e) = sink.write_all(&piece[..n]) {
+            if e.get_ref().is_some_and(|i| i.is::<Stop>()) {
+                break;
+            }
+            if e.get_ref().is_some_and(|i| i.is::<Error>()) {
+                return Err(Error::ColumnsTooLarge(limits.max_columns_body));
+            }
+            return Err(Error::Xz(e.to_string()));
+        }
+    }
+    // a body shorter than the magic
+    if let Mode::Detect(head) = &mut sink.mode {
+        let head = std::mem::take(head);
+        let _ = sink.decide(head);
+    }
+    let format = match std::mem::replace(&mut sink.mode, Mode::Text) {
+        Mode::Columns(body) => return Ok(Unpacked::Columns(body, limits)),
         _ => Format::Candump,
     };
     if !sink.skipping && !sink.partial.is_empty() && !sink.truncated {
         let rest = std::mem::take(&mut sink.partial);
         sink.line(&rest);
     }
-    Ok(Summary { format, lines: sink.lines, skipped_long_lines: sink.skipped, truncated: sink.truncated })
+    Ok(Unpacked::Text(Summary {
+        format,
+        lines: sink.lines,
+        skipped_long_lines: sink.skipped,
+        truncated: sink.truncated,
+    }))
 }
 
 /// Unpacks a columns or candump log to its candump text (LF after each line), as SMO's reference decoder does.

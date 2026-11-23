@@ -111,3 +111,77 @@ fn feeding_frames_gives_what_every_decoded_signal_gives() {
     }
     assert!(n > 100 && samples > 5_000, "{n} logs, {samples} samples");
 }
+
+/// What [`logfmt::read_lines_while`] gives (a columns log's frames made straight from the columns) is what
+/// [`logfmt::Line::parse`] gives for every line of [`logfmt::read_log_while`], with the same summary: a made-up
+/// day in both formats, and columns bodies with keys and lines of every odd kind, at several line limits and
+/// stopped early.
+#[test]
+fn lines_read_straight_from_columns_are_the_lines_parsed_from_text() {
+    fn both(xz: &[u8], limits: logfmt::Limits, stop_after: usize) -> usize {
+        let mut by_text = Vec::new();
+        let a = logfmt::read_log_while(xz, limits, |l| {
+            by_text.push(format!("{:?}", logfmt::Line::parse(l)));
+            by_text.len() < stop_after
+        });
+        let mut straight = Vec::new();
+        let b = logfmt::read_lines_while(xz, limits, |l| {
+            straight.push(format!("{l:?}"));
+            straight.len() < stop_after
+        });
+        assert_eq!(by_text, straight);
+        assert_eq!(a.map_err(|e| e.to_string()), b.map_err(|e| e.to_string()));
+        straight.len()
+    }
+    let mut n = 0;
+    for formats in [synth::Formats::Candump, synth::Formats::Columns] {
+        for log in synth::Scenario::new(3).days(1).with_trouble(true).formats(formats).logs() {
+            n += both(&log.bytes, logfmt::Limits::default(), usize::MAX);
+        }
+    }
+    assert!(n > 100_000, "{n}");
+    let data64 = "AB".repeat(64);
+    let long_key = format!("can0 123{}", " x".repeat(28));
+    let odd: Vec<String> = vec![
+        "# canbridge v1 app=test".into(),
+        "(1767225600.000001) can0 123#".into(),
+        "(1767225600.000002) can1 7FF#0102030405060708".into(),
+        "(1767225600.000003) can0 1ABCDEF0#DEADBEEF".into(),
+        "(1767225600.000004) can0 1abcdef0#00".into(),
+        "(1767225600.000005) can255 123#00".into(),
+        "(1767225600.000006) can256 123#00".into(),
+        "(1767225600.000007) can007 123#00".into(),
+        "(1767225600.000008) vcan0 123#00".into(),
+        "(1767225600.000009) can0 12#00".into(),
+        "(1767225600.000010) can0 1234#00".into(),
+        "(1767225600.000011) can0 12G#00".into(),
+        "(1767225600.000012) can0  123#00".into(),
+        "(1767225600.000013) can0 123 #00".into(),
+        "(1767225600.000014) can0#00".into(),
+        "(1767225600.000015) can 123#00".into(),
+        "(1767225600.000016) can0 123) x#00".into(),
+        format!("(1767225600.000017) can0 123#{data64}"),
+        format!("(1767225600.000018) {long_key}#{data64}"),
+        "# clock wall=1767225600.000000 mono=5000000000".into(),
+        "(0.000000) can0 123#FF".into(),
+        "(999999999999.999999) can3 04F#0011".into(),
+        "(1767225601.000000) can0 123#0A".into(),
+        "".into(),
+        "# dropped 3 frames".into(),
+        "(1767225602.000000) can0 123#0B".into(),
+    ];
+    let body = synth::columns::encode(odd.iter().map(|l| l.as_bytes()));
+    let xz = synth::xz::pack(&body, 6).unwrap();
+    // (the body holds these as frames: the odd keys are keys, not notes)
+    let mut text = Vec::new();
+    logfmt::read_log(&xz, logfmt::Limits::default(), |l| text.push(String::from_utf8(l.to_vec()).unwrap())).unwrap();
+    assert_eq!(text, odd.iter().filter(|l| !l.is_empty()).cloned().collect::<Vec<_>>());
+    for max_line in [512, 200, 60, 40, 30, 0] {
+        for stop_after in [usize::MAX, 1, 2, 5, 19] {
+            let limits = logfmt::Limits { max_line, ..logfmt::Limits::default() };
+            both(&xz, limits, stop_after);
+        }
+    }
+    let few = logfmt::Limits { max_frames: 5, ..logfmt::Limits::default() };
+    both(&xz, few, usize::MAX);
+}

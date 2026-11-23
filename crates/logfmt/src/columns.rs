@@ -123,6 +123,53 @@ fn next_key(r: &mut Reader<'_>, key_count: usize) -> Result<usize, Error> {
 /// [`decode`] with at most `max_frames` frames (more is refused before anything is allocated for them), stopping
 /// early when `on_line` returns false. `Ok(false)`: stopped early.
 pub fn decode_until(body: &[u8], max_frames: u64, mut on_line: impl FnMut(&[u8]) -> bool) -> Result<bool, Error> {
+    let mut line = Vec::with_capacity(160);
+    parts_until(body, max_frames, |p| match p {
+        Part::Note(l) => on_line(l),
+        Part::Frame { time_us, text, data, .. } => {
+            frame_line(&mut line, time_us, text, data);
+            on_line(&line)
+        }
+    })
+}
+
+/// One line of a columns body, before it is put back into text.
+pub(crate) enum Part<'a> {
+    /// A line that is not a frame, as it was written.
+    Note(&'a [u8]),
+    /// A frame: its time, its key (`can0 123`: the interface and the id, as the line has them; `key` is its place
+    /// among the body's keys) and its data.
+    Frame { time_us: u64, key: usize, text: &'a [u8], data: &'a [u8] },
+}
+
+/// The candump line of a frame: `(seconds.microseconds) key#DATA`.
+pub(crate) fn frame_line(line: &mut Vec<u8>, time_us: u64, key: &[u8], data: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    line.clear();
+    line.push(b'(');
+    line.extend_from_slice((time_us / 1_000_000).to_string().as_bytes());
+    line.extend_from_slice(format!(".{:06}) ", time_us % 1_000_000).as_bytes());
+    line.extend_from_slice(key);
+    line.push(b'#');
+    for &v in data {
+        line.push(HEX[usize::from(v >> 4)]);
+        line.push(HEX[usize::from(v & 15)]);
+    }
+}
+
+/// How long [`frame_line`]'s line is.
+pub(crate) fn frame_line_len(time_us: u64, key: &[u8], data: &[u8]) -> usize {
+    let mut secs = time_us / 1_000_000;
+    let mut digits = 1;
+    while secs >= 10 {
+        secs /= 10;
+        digits += 1;
+    }
+    1 + digits + 9 + key.len() + 1 + 2 * data.len()
+}
+
+/// [`decode_until`] before the frames are put back into text: every line in order, a frame as its parts.
+pub(crate) fn parts_until(body: &[u8], max_frames: u64, mut on: impl FnMut(Part<'_>) -> bool) -> Result<bool, Error> {
     if !is_columns(body) {
         return Err(Error::Malformed("not a columns log"));
     }
@@ -220,14 +267,12 @@ pub fn decode_until(body: &[u8], max_frames: u64, mut on_line: impl FnMut(&[u8])
     }
     drop(order);
 
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut line = Vec::with_capacity(160);
     let mut note = 0usize;
     let (mut tr, mut kr) = (Reader { body, pos: times_at }, Reader { body, pos: keys_at });
     let mut t: i128 = 0;
     for f in 0..=frames {
         while note < notes.len() && notes[note].0 == f as u64 {
-            if !on_line(notes[note].1) {
+            if !on(Part::Note(notes[note].1)) {
                 return Ok(false);
             }
             note += 1;
@@ -235,20 +280,10 @@ pub fn decode_until(body: &[u8], max_frames: u64, mut on_line: impl FnMut(&[u8])
         if f == frames {
             break;
         }
-        line.clear();
-        let t = next_time(&mut tr, &mut t)?;
+        let time_us = next_time(&mut tr, &mut t)?;
         let k = next_key(&mut kr, key_count)?;
-        line.push(b'(');
-        line.extend_from_slice((t / 1_000_000).to_string().as_bytes());
-        line.extend_from_slice(format!(".{:06}) ", t % 1_000_000).as_bytes());
-        line.extend_from_slice(keys[k]);
-        line.push(b'#');
         let a = at[f] as usize;
-        for &v in &data[a..a + usize::from(lens[f])] {
-            line.push(HEX[usize::from(v >> 4)]);
-            line.push(HEX[usize::from(v & 15)]);
-        }
-        if !on_line(&line) {
+        if !on(Part::Frame { time_us, key: k, text: keys[k], data: &data[a..a + usize::from(lens[f])] }) {
             return Ok(false);
         }
     }

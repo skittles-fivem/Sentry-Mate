@@ -380,6 +380,37 @@ as candump text), read one after the other on one core, the best of three runs. 
   about 1 MB) and logs of different cars are already read at once (one car's are read one after the other: each
   changes the car's timeline).
 
+
+### After that: the two things left
+
+Both of the things left above are now done, for columns logs (what the bridge sends by default):
+
+| An hour of driving (60 logs) | first | after the signals | now |
+|---|---:|---:|---:|
+| columns: unpack | 354 ms | 385 ms | 249 ms |
+| columns: read whole into 3,566 samples | 922 ms (794 ns a frame) | 600 ms | 341 ms (294 ns a frame) |
+| candump: read whole | 1,173 ms | 721 ms | 646 ms |
+
+1. **A columns log's frames are made straight from its columns** (`logfmt::read_lines`), without the text line in
+   between and its parsing. A frame is made that way only when its key reads as `can<n> <id>` (asked of the
+   line parser itself, once per key); any other key, and every line that is not a frame, goes through the text
+   as before. `decode_speed.rs`'s `lines_read_straight_from_columns_are_the_lines_parsed_from_text` reads a
+   made-up day in both formats and a body of odd keys and lines both ways (at six line limits, stopped early at
+   five places): the same lines, the same summary.
+2. **The unpacker is `lzma-rust2`**, the one a backup is imported with (no unsafe code without its `optimization`
+   feature, which is off), with the same limit on the xz window (64 MiB, xz's level 9; the bridge uses level 6).
+   Twice as fast on columns bodies, the same on candump text. `logfmt/tests/unpackers.rs` reads the same logs with
+   both unpackers: whole logs at four levels give the same bytes; of 4,222 damaged ones (cut short anywhere, a
+   byte changed, bytes after the stream) both refuse the same ones, but for 13 where a byte was changed that the
+   unpacker before never looked at (the range coder's first byte, always 0, and its last bytes): it gave the whole
+   text, this one refuses the log. No packer writes such a stream, and a stored log cannot come to hold one (it is
+   sealed, and was checked against its hash when it came). A log that cannot be unpacked is left out with the
+   reason as its text, and that text now is this unpacker's.
+
+The engine's workers (logs of different cars worked on at once) were already sized from the machine: half its
+cores, four at most. One car's logs are worked on one after the other by design, so more workers help a server
+with several cars catching up at once and nothing else; left as it is.
+
 ## CAN logs through the engine, and a car rebuilt whole
 
 **How it is measured.** `PERF_DAYS=30 cargo test --release -p sentry-mate measure_engine -- --ignored --nocapture`
