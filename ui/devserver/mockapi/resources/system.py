@@ -53,7 +53,7 @@ def patch_settings(req):
     req.version_check(cur["version"])
     bad, rule = {}, {}
     known = ("version", "units", "range", "car_order", "geocode", "tiles", "release_check", "outside_links",
-             "outbound", "host_names", "default_time_zone", "import_gap_fill")
+             "outbound", "host_names", "default_time_zone", "import_gap_fill", "full_rebuild")
     for k in body:
         if k not in known:
             bad[k] = "Unknown field."
@@ -117,6 +117,7 @@ def patch_settings(req):
     sub("outside_links", {"maps": bool, "release_notes": bool})
     sub("outbound", {"proxy": "str?"})
     sub("import_gap_fill", {"enabled": bool})
+    sub("full_rebuild", {"auto": bool})
     if "range" in body:
         if body["range"] not in ("rated", "ideal"):
             rule["range"] = "Must be rated or ideal."
@@ -389,6 +390,8 @@ def notices(req):
         items += teslafi_notices(req)
         from .teslamate import notices as teslamate_notices
         items += teslamate_notices(req)
+        from .fullrebuild import notices as full_notices
+        items += full_notices(req)
     return {"items": items, "next": None}
 
 
@@ -615,6 +618,9 @@ def car_health(req):
 
 def rebuild(req):
     st = req.store
+    from .fullrebuild import status as full_status
+    if full_status(req)["state"] == "running":
+        raise ApiError(409, "full_rebuild_running", "A full rebuild is under way: it makes the whole history again.")
     body = req.json(required=False)
     bad = {k: "Unknown field." for k in body if k not in ("from_ms", "to_ms")}
     for k in ("from_ms", "to_ms"):

@@ -113,6 +113,8 @@ class Store:
         from .resources import teslamate
         teslamate.seed(self, now)  # the local TeslaMate input: MQTT on, the database catch-up off, two cars
         teslamate.seed_trouble(self, getattr(cfg, "teslamate_trouble", "none"), now)  # --teslamate-trouble
+        from .resources import fullrebuild
+        fullrebuild.seed(self, cfg, now)  # --full-rebuild: none, running, failed or offered
 
     # ------------------------------------------------------------ seeding
     def seed_accounts(self, now):

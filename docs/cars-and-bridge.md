@@ -276,6 +276,26 @@ setting (Settings → Server: `import_gap_fill`, on by default) until it sets it
 span (`GET /cars/{car}/overlaps`, from the Import page or the Timeline). See [Which history is
 shown](#which-history-is-shown).
 
+## When the history is wrong: a full rebuild
+
+The server works out drives, charges, states, visits, positions and the battery figures from the stored CAN logs
+and the Tesla API, TeslaFi and TeslaMate data it keeps, and redoes a part of it by itself when a late log or a new
+setting changes it. When the history is wrong for another reason, a **full rebuild** makes all of it again: Data
+health (one car) or Settings: Server and access (every car), "Full rebuild", with your password. Every stored log is
+decoded again with the server's DBC sets and decoder, the APIs' stored data is fused in again, and every kept page
+value is dropped. It is built beside the history in use (in `.full-rebuild` in the data folder, which a move or an
+export never takes along; it needs about as much free disk as the car's history without its CAN samples) and each
+car switches to it when it is done: until then the pages show the old history, and a failure, a cancel or a restart
+before the switch leaves the old one as it was (a restart carries on with it). The stored logs, their signatures,
+the APIs' data and imports are never changed, and what you entered stays: charge costs, places and prices, typed
+versions and firmware names, drive purposes, car settings, overlap choices, sold status and source order. An import
+is kept as the rows it left (its file is not kept on the server).
+
+The server notes the decoding each car's history was made with. When a newer server decodes the stored logs
+differently (a decoder fix, a corrected DBC signal), it rebuilds those cars fully by itself after its start, with a
+notice; with Settings: Server and access "Rebuild automatically" off, the notice offers it instead. A history made
+before the server noted this is rebuilt once the same way.
+
 ## Which history is shown
 
 A car can have history of the same time from several places: SMO (the CAN Bridge's logs), the Tesla API, a TeslaMate
