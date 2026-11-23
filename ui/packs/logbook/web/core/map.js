@@ -4,7 +4,7 @@
 // settings (GET /api/v1/maps/config, read by shared/maptiles.js): the offline map file Sentry Mate serves
 // (raster, or a Protomaps vector file in a plain style), else the online tile server the owner turned on,
 // else no tiles at all: the paper background with the routes and pins on it, under a "No map tiles yet"
-// note (for an admin, a one-click switch to the satellite map). Tiles that fail show their cause. Nothing else is
+// note (for an admin, a one-click switch to the online map). Tiles that fail show their cause. Nothing else is
 // ever fetched from outside. MapLibre is loaded on first use (vendor/maplibre-gl), with its worker from the
 // same folder. In the dark theme raster tiles are dimmed (not inverted) unless the person chose original
 // colours; the light theme shows the tile server's own colours.

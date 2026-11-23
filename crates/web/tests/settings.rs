@@ -303,10 +303,10 @@ async fn server_settings() {
     let s = r.json();
     assert_eq!(s["host_names"], json!(["car.example", "10.0.0.5"]));
     assert_eq!(s["outbound"]["proxy"], "socks5://proxy.lan:1080");
-    // the custom server first, then the hosts of the styles viewers may switch to (by default satellite and OpenStreetMap)
+    // the custom server first, then the hosts of the styles viewers may switch to (by default OpenStreetMap and satellite)
     assert_eq!(
         t.s.app.tiles(),
-        ["https://tiles.example.org:8443", "https://server.arcgisonline.com", "https://tile.openstreetmap.org"]
+        ["https://tiles.example.org:8443", "https://tile.openstreetmap.org", "https://server.arcgisonline.com"]
             .map(String::from)
             .to_vec()
     );
@@ -532,7 +532,7 @@ async fn network() {
     );
     assert_eq!(
         row("tiles"),
-        json!({ "purpose": "tiles", "host": null, "hosts": [], "preset": "satellite", "enabled": false, "last_used_ms": null }),
+        json!({ "purpose": "tiles", "host": null, "hosts": [], "preset": "osm", "enabled": false, "last_used_ms": null }),
         "tiles are offline by default"
     );
     assert_eq!(row("mqtt"), json!({ "purpose": "mqtt", "host": null, "enabled": false, "last_used_ms": null }));

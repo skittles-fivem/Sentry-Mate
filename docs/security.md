@@ -135,17 +135,18 @@
 ## Map tiles
 
 Online tiles are off by default; Settings → Display and units turns them on and picks the source:
-**Satellite** (Esri World Imagery, `server.arcgisonline.com`, the default, with Esri's transparent place names,
-borders and roads layers from the same host on top unless "Place names and roads" is off), **Satellite, US only**
-(USGS The National Map imagery, `basemap.nationalmap.gov`, public domain, zoom 16 at most), **OpenStreetMap
-standard** (`tile.openstreetmap.org`), **OpenTopoMap** (`tile.opentopomap.org`) or your own `https://` address with
-`{z}`, `{x}` and `{y}`. The ready-made sources are free, need no key and allow a web app to show their tiles with
-light use and their credit on the map (Esri: "Imagery © Esri, Maxar, Earthstar Geographics, and the GIS User
-Community"); each map shows the credit in its corner, never folded away. A server whose admin never picked a source
-(including one still on the old OpenStreetMap default) uses Satellite.
+**OpenStreetMap standard** (`tile.openstreetmap.org`, the default), **Satellite** (Esri World Imagery,
+`server.arcgisonline.com`, with Esri's transparent place names, borders and roads layers from the same host on top
+unless "Place names and roads" is off), **Satellite, US only** (USGS The National Map imagery,
+`basemap.nationalmap.gov`, public domain, zoom 16 at most), **OpenTopoMap** (`tile.opentopomap.org`) or your own
+`https://` address with `{z}`, `{x}` and `{y}`. The ready-made sources are free, need no key and allow a web app to
+show their tiles with light use and their credit on the map (Esri: "Imagery © Esri, Maxar, Earthstar Geographics, and
+the GIS User Community"); each map shows the credit in its corner, never folded away. A server whose admin never
+picked a source (including one still on the old OpenStreetMap default) uses OpenStreetMap standard; a source an admin
+picked is kept.
 
 - **Viewers can switch Map / Satellite** on a map page, among the sources the admin allows ("Maps people can switch
-  to", Satellite and OpenStreetMap by default); each person's pick is remembered for them (`map_style`). Every host
+  to", OpenStreetMap and Satellite by default); each person's pick is remembered for them (`map_style`). Every host
   of the chosen source and of each allowed one is listed in Settings → Integrations → Network ("Every connection",
   the Outbound "Map pictures" row) and allowed in the pages' Content-Security-Policy (`img-src` and `connect-src`),
   and no other.
@@ -165,7 +166,7 @@ Community"); each map shows the credit in its corner, never folded away. A serve
   downloads, the credit "Map data: © OpenStreetMap contributors, SRTM | Map style: © OpenTopoMap (CC-BY-SA)").
 - OpenFreeMap is not offered: it serves vector tiles only, and the packs draw raster tiles.
 - **A map with no tiles says so.** With offline tiles and no map file (a new server), every map shows "No map tiles
-  yet" over its plain background: an admin gets "Use online map (satellite)", which turns the Satellite source on
+  yet" over its plain background: an admin gets "Use the online map", which turns the default source (OpenStreetMap standard) on
   only after a confirm that says what the tile server then sees (each viewer's IP address, this server's
   address and the map area), and "Add an offline map file"; anyone else is told to ask an admin. Tiles that fail
   (403 blocked, 429, unreachable) show a short note with the cause: maps draw tiles as images, which say nothing
