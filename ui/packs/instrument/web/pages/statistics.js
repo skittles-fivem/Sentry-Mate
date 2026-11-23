@@ -52,6 +52,14 @@ const perDistStack = (list) => stack((list || []).filter((x) => x.amount != null
 const moneyCsv = (list) => (list || []).map((x) => `${x.amount ?? x.value} ${x.currency}`).join('; ');
 // money per 100 km or mi: the number in the person's distance unit plus the currency (the unit is in the header)
 const perDistCsv = (list) => (list || []).filter((x) => x.amount != null).map((x) => `${Math.round(convert(x.amount, 'money_per_distance') * 10000) / 10000} ${x.currency}`).join('; ');
+// the total cost of a row: priced plus estimated, per currency (an older server sends only the priced cost)
+const totalOf = (r) => r.cost_total_by_currency || r.cost_by_currency || [];
+const daysOf = (r) => Math.max(1, (r.period_end_ms - r.period_start_ms) / DAY);
+const scaled = (list, f) => (list || []).filter((x) => x.amount != null).map((x) => ({ currency: x.currency, amount: x.amount * f }));
+// the total per 100 km and per day of a row: from the server, else worked out from the row
+const totalPer100 = (r) => r.cost_total_per_100km || ((r.distance_logged_km ?? 0) > 1 ? scaled(totalOf(r), 100 / r.distance_logged_km) : []);
+const totalPerDay = (r) => r.cost_total_per_day || scaled(totalOf(r), 1 / daysOf(r));
+const moneyCsv2 = (list) => (list || []).filter((x) => x.amount != null).map((x) => `${Math.round(x.amount * 100) / 100} ${x.currency}`).join('; ');
 
 // the grouping to use when the address names none: about 30 to 60 rows
 function defaultGroup(period) {
@@ -209,6 +217,15 @@ export async function mount(ctx) {
     : h('span', { class: 'faint', cover: cv }, '0'));
   const twoLine = (main, sub, title = null) => h('span', { class: 'cell-text cell-num', title },
     h('span', { class: 'main' }, main), sub ? h('span', { class: 'sub' }, sub) : null);
+  // the total cost, then what part of it is estimated or how many charges have no price
+  const costCell = (r) => {
+    const main = moneyStack(totalOf(r));
+    if (!main) return h('span', { class: 'faint' }, r.charges ? 'no price' : '—');
+    const est = (r.cost_estimated_by_currency || []).filter((x) => x.amount);
+    const sub = est.length ? `est. ${est.map((x) => formatMoney(x.amount, x.currency)).join(', ')}`
+      : r.charges_priced != null && r.charges && r.charges_priced < r.charges ? `${formatNumber(r.charges_priced)} of ${formatNumber(r.charges)} priced` : null;
+    return h('span', { class: 'cell-text cell-num' }, h('span', { class: 'main' }, main), sub ? h('span', { class: 'sub' }, sub) : null);
+  };
   const completeCell = (r) => {
     const c = r.completeness || {};
     const bits = [];
@@ -254,12 +271,18 @@ export async function mount(ctx) {
       render: (r) => countLink(r.charges, 'charges', r, 'charges', 'statistics.link.charges'), csv: { label: 'Charges', value: (r) => r.charges } },
     { key: 'per_charge', label: 'Per charge', num: true, sort: true, value: (r) => r.energy_per_charge_kwh, cover: 'statistics.col.avg_energy_per_charge', title: 'Energy added per charge, on average',
       render: (r) => format(r.energy_per_charge_kwh, 'energy'), csv: column('Energy per charge', 'energy_per_charge_kwh', 'energy') },
-    { key: 'cost', label: 'Cost', num: true, sort: true, value: (r) => r.cost_by_currency?.[0]?.amount ?? null, cover: 'statistics.col.costs', title: 'Charging costs, summed per currency (never added across currencies)',
-      render: (r) => moneyStack(r.cost_by_currency) || h('span', { class: 'faint' }, r.charges ? 'no price' : '—'), csv: { label: 'Charging cost (amount and currency)', value: (r) => moneyCsv(r.cost_by_currency) } },
+    { key: 'cost', label: 'Cost', num: true, sort: true, value: (r) => totalOf(r)[0]?.amount ?? null, cover: 'statistics.col.costs', title: 'Total charging cost: priced charges plus estimates, summed per currency (never added across currencies)',
+      render: costCell, csv: { label: 'Priced cost (amount and currency)', value: (r) => moneyCsv(r.cost_by_currency) } },
+    { key: 'n_priced', label: 'Charges priced', cls: 'st-hide', render: null, csv: (r) => r.charges_priced },
+    { key: 'n_est', label: 'Charges estimated', cls: 'st-hide', render: null, csv: (r) => r.charges_estimated },
+    { key: 'cost_est', label: 'Estimated cost (amount and currency)', cls: 'st-hide', render: null, csv: (r) => moneyCsv(r.cost_estimated_by_currency) },
+    { key: 'cost_total', label: 'Total cost (amount and currency)', cls: 'st-hide', render: null, csv: (r) => moneyCsv(totalOf(r)) },
+    { key: 'total_p100', label: `Total cost per 100 ${unitLabel('distance')} (amount and currency)`, cls: 'st-hide', render: null, csv: (r) => perDistCsv(totalPer100(r)) },
+    { key: 'total_day', label: 'Total cost per day (amount and currency)', cls: 'st-hide', render: null, csv: (r) => moneyCsv2(totalPerDay(r)) },
     { key: 'ppk', label: 'Per kWh', num: true, cover: 'statistics.col.cost_per_kwh', title: 'Cost over the energy it paid for: grid energy for AC, energy added for DC',
       render: (r) => priceStack(r.price_per_kwh) || h('span', { class: 'faint' }, '—'), csv: { label: 'Price per kWh (amount and currency)', value: (r) => moneyCsv(r.price_per_kwh) } },
-    { key: 'p100', label: `Per 100 ${unitLabel('distance')}`, num: true, cover: 'statistics.col.cost_per_distance', title: 'Charging cost over the logged distance',
-      render: (r) => perDistStack(r.cost_per_100km) || h('span', { class: 'faint' }, '—'), csv: { label: `Cost per 100 ${unitLabel('distance')} (amount and currency)`, value: (r) => perDistCsv(r.cost_per_100km) } },
+    { key: 'p100', label: `Per 100 ${unitLabel('distance')}`, num: true, cover: 'statistics.col.cost_per_distance', title: 'Priced charging cost over the logged distance',
+      render: (r) => perDistStack(r.cost_per_100km) || h('span', { class: 'faint' }, '—'), csv: { label: `Priced cost per 100 ${unitLabel('distance')} (amount and currency)`, value: (r) => perDistCsv(r.cost_per_100km) } },
     { key: 'net', label: 'Net', num: true, sort: true, value: (r) => r.net_wh_per_km, cover: 'statistics.col.consumption_net', title: 'Net consumption: energy used while driving over the logged distance',
       render: (r) => format(r.net_wh_per_km, 'efficiency'), csv: column('Net consumption', 'net_wh_per_km', 'efficiency') },
     { key: 'gross', label: 'Gross', num: true, sort: true, value: (r) => r.gross_wh_per_km, cover: 'statistics.col.consumption_gross', title: 'Gross consumption: driving plus parked use, over the logged distance. Exact from the pack’s counters.',
@@ -348,16 +371,24 @@ export async function mount(ctx) {
     const charges = sum(rows.map((r) => r.charges));
     const tW = sum(rows.map((r) => (r.outside_avg_c != null ? r.outside_avg_c * (r.time_driven_ms || 0) : 0)));
     const tMs = sum(rows.map((r) => (r.outside_avg_c != null ? r.time_driven_ms || 0 : 0)));
-    const cost = new Map(), basis = new Map();
+    // the total cost per currency (priced plus estimated), never added across currencies
+    const total = new Map(), est = new Map();
     for (const r of rows) {
-      for (const c of r.cost_by_currency || []) cost.set(c.currency, (cost.get(c.currency) || 0) + (c.amount || 0));
-      for (const p of r.price_per_kwh || []) {
-        const amt = (r.cost_by_currency || []).find((c) => c.currency === p.currency)?.amount;
-        if (amt && p.value) basis.set(p.currency, (basis.get(p.currency) || 0) + amt / p.value);
-      }
+      for (const c of totalOf(r)) total.set(c.currency, (total.get(c.currency) || 0) + (c.amount || 0));
+      for (const c of r.cost_estimated_by_currency || []) if (c.amount) est.set(c.currency, (est.get(c.currency) || 0) + c.amount);
     }
-    const tagCur = cost.size > 1 || basis.size > 1;
-    const costList = [...cost].map(([currency, amount]) => ({ currency, amount: Math.round(amount * 100) / 100 }));
+    const tagCur = total.size > 1;
+    const costList = [...total].map(([currency, amount]) => ({ currency, amount: Math.round(amount * 100) / 100 }));
+    const curText = (amount, c, kind = 'money') => `${format({ amount, currency: c }, kind)}${tagCur ? ` ${c}` : ''}`;
+    const days = Math.max(1, sum(rows.map((r) => (r.period_end_ms - r.period_start_ms) / DAY)));
+    const priced = rows.some((r) => r.charges_priced != null) ? sum(rows.map((r) => r.charges_priced)) : null;
+    const costExplain = [
+      priced != null ? `priced ${formatNumber(priced)} of ${formatNumber(charges)} ${charges === 1 ? 'charge' : 'charges'}` : 'per currency, never added across',
+      est.size ? `${[...est].map(([c, a]) => curText(a, c)).join(', ')} estimated` : null,
+      logged > 1 ? costList.map((x) => curText((x.amount / logged) * 100, x.currency, 'money_per_distance')).join(', ') : null,
+      `${costList.map((x) => curText(x.amount / days, x.currency)).join(', ')} per day`,
+    ].filter(Boolean).join(' · ');
+    const odoDropped = sum(rows.map((r) => r.completeness?.odometer_dropped));
     const net = logged > 0.1 ? (used / logged) * 1000 : null;
     const gross = logged > 0.1 ? ((used + standing) / logged) * 1000 : null;
     let span = 0, rec = 0, unknown = 0, dropped = 0, imported = 0, open = 0;
@@ -372,15 +403,14 @@ export async function mount(ctx) {
     replace(totalsSlot, panel({ title: 'Totals for the period', icon: 'stats', side: h('span', { class: 'faint st-side' }, `${period.label}${across}`) },
       h('div', { class: 'st-totals' },
         metric('Distance', odo.length ? sum(odo) : null, 'distance', { size: 'lg', why: none ? 'No data in this period' : 'No odometer reading',
-          explain: `by odometer; ${format(logged, 'distance')} in logged drives${odo.length && sum(odo) - logged > 1 ? `, ${format(sum(odo) - logged, 'distance')} not logged` : ''}` }),
+          explain: `by odometer; ${format(logged, 'distance')} in logged drives${odo.length && sum(odo) - logged > 1 ? `, ${format(sum(odo) - logged, 'distance')} not logged` : ''}${odoDropped > 0 ? `; ${formatNumber(odoDropped)} odometer ${odoDropped === 1 ? 'reading' : 'readings'} left out` : ''}` }),
         metric('Time driving', none ? null : ms, 'duration', { why: 'No data in this period', explain: `over ${formatNumber(drives)} ${drives === 1 ? 'drive' : 'drives'}` }),
         metric('Energy used', none ? null : used + standing, 'energy', { why: 'No data in this period', explain: `${format(used, 'energy')} driving, ${format(standing, 'energy')} parked` }),
         metric('Energy added', none ? null : added, 'energy', { why: 'No data in this period', explain: `into the pack over ${formatNumber(charges)} ${charges === 1 ? 'charge' : 'charges'}${grid ? `; ${format(grid, 'energy')} from the grid (AC)` : ''}` }),
         metric('Net consumption', net, 'efficiency', { why: 'Not enough distance', explain: 'driving energy over the logged distance' }),
         metric('Gross consumption', gross, 'efficiency', { why: 'Not enough distance', explain: net && gross ? `with parked use: ${pctText(((gross - net) / net) * 100, 0)} on top of driving` : 'driving and parked energy over the logged distance' }),
         metric('Outside while driving', tMs ? tW / tMs : null, 'temperature', { why: 'No drive', explain: 'average, weighted by driving time' }),
-        metric('Charging cost', costList.length ? moneyStack(costList) : null, null, { why: charges ? 'No charge has a price' : 'No charge', explain: costList.length
-          ? `per currency, never added across${[...basis].length ? `; ${[...basis].map(([c, b]) => `${format({ amount: cost.get(c) / b, currency: c }, 'price_energy')}${tagCur ? ` ${c}` : ''}`).join(', ')} on average` : ''}` : 'per currency' }),
+        metric('Total cost', costList.length ? moneyStack(costList) : null, null, { why: charges ? 'No charge has a price' : 'No charge', explain: costList.length ? costExplain : 'per currency' }),
         metric('Data recorded', span ? (rec / span) * 100 : null, 'percent', { digits: 1, why: 'No data in this period', explain: [unknown ? `${formatDuration(unknown)} unknown` : 'no unknown time', dropped ? `${formatNumber(dropped)} dropped ${dropped === 1 ? 'stretch' : 'stretches'}` : null, open ? `${formatNumber(open)} still open` : null, imported ? `${formatNumber(imported)} imported rows (estimated energy)` : null].filter(Boolean).join(' · ') }))));
   }
 

@@ -53,6 +53,12 @@ const addMoney = (rows, key, f = 'amount') => {
   for (const r of rows) for (const x of r[key] || []) if (x && x[f] != null) by.set(x.currency, (by.get(x.currency) || 0) + x[f]);
   return [...by].sort((a, b) => a[0].localeCompare(b[0])).map(([currency, amount]) => ({ currency, amount }));
 };
+// The total cost of a row: priced plus estimated, per currency (an older server sends only the priced cost).
+const totalOf = (r) => r.cost_total_by_currency || r.cost_by_currency || [];
+const daysOf = (r) => Math.max(1, (r.period_end_ms - r.period_start_ms) / DAY);
+const scaled = (list, f) => (list || []).filter((x) => x && x.amount != null).map((x) => ({ currency: x.currency, amount: x.amount * f }));
+const totalPer100 = (r) => r.cost_total_per_100km || ((r.distance_logged_km || 0) > 1 ? scaled(totalOf(r), 100 / r.distance_logged_km) : []);
+const totalPerDay = (r) => r.cost_total_per_day || scaled(totalOf(r), 1 / daysOf(r));
 // A blank consumption figure says why: no distance, or too little to divide by.
 const perKm = (kwh, km) => (km > 0.1 ? (kwh / km) * 1000 : null);
 /** Overhead: the share of all energy (gross) that did not go to driving, 1 - net / gross; 0 to 100 %. */
@@ -249,14 +255,26 @@ export async function mount(ctx) {
     const drives = sum(whole, (r) => r.drives), charges = sum(whole, (r) => r.charges);
     const span = sum(whole, (r) => r.period_end_ms - r.period_start_ms), unknown = sum(whole, (r) => r.completeness && r.completeness.unknown_ms);
     const dropped = sum(whole, (r) => r.completeness && r.completeness.dropped_stretches);
-    const cost = addMoney(whole, 'cost_by_currency');
+    const cost = addMoney(whole.map((r) => ({ t: totalOf(r) })), 't');
+    const est = addMoney(whole, 'cost_estimated_by_currency').filter((x) => x.amount);
+    const priced = whole.some((r) => r.charges_priced != null) ? sum(whole, (r) => r.charges_priced) : null;
+    const days = Math.max(1, sum(whole, (r) => (r.period_end_ms - r.period_start_ms) / DAY));
+    const many = mixed(cost);
+    const curT = (amount, c, kind = 'money') => format({ amount, currency: c }, kind) + (many ? ` ${c}` : '');
+    const costNote = cost.length ? [
+      priced != null ? `priced ${formatNumber(priced)} of ${tn(charges, '{n} charge', '{n} charges')}` : 'per currency, never added across',
+      est.length ? `${moneyText(est)} estimated` : null,
+      logged > 1 ? cost.map((x) => curT((x.amount / logged) * 100, x.currency, 'money_per_distance')).join(' + ') : null,
+      `${cost.map((x) => curT(x.amount / days, x.currency)).join(' + ')} per day`,
+    ].filter(Boolean).join(' · ') : 'per currency, never added across';
+    const odoDropped = sum(whole, (r) => r.completeness && r.completeness.odometer_dropped);
     const why = whole.length ? 'nothing driven' : 'no data in the period';
     replace(totalsBox, h('div', { class: 'figs st-totals', 'aria-label': 'Totals for the period' },
-      figure('Distance', q(whole.length ? km : null, 'distance', { why }), whole.length ? [`by odometer; ${format(logged, 'distance')} on logged drives`, km - logged > 0.5 ? `, ${format(km - logged, 'distance')} in gaps` : ''] : null),
+      figure('Distance', q(whole.length ? km : null, 'distance', { why }), whole.length ? [`by odometer; ${format(logged, 'distance')} on logged drives`, km - logged > 0.5 ? `, ${format(km - logged, 'distance')} in gaps` : '', odoDropped > 0 ? `; ${tn(odoDropped, '{n} odometer reading', '{n} odometer readings')} left out` : ''] : null),
       figure('Time driven', drives ? formatDuration(sum(whole, (r) => r.time_driven_ms)) : q(null, 'duration', { why: 'no drive' }), drives ? tn(drives, 'over {n} drive', 'over {n} drives') : null),
       figure('Energy added', q(charges ? sum(whole, (r) => r.energy_added_kwh) : null, 'energy', { why: 'no charge' }),
         charges ? `${tn(charges, '{n} charge', '{n} charges')}; ${format(sum(whole, (r) => r.energy_grid_kwh), 'energy')} metered from the grid (AC)` : 'into the pack'),
-      figure('Cost', cost.length ? moneyText(cost) : q(null, 'money', { why: charges ? 'no charge has a price' : 'no charge' }), 'per currency, never added across'),
+      figure('Total cost', cost.length ? moneyText(cost) : q(null, 'money', { why: charges ? 'no charge has a price' : 'no charge' }), costNote),
       figure('Net consumption', q(perKm(used, logged), 'efficiency', { why }), drives ? `driving only: ${format(used, 'energy')} over ${format(logged, 'distance')} of logged drives` : null),
       figure('Gross consumption', q(perKm(used + standing, logged), 'efficiency', { why }), drives ? `with ${format(standing, 'energy')} used while parked` : null),
       figure('Recorded', recorded(span ? (100 * (span - unknown)) / span : null, unknown, 'no time in the period'),
@@ -312,6 +330,12 @@ export async function mount(ctx) {
       flags.length ? h('span', { class: 'st-flags' }, flags) : null);
   }
   const zeroText = (r, what) => h('span', { class: 'st-quiet' }, what);
+  // under the total: the estimated part, else how many charges have a price
+  const costSub = (r) => {
+    const est = (r.cost_estimated_by_currency || []).filter((x) => x && x.amount);
+    if (est.length) return `est. ${moneyText(est)}`;
+    return r.charges_priced != null && r.charges && r.charges_priced < r.charges && totalOf(r).length ? `${formatNumber(r.charges_priced)} of ${formatNumber(r.charges)} priced` : '';
+  };
 
   function drawTable(rows, g) {
     setTableNote(g);
@@ -347,13 +371,14 @@ export async function mount(ctx) {
           h('span', { class: 'cell-sub' }, r.energy_grid_kwh ? [format(r.energy_grid_kwh, 'energy'), ' from grid'] : r.charges ? 'grid not metered' : '')) },
       { key: 'each', label: 'Per charge', sort: true, num: true, cls: 'c-each st-wide', cover: 'statistics.col.avg_energy_per_charge', hint: 'Energy added over the number of charges', value: (r) => r.energy_per_charge_kwh,
         cell: (r) => (r.charges ? q(r.energy_per_charge_kwh, 'energy') : zeroText(r, '—')) },
-      { key: 'cost', label: 'Cost', sort: true, num: true, cls: 'c-cost', cover: 'statistics.col.costs', hint: 'Per currency, never added across currencies', value: (r) => (r.cost_by_currency || [])[0]?.amount ?? null,
-        cell: (r) => h('span', null, (r.cost_by_currency || []).length ? h('span', { class: 'cell-main' }, moneyText(r.cost_by_currency)) : zeroText(r, r.charges ? 'no price' : '—'),
+      { key: 'cost', label: 'Cost', sort: true, num: true, cls: 'c-cost', cover: 'statistics.col.costs', hint: 'Total: priced charges plus estimates, per currency, never added across currencies', value: (r) => totalOf(r)[0]?.amount ?? null,
+        cell: (r) => h('span', null, totalOf(r).length ? h('span', { class: 'cell-main' }, moneyText(totalOf(r))) : zeroText(r, r.charges ? 'no price' : '—'),
+          h('span', { class: 'cell-sub' }, costSub(r)),
           h('span', { class: 'cell-sub st-fold st-fold-ppk' }, priceText(r.price_per_kwh)),
           h('span', { class: 'cell-sub st-fold st-fold-p100' }, per100Text(r.cost_per_100km))) },
       { key: 'ppk', label: 'Per kWh', sort: true, num: true, cls: 'c-ppk st-wide', cover: 'statistics.col.cost_per_kwh', hint: 'Cost over the energy it paid for (grid energy where metered, else pack energy)', value: (r) => (r.price_per_kwh || [])[0]?.value ?? null,
         cell: (r) => ((r.price_per_kwh || []).length ? priceText(r.price_per_kwh) : zeroText(r, '—')) },
-      { key: 'p100', label: `Per 100 ${unitD}`, sort: true, num: true, cls: 'c-p100 st-wide', cover: 'statistics.col.cost_per_distance', hint: 'Cost of the charges over the distance of the logged drives', value: (r) => (r.cost_per_100km || [])[0]?.amount ?? null,
+      { key: 'p100', label: `Per 100 ${unitD}`, sort: true, num: true, cls: 'c-p100 st-wide', cover: 'statistics.col.cost_per_distance', hint: 'Priced cost of the charges over the distance of the logged drives', value: (r) => (r.cost_per_100km || [])[0]?.amount ?? null,
         cell: (r) => ((r.cost_per_100km || []).length ? per100Text(r.cost_per_100km) : zeroText(r, '—')) },
       { key: 'data', label: 'Data', sort: true, num: false, cls: 'c-data', cover: 'statistics.col.data_complete', hint: 'How much of the period was recorded, time not recorded, dropped stretches, drives or charges still open, imported rows', value: (r) => r.completeness && r.completeness.recorded_pct,
         cell: dataCell },
@@ -371,7 +396,11 @@ export async function mount(ctx) {
       column('Net consumption', 'net_wh_per_km', 'efficiency'), column('Gross consumption', 'gross_wh_per_km', 'efficiency'), column('Overhead (share of all energy used parked)', overheadOf, 'percent'),
       column('Charges', 'charges'), column('Energy added', 'energy_added_kwh', 'energy'), column('Energy from the grid', 'energy_grid_kwh', 'energy'),
       column('Energy per charge', 'energy_per_charge_kwh', 'energy'),
-      column('Cost', money('cost_by_currency', 'amount')), column('Price per kWh', money('price_per_kwh', 'value')), column(`Cost per 100 ${unitD}`, (r) => (r.cost_per_100km || []).map((x) => `${round2(convert(x.amount, 'money_per_distance'))} ${x.currency}`).join(' + ')),
+      column('Priced cost (amount and currency)', money('cost_by_currency', 'amount')), column('Price per kWh', money('price_per_kwh', 'value')), column(`Priced cost per 100 ${unitD}`, (r) => (r.cost_per_100km || []).map((x) => `${round2(convert(x.amount, 'money_per_distance'))} ${x.currency}`).join(' + ')),
+      column('Charges priced', 'charges_priced'), column('Charges estimated', 'charges_estimated'),
+      column('Estimated cost (amount and currency)', money('cost_estimated_by_currency', 'amount')), column('Total cost (amount and currency)', (r) => totalOf(r).map((x) => `${x.amount} ${x.currency}`).join(' + ')),
+      column(`Total cost per 100 ${unitD} (amount and currency)`, (r) => totalPer100(r).map((x) => `${round2(convert(x.amount, 'money_per_distance'))} ${x.currency}`).join(' + ')),
+      column('Total cost per day (amount and currency)', (r) => totalPerDay(r).map((x) => `${round2(x.amount)} ${x.currency}`).join(' + ')),
       column('Recorded', (r) => r.completeness && r.completeness.recorded_pct, 'percent'), column('Not recorded (min)', (r) => Math.round(((r.completeness && r.completeness.unknown_ms) || 0) / 60000)),
       column('Dropped stretches', (r) => r.completeness && r.completeness.dropped_stretches),
       column('Drive under way', (r) => (r.completeness && r.completeness.open_drive ? 'yes' : 'no')), column('Charge under way', (r) => (r.completeness && r.completeness.open_charge ? 'yes' : 'no')),

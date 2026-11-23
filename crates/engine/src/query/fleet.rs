@@ -993,6 +993,13 @@ pub struct FreeRange {
     pub to_date: Option<String>,
 }
 
+/// A price per kWh in one currency (`currency`: three letters).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PricePerKwh {
+    pub value: f64,
+    pub currency: String,
+}
+
 /// What an admin set for a car's battery, range, consumption and software (`/cars/{car}/settings`). The battery,
 /// efficiency and software answers read it with [`settings_of`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1018,6 +1025,9 @@ pub struct CarSettings {
     /// TeslaFi, local TeslaMate). Absent on records written before it was kept: the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_order: Option<model::SourceOrder>,
+    /// What a charge without a price is estimated at on Statistics (never kept as its cost).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_price_per_kwh: Option<PricePerKwh>,
 }
 
 impl Default for CarSettings {
@@ -1034,6 +1044,7 @@ impl Default for CarSettings {
             pack_replaced_date: None,
             pack_new_kwh: None,
             source_order: None,
+            default_price_per_kwh: None,
         }
     }
 }
@@ -1077,6 +1088,8 @@ pub struct SettingsView {
     pub import_gap_fill_on: bool,
     pub pack_replaced_date: Option<String>,
     pub pack_new_kwh: Option<f64>,
+    /// What a charge without a price is estimated at on Statistics (null: none is estimated but at a place price).
+    pub default_price_per_kwh: Option<PricePerKwh>,
     /// What the car's build gives for the three reference values when the owner has typed none (the inputs'
     /// prefill; the owner's value, where typed, still wins), and where it comes from (`vehicle_info`, else null).
     pub capacity_new_kwh_default: Option<f64>,
@@ -1220,6 +1233,7 @@ fn settings_view(e: &Engine, c: &model::Car, o: &Owner, d: VehicleDefaults) -> Q
         import_gap_fill_on: s.import_gap_fill.unwrap_or_else(|| e.import_gap_fill()),
         pack_replaced_date: s.pack_replaced_date.clone(),
         pack_new_kwh: s.pack_new_kwh,
+        default_price_per_kwh: s.default_price_per_kwh.clone(),
         capacity_new_kwh_default: d.usable_new_kwh(),
         full_range_new_km_default: d.full_range_new_km,
         efficiency_wh_per_km_default: d.efficiency_wh_per_km,
@@ -1294,6 +1308,41 @@ fn number(body: &Body, k: &str, lo: f64, hi: f64, nullable: bool, errs: &mut Err
             None
         }
     }
+}
+
+/// `default_price_per_kwh`: `{ value, currency }` (0 to 10 a kWh, three letters), or null to forget it.
+fn price_per_kwh(v: &serde_json::Value, errs: &mut Errs) -> Option<Option<PricePerKwh>> {
+    const K: &str = "default_price_per_kwh";
+    let m = match v {
+        serde_json::Value::Null => return Some(None),
+        serde_json::Value::Object(m) => m,
+        _ => {
+            errs.bad(K, "Send { \"value\": 0.15, \"currency\": \"USD\" } or null.");
+            return None;
+        }
+    };
+    for k in m.keys().filter(|k| *k != "value" && *k != "currency") {
+        errs.bad(&format!("{K}.{k}"), "Unknown field.");
+    }
+    let value = match m.get("value").and_then(serde_json::Value::as_f64).filter(|x| x.is_finite()) {
+        Some(x) if (0.0..=10.0).contains(&x) => Some(x),
+        Some(_) => {
+            errs.rule(&format!("{K}.value"), "Must be between 0 and 10.");
+            None
+        }
+        None => {
+            errs.bad(&format!("{K}.value"), "Must be a number.");
+            None
+        }
+    };
+    let currency = match m.get("currency").and_then(serde_json::Value::as_str).map(str::trim) {
+        Some(c) if c.len() == 3 && c.chars().all(|x| x.is_ascii_alphabetic()) => Some(c.to_ascii_uppercase()),
+        _ => {
+            errs.rule(&format!("{K}.currency"), "Three letters, such as USD or EUR.");
+            None
+        }
+    };
+    Some(Some(PricePerKwh { value: value?, currency: currency? }))
 }
 
 fn date(s: &str) -> Option<chrono::NaiveDate> {
@@ -1391,6 +1440,7 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
         "pack_replaced_date",
         "pack_new_kwh",
         "source_order",
+        "default_price_per_kwh",
     ];
     let version = errs.head(body, &known);
     let chemistry = match body.get("battery_chemistry") {
@@ -1457,6 +1507,7 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
     };
     let pack_kwh = number(body, "pack_new_kwh", 10.0, 250.0, true, &mut errs);
     let order = body.get("source_order").and_then(|v| source_order(v, &mut errs));
+    let default_price = body.get("default_price_per_kwh").and_then(|v| price_per_kwh(v, &mut errs));
     let one = crate::lock(&e.inner.claim);
     // the car's record is read and written back under its own lock (the pipeline's VIN and key changes take it too)
     let record = crate::lock(&e.inner.car_record);
@@ -1497,6 +1548,9 @@ pub fn patch_settings(e: &Engine, car: CarId, body: &Body) -> QResult<Patched<Sc
     }
     if let Some(x) = pack_kwh {
         s.pack_new_kwh = x;
+    }
+    if let Some(x) = default_price {
+        s.default_price_per_kwh = x;
     }
     // (null and the default list are the same order: no rebuild between them)
     let order_changed = order.is_some_and(|x| x.unwrap_or_default() != s.source_order.unwrap_or_default());
