@@ -949,6 +949,13 @@ impl Judge {
         .unwrap_or_else(|_| Book { v: trust::RULES_VERSION, ..Book::default() })
     }
 
+    /// Where a key's records are: its generation and the changes written since (every record written, every
+    /// pairing changed, moves it on), without reading them. What is worked out of a key's records can be kept while
+    /// this stays the same. `None` for a key with nothing here.
+    pub async fn changes(&self, key: &str) -> Option<(u64, usize)> {
+        self.read(key, |_, h| Ok((h.generation, h.journal_len))).await.ok()
+    }
+
     /// A key's pairing and how many logs wait, without reading its records.
     pub async fn summary(&self, key: &str) -> Option<Summary> {
         self.read(key, |_, h| {

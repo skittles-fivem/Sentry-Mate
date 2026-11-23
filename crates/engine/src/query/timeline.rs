@@ -1049,8 +1049,17 @@ pub(crate) fn why_unknown(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
 
 /// The spans of each key's missing chain links: from the minute of the log before the gap to the start of the log
 /// after it.
+/// Kept while the car's keys' records stay the same ([`ingest::Judge::changes`]).
 pub(crate) fn chain_gaps(e: &Engine, car: CarId) -> QResult<Vec<(u64, u64)>> {
     let c = car_of(e, car)?;
+    let rt = e.handle()?;
+    let at: Vec<(&String, Option<(u64, usize)>)> =
+        c.vehicle_keys.iter().map(|k| (k, rt.block_on(e.judge().changes(k)))).collect();
+    let kept = e.memo(car, "chain-gaps", crate::memo::On::Imported, crate::memo::key(&at), || chain_gaps_of(e, &c))?;
+    Ok(kept.as_ref().clone())
+}
+
+fn chain_gaps_of(e: &Engine, c: &model::Car) -> QResult<Vec<(u64, u64)>> {
     let rt = e.handle()?;
     let mut out = Vec::new();
     for key in &c.vehicle_keys {
