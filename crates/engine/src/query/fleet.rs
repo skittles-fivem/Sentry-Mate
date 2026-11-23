@@ -91,7 +91,7 @@ pub struct Noted {
 /// from the newest day that has one (the db's small key/value records, not the car's store).
 fn last_judged(e: &Engine, car: CarId, meta: &records::CarMeta) -> QResult<Option<(u64, String, Option<String>)>> {
     for &d in meta.days.iter().rev() {
-        let rec = records::day(e.db(), car, d)?;
+        let rec = records::day_shared(e.db(), car, d)?;
         let newest = rec
             .logs
             .iter()

@@ -806,6 +806,13 @@ impl Db {
         self.with_car(car, |_, _, dir| segment::days::<P>(dir, stream))
     }
 
+    /// One key of what the files of a series' days in `[from_ms, to_ms)` are now: it changes whenever a point in
+    /// those days is written or removed (what was read from them can be kept with it).
+    pub fn days_stamp<P: Point>(&self, car: CarId, stream: impl Into<Stream>, from_ms: u64, to_ms: u64) -> Result<u64> {
+        let stream = stream.into();
+        self.with_car(car, |_, _, dir| segment::days_stamp::<P>(dir, stream, from_ms, to_ms))
+    }
+
     /// Bytes a car's time series take on disk.
     pub fn segment_bytes(&self, car: CarId) -> Result<u64> {
         self.with_car(car, |_, _, dir| segment::bytes(dir))

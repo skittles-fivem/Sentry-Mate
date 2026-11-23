@@ -379,3 +379,76 @@ as candump text), read one after the other on one core, the best of three runs. 
 - A log is a minute long, so memory per log is small (a columns log's body, at most 64 MB by the limit, in practice
   about 1 MB) and logs of different cars are already read at once (one car's are read one after the other: each
   changes the car's timeline).
+
+## CAN logs through the engine, and a car rebuilt whole
+
+**How it is measured.** `PERF_DAYS=30 cargo test --release -p sentry-mate measure_engine -- --ignored --nocapture`
+(`crates/sentry-mate/src/perf_engine.rs`): 30 made-up days of SMO logs (2,341 one-minute logs, a frame a second per
+message, with the bridge's usual trouble) are put in the store as uploads are; then the engine is started on them
+(every log read, recorded and its window of the timeline rebuilt, one after the other as for one car), then the car
+is rebuilt whole (`Engine::rebuild`, what a change of the source order does), then the engine is started again with
+nothing to do. Memory is the process's highest (`VmHWM`), with one malloc arena (`MALLOC_ARENA_MAX=1`; glibc here,
+the image's musl allocator differs).
+
+| 30 days, 2,341 logs | before | now |
+|---|---:|---:|
+| the logs found at the start | 68.6 s (29.3 ms a log), 53.7 s of CPU | 38.7 s (16.5 ms a log), 25.4 s of CPU |
+| the car rebuilt whole | 75.8 s (32.4 ms a log), 63.7 s of CPU | 46.2 s (19.7 ms a log), 34.8 s of CPU |
+| started again, nothing to do | 0.02 s | 0.03 s |
+| memory at most: the logs / the rebuild | 71 MB / 71 MB | 101 MB / 138 MB |
+
+At the made-up car's 78 logs a day, a year is about 28,500 logs: a rebuild of the car took about 15 minutes and
+takes about 9.
+
+**Where a log's 29 ms went.** Reading the log itself (unpack, decode, samples) was under 1 ms of it. The rest was
+the same things read again for every log:
+
+| Per log (ms) | before | now |
+|---|---:|---:|
+| the log's trust record looked up | 3.9 | 1.3 |
+| the day's samples read for the window (and once more to merge the log's into them) | 5.6 + part of 1.9 | about 1 |
+| the day records read (the log's entry, the window's entries and cuts, the nearest logs) | about 3 | about 1 |
+| the car's values now, worked out for the live event after every window | 3.9 | 2.4 |
+
+What changed (nothing stored differently, nothing answered differently):
+
+1. **The trust journal was read whole for every log.** The engine looks up each log's record (`Judge::record`), and
+   that read the key's journal from the disk every time (up to 2,048 changes before it is folded). The journal as it
+   was last read is kept while its file is the same file of the same size and time (`ingest/src/ledger.rs`,
+   `journal_as_read`; a journal only grows or is replaced by the next generation's). The journals of four keys at
+   most.
+2. **A day record was parsed again for every question about it.** A day's record (every log of the day with its
+   facts, as JSON in the sealed key/value store) was read about ten times per log. Its bytes are still read from the
+   db every time, but a record whose bytes are the ones last read is not parsed again
+   (`engine/src/records.rs`, `day_shared`: 24 days at most; it cannot be out of date, the bytes are compared).
+3. **The day's samples were read from the db twice per log.** A day with a journal is opened, unpacked and replayed
+   whole for every read. While a log or a car's logs are worked on, the days read last are kept
+   (`engine/src/hot.rs`: three days and 32 MB at most), what the engine writes into them is put into the kept days
+   as a read would give it back, and a window is answered from them while a key of the days' files
+   (`Db::days_stamp`) is still the one taken after the last write. In a debug build (every test) each answer from
+   memory is compared with the db's. Let go when the work is done: this is the extra memory in the table.
+4. **The build readings of two logs were decoded again for every live event.** The car's values now include the
+   recommended tyre pressures, which read the car's build from the newest day's two newest logs; with every log
+   that arrived both were unpacked again. A log's own readings are now kept in memory as it was worked on
+   (`query/vehicle.rs`), so only the new log is read.
+
+**Measured, and left as it is.**
+
+- **A rebuild's windows are long.** While the logs arrive in order, the window a log changes reaches from the last
+  settled point to the log: 10 hours on average here. In a rebuild the car's newest data is still known, so each
+  window reaches from there to the end of the history: 17 days on average here (408 hours), and a year's rebuild
+  would do more per log than these 30 days did. What costs then is what is written over the whole window for every
+  log (the charge curves: 4.6 ms a log, whole days packed again). Rebuilding the windows once per run of logs
+  instead of after each log would take most of a rebuild's time away; it is not done here because the timeline it
+  gives has to be shown to be the same one (the ids drives and charges keep, the costs carried to them).
+- **Skipping a write of charge points that are already stored** was tried (read, compare, skip): reading the day
+  to compare cost more than the write (5.7 against 2.0 ms a log). Not kept.
+- **A smaller Brotli window for small bodies** (a log's minute of points is packed with a 4 MB window) was tried:
+  no gain at the hot level, slower at the warm one. Not kept.
+- **Syncs.** A log makes about 18 `fsync`/`fdatasync` calls (12,782 + 6,448 for 1,080 logs: the samples' journal,
+  the tables' journals, each record written whole and renamed). On this container's disk a sync takes 40 µs, and
+  the 13 s between the wall time and the CPU time above are mostly those. On a disk where a sync takes 5 ms (a
+  spinning disk, a pool with synchronous writes) they would be 90 ms a log and all that counts. They are what keeps
+  a crash from losing a log's work; fewer of them is a change to that, not a speed-up.
+- **Start-up** with every log already worked on is the comparison of the store's logs with the day records: 0.03 s
+  for these 30 days.

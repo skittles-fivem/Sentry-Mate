@@ -479,6 +479,7 @@ impl Engine {
         let Some(car) = self.car_of_key(key)? else { return Ok(()) };
         let l = self.car_lock(car);
         let _held = lock(&l);
+        let _hot = crate::hot::Keep::new(self);
         self.log_locked(car, key, name, false)
     }
 
@@ -705,9 +706,9 @@ impl Engine {
             let merged = if others.is_empty() {
                 m.samples.to_vec()
             } else {
-                merge_points(db.read_points::<Sample>(car, Stream::Smo, a, b)?, m.samples)
+                merge_points(self.smo_points(car, a, b)?, m.samples)
             };
-            db.write_points(car, Stream::Smo, a, b, &merged)?;
+            self.write_smo_points(car, a, b, &merged)?;
             return Ok(());
         }
         let mut cands: Vec<(Rank, (u64, u64), Vec<Sample>)> = Vec::new();
@@ -739,7 +740,7 @@ impl Engine {
             }
         }
         let points: Vec<Sample> = by.into_values().collect();
-        db.write_points(car, Stream::Smo, a, b, &points)?;
+        self.write_smo_points(car, a, b, &points)?;
         Ok(())
     }
 
@@ -861,10 +862,15 @@ impl Engine {
         let mut by = Vec::new();
         for (rank, input) in order.iter().enumerate() {
             let m = fp.read_margin_ms(input, rank);
-            by.push((
-                db.read_points::<Sample>(car, Stream::from(input), from.saturating_sub(m), to.saturating_add(m))?,
-                input,
-            ));
+            let (lo, hi) = (from.saturating_sub(m), to.saturating_add(m));
+            let points = match input {
+                // (the day the log's samples were just written to: from memory when it is kept there)
+                Input::Smo => self.smo_points(car, lo, hi)?,
+                Input::TeslaApi | Input::TeslafiApi | Input::TeslamateLocal => {
+                    db.read_points::<Sample>(car, Stream::from(input), lo, hi)?
+                }
+            };
+            by.push((points, input));
         }
         let by: Vec<(&[Sample], Input)> = by.iter().map(|(v, i)| (v.as_slice(), *i)).collect();
         let mut fused = timeline::fuse_ordered(&by, &order, fp);
@@ -1045,6 +1051,7 @@ impl Engine {
 
     /// One car's comparison; `job` counts progress and can stop it.
     pub(crate) fn reconcile_car(&self, car: CarId, job: Option<&crate::jobs::JobState>) -> Result<()> {
+        let _hot = crate::hot::Keep::new(self);
         let db = &self.inner.db;
         let rt = self.handle()?;
         let Some(c) = db.car(car)? else { return Ok(()) };
@@ -1084,13 +1091,13 @@ impl Engine {
         }
         todo.sort_by(|x, y| (x.0, &x.1, &x.2).cmp(&(y.0, &y.1, &y.2)));
         // only those not recorded the same way (read per day, so this is cheap)
-        let mut day_cache: Option<(u32, records::DayRec)> = None;
+        let mut day_cache: Option<(u32, std::sync::Arc<records::DayRec>)> = None;
         let profile = c.profile().dbc_name();
         let mut wanted = Vec::new();
         for (start, key, name, r) in todo {
             let d = records::day_of(start);
             if day_cache.as_ref().is_none_or(|(cd, _)| *cd != d) {
-                day_cache = Some((d, records::day(db, car, d)?));
+                day_cache = Some((d, records::day_shared(db, car, d)?));
             }
             let rec = day_cache.as_ref().map(|(_, r)| r);
             // also a log whose check changed while no one was told (a key distrusted, a log judged again)

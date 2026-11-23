@@ -48,6 +48,7 @@ pub mod importer;
 pub mod jobs;
 mod pipeline;
 pub use pipeline::NEW_CAR_NAME;
+mod hot;
 mod memo;
 pub mod placing;
 pub mod query;
@@ -247,6 +248,8 @@ pub(crate) struct Inner {
     pub(crate) warm: Mutex<warm::Warm>,
     /// The cars whose days' pack readings are being worked out ([`query::pack_logs`]).
     pub(crate) packs: query::pack_logs::Fills,
+    /// The SMO samples of the days being worked on ([`hot`]).
+    pub(crate) hot: Mutex<hot::Hot>,
 }
 
 /// Where a car's zone was last looked up (latitude, longitude) and the zone found there.
@@ -352,6 +355,7 @@ impl Engine {
                 memo: memo::Memo::default(),
                 warm: Mutex::default(),
                 packs: Default::default(),
+                hot: Mutex::new(hot::Hot::default()),
                 opts,
             }),
         }
