@@ -5,6 +5,8 @@
 // unmount(), its API calls cancelled, its clean-ups run), shows grey placeholder tiles of the page's shape,
 // loads the car of the address (a 404 shows "nothing here"), resolves the period in the car's time zone, tells
 // the frame, sets the tab title, loads the page's own style sheet when it has one, and calls mount(ctx).
+// The module and its style sheet load through shared/build.js's loadPage: after a server update the tab loads the
+// address in full instead, and a file that fails is tried once more that way before the page says page_failed.
 //
 // A page module (core/README.md has the whole of ctx):
 //   export const id = 'drives';
@@ -16,6 +18,7 @@
 
 import * as state from '../shared/state.js';
 import * as api from '../shared/api.js';
+import { loadPage, reloadPage, isPageFailed } from '../shared/build.js';
 import { h, ready, failed, unready, setTitle, cover } from '../shared/dom.js';
 import { periodParams } from '../shared/time.js';
 import { pageInfo, navId } from './pages.js';
@@ -72,7 +75,10 @@ let selfQuery = false;
 /** Load a page's own style sheet once (pages/<id>.css); resolves when it applies. */
 function pageCss(id) {
   let link = document.head.querySelector(`link[data-page-css="${id}"]`);
-  const wait = (l) => new Promise((r) => { l.addEventListener('load', r, { once: true }); l.addEventListener('error', r, { once: true }); });
+  const wait = (l) => new Promise((resolve, reject) => {
+    l.addEventListener('load', resolve, { once: true });
+    l.addEventListener('error', () => { l.remove(); reject(new Error(`${l.href} did not load`)); }, { once: true });
+  });
   if (link) return link.sheet ? Promise.resolve() : wait(link);
   link = h('link', { rel: 'stylesheet', href: new URL(`../pages/${id}.css`, import.meta.url).href, dataset: { pageCss: id } });
   const p = wait(link);
@@ -168,7 +174,12 @@ async function mount(s) {
       failed('not-found');
       return;
     }
-    const modP = MODULES[id]();
+    const modP = loadPage(async () => {
+      const mod = await MODULES[id]();
+      if (mod.css) await pageCss(id);
+      return mod;
+    });
+    modP.catch(() => { /* answered where it is awaited */ });
     if (!auth) m.replaceChildren(...loadingTiles(id));
     const carP = s.car && !auth ? scope.get(api.apiPath`cars/${s.car}`) : null;
     // the header gets its car and period pills at once (the car's name follows), so it does not grow under the
@@ -190,8 +201,6 @@ async function mount(s) {
     if (my !== token) return;
     if (mod.shape && !auth) m.replaceChildren(...loadingTiles(mod.shape));
     setTitle(mod.title ? mod.title(ctx) : (ctx.info ? ctx.info.title : id), car ? car.name : null);
-    if (mod.css) await pageCss(id);
-    if (my !== token) return;
     // the loading tiles stay until the page puts its own content in (taken away in the same task, before a paint),
     // so the page does not collapse to nothing while it waits for its data and then grow again
     // Until the page is ready the view keeps the loading tiles' height, so a page that fills its boxes one by one
@@ -213,7 +222,9 @@ async function mount(s) {
     if (my !== token || api.isAbort(err)) return;
     first = false;
     if (!auth && !ctx.car) frame?.update({ page: id, info: ctx.info, car: null, tz: ctx.tz, period: null, carsCount });
-    ctx.fail(err);
+    // failed before the page was built: the tab's title is this page's, never the one before
+    if (!current?.instance) setTitle(ctx.info ? ctx.info.title : id, ctx.car ? ctx.car.name : null);
+    ctx.fail(err, isPageFailed(err) ? { retry: () => reloadPage() } : undefined);
   }
 }
 

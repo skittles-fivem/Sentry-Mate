@@ -25,6 +25,7 @@ node --test ui/shared/tests/
 | Module | What it is for |
 |---|---|
 | [`api.js`](api.js) | The one client for `/api/v1`: reads, cursor paging, changes with the CSRF header, errors, sign-in prompts, live events, cancelling, the server's clock |
+| [`build.js`](build.js) | Which build of the interface the server runs (`X-Sentry-Mate-Build` on every answer; api.js hands each one over, `watchBuild()` asks `/health` when the tab comes back into view and every 5 min) and `loadPage(load)`, which every router loads a page's module and style sheet with: once the build changed the tab loads the next address in full instead of importing into the old page, a file that fails is tried once more with a full load past the cache (`?_fresh=`, taken off the address again at once), and only then `pageFailedError()`: code `page_failed`, `PAGE_FAILED`'s words ("Sentry Mate was updated or a file could not load") with a Reload button (`reloadPage()`), never "No answer from the server" |
 | [`units.js`](units.js) | The person's units applied to the API's metric values; every number with its unit |
 | [`time.js`](time.js) | Dates and times in the car's time zone, ISO weeks, buckets, the period presets |
 | [`state.js`](state.js) | Page, car and period in the URL; the shared store; links that carry the car and period; the person's car when the URL names none (`setCarPrefs(prefs)`, `preferredCar(cars)`: main car, else last car not sold, else first pinned, else first not sold; `rememberCar(id, { sold, explicit })` saves `last_car`, debounced) |

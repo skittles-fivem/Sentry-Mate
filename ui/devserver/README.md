@@ -44,6 +44,11 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 the pack chosen for everyone. A person's `ui_pack` preference picks the pack their browser is served from the next
 page load on, as on the real server; `null` goes back to the `--pack` one, and an unknown id is `422`.
 
+Every answer names the build of the interface in `X-Sentry-Mate-Build`, as the real server does. `POST
+/__dev/new-build` (the dev server only) stands for a server update: from then on every answer names a new build, so a
+tab open across it loads its next page in full (`ui/tools/server-update.test.js`). A file under a build's address
+(`/_v/<build>/core/app.js`) is the file of that path now, as the real server answers a tab loaded before an update.
+
 ### Signing in
 
 Unless `--signed-out` is given, the first request without a session cookie signs in the default account
