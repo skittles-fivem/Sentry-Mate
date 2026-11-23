@@ -61,7 +61,12 @@ const ROW_COVERS = ['timeline.table', 'projects.dash', 'shots.timeline', 'shots.
   'timeline.link.trip_span', 'timeline.link.slot_details', 'timeline.link.geofence_start', 'timeline.link.geofence_end', 'timeline.link.place_cells_other_rows'];
 
 const MODULE_NAME = { vcfront: 'front body controller', bms: 'battery management', dir: 'rear drive unit', dif: 'front drive unit' };
-const VERSION_SOURCE = { teslamate: 'from the import', tesla_api: 'by the Tesla API', owner: 'typed by the owner', build_match: 'from an earlier update with the same fingerprints' };
+const VERSION_SOURCE = {
+  teslamate: 'from the TeslaMate import', teslafi: 'from the TeslaFi import', teslafi_api: 'from TeslaFi', teslamate_local: 'from local TeslaMate',
+  tesla_api: 'by the Tesla API', owner: 'typed by the owner', build_match: 'from an earlier update with the same fingerprints',
+};
+/** Live inputs that name a fingerprint update when they report a new version within a day after it. */
+const LIVE_VERSION = new Set(['teslafi_api', 'teslamate_local', 'tesla_api']);
 
 export async function mount(ctx) {
   const car = ctx.car, tz = ctx.tz;
@@ -498,7 +503,9 @@ function entry(r, { car, tz, now, period }) {
       fig('Battery', q(r.soc_end_pct, 'percent')),
     ];
     if (fp) extra.push(h('p', { class: 'tl-why' }, 'Found from the firmware fingerprints the modules broadcast on the vehicle bus: the car does not send its version number. ',
-      r.version_source === 'build_match' ? 'Named from an earlier update with the same fingerprints.' : r.version ? '' : 'An admin can type the version from the car’s screen.'));
+      r.version_source === 'build_match' ? 'Named from an earlier update with the same fingerprints.'
+        : r.version && LIVE_VERSION.has(r.version_source) ? `Named ${VERSION_SOURCE[r.version_source]}, which reported this version within a day after the update.`
+          : r.version ? '' : 'An admin can type the version from the car’s screen.'));
     else if (!r.version) extra.push(h('p', { class: 'tl-why' }, 'Seen as changed module builds; the version number can be typed on the Software page.'));
   }
 

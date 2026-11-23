@@ -453,7 +453,10 @@ function vitals(car, now, tz) {
       kpa.length ? recommendedLine(now) : ''));
 
   const sw = now.software || {};
-  const swSrc = { teslamate: 'imported', tesla_api: 'from the Tesla API', owner: 'typed by the owner', build_match: 'matched by build' }[sw.version_source] || null;
+  const swSrc = {
+    teslamate: 'imported from TeslaMate', teslafi: 'imported from TeslaFi', teslafi_api: 'from TeslaFi', teslamate_local: 'from local TeslaMate',
+    tesla_api: 'from the Tesla API', owner: 'typed by the owner', build_match: 'matched by build',
+  }[sw.version_source] || null;
   const ideal = v(now.ideal_range_km);
   const carSpec = h('section', { class: 'vital' }, h('h2', { class: 'label' }, 'The car'),
     h('dl', { class: 'spec' },
