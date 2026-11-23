@@ -27,6 +27,7 @@ pub mod imports;
 pub mod keys;
 pub mod logbook;
 pub mod now;
+pub mod pack_logs;
 pub mod parked;
 pub mod places;
 pub mod published;

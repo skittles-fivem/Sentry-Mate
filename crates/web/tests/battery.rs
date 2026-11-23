@@ -410,6 +410,40 @@ async fn a_car_without_history_answers_the_same_keys_with_null() {
     assert!(tp["outside"]["min_c"].is_null() && tp["daily"] == json!([]), "{tp}");
 }
 
+/// The days' pack values worked out ahead give the answers the logs decoded again give: with them gone (as for data
+/// of an older version), the battery answers have them worked out again and say the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: full tests (cargo test -- --include-ignored)"]
+async fn the_pack_values_worked_out_ahead_answer_as_the_logs_decoded_again() {
+    let k = seeded().await;
+    let car = k.car.clone();
+    let mut admin = k.s.admin().await;
+    let paths = [
+        format!("/api/v1/cars/{car}/battery"),
+        format!("/api/v1/cars/{car}/battery/capacity?group=day"),
+        format!("/api/v1/cars/{car}/battery/capacity?group=month"),
+        format!("/api/v1/cars/{car}/efficiency"),
+    ];
+    let mut kept = Vec::new();
+    for p in &paths {
+        kept.push(ok(&mut admin, p).await);
+    }
+    assert!(kept[1]["items"].as_array().is_some_and(|v| !v.is_empty()), "{}", kept[1]);
+    let kv = k._engine.db().kv();
+    for ns in [engine::query::battery::PACK_NS, engine::query::pack_logs::NS] {
+        let keys = kv.keys(ns).unwrap();
+        assert!(!keys.is_empty(), "{ns}");
+        for key in keys {
+            kv.delete(ns, &key).unwrap();
+        }
+    }
+    for (p, before) in paths.iter().zip(&kept) {
+        assert_eq!(&ok(&mut admin, p).await, before, "{p}");
+    }
+    // and the logs' values are kept again
+    assert!(!kv.keys(engine::query::pack_logs::NS).unwrap().is_empty());
+}
+
 /// More record days than a `group=day` page looks at (limit + 180): one short log a day of a made-up car over 240
 /// days. Paging one reading at a time reaches the newest day, and holds every day the whole list holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

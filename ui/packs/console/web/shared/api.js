@@ -131,8 +131,9 @@ function anySignal(signals) {
   return c.signal;
 }
 
-/** The reads that decode stored logs (they take turns on the server). */
-const HEAVY_PATH = /^\/cars\/[^/]+\/(signals(\/latest)?|battery(\/capacity)?|battery-level|projected-range|efficiency)$/;
+/** The reads that decode stored logs (they take turns on the server). The battery and efficiency reads use the
+ * days' pack values the server works out ahead: they do not take turns (docs/ui-api.md). */
+const HEAVY_PATH = /^\/cars\/[^/]+\/signals(\/latest)?$/;
 
 /**
  * A client. The module's own exports use one made with the defaults; tests and special pages can make

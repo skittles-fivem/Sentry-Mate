@@ -17,6 +17,8 @@ use engine::Engine;
 use engine::query::{self as q, QueryError};
 use serde::Serialize;
 use serde_json::Value;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A CSV of a list carries every matching row: pages of 500 at most this many times.
 pub(crate) const CSV_MAX_PAGES: usize = 200;
@@ -89,6 +91,87 @@ pub(crate) async fn answer<T: Serialize + Send + 'static>(
     f: impl FnOnce(&Engine) -> q::QResult<T> + Send + 'static,
 ) -> ApiResult<Response> {
     answer_as(app, None, p, name, f).await
+}
+
+/// A battery answer's query (the pack's readings: `/battery`, `/battery/capacity`, `/battery-level`,
+/// `/projected-range`, `/efficiency`) run so that it decodes no log ([`q::pack_logs::light`]); `needed` is set when
+/// it would have (its answer is then not one to give).
+fn light<T>(
+    f: Arc<impl Fn(&Engine, &q::Paging) -> q::QResult<T> + Send + Sync + 'static>,
+    needed: Arc<AtomicBool>,
+) -> impl Fn(&Engine, &q::Paging) -> q::QResult<T> + Send + 'static {
+    move |e, pg| {
+        let (r, need) = q::pack_logs::light(|| f(e, pg));
+        if need {
+            needed.store(true, Ordering::Relaxed);
+            // (not given: no server trouble to log)
+            return Err(QueryError::NotFound("pack_not_done"));
+        }
+        r
+    }
+}
+
+/// Works out the car's days' pack readings in the background, waiting for that up to [`crate::heavy::WAIT`].
+async fn pack_fill(app: &AppState, car: model::CarId) -> ApiResult<()> {
+    let e = app.service::<Engine>()?;
+    app.blocking(move |_| {
+        q::pack_logs::start(&e, car);
+        q::pack_logs::wait(&e, car, crate::heavy::WAIT);
+        Ok(())
+    })
+    .await
+}
+
+/// [`answer`] of a battery answer: with the days it needs worked out ahead ([`q::pack_logs`]), it decodes no log
+/// and waits for no turn; else they are worked out (waited for a while) and it is tried once more; past that it
+/// decodes what it needs itself, in its turn ([`crate::heavy`]).
+pub(crate) async fn pack_answer<T: Serialize + Send + 'static>(
+    app: &AppState,
+    v: &Viewer,
+    p: &Params,
+    name: &str,
+    car: model::CarId,
+    f: impl Fn(&Engine) -> q::QResult<T> + Send + Sync + 'static,
+) -> ApiResult<Response> {
+    let f = Arc::new(move |e: &Engine, _: &q::Paging| f(e));
+    let none = q::Paging::default();
+    for tries in 0..2 {
+        let needed = Arc::new(AtomicBool::new(false));
+        let g = light(f.clone(), needed.clone());
+        let pg = none.clone();
+        let r = answer_as(app, None, p, name, move |e| g(e, &pg)).await;
+        if !needed.load(Ordering::Relaxed) {
+            return r;
+        }
+        if tries == 0 {
+            pack_fill(app, car).await?;
+        }
+    }
+    answer_as(app, Some(v), p, name, move |e| f(e, &none)).await
+}
+
+/// [`list_answer`] of a battery answer, as [`pack_answer`].
+pub(crate) async fn pack_list_answer<T: Serialize + Send + 'static>(
+    app: &AppState,
+    v: &Viewer,
+    p: &Params,
+    name: &str,
+    car: model::CarId,
+    f: impl Fn(&Engine, &q::Paging) -> q::QResult<T> + Send + Sync + 'static,
+) -> ApiResult<Response> {
+    let f = Arc::new(move |e: &Engine, pg: &q::Paging| f(e, pg));
+    for tries in 0..2 {
+        let needed = Arc::new(AtomicBool::new(false));
+        let g = light(f.clone(), needed.clone());
+        let r = list_answer_as(app, None, p, name, move |e, pg| g(e, pg)).await;
+        if !needed.load(Ordering::Relaxed) {
+            return r;
+        }
+        if tries == 0 {
+            pack_fill(app, car).await?;
+        }
+    }
+    list_answer_as(app, Some(v), p, name, move |e, pg| f(e, pg)).await
 }
 
 /// [`answer`] of a query that decodes stored logs ([`crate::heavy`]).
