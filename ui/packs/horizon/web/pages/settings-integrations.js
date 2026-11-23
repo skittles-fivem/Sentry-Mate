@@ -24,7 +24,6 @@ import { dateTime, ago, num } from '../core/fmt.js';
 import { teslaSection } from './tesla-account.js';
 import { teslafiSection } from './teslafi-account.js';
 import { teslamateSection } from './teslamate-local.js';
-import { connectionsOverview, sectionId } from './connections-overview.js';
 
 export const id = 'settings-integrations';
 export const css = true;
@@ -223,7 +222,8 @@ export async function mount(ctx) {
   if (!ctx.alive()) return;
 
   const carList = cars?.items || [];
-  // the preview car: the address's, else the person's preferred car (Main car, last looked at, first in their order)
+  // the preview car: the address's, else the preferred car (Main car, else the last opened, else the first
+  // in the person's own order)
   const findCar = async (id) => {
     if (!id) return null;
     const known = carList.find((c) => c.id === id);
@@ -235,8 +235,11 @@ export async function mount(ctx) {
     const wanted = ctx.query.car || null;
     extraCar = await findCar(wanted);
     if (wanted && !extraCar) carMissing = wanted;
-    if (!extraCar) extraCar = await findCar(preferredCar(carList) || lastCar());
-    if (!extraCar && carList.length) extraCar = (await ctx.api.page('cars', { sort: 'custom', limit: 1 }).catch(() => null))?.items?.[0] || carList[0];
+    if (!extraCar && carList.length) {
+      const all = (await ctx.api.page('cars', { sort: 'custom', limit: 100 }, { maxAgeMs: 30000 }).catch(() => null))?.items || carList;
+      const id = preferredCar(all);
+      extraCar = all.find((c) => c.id === id) || (await findCar(lastCar())) || carList[0];
+    }
   } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }
   if (!ctx.alive()) return;
   let carId = extraCar?.id || null;
@@ -479,8 +482,8 @@ export async function mount(ctx) {
     if (!next || next === carId) return;
     carId = next;
     extraCar = carList.find((c) => c.id === next) || { id: next, name: carSel.selectedOptions[0]?.textContent || next };
-    rememberCar(next, { sold: isSold(extraCar) });
     replace(carNoteSlot);
+    rememberCar(next, { sold: isSold(extraCar) }); // picked from the server's list: a car this account sees
     ctx.setQuery({ car: carId });
     await loadPreview();
     if (!ctx.alive()) return;
@@ -792,95 +795,18 @@ export async function mount(ctx) {
       works('Garage door openers', 'projects.geogdo', 'Openers that act on arrival and departure, for several cars, by zone or saved place. Values are about 75 s late: good for closing behind you, late for opening.', [code('location'), ', ', code('place'), ' and drive events.'])));
 
   /* ---------- put it together */
-  const setupBody = [jumpNav,
+  replace(ctx.view,
+    pageHead({ title: ctx.info.nav || ctx.info.title, purpose: ctx.info.purpose, actions: headSlot }),
+    jumpNav,
     h('div', { class: 'si-stack' },
       h('p', { class: 'note saving-note' }, icon('check', 'ico--sm'), ' Switches and single fields save at once and a short note confirms it; the broker connection saves with its button. Nothing leaves the server until publishing is on.'),
-      tesla.el, teslafi.el, teslamate.el, brokerPanel, topicsPanel, valuesPanel, haPanel, entitiesPanel, eventsPanel, apiPanel, netPanel, worksPanel)];
-  // admins get two tabs: the Connections overview (first, the default) and the settings; others the settings only
-  const tabs = admin ? integrationTabs(ctx, setupBody) : null;
-  replace(ctx.view,
-    pageHead({ title: ctx.info.title, purpose: ctx.info.purpose, actions: headSlot }),
-    tabs ? tabs.el : setupBody);
+      tesla.el, teslafi.el, teslamate.el, brokerPanel, topicsPanel, valuesPanel, haPanel, entitiesPanel, eventsPanel, apiPanel, netPanel, worksPanel));
   paintHead(); paintBroker(); paintStatus(); paintTopics(); paintValues(); paintHa(); paintEntities();
   eventsPanel.append(...eventsBody());
   paintEvents(); paintNetwork();
-  await Promise.all([valuesTable?.ready, eventsTable?.ready, paintLog(), tesla.load(), teslafi.load(), teslamate.load(), tabs?.ready].filter(Boolean));
+  await Promise.all([valuesTable?.ready, eventsTable?.ready, paintLog(), tesla.load(), teslafi.load(), teslamate.load()].filter(Boolean));
   if (!ctx.alive()) return;
   ctx.ready();
-  tabs?.landed();
-}
-
-/* ---------------------------------------------------------------------- the tabs (admins) */
-
-const TABS = [['overview', 'Overview', 'pulse'], ['settings', 'Settings', 'settings']];
-
-// Overview first and the default; ?tab=settings keeps the other one over a reload. A link to a section
-// (#tesla, #si-network, ...) opens the tab that holds it, and the router (or this page) scrolls there.
-function integrationTabs(ctx, setupBody) {
-  const ov = connectionsOverview(ctx, { onSameRoute: (hash) => goSection(hash, { setHash: true }) });
-  const panes = {
-    overview: h('div', { class: 'si-pane', id: 'si-pane-overview', role: 'tabpanel', 'aria-labelledby': 'si-tab-overview' }, ov.el),
-    settings: h('div', { class: 'si-pane', id: 'si-pane-settings', role: 'tabpanel', 'aria-labelledby': 'si-tab-settings' }, setupBody),
-  };
-  const btns = {};
-  const bar = h('div', { class: 'si-tabs', role: 'tablist', 'aria-label': 'Integrations' },
-    TABS.map(([k, label, ic], i) => {
-      btns[k] = h('button', { class: 'si-tab', type: 'button', role: 'tab', id: `si-tab-${k}`, 'aria-controls': `si-pane-${k}`,
-        onclick: () => choose(k, { url: true }),
-        onkeydown: (e) => {
-          if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-          e.preventDefault();
-          const next = TABS[(i + (e.key === 'ArrowRight' ? 1 : TABS.length - 1)) % TABS.length][0];
-          choose(next, { url: true }); btns[next].focus();
-        } }, icon(ic, 'ico--sm'), label);
-      return btns[k];
-    }));
-  let current = null;
-  function choose(k, { url = false, keepHash = false } = {}) {
-    if (!panes[k]) k = 'overview';
-    current = k;
-    for (const [key] of TABS) {
-      const on = key === k;
-      btns[key].setAttribute('aria-selected', String(on));
-      btns[key].tabIndex = on ? 0 : -1;
-      panes[key].hidden = !on;
-    }
-    ov.show(k === 'overview');
-    if (url) {
-      // setQuery writes the address without its #section: put it back when it stays
-      const hash = keepHash ? location.hash : '';
-      ctx.setQuery({ tab: k === 'overview' ? null : k });
-      if (hash) history.replaceState(history.state, '', `${location.pathname}${location.search}${hash}`);
-    }
-  }
-  const paneOf = (id) => {
-    const t = id ? document.getElementById(id) : null;
-    return t ? Object.keys(panes).find((k) => panes[k].contains(t)) || null : null;
-  };
-  // a section of this page: its tab, then the section under the top bar
-  function goSection(hash, { setHash = false, smooth = true } = {}) {
-    const id = sectionId(hash);
-    const k = paneOf(id);
-    if (!k) return;
-    if (k !== current) choose(k, { url: true, keepHash: !setHash });
-    if (setHash) history.replaceState(history.state, '', `${location.pathname}${location.search}#${encodeURIComponent(id)}`);
-    const t = document.getElementById(id);
-    const top = document.querySelector('.topbar')?.getBoundingClientRect().height || 0;
-    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    if (t) window.scrollTo({ top: Math.max(0, t.getBoundingClientRect().top + window.scrollY - top - rem), behavior: smooth ? 'smooth' : 'auto' });
-  }
-  const el = h('div', { class: 'si-tabbed' }, bar, panes.overview, panes.settings);
-  // the first tab: the section the link names, else the address's tab, else the overview
-  const firstHash = sectionId(location.hash);
-  // (the panes are not in the document yet: look inside them)
-  const inPane = firstHash ? Object.keys(panes).find((k) => panes[k].querySelector(`[id="${CSS.escape(firstHash)}"]`)) : null;
-  choose(inPane || (ctx.query.tab === 'settings' ? 'settings' : 'overview'));
-  if (inPane && (ctx.query.tab || 'overview') !== inPane) choose(inPane, { url: true, keepHash: true });
-  // a section named by its server name (#mqtt): the router finds no such id, so this page scrolls there once
-  // it is drawn and the router has placed it (called after ready)
-  const landed = () => { if (inPane && firstHash !== decodeURIComponent(location.hash.slice(1))) setTimeout(() => ctx.alive() && goSection(firstHash, { smooth: false }), 0); };
-  ctx.on(window, 'hashchange', () => goSection(location.hash));
-  return { el, ready: ov.ready, landed };
 }
 
 // a discovery topic is <prefix>/<domain>/<node>/<key>/config, and the prefix may have several levels

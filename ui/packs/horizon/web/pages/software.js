@@ -18,12 +18,11 @@
 // - Car firmware (#firmware): GET /cars/{car}/firmware, each module's fingerprints as lowercase hex and when the
 //   current value was first seen. The car page links here.
 // - Module firmware history (#firmware-history): GET /cars/{car}/firmware/history, every fingerprint each module
-//   has had (newest first, paged, filtered by module) with the version name it came with, imported car versions
-//   as version-only rows, and a strip of the versions over time (one lane per module, from the answer's spans).
-//   Read-only for everyone. It loads again with the lists when an update starts or ends.
+//   has had (filter by module, paged with Show more) and a "versions over time" strip from its spans; reloads
+//   with the other lists on "rows" events with kind "updates". The car page links here.
 
 import * as state from '../shared/state.js';
-import { h, replace, cover } from '../shared/dom.js';
+import { h, replace, cover, setVars } from '../shared/dom.js';
 import { column } from '../shared/csv.js';
 import { formatDate, formatTime, formatDateTime, formatDuration, HOUR } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
@@ -110,7 +109,7 @@ export async function mount(ctx) {
       h('button', { class: 'btn', type: 'button', cover: 'updates.filter.time_range', onclick: (e) => openPeriodPicker(e.currentTarget),
         title: 'The period of the update list and its figures (the same picker as in the top bar). An update belongs to it when it started in it.' },
       icon('calendar', 'ico--sm'), period.label, icon('chev-d', 'ico--sm')),
-      h('button', { class: 'btn', type: 'button', cover: 'updates.filter.car', onclick: openCarSwitcher, title: 'Show another car on this page' },
+      h('button', { class: 'btn switch-car-btn', type: 'button', cover: 'updates.filter.car', onclick: openCarSwitcher, title: 'Show another car on this page' },
         icon('car', 'ico--sm'), car.name, icon('chev-d', 'ico--sm')),
       h('button', { class: 'btn btn--ghost', type: 'button', title: 'Every car with the version it runs, in one list (further down this page)',
         onclick: () => fleetTable.el.scrollIntoView({ behavior: 'smooth', block: 'start' }) }, icon('fleet', 'ico--sm'), 'Versions of every car')),
@@ -449,8 +448,7 @@ export async function mount(ctx) {
   /* ---------- car firmware */
   const fwSlot = h('div', { class: 'sw-fw-body' });
   const fwPanel = panel({ title: 'Car firmware', icon: 'chip', cls: 'sw-fw', id: 'firmware',
-    side: h('span', { class: 'sw-fw-links' },
-      h('a', { class: 'panel-link', href: '#firmware-history' }, 'History', icon('chev-r', 'ico--sm')),
+    side: h('span', { class: 'sw-fw-links' }, h('a', { class: 'panel-link', href: '#firmware-history', onclick: (e) => { e.preventDefault(); fhTable.el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, 'History', icon('chev-d', 'ico--sm')),
       h('a', { class: 'panel-link', href: `${ctx.link('car')}#vehicle-info` }, 'Vehicle info', icon('chev-r', 'ico--sm'))) }, fwSlot);
   let fwKey = null;
   async function loadFirmware() {
@@ -483,130 +481,123 @@ export async function mount(ctx) {
           : h('p', { class: 'faint sw-fw-none' }, 'No fingerprints in this car\'s logs: this module does not send them on this car, or no log with them has arrived.')))));
   }
 
-  /* ---------- module firmware history */
-  const HIST_MODULES = ['vcfront', 'bms', 'dir', 'dif'];
-  let histModule = '';
-  const histSeg = h('span', { class: 'seg sw-fh-seg', role: 'group', 'aria-label': 'Module' },
-    [['', 'All'], ...HIST_MODULES.map((m) => [m, MODULES[m] || m])].map(([v, l]) => h('button', {
-      class: 'seg-btn', type: 'button', 'aria-pressed': String(v === histModule), dataset: { module: v },
-      title: v ? `Only the fingerprints of the ${l.toLowerCase()}` : 'Every module, and the car versions imported without fingerprints',
-      onclick: () => pickModule(v),
-    }, l)));
-  // on a phone the five choices do not fit one row: a list box instead (software.css shows one or the other)
-  const histPick = h('select', { class: 'select sw-fh-pick', 'aria-label': 'Module', onchange: (e) => pickModule(e.target.value) },
-    [['', 'All modules'], ...HIST_MODULES.map((m) => [m, MODULES[m] || m])].map(([v, l]) => h('option', { value: v }, l)));
-  function pickModule(v) {
-    if (v === histModule) return;
-    histModule = v;
-    histPick.value = v;
-    for (const b of histSeg.children) b.setAttribute('aria-pressed', String(b.dataset.module === v));
-    paintLaneFocus();
-    histTable.setParams({ module: v || null });
-  }
-  const hday = (ms) => formatDate(ms, tz, { year: true });
-  const isVer = (r) => r.kind === 'version';
-  const unnamed = () => h('span', { class: 'faint sw-fh-unnamed' }, 'unnamed');
-  const histColumns = [
+  /* ---------- module firmware history (#firmware-history) */
+  const FH_MODS = ['vcfront', 'bms', 'dir', 'dif'];
+  const fhPath = `cars/${enc(cid)}/firmware/history`;
+  let fhModule = null;
+  let fhKey = null;
+  const fhDay = (ms) => (ms == null ? DASH : formatDate(ms, tz, { year: true }));
+  const fhBtns = new Map();
+  const fhSeg = h('div', { class: 'seg sw-fh-seg', role: 'group', 'aria-label': 'Which module' },
+    [null, ...FH_MODS].map((m) => {
+      const b = h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': String(m === fhModule),
+        title: m ? `Only the fingerprints of ${MODULES[m] || m}` : 'Every module, with the car versions imported from TeslaMate or TeslaFi',
+        onclick: () => {
+          if (fhModule === m) return;
+          fhModule = m;
+          for (const [k, el] of fhBtns) el.setAttribute('aria-pressed', String(k === m));
+          fhTable.setParams({ module: m });
+        } }, m ? MODULES[m] || m : 'All');
+      fhBtns.set(m, b);
+      return b;
+    }));
+  const fhColumns = [
     {
-      key: 'module', label: 'Module', title: 'The module that sent this fingerprint, or a car version imported without fingerprints',
+      key: 'module', label: 'Module', title: 'The module that sent the fingerprint, or a car version imported without module fingerprints',
       render: (r) => h('span', { class: 'cell-text' },
-        h('span', { class: 'main' }, isVer(r) ? 'Car version' : (r.module_name || MODULES[r.module] || r.module)),
-        h('span', { class: 'sub' }, isVer(r) ? (r.source_label || 'Imported') : (r.fields?.[0]?.field || r.source_label || ''))),
-      csv: { label: 'Module', value: (r) => (isVer(r) ? 'Car version' : r.module_name || r.module || '') },
+        h('span', { class: 'sw-fh-mod' }, r.kind === 'version' ? 'Car version' : r.module_name || MODULES[r.module] || r.module,
+          r.current ? pill('Current', { tone: 'live' }) : null),
+        h('span', { class: 'sub' }, r.kind === 'version' ? `Version only · ${r.source_label || ''}` : r.source_label || '')),
+      csv: { label: 'Module', value: (r) => (r.kind === 'version' ? 'Car version' : r.module_name || r.module || '') },
     },
     {
-      key: 'fingerprint', label: 'Fingerprint', title: 'The module\'s main fingerprint (its code checksum) in lowercase hex, as the car sends it',
-      render: (r) => (isVer(r) ? h('span', { class: 'faint' }, 'version only')
-        : h('span', { class: 'cell-text' }, hexEl(r.fingerprint), h('span', { class: 'sub' }, r.previous ? ['after ', h('code', { class: 'sw-hex sw-hex--sub' }, r.previous)] : 'the first one seen'))),
+      key: 'fingerprint', label: 'Fingerprint', title: 'The module\'s main fingerprint (its app checksum), in lowercase hex as the car sends it',
+      render: (r) => (r.fingerprint
+        ? h('span', { class: 'cell-text' }, hexEl(r.fingerprint), r.previous ? h('span', { class: 'sub' }, 'after ', h('code', { class: 'sw-hex sw-hex--sub' }, r.previous)) : h('span', { class: 'sub' }, 'first one seen'))
+        : h('span', { class: 'faint' }, 'no fingerprint')),
       csv: { label: 'Fingerprint', value: (r) => r.fingerprint || '' },
     },
     {
-      key: 'when', label: 'From – to', title: 'First and last seen (the car’s time zone); “now” while it is the current one',
+      key: 'seen', label: 'From – to', title: 'First and last seen (the car’s time zone); “now” for the one it runs now',
       render: (r) => h('span', { class: 'cell-text' },
-        h('span', null, `${hday(r.first_seen_ms)} – ${r.current ? 'now' : hday(r.until_ms ?? r.last_seen_ms)}`),
-        r.changed_in?.drive_id
-          ? h('a', { class: 'link sub', href: state.buildUrl('drive', { car: cid, drive: r.changed_in.drive_id }), title: 'The first drive with this fingerprint' }, 'first drive with it')
-          : h('span', { class: 'sub' }, `last seen ${formatDateTime(r.last_seen_ms, tz, { now: ctx.api.now() })}`)),
+        h('span', null, `${fhDay(r.first_seen_ms)} – ${r.current ? 'now' : fhDay(r.until_ms ?? r.last_seen_ms)}`),
+        !r.current && r.until_ms != null && r.last_seen_ms != null ? h('span', { class: 'sub' }, `last seen ${fhDay(r.last_seen_ms)}`) : null),
       csv: { label: 'First seen (UTC)', value: (r) => iso(r.first_seen_ms) },
     },
     { key: 'last', label: 'Last seen', hidden: true, csv: { label: 'Last seen (UTC)', value: (r) => iso(r.last_seen_ms) } },
     {
-      key: 'duration', label: 'Ran for', num: true, title: 'From first to last seen (a car version: from its start to the next one, or now)',
+      key: 'duration', label: 'Ran for', num: true, title: 'How long it ran: from first to last seen',
       render: (r) => formatDuration(r.duration_ms),
       csv: { label: 'Ran for (days)', value: (r) => (r.duration_ms == null ? '' : Math.round(r.duration_ms / 864000) / 100) },
     },
     {
-      key: 'version', label: 'Came with', cls: 'sw-fh-col-ver', title: 'The version name of the update it came with, when someone named it. Never guessed.',
-      render: (r) => h('span', { class: 'sw-ver sw-fh-ver', title: (r.version && SOURCE[r.update?.version_source]?.[1]) || null }, r.version || unnamed(), r.current ? tag('Current', 'live') : null),
-      csv: { label: 'Version', value: (r) => r.version || '' },
+      key: 'version', label: 'Came with', cls: 'sw-col-ver', title: 'The name of the version it came with: read from a live input, imported, typed by an admin, or the same fingerprints as a named update',
+      render: (r) => (r.version ? h('span', { class: 'sw-ver', title: SOURCE[r.update?.version_source]?.[1] ?? null }, r.version) : h('span', { class: 'faint' }, 'unnamed')),
+      csv: { label: 'Came with version', value: (r) => r.version || '' },
     },
-    { key: 'current', label: 'Current', hidden: true, csv: { label: 'Current', value: (r) => (r.current ? 'yes' : '') } },
   ];
-  const histTable = dataTable(ctx, {
-    title: 'Fingerprints, newest first', icon: 'chip', path: `cars/${enc(cid)}/firmware/history`, params: {}, limit: 10, cls: 'sw-fh-table',
-    csvName: 'module firmware history', csv: { all: true, columns: csvOf(histColumns) },
-    columns: histColumns.filter((c) => !c.hidden),
-    side: [histSeg, histPick],
-    rowClass: (r) => [isVer(r) && 'sw-fh-vrow', r.current && 'is-current'].filter(Boolean).join(' ') || null,
-    empty: () => emptyState({ icon: 'chip', title: histModule ? 'No fingerprints from this module' : 'No firmware history yet',
-      text: histModule ? 'This module has not sent a fingerprint in this car\'s logs. Choose All to see the other modules.'
-        : `Nothing recorded for ${car.name} yet: the history starts with the first log that carries the modules' fingerprints, or with an imported version history.` }),
+  const fhStrip = h('div', { class: 'sw-fh-strip', 'aria-busy': 'true' }, h('span', { class: 'skel sw-fh-skel' }));
+  const fhTable = dataTable(ctx, {
+    title: 'Module firmware history', icon: 'chip', path: fhPath, params: {}, limit: 50, cls: 'sw-fh', csvName: 'module firmware history',
+    csv: { all: true, columns: csvOf(fhColumns) },
+    columns: fhColumns.filter((c) => !c.hidden),
+    rowClass: (r) => [r.kind === 'version' && 'sw-fh-vrow', r.current && 'is-current'].filter(Boolean).join(' ') || null,
+    note: 'Every fingerprint each module has had, newest first, and the version name it came with when someone named it. All also shows the car versions an import brought without module fingerprints.',
+    empty: () => emptyState({ icon: 'chip', title: fhModule ? `No fingerprints of ${MODULES[fhModule] || fhModule} yet` : 'No firmware history yet',
+      text: 'Fingerprints show once a log with them arrives from the car; imported versions show once a TeslaMate or TeslaFi history is imported.' }),
     onPage: (pg) => { if (ctx.alive()) paintStrip(pg); },
+    onError: () => { if (fhKey == null) replace(fhStrip, h('p', { class: 'warn' }, icon('warn', 'ico--sm'), ' The firmware history could not be read.')); fhStrip.removeAttribute('aria-busy'); },
   });
+  fhTable.el.id = 'firmware-history';
+  fhTable.el.insertBefore(h('div', { class: 'sw-fh-top' }, fhSeg, fhStrip), fhTable.el.querySelector('.tbl-scroll'));
 
-  // the versions over time: one lane per module, a segment per fingerprint over the whole range
-  const LANE_TONE = { vcfront: 'live', bms: 'mag', dir: 'warm', dif: 'violet' };
-  const stripSlot = h('div', { class: 'sw-fh-strip' });
-  let stripKey = null;
   function paintStrip(pg) {
     const key = JSON.stringify([pg.modules, pg.spans, pg.range]);
-    if (key === stripKey) return;
-    stripKey = key;
-    const mods = pg.modules || [];
-    for (const b of [...histSeg.children, ...histPick.options]) {
-      const m = mods.find((x) => x.id === (b.dataset?.module ?? b.value) && x.id);
-      if (m?.name && b.textContent !== m.name) b.textContent = m.name;
+    if (key === fhKey) return;
+    fhKey = key;
+    fhStrip.removeAttribute('aria-busy');
+    const mods = pg.modules?.length ? pg.modules : FH_MODS.map((m) => ({ id: m, name: MODULES[m] }));
+    for (const m of mods) {
+      const b = fhBtns.get(m.id);
+      if (b) replace(b, m.name || MODULES[m.id] || m.id, m.fingerprints != null ? h('span', { class: 'count' }, formatNumber(m.fingerprints)) : null);
     }
     const from = pg.range?.from_ms, to = pg.range?.to_ms;
-    if (from == null || to == null || !(pg.spans || []).length) {
-      replace(stripSlot, h('p', { class: 'faint sw-fh-none' }, 'No fingerprint seen yet, so there is nothing to draw.'));
+    const spans = pg.spans || [];
+    if (from == null || to == null || !spans.length) {
+      replace(fhStrip, h('p', { class: 'faint sw-fw-none' }, 'No fingerprints yet, so there is nothing to draw over time.'));
       return;
     }
-    const span = Math.max(1, to - from);
-    const pct = (ms) => Math.max(0, Math.min(100, ((ms - from) / span) * 100));
-    replace(stripSlot,
-      h('div', { class: 'sw-fh-lanes', role: 'list', 'aria-label': 'Versions over time, by module' }, mods.map((m) => {
-        const list = pg.spans.filter((s) => s.module === m.id);
-        const track = h('div', { class: 'sw-fh-track', 'aria-hidden': 'true' }, list.map((s, i) => {
-          const l = pct(s.from_ms), w = Math.max(0, pct(s.to_ms) - l);
-          const tip = `${m.name}: ${s.fingerprint}, ${s.version || 'unnamed'}, ${hday(s.from_ms)} – ${s.current ? 'now' : hday(s.to_ms)}`;
-          const seg = h('span', { class: ['sw-fh-span', `sw-fh-span--${LANE_TONE[m.id] || 'live'}`, s.current && 'is-current', i % 2 && 'is-alt'], title: tip },
-            w >= 10 && s.version ? h('span', { class: 'sw-fh-span-text' }, s.version) : null);
-          seg.style.left = `${l}%`; seg.style.width = `${w}%`;
-          return seg;
-        }), list.slice(1).map((s) => { const t = h('span', { class: 'sw-fh-tick', title: `${m.name} changed ${hday(s.from_ms)}` }); t.style.left = `${pct(s.from_ms)}%`; return t; }));
-        const named = list.filter((s) => s.version).map((s) => s.version);
-        return h('div', { class: 'sw-fh-lane', role: 'listitem', dataset: { module: m.id } },
-          h('div', { class: 'sw-fh-lane-head' },
-            h('span', { class: 'sw-fh-lane-name' }, m.name),
-            h('span', { class: 'sw-fh-lane-n' }, `${formatNumber(m.fingerprints ?? list.length)} ${(m.fingerprints ?? list.length) === 1 ? 'fingerprint' : 'fingerprints'}`)),
-          track,
-          h('span', { class: 'sr-only' }, list.length ? `${list.length} fingerprints${named.length ? `, named ${[...new Set(named)].join(', ')}` : ''}; now ${m.current || 'none'}` : 'none seen'));
-      })),
-      h('div', { class: 'sw-fh-axis', 'aria-hidden': 'true' }, h('span', null, hday(from)), h('span', null, hday(to))));
-    paintLaneFocus();
+    const len = Math.max(1, to - from);
+    const pc = (ms) => `${(Math.min(100, Math.max(0, ((ms - from) / len) * 100))).toFixed(3)}%`;
+    const lanes = mods.map((m) => {
+      const own = spans.filter((s) => s.module === m.id);
+      const name = m.name || MODULES[m.id] || m.id;
+      const track = h('div', { class: 'sw-fh-track', role: 'img',
+        'aria-label': own.length ? `${name}: ${own.map((s) => `${s.version || 'unnamed'} from ${fhDay(s.from_ms)}`).join(', ')}` : `${name}: no fingerprints` },
+      own.map((s, i) => {
+        const seg = h('span', { class: ['sw-fh-seg-bar', i % 2 && 'is-alt', s.current && 'is-current', !s.version && 'is-unnamed'],
+          title: `${name}: ${s.fingerprint} · ${s.version || 'unnamed'} · ${fhDay(s.from_ms)} – ${s.current ? 'now' : fhDay(s.to_ms)}` },
+        h('span', { class: 'sw-fh-seg-text' }, s.version || 'unnamed'));
+        setVars(seg, { '--x': pc(s.from_ms), '--w': `${Math.max(0, ((Math.min(to, s.to_ms ?? to) - Math.max(from, s.from_ms)) / len) * 100).toFixed(3)}%` });
+        return seg;
+      }),
+      own.slice(1).map((s) => {
+        const t = h('i', { class: 'sw-fh-tick', title: `Changed ${fhDay(s.from_ms)}` });
+        setVars(t, { '--x': pc(s.from_ms) });
+        return t;
+      }));
+      return h('div', { class: 'sw-fh-lane' },
+        h('span', { class: 'sw-fh-lane-name' }, name, m.current ? h('code', { class: 'sw-hex sw-hex--sub' }, m.current) : null),
+        own.length ? track : h('span', { class: 'faint sw-fh-lane-none' }, 'never seen'));
+    });
+    replace(fhStrip,
+      h('h3', { class: 'sw-fh-strip-title metric-label' }, 'Versions over time'),
+      h('div', { class: 'sw-fh-lanes' }, lanes),
+      h('div', { class: 'sw-fh-axis', 'aria-hidden': 'true' }, h('span', null, fhDay(from)), h('span', null, fhDay(to))));
   }
-  function paintLaneFocus() {
-    for (const el of stripSlot.querySelectorAll('.sw-fh-lane')) el.classList.toggle('is-dim', !!histModule && el.dataset.module !== histModule);
-  }
-  const histPanel = panel({ title: 'Module firmware history', icon: 'chip', cls: 'sw-fh',
-    side: h('a', { class: 'panel-link', href: '#firmware' }, 'Car firmware now', icon('chev-r', 'ico--sm')) },
-  h('p', { class: 'note' }, 'Every fingerprint each module has had and the version name it came with, where someone named it. Imported versions without fingerprints are shown as version-only rows. Point at a stretch for its fingerprint and dates; the marks are the changes.'),
-  stripSlot);
-  const histWrap = h('div', { class: 'sw-fh-wrap', id: 'firmware-history' }, histPanel, histTable.el);
 
   replace(ctx.view, root);
-  root.append(head, filters, summary, fpPanel, table.el, fwPanel, histWrap, fleetTable.el);
+  root.append(head, filters, summary, fpPanel, table.el, fwPanel, fhTable.el, fleetTable.el);
 
   /* ---------- typing a version (admin) */
   async function editVersion(r) {
@@ -636,19 +627,19 @@ export async function mount(ctx) {
   let echoUntil = 0;
   async function reloadAll(say) {
     reloadBtn.disabled = true;
-    try { await Promise.all([table.reload(), fleetTable.reload(), loadFirmware(), histTable.reload()]); await fpPaint; if (say && ctx.alive()) flash('Loaded again.', { kind: 'info' }); } finally { reloadBtn.disabled = false; }
+    try { await Promise.all([table.reload(), fleetTable.reload(), loadFirmware(), fhTable.reload()]); await fpPaint; if (say && ctx.alive()) flash('Loaded again.', { kind: 'info' }); } finally { reloadBtn.disabled = false; }
   }
 
   ctx.events('rows', (ev) => {
     const d = ev?.data || {};
     if (!(d.kinds || []).includes('updates')) return;
     if (Date.now() < echoUntil) { echoUntil = 0; return; } // the echo of a version just saved here
-    if (d.car === cid) { table.reload(null, { quiet: true }); loadFirmware(); histTable.reload(null, { quiet: true }); }
+    if (d.car === cid) { table.reload(null, { quiet: true }); loadFirmware(); fhTable.reload(null, { quiet: true }); }
     fleetTable.reload(null, { quiet: true });
   });
 
   // both lists are part of the first render: the page does not change height once it says it is ready
-  await Promise.all([table.ready, fleetTable.ready, loadFirmware(), histTable.ready]);
+  await Promise.all([table.ready, fleetTable.ready, loadFirmware(), fhTable.ready]);
   await fpPaint;
   if (!ctx.alive()) return;
   if (!painted) paintSummary(null, []);

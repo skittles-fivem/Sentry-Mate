@@ -28,9 +28,6 @@ import { errorWords } from './states.js';
  *   onPage(page),                       after each API page (the first holds summary or totals)
  *   cover,                              item ids for the table panel
  *   note, noteCover,                    a line under the bar that explains the table (and its item ids)
- *   autoMore,                           an API list: the next page loads as the foot scrolls into view
- *                                       (IntersectionObserver); the button stays, for the keyboard
- *   moreLabel,                          the button's words (default "Show more")
  * }) -> { el, reload(params), setParams(patch), rows(), done() }
  *
  * A column's sort is the API's sort name (a string) for API lists, or true for local rows (sorted by
@@ -57,31 +54,13 @@ export function dataTable(ctx, opts) {
   const thead = h('thead');
   const tbody = h('tbody');
   const table = h('table', { class: 'tbl', 'aria-label': opts.label || opts.title || null }, thead, tbody);
-  const moreBtn = h('button', { class: 'btn btn--sm', type: 'button', onclick: () => more() }, icon('chev-d', 'ico--sm'), opts.moreLabel || 'Show more');
+  const moreBtn = h('button', { class: 'btn btn--sm', type: 'button', onclick: () => more() }, icon('chev-d', 'ico--sm'), 'Show more');
   const footText = h('span');
   const foot = h('div', { class: 'tbl-foot', hidden: true }, footText, moreBtn);
   const noteEl = opts.note ? h('p', { class: 'note tbl-note', cover: opts.noteCover || null }, opts.note) : null;
   const el = h('section', { class: ['panel', 'tbl-panel', opts.cls], 'aria-label': opts.label || opts.title || null },
     bar, noteEl, h('div', { class: 'tbl-scroll' }, table), foot);
   if (opts.cover) cover(el, opts.cover);
-
-  // autoMore: the foot is the sentinel. New rows go under the ones on screen (appended, never re-drawn), so
-  // nothing above moves; after each page, a foot still in view (a tall screen) asks for the next one.
-  const AHEAD = 240;
-  let watcher = null;
-  if (opts.autoMore && opts.path && typeof IntersectionObserver === 'function') {
-    watcher = new IntersectionObserver((entries) => {
-      if (!ctx.alive()) { watcher.disconnect(); return; }
-      if (entries.some((e) => e.isIntersecting)) more();
-    }, { rootMargin: `0px 0px ${AHEAD}px 0px` });
-    watcher.observe(foot);
-    ctx.onCleanup?.(() => watcher.disconnect());
-  }
-  function footNear() {
-    if (!watcher || foot.hidden || !foot.isConnected) return false;
-    const r = foot.getBoundingClientRect();
-    return r.height > 0 && r.top < (window.innerHeight || 0) + AHEAD && r.bottom > 0;
-  }
 
   function sortParams() {
     if (!sort) return {};
@@ -227,7 +206,6 @@ export function dataTable(ctx, opts) {
     if (busy || (done && !fresh) || !pager) return;
     busy = true;
     moreBtn.disabled = true;
-    let drew = false;
     try {
       const items = (await pager.more()) || [];
       const pg = pager.last || { items, next: null };
@@ -240,7 +218,6 @@ export function dataTable(ctx, opts) {
       if (pg.total != null) total = pg.total;
       if (!loaded.length) replace(tbody, emptyRow(opts.empty ? opts.empty(pg) : h('div', { class: 'empty' }, h('h3', null, 'Nothing in this period'))));
       setCount();
-      drew = true;
       opts.onPage?.(pg);
     } catch (e) {
       if (my !== gen || !ctx.alive() || e.name === 'AbortError') return;
@@ -255,7 +232,6 @@ export function dataTable(ctx, opts) {
       // a stale load leaves busy alone: load() cleared it and the current load owns it now
       if (my === gen) { busy = false; moreBtn.disabled = false; }
     }
-    if (drew && my === gen && watcher && !done && ctx.alive()) requestAnimationFrame(() => { if (my === gen && !busy && !done && footNear()) more(); });
   }
 
   head();

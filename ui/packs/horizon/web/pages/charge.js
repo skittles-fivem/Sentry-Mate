@@ -145,13 +145,13 @@ export async function mount(ctx) {
   const eff = metric('Efficiency', c.efficiency_pct, 'percent', {
     cover: 'cd.stat.efficiency', digits: 1,
     explain: c.efficiency_pct != null ? `${format(c.losses_kwh, 'energy')} lost on the way${est ? ' (estimated)' : ''}${c.efficiency_pct > 100 ? '; above 100 % means a bad reading' : ''}` : null,
-    why: dc ? "DC: the charger's own losses are not on the CAN bus" : why,
+    why: dc ? "Fast charge: the car cannot see the charger's own losses" : why,
   });
   const avgTemp = metric('Outside', c.outside_avg_c, 'temperature', { cover: 'cd.stat.avg_temp', explain: c.battery_avg_c != null ? `average; battery ${format(c.battery_avg_c, 'temperature')}` : 'average of the session', why });
   const socFrom = clamp(c.start_soc_pct ?? 0, 0, 100), socTo = clamp(c.end_soc_pct ?? 0, 0, 100);
   const socAdded = c.end_soc_pct != null && c.start_soc_pct != null ? c.end_soc_pct - c.start_soc_pct : null;
   const rangeName = getUnits().range === 'ideal' ? 'Rated range (charges keep rated range only)' : 'Rated range';
-  const stats = panel({ title: 'Figures', icon: 'stats', cls: 'charge-figures-panel', side: live ? h('span', { class: 'pill pill--warm' }, icon('bolt'), 'so far') : null },
+  const stats = panel({ title: 'Summary', icon: 'stats', cls: 'charge-figures-panel', side: live ? h('span', { class: 'pill pill--warm' }, icon('bolt'), 'so far') : null },
     h('div', { class: 'charge-figures' },
       metric('Charging time', c.charging_ms, 'duration', { cover: 'cd.stat.duration', explain: c.plugged_ms != null ? `plugged in for ${formatDuration(c.plugged_ms)}` : 'first to last charging second' }),
       metric('Energy added', c.energy_added_kwh, 'energy', { cover: 'cd.stat.energy_added', explain: est ? estWord : "into the pack, the pack's volts × amps", why }),

@@ -18,7 +18,7 @@
 .su-crumb--done { color: var(--text-2); }
 .su-crumb--done .su-crumb-n { color: var(--live); border-color: var(--live-line); background: var(--live-soft); }
 .su-crumb--now { color: var(--text); font-weight: 600; }
-.su-crumb--now .su-crumb-n { color: var(--bg-0); background: var(--live); border-color: var(--live); }
+.su-crumb--now .su-crumb-n { color: var(--text-on-live); background: var(--live); border-color: var(--live); }
 
 /* explanations */
 .su-where { padding: round(0.75rem, var(--e)) round(0.875rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--surface-sunken); display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); }
@@ -33,7 +33,7 @@
 .su-rules b { color: var(--text); font-weight: 600; }
 .su-halfway { margin-top: round(0.25rem, var(--e)); }
 
-.su-line { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: round(0.125rem, var(--e)) round(0.75rem, var(--e)); align-items: start; padding: round(0.75rem, var(--e)) round(0.875rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--glass); }
+.su-line { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: round(0.125rem, var(--e)) round(0.75rem, var(--e)); align-items: start; padding: round(0.75rem, var(--e)) round(0.875rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--surface-sunken); }
 .su-line--ok { border-color: var(--live-line); background: var(--live-soft); }
 .su-line--warn { border-color: var(--warm-line); background: var(--warm-soft); }
 .su-line-ic { display: grid; place-items: center; width: round(1.75rem, var(--e)); height: round(1.75rem, var(--e)); border-radius: round(0.5rem, var(--e)); background: var(--glass-2); color: var(--text-3); }
@@ -58,7 +58,7 @@
 
 /* the recovery key and codes */
 .su-keybox { padding: round(1rem, var(--e)) round(1.125rem, var(--e)); border: 1px solid var(--live-line); border-radius: var(--radius-sm); background: var(--live-soft); display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); }
-.su-keybox-head { font-size: max(0.75rem, var(--fs-floor)); text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-3); font-weight: 600; }
+.su-keybox-head { font-size: max(0.8125rem, var(--fs-floor)); color: var(--text-2); font-weight: 600; }
 .mv-code { font-family: var(--font-mono); font-size: 1.5rem; --LH: round(calc(1.4 * 1em), 2px); letter-spacing: 0.04em; color: var(--text); display: flex; flex-wrap: wrap; column-gap: round(0.125rem, var(--e)); user-select: all; }
 .mv-group { white-space: nowrap; }
 .su-key { font-size: 1.3125rem; }
@@ -122,3 +122,5 @@
 
 /* a phone: the set-up buttons share the width */
 :root[data-phone] .su-acts > .btn { flex: 1 1 auto; }
+/* the name beside the mark also on a phone (the header hides it in a narrow window) */
+.su-card .auth-brand .brand-name { display: block; }

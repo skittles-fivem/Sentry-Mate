@@ -3,9 +3,8 @@
 // the Tesla API. Off until an admin adds a token; before that the server makes no connection to TeslaFi at all. It
 // only reads (never a wake or a command), and no answer ever holds the token.
 //
-// Admins only, reading included. Every change but saving the car match asks for the admin's own password again (and
-// the two-step code), like the Tesla account section: askPassword() from settings-server-move.js, sent as
-// confirm_password and code. The car match takes the admin's session alone (it stores and shows no token).
+// Admins only, reading included. Every change asks for the admin's own password again (and the two-step code),
+// like the Tesla account section: askPassword() from settings-server-move.js, sent as confirm_password and code.
 //
 // API: GET integrations/teslafi, GET/POST integrations/teslafi/accounts, PATCH/DELETE
 // integrations/teslafi/accounts/{id}, GET/PUT integrations/teslafi/accounts/{id}/cars, GET integrations/teslafi/status.
@@ -292,10 +291,11 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
     saveBtn.addEventListener('click', async () => {
       const ch = changed();
       if (!ch.length) return;
-      // the admin's session alone: no password asked again (a match stores and shows no token)
-      saveBtn.disabled = true;
-      let r = null;
-      try { r = await guarded(() => ctx.api.put(`${BASE}/accounts/${enc(a.id)}/cars`, { version: data.version ?? a.version, items: ch.map((c) => ({ vehicle: c.vehicle, match: sels.get(c.vehicle).value || null })) }))(); } catch (e) { if (e?.name !== 'AbortError') flash(errorWords(e).text, { kind: 'error' }); } finally { saveBtn.disabled = false; }
+      const r = await askPassword(ctx, {
+        title: `Match the car of ${a.label}`, submit: 'Save matches',
+        intro: h('ul', { class: 'si-list' }, ch.map((c) => { const v = sels.get(c.vehicle).value; return h('li', null, h('b', null, c.display_name || c.vehicle), ': ', v === 'new' ? 'a new car here, read from now on' : v === 'leave_out' ? 'left out, not read' : !v ? 'not decided, not read' : `${carName(v)}, read from now on`); })),
+        run: guarded((cred) => ctx.api.put(`${BASE}/accounts/${enc(a.id)}/cars`, withPw(cred, { version: data.version ?? a.version, items: ch.map((c) => ({ vehicle: c.vehicle, match: sels.get(c.vehicle).value || null })) }))),
+      });
       await after(r, 'Match saved.');
     });
     const sv = status.find((s) => s.account === a.id) || {};

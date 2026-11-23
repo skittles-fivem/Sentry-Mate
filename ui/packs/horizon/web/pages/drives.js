@@ -430,7 +430,7 @@ export async function mount(ctx) {
 
   replace(root,
     pageHead({ eyebrow: car.name, title: 'Drives', sub: [period.label, `times in ${tz.replace(/_/g, ' ')}`],
-      actions: [h('button', { class: 'btn', type: 'button', onclick: openCarSwitcher, cover: ['drives.filter.car', 'ds.filter.car'] }, icon('car'), 'Switch car'), h('a', { class: 'btn', href: ctx.link('trip') }, icon('flag'), 'This period as a trip')] }),
+      actions: [h('button', { class: 'btn switch-car-btn', type: 'button', onclick: openCarSwitcher, cover: ['drives.filter.car', 'ds.filter.car'] }, icon('car'), 'Switch car'), h('a', { class: 'btn', href: ctx.link('trip') }, icon('flag'), 'This period as a trip')] }),
     filters, summary, table.el, patterns, incomplete.el, exclPop);
   paintSummary(null, 'loading');
 

@@ -71,7 +71,7 @@ function paint() {
     h('div', { class: 'sw-group-label' }, h('span', null, q ? 'Matching cars' : 'Your cars'), h('span', null, page.total != null ? `${page.total - (q ? 0 : soldOther.length)} in all` : page.next ? 'more below' : `${main.length}`)),
     main.length ? main.map((c) => option(c, q, current)) : h('p', { class: 'sw-more' }, q ? `No car matches "${q}". Search by name, model or VIN prefix.` : soldOther.length ? 'Every car is sold.' : 'No cars yet. A car appears when its CAN Bridge first uploads.'),
     soldBtn, showSold ? soldOther.map((c) => option(c, q, current)) : null,
-    page.next ? h('p', { class: 'sw-more' }, 'More cars match. Type more of the name, or ', h('a', { href: state.buildUrl('fleet', { query: q ? { search: q } : null }), onclick: () => dlg.close() }, 'see them all on Fleet'), '.') : null);
+    page.next ? h('p', { class: 'sw-more' }, 'More cars match. Type more of the name, or ', h('a', { href: state.buildUrl('fleet', { query: q ? { search: q } : null }), onclick: () => dlg.close() }, 'see them all in All cars'), '.') : null);
   setActive(rows.length ? 0 : -1);
 }
 
@@ -86,10 +86,10 @@ function setActive(i) {
   }
 }
 
-function choose(c) {
+function choose(car) {
   dlg.close();
-  state.rememberCar(c.id, { sold: state.isSold(c) });
-  state.navigate(state.linkForCar(c.id));
+  state.rememberCar(car.id, { sold: state.isSold(car) });
+  state.navigate(state.linkForCar(car.id));
 }
 
 function build() {

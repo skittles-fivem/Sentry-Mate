@@ -1,4 +1,4 @@
-// The account menu at the foot of the sidebar: who is signed in, the Interface size and Follow screen
+// The account menu at the right of the header: who is signed in, the Interface size and Follow screen
 // size, the theme, a link to the Display settings, and sign out. Changes apply at once and are saved to
 // the person's preferences (core/prefs.js), so they follow them to every screen.
 
@@ -118,5 +118,5 @@ export function toggleAccountMenu(button) {
   if (pop.matches(':popover-open')) { pop.hidePopover(); return; }
   fill();
   pop.showPopover();
-  placePopover(pop, button, { side: 'above', align: 'start' });
+  placePopover(pop, button, { side: 'below', align: 'end' });
 }

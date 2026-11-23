@@ -58,20 +58,14 @@ export async function mount(ctx) {
   let cityPicked = !!q.city; // picked by the viewer (kept in the address), else the city with the most days
 
   /* ---------- which cars */
-  const chosen = !q.cars || q.cars === 'all' ? 'all' : q.cars.split(',').filter(Boolean);
-  // every car (the usual case): the lists do not depend on the car list, so they are asked for with it, not after it
-  let carsParam = chosen === 'all' ? 'all' : null;
-  let batchP = chosen === 'all' ? loadBatch() : null;
-  batchP?.catch(() => {}); // handled below
   let fleet = [];
   try { fleet = (await ctx.api.page('cars', { sort: 'name' }, { limit: 200 })).items || []; } catch (e) { ctx.fail(e); return; }
   if (!ctx.alive()) return;
   const carById = new Map(fleet.map((c) => [c.id, c]));
+  const chosen = !q.cars || q.cars === 'all' ? 'all' : q.cars.split(',').filter(Boolean);
   const viewCars = chosen === 'all' ? fleet.map((c) => c.id) : chosen.filter((c) => carById.has(c));
   const multi = viewCars.length > 1;
-  carsParam = chosen === 'all' ? 'all' : viewCars.join(',');
-  // one car picked (and seen): the person looked at it
-  if (chosen !== 'all' && viewCars.length === 1) state.rememberCar(viewCars[0], { sold: state.isSold(carById.get(viewCars[0])) });
+  const carsParam = chosen === 'all' ? 'all' : viewCars.join(',');
   const carName = (cid) => carById.get(cid)?.name || cid;
   const carTz = (cid) => carById.get(cid)?.time_zone || ctx.tz;
   const colorOf = new Map(viewCars.map((cid, i) => [cid, CAR_COLORS[i % CAR_COLORS.length]]));
@@ -92,11 +86,11 @@ export async function mount(ctx) {
   }
 
   // the filters every list takes (the day list adds the city)
-  function params(patch = {}) {
+  const params = (patch = {}) => {
     const p = { cars: carsParam, from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms, q: f.q || null, place: f.place || null, country: f.country || null, region: f.region || null, ...patch };
     for (const k of Object.keys(p)) if (p[k] == null || p[k] === '') delete p[k];
     return p;
-  }
+  };
   const queryOf = () => ({ cars: chosen === 'all' ? null : viewCars.join(','), q: f.q || null, place: f.place || null, country: f.country || null, region: f.region || null, city: cityPicked ? city : null });
   const apply = () => { refocusSearch = document.activeElement === textIn; ctx.setQuery(queryOf()); ctx.reload(); };
 
@@ -112,9 +106,10 @@ export async function mount(ctx) {
   }
 
   /* ---------- load (everything at once) */
-  function loadBatch() {
-    const narrowed = f.country || f.region;
-    return Promise.all([
+  const narrowed = f.country || f.region;
+  let summary, countries, regions, cities, placesG, savedPlaces, countryOpts, regionOpts;
+  try {
+    [summary, countries, regions, cities, placesG, savedPlaces, countryOpts, regionOpts] = await Promise.all([
       ctx.api.get('visits/summary', params()),
       all('visits/countries', params()),
       all('visits/regions', params()),
@@ -124,10 +119,6 @@ export async function mount(ctx) {
       narrowed ? all('visits/countries', params({ country: null, region: null })) : null,
       f.region ? all('visits/regions', params({ region: null })) : null,
     ]);
-  }
-  let summary, countries, regions, cities, placesG, savedPlaces, countryOpts, regionOpts;
-  try {
-    [summary, countries, regions, cities, placesG, savedPlaces, countryOpts, regionOpts] = await (batchP || loadBatch());
   } catch (e) { if (ctx.alive()) ctx.fail(e); return; }
   if (!ctx.alive()) return;
   countryOpts ||= countries;

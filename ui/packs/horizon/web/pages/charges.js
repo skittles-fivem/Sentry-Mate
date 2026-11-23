@@ -86,9 +86,6 @@ export async function mount(ctx) {
   const q = ctx.query;
   const now = () => ctx.api.now();
 
-  // the places (for the place filter) are asked for together with the cars, not after them
-  const placesP = ctx.api.page('places', { sort: 'visits' }, { limit: 200 }).then((x) => x.items || [], () => []);
-
   /* ---------- which cars */
   let fleet = [];
   try { fleet = (await ctx.api.page('cars', { sort: 'name' }, { limit: 200 })).items || []; } catch { fleet = fixedCar ? [fixedCar] : []; }
@@ -126,7 +123,8 @@ export async function mount(ctx) {
   replace(ctx.view, root);
 
   // places for the place filter (the most visited first)
-  const places = await placesP;
+  let places = [];
+  try { places = (await ctx.api.page('places', { sort: 'visits' }, { limit: 200 })).items || []; } catch { places = []; }
   if (!ctx.alive()) return;
   const twins = new Set(places.map((p) => p.name).filter((n, i, a) => a.indexOf(n) !== i));
   const placeSub = (p) => [p.counts?.charges != null ? `${formatNumber(p.counts.charges)} ${p.counts.charges === 1 ? 'charge' : 'charges'}` : null,
@@ -781,7 +779,7 @@ export async function mount(ctx) {
     if (!curveCar || !viewCars.includes(curveCar)) curveCar = fixedCar ? fixedCar.id : ([...dcCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || viewCars[0]);
     const carSel = multi && viewCars.length > 1 ? h('select', { class: 'select select--sm', 'aria-label': 'Car for the curve' },
       viewCars.map((cid) => h('option', { value: cid, selected: cid === curveCar }, `${carName(cid)} (${formatNumber(dcCount.get(cid) || 0)} DC)`))) : null;
-    carSel?.addEventListener('change', () => { curveCar = carSel.value; state.rememberCar(curveCar, { sold: state.isSold(carById.get(curveCar)) }); ctx.setQuery({ curve_car: curveCar }); paintCurve(rows, statsGen); });
+    carSel?.addEventListener('change', () => { curveCar = carSel.value; ctx.setQuery({ curve_car: curveCar }); paintCurve(rows, statsGen); });
     const plotEl = h('div', { class: 'curve-chart' });
     const read = h('span', { class: 'chart-read' });
     let data = { median: [], sessions: [] };

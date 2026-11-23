@@ -33,8 +33,8 @@ api.on('unauthorized', ({ method, path } = {}) => {
 });
 api.on('events', (info) => { if (info?.state === 'signed_out') sessionEnded(); });
 
-startSky();
 initFrame();
+startSky();
 watchTables();
 // every face of the pack's fonts, loading from the start: a weight first used deep in a page (a bold figure, a
 // mono value) is in before that page says it is ready, so text never re-flows under the reader when it swaps in

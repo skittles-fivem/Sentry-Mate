@@ -1,7 +1,7 @@
 {
   "name": "Horizon",
-  "description": "A synthwave dashboard: neon panels over a dusk sky, a striped setting sun, wireframe mountains and a grid floor that runs to the horizon, in a dusk dark theme and a daybreak light one. A menu grouped by task for any number of cars, the map as the hero and the same pages as Instrument. Works from a phone to a native 4K screen, with an Interface size setting. Runs on /api/v1.",
+  "description": "Simple's layout in a synthwave look: a dashboard strip along the top with six sections (Car, Trips, Charging, Battery, Stats, Settings) and their pages as tabs, the car's key facts big and clear, details one tap away. Neon HUD panels of dense glass over a dusk sky, a striped setting sun, wireframe mountains and a grid floor that runs to the horizon (Background: Auto, Full, Calm or Off), in a dusk dark theme and a daybreak light one. Phone ready. Runs on /api/v1.",
   "author": "Sentry Mate",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "api": 1
 }

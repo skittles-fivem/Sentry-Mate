@@ -15,31 +15,6 @@ export const TM_DEFAULTS = Object.freeze({
   database: Object.freeze({ enabled: false, host: '', port: 5432, database: 'teslamate', username: 'teslamate', password_set: false, tls: false, pin_sha256: null, allow_unencrypted: false, interval_s: 300 }),
 });
 
-/**
- * MQTT's usual ports: a stock TeslaMate Mosquitto listens on plain 1883 with no user or password; 8883 is the usual
- * port with TLS. The forms start with TLS off on 1883.
- */
-export const TM_MQTT_PORT = Object.freeze({ plain: 1883, tls: 8883 });
-
-/**
- * The port a form shows after its TLS tick changed to `tls`, or null to leave it as it is. Only MQTT switches (the
- * database's 5432 is the same with and without TLS), and only while the port still holds the other default: ticking
- * TLS turns 1883 into 8883, unticking turns 8883 back into 1883; any other port the admin typed stays.
- */
-export function tmTlsPort(part, port, tls) {
-  if (part !== 'mqtt' || port === '' || port == null) return null;
-  const n = Number(port);
-  if (tls && n === TM_MQTT_PORT.plain) return TM_MQTT_PORT.tls;
-  if (!tls && n === TM_MQTT_PORT.tls) return TM_MQTT_PORT.plain;
-  return null;
-}
-
-/** The hint under the MQTT form's Host. */
-export const TM_HOST_HINT = 'TeslaMate\'s broker is usually on the TeslaMate machine, port 1883, no user or password. If Test can\'t connect, publish Mosquitto\'s port 1883 in TeslaMate\'s Docker settings.';
-
-/** The note of the "Pinned certificate (SHA-256)" field (shown only while TLS is ticked). */
-export const tmPinNote = (part) => `optional — only for a ${part === 'mqtt' ? 'broker' : 'database'} with its own self-signed certificate; leave empty otherwise`;
-
 /** [word, tone, explanation] per state; tone is one of live, plain, warm. */
 export const MQTT_STATE = Object.freeze({
   off: ['Off', 'plain', 'Not added: no connection to a TeslaMate broker is made.'],

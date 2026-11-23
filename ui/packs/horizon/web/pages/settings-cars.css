@@ -67,7 +67,7 @@
 /* data sources: the live inputs in priority order (drag by the grip, or the arrows), gap filling, the overlaps */
 .sc-order { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); width: 100%; max-width: round(40rem, var(--e)); }
 .sc-src { position: relative; display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: round(0.75rem, var(--e)); padding: round(0.375rem, var(--e)) round(0.375rem, var(--e)) round(0.375rem, var(--e)) round(0.75rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); }
-.sc-src.is-dragging { z-index: 1; transform: translateY(var(--dy, 0)); border-color: var(--live-line); background: var(--panel-solid); box-shadow: var(--shadow), var(--glow-cyan); }
+.sc-src.is-dragging { z-index: 1; transform: translateY(var(--dy, 0)); border-color: var(--live-line); background: var(--panel-solid); box-shadow: var(--shadow), 0 0 0 1px var(--live-line); }
 .sc-src.is-ro { grid-template-columns: auto minmax(0, 1fr); padding-block: round(0.6875rem, var(--e)); }
 .sc-src-rank { display: grid; place-items: center; width: round(1.5rem, var(--e)); height: round(1.5rem, var(--e)); border-radius: 50%; border: 1px solid var(--line-2); font-family: var(--font-mono); font-size: max(0.75rem, var(--fs-floor)); color: var(--text-2); }
 .sc-src:first-child .sc-src-rank { border-color: var(--live-line); color: var(--live); }

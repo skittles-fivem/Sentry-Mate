@@ -20,7 +20,7 @@
 /* now */
 .bat-now-top { display: flex; align-items: flex-end; justify-content: space-between; gap: round(1.25rem, var(--e)); flex-wrap: wrap; margin-bottom: round(1.25rem, var(--e)); }
 .bat-soc { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); }
-.bat-soc-val { font-family: var(--font-display); font-size: 4rem; font-weight: 300; --LH: round(calc(0.95 * 1em), 2px); letter-spacing: -0.04em; }
+.bat-soc-val { font-family: var(--font-display); font-size: 3.25rem; font-weight: 600; --LH: round(calc(1 * 1em), 2px); letter-spacing: -0.02em; }
 .bat-soc-val small { font-size: 1.5rem; color: var(--text-2); margin-left: round(0.125rem, var(--e)); letter-spacing: 0; }
 .bat-now-side { display: flex; gap: round(1.5rem, var(--e)); flex-wrap: wrap; }
 .bat-now-side .metric { min-width: round(9rem, var(--e)); max-width: round(14rem, var(--e)); }
@@ -28,7 +28,7 @@
 .soc-track { position: relative; height: round(1.375rem, var(--e)); border-radius: round(0.5rem, var(--e)); background: var(--surface-sunken); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
 .soc-track > i { position: absolute; top: 0; bottom: 0; }
 .soc-band { left: var(--lo); right: calc(100% - var(--hi)); background: var(--live-soft); box-shadow: inset 1px 0 0 var(--live-line), inset -1px 0 0 var(--live-line); }
-.soc-fill { left: 0; width: var(--soc); background: linear-gradient(90deg, var(--live-2), var(--c-soc)); opacity: 0.85; border-radius: round(0.5rem, var(--e)) 0 0 round(0.5rem, var(--e)); }
+.soc-fill { left: 0; width: var(--soc); background: var(--live); border-radius: round(0.5rem, var(--e)) 0 0 round(0.5rem, var(--e)); }
 .soc-usable { left: var(--usable); width: calc(var(--soc) - var(--usable)); background: repeating-linear-gradient(135deg, var(--glass-3) 0 round(0.25rem, var(--e)), transparent round(0.25rem, var(--e)) round(0.5rem, var(--e))); }
 .soc-limit { left: calc(var(--lim) - round(0.0625rem, var(--e))); width: round(0.1875rem, var(--e)); background: var(--warm); top: round(-0.125rem, var(--e)); bottom: round(-0.125rem, var(--e)); border-radius: round(0.125rem, var(--e)); }
 .soc-scale { position: relative; height: round(1rem, var(--e)); font-size: max(0.6875rem, var(--fs-floor)); color: var(--text-3); }
@@ -53,7 +53,7 @@
 .ring-fill.is-low { stroke: var(--danger); }
 .ring-warranty { stroke: var(--text); stroke-width: 2.5; stroke-linecap: round; }
 .cap-ring-text { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: round(0.125rem, var(--e)); }
-.cap-ring-val { font-family: var(--font-display); font-size: 2.375rem; font-weight: 400; --LH: round(calc(1 * 1em), 2px); letter-spacing: -0.03em; }
+.cap-ring-val { font-family: var(--font-display); font-size: 2.125rem; font-weight: 600; --LH: round(calc(1 * 1em), 2px); letter-spacing: -0.02em; }
 .cap-ring-val small { font-size: 1rem; color: var(--text-2); margin-left: round(0.0625rem, var(--e)); }
 .cap-ring-sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
 .cap-figs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: round(1.125rem, var(--e)) round(1.375rem, var(--e)); }
@@ -65,7 +65,7 @@
 .bat-now .kv { margin-top: round(1.25rem, var(--e)); }
 .range-figs { display: flex; flex-direction: column; gap: round(1rem, var(--e)); margin-bottom: round(1rem, var(--e)); }
 .range-bar { position: relative; height: round(0.5rem, var(--e)); border-radius: 99px; background: var(--surface-sunken); overflow: hidden; margin-bottom: round(0.875rem, var(--e)); }
-.range-bar > i { position: absolute; inset: 0 auto 0 0; width: var(--w); border-radius: inherit; background: linear-gradient(90deg, var(--live-2), var(--live)); }
+.range-bar > i { position: absolute; inset: 0 auto 0 0; width: var(--w); border-radius: inherit; background: var(--live); }
 
 /* lifetime */
 .life-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(1.5rem, var(--e)); margin-bottom: round(1.125rem, var(--e)); }
@@ -119,7 +119,7 @@
 .pr-label .name { min-width: round(11rem, var(--e)); }
 
 /* parked drain */
-.vd-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: round(1rem, var(--e)) round(1.5rem, var(--e)); padding: round(1.125rem, var(--e)) round(1.25rem, var(--e)); margin-bottom: var(--gap); border-radius: var(--radius); background: var(--glass); border: 1px solid var(--line); }
+.vd-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: round(1rem, var(--e)) round(1.5rem, var(--e)); padding: round(1.125rem, var(--e)) round(1.25rem, var(--e)); margin-bottom: var(--gap); border-radius: var(--radius); background: var(--surface-sunken); border: 1px solid var(--line); }
 .vd-min { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); margin-right: round(0.5rem, var(--e)); }
 .vd-table .cell-text { display: flex; flex-direction: column; min-width: 0; --LH: round(calc(1.3 * 1em), 2px); }
 .vd-table .cell-text > * { white-space: nowrap; }

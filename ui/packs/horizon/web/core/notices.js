@@ -68,7 +68,7 @@ function render() {
 /** Load the notices into the bar. Safe to call again (after a `notice` event, after signing in). */
 export async function loadNotices() {
   try {
-    const r = await api.get('notices', null, { keep: true }); // a page that lists notices too reuses it
+    const r = await api.get('notices');
     items = r.items || [];
   } catch { items = []; }
   render();

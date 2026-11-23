@@ -30,7 +30,6 @@ import { flash } from '../core/flash.js';
 import { isAdmin } from '../core/prefs.js';
 import { timeChart, barChart } from '../core/chart.js';
 import { q, agoEl, statePill, stateLabel, DASH } from '../core/fmt.js';
-import { connectionsCard } from './connections-overview.js';
 
 export const id = 'health';
 export const css = true;
@@ -207,7 +206,7 @@ async function mountCar(ctx) {
     sub: [period.label, readAtEl, `times in ${tz.replace(/_/g, ' ')}`],
     purpose: 'Whether this car’s data is arriving, complete and trusted, with the fix for anything that is not; what is recorded; and how much room it takes.',
     actions: [
-      h('button', { class: 'btn', type: 'button', cover: 'dbinfo.filter.car', onclick: openCarSwitcher,
+      h('button', { class: 'btn switch-car-btn', type: 'button', cover: 'dbinfo.filter.car', onclick: openCarSwitcher,
         title: 'Show another car. Everything on this page is about one car; the server’s storage is on Server and storage.' },
       icon('car', 'ico--sm'), car.name, icon('chev-d', 'ico--sm')),
       h('button', { class: 'btn', type: 'button', onclick: (e) => openPeriodPicker(e.currentTarget), title: 'The period of the gaps, dropped frames, unknown time and the signal chart. Totals are all-time.' },
@@ -258,7 +257,7 @@ async function mountCar(ctx) {
     const status = h('div', { class: ['hl-status', hl.healthy ? 'is-ok' : 'is-warn'] },
       h('span', { class: 'hl-status-ic' }, icon(hl.healthy ? 'check' : 'warn')),
       h('div', null,
-        h('div', { class: 'hl-status-head' }, hl.healthy ? 'Data is arriving and checks out' : `${reasons.length === 1 ? 'One thing needs' : `${reasons.length} things need`} attention`),
+        h('div', { class: 'hl-status-head' }, hl.healthy ? 'Data is arriving and looks right' : `${reasons.length === 1 ? 'One thing needs' : `${reasons.length} things need`} attention`),
         h('p', { class: 'explain' }, hl.healthy
           ? 'Logs arrive, pass their signature and chain checks, and nothing waits. The same test sets “healthy” in MQTT.'
           : 'Each problem is listed with what causes it and how to fix it. The same test sets “healthy” in MQTT.')));
@@ -282,7 +281,7 @@ async function mountCar(ctx) {
       metric('Unknown time', hl.unknown_ms != null ? formatDuration(hl.unknown_ms) : null, null, {
         why: 'Not known.', explain: `In the period: time with no usable data (not asleep, which is known). ${spans.length} ${spans.length === 1 ? 'span' : 'spans'}.`,
       }),
-      metric('Chain gaps', (hl.chain_gaps || []).length, 'count', { explain: 'Logs missing from the hash chain in the period.' }),
+      metric('Missing logs', (hl.chain_gaps || []).length, 'count', { explain: 'Gaps in the numbered chain of logs in the period.' }),
       metric('Dropped frames', (hl.dropped_frames || []).length, 'count', { explain: 'Times in the period where the bridge could not keep up and lost CAN frames.' }),
     ], 'hl-figs');
 
@@ -315,7 +314,7 @@ async function mountCar(ctx) {
     const rebuild = admin ? h('div', { class: 'hl-rebuild' },
       h('button', { class: 'btn btn--sm', type: 'button', onclick: (e) => rebuildNow(e.currentTarget), title: 'Work out drives, charges, states and visits again from the stored logs' },
         icon('reset', 'ico--sm'), `Rebuild ${period.label.toLowerCase()}`),
-      h('span', { class: 'note' }, 'Nothing is ever repaired by hand: drives, charges, states and visits are worked out again from the stored logs for the period.'))
+      h('span', { class: 'note' }, 'Works out drives, charges, states and visits again from the stored logs of the period. Nothing is edited by hand.'))
       : h('p', { class: 'note' }, 'An admin can rebuild drives and charges from the stored logs.');
 
     replace(healthSlot, status, fixes, figs, h('div', { class: 'hl-health-cols' }, h('div', null, keyList, flags, teslaBlock()), spanList), rebuild);
@@ -565,9 +564,7 @@ async function mountCar(ctx) {
 
   /* ---------- page */
   replace(ctx.view, root);
-  // admins: every connection the server keeps, in one line, and the way to the overview
-  const conn = isAdmin() ? connectionsCard(ctx) : null;
-  root.append(head, healthPanel, conn?.el, gapsTable.el,
+  root.append(head, healthPanel, gapsTable.el,
     h('div', { class: 'hl-two' }, totalsPanel, countsSlot),
     storageSlot, sigTable.el, plotPanel);
 
@@ -590,7 +587,7 @@ async function mountCar(ctx) {
   });
 
   try {
-    await Promise.all([loadHealth(), loadTotals(), loadStorage(), loadSignals(), gapsTable.ready, conn?.ready]);
+    await Promise.all([loadHealth(), loadTotals(), loadStorage(), loadSignals(), gapsTable.ready]);
   } catch (e) {
     if (ctx.alive()) ctx.fail(e);
     return;
@@ -797,8 +794,7 @@ async function mountSystem(ctx) {
   ctx.onCleanup(() => clearTimeout(carTimer));
 
   replace(ctx.view, root);
-  const conn = isAdmin() ? connectionsCard(ctx) : null;
-  root.append(head, conn?.el, storePanel, carTable.el, srvPanel, errTable.el,
+  root.append(head, storePanel, carTable.el, srvPanel, errTable.el,
     h('p', { class: 'note hl-signals-note', cover: ['nr.dash.state-table', 'nr.dash.state-table.parameter', 'nr.dash.state-table.value', 'nr.dash.state-table.sort-scroll'] },
       icon('signals', 'ico--sm'), ' Every decoded signal of a car, with its value and a chart over time, is on that car’s data health page: open a car above.'));
 
@@ -814,7 +810,7 @@ async function mountSystem(ctx) {
   }
 
   try {
-    await Promise.all([loadStorage(), loadServer(), carTable.ready, conn?.ready]);
+    await Promise.all([loadStorage(), loadServer(), carTable.ready]);
   } catch (e) {
     if (ctx.alive()) ctx.fail(e);
     return;
