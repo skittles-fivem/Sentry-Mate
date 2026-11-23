@@ -678,6 +678,29 @@ html[data-form="phone"] .auth-card { padding: var(--s6) var(--s5); }
 .mv-copied { font-size: var(--f14); line-height: var(--l14); color: var(--muted); }
 .mv-copied:empty { display: none; }
 
+/* the full rebuild (core/fullrebuild.js): a well of fixed size, every row there from the start, one line each */
+.fr-tile { gap: var(--s3); }
+.fr-bare { display: flex; flex-direction: column; padding-top: var(--s3); border-top: 1px solid var(--card-alt); }
+.fr-go { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
+.fr-go > .btn { flex: none; }
+.fr-other { flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fr-well { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4); border-radius: var(--r-sm); background: var(--well); }
+.fr-bar { display: grid; grid-template-columns: minmax(0, 1fr) round(3.5rem, var(--e)); align-items: center; column-gap: var(--s3); height: var(--l14); }
+.fr-pct { text-align: right; font-size: var(--f14); line-height: var(--l14); font-weight: 800; font-variant-numeric: tabular-nums; }
+.fr-well.is-warn .mv-bar-fill { background: var(--sun); }
+.fr-well.is-error .mv-bar-fill { background: var(--bad); }
+.fr-rows { display: flex; flex-direction: column; }
+.fr-row { display: grid; grid-template-columns: round(9rem, var(--e)) minmax(0, 1fr); column-gap: var(--s3); height: var(--l14); font-size: var(--f14); line-height: var(--l14); }
+.fr-k { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fr-v { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fr-row:first-child .fr-v { font-weight: 800; }
+.fr-well.is-ok .fr-row:first-child .fr-v { color: var(--teal); }
+.fr-well.is-warn .fr-row:first-child .fr-v { color: var(--sun); }
+.fr-well.is-error .fr-row:first-child .fr-v { color: var(--bad); }
+.fr-errs { display: flex; flex-direction: column; padding-top: var(--s3); border-top: 1px solid var(--card); }
+html[data-form="phone"] .fr-row { grid-template-columns: round(7rem, var(--e)) minmax(0, 1fr); }
+.fr-err { height: var(--l13); font-size: var(--f13); line-height: var(--l13); color: var(--bad); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 /* --------------------------------------------------------------- data parts: shared by the pages -- */
 
 :root {

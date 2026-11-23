@@ -1196,8 +1196,7 @@ fn data_dir(e: &Engine) -> Option<&Path> {
 
 /// A car's stored CAN logs (sealed, with their sidecars) whose start falls in `[a, b)`, per day of their start in
 /// `tz`: `(date, bytes)`, and the total of every log (the period apart). One look at each file's size in the car's key
-/// folders; logs still arriving are not counted. A finished day packed into one file (see `ingest::store`) counts
-/// whole for the UTC day it is of, when that day meets the period.
+/// folders; logs still arriving are not counted.
 fn log_days(e: &Engine, c: &model::Car, tz: chrono_tz::Tz, a: u64, b: u64) -> (BTreeMap<String, u64>, u64) {
     let mut days: BTreeMap<String, u64> = BTreeMap::new();
     let mut total = 0u64;
@@ -1214,17 +1213,6 @@ fn log_days(e: &Engine, c: &model::Car, tz: chrono_tz::Tz, a: u64, b: u64) -> (B
             let log = name.strip_suffix(".json").unwrap_or(&name);
             if let Some(t) = records::name_start_ms(log).filter(|t| *t >= a && *t < b) {
                 *days.entry(crate::tz::date_str(t, tz)).or_default() += m.len();
-            }
-        }
-        // finished days packed into one file each: the pack's bytes count for its (UTC) day
-        for (day, bytes) in e.store().pack_sizes(key) {
-            total += bytes;
-            let start = chrono::NaiveDate::parse_from_str(&day, "%Y-%m-%d")
-                .ok()
-                .and_then(|d| d.and_hms_opt(0, 0, 0))
-                .and_then(|d| u64::try_from(d.and_utc().timestamp_millis()).ok());
-            if start.is_some_and(|t| t < b && t.saturating_add(86_400_000) > a) {
-                *days.entry(day).or_default() += bytes;
             }
         }
     }

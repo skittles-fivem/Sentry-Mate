@@ -69,22 +69,6 @@ EXPORT_SIZE = 4 * 1024 * 1024 + 123_457
 EXPORT_FILES = 412
 EXPORT_KEEP_MS = DAY
 EXPORT_KEEP_MOST_MS = 7 * DAY
-EXPORT_STALL_MS = MIN  # no progress for this long: `stalled`
-EXPORT_SHA_MS = 2_000  # the checksum, after it is ready (quick)
-# How a new export runs (--export): its counting, waiting and collecting steps (ms), what it carries, and where it
-# stops (a fraction of the bytes collected: `stall` stops making progress there, `fail` fails there).
-EXPORT_PROFILES = {
-    "quick": {"count_ms": 500, "wait_ms": 300, "collect_ms": 2_200, "files": EXPORT_FILES,
-              "bytes": EXPORT_SIZE - 4096, "sha_ms": EXPORT_SHA_MS},
-    "slow": {"count_ms": 4_000, "wait_ms": 2_000, "collect_ms": 120_000, "files": MOVE_FILES,
-             "bytes": MOVE_BYTES, "sha_ms": 30_000},
-    "stall": {"count_ms": 4_000, "wait_ms": 2_000, "collect_ms": 120_000, "files": MOVE_FILES,
-              "bytes": MOVE_BYTES, "sha_ms": 30_000, "stall_at": 0.4},
-    "fail": {"count_ms": 4_000, "wait_ms": 2_000, "collect_ms": 40_000, "files": MOVE_FILES,
-             "bytes": MOVE_BYTES, "sha_ms": 30_000, "fail_at": 0.55},
-}
-EXPORT_FAILURE = ("no_space", "not enough space: 18.4 GB are needed (with 2 GB to spare), 6.1 GB are free",
-                  "Free some space on the data disk, then make the export again.")
 
 # The first label of the address given to "Move here" picks what the made-up old server does.
 SCENARIOS = {
@@ -224,8 +208,6 @@ def seed(st, cfg, now):
     st.setup = {"claim": None, "job": None}
     st.move = {"code": None, "moved": None, "cancelled": None, "undone_ms": None}
     st.exports = {}
-    st.export_profile = getattr(cfg, "export_profile", "quick")
-    _seed_export(st, getattr(cfg, "export_state", "none"), now)
     st.recovery_key_saved = False
     st.recovery_key = DEV_RECOVERY_KEY  # what the made-up RECOVERY-KEY.txt holds until it is saved
     preset = getattr(cfg, "move_state", "none")
@@ -247,28 +229,6 @@ def seed(st, cfg, now):
         made = claim_at - 20 * MIN
     st.move["code"] = {"id": code_id, "made_ms": made, "expires_ms": made + CODE_VALID_MS, "anywhere": False,
                        "wrong_tries": 0, "claim_at_ms": claim_at}
-
-
-# --export-state: an export file already there when the server starts, and the profile it runs with
-EXPORT_STATES = {
-    "none": None,
-    "preparing": ("slow", 50_000),  # collecting, about a third done
-    "stalled": ("stall", 6_000 + 48_000 + 90_000),  # stopped at 40 % a minute and a half ago
-    "failed": ("fail", 60_000),
-    "ready": ("quick", 10_000),  # ready, its SHA-256 worked out
-}
-
-
-def _seed_export(st, state, now):
-    preset = EXPORT_STATES.get(state)
-    if not preset:
-        return
-    profile, ago = preset
-    made = now - ago
-    day = time.strftime("%Y-%m-%d", time.gmtime(made / 1000))
-    eid = "ex7d3e9a41c2"
-    st.exports[eid] = {"id": eid, "made_ms": made, "file_name": f"sentry-mate-{day}.smexport", "sent_bytes": 0,
-                       "last_download_ms": None, "_bytes": None, "profile": profile}
 
 
 def _peer_after_ms(st):
@@ -504,77 +464,18 @@ def _export_bytes(e):
     return e["_bytes"]
 
 
-def _export_progress(done, total, files_done, files_total, phase, step, started, phase_ms, progress_ms, per_s, now):
-    known = total is not None
-    pct = None if not known else round(1000 * done / total) / 10 if total else 100.0
-    eta = -(-(total - done) // per_s) if known and per_s else None
-    quiet = max(0, now - progress_ms)
-    return {"phase": phase, "step": step, "steps": 3, "files_done": files_done, "files_total": files_total,
-            "bytes_done": done, "bytes_total": total, "percent": pct, "bytes_per_s": per_s, "eta_s": eta,
-            "started_ms": started, "phase_started_ms": phase_ms, "progress_ms": progress_ms, "quiet_ms": quiet,
-            "stalled": quiet >= EXPORT_STALL_MS}
-
-
-def _export_timeline(e, now):
-    """Where an export is at `now`: (phase, progress or None, ready_ms or None, failed_ms or None)."""
-    p = EXPORT_PROFILES[e.get("profile", "quick")]
-    t0 = e["made_ms"]
-    t = now - t0
-    c_end = p["count_ms"]
-    w_end = c_end + p["wait_ms"]
-    k_end = w_end + p["collect_ms"]
-    if t < c_end:  # counting: what it will carry, no total yet
-        f = t / c_end
-        files = int(p["files"] * f)
-        return "counting", _export_progress(int(p["bytes"] * f), None, files, None, "counting", 1, t0, t0,
-                                     now, None, now), None, None
-    if t < w_end:  # waiting for the writes under way: nothing moves
-        return "waiting", _export_progress(0, 0, 0, 0, "waiting", 2, t0, t0 + c_end, t0 + c_end, None, now), None, None
-    rate = p["bytes"] * 1000 // p["collect_ms"]
-    stop = p.get("stall_at") or p.get("fail_at")
-    stop_ms = w_end + int(p["collect_ms"] * stop) if stop else None
-    if p.get("fail_at") and t >= stop_ms:
-        return "failed", None, None, t0 + stop_ms
-    if t < k_end or p.get("stall_at"):  # a stalled one never gets further
-        at = min(t, stop_ms) if stop_ms else t
-        f = (at - w_end) / p["collect_ms"]
-        moving = not (stop_ms and t >= stop_ms)
-        return "collecting", _export_progress(int(p["bytes"] * f), p["bytes"], int(p["files"] * f), p["files"],
-                                       "collecting", 3, t0, t0 + w_end, t0 + at,
-                                       rate if moving else 0, now), None, None
-    return "ready", None, t0 + k_end, None
-
-
 def export_view(e, now):
-    phase, progress, ready_ms, failed_ms = _export_timeline(e, now)
-    out = {"id": e["id"], "state": "preparing", "phase": phase, "progress": progress, "checksum": None,
-           "sha256": None, "problem": None, "now_ms": now, "file_name": e["file_name"], "files": None,
-           "bytes": None, "size": None, "sent_bytes": e["sent_bytes"], "made_ms": e["made_ms"], "expires_ms": None,
-           "url": None, "skipped": [], "error": None}
-    if failed_ms is not None:
-        code, message, what = EXPORT_FAILURE
-        out.update(state="failed", phase="failed", error=message,
-                   problem={"code": code, "message": message, "what_to_do": what})
-    elif ready_ms is not None:
-        p = EXPORT_PROFILES[e.get("profile", "quick")]
+    ready = now >= e["made_ms"] + EXPORT_PREPARE_MS
+    out = {"id": e["id"], "state": "preparing", "file_name": e["file_name"], "files": None, "bytes": None,
+           "size": None, "sent_bytes": e["sent_bytes"], "made_ms": e["made_ms"], "expires_ms": None, "url": None,
+           "skipped": [], "error": None}
+    if ready:
         expires = min(e["made_ms"] + EXPORT_KEEP_MOST_MS, max(e["made_ms"], e["last_download_ms"] or 0)
-                      + (ready_ms - e["made_ms"]) + EXPORT_KEEP_MS)
-        state = "expired" if now >= expires else "ready"
-        out.update(state=state, phase=state)
-        if state == "ready":
-            sha_t = now - ready_ms
-            if sha_t >= p["sha_ms"]:
-                checksum = {"state": "done", "bytes_done": None, "bytes_total": None, "percent": None,
-                            "bytes_per_s": None, "eta_s": None, "quiet_ms": None, "stalled": False, "error": None}
-                out["sha256"] = hashlib.sha256(_export_bytes(e)).hexdigest()
-            else:
-                checksum = _export_progress(EXPORT_SIZE * sha_t // p["sha_ms"], EXPORT_SIZE, 0, 0, "checking", 3,
-                                     e["made_ms"], ready_ms, now, EXPORT_SIZE * 1000 // p["sha_ms"], now)
-                checksum.update(state="working", error=None)
-            out.update(checksum=checksum, files=p["files"],
-                       bytes=EXPORT_SIZE - 4096 if p["bytes"] == EXPORT_SIZE - 4096 else p["bytes"], size=EXPORT_SIZE, expires_ms=expires,
-                       url=f"/api/v1/system/exports/{e['id']}/file",
-                       skipped=[{"path": "lost+found", "why": "this server can't read it (not carried)"}])
+                      + EXPORT_PREPARE_MS + EXPORT_KEEP_MS)
+        out.update(state="expired" if now >= expires else "ready", files=EXPORT_FILES,
+                   bytes=EXPORT_SIZE - 4096, size=EXPORT_SIZE, expires_ms=expires,
+                   url=f"/api/v1/system/exports/{e['id']}/file",
+                   skipped=[{"path": "lost+found", "why": "this server can't read it (not carried)"}])
     return out
 
 
@@ -601,7 +502,7 @@ def post_export(req):
     eid = st.new_id("ex")
     day = time.strftime("%Y-%m-%d", time.gmtime(req.now / 1000))
     e = {"id": eid, "made_ms": req.now, "file_name": f"sentry-mate-{day}.smexport", "sent_bytes": 0,
-         "last_download_ms": None, "_bytes": None, "profile": st.export_profile}
+         "last_download_ms": None, "_bytes": None}
     with st.lock:
         st.exports.clear()  # one export at a time: a new one replaces the one there was
         st.exports[eid] = e
@@ -616,14 +517,11 @@ def get_export(req):
 
 
 def delete_export(req):
-    """Removes the export file; one being made is cancelled."""
     e = _export(req)
-    cancelled = export_view(e, req.now)["state"] == "preparing"
     with req.store.lock:
         req.store.exports.pop(e["id"], None)
-    req.store.record(req.account, "export-removed", f"export:{e['id']}",
-                     "Cancelled the export file being made." if cancelled else "Removed the export file.")
-    return {"deleted": True, "id": e["id"], "cancelled": cancelled}
+    req.store.record(req.account, "export-removed", f"export:{e['id']}", "Removed the export file.")
+    return {"deleted": True, "id": e["id"]}
 
 
 def export_file(req):
@@ -631,7 +529,7 @@ def export_file(req):
     v = export_view(e, req.now)
     if v["state"] == "preparing":
         raise conflict("not_ready", "The export is being prepared. Try again in a few seconds.")
-    if v["state"] in ("expired", "failed"):
+    if v["state"] == "expired":
         raise not_found("export_gone", "This export was removed. Make a new one.")
     data = _export_bytes(e)
     size = len(data)

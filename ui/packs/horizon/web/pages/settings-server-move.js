@@ -18,7 +18,6 @@ import { flash } from '../core/flash.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
 import { dateTime, dur, ago, DASH } from '../core/fmt.js';
 import { dayKey } from '../shared/time.js';
-import { exportModel, exportPollMs } from '../shared/exportjob.js';
 
 const enc = encodeURIComponent;
 const bytes = (n) => (n == null ? DASH : format(n, 'bytes'));
@@ -389,23 +388,20 @@ export function movePanel(ctx, { tz, zone }) {
   }
 
   /* ---------------------------------------------------------------- export file */
-  // The status panel has the same rows in every state (none, making, stalled, failed, ready), each always there,
-  // so the box keeps its size as the export goes on. The words come from shared/exportjob.js.
   function scheduleExp() {
     clearTimeout(expTimer);
-    const ms = exportPollMs(S.exp);
-    if (ms) expTimer = setTimeout(refreshExp, ms);
+    if (S.exp?.state === 'preparing') expTimer = setTimeout(refreshExp, 1000);
   }
-  async function refreshExp() {
+  async function refreshExp(autoDownload = false) {
     try {
       const e = S.exp ? await ctx.api.get(`system/exports/${enc(S.exp.id)}`) : null;
       if (!ctx.alive()) return;
       const was = S.exp?.state;
-      S.exp = e; S.expErr = null;
-      if (e && was === 'preparing' && e.state === 'ready' && S.wantDownload) { S.wantDownload = false; download(e); }
+      S.exp = e;
+      if (e && was === 'preparing' && e.state === 'ready' && (autoDownload || S.wantDownload)) { S.wantDownload = false; download(e); }
     } catch (err) {
       if (!ctx.alive()) return;
-      if (err.status === 404) { S.exp = null; S.expErr = null; } else S.expErr = err;
+      if (err.status === 404) S.exp = null; else S.expErr = err;
     }
     paintExp(); scheduleExp();
   }
@@ -419,7 +415,7 @@ export function movePanel(ctx, { tz, zone }) {
     const r = await askPassword(ctx, {
       title: 'Download an export file', submit: 'Make the file',
       intro: h('div', { class: 'mv-intro' },
-        h('p', null, 'The server makes one file with everything in it, in three steps: it counts what goes in, waits for the writes under way, then takes a snapshot (uploads wait for that step). This page shows how far it got; you can close it and come back. Then your browser downloads the file.'),
+        h('p', null, 'The server makes one file with everything in it, in a few seconds (uploads wait for those seconds), then your browser downloads it.'),
         h('p', null, 'The file opens only with this server\'s ', h('b', null, 'recovery key'), ' (the SMRK- line you saved when it was set up). It never holds the key file, so without the recovery key it is useless to anyone who takes it.')),
       // one being made already (another tab, another admin): follow that one
       run: (cred) => ctx.api.post('system/exports', cred).catch(async (e) => {
@@ -431,77 +427,33 @@ export function movePanel(ctx, { tz, zone }) {
     S.exp = r; S.expErr = null; S.wantDownload = true;
     paintExp(); scheduleExp();
   }
-  async function cancelExport() {
-    if (!S.exp || !(await confirmDialog('The server stops making the file and keeps nothing of it. Uploads go on. You can make a new one at any time.', { title: 'Stop making the export file?', ok: 'Stop making it', danger: true }))) return;
-    try {
-      await ctx.api.del(`system/exports/${enc(S.exp.id)}`);
-      S.exp = null; S.wantDownload = false;
-      flash('The export file was cancelled.', { kind: 'info' });
-    } catch (e) { flash(`Could not cancel it: ${errText(e)}`, { kind: 'error' }); }
-    if (ctx.alive()) { paintExp(); scheduleExp(); }
-  }
   async function removeExport() {
     if (!(await confirmDialog('The file is removed from this server. A copy you downloaded stays where you put it.', { title: 'Remove the export file?', ok: 'Remove it', danger: true }))) return;
     try { await ctx.api.del(`system/exports/${enc(S.exp.id)}`); S.exp = null; flash('The export file was removed from the server.'); } catch (e) { flash(`Could not remove it: ${errText(e)}`, { kind: 'error' }); }
     if (ctx.alive()) paintExp();
   }
-  function expPanel(e) {
-    const m = exportModel(e);
-    const ready = m.kind === 'ready';
-    const ic = { busy: 'download', warn: 'warn', ok: 'check', error: 'warn', info: 'download' }[m.tone] || 'info';
-    const bar = h('div', { class: ['bar', 'xp-bar', m.percent == null && m.kind === 'busy' && 'xp-bar--unknown', m.tone === 'error' && 'bar--low', m.tone === 'warn' && 'bar--warm'],
-      role: 'progressbar', 'aria-label': 'Export file', 'aria-valuemin': '0', 'aria-valuemax': '100',
-      'aria-valuenow': m.percent == null ? null : String(Math.round(m.percent)), 'aria-valuetext': m.percentText || m.head }, h('i'));
-    setVars(bar, { '--w': `${(m.percent ?? 0).toFixed(1)}%` });
-    let line1 = m.amount && m.files ? `${m.amount} · ${m.files}` : m.amount || m.files;
-    let line2 = m.speed;
-    if (ready) {
-      line1 = h('span', { class: 'mono' }, e.file_name);
-      line2 = `Kept until ${t(e.expires_ms)} · ${e.sent_bytes ? `${bytes(e.sent_bytes)} downloaded so far` : 'not downloaded yet'}`;
-    } else if (m.kind === 'failed') {
-      line1 = `Code: ${m.problem.code}`;
-      line2 = '';
-    }
-    let note = null;
-    if (S.expErr) note = h('p', { class: 'xp-note-text' }, h('b', null, 'The page lost touch with the server. '), `It keeps trying; the export goes on there. (${errText(S.expErr)})`);
-    else if (m.warn) note = h('p', { class: 'xp-note-text' }, m.warn.text);
-    else if (m.problem) note = h('p', { class: 'xp-note-text' }, h('b', null, 'What to do: '), m.problem.todo);
-    else if (m.sha256) note = h('p', { class: 'xp-note-text' }, h('b', null, 'SHA-256 '), h('span', { class: 'mono xp-sha' }, m.sha256));
-    else if (m.checksum) note = h('p', { class: 'xp-note-text' }, m.checksum);
-    else if (m.kind === 'busy') note = h('p', { class: 'xp-note-text' }, 'You can close this page: the server goes on, and the page shows it again when you come back.');
-    else if (m.kind === 'none' || m.kind === 'expired') note = h('p', { class: 'xp-note-text' }, 'It takes seconds to minutes, most of it for the database. Uploads wait only for the last step.');
-    const acts = [];
-    if (m.kind === 'busy') acts.push(btn('Cancel', cancelExport, { ic: 'x' }));
-    if (ready) {
-      acts.push(h('a', { class: 'btn btn--primary', href: e.url, download: e.file_name }, icon('download', 'ico--sm'), 'Download'));
-      acts.push(btn('Make new', makeExport, { kind: 'ghost', ic: 'reset' }));
-      acts.push(btn('Remove', removeExport, { kind: 'ghost', ic: 'x' }));
-    }
-    if (m.kind === 'failed') acts.push(btn('Make a new one', makeExport, { kind: 'primary', ic: 'reset' }));
-    if (m.kind === 'none' || m.kind === 'expired') acts.push(btn('Download export file', makeExport, { kind: 'primary', ic: 'download' }));
-    return h('div', { class: ['xp', `xp--${m.kind}`, `xp--${m.tone}`], role: 'group', 'aria-label': 'Export file status' },
-      h('div', { class: 'xp-head' },
-        h('span', { class: 'xp-ic' }, icon(ic)),
-        h('div', { class: 'xp-titles' },
-          h('p', { class: 'xp-title' }, m.head),
-          h('p', { class: 'xp-sub' }, m.sub)),
-        h('span', { class: 'xp-pct' }, m.percentText)),
-      h('ol', { class: 'xp-steps', 'aria-label': 'Steps of making the file' }, m.steps.map((st) =>
-        h('li', { class: ['xp-step', `xp-step--${st.state}`], 'aria-current': st.state === 'now' ? 'step' : null },
-          h('span', { class: 'xp-step-n' }, st.state === 'done' ? icon('check', 'ico--sm') : String(st.n)), h('span', null, st.label)))),
-      bar,
-      h('p', { class: 'xp-line' }, line1),
-      h('p', { class: 'xp-line xp-line--2' }, line2),
-      h('div', { class: ['xp-note', m.tone === 'warn' && 'xp-note--warn', m.tone === 'error' && 'xp-note--error'] }, note),
-      h('div', { class: 'row xp-acts' }, acts));
-  }
   function paintExp() {
     const e = S.exp;
-    replace(expBox, [
-      expPanel(e),
-      e?.state === 'ready' ? skippedNote(e.skipped) : null,
-      h('p', { class: 'note' }, h('b', null, 'On the new server:'), ' choose Restore from an export file on its first page, choose this file and type the recovery key. A cut download carries on when you press Download again.'),
-    ]);
+    const parts = [];
+    if (S.expErr) parts.push(h('p', { class: 'form-error' }, icon('warn'), `Could not read the export: ${errText(S.expErr)}`));
+    if (!e || e.state === 'expired') {
+      if (e?.state === 'expired') parts.push(h('p', { class: 'note' }, `The last export file (${e.file_name}) was removed ${t(e.expires_ms)}. Make a new one.`));
+      parts.push(h('div', { class: 'row mv-acts' }, btn('Download export file', makeExport, { kind: 'primary', ic: 'download' })));
+    } else if (e.state === 'preparing') {
+      parts.push(h('div', { class: 'mv-preparing' }, h('span', { class: 'mv-spin', 'aria-hidden': 'true' }), h('p', null, h('b', null, 'Making the file…'), ' a few seconds. The download starts by itself.')));
+    } else {
+      parts.push(h('div', { class: 'mv-file' },
+        h('p', { class: 'mv-file-name' }, icon('download', 'ico--sm'), h('span', { class: 'mono' }, e.file_name)),
+        h('p', { class: 'mv-file-meta' }, `${bytes(e.size)} · ${count(e.files)} files · made ${t(e.made_ms)} · kept until ${t(e.expires_ms)}`,
+          e.sent_bytes ? ` · ${bytes(e.sent_bytes)} downloaded so far` : null),
+        h('div', { class: 'row mv-acts' },
+          h('a', { class: 'btn btn--primary', href: e.url, download: e.file_name }, icon('download', 'ico--sm'), 'Download'),
+          btn('Make a new one', makeExport, { kind: 'ghost', ic: 'reset' }),
+          btn('Remove from the server', removeExport, { kind: 'ghost', ic: 'x' })),
+        skippedNote(e.skipped)));
+    }
+    parts.push(h('p', { class: 'note' }, h('b', null, 'On the new server:'), ' choose Restore from an export file on its first page, choose this file and type the recovery key. A cut download carries on when you press Download again.'));
+    replace(expBox, parts);
   }
 
   /* ---------------------------------------------------------------- the panel */

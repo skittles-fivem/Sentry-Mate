@@ -11,7 +11,6 @@ use web::testkit::{ADMIN, ADMIN_PASSWORD, TestServer};
 struct Kit {
     s: TestServer,
     keys: PathBuf,
-    data: PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -22,14 +21,6 @@ async fn kit() -> Kit {
 
 /// The same; `with_data`: the folder holds a made-up file of the owner's (else it is as new).
 async fn kit_with(with_data: bool) -> Kit {
-    kit_full(with_data, None).await
-}
-
-/// A test's hook at the move side's named points.
-type Hook = Arc<dyn Fn(&str) + Send + Sync>;
-
-/// The same, with a hook at the move side's named points ([`web::moving::MoveSite::with_pause`]).
-async fn kit_full(with_data: bool, pause: Option<Hook>) -> Kit {
     let dir = tempfile::tempdir().unwrap();
     let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
     std::fs::create_dir_all(&data).unwrap();
@@ -39,16 +30,12 @@ async fn kit_full(with_data: bool, pause: Option<Hook>) -> Kit {
     std::fs::create_dir_all(&keys).unwrap();
     // the folder's own vault file (an export's header carries its recovery slot)
     vault::Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
-    let mut site = web::moving::MoveSite::new(data.clone(), keys.clone(), env!("CARGO_PKG_VERSION"));
-    if let Some(p) = pause {
-        site = site.with_pause(move |at| p(at));
-    }
-    let site = Arc::new(site);
+    let site = Arc::new(web::moving::MoveSite::new(data.clone(), keys.clone(), env!("CARGO_PKG_VERSION")));
     let s = TestServer::start_with(move |b| b.service(site)).await;
     if with_data {
         s.app.vault.write_file(&data.join("db").join("made-up"), "db/made-up", b"a made-up row").unwrap();
     }
-    Kit { s, keys, data, _dir: dir }
+    Kit { s, keys, _dir: dir }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -333,117 +320,4 @@ async fn get_setup_shows_the_claim_and_the_old_one_call_set_up_shows_the_recover
     assert_eq!(c.get("/api/v1/setup").await.json(), done);
     let r = c.post("/api/v1/setup", json!({ "code": code, "name": "second", "password": ADMIN_PASSWORD })).await;
     assert_eq!((r.status, r.code()), (409, Some("setup_done".into())));
-}
-
-/// Waits for the export file `id`'s checksum.
-async fn checksummed(admin: &mut web::testkit::Client, id: &str) -> serde_json::Value {
-    for _ in 0..400 {
-        let one = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
-        if one["checksum"]["state"] != "working" {
-            return one;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-    panic!("the export file's checksum was not worked out");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_export_file_shows_its_progress_and_its_sha256_and_can_be_cancelled() {
-    use sha2::Digest;
-    // the job waits at its start until the test lets it go (once for each export made)
-    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
-    let (hit_tx, mut hit_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-    let go_rx = std::sync::Mutex::new(go_rx);
-    let hook: Hook = Arc::new(move |at: &str| {
-        if at == "export-start" {
-            hit_tx.send(()).unwrap();
-            go_rx.lock().unwrap().recv().unwrap();
-        }
-    });
-    let k = kit_full(true, Some(hook)).await;
-    let mut admin = k.s.admin().await;
-    let r = admin.post("/api/v1/system/exports", json!({ "password": ADMIN_PASSWORD })).await;
-    assert_eq!(r.status, 201, "{}", r.text());
-    let id = r.json()["id"].as_str().unwrap().to_string();
-    tokio::time::timeout(std::time::Duration::from_secs(30), hit_rx.recv()).await.unwrap().unwrap();
-    // under way: its phase and progress; the page closed and opened again finds it in the list
-    let one = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
-    assert_eq!((one["state"].as_str(), one["phase"].as_str()), (Some("preparing"), Some("counting")), "{one}");
-    let p = &one["progress"];
-    for key in [
-        "phase",
-        "step",
-        "steps",
-        "files_done",
-        "files_total",
-        "bytes_done",
-        "bytes_total",
-        "percent",
-        "bytes_per_s",
-        "eta_s",
-        "started_ms",
-        "phase_started_ms",
-        "progress_ms",
-        "quiet_ms",
-        "stalled",
-    ] {
-        assert!(p.get(key).is_some(), "{key}: {one}");
-    }
-    assert_eq!((p["step"].as_u64(), p["steps"].as_u64(), p["stalled"].as_bool()), (Some(1), Some(3), Some(false)));
-    assert!(p["bytes_total"].is_null() && p["percent"].is_null(), "not counted yet: {one}");
-    assert!(one["problem"].is_null() && one["sha256"].is_null() && one["checksum"].is_null(), "{one}");
-    let list = admin.get("/api/v1/system/exports").await.json();
-    assert_eq!(list["items"][0]["id"], json!(id));
-    // nothing done for a minute: stalled
-    k.s.advance(web::moving::EXPORT_STALL_MS);
-    let one = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
-    assert_eq!(one["progress"]["stalled"], json!(true), "{one}");
-    assert!(one["progress"]["quiet_ms"].as_u64().unwrap() >= web::moving::EXPORT_STALL_MS);
-    // cancel: it is gone at once, the job stops, and its snapshot with it
-    let r = admin.delete(&format!("/api/v1/system/exports/{id}"), json!({})).await;
-    assert_eq!(r.status, 200, "{}", r.text());
-    assert_eq!((r.json()["deleted"].as_bool(), r.json()["cancelled"].as_bool()), (Some(true), Some(true)));
-    go_tx.send(()).unwrap();
-    assert_eq!(admin.get("/api/v1/system/exports").await.json()["items"], json!([]));
-    assert_eq!(admin.get(&format!("/api/v1/system/exports/{id}")).await.code(), Some("no_such_export".into()));
-
-    // a new one runs to the end: ready, then its SHA-256 is that of the bytes downloaded
-    go_tx.send(()).unwrap();
-    let r = admin.post("/api/v1/system/exports", json!({ "password": ADMIN_PASSWORD })).await;
-    assert_eq!(r.status, 201, "{}", r.text());
-    let id = r.json()["id"].as_str().unwrap().to_string();
-    let one = ready_export(&mut admin, &id).await;
-    assert_eq!((one["state"].as_str(), one["phase"].as_str()), (Some("ready"), Some("ready")), "{one}");
-    assert!(one["progress"].is_null(), "{one}");
-    let one = checksummed(&mut admin, &id).await;
-    assert_eq!(one["checksum"]["state"], "done", "{one}");
-    let sha = one["sha256"].as_str().unwrap().to_string();
-    let r = admin.get(one["url"].as_str().unwrap()).await;
-    assert_eq!(r.status, 200);
-    assert_eq!(hex::encode(sha2::Sha256::digest(&r.body)), sha);
-    let left = std::fs::read_dir(k.data.join(moving::export::SNAPSHOTS)).unwrap().count();
-    assert_eq!(left, 1, "only the snapshot of the export there is");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_export_file_that_could_not_be_made_says_why_with_a_code() {
-    let k = kit().await;
-    // the snapshots' folder can't be made: a file stands in its place
-    std::fs::write(k.data.join(moving::export::SNAPSHOTS), b"in the way").unwrap();
-    let mut admin = k.s.admin().await;
-    let r = admin.post("/api/v1/system/exports", json!({ "password": ADMIN_PASSWORD })).await;
-    assert_eq!(r.status, 201, "{}", r.text());
-    let id = r.json()["id"].as_str().unwrap().to_string();
-    let one = ready_export(&mut admin, &id).await;
-    assert_eq!((one["state"].as_str(), one["phase"].as_str()), (Some("failed"), Some("failed")), "{one}");
-    assert_eq!(one["problem"]["code"], "disk", "{one}");
-    assert!(one["problem"]["message"].as_str().is_some_and(|m| !m.is_empty()), "{one}");
-    assert!(one["problem"]["what_to_do"].as_str().is_some_and(|m| m.contains("export again")), "{one}");
-    assert!(one["error"].is_string() && one["url"].is_null(), "{one}");
-    // a new one may be made at once
-    std::fs::remove_file(k.data.join(moving::export::SNAPSHOTS)).unwrap();
-    let r = admin.post("/api/v1/system/exports", json!({ "password": ADMIN_PASSWORD })).await;
-    assert_eq!(r.status, 201, "{}", r.text());
-    let one = ready_export(&mut admin, r.json()["id"].as_str().unwrap()).await;
-    assert_eq!(one["state"], "ready", "{one}");
 }

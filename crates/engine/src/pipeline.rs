@@ -57,7 +57,12 @@ pub(crate) fn status_word(s: &ingest::judge::Status) -> &'static str {
 /// distrusted, a log judged again, or the owner's "use it anyway" all change that), and it was decoded with these
 /// rules and this DBC set.
 pub(crate) fn fresh(e: &LogEntry, r: &ingest::judge::Record, profile: &str) -> bool {
-    e.usable == r.usable() && e.status == status_word(&r.status) && e.rules == records::rules() && e.profile == profile
+    e.rules == records::rules() && fresh_but_rules(e, r, profile)
+}
+
+/// [`fresh`] but for the rules it was made with (made with older ones, it is the same log checked the same way).
+pub(crate) fn fresh_but_rules(e: &LogEntry, r: &ingest::judge::Record, profile: &str) -> bool {
+    e.usable == r.usable() && e.status == status_word(&r.status) && e.profile == profile
 }
 
 /// How far before its name's start a left-out log's hole may begin, and how long after it it may end. A log holds a
@@ -641,6 +646,10 @@ impl Engine {
             Some(Outcome::Hole { .. }) => meta.holes = meta.holes.saturating_sub(1),
             None => {}
         }
+        // the first log of a history (a new car's, or one cleared whole) names the decoding it is made with
+        if meta.decoded == 0 && meta.holes == 0 {
+            meta.version = Some(crate::full::derived_version());
+        }
         if decoded {
             meta.decoded += 1;
         } else {
@@ -1093,7 +1102,11 @@ impl Engine {
         // only those not recorded the same way (read per day, so this is cheap)
         let mut day_cache: Option<(u32, std::sync::Arc<records::DayRec>)> = None;
         let profile = c.profile().dbc_name();
+        // a car whose history waits for a full rebuild (the server's decoding changed): its logs are not decoded
+        // again in place for the new rules alone, the full rebuild makes them again beside the old history
+        let hold = self.version_held(car);
         let mut wanted = Vec::new();
+        let mut bytes = 0;
         for (start, key, name, r) in todo {
             let d = records::day_of(start);
             if day_cache.as_ref().is_none_or(|(cd, _)| *cd != d) {
@@ -1101,15 +1114,19 @@ impl Engine {
             }
             let rec = day_cache.as_ref().map(|(_, r)| r);
             // also a log whose check changed while no one was told (a key distrusted, a log judged again)
-            let fresh = rec.and_then(|d| d.logs.get(&name)).is_some_and(|e| fresh(e, &r, profile));
+            let fresh = rec
+                .and_then(|d| d.logs.get(&name))
+                .is_some_and(|e| fresh(e, &r, profile) || (hold && fresh_but_rules(e, &r, profile)));
             if !fresh {
-                wanted.push((key, name));
+                let len = r.length.unwrap_or(0);
+                bytes += len;
+                wanted.push((key, name, len));
             }
         }
         if let Some(j) = job {
-            j.add_total(wanted.len() as u64);
+            j.add_total(wanted.len() as u64, bytes);
         }
-        for (key, name) in wanted {
+        for (key, name, len) in wanted {
             if job.is_some_and(|j| j.cancelled()) {
                 return Ok(());
             }
@@ -1118,10 +1135,13 @@ impl Engine {
             let r = self.log_locked(car, &key, &name, false);
             drop(held);
             if let Err(e) = r {
+                if let Some(j) = job {
+                    j.log_failed(&name, e.to_string());
+                }
                 self.failed(&e);
             }
             if let Some(j) = job {
-                j.step(self, Some(car));
+                j.step(self, Some(car), len);
             }
         }
         // Tesla API data stored and not built yet (a restart, or a rebuild of the car)

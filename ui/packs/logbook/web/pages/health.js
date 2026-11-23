@@ -1,17 +1,19 @@
 // Sentry Mate, "Logbook" UI pack: Data health and storage. Two addresses, one module.
 //
 // /cars/{car}/health   Is this car's data arriving, complete and trusted? Last upload, last log check,
-//                      the bridge keys, chain gaps, dropped frames, unknown time, logs waiting and a
-//                      rebuild from the stored logs, each with its cause and the fix; the gaps of the
-//                      period; what is recorded (all time, per source) and the rows kept; what the car's
-//                      data takes on disk, by kind and by day; every decoded signal of the newest log,
-//                      searchable, with a chosen signal drawn over the period.
+//                      the bridge keys, chain gaps, dropped frames, unknown time, logs waiting and
+//                      Rebuild all data (from the stored logs and API data, with its progress), each
+//                      with its cause and the fix; the gaps of the period; what is recorded (all time,
+//                      per source) and the rows kept; what the car's data takes on disk, by kind and by
+//                      day; every decoded signal of the newest log, searchable, with a chosen signal
+//                      drawn over the period.
 // /system              The server: storage by kind, free space, growth and "full in"; every car's data
 //                      status in one paged list; the server's own health (uptime, versions, memory,
 //                      housekeeping, timings), its clock and the /health address; the one error shape of
 //                      the API, with a live try of an unknown car.
 // Data: GET cars/{car}/health, cars/{car}/gaps, cars/{car}/totals?source=, cars/{car}/updates (summary),
-//       cars/{car}/storage, cars/{car}/signals/latest, cars/{car}/signals; POST cars/{car}/rebuild (admin);
+//       cars/{car}/storage, cars/{car}/signals/latest, cars/{car}/signals; GET/POST cars/{car}/full-rebuild
+//       and DELETE system/full-rebuild (admin: Rebuild all data);
 //       GET system/storage, system/health (admin), geocode/status, cars.
 // Live: a "rows" event for the car loads its health, gaps and totals again.
 
@@ -24,11 +26,12 @@ import { formatDateTime, formatTime, formatDuration, formatDayKey, dayStart, HOU
 import { formatNumber } from '../shared/i18n.js';
 import { pageHead, section, figure, figures, q, ago, icon, empty, errorView, errorWords, flag, chip, button, sep, stateMark, loadingBlock, note } from '../core/ui.js';
 import { dataTable } from '../core/table.js';
-import { confirmDialog } from '../core/dialog.js';
 import { stackedCharts } from '../core/chart.js';
 import { zoneLabel, count } from '../core/format.js';
 import { sourceMark } from '../core/sources.js';
 import { overviewCard } from './integrations-overview.js';
+import { fullRebuild } from './rebuild-parts.js';
+import * as fr from '../shared/fullrebuild.js';
 
 export const id = 'health';
 export const css = true;
@@ -182,13 +185,6 @@ function kindsTable(ctx, kinds, total, { parts, label }) {
   return { table: t, el: h('div', { class: 'hl-kinds-box' }, t.el, totalEl) };
 }
 
-/** How long a rebuild took: milliseconds below one second, so a quick one never reads "0 s". */
-function tookText(tookMs) {
-  if (tookMs == null) return 'no time at all';
-  if (tookMs < 1000) return `${formatNumber(Math.max(0, Math.round(tookMs)))} ms`;
-  return formatDuration(tookMs, { seconds: true });
-}
-
 /**
  * One section's loader that never takes the page down: an error is drawn in the section's own
  * box with a Try again button. Only a car that does not exist (or may not be seen) is passed on,
@@ -276,10 +272,24 @@ async function mountCar(ctx) {
 
   /* ---------------------------------------------------------------- health */
 
+  // Rebuild all data (admins): everything worked out made again from the stored data, at the foot of the
+  // checks; while one runs for this car its step shows on the Rebuild line
+  const rebuildWord = h('span');
+  let lastHl = null;
+  let fullLines = null;
+  function paintRebuild(fs = full && full.status(), ls = fullLines) {
+    fullLines = ls;
+    const step = fs && fr.running(fs) && fs.this_car && ls ? ls[1].text : '';
+    replace(rebuildWord, step ? h('span', { class: 'hl-warn' }, `Running: ${step}`)
+      : lastHl && lastHl.rebuild_pending ? h('span', { class: 'hl-warn' }, 'Running') : 'Nothing pending');
+  }
+  const full = admin ? fullRebuild(ctx, { car, label: 'Rebuild all data', onStatus: paintRebuild }) : null;
+
   const healthBox = h('div', { class: 'hl-health' }, loadingBlock(5));
   ctx.main.append(section({ title: 'Is data arriving?', note: 'checked now, over the period', cover: 'faq.stopped-recording', cls: 'hl-block', id: 'hl-health',
     actions: h('a', { class: 'link-arrow', href: state.buildUrl('settings-cars', { car: cid }) }, 'Settings: Cars', icon('arrowRight')) }, healthBox));
   const connCard = connSection(ctx);
+
 
   const loadHealth = guarded(ctx, 'Could not check the data', (v) => replace(healthBox, v), async () => {
     const hl = await ctx.api.get(base('health'), ctx.params);
@@ -338,7 +348,7 @@ async function mountCar(ctx) {
         : note('No key is tied to this car yet. Pair a CAN Bridge on Settings: Cars.'),
       facts([
         ['Uploads', hl.uploads_enabled ? h('span', { class: 'hl-ok' }, 'Accepted') : h('span', { class: 'hl-warn' }, 'Turned off for this car'), hl.uploads_enabled ? null : 'Turn them on again on Settings: Cars.'],
-        ['Rebuild', hl.rebuild_pending ? h('span', { class: 'hl-warn' }, 'Running') : 'Nothing pending'],
+        ['Rebuild', rebuildWord],
       ]));
 
     const spanList = h('div', { class: 'hl-col' },
@@ -349,11 +359,10 @@ async function mountCar(ctx) {
         : note('None: every moment of the period is known (driving, charging, parked or asleep).'),
       missingCard(hl.missing_logs || {}));
 
-    const rebuild = h('div', { class: 'hl-rebuild' },
-      admin ? button(`Rebuild ${periodWords.toLowerCase()}`, { iconName: 'reset', cls: 'button-small', onclick: (e) => rebuildNow(e.currentTarget), title: 'Work out drives, charges, states and visits again from the stored logs.' }) : null,
-      note(admin
-        ? 'Nothing is ever repaired by hand: drives, charges, states and visits of the period are worked out again from the stored logs. Typed names, purposes and prices stay.'
-        : 'Nothing is ever repaired by hand: an admin can work drives and charges out again from the stored logs.'));
+    lastHl = hl;
+    paintRebuild();
+    const rebuild = full ? h('div', { class: 'hl-full', id: 'full-rebuild' }, full.el)
+      : note('Nothing is ever repaired by hand: an admin can make all of this car’s data again from the stored logs and API data.');
 
     replace(healthBox, status, fixes, figs, h('div', { class: 'hl-cols' }, keyList, spanList), rebuild);
   }
@@ -375,24 +384,6 @@ async function mountCar(ctx) {
         ['Last checked', m.scanned_ms != null ? when(m.scanned_ms, tz) : 'Not checked yet', 'The server looks at start-up and once a day.'],
       ], { cls: 'hl-missing' }),
     ];
-  }
-
-  async function rebuildNow(btn) {
-    const ok = await confirmDialog({
-      title: 'Rebuild from the stored logs',
-      text: `Drives, charges, states and visits of ${car.name || cid} for ${periodWords.toLowerCase()} are worked out again from the stored logs. Typed names, purposes and prices stay. The lists change only where the logs say something new.`,
-      yes: 'Rebuild',
-    });
-    if (!ok || !ctx.alive()) return;
-    btn.disabled = true;
-    try {
-      const r = await ctx.api.post(base('rebuild'), { ...ctx.params });
-      if (!ctx.alive()) return;
-      ctx.flash(`Rebuilt from ${count(r.logs_read ?? 0, 'log')} in ${tookText(r.took_ms)}.`);
-      reloadAll(null).catch(() => {});
-    } catch (e) {
-      if (ctx.alive()) ctx.flash(`Not rebuilt: ${errorWords(e).text}`, { kind: 'error' });
-    } finally { btn.disabled = false; }
   }
 
   /* ---------------------------------------------------------------- gaps */
@@ -684,7 +675,7 @@ async function mountCar(ctx) {
     aside.paint();
   });
 
-  await settleAll([loadHealth(), gapsTable.load(), loadTesla(), loadTotals(), loadStorage(), loadSignals(), connCard]);
+  await settleAll([loadHealth(), gapsTable.load(), loadTesla(), loadTotals(), loadStorage(), loadSignals(), connCard, full && full.ready]);
   if (!ctx.alive()) return {};
   // start with the battery level drawn, so the chart is there before anything is chosen
   const first = signals.find((s) => s.series === 'soc_display' && s.has_series) || signals.find((s) => s.has_series);

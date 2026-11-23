@@ -256,7 +256,9 @@ class Contract(ServerCase):
             ("POST", "/api/v1/release/check", lambda: (None, {}, None) if c.json("PATCH", "/api/v1/settings", {
                 "version": c.get("/api/v1/settings")["version"], "release_check": {"enabled": True}}) else None),
             ("POST", "/api/v1/cars/{car}/rebuild", lambda: (None, {"from_ms": now - 2 * DAY}, None)),
-            ("POST", "/api/v1/system/storage/compact", lambda: (None, None, None)),
+            ("POST", "/api/v1/cars/{car}/full-rebuild", lambda: (None, {"confirm_password": "sentry-mate-dev"}, None)),
+            ("DELETE", "/api/v1/system/full-rebuild", lambda: (None, {}, None)),
+            ("POST", "/api/v1/system/full-rebuild", lambda: (None, {"confirm_password": "sentry-mate-dev"}, None)),
             ("PATCH", "/api/v1/cars/{car}/overlaps",
              lambda: (self.fill("/api/v1/cars/{car}/overlaps", car="c3"),
                       {"id": c.get("/api/v1/cars/c3/overlaps")["items"][0]["id"], "shown": "can"}, None)),

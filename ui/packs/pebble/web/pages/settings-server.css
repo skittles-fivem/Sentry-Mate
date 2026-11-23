@@ -25,29 +25,3 @@
   .au-row .row-text { flex: 1 1 100%; order: 2; }
   .au-who { order: 1; flex: 1 1 100%; max-width: none; justify-content: flex-start; text-align: left; color: var(--muted); padding-top: 0; }
 }
-
-/* the export file's status: the same rows in every state, each keeping its height, so the tile never jumps */
-.xp { display: grid; grid-template-rows: auto auto auto auto auto 1fr auto; gap: var(--s3); min-height: round(25rem, var(--e)); padding: var(--s4); border-radius: var(--r-card); background: var(--well); min-width: 0; }
-.xp-top { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s3); align-items: start; }
-.xp-titles { min-width: 0; }
-.xp-title { font-weight: 800; font-size: var(--f16); line-height: var(--l16); overflow-wrap: anywhere; }
-.xp-sub { color: var(--muted); font-size: var(--f14); line-height: var(--l14); min-height: calc(2 * var(--l14)); overflow-wrap: anywhere; }
-.xp-pct { font-weight: 800; font-size: var(--f16); line-height: var(--l16); font-variant-numeric: tabular-nums; min-width: 4.5ch; text-align: right; }
-.xp-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, auto); justify-content: space-between; gap: var(--s2); }
-.xp-step { display: flex; align-items: center; gap: var(--s1); min-width: 0; font-size: var(--f13); line-height: var(--l13); color: var(--muted); }
-.xp-mark { display: grid; place-items: center; flex: none; width: var(--ic-sm); height: var(--ic-sm); border-radius: 50%; background: var(--card-alt); font-weight: 800; font-size: var(--f13); }
-.xp-mark .ic { width: var(--ic-xs); height: var(--ic-xs); }
-.xp-step.is-done .xp-mark { background: var(--teal-soft); color: var(--teal); }
-.xp-step.is-now { color: var(--text); font-weight: 800; }
-.xp-step.is-now .xp-mark { background: var(--coral-fill); color: var(--on-coral); }
-.xp-bar.is-warn .mv-bar-fill { background: var(--sun); }
-.xp-bar.is-bad .mv-bar-fill { background: var(--bad); }
-.xp-bar.is-ok .mv-bar-fill { background: var(--teal); }
-.xp-line { font-size: var(--f14); line-height: var(--l14); min-height: var(--l14); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; color: var(--muted); }
-.xp-say { align-self: start; padding: var(--s3); border-radius: var(--r-ctl); background: var(--card); font-size: var(--f14); line-height: var(--l14); min-width: 0; }
-.xp-say b { font-weight: 800; }
-.xp-say.is-warn { background: var(--sun-soft); }
-.xp-say.is-bad { background: var(--bad-soft); }
-.xp-sha { display: block; overflow-wrap: anywhere; font-size: var(--f13); }
-.xp-acts { margin: 0; }
-@media (max-width: 40rem) { .xp { min-height: round(33rem, var(--e)); padding: var(--s3); } }

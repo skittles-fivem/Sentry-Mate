@@ -5,7 +5,8 @@
 // - /system: the server (storage, growth, running, memory, speed), a log tail, every car's data status,
 //   the /health address for container checks and the one error shape of the API.
 // API: GET cars/{car}/health, gaps, totals?source=, updates (summary), storage, signals/latest, signals;
-// POST cars/{car}/rebuild (admin); GET system/storage, system/health (admin), cars, geocode/status.
+// GET/POST cars/{car}/full-rebuild, DELETE system/full-rebuild (admin: rebuild all data);
+// GET system/storage, system/health (admin), cars, geocode/status.
 
 import * as state from '../shared/state.js';
 import { h, replace, cover } from '../shared/dom.js';
@@ -16,7 +17,6 @@ import { head, section, kv, note, link, btn, textBar } from '../core/ui.js';
 import { num, tag, stateWord, ago, DASH } from '../core/fmt.js';
 import { table, cellBar } from '../core/table.js';
 import { empty, errorWords, loadingLine } from '../core/states.js';
-import { confirmDialog } from '../core/dialog.js';
 import { toast } from '../core/toast.js';
 import { chartOrNote, line, timeAxis, valueAxis, cursor, readout } from '../core/chart.js';
 import { rpx } from '../core/display.js';
@@ -24,13 +24,14 @@ import { src, srcText } from '../core/source.js';
 import { teslaCarRows, lastErrorText } from './tesla.js';
 import { versionTag } from './firmware.js';
 import { totalsLine } from './connections.js';
+import { fullRebuild } from '../core/fullrebuild.js';
+import * as fr from '../shared/fullrebuild.js';
 
 export const id = 'health';
 export const title = (ctx) => (ctx.car ? 'Health' : 'System');
 
 const enc = encodeURIComponent;
 const bytes = (v) => format(v, 'bytes');
-const took = (ms) => (ms == null ? DASH : ms < 1000 ? `${formatNumber(Math.round(ms))} ms` : formatDuration(ms));
 const fullPeriod = (p) => ({ ...p, from_ms: p?.from_ms ?? 0 });
 const none = (t) => h('span', { class: 'muted' }, t);
 const ok = (word = 'ok') => tag(word, 'good');
@@ -133,6 +134,18 @@ async function mountCar(ctx) {
     admin ? ['  ', link(state.buildUrl('settings-integrations'), 'connections overview', { cover: 'conn.overview.link', title: 'every connection the server keeps: live, errors, problems' })] : null);
 
   /* ---------- status */
+  // the full rebuild (admin): everything worked out made again from the stored data, at the end of the status;
+  // its state shows on the rebuild line while one runs for this car
+  const rebuildWord = h('span');
+  let lastHl = null;
+  let fullLines = null;
+  const paintRebuild = (fs = full?.status(), ls = fullLines) => {
+    fullLines = ls;
+    const step = fs && fr.running(fs) && fs.this_car && ls ? ls[1].text : '';
+    replace(rebuildWord, step ? status(tag('running', 'warn'), `full rebuild: ${step.toLowerCase()}`)
+      : lastHl?.rebuild_pending ? status(tag('running', 'warn'), 'working out drives again') : status(ok(), 'nothing pending'));
+  };
+  const full = admin ? fullRebuild(ctx, { car, label: 'rebuild all data', onStatus: paintRebuild }) : null;
   const statusSlot = h('div', null, loadingLine('reading health'));
   const missSlot = h('div', null, loadingLine('reading health'));
   const tailSlot = h('div');
@@ -161,6 +174,7 @@ async function mountCar(ctx) {
     const reasons = hl.reasons || [];
     const keys = hl.keys || [];
     const silent = hl.last_upload_ms == null || reasons.includes('upload_silence');
+    lastHl = hl; paintRebuild();
     replace(statusSlot,
       h('p', { class: 'hl-verdict' }, hl.healthy ? ok() : warn(), ' ', hl.healthy ? 'data arrives, passes its checks and nothing waits' : `${reasons.length} ${reasons.length === 1 ? 'thing needs' : 'things need'} attention`, none('  (the same test sets "healthy" in mqtt)')),
       reasons.length ? h('ul', { class: 'hl-fixes' }, reasons.map((code) => {
@@ -175,16 +189,15 @@ async function mountCar(ctx) {
         ['chain gaps', status((hl.chain_gaps || []).length ? bad() : ok(), formatNumber((hl.chain_gaps || []).length))],
         ['dropped frames', status((hl.dropped_frames || []).length ? warn() : ok(), formatNumber((hl.dropped_frames || []).length), none(' times the bridge lost frames'))],
         ['uploads', hl.uploads_enabled ? status(ok(), 'accepted') : status(warn(), 'turned off for this car')],
-        ['rebuild', hl.rebuild_pending ? status(tag('running', 'warn'), 'working out drives again') : status(ok(), 'nothing pending')],
+        ['rebuild', rebuildWord],
         ...keys.map((k, i) => [keys.length > 1 ? `bridge key ${i + 1}` : 'bridge key', h('span', null, k.preferred ? tag('preferred', 'accent') : null, k.preferred ? ' ' : null, k.device || 'unnamed', ' ', h('span', { class: 'muted break' }, k.key), '  ',
           k.last_upload_ms != null ? ago(k.last_upload_ms) : none('never uploaded'), k.logs_waiting ? [' ', warn(`${formatNumber(k.logs_waiting)} waiting`)] : null)]),
         keys.length ? null : ['bridge keys', status(warn(), 'none tied to this car: pair one on settings/cars')],
         ['data from', src(car, { full: true }) || none('no data yet')],
         ...teslaLines(),
       ]),
-      admin ? h('p', { class: 'acts' }, btn(`rebuild ${String(ctx.period.label).toLowerCase()}`, (e) => rebuildNow(e.currentTarget)),
-        none('  drives, charges, states and visits are worked out again from the stored logs; typed names and prices stay.'))
-        : note('an admin can rebuild drives and charges from the stored logs.'));
+      full ? h('div', { class: 'hl-full', id: 'full-rebuild' }, full.el)
+        : note('an admin can rebuild all of this car\'s data from the stored logs and api data.'));
 
     paintMissing(hl.missing_logs || {});
 
@@ -226,17 +239,6 @@ async function mountCar(ctx) {
     return [['tesla api', [none(hasApi ? 'no tesla vehicle reads this car now; its older tesla api data stays.  ' : 'not read from the tesla api.  '), link(`${state.buildUrl('settings-integrations')}#tesla`, 'tesla account')]]];
   }
 
-  async function rebuildNow(b) {
-    const yes = await confirmDialog(`work out drives, charges, states and visits of ${car.name} again from the stored logs for ${String(ctx.period.label).toLowerCase()}? typed names and prices stay.`, { title: 'rebuild from logs', ok: 'rebuild' });
-    if (!yes || !ctx.alive()) return;
-    b.disabled = true;
-    try {
-      const r = await ctx.api.post(`${base}/rebuild`, { from_ms: ctx.params.from_ms, to_ms: ctx.params.to_ms });
-      if (!ctx.alive()) return;
-      toast(`rebuilt from ${formatNumber(r.logs_read ?? 0)} logs in ${took(r.took_ms ?? 0)}`, { kind: 'ok' });
-      reloadAll(false);
-    } catch (e) { if (ctx.alive()) toast(errorWords(e).text, { kind: 'error' }); } finally { b.disabled = false; }
-  }
 
   /* ---------- gaps */
   const gaps = table(ctx, {
@@ -402,7 +404,7 @@ async function mountCar(ctx) {
     loadHealth().catch(() => {}); gaps.reload(null, { quiet: true }); loadTotals().catch(() => {});
   });
 
-  try { await Promise.all([loadHealth(), loadTotals(), loadStorage(), loadSignals(), gaps.ready]); } catch (e) { if (ctx.alive()) ctx.fail(e); return; }
+  try { await Promise.all([loadHealth(), loadTotals(), loadStorage(), loadSignals(), gaps.ready, full?.ready]); } catch (e) { if (ctx.alive()) ctx.fail(e); return; }
   if (!ctx.alive()) return;
   ctx.ready();
 }

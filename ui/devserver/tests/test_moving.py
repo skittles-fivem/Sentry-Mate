@@ -8,15 +8,12 @@ import hashlib
 import json
 import threading
 
-from mockapi.resources.moving import EXPORT_SHA_MS
-
 from .helpers import NOW, Running, ServerCase
 
 PW = "sentry-mate-dev"
 SETUP_CODE = "SETUP-DEV-0000"
 DEV_KEY = "SMRK-DEVK-EY00-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000"
 SEC = 1000
-MIN = 60 * SEC
 
 
 def _code():
@@ -497,93 +494,6 @@ class Exports(ServerCase):
             fresh.close()
         self.assertTrue(c.json("DELETE", f"/api/v1/system/exports/{e['id']}")["deleted"])
         c.error("GET", f"/api/v1/system/exports/{e['id']}", 404, "no_such_export")
-
-
-    def test_progress_phases_checksum_and_cancel(self):
-        c = self.c
-        e = c.json("POST", "/api/v1/system/exports", {"password": PW}, expect=201)
-        self.assertEqual((e["phase"], e["progress"]["step"], e["progress"]["steps"]), ("counting", 1, 3))
-        self.assertIsNone(e["progress"]["bytes_total"])
-        self.advance(600)
-        e = c.get(f"/api/v1/system/exports/{e['id']}")
-        self.assertEqual((e["phase"], e["progress"]["step"]), ("waiting", 2))
-        self.advance(1_200)
-        e = c.get(f"/api/v1/system/exports/{e['id']}")
-        p = e["progress"]
-        self.assertEqual(e["phase"], "collecting")
-        self.assertTrue(0 < p["percent"] < 100 and p["bytes_done"] < p["bytes_total"], p)
-        self.assertGreater(p["bytes_per_s"], 0)
-        self.assertIsNotNone(p["eta_s"])
-        self.assertFalse(p["stalled"])
-        self.advance(1_500)
-        e = c.get(f"/api/v1/system/exports/{e['id']}")
-        self.assertEqual((e["state"], e["checksum"]["state"], e["sha256"]), ("ready", "working", None))
-        self.assertIsNone(e["progress"])
-        self.advance(EXPORT_SHA_MS)
-        e = c.get(f"/api/v1/system/exports/{e['id']}")
-        self.assertEqual(e["checksum"]["state"], "done")
-        _, _, whole = c.request("GET", e["url"])
-        self.assertEqual(e["sha256"], hashlib.sha256(whole).hexdigest())
-        # cancelled while it is made
-        c.json("DELETE", f"/api/v1/system/exports/{e['id']}")
-        e = c.json("POST", "/api/v1/system/exports", {"password": PW}, expect=201)
-        r = c.json("DELETE", f"/api/v1/system/exports/{e['id']}")
-        self.assertEqual((r["deleted"], r["cancelled"]), (True, True))
-        self.assertEqual(c.get("/api/v1/system/exports")["items"], [])
-
-
-class SlowExport(ServerCase):
-    server_args = {"export_profile": "stall"}
-
-    def test_a_slow_export_that_stops_says_it_stalled(self):
-        c = self.c
-        e = c.json("POST", "/api/v1/system/exports", {"password": PW}, expect=201)
-        self.server.app.clock.advance(6_000 + 30_000)
-        p = c.get(f"/api/v1/system/exports/{e['id']}")["progress"]
-        self.assertEqual(p["phase"], "collecting")
-        self.assertGreater(p["bytes_total"], 10 * 1024 ** 3)  # gigabytes: x of y GB
-        self.assertFalse(p["stalled"])
-        self.server.app.clock.advance(18_000 + 61_000)  # stopped at 40 %, a minute ago
-        e = c.get(f"/api/v1/system/exports/{e['id']}")
-        self.assertEqual((e["state"], e["progress"]["percent"], e["progress"]["stalled"]), ("preparing", 40.0, True))
-        self.assertEqual(e["progress"]["bytes_per_s"], 0)
-        self.assertIsNone(e["progress"]["eta_s"])
-        self.server.app.clock.advance(10 * MIN)
-        self.assertEqual(c.get(f"/api/v1/system/exports/{e['id']}")["state"], "preparing")  # never further
-        c.error("POST", "/api/v1/system/exports", 409, "export_preparing", body={"password": PW})
-        self.assertTrue(c.json("DELETE", f"/api/v1/system/exports/{e['id']}")["cancelled"])
-
-
-class FailedExport(ServerCase):
-    server_args = {"export_profile": "fail"}
-
-    def test_a_failed_export_says_why_and_what_to_do(self):
-        c = self.c
-        e = c.json("POST", "/api/v1/system/exports", {"password": PW}, expect=201)
-        self.server.app.clock.advance(6_000 + 22_500)
-        e = c.get(f"/api/v1/system/exports/{e['id']}")
-        self.assertEqual((e["state"], e["phase"], e["problem"]["code"]), ("failed", "failed", "no_space"))
-        self.assertIn("space", e["problem"]["what_to_do"])
-        self.assertEqual(e["error"], e["problem"]["message"])
-        c.error("GET", f"/api/v1/system/exports/{e['id']}/file", 404, "export_gone")
-        # a failed one does not hold up a new one
-        c.json("POST", "/api/v1/system/exports", {"password": PW}, expect=201)
-
-
-class ExportPresets(ServerCase):
-    def test_each_preset_starts_where_it_says(self):
-        for state, want in (("preparing", "collecting"), ("stalled", "collecting"), ("failed", "failed"),
-                            ("ready", "ready")):
-            r = Running(export_state=state)
-            try:
-                items = r.client().get("/api/v1/system/exports")["items"]
-                self.assertEqual(items[0]["phase"], want, state)
-                if state == "stalled":
-                    self.assertTrue(items[0]["progress"]["stalled"])
-                if state == "ready":
-                    self.assertEqual(items[0]["checksum"]["state"], "done")
-            finally:
-                r.close()
 
 
 class Presets(ServerCase):

@@ -3,9 +3,7 @@
 // Admins also: host names as a 'key = value' line, ports, the certificate and the recovery key (show again,
 // make new, say it is saved), moving to another server as numbered steps with a state tag and a run button
 // each (a move code, or an export file; carry on a stopped move; undo a move), output in a mono box; the
-// accounts, and the audit log; and storage: the space on disk by category (GET /system/storage/detail) and
-// compaction as a step with a run button (POST /system/storage/compact), its state in a mono box.
-// While a compaction pass runs the detail is read again every 2 s.
+// accounts, a full rebuild of every car (with its progress and the automatic run), and the audit log.
 // The move and the export file are read once a second while something runs (GET /system/move,
 // GET /system/exports/{id}); every dangerous action asks for the person's own password again.
 
@@ -24,7 +22,7 @@ import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
 import { signOut } from '../core/session.js';
 import { askPassword, copyBtn, codeOut, downloadKey, showOnce, STAY } from '../core/secret.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
-import { exportModel, exportPollMs } from '../shared/exportjob.js';
+import { fullRebuild } from '../core/fullrebuild.js';
 
 export const id = 'settings-server';
 export const title = () => 'Settings: server';
@@ -45,9 +43,6 @@ const ROLE = { admin: 'admin', watch: 'watch' };
 const PURPOSE = { web: 'web and api', upload: 'uploads' };
 const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
 const LIVE = new Set(['offered', 'copying', 'paused', 'moved']);
-// storage: the groups of the categories and the steps of a compaction pass, in plain words
-const STORE_GROUP = { logs: 'CAN logs', series: 'time series', rows: 'drives and charges', kv: 'kept answers and records', imports: 'imports', server: 'server' };
-const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records' };
 
 /** A list of '[tag] text' lines. */
 const lines = (rows, attrs = {}) => h('ul', { class: 'ln-list', ...attrs }, rows.filter(Boolean).map(([t, text, sub]) =>
@@ -69,7 +64,6 @@ export async function mount(ctx) {
   const S = { settings: null, network: null, notices: [], accounts: [], cars: [], sessions: [] };
   const loadAccounts = async () => { S.accounts = admin ? await ctx.api.list('accounts', { limit: 500 }).all({ max: 5000 }) : []; };
   const loadSessions = async () => { S.sessions = await ctx.api.list('me/sessions', { limit: 500 }).all({ max: 5000 }); };
-  const G = { d: null, err: null, pollErr: null };   // storage: the detail, why it could not be read
   const [settings, network, notices, cars, trips] = await Promise.all([
     ctx.api.get('settings').catch(() => null),
     admin ? ctx.api.get('network').catch(() => null) : null,
@@ -77,7 +71,6 @@ export async function mount(ctx) {
     ctx.api.list('cars', { sort: 'custom', limit: 500 }).all({ max: 5000 }).catch(() => []),
     admin ? ctx.api.list('trips', { limit: 500 }).all({ max: 2000 }).catch(() => []) : [],
     loadAccounts(), loadSessions(),
-    admin ? ctx.api.get('system/storage/detail').then((d) => { G.d = d; }).catch((e) => { G.err = e; }) : null,
   ]);
   if (!ctx.alive()) return;
   Object.assign(S, { settings, network, notices: notices?.items || [], cars });
@@ -356,9 +349,7 @@ export async function mount(ctx) {
   }
 
   /* ---------------------------------------------------------------- export file */
-  // One box of a fixed size: the same lines in every state (none, making, stalled, failed, ready), so it never
-  // jumps as the export goes on. The words come from shared/exportjob.js.
-  function scheduleExp() { clearTimeout(et); const ms = exportPollMs(M.exp); if (ms) et = setTimeout(refreshExp, ms); }
+  function scheduleExp() { clearTimeout(et); if (M.exp?.state === 'preparing') et = setTimeout(refreshExp, 1000); }
   async function refreshExp() {
     try {
       const e = M.exp ? await ctx.api.get(`system/exports/${enc(M.exp.id)}`) : null;
@@ -366,7 +357,7 @@ export async function mount(ctx) {
       const was = M.exp?.state;
       M.exp = e; M.expErr = null;
       if (e && was === 'preparing' && e.state === 'ready' && M.want) { M.want = false; download(e); }
-    } catch (err) { if (!ctx.alive()) return; if (err.status === 404) { M.exp = null; M.expErr = null; } else M.expErr = err; }
+    } catch (err) { if (!ctx.alive()) return; if (err.status === 404) M.exp = null; else M.expErr = err; }
     paintExp(); scheduleExp();
   }
   function download(e) {
@@ -377,17 +368,12 @@ export async function mount(ctx) {
   }
   async function makeExport() {
     const r = await askPassword(ctx, { title: 'make an export file', submit: 'make the file',
-      intro: h('div', { class: 'hc' }, h('p', null, 'One file with everything, in three steps: count what goes in, wait for the writes under way, take the snapshot (uploads wait for that step). The box shows how far it got; you can close the page and come back. Then your browser downloads it.'),
+      intro: h('div', { class: 'hc' }, h('p', null, 'One file with everything, made in a few seconds (uploads wait for those seconds); then your browser downloads it.'),
         note('It opens only with this server\'s recovery key and never holds the key file, so without the key it is useless to anyone who takes it.')),
       run: (cred) => ctx.api.post('system/exports', cred).catch(async (e) => { if (e.code !== 'export_preparing') throw e; return (await ctx.api.get('system/exports')).items?.[0] || null; }) });
     if (!r || !ctx.alive()) return;
     M.exp = r; M.expErr = null; M.want = true;
     paintExp(); scheduleExp();
-  }
-  async function cancelExport() {
-    if (!M.exp || !(await confirmDialog('The server stops making the file and keeps nothing of it. Uploads go on.', { title: 'stop making the export file?', ok: 'stop it', danger: true }))) return;
-    try { await ctx.api.del(`system/exports/${enc(M.exp.id)}`); M.exp = null; M.want = false; toast('The export file was cancelled.', { kind: 'info' }); } catch (e) { toast(`Could not cancel it: ${errText(e)}`, { kind: 'error' }); }
-    if (ctx.alive()) { paintExp(); scheduleExp(); }
   }
   async function removeExport() {
     if (!(await confirmDialog('The file is removed from this server. A copy you downloaded stays where you put it.', { title: 'remove the export file?', ok: 'remove', danger: true }))) return;
@@ -396,110 +382,40 @@ export async function mount(ctx) {
   }
   function paintExp() {
     const e = M.exp;
-    const m = exportModel(e);
-    const ready = m.kind === 'ready';
-    const stateTag = { none: ['none', 'muted'], expired: ['expired', 'muted'], busy: m.warn ? ['stalled', 'warn'] : ['running', 'accent'], failed: ['failed', 'bad'], ready: ['ready', 'ok'] }[m.kind];
-    const steps = m.steps.map((st) => `${st.state === 'done' ? '[x]' : st.state === 'now' ? '[>]' : '[ ]'} ${st.label.toLowerCase()}`).join('  ');
-    const tone = m.tone === 'error' ? 'bad' : m.tone === 'warn' ? 'warn' : 'accent';
-    let l1 = m.amount, l2 = m.files, l3 = m.speed, note1 = '';
-    if (ready) {
-      l1 = e.file_name; l2 = `kept until ${t(e.expires_ms)}`; l3 = e.sent_bytes ? `${bytes(e.sent_bytes)} downloaded so far` : 'not downloaded yet';
-      note1 = m.sha256 ? `sha-256 ${m.sha256}` : m.checksum.toLowerCase();
-    } else if (m.kind === 'failed') {
-      l1 = `code ${m.problem.code}`; l2 = ''; l3 = '';
-      note1 = `to do: ${m.problem.todo}`;
-    } else if (m.warn) note1 = `! ${m.warn.text}`;
-    else if (m.kind === 'busy') note1 = 'You can close this page: the server goes on.';
-    else note1 = 'Seconds to minutes, most of it for the database. Uploads wait only for the last step.';
-    if (M.expErr) note1 = `! lost touch with the server (${errText(M.expErr)}); it keeps trying.`;
-    const label = (k, v) => h('span', { class: 'xp-row' }, h('span', { class: 'xp-k' }, k), h('span', { class: 'xp-v' }, v || ' '));
-    const acts = m.kind === 'busy' ? [btn('cancel', cancelExport, { kind: 'quiet' })]
-      : ready ? [h('a', { class: 'btn btn--primary', href: e.url, download: e.file_name }, 'download'), btn('make a new one', makeExport), btn('remove', removeExport, { kind: 'quiet' })]
-        : m.kind === 'failed' ? [btn('make a new one', makeExport, { kind: 'primary' })]
-          : [btn('make the export file', makeExport, { kind: 'primary' })];
+    const s = !e || e.state === 'expired' ? 'none' : e.state;
+    const out = [
+      M.expErr ? `! could not read the export: ${errText(M.expErr)}` : null,
+      e ? `file    ${e.file_name}` : 'file    none yet',
+      e ? `state   ${e.state}` : null,
+      e?.state === 'ready' ? `size    ${bytes(e.size)}, ${count(e.files)} files\nmade    ${t(e.made_ms)}\nkept    until ${t(e.expires_ms)}${e.sent_bytes ? `\nsent    ${bytes(e.sent_bytes)}` : ''}` : null,
+      e?.state === 'expired' ? `removed ${t(e.expires_ms)}: make a new one` : null,
+      e?.state === 'failed' ? `error   ${e.error || 'it could not be made'}` : null,
+    ].filter(Boolean).join('\n');
     replace(expSlot,
-      h('div', { class: ['mono-box', 'out-box', 'xp-box', `xp-box--${m.kind}`], role: 'group', 'aria-label': 'Export file status' },
-        label('export', [tag(stateTag[0], stateTag[1]), ` ${m.head.toLowerCase()}`]),
-        label('step', m.kind === 'busy' ? m.sub.replace(/^Step /, '').toLowerCase() : m.sub),
-        label('', steps),
-        label('', [textBar(m.percent, { tone, label: m.percentText || m.head }), ` ${m.percentText}`]),
-        label(ready ? 'file' : m.kind === 'failed' ? 'why' : 'amount', l1),
-        label(ready ? 'kept' : m.kind === 'failed' ? '' : 'files', l2),
-        label(ready ? 'sent' : m.kind === 'failed' ? '' : 'speed', l3),
-        h('span', { class: ['xp-note', m.tone === 'warn' && 'xp-note--warn', m.tone === 'error' && 'xp-note--bad'] }, note1),
-        h('span', { class: 'acts xp-acts' }, acts)),
-      ready ? skipped(e?.skipped) : null,
-      note('On the new server: its first page, ', h('b', null, 'restore from an export file'), ', this file and the recovery key. A cut download carries on when you press download again.'));
+      runs([
+        [s === 'none' || s === 'failed' ? 'todo' : s === 'preparing' ? 'running' : 'ok', 'make the export file', 'A snapshot of the whole server. Asks your password. A new one replaces the one there was.',
+          s === 'preparing' ? null : btn(s === 'ready' ? 'make a new one' : 'run', makeExport, { kind: s === 'ready' ? '' : 'primary' })],
+        [s === 'ready' ? (e.sent_bytes ? 'ok' : 'todo') : 'later', 'download it', 'A cut download carries on when you press download again. Kept a day after the last download, a week at most.',
+          s === 'ready' ? [h('a', { class: 'btn btn--primary', href: e.url, download: e.file_name }, 'download'), btn('remove', removeExport, { kind: 'quiet' })] : null],
+        [s === 'ready' && e.sent_bytes ? 'todo' : 'later', 'restore it on the new server', ['On its first page choose ', h('b', null, 'restore from an export file'), ', choose this file and type the recovery key.'], null],
+      ]),
+      skipped(e?.skipped),
+      h('pre', { class: 'mono-box out-box', 'aria-label': 'Export output' }, out));
   }
 
-  /* ---------------------------------------------------------------- storage and compaction (admin) */
-  // what takes the space on disk, largest first, and compaction as one step: a state tag, a run button, its
-  // output in a mono box. While a pass runs (also one the server started by itself) the detail is read again
-  // every 2 s; when it ends the table is drawn again and a note says what was freed.
-  const storSlot = h('div', { 'aria-live': 'polite' });
-  let gt = null;
-  ctx.onCleanup(() => clearTimeout(gt));
-  const storTable = admin ? table(ctx, {
-    title: 'on disk by category', rows: G.d?.categories || [], csv: false, label: 'Space on disk by category', sort: { key: 'disk_bytes', dir: 'desc' },
-    note: 'largest first, with the kind of data.',
-    columns: [
-      { key: 'label', label: 'what', sort: true, ph: 'main', grow: true, cls: 'wrap-cell', render: (c) => c.label },
-      { key: 'group', label: 'kind', sort: true, ph: 'sub', value: (c) => STORE_GROUP[c.group] || c.group, render: (c) => h('span', { class: 'muted' }, STORE_GROUP[c.group] || c.group) },
-      { key: 'files', label: 'files', num: true, sort: true, render: (c) => count(c.files) },
-      { key: 'disk_bytes', label: 'on disk', num: true, sort: true, ph: 'num', render: (c) => bytes(c.disk_bytes), total: () => bytes(G.d?.total_disk_bytes) },
-    ],
-    empty: () => empty('not known', G.err ? `the server did not say what takes the space: ${errText(G.err)}` : 'the server did not say what takes the space'),
-  }) : null;
-  function paintStor() {
-    const d = G.d, c = d?.compaction || null;
-    const running = c?.status === 'running';
-    const failed = c?.status === 'failed';
-    const out = [
-      G.pollErr ? `! could not read the progress just now (${errText(G.pollErr)}); it keeps trying.` : null,
-      `state   ${c ? c.status : 'not known'}`,
-      `step    ${running ? `${PACK_STEP[c.step] || c.step || 'getting ready'}, ${c.total ? `${count(c.done ?? 0)} of ${count(c.total)}` : 'counting'}` : DASH}`,
-      failed ? `error   ${c.error || 'the server gave no reason'}` : null,
-      `saved   ${c ? `${bytes(c.saved_bytes)} so far` : DASH}`,
-      `last    ${!c || c.finished_ms == null ? 'no pass has finished yet' : `${t(c.finished_ms)}, ${c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'nothing left to pack'}`}`,
-      `auto    ${!c ? DASH : c.automatic ? 'runs by itself when the server is idle' : 'does not run by itself on this server'}`,
-      `on disk ${bytes(d?.total_disk_bytes)} in all, ${d?.free_bytes != null ? `${bytes(d.free_bytes)} free` : 'free space not known'}`,
-    ].filter(Boolean).join('\n');
-    replace(storSlot,
-      runs([
-        [!c ? 'off' : running ? 'running' : failed ? 'bad' : 'ok', running ? 'packing…' : 'pack what is no longer written',
-          'Packs data that is no longer written, losslessly: every value stays readable exactly, and the logs\' signed originals are kept byte for byte.',
-          btn('compact now', compactNow, { kind: 'primary', disabled: running || !c })],
-      ]),
-      h('pre', { class: 'mono-box out-box', 'aria-label': 'Compaction output' }, out));
-  }
-  function scheduleStor() { clearTimeout(gt); if (G.d?.compaction?.status === 'running') gt = setTimeout(refreshStor, 2000); }
-  async function refreshStor() {
-    try {
-      const d = await ctx.api.get('system/storage/detail');
-      if (!ctx.alive()) return;
-      G.d = d; G.pollErr = null;
-      const c = d.compaction || {};
-      if (c.status !== 'running') {
-        storTable.setRows(d.categories || []);
-        if (c.status === 'failed') toast(`Compaction failed: ${c.error || 'the server gave no reason'}`, { kind: 'error' });
-        else toast(c.last_saved_bytes ? `Compaction is done: ${bytes(c.last_saved_bytes)} freed on disk.` : 'Compaction is done: nothing was left to pack.');
-      }
-    } catch (e) { if (!ctx.alive()) return; G.pollErr = e; }
-    paintStor(); scheduleStor();
-  }
-  async function compactNow() {
-    try {
-      const r = await ctx.api.post('system/storage/compact');
-      if (!ctx.alive()) return;
-      G.d = { ...(G.d || {}), compaction: r.compaction }; G.pollErr = null;
-    } catch (e) { if (!ctx.alive()) return; toast(`Could not start compaction: ${errText(e)}`, { kind: 'error' }); }
-    paintStor(); scheduleStor();
-  }
-  const storage = admin ? [
-    section({ title: 'storage', id: 'storage', side: h('span', { class: 'muted' }, 'space on disk, and compaction') }, storSlot),
-    storTable.el,
-  ] : null;
-  if (admin) { paintStor(); scheduleStor(); }
+  /* ---------------------------------------------------------------- full rebuild (admin) */
+  // every car's history made again from the stored data, the cars made with an older decoding named
+  const full = admin ? fullRebuild(ctx, { carName: (c) => carName.get(c) || c }) : null;
+  const autoLine = admin && S.settings ? editLines([
+    { key: 'full_rebuild.auto', id: 'full-rebuild-auto', type: 'bool', value: S.settings.full_rebuild?.auto !== false,
+      help: 'Rebuild automatically when a new server version decodes the stored logs differently. Off: a notice offers it instead.',
+      save: async (v) => {
+        try { S.settings = await ctx.api.patch('settings', { version: S.settings.version, full_rebuild: { auto: v } }); } catch (e) {
+          if (e.status === 409) { S.settings = await ctx.api.get('settings'); throw new Error('Someone else changed the server settings first. Look again and save once more.'); }
+          throw e;
+        }
+      } },
+  ]) : null;
 
   /* ---------------------------------------------------------------- access, accounts, sessions, audit */
   const nAdmins = S.accounts.filter((a) => a.role === 'admin').length;
@@ -679,6 +595,8 @@ export async function mount(ctx) {
       note('For servers that can\'t reach each other, one that will be off before the new one starts, or a copy to keep. Uploads that arrive after it was made are not in it.'),
       expSlot,
       note('Neither way changes this server\'s data. Codes, passwords and keys travel only over https.')),
+    section({ title: 'full rebuild', id: 'full-rebuild', side: h('span', { class: 'muted' }, 'every car') },
+      full.el, autoLine?.el),
   ] : null;
   paint(ctx, head(ctx),
     section({ title: 'this address', cover: 'web.shell.hosting', side: h('span', { class: 'muted' }, `${loc.protocol}//${loc.host}/`) }, hostSlot),
@@ -687,7 +605,6 @@ export async function mount(ctx) {
     section({ title: 'certificate and recovery key', id: 'certificate-in-use' }, certSlot, keySlot),
     access,
     moving,
-    storage,
     accounts?.el,
     sessions.el,
     audit?.el);
@@ -699,6 +616,6 @@ export async function mount(ctx) {
     } catch (e) { if (!ctx.alive()) return; M.err = e; }
     paintMove(); paintExp(); schedule(); scheduleExp();
   }
-  await Promise.all([accounts?.ready, sessions.ready, audit?.ready].filter(Boolean)).catch(() => {});
+  await Promise.all([accounts?.ready, sessions.ready, audit?.ready, full?.ready].filter(Boolean)).catch(() => {});
   if (ctx.alive()) ctx.ready();
 }

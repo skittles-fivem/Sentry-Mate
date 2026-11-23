@@ -28,11 +28,10 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 | `--now-ms MS` | `1794850200000` | The virtual "now" at start (2026-11-16 17:30 UTC). It then moves with real time. |
 | `--fresh` (or `--needs-setup`) | off | Starts as a fresh server: no accounts and nobody signed in, the first-run set-up page. The set-up code is `SETUP-DEV-0000`. See "First-run set-up and moving" below. |
 | `--move-state S` | `none` | Starts Settings: Server's "Move to another server" in state `S`: `offered`, `expired`, `copying`, `paused`, `moved` or `done` (screenshots; add `--freeze-clock` to hold it there). Not with `--fresh`. |
-| `--export P` | `quick` | How a new export file is made: `quick` (3 s), `slow` (18 GB in 2 min), `stall` (stops at 40 %, `stalled` a minute later) or `fail` (problem `no_space` at 55 %). |
-| `--export-state S` | `none` | An export file there at start: `preparing` (slow, a third collected), `stalled`, `failed` or `ready` (its SHA-256 worked out). Screenshots: add `--freeze-clock`. Not with `--fresh`. |
 | `--own-certificate` | off | Runs with the owner's own certificate (`certificate.own` in `/network`), expiring in 12 days: the `certificate_expiring` notice is up and `POST /network/certificate` is `409 own_certificate`. Without it the certificate is one the server made, which never expires soon. |
 | `--release-check off\|newer\|up_to_date\|error\|never\|checking` | `off` | The release check at start: off, or on with that result of the last check (`GET /api/v1/release`): a newer build (`9c1e7d3`, 4 changes, with the admins' `release_available` notice), up to date, GitHub's rate limit, not checked yet, or a check in flight. Turned on later in a session it finds the newer build. `/about` carries a made-up `build` (`0.1.0 · build 2f44a52`). |
 | `--teslamate-trouble none\|connection_refused\|auth_failed\|pin_mismatch\|quiet\|catchup_failed` | `none` | The local TeslaMate starts in that trouble with its admins' notice (`teslamate_connection_refused`, `teslamate_auth_failed`, `teslamate_pin_mismatch`, `teslamate_quiet`, `teslamate_catchup_failed`; the last turns the database catch-up on), linking to Settings: Integrations (#teslamate). In tests, `resources.teslamate.fail(store, part, code, now)` starts or ends one (`quiet` for a broker that stays connected and sends nothing). |
+| `--full-rebuild none\|running\|failed\|offered` | `none` | The full rebuild the server starts with (`/cars/{car}/full-rebuild`, `/system/full-rebuild`): one of every car under way (a long one, a few minutes in, with a log it could not decode), one that failed on the second car (no space left; the old history kept), or the first car's history made with an older decoding and `full_rebuild.auto` off (the `full_rebuild_offered` notice). One started from a page runs about three minutes a car on the virtual clock and ends done. |
 | `--move-peer-after-s N` | `15` | A made-up new server (`192.168.1.30`) claims a waiting move code `N` seconds after it is made, then copies, pauses, switches and is done in about 17 s. `0`: never. |
 | `--freeze-clock` | off | Keeps "now" fixed (stable screenshots and tests). |
 | `--sse-interval-ms N` | `2000` | How often live values are pushed on `/api/v1/events`. |
@@ -198,10 +197,8 @@ After a move or a restore the server has the made-up accounts (`admin`, `watch`,
 sends `two_step: "000000"`) answers the move code once. After `--move-peer-after-s` the made-up new server claims it:
 `copying` (10 s, round 1, then round 2), `paused` (2 s), `moved` (2 s: the server takes no changes, `409 moved`),
 `done`. `POST /api/v1/system/move/undo { password, confirm: true }` takes it back. `POST /api/v1/system/exports
-{ password }` prepares a 4 MB made-up export file in 3 s (counting 0.5 s, waiting 0.3 s, collecting 2.2 s, then its
-SHA-256 in 2 s more); its `url` downloads it (with `Range`), and it restores on a `--fresh` dev server. `--export
-slow` makes it collect 18 GB in 2 min, `--export stall` stops it at 40 % (`stalled` a minute later, for ever; cancel
-it with `DELETE`), `--export fail` fails it at 55 % with problem `no_space`.
+{ password }` prepares a 4 MB made-up export file in 3 s; its `url` downloads it (with `Range`), and it restores
+on a `--fresh` dev server.
 
 **A new certificate**: `POST /api/v1/network/certificate { password }` answers `{ names, sha256, upload_address }`
 with `localhost` and the saved host names and a made-up SHA-256 (a new one each time), which `/network` shows from
@@ -211,16 +208,6 @@ then on. `409 move_under_way` while a move code waits or a copy runs, `409 moved
 then is the `certificate_expiring` notice up (a certificate the server makes is valid until 4096). `certificate.names`
 starts with `localhost`, as the real server's do. A missing `password` on any request that asks for it again is
 `400 bad_input`, a wrong one `403 wrong_password`.
-
-**Storage and compaction**: `GET /api/v1/system/storage/detail` (admin) lists the made-up space on disk by
-category, largest first (the cars' figures of `/system/storage` split into logs as uploaded, their sidecars, day
-packs, series, rows and records, plus the server's own files), with a compaction that is `idle` at start (its last
-pass ended about three hours before `--now-ms`), so a first load is always the same. `POST
-/api/v1/system/storage/compact` starts a pass that "runs" for four reads of the detail (`logs` counted and half
-done, `logs` done, `series`, `records`) and ends on the fifth, whatever the clock does (also with `--freeze-clock`):
-most logs and sidecars as uploaded have then gone into the day packs, the series and records are smaller, and
-`last_saved_bytes` is what the disk total lost. A later pass finds nothing left (`last_saved_bytes` 0). A `failed`
-pass is not played; tests set it in the store (`store.compaction`).
 
 ## Layout
 
@@ -286,7 +273,5 @@ They start servers in-process on free ports (about 45 s for all). They cover:
   the document and called with ids from the API; it fails on a missing resource, a 5xx or a missing field, on a route
   the document lacks, on anything under "Deliberately absent" that answers, and on a VIN serial in any answer;
 - determinism, a 200,000-car fleet paged under 200 ms a page, and the event stream (with `--rows-every-s` at its pace).
-- storage in detail and compaction (`test_system.py`): categories largest first that add up, idle at start, a pass that
-  runs for a few reads and moves the logs into the day packs, a second pass with nothing left, a failed pass, admin only.
 - the integrations overview (`test_overview.py`): its shape, admin only, problems newest first with one open, 24
   hourly entries ending at the current hour, values that move in place, the capped car rows of a large fleet.

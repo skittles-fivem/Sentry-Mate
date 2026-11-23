@@ -5,13 +5,12 @@
 // - Admins also: host names for the certificate, the ports, the certificate and the recovery key (show it again,
 //   make a new one, say it is saved), the move to another server as numbered step cards (with a move code, or
 //   with an export file: the current card holds the one clear button and what it printed), the accounts (an edit
-//   sheet each), the audit log, and Storage: the space on disk by category and what compaction saved, with a
-//   "Compact now" button.
+//   sheet each), and the audit log.
 // A move that stopped on the new server (a code cancelled here, say) carries on: a new code from this same server
 // lets the new server go on with what it copied. Data: settings, network, notices, accounts, me/sessions, audit,
-// system/move (+ /undo), system/exports, system/recovery-key/{show,new,saved}, system/storage/detail and
-// system/storage/compact. Polls once a second while a move or an export file is being made, and every 2 s
-// while a compaction pass runs (no event stream for these).
+// system/move (+ /undo), system/exports, system/recovery-key/{show,new,saved}. Polls once a second while a move
+// or an export file is being made (no event stream for these). A full rebuild of every car (system/full-rebuild,
+// its own tile: core/fullrebuild.js) with the switch for the automatic one (settings full_rebuild.auto).
 
 import { h } from '../shared/dom.js';
 import * as api from '../shared/api.js';
@@ -26,8 +25,8 @@ import { checkRow, sectionHead, moreButton } from '../core/bits.js';
 import { group, infoRow, said, notSaved, askPassword, keySheet, tick } from '../core/settings.js';
 import { inOrder } from '../core/settings.js';
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
+import { fullRebuildTile } from '../core/fullrebuild.js';
 import { bytes, bigCode, copyButton, downloadUrl, stepCards, progressBar, callout, PROBLEM } from './move-parts.js';
-import { exportModel, exportPollMs } from '../shared/exportjob.js';
 
 export const id = 'settings-server';
 export const shape = [[2, 'h2'], [2, 'h2'], [2, 'h3'], [2, 'h3']];
@@ -40,9 +39,6 @@ const ROLE_TEXT = {
   watch: 'Sees only the cars on its list, and changes only its own preferences and sessions.',
 };
 const PURPOSE = { web: 'Web pages and API', upload: 'CAN Bridge uploads' };
-// storage: the groups of the categories and the steps of a compaction pass, in plain words
-const STORE_GROUP = { logs: 'CAN logs', series: 'Time series', rows: 'Drives and charges', kv: 'Kept answers and records', imports: 'Imports', server: 'Server' };
-const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records' };
 /** Text that may break only after a slash, a colon or a dot (addresses, a SHA-256). */
 const breakable = (t) => String(t).split(/(?<=[/:.])/).map((part, i) => [i ? h('wbr') : null, part]);
 
@@ -248,14 +244,12 @@ export async function mount(ctx) {
     try { move = await ctx.api.get('system/move'); } catch (e) { if (api.isAbort(e)) return; move = move || { state: 'none' }; }
     if (ctx.alive()) drawMove();
   }
-  let expErr = null;    // the last read of the export failed (the export goes on on the server)
   async function readExport() {
     clearTimeout(expTimer);
     try {
       if (exp && exp.id) exp = await ctx.api.get(api.apiPath`system/exports/${exp.id}`);
       else exp = ((await ctx.api.get('system/exports')).items || [])[0] || null;
-      expErr = null;
-    } catch (e) { if (api.isAbort(e)) return; if (e && e.status === 404) { exp = null; expErr = null; } else expErr = e; }
+    } catch (e) { if (api.isAbort(e)) return; if (e && e.status === 404) exp = null; }
     if (ctx.alive()) drawMove();
   }
   function schedule() {
@@ -264,8 +258,7 @@ export async function mount(ctx) {
     const ms = s === 'copying' || s === 'paused' || s === 'moved' ? 1000 : s === 'offered' ? 3000 : 0;
     if (ms) moveTimer = setTimeout(readMove, ms);
     clearTimeout(expTimer);
-    const ems = exportPollMs(exp);
-    if (ems) expTimer = setTimeout(readExport, ems);
+    if (exp && exp.state === 'preparing') expTimer = setTimeout(readExport, 1000);
   }
 
   async function makeCode() {
@@ -320,17 +313,11 @@ export async function mount(ctx) {
   async function makeExport() {
     const out = await askPassword(ctx, {
       title: 'Make an export file', yes: 'Make the file',
-      text: 'One file with everything on this server, made in three steps: it counts what goes in, waits for the writes under way, then takes a snapshot (uploads wait for that step; the CAN Bridge sends them again). You can close the page meanwhile. It opens only with this server’s recovery key. A file made before is replaced.',
+      text: 'One file with everything on this server, ready in a few seconds (uploads wait meanwhile; the CAN Bridge sends them again). It opens only with this server’s recovery key. A file made before is replaced.',
       run: async (creds) => { try { return await ctx.api.post('system/exports', creds); } catch (e) { if (e && e.code === 'export_preparing') return ((await ctx.api.get('system/exports')).items || [])[0] || null; throw e; } },
     });
     if (!out) return;
     exp = out; fetchOnReady = out.id;
-    drawMove();
-  }
-  async function cancelExport() {
-    if (!exp || !await confirmSheet({ title: 'Stop making the export file?', text: 'The server stops and keeps nothing of it. Uploads go on. You can make a new one at any time.', yes: 'Stop making it', danger: true })) return;
-    try { await ctx.api.del(api.apiPath`system/exports/${exp.id}`); ctx.toast('The export file was cancelled.'); } catch (e) { if (!(e && e.status === 404)) { ctx.toast(notSaved(e), { kind: 'error' }); return; } }
-    exp = null; fetchOnReady = null;
     drawMove();
   }
   async function deleteExport() {
@@ -393,48 +380,35 @@ export async function mount(ctx) {
       skipped);
   }
 
-  // The export file's status: one card with the same rows in every state (none, making, stalled, failed, ready), so
-  // the tile keeps its size as the export goes on. The words come from shared/exportjob.js.
   function exportTile() {
     const e = exp;
-    const m = exportModel(e);
-    const ready = m.kind === 'ready';
-    if (ready && fetchOnReady === e.id && e.url) { fetchOnReady = null; downloadUrl(e.url); ctx.toast(`The download of ${e.file_name} has started.`); }
-    const tone = m.tone === 'error' ? 'bad' : m.tone === 'warn' ? 'warn' : m.tone === 'ok' ? 'ok' : 'info';
-    const fill = h('span', { class: 'mv-bar-fill' });
-    fill.style.setProperty('--w', m.percent == null ? '0' : String(m.percent / 100));
-    let l1 = m.amount && m.files ? `${m.amount} · ${m.files}` : m.amount || m.files;
-    let l2 = m.speed;
-    if (ready) { l1 = h('span', { class: 'set-mono' }, e.file_name); l2 = `Kept until ${when(e.expires_ms)} · ${e.sent_bytes ? `${bytes(e.sent_bytes)} downloaded so far` : 'not downloaded yet'}`; }
-    else if (m.kind === 'failed') { l1 = `Code: ${m.problem.code}`; l2 = ''; }
-    let say = null;
-    if (expErr) say = [h('b', null, 'This page lost touch with the server. '), 'It keeps trying; the export goes on there.'];
-    else if (m.warn) say = m.warn.text;
-    else if (m.problem) say = [h('b', null, 'What to do: '), m.problem.todo];
-    else if (m.sha256) say = [h('b', null, 'SHA-256 '), h('span', { class: 'set-mono xp-sha' }, m.sha256)];
-    else if (m.checksum) say = m.checksum;
-    else if (m.kind === 'busy') say = 'You can close this page: the server goes on, and shows it here again when you come back.';
-    else say = 'Seconds to minutes, most of it for the database. Uploads wait only for the last step.';
-    const acts = m.kind === 'busy' ? [btn('Cancel', { kind: 'soft', icon: 'close', onclick: cancelExport })]
-      : ready ? [linkBtn('Download', e.url, { kind: 'primary', icon: 'download' }), btn('Make new', { kind: 'soft', icon: 'refresh', onclick: makeExport }), btn('Delete', { kind: 'ghost', icon: 'trash', onclick: deleteExport })]
-        : [btn(m.kind === 'failed' ? 'Make a new one' : 'Make an export file', { kind: 'primary', icon: 'download', onclick: makeExport })];
-    const panel = h('div', { class: ['xp', `is-${tone}`], role: 'group', 'aria-label': 'Export file status' },
-      h('div', { class: 'xp-top' },
-        h('div', { class: 'xp-titles' }, h('p', { class: 'xp-title' }, m.head), h('p', { class: 'xp-sub' }, m.sub)),
-        h('span', { class: 'xp-pct' }, m.percentText)),
-      h('ol', { class: 'xp-steps', 'aria-label': 'Steps of making the file' }, m.steps.map((st) =>
-        h('li', { class: ['xp-step', `is-${st.state}`], 'aria-current': st.state === 'now' ? 'step' : null },
-          h('span', { class: 'xp-mark', 'aria-hidden': 'true' }, st.state === 'done' ? icon('check') : String(st.n)), st.label))),
-      h('div', { class: ['mv-bar', 'xp-bar', `is-${tone}`], role: 'progressbar', 'aria-label': 'Export file', 'aria-valuemin': '0', 'aria-valuemax': '100',
-        'aria-valuenow': m.percent == null ? null : String(Math.round(m.percent)), 'aria-valuetext': m.percentText || m.head }, fill),
-      h('p', { class: 'xp-line' }, l1),
-      h('p', { class: 'xp-line' }, l2),
-      h('div', { class: ['xp-say', `is-${tone}`] }, h('p', null, say)),
-      h('div', { class: 'form-actions xp-acts' }, acts));
+    const steps = [
+      ['make', 'Make the export file', 'Your password again. Ready in a few seconds.'],
+      ['ready', 'Download it', 'Take it to the new server, or keep it as a backup.'],
+      ['restore', 'Restore it on the new server', 'On its first page, choose “Restore from an export file”, choose the file and type this server’s recovery key.'],
+    ];
+    let cur = 'make';
+    let out;
+    if (!e || e.state === 'expired' || e.state === 'failed') {
+      out = [
+        e && e.state === 'expired' ? callout('info', 'The last export file has expired.', h('p', null, `Made ${when(e.made_ms)}. Make a new one.`)) : null,
+        e && e.state === 'failed' ? callout('bad', 'The export file could not be made.', h('p', null, e.error || 'Make a new one.')) : null,
+        h('div', { class: 'form-actions' }, btn('Make an export file', { kind: 'primary', icon: 'download', onclick: makeExport })),
+      ];
+    } else if (e.state === 'preparing') {
+      out = [callout('info', 'Making the export file…', h('p', null, 'A few seconds. The download starts by itself when it is ready.')), progressBar({ bytes_done: e.sent_bytes || 0 }, { label: 'Making the export file' })];
+    } else {
+      cur = 'ready';
+      if (fetchOnReady === e.id && e.url) { fetchOnReady = null; downloadUrl(e.url); ctx.toast(`The download of ${e.file_name} has started.`); }
+      out = [
+        group(null, [infoRow({ icon: 'file', name: h('span', { class: 'set-mono' }, e.file_name), sub: [bytes(e.size), e.files != null ? `${formatNumber(e.files)} files` : null, `made ${when(e.made_ms)}`].filter(Boolean).join(' · ') }),
+          infoRow({ icon: 'clock', name: 'Kept until', sub: 'A day after the last download. A download that stops carries on.', side: h('span', { class: 'set-value' }, when(e.expires_ms)) })]),
+        h('div', { class: 'form-actions' }, linkBtn('Download', e.url, { kind: 'primary', icon: 'download' }), btn('Make a new one', { kind: 'soft', icon: 'refresh', onclick: makeExport }), btn('Delete it', { kind: 'ghost', icon: 'trash', onclick: deleteExport })),
+      ];
+    }
     return tile({ w: 2, title: 'With an export file', icon: 'file' },
       note('When the servers cannot reach each other, this one will be off, or you want a copy to keep. Without the recovery key the file is useless to anyone who takes it.'),
-      panel,
-      note('On the new server: its first page, “Restore from an export file”, this file and this server’s recovery key. A download that stops carries on.'));
+      stepCards(steps, cur, { output: h('div', { class: 'set-steps' }, out) }));
   }
   function drawMove() {
     moveBox.replaceChildren(
@@ -443,77 +417,22 @@ export async function mount(ctx) {
     schedule();
   }
 
-  /* ================================================================ storage and compaction (admins) */
-  // The space on disk by category, largest first, and what compaction saved. "Compact now" starts a pass; while
-  // one runs (also one the server started by itself) the detail is read again every 2 s for its progress, and
-  // when it ends the list is drawn again and a note says what was freed.
-  let store = null;       // GET /system/storage/detail
-  let storeErr = null;    // why the last read failed
-  let storeTimer = 0;
-  ctx.onCleanup(() => clearTimeout(storeTimer));
-  const storeBox = h('div', { class: 'contents' });
-  async function readStorage() {
-    clearTimeout(storeTimer);
-    const was = store && store.compaction && store.compaction.status;
-    try { store = await ctx.api.get('system/storage/detail'); storeErr = null; } catch (e) { if (api.isAbort(e)) return; storeErr = e; }
-    if (!ctx.alive()) return;
-    const c = store && store.compaction;
-    if (was === 'running' && !storeErr && c && c.status !== 'running') {
-      if (c.status === 'failed') ctx.toast(`Compaction failed: ${c.error || 'the server gave no reason.'}`, { kind: 'error' });
-      else ctx.toast(c.last_saved_bytes ? `Compaction is done: ${bytes(c.last_saved_bytes)} freed on disk.` : 'Compaction is done: nothing was left to pack.');
-    }
-    drawStorage();
-  }
-  async function compactNow() {
-    try {
-      const r = await ctx.api.post('system/storage/compact');
-      if (!ctx.alive()) return;
-      store = { ...(store || {}), compaction: r.compaction };
-      storeErr = null;
-    } catch (e) { if (api.isAbort(e) || !ctx.alive()) return; ctx.toast(`Compaction not started: ${(e && e.message) || 'the server did not answer'}`, { kind: 'error' }); }
-    drawStorage();
-  }
-  function compactionTile() {
-    const c = (store && store.compaction) || null;
-    const running = !!c && c.status === 'running';
-    const failed = !!c && c.status === 'failed';
-    const line = running
-      ? said('info', h('b', null, 'Packing…'), ` ${PACK_STEP[c.step] || c.step || 'getting ready'}, `, c.total ? `${formatNumber(c.done || 0)} of ${formatNumber(c.total)}` : 'counting',
-        storeErr ? ' (the progress could not be read just now)' : null)
-      : failed ? said('warn', h('b', null, 'The last pass failed: '), c.error || 'the server gave no reason.')
-        : said('info', !c ? 'The server did not say how compaction stands.'
-          : c.automatic ? 'Compaction runs by itself when the server is idle. Compact now starts a pass at once.'
-            : 'Compaction does not run by itself on this server. Compact now starts a pass.');
-    return tile({ w: 2, title: 'Compaction', icon: 'refresh', id: 'storage',
-      side: chip(running ? 'Packing' : failed ? 'Failed' : c ? 'Idle' : 'Not known', { tone: running ? 'sky' : failed ? 'sun' : c ? 'teal' : 'muted' }) },
-    group(null, [
-      infoRow({ icon: 'check', name: 'Saved so far', sub: 'What compaction has freed in all.', side: h('span', { class: 'set-value' }, bytes(c ? c.saved_bytes : null)) }),
-      infoRow({ icon: 'clock', name: 'Last pass', sub: c && c.finished_ms != null ? `Finished ${when(c.finished_ms)}.` : 'No pass has finished yet.',
-        side: h('span', { class: 'set-value' }, !c || c.finished_ms == null ? 'Not yet' : c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'Nothing left to pack') }),
-    ]),
-    h('div', { 'aria-live': 'polite' }, line),
-    h('div', { class: 'form-actions' }, btn('Compact now', { kind: 'primary', icon: 'refresh', disabled: running || !c, onclick: compactNow })),
-    note('Compaction packs data that is no longer written, losslessly: every value stays readable exactly, and the logs’ signed originals are kept byte for byte.'));
-  }
-  function spaceTile() {
-    const cats = (store && store.categories) || [];
-    return tile({ w: 2, title: 'Space on disk', icon: 'server', side: chip(store && store.total_disk_bytes != null ? `${bytes(store.total_disk_bytes)} in all` : 'Not known', { tone: 'muted' }) },
-      cats.length
-        ? group(null, [
-          cats.map((c) => infoRow({ name: c.label, sub: `${STORE_GROUP[c.group] || c.group} · ${formatNumber(c.files)} ${c.files === 1 ? 'file' : 'files'}`,
-            side: h('span', { class: 'set-value' }, bytes(c.disk_bytes)) })),
-          infoRow({ icon: 'server', name: 'All together', sub: 'Everything above, as it lies on disk.', side: h('span', { class: 'set-value' }, bytes(store.total_disk_bytes)) }),
-          infoRow({ icon: 'download', name: 'Free on the disk', sub: 'Room left for new data.', side: h('span', { class: 'set-value' }, store.free_bytes != null ? bytes(store.free_bytes) : 'Not known') }),
-        ])
-        : said('warn', 'The server did not say what takes the space', storeErr && storeErr.message ? `: ${storeErr.message}` : '.'),
-      note('What takes the space on disk, largest first, with the kind of data under each.'));
-  }
-  function drawStorage() {
-    storeBox.replaceChildren(
-      sectionHead('Storage', 'What takes the space on disk, and what compaction saved.'),
-      compactionTile(), spaceTile());
-    clearTimeout(storeTimer);
-    if (store && store.compaction && store.compaction.status === 'running') storeTimer = setTimeout(readStorage, 2000);
+  /* ================================================================ full rebuild (admins) */
+  // every car's history made again from the stored data; the switch saves at once, as the other server settings
+  let fullT = null;
+  if (admin) {
+    const auto = toggle({ label: 'Automatic full rebuild', sub: 'Rebuild automatically when a new server version decodes the stored logs differently. Off: a notice offers it instead.',
+      checked: !settings.full_rebuild || settings.full_rebuild.auto !== false,
+      onchange: async (on) => {
+        try {
+          settings = await ctx.api.patch('settings', { version: settings.version, full_rebuild: { auto: on } });
+          ctx.toast(on ? 'Saved. A new server version rebuilds what it decodes differently.' : 'Saved. A notice offers a full rebuild instead.');
+        } catch (e) {
+          if (e && e.status === 409) { settings = await ctx.api.get('settings').catch(() => settings); ctx.toast('Someone else changed the server settings; this page shows theirs now.', { kind: 'info' }); } else ctx.toast(notSaved(e), { kind: 'error' });
+          if (ctx.alive()) auto.set(!settings.full_rebuild || settings.full_rebuild.auto !== false);
+        }
+      } });
+    fullT = fullRebuildTile(ctx, { carName: (c) => carName.get(c) || c, after: group(null, [auto]) });
   }
 
   /* ================================================================ accounts (admins) */
@@ -715,11 +634,11 @@ export async function mount(ctx) {
     const tiles = [hostingTile(), accessTile()];
     if (admin) tiles.push(namesTile(), certTile(), portsTile(), keyTile());
     tiles.push(sessionsTile());
-    if (admin) tiles.push(accountsTile(), moveBox, storeBox, auditT);
+    if (admin) tiles.push(accountsTile(), moveBox, fullT.el, auditT);
     ctx.view.replaceChildren(...tiles.filter(Boolean));
   }
   if (admin) {
-    await Promise.all([readMove(), readExport(), readStorage()]);
+    await Promise.all([readMove(), readExport(), fullT.ready]);
     auditT = await auditTile();
     if (!ctx.alive()) return {};
     drawMove();

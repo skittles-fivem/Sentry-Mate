@@ -4,26 +4,17 @@
 //! ```text
 //! db/cars/<car>/seg/<samples|charge>.<can|tesla-api|teslamate>/<YYYY-MM-DD>.snap   the day, columns (see columns), compressed
 //! db/cars/<car>/seg/<samples|charge>.<can|tesla-api|teslamate>/<YYYY-MM-DD>.log    windows written since: (from, to, points)
-//! db/cars/<car>/seg/<samples|charge>.<can|tesla-api|teslamate>/<YYYY-MM>.pack      a finished month's days, as their snapshots were (see pack)
 //! ```
 //!
 //! A write replaces every point of a window. A window that covers whole days writes those days' snapshots
 //! directly; a part of a day is appended to its journal without reading the day (cheap enough to do every minute
 //! for every car), and the journal is folded into the day's snapshot once it is about as big as the snapshot.
 //! Folding while writing uses the warm level; [`crate::Db::settle`] packs finished days at the cold level, the smallest.
-//!
-//! A day's snapshot is its own file or, once its month is over and [`crate::Db::compact_series`] has passed, an
-//! entry of the month's pack: the same bytes, and a snapshot file always wins over the pack's entry for its day.
-//! Everything that looks at a day's snapshot looks in both places, the file first. A data folder without packs
-//! reads as it always did; nothing but that pass makes them. A day written after it was packed gets a journal and
-//! then a snapshot file again (the next pass takes it back into the pack); a day emptied while the pack holds it
-//! keeps an empty snapshot file until the pass that drops it from the pack.
 
 pub(crate) mod columns;
-pub(crate) mod pack;
 mod points;
 
-pub use columns::{Col, ColumnSize, Derived, Fields, Point, decode, decode_fields, describe, encode};
+pub use columns::{Col, Derived, Fields, Point, decode, decode_fields, encode};
 
 use crate::codec;
 use crate::error::{Error, Result};
@@ -31,9 +22,7 @@ use crate::file::{Ctx, Kind, Which, check_header, header, remove_if_exists};
 use crate::journal::{Files, Journal};
 use crate::logged::{LEVEL_COLD, Logged, LoggedFile, append_only, snapshot_head};
 use columns::{Reader, put_varint};
-use model::{ChargePoint, Sample, Stream};
-use pack::{Month, Packs};
-use std::collections::BTreeSet;
+use model::Stream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -51,13 +40,13 @@ fn clamp(from: u64, to: u64) -> (u64, u64) {
 /// The days of `[from, to)` (cut to [`END_MS`]) the series has, from a listing of its folder, for a long window: a
 /// window of years or `0..u64::MAX` costs one listing, not a step per day. `None` for a window of a few weeks,
 /// whose days are cheaper checked one by one by name.
-fn window_days(ctx: &Ctx, dir: &Path, from: u64, to: u64) -> Result<Option<Vec<u64>>> {
+fn window_days(dir: &Path, from: u64, to: u64) -> Result<Option<Vec<u64>>> {
     if from >= to {
         return Ok(Some(Vec::new()));
     }
     let (first, last) = (from / DAY_MS, (to - 1) / DAY_MS);
     if last - first > 62 {
-        return Ok(Some(list_days(ctx, dir)?.into_iter().filter(|d| (first..=last).contains(d)).collect()));
+        return Ok(Some(list_days(dir)?.into_iter().filter(|d| (first..=last).contains(d)).collect()));
     }
     Ok(None)
 }
@@ -68,7 +57,7 @@ pub struct DayInfo {
     /// `YYYY-MM-DD` (UTC).
     pub date: String,
     pub start_ms: u64,
-    /// Bytes on disk (snapshot and journal; for a day in a month's pack, its part of the pack).
+    /// Bytes on disk (snapshot and journal).
     pub bytes: u64,
 }
 
@@ -190,33 +179,9 @@ impl<P: Point> Logged for DayLog<P> {
     }
 }
 
-/// A day's snapshot, wherever it is: its generation, level and about its bytes. The day's own file first, else its
-/// entry in the month's pack.
-fn snap_head(ctx: &Ctx, dir: &Path, day: u64, files: &Files) -> Result<Option<(u64, u8, u64)>> {
-    if let Some(h) = snapshot_head(ctx, files, Kind::Segment)? {
-        return Ok(Some(h));
-    }
-    Ok(pack::entry(ctx, dir, day)?.map(|e| (e.generation, e.level, e.snapshot_len())))
-}
-
-/// A day's snapshot and journal, kept open to commit to (under the car's lock).
-fn load_day<P: Point>(ctx: &Ctx, dir: &Path, day: u64) -> Result<LoggedFile<DayLog<P>>> {
-    LoggedFile::load_or(ctx, day_files(dir, day), &|| pack::elsewhere(ctx, dir, day))
-}
-
-/// Leaves a day with no points: its files removed, unless the month's pack holds the day; then an empty snapshot of
-/// the next generation stays (or the pack's entry would be the day again) until the pack drops the day.
-fn empty_day<P: Point>(ctx: &Ctx, dir: &Path, day: u64, mut lf: LoggedFile<DayLog<P>>) -> Result<()> {
-    if pack::entry(ctx, dir, day)?.is_some() {
-        lf.state = DayLog::empty();
-        return lf.fold(ctx, Which::Hot);
-    }
-    lf.remove_files(ctx)
-}
-
 /// The generation a day's files are at (the newer of snapshot and journal headers).
-fn current_gen(ctx: &Ctx, dir: &Path, day: u64, files: &Files) -> Result<u64> {
-    let snap = snap_head(ctx, dir, day, files)?.map_or(0, |(g, _, _)| g);
+fn current_gen(ctx: &Ctx, files: &Files) -> Result<u64> {
+    let snap = snapshot_head(ctx, files, Kind::Segment)?.map_or(0, |(g, _, _)| g);
     let log = Journal::read_only(ctx, &files.log, true)?.map_or(0, |r| r.generation);
     if log > snap {
         return Err(Error::Damaged {
@@ -227,16 +192,13 @@ fn current_gen(ctx: &Ctx, dir: &Path, day: u64, files: &Files) -> Result<u64> {
     Ok(snap)
 }
 
-/// Writes a whole day as a new cold snapshot, replacing what was there. With no points the day's files are removed
-/// (an empty snapshot stays while the month's pack holds the day: see [`empty_day`]).
-fn write_whole_day<P: Point>(ctx: &Ctx, dir: &Path, day: u64, points: Vec<P>) -> Result<()> {
-    let files = day_files(dir, day);
+/// Writes a whole day as a new cold snapshot (or removes it when there are no points), replacing what was there.
+fn write_whole_day<P: Point>(ctx: &Ctx, files: &Files, points: Vec<P>) -> Result<()> {
     files.clean_temporary()?;
-    let packed = pack::entry(ctx, dir, day)?.is_some();
-    if points.is_empty() && !files.snap.exists() && !files.log.exists() && !packed {
+    if points.is_empty() && !files.snap.exists() && !files.log.exists() {
         return Ok(());
     }
-    let generation = current_gen(ctx, dir, day, &files)? + 1;
+    let generation = current_gen(ctx, files)? + 1;
     let mut b = header(Kind::Segment);
     b.extend_from_slice(&generation.to_be_bytes());
     let which = if points.is_empty() { Which::Hot } else { Which::Cold };
@@ -245,7 +207,7 @@ fn write_whole_day<P: Point>(ctx: &Ctx, dir: &Path, day: u64, points: Vec<P>) ->
     ctx.write_atomic(&files.snap, &b)?;
     ctx.crash_point(crate::Crash::BeforeJournalRemoved)?;
     remove_if_exists(&files.log)?;
-    if points.is_empty() && !packed {
+    if points.is_empty() {
         remove_if_exists(&files.snap)?;
     }
     Ok(())
@@ -283,7 +245,7 @@ pub(crate) fn write<P: Point>(
     }
     let dir = series_dir::<P>(car_dir, source);
     // a long window: the days there are, and the days of the new points
-    let days = match window_days(ctx, &dir, from, to)? {
+    let days = match window_days(&dir, from, to)? {
         Some(mut days) => {
             days.extend(points.iter().map(|p| p.t_ms() / DAY_MS));
             days.sort_unstable();
@@ -300,20 +262,19 @@ pub(crate) fn write<P: Point>(
         let n = rest.partition_point(|p| p.t_ms() < wt);
         let (pts, after) = rest.split_at(n);
         rest = after;
+        let files = day_files(&dir, day);
         if wf == ds && wt == de {
-            write_whole_day(ctx, &dir, day, pts.to_vec())?;
+            write_whole_day(ctx, &files, pts.to_vec())?;
             continue;
         }
-        let files = day_files(&dir, day);
-        let head = snap_head(ctx, &dir, day, &files)?;
-        if pts.is_empty() && head.is_none() && !files.log.exists() {
+        if pts.is_empty() && !files.snap.exists() && !files.log.exists() {
             continue;
         }
         let op = Replace { from: wf, to: wt, points: pts.to_vec() };
-        if append_only::<DayLog<P>>(ctx, &files, &op, head.map(|(g, _, len)| (g, len)))? {
-            let mut lf = load_day::<P>(ctx, &dir, day)?;
+        if append_only::<DayLog<P>>(ctx, &files, &op)? {
+            let mut lf = LoggedFile::<DayLog<P>>::load(ctx, files)?;
             if lf.state.points.is_empty() {
-                empty_day(ctx, &dir, day, lf)?;
+                lf.remove_files(ctx)?;
             } else {
                 lf.fold(ctx, Which::Warm)?;
             }
@@ -322,131 +283,74 @@ pub(crate) fn write<P: Point>(
     Ok(Some(from / DAY_MS))
 }
 
-/// What a series' folder holds, from one listing: the days with a snapshot file of their own, the days with a
-/// journal, and the months with a pack.
-#[derive(Default)]
-struct Listing {
-    snaps: BTreeSet<u64>,
-    logs: BTreeSet<u64>,
-    packs: Vec<Month>,
-}
-
-fn listing(dir: &Path) -> Result<Listing> {
-    let mut l = Listing::default();
+/// The days a series has, in order.
+pub(crate) fn list_days(dir: &Path) -> Result<Vec<u64>> {
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(l),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e.into()),
     };
+    let mut days = Vec::new();
     for e in rd {
         let name = e?.file_name();
         let name = name.to_string_lossy();
-        if let Some(d) = name.strip_suffix(".snap").and_then(parse_day) {
-            l.snaps.insert(d);
-        } else if let Some(d) = name.strip_suffix(".log").and_then(parse_day) {
-            l.logs.insert(d);
-        } else if let Some(m) = name.strip_suffix(".pack").and_then(Month::parse) {
-            l.packs.push(m);
-        }
-    }
-    l.packs.sort_unstable();
-    Ok(l)
-}
-
-/// The days a series has, in order: those with files of their own and those in the months' packs. Under the car's
-/// lock (a month packed meanwhile could be seen neither as files nor as a pack).
-pub(crate) fn list_days(ctx: &Ctx, dir: &Path) -> Result<Vec<u64>> {
-    let l = listing(dir)?;
-    let mut days: BTreeSet<u64> = l.snaps.union(&l.logs).copied().collect();
-    for m in l.packs {
-        if let Some(i) = pack::index(ctx, dir, m)? {
-            days.extend(i.entries.iter().map(|e| e.day));
-        }
-    }
-    Ok(days.into_iter().collect())
-}
-
-/// The days of `[from, to)` a series has (files of their own, or in a month's pack). Under the car's lock.
-pub(crate) fn days_in<P: Point>(ctx: &Ctx, car_dir: &Path, source: Stream, from: u64, to: u64) -> Result<Vec<u64>> {
-    let dir = series_dir::<P>(car_dir, source);
-    let (from, to) = clamp(from, to);
-    if let Some(days) = window_days(ctx, &dir, from, to)? {
-        return Ok(days);
-    }
-    let mut packs = Packs::new(ctx, &dir);
-    let mut days = Vec::new();
-    for d in from / DAY_MS..=(to - 1) / DAY_MS {
-        let f = day_files(&dir, d);
-        if f.snap.exists() || f.log.exists() || packs.entry(d)?.is_some() {
+        if let Some(d) = name.strip_suffix(".snap").or_else(|| name.strip_suffix(".log")).and_then(parse_day) {
             days.push(d);
         }
     }
+    days.sort_unstable();
+    days.dedup();
     Ok(days)
 }
 
-/// A snapshot file opened and unpacked: its generation and body.
-fn unpack(b: &[u8], label: &str) -> Result<crate::plain::Plain> {
-    let body = check_header(b, Kind::Segment, label)?;
+/// The days of `[from, to)` that have files.
+fn days_in(dir: &Path, from: u64, to: u64) -> Result<Vec<u64>> {
+    let (from, to) = clamp(from, to);
+    if let Some(days) = window_days(dir, from, to)? {
+        return Ok(days);
+    }
+    Ok((from / DAY_MS..=(to - 1) / DAY_MS)
+        .filter(|&d| {
+            let f = day_files(dir, d);
+            f.snap.exists() || f.log.exists()
+        })
+        .collect())
+}
+
+/// A day's snapshot opened and unpacked (its generation and body), from the cache of days read last while its file
+/// is the same ([`crate::plain`]). `None`: there is no snapshot.
+fn snapshot_plain(ctx: &Ctx, files: &Files) -> Result<Option<crate::plain::Plain>> {
+    let Some(st) = crate::plain::stamp(&files.snap)? else { return Ok(None) };
+    if let Some(p) = ctx.plain.get(&files.snap, st) {
+        return Ok(Some(p));
+    }
+    let label = ctx.label(&files.snap);
+    let Some(b) = ctx.read(&files.snap)? else { return Ok(None) };
+    let body = check_header(&b, Kind::Segment, &label)?;
     let generation = body
         .get(..8)
         .and_then(|g| <[u8; 8]>::try_from(g).ok())
         .map(u64::from_be_bytes)
-        .ok_or_else(|| Error::Damaged { file: label.to_string(), why: "snapshot header cut short".into() })?;
+        .ok_or_else(|| Error::Damaged { file: label.clone(), why: "snapshot header cut short".into() })?;
     let plain = body.get(9..).ok_or_else(|| Error::Corrupt("cut short".into())).and_then(codec::decompress);
-    Ok(Arc::new((generation, zeroize::Zeroizing::new(plain.map_err(|e| e.in_file(label))?))))
-}
-
-/// A day's snapshot opened and unpacked (its generation and body) and the file it is in, from the cache of days
-/// read last while it is the same ([`crate::plain`]). The day's own file first; when there is none (or it goes
-/// while it is read: the month was just packed) the month's pack, which then has the day. `None`: no snapshot.
-fn snapshot_plain(ctx: &Ctx, dir: &Path, day: u64, files: &Files) -> Result<Option<(crate::plain::Plain, String)>> {
-    if let Some(st) = crate::plain::stamp(&files.snap)? {
-        let label = ctx.label(&files.snap);
-        if let Some(p) = ctx.plain.get(&files.snap, st) {
-            return Ok(Some((p, label)));
-        }
-        if let Some(b) = ctx.read(&files.snap)? {
-            let p = unpack(&b, &label)?;
-            // kept only when the file read is the one looked at (a day written meanwhile is read again next time)
-            if crate::plain::stamp(&files.snap)? == Some(st) {
-                ctx.plain.put(&files.snap, st, p.clone());
-            }
-            return Ok(Some((p, label)));
-        }
+    let p = Arc::new((generation, zeroize::Zeroizing::new(plain.map_err(|e| e.in_file(&label))?)));
+    // kept only when the file read is the one looked at (a day written meanwhile is read again next time)
+    if crate::plain::stamp(&files.snap)? == Some(st) {
+        ctx.plain.put(&files.snap, st, p.clone());
     }
-    let Some(e) = pack::entry(ctx, dir, day)? else { return Ok(None) };
-    let key = pack::plain_key(dir, day);
-    let label = ctx.label(&Month::of(day).file(dir));
-    if let Some(p) = ctx.plain.get(&key, e.stamp()) {
-        return Ok(Some((p, label)));
-    }
-    // the pack as it is now (written again since its index was read, it may have the day anew, or no more)
-    let Some((e, opened)) = pack::find(ctx, dir, day)? else { return Ok(None) };
-    let plain = codec::decompress(opened.body(&e)?).map_err(|err| err.in_file(&label))?;
-    let p: crate::plain::Plain = Arc::new((e.generation, zeroize::Zeroizing::new(plain)));
-    ctx.plain.put(&key, e.stamp(), p.clone());
-    Ok(Some((p, label)))
+    Ok(Some(p))
 }
 
 /// A day with a journal, read whole (snapshot and journal) and kept in the same cache as an unpacked snapshot would
 /// be, while its journal is the same file (a write to the day appends to it, a fold replaces or removes it): days
 /// written by the minute (a live car's) are read again without opening every entry of their journal each time.
 /// `None`: the journal went meanwhile (the day is its snapshot alone now).
-pub(crate) fn journaled_plain<P: Point>(
-    ctx: &Ctx,
-    car_dir: &Path,
-    source: Stream,
-    day: u64,
-) -> Result<Option<crate::plain::Plain>> {
-    let dir = series_dir::<P>(car_dir, source);
-    let files = &day_files(&dir, day);
+pub(crate) fn journaled_plain<P: Point>(ctx: &Ctx, files: &Files) -> Result<Option<crate::plain::Plain>> {
     let Some(st) = crate::plain::stamp(&files.log)? else { return Ok(None) };
     if let Some(p) = ctx.plain.get(&files.log, st) {
         return Ok(Some(p));
     }
-    // (its snapshot may be in the month's pack)
-    let elsewhere = || pack::elsewhere(ctx, &dir, day);
-    let state = LoggedFile::<DayLog<P>>::read_state_or(ctx, files.clone(), &elsewhere)?;
+    let state = LoggedFile::<DayLog<P>>::read_state(ctx, files.clone())?;
     let p = Arc::new((0, zeroize::Zeroizing::new(state.encode_state()?)));
     // kept only when the journal read is the one looked at (a day written meanwhile is read again next time)
     if crate::plain::stamp(&files.log)? == Some(st) {
@@ -466,35 +370,34 @@ pub(crate) struct DayPlain {
 /// Unpacks a day that has a journal: under the car's lock (a fold meanwhile would pair a snapshot with a journal of
 /// another generation); see [`journaled_plain`]. A day of a snapshot alone is unpacked without it: the snapshot is
 /// only ever replaced whole, by a rename.
-pub(crate) type Journaled<'a> = &'a mut dyn FnMut(u64) -> Result<Option<crate::plain::Plain>>;
+pub(crate) type Journaled<'a> = &'a mut dyn FnMut(&Files) -> Result<Option<crate::plain::Plain>>;
 
-fn day_plain(ctx: &Ctx, dir: &Path, day: u64, journaled: Journaled<'_>) -> Result<Option<DayPlain>> {
-    let files = &day_files(dir, day);
+fn day_plain(ctx: &Ctx, files: &Files, journaled: Journaled<'_>) -> Result<Option<DayPlain>> {
     if files.log.exists()
-        && let Some(plain) = journaled(day)?
+        && let Some(plain) = journaled(files)?
     {
         return Ok(Some(DayPlain { label: ctx.label(&files.log), plain }));
     }
-    if let Some((plain, label)) = snapshot_plain(ctx, dir, day, files)? {
-        return Ok(Some(DayPlain { label, plain }));
+    if let Some(plain) = snapshot_plain(ctx, files)? {
+        return Ok(Some(DayPlain { label: ctx.label(&files.snap), plain }));
     }
     // (no snapshot: a journal begun meanwhile)
-    Ok(journaled(day)?.map(|plain| DayPlain { label: ctx.label(&files.log), plain }))
+    Ok(journaled(files)?.map(|plain| DayPlain { label: ctx.label(&files.log), plain }))
 }
 
-/// The days `days` of a series (those of the window that it has: [`days_in`]), unpacked (those with a journal
-/// through `journaled`).
+/// The days of `[from, to)` that have points, unpacked (those with a journal through `journaled`).
 pub(crate) fn plains<P: Point>(
     ctx: &Ctx,
     car_dir: &Path,
     source: Stream,
-    days: &[u64],
+    from: u64,
+    to: u64,
     journaled: Journaled<'_>,
 ) -> Result<Vec<DayPlain>> {
     let dir = series_dir::<P>(car_dir, source);
     let mut out = Vec::new();
-    for &day in days {
-        out.extend(day_plain(ctx, &dir, day, journaled)?);
+    for day in days_in(&dir, from, to)? {
+        out.extend(day_plain(ctx, &day_files(&dir, day), journaled)?);
     }
     Ok(out)
 }
@@ -579,61 +482,48 @@ pub(crate) fn fields_of<P: Point>(days: Vec<DayPlain>, from: u64, to: u64, names
     Ok(out)
 }
 
-/// The days of a series, with their size (a day in a month's pack: its part of the pack).
-pub(crate) fn days<P: Point>(ctx: &Ctx, car_dir: &Path, source: Stream) -> Result<Vec<DayInfo>> {
-    let dir = series_dir::<P>(car_dir, source);
-    let mut packs = Packs::new(ctx, &dir);
-    let mut out = Vec::new();
-    for day in list_days(ctx, &dir)? {
-        let f = day_files(&dir, day);
-        let size = |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len());
-        let snap = match std::fs::metadata(&f.snap) {
-            Ok(m) => m.len(),
-            Err(_) => packs.entry(day)?.map_or(0, |e| e.len),
-        };
-        out.push(DayInfo { date: day_name(day), start_ms: day * DAY_MS, bytes: snap + size(&f.log) });
-    }
-    Ok(out)
-}
-
 /// Per day of a series (its UTC start), a key of what its files are now (each one's inode, size and change time): it
-/// changes whenever the day is written, so what was worked out from a day can be kept with it. A day in a month's
-/// pack: what the day is there (its generation, length and content hash), so its key stays when other days are packed
-/// around it.
-pub(crate) fn day_stamps<P: Point>(ctx: &Ctx, car_dir: &Path, source: Stream) -> Result<Vec<(u64, u64)>> {
+/// changes whenever the day is written, so what was worked out from a day can be kept with it.
+pub(crate) fn day_stamps<P: Point>(car_dir: &Path, source: Stream) -> Result<Vec<(u64, u64)>> {
     use std::hash::{Hash, Hasher};
     let dir = series_dir::<P>(car_dir, source);
-    let mut packs = Packs::new(ctx, &dir);
     let mut out = Vec::new();
-    for day in list_days(ctx, &dir)? {
+    for day in list_days(&dir)? {
         let f = day_files(&dir, day);
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        let snap = match crate::plain::stamp(&f.snap)? {
-            Some(st) => Some(st),
-            None => packs.entry(day)?.map(|e| e.stamp()),
-        };
-        snap.hash(&mut h);
+        crate::plain::stamp(&f.snap)?.hash(&mut h);
         crate::plain::stamp(&f.log)?.hash(&mut h);
         out.push((day * DAY_MS, h.finish()));
     }
     Ok(out)
 }
 
+/// The days of a series, with their size.
+pub(crate) fn days<P: Point>(car_dir: &Path, source: Stream) -> Result<Vec<DayInfo>> {
+    let dir = series_dir::<P>(car_dir, source);
+    let mut out = Vec::new();
+    for day in list_days(&dir)? {
+        let f = day_files(&dir, day);
+        let size = |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len());
+        out.push(DayInfo { date: day_name(day), start_ms: day * DAY_MS, bytes: size(&f.snap) + size(&f.log) });
+    }
+    Ok(out)
+}
+
 /// One key of what the files of a series' days in `[from, to)` are now ([`day_stamps`] of those days as one): it
 /// changes whenever one of them is written, made or removed.
-pub(crate) fn days_stamp<P: Point>(ctx: &Ctx, car_dir: &Path, source: Stream, from: u64, to: u64) -> Result<u64> {
+pub(crate) fn days_stamp<P: Point>(car_dir: &Path, source: Stream, from: u64, to: u64) -> Result<u64> {
     use std::hash::{Hash, Hasher};
     let dir = series_dir::<P>(car_dir, source);
-    let mut packs = Packs::new(ctx, &dir);
+    let (from, to) = clamp(from, to);
+    let days: Vec<u64> = match window_days(&dir, from, to)? {
+        Some(days) => days,
+        None => (from / DAY_MS..=(to - 1) / DAY_MS).collect(),
+    };
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    for day in days_in::<P>(ctx, car_dir, source, from, to)? {
+    for day in days {
         let f = day_files(&dir, day);
-        // a day in a month's pack: what it is there, as in [`day_stamps`]
-        let snap = match crate::plain::stamp(&f.snap)? {
-            Some(st) => Some(st),
-            None => packs.entry(day)?.map(|e| e.stamp()),
-        };
-        (day, snap, crate::plain::stamp(&f.log)?).hash(&mut h);
+        (day, crate::plain::stamp(&f.snap)?, crate::plain::stamp(&f.log)?).hash(&mut h);
     }
     Ok(h.finish())
 }
@@ -654,163 +544,30 @@ pub(crate) fn bytes(car_dir: &Path) -> Result<u64> {
     Ok(total)
 }
 
-/// Settles a day (nothing left in its journal, its snapshot at the cold level). Returns whether there was anything
-/// to do.
-fn settle_day<P: Point>(ctx: &Ctx, dir: &Path, day: u64) -> Result<bool> {
-    let files = day_files(dir, day);
-    if !files.log.exists() {
-        match snapshot_head(ctx, &files, Kind::Segment)? {
-            // folded while it was written, or emptied
-            Some((_, level, _)) if level != LEVEL_COLD => {}
-            // cold already, or in the month's pack (cold when it went in)
-            Some(_) | None => return Ok(false),
-        }
-    }
-    let mut lf = load_day::<P>(ctx, dir, day)?;
-    if lf.settled() {
-        return Ok(false);
-    }
-    if !lf.state.points.is_empty() {
-        lf.fold(ctx, Which::Cold)?;
-        return Ok(true);
-    }
-    if !lf.has_journal() && files.snap.exists() && pack::entry(ctx, dir, day)?.is_some() {
-        // emptied, and its empty snapshot is there until the pack drops the day
-        return Ok(false);
-    }
-    empty_day(ctx, dir, day, lf)?;
-    Ok(true)
-}
-
-/// The two kinds of series, for the passes over every series of a car.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Series {
-    Samples,
-    Charge,
-}
-
-/// A series of a car: its kind, its stream (as its place in [`Stream::ALL`]).
-type SeriesOf = (Series, usize);
-
-fn every_series() -> impl Iterator<Item = (SeriesOf, Stream)> {
-    Stream::ALL.into_iter().enumerate().flat_map(|(i, s)| [((Series::Samples, i), s), ((Series::Charge, i), s)])
-}
-
-fn dir_of(car_dir: &Path, series: Series, stream: Stream) -> PathBuf {
-    match series {
-        Series::Samples => series_dir::<Sample>(car_dir, stream),
-        Series::Charge => series_dir::<ChargePoint>(car_dir, stream),
-    }
-}
-
-/// What a pass has to look at in one series, from its listing alone. To fold: the days that ended before `before`
-/// and have a journal (however old: a late upload, an import into old days), or a snapshot file not known to be
-/// cold (at or after `known_cold_before`). To pack: per month that ended before `before`, the days with a snapshot
-/// file and no journal.
-struct Todo {
-    fold: Vec<u64>,
-    pack: Vec<(Month, usize)>,
-}
-
-fn todo(dir: &Path, known_cold_before: u64, before: u64) -> Result<Todo> {
-    let l = listing(dir)?;
-    let ended = |day: u64| (day + 1) * DAY_MS <= before;
-    let mut fold: BTreeSet<u64> = l.logs.iter().copied().filter(|d| ended(*d)).collect();
-    fold.extend(l.snaps.iter().copied().filter(|d| ended(*d) && d * DAY_MS >= known_cold_before));
-    let mut pack: Vec<(Month, usize)> = Vec::new();
-    for day in l.snaps.iter().copied().filter(|d| !l.logs.contains(d)) {
-        let m = Month::of(day);
-        if m.end * DAY_MS > before {
+/// Packs the days of a series in `[from, before)` at the cold level (nothing left in their journals). Returns how
+/// many it packed.
+pub(crate) fn settle<P: Point>(ctx: &Ctx, car_dir: &Path, source: Stream, from: u64, before: u64) -> Result<usize> {
+    let dir = series_dir::<P>(car_dir, source);
+    let mut n = 0;
+    for day in list_days(&dir)? {
+        if day * DAY_MS < from || (day + 1) * DAY_MS > before {
             continue;
         }
-        match pack.last_mut() {
-            Some((last, n)) if *last == m => *n += 1,
-            Some(_) | None => pack.push((m, 1)),
+        let files = day_files(&dir, day);
+        let cold = !files.log.exists() && snapshot_head(ctx, &files, Kind::Segment)?.is_some_and(|h| h.1 == LEVEL_COLD);
+        if cold {
+            continue;
         }
-    }
-    Ok(Todo { fold: fold.into_iter().collect(), pack })
-}
-
-/// What [`compact`] did.
-pub(crate) struct Compacted {
-    pub folded: usize,
-    pub packed: usize,
-    /// It stopped at `max_days` with work left.
-    pub more: bool,
-    /// Every day before this is now known to have nothing in its journal and a cold snapshot (or to be in a pack).
-    pub known_cold_before: u64,
-}
-
-/// One pass over every series of a car, at most about `max_days` of work, oldest first: settles the days that ended
-/// before `before` (see [`todo`]), then, when `packing` and with all of them settled, packs the months that ended
-/// before it ([`pack::pack_month`]; whole months, so the last one may go past `max_days`). Under the car's lock.
-pub(crate) fn compact(
-    ctx: &Ctx,
-    car_dir: &Path,
-    known_cold_before: u64,
-    before: u64,
-    max_days: usize,
-    packing: bool,
-) -> Result<Compacted> {
-    let mut out = Compacted { folded: 0, packed: 0, more: false, known_cold_before };
-    // a step always gets somewhere
-    let max_days = max_days.max(1);
-    let mut fold: Vec<(u64, SeriesOf, Stream)> = Vec::new();
-    for (series, stream) in every_series() {
-        let t = todo(&dir_of(car_dir, series.0, stream), known_cold_before, before)?;
-        fold.extend(t.fold.into_iter().map(|d| (d, series, stream)));
-    }
-    fold.sort_unstable_by_key(|f| (f.0, f.1));
-    // looking at a snapshot's head is little work next to folding a day, but not none
-    for (looked, (day, series, stream)) in fold.into_iter().enumerate() {
-        if out.folded >= max_days || looked >= max_days.saturating_mul(64) {
-            out.more = true;
-            out.known_cold_before = known_cold_before.max(day * DAY_MS);
-            return Ok(out);
+        let mut lf = LoggedFile::<DayLog<P>>::load(ctx, files)?;
+        if lf.settled() {
+            continue;
         }
-        let dir = dir_of(car_dir, series.0, stream);
-        let did = match series.0 {
-            Series::Samples => settle_day::<Sample>(ctx, &dir, day)?,
-            Series::Charge => settle_day::<ChargePoint>(ctx, &dir, day)?,
-        };
-        out.folded += usize::from(did);
-    }
-    out.known_cold_before = known_cold_before.max(before);
-    if !packing {
-        return Ok(out);
-    }
-    for (series, stream) in every_series() {
-        let dir = dir_of(car_dir, series.0, stream);
-        for (month, _) in todo(&dir, out.known_cold_before, before)?.pack {
-            if out.folded + out.packed >= max_days {
-                out.more = true;
-                return Ok(out);
-            }
-            out.packed += match series.0 {
-                Series::Samples => pack::pack_month::<Sample>(ctx, &dir, month)?,
-                Series::Charge => pack::pack_month::<ChargePoint>(ctx, &dir, month)?,
-            };
+        if lf.state.points.is_empty() {
+            lf.remove_files(ctx)?;
+        } else {
+            lf.fold(ctx, Which::Cold)?;
         }
-    }
-    Ok(out)
-}
-
-/// How many days [`compact`] would still fold or pack, from listings alone (a snapshot file not yet known to be cold
-/// counts, though a look at it may find nothing to do).
-pub(crate) fn pending(car_dir: &Path, known_cold_before: u64, before: u64) -> Result<usize> {
-    let mut n = 0;
-    for (series, stream) in every_series() {
-        let dir = dir_of(car_dir, series.0, stream);
-        let t = todo(&dir, known_cold_before, before)?;
-        let packable: usize = t.pack.iter().map(|p| p.1).sum();
-        // a day of a month to pack that is also to fold (its snapshot file not known cold) counts once
-        let l = listing(&dir)?;
-        let both = t
-            .fold
-            .iter()
-            .filter(|d| !l.logs.contains(d) && l.snaps.contains(d) && Month::of(**d).end * DAY_MS <= before)
-            .count();
-        n += t.fold.len() + packable - both;
+        n += 1;
     }
     Ok(n)
 }
