@@ -18,8 +18,7 @@ import { choice, switchField } from './form.js';
 import { createSwitcher } from './switcher.js';
 import { createPeriodPicker } from './period.js';
 import { currentPrefs, savePrefs, applyPrefs, onPrefs } from './prefs.js';
-import { SIZES, sizeState, setSize, setDeviceSize, onSize, sizeNote, display } from './display.js';
-import { deviceSizeOptions, deviceSizeNote } from '../shared/devicesize.js';
+import { SIZES, sizeState, setSize, sizeNote, display } from './display.js';
 import { flash } from './flash.js';
 import { buildLabel, buildTitle, releaseDismissed, dismissRelease } from '../shared/release.js';
 import { isTmNotice, tmNoticeFix, TM_NOTICE_ACTION } from '../shared/teslamate.js';
@@ -56,15 +55,11 @@ function displayMenu() {
   const theme = choice({ label: 'Theme', name: 'theme', value: p.theme || 'device', options: [['light', 'Light'], ['dark', 'Dark'], ['device', 'Device']], onchange: (v) => savePref({ theme: v }).catch(() => {}) });
   const units = choice({ label: 'Units', name: 'units', value: (p.units && p.units.distance) || 'km', options: [['km', 'km · °C · bar'], ['mi', 'mi · °F · psi']],
     onchange: (v) => savePref({ units: v === 'mi' ? { distance: 'mi', temperature: 'f', pressure: 'psi' } : { distance: 'km', temperature: 'c', pressure: 'bar' } }).catch(() => {}) });
-  // kept in this browser only (shared/devicesize.js), never with the account
-  const device = choice({ label: 'Size on this device', name: 'device_size', value: sizeState().device ? String(sizeState().device) : 'auto', cls: 'size-options size-options--device',
-    options: deviceSizeOptions().map((o) => [o.value, o.value === 'auto' ? 'Auto' : o.label.replace(/\u00a0/g, '')]), onchange: (v) => setDeviceSize(v) });
-  const deviceNoteEl = h('p', { class: 'size-pop-note' });
-  const size = choice({ label: 'Interface size (your account)', name: 'interface_size', value: sizeState().size, cls: 'size-options', options: SIZES.map((s) => [s, `${s}%`]), onchange: (v) => pickSize(Number(v)) });
+  const size = choice({ label: 'Interface size', name: 'interface_size', value: sizeState().size, cls: 'size-options', options: SIZES.map((s) => [s, `${s}%`]), onchange: (v) => pickSize(Number(v)) });
   const follow = switchField({ label: 'Follow screen size', checked: sizeState().follow, onchange: (on) => pickFollow(on), hint: 'Larger on big screens, such as a 4K monitor.' });
   const noteEl = h('p', { class: 'size-pop-note' });
   const more = h('a', { class: 'size-pop-more', href: '/settings/display' }, 'More in Settings: Display and units');
-  const panel = h('div', { class: 'pop size-pop', id: 'display-pop', role: 'dialog', 'aria-label': 'Display' }, theme, units, device, deviceNoteEl, size, follow, noteEl, more);
+  const panel = h('div', { class: 'pop size-pop', id: 'display-pop', role: 'dialog', 'aria-label': 'Display' }, theme, units, size, follow, noteEl, more);
   const wrap = h('div', { class: 'pop-wrap size-menu' }, trigger, panel);
   const pop = popover(trigger, panel, { focus: '[aria-checked="true"]' });
   more.addEventListener('click', () => pop.close());
@@ -75,14 +70,10 @@ function displayMenu() {
     const s = sizeState();
     size.set(s.size);
     follow.set(s.follow);
-    device.set(s.device ? String(s.device) : 'auto');
-    deviceNoteEl.textContent = deviceSizeNote(s.device, { account: s.size });
-    const shown = s.device || s.size;
-    trigger.querySelector('.size-trigger-value').textContent = shown === 100 ? '' : `${shown}%`;
+    trigger.querySelector('.size-trigger-value').textContent = s.size === 100 ? '' : `${s.size}%`;
     noteEl.textContent = sizeNote();
   };
   onPrefs(sync);
-  onSize(sync);
   display.onChange(sync);
   sync();
   return { el: wrap, sync };

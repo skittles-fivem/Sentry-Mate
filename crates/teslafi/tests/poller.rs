@@ -1,5 +1,5 @@
-//! The poller with a scripted TeslaFi and its own clock: the pace by what the car does (never slower because another
-//! input is live), the same poll never handed on twice, the back-off and TeslaFi's wait, the daily cap, a refused token
+//! The poller with a scripted TeslaFi and its own clock: the pace by what the car does, slower while SMO or the Tesla
+//! API is live, the same poll never handed on twice, the back-off and TeslaFi's wait, the daily cap, a refused token
 //! stopping the account, and a car TeslaFi names that is not this account's waiting for an admin. Made-up data only.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -105,10 +105,11 @@ async fn the_pace_follows_the_car_and_a_poll_goes_on_once() {
     let next = p.tick(next).await.unwrap();
     assert_eq!(p.status().mode, Mode::Asleep);
     assert_eq!(next, NOW + 300_000 + 600_000);
-    // driving again: the driving pace, whatever other input is live for the car (no input waits on another)
+    // SMO or the Tesla API live for the car: ten minutes at least, even driving
+    *sink.other_live.lock().unwrap() = true;
     script.push(Ok(poll(4, "2027-01-15 10:00:00", "Driving", json!({"shift_state": "D"}))));
     let t = next;
-    assert_eq!(p.tick(t).await.unwrap(), t + 60_000);
+    assert_eq!(p.tick(t).await.unwrap(), t + 600_000);
 
     let pts = sink.points.lock().unwrap().clone();
     assert_eq!(pts.len(), 4, "polls 1, 2, 3 and 4, each once: {pts:?}");

@@ -5,7 +5,7 @@
 //   id        page id (the keys of docs/parity/coverage-matrix.json "pages", plus sign-in and setup)
 //   title     the page's name (menu, heading, tab title)
 //   nav       the shorter name in the sidebar (defaults to title)
-//   group     menu group: cars | driving | battery | reports | setup (null: not in the menu)
+//   group     menu group: cars | driving | charging | battery | reports | setup (null: not in the menu)
 //   icon      sprite icon id
 //   desc      one line in the menu
 //   purpose   the line under the page title (from the page plan)
@@ -18,6 +18,7 @@
 export const GROUPS = Object.freeze([
   { id: 'cars', title: 'Cars' },
   { id: 'driving', title: 'Driving' },
+  { id: 'charging', title: 'Charging' },
   { id: 'battery', title: 'Battery and energy' },
   { id: 'reports', title: 'Reports' },
   { id: 'setup', title: 'Set-up' },
@@ -61,7 +62,7 @@ export const PAGES = Object.freeze([
     words: 'tax business private commute expenses mileage claim pdf',
     sections: ['Filters', 'Logbook table', 'Export'] },
 
-  { id: 'charges', title: 'Charges', group: 'battery', icon: 'bolt', car: 'optional', period: '30d',
+  { id: 'charges', title: 'Charges', group: 'charging', icon: 'bolt', car: 'optional', period: '30d',
     desc: 'Charging sessions, habits and costs.',
     purpose: 'Find charging sessions and understand charging habits and costs.',
     words: 'cost price supercharger dc ac kwh charging stats',

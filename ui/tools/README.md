@@ -38,7 +38,6 @@ also on Ctrl-C and on errors. It needs Node and the Playwright that is already i
 | `--pixel` | off | Also the pixel checks (below): fails a page that is not pixel centred and correct, and saves a screenshot with the problems outlined. |
 | `--stable [SECONDS]` | off (`30` when given without a number) | Also the stability checks (below): stays on each ready page that long while the dev server sends live updates, and fails a page whose layout shifts, whose blocks move, or whose elements and loading texts come and go. |
 | `--stable-fast` | off | With `--stable`: the dev server sends live values every 0.5 s and list changes every 3 s instead of every 2 s and 10 s. |
-| `--device-size N` | `auto` | The Interface size on this device (`80`, `90`, `100`, `110` or `125`): put in each window's storage before the page starts, as if picked in Settings: Display and units on that device ([`ui/shared/devicesize.js`](../shared/devicesize.js)). |
 | `--fixture-matrix FILE` | `docs/parity/coverage-matrix.json` | Another coverage matrix (the fixtures use `fixtures/matrix.json`). |
 | `--ready-timeout-ms N` | `20000` | How long to wait for the page to say it is ready. |
 | `--idle-timeout-ms N` | `10000` | How long to wait after that for the network to go quiet. |

@@ -488,23 +488,8 @@ function pixelChecks({ tol, near, fracTol, maxFindings }) {
       }
     }
   }
-  // an icon's visible box: cut by the ancestors that clip it (a scrolled menu), so an icon scrolled out of view
-  // under a footer is not an overlap
-  const shownRect = (e) => {
-    const r = rect(e);
-    let l = r.left, t = r.top, rt = r.right, b = r.bottom;
-    for (let a = e.parentElement; a && a !== body; a = a.parentElement) {
-      const as = getComputedStyle(a);
-      if (as.overflowX === 'visible' && as.overflowY === 'visible') continue;
-      const ar = rect(a);
-      if (as.overflowX !== 'visible') { l = Math.max(l, ar.left); rt = Math.min(rt, ar.right); }
-      if (as.overflowY !== 'visible') { t = Math.max(t, ar.top); b = Math.min(b, ar.bottom); }
-    }
-    return { left: l, top: t, right: rt, bottom: b, width: rt - l, height: b - t };
-  };
   for (const ic of icons) {
-    const ir = shownRect(ic);
-    if (ir.width <= 1 || ir.height <= 1) continue;
+    const ir = rect(ic);
     const done = new Set();
     cells(ir, (k) => {
       for (const i of grid.get(k) || []) {

@@ -637,7 +637,7 @@ fn smo_wins_then_the_tesla_api_then_teslafi_in_one_drive() {
         assert_eq!(ins, vec!["smo", "tesla_api", "teslafi_api"]);
         let cabin = serde_json::to_value(now.cabin_c.unwrap()).unwrap();
         assert_eq!(cabin["sources"][0]["kind"], "teslafi_api", "the newest cabin temperature came from TeslaFi");
-        assert!(k.engine.tesla_api_live(car), "the Tesla API's data just came");
+        assert!(k.engine.tesla_api_live(car), "the Tesla API's data just came: TeslaFi is read less");
     });
 }
 

@@ -558,6 +558,11 @@ pub struct Placard {
     pub rear_kpa: f64,
     /// The wheel size it is for.
     pub wheel_in: u8,
+    /// Where that wheel size comes from (the car's `wheel_in` fact).
+    pub wheel_from: Option<FactSource>,
+    /// The wheel size is not typed and not read from the car's own wheel setting with high confidence (a factory
+    /// tyre, the Tesla API's wheel name, an import or the only factory size of the build): the car may have others.
+    pub wheel_guess: bool,
     pub source: &'static str,
 }
 
@@ -570,7 +575,14 @@ pub fn placard_pressure(v: &VehicleInfo) -> Option<Placard> {
         .tyre_pressure
         .iter()
         .find(|r| in_models(&r.models, m) && r.years.contains(y) && r.wheel_in == w)
-        .map(|r| Placard { front_kpa: r.front_kpa, rear_kpa: r.rear_kpa, wheel_in: r.wheel_in, source: r.src.source })
+        .map(|r| Placard {
+            front_kpa: r.front_kpa,
+            rear_kpa: r.rear_kpa,
+            wheel_in: r.wheel_in,
+            wheel_from: v.wheel_in.source,
+            wheel_guess: v.wheel_in.source != Some(FactSource::Owner) && v.wheel_in.confidence != Some(Confidence::High),
+            source: r.src.source,
+        })
 }
 
 fn in_models(models: &[char], m: char) -> bool {

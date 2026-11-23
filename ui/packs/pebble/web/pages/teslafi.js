@@ -183,6 +183,7 @@ export function teslafiTiles(ctx, { cars = [] } = {}) {
         ['Driving or charging', `every ${secs(p.driving_s)}`],
         ['Parked, awake', `every ${secs(p.parked_s)}`],
         ['Asleep', `every ${secs(p.asleep_s)}`],
+        ['While SMO or the Tesla API sends', `every ${secs(p.other_live_s)} at most`],
         ['Between two requests', 'at least 10 s'],
         ['Requests a day', `at most ${formatNumber(p.daily_cap ?? 1500)} per account`],
         ['After an error', 'waits 1 min, doubling to 15 min'],

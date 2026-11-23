@@ -51,13 +51,10 @@
 .patterns-empty { margin-bottom: round(1rem, var(--e)); }
 .list-head { display: flex; align-items: flex-start; justify-content: space-between; gap: round(1rem, var(--e)); }
 .pattern-lists .note { margin-top: round(0.625rem, var(--e)); }
-.pattern-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, round(11rem, var(--e))), 1fr)); gap: round(1.125rem, var(--e)) round(1.5rem, var(--e)); }
-/* a top speed links to its drive; at a large Interface size on a phone it may wrap rather than stick out */
-.pattern-grid .metric { min-width: 0; }
-.pattern-grid .metric-value .link { white-space: normal; overflow-wrap: anywhere; }
+.pattern-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(round(11rem, var(--e)), 1fr)); gap: round(1.125rem, var(--e)) round(1.5rem, var(--e)); }
 .spark { display: flex; align-items: flex-end; gap: 1px; height: round(1.5rem, var(--e)); margin-top: round(0.25rem, var(--e)); }
 .spark i { flex: 1; min-width: 1px; height: max(1px, var(--h)); background: var(--live-line); border-radius: 1px 1px 0 0; }
-.pattern-lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, round(18rem, var(--e))), 1fr)); gap: round(1.5rem, var(--e)) round(2rem, var(--e)); margin-top: round(1.5rem, var(--e)); padding-top: round(1.25rem, var(--e)); border-top: 1px solid var(--line); }
+.pattern-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(1.5rem, var(--e)) round(2rem, var(--e)); margin-top: round(1.5rem, var(--e)); padding-top: round(1.25rem, var(--e)); border-top: 1px solid var(--line); }
 
 @container page (max-width: 85.375rem) {
   .drives-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: round(1rem, var(--e)); }

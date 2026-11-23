@@ -20,6 +20,7 @@ import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import { format, formatMoney } from '../shared/units.js';
 import { formatNumber, compareText } from '../shared/i18n.js';
 import { startOf, addPeriod } from '../shared/time.js';
+import { dropJumps, lineOf } from '../shared/tracks.js';
 import { icon } from '../core/icons.js';
 import { soldParts, soldToggle } from '../core/carswitch.js';
 import { pageHead, panel, metric, csvButton, tag } from '../core/page.js';
@@ -257,7 +258,7 @@ export async function mount(ctx) {
   /* ---------- the cars (one colour each, as on the map) */
   const carStrip = h('div', { class: 'tv-cars', cover: 'visited.section.car_header', 'aria-label': 'Cars on this page' },
     h('span', { class: 'tv-cars-label' }, multi ? 'Cars together on this page' : 'Car'),
-    viewCars.slice(0, 12).map((cid) => h('a', { class: 'tv-car', href: state.buildUrl('car', { car: cid, period: state.current().period }), vars: { '--cc': cssVar(colorOf.get(cid)) }, title: `${carName(cid)}: days counted in ${carTz(cid).replace(/_/g, ' ')}` },
+    viewCars.slice(0, 12).map((cid) => h('a', { class: 'tv-car', href: state.linkTo('car', { car: cid }), vars: { '--cc': cssVar(colorOf.get(cid)) }, title: `${carName(cid)}: days counted in ${carTz(cid).replace(/_/g, ' ')}` },
       h('i', { 'aria-hidden': 'true' }), h('span', null, carName(cid)), h('span', { class: 'faint' }, tzName(carTz(cid))))),
     viewCars.length > 12 ? h('span', { class: 'faint' }, `and ${formatNumber(viewCars.length - 12)} more`) : null);
   root.append(carStrip);
@@ -585,7 +586,9 @@ export async function mount(ctx) {
   const lines = (tracks?.drives || []).filter((d) => d.lat.length > 1).map((d) => ({ type: 'Feature', properties: { car: d.car },
     geometry: { type: 'LineString', coordinates: d.lat.map((la, i) => [d.lon[i], la]) } }));
   replace(routeRead, tracks ? `${plural(lines.length, 'drive')} · ${formatNumber(tracks.points || 0)} positions` : 'The route could not be loaded: too many drives for one map. Pick a shorter period or fewer cars.');
-  const pts = [...lines.flatMap((l) => [l.geometry.coordinates[0], l.geometry.coordinates[l.geometry.coordinates.length - 1]]), ...cities.items.filter((r) => r.lat != null).map((r) => [r.lon, r.lat]), ...placesG.items.filter((r) => r.lat != null).map((r) => [r.lon, r.lat])];
+  // each drive's ends, without stray fixes (a jump to another state and back)
+  const ends = (tracks?.drives || []).map((d) => { const l = lineOf(d); return dropJumps(l.coords, l.t_ms); }).filter((c) => c.length > 1);
+  const pts = [...ends.flatMap((c) => [c[0], c[c.length - 1]]), ...cities.items.filter((r) => r.lat != null).map((r) => [r.lon, r.lat]), ...placesG.items.filter((r) => r.lat != null).map((r) => [r.lon, r.lat])];
   if (!pts.length) { mapEl.append(h('div', { class: 'map-fallback' }, 'No drive and no stop in this period, so there is nothing to map.')); return; }
   try { m = await createMap(mapEl, ctx, { bounds: boundsOf(pts) }); } catch { replace(mapEl, mapFallback()); return; }
   if (!m) return;

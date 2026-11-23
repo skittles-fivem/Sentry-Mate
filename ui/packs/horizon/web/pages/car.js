@@ -5,7 +5,7 @@
 // starts or ends (`rows` events).
 
 import * as state from '../shared/state.js';
-import { tyreView, recommendedLine } from '../shared/tyres.js';
+import { tyreView, recommendedLine, wheelGuessLine, tyresTitle } from '../shared/tyres.js';
 import { h, svg, replace, cover, cssVar, quantity } from '../shared/dom.js';
 import { format, getUnits, onUnitsChange, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDate, formatDateTime, zoneName, buckets } from '../shared/time.js';
@@ -15,6 +15,7 @@ import { pageHead, panel, panelLink, metric, kv, csvButton } from '../core/page.
 import { statePill, stateLabel, ago, agoEl, when, dur, val, TYRES, STATES } from '../core/fmt.js';
 import { timelineRow } from './timeline.js';
 import { createMap, carMarker, addRoute, mapFallback } from '../core/map.js';
+import { SPOT_ZOOM } from '../shared/maptiles.js';
 import { offstage } from '../core/stage.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, colors, areaFill, hexA } from '../core/chart.js';
 import { activityStrip } from '../core/strip.js';
@@ -418,7 +419,7 @@ export async function mount(ctx) {
     const lat = val(loc.lat), lon = val(loc.lon);
     if (lat == null || lon == null) { mapEl.append(mapFallback('No position recorded yet.')); return; }
     try {
-      map = await createMap(mapEl, ctx, { center: [lon, lat], zoom: now.state === 'driving' ? 13 : 15.6 });
+      map = await createMap(mapEl, ctx, { center: [lon, lat], zoom: SPOT_ZOOM });
       if (!map) return;
       await map.ready;
       if (!ctx.alive()) return;
@@ -487,6 +488,11 @@ export async function mount(ctx) {
         isLow ? h('span', { class: 'tire-note' }, `${format(tv.against[i] - v, 'pressure')} under`) : null);
     };
     const wheel = (i) => (tv.low[i] === true ? 'wheel is-low' : 'wheel');
+    // the placard's size only a guess: say so, and where an admin sets it (the Vehicle info panel below)
+    const wheelGuess = (now) => {
+      const g = wheelGuessLine(now);
+      return g ? [' ', g.said, ctx.admin ? [' ', g.ask, ' ', h('a', { href: '#vehicle-info' }, g.action), '.'] : null] : null;
+    };
     const tyrePanel = panel({ title: 'Tyres', icon: 'tire', cover: 'summary.flag.tire_pressure_warning', side: h('span', { class: 'faint' }, agoEl(at(n.tyres_kpa?.[0]) ?? newest, tz)) },
       h('div', { class: 'tires' },
         tyre(TYRES[0], 0, false),
@@ -497,9 +503,7 @@ export async function mount(ctx) {
           svg('path', { class: 'glass', d: 'M15.5 36 Q32 28 48.5 36 L45.5 52 Q32 48 18.5 52 Z' }),
           svg('path', { class: 'glass', d: 'M18.5 86 Q32 90 45.5 86 L47.5 98 Q32 103 16.5 98 Z' })),
         tyre(TYRES[1], 1, true), tyre(TYRES[2], 2, false), tyre(TYRES[3], 3, true)),
-      h('p', { class: 'note tire-rec' }, recommendedLine(n), tv.front != null
-        ? ' A tyre more than 10 % under it is flagged; a cold morning alone takes a few percent off every tyre.'
-        : ' No tyre is flagged.'));
+      h('p', { class: 'note tire-rec', title: tyresTitle(n) || null }, recommendedLine(n), tv.front != null ? wheelGuess(n) : ' No tyre is flagged.'));
 
     // the car: 12 V, odometer, software, data age
     const sw = n.software || {};
@@ -517,7 +521,8 @@ export async function mount(ctx) {
         ['Power', aged(n.power_kw, h('span', null, format(powerV, 'power'), powerV != null && powerV < -0.05 ? h('span', { class: 'faint' }, n.state === 'driving' || n.driving ? ' regen' : ' into the pack') : null), newest), { icon: 'bolt', title: 'Power out of the battery; below zero is regen or charging.' }],
         ['12 V battery', aged(n.lv_v, format(val(n.lv_v), 'voltage'), newest), { icon: 'battery' }],
         ['Odometer', h('a', { class: 'link', href: ctx.link('statistics'), title: 'Distance over time on Statistics' }, format(val(n.odometer_km), 'odometer')), { icon: 'odo', cover: ['summary.stat.odometer', 'overview.stat.odometer', 'overview.link.mileage'] }],
-        ['Software', h('a', { class: 'link', href: ctx.link('software'), title: sw.version ? `Version ${srcWord || 'from another input'}${sw.version_since_ms ? `, since ${formatDate(sw.version_since_ms, tz, { weekday: false })}` : ''} (the car sends no version text on CAN)` : `Not known: ${swFrom}` }, sw.version || 'not known'), { icon: 'chip', cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates'] }],
+        ['Software', h('a', { class: 'link', href: ctx.link('software'), title: srcWord ? `Version ${srcWord}` : 'Software history' }, sw.version || 'not known'), { icon: 'chip', cover: ['summary.stat.version', 'overview.stat.firmware', 'overview.link.updates'] }],
+        ['Version from', h('span', { class: 'sw-src' }, swFrom), { icon: 'info', title: 'The car does not send its version text; this is where Sentry Mate got it.' }],
         ['Firmware', h('span', { class: 'car-fw-links' },
           h('a', { class: 'link', href: `${ctx.link('software')}#firmware`, title: 'The fingerprints of the modules\' firmware, as the car sends them' }, 'Module fingerprints'),
           h('a', { class: 'link', href: `${ctx.link('software')}#firmware-history`, title: 'Every fingerprint each module has had, with the version it came with, over time' }, 'History')), { icon: 'chip' }],

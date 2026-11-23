@@ -16,8 +16,7 @@ import { choice, switchField, field, form, setFieldError, carOptions } from '../
 import { MAP_COLORS_CHOICES, MAP_COLORS_TEXT, LABELS_TEXT, STYLES_TEXT, presetHosts, OFFLINE_ANCHOR, OFFLINE_STEPS, OFFLINE_NOTE, offlineSummary, offlineFileChoices, showOfflineHelp } from '../shared/maptiles.js';
 import { currentPrefs, onPrefs } from '../core/prefs.js';
 import { savePref, currentAbout } from '../core/frame.js';
-import { SIZES, sizeState, setSize, setDeviceSize, onSize, sizeNote, display } from '../core/display.js';
-import { deviceSizeOptions, deviceSizeNote } from '../shared/devicesize.js';
+import { SIZES, sizeState, setSize, sizeNote, display } from '../core/display.js';
 import { packChoices, packLabel } from '../shared/packs.js';
 import { buildLabel, buildTitle, releaseStatus, changeLines, checkedAgo } from '../shared/release.js';
 
@@ -129,10 +128,6 @@ export async function mount(ctx) {
     onchange: (v) => { setSize({ size: Number(v) }); save({ interface_size: Number(v) }); } });
   const follow = switchField({ label: 'Follow screen size', checked: sizeState().follow, onchange: (on) => { setSize({ follow: on }); save({ follow_screen: on }); } });
   const sizeNoteEl = h('p', { class: 'setting-note' });
-  // kept in this browser only (shared/devicesize.js), never with the account
-  const device = choice({ label: 'Interface size on this device', labelHidden: true, name: 'device_size_page', value: sizeState().device ? String(sizeState().device) : 'auto', cls: 'segmented-sizes',
-    options: deviceSizeOptions().map((o) => [o.value, o.value === 'auto' ? 'Automatic' : o.label.replace(/\u00a0/g, '')]), onchange: (v) => setDeviceSize(v) });
-  const deviceNoteEl = h('p', { class: 'setting-note' });
 
   const defaultLine = (el, kind, mine) => {
     const d = kind === 'range' ? srv.range : srv.units?.[kind];
@@ -169,13 +164,10 @@ export async function mount(ctx) {
     langEx.textContent = sample ? `Numbers and dates now look like this: ${sample}. Words stay in English.` : '';
     size.set(sizeState().size); follow.set(sizeState().follow);
     sizeNoteEl.textContent = sizeNote();
-    device.set(sizeState().device ? String(sizeState().device) : 'auto');
-    deviceNoteEl.textContent = deviceSizeNote(sizeState().device, { account: sizeState().size });
     if (srv && feet() !== drawnFeet) redraw(srv);
   };
   ctx.onCleanup(onPrefs(sync));
   ctx.onCleanup(display.onChange(sync));
-  ctx.onCleanup(onSize(sync));
   const mq = matchMedia('(prefers-color-scheme: dark)');
   mq.addEventListener('change', sync);
   ctx.onCleanup(() => mq.removeEventListener('change', sync));
@@ -241,8 +233,7 @@ export async function mount(ctx) {
       setting('Map colours', `${MAP_COLORS_TEXT} Satellite pictures are never dimmed, so this does not apply to them.`, mapColors),
       setting('Language', 'How dates, times and numbers are written (for example 1,234.5 or 1.234,5, and the first day of the week).', h('div', { class: 'lang-control' }, lang, langNote),
         { cover: ['shell.locale', 'web.settings.general.ui-language', 'web.shell.locale-negotiation'], extra: langEx }),
-      setting('Interface size on this device', 'This device only: kept in this browser, not with your account, so a laptop with large display scaling and a desktop monitor can each have their own size. Automatic uses your account’s Interface size below; a fixed size draws everything at that percent of the standard size, with nothing added for big screens.', h('div', { class: 'size-control' }, device, deviceNoteEl), { cls: 'setting-size' }),
-      setting('Interface size', 'Your account’s size, on every device left at Automatic. Text, controls, tables, charts and maps grow or shrink together. With “Follow screen size” on, big screens such as 4K monitors get larger text by themselves. Browser zoom works on top.', h('div', { class: 'size-control' }, size, follow, sizeNoteEl), { cls: 'setting-size' }),
+      setting('Interface size', 'Text, controls, tables, charts and maps grow or shrink together. With “Follow screen size” on, big screens such as 4K monitors get larger text by themselves. Browser zoom works on top.', h('div', { class: 'size-control' }, size, follow, sizeNoteEl), { cls: 'setting-size' }),
       setting('UI pack', 'The look of the whole app. Admins install other packs; your data and settings stay the same in every pack.',
         h('div', { class: 'lang-control' }, h('div', { class: 'pack-control' }, packSel, switchBtn), packNote)),
       setting('Main car', 'The car shown first on the pages that do not name one, such as the car overview opened from the menu. With none chosen, the car you looked at last is shown.',

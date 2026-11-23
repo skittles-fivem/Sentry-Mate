@@ -1,6 +1,6 @@
 // The app frame every page shares: Simple's structure in Horizon's look. Along the top a dashboard strip
-// (Horizon's HUD bar, without its radio display) with the brand, the five sections (Car, Trips, Battery and energy,
-// Stats, Settings) as buttons with an icon over the name, and the tools ("Find a page" (/), live
+// (Horizon's HUD bar, without its radio display) with the brand, the six sections (Car, Trips, Charging,
+// Battery, Stats, Settings) as buttons with an icon over the name, and the tools ("Find a page" (/), live
 // status, the car's clock, the car switcher, the account); under it where you are ("Sentry Mate / Car",
 // a detail page's trail), then the open section's tabs as a row of chips and the shared period picker;
 // the notices bar, flash notes and the footer.
@@ -74,7 +74,7 @@ function carButton(cls) {
     icon('chev-d', 'ico--sm top-car-chev'));
 }
 
-// The strip along the top: the brand, the five sections and (not on a phone) the tools; under it where you
+// The strip along the top: the brand, the six sections and (not on a phone) the tools; under it where you
 // are ("Sentry Mate / Car"), then the open section's tabs and the period.
 function buildTopbar() {
   const sections = new Map();
@@ -254,7 +254,7 @@ export function defaultCrumbs(s, info, car) {
   const fleet = { label: 'All cars', href: '/' };
   if (info.id === 'fleet') return [{ label: 'All cars' }];
   const group = GROUPS.find((g) => g.id === info.group);
-  const carCrumb = car ? { label: car.name, href: state.buildUrl('car', { car: car.id, period: s.period }) } : null;
+  const carCrumb = car ? { label: car.name, href: state.linkTo('car', { car: car.id }) } : null;
   if (info.id === 'car') return [fleet, { label: car?.name || 'Car' }];
   if (info.parent) {
     const parent = pageInfo(info.parent);

@@ -15,6 +15,7 @@ import * as state from '../shared/state.js';
 import { tile, chip, btn, icon, note } from '../core/ui.js';
 import { emptyTile } from '../core/states.js';
 import { mapTile, boundsOf } from '../core/map.js';
+import { trackBounds } from '../shared/tracks.js';
 import { filterBar, placeHref, statTile, dur, soldPill } from '../core/bits.js';
 import { srcPill } from '../core/source.js';
 
@@ -211,9 +212,11 @@ export async function mount(ctx) {
   async function drawMap(tracks, allCities) {
     const lines = (tracks?.drives || []).map((t) => t.lon.map((x, i) => [x, t.lat[i]]));
     const pts = [...lines.flat(), ...allCities.map((c) => [c.lon, c.lat])];
+    // framed without stray fixes (a jump to another state and back)
+    const fit = trackBounds(tracks?.drives || [], allCities.map((c) => [c.lon, c.lat])) || boundsOf(pts);
     if (!map) {
       if (!pts.length) { mapBox.append(h('p', { class: 'map-note' }, 'No route or stop in this period.')); return; }
-      map = await mapTile(ctx, mapBox, { bounds: boundsOf(pts), padding: 40, fullscreen: true });
+      map = await mapTile(ctx, mapBox, { bounds: fit, padding: 40, fullscreen: true });
       if (!map) return;
       mapReady = map.ready;
     }
@@ -223,7 +226,7 @@ export async function mount(ctx) {
     for (const c of allCities.slice(0, 80)) {
       pins.push(map.pin([c.lon, c.lat], { tone: 'teal', title: `${c.label}: ${formatNumber(c.days)} days, ${formatNumber(c.visits)} stops`, onclick: () => { mapNote.textContent = `${c.label}, ${c.region || c.country}: ${formatNumber(c.days)} days, ${formatNumber(c.visits)} stops, ${dur(c.dwell_ms)} parked.`; pickCity(c.key); } }));
     }
-    if (pts.length) map.frame(boundsOf(pts));
+    if (pts.length) map.frame(fit);
   }
 
   try { await load(); } catch (err) {

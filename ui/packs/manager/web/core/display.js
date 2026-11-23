@@ -1,4 +1,4 @@
-// Display: Interface size, Follow screen size, the Interface size on this device, theme, and the pixel ratio for canvases and maps.
+// Display: Interface size, Follow screen size, theme, and the pixel ratio for canvases and maps.
 //
 // The root font size is set in one place (app.css "root size"): browser default x Auto x Interface size.
 // boot.js (window.uiRoot) applies the saved copy before the first paint; this module owns the values
@@ -7,17 +7,13 @@
 // - the pixel ratio changed: the window moved to another monitor, or browser zoom. Browsers report this
 //   with the "(resolution: ...)" media query; DevTools device emulation changes devicePixelRatio without
 //   an event, so until the browser has fired that query once, a check every half second stands in;
-// - the Interface size or Follow screen size changed (account menu, Settings, another device), or the
-//   Interface size on this device (kept in this browser only, shared/devicesize.js; another tab too);
+// - the Interface size or Follow screen size changed (account menu, Settings, another device);
 // - the root size changed for another reason (the window moved to a screen with another Auto).
 // Window resizes alone do not change the root size: Auto follows the screen, not the window.
 
-import { onDeviceSizeStorage } from '../shared/devicesize.js';
-
 const ui = window.uiRoot || {
   MIN: 75, MAX: 200, KEY: 'sentrymate.interface', THEME_KEY: 'sentrymate.theme',
-  autoFactor: () => 1, apply: (s) => ({ size: 100, follow: true, auto: 1, device: null, shown: 100, ...s }), clampSize: (v) => v,
-  deviceSize: () => null, setDevice: () => null, readDevice: () => null,
+  autoFactor: () => 1, apply: (s) => ({ size: 100, follow: true, auto: 1, ...s }), clampSize: (v) => v,
   effectiveTheme: () => 'dark', applyTheme: () => 'dark', saved: () => null,
 };
 
@@ -55,7 +51,7 @@ const ifaceSubs = new Set();
 const themeSubs = new Set();
 const read = () => ({ rootPx: parseFloat(getComputedStyle(root).fontSize) || 16, dpr: window.devicePixelRatio || 1 });
 
-let iface = ui.apply(ui.saved() || {}); // { size, follow, auto, device, shown }
+let iface = ui.apply(ui.saved() || {}); // { size, follow, auto }
 let themeChoice = root.dataset.themeChoice || 'device';
 let state = read(), frame = 0, mq = null, causes = new Set();
 let screenKey = `${screen.width}x${screen.height}`;
@@ -99,10 +95,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) onSc
 const darkMq = window.matchMedia('(prefers-color-scheme: light)');
 darkMq.addEventListener?.('change', () => { if (themeChoice === 'device') applyTheme('device', { save: false }); });
 
-/**
- * The Interface size now: { size (75..200), follow (bool), auto (the account's factor on this screen),
- * device (this browser's own size, or null for Automatic), shown (the percent drawn now) }.
- */
+/** The Interface size now: { size (75..200), follow (bool), auto (the factor in use) }. */
 export const getInterface = () => ({ ...iface });
 
 /**
@@ -115,32 +108,17 @@ export function applyInterface(patch = {}) {
   iface = ui.apply(next);
   store(ui.KEY, { size: iface.size, follow: iface.follow });
   check('size');
-  if (before.size !== iface.size || before.follow !== iface.follow || before.auto !== iface.auto || before.device !== iface.device) {
+  if (before.size !== iface.size || before.follow !== iface.follow || before.auto !== iface.auto) {
     for (const f of [...ifaceSubs]) { try { f({ ...iface }); } catch (e) { console.error(e); } }
   }
   return { ...iface };
 }
 
-/**
- * The Interface size on this device: 80, 90, 100, 110 or 125 (%), or null / 'auto' for Automatic (the
- * account's size). Kept in this browser only, never saved to the account; applied at once.
- */
-export function applyDeviceSize(v) {
-  ui.setDevice(v === 'auto' ? null : v);
-  return applyInterface({});
-}
-/** This browser's own size, or null (Automatic). */
-export const deviceSize = () => iface.device ?? null;
-// another tab of this browser changed it
-onDeviceSizeStorage(() => { ui.readDevice(); applyInterface({}); });
-
 /** What Auto is on this screen, in percent of the standard size (100 on most screens, 145 on 4K). */
 export const autoPercent = () => Math.round(ui.autoFactor() * 100);
 
-/** The size the account's setting gives on this screen, in percent of the standard size: Auto x Interface size. */
-export const accountPercent = () => Math.round(iface.auto * iface.size);
-/** The size the person sees now, in percent of the standard size (the device size when one is set). */
-export const effectivePercent = () => iface.device || accountPercent();
+/** The size the person sees, in percent of the standard size: Auto x Interface size. */
+export const effectivePercent = () => Math.round(iface.auto * iface.size);
 
 /** The theme choice ('light' | 'dark' | 'device') and the one drawn now ('light' | 'dark'). */
 export const getTheme = () => ({ choice: themeChoice, effective: root.dataset.theme || 'dark' });
@@ -164,7 +142,7 @@ export const dpr = () => state.dpr;
 
 /** f({ rootPx, dpr, dprChanged, sizeChanged }) after the root size or the pixel ratio changed. Returns off(). */
 export function onChange(f) { subs.add(f); return () => subs.delete(f); }
-/** f({ size, follow, auto, device, shown }) after the Interface size, Follow screen size or device size changed. Returns off(). */
+/** f({ size, follow, auto }) after the Interface size or Follow screen size changed. Returns off(). */
 export function onInterface(f) { ifaceSubs.add(f); return () => ifaceSubs.delete(f); }
 /** f({ choice, effective }) after the theme changed. Returns off(). Charts and maps redraw with new colours. */
 export function onTheme(f) { themeSubs.add(f); return () => themeSubs.delete(f); }

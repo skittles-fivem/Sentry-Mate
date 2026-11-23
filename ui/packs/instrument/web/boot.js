@@ -15,19 +15,13 @@
 // - Interface size: the person's interface_size preference, 75 to 200 (%), default 100.
 //
 // Both preferences live on the server (/api/v1/me/preferences); this browser keeps a copy in localStorage
-// only so the first paint uses them.
-// - Interface size on this device ('sentrymate.device-size', the same key in every pack; ui/shared/devicesize.js):
-//   80, 90, 100, 110 or 125 (%) kept in this browser only. When set it wins here: the root is that percent of
-//   the standard size, with no Auto and no account size on top. Absent (Automatic, the default), the account's
-//   values above apply. The theme copy works the same way. core/display.js owns these values
+// only so the first paint uses them. The theme copy works the same way. core/display.js owns these values
 // after start-up (window.uiRoot is its only link to this file).
 (function () {
   var root = document.documentElement;
   var KEY = 'sentrymate.interface';
   var THEME_KEY = 'sentrymate.theme';
   var MIN = 75, MAX = 200;
-  var DEVICE_KEY = 'sentrymate.device-size';
-  var DEVICE_SIZES = [80, 90, 100, 110, 125];
   var GECKO_ZOOMED_SCREEN = /\bFirefox\//.test(navigator.userAgent || '');
 
   function clampSize(v) {
@@ -46,35 +40,18 @@
     return Math.round((1 + 0.45 * t) * 1000) / 1000;
   }
 
-  // this browser's own size (a step of DEVICE_SIZES) or null (Automatic); storage blocked: null
-  function deviceSize(v) {
-    if (arguments.length === 0) { try { v = JSON.parse(localStorage.getItem(DEVICE_KEY)); } catch (e) { v = null; } }
-    v = Math.round(Number(v));
-    return DEVICE_SIZES.indexOf(v) >= 0 ? v : null;
-  }
-  var device = deviceSize();
-
-  // { size: 75..200, follow: true | false } (the account's), and the device size now. Returns what was
-  // applied: the account's size and follow, auto (the account's factor on this screen), device (null for
-  // Automatic) and shown (the percent of the standard size drawn now).
+  // { size: 75..200, follow: true | false }. Returns what was applied, with auto (the factor used).
   function apply(s) {
     s = s || {};
     var size = clampSize(s.size == null ? 100 : s.size);
     var follow = s.follow !== false;
     var auto = follow ? autoFactor() : 1;
-    root.style.setProperty('--ui-auto', String(device ? 1 : auto));
-    root.style.setProperty('--ui-scale', String((device || size) / 100));
+    root.style.setProperty('--ui-auto', String(auto));
+    root.style.setProperty('--ui-scale', String(size / 100));
     root.setAttribute('data-ui-size', String(size));
     root.setAttribute('data-ui-follow', follow ? 'on' : 'off');
-    if (device) root.setAttribute('data-ui-device', String(device)); else root.removeAttribute('data-ui-device');
     layout();
-    return { size: size, follow: follow, auto: auto, device: device, shown: device || Math.round(auto * size) };
-  }
-  // keep (or forget, with null) this browser's own size; the caller applies again
-  function setDevice(v) {
-    device = deviceSize(v);
-    try { if (device) localStorage.setItem(DEVICE_KEY, JSON.stringify(device)); else localStorage.removeItem(DEVICE_KEY); } catch (e) { /* storage blocked: this page only */ }
-    return device;
+    return { size: size, follow: follow, auto: auto };
   }
 
   // The phone layout (a tab bar at the bottom instead of the sidebar), set on <html data-phone>:
@@ -119,8 +96,6 @@
 
   window.uiRoot = {
     MIN: MIN, MAX: MAX, KEY: KEY, THEME_KEY: THEME_KEY,
-    DEVICE_KEY: DEVICE_KEY, DEVICE_SIZES: DEVICE_SIZES, deviceSize: function () { return device; }, setDevice: setDevice,
-    readDevice: function () { device = deviceSize(); return device; },
     autoFactor: autoFactor, apply: apply, clampSize: clampSize, layout: layout,
     phone: function () { return root.getAttribute('data-phone') || ''; },
     effectiveTheme: effectiveTheme, applyTheme: applyTheme,

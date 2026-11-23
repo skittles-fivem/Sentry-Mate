@@ -10,8 +10,7 @@ described here; you should not need to read the frame's code.
 ```
 web/
   index.html        the shell only: masthead slots, nav, notices, flash zone, <main>, footer
-  boot.js           runs before the first paint: interface size (this device's own size from sentrymate.device-size
-                    when set, else the account's) and theme from this browser's copy
+  boot.js           runs before the first paint: interface size and theme from this browser's copy
   app.css           tokens, base, layout, the frame and every shared component
   manifest.webmanifest, icon*.png, icon.svg   so the app can be added to a home screen
   core/             the frame and the helpers (this folder)
@@ -171,10 +170,6 @@ ctx.main.append(table.el);
 await table.load();
 ```
 
-- `box: true` (or the box's name): the rows, and the loading, empty or error view, scroll inside a box whose
-  height the page's CSS gives `.ledger-box` from the start (a focusable region); with `autoMore` the next page
-  loads as the end of the box comes near, and `data-below` marks rows hidden under its bottom edge (for a fade).
-  The audit log of Settings: Server and access uses it.
 - A list resource (`path`) is paged by cursor: the caption counts the rows, **Show more** loads the next page,
   and the **Download CSV** button is the same resource with `format=csv` and the same filters (every matching
   row, not one page). A column with `sort: '<key>'` is sorted by the server (the resource's `sort` and `dir`);

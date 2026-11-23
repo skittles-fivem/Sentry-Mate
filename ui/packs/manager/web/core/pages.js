@@ -17,11 +17,12 @@
 //   parent    the list a detail page belongs to (breadcrumb)
 //   sections  what the page will hold (shown on pages not built yet)
 
-// The five sections of the header, in order. Each page with a group is a tab under its section (in PAGES order).
+// The six sections of the header, in order. Each page with a group is a tab under its section (in PAGES order).
 export const GROUPS = Object.freeze([
   { id: 'car', title: 'Car', icon: 'car', desc: 'What the car is doing now, its timeline and software.' },
   { id: 'trips', title: 'Trips', icon: 'route', desc: 'Drives, trips, the logbook, travel and places.' },
-  { id: 'battery', title: 'Battery and energy', short: 'Energy', icon: 'battery', desc: 'Charges, battery health and how much energy driving takes.' },
+  { id: 'charging', title: 'Charging', short: 'Charge', icon: 'bolt', desc: 'Charging sessions and what they cost.' },
+  { id: 'battery', title: 'Battery', icon: 'battery', desc: 'Battery health and how much energy driving takes.' },
   { id: 'stats', title: 'Stats', icon: 'stats', desc: 'Totals per day, week, month or year.' },
   { id: 'settings', title: 'Settings', icon: 'settings', desc: 'Cars, display, integrations, access, import and help.' },
 ]);
@@ -81,7 +82,7 @@ export const PAGES = Object.freeze([
     words: 'geofence home work price tariff cost location',
     sections: ['Place list', 'Place editor', 'Prices', 'Effect on history'] },
 
-  { id: 'charges', tab: 'Charges', title: 'Charges', group: 'battery', icon: 'bolt', car: 'optional', period: '30d',
+  { id: 'charges', tab: 'Charges', title: 'Charges', group: 'charging', icon: 'bolt', car: 'optional', period: '30d',
     desc: 'Charging sessions, habits and costs.',
     purpose: 'Find charging sessions and understand charging habits and costs.',
     words: 'cost price supercharger dc ac kwh charging stats',

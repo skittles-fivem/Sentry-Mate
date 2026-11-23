@@ -142,6 +142,23 @@ export function tileSourceDef(choice, { rasterSize = 256, attribution = choice?.
   return { type: 'raster', tiles: [choice.template], tileSize: rasterSize, minzoom: choice.minZoom || 0, maxzoom: choice.maxZoom, attribution };
 }
 
+/**
+ * The deepest camera zoom at which the tiles are still drawn sharp (one tile pixel to one screen pixel at most).
+ * MapLibre zooms count 512 px tiles, while a source's max zoom counts its own tiles: a 256 px raster source reaches
+ * its max zoom one camera level earlier (max_zoom 19 is sharp up to camera zoom 18, the US satellite's 16 up to 15).
+ * Vector tiles are drawn, not scaled, so they stay sharp past their max zoom. 22 when there are no tiles.
+ */
+export function sharpZoom(choice, rasterSize = 256) {
+  if (!choice || choice.kind === 'none' || choice.kind === 'vector') return 22;
+  return (choice.maxZoom ?? 19) - Math.log2(512 / (rasterSize || 256));
+}
+
+/**
+ * The camera zoom a map of one spot (where a car is) opens at: its neighbourhood, with the streets around it. The
+ * map helpers open no deeper than sharpZoom of their tiles.
+ */
+export const SPOT_ZOOM = 15;
+
 /** The overlay source ids (names and roads over photos), in drawing order. */
 export const overlayIds = (choice) => (choice?.kind === 'raster' ? (choice.overlays || []).map((_, i) => `tiles-overlay-${i}`) : []);
 
@@ -181,7 +198,8 @@ export const tileLayerIds = (choice) => tileLayers(choice).map((l) => l.id);
 
 /**
  * Redraws a map with another tile choice (the person switched Map / Satellite): the old tile layers and sources go,
- * the new ones go under the page's own layers. Returns the new choice.
+ * the new ones go under the page's own layers. Returns the new choice. A switch to tiles that are blurry at the
+ * current zoom (satellite photos that end sooner) zooms out to their sharpZoom.
  */
 export function swapTiles(map, from, to, { rasterSize = 256, dark = false, paint = null, attribution } = {}) {
   for (const id of tileLayerIds(from)) if (map.getLayer(id)) map.removeLayer(id);
@@ -190,6 +208,8 @@ export function swapTiles(map, from, to, { rasterSize = 256, dark = false, paint
   const before = layers.find((l) => l.type !== 'background')?.id;
   for (const [id, def] of Object.entries(tileSources(to, { rasterSize, attribution }))) map.addSource(id, def);
   for (const l of tileLayers(to, { dark, paint })) map.addLayer(l, before);
+  const sharp = sharpZoom(to, rasterSize);
+  if (to !== from && typeof map.getZoom === 'function' && map.getZoom() > sharp) map.jumpTo({ zoom: sharp });
   return to;
 }
 

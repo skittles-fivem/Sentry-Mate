@@ -643,9 +643,8 @@ export async function mount(ctx) {
 
   /* ---------------------------------------------------------------- audit log (admin) */
   // Each entry in words (shared/audit.js): what was done (the code in the tooltip), and the item it changed,
-  // linked where it still exists. Filters: what (a group of actions) and who. The list scrolls in a box five
-  // entries high; ten entries first, more as the end of the box comes near (or with Load more), added under
-  // the ones already there.
+  // linked where it still exists. Filters: what (a group of actions) and who; ten entries first, more as the
+  // end of the list scrolls into view (or with Load more), added under the ones already there.
   let auditTable = null;
   let auditSection = null;
   let auditPrep = null;
@@ -677,7 +676,7 @@ export async function mount(ctx) {
     whoField.control.addEventListener('change', refilter);
     auditTable = dataTable(ctx, {
       path: 'audit', limit: 10, itemName: ['entry', 'entries'], label: 'Audit log', cls: 'ss-audit-log',
-      append: true, autoMore: true, moreLabel: 'Load more', box: 'Audit log entries',
+      append: true, autoMore: true, moreLabel: 'Load more',
       filters: h('div', { class: 'ss-audit-filters' }, whatField, whoField),
       columns: [
         { key: 'at_ms', label: 'When', th: true, cls: 'ss-a-when', cell: (e) => h('span', null, h('span', { class: 'cell-main' }, dateTime(e.at_ms, tz)), h('span', { class: 'cell-sub' }, ago(e.at_ms))) },

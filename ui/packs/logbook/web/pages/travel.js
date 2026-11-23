@@ -23,6 +23,7 @@ import { formatNumber, compareText, tn } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
+import { trackBounds, dropJumps } from '../shared/tracks.js';
 import { pageHead, q, figure, icon, empty, errorView, flag, button, sep, loadingBlock, cover } from '../core/ui.js';
 import { sourceMark, sourceLabel, isImported } from '../core/sources.js';
 import { dataTable } from '../core/table.js';
@@ -782,7 +783,7 @@ export async function mount(ctx) {
     replace(mapNote, tracksNote ? `${tracksNote}. ` : null, lost ? `The ${markMode} could not be loaded, so they are not marked; use Load again. ` : null, capped ? `The ${formatNumber(MAX_MARKS)} ${markMode} with the most stops are marked. ` : null,
       m.source ? (m.source.offline ? 'Map tiles from this server (offline).' : 'Map tiles from the online tile server the owner turned on.') : null);
     if (refit || !framed) {
-      const pts = [...rows.map((r) => [r.lon, r.lat]), ...(f.q || f.place || f.country || f.region ? [] : tracks.flatMap((d) => [d.coords[0], d.coords[d.coords.length - 1]]))];
+      const pts = [...rows.map((r) => [r.lon, r.lat]), ...(f.q || f.place || f.country || f.region ? [] : tracks.flatMap((d) => { const c = dropJumps(d.coords, d.t); return c.length ? [c[0], c[c.length - 1]] : []; }))]; // each drive's ends, without stray fixes
       if (pts.length) { framed = true; m.frame(pts.length === 1 ? [[pts[0][0] - 0.02, pts[0][1] - 0.02], [pts[0][0] + 0.02, pts[0][1] + 0.02]] : boundsOf(pts)); }
     }
   }
@@ -802,7 +803,7 @@ export async function mount(ctx) {
 
   const allPts = [...tracks.flatMap((d) => d.coords), ...markRows().map((r) => [r.lon, r.lat])];
   if (allPts.length) {
-    m = await makeMap(ctx, mapBox, { bounds: boundsOf(allPts), padding: 40, maxZoom: 14, fullscreen: true });
+    m = await makeMap(ctx, mapBox, { bounds: trackBounds(tracks.map((d) => ({ coords: d.coords, t_ms: d.t })), markRows().map((r) => [r.lon, r.lat])) || boundsOf(allPts), padding: 40, maxZoom: 14, fullscreen: true });
     if (!ctx.alive()) return {};
     if (m) {
       await m.loaded;

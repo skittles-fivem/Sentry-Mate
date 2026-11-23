@@ -48,8 +48,7 @@ server's versioned prefix (`/_v/<version>/...`) that `index.html` is rewritten t
 
 ```
 index.html          shell markup only: the icon sprite, #notices, #topbar (header and tab row), #view, #footer, #dock, #flash
-boot.js             runs in <head> before the first paint: Interface size (this device's own size from
-                    sentrymate.device-size when set, else the account's) and theme from this browser's copy
+boot.js             runs in <head> before the first paint: Interface size and theme from this browser's copy
 app.css             tokens, light theme, root size, base, frame, shared components, tiers
 manifest.webmanifest, icons/   the app can be installed (home screen, standalone window)
 core/               the frame and the helpers (this folder)
@@ -174,10 +173,6 @@ server's CSV for API lists (same filters and sort), else CSV built from the rows
 `csv: column('Distance', 'distance_km', 'distance')` from `shared/csv.js` names the unit in the header).
 An API list that should download readable columns instead of the server's file passes `csv: { all: true }`
 (every page of the list, built from the columns' `csv` specs; `csv: {}` takes only the rows shown).
-`autoMore: true` also loads the next page as the foot scrolls into view. `box: true` (or the box's name) puts the
-rows in a box that scrolls by itself, a focusable region whose height the page's CSS gives `.tbl-box` from the
-start; with `autoMore` the next page then loads as the end of the box comes near, and the box has `data-below`
-while rows are hidden under its bottom edge (for a fade). The audit log of Settings: Server and access uses it.
 
 ### `core/chart.js`: charts on uPlot
 

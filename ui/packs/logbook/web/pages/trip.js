@@ -18,6 +18,7 @@ import { formatNumber, tn } from '../shared/i18n.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
+import { trackBounds } from '../shared/tracks.js';
 import { pageHead, q, figure, icon, empty, errorView, loadingBlock, flag, button, sep } from '../core/ui.js';
 import { dataTable } from '../core/table.js';
 import { makeMap, boundsOf, coordsText } from '../core/map.js';
@@ -448,19 +449,20 @@ export async function mount(ctx) {
   const tablesLoaded = Promise.all([drives.load(), charges.load()]);
 
   /* ------------------------------------------------------------ the map: drives, then the markers */
-  let tracks = [];
+  let tracks = [], trackDrives = [];
   let tracksErr = null;
   if (nDrives) {
     try {
       const r = await ctx.api.get('tracks', { cars: car.id, ...win, max_points: Math.min(200000, Math.max(4000, nDrives * 400)) });
-      tracks = (r.drives || []).map((d) => d.lon.map((x, i) => [x, d.lat[i]]).filter((c) => c[0] != null && c[1] != null)).filter((c) => c.length > 1);
+      trackDrives = r.drives || [];
+      tracks = trackDrives.map((d) => d.lon.map((x, i) => [x, d.lat[i]]).filter((c) => c[0] != null && c[1] != null)).filter((c) => c.length > 1);
     } catch (err) { if (ctx.signal.aborted) return {}; tracksErr = err; }
   }
   const markers = (t.markers || []).filter((m) => m.lat != null && m.lon != null);
   const allPts = [...tracks.flat(), ...markers.map((m) => [m.lon, m.lat])];
   let m = null, dot = null, dotEl = null;
   if (allPts.length) {
-    m = await makeMap(ctx, mapBox, { bounds: boundsOf(allPts), padding: 48, maxZoom: 15, fullscreen: true });
+    m = await makeMap(ctx, mapBox, { bounds: trackBounds(trackDrives, markers.map((k) => [k.lon, k.lat])) || boundsOf(allPts), padding: 48, maxZoom: 15, fullscreen: true });
     if (!ctx.alive()) return {};
     if (m) {
       await m.loaded;

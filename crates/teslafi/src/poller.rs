@@ -10,7 +10,8 @@
 //!
 //! The waits are the [`Pace`] an admin chooses (`normal` above). `often` reads about as often as TeslaFi itself polls
 //! the car while it drives or charges (TeslaFi's data changes no faster, so reading faster would only repeat it).
-//! The pace never slows because SMO or the Tesla API is live for the car: every input keeps reading. At most one request every 10 s and 1,500 a day per account (`often`: 6,000) (then nothing until midnight UTC), the checks of
+//! While SMO or the Tesla API sends live data for the car, a read waits 10 min at least (`gentle`: 20 min): their
+//! data wins there anyway. At most one request every 10 s and 1,500 a day per account (`often`: 6,000) (then nothing until midnight UTC), the checks of
 //! a token included (their requests are written into the pacing). TeslaFi's own poll time is the time of the data, and
 //! a poll already handed on (the same `data_id`) is not handed on again.
 //! A refused token stops the account until an admin gives a new one. The back-off, TeslaFi's wait and the day's
@@ -39,6 +40,8 @@ pub trait Sink: Send + Sync + 'static {
     fn points(&self, car: CarId, samples: &[Sample], facts: &[ApiFact]) -> Result<(), SinkError>;
     /// The values no CAN message carries, as a new poll (TeslaFi's time `at_ms`) gave them; only when it gave some.
     fn off_can(&self, car: CarId, at_ms: u64, values: &model::OffCan) -> Result<(), SinkError>;
+    /// SMO or the Tesla API sends live data for this car: TeslaFi is read less.
+    fn other_live(&self, car: CarId) -> bool;
     /// The account's state changed (for an audit entry or a notice).
     fn account_changed(&self, _account: &Account) {}
 }
@@ -62,6 +65,8 @@ pub struct Cadence {
     pub charging_ms: u64,
     pub idle_ms: u64,
     pub asleep_ms: u64,
+    /// While SMO or the Tesla API is live for the car.
+    pub other_live_ms: u64,
     pub min_gap_ms: u64,
     pub daily_cap: u64,
     pub backoff_first_ms: u64,
@@ -79,6 +84,7 @@ impl Default for Cadence {
             charging_ms: 60_000,
             idle_ms: 3 * 60_000,
             asleep_ms: 10 * 60_000,
+            other_live_ms: 10 * 60_000,
             min_gap_ms: 10_000,
             daily_cap: 1_500,
             backoff_first_ms: 60_000,
@@ -132,9 +138,14 @@ impl Pace {
                 daily_cap: 6_000,
                 ..n
             },
-            Pace::Gentle => {
-                Cadence { driving_ms: 120_000, charging_ms: 120_000, idle_ms: 5 * 60_000, asleep_ms: 20 * 60_000, ..n }
-            }
+            Pace::Gentle => Cadence {
+                driving_ms: 120_000,
+                charging_ms: 120_000,
+                idle_ms: 5 * 60_000,
+                asleep_ms: 20 * 60_000,
+                other_live_ms: 20 * 60_000,
+                ..n
+            },
         }
     }
 }
@@ -647,6 +658,7 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             Mode::Asleep => self.cadence.asleep_ms,
             _ => self.cadence.idle_ms,
         };
+        let gap = if car.is_some_and(|c| self.sink.other_live(c)) { gap.max(self.cadence.other_live_ms) } else { gap };
         // the first look at an account whose car is not known yet, the latest poll naming none: once more soon, for
         // the last poll of the car awake; after that the normal pace (an awake car whose polls name no car is not
         // asked every 10 s)

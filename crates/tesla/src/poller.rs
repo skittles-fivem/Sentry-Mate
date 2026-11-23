@@ -12,7 +12,7 @@
 //! | `driving` | gear D, R or N, or moving | the streaming socket, and `vehicle_data` every 60 s (30 s without a stream) |
 //! | `backoff` | errors, or the daily cap | 429: Tesla's wait (at least 60 s, else 5 min); 5xx and network: 30 s doubling to 15 min |
 //!
-//! The pace never slows because SMO (or another input) is live for the car: every input keeps reading.
+//! When SMO sends live CAN for the car, `vehicle_data` drops to every 5 min while online and no stream is opened.
 //! At most one request a second and 3,000 a day per account (then nothing until midnight UTC). The access token
 //! is refreshed when under 30 min (or a quarter of a short token's life) are left, and once on a 401; a refused
 //! refresh stops the account until an admin signs in again. The new refresh token is stored before the new access
@@ -41,6 +41,8 @@ pub trait Sink: Send + Sync + 'static {
     fn points(&self, car: CarId, samples: &[Sample], facts: &[ApiFact]) -> Result<(), SinkError>;
     /// Values beside the samples (version, settings, charger), each time they change.
     fn meta(&self, car: CarId, meta: &ApiMeta) -> Result<(), SinkError>;
+    /// SMO sends live CAN for this car (its newest log arrived a few minutes ago): poll less.
+    fn smo_live(&self, car: CarId) -> bool;
     /// The account's state changed (for an audit entry or an event).
     fn account_changed(&self, _account: &Account) {}
 }
@@ -96,6 +98,7 @@ pub struct Cadence {
     pub charging_ms: u64,
     pub driving_ms: u64,
     pub driving_streaming_ms: u64,
+    pub smo_live_ms: u64,
     pub idle_before_sleep_ms: u64,
     pub quiet_ms: u64,
     pub min_gap_ms: u64,
@@ -119,6 +122,7 @@ impl Default for Cadence {
             charging_ms: 30_000,
             driving_ms: 30_000,
             driving_streaming_ms: 60_000,
+            smo_live_ms: 5 * 60_000,
             idle_before_sleep_ms: 10 * 60_000,
             quiet_ms: 21 * 60_000,
             min_gap_ms: 1_000,
@@ -939,6 +943,7 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
                 self.cars[i].last_meta = Some(r.meta.clone());
             }
         }
+        let smo = self.cars[i].car.is_some_and(|car| self.sink.smo_live(car));
         let cad = self.cadence.clone();
         let c = &mut self.cars[i];
         c.state = CarState::Online;
@@ -970,11 +975,15 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
             }
         }
         if c.mode == Mode::Driving
+            && !smo
             && c.stream.is_none()
             && c.stream_refusals < 2
             && let (Some(tag), Some(access)) = (c.tag.clone(), self.creds.access.as_ref())
         {
             c.stream = self.streamer.open(&tag, access);
+        }
+        if smo {
+            c.stream = None;
         }
         let gap = match c.mode {
             Mode::Driving if c.stream.is_some() => cad.driving_streaming_ms,
@@ -982,7 +991,7 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
             Mode::Charging => cad.charging_ms,
             _ => cad.idle_ms,
         };
-        c.next_data_ms = now_ms + gap;
+        c.next_data_ms = now_ms + if smo { gap.max(cad.smo_live_ms) } else { gap };
     }
 }
 

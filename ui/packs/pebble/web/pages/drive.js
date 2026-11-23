@@ -15,6 +15,7 @@ import * as state from '../shared/state.js';
 import { tile, num, chip, linkBtn, icon, note } from '../core/ui.js';
 import { emptyTile } from '../core/states.js';
 import { mapTile, boundsOf } from '../core/map.js';
+import { trackBounds } from '../shared/tracks.js';
 import { timeChart, bars } from '../core/chart.js';
 import { endLabel, placeLink, statTile, socBar, facts } from '../core/bits.js';
 import { srcPill, estPill, srcText, isEstimated, apiOnly, EST_WHY } from '../core/source.js';
@@ -120,7 +121,7 @@ export async function mount(ctx) {
   let marker = null;
   let m = null;
   if (coords.length > 1) {
-    m = await mapTile(ctx, mapBox, { bounds: boundsOf(coords), padding: 48 });
+    m = await mapTile(ctx, mapBox, { bounds: trackBounds(track.error ? [] : track.features || []) || boundsOf(coords), padding: 48 });
     if (!m) return {};
     if (m.map) {
       m.route('route', coords.map((c) => [c[0], c[1]]), { tone: 'c1' });

@@ -1,14 +1,12 @@
 // The account menu at the foot of the sidebar: who is signed in, the Interface size and Follow screen
 // size, the theme, a link to the Display settings, and sign out. Changes apply at once and are saved to
-// the person's preferences (core/prefs.js), so they follow them to every screen. Above them, the Interface
-// size on this device (Automatic or a fixed step), kept in this browser only (core/display.js).
+// the person's preferences (core/prefs.js), so they follow them to every screen.
 
 import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
 import { icon } from './icons.js';
 import { getMe, getPrefs, savePrefs, onPrefs } from './prefs.js';
-import { getInterface, autoPercent, accountPercent, SIZES, onInterface, getTheme, applyDeviceSize } from './display.js';
-import { deviceSizeOptions, deviceSizeLabel, deviceSizeNote } from '../shared/devicesize.js';
+import { getInterface, autoPercent, effectivePercent, SIZES, onInterface, getTheme } from './display.js';
 import { flash } from './flash.js';
 import { placePopover } from './popover.js';
 import { signOut } from './session.js';
@@ -19,27 +17,9 @@ let pop = null, anchor = null;
 export function sizeNote() {
   const i = getInterface();
   const a = autoPercent();
-  if (i.device) return `This device uses its own size (${i.device} %), so your account's ${i.size} % applies on your other devices only.`;
   if (!i.follow) return `Follow screen size is off: ${i.size} % is ${i.size} % of the standard size on every screen.`;
   if (a === 100) return `This screen uses the standard size, so ${i.size} % shows at ${i.size} %.`;
-  return `This screen is large, so Auto adds ${a - 100} %: ${i.size} % shows at ${accountPercent()} % of the standard size.`;
-}
-
-/** One line on the Interface size on this device. */
-export const deviceNote = () => { const i = getInterface(); return deviceSizeNote(i.device, { account: i.size, shown: accountPercent() }); };
-
-/**
- * The Interface size on this device: Automatic and the fixed steps as radio buttons. Kept in this browser
- * only (never saved to the account). name: a unique radio group name.
- */
-export function devicePicker(name, { grid = false } = {}) {
-  const now = getInterface().device ? String(getInterface().device) : 'auto';
-  const group = h('div', { class: ['size-picker', 'device-picker', grid && 'size-picker--grid'], role: 'radiogroup', 'aria-label': 'Interface size on this device' },
-    deviceSizeOptions().map((o) => h('label', { class: 'size-opt' },
-      h('input', { type: 'radio', name, value: o.value, checked: o.value === now, onchange: () => applyDeviceSize(o.value) }),
-      h('span', null, o.label))));
-  const sync = (i) => { const v = i.device ? String(i.device) : 'auto'; for (const r of group.querySelectorAll('input')) r.checked = r.value === v; };
-  return { el: group, sync };
+  return `This screen is large, so Auto adds ${a - 100} %: ${i.size} % shows at ${effectivePercent()} % of the standard size.`;
 }
 
 /**
@@ -84,24 +64,17 @@ export function themeButtons() {
 
 function fill() {
   const me = getMe();
-  const dev = devicePicker('acct-device', { grid: true });
-  const devOut = h('output', { for: 'acct-device' }, deviceSizeLabel(getInterface().device));
-  const devNote = h('p', { class: 'setting-note' }, deviceNote());
   const size = sizePicker('acct-size', { grid: true });
   const follow = followSwitch('acct-follow');
   const theme = themeButtons();
   const out = h('output', { for: 'acct-size' }, `${getInterface().size} %`);
   const noteEl = h('p', { class: 'setting-note' }, sizeNote());
-  const offI = onInterface((i) => { dev.sync(i); devOut.textContent = deviceSizeLabel(i.device); devNote.textContent = deviceNote(); size.sync(i); follow.sync(i); out.textContent = `${i.size} %`; noteEl.textContent = sizeNote(); });
+  const offI = onInterface((i) => { size.sync(i); follow.sync(i); out.textContent = `${i.size} %`; noteEl.textContent = sizeNote(); });
   const offP = onPrefs((p) => theme.sync(p));
   pop.addEventListener('toggle', (e) => { if (e.newState === 'closed') { offI(); offP(); } }, { once: true });
   replace(pop,
     h('div', { class: 'account-menu-head' }, h('b', null, me?.name || 'Signed in'), h('span', null, roleText(me))),
-    h('div', { class: 'account-menu-label' }, h('span', { id: 'acct-device-label' }, 'Size on this device'), devOut),
-    dev.el,
-    devNote,
-    h('div', { class: 'account-menu-sep' }),
-    h('div', { class: 'account-menu-label' }, h('span', { id: 'acct-size-label' }, 'Interface size (your account)'), out),
+    h('div', { class: 'account-menu-label' }, h('span', { id: 'acct-size-label' }, 'Interface size'), out),
     size.el,
     h('div', { class: 'switch-row' }, h('label', { for: 'acct-follow' }, 'Follow screen size'), follow.el),
     noteEl,
