@@ -552,9 +552,9 @@ export async function mount(ctx) {
         ['on disk', bytes(d?.total_disk_bytes)],
         ['free', d?.free_bytes != null ? bytes(d.free_bytes) : 'not known'],
         ['saved', [c ? bytes(c.saved_bytes) : DASH, ' ', tip]],
-        ['runs', !c ? DASH : c.automatic ? 'compaction runs by itself when the server is idle' : 'compaction does not run by itself here'],
         ['last pass', !c || c.finished_ms == null ? 'not yet' : h('span', { title: `finished ${t(c.finished_ms)}` }, c.last_saved_bytes ? `${bytes(c.last_saved_bytes)} freed` : 'nothing left to pack')],
       ]),
+      h('p', { class: 'st-line muted' }, !c ? 'the server did not say how compaction stands' : c.automatic ? 'compaction runs by itself when the server is idle' : 'compaction does not run by itself here'),
       progressRow(c));
   }
   function scheduleStor() { clearTimeout(gt); if (G.d?.compaction?.status === 'running') gt = setTimeout(refreshStor, 2000); }
