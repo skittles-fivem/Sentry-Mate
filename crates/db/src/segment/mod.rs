@@ -345,6 +345,15 @@ fn snapshot_plain(ctx: &Ctx, files: &Files) -> Result<Option<crate::plain::Plain
 /// be, while its journal is the same file (a write to the day appends to it, a fold replaces or removes it): days
 /// written by the minute (a live car's) are read again without opening every entry of their journal each time.
 /// `None`: the journal went meanwhile (the day is its snapshot alone now).
+/// A day with a journal read whole for another process's files ([`crate::Reader`]): no cache, no cleaning up.
+pub(crate) fn inspected_plain<P: Point>(ctx: &Ctx, files: &Files) -> Result<Option<crate::plain::Plain>> {
+    if !files.log.exists() {
+        return Ok(None);
+    }
+    let state = LoggedFile::<DayLog<P>>::inspect_state(ctx, files.clone())?;
+    Ok(Some(Arc::new((0, zeroize::Zeroizing::new(state.encode_state()?)))))
+}
+
 pub(crate) fn journaled_plain<P: Point>(ctx: &Ctx, files: &Files) -> Result<Option<crate::plain::Plain>> {
     let Some(st) = crate::plain::stamp(&files.log)? else { return Ok(None) };
     if let Some(p) = ctx.plain.get(&files.log, st) {
