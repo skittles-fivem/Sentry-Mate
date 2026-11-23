@@ -143,7 +143,9 @@
 
 /* ------------------------------------------------------------------ 4. base */
 *, *::before, *::after { box-sizing: border-box; }
-html { background: var(--bg); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* The page's scrollbar keeps its place whether the page is longer than the window or not, so a page that
+   grows or shrinks (a list loaded, a tooltip near the bottom) never moves sideways. */
+html { background: var(--bg); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scrollbar-gutter: stable; }
 body {
   margin: 0; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column;
   background: var(--bg); color: var(--text);
@@ -1284,3 +1286,7 @@ th[aria-sort] .tbl-sort { color: var(--accent); }
 .st-none { padding-block: var(--g2); }
 :root[data-phone] .st-group-head { grid-template-columns: auto minmax(0, 1fr) auto calc(var(--a2) * 5); }
 :root[data-phone] .st-group-head > .tbar { grid-column: 2 / -1; grid-row: 2; }
+/* a readout whose text changes in place sits in a box as wide as its longest text (shared/dom.js steady) */
+.steady { display: inline-grid; font-variant-numeric: tabular-nums; }
+.steady > * { grid-area: 1 / 1; }
+.steady-size { visibility: hidden; }
