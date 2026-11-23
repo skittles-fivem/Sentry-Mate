@@ -153,6 +153,15 @@ rows in a box that scrolls by itself, a focusable region whose height the page's
 start; with `autoMore` the next page then loads as the end of the box comes near, and the box has `data-below`
 while rows are hidden under its bottom edge (for a fade). The audit log of Settings: Server and access uses it.
 
+`windowTable(ctx, { title, path, params, columns, sort, firstSort, search, jump, csv, onPage, empty })` is for a list
+of thousands of rows (the Logbook): the rows sit in a box ten rows high (`.vl-box`, its height from `app.css`) that
+scrolls under a header that stays, only the rows in view and a few more are in the page (`shared/vlist.js`), and they
+load from the API a chunk at a time as the box reaches them (by cursor when the chunk goes on from one already in, else
+by `offset`; Jump to date asks with `at_ms`). Every row has the same height: each cell holds at most two lines that do
+not wrap. Sorting is the server's (`sort` is the API's sort name), the search field sends `q`, the Download CSV link
+is the server's with the same filters (every row they leave), and every answer goes to `onPage` (the Logbook's totals
+come with each). It keeps the table form on a phone (`.tbl--keep`), so rows stay one height there too.
+
 ### `core/chart.js`: charts on uPlot
 
 `await loadUPlot()` once, then `mountPlot(el, make(width, height) => uPlotOptions, data, ctx, onBuild)`. The box `el`

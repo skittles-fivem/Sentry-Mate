@@ -367,6 +367,7 @@ function resized(entries) {
 }
 
 let queued = false;
+let restTimer = 0;
 function later() {
   if (queued) return;
   queued = true;
@@ -380,8 +381,17 @@ export function watchTables() {
     // or a number elsewhere that only changes its text does not count
     const el = (ns) => { for (const n of ns) if (n.nodeType === 1) return true; return false; };
     const inTable = (n) => { const e = n.nodeType === 1 ? n : n.parentElement; return !!(e && e.closest('table')); };
+    // rows coming into and going out of a long list's window as it scrolls (shared/vlist.js, a [data-vl-body]):
+    // once the scrolling rests, not every frame (the box keeps its size, so nothing outside it moves)
+    const windowed = (n) => { const e = n.nodeType === 1 ? n : n.parentElement; return !!(e && e.closest('[data-vl-body]')); };
+    let rest = false;
     // at once, in the same turn as the change: nothing can measure or paint the page in between
-    for (const m of list) if (el(m.addedNodes) || el(m.removedNodes) || inTable(m.target)) { snapAll(); return; }
+    for (const m of list) {
+      if (!(el(m.addedNodes) || el(m.removedNodes) || inTable(m.target))) continue;
+      if (windowed(m.target)) { rest = true; continue; }
+      snapAll(); return;
+    }
+    if (rest) { clearTimeout(restTimer); restTimer = setTimeout(later, 150); }
   }).observe(document.body, { childList: true, subtree: true, characterData: true });
   if ('ResizeObserver' in window) ro = new ResizeObserver(resized);
   addEventListener('resize', later);

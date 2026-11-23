@@ -1240,6 +1240,20 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 .tbl-foot[hidden] { display: none; }
 .tbl-skel td { height: calc(round(3.375rem, var(--e)) - 2 * round(0.375rem, var(--e))); }
 .tbl-skel .skel { height: round(0.625rem, var(--e)); width: 70%; }
+/* a long list in a box of ten rows (core/table.js windowTable): the header stays, the rows scroll, only those in view
+   are drawn; every row is one table row high (each cell holds at most two lines) */
+.vl-box { --vl-row: calc(round(3.375rem, var(--e)) + 1px); max-height: calc(round(2.625rem, var(--e)) + 1px + 10 * var(--vl-row)); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.vl-box:focus-visible { outline-offset: round(-0.125rem, var(--e)); }
+.vl-table { table-layout: auto; }
+.vl-table > tbody > tr.vl-gap, .vl-table > tbody > tr.vl-gap:hover { background: none; }
+.vl-table > tbody > tr.vl-gap > td { height: var(--vl-h, 0px); padding: 0; border: 0; }
+.vl-table > tbody > tr > td { white-space: nowrap; }
+.vl-table .main, .vl-table .sub { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vl-panel .tbl-bar { flex-wrap: wrap; }
+.vl-search { width: round(13rem, var(--e)); }
+.vl-jump { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); }
+.vl-jump .input--sm { width: auto; }
+.vl-empty { padding: round(1.25rem, var(--e)); }
 .tbl-empty td { padding: 0; }
 
 /* dialogs (core/dialog.js) */
@@ -1634,6 +1648,11 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 :root[data-phone] .tbl:not(.tbl--keep) td.is-num > .tag:only-child { margin-left: 0; }
 :root[data-phone] .tbl--keep th:first-child, :root[data-phone] .tbl--keep td:first-child { position: sticky; left: 0; z-index: 2; background: var(--panel-solid); }
 :root[data-phone] .tbl--keep th:first-child { z-index: 3; }
+:root[data-phone] .vl-box { max-height: min(calc(round(2.625rem, var(--e)) + 1px + 10 * var(--vl-row)), 70svh); }
+:root[data-phone] .vl-table a.main { display: block; min-height: 0; }
+:root[data-phone] .vl-panel .tbl-bar > :is(.vl-search, .vl-jump) { flex: 1 1 100%; }
+:root[data-phone] .vl-search { width: 100%; }
+:root[data-phone] .vl-jump .input--sm { flex: 1 1 auto; }
 
 /* shared parts on a phone: text of 14 px and more, and links and chips as tall as a finger */
 :root[data-phone] :is(.page-sub, .pill--lg, .mono, .tbl .main, .tbl .sub) { font-size: max(0.875rem, var(--fs-floor)); }
