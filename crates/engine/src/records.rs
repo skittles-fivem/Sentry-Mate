@@ -292,7 +292,47 @@ pub(crate) fn put_meta(db: &Db, car: CarId, m: &CarMeta) -> Result<()> {
 }
 
 pub(crate) fn day(db: &Db, car: CarId, d: u32) -> Result<DayRec> {
-    Ok(get(db, NS, &format!("car/{car}/day/{d}"))?.unwrap_or_default())
+    Ok(DayRec::clone(&*day_shared(db, car, d)?))
+}
+
+/// Day records as last read, with the stored bytes each was read from. A day's record is read many times while its
+/// logs are worked on (a log's entry, the entries and cut points of a window, the nearest decoded log), and reading
+/// one into a [`DayRec`] costs far more than opening its file: a record whose stored bytes are the ones kept here is
+/// not read into a [`DayRec`] again. Nothing here can be out of date: the bytes are read from the db every time.
+struct DayCache {
+    kept: Vec<(String, Vec<u8>, std::sync::Arc<DayRec>)>,
+}
+
+/// Day records kept at most (a window's days and the newest days, of the cars being worked on).
+const DAYS_KEPT: usize = 24;
+
+static DAY_CACHE: std::sync::Mutex<DayCache> = std::sync::Mutex::new(DayCache { kept: Vec::new() });
+
+/// [`day`] to read from only (not copied).
+pub(crate) fn day_shared(db: &Db, car: CarId, d: u32) -> Result<std::sync::Arc<DayRec>> {
+    let key = format!("car/{car}/day/{d}");
+    let Some(bytes) = db.kv().get(NS, &key)? else { return Ok(std::sync::Arc::new(DayRec::default())) };
+    {
+        let mut c = DAY_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(i) = c.kept.iter().position(|(k, b, _)| *k == key && *b == bytes) {
+            // the most recently used last
+            let hit = c.kept.remove(i);
+            let rec = hit.2.clone();
+            c.kept.push(hit);
+            return Ok(rec);
+        }
+    }
+    let rec: DayRec = serde_json::from_slice(&bytes).map_err(|e| crate::Error::Damaged(format!("{key}: {e}")))?;
+    let rec = std::sync::Arc::new(rec);
+    let mut c = DAY_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // one record per key and data folder is enough: an older reading of the same key goes first
+    if let Some(i) = c.kept.iter().position(|(k, _, _)| *k == key) {
+        c.kept.remove(i);
+    } else if c.kept.len() >= DAYS_KEPT {
+        c.kept.remove(0);
+    }
+    c.kept.push((key, bytes, rec.clone()));
+    Ok(rec)
 }
 
 pub(crate) fn put_day(db: &Db, car: CarId, d: u32, rec: &DayRec) -> Result<()> {
@@ -307,7 +347,7 @@ pub(crate) fn put_day(db: &Db, car: CarId, d: u32, rec: &DayRec) -> Result<()> {
 /// The entry of one log, if it was worked on.
 pub(crate) fn entry(db: &Db, car: CarId, name: &str) -> Result<Option<LogEntry>> {
     let Some(start) = name_start_ms(name) else { return Ok(None) };
-    Ok(day(db, car, day_of(start))?.logs.remove(name))
+    Ok(day_shared(db, car, day_of(start))?.logs.get(name).cloned())
 }
 
 pub(crate) fn dirty(db: &Db, car: CarId) -> Result<Vec<(u64, u64)>> {
@@ -405,10 +445,10 @@ pub(crate) fn entries_between(
     let hi = day_of(to_ms.saturating_sub(1).max(from_ms));
     let mut out = Vec::new();
     for &d in meta.days.range(lo..=hi) {
-        for (name, e) in day(db, car, d)?.logs {
+        for (name, e) in &day_shared(db, car, d)?.logs {
             let (a, b) = e.span();
             if b >= from_ms && a < to_ms {
-                out.push((name, e));
+                out.push((name.clone(), e.clone()));
             }
         }
     }
@@ -425,7 +465,7 @@ pub(crate) fn nearest_decoded(db: &Db, car: CarId, meta: &CarMeta, ms: u64, befo
         meta.days.range(d0.saturating_sub(1)..).copied().collect()
     };
     for (i, d) in days.into_iter().enumerate() {
-        let rec = day(db, car, d)?;
+        let rec = day_shared(db, car, d)?;
         let mut best: Option<LogFacts> = None;
         for e in rec.logs.values() {
             let Outcome::Decoded { facts, .. } = &e.outcome else { continue };
@@ -450,7 +490,7 @@ pub(crate) fn nearest_decoded(db: &Db, car: CarId, meta: &CarMeta, ms: u64, befo
 pub(crate) fn cuts_between(db: &Db, car: CarId, meta: &CarMeta, from_ms: u64, to_ms: u64) -> Result<Vec<u64>> {
     let mut out = Vec::new();
     for &d in meta.days.range(day_of(from_ms)..=day_of(to_ms.saturating_sub(1).max(from_ms))) {
-        out.extend(day(db, car, d)?.cuts.into_iter().filter(|&c| c > from_ms && c < to_ms));
+        out.extend(day_shared(db, car, d)?.cuts.iter().copied().filter(|&c| c > from_ms && c < to_ms));
     }
     out.sort_unstable();
     Ok(out)

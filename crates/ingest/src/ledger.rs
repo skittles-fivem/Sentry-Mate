@@ -57,6 +57,25 @@ fn other(e: impl std::fmt::Display) -> io::Error {
     io::Error::other(e.to_string())
 }
 
+/// A journal as it was read for a lookup ([`Ledger::journal_as_read`]).
+struct KeptJournal {
+    path: PathBuf,
+    stamp: (u64, u64, std::time::SystemTime),
+    changes: Arc<Vec<Change>>,
+}
+
+/// Journals kept in memory at most (the keys whose logs are being worked on).
+const JOURNALS_KEPT: usize = 4;
+
+static JOURNALS: std::sync::Mutex<Vec<KeptJournal>> = std::sync::Mutex::new(Vec::new());
+
+/// What a journal's file is now: its inode, size and change time (`None`: not there, or not to be told).
+fn journal_stamp(path: &Path) -> Option<(u64, u64, std::time::SystemTime)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.ino(), m.len(), m.modified().ok()?))
+}
+
 /// A CAN Bridge key as it may appear in a path: 1 to 64 letters, digits or `-` (the log name rule).
 pub(crate) fn valid_key(key: &str) -> bool {
     !key.is_empty() && key.len() <= 64 && key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
@@ -484,6 +503,38 @@ impl Ledger {
         Ok((out, damaged))
     }
 
+    /// [`Ledger::read_journal`]'s changes for a lookup, from memory while the journal's file is the one they were
+    /// read from (the same file, size and time: a journal only ever grows, or is replaced by the next generation's).
+    /// The background decoding looks every log's record up as it works on it, and reading a long journal for each
+    /// took longer than reading the log. The journals of the keys looked at last are kept ([`JOURNALS_KEPT`]; a
+    /// journal has at most a few thousand changes before it is folded).
+    fn journal_as_read(&self, generation: u64) -> io::Result<Arc<Vec<Change>>> {
+        let (path, _) = self.journal_file(generation);
+        let Some(stamp) = journal_stamp(&path) else { return Ok(Arc::new(self.read_journal(generation)?.0)) };
+        {
+            let mut kept = JOURNALS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(i) = kept.iter().position(|k| k.path == path && k.stamp == stamp) {
+                // the most recently used last
+                let hit = kept.remove(i);
+                let changes = hit.changes.clone();
+                kept.push(hit);
+                return Ok(changes);
+            }
+        }
+        let (changes, damaged) = self.read_journal(generation)?;
+        let changes = Arc::new(changes);
+        // kept only when it was read whole and the file is still the one looked at
+        if !damaged && journal_stamp(&path) == Some(stamp) {
+            let mut kept = JOURNALS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            kept.retain(|k| k.path != path);
+            if kept.len() >= JOURNALS_KEPT {
+                kept.remove(0);
+            }
+            kept.push(KeptJournal { path, stamp, changes: changes.clone() });
+        }
+        Ok(changes)
+    }
+
     /// Adds `changes` (already applied to `head`) to the journal, in batches of one sealed record each. A change too
     /// big for one record, or a damaged journal, goes through [`Ledger::compact`] instead.
     pub(crate) fn append(&self, head: &mut Head, changes: &[Change]) -> io::Result<()> {
@@ -648,9 +699,9 @@ impl Ledger {
 
     /// One log's record: the journal's last word on it, else the records file (read up to its place in name order).
     pub(crate) fn lookup(&self, head: &Head, name: &str) -> io::Result<Option<Record>> {
-        let (changes, _) = self.read_journal(head.generation)?;
-        let newest = changes.into_iter().rev().find_map(|c| match c {
-            Change::Log { name: n, record } if n == name => Some(record),
+        let changes = self.journal_as_read(head.generation)?;
+        let newest = changes.iter().rev().find_map(|c| match c {
+            Change::Log { name: n, record } if n == name => Some(record.clone()),
             _ => None,
         });
         if newest.is_some() {
@@ -752,6 +803,50 @@ mod tests {
         assert_eq!(files, ["trust-3.records", "trust.head"], "the generations before are gone");
         assert_eq!(l.lookup(&h, &name(10)).unwrap().unwrap().arrived_ms, 10);
         assert!(l.lookup(&h, "k1_20991108T000000Z_1.log.xz").unwrap().is_none());
+    }
+
+    /// A lookup's journal comes from memory only while its file is the one that was read: every change added
+    /// after a lookup is seen by the next one, also another process's (another `Ledger` on the same files), a
+    /// journal cut short, and a new generation.
+    #[test]
+    fn a_lookup_sees_every_change_made_since_the_last_one() {
+        let (_d, v, can) = vault();
+        let l = Ledger::new(&can, "k1", v.clone());
+        let mut h = l.load_head().unwrap();
+        let put = |l: &Ledger, h: &mut Head, i: u32, st: Status, at: u64| {
+            let c = vec![Change::Log { name: name(i), record: rec(st, at) }];
+            h.apply(&c[0]);
+            l.append(h, &c).unwrap();
+        };
+        assert!(l.lookup(&h, &name(1)).unwrap().is_none());
+        put(&l, &mut h, 1, Status::Waiting, 1);
+        assert_eq!(l.lookup(&h, &name(1)).unwrap().unwrap().status, Status::Waiting);
+        // asked again with nothing changed: the same answer
+        assert_eq!(l.lookup(&h, &name(1)).unwrap().unwrap().arrived_ms, 1);
+        for at in 2..40u64 {
+            put(&l, &mut h, 1, Status::Unsigned, at);
+            assert_eq!(l.lookup(&h, &name(1)).unwrap().unwrap().arrived_ms, at);
+            assert!(l.lookup(&h, &name(2)).unwrap().is_none());
+        }
+        // another process's change
+        let other = Ledger::new(&can, "k1", v.clone());
+        let mut oh = other.load_head().unwrap();
+        put(&other, &mut oh, 2, Status::Verified, 7);
+        assert_eq!(l.lookup(&oh, &name(2)).unwrap().unwrap().status, Status::Verified);
+        // a journal cut short (a crash mid-record): what is left is what a lookup gives
+        let journal = can.join("k1/trust-0.journal");
+        let whole = std::fs::metadata(&journal).unwrap().len();
+        put(&l, &mut oh, 2, Status::Failed, 8);
+        assert_eq!(l.lookup(&oh, &name(2)).unwrap().unwrap().status, Status::Failed);
+        std::fs::OpenOptions::new().write(true).open(&journal).unwrap().set_len(whole).unwrap();
+        assert_eq!(l.lookup(&oh, &name(2)).unwrap().unwrap().status, Status::Verified);
+        // the next generation: its journal is another file
+        let mut h = l.load_head().unwrap();
+        l.compact(&mut h, Vec::new()).unwrap();
+        assert_eq!(l.lookup(&h, &name(1)).unwrap().unwrap().arrived_ms, 39);
+        put(&l, &mut h, 1, Status::Verified, 99);
+        assert_eq!(l.lookup(&h, &name(1)).unwrap().unwrap().arrived_ms, 99);
+        assert_eq!(l.lookup(&h, &name(2)).unwrap().unwrap().status, Status::Verified);
     }
 
     #[test]

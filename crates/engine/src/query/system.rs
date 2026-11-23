@@ -787,11 +787,11 @@ pub fn logs(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QResult
         _ => None,
     };
     let mut items = Vec::with_capacity(found.len());
-    let mut day_cache: Option<(u32, records::DayRec)> = None;
+    let mut day_cache: Option<(u32, std::sync::Arc<records::DayRec>)> = None;
     for (start, name, key, rec) in found {
         let d = records::day_of(start);
         if day_cache.as_ref().is_none_or(|(x, _)| *x != d) {
-            day_cache = Some((d, records::day(e.db(), car, d)?));
+            day_cache = Some((d, records::day_shared(e.db(), car, d)?));
         }
         let entry = day_cache.as_ref().and_then(|(_, r)| r.logs.get(&name));
         let (decoded, samples, dropped, buses, from, to) = match entry.map(|x| &x.outcome) {
@@ -864,7 +864,7 @@ pub struct UnknownSpan {
 fn last_judged(e: &Engine, car: CarId, meta: &records::CarMeta) -> QResult<Option<LastTrust>> {
     let db = e.db();
     for &d in meta.days.iter().rev() {
-        let rec = records::day(db, car, d)?;
+        let rec = records::day_shared(db, car, d)?;
         let newest = rec
             .logs
             .iter()

@@ -139,7 +139,7 @@ fn profile_of(c: &Car) -> dbc::Profile {
 /// else from the logs' own readings (newest log first, until one has a full-pack value): kept from an earlier read of
 /// the log ([`super::pack_logs`]), else decoded now (unless the query may not decode); and kept.
 pub(crate) fn day_pack(e: &Engine, c: &Car, d: u32) -> QResult<Option<PackReading>> {
-    let rec = records::day(e.db(), c.id, d)?;
+    let rec = records::day_shared(e.db(), c.id, d)?;
     let mut logs: Vec<(&String, &records::LogEntry)> =
         rec.logs.iter().filter(|(_, en)| en.usable && matches!(en.outcome, Outcome::Decoded { .. })).collect();
     if logs.is_empty() {

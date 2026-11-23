@@ -384,7 +384,7 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
     let meta = crate::records::meta(e.db(), car)?;
     let (d0, d1) = (crate::records::day_of(wa).saturating_sub(1), crate::records::day_of(wb.saturating_sub(1).max(wa)));
     for &d in meta.days.range(d0..=d1) {
-        for en in crate::records::day(e.db(), car, d)?.logs.values() {
+        for en in crate::records::day_shared(e.db(), car, d)?.logs.values() {
             if let crate::records::Outcome::Decoded { facts, .. } = &en.outcome
                 && facts.dropped > 0
             {
