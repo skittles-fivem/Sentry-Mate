@@ -26,7 +26,7 @@ import { formatDateTime, formatDuration, formatDayKey, dayStart, HOUR } from '..
 import { formatNumber } from '../shared/i18n.js';
 import { icon } from '../core/icons.js';
 import { pageHead, panel, metric, figures, pill, tag, kv, csvButton, panelLink } from '../core/page.js';
-import { dataTable } from '../core/table.js';
+import { dataTable, windowTable } from '../core/table.js';
 import { scrollBox } from '../shared/scrollbox.js';
 import { emptyState, errorWords } from '../core/states.js';
 import { openCarSwitcher } from '../core/carswitch.js';
@@ -571,42 +571,76 @@ async function mountCar(ctx) {
   const sigInfo = h('span', { class: 'faint hl-sig-info' });
   let signals = [];
   let chosen = null;
-  const sigTable = dataTable(ctx, {
-    title: 'Signals from the newest log', icon: 'signals', rows: [], cls: 'hl-signals', csvName: 'signals', cover: ['nr.dash.state-table', 'nr.dash.state-table.sort-scroll'],
-    side: h('label', { class: 'field field--search' }, icon('search', 'ico--sm'), sigSearch),
+  // the signals: a box five rows high that scrolls inside itself under a header that stays (the owner's: a long list
+  // need not take a big part of the page), with only the rows in view drawn (shared/vlist.js). The rows all have one
+  // height, and pressing Plot marks its button in place: nothing in the box is drawn again or moves.
+  let shown = [];
+  const sigCols = [
+    { key: 'name', label: 'Signal', sort: true, cover: 'nr.dash.state-table.parameter', value: (s) => s.comment || s.series,
+      render: (s) => h('span', { class: 'cell-text' }, h('span', { class: 'main' }, s.comment || s.series), h('span', { class: 'sub mono' }, s.series)),
+      csv: { label: 'Signal', value: (s) => s.series } },
+    { key: 'message', label: 'Message', sort: true, value: (s) => `${s.bus} ${s.message_id}`,
+      render: (s) => h('span', { class: 'cell-text' }, h('span', { class: 'mono' }, s.message_id), h('span', { class: 'sub' }, s.bus === 'chassis' ? 'Chassis bus' : s.bus === 'vehicle' ? 'Vehicle bus' : s.bus)),
+      csv: { label: 'Message', value: (s) => `${s.bus} ${s.message_id}` } },
+    { key: 'value', label: 'Value', num: true, sort: true, cover: 'nr.dash.state-table.value', firstDir: 'desc',
+      value: (s) => (s.value_name ? s.value_name : s.value == null ? null : (signalKind(s) ? convert(s.value, signalKind(s)) : s.value)),
+      render: (s) => h('span', { class: 'cell-text' }, h('span', { class: 'hl-sig-val' }, signalText(s)), s.value_name ? h('span', { class: 'sub' }, `code ${s.value}`) : null),
+      csv: { label: 'Value (shown)', value: (s) => signalText(s) } },
+    { key: 'raw', label: 'As sent', num: true, title: 'The value in the unit the car sends', render: (s) => h('span', { class: 'faint' }, s.value == null ? DASH : `${formatNumber(s.value, { maximumFractionDigits: 6 })}${s.unit ? ` ${s.unit}` : ''}`),
+      csv: { label: 'Value (as sent)', value: (s) => s.value } },
+    { key: 'unit', label: 'Unit', csv: { label: 'Unit (as sent)', value: (s) => s.unit || '' }, render: (s) => h('span', { class: 'faint' }, s.unit || 'named values') },
+    { key: 'at', label: 'Read', num: true, sort: true, value: (s) => s.at_ms, render: (s) => (s.at_ms != null ? agoEl(s.at_ms, tz) : DASH), csv: { label: 'Read (UTC)', value: (s) => iso(s.at_ms) } },
+    { key: 'plot', label: '', csv: false,
+      render: (s) => (s.has_series ? h('button', { class: ['btn', 'btn--sm', chosen === s.series ? 'btn--primary' : 'btn--ghost'], type: 'button', dataset: { plot: s.series }, onclick: () => plot(s), 'aria-pressed': chosen === s.series ? 'true' : 'false', title: 'Show this signal over the period' }, icon('stats', 'ico--sm'), 'Plot')
+        : h('span', { class: 'faint', title: 'A signal with named values has its newest value only.' }, 'latest only')) },
+  ];
+  const sortedSignals = (sort) => {
+    const col = sort && sigCols.find((c) => c.key === sort.key);
+    if (!col) return shown;
+    const val = col.value || ((r) => r[col.key]);
+    const k = sort.dir === 'asc' ? 1 : -1;
+    return [...shown].sort((a, b) => {
+      const x = val(a), y = val(b);
+      if (x == null && y == null) return 0;
+      if (x == null) return 1;
+      if (y == null) return -1;
+      return (typeof x === 'string' || typeof y === 'string' ? String(x).localeCompare(String(y), undefined, { numeric: true }) : x - y) * k;
+    });
+  };
+  let sigOrder = { key: 'name', dir: 'asc' };
+  const sigCsv = csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'signals'), sortedSignals(sigOrder), sigCols.filter((c) => c.csv).map((c) => c.csv)) });
+  const sigTable = windowTable(ctx, {
+    title: 'Signals from the newest log', icon: 'signals', cls: 'hl-signals', rows: 5, boxLabel: 'Signals', cover: ['nr.dash.state-table', 'nr.dash.state-table.sort-scroll'],
+    side: [h('label', { class: 'field field--search' }, icon('search', 'ico--sm'), sigSearch), sigCsv],
     sort: { key: 'name', dir: 'asc' },
     note: 'Every signal decoded from the newest log, with its name, unit and value names. Sort by any heading (numbers sort as numbers); the list scrolls inside. Plot a signal to see it over the period.',
-    columns: [
-      { key: 'name', label: 'Signal', sort: true, cover: 'nr.dash.state-table.parameter', value: (s) => s.comment || s.series,
-        render: (s) => h('span', { class: 'cell-text' }, h('span', { class: 'main' }, s.comment || s.series), h('span', { class: 'sub mono' }, s.series)),
-        csv: { label: 'Signal', value: (s) => s.series } },
-      { key: 'message', label: 'Message', sort: true, value: (s) => `${s.bus} ${s.message_id}`,
-        render: (s) => h('span', { class: 'cell-text' }, h('span', { class: 'mono' }, s.message_id), h('span', { class: 'sub' }, s.bus === 'chassis' ? 'Chassis bus' : s.bus === 'vehicle' ? 'Vehicle bus' : s.bus)),
-        csv: { label: 'Message', value: (s) => `${s.bus} ${s.message_id}` } },
-      { key: 'value', label: 'Value', num: true, sort: true, cover: 'nr.dash.state-table.value', firstDir: 'desc',
-        value: (s) => (s.value_name ? s.value_name : s.value == null ? null : (signalKind(s) ? convert(s.value, signalKind(s)) : s.value)),
-        render: (s) => h('span', { class: 'cell-text' }, h('span', { class: 'hl-sig-val' }, signalText(s)), s.value_name ? h('span', { class: 'sub' }, `code ${s.value}`) : null),
-        csv: { label: 'Value (shown)', value: (s) => signalText(s) } },
-      { key: 'raw', label: 'As sent', num: true, title: 'The value in the unit the car sends', render: (s) => h('span', { class: 'faint' }, s.value == null ? DASH : `${formatNumber(s.value, { maximumFractionDigits: 6 })}${s.unit ? ` ${s.unit}` : ''}`),
-        csv: { label: 'Value (as sent)', value: (s) => s.value } },
-      { key: 'unit', label: 'Unit', csv: { label: 'Unit (as sent)', value: (s) => s.unit || '' }, render: (s) => h('span', { class: 'faint' }, s.unit || 'named values') },
-      { key: 'at', label: 'Read', num: true, sort: true, value: (s) => s.at_ms, render: (s) => (s.at_ms != null ? agoEl(s.at_ms, tz) : DASH), csv: { label: 'Read (UTC)', value: (s) => iso(s.at_ms) } },
-      { key: 'plot', label: '', csv: false,
-        render: (s) => (s.has_series ? h('button', { class: ['btn', 'btn--sm', chosen === s.series ? 'btn--primary' : 'btn--ghost'], type: 'button', onclick: () => plot(s), 'aria-pressed': chosen === s.series ? 'true' : 'false', title: 'Show this signal over the period' }, icon('stats', 'ico--sm'), 'Plot')
-          : h('span', { class: 'faint', title: 'A signal with named values has its newest value only.' }, 'latest only')) },
-    ],
+    columns: sigCols,
+    load: ({ sort, offset = 0, limit = 50 }) => {
+      sigOrder = sort || sigOrder;
+      const rows = sortedSignals(sort);
+      return { items: rows.slice(offset, offset + limit), offset, total: rows.length, next: null };
+    },
     empty: () => emptyState({ icon: 'search', title: signals.length ? 'No signal matches' : 'No signals yet',
       text: signals.length ? `Nothing holds “${sigSearch.value}”. Clear the search to see all ${signals.length}.` : 'Signals show once the first log of this car has been decoded.' }),
   });
 
   function filterSignals() {
     const words = sigSearch.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    const rows = !words.length ? signals : signals.filter((s) => {
+    shown = !words.length ? signals : signals.filter((s) => {
       const hay = [s.series, s.comment, s.message_id, s.bus, s.unit, s.value_name, signalText(s)].filter(Boolean).join(' ').toLowerCase();
       return words.every((w) => hay.includes(w));
     });
-    sigTable.setRows(rows);
-    replace(sigInfo, words.length ? `${rows.length} of ${signals.length}` : `${signals.length} signals`);
+    replace(sigInfo, words.length ? `${shown.length} of ${signals.length}` : `${signals.length} signals`);
+    return sigTable.setParams({});
+  }
+  // the chosen signal's Plot button, marked in place (the rows are not drawn again)
+  function markChosen() {
+    for (const b of sigTable.el.querySelectorAll('button[data-plot]')) {
+      const on = b.dataset.plot === chosen;
+      b.classList.toggle('btn--primary', on);
+      b.classList.toggle('btn--ghost', !on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
   }
   let sigTimer = null;
   ctx.on(sigSearch, 'input', () => { clearTimeout(sigTimer); sigTimer = setTimeout(() => ctx.alive() && filterSignals(), 150); });
@@ -615,7 +649,7 @@ async function mountCar(ctx) {
   async function loadSignals() {
     signals = await ctx.api.list(`${base}/signals/latest`, {}, { limit: 500 }).all({ max: 20000 });
     if (!ctx.alive()) return;
-    filterSignals();
+    await filterSignals();
   }
 
   // a chosen signal over the period
@@ -636,7 +670,7 @@ async function mountCar(ctx) {
 
   async function plot(s) {
     chosen = s.series;
-    filterSignals();
+    markChosen();
     const kind = signalKind(s);
     const unitText = kind ? unitLabel(kind) : s.unit || '';
     replace(plotSlot, h('p', { class: 'note' }, `Loading ${s.comment || s.series}…`));
