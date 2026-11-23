@@ -221,3 +221,99 @@
 :root[data-phone] .si-legend > div { flex-direction: column; gap: round(0.125rem, var(--e)); }
 :root[data-phone] .si-tree-row > .si-code { overflow-wrap: anywhere; }
 :root[data-phone] .si-fold > summary { display: block; min-height: var(--tap); padding: round(0.625rem, var(--e)) 0; }
+
+/* ---------- the tabs: Overview and Set up */
+.si-tabs { margin: 0 0 var(--gap); }
+.si-tabs .seg-btn { text-decoration: none; }
+.si-tabs .seg-btn[aria-current="true"] { color: var(--text); }
+.si-pane[hidden] { display: none; }
+
+/* ---------- Overview (pages/conn-overview.js) */
+.ov { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+.ov [hidden] { display: none; }
+.ov-light { display: inline-block; flex: none; width: round(0.625rem, var(--e)); height: round(0.625rem, var(--e)); border-radius: 50%; background: var(--ov-c, var(--text-3)); }
+.ov [data-status="live"] { --ov-c: var(--live); }
+.ov [data-status="idle"] { --ov-c: var(--info, var(--st-parked)); }
+.ov [data-status="paused"] { --ov-c: var(--warm); }
+.ov [data-status="off"] { --ov-c: var(--text-3); }
+.ov [data-status="problem"] { --ov-c: var(--danger); }
+.ov-light[data-status="off"] { background: transparent; box-shadow: inset 0 0 0 round(0.125rem, var(--e)) var(--text-3); }
+.ov-time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* totals */
+.ov-totals { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--gap); }
+.ov-total { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); min-width: 0; padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel-solid); }
+.ov-total[data-status="problem"][data-zero="false"] { border-color: var(--danger); background: var(--danger-soft); }
+.ov-total-k { display: flex; align-items: center; gap: round(0.5rem, var(--e)); color: var(--text-2); font-weight: 500; }
+.ov-total-n { font-family: var(--font-display); font-size: 1.75rem; font-weight: 700; --LH: round(calc(1.1 * 1em), 2px); font-variant-numeric: tabular-nums; }
+.ov-total[data-zero="true"] .ov-total-n { color: var(--text-3); }
+
+/* the rows: one grid, a head row with the column names */
+.ov-panel .note { margin: 0 0 round(0.75rem, var(--e)); }
+.ov-side { white-space: nowrap; }
+.ov-list { display: flex; flex-direction: column; }
+.ov-headrow, .ov-row { display: grid; grid-template-columns: minmax(round(13rem, var(--e)), 1.7fr) repeat(6, minmax(0, 1fr)) round(7.5rem, var(--e)); gap: round(0.25rem, var(--e)) round(0.875rem, var(--e)); align-items: start; }
+.ov-headrow { padding: 0 round(0.75rem, var(--e)) round(0.5rem, var(--e)); color: var(--text-3); font-size: max(0.75rem, var(--fs-floor)); font-weight: 500; border-bottom: 1px solid var(--line); }
+.ov-row { padding: round(0.75rem, var(--e)); border-bottom: 1px solid var(--line); color: inherit; text-decoration: none; border-radius: 0; }
+.ov-row:hover { background: var(--glass); }
+.ov-row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.ov-row[data-status="problem"] { box-shadow: inset round(0.1875rem, var(--e)) 0 0 var(--danger); }
+.ov-cell { display: flex; flex-direction: column; gap: round(0.125rem, var(--e)); min-width: 0; }
+.ov-k { display: none; color: var(--text-3); font-size: max(0.75rem, var(--fs-floor)); }
+.ov-label { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.ov-line { display: flex; align-items: center; flex-wrap: wrap; gap: round(0.25rem, var(--e)) round(0.5rem, var(--e)); }
+.ov-status { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); font-weight: 600; color: var(--ov-c); }
+.ov-row[data-status="off"] .ov-status { color: var(--text-2); }
+.ov-reason { color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); }
+.ov-v { color: var(--text); font-variant-numeric: tabular-nums; }
+.ov-sub { color: var(--text-3); font-size: max(0.75rem, var(--fs-floor)); font-variant-numeric: tabular-nums; }
+.ov-cell > .ov-time.ov-v { min-width: 9ch; }
+.ov-cell > .ov-sub.ov-time { white-space: normal; }
+/* room for two lines under each figure, so a longer value never pushes the rows below */
+.ov-row .ov-cell:not(.ov-main):not(.ov-spark-cell) { min-height: calc(var(--ov-lh1) + 2 * var(--ov-lh2) + round(0.25rem, var(--e))); }
+.ov-row { --ov-lh1: round(1.25rem, 2px); --ov-lh2: round(1.125rem, 2px); }
+.ov-row .ov-v { --LH: var(--ov-lh1); }
+.ov-row .ov-sub { --LH: var(--ov-lh2); }
+.ov-spark { height: round(2rem, var(--e)); border-bottom: 1px solid var(--line-2); }
+.ov-spark-svg { display: block; width: 100%; height: 100%; }
+.ov-spark-svg rect.ok { fill: var(--live); }
+.ov-spark-svg rect.err { fill: var(--danger); }
+.ov-spark-svg rect.none { fill: var(--line-2); }
+.ov-err { grid-column: 2 / -1; display: flex; align-items: flex-start; gap: round(0.375rem, var(--e)); margin: round(0.25rem, var(--e)) 0 0; color: var(--text-3); font-size: max(0.8125rem, var(--fs-floor)); }
+.ov-err .ico { flex: none; margin-top: round(0.125rem, var(--e)); color: var(--warm); }
+.ov-err > span { min-width: 0; overflow-wrap: anywhere; }
+.ov-error .note { display: flex; align-items: center; gap: round(0.375rem, var(--e)); margin: 0; color: var(--warm); }
+
+/* problems */
+.ov-prob-panel .note { margin: 0 0 round(0.75rem, var(--e)); }
+.ov-probs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.ov-probhead, .ov-prob { display: grid; grid-template-columns: minmax(round(9rem, var(--e)), 1fr) minmax(round(10rem, var(--e)), 1.2fr) minmax(0, 3fr) minmax(round(7rem, var(--e)), 0.8fr) minmax(round(8rem, var(--e)), 0.8fr); gap: round(0.25rem, var(--e)) round(0.875rem, var(--e)); align-items: start; }
+.ov-probhead { padding: 0 round(0.75rem, var(--e)) round(0.5rem, var(--e)); color: var(--text-3); font-size: max(0.75rem, var(--fs-floor)); font-weight: 500; border-bottom: 1px solid var(--line); }
+.ov-prob { padding: round(0.625rem, var(--e)) round(0.75rem, var(--e)); border-bottom: 1px solid var(--line); }
+.ov-prob[data-resolved="false"] { box-shadow: inset round(0.1875rem, var(--e)) 0 0 var(--danger); }
+.ov-pstate { display: inline-flex; align-items: center; flex-wrap: wrap; gap: round(0.375rem, var(--e)); }
+.ov-prob[data-resolved="false"] .ov-pstate { color: var(--danger); font-weight: 600; }
+
+/* a narrower page: each connection is a card of figures */
+@container page (max-width: 66rem) {
+  .ov-headrow, .ov-probhead { display: none; }
+  .ov-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, round(22rem, var(--e))), 1fr)); gap: var(--gap); }
+  .ov-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(0.625rem, var(--e)) round(0.875rem, var(--e)); padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); }
+  .ov-row[data-status="problem"] { border-color: var(--danger); box-shadow: none; }
+  .ov-main, .ov-spark-cell, .ov-err { grid-column: 1 / -1; }
+  .ov-k { display: block; }
+  .ov-main { padding-bottom: round(0.5rem, var(--e)); border-bottom: 1px solid var(--line); }
+  .ov-err { margin: 0; }
+  .ov-prob { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(0.5rem, var(--e)) round(0.875rem, var(--e)); padding: round(0.75rem, var(--e)) 0; }
+  .ov-prob .ov-what { grid-column: 1 / -1; }
+  .ov-prob[data-resolved="false"] { box-shadow: none; }
+  .ov-totals { grid-template-columns: repeat(auto-fit, minmax(round(7rem, var(--e)), 1fr)); }
+}
+:root[data-phone] .ov-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(0.5rem, var(--e)); }
+:root[data-phone] .ov-total { flex-direction: row; align-items: center; justify-content: space-between; gap: round(0.5rem, var(--e)); padding: round(0.625rem, var(--e)) round(0.875rem, var(--e)); }
+:root[data-phone] .ov-total-n { font-size: 1.375rem; }
+:root[data-phone] .ov-list { grid-template-columns: minmax(0, 1fr); }
+:root[data-phone] .ov-side { white-space: normal; }
+:root[data-phone] .ov-err .ico { margin-top: 0; }
+:root[data-phone] .si-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+:root[data-phone] .si-tabs .seg-btn { width: auto; justify-content: center; min-height: var(--tap); }

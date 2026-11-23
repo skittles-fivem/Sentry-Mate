@@ -24,6 +24,7 @@ import { dateTime, ago, num } from '../core/fmt.js';
 import { teslaSection } from './tesla-account.js';
 import { teslafiSection } from './teslafi-account.js';
 import { teslamateSection } from './teslamate-local.js';
+import { overviewTab, lockedOverview } from './conn-overview.js';
 
 export const id = 'settings-integrations';
 export const css = true;
@@ -210,13 +211,15 @@ function sw(idText, checked, labelText, onChange, disabled = false) {
 
 export async function mount(ctx) {
   const admin = ctx.admin;
-  let cfg = null, status = null, net = null, cars = null;
+  let cfg = null, status = null, net = null, cars = null, overview = null;
   try {
-    [cfg, status, net, cars] = await Promise.all([
+    [cfg, status, net, cars, overview] = await Promise.all([
       admin ? ctx.api.get('settings/mqtt') : Promise.resolve(null),
       ctx.api.get('settings/mqtt/status').catch(() => null),
       admin ? ctx.api.get('network').catch(() => null) : Promise.resolve(null),
       ctx.api.get('cars', { sort: 'name', limit: 100 }),
+      // the Overview tab (admins only): a failed read shows in the tab, the rest of the page still works
+      admin ? ctx.api.get('integrations/overview').catch((e) => (e?.name === 'AbortError' ? Promise.reject(e) : (e instanceof Error ? e : new Error(String(e))))) : Promise.resolve(null),
     ]);
   } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }
   if (!ctx.alive()) return;
@@ -794,19 +797,82 @@ export async function mount(ctx) {
       works('Smart mirrors and wall screens', 'projects.magic-mirror', 'A status tile on a mirror or wall display, from MQTT or the API.', [code('soc'), ', ', code('range'), ', ', code('state'), ', ', code('updated'), '.']),
       works('Garage door openers', 'projects.geogdo', 'Openers that act on arrival and departure, for several cars, by zone or saved place. Values are about 75 s late: good for closing behind you, late for opening.', [code('location'), ', ', code('place'), ' and drive events.'])));
 
-  /* ---------- put it together */
-  replace(ctx.view,
-    pageHead({ title: ctx.info.nav || ctx.info.title, purpose: ctx.info.purpose, actions: headSlot }),
+  /* ---------- put it together: the Overview tab (admins) and the Set up tab */
+  const setupPane = h('div', { class: 'si-pane', id: 'si-pane-setup', role: 'tabpanel', 'aria-labelledby': 'si-tab-setup' },
     jumpNav,
     h('div', { class: 'si-stack' },
       h('p', { class: 'note saving-note' }, icon('check', 'ico--sm'), ' Switches and single fields save at once and a short note confirms it; the broker connection saves with its button. Nothing leaves the server until publishing is on.'),
       tesla.el, teslafi.el, teslamate.el, brokerPanel, topicsPanel, valuesPanel, haPanel, entitiesPanel, eventsPanel, apiPanel, netPanel, worksPanel));
+  // the overview is for admins; others see the tab with a line that says so
+  const ov = admin ? overviewTab(ctx, { first: overview }) : lockedOverview();
+  const defaultTab = admin ? 'overview' : 'setup';
+  const ovPane = h('div', { class: 'si-pane', id: 'si-pane-overview', role: 'tabpanel', 'aria-labelledby': 'si-tab-overview' }, ov.el);
+  const TABS = [['overview', 'Overview', 'Every connection: is it live, when it last worked, what went wrong'], ['setup', 'Set up', 'Tesla, TeslaFi, TeslaMate, MQTT, Home Assistant, events and the API']];
+  const tabLinks = {};
+  const tabBar = h('nav', { class: 'seg si-tabs', 'aria-label': 'Integrations' },
+    TABS.map(([v, l, why]) => (tabLinks[v] = h('a', { class: 'seg-btn', id: `si-tab-${v}`, href: `/settings/integrations?tab=${v}`, title: why, 'aria-controls': `si-pane-${v}` }, l))));
+  // the tab a hash link lands in: an anchor inside Set up opens Set up
+  const hashTarget = () => (location.hash.length > 1 ? document.getElementById(decodeURIComponent(location.hash.slice(1))) || setupPane.querySelector(`[id="${CSS.escape(decodeURIComponent(location.hash.slice(1)))}"]`) : null);
+  const tabFor = (query) => {
+    const t = hashTarget();
+    if (t && setupPane.contains(t)) return 'setup';
+    return query?.tab === 'setup' || query?.tab === 'overview' ? query.tab : defaultTab;
+  };
+  let tab = null;
+  function showTab(next) {
+    tab = next;
+    for (const [v] of TABS) {
+      const a = tabLinks[v];
+      const on = v === next;
+      a.setAttribute('aria-pressed', String(on));
+      if (on) a.setAttribute('aria-current', 'true'); else a.removeAttribute('aria-current');
+    }
+    ovPane.hidden = next !== 'overview';
+    setupPane.hidden = next !== 'setup';
+    if (next === 'overview') { ov.start(); } else ov.stop();
+  }
+  // keep the tab in the address (and the hash, which setQuery would drop)
+  function keepTab() {
+    const want = tab === defaultTab && !ctx.query.tab ? undefined : tab;
+    if (want && ctx.query.tab !== want) {
+      const hash = location.hash;
+      ctx.setQuery({ tab: want });
+      if (hash) history.replaceState(history.state, '', location.pathname + location.search + hash);
+    }
+  }
+  function scrollToHash() {
+    const t = hashTarget();
+    if (!t || !ctx.view.contains(t) || t.closest('[hidden]')) return;
+    const tb = document.querySelector('.topbar');
+    const bar = tb && getComputedStyle(tb).position === 'sticky' ? tb.getBoundingClientRect().height : 0;
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    window.scrollTo(0, Math.max(0, t.getBoundingClientRect().top + window.scrollY - bar - rem));
+  }
+  replace(ctx.view,
+    pageHead({ title: ctx.info.nav || ctx.info.title, purpose: ctx.info.purpose, actions: headSlot }),
+    tabBar, ovPane, setupPane);
+  showTab(tabFor(ctx.query));
+  // a link to an anchor on this page while another tab is shown (#tesla from the Overview)
+  ctx.on(window, 'hashchange', () => {
+    const t = tabFor(ctx.query);
+    if (t !== tab) { showTab(t); keepTab(); }
+    requestAnimationFrame(scrollToHash);
+  });
   paintHead(); paintBroker(); paintStatus(); paintTopics(); paintValues(); paintHa(); paintEntities();
   eventsPanel.append(...eventsBody());
   paintEvents(); paintNetwork();
   await Promise.all([valuesTable?.ready, eventsTable?.ready, paintLog(), tesla.load(), teslafi.load(), teslamate.load()].filter(Boolean));
   if (!ctx.alive()) return;
+  keepTab();
   ctx.ready();
+  return {
+    // back / forward between the tabs, or a tab link: show that tab (and the anchor it points at)
+    onQuery(query) {
+      showTab(tabFor(query));
+      keepTab();
+      if (location.hash.length > 1) requestAnimationFrame(scrollToHash);
+    },
+  };
 }
 
 // a discovery topic is <prefix>/<domain>/<node>/<key>/config, and the prefix may have several levels
