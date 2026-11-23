@@ -36,8 +36,6 @@ import { segmented } from '../core/form.js';
 
 export const id = 'settings-integrations';
 export const css = true;
-// its status chip in the header comes with the data: the router shows the page once it is in
-export const headLater = true;
 export const shape = [['full', 'h1'], ['full', 'h1'], [2, 'h3'], [2, 'h3'], [2, 'h3'], [2, 'h3']];
 export const title = () => 'Integrations';
 

@@ -39,16 +39,8 @@ const off = (v) => Math.abs(v - Math.round(v)) > 0.01;
 
 function depth(e) { let d = 0; for (let x = e; x; x = x.parentElement) d++; return d; }
 
-// On a phone (<html data-phone>) column widths, and the widths of boxes whose edges do not show, are left as the CSS
-// gives them: the snap runs again on live updates and after late parts, and a column or a box half a pixel narrower or
-// wider wraps a line of text differently (or pushes what shares its line onto the next), so a block grew or shrank by
-// a line under the reader. At three device pixels to the CSS pixel a column edge between two of them
-// does not show; borders still land on whole device pixels (nudge() moves them, without a change of layout).
-const phone = () => document.documentElement.hasAttribute('data-phone');
-
 // grid: whole px columns with the same total width
 function gridPlan(g) {
-  if (phone()) return null;
   const v = getComputedStyle(g).gridTemplateColumns;
   if (!v || v === 'none' || /[^\d.\spx-]/.test(v)) return null; // subgrid, names or anything not plain px
   const tracks = v.trim().split(/\s+/).map(parseFloat);
@@ -68,7 +60,6 @@ function gridPlan(g) {
 // wider than its box keeps all its widths, rounded up); the table gets the sum as its width and a fixed
 // layout, so it has nothing left to share out
 function tablePlan(t) {
-  if (phone()) return null;
   const row = (t.tHead && t.tHead.rows[0]) || t.rows[0];
   if (!row || row.cells.length < 2) return null;
   const cells = Array.from(row.cells);
@@ -118,8 +109,6 @@ function contentBox(e, u) {
   }
   return u;
 }
-const wraps = (e) => { const p = e.parentElement; if (!p) return false; const ps = getComputedStyle(p); return /flex/.test(ps.display) && ps.flexWrap !== 'nowrap'; };
-const edged = (s) => s.backgroundColor !== 'rgba(0, 0, 0, 0)' || s.backgroundImage !== 'none' || SIDES.some((k) => s[`border${k}Style`] !== 'none' && parseFloat(s[`border${k}Width`]) > 0);
 const seen = (s) => s.backgroundColor !== 'rgba(0, 0, 0, 0)' || s.backgroundImage !== 'none' || s.borderTopStyle !== 'none';
 function grow(u, q) {
   if (u.top == null || q.top < u.top) u.top = q.top;
@@ -233,23 +222,15 @@ function boxPass(boxes) {
   const r = devicePixelRatio || 1;
   const up = (v) => Math.ceil(v * r - 0.02) / r;
   const offd = (v) => Math.abs(v * r - Math.round(v * r)) > 0.02;
-  const narrow = phone();
   const sets = [];
   // read everything first (a computed style read after a write would lay the page out again each time)
   for (const e of boxes) {
     const b = e.getBoundingClientRect();
     if (!b.width && !b.height) continue;
-    let w = offd(b.width) ? up(b.width) : 0;
+    const w = offd(b.width) ? up(b.width) : 0;
     const h = offd(b.height) ? up(b.height) : 0;
     if (!w && !h) continue;
     const cs = getComputedStyle(e);
-    // on a phone only a box whose edges show (a border, a background) grows sideways: a box of words a fraction of a
-    // pixel wider can push what shares its line onto the next, and the block it is in grows or shrinks by a line
-    // (what follows it still lands on whole pixels: nudge() moves it there without a change of layout); and on any
-    // screen an item of a flex row that wraps keeps its width: the items (and a spacer) stretched to fill a line, each
-    // held at its width rounded up, no longer fit on it, and the last one went to a line of its own
-    if (w && ((narrow && !edged(cs)) || wraps(e))) w = 0;
-    if (!w && !h) continue;
     // min-width and min-height size the border box only for border-box boxes
     const side = (ks) => (cs.boxSizing === 'content-box' ? ks.reduce((x, k) => x + (parseFloat(cs[k]) || 0), 0) : 0);
     sets.push([e, w && w - side(['paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth']),
@@ -317,17 +298,7 @@ function collect(root, into) {
   const accept = (e) => {
     if (e.localName === 'table') { tables.push(e); return NodeFilter.FILTER_REJECT; }
     if (e.localName === 'svg' || e.localName === 'script' || e.localName === 'template') return NodeFilter.FILTER_REJECT;
-    if (e.localName === 'details' && !e.open) {
-      // its content is not laid out; the box itself and its summary are on screen
-      for (const x of [e, e.querySelector(':scope > summary')]) {
-        if (!x) continue;
-        const d = getComputedStyle(x).display;
-        if (d === 'none') continue;
-        if (BOXES.has(d)) boxes.push(x);
-        lined.push(x);
-      }
-      return NodeFilter.FILTER_REJECT;
-    }
+    if (e.localName === 'details' && !e.open) return NodeFilter.FILTER_REJECT; // its content is not laid out
     // a map or a chart draws its own boxes: neither it nor anything in it is looked at (nor styled, nor measured)
     if (e.matches(NOT_BOXES)) return NodeFilter.FILTER_REJECT;
     const d = getComputedStyle(e).display;

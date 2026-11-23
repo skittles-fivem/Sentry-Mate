@@ -128,89 +128,10 @@ export function svg(tag, attrs, ...children) {
 export const text = (s) => globalThis.document.createTextNode(String(s ?? ''));
 /** A fragment of several children. */
 export const frag = (...children) => append(globalThis.document.createDocumentFragment(), children);
-// Where the page is scrolled, kept across the swaps of one task: scroll anchoring for the parts a page draws again.
-// Safari on iOS has no scroll anchoring of its own, so a part above the screen that is drawn again a line taller (a
-// list with a new row at its top, a total whose note wraps) moved everything on screen down; and Safari (WebKit) can
-// lay a page out in the middle of a swap (the old children out, the new ones not in yet) and scroll the window up to
-// fit that shorter page, throwing the reader towards the top. So the first swap of a part on the page in a task notes,
-// for each box that scrolls (the window, and any element marked data-scroll-box: a pack whose page scrolls inside a
-// fixed box), where it is scrolled and the block in the middle of what it shows; at the end of the task (a microtask,
-// before anything is painted) the box is scrolled by as much as that block moved, or back where it was when the block
-// itself was drawn again. A part built off the page (not connected, or in an [inert] staging box) costs nothing.
-let held = null;
-const FIXED = new Set(['fixed', 'sticky']);
-function anchorIn(doc, b) {
-  const win = b === doc.scrollingElement;
-  const view = doc.defaultView;
-  const r = win ? { left: 0, top: 0, width: view.innerWidth, height: view.innerHeight } : b.getBoundingClientRect();
-  let a = doc.elementFromPoint?.(r.left + r.width / 2, r.top + r.height / 2) || null;
-  // a block of the page, not a bar fixed over it
-  for (let x = a; x && x !== b && x !== doc.body; x = x.parentElement) if (FIXED.has(view.getComputedStyle(x).position)) { a = null; break; }
-  return a && b.contains(a) && a !== b ? a : null;
-}
-/** Keep what is on screen in place across the swaps of el's children in this task (see above). */
-export function holdScroll(el) {
-  if (held || !el?.isConnected || el.closest?.('[inert]')) return;
-  const doc = el.ownerDocument || globalThis.document;
-  const boxes = [];
-  const note = (b) => {
-    const t = b.scrollTop;
-    if (!(t > 0)) return;
-    const a = anchorIn(doc, b);
-    boxes.push([b, t, a, a ? a.getBoundingClientRect().top : 0]);
-  };
-  if (doc.scrollingElement) note(doc.scrollingElement);
-  for (const b of doc.querySelectorAll?.('[data-scroll-box]') || []) note(b);
-  held = boxes;
-  queueMicrotask(() => {
-    const list = held;
-    held = null;
-    for (const [b, t, a, at] of list) {
-      if (!b.isConnected) continue;
-      // the anchor's move on screen, plus what the box itself was scrolled meanwhile, is how far it moved in the page
-      const want = a?.isConnected ? t + (a.getBoundingClientRect().top - at) + (b.scrollTop - t) : t;
-      if (Math.abs(b.scrollTop - want) >= 1) b.scrollTop = want;
-      // a page that got shorter under a reader at its end (a list above drawn again with fewer rows) is held as tall
-      // as it was, so the box is not pulled up: the room is given back as the page grows again or the reader scrolls up
-      if (want - b.scrollTop >= 1) { growPad(doc, b, want - b.scrollTop); b.scrollTop = want; }
-      fitPad(b);
-    }
-  });
-}
-
-// room under a page, kept so it does not get shorter under the reader (see holdScroll)
-const pads = new Map(); // box -> { el, px }
-function growPad(doc, b, px) {
-  let p = pads.get(b);
-  if (!p) {
-    const el = doc.createElement('div');
-    el.setAttribute('aria-hidden', 'true');
-    el.dataset.scrollPad = '';
-    p = { el, px: 0 };
-    pads.set(b, p);
-    // it shrinks as soon as the reader scrolls up (what goes is below the screen, so nothing moves)
-    (b === doc.scrollingElement ? doc : b).addEventListener('scroll', () => fitPad(b), { passive: true });
-  }
-  p.px += px;
-  p.el.style.height = `${Math.ceil(p.px)}px`;
-  const host = b === doc.scrollingElement ? doc.body : b;
-  if (p.el.parentNode !== host || host.lastElementChild !== p.el) host.append(p.el);
-}
-function fitPad(b) {
-  const p = pads.get(b);
-  if (!p || !p.px) return;
-  // what is below the screen: the pad can give that much back
-  const spare = b.scrollHeight - b.scrollTop - b.clientHeight;
-  if (spare < 1) return;
-  p.px = Math.max(0, p.px - spare);
-  p.el.style.height = `${Math.ceil(p.px)}px`;
-  if (!p.px) p.el.remove();
-}
-
 /** Remove every child. */
-export function clear(el) { holdScroll(el); el.replaceChildren(); return el; }
+export function clear(el) { el.replaceChildren(); return el; }
 /** Replace every child with these. */
-export function replace(el, ...children) { holdScroll(el); el.replaceChildren(); return append(el, children); }
+export function replace(el, ...children) { el.replaceChildren(); return append(el, children); }
 
 // the nodes append() would add, without moving any of them yet (null when a fragment is among them)
 function flatNodes(children, out = []) {
@@ -232,7 +153,6 @@ export function replaceChanged(el, ...children) {
   const next = flatNodes(children);
   const now = Array.from(el.childNodes);
   // a node that moves within el, or a different count: everything again
-  holdScroll(el);
   if (!next || next.length !== now.length || next.some((n, i) => n !== now[i] && n.parentNode === el)) {
     el.replaceChildren();
     return append(el, children);

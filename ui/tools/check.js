@@ -1429,10 +1429,6 @@ const HELP = `Usage: node ui/tools/check.js --pack <name or folder> [options]
   --hover                also move the mouse over a grid of points, every interactive element and every chart, and
                          focus each element that takes focus, and fail the page when anything outside what is
                          hovered moves or changes size by more than ${HOVER.tol} px (the dev server's clock is frozen)
-  --jumps                instead of the checks above: the jump check of ui/tools/jumps.js for this pack (every page,
-                         loaded and scrolled through on two iPhones in WebKit, a phone in Chromium and a desktop;
-                         fails a page whose jump score or layout shift is over 0.02, that resizes a block above the
-                         screen while it is scrolled, or that scrolls by itself); --pages narrows it
   --device-size N        the Interface size on this device (80, 90, 100, 110, 125; else auto): kept in each window's storage
   --base URL             a real sentry-mate serve (https://127.0.0.1:PORT) instead of the dev server; its
                          self-signed certificate is accepted for this run only (see ui/tools/README.md)
@@ -1468,7 +1464,7 @@ function parseArgs(argv) {
     '--base': 'base', '--user': 'user', '--password': 'password', '--password-file': 'passwordFile',
     '--device-size': 'deviceSize',
   };
-  const flags = { '--json': 'json', '--allow-missing': 'allowMissing', '--full': 'full', '--pixel': 'pixel', '--self-test': 'selfTest', '--help': 'help', '-h': 'help', '--stable-fast': 'stableFast', '--hover': 'hover', '--jumps': 'jumps' };
+  const flags = { '--json': 'json', '--allow-missing': 'allowMissing', '--full': 'full', '--pixel': 'pixel', '--self-test': 'selfTest', '--help': 'help', '-h': 'help', '--stable-fast': 'stableFast', '--hover': 'hover' };
   for (let i = 0; i < argv.length; i++) {
     let a = argv[i];
     let v;
@@ -1549,17 +1545,6 @@ async function main() {
   }
   if (o.help) { process.stdout.write(HELP); return 0; }
   o.log = (line) => process.stderr.write(line + '\n');
-  if (o.jumps) {
-    // the jump check (ui/tools/jumps.js) on this pack: a built-in pack of ui/packs, on the dev server
-    const J = require('./jumps');
-    const name = path.basename(o.packDir);
-    if (!J.PACKS.includes(name) || o.base) throw new UsageError('--jumps checks a built-in pack (ui/packs) on the dev server');
-    const argv = ['--packs', name];
-    if (o.pages !== 'all') argv.push('--pages', o.pages);
-    const rep = await J.run({ ...J.parseArgs(argv), log: o.log });
-    process.stdout.write(o.json ? JSON.stringify(rep, null, 2) + '\n' : J.formatReport(rep));
-    return rep.pass ? 0 : 1;
-  }
   if (o.selfTest) {
     const r = await selfTest(o);
     if (o.json) process.stdout.write(JSON.stringify({ pass: r.pass, ok: r.reports.ok, bad: r.reports.bad, pixel: r.reports.pixel, stable: r.reports.stable, hover: r.reports.hover }, null, 2) + '\n');

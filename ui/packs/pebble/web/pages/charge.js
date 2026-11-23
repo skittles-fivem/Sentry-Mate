@@ -28,8 +28,6 @@ const PRICE_CLS = { btn: 'btn', primary: 'btn-primary', ghost: 'btn-ghost', plai
 
 export const id = 'charge';
 export const css = true;
-// its title (the place) and Earlier / Later come with the charge: the router shows the page once they are in
-export const headLater = true;
 export const title = () => 'Charge';
 
 const FIELDS = 'power_kw,ac_line_kw,soc_pct,usable_soc_pct,range_km,battery_c,outside_c,heater_kw,ac_volts_v,ac_amps_a,pilot_a,phases,dc_volts_v,dc_amps_a';
