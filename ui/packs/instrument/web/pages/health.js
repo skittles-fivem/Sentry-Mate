@@ -8,7 +8,8 @@
 //   car's data status in one paged list.
 // API: GET cars/{car}/health, cars/{car}/gaps, cars/{car}/totals?source=, cars/{car}/updates (summary),
 // cars/{car}/storage, cars/{car}/signals/latest, cars/{car}/signals; POST cars/{car}/rebuild (admin);
-// GET system/storage, system/health (admin), cars, geocode/status.
+// GET system/storage, system/health (admin), cars, geocode/status, integrations/overview (admin: the counts on
+// the card that leads to the connections overview).
 // Live: "rows" events for the car load the health and gaps again.
 
 import * as state from '../shared/state.js';
@@ -30,6 +31,7 @@ import { flash } from '../core/flash.js';
 import { isAdmin } from '../core/prefs.js';
 import { timeChart, barChart } from '../core/chart.js';
 import { q, agoEl, statePill, stateLabel, DASH } from '../core/fmt.js';
+import { overviewCard } from './conn-overview.js';
 
 export const id = 'health';
 export const css = true;
@@ -564,7 +566,8 @@ async function mountCar(ctx) {
 
   /* ---------- page */
   replace(ctx.view, root);
-  root.append(head, healthPanel, gapsTable.el,
+  const connCard = overviewCard(ctx, admin);
+  root.append(head, connCard.el, healthPanel, gapsTable.el,
     h('div', { class: 'hl-two' }, totalsPanel, countsSlot),
     storageSlot, sigTable.el, plotPanel);
 
@@ -587,7 +590,7 @@ async function mountCar(ctx) {
   });
 
   try {
-    await Promise.all([loadHealth(), loadTotals(), loadStorage(), loadSignals(), gapsTable.ready]);
+    await Promise.all([loadHealth(), loadTotals(), loadStorage(), loadSignals(), gapsTable.ready, connCard.load()]);
   } catch (e) {
     if (ctx.alive()) ctx.fail(e);
     return;
@@ -794,7 +797,8 @@ async function mountSystem(ctx) {
   ctx.onCleanup(() => clearTimeout(carTimer));
 
   replace(ctx.view, root);
-  root.append(head, storePanel, carTable.el, srvPanel, errTable.el,
+  const connCard = overviewCard(ctx, admin);
+  root.append(head, connCard.el, storePanel, carTable.el, srvPanel, errTable.el,
     h('p', { class: 'note hl-signals-note', cover: ['nr.dash.state-table', 'nr.dash.state-table.parameter', 'nr.dash.state-table.value', 'nr.dash.state-table.sort-scroll'] },
       icon('signals', 'ico--sm'), ' Every decoded signal of a car, with its value and a chart over time, is on that car’s data health page: open a car above.'));
 
@@ -810,7 +814,7 @@ async function mountSystem(ctx) {
   }
 
   try {
-    await Promise.all([loadStorage(), loadServer(), carTable.ready]);
+    await Promise.all([loadStorage(), loadServer(), carTable.ready, connCard.load()]);
   } catch (e) {
     if (ctx.alive()) ctx.fail(e);
     return;
