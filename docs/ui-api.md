@@ -362,7 +362,7 @@ America/Chicago", "Changed: text size, units", "Checked GitHub for a newer build
 | `car-changed` | `cars` | `car` | Changed a car (its name, time zone, sold date, configuration). |
 | `car-overlap` | `cars` | `car` | Chose which history a car shows where live and imported history overlap. |
 | `car-rebuild` | `cars` | `car` | Rebuilt a car's drives, charges, states and visits from the stored logs. |
-| `car-full-rebuild` | `cars` | `car` (or none: every car) | A full rebuild started, ended, failed or was cancelled (the summary says which, and why it failed). |
+| `car-full-rebuild` | `cars` | `car` (none for every car) | A full rebuild started, ended, failed or was cancelled (the summary says which, and why it failed). |
 | `car-settings-changed` | `cars` | `car` | Changed a car's settings (battery, warranty, free Supercharging). |
 | `cars-changed` | `accounts` | `account` | Changed which cars an account sees. |
 | `certificate-made` | `settings` | `server` | Made a new HTTPS certificate. |

@@ -39,7 +39,7 @@ class FullRebuild(ServerCase):
         self.assertEqual(done["logs"]["done"], done["logs"]["total"])
         self.assertIsNone(done["phase"])
         actions = [e for e in self.c.get("/api/v1/audit?limit=100")["items"]
-                   if e["action"] == "car-full-rebuild"]
+                   if e["action"] == "car-full-rebuild" and e["at_ms"] >= s["started_ms"]]
         self.assertEqual(len(actions), 2, actions)
         self.c.error("DELETE", "/api/v1/system/full-rebuild", 409, "full_rebuild_not_running", body={})
 
