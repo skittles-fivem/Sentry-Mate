@@ -252,7 +252,7 @@ async fn roles_and_hidden_cars() {
     assert_eq!(r.status, 422);
     assert_eq!(admin.post("/api/v1/probe-trips", json!({ "also": "all" })).await.json()["also"], Value::Null);
     assert_eq!(admin.post("/api/v1/probe-trips", json!({ "car": "c2" })).await.json()["car"], "c2");
-    assert_eq!(watch.put("/api/v1/ui-packs/chosen", json!({ "pack": "logbook" })).await.status, 403);
+    assert_eq!(watch.put("/api/v1/ui-packs/chosen", json!({ "pack": "instrument" })).await.status, 403);
 
     // the admin's list, a change with a stale version, a role change
     let list = admin.get("/api/v1/accounts").await.json();
@@ -397,22 +397,23 @@ async fn packs_are_served_with_a_strict_policy() {
     let api404 = c.get("/api/v1/nothing-here").await;
     assert_eq!((api404.status, api404.code().as_deref()), (404, Some("not_found")));
 
-    // the person's own pack, and /original
+    // the person's own pack (Instrument is the only built-in one: an uploaded one), and /original
     let mut admin = s.admin().await;
-    let r = admin.patch("/api/v1/me/preferences", json!({ "ui_pack": "logbook" })).await;
-    assert_eq!(r.json()["ui_pack"], "logbook");
-    let logbook = admin.get("/").await;
-    assert_ne!(logbook.header("etag"), Some(etag.as_str()));
-    assert!(logbook.header("etag").unwrap().starts_with("\"logbook-"));
+    upload_night_shift(&mut admin).await;
+    let r = admin.patch("/api/v1/me/preferences", json!({ "ui_pack": "night-shift" })).await;
+    assert_eq!(r.json()["ui_pack"], "night-shift");
+    let night = admin.get("/").await;
+    assert_ne!(night.header("etag"), Some(etag.as_str()));
+    assert!(night.header("etag").unwrap().starts_with("\"night-shift-"), "{:?}", night.header("etag"));
     let r = admin.get("/original").await;
     assert_eq!((r.status, r.header("location")), (303, Some("/")));
     assert!(admin.get("/").await.header("etag").unwrap().starts_with("\"instrument-"));
     admin.get("/original/off").await;
-    assert!(admin.get("/").await.header("etag").unwrap().starts_with("\"logbook-"));
+    assert!(admin.get("/").await.header("etag").unwrap().starts_with("\"night-shift-"));
     // a browser left on /original (its cookie is kept a year): /about says so, and choosing a pack ends it
     admin.get("/original").await;
     assert_eq!(admin.get("/api/v1/about").await.json()["ui_pack"]["id"], "instrument");
-    for pack in ["horizon", "console", "pebble", "manager", "logbook"] {
+    for pack in ["instrument", "night-shift"] {
         assert_eq!(admin.patch("/api/v1/me/preferences", json!({ "ui_pack": pack })).await.status, 200);
         let page = admin.get("/").await;
         assert!(page.header("etag").unwrap().starts_with(&format!("\"{pack}-")), "{pack}: {:?}", page.header("etag"));
@@ -425,12 +426,79 @@ async fn packs_are_served_with_a_strict_policy() {
     }
     admin.get("/original/off").await;
     assert_eq!(admin.patch("/api/v1/me/preferences", json!({ "ui_pack": "nope" })).await.status, 422);
+    // an archived pack (ui/archived) is not on the server, so it can't be chosen
+    for pack in ARCHIVED_PACKS {
+        assert_eq!(admin.patch("/api/v1/me/preferences", json!({ "ui_pack": pack })).await.status, 422, "{pack}");
+    }
 
     // the built-in pack to start from
     let z = admin.get("/api/v1/ui-packs/instrument/download").await;
     assert_eq!(z.header("content-type"), Some("application/zip"));
     let checked = web::packs::check_zip(&z.body).unwrap();
     assert_eq!(checked.meta.name, "Instrument");
+}
+
+/// The packs moved to ui/archived: kept in the repository, not built in.
+const ARCHIVED_PACKS: [&str; 5] = ["horizon", "manager", "console", "logbook", "pebble"];
+
+/// Uploads the small `night-shift` pack (its own `index.html`, laid over Instrument).
+async fn upload_night_shift(admin: &mut web::testkit::Client) {
+    let zip = pack_zip(&[("ui.json", UI), ("web/index.html", b"<!doctype html><title>Night</title>")]);
+    let r = admin
+        .request(
+            "POST",
+            "/api/v1/ui-packs",
+            Some(&zip),
+            &[("Content-Type", "application/zip"), ("X-Sentry-Mate-Password", ADMIN_PASSWORD)],
+        )
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text());
+}
+
+/// A choice saved before its pack was archived (ui/archived): a person's own `ui_pack`, or a link with `?pack=`.
+/// Instrument is served, quietly: the page loads, `/about` and the preferences name Instrument, and the saved
+/// choice is left as it is (it serves again if the pack comes back). The one for everyone is in the packs' unit
+/// tests (`a_choice_for_everyone_of_a_pack_not_built_in_falls_back_to_the_default`).
+#[tokio::test]
+async fn a_saved_choice_of_an_archived_pack_serves_instrument() {
+    let s = server().await;
+    let mut admin = s.admin().await;
+    let client = accounts::Client::new(std::net::IpAddr::from([127, 0, 0, 1]), "test");
+    let accounts::SignIn::Done(new) = s.app.accounts.sign_in(ADMIN, ADMIN_PASSWORD, &client).unwrap() else {
+        panic!("the admin has no two-step sign-in")
+    };
+    let by = s.app.accounts.authenticate(&new.token, &client).unwrap();
+    let ids: Vec<Value> = admin.get("/api/v1/ui-packs").await.json()["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].clone())
+        .collect();
+    assert_eq!(ids, [json!("instrument")], "Instrument is the only built-in pack");
+    for pack in ARCHIVED_PACKS {
+        s.app.accounts.set_ui_pack(&by, Some(pack)).unwrap();
+        assert_eq!(s.app.accounts.account(by.account.id).unwrap().ui_pack.as_deref(), Some(pack));
+        for path in ["/", "/settings/display", &format!("/?pack={pack}"), &format!("/settings/display?pack={pack}")] {
+            let page = admin.get(path).await;
+            assert_eq!(page.status, 200, "{pack} {path}");
+            assert!(
+                page.header("etag").unwrap().starts_with("\"instrument-"),
+                "{pack} {path}: {:?}",
+                page.header("etag")
+            );
+        }
+        let about = admin.get("/api/v1/about").await.json();
+        assert_eq!(
+            (about["ui_pack"]["id"].as_str(), about["ui_pack"]["original"].as_bool()),
+            (Some("instrument"), Some(false))
+        );
+        assert_eq!(admin.get("/api/v1/me/preferences").await.json()["ui_pack"], "instrument", "{pack}");
+        assert_eq!(admin.get("/core/app.js").await.status, 200);
+    }
+    // signed out, with a link naming an archived pack
+    let page = s.client().get("/?pack=pebble").await;
+    assert_eq!(page.status, 200);
+    assert!(page.header("etag").unwrap().starts_with("\"instrument-"));
 }
 
 fn pack_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
@@ -496,7 +564,11 @@ async fn uploaded_packs_are_checked_sealed_and_laid_over_the_default() {
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(admin.get("/api/v1/ui-packs").await.json()["chosen"], "instrument");
     assert_eq!(
-        admin.delete("/api/v1/ui-packs/logbook", json!({ "confirm_password": ADMIN_PASSWORD })).await.code().as_deref(),
+        admin
+            .delete("/api/v1/ui-packs/instrument", json!({ "confirm_password": ADMIN_PASSWORD }))
+            .await
+            .code()
+            .as_deref(),
         Some("builtin")
     );
 }

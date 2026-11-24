@@ -1,7 +1,9 @@
 //! UI packs: the interface the browser runs (docs/plans/rust-can-logger.md, "UI packs").
 //!
-//! - **Built in**: `instrument`, `logbook`, `horizon`, `console`, `pebble` and `manager`, embedded in the binary ([`builtin`]).
-//!   [`DEFAULT_PACK`] (`instrument`) is the one served until an admin chooses another for everyone.
+//! - **Built in**: `instrument` alone, embedded in the binary ([`builtin`]): every folder of `ui/packs`. The other
+//!   designs (Horizon, Manager, Console, Logbook, Pebble) are archived in `ui/archived`, not built in; a choice of
+//!   one saved before (a person's `ui_pack`, the one for everyone) names no pack here, so the default is served.
+//!   [`DEFAULT_PACK`] (`instrument`) is the one served until an admin chooses another (uploaded) one for everyone.
 //! - **Uploaded** (admins, their password and two-step code again): a `.zip` with `ui.json` and `web/` (one folder
 //!   around them is fine), checked before anything is kept ([`check_zip`]): at most 50 MB and 2,000 files, no
 //!   absolute paths, no `..`, no links, safe names only, web file types only, a `web/index.html`, and a `ui.json`
@@ -1333,6 +1335,33 @@ mod tests {
         assert!(Packs::open(packs_dir, v).is_ok());
     }
 
+    /// The pack for everyone saved before it was archived (`ui/archived`): the default is served, with nothing
+    /// put aside, and choosing again works.
+    #[test]
+    fn a_choice_for_everyone_of_a_pack_not_built_in_falls_back_to_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        std::fs::create_dir_all(&data).unwrap();
+        let (v, _) = Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
+        let v = Arc::new(v);
+        let packs_dir = data.join("packs");
+        std::fs::create_dir_all(&packs_dir).unwrap();
+        for archived in ["horizon", "manager", "console", "logbook", "pebble"] {
+            v.write_file(&packs_dir.join("chosen.sealed"), CHOSEN_LABEL, archived.as_bytes()).unwrap();
+            let packs = Packs::open(packs_dir.clone(), v.clone()).unwrap();
+            assert!(!packs.exists(archived), "{archived} is not built in");
+            assert_eq!(packs.chosen(), DEFAULT_PACK, "{archived}");
+            assert_eq!(packs.default_pack().meta.id, DEFAULT_PACK);
+            assert!(packs.default_pack().file("index.html").is_some());
+            let names: Vec<String> = std::fs::read_dir(&packs_dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into())
+                .collect();
+            assert!(!names.iter().any(|n| n.contains("damaged")), "nothing put aside: {names:?}");
+            packs.choose(DEFAULT_PACK).unwrap();
+        }
+    }
+
     #[test]
     fn the_cache_is_bounded_by_bytes() {
         let meta = |id: &str| Meta {
@@ -1364,11 +1393,7 @@ mod tests {
     #[test]
     fn builtin_packs_are_embedded_without_dev_files() {
         let ids: Vec<&str> = builtin::PACKS.iter().map(|p| p.id).collect();
-        assert_eq!(
-            ids,
-            ["console", "horizon", "instrument", "logbook", "manager", "pebble"],
-            "every built-in pack, in name order"
-        );
+        assert_eq!(ids, ["instrument"], "every built-in pack (the others are archived in ui/archived)");
         assert!(ids.contains(&DEFAULT_PACK));
         for p in builtin::PACKS {
             assert!(p.files.iter().any(|(n, _)| *n == "index.html"));
