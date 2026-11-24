@@ -379,14 +379,15 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
     await withPack(pack, [], async ({ origin, context }) => {
       const sent = [];
       const { page, errors } = await openPage(context, `${origin}/settings/cars/c1`, 'settings-cars',
-        (pg) => pg.on('request', (r) => { if (r.method() === 'PATCH') sent.push(`${new URL(r.url()).pathname} ${r.postData()}`); }));
+        // the car's own settings only: the page also remembers the last car seen (me/preferences), whenever it likes
+        (pg) => pg.on('request', (r) => { if (r.method() === 'PATCH' && new URL(r.url()).pathname.startsWith('/api/v1/cars/')) sent.push(`${new URL(r.url()).pathname} ${r.postData()}`); }));
       for (const [name, good, bad, read] of [
         ['sc-capacity_new_kwh', '75', '1e', async () => (await (await context.request.get(`${origin}/api/v1/cars/c1/settings`)).json()).capacity_new_kwh],
         ['sc-tyre_pressure_front_kpa', '2.9', '-.', async () => (await (await context.request.get(`${origin}/api/v1/cars/c1`)).json()).config.tyre_pressure_front_kpa?.value],
       ]) {
         const input = page.locator(`main input[name="${name}"]`);
         await input.waitFor({ timeout: 15000 });
-        const saved = () => page.waitForResponse((r) => r.request().method() === 'PATCH', { timeout: 10000 });
+        const saved = () => page.waitForResponse((r) => r.request().method() === 'PATCH' && new URL(r.url()).pathname.startsWith('/api/v1/cars/'), { timeout: 10000 });
         let done = saved();
         await input.fill(good); await input.press('Tab');
         await done;
