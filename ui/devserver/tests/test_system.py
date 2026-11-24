@@ -134,7 +134,7 @@ class Settings(ServerCase):
         self.assertNotIn("tile.openstreetmap.org", hd["content-security-policy"])
         self.assertEqual(hd["referrer-policy"], "strict-origin")
         a = self.c.get("/api/v1/about")
-        self.assertEqual(a["api_version"], "1")
+        self.assertEqual(a["api_version"], 1)  # a number, as the real server's
         self.assertEqual(a["ui_pack"]["name"], "Instrument")
         self.assertTrue(a["licences"] and a["data_credits"])
         self.assertEqual(a["licence"], {"name": None, "url": None})  # not chosen yet
@@ -338,7 +338,7 @@ class Storage(ServerCase):
     def test_system_health(self):
         h = self.c.get("/api/v1/system/health")
         self.assertEqual(h["db"]["cars"], 4)
-        self.assertEqual(h["versions"]["api"], "1")
+        self.assertEqual(h["versions"]["api"], 1)
         self.assertGreater(h["uptime_ms"], 0)
 
 
