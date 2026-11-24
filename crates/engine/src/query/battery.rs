@@ -2133,7 +2133,8 @@ pub fn efficiency(
             temp_group_c: g,
             min_distance_km: min_km,
             net_wh_per_km: r((km_e > 0.1).then(|| kwh * 1000.0 / km_e), 1),
-            gross_wh_per_km: r((all_km_e > 0.1).then(|| (all_kwh + parked_kwh.unwrap_or(0.0)) * 1000.0 / all_km_e), 1),
+            // (no gross figure while the parked energy is not known: it would only be the net one again)
+            gross_wh_per_km: r(parked_kwh.filter(|_| all_km_e > 0.1).map(|p| (all_kwh + p) * 1000.0 / all_km_e), 1),
             // `+ 0.0` turns a rounded -0 into 0
             parked_kwh: r(parked_kwh, 3).map(|v| v + 0.0),
             distance_km: r(Some(km), 3).unwrap_or(0.0),

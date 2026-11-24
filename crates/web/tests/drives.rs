@@ -280,7 +280,7 @@ async fn drives_list_detail_track_and_stats() {
     assert_eq!(t["drives"].as_array().unwrap().len(), items.len());
     let km = t["distance"]["drives_km"].as_f64().unwrap();
     assert!((km - all["summary"]["distance_km"].as_f64().unwrap()).abs() < 0.01, "{t}");
-    for f in ["driving", "charging_ac", "charging_dc", "parked_awake", "asleep", "not_recorded"] {
+    for f in ["driving", "charging_ac", "charging_dc", "charging_unknown", "parked_awake", "asleep", "not_recorded"] {
         assert!(t["time_ms"][f].is_u64(), "{f}: {t}");
     }
     assert!(t["time_ms"]["driving"].as_u64().unwrap() > 0);

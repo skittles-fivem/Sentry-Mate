@@ -488,10 +488,13 @@ fn make_book(
     let mut totals: BTreeMap<String, PurposeTotal> =
         PURPOSES.iter().chain(&["none"]).map(|k| (k.to_string(), PurposeTotal::default())).collect();
     let mut rows = Vec::new();
-    let (mut seq, mut prev_end, mut prev_end_ms, mut truncated) = (0u64, None::<Option<f64>>, None, false);
+    // the rows as the drives list shows them: with what the chosen import fills ([`super::gapfill`])
+    let gaps = super::gapfill::Gaps::new(e, c.id, None)?;
+    // the odometer the last row with one ended at, and the km of the rows since that have none
+    let (mut seq, mut prev_end, mut prev_end_ms, mut truncated) = (0u64, None::<(f64, f64)>, None, false);
     super::drives::each::<Drive>(e, c.id, a, b, None, shown, false, |d| {
-        let v = super::drives::view(c, &d, x);
-        let p = purposes.of(e, &d, &v)?.unwrap_or(serde_json::Value::Null);
+        let (v, filled) = super::drives::view_filled(c, &d, x, &gaps)?;
+        let p = purposes.of(e, &filled, &v)?.unwrap_or(serde_json::Value::Null);
         let value = text_of(&p, "value");
         let t = totals.entry(value.clone().unwrap_or_else(|| "none".into())).or_default();
         t.drives += 1;
@@ -501,11 +504,14 @@ fn make_book(
             return Ok(true);
         }
         seq += 1;
-        let gap = match prev_end {
-            Some(end) => end.zip(v.start_odometer_km).map(|(e, s)| (s - e).max(0.0)),
-            None => None,
+        // (the km driven in rows without an odometer since are not missing)
+        let gap = prev_end.zip(v.start_odometer_km).map(|((end, between), s)| (s - end - between).max(0.0));
+        prev_end = match (v.end_odometer_km, prev_end) {
+            (Some(end), _) => Some((end, 0.0)),
+            // a row with no odometer and no distance: nothing says what lies between
+            (None, Some((end, between))) => v.distance_km.map(|km| (end, between + km)),
+            (None, None) => None,
         };
-        prev_end = Some(v.end_odometer_km);
         let before = prev_end_ms;
         prev_end_ms = v.end_ms;
         rows.push(LogRow {
@@ -561,8 +567,10 @@ fn continuity_of(rows: &[LogRow]) -> Continuity {
         first_start_odometer_km: first.and_then(|x| x.start_odometer_km),
         last_seq: last.map(|x| x.seq),
         last_end_odometer_km: last.and_then(|x| x.end_odometer_km),
-        logged_km: r(Some(rows.iter().map(|x| x.distance_km.unwrap_or(0.0)).sum()), 3).unwrap_or(0.0),
-        missing_km: r(Some(gaps.iter().map(|x| x.continuity_gap_km.unwrap_or(0.0)).sum()), 3).unwrap_or(0.0),
+        // (`+ 0.0` turns an empty sum's -0 into 0)
+        logged_km: r(Some(rows.iter().map(|x| x.distance_km.unwrap_or(0.0)).sum::<f64>() + 0.0), 3).unwrap_or(0.0),
+        missing_km: r(Some(gaps.iter().map(|x| x.continuity_gap_km.unwrap_or(0.0)).sum::<f64>() + 0.0), 3)
+            .unwrap_or(0.0),
         gaps: gaps.len() as u64,
         worst: worst.into_iter().cloned().collect(),
     }
