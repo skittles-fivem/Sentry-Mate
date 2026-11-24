@@ -119,7 +119,7 @@ and nothing may show up, go away and come back, on first load or while live data
 only after every section has its data and its charts (load uPlot with the data, not after ready); on a `rows` event
 reload tables (`t.reload()` keeps the rows on screen until the new ones are in) or call `ctx.refresh()`, never
 paint skeletons or "loading" again; a part with charts that is drawn again uses `offstage(slot, build)`
-(`core/stage.js`), which builds it off screen and swaps it in at once; reserve the space of text that arrives later.
+(`core/stage.js`), which builds it off screen and swaps it in at once (once the page has rested from a scroll: while it scrolls, the swap waits); reserve the space of text that arrives later.
 Never poll on a timer for data.
 
 Below the fold: `mountPlot` builds a chart and `createMap(el, ctx, { lazy: true })` makes a map (and loads MapLibre) only when its box comes
@@ -405,6 +405,8 @@ Pages are checked with `node ui/tools/check.js --pixel` (see `ui/tools/README.md
   A long list (`shared/vlist.js`) is snapped once its scroll rests (150 ms without a change): the rows that
   come into and go out of its window, and its table's height, which changes as the window moves over rows of
   other heights (a run over the whole page for each such change took most of every frame of a scroll).
+  What a page or a part of one draws off screen (`view-stage` of a live refresh, `data-offstage` of `offstage()`) is
+  not snapped there, only once it is swapped in: each change inside the box was a run over the whole page.
 - Mark a box the snap must leave alone with `data-nosnap` (maps and charts are left alone already).
 - A box that sits in a line of text (an inline-flex pill or button) is a source of half pixels: in a table cell
   give it `vertical-align: top` or make it a block; in a flex row with `align-items: baseline`, let the words

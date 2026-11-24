@@ -551,6 +551,12 @@ export function watchTables() {
     // once the scrolling rests, not every frame (the box keeps its size, so nothing outside it moves)
     const windowed = (n) => { const e = n.nodeType === 1 ? n : n.parentElement; return !!(e && e.closest('[data-vl-body]')); };
     // a map or a chart changing inside (its markers, its canvases, its legend) changes nothing the snap looks at
+    const STAGES = '.view-stage, [data-offstage]';
+    const staged = (m) => {
+      const e = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+      if (e && e.closest(STAGES)) return true;
+      return m.target === document.body && m.type === 'childList' && [...m.addedNodes, ...m.removedNodes].every((n) => n.nodeType !== 1 || n.matches(STAGES));
+    };
     const drawn = (n) => { const e = n.nodeType === 1 ? n : n.parentElement; return !!(e && e.closest(NOT_BOXES)); };
     let rest = false;
     // at once, in the same turn as the change: nothing can measure or paint the page in between; while the
@@ -562,6 +568,10 @@ export function watchTables() {
     for (const m of list) {
       if (!(m.type === 'attributes' || el(m.addedNodes) || el(m.removedNodes) || inTable(m.target))) continue;
       if (drawn(m.target)) continue;
+      // a page, or a part of one, built again off screen (core/router.js stageView, core/stage.js offstage: an invisible box
+      // put on the body and taken off it): nothing there is on screen yet, and the swap that puts it in place is a change
+      // of its own, snapped then (a run over the whole page for every change inside the box took longer than a frame)
+      if (staged(m)) continue;
       if (windowed(m.target)) { rest = true; continue; }
       changed.push(m);
     }
