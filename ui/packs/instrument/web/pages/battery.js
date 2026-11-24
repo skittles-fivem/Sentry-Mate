@@ -171,6 +171,8 @@ export async function mount(ctx) {
 
   /* ---------- Now */
   const nowSlot = h('div', { class: 'bat-now' });
+  // "Live" only while the car is watched and its readings are recent: a sold car or old readings are the last known ones
+  const nowSide = h('span', { class: 'faint' }, state.isSold(car) ? 'Last known' : 'Live');
   function paintNow(live = {}) {
     const soc = live.soc ?? bat.soc_pct, usable = live.usable ?? bat.usable_soc_pct, kwh = live.kwh ?? bat.energy_now_kwh;
     const band = bat.band || {};
@@ -206,12 +208,14 @@ export async function mount(ctx) {
     if (!ctx.alive()) return;
     replace(chemEl, bat.chemistry?.value ? `${CHEM[bat.chemistry.value] || bat.chemistry.value} pack${bat.chemistry?.confidence === 'low' ? ' (low confidence)' : ''}` : 'Pack chemistry not known');
     replace(asOfEl, `Pack readings as of ${formatDateTime(bat.as_of_ms, tz, { now: now() })}`);
+    if (state.isSold(car) || (bat.as_of_ms != null && now() - bat.as_of_ms > 3600000)) replace(nowSide, 'Last known');
     paintNow();
     ctx.events('now', (ev) => {
       if (ev.data?.car !== cid) return;
       const d = ev.data.now || {};
       const v = (x) => (x && typeof x === 'object' && 'value' in x ? x.value : undefined);
       const live = { soc: v(d.soc_pct), usable: v(d.usable_soc_pct), kwh: v(d.energy_remaining_kwh), limit: v(d.charge?.limit_pct) };
+      if (!state.isSold(car)) replace(nowSide, 'Live');
       if (Object.values(live).some((x) => x != null)) paintNow(Object.fromEntries(Object.entries(live).filter(([, x]) => x != null)));
     });
 
@@ -292,7 +296,7 @@ export async function mount(ctx) {
   replace(ctx.view, h('div', { class: 'battery-page' },
     head,
     h('div', { class: 'bat-grid' },
-      panel({ title: 'Now', icon: 'live', cls: 'bat-nowp', side: h('span', { class: 'faint' }, 'Live') }, nowSlot),
+      panel({ title: 'Now', icon: 'live', cls: 'bat-nowp', side: nowSide }, nowSlot),
       capWait,
       rangeWait, lifeWait,
       capHist, refWait),
