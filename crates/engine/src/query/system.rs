@@ -244,7 +244,7 @@ fn can_coverage(e: &Engine, car: CarId, from: u64, to: u64) -> QResult<Vec<(u64,
 /// From the first start of a car's imported drives and charges to the end of the last one to start (at least its
 /// start, `[first, last + 1)`): imported history can overlap CAN history only there. (To the last one's end, not its
 /// start: live logging that began while it was going on meets it.)
-fn imported_span(e: &Engine, car: CarId) -> QResult<Option<(u64, u64)>> {
+pub(crate) fn imported_span(e: &Engine, car: CarId) -> QResult<Option<(u64, u64)>> {
     fn ends<T: db::Item>(e: &Engine, car: CarId) -> QResult<Option<(u64, u64)>> {
         let mut q = db::Query::default().oldest_first().limit(1);
         q.source = Some(Source::Teslamate);
@@ -1094,6 +1094,19 @@ pub fn log_checks(e: &Engine, keys: &[String]) -> QResult<ingest::judge::LogChec
     Ok(all)
 }
 
+/// Whether nobody expects an upload from a car that never sent one: it has no CAN Bridge key and no upload token
+/// (so nothing can upload for it), and its history comes from elsewhere (an import, or an API this server reads).
+/// Such a car is not one whose uploads stopped: `upload_silence` is not said of it. A car with a key or a token that
+/// never uploaded, and a car with nothing at all, are still silent.
+pub(crate) fn no_upload_expected(e: &Engine, c: &model::Car, meta: &records::CarMeta) -> QResult<bool> {
+    if meta.newest_ms.is_some() || meta.last_arrived_ms.is_some() || !c.vehicle_keys.is_empty() {
+        return Ok(false);
+    }
+    let fed = !(meta.api_days.is_empty() && meta.teslafi_days.is_empty() && meta.tmlocal_days.is_empty())
+        || imported_span(e, c.id)?.is_some();
+    Ok(fed && !super::keys::has_live_token(e, c.id)?)
+}
+
 /// What the Data health verdict rests on: the car's keys and their uploads, the newest judged log, and the reasons
 /// it is not healthy (none: healthy).
 struct Verdict {
@@ -1152,7 +1165,11 @@ fn verdict(e: &Engine, c: &model::Car, meta: &records::CarMeta, now: u64) -> QRe
     let last_trust = last_judged(e, car, meta)?;
     let mut reasons = Vec::new();
     let last_seen = meta.newest_ms.or(newest_log);
-    if last_seen.is_none_or(|t| now.saturating_sub(t) > 24 * super::now::STALE_MS) {
+    let silent = match last_seen {
+        Some(t) => now.saturating_sub(t) > 24 * super::now::STALE_MS,
+        None => !no_upload_expected(e, c, meta)?,
+    };
+    if silent {
         reasons.push("upload_silence");
     }
     if last_trust.as_ref().is_some_and(|t| t.result == "failed") {
@@ -1222,8 +1239,7 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
         for (_, _, en) in day {
             match &en.outcome {
                 Outcome::Hole { from_ms, to_ms, reason } => {
-                    let (reason, cause) =
-                        if reason == "not_stored" { ("no_log", "no_log") } else { ("failed_check", "unknown") };
+                    let (reason, cause) = super::timeline::hole_why(reason);
                     why.push(Why { from_ms: *from_ms, to_ms: *to_ms, reason, cause });
                 }
                 Outcome::Decoded { facts, .. } => {

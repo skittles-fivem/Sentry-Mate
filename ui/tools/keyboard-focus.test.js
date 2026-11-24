@@ -267,6 +267,7 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
       await dlg.waitFor({ timeout: 5000 });
       await dlg.locator('[name=name]').fill('viewer-nine');
       await dlg.locator('[name=password]').fill('correct horse battery staple 9');
+      await dlg.locator('[name=confirm_password]').fill('sentry-mate-dev');
       // (the last one is said under the name's field by the page: that field is wrong, so it takes the focus)
       for (const [status, body, want] of [[500, { error: { code: 'internal', message: 'Injected.' } }, 'BUTTON:Add account'], [403, { error: { code: 'forbidden', message: 'Admins only.' } }, 'BUTTON:Add account'],
         [409, { error: { code: 'name_taken', message: 'That name is taken.' } }, 'INPUT:name']]) {

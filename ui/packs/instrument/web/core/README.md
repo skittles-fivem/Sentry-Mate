@@ -402,6 +402,9 @@ Pages are checked with `node ui/tools/check.js --pixel` (see `ui/tools/README.md
   (a rebuild sends `rows` every second) stays under a frame. Tables that load again keep unchanged rows
   (`reuseRows`) and the page parts that live values draw again keep what did not change, so most reloads
   change nothing at all.
+  A long list (`shared/vlist.js`) is snapped once its scroll rests (150 ms without a change): the rows that
+  come into and go out of its window, and its table's height, which changes as the window moves over rows of
+  other heights (a run over the whole page for each such change took most of every frame of a scroll).
 - Mark a box the snap must leave alone with `data-nosnap` (maps and charts are left alone already).
 - A box that sits in a line of text (an inline-flex pill or button) is a source of half pixels: in a table cell
   give it `vertical-align: top` or make it a block; in a flex row with `align-items: baseline`, let the words

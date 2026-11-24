@@ -25,7 +25,7 @@ node --test ui/shared/tests/
 | Module | What it is for |
 |---|---|
 | [`api.js`](api.js) | The one client for `/api/v1`: reads, cursor paging, changes with the CSRF header, errors, sign-in prompts, live events, cancelling, the server's clock, the answers kept in the tab (below) |
-| [`build.js`](build.js) | Which build of the interface the server runs (`X-Sentry-Mate-Build` on every answer; api.js hands each one over, `watchBuild()` asks `/health` when the tab comes back into view and every 5 min) and `loadPage(load)`, which every router loads a page's module and style sheet with: once the build changed the tab loads the next address in full instead of importing into the old page, a file that fails is tried once more with a full load past the cache (`?_fresh=`, taken off the address again at once), and only then `pageFailedError()`: code `page_failed`, `PAGE_FAILED`'s words ("Sentry Mate was updated or a file could not load") with a Reload button (`reloadPage()`), never "No answer from the server" |
+| [`build.js`](build.js) | Which build of the interface the server runs (`X-Sentry-Mate-Build` on every answer; api.js hands each one over, `watchBuild()` asks `/health` when the tab comes back into view and every 5 min) and `loadPage(load)`, which every router loads a page's module and style sheet with: once the build changed the tab loads the next address in full instead of importing into the old page, a file that fails is tried once more with a full load past the cache (`?_fresh=`, taken off the address again at once), and only then `pageFailedError()`: code `page_failed`, `PAGE_FAILED`'s words ("Sentry Mate was updated or a file could not load") with a Reload button (`reloadPage()`), never "No answer from the server". A file that fails while the server gives no answer at all (`/health` is asked, 4 s) is `serverAwayError()` (status 0, code `network`) with no full load: the app stays, and the page's Try again opens it once the server is back |
 | [`prefetch.js`](prefetch.js) | Page changes without waiting: `watchLinks(warm)` (a link under the pointer for 50 ms, touched or focused: the router warms its page), `warmModules(loaders)` (the main sections' modules while the browser is idle, not with Save-Data), `prefetchApi(api)` (the `ctx.api` a page's `prefetch(ctx)` gets: the same calls, only warming), `pageSheet(id, href)` / `pageSheetsOff(keep)` (a page's style sheet kept switched off once loaded), `setStale(on)` (`<html data-stale>`) |
 | [`units.js`](units.js) | The person's units applied to the API's metric values; every number with its unit |
 | [`time.js`](time.js) | Dates and times in the car's time zone, ISO weeks, buckets, the period presets |
@@ -138,7 +138,8 @@ Zones: `zonedParts(ms, tz)`, `zonedToMs(parts, tz, { disambiguation })`, `zoneOf
 `formatDate`, `formatTime`, `formatDateTime`, `formatWhen` ('Today, 5:30 PM'), `formatDayKey`,
 `formatDateRange`, `formatRelative` ('5 min ago'), `formatDuration` ('2 h 05 min'), `toIsoZoned`,
 `dateFormat`. Periods: `PRESETS`, `presetLabel`, `normalizePeriod`, `resolvePeriod`, `periodParams`,
-`periodLabel`, `shiftPeriod`, `dayRange`, `periodDays`.
+`periodLabel`, `shiftPeriod`, `dayRange`, `periodDays`, `PERIOD_MAX_MS` (a period names times from 1970 to 2100, as
+the API does; `normalizePeriod` gives null for any other).
 
 A day is the wall-clock day in the zone (23 or 25 hours on clock-change days); weeks are ISO weeks. Presets:
 `24h` the last 24 hours; `7d` today and the 6 days before; `30d` today and the 29 days before; `year` since

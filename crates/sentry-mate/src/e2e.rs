@@ -379,6 +379,18 @@ async fn two_seeded_cars_stay_two_cars_and_their_keys_and_tokens_are_served() {
     let made = r.json();
     assert!(made["secret"].as_str().is_some_and(|s| s.starts_with("smt_")), "{made}");
     assert_eq!(made["car"], Value::Null);
+    // with the three fields of the CAN Bridge app, as /network has the address and the fingerprint
+    let net = c.get("/api/v1/network").await.json();
+    assert!(net["certificate"]["sha256"].as_str().is_some_and(|s| s.len() == 95), "{net}");
+    assert!(net["upload_address"].as_str().is_some_and(|a| a.ends_with("/api/can/logs")), "{net}");
+    let app_of = |made: &Value| {
+        json!({
+            "address": net["upload_address"],
+            "token": made["secret"],
+            "certificate_sha256": net["certificate"]["sha256"],
+        })
+    };
+    assert_eq!(made["app"], app_of(&made), "{made}");
     let listed = c.get("/api/v1/upload-tokens").await.json();
     assert_eq!(listed["items"][0]["id"], made["id"], "{listed}");
     assert!(listed["items"][0].get("secret").is_none());
@@ -389,6 +401,20 @@ async fn two_seeded_cars_stay_two_cars_and_their_keys_and_tokens_are_served() {
     let r = c.get("/api/v1/setup/status").await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!((r.json()["cars"].clone(), r.json()["keys_waiting"].clone()), (json!(2), json!(0)), "{}", r.text());
+    assert_eq!(r.json()["import_running"], json!(false), "{}", r.text());
+    // an import that is not finished shows there with its fix, until it is discarded
+    let r = c.request("POST", "/api/v1/imports", Some(json!({ "name": "made-up.sql.gz", "bytes_total": 1000 }))).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let import = r.json()["id"].clone();
+    let st = c.get("/api/v1/setup/status").await.json();
+    let fix = json!({ "cause": "import_running", "link": "/settings/import", "import": import });
+    assert_eq!(st["import_running"], json!(true), "{st}");
+    assert!(st["fixes"].as_array().unwrap().contains(&fix), "{st}");
+    let r = c.request("DELETE", &format!("/api/v1/imports/{}", import.as_str().unwrap()), None).await;
+    assert!(r.status < 300, "{}", r.text());
+    let st = c.get("/api/v1/setup/status").await.json();
+    assert_eq!(st["import_running"], json!(false), "{st}");
+    assert!(st["fixes"].as_array().unwrap().iter().all(|f| f["cause"] != json!("import_running")), "{st}");
 
     // the audit log says which key went to which car and which token was made or revoked (by id and car), not just
     // the route: moving a key redirects whose history a car's signed logs count for
@@ -409,6 +435,17 @@ async fn two_seeded_cars_stay_two_cars_and_their_keys_and_tokens_are_served() {
     }
     let r = c.request("POST", &format!("/api/v1/cars/{other}/upload-tokens"), None).await;
     assert_eq!(r.status, 201, "{}", r.text());
+    let net = c.get("/api/v1/network").await.json();
+    assert_eq!(
+        r.json()["app"],
+        json!({
+            "address": net["upload_address"],
+            "token": r.json()["secret"],
+            "certificate_sha256": net["certificate"]["sha256"],
+        }),
+        "{}",
+        r.text()
+    );
     let tid = r.json()["id"].as_str().unwrap().to_string();
     let r = c.request("DELETE", &format!("/api/v1/cars/{other}/upload-tokens/{tid}"), None).await;
     assert_eq!(r.status, 200, "{}", r.text());

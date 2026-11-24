@@ -365,8 +365,40 @@ export async function mount(ctx) {
       replace(mapEl, mapFallback());
     }
   }
+  // A map drawn again on a 4K screen takes longer than a frame (far longer without a graphics card), and a car
+  // that is driving moves its marker every 2 s: while the page is being scrolled, and while the map is out of
+  // view, the move waits; it is made once the scroll has rested with the map in view.
+  const SCROLL_REST_MS = 250;
+  let scrolledAt = -Infinity, restT = 0, markerWaits = false, mapSeen = true;
+  const scrolling = () => performance.now() - scrolledAt < SCROLL_REST_MS;
+  function markerRest() {
+    restT = 0;
+    if (!ctx.alive() || !markerWaits) return;
+    if (scrolling()) { restT = setTimeout(markerRest, SCROLL_REST_MS); return; }
+    if (mapSeen) placeMarker();
+  }
+  ctx.on(window, 'scroll', () => {
+    scrolledAt = performance.now();
+    if (markerWaits && !restT) restT = setTimeout(markerRest, SCROLL_REST_MS);
+  }, { capture: true, passive: true });
+  if (typeof IntersectionObserver === 'function') {
+    const seen = new IntersectionObserver((es) => {
+      mapSeen = es[es.length - 1].isIntersecting;
+      if (mapSeen && markerWaits && !restT) restT = setTimeout(markerRest, 0);
+    });
+    seen.observe(mapEl);
+    ctx.onCleanup(() => seen.disconnect());
+  }
+  ctx.onCleanup(() => clearTimeout(restT));
+
   function placeMarker() {
     if (!map) return;
+    if (marker && (scrolling() || !mapSeen)) {
+      markerWaits = true;
+      if (!restT && mapSeen) restT = setTimeout(markerRest, SCROLL_REST_MS);
+      return;
+    }
+    markerWaits = false;
     const n = now, loc = n.location || {};
     const lat = val(loc.lat), lon = val(loc.lon);
     if (lat == null) return;

@@ -500,7 +500,8 @@ export function windowTable(ctx, opts) {
     count.textContent = `${formatNumber(n)} ${n === 1 ? 'row' : 'rows'}`;
     table.setAttribute('aria-rowcount', String(n + 1));
     box.hidden = !n;
-    emptyBox.hidden = !!n;
+    // (set only when it changes: the whole-pixel snap takes every write of `hidden` for a box shown or hidden)
+    if (emptyBox.hidden !== !!n) emptyBox.hidden = !!n;
     if (!n) replace(emptyBox, opts.empty ? opts.empty({ total: n }) : h('div', { class: 'empty' }, h('h3', null, 'Nothing to show')));
     if (jumpBox) {
       const can = !!n && sort && base && sort.key === base.key;

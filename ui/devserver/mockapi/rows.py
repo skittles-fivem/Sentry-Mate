@@ -446,7 +446,6 @@ def timeline_row(app, h, s, now):
             "range_end_km": r(soc1 / 100 * full1, 1), "range_delta_km": r(soc1 / 100 * full1 - soc0 / 100 * full0, 1),
             "energy_delta_kwh": r(-(s.kwh_at(end) - s.kwh_at(s.start)), 3), "energy_basis": "measured",
             "outside_avg_c": r(s.outside0, 1), "parked_ms": split, "awake_reasons": s.reasons(),
-            "plugged": bool(s.plugged),
         })
         return base
     if s.kind == "gap":

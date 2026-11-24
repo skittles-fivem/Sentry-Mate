@@ -140,11 +140,13 @@ class AuditWrites(ServerCase):
 
     def test_account_changes_have_their_own_codes(self):
         a = self.c.json("POST", "/api/v1/accounts", {"name": "casey", "password": "made-up-pass", "role": "watch",
-                                                     "cars": ["c1"]}, expect=201)
+                                                     "cars": ["c1"], "confirm_password": "sentry-mate-dev"},
+                        expect=201)
         self.assertEqual(self.top()["action"], "account-created")
-        a = self.c.json("PATCH", f"/api/v1/accounts/{a['id']}", {"version": a.get("version", 1), "role": "admin"})
+        a = self.c.json("PATCH", f"/api/v1/accounts/{a['id']}", {"version": a.get("version", 1), "role": "admin",
+                                                                 "confirm_password": "sentry-mate-dev"})
         self.assertEqual((self.top()["action"], self.top()["target"]), ("role-changed", f"account:{a['id']}"))
-        self.c.json("DELETE", f"/api/v1/accounts/{a['id']}")
+        self.c.json("DELETE", f"/api/v1/accounts/{a['id']}", {"confirm_password": "sentry-mate-dev"})
         self.assertEqual(self.top()["action"], "account-removed")
 
     def test_every_write_has_a_known_group(self):

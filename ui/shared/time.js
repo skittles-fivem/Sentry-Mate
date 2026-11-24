@@ -461,6 +461,9 @@ export const PRESET_LABELS = { '24h': 'Last 24 hours', '7d': 'Last 7 days', '30d
 export const presetLabel = (p) => t(PRESET_LABELS[p] || PRESET_LABELS.custom);
 
 const isMs = (v) => typeof v === 'number' && Number.isFinite(v);
+/** The last time a period can name: 1 January 2100 UTC. The API takes `from_ms` and `to_ms` from 0 up to it. */
+export const PERIOD_MAX_MS = 4102444800000;
+const inPeriodRange = (v) => isMs(v) && v >= 0 && v <= PERIOD_MAX_MS;
 /**
  * A period in any of its shapes -> { preset } or { from, to } (ms; to may be null for "until now"),
  * or null when it is not a period. Accepts '7d', { preset: '7d' }, { from, to }, { from_ms, to_ms }.
@@ -471,8 +474,9 @@ export function normalizePeriod(p) {
   if (typeof p !== 'object') return null;
   if (p.preset && p.preset !== 'custom') return PRESETS.includes(p.preset) ? { preset: p.preset } : null;
   let from = p.from ?? p.from_ms ?? null, to = p.to ?? p.to_ms ?? null;
-  if (from != null && !isMs(from)) return null;
-  if (to != null && !isMs(to)) return null;
+  // a time before 1970 or after 2100 (a year mistyped as 0206) is no period: the API answers it with an error
+  if (from != null && !inPeriodRange(from)) return null;
+  if (to != null && !inPeriodRange(to)) return null;
   if (from == null && to == null) return null;
   if (from != null && to != null && from > to) [from, to] = [to, from];
   return { from, to };

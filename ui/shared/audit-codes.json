@@ -80,6 +80,7 @@
   {"code":"tesla-car-matched","group":"integrations","item":"tesla"},
   {"code":"tesla-invoices-changed","group":"integrations","item":"settings"},
   {"code":"tesla-poll-changed","group":"integrations","item":"settings"},
+  {"code":"tesla-rate-limited","group":"integrations","item":"tesla"},
   {"code":"tesla-sign-in-needed","group":"integrations","item":"tesla"},
   {"code":"tesla-token-replaced","group":"integrations","item":"tesla"},
   {"code":"teslafi-account-added","group":"integrations","item":"teslafi"},

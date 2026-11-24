@@ -21,7 +21,7 @@
 
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
-import { loadPage, reloadPage } from '../shared/build.js';
+import { loadPage, reloadPage, isPageFailed } from '../shared/build.js';
 import { h, replace, holdScroll, ready as markReady, failed as markFailed, unready, setTitle as docTitle, on } from '../shared/dom.js';
 import { resolvePeriod, periodParams } from '../shared/time.js';
 import { pageInfo } from './pages.js';
@@ -30,6 +30,7 @@ import * as session from './session.js';
 import { noticesLoaded } from './notices.js';
 import { errorState, statePanel, loadingPage } from './states.js';
 import { showPending } from './flash.js';
+import { fieldIdsFromStart } from './form.js';
 import { getMe, getPrefs, isAdmin } from './prefs.js';
 import { holdSnap } from './snap.js';
 import { watchLinks, warmModules, prefetchApi, pageSheet, pageSheetsOff, setStale, signedInHint } from '../shared/prefetch.js';
@@ -74,6 +75,9 @@ async function warm(s) {
   const info = pageInfo(id);
   if (!info || BARE.has(id)) return;
   const modP = pageModule(id);
+  // a file that fails while the car is still being read is not an error nobody handles: whoever warms waits for
+  // modP below and takes its failure there (and the page itself loads the file again, see mount())
+  modP.catch(() => {});
   let car = null;
   if (s.car) {
     // a car page may show a map: its tile settings, as core/map.js reads them
@@ -383,7 +387,8 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   } catch (err) {
     if (!alive()) return;
     console.error(err);
-    showError(err, () => reloadPage());
+    // a file that could not load: Reload loads the address in full; no answer from the server: Try again opens the page again
+    showError(err, isPageFailed(err) ? () => reloadPage() : undefined);
     return;
   }
   if (!alive()) return;
@@ -472,6 +477,7 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   if (!live) frame.setCrumbs(frame.defaultCrumbs(s, info, car));
 
   try {
+    fieldIdsFromStart();
     const inst = await mod.mount(ctx);
     if (!alive()) { try { inst?.unmount?.(); } catch { /* left already */ } return; }
     rec.instance = inst || null;

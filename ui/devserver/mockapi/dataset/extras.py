@@ -195,7 +195,11 @@ def teslafi_report(cars, imported, settings, again=False, read_again=False, read
         "cars": [{"tm_car": str(c["tm_car"]), "name": c["name"], "vin_prefix": c["vin_prefix"], "match": c["match"],
                   "drives": found["drives"], "charges": found["charges"], "first_ms": c["first_ms"],
                   "last_ms": c["last_ms"],
-                  "rows": d["rows"]} for c in use],
+                  "rows": d["rows"],
+                  # the car's own figures per table (one made-up car: the report's)
+                  "tables": {"positions": table(read, found["positions"]), "drives": table(0, found["drives"]),
+                             "charging_processes": table(0, found["charges"]), "states": table(0, found["states"]),
+                             "updates": table(0, found["updates"])}} for c in use],
         "cars_count": len(use), "cars_left_out": len(cars) - len(use),
         "units": units,
         "time_zone": {"name": tz or "UTC", "from": "setting" if tz else "default", "asked": True,

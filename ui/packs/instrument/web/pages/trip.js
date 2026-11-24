@@ -62,7 +62,8 @@ export async function mount(ctx) {
 
   /* ---------- the window: the shared period; "all" starts at this car's first drive or charge */
   let from = ctx.period?.from_ms ?? null;
-  const to = Math.min(ctx.period?.to_ms ?? now, now);
+  // the window ends now at the latest; one that starts after now keeps its own end (an empty trip, as on the other pages)
+  const to = from != null && from >= now ? Math.max(ctx.period?.to_ms ?? 0, from + 1) : Math.min(ctx.period?.to_ms ?? now, now);
   if (from == null) {
     // "all" needs the car's first drive or charge: when neither can be read the page says so (not the last week as if it were all)
     let d0, c0;
@@ -418,7 +419,13 @@ export async function mount(ctx) {
       const s = marks.find((k) => k.kind === 'start'), e = [...marks].reverse().find((k) => k.kind === 'end');
       if (s) routePin(m, [s.lon, s.lat], 'A');
       if (e) routePin(m, [e.lon, e.lat], 'B');
-      m.frame(() => m.map.fitBounds(fit, { padding: padClear(mapEl, mapLegend, { left: 40, top: 24, right: 60, bottom: 56, beside: true }), maxZoom: 15, duration: 0 }));
+      m.frame(() => {
+        const pad = padClear(mapEl, mapLegend, { left: 40, top: 24, right: 60, bottom: 56, beside: true });
+        // the route and its End pin stay above the Map / Satellite switch and the credit, at every Interface size
+        const foot = mapEl.querySelector('.maplibregl-ctrl-bottom-right')?.offsetHeight || 0;
+        pad.bottom = Math.min(Math.max(pad.bottom, foot + rpx(16)), Math.max(0, mapEl.clientHeight * 0.8 - pad.top));
+        m.map.fitBounds(fit, { padding: pad, maxZoom: 15, duration: 0 });
+      });
     } catch (err) { console.warn(err); replace(mapEl, mapFallback()); }
   })();
   function hoverAt(i) {

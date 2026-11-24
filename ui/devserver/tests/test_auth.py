@@ -59,44 +59,75 @@ class Setup(ServerCase):
 
 
 class Accounts(ServerCase):
+    def test_an_account_change_asks_for_the_admins_own_password_again(self):
+        """As the real server: making an account, changing its role, cars or password, and removing it need
+        confirm_password (or the X-Sentry-Mate-Password header)."""
+        c = self.c
+        pw = {"confirm_password": "sentry-mate-dev"}
+        new = {"name": "pat", "password": "made-up-pass-1", "role": "watch", "cars": ["c2"]}
+        e, _ = c.error("POST", "/api/v1/accounts", 403, "password_needed", body=new)
+        self.assertEqual(e["fields"], {"confirm_password": "Your own password, again."})
+        c.error("POST", "/api/v1/accounts", 403, "wrong_password", body={**new, "confirm_password": "not it"})
+        self.assertNotIn("pat", {a["name"] for a in c.get("/api/v1/accounts")["items"]})
+        a = c.json("POST", "/api/v1/accounts", {**new, **pw}, expect=201)
+        self.assertNotIn("confirm_password", a)
+        path = f"/api/v1/accounts/{a['id']}"
+        # what a page sends along unchanged asks for nothing; a real change does
+        a = c.json("PATCH", path, {"version": a["version"], "role": "watch", "cars": ["c2"], "password": ""})
+        self.assertEqual((a["role"], a["cars"]), ("watch", ["c2"]))
+        for change in ({"role": "admin"}, {"cars": "all"}, {"password": "made-up-pass-2"}):
+            c.error("PATCH", path, 403, "password_needed", body={"version": a["version"], **change})
+            c.error("PATCH", path, 403, "wrong_password", body={"version": a["version"], **change,
+                                                                 "confirm_password": "not it"})
+        self.assertEqual(c.get(path)["version"], a["version"])
+        up = c.json("PATCH", path, {"version": a["version"], "cars": "all", **pw})
+        self.assertEqual(up["cars"], "all")
+        up = c.json("PATCH", path, {"version": up["version"], "role": "admin"},
+                    headers={"X-Sentry-Mate-Password": "sentry-mate-dev"})
+        self.assertEqual(up["role"], "admin")
+        c.error("DELETE", path, 403, "password_needed")
+        c.error("DELETE", path, 403, "wrong_password", body={"confirm_password": "not it"})
+        self.assertEqual(c.json("DELETE", path, pw)["deleted"], True)
+
     def test_crud_and_last_admin(self):
         c = self.c
+        pw = {"confirm_password": "sentry-mate-dev"}
         lst = c.get("/api/v1/accounts")
         self.assertEqual({a["name"] for a in lst["items"]}, {"admin", "watch", "alex"})
         for a in lst["items"]:
             self.assertEqual(set(a), {"id", "name", "role", "cars", "two_step", "two_step_required", "created_ms", "version"})
         st, hd, raw = c.request("POST", "/api/v1/accounts", {"name": "guest", "password": "guest password",
-                                                             "role": "watch", "cars": ["c2"]})
+                                                             "role": "watch", "cars": ["c2"], **pw})
         self.assertEqual(st, 201)
         import json
         new = json.loads(raw)
         self.assertEqual(new["cars"], ["c2"])
-        c.error("POST", "/api/v1/accounts", 409, "name_taken", body={"name": "Guest", "password": "x" * 12, "role": "watch"})
-        c.error("POST", "/api/v1/accounts", 422, "invalid", body={"name": "g2", "password": "x" * 12, "role": "boss"})
-        up = c.json("PATCH", f"/api/v1/accounts/{new['id']}", {"version": new["version"], "cars": "all"})
+        c.error("POST", "/api/v1/accounts", 409, "name_taken", body={"name": "Guest", "password": "x" * 12, "role": "watch", **pw})
+        c.error("POST", "/api/v1/accounts", 422, "invalid", body={"name": "g2", "password": "x" * 12, "role": "boss", **pw})
+        up = c.json("PATCH", f"/api/v1/accounts/{new['id']}", {"version": new["version"], "cars": "all", **pw})
         self.assertEqual((up["cars"], up["version"]), ("all", new["version"] + 1))
-        c.error("PATCH", f"/api/v1/accounts/{new['id']}", 409, "stale_version", body={"version": new["version"], "cars": []})
+        c.error("PATCH", f"/api/v1/accounts/{new['id']}", 409, "stale_version", body={"version": new["version"], "cars": [], **pw})
         # an empty password keeps the current one, as on the real server; a huge one is refused
         same = c.json("PATCH", f"/api/v1/accounts/{new['id']}", {"version": up["version"], "password": ""})
         self.assertEqual(same["version"], up["version"])
         e, _ = c.error("PATCH", f"/api/v1/accounts/{new['id']}", 422, "invalid",
-                       body={"version": up["version"], "password": "x" * 1025})
+                       body={"version": up["version"], "password": "x" * 1025, **pw})
         self.assertIn("password", e["fields"])
         # the new account can sign in
         g = self.server.client()
         g.cookie = "sentry-mate=out"
         g.json("POST", "/api/v1/session", {"name": "guest", "password": "guest password"})
         self.assertEqual(g.get("/api/v1/me")["role"], "watch")
-        self.assertEqual(c.json("DELETE", f"/api/v1/accounts/{new['id']}")["deleted"], True)
+        self.assertEqual(c.json("DELETE", f"/api/v1/accounts/{new['id']}", pw)["deleted"], True)
         g.error("GET", "/api/v1/me", 401, "not_signed_in")
         c.error("GET", f"/api/v1/accounts/{new['id']}", 404, "no_such_account")
         # two admins: one may be demoted, the last may not
         alex = next(a for a in c.get("/api/v1/accounts")["items"] if a["name"] == "alex")
-        alex = c.json("PATCH", f"/api/v1/accounts/{alex['id']}", {"version": alex["version"], "role": "watch"})
+        alex = c.json("PATCH", f"/api/v1/accounts/{alex['id']}", {"version": alex["version"], "role": "watch", **pw})
         admin = c.get("/api/v1/accounts/a1")
-        c.error("PATCH", "/api/v1/accounts/a1", 409, "last_admin", body={"version": admin["version"], "role": "watch"})
-        c.error("DELETE", "/api/v1/accounts/a1", 409, "last_admin")
-        c.json("PATCH", f"/api/v1/accounts/{alex['id']}", {"version": alex["version"], "role": "admin"})
+        c.error("PATCH", "/api/v1/accounts/a1", 409, "last_admin", body={"version": admin["version"], "role": "watch", **pw})
+        c.error("DELETE", "/api/v1/accounts/a1", 409, "last_admin", body=pw)
+        c.json("PATCH", f"/api/v1/accounts/{alex['id']}", {"version": alex["version"], "role": "admin", **pw})
 
 
 class Preferences(ServerCase):
@@ -135,6 +166,37 @@ class Preferences(ServerCase):
         self.c.error("PATCH", "/api/v1/me/preferences", 400, "bad_input", body={"main_car": 3})
         q = self.c.json("PATCH", "/api/v1/me/preferences", {"main_car": None, "last_car": None})
         self.assertEqual((q["main_car"], q["last_car"]), (None, None))
+
+
+class OwnPassword(ServerCase):
+    def test_anyone_changes_their_own_password_and_the_other_sessions_end(self):
+        """PUT /me/password { password, new_password, code? }, as the real server: the current password again, any
+        new one but an empty or a huge one, the account's other sessions ended."""
+        w = self.server.client()
+        w.cookie = "sentry-mate=out"
+        w.json("POST", "/api/v1/session", {"name": "watch", "password": "sentry-mate-dev"})
+        other = self.server.client()
+        other.cookie = "sentry-mate=out"
+        other.json("POST", "/api/v1/session", {"name": "watch", "password": "sentry-mate-dev"})
+        path = "/api/v1/me/password"
+        w.error("PUT", path, 403, "wrong_password", body={"password": "not it", "new_password": "made-up-new-1"})
+        e, _ = w.error("PUT", path, 422, "invalid", body={"password": "sentry-mate-dev", "new_password": ""})
+        self.assertIn("new_password", e["fields"])
+        e, _ = w.error("PUT", path, 422, "invalid", body={"password": "sentry-mate-dev", "new_password": "x" * 1025})
+        self.assertIn("new_password", e["fields"])
+        w.error("PUT", path, 400, "bad_input", body={"password": "sentry-mate-dev"})
+        w.error("PUT", path, 400, "bad_input", body={"password": "sentry-mate-dev", "new_password": "a", "name": "x"})
+        self.assertEqual(other.get("/api/v1/me")["name"], "watch")
+        out = w.json("PUT", path, {"password": "sentry-mate-dev", "new_password": "made-up-new-1"})
+        self.assertEqual(out, {"signed_out_others": 1})
+        self.assertEqual(w.get("/api/v1/me")["name"], "watch")
+        other.error("GET", "/api/v1/me", 401, "not_signed_in")
+        n = self.server.client()
+        n.cookie = "sentry-mate=out"
+        n.error("POST", "/api/v1/session", 401, "wrong_credentials", body={"name": "watch", "password": "sentry-mate-dev"})
+        n.json("POST", "/api/v1/session", {"name": "watch", "password": "made-up-new-1"})
+        recent = [(e["action"], e["account"]) for e in self.c.get("/api/v1/audit?limit=5")["items"]]
+        self.assertIn(("password-changed", "watch"), recent)
 
 
 class Sessions(ServerCase):

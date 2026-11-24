@@ -16,6 +16,7 @@ import * as api from '../shared/api.js';
 import { h, cssVar, esc, styleSheet } from '../shared/dom.js';
 import { whenNear } from '../shared/lazy.js';
 import { rpx, onChange, onTheme, getTheme } from './display.js';
+import { flash } from './flash.js';
 import { getPrefs, onPrefs } from './prefs.js';
 import { tileChoice, rasterPaint, dimmed, mapColors, tileSources, tileLayers, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles, sharpZoom } from '../shared/maptiles.js';
 
@@ -184,6 +185,8 @@ export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bo
     // after 'load', not while the style is "loaded": map.loaded() and isStyleLoaded() read false while any tiles or
     // sources are still loading, long after 'load' fired (which never fires again), and a pick then was lost
     onChange: (next) => { ready.then(() => { if (ctx.alive()) swap(next); }); },
+    // the pick shows on this page; one that could not be saved is gone on the next, so say it
+    onError: (err, style) => { if (!api.isAbort(err) && ctx.alive()) flash(`Could not save the map style: ${err?.message || 'no answer from the server'} ${style.name} shows on this page only.`, { kind: 'error' }); },
   }) : null;
   // bottom right, above the credit: the page's own cards sit at the top
   if (styleSwitch) map.addControl({ onAdd: () => styleSwitch, onRemove: () => styleSwitch.remove() }, 'bottom-right');

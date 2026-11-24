@@ -215,6 +215,68 @@ async fn the_cars_list_pages_sorts_filters_and_hides_what_an_account_may_not_see
     drop(f.engine);
 }
 
+/// A made-up drive brought in by an import.
+fn imported_drive(car: CarId, start_ms: u64) -> model::Drive {
+    let source = model::Source::Teslamate;
+    model::Drive {
+        id: engine::importer::imported_id_of(source, car, 1),
+        car,
+        start_ms,
+        end_ms: start_ms + 20 * 60_000,
+        start: None,
+        end: None,
+        start_place: None,
+        end_place: None,
+        start_address: None,
+        end_address: None,
+        start_odometer_km: Some(1_000.0),
+        end_odometer_km: Some(1_010.0),
+        distance_km: Some(10.0),
+        speed_max_kmh: None,
+        power_max_kw: None,
+        power_min_kw: None,
+        energy_used_kwh: Some(1.6),
+        start_soc: None,
+        end_soc: None,
+        start_range_km: None,
+        end_range_km: None,
+        outside_temp_avg_c: None,
+        inside_temp_avg_c: None,
+        ascent_m: None,
+        descent_m: None,
+        source,
+        inputs: model::Inputs::NONE,
+        rules_version: 0,
+    }
+}
+
+/// A car that only has imported history (no CAN Bridge key, no upload token, never an upload) is not one whose
+/// uploads stopped: nobody expects a log from it, so neither the fleet nor its health calls it silent. A car with
+/// nothing at all still is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_car_that_only_has_imported_history_is_not_called_silent() {
+    let f = fleet().await;
+    f.engine.start().unwrap();
+    let mut admin = f.s.admin().await;
+    let silent = |a: &Value, car: &str| {
+        a["items"].as_array().unwrap().iter().any(|i| i["car"] == json!(car) && i["code"] == json!("upload_silence"))
+    };
+    let a = admin.get("/api/v1/fleet/attention").await.json();
+    assert!(silent(&a, "c1") && silent(&a, "c2"), "{a}");
+    let h = admin.get("/api/v1/cars/c1/health").await.json();
+    assert!(h["reasons"].as_array().unwrap().contains(&json!("upload_silence")), "{h}");
+
+    f.engine.db().upsert(1, &[imported_drive(1, 1_780_000_000_000)]).unwrap();
+    let a = admin.get("/api/v1/fleet/attention").await.json();
+    assert!(!silent(&a, "c1"), "an import-only car: {a}");
+    assert!(silent(&a, "c2"), "a car with nothing: {a}");
+    let h = admin.get("/api/v1/cars/c1/health").await.json();
+    assert!(!h["reasons"].as_array().unwrap().contains(&json!("upload_silence")), "{h}");
+    let h = admin.get("/api/v1/cars/c2/health").await.json();
+    assert!(h["reasons"].as_array().unwrap().contains(&json!("upload_silence")), "{h}");
+    drop(f.engine);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_fleet_summary_and_attention_count_every_car() {
     let f = fleet().await;

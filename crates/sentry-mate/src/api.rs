@@ -243,7 +243,8 @@ async fn audit_token(app: &AppState, v: &Viewer, action: &str, car: Option<CarId
     v.audit(app, action, Some(&target("token", car, id)), &summary).await
 }
 
-/// `201` with a token just made (its secret, shown once), recorded in the audit log by its id and car.
+/// `201` with a token just made (its secret, shown once, and `app`: what the CAN Bridge app is given), recorded in
+/// the audit log by its id and car.
 async fn created(
     app: &AppState,
     v: &Viewer,
@@ -259,6 +260,14 @@ async fn created(
         })
         .await?;
     audit_token(app, v, "token-created", car, &id).await?;
+    // the three fields of the CAN Bridge app, ready to copy: the address and the fingerprint as `/network` has them
+    let mut value = value;
+    let (names, sha256) = match app.blocking(|app| Ok(web::resources::certificate::running(app))).await? {
+        Some((names, sha)) => (names, Some(sha)),
+        None => (Vec::new(), None),
+    };
+    let address = web::resources::certificate::upload_address(app, &names);
+    value["app"] = serde_json::json!({ "address": address, "token": value["secret"], "certificate_sha256": sha256 });
     let mut r = axum::Json(value).into_response();
     *r.status_mut() = axum::http::StatusCode::CREATED;
     r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -340,11 +349,21 @@ async fn setup_status(State(app): State<AppState>, v: Viewer, p: Params) -> ApiR
     let (access, admin) = (v.cars().clone(), v.is_admin());
     // the Tesla accounts are for admins only (a watch account gets null)
     let tesla = admin.then(|| web::resources::tesla::account_count(&app));
+    // an import that is not finished: its cars are still to come
+    let import = web::resources::imports::unfinished(&app).await;
     answer(&app, &p, "setup-status", move |e| {
         let st = q::keys::setup_status(e, &visible(e, &access, &CarsParam(None))?, admin)?;
         let mut v = serde_json::to_value(st).unwrap_or(serde_json::Value::Null);
         if let serde_json::Value::Object(m) = &mut v {
             m.insert("tesla_accounts".into(), serde_json::json!(tesla));
+            if let Some(id) = import {
+                m.insert("import_running".into(), serde_json::json!(true));
+                if let Some(serde_json::Value::Array(fixes)) = m.get_mut("fixes") {
+                    fixes.push(
+                        serde_json::json!({ "cause": "import_running", "link": "/settings/import", "import": id }),
+                    );
+                }
+            }
         }
         Ok(v)
     })

@@ -291,3 +291,15 @@ test('a short duration has one numbering system where the language has digits of
   assert.equal(sp(secs), '١٢ min ٠٥ s');
   assert.equal(sp(T.formatDuration(2 * H + 5 * T.MINUTE)), '2 h 05 min');
 });
+
+test('a period that starts or ends before 1970, or after the year 2100, is no period: the API takes none', () => {
+  assert.deepEqual(T.normalizePeriod({ from: 0, to: T.PERIOD_MAX_MS }), { from: 0, to: T.PERIOD_MAX_MS });
+  assert.deepEqual(T.normalizePeriod({ from: NOW, to: null }), { from: NOW, to: null });
+  assert.equal(T.normalizePeriod({ from: Date.parse('1900-01-01T00:00:00Z'), to: NOW }), null);
+  assert.equal(T.normalizePeriod({ from: -1, to: null }), null);
+  assert.equal(T.normalizePeriod({ from: null, to: -1 }), null);
+  assert.equal(T.normalizePeriod({ from: NOW, to: T.PERIOD_MAX_MS + 1 }), null);
+  assert.equal(T.PERIOD_MAX_MS, Date.parse('2100-01-01T00:00:00Z'));
+  // and so a page asked for one shows its usual period
+  assert.equal(T.resolvePeriod({ from: -2208960000000, to: NOW }, { now: NOW, tz: CHI }).preset, '30d');
+});

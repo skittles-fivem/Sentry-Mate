@@ -220,12 +220,14 @@ class Contract(ServerCase):
         return [
             ("PATCH", "/api/v1/me/preferences", lambda: (None, {"theme": "dark"}, None)),
             ("POST", "/api/v1/accounts", lambda: (None, {"name": "contract-watch", "password": "contract-pass-1",
-                                                         "role": "watch", "cars": ["c1"]}, None)),
+                                                         "role": "watch", "cars": ["c1"],
+                                                         "confirm_password": "sentry-mate-dev"}, None)),
             ("PATCH", "/api/v1/accounts/{account}",
              lambda: (self.fill("/api/v1/accounts/{account}", account=ctx["account"]),
                       {"version": 1, "name": "contract-watch-2"}, None)),
             ("DELETE", "/api/v1/accounts/{account}",
-             lambda: (self.fill("/api/v1/accounts/{account}", account=ctx["account"]), None, None)),
+             lambda: (self.fill("/api/v1/accounts/{account}", account=ctx["account"]),
+                      {"confirm_password": "sentry-mate-dev"}, None)),
             ("PATCH", "/api/v1/cars/{car}", lambda: (None, {"version": c.get("/api/v1/cars/c1")["version"],
                                                             "name": "Comet"}, None)),
             ("PATCH", "/api/v1/cars/{car}/settings",
@@ -365,6 +367,8 @@ class Contract(ServerCase):
             ("POST", "/api/v1/session", lambda: (None, {"name": "admin", "password": "sentry-mate-dev"}, "own")),
             ("DELETE", "/api/v1/session", lambda: (None, None, "own")),
             ("POST", "/api/v1/session/two-step", lambda: (None, self.two_step_body(), "own2")),
+            ("PUT", "/api/v1/me/password",
+             lambda: (None, {"password": "sentry-mate-dev", "new_password": "sentry-mate-dev"}, None)),
             ("DELETE", "/api/v1/me/sessions", lambda: (None, None, None)),
         ], new
 
