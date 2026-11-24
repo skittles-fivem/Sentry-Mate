@@ -22,6 +22,7 @@
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { loadPage, reloadPage, isPageFailed } from '../shared/build.js';
+import { scrolling, afterScroll, SCROLL_REST_MS } from './stage.js';
 import { h, replace, holdScroll, ready as markReady, failed as markFailed, unready, setTitle as docTitle, on } from '../shared/dom.js';
 import { resolvePeriod, periodParams } from '../shared/time.js';
 import { pageInfo } from './pages.js';
@@ -199,16 +200,6 @@ function putBack(view, kept) {
     }
   }
 }
-
-// The page on screen is being scrolled, or was a moment ago. A page built again by a live refresh puts its work (the
-// snap over the whole page, the swap with its maps and charts drawn in one task) off until the scroll has rested:
-// such a task takes over a frame on a big screen. The wait is a little longer than one pause of the wheel.
-const SCROLL_REST_MS = 500;
-let scrolledAt = -Infinity;
-document.addEventListener('scroll', () => { scrolledAt = performance.now(); }, { capture: true, passive: true });
-const scrolling = () => performance.now() - scrolledAt < SCROLL_REST_MS;
-// f runs once the page has rested from scrolling (at once when it is not scrolling)
-function afterScroll(f) { const left = SCROLL_REST_MS - (performance.now() - scrolledAt); if (left > 0) setTimeout(() => afterScroll(f), left + 20); else f(); }
 
 function stageView(view, finishOld) {
   // the old page's clean-up is let go of once it is handed on or run: the new page keeps this stage as long as it
