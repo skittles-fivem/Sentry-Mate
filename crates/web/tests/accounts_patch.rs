@@ -68,3 +68,27 @@ async fn changes_from_one_version_give_one_success() {
     let stale = got.iter().filter(|g| g.1.as_deref() == Some("stale_version")).count();
     assert_eq!((ok, stale), (1, 7), "{got:?}");
 }
+
+#[tokio::test]
+async fn the_audit_log_says_which_cars_an_account_was_given() {
+    let s = server().await;
+    let mut admin = s.admin().await;
+    let _watch = s.watch(&mut admin, &[1]).await;
+    let w = watch_account(&mut admin).await;
+    let r = admin
+        .patch(
+            &format!("/api/v1/accounts/{}", w["id"].as_str().unwrap()),
+            json!({ "version": w["version"], "cars": ["c2"], "confirm_password": ADMIN_PASSWORD }),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let audit = admin.get("/api/v1/audit?limit=500").await.json();
+    let said: Vec<&str> = audit["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["action"] == "cars-changed")
+        .filter_map(|e| e["summary"].as_str())
+        .collect();
+    assert_eq!(said, [format!("Changed which cars {WATCH} sees: c2 (was c1).")], "{audit}");
+}

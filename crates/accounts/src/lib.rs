@@ -464,6 +464,15 @@ fn cars_words(c: Option<u64>) -> String {
     }
 }
 
+/// The cars of a list by their ids as the API writes them (`c1, c2`), or "all cars", or "no car".
+fn cars_list_words(c: &CarAccess) -> String {
+    match c.to_list() {
+        None => "all cars".into(),
+        Some(l) if l.is_empty() => "no car".into(),
+        Some(l) => l.iter().map(|c| format!("c{c}")).collect::<Vec<_>>().join(", "),
+    }
+}
+
 fn new_recovery(salt: &[u8]) -> Result<(RecoveryCodes, Vec<String>)> {
     let mut shown = Zeroizing::new(Vec::with_capacity(totp::RECOVERY_CODES));
     let mut kept = Vec::with_capacity(totp::RECOVERY_CODES);
@@ -1373,13 +1382,15 @@ impl Accounts {
     ) -> Result<()> {
         let details = self.with_account(target, |l| {
             let next = f(&l.cars)?;
+            let (was, now) = (cars_list_words(&l.cars), cars_list_words(&next));
             let count = next.count().map(|n| n as u64);
             self.files.save_cars(target, &next)?;
             l.cars = next;
             let mut idx = self.index_mut();
             let Some(mut s) = idx.by_id.get(&target).cloned() else { return Err(Error::NoSuchAccount) };
             s.cars = count;
-            let details = format!("Changed which cars {} sees: {}.", s.name, cars_words(count));
+            // which cars, not only how many: the log answers who was given which car
+            let details = format!("Changed which cars {} sees: {now} (was {was}).", s.name);
             idx.put(&self.vault, s)?;
             Ok(details)
         })?;
