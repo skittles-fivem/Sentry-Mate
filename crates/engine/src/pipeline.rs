@@ -1300,6 +1300,10 @@ impl Engine {
                 self.rebuild_dirty(car)?;
                 return Ok(());
             }
+            // a full rebuild whose server is stopping: nothing more is asked of a runtime that is going away
+            if job.is_some_and(|j| j.stopping()) {
+                return Err(Error::Other(crate::full::STOPPING.into()));
+            }
             let l = self.car_lock(car);
             let held = lock(&l);
             let r = self.log_locked(car, &key, &name, false, batch == 1);
