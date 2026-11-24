@@ -508,7 +508,13 @@ async fn only_unconfirmed_messages_are_sent_again() {
         b.got()
             .iter()
             .filter(|g| g.conn == conn && g.topic.ends_with("/event"))
-            .map(|g| serde_json::from_str::<serde_json::Value>(&g.payload).unwrap()["drive"].as_str().unwrap().parse().unwrap())
+            .map(|g| {
+                serde_json::from_str::<serde_json::Value>(&g.payload).unwrap()["drive"]
+                    .as_str()
+                    .unwrap()
+                    .parse()
+                    .unwrap()
+            })
             .collect()
     };
     wait_for("the last event on the second connection", || ids(1).contains(&5)).await;
