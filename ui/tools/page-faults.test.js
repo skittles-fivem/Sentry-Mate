@@ -386,7 +386,7 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
       ]) {
         const input = page.locator(`main input[name="${name}"]`);
         await input.waitFor({ timeout: 15000 });
-        const saved = () => page.waitForResponse((r) => r.request().method() === 'PATCH', { timeout: 10000 });
+        const saved = () => page.waitForResponse((r) => r.request().method() === 'PATCH' && !r.url().includes('/me/preferences'), { timeout: 10000 });
         let done = saved();
         await input.fill(good); await input.press('Tab');
         await done;
