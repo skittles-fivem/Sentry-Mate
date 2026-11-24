@@ -9,18 +9,14 @@ the [README](../README.md).
   in on Tesla's page or paste a refresh token, match cars, pause, remove) and "Data from SMO / the Tesla API /
   Imported from TeslaMate" on every page. The server side is done; until the pages have it, a Tesla account can't be
   added from the web UI.
-- **Console and Pebble catch up:** the certificate SHA-256 with Copy and "Make a new certificate", the
-  Sentry Six Manager CAN export import, and the weak-password warning (Instrument, Logbook and Horizon have them;
-  Horizon is built on Instrument's pages).
-- **Logbook pixel clean** at laptop, 4K and phone sizes (Instrument is).
 - **The Import page in each design shows TeslaFi.** The server takes TeslaFi's data download (`kind: "teslafi"`:
   its report, the time zone to confirm and the units to Start, `docs/ui-api.md`, "TeslaFi's data") and the dev
   server serves it with a made-up file (`ui/devserver/mockapi/data/TeslaFi32023.csv`); a later step does the pages:
   the time zone and units on the check's page, the report's rows, drives and charges, and "Imported from TeslaFi".
 - **A TeslaFi page in each design.** The server reads TeslaFi's API for owners who pay for TeslaFi (`/api/v1/
   integrations/teslafi`, `docs/ui-api.md`, "Integrations: TeslaFi": add a token, match the car, pause, remove, the
-  status) and the dev server serves a made-up TeslaFi account and car; a later step does the pages in all six
-  designs: the TeslaFi account in Settings: Integrations, the token refused notice, and "Data from TeslaFi" beside
+  status) and the dev server serves a made-up TeslaFi account and car; a later step does the pages in
+  Instrument: the TeslaFi account in Settings: Integrations, the token refused notice, and "Data from TeslaFi" beside
   SMO and the Tesla API on every page. Until then a TeslaFi token can't be added from the web UI.
 - **CI in about 5 minutes** per push to main (tests in parallel shards, a build cache), down from 30-45.
 
@@ -32,7 +28,7 @@ the [README](../README.md).
 2. Vehicle info on each design's car page (the server's `vehicle` facts with their sources, disagreements and unknown
    codes), and check the gateway configuration (`0x7FF`) and the LFP brick count on a real log (until then the brick count is not read for the chemistry).
 3. Check the timeline by hand against real drives and charges.
-4. Every page in all six designs, checked item by item against TeslaMate, on desktop and phone.
+4. Every page of Instrument (the other designs are archived), checked item by item against TeslaMate, on desktop and phone.
 5. A live connection to TeslaMate's database for the import.
 6. First release: the docs, a licence and the final name.
 

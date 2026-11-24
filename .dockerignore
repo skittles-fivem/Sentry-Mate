@@ -10,3 +10,5 @@ keys
 README.md
 *.log.xz
 *.log.xz.json
+# the archived UI packs: not built in (ui/archived/README.md)
+ui/archived

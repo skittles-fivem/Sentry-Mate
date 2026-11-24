@@ -215,7 +215,9 @@ python3 ui/devserver/serve.py --pack ui/packs/instrument --port 8000
 ```
 
 Then open `http://127.0.0.1:8000/`. The pages load map tiles from `tile.openstreetmap.org`.
-Swap `instrument` for `logbook`, `horizon`, `console`, `pebble` or `manager` to preview another of the six built-in packs.
+Instrument is the one built-in pack. The other designs (Logbook, Horizon, Console, Pebble, Manager) are archived in
+`ui/archived` and not built, served or tested; [`ui/archived/README.md`](../ui/archived/README.md) says how to bring
+one back.
 
 Before a pack change goes in, check its pages ([`ui/tools/README.md`](../ui/tools/README.md)): the normal check at
 `1440x900,390x844`, `--pixel` at `1440x900,3840x2160,390x844@3`, `--stable` at `1440x900,390x844`, and `--jumps`

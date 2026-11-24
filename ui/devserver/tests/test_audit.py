@@ -120,10 +120,10 @@ class AuditWrites(ServerCase):
         self.assertEqual(top["summary"], "Checked GitHub for a newer build.")
 
     def test_ui_pack_chosen(self):
-        self.c.json("PATCH", "/api/v1/me/preferences", {"ui_pack": "horizon"})
+        self.c.json("PATCH", "/api/v1/me/preferences", {"ui_pack": "instrument"})
         top = self.top()
-        self.assertEqual((top["action"], top["target"]), ("ui-pack-chosen", "ui-pack:horizon"))
-        self.assertEqual(top["summary"], "Chose the Horizon design.")
+        self.assertEqual((top["action"], top["target"]), ("ui-pack-chosen", "ui-pack:instrument"))
+        self.assertEqual(top["summary"], "Chose the Instrument design.")
         self.c.json("PATCH", "/api/v1/me/preferences", {"ui_pack": None})
         self.c.json("PATCH", "/api/v1/me/preferences", {"interface_size": 120, "units": {"distance": "mi"}})
         top = self.top()

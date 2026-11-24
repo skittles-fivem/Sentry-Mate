@@ -1,4 +1,4 @@
-// The connections overview's links in Chromium on the dev API server, in all six packs: the rows for the online
+// The connections overview's links in Chromium on the dev API server, in every built-in pack (Instrument; the others are archived): the rows for the online
 // map tiles, the address lookup and the release check name where each is changed
 // (`/settings/display#maps`, `#addresses`, `#release`, as the real server sends them), and each opens the section
 // where it lives now (shared/state.js MOVED: `#map-tiles` and `#address-lookup` of Settings: Maps and addresses,
@@ -11,12 +11,13 @@ const assert = require('node:assert/strict');
 const path = require('path');
 const { spawn } = require('child_process');
 
+const { BUILTIN_PACKS } = require('./builtin-packs');
 const UI_DIR = path.dirname(__dirname);
 const REPO_DIR = path.dirname(UI_DIR);
 let playwright = null;
 try { playwright = require('playwright'); } catch { /* not installed: skip */ }
 
-const PACKS = (process.env.PACKS || 'instrument,horizon,manager,logbook,console,pebble').split(',').filter(Boolean);
+const PACKS = (process.env.PACKS || BUILTIN_PACKS.join(',')).split(',').filter(Boolean);
 // the link the real server sends, and where the pack opens it: the page, its address and the section's id
 const LINKS = {
   tiles: { link: '/settings/display#maps', page: 'settings-maps', at: '/settings/maps#map-tiles' },

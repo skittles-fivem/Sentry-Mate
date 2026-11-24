@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Scroll check: does a page keep drawing while it is scrolled on a 4K screen, also while a rebuild is running?
 //
-//   node ui/tools/scroll.js [--packs instrument,horizon,...|all] [--pages health,car,...] [--sizes 3840x2160@1,1920x1080@2]
+//   node ui/tools/scroll.js [--packs instrument|all] [--pages health,car,...] [--sizes 3840x2160@1,1920x1080@2]
 //        [--steps N] [--step-px N] [--step-ms N] [--max-frame-ms N] [--quiet-server] [--server-args "..."]
 //        [--trace DIR] [--add-style CSS] [--json]
 //
@@ -23,8 +23,9 @@ const fs = require('fs');
 const path = require('path');
 const { startServer, killChildren, TILE_HOSTS, BLANK_TILE, ROUTES } = require('./check');
 
+const { BUILTIN_PACKS } = require('./builtin-packs');
 const UI_DIR = path.dirname(__dirname);
-const PACKS = ['instrument', 'horizon', 'manager', 'console', 'pebble', 'logbook'];
+const PACKS = BUILTIN_PACKS;
 const DEFAULT_PAGES = ['health', 'car', 'drives', 'charges', 'statistics', 'settings-server', 'logbook'];
 const DEFAULT_SIZES = '3840x2160@1,1920x1080@2';
 const REBUILD_ARGS = ['--rebuild-running', '--sse-interval-ms', '500', '--rows-every-s', '1'];

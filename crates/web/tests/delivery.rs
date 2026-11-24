@@ -125,11 +125,26 @@ async fn pack_files_are_compressed_versioned_and_cached() {
     assert_eq!(c.get(&format!("/_v/{version}/core/../../ui.json")).await.status, 404);
     assert_eq!(c.get(&format!("/_v/{version}/mock-api.js")).await.status, 404);
 
-    // another pack has another version
+    // another pack (an uploaded one: Instrument is the only built-in pack) has another version
     let mut admin = s.admin().await;
-    admin.patch("/api/v1/me/preferences", json!({ "ui_pack": "logbook" })).await;
-    let logbook = admin.get("/").await;
-    assert!(!logbook.text().contains(&format!("/_v/{version}/")));
+    let zip = web::packs::zip::write(&[
+        ("ui.json".to_string(), &br#"{"name":"Night Shift","version":"1.0.0","api":1}"#[..]),
+        ("web/app.css".to_string(), &b"body{color:red}"[..]),
+        ("web/index.html".to_string(), &br#"<!doctype html><link rel="stylesheet" href="/app.css">"#[..]),
+    ]);
+    let r = admin
+        .request(
+            "POST",
+            "/api/v1/ui-packs",
+            Some(&zip),
+            &[("Content-Type", "application/zip"), ("X-Sentry-Mate-Password", web::testkit::ADMIN_PASSWORD)],
+        )
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    assert_eq!(admin.patch("/api/v1/me/preferences", json!({ "ui_pack": "night-shift" })).await.status, 200);
+    let other = admin.get("/").await;
+    assert!(other.text().contains("/_v/"), "{}", other.text());
+    assert!(!other.text().contains(&format!("/_v/{version}/")));
 }
 
 /// A tab open across an update: its page still asks for its files under the version it was loaded with. It gets the

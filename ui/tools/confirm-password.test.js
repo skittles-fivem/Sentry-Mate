@@ -22,7 +22,7 @@ function scripts(dir, out = []) {
 
 test('no page puts a typed password in a request header it cannot hold', () => {
   const files = fs.readdirSync(PACKS_DIR).flatMap((pack) => scripts(path.join(PACKS_DIR, pack, 'web')));
-  assert.ok(files.length > 100, `the packs' scripts were found: ${files.length}`);
+  assert.ok(files.length > 40, `the packs' scripts were found: ${files.length}`);
   const bad = [];
   for (const f of files) {
     const lines = fs.readFileSync(f, 'utf8').split('\n');

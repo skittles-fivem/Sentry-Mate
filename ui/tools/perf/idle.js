@@ -4,7 +4,7 @@
 // (Chromium's own counters), and the CPU time of all of the browser's processes (`ps`, so the canvas and the
 // compositor count too).
 //
-//   node ui/tools/perf/idle.js --pack horizon [--page /cars/c1] [--seconds 120] [--every 30]
+//   node ui/tools/perf/idle.js --pack instrument [--page /cars/c1] [--seconds 120] [--every 30]
 //        [--size 1440x900] [--server-args "--sse-interval-ms 500 --rows-every-s 3"] [--json]
 //
 // Made-up data only (the dev server's). Needs Node and the Playwright that is already installed.
@@ -25,7 +25,7 @@ function args() {
     else if (a[i] === '--json') o.json = true;
     else throw new Error(`unknown option ${a[i]}`);
   }
-  if (!o.pack) throw new Error('--pack NAME is needed (instrument, logbook, horizon, console, pebble, manager)');
+  if (!o.pack) throw new Error('--pack NAME is needed (a built-in pack of ui/packs: instrument)');
   return o;
 }
 

@@ -4,7 +4,7 @@ Plain ES modules every UI pack uses, so pages look different but count, convert 
 build step, no dependencies, safe under the strict Content-Security-Policy (no `eval`, no inline styles, no
 `innerHTML` with data).
 
-**Edit them here, in `ui/shared/`.** Each pack serves a copy from `ui/packs/<name>/web/shared/`, written by:
+**Edit them here, in `ui/shared/`.** Each built-in pack serves a copy from `ui/packs/<name>/web/shared/` (the archived packs of `ui/archived` get none), written by:
 
 ```bash
 python3 ui/tools/sync_shared.py            # copy into every pack

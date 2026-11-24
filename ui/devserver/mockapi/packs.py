@@ -1,5 +1,7 @@
-"""UI packs as the real server has them (crates/web/src/packs): the built-in packs of ui/packs, each with the id
-of its folder, plus the pack given with --pack when it is another folder. A person's `ui_pack` preference picks
+"""UI packs as the real server has them (crates/web/src/packs): the built-in packs of ui/packs (each folder with
+ui.json and web/index.html, as crates/web/build.rs embeds them; Instrument alone today, the archived packs of
+ui/archived are not among them), each with the id of its folder, plus the pack given with --pack when it is
+another folder. A person's `ui_pack` preference picks
 the pack their browser is served, else the --pack one (the "chosen for everyone" of the dev server)."""
 
 from __future__ import annotations
@@ -8,7 +10,6 @@ import json
 import os
 
 BUILTIN_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "packs"))
-BUILTIN_ORDER = ["instrument", "logbook", "horizon", "console", "pebble", "manager"]
 DEFAULT_PACK = "instrument"
 API_VERSION = 1
 
@@ -34,6 +35,17 @@ def _meta(pid, folder, builtin):
             "bytes": size, "installed_ms": None, "folder": folder}
 
 
+def builtin_ids():
+    """The built-in packs' ids: the default first, then the others by name."""
+    try:
+        names = sorted(os.listdir(BUILTIN_DIR))
+    except OSError:
+        names = []
+    found = [n for n in names if os.path.isfile(os.path.join(BUILTIN_DIR, n, "ui.json"))
+             and os.path.isfile(os.path.join(BUILTIN_DIR, n, "web", "index.html"))]
+    return sorted(found, key=lambda n: (n != DEFAULT_PACK, n))
+
+
 def pack_id(folder):
     return os.path.basename(os.path.normpath(folder))
 
@@ -42,10 +54,8 @@ class Packs:
     def __init__(self, served_folder):
         self.served = pack_id(served_folder)
         found = []
-        for pid in BUILTIN_ORDER:
-            d = os.path.join(BUILTIN_DIR, pid)
-            if os.path.isdir(os.path.join(d, "web")):
-                found.append(_meta(pid, d, True))
+        for pid in builtin_ids():
+            found.append(_meta(pid, os.path.join(BUILTIN_DIR, pid), True))
         if not any(p["id"] == self.served for p in found):
             found.append(_meta(self.served, os.path.normpath(served_folder), False))
         self.items = found

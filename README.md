@@ -28,7 +28,7 @@ Bridge app at `https://<server>:10100/api/can/logs` with a token from **Settings
 | [Commands](docs/commands.md) | Every command, setting, port, limit and file |
 | [Security](docs/security.md) | Encryption at rest, accounts, what leaves the server |
 | [Rebuilds](docs/rebuilds.md) | What makes the server work its history out again, and why it never does so twice |
-| [UI packs](ui/README.md) | The six built-in designs |
+| [UI packs](ui/README.md) | The built-in design, Instrument (the others are archived: [ui/archived](ui/archived/README.md)) |
 | [Development](docs/development.md) | Building, tests, CI, the crates |
 
 ## Licence
