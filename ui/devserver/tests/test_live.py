@@ -5,6 +5,9 @@ from __future__ import annotations
 import http.client
 import json
 import time
+import unittest
+
+from mockapi.events import diff
 
 from .helpers import NOW, ServerCase
 
@@ -168,6 +171,46 @@ class EventDeltas(ServerCase):
         self.assertNotIn("time_zone", later)  # unchanged, so not sent again
         self.assertIn("location", later)  # the car is moving
         self.assertIn("lat", later["location"])
+
+
+    def test_a_pair_is_always_sent_whole(self):
+        self.c.get("/api/v1/me")
+        events = read_events(self.server.port, self.c.cookie, lambda ev: len(nows_for(ev, "c1")) >= 4)
+        seen = []
+
+        def walk(v, path):
+            if isinstance(v, dict):
+                if "at_ms" in v:
+                    seen.append(path)
+                    self.assertIn("value", v, path)
+                    self.assertIn("sources", v, path)
+                for k, x in v.items():
+                    walk(x, path + [k])
+
+        for n in nows_for(events, "c1")[1:]:
+            for k, v in n.items():
+                walk(v, [k])
+        self.assertTrue(seen)
+
+
+class Delta(unittest.TestCase):
+    """The delta of a `now` event, as the real server's (crates/sentry-mate/src/site.rs)."""
+
+    def test_a_pair_with_sources_goes_whole(self):
+        old = {"gear": {"value": "D", "at_ms": 1, "sources": ["can"]}, "state": "driving"}
+        new = {"gear": {"value": "D", "at_ms": 2, "sources": ["can"]}, "state": "driving"}
+        self.assertEqual(diff(old, new), {"gear": {"value": "D", "at_ms": 2, "sources": ["can"]}})
+
+    def test_only_what_changed_and_a_field_gone_is_null(self):
+        old = {"state": "online", "speed_kph": {"value": 10.0, "at_ms": 1}, "flags": {"sentry": False, "trunk": True},
+               "gone": 1, "tyres_kpa": [1, 2], "drive": {"drive_id": "7", "distance_km": 1.0}}
+        new = {"state": "online", "speed_kph": {"value": 12.0, "at_ms": 2}, "flags": {"sentry": True, "trunk": True},
+               "tyres_kpa": [1, 3], "drive": None, "new": {"a": 1}}
+        self.assertEqual(diff(old, new), {"speed_kph": {"value": 12.0, "at_ms": 2}, "flags": {"sentry": True},
+                                          "gone": None, "tyres_kpa": [1, 3], "drive": None, "new": {"a": 1}})
+        self.assertEqual(diff(new, new), {})
+        self.assertEqual(diff({"flags": {"doors": {"fl": 1, "fr": 2}}}, {"flags": {"doors": {"fl": 1}}}),
+                         {"flags": {"doors": {"fr": None}}})
 
 
 class LiveClock(ServerCase):
