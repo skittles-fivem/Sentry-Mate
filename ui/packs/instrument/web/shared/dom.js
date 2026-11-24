@@ -167,7 +167,11 @@ export function holdScroll(el) {
   if (doc.scrollingElement) note(doc.scrollingElement);
   for (const b of doc.querySelectorAll?.('[data-scroll-box]') || []) note(b);
   held = boxes;
-  queueMicrotask(() => {
+  // looked at again after the mutation observers this change set off (the whole-pixel snap of a pack, which gives
+  // rows drawn again their whole-pixel heights back): their callbacks were queued after this one, so this waits one
+  // turn more. Measured before them, the rows' heights of a moment would be taken for a move, and the page scrolled
+  // by what the snap then puts back.
+  queueMicrotask(() => queueMicrotask(() => {
     const list = held;
     held = null;
     for (const [b, t, a, at] of list) {
@@ -180,7 +184,7 @@ export function holdScroll(el) {
       if (want - b.scrollTop >= 1) { growPad(doc, b, want - b.scrollTop); b.scrollTop = want; }
       fitPad(b);
     }
-  });
+  }));
 }
 
 // room under a page, kept so it does not get shorter under the reader (see holdScroll)
