@@ -6,7 +6,11 @@
 import { h, replace } from '../shared/dom.js';
 import { icon } from './icons.js';
 
+// field ids: numbered from 0 again for each page build (the router calls fieldIdsFromStart), so a page built
+// again on a live refresh gives its fields the same ids, and the page swapped in looks the same as the one it
+// takes the place of (a form whose ids changed would come in as new controls: a flicker, a lost screen reader place)
 let uid = 0;
+export function fieldIdsFromStart() { uid = 0; }
 
 /**
  * field({ label, name, type, value, hint, required, options: [[value, label]], attrs, path })
