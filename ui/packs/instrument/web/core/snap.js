@@ -545,7 +545,9 @@ export function watchTables() {
   new MutationObserver((list) => {
     // elements added or taken away, or any text in a table changed (a wider number needs a wider column); a clock
     // or a number elsewhere that only changes its text does not count
-    const el = (ns) => { for (const n of ns) if (n.nodeType === 1) return true; return false; };
+    // (a box laid over the page, [data-snap-over], moves nothing as it comes or goes: the router's copy of the
+    // loading skeleton, taken away as the page it covered is put in place and snapped)
+    const el = (ns) => { for (const n of ns) if (n.nodeType === 1 && !n.hasAttribute('data-snap-over')) return true; return false; };
     const inTable = (n) => { const e = n.nodeType === 1 ? n : n.parentElement; return !!(e && e.closest('table')); };
     // rows coming into and going out of a long list's window as it scrolls (shared/vlist.js, a [data-vl-body]):
     // once the scrolling rests, not every frame (the box keeps its size, so nothing outside it moves)
