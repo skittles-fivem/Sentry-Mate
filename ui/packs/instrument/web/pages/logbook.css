@@ -23,7 +23,9 @@
 
 .lb-totals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(1rem, var(--e)) round(1.5rem, var(--e)); margin-bottom: round(0.875rem, var(--e)); }
 .lb-total { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); min-width: 0; }
-.lb-total.is-zero { opacity: 0.6; }
+/* a purpose without drives steps back by colour, not by opacity: its small text keeps 4.5:1 */
+.lb-total.is-zero :is(.lb-purpose, .lb-total-km, .q-u, .explain) { color: var(--text-3); }
+.lb-total.is-zero .lb-purpose > i { opacity: 0.6; }
 .lb-total-head { display: flex; align-items: baseline; justify-content: space-between; gap: round(0.75rem, var(--e)); }
 /* (the label's own baseline is its text's, not its colour mark's: the label and the figure stand on one line) */
 .lb-total-head .lb-purpose { align-items: baseline; }
