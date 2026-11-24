@@ -171,7 +171,7 @@ function currencyText(amount, currency, { min = null, max = null, sign } = {}) {
   if (currency) {
     o.style = 'currency';
     o.currency = currency;
-    o.currencyDisplay = 'narrowSymbol';
+    o.currencyDisplay = 'symbol'; // the locale's own symbol: CA$ and US$ differ where $ alone would not say which
   } else {
     o.minimumFractionDigits = 2;
   }
