@@ -7,7 +7,7 @@ import { initFrame } from './frame.js';
 import { watchTables } from './snap.js';
 import { markScrolling } from '../shared/dom.js';
 import { setLazy } from '../shared/lazy.js';
-import { startRouter, reload } from './router.js';
+import { startRouter, reload, firstReady } from './router.js';
 import { getMe } from './prefs.js';
 import * as session from './session.js';
 import { registerServiceWorker } from '../shared/offline.js';
@@ -59,5 +59,8 @@ if (document.fonts?.load) {
 }
 
 startRouter();
-// after the first draw: the next load draws from what the service worker keeps
-registerServiceWorker();
+// once the first page is ready (at most FIRST_PAGE_MS): the next load draws from what the service worker keeps.
+// Not before: on a first visit the worker fetches the files it keeps, and on a slow line that took the first page's
+// bandwidth
+const FIRST_PAGE_MS = 10000;
+Promise.race([firstReady, new Promise((r) => { setTimeout(r, FIRST_PAGE_MS); })]).then(() => registerServiceWorker());
