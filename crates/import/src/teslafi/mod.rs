@@ -17,8 +17,10 @@
 //! imported, with what was still under way at their edges. A row inside a stretch is passed over, so importing the
 //! same files again adds nothing, and a month imported part way (downloaded before it ended) adds only the rest. A
 //! drive or charge over the end of a month is joined with its other half when both months are in, whichever came
-//! first: the joined row replaces the halves (the later half is removed, [`Batch::Removed`]). Rows carry ids made from
-//! their start, so a run cut short and started again replaces what it stored, never doubles it.
+//! first: the joined row replaces the halves (the later half is removed, [`Batch::Removed`]). A state span under way
+//! at a stretch's last poll ends at the next stretch's first poll as it would at the next poll of its own file
+//! ([`Edge::until_ms`]). Rows carry ids made from their start, so a run cut short and started again replaces what it
+//! stored, never doubles it.
 
 mod csv;
 pub mod feed;
@@ -28,12 +30,13 @@ mod seg;
 pub use poll::CarState;
 pub use seg::{Agg, Kind, Snap};
 
+use crate::input::{Counted, DEFLATE_MAX_RATIO, RatioRead, XZ_MAX_RATIO, XZ_MAX_WINDOW_KIB};
 use crate::report::CarReport;
 use crate::rows::{Batch, ChargePointRow, ChargeRow, DriveRow, PositionRow, Sink, StateRow, TmCar, UpdateRow};
 use crate::schema::Table;
 use crate::state::ImportState;
 use crate::zip::{ZipError, ZipStream, is_zip};
-use crate::{Error, input::XZ_MAX_WINDOW_KIB, report::TableReport, vin_info};
+use crate::{Error, report::TableReport, vin_info};
 use csv::{Fields, Line, Lines};
 use model::{CarId, ChargeKind, ChargePoint, Update};
 use poll::{Col, Header, HeaderKind, Row, Utc};
@@ -107,6 +110,8 @@ pub struct Options {
     pub max_pieces: usize,
     /// Rows of a file looked at first to tell its units.
     pub lookahead_rows: usize,
+    /// The time now (ms since the epoch), against which a row's date is checked; `None`: the clock's.
+    pub now_ms: Option<u64>,
 }
 
 impl Default for Options {
@@ -122,6 +127,7 @@ impl Default for Options {
             max_cars: 64,
             max_pieces: 1200,
             lookahead_rows: 500,
+            now_ms: None,
         }
     }
 }
@@ -142,6 +148,12 @@ pub enum End {
 pub struct Edge {
     pub at: End,
     pub seg: Agg,
+    /// A state span under way at the piece's last poll, when the next piece starts in another state: the time of
+    /// that piece's first poll, which the stored span was made to end at (asleep until seen again, online up to the
+    /// next poll when it came soon, as inside one file). `seg` keeps its own end, for when a file between the two
+    /// comes in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until_ms: Option<u64>,
 }
 
 /// A stretch of a car's time imported from one file: every poll in `[first_ms, last_ms]` is in.
@@ -217,7 +229,8 @@ pub struct Report {
     pub files_skipped_count: u64,
     pub rows_read: u64,
     pub rows_used: u64,
-    /// Rows passed over, by why: `already_imported`, `duplicate`, `out_of_order`, `bad_time`, `dst_gap`,
+    /// Rows passed over, by why: `already_imported`, `duplicate`, `out_of_order`, `bad_time` (no date, or one that
+    /// cannot be right: [`FIRST_YEAR`], [`AHEAD_MS`], [`JUMP_MS`]), `dst_gap`,
     /// `car_left_out`, `too_many_cars`, `wrong_field_count`, `too_long`.
     pub rows_skipped: BTreeMap<String, u64>,
     /// Values there but unreadable, by column (read as empty).
@@ -265,6 +278,17 @@ pub struct Report {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<Group>,
 }
+
+/// No poll is from before this year (the first of these cars were built in it): such a date is a wrong one.
+pub const FIRST_YEAR: i32 = 2008;
+/// A row dated further than this after now is a wrong date (clocks and time zones differ by less).
+pub const AHEAD_MS: u64 = 24 * 3600 * 1000;
+/// A row this far after the row before it in its file is looked at with the row after it: when that one is back
+/// before it by more than this, the row's date is a wrong one (one damaged line, not a gap in the data) and it is
+/// passed over as `bad_time`. Rows less out of order than this are passed over as `out_of_order`, as ever.
+pub const JUMP_MS: u64 = 2 * 3600 * 1000;
+/// A file holds a calendar month: a last row further than this after the row before it has a wrong date.
+pub const FILE_SPAN_MS: u64 = 31 * 24 * 3600 * 1000;
 
 /// Groups an import tells apart at most (rows past it are passed over as `too_many_cars`): a group a day of rows
 /// without a VIN for fifty years.
@@ -513,7 +537,7 @@ pub fn sniff<R: Read>(r: R) -> io::Result<Sniff> {
     } else if is_zip(&head) {
         // TeslaFi's months may come after other files (a readme, another CSV): those are passed over, as the import
         // passes them over, for the first entries; a CAN export's logs say at once it is not TeslaFi's
-        let mut z = ZipStream::new(r);
+        let mut z = ZipStream::new(r).with_max_ratio(DEFLATE_MAX_RATIO);
         let mut summary = false;
         for _ in 0..SNIFF_ENTRIES {
             let Some(e) = z.next_entry().map_err(io::Error::from)? else { break };
@@ -607,6 +631,8 @@ struct Slot {
     other_zones: Vec<chrono_tz::Tz>,
     /// The last row's time in the file being read (for the repeated autumn hour).
     prev_ms: Option<u64>,
+    /// A row far after the one before it ([`JUMP_MS`]), waiting for the next row to show whether its date is right.
+    held: Option<Held>,
     pending: Pending,
     tally: [crate::report::Tally; 6],
     first_ms: Option<u64>,
@@ -614,6 +640,14 @@ struct Slot {
     warnings: Vec<String>,
     /// The odometer readings so far ([`crate::odo`]).
     odo: crate::odo::OdoCheck,
+}
+
+/// A row that waits ([`Slot::held`]).
+struct Held {
+    t: u64,
+    line: String,
+    /// The time of the row before it, when its file had one.
+    after: Option<u64>,
 }
 
 /// Tally positions by table.
@@ -624,6 +658,8 @@ fn ix(t: Table) -> usize {
 struct Importer<'a> {
     sink: &'a mut dyn Sink,
     o: &'a Options,
+    /// The time now, against which dates are checked ([`AHEAD_MS`]).
+    now_ms: u64,
     /// `vin:…`, `id:…`, `name:…` (and `` for rows with none of them) → the group they are.
     keys: HashMap<String, usize>,
     /// The cars as the rows tell them apart, and the slot each one's rows go to (several go to one when the sink
@@ -761,6 +797,10 @@ impl<'a> Importer<'a> {
         Ok(Importer {
             sink,
             o,
+            now_ms: o.now_ms.unwrap_or_else(|| {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+                now.map_or(u64::MAX, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+            }),
             keys: HashMap::new(),
             groups: Vec::new(),
             hints: HashMap::new(),
@@ -777,9 +817,8 @@ impl<'a> Importer<'a> {
     /// Reads one uploaded file: a CSV, plain, gzipped or xz'd, or a zip of them. `upload` names it among several
     /// (its zip's files are then named under it); empty for the one file of [`import`].
     fn source<R: Read>(&mut self, r: R, upload: &str) -> Result<SourceRead, Error> {
-        let mut packed = 0u64;
-        let counted = CountRead { inner: r, n: &mut packed };
-        let mut src = BufReader::with_capacity(BUF, counted);
+        let packed = std::cell::Cell::new(0u64);
+        let mut src = BufReader::with_capacity(BUF, Counted::new(r, &packed));
         let head = src.fill_buf()?.to_vec();
         let unpack = |e: io::Error, what: &str| {
             if e.kind() == io::ErrorKind::InvalidData || e.kind() == io::ErrorKind::UnexpectedEof {
@@ -790,14 +829,15 @@ impl<'a> Importer<'a> {
         };
         let alone_name = if upload.is_empty() { "the file" } else { upload };
         let (compression, unpacked) = if head.starts_with(&[0x1f, 0x8b]) {
-            let r = BufReader::with_capacity(BUF, flate2::read::MultiGzDecoder::new(&mut src));
+            let gz = RatioRead::new(flate2::read::MultiGzDecoder::new(&mut src), &packed, DEFLATE_MAX_RATIO);
+            let r = BufReader::with_capacity(BUF, gz);
             ("gzip", self.file(alone_name, r, true).map_err(|e| e.unpack("gzip: "))?)
         } else if head.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0x00]) {
-            let r =
-                BufReader::with_capacity(BUF, lzma_rust2::XzReader::new_mem_limit(&mut src, true, XZ_MAX_WINDOW_KIB));
+            let xz = lzma_rust2::XzReader::new_mem_limit(&mut src, true, XZ_MAX_WINDOW_KIB);
+            let r = BufReader::with_capacity(BUF, RatioRead::new(xz, &packed, XZ_MAX_RATIO));
             ("xz", self.file(alone_name, r, true).map_err(|e| e.unpack("xz: "))?)
         } else if is_zip(&head) {
-            let mut z = ZipStream::new(&mut src);
+            let mut z = ZipStream::new(&mut src).with_max_ratio(DEFLATE_MAX_RATIO);
             let mut unpacked = 0u64;
             loop {
                 let e = match z.next_entry() {
@@ -822,7 +862,7 @@ impl<'a> Importer<'a> {
             ("plain", self.file(alone_name, &mut src, true).map_err(|e| e.unpack(""))?)
         };
         drop(src);
-        Ok(SourceRead { compression, packed, unpacked })
+        Ok(SourceRead { compression, packed: packed.get(), unpacked })
     }
 }
 
@@ -857,19 +897,6 @@ impl FileError {
             FileError::Io(e) => Error::Io(e),
             FileError::Other(e) => e,
         }
-    }
-}
-
-struct CountRead<'n, R> {
-    inner: R,
-    n: &'n mut u64,
-}
-
-impl<R: Read> Read for CountRead<'_, R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let k = self.inner.read(buf)?;
-        *self.n += k as u64;
-        Ok(k)
     }
 }
 
@@ -1044,8 +1071,16 @@ impl Importer<'_> {
                 }
             }
         }
-        // the file is over: each car's run in it ends here
+        // the file is over: a row that still waits is its car's last (a month's file never has it this far on), and
+        // each car's run in the file ends here
         for i in 0..self.slots.len() {
+            if let Some(held) = self.slots[i].held.take() {
+                if held.after.is_some_and(|a| held.t > a.saturating_add(FILE_SPAN_MS)) {
+                    self.bad_time(i);
+                } else {
+                    self.use_held(&header, &held, &units)?;
+                }
+            }
             self.end_run(i)?;
             self.slots[i].prev_ms = None;
             self.flush(i)?;
@@ -1191,6 +1226,7 @@ impl Importer<'_> {
             units: None,
             other_zones,
             prev_ms: None,
+            held: None,
             pending: Pending::default(),
             tally: Default::default(),
             first_ms: None,
@@ -1217,18 +1253,35 @@ impl Importer<'_> {
         }
         let mut fields = std::mem::take(&mut self.fields);
         fields.split(&text);
-        let r = self.row_in(h, &fields, &text, units);
+        let r = self.row_in(h, &fields, &text, units, false);
         self.fields = fields;
         r
     }
 
-    fn row_in(&mut self, h: &Header, fields: &Fields, text: &str, units: &Units) -> Result<(), Error> {
+    /// A row of car `i` passed over for its date.
+    fn bad_time(&mut self, i: usize) {
+        self.report.skip("bad_time");
+        let t = &mut self.slots[i].tally[ix(Table::Positions)];
+        t.read += 1;
+        t.skip(crate::Skip::BadValue);
+    }
+
+    /// A row that waited is read after all: its date was right.
+    fn use_held(&mut self, h: &Header, held: &Held, units: &Units) -> Result<(), Error> {
+        let mut fields = Fields::default();
+        fields.split(&held.line);
+        self.row_in(h, &fields, &held.line, units, true)
+    }
+
+    /// `sure`: the row waited ([`Slot::held`]) and its date was found right.
+    fn row_in(&mut self, h: &Header, fields: &Fields, text: &str, units: &Units, sure: bool) -> Result<(), Error> {
         if fields.len() < 2 || fields.len() > h.fields + 2 {
             self.report.skip("wrong_field_count");
             return Ok(());
         }
         let row = Row::Csv { h, f: fields, line: text };
-        let Some(local) = row.text(Col::Date).as_deref().and_then(poll::parse_local) else {
+        let local = row.text(Col::Date).as_deref().and_then(poll::parse_local);
+        let Some(local) = local.filter(|l| chrono::Datelike::year(l) >= FIRST_YEAR) else {
             self.report.skip("bad_time");
             return Ok(());
         };
@@ -1252,9 +1305,36 @@ impl Importer<'_> {
             return Ok(());
         }
         let s = &mut self.slots[i];
+        let last = s.run.as_ref().map(|r| r.last_ms);
+        let utc = poll::to_utc(s.tz, local, last.or(s.prev_ms));
+        if let Utc::One(t) | Utc::Repeated(t) = utc {
+            if t > self.now_ms.saturating_add(AHEAD_MS) {
+                self.bad_time(i);
+                return Ok(());
+            }
+            // a row that waits is judged by the next one that is not itself before the rows read
+            if !sure
+                && last.is_none_or(|l| t > l)
+                && let Some(held) = s.held.take()
+            {
+                if t.saturating_add(JUMP_MS) < held.t {
+                    self.bad_time(i);
+                } else {
+                    self.use_held(h, &held, units)?;
+                    return self.row_in(h, fields, text, units, false);
+                }
+            }
+            let s = &mut self.slots[i];
+            let k = s.pieces.partition_point(|p| p.last_ms < t);
+            let new = s.pieces.get(k).is_none_or(|p| p.first_ms > t);
+            if !sure && new && s.held.is_none() && last.is_none_or(|l| t > l.saturating_add(JUMP_MS)) {
+                s.held = Some(Held { t, line: text.to_string(), after: last });
+                return Ok(());
+            }
+        }
+        let s = &mut self.slots[i];
         s.tally[ix(Table::Positions)].read += 1;
-        let prev = s.run.as_ref().map(|r| r.last_ms).or(s.prev_ms);
-        let t = match poll::to_utc(s.tz, local, prev) {
+        let t = match utc {
             Utc::One(t) => t,
             Utc::Repeated(t) => {
                 self.report.dst_repeated += 1;
@@ -1262,6 +1342,11 @@ impl Importer<'_> {
             }
             Utc::Skipped => {
                 self.report.skip("dst_gap");
+                s.tally[ix(Table::Positions)].skip(crate::Skip::BadValue);
+                return Ok(());
+            }
+            Utc::Before1970 => {
+                self.report.skip("bad_time");
                 s.tally[ix(Table::Positions)].skip(crate::Skip::BadValue);
                 return Ok(());
             }
@@ -1366,7 +1451,7 @@ impl Importer<'_> {
         for z in &s.other_zones {
             match poll::to_utc(*z, local, None) {
                 Utc::One(x) | Utc::Repeated(x) => at.push((*z, x)),
-                Utc::Skipped => {}
+                Utc::Skipped | Utc::Before1970 => {}
             }
         }
         for (z, x) in at {
@@ -1460,10 +1545,11 @@ impl Importer<'_> {
         let (run, tails) = run.finish(&mut out);
         self.take(i, out);
         let Some(first) = run.first_ms else { return Ok(()) };
-        let mut edges: Vec<Edge> = run.heads.into_iter().map(|seg| Edge { at: End::Head, seg }).collect();
+        let mut edges: Vec<Edge> =
+            run.heads.into_iter().map(|seg| Edge { at: End::Head, seg, until_ms: None }).collect();
         for seg in tails {
             let at = if seg.start_ms == first { End::Through } else { End::Tail };
-            edges.push(Edge { at, seg });
+            edges.push(Edge { at, seg, until_ms: None });
         }
         let piece = Piece {
             first_ms: first,
@@ -1548,6 +1634,13 @@ impl Importer<'_> {
             }
             self.flush(i)?;
         }
+        let disorder = self.report.rows_skipped.get("out_of_order").copied().unwrap_or(0);
+        if disorder >= 10 && disorder.saturating_mul(100) >= self.report.rows_read {
+            self.report.warn(format!(
+                "{disorder} rows were earlier than the row before them and were passed over: a file not in the order \
+                 of time, or with a wrong date in it"
+            ));
+        }
         self.report.missing_columns = self.missing.iter().map(|s| s.to_string()).collect();
         self.report.bad_values = self.bad.iter().map(|(k, v)| (k.to_string(), *v)).collect();
         if self.units_seen.len() > 1 {
@@ -1595,41 +1688,58 @@ impl Importer<'_> {
         let pieces = std::mem::take(&mut self.slots[i].pieces);
         let mut edges: Vec<Vec<Edge>> = vec![Vec::new(); pieces.len()];
         let mut emit: Vec<Agg> = Vec::new();
+        // what is under way at a piece's end and not carried on by the next piece: kept at that edge, and handed
+        // over when it is new or ends elsewhere than the stored one (`until`: where the next piece's first poll
+        // ends it; `was`: where the stored one was made to end)
+        let settle =
+            |edges: &mut Vec<Vec<Edge>>, emit: &mut Vec<Agg>, c: (Agg, usize, End, Option<u64>), until: Option<u64>| {
+                let (c, owner, end, was) = c;
+                let mut out = c.clone();
+                out.fresh |= until != was;
+                out.end_ms = until.unwrap_or(out.end_ms);
+                edges[owner].push(Edge { at: end, seg: c, until_ms: until });
+                emit.push(out);
+            };
         for kind in Kind::ALL {
-            let mut carry: Option<(Agg, usize, End)> = None;
+            let mut carry: Option<(Agg, usize, End, Option<u64>)> = None;
             for (k, p) in pieces.iter().enumerate() {
                 let head = p.edges.iter().find(|e| e.seg.kind == kind && matches!(e.at, End::Head | End::Through));
                 let tail = p.edges.iter().find(|e| e.seg.kind == kind && e.at == End::Tail);
-                let joinable = matches!((&carry, head), (Some((c, _, _)), Some(h)) if c.continues(&h.seg));
-                if joinable && let (Some((mut c, _, _)), Some(h)) = (carry.take(), head) {
+                let joinable = matches!((&carry, head), (Some((c, ..)), Some(h)) if c.continues(&h.seg));
+                if joinable && let (Some((mut c, ..)), Some(h)) = (carry.take(), head) {
                     c.join(h.seg.clone());
                     c.fresh = true;
                     if h.at == End::Through {
-                        carry = Some((c, k, End::Tail));
+                        carry = Some((c, k, End::Tail, None));
                         continue;
                     }
                     emit.push(c);
                 } else {
-                    if let Some((c, owner, end)) = carry.take() {
-                        edges[owner].push(Edge { at: end, seg: c.clone() });
-                        emit.push(c);
+                    if let Some(c) = carry.take() {
+                        // a state span ends at the next piece's first poll as it would at the next poll of its
+                        // own file: asleep until seen again, online when that poll came soon
+                        let gap = p.first_ms.saturating_sub(k.checked_sub(1).map_or(p.first_ms, |b| pieces[b].last_ms));
+                        let until = head.filter(|h| {
+                            kind == Kind::State
+                                && h.seg.start_ms > c.0.end_ms
+                                && (c.0.state == Some(CarState::Asleep) || gap <= seg::ONLINE_GAP_MS)
+                        });
+                        settle(&mut edges, &mut emit, c, until.map(|h| h.seg.start_ms));
                     }
                     if let Some(h) = head {
                         if h.at == End::Through {
-                            carry = Some((h.seg.clone(), k, End::Through));
+                            carry = Some((h.seg.clone(), k, End::Through, h.until_ms));
                             continue;
                         }
-                        edges[k].push(Edge { at: End::Head, seg: h.seg.clone() });
-                        emit.push(h.seg.clone());
+                        settle(&mut edges, &mut emit, (h.seg.clone(), k, End::Head, None), None);
                     }
                 }
                 if let Some(t) = tail {
-                    carry = Some((t.seg.clone(), k, End::Tail));
+                    carry = Some((t.seg.clone(), k, End::Tail, t.until_ms));
                 }
             }
-            if let Some((c, owner, end)) = carry {
-                edges[owner].push(Edge { at: end, seg: c.clone() });
-                emit.push(c);
+            if let Some(c) = carry {
+                settle(&mut edges, &mut emit, c, None);
             }
         }
         for a in &emit {

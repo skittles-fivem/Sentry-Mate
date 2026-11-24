@@ -459,6 +459,17 @@ fn what_isnt_a_whole_backup_is_refused_before_anything_is_handed_over() {
     // An xz window larger than xz's largest level is refused before it is allocated, with what to do.
     let e = refused(&xz_one_block(&plain, Some(36)));
     assert!(matches!(&e, Error::Unpack(m) if m.contains("window over 65 MiB") && m.contains("pack it again")), "{e}");
+
+    // A packed file that unpacks to far more than a backup does (40 MiB of one byte from a few KB) is refused.
+    let mut bomb = plain.clone();
+    bomb.resize(bomb.len() + (40 << 20), b'\n');
+    let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    e.write_all(&bomb).unwrap();
+    for packed in [e.finish().unwrap(), xz_one_block(&bomb, None)] {
+        assert!(packed.len() < 200_000, "{}", packed.len());
+        let e = refused(&packed);
+        assert!(matches!(&e, Error::Unpack(m) if m.contains("times its packed size")), "{e}");
+    }
 }
 
 #[test]

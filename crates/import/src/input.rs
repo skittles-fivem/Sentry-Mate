@@ -11,6 +11,7 @@
 use crate::Error;
 use crate::copy::{CopyReader, Handler};
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 use std::io::{self, Read};
 
 /// How the backup file was packed.
@@ -50,10 +51,71 @@ const CHUNK: usize = 64 << 10;
 /// and a little room. A backup packed with a larger one is refused rather than allowed to take that much memory.
 pub const XZ_MAX_WINDOW_KIB: u32 = (64 << 10) + 1024;
 
+/// The most a gzipped file (deflate, as a zip's entries) may unpack to per packed byte, past
+/// [`crate::zip::MAX_RATIO_FREE`]. Deflate reaches about 1,030 at most (on runs of one byte). A database dump stays
+/// far below this; a TeslaFi month in which the car stood asleep (a row a minute, hundreds of columns, nearly the
+/// same row each time) packs 100 to 200 times. Past the limit the file is refused: otherwise a small upload could
+/// make every pass unpack a thousand times its size.
+pub const DEFLATE_MAX_RATIO: u64 = 500;
+/// The same for xz, which packs such rows 400 to 1,300 times, and runs of one byte some 7,000 times.
+pub const XZ_MAX_RATIO: u64 = 4000;
+
+/// What a packed file unpacks to, refused once it is past `ratio` times the packed bytes read so far (`packed`).
+pub(crate) struct RatioRead<'n, R> {
+    inner: R,
+    packed: &'n Cell<u64>,
+    got: u64,
+    ratio: u64,
+}
+
+impl<'n, R: Read> RatioRead<'n, R> {
+    pub(crate) fn new(inner: R, packed: &'n Cell<u64>, ratio: u64) -> RatioRead<'n, R> {
+        RatioRead { inner, packed, got: 0, ratio }
+    }
+}
+
+impl<R: Read> Read for RatioRead<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let k = self.inner.read(buf)?;
+        self.got += k as u64;
+        if self.got > crate::zip::MAX_RATIO_FREE.max(self.packed.get().saturating_mul(self.ratio)) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "it unpacks to more than {} times its packed size, more than a real file of its kind does: it is \
+                     not read",
+                    self.ratio
+                ),
+            ));
+        }
+        Ok(k)
+    }
+}
+
+/// Counts the bytes read through it.
+pub(crate) struct Counted<'n, R> {
+    inner: R,
+    n: &'n Cell<u64>,
+}
+
+impl<'n, R> Counted<'n, R> {
+    pub(crate) fn new(inner: R, n: &'n Cell<u64>) -> Counted<'n, R> {
+        Counted { inner, n }
+    }
+}
+
+impl<R: Read> Read for Counted<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let k = self.inner.read(buf)?;
+        self.n.set(self.n.get() + k as u64);
+        Ok(k)
+    }
+}
+
 /// Reads the whole file once, handing its text to `copy`.
 pub fn read<R: Read, H: Handler<Error = Error>>(reader: R, copy: &mut CopyReader, h: &mut H) -> Result<Stats, Error> {
-    let mut packed = 0u64;
-    let mut counted = Counted { inner: reader, n: &mut packed };
+    let packed = Cell::new(0u64);
+    let mut counted = Counted::new(reader, &packed);
     let mut head = [0u8; 6];
     let n = read_up_to(&mut counted, &mut head)?;
     let head = &head[..n];
@@ -81,10 +143,14 @@ pub fn read<R: Read, H: Handler<Error = Error>>(reader: R, copy: &mut CopyReader
     };
     match compression {
         Compression::Plain => pump(&mut src, &mut feed, "")?,
-        Compression::Gzip => pump(&mut flate2::read::MultiGzDecoder::new(&mut src), &mut feed, "gzip: ")?,
+        Compression::Gzip => {
+            let gz = flate2::read::MultiGzDecoder::new(&mut src);
+            pump(&mut RatioRead::new(gz, &packed, DEFLATE_MAX_RATIO), &mut feed, "gzip: ")?
+        }
         Compression::Xz => {
             let buffered = io::BufReader::with_capacity(CHUNK, &mut src);
-            pump(&mut lzma_rust2::XzReader::new_mem_limit(buffered, true, XZ_MAX_WINDOW_KIB), &mut feed, "xz: ")?
+            let xz = lzma_rust2::XzReader::new_mem_limit(buffered, true, XZ_MAX_WINDOW_KIB);
+            pump(&mut RatioRead::new(xz, &packed, XZ_MAX_RATIO), &mut feed, "xz: ")?
         }
     }
     feed.finish()?;
@@ -92,7 +158,7 @@ pub fn read<R: Read, H: Handler<Error = Error>>(reader: R, copy: &mut CopyReader
     let (unpacked, crc32) = (feed.unpacked, feed.crc.clone().finalize());
     drop(feed);
     drop(src);
-    Ok(Stats { compression, encoding, packed_bytes: packed, unpacked_bytes: unpacked, crc32 })
+    Ok(Stats { compression, encoding, packed_bytes: packed.get(), unpacked_bytes: unpacked, crc32 })
 }
 
 fn read_up_to(r: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
@@ -126,19 +192,6 @@ fn pump<R: Read, H: Handler<Error = Error>>(src: &mut R, feed: &mut Feed<'_, H>,
             Err(e) => return Err(Error::Unpack(format!("{what}{e}"))),
         };
         feed.push(&buf[..n])?;
-    }
-}
-
-struct Counted<'n, R> {
-    inner: R,
-    n: &'n mut u64,
-}
-
-impl<R: Read> Read for Counted<'_, R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let k = self.inner.read(buf)?;
-        *self.n += k as u64;
-        Ok(k)
     }
 }
 
