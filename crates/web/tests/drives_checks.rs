@@ -264,3 +264,48 @@ async fn every_purpose_rule_in_a_csv() {
     assert_eq!(csv_lines(&watch.get(&format!("{rules}?format=csv")).await).len(), 61);
     assert_eq!(watch.get("/api/v1/cars/c999/purpose-rules?format=csv").await.code(), Some("no_such_car".into()));
 }
+
+/// A drive's consumption as the pages show it: none for a drive still under way, one under 1 km or one with a gap
+/// over 60 s in its data.
+fn has_figure(d: &Value) -> bool {
+    !d["flags"]["in_progress"].as_bool().unwrap_or(false)
+        && d["distance_km"].as_f64().unwrap_or(0.0) >= 1.0
+        && d["flags"]["gap_ms"].as_u64().unwrap_or(0) <= 60_000
+        && d["wh_per_km"].is_number()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sorted_by_consumption_drives_without_a_figure_come_last_either_way() {
+    // frames lost twice for 40 s in the day's longest drive: no figure for it
+    let base_sc = synth::Scenario::new(5).days(1).rates(synth::Rates::Light).with_trouble(false);
+    let first = base_sc.truth().drives.iter().max_by_key(|d| d.end_ms - d.start_ms).unwrap().clone();
+    let len = first.end_ms - first.start_ms;
+    let (p, q) = (first.start_ms + len / 4, first.start_ms + len * 5 / 8);
+    let sc = base_sc.trouble(synth::Trouble { drop_at: vec![(p, 40_000), (q, 40_000)], ..synth::Trouble::default() });
+    let k = seeded(&sc, |_| true).await;
+    let mut admin = k.s.admin().await;
+    let base = format!("/api/v1/cars/{}/drives", k.car);
+    for dir in ["asc", "desc"] {
+        let q = format!("{base}?sort=wh_per_km&dir={dir}&limit=500");
+        let rows = ok(&mut admin, &q).await["items"].as_array().unwrap().clone();
+        let with: Vec<f64> = rows.iter().filter(|d| has_figure(d)).map(|d| d["wh_per_km"].as_f64().unwrap()).collect();
+        assert!(!with.is_empty() && with.len() < rows.len(), "{dir}: drives with and without a figure: {rows:?}");
+        let flags: Vec<bool> = rows.iter().map(has_figure).collect();
+        assert!(flags.windows(2).all(|w| w[0] || !w[1]), "{dir}: rows without a figure come last: {flags:?}");
+        let ordered = with.windows(2).all(|w| if dir == "asc" { w[0] <= w[1] } else { w[0] >= w[1] });
+        assert!(ordered, "{dir}: {with:?}");
+        // paged the same
+        let mut paged = Vec::new();
+        let mut after = String::new();
+        loop {
+            let v = ok(&mut admin, &format!("{base}?sort=wh_per_km&dir={dir}&limit=1{after}")).await;
+            paged.extend(v["items"].as_array().unwrap().iter().map(|d| d["id"].clone()));
+            match v["next"].as_str() {
+                Some(n) => after = format!("&after={n}"),
+                None => break,
+            }
+        }
+        let want: Vec<Value> = rows.iter().map(|d| d["id"].clone()).collect();
+        assert_eq!(paged, want, "{dir}: pages give the same order");
+    }
+}
