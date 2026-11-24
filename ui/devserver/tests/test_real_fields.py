@@ -67,3 +67,24 @@ class RealFields(ServerCase):
         self.c.json("PATCH", "/api/v1/cars/c1", {"version": car["version"], "config": {"model": "Model Q"}})
         self.assertEqual(self.c.get("/api/v1/cars/c1")["config"]["model"],
                          {"value": "Model Q", "source": "owner", "sources": []})
+
+
+class CarsNamedInTheQuery(ServerCase):
+    """`cars=` or `car=` on any route, as the real server's guard reads them: each car named must be one the account
+    sees (else 404 no_such_car), and the cars of both are the ones a report covers."""
+
+    def test_car_filters_like_cars(self):
+        for path in ("/api/v1/charges",):
+            every = {x["car"] for x in self.walk(f"{path}?from_ms={NOW - 30 * DAY}", limit=200)}
+            self.assertGreater(len(every), 1, path)
+            self.assertEqual({x["car"] for x in self.walk(f"{path}?car=c1&from_ms={NOW - 30 * DAY}", limit=200)}, {"c1"})
+            both = {x["car"] for x in self.walk(f"{path}?cars=c1&car=c2&from_ms={NOW - 30 * DAY}", limit=200)}
+            self.assertEqual(both, {"c1", "c2"})
+            self.assertEqual({x["car"] for x in self.walk(f"{path}?cars=all&car=c2&from_ms={NOW - 30 * DAY}", limit=200)},
+                             {"c2"})
+
+    def test_an_unknown_car_in_the_query_is_404_on_any_route(self):
+        for path in ("/api/v1/charges?car=zz", "/api/v1/charges?cars=c1,zz", "/api/v1/statistics?car=c999",
+                     "/api/v1/me?car=zz", "/api/v1/cars/c1/drives?cars=zz", "/api/v1/places?car=zz"):
+            self.c.error("GET", path, 404, "no_such_car")
+        self.assertEqual(self.c.get("/api/v1/me?cars=all&car=")["id"], "a1")
