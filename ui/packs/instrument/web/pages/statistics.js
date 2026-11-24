@@ -402,7 +402,10 @@ export async function mount(ctx) {
     const tagCur = total.size > 1;
     const costList = [...total].map(([currency, amount]) => ({ currency, amount: Math.round(amount * 100) / 100 }));
     const curText = (amount, c, kind = 'money') => `${format({ amount, currency: c }, kind)}${tagCur ? ` ${c}` : ''}`;
-    const days = Math.max(1, sum(rows.map((r) => (r.period_end_ms - r.period_start_ms) / DAY)));
+    // the days of the period, once: with several cars every car's rows span the same days
+    const spanOf = new Map();
+    for (const r of rows) spanOf.set(r.car, (spanOf.get(r.car) || 0) + (r.period_end_ms - r.period_start_ms) / DAY);
+    const days = Math.max(1, ...spanOf.values());
     const priced = rows.some((r) => r.charges_priced != null) ? sum(rows.map((r) => r.charges_priced)) : null;
     const costExplain = [
       priced != null ? `priced ${formatNumber(priced)} of ${formatNumber(charges)} ${charges === 1 ? 'charge' : 'charges'}` : 'per currency, never added across',
