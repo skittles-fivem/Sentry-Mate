@@ -75,7 +75,7 @@ export function startRouter() {
 async function warm(s) {
   const id = s.page;
   const info = pageInfo(id);
-  if (!info || BARE.has(id)) return;
+  if (!info || BARE.has(id) || getMe()?.two_step_setup_only) return; // (behind the wall nothing is read ahead)
   const modP = pageModule(id);
   // a file that fails while the car is still being read is not an error nobody handles: whoever warms waits for
   // modP below and takes its failure there (and the page itself loads the file again, see mount())
@@ -313,6 +313,8 @@ const dropCss = pageSheetsOff;
 // wall: the account may only set two-step sign-in up (core/session.js gate): its page is shown at every address
 async function mount(s, { keepScroll = false, live = false, wall = false } = {}) {
   const my = ++seq;
+  // the wall page is no car's and no period's: it loads nothing of the address it stands at
+  if (wall) s = { ...s, car: null, period: null };
   // (the clean-up of what was there is handed to the stage alone: this page's own functions must not hold it)
   let finishOld = both(dropStage(live), unmountCurrent(live));
   if (!live) { unready(); setStale(false); forgetSorts(); }

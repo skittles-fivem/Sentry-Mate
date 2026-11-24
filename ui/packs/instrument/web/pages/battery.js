@@ -215,7 +215,13 @@ export async function mount(ctx) {
       const d = ev.data.now || {};
       const v = (x) => (x && typeof x === 'object' && 'value' in x ? x.value : undefined);
       const live = { soc: v(d.soc_pct), usable: v(d.usable_soc_pct), kwh: v(d.energy_remaining_kwh), limit: v(d.charge?.limit_pct) };
-      if (!state.isSold(car)) replace(nowSide, 'Live');
+      // "Live" by the same rule as the first paint: not sold, not marked stale, readings from the last hour; an event
+      // that tells neither (only the car's inputs changed) leaves the label as it is
+      const asOf = d.at_ms ?? d.received_ms;
+      if (d.stale != null || asOf != null) {
+        const old = state.isSold(car) || d.stale === true || (asOf != null && now() - asOf > 3600000);
+        replace(nowSide, old ? 'Last known' : 'Live');
+      }
       if (Object.values(live).some((x) => x != null)) paintNow(Object.fromEntries(Object.entries(live).filter(([, x]) => x != null)));
     });
 
