@@ -472,25 +472,25 @@ mod tests {
         let v = Arc::new(v);
         let path = data.join("sessions.journal");
         let s = Sessions::open(v.clone(), &path, T0).unwrap();
-        let (tok, _, _) = s.create(1, ip("192.168.1.2"), "Firefox", T0).unwrap();
+        let (tok, _, _) = s.create(1, ip("192.0.2.2"), "Firefox", T0).unwrap();
         let after_create = lock_journal(&s).lines();
         // 1,000 requests within a minute: nothing written
         for i in 0..1000 {
-            s.touch(&tok, ip("192.168.1.2"), T0 + i * 50).unwrap();
+            s.touch(&tok, ip("192.0.2.2"), T0 + i * 50).unwrap();
         }
         assert_eq!(lock_journal(&s).lines(), after_create);
         // past a minute: one line, then quiet again
-        s.touch(&tok, ip("192.168.1.2"), T0 + 61_000).unwrap();
-        s.touch(&tok, ip("192.168.1.2"), T0 + 122_000).unwrap();
+        s.touch(&tok, ip("192.0.2.2"), T0 + 61_000).unwrap();
+        s.touch(&tok, ip("192.0.2.2"), T0 + 122_000).unwrap();
         assert_eq!(lock_journal(&s).lines(), after_create + 1);
-        s.touch(&tok, ip("192.168.1.9"), T0 + 123_000).unwrap();
+        s.touch(&tok, ip("192.0.2.9"), T0 + 123_000).unwrap();
         s.flush().unwrap();
         drop(s);
         let s = Sessions::open(v, &path, T0 + 124_000).unwrap();
         let l = s.list(1, T0 + 124_000);
         assert_eq!(l.len(), 1);
         assert_eq!(l[0].last_seen_ms, T0 + 123_000);
-        assert_eq!(l[0].address, "192.168.1.9");
+        assert_eq!(l[0].address, "192.0.2.9");
     }
 
     fn lock_journal(s: &Sessions) -> MutexGuard<'_, Journal> {
@@ -503,9 +503,9 @@ mod tests {
         let v = Arc::new(v);
         let path = data.join("sessions.journal");
         let s = Sessions::open(v.clone(), &path, T0).unwrap();
-        let (keep, _, _) = s.create(7, ip("10.0.0.1"), "kept", T0).unwrap();
+        let (keep, _, _) = s.create(7, ip("192.0.2.1"), "kept", T0).unwrap();
         for i in 0..3000u64 {
-            let (_, h, _) = s.create(i % 40, ip("10.0.0.2"), "short", T0 + i).unwrap();
+            let (_, h, _) = s.create(i % 40, ip("192.0.2.2"), "short", T0 + i).unwrap();
             s.end(&h).unwrap();
         }
         assert!(lock_journal(&s).lines() < 1100, "{}", lock_journal(&s).lines());
@@ -513,21 +513,21 @@ mod tests {
         drop(s);
         let s = Sessions::open(v, &path, T0 + 5000).unwrap();
         assert_eq!(s.live(), 1);
-        s.touch(&keep, ip("10.0.0.1"), T0 + 5000).unwrap();
+        s.touch(&keep, ip("192.0.2.1"), T0 + 5000).unwrap();
     }
 
     #[test]
     fn an_account_keeps_at_most_its_most_recent_sessions() {
         let (_t, data, v) = crate::journal::tests::vault();
         let s = Sessions::open(Arc::new(v), &data.join("s.journal"), T0).unwrap();
-        let (first, _, _) = s.create(1, ip("10.0.0.1"), "first", T0).unwrap();
+        let (first, _, _) = s.create(1, ip("192.0.2.1"), "first", T0).unwrap();
         let mut last = None;
         for i in 1..=MAX_PER_ACCOUNT as u64 {
-            last = Some(s.create(1, ip("10.0.0.1"), "more", T0 + i).unwrap().0);
+            last = Some(s.create(1, ip("192.0.2.1"), "more", T0 + i).unwrap().0);
         }
         assert_eq!(s.list(1, T0 + 100).len(), MAX_PER_ACCOUNT);
-        assert!(matches!(s.touch(&first, ip("10.0.0.1"), T0 + 100), Err(Error::NotSignedIn)));
-        s.touch(&last.unwrap(), ip("10.0.0.1"), T0 + 100).unwrap();
+        assert!(matches!(s.touch(&first, ip("192.0.2.1"), T0 + 100), Err(Error::NotSignedIn)));
+        s.touch(&last.unwrap(), ip("192.0.2.1"), T0 + 100).unwrap();
     }
 
     #[test]

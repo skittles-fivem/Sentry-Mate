@@ -68,7 +68,7 @@
 .im-st { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); font-weight: 600; white-space: nowrap; color: var(--text-3); }
 .im-st::before { content: ""; width: round(0.4375rem, var(--e)); height: round(0.4375rem, var(--e)); border-radius: 50%; background: currentColor; }
 .im-st--live { color: var(--live-ink); }
-.im-st--ok { color: var(--st-parked); }
+.im-st--ok { color: var(--power-ink); }
 .im-st--warm { color: var(--warm-ink); }
 .im-st--danger { color: var(--danger-ink); }
 .im-restart { display: flex; gap: round(0.5rem, var(--e)); align-items: flex-start; margin-top: round(1rem, var(--e)); }

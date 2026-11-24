@@ -404,7 +404,25 @@ export async function mount(ctx) {
     if (lat == null) return;
     const tone = n.stale || n.state === 'unknown' ? 'muted' : n.state === 'charging' ? 'warm' : n.state === 'asleep' ? 'asleep' : 'live';
     const heading = n.state === 'driving' ? val(loc.heading_deg) : null;
-    const pad = () => ({ ...padClear(mapEl, placeCard, { left: 4, top: 30, right: 0, bottom: 0, beside: true }), top: rpx(30) });
+    // The marker sits in the middle of what the place card leaves of the map. Where that middle is under the
+    // tools at the bottom (the full screen button, the outside link or its "off" chip) or the map's own switch and
+    // credit, as on a phone, the frame's bottom edge rises until the whole marker is above them.
+    const pad = () => {
+      const p = { ...padClear(mapEl, placeCard, { left: 4, top: 30, right: 0, bottom: 0, beside: true }), top: rpx(30) };
+      const m = mapEl.getBoundingClientRect();
+      if (!m.width || !m.height) return p;
+      const reach = (marker?.getElement().offsetWidth || rpx(24)) / 2 + rpx(8);
+      const x = m.left + (p.left + m.width - p.right) / 2;
+      let y = m.top + (p.top + m.height - p.bottom) / 2;
+      const over = [...mapTools.children, mapEl.querySelector('.maplibregl-ctrl-bottom-right')]
+        .map((e) => e?.getBoundingClientRect()).filter((r) => r && r.width > 0 && r.height > 0).sort((a, b) => b.top - a.top);
+      for (const r of over) {
+        if (x + reach > r.left && x - reach < r.right && y + reach > r.top && y - reach < r.bottom) y = r.top - reach;
+      }
+      y = Math.max(y, m.top + Math.min(p.top + reach, m.height / 2));
+      p.bottom = Math.max(p.bottom, Math.round(m.height + p.top - 2 * (y - m.top)));
+      return p;
+    };
     // live values come every few seconds: the map is drawn again only when the car moved, turned or changed
     // state (a map drawn again on a 4K screen takes longer than a frame and holds a scroll up)
     const key = JSON.stringify([lon, lat, tone, heading, pad()]);
@@ -892,8 +910,8 @@ export async function mount(ctx) {
   let rowsT = 0;
   ctx.events('rows', (ev) => {
     if (ev.data?.car !== cid) return;
-    clearTimeout(rowsT);
-    rowsT = setTimeout(() => { if (ctx.alive()) { paintWindow().catch(() => {}); paintToday(); } }, 1500);
+    if (rowsT) return;   // (words that keep coming, as in a rebuild, never put it off)
+    rowsT = setTimeout(() => { rowsT = 0; if (ctx.alive()) { paintWindow().catch(() => {}); paintToday(); } }, 1500);
   });
   ctx.onCleanup(() => { clearTimeout(pend); clearTimeout(rowsT); });
   ctx.onCleanup(onUnitsChange(() => { paintGauge(); paintPlace(); paintLive(); paintWindow().catch(() => {}); }));

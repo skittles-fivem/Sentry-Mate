@@ -446,12 +446,13 @@ export async function mount(ctx) {
     if (days.length) barChart(dailyEl, ctx, { t_ms: xs, values: days.map((d) => d.distance_km), kind: 'distance', tz: 'UTC', onCursor: (i) => { if (i == null) { idle(); return; } const d = days[i]; replace(dailyRead, `${formatDate(xs[i], 'UTC', { year: false })} · `, h('b', null, format(d.distance_km, 'distance')), ` · ${d.count} ${d.count === 1 ? 'drive' : 'drives'}`); } });
   }
 
-  // a drive started or ended: load the lists and patterns again (a moment later, so bursts load once)
+  // a drive started or ended: load the lists and patterns again, a moment after the first word of it (so a burst
+  // loads once, and words that keep coming, every second during a rebuild, never put the load off)
   let rowsTimer = 0;
   ctx.events('rows', (ev) => {
     if (ev.data?.car && ev.data.car !== cid) return;
-    clearTimeout(rowsTimer);
-    rowsTimer = setTimeout(() => { if (!ctx.alive()) return; table.reload(apiParams()); incomplete.reload(); loadPatterns(); }, 2000);
+    if (rowsTimer) return;
+    rowsTimer = setTimeout(() => { rowsTimer = 0; if (!ctx.alive()) return; table.reload(apiParams()); incomplete.reload(); loadPatterns(); }, 2000);
   });
   ctx.onCleanup(() => clearTimeout(rowsTimer));
 

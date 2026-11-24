@@ -247,8 +247,8 @@ export async function mount(ctx) {
   /* ================================================================ move here */
   function moveStep() {
     const from = field({ label: 'The old server\'s address', name: 'from', required: true,
-      hint: 'The one the CAN Bridge sends to, such as 192.168.1.20 or nas.local. Port 10100 unless you add another; the whole https://…/api/can/logs address works too.',
-      attrs: { autocomplete: 'off', spellcheck: 'false', autocapitalize: 'none', inputmode: 'url', placeholder: '192.168.1.20' } });
+      hint: 'The one the CAN Bridge sends to, such as 192.0.2.20 or nas.local. Port 10100 unless you add another; the whole https://…/api/can/logs address works too.',
+      attrs: { autocomplete: 'off', spellcheck: 'false', autocapitalize: 'none', inputmode: 'url', placeholder: '192.0.2.20' } });
     const code = field({ label: 'Move code', name: 'code', required: true, hint: 'SMMV- and six groups of five. Case and spaces don\'t matter; a typo is caught at once.',
       attrs: { autocomplete: 'off', spellcheck: 'false', autocapitalize: 'characters', placeholder: 'SMMV-…' } });
     const f = form({

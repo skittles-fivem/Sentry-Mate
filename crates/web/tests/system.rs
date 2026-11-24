@@ -560,6 +560,8 @@ async fn bounds_streamed_pages_arrival_times_and_local_days() {
     let zone = "Pacific/Kiritimati";
     let mut c = k.db.car(k.id).unwrap().unwrap();
     c.time_zone = zone.into();
+    // (as the car's settings store a zone the owner typed: without it the car follows the zone of its position)
+    c.time_zone_typed = Some(true);
     k.db.update_car(c).unwrap();
     let st = walk(&mut admin, &format!("/api/v1/cars/{car}/storage?kinds=logs"), 500, |d| d["date"].to_string()).await;
     let got: std::collections::BTreeSet<String> = st.iter().map(|d| d["date"].as_str().unwrap().to_string()).collect();

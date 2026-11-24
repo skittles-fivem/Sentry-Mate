@@ -214,7 +214,7 @@
 .mv-step-t b { font-weight: 600; }
 .mv-step--done .mv-step-n { background: var(--live-soft); border-color: var(--live-line); color: var(--live-ink); }
 .mv-step--done { color: var(--text-2); }
-.mv-step--now .mv-step-n { background: var(--live); border-color: var(--live); color: var(--bg-0); }
+.mv-step--now .mv-step-n { background: var(--live-solid); border-color: var(--live-solid); color: var(--text-on-live); }
 .mv-step--now { color: var(--text); }
 
 /* progress */
@@ -253,7 +253,7 @@
 .xp-step--done { color: var(--text-2); }
 .xp-step--done .xp-step-n { background: var(--live-soft); border-color: var(--live-line); color: var(--live-ink); }
 .xp-step--now { color: var(--text); font-weight: 600; }
-.xp-step--now .xp-step-n { background: var(--live); border-color: var(--live); color: var(--bg-0); }
+.xp-step--now .xp-step-n { background: var(--live-solid); border-color: var(--live-solid); color: var(--text-on-live); }
 .xp-bar { height: round(0.5rem, var(--e)); }
 .xp-bar > i { transition: width 0.9s linear; }
 .xp-bar--unknown > i { width: 100%; opacity: 0.25; }

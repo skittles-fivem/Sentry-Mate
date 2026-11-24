@@ -41,15 +41,15 @@ fn sessions_survive_a_restart_and_so_do_sign_outs() {
     let (a, _) = env.owner();
     let (b, _) = env.sign_in("owner", OWNER_PASSWORD, HOME);
     env.advance(5 * 60_000);
-    env.acc.authenticate(&a.token, &client("192.168.1.77")).unwrap();
+    env.acc.authenticate(&a.token, &client("192.0.2.77")).unwrap();
     assert!(env.acc.sign_out(&b.token, &client(HOME)).unwrap());
     assert!(!env.acc.sign_out(&b.token, &client(HOME)).unwrap(), "only once");
     env.reopen();
-    let me = env.acc.authenticate(&a.token, &client("192.168.1.77")).unwrap();
+    let me = env.acc.authenticate(&a.token, &client("192.0.2.77")).unwrap();
     assert!(matches!(env.acc.authenticate(&b.token, &client(HOME)), Err(Error::NotSignedIn)));
     let list = env.acc.sessions(&me, me.account.id).unwrap();
     assert_eq!(list.len(), 1);
-    assert_eq!(list[0].address, "192.168.1.77");
+    assert_eq!(list[0].address, "192.0.2.77");
     assert_eq!(list[0].created_ms, T0);
     assert_eq!(list[0].last_seen_ms, env.now());
     assert_eq!(list[0].device, "Test browser on Linux");
@@ -61,9 +61,9 @@ fn sessions_survive_a_restart_and_so_do_sign_outs() {
 fn devices_are_listed_and_signed_out_one_by_one_or_all() {
     let env = Env::new();
     let (_, owner) = env.owner();
-    let (phone, _) = env.sign_in("owner", OWNER_PASSWORD, "192.168.1.30");
+    let (phone, _) = env.sign_in("owner", OWNER_PASSWORD, "192.0.2.30");
     env.advance(1000);
-    let (laptop, _) = env.sign_in("owner", OWNER_PASSWORD, "192.168.1.31");
+    let (laptop, _) = env.sign_in("owner", OWNER_PASSWORD, "192.0.2.31");
     let list = env.acc.sessions(&owner, owner.account.id).unwrap();
     assert_eq!(list.len(), 3);
     assert_eq!(list[0].id, laptop.session.id, "most recently used first");
@@ -218,7 +218,7 @@ fn two_step_can_be_required_from_outside_the_home_network() {
     let wrong = env.acc.sign_in("guest", "not the passphrase", &client(OUTSIDE));
     assert!(matches!(right, Err(Error::WrongCredentials)), "{:?}", right.err());
     assert!(matches!(wrong, Err(Error::WrongCredentials)));
-    env.sign_in("guest", "a visitor passphrase", "10.1.2.3");
+    env.sign_in("guest", "a visitor passphrase", HOME_OTHER);
     // a session made at home can't be taken outside: it ends on its first request from there
     assert!(matches!(env.acc.authenticate(&guest_home.token, &client(OUTSIDE)), Err(Error::TwoStepRequired)));
     assert!(matches!(env.acc.authenticate(&guest_home.token, &client(HOME)), Err(Error::NotSignedIn)));

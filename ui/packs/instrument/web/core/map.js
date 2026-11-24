@@ -269,12 +269,14 @@ export function boundsOf(coords) {
   return [[w, s], [e, n]];
 }
 
-/** Camera padding that keeps a card on top of the map clear, plus a margin (design px). */
+/** Camera padding that keeps a card on top of the map clear, plus a margin (design px). A card that does not lie on
+ *  the map (on a phone it is stacked above or below it) takes no room from it. */
 export function padClear(mapEl, card, { top = 30, right = 30, bottom = 30, left = 30, beside = false } = {}) {
   const pad = { top: rpx(top), right: rpx(right), bottom: rpx(bottom), left: rpx(left) };
   if (card) {
     const m = mapEl.getBoundingClientRect(), c = card.getBoundingClientRect();
-    if (beside) pad.left = Math.max(pad.left, c.right - m.left + rpx(left));
+    const onMap = c.width > 0 && c.height > 0 && c.left < m.right && c.right > m.left && c.top < m.bottom && c.bottom > m.top;
+    if (!onMap) { /* beside the map, not on it */ } else if (beside) pad.left = Math.max(pad.left, c.right - m.left + rpx(left));
     else pad.top = Math.max(pad.top, c.bottom - m.top + rpx(top));
   }
   const w = mapEl.clientWidth, hh = mapEl.clientHeight;

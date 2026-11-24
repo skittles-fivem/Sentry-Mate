@@ -936,14 +936,15 @@ export async function mount(ctx) {
     return plot;
   }
 
-  // a charge started or ended: load everything again (a moment later, so bursts load once)
+  // a charge started or ended: load everything again, a moment after the first word of it (so a burst loads once,
+  // and words that keep coming, every second during a rebuild, never put the load off)
   let rowsTimer = 0;
   ctx.events('rows', (ev) => {
     if (ev.data?.car && !viewCars.includes(ev.data.car)) return;
     if (ev.data?.kinds && !ev.data.kinds.includes('charges')) return;
-    clearTimeout(rowsTimer);
+    if (rowsTimer) return;
     // the page is built again off screen and swapped in whole: the statistics redraw panel by panel, maps and charts included
-    rowsTimer = setTimeout(() => { if (ctx.alive()) ctx.refresh(); }, 2000);
+    rowsTimer = setTimeout(() => { rowsTimer = 0; if (ctx.alive()) ctx.refresh(); }, 2000);
   });
   ctx.onCleanup(() => clearTimeout(rowsTimer));
 

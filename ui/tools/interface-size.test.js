@@ -1,6 +1,7 @@
 // Pages at the Interface sizes a person can pick for a device (80 to 125), in Chromium on the dev API server:
 // on a phone at 110 and 125 the export file's steps and its card's lines stay inside the card and off one another,
-// and at 80 the Travel map's legend stays inside the map.
+// at 80 the Travel map's legend stays inside the map, and on a phone of any width at any size nothing on the car
+// overview's map lies over the car's marker.
 // Each test names the packs it runs on; `PACKS=a,b` runs only those.
 // Run: node --test ui/tools/interface-size.test.js. Skipped when Playwright is not installed.
 'use strict';
@@ -282,6 +283,42 @@ for (const pack of packs('instrument')) {
         assert.deepEqual(await stickingOut(o.page, 'main .tbl-bar .panel-title', '.panel-title'), [], `${viewport.width} px: every table title is inside its own box`);
         await o.context.close();
       }
+    });
+  });
+}
+
+for (const pack of packs('instrument')) {
+  test(`${pack}: on a phone 320 to 430 px wide at every Interface size nothing on the car overview's map lies over the car's marker`, { skip: SKIP, timeout: 480000 }, async () => {
+    await withPack(pack, async ({ origin, browser }) => {
+      const over = [];
+      for (const width of [320, 360, 390, 430]) {
+        for (const size of [80, 90, 100, 110, 125]) {
+          const { page, context } = await openAt(browser, origin, '/cars/c1', 'car', { width, height: 844 }, size);
+          await page.locator('.map-panel').first().scrollIntoViewIfNeeded();
+          await page.locator('.map-panel .car-marker').first().waitFor({ timeout: 20000 });
+          await page.locator('.map-panel .map-chip').first().waitFor({ timeout: 15000 });   // outside links are off: the chip says so
+          await page.waitForTimeout(700);   // the map is framed a frame after the marker is made
+          const got = await page.evaluate(() => {
+            const panel = document.querySelector('.map-panel');
+            const box = (e) => { const r = e.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom }; };
+            // the marker with everything it draws (the heading's arrow)
+            const marker = [panel.querySelector('.car-marker'), ...panel.querySelectorAll('.car-marker *')].map(box)
+              .reduce((a, b) => ({ l: Math.min(a.l, b.l), t: Math.min(a.t, b.t), r: Math.max(a.r, b.r), b: Math.max(a.b, b.b) }));
+            const map = box(panel.querySelector('.map'));
+            const things = [...panel.querySelectorAll('.map-tools > *, .place-card, .map-style, .maplibregl-ctrl-group, .maplibregl-ctrl-attrib')]
+              .filter((e) => e.getClientRects().length);
+            const hits = things.filter((e) => { const b = box(e); return Math.min(b.r, marker.r) - Math.max(b.l, marker.l) > 0 && Math.min(b.b, marker.b) - Math.max(b.t, marker.t) > 0; })
+              .map((e) => `${e.tagName.toLowerCase()}.${String(e.className).split(' ').join('.')} "${e.textContent.trim().slice(0, 30)}"`);
+            const inside = marker.l >= map.l && marker.r <= map.r && marker.t >= map.t && marker.b <= map.b;
+            return { hits, inside, things: things.length, chip: !!panel.querySelector('.map-chip') };
+          });
+          assert.ok(got.chip && got.things >= 4, `${width} px at ${size}: the chip, the button, the card and the map's own controls are there (${got.things})`);
+          if (!got.inside) over.push(`${width} px at ${size}: the marker is not whole inside the map`);
+          for (const h of got.hits) over.push(`${width} px at ${size}: ${h} lies over the marker`);
+          await context.close();
+        }
+      }
+      assert.deepEqual(over, []);
     });
   });
 }

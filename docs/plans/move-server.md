@@ -27,7 +27,7 @@ Direct move, before the web UI exists (TrueNAS "Install via YAML", or compose):
 
    ```yaml
        environment:
-         - SENTRY_MATE_MOVE_FROM=192.168.1.20
+         - SENTRY_MATE_MOVE_FROM=192.0.2.20
          - SENTRY_MATE_MOVE_CODE=SMMV-1K3QX-7WD2M-ZP4HT-9BN6R-XC8VA-5JE0F
    ```
 
@@ -348,7 +348,7 @@ finish without a pause in force), `409 digest_mismatch`.
   then on it pins the old certificate by that SHA-256 on every connection and sends `Authorization: Bearer <session>`.
 - A fake server, or someone in between, sees one HMAC over a value of its own connection. With a 125-bit secret it
   can't be guessed offline. The secret and the keys never cross the network. The new server tells the owner: "the
-  server at 192.168.1.20 couldn't prove it made this code: nothing was sent".
+  server at 192.0.2.20 couldn't prove it made this code: nothing was sent".
 - A lost answer: the same code with the same `claim` gets the same session again (it is made from the claim). Any
   other claim gets `409 code_used` with when and from which address it was used.
 - The session lasts until the move ends. While copying, 7 days with nothing from the new server end it (the old
@@ -445,7 +445,7 @@ per car) make each catch-up round small.
 - It holds the gate exclusively the whole time, also after a restart (taken before anything else on start). Every
   upload path answers `503 moved` with `Retry-After: 3600` and "This server's data moved to another server: change
   the server address in the CAN Bridge app." The bridge shows "answered 503 moved; will retry" and keeps its logs.
-- It writes nothing more: no housekeeping, and commands that write refuse ("this server's data moved to 192.168.1.30 on
+- It writes nothing more: no housekeeping, and commands that write refuse ("this server's data moved to 192.0.2.30 on
   2026-11-17 at 14:02"). Reading still works (`log export`, `chain`, `fingerprint`, an export file: an export of a
   moved server needs no pause, nothing writes; later the UI, read only, with a banner).
 - The move's session keeps answering `finish`, `switched` and `status` until undo.
@@ -548,7 +548,7 @@ switched half way, with files of the import beside the vault of the first start.
 
 | Variable | Server | What it does |
 |---|---|---|
-| `SENTRY_MATE_MOVE_FROM` | new | The old server: `192.168.1.20`, `nas.local:10100`, or the bridge's whole upload address (`https://192.168.1.20:10100/api/can/logs`). Port 10100 unless given. |
+| `SENTRY_MATE_MOVE_FROM` | new | The old server: `192.0.2.20`, `nas.local:10100`, or the bridge's whole upload address (`https://192.0.2.20:10100/api/can/logs`). Port 10100 unless given. |
 | `SENTRY_MATE_MOVE_CODE` | new | The move code. |
 | `SENTRY_MATE_OFFER_MOVE` | old | `yes`: keep a move code ready (home network only) and print it in the log. A new one only when there is none, or the one there expired unclaimed; never while a move is under way or after one. `anywhere`: the same, for a new server anywhere. Ignored once the server has moved. |
 
@@ -557,7 +557,7 @@ On start:
 - `.moving/` is there: carry on with that move (the two lines may be gone by now; what is needed is in the sealed
   state).
 - The data folder is unused and both lines are set: start the move.
-- This server already took a move with that code: one line, "the move from 192.168.1.20 is done; you can remove the
+- This server already took a move with that code: one line, "the move from 192.0.2.20 is done; you can remove the
   two lines".
 - The data folder is in use: start as usual and warn (3.1).
 
@@ -578,7 +578,7 @@ SHA-256, carries on with that copy and fetches only what changed.
 The new server, a whole move (the old server's address, sizes and times are examples):
 
 ```text
-move: bringing the data from 192.168.1.20:10100 (move code 3f9a1c07)
+move: bringing the data from 192.0.2.20:10100 (move code 3f9a1c07)
 move: the old server proved the code; it runs Sentry Mate 0.4.1, this one 0.4.2
 move: 1,234,567 files, 182.4 GB to copy; 912.0 GB free here
 move: copying: 5 % (9.1 of 182.4 GB, 61,800 of 1,234,567 files), about 28 min left
@@ -605,15 +605,15 @@ When something is wrong:
 
 ```text
 move: the move code has a typo: check it against the one the old server showed
-move: nothing answers at 192.168.1.20:10100 (connection refused); trying again in 30 s
-move: there is no move waiting at 192.168.1.20:10100: make a move code there (update it first if it has no
+move: nothing answers at 192.0.2.20:10100 (connection refused); trying again in 30 s
+move: there is no move waiting at 192.0.2.20:10100: make a move code there (update it first if it has no
       `move code` command)
 move: the old server didn't take this code: check it, or make a new one there
 move: this move code expired at 2026-11-18 14:05: make a new one on the old server, put it in SENTRY_MATE_MOVE_CODE
       and restart this server
-move: this move code was used already, by 192.168.1.77 at 13:40. If that wasn't this server, run `move cancel` on
+move: this move code was used already, by 192.0.2.77 at 13:40. If that wasn't this server, run `move cancel` on
       the old server now.
-move: the server at 192.168.1.20 couldn't prove it made this code: it isn't the old server, or something in between
+move: the server at 192.0.2.20 couldn't prove it made this code: it isn't the old server, or something in between
       changed the connection. Nothing was sent.
 move: the old server runs a newer Sentry Mate (0.5.0) than this one (0.4.2): update this server first, then start it
       again (the code still works)
@@ -632,12 +632,12 @@ The old server:
 
 ```text
 move: a move code was made (3f9a1c07), valid until 2026-11-18 14:05, works once, from this home network only
-move: a server at 192.168.1.30 took the move code (Sentry Mate 0.4.2) and is copying the data
-move: 192.168.1.30 has copied 50 % (91.2 of 182.4 GB)
-move: uploads paused for the last changes (192.168.1.30 is catching up)
-move: moved: the data moved to 192.168.1.30 at 14:02; it is switching now. Keep this server running until this log
+move: a server at 192.0.2.30 took the move code (Sentry Mate 0.4.2) and is copying the data
+move: 192.0.2.30 has copied 50 % (91.2 of 182.4 GB)
+move: uploads paused for the last changes (192.0.2.30 is catching up)
+move: moved: the data moved to 192.0.2.30 at 14:02; it is switching now. Keep this server running until this log
       says done.
-move: done: 192.168.1.30 serves the data since 14:02. This server no longer takes uploads and tells the CAN Bridge to
+move: done: 192.0.2.30 serves the data since 14:02. This server no longer takes uploads and tells the CAN Bridge to
       try later. You can stop it now; keep its folders as a backup for a while, then delete them. To take uploads
       here again: `move undo`.
 ```
@@ -857,7 +857,7 @@ moved` to changes, as `old::refuse_if_moved` does for the commands; the audit lo
 cancelled, a claim, the finish, an undo, an export made and downloaded, a restore and a move received.
 
 What the pages show: the old server's page shows the code large with a copy button and its expiry, then "Waiting for
-the new server", then a progress bar, then "Moved to 192.168.1.30: it is switching, keep this server on", then "Done:
+the new server", then a progress bar, then "Moved to 192.0.2.30: it is switching, keep this server on", then "Done:
 you can turn this server off" with **Undo the move**. The first-run screen asks for the set-up code, then offers
 the three choices; a move or restore shows its progress, then "Done: sign in with your account from the old server",
 and the bridge note (with the port note when both ran on one machine).
@@ -893,13 +893,13 @@ and the bridge note (with the port note when both ran on one machine).
 | New server older than the old | `409 too_old` in the claim; the code stays usable | Which side to update |
 | Network cut | Every request is tried again (1 s, doubling, at most 60 s), forever; nothing is fetched twice | "lost the connection; trying again" |
 | Old server restarted | The session is kept (sealed). A pause is gone: the new server catches up and asks again. The moved state is kept, gate and session with it | "the old server restarted; carrying on" |
-| New server restarted | Carries on from `.moving/`: whole files already there are not fetched again, parts go on with the version they continue | "carrying on the move from 192.168.1.20 (45 % was copied)" |
+| New server restarted | Carries on from `.moving/`: whole files already there are not fetched again, parts go on with the version they continue | "carrying on the move from 192.0.2.20 (45 % was copied)" |
 | Old server's disk dies mid-move | The copy so far opens with the recovery key | `move finish --recovery-key`, with its warning |
 | Finish answer lost | Asked again, any time until undo, also after either restarts | Nothing; it carries on |
 | `OFFER_MOVE` with a move under way | No new code is made | Nothing; the move carries on |
 | Disk full on the new server | Checked before round 1 (total plus 2 GiB); a full disk later pauses the copy, checked every minute | How much is needed and free, and how to give up |
 | Disk full on the old server | Its own uploads fail as before (`507 no_space`). If it can't write the moved state, the finish fails, the pause ends by itself, the new server tries again | The old server's log says the disk is full |
-| The new server goes away mid-move | The old server keeps serving; a pause ends after 60 s; the session is dropped after 7 days | `move status` on the old: "a move to 192.168.1.30 started ..., not heard from since ..." |
+| The new server goes away mid-move | The old server keeps serving; a pause ends after 60 s; the session is dropped after 7 days | `move status` on the old: "a move to 192.0.2.30 started ..., not heard from since ..." |
 | Cancel on the old server while the new one finishes | One lock: whichever comes first wins. The commit reads the code record again under it, so a cancel or a new code made after the finish was let in still wins. Cancel first: the new server gets `410` and keeps its copy. Finish first: cancel says "finished; use `move undo`" | One of those two lines |
 | The new server stops reading a fetch in the pause | The answer is stopped after 60 s without a piece taken; the pause ends 60 s after the last piece; at most 15 minutes in all | "the pause ended (the new server went quiet); uploads go on" |
 | The new server's connection drops during the finish | The commit still finishes and is held; the new server asks again and gets the same answer | Nothing; it carries on |

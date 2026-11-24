@@ -80,8 +80,9 @@ cut short) is where it can lose something. It never does so quietly:
   also hold what no log gives (imported rows, typed costs and purposes), so no rebuild replaces them by itself. A
   rebuild or a full rebuild that meets one fails and names the file, and the admins get the notice `data_damaged`
   with what to do: put the car's folder back from a backup with the server stopped (the logs that came since are
-  decoded again at the start). Whether a full rebuild may start such a table empty, losing its imported rows, is
-  the owner's choice and not offered yet.
+  decoded again at the start). This is how it stays: no rebuild and no full rebuild starts such a table empty,
+  because that would lose its imported rows and typed values without a word. The steps are in
+  [A car's history file is damaged](install.md#a-cars-history-file-is-damaged).
 - **A rebuild that fails is said**: `500 rebuild_failed` with why, an audit entry that says it failed, and the
   notice `rebuild_failed` (`crates/web/tests/system.rs`).
 - **A full rebuild carried on after a restart** goes on with the logs left, counts the car's logs from the start

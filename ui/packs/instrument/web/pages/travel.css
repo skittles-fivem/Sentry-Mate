@@ -103,8 +103,8 @@
 .tv-ranks { display: grid; gap: round(1.5rem, var(--e)); grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .tv-rank-head { display: flex; align-items: center; justify-content: space-between; gap: round(0.5rem, var(--e)); margin-bottom: round(0.625rem, var(--e)); }
 .tv-rank-head .tv-group-title { margin: 0; }
-.tv-rank { --rc: var(--live); }
-.tv-rank[data-tone="region"] { --rc: var(--warm); }
+.tv-rank { --rc: var(--live); --rc-ink: var(--live-ink); }
+.tv-rank[data-tone="region"] { --rc: var(--warm); --rc-ink: var(--warm-ink); }
 .tv-bars { display: flex; flex-direction: column; gap: round(0.4375rem, var(--e)); margin: 0; padding: 0; list-style: none; }
 /* (the rank's column holds two digits at the text floor too: a phone at a small Interface size) */
 .tv-bars li { display: grid; grid-template-columns: max(round(1.25rem, var(--e)), round(up, calc(1.3 * var(--fs-floor)), 1px)) minmax(round(5rem, var(--e)), round(9rem, var(--e))) minmax(0, 1fr) auto; align-items: center; gap: round(0.625rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); }
@@ -112,9 +112,9 @@
 .tv-bar-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tv-bar { position: relative; height: round(0.625rem, var(--e)); border-radius: 99px; background: var(--glass-2); overflow: hidden; }
 .tv-bar > i { position: absolute; inset: 0 auto 0 0; width: var(--w); border-radius: inherit; background: var(--rc); }
-.tv-bar-val { white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 600; color: var(--rc); }
+.tv-bar-val { white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 600; color: var(--rc-ink); }
 .tv-bars li[data-tier="2"] .tv-bar > i { background: color-mix(in srgb, var(--rc) 60%, transparent); }
-.tv-bars li[data-tier="2"] .tv-bar-val { color: color-mix(in srgb, var(--rc) 75%, var(--text-2)); }
+.tv-bars li[data-tier="2"] .tv-bar-val { color: color-mix(in srgb, var(--rc-ink) 75%, var(--text-2)); }
 .tv-bars li[data-tier="3"] .tv-bar > i { background: color-mix(in srgb, var(--rc) 32%, transparent); }
 .tv-bars li[data-tier="3"] .tv-bar-val { color: var(--text-2); font-weight: 500; }
 .tv-rank-panel .note { margin-top: round(1rem, var(--e)); }

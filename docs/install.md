@@ -660,6 +660,68 @@ dataset's snapshots, *Rollback*), then start it. If the log then says `the
 key file doesn't open this vault`, the snapshot is from before a restore:
 run the TrueNAS restore above.
 
+### A car's history file is damaged
+
+If a file of one car's history can no longer be read (a disk fault, a copy
+cut short), admins see a notice at the top of every page: *A file of
+\<car\>'s history is damaged and can't be read*, with the file's name. Pages
+that need the file answer with an error until it is mended. The notice says
+which of two kinds it is:
+
+- **It holds only what was decoded from the stored logs** (a day of decoded
+  samples). A rebuild makes it again from the logs: *Rebuild all data* on
+  the car's Data health page, or *Rebuild the period* on its Drives page
+  with the period set over that time. No backup is needed.
+- **It also holds what no stored log gives** (a table such as the car's
+  drives or charges: it carries imported rows and what was typed in, such as
+  costs and purposes). No rebuild and no full rebuild makes this again, and
+  none starts it empty: that would lose those rows without a word. The way
+  back is the car's folder from a backup. This is why the data folder needs
+  backups even though the logs are kept.
+
+To put one car's folder back, Docker Compose, in the folder with
+`docker-compose.yml`. The notice names the folder: `db/cars/<id>`.
+
+1. Stop Sentry Mate and put the car's folder aside:
+
+   ```bash
+   docker compose stop
+   ```
+
+   ```bash
+   sudo mv data/db/cars/<id> ~/sentry-mate-car-<id>.old
+   ```
+
+2. Take that folder out of the backup. Use your backup file's name in place
+   of `sentry-mate-data-<date>.tar`:
+
+   ```bash
+   sudo tar -C data -xpf ~/sentry-mate-data-<date>.tar ./db/cars/<id>
+   ```
+
+3. Give it to the user Sentry Mate runs as, and start it:
+
+   ```bash
+   sudo chown -R 1000:1000 data/db/cars/<id>
+   ```
+
+   ```bash
+   docker compose up -d
+   ```
+
+The logs that came since the backup are decoded again by themselves, so
+drives and charges from logs come back whole. What was imported or typed in
+for that car after the backup was made (an import, a cost, a purpose) is
+not in it: do those again. When the notice is gone and the car's pages
+open, delete the folder you put aside.
+
+Use a backup this server made with its present keys. If the car's pages
+still answer with an error, put the whole data folder back instead
+([The data from a backup](#the-data-from-a-backup)). On TrueNAS, stop the
+app, copy `db/cars/<id>` out of a snapshot of the data dataset over the
+one in the dataset (a snapshot's files are under the dataset's
+`.zfs/snapshot/<name>/`), then start the app.
+
 ## Moving to a new server
 
 The easy way is [docs/moving.md](moving.md): a one-time move code on the old
