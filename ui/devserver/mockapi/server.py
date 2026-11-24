@@ -302,6 +302,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not app.ds.exists(car) or not app.store.sees(account, car):
                     raise no_such_car()
             query = parse_qs(query_string, keep_blank_values=True)
+            if account is not None:
+                # every car the query names (`cars=` or `car=`, on any route) must be one the account sees
+                for key in ("cars", "car"):
+                    text = query.get(key, [None])[-1]
+                    if text is None or (key == "cars" and text == "all"):
+                        continue
+                    for c in (x.strip() for x in text.split(",")):
+                        if c and (not app.ds.exists(c) or not app.store.sees(account, c)):
+                            raise no_such_car()
             req = Req(app, m, path, query, self.headers, body, params, session)
             req.raw_cookie_token = self.cookie_value()
             req.setup_token = self.cookie_value(SETUP_COOKIE)  # the first-run claim (resources/moving.py)

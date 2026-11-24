@@ -156,16 +156,21 @@ class Req:
         return self.int_param("limit", DEFAULT_LIMIT, 1, MAX_LIMIT)
 
     def cars(self):
-        """Car ids for a report resource: cars=all (or absent) for every car the account sees, else a list."""
-        v = self.q("cars")
+        """Car ids for a report resource: those `cars=` and `car=` name (the server checked them before the handler
+        ran), in the cars' order; cars=all, or neither, for every car the account sees."""
         st = self.store
-        if v is None or v == "" or v == "all":
+        ids = []
+        for key in ("cars", "car"):
+            v = self.q(key)
+            if v is None or v == "" or (key == "cars" and v == "all"):
+                continue
+            ids += self.list_param(key)
+        if not ids:
             return [c for c in self.ds.car_ids_featured() if st.sees(self.account, c)]
-        ids = self.list_param("cars")
         for c in ids:
             if not self.ds.exists(c) or not st.sees(self.account, c):
                 raise no_such_car()
-        return [c for c in dict.fromkeys(ids)]
+        return sorted(dict.fromkeys(ids), key=lambda c: (int(c[1:]) if c[1:].isdigit() else 0, c))
 
     # --- the JSON body
     def json(self, required=True):
