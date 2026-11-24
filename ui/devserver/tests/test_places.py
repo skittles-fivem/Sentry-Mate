@@ -216,3 +216,16 @@ class PlacesWrite(ServerCase):
                          costco["counts"]["drives"] - prev["drives_taken"])
         self.c.json("PATCH", "/api/v1/places/p2", {"lat": p2["lat"], "lon": p2["lon"], "version": d["version"]})
         self.assertEqual(self.c.get("/api/v1/places/p5")["counts"]["drives"], costco["counts"]["drives"])
+
+
+class PlaceNames(ServerCase):
+    def test_a_name_is_trimmed_first_and_then_one_plain_line(self):
+        """As the real server: white space around the name is dropped (a tab too), then no control character, line
+        separator or direction mark may be left."""
+        p = self.c.json("POST", "/api/v1/places", {"name": "\tTabbed lot \n", "lat": 37.1, "lon": -122.1}, expect=201)
+        self.assertEqual(p["name"], "Tabbed lot")
+        for bad in ("a\tb", "a\x7fb", "a\u0085b", "a b", "a‮b", "a⁦b"):
+            e, _ = self.c.error("POST", "/api/v1/places", 422, "invalid", body={"name": bad, "lat": 37.2, "lon": -122.2})
+            self.assertEqual(e["fields"], {"name": "No control characters."}, repr(bad))
+        e, _ = self.c.error("POST", "/api/v1/places", 422, "invalid", body={"name": " \t ", "lat": 37.2, "lon": -122.2})
+        self.assertEqual(e["fields"], {"name": "1 to 64 characters."})

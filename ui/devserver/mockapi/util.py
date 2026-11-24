@@ -51,6 +51,24 @@ def r(v, d=1):
     return round(float(v), d)
 
 
+# the white space Rust's str::trim drops (Unicode White_Space; Python's strip() also drops U+001C to U+001F)
+_SPACE = "\t\n\x0b\x0c\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a" \
+         "\u2028\u2029\u202f\u205f\u3000"
+
+
+def trimmed(text: str) -> str:
+    """The text without the white space around it, as the real server trims a name."""
+    return text.strip(_SPACE)
+
+
+def not_plain_text(text: str) -> bool:
+    """Whether a one-line text a person typed holds a character it may not, as the real server's rule: a control
+    character (tab, line breaks, DEL, U+0080 to U+009F), a line or paragraph separator, or a mark that turns the
+    direction of the text after it."""
+    return any(ord(c) < 32 or 0x7f <= ord(c) <= 0x9f or c in "\u2028\u2029" or "\u202a" <= c <= "\u202e"
+               or "\u2066" <= c <= "\u2069" for c in text)
+
+
 def clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
 
