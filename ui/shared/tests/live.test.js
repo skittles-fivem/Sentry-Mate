@@ -90,6 +90,29 @@ test('stream down: polls; back up: reads once to catch up and stops polling', as
   f.stop();
 });
 
+test('initial: the value the page has just read is the first one, not read again', async () => {
+  for (const state of ['open', 'connecting']) {
+    const api = fakeApi(state);
+    const t = fakeTimers();
+    let loads = 0;
+    const seen = [];
+    const f = follow(api, { type: 'job', timers: t, load: async () => { loads++; return { n: loads }; }, initial: { n: 0 },
+      onValue: (v, how) => seen.push([how, v.n]), pollMs: 1000 });
+    await tick();
+    assert.equal(loads, 0, `${state}: no read at the start`);
+    assert.deepEqual(f.value, { n: 0 });
+    assert.deepEqual(seen, [], `${state}: the page painted it already`);
+    if (state === 'connecting') {
+      await t.advance(1000);
+      assert.equal(loads, 1, 'the fallback reads go on as before');
+      api.setState('open');
+      await tick();
+      assert.equal(loads, 2, 'and the read after the stream comes up');
+    }
+    f.stop();
+  }
+});
+
 test('status updates while still down keep the planned read', async () => {
   const api = fakeApi('connecting');
   const t = fakeTimers();
