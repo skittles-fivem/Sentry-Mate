@@ -108,7 +108,10 @@ export function windowList(opts) {
     setGap(bottomGap, (total == null ? 0 : total - last) * rowH);
     drawn = next;
     view = { first, last };
-    if (!measured) measure();
+    // a first row measured at another height than the guess: the window is worked out again at once, before the
+    // browser paints (the next frame can be long in coming on a page still settling: the rows too many or too few
+    // for the box would be on screen until then, and go or come after)
+    if (!measured && measure()) { draw(); return; }
     for (let i = first; i < last; i++) if (!items.has(i)) fetchAt(Math.floor(i / limit) * limit);
     opts.onRange?.({ first, last, total: total ?? 0 });
   }
@@ -119,17 +122,18 @@ export function windowList(opts) {
     body.replaceChildren(topGap, bottomGap);
   }
 
-  // the height of a loaded row, once: the box's rows are all that tall
+  // the height of a loaded row, once: the box's rows are all that tall. True when it is not the height used so far.
   function measure() {
     for (const [, [el, has]] of drawn) {
       if (!has) continue;
       const hgt = el.getBoundingClientRect ? el.getBoundingClientRect().height : 0;
       if (hgt > 0) {
         measured = true;
-        if (Math.abs(hgt - rowH) > 0.5) { rowH = hgt; schedule(); }
+        if (Math.abs(hgt - rowH) > 0.5) { rowH = hgt; return true; }
       }
-      return;
+      return false;
     }
+    return false;
   }
 
   function schedule() {
