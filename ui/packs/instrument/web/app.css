@@ -64,6 +64,12 @@
   --warm-ink: var(--warm);
   --danger-ink: var(--danger);
   --power-ink: var(--c-power);
+  --soc-ink: var(--c-soc);
+  /* the accent as a fill that carries a label (the primary button, a route's B pin, the step being done): the
+     label in --text-on-live reaches 4.5:1 on these, so they are a little deeper than --live in the light theme */
+  --live-solid: var(--live);
+  --live-solid-2: var(--live-2);
+  --live-solid-hi: var(--live-3);
 
   /* car states: validated against the panel surface for colour-blind separation; always shown with a label */
   --st-driving: #3FE0D0;
@@ -170,7 +176,7 @@
 
   --text: #0F1828;
   --text-2: #3B475C;
-  --text-3: #556177;
+  --text-3: #4C586E;
   --text-on-live: #FFFFFF;
 
   --live: #0B9488;
@@ -192,6 +198,10 @@
   --warm-ink: #8A4B00;
   --danger-ink: #A01F2D;
   --power-ink: #2450B8;
+  --soc-ink: #5B3FC4;
+  --live-solid: #087F77;
+  --live-solid-2: #0A7782;
+  --live-solid-hi: #09827A;
 
   --st-driving: #0E9F94;
   --st-charging: #C9820F;
@@ -315,7 +325,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 
 .sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
-.skip { position: absolute; left: round(0.75rem, var(--e)); top: round(-3rem, var(--e)); z-index: 100; padding: round(0.5rem, var(--e)) round(0.875rem, var(--e)); border-radius: round(0.625rem, var(--e)); background: var(--live); color: var(--text-on-live); font-weight: 600; }
+.skip { position: absolute; left: round(0.75rem, var(--e)); top: round(-3rem, var(--e)); z-index: 100; padding: round(0.5rem, var(--e)) round(0.875rem, var(--e)); border-radius: round(0.625rem, var(--e)); background: var(--live-solid); color: var(--text-on-live); font-weight: 600; }
 .skip:focus { top: round(0.75rem, var(--e)); }
 
 .ico { width: round(1.125rem, var(--e)); height: round(1.125rem, var(--e)); flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
@@ -812,7 +822,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 /* A and B: the same pins as on the map */
 .route-pin { position: relative; z-index: 1; display: grid; place-items: center; width: round(1.375rem, var(--e)); height: round(1.375rem, var(--e)); border-radius: 50%; font-family: var(--font); font-size: max(0.6875rem, var(--fs-floor)); font-weight: 600; --LH: round(calc(1 * 1em), 2px); box-shadow: 0 round(0.25rem, var(--e)) round(0.75rem, var(--e)) rgba(0, 0, 0, 0.55); }
 .route-pin--a { background: var(--bg-1); color: var(--live-ink); border: round(0.125rem, var(--e)) solid var(--live); }
-.route-pin--b { background: var(--live); color: var(--text-on-live); border: round(0.125rem, var(--e)) solid var(--marker-ring); }
+.route-pin--b { background: var(--live-solid); color: var(--text-on-live); border: round(0.125rem, var(--e)) solid var(--marker-ring); }
 .route-end b { font-weight: 600; display: block; --LH: round(calc(1.25 * 1em), 2px); }
 .route-end div span { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
 .route-end time { font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-2); }
@@ -1168,8 +1178,8 @@ a.tl-kind:hover { color: var(--live-ink); }
 
 .page-head-text { min-width: 0; }
 .page-purpose { margin-top: round(0.375rem, var(--e)); max-width: round(52rem, var(--e)); color: var(--text-2); }
-.btn--primary { background: linear-gradient(180deg, var(--live), var(--live-2)); border-color: transparent; color: var(--text-on-live); font-weight: 600; }
-.btn--primary:hover { background: linear-gradient(180deg, var(--live-3), var(--live)); border-color: transparent; }
+.btn--primary { background: linear-gradient(180deg, var(--live-solid), var(--live-solid-2)); border-color: transparent; color: var(--text-on-live); font-weight: 600; }
+.btn--primary:hover { background: linear-gradient(180deg, var(--live-solid-hi), var(--live-solid)); border-color: transparent; }
 .btn--danger { color: var(--danger-ink); }
 .btn:disabled, .btn[aria-disabled="true"] { opacity: 0.5; cursor: default; pointer-events: none; }
 .btn .ico { width: round(1rem, var(--e)); height: round(1rem, var(--e)); }
@@ -1763,7 +1773,7 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
   .pp-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "from acts" "price acts" "who acts"; }
   .pp-rate { grid-template-columns: 1fr 1fr; padding-bottom: 0.5rem; border-bottom: 1px solid var(--pp-line); }
 }
-.pp-dialog { --pp-bg: var(--panel-solid); --pp-line: var(--line-2); --pp-text: var(--text); --pp-muted: var(--text-2); --pp-accent: var(--live); --pp-bad: var(--danger); --pp-radius: 1.25rem; --pp-backdrop: var(--backdrop); }
+.pp-dialog { --pp-bg: var(--panel-solid); --pp-line: var(--line-2); --pp-text: var(--text); --pp-muted: var(--text-2); --pp-accent: var(--live-ink); --pp-bad: var(--danger-ink); --pp-radius: 1.25rem; --pp-backdrop: var(--backdrop); }
 /* A kept answer on screen while the fresh one is asked for (core/router.js puts data-stale on the root): the page
    is a little dimmed after a moment, so a quick check shows nothing. Only the opacity changes: nothing moves. */
 #view { transition: opacity 0.2s ease; }

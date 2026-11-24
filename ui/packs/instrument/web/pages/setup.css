@@ -20,7 +20,7 @@
 .su-crumb--done { color: var(--text-2); }
 .su-crumb--done .su-crumb-n { color: var(--live-ink); border-color: var(--live-line); background: var(--live-soft); }
 .su-crumb--now { color: var(--text); font-weight: 600; }
-.su-crumb--now .su-crumb-n { color: var(--bg-0); background: var(--live); border-color: var(--live); }
+.su-crumb--now .su-crumb-n { color: var(--text-on-live); background: var(--live-solid); border-color: var(--live-solid); }
 
 /* explanations */
 .su-where { padding: round(0.75rem, var(--e)) round(0.875rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--surface-sunken); display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); }
@@ -89,7 +89,7 @@
 .su-step--done { color: var(--text-2); }
 .su-step--done .su-step-n { background: var(--live-soft); border-color: var(--live-line); color: var(--live-ink); }
 .su-step--now { color: var(--text); }
-.su-step--now .su-step-n { background: var(--live); border-color: var(--live); color: var(--bg-0); }
+.su-step--now .su-step-n { background: var(--live-solid); border-color: var(--live-solid); color: var(--text-on-live); }
 .su-step--stuck { color: var(--text); }
 .su-step--stuck .su-step-n { background: var(--warm-soft); border-color: var(--warm-line); color: var(--warm-ink); }
 .su-progress { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); }

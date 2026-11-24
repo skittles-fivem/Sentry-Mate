@@ -77,7 +77,7 @@
 /* side by side */
 .trip-compare-tbl tbody th[scope="row"] { font-weight: 500; font-size: max(0.8125rem, var(--fs-floor)); letter-spacing: 0; text-transform: none; color: var(--text-2); text-align: left; background: none; }
 .trip-compare-tbl td.is-better { color: var(--live-ink); font-weight: 600; }
-.trip-compare-tbl thead a { color: var(--t-b); }
+.trip-compare-tbl thead a { color: var(--soc-ink); }
 
 /* battery and elevation */
 .trip-charts { padding: round(1.125rem, var(--e)) round(1.25rem, var(--e)) round(0.875rem, var(--e)); }

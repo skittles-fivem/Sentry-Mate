@@ -39,7 +39,7 @@
 .st-count { font-weight: 600; }
 .st-car { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); }
 .st-swatch { display: inline-block; flex: none; width: round(0.625rem, var(--e)); height: round(0.625rem, var(--e)); border-radius: 50%; background: var(--c); }
-.st-eff.is-good { color: var(--ok, var(--live)); }
+.st-eff.is-good { color: var(--live-ink); }
 .st-rec { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); min-width: round(9rem, var(--e)); }
 .st-rec-top { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); }
 .st-rec-top b { font-weight: 600; }
