@@ -54,8 +54,8 @@
 :root[data-phone] .charges-table .cost-pen { opacity: 1; }
 @media (hover: none) { .charges-table .cost-pen { opacity: 1; } }
 .kind-pill { display: inline-flex; width: fit-content; align-items: center; height: round(1.375rem, var(--e)); padding: 0 round(0.5rem, var(--e)); border-radius: round(0.375rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.04em; }
-.kind-pill--ac { color: var(--ac); background: var(--warm-soft); }
-.kind-pill--dc { color: var(--dc); background: var(--glass-3); }
+.kind-pill--ac { color: var(--warm-ink); background: var(--warm-soft); }
+.kind-pill--dc { color: var(--power-ink); background: var(--glass-3); }
 .kind-pill--unknown { color: var(--text-2); background: var(--glass); box-shadow: inset 0 0 0 1px var(--line-2); }
 .charges-page .eff { display: inline-grid; grid-template-columns: round(3.5rem, var(--e)) auto; align-items: center; gap: round(0.5rem, var(--e)); }
 .charges-page .eff-bar { position: relative; height: round(0.375rem, var(--e)); border-radius: 99px; background: var(--glass-3); overflow: hidden; }
@@ -139,7 +139,8 @@
 .band-list li.is-high .hbar-label { color: var(--warm); }
 .band-list li.is-danger .hbar > i { background: var(--danger); }
 .band-list li.is-danger .hbar-label { color: var(--danger); }
-.weekmap { display: grid; grid-template-columns: round(2.25rem, var(--e)) repeat(24, minmax(0, 1fr)); grid-auto-rows: round(1.125rem, var(--e)); gap: 2px; }
+/* (the weekday column and the rows hold their labels at the text floor too: a phone at a small Interface size) */
+.weekmap { display: grid; grid-template-columns: max(round(2.25rem, var(--e)), round(up, calc(2.3 * var(--fs-floor)), 1px)) repeat(24, minmax(0, 1fr)); grid-auto-rows: max(round(1.125rem, var(--e)), round(calc(1.25 * var(--fs-floor)), 1px)); gap: 2px; }
 .weekmap-x { grid-column: span 3; font-size: max(0.625rem, var(--fs-floor)); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .weekmap-y { font-size: max(0.6875rem, var(--fs-floor)); color: var(--text-3); --LH: round(1.125rem, 2px); }
 .weekmap-cell { border-radius: 2px; background: var(--glass); }

@@ -208,3 +208,62 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
     });
   });
 }
+
+/** The texts of `selector` whose words reach out of the top or bottom of their own box, as "text: N px". */
+const tallerThanBox = (page, selector) => page.evaluate((selector) => {
+  const out = [];
+  for (const e of document.querySelectorAll(selector)) {
+    if (!e.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) || !e.textContent.trim()) continue;
+    const range = document.createRange(); range.selectNodeContents(e);
+    const t = range.getBoundingClientRect(), b = e.getBoundingClientRect();
+    const by = Math.max(b.top - t.top, t.bottom - b.bottom);
+    if (by > 0.5) out.push(`${e.textContent.trim().slice(0, 30)}: ${Math.round(by * 10) / 10} px`);
+  }
+  return [...new Set(out)];
+}, selector);
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: on a phone the charge page's Download CSV stands clear of "Power against battery %"`, { skip: SKIP, timeout: 240000 }, async () => {
+    await withPack(pack, async ({ origin, browser }) => {
+      for (const size of [100, 80, 125]) {
+        const first = await openAt(browser, origin, '/cars/c1/charges', 'charges', PHONE, size);
+        const id = await first.page.evaluate(async () => (await (await fetch('/api/v1/cars/c1/charges?limit=1')).json()).items[0].id);
+        await first.context.close();
+        const o = await openAt(browser, origin, `/cars/c1/charges/${id}`, 'charge', PHONE, size);
+        const head = o.page.locator('.charts-panel .panel-head', { hasText: 'Power against battery' });
+        await head.waitFor({ timeout: 15000 });
+        const over = await head.evaluate((el) => {
+          const words = (e) => { const r = document.createRange(); r.selectNodeContents(e); return r.getBoundingClientRect(); };
+          const t = words(el.querySelector('.panel-title')), b = el.querySelector('.row .btn').getBoundingClientRect();
+          return { x: Math.min(t.right, b.right) - Math.max(t.left, b.left), y: Math.min(t.bottom, b.bottom) - Math.max(t.top, b.top), title: t.width, button: b.width };
+        });
+        assert.ok(over.title > 0 && over.button > 0, 'the heading and the button are drawn');
+        assert.ok(over.x <= 0 || over.y <= 0, `at Interface size ${size} the button covers ${Math.round(over.x)} x ${Math.round(over.y)} px of the heading`);
+        await o.context.close();
+      }
+    });
+  });
+
+  test(`${pack}: on a phone at Interface size 80 and 90 a tag's text, the charging week's labels and Travel's ranks are inside their boxes`, { skip: SKIP, timeout: 300000 }, async () => {
+    await withPack(pack, async ({ origin, browser }) => {
+      for (const size of [80, 90]) {
+        for (const [route, id] of [['/settings/cars', 'settings-cars'], ['/cars/c1/software', 'software'], ['/settings/integrations', 'settings-integrations']]) {
+          const o = await openAt(browser, origin, route, id, PHONE, size);
+          await o.page.locator('main .tag:visible').first().waitFor({ timeout: 15000 });
+          assert.deepEqual(await tallerThanBox(o.page, 'main .tag'), [], `${route} at ${size}: every tag is as high as its text`);
+          await o.context.close();
+        }
+        let o = await openAt(browser, origin, '/cars/c1/charges', 'charges', PHONE, size);
+        await o.page.locator('.weekmap-x').first().waitFor({ timeout: 15000 });
+        assert.deepEqual(await tallerThanBox(o.page, '.weekmap-x'), [], `at ${size} no hour label of the charging week is cut at the top or bottom`);
+        assert.deepEqual(await stickingOut(o.page, '.weekmap-y', '.weekmap-y'), [], `at ${size} every weekday of the charging week is inside its column`);
+        await o.context.close();
+
+        o = await openAt(browser, origin, '/travel', 'travel', PHONE, size);
+        await o.page.locator('.tv-bar-rank').first().waitFor({ timeout: 15000 });
+        assert.deepEqual(await stickingOut(o.page, '.tv-bar-rank', '.tv-bar-rank'), [], `at ${size} every rank of Travel's lists is inside its column`);
+        await o.context.close();
+      }
+    });
+  });
+}
