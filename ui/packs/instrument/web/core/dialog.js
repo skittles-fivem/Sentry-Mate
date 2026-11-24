@@ -28,6 +28,20 @@ function giveBack(el) {
 }
 
 /**
+ * A dialog whose request is running cannot be closed: Esc, the close button and any Cancel (a button in the
+ * dialog's head or marked [data-cancel], or the secondary button of a form) wait until it ends, or its answer
+ * (a key shown once, an account added) would be lost with it. Pass any element inside the dialog.
+ */
+export function dialogBusy(inside, on) {
+  const dlg = inside?.closest?.('dialog');
+  if (!dlg) return;
+  dlg.toggleAttribute('data-busy', !!on);
+  for (const b of dlg.querySelectorAll('.dialog-head button, .form-actions button:not([type="submit"]), [data-cancel]')) {
+    if (on) { if (!b.disabled) { b.disabled = true; b.dataset.busyOff = ''; } } else if ('busyOff' in b.dataset) { b.disabled = false; delete b.dataset.busyOff; }
+  }
+}
+
+/**
  * Open a dialog and wait for it to close. Resolves with the value of the action pressed, or null (Esc,
  * the close button). body: elements or text. actions: [{ label, value, kind: 'primary' | 'danger' |
  * undefined, onClick?, focus? }]; an onClick that returns false keeps the dialog open (a form with errors).
@@ -44,13 +58,24 @@ export function openDialog({ title, body = null, actions = [{ label: 'Close', va
     let first = null;
     const dlg = h('dialog', { class: ['dialog', wide && 'dialog--wide', cls], 'aria-labelledby': titleId },
       h('div', { class: 'dialog-head' }, h('h2', { id: titleId }, title),
-        h('button', { class: 'btn btn--ghost btn--icon btn--sm', type: 'button', 'aria-label': 'Close', onclick: () => dlg.close() }, icon('x'))),
+        h('button', { class: 'btn btn--ghost btn--icon btn--sm', type: 'button', 'aria-label': 'Close', onclick: () => { if (!dlg.hasAttribute('data-busy')) dlg.close(); } }, icon('x'))),
       h('div', { class: 'dialog-body' }, body),
       actions.length ? h('div', { class: 'dialog-actions' }, actions.map((a) => {
         const b = h('button', {
           class: ['btn', a.kind === 'primary' && 'btn--primary', a.kind === 'danger' && 'btn--danger'], type: 'button',
           onclick: async () => {
-            if (a.onClick && (await a.onClick()) === false) return;
+            if (dlg.hasAttribute('data-busy')) return;
+            if (a.onClick) {
+              // the dialog stays and takes no second press while the action runs
+              dialogBusy(dlg.firstChild, true);
+              for (const x of dlg.querySelectorAll('.dialog-actions button')) x.setAttribute('aria-disabled', 'true');
+              let keep;
+              try { keep = await a.onClick(); } finally {
+                dialogBusy(dlg.firstChild, false);
+                for (const x of dlg.querySelectorAll('.dialog-actions button')) x.removeAttribute('aria-disabled');
+              }
+              if (keep === false) return;
+            }
             result = a.value ?? null;
             dlg.close();
           },
@@ -58,6 +83,7 @@ export function openDialog({ title, body = null, actions = [{ label: 'Close', va
         if (a.focus) first = b;
         return b;
       })) : null);
+    dlg.addEventListener('cancel', (e) => { if (dlg.hasAttribute('data-busy')) e.preventDefault(); });
     dlg.addEventListener('close', () => {
       dlg.remove();
       resolve(result);

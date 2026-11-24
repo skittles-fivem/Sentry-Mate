@@ -16,7 +16,7 @@ const num = (v) => String(Math.round(v * 10) / 10);
 import { icon } from '../core/icons.js';
 import { pageHead, panel, panelLink, kv, tag, pill, note } from '../core/page.js';
 import { dataTable } from '../core/table.js';
-import { field, showApiError } from '../core/form.js';
+import { field as baseField, showApiError, once } from '../core/form.js';
 import { emptyState, errorWords } from '../core/states.js';
 import { flash } from '../core/flash.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
@@ -31,6 +31,16 @@ export const css = true;
 export const title = (ctx) => (ctx.car ? 'Car settings' : 'Settings: Cars');
 
 const enc = encodeURIComponent;
+const KEEP = Symbol('keep');   // returned by an onFields that shows the server's words on a list it keeps as typed
+
+// the fields of the car page as drawn now, by their API path: after a save that failed the page is drawn again
+// from what is saved, and the message a field shows (a 422) is put on the field that takes the place of it
+let fieldsNow = new Map();
+function field(opts) {
+  const f = baseField(opts);
+  fieldsNow.set(f.path, f);
+  return f;
+}
 const SOURCE = { can: ['From SMO', 'live'], vin: ['From VIN', 'plain'], owner: ['Typed', 'warm'], teslamate: ['From TeslaMate', 'plain'], tesla_api: ['From the Tesla API', 'plain'] };
 const CHEM = { auto: 'Automatic', lfp: 'LFP (iron phosphate)', nca_nmc: 'NCA / NMC (nickel)' };
 const CONFIG_ROWS = [
@@ -183,10 +193,10 @@ function defaultZonePanel(ctx, admin) {
     } catch (e) {
       if (e?.name === 'AbortError') return;
       if (e.status === 409) { server = await ctx.api.get('settings').catch(() => server); flash('Someone else changed the settings; this page shows theirs now.', { kind: 'info' }); }
-      else if (e.fields) { f.setError(Object.values(e.fields).join(' ')); return; }
+      else if (e.fields) { f.reset(); f.setError(Object.values(e.fields).join(' ')); return; }
       else flash(`Could not save the time zone for new cars: ${errText(e)}`, { kind: 'error' });
     }
-    if (ctx.alive()) paint();
+    if (ctx.alive()) keepFocus(el, paint);
   }
   function paint() {
     if (!server) { replace(el, el.firstChild, h('p', { class: 'note' }, 'The server settings could not be read.')); return; }
@@ -236,13 +246,13 @@ function newCarTokens(ctx, rows, noCars) {
     note: noCars
       ? 'Step 2 above: make a token here and enter it in the CAN Bridge app. The car appears on this page with its first log.'
       : 'For a car that is not here yet: its first log makes the car. For a car already here, make the token on its own page instead, so the logs go to that car.',
-    side: h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: make }, icon('plus', 'ico--sm'), 'Make upload token'),
+    side: h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: once(make) }, icon('plus', 'ico--sm'), 'Make upload token'),
     sort: { key: 'created', dir: 'desc' },
     columns: [
       { key: 'id', label: 'Token', render: (x) => h('span', { class: 'mono' }, x.id), sort: true },
       { key: 'created', label: 'Made', value: (x) => x.created_ms, sort: true, render: (x) => dateTime(x.created_ms, tz), csv: (x) => x.created_ms },
       { key: 'state', label: 'State', value: (x) => (x.revoked ? 1 : 0), sort: true, render: tokenState, csv: tokenStateText },
-      { key: 'act', label: '', csv: false, render: (x) => (x.revoked ? null : h('button', { class: 'btn btn--sm btn--danger', type: 'button', onclick: () => revoke(x) }, icon('x', 'ico--sm'), 'Revoke')) },
+      { key: 'act', label: '', csv: false, render: (x) => (x.revoked ? null : h('button', { class: 'btn btn--sm btn--danger', type: 'button', onclick: once(() => revoke(x)) }, icon('x', 'ico--sm'), 'Revoke')) },
     ],
     empty: () => emptyState({ icon: 'lock', title: 'No token for a new car', text: noCars ? 'Press Make upload token to get the first car in.' : 'None is waiting for a car. Press Make upload token when a new car joins.' }),
   });
@@ -277,8 +287,8 @@ function waitingTable(ctx, rows, car, after, noCars = false) {
       { key: 'logs_waiting', label: 'Logs waiting', num: true, sort: true, render: (k) => format(k.logs_waiting ?? 0, 'count') },
       { key: 'act', label: car ? 'Assign' : 'What to do', csv: false, render: (k) => (car
         ? h('div', { class: 'row sc-acts' },
-          h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: () => assign(k, false) }, icon('plus', 'ico--sm'), `Assign to ${car.name}`),
-          h('button', { class: 'btn btn--sm', type: 'button', onclick: () => assign(k, true) }, 'Assign and prefer'))
+          h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: once(() => assign(k, false)) }, icon('plus', 'ico--sm'), `Assign to ${car.name}`),
+          h('button', { class: 'btn btn--sm', type: 'button', onclick: once(() => assign(k, true)) }, 'Assign and prefer'))
         : h('span', { class: 'faint' }, noCars ? 'No car to tie it to yet. Once a car appears, open it and Assign' : 'Open its car, then Assign')) },
     ],
     empty: () => emptyState({ icon: 'check', title: 'No keys waiting', text: 'Every CAN Bridge that uploaded is tied to a car. A key waits here when a new logger uploads with a key the server has not tied to a car.' }),
@@ -341,8 +351,10 @@ async function mountCar(ctx) {
         settle('car');
       } catch (e) {
         if (e.status === 409) { await refresh(); flash('Someone else changed this car; the page shows their change now. Try again.', { kind: 'info' }); return; }
-        if (f && e.fields) showApiError({ fields: [f], setMessage: (t) => t && flash(t, { kind: 'error' }) }, e);
-        else flash(`Could not save ${what.toLowerCase()}: ${errText(e)}`, { kind: 'error' });
+        failed('car', () => {
+          if (f && e.fields) showApiError({ fields: [f], setMessage: (t) => t && flash(t, { kind: 'error' }) }, e);
+          else flash(`Could not save ${what.toLowerCase()}: ${errText(e)}`, { kind: 'error' });
+        });
       }
     });
   }
@@ -355,8 +367,11 @@ async function mountCar(ctx) {
         return true;
       } catch (e) {
         if (e.status === 409) { await refresh(); flash('Someone else changed these settings; the page shows theirs now. Try again.', { kind: 'info' }); return false; }
-        if (onFields && e.fields) onFields(e.fields);
-        else flash(`Could not save ${what.toLowerCase()}: ${errText(e)}`, { kind: 'error' });
+        let keep = false;
+        failed('settings', () => {
+          if (onFields && e.fields) keep = onFields(e.fields) === KEEP;
+          else flash(`Could not save ${what.toLowerCase()}: ${errText(e)}`, { kind: 'error' });
+        }, () => keep);
         return false;
       }
     });
@@ -371,7 +386,39 @@ async function mountCar(ctx) {
 
   function paintAll() {
     if (!ctx.alive()) return;
-    paintHead(); paintCar(); paintUploads(); paintSources(); paintTz(); paintBattery(); paintRefs(); paintCharging();
+    fieldsNow = new Map();
+    // the keyboard focus stays where it was (a field tabbed out of, a button) when its panel is drawn again
+    const root = slots.car.parentElement?.parentElement || ctx.view;
+    const was = document.activeElement;
+    const sig = was && was !== root && root.contains(was) ? signature(was) : null;
+    const slot = sig && Object.values(slots).find((x) => x.contains(was));
+    keepFocus(root, () => {
+      paintHead(); paintCar(); paintUploads(); paintSources(); paintTz(); paintBattery(); paintRefs(); paintCharging();
+      // the same control by its name or its words (a panel that gained or lost a line moved it); if it is gone, the
+      // first control of its panel
+      if (sig && !was.isConnected && (!document.activeElement || document.activeElement === document.body)) {
+        const to = [...root.querySelectorAll(FOCUSABLE)].find((x) => !x.disabled && signature(x) === sig) || (slot && slot.querySelector(FOCUSABLE));
+        to?.focus({ preventScroll: true });
+      }
+    });
+  }
+  const FOCUSABLE = 'a[href], button, input, select, textarea, [tabindex]';
+  const signature = (el) => (el.name ? `${el.localName}[${el.name}]` : `${el.localName} ${el.getAttribute('aria-label') || el.textContent.trim()}`);
+
+  // After a save that failed: the page is drawn again from what is saved, so no field keeps a value that is not.
+  // `show()` puts the server's words on the fields; the ones it set are shown again on the fields drawn anew.
+  // A later save waiting will draw the page when it is answered; keep() true leaves the page as it is (a list the
+  // person is still editing, its errors shown on its rows).
+  function failed(kind, show, keep = () => false) {
+    const said = () => new Map([...fieldsNow].map(([p, f]) => [p, f.error()]).filter(([, t]) => t));
+    const before = said();
+    show();
+    if (inFlight[kind] > 1 || keep()) return;
+    const carry = [...said()].filter(([p, t]) => before.get(p) !== t);
+    paintAll();
+    for (const [p, t] of carry) fieldsNow.get(p)?.setError(t);
+    const first = carry.map(([p]) => fieldsNow.get(p)).find((f) => f && !f.input.disabled);
+    first?.input.focus();
   }
 
   /* ---- the head, the breadcrumb and the tab title: they carry the name and the time zone */
@@ -449,10 +496,10 @@ async function mountCar(ctx) {
         if (v !== (car().sold_date || null)) patchCar({ sold: true, sold_date: v }, 'Sold date', day);
       });
       return h('div', { class: 'sc-sold' }, state_, day.el,
-        h('div', { class: 'row' }, h('button', { class: 'btn btn--sm', type: 'button', onclick: () => patchCar({ sold: false, sold_date: null }, 'Not sold') }, icon('reset', 'ico--sm'), 'Mark as not sold')));
+        h('div', { class: 'row' }, h('button', { class: 'btn btn--sm', type: 'button', onclick: once(() => patchCar({ sold: false, sold_date: null }, 'Not sold')) }, icon('reset', 'ico--sm'), 'Mark as not sold')));
     }
     return h('div', { class: 'sc-sold' }, state_, day.el,
-      h('div', { class: 'row' }, h('button', { class: 'btn btn--sm', type: 'button', onclick: () => { if (!late()) patchCar({ sold: true, sold_date: day.input.value || null }, 'Sold', day); } }, icon('flag', 'ico--sm'), 'Mark as sold')));
+      h('div', { class: 'row' }, h('button', { class: 'btn btn--sm', type: 'button', onclick: once(async () => { if (!late()) await patchCar({ sold: true, sold_date: day.input.value || null }, 'Sold', day); }) }, icon('flag', 'ico--sm'), 'Mark as sold')));
   }
 
   /* ---- Uploads: outcome, tokens, keys, waiting keys */
@@ -523,7 +570,7 @@ async function mountCar(ctx) {
     const tokens = dataTable(ctx, {
       title: 'Upload tokens', icon: 'lock', rows: S.tokens, label: 'Upload tokens of this car', csvName: 'upload-tokens',
       note: 'A token lets a CAN Bridge upload logs for this car. Each is shown once, when made. Revoking one refuses its uploads from then on; past logs stay.',
-      side: h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: makeToken }, icon('plus', 'ico--sm'), 'Make upload token'),
+      side: h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: once(makeToken) }, icon('plus', 'ico--sm'), 'Make upload token'),
       sort: { key: 'created', dir: 'desc' },
       columns: [
         { key: 'id', label: 'Token', render: (t) => h('span', { class: 'mono' }, t.id), sort: true },
@@ -532,7 +579,7 @@ async function mountCar(ctx) {
           render: tokenState, csv: tokenStateText },
         { key: 'key', label: 'Key it brought', render: (t) => (t.key ? [h('span', { class: 'mono' }, t.key), ' ', deviceText(t)] : h('span', { class: 'faint' }, t.revoked ? '—' : 'None yet')) },
         { key: 'last', label: 'Last upload', value: (t) => t.last_upload_ms, sort: true, render: (t) => (t.last_upload_ms ? agoEl(t.last_upload_ms, z) : 'Never'), csv: (t) => t.last_upload_ms ?? '' },
-        { key: 'act', label: '', csv: false, render: (t) => (t.revoked ? null : h('button', { class: 'btn btn--sm btn--danger', type: 'button', onclick: () => revokeToken(t) }, icon('x', 'ico--sm'), 'Revoke')) },
+        { key: 'act', label: '', csv: false, render: (t) => (t.revoked ? null : h('button', { class: 'btn btn--sm btn--danger', type: 'button', onclick: once(() => revokeToken(t)) }, icon('x', 'ico--sm'), 'Revoke')) },
       ],
       empty: () => emptyState({ icon: 'lock', title: 'No upload tokens', text: 'Without a token no CAN Bridge can upload for this car. Make one and enter it in the CAN Bridge app.' }),
     });
@@ -549,10 +596,10 @@ async function mountCar(ctx) {
         { key: 'logs_waiting', label: 'Logs waiting', num: true, sort: true, render: (k) => format(k.logs_waiting ?? 0, 'count') },
         { key: 'preferred', label: 'Preferred', value: (k) => (k.preferred ? 0 : 1), sort: true, csv: (k) => (k.preferred ? 'yes' : 'no'),
           render: (k) => (k.preferred ? pill('Preferred', { tone: 'live', ic: 'check' })
-            : h('button', { class: 'btn btn--sm', type: 'button', onclick: () => keyChange(k, { preferred: true }, `Key ${k.key} is now preferred for ${car().name}.`) }, 'Prefer this key')) },
-        { key: 'act', label: '', csv: false, render: (k) => h('button', { class: 'btn btn--sm btn--ghost', type: 'button', onclick: async () => {
-          if (await confirmDialog(`Untie key ${k.key} from ${car().name}? Its new logs will wait under Keys waiting until it is tied to a car again. Logs already read stay.`, { title: 'Untie the key?', ok: 'Untie', danger: true })) keyChange(k, { car: null }, `Key ${k.key} is no longer tied to ${car().name}.`);
-        } }, 'Untie') },
+            : h('button', { class: 'btn btn--sm', type: 'button', onclick: once(() => keyChange(k, { preferred: true }, `Key ${k.key} is now preferred for ${car().name}.`)) }, 'Prefer this key')) },
+        { key: 'act', label: '', csv: false, render: (k) => h('button', { class: 'btn btn--sm btn--ghost', type: 'button', onclick: once(async () => {
+          if (await confirmDialog(`Untie key ${k.key} from ${car().name}? Its new logs will wait under Keys waiting until it is tied to a car again. Logs already read stay.`, { title: 'Untie the key?', ok: 'Untie', danger: true })) await keyChange(k, { car: null }, `Key ${k.key} is no longer tied to ${car().name}.`);
+        }) }, 'Untie') },
       ],
       empty: () => emptyState({ icon: 'chip', title: 'No key tied to this car', text: 'The first log sent with this car\'s upload token ties its key here. A key waiting below can be assigned by hand.' }),
     });
@@ -743,6 +790,7 @@ async function mountCar(ctx) {
           if (m && list.querySelector(`[data-err="${m[1]}-${m[2]}"]`)) showErr(m[1], m[2], ownWords(m[2], String(text)));
           else { msg.hidden = false; replace(msg, icon('warn'), /from_date|to_date/.test(String(text)) ? 'A range could not be saved: check that each has a first day, and that its last day is not before it.' : String(text)); }
         }
+        return KEEP;
       });
     }
 
