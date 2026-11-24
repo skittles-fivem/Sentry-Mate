@@ -222,6 +222,7 @@ export async function mount(ctx) {
     const pk = bat.pack || {};
     const packLine = pk.replaced_ms != null ? h('p', { class: 'note bat-note' }, icon('info', 'ico--sm'), ` Pack replaced on ${formatDate(pk.replaced_ms, tz, { weekday: false, month: 'long' })} (${pk.source === 'owner' ? 'typed by the owner' : "detected from the pack's readings"}).`) : null;
     const notesEl = (bat.notes || []).filter((c) => NOTES[c]).map((c) => h('p', { class: ['note', 'bat-note', /cold|lfp/.test(c) && 'warn'] }, icon(/cold|lfp/.test(c) ? 'warn' : 'info', 'ico--sm'), NOTES[c]));
+    const readingsWord = cap.readings == null ? '' : ` (${n0(cap.readings)} ${cap.readings === 1 ? 'reading' : 'readings'})`;
     const capPanel = panel({ title: 'Capacity and health', icon: 'battery', cls: 'bat-cap', cover: 'shots.battery-health' },
       h('div', { class: 'cap-body' },
         h('div', { class: 'cap-ring', cover: ['bh.bar.health', 'bh.gauge.degradation'] }, ring,
@@ -230,7 +231,7 @@ export async function mount(ctx) {
             h('span', { class: 'metric-label' }, 'Health'),
             h('span', { class: 'cap-ring-sub' }, cap.degradation_pct == null ? 'Lost: not known' : `${formatNumber(cap.degradation_pct, { maximumFractionDigits: 1 })} % lost`))),
         h('div', { class: 'cap-figs' },
-          metric('Usable now', cap.usable_kwh, 'energy', { cover: 'bh.capacity.usable_now', explain: cap.full_pack_kwh != null && cap.buffer_kwh != null ? `Full pack ${format(cap.full_pack_kwh, 'energy')} minus the ${format(cap.buffer_kwh, 'energy')} buffer the car keeps back; the pack’s own reading (${n0(cap.readings)} readings).` : `The pack’s own reading (${n0(cap.readings)} readings).`, why: 'The pack has not reported it' }),
+          metric('Usable now', cap.usable_kwh, 'energy', { cover: 'bh.capacity.usable_now', explain: cap.usable_kwh == null ? null : cap.full_pack_kwh != null && cap.buffer_kwh != null ? `Full pack ${format(cap.full_pack_kwh, 'energy')} minus the ${format(cap.buffer_kwh, 'energy')} buffer the car keeps back; the pack’s own reading${readingsWord}.` : `The pack’s own reading${readingsWord}.`, why: 'The pack has not reported it' }),
           metric('Usable when new', cap.new_kwh, 'energy', { cover: 'bh.capacity.usable_new', explain: cap.new_source ? `Source: ${NEW_SOURCE[cap.new_source] || cap.new_source}.` : null, why: 'Not known: type it under Reference values' }),
           metric('Difference', cap.difference_kwh == null ? null : -cap.difference_kwh, 'energy', { cover: 'bh.capacity.difference', sign: true, explain: 'Usable now minus usable when new.', why: 'Needs a “when new” value' }),
           metric('Energy per distance of range', factor, 'efficiency', { cover: 'bh.stat.efficiency', explain: eff?.factor ? `How much energy one ${unitLabel('range')} of ${rangeWord} range stands for, from ${n0(eff.factor.readings)} pack readings. Used to turn energy into range.` : null, why: effErr ? 'Could not be loaded' : 'Not worked out yet' }),
@@ -344,13 +345,15 @@ export async function mount(ctx) {
       { key: 'regen', label: 'Regen braking', kwh: life.regen_kwh, cls: 'p-regen' },
     ];
     const share = (k) => (inKwh ? ((k || 0) / inKwh) * 100 : 0);
+    // what left the pack, of what is known (a car whose counters were never read has neither)
+    const outOfPack = [life.drive_kwh != null ? `${format(life.drive_kwh, 'energy')} driving` : null, life.standing_kwh != null ? `${format(life.standing_kwh, 'energy')} while parked` : null].filter(Boolean);
     const split = h('div', { class: 'acdc', cover: 'bh.chart.ac_dc' },
       h('div', { class: 'acdc-head' }, h('span', { class: 'metric-label' }, 'Energy into the pack, by source'),
         csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'battery-energy-sources'), [...parts, { label: 'Driving (out)', kwh: life.drive_kwh }, { label: 'Parked (out)', kwh: life.standing_kwh }].map((p) => ({ source: p.label, kwh: p.kwh, share: p.key ? share(p.kwh) : null })), [column('Source', 'source'), column('Energy', 'kwh', 'energy'), column('Share of energy in', 'share', 'percent', { digits: 1 })]) })),
       h('div', { class: 'acdc-bar', role: 'img', 'aria-label': parts.map((p) => `${p.label} ${formatNumber(share(p.kwh), { maximumFractionDigits: 0 })} %`).join(', ') },
         parts.map((p) => h('i', { class: p.cls, vars: { '--w': `${share(p.kwh)}%` }, title: `${p.label}: ${format(p.kwh, 'energy')}` }))),
       h('div', { class: 'acdc-key' }, parts.map((p) => h('span', null, h('i', { class: p.cls }), p.label, h('b', null, ` ${formatNumber(share(p.kwh), { maximumFractionDigits: 0 })} %`), h('span', { class: 'faint' }, ` ${format(p.kwh, 'energy')}`)))),
-      h('p', { class: 'note' }, `From the pack’s own lifetime counters (${life.basis || 'pack counters'}), so it covers years before logging too. Out of the pack: ${format(life.drive_kwh, 'energy')} driving, ${format(life.standing_kwh, 'energy')} while parked.`));
+      h('p', { class: 'note' }, `From the pack’s own lifetime counters (${life.basis || 'pack counters'}), so it covers years before logging too.${outOfPack.length ? ` Out of the pack: ${outOfPack.join(', ')}.` : ''}`));
 
     return panel({ title: 'Lifetime totals', icon: 'odo', cls: 'bat-life' },
       totalsErr ? h('p', { class: 'note warn', role: 'status' }, `The logged drives and charges could not be loaded: ${totalsErr.message} A dash below stands for a figure that is not known, not for none. `,
