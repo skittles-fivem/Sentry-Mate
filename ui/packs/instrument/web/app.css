@@ -598,6 +598,8 @@ ul { margin: 0; padding: 0; list-style: none; }
 .empty-icon .ico { width: round(1.5rem, var(--e)); height: round(1.5rem, var(--e)); }
 .empty h3, .empty .empty-title { font-size: 1rem; font-weight: 600; color: var(--text); }
 .empty p { max-width: round(26.25rem, var(--e)); font-size: 0.84375rem; }
+/* a word longer than the note is wide (a search text, a name) breaks; it never widens the page */
+.empty h3, .empty .empty-title, .empty p { min-width: 0; overflow-wrap: anywhere; }
 
 /* ------------------------------------------------------------------ toolbar (filters above a list) */
 .toolbar { display: flex; align-items: center; gap: round(0.75rem, var(--e)); margin-bottom: round(0.75rem, var(--e)); flex-wrap: nowrap; }
