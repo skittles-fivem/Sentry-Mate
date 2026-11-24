@@ -30,7 +30,8 @@ VIN_RX = re.compile(r"[A-HJ-NPR-Z0-9]{17}")
 # answers that are files, not JSON
 PDF_OR_ZIP = {"/api/v1/cars/{car}/charges/{charge}/invoices/{invoice}/pdf": "application/pdf",
               "/api/v1/integrations/invoices/{invoice}/pdf": "application/pdf",
-              "/api/v1/integrations/invoices/zip": "application/zip"}
+              "/api/v1/integrations/invoices/zip": "application/zip",
+              "/api/v1/ui-packs/{pack}/download": "application/zip"}
 
 
 def _all_strings(obj, out):
@@ -58,7 +59,7 @@ class Contract(ServerCase):
             "update": c.get("/api/v1/cars/c1/updates")["items"][0]["id"],
             "place": "p1", "session": "s-older-1", "account": "a2", "token": "t12", "key": "cbk_5b2e9f13",
             "trip": "tr1", "rule": "r1", "import": "im1", "hold": "h1", "index": "0", "tesla_account": "ta1", "sign_in": "si0",
-            "teslafi_account": "fa1", "z": "13", "x": "1310", "y": "3166",
+            "teslafi_account": "fa1", "pack": "instrument", "z": "13", "x": "1310", "y": "3166",
             "export": c.json("POST", "/api/v1/system/exports", {"password": "sentry-mate-dev"}, expect=201)["id"],
         }
         # a Supercharger session of c1 matched to a charge, with its invoice (PDF) kept
