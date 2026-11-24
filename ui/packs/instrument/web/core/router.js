@@ -200,6 +200,16 @@ function putBack(view, kept) {
   }
 }
 
+// The page on screen is being scrolled, or was a moment ago. A page built again by a live refresh puts its work (the
+// snap over the whole page, the swap with its maps and charts drawn in one task) off until the scroll has rested:
+// such a task takes over a frame on a big screen. The wait is a little longer than one pause of the wheel.
+const SCROLL_REST_MS = 500;
+let scrolledAt = -Infinity;
+document.addEventListener('scroll', () => { scrolledAt = performance.now(); }, { capture: true, passive: true });
+const scrolling = () => performance.now() - scrolledAt < SCROLL_REST_MS;
+// f runs once the page has rested from scrolling (at once when it is not scrolling)
+function afterScroll(f) { const left = SCROLL_REST_MS - (performance.now() - scrolledAt); if (left > 0) setTimeout(() => afterScroll(f), left + 20); else f(); }
+
 function stageView(view, finishOld) {
   // the old page's clean-up is let go of once it is handed on or run: the new page keeps this stage as long as it
   // lives, and would keep the page before it, and that one the page before, each with everything it drew
@@ -216,6 +226,8 @@ function stageView(view, finishOld) {
   const end = () => { done = true; clearTimeout(maxT); clearTimeout(quietT); mo?.disconnect(); stage.remove(); if (staged?.stage === stage) staged = null; };
   function commit() {
     if (done) return;
+    // while the page scrolls the swap waits for the scroll to rest: the new page puts its maps and charts on screen in one task
+    if (scrolling()) { clearTimeout(quietT); quietT = setTimeout(commit, SCROLL_REST_MS); return; }
     const nodes = [...stage.childNodes];
     end();
     // what the reader typed or chose in the page on screen is put into the same controls of the new page
@@ -499,7 +511,8 @@ async function mount(s, { keepScroll = false, live = false, wall = false } = {})
       }
       frame.view().removeAttribute('aria-busy');
       // otherwise at the next frame (the page's own code after ready() and the router's are done by then)
-      if (!first) requestAnimationFrame(() => settle(false));
+      // (a page built again while the page on screen scrolls: its snap, a run over the whole page, waits for the scroll to rest)
+      if (!first) requestAnimationFrame(() => afterScroll(() => settle(false)));
     },
     fail(err, opts = {}) {
       if (api.isAbort(err) || !alive()) return;
@@ -549,7 +562,7 @@ async function mount(s, { keepScroll = false, live = false, wall = false } = {})
   // a page that never calls ready(): snapped all the same, a moment after its mount (a page that does is snapped
   // once, at ready: its mount often returns before its data is in, and every part it draws after would otherwise
   // start a whole-page snap of its own)
-  setTimeout(rec.release, 2000);
+  setTimeout(() => afterScroll(rec.release), 2000);
   if (live) { showPending(); return; }
   if (!keepScroll) {
     toTop();
