@@ -366,7 +366,8 @@ fn newest<'a>(errors: impl Iterator<Item = &'a tesla::ErrorInfo>) -> Option<Erro
 fn tesla_rows(app: &AppState) -> Vec<Row> {
     let Ok(svc) = app.service::<TeslaService>() else { return Vec::new() };
     let cadence = svc.cadence();
-    let pace = tesla::Pace::ALL.into_iter().find(|p| p.cadence() == cadence).map(tesla::Pace::word);
+    // the intervals an admin left at their defaults, or changed
+    let pace = Some(if tesla::Intervals::of(&cadence) == tesla::Intervals::DEFAULT { "default" } else { "custom" });
     let status = svc.status();
     let mut out = Vec::new();
     for a in svc.accounts() {
@@ -392,10 +393,15 @@ fn tesla_rows(app: &AppState) -> Vec<Row> {
         // the account's own copy is saved at most hourly: the poller's live status is newer while it runs
         r.last_ok_ms = a.last_ok_ms.max(st.and_then(|s| s.last_ok_ms));
         r.pace = pace;
-        r.cap = Some(cadence.daily_cap);
+        // no cap of its own: Tesla does the limiting
+        r.cap = None;
         if let Some(c) = cars.iter().filter(|c| c.next_poll_ms.is_some()).min_by_key(|c| c.next_poll_ms) {
             r.next_ms = c.next_poll_ms;
             r.pace_s = c.next_poll_ms.zip(c.last_poll_ms).map(|(n, l)| n.saturating_sub(l) / 1000);
+        }
+        let limited = st.and_then(|s| s.rate_limited_until_ms);
+        if limited.is_some() {
+            r.next_ms = limited;
         }
         r.last_error = newest(
             a.last_error
@@ -418,6 +424,7 @@ fn tesla_rows(app: &AppState) -> Vec<Row> {
             _ if !svc.running(&a.id) => r.set(Status::Off, Some("not_running")),
             S::Checking => r.set(Status::Idle, Some("checking")),
             S::Ok if matched.is_empty() => r.set(Status::Idle, Some("no_cars")),
+            S::Ok if limited.is_some() => r.set(Status::Problem, Some("rate_limited")),
             S::Ok if modes(&[M::Backoff]) => r.set(Status::Problem, Some("unreachable")),
             S::Ok if modes(&[M::Driving, M::Charging, M::OnlineIdle]) => r.set(Status::Live, None),
             S::Ok if modes(&[M::LettingSleep]) => r.set(Status::Idle, Some("parked")),

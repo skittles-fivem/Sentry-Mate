@@ -96,16 +96,21 @@ fn seen(samples: &[Sample]) -> Vec<ApiSpan> {
 /// audit entry and the notice.
 pub type AccountHook = std::sync::Arc<dyn Fn(&tesla::Account) + Send + Sync>;
 
+/// Told when Tesla starts limiting an account's requests (a 429), with when the next try is: the web side writes the
+/// audit entry and the notice.
+pub type RateLimitHook = std::sync::Arc<dyn Fn(&tesla::Account, u64) + Send + Sync>;
+
 /// The engine as the `tesla` crate's poller sees it.
 #[derive(Clone)]
 pub struct TeslaSink {
     pub engine: Engine,
     pub on_account: Option<AccountHook>,
+    pub on_rate_limit: Option<RateLimitHook>,
 }
 
 impl TeslaSink {
     pub fn new(engine: Engine) -> TeslaSink {
-        TeslaSink { engine, on_account: None }
+        TeslaSink { engine, on_account: None, on_rate_limit: None }
     }
 }
 
@@ -132,6 +137,12 @@ impl tesla::Sink for TeslaSink {
     fn account_changed(&self, account: &tesla::Account) {
         if let Some(h) = &self.on_account {
             h(account);
+        }
+    }
+
+    fn rate_limited(&self, account: &tesla::Account, until_ms: u64) {
+        if let Some(h) = &self.on_rate_limit {
+            h(account, until_ms);
         }
     }
 

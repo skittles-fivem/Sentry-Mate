@@ -218,19 +218,19 @@ impl Rig {
 }
 
 #[tokio::test]
-async fn an_asleep_car_gets_only_the_list_once_a_minute() {
+async fn an_asleep_car_gets_only_the_list_every_30_seconds() {
     let mut r = rig(Some(Match::Car { car: 7 }), tesla::Cadence::default());
     r.run(2 * 3_600_000).await;
     let lists = r.tesla.calls("list");
     assert!(r.tesla.calls("data").is_empty() && r.tesla.calls("data+location").is_empty());
-    assert!((119..=121).contains(&lists.len()), "{} lists", lists.len());
-    assert!(lists.windows(2).all(|w| w[1] - w[0] == MIN));
+    assert!((239..=241).contains(&lists.len()), "{} lists", lists.len());
+    assert!(lists.windows(2).all(|w| w[1] - w[0] == 30_000));
     // It said asleep, each look joined to the one before.
     let pts = r.sink.points.lock().unwrap();
     let last = pts.last().unwrap();
     assert_eq!(last.0, 7);
     assert_eq!(last.2[0].state, tesla::ApiState::Asleep);
-    assert_eq!(last.2[0].end_ms - last.2[0].start_ms, MIN);
+    assert_eq!(last.2[0].end_ms - last.2[0].start_ms, 30_000);
     assert!(r.tesla.calls("refresh").is_empty());
 }
 
@@ -279,7 +279,7 @@ async fn something_keeping_the_car_awake_is_watched_without_letting_it_sleep() {
 }
 
 #[tokio::test]
-async fn charging_every_30_seconds_whatever_else_is_live() {
+async fn charging_every_5_seconds_whatever_else_is_live() {
     let mut r = rig(Some(Match::Car { car: 7 }), tesla::Cadence::default());
     let mut d = parked_data();
     d["charge_state"] = json!({"charging_state": "Charging", "charger_power": 11, "battery_level": 50});
@@ -291,14 +291,14 @@ async fn charging_every_30_seconds_whatever_else_is_live() {
     let all: Vec<u64> = [r.tesla.calls("data"), r.tesla.calls("data+location")].concat();
     let mut all = all;
     all.sort_unstable();
-    assert!(all.windows(2).all(|w| w[1] - w[0] == 30_000), "{all:?}");
+    assert!(all.windows(2).all(|w| w[1] - w[0] == 5_000), "{all:?}");
     // Charging: the position is asked for.
     assert!(r.tesla.calls("data").is_empty());
     let n = all.len();
-    // SMO live or not, the charging pace stays (no input waits on another)
+    // SMO live or not, the charging pace stays (no input waits on another): 30 more minutes
     r.run(40 * MIN).await;
     let later = r.tesla.calls("data+location").len() - n;
-    assert!(later >= 40, "{later} looks in 40 min: no slower pace while another input is live");
+    assert!(later >= 355, "{later} looks in 30 min: no slower pace while another input is live");
     let pts = r.sink.points.lock().unwrap();
     assert!(pts.iter().any(|(_, s, _)| s.first().is_some_and(|s| s.charge_power_kw == Some(11.0))));
 }
@@ -325,10 +325,10 @@ async fn a_drive_opens_the_stream_and_its_samples_reach_the_sink() {
     assert!(r.p.status().cars[0].streaming);
     let pts = r.sink.points.lock().unwrap().clone();
     assert!(pts.iter().any(|(_, s, f)| f.is_empty() && s.iter().any(|x| x.speed_kmh == Some(50.0))));
-    // With the stream up, vehicle_data once a minute.
+    // With the stream up, vehicle_data every 2.5 s beside it.
     let looks = r.tesla.calls("data+location");
-    assert!(looks.windows(2).all(|w| w[1] - w[0] == MIN), "{looks:?}");
-    // The stream ends: polling every 30 s, and a new stream on the next look.
+    assert!(looks.windows(2).all(|w| w[1] - w[0] == 2_500), "{looks:?}");
+    // The stream ends: polling goes on at the same pace, and a new stream on the next look.
     r.streams.0.lock().unwrap()[0].1.send(StreamEvent::Ended("quiet")).unwrap();
     r.run(4 * MIN).await;
     assert_eq!(r.streams.0.lock().unwrap().len(), 2);
@@ -412,7 +412,7 @@ async fn forbidden_and_closed_endpoints_stop_polling() {
     assert_eq!(r.tesla.calls("list").len(), 1);
     assert_eq!(r.p.status().state, AccountState::Error);
     assert_eq!(r.p.status().last_error.unwrap().code, "forbidden");
-    r.run(61 * MIN).await;
+    r.run(60 * MIN + 10_000).await;
     assert_eq!(r.tesla.calls("list").len(), 2, "tried again after an hour");
     assert_eq!(r.p.status().state, AccountState::Ok);
     r.tesla.set(|w| w.list_errors.push_back(ApiError::EndpointGone));
@@ -421,19 +421,6 @@ async fn forbidden_and_closed_endpoints_stop_polling() {
     r.run(10 * 3_600_000).await;
     assert_eq!(r.tesla.calls("list").len(), n);
     assert_eq!(r.p.status().last_error.unwrap().code, "endpoint_gone");
-}
-
-#[tokio::test]
-async fn the_daily_cap_holds() {
-    let cadence = tesla::Cadence { daily_cap: 10, ..tesla::Cadence::default() };
-    let mut r = rig(Some(Match::Car { car: 7 }), cadence);
-    r.run(3 * 3_600_000).await;
-    assert_eq!(r.tesla.calls("list").len(), 10);
-    assert_eq!(r.p.status().last_error.unwrap().code, "daily_cap");
-    // The next UTC day starts the count again.
-    let midnight = (T0 / 86_400_000 + 1) * 86_400_000 - T0;
-    r.run(midnight + 5 * MIN).await;
-    assert!(r.tesla.calls("list").len() > 10);
 }
 
 #[tokio::test]
@@ -458,14 +445,150 @@ async fn unmatched_cars_are_not_polled_and_new_ones_become_cars() {
     assert!(r.p.tick(r.now).await.is_none());
 }
 
+/// The looks at the car (`vehicle_data`, with the position or not), in order.
+fn looks(r: &Rig) -> Vec<u64> {
+    let mut all = [r.tesla.calls("data"), r.tesla.calls("data+location")].concat();
+    all.sort_unstable();
+    all
+}
+
 #[tokio::test]
-async fn never_more_than_one_request_a_second() {
+async fn each_mode_reads_at_its_interval_and_slower_ones_are_kept() {
+    let slow = tesla::Intervals { driving_ms: 10_000, charging_ms: 20_000, idle_ms: 120_000, list_ms: 90_000 };
+    for (i, (driving, charging, idle, list)) in
+        [(tesla::Intervals::DEFAULT, (2_500, 5_000, 60_000, 30_000)), (slow, (10_000, 20_000, 120_000, 90_000))]
+    {
+        // asleep: only the list
+        let mut r = rig(Some(Match::Car { car: 7 }), i.cadence());
+        r.run(30 * MIN).await;
+        let l = r.tesla.calls("list");
+        assert!(l.windows(2).all(|w| w[1] - w[0] == list), "{l:?}");
+        assert!(looks(&r).is_empty());
+        // online and idle (before letting it sleep)
+        let mut r = rig(Some(Match::Car { car: 7 }), i.cadence());
+        r.tesla.set(|w| w.state = Some(CarState::Online));
+        r.run(9 * MIN).await;
+        let t = looks(&r);
+        assert!(t.len() >= 2 && t.windows(2).all(|w| w[1] - w[0] == idle), "{t:?}");
+        // charging
+        let mut r = rig(Some(Match::Car { car: 7 }), i.cadence());
+        let mut d = parked_data();
+        d["charge_state"] = json!({"charging_state": "Charging", "charger_power": 7, "battery_level": 40});
+        r.tesla.set(|w| {
+            w.state = Some(CarState::Online);
+            w.data = Some(d);
+        });
+        r.run(5 * MIN).await;
+        let t = looks(&r);
+        assert!(t.windows(2).all(|w| w[1] - w[0] == charging), "{t:?}");
+        assert_eq!(r.p.status().cars[0].mode, Mode::Charging);
+        // driving, the stream open beside it
+        let mut r = rig(Some(Match::Car { car: 7 }), i.cadence());
+        let mut d = parked_data();
+        d["drive_state"]["shift_state"] = json!("D");
+        r.tesla.set(|w| {
+            w.state = Some(CarState::Online);
+            w.data = Some(d);
+        });
+        r.run(5 * MIN).await;
+        let t = looks(&r);
+        assert!(t.len() > 20 && t.windows(2).all(|w| w[1] - w[0] == driving), "{t:?}");
+        assert!(r.p.status().cars[0].streaming);
+        assert_eq!(r.p.status().cars[0].mode, Mode::Driving);
+    }
+}
+
+#[tokio::test]
+async fn the_floors_hold_whatever_is_asked() {
+    let wild = tesla::Intervals { driving_ms: 1, charging_ms: 1_000, idle_ms: 10_000, list_ms: 0 };
+    let c = wild.cadence();
+    assert_eq!((c.driving_ms, c.charging_ms, c.idle_ms, c.list_ms), (2_500, 5_000, 60_000, 30_000));
+    let huge = tesla::Intervals { driving_ms: u64::MAX, ..tesla::Intervals::DEFAULT };
+    assert_eq!(huge.clamped(), tesla::Intervals { driving_ms: 600_000, ..tesla::Intervals::DEFAULT });
+    assert_eq!(tesla::Intervals::DEFAULT.cadence(), tesla::Cadence::default());
+    assert_eq!(tesla::Intervals::of(&tesla::Cadence::default()), tesla::Intervals::DEFAULT);
+    assert_eq!(tesla::Intervals::FLOOR, tesla::Intervals::DEFAULT);
+}
+
+#[tokio::test]
+async fn no_cap_of_its_own_a_day_of_driving_makes_every_request() {
+    let mut r = rig(Some(Match::Car { car: 7 }), tesla::Cadence::default());
+    let mut d = parked_data();
+    d["drive_state"]["shift_state"] = json!("D");
+    r.tesla.set(|w| {
+        w.state = Some(CarState::Online);
+        w.data = Some(d);
+    });
+    // from midnight UTC to midnight: every 2.5 s, all day
+    let start = (T0 / 86_400_000 + 1) * 86_400_000 - T0;
+    r.run(start).await;
+    let before = looks(&r).len();
+    r.run(start + 86_400_000).await;
+    let t = looks(&r);
+    let day = &t[before..];
+    assert!(day.len() >= 34_559, "{} looks in a day", day.len());
+    // (a token refresh takes a turn: that look comes a moment later)
+    assert!(day.windows(2).all(|w| (2_500..=2_502).contains(&(w[1] - w[0]))));
+    let st = r.p.status();
+    assert!(st.polls_today > 0 && st.last_error.is_none(), "{st:?}");
+    assert!(st.rate_limited_until_ms.is_none());
+    assert_eq!(st.cars[0].mode, Mode::Driving);
+    assert!(r.sink.limited.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn requests_go_one_at_a_time_with_no_gap_of_their_own() {
+    // the list says online: the first look follows at once, not 2.5 s later
     let mut r = rig(Some(Match::Car { car: 7 }), tesla::Cadence::default());
     r.tesla.set(|w| w.state = Some(CarState::Online));
+    r.run(MIN).await;
+    let (l, d) = (r.tesla.calls("list"), looks(&r));
+    assert!(d[0] > l[0] && d[0] - l[0] < 100, "{l:?} {d:?}");
+    // never two at the same instant
+    let mut all: Vec<u64> = r.tesla.0.lock().unwrap().calls.iter().map(|c| c.0).collect();
+    all.sort_unstable();
+    assert!(all.windows(2).all(|w| w[1] > w[0]));
+}
+
+#[tokio::test]
+async fn a_429_while_driving_waits_as_before() {
+    let mut r = rig(Some(Match::Car { car: 7 }), tesla::Cadence::default());
+    let mut d = parked_data();
+    d["drive_state"]["shift_state"] = json!("D");
+    r.tesla.set(|w| {
+        w.state = Some(CarState::Online);
+        w.data = Some(d);
+    });
+    r.run(MIN).await;
+    // Retry-After under a minute: a minute; none: 5 min; then the driving pace again
+    r.tesla.set(|w| {
+        w.data_errors.push_back(ApiError::RateLimited { retry_after_s: Some(3) });
+        w.data_errors.push_back(ApiError::RateLimited { retry_after_s: None });
+    });
+    r.run(10 * MIN).await;
+    let t = looks(&r);
+    let gaps: Vec<u64> = t.windows(2).map(|w| w[1] - w[0]).filter(|g| *g != 2_500).collect();
+    assert_eq!(gaps, vec![60_000, 300_000], "{t:?}");
+    // each wait told once: the second 429 came after the first wait ended, so it is a new episode
+    let limited = r.sink.limited.lock().unwrap().clone();
+    assert_eq!(limited.len(), 2, "{limited:?}");
+    assert!(limited.iter().all(|(a, _)| a == "ta1"));
+    // the wait is saved: a restart during one keeps it, and the status says until when
+    r.tesla.set(|w| w.data_errors.push_back(ApiError::RateLimited { retry_after_s: Some(600) }));
+    r.run(11 * MIN).await;
+    let n = looks(&r).len();
+    let until = r.sink.limited.lock().unwrap().last().unwrap().1;
+    assert_eq!(r.p.status().rate_limited_until_ms, Some(until));
+    assert_eq!(r.p.status().cars[0].mode, Mode::Backoff);
+    assert_eq!(r.p.status().last_error.unwrap().code, "rate_limited");
+    r.restart();
     r.run(20 * MIN).await;
-    let mut t: Vec<u64> = r.tesla.0.lock().unwrap().calls.iter().map(|c| c.0).collect();
-    t.sort_unstable();
-    assert!(t.windows(2).all(|w| w[1] - w[0] >= 1_000), "{t:?}");
+    assert_eq!(looks(&r).len(), n, "nothing asked during Tesla's wait, restarted or not");
+    assert_eq!(r.p.status().rate_limited_until_ms, Some(until));
+    assert_eq!(r.sink.limited.lock().unwrap().len(), 3, "the restart is not a new episode");
+    r.run(25 * MIN).await;
+    assert!(looks(&r).len() > n);
+    assert!(r.p.status().rate_limited_until_ms.is_none(), "the wait is over");
 }
 
 #[tokio::test]
@@ -491,7 +614,7 @@ async fn a_refused_stream_refreshes_once_then_polling_goes_on_alone() {
     assert_eq!(r.tesla.calls("refresh").len(), 1);
     let looks = r.tesla.calls("data+location");
     let late: Vec<u64> = looks.iter().copied().filter(|t| *t > T0 + 4 * MIN).collect();
-    assert!(late.windows(2).all(|w| w[1] - w[0] == 30_000), "{late:?}");
+    assert!(late.windows(2).all(|w| w[1] - w[0] == 2_500), "{late:?}");
 }
 
 #[tokio::test]
@@ -532,14 +655,13 @@ async fn tesla_s_wait_outlives_a_restart() {
 }
 
 #[tokio::test]
-async fn a_closed_endpoint_and_the_daily_cap_outlive_a_restart() {
-    let cadence = tesla::Cadence { daily_cap: 5, ..tesla::Cadence::default() };
-    let mut r = rig(Some(Match::Car { car: 7 }), cadence);
+async fn a_closed_endpoint_and_the_day_s_count_outlive_a_restart() {
+    let mut r = rig(Some(Match::Car { car: 7 }), tesla::Cadence::default());
     r.run(30 * MIN).await;
-    assert_eq!(r.tesla.calls("list").len(), 5);
+    let n = r.p.status().polls_today;
+    assert_eq!(n, r.tesla.calls("list").len() as u64);
     r.restart();
-    r.run(60 * MIN).await;
-    assert_eq!(r.tesla.calls("list").len(), 5, "the daily count was forgotten");
+    assert_eq!(r.p.status().polls_today, n, "the day's count was forgotten");
 
     let mut r = rig(Some(Match::Car { car: 7 }), tesla::Cadence::default());
     r.tesla.set(|w| w.list_errors.push_back(ApiError::EndpointGone));

@@ -1,5 +1,5 @@
 //! Supercharger invoices, read from Tesla with the account's own Owner API tokens: only when an admin turned them on
-//! (`/integrations/tesla` `invoices`), read only, in the poller's pacing and under its daily cap.
+//! (`/integrations/tesla` `invoices`), read only, in the poller's pacing (one request at a time, after the cars).
 //!
 //! Two reads, both `GET` on Tesla's ownership host ([`crate::hosts::OWNERSHIP_HOST`], global accounts only: no public
 //! source names one for China, where Tesla's charging history is not open yet):
