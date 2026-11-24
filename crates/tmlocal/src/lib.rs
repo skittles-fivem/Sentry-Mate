@@ -1176,14 +1176,30 @@ async fn sync_once<S: Sink>(
     }
     let ids: Vec<i64> = pairs.iter().map(|(i, _)| *i).collect();
     let cursor = store.cursor().unwrap_or_default();
-    let tmp = store.dump_path();
+    // a dump file of its own: a catch-up whose task was stopped (the settings saved meanwhile) may still be storing
+    // its dump, and a new dump on the same path would cut that file under it
+    static DUMPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = DUMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let base = store.dump_path();
+    let tmp = base.with_file_name(format!(
+        "{}.{n}",
+        base.file_name().map_or_else(|| "catchup.dump".into(), |f| f.to_string_lossy().into_owned())
+    ));
     let r = async {
         let d = catchup::dump(&cfg, &cursor, &ids, &tmp).await.map_err(|e| db_failure(&e))?;
         let (sink2, tmp2, pairs2) = (sink.clone(), tmp.clone(), pairs.clone());
-        let counts = tokio::task::spawn_blocking(move || sink2.catch_up(&tmp2, &pairs2))
-            .await
-            .map_err(|e| Failure { code: "query_failed", message: e.to_string() })?
-            .map_err(|e| Failure { code: "query_failed", message: format!("storing the catch-up: {e}") })?;
+        let counts = tokio::task::spawn_blocking(move || {
+            // one import at a time (stopping the task does not stop the import it waits for); the file goes with
+            // the import, as the task that waited for it may be gone
+            static IMPORTING: Mutex<()> = Mutex::new(());
+            let _one = lock(&IMPORTING);
+            let r = sink2.catch_up(&tmp2, &pairs2);
+            let _ = std::fs::remove_file(&tmp2);
+            r
+        })
+        .await
+        .map_err(|e| Failure { code: "query_failed", message: e.to_string() })?
+        .map_err(|e| Failure { code: "query_failed", message: format!("storing the catch-up: {e}") })?;
         store.set_cursor(&d.cursor).map_err(|e| Failure { code: "query_failed", message: e.to_string() })?;
         Ok(counts)
     }
