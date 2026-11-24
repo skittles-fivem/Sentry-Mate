@@ -1,5 +1,6 @@
 // Pages at their edges, in Chromium on the dev API server: a link to a section of the page that is open lands
-// below the top bar, as a link from another page does.
+// below the top bar, as a link from another page does; a sold date after today and a currency that is none are
+// refused under their fields.
 // `PACKS=a,b` runs only those. Run: node --test ui/tools/page-edges.test.js. Skipped when Playwright is not installed.
 'use strict';
 
@@ -91,5 +92,56 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
         assert.deepEqual(errors, []);
       }, viewport);
     }
+  });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: Settings: Cars refuses a sold date after today and a currency that is none, under their fields, and sends neither`, { skip: SKIP, timeout: 180000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      const { page, errors } = await openPage(context, `${origin}/settings/cars/c2`, 'settings-cars');
+      const sent = [];
+      page.on('request', (r) => { if (r.method() === 'PATCH' && /\/api\/v1\/cars\//.test(r.url())) sent.push(r.postData()); });
+      const errorOf = (name) => page.evaluate((name) => {
+        const input = document.querySelector(`main input[name="${name}"]`);
+        const ids = (input.getAttribute('aria-describedby') || '').split(' ');
+        return { invalid: input.getAttribute('aria-invalid'), text: ids.map((id) => document.getElementById(id)).filter((e) => e && !e.hidden && /error/.test(e.className)).map((e) => e.textContent).join(' '), focused: document.activeElement === input };
+      }, name);
+
+      // a sold date next year, typed (the picker's own limit does not stop the keyboard)
+      await page.fill('main input[name="sc-sold-date"]', `${new Date().getFullYear() + 1}-01-01`);
+      await page.getByRole('button', { name: 'Mark as sold' }).click();
+      await page.waitForTimeout(700);
+      const day = await errorOf('sc-sold-date');
+      assert.deepEqual(sent, [], 'a sold date after today is not sent');
+      assert.equal(day.invalid, 'true');
+      assert.match(day.text, /today/i);
+      assert.ok(day.focused, 'the date field has the focus');
+      assert.doesNotMatch(await mainText(page), /Sold on/);
+
+      // a currency of three letters that is none
+      await page.fill('main input[name="sc-dp-value"]', '0.2');
+      await page.fill('main input[name="sc-dp-currency"]', 'dol');
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(700);
+      const cur = await errorOf('sc-dp-currency');
+      assert.deepEqual(sent, [], 'a currency that is none is not sent');
+      assert.equal(cur.invalid, 'true');
+      assert.match(cur.text, /currency/i);
+
+      // one that is a currency, in small letters, is saved in capitals; today as the sold date is saved
+      await page.fill('main input[name="sc-dp-currency"]', 'nok');
+      const saved = page.waitForResponse((r) => r.request().method() === 'PATCH' && /\/cars\/c2\/settings$/.test(r.url()));
+      await page.keyboard.press('Enter');
+      await saved;
+      await page.waitForTimeout(500);
+      assert.equal(sent.length, 1);
+      assert.deepEqual(JSON.parse(sent[0]).default_price_per_kwh, { value: 0.2, currency: 'NOK' });
+      const today = await page.evaluate(() => document.querySelector('main input[name="sc-sold-date"]').max);
+      await page.fill('main input[name="sc-sold-date"]', today);
+      await page.getByRole('button', { name: 'Mark as sold' }).click();
+      await page.waitForFunction(() => /Sold on/.test(document.querySelector('main').innerText));
+      assert.deepEqual(JSON.parse(sent[1]), { version: JSON.parse(sent[1]).version, sold: true, sold_date: today });
+      assert.deepEqual(errors, []);
+    });
   });
 }
