@@ -748,6 +748,7 @@ async fn export_file(
     State(app): State<AppState>,
     Admin(v): Admin,
     Path(id): Path<String>,
+    method: axum::http::Method,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let s = site(&app)?;
@@ -811,8 +812,14 @@ async fn export_file(
             }
         }
     });
-    if from == 0 {
-        v.audit(&app, "export-downloaded", Some(&target("export", None, &id)), "Downloaded the export file.").await?;
+    // every download is recorded, a resumed one too (from any byte); a HEAD request sends nothing
+    if method != axum::http::Method::HEAD {
+        let said = if from == 0 {
+            "Downloaded the export file.".to_string()
+        } else {
+            format!("Downloaded the export file from byte {from} on (a download resumed).")
+        };
+        v.audit(&app, "export-downloaded", Some(&target("export", None, &id)), &said).await?;
     }
     let mut res = axum::body::Body::from_stream(ExportBody(rx)).into_response();
     *res.status_mut() = if range.is_some() { StatusCode::PARTIAL_CONTENT } else { StatusCode::OK };

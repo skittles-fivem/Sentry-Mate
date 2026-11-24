@@ -141,6 +141,17 @@ async fn a_move_code_and_an_export_file() {
     assert_eq!(r.header("content-range"), Some(format!("bytes 10-{}/{size}", size - 1).as_str()));
     let r = admin.request("GET", &url, None, &[("Range", &format!("bytes={}-", size + 5))]).await;
     assert_eq!(r.status, 416);
+    // every download of the file is in the audit log, one that starts at byte 1 too; a HEAD request downloads nothing
+    let downloads = |a: &serde_json::Value| {
+        a["items"].as_array().unwrap().iter().filter(|e| e["action"] == "export-downloaded").count()
+    };
+    let before = downloads(&admin.get("/api/v1/audit?limit=500").await.json());
+    assert_eq!(before, 2, "the whole file and the rest from byte 10");
+    let r = admin.request("GET", &url, None, &[("Range", "bytes=1-")]).await;
+    assert_eq!((r.status, r.body.len() as u64), (206, size - 1));
+    let r = admin.request("HEAD", &url, None, &[]).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(downloads(&admin.get("/api/v1/audit?limit=500").await.json()), before + 1);
     // the file opens with the recovery key: its header names this server's version
     assert!(String::from_utf8_lossy(&whole[..512.min(whole.len())]).contains(env!("CARGO_PKG_VERSION")));
     let r = admin.delete(&format!("/api/v1/system/exports/{ex}"), json!({})).await;
