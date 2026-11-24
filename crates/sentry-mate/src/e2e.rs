@@ -760,7 +760,7 @@ async fn names_given_at_start_that_are_not_host_names_stay_out_of_the_certificat
     let pem = std::fs::read_to_string(tls_dir(&data).join("cert.pem")).unwrap();
     let der = first_der(&pem);
     let has = |b: &[u8]| der.windows(b.len()).any(|w| w == b);
-    assert!(has(&[0x87, 4, 192, 168, 1, 5]), "the address as an IP address");
+    assert!(has(&[0x87, 4, 192, 0, 2, 5]), "the address as an IP address");
     assert!(!has(b"bad name") && !has(b"*.lan") && !has(b"192.0.2.5"));
     server.abort();
 }
