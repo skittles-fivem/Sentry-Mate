@@ -1064,8 +1064,11 @@ async function mountEditor(ctx, q) {
     if (!ctx.alive()) return;
     dirty = false;
     const eff = res.effect || {};
-    // past charges a reprice would change: ask now, before going back to the list
-    if (eff.charges_repriced > 0 && res.price) {
+    // past charges a reprice would change: ask now, before going back to the list. Only when this save could
+    // have changed what a charge here costs (the price, or the circle): the count is also above zero for old
+    // charges that kept their cost on purpose, and a new name or kind is no reason to ask about them again.
+    const touched = isNew || ['price', 'lat', 'lon', 'radius_m'].some((k) => k in body);
+    if (touched && eff.charges_repriced > 0 && res.price) {
       const choice = await openDialog({
         title: 'Reprice past charges too?',
         body: [h('p', null, `${plural(eff.charges_repriced, 'past charge', 'past charges')} here would cost differently with this price. They keep their cost unless you reprice them. A cost typed by hand is never changed.`)],

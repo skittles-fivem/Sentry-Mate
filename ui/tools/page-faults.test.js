@@ -373,3 +373,104 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
     });
   });
 }
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: a number a field cannot read is said under the field, and the value stored stays`, { skip: SKIP, timeout: 180000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      const sent = [];
+      const { page, errors } = await openPage(context, `${origin}/settings/cars/c1`, 'settings-cars',
+        (pg) => pg.on('request', (r) => { if (r.method() === 'PATCH') sent.push(`${new URL(r.url()).pathname} ${r.postData()}`); }));
+      for (const [name, good, bad, read] of [
+        ['sc-capacity_new_kwh', '75', '1e', async () => (await (await context.request.get(`${origin}/api/v1/cars/c1/settings`)).json()).capacity_new_kwh],
+        ['sc-tyre_pressure_front_kpa', '2.9', '-.', async () => (await (await context.request.get(`${origin}/api/v1/cars/c1`)).json()).config.tyre_pressure_front_kpa?.value],
+      ]) {
+        const input = page.locator(`main input[name="${name}"]`);
+        await input.waitFor({ timeout: 15000 });
+        const saved = () => page.waitForResponse((r) => r.request().method() === 'PATCH', { timeout: 10000 });
+        let done = saved();
+        await input.fill(good); await input.press('Tab');
+        await done;
+        await page.waitForTimeout(500);   // the panel is drawn again with the saved value
+        const stored = await read();
+        assert.ok(stored > 0, `${name}: ${good} is stored (${stored})`);
+        sent.length = 0;
+        // typed, as a person does: a number input gives "" for text it cannot read
+        const again = page.locator(`main input[name="${name}"]`);
+        await again.click(); await again.press('Control+a'); await page.keyboard.type(bad); await again.press('Tab');
+        await page.waitForTimeout(800);
+        assert.deepEqual(sent, [], `${name}: "${bad}" is not a number, so nothing is sent`);
+        assert.equal(await read(), stored, `${name}: the stored value stays`);
+        const said = await page.evaluate((name) => {
+          const i = document.querySelector(`main input[name="${name}"]`);
+          const e = i.closest('.form-row')?.querySelector('.form-error:not([hidden])');
+          return { invalid: i.getAttribute('aria-invalid'), text: e ? e.textContent : null };
+        }, name);
+        assert.equal(said.invalid, 'true', `${name}: the field is marked as wrong`);
+        assert.match(said.text || '', /A number from/, `${name}: and says what it takes`);
+      }
+      assert.deepEqual(errors, []);
+    });
+  });
+
+  test(`${pack}: saving a place whose price and circle were not touched asks nothing about past charges`, { skip: SKIP, timeout: 180000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      // a priced place with past charges a reprice would change
+      const places = (await (await context.request.get(`${origin}/api/v1/places?limit=200`)).json()).items;
+      let place = null;
+      for (const p of places.filter((x) => x.price)) {
+        const eff = await (await context.request.post(`${origin}/api/v1/places/preview`, { headers: { 'X-Sentry-Mate': '1' }, data: { id: p.id } })).json();
+        if (eff.charges_repriced > 0) { place = p; break; }
+      }
+      assert.ok(place, 'the made-up data has a priced place whose past charges would cost differently (else this checks nothing)');
+      const { page, errors } = await openPage(context, `${origin}/places?place=${place.id}`, 'places');
+      await page.locator('main input[name="name"]').waitFor({ timeout: 15000 });
+      await page.fill('main input[name="name"]', 'Renamed place');
+      const saved = page.waitForResponse((r) => r.request().method() === 'PATCH' && /\/places\//.test(new URL(r.url()).pathname));
+      await page.locator('main button[type="submit"]', { hasText: 'Save changes' }).first().click();
+      const res = await saved;
+      assert.deepEqual(Object.keys(JSON.parse(res.request().postData())).sort(), ['name', 'version'], 'only the name was sent');
+      assert.ok((await res.json()).effect.charges_repriced > 0, 'the answer counts past charges a reprice would change');
+      await page.waitForFunction(() => !location.search.includes('place=') && document.documentElement.dataset.ready === 'places', null, { timeout: 15000 })
+        .catch(async () => assert.fail(`a rename goes back to the list; instead: ${await page.evaluate(() => document.querySelector('dialog[open]')?.innerText.slice(0, 120) || location.search)}`));
+      assert.equal(await page.locator('dialog[open]').count(), 0);
+
+      // a changed price still asks
+      const p2 = await openPage(context, `${origin}/places?place=${place.id}`, 'places');
+      const price = p2.page.locator('main input[name="per_kwh"]');
+      await price.waitFor({ timeout: 15000 });
+      await price.fill('0.77');
+      await p2.page.locator('main button[type="submit"]', { hasText: 'Save changes' }).first().click();
+      await p2.page.locator('dialog[open]', { hasText: 'Reprice past charges too?' }).waitFor({ timeout: 15000 });
+      assert.deepEqual([...errors, ...p2.errors], []);
+    });
+  });
+
+  test(`${pack}: Charges and Statistics for cars that are not there say so once, and ask the server for none of them`, { skip: SKIP, timeout: 180000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      for (const [route, id] of [['/charges?cars=zzz', 'charges'], ['/statistics?cars=zzz,yyy', 'statistics']]) {
+        const asked = [], missing = [];
+        const { page, errors } = await openPage(context, origin + route, id, (pg) => {
+          pg.on('request', (r) => { if (r.url().includes('/api/') && /zzz|yyy/.test(r.url())) asked.push(r.url().replace(origin, '')); });
+          pg.on('response', (r) => { if (r.status() === 404) missing.push(r.url().replace(origin, '')); });
+        });
+        await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+        const text = await mainText(page);
+        assert.match(text, /None of these cars is yours to see/, `${route} says it`);
+        assert.doesNotMatch(text, /zzz|No charge matches|0 cars|Not found/i, `${route} shows no figures for no car: ${text.slice(0, 200)}`);
+        assert.deepEqual(asked, [], `${route} asks for no car that is not there`);
+        assert.deepEqual(missing, []);
+        // the way out: every car
+        await page.locator('main a.btn', { hasText: 'Every car' }).click();
+        await page.waitForFunction((id) => !location.search.includes('zzz') && document.documentElement.dataset.ready === id, id, { timeout: 30000 });
+        assert.deepEqual(errors, []);
+        await page.close();
+      }
+      // one car that is there beside one that is not: the page is the one car's
+      const asked = [];
+      const { page } = await openPage(context, `${origin}/charges?cars=c1,zzz`, 'charges', (pg) => pg.on('response', (r) => { if (r.status() === 404) asked.push(r.url().replace(origin, '')); }));
+      await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+      assert.deepEqual(asked, [], 'no request of the page is answered 404');
+      assert.doesNotMatch(await mainText(page), /zzz/);
+    });
+  });
+}
