@@ -220,16 +220,19 @@ export async function mount(ctx) {
     const n = now;
     const vin = car.vin_prefix;
     const trim = car.config?.trim;
+    const sold = state.isSold(car);
     redraw(head, pageHead({
       cls: 'now-head',
       eyebrow: 'Overview',
       title: h('span', { cover: 'summary.header.name' }, car.name || `Unnamed ${car.model || 'car'}`),
-      titleExtra: h('span', { cover: 'summary.stat.status' }, statePill(n.state, { lg: true, stale: n.stale })),
+      titleExtra: sold
+        ? h('span', { cover: 'summary.stat.status' }, h('span', { class: 'tag tag--plain' }, car.sold_date ? `Sold on ${car.sold_date}` : 'Sold'))
+        : h('span', { cover: 'summary.stat.status' }, statePill(n.state, { lg: true, stale: n.stale })),
       sub: [
         h('span', { cover: 'summary.header.model', title: 'Model and year come from the VIN prefix.' }, [car.model, car.year].filter(Boolean).join(' · ') || 'Model not known yet'),
         trim?.value ? h('span', { cover: 'summary.header.trim', title: `Trim: ${trim.value}, from ${trim.source === 'can' ? "the car's own configuration message" : trim.source === 'owner' ? 'the owner' : trim.source === 'vin' ? 'the VIN prefix' : trim.source === 'tesla_api' ? 'the Tesla API' : 'the TeslaMate import'}` }, trim.value, h('span', { class: 'trim-src' }, { can: 'from SMO', vin: 'from the VIN', owner: 'typed by the owner', teslamate: 'imported from TeslaMate', tesla_api: 'from the Tesla API' }[trim.source] || 'source not known')) : h('span', { cover: 'summary.header.trim' }, 'Trim not known yet'),
         vin ? h('span', null, 'VIN ', h('span', { class: 'key-chip', title: 'Only the VIN prefix is stored; the serial number never is.' }, vin)) : null,
-        h('span', { cover: 'summary.stat.status' }, `${stateLabel(n.state)} since ${n.since_ms ? when(n.since_ms, tz) : '—'}`, n.since_ms ? h('span', { class: 'faint' }, ` (${dur(Math.max(0, ctx.api.now() - n.since_ms))})`) : null),
+        h('span', { cover: 'summary.stat.status' }, `${sold || n.stale ? 'Last known: ' : ''}${stateLabel(n.state)} since ${n.since_ms ? when(n.since_ms, tz) : '—'}`, n.since_ms ? h('span', { class: 'faint' }, ` (${dur(Math.max(0, ctx.api.now() - n.since_ms))})`) : null),
       ],
       actions: [
         h('button', { class: 'btn', type: 'button', onclick: openCarSwitcher, cover: 'overview.filter.car', title: 'Show another car on this page' }, icon('car'), 'Switch car'),
@@ -529,12 +532,14 @@ export async function mount(ctx) {
     // why the car is awake
     const buses = Object.fromEntries((n.buses || []).map((b) => [b.bus, b.awake]));
     const reasons = (n.awake_reasons || []).filter((r) => AWAKE[r]);
+    // a sold car, or one that sent nothing for a while, is described as it was when it last sent (never "now")
+    const old = state.isSold(car) || n.stale;
     const awakeText = n.state === 'asleep' ? 'Asleep: both buses are quiet.' : n.state === 'driving' ? 'Driving.' : n.state === 'unknown' ? 'Not known: no log for now.'
       : buses.vehicle && !buses.chassis ? 'Parked, kept awake: only the vehicle bus is awake (the chassis bus sleeps).' : 'Awake.';
-    const why = panel({ title: 'Why the car is awake', icon: 'info', cover: 'web.settings.car.sleep-blockers' },
-      h('p', { class: 'why-state' }, awakeText),
+    const why = panel({ title: old ? 'Why the car was awake' : 'Why the car is awake', icon: 'info', cover: 'web.settings.car.sleep-blockers' },
+      h('p', { class: 'why-state' }, old && n.state !== 'unknown' ? `At its last log: ${awakeText[0].toLowerCase()}${awakeText.slice(1)}` : awakeText),
       reasons.length ? h('ul', { class: 'why-list' }, reasons.map((r) => h('li', null, h('b', null, AWAKE[r][0]), h('span', null, AWAKE[r][1]))))
-        : n.state === 'parked' ? h('p', { class: 'note' }, 'Nothing the car reports keeps it awake; it should fall asleep soon.') : null,
+        : n.state === 'parked' ? h('p', { class: 'note' }, old ? 'Nothing the car reported then kept it awake.' : 'Nothing the car reports keeps it awake; it should fall asleep soon.') : null,
       h('p', { class: 'note' }, 'Read from the car’s own messages. Sentry Mate only listens, so it never keeps the car awake.'));
 
     // status flags: each door and lid by name; a pair keeps its label and value together and wraps whole
