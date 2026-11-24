@@ -309,7 +309,7 @@
 .co-p-msg { color: var(--text-2); overflow-wrap: anywhere; }
 .co-p-dur { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .co-prob .tag { justify-self: end; align-self: center; }
-.tag--danger { color: var(--danger); background: var(--danger-soft); }
+.tag--danger { color: var(--danger-ink); background: var(--danger-soft); }
 .co-p-empty { margin: 0; display: flex; align-items: center; gap: round(0.375rem, var(--e)); }
 .co-prob-panel > .note:last-child { margin: round(0.75rem, var(--e)) 0 0; }
 
@@ -344,7 +344,7 @@
 
 /* overview: a CAN Bridge row's logs missing on the server, beside its name (no line of its own) */
 .co-nameline { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.25rem, var(--e)) round(0.5rem, var(--e)); min-width: 0; }
-.co-miss { flex: none; height: round(1.125rem, var(--e)); }
+.co-miss { flex: none; height: max(round(1.125rem, var(--e)), round(calc(1.25 * var(--fs-floor)), 1px)); }
 
 /* Supercharger invoices, in the Tesla and TeslaFi sections (pages/invoices-block.js) */
 .inv-block { display: flex; flex-direction: column; gap: round(0.875rem, var(--e)); margin-top: var(--gap); min-width: 0; }
