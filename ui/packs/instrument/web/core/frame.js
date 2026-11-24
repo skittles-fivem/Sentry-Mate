@@ -24,6 +24,7 @@ import { initNotices, loadNotices, onNotices } from './notices.js';
 import { initFlash } from './flash.js';
 import { applyPrefs, getMe } from './prefs.js';
 import { onSession } from './session.js';
+import { signedInHint } from '../shared/prefetch.js';
 import { refreshAgo, stateLabel, carMeta } from './fmt.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -382,11 +383,17 @@ export function initFrame() {
   showFreshness(api.eventsState());
   document.addEventListener('keydown', onKey);
   setInterval(() => { tickClock(); refreshAgo(); }, 15000);
+  // a browser signed in last time asks for the frame's first reads with the session check, not after it: the first
+  // page waits for the notices bar (a signed-out browser's answers are 401s, forgotten; signing in asks again)
+  let early = signedInHint();
+  if (early) { loadAbout(); loadNotices(); loadCarCount(); }
   onSession((s) => {
     showAccount();
     if (s.signedIn) {
-      if (!started) { started = true; loadAbout(); loadNotices(); loadCarCount(); startEvents(); }
+      if (!started) { started = true; if (!early) { loadAbout(); loadNotices(); loadCarCount(); } startEvents(); }
+      early = false;
     } else {
+      early = false;
       started = false;
       stopEvents?.(); stopEvents = null;
     }
