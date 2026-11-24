@@ -167,6 +167,11 @@ test('currency: a charge billed in CAD says CAD on the charge page and in the Ch
     assert.ok(Array.isArray(total));
     await page.goto(`${still.origin}/cars/c2/charges?preset=all`);
     await page.waitForFunction(() => document.documentElement.dataset.ready === 'charges');
+    // the list shows 25 charges at a time: more of them are asked for until this one is in it
+    for (let i = 0; i < 6 && !(await page.$(`a[href*="${cad.id}"]`)); i++) {
+      await page.locator('.charges-table .tbl-foot button', { hasText: 'Show more' }).click();
+      await page.waitForTimeout(500);
+    }
     const cell = await page.evaluate((id) => { const a = document.querySelector(`a[href*="${id}"]`); return a?.closest('tr')?.querySelector('a.cost-link')?.textContent || null; }, cad.id);
     assert.match(cell || '', /CAD|CA\$|C\$/, `the list cell reads "${cell}"`);
   } finally { await context.close(); }
