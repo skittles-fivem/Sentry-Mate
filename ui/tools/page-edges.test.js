@@ -1,6 +1,6 @@
 // Pages at their edges, in Chromium on the dev API server: a link to a section of the page that is open lands
 // below the top bar, as a link from another page does; a sold date after today and a currency that is none are
-// refused under their fields.
+// refused under their fields; a period still to come or before 1970 gives a page, not an error.
 // `PACKS=a,b` runs only those. Run: node --test ui/tools/page-edges.test.js. Skipped when Playwright is not installed.
 'use strict';
 
@@ -142,6 +142,41 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
       await page.waitForFunction(() => /Sold on/.test(document.querySelector('main').innerText));
       assert.deepEqual(JSON.parse(sent[1]), { version: JSON.parse(sent[1]).version, sold: true, sold_date: today });
       assert.deepEqual(errors, []);
+    });
+  });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: a period still to come gives Trip and Efficiency their empty pages, and the period picker takes no day before 1970`, { skip: SKIP, timeout: 240000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      const now = Date.parse((await context.request.get(`${origin}/api/v1/me`)).headers().date);   // the dev server's clock
+      const DAY = 86400000;
+      for (const [id, query] of [['trip', `?from=${now + 40 * DAY}&to=${now + 45 * DAY}`], ['efficiency', `?from=${now + 40 * DAY}&to=${now + 45 * DAY}`],
+        ['trip', '?from=-2208960000000&to=1700000000000'], ['logbook', '?from=-2208960000000&to=1700000000000']]) {
+        const refused = [];
+        const { page, errors } = await openPage(context, `${origin}/cars/c1/${id}${query}`, null, (p) => p.on('response', (r) => { if (r.status() >= 400 && /\/api\//.test(r.url())) refused.push(`${r.status()} ${new URL(r.url()).pathname}`); }));
+        await page.waitForLoadState('networkidle');
+        assert.equal(await page.evaluate(() => document.documentElement.dataset.ready), id, `${id}${query} is drawn, not an error page`);
+        assert.deepEqual(refused, [], `${id}${query} asks the server for nothing it refuses`);
+        assert.deepEqual(errors, []);
+        await page.close();
+      }
+
+      // the picker: a year mistyped as 1900 is said in the picker and the period stays
+      const { page } = await openPage(context, `${origin}/cars/c1/drives?preset=7d`, 'drives');
+      await page.locator('.topbar .period-btn').click();
+      await page.fill('#period-from', '1900-01-01');
+      await page.fill('#period-to', '2026-11-01');
+      await page.locator('.period-custom button[type="submit"]').click();
+      await page.waitForTimeout(700);
+      assert.match(page.url(), /\?preset=7d$/, 'the period in the address stays');
+      const said = await page.evaluate(() => {
+        const from = document.getElementById('period-from');
+        const err = document.querySelector('.period-custom .form-error');
+        return { shown: from.checkVisibility(), native: from.validationMessage, own: err && !err.hidden ? err.textContent : '' };
+      });
+      assert.ok(said.shown, 'the picker stays open');
+      assert.ok(said.native || /1970/.test(said.own), 'the picker says the day is too early');
     });
   });
 }

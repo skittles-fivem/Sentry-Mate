@@ -69,6 +69,8 @@ export function openPeriodPicker(anchor = null) {
   placePopover(pop, anchor || btn, { align: anchor ? 'start' : 'end' });
 }
 
+const FIRST_DAY = '1970-01-02';
+
 function fill() {
   if (!cur) return;
   const { period, tz } = cur;
@@ -79,14 +81,16 @@ function fill() {
 
   const days = period.from_ms != null ? periodDays(period, tz) : { from: dayKey(api.now() - 29 * 86400000, tz), to: dayKey(api.now(), tz) };
   const today = dayKey(api.now(), tz);
-  const fromIn = h('input', { class: 'input', type: 'date', value: days.from, max: today, id: 'period-from', required: true });
-  const toIn = h('input', { class: 'input', type: 'date', value: days.to, max: today, id: 'period-to', required: true });
+  // no day before 1970 (a year mistyped as 0206): the API has no such time; the day after, so it holds in every zone
+  const fromIn = h('input', { class: 'input', type: 'date', value: days.from, min: FIRST_DAY, max: today, id: 'period-from', required: true });
+  const toIn = h('input', { class: 'input', type: 'date', value: days.to, min: FIRST_DAY, max: today, id: 'period-to', required: true });
   const err = h('p', { class: 'form-error', role: 'alert', hidden: true });
   const apply = (e) => {
     e.preventDefault();
     let a = fromIn.value, b = toIn.value;
     if (!a || !b) { err.hidden = false; replace(err, icon('warn'), 'Pick a first and a last day.'); return; }
     if (a > b) [a, b] = [b, a];
+    if (a < FIRST_DAY) { err.hidden = false; replace(err, icon('warn'), 'Pick days from 1970 on.'); (fromIn.value < FIRST_DAY ? fromIn : toIn).focus(); return; }
     const r = dayRange(a, b, tz);
     pop.hidePopover();
     state.setPeriod({ from: r.from ?? r.from_ms, to: b >= today ? null : (r.to ?? r.to_ms) }, { push: true });

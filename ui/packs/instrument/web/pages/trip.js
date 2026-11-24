@@ -62,7 +62,8 @@ export async function mount(ctx) {
 
   /* ---------- the window: the shared period; "all" starts at this car's first drive or charge */
   let from = ctx.period?.from_ms ?? null;
-  const to = Math.min(ctx.period?.to_ms ?? now, now);
+  // the window ends now at the latest; one that starts after now keeps its own end (an empty trip, as on the other pages)
+  const to = from != null && from >= now ? Math.max(ctx.period?.to_ms ?? 0, from + 1) : Math.min(ctx.period?.to_ms ?? now, now);
   if (from == null) {
     // "all" needs the car's first drive or charge: when neither can be read the page says so (not the last week as if it were all)
     let d0, c0;
