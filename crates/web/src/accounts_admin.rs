@@ -289,13 +289,21 @@ async fn patch(
             {
                 return Err(accounts::Error::LastAdmin.into());
             }
-            // the password first: it is the step that can still fail (the hashing is busy), and then nothing else
-            // has changed
-            if let Some(p) = &password {
-                app.accounts.set_password(v2.signed_in(), confirm, id, p).map_err(|e| match e {
-                    accounts::Error::WeakPassword(why) => ApiError::invalid("password", why),
-                    e => e.into(),
-                })?;
+            // another account's password first: it is the step that can still fail (the hashing is busy), and then
+            // nothing else has changed. One's own last: each step checks the acting password again, and after a new
+            // own password the one typed would no longer be it.
+            let own = id == v2.id();
+            let set_password = |app: &AppState| -> ApiResult<()> {
+                if let Some(p) = &password {
+                    app.accounts.set_password(v2.signed_in(), confirm, id, p).map_err(|e| match e {
+                        accounts::Error::WeakPassword(why) => ApiError::invalid("password", why),
+                        e => e.into(),
+                    })?;
+                }
+                Ok(())
+            };
+            if !own {
+                set_password(app)?;
             }
             let mut cars_changed = false;
             if let Some(r) = role
@@ -309,6 +317,9 @@ async fn patch(
             {
                 app.accounts.set_cars(v2.signed_in(), confirm, id, c)?;
                 cars_changed = true;
+            }
+            if own {
+                set_password(app)?;
             }
             let (a, cars) = load(app, id)?;
             Ok((account_json(app, &a, &cars), cars_changed, password.is_some()))

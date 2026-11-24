@@ -437,6 +437,24 @@ impl<F: Feed, S: Sink> Poller<F, S> {
 
     /// Does what is due at `now_ms`; returns when to come back. `None`: the account is gone, stop.
     pub async fn tick(&mut self, now_ms: u64) -> Option<u64> {
+        // the server's clock was set back (a wrong clock corrected, a machine resumed): every due time moves back as
+        // far, else nothing would be read until the clock had caught up with the old times
+        if self.now_ms > now_ms.saturating_add(60_000) {
+            let back = self.now_ms - now_ms;
+            self.next_ms = self.next_ms.saturating_sub(back);
+            self.pacing.backoff_until_ms = self.pacing.backoff_until_ms.saturating_sub(back);
+            if let Some(t) = &mut self.pacing.last_request_ms {
+                *t = t.saturating_sub(back);
+            }
+            self.last_seen = None;
+            // the stored copy too: the next read of the account merges its last request in
+            match self.store.set_pacing_exact(&self.id, &self.pacing) {
+                Ok(()) => self.saved_pacing = self.pacing.clone(),
+                Err(e) => {
+                    tracing::warn!(account = %self.id, error = %e, "the TeslaFi poller's pacing could not be saved")
+                }
+            }
+        }
         self.now_ms = now_ms;
         let next = self.tick_inner(now_ms).await;
         if next.is_some() {
