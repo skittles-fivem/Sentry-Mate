@@ -10,7 +10,7 @@
 .pl-intro { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: round(1rem, var(--e)) round(1.75rem, var(--e)); margin-bottom: var(--gap); }
 .pl-intro-item { display: flex; gap: round(0.75rem, var(--e)); align-items: flex-start; min-width: 0; }
 .pl-intro-item > .ico { flex: none; width: round(1.125rem, var(--e)); height: 1lh; margin-top: 0; /* a box one line high: the drawing sits centred on the first line */ color: var(--live-ink); }
-.pl-intro-item h3 { font-size: max(0.875rem, var(--fs-floor)); font-weight: 600; margin-bottom: round(0.25rem, var(--e)); }
+.pl-intro-item h2 { font-size: max(0.875rem, var(--fs-floor)); font-weight: 600; margin-bottom: round(0.25rem, var(--e)); }
 .pl-intro-item p { font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.5 * 1em), 2px); color: var(--text-2); }
 
 .pl-banner { display: flex; align-items: center; gap: round(0.75rem, var(--e)); padding: round(0.75rem, var(--e)) round(1rem, var(--e)); margin-bottom: var(--gap); border-radius: var(--radius-sm); border: 1px solid var(--warm-line); background: var(--warm-soft); font-size: max(0.84375rem, var(--fs-floor)); }

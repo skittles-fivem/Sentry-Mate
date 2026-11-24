@@ -445,7 +445,7 @@ export async function mount(ctx) {
     const idle = () => replace(dailyRead, best ? ['busiest day ', h('b', null, format(best.distance_km, 'distance'))] : 'no driving');
     idle();
     dailyEl.hidden = !days.length;
-    if (days.length) barChart(dailyEl, ctx, { t_ms: xs, values: days.map((d) => d.distance_km), kind: 'distance', tz: 'UTC', onCursor: (i) => { if (i == null) { idle(); return; } const d = days[i]; replace(dailyRead, `${formatDate(xs[i], 'UTC', { year: false })} · `, h('b', null, format(d.distance_km, 'distance')), ` · ${d.count} ${d.count === 1 ? 'drive' : 'drives'}`); } });
+    if (days.length) barChart(dailyEl, ctx, { t_ms: xs, values: days.map((d) => d.distance_km), kind: 'distance', tz: 'UTC', label: 'Distance driven on each day of the period, as bars', onCursor: (i) => { if (i == null) { idle(); return; } const d = days[i]; replace(dailyRead, `${formatDate(xs[i], 'UTC', { year: false })} · `, h('b', null, format(d.distance_km, 'distance')), ` · ${d.count} ${d.count === 1 ? 'drive' : 'drives'}`); } });
   }
 
   // a drive started or ended: load the lists and patterns again, a moment after the first word of it (so a burst

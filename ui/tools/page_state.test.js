@@ -170,7 +170,7 @@ test('currency: a charge billed in CAD says CAD on the charge page and in the Ch
     // the list shows 25 charges at a time: more of them are asked for until this one is in it
     for (let i = 0; i < 6 && !(await page.$(`a[href*="${cad.id}"]`)); i++) {
       await page.locator('.charges-table .tbl-foot button', { hasText: 'Show more' }).click();
-      await page.waitForTimeout(500);
+      await page.waitForSelector(`a[href*="${cad.id}"]`, { timeout: 4000 }).catch(() => {});
     }
     const cell = await page.evaluate((id) => { const a = document.querySelector(`a[href*="${id}"]`); return a?.closest('tr')?.querySelector('a.cost-link')?.textContent || null; }, cad.id);
     assert.match(cell || '', /CAD|CA\$|C\$/, `the list cell reads "${cell}"`);
