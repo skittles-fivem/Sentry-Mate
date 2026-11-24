@@ -175,12 +175,15 @@ def _synthetic_status(st):
 def _tesla_rows(req, now):
     out = []
     t = req.store.tesla
-    poll = t["settings"]["poll"]
-    p = tesla.PACES[poll]
+    q = t["settings"]["poll"]
+    # the waits in seconds (the real server's pace_s is whole seconds too)
+    p = {"list_s": q["list_ms"] / 1000, "parked_s": q["idle_ms"] / 1000, "charging_s": q["charging_ms"] / 1000,
+         "driving_s": q["driving_ms"] / 1000}
+    word = "default" if q == tesla.POLL_DEFAULT else "custom"
     for a in t["accounts"].values():
         c = Conn(f"tesla:{a['id']}", "tesla", f"Tesla API: {a['label']}", "/settings/integrations#tesla", "requests",
                  account=a["id"])
-        c.pace, c.cap = poll, 3000
+        c.pace, c.cap = word, None  # no cap of its own: Tesla does the limiting
         cars = [x["match"] for x in a["cars"] if x["match"] not in (None, "new", "leave_out")]
         hs = [req.ds.history(x) for x in cars if req.ds.history(x) is not None]
 
@@ -194,9 +197,9 @@ def _tesla_rows(req, now):
         c.rate = rate
         word = tesla._status_word(a)
         modes = [tesla._mode(req, a, x)[0] for x in a["cars"]]
-        steps = {"driving": p["driving_s"], "charging": p["charging_s"], "online_idle": p["parked_s"],
-                 "letting_sleep": 15 * 60, "watching_list": p["list_s"], "backoff": 120}
-        step = min((steps[m] for m in modes if m in steps), default=None)
+        steps = {"driving": q["driving_ms"], "charging": q["charging_ms"], "online_idle": q["idle_ms"],
+                 "letting_sleep": 15 * 60_000, "watching_list": q["list_ms"], "backoff": 120_000}
+        step_ms = min((steps[m] for m in modes if m in steps), default=None)
         c.last_error = a["last_error"]
         if word == "paused":
             c.status, c.reason, c.pace_s = "paused", "paused", None
@@ -209,10 +212,15 @@ def _tesla_rows(req, now):
             c.last_ok_ms = a["last_ok_ms"]
             c.pace_s = 120 if word == "error" else None
             c.next_ms = (now - now % 120_000 + 120_000) if word == "error" else None
+        elif tesla.limited_until(req, a):
+            until = tesla.limited_until(req, a)
+            c.status, c.reason = "problem", "rate_limited"
+            c.open_since = (until - 120_000, "rate_limited", "Tesla is limiting requests")
+            c.last_ok_ms, c.next_ms, c.pace_s = a["last_ok_ms"], until, step_ms // 1000 if step_ms else None
         else:
-            c.pace_s = step
-            c.last_ok_ms = now - now % (step * 1000) if step else a["last_ok_ms"]
-            c.next_ms = c.last_ok_ms + step * 1000 if step else None
+            c.pace_s = step_ms // 1000 if step_ms else None
+            c.last_ok_ms = now - now % step_ms if step_ms else a["last_ok_ms"]
+            c.next_ms = c.last_ok_ms + step_ms if step_ms else None
             if not any(m in ("driving", "charging", "online_idle", "letting_sleep") for m in modes):
                 c.status, c.reason = "idle", "car_asleep"
         out.append(c)

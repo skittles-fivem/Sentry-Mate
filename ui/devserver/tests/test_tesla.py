@@ -32,9 +32,12 @@ class Tesla(ServerCase):
     def test_1_overview_and_accounts(self):
         o = self.c.get(BASE)
         self.assertTrue(o["enabled"])
-        self.assertEqual((o["accounts"], o["cars"], o["poll"]), (1, 2, "normal"))
+        self.assertEqual((o["accounts"], o["cars"]), (1, 2))
+        self.assertEqual(o["poll"], {"driving_ms": 2500, "charging_ms": 5000, "idle_ms": 60_000, "list_ms": 30_000})
+        self.assertEqual(o["poll_limits"]["driving_ms"], {"min": 2500, "default": 2500, "max": 600_000})
+        self.assertNotIn("daily_cap", o["poll_limits"])  # no cap of its own: Tesla does the limiting
+        self.assertIsNone(o["rate_limited_until_ms"])
         self.assertEqual(o["hosts"], ["auth.tesla.com", "owner-api.teslamotors.com", "streaming.vn.teslamotors.com"])
-        self.assertEqual(o["polls"]["parked_s"], 60)
         a = self.c.get(BASE + "/accounts")["items"][0]
         self.assertEqual((a["id"], a["status"], a["region"]), ("ta1", "ok", "global"))
         self.assertEqual([c["match"] for c in a["cars"]], ["c1", "c2", None])
@@ -54,19 +57,61 @@ class Tesla(ServerCase):
 
     def test_2_password_asked_again(self):
         v = self.c.get(BASE)["version"]
-        e, _ = self.c.error("PATCH", BASE, 403, "password_needed", body={"version": v, "poll": "often"})
+        slower = {"idle_ms": 120_000}
+        e, _ = self.c.error("PATCH", BASE, 403, "password_needed", body={"version": v, "poll": slower})
         self.assertIn("confirm_password", e["fields"])
         self.c.error("PATCH", BASE, 403, "wrong_password",
-                     body={"version": v, "poll": "often", "confirm_password": "not-it"})
-        self.assertEqual(self.c.get(BASE)["poll"], "normal")  # nothing changed
+                     body={"version": v, "poll": slower, "confirm_password": "not-it"})
+        self.assertEqual(self.c.get(BASE)["poll"]["idle_ms"], 60_000)  # nothing changed
         # the header does as well
-        o = self.c.json("PATCH", BASE, {"version": v, "poll": "often"}, headers={"X-Sentry-Mate-Password": PW})
-        self.assertEqual((o["poll"], o["polls"]["parked_s"], o["version"]), ("often", 30, v + 1))
-        self.c.error("PATCH", BASE, 409, "stale_version", body={"version": v, "poll": "gentle",
+        o = self.c.json("PATCH", BASE, {"version": v, "poll": slower}, headers={"X-Sentry-Mate-Password": PW})
+        self.assertEqual((o["poll"]["idle_ms"], o["poll"]["driving_ms"], o["version"]), (120_000, 2500, v + 1))
+        self.c.error("PATCH", BASE, 409, "stale_version", body={"version": v, "poll": {"idle_ms": 90_000},
                                                                  "confirm_password": PW})
-        self.c.error("PATCH", BASE, 422, "invalid", body={"version": v + 1, "poll": "always",
-                                                           "confirm_password": PW})
         self.assertIn("tesla-poll-changed", {x["action"] for x in self.audit()})
+        entry = next(x for x in self.audit() if x["action"] == "tesla-poll-changed")
+        self.assertIn("idle every 120 s", entry["summary"])
+
+    def test_2a_the_floors(self):
+        """Each read can be made slower, never faster than its floor; there is no cap to set."""
+        v = self.c.get(BASE)["version"]
+        for field, value in (("driving_ms", 2499), ("charging_ms", 4999), ("idle_ms", 59_999),
+                             ("list_ms", 29_999), ("list_ms", 3_600_001)):
+            e, _ = self.c.error("PATCH", BASE, 422, "invalid",
+                                body={"version": v, "poll": {field: value}, "confirm_password": PW})
+            self.assertIn(f"poll.{field}", e["fields"])
+        for bad in ("often", {"driving_ms": "2.5"}, {"fast": 1}, {"driving_ms": 2500.5}, {"driving_ms": True},
+                    {"daily_cap": 3000}):
+            self.c.error("PATCH", BASE, 400, "bad_input", body={"version": v, "poll": bad, "confirm_password": PW})
+        self.assertEqual(self.c.get(BASE)["version"], v)  # nothing changed
+        slower = {"driving_ms": 5000, "charging_ms": 10_000, "idle_ms": 120_000, "list_ms": 60_000}
+        o = self.c.json("PATCH", BASE, {"version": v, "poll": slower, "confirm_password": PW})
+        self.assertEqual(o["poll"], slower)
+        o = self.c.json("PATCH", BASE, {"version": o["version"], "poll": dict(slower, driving_ms=2500),
+                                        "confirm_password": PW})
+        self.assertEqual(o["poll"]["driving_ms"], 2500)
+
+    def test_2c_tesla_limiting_is_told(self):
+        """A 429 wait: the notice with the next try, the account and its status, the connections row."""
+        a = self.server.app.store.tesla["accounts"]["ta1"]
+        until = self.server.app.clock.now() + 10 * 60_000
+        a["rate_limited_until_ms"] = until
+        try:
+            n = [x for x in self.c.get("/api/v1/notices")["items"] if x["code"] == "tesla_rate_limited"]
+            self.assertEqual(len(n), 1)
+            self.assertTrue(n[0]["message"].startswith('Tesla is limiting requests for the Tesla account "Family account", '
+                                                       "next try at "), n[0]["message"])
+            self.assertEqual(n[0]["detail"], {"account": "ta1", "until_ms": until})
+            self.assertEqual(self.c.get(BASE)["rate_limited_until_ms"], until)
+            self.assertEqual(self.c.get(BASE + "/accounts/ta1")["rate_limited_until_ms"], until)
+            st = [x for x in self.c.get(BASE + "/status")["items"] if x["car"]]
+            self.assertTrue(all(x["mode"] == "backoff" and x["next_poll_ms"] == until for x in st), st)
+            row = next(x for x in self.c.get("/api/v1/integrations/overview")["connections"] if x["id"] == "tesla:ta1")
+            self.assertEqual((row["status"], row["status_reason"], row["next_ms"]), ("problem", "rate_limited", until))
+            self.assertIsNone(row["today"]["cap"])
+        finally:
+            a["rate_limited_until_ms"] = None
+        self.assertFalse([x for x in self.c.get("/api/v1/notices")["items"] if x["code"] == "tesla_rate_limited"])
 
     def test_2b_a_password_that_is_not_ascii(self):
         """Any password is an account's password: it signs in, confirms a change in the body, and in the headers
@@ -82,19 +127,19 @@ class Tesla(ServerCase):
             self.assertEqual(st, 200)
             v = self.c.get(BASE)["version"]
             self.c.error("PATCH", BASE, 403, "wrong_password",
-                         body={"version": v, "poll": "normal", "confirm_password": odd.strip()})
-            o = self.c.json("PATCH", BASE, {"version": v, "poll": "normal", "confirm_password": odd})
+                         body={"version": v, "poll": {"driving_ms": 2500}, "confirm_password": odd.strip()})
+            o = self.c.json("PATCH", BASE, {"version": v, "poll": {"driving_ms": 2500}, "confirm_password": odd})
             enc = "%20p%C3%A4sswort-%E9%8D%B5-zw%C3%B6lf%20"
-            o = self.c.json("PATCH", BASE, {"version": o["version"], "poll": "normal"},
+            o = self.c.json("PATCH", BASE, {"version": o["version"], "poll": {"driving_ms": 2500}},
                             headers={"X-Sentry-Mate-Password-Encoded": enc})
-            e, _ = self.c.error("PATCH", BASE, 400, "bad_input", body={"version": o["version"], "poll": "normal"},
+            e, _ = self.c.error("PATCH", BASE, 400, "bad_input", body={"version": o["version"], "poll": {"driving_ms": 2500}},
                                 headers={"X-Sentry-Mate-Password-Encoded": "p%E4sswort"})
             self.assertIn("confirm_password", e["fields"])
             # the plain header: UTF-8 bytes (HTTP drops the spaces at its ends); Latin-1 bytes are not a password
             admin["password"] = odd.strip()
-            self.c.json("PATCH", BASE, {"version": o["version"], "poll": "normal"},
+            self.c.json("PATCH", BASE, {"version": o["version"], "poll": {"driving_ms": 2500}},
                         headers={"X-Sentry-Mate-Password": odd.strip().encode("utf-8").decode("latin-1")})
-            self.c.error("PATCH", BASE, 400, "bad_input", body={"version": o["version"] + 1, "poll": "normal"},
+            self.c.error("PATCH", BASE, 400, "bad_input", body={"version": o["version"] + 1, "poll": {"driving_ms": 2500}},
                          headers={"X-Sentry-Mate-Password": "p\xe4sswort"})
         finally:
             admin["password"] = PW
@@ -105,11 +150,12 @@ class Tesla(ServerCase):
         d = alex.json("POST", "/api/v1/session", {"name": "alex", "password": PW})
         alex.json("POST", "/api/v1/session/two-step", {"pending": d["pending"], "code": "000000"})
         v = alex.get(BASE)["version"]
-        alex.error("PATCH", BASE, 401, "wrong_code", body={"version": v, "poll": "normal", "confirm_password": PW})
+        same = {"driving_ms": 2500}
+        alex.error("PATCH", BASE, 401, "wrong_code", body={"version": v, "poll": same, "confirm_password": PW})
         alex.error("PATCH", BASE, 401, "wrong_code",
-                   body={"version": v, "poll": "normal", "confirm_password": PW, "code": "123456"})
-        o = alex.json("PATCH", BASE, {"version": v, "poll": "normal", "confirm_password": PW, "code": "000000"})
-        self.assertEqual(o["poll"], "normal")
+                   body={"version": v, "poll": same, "confirm_password": PW, "code": "123456"})
+        o = alex.json("PATCH", BASE, {"version": v, "poll": same, "confirm_password": PW, "code": "000000"})
+        self.assertEqual(o["poll"]["driving_ms"], 2500)
 
     def test_4_sign_in_and_paste(self):
         s = self.c.json("POST", BASE + "/sign-in", {"region": "global"}, expect=201)

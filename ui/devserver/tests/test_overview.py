@@ -63,7 +63,7 @@ class Overview(ServerCase):
         self.assertEqual(by["smo:c3"]["uptime"]["day_pct"], 0.0)
         self.assertEqual(by["teslafi:fa1"]["status"], "idle")
         self.assertEqual(by["teslamate_db"]["status"], "off")
-        self.assertEqual(by["tesla:ta1"]["today"]["cap"], 3000)
+        self.assertIsNone(by["tesla:ta1"]["today"]["cap"])  # no cap of its own: Tesla does the limiting
         totals = {s: sum(1 for c in d["connections"] if c["status"] == s) for s in STATUSES}
         self.assertEqual(d["totals"], totals)
         self.assertGreater(sum(c["day"]["errors"] + c["week"]["errors"] for c in d["connections"]), 0)
