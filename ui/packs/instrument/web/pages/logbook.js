@@ -112,7 +112,18 @@ export async function mount(ctx) {
   const contSlot = h('div');
   const contPanel = panel({ title: 'Continuity check', icon: 'odo', cls: 'lb-cont' }, contSlot);
 
+  // A panel is drawn again only when what it shows changed: while the history is rebuilt a `rows` event comes
+  // every second, and three panels made again each time are three passes of layout, which hold a scroll up.
+  const shown = new Map();
+  const changed = (slot, what) => {
+    const key = JSON.stringify([what, unit('distance')]);
+    if (shown.get(slot) === key) return false;
+    shown.set(slot, key);
+    return true;
+  };
+
   function paintTotals() {
+    if (!changed(totalsSlot, [data?.count, data?.totals_by_purpose, data?.counts_by_purpose])) return;
     const count = data?.count || 0;
     const tot = data?.totals_by_purpose || {};
     const all = ORDER.reduce((s, k) => s + (tot[k]?.distance_km || 0), 0);
@@ -145,6 +156,7 @@ export async function mount(ctx) {
 
   function paintContinuity() {
     const c = data?.continuity;
+    if (!changed(contSlot, c ?? null)) return;
     if (!c || !c.rows) { replace(contSlot, h('p', { class: 'note' }, 'Nothing to check: no drive in this period.')); return; }
     const span = c.last_end_odometer_km != null && c.first_start_odometer_km != null ? c.last_end_odometer_km - c.first_start_odometer_km : null;
     const worst = c.worst || [];
@@ -271,6 +283,7 @@ export async function mount(ctx) {
 
   let rulesErr = null;   // the rules' read failed: said as that, with a way to read again, not as "no rules yet"
   function paintRules() {
+    if (!changed(rulesSlot, [rulesErr?.message ?? null, rules, rules.map((x) => [placeName(x.from_place), placeName(x.to_place)]), data?.rules_used ?? null])) return;
     if (rulesErr) {
       replace(rulesSlot, h('p', { class: 'note warn', role: 'status' }, `The rules could not be loaded: ${rulesErr.message} `,
         h('button', { class: 'btn btn--sm', type: 'button', onclick: () => loadRules() }, icon('reset', 'ico--sm'), 'Try again')));
@@ -401,10 +414,14 @@ export async function mount(ctx) {
     return busy;
   }
 
+  // the car's drives changed: read again, once per 2 s at most (a rebuild says so every second)
+  let rowsTimer = 0;
   ctx.events('rows', (ev) => {
     const d = ev?.data || {};
-    if (d.car === cid && (d.kinds || []).includes('drives')) refresh();
+    if (d.car !== cid || !(d.kinds || []).includes('drives') || rowsTimer) return;
+    rowsTimer = setTimeout(() => { rowsTimer = 0; if (ctx.alive()) refresh(); }, 2000);
   });
+  ctx.onCleanup(() => clearTimeout(rowsTimer));
 
   ctx.ready();
 }

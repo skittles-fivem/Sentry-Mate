@@ -506,7 +506,12 @@ function resized(entries) {
     // a grid or table that was taken off the page (a card drawn again) reports 0 x 0: nothing on the page moved
     if (!x.target.isConnected) { ro.unobserve(x.target); watched.delete(x.target); continue; }
     const b = x.target.getBoundingClientRect();
-    if (left.get(x.target) !== `${b.width} ${b.height}`) { later(); return; }
+    if (left.get(x.target) === `${b.width} ${b.height}`) continue;
+    // a long list's table (shared/vlist.js, its body a [data-vl-body]) changes height as its window moves over
+    // rows of other heights: like its rows, once the scrolling rests, not a run over the whole page every frame
+    if (x.target.querySelector(':scope > [data-vl-body]')) { atRest(); continue; }
+    later();
+    return;
   }
 }
 
@@ -531,6 +536,9 @@ function later() {
   // (a resize or the fonts while a page is being built: one run, when it is drawn)
   requestAnimationFrame(() => { queued = false; if (holds) held = true; else snapAll(); });
 }
+
+// one run once a long list's window has stopped moving
+function atRest() { clearTimeout(restTimer); restTimer = setTimeout(later, 150); }
 
 /** Starts keeping grids and tables on whole pixels: call once at start. */
 export function watchTables() {
@@ -557,7 +565,7 @@ export function watchTables() {
       if (windowed(m.target)) { rest = true; continue; }
       changed.push(m);
     }
-    if (rest) { clearTimeout(restTimer); restTimer = setTimeout(later, 150); }
+    if (rest) atRest();
     if (!changed.length) return;
     if (holds) { held = true; return; }
     const added = appendedRows(changed);
