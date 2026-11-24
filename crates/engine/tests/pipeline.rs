@@ -1036,7 +1036,15 @@ fn a_full_rebuild_makes_every_position_again_and_keeps_what_the_owner_entered() 
         k.engine.idle().await;
         let car = the_car(&k);
         let shape_before = shape(&k, car);
-        let ch: u64 = charges(&k, car)[0].id.parse().unwrap();
+        // the charge keeps the id it was first given when a late log moves its start back (as logs that come out
+        // of order leave it): its id is not the one its start would give, and a history made from scratch would
+        // name it otherwise
+        let first: u64 = charges(&k, car)[0].id.parse().unwrap();
+        let mut row = k.db.get::<model::Charge>(car, first).unwrap().unwrap();
+        let ch = first + 60;
+        row.id = ch;
+        k.db.delete::<model::Charge>(car, &[first]).unwrap();
+        k.db.upsert(car, &[row]).unwrap();
         engine::costs::set_manual(&k.engine, car, ch, engine::costs::Mode::Total, 4.2, "EUR", false).unwrap();
         let mut c = k.db.car(car).unwrap().unwrap();
         c.name = "Made-up name".into();
@@ -1065,7 +1073,9 @@ fn a_full_rebuild_makes_every_position_again_and_keeps_what_the_owner_entered() 
         assert!(!s.is_empty() && !d.is_empty());
         assert!(s.iter().chain(&d).all(|l| (*l + 30.0).abs() < 0.01), "made again from the logs: {s:?} {d:?}");
         assert_eq!(shape(&k, car), shape_before);
-        let cost = charges(&k, car)[0].cost.clone().expect("the typed cost");
+        let made = &charges(&k, car)[0];
+        assert_eq!(made.id, ch.to_string(), "the charge made again keeps the id it had");
+        let cost = made.cost.clone().expect("the typed cost");
         assert_eq!((cost.amount, cost.source.as_str()), (4.2, "manual"));
         assert_eq!(k.db.car(car).unwrap().unwrap().name, "Made-up name");
         assert!(k.engine.version_stale().is_empty());

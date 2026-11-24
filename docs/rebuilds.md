@@ -47,6 +47,10 @@ thing that does that, how far each one reaches, and the server updates that chan
   without decoding. Each narrow rebuild is proven to give the history a whole rebuild of the car gives
   (`crates/engine/tests/tesla_input.rs`: `a_gps_layout_change_rebuilds_positions_only`,
   `a_source_order_change_joins_the_inputs_again_as_a_whole_rebuild_would`), except that a drive keeps the id it had.
+- **Ids kept.** A drive or charge made again keeps the id it has in the history in use (the ids come from a row's
+  start when it is first made and stay when a late log moves the start), so what points at it stays with it: a
+  cost typed or kept, a drive's purpose and notes. A full rebuild, which makes the history from scratch beside the
+  one in use, gives its rows those ids at the switch.
 - **Said why.** Every rebuild carries its causes: the full rebuild's status and its notice name them (for a server
   update with a link to the change below), and Data health shows the last rebuilds with their cause and how long
   they took.

@@ -163,6 +163,11 @@ struct Kit {
 }
 
 fn kit() -> Kit {
+    kit_settling(200)
+}
+
+/// A kit whose rebuilds wait `settle_ms` for more saves before they start.
+fn kit_settling(settle_ms: u64) -> Kit {
     let dir = tempfile::tempdir().unwrap();
     let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
     std::fs::create_dir_all(&data).unwrap();
@@ -170,7 +175,7 @@ fn kit() -> Kit {
     let v = Arc::new(v);
     let store = Store::with_limits(data.join("can"), v.clone(), 0, 200_000, |_| u64::MAX);
     let db = db::Db::open(&data, v, db::Options::default()).unwrap();
-    let opts = Options { workers: 2, api_rebuild_ms: 0, rebuild_settle_ms: 200, ..Options::default() };
+    let opts = Options { workers: 2, api_rebuild_ms: 0, rebuild_settle_ms: settle_ms, ..Options::default() };
     let engine = Engine::new(db.clone(), store.clone(), opts);
     let judge = Judge::new(store.clone()).on_judged(engine.listener());
     engine.start().unwrap();
@@ -1379,7 +1384,8 @@ fn a_gps_layout_change_rebuilds_positions_only() {
 #[test]
 fn repeated_settings_saves_give_one_coalesced_rebuild() {
     rt().block_on(async {
-        let k = kit();
+        // a settle wide enough that a slow machine never starts the job between two saves
+        let k = kit_settling(5_000);
         let trip = Trip { a: 70, b: 250 };
         for i in 0..3 {
             send_internal_gps(&k, i, trip).await;
