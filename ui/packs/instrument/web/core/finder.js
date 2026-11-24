@@ -84,6 +84,8 @@ function build() {
       const a = items[active >= 0 ? active : 0];
       if (a) { e.preventDefault(); a.click(); }   // as a click: closes the menu and opens the page (or the car switcher first)
     }
+    // a search field's own Esc only empties it and keeps the key: the menu says "Esc close", so one Esc closes
+    else if (e.key === 'Escape') { e.preventDefault(); dlg.close(); }
   });
   list = h('div', { class: 'menu-groups', id: 'menu-list', role: 'listbox', 'aria-label': 'Pages' });
   dlg = h('dialog', { class: 'menu-panel', 'aria-label': 'All pages' },
