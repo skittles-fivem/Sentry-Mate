@@ -1145,6 +1145,11 @@ pub async fn fallback(State(app): State<AppState>, req: Request) -> Response {
         res.headers_mut().insert(header::ALLOW, HeaderValue::from_static("GET, HEAD"));
         return res;
     }
+    // a browser asks for a service worker's script with this header: only /sw.js (its own route) is one. A pack's
+    // script registered as a worker would take over the whole site and outlive the pack and /original.
+    if req.headers().contains_key("service-worker") {
+        return plain(StatusCode::NOT_FOUND, "Not found");
+    }
     let headers = req.headers().clone();
     let conn = req.extensions().get::<Conn>().copied();
     let token = conn.filter(|c| c.tls).and(crate::policy::session_token(&headers));
