@@ -243,7 +243,8 @@ async fn audit_token(app: &AppState, v: &Viewer, action: &str, car: Option<CarId
     v.audit(app, action, Some(&target("token", car, id)), &summary).await
 }
 
-/// `201` with a token just made (its secret, shown once), recorded in the audit log by its id and car.
+/// `201` with a token just made (its secret, shown once, and `app`: what the CAN Bridge app is given), recorded in
+/// the audit log by its id and car.
 async fn created(
     app: &AppState,
     v: &Viewer,
@@ -259,6 +260,14 @@ async fn created(
         })
         .await?;
     audit_token(app, v, "token-created", car, &id).await?;
+    // the three fields of the CAN Bridge app, ready to copy: the address and the fingerprint as `/network` has them
+    let mut value = value;
+    let (names, sha256) = match app.blocking(|app| Ok(web::resources::certificate::running(app))).await? {
+        Some((names, sha)) => (names, Some(sha)),
+        None => (Vec::new(), None),
+    };
+    let address = web::resources::certificate::upload_address(app, &names);
+    value["app"] = serde_json::json!({ "address": address, "token": value["secret"], "certificate_sha256": sha256 });
     let mut r = axum::Json(value).into_response();
     *r.status_mut() = axum::http::StatusCode::CREATED;
     r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
