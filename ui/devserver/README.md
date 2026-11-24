@@ -41,6 +41,7 @@ routes such as `/cars/c1/drives`). `GET /health` answers 200 with no body.
 | `--sse-interval-ms N` | `2000` | How often the cars' `now` values are pushed on `/api/v1/events` (the live figures `job`, `health`, `connections` and `storage` are looked at every 0.25 s; see "Live figures on the event stream"). |
 | `--rows-every-s N` | `0` | Also sends every featured car a `rows` event every `N` seconds (all row kinds), as if its rows had changed, so the pages load their lists again (`ui/tools/check.js --stable` uses it). `0`: `rows` only when a drive, charge or parked spell really starts or ends. |
 | `--rebuild-running` | off | Every featured car's history is being rebuilt the whole time: `/cars/{car}/health` says `rebuild_pending` (so Data health reads itself again every few seconds) and the car gets a `rows` event every second (every `--rows-every-s` when that is given), as while a long rebuild rewrites its rows. `ui/tools/scroll.js` scrolls the pages in this state. |
+| `--health-list-max N` | `500` | How many (the newest) of a car's chain gaps, dropped frames and unknown spans `/cars/{car}/health` lists; the `*_total` beside each list counts them all. The real server lists 500; a small `N` shows a page what a car with more than that looks like (`--health-list-max 3`: car `c1` has 3 of its dropped frames listed and all of them counted). |
 | `--verbose` | off | Logs every request to stderr. |
 
 ### UI packs
