@@ -1565,7 +1565,16 @@ pub fn server_storage(e: &Engine, now_ms: u64) -> QResult<ServerStorage> {
     let total = kinds.iter().map(|k| k.bytes).sum();
     let growth: Vec<Growth> = growth.into_iter().map(|(date, bytes)| Growth { date, bytes }).collect();
     let growth: Vec<Growth> = growth.into_iter().rev().take(30).collect::<Vec<_>>().into_iter().rev().collect();
-    let per_day = (!growth.is_empty()).then(|| growth.iter().map(|g| g.bytes).sum::<u64>() / growth.len() as u64);
+    // a mean over the days of the window, those without new data too (from the first day listed: a younger server
+    // has fewer), not over the days that had some: a car driven now and then would look full far too soon
+    let span = |from: &str| {
+        let d = |x: &str| chrono::NaiveDate::parse_from_str(x, "%Y-%m-%d").ok();
+        match (d(from), d(&today)) {
+            (Some(a), Some(b)) => (b - a).num_days().clamp(1, 30) as u64,
+            _ => growth.len() as u64,
+        }
+    };
+    let per_day = growth.first().map(|f| growth.iter().map(|g| g.bytes).sum::<u64>() / span(&f.date).max(1));
     Ok(ServerStorage { kinds, total_bytes: total, growth, growth_per_day_bytes: per_day })
 }
 

@@ -88,7 +88,26 @@ pub fn tonight_ms(now: u64, zone: &str) -> u64 {
     let tz = crate::tz::zone(zone);
     let day = crate::tz::date(now, tz);
     for d in [day, day.succ_opt().unwrap_or(day), day.succ_opt().and_then(|d| d.succ_opt()).unwrap_or(day)] {
-        let at = crate::tz::start_of(d, tz).saturating_add(u64::from(TONIGHT_HOUR) * 3_600_000);
+        // that hour on the local clock (not hours after midnight: a night the clocks change has 23 or 25 hours, and
+        // some zones move by half an hour); an hour the clocks skip is the first moment after it
+        let Some(wall) = d.and_hms_opt(TONIGHT_HOUR, 0, 0) else { continue };
+        let at = match chrono::TimeZone::from_local_datetime(&tz, &wall) {
+            chrono::LocalResult::Single(t) | chrono::LocalResult::Ambiguous(t, _) => t.timestamp_millis(),
+            chrono::LocalResult::None => {
+                let mut later = wall;
+                let mut found = None;
+                for _ in 0..180 {
+                    later += chrono::Duration::minutes(1);
+                    if let Some(t) = chrono::TimeZone::from_local_datetime(&tz, &later).earliest() {
+                        found = Some(t.timestamp_millis());
+                        break;
+                    }
+                }
+                let Some(t) = found else { continue };
+                t
+            }
+        };
+        let at = u64::try_from(at).unwrap_or(0);
         if at > now {
             return at;
         }
