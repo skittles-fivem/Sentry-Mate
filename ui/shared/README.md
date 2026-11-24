@@ -138,7 +138,8 @@ Zones: `zonedParts(ms, tz)`, `zonedToMs(parts, tz, { disambiguation })`, `zoneOf
 `formatDate`, `formatTime`, `formatDateTime`, `formatWhen` ('Today, 5:30 PM'), `formatDayKey`,
 `formatDateRange`, `formatRelative` ('5 min ago'), `formatDuration` ('2 h 05 min'), `toIsoZoned`,
 `dateFormat`. Periods: `PRESETS`, `presetLabel`, `normalizePeriod`, `resolvePeriod`, `periodParams`,
-`periodLabel`, `shiftPeriod`, `dayRange`, `periodDays`.
+`periodLabel`, `shiftPeriod`, `dayRange`, `periodDays`, `PERIOD_MAX_MS` (a period names times from 1970 to 2100, as
+the API does; `normalizePeriod` gives null for any other).
 
 A day is the wall-clock day in the zone (23 or 25 hours on clock-change days); weeks are ISO weeks. Presets:
 `24h` the last 24 hours; `7d` today and the 6 days before; `30d` today and the 29 days before; `year` since
