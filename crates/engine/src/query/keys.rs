@@ -239,6 +239,11 @@ pub struct NewToken {
     pub secret: String,
 }
 
+/// Whether an upload token that is not revoked belongs to `car` (by its key, else as the car it was made for).
+pub(crate) fn has_live_token(e: &Engine, car: CarId) -> QResult<bool> {
+    Ok(tokens(e)?.iter().any(|(t, c)| !t.revoked && *c == Some(car)))
+}
+
 /// Every token, and the car it belongs to (by its key, else the car it was made for).
 fn tokens(e: &Engine) -> QResult<Vec<(Token, Option<CarId>)>> {
     let Some(t) = e.tokens() else { return Ok(Vec::new()) };
