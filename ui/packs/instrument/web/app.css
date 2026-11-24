@@ -1783,3 +1783,22 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
 /* a page drawn for the first time is built in the view, hidden with the footer, under a copy of its skeleton
    (core/router.js firstStage) */
 :root[data-building] :is(#view, #footer) { visibility: hidden; }
+
+/* printing: the page itself, on white, without the menu, the top bar, the dock and the notices; wide tables wrap
+   instead of scrolling sideways and a list's box is as high as its rows (a long list that draws only the rows near
+   the scroll position prints what is drawn) */
+@media print {
+  :root { color-scheme: light; }
+  html, body, .app { background: #fff !important; color: #000; }
+  #sidebar, #topbar, #dock, #notices, #flash, .skip, .tbl-foot, .tbl-csv { display: none !important; }
+  .app { display: block; }
+  .main { display: block; padding: 0 !important; }
+  #view { overflow: visible; max-width: none; }
+  .tbl-scroll, .scroll-box, .vl-box, .scroll-box--fit { overflow: visible !important; height: auto !important; max-height: none !important; -webkit-mask-image: none; mask-image: none; }
+  .tbl { width: 100%; table-layout: auto; }
+  .tbl th, .tbl td { white-space: normal !important; overflow: visible !important; text-overflow: clip !important; }
+  .tbl .main, .vl-table .main, .vl-table .sub { white-space: normal; overflow: visible; text-overflow: clip; }
+  .scroll-box .tbl thead th { position: static; }
+  .panel, .tbl tr { break-inside: avoid; }
+  a { color: inherit; text-decoration: none; }
+}
