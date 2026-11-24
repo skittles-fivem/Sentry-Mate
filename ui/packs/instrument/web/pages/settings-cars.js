@@ -624,6 +624,8 @@ async function mountCar(ctx) {
         attrs: { min: String(lo), max: String(hi), step, required, disabled: ro, placeholder: dv } });
       const say = required ? `A number from ${range}.` : `A number from ${range}, or empty.`;
       f.input.addEventListener('change', () => {
+        // (a number input gives "" for text it cannot read, "1e" or "-.": that is not "empty")
+        if (f.input.validity.badInput) { f.setError(say); return; }
         const raw = f.input.value.trim();
         if (raw === '' && required) { f.setError(say); return; }
         const n = raw === '' ? null : Number(raw);
@@ -660,6 +662,7 @@ async function mountCar(ctx) {
       const f = field({ label: `${label} (${u})`, name: `sc-${k}`, path: `config.${k}`, type: 'number', value: cur == null ? '' : String(r2(convert(cur, 'pressure'))),
         hint: `${lo} to ${hi} ${u}. ${hint}`, attrs: { min: String(lo), max: String(hi), step: u === 'psi' ? '1' : '0.05', disabled: ro } });
       f.input.addEventListener('change', () => {
+        if (f.input.validity.badInput) { f.setError(say); return; }
         const raw = f.input.value.trim();
         const n = raw === '' ? null : Number(raw);
         if (n != null && (!Number.isFinite(n) || n < lo || n > hi)) { f.setError(say); return; }

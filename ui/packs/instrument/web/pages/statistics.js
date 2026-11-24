@@ -124,6 +124,13 @@ export async function mount(ctx) {
 
   const root = h('div', { class: 'stats-page', cover: ['shots.statistics', 'shots.mileage'] });
   replace(ctx.view, root);
+  if (!fixedCar && chosen !== 'all' && fleet.length && !viewCars.length) {
+    root.append(pageHead({ title: 'Statistics', sub: [period.label] }), panel({}, emptyState({ icon: 'stats', title: 'None of these cars is yours to see',
+      text: 'The cars in this address are unknown or hidden from your account. Pick other cars.',
+      action: h('a', { class: 'btn', href: state.buildUrl('statistics', { period: state.current().period, query: { group, cars: 'all' } }) }, 'Every car') })));
+    ctx.ready();
+    return;
+  }
 
   /* ---------- the car picker (a popover of checkboxes) */
   const pops = [];
