@@ -106,9 +106,14 @@
   .ef-cons, .ef-factor { grid-column: span 12; }
   .tp-chg, .tp-day { grid-column: span 12; }
 }
-@container page (max-width: 50rem) {
-  .ef-cons-figs, .tp-cols { grid-template-columns: minmax(0, 1fr); }
+/* three temperatures side by side, three figures each, need 70rem of page (a 1024 px window, or a 1280 px laptop at
+   Interface size 125, has 64): under that they stand below one another */
+@container page (max-width: 70rem) {
+  .tp-cols { grid-template-columns: minmax(0, 1fr); }
   .tp-col + .tp-col { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: round(1rem, var(--e)); }
+}
+@container page (max-width: 50rem) {
+  .ef-cons-figs { grid-template-columns: minmax(0, 1fr); }
   .ef-cars { margin-left: 0; }
   .ef-cars-menu { left: 0; right: auto; }
   .ef-whcell .bar { display: none; }
