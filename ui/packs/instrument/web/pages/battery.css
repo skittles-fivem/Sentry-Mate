@@ -139,7 +139,7 @@
 .vd-side { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); flex-wrap: wrap; }
 .why-cell { display: flex; flex-wrap: wrap; gap: round(0.25rem, var(--e)); min-width: round(6rem, var(--e)); max-width: round(10rem, var(--e)); }
 .why-cell .tag { height: auto; min-height: round(1.375rem, var(--e)); padding-block: round(0.125rem, var(--e)); white-space: normal; --LH: round(calc(1.25 * 1em), 2px); }
-.tag--cold { color: var(--c-power); background: var(--glass-3); }
+.tag--cold { color: var(--power-ink); background: var(--glass-3); }
 
 /* tiers */
 @container page (min-width: 140rem) {

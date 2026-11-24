@@ -17,7 +17,7 @@ from ..conventions import page
 from ..dataset import places as P
 from ..errors import bad_input, conflict, invalid, not_found
 from ..rows import charge_cost
-from ..util import date_str, haversine_m, r, valid_zone
+from ..util import date_str, haversine_m, not_plain_text, r, trimmed, valid_zone
 from .charges import CURRENCIES
 
 KINDS = ("home", "work", "charger", "service", "other")
@@ -357,12 +357,12 @@ def check_place(req, body, base=None):
     if "name" in body:
         if not isinstance(body["name"], str):
             bad["name"] = "Must be text."
-        elif not 1 <= len(body["name"].strip()) <= 64:
+        elif not 1 <= len(trimmed(body["name"])) <= 64:
             rule["name"] = "1 to 64 characters."
-        elif any(ord(c) < 32 for c in body["name"]):
+        elif not_plain_text(trimmed(body["name"])):  # of the trimmed name, as the real server
             rule["name"] = "No control characters."
         else:
-            p["name"] = body["name"].strip()
+            p["name"] = trimmed(body["name"])
     if "kind" in body:
         if body["kind"] not in KINDS:
             rule["kind"] = "Must be home, work, charger, service or other."

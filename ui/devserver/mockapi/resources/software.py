@@ -260,6 +260,8 @@ def _car_events(req, h, types):
     loc = bool(mq.get("publish_location"))
     units = {"distance": "km", "speed": "km/h", "temperature": "°C", "efficiency": "Wh/km", "elevation": "m"}
     out = []
+    # the payloads are MQTT's own JSON, where the car and the drive, charge or update are numbers (crates/mqtt)
+    car_no = int(h.car.id[1:])
 
     def name(pid):
         p = place_obj(app, pid)
@@ -270,7 +272,7 @@ def _car_events(req, h, types):
             continue
         x = cached_drive_row(req, h, d)
         a, b = drive_pids(app, d)
-        base = {"event_type": "drive_started", "car": h.car.id, "drive": d.id, "start": _iso(d.start),
+        base = {"event_type": "drive_started", "car": car_no, "drive": int(d.id), "start": _iso(d.start),
                 "start_place": name(a), "start_soc": x["start_soc_pct"], "start_range": x["start_range_km"],
                 "start_odometer": r(x["start_odometer_km"], 1)}
         if loc:
@@ -296,7 +298,7 @@ def _car_events(req, h, types):
         if c.start > req.now or not h.shown(c):
             continue
         x = cached_charge_row(req, h, c)
-        base = {"event_type": "charge_started", "car": h.car.id, "charge": c.id, "start": _iso(c.start),
+        base = {"event_type": "charge_started", "car": car_no, "charge": int(c.id), "start": _iso(c.start),
                 "place": name(piece_pid(app, c)), "kind": c.ckind, "start_soc": x["start_soc_pct"],
                 "start_range": x["start_range_km"]}
         if loc:
@@ -317,7 +319,7 @@ def _car_events(req, h, types):
                 continue
             v, vs = update_version(app, u)
             out.append((u.end, "software_changed", u.id,
-                        {"event_type": "software_changed", "car": h.car.id, "update": u.id, "at": _iso(u.end),
+                        {"event_type": "software_changed", "car": car_no, "update": int(u.id), "at": _iso(u.end),
                          "version": v, "version_source": vs if v else None}))
     if "user_present" in types:
         for s in h.segs:
@@ -328,7 +330,7 @@ def _car_events(req, h, types):
             for s0, _e0, st, rs, _kw in s.subs:
                 if "user_present" in rs and s.start <= s0 < s.end and s0 <= req.now:
                     out.append((s0, "user_present", str(s0),
-                                {"event_type": "user_present", "car": h.car.id, "at": _iso(s0),
+                                {"event_type": "user_present", "car": car_no, "at": _iso(s0),
                                  "place": name(piece_pid(app, s))}))
     return out
 

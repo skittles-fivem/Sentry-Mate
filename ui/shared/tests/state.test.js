@@ -262,3 +262,20 @@ test('a URL that only moves the #hash on the page shown is no new page: data-rea
   assert.equal(htmlEl().dataset.ready, undefined);
   assert.equal(S.current().page, 'settings-cars');
 });
+
+test('on the car overview, which has a period of its own, a #hash is the same route while the tab remembers a period', () => {
+  S.syncFromLocation('/cars/c1/drives?preset=7d'); // the tab remembers 7d
+  S.syncFromLocation('/cars/c1');
+  assert.equal(S.current().period, null);
+  assert.equal(S.sameRoute('/cars/c1'), true, 'the URL the store was read from');
+  assert.equal(S.sameRoute('/cars/c1#vehicle-info'), true, 'only the hash differs');
+  assert.equal(S.sameRoute('/cars/c1?preset=30d#vehicle-info'), false, 'a period in the URL is another view');
+  assert.equal(S.sameRoute('/cars/c1/drives'), false);
+  let told = 0;
+  const off = S.store.subscribe(() => { told++; });
+  htmlEl().dataset.ready = 'car';
+  S.navigate('/cars/c1#vehicle-info');
+  off();
+  assert.equal(htmlEl().dataset.ready, 'car', 'the page stays ready');
+  assert.equal(told, 0);
+});

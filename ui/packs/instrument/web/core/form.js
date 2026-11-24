@@ -51,11 +51,24 @@ export function form({ fields, submit = 'Save', onSubmit, extra = null, cls = nu
   const message = h('p', { class: 'form-message', role: 'alert', hidden: true });
   const btn = h('button', { class: 'btn btn--primary', type: 'submit' }, submit);
   const values = () => Object.fromEntries(fields.map((f) => [f.name, f.value()]));
+  let held = false;   // the submit button had the focus when it was disabled
   const f = {
     fields, values,
     setErrors(map) { for (const x of fields) x.setError(map?.[x.path] || map?.[x.name] || null); },
     setMessage(text) { message.hidden = !text; message.textContent = text || ''; },
-    busy(on) { btn.disabled = !!on; btn.setAttribute('aria-busy', on ? 'true' : 'false'); },
+    // A button that is disabled while it has the focus loses it to <body>. When the request is over and nothing
+    // else took the focus (a wrong field, a next step), it goes to the first field marked wrong, else back to
+    // the button.
+    busy(on) {
+      if (on) held = document.activeElement === btn;
+      btn.disabled = !!on; btn.setAttribute('aria-busy', on ? 'true' : 'false');
+      if (on || !held) return;
+      held = false;
+      const a = document.activeElement;
+      if (!btn.isConnected || (a && a !== document.body && a !== btn)) return;
+      const wrong = fields.find((x) => x.input.getAttribute('aria-invalid') === 'true' && !x.input.disabled);
+      (wrong ? wrong.input : btn).focus();
+    },
   };
   const el = h('form', {
     class: ['form', cls], novalidate: true,

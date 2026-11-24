@@ -62,6 +62,15 @@ const MAX_ERRORS: usize = 50;
 pub const STALL_MS: u64 = 120_000;
 /// A test's stop of the worker (see [`Engine::full_rebuild_crash_at`]).
 pub(crate) const CRASHED: &str = "stopped as by a crash, for a test";
+/// The worker's stop when the server is stopping ([`Engine::stopping`]): its run is left as it stands.
+pub(crate) const STOPPING: &str = "the server is stopping: the full rebuild carries on at the next start";
+
+/// Whether `err` is a stop that leaves the run as it stands for the next start (not a failure of the run).
+pub(crate) fn left_for_restart(err: &crate::Error) -> bool {
+    let s = err.to_string();
+    s.contains(CRASHED) || s.contains(STOPPING)
+}
+
 /// A test's hook at the worker's end ([`Engine::full_rebuild_exit_hook`]).
 pub type ExitHook = Arc<dyn Fn() + Send + Sync>;
 /// The job's record is written at most this often while it moves on (and at every phase).
@@ -707,6 +716,14 @@ impl Engine {
         Ok(())
     }
 
+    /// Tells the engine that the server is stopping, before its runtime is shut down. The full rebuild's worker is a
+    /// thread of its own and outlives the runtime, and once that is gone its questions about the stored logs get no
+    /// answer: from this call on it does no further step and switches no car. Its run stays as it stands (running,
+    /// its shadow kept) and the next start carries it on.
+    pub fn stopping(&self) {
+        self.inner.stopping.store(true, Ordering::SeqCst);
+    }
+
     /// Makes the next full rebuild fail at `phase` (tests).
     #[doc(hidden)]
     pub fn full_rebuild_fail_at(&self, phase: Option<Phase>) {
@@ -831,8 +848,8 @@ impl Engine {
                 // new run's shadow removed as the last one's.
                 let _one = lock(&e.inner.full_start);
                 let again = match res {
-                    // (a test's crash: left as a stop of the server would leave it)
-                    Err(err) if err.to_string().contains(CRASHED) => false,
+                    // (a stop of the server, or a test's crash: the run left as it stands)
+                    Err(err) if left_for_restart(&err) => false,
                     Err(err) => {
                         e.full_failed(&err.to_string());
                         false
@@ -962,6 +979,7 @@ impl Engine {
             if !r.running() {
                 return Ok(());
             }
+            self.full_not_stopping()?;
             if r.cancel {
                 self.inner.db.remove_shadow(SHADOW)?;
                 self.full_end(FullStatus::Cancelled)?;
@@ -1033,7 +1051,7 @@ impl Engine {
             lock(&self.inner.full).job = Some(job.clone());
             let res = se.reconcile_car(car, Some(&job));
             self.inner.full_windows.fetch_add(se.stats().windows_rebuilt, Ordering::SeqCst);
-            if matches!(&res, Err(e) if e.to_string().contains(CRASHED)) {
+            if matches!(&res, Err(e) if left_for_restart(e)) {
                 lock(&self.inner.full).job = None;
                 return res.map(|()| false);
             }
@@ -1044,16 +1062,39 @@ impl Engine {
             if self.full_cancelled() {
                 return Ok(false);
             }
+            self.full_runtime_there()?;
             self.full_lost_none(car, &job.failed())?;
         }
+        self.full_not_stopping()?;
         self.full_phase(Phase::Days)?;
         self.full_days(car, &se)?;
         if self.full_cancelled() {
             return Ok(false);
         }
+        self.full_runtime_there()?;
         self.full_phase(Phase::Switching)?;
         self.full_switch(car, &se)?;
         Ok(true)
+    }
+
+    /// The worker goes no further once the server is stopping ([`Engine::stopping`]): the run is left as it stands.
+    pub(crate) fn full_not_stopping(&self) -> Result<()> {
+        if self.inner.stopping.load(Ordering::SeqCst) {
+            return Err(crate::Error::Other(STOPPING.into()));
+        }
+        Ok(())
+    }
+
+    /// The same when the engine's runtime is gone and nobody said so (dropped under the worker): the questions about
+    /// the stored logs get no answer from then on, and "no answer" reads as "no logs". Asked after the decoding and
+    /// before a switch, so a history made of no answers is never taken for a finished one.
+    fn full_runtime_there(&self) -> Result<()> {
+        self.full_not_stopping()?;
+        let rt = self.handle()?;
+        if rt.block_on(rt.spawn_blocking(|| ())).is_err() {
+            return Err(crate::Error::Other(STOPPING.into()));
+        }
+        Ok(())
     }
 
     /// Refuses to go on when the new history would be poorer than the one in use: a log that history was made from
@@ -1146,6 +1187,7 @@ impl Engine {
                 if self.full_cancelled() {
                     return Ok(());
                 }
+                self.full_not_stopping()?;
                 self.full_edit(|r| {
                     r.days_done = base + i as u64 + 1;
                     r.last_progress_ms = now;

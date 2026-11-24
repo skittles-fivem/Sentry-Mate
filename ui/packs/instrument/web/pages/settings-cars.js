@@ -397,7 +397,7 @@ async function mountCar(ctx) {
     const shown = unsold.some((x) => x.id === cid) ? unsold : [c, ...unsold.slice(0, 7)];
     const picker = h('div', { class: 'sc-picker', cover: 'web.settings.car.car-switcher' },
       h('div', { class: 'seg sc-cars', role: 'group', 'aria-label': 'Whose settings' },
-        shown.map((x) => h('a', { class: 'seg-btn', href: state.buildUrl('settings-cars', { car: x.id }), 'aria-pressed': String(x.id === cid), 'aria-current': x.id === cid ? 'page' : null }, x.name))),
+        shown.map((x) => h('a', { class: 'seg-btn', href: state.buildUrl('settings-cars', { car: x.id }), 'aria-pressed': String(x.id === cid), 'aria-current': x.id === cid ? 'page' : null }, h('span', { class: 'name-cut' }, x.name)))),
       h('div', { class: 'row' },
         h('button', { class: 'btn btn--sm', type: 'button', onclick: () => openCarSwitcher() }, icon('search', 'ico--sm'), S.cars?.next || (S.cars?.total ?? 0) > shown.length ? `Find another car (${S.cars?.total ?? 'more'})` : 'Find a car'),
         h('span', { class: 'faint' }, 'or press ', SWITCH_KEYS.map((k) => h('span', { class: 'kbd' }, k)), ' anywhere. The switcher keeps this page.')));

@@ -20,16 +20,20 @@ STRIKES_FREE = 5
 STRIKES_FIRST_WAIT_S = 30
 STRIKES_MAX_WAIT_S = 15 * 60
 PENDING_S = 300
+SESSION_DAYS, IDLE_DAYS, DAY_MS = 30, 7, 86_400_000
 
 
 def account_view(a):
-    return {"id": a["id"], "name": a["name"], "role": a["role"], "cars": a["cars"],
+    return {"id": a["id"], "name": a["name"], "role": a["role"], "cars": a["cars"], "two_step": bool(a.get("two_step")),
             "two_step_required": a["two_step_required"], "created_ms": a["created_ms"], "version": a["version"]}
 
 
 def me_view(a):
-    return {"id": a["id"], "name": a["name"], "role": a["role"], "cars": a["cars"],
-            "two_step_required": a["two_step_required"]}
+    # two_step: the account has two-step sign-in on; two_step_setup_only: the rule asks it and the account has none
+    # yet, so the real server lets this session do nothing but set it up
+    two = bool(a.get("two_step"))
+    return {"id": a["id"], "name": a["name"], "role": a["role"], "cars": a["cars"], "two_step": two,
+            "two_step_required": a["two_step_required"], "two_step_setup_only": bool(a["two_step_required"]) and not two}
 
 
 # ------------------------------------------------------------------ throttle
@@ -168,9 +172,12 @@ def _my_sessions(req):
         for s in st.sessions.values():
             if s["account"]["id"] == acc["id"]:
                 out.append({"id": s["id"], "created_ms": s["created_ms"], "last_seen_ms": s["last_seen_ms"],
-                            "this_one": s is req.session, "device": s["device"], "_token": s["token"]})
+                            "this_one": s is req.session, "device": s["device"],
+                            "address": s.get("address") or "127.0.0.1", "_token": s["token"]})
         for s in st.session_rows.get(acc["id"], []):
             out.append(dict(s, this_one=False))
+    for s in out:  # as the real server: 30 days from sign-in at most, ended after 7 days unused
+        s["expires_ms"] = min(s["created_ms"] + SESSION_DAYS * DAY_MS, s["last_seen_ms"] + IDLE_DAYS * DAY_MS)
     return out
 
 

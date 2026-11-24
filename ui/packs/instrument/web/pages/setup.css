@@ -4,6 +4,8 @@
 .su-card--wide { width: min(round(44rem, var(--e)), 100%); }
 .su-card .auth-brand { margin-bottom: round(0.25rem, var(--e)); }
 .su-card h1 { font-family: var(--font-display); font-size: 1.625rem; font-weight: 600; letter-spacing: -0.015em; }
+/* (a new step's heading takes the keyboard focus so that it is read out; it is no control and shows no ring) */
+.su-card h1:focus { outline: none; }
 .su-card > p, .su-jobhead p { color: var(--text-2); }
 .su-card > p b, .su-jobhead b { color: var(--text); font-weight: 600; }
 .su-jobhead { display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); }

@@ -16,7 +16,8 @@ class SignIn(ServerCase):
         self.assertEqual(d["status"], "done")
         self.assertIn("sentry-mate=", c.cookie)
         self.assertEqual(c.get("/api/v1/me"), {"id": "a1", "name": "admin", "role": "admin", "cars": "all",
-                                               "two_step_required": False})
+                                               "two_step": False, "two_step_required": False,
+                                           "two_step_setup_only": False})
         self.assertEqual(c.json("DELETE", "/api/v1/session")["status"], "signed_out")
         c.error("GET", "/api/v1/me", 401, "not_signed_in")
 
@@ -63,7 +64,7 @@ class Accounts(ServerCase):
         lst = c.get("/api/v1/accounts")
         self.assertEqual({a["name"] for a in lst["items"]}, {"admin", "watch", "alex"})
         for a in lst["items"]:
-            self.assertEqual(set(a), {"id", "name", "role", "cars", "two_step_required", "created_ms", "version"})
+            self.assertEqual(set(a), {"id", "name", "role", "cars", "two_step", "two_step_required", "created_ms", "version"})
         st, hd, raw = c.request("POST", "/api/v1/accounts", {"name": "guest", "password": "guest password",
                                                              "role": "watch", "cars": ["c2"]})
         self.assertEqual(st, 201)

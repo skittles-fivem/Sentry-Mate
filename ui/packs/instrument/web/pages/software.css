@@ -128,6 +128,8 @@
 .sw-fh-seg-bar.is-current { box-shadow: inset 0 0 0 1px var(--live-line); }
 .sw-fh-seg-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: max(0.78125rem, var(--fs-floor)); color: var(--text); font-variant-numeric: tabular-nums; --LH: round(calc(1.2 * 1em), 2px); }
 .sw-fh-seg-bar.is-unnamed .sw-fh-seg-text { color: var(--text-3); }
+/* (on the bar's tint the light theme's faint text is under 4.5:1: one step darker there) */
+:root[data-theme="light"] .sw-fh-seg-bar.is-unnamed .sw-fh-seg-text { color: var(--text-2); }
 .sw-fh-tick { position: absolute; top: 0; bottom: 0; left: round(var(--x), 1px); width: 1px; background: var(--live); }
 .sw-fh-axis { display: flex; justify-content: space-between; gap: round(0.75rem, var(--e)); margin-left: round(13.75rem, var(--e)); font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-3); font-variant-numeric: tabular-nums; }
 .sw-fh-mod { display: flex; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)); font-weight: 500; }

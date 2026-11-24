@@ -236,3 +236,93 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
     });
   });
 }
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: one Esc closes the page finder with text typed in it`, { skip: SKIP, timeout: 120000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      const { page, errors } = await openPage(context, `${origin}/cars/c1/drives`, 'drives');
+      await page.keyboard.press('/');
+      await page.locator('dialog.menu-panel[open]').waitFor({ timeout: 5000 });
+      await page.keyboard.type('zzz');
+      await page.waitForTimeout(200);
+      assert.match(await page.locator('dialog.menu-panel .sw-foot').innerText(), /Esc\s*close/, 'the finder says Esc closes it');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(400);
+      assert.equal(await page.locator('dialog[open]').count(), 0, 'the finder is closed after one Esc');
+      // opened again it starts empty
+      await page.keyboard.press('/');
+      await page.locator('dialog.menu-panel[open]').waitFor({ timeout: 5000 });
+      assert.equal(await page.evaluate(() => document.activeElement.value), '');
+      assert.deepEqual(errors, []);
+    });
+  });
+
+  test(`${pack}: a save in a dialog that the server refuses leaves the focus in the dialog, on its button or the wrong field`, { skip: SKIP, timeout: 180000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      const { page, errors } = await openPage(context, `${origin}/settings/server`, 'settings-server');
+      const add = page.locator('main button', { hasText: /^\s*Add account\s*$/ }).first();
+      await add.waitFor({ timeout: 15000 });
+      await add.click();
+      const dlg = page.locator('dialog[open]');
+      await dlg.waitFor({ timeout: 5000 });
+      await dlg.locator('[name=name]').fill('viewer-nine');
+      await dlg.locator('[name=password]').fill('correct horse battery staple 9');
+      // (the last one is said under the name's field by the page: that field is wrong, so it takes the focus)
+      for (const [status, body, want] of [[500, { error: { code: 'internal', message: 'Injected.' } }, 'BUTTON:Add account'], [403, { error: { code: 'forbidden', message: 'Admins only.' } }, 'BUTTON:Add account'],
+        [409, { error: { code: 'name_taken', message: 'That name is taken.' } }, 'INPUT:name']]) {
+        await page.route('**/api/v1/accounts', (r) => (r.request().method() === 'POST' ? r.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) }) : r.continue()));
+        const submit = dlg.locator('button[type=submit]');
+        await submit.focus();
+        const answered = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/v1/accounts');
+        await page.keyboard.press('Enter');
+        await answered;
+        await dlg.getByText(body.error.message).waitFor({ timeout: 5000 });
+        await page.waitForTimeout(200);
+        assert.equal(await focused(page), want, `after ${status} the focus is on the dialog's button, or on the field that is wrong`);
+        assert.ok(await page.evaluate(() => document.querySelector('dialog[open]').contains(document.activeElement)));
+        await page.unroute('**/api/v1/accounts');
+      }
+      // a field the server names takes the focus itself
+      await page.route('**/api/v1/accounts', (r) => (r.request().method() === 'POST' ? r.fulfill({ status: 422, contentType: 'application/json', body: JSON.stringify({ error: { code: 'invalid', message: 'Some values are not valid.', fields: { name: 'That name is taken.' } } }) }) : r.continue()));
+      await dlg.locator('button[type=submit]').focus();
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => document.activeElement?.name === 'name', null, { timeout: 5000 });
+      assert.deepEqual(errors, []);
+    });
+  });
+
+  test(`${pack}: each step of the first-run set-up takes the keyboard focus`, { skip: SKIP, timeout: 180000 }, async () => {
+    await withPack(pack, ['--fresh'], async ({ origin, context }) => {
+      const { page, errors } = await openPage(context, `${origin}/`);
+      const inCard = () => page.evaluate(() => { const a = document.activeElement; return !!a && a !== document.body && !!a.closest('main'); });
+      const code = page.locator('main input[name=setup_code]');
+      await code.waitFor({ timeout: 15000 });
+      // a wrong code: the focus stays with the field that is wrong
+      await code.fill('SETUP-WRONG-1');
+      await page.locator('main button[type=submit]').focus();
+      await page.keyboard.press('Enter');
+      await page.locator('main .form-error:not([hidden])').first().waitFor({ timeout: 5000 });
+      await page.waitForTimeout(200);
+      assert.equal(await page.evaluate(() => document.activeElement?.name), 'setup_code', 'a wrong code leaves the focus in its field');
+      await code.fill('SETUP-DEV-0000');
+      await page.locator('main button[type=submit]').focus();
+      await page.keyboard.press('Enter');
+      await page.locator('main h1', { hasText: 'How should this server start?' }).waitFor({ timeout: 10000 });
+      await page.waitForTimeout(200);
+      assert.ok(await inCard(), `the choice of how to start has the focus, not the page's body (${await focused(page)})`);
+      await page.locator('main button.su-choice', { hasText: 'Start fresh' }).focus();
+      await page.keyboard.press('Enter');
+      await page.locator('main input[name=name]').waitFor({ timeout: 10000 });
+      assert.equal(await page.evaluate(() => document.activeElement?.name), 'name');
+      await page.fill('main input[name=name]', 'admin2');
+      await page.fill('main input[name=password]', 'correct horse battery staple 9');
+      await page.fill('main input[name=again]', 'correct horse battery staple 9');
+      await page.locator('main button[type=submit]').focus();
+      await page.keyboard.press('Enter');
+      await page.locator('main h1', { hasText: 'Save your recovery key' }).waitFor({ timeout: 15000 });
+      await page.waitForTimeout(200);
+      assert.ok(await inCard(), `the recovery key's step has the focus (${await focused(page)})`);
+      assert.deepEqual(errors, []);
+    });
+  });
+}

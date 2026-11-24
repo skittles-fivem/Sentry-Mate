@@ -112,7 +112,7 @@ export async function mount(ctx) {
         title: 'The period of the update list and its figures (the same picker as in the top bar). An update belongs to it when it started in it.' },
       icon('calendar', 'ico--sm'), period.label, icon('chev-d', 'ico--sm')),
       h('button', { class: 'btn', type: 'button', cover: 'updates.filter.car', onclick: openCarSwitcher, title: 'Show another car on this page' },
-        icon('car', 'ico--sm'), car.name, icon('chev-d', 'ico--sm')),
+        icon('car', 'ico--sm'), h('span', { class: 'name-cut' }, car.name), icon('chev-d', 'ico--sm')),
       h('button', { class: 'btn btn--ghost', type: 'button', title: 'Every car with the version it runs, in one list (further down this page)',
         onclick: () => fleetTable.el.scrollIntoView({ behavior: 'smooth', block: 'start' }) }, icon('fleet', 'ico--sm'), 'Versions of every car')),
     h('p', { class: 'note' }, icon('live', 'ico--sm'), ' The lists reload by themselves when an update starts or ends; Reload is only for impatience. The version now does not depend on the period.'));

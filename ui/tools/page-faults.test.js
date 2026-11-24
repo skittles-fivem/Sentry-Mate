@@ -390,13 +390,22 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
         let done = saved();
         await input.fill(good); await input.press('Tab');
         await done;
-        await page.waitForTimeout(500);   // the panel is drawn again with the saved value
+        // the panel is drawn again with the saved value (and once more if a live event follows): typing starts
+        // only once the field on the page has stayed the same element for half a second
+        for (let i = 0, still = null; i < 40; i++) {
+          const now = await input.elementHandle({ timeout: 15000 });
+          if (still && await still.evaluate((a, b) => a === b && a.isConnected, now)) break;
+          still = now;
+          await page.waitForTimeout(500);
+        }
         const stored = await read();
         assert.ok(stored > 0, `${name}: ${good} is stored (${stored})`);
         sent.length = 0;
         // typed, as a person does: a number input gives "" for text it cannot read
         const again = page.locator(`main input[name="${name}"]`);
         await again.click(); await again.press('Control+a'); await page.keyboard.type(bad); await again.press('Tab');
+        await page.waitForFunction((name) => document.querySelector(`main input[name="${name}"]`)?.getAttribute('aria-invalid') === 'true',
+          name, { timeout: 5000 }).catch(() => null);   // the assertions below say what is missing
         await page.waitForTimeout(800);
         assert.deepEqual(sent, [], `${name}: "${bad}" is not a number, so nothing is sent`);
         assert.equal(await read(), stored, `${name}: the stored value stays`);
@@ -445,6 +454,31 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
     });
   });
 
+  test(`${pack}: a place's price below zero, or above what the server takes, is said under its field and not sent`, { skip: SKIP, timeout: 180000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      const place = (await (await context.request.get(`${origin}/api/v1/places?limit=200`)).json()).items.find((x) => x.price?.per_kwh != null && !x.price.tiers);
+      assert.ok(place, 'the made-up data has a place priced per kWh');
+      const sent = [];
+      const { page, errors } = await openPage(context, `${origin}/places?place=${place.id}`, 'places', (pg) => pg.on('request', (r) => { if (r.method() === 'PATCH') sent.push(r.postData()); }));
+      const price = page.locator('main input[name="per_kwh"]');
+      await price.waitFor({ timeout: 15000 });
+      // the server's rule (crates/engine/src/query/places.rs): a price per kWh from 0 to 10
+      for (const v of ['-3', '10.5']) {
+        await price.fill(v);
+        await page.locator('main button[type="submit"]', { hasText: 'Save changes' }).first().click();
+        await page.waitForTimeout(600);
+        assert.deepEqual(sent, [], `${v} per kWh is not sent`);
+        assert.equal(await price.getAttribute('aria-invalid'), 'true', `${v}: the field is marked as wrong`);
+        assert.match(await page.locator('main .form-row:has(input[name="per_kwh"]) .form-error').innerText(), /From 0 to 10/);
+      }
+      await price.fill('0.42');
+      const saved = page.waitForResponse((r) => r.request().method() === 'PATCH' && /\/places\//.test(new URL(r.url()).pathname));
+      await page.locator('main button[type="submit"]', { hasText: 'Save changes' }).first().click();
+      assert.equal((await saved).status(), 200);
+      assert.deepEqual(errors, []);
+    });
+  });
+
   test(`${pack}: Charges and Statistics for cars that are not there say so once, and ask the server for none of them`, { skip: SKIP, timeout: 180000 }, async () => {
     await withPack(pack, [], async ({ origin, context }) => {
       for (const [route, id] of [['/charges?cars=zzz', 'charges'], ['/statistics?cars=zzz,yyy', 'statistics']]) {
@@ -473,4 +507,70 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
       assert.doesNotMatch(await mainText(page), /zzz/);
     });
   });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: more side reads that fail are said as not loaded: the other cars, a place's name, the battery's totals, a car's name`, { skip: SKIP, timeout: 300000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      // [page, the read that fails, what must not be claimed, what is said instead]
+      const cases = [
+        ['/cars/c1/trip', /^\/api\/v1\/cars\?/, /Only one car/, /other cars could not be loaded/],
+        ['/cars/c1/logbook', /^\/api\/v1\/places\?/, /place p\d/, /a place whose name could not be loaded/],
+        ['/cars/c1/battery', /\/cars\/c1\/efficiency/, /Not worked out yet/, /Could not be loaded/],
+        ['/cars/c1/battery', /\/cars\/c1\/totals/, /^$/, /logged drives and charges could not be loaded/],
+        ['/', /^\/api\/v1\/cars\/c3(\?|$)/, /\bc3\b/, /a car whose name could not be loaded/i],
+      ];
+      for (const [route, fail, never, said] of cases) {
+        const got = await textWithFailing(context, origin, route, fail);
+        const what = `${route} with ${fail} failing`;
+        assert.ok(got.hit > 0, `${what}: the read was made`);
+        assert.doesNotMatch(got.ready, /^error:/, `${what}: the page still opens`);
+        if (String(never) !== '/^$/') assert.doesNotMatch(got.text, never, `${what}: says what is not known`);
+        assert.match(got.text, said, `${what}: says the read failed`);
+        assert.deepEqual(got.errors, [], what);
+      }
+      // the cars themselves cannot be read: Charges and Statistics for every car say that, not "no car yet" with bare ids
+      for (const route of ['/charges', '/statistics']) {
+        const got = await textWithFailing(context, origin, route, /^\/api\/v1\/cars\?/);
+        assert.ok(got.hit > 0, `${route}: the cars were asked for`);
+        assert.doesNotMatch(got.text, /no car on this server yet|No car yet|\bc[123]\b/i, `${route}: claims no empty server and shows no bare id`);
+        assert.match(got.text, /The server had a problem|could not be loaded/, `${route}: says the read failed`);
+        assert.match(got.text, /Try again/, `${route}: with a way to read again`);
+        assert.deepEqual(got.errors, [], route);
+      }
+    });
+  });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  for (const [what, viewport] of [['a phone', { width: 390, height: 844 }], ['a computer', { width: 1440, height: 900 }]]) {
+    test(`${pack}: a car and a place whose names are one long word leave no page wider than the window of ${what}`, { skip: SKIP, timeout: 420000 }, async () => {
+      await withPack(pack, [], async ({ origin, context }) => {
+        const patch = async (path, name) => {
+          const cur = await (await context.request.get(origin + path)).json();
+          const res = await context.request.patch(origin + path, { headers: { 'X-Sentry-Mate': '1' }, data: { name, version: cur.version } });
+          assert.equal(res.status(), 200, `${path}: the long name is accepted`);
+        };
+        await patch('/api/v1/cars/c1', 'Wolfeschlegelsteinhausenbergerdorffvoralternwarengewissenhaftsch');   // 64 letters: the longest a car's name can be
+        await patch('/api/v1/places/p1', 'Supercalifragilisticexpialidocious-Garage-And-Workshop-Number-12');
+        const drive = (await (await context.request.get(`${origin}/api/v1/cars/c1/drives?limit=2`)).json()).items[1].id;
+        const charge = (await (await context.request.get(`${origin}/api/v1/cars/c1/charges?limit=1`)).json()).items[0].id;
+        const wide = [];
+        for (const [route, id] of [['/cars/c1/timeline', 'timeline'], [`/cars/c1/drives/${drive}`, 'drive'], ['/cars/c1/trip', 'trip'], ['/cars/c1/logbook', 'logbook'],
+          ['/cars/c1/charges', 'charges'], ['/charges', 'charges'], [`/cars/c1/charges/${charge}`, 'charge'], ['/cars/c1/efficiency', 'efficiency'], ['/cars/c1/statistics', 'statistics'],
+          ['/statistics', 'statistics'], ['/travel', 'travel'], ['/cars/c1/software', 'software'], ['/places', 'places'], ['/settings/cars/c1', 'settings-cars'], ['/settings/cars', 'settings-cars'],
+          ['/settings/integrations', 'settings-integrations'], ['/settings/server', 'settings-server'], ['/settings/import', 'import'], ['/cars/c1/health', 'health'], ['/cars/c1/drives', 'drives']]) {
+          const { page } = await openPage(context, origin + route, id);
+          await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+          // the parts built when they come near the screen
+          await page.evaluate(async () => { for (let y = 0; y < document.body.scrollHeight; y += 700) { window.scrollTo(0, y); await new Promise((r) => setTimeout(r, 60)); } window.scrollTo(0, 0); });
+          await page.waitForTimeout(300);
+          const by = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+          if (by > 1) wide.push(`${route}: ${by} px`);
+          await page.close();
+        }
+        assert.deepEqual(wide, [], 'pages that scroll sideways');
+      }, viewport);
+    });
+  }
 }

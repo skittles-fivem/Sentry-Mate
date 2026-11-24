@@ -245,3 +245,49 @@ test('where a car zone comes from, in words', () => {
   assert.equal(T.zoneSourceText('default'), 'the server’s default');
   assert.equal(T.zoneSourceText(undefined), null);
 });
+
+test('hour buckets have one key each when the clocks go back, and the plain key on every other hour', () => {
+  const from = Date.parse('2026-11-01T05:00:00Z'); // 00:00 in Chicago; 01:00 comes twice
+  const b = T.buckets(from, from + 4 * H, 'hour', CHI);
+  assert.deepEqual(b.map((x) => x.key), ['2026-11-01T00', '2026-11-01T01-05:00', '2026-11-01T01-06:00', '2026-11-01T02']);
+  for (const x of b) {
+    assert.equal(x.end_ms - x.start_ms, H);
+    assert.equal(T.bucketKey(x.start_ms + 59 * T.MINUTE, 'hour', CHI), x.key);
+  }
+  const g = T.groupByBucket([from + 90 * T.MINUTE, from + 150 * T.MINUTE], (x) => x, 'hour', CHI);
+  assert.equal(g.size, 2, 'the two 01:00 hours are two groups');
+  // the hour the clocks skip in spring needs nothing extra
+  const spring = Date.parse('2026-03-08T07:00:00Z');
+  assert.deepEqual(T.buckets(spring, spring + 2 * H, 'hour', CHI).map((x) => x.key), ['2026-03-08T01', '2026-03-08T03']);
+});
+
+test('hour buckets stay on the wall-clock hour where the clocks change by half an hour', () => {
+  const LH = 'Australia/Lord_Howe';
+  const wall = (ms) => { const p = T.zonedParts(ms, LH); return `${p.hour}:${String(p.minute).padStart(2, '0')}`; };
+  // spring: 02:00 becomes 02:30, so the hour from 02 is half as long
+  const spring = T.buckets(Date.parse('2026-10-03T14:00:00Z'), Date.parse('2026-10-03T17:30:00Z'), 'hour', LH);
+  assert.deepEqual(spring.map((x) => [x.key.slice(11), wall(x.start_ms), (x.end_ms - x.start_ms) / T.MINUTE]),
+    [['00', '0:00', 60], ['01', '1:00', 60], ['02', '2:30', 30], ['03', '3:00', 60], ['04', '4:00', 60]]);
+  // autumn: 02:00 becomes 01:30, so the hour from 01 is half as long again
+  const autumn = T.buckets(Date.parse('2026-04-04T13:00:00Z'), Date.parse('2026-04-04T17:00:00Z'), 'hour', LH);
+  assert.deepEqual(autumn.map((x) => [x.key.slice(11), wall(x.start_ms), (x.end_ms - x.start_ms) / T.MINUTE]),
+    [['00', '0:00', 60], ['01', '1:00', 90], ['02', '2:00', 60], ['03', '3:00', 60]]);
+  for (const list of [spring, autumn]) {
+    for (let i = 1; i < list.length; i++) assert.equal(list[i].start_ms, list[i - 1].end_ms);
+    for (const x of list) {
+      assert.equal(T.startOf(x.end_ms - 1, 'hour', LH), x.start_ms);
+      assert.equal(T.endOf(x.start_ms, 'hour', LH), x.end_ms);
+      assert.equal(T.bucketKey(x.end_ms - 1, 'hour', LH), x.key);
+    }
+  }
+});
+
+test('a short duration has one numbering system where the language has digits of its own', () => {
+  setLocale('ar-EG');
+  const two = T.formatDuration(2 * H + 5 * T.MINUTE);
+  const secs = T.formatDuration(12 * T.MINUTE + 5000, { seconds: true });
+  setLocale('en-US');
+  assert.equal(sp(two), '٢ h ٠٥ min');
+  assert.equal(sp(secs), '١٢ min ٠٥ s');
+  assert.equal(sp(T.formatDuration(2 * H + 5 * T.MINUTE)), '2 h 05 min');
+});

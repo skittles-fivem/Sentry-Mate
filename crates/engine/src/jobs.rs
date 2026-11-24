@@ -173,6 +173,11 @@ impl JobState {
     }
 
     /// Tests: whether the worker stops here as by a crash (once).
+    /// Whether the server of a full rebuild's job is stopping ([`Engine::stopping`]): its worker goes no further.
+    pub(crate) fn stopping(&self) -> bool {
+        self.owner.as_ref().is_some_and(|o| o.full_not_stopping().is_err())
+    }
+
     pub(crate) fn crash_now(&self) -> bool {
         let n = self.crash_after.load(Ordering::SeqCst);
         n > 0 && self.done.load(Ordering::SeqCst) >= n && self.crash_after.swap(0, Ordering::SeqCst) > 0
