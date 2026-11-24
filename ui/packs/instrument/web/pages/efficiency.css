@@ -41,7 +41,7 @@
 /* energy factor */
 .ef-factor .metric { margin-bottom: round(1rem, var(--e)); }
 .ef-factor-tbl { margin-bottom: round(0.75rem, var(--e)); }
-.ef-factor-tbl tr.is-mine .ef-rowhead { color: var(--live); }
+.ef-factor-tbl tr.is-mine .ef-rowhead { color: var(--live-ink); }
 .efficiency-page .ef-rowhead { font-weight: 600; white-space: nowrap; }
 .ef-factor .note { margin: 0 0 round(0.625rem, var(--e)); }
 
@@ -49,10 +49,10 @@
 .ef-whcell { display: inline-flex; align-items: center; justify-content: flex-end; gap: round(0.625rem, var(--e)); }
 .ef-whcell .bar { width: round(6rem, var(--e)); }
 .ef-eff { font-weight: 600; }
-.ef-eff.is-low { color: var(--danger); }
-.ef-eff.is-mid { color: var(--warm); }
-.ef-eff.is-ok { color: var(--live); }
-.ef-bytemp-tbl .btn.is-on { color: var(--live); box-shadow: inset 0 0 0 1px var(--live-line); }
+.ef-eff.is-low { color: var(--danger-ink); }
+.ef-eff.is-mid { color: var(--warm-ink); }
+.ef-eff.is-ok { color: var(--live-ink); }
+.ef-bytemp-tbl .btn.is-on { color: var(--live-ink); box-shadow: inset 0 0 0 1px var(--live-line); }
 .ef-nt { margin: 0; }
 
 /* compare */

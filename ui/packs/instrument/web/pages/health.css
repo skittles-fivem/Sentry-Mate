@@ -7,7 +7,7 @@
 .hl-page .cell-text .main { display: inline-flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)); font-weight: 500; }
 .hl-page .cell-text .sub { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
 .hl-page a.cell-text { color: inherit; text-decoration: none; }
-.hl-page a.cell-text:hover .main { color: var(--live); }
+.hl-page a.cell-text:hover .main { color: var(--live-ink); }
 .hl-wrap { white-space: normal; max-width: round(40rem, var(--e)); --LH: round(calc(1.4 * 1em), 2px); }
 .hl-sub { margin: 0 0 round(0.625rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
 .hl-page .tbl-bar { flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); }
@@ -18,15 +18,15 @@
 /* status and fixes */
 .hl-status { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: round(0.875rem, var(--e)); align-items: center; padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--live-line); background: var(--live-soft); margin-bottom: round(1rem, var(--e)); }
 .hl-status.is-warn { border-color: var(--warm-line); background: var(--warm-soft); }
-.hl-status-ic { display: grid; place-items: center; width: round(2.5rem, var(--e)); height: round(2.5rem, var(--e)); border-radius: round(0.75rem, var(--e)); background: var(--glass-2); color: var(--live); }
-.hl-status.is-warn .hl-status-ic { color: var(--warm); }
+.hl-status-ic { display: grid; place-items: center; width: round(2.5rem, var(--e)); height: round(2.5rem, var(--e)); border-radius: round(0.75rem, var(--e)); background: var(--glass-2); color: var(--live-ink); }
+.hl-status.is-warn .hl-status-ic { color: var(--warm-ink); }
 .hl-status-ic .ico { width: round(1.375rem, var(--e)); height: round(1.375rem, var(--e)); }
 .hl-status-head { font-family: var(--font-display); font-size: 1.375rem; font-weight: 500; letter-spacing: -0.01em; }
 .hl-status .explain { margin: round(0.25rem, var(--e)) 0 0; display: block; }
 
 .hl-fixes { list-style: none; margin: 0 0 round(1rem, var(--e)); padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(round(22rem, var(--e)), 1fr)); gap: round(0.625rem, var(--e)); }
 .hl-fix { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: round(0.625rem, var(--e)); padding: round(0.75rem, var(--e)) round(0.875rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); }
-.hl-fix-ic { color: var(--warm); padding-top: round(0.125rem, var(--e)); }
+.hl-fix-ic { color: var(--warm-ink); padding-top: round(0.125rem, var(--e)); }
 .hl-fix-head { font-weight: 600; }
 .hl-fix-text { margin: round(0.25rem, var(--e)) 0 round(0.5rem, var(--e)); color: var(--text-2); --LH: round(calc(1.45 * 1em), 2px); }
 
@@ -132,9 +132,9 @@
 /* the card that leads to the connections overview (pages/conn-overview.js overviewCard) */
 .hl-page > .co-card { margin-bottom: var(--gap); }
 .co-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: round(0.875rem, var(--e)); align-items: center; color: inherit; text-decoration: none; }
-.co-card:hover .co-card-title, .co-card:hover .co-card-go { color: var(--live); }
+.co-card:hover .co-card-title, .co-card:hover .co-card-go { color: var(--live-ink); }
 .co-card:focus-visible { outline: 2px solid var(--live); outline-offset: 2px; }
-.co-card-ic { display: grid; place-items: center; width: round(2.5rem, var(--e)); height: round(2.5rem, var(--e)); border-radius: round(0.75rem, var(--e)); background: var(--glass-2); color: var(--live); }
+.co-card-ic { display: grid; place-items: center; width: round(2.5rem, var(--e)); height: round(2.5rem, var(--e)); border-radius: round(0.75rem, var(--e)); background: var(--glass-2); color: var(--live-ink); }
 .co-card-ic .ico { width: round(1.25rem, var(--e)); height: round(1.25rem, var(--e)); }
 .co-card-text { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); min-width: 0; }
 .co-card-title { font-weight: 600; font-size: 0.9375rem; }
@@ -162,7 +162,7 @@
 .hl-missing-line { display: flex; align-items: center; gap: round(0.375rem, var(--e)); --LH: round(calc(1.4 * 1em), 2px); }
 .hl-missing-line > .ico { flex: none; }
 .hl-missing-line:not(.warn) > .ico { color: var(--text-3); }
-.hl-missing-line.warn { color: var(--warm); }
+.hl-missing-line.warn { color: var(--warm-ink); }
 
 /* a key's Rename (can-key-name.js): on a phone the words line up with the name when the button wraps */
 :root[data-phone] .hl-key .main > .key-rename { padding-inline: 0; }
@@ -172,7 +172,7 @@
 .fr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--gap); align-items: start; }
 .fr-about { min-width: 0; }
 .fr-explain { margin: 0 0 round(0.625rem, var(--e)); color: var(--text-2); }
-.fr-stale { margin: 0 0 round(0.625rem, var(--e)); color: var(--warm); }
+.fr-stale { margin: 0 0 round(0.625rem, var(--e)); color: var(--warm-ink); }
 .fr-acts { margin-top: round(0.875rem, var(--e)); }
 .fr-panel { display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); min-width: 0; padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--glass-2); }
 .fr-bar-row { display: flex; align-items: center; gap: round(0.75rem, var(--e)); height: round(1.25rem, var(--e)); }
@@ -185,9 +185,9 @@
 .fr-line dt, .fr-line dd { margin: 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fr-line dt { color: var(--text-3); }
 .fr-line dd { color: var(--text); font-variant-numeric: tabular-nums; }
-.fr-line[data-tone="ok"] dd { color: var(--live); }
-.fr-line[data-tone="warn"] dd { color: var(--warm); }
-.fr-line[data-tone="error"] dd { color: var(--danger); }
+.fr-line[data-tone="ok"] dd { color: var(--live-ink); }
+.fr-line[data-tone="warn"] dd { color: var(--warm-ink); }
+.fr-line[data-tone="error"] dd { color: var(--danger-ink); }
 .fr-errors-box { padding-top: round(0.625rem, var(--e)); border-top: 1px solid var(--line); }
 .fr-errors-head { margin: 0 0 round(0.25rem, var(--e)); color: var(--text-3); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
 .fr-errors { display: flex; flex-direction: column; gap: round(0.125rem, var(--e)); margin: 0; padding: 0; list-style: none; }
@@ -195,8 +195,8 @@
 /* the recent rebuilds: as the problems, in the plain text colour whatever the tone */
 .fr-history { display: flex; flex-direction: column; gap: round(0.125rem, var(--e)); margin: 0; padding: 0; list-style: none; }
 .fr-history li { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; height: round(2.5rem, var(--e)); overflow: hidden; overflow-wrap: anywhere; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
-.fr-panel[data-tone="error"] .fr-errors li, .fr-panel[data-tone="warn"] .fr-errors li { color: var(--warm); }
-.fr-panel[data-tone="error"] .fr-errors li:last-child:not(:empty) { color: var(--danger); }
+.fr-panel[data-tone="error"] .fr-errors li, .fr-panel[data-tone="warn"] .fr-errors li { color: var(--warm-ink); }
+.fr-panel[data-tone="error"] .fr-errors li:last-child:not(:empty) { color: var(--danger-ink); }
 .fr-intro { margin: 0 0 round(0.75rem, var(--e)); }
 @media (prefers-reduced-motion: reduce) { .fr-bar > i { transition: none; } }
 @container page (max-width: 85.375rem) {
@@ -239,9 +239,9 @@
 .gf-row dt { color: var(--text-3); }
 .gf-layout { font-variant-numeric: tabular-nums; }
 .gf-err { color: var(--text-2); text-align: right; font-variant-numeric: tabular-nums; }
-.gf[data-tone="ok"] .gf-head { color: var(--live); }
-.gf[data-tone="warn"] .gf-head { color: var(--warm); }
-.gf[data-tone="error"] .gf-head { color: var(--danger); }
+.gf[data-tone="ok"] .gf-head { color: var(--live-ink); }
+.gf[data-tone="warn"] .gf-head { color: var(--warm-ink); }
+.gf[data-tone="error"] .gf-head { color: var(--danger-ink); }
 @media (prefers-reduced-motion: reduce) { .gf-bar > i { transition: none; } }
 
 /* the buttons beside the full rebuild (start now, tonight, pause) wrap on a narrow screen */

@@ -5,7 +5,7 @@
 .head-stat:first-child { margin-left: 0; padding-left: 0; border-left: 0; }
 .head-stat dt { display: flex; align-items: center; gap: round(0.375rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); font-weight: 500; color: var(--text-3); }
 .head-stat dd { margin: 0; font-family: var(--font-display); font-size: 1.5rem; font-weight: 500; --LH: round(calc(1.1 * 1em), 2px); letter-spacing: -0.01em; white-space: nowrap; }
-.sub-warn { display: inline-flex; align-items: center; gap: round(0.3125rem, var(--e)); color: var(--warm); }
+.sub-warn { display: inline-flex; align-items: center; gap: round(0.3125rem, var(--e)); color: var(--warm-ink); }
 
 .fleet-board { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: round(0.75rem, var(--e)); margin-bottom: round(1rem, var(--e)); }
 .state-tile {
@@ -33,7 +33,7 @@ button.state-tile:hover { border-color: var(--line-3); }
 .attn-row { display: grid; grid-template-columns: minmax(round(8rem, var(--e)), round(12rem, var(--e))) minmax(0, 1fr) auto auto; gap: round(0.5rem, var(--e)) round(1.25rem, var(--e)); align-items: center; padding: round(0.5rem, var(--e)) 0; border-top: 1px solid var(--line); }
 .attn-row:first-child { border-top: 0; padding-top: 0; }
 .attn-car { font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-a.attn-car:hover { color: var(--live); }
+a.attn-car:hover { color: var(--live-ink); }
 .attn-text { color: var(--text-2); min-width: 0; }
 .attn-when { font-size: max(0.78125rem, var(--fs-floor)); white-space: nowrap; }
 
@@ -55,7 +55,7 @@ a.attn-car:hover { color: var(--live); }
 .cell-place span, .cell-since > span:not(.age):not(.pill) { font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-3); white-space: nowrap; }
 .pin-cell { display: inline-flex; align-items: center; gap: round(0.125rem, var(--e)); }
 .pin-btn { color: var(--text-3); }
-.pin-btn.is-on { color: var(--live); }
+.pin-btn.is-on { color: var(--live-ink); }
 .pin-btn.is-on .ico { fill: var(--live-soft); }
 .rot-90 { transform: rotate(90deg); }
 .fleet-table .tbl td { height: calc(round(3.625rem, var(--e)) - 2 * round(0.375rem, var(--e))); }
@@ -80,7 +80,7 @@ a.attn-car:hover { color: var(--live); }
 .fleet-table tr.is-sold .car-name { color: var(--text-2); }
 .car-name-row { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); min-width: 0; max-width: 100%; }
 .sold-word { font-weight: 500; color: var(--text-2); }
-.sold-toggle[aria-pressed="true"] { color: var(--live); }
+.sold-toggle[aria-pressed="true"] { color: var(--live-ink); }
 
 /* phone (<html data-phone>): tiles and names wrap instead of being cut; links are full taps; each car a card */
 :root[data-phone] .state-tile-sub { white-space: normal; overflow-wrap: anywhere; }
