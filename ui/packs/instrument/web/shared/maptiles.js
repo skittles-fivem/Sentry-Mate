@@ -223,9 +223,10 @@ export async function setMapStyle(id) {
 /**
  * The Map / Satellite switch for a map page, or null when the admin allows only one style (or tiles are offline).
  * classes: { box, button, active } for the pack's look. onChange(choice, style) after the person picked (the pick is
- * saved for them); the page redraws its tiles with swapTiles.
+ * saved for them); the page redraws its tiles with swapTiles. onError(err, style) when the pick could not be saved:
+ * it stays for this page and is gone on the next, so the pack says so.
  */
-export function mapStyleSwitch(cfg, prefs, { classes = {}, onChange = () => {}, label = 'Map style' } = {}) {
+export function mapStyleSwitch(cfg, prefs, { classes = {}, onChange = () => {}, onError = () => {}, label = 'Map style' } = {}) {
   const styles = mapStyles(cfg);
   if (styles.length < 2) return null;
   const c = { box: 'map-style', button: 'map-style-btn', active: 'is-active', ...classes };
@@ -242,7 +243,7 @@ export function mapStyleSwitch(cfg, prefs, { classes = {}, onChange = () => {}, 
       }
       const next = tileChoice(cfg, { map_style: s.id });
       onChange(next, s);
-      try { await setMapStyle(s.id); } catch { /* shown as picked for this page; saved next time */ }
+      try { await setMapStyle(s.id); } catch (err) { onError(err, s); /* (shown as picked for this page all the same) */ }
     },
   }, s.short || s.name));
   for (const b of buttons) b.classList.toggle(c.active, b.dataset.mapStyle === current);

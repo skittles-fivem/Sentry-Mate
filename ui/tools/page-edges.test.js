@@ -3,7 +3,7 @@
 // refused under their fields; a period still to come or before 1970 gives a page, not an error; a search for one very
 // long word leaves the page as wide as the window; Battery of a car whose pack reported nothing writes no
 // sentence around a dash; the car switcher of a large fleet counts the cars not sold and says where the sold ones
-// are; Statistics without a car counts no "0 cars".
+// are; Statistics without a car counts no "0 cars"; a Map or Satellite pick that could not be saved is said.
 // `PACKS=a,b` runs only those. Run: node --test ui/tools/page-edges.test.js. Skipped when Playwright is not installed.
 'use strict';
 
@@ -263,6 +263,28 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
       const text = await mainText(page);
       assert.match(text, /No car yet/i);
       assert.doesNotMatch(text, /\b0 cars\b/);
+      assert.deepEqual(errors, []);
+    });
+  });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: a Map or Satellite pick that could not be saved is said, and stays for the page`, { skip: SKIP, timeout: 180000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      const drive = (await (await context.request.get(`${origin}/api/v1/cars/c1/drives?limit=3`)).json()).items[1].id;
+      const { page, errors } = await openPage(context, `${origin}/cars/c1/drives/${drive}`, 'drive', (p) => p.route(/\/api\/v1\/me\/preferences$/, (r) => (r.request().method() === 'PATCH'
+        ? r.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'server_error', message: 'The made-up server could not save this.' } }) }) : r.fallback())));
+      const other = page.locator('main .map-style-btn[data-map-style]:not(.is-active)').first();
+      await other.scrollIntoViewIfNeeded();
+      const name = (await other.innerText()).trim();
+      const satellite = page.locator(`main .map-style-btn[data-map-style="${await other.getAttribute('data-map-style')}"]`).first();
+      await satellite.click();
+      const note = page.locator('.flash-note[data-kind="error"]');
+      await note.waitFor({ timeout: 10000 });
+      const said = await note.innerText();
+      assert.match(said, /map style/i);
+      assert.match(said, /The made-up server could not save this\./, 'with the server\'s own reason');
+      assert.equal(await satellite.getAttribute('aria-pressed'), 'true', `${name} stays picked on this page`);
       assert.deepEqual(errors, []);
     });
   });
