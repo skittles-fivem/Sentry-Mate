@@ -391,6 +391,11 @@ export async function mount(ctx) {
       : `${formatNumber(convert(b.from_kph, 'speed'), { maximumFractionDigits: 0 })}–${format(b.to_kph, 'speed', { digits: 0 })}`);
     perDay = days;
     const csvSmall = (name, rows, cols) => csvButton({ onClick: () => downloadCsv(csvFilename(car.name, name), rows, cols) });
+    // the parts kept from the last drawing (the chart, its reading, its CSV) go in after the swap: put in the new
+    // drawing while it is built they would leave the panel on screen first, shorter (the chart's height) when
+    // replace() looks at where things are, and Chromium would scroll the page by that much
+    const kept = [];
+    const keep = (el) => { const c = document.createComment(''); kept.push([c, el]); return c; };
     replace(patterns,
       h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('stats'), 'Driving patterns'),
         h('span', { class: 'faint patterns-scope' }, left.length ? `${period.label}, without drives to or from ${left.join(', ')} (the 30 and 7 day top speeds count every drive; the list filters do not apply here)` : `${period.label}, every drive (the list filters do not apply here)`),
@@ -413,7 +418,7 @@ export async function mount(ctx) {
         metric('Last 7 days', top(s.max_speed?.last_7d), null, { cover: 'ds.stat.max_speed_7d', explain: `top speed in the 7 days to ${endDay}, whatever the period; every drive counts`, why: 'No drive in those days' }),
         metric('Per month', s.projection?.per_month_km, 'distance', { cover: 'ds.stat.monthly_mileage', explain: s.projection?.basis_days ? `projected from the same ${formatNumber(Math.round(s.projection.basis_days))} days` : 'projected', why: 'Not enough driving to project' }),
         metric('Per year', s.projection?.per_year_km, 'distance', { cover: 'ds.stat.annual_mileage', explain: 'projected at the same rate', why: 'Not enough driving to project' })),
-      h('div', { class: 'daily-chart' }, h('div', { class: 'daily-chart-head' }, h('span', null, "Distance per day, in the car's days"), h('span', { class: 'daily-chart-side' }, dailyRead, dailyCsv)), dailyEl),
+      h('div', { class: 'daily-chart' }, h('div', { class: 'daily-chart-head' }, h('span', null, "Distance per day, in the car's days"), h('span', { class: 'daily-chart-side' }, keep(dailyRead), keep(dailyCsv))), keep(dailyEl)),
       h('div', { class: 'pattern-lists' },
         h('div', { cover: 'ds.chart.speed_histogram' }, h('div', { class: 'list-head' }, h('h3', { class: 'list-title' }, 'Time at each speed'),
           csvSmall('drive-speed-bands', bands, [column('From', 'from_kph', 'speed'), column('To', 'to_kph', 'speed'), column('Time (s)', 'seconds'), column('Share', 'share_pct', 'percent')])),
@@ -430,6 +435,7 @@ export async function mount(ctx) {
               h('span', { class: 'hbar' }, bar), h('span', { class: 'hbar-val' }, `${formatNumber(d.count)} ${d.count === 1 ? 'drive' : 'drives'}`));
           })) : h('p', { class: 'note' }, 'No destination in the period.'),
           h('p', { class: 'note' }, 'Where each drive ended. A saved place opens its drives; an address is not a place yet.'))));
+    for (const [c, el] of kept) c.replaceWith(el);
 
     // distance per day
     const xs = days.map((d) => Date.parse(`${d.date}T12:00:00Z`));
