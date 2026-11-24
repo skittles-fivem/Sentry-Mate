@@ -801,7 +801,7 @@ export async function mount(ctx) {
         },
       };
     };
-    plots.batt = mountPlot(el, make, [xs, soc, usable, range], ctx);
+    plots.batt = mountPlot(el, make, [xs, soc, usable, range], ctx, null, 'Battery level, usable level and range over the period');
   }
 
   async function chargingChart(el, supEl, legendHost, noteEl, charges, from, to, failed = null) {
@@ -869,7 +869,7 @@ export async function mount(ctx) {
         { label: 'Power', scale: 'kw', stroke: css('--c-charge'), width: rpx(2), fill: areaFill(css('--c-charge'), 0.22, 0.01), points: { show: false } },
         { label: 'Heating', scale: 'kw', stroke: css('--danger'), width: rpx(1.5), points: { show: false } },
         { label: 'Energy', scale: 'kwh', stroke: css('--c-soc'), width: rpx(1.5), dash: [rpx(4), rpx(3)], points: { show: false } }],
-    }), [xs, empty(P), empty(HT), empty(E)], ctx);
+    }), [xs, empty(P), empty(HT), empty(E)], ctx, null, 'Charging power, heating power and energy added during the charge');
     plots.sup = mountPlot(supEl, (width, height) => ({
       ...base(width, height, true),
       scales: { x: { time: true, min: from / 1000, max: to / 1000 }, v: { auto: true }, a: { range: (u, a, b) => [0, Math.max(5, (b || 0) * 1.15)] } },
@@ -877,7 +877,7 @@ export async function mount(ctx) {
       series: [{},
         { label: 'Volts', scale: 'v', stroke: css('--c-power'), width: rpx(1.5), points: { show: false } },
         { label: 'Amps', scale: 'a', stroke: css('--live'), width: rpx(1.5), points: { show: false } }],
-    }), [xs, empty(V), empty(A)], ctx);
+    }), [xs, empty(V), empty(A)], ctx, null, 'Supercharger volts and amps during the charge');
   }
 
   /* ---------- first draw, then live */

@@ -35,6 +35,9 @@ def bms_full(car, t):
 
 
 def _new_capacity(req, h):
+    """The usable capacity when new (kWh) and where it comes from: the same basis as the usable capacity now
+    (full pack less the buffer), so the difference and the health compare like with like. A typed value is
+    usable already; values worked out from readings are full-pack values, less the buffer."""
     car = h.car
     s = req.store.car_settings.get(car.id) or {}
     if s.get("pack_replaced_date") and s.get("pack_new_kwh"):
@@ -44,11 +47,11 @@ def _new_capacity(req, h):
     if car.odo_start_km < 5000:
         first = h.first_ms
         days = [bms_full(car, first + i * DAY) for i in range(30)]
-        return median(days), "early_bms"
+        return median(days) - car.buffer_kwh, "early_bms"
     tm = [c for c in h.charges if c.source == "teslamate"][:10]
     if tm:
-        return median([_charge_full(car, c) for c in tm]), "imported_charges"
-    return car.full_new_kwh, "vehicle_info"
+        return median([_charge_full(car, c) for c in tm]) - car.buffer_kwh, "imported_charges"
+    return car.full_new_kwh - car.buffer_kwh, "vehicle_info"
 
 
 def _new_range(req, h):
@@ -153,7 +156,8 @@ def get_battery(req):
     full = bms_full(car, at)
     recent = [bms_full(car, at - i * DAY) for i in range(30)]
     new_kwh, new_src = _new_capacity(req, h)
-    diff = new_kwh - full
+    usable_now = full - car.buffer_kwh
+    diff = new_kwh - usable_now
     # a pack is never healthier than new: no loss where the reading is above the value when new, and a note
     deg = max(0.0, diff / new_kwh * 100)
     s = req.store.car_settings.get(car.id) or {}
@@ -291,7 +295,7 @@ def _trend(req, h, rows):
     km_per_ms = (max(os_) - min(os_)) / max(1, max(ts) - min(ts))
     new_kwh, _src = _new_capacity(req, h)
     warranty = (req.store.car_settings.get(h.car.id) or {}).get("warranty_threshold_pct", 70)
-    target = new_kwh * warranty / 100
+    target = (new_kwh + h.car.buffer_kwh) * warranty / 100  # on the full-pack basis of the points
     proj = None
     if slope < -1e-9:
         at_km = mx + (target - my) / slope

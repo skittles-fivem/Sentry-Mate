@@ -23,6 +23,8 @@ class Battery(ServerCase):
         self.assertEqual(cap["new_source"], "early_bms")
         self.assertAlmostEqual(cap["usable_kwh"], cap["full_pack_kwh"] - cap["buffer_kwh"], delta=0.02)
         self.assertGreater(cap["difference_kwh"], 0)
+        self.assertAlmostEqual(cap["difference_kwh"], cap["new_kwh"] - cap["usable_kwh"], delta=0.06)
+        self.assertAlmostEqual(cap["health_pct"], cap["usable_kwh"] / cap["new_kwh"] * 100, delta=0.11)
         self.assertAlmostEqual(cap["health_pct"], 100 - cap["degradation_pct"], delta=0.11)
         self.assertEqual(b1["band"], {"low_pct": 20, "high_pct": 80, "charge_limit_pct": 80})
         self.assertEqual(self.c.get("/api/v1/cars/c3/battery")["capacity"]["new_source"], "owner")
@@ -42,7 +44,7 @@ class Battery(ServerCase):
         b = self.c.get("/api/v1/cars/c2/battery")
         self.assertNotIn("reading_above_new", b["notes"])
         self.assertEqual(b["lifetime"]["unknown_kwh"], 0)
-        now_kwh = b["capacity"]["full_pack_kwh"]
+        now_kwh = b["capacity"]["usable_kwh"]  # the value when new is the usable capacity, so it is compared with the usable capacity now
         s = self.c.get("/api/v1/cars/c2/settings")
         # a value when new typed below what the pack reads now: no loss, full health, a note, the difference as it is
         up = self.c.json("PATCH", "/api/v1/cars/c2/settings", {"version": s["version"], "capacity_new_kwh": round(now_kwh - 4, 1)})
