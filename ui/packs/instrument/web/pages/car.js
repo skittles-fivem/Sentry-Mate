@@ -910,8 +910,8 @@ export async function mount(ctx) {
   let rowsT = 0;
   ctx.events('rows', (ev) => {
     if (ev.data?.car !== cid) return;
-    clearTimeout(rowsT);
-    rowsT = setTimeout(() => { if (ctx.alive()) { paintWindow().catch(() => {}); paintToday(); } }, 1500);
+    if (rowsT) return;   // (words that keep coming, as in a rebuild, never put it off)
+    rowsT = setTimeout(() => { rowsT = 0; if (ctx.alive()) { paintWindow().catch(() => {}); paintToday(); } }, 1500);
   });
   ctx.onCleanup(() => { clearTimeout(pend); clearTimeout(rowsT); });
   ctx.onCleanup(onUnitsChange(() => { paintGauge(); paintPlace(); paintLive(); paintWindow().catch(() => {}); }));

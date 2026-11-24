@@ -378,8 +378,8 @@ export async function mount(ctx) {
     ctx.events('rows', (ev) => {
       if (ev.data?.car !== cid && ev.data?.car !== vsId) return;
       if (!(ev.data.kinds || []).some((k) => k === 'drives' || k === 'charges')) return;
-      clearTimeout(t);
-      t = setTimeout(() => { if (ctx.alive()) ctx.refresh(); }, 1500);
+      if (t) return;   // (words that keep coming, as in a rebuild, never put it off)
+      t = setTimeout(() => { t = 0; if (ctx.alive()) ctx.refresh(); }, 1500);
     });
     ctx.onCleanup(() => clearTimeout(t));
   }

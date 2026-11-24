@@ -718,7 +718,8 @@ export async function mount(ctx) {
     // only the cars shown, and only rows the totals count (drives, charges, updates)
     if (d.car && !viewCars.includes(d.car)) return;
     if (d.kinds && !d.kinds.some((k) => k === 'drives' || k === 'charges' || k === 'updates')) return;
-    clearTimeout(timer); timer = setTimeout(() => ctx.refresh(), 1500);
+    if (timer) return;   // (words that keep coming, as in a rebuild, never put it off)
+    timer = setTimeout(() => { timer = 0; ctx.refresh(); }, 1500);
   });
 
   await load();
