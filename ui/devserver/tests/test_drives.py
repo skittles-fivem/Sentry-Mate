@@ -224,8 +224,9 @@ class Drives(ServerCase):
         self.assertTrue(d["cost"]["by_currency"])
         kinds = {m["kind"] for m in d["markers"]}
         self.assertTrue({"start", "end", "charge", "overnight"} <= kinds, kinds)
-        self.assertEqual(set(d["time_ms"]), {"driving", "charging_ac", "charging_dc", "parked_awake", "asleep",
-                                             "not_recorded"})
+        self.assertEqual(set(d["time_ms"]), {"driving", "charging_ac", "charging_dc", "charging_unknown",
+                                             "parked_awake", "asleep", "not_recorded"})
+        self.assertEqual(set(d["energy_kwh"]), {"drive_net", "gross", "added_ac", "added_dc", "added_unknown"})
 
     def test_saved_trips(self):
         lst = self.c.get("/api/v1/trips")["items"]

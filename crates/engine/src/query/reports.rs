@@ -255,6 +255,8 @@ struct Acc {
     driven_ms: u64,
     drives: u64,
     km: f64,
+    /// The km of the drives with energy: what Wh/km is over, as in the drives list.
+    km_e: f64,
     kwh: f64,
     temp_w: f64,
     temp_ms: u64,
@@ -307,6 +309,9 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
             g.driven_ms += ms;
             g.km += d.distance_km.unwrap_or(0.0);
             g.kwh += d.energy_used_kwh.unwrap_or(0.0);
+            if d.energy_used_kwh.is_some() {
+                g.km_e += d.distance_km.unwrap_or(0.0);
+            }
             if let Some(t) = d.outside_temp_avg_c {
                 g.temp_w += t * ms.max(1) as f64;
                 g.temp_ms += ms.max(1);
@@ -405,8 +410,8 @@ fn stat_rows(e: &Engine, c: &Car, slots: &[Slot]) -> QResult<Vec<StatRow>> {
     for (s, g) in slots.iter().zip(acc) {
         let (o0, o1) = odometer_over(&odo, s.start, s.end, still);
         let span = s.end.saturating_sub(s.start).max(1);
-        let net = (g.km > 0.1).then(|| g.kwh / g.km * 1000.0);
-        let gross = g.stand.filter(|_| g.km > 0.1).map(|st| (g.kwh + st) / g.km * 1000.0);
+        let net = (g.km_e > 0.1).then(|| g.kwh / g.km_e * 1000.0);
+        let gross = g.stand.filter(|_| g.km_e > 0.1).map(|st| (g.kwh + st) / g.km_e * 1000.0);
         let price: Vec<PriceIn> = g
             .cost
             .iter()
@@ -1064,9 +1069,10 @@ pub fn compare(
                             if let Some(o) = odo.as_ref().and_then(|o| o.last_in(slots[i].start, slots[i].end)) {
                                 g.2 = Some(o);
                             }
+                            // (the km of drives with energy only, as the drives list counts them)
                             let km = d.distance_km.unwrap_or(0.0);
-                            if km >= min_d {
-                                g.0 += d.energy_used_kwh.unwrap_or(0.0);
+                            if let Some(kwh) = d.energy_used_kwh.filter(|_| km >= min_d) {
+                                g.0 += kwh;
                                 g.1 += km;
                             }
                         }

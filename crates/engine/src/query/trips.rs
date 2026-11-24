@@ -37,6 +37,8 @@ pub struct TripTime {
     pub driving: u64,
     pub charging_ac: u64,
     pub charging_dc: u64,
+    /// Charging of no known kind (no input told AC or DC).
+    pub charging_unknown: u64,
     pub parked_awake: u64,
     pub asleep: u64,
     pub not_recorded: u64,
@@ -51,9 +53,12 @@ pub struct TripSpeed {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TripEnergy {
     pub drive_net: f64,
-    pub gross: f64,
+    /// The drives' energy and the parked energy: null when the parked energy is not known.
+    pub gross: Option<f64>,
     pub added_ac: f64,
     pub added_dc: f64,
+    /// Added by charges of no known kind.
+    pub added_unknown: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -119,7 +124,8 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
     let shown = Shown::new(e, car, None)?;
     let dx = super::drives::ctx(e, &c)?;
     let mut drives: Vec<String> = Vec::new();
-    let (mut km, mut net) = (0.0, 0.0);
+    // the km of the drives with energy (what Wh/km is over, as in the drives list) and the drives' own time
+    let (mut km, mut net, mut km_e, mut drive_ms) = (0.0, 0.0, 0.0, 0u64);
     let (mut odo_first, mut odo_last) = (None::<f64>, None::<f64>);
     let mut markers: Vec<Marker> = Vec::new();
     let mut first: Option<DriveView> = None;
@@ -129,6 +135,10 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
         let v = super::drives::view(&c, &d, &dx);
         km += v.distance_km.unwrap_or(0.0);
         net += v.energy_kwh.unwrap_or(0.0);
+        if v.energy_kwh.is_some() {
+            km_e += v.distance_km.unwrap_or(0.0);
+        }
+        drive_ms += v.duration_ms;
         if odo_first.is_none() {
             odo_first = v.start_odometer_km;
         }
@@ -164,7 +174,7 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
     let cx = super::charges::ctx(e, &c)?;
     let mut charges: Vec<String> = Vec::new();
     let mut kinds: HashMap<String, Option<&'static str>> = HashMap::new();
-    let (mut ac, mut dc) = (0.0, 0.0);
+    let (mut ac, mut dc, mut unknown) = (0.0, 0.0, 0.0);
     let mut by_cur: BTreeMap<String, f64> = BTreeMap::new();
     let (mut priced, mut unpriced) = (0u64, 0u64);
     // a charge that started before the period and runs into it still counts for the time charging
@@ -176,7 +186,8 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
         }
         match v.kind {
             Some("dc") => dc += v.energy_added_kwh.unwrap_or(0.0),
-            _ => ac += v.energy_added_kwh.unwrap_or(0.0),
+            Some("ac") => ac += v.energy_added_kwh.unwrap_or(0.0),
+            _ => unknown += v.energy_added_kwh.unwrap_or(0.0),
         }
         match v.cost.as_ref().filter(|k| !k.currency.is_empty()) {
             Some(k) => {
@@ -226,8 +237,11 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
             };
             match s.kind {
                 "driving" => time.driving += ms,
-                "charging" if charge_kind() == Some("dc") => time.charging_dc += ms,
-                "charging" => time.charging_ac += ms,
+                "charging" => match charge_kind() {
+                    Some("dc") => time.charging_dc += ms,
+                    Some("ac") => time.charging_ac += ms,
+                    _ => time.charging_unknown += ms,
+                },
                 "asleep" => time.asleep += ms,
                 "unknown" => time.not_recorded += ms,
                 _ => time.parked_awake += ms,
@@ -237,16 +251,16 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
         // nothing for) is not recorded, so the parts add up to the period
         time.not_recorded += (end - a).saturating_sub(covered);
     }
+    // (not known parked: no gross figure, rather than the drives' alone)
     let parked_kwh = if end > a {
         super::parked::parked(e, car, &Period::new(Some(a), Some(end)), None, &Paging::first(1))?
             .body
             .summary
             .energy_kwh
-            .unwrap_or(0.0)
     } else {
-        0.0
+        Some(0.0)
     };
-    let gross = net + parked_kwh;
+    let gross = parked_kwh.map(|p| net + p);
     let hours = |ms: u64| ms as f64 / 3_600_000.0;
     let per_100: Vec<Money> = if km > 1.0 {
         by_cur
@@ -265,20 +279,23 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
                 odometer_km: r(odo_first.zip(odo_last).map(|(f, l)| (l - f).max(0.0)), 3),
                 drives_km: r(Some(km), 3).unwrap_or(0.0),
             },
+            // the km of the drives counted over their own time (a drive that runs past the period's end counts whole
+            // in both)
             speed_kph: TripSpeed {
-                moving: r((time.driving > 0).then(|| km / hours(time.driving)), 1),
-                incl_dc: r((time.driving > 0).then(|| km / hours(time.driving + time.charging_dc)), 1),
+                moving: r((drive_ms > 0).then(|| km / hours(drive_ms)), 1),
+                incl_dc: r((drive_ms > 0).then(|| km / hours(drive_ms + time.charging_dc)), 1),
             },
             time_ms: time,
             energy_kwh: TripEnergy {
                 drive_net: r(Some(net), 3).unwrap_or(0.0),
-                gross: r(Some(gross), 3).unwrap_or(0.0),
+                gross: r(gross, 3),
                 added_ac: r(Some(ac), 3).unwrap_or(0.0),
                 added_dc: r(Some(dc), 3).unwrap_or(0.0),
+                added_unknown: r(Some(unknown), 3).unwrap_or(0.0),
             },
             wh_per_km: TripWhKm {
-                net: r((km > 0.1).then(|| net * 1000.0 / km), 1),
-                gross: r((km > 0.1).then(|| gross * 1000.0 / km), 1),
+                net: r((km_e > 0.1).then(|| net * 1000.0 / km_e), 1),
+                gross: r(gross.filter(|_| km_e > 0.1).map(|g| g * 1000.0 / km_e), 1),
             },
             cost: TripCost { by_currency: money(by_cur), per_100km: per_100, priced, unpriced },
             markers,

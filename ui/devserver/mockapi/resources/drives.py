@@ -719,15 +719,17 @@ def trip(req):
     out = {"car": req.car, "time_zone": tz, "from_ms": a, "to_ms": min(b, req.now), "truncated": False}
     if h is None:
         out.update({"distance": {"odometer_km": None, "drives_km": 0.0},
-                    "time_ms": dict.fromkeys(("driving", "charging_ac", "charging_dc", "parked_awake", "asleep",
-                                              "not_recorded"), 0),
+                    "time_ms": dict.fromkeys(("driving", "charging_ac", "charging_dc", "charging_unknown",
+                                              "parked_awake", "asleep", "not_recorded"), 0),
                     "speed_kph": {"moving": None, "incl_dc": None},
-                    "energy_kwh": {"drive_net": 0.0, "gross": 0.0, "added_ac": 0.0, "added_dc": 0.0},
+                    "energy_kwh": {"drive_net": 0.0, "gross": 0.0, "added_ac": 0.0, "added_dc": 0.0,
+                                   "added_unknown": 0.0},
                     "wh_per_km": {"net": None, "gross": None},
                     "cost": {"by_currency": [], "per_100km": [], "priced": 0, "unpriced": 0}, "markers": []})
         return out
     end = min(b, req.now)
-    tm = dict.fromkeys(("driving", "charging_ac", "charging_dc", "parked_awake", "asleep", "not_recorded"), 0)
+    tm = dict.fromkeys(("driving", "charging_ac", "charging_dc", "charging_unknown", "parked_awake", "asleep",
+                        "not_recorded"), 0)
     parked_kwh = 0.0
     odo_first = odo_last = None
     markers = []
@@ -739,7 +741,8 @@ def trip(req):
             tm["not_recorded"] += max(0, y - de)
         elif s.kind == "charge":
             de = min(s.data_end, end)
-            tm["charging_dc" if s.ckind == "dc" else "charging_ac"] += max(0, de - x)
+            part = {"dc": "charging_dc", "ac": "charging_ac"}.get(s.ckind, "charging_unknown")
+            tm[part] += max(0, de - x)
         elif s.kind == "parked":
             sp = s.clip(x, y).split_ms()
             tm["asleep"] += sp["asleep"]
@@ -768,6 +771,8 @@ def trip(req):
     markers.sort(key=lambda m: (m["t_ms"], m["kind"] != "start"))
     dist = sum(x["distance_km"] or 0 for x in drows)
     net = sum(x["energy_kwh"] or 0 for x in drows)
+    # Wh/km over the drives with energy, as the drives list; the speed over the drives' own time
+    dist_e = sum(x["distance_km"] or 0 for x in drows if x["energy_kwh"] is not None)
     gross = net + parked_kwh
     by_cur = {}
     priced = unpriced = 0
@@ -778,17 +783,19 @@ def trip(req):
         else:
             unpriced += 1
     odo_km = r(odo_last - odo_first, 3) if odo_first is not None else None
-    drive_h = tm["driving"] / HOUR
+    drive_h = sum(x["duration_ms"] or 0 for x in drows) / HOUR
     out.update({
         "distance": {"odometer_km": odo_km, "drives_km": r(dist, 3)},
         "time_ms": tm,
         "speed_kph": {"moving": r(dist / drive_h, 1) if drive_h > 0 else None,
-                      "incl_dc": r(dist / ((tm["driving"] + tm["charging_dc"]) / HOUR), 1) if drive_h > 0 else None},
+                      "incl_dc": r(dist / (drive_h + tm["charging_dc"] / HOUR), 1) if drive_h > 0 else None},
         "energy_kwh": {"drive_net": r(net, 3), "gross": r(gross, 3),
                        "added_ac": r(sum(c["energy_added_kwh"] or 0 for c in crows if c["kind"] == "ac"), 3),
-                       "added_dc": r(sum(c["energy_added_kwh"] or 0 for c in crows if c["kind"] == "dc"), 3)},
-        "wh_per_km": {"net": r(net / dist * 1000, 1) if dist > 0.1 else None,
-                      "gross": r(gross / dist * 1000, 1) if dist > 0.1 else None},
+                       "added_dc": r(sum(c["energy_added_kwh"] or 0 for c in crows if c["kind"] == "dc"), 3),
+                       "added_unknown": r(sum(c["energy_added_kwh"] or 0 for c in crows
+                                              if c["kind"] not in ("ac", "dc")), 3)},
+        "wh_per_km": {"net": r(net / dist_e * 1000, 1) if dist_e > 0.1 else None,
+                      "gross": r(gross / dist_e * 1000, 1) if dist_e > 0.1 else None},
         "cost": {"by_currency": [{"currency": k, "amount": round(v, 2)} for k, v in sorted(by_cur.items())],
                  "per_100km": [{"currency": k, "amount": round(v / dist * 100, 2)} for k, v in sorted(by_cur.items())]
                  if dist > 1 else [], "priced": priced, "unpriced": unpriced},

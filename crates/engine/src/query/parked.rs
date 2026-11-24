@@ -415,7 +415,7 @@ pub(crate) fn spells(e: &Engine, c: &Car, a: u64, b: u64, min_hours: Option<f64>
     let near = nearest(e, car, &asks)?;
     let mut items = Vec::new();
     // what known time the summary counts: that of the spells whose energy is known
-    let (mut known_ms, mut known_kwh) = (0u64, 0.0);
+    let (mut known_ms, mut known_kwh, mut known) = (0u64, 0.0, false);
     for &(i, s0, s1, x, y) in &found {
         let p = &busy[i];
         let n = busy.get(i + 1).or(next.as_ref());
@@ -443,6 +443,7 @@ pub(crate) fn spells(e: &Engine, c: &Car, a: u64, b: u64, min_hours: Option<f64>
         if let Some(k) = energy {
             known_ms += dur - sp.unknown.min(dur);
             known_kwh += k;
+            known = true;
         }
         let place = p.at.as_ref().and_then(|pos| places.place_at(pos.lat, pos.lon));
         items.push(Spell {
@@ -479,7 +480,8 @@ pub(crate) fn spells(e: &Engine, c: &Car, a: u64, b: u64, min_hours: Option<f64>
     let hours = known_ms as f64 / 3_600_000.0;
     let summary = Summary {
         spells: items.len(),
-        energy_kwh: r(Some(known_kwh), 3),
+        // (spells none of whose energy is known: not known, rather than 0 kWh)
+        energy_kwh: r((known || items.is_empty()).then_some(known_kwh), 3),
         hours: r(Some(hours), 1),
         kwh_per_day: r((known_ms > 3_600_000).then(|| known_kwh / hours * 24.0), 3),
         cost: None,
