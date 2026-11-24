@@ -49,6 +49,9 @@ let mounted = null;      // { key, queryKey, ctx, instance, cleanups, scope, css
 let seq = 0;
 let firstMount = true;
 let warmedMain = false;
+let firstReadyDone;
+/** Resolves once the first page of this visit is ready (its data drawn). */
+export const firstReady = new Promise((resolve) => { firstReadyDone = resolve; });
 
 const periodKey = (p) => (p ? JSON.stringify(p) : '');
 const routeKey = (s) => [s.page, s.car, s.drive, s.charge, periodKey(s.period)].join('|');
@@ -499,6 +502,7 @@ async function mount(s, { keepScroll = false, live = false, wall = false } = {})
       tracker?.close();
       if (!BARE.has(id)) signedInHint(true);
       if (!warmedMain) { warmedMain = true; warmModules(MAIN.map((m) => () => pageModule(m))); }
+      firstReadyDone();
       shownOnce = true;
       if (refreshAsked) { refreshAsked = false; setTimeout(() => ctx.refresh(), 0); }
       st?.settle(() => scope.busy);
