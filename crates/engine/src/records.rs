@@ -225,6 +225,11 @@ pub struct RebuildMark {
     /// Whether the window was cleared (all of it): then carrying on only works on the logs not done again yet.
     #[serde(default)]
     pub cleared: bool,
+    /// Whether no drive or charge worked out from logs went on across the period's end when it was cleared (or
+    /// the period runs to the end of the history): then its logs can rebuild their windows once per run of them.
+    /// A mark from before this was kept says no.
+    #[serde(default)]
+    pub end_clear: bool,
 }
 
 /// A CAN key no car claims yet.

@@ -755,6 +755,16 @@ after every log is deterministic there: two such engines agreed on everything. S
 beside SMO gains nothing from this step; for it to, a drive's id would have to come from the data alone and not
 from what was stored before, which is a change to what a rebuild keeps and not a speed-up.
 
+**A rebuild of a period** clears the period first, so the rule above looks only at what starts between its first
+log and its end: nothing, and it goes per run, where no drive or charge goes on across the period's end. The same
+two engines compare periods in the middle, at the start and at the end of a history, cut through a drive or a
+charge, with gaps inside and before them, and over two cars (`a_rebuild_of_a_period_gives_the_same_timeline_*`).
+About the middle third of a week: 374 windows after every log (6.7 s) against 12 per run of 64 (2.5 s). A period
+whose end is inside a drive or a charge is not the same per run: the part after the end is kept, made a drive or
+charge of its own on the way, and the whole one keeps the id of whichever piece was stored first (a week's middle
+third that ends 18 minutes into a charge gave the charge its later part's id per run of 64). Such a period still
+gets a window per log.
+
 ## Start-up and the idle server, on the long history
 
 **How it is measured.** The long made-up history above (211 MB: 2.7 million imported positions, 1.7 million API

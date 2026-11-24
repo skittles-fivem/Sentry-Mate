@@ -89,6 +89,11 @@ cut short) is where it can lose something. It never does so quietly:
   and rebuilds its windows once per run of logs as before the restart, to the very history an uninterrupted one
   gives (`crates/sentry-mate/src/window_batch.rs`:
   `a_full_rebuild_carried_on_after_a_restart_gives_the_same_timeline_per_run_of_logs`).
+- **A rebuild of a period** rebuilds its windows once per run of logs too where no drive or charge goes on across
+  the period's end, to the very history a window per log gives, ids included
+  (`a_rebuild_of_a_period_gives_the_same_timeline_per_run_of_logs`). A period whose end cuts a drive or a charge
+  gets a window per log: the part after the end is kept, and per run the whole drive or charge could keep the id of
+  that part instead of its start's.
 
 ## Version changes
 
