@@ -52,6 +52,8 @@ export function invoicesBlock(ctx, opts) {
   f.live ||= follow(ctx.api, {
     type: 'job', match: jobOf('invoices', opts.source), pick: (d) => d.status,
     load: () => ctx.api.get(opts.base).then((o) => o?.invoices || null),
+    // the section has just read the overview: the block starts from it (no second read of the same address)
+    initial: opts.ov.invoices,
     // while the stream is down: often while older invoices or PDFs are still being fetched, else now and then
     pollMs: (inv) => (inv?.backfill === 'running' || inv?.pdfs_waiting ? 10000 : 60000),
     onValue: (inv) => {

@@ -337,7 +337,9 @@ async function mount(s, { keepScroll = false, live = false, wall = false } = {})
   // kept answers at once for the first reads (after a reload: the service worker's); the page is built again
   // in place when one of them changed
   const tracker = !live && takesStale(id) ? api.staleTracker({
-    worker: firstMount,
+    // only a page the service worker serves: with none (the first visit, a browser without one) the worker's
+    // answer would be a second request for the same read to the server
+    worker: firstMount && !!globalThis.navigator?.serviceWorker?.controller,
     onStale: () => { if (alive()) setStale(true); },
     onFresh: ({ changed, failed }) => {
       if (!alive() || failed) return;

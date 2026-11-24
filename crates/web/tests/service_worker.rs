@@ -67,6 +67,10 @@ fn the_script_keeps_to_its_rules() {
         "const STALE_OK = 'X-Sentry-Mate-Stale-Ok';",
         "const STALE = 'X-Sentry-Mate-Stale';",
         "if (req.headers.get(STALE_OK) === '1') {",
+        // a stale-ok read with nothing kept joins the read under way (one without a tag) instead of a second request
+        "const w = underway.get(key);",
+        "req.headers.has('if-none-match') || underway.has(key) ? null : { joiners: [] };",
+        "for (const j of mine?.joiners || []) j.resolve(res.clone());",
         "if (/no-store/i.test(res.headers.get('cache-control') || '')) return;",
         // who is signed in
         "if (res.status === 401) {",

@@ -595,8 +595,9 @@ export function createClient(options = {}) {
     if (near) return join(shared(key, path, params, opts, { base: near.entry }), opts.signal, key);
     if (!kept && tracker?.worker) {
       // the first page after a reload: the worker may have the answer in its memory
-      // (asked for only when the network's answer is not in within STALE_GRACE_MS)
-      const e = shared(key, path, params, opts);
+      // (asked for only when the network's answer is not in within STALE_GRACE_MS). The network's answer is warm:
+      // the page built again because it differs from the worker's takes it at once, not with another request
+      const e = shared(key, path, params, opts, { warm: true });
       const fresh = join(e, opts.signal, key);
       return grace(fresh).then((r) => {
         if (r) return r.v;
