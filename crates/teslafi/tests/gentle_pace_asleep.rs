@@ -120,3 +120,25 @@ async fn a_clock_set_back_does_not_stop_the_reads() {
     // the gentle pace reads a sleeping car every 20 minutes: the first read, then two more within the hour
     assert!(reads >= 3, "only {reads} reads in the hour after the clock went back");
 }
+
+/// Requests a token check wrote while the poller waited are kept when the clock is set back.
+#[tokio::test]
+async fn a_clock_set_back_keeps_the_requests_a_token_check_wrote() {
+    let (_t, data, v) = vault();
+    let store = Store::new(&data, v);
+    let id = account(&store, true);
+    let (script, sink) = (Script::default(), Arc::new(MemSink::default()));
+    let mut p =
+        Poller::new(store.clone(), &id, script.clone(), sink.clone(), Pace::Gentle.cadence(), chrono_tz::Tz::UTC)
+            .unwrap();
+    let asleep = |id: usize| json!({ "data_id": id.to_string(), "Date": "2027-01-15 08:00:00", "carState": "Sleeping", "state": "asleep" });
+    script.push(Ok(asleep(10)));
+    p.tick(NOW).await.unwrap();
+    let before = store.pacing(&id).unwrap().polls_today;
+    store.update_paced(&id, None, None, |_| {}, |p| p.note_requests(5, NOW + 5000)).unwrap();
+    assert_eq!(store.pacing(&id).unwrap().polls_today, before + 5);
+    script.push(Ok(asleep(11)));
+    p.tick(NOW - 3 * 3_600_000).await.unwrap();
+    let after = store.pacing(&id).unwrap();
+    assert!(after.polls_today >= before + 5, "before {before}, after {}", after.polls_today);
+}

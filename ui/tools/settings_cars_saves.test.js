@@ -123,14 +123,14 @@ test('Prefer this key and Mark as sold pressed twice send one request each', { s
 
 test('a dialog whose request runs stays open: a new recovery key is not lost', { skip, timeout: 120000 }, async () => {
   await withServer(async (browser, server) => {
-    const { page, context, errors } = await open(browser, server, '/settings/server', { slow: 1800 });
+    const { page, context, errors } = await open(browser, server, '/settings/server', { slow: 2500 });
     await page.click('button:has-text("Make a new recovery key")');
     await page.fill('dialog input[name=password]', 'sentry-mate-dev');
     await page.keyboard.press('Enter');
     await wait(400);
     assert.equal(await page.locator('dialog button[type=submit]').getAttribute('aria-busy'), 'true');
-    await page.keyboard.press('Escape');
-    await wait(200);
+    // three times: a browser holds a cancel back only once between two gestures
+    for (let i = 0; i < 3; i++) { await page.keyboard.press('Escape'); await wait(100); }
     assert.equal(await dialogs(page), 1, 'Esc does nothing while the request runs');
     assert.ok(await page.locator('dialog button:has-text("Cancel")').isDisabled(), 'Cancel is disabled');
     assert.ok(await page.locator('dialog button[aria-label="Close"]').isDisabled(), 'the close button is disabled');
