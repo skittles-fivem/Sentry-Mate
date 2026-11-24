@@ -366,7 +366,8 @@ def _odometer_run(drows, now):
 
 # ------------------------------------------------------------------ gaps
 
-CAUSE = {"no_log": "no_log", "not_recorded": "not_recorded", "failed_check": "unknown", "dropped_frames": "unknown"}
+CAUSE = {"no_log": "no_log", "not_recorded": "not_recorded", "failed_check": "unknown", "unreadable": "unknown",
+         "other_vin": "unknown", "dropped_frames": "unknown"}
 
 
 def gap_rows(req, h):

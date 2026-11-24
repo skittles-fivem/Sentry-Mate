@@ -1239,8 +1239,7 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
         for (_, _, en) in day {
             match &en.outcome {
                 Outcome::Hole { from_ms, to_ms, reason } => {
-                    let (reason, cause) =
-                        if reason == "not_stored" { ("no_log", "no_log") } else { ("failed_check", "unknown") };
+                    let (reason, cause) = super::timeline::hole_why(reason);
                     why.push(Why { from_ms: *from_ms, to_ms: *to_ms, reason, cause });
                 }
                 Outcome::Decoded { facts, .. } => {

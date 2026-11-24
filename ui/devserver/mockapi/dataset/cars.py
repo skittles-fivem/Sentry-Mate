@@ -123,7 +123,7 @@ def featured_specs():
         gaps=[
             (-402, 9.0, 18 * 60, "no_log", "moved"),
             (-299, 3.0, 180, "not_recorded", "parked"),
-            (-210, 14.5, 95, "failed_check", "parked"),
+            (-210, 14.5, 95, "unreadable", "parked"),  # a stored log that could not be decoded
             (-120, 22.0, 5, "dropped_frames", "parked"),
             (-61, 12.0, 30 * 60, "no_log", "moved"),
         ],
@@ -154,7 +154,7 @@ def featured_specs():
             (-350, 10.0, 240, "no_log", "parked"),
             (-240, 16.0, 26 * 60, "no_log", "moved"),
             (-160, 2.0, 90, "dropped_frames", "parked"),
-            (-70, 13.0, 60, "failed_check", "parked"),
+            (-70, 13.0, 60, "other_vin", "parked"),  # a log that names another car's VIN
         ],
     )
     return [c1, c2, c3]

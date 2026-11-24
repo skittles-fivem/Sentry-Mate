@@ -32,7 +32,9 @@ class Timeline(ServerCase):
             g = self.c.get(f"/api/v1/cars/{car}/timeline?kinds=gap&limit=500")["items"]
             reasons |= {x["gap_reason"] for x in g}
             self.assertTrue(all(x["kind"] == "gap" for x in g))
-        self.assertEqual(reasons, {"no_log", "not_recorded", "failed_check", "dropped_frames"})
+        # every word the server has for a gap (a log left out is said by its own reason)
+        self.assertEqual(reasons, {"no_log", "not_recorded", "failed_check", "unreadable", "other_vin",
+                                   "dropped_frames"})
         u = self.c.get("/api/v1/cars/c1/timeline?kinds=update&limit=50")["items"]
         self.assertEqual(len(u), 3)  # c1 has three software updates
         self.assertTrue(all("update" in x["ref"] for x in u))

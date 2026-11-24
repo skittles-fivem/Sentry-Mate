@@ -21,7 +21,8 @@ ACT_STATE = {"driving": ("online", ("vehicle", "chassis")), "charging": ("online
 KIND_TEXT = {"drive": "drive driving", "charge": "charge charging", "parked": "parked",
              "gap": "gap in the data no data missing", "update": "software update"}
 GAP_TEXT = {"no_log": "no log arrived for this time", "not_recorded": "not recorded recording was paused",
-            "failed_check": "the log failed its check", "dropped_frames": "frames were dropped"}
+            "failed_check": "a log failed its check", "unreadable": "a log could not be read",
+            "other_vin": "a log names another car", "dropped_frames": "frames were dropped"}
 AWAKE_TEXT = {"sentry": "sentry mode", "keep_climate_on": "keep-climate on keep climate", "keep_climate_dog": "dog mode",
               "keep_climate_camp": "camp mode", "user_present": "someone in the car",
               "preconditioning_cabin": "cabin preconditioning", "preconditioning_battery": "battery preconditioning",

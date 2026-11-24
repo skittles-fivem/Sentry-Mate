@@ -52,7 +52,7 @@ pub struct Row {
     pub reference: Option<serde_json::Value>,
     pub parked_ms: Option<ParkedMs>,
     pub awake_reasons: Vec<&'static str>,
-    /// `no_log`, `not_recorded`, `failed_check`, `dropped_frames`.
+    /// `no_log`, `not_recorded`, `failed_check`, `unreadable`, `other_vin`, `dropped_frames`.
     pub gap_reason: Option<&'static str>,
     #[serde(flatten)]
     pub from: super::Sources,
@@ -122,6 +122,8 @@ fn words(r: &Row) -> String {
             "no_log" => "no log arrived for this time",
             "not_recorded" => "the bridge was not recording",
             "failed_check" => "a log failed its check",
+            "unreadable" => "a log could not be read",
+            "other_vin" => "a log names another car",
             _ => "frames were dropped",
         });
     }
@@ -1005,8 +1007,9 @@ pub struct GapRow {
     pub inside: Option<serde_json::Value>,
 }
 
-/// A span the car's records say has no usable data, and why: the timeline's word (`failed_check`, `dropped_frames`,
-/// `not_recorded`, `no_log`) and the gap's cause (`unknown`, `not_recorded`, `chain_gap`, `no_log`).
+/// A span the car's records say has no usable data, and why: the timeline's word (`failed_check`, `unreadable`,
+/// `other_vin`, `dropped_frames`, `not_recorded`, `no_log`) and the gap's cause (`unknown`, `not_recorded`,
+/// `chain_gap`, `no_log`).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Why {
     pub from_ms: u64,
@@ -1019,6 +1022,18 @@ pub(crate) struct Why {
 /// frames sit beside the span they leave unknown).
 const NEAR_MS: u64 = 2_000;
 
+/// The timeline's word and the gap's cause for a log the records keep as a hole, from the reason the pipeline wrote
+/// ([`crate::records::Outcome::Hole`]): `not_stored` is no log; a log that could not be decoded (`unreadable: ...`)
+/// and one that names another car's VIN (`other_vin`) are said as that, not as a log that failed its check.
+pub(crate) fn hole_why(reason: &str) -> (&'static str, &'static str) {
+    match reason {
+        "not_stored" => ("no_log", "no_log"),
+        "other_vin" => ("other_vin", "unknown"),
+        r if r.starts_with("unreadable") => ("unreadable", "unknown"),
+        _ => ("failed_check", "unknown"),
+    }
+}
+
 /// The reasons the records keep for `[a, b)`: logs left out (failed their check, named another VIN, could not be
 /// read, or never stored), pauses in recording and lost frames of decoded logs, and gaps in each key's chain.
 pub(crate) fn why_unknown(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec<Why>> {
@@ -1029,8 +1044,7 @@ pub(crate) fn why_unknown(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
     for (_, en) in records::entries_between(db, car, &meta, a, b)? {
         match &en.outcome {
             Outcome::Hole { from_ms, to_ms, reason } => {
-                let (reason, cause) =
-                    if reason == "not_stored" { ("no_log", "no_log") } else { ("failed_check", "unknown") };
+                let (reason, cause) = hole_why(reason);
                 out.push(Why { from_ms: *from_ms, to_ms: *to_ms, reason, cause });
             }
             Outcome::Decoded { facts, .. } => {
@@ -1102,13 +1116,16 @@ fn chain_gaps_of(e: &Engine, c: &model::Car) -> QResult<Vec<(u64, u64)>> {
     Ok(out)
 }
 
-/// Why `[x, y)` is unknown: the timeline's word and the gap's cause. A log that failed its check (or lost frames, or
-/// named another VIN) comes first, then a gap in the chain, then a pause in recording; else no log came.
+/// Why `[x, y)` is unknown: the timeline's word and the gap's cause. A log that failed its check comes first, then
+/// one that could not be read, one that named another VIN and one that lost frames, then a gap in the chain, then a
+/// pause in recording; else no log came.
 pub(crate) fn classify(why: &[Why], x: u64, y: u64) -> (&'static str, &'static str) {
     let near = |w: &&Why| w.from_ms < y.saturating_add(NEAR_MS) && w.to_ms.saturating_add(NEAR_MS) > x;
     let first = |reason: &str, cause: &str| why.iter().filter(near).find(|w| w.reason == reason && w.cause == cause);
     let order = [
         ("failed_check", "unknown"),
+        ("unreadable", "unknown"),
+        ("other_vin", "unknown"),
         ("dropped_frames", "unknown"),
         ("no_log", "chain_gap"),
         ("not_recorded", "not_recorded"),
