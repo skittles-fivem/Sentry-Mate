@@ -10,6 +10,14 @@
 //! Logs that fill a gap before rows already stored are why the engine rebuilds per run only where nothing is
 //! stored yet at or after the logs: without that, a week of these logs gave a drive with the same times and values
 //! and another id (the id of another of the pieces it was first seen as). With it, such logs get a window each.
+//!
+//! A rebuild of a period ([`periods`]) clears the period first, so nothing worked out from logs is stored in it,
+//! and its logs are rebuilt per run where no drive or charge went on across the period's end. Without that
+//! condition two of these periods gave the same times and values and another id: a week's middle third (by count
+//! of logs) ends 18 minutes into a charge, and at runs of 64 the charge took the id of its part after the end
+//! (rebuilt as a charge of its own on the way) where a window per log kept the id of its start; and a day's
+//! period with gaps inside gave a drive cut by the period's end the other id the other way round. The part after
+//! the end is kept, and which piece is stored first depends on the windows rebuilt on the way.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::print_stdout)]
 
 use super::*;
@@ -29,45 +37,52 @@ fn rows<T: db::Item + std::fmt::Debug>(db: &db::Db, car: model::CarId) -> Vec<St
     }
 }
 
-/// Everything stored for the engine's one car, in named parts.
-fn stored(e: &engine::Engine) -> Vec<(&'static str, Vec<String>)> {
+/// Everything stored for the engine's cars, in named parts (each car's, in the order of their ids).
+fn stored(e: &engine::Engine) -> Vec<(String, Vec<String>)> {
     let db = e.db();
     let fleet = db.fleet(&db::FleetQuery { search: None, limit: 10, after: None }).unwrap();
-    assert_eq!(fleet.cars.len(), 1, "one made-up car");
-    let entry = &fleet.cars[0];
-    let car = entry.car.id;
-    let mut meta = engine::records::car_meta(db, car).unwrap();
-    // (when the engine last worked, by this machine's clock: not the car's history)
-    meta.last_done_ms = None;
-    meta.last_took_ms = None;
-    // (when the logs were stored: each side stored its own)
-    meta.last_arrived_ms = None;
-    meta.api_received_ms = None;
-    meta.teslafi_received_ms = None;
-    meta.tmlocal_received_ms = None;
-    let points = |v: Vec<Sample>| v.iter().map(|p| format!("{p:?}")).collect::<Vec<_>>();
-    vec![
-        ("drives", rows::<Drive>(db, car)),
-        ("charges", rows::<Charge>(db, car)),
-        ("states", rows::<db::StateRow>(db, car)),
-        ("updates", rows::<db::UpdateRow>(db, car)),
-        (
-            "charge points",
-            db.read_points::<ChargePoint>(car, Source::Live, 0, u64::MAX)
-                .unwrap()
-                .iter()
-                .map(|p| format!("{p:?}"))
-                .collect(),
-        ),
-        ("samples", points(db.read_points::<Sample>(car, Stream::Smo, 0, u64::MAX).unwrap())),
-        ("summary", vec![format!("{:?}", entry.summary)]),
-        ("car", vec![format!("{:?} {:?} {:?}", entry.car.name, entry.car.vin, entry.car.vehicle_keys)]),
-        ("record", vec![format!("{meta:?}")]),
-    ]
+    assert!(!fleet.cars.is_empty(), "a made-up car");
+    let mut cars: Vec<&db::FleetEntry> = fleet.cars.iter().collect();
+    cars.sort_by_key(|c| c.car.id);
+    let mut out = Vec::new();
+    for entry in cars {
+        let car = entry.car.id;
+        let mut meta = engine::records::car_meta(db, car).unwrap();
+        // (when the engine last worked, by this machine's clock: not the car's history)
+        meta.last_done_ms = None;
+        meta.last_took_ms = None;
+        // (when the logs were stored: each side stored its own)
+        meta.last_arrived_ms = None;
+        meta.api_received_ms = None;
+        meta.teslafi_received_ms = None;
+        meta.tmlocal_received_ms = None;
+        let points = |v: Vec<Sample>| v.iter().map(|p| format!("{p:?}")).collect::<Vec<_>>();
+        let parts = vec![
+            ("drives", rows::<Drive>(db, car)),
+            ("charges", rows::<Charge>(db, car)),
+            ("states", rows::<db::StateRow>(db, car)),
+            ("updates", rows::<db::UpdateRow>(db, car)),
+            (
+                "charge points",
+                db.read_points::<ChargePoint>(car, Source::Live, 0, u64::MAX)
+                    .unwrap()
+                    .iter()
+                    .map(|p| format!("{p:?}"))
+                    .collect(),
+            ),
+            ("samples", points(db.read_points::<Sample>(car, Stream::Smo, 0, u64::MAX).unwrap())),
+            ("summary", vec![format!("{:?}", entry.summary)]),
+            ("car", vec![format!("{:?} {:?} {:?}", entry.car.name, entry.car.vin, entry.car.vehicle_keys)]),
+            ("record", vec![format!("{meta:?}")]),
+        ];
+        out.extend(parts.into_iter().map(|(name, v)| (format!("car {car} {name}"), v)));
+    }
+    out
 }
 
 fn same(what: &str, a: &engine::Engine, b: &engine::Engine) -> usize {
     let (x, y) = (stored(a), stored(b));
+    assert_eq!(x.len(), y.len(), "{what}: the same cars");
     let mut n = 0;
     for ((name, p), (_, q)) in x.iter().zip(&y) {
         if let Some(i) = (0..p.len().max(q.len())).find(|&i| p.get(i) != q.get(i)) {
@@ -95,6 +110,10 @@ struct Side {
 
 impl Side {
     async fn new(window_batch: usize) -> Side {
+        Side::with(engine::Options { window_batch, ..engine::Options::default() }).await
+    }
+
+    async fn with(opts: engine::Options) -> Side {
         let dir = tempfile::tempdir().unwrap();
         let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
         std::fs::create_dir_all(&data).unwrap();
@@ -103,7 +122,6 @@ impl Side {
         let store = Store::new(can_dir(&data), v.clone());
         let judge = Judge::new(store.clone());
         let db = db::Db::open(&data, v.clone(), db::Options::default()).unwrap();
-        let opts = engine::Options { window_batch, ..engine::Options::default() };
         let engine = engine::Engine::new(db, Store::new(can_dir(&data), v), opts);
         engine.start().unwrap();
         engine.idle().await;
@@ -119,6 +137,31 @@ impl Side {
         }
         self.engine.reconcile(None);
         self.engine.idle().await;
+    }
+
+    /// Stores these logs as uploads are stored, and nothing more (the engine is not told).
+    async fn put(&self, logs: &[&synth::LogFile]) {
+        let enter = || -> Result<gate::Pass, Box<dyn std::error::Error>> { Ok(self.gate.enter(GATE_WAIT)?) };
+        for log in logs {
+            seed::put(&self.store, &self.judge, &enter, &log.name, &log.bytes).await.unwrap();
+            seed::put(&self.store, &self.judge, &enter, &log.sidecar_name(), &log.sidecar_bytes()).await.unwrap();
+        }
+    }
+
+    /// The cars, in the order of their ids.
+    fn cars(&self) -> Vec<model::CarId> {
+        let fleet = self.engine.db().fleet(&db::FleetQuery { search: None, limit: 10, after: None }).unwrap();
+        let mut cars: Vec<model::CarId> = fleet.cars.iter().map(|c| c.car.id).collect();
+        cars.sort_unstable();
+        cars
+    }
+
+    /// A rebuild of `[from_ms, to_ms)` of a car (or of every car); returns how many windows it rebuilt.
+    async fn rebuild_period(&self, car: Option<model::CarId>, from_ms: u64, to_ms: u64) -> u64 {
+        let before = self.engine.stats().windows_rebuilt;
+        self.engine.rebuild(engine::Scope { car, from_ms: Some(from_ms), to_ms: Some(to_ms) }).unwrap();
+        self.engine.idle().await;
+        self.engine.stats().windows_rebuilt - before
     }
 
     async fn rebuild(&self) {
@@ -326,5 +369,188 @@ async fn a_full_rebuild_carried_on_after_a_restart_gives_the_same_timeline_over_
     for batch in [7, 64] {
         carried_on(7, batch, |n| (n / 3 + 1, n / 5 + 2)).await;
         carried_on(7, batch, |n| (n / 2 + 3, n / 4 + 5)).await;
+    }
+}
+
+/// A rebuild of a period through both engines, compared after it; returns the windows each rebuilt for it.
+async fn period(what: &str, each: &Side, run: &Side, car: Option<usize>, from_ms: u64, to_ms: u64) -> (u64, u64) {
+    let cars = each.cars();
+    assert_eq!(cars, run.cars(), "{what}");
+    let car = car.map(|i| cars[i]);
+    let began = Instant::now();
+    let w = each.rebuild_period(car, from_ms, to_ms).await;
+    let took_each = began.elapsed();
+    let began = Instant::now();
+    let v = run.rebuild_period(car, from_ms, to_ms).await;
+    let took_run = began.elapsed();
+    let n = same(what, &each.engine, &run.engine);
+    assert!(n > 1_000, "{what}: {n}");
+    assert_eq!(each.engine.stats().failures + run.engine.stats().failures, 0, "{what}");
+    println!(
+        "{what}: {n} stored things the same; windows {w} after every log ({took_each:.2?}), {v} once per run \
+         ({took_run:.2?})"
+    );
+    (w, v)
+}
+
+/// Where a log starts, as its name says it (a period that starts there takes that log in).
+fn at(log: &synth::LogFile) -> u64 {
+    log.start_ms / 1000 * 1000
+}
+
+/// The log that starts nearest the middle of `[a, b)`, strictly inside it.
+fn log_inside(logs: &[synth::LogFile], a: u64, b: u64) -> Option<usize> {
+    let mid = a + (b - a) / 2;
+    (0..logs.len()).filter(|&i| at(&logs[i]) > a && at(&logs[i]) < b).min_by_key(|&i| at(&logs[i]).abs_diff(mid))
+}
+
+/// A car's drives and charges, (start, end).
+fn spans_of(e: &engine::Engine, car: model::CarId) -> Vec<(u64, u64)> {
+    let db = e.db();
+    let q = db::Query::default().oldest_first().limit(db::MAX_PAGE);
+    let mut out: Vec<(u64, u64)> =
+        db.list::<Drive>(car, &q).unwrap().items.iter().map(|d| (d.start_ms, d.end_ms)).collect();
+    out.extend(db.list::<Charge>(car, &q).unwrap().items.iter().map(|c| (c.start_ms, c.end_ms)));
+    out
+}
+
+/// Where the logs nearest the middles of a car's drives start, and of its charges', from what is stored.
+fn cut_by(e: &engine::Engine, logs: &[synth::LogFile], car: model::CarId) -> (Vec<u64>, Vec<u64>) {
+    let db = e.db();
+    let q = db::Query::default().oldest_first().limit(db::MAX_PAGE);
+    let middles = |spans: Vec<(u64, u64)>| -> Vec<u64> {
+        spans.into_iter().filter_map(|(a, b)| log_inside(logs, a, b)).map(|i| at(&logs[i])).collect()
+    };
+    let drives = middles(db.list::<Drive>(car, &q).unwrap().items.iter().map(|d| (d.start_ms, d.end_ms)).collect());
+    let charges = middles(db.list::<Charge>(car, &q).unwrap().items.iter().map(|c| (c.start_ms, c.end_ms)).collect());
+    (drives, charges)
+}
+
+/// Rebuilds of a period, per log and per run of logs, over one car's history and then two cars': in the middle of
+/// the history, at its start and at its end, with a drive and a charge cut at each edge, and over gaps filled later
+/// (inside the period and before it), each compared, ids included, after every step.
+///
+/// Returns the windows each way of a rebuild of about the middle third whose end cuts no drive or charge (the
+/// engine rebuilds a period per run of logs only there).
+async fn periods(days: u32, batch: usize) -> (u64, u64) {
+    let scenario = || synth::Scenario::new(7).days(days).rates(synth::Rates::Light).with_trouble(true);
+    let logs: Vec<synth::LogFile> = scenario().logs().collect();
+    let n = logs.len();
+    assert!(n > 100, "{n} logs");
+    let t = |i: usize| at(&logs[i]);
+    let all: Vec<&synth::LogFile> = logs.iter().collect();
+
+    let (each, run) = (Side::new(1).await, Side::new(batch).await);
+    each.take(&all).await;
+    run.take(&all).await;
+    same("periods, all logs in", &each.engine, &run.engine);
+    period("the middle third", &each, &run, Some(0), t(n / 3), t(2 * n / 3)).await;
+    let car = each.cars()[0];
+    let busy = spans_of(&each.engine, car);
+    let free = |i: usize| (i..n).find(|&k| !busy.iter().any(|&(a, b)| a < t(k) && t(k) < b));
+    let clear = |i: usize| free(i).unwrap();
+    // (where a log starts at or after `i` that no drive or charge goes on across, or the end of the history)
+    let clear_at = |i: usize| free(i).map_or(u64::MAX, t);
+    // (by count and by time, the wider: the logs come once a minute while the car charges, and the thirds by
+    // count can fall in one charge)
+    let (first, last) = (t(0), t(n - 1));
+    let by_time = |k: u64| logs.iter().position(|l| at(l) >= first + (last - first) * k / 3).unwrap();
+    let (a, b) = (clear(by_time(1).min(n / 3)), clear(by_time(2).max(2 * n / 3)));
+    assert!(b > a + 20, "{a} {b}");
+    let middle =
+        period("about the middle third, its end in no drive or charge", &each, &run, Some(0), t(a), t(b)).await;
+    period("the first quarter", &each, &run, Some(0), 0, t(n / 4)).await;
+    period("the last quarter", &each, &run, Some(0), t(3 * n / 4), u64::MAX).await;
+    period("the middle third again", &each, &run, Some(0), t(n / 3), t(2 * n / 3)).await;
+    let (drives, charges) = cut_by(&each.engine, &logs, car);
+    println!("drives cut at {drives:?}, charges at {charges:?}");
+    assert!(drives.len() >= 2 && !charges.is_empty(), "{drives:?} {charges:?}");
+    // from a drive's middle to a charge's, and from a charge's to a drive's
+    let (d, c) = (drives[drives.len() / 2], charges[0]);
+    period("between the middles of a drive and a charge", &each, &run, Some(0), d.min(c), d.max(c)).await;
+    if let Some(&d2) = drives.iter().find(|&&d2| d2 > c) {
+        period("from the middle of a charge to the middle of a drive", &each, &run, Some(0), c, d2).await;
+    }
+    if let Some(&d0) = drives.iter().rev().find(|&&d0| d0 < c) {
+        period("from the middle of a drive to the middle of a charge", &each, &run, Some(0), d0, c).await;
+    }
+    // a drive cut at each edge
+    let (d1, d2) = (drives[0], drives[drives.len() - 1]);
+    period("from the middle of a drive to the middle of another", &each, &run, Some(0), d1, d2).await;
+    // a drive and a charge cut at the start, the end in neither
+    let index = |ms: u64| logs.iter().position(|l| at(l) == ms).unwrap();
+    let end = clear_at(index(d1) + n / 10);
+    period("from the middle of a drive to where nothing goes on", &each, &run, Some(0), d1, end).await;
+    let end = clear_at(index(c) + n / 10);
+    period("from the middle of a charge to where nothing goes on", &each, &run, Some(0), c, end).await;
+    each.rebuild().await;
+    run.rebuild().await;
+    same("periods, rebuilt whole", &each.engine, &run.engine);
+
+    // gaps, filled later: inside the period (the one whose end cuts nothing), then before it (worked on as they
+    // come, then stored and left for the rebuild of the period to take in)
+    let (from, to) = (t(a), t(b));
+    let inside = |i: usize| (a..b).contains(&i) && i % 7 == 3;
+    let before = |i: usize| (n / 6..n / 6 + 40).contains(&i);
+    let pick = |f: &dyn Fn(usize) -> bool| -> Vec<&synth::LogFile> {
+        logs.iter().enumerate().filter(|(i, _)| f(*i)).map(|(_, l)| l).collect()
+    };
+    let (each, run) = (Side::new(1).await, Side::new(batch).await);
+    for side in [&each, &run] {
+        side.take(&pick(&|i| !inside(i) && !before(i))).await;
+    }
+    same("gaps, the rest in", &each.engine, &run.engine);
+    period("gaps, the period with gaps inside and before", &each, &run, Some(0), from, to).await;
+    for side in [&each, &run] {
+        side.take(&pick(&inside)).await;
+    }
+    same("gaps, inside filled", &each.engine, &run.engine);
+    period("gaps, the period with gaps before", &each, &run, Some(0), from, to).await;
+    for side in [&each, &run] {
+        side.put(&pick(&before)).await;
+    }
+    period("gaps, the period with logs before it waiting", &each, &run, Some(0), from, to).await;
+    period("gaps, the period again", &each, &run, Some(0), from, to).await;
+    period("gaps, filled, the middle third", &each, &run, Some(0), t(n / 3), t(2 * n / 3)).await;
+    // logs stored inside the period and left for its rebuild
+    let (each, run) = (Side::new(1).await, Side::new(batch).await);
+    for side in [&each, &run] {
+        side.take(&pick(&|i| !inside(i))).await;
+        side.put(&pick(&inside)).await;
+    }
+    period("gaps inside, stored and left for the period's rebuild", &each, &run, Some(0), from, to).await;
+
+    // two cars: each car's period, and one of every car
+    let other: Vec<synth::LogFile> = scenario().car(1).logs().collect();
+    let two = |window_batch| engine::Options { window_batch, new_keys: engine::NewKeys::NewCar, ..Default::default() };
+    let (each, run) = (Side::with(two(1)).await, Side::with(two(batch)).await);
+    let other_logs: Vec<&synth::LogFile> = other.iter().collect();
+    for side in [&each, &run] {
+        side.take(&all).await;
+        side.take(&other_logs).await;
+    }
+    assert_eq!(each.cars().len(), 2, "two cars");
+    same("two cars in", &each.engine, &run.engine);
+    period("two cars, the first's middle third", &each, &run, Some(0), from, to).await;
+    let m = other.len();
+    let (from1, to1) = (at(&other[m / 4]), at(&other[m / 2]));
+    period("two cars, the second's second quarter", &each, &run, Some(1), from1, to1).await;
+    period("two cars, every car's middle third", &each, &run, None, from, to).await;
+    middle
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rebuild_of_a_period_gives_the_same_timeline_per_run_of_logs() {
+    let (each, run) = periods(1, 16).await;
+    // (and its windows were rebuilt per run: far fewer of them)
+    assert!(run * 3 < each, "{run} windows against {each}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "long: cargo test --release -p sentry-mate a_rebuild_of_a_period -- --ignored --nocapture"]
+async fn a_rebuild_of_a_period_gives_the_same_timeline_over_a_week() {
+    for (days, batch) in [(2, 16), (7, 7), (7, 64), (7, 100_000)] {
+        let (each, run) = periods(days, batch).await;
+        println!("{days} days, runs of {batch}: the middle third's windows {each} after every log, {run} once per run");
     }
 }

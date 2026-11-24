@@ -443,9 +443,14 @@ impl Engine {
             {
                 let l = self.car_lock(car);
                 let _held = lock(&l);
-                let mut mark = RebuildMark { from_ms, to_ms, started_ms, cleared: false };
+                let end_clear = to_ms == u64::MAX || !self.cut_at(car, to_ms)?;
+                let mut mark = RebuildMark { from_ms, to_ms, started_ms, cleared: false, end_clear };
                 records::put_rebuild_mark(db, car, Some(&mark))?;
                 self.clear_window(car, from_ms, to_ms)?;
+                // (a window grown over a damaged file: its end is another)
+                if records::rebuild_mark(db, car)?.is_some_and(|m| (m.from_ms, m.to_ms) != (from_ms, to_ms)) {
+                    mark.end_clear = false;
+                }
                 mark.cleared = true;
                 records::put_rebuild_mark(db, car, Some(&mark))?;
             }
@@ -479,6 +484,20 @@ impl Engine {
             )));
         }
         Ok(())
+    }
+
+    /// Whether a drive or a charge worked out from logs goes on across `t` (begun before it, ended after it).
+    fn cut_at(&self, car: CarId, t: u64) -> Result<bool> {
+        fn cut<T: db::Item>(db: &db::Db, car: CarId, t: u64) -> Result<bool> {
+            let q = db::Query {
+                limit: 10,
+                source: Some(model::Source::Live),
+                ..db::Query::between(t, t.saturating_add(1))
+            };
+            Ok(db.list::<T>(car, &q)?.items.iter().any(|r| r.start_ms() < t))
+        }
+        let db = &self.inner.db;
+        Ok(cut::<model::Drive>(db, car, t)? || cut::<model::Charge>(db, car, t)?)
     }
 
     /// The narrow rebuild of a GPS layout's change, when one is noted on the car: its logs whose positions came from
