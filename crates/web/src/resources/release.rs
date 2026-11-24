@@ -56,6 +56,15 @@ pub struct Checker {
     started: AtomicBool,
 }
 
+/// A check under way: no longer running once this is dropped, however it ended.
+struct Running<'a>(&'a Checker);
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        self.0.lock().running = false;
+    }
+}
+
 impl Checker {
     /// A checker asking through `fetch` (GitHub's API host in a server; a stand-in in a test) about `build`.
     pub fn new(fetch: Arc<dyn Fetch>, build: Build, clock: Clock) -> Checker {
@@ -102,6 +111,7 @@ impl Checker {
                 st.enabled = true;
                 st.next_ms = Some(self.now());
             } else if !enabled && st.enabled {
+                // (a check under way stays one: it is its own task, its result is dropped by the generation)
                 let generation = st.generation + 1;
                 *st = St { generation, running: st.running, ..St::default() };
                 self.gh.forget();
@@ -150,6 +160,8 @@ impl Checker {
             st.running = true;
             st.generation
         };
+        // however the check ends (a panic in it too), it no longer counts as running
+        let running = Running(self);
         let r = self.gh.check(&self.build).await;
         let now = self.now();
         {
@@ -175,16 +187,19 @@ impl Checker {
                 st.next_ms = Some(next);
             }
         }
+        drop(running);
         // the scheduler looks again (a switch during the check may want another)
         self.wake.notify_one();
     }
 
-    /// "Check now": `false` when the check is off.
-    pub async fn check_now(&self) -> bool {
+    /// "Check now": `false` when the check is off. The check is a task of its own, which the caller waits for: a
+    /// request that goes away meanwhile (a page reloaded, a timeout) leaves it to end by itself, never half done.
+    pub async fn check_now(self: &Arc<Self>) -> bool {
         if !self.enabled() {
             return false;
         }
-        self.run().await;
+        let me = self.clone();
+        let _ = tokio::spawn(async move { me.run().await }).await;
         true
     }
 

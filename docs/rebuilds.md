@@ -58,6 +58,37 @@ thing that does that, how far each one reaches, and the server updates that chan
   it now, puts it off until tonight (02:00, the server's time zone) or pauses it (its progress kept); any full
   rebuild can also be cancelled.
 
+## When a stored file can't be read
+
+A rebuild makes the history again from what is stored, so a stored file that no longer opens (a disk fault, a copy
+cut short) is where it can lose something. It never does so quietly:
+
+- **A stored CAN log that can't be read** (its file, or the day pack it is in, is damaged). A **full rebuild** whose
+  car has such a log that the history in use was made from **fails and keeps the old history**: that one still has
+  what the log held, a new one would not. Its error names the log; put the file back from a backup and start it
+  again. A log that could not be read before either (the history in use never had it) is listed with the rebuild's
+  errors and left out. A **rebuild of a car or a period** clears first, so it can only say so: it ends `failed`
+  with how many logs it could not read (`crates/engine/tests/pipeline.rs`:
+  `a_full_rebuild_keeps_the_old_history_when_a_stored_log_cant_be_read`,
+  `a_rebuild_that_cant_read_a_stored_log_ends_failed_and_says_so`).
+- **A damaged day of decoded samples** (`db/cars/<car>/seg/samples.can` or `charge.can`: a day's file or a
+  month's pack). Everything in it is made again from the stored logs, so a rebuild that meets it sets the file aside
+  (`<name>.damaged` beside it), widens its window over the time the file covered and decodes the logs of that time
+  again, where it used to clear the car's drives and charges and then stop at the file
+  (`a_rebuild_mends_a_damaged_day_of_decoded_samples`). A full rebuild never reads those files: it makes them all.
+- **A damaged table of a car** (`drives.snap` and the like), or a damaged series of an import or an API: these
+  also hold what no log gives (imported rows, typed costs and purposes), so no rebuild replaces them by itself. A
+  rebuild or a full rebuild that meets one fails and names the file, and the admins get the notice `data_damaged`
+  with what to do: put the car's folder back from a backup with the server stopped (the logs that came since are
+  decoded again at the start). Whether a full rebuild may start such a table empty, losing its imported rows, is
+  the owner's choice and not offered yet.
+- **A rebuild that fails is said**: `500 rebuild_failed` with why, an audit entry that says it failed, and the
+  notice `rebuild_failed` (`crates/web/tests/system.rs`).
+- **A full rebuild carried on after a restart** goes on with the logs left, counts the car's logs from the start
+  and rebuilds its windows once per run of logs as before the restart, to the very history an uninterrupted one
+  gives (`crates/sentry-mate/src/window_batch.rs`:
+  `a_full_rebuild_carried_on_after_a_restart_gives_the_same_timeline_per_run_of_logs`).
+
 ## Version changes
 
 A version is bumped only when what is stored would really come out otherwise, and each bump names the test that

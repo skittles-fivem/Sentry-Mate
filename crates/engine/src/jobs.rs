@@ -58,6 +58,8 @@ pub struct Job {
     /// Logs worked on, and to work on (grows as each car's logs are counted).
     pub done: u64,
     pub total: u64,
+    /// Of the logs worked on, those that could not be (their stored file could not be read, mostly).
+    pub failed: u64,
     pub from_ms: u64,
     pub to_ms: u64,
     pub started_ms: u64,
@@ -130,14 +132,21 @@ pub(crate) struct JobState {
     pub(crate) bytes_total: AtomicU64,
     /// When the last log was done (ms).
     pub(crate) last_step_ms: AtomicU64,
-    /// The logs that could not be worked on, and why (the first few).
+    /// The logs that could not be worked on, and what went wrong (the first few).
     pub(crate) log_errors: Mutex<Vec<(String, String)>>,
+    /// Every log that could not be worked on (their names): they count as worked on, never as made again.
+    pub(crate) failed_logs: Mutex<Vec<String>>,
     /// A full rebuild's: its progress is noted as it goes ([`crate::full`]).
     pub(crate) full: bool,
+    /// A full rebuild's: the engine whose rebuild it is. The decoding itself runs on a second engine over the
+    /// shadow, which has no record of the rebuild: the progress is noted on this one.
+    owner: Option<Engine>,
+    /// Tests: stop as by a crash once this many logs are done (0: never).
+    crash_after: AtomicU64,
 }
 
-/// A job's log errors kept at most.
-pub(crate) const MAX_LOG_ERRORS: usize = 20;
+/// A job's log errors kept at most (as many as a full rebuild's record keeps).
+pub(crate) const MAX_LOG_ERRORS: usize = 50;
 
 impl JobState {
     pub(crate) fn cancelled(&self) -> bool {
@@ -155,17 +164,46 @@ impl JobState {
         let done = self.done.fetch_add(1, Ordering::SeqCst) + 1;
         let total = self.total.load(Ordering::SeqCst);
         if self.full {
-            e.full_noted();
+            if let Some(o) = &self.owner {
+                o.full_noted();
+            }
         } else if done.is_multiple_of(50) || done == total {
             e.emit(Event::Job { job: self.id, car, status: JobStatus::Running, done, total });
         }
     }
 
-    /// A log that could not be worked on (kept for the job's status; the first [`MAX_LOG_ERRORS`]).
-    pub(crate) fn log_failed(&self, name: &str, why: String) {
+    /// Tests: whether the worker stops here as by a crash (once).
+    pub(crate) fn crash_now(&self) -> bool {
+        let n = self.crash_after.load(Ordering::SeqCst);
+        n > 0 && self.done.load(Ordering::SeqCst) >= n && self.crash_after.swap(0, Ordering::SeqCst) > 0
+    }
+
+    /// A log that could not be worked on: counted, and what went wrong kept for the job's status (the first
+    /// [`MAX_LOG_ERRORS`]). A log the store can't give is said so (the store's own words are for an uploader).
+    pub(crate) fn log_failed(&self, name: &str, why: &crate::Error) {
+        let said = match why {
+            crate::Error::Store(_) => "could not be read: its stored file (or the day's pack it is in) is damaged or \
+                                       cut short; the server's log names the file"
+                .to_string(),
+            e => format!("could not be decoded: {e}"),
+        };
+        lock(&self.failed_logs).push(name.to_string());
         let mut v = lock(&self.log_errors);
         if v.len() < MAX_LOG_ERRORS {
-            v.push((name.to_string(), why));
+            v.push((name.to_string(), said));
+        }
+    }
+
+    /// The logs that could not be worked on.
+    pub(crate) fn failed(&self) -> Vec<String> {
+        lock(&self.failed_logs).clone()
+    }
+
+    /// A full rebuild's: the logs of the car that need no work (decoded by this rebuild before a restart), told
+    /// to the rebuild's own engine once they are counted.
+    pub(crate) fn counted(&self, skipped: u64, skipped_bytes: u64) {
+        if let Some(o) = &self.owner {
+            o.full_counted(skipped, skipped_bytes);
         }
     }
 
@@ -183,9 +221,11 @@ impl JobState {
     }
 
     /// A job state of a full rebuild's car (never listed with [`Engine::jobs`]).
-    pub(crate) fn for_full(car: CarId) -> JobState {
+    pub(crate) fn for_full(car: CarId, owner: &Engine, crash_after: Option<u64>) -> JobState {
         let mut s = JobState::new(0, Some(car), 0, u64::MAX);
         s.full = true;
+        s.owner = Some(owner.clone());
+        s.crash_after.store(crash_after.unwrap_or(0), Ordering::SeqCst);
         s.started.store(true, Ordering::SeqCst);
         s
     }
@@ -211,7 +251,10 @@ impl JobState {
             bytes_total: AtomicU64::new(0),
             last_step_ms: AtomicU64::new(now_ms()),
             log_errors: Mutex::new(Vec::new()),
+            failed_logs: Mutex::new(Vec::new()),
             full: false,
+            owner: None,
+            crash_after: AtomicU64::new(0),
         }
     }
 
@@ -229,6 +272,7 @@ impl JobState {
             status: *lock(&self.status),
             done: self.done.load(Ordering::SeqCst),
             total: self.total.load(Ordering::SeqCst),
+            failed: lock(&self.failed_logs).len() as u64,
             from_ms,
             to_ms,
             started_ms,
@@ -412,6 +456,22 @@ impl Engine {
                 records::put_redo(db, car, Redo::Inputs, false)?;
             }
         }
+        // logs that could not be worked on: what they held was cleared and is not made again, so the job did not
+        // do what it was asked for, and says so
+        let failed = st.failed();
+        if let Some(first) = failed.first() {
+            let why = lock(&st.log_errors).first().map(|(_, w)| w.clone()).unwrap_or_default();
+            let total = st.total.load(Ordering::SeqCst);
+            let more = match failed.len() - 1 {
+                0 => String::new(),
+                n => format!(", and {n} more"),
+            };
+            let so = if what.whole { ", so the history was made again without what they held" } else { "" };
+            return Err(crate::Error::Other(format!(
+                "{} of {total} stored logs could not be worked on{so}: {first} {why}{more}",
+                failed.len()
+            )));
+        }
         Ok(())
     }
 
@@ -475,7 +535,7 @@ impl Engine {
             drop(held);
             if let Err(e) = r {
                 if let Some(j) = job {
-                    j.log_failed(&name, e.to_string());
+                    j.log_failed(&name, &e);
                 }
                 self.failed(&e);
             }

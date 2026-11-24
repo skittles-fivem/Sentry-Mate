@@ -73,6 +73,7 @@ async fn list(State(app): State<AppState>, v: crate::Viewer, q: crate::Params) -
                 out.extend(super::teslamate_local::notices(app));
                 out.extend(super::release::notices(app));
                 out.extend(super::full_rebuild::notices(app));
+                out.extend(super::system::notices(app));
             }
             Ok(out)
         })

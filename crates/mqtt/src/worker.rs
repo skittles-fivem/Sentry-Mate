@@ -315,9 +315,15 @@ fn changed(layout: &Layout, car: CarId, n: &NowItem, sent: &mut Sent) -> Vec<Mes
         }
     }
     for f in Field::ALL {
-        let Some(payload) = render::field_payload(layout, f, &n.now, n.place.as_deref()) else { continue };
-        let h = fingerprint(&payload);
         let slot = &mut sent.fields[f.index()];
+        // a value that was sent and is no longer known (the route ended, the charge stopped) is cleared on the
+        // broker with an empty retained message, once; one never sent stays unpublished
+        let payload = match render::field_payload(layout, f, &n.now, n.place.as_deref()) {
+            Some(p) => p,
+            None if *slot != 0 => String::new(),
+            None => continue,
+        };
+        let h = fingerprint(&payload);
         if *slot != h {
             *slot = h;
             out.push(Message { topic: layout.topics.field(car, f.key()), payload, retain: true });
@@ -362,6 +368,27 @@ mod tests {
             !again.is_empty() && again.iter().all(|m| m.topic.starts_with("homeassistant/")),
             "a new name: configs again"
         );
+    }
+
+    #[test]
+    fn a_value_no_longer_known_is_cleared_once() {
+        let l = layout(false, Units::default());
+        let mut sent = Sent::default();
+        let topic = "sentry-mate/cars/c7/energy_at_destination";
+        let of = |msgs: &[Message]| msgs.iter().find(|m| m.topic == topic).map(|m| (m.payload.clone(), m.retain));
+        // never navigated: nothing is published for the destination
+        assert_eq!(of(&changed(&l, 7, &item(80.0), &mut sent)), None);
+        let mut route = item(80.0);
+        route.now.sample.extra.navigating = Some(true);
+        route.now.sample.extra.energy_at_destination_kwh = Some(42.0);
+        assert_eq!(of(&changed(&l, 7, &route, &mut sent)), Some(("42".to_string(), true)));
+        // the route ended: the broker's retained 42 is cleared with an empty retained message, once
+        let mut ended = item(80.0);
+        ended.now.sample.extra.navigating = Some(false);
+        assert_eq!(of(&changed(&l, 7, &ended, &mut sent)), Some((String::new(), true)));
+        assert_eq!(of(&changed(&l, 7, &ended, &mut sent)), None, "cleared once, not again");
+        // and a new route's figure is sent again, the same one too
+        assert_eq!(of(&changed(&l, 7, &route, &mut sent)), Some(("42".to_string(), true)));
     }
 
     /// What a car's newest values cost to turn into messages (docs/plans/performance.md, "MQTT"): by hand,

@@ -153,12 +153,19 @@ impl Options {
 /// What a running server writes before it is set up (no account yet) that an import or a move from the web pages
 /// may replace ([`Options::first_start_also`]): the web side's set-up code state and audit log, and the first
 /// start's certificate and migration note (set aside too when the export has none: sealed with the first start's
-/// vault, they would open with nothing after the switch; a new certificate is made at the next start).
-pub const WEB_FIRST_START: &[&str] = &["accounts", "audit", "tls", "migrated.json"];
+/// vault, they would open with nothing after the switch; a new certificate is made at the next start), and a
+/// database and a web folder that hold nothing but what the server keeps there for itself ([`ONLY_FIRST_START`]).
+pub const WEB_FIRST_START: &[&str] = &["accounts", "audit", "tls", "migrated.json", "db", "web"];
 
 /// Files under a [`WEB_FIRST_START`] name that are the owner's all the same: an account made on the web side (it is
 /// no longer a first start, and the switch would set the account aside and remove it).
 const OWNERS_UNDER_FIRST_START: &[&str] = &["accounts/account-"];
+
+/// The [`WEB_FIRST_START`] names of which only one file is not the owner's: in the database, the key its record
+/// names are hashed with (made the first time any record is looked for: a server with no car and no setting has it
+/// too); in the web folder, the connections overview's counters (saved when the server stops). Every other file
+/// there is a car, a row, a record, a setting or an import, and counts as data.
+const ONLY_FIRST_START: &[(&str, &str)] = &[("db", "db/kv/names.key"), ("web", "web/overview.sealed")];
 
 /// The options an import runs with: its own, or shared with whoever holds the import (a web upload keeps one open).
 pub enum Opts<'a> {
@@ -570,7 +577,8 @@ pub fn unused_but(data: &Path, keys: &Path, also: &[String]) -> Result<(), Error
     let mut skips = Skips::default();
     tree::walk(data, Purpose::Move, &mut skips, |f| -> Result<ControlFlow<()>, Error> {
         let top = f.path.split('/').next().unwrap_or("");
-        let owners = OWNERS_UNDER_FIRST_START.iter().any(|p| f.path.starts_with(p));
+        let owners = OWNERS_UNDER_FIRST_START.iter().any(|p| f.path.starts_with(p))
+            || ONLY_FIRST_START.iter().any(|(t, only)| top == *t && f.path != *only);
         if first_start(f.path, f.len) || (also.iter().any(|a| a == top) && !owners) {
             return Ok(ControlFlow::Continue(()));
         }

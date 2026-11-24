@@ -164,6 +164,7 @@ struct Kit {
     judge: Judge,
     engine: Engine,
     db: db::Db,
+    vault: Arc<vault::Vault>,
 }
 
 fn kit() -> Kit {
@@ -173,11 +174,11 @@ fn kit() -> Kit {
     let (v, _) = vault::Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
     let v = Arc::new(v);
     let store = Store::with_limits(data.join("can"), v.clone(), 0, 200_000, |_| u64::MAX);
-    let db = db::Db::open(&data, v, db::Options::default()).unwrap();
+    let db = db::Db::open(&data, v.clone(), db::Options::default()).unwrap();
     let engine = Engine::new(db.clone(), store.clone(), Options { workers: 2, ..Options::default() });
     let judge = Judge::new(store.clone()).on_judged(engine.listener());
     engine.start().unwrap();
-    Kit { _dir: dir, store, judge, engine, db }
+    Kit { _dir: dir, store, judge, engine, db, vault: v }
 }
 
 async fn upload(k: &Kit, name: &str, bytes: &[u8]) {
@@ -1326,5 +1327,201 @@ fn a_planned_full_rebuild_can_be_started_now_put_off_or_paused() {
         let codes: Vec<&str> = runs[0].causes.iter().map(|c| c.code.as_str()).collect();
         assert_eq!(codes.last(), Some(&"owner"), "{:?}", runs[0].causes);
         assert_eq!(runs[0].causes[0].link.as_deref(), Some("docs/rebuilds.md#rules-3"));
+    });
+}
+
+/// A server killed while a full rebuild decodes carries on with the logs left, and its progress counts every log of
+/// the car: the ones done before the restart too, in the bar and in the end's count.
+#[test]
+fn a_full_rebuild_cut_off_while_decoding_still_counts_every_log() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let before = shape(&k, car);
+        let all = DAY.len() as u64;
+        k.engine.full_rebuild_crash_after_logs(Some(4));
+        k.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+        k.engine.idle().await;
+        let cut = k.engine.full_rebuild_status().unwrap().unwrap();
+        assert!(cut.running() && cut.phase == engine::full::Phase::Decoding, "{cut:#?}");
+
+        let again = Engine::new(k.db.clone(), k.store.clone(), Options::default());
+        // (stopped once more, two logs on: what a status says in between)
+        again.full_rebuild_crash_after_logs(Some(1));
+        again.start().unwrap();
+        again.idle().await;
+        let mid = again.full_rebuild_status().unwrap().unwrap();
+        assert!(mid.running() && mid.phase == engine::full::Phase::Decoding, "{mid:#?}");
+        assert_eq!(mid.logs_total, all, "the car's logs, not only the ones left: {mid:#?}");
+        assert_eq!(mid.base_logs, 4, "the rate is of the logs decoded since the restart: {mid:#?}");
+
+        let third = Engine::new(k.db.clone(), k.store.clone(), Options::default());
+        third.start().unwrap();
+        let r = full_done(&third).await;
+        assert_eq!(r.status, engine::full::FullStatus::Done, "{r:#?}");
+        assert_eq!((r.logs_done, r.logs_total), (all, all), "{r:#?}");
+        assert!(r.bytes_done > 0 && r.bytes_done == r.bytes_total, "{r:#?}");
+        let runs = third.rebuild_history().unwrap();
+        assert_eq!((runs.len(), runs[0].logs), (1, all), "{runs:#?}");
+        assert_eq!(shape(&k, car), before);
+    });
+}
+
+/// Cuts a stored log's file short: the store can't read it any more.
+fn damage_log(k: &Kit, i: u64) -> String {
+    let (name, _, _) = minute(i, DAY[i as usize]);
+    let file = k._dir.path().join("data/can").join(KEY).join(&name);
+    let len = std::fs::metadata(&file).unwrap().len();
+    std::fs::OpenOptions::new().write(true).open(&file).unwrap().set_len(len / 2).unwrap();
+    name
+}
+
+/// A stored log the history in use was made from that can't be read again: a full rebuild fails and keeps the old
+/// history (which still has what the log held), saying which log; it never switches to a poorer one and says done.
+#[test]
+fn a_full_rebuild_keeps_the_old_history_when_a_stored_log_cant_be_read() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let before = shape(&k, car);
+        assert_eq!(before.0.len(), 1, "{before:?}");
+        // the drive's log
+        let name = damage_log(&k, 0);
+        k.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+        let r = full_done(&k.engine).await;
+        assert_eq!(r.status, engine::full::FullStatus::Failed, "{r:#?}");
+        let why = r.error.clone().unwrap_or_default();
+        assert!(why.contains("1 stored log") && why.contains(&name) && why.contains("could not be read"), "{why}");
+        assert!(!why.contains("server_error"), "{why}");
+        assert_eq!(r.logs_failed, 1, "{r:#?}");
+        assert!(r.errors.iter().any(|e| e.log.as_deref() == Some(name.as_str())), "{:#?}", r.errors);
+        assert_eq!(shape(&k, car), before, "the old history, with the drive, is kept");
+        assert_eq!(k.db.shadow_bytes(engine::full::SHADOW), 0);
+    });
+}
+
+/// The plain rebuild clears first, so it can't keep what an unreadable log held: it ends failed and says how many
+/// logs it could not read, never `done`.
+#[test]
+fn a_rebuild_that_cant_read_a_stored_log_ends_failed_and_says_so() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let name = damage_log(&k, 2);
+        let job = k.engine.rebuild(Scope::car(car)).unwrap();
+        k.engine.idle().await;
+        let job = k.engine.job(job.id).unwrap();
+        assert_eq!(job.status, engine::JobStatus::Failed, "{job:#?}");
+        assert_eq!((job.done, job.total, job.failed), (DAY.len() as u64, DAY.len() as u64, 1), "{job:#?}");
+        let why = job.error.clone().unwrap_or_default();
+        assert!(why.contains("1 of 6 stored logs") && why.contains(&name), "{why}");
+        // the rest was made again
+        assert_eq!(drives(&k, car).len(), 1);
+    });
+}
+
+/// An ask that comes in the instant the last run's worker is going (its run ended, its flag not cleared yet) still
+/// gets a worker.
+#[test]
+fn a_full_rebuild_asked_for_as_the_last_ones_worker_ends_runs() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let e2 = k.engine.clone();
+        k.engine.full_rebuild_exit_hook(Some(Arc::new(move || {
+            e2.full_rebuild(Some(car), engine::full::Reason::Owner, Some("second".into())).unwrap();
+        })));
+        let first = k.engine.full_rebuild(Some(car), engine::full::Reason::Owner, Some("first".into())).unwrap();
+        let mut r = full_done(&k.engine).await;
+        for _ in 0..100 {
+            if r.id != first.id {
+                break;
+            }
+            // (the first one's end was seen before the second began)
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            r = full_done(&k.engine).await;
+        }
+        assert_eq!(r.id, first.id + 1, "{r:#?}");
+        assert_eq!(r.status, engine::full::FullStatus::Done, "{r:#?}");
+        assert_eq!(r.by.as_deref(), Some("second"));
+        assert_eq!(k.db.shadow_bytes(engine::full::SHADOW), 0);
+        assert_eq!(k.engine.rebuild_history().unwrap().len(), 2);
+    });
+}
+
+/// Cuts a file of the car's folder in the db short (`rel` under `db/cars/<car>/`).
+fn damage_db_file(k: &Kit, car: u32, rel: &str) {
+    let file = k._dir.path().join("data/db/cars").join(car.to_string()).join(rel);
+    let len = std::fs::metadata(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display())).len();
+    std::fs::OpenOptions::new().write(true).open(&file).unwrap().set_len(len / 2).unwrap();
+}
+
+/// The server started again on the kit's folders (nothing kept in memory from before).
+fn restarted(k: Kit) -> Kit {
+    let Kit { _dir, store, judge, engine, db, vault } = k;
+    drop((engine, db));
+    let db = db::Db::open(&_dir.path().join("data"), vault.clone(), db::Options::default()).unwrap();
+    let engine = Engine::new(db.clone(), store.clone(), Options { workers: 2, ..Options::default() });
+    engine.start().unwrap();
+    Kit { _dir, store, judge, engine, db, vault }
+}
+
+/// A damaged day file of the samples decoded from the logs is no reason to lose the history: everything in it is
+/// made again from the stored logs, so a rebuild puts a new file in its place (the damaged one set aside) and the
+/// drives and charges come back as they were, after a rebuild of everything and of a part of the day alike.
+#[test]
+fn a_rebuild_mends_a_damaged_day_of_decoded_samples() {
+    let rt = rt();
+    rt.block_on(async {
+        for part in [None, Some((T0_MS + 120_000, T0_MS + 180_000))] {
+            let k = kit();
+            for i in 0..DAY.len() as u64 {
+                send(&k, i).await;
+            }
+            k.engine.idle().await;
+            let car = the_car(&k);
+            let before = shape(&k, car);
+            let samples = k.db.read_points::<model::Sample>(car, model::Stream::Smo, 0, u64::MAX).unwrap();
+            assert!(samples.len() > 300, "{}", samples.len());
+            // (the day as it is kept once the server was idle: one sealed file; a journal cut short only loses
+            // its tail)
+            k.db.settle(car, u64::MAX).unwrap();
+            let file = "seg/samples.can/2026-01-01.snap";
+            damage_db_file(&k, car, file);
+            let k = restarted(k);
+            k.engine.idle().await;
+            assert!(k.db.read_points::<model::Sample>(car, model::Stream::Smo, 0, u64::MAX).is_err(), "{file}");
+            let scope = Scope { car: Some(car), from_ms: part.map(|p| p.0), to_ms: part.map(|p| p.1) };
+            let job = k.engine.rebuild(scope).unwrap();
+            k.engine.idle().await;
+            let job = k.engine.job(job.id).unwrap();
+            assert_eq!(job.status, engine::JobStatus::Done, "{file} {part:?}: {job:#?}");
+            assert_eq!(shape(&k, car), before, "{file} {part:?}");
+            let again = k.db.read_points::<model::Sample>(car, model::Stream::Smo, 0, u64::MAX).unwrap();
+            assert_eq!(again.len(), samples.len(), "{file} {part:?}: every sample made again");
+            let health =
+                tokio::task::block_in_place(|| query::system::health(&k.engine, car, &Period::all())).unwrap().body;
+            assert!(!health.rebuild_pending, "{file} {part:?}");
+        }
     });
 }

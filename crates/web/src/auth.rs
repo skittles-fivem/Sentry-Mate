@@ -130,6 +130,7 @@ async fn post_setup(
             Ok(())
         })?;
         drop(gate);
+        crate::resources::imports::first_admin_made(app);
         // like `POST /setup/fresh`: the recovery key is shown this once (from its file). A claim is left alone: it
         // may be another browser's, which still reads its restore's result.
         let recovery = site.as_ref().and_then(|s| moving::import::recovery_from_file(&s.recovery_file()));

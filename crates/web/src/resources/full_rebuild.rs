@@ -129,7 +129,7 @@ pub fn status_json(e: &Engine, r: Option<&FullRecord>, now_ms: u64) -> Value {
     let Some(r) = r else {
         return json!({
             "state": "idle", "id": null, "scope": null, "cars": [], "car": null, "cars_done": 0, "cars_total": 0,
-            "reason": null, "phase": null, "logs": { "done": 0, "total": 0 }, "days": { "done": 0, "total": 0 },
+            "reason": null, "phase": null, "logs": { "done": 0, "total": 0, "failed": 0 }, "days": { "done": 0, "total": 0 },
             "bytes": { "done": 0, "total": 0, "copied": 0 }, "percent": null, "rate_bytes_per_s": null,
             "rate_logs_per_s": null, "rate_days_per_s": null, "eta_ms": null,
             "started_ms": null, "finished_ms": null, "last_progress_ms": null, "stalled": false, "errors": [],
@@ -154,7 +154,7 @@ pub fn status_json(e: &Engine, r: Option<&FullRecord>, now_ms: u64) -> Value {
         "cars_total": r.cars.len(),
         "reason": reason_word(r.reason),
         "phase": if running { Some(phase_word(r.phase)) } else { None },
-        "logs": { "done": r.logs_done, "total": r.logs_total },
+        "logs": { "done": r.logs_done, "total": r.logs_total, "failed": r.logs_failed },
         "days": { "done": r.days_done, "total": r.days_total },
         "bytes": { "done": r.bytes_done, "total": r.bytes_total, "copied": r.bytes_copied },
         "percent": percent(r),
@@ -479,8 +479,10 @@ pub fn watch_once(app: &AppState) {
         let summary = match r.status {
             FullStatus::Done => format!(
                 "Full rebuild of {of} done in {mins} min: {} logs decoded again{}.",
-                r.logs_done,
-                match r.errors.len() {
+                r.logs_done.saturating_sub(r.logs_failed),
+                // every log that could not be worked on (the list keeps the first ones only), and what else went
+                // wrong
+                match r.logs_failed + r.errors.iter().filter(|e| e.log.is_none()).count() as u64 {
                     0 => String::new(),
                     1 => ", 1 problem".into(),
                     n => format!(", {n} problems"),

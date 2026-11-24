@@ -25,6 +25,11 @@
 - A log can't unpack to more than it is worth: at most 200 times its packed size (at least 1 MiB), 4 GB of candump
   text, a columns body of 64 MiB and 8 million frames. Real logs unpack to under 10 times their size, so a few
   kilobytes crafted to unpack to gigabytes are cut or refused (a refused log is a hole, never decoded again).
+- An import's upload (a TeslaMate backup, TeslaFi's files) is held to the same idea as it is read: past 16 MiB a
+  gzipped file or a zip's entry may unpack to 500 times its packed size and an xz'd one to 4000 times (a CAN export
+  zip's entries to 100 times), else the import fails as `unreadable`. Rows that hardly differ pack far better than
+  logs do (a TeslaFi month in which the car stood asleep: 100 to 200 times, with xz up to some 1,300), so the limits
+  sit above that and below what runs of one byte reach (about 1,030 with deflate, 7,000 with xz).
 - Pages that decode stored logs while they answer (signals; the battery pages and efficiency only for a day whose pack
   values the server has not worked out ahead in time) take turns: at most 3 run at once for the whole server and 4 run or wait per account (`503 busy`, `429 throttled` beyond), a request
   that goes away stops its decoding, and one answer decodes at most 2 GiB of log lines. A watch account can't keep
