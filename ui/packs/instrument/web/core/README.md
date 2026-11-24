@@ -108,7 +108,7 @@ answers can come first the same way.
 | `link(page, params)` | A link that carries the car and period (`state.linkTo`). |
 | `setQuery(patch)` | Puts filters in the address (`null` removes one) without rebuilding the page. |
 | `navigate(href)`, `reload()` | Go somewhere; build this page again (keeps the scroll). |
-| `refresh()` | Live data changed (a `rows` event): build the page again off screen, in an invisible box of the view's size, and swap it in whole once it is ready, drawn and its requests are done. The page on screen stays until then, so nothing goes away, shows a skeleton and comes back. Asked before the first `ready()`, it waits for it. |
+| `refresh()` | Live data changed (a `rows` event): build the page again off screen, in an invisible box of the view's size, and swap it in whole once it is ready, drawn and its requests are done. The page on screen stays until then, so nothing goes away, shows a skeleton and comes back. While the page on screen is scrolled (and for half a second after) its snap and the swap wait: a new page puts its maps and charts on screen in one task, longer than a frame on a big screen. Asked before the first `ready()`, it waits for it. |
 | `#id` in a link | After the page mounts, the router scrolls to the element with that id in the view (below the top bar): `/cars/c1/charges?…#habits`. Give a section an `id` for links to land on it. |
 
 Live data: `ctx.events('now', (ev) => ...)` gets `now` deltas (`ev.data = { car, now }`, merge field by field);
