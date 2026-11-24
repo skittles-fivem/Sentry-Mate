@@ -725,6 +725,7 @@ async function mountCar(ctx) {
     await timeChart(box, ctx, {
       tz, t_ms: data.t_ms, digits: kind === 'pressure' ? 2 : 1,
       series: [{ label: s.comment || s.series, values, kind, color: '--live', area: true }],
+      label: `${s.comment || s.series} over the period`,
       onCursor: (i) => {
         if (i == null) { replace(readout, 'Point at the chart to read a value.'); return; }
         const v = values[i];
@@ -862,7 +863,7 @@ async function mountSystem(ctx) {
     if (growth.length) {
       const t = growth.map((g) => Date.parse(`${g.date}T12:00:00Z`));
       const mb = growth.map((g) => g.bytes / 1e6);
-      await barChart(chartBox, ctx, { t_ms: t, values: mb, color: '--live', tz: 'UTC',
+      await barChart(chartBox, ctx, { t_ms: t, values: mb, color: '--live', tz: 'UTC', label: 'Data added per day in megabytes, for all cars together, as bars',
         onCursor: (i) => replace(readout, i == null ? 'Point at a day.' : h('b', null, `${formatDayKey(growth[i].date)}: ${bytes(growth[i].bytes)}`)) });
     }
   }

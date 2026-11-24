@@ -524,8 +524,8 @@ export async function mount(ctx) {
       },
     };
   };
-  mountPlot(battEl, make('batt'), [xs, soc, range], ctx);
-  mountPlot(elevEl, make('elev'), [xs, elev], ctx);
+  mountPlot(battEl, make('batt'), [xs, soc, range], ctx, null, 'Battery level and range along the trip');
+  mountPlot(elevEl, make('elev'), [xs, elev], ctx, null, 'Height above sea level along the trip');
 }
 
 /* ------------------------------------------------------------------ helpers */

@@ -250,11 +250,11 @@ async function mountList(ctx, q) {
   });
 
   const intro = h('section', { class: 'panel panel-pad pl-intro', 'aria-label': 'What places do', cover: 'faq.geofence-purpose' },
-    h('div', { class: 'pl-intro-item' }, icon('pin'), h('div', null, h('h3', null, 'Your own names'),
+    h('div', { class: 'pl-intro-item' }, icon('pin'), h('div', null, h('h2', null, 'Your own names'),
       h('p', null, 'A street address can be wrong, or change from one parking spot to the next. A place gives a spot one name of your choosing. Every drive, charge and stop inside its circle shows that name, including history recorded before the place existed.'))),
-    h('div', { class: 'pl-intro-item' }, icon('bolt'), h('div', null, h('h3', null, 'Charging prices'),
+    h('div', { class: 'pl-intro-item' }, icon('bolt'), h('div', null, h('h2', null, 'Charging prices'),
       h('p', null, 'A place can have a price per kWh or per minute, time-of-use rates and a session fee. A charge that ends there gets its cost from that price by itself.'))),
-    h('div', { class: 'pl-intro-item' }, icon('info'), h('div', null, h('h3', null, 'One place per point'),
+    h('div', { class: 'pl-intro-item' }, icon('info'), h('div', null, h('h2', null, 'One place per point'),
       h('p', null, 'Where circles overlap, the place with the nearest centre wins. The editor shows which places overlap and what a change would rename before you save.'))));
 
   // a stale or mistyped editor link lands here with ?missing=<id>

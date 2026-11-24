@@ -22,8 +22,18 @@ from ..rows import charge_row, drive_row, in_progress, place_obj
 from ..util import DAY, HOUR, iso_utc, local_dt, median, r
 
 SORTS = {"start": lambda d: d["start_ms"], "distance": lambda d: d["distance_km"], "duration": lambda d: d["duration_ms"],
-         "energy": lambda d: d["energy_kwh"], "wh_per_km": lambda d: d["wh_per_km"],
+         "energy": lambda d: d["energy_kwh"], "wh_per_km": lambda d: _figure_whkm(d),
          "speed_max": lambda d: d["speed_max_kph"]}
+
+
+def _figure_whkm(d):
+    """The consumption a page shows for a drive, or None: a drive still under way, a very short one or one with a
+    gap in its data has no figure, so it sorts with the other drives without one (last in either direction)."""
+    if d["flags"].get("in_progress") or (d["distance_km"] or 0) < 1 or d["flags"].get("gap_ms", 0) > 60000:
+        return None
+    return d["wh_per_km"]
+
+
 PURPOSES = ("business", "private", "commute")
 
 
