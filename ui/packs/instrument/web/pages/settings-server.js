@@ -887,8 +887,8 @@ export async function mount(ctx) {
       type: 'job', match: jobOf('compaction'), pick: (d) => laterCompaction(S.storage?.compaction, d.status), // (a failed pass keeps its reason)
       load: () => ctx.api.get('system/storage/detail'),
       // (a `job` event that comes in while the detail is read — one comes with the stream's first words — has the pass
-      // only, the detail the categories too: the read is kept, the pass as the event says it)
-      overtaken: (detail, pass) => ({ ...detail, compaction: pass }),
+      // only, the detail the categories too: the read is kept, the pass as the event says it unless the read has how it failed)
+      overtaken: (detail, pass) => ({ ...detail, compaction: laterCompaction(detail.compaction, pass) }),
       pollMs: () => (S.storage?.compaction?.status === 'running' ? 2000 : 30000),
       onValue: (v, how) => {
         if (!ctx.alive()) return;
