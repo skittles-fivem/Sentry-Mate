@@ -107,8 +107,9 @@ fn last_judged(e: &Engine, car: CarId, meta: &records::CarMeta) -> QResult<Optio
 
 /// What a car's people should look at (`stopped_mid_drive`, `stopped_mid_charge`, `upload_silence`, `trust_failed`,
 /// `low_battery`), from its fleet entry and its log records. `upload_silence` and `trust_failed` follow the rules of
-/// `/cars/{car}/health`: nothing new (its newest log's data, else its last upload) for a day, and its newest judged
-/// log failed its check. `tyre_low`: a tyre of the Now more than 10 % under its recommended pressure (as the Now's
+/// `/cars/{car}/health`: nothing new (its newest log's data, else its last upload) for a day (a car that never
+/// uploaded is silent too, unless it has no key and no token and its history is an import's or an API's), and its
+/// newest judged log failed its check. `tyre_low`: a tyre of the Now more than 10 % under its recommended pressure (as the Now's
 /// `tyre_low`: typed, else the car's, else the door placard's; each tyre against the lower axle's while which wheel
 /// each sensor is is not known), with `{ tyre: "fl" | "fr" | "rl" | "rr" | null (not known), pressure_kpa,
 /// recommended_kpa, source }` for the lowest. Not said yet: `door_open_asleep` (the Now keeps no doors).
@@ -143,7 +144,12 @@ pub fn attention_of(e: &Engine, x: &FleetEntry, meta: &records::CarMeta, now: u6
         });
     }
     let last_seen = meta.newest_ms.or(meta.last_arrived_ms);
-    if last_seen.is_none_or(|t| now.saturating_sub(t) > 24 * STALE_MS) {
+    let silent = match last_seen {
+        Some(t) => now.saturating_sub(t) > 24 * STALE_MS,
+        // (a car that only has imported or API history, with no key and no token: no upload is expected of it)
+        None => !super::system::no_upload_expected(e, &x.car, meta)?,
+    };
+    if silent {
         out.push(Noted {
             code: "upload_silence",
             since_ms: last_seen,
