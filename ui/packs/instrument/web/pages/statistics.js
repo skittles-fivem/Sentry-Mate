@@ -596,7 +596,7 @@ export async function mount(ctx) {
       if (!legend) return;
       replace(legend, cars.map((cid, k) => {
         const b = h('button', { class: 'legend-chip', type: 'button', 'aria-pressed': String(u.series[k + 1].show !== false), title: 'Show or hide this car' },
-          h('i', { class: 'legend-swatch', vars: { '--c': `var(${colorOf.get(cid)})` } }), h('span', null, carName(cid)));
+          h('i', { class: 'legend-swatch', vars: { '--c': `var(${colorOf.get(cid)})` } }), h('span', { class: 'name-cut' }, carName(cid)));
         b.addEventListener('click', () => { const on = b.getAttribute('aria-pressed') !== 'true'; b.setAttribute('aria-pressed', String(on)); u.setSeries(k + 1, { show: on }); });
         return b;
       }));

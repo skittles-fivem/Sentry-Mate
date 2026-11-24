@@ -44,6 +44,8 @@
 .tv-cars { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); }
 .tv-cars-label { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); font-weight: 500; }
 .tv-car { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); height: round(1.875rem, var(--e)); padding: 0 round(0.75rem, var(--e)); border-radius: round(0.5rem, var(--e)); border: 1px solid var(--line); background: var(--glass); color: var(--text); font-size: max(0.8125rem, var(--fs-floor)); text-decoration: none; }
+.tv-car { max-width: 100%; }
+.tv-car > :is(i, .faint) { flex: none; }
 .tv-car:hover { border-color: var(--line-3); }
 .tv-car i { width: round(1rem, var(--e)); height: round(0.25rem, var(--e)); border-radius: round(0.125rem, var(--e)); background: var(--cc); }
 
