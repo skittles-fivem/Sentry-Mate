@@ -445,6 +445,31 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
     });
   });
 
+  test(`${pack}: a place's price below zero, or above what the server takes, is said under its field and not sent`, { skip: SKIP, timeout: 180000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      const place = (await (await context.request.get(`${origin}/api/v1/places?limit=200`)).json()).items.find((x) => x.price?.per_kwh != null && !x.price.tiers);
+      assert.ok(place, 'the made-up data has a place priced per kWh');
+      const sent = [];
+      const { page, errors } = await openPage(context, `${origin}/places?place=${place.id}`, 'places', (pg) => pg.on('request', (r) => { if (r.method() === 'PATCH') sent.push(r.postData()); }));
+      const price = page.locator('main input[name="per_kwh"]');
+      await price.waitFor({ timeout: 15000 });
+      // the server's rule (crates/engine/src/query/places.rs): a price per kWh from 0 to 10
+      for (const v of ['-3', '10.5']) {
+        await price.fill(v);
+        await page.locator('main button[type="submit"]', { hasText: 'Save changes' }).first().click();
+        await page.waitForTimeout(600);
+        assert.deepEqual(sent, [], `${v} per kWh is not sent`);
+        assert.equal(await price.getAttribute('aria-invalid'), 'true', `${v}: the field is marked as wrong`);
+        assert.match(await page.locator('main .form-row:has(input[name="per_kwh"]) .form-error').innerText(), /From 0 to 10/);
+      }
+      await price.fill('0.42');
+      const saved = page.waitForResponse((r) => r.request().method() === 'PATCH' && /\/places\//.test(new URL(r.url()).pathname));
+      await page.locator('main button[type="submit"]', { hasText: 'Save changes' }).first().click();
+      assert.equal((await saved).status(), 200);
+      assert.deepEqual(errors, []);
+    });
+  });
+
   test(`${pack}: Charges and Statistics for cars that are not there say so once, and ask the server for none of them`, { skip: SKIP, timeout: 180000 }, async () => {
     await withPack(pack, [], async ({ origin, context }) => {
       for (const [route, id] of [['/charges?cars=zzz', 'charges'], ['/statistics?cars=zzz,yyy', 'statistics']]) {

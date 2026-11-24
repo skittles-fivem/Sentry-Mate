@@ -959,7 +959,8 @@ async function mountEditor(ctx, q) {
     if (d.priced) {
       const k = d.mode !== 'minute' && d.mode !== 'tiers' ? d.per_kwh : null, mm = d.mode !== 'kwh' && d.mode !== 'tiers' ? d.per_minute : null;
       if (d.mode === 'tiers') Object.assign(e, TI.tierErrors(d.tiers));
-      for (const [key, v] of [['price.per_kwh', k], ['price.per_minute', mm]]) if (v != null && (!Number.isFinite(v) || v < -10 || v > 100)) e[key] = 'From −10 to 100.';
+      // (the server's own limits: a price per kWh from 0 to 10, per minute from 0 to 100)
+      for (const [key, v, max] of [['price.per_kwh', k, 10], ['price.per_minute', mm, 100]]) if (v != null && (!Number.isFinite(v) || v < 0 || v > max)) e[key] = `From 0 to ${max}.`;
       if (d.session_fee != null && (!Number.isFinite(d.session_fee) || d.session_fee < 0 || d.session_fee > 1000)) e['price.session_fee'] = 'From 0 to 1,000; a fee cannot be below zero.';
       if (d.mode !== 'tiers' && k == null && mm == null && d.session_fee == null && !d.rates.length) e.price = d.mode === 'minute' ? 'Type a price per minute, a rate or a session fee, or choose “Free or not tracked”.' : 'Type a price per kWh, a rate or a session fee, or choose “Free or not tracked”.';
       d.rates.forEach((r, i) => {
