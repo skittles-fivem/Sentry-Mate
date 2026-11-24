@@ -358,14 +358,18 @@ export const store = createStore({ page: null, car: null, drive: null, charge: n
 export const current = () => store.get();
 export const subscribe = (f) => store.subscribe(f);
 
+/** What the store holds for a URL: its page, ids and query, and the period the page shows (nothing is written). */
+function routeState(u) {
+  const s = parseUrl(u);
+  const own = OWN_PERIOD_PAGES.includes(s.page);
+  return { ...s, period: s.period || (own ? null : tabPeriod()), periodFromUrl: !!s.period };
+}
+
 function stateFromUrl(u) {
   const s = parseUrl(u);
-  const fromUrl = !!s.period;
-  const own = OWN_PERIOD_PAGES.includes(s.page);
-  const period = s.period || (own ? null : tabPeriod());
-  if (fromUrl && !own) writeStore('sessionStorage', KEY_PERIOD, s.period);
+  if (s.period && !OWN_PERIOD_PAGES.includes(s.page)) writeStore('sessionStorage', KEY_PERIOD, s.period);
   if (s.car) writeStore('localStorage', KEY_CAR, s.car); // the fast copy; the router calls rememberCar() once the car loaded
-  return { ...s, period, periodFromUrl: fromUrl };
+  return routeState(u);
 }
 
 /**
@@ -373,8 +377,7 @@ function stateFromUrl(u) {
  * at most in its #hash, so going there is no new page: the page stays (and stays ready), only the hash moves.
  */
 export function sameRoute(u) {
-  const s = parseUrl(u ?? '/');
-  const next = { ...s, period: s.period || tabPeriod(), periodFromUrl: !!s.period };
+  const next = routeState(u ?? '/');
   const now = store.get();
   return now.page != null && Object.keys(next).every((k) => sameValue(next[k], now[k]));
 }
