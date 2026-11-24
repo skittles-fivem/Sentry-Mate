@@ -842,7 +842,13 @@ export async function mount(ctx) {
       h('p', null, 'The report keeps only how many polls were skipped and why, never what they held.')));
     setTableRows(rows);
     reasonsTable.setRows(reasons);
-    carsTable.setRows((rep.cars || []).map((c) => ({ ...c, read: c.rows, imported: rep.imported ? c.rows : null, skipped: c.rows == null ? null : {} })));
+    // a car's polls: read, stored and skipped as its own `tables.positions` says (a report without it, with one
+    // car: the file's own counts; else not known, never "all imported")
+    const one = (rep.cars || []).length === 1 ? { imported: rep.rows?.used ?? null, skipped: rep.rows?.skipped ?? null } : null;
+    carsTable.setRows((rep.cars || []).map((c) => {
+      const p = c.tables?.positions || one;
+      return { ...c, read: c.rows, imported: rep.imported && p ? p.imported ?? null : null, skipped: c.rows == null || !p ? null : p.skipped || {} };
+    }));
   }
   /* ---------------------------------------------------------------- a CAN export's report */
   const keyStatus = (k) => KEY_STATUS[k.status] || [k.status, 'plain'];

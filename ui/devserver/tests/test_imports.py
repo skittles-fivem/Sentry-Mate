@@ -211,6 +211,11 @@ class Imports(ServerCase):
         again = c.get(url)["report"]
         self.assertEqual(again["rows"]["used"], 0)
         self.assertEqual(again["rows"]["skipped"], {"already_imported": again["rows"]["read"]})
+        # each car's own figures say the same: nothing of it was stored this time
+        for car in again["cars"]:
+            self.assertEqual(car["tables"]["positions"]["read"], car["rows"])
+            self.assertEqual(car["tables"]["positions"]["imported"], 0)
+            self.assertEqual(car["tables"]["positions"]["skipped"], {"already_imported": car["rows"]})
         c.json("DELETE", url)
         # TeslaFi's drives list is refused with why; a TeslaMate backup takes no time zone
         drives = b'Date,"Start Time","End Time","Driving Time","Kilometers Driven"\n2023-03-04,10:15,10:45,0:30,31\n'
