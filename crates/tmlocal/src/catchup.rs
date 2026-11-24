@@ -167,7 +167,16 @@ impl CatchupError {
 pub struct Cursor {
     #[serde(default)]
     pub cars: BTreeMap<i64, u64>,
+    /// TeslaMate car id → table → the highest row id the last stored catch-up saw (0 for none). Rows that reach the
+    /// database later with an earlier date (TeslaMate's own import of older history, a restore) have a higher id, so
+    /// the next catch-up reads `id > ` this as well as what the date filter takes. A car without ids (a cursor stored
+    /// before they were kept) is read by date alone until its next dump sets them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ids: BTreeMap<i64, BTreeMap<String, i64>>,
 }
+
+/// The per-car tables whose rows are also read by id (`id > ` the cursor's mark), not by date alone.
+pub const ID_TABLES: [&str; 5] = ["positions", "drives", "charging_processes", "states", "updates"];
 
 /// A car of the database's `cars` table (its VIN's prefix only).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -230,6 +239,20 @@ pub async fn dump(cfg: &DbConfig, cursor: &Cursor, cars: &[i64], out: &Path) -> 
         client.query_one("SELECT (extract(epoch FROM now()) * 1000)::bigint", &[]).await.map_err(classify)?.get(0);
     let now = u64::try_from(now).unwrap_or(0);
     let plan = plan(&cols, cursor, cars)?;
+    // the highest ids, from the same snapshot the rows are read in
+    let mut max_ids: BTreeMap<i64, BTreeMap<String, i64>> = BTreeMap::new();
+    for table in ID_TABLES {
+        if !plan.iter().any(|s| s.table == table) {
+            continue;
+        }
+        let sql = format!(
+            "SELECT car_id::bigint, max(id)::bigint FROM public.{table} WHERE car_id = ANY($1) GROUP BY car_id"
+        );
+        for r in client.query(sql.as_str(), &[&cars]).await.map_err(classify)? {
+            let (car, max): (i64, Option<i64>) = (r.get(0), r.get(1));
+            max_ids.entry(car).or_default().insert(table.to_string(), max.unwrap_or(0));
+        }
+    }
     let file = create_private(out)?;
     let mut w = DumpWriter::new(io::BufWriter::new(file))?;
     for step in &plan {
@@ -247,6 +270,14 @@ pub async fn dump(cfg: &DbConfig, cursor: &Cursor, cars: &[i64], out: &Path) -> 
     let mut next = cursor.clone();
     for &c in cars {
         next.cars.insert(c, now);
+        // a table with no row for the car is at 0: any row it gets later is read
+        let mut ids = max_ids.remove(&c).unwrap_or_default();
+        for table in ID_TABLES {
+            if plan.iter().any(|s| s.table == table) {
+                ids.entry(table.to_string()).or_insert(0);
+            }
+        }
+        next.ids.insert(c, ids);
     }
     Ok(Dumped { cursor: next, rows, bytes })
 }
@@ -451,12 +482,19 @@ pub fn plan(cols: &Columns, cursor: &Cursor, cars: &[i64]) -> Result<Vec<Step>, 
     }
     let ts = |ms: u64| format!("(TIMESTAMP '1970-01-01 00:00:00' + INTERVAL '1 millisecond' * {ms})");
     // per car: `(car_id = 1 AND (<since>)) OR car_id IN (2, 3)`
-    let by_car = |since: &dyn Fn(&str) -> String| -> String {
+    // (a car with a stored id mark for the table also reads what has a higher id: rows added late with earlier dates)
+    let by_car = |table: &str, since: &dyn Fn(&str) -> String| -> String {
         let mut parts = Vec::new();
         let mut whole = Vec::new();
         for &c in cars {
             match cursor.cars.get(&c) {
-                Some(&ms) => parts.push(format!("(car_id = {c} AND ({}))", since(&ts(ms.saturating_sub(MARGIN_MS))))),
+                Some(&ms) => {
+                    let mut r = since(&ts(ms.saturating_sub(MARGIN_MS)));
+                    if let Some(id) = cursor.ids.get(&c).and_then(|m| m.get(table)) {
+                        r = format!("({r}) OR id > {id}");
+                    }
+                    parts.push(format!("(car_id = {c} AND ({r}))"));
+                }
                 None => whole.push(c.to_string()),
             }
         }
@@ -466,8 +504,8 @@ pub fn plan(cols: &Columns, cursor: &Cursor, cars: &[i64]) -> Result<Vec<Step>, 
         if parts.is_empty() { "FALSE".into() } else { parts.join(" OR ") }
     };
     let spans = |s: &str| format!("end_date IS NULL OR start_date >= {s} OR end_date >= {s}");
-    let drives = by_car(&spans);
-    let procs = if readable("charging_processes") { Some(by_car(&spans)) } else { None };
+    let drives = by_car("drives", &spans);
+    let procs = if readable("charging_processes") { Some(by_car("charging_processes", &spans)) } else { None };
     let refs = |pairs: &[(&str, &str, &Option<String>)]| -> Option<String> {
         let sel: Vec<String> = pairs
             .iter()
@@ -511,7 +549,7 @@ pub fn plan(cols: &Columns, cursor: &Cursor, cars: &[i64]) -> Result<Vec<Step>, 
             },
             "drives" => drives.clone(),
             "positions" => {
-                let recent = by_car(&|s| format!("date >= {s}"));
+                let recent = by_car("positions", &|s| format!("date >= {s}"));
                 match refs(&[
                     ("drives", "start_position_id", &d),
                     ("drives", "end_position_id", &d),
@@ -521,7 +559,7 @@ pub fn plan(cols: &Columns, cursor: &Cursor, cars: &[i64]) -> Result<Vec<Step>, 
                     None => recent,
                 }
             }
-            _ => by_car(&spans),
+            _ => by_car(table, &spans),
         };
         let columns: Vec<&'static str> = used.iter().copied().filter(|c| has(table, c)).collect();
         let select: Vec<String> = columns
@@ -1168,7 +1206,7 @@ mod tests {
         let text = std::fs::read_to_string(fixture("teslamate-4.4.0.sql")).unwrap();
         let cols = columns_of(&blocks(&text));
         let since = 1_709_280_000_000u64;
-        let cursor = Cursor { cars: BTreeMap::from([(1, since)]) };
+        let cursor = Cursor { cars: BTreeMap::from([(1, since)]), ..Cursor::default() };
         let plan = plan(&cols, &cursor, &[1, 2]).unwrap();
         let names: Vec<&str> = plan.iter().map(|s| s.table).collect();
         assert_eq!(names, TABLES.map(|t| t.0).to_vec(), "pg_dump's order");
@@ -1199,6 +1237,55 @@ mod tests {
         assert_eq!(e.code(), "not_teslamate");
         let none = super::plan(&cols, &Cursor::default(), &[]).unwrap();
         assert!(none.iter().find(|s| s.table == "drives").unwrap().sql.contains("WHERE FALSE"));
+    }
+
+    #[test]
+    fn the_plan_also_reads_rows_with_ids_above_the_mark() {
+        let text = std::fs::read_to_string(fixture("teslamate-4.4.0.sql")).unwrap();
+        let cols = columns_of(&blocks(&text));
+        let ids = |p: i64, d: i64| -> BTreeMap<String, i64> {
+            ID_TABLES.iter().map(|t| (t.to_string(), if *t == "positions" { p } else { d })).collect()
+        };
+        // car 1 has marks with ids; car 2 has a mark without ids (an old cursor); car 3 has neither
+        let cursor = Cursor {
+            cars: BTreeMap::from([(1, 1_709_280_000_000), (2, 1_709_280_000_000)]),
+            ids: BTreeMap::from([(1, ids(900, 40))]),
+        };
+        let plan = plan(&cols, &cursor, &[1, 2, 3]).unwrap();
+        let sql = |t: &str| plan.iter().find(|s| s.table == t).unwrap().sql.clone();
+        let positions = sql("positions");
+        assert!(positions.contains("OR id > 900))"), "{positions}");
+        assert!(positions.contains("car_id IN (3)"), "{positions}");
+        assert!(positions.contains("(car_id = 2 AND (date >="), "{positions}");
+        assert_eq!(positions.matches("id > 900").count(), 1, "car 2 and 3 have no id mark: {positions}");
+        for t in ["drives", "charging_processes", "states", "updates"] {
+            let s = sql(t);
+            assert!(s.contains("OR id > 40))"), "{t}: {s}");
+            assert_eq!(s.matches("id > 40").count(), 1, "{t}: {s}");
+        }
+        // the rows they point at and the charges of a process read late follow the same filter
+        assert!(sql("charges").contains("id > 40"));
+        assert!(sql("addresses").contains("id > 40"));
+        assert!(
+            positions.contains("SELECT start_position_id FROM public.drives WHERE") && positions.contains("id > 40")
+        );
+        // no ids at all: the filter is today's
+        let old = super::plan(&cols, &Cursor { ids: BTreeMap::new(), ..cursor.clone() }, &[1]).unwrap();
+        assert!(old.iter().all(|s| !s.sql.contains("id >")));
+    }
+
+    #[test]
+    fn a_cursor_stored_before_ids_still_loads() {
+        let old: Cursor = serde_json::from_str(r#"{"cars":{"1":1709280000000}}"#).unwrap();
+        assert_eq!(old.cars[&1], 1_709_280_000_000);
+        assert!(old.ids.is_empty());
+        let none: Cursor = serde_json::from_str("{}").unwrap();
+        assert_eq!(none, Cursor::default());
+        let mut c = old;
+        c.ids.insert(1, BTreeMap::from([("positions".to_string(), 12)]));
+        let back: Cursor = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back, c);
+        assert_eq!(serde_json::to_string(&Cursor::default()).unwrap(), r#"{"cars":{}}"#);
     }
 
     #[test]
@@ -1238,7 +1325,7 @@ mod tests {
 
         // car 1 caught up to 2024-03-02 06:00 (its open drive started at 07:00): only what came after, plus what
         // its rows point at
-        let cursor = Cursor { cars: BTreeMap::from([(1, 1_709_359_200_000)]) };
+        let cursor = Cursor { cars: BTreeMap::from([(1, 1_709_359_200_000)]), ..Cursor::default() };
         let later = dump(&base, &cursor, &[1], &out).await.unwrap();
         assert!(later.rows < first.rows, "{} {}", later.rows, first.rows);
         let file = std::fs::read(&out).unwrap();
@@ -1269,6 +1356,69 @@ mod tests {
             assert_eq!(test(&public).await.unwrap_err().code(), "tls_failed", "self-signed, no pin");
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Rows that reach the database late with earlier dates and higher ids (TeslaMate's own import of older history,
+    /// a restore) are read by the next catch-up. Against the same real Postgres as [`live_postgres`], and only when
+    /// `TMLOCAL_TEST_PG_WRITE` is also set: the user must be allowed to write, and the test adds rows to car 1 (ids
+    /// 9001 and up) and removes them again, so run it apart from `live_postgres` (`-- --test-threads=1`).
+    #[tokio::test]
+    async fn live_postgres_late_rows() {
+        let (Ok(at), Ok(_)) = (std::env::var("TMLOCAL_TEST_PG"), std::env::var("TMLOCAL_TEST_PG_WRITE")) else {
+            return;
+        };
+        let (host, port) = at.rsplit_once(':').unwrap();
+        let base = DbConfig { host: host.into(), port: port.parse().unwrap(), username: "trustme".into(), ..cfg() };
+        let dir = std::env::temp_dir().join(format!("tmlocal-late-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("catch-up.sql");
+        let ids_of = |table: &str| -> Vec<String> {
+            let text = std::fs::read_to_string(&out).unwrap();
+            let b = blocks(&text);
+            let (cols, rows) = &b[table];
+            let at = cols.iter().position(|c| c == "id").unwrap();
+            rows.iter().map(|r| r[at].clone().unwrap()).collect()
+        };
+
+        let first = dump(&base, &Cursor::default(), &[1], &out).await.unwrap();
+        assert!(first.cursor.ids[&1]["positions"] > 0 && first.cursor.ids[&1]["drives"] > 0, "{:?}", first.cursor);
+        // the same dump with the marks of a cursor stored before ids were kept
+        let old = Cursor { ids: BTreeMap::new(), ..first.cursor.clone() };
+
+        // later history, dated long before the mark, with ids above every id read
+        let writer = connect(&base).await.unwrap();
+        let late = "BEGIN;
+            INSERT INTO public.positions (id, date, latitude, longitude, car_id) VALUES (9001, '2019-05-01 10:00', 1, 2, 1);
+            INSERT INTO public.drives (id, start_date, end_date, car_id) VALUES (9001, '2019-05-01 10:00', '2019-05-01 10:30', 1);
+            INSERT INTO public.charging_processes (id, start_date, end_date, car_id) VALUES (9001, '2019-05-02 10:00', '2019-05-02 11:00', 1);
+            INSERT INTO public.charges (id, date, charging_process_id) VALUES (9001, '2019-05-02 10:30', 9001);
+            INSERT INTO public.states (id, state, start_date, end_date, car_id) VALUES (9001, 'asleep', '2019-05-03 10:00', '2019-05-03 11:00', 1);
+            INSERT INTO public.updates (id, start_date, end_date, version, car_id) VALUES (9001, '2019-05-04 10:00', '2019-05-04 11:00', '2019.1', 1);
+            COMMIT;";
+        let undo = "DELETE FROM public.charges WHERE id = 9001; DELETE FROM public.updates WHERE id = 9001;
+            DELETE FROM public.states WHERE id = 9001; DELETE FROM public.charging_processes WHERE id = 9001;
+            DELETE FROM public.drives WHERE id = 9001; DELETE FROM public.positions WHERE id = 9001;";
+        writer.batch_execute(undo).await.unwrap();
+        writer.batch_execute(late).await.unwrap();
+        let result = async {
+            dump(&base, &old, &[1], &out).await.unwrap();
+            for t in ["positions", "drives", "charging_processes", "states", "updates", "charges"] {
+                assert!(!ids_of(t).contains(&"9001".to_string()), "date alone misses the late {t} row");
+            }
+            let next = dump(&base, &first.cursor, &[1], &out).await.unwrap();
+            for t in ["positions", "drives", "charging_processes", "states", "updates", "charges"] {
+                assert!(ids_of(t).contains(&"9001".to_string()), "the late {t} row is read");
+            }
+            assert_eq!(next.cursor.ids[&1]["positions"], 9001, "the new marks");
+            // nothing new since: the late rows are not read again
+            dump(&base, &next.cursor, &[1], &out).await.unwrap();
+            assert!(!ids_of("positions").contains(&"9001".to_string()));
+            assert!(!ids_of("drives").contains(&"9001".to_string()));
+        }
+        .await;
+        writer.batch_execute(undo).await.unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        result
     }
 
     #[tokio::test]

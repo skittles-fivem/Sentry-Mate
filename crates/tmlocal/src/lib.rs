@@ -767,9 +767,10 @@ impl<S: Sink> Service<S> {
             .collect();
         if !moved.is_empty() {
             let mut cursor = self.inner.store.cursor()?;
-            let had = cursor.cars.len();
+            let had = (cursor.cars.len(), cursor.ids.len());
             cursor.cars.retain(|id, _| !moved.contains(id));
-            if cursor.cars.len() != had {
+            cursor.ids.retain(|id, _| !moved.contains(id));
+            if (cursor.cars.len(), cursor.ids.len()) != had {
                 self.inner.store.set_cursor(&cursor)?;
             }
         }

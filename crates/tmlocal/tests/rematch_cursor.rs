@@ -46,6 +46,8 @@ fn a_car_matched_again_is_caught_up_from_the_start() {
     // the first catch-up stored everything up to this mark, for car 5
     let mut cursor = Cursor::default();
     cursor.cars.insert(1, 1_800_000_000_000);
+    cursor.ids.insert(1, [("positions".to_string(), 99)].into());
+    cursor.ids.insert(2, [("positions".to_string(), 7)].into());
     svc.store().set_cursor(&cursor).unwrap();
 
     svc.set_matches(c.version, &[("1".to_string(), Some(Match::Car { car: 6 }))]).unwrap();
@@ -55,4 +57,7 @@ fn a_car_matched_again_is_caught_up_from_the_start() {
         None,
         "TeslaMate car 1 keeps its mark: car 6 is caught up only from the last sync on"
     );
+    let after = svc.store().cursor().unwrap();
+    assert_eq!(after.ids.get(&1), None, "its id marks go with its date mark");
+    assert!(after.ids.contains_key(&2), "another car's marks stay");
 }
