@@ -5,7 +5,7 @@
 // Pure functions, no DOM: each pack draws its own cells and blocks and calls these.
 
 import { t } from './i18n.js';
-import { startOf, addPeriod, dateFormat } from './time.js';
+import { startOf, addPeriod, bucketKey, dateFormat } from './time.js';
 
 export const INVOICES_BASE = 'integrations/invoices';
 
@@ -91,11 +91,9 @@ export function invoiceMonths(nowMs, tz, n = 12) {
   const out = [];
   let start = startOf(nowMs, 'month', tz);
   const fmt = dateFormat(tz, { month: 'long', year: 'numeric' });
-  const keyFmt = dateFormat(tz, { year: 'numeric', month: '2-digit' });
   for (let i = 0; i < n; i++) {
     const end = addPeriod(start, 'month', 1, tz);
-    const p = Object.fromEntries(keyFmt.formatToParts(start).map((x) => [x.type, x.value]));
-    out.push({ key: `${p.year}-${p.month}`, label: fmt.format(start), from_ms: start, to_ms: end });
+    out.push({ key: bucketKey(start, 'month', tz), label: fmt.format(start), from_ms: start, to_ms: end });
     start = addPeriod(start, 'month', -1, tz);
   }
   return out;
