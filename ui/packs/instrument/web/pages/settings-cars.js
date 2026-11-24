@@ -47,6 +47,8 @@ const yesNo = (v) => (v === true ? 'Yes' : v === false ? 'No' : v);
 const setting = (titleText, text, control, cv = null) => h('div', { class: 'setting', cover: cv },
   h('div', null, h('h3', null, titleText), text ? h('p', null, text) : null), h('div', { class: 'setting-control' }, control));
 
+// the currency codes this browser knows (ISO 4217), or null where it cannot say: then any three letters go to the server
+const KNOWN_CURRENCIES = (() => { try { return new Set(Intl.supportedValuesOf('currency')); } catch { return null; } })();
 const soldText = (c) => (c.sold_date ? `Sold on ${c.sold_date}` : 'Sold (date not given)');
 
 // the sentence for an error that did not land under a field
@@ -433,16 +435,24 @@ async function mountCar(ctx) {
     if (ro) return state_;
     const today = new Date().toISOString().slice(0, 10);
     const day = field({ label: c.sold ? 'Sold date' : 'Sold date (optional)', name: 'sc-sold-date', type: 'date', path: 'sold_date', value: c.sold_date || '', hint: c.sold ? 'Change it, or clear it if not known.' : 'Leave empty if not known.', attrs: { max: today } });
+    // the picker stops at today; a date typed past it is said under the field and not sent
+    const late = () => {
+      if (!day.input.value || day.input.value <= today) return false;
+      day.setError('A day up to today: a car is not sold on a day still to come.');
+      day.input.focus();
+      return true;
+    };
     if (c.sold) {
       day.input.addEventListener('change', () => {
         const v = day.input.value || null;
+        if (late()) return;
         if (v !== (car().sold_date || null)) patchCar({ sold: true, sold_date: v }, 'Sold date', day);
       });
       return h('div', { class: 'sc-sold' }, state_, day.el,
         h('div', { class: 'row' }, h('button', { class: 'btn btn--sm', type: 'button', onclick: () => patchCar({ sold: false, sold_date: null }, 'Not sold') }, icon('reset', 'ico--sm'), 'Mark as not sold')));
     }
     return h('div', { class: 'sc-sold' }, state_, day.el,
-      h('div', { class: 'row' }, h('button', { class: 'btn btn--sm', type: 'button', onclick: () => patchCar({ sold: true, sold_date: day.input.value || null }, 'Sold', day) }, icon('flag', 'ico--sm'), 'Mark as sold')));
+      h('div', { class: 'row' }, h('button', { class: 'btn btn--sm', type: 'button', onclick: () => { if (!late()) patchCar({ sold: true, sold_date: day.input.value || null }, 'Sold', day); } }, icon('flag', 'ico--sm'), 'Mark as sold')));
   }
 
   /* ---- Uploads: outcome, tokens, keys, waiting keys */
@@ -799,6 +809,7 @@ async function mountCar(ctx) {
       const bad = {};
       if (raw === '' || !Number.isFinite(n) || n < 0 || n > 10) bad['default_price_per_kwh.value'] = 'A price from 0 to 10.';
       if (!/^[A-Z]{3}$/.test(c)) bad['default_price_per_kwh.currency'] = 'Three letters, such as USD or EUR.';
+      else if (KNOWN_CURRENCIES && !KNOWN_CURRENCIES.has(c)) bad['default_price_per_kwh.currency'] = `${c} is not a currency. Its three letters, such as USD or EUR.`;
       onErrs(bad);
       if (!Object.keys(bad).length) patchSettings({ default_price_per_kwh: { value: n, currency: c } }, what, onErrs);
     };
