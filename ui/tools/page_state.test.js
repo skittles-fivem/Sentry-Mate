@@ -145,7 +145,7 @@ test('period: Back after picking a preset shows the period of the address again'
     await page.locator('.period-preset', { hasText: 'Last 24 hours' }).click();
     await page.waitForFunction(() => document.querySelector('.period-label').textContent === 'Last 24 hours');
     await page.goBack();
-    await page.waitForFunction(() => location.pathname === '/cars/c1/drives' && !location.search);
+    await page.waitForFunction(() => location.pathname === '/cars/c1/drives' && !/24h/.test(location.search));
     await page.waitForTimeout(1000);
     assert.equal(await label(), 'Last 30 days', 'the address is back at the first view, the page still shows the new period');
   } finally { await context.close(); }

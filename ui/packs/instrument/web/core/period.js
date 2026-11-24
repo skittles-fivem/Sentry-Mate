@@ -23,7 +23,7 @@ export function periodPicker() {
   prevBtn = h('button', { class: 'btn btn--ghost btn--icon period-step', type: 'button', 'aria-label': 'Earlier period', title: 'Earlier period', onclick: () => step(-1) }, icon('chev-l'));
   nextBtn = h('button', { class: 'btn btn--ghost btn--icon period-step', type: 'button', 'aria-label': 'Later period', title: 'Later period', onclick: () => step(1) }, icon('chev-r'));
   pop = h('div', { class: 'popover period-pop', popover: 'auto', role: 'dialog', 'aria-label': 'Choose the period' });
-  pop.addEventListener('toggle', (e) => { btn.setAttribute('aria-expanded', String(e.newState === 'open')); if (e.newState === 'open') fill(); });
+  pop.addEventListener('toggle', (e) => { btn.setAttribute('aria-expanded', String(e.newState === 'open')); });
   root = h('div', { class: 'period', role: 'group', 'aria-label': 'Period' }, prevBtn, btn, nextBtn, pop);
   return root;
 }
@@ -46,6 +46,13 @@ export function setPeriodShown(period, tz) {
   nextBtn.disabled = !fwd || (period.to_ms != null && period.to_ms >= now - 1000);
 }
 
+// the period now shown, as state.setPeriod takes it
+function shown() {
+  const p = cur?.period;
+  if (!p) return null;
+  return p.preset && p.preset !== 'custom' ? { preset: p.preset } : { from: p.from_ms, to: p.to_ms ?? null };
+}
+
 function step(n) {
   if (!cur) return;
   const p = shiftPeriod(cur.period, n, { tz: cur.tz, now: api.now() });
@@ -53,18 +60,19 @@ function step(n) {
   const to = p.to_ms ?? p.to;
   const from = p.from_ms ?? p.from;
   // a step that reaches now becomes "until now" again
-  state.setPeriod({ from, to: to != null && to >= api.now() ? null : to }, { push: true });
+  state.setPeriod({ from, to: to != null && to >= api.now() ? null : to }, { push: true, was: shown() });
 }
 
 function toggle() {
   if (pop.matches(':popover-open')) pop.hidePopover();
-  else { pop.showPopover(); placePopover(pop, btn, { align: 'end' }); }
+  else { fill(); pop.showPopover(); placePopover(pop, btn, { align: 'end' }); }
 }
 
 /** Open the shared period picker from a button on a page (it is the same picker as in the top bar). */
 export function openPeriodPicker(anchor = null) {
   if (!pop || !cur) return;
   if (pop.matches(':popover-open')) { pop.hidePopover(); return; }
+  fill();
   pop.showPopover();
   placePopover(pop, anchor || btn, { align: anchor ? 'start' : 'end' });
 }
@@ -76,7 +84,7 @@ function fill() {
   const { period, tz } = cur;
   const presets = h('div', { class: 'period-presets' }, PRESETS.map((p) => h('button', {
     class: 'period-preset', type: 'button', 'aria-pressed': String(period.preset === p),
-    onclick: () => { pop.hidePopover(); state.setPeriod({ preset: p }, { push: true }); },
+    onclick: () => { pop.hidePopover(); state.setPeriod({ preset: p }, { push: true, was: shown() }); },
   }, h('span', null, presetLabel(p)), h('span', { class: 'faint' }, SHORT[p]))));
 
   const days = period.from_ms != null ? periodDays(period, tz) : { from: dayKey(api.now() - 29 * 86400000, tz), to: dayKey(api.now(), tz) };
@@ -93,7 +101,7 @@ function fill() {
     if (a < FIRST_DAY) { err.hidden = false; replace(err, icon('warn'), 'Pick days from 1970 on.'); (fromIn.value < FIRST_DAY ? fromIn : toIn).focus(); return; }
     const r = dayRange(a, b, tz);
     pop.hidePopover();
-    state.setPeriod({ from: r.from ?? r.from_ms, to: b >= today ? null : (r.to ?? r.to_ms) }, { push: true });
+    state.setPeriod({ from: r.from ?? r.from_ms, to: b >= today ? null : (r.to ?? r.to_ms) }, { push: true, was: shown() });
   };
   const custom = h('form', { class: 'period-custom', onsubmit: apply },
     h('label', { class: 'form-label', for: 'period-from' }, 'First day'),
