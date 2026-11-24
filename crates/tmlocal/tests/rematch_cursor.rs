@@ -2,7 +2,6 @@
 //! The local TeslaMate catch-up when a car is matched again. Everything is made up.
 
 use model::{CarId, Sample};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tmlocal::catchup::{self, Cursor};
 use tmlocal::{ApiFact, Config, DbConfig, LocalCar, Match, MqttConfig, Password, Service, Sink, SinkError};
