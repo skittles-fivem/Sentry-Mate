@@ -174,7 +174,7 @@ export async function mount(ctx) {
     { key: 'pin', label: 'Order', cls: 'col-pin', csv: false, render: pinBtn },
   ];
   const table = dataTable(ctx, {
-    title: 'Cars', icon: 'car', path: 'cars', params: params(), columns, limit: 50, csvName: 'cars', sort: headSort(),
+    title: 'Cars', icon: 'car', path: 'cars', params: params(), columns, limit: 50, csvName: 'cars', sort: headSort(), keepSort: false,
     onSort: (sNow) => {
       sort = SORT_OF[sNow.key]; dir = sNow.dir;
       sortSel.value = sort;
