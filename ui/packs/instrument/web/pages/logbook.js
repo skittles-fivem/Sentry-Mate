@@ -266,7 +266,8 @@ export async function mount(ctx) {
   const rulesPanel = panel({ title: 'Purpose rules', icon: 'flag', cls: 'lb-rules-panel', side: addRuleBtn },
     h('p', { class: 'note' }, 'A rule gives a purpose to every drive between two places on some days, such as Home to Office on weekdays is commute. Rules fill in drives nobody has set; a purpose set by hand always wins. Rules and purposes are stored apart from the drives, so they survive a rebuild of the history.'),
     rulesSlot);
-  const placeName = (pid) => (pid == null ? 'anywhere that is not a saved place' : (places.find((p) => p.id === pid)?.name || `place ${pid}`));
+  const placeName = (pid) => (pid == null ? 'anywhere that is not a saved place' : (places.find((p) => p.id === pid)?.name || (placesErr ? 'a place whose name could not be loaded' : 'a place that is gone')));
+  let placesErr = null;   // the places' read failed: a rule's places are said as not loaded, not by their ids
 
   let rulesErr = null;   // the rules' read failed: said as that, with a way to read again, not as "no rules yet"
   function paintRules() {
@@ -303,7 +304,7 @@ export async function mount(ctx) {
   async function loadRules() {
     const [rl, pl] = await Promise.all([
       ctx.api.get(rulesPath, { limit: 500 }).then((x) => { rulesErr = null; return x; }, (e) => { rulesErr = e; return { items: [] }; }),
-      ctx.api.list('places', { sort: 'name' }, { limit: 500 }).all({ max: 2000 }).catch(() => []),
+      ctx.api.list('places', { sort: 'name' }, { limit: 500 }).all({ max: 2000 }).then((x) => { placesErr = null; return x; }, (e) => { placesErr = e; return []; }),
     ]);
     if (!ctx.alive()) return;
     rules = rl.items || [];

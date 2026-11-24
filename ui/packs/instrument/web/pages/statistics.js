@@ -105,7 +105,7 @@ export async function mount(ctx) {
 
   /* ---------- which cars */
   let fleet = [];
-  try { fleet = (await fleetRead(ctx)).items || []; } catch { fleet = fixedCar ? [fixedCar] : []; }
+  try { fleet = (await fleetRead(ctx)).items || []; } catch (e) { if (!fixedCar) { ctx.fail(e); return; } fleet = [fixedCar]; }
   if (!ctx.alive()) return;
   const carById = new Map(fleet.map((c) => [c.id, c]));
   if (fixedCar) carById.set(fixedCar.id, fixedCar);
