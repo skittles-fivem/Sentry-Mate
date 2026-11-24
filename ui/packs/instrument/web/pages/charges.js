@@ -135,15 +135,17 @@ export async function mount(ctx) {
   const placesP = placesRead(ctx).then((x) => x.items || [], () => []);
 
   /* ---------- which cars */
-  let fleet = [], fleetKnown = true;
-  try { fleet = (await fleetRead(ctx)).items || []; } catch { fleet = fixedCar ? [fixedCar] : []; fleetKnown = false; }
+  // (for one car the page needs no list of cars; for several, a list that cannot be read is the page's error:
+  // "no car yet" and bare ids would both be untrue)
+  let fleet = [];
+  try { fleet = (await fleetRead(ctx)).items || []; } catch (e) { if (!fixedCar) { ctx.fail(e); return; } fleet = [fixedCar]; }
   if (!ctx.alive()) return;
   const carById = new Map(fleet.map((c) => [c.id, c]));
   if (fixedCar) carById.set(fixedCar.id, fixedCar);
   const chosen = fixedCar ? [fixedCar.id] : (!q.cars || q.cars === 'all' ? 'all' : q.cars.split(',').filter(Boolean));
   // (cars of the address that are not there, removed or hidden since, are left out: the server answers a
-  // list that names one of them with 404. When the cars could not be read, the address is taken as it is.)
-  const viewCars = chosen === 'all' ? fleet.map((c) => c.id) : fleetKnown ? chosen.filter((c) => carById.has(c)) : chosen;
+  // list that names one of them with 404)
+  const viewCars = chosen === 'all' ? fleet.map((c) => c.id) : chosen.filter((c) => carById.has(c));
   const multi = !fixedCar;
   const carsParam = fixedCar ? null : (chosen === 'all' ? 'all' : viewCars.join(','));
   const carName = (cid) => carById.get(cid)?.name || cid;

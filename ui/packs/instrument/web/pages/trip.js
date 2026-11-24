@@ -89,7 +89,7 @@ export async function mount(ctx) {
       or('activity', collect(ctx.api.list(`cars/${enc(cid)}/activity`, win, { limit: 1000 }), 20000), []),
       or('last3', ctx.api.page(`cars/${enc(cid)}/drives`, { sort: 'start', dir: 'desc' }, { limit: 3 }), { items: [] }),
       or('saved', ctx.api.page('trips', { car: cid }, { limit: 100 }), { items: [] }),
-      ctx.api.page('cars', { sort: 'name' }, { limit: 100 }).catch(() => ({ items: [car], next: null })),
+      or('cars', ctx.api.page('cars', { sort: 'name' }, { limit: 100 }), { items: [car], next: null }),
     ]);
     if (vsId) {
       [vsCar, vsTrip] = await Promise.all([
@@ -160,7 +160,7 @@ export async function mount(ctx) {
   // a second car for side by side; the list is searched when there are more cars than it shows
   const others = (fleet.items || []).filter((c) => c.id !== cid);
   const vsSel = h('select', { class: 'select', id: 'trip-vs', disabled: !others.length && !fleet.next },
-    h('option', { value: '' }, others.length || fleet.next ? 'No second car' : 'Only one car'),
+    h('option', { value: '' }, others.length || fleet.next ? 'No second car' : lost.cars ? 'The other cars could not be loaded' : 'Only one car'),
     // sold cars last, in a "Sold cars" group (a sold car already compared stays in place)
     (() => { const { main, sold } = soldParts(others, [vsId]); const mk = (c) => h('option', { value: c.id, selected: c.id === vsId }, c.name); return [main.map(mk), soldOptions(sold, mk)]; })(),
     vsId && !others.some((c) => c.id === vsId) && vsCar ? h('option', { value: vsId, selected: true }, vsCar.name) : null);
