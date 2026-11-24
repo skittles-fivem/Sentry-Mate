@@ -14,6 +14,7 @@ import hashlib
 import io
 import json
 import math
+import re
 
 from .errors import ApiError, bad_input, invalid, no_such_car
 
@@ -32,6 +33,10 @@ class Response:
 
 def json_bytes(obj) -> bytes:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+
+WHOLE = re.compile(r"(0|[1-9][0-9]{0,19})")
+DECIMAL = re.compile(r"[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?|[+-]?(inf|infinity|nan)", re.I)
 
 
 class Req:
@@ -89,10 +94,10 @@ class Req:
         v = self.q(name)
         if v is None or v == "":
             return default
-        try:
-            n = int(v)
-        except ValueError:
+        # as the real server (ids::number): digits 0-9 only, no sign, no leading zero, at most 20 digits
+        if not WHOLE.fullmatch(v) or int(v) > 2 ** 64 - 1:
             raise bad_input({name: "Must be a whole number."})
+        n = int(v)
         if lo is not None and n < lo or hi is not None and n > hi:
             raise bad_input({name: f"Must be between {lo} and {hi}."})
         return n
@@ -101,10 +106,9 @@ class Req:
         v = self.q(name)
         if v is None or v == "":
             return default
-        try:
-            n = float(v)
-        except ValueError:
-            raise bad_input({name: "Must be a number."})
+        if not DECIMAL.fullmatch(v):  # as Rust's f64 parse: no spaces or underscores, ASCII digits
+            raise bad_input({name: f"Must be a number between {lo} and {hi}."})
+        n = float(v)
         if not math.isfinite(n) or (lo is not None and n < lo) or (hi is not None and n > hi):
             raise bad_input({name: f"Must be a number between {lo} and {hi}."})
         return n
