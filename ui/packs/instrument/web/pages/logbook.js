@@ -92,7 +92,7 @@ export async function mount(ctx) {
       h('button', {
         class: 'btn', type: 'button', cover: 'dt.control.per_car', onclick: openCarSwitcher,
         title: 'A logbook is kept per car. Switch to another car; the period stays.',
-      }, icon('car', 'ico--sm'), car.name, icon('chev-d', 'ico--sm')),
+      }, icon('car', 'ico--sm'), h('span', { class: 'name-cut' }, car.name), icon('chev-d', 'ico--sm')),
       h('span', { class: 'lb-filter-label' }, 'Purpose'), seg),
     h('p', { class: 'note' }, icon('info', 'ico--sm'),
       ' One car per logbook, as a tax office asks. The purpose filter narrows the table and its CSV only; totals, numbers and the continuity check always cover the whole period.'));

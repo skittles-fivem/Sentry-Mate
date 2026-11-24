@@ -474,3 +474,36 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
     });
   });
 }
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  for (const [what, viewport] of [['a phone', { width: 390, height: 844 }], ['a computer', { width: 1440, height: 900 }]]) {
+    test(`${pack}: a car and a place whose names are one long word leave no page wider than the window of ${what}`, { skip: SKIP, timeout: 420000 }, async () => {
+      await withPack(pack, [], async ({ origin, context }) => {
+        const patch = async (path, name) => {
+          const cur = await (await context.request.get(origin + path)).json();
+          const res = await context.request.patch(origin + path, { headers: { 'X-Sentry-Mate': '1' }, data: { name, version: cur.version } });
+          assert.equal(res.status(), 200, `${path}: the long name is accepted`);
+        };
+        await patch('/api/v1/cars/c1', 'Wolfeschlegelsteinhausenbergerdorffvoralternwarengewissenhaftsch');   // 64 letters: the longest a car's name can be
+        await patch('/api/v1/places/p1', 'Supercalifragilisticexpialidocious-Garage-And-Workshop-Number-12');
+        const drive = (await (await context.request.get(`${origin}/api/v1/cars/c1/drives?limit=2`)).json()).items[1].id;
+        const charge = (await (await context.request.get(`${origin}/api/v1/cars/c1/charges?limit=1`)).json()).items[0].id;
+        const wide = [];
+        for (const [route, id] of [['/cars/c1/timeline', 'timeline'], [`/cars/c1/drives/${drive}`, 'drive'], ['/cars/c1/trip', 'trip'], ['/cars/c1/logbook', 'logbook'],
+          ['/cars/c1/charges', 'charges'], ['/charges', 'charges'], [`/cars/c1/charges/${charge}`, 'charge'], ['/cars/c1/efficiency', 'efficiency'], ['/cars/c1/statistics', 'statistics'],
+          ['/statistics', 'statistics'], ['/travel', 'travel'], ['/cars/c1/software', 'software'], ['/places', 'places'], ['/settings/cars/c1', 'settings-cars'], ['/settings/cars', 'settings-cars'],
+          ['/settings/integrations', 'settings-integrations'], ['/settings/server', 'settings-server'], ['/settings/import', 'import'], ['/cars/c1/health', 'health'], ['/cars/c1/drives', 'drives']]) {
+          const { page } = await openPage(context, origin + route, id);
+          await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+          // the parts built when they come near the screen
+          await page.evaluate(async () => { for (let y = 0; y < document.body.scrollHeight; y += 700) { window.scrollTo(0, y); await new Promise((r) => setTimeout(r, 60)); } window.scrollTo(0, 0); });
+          await page.waitForTimeout(300);
+          const by = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+          if (by > 1) wide.push(`${route}: ${by} px`);
+          await page.close();
+        }
+        assert.deepEqual(wide, [], 'pages that scroll sideways');
+      }, viewport);
+    });
+  }
+}

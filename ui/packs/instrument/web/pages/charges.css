@@ -74,7 +74,7 @@
 .section-title { font-family: var(--font-display); font-size: 1.25rem; font-weight: 600; letter-spacing: -0.01em; }
 .stats-scope { flex: 1; min-width: round(16rem, var(--e)); margin: 0; }
 .stats-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: var(--gap); margin-bottom: var(--gap); }
-.panel-side { display: inline-flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); }
+.panel-side { display: inline-flex; min-width: 0; max-width: 100%; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: round(0.5rem, var(--e)) round(0.75rem, var(--e)); }
 .charges-page .panel-head { flex-wrap: wrap; }
 .totals-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: round(1.125rem, var(--e)) round(1.5rem, var(--e)); margin-bottom: round(1rem, var(--e)); }
 .totals-grid .metric { min-width: 0; }

@@ -252,7 +252,7 @@ async function mountCar(ctx) {
     actions: [
       h('button', { class: 'btn', type: 'button', cover: 'dbinfo.filter.car', onclick: openCarSwitcher,
         title: 'Show another car. Everything on this page is about one car; the server’s storage is on Server and storage.' },
-      icon('car', 'ico--sm'), car.name, icon('chev-d', 'ico--sm')),
+      icon('car', 'ico--sm'), h('span', { class: 'name-cut' }, car.name), icon('chev-d', 'ico--sm')),
       h('button', { class: 'btn', type: 'button', onclick: (e) => openPeriodPicker(e.currentTarget), title: 'The period of the gaps, dropped frames, unknown time and the signal chart. Totals are all-time.' },
         icon('calendar', 'ico--sm'), period.label, icon('chev-d', 'ico--sm')),
       reloadBtn,
