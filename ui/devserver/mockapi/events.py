@@ -45,22 +45,26 @@ MISSING_SCAN_IDLE = {"state": "idle", "keys_done": 0, "keys_total": 0, "found": 
                      "finished_ms": None}
 
 
-def _leaf(v):
-    return isinstance(v, dict) and set(v) == {"value", "at_ms"}
+def _pair(v):
+    return "value" in v and "at_ms" in v
 
 
 def diff(old, new):
-    """The parts of `new` that differ from `old` (nested objects compared field by field; a
-    { value, at_ms } pair is sent whole)."""
+    """What changed from `old` to `new`, field by field, as the real server's delta: a { value, at_ms } pair
+    (whatever else it carries, such as `sources`), an array and anything not an object go whole; a field
+    gone is null."""
     out = {}
     for k, v in new.items():
         o = old.get(k, _MISSING)
-        if isinstance(v, dict) and isinstance(o, dict) and not _leaf(v):
+        if isinstance(v, dict) and isinstance(o, dict) and not _pair(v):
             d = diff(o, v)
             if d:
                 out[k] = d
-        elif o != v:
+        elif o is _MISSING or o != v:
             out[k] = v
+    for k in old:
+        if k not in new:
+            out[k] = None
     return out
 
 
