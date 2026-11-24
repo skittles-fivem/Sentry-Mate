@@ -1652,3 +1652,41 @@ fn a_rebuild_mends_a_damaged_day_of_decoded_samples() {
         }
     });
 }
+
+/// Each reason a stored log was left out is said as it is: a log that can't be decoded is `unreadable`, one that
+/// names another car's VIN is `other_vin`; neither is a log that failed its check.
+#[test]
+fn unknown_time_says_why_its_log_was_left_out() {
+    let rt = rt();
+    rt.block_on(async {
+        let reasons_of = |k: &Kit, car| {
+            let h = tokio::task::block_in_place(|| query::system::health(&k.engine, car, &Period::all())).unwrap().body;
+            h.unknown_spans.iter().map(|u| u.reason).collect::<Vec<_>>()
+        };
+        // a log whose bytes are no candump log: it is stored, and can't be decoded
+        let k = kit();
+        for i in [0, 1, 2, 4, 5] {
+            send(&k, i).await;
+        }
+        let (name, _, side) = minute(3, Minute::Charging);
+        upload(&k, &name, b"not a log").await;
+        upload(&k, &format!("{name}.json"), &side).await;
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let r = reasons_of(&k, car);
+        assert!(r.contains(&"unreadable") && !r.contains(&"failed_check"), "{r:?}");
+        // a log that names another car's VIN, in the middle of the car's own
+        let k = kit();
+        for i in [0, 1, 2, 4, 5] {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let (name, log, side) = minute_of(KEY, 3, Minute::Charging, LON, Some(VIN2));
+        upload(&k, &name, &log).await;
+        upload(&k, &format!("{name}.json"), &side).await;
+        k.engine.idle().await;
+        let r = reasons_of(&k, car);
+        assert!(r.contains(&"other_vin") && !r.contains(&"failed_check"), "{r:?}");
+    });
+}

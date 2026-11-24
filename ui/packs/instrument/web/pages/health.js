@@ -119,15 +119,19 @@ const TRUST_REASONS = {
   unknown_key: 'the key is not known',
   bad_format: 'the file could not be read',
 };
+// why a stretch of time is unknown, by the server's word (`reason` of an unknown span, `gap_reason` of a gap). A log
+// that was left out says which way: failed_check is its signature, hash or chain; unreadable is a stored log that
+// could not be decoded; other_vin is a log whose frames name another car
 const SPAN_REASONS = {
-  no_log: 'no log arrived', dropped_frames: 'the bridge dropped frames', failed_check: 'the log failed its check',
+  no_log: 'no log arrived', not_recorded: 'recording was paused', dropped_frames: 'the bridge dropped frames',
+  failed_check: 'the log failed its check', unreadable: 'the log could not be read', other_vin: 'the log names another car’s VIN',
   chain_gap: 'a log is missing from the chain', paused: 'recording was paused',
 };
 const GAP_CAUSES = {
   no_log: ['No log', 'Nothing arrived for this time.'],
   not_recorded: ['Not recorded', 'The car moved while the bridge was not recording.'],
   chain_gap: ['Chain gap', 'A log in the hash chain is missing.'],
-  unknown: ['Unknown', 'The data here could not be used.'],
+  unknown: ['Unknown', 'The data here could not be used: a log failed its check, could not be read, names another car or lost frames.'],
 };
 // what each kind of stored data holds, in plain words
 const KIND_TEXT = {

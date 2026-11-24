@@ -33,6 +33,8 @@ const GAP = {
   no_log: 'No log arrived for this time.',
   not_recorded: 'Recording was paused on the CAN Bridge.',
   failed_check: 'A log failed its check, so its data is not used.',
+  unreadable: 'A log could not be read, so its data is not used.',
+  other_vin: 'A log names another car’s VIN, so its data is not used.',
   dropped_frames: 'The log lost frames here.',
 };
 const AWAKE_WORD = {

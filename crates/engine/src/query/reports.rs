@@ -809,7 +809,7 @@ pub struct GapRow {
     pub to_place: Option<PlaceBrief>,
     /// `no_log`, `not_recorded`, `chain_gap`, `unknown`.
     pub cause: &'static str,
-    /// The timeline's word: `no_log`, `not_recorded`, `failed_check`, `dropped_frames`.
+    /// The timeline's word: `no_log`, `not_recorded`, `failed_check`, `unreadable`, `other_vin`, `dropped_frames`.
     pub gap_reason: &'static str,
     #[serde(flatten)]
     pub from: super::Sources,
@@ -827,8 +827,7 @@ fn reasons(e: &Engine, car: CarId, a: u64, b: u64, chain: &[(u64, u64)]) -> QRes
     for (_, en) in records::entries_between(e.db(), car, &meta, a, b)? {
         match &en.outcome {
             Outcome::Hole { from_ms, to_ms, reason } => {
-                let (reason, cause) =
-                    if reason == "not_stored" { ("no_log", "no_log") } else { ("failed_check", "unknown") };
+                let (reason, cause) = super::timeline::hole_why(reason);
                 out.push(Why { from_ms: *from_ms, to_ms: *to_ms, reason, cause });
             }
             Outcome::Decoded { facts, .. } => {
