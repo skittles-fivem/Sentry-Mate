@@ -183,7 +183,7 @@ function jumpsInit(arg) {
         // (the box that scrolls and what holds it are not blocks in it: they do not scroll with its content)
         if (!fixed && r.height >= 8 && r.width >= 24 && (win || (b.contains(c) && c !== b))) {
           n++;
-          now.set(key, { el: c, top, h: r.height, vtop: r.top, vbot: r.bottom, w: Math.min(r.right, view.w) - Math.max(r.left, 0) });
+          now.set(key, { el: c, top, h: r.height, vtop: r.top, vbot: r.bottom, w: Math.min(r.right, view.w) - Math.max(r.left, 0), hid: cs.visibility === 'hidden' || +cs.opacity === 0 });
         }
         if (!far && depth < MAX_DEPTH) visit(c, key, depth + 1, fixed);
       }
@@ -236,7 +236,9 @@ function jumpsInit(arg) {
         // (a block as tall as the screen or taller, over all of it before and after, shows no move of its own: what is
         // in it is looked at block by block)
         const over = q.vtop <= view.top && q.vbot >= view.bottom && p.vtop <= view.top && p.vbot >= view.bottom;
-        if (Math.abs(dy) > MOVE_PX && (onNow || onThen) && !over && (!p.el.checkVisibility || p.el.checkVisibility({ visibilityProperty: true, opacityProperty: true }))) moved.push([k, p, q, dy]);
+        // (nor one that could not be seen in the frame before: a page built hidden and then shown in one step, under
+        // a copy of its skeleton, comes into sight where it is, it does not move there)
+        if (Math.abs(dy) > MOVE_PX && (onNow || onThen) && !over && !q.hid && (!p.el.checkVisibility || p.el.checkVisibility({ visibilityProperty: true, opacityProperty: true }))) moved.push([k, p, q, dy]);
         // above the screen and changed its height while the page is scrolled
         if ((J.phase === 'scroll-down' || J.phase === 'scroll-up' || J.phase === 'again-scroll') && q.vbot <= lastView.top && p.vbot <= view.top
           && Math.abs(p.h - q.h) > MOVE_PX && J.above.length < 100) {
