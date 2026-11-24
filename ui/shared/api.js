@@ -459,6 +459,9 @@ export function createClient(options = {}) {
     const k = byPeriod.get(a.pk);
     const e = k && k !== key ? mem.get(k) : null;
     if (!e) return null;
+    // a page of a list with more to come carries a cursor made for its own period's end: asked with another one the
+    // server answers 400, so such a page is never a stand-in
+    if (e.value && typeof e.value === 'object' && e.value.next != null) return null;
     const b = periodKey(k);
     if (!(b.to <= a.to) || !(b.from === a.from || (a.from != null && b.from != null && a.to - a.from === b.to - b.from))) return null;
     return { key: k, entry: e };
