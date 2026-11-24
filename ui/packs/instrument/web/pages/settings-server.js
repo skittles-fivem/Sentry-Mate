@@ -443,10 +443,17 @@ export async function mount(ctx) {
       options: [['watch', `Watch-only: ${ROLE_TEXT.watch}`], ['admin', `Admin: ${ROLE_TEXT.admin}`]] });
     const two = field({ label: 'Require two-step sign-in', name: 'two_step_required', type: 'checkbox', value: !!a?.two_step_required,
       hint: 'After the password, a six-digit code from an authenticator app. Recommended for every admin.' });
+    // the server asks for the acting admin's own password again before every account change (and the code, with
+    // two-step sign-in on): sent as confirm_password and code
+    const own = field({ label: 'Your password', name: 'confirm_password', type: 'password', required: true,
+      hint: `The password you sign in with as ${me.name || 'this account'}: an account change asks for it again.`, attrs: { autocomplete: 'current-password' } });
+    const code = field({ label: 'Code from your authenticator app', name: 'code', hint: 'Six digits. Codes change every 30 seconds.',
+      attrs: { autocomplete: 'one-time-code', inputmode: 'numeric', maxlength: '8' } });
+    code.el.hidden = !me.two_step_required;
     const cars = carPicker(a ? a.cars : []);
     const carsField = { name: 'cars', path: 'cars', input: { checkValidity: () => true, getAttribute: () => null, focus() {} }, setError: cars.setError, value: cars.value, el: cars.el };
     const f = form({
-      fields: [name, password, role, carsField, two], submit: isNew ? 'Add account' : 'Save changes',
+      fields: [name, password, role, carsField, two, own, code], submit: isNew ? 'Add account' : 'Save changes',
       secondary: h('button', { class: 'btn btn--ghost', type: 'button', onclick: (e) => e.target.closest('dialog')?.close() }, 'Cancel'),
       async onSubmit(v) {
         const body = { name: v.name.trim(), role: v.role, cars: v.cars, two_step_required: v.two_step_required };
@@ -454,6 +461,8 @@ export async function mount(ctx) {
           if (!(await passwordOk(body.name, v.password, password.input))) return;
           body.password = v.password;
         }
+        body.confirm_password = v.confirm_password;
+        if (!code.el.hidden && v.code) body.code = v.code.replace(/\s+/g, '');
         try {
           if (isNew) {
             await ctx.api.post('accounts', body);
@@ -470,6 +479,8 @@ export async function mount(ctx) {
           }
           if (e.code === 'name_taken') { name.setError('That name is taken.'); return; }
           if (e.code === 'last_admin') { role.setError('This is the last admin. Make another account an admin first.'); return; }
+          if (e.code === 'wrong_password' || e.code === 'password_needed') { own.setError(v.confirm_password ? 'That is not your password. Type the one you sign in with.' : 'Type your password to go on.'); own.input.focus(); own.input.select(); return; }
+          if (e.code === 'wrong_two_step' || e.code === 'wrong_code') { code.el.hidden = false; code.setError(v.code ? 'That code is not right. Type the one your authenticator app shows now.' : 'Your account has two-step sign-in: type the code from your authenticator app as well.'); code.input.focus(); return; }
           throw e;
         }
         f.el.closest('dialog')?.close();
@@ -481,15 +492,25 @@ export async function mount(ctx) {
   }
 
   async function removeAccount(a) {
-    const ok = await confirmDialog(`${a.name} can no longer sign in, and every session of theirs ends now. Their changes stay in the audit log.`, { title: `Remove ${a.name}?`, ok: 'Remove account', danger: true });
-    if (!ok) return;
-    try {
-      await ctx.api.del(`accounts/${enc(a.id)}`);
-      flash(`${a.name} was removed.`);
-      await refreshAccounts();
-    } catch (e) {
-      flash(e.code === 'last_admin' ? 'This is the last admin. Make another account an admin first.' : `Could not remove ${a.name}: ${errText(e)}`, { kind: 'error' });
-    }
+    const ok = await askPassword(ctx, {
+      title: `Remove ${a.name}?`,
+      intro: h('p', null, `${a.name} can no longer sign in, and every session of theirs ends now. Their changes stay in the audit log.`),
+      submit: 'Remove account', danger: true,
+      run: async (cred) => {
+        try {
+          await ctx.api.send('DELETE', `accounts/${enc(a.id)}`, { confirm_password: cred.password, ...(cred.two_step ? { code: cred.two_step } : {}) });
+        } catch (e) {
+          if (e.code === 'wrong_password' || e.code === 'wrong_two_step' || e.status === 429) throw e;
+          if (e.code === 'wrong_code') { e.code = 'wrong_two_step'; throw e; }
+          flash(e.code === 'last_admin' ? 'This is the last admin. Make another account an admin first.' : `Could not remove ${a.name}: ${errText(e)}`, { kind: 'error' });
+          return false;
+        }
+        return true;
+      },
+    });
+    if (!ok || !ctx.alive()) return;
+    flash(`${a.name} was removed.`);
+    await refreshAccounts();
   }
 
   /* ---------------------------------------------------------------- your sessions */
