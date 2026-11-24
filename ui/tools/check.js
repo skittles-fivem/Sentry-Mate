@@ -1556,7 +1556,9 @@ async function main() {
     if (!J.PACKS.includes(name) || o.base) throw new UsageError('--jumps checks a built-in pack (ui/packs) on the dev server');
     const argv = ['--packs', name];
     if (o.pages !== 'all') argv.push('--pages', o.pages);
-    const rep = await J.run({ ...J.parseArgs(argv), log: o.log });
+    let jo;
+    try { jo = J.parseArgs(argv); } catch (e) { throw new UsageError(e.message); }
+    const rep = await J.run({ ...jo, log: o.log });
     process.stdout.write(o.json ? JSON.stringify(rep, null, 2) + '\n' : J.formatReport(rep));
     return rep.pass ? 0 : 1;
   }
@@ -1571,6 +1573,10 @@ async function main() {
   return rep.pass ? 0 : 1;
 }
 
+// before main: run as the program, check.js is still being loaded when --jumps asks for jumps.js, which asks for
+// these (a module that needs this one while it loads gets only what is exported by then)
+module.exports = { run, formatReport, selfTest, parseArgs, ROUTES, FRAME_SCREENS, startServer, killChildren, TILE_HOSTS, BLANK_TILE };
+
 if (require.main === module) {
   main().then((code) => { process.exitCode = code; }, (e) => {
     process.stderr.write(`check.js: ${e instanceof UsageError || e instanceof StartError ? e.message : e.stack || e}\n`);
@@ -1578,5 +1584,3 @@ if (require.main === module) {
     process.exitCode = 2;
   });
 }
-
-module.exports = { run, formatReport, selfTest, parseArgs, ROUTES, FRAME_SCREENS, startServer, killChildren, TILE_HOSTS, BLANK_TILE };
