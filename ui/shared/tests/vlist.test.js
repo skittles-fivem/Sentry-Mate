@@ -126,6 +126,18 @@ test('a measured row height replaces the guess', async () => {
   assert.deepEqual(rows(body), [1, 2, 3, 4, 5, 6, 7]);
 });
 
+test('rows the guessed height drew too many of are taken out in the same step, never shown and taken away a frame later', async () => {
+  const seen = [];
+  const { body, list } = make(100, [], { row: (it, i) => el('row', { seq: it.seq, i, height: 80 }), onRange: (r) => seen.push([r.first, r.last]) });
+  await list.start();
+  // no frame has passed since the rows came in: the window is already the one of the measured height
+  assert.deepEqual(rows(body), [1, 2, 3, 4, 5, 6, 7]);
+  assert.equal(list.rowHeight(), 80);
+  assert.deepEqual(seen.at(-1), [0, 7], 'and the range told last is that window');
+  await tick();
+  assert.deepEqual(rows(body), [1, 2, 3, 4, 5, 6, 7]);
+});
+
 test('a day to jump to, in the car\'s zone', () => {
   assert.equal(dayJumpMs('2026-03-08', 'America/Los_Angeles'), Date.UTC(2026, 2, 8, 8));
   // newest first: the day after begins it (a change to summer time that night: 23 hours later)
