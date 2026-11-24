@@ -288,6 +288,8 @@ pub(crate) struct Inner {
     /// The full rebuild under way ([`full`]); its record's changes, one at a time; a test's failure point.
     pub(crate) full: Mutex<full::Full>,
     pub(crate) full_start: Mutex<()>,
+    /// The server is stopping ([`Engine::stopping`]): the full rebuild leaves its run as it stands.
+    pub(crate) stopping: std::sync::atomic::AtomicBool,
     pub(crate) full_fail_at: Mutex<Option<full::Phase>>,
     pub(crate) full_crash_at: Mutex<Option<full::Phase>>,
     /// The windows the full rebuilds' decoding rebuilt beside the history (their own engine's count, added up).
@@ -494,6 +496,7 @@ impl Engine {
                 compact_auto: std::sync::atomic::AtomicBool::new(false),
                 full: Mutex::default(),
                 full_start: Mutex::new(()),
+                stopping: std::sync::atomic::AtomicBool::new(false),
                 full_fail_at: Mutex::new(None),
                 full_crash_at: Mutex::new(None),
                 full_windows: AtomicU64::new(0),
