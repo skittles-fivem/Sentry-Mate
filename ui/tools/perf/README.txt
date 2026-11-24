@@ -76,7 +76,9 @@ What is measured (see the header of measure.js for detail)
            resource except /api/v1/events ). The run waits for that plus 500 ms with nothing in flight
            (Playwright's view of requests, workers included; SSE excluded). Counts are taken up to that point.
   long tasks  PerformanceObserver 'longtask' (buffered, injected by addInitScript): count, total ms, max
-  dup GETs    identical API GET URLs (path+query) requested more than once during the load (SSE excluded): sum of n-1
+  dup GETs    identical API GET URLs (path+query) requested more than once during the load (SSE excluded): sum of n-1;
+              a stale-ok read the service worker answers from its memory (X-Sentry-Mate-Stale) reaches no server
+              and is not counted (memory_api_gets in the JSON counts those)
 
 Page paths (all packs share ui/packs/*/web/shared/state.js ROUTES):
   car /cars/{car}, drives /cars/{car}/drives, drive /cars/{car}/drives/{drive}, charges /cars/{car}/charges,

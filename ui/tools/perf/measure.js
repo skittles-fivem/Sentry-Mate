@@ -149,13 +149,14 @@ async function load(page, cdp, url) {
       if (e.request.url.startsWith('data:')) return;
       if (reqs.has(e.requestId)) { reqs.get(e.requestId).redirects++; return; }
       const sse = isSse(e.request.url);
-      reqs.set(e.requestId, { url: e.request.url, method: e.request.method, type: e.type, sse, done: false, bytes: 0, redirects: 0, at: Date.now() - t0 });
+      reqs.set(e.requestId, { url: e.request.url, method: e.request.method, type: e.type, sse, done: false, bytes: 0, redirects: 0, at: Date.now() - t0 , staleOk: Object.entries(e.request.headers || {}).some(([k, v]) => k.toLowerCase() === 'x-sentry-mate-stale-ok' && v === '1') });
       if (!sse) inflight++;
       lastActivity = Date.now();
     }),
     on('Network.responseReceived', (e) => {
       const r = reqs.get(e.requestId); if (!r) return;
       r.respondedAt = Date.now(); lastActivity = Date.now();
+      r.memory = Object.keys(e.response.headers || {}).some((k) => k.toLowerCase() === 'x-sentry-mate-stale');
       r.protocol = e.response.protocol; r.status = e.response.status; r.fromCache = !!(e.response.fromDiskCache || e.response.fromServiceWorker || e.response.fromPrefetchCache);
     }),
     on('Network.dataReceived', (e) => { const r = reqs.get(e.requestId); if (r) { r.received = (r.received || 0) + (e.encodedDataLength || 0); if (!r.sse) lastActivity = Date.now(); } }),
@@ -209,7 +210,8 @@ async function load(page, cdp, url) {
   const stat = list.filter((r) => !new URL(r.url).pathname.startsWith('/api/'));
   const sum = (a) => a.reduce((s, r) => s + (r.done ? (r.bytes || 0) : (r.received || 0)), 0);
   const gets = {};
-  for (const r of api) if (r.method === 'GET' && !r.sse) gets[r.url] = (gets[r.url] || 0) + 1;
+  // a stale-ok read the service worker answers from its memory reaches no server (counted apart)
+  for (const r of api) if (r.method === 'GET' && !r.sse && !r.memory) gets[r.url] = (gets[r.url] || 0) + 1;
   const dups = Object.entries(gets).filter(([, n]) => n > 1).map(([u, n]) => ({ url: new URL(u).pathname + new URL(u).search, n }));
   const protos = {};
   for (const r of list) if (r.protocol) protos[r.protocol] = (protos[r.protocol] || 0) + 1;
@@ -230,7 +232,7 @@ async function load(page, cdp, url) {
     ttu_ms: ttu,
     dcl_ms: m.dcl != null ? Math.round(m.dcl) : null,
     long_tasks: m.lt ? m.lt.count : null, long_tasks_ms: m.lt ? Math.round(m.lt.total) : null, long_task_max_ms: m.lt ? Math.round(m.lt.max) : null,
-    dup_api_gets: dups.reduce((s, d) => s + d.n - 1, 0), dup_api_list: dups,
+    dup_api_gets: dups.reduce((s, d) => s + d.n - 1, 0), dup_api_list: dups, memory_api_gets: api.filter((r) => r.memory).length,
     all: args.verbose ? list.map((r) => [new URL(r.url).pathname, r.status, r.done ? r.bytes : r.received, r.type, r.at]) : undefined,
     biggest: list.map((r) => ({ path: new URL(r.url).pathname, status: r.status, bytes: r.done ? r.bytes : (r.received || 0) }))
       .sort((x, y) => y.bytes - x.bytes).slice(0, 8),
@@ -287,7 +289,7 @@ async function navigate(page, cdp, base, target) {
     url: target, final_path: m.path, via, timed_out: timedOut, blocker: timedOut ? m.blocker : null,
     ttu_ms: m.readyAt != null && m.start != null ? Math.round(m.readyAt - m.start) : null, fcp_ms: null,
     bytes: sizes.reduce((a, b) => a + b, 0), requests: reqs.length, requests_static: reqs.filter((q) => !isApi(q)).length,
-    requests_api: reqs.filter(isApi).length, not_modified: 0, dup_api_gets: 0, dup_api_list: [], protocols: {},
+    requests_api: reqs.filter(isApi).length, not_modified: 0, dup_api_gets: 0, dup_api_list: [], memory_api_gets: 0, protocols: {},
     long_tasks: null, long_tasks_ms: null,
   };
 }
