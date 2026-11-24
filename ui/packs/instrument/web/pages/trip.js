@@ -419,7 +419,13 @@ export async function mount(ctx) {
       const s = marks.find((k) => k.kind === 'start'), e = [...marks].reverse().find((k) => k.kind === 'end');
       if (s) routePin(m, [s.lon, s.lat], 'A');
       if (e) routePin(m, [e.lon, e.lat], 'B');
-      m.frame(() => m.map.fitBounds(fit, { padding: padClear(mapEl, mapLegend, { left: 40, top: 24, right: 60, bottom: 56, beside: true }), maxZoom: 15, duration: 0 }));
+      m.frame(() => {
+        const pad = padClear(mapEl, mapLegend, { left: 40, top: 24, right: 60, bottom: 56, beside: true });
+        // the route and its End pin stay above the Map / Satellite switch and the credit, at every Interface size
+        const foot = mapEl.querySelector('.maplibregl-ctrl-bottom-right')?.offsetHeight || 0;
+        pad.bottom = Math.min(Math.max(pad.bottom, foot + rpx(16)), Math.max(0, mapEl.clientHeight * 0.8 - pad.top));
+        m.map.fitBounds(fit, { padding: pad, maxZoom: 15, duration: 0 });
+      });
     } catch (err) { console.warn(err); replace(mapEl, mapFallback()); }
   })();
   function hoverAt(i) {
