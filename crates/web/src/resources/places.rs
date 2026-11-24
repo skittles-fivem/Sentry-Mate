@@ -400,9 +400,12 @@ async fn create(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiRe
     let (id, name) = (saved["id"].as_str().unwrap_or_default().to_string(), saved["name"].clone());
     let named = saved["effect"]["drives_named"].as_u64().unwrap_or(0);
     let charges = saved["effect"]["charges_named"].as_u64().unwrap_or(0);
+    let n = |k: u64, one: &str, many: &str| if k == 1 { format!("1 {one}") } else { format!("{k} {many}") };
     let summary = format!(
-        "Added the place {} ({named} drives and {charges} charges now carry its name).",
-        name.as_str().unwrap_or("")
+        "Added the place {} ({} and {} now carry its name).",
+        name.as_str().unwrap_or(""),
+        n(named, "drive", "drives"),
+        n(charges, "charge", "charges")
     );
     v.audit(&app, "place-created", Some(&target("place", None, &id)), &summary).await?;
     Ok(with_status(StatusCode::CREATED, saved))

@@ -29,6 +29,10 @@ DAYS_RX = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 # ------------------------------------------------------------------ counts per place
 
 
+def _count(n, word):
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
 def _cars(req):
     return [c for c in req.ds.car_ids_featured() if req.store.sees(req.account, c)]
 
@@ -537,8 +541,8 @@ def create_place(req):
     p["created_ms"] = req.now
     summary = _apply(req, "create", p["id"], p)
     st.record(req.account, "place-created", f"place:{p['id']}",
-              f"Added the place {p['name']} ({summary['drives_named']} drives and {summary['charges_named']} "
-              "charges now carry its name).")
+              f"Added the place {p['name']} ({_count(summary['drives_named'], 'drive')} and "
+              f"{_count(summary['charges_named'], 'charge')} now carry its name).")
     _rows_event(req)
     out = view(req, p)
     out["effect"] = summary
