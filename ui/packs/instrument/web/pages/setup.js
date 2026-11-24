@@ -83,11 +83,20 @@ export async function mount(ctx) {
   const line = (tone, head, ...text) => h('div', { class: ['su-line', `su-line--${tone}`], role: tone === 'warn' ? 'alert' : null },
     h('span', { class: 'su-line-ic' }, icon(tone === 'ok' ? 'check' : tone === 'warn' ? 'warn' : 'info')),
     h('div', null, h('p', { class: 'su-line-head' }, head), text.length ? h('p', { class: 'su-line-text' }, text) : null));
+  let painted = false;
   function paint(wide, ...children) {
     stop();
     card.classList.toggle('su-card--wide', !!wide);
     replace(card, brand(), children);
     globalThis.scrollTo?.(0, 0);
+    // a step after the first: the control that led here is gone, and the focus with it. The new step's heading
+    // takes it (a step with a field to type in moves it there next), so a screen reader says where this is.
+    if (painted) takeFocus();
+    painted = true;
+  }
+  function takeFocus() {
+    const head = card.querySelector('h1');
+    if (head && (!document.activeElement || document.activeElement === document.body)) { head.tabIndex = -1; head.focus({ preventScroll: true }); }
   }
 
   // anything that says the claim is gone or the server is set up
