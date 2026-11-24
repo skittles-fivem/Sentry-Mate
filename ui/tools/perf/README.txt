@@ -61,6 +61,9 @@ What is measured (see the header of measure.js for detail)
   CPU      Emulation.setCPUThrottlingRate {rate: 4}
   network  Network.emulateNetworkConditions {latency 150 ms, download 180000 B/s (1.6 Mbit/s x 0.9),
            upload 84375 B/s (750 kbit/s x 0.9)}
+           on the page and on the site's service worker (the browser's CDP endpoint, auto-attached): the page's
+           throttling does not reach a request the worker answers, so before 2026-11-24 the worker's API reads (warm
+           loads, navigations) took no round trip; --no-sw-throttle measures that way still, for comparison
   cold     a new persistent Chromium profile (empty disk cache) per pack/page, session cookie copied in
   warm     page.goto of the same URL again in that same page (HTTP cache warm; packs answer
            Cache-Control: no-cache + ETag, so static files come back as 304s)
