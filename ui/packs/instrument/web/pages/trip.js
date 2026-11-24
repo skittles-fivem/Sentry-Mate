@@ -47,6 +47,7 @@ const SPLIT = [
   ['driving', 'Driving', 'driving'],
   ['charging_ac', 'Charging AC', 'ac'],
   ['charging_dc', 'Charging DC (fast)', 'dc'],
+  ['charging_unknown', 'Charging (kind not known)', 'unknown'],
   ['parked_awake', 'Parked, awake', 'awake'],
   ['asleep', 'Asleep', 'asleep'],
   ['not_recorded', 'Not recorded (no data)', 'none'],
@@ -228,6 +229,7 @@ export async function mount(ctx) {
     ['net', 'Used driving', en.drive_net, 'while driving, regen taken off'],
     ['ac', 'Added AC', en.added_ac, 'into the pack, home and public AC'],
     ['dc', 'Added DC', en.added_dc, 'into the pack at fast chargers'],
+    ['unknown', 'Added (kind not known)', en.added_unknown, 'into the pack, charges that did not say AC or DC'],
   ];
   const eMax = Math.max(1e-6, ...eRows.map((r) => r[2] || 0));
   const energyPanel = panel({ title: 'Energy', icon: 'bolt', cover: 'trip.chart.energy', side: csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'trip', dayKey(from, tz), 'energy'), eRows.map(([, l, v]) => ({ what: l, kwh: v })), [column('What', 'what'), column('Energy', 'kwh', 'energy')]) }) },
@@ -595,6 +597,7 @@ const FIGS = [
   ['Driving', (t) => t.time_ms?.driving, 'duration'],
   ['Charging AC', (t) => t.time_ms?.charging_ac, 'duration'],
   ['Charging DC', (t) => t.time_ms?.charging_dc, 'duration'],
+  ['Charging (kind not known)', (t) => t.time_ms?.charging_unknown, 'duration'],
   ['Parked, awake', (t) => t.time_ms?.parked_awake, 'duration'],
   ['Asleep', (t) => t.time_ms?.asleep, 'duration'],
   ['Not recorded', (t) => t.time_ms?.not_recorded, 'duration'],
@@ -604,6 +607,7 @@ const FIGS = [
   ['Energy used in all', (t) => t.energy_kwh?.gross, 'energy'],
   ['Energy added AC', (t) => t.energy_kwh?.added_ac, 'energy'],
   ['Energy added DC', (t) => t.energy_kwh?.added_dc, 'energy'],
+  ['Energy added (kind not known)', (t) => t.energy_kwh?.added_unknown, 'energy'],
   ['Net consumption', (t) => t.wh_per_km?.net, 'efficiency'],
   ['Gross consumption', (t) => t.wh_per_km?.gross, 'efficiency'],
   ['Charging cost', (t) => t.cost?.by_currency || [], 'money'],
