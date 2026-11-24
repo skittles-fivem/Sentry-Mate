@@ -36,6 +36,27 @@ class Paging(ServerCase):
         e, _ = self.c.error("GET", "/api/v1/cars/c1/timeline?limit=x", 400, "bad_input")
         self.assertIn("limit", e["fields"])
 
+    def test_numbers_in_the_query_are_read_as_strictly_as_the_real_server_does(self):
+        base = "/api/v1/cars/c1/timeline?"
+        for q in ("limit=1_0", "limit=%20%205", "limit=%2B5", "limit=007", "limit=%D9%A5", "limit=-1", "limit=1.5",
+                  "from_ms=007", "from_ms=1_000", "from_ms=%2B5", "to_ms=%EF%BC%95", "limit=99999999999999999999999"):
+            e, _ = self.c.error("GET", base + q, 400, "bad_input")
+            self.assertIn(q.split("=")[0], e["fields"], q)
+        e, _ = self.c.error("GET", base + "limit=1_0", 400, "bad_input")
+        self.assertEqual(e["fields"]["limit"], "Must be a whole number.")
+        self.assertEqual(len(self.c.get(base + "limit=5&from_ms=0")["items"]), 5)
+        self.assertEqual(len(self.c.get(base + "limit=")["items"]), 50)  # an empty value is absent
+
+    def test_the_query_itself_is_checked_as_the_real_server_does(self):
+        base = "/api/v1/cars/c1/timeline?"
+        e, _ = self.c.error("GET", base + "limit=%FF", 400, "bad_input")
+        self.assertEqual(e["fields"], {"query": "The query is not valid UTF-8."})
+        e, _ = self.c.error("GET", base + "%E0%A4%A=1", 400, "bad_input")
+        self.assertEqual(e["fields"], {"query": "The query is not valid UTF-8."})
+        e, _ = self.c.error("GET", base + "&".join(f"p{i}=1" for i in range(201)), 400, "bad_input")
+        self.assertEqual(e["fields"], {"query": "Too many parameters."})
+        self.c.get(base + "&".join(f"p{i}=1" for i in range(200)) + "&")  # 200 are allowed
+
     def test_cursor_is_tied_to_its_filters(self):
         d = self.c.get("/api/v1/cars/c1/drives?limit=2&sort=distance")
         e, _ = self.c.error("GET", f"/api/v1/cars/c1/drives?limit=2&sort=duration&after={d['next']}", 400,
@@ -217,7 +238,17 @@ class StaticAndHeaders(ServerCase):
         self.assertTrue(hd["content-type"].startswith("text/javascript"))
         self.assertNotEqual(js, raw)  # the file itself, not the index.html fallback
         st, hd, raw3 = self.c.request("GET", "/../../../etc/passwd")
-        self.assertEqual(raw3, raw)  # never outside the pack
+        self.assertEqual((st, raw3), (404, b"Not found"))  # never outside the pack
+
+    def test_a_missing_file_is_404_and_only_a_page_address_is_the_page(self):
+        for path in ("/missing.js", "/core/nothing.css", "/a/b.c", "/cars/c1/", "/a%00b", "/a/../b", "/a%5Cb", "/a//b",
+                     "/%FF", "/%E0%A4%A", "/mock-api.js", "/x/mock-api.mjs", "/_v/abc/missing.js"):
+            st, hd, raw = self.c.request("GET", path)
+            self.assertEqual((st, raw), (404, b"Not found"), path)
+            self.assertTrue(hd["content-type"].startswith("text/plain"), path)
+        st, hd, page = self.c.request("GET", "/")
+        for path in ("/cars/c1/drives", "/index.html", "/settings"):
+            self.assertEqual(self.c.request("GET", path)[2], page, path)
 
     def test_security_headers(self):
         for path in ("/", "/api/v1/me", "/api/v1/nothing", "/boot.js"):
