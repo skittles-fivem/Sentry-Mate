@@ -177,7 +177,7 @@ async fn the_claim_a_move_here_refused_and_starting_fresh() {
     assert_eq!((r.status, r.code()), (404, Some("no_such_job".into())));
 
     // a move here: checked before anything runs
-    let r = c.post("/api/v1/setup/move-here", json!({ "from": "http://192.168.1.20", "code": "x" })).await;
+    let r = c.post("/api/v1/setup/move-here", json!({ "from": "http://192.0.2.20", "code": "x" })).await;
     assert_eq!(r.status, 400, "{}", r.text());
     let r = c.post("/api/v1/setup/move-here", json!({ "from": "127.0.0.1:1", "code": "SMMV-NOT-A-CODE" })).await;
     assert_eq!(r.status, 400, "{}", r.text());

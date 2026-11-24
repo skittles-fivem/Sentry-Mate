@@ -40,8 +40,8 @@ impl std::fmt::Display for Address {
 }
 
 impl Address {
-    /// Reads what the owner gives: `192.168.1.20`, `nas.local:10100`, `[fd00::1]:10100`, or the bridge's whole upload
-    /// address (`https://192.168.1.20:10100/api/can/logs`). Port 10100 unless given.
+    /// Reads what the owner gives: `192.0.2.20`, `nas.local:10100`, `[fd00::1]:10100`, or the bridge's whole upload
+    /// address (`https://192.0.2.20:10100/api/can/logs`). Port 10100 unless given.
     pub fn parse(text: &str) -> Result<Address, String> {
         let t = text.trim();
         let t = t.strip_prefix("https://").or_else(|| t.strip_prefix("HTTPS://")).unwrap_or(t);
@@ -49,7 +49,7 @@ impl Address {
             return Err("the old server's address is https:// (its upload port), not http://".into());
         }
         let t = t.split('/').next().unwrap_or("");
-        let bad = || format!("{text:?} isn't a server address: give it like 192.168.1.20 or nas.local:10100");
+        let bad = || format!("{text:?} isn't a server address: give it like 192.0.2.20 or nas.local:10100");
         let (host, port) = if let Some(rest) = t.strip_prefix('[') {
             let (h, after) = rest.split_once(']').ok_or_else(bad)?;
             let port = match after.strip_prefix(':') {
@@ -508,13 +508,13 @@ mod tests {
     #[test]
     fn addresses_read_as_the_owner_gives_them() {
         let a = |s: &str| Address::parse(s).unwrap();
-        assert_eq!(a("192.168.1.20"), Address { host: "192.168.1.20".into(), port: 10100 });
+        assert_eq!(a("192.0.2.20"), Address { host: "192.0.2.20".into(), port: 10100 });
         assert_eq!(a(" nas.local:10101 "), Address { host: "nas.local".into(), port: 10101 });
-        assert_eq!(a("https://192.168.1.20:10100/api/can/logs"), Address { host: "192.168.1.20".into(), port: 10100 });
+        assert_eq!(a("https://192.0.2.20:10100/api/can/logs"), Address { host: "192.0.2.20".into(), port: 10100 });
         assert_eq!(a("[fd00::1]:10102"), Address { host: "fd00::1".into(), port: 10102 });
         assert_eq!(a("fd00::1"), Address { host: "fd00::1".into(), port: 10100 });
         assert_eq!(a("[fd00::1]").to_string(), "[fd00::1]:10100");
-        for bad in ["", "http://192.168.1.20", "nas:port", "a b", "nas:0", "[fd00::1"] {
+        for bad in ["", "http://192.0.2.20", "nas:port", "a b", "nas:0", "[fd00::1"] {
             assert!(Address::parse(bad).is_err(), "{bad}");
         }
         assert!(a("127.0.0.1:1").is_this_machine());

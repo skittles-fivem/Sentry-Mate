@@ -1,7 +1,7 @@
 /// Why MQTT won't start: every message says what to change, as Settings → MQTT shows it.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
-    #[error("the broker address needs a scheme, e.g. mqtts://192.168.1.10:8883")]
+    #[error("the broker address needs a scheme, e.g. mqtts://192.0.2.10:8883")]
     NoScheme,
     #[error(
         "{0}:// is unencrypted: car data includes where it is. Use mqtts://host:8883, or turn on \"Allow unencrypted MQTT\""

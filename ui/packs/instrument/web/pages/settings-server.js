@@ -201,7 +201,7 @@ export async function mount(ctx) {
     nameErr.hidden = true;
     if (!v) return;
     if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/.test(v) || v.length > 253) {
-      replace(nameErr, icon('warn'), 'A host name has letters, digits, hyphens and dots, such as sentry-mate.local or an address such as 192.168.1.20.');
+      replace(nameErr, icon('warn'), 'A host name has letters, digits, hyphens and dots, such as sentry-mate.local or an address such as 192.0.2.20.');
       nameErr.hidden = false;
       return;
     }

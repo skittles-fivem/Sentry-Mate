@@ -981,9 +981,9 @@ mod tests {
         assert_eq!(origin_of("http://t.example/a"), None);
         assert_eq!(host_of("https://geo.example:443/x").as_deref(), Some("geo.example"));
         assert_eq!(host_of("https://[::1]:8443/").as_deref(), Some("::1"));
-        assert!(is_proxy("http://proxy.lan:3128") && is_proxy("socks5://10.0.0.2") && is_proxy("https://p.example/"));
+        assert!(is_proxy("http://proxy.lan:3128") && is_proxy("socks5://192.0.2.2") && is_proxy("https://p.example/"));
         assert!(!is_proxy("ftp://p") && !is_proxy("http://user:pw@p") && !is_proxy("http://p/path"));
-        assert!(is_host_name("sentry-mate.local") && is_host_name("192.168.1.10"));
+        assert!(is_host_name("sentry-mate.local") && is_host_name("192.0.2.10"));
         assert!(!is_host_name("-a.local") && !is_host_name("a..b") && !is_host_name("a b"));
         assert_eq!(cert_host_name(" Sentry-Mate.LOCAL ").as_deref(), Some("sentry-mate.local"));
         assert_eq!(cert_host_name("[::1]").as_deref(), Some("::1"));
@@ -991,11 +991,11 @@ mod tests {
         assert_eq!(cert_host_name("[::1"), None);
         assert_eq!(cert_host_name("a b"), None);
         // the running certificate's names, from SENTRY_MATE_NAMES as written: only real names are offered
-        let running: Vec<String> = ["localhost", "nas.lan", " 192.168.1.5", "bad name", "*.lan", "NAS.lan"]
+        let running: Vec<String> = ["localhost", "nas.lan", " 192.0.2.5", "bad name", "*.lan", "NAS.lan"]
             .iter()
             .map(|s| s.to_string())
             .collect();
-        assert_eq!(default_host_names(&running), ["nas.lan", "192.168.1.5"]);
+        assert_eq!(default_host_names(&running), ["nas.lan", "192.0.2.5"]);
         // nothing outside until an admin turns online tiles on
         let mut s = ServerSettings::default();
         assert_eq!(s.tiles.mode, "offline");

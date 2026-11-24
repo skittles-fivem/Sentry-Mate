@@ -9,7 +9,10 @@ use vault::{Kdf, Vault};
 /// 2026-11-16 12:00:00 UTC.
 pub const T0: u64 = 1_794_830_400_000;
 pub const OWNER_PASSWORD: &str = "correct horse saddle 42";
+/// A home-network address: the sign-in rules sort addresses into home and outside, so this one has to be private.
 pub const HOME: &str = "192.168.1.20";
+/// Another device at home.
+pub const HOME_OTHER: &str = "10.1.2.3";
 pub const OUTSIDE: &str = "203.0.113.50";
 
 pub struct Env {

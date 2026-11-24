@@ -65,7 +65,7 @@ services:
     # certificate. Read only when it is made, on first start; the bridge
     # pins its SHA-256 and does not check names.
 #    environment:
-#      SENTRY_MATE_NAMES: 192.168.1.20,truenas.local
+#      SENTRY_MATE_NAMES: 192.0.2.20,truenas.local
 
     # Both lines are needed, each with a dataset of its own. Without one it
     # does not start, and the log says which.

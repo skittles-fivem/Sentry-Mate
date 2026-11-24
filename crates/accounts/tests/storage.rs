@@ -20,7 +20,7 @@ fn nothing_readable_is_kept_on_disk() {
         cars: Some((1000..1100).collect()),
     };
     env.acc.create_account(&owner, accounts::Confirm::new(OWNER_PASSWORD, Some(&codes[1])), n).unwrap();
-    let (gran, _) = env.sign_in("grandmother", "knitting needles 1952", "192.168.1.66");
+    let (gran, _) = env.sign_in("grandmother", "knitting needles 1952", "192.0.2.66");
     env.acc.set_ui_pack(&owner, Some("plain-pack-x")).unwrap();
     env.acc.maintain().unwrap();
     env.reopen();
@@ -45,8 +45,8 @@ fn nothing_readable_is_kept_on_disk() {
         codes[0].as_bytes(),
         gran.token.as_bytes(),
         token_hash_hex.as_bytes(),
-        b"192.168.1.66",
-        b"192.168.1.20",
+        b"192.0.2.66",
+        HOME.as_bytes(),
         b"plain-pack-x",
         b"Test browser",
         b"sign-in",
@@ -69,7 +69,7 @@ fn nothing_readable_is_kept_on_disk() {
     }
     // and it all still opens
     env.acc.authenticate(&owner_session.token, &client(HOME)).unwrap();
-    env.acc.authenticate(&gran.token, &client("192.168.1.66")).unwrap();
+    env.acc.authenticate(&gran.token, &client("192.0.2.66")).unwrap();
 }
 
 #[test]

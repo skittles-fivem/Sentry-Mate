@@ -748,12 +748,12 @@ async fn names_given_at_start_that_are_not_host_names_stay_out_of_the_certificat
     let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
     std::fs::create_dir_all(&data).unwrap();
     Vault::create(&data, &keys, Kdf::FAST_FOR_TESTS).unwrap();
-    let (_, web_port, server) = start_serving_as(&data, &keys, &["nas.lan", " 192.168.1.5", "bad name", "*.lan"]);
+    let (_, web_port, server) = start_serving_as(&data, &keys, &["nas.lan", " 192.0.2.5", "bad name", "*.lan"]);
     listening(web_port, &server).await;
     let mut c = set_up(&keys, web_port, PASSWORD).await;
-    let want = json!(["localhost", "nas.lan", "192.168.1.5"]);
+    let want = json!(["localhost", "nas.lan", "192.0.2.5"]);
     assert_eq!(c.get("/api/v1/network").await.json()["certificate"]["names"], want);
-    assert_eq!(c.get("/api/v1/settings").await.json()["host_names"], json!(["nas.lan", "192.168.1.5"]));
+    assert_eq!(c.get("/api/v1/settings").await.json()["host_names"], json!(["nas.lan", "192.0.2.5"]));
     let r = c.request("POST", "/api/v1/network/certificate", Some(json!({ "password": PASSWORD }))).await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(r.json()["names"], want);
@@ -761,7 +761,7 @@ async fn names_given_at_start_that_are_not_host_names_stay_out_of_the_certificat
     let der = first_der(&pem);
     let has = |b: &[u8]| der.windows(b.len()).any(|w| w == b);
     assert!(has(&[0x87, 4, 192, 168, 1, 5]), "the address as an IP address");
-    assert!(!has(b"bad name") && !has(b"*.lan") && !has(b"192.168.1.5"));
+    assert!(!has(b"bad name") && !has(b"*.lan") && !has(b"192.0.2.5"));
     server.abort();
 }
 

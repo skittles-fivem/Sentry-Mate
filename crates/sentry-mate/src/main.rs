@@ -292,7 +292,7 @@ enum MoveCmd {
     Undo,
     /// A new server (empty data and keys folders): bring the data here from the old server.
     From {
-        /// The old server's address, as the CAN Bridge uses it (192.168.1.20, nas.local:10100, ...).
+        /// The old server's address, as the CAN Bridge uses it (192.0.2.20, nas.local:10100, ...).
         address: String,
         /// The move code the old server showed.
         code: String,

@@ -41,7 +41,7 @@ class MoveCarriesOn(FreshCase):
         kept = j["progress"]["bytes_done"]
         self.assertGreater(kept, 0)
         # another server: busy (give this move up first); a code with a typo: 400, nothing changes
-        c.error("POST", "/api/v1/setup/move-here", 409, "setup_busy", body={"from": "192.168.1.20", "code": _code()})
+        c.error("POST", "/api/v1/setup/move-here", 409, "setup_busy", body={"from": "192.0.2.20", "code": _code()})
         c.error("POST", "/api/v1/setup/move-here", 400, "bad_input", body={"from": "cancel.example", "code": "SMMV-1"})
         # the same server with a new code: the same job, from where it stopped
         j = c.json("POST", "/api/v1/setup/move-here", {"from": "cancel.example:10100", "code": _code()})
