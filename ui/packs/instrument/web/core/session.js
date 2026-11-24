@@ -2,6 +2,8 @@
 //   1. the server has no account yet          -> /setup (create the first admin with the set-up code)
 //   2. nobody is signed in in this browser     -> /sign-in?next=<the page asked for>
 //   3. signed in                               -> the page asked for; / is Fleet
+// A signed-in account that the rule for every account has not met yet (GET /me: two_step_setup_only) gets the
+// two-step set-up page at every address.
 // gate(page) answers this for every navigation. A 401 from any call later (the session ended on the
 // server, another tab signed out) sends the person to sign-in, keeping the page they were on.
 
@@ -66,7 +68,21 @@ export async function gate(page, here) {
     return { redirect: `/sign-in${next}` };
   }
   if (page === 'sign-in' || page === 'setup') return { redirect: '/' };
+  // the rule asks every account for two-step sign-in and this one has none: the server answers every call but its own
+  // account's with 403 two_step_setup, so all there is to show is the page that sets it up (pages/two-step-setup.js)
+  if (getMe()?.two_step_setup_only) return page === 'two-step-setup' ? { ok: true } : { wall: true };
+  if (page === 'two-step-setup') return { redirect: '/' };
   return { ok: true };
+}
+
+/**
+ * The server answered 403 two_step_setup: ask again who this is, and say whether the account may now only set
+ * two-step sign-in up (then the router shows that page, whatever address it was on).
+ */
+export async function refreshMe() {
+  api.invalidate();
+  try { await loadSession(); } catch (e) { if (e.status !== 401 && e.status !== 403) throw e; }
+  return !!getMe()?.two_step_setup_only;
 }
 
 /** After POST /session or POST /setup answered "done": load the account and its preferences. */

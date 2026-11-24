@@ -299,6 +299,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if m not in route.public and session is None:
                 raise not_signed_in()
             account = session["account"] if session else None
+            # a rule for every account that this one has not met yet: all it may do is set two-step sign-in up (the
+            # real server's policy: every route but /me*, DELETE /session and the public ones answers 403)
+            if account is not None and m not in route.public and resources.auth.setup_only(app.store, account) and \
+                    not (path == "/api/v1/me" or path.startswith("/api/v1/me/")
+                         or (m == "DELETE" and path == "/api/v1/session")):
+                raise ApiError(403, "two_step_setup", "Set up two-step sign-in for your account first.")
             if m in route.admin and (account is None or account["role"] != "admin"):
                 raise not_allowed("Only an admin may do this.")
             if route.car_scoped:

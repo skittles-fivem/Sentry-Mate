@@ -84,6 +84,19 @@ test('a 401 tells the frame to show sign-in', async () => {
   assert.deepEqual(seen, ['me', 'me/preferences']);
 });
 
+test('a 403 two_step_setup tells the frame this account may only set two-step sign-in up', async () => {
+  const api = createClient({ fetch: fakeFetch((url) => (url.includes('csrf')
+    ? json(403, { error: { code: 'csrf' } }) : json(403, { error: { code: 'two_step_setup', message: 'Set up two-step sign-in for your account first.' } }))) });
+  const seen = [];
+  const off = api.on('two_step_setup', (d) => seen.push(d.path));
+  await assert.rejects(api.get('cars'), (e) => e.status === 403 && e.code === 'two_step_setup');
+  await assert.rejects(api.patch('me/preferences', { theme: 'dark' }), (e) => e.code === 'two_step_setup');
+  await assert.rejects(api.get('csrf'), (e) => e.code === 'csrf');
+  off();
+  await assert.rejects(api.get('cars'));
+  assert.deepEqual(seen, ['cars', 'me/preferences']);
+});
+
 test('changes carry the CSRF header and a JSON body; 204 gives null', async () => {
   const f = fakeFetch((url, init) => (init.method === 'DELETE' ? new Response(null, { status: 204 }) : json(200, { version: 2 })));
   const api = createClient({ fetch: f });

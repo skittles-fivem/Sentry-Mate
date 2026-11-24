@@ -1,0 +1,19 @@
+/* Set up two-step sign-in (pages/two-step-setup.js). The card is the app's .auth-card; the key and the recovery codes in its
+   dialogs look as they do in Settings: Server and access (pages/settings-server.css), whose rules are repeated here
+   because that page's style sheet is not loaded on this one. */
+.su2-acts { margin-top: round(1.25rem, var(--e)); gap: round(0.5rem, var(--e)); flex-wrap: wrap; }
+.mv-acts { flex-wrap: wrap; gap: round(0.5rem, var(--e)); }
+.mv-codebox { padding: round(1rem, var(--e)) round(1.125rem, var(--e)); border: 1px solid var(--live-line); border-radius: var(--radius-sm); background: var(--live-soft); display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); }
+.mv-codebox-head { font-size: max(0.75rem, var(--fs-floor)); text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-3); font-weight: 600; }
+.mv-code { font-family: var(--font-mono); font-size: 1.625rem; --LH: round(calc(1.35 * 1em), 2px); letter-spacing: 0.04em; color: var(--text); display: flex; flex-wrap: wrap; column-gap: round(0.125rem, var(--e)); user-select: all; }
+.ss-value { font-size: max(0.875rem, var(--fs-floor)); padding: round(0.25rem, var(--e)) round(0.5rem, var(--e)); border-radius: round(0.375rem, var(--e)); background: var(--glass-2); color: var(--text); user-select: all; min-width: 0; max-width: 100%; }
+.ss-steps { margin: 0 0 round(1rem, var(--e)); padding-left: round(1.25rem, var(--e)); display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); color: var(--text-2); }
+.ss-steps .mv-codebox { margin-top: round(0.5rem, var(--e)); }
+.ss-secret { font-size: 1.25rem; }
+.ss-rcodes { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(round(9.5rem, var(--e)), 1fr)); gap: round(0.5rem, var(--e)) round(1rem, var(--e)); }
+.ss-rdlg > p { margin: 0 0 round(0.875rem, var(--e)); }
+@media (max-width: 40rem) { .mv-code { font-size: 1.25rem; } }
+:root[data-phone] .auth { min-height: calc(100dvh - round(2rem, var(--e))); }
+:root[data-phone] .auth-card { padding: round(1.5rem, var(--e)) round(1.25rem, var(--e)) round(1.375rem, var(--e)); }
+.mv-copy { display: inline-flex; align-items: center; gap: round(0.625rem, var(--e)); flex-wrap: wrap; }
+.mv-copied { color: var(--text-3); font-size: max(0.78125rem, var(--fs-floor)); }
