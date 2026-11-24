@@ -55,19 +55,24 @@ async function savePref(patch, what) {
   try { await savePrefs(patch); flash(`${what} saved.`); return true; } catch (e) { flash(`Could not save ${what.toLowerCase()}: ${e.message}`, { kind: 'error' }); return false; }
 }
 
+// The first reads; prefetch() warms them while the session is checked, and when a link here is under the pointer
+// (not the map settings: a page with a map takes a warmed answer as fresh, and this page is where they change)
+const firstReads = (ctx, { maps = true } = {}) => [
+  ctx.api.get('about', null, { maxAgeMs: 600000 }),
+  ctx.api.get('settings'),
+  maps ? ctx.api.get('maps/config') : null,
+  packChoices(ctx.api, { fallback: PACKS, current: (ctx.prefs || getPrefs())?.ui_pack || 'instrument' }),
+  ctx.api.list('cars', { sort: 'custom', limit: 500 }).all({ max: 5000 }),
+];
+export function prefetch(ctx) { return Promise.all(firstReads(ctx, { maps: false }).map((p) => p?.catch(() => null))); }
+
 export async function mount(ctx) {
   // an old link to a section that moved (/settings/display#map-tiles): open it where it is now
   const moved = movedUrl(location.href);
   if (moved) { navigate(moved, { replace: true }); return; }
   const admin = isAdmin();
   let about = null, server = null, maps = null, packList = null, cars = null;
-  [about, server, maps, packList, cars] = await Promise.all([
-    ctx.api.get('about', null, { maxAgeMs: 600000 }).catch(() => null),
-    ctx.api.get('settings').catch(() => null),
-    ctx.api.get('maps/config').catch(() => null),
-    packChoices(ctx.api, { fallback: PACKS, current: getPrefs()?.ui_pack || 'instrument' }),
-    ctx.api.list('cars', { sort: 'custom', limit: 500 }).all({ max: 5000 }).catch(() => null),
-  ]);
+  [about, server, maps, packList, cars] = await Promise.all(firstReads(ctx).map((p) => p.catch(() => null)));
   if (!ctx.alive()) return;
   const p = getPrefs() || {};
   const u = getUnits();
