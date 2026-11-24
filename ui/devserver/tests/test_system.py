@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import threading
 
-from .helpers import DAY, NOW, ServerCase
+from .helpers import DAY, NOW, Running, ServerCase
 from .test_live import read_events
 
 PACKS = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "packs"))
@@ -156,6 +156,14 @@ class Health(ServerCase):
         self.assertLess(c3["last_upload_ms"], NOW - 50 * 3_600_000)
         old = self.c.get(f"/api/v1/cars/c1/health?from_ms={NOW - 400 * DAY}")
         self.assertGreaterEqual(len(old["unknown_spans"]), len(c1["unknown_spans"]))
+
+    def test_each_list_has_its_whole_count_and_no_period_of_its_own(self):
+        for cid in ("c1", "c2", "c3"):
+            h = self.c.get(f"/api/v1/cars/{cid}/health?from_ms=0")
+            for k in ("chain_gaps", "dropped_frames", "unknown_spans"):
+                self.assertEqual(h[k + "_total"], len(h[k]), (cid, k))  # under 500 in each list here
+            self.assertNotIn("from_ms", h)  # the real server's answer has neither
+            self.assertNotIn("to_ms", h)
 
     def test_log_checks(self):
         """Every log as the CAN Bridge app is told it, counted per check_reason, with the runs of failed logs."""
@@ -476,6 +484,8 @@ class BigFleetSystem(ServerCase):
         self.assertGreater(s["total_bytes"], 0)
         h = self.c.get("/api/v1/cars/c42/health")
         self.assertIn("healthy", h)
+        for k in ("chain_gaps", "dropped_frames", "unknown_spans"):
+            self.assertEqual((h[k], h[k + "_total"]), ([], 0))
 
 
 class WatchSystem(ServerCase):
@@ -624,3 +634,25 @@ class ReleaseCheckWatcher(ServerCase):
         self.assertEqual(self.c.get("/api/v1/release")["status"], "newer")
         self.assertNotIn("release_available", {x["code"] for x in self.c.get("/api/v1/notices")["items"]})
         self.c.error("POST", "/api/v1/release/check", 403, "not_allowed", body={})
+
+
+class HealthListsCapped(ServerCase):
+    """--health-list-max: the lists hold the newest few, the totals count the whole period (the real server: 500)."""
+    server_args = {"health_list_max": 3}
+
+    def test_the_newest_are_kept_and_the_totals_count_all(self):
+        h = self.c.get("/api/v1/cars/c1/health?from_ms=0")
+        self.assertEqual(len(h["dropped_frames"]), 3)
+        self.assertGreater(h["dropped_frames_total"], 3)
+        self.assertEqual(len(h["unknown_spans"]), 3)
+        self.assertGreater(h["unknown_spans_total"], 3)
+        self.assertEqual(h["chain_gaps_total"], len(h["chain_gaps"]))
+        whole = Running(health_list_max=500)
+        try:
+            w = whole.client().get("/api/v1/cars/c1/health?from_ms=0")
+        finally:
+            whole.close()
+        for k in ("dropped_frames", "unknown_spans"):
+            self.assertEqual(h[k + "_total"], len(w[k]))
+            self.assertEqual(h[k], w[k][-3:], k)
+        self.assertEqual(h["unknown_ms"], w["unknown_ms"])  # of the whole period
