@@ -137,3 +137,20 @@ test('a live rebuild leaves a control the reader did not touch as the new page h
     assert.equal(await (await openPicker(page)).isChecked(), true);
   });
 });
+
+// Print: a wide table fits the width of the page (it wraps, it does not run off the paper)
+for (const p of ['drives', 'charges', 'statistics', 'health']) {
+  test(`print: ${p} fits the width of the page`, { skip: SKIP, timeout: 120000 }, async () => {
+    await withServer(['--freeze-clock'], async ({ origin, page }) => {
+      await page.goto(`${origin}/cars/c1/${p}`);
+      await ready(page, p);
+      await page.waitForTimeout(500);
+      await page.emulateMedia({ media: 'print' });
+      await page.setViewportSize({ width: 794, height: 1123 });
+      await page.waitForTimeout(500);
+      const r = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, iw: innerWidth,
+        wide: [...document.querySelectorAll('#view *')].filter((e) => e.getBoundingClientRect().right > innerWidth + 1).slice(0, 4).map((e) => `${e.tagName}.${e.className}`) }));
+      assert.ok(r.sw <= r.iw, `${p}: ${JSON.stringify(r)}`);
+    });
+  });
+}
