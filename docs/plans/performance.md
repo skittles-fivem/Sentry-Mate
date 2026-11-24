@@ -252,6 +252,36 @@ Means over 6 packs x 8 pages (ms):
   waits for (TTU counts the last answer): the next steps would be drawing less on the first frame (`core/snap.js`'s
   whole-document passes, long lists), and not waiting on answers that are only below the fold.
 
+#### Instrument alone: reads sent twice
+
+Since the other packs were archived the runs are Instrument's 8 pages only (8 loads per phase, 7 navigations), on
+the same data folder; the baseline is origin/main `768cec29`, which carries other sessions' work since the last row
+above (the off-screen first draw, the bug hunt's fixes), so its numbers are not those of the table above.
+
+The harness counts a GET of the same address twice in one load as a duplicate: there were 4 to 10 per cold load
+(`/cars/c1` on every page, ten on Battery) and up to 4 per warm load. Each costs a round trip (150 ms) and its bytes
+on the phone. Four causes, each its own commit:
+1. **The service worker** answered a page's stale-ok read (the second read a first page sends when the network's
+   answer is not in within 100 ms) from the network when it had nothing kept: it joins the read of the same address
+   under way now (one sent without a tag).
+2. **No worker at all** (a first visit) still got that second read: the router asks for it only when a worker
+   controls the page.
+3. **A page built again** because a fresh answer differed from the worker's read everything once more: the fresh
+   answers are warm now (taken at once, like a prefetched one).
+4. **Settings: Integrations**' invoices block read each input's overview again right after its section had
+   (`follow()` takes `initial`).
+
+| run | phone cold TTU | cold FCP | warm TTU | warm FCP | nav | desktop cold | warm | nav |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| origin/main `768cec29` | 3992 | 1704 | 1037 | 353 | 802 | 607 | 396 | 180 |
+| 1 the worker joins the read under way | 4035 | 1650 | 898 | 343 | 678 | 533 | 350 | 177 |
+| 2, 4 + no second read without a worker, Integrations once | 3926 | 1653 | 986 | 316 | 703 | 540 | 371 | 175 |
+| 3 + a page built again takes the fresh answers | **3774** | 1608 | **937** | 325 | **668** | 579 | **349** | 177 |
+
+- Duplicates per run: cold loads none left (from 4 to 10 each); warm loads 3 to 4 left on Car, Battery and
+  Integrations (reads made after the page is drawn, looked at next).
+- Long tasks per cold phone load 970 → 741 ms (fewer answers to parse and draw twice).
+
 
 # Plan: page speed with a long history
 
