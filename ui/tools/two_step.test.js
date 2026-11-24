@@ -102,7 +102,7 @@ test('instrument: two-step sign-in is turned on from the page, and an admin sets
     const codes = dlg.locator('.ss-rcodes li');
     await codes.first().waitFor({ timeout: 5000 });
     assert.equal(await codes.count(), 10);
-    assert.match(await codes.first().innerText(), /^[a-z0-9]{5}-[a-z0-9]{5}$/);
+    assert.match(await codes.first().innerText(), /^[0-9a-hjkmnp-tv-z]{4}(-[0-9a-hjkmnp-tv-z]{4}){3}$/);
     await dlg.getByText('Keep these recovery codes').waitFor();
     await dlg.locator('button', { hasText: /^\s*I have kept them\s*$/ }).click();
     await closed();

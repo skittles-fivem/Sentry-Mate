@@ -36,7 +36,7 @@ import { getMe, getPrefs, isAdmin } from './prefs.js';
 import { holdSnap } from './snap.js';
 import { watchLinks, warmModules, prefetchApi, pageSheet, pageSheetsOff, setStale, signedInHint } from '../shared/prefetch.js';
 
-const BARE = new Set(['sign-in', 'setup']);
+const BARE = new Set(['sign-in', 'setup', 'two-step-setup']);
 // the main sections: their modules load when the browser is idle after the first page
 const MAIN = ['car', 'drives', 'drive', 'charges', 'battery', 'statistics', 'timeline', 'fleet'];
 // pages that may show kept answers at once (marked stale until checked): not forms
@@ -307,7 +307,8 @@ function counted(sc, tracker = null) {
 function pageCss(id) { return pageSheet(id, new URL(`../pages/${id}.css`, import.meta.url).href); }
 const dropCss = pageSheetsOff;
 
-async function mount(s, { keepScroll = false, live = false } = {}) {
+// wall: the account may only set two-step sign-in up (core/session.js gate): its page is shown at every address
+async function mount(s, { keepScroll = false, live = false, wall = false } = {}) {
   const my = ++seq;
   // (the clean-up of what was there is handed to the stage alone: this page's own functions must not hold it)
   let finishOld = both(dropStage(live), unmountCurrent(live));
@@ -321,7 +322,7 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
     if (!focusWas || !alive() || (focusWas !== document.body && focusWas.isConnected)) return;
     if (!document.activeElement || document.activeElement === document.body) frame.view().focus({ preventScroll: true });
   };
-  const id = s.page;
+  const id = wall ? 'two-step-setup' : s.page;
   const st = live ? stageView(frame.view(), finishOld) : null;
   finishOld = null;
   let view = st ? st.stage : frame.view();
@@ -383,6 +384,7 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   }
   if (!alive()) return;
   if (gate.redirect) { state.navigate(gate.redirect, { replace: true }); return; }
+  if (gate.wall) { mount(s, { keepScroll: false, live: false, wall: true }); return; }
 
   if (id === 'not-found' || !info) {
     frame.update({ s, info: null, car: null, period: null });

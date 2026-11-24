@@ -5,6 +5,7 @@
 import { h, replace } from '../shared/dom.js';
 import { brandMark, icon } from '../core/icons.js';
 import { field, form } from '../core/form.js';
+import { codeAttrs, codeValue } from '../core/code.js';
 import * as session from '../core/session.js';
 import { flash } from '../core/flash.js';
 
@@ -51,16 +52,16 @@ export async function mount(ctx) {
   }
 
   function codeStep(pending) {
-    const code = field({ label: 'Code from your authenticator app', name: 'code', required: true, attrs: { autocomplete: 'one-time-code', inputmode: 'numeric', pattern: '[0-9 ]{6,8}', maxlength: '8' } });
+    const code = field({ label: 'Code from your authenticator app', name: 'code', required: true, hint: 'Six digits from the app, or one of your recovery codes if you lost your phone.', attrs: codeAttrs() });
     const f = form({
       fields: [code], submit: 'Confirm',
       secondary: h('button', { class: 'btn btn--ghost', type: 'button', onclick: passwordStep }, 'Start again'),
       async onSubmit(v) {
         try {
-          await ctx.api.post('session/two-step', { pending, code: v.code.replace(/\s+/g, '') });
+          await ctx.api.post('session/two-step', { pending, code: codeValue(v.code) });
           await done();
         } catch (err) {
-          if (err.code === 'wrong_code') { code.setError('That code is not right. Codes change every 30 seconds.'); return; }
+          if (err.code === 'wrong_code') { code.setError('That code is not right. Codes change every 30 seconds; a recovery code works once.'); return; }
           if (err.code === 'sign_in_expired') { flash('That sign-in took too long. Start again.', { kind: 'info' }); passwordStep(); return; }
           throw err;
         }
