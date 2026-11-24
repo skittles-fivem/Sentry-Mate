@@ -1,6 +1,7 @@
 // Pages at their edges, in Chromium on the dev API server: a link to a section of the page that is open lands
 // below the top bar, as a link from another page does; a sold date after today and a currency that is none are
-// refused under their fields; a period still to come or before 1970 gives a page, not an error.
+// refused under their fields; a period still to come or before 1970 gives a page, not an error; a search for one very
+// long word leaves the page as wide as the window.
 // `PACKS=a,b` runs only those. Run: node --test ui/tools/page-edges.test.js. Skipped when Playwright is not installed.
 'use strict';
 
@@ -178,5 +179,31 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
       assert.ok(said.shown, 'the picker stays open');
       assert.ok(said.native || /1970/.test(said.own), 'the picker says the day is too early');
     });
+  });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: a search for one very long word that finds nothing leaves the page as wide as the window`, { skip: SKIP, timeout: 240000 }, async () => {
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+      await withPack(pack, [], async ({ origin, context }) => {
+        for (const [route, id, label] of [['/cars/c1/logbook', 'logbook', 'Search the drives'], ['/cars/c1/health', 'health', 'Find a signal']]) {
+          const { page, errors } = await openPage(context, origin + route, id);
+          const box = page.getByLabel(label).filter({ visible: true }).first();
+          await box.fill('x'.repeat(300));
+          await box.press('Enter');
+          await page.waitForFunction(() => [...document.querySelectorAll('main .empty p')].some((p) => p.checkVisibility() && /x{20}/.test(p.textContent)), null, { timeout: 15000 });
+          await page.waitForTimeout(300);
+          const at = await page.evaluate(() => {
+            const note = [...document.querySelectorAll('main .empty p')].find((p) => p.checkVisibility() && /x{20}/.test(p.textContent));
+            const r = note.getBoundingClientRect();
+            return { page: document.documentElement.scrollWidth, window: document.documentElement.clientWidth, left: r.left, right: r.right, inside: note.scrollWidth <= note.clientWidth + 1 };
+          });
+          assert.ok(at.page <= at.window, `${route} at ${viewport.width} px is ${at.page} px wide in a window of ${at.window}`);
+          assert.ok(at.left >= 0 && at.right <= at.window && at.inside, `${route} at ${viewport.width} px: the note runs from ${at.left} to ${at.right} and ${at.inside ? 'holds' : 'does not hold'} its words`);
+          assert.deepEqual(errors, []);
+          await page.close();
+        }
+      }, viewport);
+    }
   });
 }
