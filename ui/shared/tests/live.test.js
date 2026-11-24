@@ -86,6 +86,25 @@ test('a read started before an event applied does not overwrite it', async () =>
   f.stop();
 });
 
+test('a read an event overtook is kept with the event put over it (overtaken), and read once', async () => {
+  const api = fakeApi('open');
+  const t = fakeTimers();
+  let finish, loads = 0;
+  const seen = [];
+  const f = follow(api, {
+    type: 'job', timers: t, pollMs: null,
+    load: () => { loads++; return new Promise((r) => { finish = r; }); },
+    overtaken: (read, ev) => ({ ...read, progress: ev.progress }),
+    onValue: (v, how) => seen.push([how, v.progress, v.categories]),
+  });
+  api.fire('job', { progress: 90 });
+  finish({ progress: 10, categories: 5 });
+  await tick();
+  assert.deepEqual(seen, [['event', 90, undefined], ['load', 90, 5]]);
+  assert.equal(loads, 1);
+  f.stop();
+});
+
 test('stream down: polls; back up: reads once to catch up and stops polling', async () => {
   const api = fakeApi('reconnecting');
   const t = fakeTimers();
