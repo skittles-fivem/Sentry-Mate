@@ -457,7 +457,8 @@ def drive_stats(req):
     excl = set(_place_ids(req, "exclude_places") or [])
     tz = req.tz()
     end = min(b, req.now)
-    empty = {"car": req.car, "time_zone": tz, "count": 0, "distance_km": 0.0, "energy_kwh": 0.0,
+    empty = {"car": req.car, "time_zone": tz, "from_ms": a, "to_ms": max(a, end), "count": 0, "distance_km": 0.0,
+             "energy_kwh": 0.0,
              "median_distance_km": None, "per_day": [], "days": 0,
              "max_speed": {"period": None, "last_30d": None, "last_7d": None}, "speed_bands": [],
              "projection": {"per_month_km": None, "per_year_km": None, "basis_days": 0}, "top_destinations": []}
@@ -525,7 +526,8 @@ def drive_stats(req):
         e["count"] += 1
     top = sorted(dest.values(), key=lambda e: (-e["count"], e["label"]))[:10]
     return {
-        "car": req.car, "time_zone": tz, "count": len(rows), "distance_km": r(dist, 3),
+        "car": req.car, "time_zone": tz, "from_ms": a, "to_ms": max(a, end), "count": len(rows),
+        "distance_km": r(dist, 3),
         "energy_kwh": r(sum(x["energy_kwh"] or 0 for _, x in rows), 3),
         "median_distance_km": r(median([x["distance_km"] for _, x in rows]), 3),
         "per_day": [per[k] for k in sorted(per)], "days": len(per),
@@ -678,7 +680,8 @@ def logbook(req):
     shown, sort, desc, filtered = _logbook_shown(req, rows)
     paged = any(req.q(k) is not None for k in ("limit", "after", "offset", "at_ms"))
     if req.csv or not (paged or filtered):
-        return {"car": req.car, "time_zone": tz, "rows": shown if filtered else rows, "totals_by_purpose": totals}
+        return {"car": req.car, "time_zone": tz, "from_ms": a, "to_ms": min(b, req.now),
+                "rows": shown if filtered else rows, "totals_by_purpose": totals, "truncated": False}
     # a page: by cursor (the offset it reaches), by offset, or from a date (seq order only)
     limit = req.limit()
     total = len(shown)
@@ -712,7 +715,8 @@ def trip(req):
     h = req.history()
     a, b = req.period(7 * DAY)
     tz = req.tz()
-    out = {"car": req.car, "time_zone": tz, "from_ms": a, "to_ms": min(b, req.now)}
+    # truncated: the real server lists 5,000 drives, charges and markers at most; no made-up car has as many
+    out = {"car": req.car, "time_zone": tz, "from_ms": a, "to_ms": min(b, req.now), "truncated": False}
     if h is None:
         out.update({"distance": {"odometer_km": None, "drives_km": 0.0},
                     "time_ms": dict.fromkeys(("driving", "charging_ac", "charging_dc", "parked_awake", "asleep",

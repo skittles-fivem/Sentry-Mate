@@ -427,8 +427,18 @@ def car_detail(req, cid=None):
     for k in TYRE_KEYS:
         it["config"][k] = config_value(meta["config"].get(k, {"value": None, "source": None}))
     s = st.car_settings.get(cid) or {}
-    it["vehicle"] = vehicle_info(meta, (s.get("battery_chemistry") or {}).get("setting", "auto"))
+    it["vehicle"] = v = vehicle_info(meta, (s.get("battery_chemistry") or {}).get("setting", "auto"))
+    # what `vehicle` settled on, in the config's older words: the plant is the VIN's letter unless typed
+    for k, fact in (("model", v["model"]), ("year", v["model_year"])):
+        it["config"][k] = config_value({"value": fact["value"], "source": fact["source"]})
+    vp = meta.get("vin_prefix") or ""
+    plant = ({"value": v["plant"]["value"], "source": "owner"} if v["plant"]["source"] == "owner"
+             else {"value": vp[10], "source": "vin"} if len(vp) > 10 else {"value": None, "source": None})
+    it["config"]["plant"] = config_value(plant)
     it["version"] = meta["version"]
+    h = req.app.ds.history(cid)
+    # when the server first knew the car: a day before its first data here
+    it["created_ms"] = (h.first_ms if h is not None and h.first_ms else req.now - 400 * 86_400_000) - 86_400_000
     return it
 
 
@@ -725,7 +735,7 @@ def _car_change_words(old_name, body):
 
 
 def list_tokens(req):
-    rows = [_tok_out(req.store, t) for t in req.store.tokens.get(req.car, [])]
+    rows = [_tok_out(req.store, t, car=req.car) for t in req.store.tokens.get(req.car, [])]
     items, nxt = page(req, rows, key=lambda t: (t["created_ms"], t["id"]), reverse=True)
     return {"car": req.car, "time_zone": req.tz(), "items": items, "next": nxt}
 

@@ -141,9 +141,9 @@ class Store:
                             "theme": "light"}
         self.session_rows["a1"] = [
             {"id": "s-older-1", "created_ms": now - 9 * DAY, "last_seen_ms": now - 2 * DAY,
-             "device": "Firefox on Linux"},
+             "device": "Firefox on Linux", "address": "192.0.2.14"},
             {"id": "s-older-2", "created_ms": now - 20 * DAY, "last_seen_ms": now - 5 * HOUR,
-             "device": "Safari on iPad"},
+             "device": "Safari on iPad", "address": "192.0.2.27"},
         ]
 
     def _seed_cars(self, now):

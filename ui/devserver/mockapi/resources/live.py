@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ..conventions import page
 from ..live import now_object
+from .. import sources as S
 from ..util import r
 
 
@@ -22,7 +23,7 @@ def awake_reasons(req):
             for x, y, buses, reasons, kw in s.awake_spans():
                 y = min(y, req.now)
                 if y > x:
-                    spans.append([x, y, set(buses), list(reasons), kw if kw is not None else 0.0])
+                    spans.append([x, y, set(buses), list(reasons), kw if kw is not None else 0.0, S.of_seg(s)])
         spans.sort(key=lambda z: z[0])
         merged = []
         for sp in spans:
@@ -37,10 +38,10 @@ def awake_reasons(req):
                         m[3].append(rr)
             else:
                 merged.append(sp)
-        for x, y, buses, reasons, kw in merged:
+        for x, y, buses, reasons, kw, src in merged:
             if a <= x < b:
                 rows.append({"start_ms": x, "end_ms": y, "buses": sorted(buses, key=("vehicle", "chassis").index),
-                             "reasons": reasons, "avg_power_kw": r(kw, 3)})
+                             "reasons": reasons, "avg_power_kw": r(kw, 3), **src})
     items, nxt = page(req, rows, key=lambda s: (s["start_ms"],), reverse=True)
     return {"car": req.car, "time_zone": req.tz(), "items": items, "next": nxt}
 
