@@ -154,11 +154,39 @@ function checkUnit(unit) {
 }
 const daysInMonth = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();
 
+// The start of the wall-clock hour the instant is in. Where the clocks change by a part of an hour the hour
+// they change in is shorter (it starts at the change) or longer (it started before the change).
+function hourStart(ms, tz) {
+  const p = zonedParts(ms, tz);
+  const s = ms - (p.minute * MINUTE + p.second * SECOND + p.millisecond);
+  if (zoneOffset(s, tz) === p.offset_ms) return s;
+  let change = Math.floor(ms / QUARTER) * QUARTER; // the clocks changed after s: find when
+  while (change > s && zoneOffset(change - QUARTER, tz) === p.offset_ms) change -= QUARTER;
+  const b = zonedParts(change - 1, tz);
+  if (b.hour !== p.hour || b.day !== p.day) return change;
+  return change - 1 - (b.minute * MINUTE + b.second * SECOND + b.millisecond);
+}
+// The end of the wall-clock hour that starts at `start` (the start of the next one).
+function hourEnd(start, tz) {
+  for (let k = 1; k <= 2; k++) {
+    const e = hourStart(start + k * HOUR, tz);
+    if (e > start) return e;
+  }
+  return start + HOUR;
+}
+// Does the wall-clock hour the instant is in come twice (the clocks go back by a whole hour)?
+function hourTwice(ms, p, tz) {
+  if (zoneOffset(ms - 2 * HOUR, tz) === zoneOffset(ms + 2 * HOUR, tz)) return false;
+  const start = hourStart(ms, tz);
+  const same = (q) => q.hour === p.hour && q.day === p.day;
+  return same(zonedParts(start - 1, tz)) || same(zonedParts(hourEnd(start, tz), tz));
+}
+
 /** The start of the hour, day, ISO week, month or year the instant is in, in the zone. */
 export function startOf(ms, unit, tz) {
   checkUnit(unit);
+  if (unit === 'hour') return hourStart(ms, tz);
   const p = zonedParts(ms, tz);
-  if (unit === 'hour') return ms - (p.minute * MINUTE + p.second * SECOND + p.millisecond);
   if (unit === 'day') return zonedToMs({ year: p.year, month: p.month, day: p.day }, tz);
   if (unit === 'week') {
     const k = addDays(`${p.year}-${pad2(p.month)}-${pad2(p.day)}`, -(p.weekday - 1));
@@ -190,13 +218,21 @@ export function addPeriod(ms, unit, n, tz) {
 }
 
 /** The end of the unit the instant is in (the start of the next one, exclusive). */
-export const endOf = (ms, unit, tz) => addPeriod(startOf(ms, unit, tz), unit, 1, tz);
+export const endOf = (ms, unit, tz) => (unit === 'hour' ? hourEnd(hourStart(ms, tz), tz) : addPeriod(startOf(ms, unit, tz), unit, 1, tz));
 
-/** A stable key for the bucket: '2026-11-16T17', '2026-11-16', '2026-W47', '2026-11', '2026'. */
+/**
+ * A stable key for the bucket: '2026-11-16T17', '2026-11-16', '2026-W47', '2026-11', '2026'. An hour that
+ * comes twice when the clocks go back has its offset in the key: '2026-11-01T01-05:00', '2026-11-01T01-06:00'.
+ */
 export function bucketKey(ms, unit, tz) {
   checkUnit(unit);
   const p = zonedParts(ms, tz);
-  if (unit === 'hour') return `${p.year}-${pad2(p.month)}-${pad2(p.day)}T${pad2(p.hour)}`;
+  if (unit === 'hour') {
+    const key = `${p.year}-${pad2(p.month)}-${pad2(p.day)}T${pad2(p.hour)}`;
+    if (!hourTwice(ms, p, tz)) return key;
+    const oa = Math.abs(Math.round(p.offset_ms / MINUTE));
+    return `${key}${p.offset_ms < 0 ? '-' : '+'}${pad2(Math.floor(oa / 60))}:${pad2(oa % 60)}`;
+  }
   if (unit === 'day') return `${p.year}-${pad2(p.month)}-${pad2(p.day)}`;
   if (unit === 'week') { const w = isoWeek(p.year, p.month, p.day); return `${w.year}-W${pad2(w.week)}`; }
   if (unit === 'month') return `${p.year}-${pad2(p.month)}`;
@@ -205,7 +241,8 @@ export function bucketKey(ms, unit, tz) {
 
 /**
  * The calendar buckets that cover [from_ms, to_ms): [{ key, start_ms, end_ms }]. The first starts at the
- * start of the unit holding from_ms; bounds are the zone's own (a day can be 23 or 25 hours).
+ * start of the unit holding from_ms; bounds are the zone's own (a day can be 23 or 25 hours, and an hour 30
+ * or 90 minutes where the clocks change by half an hour).
  */
 export function buckets(fromMs, toMs, unit, tz, { max = 100000 } = {}) {
   checkUnit(unit);
@@ -213,7 +250,7 @@ export function buckets(fromMs, toMs, unit, tz, { max = 100000 } = {}) {
   if (!(toMs > fromMs)) return out;
   let start = startOf(fromMs, unit, tz);
   while (start < toMs) {
-    const end = addPeriod(start, unit, 1, tz);
+    const end = unit === 'hour' ? hourEnd(start, tz) : addPeriod(start, unit, 1, tz);
     out.push({ key: bucketKey(start, unit, tz), start_ms: start, end_ms: end });
     if (out.length >= max) throw new RangeError(`more than ${max} buckets`);
     start = end;
@@ -395,7 +432,7 @@ export function formatDuration(ms, { style = 'short', seconds = 'auto' } = {}) {
   // one number with its unit; the second part of '2 h 05 min' is padded to two digits
   const word = (n, short, one, other, padded = false) => (long
     ? tn(n, `{n} ${one}`, `{n} ${other}`)
-    : `${padded ? pad2(n) : formatNumber(n)}${NBSP}${t(short)}`);
+    : `${formatNumber(n, padded ? { minimumIntegerDigits: 2 } : {})}${NBSP}${t(short)}`);
   let out;
   if (s < 60) {
     out = word(s, 's', 'second', 'seconds');

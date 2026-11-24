@@ -80,3 +80,10 @@ test('the audit log names the invoice changes', async () => {
   assert.equal(it.text, 'Tesla Supercharger invoices');
   assert.equal(it.hash, '#tesla');
 });
+
+test('the month keys are plain YYYY-MM where the language has digits of its own', () => {
+  setLocale('ar-EG');
+  const m = I.invoiceMonths(Date.parse('2026-11-16T12:00:00Z'), 'America/Chicago', 2);
+  setLocale('en-US');
+  assert.deepEqual(m.map((x) => x.key), ['2026-11', '2026-10']);
+});
