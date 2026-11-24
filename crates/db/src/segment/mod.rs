@@ -119,6 +119,15 @@ pub(crate) fn parse_day(name: &str) -> Option<u64> {
     (days >= 0 && day_name(days as u64) == name).then_some(days as u64)
 }
 
+/// The time a file of a series' folder covers, from its name: a day's snapshot or journal, a month's pack.
+pub(crate) fn file_span(name: &str) -> Option<(u64, u64)> {
+    if let Some(d) = name.strip_suffix(".snap").or_else(|| name.strip_suffix(".log")).and_then(parse_day) {
+        return Some((d * DAY_MS, (d + 1) * DAY_MS));
+    }
+    let m = name.strip_suffix(".pack").and_then(Month::parse)?;
+    Some((m.first * DAY_MS, m.end * DAY_MS))
+}
+
 pub(crate) fn series_dir<P: Point>(car_dir: &Path, stream: Stream) -> PathBuf {
     car_dir.join("seg").join(format!("{}.{}", P::SERIES, stream.dir_name()))
 }

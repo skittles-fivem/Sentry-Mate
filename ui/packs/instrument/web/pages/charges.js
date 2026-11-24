@@ -145,7 +145,7 @@ export async function mount(ctx) {
   const multi = !fixedCar;
   const carsParam = fixedCar ? null : (chosen === 'all' ? 'all' : chosen.join(','));
   const carName = (cid) => carById.get(cid)?.name || cid;
-  const scopeName = fixedCar ? fixedCar.name : chosen === 'all' ? (fleet.length === 1 ? fleet[0].name : `All ${formatNumber(fleet.length)} cars`) : chosen.length === 1 ? carName(chosen[0]) : `${formatNumber(chosen.length)} cars`;
+  const scopeName = fixedCar ? fixedCar.name : chosen === 'all' ? (fleet.length === 1 ? fleet[0].name : fleet.length ? `All ${formatNumber(fleet.length)} cars` : 'No car yet') : chosen.length === 1 ? carName(chosen[0]) : `${formatNumber(chosen.length)} cars`;
   const listPath = fixedCar ? `cars/${enc(fixedCar.id)}/charges` : 'charges';
   const statsPath = fixedCar ? `cars/${enc(fixedCar.id)}/charging-stats` : 'charging-stats';
   const fileBase = fixedCar ? fixedCar.name : scopeName;
@@ -376,7 +376,7 @@ export async function mount(ctx) {
     onPage: (pg) => { if (pg.totals) paintSummary(pg.totals); },
     empty: () => {
       const why = f.q ? `the text "${f.q}"` : f.places ? 'the place filter' : f.place_kind ? 'the kind of place' : f.kind ? `the ${KIND[f.kind]} filter` : f.min_cost ? 'the lowest cost' : f.min_dur ? 'the shortest charging time' : f.flags ? 'the missing-data filter' : f.source ? 'the source filter' : null;
-      return emptyState({ icon: 'bolt', title: 'No charges', text: why ? `No charge in ${period.label.toLowerCase()} passes ${why}. Clear it to see every charge.` : `${scopeName} did not charge in this period. Pick a longer period.` });
+      return emptyState({ icon: 'bolt', title: 'No charges', text: why ? `No charge in ${period.label.toLowerCase()} passes ${why}. Clear it to see every charge.` : !viewCars.length ? 'There is no car on this server yet. A car appears when its CAN Bridge first uploads.' : `${scopeName} did not charge in this period. Pick a longer period.` });
     },
   });
 
@@ -438,7 +438,7 @@ export async function mount(ctx) {
     const my = ++statsGen;
     const sp = statsParams();
     const left = [f.places ? 'the place filter' : null, f.min_dur ? `charges of at least ${f.min_dur} min` : null].filter(Boolean);
-    scopeLine.textContent = `Statistics for ${scopeName}, ${period.label.toLowerCase()}${left.length ? `, with ${left.join(' and ')}` : ''}. Of the list filters, only the period, cars, places and shortest charging time apply here.`;
+    scopeLine.textContent = !viewCars.length ? 'There is no car on this server yet. A car appears when its CAN Bridge first uploads.' : `Statistics for ${scopeName}, ${period.label.toLowerCase()}${left.length ? `, with ${left.join(' and ')}` : ''}. Of the list filters, only the period, cars, places and shortest charging time apply here.`;
     let s, rows;
     try {
       [s, rows] = await Promise.all([
@@ -839,6 +839,8 @@ export async function mount(ctx) {
     const dcCount = new Map();
     for (const c of rows) if (c.kind === 'dc') dcCount.set(c.car, (dcCount.get(c.car) || 0) + 1);
     if (!curveCar || !viewCars.includes(curveCar)) curveCar = fixedCar ? fixedCar.id : ([...dcCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || viewCars[0]);
+    // a server with no car yet: no car to ask a curve for
+    if (!curveCar) { replace(curvePanel, head('bolt', 'Fast-charging curve'), h('div', { class: 'map-fallback' }, 'No car yet, so no fast-charging curve.')); return; }
     const carSel = multi && viewCars.length > 1 ? h('select', { class: 'select select--sm', 'aria-label': 'Car for the curve' },
       viewCars.map((cid) => h('option', { value: cid, selected: cid === curveCar }, `${carName(cid)} (${formatNumber(dcCount.get(cid) || 0)} DC)`))) : null;
     carSel?.addEventListener('change', () => { curveCar = carSel.value; ctx.setQuery({ curve_car: curveCar }); paintCurve(rows, statsGen); });

@@ -1221,7 +1221,9 @@ async fn carry_on_move(data: &Path, keys: &Path, env: &MoveEnv, port: u16, tried
                     return true;
                 }
                 let (d, k) = (data.to_path_buf(), keys.to_path_buf());
-                if let Ok(Err(e)) = tokio::task::spawn_blocking(move || moving::import::unused(&d, &k)).await {
+                let also = opts.first_start_also.clone();
+                if let Ok(Err(e)) = tokio::task::spawn_blocking(move || moving::import::unused_but(&d, &k, &also)).await
+                {
                     tracing::warn!(
                         "move: nothing was moved: {e}. Remove SENTRY_MATE_MOVE_FROM and SENTRY_MATE_MOVE_CODE"
                     );
@@ -1346,6 +1348,14 @@ async fn begin_move(data: &Path, keys: &Path, from: &str, code: &str, opts: &Arc
             false
         }
     }
+}
+
+/// What `import` runs with: as the pages' restore, what a first start of the server wrote before anyone set it up
+/// is not the owner's data (docs/moving.md: "start it with empty folders, then import").
+fn import_options() -> moving::Options {
+    let mut o = moving::Options::new(APP_VERSION);
+    o.first_start_also = moving::import::WEB_FIRST_START.iter().map(|n| n.to_string()).collect();
+    o
 }
 
 fn move_options() -> moving::pull::Options {
@@ -1706,7 +1716,7 @@ async fn start_web(
     if let Ok(im) = app.service::<web::resources::imports::Imports>() {
         im.set_gate(gate.clone());
         // imported rows an older server put on the wrong car are moved, once
-        web::resources::imports::spawn_rehome(&app);
+        drop(web::resources::imports::spawn_rehome(&app));
     }
     let listener = tokio::net::TcpListener::bind((net.bind.as_str(), net.web)).await?;
     tracing::info!("web UI on https://{}:{}/ (TLS 1.3), the same certificate", net.bind, net.web);
@@ -1896,7 +1906,7 @@ async fn import_cmd(
         h.files,
         moving::size(h.bytes)
     );
-    let opts = moving::Options::new(APP_VERSION);
+    let opts = import_options();
     let mut imp = match moving::import::resume(data, keys, &ex, &opts)? {
         moving::Resume::Same(i) => {
             let i = *i;
@@ -1910,7 +1920,7 @@ async fn import_cmd(
         moving::Resume::Other(Phase::Switching) => return Err(moving::Error::Switching.into()),
         moving::Resume::None | moving::Resume::Other(Phase::Reading) => {
             // a server in use is refused before the recovery key is asked for (it would be typed for nothing)
-            moving::import::unused(data, keys)?;
+            moving::import::unused_but(data, keys, &opts.first_start_also)?;
             let key = read_recovery_key()?;
             eprintln!("import: opening it with the recovery key (a few seconds) ...");
             moving::import::begin(data, keys, &ex, &key, &opts)?
@@ -2526,6 +2536,72 @@ mod tests {
             Err(vault::Error::KeyFileButNoVault { .. })
         ));
         assert!(moving::import::unused(&d2, &k2).is_err());
+    }
+
+    /// A new server that was started once (no account, nothing uploaded) still takes data in: what its first start
+    /// wrote by itself (the set-up code, the audit log, a certificate, the database's own key) is not the owner's,
+    /// for the pages' "Move here" and "Restore", the move lines and `import` alike, and is set aside at the switch.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_server_that_started_once_still_takes_data_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let (od, ok) = (dir.path().join("old-data"), dir.path().join("old-keys"));
+        std::fs::create_dir_all(&od).unwrap();
+        let (ov, rk) = Vault::create(&od, &ok, Kdf::FAST_FOR_TESTS).unwrap();
+        let ov = Arc::new(ov);
+        Tokens::open(tokens_file(&od), ov.clone()).await.unwrap().create("Test car").await.unwrap();
+        let file = dir.path().join("x.smexport");
+        {
+            let g = gate::Gate::open(&od).unwrap();
+            let snap = moving::Snapshot::make(&od, &ov, &g, APP_VERSION, Duration::from_secs(5)).unwrap();
+            let mut out = Vec::new();
+            snap.write_to(&ov, &mut out).unwrap();
+            std::fs::write(&file, out).unwrap();
+        }
+
+        // the new server's first start, through the real start (the engine, the web side and its start-up passes)
+        let (nd, nk) = (dir.path().join("new-data"), dir.path().join("new-keys"));
+        std::fs::create_dir_all(&nd).unwrap();
+        std::fs::create_dir_all(&nk).unwrap();
+        let net = Net { bind: "127.0.0.1".into(), upload: 0, web: 0 };
+        let gate = gate::Gate::open(&nd).unwrap();
+        let claim = web::moving::ClaimKeep::default();
+        let hashing = accounts::Hashing::FAST_FOR_TESTS;
+        let mut inst = start(&nd, &nk, &gate, &net, &[], &MoveEnv::default(), hashing, &claim).await.unwrap();
+        // (the start's pass over imported rows, once more and to its end: what it writes is written now)
+        web::resources::imports::spawn_rehome(inst.side.app.as_ref().unwrap()).await.unwrap();
+        assert!(nd.join("accounts").exists(), "the first start's set-up code");
+        // the pages' "Move here" and "Restore", and the move lines
+        moving::import::unused_but(&nd, &nk, &move_options().first_start_also).unwrap();
+        // `import` beside the running server, and after it stopped
+        moving::import::unused_but(&nd, &nk, &import_options().first_start_also).unwrap();
+        inst.housekeeping.abort();
+        inst.ticker.abort();
+        inst.side.stop(Duration::from_secs(10)).await;
+        drop(inst);
+        let mut opts = import_options();
+        opts.min_free = 0;
+        moving::import::unused_but(&nd, &nk, &opts.first_start_also).unwrap();
+        let ex = moving::import::open_file(&file, APP_VERSION).unwrap();
+        let mut imp = moving::import::begin(&nd, &nk, &ex, rk.as_str(), &opts).unwrap();
+        assert_eq!(imp.run(|_| std::ops::ControlFlow::Continue(())).unwrap(), moving::Outcome::Ready);
+        drop(imp);
+        assert!(moving::import::switch(&nd, &nk).unwrap().replaced_first_start);
+        // nothing sealed with the first start's vault is left beside the imported data
+        let nv = Arc::new(Vault::open(&nd, &nk).unwrap());
+        assert_eq!(nv.key_id(), ov.key_id());
+        assert!(!nd.join("accounts").exists() && !nd.join("audit").exists(), "the first start's own files stayed");
+        assert_eq!(Tokens::open(tokens_file(&nd), nv.clone()).await.unwrap().list().await.len(), 1);
+        // and the server starts on it
+        let gate = gate::Gate::open(&nd).unwrap();
+        let mut inst = start(&nd, &nk, &gate, &net, &[], &MoveEnv::default(), hashing, &claim).await.unwrap();
+        inst.housekeeping.abort();
+        inst.ticker.abort();
+        inst.side.stop(Duration::from_secs(10)).await;
+
+        // a server someone set up is in use all the same: an account is the owner's
+        std::fs::create_dir_all(nd.join("accounts")).unwrap();
+        std::fs::write(nd.join("accounts").join("account-1.sealed"), b"x").unwrap();
+        assert!(moving::import::unused_but(&nd, &nk, &import_options().first_start_also).is_err());
     }
 
     #[test]

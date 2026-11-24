@@ -240,3 +240,91 @@ async fn beside_apis(days: u32, batch: usize) {
 async fn windows_rebuilt_beside_api_inputs_give_the_same_timeline() {
     beside_apis(2, 64).await;
 }
+
+/// A full rebuild cut off while it decodes (the server killed, twice, neither time at the end of a run of logs) and
+/// carried on gives the very history an uninterrupted one gives, ids included, and still rebuilds its windows once
+/// per run of logs: the rows in its shadow at or after the logs left are only what its own earlier logs gave, as
+/// they are in an uninterrupted one at that point.
+async fn carried_on(days: u32, batch: usize, cuts: impl Fn(u64) -> (u64, u64)) {
+    let logs: Vec<synth::LogFile> =
+        synth::Scenario::new(7).days(days).rates(synth::Rates::Light).with_trouble(true).logs().collect();
+    let all: Vec<&synth::LogFile> = logs.iter().collect();
+    let n = logs.len() as u64;
+    let done = |e: engine::Engine| async move {
+        for _ in 0..60_000 {
+            let r = e.full_rebuild_status().unwrap().unwrap();
+            if !r.running() {
+                e.idle().await;
+                return r;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the full rebuild did not end");
+    };
+    let car_of = |e: &engine::Engine| {
+        e.db().fleet(&db::FleetQuery { search: None, limit: 10, after: None }).unwrap().cars[0].car.id
+    };
+
+    let whole = Side::new(batch).await;
+    whole.take(&all).await;
+    let car = car_of(&whole.engine);
+    whole.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+    let r = done(whole.engine.clone()).await;
+    assert_eq!((r.status, r.logs_done), (engine::full::FullStatus::Done, n), "{r:#?}");
+    let whole_windows = whole.engine.full_rebuild_windows();
+
+    let cut = Side::new(batch).await;
+    cut.take(&all).await;
+    let car = car_of(&cut.engine);
+    let (first, second) = cuts(n);
+    cut.engine.full_rebuild_crash_after_logs(Some(first));
+    cut.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+    cut.engine.idle().await;
+    let data = cut._dir.path().join("data");
+    let again = |crash: Option<u64>| {
+        let v = Arc::new(Vault::open(&data, &cut._dir.path().join("keys")).unwrap());
+        let opts = engine::Options { window_batch: batch, ..engine::Options::default() };
+        let e = engine::Engine::new(cut.engine.db().clone(), Store::new(can_dir(&data), v), opts);
+        e.full_rebuild_crash_after_logs(crash);
+        e.start().unwrap();
+        e
+    };
+    let mid = again(Some(second));
+    mid.idle().await;
+    let r = mid.full_rebuild_status().unwrap().unwrap();
+    assert!(r.running() && r.phase == engine::full::Phase::Decoding, "{r:#?}");
+    let last = again(None);
+    let r = done(last.clone()).await;
+    assert_eq!((r.status, r.logs_done, r.logs_total), (engine::full::FullStatus::Done, n, n), "{r:#?}");
+    let k = same("a full rebuild carried on twice", &whole.engine, &last);
+    assert!(k > 1_000, "{k}");
+    assert_eq!(whole.engine.stats().failures + last.stats().failures, 0);
+    // the logs left after each restart got a window per run, not one each
+    let left = n - first - second;
+    let (mid_windows, last_windows) = (mid.full_rebuild_windows(), last.full_rebuild_windows());
+    println!(
+        "{n} logs: {whole_windows} windows uninterrupted; {mid_windows} for {second} logs and {last_windows} for {left} after the restarts"
+    );
+    assert!(
+        mid_windows * 2 < second.max(8) && last_windows * 3 < left,
+        "{mid_windows} of {second}, {last_windows} of {left}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_full_rebuild_carried_on_after_a_restart_gives_the_same_timeline_per_run_of_logs() {
+    // cut a third in, then a fifth further on: neither a whole number of runs
+    carried_on(1, 16, |n| (n / 3 + 1, n / 5 + 2)).await;
+    // cut after a few logs, twice; and half way, then one log on
+    carried_on(1, 16, |_| (5, 9)).await;
+    carried_on(1, 7, |n| (n / 2, 1)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "long: cargo test --release -p sentry-mate carried_on -- --ignored --nocapture"]
+async fn a_full_rebuild_carried_on_after_a_restart_gives_the_same_timeline_over_a_week() {
+    for batch in [7, 64] {
+        carried_on(7, batch, |n| (n / 3 + 1, n / 5 + 2)).await;
+        carried_on(7, batch, |n| (n / 2 + 3, n / 4 + 5)).await;
+    }
+}

@@ -140,7 +140,7 @@ pub fn local_ms(s: &str, tz: chrono_tz::Tz) -> Option<u64> {
     let local = poll::parse_local(s)?;
     match poll::to_utc(tz, local, None) {
         Utc::One(t) | Utc::Repeated(t) => Some(t),
-        Utc::Skipped => None,
+        Utc::Skipped | Utc::Before1970 => None,
     }
 }
 
@@ -150,6 +150,7 @@ pub fn read(fields: &BTreeMap<String, String>, tz: chrono_tz::Tz, prev_ms: Optio
     let t_ms = match poll::to_utc(tz, local, prev_ms) {
         Utc::One(t) | Utc::Repeated(t) => t,
         Utc::Skipped => return Err(FeedError::SkippedTime),
+        Utc::Before1970 => return Err(FeedError::NoTime),
     };
     let mut d = Detect::default();
     d.see(&row);

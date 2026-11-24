@@ -48,6 +48,8 @@ def _counts(req, cars):
 
     for cid in cars:
         h = req.ds.history(cid)
+        if h is None:  # a car with a summary only (c4 and up): no drive, charge or stop anywhere
+            continue
         for d in h.drives:
             if d.start > req.now or not h.shown(d):
                 continue
@@ -90,7 +92,10 @@ def _visible(req, p, counts):
 
 
 def _car_counts(req, cid):
-    key = (cid, req.store.places_rev, derive.started(req.ds.history(cid), req.now))
+    h = req.ds.history(cid)
+    if h is None:
+        return {}
+    key = (cid, req.store.places_rev, derive.started(h, req.now))
     return derive.memo(req.app, "place_counts_car", key, lambda: _counts(req, (cid,)))
 
 

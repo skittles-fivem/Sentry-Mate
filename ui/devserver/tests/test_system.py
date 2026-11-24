@@ -181,7 +181,16 @@ class Health(ServerCase):
         self.assertIn("rebuild_pending", h["reasons"])
         self.server.app.clock.advance(6000)
         self.assertFalse(self.c.get("/api/v1/cars/c1/health")["rebuild_pending"])
-        self.assertEqual(self.c.get("/api/v1/audit?limit=1")["items"][0]["action"], "car-rebuild")
+        last = self.c.get("/api/v1/audit?limit=1")["items"][0]
+        self.assertEqual(last["action"], "car-rebuild")
+        # the period as it was asked for, as the server says it: an open end is one, never days counted from 1970
+        self.assertRegex(last["summary"], r"^Rebuilt .+'s drives, charges, states and visits from the stored logs "
+                                          r"\(everything from \d{4}-\d\d-\d\d UTC on\)\.$")
+        self.assertEqual(d["logs_total"], d["logs_read"])
+        self.c.json("POST", "/api/v1/cars/c1/rebuild", {"from_ms": NOW - DAY, "to_ms": NOW})
+        self.assertIn("(1 day from ", self.c.get("/api/v1/audit?limit=1")["items"][0]["summary"])
+        self.c.json("POST", "/api/v1/cars/c1/rebuild", {})
+        self.assertIn("(the whole history).", self.c.get("/api/v1/audit?limit=1")["items"][0]["summary"])
 
     def test_overlaps(self):
         o = self.c.get("/api/v1/cars/c3/overlaps")["items"]

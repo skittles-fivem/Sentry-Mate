@@ -180,7 +180,8 @@
 .fr-bar > i { transition: width 0.9s linear; }
 .fr-pct { flex: none; width: 5ch; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); height: round(1.25rem, var(--e)); }
 .fr-lines { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); margin: 0; }
-.fr-line { display: grid; grid-template-columns: round(8rem, var(--e)) minmax(0, 1fr); gap: round(0.75rem, var(--e)); height: round(1.25rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
+/* (a line is as high as its text needs: on a phone the text is never under the smallest size, at any Interface size) */
+.fr-line { --fr-lh: max(round(1.25rem, var(--e)), round(calc(1.4 * var(--fs-floor)), 2px)); display: grid; grid-template-columns: round(8rem, var(--e)) minmax(0, 1fr); gap: round(0.75rem, var(--e)); height: var(--fr-lh); font-size: max(0.8125rem, var(--fs-floor)); line-height: var(--fr-lh); }
 .fr-line dt, .fr-line dd { margin: 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fr-line dt { color: var(--text-3); }
 .fr-line dd { color: var(--text); font-variant-numeric: tabular-nums; }
@@ -204,7 +205,7 @@
 @container page (max-width: 50rem) {
   .fr-line { grid-template-columns: round(6.5rem, var(--e)) minmax(0, 1fr); }
   /* the state, the step and the speed take two lines on a narrow page (always, so the panel keeps its size) */
-  .fr-line[data-key="state"], .fr-line[data-key="phase"], .fr-line[data-key="rate"] { height: round(2.5rem, var(--e)); }
+  .fr-line[data-key="state"], .fr-line[data-key="phase"], .fr-line[data-key="rate"] { height: calc(2 * var(--fr-lh)); }
   .fr-line[data-key="state"] dd, .fr-line[data-key="phase"] dd, .fr-line[data-key="rate"] dd { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; }
 }
 /* Rebuild all data at the bottom of the health card: the full rebuild block (below) over the whole width */

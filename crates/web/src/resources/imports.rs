@@ -1709,13 +1709,21 @@ async fn assign_hold(
 /// are moved to the right one, or to wait for a car; without the files, a car's own odometer tells which imported
 /// drives can't be its own. Nothing is deleted; each move is in the audit log (`import-rows-moved`, in the server's
 /// name) and on the import; each car that lost or got rows is rebuilt.
-pub fn spawn_rehome(app: &AppState) {
+pub fn spawn_rehome(app: &AppState) -> tokio::task::JoinHandle<()> {
     let app = app.clone();
     tokio::task::spawn_blocking(move || {
         if let Err(e) = rehome(&app) {
             tracing::warn!("checking imported rows' cars: {}", e.message);
         }
-    });
+    })
+}
+
+/// The first admin was made: the start's one-time pass over imported rows, which notes nothing on a server no one
+/// has set up (such a server writes nothing of its own to the database), is noted done now, with nothing to check.
+pub(crate) fn first_admin_made(app: &AppState) {
+    if app.service::<Imports>().is_ok() && app.service::<Engine>().is_ok() {
+        drop(spawn_rehome(app));
+    }
 }
 
 fn rehome(app: &AppState) -> ApiResult<()> {
@@ -1799,9 +1807,12 @@ fn rehome(app: &AppState) -> ApiResult<()> {
             save(app, &job)?;
         }
     }
-    // without an import's files: what each car's own odometer says
-    if !engine::rehome::done_once(e.db(), "strays-v1").unwrap_or(true) {
-        let cars = engine::rehome::car_ids(&e).unwrap_or_default();
+    // without an import's files: what each car's own odometer says. A server no one has set up yet, with no car,
+    // has nothing to check and notes nothing: it wrote nothing of its own to the database, so a move or a restore
+    // into it still finds it new (the pass is noted done once its first admin is made, `/setup/fresh`)
+    let cars = engine::rehome::car_ids(&e).unwrap_or_default();
+    let unused = cars.is_empty() && app.accounts.needs_setup();
+    if !unused && !engine::rehome::done_once(e.db(), "strays-v1").unwrap_or(true) {
         for car in cars {
             match engine::rehome::rehome_strays(&e, car) {
                 Ok(moves) => {

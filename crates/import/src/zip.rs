@@ -10,7 +10,8 @@
 //!
 //! Each entry's CRC-32 (and size, when known) is checked as its last byte is read: a damaged entry is an error, never
 //! data. A deflated entry that unpacks to more than [`MAX_RATIO`] times its packed size (past 16 MiB) is an error too
-//! (a zip bomb), as it is read, so moving past one costs no more than that. Encrypted entries and other methods
+//! (a zip bomb), as it is read, so moving past one costs no more than that; a reader of text that packs better than
+//! that sets its own limit ([`ZipStream::with_max_ratio`]). Encrypted entries and other methods
 //! (bzip2, LZMA, zstd ...) are refused with what to do.
 
 use std::io::{self, Read, Write};
@@ -22,12 +23,13 @@ const ZIP64_END: u32 = 0x0606_4b50;
 const DESCRIPTOR: u32 = 0x0807_4b50;
 const MAX32: u64 = 0xffff_ffff;
 const BUF: usize = 256 * 1024;
-/// The most a deflated entry may unpack to per packed byte. Deflate reaches about 1,030 at most (on runs of one byte);
-/// real files, the CAN Bridge's candump text included, stay far below. Past it the zip is refused: otherwise a small
-/// upload could make every pass inflate a thousand times its size.
+/// The most a deflated entry may unpack to per packed byte, unless the reader says otherwise
+/// ([`ZipStream::with_max_ratio`]). Deflate reaches about 1,030 at most (on runs of one byte); the CAN Bridge's logs
+/// and candump text stay far below this. Past it the zip is refused: otherwise a small upload could make every pass
+/// inflate a thousand times its size.
 pub const MAX_RATIO: u64 = 100;
-/// Bytes a deflated entry may unpack to whatever its ratio (a small file of zeros is no bomb).
-const MAX_RATIO_FREE: u64 = 16 << 20;
+/// Bytes a packed file may unpack to whatever its ratio (a small file of zeros is no bomb).
+pub const MAX_RATIO_FREE: u64 = 16 << 20;
 /// The longest name taken (a zip allows 65,535 bytes).
 pub const MAX_NAME: usize = 1024;
 
@@ -42,6 +44,11 @@ pub enum ZipError {
     Io(#[from] io::Error),
     #[error("not a zip file, or a damaged one ({0})")]
     Bad(String),
+    #[error(
+        "{name} unpacks to more than {ratio} times its packed size, more than a real file of its kind does: it is \
+         not read (a zip bomb?)"
+    )]
+    Ratio { name: String, ratio: u64 },
     #[error("{0} is encrypted: make the zip again without a password")]
     Encrypted(String),
     #[error("{name} is compressed with method {method}, which isn't read: zip it again with deflate (or store it)")]
@@ -112,6 +119,7 @@ pub struct ZipStream<R> {
     pos: u64,
     cur: Option<Current>,
     finished: bool,
+    max_ratio: u64,
 }
 
 fn u16_at(b: &[u8], i: usize) -> u16 {
@@ -134,7 +142,24 @@ fn bad(what: impl Into<String>) -> ZipError {
 
 impl<R: Read> ZipStream<R> {
     pub fn new(inner: R) -> ZipStream<R> {
-        ZipStream { inner, buf: vec![0u8; BUF], lo: 0, hi: 0, eof: false, pos: 0, cur: None, finished: false }
+        ZipStream {
+            inner,
+            buf: vec![0u8; BUF],
+            lo: 0,
+            hi: 0,
+            eof: false,
+            pos: 0,
+            cur: None,
+            finished: false,
+            max_ratio: MAX_RATIO,
+        }
+    }
+
+    /// With another limit than [`MAX_RATIO`] on what a deflated entry may unpack to per packed byte: for entries
+    /// known to pack better (a CSV of rows that hardly differ).
+    pub fn with_max_ratio(mut self, max_ratio: u64) -> ZipStream<R> {
+        self.max_ratio = max_ratio;
+        self
     }
 
     /// Bytes of the zip read so far.
@@ -416,12 +441,8 @@ impl<R: Read> ZipStream<R> {
                         }
                     }
                 };
-                if c.got + made as u64 > MAX_RATIO_FREE.max(c.taken.saturating_mul(MAX_RATIO)) {
-                    return Err(bad(format!(
-                        "{}: it unpacks to more than {MAX_RATIO} times its packed size, which no real file does (a \
-                         zip bomb?)",
-                        c.name
-                    )));
+                if c.got + made as u64 > MAX_RATIO_FREE.max(c.taken.saturating_mul(self.max_ratio)) {
+                    return Err(ZipError::Ratio { name: c.name.clone(), ratio: self.max_ratio });
                 }
                 made
             }
@@ -867,6 +888,11 @@ mod tests {
         };
         assert!(e.to_string().contains("zip bomb"), "{e}");
         assert!(got <= (16 << 20) + 100 * packed.len() as u64 + (1 << 16), "{got}");
+        // a reader of text that packs better says how much more it takes: the same zip is still past it
+        let mut z = ZipStream::new(&zip[..]).with_max_ratio(500);
+        z.next_entry().unwrap().unwrap();
+        let e = z.next_entry().unwrap_err();
+        assert!(matches!(e, ZipError::Ratio { ratio: 500, .. }), "{e}");
         // a small file of zeros, or text that packs well, is no bomb
         let small = vec![0u8; 8 << 20];
         let mut enc = DeflateEncoder::new(Vec::new(), Compression::best());

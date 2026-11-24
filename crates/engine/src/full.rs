@@ -61,7 +61,9 @@ const MAX_ERRORS: usize = 50;
 /// No progress for this long while running: the status says it is stalled.
 pub const STALL_MS: u64 = 120_000;
 /// A test's stop of the worker (see [`Engine::full_rebuild_crash_at`]).
-const CRASHED: &str = "stopped as by a crash, for a test";
+pub(crate) const CRASHED: &str = "stopped as by a crash, for a test";
+/// A test's hook at the worker's end ([`Engine::full_rebuild_exit_hook`]).
+pub type ExitHook = Arc<dyn Fn() + Send + Sync>;
 /// The job's record is written at most this often while it moves on (and at every phase).
 const NOTE_EVERY_MS: u64 = 2_000;
 /// The version whose automatic full rebuild was planned (once per version).
@@ -233,7 +235,18 @@ pub struct FullRecord {
     pub base_bytes: u64,
     #[serde(default)]
     pub base_days: u64,
+    /// The counts when the car under way began (the cars before it): what a restart counts the car's own logs on
+    /// top of.
+    #[serde(default)]
+    car_base_logs: u64,
+    #[serde(default)]
+    car_base_bytes: u64,
+    #[serde(default)]
+    car_base_failed: u64,
     pub last_progress_ms: u64,
+    /// The logs that could not be worked on, in all (`errors` keeps the first ones only).
+    #[serde(default)]
+    pub logs_failed: u64,
     pub errors: Vec<FullError>,
     /// Why it failed.
     pub error: Option<String>,
@@ -436,9 +449,10 @@ impl Engine {
             r.bytes_done = r.base_bytes + bd;
             r.bytes_total = r.base_bytes + bt;
             r.last_progress_ms = r.last_progress_ms.max(j.last_step_ms.load(Ordering::SeqCst));
+            r.logs_failed = r.car_base_failed + lock(&j.failed_logs).len() as u64;
             for (log, why) in lock(&j.log_errors).iter() {
                 if !r.errors.iter().any(|e| e.log.as_deref() == Some(log.as_str())) {
-                    r.error(r.car(), Some(log.clone()), format!("The log {log} could not be decoded: {why}"));
+                    r.error(r.car(), Some(log.clone()), format!("The log {log} {why}."));
                 }
             }
         }
@@ -546,7 +560,11 @@ impl Engine {
             base_logs: 0,
             base_bytes: 0,
             base_days: 0,
+            car_base_logs: 0,
+            car_base_bytes: 0,
+            car_base_failed: 0,
             last_progress_ms: now,
+            logs_failed: 0,
             errors: Vec::new(),
             error: None,
             cancel: false,
@@ -701,6 +719,27 @@ impl Engine {
         *lock(&self.inner.full_crash_at) = phase;
     }
 
+    /// Makes the full rebuild's worker stop as by a crash once it decoded `logs` logs of a car (tests: nothing is
+    /// noted on the way out, as nothing is when the server is killed).
+    #[doc(hidden)]
+    pub fn full_rebuild_crash_after_logs(&self, logs: Option<u64>) {
+        *lock(&self.inner.full_crash_logs) = logs;
+    }
+
+    /// How many windows this engine's full rebuilds rebuilt while they decoded (tests: whether a run of logs was
+    /// one window or one each).
+    #[doc(hidden)]
+    pub fn full_rebuild_windows(&self) -> u64 {
+        self.inner.full_windows.load(Ordering::SeqCst)
+    }
+
+    /// Calls `hook` when the full rebuild's worker has ended its run and is about to go (tests: an ask that comes
+    /// in that instant).
+    #[doc(hidden)]
+    pub fn full_rebuild_exit_hook(&self, hook: Option<ExitHook>) {
+        *lock(&self.inner.full_exit_hook) = hook;
+    }
+
     /// Carries on with a full rebuild a restart cut off (from [`Engine::start`], after [`Engine::check_versions`]),
     /// unless it waits. After an update that changed the decoding again, the same run takes the version on: the cars
     /// it switched already (made with the old decoding) and the others now out of date are added to its cars, the car
@@ -780,24 +819,40 @@ impl Engine {
         let e = self.clone();
         self.inner.outstanding_add();
         Engine::background(&rt, "full-rebuild", move || {
-            match e.full_run() {
-                // (a test's crash: left as a stop of the server would leave it)
-                Err(err) if err.to_string().contains(CRASHED) => {}
-                Err(err) => e.full_failed(&err.to_string()),
-                Ok(()) => {}
-            }
-            {
-                let mut f = lock(&e.inner.full);
-                f.worker = false;
-                f.job = None;
+            loop {
+                let res = e.full_run();
+                let hook = lock(&e.inner.full_exit_hook).take();
+                if let Some(h) = hook {
+                    h();
+                }
+                // Under the lock an ask starts under: the failure noted and the shadow removed, then either this
+                // worker goes (the next ask finds none and starts one) or it takes the run an ask began just now,
+                // which found this worker still there and started none. Never a run with no worker, and never a
+                // new run's shadow removed as the last one's.
+                let _one = lock(&e.inner.full_start);
+                let again = match res {
+                    // (a test's crash: left as a stop of the server would leave it)
+                    Err(err) if err.to_string().contains(CRASHED) => false,
+                    Err(err) => {
+                        e.full_failed(&err.to_string());
+                        false
+                    }
+                    Ok(()) => e.full_get().ok().flatten().is_some_and(|r| r.running() && !r.held(now_ms())),
+                };
+                if !again {
+                    let mut f = lock(&e.inner.full);
+                    f.worker = false;
+                    f.job = None;
+                    break;
+                }
             }
             e.inner.outstanding_sub();
         });
     }
 
+    /// The run failed (the start lock held): its record says why, the shadow goes.
     fn full_failed(&self, why: &str) {
         tracing::warn!("full rebuild: {why}");
-        let _one = lock(&self.inner.full_start);
         if let Ok(Some(mut r)) = self.full_get()
             && r.running()
         {
@@ -827,6 +882,20 @@ impl Engine {
         if let Ok(Some(r)) = self.full_rebuild_status()
             && r.running()
         {
+            let _ = self.full_put(&r);
+        }
+    }
+
+    /// The car under way's logs are counted (from the decoding, as it starts or carries on after a restart):
+    /// `skipped` of them, `skipped_bytes` long, were decoded by this rebuild before and need no work. They count as
+    /// done, on top of the cars before this one, and the rate is of the logs decoded from here on.
+    pub(crate) fn full_counted(&self, skipped: u64, skipped_bytes: u64) {
+        let _one = lock(&self.inner.full_start);
+        if let Ok(Some(mut r)) = self.full_get()
+            && r.running()
+        {
+            r.base_logs = r.car_base_logs + skipped;
+            r.base_bytes = r.car_base_bytes + skipped_bytes;
             let _ = self.full_put(&r);
         }
     }
@@ -920,6 +989,9 @@ impl Engine {
             r.car_started_ms = now_ms();
             r.phase_started_ms = now_ms();
             r.bytes_copied = 0;
+            r.car_base_logs = r.logs_done;
+            r.car_base_bytes = r.bytes_done;
+            r.car_base_failed = r.logs_failed;
         })?;
         Ok(())
     }
@@ -950,9 +1022,14 @@ impl Engine {
                 r.days_done = r.base_days;
                 r.days_total = r.base_days + days;
             })?;
-            let job = Arc::new(JobState::for_full(car));
+            let job = Arc::new(JobState::for_full(car, self, lock(&self.inner.full_crash_logs).take()));
             lock(&self.inner.full).job = Some(job.clone());
             let res = se.reconcile_car(car, Some(&job));
+            self.inner.full_windows.fetch_add(se.stats().windows_rebuilt, Ordering::SeqCst);
+            if matches!(&res, Err(e) if e.to_string().contains(CRASHED)) {
+                lock(&self.inner.full).job = None;
+                return res.map(|()| false);
+            }
             // the counts kept in the record before the job goes
             self.full_edit(|_| {})?;
             lock(&self.inner.full).job = None;
@@ -960,6 +1037,7 @@ impl Engine {
             if self.full_cancelled() {
                 return Ok(false);
             }
+            self.full_lost_none(car, &job.failed())?;
         }
         self.full_phase(Phase::Days)?;
         self.full_days(car, &se)?;
@@ -969,6 +1047,33 @@ impl Engine {
         self.full_phase(Phase::Switching)?;
         self.full_switch(car, &se)?;
         Ok(true)
+    }
+
+    /// Refuses to go on when the new history would be poorer than the one in use: a log that history was made from
+    /// (it has it as decoded) could not be worked on now (its stored file can't be read any more). What it held is
+    /// still in the history in use and can't be made again, so that history is kept. A log that could not be read
+    /// before either is left out as it was.
+    fn full_lost_none(&self, car: CarId, failed: &[String]) -> Result<()> {
+        let db = &self.inner.db;
+        let mut lost = Vec::new();
+        for name in failed {
+            if matches!(records::entry(db, car, name)?, Some(e) if matches!(e.outcome, records::Outcome::Decoded { .. }))
+            {
+                lost.push(name.as_str());
+            }
+        }
+        let Some(first) = lost.first() else { return Ok(()) };
+        let (n, s, they, them, files) = match lost.len() {
+            1 => (1, "", "it", "it", "its stored file is"),
+            n => (n, "s", "they", "them", "their stored files are"),
+        };
+        let more = if n > 1 { format!(", the first {first}") } else { format!(", {first}") };
+        Err(crate::Error::Other(format!(
+            "{n} stored log{s} that the history in use was made from could not be read again{more}: {files} damaged \
+             or cut short (the server's log names the file). The history in use still has what {they} held and a \
+             new one would be without {them}, so it was kept. Put the file back from a backup, then start the full \
+             rebuild again"
+        )))
     }
 
     /// Starts the car's shadow: its folder copied (without SMO's series), its kept keys copied in, then what was
@@ -1001,6 +1106,12 @@ impl Engine {
         self.full_edit(|r| {
             r.bytes_copied = bytes;
             r.seed = Seed { api_last: api_lasts(&real_meta) };
+            // (a car started again from its copy: its logs are counted from the cars before it)
+            r.logs_done = r.car_base_logs;
+            r.logs_total = r.car_base_logs;
+            r.bytes_done = r.car_base_bytes;
+            r.bytes_total = r.car_base_bytes;
+            r.logs_failed = r.car_base_failed;
         })?;
         Ok(shadow)
     }

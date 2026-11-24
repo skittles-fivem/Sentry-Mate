@@ -1,7 +1,8 @@
 // Keyboard focus in Chromium on the dev API server: focus is never dropped to the page's <body>. A dialog gives
 // the focus back to the button that opened it (also one that was disabled while its request ran), the account
-// menu takes the focus when it opens and gives it back when it closes, and a car's live updates leave the
-// focused control where it is.
+// menu takes the focus when it opens and gives it back when it closes, a car's live updates leave the
+// focused control where it is, one dialog is open at a time, and a page that builds itself again for its own
+// address (Places' editor) or draws its list again (the Logbook after a purpose is saved) keeps the focus.
 // Each test names the packs it runs on; `PACKS=a,b` runs only those.
 // Run: node --test ui/tools/keyboard-focus.test.js. Skipped when Playwright is not installed.
 'use strict';
@@ -18,7 +19,8 @@ let playwright = null;
 try { playwright = require('playwright'); } catch { /* not installed: skip */ }
 
 const ONLY = process.env.PACKS ? new Set(process.env.PACKS.split(',')) : null;
-const packs = (...list) => list.filter((p) => !ONLY || ONLY.has(p));
+// a pack named here that is not built in (ui/tools/builtin-packs.js) drops out
+const packs = (...list) => list.filter((p) => BUILTIN_PACKS.includes(p) && (!ONLY || ONLY.has(p)));
 const BUILT_ON_INSTRUMENT = BUILTIN_PACKS.filter((p) => p === 'instrument');
 const SKIP = !playwright && 'Playwright is not installed';
 
@@ -165,6 +167,72 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
       assert.ok(await button.evaluate((b) => document.activeElement === b), `after Escape the focus is back on the account button (it is on ${await focused(page)})`);
       assert.equal(await button.getAttribute('aria-expanded'), 'false');
       assert.deepEqual(errors, []);
+    });
+  });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: the car switcher's key opens no second dialog over the page finder, and the focus comes back`, { skip: SKIP, timeout: 120000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      const { page } = await openPage(context, `${origin}/cars/c1/drives`, 'drives');
+      await page.locator('main a[href], main button').first().focus();
+      const before = await focused(page);
+      assert.notEqual(before, 'BODY');
+      await page.keyboard.press('/');
+      await page.waitForFunction(() => document.querySelectorAll('dialog[open]').length === 1, null, { timeout: 5000 });
+      await page.keyboard.press('Control+k');
+      await page.waitForTimeout(500);
+      assert.equal(await page.evaluate(() => document.querySelectorAll('dialog[open]').length), 1, 'one dialog at a time');
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => !document.querySelector('dialog[open]'), null, { timeout: 5000 });
+      assert.equal(await focused(page), before, 'the focus is back where it was');
+      // the other way round: the finder's key types into the switcher's search, it opens nothing
+      await page.keyboard.press('Control+k');
+      await page.waitForFunction(() => document.querySelectorAll('dialog[open]').length === 1, null, { timeout: 5000 });
+      await page.keyboard.press('Control+k');
+      await page.waitForTimeout(300);
+      assert.equal(await page.evaluate(() => document.querySelectorAll('dialog[open]').length), 1);
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => !document.querySelector('dialog[open]'), null, { timeout: 5000 });
+      assert.equal(await focused(page), before);
+    });
+  });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: opening the place editor, saving a place and saving a drive's purpose leave the focus on the page`, { skip: SKIP, timeout: 180000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      const inView = (page) => page.evaluate(() => { const a = document.activeElement; return !!a && a !== document.body && document.querySelector('main').contains(a); });
+      const { page, errors } = await openPage(context, `${origin}/places`, 'places');
+      const add = page.locator('main a', { hasText: 'New place' }).first();
+      await add.focus();
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => location.search.includes('new=1') && document.documentElement.dataset.ready === 'places' && document.querySelector('main input[name="name"]'), null, { timeout: 30000 });
+      await page.waitForTimeout(300);
+      assert.ok(await inView(page), `the editor has the focus, not the page's body (${await focused(page)})`);
+      await page.fill('main input[name="name"]', 'Depot');
+      await page.locator('main button[type="submit"]').first().focus();
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => !location.search.includes('new=1') && document.documentElement.dataset.ready === 'places', null, { timeout: 30000 });
+      await page.waitForTimeout(300);
+      assert.ok(await inView(page), `back on the list the focus is on the page (${await focused(page)})`);
+      assert.deepEqual(errors, []);
+      await page.close();
+
+      const lb = await openPage(context, `${origin}/cars/c1/logbook`, 'logbook');
+      const edit = lb.page.locator('main .lb-edit').first();
+      await edit.focus();
+      const label = await focused(lb.page);
+      await lb.page.keyboard.press('Enter');
+      await lb.page.waitForSelector('dialog[open] select[name="purpose"]');
+      await lb.page.selectOption('dialog[open] select[name="purpose"]', 'private');
+      const saved = lb.page.waitForResponse((r) => r.request().method() === 'PUT' && /\/purpose$/.test(new URL(r.url()).pathname));
+      await lb.page.locator('dialog[open] button[type="submit"]').click();
+      await saved;
+      await lb.page.waitForFunction(() => !document.querySelector('dialog[open]'), null, { timeout: 5000 });
+      await lb.page.waitForTimeout(1500); // the list is read and drawn again
+      assert.equal(await focused(lb.page), label, 'the focus is on the same drive\'s button in the list drawn again');
+      assert.deepEqual(lb.errors, []);
     });
   });
 }

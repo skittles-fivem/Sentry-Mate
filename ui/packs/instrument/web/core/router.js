@@ -252,6 +252,15 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   // (the clean-up of what was there is handed to the stage alone: this page's own functions must not hold it)
   let finishOld = both(dropStage(live), unmountCurrent(live));
   if (!live) { unready(); setStale(false); }
+  // the page builds itself again for its own address (Places' list and its editor): the control that had the
+  // focus goes away with the old drawing (or lost it already, a Save button disabled while its request ran), and
+  // the focus must not be left on <body>: the page gets it, as on a move to another page
+  const had = !live && keepScroll ? document.activeElement || document.body : null;
+  const focusWas = had && (had === document.body || frame.view().contains(had)) ? had : null;
+  const focusBack = () => {
+    if (!focusWas || !alive() || (focusWas !== document.body && focusWas.isConnected)) return;
+    if (!document.activeElement || document.activeElement === document.body) frame.view().focus({ preventScroll: true });
+  };
   const id = s.page;
   const st = live ? stageView(frame.view(), finishOld) : null;
   finishOld = null;
@@ -299,13 +308,14 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
     rec.release();
     shown();
     frame.view().removeAttribute('aria-busy');
+    focusBack();
     markFailed(id === 'not-found' ? 'not-found' : id);
   };
 
   // where may this page be shown?
   let gate;
   try {
-    gate = await session.gate(id, s.path + (location.search || ''));
+    gate = await session.gate(id, s.path + (location.search || '') + (location.hash || '')); // the section too (/help#licences)
   } catch (err) {
     frame.update({ s, info, car: null, period: null });
     showError(err);
@@ -408,6 +418,7 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
       // what the page drew, after ready() too
       const settle = (markFirst) => {
         if (!alive()) return;
+        focusBack();
         const fonts = document.fonts;
         const loading = fonts && fonts.status === 'loading';
         if (markFirst && !loading) markReady(id);
@@ -479,7 +490,8 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
     if (!firstMount) frame.view().focus({ preventScroll: true });
   }
   // a link to a section of a page (/cars/c1/charges?…#habits): open the page there
-  const target = location.hash.length > 1 ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null;
+  let target = null;
+  try { target = location.hash.length > 1 ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null; } catch { /* not valid percent-encoding: no section to open */ }
   if (target && frame.view().contains(target)) {
     const bar = document.querySelector('.topbar')?.getBoundingClientRect().height || 0; // the sticky top bar
     const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;

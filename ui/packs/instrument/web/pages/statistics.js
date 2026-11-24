@@ -116,7 +116,7 @@ export async function mount(ctx) {
   const carName = (cid) => carById.get(cid)?.name || cid;
   const carTz = (cid) => carById.get(cid)?.time_zone || tz;
   const colorOf = new Map(viewCars.map((cid, i) => [cid, CAR_COLORS[i % CAR_COLORS.length]]));
-  const scopeName = fixedCar ? fixedCar.name : chosen === 'all' ? (fleet.length === 1 ? fleet[0].name : `All ${formatNumber(fleet.length)} cars`)
+  const scopeName = fixedCar ? fixedCar.name : chosen === 'all' ? (fleet.length === 1 ? fleet[0].name : fleet.length ? `All ${formatNumber(fleet.length)} cars` : 'No car yet')
     : viewCars.length === 1 ? carName(viewCars[0]) : `${formatNumber(viewCars.length)} cars`;
   const statsPath = fixedCar ? `cars/${enc(fixedCar.id)}/statistics` : 'statistics';
   const periodOf = (r) => ({ from: r.period_start_ms, to: r.period_end_ms });
@@ -437,7 +437,7 @@ export async function mount(ctx) {
       title: `Per ${GROUP_NAME[group]}`, icon: 'calendar', rows: sorted, columns: shownColumns, sort: { key: 'period', dir: 'desc' }, cls: 'st-table', cover: 'statistics.table',
       csv: { filename: csvFilename(scopeName, 'statistics', group), columns: csvColumns },
       note: `One row per ${GROUP_NAME[group]}${multi ? ' and car' : ''}, newest first; drives and charges count by their start, so a ${GROUP_NAME[group]} adds up to Drives and Charges for the same dates. Open a period as a trip, or its drives, charges and charging habits. Efficiency is the rated consumption over the measured one (above 100 % beats the rating). The CSV adds the parts this table folds into second lines.`,
-      empty: () => emptyState({ icon: 'stats', title: 'Nothing in this period', text: `${scopeName} has no recorded data in ${period.label.toLowerCase()}. Pick a longer period, or another car.` }),
+      empty: () => emptyState({ icon: 'stats', title: 'Nothing in this period', text: !viewCars.length ? 'There is no car on this server yet. A car appears when its CAN Bridge first uploads.' : `${scopeName} has no recorded data in ${period.label.toLowerCase()}. Pick a longer period, or another car.` }),
     });
     replace(tableSlot, table.el);
   }
@@ -534,7 +534,7 @@ export async function mount(ctx) {
     ] : failedCars.length ? [h('div', { role: 'alert' }, emptyState({ icon: 'warn', warn: true, title: 'The odometer could not be loaded',
       text: `The mileage of ${failedCars.map(carName).join(', ')} could not be loaded from the server, so there is nothing to show yet. The readings are not missing: try again.`,
       action: h('button', { class: 'btn', type: 'button', onclick: retryMileage }, icon('reset'), 'Try again') }))]
-      : [emptyState({ icon: 'odo', title: 'No odometer readings', text: `${scopeName} has no odometer reading in ${period.label.toLowerCase()}. Pick a longer period.` })];
+      : [emptyState({ icon: 'odo', title: 'No odometer readings', text: !viewCars.length ? 'There is no car on this server yet. A car appears when its CAN Bridge first uploads.' : `${scopeName} has no odometer reading in ${period.label.toLowerCase()}. Pick a longer period.` })];
     replace(mileSlot, h('section', { class: 'panel panel-pad st-mileage', 'aria-label': 'Odometer and mileage', cover: 'mi.chart.odometer' },
       h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('odo'), 'Odometer and mileage'),
         h('span', { class: 'faint st-side' }, multi ? 'one line per car' : carName(viewCars[0]))),

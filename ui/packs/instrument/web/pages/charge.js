@@ -106,9 +106,11 @@ export async function mount(ctx) {
   const estWord = apiAlone ? 'estimated from the Tesla API\'s readings' : 'estimated (imported)';
   const notIn = apiAlone ? 'Not from the Tesla API' : 'Not in imported history';
 
+  // a read that failed is said as that, never shown as "no curve was recorded" or "no price"
+  let curveErr = null, placeErr = null;
   const [curve, place, around, typical] = await Promise.all([
-    ctx.api.get(`${base}/curve`, { fields: FIELDS.join(','), max_points: 4000 }).catch(() => null),
-    c.place?.id ? ctx.api.get(`places/${encodeURIComponent(c.place.id)}`).catch(() => null) : null,
+    ctx.api.get(`${base}/curve`, { fields: FIELDS.join(','), max_points: 4000 }).catch((e) => { curveErr = e; return null; }),
+    c.place?.id ? ctx.api.get(`places/${encodeURIComponent(c.place.id)}`).catch((e) => { placeErr = e; return null; }) : null,
     Promise.all([
       // the timeline is newest first: the first row before the charge is the drive before, however long the car stood
       ctx.api.get(`cars/${encodeURIComponent(cid)}/timeline`, { to_ms: t0, kinds: 'drive', limit: 1 }).catch(() => null),
@@ -260,7 +262,7 @@ export async function mount(ctx) {
     h('span', { class: 'cost-amount' }, cost ? formatMoney(cost.amount, cost.currency) : 'No cost yet'),
     h('span', { class: 'explain' }, cost ? [COST_SOURCE[cost.source] || cost.source,
       isManual ? manualWhy : c.price_per_kwh?.value != null ? ` · ${format(c.price_per_kwh.value, 'price_energy', { currency: cost.currency })} over the ${c.price_per_kwh.basis === 'grid' ? 'energy drawn' : 'energy added to the pack'}` : '']
-      : price ? 'The place has a price, but it gave no figure for this charge.' : c.place ? `${c.place.name} has no price yet: add one on Places, or enter the cost below.` : 'Not at a saved place with a price: enter the cost below, or save the spot as a place with a price.'),
+      : price ? 'The place has a price, but it gave no figure for this charge.' : placeErr ? `The price of ${c.place.name} could not be loaded: ${placeErr.message}` : c.place ? `${c.place.name} has no price yet: add one on Places, or enter the cost below.` : 'Not at a saved place with a price: enter the cost below, or save the spot as a place with a price.'),
     cost?.source === 'manual' ? tag('Entered by hand', 'warm') : null);
   const invoices = invoiceFacts(c);
   const parts = (bd.parts || []).map((p) => ({ ...p }));
@@ -298,7 +300,7 @@ export async function mount(ctx) {
     ['Charging time', h('span', { cover: 'web.charge-cost.duration' }, formatDuration(c.charging_ms), h('span', { class: 'faint block' }, 'pauses under 3 min count as one charge'))],
     ['Energy', h('span', { cover: 'web.charge-cost.energy' }, `${format(c.energy_added_kwh, 'energy')} into the pack`,
       h('span', { class: 'faint block' }, ac && gridKwh != null ? `${format(gridKwh, 'energy')} drawn${c.losses_kwh != null ? `, ${format(c.losses_kwh, 'energy')} lost` : ''}` : dc ? `${format(c.dc_inlet_kwh, 'energy')} delivered; grid energy unknown` : 'energy drawn unknown'))],
-    ['Place', price ? `${placeLabel(c)}: ${[price.per_kwh != null ? format(price.per_kwh, 'price_energy', { currency: price.currency }) : null, price.tiers?.steps?.length ? TI.tiersSummary(price.tiers, price.currency) : null, price.per_minute != null ? format(price.per_minute, 'price_time', { currency: price.currency }) : null, (price.rates || []).length ? `${price.rates.length} time rates` : null, price.session_fee ? `${formatMoney(price.session_fee, price.currency)} per session` : null].filter(Boolean).join(', ') || 'priced'}` : `${placeLabel(c)}: no price`],
+    ['Place', price ? `${placeLabel(c)}: ${[price.per_kwh != null ? format(price.per_kwh, 'price_energy', { currency: price.currency }) : null, price.tiers?.steps?.length ? TI.tiersSummary(price.tiers, price.currency) : null, price.per_minute != null ? format(price.per_minute, 'price_time', { currency: price.currency }) : null, (price.rates || []).length ? `${price.rates.length} time rates` : null, price.session_fee ? `${formatMoney(price.session_fee, price.currency)} per session` : null].filter(Boolean).join(', ') || 'priced'}` : placeErr ? `${placeLabel(c)}: the price could not be loaded` : `${placeLabel(c)}: no price`],
   ]);
 
   const editor = costEditor(ctx, { c, base, manual, cur, gridKwh, dc });
@@ -361,7 +363,7 @@ export async function mount(ctx) {
 
   /* ---------- charts */
   if (!t.length) {
-    for (const host of [chargeHost, supplyHost, curveHost]) host.append(h('p', { class: 'note' }, 'No curve was recorded for this charge.'));
+    for (const host of [chargeHost, supplyHost, curveHost]) host.append(h('p', { class: curveErr ? 'note warn' : 'note' }, curveErr ? `The curve could not be loaded: ${curveErr.message}` : 'No curve was recorded for this charge.'));
     for (const id2 of ['cd.chart.soc', 'cd.chart.power', 'cd.chart.range', 'cd.chart.outdoor_temp', 'cd.chart.battery_heater']) cover(chargeHost, id2);
     for (const id2 of ['cd.chart.ac_voltage', 'cd.chart.ac_current', 'cd.chart.pilot_current', 'cd.chart.phases']) cover(supplyHost, id2);
     selBox.append(h('span', { class: 'selection-title' }, 'Nothing to zoom: no curve'));

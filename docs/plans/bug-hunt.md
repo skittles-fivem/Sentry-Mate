@@ -6,24 +6,15 @@ The owner's instruction: find every problem and bug in every page and every feat
 
 How it was done: the code was split into areas (below). In each round one hunter per area listed every feature, route, endpoint and job of its area and tried to break each one (edge cases, hostile input, concurrency, data correctness, every page at phone, laptop, 1440p and 4K sizes, light and dark, each interface size). A second pass then tried to refute every finding against the code and the docs; only what it could reproduce counted. Each confirmed bug got a failing test first where that was feasible, then the fix.
 
-State: 1 round(s); 22 bugs fixed, 154 found and open, 4 reports refuted.
+State: 1 round(s); 45 bugs fixed, 39 found and open, 92 archived with their pack, 4 reports refuted.
 
 - [Found and not fixed](#found-and-not-fixed)
+- [Archived with their pack](#archived-with-their-pack)
 - [Fixed](#fixed)
 - [Reported and refuted](#reported-and-refuted)
 - [Checked and found working](#checked-and-found-working)
 
 ## Found and not fixed
-
-### Inputs and ingest
-
-- **TeslaFi import: one row with a wrong date drops the rest of the file and makes other months permanently 'already imported'** (medium; crates/import/src/teslafi/mod.rs:1275-1289 (already_imported / out_of_order), :1457-1483 (end_run builds the Piece from first_ms..last_ms), crates/import/src/teslafi/poll.rs:448-486 (parse_local takes). confirmed, fix not done yet
-- **TeslaFi import: a row dated before 1970 is stored at 1970-01-01 00:00:00 instead of being skipped** (low; crates/import/src/teslafi/poll.rs:503 (to_utc: u64::try_from(d.timestamp_millis()).unwrap_or(0))). confirmed, fix not done yet
-- **Local TeslaMate: the saved database password can be sent to another host without typing it again (password_resend rule bypass)** (medium; crates/tmlocal/src/lib.rs:225-246 (validate: database side checked only when db_used), :689-707 (Service::put), crates/tmlocal/src/store.rs:265-296 (put keeps the password); route PUT /integrations/te). confirmed, fix not done yet
-- **A zipped TeslaFi month in which the car mostly stood asleep is refused as 'a zip bomb?' (the same file plain or gzipped imports)** (medium; crates/import/src/zip.rs:28 (MAX_RATIO = 100), :419-424 (the check in read_in), surfaced through crates/import/src/teslafi/mod.rs:779-830 (source) as Error::Unpack). confirmed, fix not done yet
-- **TeslaFi import: a gzipped or xz'd upload unpacks without any ratio or size limit (a 310 KB file kept an import busy for 28 s; a zip of the same is refused)** (low; crates/import/src/teslafi/mod.rs:779-830 (Importer::source: gzip and xz readers fed straight into file()), crates/import/src/teslafi/csv.rs:28-68 (Lines::next)). confirmed, fix not done yet
-- **TeslaFi charge costs: a cost written with a decimal comma is read 100 times too high; a cost of 0 and negative costs are kept** (low; crates/teslafi/src/costs.rs:130-139 (num), :143-146 (session)). confirmed, fix not done yet
-- **TeslaFi import: a state span that ends exactly where a file ends is not extended to the next file's first poll** (low; crates/import/src/teslafi/seg.rs:575-600 (Run::push: 'asleep until seen again; online up to the next poll'), :607-625 (Run::finish), crates/import/src/teslafi/mod.rs:1593-1700 (join of edges)). confirmed, fix not done yet
 
 ### Background jobs and storage
 
@@ -63,34 +54,19 @@ State: 1 round(s); 22 bugs fixed, 154 found and open, 4 reports refuted.
 - **/setup/status never reports a running import** (low; crates/engine/src/query/keys.rs:420 (import_running: false); crates/sentry-mate/src/api.rs setup_status; ui/packs/*/web/pages/fleet.js (the import_running fix text)). confirmed, fix not done yet
 - **A car that only has imported history is flagged 'no upload' for good** (low; crates/engine/src/query/fleet.rs:145-152 (attention_of) and crates/engine/src/query/system.rs:1056-1060 (health reasons)). confirmed, fix not done yet
 - **Fleet says 'No upload for 4 min' for a car flagged because its data is 38 hours old** (low; ui/packs/instrument/web/pages/fleet.js:34 (same in horizon and manager); rule in crates/engine/src/query/fleet.rs:145). confirmed, fix not done yet
-- **Console's Travel page prints 'null' for stops with no town** (medium; ui/packs/console/web/pages/travel.js:122, :131, :152, :162, :170). archived (pack archived)
-- **Pebble's Settings: Display shows the word 'null' under the release check** (low; ui/packs/pebble/web/pages/settings-display.js:266-271 (drawRel)). archived (pack archived)
-- **Console's drive page labels the fourth tyre line 'undefined rr'** (low; ui/packs/console/web/pages/drive.js:174 (three legend glyphs) and ui/packs/console/web/core/chart.js:44 (DASHES has three entries)). archived (pack archived)
+- **Console's Travel page prints 'null' for stops with no town** (medium; ui/packs/console/web/pages/travel.js:122, :131, :152, :162, :170). confirmed, fix not done yet
+- **Pebble's Settings: Display shows the word 'null' under the release check** (low; ui/packs/pebble/web/pages/settings-display.js:266-271 (drawRel)). confirmed, fix not done yet
+- **Console's drive page labels the fourth tyre line 'undefined rr'** (low; ui/packs/console/web/pages/drive.js:174 (three legend glyphs) and ui/packs/console/web/core/chart.js:44 (DASHES has three entries)). confirmed, fix not done yet
 - **Charges for all cars on a server with no car asks for /cars/undefined/... and prints 'undefined'** (low; ui/packs/{instrument,horizon,manager,console,logbook}/web/pages/charges.js (the DC curve block); route /charges?cars=all). confirmed, fix not done yet
 - **Import report 'Rows per car' says every TeslaFi poll was imported even when all were skipped** (medium; ui/packs/instrument/web/pages/import.js:841 (same line in horizon and manager); ui/packs/console/web/pages/import.js:535). confirmed, fix not done yet
 - **Logbook's ', plugged in' on parked timeline rows never shows on the real server** (low; ui/packs/logbook/web/pages/timeline.js:466; crates/web/src/resources/timeline.rs (row fields); mock timeline rows). confirmed, fix not done yet
 - **Six list resources ignore ?format=csv and Accept: text/csv** (low; crates/web/src/accounts_admin.rs (accounts, audit), auth.rs (me/sessions), packs/mod.rs (ui-packs), resources/notices.rs, resources/imports.rs (import-holds)). confirmed, fix not done yet
-- **Pebble tells a car with no data 'it should fall asleep soon'** (low; ui/packs/pebble/web/pages/car.js (the 'Why it is awake' block)). archived (pack archived)
+- **Pebble tells a car with no data 'it should fall asleep soon'** (low; ui/packs/pebble/web/pages/car.js (the 'Why it is awake' block)). confirmed, fix not done yet
 - **No pack offers a way to change one's own password** (low; ui/packs/*/web (no file names me/password); API PUT /api/v1/me/password in crates/web/src/auth.rs:41). confirmed, fix not done yet
 
-### Instrument
+## Archived with their pack
 
-- **Car overview: every live update destroys the focused control, keyboard focus falls to <body>** (high; ui/packs/instrument/web/pages/car.js:805-814 (live 'now' handler calls paintHead, paintInputs, paintPlace, paintLive every 2 s), :304-308 (mapTools replaced), :195/:257 (head)). confirmed, fix not done yet
-- **Account menu opens but keyboard focus never enters it (149 Tab presses away)** (medium; ui/packs/instrument/web/core/account.js:138-149 (toggleAccountMenu), core/frame.js (button.account)). confirmed, fix not done yet
-- **Failed API reads are shown as true 'there is none' statements on several pages** (medium; ui/packs/instrument/web/pages/car.js:575, drive.js:70, charge.js:107-108, logbook.js:299-300, fleet.js:237, drives.js (places filter), places.js:176/439, trip.js:84-85). confirmed, fix not done yet
-- **Places page sends one GET /places?car= per car (196 extra requests with 200 cars), failures hidden** (medium; ui/packs/instrument/web/pages/places.js:58-71 (drivesByCar), :176). confirmed, fix not done yet
-- **Connections overview rows for map tiles, address lookup and release check link to anchors that do not exist** (medium; ui/packs/instrument/web/pages/settings-display.js (only id 'release-check' exists); links come from crates/web/src/resources/overview.rs:579,591,612 and ui/devserver/mockapi/resources/overview.py:345,). confirmed, fix not done yet
-- **A long car name without spaces makes car pages scroll sideways on a phone** (medium; ui/packs/instrument/web/app.css (.page-title, .eyebrow), pages/car.js:257 (head), core/page.js:18-31 (pageHead)). confirmed, fix not done yet
-- **With no cars: eight menu items do nothing, and /charges asks for car 'undefined'** (medium; ui/packs/instrument/web/core/frame.js (nav link hrefs), pages/charges.js (fast-charging curve panel)). confirmed, fix not done yet
-- **Dialogs opened by a button that disables itself first do not return focus on close** (low; ui/packs/instrument/web/core/dialog.js:17,37-40 (back = document.activeElement); callers pages/tesla-account.js:239 (signIn), pages/settings-cars.js:190,468 (Make upload token), settings-integrations.). confirmed, fix not done yet
-- **Typing a latitude outside -90..90 in the place editor throws an uncaught error** (low; ui/packs/instrument/web/pages/places.js:778 (paintCircle -> marker.setLngLat), called from the input handler at :916). confirmed, fix not done yet
-- **Timeline: filter bar grows 48 px after the page is ready and pushes everything down** (low; ui/packs/instrument/web/pages/timeline.js:153-158 (placeSel filled after ready), toolbar .tl-filters). confirmed, fix not done yet
-- **Settings: Server export steps overlap and are cut off on a phone at interface size 110 and 125** (low; ui/packs/instrument/web/pages/settings-server.css (.xp-steps, .xp-step), section 'With an export file'). confirmed, fix not done yet
-- **Travel on a phone at interface size 80: the map legend hangs out of the map over the help text** (low; ui/packs/instrument/web/pages/travel.css (.tv-map-panel map height, .tv-legend)). confirmed, fix not done yet
-- **Empty state of a wide table is centred in the full table width and cut off at the edge** (low; ui/packs/instrument/web/core/table.js (.tbl-empty inside .tbl-scroll), seen on /statistics 'Per month'). confirmed, fix not done yet
-- **Interface size 80 on a desktop gives unit text of 8.6 to 9.6 px** (low; ui/packs/instrument/web/app.css (.q-u unit size, .sub), seen on fleet, charges, software, health). confirmed, fix not done yet
-- **/software is 'not found' although the page is registered as working without a car; the not-found screen has no heading** (low; ui/packs/instrument/web/core/pages.js:107 (software: car 'optional'), ui/shared/state.js:36 (only /cars/:car/software), core/router.js:232-237 and core/states.js (error panel)). confirmed, fix not done yet
-- **Dev server: Software's 'Versions of every car' lists a car c4 that does not exist, so its link 404s** (low; ui/devserver/mockapi (GET /api/v1/fleet/versions); shown by ui/packs/instrument/web/pages/software.js:292). confirmed, fix not done yet
+The owner archived every UI pack except Instrument while the hunt ran. What was found in Horizon, Manager, Console, Pebble and Logbook and not fixed is kept here for the day a pack comes back. Fixes made to those packs before the change are not on main: only Instrument, the shared modules and the server carry them.
 
 ### Horizon
 
@@ -123,7 +99,7 @@ State: 1 round(s); 22 bugs fixed, 154 found and open, 4 reports refuted.
 - **Place editor: typing a latitude outside -90..90 throws an uncaught MapLibre error** (low; ui/packs/manager/web/pages/places.js:773-780 (paintCircle)). archived (pack archived)
 - **Saving a place without touching its price still asks 'Update past charge costs too? ... would cost differently with this price'** (low; ui/packs/manager/web/pages/places.js:967-971). archived (pack archived)
 - **A deep link with a section anchor loses the anchor when sign-in is needed** (low; ui/packs/manager/web/core/router.js:206 (session.gate(id, s.path + location.search)); core/session.js gate()). archived (pack archived)
-- **With no cars, the Overview, Timeline, Software, Drives, Trip, Logbook, Battery and Efficiency tabs all link to '/' and silently show All cars** (low; ui/packs/manager/web/core/frame.js (tab links via state.linkTo); ui/shared/state.js:400). confirmed, fix not done yet
+- **With no cars, the Overview, Timeline, Software, Drives, Trip, Logbook, Battery and Efficiency tabs all link to '/' and silently show All cars** (low; ui/packs/manager/web/core/frame.js (tab links via state.linkTo); ui/shared/state.js:400). archived (pack archived)
 - **Page finder: Esc with text typed only clears the text; the hint says 'Esc close'** (low; ui/packs/manager/web/core/finder.js (search input in the menu panel dialog)). archived (pack archived)
 - **After a failed save in a dialog (and after each set-up step) keyboard focus drops to the page body** (low; ui/packs/manager/web/core/form.js busy() (disables the focused submit button); pages/settings-server.js account dialogs; pages/setup.js step changes). archived (pack archived)
 - **Logbook: the text of a purpose total with no drives has 2.5:1 contrast (light) and 2.9:1 (dark)** (low; ui/packs/manager/web/pages/logbook.css (.lb-total.is-zero, opacity 0.6)). archived (pack archived)
@@ -131,7 +107,7 @@ State: 1 round(s); 22 bugs fixed, 154 found and open, 4 reports refuted.
 ### Console
 
 - **Battery: the "by month" table never shows a row (ReferenceError: warranty is not defined)** (high; ui/packs/console/web/pages/battery.js:354 (paintMonths), variable declared at line 146 in another function; route /cars/{car}/battery). archived (pack archived)
-- **Places: saving an existing place leaves the form dead (no "Saved" note, save button stays disabled, old heading)** (high; ui/packs/console/web/pages/places.js:361-362 (save) with ui/shared/state.js navigate; route /places?place={id}). confirmed, fix not done yet
+- **Places: saving an existing place leaves the form dead (no "Saved" note, save button stays disabled, old heading)** (high; ui/packs/console/web/pages/places.js:361-362 (save) with ui/shared/state.js navigate; route /places?place={id}). archived (pack archived)
 - **Places: deleting from the list leaves the row in the list and shows no confirmation** (medium; ui/packs/console/web/pages/places.js:99 (removePlace); route /places). archived (pack archived)
 - **Travel: the [refresh] button throws and does nothing** (medium; ui/packs/console/web/pages/travel.js:102; scoped client built in ui/packs/console/web/core/router.js counted()). archived (pack archived)
 - **Settings: car: a failed "mark as sold" / "not sold" / sold-date change shows no error** (medium; ui/packs/console/web/pages/settings-cars.js:396-400 (paintSold save)). archived (pack archived)
@@ -153,9 +129,9 @@ State: 1 round(s); 22 bugs fixed, 154 found and open, 4 reports refuted.
 - **Settings: car: the key efficiency_wh_per_km_override breaks in the middle of the word** (low; ui/packs/console/web/pages/settings-cars.js:567 and app.css .ke-k; /settings/cars/{car} reference values at 1440 px). archived (pack archived)
 - **Interface size 80 and 125: checker failures besides the sideways scroll (fractional borders, text under 10 px, focus scroll)** (low; Logbook purpose select (.pur-cell select.in--cell), Travel tables, Import phone rows, Drives/Logbook sort select on phone; settings-cars sold date input on phone). archived (pack archived)
 - **Logbook: rows of the trip log appear and vanish again right after the page is ready** (low; ui/packs/console/web/core/table.js windowTable / shared/vlist.js; /cars/{car}/logbook). archived (pack archived)
-- **Private LAN addresses used as examples in page text (rule: use 192.0.2.x)** (low; ui/packs/console/web/pages/settings-server.js:134; pages/setup.js:215-216; ui/devserver/README.md (192.168.1.30 for the made-up new server)). confirmed, fix not done yet
-- **Dev server: /fleet/versions lists a car that does not exist (and omits the sold car), so Software shows a dead link** (low; ui/devserver/mockapi/resources/software.py fleet_versions (line 180 on); seen on /cars/c1/software "every car" table). confirmed, fix not done yet
-- **Dev server: GET /places?car=<synthetic car>&sort=drives answers 500** (low; ui/devserver/mockapi/resources/places.py:90 (_car_counts) -> mockapi/derive.py:37 (started)). confirmed, fix not done yet
+- **Private LAN addresses used as examples in page text (rule: use 192.0.2.x)** (low; ui/packs/console/web/pages/settings-server.js:134; pages/setup.js:215-216; ui/devserver/README.md (192.168.1.30 for the made-up new server)). archived (pack archived)
+- **Dev server: /fleet/versions lists a car that does not exist (and omits the sold car), so Software shows a dead link** (low; ui/devserver/mockapi/resources/software.py fleet_versions (line 180 on); seen on /cars/c1/software "every car" table). archived (pack archived)
+- **Dev server: GET /places?car=<synthetic car>&sort=drives answers 500** (low; ui/devserver/mockapi/resources/places.py:90 (_car_counts) -> mockapi/derive.py:37 (started)). archived (pack archived)
 
 ### Pebble
 
@@ -164,15 +140,15 @@ State: 1 round(s); 22 bugs fixed, 154 found and open, 4 reports refuted.
 - **Charges on a phone at the default size: "Per 100 km" and "DC per kWh" figures are cut off and the page scrolls sideways** (medium; ui/packs/pebble/web/pages/charges.js:300-301 (moneyTile), core/bits.js:302-307 money(), app.css:987 (.money); routes /cars/{car}/charges and /charges). archived (pack archived)
 - **More sideways overflow at phone widths: Integrations Set up, Charge, Statistics** (low; ui/packs/pebble/web/pages/settings-integrations.js (.iv-top chip, Set up tab), pages/charge.js:76-78 (context bar date pill), pages/statistics.js (bucket segmented control in .page-bar)). archived (pack archived)
 - **Segmented controls are cut off inside sheets on a phone (Charges Filters, Place editor price type)** (medium; ui/packs/pebble/web/pages/places.js:111 (billing segmented: No price / Per kWh / Per minute / Tiered (per kWh steps)), pages/charges.js Filters sheet; core/form.js segmented(), app.css .seg). archived (pack archived)
-- **On a first visit the dock's Car, Drives and Battery and five More-sheet entries do nothing** (medium; ui/shared/state.js linkTo() ("with no car known it links to Fleet"), ui/packs/pebble/web/core/frame.js drawDock() and buildMoreSheet()). confirmed, fix not done yet
+- **On a first visit the dock's Car, Drives and Battery and five More-sheet entries do nothing** (medium; ui/shared/state.js linkTo() ("with no car known it links to Fleet"), ui/packs/pebble/web/core/frame.js drawDock() and buildMoreSheet()). archived (pack archived)
 - **Links to page sections land at the top: #move, #habits, #release-check, #maps, #addresses, #overlaps-{car} do not exist in Pebble** (medium; ui/packs/pebble/web/pages/settings-server.js:442 (move tile has no id), pages/statistics.js:106 (links to charges#habits; pages/charges.js has no such id), pages/settings-server.js:176 with ui/shared/). archived (pack archived)
-- **Tapping a page while the server is unreachable replaces the app with the browser's error page** (medium; ui/shared/build.js loadPage() lines 118-140 (copied to ui/packs/pebble/web/shared/build.js), used by ui/packs/pebble/web/core/router.js:185). confirmed, fix not done yet
+- **Tapping a page while the server is unreachable replaces the app with the browser's error page** (medium; ui/shared/build.js loadPage() lines 118-140 (copied to ui/packs/pebble/web/shared/build.js), used by ui/packs/pebble/web/core/router.js:185). archived (pack archived)
 - **Long car and account names push pages wider than the phone screen** (low; ui/packs/pebble/web/pages/settings-cars.js ("Tie to {car}" button in Keys waiting for a car), pages/travel.js (car filter pills and row sides), pages/settings-server.js accountsTile() (line 714-720)). archived (pack archived)
 - **Place editor: name allows 80 characters but the server takes 64, and server field errors are shown as one unlabelled line** (low; ui/packs/pebble/web/pages/places.js:105 (maxlength: 80), :303-306 (save catch joins e.fields values), :296 (preview shows only e.message); server rule crates/engine/src/query/places.rs:997). archived (pack archived)
 - **Typing a latitude outside -90..90 in the place editor throws uncaught errors** (low; ui/packs/pebble/web/pages/places.js drawSheetMap() (around lines 243-262)). archived (pack archived)
 - **With miles and Fahrenheit chosen, three texts stay metric** (low; ui/packs/pebble/web/pages/trip.js:81, pages/charges.js:351, pages/places.js:107 and :278). archived (pack archived)
 - **Logbook: "1 drives" in the purpose tiles, and keyboard focus is lost after saving a purpose** (low; ui/packs/pebble/web/pages/logbook.js:137 (totalsTiles) and :172-196 (edit / refresh)). archived (pack archived)
-- **Logbook fails the stability check: rows flicker on every live rows event** (low; ui/packs/pebble/web/pages/logbook.js:198-207 (refresh on rows events), ui/shared/vlist.js). confirmed, fix not done yet
+- **Logbook fails the stability check: rows flicker on every live rows event** (low; ui/packs/pebble/web/pages/logbook.js:198-207 (refresh on rows events), ui/shared/vlist.js). archived (pack archived)
 - **Battery page of a car without capacity data shows a broken sentence** (low; ui/packs/pebble/web/pages/battery.js:92). archived (pack archived)
 - **Warning-tone text is below 4.5:1 in the light theme; "unnamed" firmware labels are below it in both themes** (medium; ui/packs/pebble/web/app.css (--sun as text colour: .chip.tone-sun, .check.is-warn .check-word, .tile-line.is-warn, .is-low, .is-paused; --sky on .chip.tone-sky), pages/software.css (.fwh-seg.is-unname). archived (pack archived)
 - **Car switcher says "200 cars" where the header says "199 cars"** (low; ui/packs/pebble/web/core/switcher.js draw() (count.textContent, about line 84)). archived (pack archived)
@@ -197,7 +173,7 @@ State: 1 round(s); 22 bugs fixed, 154 found and open, 4 reports refuted.
 - **Settings: Cars saves a made-up currency ("dollars" becomes DOL) and a sold date in the future** (low; ui/packs/logbook/web/pages/settings-cars.js (default price form: currency cut to three letters; sold form: no date check)). archived (pack archived)
 - **"Apply" on an import lot and "Jump to date" do nothing when nothing is chosen** (low; ui/packs/logbook/web/pages/import.js:1232-1234 (giveCar returns when no car is picked), core/table.js:364-365 (jump only focuses the date)). archived (pack archived)
 - **Pixel check fails at the default size on fleet, charge, battery, travel and settings-integrations** (low; ui/packs/logbook/web/pages/fleet.css (page-head-aside), charge.css (.map-charge pin label), battery.css (.bt-cap-x ticks, .bt-split-key), travel.css (.tv-period), settings-integrations.css (.co-p rows). archived (pack archived)
-- **Dev server: GET /api/v1/places?car=c4 answers 500 for a light synthetic car (--cars 200)** (low; ui/devserver mock API, places list with car= for cars above the three featured ones; seen from ui/packs/logbook/web/pages/timeline.js and drives.js). confirmed, fix not done yet
+- **Dev server: GET /api/v1/places?car=c4 answers 500 for a light synthetic car (--cars 200)** (low; ui/devserver mock API, places list with car= for cars above the three featured ones; seen from ui/packs/logbook/web/pages/timeline.js and drives.js). archived (pack archived)
 
 ## Fixed
 
@@ -230,6 +206,35 @@ Each with a test unless the line says otherwise; the commits name them.
 - 26 error codes the server answers are missing from the contract's list of error codes (low). Test: crates/web/tests/error_codes.rs: every_error_code_the_server_answers_is_in_the_contract (walks ApiError::new/conflict/not_found in crates/web/src and sentry-mate/src/api.rs, checks code and status against the doc line)
 - A Content-Length that is not a number gets an empty 400, not the documented error shape (low). Test: docs only (hyper answers before the router; no handler test is possible)
 - A pack zip without ui.json is refused with a misleading reason (low). Test: crates/web/tests/ui_pack_uploads.rs: a_zip_without_ui_json_is_refused_for_that
+
+### Inputs and ingest
+
+- TeslaFi import: one row with a wrong date drops the rest of the file and makes other months permanently 'already imported' (medium). Test: crates/import/tests/teslafi.rs: one_row_with_a_wrong_date_is_passed_over_alone, a_real_gap_in_a_file_is_not_a_wrong_date, many_rows_out_of_order_are_said
+- TeslaFi import: a row dated before 1970 is stored at 1970-01-01 00:00:00 instead of being skipped (low). Test: crates/import/tests/teslafi.rs: a_date_before_1970_is_a_bad_time; crates/import/src/teslafi/poll.rs: local_time_goes_to_utc_through_dst (Before1970 cases)
+- Local TeslaMate: the saved database password can be sent to another host without typing it again (password_resend rule bypass) (medium). Test: crates/tmlocal/src/lib.rs: a_kept_database_password_never_follows_a_host_changed_while_the_database_is_off
+- A zipped TeslaFi month in which the car mostly stood asleep is refused as 'a zip bomb?' (the same file plain or gzipped imports) (medium). Test: crates/import/tests/teslafi.rs: a_month_the_car_stood_asleep_reads_the_same_zipped_gzipped_or_plain; crates/import/src/zip.rs zip-bomb test (with_max_ratio(500) case added)
+- TeslaFi import: a gzipped or xz'd upload unpacks without any ratio or size limit (a 310 KB file kept an import busy for 28 s; a zip of the same is refused) (low). Test: crates/import/tests/teslafi.rs: a_packed_file_that_unpacks_to_far_more_than_a_real_one_is_refused; crates/import/tests/import.rs: what_isnt_a_whole_backup_is_refused_before_anything_is_handed_over (gzip/xz bomb case for the TeslaMate backup path)
+- TeslaFi charge costs: a cost written with a decimal comma is read 100 times too high; a cost of 0 and negative costs are kept (low). Test: crates/teslafi/src/costs.rs: a_cost_is_read_as_written
+- TeslaFi import: a state span that ends exactly where a file ends is not extended to the next file's first poll (low). Test: crates/import/tests/teslafi.rs: polls_cut_into_two_files_anywhere_give_what_one_file_gives, a_state_span_reaches_the_next_files_first_poll_until_a_file_between_them_comes
+
+### Instrument
+
+- Car overview: every live update destroys the focused control, keyboard focus falls to <body> (high). Test: ui/tools/keyboard-focus.test.js: "the car overview's live updates leave the focused control in place"
+- Account menu opens but keyboard focus never enters it (149 Tab presses away) (medium). Test: ui/tools/keyboard-focus.test.js: "the account menu takes the focus when it opens, keeps Tab inside and gives the focus back when it closes"
+- Failed API reads are shown as true 'there is none' statements on several pages (medium). Test: ui/tools/page-faults.test.js: "a side read that fails is said as not loaded, never shown as 'there is none'" (ten cases; seen failing first on its first case, the others were not each run unfixed). Not covered, left as they were: the swallowed reads on battery, efficiency, health, help, software, th
+- Places page sends one GET /places?car= per car (196 extra requests with 200 cars), failures hidden (medium). Test: ui/tools/page-faults.test.js: "Places asks for the drives per car of only the cars that have them, a few at a time" and "Places whose drives of one car cannot be read says so, and reads them again on Try again"; ui/devserver/tests/test_places.py test_counts_for_a_car_without_history (all seen failin
+- Connections overview rows for map tiles, address lookup and release check link to anchors that do not exist (medium). Test: ui/tools/overview-links.test.js
+- A long car name without spaces makes car pages scroll sideways on a phone (medium). Test: ui/tools/page-faults.test.js: "a car name of one long word stays inside a phone's window on the car's pages"
+- With no cars: eight menu items do nothing, and /charges asks for car 'undefined' (medium). Test: ui/tools/page-faults.test.js: "with no car, a menu item of a car's page says there is no car yet, and Charges and Statistics ask for no car" and "before any car was opened, a menu item of a car's page asks which car and then opens that page for it" (both seen failing first)
+- Dialogs opened by a button that disables itself first do not return focus on close (low). Test: ui/tools/keyboard-focus.test.js: "a dialog opened by a button that is disabled while its request runs gives the focus back to that button"
+- Typing a latitude outside -90..90 in the place editor throws an uncaught error (low). Test: ui/tools/page-faults.test.js: "a latitude or longitude typed out of range in the place editor throws nothing"
+- Timeline: filter bar grows 48 px after the page is ready and pushes everything down (low). Test: node ui/tools/check.js --pack instrument\|horizon\|manager --pages timeline --stable 8 --sizes 1440x900 (passes in all three on HEAD)
+- Settings: Server export steps overlap and are cut off on a phone at interface size 110 and 125 (low). Test: ui/tools/interface-size.test.js: "on a phone at Interface size 110 and 125 the export file's steps and lines stay inside the card, apart" (seen failing first)
+- Travel on a phone at interface size 80: the map legend hangs out of the map over the help text (low). Test: ui/tools/interface-size.test.js: "on a phone at Interface size 80 the Travel map's legend stays inside the map" (seen failing first in Instrument and Manager; Horizon got the same CSS)
+- Empty state of a wide table is centred in the full table width and cut off at the edge (low). Test: ui/tools/page-faults.test.js: "the empty note of a wide table sits inside the part of the table that is in view" (seen failing without the fix)
+- Interface size 80 on a desktop gives unit text of 8.6 to 9.6 px (low). Test: ui/tools/interface-size.test.js: "at Interface size 80 on a desktop no unit and no code text is under 10 px" (seen failing first). /setup has the same .mono fix in Horizon and Manager but is not in the test.
+- /software is 'not found' although the page is registered as working without a car; the not-found screen has no heading (low). Test: ui/tools/page-faults.test.js: "an address that is no page, or no car, has one h1 that says so, and the tab title says it too"
+- Dev server: Software's 'Versions of every car' lists a car c4 that does not exist, so its link 404s (low). Test: ui/devserver/tests/test_review.py (walks /api/v1/fleet/versions against /cars); checked by hand on HEAD
 
 ## Reported and refuted
 
@@ -269,7 +274,7 @@ What a hunter reported and the second pass could not stand up.
 
 ### API and security
 
-- Inventory: every route of crates/web (156 route lines) plus crates/sentry-mate/src/api.rs written to (hunt scratch)/api-security/inventory.md; all attacks ran against the real binary (dev-seed build, 2 seeded cars, TLS) with scripts in that folder (smc.py client, t*.py, fuzz*.py)
+- Inventory: every route of crates/web (156 route lines) plus crates/sentry-mate/src/api.rs written to (hunt scratch); all attacks ran against the real binary (dev-seed build, 2 seeded cars, TLS) with scripts in that folder (smc.py client, t*.py, fuzz*.py)
 - Role and car matrix: all 170 GET routes as admin, watch (c1 only), watch with no cars and signed out (matrix.py / matrix.out): signed out always 401, admin-only reads 403 for watch, c2 always 404 no_such_car for the c1 watch account
 - Per-car isolation on fleet-wide reports: /charges, /charging-stats[/places], /compare, /statistics, /tracks, /visits/*, /fleet/*, /places/suggestions, mqtt preview: watch answer equals admin's ?cars=c1 answer (t4.py); cars=c2, car=c2, percent-encoded and ../ path tricks give 404
 - Places isolation: a place only c2 used is 404 for the watch account, /places/at shows nothing, preview by id is 422, preview counts and place counts for a place covering both cars hold only c1's rows (t5.py, t6.py)
@@ -292,12 +297,12 @@ What a hunter reported and the second pass could not stand up.
 - Imports upload: wrong offset 409 with Upload-Offset, bad checksum 422, missing checksum 400, 1 MiB chunk 413, second import 409, start before ready refused, size 0, negative and 2^63 refused (t13.py)
 - HTTP layer: TLS 1.2 refused, plain HTTP refused, 2 MB JSON body 413 (also chunked), 70 KB header refused on HTTP/2, unknown /api paths 404 in the error shape, OPTIONS/TRACE 405 with Allow
 - Audit log: wrong sign-ins, confirms and changes recorded with account and address; group filter validated; entries cannot be forged through names (target brackets are escaped)
-- Rust tests through web::testkit compile and run against a copy of the tree: (hunt scratch)/api-security/repro/api_security_hunt.rs (3 tests, all fail on the code as found; log in repro/test.log)
+- Rust tests through web::testkit compile and run against a copy of the tree: (hunt scratch) (3 tests, all fail on the code as found; log in repro/test.log)
 - Not tested: behaviour for addresses outside the home network (the sandbox has only loopback addresses), offline map tiles with a real .pmtiles file, a real move between two servers, Tesla/TeslaFi/TeslaMate inputs against live services
 
 ### Inputs and ingest
 
-- Scratch harness: a cargo workspace outside the repo with path deps on the crates ((hunt scratch)/inputs-ingest/ws, run with `cargo test --offline --test <name> -- --nocapture`); inventory at (hunt scratch)/inputs-ingest/inventory.md; no tracked file changed, git status clean
+- Scratch harness: a cargo workspace outside the repo with path deps on the crates ((hunt scratch), run with `cargo test --offline --test <name> -- --nocapture`); inventory at (hunt scratch); no tracked file changed, git status clean
 - logfmt empty and truncated input: every prefix of a candump and a columns .log.xz is refused, never taken as a whole log (ws/tests/logfmt_fuzz.rs)
 - logfmt bit flips: 6,000 mutated xz files of both formats never panic, and read_log + Line::parse gives the same lines and summary as read_lines (fast columns path)
 - logfmt columns body: 40,000 mutated bodies (flips, inserts, truncation) never panic; accepted ones decode the same through both paths; odd keys (can00, trailing space, 8-digit ids, embedded newline) agree between fast path and text path
@@ -395,7 +400,7 @@ What a hunter reported and the second pass could not stand up.
 
 ### Instrument
 
-- Page checker --pixel at 390x844@3, 1440x900, 2560x1440, 3840x2160: 22 of 25 routes pass; the 3 fails are sub-pixel only (logbook baselines 1 px, places border fraction, settings-server step number 0.66 px). Log: (hunt scratch)/pack-instrument/check-pixel.log
+- Page checker --pixel at 390x844@3, 1440x900, 2560x1440, 3840x2160: 22 of 25 routes pass; the 3 fails are sub-pixel only (logbook baselines 1 px, places border fraction, settings-server step number 0.66 px). Log: (hunt scratch)
 - Page checker --hover: 25 of 25 routes pass (check-hover.log in the same folder)
 - Page checker --stable 30 s at 1440x900 and 390x844: only timeline fails (reported); no flicker anywhere (check-stable.log)
 - Page checker with --role watch, --cars 0, --cars 200 --latency-ms 300: no console errors, page errors, CSP violations or overflow; fails are missing cover ids in empty states plus the mock's 500 on /places?car= (check-watch.log, check-cars0.log, check-cars200.log)
@@ -448,7 +453,7 @@ What a hunter reported and the second pass could not stand up.
 
 ### Manager
 
-- Checker, every page, --pixel at 390x844@3/1440x900/2560x1440/3840x2160: 20 of 25 routes pass (logs: (hunt scratch)/pack-manager/check-*.log); the 5 failures are in the findings or are 1 px nits (logbook totals baseline, integrations ov-err icon, settings-server step numbers, places action buttons on fractional pixels)
+- Checker, every page, --pixel at 390x844@3/1440x900/2560x1440/3840x2160: 20 of 25 routes pass (logs: (hunt scratch)*.log); the 5 failures are in the findings or are 1 px nits (logbook totals baseline, integrations ov-err icon, settings-server step numbers, places action buttons on fractional pixels)
 - Checker --hover (390 and 1440): 25 of 25 pass; --stable 30 s (390 and 1440): 25 of 25 pass (7 with warnings); --latency-ms 400: all pass
 - Checker --role watch: only coverage-mark misses on settings-server and import (admin-only content), no API failures; my own watch crawl (watch.js) found no 403s, no other cars' names leaking, no enabled admin controls (charge cost form is in a disabled fieldset, hidden cars answer Not found)
 - crawl.js: all 26 routes x dark/light (prefers-color-scheme) x 390/1440 on default data, --role watch, --cars 1 --map-tiles none: every page ready, no console errors, no page errors, no failed requests, no horizontal overflow, every visible input labelled, every button and link has an accessible name
@@ -471,7 +476,7 @@ What a hunter reported and the second pass could not stand up.
 
 ### Console
 
-- Checker, plain: `check.js --pack console --pixel --sizes 390x844@3,1440x900,2560x1440,3840x2160` passes every page (exit 0); with `--latency-ms 400` also passes. Logs: (hunt scratch)/pack-console/check-*.log
+- Checker, plain: `check.js --pack console --pixel --sizes 390x844@3,1440x900,2560x1440,3840x2160` passes every page (exit 0); with `--latency-ms 400` also passes. Logs: (hunt scratch)*.log
 - Every route loads and reaches ready with no console error, page error or failed request: admin at 1440x900, watch role, car c3 at 390x844, a synthetic car (--cars 5, --cars 200), crawl.js
 - Mock modes on fleet, settings/server, settings/integrations (both tabs), settings/display, system, help, car, health, import: --move-state (all 6), --export-state (all 4), --map-tiles none/offline, --release-check newer/error/checking/never, --teslamate-trouble auth_failed/catchup_failed, --full-rebuild running/failed/offered, --own-certificate, --cars 1/2, --seed 7, --now-ms: all ready, no console errors (modes.log)
 - Every link of every page (578 unique hrefs) visited: no dead page apart from the findings; licence text files answer 200 text/plain (links.js)
@@ -494,7 +499,7 @@ What a hunter reported and the second pass could not stand up.
 
 ### Pebble
 
-- Checker baseline: check.js --pack pebble --pixel at 390x844@3, 1440x900, 2560x1440, 3840x2160 passes 25 of 25; --hover passes 25 of 25; --device-size 80 passes; --server-args "--latency-ms 400" passes (outputs in (hunt scratch)/pack-pebble/check-*.txt)
+- Checker baseline: check.js --pack pebble --pixel at 390x844@3, 1440x900, 2560x1440, 3840x2160 passes 25 of 25; --hover passes 25 of 25; --device-size 80 passes; --server-args "--latency-ms 400" passes (outputs in (hunt scratch)*.txt)
 - Checker with --role watch, --cars 0 and --cars 200: the only failures are 'missing' coverage items for admin-only controls or cars with no data, and 'no car to open'; no console, page, CSP or API errors
 - Every route loads to its ready state with no console errors, page errors or failed requests: own sweep at 1440x900 light and OS-dark, 390x844, 360x740, with --cars 0/1/200, --role watch, and a combined trouble run (--map-tiles none, --release-check newer, --teslamate-trouble, --full-rebuild failed, --move-state, --export-state failed)
 - Every button on every route clicked as admin and as watch at 390x844 (clicker.js): no page errors, no console errors, no HTTP 4xx/5xx, Escape closes every sheet, no unlabeled inputs or icon buttons without a name inside sheets
@@ -518,7 +523,7 @@ What a hunter reported and the second pass could not stand up.
 
 ### Logbook
 
-- Checker --pixel at 390x844@3, 1440x900, 2560x1440, 3840x2160: 20 of 25 routes pass (failures reported below); output in (hunt scratch)/pack-logbook/check-pixel.txt
+- Checker --pixel at 390x844@3, 1440x900, 2560x1440, 3840x2160: 20 of 25 routes pass (failures reported below); output in (hunt scratch)
 - Checker --stable (30 s per page, 1440x900 and 390x844): 25 of 25 pass, no layout shift, moved blocks or flicker while live updates arrive (check-stable.txt)
 - Checker with --server-args "--latency-ms 400": 25 of 25 pass (check-latency.txt)
 - Checker with --role watch: no console, api, csp or overflow failures; the only 'missing' items are admin-only controls that are rightly hidden (check-watch.txt)

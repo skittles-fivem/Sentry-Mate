@@ -290,6 +290,12 @@ pub(crate) struct Inner {
     pub(crate) full_start: Mutex<()>,
     pub(crate) full_fail_at: Mutex<Option<full::Phase>>,
     pub(crate) full_crash_at: Mutex<Option<full::Phase>>,
+    /// The windows the full rebuilds' decoding rebuilt beside the history (their own engine's count, added up).
+    pub(crate) full_windows: AtomicU64,
+    /// Tests: the full rebuild's worker stops as by a crash once it decoded this many logs of a car.
+    pub(crate) full_crash_logs: Mutex<Option<u64>>,
+    /// Tests: called by the full rebuild's worker when its run ended, before it goes.
+    pub(crate) full_exit_hook: Mutex<Option<full::ExitHook>>,
     pub(crate) full_auto: std::sync::atomic::AtomicBool,
     /// How long a new version's full rebuild waits before it starts ([`Engine::full_rebuild_auto_plan`]'s grace).
     pub(crate) full_grace_ms: AtomicU64,
@@ -490,6 +496,9 @@ impl Engine {
                 full_start: Mutex::new(()),
                 full_fail_at: Mutex::new(None),
                 full_crash_at: Mutex::new(None),
+                full_windows: AtomicU64::new(0),
+                full_crash_logs: Mutex::new(None),
+                full_exit_hook: Mutex::new(None),
                 full_auto: std::sync::atomic::AtomicBool::new(true),
                 full_grace_ms: AtomicU64::new(full::AUTO_GRACE_MS),
                 version_stale: Mutex::default(),

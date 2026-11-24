@@ -1206,6 +1206,8 @@ impl Engine {
         let hold = self.version_held(car);
         let mut wanted = Vec::new();
         let mut bytes = 0;
+        // (a full rebuild carried on after a restart: the logs it decoded before, for its counts)
+        let (mut skipped, mut skipped_bytes) = (0u64, 0u64);
         for (start, key, name, r) in todo {
             let d = records::day_of(start);
             if day_cache.as_ref().is_none_or(|(cd, _)| *cd != d) {
@@ -1220,6 +1222,9 @@ impl Engine {
                 let len = r.length.unwrap_or(0);
                 bytes += len;
                 wanted.push((key, name, len));
+            } else {
+                skipped += 1;
+                skipped_bytes += r.length.unwrap_or(0);
             }
         }
         // logs judged before their length was kept: their size as stored (a job's bytes then add up to its logs')
@@ -1243,6 +1248,7 @@ impl Engine {
         }
         if let Some(j) = job {
             j.add_total(wanted.len() as u64, bytes);
+            j.counted(skipped, skipped_bytes);
         }
         // the windows the logs change are rebuilt once per run of logs, not after each log (a window reaches back
         // to the last settled point, and in a rebuild on to the car's newest data: far more than a log)
@@ -1260,6 +1266,22 @@ impl Engine {
             let meta = records::meta(db, car)?;
             let apis = !(meta.api_days.is_empty() && meta.teslafi_days.is_empty() && meta.tmlocal_days.is_empty());
             let ahead = match first {
+                // A full rebuild carried on after a restart: its shadow started empty of everything worked out
+                // from logs, so what is stored there at or after these logs (a state that goes on past the last
+                // log done, say) is only what the logs it decoded before gave, all of them older than these. An
+                // uninterrupted one stands the same at that point, between two runs of logs, and goes on per run:
+                // so does this (crates/sentry-mate/src/window_batch.rs cuts one twice and compares everything).
+                Some(t) if job.is_some_and(|j| j.full) && skipped > 0 => {
+                    let mut later = false;
+                    for d in meta.days.range(records::day_of(t)..) {
+                        let rec = records::day_shared(db, car, *d)?;
+                        if rec.logs.keys().any(|n| records::name_start_ms(n).is_some_and(|s| s >= t)) {
+                            later = true;
+                            break;
+                        }
+                    }
+                    later
+                }
                 Some(t) => {
                     let q = db::Query { limit: 1, source: Some(Source::Live), ..db::Query::between(t, u64::MAX) };
                     !(db.list::<StateRow>(car, &q)?.items.is_empty()
@@ -1284,7 +1306,7 @@ impl Engine {
             drop(held);
             if let Err(e) = r {
                 if let Some(j) = job {
-                    j.log_failed(&name, e.to_string());
+                    j.log_failed(&name, &e);
                 }
                 self.failed(&e);
             }
@@ -1295,6 +1317,9 @@ impl Engine {
             }
             if let Some(j) = job {
                 j.step(self, Some(car), len);
+                if j.crash_now() {
+                    return Err(Error::Other(crate::full::CRASHED.into()));
+                }
             }
         }
         self.rebuild_dirty(car)?;
@@ -1326,7 +1351,40 @@ impl Engine {
                 u.update.inputs.contains(Input::TeslaApi) && u.update.start_ms >= from_ms && u.update.start_ms < to_ms
             })
             .collect();
-        db.delete_window(car, from_ms, to_ms)?;
+        // A damaged file of the samples or charge points decoded from the logs must not stop the rebuild that makes
+        // them again: it is set aside, and the window grows over the time it covered (and an hour before: a log
+        // that started earlier may reach into it), so every log with points in it is decoded again. Noted on the
+        // rebuild's mark, so a restart clears the same.
+        let (asked_from, asked_to) = (from_ms, to_ms);
+        let (mut from_ms, mut to_ms) = (from_ms, to_ms);
+        loop {
+            let err = match db.delete_window(car, from_ms, to_ms) {
+                Ok(_) => break,
+                Err(e) => e,
+            };
+            let Some((a, b)) = db.set_aside_damaged_can_series(car, &err)? else { return Err(err.into()) };
+            tracing::warn!(
+                "car {car}: {err}; it holds only what was decoded from the stored logs, so it was set aside (as \
+                 .damaged beside it) and the logs of its time are decoded again"
+            );
+            from_ms = from_ms.min(a.saturating_sub(3_600_000));
+            to_ms = to_ms.max(b);
+            if let Some(mut m) = records::rebuild_mark(db, car)?
+                && !m.cleared
+            {
+                m.from_ms = m.from_ms.min(from_ms);
+                m.to_ms = m.to_ms.max(to_ms);
+                records::put_rebuild_mark(db, car, Some(&m))?;
+            }
+        }
+        if (from_ms, to_ms) != (asked_from, asked_to) {
+            // (the part the window grew by was not looked at above: once more over all of it, the API's updates
+            // of the part cleared put back first, to be kept as they are below)
+            if !api_updates.is_empty() {
+                db.replace_window::<db::UpdateRow>(car, asked_from, asked_to, &api_updates)?;
+            }
+            return self.clear_window(car, from_ms, to_ms);
+        }
         if !api_updates.is_empty() {
             db.replace_window::<db::UpdateRow>(car, from_ms, to_ms, &api_updates)?;
         }

@@ -14,7 +14,9 @@
 .charge-figures .metric-value { font-size: 1.375rem; }
 .charge-soc { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: round(1rem, var(--e)); margin-top: round(1.25rem, var(--e)); padding-top: round(1.125rem, var(--e)); border-top: 1px solid var(--line); }
 .charge-soc > div { display: flex; flex-direction: column; --LH: round(calc(1.25 * 1em), 2px); }
-.charge-soc > div.r { text-align: right; }
+.charge-soc > div.r { text-align: right; justify-self: end; }
+/* (a side column rounded to whole pixels is never narrower than its figure: the figure keeps its own width) */
+.charge-soc > div:not(.charge-soc-bar) { min-width: max-content; }
 .charge-soc b { font-family: var(--font-display); font-weight: 500; font-size: 1.5rem; }
 .charge-soc span { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); }
 .charge-soc .lbl { text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }

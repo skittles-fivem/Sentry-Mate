@@ -85,6 +85,18 @@ function style(src) {
   return { version: 8, sources, layers };
 }
 
+// Resolves once the page says it is ready (<html data-ready>): a map's setup (the library, its worker, WebGL, the
+// style) is the largest piece of work on a page, so afterReady keeps it out of the page's first drawing.
+function whenReady(signal) {
+  const root = document.documentElement;
+  if (root.dataset.ready || typeof MutationObserver !== 'function') return Promise.resolve();
+  return new Promise((resolve) => {
+    const mo = new MutationObserver(() => { if (root.dataset.ready) { mo.disconnect(); resolve(); } });
+    mo.observe(root, { attributes: true, attributeFilter: ['data-ready'] });
+    signal?.addEventListener?.('abort', () => { mo.disconnect(); resolve(); }, { once: true });
+  });
+}
+
 /**
  * A map in container (sized by CSS):
  *   const m = await createMap(el, ctx, { center: [lon, lat], zoom: 15, bounds, interactive: true });
@@ -92,12 +104,16 @@ function style(src) {
  *   m.frame(() => m.map.fitBounds(b, { padding: rpx(30), duration: 0 }));
  * Returns { map, ml, ready, addLayer, frame, tiles } or null when the page was left meanwhile.
  * With lazy: true a map below the fold is made (and MapLibre loaded) only when it comes within a screen of view
- * (shared/lazy.js): until then this waits, so a page awaits it for ready only when nearNow(el) says it is near.
+ * (shared/lazy.js; with afterReady too, only after the page is ready and once it is in view): until then this
+ * waits, so a page awaits it for ready only when nearNow(el) says it is near.
  * Throws when MapLibre cannot start (no WebGL): show mapFallback() then.
  */
-export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bounds = null, interactive = true, lazy = false } = {}) {
+export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bounds = null, interactive = true, lazy = false, afterReady = false } = {}) {
   if (lazy) {
-    await new Promise((resolve) => ctx.onCleanup(whenNear(container, resolve)));
+    // afterReady: not before the page is drawn and ready, and then once the map is in view (a map's setup is the
+    // largest piece of work on a page: it must not hold up the rest)
+    if (afterReady) { await whenReady(ctx.signal); if (!ctx.alive()) return null; }
+    await new Promise((resolve) => ctx.onCleanup(whenNear(container, resolve, { margin: afterReady ? 0 : 1 })));
     if (!ctx.alive()) return null;
   }
   const [ml, cfg] = await Promise.all([loadMapLibre(), mapsConfig()]);

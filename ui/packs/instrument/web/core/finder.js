@@ -7,6 +7,7 @@ import * as state from '../shared/state.js';
 import { h, replace } from '../shared/dom.js';
 import { GROUPS, PAGES, pagesIn } from './pages.js';
 import { icon } from './icons.js';
+import { carLink } from './carswitch.js';
 
 let dlg = null, input = null, list = null, active = -1, items = [];
 
@@ -47,10 +48,11 @@ function render() {
       h('h3', null, g.title),
       pages.map(({ p }) => {
         const a = h('a', {
-          class: 'menu-item', href: state.linkTo(p.id), role: 'option', id: `menu-${p.id}`,
+          class: 'menu-item', href: '/', role: 'option', id: `menu-${p.id}`,
           'aria-current': here === p.id || (p.id === 'drives' && here === 'drive') || (p.id === 'charges' && here === 'charge') ? 'page' : null,
           onclick: () => dlg.close(),
         }, icon(p.icon), h('span', null, h('b', null, marked(p.nav || p.title, q)), h('span', null, marked(p.desc, q))));
+        carLink(a, p.id);   // a page of one car while no car is known: the car switcher first
         items.push(a);
         return a;
       }));
@@ -80,7 +82,7 @@ function build() {
     else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(Math.max(0, active - 1)); }
     else if (e.key === 'Enter') {
       const a = items[active >= 0 ? active : 0];
-      if (a) { e.preventDefault(); dlg.close(); state.navigate(a.getAttribute('href')); }
+      if (a) { e.preventDefault(); a.click(); }   // as a click: closes the menu and opens the page (or the car switcher first)
     }
   });
   list = h('div', { class: 'menu-groups', id: 'menu-list', role: 'listbox', 'aria-label': 'Pages' });
