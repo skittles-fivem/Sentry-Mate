@@ -1089,7 +1089,12 @@ def system_storage(req):
     today = date_str(req.now, "UTC")
     days = sorted(d for d in growth if d < today)[-30:]
     rows = [{"date": d, "bytes": growth[d] + SYNTHETIC_PER_DAY * n_syn} for d in days]
-    per_day = sum(g["bytes"] for g in rows) / len(rows) if rows else 0
+    # a mean over the days from the first one listed to today (days without new data too), at most 30
+    span = 0
+    if rows:
+        from datetime import date as _date
+        span = min(30, max(1, (_date.fromisoformat(today) - _date.fromisoformat(rows[0]["date"])).days))
+    per_day = sum(g["bytes"] for g in rows) / span if rows else 0
     free = free_bytes(req.app, req.now)
     return {"kinds": kinds, "total_bytes": sum(k["bytes"] for k in kinds), "free_bytes": free,
             "growth": rows, "growth_per_day_bytes": int(per_day),
