@@ -38,3 +38,9 @@ test('shares as percent, a sliver as under one', () => {
   assert.equal(sp(S.shareText(0.004)), '<1%');
   assert.equal(sp(S.shareText(0)), '0%');
 });
+
+test('names that are properties of every object are not names of ours', () => {
+  assert.equal(S.shortName({ key: 'constructor', label: 'Mine' }), 'Mine');
+  assert.equal(S.shortName({ key: 'series.constructor.snapshots' }), 'constructor: day series');
+  assert.equal(S.groupWord('constructor'), 'constructor');
+});

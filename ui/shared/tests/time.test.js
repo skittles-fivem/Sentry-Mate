@@ -303,3 +303,51 @@ test('a period that starts or ends before 1970, or after the year 2100, is no pe
   // and so a page asked for one shows its usual period
   assert.equal(T.resolvePeriod({ from: -2208960000000, to: NOW }, { now: NOW, tz: CHI }).preset, '30d');
 });
+
+test('where the clocks jump at midnight, buckets start at the first instant of the day and do not drift', () => {
+  const CAI = 'Africa/Cairo'; // 2026-04-24 00:00 -> 01:00
+  const from = Date.parse('2026-04-23T12:00:00Z'), to = Date.parse('2026-04-27T12:00:00Z');
+  for (const unit of ['day', 'week', 'month']) {
+    const bs = T.buckets(from, to, unit, CAI);
+    for (let i = 0; i < bs.length; i++) {
+      const b = bs[i];
+      assert.equal(T.startOf(b.start_ms, unit, CAI), b.start_ms, `${unit} ${b.key} starts at the start of its unit`);
+      assert.equal(T.endOf(b.start_ms, unit, CAI), b.end_ms);
+      if (i) assert.equal(b.start_ms, bs[i - 1].end_ms);
+      assert.equal(T.bucketKey(b.start_ms, unit, CAI), b.key);
+      assert.equal(T.bucketKey(b.end_ms - 1, unit, CAI), b.key);
+    }
+  }
+  const days = T.buckets(from, to, 'day', CAI);
+  assert.deepEqual(days.map((b) => T.toIsoZoned(b.start_ms, CAI)), ['2026-04-23T00:00:00+02:00', '2026-04-24T01:00:00+03:00', '2026-04-25T00:00:00+03:00', '2026-04-26T00:00:00+03:00', '2026-04-27T00:00:00+03:00']);
+  const t = Date.parse('2026-04-24T21:30:00Z'); // 00:30 on the 25th
+  assert.equal(days.find((b) => b.start_ms <= t && t < b.end_ms).key, T.bucketKey(t, 'day', CAI));
+  const months = T.buckets(Date.parse('2017-09-15T00:00:00Z'), Date.parse('2017-11-15T00:00:00Z'), 'month', 'America/Asuncion');
+  for (const b of months) assert.equal(T.startOf(b.start_ms, 'month', 'America/Asuncion'), b.start_ms);
+});
+
+test('times that are not numbers: an empty ISO cell, a dash in text, no throw', () => {
+  for (const v of [NaN, Infinity, 'x', '2026-01-01', {}, 8.64e15]) {
+    assert.equal(T.toIsoZoned(v, 'UTC'), '');
+    assert.equal(T.formatDate(v, 'UTC'), '\u2014');
+    assert.equal(T.formatDateTime(v, 'UTC'), '\u2014');
+    assert.equal(T.formatTime(v, 'UTC'), '\u2014');
+    assert.equal(T.formatWhen(v, 'UTC', 0), '\u2014');
+    assert.equal(T.formatRelative(v, 1000), '\u2014');
+  }
+  assert.equal(T.formatRelative(1000, NaN), '\u2014');
+});
+
+test('years 0 to 99 stay in those years', () => {
+  assert.equal(new Date(T.dayStart('0050-01-01', 'UTC')).toISOString(), '0050-01-01T00:00:00.000Z');
+  assert.equal(new Date(T.dayStart('0099-06-01', 'UTC')).toISOString(), '0099-06-01T00:00:00.000Z');
+  assert.equal(T.addDays('0050-01-01', 1), '0050-01-02');
+  assert.equal(T.daysBetween('0050-01-01', '0050-01-11'), 10);
+});
+
+test('a custom period that starts after now is empty, not backwards', () => {
+  const now = Date.UTC(2026, 10, 24), from = Date.UTC(2027, 0, 1);
+  const r = T.resolvePeriod({ from }, { now, tz: 'UTC' });
+  assert.equal(r.from_ms, from);
+  assert.equal(r.to_ms, from);
+});

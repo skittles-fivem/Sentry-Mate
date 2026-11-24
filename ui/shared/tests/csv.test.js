@@ -95,3 +95,8 @@ test('file names are safe and readable', () => {
   // without a document, downloadCsv only builds the text
   assert.equal(C.downloadCsv('a.csv', [{ a: 1 }]), '\ufeffa\r\n1\r\n');
 });
+
+test('a time column gives an empty cell for a time that is not a number', () => {
+  const col = C.timeColumn('t', 't', 'UTC');
+  assert.equal(C.toCsv([{ t: NaN }, { t: 'x' }, { t: Infinity }, { t: null }, { t: 0 }], [col], { header: false, eol: '\n' }), '\n\n\n\n1970-01-01T00:00:00+00:00\n');
+});

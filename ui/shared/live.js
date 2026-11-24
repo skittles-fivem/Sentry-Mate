@@ -63,6 +63,7 @@ export function follow(api, opts = {}) {
   let timer = null;
   let reading = null;
   let again = false;
+  let applied = 0; // events applied so far: a read that began before one is older than it
 
   const give = (v, how) => {
     value = v;
@@ -80,8 +81,9 @@ export function follow(api, opts = {}) {
     if (reading) { again = true; return reading; }
     reading = (async () => {
       try {
+        const began = applied;
         const v = await load();
-        if (!stopped) give(v, 'load');
+        if (!stopped && began === applied) give(v, 'load');
       } catch (e) {
         if (!stopped && e?.name !== 'AbortError') onError?.(e);
       }
@@ -101,6 +103,7 @@ export function follow(api, opts = {}) {
   }
   const unsubscribe = api.events((ev) => {
     if (stopped || ev?.type !== type || !match(ev.data)) return;
+    applied++;
     give(pick(ev.data), 'event');
     schedule();
   }, { types: [type], signal, onStatus: status });
