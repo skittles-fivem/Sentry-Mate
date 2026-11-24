@@ -9,8 +9,9 @@
 // - API reads: the network first. The last JSON answer of each address is kept in this worker's memory only
 //   (never on disk), at most MEMORY_ENTRIES answers and MEMORY_BYTES, each for MEMORY_AGE_MS; never one that says
 //   `no-store`. A read with `X-Sentry-Mate-Stale-Ok: 1` gets the kept answer at once, with
-//   `X-Sentry-Mate-Stale: <age in ms>`; so does any read while the network fails. The live stream and every
-//   change go as they are.
+//   `X-Sentry-Mate-Stale: <age in ms>`; so does any read while the network fails. A stale-ok read with no kept
+//   answer joins the read of the same address under way (one sent without a tag), instead of asking again. The live
+//   stream and every change go as they are.
 // - Who is signed in and which pack they see: signing in or out, a change of preferences or packs, and any 401 on
 //   a read drop the kept answers and the kept page; signing out drops the files too, and so does the message
 //   { type: 'sentry-mate:clear' } from a page. /original and /original/off drop the kept page.
@@ -203,20 +204,36 @@ function api(event, req, path, url) {
   event.respondWith(read(event, req, url.href));
 }
 
+// the network reads under way that a stale-ok read may join: url -> { joiners: [{ resolve, reject }] }. Only reads
+// sent without a tag (an answer to one is never a 304 that the joiner could not read).
+const underway = new Map();
+
 async function read(event, req, key) {
   if (req.headers.get(STALE_OK) === '1') {
     const e = recall(key);
     if (e) return stale(e);
+    // nothing kept: the read of the same address under way answers this one too (the page asks with stale-ok when
+    // its own read is slow; a second request to the server would only make both slower)
+    const w = underway.get(key);
+    if (w) return new Promise((resolve, reject) => w.joiners.push({ resolve, reject }));
   }
   const gen = generation;
+  const mine = req.headers.has('if-none-match') || underway.has(key) ? null : { joiners: [] };
+  if (mine) underway.set(key, mine);
+  const done = () => { if (mine && underway.get(key) === mine) underway.delete(key); };
   let res;
   try {
     res = await fetch(req);
   } catch (err) {
+    done();
+    for (const j of mine?.joiners || []) j.reject(err);
     const e = recall(key);
     if (e) return stale(e);
     throw err;
   }
+  done();
+  // each joiner gets its own copy, taken before the page reads this one
+  for (const j of mine?.joiners || []) j.resolve(res.clone());
   if (res.status === 401) {
     await clear({ files: false });
     return res;
