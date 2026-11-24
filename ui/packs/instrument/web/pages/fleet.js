@@ -31,7 +31,15 @@ function attention(a, car) {
   switch (a.code) {
     case 'stopped_mid_drive': return { text: 'Data stopped in the middle of a drive.', href: state.linkTo('drives', c), go: 'Drives' };
     case 'stopped_mid_charge': return { text: 'Data stopped in the middle of a charge.', href: state.linkTo('charges', c), go: 'Charges' };
-    case 'upload_silence': return { text: `No upload for ${d.last_upload_ms ? ago(d.last_upload_ms).replace(/ ago$/, '') : 'a long time'}. The CAN Bridge may be off or out of range.`, href: state.linkTo('health', c), go: 'Data health' };
+    case 'upload_silence': {
+      // raised on the age of the newest log's data (since_ms); when the last upload came (detail.last_upload_ms) is
+      // another time: a bridge that sends old logs first uploaded minutes ago and still has nothing new
+      const span = (t) => ago(t).replace(/ ago$/, '');
+      const text = a.since_ms == null ? 'No upload for a long time. The CAN Bridge may be off or out of range.'
+        : d.last_upload_ms != null && d.last_upload_ms - a.since_ms > 3600000 ? `No new data for ${span(a.since_ms)}; the last upload came ${ago(d.last_upload_ms)}, with older logs.`
+          : `No upload for ${span(a.since_ms)}. The CAN Bridge may be off or out of range.`;
+      return { text, href: state.linkTo('health', c), go: 'Data health' };
+    }
     case 'trust_failed': return { text: `A log failed its check${d.reason ? ` (${String(d.reason).replace(/_/g, ' ')})` : ''}; its time shows as unknown.`, href: state.linkTo('health', c), go: 'Data health' };
     case 'gps_inputs_disagree': return { text: 'One input’s GPS positions are out of step with the others’; its positions are not used there.', href: state.linkTo('health', c), go: 'Data health' };
     case 'logs_missing': return { text: 'Some logs are missing on the server; the car was asked to send them again.', href: state.linkTo('health', c), go: 'Data health' };
