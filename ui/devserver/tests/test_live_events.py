@@ -87,11 +87,20 @@ class PageRebuild(ServerCase):
     def test_a_rebuild_started_here_goes_through_its_phases_on_the_stream(self):
         self.c.json("POST", "/api/v1/cars/c1/full-rebuild", {"confirm_password": PW}, expect=202)
         seen = []
-        self.server.app.clock.advance(140_000)  # most of the decoding done (a car takes 3 min here)
-        with Ticking(self.server.app, 2_000):
-            events = read_events(self.server.port, self.c.cookie,
-                                 lambda ev: any(e["data"]["status"]["state"] == "done"
-                                                for e in of(ev, "job", "full_rebuild")), seconds=10)
+        clock = self.server.app.clock
+        clock.advance(140_000)  # most of the decoding done (a car takes 3 min here)
+        # the clock moves on only once the stream has said the phase it is in: the stream says what a job is at
+        # when it looks (twice a second at most), so a clock that ran by itself could pass the 23 s of "days"
+        # between two looks
+        steps = [("decoding", 20_000), ("days", 30_000)]  # the phase to hear of, then how far to move on
+
+        def heard(ev):
+            jobs = [e["data"]["status"] for e in of(ev, "job", "full_rebuild")]
+            if steps and any(s["phase"] == steps[0][0] for s in jobs):
+                clock.advance(steps.pop(0)[1])
+            return any(s["state"] == "done" for s in jobs)
+
+        events = read_events(self.server.port, self.c.cookie, heard, seconds=10)
         for e in of(events, "job", "full_rebuild"):
             s = e["data"]["status"]
             seen.append(s["phase"] or s["state"])
