@@ -231,9 +231,13 @@ export function parts(value, kind, opts = {}) {
   }
 
   if (kind === 'bytes') {
-    let v = Math.abs(value), i = 0;
-    while (v >= 1000 && i < BYTE_UNITS.length - 1) { v /= 1000; i++; }
-    const d = opts.digits ?? (i === 0 ? 0 : v < 10 ? 1 : 0);
+    // the unit and the decimals are chosen from the rounded number: 999,999 is '1.0 MB' and 9,960 is '10 kB'
+    let v = Math.abs(value), i = 0, d;
+    for (;;) {
+      d = opts.digits ?? (i === 0 || Number(v.toFixed(1)) >= 10 ? 0 : 1);
+      if (Number(v.toFixed(d)) < 1000 || i === BYTE_UNITS.length - 1) break;
+      v /= 1000; i++;
+    }
     const number = numberText(Math.sign(value) * v, d, opts);
     return { value, number, unit: BYTE_UNITS[i], sep: NBSP, text: number + NBSP + BYTE_UNITS[i], missing: false, why: null };
   }

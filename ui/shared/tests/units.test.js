@@ -174,3 +174,17 @@ test('rated or ideal range', () => {
   assert.equal(U.rangeValue({ ideal_range_km: null, range_km: 1 }), null);
   assert.equal(U.rangeLabel(), 'Ideal range');
 });
+
+test('a byte size that rounds up to 1,000 steps to the next unit, and 10 and more has no decimal', () => {
+  assert.equal(f(999_999, 'bytes'), '1.0 MB');
+  assert.equal(f(999.6, 'bytes'), '1.0 kB');
+  assert.equal(f(999_950_000_000, 'bytes'), '1.0 TB');
+  assert.equal(f(9_960, 'bytes'), '10 kB');
+  assert.equal(f(9_940, 'bytes'), '9.9 kB');
+  assert.equal(f(999_400, 'bytes'), '999 kB');
+  assert.equal(f(-999_999, 'bytes'), '−1.0 MB');
+  assert.equal(f(999_999, 'bytes', { digits: 2 }), '1.00 MB');
+  assert.equal(f(1234, 'bytes', { digits: 2 }), '1.23 kB');
+  assert.equal(f(999_999_999_999_999_999, 'bytes'), '1,000 PB', 'the last unit has no next one');
+  assert.equal(f(0, 'bytes'), '0 B');
+});
