@@ -518,9 +518,10 @@ export async function mount(ctx) {
   const sessionsTable = dataTable(ctx, {
     title: 'Your sessions', icon: 'monitor', rows: S.sessions, label: 'Where you are signed in', csvName: 'sessions',
     note: admin
-      ? `Every browser where your account is signed in; times are in ${zoneText}. End one you do not recognise, then give your account a new password: Edit your account under Accounts above.`
-      : `Every browser where your account is signed in; times are in ${zoneText}. End one you do not recognise, then ask an admin to set a new password for your account.`,
-    side: h('button', { class: 'btn btn--sm', type: 'button', onclick: () => endOthers() }, icon('signout', 'ico--sm'), 'Sign out everywhere else'),
+      ? `Every browser where your account is signed in; times are in ${zoneText}. End one you do not recognise, then give your account a new password with Change your password.`
+      : `Every browser where your account is signed in; times are in ${zoneText}. End one you do not recognise, then give your account a new password with Change your password.`,
+    side: [h('button', { class: 'btn btn--sm', type: 'button', onclick: () => changePassword() }, icon('lock', 'ico--sm'), 'Change your password'),
+      h('button', { class: 'btn btn--sm', type: 'button', onclick: () => endOthers() }, icon('signout', 'ico--sm'), 'Sign out everywhere else')],
     sort: { key: 'last_seen_ms', dir: 'desc' },
     columns: [
       { key: 'device', label: 'Browser', sort: true, render: (s) => h('span', { class: 'row ss-acc' }, s.device || 'Not reported',
@@ -543,6 +544,39 @@ export async function mount(ctx) {
     }
     try { await ctx.api.del(`me/sessions/${enc(s.id)}`); flash(`Signed out ${s.device || 'that browser'}.`); await refreshSessions(); } catch (e) { flash(`Could not end the session: ${errText(e)}`, { kind: 'error' }); }
   }
+  // anyone's own password (PUT /me/password): the current one again, the new one, and the code with two-step
+  // sign-in on; the account's other sessions end
+  function changePassword() {
+    const current = field({ label: 'Current password', name: 'password', type: 'password', required: true,
+      hint: `The password you sign in with as ${me.name || 'this account'}.`, attrs: { autocomplete: 'current-password' } });
+    const next = field({ label: 'New password', name: 'new_password', type: 'password', required: true,
+      hint: 'Every other browser where your account is signed in is signed out; this one stays.', attrs: { autocomplete: 'new-password' } });
+    const code = field({ label: 'Code from your authenticator app', name: 'code', hint: 'Six digits. Codes change every 30 seconds.',
+      attrs: { autocomplete: 'one-time-code', inputmode: 'numeric', maxlength: '8' } });
+    code.el.hidden = !(me.two_step || me.two_step_required);
+    const f = form({
+      fields: [current, next, code], submit: 'Change password',
+      secondary: h('button', { class: 'btn btn--ghost', type: 'button', onclick: (e) => e.target.closest('dialog')?.close() }, 'Cancel'),
+      async onSubmit(v) {
+        if (!(await passwordOk(me.name || '', v.new_password, next.input))) return;
+        let out;
+        try {
+          out = await ctx.api.put('me/password', { password: v.password, new_password: v.new_password, ...(!code.el.hidden && v.code ? { code: v.code.replace(/\s+/g, '') } : {}) });
+        } catch (e) {
+          if (e.code === 'wrong_password') { current.setError('That is not your password. Type the one you sign in with.'); current.input.focus(); current.input.select(); return; }
+          if (e.code === 'wrong_code' || e.code === 'wrong_two_step') { code.el.hidden = false; code.setError(v.code ? 'That code is not right. Type the one your authenticator app shows now.' : 'Your account has two-step sign-in: type the code from your authenticator app as well.'); code.input.focus(); return; }
+          throw e;
+        }
+        f.el.closest('dialog')?.close();
+        const n = out?.signed_out_others || 0;
+        flash(n ? `Password changed. ${format(n, 'count')} other ${n === 1 ? 'browser was' : 'browsers were'} signed out.` : 'Password changed.');
+        await refreshSessions();
+      },
+    });
+    openDialog({ title: 'Change your password', body: f.el, actions: [] });
+    current.input.focus();
+  }
+
   async function endOthers() {
     const others = S.sessions.filter((s) => !s.this_one).length;
     if (!others) { flash('No other browser is signed in.', { kind: 'info' }); return; }

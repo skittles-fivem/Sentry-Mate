@@ -4,6 +4,8 @@
 //   - "Add an account" and "Edit" have a "Your password" field and send it as confirm_password; a wrong one is said
 //     under that field and the dialog stays open; the right one makes or changes the account;
 //   - "Remove" asks for the password in its dialog and sends it with the DELETE.
+// And anyone's own password: "Change your password" beside the sessions asks for the current one and the new one,
+// says a wrong current one under its field, and sends PUT /me/password; the new password then signs in.
 // Run: node --test ui/tools/account-password.test.js. Skipped when Playwright is not installed.
 'use strict';
 
@@ -116,6 +118,52 @@ for (const pack of BUILTIN_PACKS) {
       assert.equal(gone.body.confirm_password, OWN);
       await page.waitForFunction(() => !document.querySelector('dialog[open]'), null, { timeout: 5000 });
       await row('viewer-nine').waitFor({ state: 'detached', timeout: 5000 });
+      assert.deepEqual(errors, []);
+    } finally {
+      await browser.close();
+      await server.stop();
+    }
+  });
+
+  test(`${pack}: Change your password asks for the current one and the new one, and the new one signs in`, { skip: !playwright && 'Playwright is not installed', timeout: 180000 }, async () => {
+    const server = await devServer(pack);
+    const browser = await playwright.chromium.launch();
+    try {
+      const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+      const page = await context.newPage();
+      const errors = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      const sent = [];
+      page.on('response', (r) => {
+        const q = r.request();
+        if (q.method() === 'PUT' && new URL(r.url()).pathname === '/api/v1/me/password') sent.push({ status: r.status(), body: JSON.parse(q.postData() || '{}') });
+      });
+      await page.goto(`${server.origin}/settings/server`);
+      await page.waitForFunction(() => document.documentElement.dataset.ready === 'settings-server', null, { timeout: 30000 });
+      await page.locator('main button', { hasText: /^\s*Change your password\s*$/ }).first().click();
+      const dlg = page.locator('dialog[open]');
+      await dlg.waitFor({ timeout: 5000 });
+      const NEW = 'correct horse battery staple 7';
+      await dlg.locator('[name=password]').fill('not my password');
+      await dlg.locator('[name=new_password]').fill(NEW);
+      let answered = page.waitForResponse((r) => r.request().method() === 'PUT');
+      await dlg.locator('button[type=submit]').click();
+      await answered;
+      await page.waitForFunction(() => document.querySelector('dialog[open] [name=password]')?.getAttribute('aria-invalid') === 'true', null, { timeout: 5000 });
+      assert.equal(sent.at(-1).status, 403);
+      await dlg.locator('[name=password]').fill(OWN);
+      answered = page.waitForResponse((r) => r.request().method() === 'PUT');
+      await dlg.locator('button[type=submit]').click();
+      await answered;
+      await page.waitForFunction(() => !document.querySelector('dialog[open]'), null, { timeout: 5000 });
+      assert.deepEqual(sent.at(-1), { status: 200, body: { password: OWN, new_password: NEW } });
+      // this browser stays signed in, and the new password is the account's
+      const who = await page.evaluate(async () => (await (await fetch('/api/v1/me')).json()).name);
+      const tries = await page.evaluate(async ([name, old, now]) => {
+        const go = (password) => fetch('/api/v1/session', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sentry-Mate': '1' }, body: JSON.stringify({ name, password }) }).then((r) => r.status);
+        return [await go(old), await go(now)];
+      }, [who, OWN, NEW]);
+      assert.deepEqual(tries, [401, 200]);
       assert.deepEqual(errors, []);
     } finally {
       await browser.close();

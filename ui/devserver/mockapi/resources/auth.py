@@ -205,6 +205,45 @@ def delete_sessions(req):
     return {"ended": n}
 
 
+def put_password(req):
+    """PUT /me/password { password, new_password, code? }: anyone's own password, with the current one again (and a
+    code with two-step sign-in on). The account's other sessions end; this one stays."""
+    from ..store import DEV_PASSWORD
+    st = req.store
+    acc = req.account
+    body = req.json()
+    for k in body:
+        if k not in ("password", "new_password", "code"):
+            raise bad_input({k: "Unknown field."})
+    for k in ("password", "new_password"):
+        if not isinstance(body.get(k), str):
+            raise bad_input({k: "Needed: text."})
+    if not secrets.compare_digest(body["password"].encode(), acc.get("password", DEV_PASSWORD).encode()):
+        raise ApiError(403, "wrong_password", "That is not your password.")
+    if acc.get("two_step"):
+        code = body.get("code")
+        if not isinstance(code, str) or code.strip() != DEV_TWO_STEP_CODE:
+            raise ApiError(401, "wrong_code", "Type the code from your authenticator app.")
+    new = body["new_password"]
+    if not new:
+        raise invalid({"new_password": "Type a password."})
+    if len(new.encode()) > 1024:
+        raise invalid({"new_password": "That password is too long (at most 1,024 bytes)."})
+    n = 0
+    with st.lock:
+        acc["password"] = new
+        for s in _my_sessions(req):
+            if s["this_one"]:
+                continue
+            if s.get("_token"):
+                st.end_session(s["_token"])
+                req.app.events.end_session(s["_token"])
+            n += 1
+        st.session_rows[acc["id"]] = []
+    st.record(acc, "password-changed", f"account:{acc['id']}", f"Changed the password of {acc['name']}.")
+    return {"signed_out_others": n}
+
+
 def get_one_session(req):
     for s in _my_sessions(req):
         if s["id"] == req.params["session"]:
@@ -546,6 +585,7 @@ def register(router):
     router.add("/api/v1/me", GET=get_me)
     router.add("/api/v1/me/sessions", GET=get_sessions, DELETE=delete_sessions)
     router.add("/api/v1/me/sessions/{session}", GET=get_one_session, DELETE=delete_one_session)
+    router.add("/api/v1/me/password", PUT=put_password)
     router.add("/api/v1/me/preferences", GET=get_prefs, PATCH=patch_prefs)
     router.add("/api/v1/accounts", GET=list_accounts, POST=create_account, admin=("GET", "POST"))
     router.add("/api/v1/accounts/{account}", GET=get_account, PATCH=patch_account, DELETE=delete_account,

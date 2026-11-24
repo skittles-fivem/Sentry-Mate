@@ -367,6 +367,8 @@ class Contract(ServerCase):
             ("POST", "/api/v1/session", lambda: (None, {"name": "admin", "password": "sentry-mate-dev"}, "own")),
             ("DELETE", "/api/v1/session", lambda: (None, None, "own")),
             ("POST", "/api/v1/session/two-step", lambda: (None, self.two_step_body(), "own2")),
+            ("PUT", "/api/v1/me/password",
+             lambda: (None, {"password": "sentry-mate-dev", "new_password": "sentry-mate-dev"}, None)),
             ("DELETE", "/api/v1/me/sessions", lambda: (None, None, None)),
         ], new
 
