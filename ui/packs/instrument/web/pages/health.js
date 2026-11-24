@@ -837,7 +837,7 @@ async function mountSystem(ctx) {
       metric('Data takes', bytes(used), null, { size: 'lg', cover: 'dbinfo.stat.total_size', explain: 'Every car’s data, imported history and offline maps together, as stored on disk.' }),
       metric('Free on the disk', st.free_bytes != null ? bytes(st.free_bytes) : null, null, { size: 'lg', why: 'Not known.',
         explain: disk ? `${format((used / disk) * 100, 'percent', { digits: 1 })} of ${bytes(disk)} is Sentry Mate’s data.` : null }),
-      metric('Grows by', perDay != null ? `${bytes(perDay)} a day` : null, null, { size: 'lg', why: 'Needs a few days of history.', explain: perDay != null ? `The mean of the last ${growth.length} full days.` : null }),
+      metric('Grows by', perDay != null ? `${bytes(perDay)} a day` : null, null, { size: 'lg', why: 'Needs a few days of history.', explain: perDay != null ? 'The mean of the last full days (at most 30), those without new data included.' : null }),
       metric('Full in', st.full_in_days != null ? `${formatNumber(st.full_in_days)} days` : null, null, { size: 'lg', why: 'Not growing, or not known.',
         explain: st.full_in_days != null ? (st.full_in_days > 3650 ? 'More than ten years at this rate: nothing to do.' : st.full_in_days < 60 ? 'Soon. Free space on the disk or move the data to a bigger one.' : 'Free space divided by the mean growth.') : null }),
     ], 'hl-tot-figs');
