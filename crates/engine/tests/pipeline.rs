@@ -1150,6 +1150,88 @@ fn a_full_rebuild_cut_off_by_a_restart_carries_on() {
     });
 }
 
+/// What a car's history reads as through any engine over the kit's store: its drives and charges.
+fn rows_of(e: &Engine, car: u32) -> (Rows, Rows) {
+    let d = query::drives::drives(e, car, &Default::default(), &Paging::default()).unwrap().body.items;
+    let c = query::charges::charges(e, &[car], &Default::default(), &Paging::default()).unwrap().items;
+    (
+        d.into_iter().map(|d| (d.start_ms, d.end_ms, d.distance_km)).collect(),
+        c.into_iter().map(|c| (c.start_ms, c.end_ms, c.energy_added_kwh)).collect(),
+    )
+}
+
+/// The full rebuild's worker has ended its run (it is a thread of its own, so it outlives the engine's runtime).
+fn full_worker_gone(e: &Engine) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    e.full_rebuild_exit_hook(Some(Arc::new(move || {
+        let _ = tx.send(());
+    })));
+    rx.recv_timeout(std::time::Duration::from_secs(60)).expect("the full rebuild's worker ended its run");
+    std::thread::sleep(std::time::Duration::from_millis(200));
+}
+
+/// A normal stop of the server (SIGTERM, `docker stop`) shuts the engine's runtime down while the full rebuild's
+/// worker, a thread of its own, goes on: from then on its questions about the stored logs get no answer. It must not
+/// take "no answer" for "no logs" and switch the car to an empty history: the run is left as it stands, the history
+/// in use is untouched, and the next start carries the run on.
+#[test]
+fn a_full_rebuild_whose_server_is_stopped_leaves_the_history_and_carries_on_at_the_next_start() {
+    let first = rt();
+    let (k, car, before) = first.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let before = rows_of(&k.engine, car);
+        (k, car, before)
+    });
+    assert!(!before.0.is_empty() && !before.1.is_empty(), "{before:?}");
+    // the stop, as `serve` does it: the engine is told, then its runtime goes
+    k.engine.stopping();
+    first.shutdown_timeout(std::time::Duration::from_secs(5));
+    k.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+    full_worker_gone(&k.engine);
+    let cut = k.engine.full_rebuild_status().unwrap().unwrap();
+    assert!(cut.running(), "left for the next start: {cut:#?}");
+    assert_eq!(rows_of(&k.engine, car), before, "the history in use is as it was");
+
+    let second = rt();
+    second.block_on(async {
+        let again = Engine::new(k.db.clone(), k.store.clone(), Options::default());
+        again.start().unwrap();
+        let r = full_done(&again).await;
+        assert_eq!(r.status, engine::full::FullStatus::Done, "{r:#?}");
+        assert_eq!((r.id, r.started_ms), (cut.id, cut.started_ms), "the same run, carried on");
+        assert_eq!((r.logs_done, r.logs_total), (DAY.len() as u64, DAY.len() as u64), "{r:#?}");
+        assert_eq!(rows_of(&again, car), before);
+    });
+}
+
+/// The same when nobody told the engine of the stop (its runtime dropped under it): a new history that lacks logs
+/// the one in use was made from is never switched in.
+#[test]
+fn a_full_rebuild_never_switches_to_a_history_that_lacks_logs_the_one_in_use_has() {
+    let first = rt();
+    let (k, car, before) = first.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let before = rows_of(&k.engine, car);
+        (k, car, before)
+    });
+    first.shutdown_timeout(std::time::Duration::from_secs(5));
+    k.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+    full_worker_gone(&k.engine);
+    let r = k.engine.full_rebuild_status().unwrap().unwrap();
+    assert_ne!(r.status, engine::full::FullStatus::Done, "{r:#?}");
+    assert_eq!(rows_of(&k.engine, car), before, "the history in use is as it was");
+}
+
 /// A server stopped in the middle of a full rebuild carries the same run on where it was when it starts again: the
 /// same run (its id and start), its logs not decoded again, one run in the history.
 #[test]

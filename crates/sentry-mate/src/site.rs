@@ -79,6 +79,9 @@ impl EngineRun {
         // a compaction pass ends at its next unit (a few seconds at most), before the data folder may change
         let e = self.engine.clone();
         let _ = tokio::task::spawn_blocking(move || e.compact_stop()).await;
+        // a full rebuild's worker outlives the runtime: told first, so it leaves its run for the next start rather
+        // than go on with a runtime that no longer answers it
+        self.engine.stopping();
         if let Some(rt) = self.rt.take() {
             let _ = tokio::task::spawn_blocking(move || rt.shutdown_timeout(wait)).await;
         }
@@ -88,6 +91,7 @@ impl EngineRun {
 impl Drop for EngineRun {
     fn drop(&mut self) {
         self.engine.compact_stop();
+        self.engine.stopping();
         if let Some(rt) = self.rt.take() {
             rt.shutdown_background();
         }
