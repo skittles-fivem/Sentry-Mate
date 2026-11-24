@@ -27,9 +27,13 @@ export function registerServiceWorker(g = globalThis) {
   return new Promise((resolve) => {
     const go = () => idle(g, () => {
       g.navigator.serviceWorker.register(SCRIPT, { scope: '/' }).then((reg) => {
-        // the page and the files it names, kept now (this load did not go through the worker yet)
+        // the page, the files it names and the ones this load fetched (its page module, fonts), kept now: this load
+        // did not go through the worker yet; and each file that finishes loading past the worker later (one still
+        // loading now, or asked for before the worker answers this page), as it comes in
         g.navigator.serviceWorker.ready.then((r) => {
-          if (r.active) r.active.postMessage({ type: 'sentry-mate:warm' });
+          const tell = (files) => { if (r.active) r.active.postMessage({ type: 'sentry-mate:warm', files }); };
+          tell(loadedFiles(g));
+          watchLoaded(g, tell);
         }, () => {});
         resolve(reg);
       }, () => resolve(null));
@@ -37,6 +41,39 @@ export function registerServiceWorker(g = globalThis) {
     if (g.document && g.document.readyState !== 'complete') g.addEventListener('load', go, { once: true });
     else go();
   });
+}
+
+// the path of a resource entry that is one of this site's versioned files (/_v/...), else null
+function versioned(g, e) {
+  try {
+    const u = new URL(e.name, g.location.href);
+    return u.origin === g.location.origin && u.pathname.startsWith('/_v/') ? u.pathname : null;
+  } catch { return null; }
+}
+
+// the versioned files this page loaded so far
+function loadedFiles(g) {
+  const out = new Set();
+  try {
+    for (const e of g.performance?.getEntriesByType?.('resource') || []) { const p = versioned(g, e); if (p) out.add(p); }
+  } catch { /* no timing: the files the page names only */ }
+  return [...out];
+}
+
+// tell(paths) for the versioned files that finish loading from now on without the worker answering them (a
+// worker that answered one keeps it itself), a batch at a time when the browser is idle
+function watchLoaded(g, tell) {
+  if (typeof g.PerformanceObserver !== 'function') return;
+  let batch = new Set();
+  let due = false;
+  try {
+    new g.PerformanceObserver((list) => {
+      for (const e of list.getEntries()) { const p = versioned(g, e); if (p && !(e.workerStart > 0)) batch.add(p); }
+      if (due || !batch.size) return;
+      due = true;
+      idle(g, () => { due = false; const b = [...batch]; batch = new Set(); if (b.length) tell(b); });
+    }).observe({ type: 'resource' });
+  } catch { /* no observer: the files loaded so far only */ }
 }
 
 function ask(worker, g, msg) {
