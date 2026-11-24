@@ -128,6 +128,17 @@ A charge's grid energy counts every phase in use. A reading counts in an energy 
 it (an API's for 150 s at most), so readings far apart leave no energy out. A drive whose odometer was first read
 late or last read early has the GPS distance of the rest. Proof: `grid_energy_counts_every_phase`.
 
+<a id="rules-5"></a>
+### rules-5: drives and charges are worked out differently
+
+A drive an API read (readings seconds to minutes apart) runs up to the first reading that sees the car parked, and
+ends at that reading's odometer and position: the stretch after its last reading in D is no longer left out. A last
+odometer reading further from the first than the car can have driven in the time between them (one bad value) is
+passed over for the one before it. With no odometer, a GPS step that ends where the car stands is left out only when
+it is short (5 s at most) or starts standing too, so fixes far apart lose no distance before a stop. Charging shorter
+than a minute that added less than 0.05 kWh (a scheduled charge that starts and stops at plug-in, a failed
+handshake) is no charge. Proof: `api_only_drive_keeps_its_last_leg`.
+
 <a id="trust-2"></a>
 ### trust-2: a chain break fails only the log that breaks it
 

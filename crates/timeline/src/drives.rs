@@ -38,22 +38,49 @@ pub(crate) fn find(seg: &[&Sample], api: &[bool], params: &Params) -> Vec<(usize
     out
 }
 
+/// Odometer readings this much further apart than the fastest a car drives ([`Params::max_gps_kmh`]) in the time
+/// between them are not both right (km): the slack covers an odometer read in steps.
+const ODOMETER_SLACK_KM: f64 = 1.0;
+
 /// A drive from its samples (`s[0]` the first second out of P, the last the last one), or `None` when it is too
 /// short or didn't move. `prev` is the sample just before it, when there is one: where the drive started from (its
-/// odometer and position before the first second moved them). `holds`: how long each of `s` counts across a gap in
-/// the energy sum (ms; empty: [`Params::max_hold_ms`] for all).
+/// odometer and position before the first second moved them). `next` is the sample just after it, given only where
+/// the readings are far apart (an API's): the car was seen parked there, so the drive runs up to it and ends at its
+/// odometer and position. `holds`: how long each of `s` counts across a gap in the energy sum (ms; empty:
+/// [`Params::max_hold_ms`] for all).
 ///
-/// The distance is the odometer's difference. Where the odometer was first read later than the hold time after the
-/// start, or last read earlier than that before the end (lost frames, an input that sends it late), the GPS distance
-/// of the stretch it missed is added and the odometer at that end is worked out from it; with no fixes there, the
-/// distance is what the odometer has.
-pub(crate) fn make(car: CarId, s: &[&Sample], prev: Option<&Sample>, params: &Params, holds: &[u64]) -> Option<Drive> {
+/// The distance is the odometer's difference. A last reading further from the first than the car can have driven in
+/// the time between them (one bad value) is passed over for the one before it. Where the odometer was first read
+/// later than the hold time after the start, or last read earlier than that before the end (lost frames, an input
+/// that sends it late), the GPS distance of the stretch it missed is added and the odometer at that end is worked out
+/// from it; with no fixes there, the distance is what the odometer has.
+pub(crate) fn make(
+    car: CarId,
+    s: &[&Sample],
+    prev: Option<&Sample>,
+    next: Option<&Sample>,
+    params: &Params,
+    holds: &[u64],
+) -> Option<Drive> {
     let (first, last) = (s.first()?, s.last()?);
-    let (start_ms, end_ms) = (first.t_ms, last.t_ms + 1000);
+    let next = next.filter(|n| n.t_ms > last.t_ms && n.t_ms - last.t_ms <= params.max_hold_ms);
+    let (start_ms, end_ms) = (first.t_ms, next.map_or(last.t_ms + 1000, |n| n.t_ms));
     let prev = prev.filter(|p| start_ms.saturating_sub(p.t_ms) <= params.max_hold_ms);
-    let track: Vec<&Sample> = prev.into_iter().chain(s.iter().copied()).collect();
+    let track: Vec<&Sample> = prev.into_iter().chain(s.iter().copied()).chain(next).collect();
     let first_read = track.iter().position(|x| x.odometer_km.is_some());
-    let last_read = track.iter().rposition(|x| x.odometer_km.is_some()).filter(|&i| i > 0 || prev.is_none());
+    let plausible = |j: usize| {
+        let (Some(i), Some(b)) = (first_read, track[j].odometer_km) else { return false };
+        let a = track[i].odometer_km.unwrap_or(b);
+        let hours = track[j].t_ms.saturating_sub(track[i].t_ms) as f64 / 3_600_000.0;
+        b - a <= params.max_gps_kmh * hours + ODOMETER_SLACK_KM
+    };
+    let newest = track.iter().rposition(|x| x.odometer_km.is_some());
+    // (a last reading that cannot be right gives way to the last one that can; when only the first can, the
+    // odometer says nothing of the drive)
+    let last_read = newest
+        .and_then(|j| (0..=j).rev().find(|&k| track[k].odometer_km.is_some() && plausible(k)))
+        .filter(|&k| Some(k) != first_read || newest == first_read)
+        .filter(|&i| i > 0 || prev.is_none());
     let mut start_odometer_km = first_read.and_then(|i| track[i].odometer_km);
     let mut end_odometer_km = last_read.and_then(|i| track[i].odometer_km);
     let mut by_odometer = start_odometer_km.zip(end_odometer_km).map(|(a, b)| b - a).filter(|d| *d >= 0.0);
@@ -82,7 +109,7 @@ pub(crate) fn make(car: CarId, s: &[&Sample], prev: Option<&Sample>, params: &Pa
     }
     let (ascent_m, descent_m) = climb(s);
     let start = track.iter().find_map(|x| position(x));
-    let end = s.iter().rev().find_map(|x| position(x));
+    let end = next.and_then(position).or_else(|| s.iter().rev().find_map(|x| position(x)));
     Some(Drive {
         id: drive_id(car, start_ms),
         car,
