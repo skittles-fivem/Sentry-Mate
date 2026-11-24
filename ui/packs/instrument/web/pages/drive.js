@@ -79,9 +79,10 @@ export async function mount(ctx) {
   const rk = ideal ? 'ideal_range_km' : 'range_km';
   const fields = seriesFields(rk);
   // uPlot loads with the data, so the charts are drawn with the page (their space never opens up later)
+  let trackErr = null;   // the route's read failed: said as that, not as "no route was recorded"
   const [series, track] = await Promise.all([
     seriesRead(ctx, t0, t1, fields),
-    trackRead(ctx).catch(() => null),
+    trackRead(ctx).catch((e) => { trackErr = e; return null; }),
     loadUPlot(),
   ]);
   if (!ctx.alive()) return;
@@ -254,7 +255,7 @@ export async function mount(ctx) {
   let mapMade = null;
   const mapUp = new Promise((res) => { mapMade = res; });
   (async () => {
-    if (coords.length < 2) { mapEl.append(mapFallback('No route was recorded for this drive.')); mapMade(); return; }
+    if (coords.length < 2) { mapEl.append(mapFallback(trackErr ? `The route could not be loaded: ${trackErr.message}` : 'No route was recorded for this drive.')); mapMade(); return; }
     try {
       m = await createMap(mapEl, ctx, { bounds: routeBounds });
       mapMade();

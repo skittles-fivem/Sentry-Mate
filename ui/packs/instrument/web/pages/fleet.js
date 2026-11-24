@@ -234,7 +234,8 @@ export async function mount(ctx) {
   async function loadTop(namesFresh = false, first = false) {
     const [s, at, setup] = await Promise.all([
       ctx.api.get('fleet/summary', null, first ? { maxAgeMs: 5000 } : undefined),
-      ctx.api.page('fleet/attention', {}, { limit: 8 }).catch(() => ({ items: [], next: null })),
+      // a failed read is said in the panel, never shown as fewer cars that need a look
+      ctx.api.page('fleet/attention', {}, { limit: 8 }).catch((e) => ({ items: [], next: null, failed: e })),
       isAdmin() ? ctx.api.get('setup/status').catch(() => null) : Promise.resolve(null),
     ]);
     if (!ctx.alive()) return;
@@ -253,16 +254,17 @@ export async function mount(ctx) {
     const fixes = (setup?.fixes || []).filter((f) => FIX[f.cause]);
     // the count is the rows of the panel below ("8+" when more car items wait in the list)
     replace(headStats,
-      h('div', { class: 'head-stat' }, h('dt', null, 'Need a look'), h('dd', null, formatNumber(at.items.length + fixes.length), at.next ? '+' : '')),
+      h('div', { class: 'head-stat' }, h('dt', null, 'Need a look'), h('dd', { title: at.failed ? 'The cars that need a look could not be loaded' : null }, at.failed ? '?' : formatNumber(at.items.length + fixes.length), at.next ? '+' : '')),
       h('div', { class: 'head-stat' }, h('dt', null, 'Charging now'), h('dd', null, formatNumber(s.by_state?.charging || 0))));
 
-    if (at.items.length || fixes.length) {
+    if (at.items.length || fixes.length || at.failed) {
       const names = new Map();
       await Promise.all([...new Set(at.items.map((a) => a.car))].map(async (cid) => {
         try { names.set(cid, (await ctx.api.get(`cars/${encodeURIComponent(cid)}`, null, namesFresh ? {} : { maxAgeMs: 60000 })).name); } catch { names.set(cid, cid); }
       }));
       if (!ctx.alive()) return;
       replace(attn, panel({ title: 'Need a look', icon: 'warn', cls: 'attn-panel', side: at.next ? h('span', { class: 'faint' }, 'More below in the list') : null },
+        at.failed ? h('p', { class: 'note warn', role: 'status' }, `The cars that need a look could not be loaded: ${at.failed.message}`) : null,
         h('ul', { class: 'attn-list' },
           at.items.map((a) => {
             const t = attention(a);

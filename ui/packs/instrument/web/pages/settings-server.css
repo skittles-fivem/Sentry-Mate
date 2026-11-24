@@ -234,7 +234,8 @@
 
 /* the export file */
 /* the export file's status: the same rows in every state, each with its height kept, so the box never jumps */
-.xp { --xp-lh: round(1.25rem, var(--e)); display: grid; grid-template-rows: auto auto auto auto auto 1fr auto; gap: round(0.625rem, var(--e)); min-height: round(20.5rem, var(--e)); padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--glass); min-width: 0; }
+/* one column no wider than the card, so a long line wraps in it; the steps go to a second line when three do not fit */
+.xp { --xp-lh: round(1.25rem, var(--e)); display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto auto auto 1fr auto; gap: round(0.625rem, var(--e)); min-height: round(20.5rem, var(--e)); padding: round(0.875rem, var(--e)) round(1rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--glass); min-width: 0; }
 .xp--ok { border-color: var(--live-line); }
 .xp--warn { border-color: var(--warm-line); }
 .xp--error { border-color: var(--danger); }
@@ -246,9 +247,9 @@
 .xp-title { font-weight: 600; line-height: var(--xp-lh); overflow-wrap: anywhere; }
 .xp-sub { color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: var(--xp-lh); min-height: calc(2 * var(--xp-lh)); overflow-wrap: anywhere; }
 .xp-pct { font-variant-numeric: tabular-nums; font-weight: 600; line-height: var(--xp-lh); min-width: 4.5ch; text-align: right; color: var(--text); }
-.xp-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, auto); justify-content: space-between; gap: round(0.5rem, var(--e)); }
+.xp-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: space-between; gap: round(0.25rem, var(--e)) round(0.5rem, var(--e)); }
 .xp-step { display: flex; align-items: center; gap: round(0.375rem, var(--e)); min-width: 0; color: var(--text-3); font-size: max(0.78125rem, var(--fs-floor)); line-height: var(--xp-lh); }
-.xp-step-n { flex: none; display: grid; place-items: center; width: var(--xp-lh); height: var(--xp-lh); border-radius: 50%; border: 1px solid var(--line-2); font-size: max(0.6875rem, var(--fs-floor)); font-weight: 600; line-height: 1; }
+.xp-step-n { flex: none; display: grid; place-items: center; width: var(--xp-lh); height: var(--xp-lh); border-radius: 50%; border: 1px solid var(--line-2); font-size: max(0.6875rem, var(--fs-floor)); font-weight: 600; --LH: round(calc(1 * 1em), 2px); }
 .xp-step--done { color: var(--text-2); }
 .xp-step--done .xp-step-n { background: var(--live-soft); border-color: var(--live-line); color: var(--live); }
 .xp-step--now { color: var(--text); font-weight: 600; }
@@ -263,6 +264,8 @@
 .xp-note--error { background: var(--danger-soft); }
 .xp-sha { display: block; overflow-wrap: anywhere; color: var(--text); font-size: max(0.75rem, var(--fs-floor)); }
 .xp-acts { flex-wrap: wrap; gap: round(0.5rem, var(--e)); }
+/* a button wider than the card (a narrow phone at a large Interface size) wraps its words */
+.xp-acts > .btn { max-width: 100%; height: auto; min-height: round(2.25rem, var(--e)); padding-block: round(0.375rem, var(--e)); white-space: normal; justify-content: flex-start; text-align: left; } /* (a label on two lines starts at the icon) */
 @media (prefers-reduced-motion: reduce) { .mv-bar > i, .xp-bar > i { transition: none; } }
 .mv-file { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); }
 .mv-file-name { display: flex; align-items: center; gap: round(0.5rem, var(--e)); font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
@@ -283,7 +286,7 @@
 }
 @container page (max-width: 50rem) {
   .xp { min-height: round(29.5rem, var(--e)); padding: round(0.75rem, var(--e)) round(0.875rem, var(--e)); }
-  .xp-steps { gap: round(0.375rem, var(--e)); }
+  .xp-steps { column-gap: round(0.375rem, var(--e)); }
   .xp-step { gap: round(0.25rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); }
   .mv-steps { grid-template-columns: minmax(0, 1fr); gap: round(0.375rem, var(--e)); }
   .mv-step-t { flex-direction: row; flex-wrap: wrap; gap: 0 round(0.375rem, var(--e)); }
@@ -323,7 +326,8 @@
 .fr-bar > i { transition: width 0.9s linear; }
 .fr-pct { flex: none; width: 5ch; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-2); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); height: round(1.25rem, var(--e)); }
 .fr-lines { display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); margin: 0; }
-.fr-line { display: grid; grid-template-columns: round(8rem, var(--e)) minmax(0, 1fr); gap: round(0.75rem, var(--e)); height: round(1.25rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
+/* (a line is as high as its text needs: on a phone the text is never under the smallest size, at any Interface size) */
+.fr-line { --fr-lh: max(round(1.25rem, var(--e)), round(calc(1.4 * var(--fs-floor)), 2px)); display: grid; grid-template-columns: round(8rem, var(--e)) minmax(0, 1fr); gap: round(0.75rem, var(--e)); height: var(--fr-lh); font-size: max(0.8125rem, var(--fs-floor)); line-height: var(--fr-lh); }
 .fr-line dt, .fr-line dd { margin: 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fr-line dt { color: var(--text-3); }
 .fr-line dd { color: var(--text); font-variant-numeric: tabular-nums; }
@@ -347,7 +351,7 @@
 @container page (max-width: 50rem) {
   .fr-line { grid-template-columns: round(6.5rem, var(--e)) minmax(0, 1fr); }
   /* the state, the step and the speed take two lines on a narrow page (always, so the panel keeps its size) */
-  .fr-line[data-key="state"], .fr-line[data-key="phase"], .fr-line[data-key="rate"] { height: round(2.5rem, var(--e)); }
+  .fr-line[data-key="state"], .fr-line[data-key="phase"], .fr-line[data-key="rate"] { height: calc(2 * var(--fr-lh)); }
   .fr-line[data-key="state"] dd, .fr-line[data-key="phase"] dd, .fr-line[data-key="rate"] dd { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; }
 }
 /* the full rebuild section of this page: the stale cars, the automatic run's switch */

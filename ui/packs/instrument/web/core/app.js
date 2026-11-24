@@ -19,7 +19,7 @@ function sessionEnded() {
   if (!s?.signedIn) return;
   session.signedOut();
   flash('Your session ended. Sign in again to go on.', { kind: 'info', next: true });
-  const here = location.pathname + location.search;
+  const here = location.pathname + location.search + location.hash;
   state.navigate(`/sign-in?next=${encodeURIComponent(here)}`, { replace: true });
 }
 api.on('unauthorized', ({ method, path } = {}) => {

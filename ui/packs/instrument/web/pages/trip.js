@@ -64,10 +64,14 @@ export async function mount(ctx) {
   let from = ctx.period?.from_ms ?? null;
   const to = Math.min(ctx.period?.to_ms ?? now, now);
   if (from == null) {
-    const [d0, c0] = await Promise.all([
-      ctx.api.page(`cars/${enc(cid)}/drives`, { sort: 'start', dir: 'asc' }, { limit: 1 }).catch(() => ({ items: [] })),
-      ctx.api.page(`cars/${enc(cid)}/charges`, { sort: 'start', dir: 'asc' }, { limit: 1 }).catch(() => ({ items: [] })),
-    ]);
+    // "all" needs the car's first drive or charge: when neither can be read the page says so (not the last week as if it were all)
+    let d0, c0;
+    try {
+      [d0, c0] = await Promise.all([
+        ctx.api.page(`cars/${enc(cid)}/drives`, { sort: 'start', dir: 'asc' }, { limit: 1 }),
+        ctx.api.page(`cars/${enc(cid)}/charges`, { sort: 'start', dir: 'asc' }, { limit: 1 }),
+      ]);
+    } catch (e) { ctx.fail(e); return; }
     if (!ctx.alive()) return;
     const starts = [d0.items?.[0]?.start_ms, c0.items?.[0]?.start_ms].filter((v) => v != null);
     from = starts.length ? Math.min(...starts) : to - 7 * DAY;
@@ -76,13 +80,15 @@ export async function mount(ctx) {
   const span = Math.max(1, to - from);
 
   let trip, series, actItems, last3, saved, fleet, vsTrip = null, vsCar = null;
+  const lost = {};   // the side reads that failed, by name: each is said where its data would be, never shown as "none"
+  const or = (name, p, v) => p.catch((e) => { lost[name] = e; return v; });
   try {
     [trip, series, actItems, last3, saved, fleet] = await Promise.all([
       ctx.api.get(`cars/${enc(cid)}/trip`, win),
-      ctx.api.get(`cars/${enc(cid)}/series`, { fields: `soc_pct,${rk},elevation_m,lat,lon`, ...win, max_points: 1500 }).catch(() => null),
-      collect(ctx.api.list(`cars/${enc(cid)}/activity`, win, { limit: 1000 }), 20000).catch(() => []),
-      ctx.api.page(`cars/${enc(cid)}/drives`, { sort: 'start', dir: 'desc' }, { limit: 3 }).catch(() => ({ items: [] })),
-      ctx.api.page('trips', { car: cid }, { limit: 100 }).catch(() => ({ items: [] })),
+      or('series', ctx.api.get(`cars/${enc(cid)}/series`, { fields: `soc_pct,${rk},elevation_m,lat,lon`, ...win, max_points: 1500 }), null),
+      or('activity', collect(ctx.api.list(`cars/${enc(cid)}/activity`, win, { limit: 1000 }), 20000), []),
+      or('last3', ctx.api.page(`cars/${enc(cid)}/drives`, { sort: 'start', dir: 'desc' }, { limit: 3 }), { items: [] }),
+      or('saved', ctx.api.page('trips', { car: cid }, { limit: 100 }), { items: [] }),
       ctx.api.page('cars', { sort: 'name' }, { limit: 100 }).catch(() => ({ items: [car], next: null })),
     ]);
     if (vsId) {
@@ -109,7 +115,7 @@ export async function mount(ctx) {
   const l3From = l3.length ? l3[l3.length - 1].start_ms : null;
   const lastThree = l3From != null
     ? h('a', { class: 'btn btn--sm', href: periodLink({ from: l3From, to: null }), cover: 'trip.link.last_three_drives', title: `From the start of the ${l3.length === 3 ? 'third newest' : 'oldest'} drive (${formatDate(l3From, tz, { year: false })}, ${formatTime(l3From, tz)}) up to now` }, icon('route', 'ico--sm'), l3.length === 3 ? 'Last three drives' : `Last ${l3.length === 1 ? 'drive' : `${l3.length} drives`}`)
-    : h('button', { class: 'btn btn--sm', type: 'button', disabled: true, cover: 'trip.link.last_three_drives', title: 'This car has no drives yet' }, icon('route', 'ico--sm'), 'Last three drives');
+    : h('button', { class: 'btn btn--sm', type: 'button', disabled: true, cover: 'trip.link.last_three_drives', title: lost.last3 ? `The drives could not be loaded: ${lost.last3.message}` : 'This car has no drives yet' }, icon('route', 'ico--sm'), 'Last three drives');
   const today = dayKey(now, tz);
   const shortcuts = h('div', { class: 'trip-shortcuts', role: 'group', 'aria-label': 'Window shortcuts' },
     lastThree,
@@ -119,7 +125,7 @@ export async function mount(ctx) {
 
   // saved trips: open one, save this window, rename or remove the one shown
   const savedSel = h('select', { class: 'select', 'aria-label': 'Open a saved trip', disabled: !savedItems.length },
-    h('option', { value: '' }, savedItems.length ? `Saved trips (${formatNumber(savedItems.length)})` : 'No saved trips yet'),
+    h('option', { value: '' }, savedItems.length ? `Saved trips (${formatNumber(savedItems.length)})` : lost.saved ? 'Saved trips could not be loaded' : 'No saved trips yet'),
     savedItems.map((t) => h('option', { value: t.id, selected: match?.id === t.id }, `${t.name} · ${formatDateRange(t.from_ms, Math.max(t.from_ms, t.to_ms - 1), tz, { year: true })}`)));
   savedSel.addEventListener('change', () => {
     const t = savedItems.find((x) => x.id === savedSel.value);
@@ -251,7 +257,7 @@ export async function mount(ctx) {
   const stripPanel = panel({ title: 'What the car did', icon: 'timeline', cover: 'trip.chart.states',
     side: h('span', { class: 'row' }, csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'trip', dayKey(from, tz), 'activity'), actItems.map((a) => ({ ...a, state: ACT[a.kind] || a.kind, minutes: a.end_ms != null ? Math.round((a.end_ms - a.start_ms) / 60000) : null })), [timeColumn('Start', 'start_ms', tz), timeColumn('End', 'end_ms', tz), column('State', 'state'), column('Minutes', 'minutes'), { label: 'Data from', value: (a) => srcText(a) }]) }),
       h('a', { class: 'panel-link', href: state.buildUrl('timeline', { car: cid, period: { from, to: ctx.period?.to_ms ?? null } }) }, 'Timeline', icon('chev-r', 'ico--sm'))) },
-    activityStrip(actItems, from, to, { tz, now, size: 'lg' }),
+    lost.activity ? h('p', { class: 'note warn', role: 'status' }, `What the car did could not be loaded: ${lost.activity.message}`) : activityStrip(actItems, from, to, { tz, now, size: 'lg' }),
     h('p', { class: 'note' }, 'Asleep is hatched blue: the car went quiet. Grey hatching is unknown: no log, a paused recording or a log that failed its check.'));
 
   /* ---------- battery and elevation */
@@ -382,8 +388,8 @@ export async function mount(ctx) {
   (async () => {
     const cars = [cid, vsCar && vsTrip ? vsId : null].filter(Boolean).join(','); // a second car that did not load cannot hide the first car's route
     const n = nDrives + (vsTrip?.drives?.length ?? 0);
-    let tracks = null;
-    try { tracks = await ctx.api.get('tracks', { cars, ...win, max_points: clamp(Math.max(12000, n * 6), 12000, 200000) }); } catch { tracks = null; }
+    let tracks = null, tracksErr = null;
+    try { tracks = await ctx.api.get('tracks', { cars, ...win, max_points: clamp(Math.max(12000, n * 6), 12000, 200000) }); } catch (e) { tracks = null; tracksErr = e; }
     if (!ctx.alive()) return;
     const lines = (tracks?.drives || []).map((d) => ({ type: 'Feature', properties: { car: d.car === cid ? 'a' : 'b', drive: d.drive },
       geometry: { type: 'LineString', coordinates: d.lon.map((lo, i) => [lo, d.lat[i]]).filter((p) => p[0] != null && p[1] != null) } })).filter((f) => f.geometry.coordinates.length > 1);
@@ -391,7 +397,7 @@ export async function mount(ctx) {
     const all = [...lines.flatMap((f) => f.geometry.coordinates), ...marks.map((k) => [k.lon, k.lat])];
     // framed without stray fixes (a jump to another state and back)
     const fit = trackBounds(tracks?.drives || [], marks.map((k) => [k.lon, k.lat])) || boundsOf(all);
-    if (!all.length) { mapEl.append(mapFallback(nDrives ? 'No positions were recorded for these drives.' : 'Nothing was driven in this window, so there is no route.')); return; }
+    if (!all.length) { mapEl.append(mapFallback(tracksErr ? `The route could not be loaded: ${tracksErr.message}` : nDrives ? 'No positions were recorded for these drives.' : 'Nothing was driven in this window, so there is no route.')); return; }
     try {
       m = await createMap(mapEl, ctx, { bounds: fit });
       if (!m) return;
@@ -426,8 +432,8 @@ export async function mount(ctx) {
 
   /* ---------- the charts */
   if (!series || !series.t_ms?.length) {
-    battEl.append(h('p', { class: 'chart-empty' }, 'No battery readings in this window.'));
-    elevEl.append(h('p', { class: 'chart-empty' }, 'No elevation readings in this window.'));
+    battEl.append(h('p', { class: 'chart-empty' }, lost.series ? `The battery readings could not be loaded: ${lost.series.message}` : 'No battery readings in this window.'));
+    elevEl.append(h('p', { class: 'chart-empty' }, lost.series ? 'The elevation readings could not be loaded.' : 'No elevation readings in this window.'));
     return;
   }
   await loadUPlot();

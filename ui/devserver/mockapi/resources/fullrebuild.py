@@ -208,7 +208,7 @@ def _view(req, j):
         "state": state, "id": str(j["id"]), "scope": j["scope"], "cars": list(cars),
         "car": cars[index] if state == "running" or state == "failed" else None,
         "cars_done": min(index, len(cars)), "cars_total": len(cars), "reason": j["reason"], "phase": phase,
-        "logs": {"done": logs_done, "total": logs_total}, "days": {"done": days_done, "total": days_total},
+        "logs": {"done": logs_done, "total": logs_total, "failed": 0}, "days": {"done": days_done, "total": days_total},
         "bytes": {"done": bytes_done, "total": bytes_total, "copied": int(bytes_total * 0.18 / max(1, len(cars)))},
         "percent": percent, "rate_bytes_per_s": rate, "rate_logs_per_s": rate_logs, "rate_days_per_s": rate_days,
         "eta_ms": eta, "started_ms": j["started_ms"], "finished_ms": finished,
@@ -223,7 +223,7 @@ def status(req, car=None):
     st = req.store
     j = st.full_rebuild
     base = {"state": "idle", "id": None, "scope": None, "cars": [], "car": None, "cars_done": 0, "cars_total": 0,
-            "reason": None, "phase": None, "logs": {"done": 0, "total": 0}, "days": {"done": 0, "total": 0},
+            "reason": None, "phase": None, "logs": {"done": 0, "total": 0, "failed": 0}, "days": {"done": 0, "total": 0},
             "bytes": {"done": 0, "total": 0, "copied": 0}, "percent": None, "rate_bytes_per_s": None,
             "rate_logs_per_s": None, "rate_days_per_s": None, "eta_ms": None,
             "started_ms": None, "finished_ms": None, "last_progress_ms": None, "stalled": False, "errors": [],

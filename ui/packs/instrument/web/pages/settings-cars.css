@@ -33,6 +33,7 @@
 .sc-outcome-text { color: var(--text-2); margin-top: round(0.25rem, var(--e)); max-width: round(60rem, var(--e)); }
 .sc-outcome .panel-link { align-self: center; white-space: nowrap; }
 .sc-acts { flex-wrap: nowrap; }
+.sc-acts > .btn { flex: none; } /* never squeezed under its label's width (and so off whole pixels) in a column that is a hair too narrow */
 .sc-secret-row { flex-wrap: wrap; margin: round(0.75rem, var(--e)) 0; }
 .sc-secret { width: round(26rem, var(--e)); max-width: 100%; }
 
@@ -74,7 +75,7 @@
 .sc-src { position: relative; display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: round(0.75rem, var(--e)); padding: round(0.375rem, var(--e)) round(0.375rem, var(--e)) round(0.375rem, var(--e)) round(0.75rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); }
 .sc-src.is-dragging { z-index: 1; transform: translateY(var(--dy, 0)); border-color: var(--live-line); background: var(--panel-solid); box-shadow: var(--shadow), 0 0 0 1px var(--live-line); }
 .sc-src.is-ro { grid-template-columns: auto minmax(0, 1fr); padding-block: round(0.6875rem, var(--e)); }
-.sc-src-rank { display: grid; place-items: center; width: round(1.5rem, var(--e)); height: round(1.5rem, var(--e)); border-radius: 50%; border: 1px solid var(--line-2); font-family: var(--font-mono); font-size: max(0.75rem, var(--fs-floor)); color: var(--text-2); }
+.sc-src-rank { display: grid; place-items: center; width: round(1.5rem, var(--e)); height: round(1.5rem, var(--e)); border-radius: 50%; border: 1px solid var(--line-2); font-family: var(--font-mono); font-size: max(0.75rem, var(--fs-floor)); --LH: round(calc(1 * 1em), 2px); color: var(--text-2); }
 .sc-src:first-child .sc-src-rank { border-color: var(--live-line); color: var(--live); }
 .sc-grip { display: grid; place-items: center; width: round(1.75rem, var(--e)); height: round(2.25rem, var(--e)); margin: 0 round(-0.5rem, var(--e)); color: var(--text-3); cursor: grab; touch-action: none; user-select: none; }
 .sc-grip:hover { color: var(--live); }
