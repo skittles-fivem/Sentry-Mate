@@ -42,10 +42,16 @@ impl Engine {
         Ok(records::get::<Vec<Run>>(&self.inner.db, records::NS, KEY)?.unwrap_or_default())
     }
 
-    /// Notes a rebuild that ended.
+    /// Notes a rebuild that ended. Called before the rebuild is told as ended (its record, its job's status), so
+    /// that an end seen is an end in the history.
     pub(crate) fn note_rebuild(&self, run: Run) {
         let _one = lock(&self.inner.history);
         let mut v = self.rebuild_history().unwrap_or_default();
+        // (a full rebuild's end is noted before its record says it ended: one cut off between the two ends again
+        // when the server starts, and is still one run)
+        v.retain(|x| {
+            !(run.kind == "full" && x.kind == run.kind && x.started_ms == run.started_ms && x.cars == run.cars)
+        });
         v.insert(0, run);
         v.truncate(KEPT);
         if let Err(e) = records::put(&self.inner.db, records::NS, KEY, &v) {

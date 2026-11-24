@@ -343,8 +343,7 @@ impl Engine {
                 Ok(()) => JobStatus::Done,
             };
             let finished = now_ms();
-            *lock(&st.status) = status;
-            *lock(&st.finished_ms) = Some(finished);
+            // (the rebuilds' history first: a job seen as ended is in it)
             let v = st.view();
             e.note_rebuild(Run {
                 kind: v.kind.clone(),
@@ -361,6 +360,8 @@ impl Engine {
                 finished_ms: finished,
                 logs: v.done,
             });
+            *lock(&st.status) = status;
+            *lock(&st.finished_ms) = Some(finished);
             e.emit(Event::Job { job: v.id, car: v.car, status, done: v.done, total: v.total });
             e.inner.outstanding_sub();
         });
