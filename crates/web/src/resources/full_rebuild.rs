@@ -530,12 +530,44 @@ pub fn watch_once(app: &AppState) {
     }
 }
 
+/// Tells the open pages when the full rebuild's notices change (planned, under way, paused, failed, gone): they read
+/// the notices again on a `notice` event, as for the other inputs' notices. Admins only, as the notices are.
+pub fn announce_notices(app: &AppState, last: &mut Option<String>) {
+    let now = notices(app);
+    let key = serde_json::to_string(&now).unwrap_or_default();
+    if last.as_deref() == Some(key.as_str()) {
+        return;
+    }
+    let first = last.is_none();
+    *last = Some(key);
+    // at start nothing has changed for a page yet (it reads the notices when it opens)
+    if first && now.is_empty() {
+        return;
+    }
+    let notice = match now.first() {
+        Some(n) => serde_json::to_value(n).unwrap_or(Value::Null),
+        None => json!({ "code": "full_rebuild_ended" }),
+    };
+    app.events.publish(crate::events::Event::Notice { notice: std::sync::Arc::new(notice), admins_only: true });
+}
+
 /// Looks at the full rebuild every [`WATCH_EVERY`] (see [`watch_once`]), off the async threads.
 pub fn spawn_watch(app: AppState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let mut shown: Option<String> = None;
         loop {
             let a = app.clone();
-            let _ = tokio::task::spawn_blocking(move || watch_once(&a)).await;
+            if let Ok(s) = tokio::task::spawn_blocking(move || {
+                watch_once(&a);
+                announce_notices(&a, &mut shown);
+                shown
+            })
+            .await
+            {
+                shown = s;
+            } else {
+                shown = None;
+            }
             tokio::time::sleep(WATCH_EVERY).await;
         }
     })
