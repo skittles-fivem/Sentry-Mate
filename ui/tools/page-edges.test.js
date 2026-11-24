@@ -1,7 +1,8 @@
 // Pages at their edges, in Chromium on the dev API server: a link to a section of the page that is open lands
 // below the top bar, as a link from another page does; a sold date after today and a currency that is none are
 // refused under their fields; a period still to come or before 1970 gives a page, not an error; a search for one very
-// long word leaves the page as wide as the window.
+// long word leaves the page as wide as the window; Battery of a car whose pack reported nothing writes no
+// sentence around a dash.
 // `PACKS=a,b` runs only those. Run: node --test ui/tools/page-edges.test.js. Skipped when Playwright is not installed.
 'use strict';
 
@@ -205,5 +206,26 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
         }
       }, viewport);
     }
+  });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: Battery of a car whose pack has reported nothing writes no sentence around a dash`, { skip: SKIP, timeout: 180000 }, async () => {
+    await withPack(pack, ['--cars', '200'], async ({ origin, context }) => {
+      // c4 is a car with no history: no pack reading, no lifetime counter
+      const bare = await openPage(context, `${origin}/cars/c4/battery`, 'battery');
+      await bare.page.waitForLoadState('networkidle');
+      const text = await mainText(bare.page);
+      assert.match(text, /Usable now/);
+      assert.doesNotMatch(text, /— readings?\b/, 'no count of readings that is not known');
+      assert.doesNotMatch(text, /— (driving|while parked)/, 'no energy out of the pack that is not known');
+      assert.deepEqual(bare.errors, []);
+      // a car that has them still says them
+      const full = await openPage(context, `${origin}/cars/c1/battery`, 'battery');
+      await full.page.waitForLoadState('networkidle');
+      const said = await mainText(full.page);
+      assert.match(said, /the pack’s own reading \([\d,.]+ readings\)\./i);
+      assert.match(said, /Out of the pack: [\d,.]+\s\S+ driving, [\d,.]+\s\S+ while parked\./);
+    });
   });
 }
