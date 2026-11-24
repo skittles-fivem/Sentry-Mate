@@ -102,3 +102,38 @@ test('Battery: a stale car stays "Last known" when a now event comes', { skip: S
     assert.deepEqual([...seen], ['Last known']);
   });
 });
+
+// A live rebuild (a rows event) draws the page again; a control the reader changed keeps the reader's value, one the
+// reader did not touch takes the new page's. The page sets value / checked as properties, so the "was it changed"
+// test must compare with what the page built, not with the markup's defaults.
+async function openPicker(page) {
+  const maple = page.locator('.pick-pop[popover] .check', { hasText: 'Maple' }).first().locator('input');
+  if (!(await maple.isVisible())) await page.locator('.pick-btn').first().click();
+  return maple;
+}
+const rebuilt = async (page) => {
+  await page.evaluate(() => { document.querySelector('.pick-btn').dataset.old = '1'; });
+  await page.waitForFunction(() => !document.querySelector('.pick-btn').dataset.old, null, { timeout: 20000 });
+};
+
+test('a live rebuild keeps a car the reader unticked in the picker', { skip: SKIP, timeout: 120000 }, async () => {
+  await withServer(['--rows-every-s', '1'], async ({ origin, page }) => {
+    await page.goto(`${origin}/charges?cars=c1,c2`);
+    await ready(page, 'charges');
+    const maple = await openPicker(page);
+    assert.equal(await maple.isChecked(), true);
+    await maple.uncheck();
+    await rebuilt(page);
+    assert.equal(await (await openPicker(page)).isChecked(), false);
+  });
+});
+
+test('a live rebuild leaves a control the reader did not touch as the new page has it', { skip: SKIP, timeout: 120000 }, async () => {
+  await withServer(['--rows-every-s', '1'], async ({ origin, page }) => {
+    await page.goto(`${origin}/charges?cars=c1,c2`);
+    await ready(page, 'charges');
+    await page.locator('.pick-btn').first().click();
+    await rebuilt(page);
+    assert.equal(await (await openPicker(page)).isChecked(), true);
+  });
+});

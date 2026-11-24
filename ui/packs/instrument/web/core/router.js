@@ -23,7 +23,7 @@ import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { loadPage, reloadPage, isPageFailed } from '../shared/build.js';
 import { scrolling, afterScroll, SCROLL_REST_MS } from './stage.js';
-import { h, replace, holdScroll, ready as markReady, failed as markFailed, unready, setTitle as docTitle, on } from '../shared/dom.js';
+import { h, replace, holdScroll, builtWith, ready as markReady, failed as markFailed, unready, setTitle as docTitle, on } from '../shared/dom.js';
 import { resolvePeriod, periodParams } from '../shared/time.js';
 import { pageInfo } from './pages.js';
 import * as frame from './frame.js';
@@ -161,12 +161,13 @@ function controlKeys(root) {
     return [el, `${k}|${n}`];
   });
 }
+// (what the page built a control with is what h() set, builtWith; the markup's defaults for a control it left alone)
 function changedByReader(el) {
   if (el.type === 'file' || el.type === 'password' && !el.value) return false;
-  if (el.tagName === 'SELECT') return [...el.options].some((o) => o.selected !== o.defaultSelected);
-  if (el.type === 'checkbox' || el.type === 'radio') return el.checked !== el.defaultChecked;
+  if (el.tagName === 'SELECT') return [...el.options].some((o) => o.selected !== (builtWith(o, 'selected') ?? o.defaultSelected));
+  if (el.type === 'checkbox' || el.type === 'radio') return el.checked !== (builtWith(el, 'checked') ?? el.defaultChecked);
   if (el.type === 'hidden' || el.type === 'button' || el.type === 'submit') return false;
-  return el.value !== el.defaultValue;
+  return el.value !== (builtWith(el, 'value') ?? el.defaultValue);
 }
 function readerChanges(view) {
   const active = document.activeElement;
