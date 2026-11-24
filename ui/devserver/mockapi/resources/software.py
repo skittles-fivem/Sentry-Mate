@@ -272,7 +272,7 @@ def _car_events(req, h, types):
             continue
         x = cached_drive_row(req, h, d)
         a, b = drive_pids(app, d)
-        base = {"event_type": "drive_started", "car": car_no, "drive": int(d.id), "start": _iso(d.start),
+        base = {"event_type": "drive_started", "car": car_no, "drive": str(d.id), "start": _iso(d.start),
                 "start_place": name(a), "start_soc": x["start_soc_pct"], "start_range": x["start_range_km"],
                 "start_odometer": r(x["start_odometer_km"], 1)}
         if loc:
@@ -298,7 +298,7 @@ def _car_events(req, h, types):
         if c.start > req.now or not h.shown(c):
             continue
         x = cached_charge_row(req, h, c)
-        base = {"event_type": "charge_started", "car": car_no, "charge": int(c.id), "start": _iso(c.start),
+        base = {"event_type": "charge_started", "car": car_no, "charge": str(c.id), "start": _iso(c.start),
                 "place": name(piece_pid(app, c)), "kind": c.ckind, "start_soc": x["start_soc_pct"],
                 "start_range": x["start_range_km"]}
         if loc:

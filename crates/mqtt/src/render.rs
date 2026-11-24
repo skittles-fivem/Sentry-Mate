@@ -730,7 +730,8 @@ fn put_position(
 }
 
 /// The event as JSON on `<prefix>/cars/<id>/event`, not retained: `event_type` (as Home Assistant's event entity
-/// wants it), the ids, times in ISO 8601 UTC, and the summary in the owner's units (named in `units`). Unknown values
+/// wants it), the ids (the car's number; the drive's or charge's id as text, as the API has it: an imported row's id is
+/// over 2^53 and would lose digits as a JSON number), times in ISO 8601 UTC, and the summary in the owner's units (named in `units`). Unknown values
 /// are `null`.
 pub fn event_message(layout: &Layout, event: &Event) -> Message {
     let u = &layout.units;
@@ -743,7 +744,7 @@ pub fn event_message(layout: &Layout, event: &Event) -> Message {
     match event {
         Event::DriveStarted { drive, start_place } | Event::DriveEnded { drive, start_place, .. } => {
             let d = drive;
-            put(&mut o, "drive", d.id.into());
+            put(&mut o, "drive", d.id.to_string().into());
             put(&mut o, "start", iso_utc(d.start_ms).into());
             put(&mut o, "start_place", place(start_place));
             put(&mut o, "start_soc", num(d.start_soc, 1));
@@ -772,7 +773,7 @@ pub fn event_message(layout: &Layout, event: &Event) -> Message {
         }
         Event::ChargeStarted { charge, place: at } | Event::ChargeEnded { charge, place: at } => {
             let c = charge;
-            put(&mut o, "charge", c.id.into());
+            put(&mut o, "charge", c.id.to_string().into());
             put(&mut o, "start", iso_utc(c.start_ms).into());
             put(&mut o, "place", place(at));
             put(&mut o, "kind", c.kind.map_or(Value::Null, |k| kind_text(k).into()));
@@ -1176,7 +1177,13 @@ pub(crate) mod tests {
         assert_eq!((start.topic.as_str(), start.retain), ("sentry-mate/cars/c3/event", false));
         let v: Value = serde_json::from_str(&start.payload).unwrap();
         assert_eq!(v["event_type"], "drive_started");
-        assert_eq!((v["car"].as_u64(), v["drive"].as_u64()), (Some(3), Some(42)));
+        // the drive's id is text, as the API's ids are: a JSON number that large loses digits in a browser, in
+        // Home Assistant and in Node-RED (an imported row's id is over 2^53)
+        assert_eq!((v["car"].as_u64(), v["drive"].as_str()), (Some(3), Some("42")));
+        let mut big = drive(3);
+        big.id = 13_835_061_355_494_956_640;
+        let m = event_message(&km, &Event::DriveStarted { drive: Box::new(big), start_place: None });
+        assert!(m.payload.contains(r#""drive":"13835061355494956640""#), "{}", m.payload);
         assert_eq!(v["start"], "2026-11-08T15:00:00+00:00");
         assert_eq!(v["start_place"], "Home");
         assert_eq!(v["start_soc"], 80.0);
@@ -1253,7 +1260,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert_eq!(s["event_type"], "charge_started");
-        assert_eq!((s["charge"].as_u64(), s["car"].as_u64()), (Some(9), Some(5)));
+        assert_eq!((s["charge"].as_str(), s["car"].as_u64()), (Some("9"), Some(5)));
         assert_eq!((s["place"].as_str(), s["kind"].as_str()), (Some("Work"), Some("dc")));
         assert!(s.get("energy_added_kwh").is_none() && s.get("latitude").is_none());
         let msg = event_message(&l, &Event::ChargeEnded { charge: Box::new(charge), place: Some("Work".into()) });
