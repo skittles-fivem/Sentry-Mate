@@ -207,9 +207,14 @@ for (const pack of BUILTIN_PACKS) {
         assert.equal(reads.length, left, 'the page was left: nothing reads the detail any more');
         assert.deepEqual(errors, []);
         await context.close();
+      } finally { await server.stop(); }
 
-        // a failed pass says why (the answer is changed on its way to the page)
-        ({ page, context, errors, reads } = await openDesk(browser, server));
+      // a failed pass says why (the answer is changed on its way to the page). On a server of its own: the one above
+      // still has the pass the test left running, and the page rightly shows what the stream says of it, over a read
+      // the test changed (the `job` event of the running pass came in before or after the read, run to run)
+      server = await devServer(pack);
+      try {
+        let { page, context, errors, reads } = await openDesk(browser, server);
         await page.route(DETAIL, async (route) => {
           const res = await route.fetch();
           const d = await res.json();
