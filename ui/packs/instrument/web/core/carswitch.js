@@ -47,9 +47,11 @@ async function load() {
   const q = input.value.trim();
   const limit = Math.max(8, Math.min(50, Math.floor((window.innerHeight * 0.6) / 56)));
   try {
-    const page = await api.page('cars', { search: q || null, sort: 'custom', limit });
+    // how many cars are sold comes from the fleet's own count: the sold ones are often not among the first listed
+    const [page, summary] = await Promise.all([api.page('cars', { search: q || null, sort: 'custom', limit }),
+      q ? null : api.get('fleet/summary', null, { maxAgeMs: 30000 }).catch(() => null)]);
     if (my !== seq) return;
-    lastPage = { page, q };
+    lastPage = { page, q, soldAll: Number.isInteger(summary?.sold) ? summary.sold : null };
     paint();
   } catch (e) {
     if (my !== seq || api.isAbort(e)) return;
@@ -59,18 +61,24 @@ async function load() {
 
 // a search lists sold cars too (marked Sold); without one they wait behind "Sold cars (n)", except the open car
 function paint() {
-  const { page, q } = lastPage;
+  const { page, q, soldAll } = lastPage;
   const current = state.current().car || state.lastCar();
   const { sold } = state.splitSold(page.items);
   const soldOther = q ? [] : sold.filter((c) => c.id !== current);
   const main = q ? page.items : page.items.filter((c) => !soldOther.includes(c));
   rows = showSold ? [...main, ...soldOther] : main;
-  const soldBtn = soldOther.length ? h('button', { class: 'sw-sold-toggle', type: 'button', 'aria-expanded': String(showSold),
-    onclick: () => { showSold = !showSold; paint(); input.focus(); } }, icon('chev-d', showSold ? 'ico--sm sw-rot' : 'ico--sm'), `Sold cars (${soldOther.length})`) : null;
+  // every sold car but the open one (which stays in the list above), also those further down than the cars loaded
+  const soldN = q ? 0 : Math.max(soldOther.length, (soldAll ?? 0) - (sold.length - soldOther.length));
+  const soldUnlisted = soldN - soldOther.length;
+  const soldBtn = soldN ? h('button', { class: 'sw-sold-toggle', type: 'button', 'aria-expanded': String(showSold),
+    onclick: () => { showSold = !showSold; paint(); input.focus(); } }, icon('chev-d', showSold ? 'ico--sm sw-rot' : 'ico--sm'), `Sold cars (${soldN})`) : null;
+  const soldMore = showSold && soldUnlisted > 0 ? h('p', { class: 'sw-more sw-sold-more' },
+    soldOther.length ? `${soldUnlisted} more sold ${soldUnlisted === 1 ? 'car is' : 'cars are'} further down the list. ` : `${soldUnlisted === 1 ? 'It is' : 'They are'} further down the list than the cars shown here. `,
+    'Type the name, or ', h('a', { href: state.buildUrl('fleet', { query: { sold: '1' } }), onclick: () => dlg.close() }, 'see the sold cars on Fleet'), '.') : null;
   replace(list,
-    h('div', { class: 'sw-group-label' }, h('span', null, q ? 'Matching cars' : 'Your cars'), h('span', null, page.total != null ? `${page.total - (q ? 0 : soldOther.length)} in all` : page.next ? 'more below' : `${main.length}`)),
+    h('div', { class: 'sw-group-label' }, h('span', null, q ? 'Matching cars' : 'Your cars'), h('span', null, page.total != null ? `${page.total - soldN} in all` : page.next ? 'more below' : `${main.length}`)),
     main.length ? main.map((c) => option(c, q, current)) : h('p', { class: 'sw-more' }, q ? `No car matches "${q}". Search by name, model or VIN prefix.` : soldOther.length ? 'Every car is sold.' : 'No cars yet. A car appears when its CAN Bridge first uploads.'),
-    soldBtn, showSold ? soldOther.map((c) => option(c, q, current)) : null,
+    soldBtn, showSold ? soldOther.map((c) => option(c, q, current)) : null, soldMore,
     page.next ? h('p', { class: 'sw-more' }, 'More cars match. Type more of the name, or ', h('a', { href: state.buildUrl('fleet', { query: q ? { search: q } : null }), onclick: () => dlg.close() }, 'see them all on Fleet'), '.') : null);
   setActive(rows.length ? 0 : -1);
 }

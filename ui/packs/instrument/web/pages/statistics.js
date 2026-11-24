@@ -421,7 +421,7 @@ export async function mount(ctx) {
     }
     const none = !rows.length;
     const nCars = new Set(rows.map((r) => r.car)).size;
-    const across = multi ? ` across ${formatNumber(nCars)} ${nCars === 1 ? 'car' : 'cars'}` : '';
+    const across = multi && nCars ? ` across ${formatNumber(nCars)} ${nCars === 1 ? 'car' : 'cars'}` : ''; // (no rows: no car to count)
     replace(totalsSlot, panel({ title: 'Totals for the period', icon: 'stats', side: h('span', { class: 'faint st-side' }, `${period.label}${across}`) },
       h('div', { class: 'st-totals' },
         metric('Distance', odo.length ? sum(odo) : null, 'distance', { size: 'lg', why: none ? 'No data in this period' : 'No odometer reading',

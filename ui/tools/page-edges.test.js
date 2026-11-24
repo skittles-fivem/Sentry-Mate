@@ -2,7 +2,8 @@
 // below the top bar, as a link from another page does; a sold date after today and a currency that is none are
 // refused under their fields; a period still to come or before 1970 gives a page, not an error; a search for one very
 // long word leaves the page as wide as the window; Battery of a car whose pack reported nothing writes no
-// sentence around a dash.
+// sentence around a dash; the car switcher of a large fleet counts the cars not sold and says where the sold ones
+// are; Statistics without a car counts no "0 cars".
 // `PACKS=a,b` runs only those. Run: node --test ui/tools/page-edges.test.js. Skipped when Playwright is not installed.
 'use strict';
 
@@ -226,6 +227,43 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
       const said = await mainText(full.page);
       assert.match(said, /the pack’s own reading \([\d,.]+ readings\)\./i);
       assert.match(said, /Out of the pack: [\d,.]+\s\S+ driving, [\d,.]+\s\S+ while parked\./);
+    });
+  });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: the car switcher of a large fleet counts the cars not sold, as the header does, and says where the sold ones are`, { skip: SKIP, timeout: 180000 }, async () => {
+    await withPack(pack, ['--cars', '200'], async ({ origin, context }) => {
+      const summary = await (await context.request.get(`${origin}/api/v1/fleet/summary`)).json();
+      assert.ok(summary.sold >= 1 && summary.cars > 100, 'the made-up fleet has sold cars');
+      const { page, errors } = await openPage(context, `${origin}/`, 'fleet');
+      await page.keyboard.press('Control+k');
+      const dialog = page.locator('dialog[open]');
+      await dialog.locator('.sw-opt').first().waitFor();
+      const count = await dialog.locator('.sw-group-label').first().innerText();
+      assert.match(count.replace(/\s+/g, ' '), new RegExp(`\\b${summary.cars} in all`), `the switcher counts the ${summary.cars} cars not sold`);
+      // the sold cars are not among the first ones listed: the toggle still names how many there are and where they are
+      const toggle = dialog.locator('.sw-sold-toggle');
+      assert.match(await toggle.innerText(), new RegExp(`Sold cars \\(${summary.sold}\\)`, 'i'));   // (drawn in capitals)
+      await toggle.click();
+      const where = dialog.locator('.sw-sold-more');
+      await where.waitFor();
+      assert.match(await where.innerText(), /Fleet/);
+      assert.match(await where.locator('a').getAttribute('href'), /^\/\?(.*&)?sold=1/);
+      assert.deepEqual(errors, []);
+    });
+  });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: Statistics on a server without a car does not count "0 cars"`, { skip: SKIP, timeout: 120000 }, async () => {
+    await withPack(pack, ['--cars', '0'], async ({ origin, context }) => {
+      const { page, errors } = await openPage(context, `${origin}/statistics`, 'statistics');
+      await page.waitForLoadState('networkidle');
+      const text = await mainText(page);
+      assert.match(text, /No car yet/i);
+      assert.doesNotMatch(text, /\b0 cars\b/);
+      assert.deepEqual(errors, []);
     });
   });
 }
