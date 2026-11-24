@@ -450,6 +450,9 @@ ul { margin: 0; padding: 0; list-style: none; }
 /* at least a screen high (the small one: a phone's toolbars shown), so the footer starts below the fold and is never
    pushed down on screen as the page draws (the loading skeleton, then the page) */
 .view { flex: 1; padding: var(--view-pad-top) var(--gutter) var(--view-pad-bottom); width: 100%; min-width: 0; min-height: 100svh; outline: none; }
+/* a link to a section of the page that is open (#qa, the footer's #licences): the browser moves to it by itself, so
+   it stops below the sticky top bar, where the router puts a section opened from another page */
+:where(.view [id]) { scroll-margin-top: round(5rem, var(--e)); }
 /* the fleet page fills the window; in a very short window (or at a large interface size) it keeps a usable table and the page scrolls */
 .view--fill { flex: none; height: max(calc(100vh - var(--topbar-h)), round(36rem, var(--e))); display: flex; flex-direction: column; padding-bottom: round(1.25rem, var(--e)); overflow: hidden; }
 
