@@ -105,7 +105,6 @@ const BY_GROUP = {
     'tesla-invoices-changed': 'Turned Tesla invoices on or off',
     'tesla-sign-in-needed': 'Tesla asked to sign in again',
     'tesla-account-error': 'Could not read a Tesla account',
-    'tesla-rate-limited': 'Tesla started limiting requests',
     'teslafi-account-added': 'Added a TeslaFi account',
     'teslafi-account-removed': 'Removed a TeslaFi account',
     'teslafi-account-paused': 'Paused a TeslaFi account',

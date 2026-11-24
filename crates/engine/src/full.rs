@@ -861,8 +861,9 @@ impl Engine {
             r.error = Some(why.to_string());
             r.status = FullStatus::Failed;
             r.finished_ms = Some(now_ms());
-            let _ = self.full_put(&r);
+            // (the rebuilds' history first, as in [`Engine::full_end`])
             self.full_ended(&r);
+            let _ = self.full_put(&r);
         }
         // the history in use was never touched: only the shadow goes
         let _ = self.inner.db.remove_shadow(SHADOW);
@@ -911,6 +912,20 @@ impl Engine {
         Ok(r)
     }
 
+    /// The run ends as `status`. Its entry in the rebuilds' history is written before its record says so: whoever
+    /// finds the run ended and reads the history at once (the status answer does both) finds it there.
+    fn full_end(&self, status: FullStatus) -> Result<FullRecord> {
+        let _one = lock(&self.inner.full_start);
+        let mut r = self
+            .full_rebuild_status()?
+            .ok_or_else(|| crate::Error::Other("the full rebuild's record is gone".into()))?;
+        r.status = status;
+        r.finished_ms = Some(now_ms());
+        self.full_ended(&r);
+        self.full_put(&r)?;
+        Ok(r)
+    }
+
     fn full_phase(&self, phase: Phase) -> Result<FullRecord> {
         let r = self.full_edit(|r| {
             r.phase_started_ms = now_ms();
@@ -949,11 +964,7 @@ impl Engine {
             }
             if r.cancel {
                 self.inner.db.remove_shadow(SHADOW)?;
-                let r = self.full_edit(|r| {
-                    r.status = FullStatus::Cancelled;
-                    r.finished_ms = Some(now_ms());
-                })?;
-                self.full_ended(&r);
+                self.full_end(FullStatus::Cancelled)?;
                 return Ok(());
             }
             if r.held(now_ms()) {
@@ -961,11 +972,7 @@ impl Engine {
                 return Ok(());
             }
             let Some(car) = r.car() else {
-                let r = self.full_edit(|r| {
-                    r.status = FullStatus::Done;
-                    r.finished_ms = Some(now_ms());
-                })?;
-                self.full_ended(&r);
+                self.full_end(FullStatus::Done)?;
                 return Ok(());
             };
             if self.inner.db.car(car)?.is_none() {

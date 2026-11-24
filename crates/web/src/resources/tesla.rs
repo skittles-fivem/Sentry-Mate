@@ -217,7 +217,8 @@ pub fn service(
         let details = audit_details(Some(&target("tesla", None, &a.id)), &n.message);
         let audit = audit2.clone();
         let write = move || {
-            if let Err(e) = audit.record(None, None, "tesla-rate-limited", &details) {
+            // under the account-error action: during the wait the account is not read
+            if let Err(e) = audit.record(None, None, "tesla-account-error", &details) {
                 tracing::warn!("audit: {e}");
             }
         };

@@ -131,7 +131,6 @@ pub const CODES: &[Code] = &[
     c("tesla-car-matched", INT, Some("tesla"), "Matched a Tesla car"),
     c("tesla-invoices-changed", INT, Some("settings"), "Turned Supercharger invoices from Tesla on or off"),
     c("tesla-poll-changed", INT, Some("settings"), "Changed how often Tesla is asked"),
-    c("tesla-rate-limited", INT, Some("tesla"), "Tesla started limiting requests"),
     c("tesla-sign-in-needed", INT, Some("tesla"), "Tesla needs a new sign-in"),
     c("tesla-token-replaced", INT, Some("tesla"), "Replaced a Tesla account's token"),
     c("teslafi-account-added", INT, Some("teslafi"), "Added a TeslaFi account"),

@@ -15,7 +15,7 @@ import { formatTime, formatDate, formatDuration, buckets, bucketKey } from '../s
 import { formatNumber } from '../shared/i18n.js';
 import { icon } from '../core/icons.js';
 import { spotText } from '../core/fmt.js';
-import { pageHead, metric, csvButton } from '../core/page.js';
+import { pageHead, panel, metric, csvButton } from '../core/page.js';
 import { dataTable } from '../core/table.js';
 import { emptyState } from '../core/states.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, colors, hexA, chartFont } from '../core/chart.js';
@@ -135,17 +135,19 @@ export async function mount(ctx) {
   const placesP = placesRead(ctx).then((x) => x.items || [], () => []);
 
   /* ---------- which cars */
-  let fleet = [];
-  try { fleet = (await fleetRead(ctx)).items || []; } catch { fleet = fixedCar ? [fixedCar] : []; }
+  let fleet = [], fleetKnown = true;
+  try { fleet = (await fleetRead(ctx)).items || []; } catch { fleet = fixedCar ? [fixedCar] : []; fleetKnown = false; }
   if (!ctx.alive()) return;
   const carById = new Map(fleet.map((c) => [c.id, c]));
   if (fixedCar) carById.set(fixedCar.id, fixedCar);
   const chosen = fixedCar ? [fixedCar.id] : (!q.cars || q.cars === 'all' ? 'all' : q.cars.split(',').filter(Boolean));
-  const viewCars = chosen === 'all' ? fleet.map((c) => c.id) : chosen;
+  // (cars of the address that are not there, removed or hidden since, are left out: the server answers a
+  // list that names one of them with 404. When the cars could not be read, the address is taken as it is.)
+  const viewCars = chosen === 'all' ? fleet.map((c) => c.id) : fleetKnown ? chosen.filter((c) => carById.has(c)) : chosen;
   const multi = !fixedCar;
-  const carsParam = fixedCar ? null : (chosen === 'all' ? 'all' : chosen.join(','));
+  const carsParam = fixedCar ? null : (chosen === 'all' ? 'all' : viewCars.join(','));
   const carName = (cid) => carById.get(cid)?.name || cid;
-  const scopeName = fixedCar ? fixedCar.name : chosen === 'all' ? (fleet.length === 1 ? fleet[0].name : fleet.length ? `All ${formatNumber(fleet.length)} cars` : 'No car yet') : chosen.length === 1 ? carName(chosen[0]) : `${formatNumber(chosen.length)} cars`;
+  const scopeName = fixedCar ? fixedCar.name : chosen === 'all' ? (fleet.length === 1 ? fleet[0].name : fleet.length ? `All ${formatNumber(fleet.length)} cars` : 'No car yet') : viewCars.length === 1 ? carName(viewCars[0]) : `${formatNumber(viewCars.length)} cars`;
   const listPath = fixedCar ? `cars/${enc(fixedCar.id)}/charges` : 'charges';
   const statsPath = fixedCar ? `cars/${enc(fixedCar.id)}/charging-stats` : 'charging-stats';
   const fileBase = fixedCar ? fixedCar.name : scopeName;
@@ -162,6 +164,13 @@ export async function mount(ctx) {
 
   const root = h('div', { class: 'charges-page', cover: ['shots.charges', 'shots.charging-stats'] });
   replace(ctx.view, root);
+  if (multi && chosen !== 'all' && !viewCars.length) {
+    root.append(pageHead({ title: 'Charges', sub: [period.label] }), panel({}, emptyState({ icon: 'bolt', title: fleet.length ? 'None of these cars is yours to see' : 'There is no car yet',
+      text: fleet.length ? 'The cars in this address are unknown or hidden from your account. Pick other cars.' : 'There is no car on this server yet. A car appears when its CAN Bridge first uploads.',
+      action: !fleet.length ? null : h('a', { class: 'btn', href: state.buildUrl('charges', { period: state.current().period, query: { ...queryOf(), cars: 'all' } }) }, 'Every car') })));
+    ctx.ready();
+    return;
+  }
 
   // places for the place filter (the most visited first)
   const places = await placesP;
@@ -226,7 +235,7 @@ export async function mount(ctx) {
   };
   const carBtn = pickList({
     label: 'Cars', allText: 'Every car', items: fleet.map((c) => ({ id: c.id, label: c.name, sold: state.isSold(c), sub: [c.model, c.year].filter(Boolean).join(' · ') })),
-    selected: chosen === 'all' ? [] : chosen, onApply: goCars, cover: ['charges.filter.car', 'cs.filter.car'],
+    selected: chosen === 'all' ? [] : viewCars, onApply: goCars, cover: ['charges.filter.car', 'cs.filter.car'],
     hint: 'Tick one car, several, or none for every car. Every figure, chart and list on this page then covers the cars you picked, in one view.',
     title: 'Which cars this page covers',
   });
