@@ -39,8 +39,10 @@ const placeCell = (p, cover) => {
 };
 
 // The list filters of the address, and the API query they make.
+// a number from the address, or nothing: a word or a number past what a computer holds is not a filter
+const numberOf = (v) => { const n = v === '' || v == null ? NaN : Number(v); return Number.isFinite(n) && n >= 0 ? String(v) : ''; };
 const filtersOf = (q) => ({
-  places: q.places || '', place_side: q.place_side || 'any', q: q.q || '', min_distance: q.min_distance || '', min_speed: q.min_speed || '',
+  places: q.places || '', place_side: q.place_side || 'any', q: q.q || '', min_distance: numberOf(q.min_distance), min_speed: numberOf(q.min_speed),
   source: filterWord(q.source), flags: q.flags || '', efficiency: q.efficiency || 'plain', exclude: q.exclude || '',
 });
 const listParams = (ctx, f) => ({
