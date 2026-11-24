@@ -31,7 +31,7 @@ struct World {
     car: CarId,
     /// The first line of every request the "proxy" got (`CONNECT host:port HTTP/1.1`).
     seen: Arc<Mutex<Vec<String>>>,
-    _engine: Engine,
+    engine: Engine,
     _dir: tempfile::TempDir,
 }
 
@@ -85,7 +85,7 @@ async fn world() -> World {
     let svc = Arc::new(tesla::Service::new(&data, v, Arc::new(engine::TeslaSink::new(engine.clone())), opts));
     let (e2, d2, s2) = (engine.clone(), db.clone(), svc.clone());
     let s = TestServer::start_with(move |b| b.cars(Arc::new(EngineCars(d2))).service(Arc::new(e2)).service(s2)).await;
-    World { s, svc, car, seen, _engine: engine, _dir: dir }
+    World { s, svc, car, seen, engine: engine.clone(), _dir: dir }
 }
 
 /// An account as if it had been added and checked: one vehicle, not matched yet.
@@ -148,8 +148,12 @@ async fn off_until_an_account_and_admin_only() {
     assert_eq!(o["accounts"], 0);
     assert_eq!(o["hosts"], json!([]));
     assert_eq!(o["clients_built"], 0);
-    assert_eq!(o["poll"], "normal");
-    assert_eq!(o["polls"]["parked_s"], 60);
+    assert_eq!(o["poll"], json!({ "driving_ms": 2500, "charging_ms": 5000, "idle_ms": 60000, "list_ms": 30000 }));
+    assert_eq!(o["poll_limits"]["driving_ms"], json!({ "min": 2500, "default": 2500, "max": 600000 }));
+    assert_eq!(o["poll_limits"]["list_ms"]["min"], 30000);
+    // no cap and no gap of its own: Tesla does the limiting
+    assert!(o["poll_limits"].get("daily_cap").is_none() && o["poll_limits"].get("min_gap_ms").is_none());
+    assert_eq!(o["rate_limited_until_ms"], Value::Null);
     assert_eq!(admin.get("/api/v1/integrations/tesla/accounts").await.json()["items"], json!([]));
     assert_eq!(admin.get("/api/v1/integrations/tesla/status").await.json()["items"], json!([]));
 
@@ -345,33 +349,57 @@ async fn accounts_cars_pause_poll_notices_and_removal() {
         assert!(actions.iter().any(|a| a == want), "{want} in {actions:?}");
     }
 
-    // how often it asks
-    let r = admin.patch("/api/v1/integrations/tesla", json!({ "version": 1, "poll": "gentle" })).await;
+    // how often it asks: slower than the defaults, never faster than the floors
+    let tbase = "/api/v1/integrations/tesla";
+    let r = admin.patch(tbase, json!({ "version": 1, "poll": { "idle_ms": 120000 } })).await;
     assert_eq!((r.status, r.code().as_deref()), (403, Some("password_needed")));
+    for (field, value) in
+        [("driving_ms", 2499), ("charging_ms", 4999), ("idle_ms", 59_999), ("list_ms", 29_999), ("idle_ms", 3_600_001)]
+    {
+        let r = admin
+            .patch(tbase, json!({ "version": 1, "poll": { field: value }, "confirm_password": ADMIN_PASSWORD }))
+            .await;
+        assert_eq!((r.status, r.code().as_deref()), (422, Some("invalid")), "{field} {value}");
+        let fields = r.json()["error"]["fields"].clone();
+        assert!(fields.get(format!("poll.{field}")).is_some(), "{fields}");
+    }
+    for bad in [
+        json!("often"),
+        json!({ "driving_ms": "2.5" }),
+        json!({ "fast": 1 }),
+        json!({ "driving_ms": 2500.5 }),
+        json!({ "daily_cap": 3000 }),
+    ] {
+        let r = admin.patch(tbase, json!({ "version": 1, "poll": bad, "confirm_password": ADMIN_PASSWORD })).await;
+        assert_eq!((r.status, r.code().as_deref()), (400, Some("bad_input")), "{bad}");
+    }
+    assert_eq!(w.svc.cadence(), tesla::Intervals::DEFAULT.cadence(), "nothing changed");
+    let slower = json!({ "driving_ms": 5000, "charging_ms": 10000, "idle_ms": 120000, "list_ms": 60000 });
+    let r = admin.patch(tbase, json!({ "version": 1, "poll": slower, "confirm_password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!((r.json()["poll"].clone(), r.json()["version"].clone()), (slower.clone(), json!(2)));
+    let want = tesla::Intervals { driving_ms: 5000, charging_ms: 10_000, idle_ms: 120_000, list_ms: 60_000 };
+    assert_eq!(w.svc.cadence(), want.cadence());
+    // the floors themselves are taken, one field at a time
     let r = admin
-        .patch(
-            "/api/v1/integrations/tesla",
-            json!({ "version": 1, "poll": "often!", "confirm_password": ADMIN_PASSWORD }),
-        )
-        .await;
-    assert_eq!((r.status, r.code().as_deref()), (422, Some("invalid")));
-    let r = admin
-        .patch(
-            "/api/v1/integrations/tesla",
-            json!({ "version": 1, "poll": "gentle", "confirm_password": ADMIN_PASSWORD }),
-        )
+        .patch(tbase, json!({ "version": 2, "poll": { "driving_ms": 2500 }, "confirm_password": ADMIN_PASSWORD }))
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
-    assert_eq!((r.json()["poll"].clone(), r.json()["polls"]["parked_s"].clone()), (json!("gentle"), json!(300)));
-    assert_eq!(w.svc.cadence(), tesla::Pace::Gentle.cadence());
+    assert_eq!(
+        (r.json()["poll"]["driving_ms"].clone(), r.json()["poll"]["idle_ms"].clone()),
+        (json!(2500), json!(120000))
+    );
+    let want = tesla::Intervals { driving_ms: 2500, ..want };
+    // kept: what a server started again over the same data reads
+    assert_eq!(web::resources::tesla::options(&w.engine).cadence, want.cadence());
+    assert_eq!(web::resources::tesla::load_settings(&w.engine).intervals(), want);
     let r = admin
-        .patch(
-            "/api/v1/integrations/tesla",
-            json!({ "version": 1, "poll": "often", "confirm_password": ADMIN_PASSWORD }),
-        )
+        .patch(tbase, json!({ "version": 1, "poll": { "idle_ms": 90000 }, "confirm_password": ADMIN_PASSWORD }))
         .await;
     assert_eq!((r.status, r.code().as_deref()), (409, Some("stale_version")));
-    assert!(audit_actions(&mut admin).await.iter().any(|(a, _)| a == "tesla-poll-changed"));
+    let audit = audit_actions(&mut admin).await;
+    let (_, d) = audit.iter().find(|(a, _)| a == "tesla-poll-changed").expect("audited");
+    assert!(d.to_string().contains("driving every 2.5 s"), "{d}");
 
     // Tesla stops taking the sign-in: a notice for admins, not for a watch account
     w.svc
@@ -405,4 +433,37 @@ async fn accounts_cars_pause_poll_notices_and_removal() {
     // and still nothing went out
     assert_eq!(w.svc.clients_built(), 0);
     assert!(w.seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn settings_saved_before_the_intervals_still_read() {
+    let w = world().await;
+    let e = &w.engine;
+    // a pace word saved by an older server: gentle stays slower, invoices stay on
+    e.db().set_setting("tesla", json!({ "poll": "gentle", "invoices": true, "version": 4 })).unwrap();
+    let s = web::resources::tesla::load_settings(e);
+    assert_eq!((s.invoices, s.version), (true, 4));
+    let i = s.intervals();
+    assert_eq!((i.driving_ms, i.charging_ms, i.idle_ms, i.list_ms), (60_000, 120_000, 300_000, 120_000));
+    for word in ["often", "normal"] {
+        e.db().set_setting("tesla", json!({ "poll": word, "version": 2 })).unwrap();
+        assert_eq!(web::resources::tesla::load_settings(e).intervals(), tesla::Intervals::DEFAULT, "{word}");
+    }
+    // a value saved under a floor (by hand) is read at the floor
+    e.db().set_setting("tesla", json!({ "intervals": { "driving_ms": 500, "list_ms": 1000 }, "version": 3 })).unwrap();
+    let i = web::resources::tesla::load_settings(e).intervals();
+    assert_eq!((i.driving_ms, i.list_ms, i.idle_ms), (2500, 30_000, 60_000));
+    // what is saved now holds the intervals, not the word
+    let mut admin = w.s.admin().await;
+    let v = admin.get("/api/v1/integrations/tesla").await.json()["version"].clone();
+    let r = admin
+        .patch(
+            "/api/v1/integrations/tesla",
+            json!({ "version": v, "poll": { "idle_ms": 600000 }, "confirm_password": ADMIN_PASSWORD }),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let saved = e.db().setting("tesla").unwrap().unwrap();
+    assert_eq!(saved["intervals"]["idle_ms"], 600_000);
+    assert!(saved.get("poll").is_none(), "{saved}");
 }

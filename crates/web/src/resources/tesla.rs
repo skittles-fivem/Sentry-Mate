@@ -2,7 +2,7 @@
 //!
 //! | Route | |
 //! |---|---|
-//! | `GET`/`PATCH /integrations/tesla` | `{ enabled, accounts, cars, hosts, poll, polls, polls_today, last_error, clients_built, version }`; PATCH `{ version, poll }` |
+//! | `GET`/`PATCH /integrations/tesla` | `{ enabled, accounts, cars, hosts, poll, poll_limits, polls_today, rate_limited_until_ms, last_error, clients_built, version }`; PATCH `{ version, poll: { driving_ms?, charging_ms?, idle_ms?, list_ms? } }` |
 //! | `GET`/`POST /integrations/tesla/accounts` | POST `{ label, region, refresh_token }` -> 201 Account |
 //! | `POST /integrations/tesla/sign-in` | `{ region }` -> `{ sign_in, url, expires_ms }` (changes nothing stored) |
 //! | `POST /integrations/tesla/sign-in/{sign_in}` | `{ pasted_url, label }` -> 201 Account |
@@ -35,7 +35,7 @@ use engine::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use tesla::{Account, AccountState, AccountStatus, Match, Pace, Region, ServiceError};
+use tesla::{Account, AccountState, AccountStatus, Intervals, Match, Region, ServiceError};
 
 /// The Tesla API input as the web side holds it (handed over with `Builder::service`).
 pub type TeslaService = tesla::Service<engine::TeslaSink>;
@@ -50,16 +50,35 @@ const MAX_LABEL: usize = 64;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TeslaSettings {
-    pub poll: Pace,
+    /// The four reads and the daily cap. `None` in settings saved before they were kept: read from `poll`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intervals: Option<Intervals>,
+    /// The pace word settings saved before the intervals held (`often`, `normal`, `gentle`); read, never written.
+    #[serde(skip_serializing)]
+    pub poll: Option<String>,
     /// Supercharger invoices (`/integrations/invoices`): off until an admin turns them on.
     pub invoices: bool,
     pub version: u64,
 }
 
 impl TeslaSettings {
-    /// The pollers' cadence: the pace, and whether they read invoices.
+    /// How often it asks: the saved intervals, else those of an older saved pace (`gentle` kept slower, any other
+    /// the defaults), within the floors.
+    pub fn intervals(&self) -> Intervals {
+        if let Some(i) = self.intervals {
+            return i.clamped();
+        }
+        match self.poll.as_deref() {
+            Some("gentle") => {
+                Intervals { driving_ms: 60_000, charging_ms: 120_000, idle_ms: 5 * 60_000, list_ms: 120_000 }
+            }
+            _ => Intervals::DEFAULT,
+        }
+    }
+
+    /// The pollers' cadence: the intervals, and whether they read invoices.
     pub fn cadence(&self) -> tesla::Cadence {
-        let mut c = self.poll.cadence();
+        let mut c = self.intervals().cadence();
         c.invoices = self.invoices;
         c
     }
@@ -67,13 +86,78 @@ impl TeslaSettings {
 
 impl Default for TeslaSettings {
     fn default() -> TeslaSettings {
-        TeslaSettings { poll: Pace::Normal, invoices: false, version: 1 }
+        TeslaSettings { intervals: None, poll: None, invoices: false, version: 1 }
     }
 }
 
 /// The saved settings (the defaults when none are saved or they don't read).
 pub fn load_settings(e: &Engine) -> TeslaSettings {
     e.db().setting(SETTING).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+}
+
+/// A time in words, UTC to the minute: `2026-11-24 14:05 UTC`.
+fn utc_minute(ms: u64) -> String {
+    let day = engine::tz::date_str(ms, engine::tz::zone("UTC"));
+    format!("{day} {:02}:{:02} UTC", (ms / 3_600_000) % 24, (ms / 60_000) % 60)
+}
+
+/// An interval in words, for the audit: `2.5 s`, `60 s`.
+fn secs(ms: u64) -> String {
+    if ms.is_multiple_of(1000) { format!("{} s", ms / 1000) } else { format!("{}.{} s", ms / 1000, (ms % 1000) / 100) }
+}
+
+/// The intervals in words, for the audit.
+fn intervals_words(i: &Intervals) -> String {
+    format!(
+        "driving every {}, charging every {}, idle every {}, asleep (the list) every {}",
+        secs(i.driving_ms),
+        secs(i.charging_ms),
+        secs(i.idle_ms),
+        secs(i.list_ms)
+    )
+}
+
+/// The `poll` of a PATCH over `old`: each field given replaces its value; `400 bad_input` for a wrong type or an
+/// unknown field, `422 invalid` for a value under its floor or over its ceiling (named `poll.<field>`).
+fn intervals_of(v: &Value, old: Intervals) -> ApiResult<Intervals> {
+    let Value::Object(m) = v else { return Err(ApiError::bad_input("poll", "Must be an object.")) };
+    let mut f = Fields::new();
+    for k in m.keys() {
+        if !matches!(k.as_str(), "driving_ms" | "charging_ms" | "idle_ms" | "list_ms") {
+            f.add(&format!("poll.{k}"), "Unknown field.");
+        }
+    }
+    f.bad_input()?;
+    let get = |k: &str, was: u64| -> ApiResult<u64> {
+        match m.get(k) {
+            None | Some(Value::Null) => Ok(was),
+            Some(x) => x.as_u64().ok_or_else(|| ApiError::bad_input(&format!("poll.{k}"), "Must be a whole number.")),
+        }
+    };
+    let new = Intervals {
+        driving_ms: get("driving_ms", old.driving_ms)?,
+        charging_ms: get("charging_ms", old.charging_ms)?,
+        idle_ms: get("idle_ms", old.idle_ms)?,
+        list_ms: get("list_ms", old.list_ms)?,
+    };
+    let mut f = Fields::new();
+    for (field, v, lo, hi) in new.fields() {
+        if v < lo || v > hi {
+            let why = format!("Must be from {} to {} (never faster than {}).", secs(lo), secs(hi), secs(lo));
+            f.add(&format!("poll.{field}"), &why);
+        }
+    }
+    f.invalid()?;
+    Ok(new)
+}
+
+/// The floors, defaults and ceilings of `poll`, for the page.
+fn poll_limits() -> Value {
+    let mut m = serde_json::Map::new();
+    for (k, default, min, max) in Intervals::DEFAULT.fields() {
+        m.insert(k.to_string(), json!({ "min": min, "default": default, "max": max }));
+    }
+    Value::Object(m)
 }
 
 /// The owner's proxy for what the server fetches itself (`/settings` `outbound.proxy`), when it is one the Tesla
@@ -101,6 +185,7 @@ pub fn service(
     audit: Arc<accounts::Audit>,
     events: Events,
 ) -> TeslaService {
+    let (audit2, events2) = (audit.clone(), events.clone());
     let hook: engine::tesla_in::AccountHook = Arc::new(move |a: &Account| {
         let Some(n) = notice(a) else { return };
         let (what, summary) = match a.state {
@@ -127,7 +212,27 @@ pub fn service(
             events.publish(Event::Notice { notice: Arc::new(v), admins_only: true });
         }
     });
-    let sink = engine::TeslaSink { engine: engine.clone(), on_account: Some(hook) };
+    let limited: engine::tesla_in::RateLimitHook = Arc::new(move |a: &Account, until_ms: u64| {
+        let n = rate_notice(a, until_ms, None);
+        let details = audit_details(Some(&target("tesla", None, &a.id)), &n.message);
+        let audit = audit2.clone();
+        let write = move || {
+            // under the account-error action: during the wait the account is not read
+            if let Err(e) = audit.record(None, None, "tesla-account-error", &details) {
+                tracing::warn!("audit: {e}");
+            }
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(h) => {
+                h.spawn_blocking(write);
+            }
+            Err(_) => write(),
+        }
+        if let Ok(v) = serde_json::to_value(&n) {
+            events2.publish(Event::Notice { notice: Arc::new(v), admins_only: true });
+        }
+    });
+    let sink = engine::TeslaSink { engine: engine.clone(), on_account: Some(hook), on_rate_limit: Some(limited) };
     tesla::Service::new(data, vault, Arc::new(sink), options(engine))
 }
 
@@ -135,6 +240,23 @@ pub fn service(
 pub fn follow_proxy(app: &AppState, proxy: Option<&str>) {
     if let Ok(svc) = app.service::<TeslaService>() {
         svc.reconfigure(proxy.and_then(tesla::Proxy::parse), svc.cadence());
+    }
+}
+
+/// The notice of Tesla limiting an account's requests (it answered 429): nothing is asked before `until_ms`.
+pub fn rate_notice(a: &Account, until_ms: u64, since_ms: Option<u64>) -> Notice {
+    Notice {
+        code: "tesla_rate_limited",
+        level: "warning",
+        message: format!(
+            "Tesla is limiting requests for the Tesla account \"{}\", next try at {}. This server sets no limit of its \
+             own; it waits as long as Tesla asks.",
+            a.label,
+            utc_minute(until_ms)
+        ),
+        since_ms,
+        fix_link: Some("/settings/integrations#tesla"),
+        detail: Some(json!({ "account": a.id, "until_ms": until_ms })),
     }
 }
 
@@ -173,7 +295,20 @@ pub fn notice(a: &Account) -> Option<Notice> {
 
 /// The notices of every Tesla account in trouble (for admins).
 pub fn notices(app: &AppState) -> Vec<Notice> {
-    app.service::<TeslaService>().map(|s| s.accounts().iter().filter_map(notice).collect()).unwrap_or_default()
+    let Ok(s) = app.service::<TeslaService>() else { return Vec::new() };
+    let status = s.status();
+    let mut out: Vec<Notice> = Vec::new();
+    for a in s.accounts() {
+        out.extend(notice(&a));
+        let st = status.iter().find(|x| x.account == a.id);
+        if a.state == AccountState::Ok
+            && let Some(until) = st.and_then(|x| x.rate_limited_until_ms)
+        {
+            let since = st.and_then(|x| x.last_error.as_ref()).filter(|e| e.code == "rate_limited").map(|e| e.at_ms);
+            out.push(rate_notice(&a, until, since));
+        }
+    }
+    out
 }
 
 /// Whether a vehicle of an account is matched to `car` (it is read for that car), for the car's data sources.
@@ -361,6 +496,7 @@ fn account_json(e: &Engine, svc: &TeslaService, a: &Account) -> Value {
         "last_ok_ms": a.last_ok_ms,
         "last_error": a.last_error.as_ref().map(|e| json!({ "code": e.code, "message": e.message, "at_ms": e.at_ms })),
         "polls_today": st.as_ref().map_or(0, |s| s.polls_today),
+        "rate_limited_until_ms": st.as_ref().and_then(|s| s.rate_limited_until_ms),
         "cars": cars,
         "version": a.version,
     })
@@ -418,16 +554,10 @@ async fn overview(State(app): State<AppState>, Admin(_): Admin) -> ApiResult<Jso
             "accounts": accounts.len(),
             "cars": matched_cars(&accounts),
             "hosts": s.hosts(),
-            "poll": settings.poll.word(),
-            "polls": {
-                "list_s": c.list_ms / 1000,
-                "parked_s": c.idle_ms / 1000,
-                "charging_s": c.charging_ms / 1000,
-                "driving_s": c.driving_ms / 1000,
-                "driving_streaming_s": c.driving_streaming_ms / 1000,
-                "daily_cap": c.daily_cap,
-            },
+            "poll": Intervals::of(&c),
+            "poll_limits": poll_limits(),
             "polls_today": status.iter().map(|s| s.polls_today).sum::<u64>(),
+            "rate_limited_until_ms": status.iter().filter_map(|s| s.rate_limited_until_ms).max(),
             "last_error": last_error(&accounts),
             "clients_built": s.clients_built(),
             "invoices": super::invoices::tesla_block(&e, &s, settings.invoices),
@@ -437,7 +567,8 @@ async fn overview(State(app): State<AppState>, Admin(_): Admin) -> ApiResult<Jso
     .await
 }
 
-/// `PATCH /integrations/tesla` `{ version, poll }`: how often the server asks.
+/// `PATCH /integrations/tesla` `{ version, poll: { driving_ms?, charging_ms?, idle_ms?, list_ms? } }`:
+/// how often the server asks (each read never faster than its floor), and `invoices`.
 async fn change_settings(
     State(app): State<AppState>,
     Admin(v): Admin,
@@ -447,9 +578,13 @@ async fn change_settings(
     body.only(&["version", "poll", "invoices", "confirm_password", "code"])?;
     let version = body.version()?;
     let invoices = body.bool("invoices")?;
-    let pace = match body.str("poll")? {
-        None => None,
-        Some(p) => Some(Pace::parse(p).ok_or_else(|| ApiError::invalid("poll", "Must be often, normal or gentle."))?),
+    let poll = match body.get("poll") {
+        None | Some(Value::Null) => None,
+        Some(p) => {
+            // checked before the password is asked again (a wrong value changes nothing either way)
+            intervals_of(p, Intervals::DEFAULT)?;
+            Some(p.clone())
+        }
     };
     reconfirm(&app, &v, &body, &headers).await?;
     let s = svc(&app)?;
@@ -462,8 +597,12 @@ async fn change_settings(
                 return Err(ApiError::stale_version(old.version));
             }
             let mut new = old.clone();
-            if let Some(p) = pace {
-                new.poll = p;
+            if let Some(p) = &poll {
+                let i = intervals_of(p, old.intervals())?;
+                if i != old.intervals() {
+                    new.intervals = Some(i);
+                    new.poll = None;
+                }
             }
             if let Some(i) = invoices {
                 new.invoices = i;
@@ -485,8 +624,8 @@ async fn change_settings(
         };
         v.audit(&app, "tesla-invoices-changed", Some(&target("settings", None, "tesla-invoices")), summary).await?;
     }
-    if new.poll != old.poll {
-        let summary = format!("Set how often the Tesla API is asked to {}.", new.poll.word());
+    if new.intervals() != old.intervals() {
+        let summary = format!("Set how often the Tesla API is asked: {}.", intervals_words(&new.intervals()));
         v.audit(&app, "tesla-poll-changed", Some(&target("settings", None, "tesla")), &summary).await?;
     }
     if new == old {
@@ -511,6 +650,7 @@ async fn status(State(app): State<AppState>, Admin(_): Admin, q: Params) -> ApiR
                 "next_poll_ms": c.next_poll_ms,
                 "last_data_ms": c.last_data_ms,
                 "polls_today": a.polls_today,
+                "rate_limited_until_ms": a.rate_limited_until_ms,
                 "streaming": c.streaming,
                 "last_error": c.last_error.as_ref().map(|e| json!({ "code": e.code, "message": e.message, "at_ms": e.at_ms })),
             }));
@@ -823,4 +963,42 @@ pub(crate) fn invoices_now(app: &AppState) -> Option<Value> {
     let e = app.service::<Engine>().ok()?;
     let settings = load_settings(&e);
     Some(super::invoices::tesla_block(&e, &s, settings.invoices))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_rate_limit_notice_says_the_next_try() {
+        let a = Account {
+            id: "ta1".into(),
+            label: "Family".into(),
+            region: Region::Global,
+            redirect: tesla::Redirect::App,
+            added_ms: 0,
+            version: 1,
+            paused: false,
+            location: tesla::Location::default(),
+            state: AccountState::Ok,
+            last_ok_ms: None,
+            last_error: None,
+            cars: Vec::new(),
+        };
+        // 2027-01-15 14:05:30 UTC
+        let until = 1_800_021_930_000;
+        let n = rate_notice(&a, until, Some(5));
+        assert_eq!(n.code, "tesla_rate_limited");
+        assert_eq!(n.level, "warning");
+        assert!(
+            n.message.starts_with("Tesla is limiting requests for the Tesla account \"Family\", next try at "),
+            "{}",
+            n.message
+        );
+        assert!(n.message.contains(&utc_minute(until)), "{}", n.message);
+        assert_eq!(utc_minute(0), "1970-01-01 00:00 UTC");
+        assert_eq!(utc_minute(90_061_000), "1970-01-02 01:01 UTC");
+        assert_eq!(n.detail, Some(json!({ "account": "ta1", "until_ms": until })));
+        assert_eq!(n.since_ms, Some(5));
+    }
 }

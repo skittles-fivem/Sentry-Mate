@@ -341,8 +341,14 @@ Either way the server checks it with Tesla before it keeps anything. Then:
 4. Match each car of the account: to a car Sentry Mate already has (the one
    with the same VIN prefix is suggested), to a new car, or leave it out. A
    car is read only once it is matched.
-5. Pick how often it asks: `normal` (the default), `often` or `gentle`. A car
-   that is asleep is never woken; only the list of cars is read then.
+5. Pick how often it asks (Settings → Integrations → Tesla account, Change):
+   driving every 2.5 s, charging every 5 s, awake and idle every 60 s, and
+   asleep the list of cars every 30 s are the defaults and the fastest; each
+   can be made slower. A car that is asleep is never woken; only the list of
+   cars is read then. There is no daily cap on this side: Tesla does the
+   limiting. When Tesla answers 429 the server waits as long as Tesla asks,
+   and the Tesla account section, Data health and the notices say "Tesla is
+   limiting requests" with the time of the next try.
 
 4. Pick how often TeslaFi is read: `normal` (the default: driving or
    charging every minute, awake every 3 min, asleep every 10 min), `often`

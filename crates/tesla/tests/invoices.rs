@@ -288,21 +288,14 @@ async fn a_restart_goes_on_where_the_backfill_was() {
 }
 
 #[tokio::test]
-async fn invoices_keep_to_their_daily_cap_and_leave_the_cap_to_the_cars() {
-    let c = tesla::Cadence { invoice_daily_cap: 5, ..on() };
-    let mut r = rig(120, c);
+async fn invoices_have_no_daily_cap_of_their_own() {
+    // 120 sessions: every page and every PDF on the first day, one request at a time
+    let mut r = rig(120, on());
     r.run(DAY - (T0 % DAY) - 1).await;
+    assert_eq!(r.sink.sessions.lock().unwrap().len(), 120);
+    assert_eq!(r.sink.pdfs.lock().unwrap().len(), 120);
     let asked = r.history().len() + r.tesla.0.lock().unwrap().pdf_calls.len();
-    assert_eq!(asked, 5);
-    // the next day, five more
-    r.run(DAY).await;
-    let asked = r.history().len() + r.tesla.0.lock().unwrap().pdf_calls.len();
-    assert_eq!(asked, 10);
-    // a daily cap nearly spent leaves nothing to the invoices
-    let c = tesla::Cadence { daily_cap: 600, invoice_reserve: 600, ..on() };
-    let mut r = rig(10, c);
-    r.run(DAY).await;
-    assert!(r.history().is_empty());
+    assert!(asked > 120, "{asked}");
 }
 
 #[tokio::test]

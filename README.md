@@ -6,6 +6,12 @@ nothing ever wakes the car. One Rust program in one small Docker image: no datab
 Optional extra inputs: a **Tesla account** (the Owner API, off until you add one) and **imports** from TeslaMate, TeslaFi or
 Sentry Six Manager. Every drive, charge and value says where it came from.
 
+The Tesla account is read without ever waking a car: while it drives every 2.5 s (with Tesla's live stream beside
+it), while it charges every 5 s, awake and idle every 60 s (then left alone so it can fall asleep), and asleep only
+the list of cars every 30 s. An admin can make each slower, never faster. Sentry Mate sets no cap of its own: Tesla
+does the limiting, and when it answers 429 the server waits as long as Tesla asks and says so (a notice with the
+next try, and an audit entry).
+
 **Status: early.** [Progress](docs/status.md) · [To do](docs/todo.md)
 
 ## Install
