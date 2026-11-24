@@ -45,6 +45,8 @@ class Store:
         self.lock = threading.RLock()
         now = cfg.now_ms
         self.accounts = {}
+        # the two-step rule, server-wide (not per account): everyone, or from outside the home network
+        self.two_step_policy = {"everyone": False, "outside": False}
         self.sessions = {}  # token -> session
         self.ended = set()  # tokens this server ended (they stay signed out)
         self.session_rows = {}  # account id -> [made-up older sessions]
@@ -131,7 +133,7 @@ class Store:
 
     def _seed_accounts(self, now):
         mk = lambda i, name, role, cars, two: {  # noqa: E731
-            "id": i, "name": name, "role": role, "cars": cars, "two_step_required": two, "two_step": two,
+            "id": i, "name": name, "role": role, "cars": cars, "two_step": two,
             "password": DEV_PASSWORD, "created_ms": now - 400 * DAY + int(i[1:]) * DAY, "version": 1,
         }
         for a in (mk("a1", "admin", "admin", "all", False), mk("a2", "watch", "watch", ["c1"], False),

@@ -87,7 +87,7 @@ export function askPassword(ctx, { title, intro, submit, danger = false, extra =
     hint: `The password you sign in with as ${me.name || 'this account'}.`, attrs: { autocomplete: 'current-password' } });
   const two = field({ label: 'Code from your authenticator app', name: 'two_step', hint: 'Six digits. Codes change every 30 seconds.',
     attrs: { autocomplete: 'one-time-code', inputmode: 'numeric', maxlength: '8' } });
-  two.el.hidden = !me.two_step_required;
+  two.el.hidden = !(me.two_step || me.two_step_required);
   let result = null;
   const f = form({
     fields: [...extra, pass, two], submit,
