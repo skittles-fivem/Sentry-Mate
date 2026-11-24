@@ -977,7 +977,7 @@ def _first_admin(req, name, password, end_claim=True):
     st = req.store
     _password_rules(req, name, password)
     with st.lock:
-        a = {"id": "a1", "name": name.strip(), "role": "admin", "cars": "all", "two_step_required": False,
+        a = {"id": "a1", "name": name.strip(), "role": "admin", "cars": "all",
              "two_step": False, "password": password, "created_ms": req.now, "version": 1}
         st.accounts[a["id"]] = a
         st.needs_setup = False
@@ -993,7 +993,7 @@ def _first_admin(req, name, password, end_claim=True):
     _signed_in(req, a)
     with st.lock:
         st.recovery_key = make_recovery_key()
-    return {"status": "done", "me": me_view(a), "recovery_key": st.recovery_key}
+    return {"status": "done", "me": me_view(a, st), "recovery_key": st.recovery_key}
 
 
 def post_fresh(req):

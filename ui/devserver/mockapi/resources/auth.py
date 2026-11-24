@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 import secrets
 import threading
 import time
+from urllib.parse import quote
 
 from ..conventions import page
 from ..errors import ApiError, bad_input, conflict, invalid, not_found, throttled
@@ -23,17 +25,25 @@ PENDING_S = 300
 SESSION_DAYS, IDLE_DAYS, DAY_MS = 30, 7, 86_400_000
 
 
-def account_view(a):
+def _everyone(store):
+    return bool(store.two_step_policy["everyone"])
+
+
+def account_view(a, store):
+    # two_step: this account has two-step sign-in on; two_step_required: the server-wide rule `everyone` (the same
+    # for every account: the real server has no per-account rule)
     return {"id": a["id"], "name": a["name"], "role": a["role"], "cars": a["cars"], "two_step": bool(a.get("two_step")),
-            "two_step_required": a["two_step_required"], "created_ms": a["created_ms"], "version": a["version"]}
+            "two_step_required": _everyone(store), "created_ms": a["created_ms"], "version": a["version"]}
 
 
-def me_view(a):
-    # two_step: the account has two-step sign-in on; two_step_setup_only: the rule asks it and the account has none
-    # yet, so the real server lets this session do nothing but set it up
+def me_view(a, store):
+    # two_step: the account has two-step sign-in on; two_step_required: the rule applies to this browser now (the dev
+    # server is always "at home", so only `everyone` counts); two_step_setup_only: the rule asks it and the account
+    # has none yet, so the real server lets this session do nothing but set it up
     two = bool(a.get("two_step"))
+    need = _everyone(store)
     return {"id": a["id"], "name": a["name"], "role": a["role"], "cars": a["cars"], "two_step": two,
-            "two_step_required": a["two_step_required"], "two_step_setup_only": bool(a["two_step_required"]) and not two}
+            "two_step_required": need, "two_step_setup_only": need and not two}
 
 
 # ------------------------------------------------------------------ throttle
@@ -119,7 +129,7 @@ def post_session(req):
             st.pending[token] = {"account": a["id"], "expires": time.monotonic() + PENDING_S, "tries": 0}
         return {"status": "two_step_pending", "pending": token}
     _signed_in(req, a)
-    return {"status": "done", "me": me_view(a)}
+    return {"status": "done", "me": me_view(a, st)}
 
 
 def post_two_step(req):
@@ -144,7 +154,7 @@ def post_two_step(req):
     if a is None:
         raise ApiError(401, "sign_in_expired", "This sign-in took too long. Start again.")
     _signed_in(req, a)
-    return {"status": "done", "me": me_view(a)}
+    return {"status": "done", "me": me_view(a, st)}
 
 
 def delete_session(req):
@@ -158,7 +168,7 @@ def delete_session(req):
 
 
 def get_me(req):
-    return me_view(req.account)
+    return me_view(req.account, req.store)
 
 
 # ------------------------------------------------------------------ own sessions
@@ -416,6 +426,16 @@ def _cars_value(req, v, errs):
     return list(dict.fromkeys(v))
 
 
+def _no_per_account_two_step(body, errs):
+    """The real server refuses `two_step_required: true` on one account (422): the rule is server-wide."""
+    v = body.get("two_step_required")
+    if v is not None and not isinstance(v, bool):
+        raise bad_input({"two_step_required": "Must be true or false."})
+    if v is True:
+        errs["two_step_required"] = ("Two-step sign-in is required for every account or from outside the home network "
+                                     "(Accounts, two-step rule), not for one account.")
+
+
 def _reconfirm(req, body):
     """The acting admin's own password again (`confirm_password`, or the X-Sentry-Mate-Password header), and a code
     when that admin has two-step sign-in on: as the real server asks before every account change."""
@@ -424,7 +444,7 @@ def _reconfirm(req, body):
 
 
 def list_accounts(req):
-    rows = [account_view(a) for a in req.store.accounts.values()]
+    rows = [account_view(a, req.store) for a in req.store.accounts.values()]
     items, nxt = page(req, rows, key=lambda a: (a["name"].lower(), a["id"]))
     return {"items": items, "next": nxt, "total": len(rows)}
 
@@ -443,18 +463,16 @@ def create_account(req):
     if body["role"] not in ("admin", "watch"):
         errs["role"] = "Must be admin or watch."
     cars = _cars_value(req, body.get("cars", "all"), errs)
-    two = body.get("two_step_required", False)
-    if not isinstance(two, bool):
-        raise bad_input({"two_step_required": "Must be true or false."})
+    _no_per_account_two_step(body, errs)
     if errs:
         raise invalid(errs)
     a = {"id": st.new_id("a"), "name": body["name"].strip(), "role": body["role"], "cars": cars,
-         "two_step_required": two, "two_step": False, "password": body["password"], "created_ms": req.now,
+         "two_step": False, "password": body["password"], "created_ms": req.now,
          "version": 1}
     with st.lock:
         st.accounts[a["id"]] = a
     st.record(req.account, "account-created", f"account:{a['id']}", f"Made the account {a['name']} ({a['role']}).")
-    out = account_view(a)
+    out = account_view(a, st)
     out["_created"] = True
     return out
 
@@ -467,7 +485,7 @@ def _account(req):
 
 
 def get_account(req):
-    return account_view(_account(req))
+    return account_view(_account(req), req.store)
 
 
 def _admins(st):
@@ -494,8 +512,7 @@ def patch_account(req):
     if "role" in body and body["role"] not in ("admin", "watch"):
         errs["role"] = "Must be admin or watch."
     cars = _cars_value(req, body["cars"], errs) if "cars" in body else None
-    if "two_step_required" in body and not isinstance(body["two_step_required"], bool):
-        raise bad_input({"two_step_required": "Must be true or false."})
+    _no_per_account_two_step(body, errs)
     if errs:
         raise invalid(errs)
     # asked for only when something really changes (a page may send the unchanged role and cars along)
@@ -511,12 +528,10 @@ def patch_account(req):
             a["role"] = body["role"]
         if cars is not None:
             a["cars"] = cars
-        if "two_step_required" in body:
-            a["two_step_required"] = body["two_step_required"]
         if "password" in body:
             a["password"] = body["password"]
-        if set(body) == {"version"}:
-            return account_view(a)
+        if not (set(body) - {"version", "two_step_required"}):
+            return account_view(a, st)
         a["version"] += 1
     target = f"account:{a['id']}"
     if "role" in body:
@@ -526,14 +541,11 @@ def patch_account(req):
     if cars is not None:
         seen = "every car" if cars == "all" else ", ".join(st.car_meta(c)["name"] for c in cars) or "no car"
         st.record(req.account, "cars-changed", target, f"{a['name']} now sees {seen}.")
-    other = [k for k in sorted(body) if k in ("name", "two_step_required")]
-    if other:
-        words = {"name": "name", "two_step_required": "two-step sign-in needed"}
-        st.record(req.account, "account-changed", target,
-                  f"Changed the account {a['name']}: " + ", ".join(words[k] for k in other) + ".")
+    if "name" in body:
+        st.record(req.account, "account-changed", target, f"Changed the account {a['name']}: name.")
     if cars is not None and cars != old_cars:
         req.app.events.account_cars_changed(a, old_cars, cars, st.get_prefs(a))
-    return account_view(a)
+    return account_view(a, st)
 
 
 def delete_account(req):
@@ -554,6 +566,136 @@ def delete_account(req):
                 req.app.events.end_session(tok)
     st.record(req.account, "account-removed", f"account:{a['id']}", f"Removed the account {a['name']}.")
     return {"deleted": True, "id": a["id"]}
+
+
+# ------------------------------------------------------------------ two-step sign-in (one's own) and the rule
+
+SECRET_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+
+
+def _own_confirm(req, body, need_code):
+    """The account's own password (403 wrong_password) and a code (401 wrong_code): the dev server takes any six
+    digits, or a made-up recovery code (like `abcde-12345`)."""
+    from ..store import DEV_PASSWORD
+    for k in body:
+        if k not in ("password", "code"):
+            raise bad_input({k: "Unknown field."})
+    if not isinstance(body.get("password"), str):
+        raise bad_input({"password": "Needed: text."})
+    if not secrets.compare_digest(body["password"].encode(), req.account.get("password", DEV_PASSWORD).encode()):
+        raise ApiError(403, "wrong_password", "That is not your password.", fields={"password": "Not your password."})
+    code = body.get("code")
+    if code is not None and not isinstance(code, str):
+        raise bad_input({"code": "Must be text."})
+    if need_code:
+        c = (code or "").replace(" ", "").strip()
+        if not (re.fullmatch(r"\d{6}", c) or re.fullmatch(r"[a-z0-9]{5}-[a-z0-9]{5}", c)):
+            raise ApiError(401, "wrong_code", "That code is not right.", fields={"code": "The 6-digit code."})
+
+
+def _recovery_codes():
+    chars = "abcdefghjkmnpqrstuvwxyz23456789"
+    return ["".join(secrets.choice(chars) for _ in range(5)) + "-" + "".join(secrets.choice(chars) for _ in range(5))
+            for _ in range(10)]
+
+
+def get_two_step(req):
+    a, st = req.account, req.store
+    on = bool(a.get("two_step"))
+    p = st.two_step_policy
+    return {"enabled": on, "recovery_codes_left": a.get("recovery_codes_left", 10) if on else None,
+            "required": {"everyone": p["everyone"], "outside": p["outside"]}}
+
+
+def post_two_step_start(req):
+    a, st = req.account, req.store
+    req.json(required=False)
+    if a.get("two_step"):
+        raise conflict("two_step_on", "Two-step sign-in is on already.")
+    secret = "".join(secrets.choice(SECRET_ALPHABET) for _ in range(32))
+    with st.lock:
+        a["two_step_pending"] = secret
+    uri = f"otpauth://totp/Sentry%20Mate:{quote(a['name'])}?secret={secret}&issuer=Sentry%20Mate"
+    return {"secret": secret, "uri": uri, "_created": True}
+
+
+def post_two_step_confirm(req):
+    a, st = req.account, req.store
+    body = req.json()
+    if a.get("two_step"):
+        raise conflict("two_step_on", "Two-step sign-in is on already.")
+    if "code" not in body:
+        raise bad_input({"code": "Required: the 6-digit code."})
+    if not a.get("two_step_pending"):
+        raise conflict("two_step_first", "Start setting two-step sign-in up first.")
+    _own_confirm(req, body, True)
+    codes = _recovery_codes()
+    with st.lock:
+        a.pop("two_step_pending", None)
+        a["two_step"] = True
+        a["recovery_codes_left"] = len(codes)
+        a["version"] += 1
+    st.record(a, "two-step-on", f"account:{a['id']}", f"Turned two-step sign-in on for {a['name']}.")
+    return {"enabled": True, "recovery_codes": codes}
+
+
+def delete_two_step(req):
+    a, st = req.account, req.store
+    body = req.json()
+    if not a.get("two_step"):
+        raise conflict("two_step_off", "Two-step sign-in is off already.")
+    _own_confirm(req, body, True)
+    if _everyone(st):
+        raise conflict("two_step_kept", "Two-step sign-in is required for every account: it cannot be turned off.")
+    with st.lock:
+        a["two_step"] = False
+        a.pop("recovery_codes_left", None)
+        a["version"] += 1
+    st.record(a, "two-step-off", f"account:{a['id']}", f"Turned two-step sign-in off for {a['name']}.")
+    return {"enabled": False}
+
+
+def post_recovery_codes(req):
+    a, st = req.account, req.store
+    body = req.json()
+    if not a.get("two_step"):
+        raise conflict("two_step_off", "Two-step sign-in is off: turn it on first.")
+    _own_confirm(req, body, True)
+    codes = _recovery_codes()
+    with st.lock:
+        a["recovery_codes_left"] = len(codes)
+    st.record(a, "recovery-codes-new", f"account:{a['id']}", f"Made new recovery codes for {a['name']}.")
+    return {"recovery_codes": codes}
+
+
+def get_policy(req):
+    p = req.store.two_step_policy
+    return {"everyone": p["everyone"], "outside": p["outside"]}
+
+
+def put_policy(req):
+    st = req.store
+    body = req.json()
+    for k in body:
+        if k not in ("everyone", "outside", "confirm_password", "code"):
+            raise bad_input({k: "Unknown field."})
+    new = dict(st.two_step_policy)
+    for k in ("everyone", "outside"):
+        if k in body:
+            if not isinstance(body[k], bool):
+                raise bad_input({k: "Must be true or false."})
+            new[k] = body[k]
+    _reconfirm(req, body)
+    with st.lock:
+        st.two_step_policy.update(new)
+    if new["everyone"]:
+        words = "Two-step sign-in is now needed for every account."
+    elif new["outside"]:
+        words = "Two-step sign-in is now needed from outside the home network."
+    else:
+        words = "Two-step sign-in is no longer required."
+    st.record(req.account, "two-step-policy", "settings:server", words)
+    return {"everyone": new["everyone"], "outside": new["outside"]}
 
 
 def get_audit(req):
@@ -586,6 +728,10 @@ def register(router):
     router.add("/api/v1/me/sessions", GET=get_sessions, DELETE=delete_sessions)
     router.add("/api/v1/me/sessions/{session}", GET=get_one_session, DELETE=delete_one_session)
     router.add("/api/v1/me/password", PUT=put_password)
+    router.add("/api/v1/me/two-step", GET=get_two_step, POST=post_two_step_start, DELETE=delete_two_step)
+    router.add("/api/v1/me/two-step/confirm", POST=post_two_step_confirm)
+    router.add("/api/v1/me/two-step/recovery-codes", POST=post_recovery_codes)
+    router.add("/api/v1/two-step-policy", GET=get_policy, PUT=put_policy, admin=("GET", "PUT"))
     router.add("/api/v1/me/preferences", GET=get_prefs, PATCH=patch_prefs)
     router.add("/api/v1/accounts", GET=list_accounts, POST=create_account, admin=("GET", "POST"))
     router.add("/api/v1/accounts/{account}", GET=get_account, PATCH=patch_account, DELETE=delete_account,

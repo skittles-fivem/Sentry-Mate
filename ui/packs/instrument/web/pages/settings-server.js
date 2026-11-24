@@ -31,7 +31,7 @@ import { storageGroups, shortName, shareText, groupWord } from '../shared/storag
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 import { serverUpdates, RELEASE_OFF_TEXT } from '../shared/release.js';
 import { cover } from '../shared/dom.js';
-import { movePanel, showRecoveryKey, newRecoveryKey, markKeySaved, askPassword } from './settings-server-move.js';
+import { movePanel, showRecoveryKey, newRecoveryKey, markKeySaved, askPassword, codeGroups, copyButton } from './settings-server-move.js';
 import { fullRebuild } from './full-rebuild.js';
 import { follow, jobOf } from '../shared/live.js';
 import { morphChildren } from '../core/morph.js';
@@ -90,7 +90,7 @@ export async function mount(ctx) {
   const admin = ctx.admin;
   const me = ctx.me || {};
   const query = ctx.query || {};
-  const S = { settings: null, network: null, notices: [], accounts: [], cars: [], sessions: [], trips: [], storage: null, storageErr: null, about: null, release: null };
+  const S = { twoStep: null, policy: null, settings: null, network: null, notices: [], accounts: [], cars: [], sessions: [], trips: [], storage: null, storageErr: null, about: null, release: null };
 
   async function loadAccounts() { S.accounts = admin ? await ctx.api.list('accounts', { limit: 500 }).all({ max: 5000 }) : []; }
   async function loadSessions() { S.sessions = await ctx.api.list('me/sessions', { limit: 500 }).all({ max: 5000 }); }
@@ -106,6 +106,8 @@ export async function mount(ctx) {
       admin ? ctx.api.list('trips', { limit: 500 }).all({ max: 5000 }).then((t) => { S.trips = t; }).catch(() => {}) : null,
       ctx.api.get('about', null, { maxAgeMs: 600000 }).then((a) => { S.about = a; }).catch(() => {}),
       ctx.api.get('release').then((r) => { S.release = r; }).catch(() => {}),
+      ctx.api.get('me/two-step').then((t) => { S.twoStep = t; }).catch(() => {}),
+      admin ? ctx.api.get('two-step-policy').then((p) => { S.policy = p; }).catch(() => {}) : null,
     ]);
     Object.assign(S, { settings, network, notices: notices?.items || [], cars });
   } catch (e) { if (!ctx.alive()) return; ctx.fail(e); return; }
@@ -353,13 +355,13 @@ export async function mount(ctx) {
       metric('Accounts', S.accounts.length, 'count', { explain: 'Everyone who can sign in.', size: 'sm' }),
       metric('Admins', nAdmins, 'count', { explain: 'At least one is always kept.', size: 'sm' }),
       metric('Watch-only', S.accounts.length - nAdmins, 'count', { explain: 'See their cars, change nothing shared.', size: 'sm' }),
-      metric('Two-step required', S.accounts.filter((a) => a.two_step_required).length, 'count', { explain: 'A code after the password.', size: 'sm' }),
+      metric('Two-step on', S.accounts.filter((a) => a.two_step).length, 'count', { explain: 'Accounts that give a code after the password.', size: 'sm' }),
     ], 'ss-figs') : null,
     h('ul', { class: 'ss-rules' },
       h('li', null, h('b', null, 'Nothing without signing in.'), ' Every page and every API call needs a session; there is no open view and no open API.'),
       h('li', null, h('b', null, 'Two roles.'), ` Admin: ${ROLE_TEXT.admin} Watch-only: ${ROLE_TEXT.watch}`),
       h('li', null, h('b', null, 'A car list per account.'), ' A car that is not on an account\'s list looks exactly like a car that does not exist: it is in no list, total, map or export.'),
-      h('li', null, h('b', null, 'Two-step sign-in.'), ' An account can be made to give a six-digit code from an authenticator app after its password.'),
+      h('li', null, h('b', null, 'Two-step sign-in.'), ' Each person turns it on for their own account: after the password, a six-digit code from an authenticator app. An admin can require it for every account, or from outside the home network.'),
       h('li', null, h('b', null, 'Guessing is slowed down.'), ' Five wrong passwords for one name within a minute, or 30 from one address, and sign-in waits a minute.'),
       h('li', null, h('b', null, 'Sessions you can see.'), ' A session lasts 30 days in its browser. Below you can end one, or every other one.'),
       h('li', null, h('b', null, 'Cars never sign in.'), ' A CAN Bridge uploads with its car\'s own upload token on the upload port, made under ', h('a', { class: 'link', href: state.buildUrl('settings-cars') }, 'Settings: Cars'), '.'),
@@ -375,7 +377,7 @@ export async function mount(ctx) {
   const focusAccount = query.account || null;
   const accountsTable = admin ? dataTable(ctx, {
     title: 'Accounts', icon: 'user', rows: S.accounts, label: 'Accounts that can sign in', csvName: 'accounts',
-    note: 'Everyone who can sign in, with what they may see. Edit an account to change its role, its cars, its password or two-step sign-in.',
+    note: 'Everyone who can sign in, with what they may see. Edit an account to change its role, its cars or its password. Two-step sign-in is turned on by each person for their own account (below, under Two-step sign-in); an admin can require it for everyone or from outside the home network.',
     side: h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: () => editAccount(null) }, icon('plus', 'ico--sm'), 'Add account'),
     sort: { key: 'name', dir: 'asc' },
     columns: [
@@ -383,7 +385,7 @@ export async function mount(ctx) {
         a.id === me.id ? tag('you', 'live') : null, a.id === focusAccount ? tag('from the audit log', 'warm') : null) },
       { key: 'role', label: 'Role', sort: true, render: (a) => pill(ROLE[a.role] || a.role, { tone: a.role === 'admin' ? 'warm' : 'plain' }), csv: (a) => ROLE[a.role] || a.role },
       { key: 'cars', label: 'Cars it sees', value: (a) => (a.cars === 'all' ? -1 : a.cars.length), sort: true, render: (a) => carsText(a.cars), csv: (a) => (a.cars === 'all' ? 'all' : a.cars.map((c) => carName.get(c) || c).join('; ')) },
-      { key: 'two_step_required', label: 'Two-step sign-in', sort: true, render: (a) => (a.two_step_required ? h('span', { class: 'ok' }, 'Required') : h('span', { class: 'faint' }, 'Password only')), csv: (a) => (a.two_step_required ? 'required' : 'no') },
+      { key: 'two_step', label: 'Two-step sign-in', sort: true, render: (a) => (a.two_step ? h('span', { class: 'ok' }, 'On') : h('span', { class: 'faint' }, 'Password only')), csv: (a) => (a.two_step ? 'on' : 'no') },
       { key: 'created_ms', label: `Made (${zone})`, sort: true, render: (a) => date(a.created_ms, tz), csv: timeColumn(`Made (${isoNote})`, 'created_ms', tz) },
       { key: 'act', label: 'Change', csv: false, render: (a) => h('div', { class: 'row ss-acts' },
         h('button', { class: 'btn btn--sm', type: 'button', onclick: () => editAccount(a) }, 'Edit'),
@@ -441,22 +443,20 @@ export async function mount(ctx) {
       attrs: { autocomplete: 'new-password' } });
     const role = field({ label: 'Role', name: 'role', type: 'select', value: a?.role || 'watch',
       options: [['watch', `Watch-only: ${ROLE_TEXT.watch}`], ['admin', `Admin: ${ROLE_TEXT.admin}`]] });
-    const two = field({ label: 'Require two-step sign-in', name: 'two_step_required', type: 'checkbox', value: !!a?.two_step_required,
-      hint: 'After the password, a six-digit code from an authenticator app. Recommended for every admin.' });
     // the server asks for the acting admin's own password again before every account change (and the code, with
     // two-step sign-in on): sent as confirm_password and code
     const own = field({ label: 'Your password', name: 'confirm_password', type: 'password', required: true,
       hint: `The password you sign in with as ${me.name || 'this account'}: an account change asks for it again.`, attrs: { autocomplete: 'current-password' } });
     const code = field({ label: 'Code from your authenticator app', name: 'code', hint: 'Six digits. Codes change every 30 seconds.',
       attrs: { autocomplete: 'one-time-code', inputmode: 'numeric', maxlength: '8' } });
-    code.el.hidden = !me.two_step_required;
+    code.el.hidden = !(me.two_step || me.two_step_required);
     const cars = carPicker(a ? a.cars : []);
     const carsField = { name: 'cars', path: 'cars', input: { checkValidity: () => true, getAttribute: () => null, focus() {} }, setError: cars.setError, value: cars.value, el: cars.el };
     const f = form({
-      fields: [name, password, role, carsField, two, own, code], submit: isNew ? 'Add account' : 'Save changes',
+      fields: [name, password, role, carsField, own, code], submit: isNew ? 'Add account' : 'Save changes',
       secondary: h('button', { class: 'btn btn--ghost', type: 'button', onclick: (e) => e.target.closest('dialog')?.close() }, 'Cancel'),
       async onSubmit(v) {
-        const body = { name: v.name.trim(), role: v.role, cars: v.cars, two_step_required: v.two_step_required };
+        const body = { name: v.name.trim(), role: v.role, cars: v.cars };
         if (v.password) {
           if (!(await passwordOk(body.name, v.password, password.input))) return;
           body.password = v.password;
@@ -512,6 +512,187 @@ export async function mount(ctx) {
     flash(`${a.name} was removed.`);
     await refreshAccounts();
   }
+
+
+  /* ---------------------------------------------------------------- two-step sign-in (everyone), and the rule (admin) */
+  // One's own two-step sign-in: GET /me/two-step, POST /me/two-step (the secret and its otpauth address),
+  // POST /me/two-step/confirm (password and the first code: the recovery codes, shown once), DELETE /me/two-step and
+  // POST /me/two-step/recovery-codes (password and a code). The rule (admin): GET and PUT /two-step-policy.
+  const tsBody = h('div', { class: 'ss-twostep' });
+  const cancelBtn = () => h('button', { class: 'btn btn--ghost', type: 'button', onclick: (e) => e.target.closest('dialog')?.close() }, 'Cancel');
+  const ownPassword = () => field({ label: 'Your password', name: 'password', type: 'password', required: true,
+    hint: `The password you sign in with as ${me.name || 'this account'}.`, attrs: { autocomplete: 'current-password' } });
+  const ownCode = (label) => field({ label, name: 'code', required: true, hint: 'Six digits from the app, which change every 30 seconds, or one of your recovery codes.',
+    attrs: { autocomplete: 'one-time-code', inputmode: 'numeric', maxlength: '12' } });
+  // a wrong password or code is said under its field; true when it was one of those
+  function ownWrong(e, password, code, v) {
+    if (e.code === 'wrong_password') { password.setError(v.password ? 'That is not your password. Type the one you sign in with.' : 'Type your password to go on.'); password.input.focus(); password.input.select(); return true; }
+    if (e.code === 'wrong_code') { code.setError(v.code ? 'That code is not right. Type the one your authenticator app shows now.' : 'Type the code from your authenticator app.'); code.input.focus(); return true; }
+    return false;
+  }
+  async function loadTwoStep() {
+    try { S.twoStep = await ctx.api.get('me/two-step'); } catch { /* the panel keeps what it had */ }
+    if (S.twoStep) me.two_step = !!S.twoStep.enabled;
+  }
+  function recoveryDialog(codes, title) {
+    return openDialog({
+      title, wide: true,
+      body: h('div', { class: 'ss-rdlg' },
+        h('p', null, 'Keep these recovery codes somewhere safe, away from your phone (a password manager, or on paper). Each one works once, in place of the app\'s code, if you lose your phone. They are shown only now.'),
+        h('div', { class: 'mv-codebox' },
+          h('p', { class: 'mv-codebox-head' }, 'Recovery codes'),
+          h('ul', { class: 'ss-rcodes', 'aria-label': 'Recovery codes' }, codes.map((c) => h('li', null, h('code', { class: 'mono ss-value' }, c)))),
+          h('div', { class: 'row mv-acts' }, copyButton(codes.join('\n'), 'Copy all codes', { primary: true })))),
+      actions: [{ label: 'I have kept them', value: true, kind: 'primary', focus: true }],
+    });
+  }
+  async function turnOnTwoStep() {
+    let setup;
+    try { setup = await ctx.api.post('me/two-step', {}); } catch (e) {
+      if (e.code === 'two_step_on') { await loadTwoStep(); paintTwoStep(); return; }
+      flash(`Could not start: ${errText(e)}`, { kind: 'error' }); return;
+    }
+    const password = ownPassword();
+    const code = ownCode('Code from your authenticator app');
+    let codes = null;
+    const f = form({
+      fields: [password, code], submit: 'Turn on two-step sign-in', secondary: cancelBtn(),
+      async onSubmit(v) {
+        try {
+          const out = await ctx.api.post('me/two-step/confirm', { password: v.password, code: v.code.replace(/\s+/g, '') });
+          codes = out.recovery_codes || [];
+        } catch (e) {
+          if (ownWrong(e, password, code, v)) return;
+          if (e.status === 409) { f.setMessage('This set-up ran out or was started again. Close this and press Turn on again.'); return; }
+          throw e;
+        }
+        f.el.closest('dialog')?.close();
+      },
+    });
+    // h() leaves out an href it does not know as safe (otpauth: is none of its schemes): set it by hand, for this scheme only
+    const appLink = h('a', { class: 'btn' }, 'Open in your authenticator app');
+    if (/^otpauth:\/\/totp\//.test(setup.uri)) appLink.setAttribute('href', setup.uri); else appLink.hidden = true;
+    const grouped = String(setup.secret).replace(/\s+/g, '').match(/.{1,4}/g)?.join('-') || setup.secret;
+    const done = openDialog({
+      title: 'Turn on two-step sign-in', wide: true,
+      body: h('div', { class: 'ss-tsdlg' },
+        h('ol', { class: 'ss-steps' },
+          h('li', null, 'In an authenticator app (any app that makes six-digit codes), add an account with this key:',
+            h('div', { class: 'mv-codebox' }, h('p', { class: 'mv-codebox-head' }, 'Key'), codeGroups(grouped, 'mv-code ss-secret'),
+              h('div', { class: 'row mv-acts' }, copyButton(setup.secret, 'Copy key'),
+                appLink, copyButton(setup.uri, 'Copy link')))),
+          h('li', null, 'Type your password and the six-digit code the app shows now.')),
+        f.el),
+      actions: [],
+    });
+    password.input.focus({ preventScroll: true });
+    await done;
+    if (!codes || !ctx.alive()) return;
+    me.two_step = true;
+    await loadTwoStep();
+    paintTwoStep();
+    if (admin) refreshAccounts();
+    flash('Two-step sign-in is on.');
+    await recoveryDialog(codes, 'Your recovery codes');
+  }
+  // the password and a code again, then run({ password, code }); the dialog stays open on a wrong one
+  function ownAgain({ title, intro, submit, danger = false, run }) {
+    const password = ownPassword();
+    const code = ownCode('Code from your authenticator app');
+    let result = null;
+    const f = form({
+      fields: [password, code], submit, secondary: cancelBtn(),
+      async onSubmit(v) {
+        try { result = await run({ password: v.password, code: v.code.replace(/\s+/g, '') }); } catch (e) {
+          if (ownWrong(e, password, code, v)) return;
+          if (e.code === 'two_step_kept') { f.setMessage('The rule asks every account for two-step sign-in, so it cannot be turned off. An admin can change the rule.'); return; }
+          throw e;
+        }
+        f.el.closest('dialog')?.close();
+      },
+    });
+    if (danger) f.el.querySelector('button[type="submit"]')?.classList.replace('btn--primary', 'btn--danger');
+    const done = openDialog({ title, body: [intro, f.el], actions: [] });
+    password.input.focus({ preventScroll: true });
+    return done.then(() => result);
+  }
+  async function newRecoveryCodes() {
+    const out = await ownAgain({
+      title: 'New recovery codes',
+      intro: h('p', null, 'The recovery codes you have now stop working. You get ten new ones, shown once.'),
+      submit: 'Make new codes', run: (cred) => ctx.api.post('me/two-step/recovery-codes', cred),
+    });
+    if (!out || !ctx.alive()) return;
+    await loadTwoStep();
+    paintTwoStep();
+    await recoveryDialog(out.recovery_codes || [], 'Your new recovery codes');
+  }
+  async function turnOffTwoStep() {
+    const out = await ownAgain({
+      title: 'Turn off two-step sign-in?',
+      intro: h('p', null, 'After this your password alone signs in to your account, and your recovery codes stop working.'),
+      submit: 'Turn off', danger: true, run: (cred) => ctx.api.send('DELETE', 'me/two-step', cred),
+    });
+    if (!out || !ctx.alive()) return;
+    me.two_step = false;
+    await loadTwoStep();
+    paintTwoStep();
+    if (admin) refreshAccounts();
+    flash('Two-step sign-in is off.');
+  }
+  async function saveRule(key, box) {
+    const want = box.checked;
+    // the switch is drawn again from what the server has when the dialog closes: back as it was if cancelled
+    const next = { everyone: !!S.policy?.everyone, outside: !!S.policy?.outside, [key]: want };
+    const risky = key === 'everyone' && want && !me.two_step;
+    const out = await askPassword(ctx, {
+      title: want ? 'Require two-step sign-in?' : 'Stop requiring two-step sign-in?',
+      intro: h('div', null,
+        h('p', null, key === 'everyone'
+          ? (want ? 'Every account will need a code from an authenticator app after its password. An account without it can only set it up until it has.' : 'Accounts that have two-step sign-in on keep it; the others can sign in with a password alone again.')
+          : (want ? 'Signing in from outside the home network will need a code from an authenticator app after the password. An account without two-step sign-in cannot sign in from outside.' : 'Signing in from outside the home network needs no code any more, unless the rule for every account is on.')),
+        risky ? h('p', { class: 'form-error ss-warn' }, icon('warn'), ' Your own account has no two-step sign-in yet: after this you must set it up next, before you can use anything else.') : null),
+      submit: 'Save the rule',
+      run: async (cred) => {
+        try {
+          return await ctx.api.put('two-step-policy', { ...next, confirm_password: cred.password, ...(cred.two_step ? { code: cred.two_step } : {}) });
+        } catch (e) {
+          if (e.code === 'wrong_code') e.code = 'wrong_two_step';
+          throw e;
+        }
+      },
+    });
+    if (out && ctx.alive()) {
+      S.policy = { everyone: !!out.everyone, outside: !!out.outside };
+      if (S.twoStep) S.twoStep.required = S.policy;
+      flash('Saved the two-step rule.');
+    }
+    if (ctx.alive()) paintTwoStep();
+  }
+  function paintTwoStep() {
+    const t = S.twoStep;
+    const on = !!t?.enabled;
+    const left = t?.recovery_codes_left;
+    const own = !t
+      ? h('p', { class: 'note' }, 'This page could not read your two-step sign-in. Reload it to try again.')
+      : setting('Your two-step sign-in',
+        on
+          ? [pill('On', { tone: 'warm' }), ` After your password, a code from your authenticator app. ${left == null ? '' : `${format(left, 'count')} recovery ${left === 1 ? 'code' : 'codes'} left.`}`]
+          : [pill('Off', { tone: 'plain' }), ' Your password alone signs in. Turn it on to add a six-digit code from an authenticator app.'],
+        on
+          ? h('div', { class: 'row ss-acts' },
+            h('button', { class: 'btn btn--sm', type: 'button', onclick: () => newRecoveryCodes() }, 'New recovery codes'),
+            h('button', { class: 'btn btn--sm btn--ghost', type: 'button', onclick: () => turnOffTwoStep() }, 'Turn off'))
+          : h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: () => turnOnTwoStep() }, 'Turn on'));
+    const rule = admin && S.policy ? setting('Where it is required', 'The rule for every account, not for one: set here by an admin.',
+      h('div', { class: 'ss-rule' },
+        h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'rule-everyone', checked: !!S.policy.everyone, onchange: (e) => saveRule('everyone', e.target) }), h('span', null, 'Require it for every account')),
+        h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'rule-outside', checked: !!S.policy.outside, onchange: (e) => saveRule('outside', e.target) }), h('span', null, 'Require it from outside the home network')),
+        !me.two_step ? h('p', { class: 'note ss-rule-note' }, icon('info', 'ico--sm'), ' Your own account has no two-step sign-in yet: if you turn on "Require it for every account", you must set it up next.') : null)) : null;
+    replace(tsBody, own, rule);
+  }
+  paintTwoStep();
+  const twoPanel = panel({ title: 'Two-step sign-in', icon: 'lock', pad: true }, tsBody);
 
   /* ---------------------------------------------------------------- your sessions */
   const focusSession = query.session || null;
@@ -942,6 +1123,7 @@ export async function mount(ctx) {
       // the move and Storage side by side (one above the other on a phone or a narrow window)
       move || storagePanel ? h('div', { class: 'ss-pair' }, move ? move.el : null, storagePanel) : null,
       accountsTable ? [goneNote, accountsTable.el] : null,
+      twoPanel,
       sessionGone, sessionsTable.el,
       auditTable ? auditTable.el : null));
   if (auditTable) await auditTable.ready;

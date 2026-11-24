@@ -374,3 +374,12 @@
 .ss-names-dlg > p { margin: 0; }
 /* the buttons beside the full rebuild (start now, tonight, pause) wrap on a narrow screen */
 .fr-acts { flex-wrap: wrap; }
+
+/* two-step sign-in: the rule's switches, the set-up steps and the recovery codes */
+.ss-rule { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); align-items: flex-start; min-width: 0; }
+.ss-rule-note { margin: 0; max-width: round(24rem, var(--e)); }
+.ss-steps { margin: 0 0 round(1rem, var(--e)); padding-left: round(1.25rem, var(--e)); display: flex; flex-direction: column; gap: round(0.75rem, var(--e)); color: var(--text-2); }
+.ss-steps .mv-codebox { margin-top: round(0.5rem, var(--e)); }
+.ss-secret { font-size: 1.25rem; }
+.ss-rcodes { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(round(9.5rem, var(--e)), 1fr)); gap: round(0.5rem, var(--e)) round(1rem, var(--e)); }
+.ss-rdlg > p { margin: 0 0 round(0.875rem, var(--e)); }
