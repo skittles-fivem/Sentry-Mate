@@ -87,3 +87,28 @@ fn the_script_keeps_to_its_rules() {
     assert!(!remember.contains("caches") && remember.contains("memory.set("), "{remember}");
     assert!(!js.contains("eval(") && !js.contains("importScripts("), "nothing loaded or run from strings");
 }
+
+/// A browser asks for a service worker's script with `Service-Worker: script`. Only `/sw.js` answers it: a pack's
+/// own script registered as a worker would take over the whole site and outlive the pack (and `/original`).
+#[tokio::test]
+async fn no_pack_file_is_served_as_a_service_worker() {
+    let s = TestServer::start(&[]).await;
+    let mut c = s.client();
+    let index = c.get("/").await.text();
+    let version = index.split("/_v/").nth(1).unwrap().split('/').next().unwrap().to_string();
+    let module = index
+        .split(&format!("/_v/{version}/"))
+        .skip(1)
+        .map(|s| s.split('"').next().unwrap())
+        .find(|f| f.ends_with(".js"))
+        .unwrap()
+        .to_string();
+    for path in [format!("/_v/{version}/{module}"), format!("/{module}"), "/keeper.js".to_string(), "/".to_string()] {
+        let r = c.request("GET", &path, None, &[("Service-Worker", "script")]).await;
+        assert_eq!(r.status, 404, "{path}");
+    }
+    let plain = c.get(&format!("/_v/{version}/{module}")).await;
+    assert_eq!(plain.status, 200, "a pack's module loads as before");
+    let sw = c.request("GET", "/sw.js", None, &[("Service-Worker", "script")]).await;
+    assert_eq!((sw.status, sw.text()), (200, web::sw::SCRIPT.to_string()));
+}
