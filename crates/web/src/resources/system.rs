@@ -302,7 +302,8 @@ async fn health(State(app): State<AppState>, CarParam(car): CarParam, p: Params)
 
 /// `POST /cars/{car}/rebuild` `{ from_ms?, to_ms? }`: drives, charges, states and visits made again from the stored
 /// logs (the whole history when no period is given; at most three years at a time when one is). Waits for the job
-/// (at most [`REBUILD_WAIT`]; beyond, it answers `status: "running"` and the job carries on).
+/// (at most [`REBUILD_WAIT`]; beyond, it answers `status: "running"` and the job carries on). A job that failed is
+/// `500 rebuild_failed` with why. The audit entry is written when the job ends, whatever became of the request.
 async fn rebuild(
     State(app): State<AppState>,
     v: Viewer,
@@ -339,36 +340,26 @@ async fn rebuild(
             .map_err(|x| ApiError::server(format!("starting the rebuild: {x}")))
         })
         .await?;
-    let waited = Instant::now();
-    let mut now = job.clone();
-    while now.status == engine::JobStatus::Running && waited.elapsed() < REBUILD_WAIT {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        now = e.job(job.id).unwrap_or(now);
-    }
+    // The job is followed by a task of its own, which writes the audit entry when it ends, by how it ended: a
+    // request that goes away meanwhile (a closed page, a timeout) or gives up waiting changes neither.
+    v.mark_audited();
+    let asked = Asked { car, from, to, who: v.name().to_string(), ip: v.client().address };
+    let mut end = follow_rebuild(&app, &e, job.id, asked);
+    let now = match tokio::time::timeout(REBUILD_WAIT, end.wait_for(Option::is_some)).await {
+        Ok(Ok(j)) => j.clone().unwrap_or_else(|| job.clone()),
+        _ => e.job(job.id).unwrap_or_else(|| job.clone()),
+    };
     let status = match now.status {
         engine::JobStatus::Running => "running",
         engine::JobStatus::Done => "done",
         engine::JobStatus::Cancelled => "cancelled",
-        engine::JobStatus::Failed => "failed",
+        engine::JobStatus::Failed => {
+            return Err(ApiError::new(500, "rebuild_failed", format!("The rebuild failed: {}.", why_failed(&now))));
+        }
     };
-    if now.status == engine::JobStatus::Failed {
-        return Err(ApiError::server(format!(
-            "the rebuild failed: {}",
-            now.error.clone().unwrap_or_else(|| "no reason given".into())
-        )));
-    }
     let kinds = ["drives", "charges", "states", "visits"];
     let (a, b) = (now.from_ms, now.to_ms.min(app.now().max(now.from_ms.saturating_add(1))));
-    let days = b.saturating_sub(a).div_ceil(86_400_000).max(1);
-    let name = app.car_name_now(car).await;
-    let summary = match (from, to) {
-        (None, None) => {
-            format!("Rebuilt {name}'s drives, charges, states and visits from the stored logs (the whole history).")
-        }
-        _ => format!("Rebuilt {name}'s drives, charges, states and visits from the stored logs ({days} days)."),
-    };
     // (the engine's rebuild tells the live stream of each window it made again: no second `rows` event here)
-    v.audit(&app, "car-rebuild", Some(&target("car", Some(car), "")), &summary).await?;
     Ok(Json(json!({
         "car": ids::car(car),
         "job": now.id.to_string(),
@@ -376,10 +367,163 @@ async fn rebuild(
         "from_ms": a,
         "to_ms": b,
         "kinds": kinds,
-        "logs_read": now.done,
+        "logs_read": now.done.saturating_sub(now.failed),
         "logs_total": now.total,
         "took_ms": now.took_ms,
     })))
+}
+
+/// Why a rebuild job failed, as a sentence's end.
+fn why_failed(j: &engine::Job) -> String {
+    j.error.as_deref().unwrap_or("no reason given").trim_end_matches('.').to_string()
+}
+
+/// Who asked for a rebuild, of what.
+struct Asked {
+    car: model::CarId,
+    from: Option<u64>,
+    to: Option<u64>,
+    who: String,
+    ip: std::net::IpAddr,
+}
+
+/// How much of the history a rebuild was asked for, for its audit entry: the whole of it, or the period in UTC
+/// days as it was given (an open end is said as one, never counted from 1970 or to the year 2100).
+fn rebuild_span(from: Option<u64>, to: Option<u64>) -> String {
+    let day = |ms: u64| format!("{} UTC", moving::export::day_of(ms));
+    match (from, to) {
+        (None, None) => "the whole history".into(),
+        (Some(a), None) => format!("everything from {} on", day(a)),
+        (None, Some(b)) => format!("everything up to {}", day(b)),
+        (Some(a), Some(b)) => match b.saturating_sub(a).div_ceil(86_400_000).max(1) {
+            1 => format!("1 day from {}", day(a)),
+            n => format!("{n} days from {}", day(a)),
+        },
+    }
+}
+
+/// Where the notices below send an admin: the server's settings, with the rebuilds.
+const NOTICE_LINK: &str = "/settings/server";
+
+/// For admins: a car's rebuild that failed (`rebuild_failed`, until a later rebuild of the car ends well or the
+/// server starts again), and files of a car's history that can't be read (`data_damaged`, while they are there),
+/// each with what can be done about it.
+pub fn notices(app: &AppState) -> Vec<super::notices::Notice> {
+    use super::notices::Notice;
+    let Ok(e) = app.service::<Engine>() else { return Vec::new() };
+    let mut out = Vec::new();
+    let damaged = e.db().damaged();
+    if let Some(first) = damaged.first() {
+        let name = app.car_name(first.car);
+        let more = match damaged.len() - 1 {
+            0 => String::new(),
+            1 => " (and 1 more file)".into(),
+            n => format!(" (and {n} more files)"),
+        };
+        let fix = if damaged.iter().all(|d| d.from_logs) {
+            "It holds only what was decoded from the stored logs: a rebuild of the car makes it again.".to_string()
+        } else {
+            format!(
+                "It also holds what no stored log gives (imported rows, what was typed in), so no rebuild makes it \
+                 again: stop the server, put the folder db/cars/{} back from a backup and start it again; the logs \
+                 that came since are decoded again by themselves.",
+                first.car
+            )
+        };
+        out.push(Notice {
+            code: "data_damaged",
+            level: "error",
+            message: format!(
+                "A file of {name}'s history is damaged and can't be read: {}{more}. Pages that need it answer with \
+                 an error. {fix}",
+                first.file
+            ),
+            since_ms: damaged.iter().map(|d| d.since_ms).min(),
+            fix_link: Some(NOTICE_LINK),
+            detail: Some(json!({
+                "files": damaged.iter().map(|d| json!({
+                    "car": ids::car(d.car), "file": d.file, "why": d.why, "since_ms": d.since_ms,
+                    "mend": if d.from_logs { "rebuild" } else { "backup" },
+                })).collect::<Vec<_>>(),
+            })),
+        });
+    }
+    // the newest ended job of each car (or of every car): failed, and none after it ended well
+    let mut seen = std::collections::HashSet::new();
+    for j in e.jobs() {
+        if j.status == engine::JobStatus::Running || !seen.insert(j.car) {
+            continue;
+        }
+        if j.status == engine::JobStatus::Failed {
+            let of = j.car.map_or_else(|| "every car".to_string(), |c| app.car_name(c));
+            out.push(Notice {
+                code: "rebuild_failed",
+                level: "warning",
+                message: format!("The rebuild of {of} from the stored logs failed: {}.", why_failed(&j)),
+                since_ms: j.finished_ms,
+                fix_link: Some(NOTICE_LINK),
+                detail: Some(json!({ "car": j.car.map(ids::car), "job": j.id.to_string(), "kind": j.kind })),
+            });
+        }
+    }
+    out
+}
+
+type RebuildEnd = tokio::sync::watch::Receiver<Option<engine::Job>>;
+
+/// A rebuild job is followed to its end for at most this long.
+const FOLLOW_MAX: Duration = Duration::from_secs(7 * 86_400);
+
+/// The rebuild jobs being followed, by engine and job: a second ask that joined a job waits for the same end, and
+/// the job gets one audit entry.
+static FOLLOWED: std::sync::Mutex<Vec<(usize, u64, RebuildEnd)>> = std::sync::Mutex::new(Vec::new());
+
+/// Follows a rebuild job to its end in a task of its own (one per job) and writes its audit entry then: rebuilt,
+/// failed (with why) or cancelled. Returns where the end is told.
+fn follow_rebuild(app: &AppState, e: &Arc<Engine>, id: u64, asked: Asked) -> RebuildEnd {
+    let key = (Arc::as_ptr(e) as usize, id);
+    let mut followed = FOLLOWED.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((_, _, rx)) = followed.iter().find(|(p, i, _)| (*p, *i) == key) {
+        return rx.clone();
+    }
+    let (tx, rx) = tokio::sync::watch::channel(None);
+    followed.push((key.0, key.1, rx.clone()));
+    drop(followed);
+    let (app, e) = (app.clone(), e.clone());
+    tokio::spawn(async move {
+        let began = Instant::now();
+        let job = loop {
+            match e.job(id) {
+                // (a job that never ends, its engine stopped under it, is not followed for good)
+                Some(j) if j.status == engine::JobStatus::Running && began.elapsed() < FOLLOW_MAX => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                j => break j,
+            }
+        };
+        if let Some(j) = job.as_ref().filter(|j| j.status != engine::JobStatus::Running) {
+            let name = app.car_name_now(asked.car).await;
+            let what = format!("{name}'s drives, charges, states and visits from the stored logs");
+            let span = rebuild_span(asked.from, asked.to);
+            let summary = match j.status {
+                engine::JobStatus::Failed => format!("The rebuild of {what} ({span}) failed: {}.", why_failed(j)),
+                engine::JobStatus::Cancelled => format!("The rebuild of {what} ({span}) was cancelled."),
+                _ => format!("Rebuilt {what} ({span})."),
+            };
+            let details = crate::ctx::audit_details(Some(&target("car", Some(asked.car), "")), &summary);
+            let (who, ip) = (asked.who, asked.ip);
+            let r = app
+                .blocking(move |app| Ok(app.accounts.audit().record(Some(&who), Some(ip), "car-rebuild", &details)?))
+                .await;
+            if let Err(err) = r {
+                tracing::warn!("audit: {}", err.message);
+            }
+        }
+        FOLLOWED.lock().unwrap_or_else(|p| p.into_inner()).retain(|(p, i, _)| (*p, *i) != key);
+        // (the entry is written before the end is told: an answer that says done has it)
+        let _ = tx.send(job.or_else(|| e.job(id)));
+    });
+    rx
 }
 
 /// `GET /cars/{car}/gps-layout`: the car's own layout of the Screenmate's GPS frame (0x04F on its internal bus) as

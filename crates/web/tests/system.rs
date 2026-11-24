@@ -70,13 +70,23 @@ fn imported_drive(car: CarId, start_ms: u64) -> model::Drive {
 }
 
 async fn seeded() -> Seeded {
+    seeded_or(None::<fn(&std::path::Path, CarId)>).await
+}
+
+/// [`seeded`], with the server stopped once its history is made, `damage` done to its folders (the data folder and
+/// the car), and the server started again on them: what it reads from then on, it reads from the disk.
+async fn seeded_then(damage: impl FnOnce(&std::path::Path, CarId)) -> Seeded {
+    seeded_or(Some(damage)).await
+}
+
+async fn seeded_or(damage: Option<impl FnOnce(&std::path::Path, CarId)>) -> Seeded {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     std::fs::create_dir_all(&data).unwrap();
     let (v, _) = vault::Vault::create(&data, &dir.path().join("keys"), vault::Kdf::FAST_FOR_TESTS).unwrap();
     let v = Arc::new(v);
     let db = db::Db::open(&data, v.clone(), db::Options::default()).unwrap();
-    let store = ingest::Store::with_limits(data.join("can"), v, 0, 200_000, |_| u64::MAX);
+    let store = ingest::Store::with_limits(data.join("can"), v.clone(), 0, 200_000, |_| u64::MAX);
     let engine = Engine::new(db.clone(), store.clone(), engine::Options { workers: 2, ..engine::Options::default() });
     let judge = ingest::Judge::new(store.clone()).on_judged(engine.listener());
     engine.start().unwrap();
@@ -97,6 +107,21 @@ async fn seeded() -> Seeded {
     });
     let at = first.first().map_or(from + 2 * 3_600_000, |d| d.start_ms + 60_000);
     db.upsert(id, &[imported_drive(id, at)]).unwrap();
+    let (engine, db) = match damage {
+        None => (engine, db),
+        Some(damage) => {
+            // the files as an idle server leaves them (each table and each day one sealed file), then the restart
+            db.settle(id, u64::MAX).unwrap();
+            drop((engine, db));
+            damage(&data, id);
+            let db = db::Db::open(&data, v, db::Options::default()).unwrap();
+            let opts = engine::Options { workers: 2, ..engine::Options::default() };
+            let engine = Engine::new(db.clone(), store.clone(), opts);
+            engine.start().unwrap();
+            engine.idle().await;
+            (engine, db)
+        }
+    };
     let (e2, d2) = (engine.clone(), db.clone());
     let s = TestServer::start_with(move |b| b.cars(Arc::new(EngineCars(d2))).service(Arc::new(e2))).await;
     Seeded { s, engine, db, data, car: format!("c{id}"), id, from, _dir: dir }
@@ -884,4 +909,203 @@ async fn a_full_rebuild_counts_its_logs_bytes_and_days_and_the_live_stream_sends
     assert!(jobs.iter().filter(|j| j["kind"] == "full_rebuild").count() <= 6, "{a}");
     k.engine.full_rebuild_crash_at(None);
     let _ = admin.delete("/api/v1/system/full-rebuild", json!({})).await;
+}
+
+/// The audit log's `car-rebuild` sentences, newest first.
+async fn rebuild_entries(admin: &mut Client) -> Vec<String> {
+    let page = ok(admin, "/api/v1/audit?limit=100").await;
+    page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["action"] == "car-rebuild")
+        .map(|e| e["summary"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// Cuts a file short.
+fn cut(file: &std::path::Path) {
+    let len = std::fs::metadata(file).unwrap_or_else(|e| panic!("{}: {e}", file.display())).len();
+    std::fs::OpenOptions::new().write(true).open(file).unwrap().set_len(len / 2).unwrap();
+}
+
+/// A rebuild's audit entry is written when its job ends, by how it ended and for the period asked for: also when
+/// the request went away meanwhile (a closed page, a timeout), which used to leave a rebuild that ran to its end
+/// out of the audit log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rebuild_is_audited_when_it_ends_whatever_became_of_its_request() {
+    let k = seeded().await;
+    let car = k.car.clone();
+    let mut admin = k.s.admin().await;
+    let path = format!("/api/v1/cars/{car}/rebuild");
+    let name = k.db.car(k.id).unwrap().unwrap().name;
+    let rebuilt =
+        |span: &str| format!("Rebuilt {name}'s drives, charges, states and visits from the stored logs ({span}).");
+
+    // the period as it was asked for: an open end is said as one, a day is "1 day"
+    let day = moving::export::day_of(k.from);
+    for (body, span) in [
+        (json!({ "to_ms": k.from + 1 }), format!("everything up to {day} UTC")),
+        (json!({ "from_ms": 4_102_444_800_000u64 }), "everything from 2100-01-01 UTC on".to_string()),
+        (json!({ "from_ms": k.from, "to_ms": k.from + 3_600_000 }), format!("1 day from {day} UTC")),
+        (json!({ "from_ms": k.from, "to_ms": k.from + 2 * 86_400_000 }), format!("2 days from {day} UTC")),
+    ] {
+        let r = admin.post(&path, body.clone()).await;
+        assert_eq!(r.status, 200, "{body}: {}", r.text());
+        assert_eq!(r.json()["status"], "done", "{body}");
+        assert_eq!(rebuild_entries(&mut admin).await[0], rebuilt(&span), "{body}");
+    }
+
+    // a request that goes away while its job runs: the job ends, and is in the audit log
+    let before = rebuild_entries(&mut admin).await.len();
+    let jobs = k.engine.jobs().len();
+    {
+        // (dropped, and its connection with it, once the server has started the job)
+        let post = admin.post(&path, json!({}));
+        tokio::pin!(post);
+        loop {
+            tokio::select! {
+                r = &mut post => panic!("the rebuild ended before the request went away: {}", r.text()),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(2)) => {
+                    if k.engine.jobs().len() > jobs {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    k.engine.idle().await;
+    let mut entries = rebuild_entries(&mut admin).await;
+    for _ in 0..100 {
+        if entries.len() > before {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        entries = rebuild_entries(&mut admin).await;
+    }
+    assert_eq!(entries.len(), before + 1, "{entries:#?}");
+    assert_eq!(entries[0], rebuilt("the whole history"));
+}
+
+/// A rebuild that fails says so: `500 rebuild_failed` with why (not a bare server error), an audit entry that says
+/// it failed, and a notice for the admins until a later rebuild of the car ends well.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rebuild_that_fails_says_why_in_its_answer_the_audit_log_and_a_notice() {
+    let k = seeded().await;
+    let car = k.car.clone();
+    let mut admin = k.s.admin().await;
+    let mut watch = k.s.watch(&mut admin, &[k.id]).await;
+    let path = format!("/api/v1/cars/{car}/rebuild");
+    // a stored log the store can't read any more
+    let key = k.db.car(k.id).unwrap().unwrap().vehicle_keys[0].clone();
+    let log = std::fs::read_dir(k.data.join("can").join(&key))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().ends_with(".log.xz"))
+        .min()
+        .unwrap();
+    let whole = std::fs::read(&log).unwrap();
+    cut(&log);
+    let r = admin.post(&path, json!({})).await;
+    assert_eq!((r.status, r.code().as_deref()), (500, Some("rebuild_failed")), "{}", r.text());
+    let said = r.json()["error"]["message"].as_str().unwrap_or_default().to_string();
+    let file = log.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(said.contains("1 of ") && said.contains(&file) && said.contains("could not be read"), "{said}");
+    let entries = rebuild_entries(&mut admin).await;
+    assert!(entries[0].contains("(the whole history) failed: 1 of ") && entries[0].contains(&file), "{entries:#?}");
+    let notices = ok(&mut admin, "/api/v1/notices").await;
+    let n = notices["items"].as_array().unwrap().iter().find(|n| n["code"] == "rebuild_failed").expect("a notice");
+    assert_eq!((n["level"].as_str(), n["detail"]["car"].as_str()), (Some("warning"), Some(car.as_str())), "{n}");
+    assert!(n["message"].as_str().unwrap().contains(&file), "{n}");
+    let theirs = ok(&mut watch, "/api/v1/notices").await;
+    assert!(!theirs.to_string().contains("rebuild_failed"), "admins only: {theirs}");
+    // the file put back (from a backup): a rebuild of the car ends well, and the notice goes
+    std::fs::write(&log, whole).unwrap();
+    let r = admin.post(&path, json!({})).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(
+        rebuild_entries(&mut admin).await[0],
+        format!(
+            "Rebuilt {}'s drives, charges, states and visits from the stored logs (the whole history).",
+            k.db.car(k.id).unwrap().unwrap().name
+        )
+    );
+    let notices = ok(&mut admin, "/api/v1/notices").await;
+    assert!(!notices.to_string().contains("rebuild_failed"), "{notices}");
+}
+
+/// A damaged table of a car (its drives: imported rows and typed values live there too, so no rebuild may make it
+/// again by itself) is said to the admins in a notice that names the file and what to do, where there used to be
+/// bare server errors and nothing else; a rebuild's refusal names the file too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_damaged_table_is_said_in_a_notice_with_what_to_do() {
+    let k = seeded_then(|data, car| cut(&data.join("db/cars").join(car.to_string()).join("drives.snap"))).await;
+    let car = k.car.clone();
+    let mut admin = k.s.admin().await;
+    let mut watch = k.s.watch(&mut admin, &[k.id]).await;
+    let file = format!("db/cars/{}/drives.snap", k.id);
+    let r = admin.get(&format!("/api/v1/cars/{car}/drives")).await;
+    assert_eq!(r.status, 500, "{}", r.text());
+    let notices = ok(&mut admin, "/api/v1/notices").await;
+    let n = notices["items"].as_array().unwrap().iter().find(|n| n["code"] == "data_damaged").expect("a notice");
+    assert_eq!(n["level"], "error", "{n}");
+    let said = n["message"].as_str().unwrap();
+    assert!(said.contains(&file) && said.contains("from a backup"), "{said}");
+    assert_eq!(n["detail"]["files"][0]["file"].as_str(), Some(file.as_str()), "{n}");
+    assert_eq!(
+        (n["detail"]["files"][0]["car"].as_str(), n["detail"]["files"][0]["mend"].as_str()),
+        (Some(car.as_str()), Some("backup"))
+    );
+    assert!(!ok(&mut watch, "/api/v1/notices").await.to_string().contains("data_damaged"), "admins only");
+    // a rebuild says which file stops it, and leaves the file where it is
+    let r = admin.post(&format!("/api/v1/cars/{car}/rebuild"), json!({})).await;
+    assert_eq!((r.status, r.code().as_deref()), (500, Some("rebuild_failed")), "{}", r.text());
+    assert!(r.text().contains(&file), "{}", r.text());
+    assert!(k.data.join(&file).exists());
+}
+
+/// A damaged day of the samples decoded from the logs is said too, as something a rebuild mends; after the rebuild
+/// the notice is gone and the history is back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_damaged_day_of_decoded_samples_is_said_and_a_rebuild_mends_it() {
+    let hit = std::sync::Mutex::new(String::new());
+    let k = seeded_then(|data, car| {
+        let dir = data.join("db/cars").join(car.to_string()).join("seg/samples.can");
+        let day = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "snap"))
+            .min()
+            .unwrap();
+        cut(&day);
+        *hit.lock().unwrap() = day.file_name().unwrap().to_string_lossy().into_owned();
+    })
+    .await;
+    let car = k.car.clone();
+    let mut admin = k.s.admin().await;
+    let file = format!("db/cars/{}/seg/samples.can/{}", k.id, hit.lock().unwrap());
+    let from = k.from;
+    let r = admin
+        .get(&format!("/api/v1/cars/{car}/series?fields=speed_kph&from_ms={from}&to_ms={}", from + 86_400_000))
+        .await;
+    assert_eq!(r.status, 500, "{}", r.text());
+    let notices = ok(&mut admin, "/api/v1/notices").await;
+    let n = notices["items"].as_array().unwrap().iter().find(|n| n["code"] == "data_damaged").expect("a notice");
+    assert!(n["message"].as_str().unwrap().contains("a rebuild of the car makes it again"), "{n}");
+    assert_eq!(
+        (n["detail"]["files"][0]["file"].as_str(), n["detail"]["files"][0]["mend"].as_str()),
+        (Some(file.as_str()), Some("rebuild"))
+    );
+    let r = admin.post(&format!("/api/v1/cars/{car}/rebuild"), json!({})).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["status"], "done");
+    assert!(!ok(&mut admin, "/api/v1/notices").await.to_string().contains("data_damaged"));
+    let r = admin
+        .get(&format!("/api/v1/cars/{car}/series?fields=speed_kph&from_ms={from}&to_ms={}", from + 86_400_000))
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let drives = ok(&mut admin, &format!("/api/v1/cars/{car}/drives")).await;
+    assert!(!drives["items"].as_array().unwrap().is_empty(), "{drives}");
 }

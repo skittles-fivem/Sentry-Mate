@@ -997,6 +997,7 @@ async fn fresh(
             Err(e) => return Err(e.into()),
         };
         *s.claim.lock() = None;
+        crate::resources::imports::first_admin_made(app);
         if let Some(z) = zone.as_deref()
             && let Err(e) = crate::resources::settings::first_time_zone(app, z)
         {

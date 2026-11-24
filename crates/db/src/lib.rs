@@ -301,12 +301,38 @@ struct Inner {
     kv: Kv,
     cars: OpenCars,
     tables_read: AtomicU64,
+    /// The cars' files found damaged since the db was opened ([`Db::damaged`]).
+    damaged: Mutex<BTreeMap<String, DamagedFile>>,
+}
+
+/// A file of a car that was found damaged when something read it ([`Db::damaged`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DamagedFile {
+    pub car: CarId,
+    /// Its path under the data folder (`db/cars/7/drives.snap`).
+    pub file: String,
+    pub why: String,
+    /// When it was first found so (ms since 1970).
+    pub since_ms: u64,
+    /// Whether everything in it is made again from the stored CAN logs (a series of decoded samples or charge
+    /// points: a rebuild of the car replaces it), as opposed to a table or an import's or an API's series, which
+    /// also hold what no log gives.
+    pub from_logs: bool,
 }
 
 /// The db. Cheap to clone; share it between threads.
 #[derive(Clone)]
 pub struct Db {
     inner: Arc<Inner>,
+}
+
+/// A file (its path under the data folder) of a car's series that is made from the stored CAN logs
+/// (`seg/<series>.can`): its series folder, its name and the time it covers.
+fn can_series_file(car: CarId, file: &str) -> Option<(&str, &str, (u64, u64))> {
+    let rest = file.strip_prefix("db/cars/")?.strip_prefix(&car.to_string())?.strip_prefix("/seg/")?;
+    let (series, name) = rest.split_once('/')?;
+    let can = series.rsplit_once('.').is_some_and(|(_, stream)| stream == Stream::Smo.dir_name());
+    segment::file_span(name).filter(|_| can).map(|span| (series, name, span))
 }
 
 fn lock<T>(m: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
@@ -385,6 +411,7 @@ impl Db {
                 kv,
                 cars,
                 tables_read: AtomicU64::new(0),
+                damaged: Mutex::new(BTreeMap::new()),
             }),
         })
     }
@@ -557,8 +584,9 @@ impl Db {
         }
         let dir = self.car_dir(car);
         let r = f(self, &mut data, &dir);
-        if r.is_err() {
+        if let Err(e) = &r {
             data.unload();
+            self.note_damage(car, e);
         }
         slot.set_weight(data.weight());
         drop(data);
@@ -764,6 +792,61 @@ impl Db {
         Ok(deleted)
     }
 
+    /// Keeps a damaged file of a car that a read or a write met, for [`Db::damaged`].
+    fn note_damage(&self, car: CarId, err: &Error) {
+        let Error::Damaged { file, why } = err else { return };
+        if !file.starts_with(&format!("db/cars/{car}/")) {
+            return;
+        }
+        let Ok(mut d) = self.inner.damaged.lock() else { return };
+        if d.len() >= 200 && !d.contains_key(file) {
+            return;
+        }
+        let since_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |t| u64::try_from(t.as_millis()).unwrap_or(u64::MAX));
+        let from_logs = can_series_file(car, file).is_some();
+        d.entry(file.clone()).or_insert_with(|| DamagedFile {
+            car,
+            file: file.clone(),
+            why: why.clone(),
+            since_ms,
+            from_logs,
+        });
+    }
+
+    /// The cars' files that something found damaged since the db was opened and that are still there (one set
+    /// aside or replaced since is no longer listed; one put back while the server ran is, until the next start),
+    /// by path. Nothing damaged is ever read as empty, so what needs such a file fails each time: this is what to
+    /// tell the owner, once.
+    pub fn damaged(&self) -> Vec<DamagedFile> {
+        let Ok(mut d) = self.inner.damaged.lock() else { return Vec::new() };
+        let data = &self.inner.ctx.data;
+        d.retain(|file, _| data.join(file).exists());
+        d.values().cloned().collect()
+    }
+
+    /// A rebuild met `err`: when it is damage to a file of a series that is made from the stored CAN logs (a day's
+    /// snapshot or journal, or a month's pack, of `seg/<series>.can`), sets the file aside (`<name>.damaged` beside
+    /// it, in place of an earlier one) and returns the time it covered: everything it held is made again by decoding
+    /// the logs of that time, which the caller then does. `None`: not such damage, nothing touched (a table, an
+    /// import's or an API's series are not made again from logs, and a file of another format is not damage).
+    pub fn set_aside_damaged_can_series(&self, car: CarId, err: &Error) -> Result<Option<(u64, u64)>> {
+        let Error::Damaged { file, .. } = err else { return Ok(None) };
+        let Some((series, name, span)) = can_series_file(car, file) else { return Ok(None) };
+        self.with_car(car, |_, _, dir| {
+            let folder = dir.join("seg").join(series);
+            let (f, aside) = (folder.join(name), folder.join(format!("{name}.damaged")));
+            if !f.exists() {
+                return Ok(None);
+            }
+            file::remove_if_exists(&aside)?;
+            std::fs::rename(&f, &aside)?;
+            file::sync_dir(&folder);
+            Ok(Some(span))
+        })
+    }
+
     /// Removes everything an import from `source` (an import site, never [`Source::Live`]) stored for `[from_ms,
     /// to_ms)`: rows of every table that start in it and that site's samples and charge points in it (a stretch read
     /// again).
@@ -835,7 +918,8 @@ impl Db {
         })?;
         let days = segment::plains::<P>(ctx, &dir, stream, &days, &mut |day| {
             self.with_car(car, |_, _, dir| segment::journaled_plain::<P>(ctx, dir, stream, day))
-        })?;
+        })
+        .inspect_err(|e| self.note_damage(car, e))?;
         segment::points_of(days, from_ms, to_ms)
     }
 
@@ -856,7 +940,8 @@ impl Db {
         })?;
         let days = segment::plains::<P>(ctx, &dir, stream, &days, &mut |day| {
             self.with_car(car, |_, _, dir| segment::journaled_plain::<P>(ctx, dir, stream, day))
-        })?;
+        })
+        .inspect_err(|e| self.note_damage(car, e))?;
         segment::fields_of::<P>(days, from_ms, to_ms, fields)
     }
 

@@ -245,7 +245,15 @@ async fn a_web_servers_first_start_files_are_set_aside() {
     let (old, file) = old_and_export().await;
     let new = server();
     // what a web side writes before it is set up
-    for f in ["accounts/setup.sealed", "accounts/index.journal", "audit/2026-11.0001.log"] {
+    // (with the key the database hashes its records' names with, and the connections overview's counters)
+    let first = [
+        "accounts/setup.sealed",
+        "accounts/index.journal",
+        "audit/2026-11.0001.log",
+        "db/kv/names.key",
+        "web/overview.sealed",
+    ];
+    for f in first {
         let p = new.data.join(f);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         new.vault.write_file(&p, f, b"a first start's").unwrap();
@@ -256,6 +264,17 @@ async fn a_web_servers_first_start_files_are_set_aside() {
     assert!(matches!(e, moving::Error::InUse(_)), "{e}");
     let mut o = opts();
     o.first_start_also = moving::import::WEB_FIRST_START.iter().map(|s| s.to_string()).collect();
+    // anything else in the database or the web folder is the owner's: a record, a car, a setting, an import
+    for owners in ["db/kv/0a/0b.kv", "db/cars/1/car.snap", "db/fleet.snap", "web/settings.sealed", "web/imports/1/job"]
+    {
+        let p = new.data.join(owners);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        new.vault.write_file(&p, owners, b"the owner's").unwrap();
+        let e = moving::import::unused_but(&new.data, &new.keys, &o.first_start_also).unwrap_err();
+        assert!(matches!(e, moving::Error::InUse(_)), "{owners}: {e}");
+        std::fs::remove_file(&p).unwrap();
+    }
+    moving::import::unused_but(&new.data, &new.keys, &o.first_start_also).unwrap();
     let v = ex.open_key(&old.recovery).unwrap();
     let mut imp = moving::import::begin_streamed(&new.data, &new.keys, &ex, v, Arc::new(o)).unwrap();
     imp.feed(&file).unwrap();
