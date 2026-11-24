@@ -11,7 +11,7 @@ export const STORE_GROUP = {
   imports: 'Imports', server: 'Server',
 };
 /** A group's name without the note in brackets (a tag on a row). */
-export const groupWord = (g) => String(STORE_GROUP[g] || g || '').replace(/\s*\(.*\)$/, '');
+export const groupWord = (g) => String((Object.hasOwn(STORE_GROUP, g) && STORE_GROUP[g]) || g || '').replace(/\s*\(.*\)$/, '');
 
 /** The steps of a compaction pass, in plain words. */
 export const PACK_STEP = { logs: 'CAN logs', series: 'time series', records: 'records', imports: 'uploaded backups' };
@@ -36,9 +36,9 @@ const CURVE_PART = { snapshots: 'charge curves', packs: 'charge curves, packed',
 /** A short name for a category: "TeslaMate import: day series", "Signed originals"; else the server's label. */
 export function shortName(c) {
   const key = String(c?.key || '');
-  if (SHORT[key]) return SHORT[key];
+  if (Object.hasOwn(SHORT, key)) return SHORT[key];
   const m = /^(series|curves)\.(.+)\.(snapshots|packs|journals)$/.exec(key);
-  if (m) return `${STREAM[m[2]] || m[2]}: ${(m[1] === 'curves' ? CURVE_PART : PART)[m[3]]}`;
+  if (m) return `${Object.hasOwn(STREAM, m[2]) ? STREAM[m[2]] : m[2]}: ${(m[1] === 'curves' ? CURVE_PART : PART)[m[3]]}`;
   const kv = /^kv\.(.+)$/.exec(key);
   if (kv && !c?.label) return kv[1];
   return c?.label || key;
@@ -53,7 +53,7 @@ export function storageGroups(categories) {
   let total = 0;
   for (const c of categories || []) {
     const g = c.group || 'server';
-    if (!by.has(g)) by.set(g, { group: g, name: STORE_GROUP[g] || g, disk_bytes: 0, files: 0, share: 0, rows: [] });
+    if (!by.has(g)) by.set(g, { group: g, name: Object.hasOwn(STORE_GROUP, g) ? STORE_GROUP[g] : g, disk_bytes: 0, files: 0, share: 0, rows: [] });
     const e = by.get(g);
     const d = Number(c.disk_bytes) || 0;
     e.disk_bytes += d; e.files += Number(c.files) || 0; total += d;
