@@ -677,7 +677,7 @@ export async function mount(ctx) {
   const tablesTable = dataTable(ctx, {
     title: 'Rows per table', icon: 'book', rows: [], csvName: 'import-report-tables', label: 'Rows read, imported and skipped per table',
     note: 'Counts only: the report never keeps row values or positions.',
-    sort: { key: 'order', dir: 'asc' },
+    sort: { key: 'order', dir: 'asc' }, keepSort: false,
     columns: tableCols, onSort: (o) => { tablesSort = o; },
     csv: { get columns() {
       const done = !!S.report?.imported;

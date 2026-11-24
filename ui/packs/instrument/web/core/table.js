@@ -23,6 +23,7 @@ import { windowList, dayJumpMs } from '../shared/vlist.js';
  *   rows,                               or rows the page already has (no paging)
  *   columns: [{ key, label, num, sort, render(row), csv(row), title, cls, cover }],
  *   sort: { key, dir: 'asc' | 'desc' }, the first order (key: a column key)
+ *   keepSort,                           false: a live update does not give the table the reader's order back
  *   onSort(sort),                      called when the person sorts by a header ({ key, dir })
  *   rowHref(row),                       a row opens this page
  *   rowClass(row),                      more classes for a row (a string, or null)
@@ -53,10 +54,22 @@ import { windowList, dayJumpMs } from '../shared/vlist.js';
  */
 const LOCAL_STEP = 200; // rows the page already has, drawn at a time
 
+// The order the reader picked, by page address and table name: a live update builds the page again, and its tables
+// start in the order the reader chose, not the first one. The router forgets them when another page is opened.
+const chosenSorts = new Map();
+const sortKey = (opts) => { const n = opts.title || opts.label; return n && opts.keepSort !== false ? `${location.pathname}|${n}` : null; };
+export function forgetSorts() { chosenSorts.clear(); }
+function firstSort(opts, columns) {
+  const k = sortKey(opts), c = k && chosenSorts.get(k);
+  if (c && columns.some((x) => x.key === c.key && x.sort)) return { ...c };
+  return opts.sort ? { ...opts.sort } : null;
+}
+function rememberSort(opts, sort) { const k = sortKey(opts); if (k && sort) chosenSorts.set(k, { ...sort }); }
+
 export function dataTable(ctx, opts) {
   const { columns, rowHref = null, limit = 50, csv = true } = opts;
   let params = { ...(opts.params || {}) };
-  let sort = opts.sort ? { ...opts.sort } : null;
+  let sort = firstSort(opts, columns);
   let pager = null, loaded = [], done = false, total = null, busy = false, gen = 0;
   let fresh = false, freshQuiet = false, prevPager = null, answered = false;
   let shownLocal = LOCAL_STEP; // rows the page already has: how many are drawn
@@ -151,6 +164,7 @@ export function dataTable(ctx, opts) {
     if (!key) return;
     sort = { key, dir: dir === 'asc' ? 'asc' : 'desc' };
     head();
+    rememberSort(opts, sort);
     opts.onSort?.({ ...sort });
     if (opts.rows) { renderLocal(); return; }
     load();
@@ -161,6 +175,7 @@ export function dataTable(ctx, opts) {
     const dir = sort && sort.key === key ? (sort.dir === 'asc' ? 'desc' : 'asc') : (col.firstDir || (col.num ? 'desc' : 'asc'));
     sort = { key, dir };
     head();
+    rememberSort(opts, sort);
     opts.onSort?.({ ...sort });
     if (opts.rows) { renderLocal(); return; }
     load();
@@ -427,7 +442,7 @@ export function cardLabels(table) {
 export function windowTable(ctx, opts) {
   const { columns, rowHref = null } = opts;
   let params = { ...(opts.params || {}) };
-  let sort = opts.sort ? { ...opts.sort } : null;
+  let sort = firstSort(opts, columns);
   const base = opts.firstSort || opts.sort || null;
   let total = null;
 
@@ -525,6 +540,7 @@ export function windowTable(ctx, opts) {
     const col = columns.find((c) => c.key === key);
     const dir = sort && sort.key === key ? (sort.dir === 'asc' ? 'desc' : 'asc') : (col.firstDir || (col.num ? 'desc' : 'asc'));
     sort = { key, dir };
+    rememberSort(opts, sort);
     head();
     restart().catch((e) => opts.onError?.(e));
   }
