@@ -14,6 +14,11 @@ import { parts as unitParts } from './units.js';
 export const SVG_NS = 'http://www.w3.org/2000/svg';
 const URL_ATTRS = new Set(['href', 'src', 'action', 'formaction', 'xlink:href', 'poster', 'cite', 'data']);
 const PROPS = new Set(['value', 'checked', 'selected', 'indeterminate', 'muted']);
+// What h() set a control to (value / checked / selected are properties, so the markup's defaults stay empty): a page
+// drawn again asks what the reader changed by comparing a control with this (builtWith), not with its defaults.
+const BUILT = new WeakMap();
+/** What h() built el with for prop ('value', 'checked' or 'selected'), or undefined when it did not set it. */
+export function builtWith(el, prop) { const b = BUILT.get(el); return b && prop in b ? b[prop] : undefined; }
 
 /** Escape text for the rare place a pack still builds HTML text (prefer h()). */
 export function esc(s) {
@@ -87,6 +92,9 @@ function setAttrs(el, attrs, isSvg) {
       if (u != null) el.setAttribute(k, u);
     } else if (!isSvg && PROPS.has(k)) {
       el[k] = v;
+      let b = BUILT.get(el);
+      if (!b) BUILT.set(el, b = {});
+      b[k] = el[k];
     } else if (v === true) {
       el.setAttribute(k, '');
     } else {
