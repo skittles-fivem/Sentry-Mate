@@ -147,7 +147,8 @@
 :root[data-phone] .missing-table .tbl > tbody > tr > td:nth-child(4) { grid-column: 1 / -1; }
 
 /* the patterns: two columns of figures; the lists in one column */
-:root[data-phone] .pattern-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(1rem, var(--e)) round(1rem, var(--e)); }
+/* (one column where two would be narrower than a figure, at a large Interface size) */
+:root[data-phone] .pattern-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 8.75rem), 1fr)); gap: round(1rem, var(--e)) round(1rem, var(--e)); }
 :root[data-phone] .patterns-scope { flex-basis: 100%; order: 3; }
 :root[data-phone] .pattern-lists { grid-template-columns: minmax(0, 1fr); }
 :root[data-phone] .drives-summary { padding: round(1rem, var(--e)); }

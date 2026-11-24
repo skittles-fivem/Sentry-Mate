@@ -17,7 +17,8 @@ let playwright = null;
 try { playwright = require('playwright'); } catch { /* not installed: skip */ }
 
 const ONLY = process.env.PACKS ? new Set(process.env.PACKS.split(',')) : null;
-const packs = (...list) => list.filter((p) => !ONLY || ONLY.has(p));
+// a pack named here that is not built in (ui/tools/builtin-packs.js) drops out
+const packs = (...list) => list.filter((p) => BUILTIN_PACKS.includes(p) && (!ONLY || ONLY.has(p)));
 const BUILT_ON_INSTRUMENT = BUILTIN_PACKS.filter((p) => p === 'instrument');
 const SKIP = !playwright && 'Playwright is not installed';
 
@@ -133,6 +134,242 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
       const { page } = await openPage(context, `${origin}/cars/c1/software`, 'software');
       const kind = await page.evaluate(async () => (await import('/core/pages.js')).PAGES.find((p) => p.id === 'software').car);
       assert.equal(kind, 'required');
+    });
+  });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: the empty note of a wide table sits inside the part of the table that is in view`, { skip: SKIP, timeout: 120000 }, async () => {
+    await withPack(pack, ['--cars', '0'], async ({ origin, context }) => {
+      const { page, errors } = await openPage(context, `${origin}/statistics`, 'statistics');
+      await page.locator('.tbl-scroll .tbl-empty .empty').first().waitFor({ timeout: 15000 });
+      const box = () => page.evaluate(() => {
+        const e = document.querySelector('.tbl-scroll .tbl-empty .empty');
+        const sc = e.closest('.tbl-scroll');
+        const r = e.getBoundingClientRect(), s = sc.getBoundingClientRect();
+        const texts = [...e.querySelectorAll('h3, p')].map((x) => { const range = document.createRange(); range.selectNodeContents(x); return range.getBoundingClientRect(); });
+        return { wide: sc.scrollWidth > sc.clientWidth + 1, left: r.left - s.left, right: r.right - s.right, textLeft: Math.min(...texts.map((t) => t.left)) - s.left, textRight: Math.max(...texts.map((t) => t.right)) - s.right };
+      });
+      let b = await box();
+      assert.ok(b.wide, 'the table is wider than its box (else this checks nothing)');
+      assert.ok(b.left >= -1 && b.right <= 1 && b.textLeft >= 0 && b.textRight <= 0, `the note is inside the box: ${JSON.stringify(b)}`);
+      // and stays there when the table is scrolled sideways
+      await page.evaluate(() => { const sc = document.querySelector('.tbl-scroll:has(.tbl-empty)'); sc.scrollLeft = 300; });
+      await page.waitForTimeout(100);
+      b = await box();
+      assert.ok(b.left >= -1 && b.right <= 1, `the note is still inside the box after scrolling: ${JSON.stringify(b)}`);
+      assert.deepEqual(errors, []);
+    });
+  });
+}
+
+/** The frame's links (outside the page) that lead to All cars although they name another page. */
+const deadLinks = (page) => page.evaluate(() => [...document.querySelectorAll('a[data-page], a[data-section]')]
+  .filter((a) => !a.closest('main') && a.checkVisibility() && a.getAttribute('href') === '/' && a.dataset.page !== 'fleet' && a.getAttribute('aria-current') !== 'page')
+  .map((a) => (a.dataset.page ? `a[data-page="${a.dataset.page}"]` : `a[data-section="${a.dataset.section}"]`)));
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: with no car, a menu item of a car's page says there is no car yet, and Charges and Statistics ask for no car`, { skip: SKIP, timeout: 180000 }, async () => {
+    await withPack(pack, ['--cars', '0'], async ({ origin, context }) => {
+      const { page, errors } = await openPage(context, `${origin}/`, 'fleet');
+      const links = await deadLinks(page);
+      assert.ok(links.length >= 3, `the car pages' links: ${links}`);
+      for (const sel of links) {
+        await page.locator(`${sel}:visible`).first().click();
+        const dlg = page.locator('dialog.switcher[open]');
+        await dlg.waitFor({ timeout: 5000 }).catch(() => assert.fail(`${sel}: a click opens nothing and says nothing`));
+        await dlg.getByText('No cars yet').waitFor({ timeout: 5000 });
+        await page.keyboard.press('Escape');
+        await dlg.waitFor({ state: 'detached', timeout: 2000 }).catch(() => {});
+        assert.equal(new URL(page.url()).pathname, '/');
+      }
+      await page.close();
+
+      for (const [route, id] of [['/charges', 'charges'], ['/statistics', 'statistics']]) {
+        const asked = [];
+        const p2 = await openPage(context, origin + route, id, (pg) => pg.on('request', (r) => { if (r.url().includes('/api/')) asked.push(new URL(r.url()).pathname); }));
+        await p2.page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+        await p2.page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await p2.page.waitForTimeout(800);
+        const text = await mainText(p2.page);
+        assert.deepEqual(asked.filter((u) => /undefined|null/.test(u)), [], `${route} asks for no car that is not there`);
+        assert.doesNotMatch(text, /undefined|All 0 cars/i, `${route} names no car that is not there`);
+        assert.match(text, /no car on this server yet/i, `${route} says why it is empty`);
+        assert.deepEqual(p2.errors, []);
+        await p2.page.close();
+      }
+      assert.deepEqual(errors, []);
+    });
+  });
+
+  test(`${pack}: before any car was opened, a menu item of a car's page asks which car and then opens that page for it`, { skip: SKIP, timeout: 180000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      const { page, errors } = await openPage(context, `${origin}/`, 'fleet');
+      await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+      const links = (await deadLinks(page)).filter((s) => s.includes('data-page'));
+      if (!links.length) return;   // the frame knows a car already (the person's main car): its links lead there
+      const want = /data-page="([^"]+)"/.exec(links[0])[1];
+      await page.locator(`${links[0]}:visible`).first().click();
+      const dlg = page.locator('dialog.switcher[open]');
+      await dlg.waitFor({ timeout: 5000 });
+      await dlg.locator('.sw-opt').first().waitFor({ timeout: 5000 });
+      await page.keyboard.press('Enter');
+      await page.waitForFunction((id) => document.documentElement.dataset.ready === id, want, { timeout: 30000 });
+      assert.match(new URL(page.url()).pathname, /^\/cars\/c\d+/);
+      assert.deepEqual(errors, []);
+    });
+  });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: Places asks for the drives per car of only the cars that have them, a few at a time`, { skip: SKIP, timeout: 180000 }, async () => {
+    await withPack(pack, ['--cars', '200'], async ({ origin, context }) => {
+      const asked = [], bad = [];
+      const { page, errors } = await openPage(context, `${origin}/places`, 'places', (pg) => {
+        pg.on('request', (r) => { if (/\/api\/v1\/places\?(.*&)?car=/.test(r.url())) asked.push(new URL(r.url()).searchParams.get('car')); });
+        pg.on('response', (r) => { if (r.url().includes('/api/') && r.status() >= 400) bad.push(`${r.status()} ${r.url()}`); });
+      });
+      await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+      const cars = new Set(asked);
+      // four of the 200 cars have drives (c1 to c3 and the sold c0); a few more may be asked before the last answer is in
+      assert.ok(cars.size >= 4 && cars.size <= 10, `asked for ${cars.size} cars: ${[...cars].slice(0, 20)}`);
+      assert.deepEqual(bad, []);
+      assert.match(await page.locator('.pl-hist').first().innerText(), /drives?( \(|: )(Comet|Maple|Atlas|Ember)/, 'the drives are split by car');
+      assert.deepEqual(errors, []);
+    });
+  });
+
+  test(`${pack}: Places whose drives of one car cannot be read says so, and reads them again on Try again`, { skip: SKIP, timeout: 180000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      let fail = true;
+      const { page, errors } = await openPage(context, `${origin}/places`, 'places', (pg) => pg.route(/\/api\/v1\/places\?(.*&)?car=c1(&|$)/, (r) => (fail
+        ? r.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal', message: 'Something went wrong on the server.' } }) }) : r.continue())));
+      const banner = page.locator('.pl-banner', { hasText: 'could not be read for Comet' });
+      await banner.waitFor({ timeout: 15000 });
+      const home = page.locator('tr', { hasText: 'Home' }).locator('.pl-hist').first();
+      assert.doesNotMatch(await home.innerText(), /Comet/, 'Comet’s drives are not shown as read');
+      assert.match(await home.innerText(), /of a car not read|(^|\n)[\d,]+ drives(\n|$)/, 'the total is not given to another car');
+      fail = false;
+      await banner.getByRole('button', { name: 'Try again' }).click();
+      await banner.waitFor({ state: 'hidden', timeout: 15000 });
+      await page.locator('tr', { hasText: 'Home' }).locator('.pl-hist', { hasText: 'Comet' }).first().waitFor({ timeout: 15000 });
+      assert.deepEqual(errors, []);
+    });
+  });
+}
+
+/** Opens `route` with every GET whose address matches `fail` answered 500, and gives the page's text once it is quiet. */
+async function textWithFailing(context, origin, route, fail) {
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  let hit = 0;
+  await page.route((u) => u.pathname.startsWith('/api/v1/') && fail.test(u.pathname + u.search), (r) => {
+    if (r.request().method() !== 'GET') return r.continue();
+    hit += 1;
+    return r.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal', message: 'Something went wrong on the server.' } }) });
+  });
+  await page.goto(origin + route);
+  await page.waitForFunction(() => document.documentElement.dataset.ready, null, { timeout: 30000 });
+  await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+  // what is below the fold is drawn when it comes near: go down the page and back
+  const tall = await page.evaluate(() => document.documentElement.scrollHeight);
+  for (let y = 0; y < tall; y += 700) { await page.mouse.wheel(0, 700); await page.waitForTimeout(120); }
+  await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+  await page.waitForTimeout(500);
+  // every text of the page, also in a part folded away now (Horizon and Manager fold the overview's sections)
+  const text = await page.evaluate(() => document.querySelector('main').textContent);
+  const ready = await page.evaluate(() => document.documentElement.dataset.ready);
+  await page.close();
+  return { text, ready, hit, errors };
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: a side read that fails is said as not loaded, never shown as "there is none"`, { skip: SKIP, timeout: 300000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      const get = async (p) => (await context.request.get(`${origin}/api/v1/${p}`)).json();
+      const drive = (await get('cars/c1/drives?limit=1')).items[0].id;
+      const charge = (await get('cars/c1/charges?kind=dc&limit=50')).items.find((c) => c.place?.id && !c.flags?.in_progress);
+      assert.ok(charge, 'a fast charge at a saved place');
+      const rules = (await get('cars/c1/purpose-rules')).items.length;
+      const look = (await get('fleet/attention?limit=8')).items.length;
+      assert.ok(rules > 0 && look > 0, 'the made-up data has purpose rules and cars that need a look');
+      const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // [page, the read that fails, what must not be claimed, what is said instead]
+      const cases = [
+        ['/cars/c1', /^\/api\/v1\/cars\/c1\/charges(\?|$)/, /No charging in this period/, /charges of this period could not be loaded/],
+        [`/cars/c1/drives/${drive}`, /\/track(\?|$)/, /No route was recorded/, /route could not be loaded/],
+        [`/cars/c1/charges/${charge.id}`, new RegExp(`/charges/${charge.id}/curve`), /No curve was recorded/, /curve could not be loaded/],
+        [`/cars/c1/charges/${charge.id}`, new RegExp(`/places/${esc(charge.place.id)}(\\?|$)`), /: no price|has no price yet/, /price could not be loaded/],
+        ['/cars/c1/logbook', /\/purpose-rules/, /No rules yet/, /rules could not be loaded/],
+        ['/', /\/fleet\/attention/, /^$/, /cars that need a look could not be loaded/],
+        ['/cars/c1/drives', /^\/api\/v1\/places\?/, /^$/, /places could not be loaded/],
+        ['/cars/c1/trip', /\/cars\/c1\/series/, /No battery readings in this window/, /battery readings could not be loaded/],
+        ['/cars/c1/trip', /\/api\/v1\/trips\?/, /No saved trips yet/, /Saved trips could not be loaded/],
+        ['/places', /\/places\/suggestions/, /No suggestions/, /Suggestions could not be loaded/],
+      ];
+      for (const [route, fail, never, said] of cases) {
+        const got = await textWithFailing(context, origin, route, fail);
+        const what = `${route} with ${fail} failing`;
+        assert.ok(got.hit > 0, `${what}: the read was made`);
+        assert.doesNotMatch(got.ready, /^error:/, `${what}: the page still opens`);
+        if (String(never) !== '/^$/') assert.doesNotMatch(got.text, never, `${what}: says what is not known`);
+        assert.match(got.text, said, `${what}: says the read failed`);
+        assert.deepEqual(got.errors, [], what);
+      }
+    });
+  });
+}
+
+for (const pack of packs('horizon', 'manager')) {
+  test(`${pack}: the old short address /charging opens Charges, and a section's short address opens one of its pages`, { skip: SKIP, timeout: 120000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      // with a car opened before (the car's Charges) and with none (Charges of all cars)
+      for (const [first, want] of [['/cars/c1', '/cars/c1/charges'], [null, '/charges']]) {
+        const ctx = first ? context : await context.browser().newContext({ viewport: { width: 1440, height: 900 } });
+        if (first) (await openPage(ctx, origin + first, 'car')).page.close();
+        const { page, errors } = await openPage(ctx, `${origin}/charging`, 'charges');
+        assert.equal(await page.evaluate(() => location.pathname), want);
+        assert.deepEqual(errors, []);
+        await page.close();
+        if (!first) await ctx.close();
+      }
+      for (const [short, id] of [['/battery', 'charges'], ['/trips', 'drives'], ['/stats', 'statistics'], ['/settings', 'settings-cars']]) {
+        const { page, errors } = await openPage(context, origin + short, id);
+        assert.deepEqual(errors, [], short);
+        await page.close();
+      }
+    });
+  });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT, 'console')) {
+  test(`${pack}: a #fragment in the address that is not valid percent-encoding throws nothing`, { skip: SKIP, timeout: 120000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      const { page, errors } = await openPage(context, `${origin}/help#%E0%A4%A`, 'help');
+      await page.waitForTimeout(300);
+      assert.deepEqual(errors, []);
+      // and a section that is there is still opened
+      const ok = await openPage(context, `${origin}/help#licences`, 'help');
+      await ok.page.waitForFunction(() => window.scrollY > 0, null, { timeout: 10000 });
+      assert.deepEqual(ok.errors, []);
+    });
+  });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: the empty note of a wide table breaks into lines inside its own width`, { skip: SKIP, timeout: 120000 }, async () => {
+    await withPack(pack, ['--cars', '200'], async ({ origin, context }) => {
+      // (the made-up car c4 has no data in the default period)
+      const { page, errors } = await openPage(context, `${origin}/cars/c4/statistics`, 'statistics');
+      await page.locator('.tbl-scroll .tbl-empty .empty p').first().waitFor({ timeout: 15000 });
+      const out = await page.evaluate(() => [...document.querySelectorAll('.tbl-scroll .tbl-empty .empty p')].map((p) => {
+        const range = document.createRange(); range.selectNodeContents(p);
+        const t = range.getBoundingClientRect(), b = p.getBoundingClientRect();
+        return Math.round(Math.max(b.left - t.left, t.right - b.right));
+      }).filter((px) => px > 0));
+      assert.deepEqual(out, [], 'no note text sticks out of its paragraph');
+      assert.deepEqual(errors, []);
     });
   });
 }

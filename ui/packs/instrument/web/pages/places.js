@@ -58,21 +58,68 @@ const ALL_TIME = { preset: 'all' };
 const chargesHref = (pid) => state.buildUrl('charges', { period: ALL_TIME, query: { cars: 'all', places: pid } });
 const drivesHref = (carId, pid) => state.buildUrl('drives', { car: carId, period: ALL_TIME, query: { places: pid } });
 
-/** Drives per car at each place (GET /places?car= for every car): Map place id -> [{ car, name, drives }], most first. */
-async function drivesByCar(ctx, cars) {
-  const out = new Map();
-  const lists = await Promise.all(cars.map((c) => ctx.api.list('places', { car: c.id, sort: 'drives' }, { max: 1000 }).all()
-    .then((rows) => [c, rows]).catch(() => [c, []])));
-  for (const [c, rows] of lists) {
-    for (const p of rows) {
-      const n = p.counts?.drives || 0;
-      if (!n) continue;
-      if (!out.has(p.id)) out.set(p.id, []);
-      out.get(p.id).push({ car: c.id, name: c.name, drives: n });
+/**
+ * Drives per car at each place: the API has them one car at a time (GET /places?car=). The cars are asked a few at a
+ * time and only until every drive in `totals` is found (Map place id -> the drives of every car together, a place's own
+ * count, which is the sum of the cars'): a car not asked by then has no drive at any of those places. The cars in
+ * `first` (a Set of ids: those known to have stopped there, see stoppedAt) are asked first, then the last active, so
+ * the cars with drives are found early. Without `totals` every car is asked. `known` (Map car id -> [[place id,
+ * drives]]) is what was read before and is added to; a caller that keeps it asks again only for the cars it took out.
+ * Answers { by: Map place id -> [{ car, name, drives }] (most first), failed: [car] whose read failed }.
+ */
+const CARS_AT_ONCE = 4;
+async function drivesByCar(ctx, cars, { totals = null, known = new Map(), first = null } = {}) {
+  const left = totals ? new Map(totals) : null;
+  const found = (rows) => { if (left) for (const [pid, n] of rows) left.set(pid, (left.get(pid) || 0) - n); };
+  const allFound = () => !!left && [...left.values()].every((n) => n <= 0);
+  for (const c of cars) if (known.has(c.id)) found(known.get(c.id));
+  const queue = cars.filter((c) => !known.has(c.id)).sort((a, b) => (first?.has(b.id) ? 1 : 0) - (first?.has(a.id) ? 1 : 0) || (b.last_activity_ms || 0) - (a.last_activity_ms || 0));
+  const failed = [];
+  const worker = async () => {
+    while (queue.length && !allFound() && ctx.alive()) {
+      const c = queue.shift();
+      try {
+        const rows = (await ctx.api.list('places', { car: c.id, sort: 'drives' }, { max: 1000 }).all()).filter((p) => p.counts?.drives).map((p) => [p.id, p.counts.drives]);
+        known.set(c.id, rows);
+        found(rows);
+      } catch (e) {
+        if (!ctx.api.isAbort?.(e)) failed.push(c);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: CARS_AT_ONCE }, worker));
+  const by = new Map();
+  for (const c of cars) {
+    for (const [pid, n] of known.get(c.id) || []) {
+      if (!by.has(pid)) by.set(pid, []);
+      by.get(pid).push({ car: c.id, name: c.name, drives: n });
     }
   }
-  for (const v of out.values()) v.sort((a, b) => b.drives - a.drives || a.name.localeCompare(b.name));
-  return out;
+  for (const v of by.values()) v.sort((a, b) => b.drives - a.drives || a.name.localeCompare(b.name));
+  return { by, failed };
+}
+/**
+ * The cars that have stopped at a saved place (`place`: at that one), all time, from one read of the stops grouped by
+ * place: a Set of car ids, or null when it cannot be read. Only a hint for the order drivesByCar asks in.
+ */
+async function stoppedAt(ctx, place = null) {
+  try {
+    const rows = await ctx.api.list('visits/places', { cars: 'all', place }, { max: 1000 }).all();
+    return new Set(rows.filter((r) => r.place?.id && (!place || r.place.id === place)).flatMap((r) => r.cars || []));
+  } catch (e) {
+    if (ctx.api.isAbort?.(e)) throw e;
+    return null;
+  }
+}
+/** Every place's drives (all cars together) for drivesByCar, or null when they cannot all be known (a failed read, or more places than one read holds). */
+async function driveTotals(ctx) {
+  try {
+    const rows = await ctx.api.list('places', { sort: 'drives' }, { max: 1000 }).all();
+    return rows.length < 1000 ? new Map(rows.filter((p) => p.counts?.drives).map((p) => [p.id, p.counts.drives])) : null;
+  } catch (e) {
+    if (ctx.api.isAbort?.(e)) throw e;
+    return null;
+  }
 }
 const fix5 = (v) => (v == null ? DASH : Number(v).toFixed(5));
 const posText = (lat, lon) => `${fix5(lat)}, ${fix5(lon)}`;
@@ -175,13 +222,19 @@ async function mountList(ctx, q) {
   ctx.setCrumbs([{ label: 'All cars', href: '/' }, { label: 'Places' }]);
   ctx.setTitle('Places');
 
+  // a side read that failed is said (the banner below, the suggestions' own line), never shown as "none"
+  let carsErr = null, suggErr = null;
   const [cars, sugg] = await Promise.all([
-    ctx.api.list('cars', { sort: 'name' }, { max: 500 }).all().catch(() => []),
-    ctx.api.get('places/suggestions', { limit: 8 }).catch(() => null),
+    ctx.api.list('cars', { sort: 'name' }, { max: 500 }).all().catch((e) => { carsErr = e; return []; }),
+    ctx.api.get('places/suggestions', { limit: 8 }).catch((e) => { suggErr = e; return null; }),
   ]);
   if (!ctx.alive()) return;
   const carName = Object.fromEntries(cars.map((c) => [c.id, c.name]));
-  let byCar = await drivesByCar(ctx, cars);
+  // drives per car: what was read is kept per car, and a car is read again only when its rows changed
+  const perCar = new Map();
+  const [totals0, first] = await Promise.all([driveTotals(ctx), stoppedAt(ctx)]);
+  if (!ctx.alive()) return;
+  let { by: byCar, failed: carsFailed } = await drivesByCar(ctx, cars, { totals: totals0, known: perCar, first });
   if (!ctx.alive()) return;
 
   const countEl = h('span', null, 'Saved places');
@@ -247,15 +300,17 @@ async function mountList(ctx, q) {
   const historyCell = (p) => {
     const nc = p.counts?.charges || 0, nd = p.counts?.drives || 0, nv = p.counts?.visits || 0;
     const per = byCar.get(p.id) || [];
+    const split = per.reduce((n, x) => n + x.drives, 0);   // less than nd when a car's drives could not be read
     const charges = nc ? h('a', { class: 'link', href: chargesHref(p.id), title: 'Every charge here, every car, all time' }, plural(nc, 'charge', 'charges'))
       : h('span', { class: 'faint' }, 'No charges');
     let drives;
     if (!nd) drives = h('span', { class: 'faint' }, 'No drives');
-    else if (per.length === 1) drives = h('a', { class: 'link', href: drivesHref(per[0].car, p.id), title: `${per[0].name}’s drives that start or end here, all time` }, plural(nd, 'drive', 'drives'), h('span', { class: 'faint' }, ` (${per[0].name})`));
+    else if (per.length === 1 && split >= nd) drives = h('a', { class: 'link', href: drivesHref(per[0].car, p.id), title: `${per[0].name}’s drives that start or end here, all time` }, plural(nd, 'drive', 'drives'), h('span', { class: 'faint' }, ` (${per[0].name})`));
     else if (per.length) {
       drives = h('span', null, `${plural(nd, 'drive', 'drives')}: `, per.slice(0, 3).map((x, i) => [i ? h('span', { class: 'faint' }, ', ') : null,
         h('a', { class: 'link', href: drivesHref(x.car, p.id), title: `${x.name}’s drives that start or end here, all time` }, `${x.name} ${formatNumber(x.drives)}`)]),
-        per.length > 3 ? h('span', { class: 'faint' }, ` +${per.length - 3} more in the editor`) : null);
+        per.length > 3 ? h('span', { class: 'faint' }, ` +${per.length - 3} more in the editor`) : null,
+        split < nd ? h('span', { class: 'faint' }, `, ${formatNumber(nd - split)} of a car not read`) : null);
     } else drives = h('span', null, plural(nd, 'drive', 'drives'));
     return h('span', { class: 'pl-hist' }, charges, drives, h('span', { class: nv ? 'sub' : 'sub faint' }, nv ? plural(nv, 'stop', 'stops') : 'No stops'));
   };
@@ -369,22 +424,50 @@ async function mountList(ctx, q) {
       { key: 'name', label: '', csv: false, cover: 'web.geofences.form.entry-from-dashboards',
         render: (s) => (admin ? h('a', { class: 'btn btn--sm', href: newUrl({ lat: s.lat.toFixed(5), lon: s.lon.toFixed(5), radius: s.radius_m || R_NEW, origin: 'suggestion', name: suggName(s), kind: KIND_LABEL[s.kind] ? s.kind : null }) }, icon('plus', 'ico--sm'), 'Name it') : h('span', { class: 'faint' }, 'Admin only')) },
     ],
-    empty: () => emptyState({ icon: 'check', title: 'No suggestions', text: 'Every spot where the cars stop often already lies inside a saved place.' }),
+    empty: () => (suggErr ? emptyState({ icon: 'warn', title: 'Suggestions could not be loaded', text: suggErr.message })
+      : emptyState({ icon: 'check', title: 'No suggestions', text: 'Every spot where the cars stop often already lies inside a saved place.' })),
   });
 
+  // a car whose drives per place could not be read: said, with a way to read them again (never shown as no drives)
+  const failedText = h('p', null);
+  const failedBox = h('div', { class: 'pl-banner', role: 'status', hidden: true }, icon('warn'), failedText,
+    h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onclick: async (e) => {
+      const b = e.currentTarget;
+      b.disabled = true;
+      await refreshCounts();
+      b.disabled = false;
+      if (ctx.alive()) table.reload(params());
+    } }, icon('reset', 'ico--sm'), 'Try again'));
+  function paintFailed() {
+    failedBox.hidden = !carsFailed.length && !carsErr;
+    if (carsErr) { failedText.textContent = `The cars could not be loaded (${carsErr.message}), so the History column shows each place’s drives of every car together. Load the page again to see them per car.`; failedBox.querySelector('button').hidden = true; return; }
+    if (carsFailed.length) failedText.textContent = `The drives per car could not be read for ${carsFailed.length === 1 ? carsFailed[0].name : `${carsFailed[0].name} and ${plural(carsFailed.length - 1, 'more car', 'more cars')}`}. The History column shows each place’s drives of every car together, and names only the cars that were read.`;
+  }
+  paintFailed();
+
   replace(ctx.view, h('div', { class: 'places-page' },
-    head, missingBox, intro, filters, emptyBox, table.el,
+    head, missingBox, intro, filters, failedBox, emptyBox, table.el,
     h('div', { class: 'pl-lower' }, mapPanel, suggTable.el)));
 
   const reloadAll = () => { table.reload(params()); loadMap(); };
-  const refreshCounts = async () => { const b = await drivesByCar(ctx, cars); if (ctx.alive()) byCar = b; };
+  // `again`: the cars whose rows changed (their counts are read again); the others keep what was read
+  async function refreshCounts(again = []) {
+    for (const id of again) perCar.delete(id);
+    const r = await drivesByCar(ctx, cars, { totals: await driveTotals(ctx), known: perCar, first });
+    if (!ctx.alive()) return;
+    byCar = r.by; carsFailed = r.failed;
+    paintFailed();
+  }
   let liveT = 0;
-  ctx.events('rows', () => { clearTimeout(liveT); liveT = setTimeout(async () => {
-    await refreshCounts();
+  const changed = new Set();
+  ctx.events('rows', (ev) => { if (ev?.data?.car) changed.add(ev.data.car); clearTimeout(liveT); liveT = setTimeout(async () => {
+    const again = [...changed];
+    changed.clear();
+    await refreshCounts(again);
     if (!ctx.alive()) return;
     table.reload(params());
     const s = await ctx.api.get('places/suggestions', { limit: 8 }).catch(() => null);
-    if (s && ctx.alive()) suggTable.setRows(s.items || []);
+    if (s && ctx.alive()) { suggErr = null; suggTable.setRows(s.items || []); }
   }, 1000); });
   ctx.onCleanup(() => clearTimeout(liveT));
 
@@ -438,10 +521,17 @@ async function mountEditor(ctx, q) {
   const admin = ctx.admin;
   const isNew = !q.place;
   let cur = null;
-  const [placesAll, cars] = await Promise.all([
-    ctx.api.list('places', { sort: 'name' }, { max: 1000 }).all().catch(() => []),
-    ctx.api.list('cars', { sort: 'last_activity', dir: 'desc' }, { max: 200 }).all().catch(() => []),
-  ]);
+  // the other places are what the editor checks overlaps against: without them it cannot say which place wins
+  let placesAll, cars;
+  try {
+    [placesAll, cars] = await Promise.all([
+      ctx.api.list('places', { sort: 'name' }, { max: 1000 }).all(),
+      ctx.api.list('cars', { sort: 'last_activity', dir: 'desc' }, { max: 200 }).all().catch(() => []),
+    ]);
+  } catch (e) {
+    if (ctx.alive()) ctx.fail(e, { retry: () => ctx.reload() });
+    return;
+  }
   if (!ctx.alive()) return;
   if (!isNew) {
     try { cur = await ctx.api.get(`places/${enc(q.place)}`); } catch (e) {
@@ -709,13 +799,17 @@ async function mountEditor(ctx, q) {
   // all time, like the counts; drives only for the cars that drove here
   const drillLinks = cur ? h('p', { class: 'pl-drill' }, h('span', { class: 'faint' }, 'All time: ')) : null;
   if (cur) {
-    const per = (cur.counts?.drives ? (await drivesByCar(ctx, cars)).get(cur.id) : null) || [];
+    // only this place's drives are looked for: the cars are asked until all of them are found
+    const read = cur.counts?.drives ? await drivesByCar(ctx, cars, { totals: new Map([[cur.id, cur.counts.drives]]), first: await stoppedAt(ctx, cur.id) }) : { by: new Map(), failed: [] };
     if (!ctx.alive()) return;
+    const per = read.by.get(cur.id) || [];
+    const unread = read.failed.length && per.reduce((n, x) => n + x.drives, 0) < (cur.counts?.drives || 0);
     const dot = () => h('span', { class: 'faint', 'aria-hidden': 'true' }, ' · ');
     drillLinks.append(
       cur.counts?.charges ? h('a', { class: 'link', href: chargesHref(cur.id) }, `${plural(cur.counts.charges, 'charge', 'charges')} here, every car`) : h('span', { class: 'faint' }, 'no charges here yet'),
       ...(per.length ? per.flatMap((x) => [dot(), h('a', { class: 'link', href: drivesHref(x.car, cur.id) }, `${x.name}’s ${plural(x.drives, 'drive', 'drives')} here`)])
-        : [dot(), h('span', { class: 'faint' }, 'no drives start or end here yet')]));
+        : [dot(), h('span', { class: 'faint' }, unread ? 'the drives here could not be read per car' : 'no drives start or end here yet')]),
+      ...(per.length && unread ? [dot(), h('span', { class: 'faint' }, `the drives of ${plural(read.failed.length, 'car', 'cars')} could not be read`)] : []));
   }
   const effPanel = panel({ title: 'Effect on history', icon: 'timeline', cls: 'pl-effect', cover: 'web.geofences.form.relabel-history' },
     note('Names follow the place as it is now: saving renames every drive, charge and stop inside the circle, including those recorded before the place existed. Moving or shrinking it can take the name off some. Nothing below has changed yet.'),

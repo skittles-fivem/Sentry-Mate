@@ -87,9 +87,10 @@ function setActive(i) {
 }
 
 function choose(car) {
+  const page = wanted;
   dlg.close();
   state.rememberCar(car.id, { sold: state.isSold(car) });
-  state.navigate(state.linkForCar(car.id));
+  state.navigate(page ? state.linkTo(page, { car: car.id }) : state.linkForCar(car.id));
 }
 
 function build() {
@@ -109,9 +110,32 @@ function build() {
   document.body.append(dlg);
 }
 
+/* ---------- a link to a page of one car while no car is known
+ * No car was opened in this browser yet, or the server has none: state.linkTo answers All cars for such a page, and a
+ * click would load All cars again without a word. carLink(a, page) sets the link's address and, while that is so, makes
+ * a click open the switcher instead: it lists the cars to open that page for, or says that there is no car yet. */
+let wanted = null;   // the page the switcher was opened for (a chosen car opens it), else null: the page shown
+const carLinks = new WeakSet();
+export function carLink(a, page) {
+  const href = state.linkTo(page);
+  a.setAttribute('href', href);
+  if (page !== 'fleet' && href === state.buildUrl('fleet')) { a.dataset.needsCar = page; a.setAttribute('aria-haspopup', 'dialog'); }
+  else { delete a.dataset.needsCar; a.removeAttribute('aria-haspopup'); }
+  if (carLinks.has(a)) return;
+  carLinks.add(a);
+  a.addEventListener('click', (e) => {
+    const to = a.dataset.needsCar;
+    if (!to || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    openCarSwitcher();
+    wanted = to;
+  });
+}
+
 /** Open the car switcher. */
 export function openCarSwitcher() {
   if (!dlg) build();
+  wanted = null;
   input.value = '';
   showSold = false;
   replace(list, h('p', { class: 'sw-more' }, 'Loading the cars …'));

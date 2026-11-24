@@ -12,7 +12,7 @@
 // - Live: a drive that starts or ends ("rows" events with kind "drives") loads the rows in view again.
 
 import * as state from '../shared/state.js';
-import { h, replace } from '../shared/dom.js';
+import { h, replace, keepFocus } from '../shared/dom.js';
 import { formatDate, formatTime, formatDuration, dayKey, MINUTE } from '../shared/time.js';
 import { formatNumber } from '../shared/i18n.js';
 import { icon } from '../core/icons.js';
@@ -268,7 +268,13 @@ export async function mount(ctx) {
     rulesSlot);
   const placeName = (pid) => (pid == null ? 'anywhere that is not a saved place' : (places.find((p) => p.id === pid)?.name || `place ${pid}`));
 
+  let rulesErr = null;   // the rules' read failed: said as that, with a way to read again, not as "no rules yet"
   function paintRules() {
+    if (rulesErr) {
+      replace(rulesSlot, h('p', { class: 'note warn', role: 'status' }, `The rules could not be loaded: ${rulesErr.message} `,
+        h('button', { class: 'btn btn--sm', type: 'button', onclick: () => loadRules() }, icon('reset', 'ico--sm'), 'Try again')));
+      return;
+    }
     if (!rules.length) {
       replace(rulesSlot, emptyState({ icon: 'flag', title: 'No rules yet', text: admin ? 'Add one for the trips you make every week, and their drives get a purpose by themselves.' : 'An admin can add rules for trips that repeat.' }));
       return;
@@ -296,7 +302,7 @@ export async function mount(ctx) {
   }
   async function loadRules() {
     const [rl, pl] = await Promise.all([
-      ctx.api.get(rulesPath, { limit: 500 }).catch(() => ({ items: [] })),
+      ctx.api.get(rulesPath, { limit: 500 }).then((x) => { rulesErr = null; return x; }, (e) => { rulesErr = e; return { items: [] }; }),
       ctx.api.list('places', { sort: 'name' }, { limit: 500 }).all({ max: 2000 }).catch(() => []),
     ]);
     if (!ctx.alive()) return;
@@ -388,7 +394,8 @@ export async function mount(ctx) {
   let busy = null;
   function refresh() {
     if (busy) return busy;
-    busy = Promise.all([loadLogbook(true), loadRules()]).catch((err) => { if (ctx.alive()) flash(err?.message || 'The logbook could not be loaded again.', { kind: 'error' }); })
+    // (the rows are drawn again: the button that had the focus, a drive's purpose, has it again in the new row)
+    busy = keepFocus(ctx.view, () => Promise.all([loadLogbook(true), loadRules()]).catch((err) => { if (ctx.alive()) flash(err?.message || 'The logbook could not be loaded again.', { kind: 'error' }); }))
       .finally(() => { busy = null; });
     return busy;
   }

@@ -18,7 +18,7 @@ import { icon, brandMark } from './icons.js';
 import { GROUPS, pagesIn, pageInfo } from './pages.js';
 import { periodPicker, setPeriodShown } from './period.js';
 import { openFinder } from './finder.js';
-import { openCarSwitcher, SWITCH_KEYS } from './carswitch.js';
+import { openCarSwitcher, carLink, SWITCH_KEYS } from './carswitch.js';
 import { accountMenu, toggleAccountMenu, roleText } from './account.js';
 import { initNotices, loadNotices, onNotices } from './notices.js';
 import { initFlash } from './flash.js';
@@ -181,7 +181,7 @@ function showTabs(activePage) {
   if (!els.tabs) return;
   let any = false;
   for (const [id, a] of els.tabs) {
-    a.setAttribute('href', state.linkTo(id));
+    carLink(a, id);
     const on = id === activePage;
     any ||= on;
     if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
@@ -357,6 +357,7 @@ function onKey(e) {
   if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === 'k' || e.key === 'K')) {
     if (document.documentElement.dataset.screen === 'bare') return;
     e.preventDefault();
+    if (document.querySelector('dialog[open]')) return; // one dialog at a time (the finder, the switcher itself)
     openCarSwitcher();
   } else if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey && document.documentElement.dataset.screen !== 'bare') {
     if (document.querySelector('dialog[open]')) return;
@@ -397,7 +398,7 @@ export async function update({ s, info, car, period, tz = null }) {
   const page = info?.id || s.page;
   const activePage = info?.parent || page;
   for (const [id, a] of els.navLinks || []) {
-    a.setAttribute('href', state.linkTo(id));
+    carLink(a, id);
     if (id === activePage) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   }
   for (const g of document.querySelectorAll('.nav-group')) {

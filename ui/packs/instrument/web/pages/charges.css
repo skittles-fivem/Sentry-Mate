@@ -219,7 +219,9 @@
 :root[data-phone] .charges-table .col-place .cell-text, :root[data-phone] .places-table .cell-text { max-width: none; }
 :root[data-phone] .charges-page .cost-link { min-height: var(--tap); }
 :root[data-phone] .charges-page .stats-scope { min-width: 0; }
-:root[data-phone] .charges-page .panel-side { justify-content: flex-start; }
+:root[data-phone] .charges-page .panel-side { justify-content: flex-start; max-width: 100%; }
+/* ("Follows the period: ..." takes a second line where it is wider than the panel, at a large Interface size) */
+:root[data-phone] .charges-page .panel-side > .btn { max-width: 100%; height: auto; min-height: round(2rem, var(--e)); padding-block: round(0.25rem, var(--e)); white-space: normal; justify-content: flex-start; text-align: left; }
 :root[data-phone] .charges-page .chart-read { white-space: normal; overflow-wrap: anywhere; }
 :root[data-phone="tall"] .weekmap-x { grid-column: span 6; }
 :root[data-phone="tall"] .weekmap-x:nth-child(odd) { display: none; }
@@ -229,5 +231,6 @@
 :root[data-phone] .charges-page .places-map { height: min(round(22rem, var(--e)), 60svh); }
 :root[data-phone] .charges-page .curve-chart { height: min(round(17rem, var(--e)), 60svh); }
 :root[data-phone="short"] .charges-page .delta-chart { height: min(round(13rem, var(--e)), 55svh); }
-:root[data-phone] .socmap, :root[data-phone] .socmap-axis { grid-template-columns: round(4.75rem, var(--e)) repeat(var(--n), minmax(0, 1fr)); }
+/* (the labels are never under the phone's smallest text size: their column keeps room for "90–100 %" at a small Interface size) */
+:root[data-phone] .socmap, :root[data-phone] .socmap-axis { grid-template-columns: max(round(4.75rem, var(--e)), round(calc(5.4 * var(--fs-floor)), var(--e))) repeat(var(--n), minmax(0, 1fr)); }
 :root[data-phone] .socmap-y { padding-right: round(0.375rem, var(--e)); }

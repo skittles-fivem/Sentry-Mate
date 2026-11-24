@@ -3,7 +3,7 @@ everywhere at once (drives, charges, timeline, visits), costs stay until reprice
 
 from __future__ import annotations
 
-from .helpers import DAY, NOW, ServerCase
+from .helpers import DAY, NOW, Running, ServerCase
 
 LA = {"lat": 34.0522, "lon": -118.2437}  # a made-up stop in downtown Los Angeles on c1's road trip
 
@@ -34,6 +34,19 @@ class PlacesRead(ServerCase):
         self.assertTrue(all(x["counts"]["drives"] <= fleet[x["id"]]["counts"]["drives"] for x in rows))
         self.assertTrue(any(x["counts"]["drives"] < fleet[x["id"]]["counts"]["drives"] for x in rows))
         self.c.error("GET", "/api/v1/places?car=c999", 404, "no_such_car")
+
+    def test_counts_for_a_car_without_history(self):
+        # a car with a summary only (c4 and up in a larger fleet) answers every place with no drive, never a 500
+        big = Running(cars=6)
+        try:
+            c = big.client()
+            for car in ("c4", "c5"):
+                self.assertEqual(c.get(f"/api/v1/cars/{car}")["id"], car)
+                rows = c.get(f"/api/v1/places?car={car}&sort=drives&limit=100")["items"]
+                self.assertTrue(rows)
+                self.assertTrue(all(x["counts"] == {"drives": 0, "charges": 0, "visits": 0} for x in rows))
+        finally:
+            big.close()
 
     def test_nearest_centre_wins(self):
         # Home (60 m) sits inside Noe Valley (400 m): at Home's centre, Home wins and both are candidates

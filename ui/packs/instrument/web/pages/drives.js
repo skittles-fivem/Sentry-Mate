@@ -77,7 +77,8 @@ export async function mount(ctx) {
   // places for the filters: every page of /places, with this car's counts, the places it drove to or from
   // most first. Places it never drove to are left out (a filter on them finds nothing), unless one is chosen.
   let allPlaces = [];
-  try { allPlaces = await placesRead(ctx); } catch { allPlaces = []; }
+  let placesErr = null;   // said under the filters: the pick lists are empty because the read failed, not because there is no place
+  try { allPlaces = await placesRead(ctx); } catch (e) { placesErr = e; allPlaces = []; }
   if (!ctx.alive()) return;
   const chosen = new Set([...(f.places ? f.places.split(',') : []), ...(f.exclude ? f.exclude.split(',') : [])]);
   const places = allPlaces.filter((p) => (p.counts?.drives || 0) > 0 || chosen.has(p.id));
@@ -109,7 +110,8 @@ export async function mount(ctx) {
     : 'Consumption, efficiency and the summary are plain: all the energy the drive took. Efficiency is the rated consumption against it (100 % = as rated).');
   paintEffHint();
   const filterHint = h('p', { class: 'note filters-hint', cover: ['drives.filter.location.hint'] },
-    h('span', null, 'The text box keeps drives whose start or destination contains the text, in the place name or the address. '), effHint);
+    h('span', null, 'The text box keeps drives whose start or destination contains the text, in the place name or the address. '), effHint,
+    placesErr ? h('span', { class: 'warn', role: 'status' }, ` The places could not be loaded (${placesErr.message}), so the place filters are empty: load the page again to use them.`) : null);
   // the basis named on the columns and the tile it changes
   const basisTag = () => (hill() ? ' (hill corrected)' : '');
   const whHead = h('span'); const effHead = h('span');

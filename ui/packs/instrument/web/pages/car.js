@@ -612,7 +612,9 @@ export async function mount(ctx) {
     const qs = { from_ms: from, to_ms: to };
     const ideal = rk === 'ideal_range_km';
     const reads = windowReads(ctx);
-    const [stats, series, act, charges] = await Promise.all([reads[0].catch(() => null), reads[1], reads[2], reads[3].catch(() => ({ items: [] }))]);
+    // a read that failed is said as that, never shown as "there is none"
+    let chargesErr = null;
+    const [stats, series, act, charges] = await Promise.all([reads[0].catch(() => null), reads[1], reads[2], reads[3].catch((e) => { chargesErr = e; return { items: [] }; })]);
     if (!ctx.alive()) return;
     const row = stats?.items?.[0] || {};
     // a period with no data is not a period the car stood still: say which it was
@@ -660,7 +662,7 @@ export async function mount(ctx) {
     await loadUPlot();
     if (!ctx.alive()) return;
     batteryChart(battEl, battLegend, series, rk, from, to);
-    await chargingChart(chgEl, supEl, chgLegend, curveNote, chargesIn(charges.items, from, to), from, to);
+    await chargingChart(chgEl, supEl, chgLegend, curveNote, chargesIn(charges.items, from, to), from, to, chargesErr);
     });
   }
 
@@ -747,10 +749,11 @@ export async function mount(ctx) {
     plots.batt = mountPlot(el, make, [xs, soc, usable, range], ctx);
   }
 
-  async function chargingChart(el, supEl, legendHost, noteEl, charges, from, to) {
+  async function chargingChart(el, supEl, legendHost, noteEl, charges, from, to, failed = null) {
     // the curves of the charges in the period, on one time axis, broken between sessions
     const sorted = [...charges].sort((a, b) => a.start_ms - b.start_ms).slice(-10);
-    const curves = await Promise.all(curveReads(ctx, charges).map((p) => p.catch(() => null)));
+    let curveErr = null;
+    const curves = await Promise.all(curveReads(ctx, charges).map((p) => p.catch((e) => { curveErr = e; return null; })));
     if (!ctx.alive()) return;
     const T = [], P = [], E = [], V = [], A = [], HT = [];
     let addedInWin = 0;
@@ -779,7 +782,8 @@ export async function mount(ctx) {
       if (last != null) { T.push(last + 1); P.push(null); E.push(null); HT.push(null); V.push(null); A.push(null); }
     });
     for (const x of [el, supEl, legendHost]) x.hidden = !T.length;
-    noteEl.textContent = !T.length ? 'No charging in this period. Choose a longer period in the period picker to see past charges here.' : `${sorted.length} ${sorted.length === 1 ? 'charge' : 'charges'} in the period${charges.length > 10 ? ' (the 10 newest)' : ''}. For a DC charge, volts and amps are the charger’s own. Battery heating is the heater’s power.`;
+    noteEl.textContent = !T.length && (failed || curveErr) ? `The ${failed ? 'charges' : 'charging curves'} of this period could not be loaded: ${(failed || curveErr).message}`
+      : !T.length ? 'No charging in this period. Choose a longer period in the period picker to see past charges here.' : `${sorted.length} ${sorted.length === 1 ? 'charge' : 'charges'} in the period${charges.length > 10 ? ' (the 10 newest)' : ''}. For a DC charge, volts and amps are the charger’s own. Battery heating is the heater’s power.`;
     if (!T.length) return;
     const maxOf = (a) => Math.max(0, ...a.filter((v) => v != null));
     const entries = [

@@ -206,8 +206,19 @@ export function dataTable(ctx, opts) {
     return Array.from({ length: n }, () => h('tr', { class: 'tbl-skel', 'aria-hidden': 'true' }, columns.map(() => h('td', null, h('span', { class: 'skel' })))));
   }
 
+  // The empty note (or the error) of a table wider than its box: it stays in the part of the table that is in
+  // view, as wide as that part, so it is centred there and never cut. --tbl-view is the box's inner width.
+  let viewWatch = null;
   function emptyRow(node) {
-    return h('tr', { class: 'tbl-empty' }, h('td', { colspan: String(columns.length) }, node));
+    if (!viewWatch && typeof ResizeObserver === 'function') {
+      viewWatch = new ResizeObserver(() => {
+        const cs = getComputedStyle(scroller);
+        scroller.style.setProperty('--tbl-view', `${Math.max(0, scroller.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight))}px`);
+      });
+      viewWatch.observe(scroller);
+      ctx.onCleanup?.(() => viewWatch.disconnect());
+    }
+    return h('tr', { class: 'tbl-empty' }, h('td', { colspan: String(columns.length) }, h('div', { class: 'tbl-empty-view' }, node)));
   }
 
   function setCount() {

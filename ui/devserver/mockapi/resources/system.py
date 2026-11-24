@@ -13,6 +13,7 @@ import copy
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import ipaddress
 import re
+import time
 
 from .. import derive
 from ..conventions import Response, json_bytes, page
@@ -678,12 +679,25 @@ def rebuild(req):
            "pending_until": req.now + min(took, 5000), "kinds": ["drives", "charges", "states", "visits"]}
     with st.lock:
         st.rebuilds.setdefault(req.car, []).append(job)
+    # the period as it was asked for, as the server's audit entry says it (an open end is said as one)
+    def day(ms):
+        return time.strftime("%Y-%m-%d UTC", time.gmtime(ms / 1000))
+    if "from_ms" in body and "to_ms" in body:
+        n = max(1, -(-(b - a) // DAY))
+        span = f"{n} day{'' if n == 1 else 's'} from {day(a)}"
+    elif "from_ms" in body:
+        span = f"everything from {day(a)} on"
+    elif "to_ms" in body:
+        span = f"everything up to {day(b)}"
+    else:
+        span = "the whole history"
     st.record(req.account, "car-rebuild", f"car:{req.car}",
-              f"Rebuilt drives, charges, states and visits of {st.car_meta(req.car)['name']} "
-              f"from the stored logs ({days} days).")
+              f"Rebuilt {st.car_meta(req.car)['name']}'s drives, charges, states and visits "
+              f"from the stored logs ({span}).")
     req.app.events.publish("rows", {"car": req.car, "kinds": job["kinds"], "from_ms": a, "to_ms": b}, car=req.car)
+    logs = int(days * 1440 * 0.6)
     return {"car": req.car, "job": job["id"], "status": "done", "from_ms": a, "to_ms": b, "kinds": job["kinds"],
-            "logs_read": int(days * 1440 * 0.6), "took_ms": took}
+            "logs_read": logs, "logs_total": logs, "took_ms": took}
 
 
 # ------------------------------------------------------------------ the car's own GPS layout
