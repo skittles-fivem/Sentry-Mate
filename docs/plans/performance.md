@@ -282,6 +282,34 @@ on the phone. Four causes, each its own commit:
   Integrations (reads made after the page is drawn, looked at next).
 - Long tasks per cold phone load 970 → 741 ms (fewer answers to parse and draw twice).
 
+#### The phone's network for the service worker too: a corrected baseline
+
+The harness slowed the page's network with Chrome's `Network.emulateNetworkConditions`, which does not reach the
+service worker's own requests: a warm or in-app read the worker passed to the server cost about 6 ms instead of a
+round trip (150 ms) and its bytes at 1.44 Mbit/s. **Every phone warm and nav figure above, and the cold ones, were
+measured without the service worker slowed**, so they are too low. The harness now attaches to each service worker as
+it starts (`Target.setAutoAttach`, through a debugging port of its own) and sets the same conditions there; the
+results say `service_worker_throttled`, and `--no-sw-throttle` gives the old way. It also no longer counts a read the
+worker answers from its memory (`X-Sentry-Mate-Stale`) as a duplicate request: those are `memory_api_gets`.
+
+With it, the same pages (Instrument's 8; phone means of 3 runs, desktop one run):
+
+| run | phone cold TTU | cold view ready | cold FCP | warm TTU | warm FCP | nav | desktop cold | warm | nav |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| origin/main `ea7ad752`, worker not slowed (as before) | 3789 | – | 1607 | 905 | 310 | 597 | 571 | 359 | 172 |
+| origin/main `ea7ad752`, worker slowed | 8780 | 4618 | 1613 | 2108 | 327 | 1107 | 552 | 341 | 176 |
+| + one snap, the session read with set-up | 8669 | 4489 | 1619 | 2122 | 334 | 1041 | 523 | 342 | 162 |
+
+- With the worker slowed a phone page waits for its reads again: warm 0.9 → 2.1 s, nav 0.6 → 1.1 s. The desktop is
+  not throttled, so its numbers stand.
+- A cold phone TTU (8.8 s) is about 4 s after the view is ready: the other main sections' modules load on idle after
+  the first page (about 250 ms each, one after another) and TTU counts the last response. The view itself is ready
+  at about 4.6 s.
+- Two changes, each its own commit, measured on it: the loading skeleton's copy laid over the page while it is built
+  (`data-snap-over`) going away no longer runs a second whole-page snap (long tasks per warm phone load 615 → 532
+  ms); and the session check asks for the account and its preferences with `/setup`, not after it. Neither moves the
+  phone TTU beyond noise: what is left is the reads a page waits for, next.
+
 
 # Plan: page speed with a long history
 
