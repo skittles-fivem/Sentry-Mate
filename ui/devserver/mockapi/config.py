@@ -48,6 +48,7 @@ class Config:
     sse_interval_ms: int = 2000
     rows_every_s: float = 0
     rebuild_running: bool = False
+    health_list_max: int = 500
     gps_fit: str = "none"
     verbose: bool = False
     own_certificate: bool = False
@@ -89,6 +90,9 @@ def parse_args(argv=None) -> Config:
     ap.add_argument("--rebuild-running", action="store_true",
                     help="every featured car's history is being rebuilt the whole time: its health says "
                          "rebuild_pending and it gets a `rows` event every second (or every --rows-every-s)")
+    ap.add_argument("--health-list-max", type=int, default=500,
+                    help="how many (the newest) of a car's chain gaps, dropped frames and unknown spans its health "
+                         "lists; the *_total beside each counts them all (the real server: 500)")
     ap.add_argument("--gps-fit", choices=GPS_FIT, default="none",
                     help="every featured car's positions from one input are out of step (Data health's "
                          "gps_inputs_disagree, with Find GPS layout for admins), and its GPS layout fit: not run "
@@ -124,6 +128,8 @@ def parse_args(argv=None) -> Config:
         ap.error("--latency-ms must be 0 or more")
     if a.rows_every_s < 0:
         ap.error("--rows-every-s must be 0 or more")
+    if a.health_list_max < 1:
+        ap.error("--health-list-max must be 1 or more")
     if a.move_peer_after_s < 0:
         ap.error("--move-peer-after-s must be 0 or more")
     if a.needs_setup and a.export_state != "none":
@@ -137,7 +143,8 @@ def parse_args(argv=None) -> Config:
                   move_state=a.move_state, move_peer_after_s=a.move_peer_after_s,
                   export_profile=a.export_profile, export_state=a.export_state,
                   freeze_clock=a.freeze_clock, sse_interval_ms=max(200, a.sse_interval_ms),
-                  rows_every_s=a.rows_every_s, rebuild_running=a.rebuild_running, gps_fit=a.gps_fit, verbose=a.verbose,
+                  rows_every_s=a.rows_every_s, rebuild_running=a.rebuild_running, health_list_max=a.health_list_max,
+                  gps_fit=a.gps_fit, verbose=a.verbose,
                   own_certificate=a.own_certificate, map_tiles=a.map_tiles,
                   release_check=a.release_check, teslamate_trouble=a.teslamate_trouble,
                   full_rebuild=a.full_rebuild, drives=a.drives)

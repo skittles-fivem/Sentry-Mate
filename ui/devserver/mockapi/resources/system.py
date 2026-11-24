@@ -590,7 +590,8 @@ def car_health(req):
         return {"car": cid, "time_zone": req.tz(), "healthy": not reasons, "reasons": reasons,
                 "last_upload_ms": it["now"]["received_ms"], "newest_log_ms": it["now"]["received_ms"],
                 "last_log_trust": {"result": "failed" if "trust_failed" in reasons else "verified", "reason": None},
-                "keys": [], "chain_gaps": [], "dropped_frames": [], "unknown_spans": [], "unknown_ms": 0,
+                "keys": [], "chain_gaps": [], "chain_gaps_total": 0, "dropped_frames": [],
+                "dropped_frames_total": 0, "unknown_spans": [], "unknown_spans_total": 0, "unknown_ms": 0,
                 "logs_waiting": 0, "missing_logs": missing_logs(req, cid), "log_checks": log_checks(req, None, 0),
                 "rebuild_pending": pending, "gps_disagreement": gps_disagreement(req, cid), "uploads_enabled": True}
     n = now_object(req.app, cid, req.now)
@@ -637,6 +638,7 @@ def car_health(req):
                 dropped.append({"start_ms": s.start, "end_ms": s.end})
             live = s.open_end and s.end > req.now
             unknown.append({"start_ms": s.start, "end_ms": None if live else s.end, "reason": s.reason})
+    cap = req.app.cfg.health_list_max
     return {
         "car": cid, "time_zone": req.tz(), "healthy": not reasons, "reasons": reasons, "last_upload_ms": last_upload,
         # the bridge's last request and the newest log's arrival: one and the same here (a log a minute while awake)
@@ -645,12 +647,14 @@ def car_health(req):
                   "preferred": k["preferred"],
                   "device": k["device"], "device_label": device_label(k), "logs_waiting": k["logs_waiting"]}
                  for k in keys],
-        "chain_gaps": chain, "dropped_frames": dropped, "unknown_spans": unknown,
+        # each list holds the newest few (the real server: 500); its *_total counts the whole period
+        "chain_gaps": chain[-cap:], "chain_gaps_total": len(chain),
+        "dropped_frames": dropped[-cap:], "dropped_frames_total": len(dropped),
+        "unknown_spans": unknown[-cap:], "unknown_spans_total": len(unknown),
         "unknown_ms": sum(((u["end_ms"] or req.now) - u["start_ms"]) for u in unknown),
         "logs_waiting": waiting, "missing_logs": missing, "log_checks": log_checks(req, h, waiting),
         "rebuild_pending": pending, "gps_disagreement": disagree,
         "uploads_enabled": bool(toks),
-        "from_ms": a, "to_ms": min(b, req.now),
     }
 
 
