@@ -447,7 +447,18 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                 *t = t.saturating_sub(back);
             }
             self.last_seen = None;
-            // the stored copy too: the next read of the account merges its last request in
+            if let Some(t) = &mut self.last_ok_ms {
+                *t = t.saturating_sub(back);
+            }
+            self.last_ok_written_ms = self.last_ok_written_ms.saturating_sub(back);
+            // the stored copy too (the next read of the account merges its last request in), with the requests a
+            // token's check wrote meanwhile, their time moved back as well
+            if let Ok(mut stored) = self.store.pacing(&self.id) {
+                if let Some(t) = &mut stored.last_request_ms {
+                    *t = t.saturating_sub(back);
+                }
+                self.pacing.merge_requests(&stored);
+            }
             match self.store.set_pacing_exact(&self.id, &self.pacing) {
                 Ok(()) => self.saved_pacing = self.pacing.clone(),
                 Err(e) => {
