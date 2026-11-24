@@ -168,6 +168,37 @@ class Preferences(ServerCase):
         self.assertEqual((q["main_car"], q["last_car"]), (None, None))
 
 
+class OwnPassword(ServerCase):
+    def test_anyone_changes_their_own_password_and_the_other_sessions_end(self):
+        """PUT /me/password { password, new_password, code? }, as the real server: the current password again, any
+        new one but an empty or a huge one, the account's other sessions ended."""
+        w = self.server.client()
+        w.cookie = "sentry-mate=out"
+        w.json("POST", "/api/v1/session", {"name": "watch", "password": "sentry-mate-dev"})
+        other = self.server.client()
+        other.cookie = "sentry-mate=out"
+        other.json("POST", "/api/v1/session", {"name": "watch", "password": "sentry-mate-dev"})
+        path = "/api/v1/me/password"
+        w.error("PUT", path, 403, "wrong_password", body={"password": "not it", "new_password": "made-up-new-1"})
+        e, _ = w.error("PUT", path, 422, "invalid", body={"password": "sentry-mate-dev", "new_password": ""})
+        self.assertIn("new_password", e["fields"])
+        e, _ = w.error("PUT", path, 422, "invalid", body={"password": "sentry-mate-dev", "new_password": "x" * 1025})
+        self.assertIn("new_password", e["fields"])
+        w.error("PUT", path, 400, "bad_input", body={"password": "sentry-mate-dev"})
+        w.error("PUT", path, 400, "bad_input", body={"password": "sentry-mate-dev", "new_password": "a", "name": "x"})
+        self.assertEqual(other.get("/api/v1/me")["name"], "watch")
+        out = w.json("PUT", path, {"password": "sentry-mate-dev", "new_password": "made-up-new-1"})
+        self.assertEqual(out, {"signed_out_others": 1})
+        self.assertEqual(w.get("/api/v1/me")["name"], "watch")
+        other.error("GET", "/api/v1/me", 401, "not_signed_in")
+        n = self.server.client()
+        n.cookie = "sentry-mate=out"
+        n.error("POST", "/api/v1/session", 401, "wrong_credentials", body={"name": "watch", "password": "sentry-mate-dev"})
+        n.json("POST", "/api/v1/session", {"name": "watch", "password": "made-up-new-1"})
+        recent = [(e["action"], e["account"]) for e in self.c.get("/api/v1/audit?limit=5")["items"]]
+        self.assertIn(("password-changed", "watch"), recent)
+
+
 class Sessions(ServerCase):
     def test_list_and_end(self):
         c = self.server.client()
