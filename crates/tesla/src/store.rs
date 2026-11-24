@@ -152,11 +152,11 @@ struct TokensFile {
     access_expires_ms: u64,
 }
 
-/// The poller's own pacing, kept across a restart and a settings change so that a wait Tesla asked for, the daily
-/// count and a closed endpoint are not forgotten. Not part of [`Account`]: nothing outside the poller needs it.
+/// The poller's own pacing, kept across a restart and a settings change so that a wait Tesla asked for, the day's
+/// count (shown) and a closed endpoint are not forgotten. Not part of [`Account`]: nothing outside the poller needs it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pacing {
-    /// No request before this (a back-off, Tesla's wait, or midnight after the daily cap).
+    /// No request before this (a back-off, or Tesla's wait).
     #[serde(default)]
     pub backoff_until_ms: u64,
     #[serde(default)]
@@ -174,6 +174,9 @@ pub struct Pacing {
     /// How long the last access token Tesla gave lasted.
     #[serde(default)]
     pub token_lifetime_ms: Option<u64>,
+    /// The end of Tesla's last 429 wait (a 429 before it ends is the same episode).
+    #[serde(default)]
+    pub rate_limited_until_ms: u64,
 }
 
 #[derive(Serialize, Deserialize)]

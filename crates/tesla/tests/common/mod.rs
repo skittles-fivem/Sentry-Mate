@@ -353,6 +353,8 @@ pub struct MemSink {
     pub metas: Mutex<Vec<(u32, tesla::ApiMeta)>>,
     pub new_cars: Mutex<Vec<tesla::NewCar>>,
     pub changed: Mutex<Vec<tesla::AccountState>>,
+    /// Each new episode of Tesla's limiting: (account, until).
+    pub limited: Mutex<Vec<(String, u64)>>,
 }
 
 impl tesla::Sink for MemSink {
@@ -371,6 +373,9 @@ impl tesla::Sink for MemSink {
     }
     fn account_changed(&self, account: &tesla::Account) {
         self.changed.lock().unwrap().push(account.state);
+    }
+    fn rate_limited(&self, account: &tesla::Account, until_ms: u64) {
+        self.limited.lock().unwrap().push((account.id.clone(), until_ms));
     }
 }
 

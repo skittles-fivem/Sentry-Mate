@@ -77,7 +77,7 @@ async fn add_by_refresh_token_seals_the_tokens_and_never_logs_them() {
     assert_eq!(taken.code(), "car_taken");
     let missing = s.set_matches("ta1", a.version, &[("tv9".into(), None)]).unwrap_err();
     assert_eq!(missing.code(), "no_such_vehicle");
-    for _ in 0..100 {
+    for _ in 0..300 {
         if s.status().first().is_some_and(|st| st.cars.iter().any(|c| c.last_data_ms.is_some())) {
             break;
         }

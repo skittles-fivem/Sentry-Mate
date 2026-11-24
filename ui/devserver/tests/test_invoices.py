@@ -139,9 +139,11 @@ class Invoices(ServerCase):
             self.assertEqual((top["action"], top["target"]), (f"{src}-invoices-changed", f"settings:{src}-invoices"))
             # with the poll in the same PATCH, and the stale version refused
             self.c.error("PATCH", path, 409, "stale_version", body={"version": o["version"], "invoices": not want, "confirm_password": PW})
-            m = self.c.json("PATCH", path, {"version": n["version"], "invoices": not want, "poll": "gentle",
+            poll = {"idle_ms": 300_000} if src == "tesla" else "gentle"
+            m = self.c.json("PATCH", path, {"version": n["version"], "invoices": not want, "poll": poll,
                                             "confirm_password": PW})
-            self.assertEqual((m["invoices"]["enabled"], m["poll"]), (not want, "gentle"))
+            got = m["poll"]["idle_ms"] if src == "tesla" else m["poll"]
+            self.assertEqual((m["invoices"]["enabled"], got), (not want, 300_000 if src == "tesla" else "gentle"))
 
 
 class WatchSeesNone(ServerCase):

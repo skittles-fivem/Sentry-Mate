@@ -31,11 +31,11 @@ HOSTS = {"global": ["auth.tesla.com", "owner-api.teslamotors.com", "streaming.vn
 AUTH = {"global": "https://auth.tesla.com", "china": "https://auth.tesla.cn"}
 REDIRECT = {"app": lambda region: "tesla://auth/callback", "void": lambda region: AUTH[region] + "/void/callback"}
 LOCATIONS = ("driving_or_charging", "always", "never")
-PACES = {
-    "often": {"list_s": 30, "parked_s": 30, "charging_s": 15, "driving_s": 15, "driving_streaming_s": 30},
-    "normal": {"list_s": 60, "parked_s": 60, "charging_s": 30, "driving_s": 30, "driving_streaming_s": 60},
-    "gentle": {"list_s": 120, "parked_s": 300, "charging_s": 120, "driving_s": 60, "driving_streaming_s": 120},
-}
+# How often it asks (`poll`): each read at its default or slower, never faster (the default is the floor). There is
+# no cap and no gap of the server's own: Tesla does the limiting (an account's `rate_limited_until_ms`).
+POLL_DEFAULT = {"driving_ms": 2500, "charging_ms": 5000, "idle_ms": 60_000, "list_ms": 30_000}
+POLL_MIN = dict(POLL_DEFAULT)
+POLL_MAX = {"driving_ms": 600_000, "charging_ms": 1_800_000, "idle_ms": 3_600_000, "list_ms": 3_600_000}
 TOKEN_RX = re.compile(r"[\x21-\x7e]{1,8192}")
 
 
@@ -43,7 +43,7 @@ def seed(st, now):
     """One Tesla account with the two cars that have Tesla API data (c1 with SMO too, c2), and a third vehicle
     not matched yet."""
     st.tesla = {
-        "settings": {"poll": "normal", "version": 1},
+        "settings": {"poll": dict(POLL_DEFAULT), "version": 1},
         "accounts": {
             "ta1": {
                 "id": "ta1", "label": "Family account", "region": "global", "redirect": "app",
@@ -182,9 +182,12 @@ def _mode(req, a, c):
         gone = (a["last_error"] or {}).get("code") == "endpoint_gone"
         return ("off" if gone else "backoff"), "unknown"
     if c["match"] == "new" or req.ds.history(c["match"]) is None:
-        return "watching_list", "asleep"
+        return ("backoff" if limited_until(req, a) else "watching_list"), "asleep"
     from ..live import now_object
     state = now_object(req.app, c["match"], req.now).get("state")
+    if limited_until(req, a):
+        # Tesla is limiting requests: nothing is asked until its wait ends
+        return "backoff", "online" if state in ("driving", "charging", "parked") else "asleep"
     if state == "driving":
         return "driving", "online"
     if state == "charging":
@@ -199,7 +202,7 @@ def _polls_today(req, a):
     if a["paused"] or a["state"] != "ok":
         return 0
     midnight = req.now - req.now % DAY
-    return int((req.now - midnight) / 60_000 * 1.4) % 3000
+    return int((req.now - midnight) / 60_000 * 1.4)
 
 
 def _suggest(req, c):
@@ -225,6 +228,7 @@ def account_view(req, a):
         "hosts": list(HOSTS[a["region"]]), "added_ms": a["added_ms"], "status": _status_word(a),
         "paused": a["paused"], "location": a["location"], "running": True,
         "last_ok_ms": a["last_ok_ms"], "last_error": a["last_error"], "polls_today": _polls_today(req, a),
+        "rate_limited_until_ms": limited_until(req, a),
         "cars": [car_view(req, a, c) for c in a["cars"]], "version": a["version"],
     }
 
@@ -245,13 +249,69 @@ def _hosts(t):
 # ------------------------------------------------------------------ the input as a whole
 
 
+def poll(req):
+    """The intervals (ms) and the daily cap as set now."""
+    return _t(req)["settings"]["poll"]
+
+
+def _secs(ms):
+    return f"{ms // 1000} s" if ms % 1000 == 0 else f"{ms // 1000}.{ms % 1000 // 100} s"
+
+
+def _poll_words(p):
+    return (f"driving every {_secs(p['driving_ms'])}, charging every {_secs(p['charging_ms'])}, "
+            f"idle every {_secs(p['idle_ms'])}, asleep (the list) every {_secs(p['list_ms'])}")
+
+
+def _poll_of(v, old):
+    """A PATCH's `poll` over `old`, checked as the real server does: 400 for a wrong type or an unknown field,
+    422 for a value under its floor or over its ceiling, named `poll.<field>`."""
+    if not isinstance(v, dict):
+        raise bad_input({"poll": "Must be an object."})
+    extra = sorted(set(v) - set(POLL_DEFAULT))
+    if extra:
+        raise bad_input({f"poll.{k}": "Unknown field." for k in extra})
+    new = dict(old)
+    for k, x in v.items():
+        if x is None:
+            continue
+        if isinstance(x, bool) or not isinstance(x, int) or x < 0:
+            raise bad_input({f"poll.{k}": "Must be a whole number."})
+        new[k] = x
+    bad = {}
+    for k, x in new.items():
+        lo, hi = POLL_MIN[k], POLL_MAX[k]
+        if not lo <= x <= hi:
+            bad[f"poll.{k}"] = f"Must be from {_secs(lo)} to {_secs(hi)} (never faster than {_secs(lo)})."
+    if bad:
+        raise invalid(bad)
+    return new
+
+
+def poll_limits():
+    return {k: {"min": POLL_MIN[k], "default": POLL_DEFAULT[k], "max": POLL_MAX[k]} for k in POLL_DEFAULT}
+
+
+def limited_until(req, a):
+    """When Tesla's 429 wait of the account ends, while it lasts (a test or a page check sets
+    `rate_limited_until_ms` on the account)."""
+    t = a.get("rate_limited_until_ms")
+    return t if t and t > req.now and not a["paused"] and a["state"] == "ok" else None
+
+
+def _utc_minute(ms):
+    import datetime
+    return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
 def overview(req):
     t = _t(req)
-    poll = t["settings"]["poll"]
     return {
         "enabled": bool(t["accounts"]), "accounts": len(t["accounts"]), "cars": _matched(t), "hosts": _hosts(t),
-        "poll": poll, "polls": dict(PACES[poll], daily_cap=3000),
-        "polls_today": sum(_polls_today(req, a) for a in t["accounts"].values()), "last_error": _last_error(t),
+        "poll": dict(poll(req)), "poll_limits": poll_limits(),
+        "polls_today": sum(_polls_today(req, a) for a in t["accounts"].values()),
+        "rate_limited_until_ms": max((u for a in t["accounts"].values() if (u := limited_until(req, a))), default=None),
+        "last_error": _last_error(t),
         "clients_built": t["clients_built"], "version": t["settings"]["version"],
         "invoices": invoices.block(req, "tesla"),
     }
@@ -260,9 +320,9 @@ def overview(req):
 def patch_overview(req):
     body = req.json()
     _only(body, ("version", "poll", "invoices", "confirm_password", "code"))
-    poll = _str(body, "poll")
-    if poll is not None and poll not in PACES:
-        raise invalid({"poll": "Must be often, normal or gentle."})
+    new_poll = None
+    if body.get("poll") is not None:
+        new_poll = _poll_of(body["poll"], POLL_DEFAULT)  # checked before the password, as the real server does
     inv = invoices.patch_value(body)
     reconfirm(req, body)
     st = req.store
@@ -270,11 +330,13 @@ def patch_overview(req):
     with st.lock:
         req.version_check(s["version"])
         changed = False
-        if poll is not None and poll != s["poll"]:
-            s["poll"] = poll
+        if new_poll is not None:
+            new_poll = _poll_of(body["poll"], s["poll"])
+        if new_poll is not None and new_poll != s["poll"]:
+            s["poll"] = new_poll
             changed = True
             st.record(req.account, "tesla-poll-changed", "settings:tesla",
-                      f"Set how often the Tesla API is asked to {poll}.")
+                      f"Set how often the Tesla API is asked: {_poll_words(new_poll)}.")
         if invoices.apply_patch(req, "tesla", inv):
             changed = True
         if changed:
@@ -288,17 +350,21 @@ def status(req):
     for a in _t(req)["accounts"].values():
         for c in a["cars"]:
             mode, state = _mode(req, a, c)
-            step = {"driving": 30_000, "charging": 30_000, "online_idle": 60_000, "letting_sleep": 15 * MIN,
-                    "watching_list": 60_000, "backoff": 120_000}.get(mode)
+            q = poll(req)
+            step = {"driving": q["driving_ms"], "charging": q["charging_ms"], "online_idle": q["idle_ms"],
+                    "letting_sleep": 15 * MIN, "watching_list": q["list_ms"], "backoff": 120_000}.get(mode)
             last = req.now - req.now % step if step else None
+            until = limited_until(req, a)
             items.append({
                 "car": c["match"] if c["match"] not in (None, "new", "leave_out") else None,
                 "account": a["id"], "vehicle": c["vehicle"], "mode": mode, "car_state": state,
-                "last_poll_ms": last, "next_poll_ms": last + step if step else None,
+                "last_poll_ms": last, "next_poll_ms": until or (last + step if step else None),
                 "last_data_ms": last if mode in ("driving", "charging", "online_idle") else a["last_ok_ms"]
                 if mode != "off" else None,
-                "polls_today": _polls_today(req, a), "streaming": mode == "driving" and a["region"] == "global",
-                "last_error": None,
+                "polls_today": _polls_today(req, a), "rate_limited_until_ms": until,
+                "streaming": mode == "driving" and a["region"] == "global",
+                "last_error": {"code": "rate_limited", "message": "Tesla is limiting requests", "at_ms": until - 120_000}
+                if until else None,
             })
     return {"items": items, "next": None}
 
@@ -574,6 +640,14 @@ def notices(req):
             out.append({"code": "tesla_account_error", "level": "warning",
                         "message": f"The Tesla account \"{a['label']}\" is not read: {msg}.", "since_ms": since,
                         "fix_link": "/settings/integrations#tesla", "detail": {"account": a["id"]}})
+        until = limited_until(req, a)
+        if until:
+            out.append({"code": "tesla_rate_limited", "level": "warning",
+                        "message": f"Tesla is limiting requests for the Tesla account \"{a['label']}\", next try at "
+                                   f"{_utc_minute(until)}. This server sets no limit of its own; it waits as long as "
+                                   "Tesla asks.",
+                        "since_ms": since, "fix_link": "/settings/integrations#tesla",
+                        "detail": {"account": a["id"], "until_ms": until}})
     return out
 
 

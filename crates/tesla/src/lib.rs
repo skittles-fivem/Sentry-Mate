@@ -24,7 +24,7 @@ pub use convert::{Activity, ApiMeta, Reading};
 pub use hosts::{Endpoints, Region};
 pub use http::{Http, HttpError, Proxy};
 pub use poller::{
-    AccountStatus, ApiFact, ApiState, Cadence, CarStatus, Clock, Mode, NewCar, Pace, Poller, Sink, SinkError,
+    AccountStatus, ApiFact, ApiState, Cadence, CarStatus, Clock, Intervals, Mode, NewCar, Poller, Sink, SinkError,
     SystemClock,
 };
 pub use secret::{FullVin, Secret};

@@ -51,7 +51,7 @@ export const CAR_MODE = {
   letting_sleep: ['Letting it sleep', 'Awake and quiet for 10 minutes: left alone for 21 minutes so it can fall asleep.'],
   charging: ['Charging', 'Read at the charging pace.'],
   driving: ['Driving', 'Read at the driving pace.'],
-  backoff: ['Waiting after errors', 'Tesla answered with errors, or the day\'s 3,000 requests are used up: nothing is asked until the next try. After a server error it waits longer each time, up to 15 minutes; after a refusal (403) an hour.'],
+  backoff: ['Waiting after errors', 'Tesla answered with errors, or is limiting requests (429): nothing is asked until the next try, as long as Tesla asks. After a server error it waits longer each time, up to 15 minutes; after a refusal (403) an hour.'],
 };
 
 const CAR_STATE = { online: 'Online', asleep: 'Asleep', offline: 'Offline', unknown: 'Not known' };
@@ -60,7 +60,19 @@ const LOCATION = [
   ['always', 'Always', 'Also while parked and awake. The car shows its location-shared icon whenever the position is asked for.'],
   ['never', 'Never', 'No position from the Tesla API at all: drives from it have no route and charges no place.'],
 ];
-const PACE = [['gentle', 'Gentle'], ['normal', 'Normal'], ['often', 'Often']];
+// How often Tesla is asked (`poll`): each read at its default or slower, never faster than its floor.
+// [key, label, what is read, the step of its input (s)]
+const POLL = [
+  ['driving_ms', 'Driving', 'vehicle_data, with Tesla\'s live stream beside it', 0.5],
+  ['charging_ms', 'Charging', 'vehicle_data', 1],
+  ['idle_ms', 'Awake, idle', 'vehicle_data (then left alone so it can fall asleep)', 1],
+  ['list_ms', 'Asleep or offline', 'the list of cars only: it never wakes a car', 1],
+];
+// the floors (the defaults) and ceilings when the server does not say them (it always does)
+const POLL_LIMITS = {
+  driving_ms: { min: 2500, default: 2500, max: 600000 }, charging_ms: { min: 5000, default: 5000, max: 1800000 },
+  idle_ms: { min: 60000, default: 60000, max: 3600000 }, list_ms: { min: 30000, default: 30000, max: 3600000 },
+};
 const REGION = [['global', 'Global (tesla.com)'], ['china', 'China (tesla.cn)']];
 
 // error codes, in words (the API's message is kept when there is no better one)
@@ -80,8 +92,7 @@ const LAST_ERROR_WORDS = {
   tesla_refused: 'Tesla refused the token',
   tesla_unreachable: 'Tesla could not be reached',
   endpoint_gone: 'Tesla closed the address the server reads; the server stops asking it',
-  rate_limited: 'Tesla asked the server to slow down',
-  daily_cap: 'The day\'s 3,000 requests are used up',
+  rate_limited: 'Tesla is limiting requests',
   forbidden: 'Tesla refused the request (403)',
   server_error: 'Tesla answered with a server error',
   timeout: 'Tesla took too long to answer',
@@ -108,7 +119,12 @@ const guarded = (fn) => async (...a) => {
 };
 const withPw = (cred, body = {}) => ({ ...body, confirm_password: cred.password, ...(cred.two_step ? { code: cred.two_step } : {}) });
 const code = (t) => h('code', { class: 'si-code' }, t);
-const secs = (s) => (s == null ? '—' : s >= 120 && s % 60 === 0 ? `${num(s / 60)} min` : `${num(s)} s`);
+const secs = (s) => (s == null ? '—' : s >= 120 && s % 60 === 0 ? `${num(s / 60)} min` : `${num(s, Number.isInteger(s) ? 0 : 1)} s`);
+const msWords = (ms) => secs(ms / 1000);
+/** "Tesla is limiting requests, next try at 14:05": Tesla answered 429 and nothing is asked before `until`. */
+export const limitedText = (until, tz) => `Tesla is limiting requests, next try at ${dateTime(until, tz)}.`;
+const limitedNote = (until, tz, cls = 'setting-note') => h('p', { class: [cls, 'warn', 'ta-limited'], role: 'status' }, icon('warn', 'ico--sm'),
+  h('span', null, h('b', null, limitedText(until, tz)), ' This server sets no limit of its own: Tesla does the limiting, and the server waits as long as Tesla asks (at least a minute).'));
 
 /* ---------------------------------------------------------------------- the section */
 
@@ -186,19 +202,20 @@ export function teslaSection(ctx, { cars = [] } = {}) {
       accounts.length ? accounts.map(accountPanel) : null);
   }
 
-  /* ---------- the input as a whole: state, hosts, pace */
+  /* ---------- the input as a whole: state, hosts, how often */
+  const limits = () => ({ ...POLL_LIMITS, ...(ov.poll_limits || {}) });
+  const pollNow = () => ({ ...Object.fromEntries(Object.entries(POLL_LIMITS).map(([k, v]) => [k, v.default])), ...(ov.poll || {}) });
   function statusPanel() {
-    const p = ov.polls || {};
+    const p = pollNow(), lim = limits();
     const { matched, read } = carCounts();
     const paused = accounts.filter((a) => a.paused).length;
-    const cap = (p.daily_cap || 3000) * Math.max(1, ov.accounts || 0);
-    const paceSeg = h('div', { class: 'seg', role: 'group', 'aria-label': 'How often Tesla is asked' },
-      PACE.map(([v, l]) => h('button', { class: 'seg-btn', type: 'button', 'aria-pressed': String(ov.poll === v), onclick: () => setPace(v) }, l)));
+    const slower = (k) => p[k] !== lim[k].default;
     return h('div', { class: 'panel panel-pad ta-status' },
       h('div', { class: 'panel-head' }, h('h3', { class: 'panel-title' }, icon('pulse'), 'Status')),
+      ov.rate_limited_until_ms ? limitedNote(ov.rate_limited_until_ms, LOCAL) : null,
       figures([
         metric('State', ov.enabled ? 'On' : 'Off', null, { size: 'sm', explain: ov.enabled ? `${num(ov.accounts)} ${ov.accounts === 1 ? 'account' : 'accounts'}${paused ? ` (${num(paused)} paused)` : ''}, ${read ? `${cars_(read)} read` : 'no car read now'}${matched > read ? `, ${num(matched)} matched` : ''}.` : 'Off until an account is added: no connection to Tesla is made.' }),
-        metric('Requests today', ov.polls_today, 'number', { size: 'sm', digits: 0, explain: ov.enabled ? `Of at most ${num(cap)} (3,000 a day per account).` : 'None: there is no account.' }),
+        metric('Requests today', ov.polls_today, 'number', { size: 'sm', digits: 0, explain: ov.enabled ? 'Since midnight UTC, for information: there is no cap on this side.' : 'None: there is no account.' }),
         metric('Connections set up', ov.clients_built, 'number', { size: 'sm', digits: 0, explain: 'To Tesla, since the server started.' }),
       ], 'si-figs'),
       ov.last_error ? h('p', { class: 'si-last-error warn' }, icon('warn', 'ico--sm'), ' Last error: ', h('b', null, lastErrorText(ov.last_error)),
@@ -207,19 +224,31 @@ export function teslaSection(ctx, { cars = [] } = {}) {
         ov.hosts?.length ? h('ul', { class: 'ta-host-list' }, ov.hosts.map((x) => h('li', null, code(x))))
           : h('p', { class: 'faint' }, 'None while there is no account. Once one is added: Tesla\'s sign-in host, its Owner API and (outside China) its live stream, all over HTTPS.')),
       h('div', { class: 'ta-pace' },
-        h('div', { class: 'ta-pace-head' }, h('span', { class: 'metric-label' }, 'How often Tesla is asked'), paceSeg),
-        h('dl', { class: 'ta-pace-list' },
-          [['A parked, awake car', p.parked_s], ['A charging car', p.charging_s], ['A driving car', p.driving_s], ['A driving car with Tesla\'s live stream', p.driving_streaming_s],
-            ['The list of cars (asleep cars)', p.list_s]].map(([l, s]) => h('div', null, h('dt', null, l), h('dd', null, `every ${secs(s)}`)))),
-        h('p', { class: 'setting-note' }, 'In every pace an asleep car is never woken (only the list of cars is read), and an awake car with nothing going on is left alone so it can fall asleep. At most one request a second goes to Tesla per account.')));
+        h('div', { class: 'ta-pace-head' }, h('span', { class: 'metric-label' }, 'How often Tesla is asked'),
+          h('button', { class: 'btn btn--sm', type: 'button', onclick: () => setPoll() }, icon('settings', 'ico--sm'), 'Change')),
+        h('dl', { class: 'ta-poll-list' },
+          POLL.map(([k, l, what]) => h('div', null,
+            h('dt', null, h('span', { class: 'ta-poll-mode' }, l), h('span', { class: 'ta-poll-what faint' }, what)),
+            h('dd', null, h('b', null, `every ${msWords(p[k])}`),
+              h('span', { class: 'faint' }, slower(k) ? `slower than the default ${msWords(lim[k].default)}` : 'the default, the fastest allowed'))))),
+        h('p', { class: 'setting-note' }, 'An asleep car is never woken, and an awake car with nothing going on is left alone after 10 minutes for 21 so it can fall asleep. Requests go one at a time per account. There is no daily cap on this side: Tesla does the limiting, and when it answers 429 (too many requests) the server waits as long as Tesla asks and says so here, on Data health and in the notices.')));
   }
-  async function setPace(v) {
-    if (v === ov.poll) return;
+  async function setPoll() {
+    const p = pollNow(), lim = limits();
+    const fields = POLL.map(([k, l, what, step]) => field({
+      label: `${l}: every … seconds`, name: k, path: `poll.${k}`, type: 'number', value: p[k] / 1000, required: true,
+      hint: `Reads ${what}. The default and fastest: ${msWords(lim[k].min)}; at most ${msWords(lim[k].max)}.`,
+      attrs: { min: String(lim[k].min / 1000), max: String(lim[k].max / 1000), step: String(step), inputmode: 'decimal' },
+    }));
     const r = await askPassword(ctx, {
-      title: `Pace: ${PACE.find((x) => x[0] === v)[1]}`,
-      intro: h('p', { class: 'note' }, 'How often the server reads each car from the Tesla API. A faster pace gives finer drives and charges from the API, and uses more of the 3,000 requests a day.'),
-      submit: 'Change the pace',
-      run: guarded((cred) => ctx.api.patch(BASE, withPw(cred, { version: ov.version, poll: v }))),
+      title: 'How often Tesla is asked',
+      intro: h('p', { class: 'note ta-poll-note' }, 'Each read can be made slower than its default, never faster. Faster reads give finer drives and charges from the API. Tesla does the limiting: if it answers 429, the server waits as long as Tesla asks and tells you.'),
+      submit: 'Save', extra: fields,
+      run: guarded((cred) => {
+        const v = Object.fromEntries(POLL.map(([k], i) => [k, Math.round(Number(fields[i].input.value) * 1000)]));
+        const poll = Object.fromEntries(Object.entries(v).filter(([k, x]) => x !== p[k]));
+        return ctx.api.patch(BASE, withPw(cred, { version: ov.version, poll }));
+      }),
     });
     await after(r, 'How often Tesla is asked: saved.');
   }
@@ -333,11 +362,12 @@ export function teslaSection(ctx, { cars = [] } = {}) {
         h('div', { class: 'ta-acc-title' }, h('h3', null, a.label), pill(st[0], { tone: st[1] }), h('span', { class: 'faint' }, a.region === 'china' ? 'China' : 'Global')),
         h('div', { class: 'row ta-acc-acts' }, pauseBtn, tokenBtn, renameBtn, removeBtn)),
       st[2] ? h('p', { class: ['setting-note', a.status === 'sign_in_needed' || a.status === 'error' ? 'warn' : null] }, st[2]) : null,
+      a.rate_limited_until_ms ? limitedNote(a.rate_limited_until_ms, LOCAL) : null,
       kv([
         ['Added', at(a.added_ms), { icon: 'calendar' }],
         ['Last good answer', a.last_ok_ms ? h('span', { title: at(a.last_ok_ms) }, ago(a.last_ok_ms)) : h('span', { class: 'faint' }, 'none yet'), { icon: 'check' }],
         ['Last error', err ? h('span', { class: 'warn' }, lastErrorText(err), err.message && LAST_ERROR_WORDS[err.code] ? h('span', { class: 'faint' }, ` (${err.message})`) : null, err.at_ms ? h('span', { title: at(err.at_ms) }, `, ${ago(err.at_ms)}`) : '') : h('span', { class: 'faint' }, 'none'), { icon: 'warn' }],
-        ['Requests today', `${num(a.polls_today ?? 0)} of 3,000`, { icon: 'pulse' }],
+        ['Requests today', num(a.polls_today ?? 0), { icon: 'pulse', title: 'Since midnight UTC, for information: there is no cap on this side.' }],
         ['Hosts', h('span', { class: 'ta-inline-hosts' }, (a.hosts || []).map((x) => code(x))), { icon: 'globe' }],
       ]),
       h('div', { class: 'ta-loc' },
@@ -436,13 +466,14 @@ export function teslaCarStatus(ctx, statusItems, carId) {
   const sv = (statusItems || []).filter((s) => s.car === carId);
   if (!sv.length) return null;
   return sv.map((s) => {
-    const mode = CAR_MODE[s.mode] || [s.mode, ''];
+    const mode = s.rate_limited_until_ms ? ['Waiting for Tesla', 'Tesla is limiting requests (429): nothing is asked until its wait ends.'] : CAR_MODE[s.mode] || [s.mode, ''];
     return [
       ['What the server does', h('span', null, h('b', null, mode[0]), s.streaming ? ' · live stream' : '', h('span', { class: 'faint' }, ` (Tesla says ${(CAR_STATE[s.car_state] || s.car_state || 'not known').toLowerCase()})`)), { icon: 'globe', title: mode[1] }],
       ['Last Tesla data', s.last_data_ms ? h('span', { title: dateTime(s.last_data_ms, ctx.tz) }, ago(s.last_data_ms)) : h('span', { class: 'faint' }, 'none yet'), { icon: 'clock' }],
-      [s.mode === 'backoff' ? 'Next try' : 'Next read', s.next_poll_ms ? `${time(s.next_poll_ms, ctx.tz)}${s.mode === 'backoff' ? ' (waiting after errors)' : ''}` : h('span', { class: 'faint' }, 'not planned'), { icon: 'calendar' }],
-      ['Tesla requests today', num(s.polls_today ?? 0), { icon: 'pulse' }],
-      s.last_error ? ['Tesla error', h('span', { class: 'warn' }, lastErrorText(s.last_error)), { icon: 'warn' }] : null,
+      s.rate_limited_until_ms ? ['Tesla', h('span', { class: 'warn ta-limited-kv' }, h('b', null, limitedText(s.rate_limited_until_ms, ctx.tz))), { icon: 'warn' }] : null,
+      [s.mode === 'backoff' ? 'Next try' : 'Next read', s.next_poll_ms ? `${time(s.next_poll_ms, ctx.tz)}${s.rate_limited_until_ms ? ' (when Tesla\'s wait ends)' : s.mode === 'backoff' ? ' (waiting after errors)' : ''}` : h('span', { class: 'faint' }, 'not planned'), { icon: 'calendar' }],
+      ['Tesla requests today', num(s.polls_today ?? 0), { icon: 'pulse', title: 'Since midnight UTC, for information: there is no cap on this side.' }],
+      s.last_error && !s.rate_limited_until_ms ? ['Tesla error', h('span', { class: 'warn' }, lastErrorText(s.last_error)), { icon: 'warn' }] : null,
     ];
   })[0];
 }

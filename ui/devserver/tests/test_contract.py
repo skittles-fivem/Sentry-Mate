@@ -301,7 +301,7 @@ class Contract(ServerCase):
              lambda: (self.fill("/api/v1/imports/{import}", **{"import": ctx["import"]}), None, None)),
             ("POST", "/api/v1/import-holds/{hold}", lambda: (None, {"match": "c2"}, None)),
             ("PATCH", "/api/v1/integrations/tesla",
-             lambda: (None, {"version": c.get("/api/v1/integrations/tesla")["version"], "poll": "gentle",
+             lambda: (None, {"version": c.get("/api/v1/integrations/tesla")["version"], "poll": {"idle_ms": 300_000},
                              "confirm_password": "sentry-mate-dev"}, None)),
             ("POST", "/api/v1/integrations/tesla/sign-in", lambda: (None, {"region": "global"}, None)),
             ("POST", "/api/v1/integrations/tesla/sign-in/{sign_in}", lambda: self.tesla_finish()),

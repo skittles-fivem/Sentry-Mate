@@ -209,7 +209,9 @@ SMO. How to add an account is in [install.md](install.md#add-a-tesla-account).
   Nothing about this server, its other cars, its accounts or its owner is sent.
 - **Read-only.** There is no code that wakes a car or sends it a command. A car that is asleep is left asleep: only
   the car list is read then, which does not wake it. An awake car with nothing going on is left alone for a while
-  so it can fall asleep. At most one request a second and 3,000 a day go to Tesla per account.
+  so it can fall asleep. Requests go one at a time per account, at the intervals an admin set (never faster than
+  driving every 2.5 s); there is no cap of its own: when Tesla answers 429 the server waits as long as Tesla asks,
+  and says so.
 - **The sign-in is on Tesla's own page,** in your browser: Sentry Mate never sees your Tesla password, your
   two-step code or a captcha. You paste back the address the page ends on; the code in it works once and only for
   that sign-in (it is bound to a secret that never leaves the server).
@@ -292,9 +294,9 @@ an admin turns it on** (the password asked again, an audit entry written): befor
   charge log, `GET /history.php?command=charges&dateFrom=<date>&dateTo=<date>` (the path made of two dates only,
   the token in the `Authorization` header as for the polls), and takes the cost TeslaFi lists for each charge. No
   PDFs come from TeslaFi.
-- **Paced, under the caps.** One request at a time, in the input's own pace and gap between requests, counted in its
-  daily cap, after the car's own reads (never instead of one), and never more than 300 a day for Tesla (60 for
-  TeslaFi) or into the last 500 (200) requests of the daily cap. The first time, the whole history is read page by
+- **Paced.** One request at a time, after the car's own reads (never instead of one). TeslaFi: in its own pace and
+  gap between requests, counted in its daily cap, never more than 60 a day or into the last 200 requests of the
+  cap. Tesla: no cap of this server's own (Tesla does the limiting; its 429 is waited out as it asks). The first time, the whole history is read page by
   page (resumable: a restart goes on where it was); then once a day, and soon after a DC charge (TeslaFi: a charge)
   ends. An error waits half an hour, doubling up to a day; Tesla's or TeslaFi's `Retry-After` is followed.
 - **Kept sealed, once.** Each session (one per Tesla session id or TeslaFi charge id) and each PDF (at most 4 MiB,
