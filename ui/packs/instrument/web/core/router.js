@@ -30,6 +30,7 @@ import * as session from './session.js';
 import { noticesLoaded } from './notices.js';
 import { errorState, statePanel, loadingPage } from './states.js';
 import { showPending } from './flash.js';
+import { fieldIdsFromStart } from './form.js';
 import { getMe, getPrefs, isAdmin } from './prefs.js';
 import { holdSnap } from './snap.js';
 import { watchLinks, warmModules, prefetchApi, pageSheet, pageSheetsOff, setStale, signedInHint } from '../shared/prefetch.js';
@@ -472,6 +473,7 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   if (!live) frame.setCrumbs(frame.defaultCrumbs(s, info, car));
 
   try {
+    fieldIdsFromStart();
     const inst = await mod.mount(ctx);
     if (!alive()) { try { inst?.unmount?.(); } catch { /* left already */ } return; }
     rec.instance = inst || null;
