@@ -1469,6 +1469,51 @@ fn a_full_rebuild_asked_for_as_the_last_ones_worker_ends_runs() {
     });
 }
 
+/// A rebuild that is told as ended has its entry in the rebuilds' history already: whoever sees the end and reads
+/// the history at once (the status answer does) finds it there. A full rebuild and a plain one, a few times each.
+#[test]
+fn a_rebuild_seen_as_ended_is_in_the_rebuilds_history() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let spin = |e: Engine, ended: Box<dyn Fn(&Engine) -> bool + Send>| {
+            std::thread::spawn(move || {
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
+                while !ended(&e) {
+                    assert!(std::time::Instant::now() < until, "the rebuild did not end");
+                    std::hint::spin_loop();
+                }
+                e.rebuild_history().unwrap()
+            })
+        };
+        for round in 1..=6usize {
+            let r = k.engine.full_rebuild(Some(car), engine::full::Reason::Owner, Some("owner".into())).unwrap();
+            let seen =
+                spin(k.engine.clone(), Box::new(|e: &Engine| !e.full_rebuild_status().unwrap().unwrap().running()));
+            let h = tokio::task::spawn_blocking(move || seen.join().unwrap()).await.unwrap();
+            assert_eq!(h.len(), (2 * round - 1).min(engine::history::KEPT), "full rebuild {}: {h:#?}", r.id);
+            assert_eq!((h[0].kind.as_str(), h[0].state.as_str(), h[0].started_ms), ("full", "done", r.started_ms));
+            k.engine.idle().await;
+
+            let job = k.engine.rebuild(Scope::car(car)).unwrap();
+            let id = job.id;
+            let seen = spin(
+                k.engine.clone(),
+                Box::new(move |e: &Engine| e.job(id).unwrap().status != engine::JobStatus::Running),
+            );
+            let h = tokio::task::spawn_blocking(move || seen.join().unwrap()).await.unwrap();
+            assert_eq!(h.len(), (2 * round).min(engine::history::KEPT), "rebuild {id}: {h:#?}");
+            assert_eq!((h[0].kind.as_str(), h[0].state.as_str()), ("car", "done"), "{h:#?}");
+            k.engine.idle().await;
+        }
+    });
+}
+
 /// Cuts a file of the car's folder in the db short (`rel` under `db/cars/<car>/`).
 fn damage_db_file(k: &Kit, car: u32, rel: &str) {
     let file = k._dir.path().join("data/db/cars").join(car.to_string()).join(rel);
