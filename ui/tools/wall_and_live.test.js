@@ -138,6 +138,18 @@ test('a live rebuild leaves a control the reader did not touch as the new page h
   });
 });
 
+test('Drives: a filter past what the server takes gives the list, not an error', { skip: SKIP, timeout: 120000 }, async () => {
+  await withServer(['--freeze-clock'], async ({ origin, page }) => {
+    const bad = [];
+    page.on('response', (r) => { if (r.status() >= 400 && /\/api\//.test(r.url())) bad.push(`${r.status()} ${r.url()}`); });
+    for (const q of ['min_speed=100000', 'min_distance=99999999999']) {
+      await page.goto(`${origin}/cars/c1/drives?${q}`);
+      await ready(page, 'drives');
+    }
+    assert.deepEqual(bad, []);
+  });
+});
+
 // Print: a wide table fits the width of the page (it wraps, it does not run off the paper)
 for (const p of ['drives', 'charges', 'statistics', 'health']) {
   test(`print: ${p} fits the width of the page`, { skip: SKIP, timeout: 120000 }, async () => {

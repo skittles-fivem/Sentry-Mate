@@ -48,8 +48,9 @@ const filtersOf = (q) => ({
 const listParams = (ctx, f) => ({
   ...ctx.params,
   places: f.places || null, place_side: f.places ? f.place_side : null, q: f.q || null,
-  min_distance_km: f.min_distance ? +toMetric(+f.min_distance, 'distance').toFixed(3) : null,
-  min_avg_kph: f.min_speed ? +toMetric(+f.min_speed, 'speed').toFixed(2) : null,
+  // (the server refuses more than 1,000 km/h (and a distance of 100,000 km is no drive): a larger number asks for the most it takes, an empty list)
+  min_distance_km: f.min_distance ? Math.min(1e5, +toMetric(+f.min_distance, 'distance').toFixed(3)) : null,
+  min_avg_kph: f.min_speed ? Math.min(1e3, +toMetric(+f.min_speed, 'speed').toFixed(2)) : null,
   source: f.source || null, flags: f.flags || null, efficiency: f.efficiency,
 });
 const placesRead = (ctx) => ctx.api.list('places', { car: ctx.car.id, sort: 'drives' }, { limit: 200 }).all();
