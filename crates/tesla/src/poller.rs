@@ -144,6 +144,16 @@ pub struct Cadence {
     pub invoice_error_max_ms: u64,
 }
 
+impl Cadence {
+    /// How far apart two looks at the same state may be and still make one span: [`Cadence::fact_join_ms`], or one
+    /// and a half of the slowest read when that is slower (looks further apart than the join would all be
+    /// zero-length, and the car would never be recorded asleep or online between them).
+    pub fn join_ms(&self) -> u64 {
+        let slowest = [self.list_ms, self.idle_ms, self.charging_ms, self.driving_ms].into_iter().max().unwrap_or(0);
+        self.fact_join_ms.max(slowest.saturating_add(slowest / 2))
+    }
+}
+
 impl Default for Cadence {
     fn default() -> Self {
         Cadence {
@@ -518,6 +528,9 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
                     // The admin pasted a new token: start over.
                     self.backoff_until_ms = 0;
                     self.backoff_step = 0;
+                    // a 429 wait ends with it: the status no longer says Tesla is limiting requests, and the next 429
+                    // is announced again
+                    self.rate_limited_until_ms = 0;
                     self.unauthorized_once = false;
                     if self.last_error.as_ref().is_some_and(|e| e.code == "endpoint_gone") {
                         self.gone = false;
@@ -600,7 +613,7 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
 
     fn fact(&self, car: usize, at_ms: u64, state: ApiState) -> ApiFact {
         match self.cars[car].last_seen {
-            Some((t, s)) if s == state && at_ms >= t && at_ms - t <= self.cadence.fact_join_ms => {
+            Some((t, s)) if s == state && at_ms >= t && at_ms - t <= self.cadence.join_ms() => {
                 ApiFact { start_ms: t, end_ms: at_ms, state }
             }
             _ => ApiFact { start_ms: at_ms, end_ms: at_ms, state },
@@ -705,6 +718,20 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
 
     /// Does what is due at `now_ms`; returns when to come back. `None`: the account is gone, stop.
     pub async fn tick(&mut self, now_ms: u64) -> Option<u64> {
+        // the server's clock was set back (a wrong clock corrected, a machine resumed): every due time moves back as
+        // far, else nothing would be read until the clock had caught up with the old times
+        if self.now_ms > now_ms.saturating_add(60_000) {
+            let back = self.now_ms - now_ms;
+            let earlier = |t: &mut u64| *t = t.saturating_sub(back);
+            earlier(&mut self.list_next_ms);
+            earlier(&mut self.backoff_until_ms);
+            earlier(&mut self.rate_limited_until_ms);
+            for c in &mut self.cars {
+                earlier(&mut c.next_data_ms);
+                earlier(&mut c.quiet_until_ms);
+                c.last_seen = None;
+            }
+        }
         self.now_ms = now_ms;
         let next = self.tick_inner(now_ms).await;
         if next.is_some() {
