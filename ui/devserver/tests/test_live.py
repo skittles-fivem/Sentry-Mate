@@ -103,7 +103,8 @@ class Now(ServerCase):
         self.assertTrue(d["items"])
         seen = set()
         for s in d["items"]:
-            self.assertEqual(set(s), {"start_ms", "end_ms", "buses", "reasons", "avg_power_kw"})
+            self.assertEqual(set(s), {"start_ms", "end_ms", "buses", "reasons", "avg_power_kw", "source", "sources",
+                                      "source_label"})
             self.assertLess(s["start_ms"], s["end_ms"])
             seen |= set(s["reasons"])
         self.assertTrue({"sentry", "user_present", "charging"} <= seen, seen)
