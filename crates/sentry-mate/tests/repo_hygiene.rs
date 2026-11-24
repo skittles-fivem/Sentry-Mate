@@ -5,7 +5,9 @@
 //!   moved upstream must not change what runs there;
 //! - Dependabot proposes the bumps, so the pins don't go stale;
 //! - the image takes the binary from the one Dockerfile stage the image workflow replaces with the binary it built;
-//! - this public repo carries none of the markers that once came with the owner's car data or a local session path.
+//! - this public repo carries none of the markers that once came with the owner's car data or a local session path;
+//! - example addresses are from the documentation range (192.0.2.x), never a private home range, except where the
+//!   code that sorts addresses into home and outside is tested or described.
 
 use std::path::{Path, PathBuf};
 
@@ -242,6 +244,111 @@ fn no_owner_data_or_session_paths_in_the_repo() {
         }
     }
     assert!(hits.is_empty(), "owner data or local paths in the repo:\n{}", hits.join("\n"));
+}
+
+/// The private IPv4 addresses (10.x.x.x, 172.16-31.x.x, 192.168.x.x) written in `text` as dotted quads.
+fn private_addresses(text: &str) -> Vec<String> {
+    let b = text.as_bytes();
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if !b[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        // one run of digits and dots; a quad is the whole run or nothing (so "1.10.0.0.1" and "10.0.0.1.2" aren't)
+        let start = i;
+        while i < b.len() && (b[i].is_ascii_digit() || b[i] == b'.') {
+            i += 1;
+        }
+        let run = text[start..i].trim_end_matches('.');
+        let parts: Vec<&str> = run.split('.').collect();
+        if parts.len() != 4 || parts.iter().any(|p| p.is_empty() || p.len() > 3) {
+            continue;
+        }
+        let Ok(o) = parts.iter().map(|p| p.parse::<u8>()).collect::<Result<Vec<u8>, _>>() else { continue };
+        if std::net::Ipv4Addr::new(o[0], o[1], o[2], o[3]).is_private() {
+            found.push(run.to_string());
+        }
+    }
+    found
+}
+
+#[test]
+fn private_addresses_are_found_whole() {
+    let found = private_addresses("at 192.168.1.20, https://10.0.0.2:8883/x and ::ffff:172.31.255.254.");
+    assert_eq!(found, ["192.168.1.20", "10.0.0.2", "172.31.255.254"]);
+    let none = "192.0.2.20 203.0.113.5 172.15.0.1 172.32.0.1 192.169.0.1 11.0.0.1 127.0.0.1 1.10.0.0.1 10.0.0.1.2 10.0.0 \
+                10.0.0.256 v10.1.2 10.0.0.1234";
+    assert_eq!(private_addresses(none), Vec::<String>::new());
+}
+
+/// This is a public repo with made-up data: an example address is from the documentation range (192.0.2.x), so no
+/// page, error text, doc or test shows what could be somebody's home network. The only private addresses are the
+/// ones the home-network rule itself is tested and described with: those are listed here, file by file, and a
+/// listed address that is gone has to leave the list too.
+#[test]
+fn example_addresses_are_from_the_documentation_range() {
+    let allowed: [(&str, &[&str]); 4] = [
+        // the rule that sorts addresses into home and outside, tested at the edges of each private range
+        (
+            "crates/accounts/tests/net.rs",
+            &[
+                "10.0.0.1",
+                "10.255.255.255",
+                "172.16.0.1",
+                "172.31.255.254",
+                "192.168.0.1",
+                "192.168.255.255",
+                "192.168.1.2",
+                "10.0.0.9",
+            ],
+        ),
+        // the two home devices the sign-in tests need the rule to call home
+        ("crates/accounts/tests/common/mod.rs", &["192.168.1.20", "10.1.2.3"]),
+        // the move's own home-network rule
+        ("crates/moving/src/old.rs", &["10.1.2.3", "172.16.0.1", "192.168.1.30", "192.168.1.2"]),
+        // Docker's bridge gateway, which that rule takes for the home network
+        ("docs/security.md", &["172.18.0.1"]),
+    ];
+    let root = repo();
+    let this = Path::new(file!()).file_name().unwrap().to_owned();
+    let mut hits = Vec::new();
+    let mut seen: Vec<(String, Vec<String>)> = Vec::new();
+    for f in repo_files(&root) {
+        let rel = f.strip_prefix(&root).unwrap_or(&f).to_string_lossy().replace('\\', "/");
+        // archived packs are kept as they were, and the bug hunt's record quotes what it found
+        if f.file_name() == Some(this.as_os_str()) || rel.starts_with("ui/archived/") || rel == "docs/plans/bug-hunt.md"
+        {
+            continue;
+        }
+        let Ok(text) = std::fs::read(&f) else { continue };
+        let found = private_addresses(&String::from_utf8_lossy(&text));
+        if found.is_empty() {
+            continue;
+        }
+        match allowed.iter().find(|(file, _)| *file == rel) {
+            Some((_, list)) => {
+                let mut want: Vec<&str> = list.to_vec();
+                want.sort_unstable();
+                want.dedup();
+                let mut got: Vec<&str> = found.iter().map(String::as_str).collect();
+                got.sort_unstable();
+                got.dedup();
+                if got != want {
+                    hits.push(format!("{rel}: holds {got:?}, the list allows exactly {want:?}"));
+                }
+            }
+            None => hits.push(format!("{rel}: {found:?}")),
+        }
+        seen.push((rel, found));
+    }
+    for (file, _) in allowed {
+        if !seen.iter().any(|(rel, _)| rel == file) {
+            hits.push(format!("{file}: listed, but it holds no private address any more"));
+        }
+    }
+    assert!(hits.is_empty(), "private-range example addresses (use 192.0.2.x):\n{}", hits.join("\n"));
 }
 
 /// The fake-server switch of the `tesla`, `teslafi` and `release` crates (`test-endpoints`) is only for each crate's
