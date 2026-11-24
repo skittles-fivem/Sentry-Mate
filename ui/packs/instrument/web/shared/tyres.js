@@ -54,12 +54,17 @@ export function recommendedFrom(view) {
   return '';
 }
 
-/** The recommended pressures in the person's unit: "2.9 bar", or "2.9 bar front, 3.1 bar rear"; null when none. */
+/**
+ * The recommended pressures in the person's unit: "2.9 bar", or "2.9 bar front, 3.1 bar rear" when the two read
+ * differently in that unit; null when none.
+ */
 export function recommendedValue(view) {
   const v = view || {};
   if (v.front == null) return null;
-  if (v.rear == null || Math.abs(v.rear - v.front) < 0.5) return format(v.front, 'pressure');
-  return t('{front} front, {rear} rear', { front: format(v.front, 'pressure'), rear: format(v.rear, 'pressure') });
+  const front = format(v.front, 'pressure');
+  if (v.rear == null || Math.abs(v.rear - v.front) < 0.5) return front;
+  const rear = format(v.rear, 'pressure');
+  return rear === front ? front : t('{front} front, {rear} rear', { front, rear }); // 290 and 293 kPa are both '42 psi'
 }
 
 /** The line under the tyres: "Recommended 2.9 bar (from CAN)." or "No recommended pressure known." */
