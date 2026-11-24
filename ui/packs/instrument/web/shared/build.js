@@ -15,7 +15,10 @@
 //     the address that skips the cache;
 //   - only when that fails too does loadPage throw pageFailedError() (code page_failed): "Sentry Mate was updated
 //     or a file could not load", with a Reload button (PAGE_FAILED). It is not "No answer from the server", which
-//     is for requests that got no answer.
+//     is for requests that got no answer;
+//   - a file that fails while the server gives no answer at all (a restart, the network gone: /health is asked) is
+//     that: serverAwayError() (status 0, code network), with no full load. A full load then would put the browser's
+//     own error page where the app was, and the app could not come back by itself.
 
 export const BUILD_HEADER = 'X-Sentry-Mate-Build';
 /** What a page that could not load says: a title, a line, and the button that reloads (reloadPage). */
@@ -34,6 +37,8 @@ const CHECK_EVERY_MS = 5 * 60000;
 // a page asked for when the last answer is older than this checks the build first (at most CHECK_WAIT_MS)
 const STALE_MS = 30000;
 const CHECK_WAIT_MS = 1500;
+// how long /health may take to answer before a page file that failed counts as "the server is away"
+const AWAY_AFTER_MS = 4000;
 
 let loaded = null, latest = null, seenAt = 0;
 
@@ -83,6 +88,27 @@ export function pageFailedError(cause = null) {
 }
 export const isPageFailed = (e) => !!e && e.code === PAGE_FAILED.code;
 
+/** The error of a page whose files could not load because the server gives no answer (status 0, code network, as a request's). */
+export function serverAwayError(cause = null) {
+  const e = new Error('Could not reach the server.');
+  e.name = 'PageLoadError';
+  e.status = 0;
+  e.code = 'network';
+  if (cause) e.cause = cause;
+  return e;
+}
+
+/** Does the server answer at all? GET /health; any answer counts, none within `waitMs` does not. Never rejects. */
+function serverAnswers(fetch, waitMs) {
+  if (typeof fetch !== 'function') return Promise.resolve(true); // nothing to ask with: go on as if it does
+  let timer = null;
+  const late = new Promise((r) => { timer = setTimeout(() => r(false), waitMs); });
+  const asked = Promise.resolve()
+    .then(() => fetch('/health', { cache: 'no-store', credentials: 'same-origin' }))
+    .then((res) => { observeBuild(res?.headers?.get?.(BUILD_HEADER)); return true; }, () => false);
+  return Promise.race([asked, late]).finally(() => clearTimeout(timer));
+}
+
 // the address without FRESH_PARAM and the fragment: what a retry is remembered by
 function placeKey(href) {
   const u = new URL(href, globalThis.location?.href);
@@ -109,9 +135,9 @@ const never = () => new Promise(() => {});
  * Load a page's files: `load()` imports the module (and waits for its style sheet) and resolves with the module.
  * See the notes at the top: after an update the tab loads `href` in full instead (the promise then never settles,
  * the tab is going away); a failure is tried once more with a full load; a second failure throws
- * pageFailedError().
+ * pageFailedError(); a failure while the server gives no answer throws serverAwayError() and loads nothing.
  */
-export async function loadPage(load, { href = globalThis.location?.href } = {}) {
+export async function loadPage(load, { href = globalThis.location?.href, fetch = globalThis.fetch, awayAfterMs = AWAY_AFTER_MS } = {}) {
   watchBuild();
   // a tab that heard nothing from the server for a while asks first (the update may have come in the meantime)
   if (latest !== null && Date.now() - seenAt > STALE_MS) await Promise.race([checkBuild(), new Promise((r) => setTimeout(r, CHECK_WAIT_MS))]);
@@ -120,7 +146,9 @@ export async function loadPage(load, { href = globalThis.location?.href } = {}) 
     const st = storage();
     try { if (st?.getItem(RETRY_KEY)) st.removeItem(RETRY_KEY); } catch { /* no storage: nothing to forget */ }
     return mod;
-  }, (err) => {
+  }, async (err) => {
+    // no answer from the server: say that and stay (the page's Try again loads it once the server is back)
+    if (!(await serverAnswers(fetch, awayAfterMs))) throw serverAwayError(err);
     const st = storage();
     const key = href ? placeKey(href) : null;
     let tried = true; // without storage the tab can't tell it already tried: no second load, no loop

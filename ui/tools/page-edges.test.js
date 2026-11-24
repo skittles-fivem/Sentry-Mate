@@ -3,7 +3,8 @@
 // refused under their fields; a period still to come or before 1970 gives a page, not an error; a search for one very
 // long word leaves the page as wide as the window; Battery of a car whose pack reported nothing writes no
 // sentence around a dash; the car switcher of a large fleet counts the cars not sold and says where the sold ones
-// are; Statistics without a car counts no "0 cars"; a Map or Satellite pick that could not be saved is said.
+// are; Statistics without a car counts no "0 cars"; a Map or Satellite pick that could not be saved is said; a page
+// opened while the server is away says so inside the app.
 // `PACKS=a,b` runs only those. Run: node --test ui/tools/page-edges.test.js. Skipped when Playwright is not installed.
 'use strict';
 
@@ -287,5 +288,38 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
       assert.equal(await satellite.getAttribute('aria-pressed'), 'true', `${name} stays picked on this page`);
       assert.deepEqual(errors, []);
     });
+  });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: a page opened while the server is away says so inside the app, and Try again opens it once the server is back`, { skip: SKIP, timeout: 180000 }, async () => {
+    const browser = await playwright.chromium.launch();
+    let server = await devServer(pack);
+    try {
+      const origin = server.origin;
+      const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      await context.route(/^https?:\/\/(?!127\.0\.0\.1)/, (r) => r.abort());   // nothing leaves the machine
+      const { page } = await openPage(context, `${origin}/`, 'fleet');
+      await server.stop();
+      server = null;
+      // a page whose files this tab has not loaded yet
+      await page.locator('a[href="/travel"]').filter({ visible: true }).first().click();
+      await page.waitForFunction(() => /^error:/.test(document.documentElement.dataset.ready || ''), null, { timeout: 30000 }).catch(() => {});
+      assert.ok(page.url().startsWith(origin), `the tab is still in the app, not at ${page.url()}`);
+      assert.equal(new URL(page.url()).pathname, '/travel');
+      assert.match(await mainText(page), /No answer from the server/);
+      assert.ok(await page.locator('.sidebar, nav').first().isVisible(), 'the frame is still there');
+
+      // the server comes back at the same address
+      server = await devServer(pack, ['--port', new URL(origin).port]);
+      assert.equal(server.origin, origin);
+      await page.getByRole('button', { name: 'Try again' }).click();
+      await page.waitForFunction(() => document.documentElement.dataset.ready === 'travel', null, { timeout: 45000 });
+      assert.equal(new URL(page.url()).pathname, '/travel');
+      await context.close();
+    } finally {
+      if (server) await server.stop();
+      await browser.close();
+    }
   });
 }

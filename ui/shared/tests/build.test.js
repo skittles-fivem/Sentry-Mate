@@ -72,23 +72,52 @@ test('a page file that fails is tried once with a full load; a second failure is
   sessionStorage.clear();
   const loc = fakeLocation('https://sm.example/cars/c1/health', t);
   const fail = () => Promise.reject(new TypeError('Failed to fetch dynamically imported module'));
-  b.loadPage(fail);
+  const up = { fetch: async () => ({ ok: true, headers: { get: () => null } }) };   // the server answers /health
+  b.loadPage(fail, up);
   await flush();
   assert.equal(loc.replaced.length, 1, 'one more try, in full');
   // the page after that full load fails again
   fakeLocation('https://sm.example/cars/c1/health');
-  await assert.rejects(b.loadPage(fail), (e) => e.code === 'page_failed' && e.status === 0 && b.isPageFailed(e)
+  await assert.rejects(b.loadPage(fail, up), (e) => e.code === 'page_failed' && e.status === 0 && b.isPageFailed(e)
     && /updated or a file could not load/.test(e.message) && e.cause instanceof TypeError);
   assert.equal(sessionStorage.getItem('sentrymate.page-retry'), null, 'Reload tries again from the start');
   // another page that fails gets its own try
   const loc2 = fakeLocation('https://sm.example/cars/c1/drives');
-  b.loadPage(fail);
+  b.loadPage(fail, up);
   await flush();
   assert.equal(loc2.replaced.length, 1);
   // and one that loads forgets the try
   const mod = { mount() {} };
   assert.equal(await b.loadPage(async () => mod), mod);
   assert.equal(sessionStorage.getItem('sentrymate.page-retry'), null);
+});
+
+test('a page file that fails while the server gives no answer is "no answer from the server": the tab stays, and tries afresh later', async (t) => {
+  const b = await fresh('away');
+  sessionStorage.clear();
+  const loc = fakeLocation('https://sm.example/cars/c1/health', t);
+  const fail = () => Promise.reject(new TypeError('Failed to fetch dynamically imported module'));
+  const asked = [];
+  const away = async (url, init) => { asked.push([url, init?.cache]); throw new TypeError('Failed to fetch'); };
+  // the server is away (a restart, the network gone): a full load would put the browser's own error page there
+  await assert.rejects(b.loadPage(fail, { fetch: away }), (e) => e.status === 0 && e.code === 'network' && !b.isPageFailed(e)
+    && /server/i.test(e.message) && e.cause instanceof TypeError);
+  assert.deepEqual(asked, [['/health', 'no-store']]);
+  assert.equal(loc.replaced.length, 0, 'no full load while the server does not answer');
+  assert.equal(sessionStorage.getItem('sentrymate.page-retry'), null, 'and it does not count as the one try');
+  // one that never answers is given up on, too
+  await assert.rejects(b.loadPage(fail, { fetch: () => new Promise(() => {}), awayAfterMs: 20 }), (e) => e.code === 'network');
+  assert.equal(loc.replaced.length, 0);
+  // the server is back and the file still fails: now the one full load
+  b.loadPage(fail, { fetch: async () => ({ ok: true, headers: { get: () => null } }) });
+  await flush();
+  assert.equal(loc.replaced.length, 1);
+  // an answer that is an error is an answer: the server is there
+  sessionStorage.clear();
+  const loc2 = fakeLocation('https://sm.example/cars/c1/drives');
+  b.loadPage(fail, { fetch: async () => ({ ok: false, status: 503, headers: { get: () => null } }) });
+  await flush();
+  assert.equal(loc2.replaced.length, 1);
 });
 
 test('the words of a page that could not load', () => {
