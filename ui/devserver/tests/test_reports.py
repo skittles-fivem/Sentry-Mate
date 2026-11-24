@@ -305,11 +305,12 @@ class Software(ServerCase):
         for k in ("event_type", "car", "drive", "start", "end", "distance", "energy_used_kwh", "units"):
             self.assertIn(k, ended)
         self.assertNotIn("start_latitude", ended)  # positions only when the owner turns location publishing on
-        # the payload is MQTT's: the car and the drive or charge are numbers there, as the real server sends them
+        # the payload is MQTT's: the car is its number there; the drive or charge is its id as text, as the API has it
+        # (an imported row's id is over 2^53: a JSON number would lose digits)
         row = next(x for x in d["items"] if x["type"] == "drive_ended")
-        self.assertEqual((ended["car"], ended["drive"]), (1, int(row["id"].split(":")[1])))
+        self.assertEqual((ended["car"], ended["drive"]), (1, row["id"].split(":")[1]))
         ch = self.c.get("/api/v1/cars/c2/events?types=charge_ended&limit=1")["items"][0]
-        self.assertEqual((ch["payload"]["car"], ch["payload"]["charge"]), (2, int(ch["id"].split(":")[1])))
+        self.assertEqual((ch["payload"]["car"], ch["payload"]["charge"]), (2, ch["id"].split(":")[1]))
         self.assertTrue(all(x["topic"] == "sentrymate/cars/c1/event" for x in d["items"]))
         sw = self.c.get("/api/v1/cars/c1/events?types=software_changed")["items"]
         self.assertEqual(len(sw), 3)  # one per software update of c1
