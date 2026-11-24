@@ -14,8 +14,8 @@ use std::collections::BinaryHeap;
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct DriveFlags {
     pub in_progress: bool,
-    /// How long the drive has no data (stretches of over [`GAP_MS`] between its samples where the records say logs
-    /// are missing, failed their check, paused or lost frames): the same in the list and the detail.
+    /// How long the drive has no data (stretches between its samples longer than [`gap_limit`] where the records say
+    /// logs are missing, failed their check, paused or lost frames): the same in the list and the detail.
     pub gap_ms: u64,
     /// How many frames were lost: `0` when the drive's logs lost none; null when they did (the bridge's `# dropped`
     /// lines say frames were lost there, not how many) and for imported history.
@@ -29,6 +29,34 @@ pub struct DriveFlags {
 
 /// Samples further apart than this are a gap in a drive's data (and break its track).
 pub const GAP_MS: u64 = 10_000;
+
+/// How far apart two of a drive's samples may be before the stretch between them is a gap (ms): [`GAP_MS`], or, where
+/// either is an API's reading alone (one every few seconds to two minutes), as long as the timeline counts an API's
+/// reading ([`timeline::Params::api_max_hold_ms`]).
+pub(crate) fn gap_limit(e: &Engine, api: bool) -> u64 {
+    if api { GAP_MS.max(e.options().params.api_max_hold_ms) } else { GAP_MS }
+}
+
+/// Whether the second `t` of a live drive's samples is an API's alone (`marks`: [`timeline::Fused::marks`]).
+fn api_second(marks: &[(u64, model::Inputs)], t: u64) -> bool {
+    marks.binary_search_by_key(&t, |m| m.0).is_ok_and(|i| !marks[i].1.contains(model::Input::Smo))
+}
+
+/// The seconds a live drive has data in `[a, b)`, each with whether only an API read it: SMO's and those of the
+/// APIs that gave the drive's seconds, by time.
+fn data_seconds(e: &Engine, d: &Drive, a: u64, b: u64) -> QResult<Vec<(u64, bool)>> {
+    let read = |stream: model::Stream| -> QResult<Vec<u64>> {
+        Ok(e.db().read_fields::<Sample>(d.car, stream, a, b, &["speed_kmh"])?.t_ms)
+    };
+    let mut t: Vec<(u64, bool)> = read(model::Stream::Smo)?.into_iter().map(|x| (x, false)).collect();
+    for input in d.inputs.without_smo().iter() {
+        t.extend(read(model::Stream::from(input))?.into_iter().map(|x| (x, true)));
+    }
+    // (a second SMO has is SMO's)
+    t.sort_unstable();
+    t.dedup_by_key(|x| x.0);
+    Ok(t)
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DriveView {
@@ -322,17 +350,11 @@ impl Cover {
     }
 }
 
-/// Marks a drive's gaps and lost frames on its row, and answers its gaps: the stretches of over [`GAP_MS`] between
-/// its samples, looked for only where the records doubt its data (a drive its logs cover whole, with no pause and no
-/// lost frame, has none). The list and the detail mark a drive alike. `times` are the drive's samples' times when
-/// they are at hand (else its time column is read). Imported history has no records: no gaps, lost frames null.
-pub(crate) fn mark_gaps(
-    e: &Engine,
-    d: &Drive,
-    cover: &Cover,
-    times: Option<&[u64]>,
-    v: &mut DriveView,
-) -> QResult<Vec<Gap>> {
+/// Marks a drive's gaps and lost frames on its row, and answers its gaps: the stretches between its samples longer
+/// than [`gap_limit`], looked for only where the records doubt its data (a drive its logs cover whole, with no pause
+/// and no lost frame, has none). The list and the detail mark a drive alike: both read the seconds of SMO and of the
+/// APIs the drive names. Imported history has no records: no gaps, lost frames null.
+pub(crate) fn mark_gaps(e: &Engine, d: &Drive, cover: &Cover, v: &mut DriveView) -> QResult<Vec<Gap>> {
     if d.source != Source::Live {
         return Ok(Vec::new());
     }
@@ -343,21 +365,14 @@ pub(crate) fn mark_gaps(
     if !cover.doubtful(a, b) {
         return Ok(Vec::new());
     }
-    let read;
-    let t: &[u64] = match times {
-        Some(t) => t,
-        None => {
-            read = e.db().read_fields::<Sample>(d.car, d.source, a, b, &["speed_kmh"])?.t_ms;
-            &read
-        }
-    };
-    let gaps: Vec<Gap> = t
+    let (smo_limit, api_limit) = (gap_limit(e, false), gap_limit(e, true));
+    let gaps: Vec<Gap> = data_seconds(e, d, a, b)?
         .windows(2)
-        .filter(|w| w[1].saturating_sub(w[0]) > GAP_MS)
+        .filter(|w| w[1].0.saturating_sub(w[0].0) > if w[0].1 || w[1].1 { api_limit } else { smo_limit })
         .map(|w| Gap {
-            start_ms: w[0] + 1000,
-            end_ms: w[1],
-            kind: if cover.lost(w[0], w[1] + 1) { "dropped" } else { "unknown" },
+            start_ms: w[0].0 + 1000,
+            end_ms: w[1].0,
+            kind: if cover.lost(w[0].0, w[1].0 + 1) { "dropped" } else { "unknown" },
         })
         .collect();
     v.flags.gap_ms = gaps.iter().map(|g| g.end_ms.saturating_sub(g.start_ms)).sum();
@@ -625,14 +640,26 @@ fn hill_corrected(v: &mut DriveView, d: &Drive, rated: Option<f64>, mass_kg: Opt
     v.efficiency_pct = r(rated.zip(v.wh_per_km).map(|(rated, w)| rated / w * 100.0), 1);
 }
 
-/// The drives list's sort key.
-fn sort_key(sort: &str, v: &DriveView) -> (f64, String) {
+/// Whether a drive has a consumption the pages show: not one still under way, under 1 km, or with a gap over 60 s in
+/// its data (the pages show "—" for those).
+fn has_figure(v: &DriveView) -> bool {
+    v.wh_per_km.is_some()
+        && !v.flags.in_progress
+        && v.distance_km.is_some_and(|km| km >= 1.0)
+        && v.flags.gap_ms <= 60_000
+}
+
+/// The drives list's sort key. By consumption, a drive without a figure goes last in either direction (the lowest key
+/// going down, the highest going up).
+fn sort_key(sort: &str, v: &DriveView, desc: bool) -> (f64, String) {
     let n = |x: Option<f64>| x.unwrap_or(f64::NEG_INFINITY);
+    let figure =
+        || v.wh_per_km.filter(|_| has_figure(v)).unwrap_or(if desc { f64::NEG_INFINITY } else { f64::INFINITY });
     let k = match sort {
         "distance" => n(v.distance_km),
         "duration" => v.duration_ms as f64,
         "energy" => n(v.energy_kwh),
-        "wh_per_km" => n(v.wh_per_km),
+        "wh_per_km" => figure(),
         "speed_max" => n(v.speed_max_kph),
         _ => v.start_ms as f64,
     };
@@ -666,7 +693,7 @@ fn pass(
     };
     each::<Drive>(e, car, a, b, f.source, &shown, desc, |d| {
         let (mut v, filled) = view_filled(c, &d, &x, &gaps)?;
-        mark_gaps(e, &d, &cover, None, &mut v)?;
+        mark_gaps(e, &d, &cover, &mut v)?;
         v.purpose = purposes.of(e, &filled, &v)?;
         // (the consumption over the climb from the row's own climb: an imported one is never counted as measured)
         if f.hill {
@@ -674,7 +701,7 @@ fn pass(
         }
         if f.keeps(&v) {
             sum.add(&v);
-            take(sort_key(sort, &v), v);
+            take(sort_key(sort, &v, desc), v);
         }
         Ok(true)
     })?;
@@ -811,14 +838,16 @@ pub struct DriveDetail {
     pub est_basis: &'static str,
 }
 
-/// The samples of a drive (its own source's), in time order.
-pub(crate) fn samples(e: &Engine, car: CarId, d: &Drive) -> QResult<Vec<Sample>> {
+/// The samples of a drive (its own source's), in time order, with the seconds that are not SMO's alone
+/// ([`timeline::Fused::marks`]; none for imported history).
+fn samples_marked(e: &Engine, car: CarId, d: &Drive) -> QResult<crate::tesla_in::LiveFused> {
     let to = d.end_ms.max(d.start_ms) + 1;
     if d.source == Source::Live {
-        // SMO's and the Tesla API's, made one as the drive was built from
-        return Ok(e.live_samples(car, d.start_ms, to)?);
+        // SMO's and the APIs', made one as the drive was built from
+        return Ok(e.live_fused(car, d.start_ms, to)?);
     }
-    Ok(e.db().read_points::<Sample>(car, d.source, d.start_ms, to)?)
+    let samples = e.db().read_points::<Sample>(car, d.source, d.start_ms, to)?;
+    Ok(crate::tesla_in::LiveFused { samples, marks: Vec::new() })
 }
 
 /// `/cars/{car}/drives/{drive}`; `speed_band_kph` is 1 to 100 (default 10).
@@ -845,20 +874,21 @@ pub fn drive(e: &Engine, car: CarId, id: u64, speed_band_kph: Option<f64>) -> QR
         first::<model::Charge>(e, car, d.start_ms, u64::MAX, &shown, false, |ch| ch.start_ms >= d.start_ms)?
             .map(|ch| ch.id.to_string())
     };
-    let s = samples(e, car, &d)?;
+    let crate::tesla_in::LiveFused { samples: s, marks } = samples_marked(e, car, &d)?;
     let mut bands: std::collections::BTreeMap<u64, u64> = Default::default();
     // the energy back into the pack: the negative battery power over the drive (each sample's power held until the
-    // next, for GAP_MS at most)
+    // next, for the gap limit at most: an API's readings are far apart)
     let (mut regen, mut with_power) = (0.0, false);
     for w in s.windows(2) {
         let dt = w[1].t_ms.saturating_sub(w[0].t_ms);
+        let limit = gap_limit(e, api_second(&marks, w[0].t_ms) || api_second(&marks, w[1].t_ms));
         if let Some(p) = w[0].battery_power_kw.filter(|p| p.is_finite()) {
             with_power = true;
             if p < 0.0 {
-                regen += -p * dt.min(GAP_MS) as f64 / 3_600_000.0;
+                regen += -p * dt.min(limit) as f64 / 3_600_000.0;
             }
         }
-        if dt > GAP_MS {
+        if dt > limit {
             continue;
         }
         if let Some(v) = w[0].speed_kmh.filter(|v| *v > 0.5) {
@@ -885,8 +915,7 @@ pub fn drive(e: &Engine, car: CarId, id: u64, speed_band_kph: Option<f64>) -> QR
     let gaps = super::gapfill::Gaps::new(e, car, None)?;
     let (mut view, filled) = view_filled(&c, &d, &x, &gaps)?;
     let cover = Cover::read(e, car, d.start_ms.saturating_sub(GAP_MS), d.end_ms.saturating_add(GAP_MS + 1))?;
-    let times: Vec<u64> = s.iter().map(|x| x.t_ms).collect();
-    let gaps = mark_gaps(e, &d, &cover, Some(&times), &mut view)?;
+    let gaps = mark_gaps(e, &d, &cover, &mut view)?;
     view.purpose = super::logbook::Purposes::new(e, &c)?.of(e, &filled, &view)?;
     if d.source == Source::Live && with_power {
         view.regen_kwh = r(Some(regen), 3);
@@ -936,7 +965,8 @@ const TRACK_FIELDS: &[(&str, &str)] = &[
     ("soc_pct", "soc"),
 ];
 
-/// A drive's track: one point a second with a fix, cut into stretches where data is missing for over 10 s.
+/// A drive's track: one point a second with a fix, cut into stretches where data is missing for longer than
+/// [`gap_limit`] (10 s, or an API's pace where only an API read the car).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Track {
     pub car: CarRef,
@@ -959,7 +989,7 @@ pub(crate) fn track_with(e: &Engine, car: CarId, id: u64, gaps: Option<&super::g
     let d: Drive = e.db().get(car, id)?.ok_or(QueryError::NotFound("no_such_drive"))?;
     let mut stretches: Vec<Vec<TrackPoint>> = Vec::new();
     let mut last_t: Option<u64> = None;
-    let own = samples(e, car, &d)?;
+    let crate::tesla_in::LiveFused { samples: own, marks } = samples_marked(e, car, &d)?;
     // a live drive's track with what the chosen import fills: values it lacks, and the import's points where the
     // drive's own data has a gap
     let mut given = if d.source == Source::Live {
@@ -1015,7 +1045,9 @@ pub(crate) fn track_with(e: &Engine, car: CarId, id: u64, gaps: Option<&super::g
             soc_pct: s.soc,
             imported,
         };
-        if last_t.is_none_or(|t| s.t_ms.saturating_sub(t) > GAP_MS) || stretches.is_empty() {
+        let apart =
+            |t: u64| s.t_ms.saturating_sub(t) > gap_limit(e, api_second(&marks, t) || api_second(&marks, s.t_ms));
+        if last_t.is_none_or(apart) || stretches.is_empty() {
             stretches.push(Vec::new());
         }
         if let Some(st) = stretches.last_mut() {
@@ -1034,7 +1066,8 @@ pub(crate) fn track_with(e: &Engine, car: CarId, id: u64, gaps: Option<&super::g
     })
 }
 
-/// Douglas-Peucker thinning to `tolerance_m`, keeping the ends.
+/// Douglas-Peucker thinning to `tolerance_m`, keeping the ends. A point's distance is to the segment between a
+/// stretch's ends, not the endless line through them: a point beyond an end (the turn of an out-and-back) is far.
 pub fn simplify(points: &[TrackPoint], tolerance_m: f64) -> Vec<TrackPoint> {
     if points.len() < 3 || tolerance_m <= 0.0 {
         return points.to_vec();
@@ -1053,11 +1086,14 @@ pub fn simplify(points: &[TrackPoint], tolerance_m: f64) -> Vec<TrackPoint> {
         let (ax, ay) = (points[a].lon * kx, points[a].lat * ky);
         let (bx, by) = (points[b].lon * kx, points[b].lat * ky);
         let (dx, dy) = (bx - ax, by - ay);
-        let len = (dx * dx + dy * dy).sqrt();
+        let len2 = dx * dx + dy * dy;
         let mut best = (0.0, a);
         for (i, p) in points.iter().enumerate().take(b).skip(a + 1) {
             let (px, py) = (p.lon * kx - ax, p.lat * ky - ay);
-            let dist = if len > 0.0 { (px * dy - py * dx).abs() / len } else { (px * px + py * py).sqrt() };
+            // the nearest point of the segment, as a share of the way from a to b
+            let k = if len2 > 0.0 { ((px * dx + py * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+            let (ex, ey) = (px - k * dx, py - k * dy);
+            let dist = (ex * ex + ey * ey).sqrt();
             if dist > best.0 {
                 best = (dist, i);
             }

@@ -27,7 +27,11 @@ use serde::{Deserialize, Serialize};
 /// 4: a charge's grid energy counts every phase in use; a reading counts in an energy sum until the next second
 /// that has it, an API's for as long as an API's readings are apart ([`Params::api_max_hold_ms`]); a drive whose
 /// odometer was first read late or last read early has the GPS distance of the rest.
-pub const RULES_VERSION: u32 = 4;
+/// 5: a drive an API read runs up to the reading that sees the car parked, and ends at its odometer and position; a
+/// last odometer reading the car cannot have driven to is passed over; a GPS step that ends standing is left out
+/// only when it is short or starts standing too; charging shorter than [`Params::min_charge_ms`] that added less
+/// than [`Params::min_charge_kwh`] is no charge.
+pub const RULES_VERSION: u32 = 5;
 
 /// A drive's id: the car in the high 32 bits, its start (s since 1970) in the low ones. The same drive rebuilt keeps
 /// its id, and no two cars share one. (As a JSON number it is exact while car ids stay under 2^21; past that the API
@@ -51,6 +55,12 @@ pub struct Params {
     pub min_drive_km: f64,
     /// Charging that stops for less than this and starts again is one charge (ms).
     pub charge_gap_ms: u64,
+    /// Charging shorter than this that added less than `min_charge_kwh` (or nothing known) is no charge: a scheduled
+    /// charge that starts and stops at plug-in, a failed handshake (ms).
+    #[serde(default = "min_charge_ms")]
+    pub min_charge_ms: u64,
+    #[serde(default = "min_charge_kwh")]
+    pub min_charge_kwh: f64,
     /// One position kept per this long while parked (ms).
     pub parked_position_every_ms: u64,
     /// An unknown span this long (or any asleep span) is a settled point: nothing goes on across it (ms).
@@ -79,6 +89,14 @@ fn api_max_hold_ms() -> u64 {
     150_000
 }
 
+fn min_charge_ms() -> u64 {
+    60_000
+}
+
+fn min_charge_kwh() -> f64 {
+    0.05
+}
+
 impl Params {
     /// The thresholds for rows with seconds from the Tesla API alone.
     pub fn for_api(&self) -> Params {
@@ -97,6 +115,8 @@ impl Default for Params {
             min_drive_ms: 30_000,
             min_drive_km: 0.05,
             charge_gap_ms: 180_000,
+            min_charge_ms: min_charge_ms(),
+            min_charge_kwh: min_charge_kwh(),
             parked_position_every_ms: 300_000,
             settle_ms: 600_000,
             join_ms: 5_000,
@@ -357,7 +377,9 @@ pub fn build(input: &Input<'_>, params: &Params) -> Timeline {
             .copied()
             .filter(|&(i, j)| {
                 let prev = i.checked_sub(1).map(|k| seg[k]);
-                match drives::make(car, &seg[i..=j], prev, &params_of(i, j), holds_of(i, j)) {
+                // where an API read the drive, its readings are far apart: the one after it says where it ended
+                let next = seg.get(j + 1).copied().filter(|_| !api.is_empty() && api[i..=(j + 1)].contains(&true));
+                match drives::make(car, &seg[i..=j], prev, next, &params_of(i, j), holds_of(i, j)) {
                     Some(mut d) => {
                         d.inputs = inputs_of(i, j);
                         t.drives.push(d);

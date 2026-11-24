@@ -149,6 +149,7 @@ export async function mount(ctx) {
   const multi = !fixedCar;
   const carsParam = fixedCar ? null : (chosen === 'all' ? 'all' : viewCars.join(','));
   const carName = (cid) => carById.get(cid)?.name || cid;
+  const carZone = (cid) => carById.get(cid)?.time_zone || tz;
   const scopeName = fixedCar ? fixedCar.name : chosen === 'all' ? (fleet.length === 1 ? fleet[0].name : fleet.length ? `All ${formatNumber(fleet.length)} cars` : 'No car yet') : viewCars.length === 1 ? carName(viewCars[0]) : `${formatNumber(viewCars.length)} cars`;
   const listPath = fixedCar ? `cars/${enc(fixedCar.id)}/charges` : 'charges';
   const statsPath = fixedCar ? `cars/${enc(fixedCar.id)}/charging-stats` : 'charging-stats';
@@ -656,7 +657,7 @@ export async function mount(ctx) {
       sort: { key: 'start', dir: 'desc' },
       columns: [
         multi ? { key: 'car', label: 'Car', sort: true, value: (r) => carName(r.car), render: (r) => carName(r.car), csv: (r) => carName(r.car) } : null,
-        { key: 'start', label: 'First start', sort: true, value: (r) => r.start_ms, render: (r) => `${formatDate(r.start_ms, tz, { year: false })}, ${formatTime(r.start_ms, tz)}`, csv: (r) => iso(r.start_ms) },
+        { key: 'start', label: 'First start', sort: true, value: (r) => r.start_ms, render: (r) => `${formatDate(r.start_ms, carZone(r.car), { year: false })}, ${formatTime(r.start_ms, carZone(r.car))}`, csv: (r) => iso(r.start_ms) },
         { key: 'charges', label: 'Charges', num: true, sort: true, render: (r) => formatNumber(r.charges) },
         { key: 'min_start_soc_pct', label: 'Lowest start', num: true, sort: true, render: (r) => pct(r.min_start_soc_pct) },
         { key: 'max_end_soc_pct', label: 'Highest end', num: true, sort: true, render: (r) => pct(r.max_end_soc_pct) },

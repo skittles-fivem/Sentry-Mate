@@ -153,11 +153,16 @@ export async function mount(ctx) {
       onclick: (e) => { if (kinds.has(k) && kinds.size === 1) return; if (kinds.has(k)) kinds.delete(k); else kinds.add(k); e.currentTarget.setAttribute('aria-pressed', String(kinds.has(k))); reload(); },
     }, h('span', { class: 'dot' }), v.plural)));
   const placeSel = h('select', { class: 'select', 'aria-label': 'Place' }, h('option', { value: '' }, 'Every place'));
-  ctx.api.page('places', { sort: 'visits' }, { limit: 100 }).then((pg) => {
+  // this car's own places (counted by this car, as Drives does): the ones it drove to or from or charged at; two that
+  // share a name are told apart by their position
+  ctx.api.list('places', { car: cid, sort: 'visits' }, { limit: 200 }).all().then((all) => {
     if (!ctx.alive()) return;
-    placeSel.append(...pg.items.map((p) => h('option', { value: p.id, selected: p.id === placeId }, p.name)));
-    // a place from the link that is not in the list (removed, or past the first 100): show it, so the select and the list agree
-    if (placeId && !pg.items.some((p) => p.id === placeId)) placeSel.append(h('option', { value: placeId, selected: true, dataset: { fromLink: '1' } }, 'The place in the link'));
+    const items = all.filter((p) => (p.counts?.drives || 0) + (p.counts?.charges || 0) > 0 || p.id === placeId);
+    const twins = new Set(items.map((p) => p.name).filter((n, i, a) => a.indexOf(n) !== i));
+    const label = (p) => (twins.has(p.name) && p.lat != null ? `${p.name} (${p.lat.toFixed(3)}, ${p.lon.toFixed(3)})` : p.name);
+    placeSel.append(...items.map((p) => h('option', { value: p.id, selected: p.id === placeId }, label(p))));
+    // a place from the link that is not in the list (removed): show it, so the select and the list agree
+    if (placeId && !items.some((p) => p.id === placeId)) placeSel.append(h('option', { value: placeId, selected: true, dataset: { fromLink: '1' } }, 'The place in the link'));
   }).catch(() => {});
   placeSel.addEventListener('change', () => { placeId = placeSel.value; reload(); });
   const textIn = h('input', { class: 'input', type: 'search', value: text, placeholder: 'Hide rows without this text', 'aria-label': 'Text filter', title: 'Only hides rows; it never changes the figures of the rows it keeps.' });

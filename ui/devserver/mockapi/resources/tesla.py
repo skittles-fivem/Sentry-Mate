@@ -19,7 +19,7 @@ import secrets
 from urllib.parse import parse_qs, unquote_to_bytes, urlencode, urlsplit
 
 from ..errors import ApiError, bad_input, conflict, invalid, not_found
-from ..store import DEV_PASSWORD, DEV_TWO_STEP_CODE
+from ..store import DEV_PASSWORD, take_code
 from ..util import DAY, MIN
 from . import invoices
 
@@ -116,7 +116,7 @@ def reconfirm(req, body):
         code = _str(body, "code")
         if code is None:
             code = req.headers.get("X-Sentry-Mate-Code")
-        if code is None or code.strip() != DEV_TWO_STEP_CODE:
+        if code is None or not take_code(req.account, code):
             raise ApiError(401, "wrong_code", "Type the code from your authenticator app.",
                            fields={"code": "The 6-digit code."})
 

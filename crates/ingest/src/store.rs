@@ -912,6 +912,13 @@ impl Inner {
             )
             .received(had.received));
         }
+        // every byte arrived but the file was not sealed (the server stopped, or the sealing failed, at that moment):
+        // whatever chunk comes next for it seals it now (the SHA-256 decides), else it would stay partial for good
+        let full = had.state == State::Partial && had.length == Some(length) && had.received == length;
+        if full {
+            let records = self.vault.records(&p.part, &p.part_label).map_err(vault_err)?;
+            return self.seal(name, &n, &p, records, length, sha256, replacing);
+        }
         if offset != had.received {
             return Err(ApiError::new(409, "offset_mismatch", format!("Expected Upload-Offset {}.", had.received))
                 .received(had.received));
@@ -975,6 +982,23 @@ impl Inner {
         if received < length {
             return Ok(Received { received, length, complete: false, already: false, replaced: false, orphan: false });
         }
+        self.seal(name, &n, &p, records, length, sha256, replacing)
+    }
+
+    /// The last byte arrived: the part is kept only if it is the file the app hashed, sealed again as a finished file.
+    /// A failure here that is no fault of the file (an I/O error) leaves the part whole: the next chunk seals it.
+    #[allow(clippy::too_many_arguments)]
+    fn seal(
+        self: &Arc<Self>,
+        name: &str,
+        n: &LogName,
+        p: &Paths,
+        mut records: vault::Records,
+        length: u64,
+        sha256: &str,
+        replacing: bool,
+    ) -> Result<Received, ApiError> {
+        let received = length;
 
         // the last byte: kept only if it is the file the app hashed, sealed again as a finished file
         let discard = |tmp: Option<&Path>| {

@@ -85,6 +85,16 @@ pub struct Cadence {
     pub invoice_error_max_ms: u64,
 }
 
+impl Cadence {
+    /// How far apart two looks at the same state may be and still make one span: [`Cadence::fact_join_ms`], or one
+    /// and a half of the slowest read when that is slower (looks further apart than the join would all be
+    /// zero-length, and the car would never be recorded asleep or online between them).
+    pub fn join_ms(&self) -> u64 {
+        let slowest = [self.asleep_ms, self.idle_ms, self.charging_ms, self.driving_ms].into_iter().max().unwrap_or(0);
+        self.fact_join_ms.max(slowest.saturating_add(slowest / 2))
+    }
+}
+
 impl Default for Cadence {
     fn default() -> Self {
         Cadence {
@@ -585,7 +595,7 @@ impl<F: Feed, S: Sink> Poller<F, S> {
 
     fn fact(&mut self, at_ms: u64, state: ApiState) -> ApiFact {
         let f = match self.last_seen {
-            Some((t, s)) if s == state && at_ms >= t && at_ms - t <= self.cadence.fact_join_ms => {
+            Some((t, s)) if s == state && at_ms >= t && at_ms - t <= self.cadence.join_ms() => {
                 ApiFact { start_ms: t, end_ms: at_ms, state }
             }
             _ => ApiFact { start_ms: at_ms, end_ms: at_ms, state },

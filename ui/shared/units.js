@@ -86,7 +86,7 @@ const KINDS = {
 export const KIND_NAMES = Object.freeze(Object.keys(KINDS));
 
 function kindOrThrow(kind) {
-  const k = KINDS[kind];
+  const k = Object.hasOwn(KINDS, kind) ? KINDS[kind] : null;
   if (!k) throw new RangeError(`units.js: unknown kind ${JSON.stringify(kind)}`);
   return k;
 }
@@ -101,8 +101,11 @@ export function convert(value, kind, opts) {
 /** A value typed in the person's unit back to the API's metric unit (for filters and forms). */
 export function toMetric(value, kind, opts) {
   const k = kindOrThrow(kind);
-  if (value == null || value === '' || !Number.isFinite(+value)) return null;
-  return k.back ? k.back(+value, cur(opts)) : +value;
+  // a number, or text in plain decimal ('12', '-1.5', '1e3'); blank text, true, [] and '0x10' are not numbers
+  const n = typeof value === 'number' ? value
+    : typeof value === 'string' && /^\s*[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?\s*$/i.test(value) ? Number(value) : NaN;
+  if (!Number.isFinite(n)) return null;
+  return k.back ? k.back(n, cur(opts)) : n;
 }
 /** The unit symbol for a kind in the person's units: 'mi', 'km/h', '°F', 'bar', 'Wh/mi', '%'. */
 export function unitLabel(kind, opts) {
@@ -171,7 +174,7 @@ function currencyText(amount, currency, { min = null, max = null, sign } = {}) {
   if (currency) {
     o.style = 'currency';
     o.currency = currency;
-    o.currencyDisplay = 'narrowSymbol';
+    o.currencyDisplay = 'symbol'; // the locale's own symbol: CA$ and US$ differ where $ alone would not say which
   } else {
     o.minimumFractionDigits = 2;
   }

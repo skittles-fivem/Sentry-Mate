@@ -949,8 +949,10 @@ function failures(r, o) {
   if (!r.ready.ok) f.push('ready');
   if (r.missing.length && !o.allowMissing) f.push('missing');
   for (const k of ['foreign', 'unknown', 'console', 'pageErrors', 'csp', 'apiFailures', 'outside']) if (r[k].length) f.push(k);
-  if (r.overflow && (r.overflow.document || r.overflow.count)) f.push('overflow');
-  if (r.smallText && r.smallText.count) f.push('smallText');
+  // a page whose measuring failed (it threw or timed out) is not a page that measured clean
+  const measured = !r.loadError && r.ready.ok;
+  if (r.overflow ? (r.overflow.document || r.overflow.count) : measured) f.push('overflow');
+  if (r.smallText ? r.smallText.count : measured) f.push('smallText');
   if (o.pixel && (!r.pixel || r.pixel.count)) f.push('pixel');
   if (o.stable && !r.loadError && r.ready.ok && stableFails(r.stable)) f.push('stable');
   if (o.hover && !r.loadError && r.ready.ok && (!r.hover || r.hover.error || r.hover.count)) f.push('hover');
@@ -1387,6 +1389,12 @@ async function selfTest(o) {
   expect('hover: the report has a hover column and says what moved', / hover\n/.test(formatReport(hv)) && /hover: \d+\. hover on [^\n]*button\.btn\.bold[^\n]* moved [^\n]*\(x \+\d/.test(formatReport(hv)));
   expect('hover: no hover column or check without --hover', ok.pages.every((p) => p.sizes.every((s) => s.hover === null)) && !/ hover\n/.test(formatReport(ok)));
 
+  // a page that could not be measured fails; one that load or ready already failed is not blamed twice
+  const clean = { loadError: null, ready: { ok: true }, missing: [], foreign: [], unknown: [], console: [], pageErrors: [], csp: [], apiFailures: [], outside: [], overflow: { document: false, count: 0 }, smallText: { count: 0 }, pixel: null };
+  expect('a page measured clean has no failures', failures(clean, {}).length === 0);
+  expect('a page that could not be measured fails on overflow and small text', failures({ ...clean, overflow: null, smallText: null }, {}).join() === 'overflow,smallText');
+  expect('a page that failed to load is not also blamed for what it could not measure', failures({ ...clean, loadError: 'x', overflow: null, smallText: null }, {}).join() === 'load');
+
   const failed = checks.filter((c) => !c.ok);
   const L = checks.map((c) => `${c.ok ? 'ok  ' : 'FAIL'}  ${c.what}`);
   L.push('', failed.length ? `self-test failed: ${failed.length} of ${checks.length} checks` : `self-test passed: ${checks.length} checks`);
@@ -1575,7 +1583,7 @@ async function main() {
 
 // before main: run as the program, check.js is still being loaded when --jumps asks for jumps.js, which asks for
 // these (a module that needs this one while it loads gets only what is exported by then)
-module.exports = { run, formatReport, selfTest, parseArgs, ROUTES, FRAME_SCREENS, startServer, killChildren, TILE_HOSTS, BLANK_TILE };
+module.exports = { run, failures, formatReport, selfTest, parseArgs, ROUTES, FRAME_SCREENS, startServer, killChildren, TILE_HOSTS, BLANK_TILE };
 
 if (require.main === module) {
   main().then((code) => { process.exitCode = code; }, (e) => {

@@ -370,7 +370,7 @@ export async function mount(ctx) {
     for (const c of r.changes || []) { if (!byMod.has(c.module)) byMod.set(c.module, { name: c.module_name || MODULES[c.module] || c.module, rows: [] }); byMod.get(c.module).rows.push(c); }
     const changes = h('div', { class: 'sw-fp-changes', role: 'list', 'aria-label': 'Fingerprints that changed' },
       [...byMod.values()].map((m) => h('div', { class: 'sw-fp-mod', role: 'listitem' },
-        h('h4', { class: 'sw-fp-mod-name' }, m.name),
+        h('h3', { class: 'sw-fp-mod-name' }, m.name),
         h('dl', { class: 'sw-fp-rows' }, m.rows.map((c) => h('div', { class: 'sw-fp-row' },
           h('dt', { class: 'sw-fp-field' }, c.field),
           h('dd', { class: 'sw-fp-hexes' }, hexEl(c.old), h('span', { class: 'sw-fp-arrow', 'aria-label': 'became' }, '→'), hexEl(c.new))))))));

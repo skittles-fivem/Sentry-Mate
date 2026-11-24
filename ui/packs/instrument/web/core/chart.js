@@ -61,9 +61,10 @@ export const colors = () => ({
  * every build), data is uPlot's [x, ...ys]. onBuild(u) runs after each build. Cleaned up with the page.
  * A chart below the fold is built when it comes within a screen of view (shared/lazy.js); its box has its
  * height from CSS already, so nothing moves. Until then u is null and setData keeps the newest data.
- * Returns { get u(), setData(data) }.
+ * label: what the chart shows, for a screen reader (the box gets role="img" and this aria-label); without one the
+ * name is made from the nearest panel or chart title and the names of the series. Returns { get u(), setData(data) }.
  */
-export function mountPlot(target, make, data, ctx, onBuild = null) {
+export function mountPlot(target, make, data, ctx, onBuild = null, label = null) {
   const uPlot = window.uPlot;
   // a chart drawn again into the same box (a live refresh) takes the old one's place at once, never a second one under it
   const again = !!target.__smPlot;
@@ -79,6 +80,7 @@ export function mountPlot(target, make, data, ctx, onBuild = null) {
     u?.destroy();
     const { width, height } = box();
     u = new uPlot(make(width, height), cur, target);
+    nameChart(target, label, u);
     onBuild?.(u);
     putCursor(c);
   };
@@ -111,6 +113,18 @@ export function mountPlot(target, make, data, ctx, onBuild = null) {
   const plot = { get u() { return u; }, setData(d) { cur = d; u?.setData(d); }, rebuild: () => { if (u) build(); }, destroy };
   target.__smPlot = plot;
   return plot;
+}
+
+// The chart's name for a screen reader: the page's label, else the nearest title and the series it draws.
+function nameChart(box, label, u) {
+  let name = label;
+  if (!name) {
+    const near = box.closest('.panel, section, .habit-block, .chart-card')?.querySelector('.chart-title, .panel-title, h2, h3');
+    const series = (u?.series || []).slice(1).map((x) => x.label).filter((x) => typeof x === 'string' && x);
+    name = [near?.textContent.trim(), series.length ? series.join(', ') : null].filter(Boolean).join(': ') || 'Chart';
+  }
+  box.setAttribute('role', 'img');
+  box.setAttribute('aria-label', name);
 }
 
 // A tap on a touch screen fires mousemove, mousedown, mouseup, click and then mouseleave at once; uPlot hides
@@ -173,7 +187,7 @@ export const toUnits = (values, kind) => (kind ? values.map((v) => (v == null ? 
 export async function timeChart(target, ctx, opts) {
   await loadUPlot();
   if (!ctx.alive()) return null;
-  const { tz, t_ms, series, showX = true, range = null, sync = null, onCursor = null, digits = 0, onBuild = null } = opts;
+  const { tz, t_ms, series, showX = true, range = null, sync = null, onCursor = null, digits = 0, onBuild = null, label = null } = opts;
   const x = t_ms.map((t) => t / 1000);
   const ys = series.map((s) => toUnits(s.values, s.kind));
   const spanMs = t_ms.length ? t_ms[t_ms.length - 1] - t_ms[0] : 0;
@@ -206,14 +220,14 @@ export async function timeChart(target, ctx, opts) {
       },
     };
   };
-  return mountPlot(target, make, [x, ...ys], ctx, onBuild);
+  return mountPlot(target, make, [x, ...ys], ctx, onBuild, label);
 }
 
 /**
  * Bars per day (or any bucket): await barChart(el, ctx, { t_ms, values, kind, color, tz, onCursor }).
  * One bar per value at its time; labels are dates in the zone.
  */
-export async function barChart(target, ctx, { t_ms, values, kind = null, color = '--live', tz, onCursor = null }) {
+export async function barChart(target, ctx, { t_ms, values, kind = null, color = '--live', tz, onCursor = null, label = null }) {
   const uPlot = await loadUPlot();
   if (!ctx.alive()) return null;
   const xs = t_ms.map((t) => t / 1000);
@@ -238,7 +252,7 @@ export async function barChart(target, ctx, { t_ms, values, kind = null, color =
       hooks: { setCursor: onCursor ? [(u) => onCursor(u.cursor.idx)] : [] },
     };
   };
-  return mountPlot(target, make, [xs, ys], ctx);
+  return mountPlot(target, make, [xs, ys], ctx, null, label);
 }
 
 /** '12.4 mi' for a chart readout. */

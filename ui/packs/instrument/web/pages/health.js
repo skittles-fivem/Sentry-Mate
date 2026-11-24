@@ -725,6 +725,7 @@ async function mountCar(ctx) {
     await timeChart(box, ctx, {
       tz, t_ms: data.t_ms, digits: kind === 'pressure' ? 2 : 1,
       series: [{ label: s.comment || s.series, values, kind, color: '--live', area: true }],
+      label: `${s.comment || s.series} over the period`,
       onCursor: (i) => {
         if (i == null) { replace(readout, 'Point at the chart to read a value.'); return; }
         const v = values[i];
@@ -837,7 +838,7 @@ async function mountSystem(ctx) {
       metric('Data takes', bytes(used), null, { size: 'lg', cover: 'dbinfo.stat.total_size', explain: 'Every car’s data, imported history and offline maps together, as stored on disk.' }),
       metric('Free on the disk', st.free_bytes != null ? bytes(st.free_bytes) : null, null, { size: 'lg', why: 'Not known.',
         explain: disk ? `${format((used / disk) * 100, 'percent', { digits: 1 })} of ${bytes(disk)} is Sentry Mate’s data.` : null }),
-      metric('Grows by', perDay != null ? `${bytes(perDay)} a day` : null, null, { size: 'lg', why: 'Needs a few days of history.', explain: perDay != null ? `The mean of the last ${growth.length} full days.` : null }),
+      metric('Grows by', perDay != null ? `${bytes(perDay)} a day` : null, null, { size: 'lg', why: 'Needs a few days of history.', explain: perDay != null ? 'The mean of the last full days (at most 30), those without new data included.' : null }),
       metric('Full in', st.full_in_days != null ? `${formatNumber(st.full_in_days)} days` : null, null, { size: 'lg', why: 'Not growing, or not known.',
         explain: st.full_in_days != null ? (st.full_in_days > 3650 ? 'More than ten years at this rate: nothing to do.' : st.full_in_days < 60 ? 'Soon. Free space on the disk or move the data to a bigger one.' : 'Free space divided by the mean growth.') : null }),
     ], 'hl-tot-figs');
@@ -862,7 +863,7 @@ async function mountSystem(ctx) {
     if (growth.length) {
       const t = growth.map((g) => Date.parse(`${g.date}T12:00:00Z`));
       const mb = growth.map((g) => g.bytes / 1e6);
-      await barChart(chartBox, ctx, { t_ms: t, values: mb, color: '--live', tz: 'UTC',
+      await barChart(chartBox, ctx, { t_ms: t, values: mb, color: '--live', tz: 'UTC', label: 'Data added per day in megabytes, for all cars together, as bars',
         onCursor: (i) => replace(readout, i == null ? 'Point at a day.' : h('b', null, `${formatDayKey(growth[i].date)}: ${bytes(growth[i].bytes)}`)) });
     }
   }

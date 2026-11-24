@@ -15,6 +15,51 @@ from .util import DAY, HOUR, MIN, local_date
 
 DEV_PASSWORD = "sentry-mate-dev"
 DEV_TWO_STEP_CODE = "000000"
+# a recovery code is 16 symbols of Crockford base32 (no i, l, o or u), shown as xxxx-xxxx-xxxx-xxxx; one works once
+# in place of the app's code. The seeded two-step account (alex) has these made-up ones.
+RECOVERY_SYMBOLS = "0123456789abcdefghjkmnpqrstvwxyz"
+DEV_RECOVERY_CODES = ("a3k7-m2p9-q4r8-s5t6", "b4m8-n3q0-r5s9-t6v7", "c5n9-p4r1-s6t0-v7w8", "d6p0-q5s2-t7v1-w8x9",
+                      "e7q1-r6t3-v8w2-x9y0", "f8r2-s7v4-w9x3-y0z1", "g9s3-t8w5-x0y4-z1a2", "h0t4-v9x6-y1z5-a2b3",
+                      "j1v5-w0y7-z2a6-b3c4", "k2w6-x1z8-a3b7-c4d5")
+
+
+def normalize_recovery(typed):
+    """A typed recovery code as kept (16 symbols, lower case, dashes and spaces left out, o read as 0, i and l as 1),
+    or None: not a recovery code. The same reading as the real server's."""
+    out = []
+    for c in typed:
+        if c in "- ":
+            continue
+        c = {"o": "0", "i": "1", "l": "1"}.get(c.lower(), c.lower())
+        if c not in RECOVERY_SYMBOLS:
+            return None
+        out.append(c)
+    return "".join(out) if len(out) == 16 else None
+
+
+def new_recovery_codes(n=10):
+    return ["-".join("".join(secrets.choice(RECOVERY_SYMBOLS) for _ in range(4)) for _ in range(4)) for _ in range(n)]
+
+
+def keep_recovery_codes(account, codes):
+    """The account's recovery codes are these (kept normalized); the old ones stop working."""
+    account["recovery_codes"] = [normalize_recovery(c) for c in codes]
+    account["recovery_codes_left"] = len(codes)
+
+
+def take_code(account, code):
+    """True when `code` is the dev server's six digits, or one of the account's recovery codes (which is used up)."""
+    if not isinstance(code, str):
+        return False
+    if code.strip() == DEV_TWO_STEP_CODE:
+        return True
+    n = normalize_recovery(code)
+    left = account.get("recovery_codes") or []
+    if n is None or n not in left:
+        return False
+    left.remove(n)
+    account["recovery_codes_left"] = len(left)
+    return True
 DEV_SETUP_CODE = "SETUP-DEV-0000"
 COOKIE = "sentry-mate"
 COOKIE_SIGNED_OUT = "out"
@@ -45,6 +90,8 @@ class Store:
         self.lock = threading.RLock()
         now = cfg.now_ms
         self.accounts = {}
+        # the two-step rule, server-wide (not per account): everyone, or from outside the home network
+        self.two_step_policy = {"everyone": False, "outside": False}
         self.sessions = {}  # token -> session
         self.ended = set()  # tokens this server ended (they stay signed out)
         self.session_rows = {}  # account id -> [made-up older sessions]
@@ -131,12 +178,13 @@ class Store:
 
     def _seed_accounts(self, now):
         mk = lambda i, name, role, cars, two: {  # noqa: E731
-            "id": i, "name": name, "role": role, "cars": cars, "two_step_required": two, "two_step": two,
+            "id": i, "name": name, "role": role, "cars": cars, "two_step": two,
             "password": DEV_PASSWORD, "created_ms": now - 400 * DAY + int(i[1:]) * DAY, "version": 1,
         }
         for a in (mk("a1", "admin", "admin", "all", False), mk("a2", "watch", "watch", ["c1"], False),
                   mk("a3", "alex", "admin", "all", True)):
             self.accounts[a["id"]] = a
+        keep_recovery_codes(self.accounts["a3"], DEV_RECOVERY_CODES)
         self.prefs["a2"] = {"units": {"distance": "mi", "temperature": "f", "pressure": "psi"}, "range": "ideal",
                             "theme": "light"}
         self.session_rows["a1"] = [

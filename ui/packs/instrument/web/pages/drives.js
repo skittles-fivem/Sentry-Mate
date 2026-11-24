@@ -39,8 +39,10 @@ const placeCell = (p, cover) => {
 };
 
 // The list filters of the address, and the API query they make.
+// a number from the address, or nothing: a word or a number past what a computer holds is not a filter
+const numberOf = (v) => { const n = v === '' || v == null ? NaN : Number(v); return Number.isFinite(n) && n >= 0 ? String(v) : ''; };
 const filtersOf = (q) => ({
-  places: q.places || '', place_side: q.place_side || 'any', q: q.q || '', min_distance: q.min_distance || '', min_speed: q.min_speed || '',
+  places: q.places || '', place_side: q.place_side || 'any', q: q.q || '', min_distance: numberOf(q.min_distance), min_speed: numberOf(q.min_speed),
   source: filterWord(q.source), flags: q.flags || '', efficiency: q.efficiency || 'plain', exclude: q.exclude || '',
 });
 const listParams = (ctx, f) => ({
@@ -443,7 +445,7 @@ export async function mount(ctx) {
     const idle = () => replace(dailyRead, best ? ['busiest day ', h('b', null, format(best.distance_km, 'distance'))] : 'no driving');
     idle();
     dailyEl.hidden = !days.length;
-    if (days.length) barChart(dailyEl, ctx, { t_ms: xs, values: days.map((d) => d.distance_km), kind: 'distance', tz: 'UTC', onCursor: (i) => { if (i == null) { idle(); return; } const d = days[i]; replace(dailyRead, `${formatDate(xs[i], 'UTC', { year: false })} · `, h('b', null, format(d.distance_km, 'distance')), ` · ${d.count} ${d.count === 1 ? 'drive' : 'drives'}`); } });
+    if (days.length) barChart(dailyEl, ctx, { t_ms: xs, values: days.map((d) => d.distance_km), kind: 'distance', tz: 'UTC', label: 'Distance driven on each day of the period, as bars', onCursor: (i) => { if (i == null) { idle(); return; } const d = days[i]; replace(dailyRead, `${formatDate(xs[i], 'UTC', { year: false })} · `, h('b', null, format(d.distance_km, 'distance')), ` · ${d.count} ${d.count === 1 ? 'drive' : 'drives'}`); } });
   }
 
   // a drive started or ended: load the lists and patterns again, a moment after the first word of it (so a burst

@@ -68,6 +68,24 @@ test('open stream: one read, then events only, no polling', async () => {
   assert.equal(api.subs.size, 0);
 });
 
+test('a read started before an event applied does not overwrite it', async () => {
+  const api = fakeApi('open');
+  const t = fakeTimers();
+  let finish;
+  const seen = [];
+  const f = follow(api, {
+    type: 'job', timers: t, pollMs: null,
+    load: () => new Promise((r) => { finish = r; }),
+    onValue: (v, how) => seen.push([how, v.progress]),
+  });
+  api.fire('job', { progress: 90 });
+  finish({ progress: 10 });
+  await tick();
+  assert.deepEqual(seen, [['event', 90]]);
+  assert.equal(f.value.progress, 90);
+  f.stop();
+});
+
 test('stream down: polls; back up: reads once to catch up and stops polling', async () => {
   const api = fakeApi('reconnecting');
   const t = fakeTimers();

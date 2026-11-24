@@ -671,13 +671,9 @@ impl Engine {
         Ok(())
     }
 
-    /// A drive's or a stretch's live samples: SMO's and the API's fused, as the timeline was built from.
-    pub(crate) fn live_samples(&self, car: CarId, from_ms: u64, to_ms: u64) -> Result<Vec<Sample>> {
-        Ok(self.live_fused(car, from_ms, to_ms)?.samples)
-    }
-
-    /// [`Self::live_samples`] (SMO's, the Tesla API's, TeslaFi's API's and the local TeslaMate's, in the car's
-    /// order) and the seconds that are not SMO's alone ([`timeline::Fused::marks`]).
+    /// A drive's or a stretch's live samples, as the timeline was built from them (SMO's, the Tesla API's, TeslaFi's
+    /// API's and the local TeslaMate's, fused in the car's order), and the seconds that are not SMO's alone
+    /// ([`timeline::Fused::marks`]).
     pub(crate) fn live_fused(&self, car: CarId, from_ms: u64, to_ms: u64) -> Result<LiveFused> {
         let db = &self.inner.db;
         let p = &self.inner.opts.fuse;

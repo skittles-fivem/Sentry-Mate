@@ -15,6 +15,7 @@ import { format } from '../shared/units.js';
 import { icon } from '../core/icons.js';
 import { panel, pill } from '../core/page.js';
 import { field, form } from '../core/form.js';
+import { codeAttrs, codeValue, CODE_HINT } from '../core/code.js';
 import { errorWords } from '../core/states.js';
 import { flash } from '../core/flash.js';
 import { openDialog, confirmDialog } from '../core/dialog.js';
@@ -85,16 +86,16 @@ export function askPassword(ctx, { title, intro, submit, danger = false, extra =
   const me = ctx.me || {};
   const pass = field({ label: 'Your password', name: 'password', type: 'password', required: true,
     hint: `The password you sign in with as ${me.name || 'this account'}.`, attrs: { autocomplete: 'current-password' } });
-  const two = field({ label: 'Code from your authenticator app', name: 'two_step', hint: 'Six digits. Codes change every 30 seconds.',
-    attrs: { autocomplete: 'one-time-code', inputmode: 'numeric', maxlength: '8' } });
-  two.el.hidden = !me.two_step_required;
+  const two = field({ label: 'Code from your authenticator app', name: 'two_step', hint: CODE_HINT,
+    attrs: codeAttrs() });
+  two.el.hidden = !(me.two_step || me.two_step_required);
   let result = null;
   const f = form({
     fields: [...extra, pass, two], submit,
     secondary: h('button', { class: 'btn btn--ghost', type: 'button', onclick: (e) => e.target.closest('dialog')?.close() }, 'Cancel'),
     async onSubmit(v) {
       const cred = { password: v.password };
-      if (!two.el.hidden && v.two_step) cred.two_step = v.two_step.replace(/\s+/g, '');
+      if (!two.el.hidden && v.two_step) cred.two_step = codeValue(v.two_step);
       try {
         const r = await run(cred, v);
         if (r === STAY) return;

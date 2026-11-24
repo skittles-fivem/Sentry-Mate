@@ -7,7 +7,7 @@
 // more" button. send() changes something and adds the CSRF header. Every call takes { signal }, and
 // scope() gives a page its own client whose abort() cancels everything it started. Errors are ApiError
 // { status, code, message, fields }; a 401 also tells on('unauthorized') listeners (the frame shows
-// sign-in). events() follows /api/v1/events and reconnects with backoff. now() is the server's clock,
+// sign-in), a 403 two_step_setup tells on('two_step_setup') listeners (the frame shows the set-up page). events() follows /api/v1/events and reconnects with backoff. now() is the server's clock,
 // estimated from response headers, for period presets and "5 min ago". Each answer's X-Sentry-Mate-Build goes to
 // build.js (a tab open across an update loads its next page in full).
 //
@@ -329,7 +329,12 @@ export function createClient(options = {}) {
           emit('unauthorized', { method, path });
         }
         if (res.status === 304 && etag) return NOT_MODIFIED;
-        if (!res.ok) throw await toError(res, method, path);
+        if (!res.ok) {
+          const err = await toError(res, method, path);
+          // the rule asks every account for two-step sign-in and this one has none: all it may do is set it up
+          if (res.status === 403 && err.code === 'two_step_setup') emit('two_step_setup', { method, path });
+          throw err;
+        }
         if (meta) {
           const hd = (k) => res.headers?.get?.(k) ?? null;
           meta.etag = hd('ETag');
@@ -459,6 +464,9 @@ export function createClient(options = {}) {
     const k = byPeriod.get(a.pk);
     const e = k && k !== key ? mem.get(k) : null;
     if (!e) return null;
+    // a page of a list with more to come carries a cursor made for its own period's end: asked with another one the
+    // server answers 400, so such a page is never a stand-in
+    if (e.value && typeof e.value === 'object' && e.value.next != null) return null;
     const b = periodKey(k);
     if (!(b.to <= a.to) || !(b.from === a.from || (a.from != null && b.from != null && a.to - a.from === b.to - b.from))) return null;
     return { key: k, entry: e };

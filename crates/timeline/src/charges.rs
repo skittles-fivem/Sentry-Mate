@@ -39,7 +39,8 @@ pub(crate) fn find(seg: &[&Sample], drives: &[(usize, usize)], params: &Params) 
     out
 }
 
-/// A charge from its samples (`s[0]` the first charging second, the last the last one); `before` are the samples
+/// A charge from its samples (`s[0]` the first charging second, the last the last one), or `None` when it is too short
+/// and added too little to be one ([`Params::min_charge_ms`]); `before` are the samples
 /// before it since the last drive, for where the car is when the charge itself has no GPS fix. `holds`: how long each
 /// of `s` counts across a gap in the energy sums (ms; empty: [`Params::max_hold_ms`] for all).
 pub(crate) fn make(car: CarId, s: &[&Sample], before: &[&Sample], params: &Params, holds: &[u64]) -> Option<Charge> {
@@ -117,6 +118,10 @@ pub(crate) fn make(car: CarId, s: &[&Sample], before: &[&Sample], params: &Param
         }
         _ => None,
     };
+    // a few seconds of charging that added next to nothing are no charge
+    if end_ms - start_ms < params.min_charge_ms && energy_added_kwh.is_none_or(|k| k < params.min_charge_kwh) {
+        return None;
+    }
     let position = s.iter().find_map(|x| position(x)).or_else(|| before.iter().rev().find_map(|x| position(x)));
     Some(Charge {
         id: charge_id(car, start_ms),

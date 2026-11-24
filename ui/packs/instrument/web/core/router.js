@@ -27,6 +27,7 @@ import { resolvePeriod, periodParams } from '../shared/time.js';
 import { pageInfo } from './pages.js';
 import * as frame from './frame.js';
 import * as session from './session.js';
+import { forgetSorts } from './table.js';
 import { noticesLoaded } from './notices.js';
 import { errorState, statePanel, loadingPage } from './states.js';
 import { showPending } from './flash.js';
@@ -35,7 +36,7 @@ import { getMe, getPrefs, isAdmin } from './prefs.js';
 import { holdSnap } from './snap.js';
 import { watchLinks, warmModules, prefetchApi, pageSheet, pageSheetsOff, setStale, signedInHint } from '../shared/prefetch.js';
 
-const BARE = new Set(['sign-in', 'setup']);
+const BARE = new Set(['sign-in', 'setup', 'two-step-setup']);
 // the main sections: their modules load when the browser is idle after the first page
 const MAIN = ['car', 'drives', 'drive', 'charges', 'battery', 'statistics', 'timeline', 'fleet'];
 // pages that may show kept answers at once (marked stale until checked): not forms
@@ -147,6 +148,58 @@ function unmountCurrent(keep = false) {
 let staged = null;   // { stage, commit, drop }
 // keepOld: a newer live refresh takes over, and the page still on screen is cleaned up when that one commits
 function dropStage(keepOld = false) { const f = staged?.drop(keepOld) || null; staged = null; return f; }
+// The controls of a page, each with a key that stays the same when the page is built again: its name, id or label,
+// and its place among the controls with that key.
+const CONTROLS = 'input, select, textarea';
+function controlKeys(root) {
+  const seen = new Map();
+  return [...root.querySelectorAll(CONTROLS)].map((el) => {
+    const k = `${el.tagName}|${el.type}|${el.name || el.id || el.getAttribute('aria-label') || ''}`;
+    const n = seen.get(k) || 0;
+    seen.set(k, n + 1);
+    return [el, `${k}|${n}`];
+  });
+}
+function changedByReader(el) {
+  if (el.type === 'file' || el.type === 'password' && !el.value) return false;
+  if (el.tagName === 'SELECT') return [...el.options].some((o) => o.selected !== o.defaultSelected);
+  if (el.type === 'checkbox' || el.type === 'radio') return el.checked !== el.defaultChecked;
+  if (el.type === 'hidden' || el.type === 'button' || el.type === 'submit') return false;
+  return el.value !== el.defaultValue;
+}
+function readerChanges(view) {
+  const active = document.activeElement;
+  const out = new Map();
+  for (const [el, key] of controlKeys(view)) {
+    if (!changedByReader(el) && el !== active) continue;
+    const c = { el, focus: el === active, changed: changedByReader(el) };
+    if (el.tagName === 'SELECT') c.value = el.value;
+    else if (el.type === 'checkbox' || el.type === 'radio') c.checked = el.checked;
+    else { c.value = el.value; try { c.sel = [el.selectionStart, el.selectionEnd, el.selectionDirection]; } catch { /* no selection */ } }
+    out.set(key, c);
+  }
+  return out;
+}
+function putBack(view, kept) {
+  if (!kept.size) return;
+  for (const [el, key] of controlKeys(view)) {
+    const c = kept.get(key);
+    if (!c || el.disabled && !c.changed) continue;
+    if (c.changed) {
+      const isBox = 'checked' in c;
+      if (isBox ? el.checked === c.checked : el.value === c.value) { /* the new page has it already */ } else {
+        if (isBox) el.checked = c.checked; else el.value = c.value;
+        // the page's own handlers (a search that filters, a total that adds up) hear it as they hear the reader
+        el.dispatchEvent(new Event(isBox || el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+      }
+    }
+    if (c.focus) {
+      el.focus?.({ preventScroll: true });
+      if (c.sel && c.sel[0] != null) { try { el.setSelectionRange(c.sel[0], c.sel[1], c.sel[2]); } catch { /* no selection */ } }
+    }
+  }
+}
+
 function stageView(view, finishOld) {
   // the old page's clean-up is let go of once it is handed on or run: the new page keeps this stage as long as it
   // lives, and would keep the page before it, and that one the page before, each with everything it drew
@@ -165,11 +218,14 @@ function stageView(view, finishOld) {
     if (done) return;
     const nodes = [...stage.childNodes];
     end();
+    // what the reader typed or chose in the page on screen is put into the same controls of the new page
+    const kept = readerChanges(view);
     // the control that had the focus: the same place in the new page gets it back
     const path = [];
     for (let e = document.activeElement; e && e !== view && view.contains(e); e = e.parentElement) path.unshift([...e.parentElement.children].indexOf(e));
     holdScroll(view);
     view.replaceChildren(...nodes);
+    putBack(view, kept);
     setStale(false); // the page built again has checked answers only
     takeOld()?.();
     if (path.length) {
@@ -251,11 +307,12 @@ function counted(sc, tracker = null) {
 function pageCss(id) { return pageSheet(id, new URL(`../pages/${id}.css`, import.meta.url).href); }
 const dropCss = pageSheetsOff;
 
-async function mount(s, { keepScroll = false, live = false } = {}) {
+// wall: the account may only set two-step sign-in up (core/session.js gate): its page is shown at every address
+async function mount(s, { keepScroll = false, live = false, wall = false } = {}) {
   const my = ++seq;
   // (the clean-up of what was there is handed to the stage alone: this page's own functions must not hold it)
   let finishOld = both(dropStage(live), unmountCurrent(live));
-  if (!live) { unready(); setStale(false); }
+  if (!live) { unready(); setStale(false); forgetSorts(); }
   // the page builds itself again for its own address (Places' list and its editor): the control that had the
   // focus goes away with the old drawing (or lost it already, a Save button disabled while its request ran), and
   // the focus must not be left on <body>: the page gets it, as on a move to another page
@@ -265,7 +322,7 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
     if (!focusWas || !alive() || (focusWas !== document.body && focusWas.isConnected)) return;
     if (!document.activeElement || document.activeElement === document.body) frame.view().focus({ preventScroll: true });
   };
-  const id = s.page;
+  const id = wall ? 'two-step-setup' : s.page;
   const st = live ? stageView(frame.view(), finishOld) : null;
   finishOld = null;
   let view = st ? st.stage : frame.view();
@@ -327,6 +384,7 @@ async function mount(s, { keepScroll = false, live = false } = {}) {
   }
   if (!alive()) return;
   if (gate.redirect) { state.navigate(gate.redirect, { replace: true }); return; }
+  if (gate.wall) { mount(s, { keepScroll: false, live: false, wall: true }); return; }
 
   if (id === 'not-found' || !info) {
     frame.update({ s, info: null, car: null, period: null });

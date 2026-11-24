@@ -283,7 +283,7 @@ def _reauth(req, body):
     """The account's own password again, and its two-step code when two-step is on: 400 bad_input without one,
     403 wrong_password or wrong_two_step (throttled like sign-in) when it is not right."""
     from .auth import _check_throttle, _fail
-    from ..store import DEV_TWO_STEP_CODE
+    from ..store import take_code
     st = req.store
     a = req.account
     pw = body.get("password")
@@ -304,7 +304,7 @@ def _reauth(req, body):
                        fields={"password": "Not your password."})
     if a.get("two_step"):
         code = body.get("two_step")
-        if not isinstance(code, str) or code.strip() != DEV_TWO_STEP_CODE:
+        if not take_code(a, code):
             _fail(st, key)
             raise ApiError(403, "wrong_two_step", "Type the code from your authenticator app as well.",
                            fields={"two_step": "Required: the 6-digit code." if not code else "Not the right code."})
@@ -977,7 +977,7 @@ def _first_admin(req, name, password, end_claim=True):
     st = req.store
     _password_rules(req, name, password)
     with st.lock:
-        a = {"id": "a1", "name": name.strip(), "role": "admin", "cars": "all", "two_step_required": False,
+        a = {"id": "a1", "name": name.strip(), "role": "admin", "cars": "all",
              "two_step": False, "password": password, "created_ms": req.now, "version": 1}
         st.accounts[a["id"]] = a
         st.needs_setup = False
@@ -993,7 +993,7 @@ def _first_admin(req, name, password, end_claim=True):
     _signed_in(req, a)
     with st.lock:
         st.recovery_key = make_recovery_key()
-    return {"status": "done", "me": me_view(a), "recovery_key": st.recovery_key}
+    return {"status": "done", "me": me_view(a, st), "recovery_key": st.recovery_key}
 
 
 def post_fresh(req):

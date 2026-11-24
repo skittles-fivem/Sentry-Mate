@@ -224,6 +224,9 @@ async fn create(
     Ok((StatusCode::CREATED, Json(out)).into_response())
 }
 
+/// Held while an account change is compared with its version and made.
+static PATCHING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 async fn patch(
     State(app): State<AppState>,
     Admin(v): Admin,
@@ -243,6 +246,12 @@ async fn patch(
     });
     let cars = body_cars(&app, &body, &mut f)?;
     let password = body.str("password")?.filter(|p| !p.is_empty()).map(|p| Zeroizing::new(p.to_string()));
+    if let Some(p) = &password
+        && let Err(accounts::Error::WeakPassword(why)) = accounts::check_password("", p)
+    {
+        // refused before anything is changed: a 422 leaves the role and the cars as they were
+        f.add("password", why);
+    }
     let name = body.str("name")?.map(str::to_string);
     no_per_account_two_step(&body, &mut f)?;
     f.invalid()?;
@@ -253,6 +262,9 @@ async fn patch(
     let v2 = v.clone();
     let (out, cars_changed, password_changed) = app
         .blocking(move |app| {
+            // one change at a time: the version is compared and the change made under one lock, so of two changes
+            // sent with the same version one wins and the other gets 409
+            let _one = PATCHING.lock().unwrap_or_else(|e| e.into_inner());
             let (a, now_cars) = load(app, id)?;
             let current = version_of(&a, &now_cars);
             if version != current {
@@ -270,6 +282,21 @@ async fn patch(
             // the code is used up by the first change; the others in this request ask for the password only
             let once = CodeOnce::default();
             let confirm = Confirm::in_request(&confirm, code.as_deref(), &once);
+            // what would be refused is refused before the first step: the steps are saved one by one
+            if role.is_some_and(|r| r != a.role)
+                && a.role == accounts::Role::Admin
+                && app.accounts.list(None, usize::MAX).iter().filter(|x| x.role == accounts::Role::Admin).count() <= 1
+            {
+                return Err(accounts::Error::LastAdmin.into());
+            }
+            // the password first: it is the step that can still fail (the hashing is busy), and then nothing else
+            // has changed
+            if let Some(p) = &password {
+                app.accounts.set_password(v2.signed_in(), confirm, id, p).map_err(|e| match e {
+                    accounts::Error::WeakPassword(why) => ApiError::invalid("password", why),
+                    e => e.into(),
+                })?;
+            }
             let mut cars_changed = false;
             if let Some(r) = role
                 && r != a.role
@@ -282,12 +309,6 @@ async fn patch(
             {
                 app.accounts.set_cars(v2.signed_in(), confirm, id, c)?;
                 cars_changed = true;
-            }
-            if let Some(p) = &password {
-                app.accounts.set_password(v2.signed_in(), confirm, id, p).map_err(|e| match e {
-                    accounts::Error::WeakPassword(why) => ApiError::invalid("password", why),
-                    e => e.into(),
-                })?;
             }
             let (a, cars) = load(app, id)?;
             Ok((account_json(app, &a, &cars), cars_changed, password.is_some()))

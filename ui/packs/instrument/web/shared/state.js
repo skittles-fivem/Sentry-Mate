@@ -460,9 +460,10 @@ export function linkForCar(car, s = store.get()) {
 /**
  * Choose a period: puts it in the URL (replacing the entry unless opts.push), in the tab's memory and in
  * the store. null clears it (the page's default applies again). On a page with a period of its own
- * (OWN_PERIOD_PAGES) it goes only in the URL and the store.
+ * (OWN_PERIOD_PAGES) it goes only in the URL and the store. opts.was: the period the page shows now, for an address
+ * that has none (the page's own default shows): with push, that entry is written with it before the new one is added.
  */
-export function setPeriod(period, { push = false } = {}) {
+export function setPeriod(period, { push = false, was = null } = {}) {
   const p = period == null ? null : normalizePeriod(period);
   if (period != null && !p) throw new RangeError('not a period');
   const s = store.get();
@@ -471,7 +472,14 @@ export function setPeriod(period, { push = false } = {}) {
   if (!page) { store.set({ period: p, periodFromUrl: false }); return store.get(); }
   const href = buildUrl(page, { car: s.car, drive: s.drive, charge: s.charge, period: p, query: s.query });
   const h = browserHistory();
-  if (h) { if (push) h.pushState(null, '', href); else h.replaceState(null, '', href); }
+  if (h) {
+    if (push) {
+      // the entry being left is written with the period it shows, so Back brings the page and the address back to it
+      const shown = s.period || normalizePeriod(was);
+      if (shown && !s.periodFromUrl) h.replaceState(null, '', buildUrl(page, { car: s.car, drive: s.drive, charge: s.charge, period: shown, query: s.query }));
+      h.pushState(null, '', href);
+    } else h.replaceState(null, '', href);
+  }
   return store.set({ period: p, periodFromUrl: !!p });
 }
 

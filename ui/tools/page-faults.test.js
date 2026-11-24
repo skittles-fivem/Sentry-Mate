@@ -379,14 +379,14 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
     await withPack(pack, [], async ({ origin, context }) => {
       const sent = [];
       const { page, errors } = await openPage(context, `${origin}/settings/cars/c1`, 'settings-cars',
-        (pg) => pg.on('request', (r) => { if (r.method() === 'PATCH') sent.push(`${new URL(r.url()).pathname} ${r.postData()}`); }));
+        (pg) => pg.on('request', (r) => { if (r.method() === 'PATCH' && !r.url().includes('/me/preferences')) sent.push(`${new URL(r.url()).pathname} ${r.postData()}`); }));
       for (const [name, good, bad, read] of [
         ['sc-capacity_new_kwh', '75', '1e', async () => (await (await context.request.get(`${origin}/api/v1/cars/c1/settings`)).json()).capacity_new_kwh],
         ['sc-tyre_pressure_front_kpa', '2.9', '-.', async () => (await (await context.request.get(`${origin}/api/v1/cars/c1`)).json()).config.tyre_pressure_front_kpa?.value],
       ]) {
         const input = page.locator(`main input[name="${name}"]`);
         await input.waitFor({ timeout: 15000 });
-        const saved = () => page.waitForResponse((r) => r.request().method() === 'PATCH', { timeout: 10000 });
+        const saved = () => page.waitForResponse((r) => r.request().method() === 'PATCH' && !r.url().includes('/me/preferences'), { timeout: 10000 });
         let done = saved();
         await input.fill(good); await input.press('Tab');
         await done;
@@ -459,7 +459,7 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
       const place = (await (await context.request.get(`${origin}/api/v1/places?limit=200`)).json()).items.find((x) => x.price?.per_kwh != null && !x.price.tiers);
       assert.ok(place, 'the made-up data has a place priced per kWh');
       const sent = [];
-      const { page, errors } = await openPage(context, `${origin}/places?place=${place.id}`, 'places', (pg) => pg.on('request', (r) => { if (r.method() === 'PATCH') sent.push(r.postData()); }));
+      const { page, errors } = await openPage(context, `${origin}/places?place=${place.id}`, 'places', (pg) => pg.on('request', (r) => { if (r.method() === 'PATCH' && !r.url().includes('/me/preferences')) sent.push(r.postData()); }));
       const price = page.locator('main input[name="per_kwh"]');
       await price.waitFor({ timeout: 15000 });
       // the server's rule (crates/engine/src/query/places.rs): a price per kWh from 0 to 10

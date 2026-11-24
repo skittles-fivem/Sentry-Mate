@@ -7,7 +7,8 @@ import { initFrame } from './frame.js';
 import { watchTables } from './snap.js';
 import { markScrolling } from '../shared/dom.js';
 import { setLazy } from '../shared/lazy.js';
-import { startRouter } from './router.js';
+import { startRouter, reload } from './router.js';
+import { getMe } from './prefs.js';
 import * as session from './session.js';
 import { registerServiceWorker } from '../shared/offline.js';
 import { flash } from './flash.js';
@@ -32,6 +33,15 @@ api.on('unauthorized', ({ method, path } = {}) => {
     return;
   }
   sessionEnded();
+});
+// The rule asks every account for two-step sign-in and this one has none: the server answers every call but its own
+// account's with 403 two_step_setup. Ask who this is again; if it may only set two-step sign-in up, build the page again
+// (the router shows the set-up page, at any address).
+let askingMe = false;
+api.on('two_step_setup', async () => {
+  if (askingMe || !session.status()?.signedIn || getMe()?.two_step_setup_only) return;
+  askingMe = true;
+  try { if (await session.refreshMe()) reload(); } catch { /* the next call asks again */ } finally { askingMe = false; }
 });
 api.on('events', (info) => { if (info?.state === 'signed_out') sessionEnded(); });
 

@@ -2,7 +2,7 @@
 // description, the words the page finder matches, and how the router treats it. Page modules live in
 // pages/<id>.js; core/router.js loads them on first use.
 //
-//   id        page id (the keys of docs/parity/coverage-matrix.json "pages", plus sign-in and setup)
+//   id        page id (the keys of docs/parity/coverage-matrix.json "pages", plus sign-in, setup and two-step-setup)
 //   title     the page's name (menu, heading, tab title)
 //   nav       the shorter name in the sidebar (defaults to title)
 //   group     menu group: cars | driving | battery | reports | setup (null: not in the menu)
@@ -149,6 +149,8 @@ export const PAGES = Object.freeze([
     desc: 'Sign in to Sentry Mate.', purpose: 'Sign in to see your cars.', words: '', sections: [] },
   { id: 'setup', title: 'Set up', group: null, icon: 'settings', car: null, period: null, bare: true,
     desc: 'Create the first account.', purpose: 'Create the first admin account with the set-up code.', words: '', sections: [] },
+  { id: 'two-step-setup', title: 'Set up two-step sign-in', group: null, icon: 'lock', car: null, period: null, bare: true,
+    desc: 'Set up two-step sign-in.', purpose: 'Set up two-step sign-in, which the server asks of every account.', words: '', sections: [] },
 ]);
 
 const BY_ID = new Map(PAGES.map((p) => [p.id, p]));

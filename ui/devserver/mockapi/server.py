@@ -15,7 +15,7 @@ import threading
 import time
 import traceback
 from http.cookies import SimpleCookie
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import unquote, unquote_to_bytes, urlsplit
 
 from . import resources, uploads
 from .config import Clock
@@ -249,6 +249,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.api(method, path, parts.query)
             # a file under a build's address (/_v/<build>/core/app.js): the file of that path now, as the real
             # server answers a tab loaded before an update
+            try:  # a page address that is not UTF-8 once decoded is no file (the real server's 404)
+                path = unquote_to_bytes(parts.path).decode("utf-8")
+            except UnicodeDecodeError:
+                return self.send(404, b"Not found", "text/plain; charset=utf-8")
             m = re.match(r"^/_v/[^/]+(/.*)$", path)
             if m:
                 path = m.group(1)
@@ -295,13 +299,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if m not in route.public and session is None:
                 raise not_signed_in()
             account = session["account"] if session else None
+            # a rule for every account that this one has not met yet: all it may do is set two-step sign-in up (the
+            # real server's policy: every route but /me*, DELETE /session and the public ones answers 403)
+            if account is not None and m not in route.public and resources.auth.setup_only(app.store, account) and \
+                    not (path == "/api/v1/me" or path.startswith("/api/v1/me/")
+                         or (m == "DELETE" and path == "/api/v1/session")):
+                raise ApiError(403, "two_step_setup", "Set up two-step sign-in for your account first.")
             if m in route.admin and (account is None or account["role"] != "admin"):
                 raise not_allowed("Only an admin may do this.")
             if route.car_scoped:
                 car = params["car"]
                 if not app.ds.exists(car) or not app.store.sees(account, car):
                     raise no_such_car()
-            query = parse_qs(query_string, keep_blank_values=True)
+            query = parse_query(query_string)
             if account is not None:
                 # every car the query names (`cars=` or `car=`, on any route) must be one the account sees
                 for key in ("cars", "car"):
@@ -393,14 +403,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def static(self, method, path):
         if method not in ("GET", "HEAD"):
             return self.send(405, b"", None, {"Allow": "GET, HEAD"})
-        rel = path.lstrip("/")
+        rel = path.lstrip("/") or "index.html"
+        # as the real server (crates/web/src/packs/mod.rs, serve_file): these are never files, and a name with a
+        # dot that is no file is a missing file, not a page
+        if ".." in rel or "\\" in rel or "//" in rel or "\0" in rel:
+            return self.send(404, b"Not found", "text/plain; charset=utf-8")
+        name = rel.rsplit("/", 1)[-1]
+        if name in NEVER_SERVED:
+            return self.send(404, b"Not found", "text/plain; charset=utf-8")
         token = self.cookie_value()
         s = self.app.store.session_for(token) if token and token != COOKIE_SIGNED_OUT else None
         root = self.app.root_for(s)
-        full = os.path.realpath(os.path.join(root, rel)) if rel else root
+        full = os.path.realpath(os.path.join(root, rel))
+        is_file = (full.startswith(root + os.sep)) and os.path.isfile(full)
         cookie = None
-        if not (full == root or full.startswith(root + os.sep)) or not os.path.isfile(full):
+        if rel == "index.html" or (not is_file and "." not in name and not rel.endswith("/")):
             full = os.path.join(root, "index.html")
+        elif not is_file:
+            return self.send(404, b"Not found", "text/plain; charset=utf-8")
         if full.endswith("index.html"):
             s, cookie = self.session()  # a session starts on a page load
             root = self.app.root_for(s)
@@ -414,6 +434,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
         ctype = TYPES.get(ext) or mimetypes.guess_type(full)[0] or "application/octet-stream"
         headers = {"Set-Cookie": cookie} if cookie else {}
         return self.send(200, data, ctype, headers)
+
+
+NEVER_SERVED = ("mock-api.js", "mock-api.mjs")  # the packs' made-up stand-in for the API, as the real server's list
+
+
+def parse_query(text):
+    """A query string as the real server reads it (crates/web/src/query.rs, Params::parse): a dict of lists; a part
+    that is not UTF-8 once decoded, or a 201st parameter, is 400."""
+    out, n = {}, 0
+    for part in text.split("&"):
+        if not part:
+            continue
+        k, _, v = part.partition("=")
+        try:
+            k, v = (unquote_to_bytes(x.replace("+", " ")).decode("utf-8") for x in (k, v))
+        except UnicodeDecodeError:
+            raise bad_input({"query": "The query is not valid UTF-8."})
+        if n >= 200:
+            raise bad_input({"query": "Too many parameters."})
+        n += 1
+        out.setdefault(k, []).append(v)
+    return out
 
 
 def set_cookie(token):
