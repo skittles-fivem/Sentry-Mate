@@ -377,6 +377,13 @@ def _cars_value(req, v, errs):
     return list(dict.fromkeys(v))
 
 
+def _reconfirm(req, body):
+    """The acting admin's own password again (`confirm_password`, or the X-Sentry-Mate-Password header), and a code
+    when that admin has two-step sign-in on: as the real server asks before every account change."""
+    from .tesla import reconfirm
+    reconfirm(req, body)
+
+
 def list_accounts(req):
     rows = [account_view(a) for a in req.store.accounts.values()]
     items, nxt = page(req, rows, key=lambda a: (a["name"].lower(), a["id"]))
@@ -386,6 +393,10 @@ def list_accounts(req):
 def create_account(req):
     st = req.store
     body = req.json()
+    for k in body:
+        if k not in ("name", "password", "role", "cars", "two_step_required", "confirm_password", "code"):
+            raise bad_input({k: "Unknown field."})
+    _reconfirm(req, body)
     _types(body, {"name": str, "password": str, "role": str})
     errs = _name_password_rules(st, body["name"], body["password"])
     if errs.get("name") == "That name is taken.":
@@ -431,8 +442,9 @@ def patch_account(req):
     req.version_check(a["version"])
     errs = {}
     for k in body:
-        if k not in ("version", "name", "role", "cars", "two_step_required", "password"):
+        if k not in ("version", "name", "role", "cars", "two_step_required", "password", "confirm_password", "code"):
             raise bad_input({k: "Unknown field."})
+    given = {k: body.pop(k) for k in ("confirm_password", "code") if k in body}
     if "name" in body and not isinstance(body["name"], str) or "password" in body and not isinstance(
             body["password"], str):
         raise bad_input({"name" if "name" in body else "password": "Wrong type."})
@@ -447,6 +459,9 @@ def patch_account(req):
         raise bad_input({"two_step_required": "Must be true or false."})
     if errs:
         raise invalid(errs)
+    # asked for only when something really changes (a page may send the unchanged role and cars along)
+    if ("role" in body and body["role"] != a["role"]) or (cars is not None and cars != a["cars"]) or "password" in body:
+        _reconfirm(req, given)
     if body.get("role") == "watch" and a["role"] == "admin" and len(_admins(st)) == 1:
         raise conflict("last_admin", "This is the last admin account. Make another admin first.")
     old_cars = a["cars"]
@@ -485,6 +500,11 @@ def patch_account(req):
 def delete_account(req):
     st = req.store
     a = _account(req)
+    body = req.json(required=False)
+    for k in body:
+        if k not in ("confirm_password", "code", "version"):
+            raise bad_input({k: "Unknown field."})
+    _reconfirm(req, body)
     if a["role"] == "admin" and len(_admins(st)) == 1:
         raise conflict("last_admin", "This is the last admin account. Make another admin first.")
     with st.lock:

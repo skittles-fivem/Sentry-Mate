@@ -130,7 +130,7 @@ class WatchSeesOnlyItsCars(ServerCase):
         # a car taken off the account's list leaves its pins and order too
         self.w.json("PATCH", "/api/v1/me/preferences", {"pinned_cars": ["c1"], "car_order": ["c1"]})
         acc = self.c.get("/api/v1/accounts/a2")
-        self.c.json("PATCH", "/api/v1/accounts/a2", {"version": acc["version"], "cars": ["c2"]})
+        self.c.json("PATCH", "/api/v1/accounts/a2", {"version": acc["version"], "cars": ["c2"], "confirm_password": "sentry-mate-dev"})
         try:
             p = self.w.get("/api/v1/me/preferences")
             self.assertEqual(p["pinned_cars"], [])
@@ -138,7 +138,7 @@ class WatchSeesOnlyItsCars(ServerCase):
             self.assertNotIn("c3", p["car_order"])
         finally:
             acc = self.c.get("/api/v1/accounts/a2")
-            self.c.json("PATCH", "/api/v1/accounts/a2", {"version": acc["version"], "cars": ["c1"]})
+            self.c.json("PATCH", "/api/v1/accounts/a2", {"version": acc["version"], "cars": ["c1"], "confirm_password": "sentry-mate-dev"})
 
     def test_preview_of_a_place_its_cars_never_used(self):
         seen = {p["id"] for p in self.w.get("/api/v1/places?limit=500")["items"]}
@@ -343,7 +343,7 @@ class AccountCarsChange(ServerCase):
             hub.tick()
             self.assertIn(("now", "c1"), [(e, d["car"]) for e, d in self.drain(s) if e == "now"])
             v = self.c.get("/api/v1/accounts/a2")["version"]
-            self.c.json("PATCH", "/api/v1/accounts/a2", {"version": v, "cars": ["c2"]})
+            self.c.json("PATCH", "/api/v1/accounts/a2", {"version": v, "cars": ["c2"], "confirm_password": "sentry-mate-dev"})
             got = self.drain(s)
             fleet = sorted((d["car"], d["change"]) for e, d in got if e == "fleet")
             self.assertEqual(fleet, [("c1", "removed"), ("c2", "added")])
@@ -352,7 +352,7 @@ class AccountCarsChange(ServerCase):
             self.assertNotIn("c1", prefs[0]["car_order"])
             # given back later, the car's first `now` on this stream is whole again, not a delta
             v = self.c.get("/api/v1/accounts/a2")["version"]
-            self.c.json("PATCH", "/api/v1/accounts/a2", {"version": v, "cars": ["c1", "c2"]})
+            self.c.json("PATCH", "/api/v1/accounts/a2", {"version": v, "cars": ["c1", "c2"], "confirm_password": "sentry-mate-dev"})
             self.drain(s)
             hub.tick()
             first = [d["now"] for e, d in self.drain(s) if e == "now" and d["car"] == "c1"]
@@ -360,7 +360,7 @@ class AccountCarsChange(ServerCase):
         finally:
             hub.unsubscribe(s)
             v = self.c.get("/api/v1/accounts/a2")["version"]
-            self.c.json("PATCH", "/api/v1/accounts/a2", {"version": v, "cars": ["c1"]})
+            self.c.json("PATCH", "/api/v1/accounts/a2", {"version": v, "cars": ["c1"], "confirm_password": "sentry-mate-dev"})
 
 
 class FleetVersionsSearch(ServerCase):
