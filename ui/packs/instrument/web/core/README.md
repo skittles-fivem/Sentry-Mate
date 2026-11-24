@@ -406,6 +406,8 @@ Pages are checked with `node ui/tools/check.js --pixel` (see `ui/tools/README.md
   come into and go out of its window, and its table's height, which changes as the window moves over rows of
   other heights (a run over the whole page for each such change took most of every frame of a scroll).
 - Mark a box the snap must leave alone with `data-nosnap` (maps and charts are left alone already).
+- A box laid over the page (absolute or fixed, taking no room) that comes and goes: `data-snap-over` as well, so adding
+  or taking it away does not snap the page again (the router's copy of the loading skeleton).
 - A box that sits in a line of text (an inline-flex pill or button) is a source of half pixels: in a table cell
   give it `vertical-align: top` or make it a block; in a flex row with `align-items: baseline`, let the words
   give the baseline and centre the icon with `align-self: center`.
