@@ -267,3 +267,21 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
     });
   });
 }
+
+for (const pack of packs('instrument')) {
+  test(`${pack}: on a 1280 px laptop at Interface size 125 Efficiency's temperature figures stay in their columns and Software's table titles are whole`, { skip: SKIP, timeout: 240000 }, async () => {
+    await withPack(pack, async ({ origin, browser }) => {
+      for (const viewport of [{ width: 1280, height: 800 }, { width: 1366, height: 768 }]) {
+        let o = await openAt(browser, origin, '/cars/c1/efficiency', 'efficiency', viewport, 125);
+        await o.page.locator('.tp-col-figs .metric-value').first().waitFor({ timeout: 15000 });
+        assert.deepEqual(await stickingOut(o.page, '.tp-col-figs .metric-value', '.metric'), [], `${viewport.width} px: every temperature figure is inside its column`);
+        await o.context.close();
+
+        o = await openAt(browser, origin, '/cars/c1/software', 'software', viewport, 125);
+        await o.page.locator('.tbl-bar .panel-title').first().waitFor({ timeout: 15000 });
+        assert.deepEqual(await stickingOut(o.page, 'main .tbl-bar .panel-title', '.panel-title'), [], `${viewport.width} px: every table title is inside its own box`);
+        await o.context.close();
+      }
+    });
+  });
+}
