@@ -129,8 +129,10 @@ export async function mount(ctx) {
   // Every call starts at once and each section paints when its own answers are in: until then a panel of its
   // kind with a grey block keeps its place, so the page shows what it has instead of waiting for the slowest call.
   const [batP, effRead, totalsRead, settingsRead, ...bySrc] = firstReads(ctx);
-  const effP = effRead.catch(() => null);
-  const totalsP = totalsRead.catch(() => null);
+  // (a read that failed is kept: its figures are said as not loaded, not as "not worked out" or as dashes alone)
+  let effErr = null, totalsErr = null;
+  const effP = effRead.catch((e) => { effErr = e; return null; });
+  const totalsP = totalsRead.catch((e) => { totalsErr = e; return null; });
   const settingsP = settingsRead.catch(() => null);
   // which inputs gave drives or charges at all: /totals names the inputs the filter takes, not the ones that gave rows
   const bySrcP = Promise.all(bySrc.map((p) => p.catch(() => null)));
@@ -231,7 +233,7 @@ export async function mount(ctx) {
           metric('Usable now', cap.usable_kwh, 'energy', { cover: 'bh.capacity.usable_now', explain: cap.full_pack_kwh != null && cap.buffer_kwh != null ? `Full pack ${format(cap.full_pack_kwh, 'energy')} minus the ${format(cap.buffer_kwh, 'energy')} buffer the car keeps back; the pack’s own reading (${n0(cap.readings)} readings).` : `The pack’s own reading (${n0(cap.readings)} readings).`, why: 'The pack has not reported it' }),
           metric('Usable when new', cap.new_kwh, 'energy', { cover: 'bh.capacity.usable_new', explain: cap.new_source ? `Source: ${NEW_SOURCE[cap.new_source] || cap.new_source}.` : null, why: 'Not known: type it under Reference values' }),
           metric('Difference', cap.difference_kwh == null ? null : -cap.difference_kwh, 'energy', { cover: 'bh.capacity.difference', sign: true, explain: 'Usable now minus usable when new.', why: 'Needs a “when new” value' }),
-          metric('Energy per distance of range', factor, 'efficiency', { cover: 'bh.stat.efficiency', explain: eff?.factor ? `How much energy one ${unitLabel('range')} of ${rangeWord} range stands for, from ${n0(eff.factor.readings)} pack readings. Used to turn energy into range.` : null, why: 'Not worked out yet' }),
+          metric('Energy per distance of range', factor, 'efficiency', { cover: 'bh.stat.efficiency', explain: eff?.factor ? `How much energy one ${unitLabel('range')} of ${rangeWord} range stands for, from ${n0(eff.factor.readings)} pack readings. Used to turn energy into range.` : null, why: effErr ? 'Could not be loaded' : 'Not worked out yet' }),
           metric('Brick voltage spread', bat.brick_spread_v == null ? null : h('span', { class: 'q' }, h('span', { class: 'q-v' }, formatNumber(bat.brick_spread_v * 1000, { maximumFractionDigits: 0 })), '\u00a0', h('span', { class: 'q-u' }, 'mV')), null, { explain: 'Highest minus lowest cell group: the pack’s balance. Under 30 mV is well balanced.', why: 'Not reported' }),
         )),
       h('div', { class: 'cap-explain', cover: ['bh.capacity.help', 'bh.gauge.degradation_help'] },
@@ -351,6 +353,8 @@ export async function mount(ctx) {
       h('p', { class: 'note' }, `From the pack’s own lifetime counters (${life.basis || 'pack counters'}), so it covers years before logging too. Out of the pack: ${format(life.drive_kwh, 'energy')} driving, ${format(life.standing_kwh, 'energy')} while parked.`));
 
     return panel({ title: 'Lifetime totals', icon: 'odo', cls: 'bat-life' },
+      totalsErr ? h('p', { class: 'note warn', role: 'status' }, `The logged drives and charges could not be loaded: ${totalsErr.message} A dash below stands for a figure that is not known, not for none. `,
+        h('button', { class: 'btn btn--sm', type: 'button', onclick: () => ctx.reload() }, icon('reset', 'ico--sm'), 'Try again')) : null,
       lifeSource(),
       h('div', { class: 'life-cols' },
         h('div', { class: 'life-col' },

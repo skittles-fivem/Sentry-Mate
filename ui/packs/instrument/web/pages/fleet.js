@@ -260,7 +260,7 @@ export async function mount(ctx) {
     if (at.items.length || fixes.length || at.failed) {
       const names = new Map();
       await Promise.all([...new Set(at.items.map((a) => a.car))].map(async (cid) => {
-        try { names.set(cid, (await ctx.api.get(`cars/${encodeURIComponent(cid)}`, null, namesFresh ? {} : { maxAgeMs: 60000 })).name); } catch { names.set(cid, cid); }
+        try { names.set(cid, (await ctx.api.get(`cars/${encodeURIComponent(cid)}`, null, namesFresh ? {} : { maxAgeMs: 60000 })).name); } catch { names.set(cid, null); }   // said as not loaded below, not by its id
       }));
       if (!ctx.alive()) return;
       replace(attn, panel({ title: 'Need a look', icon: 'warn', cls: 'attn-panel', side: at.next ? h('span', { class: 'faint' }, 'More below in the list') : null },
@@ -269,7 +269,7 @@ export async function mount(ctx) {
           at.items.map((a) => {
             const t = attention(a);
             return h('li', { class: 'attn-row' },
-              h('a', { class: 'attn-car', href: state.linkTo('car', { car: a.car }) }, names.get(a.car) || a.car),
+              h('a', { class: 'attn-car', href: state.linkTo('car', { car: a.car }) }, names.get(a.car) || 'A car whose name could not be loaded'),
               h('span', { class: 'attn-text' }, t.text),
               h('span', { class: 'attn-when faint' }, a.since_ms ? ago(a.since_ms) : ''),
               h('a', { class: 'panel-link', href: t.href }, t.go, icon('chev-r', 'ico--sm')));

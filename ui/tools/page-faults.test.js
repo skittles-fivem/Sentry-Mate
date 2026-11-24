@@ -476,6 +476,39 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
 }
 
 for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
+  test(`${pack}: more side reads that fail are said as not loaded: the other cars, a place's name, the battery's totals, a car's name`, { skip: SKIP, timeout: 300000 }, async () => {
+    await withPack(pack, [], async ({ origin, context }) => {
+      // [page, the read that fails, what must not be claimed, what is said instead]
+      const cases = [
+        ['/cars/c1/trip', /^\/api\/v1\/cars\?/, /Only one car/, /other cars could not be loaded/],
+        ['/cars/c1/logbook', /^\/api\/v1\/places\?/, /place p\d/, /a place whose name could not be loaded/],
+        ['/cars/c1/battery', /\/cars\/c1\/efficiency/, /Not worked out yet/, /Could not be loaded/],
+        ['/cars/c1/battery', /\/cars\/c1\/totals/, /^$/, /logged drives and charges could not be loaded/],
+        ['/', /^\/api\/v1\/cars\/c3(\?|$)/, /\bc3\b/, /a car whose name could not be loaded/i],
+      ];
+      for (const [route, fail, never, said] of cases) {
+        const got = await textWithFailing(context, origin, route, fail);
+        const what = `${route} with ${fail} failing`;
+        assert.ok(got.hit > 0, `${what}: the read was made`);
+        assert.doesNotMatch(got.ready, /^error:/, `${what}: the page still opens`);
+        if (String(never) !== '/^$/') assert.doesNotMatch(got.text, never, `${what}: says what is not known`);
+        assert.match(got.text, said, `${what}: says the read failed`);
+        assert.deepEqual(got.errors, [], what);
+      }
+      // the cars themselves cannot be read: Charges and Statistics for every car say that, not "no car yet" with bare ids
+      for (const route of ['/charges', '/statistics']) {
+        const got = await textWithFailing(context, origin, route, /^\/api\/v1\/cars\?/);
+        assert.ok(got.hit > 0, `${route}: the cars were asked for`);
+        assert.doesNotMatch(got.text, /no car on this server yet|No car yet|\bc[123]\b/i, `${route}: claims no empty server and shows no bare id`);
+        assert.match(got.text, /The server had a problem|could not be loaded/, `${route}: says the read failed`);
+        assert.match(got.text, /Try again/, `${route}: with a way to read again`);
+        assert.deepEqual(got.errors, [], route);
+      }
+    });
+  });
+}
+
+for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
   for (const [what, viewport] of [['a phone', { width: 390, height: 844 }], ['a computer', { width: 1440, height: 900 }]]) {
     test(`${pack}: a car and a place whose names are one long word leave no page wider than the window of ${what}`, { skip: SKIP, timeout: 420000 }, async () => {
       await withPack(pack, [], async ({ origin, context }) => {
