@@ -88,3 +88,11 @@ class CarsNamedInTheQuery(ServerCase):
                      "/api/v1/me?car=zz", "/api/v1/cars/c1/drives?cars=zz", "/api/v1/places?car=zz"):
             self.c.error("GET", path, 404, "no_such_car")
         self.assertEqual(self.c.get("/api/v1/me?cars=all&car=")["id"], "a1")
+
+    def test_a_parked_timeline_row_has_no_field_the_server_does_not_send(self):
+        """The server's timeline rows do not say whether the cable was in (`plugged` is the Now's, and a charge's
+        own times): a page that showed it from here would never show it on a real server."""
+        rows = self.c.get("/api/v1/cars/c1/timeline?kinds=parked&limit=200")["items"]
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertNotIn("plugged", row, row["id"])
