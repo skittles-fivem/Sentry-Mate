@@ -1062,13 +1062,6 @@ impl Engine {
         db.replace_window::<StateRow>(car, from, to, &states)?;
         db.write_points::<ChargePoint>(car, Source::Live, from, to, &points)?;
         records::replace_cuts(db, car, meta, from, to, &t.cuts)?;
-        if let Some(last) = states.last()
-            && to > meta.newest_ms.unwrap_or(0)
-        {
-            // the window reaches the newest data: its last span is the car's state now
-            meta.state_since_ms = Some(last.span.start_ms);
-        }
-        records::put_meta(db, car, meta)?;
         if let Some(last) = states.last() {
             // the car's state now: the last span's
             if let Some(mut e) = db.entry(car)?.and_then(|e| e.summary.now)
@@ -1079,6 +1072,15 @@ impl Engine {
                 db.set_now(e)?;
             }
         }
+        // Since when the car is in its state, kept for the list of cars (which opens no car's store): what the
+        // car's Now says, by the same rule. Not the start of the window's last span: that is often a sliver at the
+        // end of the newest log, after the newest sample, and a drive or a charge under way began long before it;
+        // and a window that ends before the newest data can still move the start of the span the newest rows go on.
+        let now = db.entry(car)?.and_then(|e| e.summary.now);
+        if let Ok(s) = crate::query::now::state_now(self, car, now.as_ref()) {
+            meta.state_since_ms = s.since_ms;
+        }
+        records::put_meta(db, car, meta)?;
         self.emit(Event::Rows { car, kinds: vec!["drives", "charges", "states", "visits"], from_ms: from, to_ms: to });
         if let Ok(now) = crate::query::now::now_view(self, car) {
             self.emit(Event::Now { car, now: Box::new(now) });

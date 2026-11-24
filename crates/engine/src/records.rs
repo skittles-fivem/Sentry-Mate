@@ -127,8 +127,9 @@ pub struct CarMeta {
     /// When the newest log worked on arrived (its upload, not when it was worked on: a re-decode keeps it).
     #[serde(default)]
     pub last_arrived_ms: Option<u64>,
-    /// When the car's newest state span began (it went online, to sleep...), kept as the timeline is rebuilt so the
-    /// fleet lists read it without opening the car.
+    /// Since when the car is in its state, as its Now says it (a drive's or charge's start while one is under way,
+    /// else the start of the newest span of that state), kept as the timeline is rebuilt so the fleet lists read it
+    /// without opening the car.
     #[serde(default)]
     pub state_since_ms: Option<u64>,
     /// Days (since 1970, UTC) with Tesla API state spans.
