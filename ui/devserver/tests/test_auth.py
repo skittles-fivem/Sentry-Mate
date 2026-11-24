@@ -130,6 +130,80 @@ class Accounts(ServerCase):
         c.json("PATCH", f"/api/v1/accounts/{alex['id']}", {"version": alex["version"], "role": "admin", **pw})
 
 
+class TwoStep(ServerCase):
+    """Two-step sign-in, one's own and the server-wide rule: as the real server (crates/web/src/auth.rs)."""
+
+    def test_no_per_account_rule(self):
+        c = self.c
+        pw = {"confirm_password": "sentry-mate-dev"}
+        msg = ("Two-step sign-in is required for every account or from outside the home network "
+               "(Accounts, two-step rule), not for one account.")
+        e, _ = c.error("POST", "/api/v1/accounts", 422, "invalid",
+                       body={"name": "pat", "password": "made-up-pass-1", "role": "watch", "two_step_required": True, **pw})
+        self.assertEqual(e["fields"], {"two_step_required": msg})
+        alex = next(a for a in c.get("/api/v1/accounts")["items"] if a["name"] == "alex")
+        e, _ = c.error("PATCH", f"/api/v1/accounts/{alex['id']}", 422, "invalid",
+                       body={"version": alex["version"], "two_step_required": True, **pw})
+        self.assertEqual(e["fields"], {"two_step_required": msg})
+        # false is accepted and changes nothing; two_step is the account's own, two_step_required the rule
+        c.json("PATCH", f"/api/v1/accounts/{alex['id']}", {"version": alex["version"], "two_step_required": False})
+        by = {a["name"]: a for a in c.get("/api/v1/accounts")["items"]}
+        self.assertEqual((by["alex"]["two_step"], by["admin"]["two_step"]), (True, False))
+        self.assertTrue(all(a["two_step_required"] is False for a in by.values()))
+
+    def test_enrol_recovery_codes_and_turn_off(self):
+        c = self.c
+        pw = "sentry-mate-dev"
+        self.assertEqual(c.get("/api/v1/me/two-step"),
+                         {"enabled": False, "recovery_codes_left": None, "required": {"everyone": False, "outside": False}})
+        c.error("POST", "/api/v1/me/two-step/confirm", 409, "two_step_first", body={"password": pw, "code": "123456"})
+        c.error("POST", "/api/v1/me/two-step/recovery-codes", 409, "two_step_off", body={"password": pw, "code": "123456"})
+        c.error("DELETE", "/api/v1/me/two-step", 409, "two_step_off", body={"password": pw, "code": "123456"})
+        d = c.json("POST", "/api/v1/me/two-step", {}, expect=201)
+        self.assertRegex(d["secret"], r"^[A-Z2-7]{32}$")
+        self.assertTrue(d["uri"].startswith("otpauth://totp/") and d["secret"] in d["uri"])
+        c.error("POST", "/api/v1/me/two-step/confirm", 403, "wrong_password", body={"password": "nope", "code": "123456"})
+        c.error("POST", "/api/v1/me/two-step/confirm", 401, "wrong_code", body={"password": pw, "code": "12345"})
+        self.assertIs(c.get("/api/v1/me")["two_step"], False)
+        out = c.json("POST", "/api/v1/me/two-step/confirm", {"password": pw, "code": "123456"})
+        self.assertIs(out["enabled"], True)
+        self.assertEqual(len(out["recovery_codes"]), 10)
+        self.assertEqual(c.get("/api/v1/me/two-step")["recovery_codes_left"], 10)
+        self.assertIs(c.get("/api/v1/me")["two_step"], True)
+        c.error("POST", "/api/v1/me/two-step", 409, "two_step_on")
+        new = c.json("POST", "/api/v1/me/two-step/recovery-codes", {"password": pw, "code": "654321"})
+        self.assertEqual(len(new["recovery_codes"]), 10)
+        self.assertNotEqual(new["recovery_codes"], out["recovery_codes"])
+        c.error("DELETE", "/api/v1/me/two-step", 401, "wrong_code", body={"password": pw})
+        c.error("DELETE", "/api/v1/me/two-step", 403, "wrong_password", body={"password": "nope", "code": "123456"})
+        self.assertEqual(c.json("DELETE", "/api/v1/me/two-step", {"password": pw, "code": "123456"}), {"enabled": False})
+        self.assertIs(c.get("/api/v1/me")["two_step"], False)
+        actions = [a["action"] for a in c.get("/api/v1/audit?limit=20")["items"]]
+        self.assertEqual(actions[:3], ["two-step-off", "recovery-codes-new", "two-step-on"])
+
+    def test_policy(self):
+        c = self.c
+        self.assertEqual(c.get("/api/v1/two-step-policy"), {"everyone": False, "outside": False})
+        c.error("PUT", "/api/v1/two-step-policy", 403, "password_needed", body={"everyone": True})
+        c.error("PUT", "/api/v1/two-step-policy", 403, "wrong_password", body={"everyone": True, "confirm_password": "no"})
+        c.error("PUT", "/api/v1/two-step-policy", 400, "bad_input",
+                body={"everyone": "yes", "confirm_password": "sentry-mate-dev"})
+        out = c.json("PUT", "/api/v1/two-step-policy", {"everyone": True, "confirm_password": "sentry-mate-dev"})
+        self.assertEqual(out, {"everyone": True, "outside": False})
+        me = c.get("/api/v1/me")
+        self.assertEqual((me["two_step_required"], me["two_step_setup_only"]), (True, True))
+        self.assertTrue(all(a["two_step_required"] for a in c.get("/api/v1/accounts")["items"]))
+        self.assertEqual(c.get("/api/v1/me/two-step")["required"], {"everyone": True, "outside": False})
+        top = c.get("/api/v1/audit?limit=1")["items"][0]
+        self.assertEqual((top["action"], top["target"]), ("two-step-policy", "settings:server"))
+        c.json("PUT", "/api/v1/two-step-policy", {"everyone": False, "outside": True, "confirm_password": "sentry-mate-dev"})
+        self.assertEqual(c.get("/api/v1/two-step-policy"), {"everyone": False, "outside": True})
+        w = self.server.client()
+        w.cookie = "sentry-mate=out"
+        w.json("POST", "/api/v1/session", {"name": "watch", "password": PW})
+        w.error("GET", "/api/v1/two-step-policy", 403, "not_allowed")
+
+
 class Preferences(ServerCase):
     def test_get_patch(self):
         p = self.c.get("/api/v1/me/preferences")
