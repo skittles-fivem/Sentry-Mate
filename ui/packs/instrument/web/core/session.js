@@ -22,15 +22,14 @@ function tell() { for (const f of [...subs]) { try { f({ ...known, me: getMe() }
 /** Ask the server: is set-up needed, and is this browser signed in? Throws an ApiError when it cannot say. */
 export async function check() {
   checking ??= (async () => {
+    // the account and its preferences are asked for with set-up, not after it: a round trip less before every first
+    // page (a server that still needs set-up has no account, so they only answer 401, which is no lost session here)
+    const session = loadSession().then(() => null, (e) => e);
     const s = await api.get('setup');
     if (s.needs_setup) { known = { needsSetup: true, signedIn: false }; return known; }
-    try {
-      await loadSession();
-      known = { needsSetup: false, signedIn: true };
-    } catch (e) {
-      if (e.status !== 401) throw e;
-      known = { needsSetup: false, signedIn: false };
-    }
+    const e = await session;
+    if (e && e.status !== 401) throw e;
+    known = { needsSetup: false, signedIn: !e };
     return known;
   })().finally(() => { checking = null; });
   const k = await checking;
