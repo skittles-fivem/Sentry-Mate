@@ -23,7 +23,7 @@ export const id = 'settings-display';
 export const css = true;
 
 // used only when the server's list of packs can't be read
-const PACKS = [['instrument', 'Instrument'], ['logbook', 'Logbook'], ['horizon', 'Horizon'], ['console', 'Console'], ['pebble', 'Pebble']];
+const PACKS = [['instrument', 'Instrument']];
 const LOCALES = [['auto', "This browser's language"], ['en-US', 'English (United States)'], ['en-GB', 'English (United Kingdom)'], ['de-DE', 'German number and date style'], ['fr-FR', 'French number and date style'], ['nl-NL', 'Dutch number and date style']].filter(([v]) => v === 'auto' || isSupportedLocale(v));
 
 

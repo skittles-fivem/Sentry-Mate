@@ -366,8 +366,9 @@ async fn every_change_route_writes_a_readable_entry() {
     // the family's own preferences and design
     let packs = ok(&mut admin, "/api/v1/ui-packs").await;
     let chosen = packs["chosen"].as_str().unwrap().to_string();
-    let other_pack = packs["items"].as_array().unwrap().iter().find(|p| p["id"] != json!(chosen)).unwrap().clone();
-    let (pack_id, pack_name) = (other_pack["id"].as_str().unwrap(), other_pack["name"].as_str().unwrap());
+    // (Instrument, the only built-in pack: the others are archived in ui/archived; choosing it is still a choice)
+    let the_pack = packs["items"].as_array().unwrap().iter().find(|p| p["id"] == json!(chosen)).unwrap().clone();
+    let (pack_id, pack_name) = (the_pack["id"].as_str().unwrap(), the_pack["name"].as_str().unwrap());
     w.send(
         &mut watch,
         "PATCH",

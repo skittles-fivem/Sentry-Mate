@@ -15,8 +15,10 @@ name: Image
 #     when no image has that tag yet (no `build-N` tag: those are only for
 #     releases from main). A branch or git tag named latest, build-... or
 #     sha-... gets branch- in front, so it never replaces a release's tag.
-#   - A push that changes only README.md, docs/ or truenas/ runs nothing: no
-#     code changed, so there is nothing to test and no new image.
+#   - A push that changes only README.md, docs/, truenas/ or ui/archived/
+#     runs nothing: no code changed, so there is nothing to test and no new
+#     image (the archived UI packs are not built, served or tested:
+#     ui/archived/README.md).
 # This replaces ci.yml: it ran the same tests on every push to main, so with
 # this file they would have run twice.
 # The owner's limit: a push to main takes at most 5 minutes, tests and image
@@ -63,7 +65,7 @@ name: Image
 on:
   push:
     branches: [main]
-    paths-ignore: ['README.md', 'docs/**', 'truenas/**']
+    paths-ignore: ['README.md', 'docs/**', 'truenas/**', 'ui/archived/**']
   workflow_dispatch:
 
 # Read-only by default; only the jobs that push images may write packages.
