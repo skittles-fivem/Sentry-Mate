@@ -26,7 +26,7 @@ from ..uploads import free_bytes
 from .reports import gap_rows
 
 DEV_VERSION = "0.1.0-dev"
-API_VERSION = "1"
+API_VERSION = 1
 
 
 # ------------------------------------------------------------------ server settings
