@@ -92,3 +92,26 @@ async fn the_audit_log_says_which_cars_an_account_was_given() {
         .collect();
     assert_eq!(said, [format!("Changed which cars {WATCH} sees: c2 (was c1).")], "{audit}");
 }
+
+/// An admin's own new password and another change in one request: both are made (each step checks the password
+/// typed, which is the old one until the last step).
+#[tokio::test]
+async fn ones_own_new_password_and_cars_in_one_change() {
+    let s = server().await;
+    let mut admin = s.admin().await;
+    let list = admin.get("/api/v1/accounts").await.json();
+    let me = list["items"].as_array().unwrap().iter().find(|a| a["name"] == web::testkit::ADMIN).unwrap().clone();
+    let r = admin
+        .patch(
+            &format!("/api/v1/accounts/{}", me["id"].as_str().unwrap()),
+            json!({ "version": me["version"], "cars": ["c1"], "password": "a brand new long passphrase 1",
+                    "confirm_password": ADMIN_PASSWORD }),
+        )
+        .await;
+    assert_eq!((r.status, &r.json()["cars"]), (200, &json!(["c1"])), "{}", r.text());
+    let mut c = s.client();
+    let r = c
+        .post("/api/v1/session", json!({ "name": web::testkit::ADMIN, "password": "a brand new long passphrase 1" }))
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+}

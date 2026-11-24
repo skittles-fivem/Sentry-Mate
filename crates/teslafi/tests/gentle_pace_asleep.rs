@@ -94,3 +94,29 @@ async fn the_gentle_pace_still_records_the_asleep_time() {
         "every asleep look is zero-length: {facts:?}"
     );
 }
+
+/// The server's clock set back three hours: the reads go on, as for the Tesla API.
+#[tokio::test]
+async fn a_clock_set_back_does_not_stop_the_reads() {
+    let (_t, data, v) = vault();
+    let store = Store::new(&data, v);
+    let id = account(&store, true);
+    let (script, sink) = (Script::default(), Arc::new(MemSink::default()));
+    let mut p =
+        Poller::new(store.clone(), &id, script.clone(), sink.clone(), Pace::Gentle.cadence(), chrono_tz::Tz::UTC)
+            .unwrap();
+    let asleep = |id: usize| json!({ "data_id": id.to_string(), "Date": "2027-01-15 08:00:00", "carState": "Sleeping", "state": "asleep" });
+    script.push(Ok(asleep(10)));
+    p.tick(NOW).await.unwrap();
+    let back = NOW - 3 * 3_600_000;
+    script.push(Ok(asleep(11)));
+    let mut t = p.tick(back).await.unwrap();
+    let mut reads = script.asked.lock().unwrap().len();
+    while t < back + 3_600_000 {
+        script.push(Ok(asleep(20 + reads)));
+        t = p.tick(t).await.unwrap();
+        reads = script.asked.lock().unwrap().len();
+    }
+    // the gentle pace reads a sleeping car every 20 minutes: the first read, then two more within the hour
+    assert!(reads >= 3, "only {reads} reads in the hour after the clock went back");
+}

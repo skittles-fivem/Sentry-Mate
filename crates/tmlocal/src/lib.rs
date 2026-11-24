@@ -1154,6 +1154,9 @@ fn merge_cars(store: &Store, seen: &[catchup::DbCar]) -> bool {
     }
 }
 
+/// Held while a catch-up's dump is stored (one at a time: stopping a task does not stop the import it waits for).
+static IMPORTING: Mutex<()> = Mutex::new(());
+
 /// One catch-up: the database's cars (for the match table), then, for the matched cars, a dump from each car's
 /// mark, stored as a TeslaMate import; the marks move on only once the sink stored it. The dump file is deleted
 /// whatever happened.
@@ -1182,6 +1185,18 @@ async fn sync_once<S: Sink>(
     static DUMPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = DUMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let base = store.dump_path();
+    // dumps a stopped catch-up left (its task was stopped while it wrote one): no import reads them while none runs
+    if let Ok(_free) = IMPORTING.try_lock()
+        && let (Some(dir), Some(stem)) = (base.parent(), base.file_name().map(|f| f.to_string_lossy().into_owned()))
+        && let Ok(rd) = std::fs::read_dir(dir)
+    {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.strip_prefix(&stem).is_some_and(|r| r.starts_with('.')) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
     let tmp = base.with_file_name(format!(
         "{}.{n}",
         base.file_name().map_or_else(|| "catchup.dump".into(), |f| f.to_string_lossy().into_owned())
@@ -1192,7 +1207,6 @@ async fn sync_once<S: Sink>(
         let counts = tokio::task::spawn_blocking(move || {
             // one import at a time (stopping the task does not stop the import it waits for); the file goes with
             // the import, as the task that waited for it may be gone
-            static IMPORTING: Mutex<()> = Mutex::new(());
             let _one = lock(&IMPORTING);
             let r = sink2.catch_up(&tmp2, &pairs2);
             let _ = std::fs::remove_file(&tmp2);
@@ -1201,7 +1215,30 @@ async fn sync_once<S: Sink>(
         .await
         .map_err(|e| Failure { code: "query_failed", message: e.to_string() })?
         .map_err(|e| Failure { code: "query_failed", message: format!("storing the catch-up: {e}") })?;
-        store.set_cursor(&d.cursor).map_err(|e| Failure { code: "query_failed", message: e.to_string() })?;
+        // the marks of the cars still matched as they were when the dump began: a car matched again meanwhile had
+        // its mark cleared (it is caught up from its start), and this dump's mark would put that back
+        let now: Vec<(i64, CarId)> = store
+            .get()
+            .map(|c| {
+                c.cars
+                    .iter()
+                    .filter_map(|k| Some((k.teslamate_car.parse::<i64>().ok()?, match_car(k.matched)?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let kept = |t: &i64| pairs.iter().any(|p| p.0 == *t && now.contains(p));
+        let mut next = store.cursor().unwrap_or_default();
+        for (t, ms) in &d.cursor.cars {
+            if kept(t) {
+                next.cars.insert(*t, *ms);
+            }
+        }
+        for (t, ids) in &d.cursor.ids {
+            if kept(t) {
+                next.ids.insert(*t, ids.clone());
+            }
+        }
+        store.set_cursor(&next).map_err(|e| Failure { code: "query_failed", message: e.to_string() })?;
         Ok(counts)
     }
     .await;
