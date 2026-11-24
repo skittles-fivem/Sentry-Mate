@@ -353,6 +353,8 @@ async function mountCar(ctx) {
     const trust = hl.last_log_trust || {};
     const tw = TRUST[trust.result];
     const spans = hl.unknown_spans || [];
+    // the lists hold the newest 500; the totals count the whole period
+    const spanCount = hl.unknown_spans_total ?? spans.length;
     const reasons = hl.reasons || [];
     const status = h('div', { class: ['hl-status', hl.healthy ? 'is-ok' : 'is-warn'] },
       h('span', { class: 'hl-status-ic' }, icon(hl.healthy ? 'check' : 'warn')),
@@ -380,10 +382,10 @@ async function mountCar(ctx) {
       }),
       metric('Logs waiting', hl.logs_waiting ?? null, 'count', { explain: hl.logs_waiting ? 'Arrived but not read: their key is not trusted yet.' : 'Every log that arrived has been read.' }),
       metric('Unknown time', hl.unknown_ms != null ? formatDuration(hl.unknown_ms) : null, null, {
-        why: 'Not known.', explain: `In the period: time with no usable data (not asleep, which is known). ${spans.length} ${spans.length === 1 ? 'span' : 'spans'}.`,
+        why: 'Not known.', explain: `In the period: time with no usable data (not asleep, which is known). ${formatNumber(spanCount)} ${spanCount === 1 ? 'span' : 'spans'}.`,
       }),
-      metric('Chain gaps', (hl.chain_gaps || []).length, 'count', { explain: 'Logs missing from the hash chain in the period.' }),
-      metric('Dropped frames', (hl.dropped_frames || []).length, 'count', { explain: 'Times in the period where the bridge could not keep up and lost CAN frames.' }),
+      metric('Chain gaps', hl.chain_gaps_total ?? (hl.chain_gaps || []).length, 'count', { explain: 'Logs missing from the hash chain in the period.' }),
+      metric('Dropped frames', hl.dropped_frames_total ?? (hl.dropped_frames || []).length, 'count', { explain: 'Times in the period where the bridge could not keep up and lost CAN frames.' }),
     ], 'hl-figs');
 
     const flags = kv([
