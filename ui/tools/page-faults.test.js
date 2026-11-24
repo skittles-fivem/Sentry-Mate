@@ -390,13 +390,22 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
         let done = saved();
         await input.fill(good); await input.press('Tab');
         await done;
-        await page.waitForTimeout(500);   // the panel is drawn again with the saved value
+        // the panel is drawn again with the saved value (and once more if a live event follows): typing starts
+        // only once the field on the page has stayed the same element for half a second
+        for (let i = 0, still = null; i < 40; i++) {
+          const now = await input.elementHandle({ timeout: 15000 });
+          if (still && await still.evaluate((a, b) => a === b && a.isConnected, now)) break;
+          still = now;
+          await page.waitForTimeout(500);
+        }
         const stored = await read();
         assert.ok(stored > 0, `${name}: ${good} is stored (${stored})`);
         sent.length = 0;
         // typed, as a person does: a number input gives "" for text it cannot read
         const again = page.locator(`main input[name="${name}"]`);
         await again.click(); await again.press('Control+a'); await page.keyboard.type(bad); await again.press('Tab');
+        await page.waitForFunction((name) => document.querySelector(`main input[name="${name}"]`)?.getAttribute('aria-invalid') === 'true',
+          name, { timeout: 5000 }).catch(() => null);   // the assertions below say what is missing
         await page.waitForTimeout(800);
         assert.deepEqual(sent, [], `${name}: "${bad}" is not a number, so nothing is sent`);
         assert.equal(await read(), stored, `${name}: the stored value stays`);
