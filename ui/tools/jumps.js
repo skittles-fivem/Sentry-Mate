@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Jump check: does a page stay where it is while it loads and while it is scrolled, on a phone and on a desktop?
 //
-//   node ui/tools/jumps.js [--packs instrument,horizon,...|all] [--pages car,drives,...|all]
+//   node ui/tools/jumps.js [--packs instrument|all] [--pages car,drives,...|all]
 //        [--devices iphone-15,iphone-13-mini,phone-chromium,desktop|all] [--max-score N] [--latency-ms N]
 //        [--step-ms N] [--server-args "..."] [--jobs N] [--json] [--verbose]
 //
@@ -44,8 +44,9 @@ const path = require('path');
 const http = require('http');
 const { startServer, killChildren, TILE_HOSTS, BLANK_TILE, ROUTES } = require('./check');
 
+const { BUILTIN_PACKS } = require('./builtin-packs');
 const UI_DIR = path.dirname(__dirname);
-const PACKS = ['instrument', 'horizon', 'manager', 'console', 'pebble', 'logbook'];
+const PACKS = BUILTIN_PACKS;
 const DEVICES = {
   'iphone-15': { engine: 'webkit', descriptor: 'iPhone 15' },
   'iphone-13-mini': { engine: 'webkit', descriptor: 'iPhone 13 Mini' },

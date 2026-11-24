@@ -13,9 +13,10 @@ const assert = require('node:assert/strict');
 const path = require('path');
 const { spawn } = require('child_process');
 
+const { BUILTIN_PACKS } = require('./builtin-packs');
 const UI_DIR = path.dirname(__dirname);
 const REPO_DIR = path.dirname(UI_DIR);
-const PACKS = (process.env.PACKS || 'instrument,logbook,horizon,console,pebble,manager').split(',');
+const PACKS = (process.env.PACKS || BUILTIN_PACKS.join(',')).split(',');
 let playwright = null;
 try { playwright = require('playwright'); } catch { /* not installed: skip */ }
 

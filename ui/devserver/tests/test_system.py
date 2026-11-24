@@ -486,33 +486,46 @@ class WatchSystem(ServerCase):
 
 
 class UiPacks(ServerCase):
-    """GET /ui-packs lists every built-in pack; a person's ui_pack picks the pack their browser is served."""
+    """GET /ui-packs lists every built-in pack (Instrument alone: the others are archived in ui/archived); a
+    person's ui_pack picks the pack their browser is served, and an archived pack can't be picked."""
 
     def test_list_and_choice(self):
         r = self.c.get("/api/v1/ui-packs")
-        self.assertEqual([p["id"] for p in r["items"]], ["instrument", "logbook", "horizon", "console", "pebble", "manager"])
+        self.assertEqual([p["id"] for p in r["items"]], ["instrument"])
         self.assertEqual(r["chosen"], "instrument")
         self.assertEqual(r["default"], "instrument")
         for p in r["items"]:
             self.assertTrue(p["name"] and p["version"] and p["description"])
             self.assertTrue(p["api_supported"] and p["builtin"])
             self.assertEqual(p["chosen"], p["id"] == "instrument")
-        e, _ = self.c.error("PATCH", "/api/v1/me/preferences", 422, "invalid", body={"ui_pack": "nope"})
-        self.assertIn("ui_pack", e["fields"])
+        for gone in ("nope", "pebble", "horizon", "logbook", "console", "manager"):
+            e, _ = self.c.error("PATCH", "/api/v1/me/preferences", 422, "invalid", body={"ui_pack": gone})
+            self.assertIn("ui_pack", e["fields"])
         try:
-            self.c.json("PATCH", "/api/v1/me/preferences", {"ui_pack": "pebble"})
-            self.assertEqual(self.c.get("/api/v1/about")["ui_pack"]["name"], "Pebble")
+            self.c.json("PATCH", "/api/v1/me/preferences", {"ui_pack": "instrument"})
+            self.assertEqual(self.c.get("/api/v1/about")["ui_pack"]["name"], "Instrument")
             st, _hd, body = self.c.request("GET", "/settings/display")
             self.assertEqual(st, 200)
-            with open(os.path.join(PACKS, "pebble", "web", "index.html"), "rb") as f:
-                self.assertEqual(body, f.read())
-            st, _hd, body = self.c.request("GET", "/pages/settings-display.js")
-            with open(os.path.join(PACKS, "pebble", "web", "pages", "settings-display.js"), "rb") as f:
+            with open(os.path.join(PACKS, "instrument", "web", "index.html"), "rb") as f:
                 self.assertEqual(body, f.read())
         finally:
             p = self.c.json("PATCH", "/api/v1/me/preferences", {"ui_pack": None})
         self.assertEqual(p["ui_pack"], "instrument")
         self.assertEqual(self.c.get("/api/v1/about")["ui_pack"]["name"], "Instrument")
+
+    def test_a_saved_archived_pack_serves_instrument(self):
+        """A preference saved before its pack was archived: Instrument is served, with no error."""
+        acct = self.c.get("/api/v1/me")
+        with self.server.app.store.lock:
+            self.server.app.store.prefs.setdefault(acct["id"], {})["ui_pack"] = "pebble"
+        try:
+            self.assertEqual(self.c.get("/api/v1/about")["ui_pack"]["id"], "instrument")
+            st, _hd, body = self.c.request("GET", "/settings/display")
+            self.assertEqual(st, 200)
+            with open(os.path.join(PACKS, "instrument", "web", "index.html"), "rb") as f:
+                self.assertEqual(body, f.read())
+        finally:
+            self.c.json("PATCH", "/api/v1/me/preferences", {"ui_pack": None})
 
 
 class ReleaseCheck(ServerCase):

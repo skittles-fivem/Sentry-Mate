@@ -2,9 +2,9 @@
 """Copy the shared browser modules into every UI pack.
 
 The canonical modules live in ui/shared/*.js. Each pack serves its own copy from
-ui/packs/<name>/web/shared/ (instrument, logbook, horizon, console, pebble, manager, and any new pack folder
-with ui.json and web/), so a pack folder (or its zip) works on its own. This tool writes those copies;
-nothing else should edit them.
+ui/packs/<name>/web/shared/ (instrument, and any new pack folder with ui.json and web/), so a pack folder (or its zip) works on its own. This tool writes those copies;
+nothing else should edit them. The archived packs of ui/archived are left alone: they are not built, served or
+tested, and get the shared modules again when one is brought back (ui/archived/README.md).
 
     python3 ui/tools/sync_shared.py               copy into every pack
     python3 ui/tools/sync_shared.py --pack NAME   copy into one pack

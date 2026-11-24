@@ -3,7 +3,7 @@
 // scrolled down and back up with the mouse wheel on a 4K screen at 200 % (1920x1080 at device scale 2). No frame
 // may take over 50 ms. ui/tools/scroll.js does the work; see ui/tools/README.md.
 // Run: node --test ui/tools/scroll.test.js. Skipped when Playwright is not installed.
-// SCROLL_PACKS=instrument,horizon and SCROLL_SIZES=3840x2160@1,1920x1080@2 narrow or widen it.
+// SCROLL_PACKS=instrument and SCROLL_SIZES=3840x2160@1,1920x1080@2 narrow or widen it.
 'use strict';
 
 const { test } = require('node:test');
