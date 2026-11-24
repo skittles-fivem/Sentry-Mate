@@ -11,6 +11,7 @@ const assert = require('node:assert/strict');
 const path = require('path');
 const { spawn } = require('child_process');
 
+const { BUILTIN_PACKS } = require('./builtin-packs');
 const UI_DIR = path.dirname(__dirname);
 const REPO_DIR = path.dirname(UI_DIR);
 let playwright = null;
@@ -18,7 +19,7 @@ try { playwright = require('playwright'); } catch { /* not installed: skip */ }
 
 const ONLY = process.env.PACKS ? new Set(process.env.PACKS.split(',')) : null;
 const packs = (...list) => list.filter((p) => !ONLY || ONLY.has(p));
-const BUILT_ON_INSTRUMENT = ['instrument', 'horizon', 'manager'];
+const BUILT_ON_INSTRUMENT = BUILTIN_PACKS.filter((p) => p === 'instrument');
 const SKIP = !playwright && 'Playwright is not installed';
 
 function devServer(pack, extra = [], freeze = true) {

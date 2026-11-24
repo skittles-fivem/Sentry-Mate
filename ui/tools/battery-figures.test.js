@@ -1,4 +1,4 @@
-// The Battery page of all six packs in Chromium on the dev API server, with an answer of `/battery` the made-up
+// The Battery page of every built-in pack (Instrument; the others are archived) in Chromium on the dev API server, with an answer of `/battery` the made-up
 // cars do not give: a capacity that reads above the value when new (the server then answers no loss, full health
 // and the note `reading_above_new`), and logged charges of no known kind (`lifetime.unknown_kwh`). Every pack says
 // why no loss is shown, and shows the charges of no known kind as their own part of the energy into the pack,
@@ -11,6 +11,7 @@ const assert = require('node:assert/strict');
 const path = require('path');
 const { spawn } = require('child_process');
 
+const { BUILTIN_PACKS } = require('./builtin-packs');
 const UI_DIR = path.dirname(__dirname);
 const REPO_DIR = path.dirname(UI_DIR);
 let playwright = null;
@@ -64,7 +65,7 @@ async function batteryText(context, origin, car, change, wanted) {
   return text;
 }
 
-for (const pack of ['instrument', 'horizon', 'manager', 'logbook', 'console', 'pebble']) {
+for (const pack of BUILTIN_PACKS) {
   test(`${pack}: Battery says why no loss is shown, and shows charges of no known kind as their own part`, { skip: !playwright && 'Playwright is not installed', timeout: 180000 }, async () => {
     const browser = await playwright.chromium.launch();
     const server = await devServer(pack);

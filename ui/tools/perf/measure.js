@@ -58,7 +58,7 @@ const args = (() => {
 const BASE = (args.base || 'https://127.0.0.1:10101').replace(/\/$/, '');
 const USER = args.user || 'owner';
 const PASS = args.pass || process.env.SM_PASS || 'correct horse battery staple';
-const PACKS = (args.packs || 'instrument,logbook,horizon,console,pebble,manager').split(',');
+const PACKS = args.packs ? args.packs.split(',') : [...require('../builtin-packs').BUILTIN_PACKS];
 const PAGES = (args.pages || 'car,drives,drive,charges,battery,statistics,settings,settings-integrations').split(',');
 const TIMEOUT = Number(args.timeout || 90000);
 const QUIET = Number(args.quiet || 500);

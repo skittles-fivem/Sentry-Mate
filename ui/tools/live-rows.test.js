@@ -1,4 +1,4 @@
-// Live list updates in Chromium on the dev API server: Pebble's Charges page loads its list again when a
+// Live list updates in Chromium on the dev API server: each built-in pack's Charges page loads its list again when a
 // `rows` event says charges changed, and shows the new charge without a reload of the page.
 // The dev server sends a `rows` event for every kind every 2 s (--rows-every-s 2); the second answer for the
 // list gets one more charge at the top, and the test waits for it to be drawn.
@@ -10,6 +10,7 @@ const assert = require('node:assert/strict');
 const path = require('path');
 const { spawn } = require('child_process');
 
+const { BUILTIN_PACKS } = require('./builtin-packs');
 const UI_DIR = path.dirname(__dirname);
 const REPO_DIR = path.dirname(UI_DIR);
 let playwright = null;
@@ -34,9 +35,9 @@ function devServer(pack, extra) {
   });
 }
 
-test('pebble: Charges loads its list again on a rows event and shows the new charge', { skip: !playwright && 'Playwright is not installed', timeout: 120000 }, async () => {
+for (const pack of BUILTIN_PACKS) test(`${pack}: Charges loads its list again on a rows event and shows the new charge`, { skip: !playwright && 'Playwright is not installed', timeout: 120000 }, async () => {
   const browser = await playwright.chromium.launch();
-  const server = await devServer('pebble', ['--rows-every-s', '2']);
+  const server = await devServer(pack, ['--rows-every-s', '2']);
   try {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const cars = await (await context.request.get(`${server.origin}/api/v1/cars`)).json();
@@ -45,10 +46,11 @@ test('pebble: Charges loads its list again on a rows event and shows the new cha
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
 
-    // The list itself is the request with limit=30 and no flags (the missing-data box and the statistics differ).
+    // The list itself is the request with limit=25 (Instrument's table) and no flags (the missing-data box and the
+    // statistics differ).
     let listLoads = 0;
     const NEW_ID = 'live-rows-new-charge';
-    await page.route((u) => u.pathname === `/api/v1/cars/${car}/charges` && u.searchParams.get('limit') === '30' && !u.searchParams.has('flags') && !u.searchParams.has('cursor'), async (route) => {
+    await page.route((u) => u.pathname === `/api/v1/cars/${car}/charges` && u.searchParams.get('limit') === '25' && !u.searchParams.has('flags') && !u.searchParams.has('cursor'), async (route) => {
       listLoads++;
       // asked without the kept answer's tag (the page's cache revalidates; a 304 would carry no list to change),
       // and answered without a tag (the changed list is not the server's)

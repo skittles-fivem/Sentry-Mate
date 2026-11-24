@@ -1,9 +1,9 @@
-// Settings: Server and access in both built-in packs, in Chromium on the dev API server, at phone size:
+// Settings: Server and access in every built-in pack (Instrument; the others are archived), in Chromium on the dev API server, at phone size:
 //   - the CAN Bridge upload address breaks only after a slash or a colon, never at the hyphen of a host name;
 //   - the names in the certificate start with localhost, as the real server's do;
 //   - with the owner's own certificate (--own-certificate) the page offers no "Make a new certificate" (the server
 //     refuses it there) and says how to change the files instead, also in the "certificate expires" row.
-// And its Storage panel in all six packs, at desktop size (admins only):
+// And its Storage panel in every built-in pack, at desktop size (admins only):
 //   - the categories of GET /system/storage/detail are grouped by kind, largest first, and the CAN logs group opens
 //     to its categories by short name, largest first; with the total, the free space, what compaction saved and
 //     its last pass, and the sentence that says compaction is lossless on hover (a title);
@@ -20,6 +20,7 @@ const assert = require('node:assert/strict');
 const path = require('path');
 const { spawn } = require('child_process');
 
+const { BUILTIN_PACKS } = require('./builtin-packs');
 const UI_DIR = path.dirname(__dirname);
 const REPO_DIR = path.dirname(UI_DIR);
 let playwright = null;
@@ -78,7 +79,7 @@ function breaksOf(page) {
 const visibleText = (page) => page.evaluate(() => document.querySelector('main, #app, body').innerText);
 const certButtons = (page) => page.evaluate(() => [...document.querySelectorAll('button')].filter((b) => /make a new certificate/i.test(b.textContent)).length);
 
-for (const pack of ['instrument', 'logbook']) {
+for (const pack of BUILTIN_PACKS) {
   test(`${pack}: Settings: Server at phone size, the server's certificate and the owner's own`, { skip: !playwright && 'Playwright is not installed', timeout: 180000 }, async () => {
     const browser = await playwright.chromium.launch();
     try {
@@ -118,7 +119,7 @@ for (const pack of ['instrument', 'logbook']) {
   });
 }
 
-/* ------------------------------------------------------------------ the Storage panel, in all six packs */
+/* ------------------------------------------------------------------ the Storage panel, in every built-in pack */
 
 const DETAIL = /\/api\/v1\/system\/storage\/detail(\?|$)/;
 async function openDesk(browser, server) {
@@ -143,7 +144,7 @@ async function openLogs(page) {
   await page.waitForFunction(() => [...document.querySelectorAll('button[aria-expanded="true"]')].some((b) => /can logs/i.test(b.textContent)));
 }
 
-for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'manager']) {
+for (const pack of BUILTIN_PACKS) {
   test(`${pack}: Settings: Server, the Storage panel and Compact now`, { skip: !playwright && 'Playwright is not installed', timeout: 240000 }, async () => {
     const browser = await playwright.chromium.launch();
     try {

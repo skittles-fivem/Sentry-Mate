@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Bundles and minifies the built-in UI packs for the release build (esbuild, pinned in package-lock.json):
 //
-//   npm ci --prefix ui/tools/bundle && node ui/tools/bundle/bundle.mjs OUT [--packs instrument,logbook]
+//   npm ci --prefix ui/tools/bundle && node ui/tools/bundle/bundle.mjs OUT [--packs instrument]
 //
 // For each pack in ui/packs/<id>/ it writes OUT/<id>/web/ with only the files that differ from the sources:
 //   - the module the pack's index.html starts (core/app.js or core/start.js) and every page (pages/*.js), each at

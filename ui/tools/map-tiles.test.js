@@ -20,6 +20,7 @@ const path = require('path');
 const zlib = require('zlib');
 const { spawn } = require('child_process');
 
+const { BUILTIN_PACKS } = require('./builtin-packs');
 const UI_DIR = path.dirname(__dirname);
 const REPO_DIR = path.dirname(UI_DIR);
 let playwright = null;
@@ -64,7 +65,7 @@ const SOURCES = {
   topo: { mode: 'online', online_url: 'https://tile.opentopomap.org/{z}/{x}/{y}.png', attribution: '© OpenStreetMap contributors, © OpenTopoMap', max_zoom: 17 },
 };
 
-for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'manager']) {
+for (const pack of BUILTIN_PACKS) {
   test(`${pack}: online tiles load after they are turned on or switched, without a reload by hand`, { skip: !playwright && 'Playwright is not installed', timeout: 180000 }, async () => {
     const browser = await playwright.chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
     const server = await devServer(pack);
@@ -139,7 +140,7 @@ for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'ma
 // Settings: Maps and addresses and Settings: Cars at phone width, with a long browser zone name: the tile source's
 // terms note and the "Use this browser's zone" button (time zone for new cars) stay inside the window (they ran up
 // to 88 px past it when both were on Settings: Display and units).
-for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'manager']) {
+for (const pack of BUILTIN_PACKS) {
   test(`${pack}: the zone button and the tile terms fit a 360 px phone`, { skip: !playwright && 'Playwright is not installed', timeout: 120000 }, async () => {
     const browser = await playwright.chromium.launch();
     const server = await devServer(pack);
@@ -177,7 +178,7 @@ const SAT_BASE = /^https:\/\/server\.arcgisonline\.com\/ArcGIS\/rest\/services\/
 const SAT_LABELS = /^https:\/\/server\.arcgisonline\.com\/ArcGIS\/rest\/services\/Reference\//;
 const OSM = /^https:\/\/tile\.openstreetmap\.org\//;
 const TILE_HOSTS = /^https:\/\/(server\.arcgisonline\.com|tile\.openstreetmap\.org)\//;
-for (const pack of ['instrument', 'logbook', 'horizon', 'console', 'pebble', 'manager']) {
+for (const pack of BUILTIN_PACKS) {
   test(`${pack}: a map with no tiles says so, and an admin turns the online map on from it`, { skip: !playwright && 'Playwright is not installed', timeout: 180000 }, async () => {
     const browser = await playwright.chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
     const server = await devServer(pack, ['--map-tiles', 'none']);
