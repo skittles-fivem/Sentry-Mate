@@ -32,7 +32,7 @@
 .lb-total-head .lb-purpose > i { align-self: center; }
 .lb-total-km { font-family: var(--font-display); font-size: 1.375rem; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .lb-bar > i { background: var(--pc); }
-.lb-unset { grid-column: 1 / -1; margin: 0; color: var(--warm); }
+.lb-unset { grid-column: 1 / -1; margin: 0; color: var(--warm-ink); }
 .lb-unset > .ico { vertical-align: round(-0.125rem, var(--e)); margin-right: round(0.375rem, var(--e)); }
 
 .lb-purpose { display: inline-flex; align-items: center; gap: round(0.4375rem, var(--e)); font-weight: 500; white-space: nowrap; }
@@ -41,11 +41,11 @@
 .lb-purpose.lb-p--none > i { background: transparent; box-shadow: inset 0 0 0 1.5px var(--pc); }
 
 .lb-cont .figures { margin-bottom: round(0.875rem, var(--e)); }
-.lb-cont .is-warn .metric-value { color: var(--warm); }
-.lb-cont .is-ok .metric-value { color: var(--live); }
+.lb-cont .is-warn .metric-value { color: var(--warm-ink); }
+.lb-cont .is-ok .metric-value { color: var(--live-ink); }
 .lb-gaps { list-style: none; margin: 0 0 round(0.75rem, var(--e)); padding: 0; display: flex; flex-direction: column; gap: round(0.375rem, var(--e)); }
 .lb-gaps li { display: flex; align-items: center; gap: round(0.5rem, var(--e)); padding: round(0.4375rem, var(--e)) round(0.625rem, var(--e)); border-radius: var(--radius-sm); background: var(--warm-soft); }
-.lb-gaps li > .ico { color: var(--warm); flex: none; }
+.lb-gaps li > .ico { color: var(--warm-ink); flex: none; }
 .lb-gaps li > span { flex: 1 1 auto; min-width: 0; }
 .lb-cont > .note, .lb-export > .note { margin: 0; --LH: round(calc(1.5 * 1em), 2px); }
 
@@ -67,14 +67,14 @@
 .lb-edit { margin-left: round(0.125rem, var(--e)); }
 /* the edit button sits in the chip's line without making the row taller */
 .lb-table .lb-edit { margin-block: round(-0.3125rem, var(--e)); }
-.lb-now { color: var(--live); font-weight: 500; }
+.lb-now { color: var(--live-ink); font-weight: 500; }
 .lb-arrow { color: var(--text-3); }
 .lb-pcell { min-width: 0; }
 .lb-pcell .lb-prow { width: 100%; flex-wrap: nowrap; }
-.lb-gap { display: inline-flex; align-items: center; gap: round(0.3125rem, var(--e)); color: var(--warm); font-weight: 500; white-space: nowrap; }
+.lb-gap { display: inline-flex; align-items: center; gap: round(0.3125rem, var(--e)); color: var(--warm-ink); font-weight: 500; white-space: nowrap; }
 .lb-gap:hover { text-decoration: underline; }
 .lb-ok { color: var(--text-3); white-space: nowrap; }
-.lb-ok .ico { color: var(--live); vertical-align: round(-0.125em, var(--e)); }
+.lb-ok .ico { color: var(--live-ink); vertical-align: round(-0.125em, var(--e)); }
 
 .lb-rules-panel > .note { margin: 0 0 round(0.875rem, var(--e)); max-width: round(60rem, var(--e)); --LH: round(calc(1.5 * 1em), 2px); }
 .lb-rule-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(round(26rem, var(--e)), 1fr)); gap: round(0.625rem, var(--e)); }

@@ -1,6 +1,8 @@
 // Text that must be readable in both themes, in Chromium on the dev API server: the small words of a tag
 // (Preferred, estimated, Ongoing), of the AC and DC pills of the Charges list, of an unnamed version in the
-// Software page's strip and of a Logbook purpose's total that has no drives, measured on the pixels drawn (the box's most common colour is its background) against
+// Software page's strip, of a Logbook purpose's total that has no drives, of a warning in amber (drives without a
+// purpose, stale cars, an estimate's mark, a middling efficiency), of a problem in red and of a link or a good word
+// in teal, measured on the pixels drawn (the box's most common colour is its background) against
 // the text's colour: 4.5:1 or more (WCAG AA for small text).
 // `PACKS=a,b` runs only those. Run: node --test ui/tools/contrast.test.js. Skipped when Playwright is not installed.
 'use strict';
@@ -96,11 +98,20 @@ const PARTS = [
   ['/cars/c1/software', 'software', 'main .sw-fh-seg-bar.is-unnamed .sw-fh-seg-text'],
   ['/cars/c1/logbook', 'logbook', 'main .lb-total.is-zero .explain'],
   ['/cars/c1/logbook', 'logbook', 'main .lb-total.is-zero .lb-total-km .q-u'],
+  // the accents as plain words: a warning (amber) and a link or a good word (teal)
+  ['/cars/c1/logbook', 'logbook', 'main .lb-unset'],
+  ['/', 'fleet', 'main .sub-warn'],
+  ['/cars/c1/drives', 'drives', 'main .est-mark'],
+  ['/cars/c1/efficiency', 'efficiency', 'main .ef-eff.is-mid'],
+  ['/cars/c1/statistics', 'statistics', 'main a.link'],
+  ['/travel', 'travel', 'main .tv-city-btn:not(.is-chosen)'],
+  ['/system', 'health', 'main span.ok'],
+  ['/settings/integrations', 'settings-integrations', 'main .co-row[data-status="problem"] .co-word'],   // a problem (red)
 ];
 
 for (const pack of packs) {
   for (const theme of ['light', 'dark']) {
-    test(`${pack}: in the ${theme} theme the words of tags, of the AC and DC pills and of an empty Logbook total reach 4.5:1`, { skip: SKIP, timeout: 240000 }, async () => {
+    test(`${pack}: in the ${theme} theme the words of tags, of the AC and DC pills, of an empty Logbook total, of a warning, of a problem and of a link reach 4.5:1`, { skip: SKIP, timeout: 240000 }, async () => {
       const browser = await playwright.chromium.launch();
       const server = await devServer(pack);
       try {

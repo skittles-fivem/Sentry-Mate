@@ -1,7 +1,7 @@
 /* Charge detail (pages/charge.js): figures beside the map, the charts, supply and power curve, then the cost. */
 .charge-trail { display: inline-flex; flex-wrap: wrap; align-items: center; gap: round(0.375rem, var(--e)); }
 .charge-trail a { color: inherit; }
-.charge-trail a:hover { color: var(--live); }
+.charge-trail a:hover { color: var(--live-ink); }
 .charge-page .page-actions .back { margin: 0 round(0.25rem, var(--e)) 0 0; }
 
 .charge-layout { display: grid; gap: var(--gap); grid-template-columns: minmax(0, 7fr) minmax(round(24rem, var(--e)), 5fr); margin-bottom: var(--gap); }
@@ -43,7 +43,7 @@
 .charge-page .chart-label .key--dash i { background: repeating-linear-gradient(90deg, var(--c) 0 round(0.25rem, var(--e)), transparent round(0.25rem, var(--e)) round(0.4375rem, var(--e))); }
 .charge-page .chart-label .key--dot i { width: round(0.4375rem, var(--e)); height: round(0.4375rem, var(--e)); border-radius: 50%; }
 .charge-page .charts-panel > .note { margin: round(0.5rem, var(--e)) 0 round(0.25rem, var(--e)); }
-.charge-page .note.warn { display: flex; align-items: center; gap: round(0.375rem, var(--e)); color: var(--warm); }
+.charge-page .note.warn { display: flex; align-items: center; gap: round(0.375rem, var(--e)); color: var(--warm-ink); }
 .charge-lower { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--gap); margin-bottom: var(--gap); align-items: start; }
 .charge-lower .charts-panel { margin-bottom: 0; }
 .curve-keys { padding-left: round(4rem, var(--e)); margin: round(0.25rem, var(--e)) 0 round(0.25rem, var(--e)); }

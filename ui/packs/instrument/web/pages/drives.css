@@ -15,9 +15,9 @@
 
 .drives-table { margin-bottom: var(--gap); }
 .drives-table .col-route .cell-text { max-width: round(16rem, var(--e)); }
-.drives-table .est-mark { color: var(--warm); }
+.drives-table .est-mark { color: var(--warm-ink); }
 .drives-table .start-sub { display: flex; align-items: center; gap: round(0.375rem, var(--e)); }
-.drives-table .start-sub .flag-ico { display: inline-flex; color: var(--warm); }
+.drives-table .start-sub .flag-ico { display: inline-flex; color: var(--warm-ink); }
 /* a narrower table: outside temperature and speed go (the drive's page has them; the outside temperature is in
    the battery's title), the efficiency keeps its number only; narrower still the time goes under the distance */
 .drives-table { container: drives-list / inline-size; }
@@ -37,13 +37,13 @@
 .cell-text > * { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cell-text .route { font-weight: 500; }
 .temp-cell.is-cold { color: var(--st-parked); }
-.temp-cell.is-warm { color: var(--warm); }
+.temp-cell.is-warm { color: var(--warm-ink); }
 .eff { display: grid; justify-content: start; /* a block, so it sits in the middle of the cell on whole px */ grid-template-columns: round(4.5rem, var(--e)) auto; align-items: center; gap: round(0.625rem, var(--e)); }
 .eff-bar { position: relative; height: round(0.375rem, var(--e)); border-radius: 99px; background: var(--glass-3); overflow: hidden; }
 .eff-bar > i { position: absolute; inset: 0 auto 0 0; width: var(--w); border-radius: inherit; background: var(--text-3); }
 .eff-bar.is-better > i { background: linear-gradient(90deg, var(--live-2), var(--live)); }
 .eff-val { font-size: max(0.8125rem, var(--fs-floor)); white-space: nowrap; }
-.flag-icons { display: flex; gap: round(0.375rem, var(--e)); align-items: center; color: var(--warm); }
+.flag-icons { display: flex; gap: round(0.375rem, var(--e)); align-items: center; color: var(--warm-ink); }
 
 /* picks for a trip */
 .drives-table .col-pick { width: round(2.5rem, var(--e)); padding-right: 0; }
@@ -113,7 +113,7 @@
 :root[data-phone] .drv-more { min-width: 0; }
 :root[data-phone] .drv-more-sum { display: flex; width: 100%; justify-content: flex-start; list-style: none; cursor: pointer; }
 :root[data-phone] .drv-more-sum::-webkit-details-marker { display: none; }
-:root[data-phone] .drv-more-count { color: var(--live); font-weight: 600; }
+:root[data-phone] .drv-more-count { color: var(--live-ink); font-weight: 600; }
 :root[data-phone] .drv-more-chev { margin-left: auto; transition: transform 0.15s; }
 :root[data-phone] .drv-more[open] .drv-more-chev { transform: rotate(180deg); }
 :root[data-phone] .drv-more[open] > .drv-more-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: round(0.5rem, var(--e)); padding-top: round(0.625rem, var(--e)); }

@@ -27,7 +27,7 @@
 @container page (max-width: 76rem) {
   .tl-rows .tl-item { grid-template-columns: round(8.5rem, var(--e)) round(1.125rem, var(--e)) minmax(0, 1fr) round(5rem, var(--e)) round(1rem, var(--e)); column-gap: round(0.625rem, var(--e)); padding: 0 round(1rem, var(--e)); }
 }
-.tl-fp { color: var(--live); font-weight: 500; }
+.tl-fp { color: var(--live-ink); font-weight: 500; }
 
 /* phone (<html data-phone>): the filters stack full width; each row puts its time and length on top, what
    happened under it (wrapping, never cut), the rail on the left and a whole-tap chevron on the right */
