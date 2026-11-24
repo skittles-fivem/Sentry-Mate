@@ -401,6 +401,20 @@ async fn two_seeded_cars_stay_two_cars_and_their_keys_and_tokens_are_served() {
     let r = c.get("/api/v1/setup/status").await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!((r.json()["cars"].clone(), r.json()["keys_waiting"].clone()), (json!(2), json!(0)), "{}", r.text());
+    assert_eq!(r.json()["import_running"], json!(false), "{}", r.text());
+    // an import that is not finished shows there with its fix, until it is discarded
+    let r = c.request("POST", "/api/v1/imports", Some(json!({ "name": "made-up.sql.gz", "bytes_total": 1000 }))).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let import = r.json()["id"].clone();
+    let st = c.get("/api/v1/setup/status").await.json();
+    let fix = json!({ "cause": "import_running", "link": "/settings/import", "import": import });
+    assert_eq!(st["import_running"], json!(true), "{st}");
+    assert!(st["fixes"].as_array().unwrap().contains(&fix), "{st}");
+    let r = c.request("DELETE", &format!("/api/v1/imports/{}", import.as_str().unwrap()), None).await;
+    assert!(r.status < 300, "{}", r.text());
+    let st = c.get("/api/v1/setup/status").await.json();
+    assert_eq!(st["import_running"], json!(false), "{st}");
+    assert!(st["fixes"].as_array().unwrap().iter().all(|f| f["cause"] != json!("import_running")), "{st}");
 
     // the audit log says which key went to which car and which token was made or revoked (by id and car), not just
     // the route: moving a key redirects whose history a car's signed logs count for

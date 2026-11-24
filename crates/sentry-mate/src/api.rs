@@ -349,11 +349,21 @@ async fn setup_status(State(app): State<AppState>, v: Viewer, p: Params) -> ApiR
     let (access, admin) = (v.cars().clone(), v.is_admin());
     // the Tesla accounts are for admins only (a watch account gets null)
     let tesla = admin.then(|| web::resources::tesla::account_count(&app));
+    // an import that is not finished: its cars are still to come
+    let import = web::resources::imports::unfinished(&app).await;
     answer(&app, &p, "setup-status", move |e| {
         let st = q::keys::setup_status(e, &visible(e, &access, &CarsParam(None))?, admin)?;
         let mut v = serde_json::to_value(st).unwrap_or(serde_json::Value::Null);
         if let serde_json::Value::Object(m) = &mut v {
             m.insert("tesla_accounts".into(), serde_json::json!(tesla));
+            if let Some(id) = import {
+                m.insert("import_running".into(), serde_json::json!(true));
+                if let Some(serde_json::Value::Array(fixes)) = m.get_mut("fixes") {
+                    fixes.push(
+                        serde_json::json!({ "cause": "import_running", "link": "/settings/import", "import": id }),
+                    );
+                }
+            }
         }
         Ok(v)
     })
