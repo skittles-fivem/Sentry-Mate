@@ -144,6 +144,7 @@ export async function mount(ctx) {
     // "All" has no start: the charts start where the data does
     dataStart = temps.daily?.[0]?.t_ms ?? null;
     fromMs = period.from_ms ?? (dataStart ?? (eff.from_ms || now() - 30 * DAY)); toMs = Math.min(eff.to_ms ?? period.to_ms ?? now(), now());
+    if (toMs <= fromMs) toMs = Math.max(eff.to_ms ?? period.to_ms ?? 0, fromMs + 1); // a period still to come keeps its own end
     span = Math.max(1, toMs - fromMs);
     paintTempSummary();
     const picker = paintCarsPicker();
