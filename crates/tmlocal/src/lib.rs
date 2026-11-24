@@ -731,6 +731,8 @@ impl<S: Sink> Service<S> {
             return Err(ServiceError::Stale);
         }
         let changing: Vec<&str> = matches.iter().map(|(t, _)| t.as_str()).collect();
+        let before: Vec<(String, Option<Match>)> =
+            c.cars.iter().map(|k| (k.teslamate_car.clone(), k.matched)).collect();
         let mut taken: Vec<CarId> = c
             .cars
             .iter()
@@ -755,6 +757,22 @@ impl<S: Sink> Service<S> {
                 }
             }
         })?;
+        // a TeslaMate car matched to another car here is caught up again from its start: its catch-up mark was of
+        // the car it was matched to before, and the newly matched car has none of its history yet (the import skips
+        // what is stored already)
+        let moved: Vec<i64> = matches
+            .iter()
+            .filter(|(t, m)| before.iter().any(|(bt, bm)| bt == t && bm != m))
+            .filter_map(|(t, _)| t.parse().ok())
+            .collect();
+        if !moved.is_empty() {
+            let mut cursor = self.inner.store.cursor()?;
+            let had = cursor.cars.len();
+            cursor.cars.retain(|id, _| !moved.contains(id));
+            if cursor.cars.len() != had {
+                self.inner.store.set_cursor(&cursor)?;
+            }
+        }
         self.inner.sink.changed(&self.status());
         Ok(c)
     }
