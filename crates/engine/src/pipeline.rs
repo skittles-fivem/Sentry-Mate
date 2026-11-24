@@ -1256,10 +1256,11 @@ impl Engine {
         // to the last settled point, and in a rebuild on to the car's newest data: far more than a log)
         //
         // Only where it gives the very timeline that a rebuild after every log gives: nothing of the timeline is
-        // stored yet at or after the first of these logs (a first start over a full store, a car rebuilt whole),
-        // and the car has no API input. Where logs fill a gap before rows that are there, a drive or charge keeps
-        // the id of the piece of it that was there first, and which piece that is depends on the windows rebuilt
-        // on the way: there every log's window is rebuilt as before. The same beside an API's samples: a rebuild
+        // stored yet at or after the first of these logs (a first start over a full store, a car rebuilt whole, a
+        // period rebuilt whose end no drive or charge went on across: see `in_period`), and the car has no API
+        // input. Where logs fill a gap before rows that are there, a drive or charge keeps the id of the piece of
+        // it that was there first, and which piece that is depends on the windows rebuilt on the way: there every
+        // log's window is rebuilt as before. The same beside an API's samples: a rebuild
         // builds rows from them ahead of the logs, and five made-up days with TeslaFi's API and local TeslaMate
         // gave a drive another id when rebuilt per run (crates/sentry-mate/src/window_batch.rs).
         let mut batch = self.inner.opts.window_batch.max(1);
@@ -1267,13 +1268,28 @@ impl Engine {
             let first = wanted.first().and_then(|(_, name, _)| records::name_start_ms(name));
             let meta = records::meta(db, car)?;
             let apis = !(meta.api_days.is_empty() && meta.teslafi_days.is_empty() && meta.tmlocal_days.is_empty());
-            let ahead = match first {
+            // A rebuild of a period: its window was cleared, so nothing worked out from logs is stored in it. Where
+            // every log wanted lies in it, only what is stored between the first of them and the period's end
+            // counts: the rows after it are kept, and the windows that reach them are rebuilt either way. Not where
+            // a drive or charge went on across the period's end: its part after the end is still there, the
+            // windows on the way make a drive or charge of it, and the whole one rebuilt keeps the id of whichever
+            // piece was stored first, which depends on those windows (two made-up periods gave a charge, and a
+            // drive, another id per run; crates/sentry-mate/src/window_batch.rs).
+            let in_period = records::rebuild_mark(db, car)?.filter(|m| {
+                m.cleared
+                    && m.end_clear
+                    && (m.from_ms, m.to_ms) != (0, u64::MAX)
+                    && wanted
+                        .iter()
+                        .all(|(_, n, _)| records::name_start_ms(n).is_some_and(|s| s >= m.from_ms && s < m.to_ms))
+            });
+            let ahead = match (first, in_period) {
                 // A full rebuild carried on after a restart: its shadow started empty of everything worked out
                 // from logs, so what is stored there at or after these logs (a state that goes on past the last
                 // log done, say) is only what the logs it decoded before gave, all of them older than these. An
                 // uninterrupted one stands the same at that point, between two runs of logs, and goes on per run:
                 // so does this (crates/sentry-mate/src/window_batch.rs cuts one twice and compares everything).
-                Some(t) if job.is_some_and(|j| j.full) && skipped > 0 => {
+                (Some(t), _) if job.is_some_and(|j| j.full) && skipped > 0 => {
                     let mut later = false;
                     for d in meta.days.range(records::day_of(t)..) {
                         let rec = records::day_shared(db, car, *d)?;
@@ -1284,13 +1300,26 @@ impl Engine {
                     }
                     later
                 }
-                Some(t) => {
+                // A rebuild of a period (see `in_period`): what starts between the first of its logs and its end.
+                // A row that starts before them and goes on into the period (the state, drive or charge its start
+                // cut) is kept and rebuilt the same either way.
+                (Some(t), Some(m)) => {
+                    fn starts<T: db::Item>(db: &db::Db, car: CarId, t: u64, to: u64) -> Result<bool> {
+                        // (rows that overlap, at most one of them begun before `t`: two tell)
+                        let q = db::Query { limit: 2, source: Some(Source::Live), ..db::Query::between(t, to) };
+                        Ok(db.list::<T>(car, &q)?.items.iter().any(|r| r.start_ms() >= t))
+                    }
+                    starts::<StateRow>(db, car, t, m.to_ms)?
+                        || starts::<Drive>(db, car, t, m.to_ms)?
+                        || starts::<Charge>(db, car, t, m.to_ms)?
+                }
+                (Some(t), None) => {
                     let q = db::Query { limit: 1, source: Some(Source::Live), ..db::Query::between(t, u64::MAX) };
                     !(db.list::<StateRow>(car, &q)?.items.is_empty()
                         && db.list::<Drive>(car, &q)?.items.is_empty()
                         && db.list::<Charge>(car, &q)?.items.is_empty())
                 }
-                None => true,
+                (None, _) => true,
             };
             if apis || ahead {
                 batch = 1;
@@ -1380,6 +1409,7 @@ impl Engine {
             {
                 m.from_ms = m.from_ms.min(from_ms);
                 m.to_ms = m.to_ms.max(to_ms);
+                m.end_clear = false;
                 records::put_rebuild_mark(db, car, Some(&m))?;
             }
         }

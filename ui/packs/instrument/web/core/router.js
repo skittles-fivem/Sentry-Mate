@@ -22,7 +22,8 @@
 import * as api from '../shared/api.js';
 import * as state from '../shared/state.js';
 import { loadPage, reloadPage, isPageFailed } from '../shared/build.js';
-import { h, replace, holdScroll, ready as markReady, failed as markFailed, unready, setTitle as docTitle, on } from '../shared/dom.js';
+import { scrolling, afterScroll, SCROLL_REST_MS } from './stage.js';
+import { h, replace, holdScroll, builtWith, ready as markReady, failed as markFailed, unready, setTitle as docTitle, on } from '../shared/dom.js';
 import { resolvePeriod, periodParams } from '../shared/time.js';
 import { pageInfo } from './pages.js';
 import * as frame from './frame.js';
@@ -74,7 +75,7 @@ export function startRouter() {
 async function warm(s) {
   const id = s.page;
   const info = pageInfo(id);
-  if (!info || BARE.has(id)) return;
+  if (!info || BARE.has(id) || getMe()?.two_step_setup_only) return; // (behind the wall nothing is read ahead)
   const modP = pageModule(id);
   // a file that fails while the car is still being read is not an error nobody handles: whoever warms waits for
   // modP below and takes its failure there (and the page itself loads the file again, see mount())
@@ -160,12 +161,13 @@ function controlKeys(root) {
     return [el, `${k}|${n}`];
   });
 }
+// (what the page built a control with is what h() set, builtWith; the markup's defaults for a control it left alone)
 function changedByReader(el) {
   if (el.type === 'file' || el.type === 'password' && !el.value) return false;
-  if (el.tagName === 'SELECT') return [...el.options].some((o) => o.selected !== o.defaultSelected);
-  if (el.type === 'checkbox' || el.type === 'radio') return el.checked !== el.defaultChecked;
+  if (el.tagName === 'SELECT') return [...el.options].some((o) => o.selected !== (builtWith(o, 'selected') ?? o.defaultSelected));
+  if (el.type === 'checkbox' || el.type === 'radio') return el.checked !== (builtWith(el, 'checked') ?? el.defaultChecked);
   if (el.type === 'hidden' || el.type === 'button' || el.type === 'submit') return false;
-  return el.value !== el.defaultValue;
+  return el.value !== (builtWith(el, 'value') ?? el.defaultValue);
 }
 function readerChanges(view) {
   const active = document.activeElement;
@@ -216,6 +218,8 @@ function stageView(view, finishOld) {
   const end = () => { done = true; clearTimeout(maxT); clearTimeout(quietT); mo?.disconnect(); stage.remove(); if (staged?.stage === stage) staged = null; };
   function commit() {
     if (done) return;
+    // while the page scrolls the swap waits for the scroll to rest: the new page puts its maps and charts on screen in one task
+    if (scrolling()) { clearTimeout(quietT); quietT = setTimeout(commit, SCROLL_REST_MS); return; }
     const nodes = [...stage.childNodes];
     end();
     // what the reader typed or chose in the page on screen is put into the same controls of the new page
@@ -310,6 +314,8 @@ const dropCss = pageSheetsOff;
 // wall: the account may only set two-step sign-in up (core/session.js gate): its page is shown at every address
 async function mount(s, { keepScroll = false, live = false, wall = false } = {}) {
   const my = ++seq;
+  // the wall page is no car's and no period's: it loads nothing of the address it stands at
+  if (wall) s = { ...s, car: null, period: null };
   // (the clean-up of what was there is handed to the stage alone: this page's own functions must not hold it)
   let finishOld = both(dropStage(live), unmountCurrent(live));
   if (!live) { unready(); setStale(false); forgetSorts(); }
@@ -499,7 +505,8 @@ async function mount(s, { keepScroll = false, live = false, wall = false } = {})
       }
       frame.view().removeAttribute('aria-busy');
       // otherwise at the next frame (the page's own code after ready() and the router's are done by then)
-      if (!first) requestAnimationFrame(() => settle(false));
+      // (a page built again while the page on screen scrolls: its snap, a run over the whole page, waits for the scroll to rest)
+      if (!first) requestAnimationFrame(() => afterScroll(() => settle(false)));
     },
     fail(err, opts = {}) {
       if (api.isAbort(err) || !alive()) return;
@@ -549,7 +556,7 @@ async function mount(s, { keepScroll = false, live = false, wall = false } = {})
   // a page that never calls ready(): snapped all the same, a moment after its mount (a page that does is snapped
   // once, at ready: its mount often returns before its data is in, and every part it draws after would otherwise
   // start a whole-page snap of its own)
-  setTimeout(rec.release, 2000);
+  setTimeout(() => afterScroll(rec.release), 2000);
   if (live) { showPending(); return; }
   if (!keepScroll) {
     toTop();

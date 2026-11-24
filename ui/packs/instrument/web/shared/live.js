@@ -42,6 +42,8 @@ export const carOf = (car) => (d) => !!d && d.car === car;
  *   load     () -> Promise of the value, read from its endpoint (optional: an event-only figure)
  *   onValue  (value, how) -> paints it; how is 'load' or 'event'
  *   onError  (err) -> a read failed (the last value stays)
+ *   overtaken (read, eventValue) -> the value to show when an event came in while a read was under way (default: the
+ *            read is dropped, the event is the newer word); for a figure whose events carry less than its endpoint
  *   pollMs   ms, or (lastValue) -> ms | null (null: no fallback read for now), while the stream is down
  *   onLive   (live: boolean) -> the stream went up or down (a page can show it)
  *   initial  the value as the page has just read it (with load): no read at the start, only the later ones
@@ -83,7 +85,13 @@ export function follow(api, opts = {}) {
       try {
         const began = applied;
         const v = await load();
-        if (!stopped && began === applied) give(v, 'load');
+        if (!stopped) {
+          if (began === applied) give(v, 'load');
+          // an event came in while the read was under way: it is the newer word on what it carries, but it may carry
+          // less than the endpoint (a storage detail has its categories only there): with `overtaken` the read is
+          // kept, with the event's value put over it
+          else if (opts.overtaken) give(opts.overtaken(v, value), 'load');
+        }
       } catch (e) {
         if (!stopped && e?.name !== 'AbortError') onError?.(e);
       }

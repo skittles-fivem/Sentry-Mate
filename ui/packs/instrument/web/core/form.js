@@ -5,6 +5,7 @@
 
 import { h, replace } from '../shared/dom.js';
 import { icon } from './icons.js';
+import { dialogBusy } from './dialog.js';
 
 // field ids: numbered from 0 again for each page build (the router calls fieldIdsFromStart), so a page built
 // again on a live refresh gives its fields the same ids, and the page swapped in looks the same as the one it
@@ -14,7 +15,7 @@ export function fieldIdsFromStart() { uid = 0; }
 
 /**
  * field({ label, name, type, value, hint, required, options: [[value, label]], attrs, path })
- *   -> { el, input, name, path, setError(text | null), value() }
+ *   -> { el, input, name, path, setError(text | null), error(), reset(), value() }
  * type: text | password | number | email | date | time | select | checkbox | textarea. path: the API
  * field path for error messages (defaults to name).
  */
@@ -43,7 +44,10 @@ export function field({ label, name, type = 'text', value = null, hint = null, r
   };
   input.addEventListener('input', () => setError(null));
   const read = () => (type === 'checkbox' ? input.checked : type === 'number' ? (input.value === '' ? null : Number(input.value)) : input.value);
-  return { el, input, name, path: path || name, setError, value: read };
+  // the value the field was built with (the saved one): a save that failed puts it back
+  const first = type === 'checkbox' ? !!value : String(value ?? '');
+  const reset = () => { if (type === 'checkbox') input.checked = first; else input.value = first; };
+  return { el, input, name, path: path || name, setError, error: () => (err.hidden ? null : err.textContent.trim() || null), reset, value: read };
 }
 
 /**
@@ -66,6 +70,7 @@ export function form({ fields, submit = 'Save', onSubmit, extra = null, cls = nu
     busy(on) {
       if (on) held = document.activeElement === btn;
       btn.disabled = !!on; btn.setAttribute('aria-busy', on ? 'true' : 'false');
+      dialogBusy(btn, on);   // in a dialog: it cannot be closed while the request runs
       if (on || !held) return;
       held = false;
       const a = document.activeElement;
@@ -105,4 +110,21 @@ export function showApiError(f, err) {
   if (!placed || rest.length) f.setMessage(rest.length ? rest.map(([k, v]) => `${k}: ${v}`).join(' ') : (err?.message || 'That did not work. Try again.'));
   const first = f.fields.find((x) => x.input.getAttribute('aria-invalid') === 'true');
   first?.input.focus();
+}
+
+/**
+ * An onclick for a button that starts one thing at a time: a press while the last one is still running does
+ * nothing (a double click makes one token, sends one save). The button shows it with aria-disabled (it keeps the
+ * focus; a disabled button would lose it).
+ *   h('button', { onclick: once(async () => { await api.post(...); }) }, 'Make')
+ */
+export function once(fn) {
+  let running = false;
+  return async (e) => {
+    if (running) return undefined;
+    running = true;
+    const b = e?.currentTarget instanceof HTMLElement ? e.currentTarget : null;
+    b?.setAttribute('aria-disabled', 'true');
+    try { return await fn(e); } finally { running = false; b?.removeAttribute('aria-disabled'); }
+  };
 }

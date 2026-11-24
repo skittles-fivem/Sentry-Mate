@@ -11,6 +11,16 @@
 
 import { h, keepFocus } from '../shared/dom.js';
 
+// The page on screen is being scrolled, or was a moment ago. A part of a page, or a page, built again by a live update puts
+// its work (the swap with its maps and charts drawn in one task, the snap over the page) off until the scroll has rested:
+// such a task takes over a frame on a big screen. The wait is a little longer than one pause of the wheel.
+export const SCROLL_REST_MS = 500;
+let scrolledAt = -Infinity;
+document.addEventListener('scroll', () => { scrolledAt = performance.now(); }, { capture: true, passive: true });
+export const scrolling = () => performance.now() - scrolledAt < SCROLL_REST_MS;
+/** f runs once the page has rested from scrolling (at once when it is not scrolling). */
+export function afterScroll(f) { const left = SCROLL_REST_MS - (performance.now() - scrolledAt); if (left > 0) setTimeout(() => afterScroll(f), left + 20); else f(); }
+
 function shell(slot) {
   const chain = [];
   for (let e = slot.parentElement; e && e !== document.body && e !== document.documentElement; e = e.parentElement) chain.unshift(e);
@@ -51,6 +61,7 @@ export async function offstage(slot, build) {
   try {
     return await build(box);
   } finally {
+    await new Promise(afterScroll); // (while the page scrolls the swap waits: it is one task of snap, layout and drawing)
     if (slot.isConnected) {
       // the charts of the part that goes are taken down with it (core/chart.js keeps each on its box): left up,
       // each would keep its listeners, its observer and its whole drawing until the page is left

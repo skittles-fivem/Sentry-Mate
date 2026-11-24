@@ -729,6 +729,9 @@ impl<T: Tesla, S: Sink, St: Streamer> Poller<T, S, St> {
             for c in &mut self.cars {
                 earlier(&mut c.next_data_ms);
                 earlier(&mut c.quiet_until_ms);
+                if let Some(t) = &mut c.idle_since_ms {
+                    earlier(t);
+                }
                 c.last_seen = None;
             }
         }

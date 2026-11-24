@@ -108,7 +108,7 @@ answers can come first the same way.
 | `link(page, params)` | A link that carries the car and period (`state.linkTo`). |
 | `setQuery(patch)` | Puts filters in the address (`null` removes one) without rebuilding the page. |
 | `navigate(href)`, `reload()` | Go somewhere; build this page again (keeps the scroll). |
-| `refresh()` | Live data changed (a `rows` event): build the page again off screen, in an invisible box of the view's size, and swap it in whole once it is ready, drawn and its requests are done. The page on screen stays until then, so nothing goes away, shows a skeleton and comes back. Asked before the first `ready()`, it waits for it. |
+| `refresh()` | Live data changed (a `rows` event): build the page again off screen, in an invisible box of the view's size, and swap it in whole once it is ready, drawn and its requests are done. The page on screen stays until then, so nothing goes away, shows a skeleton and comes back. While the page on screen is scrolled (and for half a second after) its snap and the swap wait: a new page puts its maps and charts on screen in one task, longer than a frame on a big screen. Asked before the first `ready()`, it waits for it. |
 | `#id` in a link | After the page mounts, the router scrolls to the element with that id in the view (below the top bar): `/cars/c1/charges?…#habits`. Give a section an `id` for links to land on it. |
 
 Live data: `ctx.events('now', (ev) => ...)` gets `now` deltas (`ev.data = { car, now }`, merge field by field);
@@ -119,7 +119,7 @@ and nothing may show up, go away and come back, on first load or while live data
 only after every section has its data and its charts (load uPlot with the data, not after ready); on a `rows` event
 reload tables (`t.reload()` keeps the rows on screen until the new ones are in) or call `ctx.refresh()`, never
 paint skeletons or "loading" again; a part with charts that is drawn again uses `offstage(slot, build)`
-(`core/stage.js`), which builds it off screen and swaps it in at once; reserve the space of text that arrives later.
+(`core/stage.js`), which builds it off screen and swaps it in at once (once the page has rested from a scroll: while it scrolls, the swap waits); reserve the space of text that arrives later.
 Never poll on a timer for data.
 
 Below the fold: `mountPlot` builds a chart and `createMap(el, ctx, { lazy: true })` makes a map (and loads MapLibre) only when its box comes
@@ -405,6 +405,8 @@ Pages are checked with `node ui/tools/check.js --pixel` (see `ui/tools/README.md
   A long list (`shared/vlist.js`) is snapped once its scroll rests (150 ms without a change): the rows that
   come into and go out of its window, and its table's height, which changes as the window moves over rows of
   other heights (a run over the whole page for each such change took most of every frame of a scroll).
+  What a page or a part of one draws off screen (`view-stage` of a live refresh, `data-offstage` of `offstage()`) is
+  not snapped there, only once it is swapped in: each change inside the box was a run over the whole page.
 - Mark a box the snap must leave alone with `data-nosnap` (maps and charts are left alone already).
 - A box that sits in a line of text (an inline-flex pill or button) is a source of half pixels: in a table cell
   give it `vertical-align: top` or make it a block; in a flex row with `align-items: baseline`, let the words

@@ -30,7 +30,7 @@ class Robust(ServerCase):
                "charge": charges[0]["id"] if charges else "9007199254740993", "place": "p1",
                "session": "s-older-1", "account": "a2", "token": "t12", "key": "cbk_5b2e9f13", "trip": "tr1",
                "rule": "r1", "import": "im1", "update": "1", "export": "ex1", "tesla_account": "ta1",
-               "sign_in": "si0", "teslafi_account": "fa1", "z": "13", "x": "1310", "y": "3166",
+               "sign_in": "si0", "teslafi_account": "fa1", "pack": "instrument", "z": "13", "x": "1310", "y": "3166",
                "invoice": "tesla-1000101"}
         out = set()
         for r in rows:

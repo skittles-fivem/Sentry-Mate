@@ -262,6 +262,15 @@ impl Store {
         self.write(&f, false)
     }
 
+    /// Saves the poller's pacing as it is, the last request too (after the server's clock was set back: the
+    /// later request written before is in the clock's future).
+    pub fn set_pacing_exact(&self, id: &str, pacing: &Pacing) -> Result<(), StoreError> {
+        let _g = self.inner.lock.lock().unwrap_or_else(|p| p.into_inner());
+        let mut f = self.read(id)?;
+        f.pacing = pacing.clone();
+        self.write(&f, false)
+    }
+
     pub fn get(&self, id: &str) -> Result<Account, StoreError> {
         Ok(self.read(id)?.account)
     }

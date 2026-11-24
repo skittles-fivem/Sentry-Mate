@@ -1792,11 +1792,20 @@ th[aria-sort="ascending"] .tbl-sort .ico { transform: rotate(180deg); }
   html, body, .app { background: #fff !important; color: #000; }
   #sidebar, #topbar, #dock, #notices, #flash, .skip, .tbl-foot, .tbl-csv { display: none !important; }
   .app { display: block; }
-  .main { display: block; padding: 0 !important; }
-  #view { overflow: visible; max-width: none; }
+  .app > .main { display: block; padding: 0 !important; }
+  #view { overflow: visible; max-width: none; min-height: 0; }
   .tbl-scroll, .scroll-box, .vl-box, .scroll-box--fit { overflow: visible !important; height: auto !important; max-height: none !important; -webkit-mask-image: none; mask-image: none; }
-  .tbl { width: 100%; table-layout: auto; }
-  .tbl th, .tbl td { white-space: normal !important; overflow: visible !important; text-overflow: clip !important; }
+  /* a wide table is made to fit the paper: a smaller type, tighter cells, headings and cells that wrap (a long word
+     breaks), and nothing inside a cell that holds its width */
+  .tbl { width: 100% !important; max-width: 100%; table-layout: auto; font-size: 0.6875rem; }
+  .tbl th, .tbl td { white-space: normal !important; overflow: visible !important; text-overflow: clip !important; overflow-wrap: break-word; min-width: 0 !important; max-width: none !important; width: auto !important; height: auto !important; padding: 0.25rem 0.3rem !important; letter-spacing: 0; font-size: 0.625rem; }
+  .tbl th { position: static !important; box-sizing: border-box; font-size: 0.5rem; }
+  .tbl td { overflow-wrap: anywhere; }
+  .tbl th .tbl-sort { font-size: inherit; padding: 0 !important; gap: 0.15rem; }
+  .tbl th .ico { display: none; }
+  .tbl :is(th, td) * { white-space: normal !important; min-width: 0 !important; max-width: 100% !important; overflow-wrap: break-word; }
+  .tbl :is(th, td) svg { max-width: 1rem !important; }
+  .tbl-panel, .tbl-scroll { max-width: 100%; }
   .tbl .main, .vl-table .main, .vl-table .sub { white-space: normal; overflow: visible; text-overflow: clip; }
   .scroll-box .tbl thead th { position: static; }
   .panel, .tbl tr { break-inside: avoid; }
