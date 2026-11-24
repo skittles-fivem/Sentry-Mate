@@ -148,8 +148,8 @@ fn smo_offline_mid_drive_the_api_fills_the_gap() {
     assert_eq!(t.drives.len(), 1, "one drive across the gap: {:?}", t.drives);
     let d = &t.drives[0];
     assert_eq!(d.inputs, Inputs::BOTH);
-    // (to the last API sample in D: 2070 s)
-    assert_eq!(((d.start_ms - T0) / 1000, (d.end_ms - T0) / 1000), (120, 2071));
+    // (to the first API sample that sees it parked: 2100 s)
+    assert_eq!(((d.start_ms - T0) / 1000, (d.end_ms - T0) / 1000), (120, 2100));
     assert!((d.distance_km.unwrap() - 33.0).abs() < 0.6, "{:?}", d.distance_km);
     // the states: SMO's while it recorded, the API's after
     let gap: Vec<_> = t.states.iter().filter(|s| s.start_ms >= T0 + 600_000).collect();

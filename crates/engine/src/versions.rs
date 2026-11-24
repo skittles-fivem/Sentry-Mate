@@ -97,6 +97,13 @@ pub const BUMPS: &[Bump] = &[
         proof_file: "crates/timeline/tests/energy.rs",
     },
     Bump {
+        part: Part::Rules,
+        version: 5,
+        what: "drives and charges are worked out differently: a drive an API read runs up to where it parked, a bad last odometer reading or a stop between sparse fixes sets no distance, and a few seconds of charging are no charge",
+        proof: "api_only_drive_keeps_its_last_leg",
+        proof_file: "crates/timeline/tests/drive_and_charge_edges.rs",
+    },
+    Bump {
         part: Part::Trust,
         version: 2,
         what: "a break in a log chain fails only the log that breaks it",

@@ -246,14 +246,25 @@ pub fn drop_bad_fixes(s: &mut [Sample], max_kmh: f64) -> u64 {
 /// position at the start), so the track goes on from them.
 const REANCHOR_AFTER: usize = 3;
 
+/// A step to a fix where the car says it stands is left out when it is at most this long (ms): the fix wanders at a
+/// stop. A longer one (fixes far apart) was mostly driven before the car stopped, and is left out only when the car
+/// stood at both ends.
+const STANDING_STEP_MS: u64 = 5_000;
+
+fn standing(s: &Sample) -> bool {
+    s.speed_kmh.is_some_and(|v| v.abs() <= 0.5)
+}
+
 /// The length of the GPS track, km: steps between fixes, leaving out jumps faster than `max_kmh` (a bad fix) and
-/// steps while the car says it is standing (the fix wanders at a stop). `None` with fewer than two fixes.
+/// steps while the car says it is standing (the fix wanders at a stop; [`STANDING_STEP_MS`]). `None` with fewer than
+/// two fixes.
 pub(crate) fn gps_km(s: &[&Sample], max_kmh: f64) -> Option<f64> {
     let plausible = |a: (f64, f64, u64), b: (f64, f64, u64)| {
         let hours = b.2.saturating_sub(a.2).max(1) as f64 / 3_600_000.0;
         haversine_km((a.0, a.1), (b.0, b.1)) / hours <= max_kmh
     };
     let mut last: Option<(f64, f64, u64)> = None;
+    let mut last_standing = false;
     // fixes left out since the last good one, as (the newest, how many in a row agree with each other)
     let mut left_out: Option<((f64, f64, u64), usize)> = None;
     let mut total = 0.0;
@@ -272,17 +283,20 @@ pub(crate) fn gps_km(s: &[&Sample], max_kmh: f64) -> Option<f64> {
                 left_out = Some((here, run));
                 if run >= REANCHOR_AFTER {
                     last = Some(here);
+                    last_standing = standing(x);
                     left_out = None;
                 }
                 continue;
             }
             left_out = None;
-            if x.speed_kmh.is_none_or(|v| v.abs() > 0.5) {
+            let short = x.t_ms.saturating_sub(t) <= STANDING_STEP_MS;
+            if !standing(x) || !(short || last_standing) {
                 total += d;
             }
             steps += 1;
         }
         last = Some((lat, lon, x.t_ms));
+        last_standing = standing(x);
     }
     (steps > 0).then_some(total)
 }
