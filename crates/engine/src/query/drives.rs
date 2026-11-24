@@ -640,14 +640,26 @@ fn hill_corrected(v: &mut DriveView, d: &Drive, rated: Option<f64>, mass_kg: Opt
     v.efficiency_pct = r(rated.zip(v.wh_per_km).map(|(rated, w)| rated / w * 100.0), 1);
 }
 
-/// The drives list's sort key.
-fn sort_key(sort: &str, v: &DriveView) -> (f64, String) {
+/// Whether a drive has a consumption the pages show: not one still under way, under 1 km, or with a gap over 60 s in
+/// its data (the pages show "—" for those).
+fn has_figure(v: &DriveView) -> bool {
+    v.wh_per_km.is_some()
+        && !v.flags.in_progress
+        && v.distance_km.is_some_and(|km| km >= 1.0)
+        && v.flags.gap_ms <= 60_000
+}
+
+/// The drives list's sort key. By consumption, a drive without a figure goes last in either direction (the lowest key
+/// going down, the highest going up).
+fn sort_key(sort: &str, v: &DriveView, desc: bool) -> (f64, String) {
     let n = |x: Option<f64>| x.unwrap_or(f64::NEG_INFINITY);
+    let figure =
+        || v.wh_per_km.filter(|_| has_figure(v)).unwrap_or(if desc { f64::NEG_INFINITY } else { f64::INFINITY });
     let k = match sort {
         "distance" => n(v.distance_km),
         "duration" => v.duration_ms as f64,
         "energy" => n(v.energy_kwh),
-        "wh_per_km" => n(v.wh_per_km),
+        "wh_per_km" => figure(),
         "speed_max" => n(v.speed_max_kph),
         _ => v.start_ms as f64,
     };
@@ -689,7 +701,7 @@ fn pass(
         }
         if f.keeps(&v) {
             sum.add(&v);
-            take(sort_key(sort, &v), v);
+            take(sort_key(sort, &v, desc), v);
         }
         Ok(true)
     })?;
