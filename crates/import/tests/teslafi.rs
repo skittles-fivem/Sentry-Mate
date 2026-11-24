@@ -664,3 +664,295 @@ fn rows_without_a_vin_whose_odometer_jumps_need_a_car() {
     assert_eq!(s.drives_of(1).len(), 2);
     assert!(s.drives.values().all(|d| d.start_odometer_km.is_none_or(|o| o < 30_000.0)));
 }
+
+/// A row of `csv` (line `n`, the header is 0) with the start of its date swapped.
+fn redate(csv: &str, n: usize, from: &str, to: &str) -> String {
+    let mut lines: Vec<String> = csv.lines().map(str::to_string).collect();
+    assert!(lines[n].contains(from), "{}", lines[n]);
+    lines[n] = lines[n].replacen(from, to, 1);
+    lines.join("\r\n") + "\r\n"
+}
+
+#[test]
+fn one_row_with_a_wrong_date_is_passed_over_alone() {
+    let mut g = Gen::new(VIN1);
+    let march = month(&mut g, 2023, 3);
+    let april = month(&mut g, 2023, 4);
+    let rows = march.lines().count() as u64 - 1;
+    for wrong in ["2033-03-01", "2023-03-19", "2024-03-01", "1999-03-01"] {
+        let bad = redate(&march, 100, "2023-03-01", wrong);
+        let mut s = Store::new(&[(VIN1, 7)]);
+        let r = run(&mut s, bad.as_bytes(), &Options::default());
+        assert_eq!((r.rows_read, r.rows_used), (rows, rows - 1), "{wrong}: {:?}", r.rows_skipped);
+        assert_eq!(r.rows_skipped.get("bad_time"), Some(&1), "{wrong}: {:?}", r.rows_skipped);
+        // what is remembered as imported is the month, not the time up to the wrong date
+        assert_eq!(r.last_ms, Some(utc("2023-03-31 23:30:00")), "{wrong}");
+        let pieces = &s.states[&7].teslafi.as_ref().unwrap().pieces;
+        assert_eq!(pieces.len(), 1, "{wrong}");
+        assert_eq!(
+            (pieces[0].first_ms, pieces[0].last_ms),
+            (utc("2023-03-01 00:00:00"), utc("2023-03-31 23:30:00")),
+            "{wrong}"
+        );
+        // so the next month comes in whole, and the right file adds the one row
+        let r = run(&mut s, april.as_bytes(), &Options::default());
+        assert_eq!(r.rows_used, r.rows_read, "{wrong}: {:?}", r.rows_skipped);
+    }
+    // the first row and the last row of a file as well
+    let first = redate(&march, 1, "2023-03-01", "2024-03-01");
+    let mut s = Store::new(&[(VIN1, 7)]);
+    let r = run(&mut s, first.as_bytes(), &Options::default());
+    assert_eq!((r.rows_used, r.rows_skipped.get("bad_time")), (rows - 1, Some(&1)), "{:?}", r.rows_skipped);
+    let last = redate(&march, rows as usize, "2023-03-31", "2023-08-31");
+    let mut s = Store::new(&[(VIN1, 7)]);
+    let r = run(&mut s, last.as_bytes(), &Options::default());
+    assert_eq!((r.rows_used, r.rows_skipped.get("bad_time")), (rows - 1, Some(&1)), "{:?}", r.rows_skipped);
+    assert_eq!(r.last_ms, Some(utc("2023-03-31 23:00:00")));
+    // a date after today is never right
+    let now = utc("2023-03-20 00:00:00");
+    let mut s = Store::new(&[(VIN1, 7)]);
+    let r = run(&mut s, march.as_bytes(), &Options { now_ms: Some(now), ..Options::default() });
+    assert!(r.rows_used > 0 && r.rows_skipped.get("bad_time").is_some_and(|n| *n > 0), "{:?}", r.rows_skipped);
+    assert!(r.last_ms.unwrap() <= now + 86_400_000);
+}
+
+#[test]
+fn a_real_gap_in_a_file_is_not_a_wrong_date() {
+    // the car out of reach for ten days, then one poll at the month's end
+    let mut g = Gen::new(VIN1);
+    for d in 1..=5 {
+        g.day(NaiveDate::from_ymd_opt(2023, 3, d).unwrap());
+    }
+    for d in 15..=20 {
+        g.day(NaiveDate::from_ymd_opt(2023, 3, d).unwrap());
+    }
+    g.poll(local("2023-03-31 23:30:00"), Doing::Asleep);
+    let csv = g.csv();
+    let rows = csv.lines().count() as u64 - 1;
+    let mut s = Store::new(&[(VIN1, 7)]);
+    let r = run(&mut s, csv.as_bytes(), &Options::default());
+    assert_eq!((r.rows_read, r.rows_used), (rows, rows), "{:?}", r.rows_skipped);
+    assert_eq!(r.last_ms, Some(utc("2023-03-31 23:30:00")));
+    assert_eq!(s.states[&7].teslafi.as_ref().unwrap().pieces.len(), 1);
+    // and a file of one row is that row
+    let mut g = Gen::new(VIN1);
+    g.poll(local("2023-05-01 10:00:00"), Doing::Asleep);
+    let r = run(&mut s, g.csv().as_bytes(), &Options::default());
+    assert_eq!((r.rows_read, r.rows_used), (1, 1));
+}
+
+#[test]
+fn a_date_before_1970_is_a_bad_time() {
+    let mut g = Gen::new(VIN1);
+    g.day(NaiveDate::from_ymd_opt(2023, 3, 1).unwrap());
+    let csv = g.csv();
+    let rows = csv.lines().count() as u64 - 1;
+    // a null time as PHP prints it west of Greenwich, and one east of it
+    for (zone, wrong) in [("America/New_York", "1969-12-31 19:00:00"), ("Europe/Berlin", "1970-01-01 00:30:00")] {
+        let bad = csv.replacen("2023-03-01 00:00:00", wrong, 1);
+        let mut s = Store::new(&[(VIN1, 7)]);
+        let o = Options { time_zone: Some(zone.into()), ..Options::default() };
+        let r = run(&mut s, bad.as_bytes(), &o);
+        assert_eq!(r.rows_skipped.get("bad_time"), Some(&1), "{zone}: {:?}", r.rows_skipped);
+        assert_eq!(r.rows_used, rows - 1, "{zone}");
+        assert!(r.first_ms.unwrap() > utc("2023-02-28 00:00:00"), "{zone}: {:?}", r.first_ms);
+        assert!(s.states[&7].teslafi.as_ref().unwrap().pieces[0].first_ms > utc("2023-02-28 00:00:00"));
+    }
+    assert_eq!(teslafi::feed::local_ms("1969-12-31 19:00:00", "America/New_York".parse().unwrap()), None);
+    assert!(teslafi::feed::local_ms("2023-03-01 00:00:00", "America/New_York".parse().unwrap()).is_some());
+}
+
+#[test]
+fn many_rows_out_of_order_are_said() {
+    // a file whose second half comes first: the first half is earlier than what was read
+    let mut g = Gen::new(VIN1);
+    g.day(NaiveDate::from_ymd_opt(2023, 3, 1).unwrap());
+    let a = g.take_csv();
+    g.day(NaiveDate::from_ymd_opt(2023, 3, 2).unwrap());
+    let b = g.take_csv();
+    let both = format!("{b}{}", a.split_once("\r\n").unwrap().1);
+    let mut s = Store::new(&[(VIN1, 7)]);
+    let r = run(&mut s, both.as_bytes(), &Options::default());
+    let n = r.rows_skipped.get("out_of_order").copied().unwrap_or(0);
+    assert!(n > 10, "{:?}", r.rows_skipped);
+    assert!(r.warnings.iter().any(|w| w.contains("earlier than the row before")), "{:?}", r.warnings);
+    // a file in order says nothing
+    let mut s = Store::new(&[(VIN1, 7)]);
+    let r = run(&mut s, a.as_bytes(), &Options::default());
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+}
+
+/// A zip of one deflated entry (as any zip tool writes a CSV).
+fn zip_deflated(name: &str, data: &[u8]) -> Vec<u8> {
+    let mut e = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+    e.write_all(data).unwrap();
+    let packed = e.finish().unwrap();
+    let mut out = Vec::new();
+    out.extend_from_slice(b"PK\x03\x04");
+    for x in [20u16, 0, 8, 0, 0] {
+        out.extend_from_slice(&x.to_le_bytes());
+    }
+    out.extend_from_slice(&crc32fast::hash(data).to_le_bytes());
+    out.extend_from_slice(&(packed.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(name.as_bytes());
+    out.extend_from_slice(&packed);
+    out.extend_from_slice(b"PK\x01\x02");
+    out
+}
+
+#[test]
+fn a_month_the_car_stood_asleep_reads_the_same_zipped_gzipped_or_plain() {
+    // a row a minute, nearly the same row each time, with the many columns TeslaFi's download has beside the ones
+    // read here: it packs to under a hundredth of its size
+    let mut g = Gen::new(VIN1);
+    g.pad = 0;
+    let mut t = local("2023-01-01 00:00:00");
+    while t < local("2023-01-15 00:00:00") {
+        g.poll(t, Doing::Asleep);
+        t += chrono::Duration::minutes(1);
+    }
+    let head: String = (0..400).map(|i| format!(",setting_{i}")).collect();
+    let tail: String = (0..400).map(|i| [",None", ",False", ",0", ",1"][i % 4]).collect();
+    let csv: String =
+        g.csv().lines().enumerate().map(|(i, l)| format!("{l}{}\r\n", if i == 0 { &head } else { &tail })).collect();
+    let rows = csv.lines().count() as u64 - 1;
+    let zipped = zip_deflated("TeslaFi12023.csv", csv.as_bytes());
+    let gzipped = gz(csv.as_bytes());
+    assert!(csv.len() > 20 << 20 && csv.len() > 110 * zipped.len(), "{} to {}", csv.len(), zipped.len());
+    for (what, bytes) in [("zip", &zipped), ("gzip", &gzipped)] {
+        let mut s = Store::new(&[(VIN1, 7)]);
+        s.clear();
+        let r = teslafi::import(&bytes[..], &mut s, &Options::default());
+        let r = r.unwrap_or_else(|e| panic!("{what}: {e}"));
+        assert_eq!((r.rows_read, r.rows_used), (rows, rows), "{what}");
+        assert!(matches!(teslafi::sniff(&bytes[..]), Ok(Sniff::Teslafi)), "{what}");
+    }
+}
+
+#[test]
+fn a_packed_file_that_unpacks_to_far_more_than_a_real_one_is_refused() {
+    // a real day, then the same line over and over: 40 MiB that pack to a few KB
+    let mut g = Gen::new(VIN1);
+    g.day(NaiveDate::from_ymd_opt(2023, 3, 1).unwrap());
+    let mut csv = g.csv().into_bytes();
+    csv.resize(csv.len() + (40 << 20), b'\n');
+    for (what, bytes) in [("gzip", gz(&csv)), ("xz", xz(&csv)), ("zip", zip_deflated("TeslaFi32023.csv", &csv))] {
+        assert!(bytes.len() < 200_000, "{what}: {}", bytes.len());
+        let mut s = Store::new(&[(VIN1, 7)]);
+        s.clear();
+        match teslafi::import(&bytes[..], &mut s, &Options::default()) {
+            Err(Error::Unpack(m)) => assert!(m.contains("times its packed size"), "{what}: {m}"),
+            other => panic!("{what}: {:?}", other.map(|r| (r.rows_read, r.unpacked_bytes)).map_err(|e| e.to_string())),
+        }
+    }
+}
+
+/// What a store holds after imports, to compare: drives, charges, state spans, and how many positions and points.
+type Shape = (Vec<(u64, u64, Option<i64>)>, Vec<(u64, u64, Option<i64>)>, Vec<(u64, u64, String)>, usize, usize);
+
+fn shape(s: &Store) -> Shape {
+    let r = |x: Option<f64>| x.map(|v| (v * 100.0).round() as i64);
+    (
+        s.drives.values().map(|d| (d.start_ms, d.end_ms, r(d.distance_km))).collect(),
+        s.charges.values().map(|c| (c.start_ms, c.end_ms, r(c.energy_added_kwh))).collect(),
+        s.spans.values().map(|(x, _)| (x.start_ms, x.end_ms, format!("{:?}", x.state))).collect(),
+        s.positions.len(),
+        s.points.len(),
+    )
+}
+
+#[test]
+fn polls_cut_into_two_files_anywhere_give_what_one_file_gives() {
+    let mut g = Gen::new(VIN1);
+    let mut t = local("2023-03-01 20:00:00");
+    let mut step = |g: &mut Gen, n: i64, every: i64, doing: Doing| {
+        for _ in 0..n {
+            g.poll(t, doing);
+            t += chrono::Duration::minutes(every);
+        }
+    };
+    step(&mut g, 4, 30, Doing::Asleep);
+    step(&mut g, 10, 1, Doing::Parked);
+    step(&mut g, 40, 1, Doing::Drive(50.0));
+    step(&mut g, 5, 1, Doing::Parked);
+    step(&mut g, 90, 1, Doing::Charge(11.0, false));
+    step(&mut g, 1, 1, Doing::ChargeDone);
+    g.added = 0.0;
+    step(&mut g, 6, 30, Doing::Asleep);
+    step(&mut g, 5, 1, Doing::Parked);
+    step(&mut g, 25, 1, Doing::Drive(30.0));
+    step(&mut g, 30, 1, Doing::Charge(120.0, true));
+    step(&mut g, 3, 1, Doing::ChargeDone);
+    step(&mut g, 4, 30, Doing::Asleep);
+    let (h, rows) = (g.header(), g.lines.clone());
+    let file = |rows: &[String]| format!("{h}\r\n{}\r\n", rows.join("\r\n"));
+    let o = Options::default();
+
+    let mut whole = Store::new(&[(VIN1, 7)]);
+    run(&mut whole, file(&rows).as_bytes(), &o);
+    let want = shape(&whole);
+    assert!(want.2.len() >= 5, "{:?}", want.2);
+    let mut differ = Vec::new();
+    for cut in 1..rows.len() {
+        // the second file may also start up to 20 rows before the first one's end
+        let over = (cut + 20).min(rows.len());
+        for (what, a, b) in [
+            ("first, second", &rows[..cut], &rows[cut..]),
+            ("second, first", &rows[cut..], &rows[..cut]),
+            ("overlapping, first, second", &rows[..over], &rows[cut..]),
+            ("overlapping, second, first", &rows[cut..], &rows[..over]),
+        ] {
+            let mut s = Store::new(&[(VIN1, 7)]);
+            run(&mut s, file(a).as_bytes(), &o);
+            run(&mut s, file(b).as_bytes(), &o);
+            let got = shape(&s);
+            if got != want {
+                differ.push(format!("cut {cut} ({what}): spans {:?}", got.2));
+                continue;
+            }
+            // and again adds nothing
+            let r = run(&mut s, file(b).as_bytes(), &o);
+            assert_eq!((r.rows_used, s.handed()), (0, 0), "cut {cut} ({what}): {:?}", s.handed);
+        }
+    }
+    assert!(differ.is_empty(), "{} cuts differ; want spans {:?}\n{}", differ.len(), want.2, differ[..3].join("\n"));
+}
+
+#[test]
+fn a_state_span_reaches_the_next_files_first_poll_until_a_file_between_them_comes() {
+    // March ends asleep, May starts awake: asleep until seen again, as in one file
+    let mut g = Gen::new(VIN1);
+    g.poll(local("2023-03-31 22:00:00"), Doing::Parked);
+    g.poll(local("2023-03-31 23:00:00"), Doing::Asleep);
+    g.poll(local("2023-03-31 23:30:00"), Doing::Asleep);
+    let march = g.take_csv();
+    g.poll(local("2023-04-10 08:00:00"), Doing::Asleep);
+    g.poll(local("2023-04-10 09:00:00"), Doing::Parked);
+    g.poll(local("2023-04-10 09:01:00"), Doing::Parked);
+    let april = g.take_csv();
+    g.poll(local("2023-05-01 07:00:00"), Doing::Parked);
+    g.poll(local("2023-05-01 07:01:00"), Doing::Parked);
+    let may = g.take_csv();
+    let o = Options::default();
+    let asleep = |s: &Store| -> Vec<(u64, u64)> {
+        let spans = s.spans.values().filter(|(x, _)| x.state == State::Asleep);
+        spans.map(|(x, _)| (x.start_ms, x.end_ms)).collect()
+    };
+    let mut s = Store::new(&[(VIN1, 7)]);
+    run(&mut s, march.as_bytes(), &o);
+    run(&mut s, may.as_bytes(), &o);
+    assert_eq!(asleep(&s), vec![(utc("2023-03-31 23:00:00"), utc("2023-05-01 07:00:00"))]);
+    // April comes later: the sleep goes on into it and ends where April shows the car awake
+    run(&mut s, april.as_bytes(), &o);
+    assert_eq!(asleep(&s), vec![(utc("2023-03-31 23:00:00"), utc("2023-04-10 09:00:00"))]);
+    let mut whole = Store::new(&[(VIN1, 7)]);
+    run(
+        &mut whole,
+        format!("{march}{}{}", april.split_once("\r\n").unwrap().1, may.split_once("\r\n").unwrap().1).as_bytes(),
+        &o,
+    );
+    assert_eq!(shape(&s), shape(&whole));
+}

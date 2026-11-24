@@ -172,24 +172,29 @@ fn check_side(s: &Side<'_>, out: &mut Vec<Invalid>) {
         Password::Remove => false,
         Password::Keep => saved_pw,
     };
-    if matches!(s.password, Password::Keep)
-        && let Some((host, port, tls, true)) = s.saved
-        && (host != s.host || port != s.port || tls != s.tls)
-    {
-        out.push(Invalid {
-            field: f("password"),
-            code: "password_resend",
-            message: "The host, port or TLS changed: type the password again (a saved password goes only to the host \
-                      it was typed for), or send null to remove it."
-                .into(),
-        });
-    }
+    check_resend(s, out);
     if has_pw && !s.tls && !s.allow_unencrypted {
         out.push(Invalid {
             field: f("password"),
             code: "plaintext_password",
             message: "A password over plain TCP would cross the network readable: turn TLS on, or tick \"Allow \
                       unencrypted (local network only)\"."
+                .into(),
+        });
+    }
+}
+
+/// A saved password that is kept goes only to the host, port and TLS setting it was typed for.
+fn check_resend(s: &Side<'_>, out: &mut Vec<Invalid>) {
+    if matches!(s.password, Password::Keep)
+        && let Some((host, port, tls, true)) = s.saved
+        && (host != s.host || port != s.port || tls != s.tls)
+    {
+        out.push(Invalid {
+            field: format!("{}.password", s.name),
+            code: "password_resend",
+            message: "The host, port or TLS changed: type the password again (a saved password goes only to the host \
+                      it was typed for), or send null to remove it."
                 .into(),
         });
     }
@@ -221,23 +226,21 @@ pub fn validate(d: &Draft, saved: Option<&Config>) -> Result<(), Vec<Invalid>> {
     if matches!(d.mqtt_password, Password::Set(_)) && m.username.is_none() {
         out.push(invalid("mqtt.username", "A password needs a user name."));
     }
-    // the database: checked only when it is used (or a password is given for it)
+    // the database: checked only when it is used (or a password is given for it); a kept password stays with its
+    // host all the same (else a host saved while the database is off would get it once the database is on again)
     let db_used = db.enabled || matches!(d.db_password, Password::Set(_));
+    let side = Side {
+        name: "database",
+        host: &db.host,
+        port: db.port,
+        tls: db.tls,
+        pin: db.pin_sha256.as_deref(),
+        allow_unencrypted: db.allow_unencrypted,
+        password: &d.db_password,
+        saved: saved.map(|c| (c.database.host.as_str(), c.database.port, c.database.tls, c.database.password_set)),
+    };
     if db_used {
-        check_side(
-            &Side {
-                name: "database",
-                host: &db.host,
-                port: db.port,
-                tls: db.tls,
-                pin: db.pin_sha256.as_deref(),
-                allow_unencrypted: db.allow_unencrypted,
-                password: &d.db_password,
-                saved: saved
-                    .map(|c| (c.database.host.as_str(), c.database.port, c.database.tls, c.database.password_set)),
-            },
-            &mut out,
-        );
+        check_side(&side, &mut out);
         if db.database.is_empty() || !text_ok(&db.database, 63) {
             out.push(invalid("database.database", "The database's name (teslamate), at most 63 characters."));
         }
@@ -247,8 +250,14 @@ pub fn validate(d: &Draft, saved: Option<&Config>) -> Result<(), Vec<Invalid>> {
         if !(60..=86_400).contains(&db.interval_s) {
             out.push(invalid("database.interval_s", "From 60 to 86400 seconds."));
         }
-    } else if db.pin_sha256.as_deref().is_some_and(|p| tls::parse_pin(p).is_none()) {
-        out.push(invalid("database.pin_sha256", "The certificate's SHA-256: 64 hexadecimal digits (colons allowed)."));
+    } else {
+        check_resend(&side, &mut out);
+        if db.pin_sha256.as_deref().is_some_and(|p| tls::parse_pin(p).is_none()) {
+            out.push(invalid(
+                "database.pin_sha256",
+                "The certificate's SHA-256: 64 hexadecimal digits (colons allowed).",
+            ));
+        }
     }
     if out.is_empty() { Ok(()) } else { Err(out) }
 }
@@ -1253,6 +1262,46 @@ mod tests {
         d.database = DbConfig { enabled: true, host: "192.0.2.10".into(), ..DbConfig::default() };
         d.db_password = Password::Set(Secret::new("made-up-password"));
         assert_eq!(codes(validate(&d, None)), vec![("database.password".to_string(), "plaintext_password")]);
+    }
+
+    #[test]
+    fn a_kept_database_password_never_follows_a_host_changed_while_the_database_is_off() {
+        let db = |enabled: bool, host: &str, port: u16, tls: bool| DbConfig {
+            enabled,
+            host: host.into(),
+            port,
+            tls,
+            ..DbConfig::default()
+        };
+        let port = DbConfig::default().port;
+        let saved = Config {
+            version: 1,
+            added_ms: 0,
+            paused: false,
+            mqtt: MqttConfig { host: "192.0.2.10".into(), ..MqttConfig::default() },
+            database: DbConfig { password_set: true, ..db(true, "192.0.2.10", port, true) },
+            cars: Vec::new(),
+        };
+        let with = |database: DbConfig, db_password: Password| Draft { database, db_password, ..draft() };
+        let resend = vec![("database.password".to_string(), "password_resend")];
+        // on or off: another host, port or TLS with the password kept is refused (else it would be saved as the
+        // host the password belongs to, and go there once the database is on again)
+        for enabled in [true, false] {
+            for moved in [db(enabled, "192.0.2.66", port, true), db(enabled, "192.0.2.10", port + 1, true)] {
+                assert_eq!(codes(validate(&with(moved, Password::Keep), Some(&saved))), resend, "{enabled}");
+            }
+            let c = codes(validate(&with(db(enabled, "192.0.2.10", port, false), Password::Keep), Some(&saved)));
+            assert!(c.contains(&resend[0]), "{enabled}: {c:?}");
+            // the same place, the password removed, or typed again: fine
+            assert!(validate(&with(db(enabled, "192.0.2.10", port, true), Password::Keep), Some(&saved)).is_ok());
+            assert!(validate(&with(db(enabled, "192.0.2.66", port, true), Password::Remove), Some(&saved)).is_ok());
+            let typed = Password::Set(Secret::new("made-up-password"));
+            assert!(validate(&with(db(enabled, "192.0.2.66", port, true), typed), Some(&saved)).is_ok());
+        }
+        // no password saved: an unused database's host is anything
+        let mut bare = saved.clone();
+        bare.database.password_set = false;
+        assert!(validate(&with(db(false, "192.0.2.66", port, true), Password::Keep), Some(&bare)).is_ok());
     }
 
     #[test]

@@ -4,7 +4,8 @@
 //! Supercharger invoices for its own pages, but no public TeslaFi document gives a way to download them. Its charge
 //! log can be read as `history.php?command=charges&dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD` (the same token, in the
 //! `Authorization` header): this crate takes from each charge the cost TeslaFi lists (`cost`, else `chargeCost`,
-//! `totalCost`, `superchargerCost`), its times, place and energy, and never a PDF. A charge with no cost is left out.
+//! `totalCost`, `superchargerCost`), its times, place and energy, and never a PDF. A charge with no cost (none, 0 or
+//! below 0) is left out; a cost is read with either decimal mark (`12.50`, `12,50`).
 //! The path is built from numbers only (two dates): no text from anywhere goes into it.
 //!
 //! The backfill reads the log [`CHUNK_DAYS`] at a time back from today until two chunks in a row hold no charge (or
@@ -138,10 +139,42 @@ fn num(v: &Value, keys: &[&str]) -> Option<f64> {
         .filter(|x| x.is_finite())
 }
 
+/// An amount of money as text: a currency sign before it, and either mark for the decimals (`12.50`, `12,50`,
+/// `1,234.56`, `1.234,56`). Where both marks are there the last one is the decimal mark; a lone comma is one unless
+/// exactly three digits follow it (`1,234`: a thousand), as are several of the same mark.
+fn amount(s: &str) -> Option<f64> {
+    let s = s.trim().trim_start_matches(['$', '\u{20ac}', '\u{a3}']).trim_start();
+    let decimal = match (s.rfind('.'), s.rfind(',')) {
+        (Some(d), Some(c)) => Some(if d > c { '.' } else { ',' }),
+        (Some(_), None) => (s.matches('.').count() == 1).then_some('.'),
+        (None, Some(c)) => (s.matches(',').count() == 1 && s.len() - c - 1 != 3).then_some(','),
+        (None, None) => None,
+    };
+    let plain: String = s
+        .chars()
+        .filter(|c| Some(*c) == decimal || !matches!(c, '.' | ','))
+        .map(|c| if c == ',' { '.' } else { c })
+        .collect();
+    plain.parse().ok()
+}
+
+/// The cost a charge lists: the first of `keys` with an amount over nothing (TeslaFi's 0 is "no cost given", and a
+/// cost below nothing is none).
+fn money(v: &Value, keys: &[&str]) -> Option<f64> {
+    keys.iter().find_map(|k| {
+        let x = match v.get(*k)? {
+            Value::Number(n) => n.as_f64(),
+            Value::String(s) => amount(s),
+            _ => None,
+        };
+        x.filter(|x| x.is_finite() && *x > 0.0)
+    })
+}
+
 /// One charge of TeslaFi's log as a session, when it lists a cost (local times in the account's zone `tz`).
 pub fn session(r: &Value, tz: chrono_tz::Tz) -> Option<tesla::invoices::Session> {
     let id = text(r, &["id", "chargeId", "charge_id", "data_id"])?;
-    let cost = num(r, &["cost", "chargeCost", "totalCost", "superchargerCost", "supercharger_cost"])?;
+    let cost = money(r, &["cost", "chargeCost", "totalCost", "superchargerCost", "supercharger_cost"])?;
     let start_ms =
         text(r, &["startDate", "start_date", "date", "start"]).and_then(|s| import::teslafi::feed::local_ms(&s, tz))?;
     let end_ms = text(r, &["endDate", "end_date", "end"])
@@ -215,5 +248,39 @@ mod tests {
         assert_eq!(records(401, None, b""), Err(FeedError::Refused));
         assert_eq!(records(200, None, br#"{"response":{"result":"unauthorized"}}"#), Err(FeedError::Refused));
         assert_eq!(records(200, None, b"<html>"), Err(FeedError::NotData));
+    }
+
+    #[test]
+    fn a_cost_is_read_as_written() {
+        let tz = chrono_tz::Tz::UTC;
+        let total = |cost: Value| {
+            session(&json!({"id": 77, "startDate": "2026-07-04 03:00:00", "cost": cost}), tz).map(|s| s.total.unwrap())
+        };
+        // a decimal comma is a decimal comma, not a thousands mark
+        for (text, want) in [
+            ("12,50", 12.5),
+            ("\u{20ac}12,50", 12.5),
+            ("12,5", 12.5),
+            ("0,75", 0.75),
+            ("1.234,56", 1234.56),
+            ("1,234.56", 1234.56),
+            ("$1,234", 1234.0),
+            ("1,234,567.5", 1_234_567.5),
+            ("12.50", 12.5),
+            ("12.345", 12.35),
+            ("7", 7.0),
+        ] {
+            assert_eq!(total(json!(text)), Some(want), "{text}");
+        }
+        assert_eq!(total(json!(12.5)), Some(12.5));
+        // no cost, a cost of nothing and a cost below nothing are no cost: the charge is left out
+        for none in
+            [json!("0"), json!("0.00"), json!("0,00"), json!(0), json!("-3.20"), json!(-3.2), json!(""), json!("free")]
+        {
+            assert_eq!(total(none.clone()), None, "{none}");
+        }
+        // a cost of nothing under one name does not hide a cost under another
+        let r = json!({"id": 77, "startDate": "2026-07-04 03:00:00", "cost": "0.00", "superchargerCost": "9,90"});
+        assert_eq!(session(&r, tz).unwrap().total, Some(9.9));
     }
 }

@@ -502,14 +502,16 @@ pub(crate) enum Utc {
     Repeated(u64),
     /// A wall time the clocks skip (spring forward).
     Skipped,
+    /// The start of 1970 or before it: no poll's time (a null time as some programs print it), never read as 1970.
+    Before1970,
 }
 
 pub(crate) fn to_utc(tz: chrono_tz::Tz, local: NaiveDateTime, prev_ms: Option<u64>) -> Utc {
-    let ms = |d: chrono::DateTime<chrono_tz::Tz>| u64::try_from(d.timestamp_millis()).unwrap_or(0);
+    let ms = |d: chrono::DateTime<chrono_tz::Tz>| u64::try_from(d.timestamp_millis()).ok().filter(|t| *t > 0);
     match tz.from_local_datetime(&local) {
-        LocalResult::Single(d) => Utc::One(ms(d)),
+        LocalResult::Single(d) => ms(d).map_or(Utc::Before1970, Utc::One),
         LocalResult::Ambiguous(a, b) => {
-            let (a, b) = (ms(a), ms(b));
+            let (Some(a), Some(b)) = (ms(a), ms(b)) else { return Utc::Before1970 };
             if prev_ms.is_some_and(|p| a < p) { Utc::Repeated(b) } else { Utc::Repeated(a) }
         }
         LocalResult::None => Utc::Skipped,
@@ -543,5 +545,9 @@ mod tests {
         assert_eq!(second - first, 3_600_000);
         // 2023-03-12 02:30 never happens there
         assert!(matches!(to_utc(tz, parse_local("2023-03-12 02:30:00").unwrap(), None), Utc::Skipped));
+        // before 1970 is no time, not 1970
+        assert!(matches!(to_utc(tz, parse_local("1969-12-31 19:00:00").unwrap(), None), Utc::Before1970));
+        assert!(matches!(to_utc(tz, parse_local("1969-12-31 18:59:59").unwrap(), None), Utc::Before1970));
+        assert!(matches!(to_utc(tz, parse_local("1969-12-31 19:00:01").unwrap(), None), Utc::One(1000)));
     }
 }
