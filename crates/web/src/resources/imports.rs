@@ -424,6 +424,15 @@ async fn with_jobs<R: Send + 'static>(
     .await
 }
 
+/// The id of the import that is not finished yet (uploading, checked or importing), if any: `/setup/status` says
+/// so. `None` also where there are no imports to ask.
+pub async fn unfinished(app: &AppState) -> Option<String> {
+    with_jobs(app, |_, all| Ok(all.lock().jobs.values().find(|j| j.unfinished()).map(|j| j.id.clone())))
+        .await
+        .ok()
+        .flatten()
+}
+
 async fn list(State(app): State<AppState>, p: Params) -> ApiResult<Response> {
     let rows = with_jobs(&app, |_, all| {
         let st = all.lock();
