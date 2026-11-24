@@ -1,6 +1,6 @@
 // Text that must be readable in both themes, in Chromium on the dev API server: the small words of a tag
-// (Preferred, estimated, Ongoing), of the AC and DC pills of the Charges list, and of a Logbook purpose's total
-// that has no drives, measured on the pixels drawn (the box's most common colour is its background) against
+// (Preferred, estimated, Ongoing), of the AC and DC pills of the Charges list, of an unnamed version in the
+// Software page's strip and of a Logbook purpose's total that has no drives, measured on the pixels drawn (the box's most common colour is its background) against
 // the text's colour: 4.5:1 or more (WCAG AA for small text).
 // `PACKS=a,b` runs only those. Run: node --test ui/tools/contrast.test.js. Skipped when Playwright is not installed.
 'use strict';
@@ -93,6 +93,7 @@ const PARTS = [
   ['/settings/integrations', 'settings-integrations', 'main .tag--danger'],
   ['/cars/c1/charges', 'charges', 'main .kind-pill--ac'],
   ['/cars/c1/charges', 'charges', 'main .kind-pill--dc'],
+  ['/cars/c1/software', 'software', 'main .sw-fh-seg-bar.is-unnamed .sw-fh-seg-text'],
   ['/cars/c1/logbook', 'logbook', 'main .lb-total.is-zero .explain'],
   ['/cars/c1/logbook', 'logbook', 'main .lb-total.is-zero .lb-total-km .q-u'],
 ];
