@@ -35,7 +35,7 @@ the server only: the set-up code, passwords, move codes and recovery keys never 
    time it stops working: it works once, for 24 hours, and only from your home network unless you tick **from
    anywhere**. It is shown this once; if you lose it, make a new one (the old one stops working).
 3. Keep the page open, or come back to it: once the new server uses the code, it shows what is being copied (how
-   much, how many files, which step). At the end it says **Moved to 192.168.1.30: you can turn this server off**.
+   much, how many files, which step). At the end it says **Moved to 192.0.2.30: you can turn this server off**.
 
 After the move the old server's pages stay up, read only: you can look at everything, sign in and out, download an
 export file and undo the move, but nothing else changes there (any change answers "moved").
@@ -58,7 +58,7 @@ Then choose one of three:
   lost: **Settings → Server and access** has **Show the key again** (your password first) until it is ticked, and
   **Make a new recovery key** for a key lost later (the old one stops working; exports made before still need it).
 - **Move here from another server**: type the old server's address (the one the CAN Bridge sends to, for example
-  `192.168.1.20`) and the move code. The page shows the copy as it goes (the server keeps its pages up while it
+  `192.0.2.20`) and the move code. The page shows the copy as it goes (the server keeps its pages up while it
   copies). At the end the server switches to the data and starts again by itself (a few seconds); then sign in with
   your account from the old server: everything is there, accounts too.
 - **Restore from an export file**: choose the file and type the old server's recovery key. The key and the file are
@@ -136,7 +136,7 @@ No shell is needed.
    empty `data` and `keys` folders. Add these two lines under `environment:`:
 
    ```yaml
-         - SENTRY_MATE_MOVE_FROM=192.168.1.20
+         - SENTRY_MATE_MOVE_FROM=192.0.2.20
          - SENTRY_MATE_MOVE_CODE=SMMV-1K3QX-7WD2M-ZP4HT-9BN6R-XC8VA-5JE0F
    ```
 
@@ -173,7 +173,7 @@ ports for now, for example `10200:10100` and `10201:10101`, and use the machine'
    usual and run:
 
    ```bash
-   docker exec sentry-mate /sentry-mate move from 192.168.1.20 SMMV-1K3QX-7WD2M-ZP4HT-9BN6R-XC8VA-5JE0F
+   docker exec sentry-mate /sentry-mate move from 192.0.2.20 SMMV-1K3QX-7WD2M-ZP4HT-9BN6R-XC8VA-5JE0F
    ```
 
    The command checks the code at once and shows the progress. Closing it doesn't stop the move.
@@ -212,13 +212,13 @@ new server runs.
 - **Same address** (the new server took the old one's address, or the same machine with port 10100 back): change
   nothing.
 - **Another address:** in **Second Sentry Six Manager**, change only the server address to the new server, for example
-  `https://192.168.1.30:10100/api/can/logs`. Keep the token and the certificate SHA-256 as they are.
+  `https://192.0.2.30:10100/api/can/logs`. Keep the token and the certificate SHA-256 as they are.
 
 Nothing is lost while you do it. The bridge keeps its logs and sends them once it reaches the new server.
 
 ## What the old server shows after
 
-- Its log says where the data went and when: `this server's data moved to 192.168.1.30 on ...`.
+- Its log says where the data went and when: `this server's data moved to 192.0.2.30 on ...`.
 - It takes no more uploads. It answers the CAN Bridge "moved, try later" (`503 moved`). The app shows that it will
   retry. Once an hour, while a bridge still calls, the log says which car key still sends there.
 - Commands that change data refuse there. Reading still works (`fingerprint`, `token list`, `export`).

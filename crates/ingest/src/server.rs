@@ -807,25 +807,25 @@ mod tests {
     #[test]
     fn only_host_names_and_addresses_go_into_a_certificate() {
         assert_eq!(cert_name(" NAS.lan "), Some("nas.lan".into()));
-        assert_eq!(cert_name(" 192.168.1.5"), Some("192.168.1.5".into()));
+        assert_eq!(cert_name(" 192.0.2.5"), Some("192.0.2.5".into()));
         assert_eq!(cert_name("[FD00::0001]"), Some("fd00::1".into()));
         for bad in ["bad name", "*.lan", "a..b", "-a.lan", "", "nas.lan/x", "[::1"] {
             assert_eq!(cert_name(bad), None, "{bad:?}");
         }
         let names: Vec<String> =
-            ["nas.lan", " 192.168.1.5", "bad name", "*.lan", "NAS.lan", " "].iter().map(|s| s.to_string()).collect();
+            ["nas.lan", " 192.0.2.5", "bad name", "*.lan", "NAS.lan", " "].iter().map(|s| s.to_string()).collect();
         assert_eq!(
             cert_names(&names),
-            (vec!["nas.lan".into(), "192.168.1.5".into()], vec!["bad name".into(), "*.lan".into()])
+            (vec!["nas.lan".into(), "192.0.2.5".into()], vec!["bad name".into(), "*.lan".into()])
         );
 
         // in the certificate: the address as an IP address, nothing of the rest
         let (pem, _) = make(&names).unwrap();
         let der = rustls_pemfile::certs(&mut pem.as_bytes()).next().unwrap().unwrap();
         let has = |b: &[u8]| der.windows(b.len()).any(|w| w == b);
-        assert!(has(&[0x87, 4, 192, 168, 1, 5]), "an IP address SAN");
+        assert!(has(&[0x87, 4, 192, 0, 2, 5]), "an IP address SAN");
         assert!(has(b"nas.lan") && has(b"localhost"));
-        assert!(!has(b"192.168.1.5") && !has(b"bad name") && !has(b"*.lan"));
+        assert!(!has(b"192.0.2.5") && !has(b"bad name") && !has(b"*.lan"));
     }
 
     #[test]

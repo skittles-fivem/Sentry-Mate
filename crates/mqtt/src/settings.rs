@@ -423,7 +423,7 @@ mod tests {
     fn broker_addresses() {
         let b = parse_broker("mqtts://broker.example", false).unwrap();
         assert_eq!(b, Broker { host: "broker.example".into(), port: 8883, tls: true });
-        assert_eq!(parse_broker(" ssl://10.0.0.2:18883/ ", false).unwrap().port, 18883);
+        assert_eq!(parse_broker(" ssl://192.0.2.2:18883/ ", false).unwrap().port, 18883);
         let v6 = parse_broker("MQTTS://[::1]:8884", false).unwrap();
         assert_eq!((v6.host.as_str(), v6.port), ("::1", 8884));
         assert_eq!(v6.to_string(), "mqtts://[::1]:8884");

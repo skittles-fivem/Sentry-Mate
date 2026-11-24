@@ -47,7 +47,7 @@ OLD_COPY_MS = 10_000
 OLD_CATCH_MS = 3_000
 OLD_PAUSE_MS = 2_000
 OLD_SWITCH_MS = 2_000
-PEER_ADDRESS = "192.168.1.30"
+PEER_ADDRESS = "192.0.2.30"
 
 # the new server's side ("Move here"), from the start (ms)
 NEW_CONNECT_MS = 1_000
@@ -186,7 +186,7 @@ def parse_address(text):
     if t.lower().startswith("https://"):
         t = t[8:]
     t = t.split("/")[0]
-    bad = bad_input({"from": "This is not a server address. Write it like 192.168.1.20 or nas.local:10100 "
+    bad = bad_input({"from": "This is not a server address. Write it like 192.0.2.20 or nas.local:10100 "
                              "(the address the CAN Bridge sends to)."})
     if t.startswith("["):
         h, sep, after = t[1:].partition("]")

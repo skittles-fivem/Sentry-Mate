@@ -79,7 +79,7 @@ On the Screenmate, open the CAN Bridge app. Under **Second Sentry Six Manager (o
 
 | App field | What to put in |
 |---|---|
-| Upload address (empty = off) | `https://<server>:10100/api/can/logs`, for example `https://192.168.1.20:10100/api/can/logs`. |
+| Upload address (empty = off) | `https://<server>:10100/api/can/logs`, for example `https://192.0.2.20:10100/api/can/logs`. |
 | Token | The line that starts with `smt_`. |
 | Certificate SHA-256 | The 64 hex digits that `token new` printed. |
 

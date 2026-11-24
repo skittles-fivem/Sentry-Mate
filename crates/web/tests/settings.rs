@@ -296,12 +296,12 @@ async fn server_settings() {
     let r = admin
         .patch(
             "/api/v1/settings",
-            json!({ "version": v2, "tiles": { "mode": "online", "online_url": "https://tiles.example.org:8443/{z}/{x}/{y}.png" }, "outbound": { "proxy": "socks5://proxy.lan:1080" }, "host_names": ["Car.Example", "car.example", "10.0.0.5"] }),
+            json!({ "version": v2, "tiles": { "mode": "online", "online_url": "https://tiles.example.org:8443/{z}/{x}/{y}.png" }, "outbound": { "proxy": "socks5://proxy.lan:1080" }, "host_names": ["Car.Example", "car.example", "192.0.2.5"] }),
         )
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
     let s = r.json();
-    assert_eq!(s["host_names"], json!(["car.example", "10.0.0.5"]));
+    assert_eq!(s["host_names"], json!(["car.example", "192.0.2.5"]));
     assert_eq!(s["outbound"]["proxy"], "socks5://proxy.lan:1080");
     // the custom server first, then the hosts of the styles viewers may switch to (by default OpenStreetMap and satellite)
     assert_eq!(

@@ -675,7 +675,7 @@ mod tests {
         let c: IpAddr = "2001:db8:1:3::1".parse().unwrap();
         assert_eq!(who(a), who(b));
         assert_ne!(who(a), who(c));
-        assert_eq!(who("::ffff:192.168.1.20".parse().unwrap()), "192.168.1.20");
-        assert_eq!(who("10.0.0.1".parse().unwrap()), "10.0.0.1");
+        assert_eq!(who("::ffff:192.0.2.20".parse().unwrap()), "192.0.2.20");
+        assert_eq!(who("192.0.2.1".parse().unwrap()), "192.0.2.1");
     }
 }

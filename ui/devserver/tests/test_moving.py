@@ -63,7 +63,7 @@ class Fresh(ServerCase):
         # no one is signed in by themselves on a fresh server
         c.error("GET", "/api/v1/me", 401, "not_signed_in")
         for path, body in (("/api/v1/setup/fresh", {"name": "owner", "password": "a long password"}),
-                           ("/api/v1/setup/move-here", {"from": "192.168.1.20", "code": _code()})):
+                           ("/api/v1/setup/move-here", {"from": "192.0.2.20", "code": _code()})):
             c.error("POST", path, 401, "not_claimed", body=body)
         c.error("GET", "/api/v1/setup/job", 401, "not_claimed")
         c.error("POST", "/api/v1/setup/claim", 403, "wrong_setup_code", body={"setup_code": "SETUP-DEV-9999"})
@@ -108,7 +108,7 @@ class Fresh(ServerCase):
         # set up: every set-up call answers 409 setup_done
         for path, body in (("/api/v1/setup/claim", {"setup_code": SETUP_CODE}),
                            ("/api/v1/setup/fresh", {"name": "x", "password": "y" * 12}),
-                           ("/api/v1/setup/move-here", {"from": "192.168.1.20", "code": _code()})):
+                           ("/api/v1/setup/move-here", {"from": "192.0.2.20", "code": _code()})):
             c.error("POST", path, 409, "setup_done", body=body)
         c.error("GET", "/api/v1/setup/job", 409, "setup_done")
 
@@ -169,7 +169,7 @@ class OneCallSetUp(ServerCase):
 
     def test_a_wrong_code_is_wrong_while_a_move_runs(self):
         c = _claimed(self.server)
-        c.json("POST", "/api/v1/setup/move-here", {"from": "192.168.1.20", "code": _code()}, expect=201)
+        c.json("POST", "/api/v1/setup/move-here", {"from": "192.0.2.20", "code": _code()}, expect=201)
         other = self.server.client()
         other.error("POST", "/api/v1/setup", 403, "wrong_setup_code", body=self.body(code="nope"))
         other.error("POST", "/api/v1/setup", 409, "setup_busy", body=self.body())
@@ -185,10 +185,10 @@ class FreshCase(ServerCase):
 class MoveHereErrors(FreshCase):
     def test_errors_before_anything_starts(self):
         c = _claimed(self.server)
-        e, _ = c.error("POST", "/api/v1/setup/move-here", 400, "bad_input", body={"from": "http://192.168.1.20",
+        e, _ = c.error("POST", "/api/v1/setup/move-here", 400, "bad_input", body={"from": "http://192.0.2.20",
                                                                                    "code": _code()})
         self.assertIn("from", e["fields"])
-        e, _ = c.error("POST", "/api/v1/setup/move-here", 400, "bad_input", body={"from": "192.168.1.20",
+        e, _ = c.error("POST", "/api/v1/setup/move-here", 400, "bad_input", body={"from": "192.0.2.20",
                                                                                    "code": "SMMV-1K3QX-7WD2M"})
         self.assertIn("code", e["fields"])
         for host, status, code in (("unreachable.example", 502, "old_server_unreachable"),
@@ -207,9 +207,9 @@ class MoveHereErrors(FreshCase):
 class MoveHere(FreshCase):
     def test_a_move_runs_to_the_end_then_people_sign_in(self):
         c = _claimed(self.server)
-        j = c.json("POST", "/api/v1/setup/move-here", {"from": "https://192.168.1.20:10100/api/can/logs",
+        j = c.json("POST", "/api/v1/setup/move-here", {"from": "https://192.0.2.20:10100/api/can/logs",
                                                        "code": _code()}, expect=201)
-        self.assertEqual((j["kind"], j["state"], j["from"]), ("move_here", "connecting", "192.168.1.20:10100"))
+        self.assertEqual((j["kind"], j["state"], j["from"]), ("move_here", "connecting", "192.0.2.20:10100"))
         other = self.server.client()
         self.assertEqual(other.get("/api/v1/setup")["state"], "moving_here")
         self.assertIsNone(other.get("/api/v1/setup")["job"])
@@ -394,7 +394,7 @@ class OldServer(ServerCase):
         self.advance(15 * SEC)
         g = c.get("/api/v1/system/move")
         self.assertEqual(g["state"], "copying")
-        self.assertEqual(g["peer"]["address"], "192.168.1.30")
+        self.assertEqual(g["peer"]["address"], "192.0.2.30")
         self.assertEqual(g["progress"]["round"], 1)
         c.error("POST", "/api/v1/system/move", 409, "move_under_way", body={"password": PW})
         c.error("POST", "/api/v1/system/move/undo", 409, "not_moved", body={"password": PW, "confirm": True})
@@ -592,7 +592,7 @@ class Presets(ServerCase):
     def test_start_moved(self):
         g = self.c.get("/api/v1/system/move")
         self.assertEqual(g["state"], "moved")
-        self.assertEqual(g["moved"]["to"], "192.168.1.30")
+        self.assertEqual(g["moved"]["to"], "192.0.2.30")
 
 
 class RecoveryKeyLikeTheServer(ServerCase):
