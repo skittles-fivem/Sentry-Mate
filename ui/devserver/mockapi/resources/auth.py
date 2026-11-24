@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from ..conventions import page
 from ..errors import ApiError, bad_input, conflict, invalid, not_found, throttled
-from ..store import DEV_TWO_STEP_CODE
+from ..store import keep_recovery_codes, new_recovery_codes, take_code
 
 _throttle_lock = threading.Lock()
 THROTTLE_TRIES = 5
@@ -29,6 +29,11 @@ def _everyone(store):
     return bool(store.two_step_policy["everyone"])
 
 
+def setup_only(store, a):
+    """The rule asks every account for two-step sign-in and this one has none yet: its session may only set it up."""
+    return _everyone(store) and not a.get("two_step")
+
+
 def account_view(a, store):
     # two_step: this account has two-step sign-in on; two_step_required: the server-wide rule `everyone` (the same
     # for every account: the real server has no per-account rule)
@@ -43,7 +48,7 @@ def me_view(a, store):
     two = bool(a.get("two_step"))
     need = _everyone(store)
     return {"id": a["id"], "name": a["name"], "role": a["role"], "cars": a["cars"], "two_step": two,
-            "two_step_required": need, "two_step_setup_only": need and not two}
+            "two_step_required": need, "two_step_setup_only": setup_only(store, a)}
 
 
 # ------------------------------------------------------------------ throttle
@@ -141,11 +146,11 @@ def post_two_step(req):
         if p is None or p["expires"] < time.monotonic():
             st.pending.pop(body["pending"], None)
             raise ApiError(401, "sign_in_expired", "This sign-in took too long. Start again.")
-        if body["code"].strip() != DEV_TWO_STEP_CODE:
+        who = st.accounts.get(p["account"])
+        if who is None or not take_code(who, body["code"]):
             p["tries"] += 1
             if p["tries"] >= 5:
                 st.pending.pop(body["pending"], None)
-            who = st.accounts.get(p["account"])
             st.record(who, "two-step-failed", None, f"Wrong two-step code for {who['name'] if who else 'an account'}.",
                       address=getattr(req, "client_ip", None) or "127.0.0.1")
             raise ApiError(401, "wrong_code", "That code is not right.")
@@ -232,7 +237,7 @@ def put_password(req):
         raise ApiError(403, "wrong_password", "That is not your password.")
     if acc.get("two_step"):
         code = body.get("code")
-        if not isinstance(code, str) or code.strip() != DEV_TWO_STEP_CODE:
+        if not take_code(acc, code):
             raise ApiError(401, "wrong_code", "Type the code from your authenticator app.")
     new = body["new_password"]
     if not new:
@@ -575,7 +580,7 @@ SECRET_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 
 def _own_confirm(req, body, need_code):
     """The account's own password (403 wrong_password) and a code (401 wrong_code): the dev server takes any six
-    digits, or a made-up recovery code (like `abcde-12345`)."""
+    digits, or one of the account's recovery codes (xxxx-xxxx-xxxx-xxxx, which works once)."""
     from ..store import DEV_PASSWORD
     for k in body:
         if k not in ("password", "code"):
@@ -589,14 +594,8 @@ def _own_confirm(req, body, need_code):
         raise bad_input({"code": "Must be text."})
     if need_code:
         c = (code or "").replace(" ", "").strip()
-        if not (re.fullmatch(r"\d{6}", c) or re.fullmatch(r"[a-z0-9]{5}-[a-z0-9]{5}", c)):
+        if not (re.fullmatch(r"\d{6}", c) or take_code(req.account, code)):
             raise ApiError(401, "wrong_code", "That code is not right.", fields={"code": "The 6-digit code."})
-
-
-def _recovery_codes():
-    chars = "abcdefghjkmnpqrstuvwxyz23456789"
-    return ["".join(secrets.choice(chars) for _ in range(5)) + "-" + "".join(secrets.choice(chars) for _ in range(5))
-            for _ in range(10)]
 
 
 def get_two_step(req):
@@ -629,11 +628,11 @@ def post_two_step_confirm(req):
     if not a.get("two_step_pending"):
         raise conflict("two_step_first", "Start setting two-step sign-in up first.")
     _own_confirm(req, body, True)
-    codes = _recovery_codes()
+    codes = new_recovery_codes()
     with st.lock:
         a.pop("two_step_pending", None)
         a["two_step"] = True
-        a["recovery_codes_left"] = len(codes)
+        keep_recovery_codes(a, codes)
         a["version"] += 1
     st.record(a, "two-step-on", f"account:{a['id']}", f"Turned two-step sign-in on for {a['name']}.")
     return {"enabled": True, "recovery_codes": codes}
@@ -650,6 +649,7 @@ def delete_two_step(req):
     with st.lock:
         a["two_step"] = False
         a.pop("recovery_codes_left", None)
+        a.pop("recovery_codes", None)
         a["version"] += 1
     st.record(a, "two-step-off", f"account:{a['id']}", f"Turned two-step sign-in off for {a['name']}.")
     return {"enabled": False}
@@ -661,9 +661,9 @@ def post_recovery_codes(req):
     if not a.get("two_step"):
         raise conflict("two_step_off", "Two-step sign-in is off: turn it on first.")
     _own_confirm(req, body, True)
-    codes = _recovery_codes()
+    codes = new_recovery_codes()
     with st.lock:
-        a["recovery_codes_left"] = len(codes)
+        keep_recovery_codes(a, codes)
     st.record(a, "recovery-codes-new", f"account:{a['id']}", f"Made new recovery codes for {a['name']}.")
     return {"recovery_codes": codes}
 

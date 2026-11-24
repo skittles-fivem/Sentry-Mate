@@ -21,6 +21,8 @@ import { soldParts, soldToggle } from '../core/carswitch.js';
 import { pageHead, panel, kv, tag, pill, metric, figures, csvButton } from '../core/page.js';
 import { dataTable } from '../core/table.js';
 import { field, form } from '../core/form.js';
+import { codeAttrs, codeValue, CODE_HINT } from '../core/code.js';
+import { cancelBtn as twoCancelBtn, ownPassword as twoOwnPassword, ownCode, ownWrong, recoveryDialog, confirmTwoStep } from './two-step-turn-on.js';
 import { emptyState, errorWords } from '../core/states.js';
 import { flash } from '../core/flash.js';
 import { openDialog, confirmDialog, passwordOk } from '../core/dialog.js';
@@ -31,7 +33,7 @@ import { storageGroups, shortName, shareText, groupWord } from '../shared/storag
 import { AUDIT_GROUPS, actionLabel, auditItem } from '../shared/audit.js';
 import { serverUpdates, RELEASE_OFF_TEXT } from '../shared/release.js';
 import { cover } from '../shared/dom.js';
-import { movePanel, showRecoveryKey, newRecoveryKey, markKeySaved, askPassword, codeGroups, copyButton } from './settings-server-move.js';
+import { movePanel, showRecoveryKey, newRecoveryKey, markKeySaved, askPassword } from './settings-server-move.js';
 import { fullRebuild } from './full-rebuild.js';
 import { follow, jobOf } from '../shared/live.js';
 import { morphChildren } from '../core/morph.js';
@@ -447,8 +449,8 @@ export async function mount(ctx) {
     // two-step sign-in on): sent as confirm_password and code
     const own = field({ label: 'Your password', name: 'confirm_password', type: 'password', required: true,
       hint: `The password you sign in with as ${me.name || 'this account'}: an account change asks for it again.`, attrs: { autocomplete: 'current-password' } });
-    const code = field({ label: 'Code from your authenticator app', name: 'code', hint: 'Six digits. Codes change every 30 seconds.',
-      attrs: { autocomplete: 'one-time-code', inputmode: 'numeric', maxlength: '8' } });
+    const code = field({ label: 'Code from your authenticator app', name: 'code', hint: CODE_HINT,
+      attrs: codeAttrs() });
     code.el.hidden = !(me.two_step || me.two_step_required);
     const cars = carPicker(a ? a.cars : []);
     const carsField = { name: 'cars', path: 'cars', input: { checkValidity: () => true, getAttribute: () => null, focus() {} }, setError: cars.setError, value: cars.value, el: cars.el };
@@ -462,7 +464,7 @@ export async function mount(ctx) {
           body.password = v.password;
         }
         body.confirm_password = v.confirm_password;
-        if (!code.el.hidden && v.code) body.code = v.code.replace(/\s+/g, '');
+        if (!code.el.hidden && v.code) body.code = codeValue(v.code);
         try {
           if (isNew) {
             await ctx.api.post('accounts', body);
@@ -519,81 +521,22 @@ export async function mount(ctx) {
   // POST /me/two-step/confirm (password and the first code: the recovery codes, shown once), DELETE /me/two-step and
   // POST /me/two-step/recovery-codes (password and a code). The rule (admin): GET and PUT /two-step-policy.
   const tsBody = h('div', { class: 'ss-twostep' });
-  const cancelBtn = () => h('button', { class: 'btn btn--ghost', type: 'button', onclick: (e) => e.target.closest('dialog')?.close() }, 'Cancel');
-  const ownPassword = () => field({ label: 'Your password', name: 'password', type: 'password', required: true,
-    hint: `The password you sign in with as ${me.name || 'this account'}.`, attrs: { autocomplete: 'current-password' } });
-  const ownCode = (label) => field({ label, name: 'code', required: true, hint: 'Six digits from the app, which change every 30 seconds, or one of your recovery codes.',
-    attrs: { autocomplete: 'one-time-code', inputmode: 'numeric', maxlength: '12' } });
-  // a wrong password or code is said under its field; true when it was one of those
-  function ownWrong(e, password, code, v) {
-    if (e.code === 'wrong_password') { password.setError(v.password ? 'That is not your password. Type the one you sign in with.' : 'Type your password to go on.'); password.input.focus(); password.input.select(); return true; }
-    if (e.code === 'wrong_code') { code.setError(v.code ? 'That code is not right. Type the one your authenticator app shows now.' : 'Type the code from your authenticator app.'); code.input.focus(); return true; }
-    return false;
-  }
+  const cancelBtn = twoCancelBtn;
+  const ownPassword = () => twoOwnPassword(me);
   async function loadTwoStep() {
     try { S.twoStep = await ctx.api.get('me/two-step'); } catch { /* the panel keeps what it had */ }
     if (S.twoStep) me.two_step = !!S.twoStep.enabled;
   }
-  function recoveryDialog(codes, title) {
-    return openDialog({
-      title, wide: true,
-      body: h('div', { class: 'ss-rdlg' },
-        h('p', null, 'Keep these recovery codes somewhere safe, away from your phone (a password manager, or on paper). Each one works once, in place of the app\'s code, if you lose your phone. They are shown only now.'),
-        h('div', { class: 'mv-codebox' },
-          h('p', { class: 'mv-codebox-head' }, 'Recovery codes'),
-          h('ul', { class: 'ss-rcodes', 'aria-label': 'Recovery codes' }, codes.map((c) => h('li', null, h('code', { class: 'mono ss-value' }, c)))),
-          h('div', { class: 'row mv-acts' }, copyButton(codes.join('\n'), 'Copy all codes', { primary: true })))),
-      actions: [{ label: 'I have kept them', value: true, kind: 'primary', focus: true }],
-    });
-  }
   async function turnOnTwoStep() {
-    let setup;
-    try { setup = await ctx.api.post('me/two-step', {}); } catch (e) {
-      if (e.code === 'two_step_on') { await loadTwoStep(); paintTwoStep(); return; }
-      flash(`Could not start: ${errText(e)}`, { kind: 'error' }); return;
-    }
-    const password = ownPassword();
-    const code = ownCode('Code from your authenticator app');
-    let codes = null;
-    const f = form({
-      fields: [password, code], submit: 'Turn on two-step sign-in', secondary: cancelBtn(),
-      async onSubmit(v) {
-        try {
-          const out = await ctx.api.post('me/two-step/confirm', { password: v.password, code: v.code.replace(/\s+/g, '') });
-          codes = out.recovery_codes || [];
-        } catch (e) {
-          if (ownWrong(e, password, code, v)) return;
-          if (e.status === 409) { f.setMessage('This set-up ran out or was started again. Close this and press Turn on again.'); return; }
-          throw e;
-        }
-        f.el.closest('dialog')?.close();
-      },
-    });
-    // h() leaves out an href it does not know as safe (otpauth: is none of its schemes): set it by hand, for this scheme only
-    const appLink = h('a', { class: 'btn' }, 'Open in your authenticator app');
-    if (/^otpauth:\/\/totp\//.test(setup.uri)) appLink.setAttribute('href', setup.uri); else appLink.hidden = true;
-    const grouped = String(setup.secret).replace(/\s+/g, '').match(/.{1,4}/g)?.join('-') || setup.secret;
-    const done = openDialog({
-      title: 'Turn on two-step sign-in', wide: true,
-      body: h('div', { class: 'ss-tsdlg' },
-        h('ol', { class: 'ss-steps' },
-          h('li', null, 'In an authenticator app (any app that makes six-digit codes), add an account with this key:',
-            h('div', { class: 'mv-codebox' }, h('p', { class: 'mv-codebox-head' }, 'Key'), codeGroups(grouped, 'mv-code ss-secret'),
-              h('div', { class: 'row mv-acts' }, copyButton(setup.secret, 'Copy key'),
-                appLink, copyButton(setup.uri, 'Copy link')))),
-          h('li', null, 'Type your password and the six-digit code the app shows now.')),
-        f.el),
-      actions: [],
-    });
-    password.input.focus({ preventScroll: true });
-    await done;
-    if (!codes || !ctx.alive()) return;
+    const r = await confirmTwoStep(ctx, me);
+    if (r?.already) { await loadTwoStep(); paintTwoStep(); return; }
+    if (!r || !ctx.alive()) return;
     me.two_step = true;
     await loadTwoStep();
     paintTwoStep();
     if (admin) refreshAccounts();
     flash('Two-step sign-in is on.');
-    await recoveryDialog(codes, 'Your recovery codes');
+    await recoveryDialog(r.codes, 'Your recovery codes');
   }
   // the password and a code again, then run({ password, code }); the dialog stays open on a wrong one
   function ownAgain({ title, intro, submit, danger = false, run }) {
@@ -603,7 +546,7 @@ export async function mount(ctx) {
     const f = form({
       fields: [password, code], submit, secondary: cancelBtn(),
       async onSubmit(v) {
-        try { result = await run({ password: v.password, code: v.code.replace(/\s+/g, '') }); } catch (e) {
+        try { result = await run({ password: v.password, code: codeValue(v.code) }); } catch (e) {
           if (ownWrong(e, password, code, v)) return;
           if (e.code === 'two_step_kept') { f.setMessage('The rule asks every account for two-step sign-in, so it cannot be turned off. An admin can change the rule.'); return; }
           throw e;
@@ -732,8 +675,8 @@ export async function mount(ctx) {
       hint: `The password you sign in with as ${me.name || 'this account'}.`, attrs: { autocomplete: 'current-password' } });
     const next = field({ label: 'New password', name: 'new_password', type: 'password', required: true,
       hint: 'Every other browser where your account is signed in is signed out; this one stays.', attrs: { autocomplete: 'new-password' } });
-    const code = field({ label: 'Code from your authenticator app', name: 'code', hint: 'Six digits. Codes change every 30 seconds.',
-      attrs: { autocomplete: 'one-time-code', inputmode: 'numeric', maxlength: '8' } });
+    const code = field({ label: 'Code from your authenticator app', name: 'code', hint: CODE_HINT,
+      attrs: codeAttrs() });
     code.el.hidden = !(me.two_step || me.two_step_required);
     const f = form({
       fields: [current, next, code], submit: 'Change password',
@@ -742,7 +685,7 @@ export async function mount(ctx) {
         if (!(await passwordOk(me.name || '', v.new_password, next.input))) return;
         let out;
         try {
-          out = await ctx.api.put('me/password', { password: v.password, new_password: v.new_password, ...(!code.el.hidden && v.code ? { code: v.code.replace(/\s+/g, '') } : {}) });
+          out = await ctx.api.put('me/password', { password: v.password, new_password: v.new_password, ...(!code.el.hidden && v.code ? { code: codeValue(v.code) } : {}) });
         } catch (e) {
           if (e.code === 'wrong_password') { current.setError('That is not your password. Type the one you sign in with.'); current.input.focus(); current.input.select(); return; }
           if (e.code === 'wrong_code' || e.code === 'wrong_two_step') { code.el.hidden = false; code.setError(v.code ? 'That code is not right. Type the one your authenticator app shows now.' : 'Your account has two-step sign-in: type the code from your authenticator app as well.'); code.input.focus(); return; }
