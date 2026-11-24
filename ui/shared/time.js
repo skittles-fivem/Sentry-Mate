@@ -65,7 +65,7 @@ export function zoneOffset(ms, tz) {
     const at = q * QUARTER;
     const p = {};
     for (const x of partsFormat(tz).formatToParts(at)) p[x.type] = x.value;
-    o = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second) - at;
+    o = utc(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second) - at;
     if (offsets.size > 50000) offsets.clear();
     offsets.set(key, o);
   }
@@ -86,6 +86,14 @@ export function zonedParts(ms, tz) {
   };
 }
 
+// Date.UTC reads the years 0-99 as 1900-1999; this keeps them.
+function utc(year, monthIndex = 0, day = 1, hour = 0, minute = 0, second = 0, millisecond = 0) {
+  const d = new Date(0);
+  d.setUTCFullYear(year, monthIndex, day);
+  d.setUTCHours(hour, minute, second, millisecond);
+  return d.getTime();
+}
+
 /**
  * Wall-clock time in the zone -> UTC ms. A time that happens twice (clocks go back) gives the first
  * one ('compatible' and 'earlier') or the second ('later'). A time that never happens (clocks go
@@ -93,7 +101,7 @@ export function zonedParts(ms, tz) {
  * time just before it ('earlier': 2:30 -> 1:30).
  */
 export function zonedToMs({ year, month = 1, day = 1, hour = 0, minute = 0, second = 0, millisecond = 0 }, tz, { disambiguation = 'compatible' } = {}) {
-  const wall = Date.UTC(year, month - 1, day, hour, minute, second, millisecond);
+  const wall = utc(year, month - 1, day, hour, minute, second, millisecond);
   const before = zoneOffset(wall - DAY, tz), after = zoneOffset(wall + DAY, tz);
   const a = wall - before, b = wall - after;
   const okA = a + zoneOffset(a, tz) === wall, okB = b + zoneOffset(b, tz) === wall;
@@ -118,7 +126,7 @@ function keyParts(key) {
 /** 'YYYY-MM-DD' plus n calendar days. */
 export function addDays(key, n) {
   const { year, month, day } = keyParts(key);
-  return new Date(Date.UTC(year, month - 1, day + n)).toISOString().slice(0, 10);
+  return new Date(utc(year, month - 1, day + n)).toISOString().slice(0, 10);
 }
 /** The first instant of a day (normally midnight) in the zone, as UTC ms. */
 export function dayStart(key, tz) {
@@ -127,16 +135,16 @@ export function dayStart(key, tz) {
 /** Whole calendar days from key a to key b (b - a). */
 export function daysBetween(a, b) {
   const pa = keyParts(a), pb = keyParts(b);
-  return Math.round((Date.UTC(pb.year, pb.month - 1, pb.day) - Date.UTC(pa.year, pa.month - 1, pa.day)) / DAY);
+  return Math.round((utc(pb.year, pb.month - 1, pb.day) - utc(pa.year, pa.month - 1, pa.day)) / DAY);
 }
 
 /** The ISO week of a calendar date: { year, week }. The ISO year can differ from the calendar year. */
 export function isoWeek(year, month, day) {
-  const d = Date.UTC(year, month - 1, day);
+  const d = utc(year, month - 1, day);
   const wd = (new Date(d).getUTCDay() + 6) % 7; // Monday 0
   const thursday = d + (3 - wd) * DAY;
   const y = new Date(thursday).getUTCFullYear();
-  return { year: y, week: 1 + Math.floor((thursday - Date.UTC(y, 0, 1)) / (7 * DAY)) };
+  return { year: y, week: 1 + Math.floor((thursday - utc(y, 0, 1)) / (7 * DAY)) };
 }
 /** The ISO week the instant falls in, in the zone. */
 export function isoWeekOf(ms, tz) {
@@ -152,7 +160,7 @@ export const UNITS = ['hour', 'day', 'week', 'month', 'year'];
 function checkUnit(unit) {
   if (!UNITS.includes(unit)) throw new RangeError(`unknown unit: ${unit}`);
 }
-const daysInMonth = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();
+const daysInMonth = (y, m) => new Date(utc(y, m, 0)).getUTCDate();
 
 // The start of the wall-clock hour the instant is in. Where the clocks change by a part of an hour the hour
 // they change in is shorter (it starts at the change) or longer (it started before the change).
@@ -214,6 +222,9 @@ export function addPeriod(ms, unit, n, tz) {
     month = (total % 12) + 1;
     day = Math.min(day, daysInMonth(year, month));
   }
+  // The first instant of a day stays the first instant of the target day, also where that day starts at 01:00
+  // because midnight never happens (clocks jump at midnight): otherwise buckets would start an hour late and drift.
+  if (ms === zonedToMs({ year: p.year, month: p.month, day: p.day }, tz)) return zonedToMs({ year, month, day }, tz);
   return zonedToMs({ year, month, day, hour: p.hour, minute: p.minute, second: p.second, millisecond: p.millisecond }, tz);
 }
 
@@ -302,19 +313,19 @@ function dateOpts({ weekday = true, month = 'short', year = 'auto', ms, now, tz 
  * false | 'auto'), now.
  */
 export function formatDate(ms, tz, { weekday = true, month = 'short', year = 'auto', now = null } = {}) {
-  if (ms == null) return DASH;
+  if (!validMs(ms)) return DASH;
   return dateFormat(tz, dateOpts({ weekday, month, year, ms, now, tz })).format(ms);
 }
 
 /** The time of day: '5:30 PM' or '17:30', as the locale writes it. opts.seconds adds seconds. */
 export function formatTime(ms, tz, { seconds = false } = {}) {
-  if (ms == null) return DASH;
+  if (!validMs(ms)) return DASH;
   return dateFormat(tz, seconds ? { hour: 'numeric', minute: '2-digit', second: '2-digit' } : { hour: 'numeric', minute: '2-digit' }).format(ms);
 }
 
 /** Date and time: 'Mon, Nov 16, 5:30 PM'. Same options as formatDate, plus seconds. */
 export function formatDateTime(ms, tz, { weekday = true, month = 'short', year = 'auto', now = null, seconds = false } = {}) {
-  if (ms == null) return DASH;
+  if (!validMs(ms)) return DASH;
   const o = dateOpts({ weekday, month, year, ms, now, tz });
   o.hour = 'numeric';
   o.minute = '2-digit';
@@ -322,9 +333,12 @@ export function formatDateTime(ms, tz, { weekday = true, month = 'short', year =
   return dateFormat(tz, o).format(ms);
 }
 
+// A time a Date can show: a finite number within the range of dates.
+const validMs = (v) => typeof v === 'number' && Math.abs(v) <= 8.64e15 - 2 * DAY;
+
 /** 'Today, 5:30 PM', 'Yesterday, 9:12 AM', 'Tomorrow, 7:00 AM' or 'Mon, Nov 9, 5:30 PM'. */
 export function formatWhen(ms, tz, now, { seconds = false } = {}) {
-  if (ms == null) return DASH;
+  if (!validMs(ms)) return DASH;
   const k = dayKey(ms, tz), today = dayKey(now, tz);
   const time = formatTime(ms, tz, { seconds });
   if (k === today) return t('Today, {time}', { time });
@@ -339,7 +353,7 @@ export function formatDayKey(key, { weekday = true, month = 'short', year = true
   const o = { month, day: 'numeric' };
   if (weekday) o.weekday = weekday === true ? 'short' : weekday;
   if (year) o.year = 'numeric';
-  return dateFormat('UTC', o).format(Date.UTC(y, m - 1, day, 12));
+  return dateFormat('UTC', o).format(utc(y, m - 1, day, 12));
 }
 
 /**
@@ -379,7 +393,7 @@ export function zoneName(ms, tz, { style = 'short' } = {}) {
 
 /** ISO 8601 with the zone's offset, for files: '2026-11-16T11:30:00-06:00'. */
 export function toIsoZoned(ms, tz) {
-  if (ms == null) return '';
+  if (!validMs(ms)) return '';
   const p = zonedParts(ms, tz);
   const o = Math.round(p.offset_ms / MINUTE);
   const sign = o < 0 ? '-' : '+';
@@ -393,7 +407,7 @@ export function toIsoZoned(ms, tz) {
  * 'in 10 min'. Minutes up to an hour, hours and minutes up to 6 hours, hours up to 2 days, then days.
  */
 export function formatRelative(ms, now) {
-  if (ms == null || now == null) return DASH;
+  if (!validMs(ms) || !validMs(now)) return DASH;
   const diff = now - ms;
   const s = Math.abs(diff) / 1000;
   const future = diff < 0;
@@ -422,8 +436,8 @@ export function formatRelative(ms, now) {
  */
 export function formatDuration(ms, { style = 'short', seconds = 'auto' } = {}) {
   if (ms == null || !Number.isFinite(ms)) return DASH;
-  const sign = ms < 0 ? '\u2212' : '';
   let s = Math.round(Math.abs(ms) / 1000);
+  const sign = ms < 0 && s > 0 ? '\u2212' : ''; // no sign on what rounds to zero
   if (style === 'clock') {
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
     return sign + (h ? `${h}:${pad2(m)}:${pad2(sec)}` : `${m}:${pad2(sec)}`);
@@ -503,7 +517,9 @@ export function resolvePeriod(period, { now, tz, first_ms = null, fallback = '30
     case '30d': from = addPeriod(startOf(now, 'day', tz), 'day', -29, tz); break;
     case 'year': from = startOf(now, 'year', tz); break;
     case 'all': from = isMs(first_ms) ? Math.min(first_ms, now) : null; break;
-    default: from = p.from ?? null; to = p.to ?? now;
+    default:
+      from = p.from ?? null; to = p.to ?? now;
+      if (isMs(from) && to < from) to = from; // a start still to come: an empty period, not a backwards one
   }
   const r = { preset, from_ms: from, to_ms: to };
   r.label = periodLabel(r, tz, now);

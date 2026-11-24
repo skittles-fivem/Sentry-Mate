@@ -188,3 +188,22 @@ test('a byte size that rounds up to 1,000 steps to the next unit, and 10 and mor
   assert.equal(f(999_999_999_999_999_999, 'bytes'), '1,000 PB', 'the last unit has no next one');
   assert.equal(f(0, 'bytes'), '0 B');
 });
+
+test('a duration that rounds to zero has no sign', () => {
+  assert.equal(U.format(-1, 'duration'), '0\u00a0s');
+  assert.equal(U.format(-400, 'duration'), '0\u00a0s');
+  assert.equal(U.format(-1500, 'duration'), '\u22122\u00a0s');
+});
+
+test('toMetric takes numbers and plain decimal text only', () => {
+  for (const v of [' ', '', true, false, [], {}, '0x10', 'abc', NaN, Infinity, null, undefined]) assert.equal(U.toMetric(v, 'percent'), null, JSON.stringify(v));
+  assert.equal(U.toMetric('12', 'percent'), 12);
+  assert.equal(U.toMetric(' -1.5 ', 'percent'), -1.5);
+  assert.equal(U.toMetric('1e2', 'percent'), 100);
+  assert.equal(U.toMetric(7, 'percent'), 7);
+});
+
+test('a kind named like an object property is unknown', () => {
+  assert.throws(() => U.format(1, 'constructor'), RangeError);
+  assert.throws(() => U.unitLabel('toString'), RangeError);
+});
