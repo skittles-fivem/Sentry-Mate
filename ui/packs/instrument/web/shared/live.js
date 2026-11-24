@@ -44,6 +44,7 @@ export const carOf = (car) => (d) => !!d && d.car === car;
  *   onError  (err) -> a read failed (the last value stays)
  *   pollMs   ms, or (lastValue) -> ms | null (null: no fallback read for now), while the stream is down
  *   onLive   (live: boolean) -> the stream went up or down (a page can show it)
+ *   initial  the value as the page has just read it (with load): no read at the start, only the later ones
  *   signal   stops following when aborted (a page scope's own is used by default)
  *   timers   { setTimeout, clearTimeout } (tests)
  * Returns { refresh(), stop(), live, value }.
@@ -54,7 +55,9 @@ export function follow(api, opts = {}) {
   const clearT = opts.timers?.clearTimeout || globalThis.clearTimeout.bind(globalThis);
   const signal = opts.signal || api.signal || null;
   const pollOf = typeof opts.pollMs === 'function' ? opts.pollMs : () => (opts.pollMs ?? FALLBACK_POLL_MS);
-  let value;
+  // a value the page has just read stands for the first read (the stream already open at the start reads nothing)
+  let given = load != null && 'initial' in opts;
+  let value = given ? opts.initial : undefined;
   let live = false;
   let stopped = false;
   let timer = null;
@@ -94,7 +97,7 @@ export function follow(api, opts = {}) {
     live = up;
     onLive?.(up);
     // back up: what changed while it was down, read once; down: the fallback reads start
-    if (up) { if (timer) { clearT(timer); timer = null; } read(); } else schedule();
+    if (up) { if (timer) { clearT(timer); timer = null; } if (!given) read(); } else schedule();
   }
   const unsubscribe = api.events((ev) => {
     if (stopped || ev?.type !== type || !match(ev.data)) return;
@@ -109,7 +112,7 @@ export function follow(api, opts = {}) {
   }
   signal?.addEventListener?.('abort', stop, { once: true });
   // (the stream already open answered at once above, and that started the first read)
-  if (!reading) read();
+  if (given) { given = false; schedule(); } else if (!reading) read();
   return {
     refresh: read,
     stop,
