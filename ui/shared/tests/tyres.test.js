@@ -69,3 +69,14 @@ test('a placard wheel size that is only a guess says so and where to set it', ()
   // a size the server sends with a pressure that is not the placard's is not shown
   assert.equal(T.wheelGuessLine(now({ tyre_recommended_kpa: W(290), tyre_recommended_source: 'can', tyre_recommended_wheel_in: 21, tyre_recommended_wheel_guess: true })), null);
 });
+
+test('front and rear that read the same in the person\'s unit are said once', () => {
+  psi();
+  const near = { tyre_recommended_kpa: W(290), tyre_recommended_rear_kpa: W(293), tyre_recommended_source: 'can' };
+  assert.equal(sp(T.recommendedValue(T.tyreView(now(near)))), '42 psi');
+  assert.equal(sp(T.recommendedLine(now(near))), 'Recommended 42 psi (from CAN).');
+  assert.equal(sp(T.recommendedValue({ front: 290, rear: 300 })), '42 psi front, 44 psi rear');
+  setUnits({ distance: 'km', temperature: 'c', pressure: 'bar', range: 'rated' });
+  assert.equal(sp(T.recommendedValue({ front: 290, rear: 293 })), '2.90 bar front, 2.93 bar rear');
+  assert.equal(sp(T.recommendedValue({ front: 290, rear: 290.4 })), '2.90 bar');
+});
