@@ -75,6 +75,9 @@ async function warm(s) {
   const info = pageInfo(id);
   if (!info || BARE.has(id)) return;
   const modP = pageModule(id);
+  // a file that fails while the car is still being read is not an error nobody handles: whoever warms waits for
+  // modP below and takes its failure there (and the page itself loads the file again, see mount())
+  modP.catch(() => {});
   let car = null;
   if (s.car) {
     // a car page may show a map: its tile settings, as core/map.js reads them
