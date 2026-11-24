@@ -21,11 +21,12 @@
 //! started ([`db::Db::shadow`]: the car's folder copied without its SMO series, its kept keys copied in), a second
 //! engine over it ([`Engine::shadow_of`]) clears what was worked out from CAN logs and decodes every log again as a
 //! rebuild does, then works out the pack's day readings, then the car is switched to it under its lock
-//! ([`db::Db::adopt_car`], then its records: the derived keys replaced, the kept ones left). Until the switch the
-//! pages read the old history (and new logs keep going into it: they are found not recorded after the switch and
-//! decoded again then); a failure, a cancel or a crash before the switch leaves it as it was. The job's record is
-//! kept (`engine` / `full-rebuild`), so a restart carries on where it was: decoding goes on with the logs the shadow
-//! has not recorded, a switch cut off is finished.
+//! ([`db::Db::adopt_car`], then its records: the derived keys replaced, the kept ones left; the drives and charges
+//! made again take the ids they have in the history in use first, so the costs and purposes kept by id stay with
+//! them). Until the switch the pages read the old history (and new logs keep going into it: they are found not
+//! recorded after the switch and decoded again then); a failure, a cancel or a crash before the switch leaves it as
+//! it was. The job's record is kept (`engine` / `full-rebuild`), so a restart carries on where it was: decoding goes
+//! on with the logs the shadow has not recorded, a switch cut off is finished.
 //!
 //! **Versions** ([`derived_version`]): the decoder's version, the timeline's rules and a digest of the DBC sets the
 //! history was made with are kept per car (in its record's meta). A server whose decoding differs finds the cars made
@@ -1059,6 +1060,15 @@ impl Engine {
                         .filter(|u| u.update.inputs.contains(model::Input::TeslaApi))
                         .collect();
                 sdb.upsert(car, &api_updates)?;
+                // the drives and charges made again keep the ids they have in the history in use (as a window's
+                // rebuild keeps them), so what points at them (costs typed or kept, purposes, notes) stays with them
+                keep_ids::<model::Drive>(db, sdb, car, |d, id| d.id = id)?;
+                keep_ids::<model::Charge>(db, sdb, car, |c, id| {
+                    c.id = id;
+                    if let Ok(Some(k)) = records::cost(db, car, id, c.start_ms) {
+                        c.cost = Some(k.amount);
+                    }
+                })?;
                 db.adopt_car(car, sdb)?;
             }
             self.full_switch_records(car, sdb, &seed)?;
@@ -1224,6 +1234,31 @@ impl Engine {
         }
         Ok(())
     }
+}
+
+/// Gives the shadow's live rows of a kind the ids of the rows `real` has where they are the same row made again
+/// ([`crate::pipeline::carry_ids`]: its own id if `real` has it, else the first one it overlaps that no other took).
+/// A row's id comes from its start when it is first made and stays when a late log moves the start, so a history
+/// built from scratch can name a row otherwise than the one in use.
+fn keep_ids<T: db::Item>(real: &Db, shadow: &Db, car: CarId, set_id: impl Fn(&mut T, u64)) -> Result<()> {
+    let old: Vec<(u64, u64, u64)> = crate::pipeline::all_rows::<T>(real, car, 0, u64::MAX, Some(Source::Live))?
+        .iter()
+        .map(|r| (r.id(), r.start_ms(), r.end_ms()))
+        .collect();
+    let mut rows = crate::pipeline::all_rows::<T>(shadow, car, 0, u64::MAX, Some(Source::Live))?;
+    let ids: Vec<u64> = rows.iter().map(db::Item::id).collect();
+    let spans: Vec<(u64, u64)> = rows.iter().map(|r| (r.start_ms(), r.end_ms())).collect();
+    let kept = crate::pipeline::carry_ids(&old, &ids, &spans);
+    if kept == ids {
+        return Ok(());
+    }
+    for (r, id) in rows.iter_mut().zip(kept) {
+        if r.id() != id {
+            set_id(r, id);
+        }
+    }
+    shadow.replace_window::<T>(car, 0, u64::MAX, &rows)?;
+    Ok(())
 }
 
 /// Puts in the shadow the rows `real` has from an import site (an import that ran during the rebuild).
