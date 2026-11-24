@@ -460,7 +460,8 @@ async function mountList(ctx, q) {
   }
   let liveT = 0;
   const changed = new Set();
-  ctx.events('rows', (ev) => { if (ev?.data?.car) changed.add(ev.data.car); clearTimeout(liveT); liveT = setTimeout(async () => {
+  ctx.events('rows', (ev) => { if (ev?.data?.car) changed.add(ev.data.car); if (liveT) return; liveT = setTimeout(async () => {   // (words that keep coming, as in a rebuild, never put it off)
+    liveT = 0;
     const again = [...changed];
     changed.clear();
     await refreshCounts(again);
