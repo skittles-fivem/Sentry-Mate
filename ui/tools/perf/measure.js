@@ -26,6 +26,9 @@
 //   CPU      Emulation.setCPUThrottlingRate { rate: 4 }
 //   network  Network.emulateNetworkConditions { latency: 150 ms, download 1.6 Mbit/s * 0.9 = 180000 B/s,
 //            upload 750 kbit/s * 0.9 = 84375 B/s } (Lighthouse's mobile "slow 4G / fast 3G" figures)
+//            on the page and on the site's service worker too: the page's own throttling leaves a request the worker
+//            answers alone, so without it the worker's network reads (every API read once it controls the page: warm
+//            loads and navigations) took no round trip at all (--no-sw-throttle: as before, for comparison)
 //   device   390 x 844 CSS px, deviceScaleFactor 3, isMobile, hasTouch
 //
 // Time to usable (ms after navigation start, in the page's own clock):
@@ -319,6 +322,34 @@ async function scrollRun(page) {
   }, ROW_SELECTOR).catch((e) => ({ error: String(e) }));
 }
 
+// The network conditions on every service worker of the browser too (the page's CDP session cannot reach them):
+// the browser's own CDP endpoint, auto-attached to each new target, which waits until it is set. Returns close().
+async function throttleWorkers(port, net) {
+  const v = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+  const ws = new WebSocket(v.webSocketDebuggerUrl);
+  await new Promise((res, rej) => { ws.addEventListener('open', res); ws.addEventListener('error', rej); });
+  let id = 0;
+  const pend = new Map();
+  const send = (method, params = {}, sessionId) => new Promise((res) => {
+    const i = ++id; pend.set(i, res); ws.send(JSON.stringify({ id: i, method, params, ...(sessionId ? { sessionId } : {}) }));
+  });
+  ws.addEventListener('message', async (m) => {
+    const d = JSON.parse(m.data);
+    if (d.id && pend.has(d.id)) { pend.get(d.id)(d); pend.delete(d.id); return; }
+    if (d.method !== 'Target.attachedToTarget') return;
+    const { sessionId, targetInfo } = d.params;
+    if (targetInfo.type === 'service_worker') {
+      await send('Network.enable', {}, sessionId);
+      const r = await send('Network.emulateNetworkConditions', net, sessionId);
+      if (r.error) console.error('service worker not throttled:', r.error.message);
+    }
+    await send('Runtime.runIfWaitingForDebugger', {}, sessionId);
+  });
+  const r = await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+  if (r.error) throw new Error('Target.setAutoAttach: ' + r.error.message);
+  return () => { try { ws.close(); } catch { /* gone */ } };
+}
+
 async function main() {
   const browser = await chromium.launch({ args: ['--ignore-certificate-errors'] });
   // one sign-in for the whole run (the server limits right-password sign-ins per minute)
@@ -334,7 +365,7 @@ async function main() {
   const about = await (await auth.request.get(BASE + '/api/v1/about', { headers: h })).json().catch(() => ({}));
   const results = { label: LABEL, base: BASE, when: new Date().toISOString(), server_version: about.version || null,
     build: about.build || null, car, cars: cars.items.length,
-    conditions: { desktop: DESKTOP, laptop: LAPTOP, throttled: !args['no-throttle'], network_throttled: THROTTLE_NET, cpu_throttling_rate: CPU, network: NET, device: { ...DEVICE, userAgent: undefined }, quiet_ms: QUIET, timeout_ms: TIMEOUT,
+    conditions: { desktop: DESKTOP, laptop: LAPTOP, throttled: !args['no-throttle'], network_throttled: THROTTLE_NET, service_worker_throttled: !args['no-throttle'] && THROTTLE_NET && !args['no-sw-throttle'], cpu_throttling_rate: CPU, network: NET, device: { ...DEVICE, userAgent: undefined }, quiet_ms: QUIET, timeout_ms: TIMEOUT,
       ttu: 'max(main view ready: content, no aria-busy, no placeholders; last resource responseEnd excl. /api/v1/events), after ' + QUIET + ' ms network quiet',
       warm: 'second page.goto of the same URL in the same page and persistent profile (fresh profile folder per pack/page) (HTTP cache warm; packs answer Cache-Control: no-cache, so 304 revalidations)' },
     runs: [] };
@@ -347,7 +378,10 @@ async function main() {
       // a persistent profile in a new empty folder: an empty disk cache, like a phone's browser (an incognito
       // context's in-memory cache does not keep maplibre-gl.mjs, 1.1 MB, for the warm load)
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-perf-'));
-      const ctx = await chromium.launchPersistentContext(dir, { ignoreHTTPSErrors: true, args: ['--ignore-certificate-errors'], ...DEVICE });
+      const swNet = !args['no-throttle'] && THROTTLE_NET && !args['no-sw-throttle'];
+      const dport = 20000 + Math.floor(Math.random() * 20000);
+      const ctx = await chromium.launchPersistentContext(dir, { ignoreHTTPSErrors: true, args: ['--ignore-certificate-errors', ...(swNet ? [`--remote-debugging-port=${dport}`] : [])], ...DEVICE });
+      const unthrottle = swNet ? await throttleWorkers(dport, NET) : null;
       await ctx.addCookies(cookies);
       await ctx.addInitScript(INIT);
       const page = ctx.pages()[0] || await ctx.newPage();
@@ -376,6 +410,7 @@ async function main() {
           await navigate(page, cdp, BASE, PATHS[PAGES[0]](car, drive));
         }
       }
+      unthrottle?.();
       await ctx.close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
