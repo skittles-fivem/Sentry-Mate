@@ -727,7 +727,8 @@ the file is all there is.
   windows_1252 }`, `found: { drives, charges, states, updates, positions, charge_points, replaced, read_again }`
   (what the file gives; stored once imported), `tables: { positions, drives, charging_processes, states, updates }`
   each `{ read, imported, found, skipped }` (`imported` 0 until the import ran), `cars: [{ tm_car, name, vin_prefix, match,
-  drives, charges, first_ms, last_ms, rows }]`, `cars_count`, `cars_left_out`, `span: { from_ms, to_ms }` (the rows
+  drives, charges, first_ms, last_ms, rows, tables }]` (`rows`: the car's polls read; `tables`: the car's own figures
+  per table, as the report's `tables`, so `tables.positions` says how many of its polls were stored and skipped), `cars_count`, `cars_left_out`, `span: { from_ms, to_ms }` (the rows
   used), `units`, `time_zone`, `compression`, `packed_bytes`, `unpacked_bytes`, `missing_columns` (read here, not in
   the files: read as empty), `unknown_columns` (how many columns were passed over), `warnings`. The `skipped`
   reasons: `already_imported`, `duplicate` (the same time twice), `out_of_order`, `bad_time` (no readable `Date`, or a
