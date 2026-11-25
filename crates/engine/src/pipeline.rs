@@ -519,6 +519,21 @@ impl Engine {
     /// `rebuild`: `false` leaves the window for [`Self::rebuild_dirty`] (it stays noted dirty, as when a crash came
     /// between the two: several logs' windows are then rebuilt as one).
     pub(crate) fn log_locked(&self, car: CarId, key: &str, name: &str, force: bool, rebuild: bool) -> Result<()> {
+        self.log_read(car, key, name, force, rebuild, None)
+    }
+
+    /// [`Self::log_locked`], with the log read and decoded ahead (`ahead`, [`crate::ahead`]): its reading is used
+    /// where it was made with the DBC set and GPS layout the car has now, else the log is decoded here as it would
+    /// be without it.
+    pub(crate) fn log_read(
+        &self,
+        car: CarId,
+        key: &str,
+        name: &str,
+        force: bool,
+        rebuild: bool,
+        mut ahead: Option<crate::ahead::Read>,
+    ) -> Result<()> {
         let rt = self.handle()?;
         let db = &self.inner.db;
         let Some(record) = rt.block_on(self.inner.judge.record(key, name)) else { return Ok(()) };
@@ -544,6 +559,7 @@ impl Engine {
         }
         let began = Instant::now();
         let read = |n: &str| rt.block_on(self.inner.store.read(n)).map_err(|e| Error::Store(e.to_string()));
+        let us = |t: Instant| u64::try_from(t.elapsed().as_micros()).unwrap_or(u64::MAX);
         let mut profile_changed = false;
         let old_samples = match &old {
             Some(LogEntry {
@@ -556,12 +572,15 @@ impl Engine {
         let mut firmware: Option<(timeline::LogFirmware, bool)> = None;
         let mut internal_gps: Option<bool> = None;
         let outcome = if usable {
-            match read(name)? {
+            let t = Instant::now();
+            let stored = match ahead.as_mut() {
+                Some(a) => std::mem::replace(&mut a.stored, Ok(None))?,
+                None => self.read_stored(name)?,
+            };
+            self.inner.counters.read_us.fetch_add(us(t), Ordering::Relaxed);
+            match stored {
                 None => Outcome::Hole { from_ms: start, to_ms: start + 60_000, reason: "not_stored".into() },
-                Some(bytes) => {
-                    let side: serde_json::Value = read(&format!("{name}.json"))?
-                        .and_then(|b| serde_json::from_slice(&b).ok())
-                        .unwrap_or_default();
+                Some((bytes, side)) => {
                     // the VIN: from the log's own frames (signed with the log), else its sidecar while the car has
                     // none; a VIN from a sidecar (`via` 0) gives way to one from frames
                     let from_sidecar = c.vin.as_ref().is_none_or(|v| v.via == 0);
@@ -591,7 +610,17 @@ impl Engine {
                     }
                     let profile = dbc::Profile::from_name(c.profile().dbc_name());
                     let gps = self.gps_layout(car)?;
-                    match timeline::read_log_with(&bytes, &side, profile, self.inner.opts.sample, gps) {
+                    let t = Instant::now();
+                    let decoded =
+                        match ahead.as_mut().and_then(|a| a.decoded_with(c.profile().dbc_name(), gps.as_ref())) {
+                            Some(d) => {
+                                self.inner.counters.read_ahead.fetch_add(1, Ordering::Relaxed);
+                                d
+                            }
+                            None => timeline::read_log_with(&bytes, &side, profile, self.inner.opts.sample, gps),
+                        };
+                    self.inner.counters.read_us.fetch_add(us(t), Ordering::Relaxed);
+                    match decoded {
                         Ok(r) if other_vin(&c, r.vin.as_ref()) => {
                             tracing::warn!(
                                 "car {car}: log {name} names another car's VIN than the car's; it is left out"
@@ -609,11 +638,15 @@ impl Engine {
                             if let (Some(a), Some(b)) = (from, to) {
                                 let (a, b) = old_samples.map_or((a, b), |(x, y)| (a.min(x), b.max(y)));
                                 let mine = Mine { key, status, dropped: r.facts.dropped, samples: &r.samples };
+                                let t = Instant::now();
                                 self.write_samples(car, &c, name, a, b, Some(mine))?;
+                                self.inner.counters.samples_us.fetch_add(us(t), Ordering::Relaxed);
                                 wrote_samples = true;
                             }
                             let n = u32::try_from(r.samples.len()).unwrap_or(u32::MAX);
+                            let t = Instant::now();
                             self.note_now_from(car, &r.samples, Input::Smo)?;
+                            self.inner.counters.now_us.fetch_add(us(t), Ordering::Relaxed);
                             if !c.inputs.contains(Input::Smo) {
                                 let _record = lock(&self.inner.car_record);
                                 if let Some(mut now) = db.car(car)? {
@@ -1207,6 +1240,8 @@ impl Engine {
         // again in place for the new rules alone, the full rebuild makes them again beside the old history
         let hold = self.version_held(car);
         let mut wanted = Vec::new();
+        // (those read and decoded ahead: the usable ones)
+        let mut usable = Vec::new();
         let mut bytes = 0;
         // (a full rebuild carried on after a restart: the logs it decoded before, for its counts)
         let (mut skipped, mut skipped_bytes) = (0u64, 0u64);
@@ -1223,6 +1258,9 @@ impl Engine {
             if !fresh {
                 let len = r.length.unwrap_or(0);
                 bytes += len;
+                if r.usable() {
+                    usable.push(name.clone());
+                }
                 wanted.push((key, name, len));
             } else {
                 skipped += 1;
@@ -1325,37 +1363,46 @@ impl Engine {
                 batch = 1;
             }
         }
-        let mut waiting = 0;
-        for (key, name, len) in wanted {
-            if job.is_some_and(|j| j.cancelled()) {
-                self.rebuild_dirty(car)?;
-                return Ok(());
-            }
-            // a full rebuild whose server is stopping: nothing more is asked of a runtime that is going away
-            if job.is_some_and(|j| j.stopping()) {
-                return Err(Error::Other(crate::full::STOPPING.into()));
-            }
-            let l = self.car_lock(car);
-            let held = lock(&l);
-            let r = self.log_locked(car, &key, &name, false, batch == 1);
-            drop(held);
-            if let Err(e) = r {
+        // the logs read and decoded ahead on the other cores, worked on here in order ([`crate::ahead`])
+        let threads = self.inner.opts.read_ahead;
+        let ended = crate::ahead::Ahead::run(self, car, usable, threads, |ahead| -> Result<bool> {
+            let mut waiting = 0;
+            for (key, name, len) in wanted {
+                if job.is_some_and(|j| j.cancelled()) {
+                    self.rebuild_dirty(car)?;
+                    return Ok(true);
+                }
+                // a full rebuild whose server is stopping: nothing more is asked of a runtime that is going away
+                if job.is_some_and(|j| j.stopping()) {
+                    return Err(Error::Other(crate::full::STOPPING.into()));
+                }
+                let read = ahead.and_then(|a| a.take(&name));
+                let l = self.car_lock(car);
+                let held = lock(&l);
+                let r = self.log_read(car, &key, &name, false, batch == 1, read);
+                drop(held);
+                if let Err(e) = r {
+                    if let Some(j) = job {
+                        j.log_failed(&name, &e);
+                    }
+                    self.failed(&e);
+                }
+                waiting += 1;
+                if batch > 1 && waiting >= batch {
+                    waiting = 0;
+                    self.rebuild_dirty(car)?;
+                }
                 if let Some(j) = job {
-                    j.log_failed(&name, &e);
-                }
-                self.failed(&e);
-            }
-            waiting += 1;
-            if batch > 1 && waiting >= batch {
-                waiting = 0;
-                self.rebuild_dirty(car)?;
-            }
-            if let Some(j) = job {
-                j.step(self, Some(car), len);
-                if j.crash_now() {
-                    return Err(Error::Other(crate::full::CRASHED.into()));
+                    j.step(self, Some(car), len);
+                    if j.crash_now() {
+                        return Err(Error::Other(crate::full::CRASHED.into()));
+                    }
                 }
             }
+            Ok(false)
+        })?;
+        if ended {
+            return Ok(());
         }
         self.rebuild_dirty(car)?;
         // Tesla API data stored and not built yet (a restart, or a rebuild of the car)
