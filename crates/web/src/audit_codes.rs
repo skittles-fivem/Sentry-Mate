@@ -60,6 +60,7 @@ pub const CODES: &[Code] = &[
     c("can-logs-unsigned-used", CARS, Some("car"), "Used unsigned CAN logs that had failed only for being unsigned"),
     c("car-changed", CARS, Some("car"), "Changed a car"),
     c("car-full-rebuild", CARS, Some("car"), "Ran a full rebuild"),
+    c("car-gps-fit-removed", CARS, Some("car"), "Removed a past GPS layout fit of a car"),
     c("car-gps-layout", CARS, Some("car"), "Set how a car's Screenmate GPS frames are read"),
     c("car-overlap", CARS, Some("car"), "Chose how a car's overlapping data is read"),
     c("car-rebuild", CARS, Some("car"), "Rebuilt a car's history"),
