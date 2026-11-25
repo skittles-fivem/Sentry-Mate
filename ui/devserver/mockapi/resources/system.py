@@ -394,6 +394,8 @@ def notices(req):
         items += teslamate_notices(req)
         from .fullrebuild import notices as full_notices
         items += full_notices(req)
+        from .repair import notices as repair_notices
+        items += repair_notices(req)
     return {"items": items, "next": None}
 
 
