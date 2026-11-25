@@ -132,7 +132,14 @@ impl Bench {
         let sha = hex::encode(Sha256::digest(bytes));
         let h =
             [("upload-offset", "0".to_string()), ("upload-length", bytes.len().to_string()), ("upload-sha256", sha)];
-        let (s, b) = self.call(&format!("/api/can/logs/{name}"), &h, bytes.to_vec()).await;
+        // (a server error is told to send again, as the app does)
+        let (mut s, mut b) = self.call(&format!("/api/can/logs/{name}"), &h, bytes.to_vec()).await;
+        for _ in 0..3 {
+            if !s.is_server_error() {
+                break;
+            }
+            (s, b) = self.call(&format!("/api/can/logs/{name}"), &h, bytes.to_vec()).await;
+        }
         assert_eq!(s, StatusCode::CREATED, "{name}: {b}");
     }
 
@@ -202,8 +209,43 @@ fn pct(v: &[u64], p: f64) -> u64 {
     s[((s.len() as f64 - 1.0) * p).round() as usize]
 }
 
+/// How long a whole run may take, and how long it may go without one more log verified, before it is called stuck.
+struct Limits {
+    total: Duration,
+    stall: Duration,
+}
+
+/// The test: a backlog of 600 logs takes seconds on one core; ten minutes is a hang.
+const TEST_LIMITS: Limits = Limits { total: Duration::from_secs(600), stall: Duration::from_secs(60) };
+/// By hand with 20,000 logs on whatever machine.
+const MEASURE_LIMITS: Limits = Limits { total: Duration::from_secs(3 * 3600), stall: Duration::from_secs(600) };
+
+/// The logs asked about and not answered `verified`, each with its own record and the record of the log before it:
+/// what a log stuck behind another one looks like.
+async fn stuck_report(b: &Bench, left: &[String]) -> String {
+    let mut out = format!("{} logs not verified; first {}:\n", left.len(), left.len().min(8));
+    for n in left.iter().take(8) {
+        let index = n.rsplit('_').next().and_then(|t| t.strip_suffix(".log.xz")).and_then(|t| t.parse::<u64>().ok());
+        let prev = index.filter(|i| *i > 0).map(|i| name(i - 1));
+        let own = b.up.judge.record(KEY, n).await.map(|r| (r.status, r.reason));
+        let before = match &prev {
+            Some(p) => b.up.judge.record(KEY, p).await.map(|r| (r.status, r.reason)),
+            None => None,
+        };
+        out.push_str(&format!("  {n}: {own:?}; before it {prev:?}: {before:?}\n"));
+    }
+    out
+}
+
+/// Stops the test at once when a task of it ended in a panic (or, for those that run to the end, when one ended).
+fn task_ended(ended: Option<Result<(), tokio::task::JoinError>>, what: &str) {
+    if let Some(r) = ended {
+        r.unwrap_or_else(|e| panic!("the {what} task failed: {e}"));
+    }
+}
+
 /// The whole scenario: `n` logs of the backlog, then live logs every `live_every` while it goes.
-async fn run(n: u64, live_every: Duration) -> Run {
+async fn run(n: u64, live_every: Duration, limits: Limits) -> Run {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let b = Arc::new(
         Bench::new(10 * 60 * 1000, move |j| {
@@ -219,19 +261,21 @@ async fn run(n: u64, live_every: Duration) -> Run {
     // uploads' judge through the key's lock file
     let engine = Arc::new(Judge::new(b.up.store.clone()));
     // the decode queue: every judged log's record looked up, one after the other
-    let decoder = {
+    // (the decoder and the rebuild run until the end; their ending before it, or a panic, is looked for every round)
+    let mut background = tokio::task::JoinSet::new();
+    {
         let (engine, lookups) = (engine.clone(), lookups.clone());
-        tokio::spawn(async move {
+        background.spawn(async move {
             while let Some(name) = rx.recv().await {
                 engine.record(KEY, &name).await;
                 lookups.fetch_add(1, Ordering::Relaxed);
             }
-        })
-    };
+        });
+    }
     // a full rebuild: the car's whole book read, then each of its logs' records looked up in turn, again and again
-    let rebuild = {
+    {
         let (engine, stop, book_reads, lookups) = (engine.clone(), stop.clone(), book_reads.clone(), lookups.clone());
-        tokio::spawn(async move {
+        background.spawn(async move {
             while !stop.load(Ordering::Relaxed) {
                 let book = engine.book(KEY).await;
                 book_reads.fetch_add(1, Ordering::Relaxed);
@@ -244,8 +288,8 @@ async fn run(n: u64, live_every: Duration) -> Run {
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
-        })
-    };
+        });
+    }
 
     // the newest log of the backlog goes first, so the live chain after it is never waiting for its log before
     let mut order = shuffled(n - 1, 0x5eed);
@@ -253,20 +297,20 @@ async fn run(n: u64, live_every: Duration) -> Run {
     let queue = Arc::new(Mutex::new(order.into_iter().collect::<std::collections::VecDeque<u64>>()));
     let stored: Arc<Mutex<BTreeMap<String, Instant>>> = Arc::default();
     let t0 = Instant::now();
-    let mut senders = Vec::new();
+    let mut senders = tokio::task::JoinSet::new();
     for _ in 0..PARALLEL {
         let (b, queue, stored) = (b.clone(), queue.clone(), stored.clone());
-        senders.push(tokio::spawn(async move {
+        senders.spawn(async move {
             loop {
                 let Some(i) = queue.lock().unwrap().pop_front() else { return };
                 b.send(i, false).await;
                 stored.lock().unwrap().insert(name(i), Instant::now());
             }
-        }));
+        });
     }
     // the live chain: one new log at a time after the backlog's newest (the app's status calls below time them)
     let live_stored: Arc<Mutex<BTreeMap<String, Instant>>> = Arc::default();
-    let live = {
+    let mut live = {
         let (b, stop, live_stored) = (b.clone(), stop.clone(), live_stored.clone());
         tokio::spawn(async move {
             let (mut i, mut sends) = (n, Vec::new());
@@ -289,8 +333,20 @@ async fn run(n: u64, live_every: Duration) -> Run {
     let mut live_ms: Vec<u64> = Vec::new();
     let mut upload_done: Option<f64> = None;
     let (mut status_calls, mut status_ms) = (0u64, Vec::new());
+    let mut last_progress = Instant::now();
     loop {
-        if upload_done.is_none() && senders.iter().all(|s| s.is_finished()) {
+        // a task that panicked (a failed upload, say) stops the test here, not hours later
+        while let Some(r) = senders.try_join_next() {
+            task_ended(Some(r), "sender");
+        }
+        if let Some(r) = background.try_join_next() {
+            task_ended(Some(r), "decoder or rebuild");
+            panic!("the decoder or the rebuild ended before the end of the run");
+        }
+        if live.is_finished() {
+            panic!("the live task ended before the end of the run: {:?}", (&mut live).await.err());
+        }
+        if upload_done.is_none() && senders.is_empty() {
             upload_done = Some(t0.elapsed().as_secs_f64());
         }
         let live_now: BTreeMap<String, Instant> = live_stored.lock().unwrap().clone();
@@ -305,6 +361,18 @@ async fn run(n: u64, live_every: Duration) -> Run {
         if backlog_left == 0 && upload_done.is_some() {
             break;
         }
+        let stalled = last_progress.elapsed() > limits.stall;
+        let late = t0.elapsed() > limits.total;
+        if stalled || late {
+            let left: Vec<String> = {
+                let s = stored.lock().unwrap();
+                s.keys().chain(live_now.keys()).filter(|k| !verified_at.contains_key(*k)).cloned().collect()
+            };
+            let why = if stalled { "no log verified for" } else { "the backlog was not all verified within" };
+            let after = if stalled { limits.stall } else { limits.total };
+            let stored_now = stored.lock().unwrap().len();
+            panic!("{why} {after:?} ({stored_now} stored)\n{}", stuck_report(&b, &left).await);
+        }
         if !ask.is_empty() {
             let at = Instant::now();
             let c = b.checks(&ask).await;
@@ -318,24 +386,26 @@ async fn run(n: u64, live_every: Duration) -> Run {
                             live_ms.push(now.duration_since(*t).as_millis() as u64);
                         }
                         verified_at.insert(k, now);
+                        last_progress = now;
                     }
                     "failed" => panic!("{k} failed"),
                     _ => {}
                 }
             }
         }
-        assert!(t0.elapsed() < Duration::from_secs(3 * 3600), "the backlog never got verified");
         tokio::time::sleep(Duration::from_millis(700)).await;
     }
     let all_verified_s = t0.elapsed().as_secs_f64();
     stop.store(true, Ordering::Relaxed);
     let live_send_ms = live.await.unwrap();
-    rebuild.await.unwrap();
-    for s in senders {
-        s.await.unwrap();
+    // (the rebuild ends by itself; the decoder waits for the next judged log for ever and is stopped here)
+    background.abort_all();
+    while let Some(r) = background.join_next().await {
+        if let Err(e) = r {
+            assert!(e.is_cancelled(), "the decoder or the rebuild failed: {e}");
+        }
     }
     drop(b.up.judge.book(KEY).await);
-    decoder.abort();
     let backlog_verified = stored.lock().unwrap().keys().filter(|k| verified_at.contains_key(*k)).count();
     assert_eq!(backlog_verified as u64, n);
     Run {
@@ -383,7 +453,9 @@ fn print(r: &Run) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_backlog_is_judged_and_answered() {
-    let r = run(600, Duration::from_millis(200)).await;
+    let r = tokio::time::timeout(TEST_LIMITS.total, run(600, Duration::from_millis(200), TEST_LIMITS))
+        .await
+        .expect("the run did not end within its time");
     print(&r);
     assert!(!r.live_ms.is_empty());
     let worst = r.live_ms.iter().max().copied().unwrap_or(0);
@@ -394,6 +466,6 @@ async fn a_backlog_is_judged_and_answered() {
 #[ignore = "by hand, --release: JUDGE_LOGS=20000 JUDGE_LOG_KB=16"]
 async fn measure_backlog() {
     let n = std::env::var("JUDGE_LOGS").ok().and_then(|v| v.parse().ok()).unwrap_or(20_000);
-    let r = run(n, Duration::from_secs(2)).await;
+    let r = run(n, Duration::from_secs(2), MEASURE_LIMITS).await;
     print(&r);
 }

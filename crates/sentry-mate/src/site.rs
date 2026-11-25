@@ -206,6 +206,10 @@ pub fn web_state(
     }
     .build()?;
     web::resources::settings::init(&app, engine).map_err(|e| e.message)?;
+    // an export file a stop left is taken up (or removed, when it expired meanwhile); nothing writes after a move away
+    if !web::moving::data_moved(&app) {
+        web::moving::recover(&app);
+    }
     Ok(app)
 }
 

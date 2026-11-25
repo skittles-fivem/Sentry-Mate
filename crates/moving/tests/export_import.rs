@@ -550,29 +550,33 @@ fn a_new_recovery_key_that_cannot_be_written_changes_nothing() {
     let vault_before = std::fs::read(data.join(vault::VAULT_FILE)).unwrap();
     let file_before = std::fs::read(&file).unwrap();
 
-    // the file can't be written (its temp file is a folder): the vault is not touched
-    let tmp = keys.join("RECOVERY-KEY.tmp");
-    std::fs::create_dir(&tmp).unwrap();
+    // the file can't be written (a folder is where it goes): the vault is not touched
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
     let e = moving::import::new_recovery_key(&v, &data, &keys, vault::Kdf::FAST_FOR_TESTS).err().unwrap();
     assert!(matches!(e, moving::import::NewKeyError::File(_)), "{e}");
     assert!(std::fs::read(data.join(vault::VAULT_FILE)).unwrap() == vault_before, "the vault file is the same");
-    assert!(std::fs::read(&file).unwrap() == file_before, "the key file is the same");
     assert!(opens(rk.as_str()));
-    std::fs::remove_dir(&tmp).unwrap();
+    std::fs::remove_dir(&file).unwrap();
+    std::fs::write(&file, &file_before).unwrap();
 
-    // the vault file can't be written: the file is put back as it was
-    let vtmp = data.join("vault.tmp");
-    std::fs::create_dir(&vtmp).unwrap();
+    // the vault file can't be written (a folder is where it goes): the file is put back as it was
+    let vault_file = data.join(vault::VAULT_FILE);
+    let aside = data.join("vault.aside");
+    std::fs::rename(&vault_file, &aside).unwrap();
+    std::fs::create_dir(&vault_file).unwrap();
     let e = moving::import::new_recovery_key(&v, &data, &keys, vault::Kdf::FAST_FOR_TESTS).err().unwrap();
     assert!(matches!(e, moving::import::NewKeyError::Vault(_)), "{e}");
-    assert!(std::fs::read(data.join(vault::VAULT_FILE)).unwrap() == vault_before, "the vault file is the same");
     assert!(std::fs::read(&file).unwrap() == file_before, "the key file is the same");
-    assert!(opens(rk.as_str()));
     // with no file before, none is left
     std::fs::remove_file(&file).unwrap();
     moving::import::new_recovery_key(&v, &data, &keys, vault::Kdf::FAST_FOR_TESTS).err().unwrap();
     assert!(!file.exists());
-    std::fs::remove_dir(&vtmp).unwrap();
+    std::fs::remove_dir(&vault_file).unwrap();
+    std::fs::rename(&aside, &vault_file).unwrap();
+    assert!(std::fs::read(&vault_file).unwrap() == vault_before, "the vault file is the same");
+    assert!(opens(rk.as_str()));
+    std::fs::write(&file, &file_before).unwrap();
 
     // both writable: the file holds the new key, and only it opens the vault
     let (rk2, f2) = moving::import::new_recovery_key(&v, &data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();

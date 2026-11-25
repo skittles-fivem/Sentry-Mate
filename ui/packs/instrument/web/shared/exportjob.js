@@ -26,6 +26,7 @@ const TODO = {
   writes_busy: 'Something kept writing (an import, a big upload): try again in a few minutes.',
   server_stopping: 'The server is stopping: make the export once it runs again.',
   changed: 'Make the export again.',
+  server_restarted: 'The server restarted while the file was being made: make the export again.',
   disk: 'Look at the server\'s log and its disk, then make the export again.',
   server_error: 'Look at the server\'s log, then make the export again.',
 };

@@ -388,6 +388,13 @@ pub(crate) struct Inner {
     pub(crate) full_crash_logs: Mutex<Option<u64>>,
     /// Tests: called by the full rebuild's worker when its run ended, before it goes.
     pub(crate) full_exit_hook: Mutex<Option<full::ExitHook>>,
+    /// Tests: called by a rebuild job just before it clears the narrow rebuilds' notes it did.
+    pub(crate) job_clear_hook: Mutex<Option<full::ExitHook>>,
+    /// Tests: the rebuild jobs about to start meet here once.
+    pub(crate) job_start_hook: Mutex<Option<Arc<std::sync::Barrier>>>,
+    /// The rebuild jobs running now, and the most at once (tests).
+    pub(crate) rebuilds_running: AtomicU64,
+    pub(crate) rebuilds_overlap: AtomicU64,
     pub(crate) full_auto: std::sync::atomic::AtomicBool,
     /// How long a new version's full rebuild waits before it starts ([`Engine::full_rebuild_auto_plan`]'s grace).
     pub(crate) full_grace_ms: AtomicU64,
@@ -480,7 +487,7 @@ impl Engine {
             },
         )?;
         // noted first: a restart before the job did it does it then
-        records::put_redo(&self.inner.db, car, records::Redo::Positions, true)?;
+        self.note_redo(car, records::Redo::Positions)?;
         Ok(Some(self.rebuild_because(Scope::car(car), jobs::What::POSITIONS, versions::Cause::gps_layout(), true)?))
     }
 
@@ -621,6 +628,10 @@ impl Engine {
                 full_windows: AtomicU64::new(0),
                 full_crash_logs: Mutex::new(None),
                 full_exit_hook: Mutex::new(None),
+                job_clear_hook: Mutex::new(None),
+                job_start_hook: Mutex::new(None),
+                rebuilds_running: AtomicU64::new(0),
+                rebuilds_overlap: AtomicU64::new(0),
                 full_auto: std::sync::atomic::AtomicBool::new(true),
                 full_grace_ms: AtomicU64::new(full::AUTO_GRACE_MS),
                 version_stale: Mutex::default(),

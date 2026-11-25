@@ -292,24 +292,36 @@ fn recovery_kek(recovery: &[u8; 32], salt: &[u8], kdf: Kdf) -> Result<Zeroizing<
 const KEY_FILE_PURPOSE: &[u8] = b"sentry-mate vault v1: key file";
 const RECOVERY_PURPOSE: &[u8] = b"sentry-mate vault v1: recovery key";
 
-/// Writes a file whole or not at all, readable by its owner only.
+/// Writes a file whole or not at all, readable by its owner only. The temporary file is the file's own full name
+/// with a name of this write's own after it (still ending in `.tmp`): two writers of one file, or of two files of one
+/// stem (`slot.sealed`, `slot.json`), never share one.
 pub fn write_private(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(d) = file.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let tmp = file.with_extension("tmp");
-    {
-        #[cfg(unix)]
+    let name = file.file_name().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "no file name"))?;
+    let mut rnd = [0u8; 8];
+    getrandom::fill(&mut rnd).map_err(std::io::Error::other)?;
+    let mut tmp_name = name.to_owned();
+    tmp_name.push(format!(".{}-{}.tmp", std::process::id(), hex::encode(rnd)));
+    let tmp = file.with_file_name(tmp_name);
+    let result = (|| {
         let mut f = {
-            use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?
+            let mut o = std::fs::OpenOptions::new();
+            o.write(true).create_new(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+            o.open(&tmp)?
         };
-        #[cfg(not(unix))]
-        let mut f = std::fs::File::create(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, file)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
-    std::fs::rename(&tmp, file)?;
+    result?;
     if let Some(d) = file.parent()
         && let Ok(d) = std::fs::File::open(d)
     {

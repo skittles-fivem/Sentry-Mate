@@ -231,9 +231,18 @@ pub fn finish_swap(dir: &Path) -> std::io::Result<()> {
         std::fs::remove_file(&next_key)?;
         sync_dir(dir);
     }
-    // what `write_private` leaves when it stops before its rename
-    for t in ["next-cert.tmp", "next-key.tmp"] {
-        let _ = std::fs::remove_file(dir.join(t));
+    // what a write leaves when it stops before its rename (`<file name>.<writer>.tmp`; `<stem>.tmp` of an older version)
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let left = name.ends_with(".tmp")
+                && ["next-cert", "next-key"]
+                    .iter()
+                    .any(|n| name.strip_prefix(n).is_some_and(|rest| rest.starts_with('.')));
+            if left {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
     }
     Ok(())
 }
