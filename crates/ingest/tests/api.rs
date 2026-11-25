@@ -649,7 +649,8 @@ async fn a_car_that_cant_be_judged_is_reported_without_its_key() {
     let t = setup().await;
     let logs = Arc::new(std::sync::Mutex::new(Vec::new()));
     let _catch = tracing::subscriber::set_default(Capture(logs.clone()));
-    // the car's trust head is damaged: its uploads are still kept, but can't be judged
+    // the car's trust head is damaged: its uploads are still kept, but can't be judged (and the sender is told, so it
+    // sends them again)
     let car = t.data.join("can/abcdef123456");
     std::fs::create_dir_all(&car).unwrap();
     std::fs::write(car.join("trust.head"), b"damaged, not sealed").unwrap();
@@ -657,7 +658,8 @@ async fn a_car_that_cant_be_judged_is_reported_without_its_key() {
     let tok = t.up.tokens.find(&t.token).await.unwrap();
     t.up.tokens.tie(&tok, "abcdef123456").await.unwrap();
     let (s, _) = put(&t, LOG, b"a minute", 0, b"a minute").await;
-    assert_eq!(s, StatusCode::CREATED);
+    assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(t.up.store.exists(LOG), "the log is kept");
     // and the sweep can't judge its waiting logs either
     std::fs::create_dir_all(t.data.join("can/.waiting")).unwrap();
     std::fs::write(t.data.join("can/.waiting/abcdef123456"), b"").unwrap();
