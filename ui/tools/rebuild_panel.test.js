@@ -142,7 +142,7 @@ test('past fits: listed, opened, applied with the password, removed; on desktop 
 
     // a row opens to its full result
     await rows.nth(3).locator('button', { hasText: 'Open' }).click();
-    await page.waitForSelector('#gps-fits .gp-result .gf-row');
+    await page.waitForFunction(() => /Best layout found/.test(document.querySelector('#gps-fits .gp-result .gp-head')?.textContent || ''));
     const open = await rows.nth(3).innerText();
     assert.match(open, /Best layout found, but it is far off/);
     assert.match(open, /Latitude/);
