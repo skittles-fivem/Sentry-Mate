@@ -958,19 +958,42 @@ impl Engine {
         };
         let db = &self.inner.db;
         let p = &self.inner.opts.params;
-        let mut look = 2 * DAY_MS;
-        let (from, to) = loop {
-            let (lo, hi) = (a.saturating_sub(look), b.saturating_add(look));
+        // First a short stretch around the log (`window_look_ms`): where both bounds are found in it (a cut point
+        // or settled span either side) they are the bounds any longer stretch gives, and the two days below would
+        // give; else the two days, four times as far each time no bound is found, as always.
+        let near = self.inner.opts.window_look_ms;
+        let mut found = None;
+        if near < 2 * DAY_MS {
+            let (lo, hi) = (a.saturating_sub(near), b.saturating_add(near));
             let spans: Vec<StateSpan> =
                 all_rows::<StateRow>(db, car, lo, hi, Some(Source::Live))?.into_iter().map(|r| r.span).collect();
             let cuts = records::cuts_between(db, car, meta, lo, hi)?;
             let w = timeline::rebuild_window(&spans, &cuts, a, b, p);
-            let more_before = w.from_ms == 0 && meta.first_ms.is_some_and(|f| f < lo);
-            let more_after = w.to_ms.is_none() && meta.newest_ms.is_some_and(|n| n > hi);
-            if !(more_before || more_after) || look > 4000 * DAY_MS {
-                break (w.from_ms, w.to_ms);
+            // (the spans the log falls in or between, which the bounds are looked for from, are the same as in a
+            // longer stretch only when the stretch has one that starts at or before the log and one that ends after
+            // it: else the nearest are further away)
+            let touched = spans.iter().any(|s| s.start_ms <= a) && spans.iter().any(|s| s.end_ms > b.max(a));
+            if touched && w.from_ms > lo && w.to_ms.is_some_and(|t| t < hi) {
+                self.inner.counters.bounded_near.fetch_add(1, Ordering::Relaxed);
+                found = Some((w.from_ms, w.to_ms));
             }
-            look = look.saturating_mul(4);
+        }
+        let mut look = 2 * DAY_MS;
+        let (from, to) = match found {
+            Some(w) => w,
+            None => loop {
+                let (lo, hi) = (a.saturating_sub(look), b.saturating_add(look));
+                let spans: Vec<StateSpan> =
+                    all_rows::<StateRow>(db, car, lo, hi, Some(Source::Live))?.into_iter().map(|r| r.span).collect();
+                let cuts = records::cuts_between(db, car, meta, lo, hi)?;
+                let w = timeline::rebuild_window(&spans, &cuts, a, b, p);
+                let more_before = w.from_ms == 0 && meta.first_ms.is_some_and(|f| f < lo);
+                let more_after = w.to_ms.is_none() && meta.newest_ms.is_some_and(|n| n > hi);
+                if !(more_before || more_after) || look > 4000 * DAY_MS {
+                    break (w.from_ms, w.to_ms);
+                }
+                look = look.saturating_mul(4);
+            },
         };
         let first = meta.first_ms.unwrap_or(a).min(a);
         let from = from.max(first.saturating_sub(1));
@@ -1122,6 +1145,7 @@ impl Engine {
             .into_iter()
             .filter(|c| c.start_ms >= from && c.start_ms < to)
             .collect();
+        let t_costs = Instant::now();
         crate::costs::carry(self, car, &old, &charges)?;
         for ch in &mut charges {
             ch.place = ch.position.as_ref().and_then(|p| places.place_at(p.lat, p.lon)).map(|p| p.id);
@@ -1130,12 +1154,18 @@ impl Engine {
             let ended = newest > ch.end_ms + self.inner.opts.params.charge_gap_ms;
             ch.cost = crate::costs::settle(self, car, ch, &curve, &tz, ended)?.map(|c| c.amount);
         }
+        let us = |t: Instant| u64::try_from(t.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.inner.counters.window_parts[8].fetch_add(us(t_costs), Ordering::Relaxed);
+        let t_replace = Instant::now();
         let states: Vec<StateRow> = t.states.into_iter().map(|span| StateRow { id: span.start_ms, span }).collect();
         db.replace_window::<Drive>(car, from, to, &drives)?;
         db.replace_window::<Charge>(car, from, to, &charges)?;
         db.replace_window::<StateRow>(car, from, to, &states)?;
         db.write_points::<ChargePoint>(car, Source::Live, from, to, &points)?;
+        self.inner.counters.window_parts[9].fetch_add(us(t_replace), Ordering::Relaxed);
+        let t_cuts = Instant::now();
         records::replace_cuts(db, car, meta, from, to, &t.cuts)?;
+        self.inner.counters.window_parts[10].fetch_add(us(t_cuts), Ordering::Relaxed);
         let rows_written = Instant::now();
         let rows = u64::try_from((rows_written - began).as_micros()).unwrap_or(u64::MAX);
         self.inner.counters.window_parts[4].fetch_add(rows, Ordering::Relaxed);
@@ -1153,10 +1183,12 @@ impl Engine {
         // car's Now says, by the same rule. Not the start of the window's last span: that is often a sliver at the
         // end of the newest log, after the newest sample, and a drive or a charge under way began long before it;
         // and a window that ends before the newest data can still move the start of the span the newest rows go on.
+        let t_state = Instant::now();
         let now = db.entry(car)?.and_then(|e| e.summary.now);
         if let Ok(s) = crate::query::now::state_now(self, car, now.as_ref()) {
             meta.state_since_ms = s.since_ms;
         }
+        self.inner.counters.window_parts[11].fetch_add(us(t_state), Ordering::Relaxed);
         records::put_meta(db, car, meta)?;
         self.emit(Event::Rows { car, kinds: vec!["drives", "charges", "states", "visits"], from_ms: from, to_ms: to });
         // (worked out only for someone listening: nobody listens to a full rebuild's engine over its shadow, and the

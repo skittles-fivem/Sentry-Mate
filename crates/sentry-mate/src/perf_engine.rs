@@ -361,7 +361,8 @@ async fn owner_history(base: &Path, logs: usize) -> model::CarId {
 /// counters, [`engine::Engine::work_stats`]).
 ///
 /// `PERF_LOGS=1000,5000,10000,20000 cargo test --release -p sentry-mate measure_owner_rebuild -- --ignored
-/// --nocapture` (the sizes; 1,000 and 5,000 when not given).
+/// --nocapture` (the sizes; 1,000 and 5,000 when not given); `PERF_OWNER_DATA=DIR` keeps each size's seeded folder
+/// there and starts from a copy of it the next time.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "measurement by hand: cargo test --release -p sentry-mate measure_owner_rebuild -- --ignored --nocapture"]
 async fn measure_owner_rebuild() {
@@ -372,13 +373,25 @@ async fn measure_owner_rebuild() {
     let mut table = Vec::new();
     for logs in sizes {
         let tmp = tempfile::tempdir().unwrap();
-        let car = owner_history(tmp.path(), logs).await;
+        // (a seeded history kept for the next run: PERF_OWNER_DATA, copied before each rebuild)
+        match std::env::var_os("PERF_OWNER_DATA").map(|d| PathBuf::from(d).join(logs.to_string())) {
+            Some(kept) => {
+                if !kept.join("data").exists() {
+                    owner_history(&kept, logs).await;
+                }
+                copy_dir(&kept, tmp.path());
+            }
+            None => {
+                owner_history(tmp.path(), logs).await;
+            }
+        }
         let (data, keys) = (tmp.path().join("data"), tmp.path().join("keys"));
         let v = Arc::new(Vault::open(&data, &keys).unwrap());
         let db = db::Db::open(&data, v.clone(), db::Options::default()).unwrap();
         let e = engine::Engine::new(db, Store::new(can_dir(&data), v), engine::Options::default());
         e.start().unwrap();
         e.idle().await;
+        let car = e.db().fleet(&db::FleetQuery { search: None, limit: 10, after: None }).unwrap().cars[0].car.id;
         let (t, cpu, before) = (Instant::now(), cpu_s(), e.work_stats());
         e.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
         let mut last = before.clone();
@@ -423,11 +436,24 @@ async fn measure_owner_rebuild() {
             decode_ms - read - samples - now,
             (s.windows_rebuilt - before.windows_rebuilt),
         );
-        let parts: Vec<String> = ["find", "read", "fuse", "build", "rows", "rest", "(of find: entries", "nearest)"]
-            .iter()
-            .zip(s.window_parts_us.iter().zip(before.window_parts_us))
-            .map(|(name, (a, b))| format!("{name} {:.1}", per(*a, b) / 1000.0))
-            .collect();
+        let parts: Vec<String> = [
+            "find",
+            "read",
+            "fuse",
+            "build",
+            "rows",
+            "rest",
+            "(of find: entries",
+            "nearest)",
+            "(of rows: costs",
+            "replaced",
+            "cuts)",
+            "(of rest: state now)",
+        ]
+        .iter()
+        .zip(s.window_parts_us.iter().zip(before.window_parts_us))
+        .map(|(name, (a, b))| format!("{name} {:.1}", per(*a, b) / 1000.0))
+        .collect();
         println!("owner shape: {logs} logs: of the windows (ms a log): {}; {:.0} s decoding", parts.join(", "), dec_s);
         println!(
             "owner shape: {logs} logs: a full rebuild in {secs:.1} s, {:.1} s of CPU, {:?}, {} logs\n{row}",
