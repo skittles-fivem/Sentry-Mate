@@ -70,6 +70,11 @@ pub struct Scenario {
     /// How long the car stays awake after it was last used, ms ([`crate::sim::IDLE_AWAKE_MS`] by default; longer is
     /// a car left in Sentry Mode, which the bridge logs all the while).
     pub idle_awake_ms: u64,
+    /// Sentry mode: the car never sleeps (awake and parked between its drives and charges).
+    pub stays_awake: bool,
+    /// Only the first `keep` ms of every `every` ms of frames go to the bridge (from the scenario's start): many tiny
+    /// logs, each closed `quiet` (`keep` + 60 s before the next when `every` is longer), at little disk.
+    pub snippets: Option<(u64, u64)>,
 }
 
 impl Scenario {
@@ -106,6 +111,8 @@ impl Scenario {
             with_trouble: false,
             firmware: None,
             idle_awake_ms: crate::sim::IDLE_AWAKE_MS,
+            stays_awake: false,
+            snippets: None,
         }
     }
 
@@ -231,6 +238,17 @@ impl Scenario {
         self
     }
 
+    /// Sentry mode: the car stays awake between its drives and charges ([`Scenario::stays_awake`]).
+    pub fn stays_awake(mut self, on: bool) -> Self {
+        self.stays_awake = on;
+        self
+    }
+    /// Tiny logs: the frames of the first `keep_ms` of every `every_ms` only ([`Scenario::snippets`]).
+    pub fn snippets(mut self, every_ms: u64, keep_ms: u64) -> Self {
+        self.snippets = Some((every_ms.max(1), keep_ms));
+        self
+    }
+
     /// The seed of this car (the scenario's seed and the car's number).
     fn car_seed(&self) -> u64 {
         let h = Sha256::digest(format!("synth car {} {}", self.seed, self.car));
@@ -266,8 +284,10 @@ impl Scenario {
 
     fn sim(&self) -> Sim {
         let state = CarState::new(self.model, self.start_ms, self.home, self.start_soc, self.start_odometer_km);
-        Sim::new(self.model, self.plan(), state, self.end_ms(), self.car_seed(), self.outside_c)
-            .awake_for(self.idle_awake_ms)
+        let mut sim = Sim::new(self.model, self.plan(), state, self.end_ms(), self.car_seed(), self.outside_c)
+            .awake_for(self.idle_awake_ms);
+        sim.stays_awake = self.stays_awake;
+        sim
     }
 
     /// What happens, without making any log (quick): the drives, charges, sleeps and updates.
@@ -357,6 +377,7 @@ impl Scenario {
             bridge: Bridge::new(cfg, self.signer(), self.start_ms * 1000, uptime),
             schedule: Schedule::new(&self.vin(), self.rates, rng),
             firmware: self.firmware.clone().map(crate::firmware::Sender::new),
+            snippets: self.snippets.map(|(every, keep)| (self.start_ms, every, keep)),
             sim,
             buf: Vec::new(),
             done: false,
@@ -370,6 +391,8 @@ pub struct Logs {
     bridge: Bridge,
     schedule: Schedule,
     firmware: Option<crate::firmware::Sender>,
+    /// (the scenario's start, every, keep) in ms: [`Scenario::snippets`].
+    snippets: Option<(u64, u64, u64)>,
     sim: Sim,
     buf: Vec<RawFrame>,
     done: bool,
@@ -422,6 +445,12 @@ impl Iterator for Logs {
                 Some(Step::Awake { t_ms, buses }) => {
                     self.buf.clear();
                     let from = t_ms * 1000;
+                    if let Some((start, every, keep)) = self.snippets
+                        && t_ms.saturating_sub(start) % every >= keep
+                    {
+                        self.bridge.tick(from);
+                        continue;
+                    }
                     self.schedule.frames(
                         from,
                         from + crate::sim::STEP_MS * 1000,

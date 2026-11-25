@@ -689,6 +689,7 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
                 teslafi_days,
                 api_days,
                 tesla_days,
+                tesla_sentry: false,
             };
             let t = Instant::now();
             let c = history::run(&engine, &o).await?;
