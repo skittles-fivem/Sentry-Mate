@@ -64,7 +64,7 @@ async fn a_kept_snapshot_reopens_to_the_same_bytes() {
     fill(&old).await;
     let gate = gate::Gate::open(&old.data).unwrap();
     let snap = moving::Snapshot::make(&old.data, &old.vault, &gate, APP, Duration::from_secs(5)).unwrap();
-    snap.keep_on_drop(true);
+    snap.keep_on_drop(true).unwrap();
     let hid = snap.header().id.clone();
     let mut before = Vec::new();
     snap.write_to(&old.vault, &mut before).unwrap();
@@ -93,7 +93,7 @@ async fn reopen_refuses_a_held_or_unfinished_snapshot() {
     fill(&old).await;
     let gate = gate::Gate::open(&old.data).unwrap();
     let snap = moving::Snapshot::make(&old.data, &old.vault, &gate, APP, Duration::from_secs(5)).unwrap();
-    snap.keep_on_drop(true);
+    snap.keep_on_drop(true).unwrap();
     let hid = snap.header().id.clone();
     // held by the one that made it
     assert!(moving::Snapshot::reopen(&old.data, &old.vault, &hid).is_err());
@@ -114,5 +114,32 @@ async fn reopen_refuses_a_held_or_unfinished_snapshot() {
     assert!(moving::Snapshot::reopen(&old.data, &old.vault, &hid).is_err());
     // whole again: it opens
     std::fs::write(&plan, &kept).unwrap();
+    assert!(moving::Snapshot::reopen(&old.data, &old.vault, &hid).is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_start_upkeep_leaves_a_kept_snapshot_and_recovery_removes_the_unwanted_ones() {
+    let old = server();
+    fill(&old).await;
+    let gate = gate::Gate::open(&old.data).unwrap();
+    let snap = moving::Snapshot::make(&old.data, &old.vault, &gate, APP, Duration::from_secs(5)).unwrap();
+    snap.keep_on_drop(true).unwrap();
+    let hid = snap.header().id.clone();
+    let other = moving::Snapshot::make(&old.data, &old.vault, &gate, APP, Duration::from_secs(5)).unwrap();
+    other.keep_on_drop(true).unwrap();
+    let other_hid = other.header().id.clone();
+    // the process ends: no lock is held any more, what is kept stays
+    drop(snap);
+    drop(other);
+    // the program's start, before the vault is open (a stale temporary file of the state is not a snapshot)
+    std::fs::write(old.data.join(moving::export::SNAPSHOTS).join("slot.7-ab.tmp"), b"x").unwrap();
+    moving::import::tidy(&old.data, &old.data.join("keys-not-there"));
+    let names = snapshot_dirs(&old.data);
+    assert!(names.contains(&hid) && names.contains(&other_hid), "{names:?}");
+    assert!(names.contains(&"slot.7-ab.tmp".to_string()), "{names:?}");
+    // the web side's recovery keeps the one its state names; the other goes
+    assert_eq!(moving::export::remove_stale_kept(&old.data, &[&hid]), 1);
+    let names = snapshot_dirs(&old.data);
+    assert!(names.contains(&hid) && !names.contains(&other_hid), "{names:?}");
     assert!(moving::Snapshot::reopen(&old.data, &old.vault, &hid).is_ok());
 }

@@ -362,8 +362,15 @@ fn lock_snapshot(dir: &Path) -> io::Result<Option<File>> {
     }
 }
 
-/// The web side's state file of the export kept across a restart (and its temporary file): not a snapshot, left alone.
-const SLOT_FILES: [&str; 2] = ["slot.sealed", "slot.tmp"];
+/// The marker file in a snapshot's folder that says it is kept across a restart (plain, nothing secret in it: the
+/// start's upkeep runs before the vault is open and could not read the web side's sealed state file).
+const KEEP: &str = "keep";
+
+/// The web side's state file of the export kept across a restart (and its temporary files): not a snapshot, left
+/// alone.
+fn is_slot_file(name: &str) -> bool {
+    name == "slot.sealed" || (name.starts_with("slot.") && name.ends_with(".tmp"))
+}
 
 /// Removes snapshots no one uses (a crash's, or one a finished download left). Returns how many.
 pub fn remove_unused_snapshots(data: &Path) -> usize {
@@ -371,12 +378,37 @@ pub fn remove_unused_snapshots(data: &Path) -> usize {
     for e in std::fs::read_dir(data.join(SNAPSHOTS)).into_iter().flatten().flatten() {
         let dir = e.path();
         if !dir.is_dir() {
-            if !e.file_name().to_str().is_some_and(|n| SLOT_FILES.contains(&n)) {
+            if !e.file_name().to_str().is_some_and(is_slot_file) {
                 let _ = std::fs::remove_file(&dir);
             }
             continue;
         }
+        // a kept one goes only when the web side lets it go ([`remove_stale_kept`])
+        if dir.join(KEEP).exists() {
+            continue;
+        }
         // held while it is in use; one with no lock file was cut short while it was made
+        if let Ok(Some(_held)) = lock_snapshot(&dir)
+            && std::fs::remove_dir_all(&dir).is_ok()
+        {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Removes the kept snapshots (those with a keep marker) that are not in `named`: what the web side's state file does
+/// not name any more, or an export that expired. Returns how many.
+pub fn remove_stale_kept(data: &Path, named: &[&str]) -> usize {
+    let mut n = 0;
+    for e in std::fs::read_dir(data.join(SNAPSHOTS)).into_iter().flatten().flatten() {
+        let dir = e.path();
+        let name = e.file_name();
+        if !dir.is_dir() || !dir.join(KEEP).exists() || named.iter().any(|k| name.to_str() == Some(k)) {
+            continue;
+        }
+        // not kept any more, whoever still holds it: it goes when the last holder lets go
+        let _ = std::fs::remove_file(dir.join(KEEP));
         if let Ok(Some(_held)) = lock_snapshot(&dir)
             && std::fs::remove_dir_all(&dir).is_ok()
         {
@@ -449,8 +481,19 @@ impl Snapshot {
 
     /// Whether the folder stays when this is dropped (default: no, it is removed). A kept folder is opened again by
     /// [`Snapshot::reopen`] after a restart.
-    pub fn keep_on_drop(&self, keep: bool) {
+    /// Keeping writes the marker file the start's upkeep respects (an error when it can't be written: then it is not
+    /// kept); not keeping removes it.
+    pub fn keep_on_drop(&self, keep: bool) -> io::Result<()> {
+        if keep {
+            std::fs::write(self.dir.join(KEEP), b"")?;
+        } else if let Err(e) = std::fs::remove_file(self.dir.join(KEEP))
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            self.keep.store(false, Ordering::SeqCst);
+            return Err(e);
+        }
         self.keep.store(keep, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Opens a kept snapshot again (after a restart): takes its lock (an error while another holds it), reads its
