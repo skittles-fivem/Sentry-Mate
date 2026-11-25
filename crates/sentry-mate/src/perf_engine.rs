@@ -377,7 +377,11 @@ async fn measure_owner_rebuild() {
         match std::env::var_os("PERF_OWNER_DATA").map(|d| PathBuf::from(d).join(logs.to_string())) {
             Some(kept) => {
                 if !kept.join("data").exists() {
-                    owner_history(&kept, logs).await;
+                    // (seeded beside it and moved in place whole: a run cut off leaves nothing to reuse)
+                    let part = kept.with_extension("part");
+                    let _ = std::fs::remove_dir_all(&part);
+                    owner_history(&part, logs).await;
+                    std::fs::rename(&part, &kept).unwrap();
                 }
                 copy_dir(&kept, tmp.path());
             }
