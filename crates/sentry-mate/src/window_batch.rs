@@ -650,12 +650,11 @@ async fn logs_read_ahead_on_other_cores_give_the_same_history_over_a_week() {
 /// A window's newest values for the live stream (`now_view`, which reads the car's last 30 days of drives,
 /// imported ones included) are worked out only while someone listens to the engine's events: nobody listens to a
 /// full rebuild's engine over its shadow. The same made-up logs, beside a TeslaMate import and the Tesla API in
-/// sentry mode when `apis`, through an engine someone listens to and one nobody does, everything stored compared
-/// (ids included) after the logs at the start, the gaps filled, the car rebuilt whole and a full rebuild.
-async fn unwatched(days: u32, apis: bool) {
+/// sentry mode (`how`), through an engine someone listens to and one nobody does, everything stored compared (ids
+/// included) after the logs at the start, the gaps filled, the car rebuilt whole and a full rebuild.
+async fn unwatched(days: u32, how: Logs) {
     let o = engine::Options::default();
-    let how = if apis { Logs::Apis } else { Logs::Alone };
-    let (got, _, _) = two_engines(&format!("{days} days"), days, how, o.clone(), o, true).await;
+    let (got, _, _) = two_engines(&format!("{days} days ({how:?})"), days, how, o.clone(), o, true).await;
     // (the listened-to engine sent its windows' newest values)
     assert!(got > 10, "{days} days: {got} now events");
 }
@@ -667,13 +666,15 @@ enum Logs {
     Alone,
     Apis,
     Sentry,
+    /// The same, 3 s every 10 minutes: fewer logs (the tests in the suite).
+    SentrySparse,
 }
 
 /// The same made-up logs through two engines (with `a` and `b`; someone listens to the first one's events when
-/// `listen`), beside a TeslaMate import and the Tesla API in sentry mode when `apis`, everything stored compared
-/// (ids included) after the logs at the start, the gaps filled, the car rebuilt whole and a full rebuild. Returns
-/// the `now` events the first sent, and its windows bounded near their log and in all (its own, not its full
-/// rebuild's).
+/// `listen`), beside a TeslaMate import and the Tesla API in sentry mode unless `how` is alone, everything stored
+/// compared (ids included) after the logs at the start, the gaps filled, the car rebuilt whole and a full rebuild.
+/// Returns the `now` events the first sent, and its windows bounded near their log and in all (its own, not its
+/// full rebuild's).
 async fn two_engines(
     what: &str,
     days: u32,
@@ -685,7 +686,11 @@ async fn two_engines(
     let apis = how != Logs::Alone;
     let s = synth::Scenario::new(7).days(days).rates(synth::Rates::Light).with_trouble(true);
     // (a car in sentry mode: tiny logs, 3 s of frames every 69 s, as the owner's rebuild speed is measured on)
-    let s = if how == Logs::Sentry { s.stays_awake(true).snippets(69_000, 3_000) } else { s };
+    let s = match how {
+        Logs::Sentry => s.stays_awake(true).snippets(69_000, 3_000),
+        Logs::SentrySparse => s.stays_awake(true).snippets(600_000, 3_000),
+        Logs::Alone | Logs::Apis => s,
+    };
     let logs: Vec<synth::LogFile> = s.logs().collect();
     let n = logs.len();
     let all: Vec<&synth::LogFile> = logs.iter().collect();
@@ -767,14 +772,14 @@ async fn two_engines(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn windows_nobody_listens_to_give_the_same_history() {
-    unwatched(1, true).await;
+    unwatched(1, Logs::SentrySparse).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "long: cargo test --release -p sentry-mate windows_nobody_listens -- --ignored --nocapture"]
 async fn windows_nobody_listens_to_give_the_same_history_over_days() {
-    for (days, apis) in [(4, true), (3, false)] {
-        unwatched(days, apis).await;
+    for (days, how) in [(4, Logs::Apis), (3, Logs::Alone), (2, Logs::Sentry)] {
+        unwatched(days, how).await;
     }
 }
 
@@ -793,13 +798,13 @@ async fn looked_near(days: u32, how: Logs) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn window_bounds_looked_for_near_the_log_give_the_same_history() {
-    looked_near(1, Logs::Sentry).await;
+    looked_near(1, Logs::SentrySparse).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "long: cargo test --release -p sentry-mate window_bounds_looked_for -- --ignored --nocapture"]
 async fn window_bounds_looked_for_near_the_log_give_the_same_history_over_days() {
-    for (days, how) in [(7, Logs::Alone), (4, Logs::Sentry), (4, Logs::Apis)] {
+    for (days, how) in [(7, Logs::Alone), (1, Logs::Sentry), (4, Logs::Sentry), (4, Logs::Apis)] {
         looked_near(days, how).await;
     }
 }
