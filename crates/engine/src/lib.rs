@@ -63,6 +63,7 @@ pub mod placing;
 pub mod query;
 pub mod records;
 pub mod rehome;
+mod speed;
 pub mod tesla_in;
 pub mod tmlocal_catchup;
 pub mod tz;
@@ -73,6 +74,7 @@ pub use tesla_in::{TeslaSink, TeslafiSink, TeslamateLocalSink};
 
 pub use jobs::{Job, JobStatus, Scope};
 pub use records::DECODE_VERSION;
+pub use speed::RebuildSpeed;
 
 use db::Db;
 use ingest::{Judge, Store};
@@ -144,6 +146,11 @@ pub struct Options {
     /// other (the logs found at the start, a car rebuilt whole, a full rebuild: [`ahead`]). `0`: each log is read
     /// in place. By default the machine's cores but one, eight at most, none on one or two cores.
     pub read_ahead: usize,
+    /// How far either side of a log a window's bounds are first looked for (ms): the state spans and idle cut points
+    /// of that stretch are read, and four times as far each time no bound is found in it (the same bounds however
+    /// far it starts: crates/sentry-mate/src/window_batch.rs). Two hours: a car in sentry mode has a cut point every
+    /// five minutes, and the stretch read is then about 50 state spans, not two days' of them.
+    pub window_look_ms: u64,
 }
 
 impl Default for Options {
@@ -161,6 +168,7 @@ impl Default for Options {
             window_batch: 64,
             rebuild_settle_ms: 3_000,
             read_ahead: ahead::Ahead::threads(),
+            window_look_ms: 2 * 3_600_000,
         }
     }
 }
@@ -196,11 +204,21 @@ pub struct EngineStats {
     pub now_us_total: u64,
     /// Logs whose reading made ahead on another core was used ([`ahead`]).
     pub logs_read_ahead: u64,
+    /// Of the windows' time (`rebuild_ms_total`, µs): finding the window, reading the inputs' samples, fusing them,
+    /// building the timeline, writing its rows, the rest of the writing (the car's state now, the events), and of
+    /// the first: the window's logs, the nearest logs either side; of the rows: the charges' costs, the rows
+    /// replaced, the cut points; of the rest: the car's state now.
+    pub window_parts_us: [u64; WINDOW_PARTS],
+    /// Windows whose bounds were both found near their log ([`Options::window_look_ms`]).
+    pub windows_bounded_near: u64,
     /// GPS fixes the timeline rebuilds left out since the server started (a placeholder, half a fix, or a jump
     /// faster than a car drives from the fixes around it): rebuilding a window counts its fixes again.
     pub gps_fixes_dropped: u64,
     pub last_error: Option<String>,
 }
+
+/// The parts of a window's time counted ([`EngineStats::window_parts_us`]).
+pub const WINDOW_PARTS: usize = 12;
 
 #[derive(Default)]
 struct Counters {
@@ -216,6 +234,8 @@ struct Counters {
     now_us: AtomicU64,
     read_ahead: AtomicU64,
     gps_fixes_dropped: AtomicU64,
+    window_parts: [AtomicU64; WINDOW_PARTS],
+    bounded_near: AtomicU64,
 }
 
 pub(crate) enum Work {
@@ -309,6 +329,8 @@ pub(crate) struct Inner {
     pub(crate) compact_auto: std::sync::atomic::AtomicBool,
     /// The full rebuild under way ([`full`]); its record's changes, one at a time; a test's failure point.
     pub(crate) full: Mutex<full::Full>,
+    /// The counters as last read for [`Engine::rebuild_speed`].
+    pub(crate) speeds: Mutex<speed::Speeds>,
     pub(crate) full_start: Mutex<()>,
     /// The server is stopping ([`Engine::stopping`]): the full rebuild leaves its run as it stands.
     pub(crate) stopping: std::sync::atomic::AtomicBool,
@@ -544,6 +566,7 @@ impl Engine {
                 compact_steps: Mutex::default(),
                 compact_auto: std::sync::atomic::AtomicBool::new(false),
                 full: Mutex::default(),
+                speeds: Mutex::default(),
                 full_start: Mutex::new(()),
                 stopping: std::sync::atomic::AtomicBool::new(false),
                 full_fail_at: Mutex::new(None),
@@ -794,9 +817,35 @@ impl Engine {
             samples_us_total: c.samples_us.load(Ordering::Relaxed),
             now_us_total: c.now_us.load(Ordering::Relaxed),
             logs_read_ahead: c.read_ahead.load(Ordering::Relaxed),
+            window_parts_us: std::array::from_fn(|i| c.window_parts[i].load(Ordering::Relaxed)),
+            windows_bounded_near: c.bounded_near.load(Ordering::Relaxed),
             gps_fixes_dropped: c.gps_fixes_dropped.load(Ordering::Relaxed),
             last_error: lock(&self.inner.last_error).clone(),
         }
+    }
+
+    /// [`Self::stats`] with the counters of the full rebuild's decoding under way added (it runs on an engine of its
+    /// own, over the shadow): what the logs being worked on took, stage by stage (the rebuild speed).
+    pub fn work_stats(&self) -> EngineStats {
+        let mut s = self.stats();
+        let shadow = lock(&self.inner.full).shadow.clone();
+        if let Some(se) = shadow {
+            let t = se.stats();
+            s.logs_decoded += t.logs_decoded;
+            s.logs_left_out += t.logs_left_out;
+            s.windows_rebuilt += t.windows_rebuilt;
+            s.decode_ms_total += t.decode_ms_total;
+            s.rebuild_ms_total += t.rebuild_ms_total;
+            s.read_us_total += t.read_us_total;
+            s.samples_us_total += t.samples_us_total;
+            s.now_us_total += t.now_us_total;
+            s.logs_read_ahead += t.logs_read_ahead;
+            s.windows_bounded_near += t.windows_bounded_near;
+            for (a, b) in s.window_parts_us.iter_mut().zip(t.window_parts_us) {
+                *a += b;
+            }
+        }
+        s
     }
 
     /// Waits until no work is queued or under way (tests, and a command that wants the history up to date).

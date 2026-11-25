@@ -131,7 +131,7 @@ pub fn status_json(e: &Engine, r: Option<&FullRecord>, now_ms: u64) -> Value {
             "state": "idle", "id": null, "scope": null, "cars": [], "car": null, "cars_done": 0, "cars_total": 0,
             "reason": null, "phase": null, "logs": { "done": 0, "total": 0, "failed": 0 }, "days": { "done": 0, "total": 0 },
             "bytes": { "done": 0, "total": 0, "copied": 0 }, "percent": null, "rate_bytes_per_s": null,
-            "rate_logs_per_s": null, "rate_days_per_s": null, "eta_ms": null,
+            "rate_logs_per_s": null, "rate_days_per_s": null, "eta_ms": null, "speed": null,
             "started_ms": null, "finished_ms": null, "last_progress_ms": null, "stalled": false, "errors": [],
             "error": null, "by": null, "version": version, "causes": [], "hold": null, "cancelling": false, "history": history_json(e),
         });
@@ -167,6 +167,7 @@ pub fn status_json(e: &Engine, r: Option<&FullRecord>, now_ms: u64) -> Value {
         "rate_logs_per_s": rates.logs_per_s,
         "rate_days_per_s": rates.days_per_s,
         "eta_ms": rates.eta_ms,
+        "speed": if running && r.phase == Phase::Decoding { e.rebuild_speed() } else { None },
         "started_ms": r.started_ms,
         "finished_ms": r.finished_ms,
         "last_progress_ms": r.last_progress_ms,

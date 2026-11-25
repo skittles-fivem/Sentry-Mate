@@ -612,7 +612,8 @@ def car_health(req):
                 "keys": [], "chain_gaps": [], "chain_gaps_total": 0, "dropped_frames": [],
                 "dropped_frames_total": 0, "unknown_spans": [], "unknown_spans_total": 0, "unknown_ms": 0,
                 "logs_waiting": 0, "missing_logs": missing_logs(req, cid), "log_checks": log_checks(req, None, 0),
-                "rebuild_pending": pending, "gps_disagreement": gps_disagreement(req, cid), "uploads_enabled": True}
+                "rebuild_pending": pending, "rebuild_speed": rebuild_speed(pending),
+                "gps_disagreement": gps_disagreement(req, cid), "uploads_enabled": True}
     n = now_object(req.app, cid, req.now)
     last_upload = n.get("received_ms")
     reasons = []
@@ -672,9 +673,16 @@ def car_health(req):
         "unknown_spans": unknown[-cap:], "unknown_spans_total": len(unknown),
         "unknown_ms": sum(((u["end_ms"] or req.now) - u["start_ms"]) for u in unknown),
         "logs_waiting": waiting, "missing_logs": missing, "log_checks": log_checks(req, h, waiting),
-        "rebuild_pending": pending, "gps_disagreement": disagree,
+        "rebuild_pending": pending, "rebuild_speed": rebuild_speed(pending), "gps_disagreement": disagree,
         "uploads_enabled": bool(toks),
     }
+
+
+def rebuild_speed(pending):
+    """While a rebuild is pending: how fast its logs go now (the full rebuild's `speed`, docs/ui-api.md)."""
+    if not pending:
+        return None
+    return {"logs_per_s": 1.1, "stage": "windows", "stage_share_pct": 72, "over_ms": 30000}
 
 
 def rebuild(req):

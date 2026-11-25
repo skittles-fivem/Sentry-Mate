@@ -219,7 +219,8 @@ def _view(req, j):
         "logs": {"done": logs_done, "total": logs_total, "failed": 0}, "days": {"done": days_done, "total": days_total},
         "bytes": {"done": bytes_done, "total": bytes_total, "copied": int(bytes_total * 0.18 / max(1, len(cars)))},
         "percent": percent, "rate_bytes_per_s": rate, "rate_logs_per_s": rate_logs, "rate_days_per_s": rate_days,
-        "eta_ms": eta, "started_ms": j["started_ms"], "finished_ms": finished,
+        "eta_ms": eta, "speed": speed(rate_logs) if phase == "decoding" else None,
+        "started_ms": j["started_ms"], "finished_ms": finished,
         "last_progress_ms": (now - 1500) if state == "running" else finished, "stalled": False,
         "errors": errors, "error": j["error"] if state == "failed" else None, "by": j["by"],
         "causes": list(j.get("causes") or []),
@@ -228,13 +229,21 @@ def _view(req, j):
     }
 
 
+def speed(logs_per_s):
+    """The rebuild speed now (docs/ui-api.md): the logs a second over the last half minute and the stage of a
+    log's work that took the most of it, with its share; the mock's rebuild spends most of it on the windows."""
+    if not logs_per_s:
+        return None
+    return {"logs_per_s": logs_per_s, "stage": "windows", "stage_share_pct": 72, "over_ms": 30000}
+
+
 def status(req, car=None):
     st = req.store
     j = st.full_rebuild
     base = {"state": "idle", "id": None, "scope": None, "cars": [], "car": None, "cars_done": 0, "cars_total": 0,
             "reason": None, "phase": None, "logs": {"done": 0, "total": 0, "failed": 0}, "days": {"done": 0, "total": 0},
             "bytes": {"done": 0, "total": 0, "copied": 0}, "percent": None, "rate_bytes_per_s": None,
-            "rate_logs_per_s": None, "rate_days_per_s": None, "eta_ms": None,
+            "rate_logs_per_s": None, "rate_days_per_s": None, "eta_ms": None, "speed": None,
             "started_ms": None, "finished_ms": None, "last_progress_ms": None, "stalled": False, "errors": [],
             "error": None, "by": None, "causes": [], "hold": None, "cancelling": False}
     v = _view(req, j) if j else base

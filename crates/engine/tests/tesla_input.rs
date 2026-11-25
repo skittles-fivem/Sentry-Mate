@@ -257,7 +257,7 @@ fn a_car_with_the_tesla_api_alone() {
         let states = query::timeline::states(&k.engine, car, &Period::all(), &Paging::first(100)).unwrap().body;
         assert!(states.items.iter().any(|s| s.state == "online"));
 
-        let now = query::now::now_view(&k.engine, car).unwrap();
+        let now = tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap();
         let soc = serde_json::to_value(now.soc_pct.unwrap()).unwrap();
         assert_eq!(soc["sources"][0]["kind"], "tesla_api");
         assert_eq!(now.charge.limit_pct.map(|v| v.value), Some(80.0));
@@ -265,7 +265,10 @@ fn a_car_with_the_tesla_api_alone() {
         assert_eq!(now.software.version.as_deref(), Some("2026.32.5"));
         assert_eq!(now.software.version_source, Some("tesla_api"));
 
-        let fleet = query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default()).unwrap();
+        let fleet = tokio::task::block_in_place(|| {
+            query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default())
+        })
+        .unwrap();
         assert_eq!(fleet.items[0].source_label, "Data from the Tesla API");
         assert_eq!(fleet.items[0].name, "Blue");
         let detail = query::fleet::car(&k.engine, car).unwrap();
@@ -313,10 +316,13 @@ fn a_car_with_smo_alone_names_smo_only() {
         assert_eq!(kinds(&ds[0].from), vec!["smo"]);
         assert_eq!(ds[0].from.source, "can");
         assert_eq!(ds[0].energy_basis, "measured");
-        let fleet = query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default()).unwrap();
+        let fleet = tokio::task::block_in_place(|| {
+            query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default())
+        })
+        .unwrap();
         assert_eq!(fleet.items[0].source_label, "Data from SMO");
         assert_eq!(k.db.car(car).unwrap().unwrap().inputs, model::Inputs::SMO);
-        let now = query::now::now_view(&k.engine, car).unwrap();
+        let now = tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap();
         assert_eq!(now.inputs.iter().map(|i| i.input.kind).collect::<Vec<_>>(), vec!["smo"]);
         assert!(!k.engine.smo_live(car) || now.received_ms.is_some());
     });
@@ -358,9 +364,12 @@ fn one_drive_seen_by_both_is_one_row_with_both_sources_and_keeps_its_id() {
         let api = query::drives::DrivesQuery { source: Some("tesla_api".into()), ..Default::default() };
         assert_eq!(query::drives::drives(&k.engine, car, &smo, &Paging::default()).unwrap().body.items.len(), 1);
         assert_eq!(query::drives::drives(&k.engine, car, &api, &Paging::default()).unwrap().body.items.len(), 1);
-        let fleet = query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default()).unwrap();
+        let fleet = tokio::task::block_in_place(|| {
+            query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default())
+        })
+        .unwrap();
         assert_eq!(fleet.items[0].source_label, "Data from SMO and the Tesla API");
-        let now = query::now::now_view(&k.engine, car).unwrap();
+        let now = tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap();
         let mut ins: Vec<&str> = now.inputs.iter().map(|i| i.input.kind).collect();
         ins.sort_unstable();
         assert_eq!(ins, vec!["smo", "tesla_api"]);
@@ -499,7 +508,10 @@ fn imported_history_keeps_its_source_beside_live_data() {
         let tm_rows = query::drives::drives(&k.engine, car, &imported, &Paging::default()).unwrap().body.items;
         assert_eq!(tm_rows.len(), 2, "both imported drives keep their source");
         assert!(tm_rows.iter().all(|d| d.from.source == "teslamate"));
-        let fleet = query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default()).unwrap();
+        let fleet = tokio::task::block_in_place(|| {
+            query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default())
+        })
+        .unwrap();
         assert_eq!(fleet.items[0].source_label, "Data from the Tesla API; imported from TeslaMate");
         // more API data later does not touch the imported rows
         k.engine.api_points(car, api_readings(2400, 3000, 30, trip), vec![online(2400, 3000)]);
@@ -563,12 +575,15 @@ fn a_car_with_teslafi_alone_names_teslafi() {
         assert!(states.items.iter().any(|s| s.state == "online"));
         assert!(states.items.iter().all(|s| kinds(&s.from) == vec!["teslafi_api"]), "{:#?}", states.items);
 
-        let now = query::now::now_view(&k.engine, car).unwrap();
+        let now = tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap();
         let soc = serde_json::to_value(now.soc_pct.unwrap()).unwrap();
         assert_eq!(soc["sources"][0]["kind"], "teslafi_api");
         assert_eq!(soc["sources"][0]["label"], "Data from TeslaFi");
         assert_eq!(now.inputs.iter().map(|i| i.input.kind).collect::<Vec<_>>(), vec!["teslafi_api"]);
-        let fleet = query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default()).unwrap();
+        let fleet = tokio::task::block_in_place(|| {
+            query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default())
+        })
+        .unwrap();
         assert_eq!(fleet.items[0].source_label, "Data from TeslaFi");
         assert!(!k.engine.tesla_api_live(car));
 
@@ -641,10 +656,13 @@ fn smo_wins_then_the_tesla_api_then_teslafi_in_one_drive() {
         assert_eq!(at(500).map(|s| kinds(&s.from)), Some(vec!["tesla_api"]), "{:#?}", states.items);
         assert_eq!(at(1500).map(|s| kinds(&s.from)), Some(vec!["teslafi_api"]), "{:#?}", states.items);
 
-        let fleet = query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default()).unwrap();
+        let fleet = tokio::task::block_in_place(|| {
+            query::fleet::cars(&k.engine, &[car], &Default::default(), &Paging::default())
+        })
+        .unwrap();
         assert_eq!(fleet.items[0].source_label, "Data from SMO, the Tesla API and TeslaFi");
         // Now: each value from the newest second that has it, the inputs named
-        let now = query::now::now_view(&k.engine, car).unwrap();
+        let now = tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap();
         let mut ins: Vec<&str> = now.inputs.iter().map(|i| i.input.kind).collect();
         ins.sort_unstable();
         assert_eq!(ins, vec!["smo", "tesla_api", "teslafi_api"]);
@@ -670,7 +688,7 @@ fn a_used_car_takes_its_values_when_new_from_its_build() {
         k.engine.idle().await;
         assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
 
-        let s = query::fleet::car_settings(&k.engine, car).unwrap().body;
+        let s = tokio::task::block_in_place(|| query::fleet::car_settings(&k.engine, car)).unwrap().body;
         assert_eq!((s.capacity_new_kwh, s.full_range_new_km), (None, None), "nothing typed");
         assert_eq!(s.defaults_source, Some("vehicle_info"));
         assert_eq!(s.full_range_new_km_default, Some(438.0), "the EPA rating");
@@ -780,7 +798,8 @@ fn values_not_on_the_can_bus_come_from_the_tesla_api_and_teslafi_with_their_sour
         assert_eq!(n.trim.as_deref(), detail.config["trim"].value.as_str());
         assert_eq!(n.trim.as_deref(), Some("74d"));
 
-        let view = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+        let view = serde_json::to_value(tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap())
+            .unwrap();
         let oc = &view["off_can"];
         assert_eq!(oc["locked"]["value"], true);
         assert_eq!(oc["locked"]["stale"], false);
@@ -826,7 +845,8 @@ fn values_not_on_the_can_bus_come_from_the_tesla_api_and_teslafi_with_their_sour
             Some((0.0, Input::TeslaApi, false))
         );
         assert_eq!(o.version.as_ref().map(|v| (v.input, v.stale)), Some((Input::TeslaApi, false)));
-        let view = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+        let view = serde_json::to_value(tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap())
+            .unwrap();
         assert_eq!(view["off_can"]["locked"]["sources"][0]["kind"], "teslafi_api");
         assert_eq!(view["off_can"]["locked"]["sources"][0]["label"], "Data from TeslaFi");
         assert_eq!(view["off_can"]["windows"]["passenger_rear"]["value"], true);
@@ -841,7 +861,8 @@ fn values_not_on_the_can_bus_come_from_the_tesla_api_and_teslafi_with_their_sour
         k.engine.idle().await;
         let n = query::now::published_now(&k.engine, car).unwrap().unwrap();
         assert_eq!(n.off_can.locked.as_ref().map(|l| (l.value, l.stale)), Some((true, true)));
-        let view = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+        let view = serde_json::to_value(tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap())
+            .unwrap();
         assert_eq!(view["off_can"]["locked"]["stale"], true);
         assert_eq!(view["off_can"]["windows_open"]["stale"], true);
         let t = mqtt_topics(&n);
@@ -858,7 +879,7 @@ fn values_not_on_the_can_bus_come_from_the_tesla_api_and_teslafi_with_their_sour
         let p = fi_poll(wall - 60_000);
         fi.off_can(car, p.t_ms, &p.off_can).unwrap();
         k.engine.idle().await;
-        let view = query::now::now_view(&k.engine, car).unwrap();
+        let view = tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap();
         assert_eq!(view.software.version.as_deref(), Some("2026.32.5"));
         assert_eq!(view.software.version_source, Some("teslafi_api"));
         let v = serde_json::to_value(&view).unwrap();
@@ -885,7 +906,8 @@ fn values_not_on_the_can_bus_come_from_the_tesla_api_and_teslafi_with_their_sour
                 "TeslaFi first"
             );
             assert_eq!(o.route_destination.as_ref().map(|r| r.input), Some(Input::TeslamateLocal));
-            let v = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+            let v = serde_json::to_value(tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap())
+                .unwrap();
             assert_eq!(v["off_can"]["route"]["destination"]["sources"][0]["kind"], "teslamate_local");
             assert_eq!(mqtt_topics(&n).get("route_destination").map(String::as_str), Some("Made-up Lake"));
         }
@@ -933,7 +955,8 @@ fn local_teslamates_energy_added_and_range_are_its_own_and_the_tesla_api_wins() 
         tm.meta(car, &meta);
         k.engine.idle().await;
         assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
-        let v = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+        let v = serde_json::to_value(tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap())
+            .unwrap();
         assert_eq!(v["state"], "charging", "{v}");
         assert_eq!(v["charge"]["added_kwh"]["value"], 12.35);
         assert_eq!(v["charge"]["added_kwh"]["sources"][0]["kind"], "teslamate_local");
@@ -953,7 +976,8 @@ fn local_teslamates_energy_added_and_range_are_its_own_and_the_tesla_api_wins() 
             tesla::ApiMeta { at_ms: start + 595_000, est_range_km: Some(280.0), ..tesla::ApiMeta::default() },
         );
         k.engine.idle().await;
-        let v = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+        let v = serde_json::to_value(tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap())
+            .unwrap();
         assert_eq!(v["car_est_range_km"]["value"], 280.0);
         assert_eq!(v["car_est_range_km"]["sources"][0]["kind"], "tesla_api");
         assert_eq!(v["charge"]["added_kwh"]["sources"][0]["kind"], "teslamate_local");
@@ -963,7 +987,8 @@ fn local_teslamates_energy_added_and_range_are_its_own_and_the_tesla_api_wins() 
         tm.points(car2, &charging_samples(start, 600), &[]).unwrap();
         tm.meta(car2, &tesla::ApiMeta { at_ms: start - 2 * 3_600_000, est_range_km: Some(250.0), ..meta });
         k.engine.idle().await;
-        let v = serde_json::to_value(query::now::now_view(&k.engine, car2).unwrap()).unwrap();
+        let v = serde_json::to_value(tokio::task::block_in_place(|| query::now::now_view(&k.engine, car2)).unwrap())
+            .unwrap();
         assert_eq!(v["car_est_range_km"], serde_json::Value::Null);
         assert_eq!(v["charge"]["added_kwh"], serde_json::Value::Null);
     });
@@ -1049,7 +1074,8 @@ fn smo_gps_out_of_step_with_the_api_gives_way_and_is_named() {
 
         // the live position by the same word: the API's, with its own time and input, never SMO's
         let live = |k: &Kit| {
-            let v = serde_json::to_value(query::now::now_view(&k.engine, car).unwrap()).unwrap();
+            let v = serde_json::to_value(tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap())
+                .unwrap();
             let lon = &v["location"]["lon"];
             (lon["value"].as_f64().unwrap(), lon["sources"][0]["kind"].as_str().unwrap().to_string(), v)
         };
@@ -1273,7 +1299,8 @@ async fn send_internal_gps(k: &Kit, i: u64, trip: Trip) {
 
 /// Saves the car's source order (as its settings page does).
 fn set_order(k: &Kit, car: u32, order: &[&str]) {
-    let now = serde_json::to_value(query::fleet::car_settings(&k.engine, car).unwrap()).unwrap();
+    let now = serde_json::to_value(tokio::task::block_in_place(|| query::fleet::car_settings(&k.engine, car)).unwrap())
+        .unwrap();
     let mut body = serde_json::Map::new();
     body.insert("version".into(), now["version"].clone());
     body.insert("source_order".into(), serde_json::json!(order));

@@ -385,7 +385,19 @@ pub(crate) fn put_day(db: &Db, car: CarId, d: u32, rec: &DayRec) -> Result<()> {
         db.kv().delete(NS, &key)?;
         return Ok(());
     }
-    put(db, NS, &key, rec)
+    let bytes = serde_json::to_vec(rec).map_err(|e| crate::Error::Damaged(format!("{key}: {e}")))?;
+    db.kv().put(NS, &key, &bytes)?;
+    // the record as written is what reading these bytes gives (`a_day_record_reads_back_as_it_was_written`): kept,
+    // so the next read of the day (the log's window, the next log) does not read it into a DayRec again
+    let rec = std::sync::Arc::new(rec.clone());
+    let mut c = DAY_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(i) = c.kept.iter().position(|(k, _, _)| *k == key) {
+        c.kept.remove(i);
+    } else if c.kept.len() >= DAYS_KEPT {
+        c.kept.remove(0);
+    }
+    c.kept.push((key, bytes, rec));
+    Ok(())
 }
 
 /// The entry of one log, if it was worked on.
@@ -883,6 +895,60 @@ mod tests {
 
     fn sp(a: u64, b: u64, state: ApiState, data: bool) -> ApiSpan {
         ApiSpan { start_ms: a, end_ms: b, state, data, inputs: model::Inputs::NONE }
+    }
+
+    /// [`put_day`] keeps the record it wrote as the reading of its bytes: every field of a day record, of every kind
+    /// of entry, reads back as it was written.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_day_record_reads_back_as_it_was_written() {
+        use timeline::{Closed, LogFacts, NotRecorded};
+        let facts = |closed| LogFacts {
+            start_ms: 1_793_491_200_000,
+            end_ms: 1_793_491_260_000,
+            first_frame_ms: Some(1_793_491_199_500),
+            last_frame_ms: Some(1_793_491_259_999),
+            closed,
+            buses: vec!["can0".into(), "can1".into()],
+            not_recorded: vec![
+                NotRecorded { at_ms: 1_793_491_200_000, paused_ms: Some(360_000) },
+                NotRecorded { at_ms: 1_793_491_230_000, paused_ms: None },
+            ],
+            dropped: 3,
+        };
+        let entry = |outcome, internal_gps| LogEntry {
+            key: "feedc0ffee42".into(),
+            outcome,
+            profile: "tesla-3y".into(),
+            rules: rules(),
+            usable: true,
+            status: "verified".into(),
+            reason: Some("a reason, \"quoted\" and ünïcode".into()),
+            done_ms: 1_793_500_000_123,
+            internal_gps,
+        };
+        let mut rec = DayRec { logs: BTreeMap::new(), cuts: vec![1_793_491_500_000, 1_793_491_800_000] };
+        let closed = [Closed::Rotate, Closed::Quiet, Closed::Stop, Closed::Size, Closed::Flush, Closed::Unknown];
+        for (i, c) in closed.into_iter().enumerate() {
+            let gps = [None, Some(true), Some(false)][i % 3];
+            let out = Outcome::Decoded {
+                facts: facts(c),
+                samples_from_ms: (i % 2 == 0).then_some(1_793_491_200_000),
+                samples_to_ms: (i % 2 == 0).then_some(1_793_491_261_000),
+                samples: 60 * i as u32,
+            };
+            rec.logs.insert(format!("feedc0ffee42_20261101T00{i:02}00Z_{i}.log.xz"), entry(out, gps));
+        }
+        let hole = Outcome::Hole { from_ms: 5, to_ms: 60_005, reason: "unreadable: cut short".into() };
+        rec.logs.insert("feedc0ffee42_20261101T0100Z_9.log.xz".into(), entry(hole, None));
+        let mut empty = entry(
+            Outcome::Decoded { facts: LogFacts::default(), samples_from_ms: None, samples_to_ms: None, samples: 0 },
+            None,
+        );
+        empty.reason = None;
+        rec.logs.insert("feedc0ffee42_20261101T0200Z_10.log.xz".into(), empty);
+        let back: DayRec = serde_json::from_slice(&serde_json::to_vec(&rec).unwrap()).unwrap();
+        assert_eq!(back, rec);
     }
 
     #[test]

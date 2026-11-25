@@ -250,6 +250,7 @@ async fn beside_apis(days: u32, batch: usize) {
         teslafi_days: 1,
         api_days: days,
         tesla_days: 0,
+        tesla_sentry: false,
     };
     for (k, side) in [&each, &run].into_iter().enumerate() {
         side.take(&all[..20]).await;
@@ -596,6 +597,7 @@ async fn read_ahead(days: u32, batch: usize, threads: usize, apis: bool) -> u64 
             teslafi_days: 1,
             api_days: days,
             tesla_days: 0,
+            tesla_sentry: false,
         };
         for side in [&each, &run] {
             side.take(&first[..20]).await;
@@ -642,5 +644,170 @@ async fn logs_read_ahead_on_other_cores_give_the_same_history() {
 async fn logs_read_ahead_on_other_cores_give_the_same_history_over_a_week() {
     for (days, batch, threads, apis) in [(7, 64, 3, false), (7, 1, 7, false), (3, 64, 3, true), (2, 7, 2, true)] {
         read_ahead(days, batch, threads, apis).await;
+    }
+}
+
+/// A window's newest values for the live stream (`now_view`, which reads the car's last 30 days of drives,
+/// imported ones included) are worked out only while someone listens to the engine's events: nobody listens to a
+/// full rebuild's engine over its shadow. The same made-up logs, beside a TeslaMate import and the Tesla API in
+/// sentry mode (`how`), through an engine someone listens to and one nobody does, everything stored compared (ids
+/// included) after the logs at the start, the gaps filled, the car rebuilt whole and a full rebuild.
+async fn unwatched(days: u32, how: Logs) {
+    let o = engine::Options::default();
+    let (got, _, _) = two_engines(&format!("{days} days ({how:?})"), days, how, o.clone(), o, true).await;
+    // (the listened-to engine sent its windows' newest values)
+    assert!(got > 10, "{days} days: {got} now events");
+}
+
+/// The logs [`two_engines`] are given: the usual made-up days alone, beside a TeslaMate import and the Tesla API in
+/// sentry mode, or a car in sentry mode's tiny logs beside them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Logs {
+    Alone,
+    Apis,
+    Sentry,
+    /// The same, 3 s every 10 minutes: fewer logs (the tests in the suite).
+    SentrySparse,
+}
+
+/// The same made-up logs through two engines (with `a` and `b`; someone listens to the first one's events when
+/// `listen`), beside a TeslaMate import and the Tesla API in sentry mode unless `how` is alone, everything stored
+/// compared (ids included) after the logs at the start, the gaps filled, the car rebuilt whole and a full rebuild.
+/// Returns the `now` events the first sent, and its windows bounded near their log and in all (its own, not its
+/// full rebuild's).
+async fn two_engines(
+    what: &str,
+    days: u32,
+    how: Logs,
+    a: engine::Options,
+    b: engine::Options,
+    listen: bool,
+) -> (u64, u64, u64) {
+    let apis = how != Logs::Alone;
+    let s = synth::Scenario::new(7).days(days).rates(synth::Rates::Light).with_trouble(true);
+    // (a car in sentry mode: tiny logs, 3 s of frames every 69 s, as the owner's rebuild speed is measured on)
+    let s = match how {
+        Logs::Sentry => s.stays_awake(true).snippets(69_000, 3_000),
+        Logs::SentrySparse => s.stays_awake(true).snippets(600_000, 3_000),
+        Logs::Alone | Logs::Apis => s,
+    };
+    let logs: Vec<synth::LogFile> = s.logs().collect();
+    let n = logs.len();
+    let all: Vec<&synth::LogFile> = logs.iter().collect();
+    let (watched, alone) = (Side::with(a).await, Side::with(b).await);
+    let nows = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // (the events read as they come, as the live stream does)
+    let got = nows.clone();
+    let reader = listen.then(|| {
+        let mut events = watched.engine.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(engine::Event::Now { .. }) => {
+                        got.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        })
+    });
+    let what = format!("{what}{}", if apis { ", beside APIs" } else { "" });
+    let gap = |i: usize| i % 5 == 2 || (n / 2..n / 2 + 90).contains(&i);
+    let first: Vec<&synth::LogFile> = all.iter().enumerate().filter(|(i, _)| !gap(*i)).map(|(_, l)| *l).collect();
+    let later: Vec<&synth::LogFile> = all.iter().enumerate().filter(|(i, _)| gap(*i)).map(|(_, l)| *l).collect();
+    if apis {
+        let o = history::Options {
+            days: days + 20,
+            end_ms: synth::DEFAULT_START_MS + u64::from(days) * 86_400_000,
+            seed: 5,
+            drives: 4 * (days + 20),
+            charges: days + 20,
+            drive_step_s: 5,
+            teslafi_days: 0,
+            api_days: 0,
+            tesla_days: days,
+            tesla_sentry: true,
+        };
+        for side in [&watched, &alone] {
+            side.take(&first[..20]).await;
+            history::run(&side.engine, &o).await.unwrap();
+            side.engine.idle().await;
+        }
+        same(&format!("{what}: the history in"), &watched.engine, &alone.engine);
+    }
+    watched.take(&first).await;
+    alone.take(&first).await;
+    same(&format!("{what}: the logs at the start"), &watched.engine, &alone.engine);
+    watched.take(&later).await;
+    alone.take(&later).await;
+    same(&format!("{what}: the gaps filled"), &watched.engine, &alone.engine);
+    watched.rebuild().await;
+    alone.rebuild().await;
+    same(&format!("{what}: rebuilt whole"), &watched.engine, &alone.engine);
+    for side in [&watched, &alone] {
+        let car = side.cars()[0];
+        side.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+        let r = full_done(&side.engine).await;
+        assert_eq!((r.status, r.logs_done), (engine::full::FullStatus::Done, n as u64), "{r:#?}");
+    }
+    let k = same(&format!("{what}: a full rebuild"), &watched.engine, &alone.engine);
+    assert!(k > 1_000, "{what}: {k}");
+    assert_eq!(watched.engine.stats().failures + alone.engine.stats().failures, 0);
+    if let Some(r) = reader {
+        r.abort();
+    }
+    println!(
+        "{what}: windows bounded near their log: {} and {} (of {} and {})",
+        watched.engine.stats().windows_bounded_near,
+        alone.engine.stats().windows_bounded_near,
+        watched.engine.stats().windows_rebuilt,
+        alone.engine.stats().windows_rebuilt
+    );
+    let got = nows.load(std::sync::atomic::Ordering::Relaxed);
+    println!("{what}: {k} stored things the same on both engines; {got} now events sent by the first");
+    let st = watched.engine.stats();
+    (got, st.windows_bounded_near, st.windows_rebuilt)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn windows_nobody_listens_to_give_the_same_history() {
+    unwatched(1, Logs::SentrySparse).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "long: cargo test --release -p sentry-mate windows_nobody_listens -- --ignored --nocapture"]
+async fn windows_nobody_listens_to_give_the_same_history_over_days() {
+    for (days, how) in [(4, Logs::Apis), (3, Logs::Alone), (2, Logs::Sentry)] {
+        unwatched(days, how).await;
+    }
+}
+
+/// A window's bounds looked for first in a short stretch around its log ([`engine::Options::window_look_ms`], two
+/// hours) give the very history the two days looked at before give: the same made-up logs through an engine of each,
+/// beside a TeslaMate import and the Tesla API in sentry mode (a car with a cut point every five minutes), and
+/// without them; everything stored compared, ids included.
+async fn looked_near(days: u32, how: Logs) {
+    let near = engine::Options::default();
+    let far = engine::Options { window_look_ms: 2 * 86_400_000, ..engine::Options::default() };
+    let what = format!("{days} days ({how:?}), bounds looked for near the log");
+    let (_, near, all) = two_engines(&what, days, how, near, far, false).await;
+    // (in sentry mode most windows were bounded near their log: the comparison is of that; a car that sleeps has a
+    // settled span, often further than two hours away)
+    if matches!(how, Logs::Sentry | Logs::SentrySparse) {
+        assert!(near * 2 > all, "{what}: {near} of {all} windows bounded near their log");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn window_bounds_looked_for_near_the_log_give_the_same_history() {
+    looked_near(1, Logs::SentrySparse).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "long: cargo test --release -p sentry-mate window_bounds_looked_for -- --ignored --nocapture"]
+async fn window_bounds_looked_for_near_the_log_give_the_same_history_over_days() {
+    for (days, how) in [(7, Logs::Alone), (1, Logs::Sentry), (4, Logs::Sentry), (4, Logs::Apis)] {
+        looked_near(days, how).await;
     }
 }

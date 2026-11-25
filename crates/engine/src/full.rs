@@ -388,6 +388,8 @@ pub enum StartError {
 pub(crate) struct Full {
     /// The car under way's log counting, while it decodes.
     job: Option<Arc<JobState>>,
+    /// The engine over the shadow while the car under way decodes: its counters are the run's ([`Engine::work_stats`]).
+    pub(crate) shadow: Option<Engine>,
     /// When the record was last written.
     noted_ms: u64,
     /// One worker at a time.
@@ -1096,8 +1098,13 @@ impl Engine {
                 r.days_total = r.base_days + days;
             })?;
             let job = Arc::new(JobState::for_full(car, self, lock(&self.inner.full_crash_logs).take()));
-            lock(&self.inner.full).job = Some(job.clone());
+            {
+                let mut full = lock(&self.inner.full);
+                full.job = Some(job.clone());
+                full.shadow = Some(se.clone());
+            }
             let res = se.reconcile_car(car, Some(&job));
+            lock(&self.inner.full).shadow = None;
             self.inner.full_windows.fetch_add(se.stats().windows_rebuilt, Ordering::SeqCst);
             if matches!(&res, Err(e) if left_for_restart(e)) {
                 lock(&self.inner.full).job = None;

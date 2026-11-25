@@ -116,6 +116,8 @@ pub struct Sim {
     seed: u64,
     idle_awake_ms: u64,
     pub truth: Truth,
+    /// Sentry mode: never asleep ([`crate::Scenario::stays_awake`]).
+    pub stays_awake: bool,
 }
 
 impl Sim {
@@ -137,6 +139,7 @@ impl Sim {
             seed,
             idle_awake_ms: IDLE_AWAKE_MS,
             truth: Truth::default(),
+            stays_awake: false,
         };
         s.state.outside_c = s.outside_at(t);
         s.state.batt_temp_c = s.state.outside_c + 2.0;
@@ -288,7 +291,7 @@ impl Sim {
             None => {
                 let awake_until = self.last_end + self.idle_awake_ms;
                 let wake = self.wake_for();
-                if t < awake_until || wake.is_some_and(|w| w <= t) {
+                if self.stays_awake || t < awake_until || wake.is_some_and(|w| w <= t) {
                     self.state.gear = Gear::P;
                     self.state.no_charger_current();
                     self.state.idle(0.3 + (self.state.cabin_c - 20.0).abs() * 0.02, dt);

@@ -47,6 +47,8 @@ pub struct Options {
     pub api_days: u32,
     /// Days of the Tesla API, live, before `end_ms`.
     pub tesla_days: u32,
+    /// The Tesla API's car in sentry mode: awake all day, a `vehicle_data` answer every 15 to 30 s while parked.
+    pub tesla_sentry: bool,
 }
 
 impl Options {
@@ -64,6 +66,7 @@ impl Options {
             api_days: 30,
             // (the pages' timings were taken without it)
             tesla_days: 0,
+            tesla_sentry: false,
         }
     }
 }
@@ -453,8 +456,9 @@ fn tesla_record(s: &Sample) -> Sample {
 /// A day as the Tesla API input gets it, from the day's samples made every second while driving and every 30 s
 /// while charging: the stream's records while driving (a record missing now and then) with a `vehicle_data` answer
 /// about every 60 s joined in, an answer about every 30 s while charging, and one every 60 s while the car is awake
-/// and parked (the minutes before and after a drive or a charge); nothing while it sleeps.
-fn tesla_day(rng: &mut Rng, d: &Day) -> Vec<Sample> {
+/// and parked (the minutes before and after a drive or a charge); nothing while it sleeps. In sentry mode (`sentry`,
+/// the day's start) the car is awake and parked all day outside its drives and charges, an answer every 15 to 30 s.
+fn tesla_day(rng: &mut Rng, d: &Day, sentry: Option<u64>) -> Vec<Sample> {
     let mut out: std::collections::BTreeMap<u64, Sample> = std::collections::BTreeMap::new();
     let mut next_poll = 0u64;
     for s in &d.samples {
@@ -475,10 +479,15 @@ fn tesla_day(rng: &mut Rng, d: &Day) -> Vec<Sample> {
         }
     }
     // awake and parked: the car as the nearest sample has it
-    for span in d.states.iter().filter(|s| s.state == State::Online) {
-        let mut t = span.start_ms - span.start_ms % S;
-        while t < span.end_ms {
-            let near = out.range(t.saturating_sub(45 * S)..t + 45 * S).next().is_some();
+    let spans: Vec<(u64, u64)> = match sentry {
+        Some(day) => vec![(day, day + DAY)],
+        None => d.states.iter().filter(|s| s.state == State::Online).map(|s| (s.start_ms, s.end_ms)).collect(),
+    };
+    let (near_ms, every) = if sentry.is_some() { (10 * S, 15) } else { (45 * S, 59) };
+    for (a, b) in spans {
+        let mut t = a - a % S;
+        while t < b {
+            let near = out.range(t.saturating_sub(near_ms)..t + near_ms).next().is_some();
             let i = d.samples.partition_point(|s| s.t_ms <= t);
             if let (false, Some(s)) = (near, d.samples.get(i.saturating_sub(1))) {
                 let mut parked = s.clone();
@@ -486,7 +495,7 @@ fn tesla_day(rng: &mut Rng, d: &Day) -> Vec<Sample> {
                 parked.battery_power_kw = Some(0.0);
                 out.insert(t, tesla_reading(rng, &parked, t));
             }
-            t += 59 * S + (rng.next() % 3) * S;
+            t += if sentry.is_some() { every * S + (rng.next() % 16) * S } else { every * S + (rng.next() % 3) * S };
         }
     }
     out.into_values().collect()
@@ -775,16 +784,21 @@ pub async fn run(e: &Engine, o: &Options) -> Result<Counts, Box<dyn std::error::
         let mut c = start(o.seed + 2);
         let mut rng = Rng(o.seed.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1);
         each_day(&mut c, &events, a, o.end_ms, S, 30 * S, |day, d| {
-            let samples: Vec<Sample> =
-                tesla_day(&mut rng, &d).into_iter().filter(|s| (day..day + DAY).contains(&s.t_ms)).collect();
+            let samples: Vec<Sample> = tesla_day(&mut rng, &d, o.tesla_sentry.then_some(day))
+                .into_iter()
+                .filter(|s| (day..day + DAY).contains(&s.t_ms))
+                .collect();
             counts.tesla_samples += samples.len() as u64;
-            let facts = d
-                .states
-                .iter()
-                .filter(|s| s.state == State::Online)
-                .map(|s| ApiSpan {
-                    start_ms: s.start_ms,
-                    end_ms: s.end_ms,
+            let online: Vec<(u64, u64)> = if o.tesla_sentry {
+                vec![(day, day + DAY)]
+            } else {
+                d.states.iter().filter(|s| s.state == State::Online).map(|s| (s.start_ms, s.end_ms)).collect()
+            };
+            let facts = online
+                .into_iter()
+                .map(|(start_ms, end_ms)| ApiSpan {
+                    start_ms,
+                    end_ms,
                     state: ApiState::Online,
                     data: true,
                     inputs: Inputs::NONE,

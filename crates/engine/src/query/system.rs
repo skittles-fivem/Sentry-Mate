@@ -1121,6 +1121,8 @@ pub struct Health {
     /// API's status call), counted, with the runs of failed logs: what `sentry-mate log-checks` prints.
     pub log_checks: ingest::judge::LogChecks,
     pub rebuild_pending: bool,
+    /// While a rebuild is pending: how fast its logs go now (null before a few seconds were measured).
+    pub rebuild_speed: Option<crate::RebuildSpeed>,
     /// The newest stretch where one input's GPS fixes disagreed with another's (`gps_inputs_disagree`): which
     /// inputs, and whose fixes were left out of positions there.
     pub gps_disagreement: Option<crate::GpsDisagreement>,
@@ -1398,6 +1400,7 @@ pub fn health(e: &Engine, car: CarId, period: &Period) -> QResult<Scoped<Health>
             missing_logs: missing,
             log_checks: log_checks(e, &c.vehicle_keys)?,
             rebuild_pending,
+            rebuild_speed: if rebuild_pending { e.rebuild_speed() } else { None },
             gps_disagreement: e.gps_disagreement(car),
             uploads_enabled: None,
         },

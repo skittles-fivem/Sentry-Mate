@@ -196,6 +196,28 @@ export function countRate(perS, one, many) {
   return `${m.toLocaleString('en-US')} ${m === 1 ? one : many}/min`;
 }
 
+/** The stages of a log's work, as `speed.stage` names them (docs/ui-api.md: the rebuild speed). */
+const STAGES = {
+  read: 'reading the logs',
+  samples: 'writing their samples',
+  now: 'the newest values',
+  windows: 'rebuilding the timeline around them',
+  other: 'the logs’ records',
+};
+
+/**
+ * Data health's "Rebuild speed" line from a rebuild's `speed` (`{ logs_per_s, stage, stage_share_pct }`, the full
+ * rebuild's status or the car's health while a rebuild is pending): "1.1 logs/s · most of the time: rebuilding the
+ * timeline around them (72 %)". `''` without one (none runs, or not measured yet).
+ */
+export function speedText(speed) {
+  if (!speed || !Number.isFinite(speed.logs_per_s)) return '';
+  const rate = countRate(speed.logs_per_s, 'log', 'logs') || '0 logs/s';
+  const stage = STAGES[speed.stage];
+  if (!stage || !Number.isFinite(speed.stage_share_pct)) return rate;
+  return `${rate} · most of the time: ${stage} (${Math.round(speed.stage_share_pct)} %)`;
+}
+
 /**
  * The progress panel's lines, always the same eight in the same order (`label`, `text`; an empty text keeps the
  * line's room): State, Step, Logs decoded, Days, Data, Speed and time left, Last progress, Why (what started it:

@@ -189,6 +189,7 @@ async fn measure_full_rebuild() {
                 teslafi_days: 0,
                 api_days: days,
                 tesla_days: 0,
+                tesla_sentry: false,
             }
         };
         let t = Instant::now();
@@ -280,5 +281,198 @@ async fn measure_full_rebuild() {
             unix_ms(),
         );
         drop(e);
+    }
+}
+
+/// 2026-11-01T00:00:00Z: where the owner-shaped logs start ([`measure_owner_rebuild`]).
+const OWNER_LOGS_START_MS: u64 = 1_793_491_200_000;
+/// 2026-02-01T00:00:00Z: where its imported TeslaMate history starts.
+const OWNER_IMPORT_START_MS: u64 = 1_769_904_000_000;
+
+/// The owner's shape of history, made up and small on disk: `logs` tiny logs (3 s of frames every 69 s of a car in
+/// sentry mode: about 1,250 a day), the Tesla API over the same days (a `vehicle_data` answer every 15 to 30 s,
+/// every second while driving), and a TeslaMate import from February 2026 through the same days. Returns the data
+/// folder's base (`data`, `keys`) and the car's id.
+async fn owner_history(base: &Path, logs: usize) -> model::CarId {
+    let (data, keys) = (base.join("data"), base.join("keys"));
+    std::fs::create_dir_all(&data).unwrap();
+    let (v, _) = Vault::create(&data, &keys, Kdf::FAST_FOR_TESTS).unwrap();
+    let v = Arc::new(v);
+    let days = u32::try_from(logs.div_ceil(1200)).unwrap();
+    let t = Instant::now();
+    {
+        let store = Store::new(can_dir(&data), v.clone());
+        let judge = Judge::new(store.clone());
+        let gate = gate::Gate::memory();
+        let enter = || -> Result<gate::Pass, Box<dyn std::error::Error>> { Ok(gate.enter(GATE_WAIT)?) };
+        let s = synth::Scenario::new(7)
+            .start(OWNER_LOGS_START_MS)
+            .days(days)
+            .rates(synth::Rates::Light)
+            .stays_awake(true)
+            .snippets(69_000, 3_000);
+        let mut n = 0;
+        for log in s.logs().take(logs) {
+            seed::put(&store, &judge, &enter, &log.name, &log.bytes).await.unwrap();
+            seed::put(&store, &judge, &enter, &log.sidecar_name(), &log.sidecar_bytes()).await.unwrap();
+            n += 1;
+        }
+        assert_eq!(n, logs, "{days} days give fewer logs");
+    }
+    println!("owner shape, {logs} logs: {days} days of tiny logs made in {:.1} s", t.elapsed().as_secs_f64());
+    let db = db::Db::open(&data, v.clone(), db::Options::default()).unwrap();
+    let e = engine::Engine::new(db, Store::new(can_dir(&data), v.clone()), engine::Options::default());
+    let t = Instant::now();
+    e.start().unwrap();
+    e.idle().await;
+    println!("owner shape, {logs} logs: decoded at the start in {:.1} s", t.elapsed().as_secs_f64());
+    let end_ms = OWNER_LOGS_START_MS + u64::from(days) * 86_400_000;
+    let import_days = u32::try_from((end_ms - OWNER_IMPORT_START_MS) / 86_400_000).unwrap();
+    let o = history::Options {
+        days: import_days,
+        end_ms,
+        seed: 5,
+        drives: 4 * import_days,
+        charges: import_days,
+        drive_step_s: 1,
+        teslafi_days: 0,
+        api_days: 0,
+        tesla_days: days,
+        tesla_sentry: true,
+    };
+    let t = Instant::now();
+    let c = history::run(&e, &o).await.unwrap();
+    e.idle().await;
+    println!(
+        "owner shape, {logs} logs: {import_days} days of TeslaMate import ({} positions, {} drives) and {days} days of \
+         the Tesla API ({} samples) put in in {:.1} s",
+        c.positions,
+        c.drives,
+        c.tesla_samples,
+        t.elapsed().as_secs_f64()
+    );
+    let car = e.db().fleet(&db::FleetQuery { search: None, limit: 10, after: None }).unwrap().cars[0].car.id;
+    assert_eq!(e.stats().failures, 0);
+    car
+}
+
+/// A full rebuild's time per log as the history grows, in the owner's shape ([`owner_history`]; docs/plans/
+/// performance.md, "A full rebuild in the owner's shape"): ms a log, and of it the stages (the full rebuild's own
+/// counters, [`engine::Engine::work_stats`]).
+///
+/// `PERF_LOGS=1000,5000,10000,20000 cargo test --release -p sentry-mate measure_owner_rebuild -- --ignored
+/// --nocapture` (the sizes; 1,000 and 5,000 when not given); `PERF_OWNER_DATA=DIR` keeps each size's seeded folder
+/// there and starts from a copy of it the next time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "measurement by hand: cargo test --release -p sentry-mate measure_owner_rebuild -- --ignored --nocapture"]
+async fn measure_owner_rebuild() {
+    let sizes: Vec<usize> = std::env::var("PERF_LOGS")
+        .ok()
+        .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![1000, 5000]);
+    let mut table = Vec::new();
+    for logs in sizes {
+        let tmp = tempfile::tempdir().unwrap();
+        // (a seeded history kept for the next run: PERF_OWNER_DATA, copied before each rebuild)
+        match std::env::var_os("PERF_OWNER_DATA").map(|d| PathBuf::from(d).join(logs.to_string())) {
+            Some(kept) => {
+                if !kept.join("data").exists() {
+                    // (seeded beside it and moved in place whole: a run cut off leaves nothing to reuse)
+                    let part = kept.with_extension("part");
+                    let _ = std::fs::remove_dir_all(&part);
+                    owner_history(&part, logs).await;
+                    std::fs::rename(&part, &kept).unwrap();
+                }
+                copy_dir(&kept, tmp.path());
+            }
+            None => {
+                owner_history(tmp.path(), logs).await;
+            }
+        }
+        let (data, keys) = (tmp.path().join("data"), tmp.path().join("keys"));
+        let v = Arc::new(Vault::open(&data, &keys).unwrap());
+        let db = db::Db::open(&data, v.clone(), db::Options::default()).unwrap();
+        let e = engine::Engine::new(db, Store::new(can_dir(&data), v), engine::Options::default());
+        e.start().unwrap();
+        e.idle().await;
+        let car = e.db().fleet(&db::FleetQuery { search: None, limit: 10, after: None }).unwrap().cars[0].car.id;
+        let (t, cpu, before) = (Instant::now(), cpu_s(), e.work_stats());
+        e.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+        let mut last = before.clone();
+        let mut decoding = (None, None);
+        let r = loop {
+            let r = e.full_rebuild_status().unwrap().unwrap();
+            if r.phase == engine::full::Phase::Decoding {
+                // (the shadow's counters go with it at the phase's end, before the record says so)
+                let w = e.work_stats();
+                if w.decode_ms_total >= last.decode_ms_total {
+                    last = w;
+                }
+                if std::env::var_os("PERF_DEBUG").is_some() {
+                    println!("{:?} {} {:?}", r.phase, r.logs_done, last);
+                }
+                decoding.0.get_or_insert_with(Instant::now);
+                decoding.1 = Some(Instant::now());
+            }
+            if !r.running() {
+                break r;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        e.idle().await;
+        let secs = t.elapsed().as_secs_f64();
+        let n = r.logs_done.max(1) as f64;
+        let per = |a: u64, b: u64| (a - b) as f64 / n;
+        let s = &last;
+        let decode_ms = per(s.decode_ms_total, before.decode_ms_total);
+        let read = per(s.read_us_total, before.read_us_total) / 1000.0;
+        let samples = per(s.samples_us_total, before.samples_us_total) / 1000.0;
+        let now = per(s.now_us_total, before.now_us_total) / 1000.0;
+        let windows = per(s.rebuild_ms_total, before.rebuild_ms_total);
+        let dec_s = match decoding {
+            (Some(a), Some(b)) => (b - a).as_secs_f64(),
+            _ => 0.0,
+        };
+        let row = format!(
+            "| {logs} | {secs:.0} s | {:.1} | {:.1} | {read:.1} | {samples:.1} | {now:.1} | {:.1} | {windows:.1} | {} |",
+            secs * 1000.0 / n,
+            dec_s * 1000.0 / n,
+            decode_ms - read - samples - now,
+            (s.windows_rebuilt - before.windows_rebuilt),
+        );
+        let parts: Vec<String> = [
+            "find",
+            "read",
+            "fuse",
+            "build",
+            "rows",
+            "rest",
+            "(of find: entries",
+            "nearest)",
+            "(of rows: costs",
+            "replaced",
+            "cuts)",
+            "(of rest: state now)",
+        ]
+        .iter()
+        .zip(s.window_parts_us.iter().zip(before.window_parts_us))
+        .map(|(name, (a, b))| format!("{name} {:.1}", per(*a, b) / 1000.0))
+        .collect();
+        println!("owner shape: {logs} logs: of the windows (ms a log): {}; {:.0} s decoding", parts.join(", "), dec_s);
+        println!(
+            "owner shape: {logs} logs: a full rebuild in {secs:.1} s, {:.1} s of CPU, {:?}, {} logs\n{row}",
+            cpu_s() - cpu,
+            r.status,
+            r.logs_done
+        );
+        table.push(row);
+        assert_eq!(r.status, engine::full::FullStatus::Done);
+    }
+    println!(
+        "| logs | full rebuild | ms a log | of it decoding (ms a log) | read | samples | now | other of the log | \
+         windows | windows rebuilt |"
+    );
+    for row in table {
+        println!("{row}");
     }
 }

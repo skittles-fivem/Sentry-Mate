@@ -949,26 +949,67 @@ impl Engine {
     /// Rebuilds the window of `car`'s timeline that data in `[a, b]` changes; returns it.
     pub(crate) fn rebuild_span(&self, car: CarId, meta: &mut CarMeta, a: u64, b: u64) -> Result<(u64, u64)> {
         let began = Instant::now();
+        let mut mark = began;
+        let part = |i: usize, mark: &mut Instant| {
+            let now = Instant::now();
+            let us = u64::try_from((now - *mark).as_micros()).unwrap_or(u64::MAX);
+            self.inner.counters.window_parts[i].fetch_add(us, Ordering::Relaxed);
+            *mark = now;
+        };
         let db = &self.inner.db;
         let p = &self.inner.opts.params;
-        let mut look = 2 * DAY_MS;
-        let (from, to) = loop {
-            let (lo, hi) = (a.saturating_sub(look), b.saturating_add(look));
+        // First a short stretch around the log (`window_look_ms`): where both bounds are found in it (a cut point
+        // or settled span either side) they are the bounds any longer stretch gives, and the two days below would
+        // give; else the two days, four times as far each time no bound is found, as always.
+        let near = self.inner.opts.window_look_ms;
+        let mut found = None;
+        if near < 2 * DAY_MS {
+            let (lo, hi) = (a.saturating_sub(near), b.saturating_add(near));
             let spans: Vec<StateSpan> =
                 all_rows::<StateRow>(db, car, lo, hi, Some(Source::Live))?.into_iter().map(|r| r.span).collect();
             let cuts = records::cuts_between(db, car, meta, lo, hi)?;
             let w = timeline::rebuild_window(&spans, &cuts, a, b, p);
-            let more_before = w.from_ms == 0 && meta.first_ms.is_some_and(|f| f < lo);
-            let more_after = w.to_ms.is_none() && meta.newest_ms.is_some_and(|n| n > hi);
-            if !(more_before || more_after) || look > 4000 * DAY_MS {
-                break (w.from_ms, w.to_ms);
+            // (the spans the log falls in or between, which the bounds are looked for from, are the same as in a
+            // longer stretch only when the stretch has one that starts at or before the log and one that ends after
+            // it: else the nearest are further away)
+            let before = spans.iter().any(|s| s.start_ms <= a) && w.from_ms > lo;
+            // After the log: a bound found there, or nothing stored at all between the stretch's end and the two
+            // days' and no newer data than them (a log at the newest end of a history, as in a full rebuild): then
+            // the two days see what the stretch sees after the log, and give its bound or none, and look no further.
+            let far = b.saturating_add(2 * DAY_MS);
+            let after = (spans.iter().any(|s| s.end_ms > b.max(a)) && w.to_ms.is_some_and(|t| t < hi))
+                || before && meta.newest_ms.is_none_or(|n| n <= far) && {
+                    let q = db::Query { limit: 1, source: Some(Source::Live), ..db::Query::between(hi, far) };
+                    db.list::<StateRow>(car, &q)?.items.is_empty()
+                        && records::cuts_between(db, car, meta, hi, far)?.is_empty()
+                };
+            if before && after {
+                self.inner.counters.bounded_near.fetch_add(1, Ordering::Relaxed);
+                found = Some((w.from_ms, w.to_ms));
             }
-            look = look.saturating_mul(4);
+        }
+        let mut look = 2 * DAY_MS;
+        let (from, to) = match found {
+            Some(w) => w,
+            None => loop {
+                let (lo, hi) = (a.saturating_sub(look), b.saturating_add(look));
+                let spans: Vec<StateSpan> =
+                    all_rows::<StateRow>(db, car, lo, hi, Some(Source::Live))?.into_iter().map(|r| r.span).collect();
+                let cuts = records::cuts_between(db, car, meta, lo, hi)?;
+                let w = timeline::rebuild_window(&spans, &cuts, a, b, p);
+                let more_before = w.from_ms == 0 && meta.first_ms.is_some_and(|f| f < lo);
+                let more_after = w.to_ms.is_none() && meta.newest_ms.is_some_and(|n| n > hi);
+                if !(more_before || more_after) || look > 4000 * DAY_MS {
+                    break (w.from_ms, w.to_ms);
+                }
+                look = look.saturating_mul(4);
+            },
         };
         let first = meta.first_ms.unwrap_or(a).min(a);
         let from = from.max(first.saturating_sub(1));
         let to = to.unwrap_or_else(|| b.max(meta.newest_ms.unwrap_or(b)).saturating_add(1)).max(from + 1);
 
+        let t_entries = Instant::now();
         let entries = records::entries_between(db, car, meta, from, to)?;
         let mut logs = Vec::new();
         let mut holes = Vec::new();
@@ -978,14 +1019,19 @@ impl Engine {
                 Outcome::Hole { from_ms, to_ms, .. } => holes.push((*from_ms, *to_ms)),
             }
         }
+        let t_nearest = Instant::now();
+        let us = |t: Instant| u64::try_from(t.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.inner.counters.window_parts[6].fetch_add(us(t_entries), Ordering::Relaxed);
         if let Some(f) = records::nearest_decoded(db, car, meta, from, true)? {
             logs.push(f);
         }
         if let Some(f) = records::nearest_decoded(db, car, meta, to, false)? {
             logs.push(f);
         }
+        self.inner.counters.window_parts[7].fetch_add(us(t_nearest), Ordering::Relaxed);
         logs.sort_by_key(|f| f.span());
         logs.dedup();
+        part(0, &mut mark);
         // the live inputs' samples made one in the car's order (each read a margin around the window as its place
         // asks, so a second inside it fuses as in a longer one)
         let fp = &self.inner.opts.fuse;
@@ -1004,6 +1050,7 @@ impl Engine {
             by.push((points, input));
         }
         let by: Vec<(&[Sample], Input)> = by.iter().map(|(v, i)| (v.as_slice(), *i)).collect();
+        part(1, &mut mark);
         let mut fused = timeline::fuse_ordered(&by, &order, fp);
         self.inner.counters.gps_fixes_dropped.fetch_add(fused.fixes_dropped, Ordering::Relaxed);
         // the car's live position by the same word on SMO's fixes as its history's
@@ -1030,6 +1077,7 @@ impl Engine {
         fused.samples.retain(|s| s.t_ms >= from && s.t_ms < to);
         fused.marks.retain(|m| m.0 >= from && m.0 < to);
         let seen = records::api_between(db, car, meta, from, to)?;
+        part(2, &mut mark);
         let input = timeline::Input {
             car,
             from_ms: from,
@@ -1042,6 +1090,7 @@ impl Engine {
             order,
         };
         let t = timeline::build(&input, p);
+        part(3, &mut mark);
         self.write_timeline(car, meta, from, to, t)?;
         self.inner.counters.windows.fetch_add(1, Ordering::Relaxed);
         let took = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -1057,6 +1106,7 @@ impl Engine {
         to: u64,
         mut t: timeline::Timeline,
     ) -> Result<()> {
+        let began = Instant::now();
         let db = &self.inner.db;
         let places = self.places();
         // a drive or charge that was already there (seen first by one input, then by the other, or by a late log)
@@ -1105,6 +1155,7 @@ impl Engine {
             .into_iter()
             .filter(|c| c.start_ms >= from && c.start_ms < to)
             .collect();
+        let t_costs = Instant::now();
         crate::costs::carry(self, car, &old, &charges)?;
         for ch in &mut charges {
             ch.place = ch.position.as_ref().and_then(|p| places.place_at(p.lat, p.lon)).map(|p| p.id);
@@ -1113,12 +1164,21 @@ impl Engine {
             let ended = newest > ch.end_ms + self.inner.opts.params.charge_gap_ms;
             ch.cost = crate::costs::settle(self, car, ch, &curve, &tz, ended)?.map(|c| c.amount);
         }
+        let us = |t: Instant| u64::try_from(t.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.inner.counters.window_parts[8].fetch_add(us(t_costs), Ordering::Relaxed);
+        let t_replace = Instant::now();
         let states: Vec<StateRow> = t.states.into_iter().map(|span| StateRow { id: span.start_ms, span }).collect();
         db.replace_window::<Drive>(car, from, to, &drives)?;
         db.replace_window::<Charge>(car, from, to, &charges)?;
         db.replace_window::<StateRow>(car, from, to, &states)?;
         db.write_points::<ChargePoint>(car, Source::Live, from, to, &points)?;
+        self.inner.counters.window_parts[9].fetch_add(us(t_replace), Ordering::Relaxed);
+        let t_cuts = Instant::now();
         records::replace_cuts(db, car, meta, from, to, &t.cuts)?;
+        self.inner.counters.window_parts[10].fetch_add(us(t_cuts), Ordering::Relaxed);
+        let rows_written = Instant::now();
+        let rows = u64::try_from((rows_written - began).as_micros()).unwrap_or(u64::MAX);
+        self.inner.counters.window_parts[4].fetch_add(rows, Ordering::Relaxed);
         if let Some(last) = states.last() {
             // the car's state now: the last span's
             if let Some(mut e) = db.entry(car)?.and_then(|e| e.summary.now)
@@ -1133,15 +1193,23 @@ impl Engine {
         // car's Now says, by the same rule. Not the start of the window's last span: that is often a sliver at the
         // end of the newest log, after the newest sample, and a drive or a charge under way began long before it;
         // and a window that ends before the newest data can still move the start of the span the newest rows go on.
+        let t_state = Instant::now();
         let now = db.entry(car)?.and_then(|e| e.summary.now);
         if let Ok(s) = crate::query::now::state_now(self, car, now.as_ref()) {
             meta.state_since_ms = s.since_ms;
         }
+        self.inner.counters.window_parts[11].fetch_add(us(t_state), Ordering::Relaxed);
         records::put_meta(db, car, meta)?;
         self.emit(Event::Rows { car, kinds: vec!["drives", "charges", "states", "visits"], from_ms: from, to_ms: to });
-        if let Ok(now) = crate::query::now::now_view(self, car) {
+        // (worked out only for someone listening: nobody listens to a full rebuild's engine over its shadow, and the
+        // view reads the car's last 30 days of drives, imported ones included, for its range estimate)
+        if self.inner.events.receiver_count() > 0
+            && let Ok(now) = crate::query::now::now_view(self, car)
+        {
             self.emit(Event::Now { car, now: Box::new(now) });
         }
+        let rest = u64::try_from(rows_written.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.inner.counters.window_parts[5].fetch_add(rest, Ordering::Relaxed);
         Ok(())
     }
 
