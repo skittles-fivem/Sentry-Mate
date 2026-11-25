@@ -1508,3 +1508,104 @@ fn lzma_decompress(xz: &[u8]) -> Vec<u8> {
     lzma_rs::xz_decompress(&mut &xz[..], &mut out).unwrap();
     out
 }
+
+/// A hook for a job's clear step that holds the first job to reach it until the test lets it go.
+struct Gate {
+    reached: Arc<std::sync::atomic::AtomicBool>,
+    release: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Gate {
+    fn on(e: &Engine) -> Gate {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let (reached, release) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let (r, g) = (reached.clone(), release.clone());
+        e.job_clear_hook_set(Some(Arc::new(move || {
+            // (the first job only)
+            if r.swap(true, SeqCst) {
+                return;
+            }
+            while !g.load(SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        })));
+        Gate { reached, release }
+    }
+
+    async fn reached(&self) {
+        for _ in 0..2000 {
+            if self.reached.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("no job reached its clear step");
+    }
+
+    fn open(&self) {
+        self.release.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn smo_lons(k: &Kit, car: u32) -> Vec<f64> {
+    let h = history(k, car);
+    h["smo"].as_array().unwrap().iter().filter_map(|p| p["lon"].as_f64()).collect()
+}
+
+/// A GPS layout saved while a whole rebuild of the car runs (after its logs were decoded, before it ends) is not
+/// lost: the rebuild must not take the note of that change away, so the narrow job queued behind it does its work.
+#[test]
+fn a_gps_layout_saved_during_a_whole_rebuild_is_still_applied_after_it() {
+    rt().block_on(async {
+        let k = kit();
+        let trip = Trip { a: 70, b: 250 };
+        for i in 0..3 {
+            send_internal_gps(&k, i, trip).await;
+        }
+        k.engine.idle().await;
+        let car = k.db.car_for_key(KEY).unwrap().unwrap();
+        let gate = Gate::on(&k.engine);
+        let whole = k.engine.rebuild(engine::Scope::car(car)).unwrap();
+        gate.reached().await;
+        let layout: model::gps::GpsLayout = "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)".parse().unwrap();
+        let job = k.engine.set_gps_layout(car, Some(layout)).unwrap().unwrap();
+        assert_ne!(job.id, whole.id);
+        gate.open();
+        assert_eq!(job_done(&k, whole.id).await.status, engine::JobStatus::Done);
+        let p = job_done(&k, job.id).await;
+        assert_eq!(p.status, engine::JobStatus::Done, "{p:?}");
+        assert_eq!((p.done, p.total), (3, 3), "the layout change did its work: {p:?}");
+        let lons = smo_lons(&k, car);
+        assert!(!lons.is_empty() && lons.iter().all(|l| (l - LON).abs() < 0.5), "{lons:?}");
+        assert!(!k.engine.rebuild_pending(car));
+    });
+}
+
+/// The same for a narrow job: a second change saved while the first one runs (its logs done, its note not yet
+/// taken away) is not lost.
+#[test]
+fn a_second_gps_layout_saved_during_a_narrow_rebuild_is_still_applied_after_it() {
+    rt().block_on(async {
+        let k = kit();
+        let trip = Trip { a: 70, b: 250 };
+        for i in 0..3 {
+            send_internal_gps(&k, i, trip).await;
+        }
+        k.engine.idle().await;
+        let car = k.db.car_for_key(KEY).unwrap().unwrap();
+        let a: model::gps::GpsLayout = "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)".parse().unwrap();
+        let b: model::gps::GpsLayout = "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.0)".parse().unwrap();
+        let gate = Gate::on(&k.engine);
+        let first = k.engine.set_gps_layout(car, Some(a)).unwrap().unwrap();
+        gate.reached().await;
+        let second = k.engine.set_gps_layout(car, Some(b)).unwrap().unwrap();
+        assert_ne!(first.id, second.id);
+        gate.open();
+        assert_eq!(job_done(&k, first.id).await.status, engine::JobStatus::Done);
+        let p = job_done(&k, second.id).await;
+        assert_eq!((p.done, p.total), (3, 3), "the second change did its work: {p:?}");
+        let lons = smo_lons(&k, car);
+        assert!(!lons.is_empty() && lons.iter().all(|l| (l - (LON - 0.777216)).abs() < 0.05), "{lons:?}");
+        assert!(!k.engine.rebuild_pending(car));
+    });
+}
