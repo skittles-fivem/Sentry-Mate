@@ -465,6 +465,11 @@ impl Engine {
         records::put(&self.inner.db, NS, KEY, r)
     }
 
+    /// Whether a full rebuild's worker runs now (one put off, paused or waiting for tonight has none).
+    pub(crate) fn full_worker_running(&self) -> bool {
+        lock(&self.inner.full).worker
+    }
+
     /// The full rebuild under way or the last one (with the progress of the car under way), if any.
     pub fn full_rebuild_status(&self) -> Result<Option<FullRecord>> {
         let Some(mut r) = self.full_get()? else { return Ok(None) };
@@ -755,6 +760,13 @@ impl Engine {
         *lock(&self.inner.full_crash_at) = phase;
     }
 
+    /// Holds the full rebuild's worker at the start of `phase` until this is called again with another phase or
+    /// `None` (tests: a rebuild that runs for as long as a test needs).
+    #[doc(hidden)]
+    pub fn full_rebuild_hold_at(&self, phase: Option<Phase>) {
+        *lock(&self.inner.full_hold_at) = phase;
+    }
+
     /// Makes the full rebuild's worker stop as by a crash once it decoded `logs` logs of a car (tests: nothing is
     /// noted on the way out, as nothing is when the server is killed).
     #[doc(hidden)]
@@ -974,6 +986,10 @@ impl Engine {
             }
             r.phase = phase;
         })?;
+        while *lock(&self.inner.full_hold_at) == Some(phase) {
+            self.full_not_stopping()?;
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         if r.fail_at == Some(phase) {
             return Err(crate::Error::Other(format!("stopped at {phase:?} for a test")));
         }
