@@ -102,7 +102,7 @@
 - **An export file never holds the key file.** It opens only with the recovery key (Argon2id at 1 GiB), so a
   copied export file is useless without it. It still holds everything, sealed as stored: keep it private, and delete
   it once the new server runs. The web side's export waits sealed in `data/.export/` until it is removed or
-  expires, a restart included, and opens only with the data key.
+  expires, a restart included, and opens only with the data key. Its snapshot is made of hard links, so data the owner deletes meanwhile stays on disk until the export is removed or expires (a week at most), across restarts.
 - A move or an import goes only into a new server: empty data and keys folders, or only what a first start made
   there. A key file that opens other data is never replaced.
 - **The audit log names what changed.** Moving a CAN Bridge key between cars (it decides whose history a car's signed
