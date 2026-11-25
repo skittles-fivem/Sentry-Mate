@@ -274,7 +274,7 @@ fn logs_become_a_drive_and_a_charge_and_late_logs_rebuild_the_same_history() {
             query::timeline::timeline(&a.engine, car, &Default::default(), &Paging::first(500)).unwrap().body.items;
         let kinds: Vec<&str> = tl.iter().map(|r| r.kind).collect();
         assert!(kinds.contains(&"drive") && kinds.contains(&"charge") && kinds.contains(&"parked"), "{kinds:?}");
-        let now = query::now::now_view(&a.engine, car).unwrap();
+        let now = tokio::task::block_in_place(|| query::now::now_view(&a.engine, car)).unwrap();
         assert_eq!(now.soc_pct.map(|v| v.value), Some(70.0));
         let fleet = query::fleet::cars(&a.engine, &[car], &Default::default(), &Paging::default()).unwrap();
         assert_eq!(fleet.items.len(), 1);
@@ -970,13 +970,13 @@ fn live_values_after_a_charge_are_not_the_charge_s_while_driving() {
         }
         k.engine.idle().await;
         let car = the_car(&k);
-        let n = query::now::now_view(&k.engine, car).unwrap();
+        let n = tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap();
         assert_eq!(n.charge.plugged.map(|p| p.value), Some(true));
         let (name, log, side) = minute_of(KEY, 4, Minute::Drive, LON, None);
         upload(&k, &name, &log).await;
         upload(&k, &format!("{name}.json"), &side).await;
         k.engine.idle().await;
-        let n = query::now::now_view(&k.engine, car).unwrap();
+        let n = tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap();
         assert_ne!(n.charge.plugged.map(|p| p.value), Some(true), "{:?}", n.charge);
         assert!(n.charge.kind.is_none() && n.charge.power_kw.is_none(), "{:?}", n.charge);
         let at = n.at_ms.unwrap();
