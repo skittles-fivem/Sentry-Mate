@@ -94,7 +94,38 @@ pub struct LogEntry {
     pub internal_gps: Option<bool>,
 }
 
+/// The kinds of log left out, as [`LogEntry::hole_kind`] names them.
+pub mod hole {
+    /// The bridge could not sign it (its sidecar says why): the owner may choose to use it.
+    pub const COULD_NOT_SIGN: &str = "could_not_sign";
+    /// It has no signature although the car is paired: the owner may choose to use it.
+    pub const NOT_SIGNED: &str = "not_signed";
+    /// Its check failed otherwise (a bad signature, another key's, changed since signed, a wrong name).
+    pub const FAILED_CHECK: &str = "failed_check";
+    /// It names another car's VIN than the car's.
+    pub const OTHER_VIN: &str = "other_vin";
+    /// It could not be read (a damaged file).
+    pub const UNREADABLE: &str = "unreadable";
+    /// The server recorded it but no longer has it, and has asked the car to send it again: not an error.
+    pub const NOT_STORED: &str = "not_stored";
+}
+
 impl LogEntry {
+    /// Why this log was left out (`None` when it was decoded): one of [`hole`]'s words.
+    pub fn hole_kind(&self) -> Option<&'static str> {
+        let Outcome::Hole { reason, .. } = &self.outcome else { return None };
+        Some(match reason.as_str() {
+            "not_stored" => hole::NOT_STORED,
+            "other_vin" => hole::OTHER_VIN,
+            r if r.starts_with("unreadable") => hole::UNREADABLE,
+            _ => match (self.status.as_str(), self.reason.as_deref()) {
+                ("could_not_sign", _) => hole::COULD_NOT_SIGN,
+                ("failed", Some(trust::NOT_SIGNED_BUT_PAIRED)) => hole::NOT_SIGNED,
+                _ => hole::FAILED_CHECK,
+            },
+        })
+    }
+
     pub fn span(&self) -> (u64, u64) {
         match &self.outcome {
             Outcome::Decoded { facts, .. } => facts.span(),
@@ -121,6 +152,10 @@ pub struct CarMeta {
     /// Logs decoded and logs left out, in all.
     pub decoded: u64,
     pub holes: u64,
+    /// The logs left out, by why ([`LogEntry::hole_kind`]); their sum is `holes` for logs worked on since this was
+    /// kept (an older record has fewer).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub holes_by: BTreeMap<String, u64>,
     /// When a log was last worked on, and how long it took (ms).
     pub last_done_ms: Option<u64>,
     pub last_took_ms: Option<u64>,
@@ -160,6 +195,33 @@ pub struct CarMeta {
 }
 
 impl CarMeta {
+    /// Takes a log into the counts of logs decoded and left out, by its [`LogEntry::hole_kind`].
+    pub(crate) fn count(&mut self, kind: Option<&str>) {
+        match kind {
+            None => self.decoded += 1,
+            Some(k) => {
+                self.holes += 1;
+                *self.holes_by.entry(k.to_string()).or_default() += 1;
+            }
+        }
+    }
+
+    /// Takes `e` out of the counts of logs decoded and left out (it is worked on again, or is gone).
+    pub(crate) fn uncount(&mut self, e: &LogEntry) {
+        match e.hole_kind() {
+            None => self.decoded = self.decoded.saturating_sub(1),
+            Some(k) => {
+                self.holes = self.holes.saturating_sub(1);
+                if let Some(n) = self.holes_by.get_mut(k) {
+                    *n = n.saturating_sub(1);
+                    if *n == 0 {
+                        self.holes_by.remove(k);
+                    }
+                }
+            }
+        }
+    }
+
     /// The days with state spans, the newest data and when it came, of one API input (none for SMO, which keeps its
     /// own in its logs). Every input is named, so a new one must be given its own fields here.
     pub(crate) fn api_track(&mut self, input: model::Input) -> Option<ApiTrack<'_>> {
@@ -335,6 +397,12 @@ pub(crate) fn meta(db: &Db, car: CarId) -> Result<CarMeta> {
 /// defaults when the car has none yet.
 pub fn car_meta(db: &Db, car: CarId) -> Result<CarMeta> {
     meta(db, car)
+}
+
+/// Writes a car's meta record as it is given, for tests of what reads it.
+#[doc(hidden)]
+pub fn put_car_meta(db: &Db, car: CarId, m: &CarMeta) -> Result<()> {
+    put_meta(db, car, m)
 }
 
 pub(crate) fn put_meta(db: &Db, car: CarId, m: &CarMeta) -> Result<()> {
@@ -924,6 +992,43 @@ pub(crate) fn note_input_version(db: &Db, car: CarId, input: model::Input, versi
 mod tests {
     use super::*;
     use timeline::{ApiSpan, ApiState};
+
+    /// Why a log was left out, by what its check and its decoding said; the counts follow a log that is worked on
+    /// again or removed.
+    #[test]
+    fn logs_left_out_are_named_and_counted_by_kind() {
+        let hole = |reason: &str, status: &str, why: Option<&str>| LogEntry {
+            key: "k".into(),
+            outcome: Outcome::Hole { from_ms: 0, to_ms: 1, reason: reason.into() },
+            profile: "tesla-3y".into(),
+            rules: rules(),
+            usable: false,
+            status: status.into(),
+            reason: why.map(str::to_string),
+            done_ms: 0,
+            internal_gps: None,
+        };
+        let kind = |e: &LogEntry| e.hole_kind();
+        assert_eq!(kind(&hole("failed_check", "could_not_sign", None)), Some(hole::COULD_NOT_SIGN));
+        assert_eq!(kind(&hole("failed_check", "failed", Some(trust::NOT_SIGNED_BUT_PAIRED))), Some(hole::NOT_SIGNED));
+        assert_eq!(kind(&hole("failed_check", "failed", Some("bad signature"))), Some(hole::FAILED_CHECK));
+        assert_eq!(kind(&hole("other_vin", "verified", None)), Some(hole::OTHER_VIN));
+        assert_eq!(kind(&hole("unreadable: cut short", "verified", None)), Some(hole::UNREADABLE));
+        assert_eq!(kind(&hole("not_stored", "verified", None)), Some(hole::NOT_STORED));
+        let mut m = CarMeta::default();
+        let (a, b) = (hole("failed_check", "could_not_sign", None), hole("other_vin", "verified", None));
+        m.count(a.hole_kind());
+        m.count(a.hole_kind());
+        m.count(b.hole_kind());
+        m.count(None);
+        assert_eq!((m.decoded, m.holes), (1, 3));
+        assert_eq!(m.holes_by.get(hole::COULD_NOT_SIGN), Some(&2));
+        m.uncount(&a);
+        m.uncount(&b);
+        assert_eq!((m.decoded, m.holes), (1, 1));
+        assert_eq!(m.holes_by.get(hole::OTHER_VIN), None, "a kind with none left is dropped");
+        assert_eq!(m.holes_by.values().sum::<u64>(), m.holes);
+    }
 
     fn sp(a: u64, b: u64, state: ApiState, data: bool) -> ApiSpan {
         ApiSpan { start_ms: a, end_ms: b, state, data, inputs: model::Inputs::NONE }

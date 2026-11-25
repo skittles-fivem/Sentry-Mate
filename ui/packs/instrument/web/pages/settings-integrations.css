@@ -279,6 +279,10 @@
 .co-k { display: none; font-size: max(0.6875rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
 .co-v { font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
 .co-s { font-size: max(0.75rem, var(--fs-floor)); color: var(--text-3); font-variant-numeric: tabular-nums; }
+.co-kinds { display: flex; flex-direction: column; gap: round(0.0625rem, var(--e)); font-size: max(0.75rem, var(--fs-floor)); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.co-kinds[hidden] { display: none; }
+.co-kind.is-link { text-decoration: underline dotted; text-underline-offset: 0.2em; cursor: pointer; }
+.co-kind--ok { color: var(--text-3); }
 .co-stline { display: flex; align-items: center; gap: round(0.5rem, var(--e)); }
 .co-word { font-weight: 600; }
 .co-row[data-status="problem"] .co-word { color: var(--danger-ink); }

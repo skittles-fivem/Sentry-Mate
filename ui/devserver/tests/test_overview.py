@@ -64,9 +64,37 @@ class Overview(ServerCase):
         self.assertEqual(by["teslafi:fa1"]["status"], "idle")
         self.assertEqual(by["teslamate_db"]["status"], "off")
         self.assertIsNone(by["tesla:ta1"]["today"]["cap"])  # no cap of its own: Tesla does the limiting
+        self.assertIsNone(by["teslafi:fa1"]["today"]["cap"])  # nor TeslaFi: it does the limiting
         totals = {s: sum(1 for c in d["connections"] if c["status"] == s) for s in STATUSES}
         self.assertEqual(d["totals"], totals)
         self.assertGreater(sum(c["day"]["errors"] + c["week"]["errors"] for c in d["connections"]), 0)
+
+    def test_errors_of_a_can_bridge_are_named(self):
+        """A CAN Bridge row says what its errors were (logs left out, by why, with the page that shows them); logs
+        asked of the car again are counted apart and are in neither the tries nor the errors; other rows name none."""
+        d = self.c.get(PATH)
+        known = {"could_not_sign", "not_signed", "failed_check", "other_vin", "unreadable", "unknown"}
+        named = 0
+        for c in d["connections"]:
+            for p in ("day", "week"):
+                x = c[p]
+                self.assertEqual(set(x), {"count", "ok", "errors", "success_pct", "expected", "by_kind"}, c["id"])
+                self.assertIsInstance(x["expected"], int)
+                if c["kind"] != "smo":
+                    self.assertEqual((x["expected"], x["by_kind"]), (0, []), c["id"])
+                    continue
+                self.assertEqual(sum(k["count"] for k in x["by_kind"]), x["errors"], c["id"])
+                counts = [k["count"] for k in x["by_kind"]]
+                self.assertEqual(counts, sorted(counts, reverse=True), "the most first")
+                for k in x["by_kind"]:
+                    self.assertIn(k["kind"], known)
+                    self.assertTrue(k["link"].startswith(c["link"]), k)
+                    named += 1
+                    if k["kind"] in ("could_not_sign", "not_signed"):
+                        self.assertEqual(k["link"], c["link"] + "#unsigned-logs")
+        self.assertGreater(named, 0, "some CAN Bridge row has errors by kind")
+        by = {c["id"]: c for c in d["connections"]}
+        self.assertGreaterEqual(by["smo:c1"]["week"]["expected"], by["smo:c1"]["day"]["expected"])
 
     def test_hourly(self):
         d = self.c.get(PATH)

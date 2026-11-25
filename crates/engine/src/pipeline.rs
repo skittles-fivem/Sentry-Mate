@@ -470,14 +470,9 @@ impl Engine {
                 }
                 names.push(name.clone());
                 spans.push(e.span());
-                match &e.outcome {
-                    Outcome::Decoded { samples_from_ms, samples_to_ms, .. } => {
-                        meta.decoded = meta.decoded.saturating_sub(1);
-                        if let (Some(a), Some(b)) = (samples_from_ms, samples_to_ms) {
-                            sample_spans.push((*a, *b));
-                        }
-                    }
-                    Outcome::Hole { .. } => meta.holes = meta.holes.saturating_sub(1),
+                meta.uncount(e);
+                if let Outcome::Decoded { samples_from_ms: Some(a), samples_to_ms: Some(b), .. } = &e.outcome {
+                    sample_spans.push((*a, *b));
                 }
                 false
             });
@@ -716,6 +711,7 @@ impl Engine {
             done_ms: now_ms(),
             internal_gps,
         };
+        let kind = entry.hole_kind();
         let mut span = entry.span();
         if let Some(o) = &old {
             let (a, b) = o.span();
@@ -734,20 +730,14 @@ impl Engine {
         meta.days.insert(d);
         meta.first_ms = Some(meta.first_ms.map_or(span.0, |f| f.min(span.0)));
         meta.newest_ms = Some(meta.newest_ms.map_or(span.1, |n| n.max(span.1)));
-        match old.as_ref().map(|o| &o.outcome) {
-            Some(Outcome::Decoded { .. }) => meta.decoded = meta.decoded.saturating_sub(1),
-            Some(Outcome::Hole { .. }) => meta.holes = meta.holes.saturating_sub(1),
-            None => {}
+        if let Some(o) = &old {
+            meta.uncount(o);
         }
         // the first log of a history (a new car's, or one cleared whole) names the decoding it is made with
         if meta.decoded == 0 && meta.holes == 0 {
             meta.version = Some(crate::full::derived_version());
         }
-        if decoded {
-            meta.decoded += 1;
-        } else {
-            meta.holes += 1;
-        }
+        meta.count(kind);
         let counter = if decoded { &self.inner.counters.decoded } else { &self.inner.counters.left_out };
         counter.fetch_add(1, Ordering::Relaxed);
         let took = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -1645,10 +1635,7 @@ impl Engine {
                 let keep = records::name_start_ms(name).is_none_or(|s| s < from_ms || s >= to_ms);
                 if !keep {
                     names.push(name.clone());
-                    match e.outcome {
-                        Outcome::Decoded { .. } => meta.decoded = meta.decoded.saturating_sub(1),
-                        Outcome::Hole { .. } => meta.holes = meta.holes.saturating_sub(1),
-                    }
+                    meta.uncount(e);
                 }
                 keep
             });
