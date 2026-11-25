@@ -1345,9 +1345,10 @@ rebuild):
   The stored Now, the car's state and `state_since_ms` are worked out as before; only the view sent as a `now`
   event is left out where nobody would get it: a full rebuild's engine over its shadow, a test's engine. On the
   server the live stream always listens, so a rebuild in place still sends one per window.
-  `windows_nobody_listens_to_give_the_same_history` (one day beside a TeslaMate import and the Tesla API in sentry
-  mode; four days beside them and three alone by hand): the same history with a listener (187, 1,248 and 195 `now`
-  events sent) and without.
+  `windows_nobody_listens_to_give_the_same_history` (in the suite: a day of a car in sentry mode, 3 s of frames every
+  10 minutes, beside a TeslaMate import and the Tesla API in sentry mode, 272 `now` events sent; by hand: four usual
+  days beside them, 1,248; three alone, 195; two days of the owner's shape of tiny logs beside them, 4,991): the
+  same history with a listener and without.
 - **A window's bounds looked for near its log first** (`engine::Options::window_look_ms`, two hours either side).
   Where both bounds are found in that stretch they are the ones the two days give: a cut point or settled span
   found near the log is the nearest one in any longer stretch, provided the stretch has the spans the log falls in
@@ -1355,9 +1356,12 @@ rebuild):
   too where nothing is stored between the stretch's end and the two days' and no data is newer than them (a log at
   the newest end of a history: a full rebuild, the logs at the start). Elsewhere the two days, and further, as
   before. `window_bounds_looked_for_near_the_log_give_the_same_history`: an engine looking near and one looking at
-  the two days, the same history; 2,085 of 2,485 windows (one day of tiny logs in sentry mode, beside the import
-  and the API) and, by hand, 7,551 of 10,000 (four days of them) and 571 of 1,247 (four usual days beside them)
-  bounded near their log in place, besides the full rebuild's; seven usual days alone the same.
+  the two days, the same history; in the suite 218 of 271 windows bounded near their log in place (the sparse day
+  above), by hand 2,085 of 2,485 (a day of the owner's shape beside the import and the API), 7,551 of 10,000 (four
+  days of it), 571 of 1,247 (four usual days beside them) and 11 of 259 (seven usual days alone: a car that sleeps
+  has settled spans, often further away), besides the full rebuilds' (compared too, not counted). The existing
+  comparisons (`windows_rebuilt_beside_api_inputs_give_the_same_timeline`, `logs_read_ahead_on_other_cores_give_the_same_history_over_a_week`)
+  pass with all of it.
 - **A day's record kept as it was written** (`records::put_day`): the record a log was just added to is kept
   beside the bytes written, so the next read of that day (the log's window, the next log) does not read 1,250
   entries back into a record. `a_day_record_reads_back_as_it_was_written` checks that every field of every kind of
