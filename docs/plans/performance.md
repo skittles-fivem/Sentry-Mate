@@ -1363,9 +1363,19 @@ rebuild):
   entries back into a record. `a_day_record_reads_back_as_it_was_written` checks that every field of every kind of
   entry reads back as written.
 
-**After** (`AFTER_COMMIT`; ms a log, wall):
+**After** (`3f384802`; ms a log, wall; the windows' parts as above):
 
-AFTER_TABLE
+| logs | full rebuild | ms a log | CPU ms a log | samples | now | the rest of the log | windows | of the windows: finding | writing rows | the rest of the writing |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1,000 | 26 s | 26.3 | 19.7 | 1.4 | 3.2 | 5.9 | 11.8 | 2.5 | 2.9 | 1.4 |
+| 5,000 | 172 s | 34.4 | 26.9 | 2.4 | 3.2 | 7.1 | 17.4 | 5.6 | 5.2 | 1.5 |
+| 10,000 | 337 s | 33.7 | 25.7 | 2.6 | 3.4 | 7.2 | 16.2 | 5.7 | 4.7 | 1.6 |
+| 20,000 | 818 s | 40.9 | 30.2 | 3.1 | 4.0 | 8.8 | 20.0 | 6.8 | 6.0 | 2.0 |
+
+At 20,000 logs: 60.2 → 40.9 ms a log (16.6 → 24.4 logs/s), 42.6 → 30.2 ms of CPU, the windows 38.8 → 20.0 ms; the
+rest of the writing no longer grows with the history (17.4 → 2.0 ms), and finding the window is about two thirds of
+what it was (10.2 → 6.8: of it, the window's logs 2.0 and the nearest logs either side 2.6 are what is left). The
+rest of the windows at 20,000: reading the inputs' samples 5.0, fusing 0.5, building 0.1.
 
 **What is left.** The owner's 900 ms a log is not reproduced by this shape: here a log costs 25 to 60 ms beside the
 Tesla API and an import under the same days, and what grew with the history is gone or bounded. So the owner's
