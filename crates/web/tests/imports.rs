@@ -465,3 +465,31 @@ async fn two_imported_cars_never_go_into_one_and_chunks_take_turns() {
     let open: Vec<&Value> = visits["items"].as_array().unwrap().iter().filter(|v| v["left_ms"].is_null()).collect();
     assert!(!open.is_empty(), "{visits}");
 }
+
+/// The data moved to another server while a check runs: it stops at its next read and writes nothing more (its job
+/// stays as it was saved, `checking`; a restart, or the new server, checks it again).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_check_under_way_when_the_data_moves_stops_and_writes_nothing() {
+    let k = kit().await;
+    let mut admin = k.s.admin().await;
+    let mut big = BACKUP.to_vec();
+    let pad = format!("-- {}\n", "made-up padding ".repeat(12));
+    while big.len() < 24 << 20 {
+        big.extend_from_slice(pad.as_bytes());
+    }
+    let id = upload(&mut admin, &big, web::resources::imports::CHUNK_MAX).await;
+    let job = k.s.app.dir.join("imports").join(&id).join("job");
+    assert_eq!(admin.get(&format!("/api/v1/imports/{id}")).await.json()["status"], "checking");
+    assert_eq!(k.imports.stop_for_move(), 1, "one check under way");
+    let saved = std::fs::metadata(&job).unwrap().modified().unwrap();
+    for _ in 0..200 {
+        if k.imports.running() == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(k.imports.running(), 0, "the check stopped");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(std::fs::metadata(&job).unwrap().modified().unwrap(), saved, "the job was written after the stop");
+    assert_eq!(admin.get(&format!("/api/v1/imports/{id}")).await.json()["status"], "checking");
+}

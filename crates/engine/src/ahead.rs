@@ -115,7 +115,8 @@ impl Ahead {
             let i = {
                 let mut st = lock(&self.state);
                 loop {
-                    if st.stop || st.next >= self.names.len() {
+                    // (the server stopping, or its data moved away: nothing more is read ahead)
+                    if st.stop || st.next >= self.names.len() || e.is_stopping() {
                         return;
                     }
                     if st.next < st.wanted + self.ahead {

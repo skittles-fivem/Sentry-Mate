@@ -753,6 +753,11 @@ impl Engine {
         self.inner.stopping.store(true, Ordering::SeqCst);
     }
 
+    /// Whether the server is stopping ([`Engine::stopping`]): what runs by itself ends at its next step.
+    pub fn is_stopping(&self) -> bool {
+        self.inner.stopping.load(Ordering::SeqCst)
+    }
+
     /// Makes the next full rebuild fail at `phase` (tests).
     #[doc(hidden)]
     pub fn full_rebuild_fail_at(&self, phase: Option<Phase>) {

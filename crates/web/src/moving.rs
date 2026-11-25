@@ -289,6 +289,15 @@ impl Drop for KeyWork<'_> {
     }
 }
 
+/// Whether this server's data moved away (its write gate held for good, from the moment of the move's commit): what
+/// runs here on its own writes nothing then (the upkeep, the invoices' audit, the MQTT publisher, an import).
+pub fn data_moved(app: &AppState) -> bool {
+    match app.service::<moving::old::Offer>() {
+        Ok(o) => o.is_moved(),
+        Err(_) => site(app).is_ok_and(|s| moving::old::is_moved(&s.data)),
+    }
+}
+
 pub(crate) fn site(app: &AppState) -> ApiResult<Arc<MoveSite>> {
     app.service::<MoveSite>()
 }
@@ -358,7 +367,13 @@ fn old_view(s: &MoveSite, app: &AppState) -> ApiResult<Value> {
     Ok(json!({
         "state": state, "code": code, "peer": peer, "progress": progress, "moved": moved,
         "last_cancelled": cancelled, "last_undone_ms": st.last_undone_ms, "skipped": [], "problem": null,
+        "log": log_view(&moving::old::log(&s.data, &app.vault)),
     }))
+}
+
+/// The move's log as the pages get it: `[{ at_ms, text }]`, oldest first (nothing secret in it: [`moving::log`]).
+pub(crate) fn log_view(log: &[moving::log::Line]) -> Value {
+    Value::Array(log.iter().map(|l| json!({ "at_ms": l.at_ms, "text": l.text })).collect())
 }
 
 /// The uploads are paused for the move's last round (the running server's [`moving::old::Offer`], when it has one).
@@ -1097,6 +1112,7 @@ fn move_view(app: &AppState, s: &MoveSite) -> ApiResult<Option<Value>> {
         "problem": problem,
         "result": null,
         "skipped": skipped,
+        "log": log_view(&st.log),
     })))
 }
 
@@ -1120,6 +1136,7 @@ fn moved_in_view(app: &AppState) -> Option<Value> {
         "problem": null,
         "result": result,
         "skipped": [],
+        "log": log_view(&n.log),
     }))
 }
 

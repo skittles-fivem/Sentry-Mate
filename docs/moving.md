@@ -207,6 +207,50 @@ ports for now, for example `10200:10100` and `10201:10101`, and use the machine'
 The file never holds the key file. Without the recovery key it is useless to anyone who takes it. Delete it once the
 new server runs.
 
+## One server at a time: what moves, what stops, what starts
+
+A direct move is one to one: the new server takes over everything the old one did, and the old one stops all of it.
+At no moment do both read the cars or publish for them.
+
+**What moves.** The whole data folder, exactly as stored: the CAN logs and uploads still arriving, the tokens, the
+trust records, the certificate, the history, the accounts and the audit log, the settings, and the state of every
+input: the Tesla API and TeslaFi accounts with their saved waits (a back-off, Tesla's or TeslaFi's "wait until"),
+their pacing and the day's request count, how far the Supercharger invoices were read, the local TeslaMate's
+settings and its catch-up mark, the MQTT settings, and the imports with their uploads.
+
+**What stops on the old server, and when.** Uploads stop at the last-round pause: they wait at the old server's
+write gate while the last changes are copied (the bridge keeps its logs and sends them again). Everything else stops
+at the switch, the moment the old server checks the copy and records that the data moved:
+
+- the Tesla API, TeslaFi and local TeslaMate inputs (no more requests, the MQTT subscription closed);
+- an import or a check under way: it stops at its next read and writes nothing more (its job stays as it was);
+- MQTT publishing: it closes its connection and clears what it published (an empty retained message on every car's
+  value topics, its Home Assistant discovery configs and its status topic), so the broker never holds two servers'
+  values for the same topics;
+- the history's own work: decoding, a full rebuild (it carries on on the new server), the GPS layout fit,
+  compaction, the scan for missing logs, the full rebuild's watch, the invoices' audit and the upkeep (the
+  accounts' "last seen", the connections overview).
+
+The old server answers the new one's finish only after all of that has stopped (at most 30 seconds); the new server
+starts its own inputs only once it has that answer. The old server's log, and the move's log on its page, say
+`Inputs stopped on this server: ...`. From then on it writes nothing to its data folder; its pages stay up, read
+only. A restart of it starts none of these again. Signing in and out still works there (a session is the one
+thing it records).
+
+**What starts on the new server.** On its first start after the switch it starts every input the old one had, from
+where the old one left it: a wait still running is waited out (no request is sent before it ends), the day's count
+goes on, an import cut by the move is `ready` to run again (running it again replaces what it stored, never doubles
+it), and the local TeslaMate catches up from its mark. Nothing that reached the old server's data before the switch
+is fetched or published twice, and nothing is lost: what an input fetched in the moment between the last check and
+the stop was not carried, so the new server fetches it again from the mark that was. Its move log says
+`Inputs started here: ...`.
+
+**During the pause** the inputs still run on the old server. A change one of them writes then makes the copy differ;
+the new server copies what changed again (the log says so), and after five tries it lets the pause end and asks again.
+
+**One exception**: `move finish --recovery-key` (the old server gone for good) switches without the old server, so it
+stops nothing there. Never start that old server again with its inputs or the CAN Bridge pointed at it.
+
 ## In the CAN Bridge app
 
 - **Same address** (the new server took the old one's address, or the same machine with port 10100 back): change
