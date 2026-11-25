@@ -103,6 +103,7 @@ async fn battery_capacity_level_range_efficiency_and_temperatures_of_decoded_day
             "new_source",
             "readings",
             "spread_kwh",
+            "usable_basis",
             "usable_kwh",
             "warranty_pct"
         ]
@@ -156,6 +157,11 @@ async fn battery_capacity_level_range_efficiency_and_temperatures_of_decoded_day
     for it in c["items"].as_array().unwrap() {
         assert_eq!(it["method"], json!("charge"), "{it}");
         assert!(it["charge"].is_string() && it["usable_kwh"].is_number(), "{it}");
+        // the energy the charge stored (the rated range it added at the car's own stored energy per km): the made-up
+        // car loses nothing charging, so it is the energy it added, within the rounding of the range
+        assert!(["rated_range", "energy_added"].contains(&it["usable_basis"].as_str().unwrap()), "{it}");
+        let (stored, added) = (it["stored_kwh"].as_f64().unwrap(), it["energy_added_kwh"].as_f64().unwrap());
+        assert!((stored - added).abs() <= added * 0.02, "{it}");
     }
     let day = ok(&mut admin, &format!("{base}?group=day")).await;
     let days = day["items"].as_array().unwrap();
