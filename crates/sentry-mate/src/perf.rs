@@ -46,6 +46,7 @@ async fn make(data: &Path, keys: &Path, size: &Size) {
             candump: false,
             with_real_cars: false,
             start_ms: Some(size.history.end_ms - u64::from(size.smo_days) * DAY),
+            awake_min: None,
         };
         let gate = gate::Gate::memory();
         let enter = || -> Result<gate::Pass, Box<dyn std::error::Error>> { Ok(gate.enter(GATE_WAIT)?) };

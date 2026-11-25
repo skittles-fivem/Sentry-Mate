@@ -37,6 +37,8 @@ pub struct Options {
     pub with_real_cars: bool,
     /// The first day's UTC midnight (Unix ms); `None` is synth's own first day.
     pub start_ms: Option<u64>,
+    /// Minutes the car stays awake (logging) after it was last used, as in Sentry Mode; `None` is synth's own 10.
+    pub awake_min: Option<u32>,
 }
 
 /// `YYYY-MM-DD` as that day's UTC midnight in Unix ms (days from 1970 through the civil calendar), at the earliest
@@ -67,9 +69,14 @@ impl Options {
             if self.clean { "clean" } else { "trouble" },
             if self.candump { "candump" } else { "columns" }
         );
-        // only a start of its own is recorded, so cars seeded before this option keep their names
-        if let Some(ms) = self.start_ms.filter(|ms| *ms != synth::DEFAULT_START_MS) {
-            tag.push_str(&format!(", from day {}", ms / 86_400_000));
+        // only a start of its own is recorded, so cars seeded before this option keep their names; with a time awake
+        // too, both are written short (`d<day>`, `a<minutes awake>`), so the name stays within a token's 80 characters
+        let start = self.start_ms.filter(|ms| *ms != synth::DEFAULT_START_MS).map(|ms| ms / 86_400_000);
+        match (start, self.awake_min) {
+            (Some(day), None) => tag.push_str(&format!(", from day {day}")),
+            (Some(day), Some(m)) => tag.push_str(&format!(", d{day}, a{m}")),
+            (None, Some(m)) => tag.push_str(&format!(", a{m}")),
+            (None, None) => {}
         }
         tag
     }
@@ -135,6 +142,10 @@ pub async fn run(
         .map(|s| {
             let s = match o.start_ms {
                 Some(ms) => s.start(ms),
+                None => s,
+            };
+            let s = match o.awake_min {
+                Some(m) => s.stay_awake(u64::from(m) * 60_000),
                 None => s,
             };
             s.rates(if o.light { synth::Rates::Light } else { synth::Rates::Realistic })
@@ -244,13 +255,29 @@ mod tests {
             candump: false,
             with_real_cars: false,
             start_ms,
+            awake_min: None,
         };
         assert_eq!(o(None).tag(), o(Some(synth::DEFAULT_START_MS)).tag());
         assert!(o(Some(parse_day("2026-11-10").unwrap())).tag().ends_with(", from day 20767"));
+        // a car's name (what a later run is compared with) fits in a token's 80 characters with every option
+        let long = Options { awake_min: Some(1440), ..o(Some(parse_day("2026-11-10").unwrap())) };
+        let name = format!("{MADE_UP}{} ({})", synth::MAX_FLEET, long.tag());
+        assert!(name.chars().count() <= 80, "{name}");
+        assert!(name.ends_with(", d20767, a1440)"), "{name}");
     }
 
     fn opts(days: u32, clean: bool) -> Options {
-        Options { days, cars: 1, seed: 9, light: true, clean, candump: false, with_real_cars: false, start_ms: None }
+        Options {
+            days,
+            cars: 1,
+            seed: 9,
+            light: true,
+            clean,
+            candump: false,
+            with_real_cars: false,
+            start_ms: None,
+            awake_min: None,
+        }
     }
 
     async fn seed(kit: &crate::testkit::Kit, tokens: &Tokens, o: &Options) -> Result<String, String> {
@@ -340,6 +367,7 @@ mod tests {
             candump: false,
             with_real_cars: false,
             start_ms: None,
+            awake_min: None,
         };
         let e = seed(&kit, &tokens, &o).await.unwrap_err();
         assert!(e.contains("real car"), "{e}");
