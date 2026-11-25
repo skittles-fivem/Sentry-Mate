@@ -41,8 +41,34 @@ pub struct LayoutChange {
     pub layout: Option<String>,
     /// The layout before it (`None`: the DBC's).
     pub before: Option<String>,
-    /// The run it was applied from, when one.
+    /// The run it was applied from, when one (an id as text in the API, like every id).
+    #[serde(with = "id_text")]
     pub fit: Option<u64>,
+}
+
+mod id_text {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &Option<u64>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(n) => s.serialize_str(&n.to_string()),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Id {
+            Text(String),
+            Number(u64),
+        }
+        Ok(match Option::<Id>::deserialize(d)? {
+            None => None,
+            Some(Id::Number(n)) => Some(n),
+            Some(Id::Text(t)) => t.parse().ok(),
+        })
+    }
 }
 
 /// What deleting a run did.
@@ -106,6 +132,32 @@ impl Engine {
         Ok(out)
     }
 
+    /// A page of the car's runs, newest first.
+    pub fn gps_fit_page(
+        &self,
+        car: CarId,
+        paging: &crate::query::Paging,
+    ) -> crate::query::QResult<crate::query::List<FitStatus>> {
+        let rows = self.gps_fit_runs(car)?;
+        crate::query::paginate(rows, |s| (s.id as f64, s.id.to_string()), true, "gps-fits", paging, true)
+    }
+
+    /// A page of the layouts the car was set to, newest first.
+    pub fn gps_layout_page(
+        &self,
+        car: CarId,
+        paging: &crate::query::Paging,
+    ) -> crate::query::QResult<crate::query::List<LayoutChange>> {
+        let rows: Vec<(u64, LayoutChange)> =
+            self.gps_layout_changes(car)?.into_iter().rev().enumerate().map(|(i, c)| (i as u64, c)).collect();
+        let page = crate::query::paginate(rows, |r| (r.0 as f64, r.0.to_string()), true, "gps-layouts", paging, true)?;
+        Ok(crate::query::List {
+            items: page.items.into_iter().map(|r| r.1).collect(),
+            next: page.next,
+            total: page.total,
+        })
+    }
+
     /// One run of the car (under way, or kept).
     pub fn gps_fit_run(&self, car: CarId, id: u64) -> Result<Option<FitStatus>> {
         if let Some(s) = lock(&self.inner.gps_fits).jobs.get(&car).filter(|s| s.id == id).cloned() {
@@ -149,7 +201,8 @@ impl Engine {
 
     /// The layouts the car was set to, newest first.
     pub fn gps_layout_changes(&self, car: CarId) -> Result<Vec<LayoutChange>> {
-        let mut v = records::kept::<Vec<LayoutChange>>(&self.inner.db, records::NS, &changes_key(car))?.unwrap_or_default();
+        let mut v =
+            records::kept::<Vec<LayoutChange>>(&self.inner.db, records::NS, &changes_key(car))?.unwrap_or_default();
         v.reverse();
         Ok(v)
     }

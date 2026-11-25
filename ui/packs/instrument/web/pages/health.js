@@ -41,6 +41,7 @@ import { q, agoEl, statePill, stateLabel, DASH } from '../core/fmt.js';
 import { overviewCard } from './conn-overview.js';
 import { deviceText, renameKeyButton } from './can-key-name.js';
 import { fullRebuild } from './full-rebuild.js';
+import { askPassword } from './settings-server-move.js';
 import { gpsLayoutSection, hasCanData } from '../shared/gpsfit.js';
 import { confirmDialog } from '../core/dialog.js';
 import { follow, carOf, onRows, FALLBACK_POLL_MS } from '../shared/live.js';
@@ -288,7 +289,7 @@ async function mountCar(ctx) {
   const gpsLayout = gpsLayoutSection({
     api: ctx.api, car: cid, admin, alive: () => ctx.alive(), flash, when: (ms) => when(ctx, ms),
     confirm: (text, o) => confirmDialog(text, { title: o.title, ok: o.ok }),
-    errorText: (e) => errorWords(e).text, onApplied: () => refreshHealth(),
+    errorText: (e) => errorWords(e).text, onApplied: () => refreshHealth(), password: (o) => askPassword(ctx, o),
     btnClass: 'btn btn--sm', applyClass: 'btn btn--sm btn--primary', resetClass: 'btn btn--sm btn--ghost', barClass: 'bar', icon: (n) => icon(n, 'ico--sm'),
   });
   ctx.onCleanup(() => gpsLayout.stop());
