@@ -226,7 +226,7 @@ for (const pack of packs(...BUILT_ON_INSTRUMENT)) {
       const full = await openPage(context, `${origin}/cars/c1/battery`, 'battery');
       await full.page.waitForLoadState('networkidle');
       const said = await mainText(full.page);
-      assert.match(said, /the pack’s own reading \([\d,.]+ readings\)\./i);
+      assert.match(said, /From the BMS: .*\([\d,.]+ readings\)\./);
       assert.match(said, /Out of the pack: [\d,.]+\s\S+ driving, [\d,.]+\s\S+ while parked\./);
     });
   });
