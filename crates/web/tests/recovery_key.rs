@@ -202,20 +202,22 @@ async fn a_key_file_that_cannot_be_written_leaves_the_old_key_working() {
     let pw = json!({ "password": ADMIN_PASSWORD });
     let vault_before = std::fs::read(k.data.join(vault::VAULT_FILE)).unwrap();
 
-    // the file's temp file is a folder: the file can't be written, so the vault keeps its key
-    let tmp = k.keys.join("RECOVERY-KEY.tmp");
-    std::fs::create_dir(&tmp).unwrap();
+    // a folder where the key file goes: it can't be written (nor read, to put it back), so the vault keeps its key
+    let kept = std::fs::read(&file).unwrap();
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
     let r = admin.post("/api/v1/system/recovery-key/new", pw.clone()).await;
     assert_eq!((r.status, r.code()), (500, Some("server_error".into())), "{}", r.text());
     assert!(std::fs::read(k.data.join(vault::VAULT_FILE)).unwrap() == vault_before, "the vault file is the same");
     assert!(opens(&k, &k.first_key), "the old key still opens the vault");
+    std::fs::remove_dir(&file).unwrap();
+    std::fs::write(&file, kept).unwrap();
     let r = admin.post("/api/v1/system/recovery-key/show", pw.clone()).await;
     assert_eq!((r.status, r.json()), (200, json!({ "recovery_key": k.first_key })), "{}", r.text());
     assert_eq!(codes(&admin.get("/api/v1/notices").await.json()), ["recovery_key_unsaved"]);
     assert!(!audit(&mut admin).await.contains("recovery-key-new"));
 
     // once it can be written, a new key works as before
-    std::fs::remove_dir(&tmp).unwrap();
     let r = admin.post("/api/v1/system/recovery-key/new", pw.clone()).await;
     assert_eq!(r.status, 201, "{}", r.text());
     let new_key = r.json()["recovery_key"].as_str().unwrap().to_string();

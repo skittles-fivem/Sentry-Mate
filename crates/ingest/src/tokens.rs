@@ -199,8 +199,8 @@ impl Tokens {
 
     /// Writes one of a token's files whole or not at all. Each write has a temporary file of its own: a token's two
     /// files are written by different processes (the owner's commands, the server), and a temporary name shared by
-    /// `<hash>.json` and `<hash>.key` (as `vault::write_private` would give both) would let one write land in the
-    /// other's file.
+    /// `<hash>.json` and `<hash>.key` (as `vault::write_private` gave both before it named its temporary file by the
+    /// file's whole name and the write) would let one write land in the other's file.
     fn write(&self, file: &std::path::Path, label: &str, what: &impl serde::Serialize) -> std::io::Result<()> {
         let bytes = serde_json::to_vec(what).map_err(other)?;
         crate::ledger::write_sealed(&self.vault, file, label, |w| w.write_all(&bytes))

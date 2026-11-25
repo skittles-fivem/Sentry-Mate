@@ -252,4 +252,15 @@ fn a_swap_cut_short_is_finished_or_dropped_at_start() {
     finish_swap(&old).unwrap();
     assert_eq!(Identity::load_or_create(&old, &[], &v).unwrap().fingerprint(), c.fingerprint());
     assert!(!old.join("next-cert.pem").exists());
+    // what a write that stopped before its rename left (its own temporary name, or an older version's) goes too
+    for f in ["next-cert.pem.77-00ff.tmp", "next-key.sealed.77-00ff.tmp", "next-cert.tmp", "next-key.tmp"] {
+        std::fs::write(old.join(f), b"half").unwrap();
+    }
+    std::fs::write(old.join("cert.pem.77-00ff.tmp"), b"not ours").unwrap();
+    finish_swap(&old).unwrap();
+    let mut left: Vec<String> =
+        std::fs::read_dir(&old).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    left.sort();
+    assert!(!left.iter().any(|n| n.starts_with("next-")), "{left:?}");
+    assert!(left.contains(&"cert.pem.77-00ff.tmp".to_string()), "{left:?}");
 }
