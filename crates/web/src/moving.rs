@@ -90,10 +90,15 @@ pub struct MoveSite {
     setup_gate: Mutex<()>,
     /// Tests: called at named points (see [`MoveSite::with_pause`]).
     pause: Option<Pause>,
+    /// Tests: a step named here fails when this says so (see [`MoveSite::with_fault`]).
+    fault: Option<Fault>,
 }
 
 /// A test's hook ([`MoveSite::with_pause`]).
 type Pause = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// A test's fault switch ([`MoveSite::with_fault`]).
+type Fault = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Which web side of a data folder writes its export state file: the latest made. A web side that was replaced (the
 /// program starts the web side again after an import's switch or a move) and still has a job or a download going
@@ -221,6 +226,7 @@ impl MoveSite {
             reopen_wait: Duration::from_secs(4),
             setup_gate: Mutex::new(()),
             pause: None,
+            fault: None,
         }
     }
 
@@ -238,6 +244,17 @@ impl MoveSite {
     pub fn with_pause(mut self, f: impl Fn(&str) + Send + Sync + 'static) -> MoveSite {
         self.pause = Some(Arc::new(f));
         self
+    }
+
+    /// Tests only: the step `slot-save` (the export file's state written) fails while `f("slot-save")` is true.
+    #[doc(hidden)]
+    pub fn with_fault(mut self, f: impl Fn(&str) -> bool + Send + Sync + 'static) -> MoveSite {
+        self.fault = Some(Arc::new(f));
+        self
+    }
+
+    fn faulted(&self, at: &str) -> bool {
+        self.fault.as_ref().is_some_and(|f| f(at))
     }
 
     pub(crate) fn paused(&self, at: &str) {
@@ -737,6 +754,9 @@ impl MoveSite {
 
     /// Writes the export file's state whole or not at all.
     fn save_slot(&self, vault: &vault::Vault, e: &ExportSlot) -> Result<(), String> {
+        if self.faulted("slot-save") {
+            return Err("a test's fault".into());
+        }
         let state = match (&e.error, &e.snapshot) {
             (Some(err), _) if err == EXPIRED => "expired",
             (Some(_), _) => "failed",
