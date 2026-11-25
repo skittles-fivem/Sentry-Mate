@@ -118,6 +118,14 @@ pub(crate) fn plain_len(files: u64, manifest: u64, bytes: u64) -> u64 {
 struct Plan {
     header: Header,
     manifest: u64,
+    /// What the walk skipped, named (a snapshot opened again after a restart tells it again).
+    #[serde(default)]
+    skipped: Vec<(String, String)>,
+    #[serde(default)]
+    skip_count: u64,
+    /// The SHA-256 of the file's prefix (hex): what a snapshot opened again must rebuild to the byte.
+    #[serde(default)]
+    prefix_sha256: String,
 }
 
 fn now_ms() -> u64 {
@@ -354,13 +362,18 @@ fn lock_snapshot(dir: &Path) -> io::Result<Option<File>> {
     }
 }
 
+/// The web side's state file of the export kept across a restart (and its temporary file): not a snapshot, left alone.
+const SLOT_FILES: [&str; 2] = ["slot.sealed", "slot.tmp"];
+
 /// Removes snapshots no one uses (a crash's, or one a finished download left). Returns how many.
 pub fn remove_unused_snapshots(data: &Path) -> usize {
     let mut n = 0;
     for e in std::fs::read_dir(data.join(SNAPSHOTS)).into_iter().flatten().flatten() {
         let dir = e.path();
         if !dir.is_dir() {
-            let _ = std::fs::remove_file(&dir);
+            if !e.file_name().to_str().is_some_and(|n| SLOT_FILES.contains(&n)) {
+                let _ = std::fs::remove_file(&dir);
+            }
             continue;
         }
         // held while it is in use; one with no lock file was cut short while it was made
@@ -380,12 +393,16 @@ pub struct Snapshot {
     header: Header,
     prefix: Vec<u8>,
     skips: Skips,
+    /// Kept when dropped (a ready export file that outlives a restart); removed by default.
+    keep: AtomicBool,
     _lock: File,
 }
 
 impl Drop for Snapshot {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        if !self.keep.load(Ordering::SeqCst) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
     }
 }
 
@@ -419,13 +436,56 @@ impl Snapshot {
         };
         let made = take(data, &dir, &hid, vault, gate, app, wait, watch, (files, bytes));
         match made {
-            Ok((header, prefix, skips)) => Ok(Snapshot { dir, id, header, prefix, skips, _lock: lock }),
+            Ok((header, prefix, skips)) => {
+                Ok(Snapshot { dir, id, header, prefix, skips, keep: AtomicBool::new(false), _lock: lock })
+            }
             Err(e) => {
                 drop(lock);
                 let _ = std::fs::remove_dir_all(&dir);
                 Err(e)
             }
         }
+    }
+
+    /// Whether the folder stays when this is dropped (default: no, it is removed). A kept folder is opened again by
+    /// [`Snapshot::reopen`] after a restart.
+    pub fn keep_on_drop(&self, keep: bool) {
+        self.keep.store(keep, Ordering::SeqCst);
+    }
+
+    /// Opens a kept snapshot again (after a restart): takes its lock (an error while another holds it), reads its
+    /// plan and rebuilds the file's prefix, which must be the one made. The snapshot is removed when dropped, unless
+    /// [`Snapshot::keep_on_drop`] says to keep it.
+    pub fn reopen(data: &Path, vault: &Vault, hid: &str) -> Result<Snapshot, Error> {
+        let bad = |m: &str| Error::Malformed(m.to_string());
+        let mut id = [0u8; 16];
+        if hid.len() != 32 || hex::decode_to_slice(hid, &mut id).is_err() {
+            return Err(bad("not a snapshot's name"));
+        }
+        let dir = data.join(SNAPSHOTS).join(hid);
+        if !dir.join(PLAN).is_file() {
+            return Err(bad("a snapshot that was not finished"));
+        }
+        let Some(lock) = lock_snapshot(&dir)? else {
+            return Err(bad("the snapshot is in use"));
+        };
+        let plan = vault
+            .read_file(&dir.join(PLAN), &format!("{SNAPSHOTS}/{hid}/{PLAN}"))?
+            .ok_or_else(|| bad("a snapshot that was not finished"))?;
+        let plan: Plan = serde_json::from_slice(&plan).map_err(|e| Error::Malformed(e.to_string()))?;
+        if plan.header.id != hid || plan.prefix_sha256.is_empty() {
+            return Err(bad("a snapshot of an older make"));
+        }
+        let prefix = plan.header.prefix()?;
+        if hex::encode(Sha256::digest(&prefix)) != plan.prefix_sha256 {
+            return Err(bad("a snapshot whose header does not rebuild"));
+        }
+        let mut skips = Skips::default();
+        for (path, why) in plan.skipped {
+            skips.add(path, tree::why_of(&why));
+        }
+        skips.count = skips.count.max(plan.skip_count);
+        Ok(Snapshot { dir, id, header: plan.header, prefix, skips, keep: AtomicBool::new(false), _lock: lock })
     }
 
     pub fn header(&self) -> &Header {
@@ -635,8 +695,14 @@ fn take(
     if prefix.len() as u64 + body != header.size {
         return Err(Error::Malformed("the export's size doesn't settle".into()));
     }
-    let plan =
-        serde_json::to_vec(&Plan { header: header.clone(), manifest }).map_err(|e| Error::Malformed(e.to_string()))?;
+    let plan = serde_json::to_vec(&Plan {
+        header: header.clone(),
+        manifest,
+        skipped: skips.named.iter().map(|k| (k.path.clone(), k.why.to_string())).collect(),
+        skip_count: skips.count,
+        prefix_sha256: hex::encode(Sha256::digest(&prefix)),
+    })
+    .map_err(|e| Error::Malformed(e.to_string()))?;
     vault.write_file(&dir.join(PLAN), &format!("{SNAPSHOTS}/{hid}/{PLAN}"), &plan)?;
     watch.begin(Phase::Done, files, bytes);
     Ok((header, prefix, skips))
