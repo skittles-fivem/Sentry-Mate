@@ -57,6 +57,15 @@ thing that does that, how far each one reaches, and the server updates that chan
 - **Put off when you choose.** A new version's full rebuild starts after its grace by itself, unless an admin starts
   it now, puts it off until tonight (02:00, the server's time zone) or pauses it (its progress kept); any full
   rebuild can also be cancelled.
+- **A rebuild goes before a GPS layout fit.** A fit (Data health's **Find GPS layout**, or `sentry-mate
+  gps-layout` beside the server) reads and unpacks the same stored logs a rebuild decodes, and the rebuild is what
+  the history waits for. So while a full rebuild or a rebuild job runs, the fit waits: between two of its days or
+  logs (or before it tries the layouts), its phase and counts kept, its status saying why (`waiting`: "the full
+  rebuild goes first (both read the same logs); this fit goes on from here once it ends"), and it goes on from
+  there once no rebuild runs. A fit asked during a rebuild is never lost or refused, and a rebuild started during
+  a fit never waits for it (the fit lets it go after the log it is on). A full rebuild put off, paused or waiting
+  for tonight, and a job that has not started (it settles), take nothing, so a fit goes on meanwhile
+  (`crates/web/tests/gps_fit.rs`: `a_fit_waits_while_a_full_rebuild_runs_and_goes_on_after`).
 
 ## When a stored file can't be read
 

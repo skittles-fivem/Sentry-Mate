@@ -292,6 +292,7 @@ pub(crate) struct Inner {
     pub(crate) stopping: std::sync::atomic::AtomicBool,
     pub(crate) full_fail_at: Mutex<Option<full::Phase>>,
     pub(crate) full_crash_at: Mutex<Option<full::Phase>>,
+    pub(crate) full_hold_at: Mutex<Option<full::Phase>>,
     /// The windows the full rebuilds' decoding rebuilt beside the history (their own engine's count, added up).
     pub(crate) full_windows: AtomicU64,
     /// Tests: the full rebuild's worker stops as by a crash once it decoded this many logs of a car.
@@ -313,6 +314,8 @@ pub(crate) struct Inner {
     /// The cars' GPS layout fits ([`gps_fit`]), and the one that runs (one at a time).
     pub(crate) gps_fits: Mutex<gps_fit::Fits>,
     pub(crate) gps_fit_one: Mutex<()>,
+    /// How often a fit waiting for a rebuild looks again ([`gps_fit`]).
+    pub(crate) gps_fit_wait: Mutex<std::time::Duration>,
     /// The rebuilds' history ([`history`]): one writer at a time.
     pub(crate) history: Mutex<()>,
     /// Rebuild jobs not started yet, per car (`None`: every car), that later asks join ([`jobs`]).
@@ -499,6 +502,7 @@ impl Engine {
                 stopping: std::sync::atomic::AtomicBool::new(false),
                 full_fail_at: Mutex::new(None),
                 full_crash_at: Mutex::new(None),
+                full_hold_at: Mutex::new(None),
                 full_windows: AtomicU64::new(0),
                 full_crash_logs: Mutex::new(None),
                 full_exit_hook: Mutex::new(None),
@@ -512,6 +516,7 @@ impl Engine {
                 invoice_prices_run: Mutex::new(()),
                 gps_fits: Mutex::default(),
                 gps_fit_one: Mutex::new(()),
+                gps_fit_wait: Mutex::new(std::time::Duration::from_secs(1)),
                 history: Mutex::new(()),
                 pending_jobs: Mutex::new(HashMap::new()),
                 opts,

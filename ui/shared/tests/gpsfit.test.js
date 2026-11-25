@@ -40,6 +40,16 @@ test('running: the step with its count, the percentage and what else the server 
   assert.equal(fitModel({ state: 'running', phase: 'queued', percent: 0 }).step, 'Waiting for another car’s fit');
 });
 
+test('waiting for a rebuild: its step and count kept, and why it waits', () => {
+  const why = 'the full rebuild goes first (both read the same logs); this fit goes on from here once it ends';
+  const m = fitModel({ state: 'running', phase: 'logs', done: 272, total: 22402, percent: 30, server_busy: 'rebuild 2 %', waiting: why });
+  assert.equal(m.running, true);
+  assert.equal(m.step, 'Reading the logs’ GPS frames: 272 of 22,402 logs');
+  assert.equal(m.headline, 'Waiting (30 %)');
+  assert.equal(m.notes, `Waiting: ${why}.`);
+  assert.equal(fitModel({ state: 'running', phase: 'logs', done: 1, total: 2, percent: 60, waiting: null }).headline, 'Finding the layout (60 %)');
+});
+
 test('done: the best layouts with their errors, the pairs, and Apply', () => {
   const m = fitModel(done());
   assert.equal(m.button, AGAIN);
