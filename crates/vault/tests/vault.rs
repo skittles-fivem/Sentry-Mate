@@ -469,3 +469,62 @@ fn derived_keys_are_stable_per_purpose_and_vault() {
     let (other, _) = Vault::create(&data2, &keys2, Kdf::FAST_FOR_TESTS).unwrap();
     assert_ne!(*a, *other.derive_key(b"purpose a"));
 }
+
+/// Two files of one stem (`slot.sealed`, `slot.json`) written at the same time by two writers each get exactly
+/// their own bytes: the writes never share a temporary file.
+#[test]
+fn files_of_one_stem_written_at_once_keep_their_own_bytes() {
+    let t = tempfile::tempdir().unwrap();
+    let dir = t.path().join("export");
+    let go = |name: &'static str, fill: u8| {
+        let dir = dir.clone();
+        std::thread::spawn(move || {
+            for round in 0..1000usize {
+                let bytes = vec![fill; 100 + round % 50];
+                vault::write_private(&dir.join(name), &bytes).unwrap_or_else(|e| panic!("{name} round {round}: {e}"));
+                assert_eq!(std::fs::read(dir.join(name)).unwrap(), bytes, "{name} round {round}");
+            }
+        })
+    };
+    let (a, b) = (go("slot.sealed", b'a'), go("slot.json", b'b'));
+    a.join().unwrap();
+    b.join().unwrap();
+    let mut left: Vec<String> =
+        std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    left.sort();
+    assert_eq!(left, ["slot.json", "slot.sealed"], "no temporary file is left");
+}
+
+/// Two writers of one file at once: it ends up one of the two whole, and neither fails.
+#[test]
+fn two_writers_of_one_file_leave_one_whole_and_neither_fails() {
+    let t = tempfile::tempdir().unwrap();
+    let file = t.path().join("slot.sealed");
+    let go = |fill: u8| {
+        let file = file.clone();
+        std::thread::spawn(move || {
+            for round in 0..1000usize {
+                vault::write_private(&file, &vec![fill; 70_000])
+                    .unwrap_or_else(|e| panic!("{fill} round {round}: {e}"));
+                let now = std::fs::read(&file).unwrap();
+                assert!(now.len() == 70_000 && now.iter().all(|b| *b == now[0]), "mixed, round {round}");
+            }
+        })
+    };
+    let (a, b) = (go(b'A'), go(b'B'));
+    a.join().unwrap();
+    b.join().unwrap();
+    let end = std::fs::read(&file).unwrap();
+    assert!(end == vec![b'A'; 70_000] || end == vec![b'B'; 70_000]);
+    assert_eq!(std::fs::read_dir(t.path()).unwrap().count(), 1, "no temporary file is left");
+}
+
+/// A write that fails leaves no temporary file behind.
+#[test]
+fn a_write_that_fails_leaves_no_temporary_file() {
+    let t = tempfile::tempdir().unwrap();
+    let file = t.path().join("slot.sealed");
+    std::fs::create_dir(&file).unwrap();
+    assert!(vault::write_private(&file, b"x").is_err());
+    assert_eq!(std::fs::read_dir(t.path()).unwrap().count(), 1, "only the folder in the way");
+}
