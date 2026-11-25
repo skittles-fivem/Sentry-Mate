@@ -67,7 +67,7 @@ export function rowModel(r, when = (ms) => new Date(ms).toISOString()) {
   }
   let applied = '';
   if (r.applied_ms != null) applied = `Applied${r.applied_by ? ` by ${r.applied_by}` : ''} ${when(r.applied_ms)}`;
-  else if (r.applied) applied = 'In use now';
+  else if (r.applied) applied = 'Its layout is in use now';
   return {
     when: r.started_ms != null ? when(r.started_ms) : '',
     counts, best, err, verdict, tone, applied,
