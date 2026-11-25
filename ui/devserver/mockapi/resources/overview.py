@@ -234,7 +234,7 @@ def _teslafi_rows(req, now):
     for a in t["accounts"].values():
         c = Conn(f"teslafi:{a['id']}", "teslafi", f"TeslaFi: {a['label']}", "/settings/integrations#teslafi",
                  "requests", account=a["id"])
-        c.pace, c.cap = poll, teslafi.PACES[poll]["daily_cap"]
+        c.pace, c.cap = poll, None  # no cap of its own: TeslaFi does the limiting
         mode, _ = teslafi._mode(req, a)
         step = teslafi._step(mode, poll)
         car = next((x["match"] for x in a["cars"] if teslafi._matched(x)), None)
@@ -263,6 +263,11 @@ def _teslafi_rows(req, now):
         elif mode == "off":
             c.status, c.reason = "off", "no_car"
             c.rate = lambda x, y: 0
+        elif teslafi.limited_until(req, a):
+            until = teslafi.limited_until(req, a)
+            c.status, c.reason = "problem", "rate_limited"
+            c.open_since = (until - 120_000, "rate_limited", "TeslaFi is limiting requests")
+            c.last_ok_ms, c.next_ms, c.pace_s = a["last_ok_ms"], until, step // 1000 if step else None
         else:
             c.pace_s = step // 1000 if step else None
             c.last_ok_ms = now - now % step if step else a["last_ok_ms"]

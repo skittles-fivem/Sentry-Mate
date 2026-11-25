@@ -26,7 +26,9 @@ class Teslafi(ServerCase):
         o = self.c.get(BASE)
         self.assertTrue(o["enabled"])
         self.assertEqual((o["accounts"], o["cars"], o["hosts"], o["tls"]), (1, 1, ["www.teslafi.com"], "1.3"))
-        self.assertEqual((o["polls"]["driving_s"], o["polls"]["daily_cap"]), (60, 1500))
+        self.assertEqual(o["polls"]["driving_s"], 60)
+        self.assertNotIn("daily_cap", o["polls"])  # no cap of its own: TeslaFi does the limiting
+        self.assertIsNone(o["rate_limited_until_ms"])
         a = self.c.get(BASE + "/accounts")["items"][0]
         self.assertEqual((a["id"], a["status"], a["time_zone"]), ("fa1", "ok", "America/Chicago"))
         self.assertEqual([(c["vehicle"], c["match"], c["vin_prefix"], c["model"]) for c in a["cars"]],
@@ -106,6 +108,32 @@ class Teslafi(ServerCase):
         self.assertEqual((a["status"], a["mode"]), ("token_refused", "off"))
         self.assertIn("teslafi-token-refused", [e["action"] for e in self.audit()])
 
+
+    def test_1b_teslafi_limiting_is_told(self):
+        """A 429 wait: the notice with the next try, the account and its status, the connections row, and no cap."""
+        a = self.server.app.store.teslafi["accounts"]["fa1"]
+        until = self.server.app.clock.now() + 10 * 60_000
+        a["rate_limited_until_ms"] = until
+        try:
+            n = [x for x in self.c.get("/api/v1/notices")["items"] if x["code"] == "teslafi_rate_limited"]
+            self.assertEqual(len(n), 1)
+            self.assertTrue(n[0]["message"].startswith('TeslaFi is limiting requests for the TeslaFi account "TeslaFi", '
+                                                       "next try at "), n[0]["message"])
+            self.assertEqual(n[0]["detail"], {"account": "fa1", "until_ms": until})
+            self.assertEqual(n[0]["fix_link"], "/settings/integrations#teslafi")
+            self.assertEqual(self.c.get(BASE)["rate_limited_until_ms"], until)
+            self.assertEqual(self.c.get(BASE + "/accounts/fa1")["rate_limited_until_ms"], until)
+            st = self.c.get(BASE + "/status")["items"][0]
+            self.assertEqual((st["mode"], st["next_request_ms"], st["rate_limited_until_ms"]), ("backoff", until, until))
+            row = next(x for x in self.c.get("/api/v1/integrations/overview")["connections"] if x["id"] == "teslafi:fa1")
+            self.assertEqual((row["status"], row["status_reason"], row["next_ms"]), ("problem", "rate_limited", until))
+            self.assertIsNone(row["today"]["cap"])
+        finally:
+            a["rate_limited_until_ms"] = None
+        self.assertFalse([x for x in self.c.get("/api/v1/notices")["items"] if x["code"] == "teslafi_rate_limited"])
+        row = next(x for x in self.c.get("/api/v1/integrations/overview")["connections"] if x["id"] == "teslafi:fa1")
+        self.assertIsNone(row["today"]["cap"], "no cap shown, whatever the pace")
+        self.assertIn("teslafi-rate-limited", [e["action"] for e in self.audit()])
 
 
 class TeslafiWatch(ServerCase):

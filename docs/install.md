@@ -398,7 +398,10 @@ Either way the server checks it with Tesla before it keeps anything. Then:
    charging, every minute awake, every 3 min asleep) or `gentle` (2 min,
    5 min, 20 min). TeslaFi only has new data as often as it polls the car, so
    `often` is as fast as is useful. Whatever the pace, the server waits as
-   long as TeslaFi asks it to (`Retry-After`) and backs off on errors.
+   long as TeslaFi asks it to (`Retry-After`) and backs off on errors. There is no
+   daily cap on this side: TeslaFi does the limiting. When it answers 429 the
+   TeslaFi section, Data health and the notices say "TeslaFi is limiting
+   requests" with the time of the next try.
 
 To stop for a while, pause the account; to stop for good, remove it. Removing
 deletes its sealed tokens; the history already stored stays. Also sign the

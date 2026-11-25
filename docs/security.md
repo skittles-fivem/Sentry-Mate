@@ -261,8 +261,9 @@ given; this server only reads what TeslaFi stored. How to add the token is in
   from TeslaFi's database and do not wake the car.
 - **Polite.** One read a minute at most while the car drives or charges (every 15 s with the `often` pace, about as
   often as TeslaFi itself refreshes), less while it is parked or asleep (never less because SMO or the Tesla API is live for it);
-  never two requests within 10 s; at most 1,500 requests a day per account (6,000 with `often`); waits after errors
-  and whatever TeslaFi asks for (429, `Retry-After`), whatever the pace.
+  never two requests within 10 s, one at a time; no daily cap of this server's own (TeslaFi does the limiting); waits
+  after errors and whatever TeslaFi asks for (429, `Retry-After`: the admins are told by a notice and an audit entry),
+  whatever the pace.
 - **The token is sealed in the vault** (`teslafi/accounts/<id>.json` in the data folder, encrypted with the vault
   key), held in memory only while used and wiped after. No page, API answer, audit entry, error or log line shows
   it. A move or an export carries the account to the new server, still sealed.
@@ -302,9 +303,9 @@ an admin turns it on** (the password asked again, an audit entry written): befor
   charge log, `GET /history.php?command=charges&dateFrom=<date>&dateTo=<date>` (the path made of two dates only,
   the token in the `Authorization` header as for the polls), and takes the cost TeslaFi lists for each charge. No
   PDFs come from TeslaFi.
-- **Paced.** One request at a time, after the car's own reads (never instead of one). TeslaFi: in its own pace and
-  gap between requests, counted in its daily cap, never more than 60 a day or into the last 200 requests of the
-  cap. Tesla: no cap of this server's own (Tesla does the limiting; its 429 is waited out as it asks). The first time, the whole history is read page by
+- **Paced.** One request at a time, after the car's own reads (never instead of one). In its own pace and
+  gap between requests, with no cap of this server's own for either TeslaFi or Tesla (they do the limiting; a 429 is
+  waited out as it asks). The first time, the whole history is read page by
   page (resumable: a restart goes on where it was); then once a day, and soon after a DC charge (TeslaFi: a charge)
   ends. An error waits half an hour, doubling up to a day; Tesla's or TeslaFi's `Retry-After` is followed.
 - **Kept sealed, once.** Each session (one per Tesla session id or TeslaFi charge id) and each PDF (at most 4 MiB,

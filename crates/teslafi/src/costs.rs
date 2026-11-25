@@ -10,7 +10,7 @@
 //!
 //! The backfill reads the log [`CHUNK_DAYS`] at a time back from today until two chunks in a row hold no charge (or
 //! 2012); then the last [`CHECK_DAYS`] days once a day, and soon after a charge ends. One request per tick, in the
-//! poller's gap and under its daily cap ([`crate::poller`]).
+//! poller's gap ([`crate::poller`]); TeslaFi's 429 is waited out there as for the polls.
 
 use crate::api::FeedError;
 use serde::{Deserialize, Serialize};

@@ -40,13 +40,13 @@ const MODE = {
   idle: ['Parked', 'Read at the awake pace.'],
   charging: ['Charging', 'Read at the driving or charging pace.'],
   driving: ['Driving', 'Read at the driving or charging pace.'],
-  backoff: ['Waiting after errors', 'TeslaFi answered with errors, or the day\'s requests are used up: nothing is asked until the next try.'],
+  backoff: ['Waiting after errors', 'TeslaFi answered with errors, or asked the server to wait (429): nothing is asked until the next try.'],
 };
 // the pace choice (one setting for every TeslaFi account); the waits of the chosen one come back in the overview's `polls`
 const PACE = [
   ['gentle', 'Gentle', ['2 min', '5 min', '20 min'], 'Fewer requests: for a car that needs no fine detail from TeslaFi.'],
   ['normal', 'Normal', ['60 s', '3 min', '10 min'], 'The default: about as often as TeslaFi itself polls an awake car.'],
-  ['often', 'Often', ['15 s', '60 s', '3 min'], 'As fast as TeslaFi refreshes: finer drives and charges, up to 6,000 requests a day per account.'],
+  ['often', 'Often', ['15 s', '60 s', '3 min'], 'As fast as TeslaFi refreshes: finer drives and charges, with more requests to TeslaFi (it may limit them: the server then waits as it asks).'],
 ];
 const paceLine = ([d, a, s]) => `driving or charging every ${d}, awake every ${a}, asleep every ${s}`;
 const ERROR_WORDS = {
@@ -61,10 +61,12 @@ const LAST_ERROR = {
   token_refused: 'TeslaFi refused the token',
   teslafi_unreachable: 'TeslaFi could not be reached',
   rate_limited: 'TeslaFi asked the server to slow down',
-  daily_cap: 'The day\'s requests are used up',
   server_error: 'TeslaFi answered with a server error',
   timeout: 'TeslaFi took too long to answer',
 };
+export const limitedText = (until, tz) => `TeslaFi is limiting requests, next try at ${dateTime(until, tz)}.`;
+const limitedNote = (until, tz, cls = 'setting-note') => h('p', { class: [cls, 'warn', 'ta-limited'], role: 'status' }, icon('warn', 'ico--sm'),
+  h('span', null, h('b', null, limitedText(until, tz)), ' This server sets no daily limit of its own: TeslaFi does the limiting, and the server waits as long as TeslaFi asks (at least a minute).'));
 const lastErrorText = (e) => (e ? (LAST_ERROR[e.code] || e.message || e.code) : null);
 
 function words(e) {
@@ -161,15 +163,15 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
 
   function statusPanel() {
     const p = ov.polls || {};
-    const cap = p.daily_cap || 1500;
     const poll = ov.poll || 'normal';
     const paceSeg = h('div', { class: 'seg', role: 'group', 'aria-label': 'How often TeslaFi is asked' },
       PACE.map(([v, l, w]) => h('button', { class: 'seg-btn', type: 'button', title: `${l}: ${paceLine(w)}`, 'aria-pressed': String(poll === v), onclick: () => setPace(v) }, l)));
     return h('div', { class: 'panel panel-pad ta-status' },
       h('div', { class: 'panel-head' }, h('h3', { class: 'panel-title' }, icon('pulse'), 'Status')),
+      ov.rate_limited_until_ms ? limitedNote(ov.rate_limited_until_ms, LOCAL) : null,
       figures([
         metric('State', ov.enabled ? 'On' : 'Off', null, { size: 'sm', explain: ov.enabled ? `${num(ov.accounts)} ${ov.accounts === 1 ? 'account' : 'accounts'}, ${num(ov.cars)} ${ov.cars === 1 ? 'car' : 'cars'} matched.` : 'Off until a token is added: no connection to TeslaFi is made.' }),
-        metric('Requests today', ov.polls_today, 'number', { size: 'sm', digits: 0, explain: ov.enabled ? `Of at most ${num(cap)} a day per account (then nothing until midnight UTC).` : 'None: there is no account.' }),
+        metric('Requests today', ov.polls_today, 'number', { size: 'sm', digits: 0, explain: ov.enabled ? 'Since midnight UTC, for information: there is no cap on this side.' : 'None: there is no account.' }),
         metric('Connection', ov.tls ? `TLS ${ov.tls}` : '—', null, { size: 'sm', explain: ov.tls ? 'To www.teslafi.com on 443; the token goes in a header, never in an address.' : 'None yet.' }),
       ], 'si-figs'),
       ov.last_error ? h('p', { class: 'si-last-error warn' }, icon('warn', 'ico--sm'), ' Last error: ', h('b', null, lastErrorText(ov.last_error)),
@@ -184,7 +186,7 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
         h('dl', { class: 'ta-pace-list' },
           [['A driving car', p.driving_s], ['A charging car', p.charging_s], ['A parked car', p.parked_s], ['An asleep car', p.asleep_s]]
             .map(([l, s]) => h('div', null, h('dt', null, l), h('dd', null, l.endsWith('live') ? `at most every ${secs(s)}` : `every ${secs(s)}`)))),
-        h('p', { class: 'setting-note' }, `${PACE.find((x) => x[0] === poll)?.[3] || ''} Whatever the pace: at most one request every 10 s and ${num(cap)} a day per account, TeslaFi's requests to slow down are always obeyed, and after an error it waits 60 s, doubling up to 15 minutes. These reads come from TeslaFi's own database: they never wake the car.`)));
+        h('p', { class: 'setting-note' }, `${PACE.find((x) => x[0] === poll)?.[3] || ''} Whatever the pace: at most one request every 10 s per account, with no daily cap on this side (TeslaFi does the limiting: its requests to slow down are always obeyed and shown here), and after an error it waits 60 s, doubling up to 15 minutes. These reads come from TeslaFi's own database: they never wake the car.`)));
   }
   async function setPace(v) {
     if (v === (ov.poll || 'normal')) return;
@@ -266,12 +268,13 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
         h('div', { class: 'ta-acc-title' }, h('h3', null, a.label), pill(st[0], { tone: st[1] }), a.tls ? h('span', { class: 'faint' }, `TLS ${a.tls}`) : null),
         h('div', { class: 'row ta-acc-acts' }, pauseBtn, tokenBtn, editBtn, removeBtn)),
       st[2] ? h('p', { class: ['setting-note', (a.status === 'token_refused' || a.status === 'error') && 'warn'] }, st[2]) : null,
+      a.rate_limited_until_ms ? limitedNote(a.rate_limited_until_ms, LOCAL) : null,
       kv([
         ['Added', at(a.added_ms), { icon: 'calendar' }],
         ['What the server does', h('span', { title: mode[1] }, mode[0]), { icon: 'pulse' }],
         ['Last good answer', a.last_ok_ms ? h('span', { title: at(a.last_ok_ms) }, ago(a.last_ok_ms)) : h('span', { class: 'faint' }, 'none yet'), { icon: 'check' }],
         ['Last error', err ? h('span', { class: 'warn' }, lastErrorText(err), err.at_ms ? h('span', { title: at(err.at_ms) }, `, ${ago(err.at_ms)}`) : '') : h('span', { class: 'faint' }, 'none'), { icon: 'warn' }],
-        ['Requests today', `${num(a.polls_today ?? 0)} of ${num(ov.polls?.daily_cap || 1500)}`, { icon: 'pulse' }],
+        ['Requests today', num(a.polls_today ?? 0), { icon: 'pulse', title: 'Since midnight UTC, for information: there is no cap on this side.' }],
         ['TeslaFi\'s time zone', a.time_zone ? a.time_zone.replace(/_/g, ' ') : h('span', { class: 'faint' }, 'the server\'s own'), { icon: 'clock' }],
         ['Token', h('span', { class: 'faint' }, 'sealed on the server, never shown'), { icon: 'lock' }],
       ]),

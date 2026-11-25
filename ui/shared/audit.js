@@ -122,6 +122,7 @@ const BY_GROUP = {
     'teslafi-invoices-changed': 'Turned TeslaFi invoice costs on or off',
     'invoices-downloaded': 'Downloaded Supercharger invoices',
     'teslafi-account-error': 'Could not read a TeslaFi account',
+    'teslafi-rate-limited': 'TeslaFi started limiting requests',
     'teslamate-local-added': 'Connected the local TeslaMate',
     'teslamate-local-changed': 'Changed the local TeslaMate',
     'teslamate-local-paused': 'Paused the local TeslaMate',

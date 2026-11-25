@@ -121,6 +121,7 @@ def seed(ds, now):
         (47 * DAY, S, "teslafi-token-refused", "teslafi:fa1", None, "TeslaFi refused the token of the TeslaFi account TeslaFi."),
         (47 * DAY - HOUR, "admin", "teslafi-token-replaced", "teslafi:fa1", None, "Replaced the token of the TeslaFi account TeslaFi."),
         (45 * DAY, S, "teslafi-account-error", "teslafi:fa1", None, "The TeslaFi account TeslaFi keeps failing: TeslaFi answered 502."),
+        (44 * DAY, S, "teslafi-rate-limited", "teslafi:fa1", None, "TeslaFi is limiting requests for the TeslaFi account \"TeslaFi\", next try 5 minutes later. This server sets no limit of its own; it waits as long as TeslaFi asks."),
         (44 * DAY, "admin", "teslafi-account-removed", "teslafi:fa9", None, "Removed the TeslaFi account Second TeslaFi."),
         (42 * DAY, "alex", "teslamate-local-added", "teslamate:local", None, "Added the local TeslaMate (MQTT 192.0.2.40:1883)."),
         (42 * DAY - 2 * MIN, "alex", "teslamate-local-tested", "teslamate:local", None, "Tested the local TeslaMate: connected, saw 3 cars."),
