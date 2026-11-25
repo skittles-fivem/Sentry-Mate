@@ -354,6 +354,30 @@ kept only the files `index.html` names, so every second visit fetched them again
 - **Not met yet:** phone warm 1.2 s (target 500 ms) and FCP 338 ms (200); in-app navigation 1.2 s on the phone and
   158 ms on the desktop (100); desktop warm 309 ms (150). Desktop cold (399 ms) is within its 400.
 
+##### 5. The drive page is ready before its map library arrives
+
+The drive page was ready only once MapLibre (over a megabyte with its worker) had loaded: after step 1–4, nav to a
+drive took 2.5 s on the phone in every run. A map made with `onShell` (core/map.js) now lays out its foot first, the
+credit and the Map / Satellite switch, which are the page's own elements, where MapLibre will put them (its 71 KB style
+sheet first). The overlays above them take their room from it at once, and the page is ready then. The library draws
+the map into its reserved place after; the zoom buttons come in then at the top right, where nothing moves for them.
+The drive page uses it; the car and trip pages still wait for the map. The optional preload of MapLibre on idle is not
+done: a page that is ready no longer needs it, and on the phone's network it would compete with the next page.
+
+Same harness, same machine; step 1–4 (`bc2e7ba12`) against this step, phone mean of 3 runs taken alternately,
+desktop 1 run, in ms:
+
+| | phone nav | phone nav to a drive | phone cold TTU | phone warm TTU | desktop nav | desktop nav to a drive |
+|---|---:|---:|---:|---:|---:|---:|
+| step 1–4 | 1185 | 2477 | 8659 | 1108 | 141 | 98 |
+| + 5 | **957** | **954** | 8455 | 1328 (1115 without one 6.2 s battery load) | 147 | 107 |
+
+- Nav to a drive is back to where main was (about 0.97 s), every run, without needing the idle preloads.
+- Phone nav 1.19 → 0.96 s overall. The desktop numbers are within the noise of one run (desktop cold 383 → 440).
+- One warm battery load took 6.2 s in the third run (the other two: 1.5 s); its pages are not touched by this step.
+- Checks: `jumps.test.js` (Instrument) clean 3 times in a row, `check.js --pixel` and `--stable` on the drive page
+  pass, and the full checks before the hand-off.
+
 # Plan: page speed with a long history
 
 Status (2026-11-23): done. On the owner-sized made-up history every page's calls answer within the target warm and
