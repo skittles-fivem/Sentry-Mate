@@ -177,7 +177,10 @@ export function percent(s) {
 export function rowText(s, nowMs = Date.now(), carName = (id) => id) {
   if (!running(s)) return null;
   if (cancelling(s)) return { text: 'Cancelling the full rebuild', tone: 'warn' };
-  if (held(s)) return { text: `Full rebuild: ${holdText(s, nowMs)}`, tone: 'warn' };
+  if (held(s)) {
+    const t = holdText(s, nowMs);
+    return { text: `Full rebuild ${t.charAt(0).toLowerCase()}${t.slice(1)}`, tone: 'warn' };
+  }
   const step = lines(s, nowMs, carName).find((l) => l.key === 'phase')?.text;
   return { text: step ? `Running: ${step}` : 'Running', tone: 'warn' };
 }

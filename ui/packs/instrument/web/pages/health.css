@@ -250,6 +250,30 @@
 .gf[data-tone="warn"] .gf-head { color: var(--warm-ink); }
 .gf[data-tone="error"] .gf-head { color: var(--danger-ink); }
 @media (prefers-reduced-motion: reduce) { .gf-bar > i { transition: none; } }
+/* past fits of the GPS layout, and the layouts used over time */
+.gp { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); min-width: 0; margin-top: round(0.875rem, var(--e)); padding-top: round(0.75rem, var(--e)); border-top: 1px solid var(--line); }
+.gp-title { margin: 0; font-size: max(0.875rem, var(--fs-floor)); font-weight: 600; }
+.gp-title:not(:first-child) { margin-top: round(0.5rem, var(--e)); }
+.gp-empty, .gp-wait { margin: 0; color: var(--text-3); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
+.gp-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.gp-row { min-width: 0; padding: round(0.375rem, var(--e)) 0; border-top: 1px solid var(--line); font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
+.gp-row:first-child { border-top: 0; }
+.gp-line { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.125rem, var(--e)) round(0.75rem, var(--e)); min-width: 0; }
+.gp-line > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.gp-when { flex: none; color: var(--text); }
+.gp-verdict { flex: none; font-weight: 600; }
+.gp-row[data-tone="ok"] .gp-verdict { color: var(--live-ink); }
+.gp-row[data-tone="warn"] .gp-verdict { color: var(--warm-ink); }
+.gp-row[data-tone="error"] .gp-verdict { color: var(--danger-ink); }
+.gp-best { flex: 1 1 round(10rem, var(--e)); }
+.gp-acts { display: flex; flex: none; flex-wrap: wrap; gap: round(0.375rem, var(--e)); margin-left: auto; overflow: visible !important; }
+.gp-result { margin-top: round(0.375rem, var(--e)); }
+.gp-head, .gp-pairs, .gp-notes { margin: 0; overflow-wrap: anywhere; font-size: max(0.8125rem, var(--fs-floor)); line-height: round(1.25rem, var(--e)); }
+.gp-pairs, .gp-notes { color: var(--text-3); }
+.gp-result[data-tone="ok"] .gp-head { color: var(--live-ink); }
+.gp-result[data-tone="warn"] .gp-head { color: var(--warm-ink); }
+.gp [hidden] { display: none !important; }
+@media (max-width: 600px) { .gp-best { flex-basis: 100%; } .gp-acts { margin-left: 0; } }
 
 /* the buttons beside the full rebuild (start now, tonight, pause) wrap on a narrow screen */
 .fr-acts { flex-wrap: wrap; }
