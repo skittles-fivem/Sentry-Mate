@@ -9,6 +9,8 @@
 //! - `moved.sealed`: written when the move finishes (the commit point): when, to where, the session and the keys to
 //!   answer the finish again, and when the new server confirmed it serves. Kept until `move undo`.
 //! - `cancelled.sealed`: the last sessions that were cancelled here, so their requests are answered `410 cancelled`.
+//! - `log.sealed`: the move's log for the owner ([`crate::log`]), begun again with each new code; `log.lock` keeps
+//!   its writes one at a time.
 //!
 //! The running server reads these files on every request, so a command run beside it (`move code`, `move cancel`,
 //! `move undo`) changes what it does at once; `.move/lock` keeps changes one at a time. The pause is in memory only:
@@ -47,6 +49,11 @@ const LOCK: &str = "lock";
 const CODE: &str = "code.sealed";
 const MOVED: &str = "moved.sealed";
 const CANCELLED: &str = "cancelled.sealed";
+const LOG: &str = "log.sealed";
+const LOG_LOCK: &str = "log.lock";
+/// How long a finish waits, after the commit, for the running server to say its inputs stopped
+/// ([`Offer::expect_quiet`]) before it answers: the new server starts its own only once it has the answer.
+pub const QUIET_MOST: Duration = Duration::from_secs(30);
 
 /// A code can be claimed for this long.
 pub const CODE_VALID_MS: u64 = 24 * 3600 * 1000;
@@ -160,6 +167,32 @@ fn write<T: serde::Serialize>(data: &Path, vault: &Vault, name: &str, v: &T) -> 
     Ok(())
 }
 
+/// Adds a line to the move's log (`.move/log.sealed`), or begins it again (`fresh`: a new code). A log that can't
+/// be written is said in the server's log only: the move goes on.
+fn add_log(data: &Path, vault: &Vault, text: &str, fresh: bool) {
+    let r = (|| -> Result<(), Error> {
+        std::fs::create_dir_all(data.join(DIR))?;
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path(data, LOG_LOCK))?;
+        flock(&f, FlockOperation::LockExclusive).map_err(io::Error::from)?;
+        let mut l: Vec<crate::log::Line> = if fresh { Vec::new() } else { read(data, vault, LOG)?.unwrap_or_default() };
+        crate::log::push(&mut l, now_ms(), text);
+        write(data, vault, LOG, &l)
+    })();
+    if let Err(e) = r {
+        tracing::warn!("move: the move's log wasn't written: {e}");
+    }
+}
+
+/// The move's log on this server (the move away from it), oldest first; empty when there is none.
+pub fn log(data: &Path, vault: &Vault) -> Vec<crate::log::Line> {
+    read(data, vault, LOG).ok().flatten().unwrap_or_default()
+}
+
 /// `.move/lock`, held while the move's state changes.
 struct DirLock(#[allow(dead_code)] File);
 
@@ -225,6 +258,13 @@ fn new_code(data: &Path, vault: &Vault, anywhere: bool, keep_text: bool) -> Resu
         claimed: None,
     };
     write(data, vault, CODE, &rec)?;
+    let reach = if anywhere { "from anywhere" } else { "from the home network only" };
+    add_log(
+        data,
+        vault,
+        &format!("A move code was made: it works once, {reach}, until {}.", when(rec.expires_ms)),
+        true,
+    );
     Ok(Made { code: text, id: k.id, expires_ms: rec.expires_ms, anywhere })
 }
 
@@ -329,6 +369,12 @@ pub fn cancel(data: &Path, vault: &Vault) -> Result<Cancelled, Error> {
         add_cancelled(data, vault, &cl.session_sha256, "cancelled on the old server")?;
     }
     crate::import::remove_file(&path(data, CODE))?;
+    let said = if c.claimed.is_some() {
+        "The move was cancelled here: uploads go on as before."
+    } else {
+        "The move code was cancelled."
+    };
+    add_log(data, vault, said, false);
     Ok(match c.claimed {
         Some(cl) => Cancelled::Ended { id: c.id, to: cl.from },
         None => Cancelled::Revoked { id: c.id },
@@ -647,6 +693,9 @@ pub struct Offer {
     hold: Mutex<Option<gate::Pause>>,
     moved: watch::Sender<bool>,
     seen: Mutex<Seen>,
+    /// The running server stops its inputs when the data moved and says so ([`Offer::quiet`]): a finish waits for it.
+    expect_quiet: std::sync::atomic::AtomicBool,
+    quiet: watch::Sender<bool>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -682,6 +731,8 @@ impl Offer {
             hold: Mutex::new(None),
             moved: tx,
             seen: Mutex::new(Seen::default()),
+            expect_quiet: std::sync::atomic::AtomicBool::new(false),
+            quiet: watch::channel(false).0,
         });
         if let Some(m) = read::<MovedRecord>(&o.data, &o.vault, MOVED)? {
             o.hold_moved()?;
@@ -722,6 +773,49 @@ impl Offer {
         self.moved.subscribe()
     }
 
+    /// The running server stops its inputs once the data moved and then calls [`Offer::quiet`]: from now on a
+    /// finish answers only after that (at most [`QUIET_MOST`]), so the new server, which starts its own inputs once
+    /// it has the answer, never runs them while this one's still do. A server whose data moved already started none.
+    pub fn expect_quiet(&self) {
+        self.expect_quiet.store(true, std::sync::atomic::Ordering::SeqCst);
+        if self.is_moved() {
+            self.quiet.send_replace(true);
+        }
+    }
+
+    /// Everything that reads or writes on its own here stopped after the move (`what`: in words, for the move's
+    /// log): a finish waiting for it answers now.
+    pub fn quiet(&self, what: &str) {
+        if !self.quiet.send_replace(true) {
+            self.note(&format!("Inputs stopped on this server: {what}."));
+        }
+    }
+
+    /// Whether this server's inputs stopped after the move (always `true` when nothing waits for it).
+    pub fn is_quiet(&self) -> bool {
+        !self.expect_quiet.load(std::sync::atomic::Ordering::SeqCst) || *self.quiet.borrow()
+    }
+
+    /// Waits until [`Offer::is_quiet`], at most [`QUIET_MOST`].
+    async fn wait_quiet(&self) {
+        if self.is_quiet() {
+            return;
+        }
+        let mut rx = self.quiet.subscribe();
+        let _ = tokio::time::timeout(QUIET_MOST, rx.wait_for(|q| *q)).await;
+        if !self.is_quiet() {
+            tracing::warn!(
+                "move: this server's inputs didn't say they stopped within {} s; the finish is answered all the same",
+                QUIET_MOST.as_secs()
+            );
+        }
+    }
+
+    /// Adds a line to the move's log (the running server's own steps: what it stopped, what it does).
+    pub fn note(&self, text: &str) {
+        add_log(&self.data, &self.vault, text, false);
+    }
+
     /// Runs the timers: a pause that went quiet ends, `move undo` and `move cancel` from the command line are seen,
     /// a move not heard from in 7 days ends. Stop it by aborting the task.
     pub fn spawn_ticker(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
@@ -759,12 +853,15 @@ impl Offer {
             return;
         };
         *p = None;
+        drop(p);
         tracing::info!("move: the pause ended ({why}); uploads go on, and the new server catches up and asks again");
+        self.note(&format!("The pause ended ({why}); uploads go on, and the new server catches up and asks again."));
     }
 
     fn end_pause(&self, why: &str) {
         if lock(&self.paused).take().is_some() {
             tracing::info!("move: the pause ended ({why}); uploads go on");
+            self.note(&format!("The pause ended ({why}); uploads go on."));
         }
     }
 
@@ -779,6 +876,9 @@ impl Offer {
                 *lock(&self.hold) = None;
                 self.gate.reopen();
                 self.moved.send_replace(false);
+                self.quiet.send_replace(false);
+                drop(p);
+                self.note("The move was undone: this server takes uploads again.");
                 tracing::warn!(
                     "move: undone: this server takes uploads again. If the new server also takes uploads, the two drift apart: stop it."
                 );
@@ -823,6 +923,7 @@ impl Offer {
                 let _l = lock_dir(&self.data);
                 let _ = add_cancelled(&self.data, &self.vault, &cl.session_sha256, "not heard from in 7 days");
                 let _ = crate::import::remove_file(&path(&self.data, CODE));
+                self.note(&format!("The move ended: the new server wasn't heard from since {}.", when(last)));
                 tracing::warn!(
                     "move: the move to {} ended: not heard from since {}. Make a new move code to move again.",
                     cl.from,
@@ -1106,6 +1207,12 @@ impl Offer {
                 c.text = None;
                 write(&self.data, &self.vault, CODE, &c)?;
                 *lock(&self.seen) = Seen { last_ms: now, ..Seen::default() };
+                self.note(&format!(
+                    "The new server at {} connected (Sentry Mate {}): {files} files, {} to copy.",
+                    shown(ip),
+                    r.app,
+                    crate::size(bytes)
+                ));
                 tracing::info!(
                     "move: a server at {} took the move code ({}; Sentry Mate {}) and is copying the data: {files} files, {}",
                     shown(ip),
@@ -1291,12 +1398,10 @@ impl Offer {
             let tenths = (s.sent.saturating_mul(10) / total).min(10);
             if tenths > s.logged_tenths {
                 s.logged_tenths = tenths;
-                tracing::info!(
-                    "move: {to} has copied {} % ({} of {})",
-                    tenths * 10,
-                    crate::size(s.sent.min(total)),
-                    crate::size(total)
-                );
+                let (done, all) = (crate::size(s.sent.min(total)), crate::size(total));
+                drop(s);
+                tracing::info!("move: {to} has copied {} % ({done} of {all})", tenths * 10);
+                self.note(&format!("Sent {} % to the new server ({done} of {all}).", tenths * 10));
             }
         }
     }
@@ -1390,6 +1495,10 @@ impl Offer {
             m.to,
             when(m.at_ms)
         );
+        self.note(&format!(
+            "The new server's copy matches: the data moved to {}. This server takes no more uploads and stops its inputs; the new server switches.",
+            m.to
+        ));
         Ok(m)
     }
 
@@ -1647,6 +1756,7 @@ async fn pause(o: Arc<Offer>, req: Request) -> Result<Response, Refusal> {
         Some(Paused { id: id.clone(), session: sh, _pause: Some(held), digest, started: now, last: now, busy: 0 });
     let from = c.claimed.as_ref().map_or_else(String::new, |cl| cl.from.clone());
     tracing::info!("move: uploads paused for the last changes ({from} is catching up)");
+    o.note("Last-round pause: uploads wait here while the new server copies the last changes.");
     json(PauseAnswer { pause: id, until_ms: now_ms() + PAUSE_MOST.as_millis() as u64 })
 }
 
@@ -1656,8 +1766,11 @@ async fn finish(o: Arc<Offer>, req: Request) -> Result<Response, Refusal> {
     let r: FinishRequest = body_json(req, 64 * 1024).await?;
     let _op = o.op.lock().await;
     let c = match who {
-        // a lost finish answer: the same again (a new nonce), also weeks later
-        Who::Moved(m) => return json(o.finish_answer(&m, &session)?),
+        // a lost finish answer: the same again (a new nonce), also weeks later; once this server's inputs stopped
+        Who::Moved(m) => {
+            o.wait_quiet().await;
+            return json(o.finish_answer(&m, &session)?);
+        }
         Who::Copying(c) => c,
     };
     let Some((id, busy)) = o.busy(&sh) else {
@@ -1682,6 +1795,7 @@ async fn finish(o: Arc<Offer>, req: Request) -> Result<Response, Refusal> {
             fresh.0,
             crate::size(fresh.1)
         );
+        o.note("The new server's copy differs from this server's files: it copies what changed again.");
         return Err(Refusal::new(
             409,
             "digest_mismatch",
@@ -1699,6 +1813,8 @@ async fn finish(o: Arc<Offer>, req: Request) -> Result<Response, Refusal> {
         m
     })
     .await?;
+    // the new server starts its inputs once it has this answer: this server's stop first
+    o.wait_quiet().await;
     json(o.finish_answer(&m, &session)?)
 }
 
@@ -1719,6 +1835,10 @@ async fn switched(o: Arc<Offer>, req: Request) -> Result<Response, Refusal> {
             Ok(m)
         })
         .await?;
+        o.note(&format!(
+            "Done: {} serves the data now. This server takes no uploads; you can turn it off (keep its folders as a backup for a while).",
+            done.to
+        ));
         tracing::info!(
             "move: done: {} serves the data since {}. This server no longer takes uploads and tells the CAN Bridge to try later. You can stop it now; keep its folders as a backup for a while, then delete them. To take uploads here again: `move undo`.",
             done.to,
@@ -1768,6 +1888,7 @@ async fn end_session(o: Arc<Offer>, req: Request) -> Result<Response, Refusal> {
     })
     .await?;
     o.end_pause("the new server gave the move up");
+    o.note("The new server gave the move up: this server takes uploads as before.");
     tracing::info!("move: the new server gave the move up; this server takes uploads as before");
     json(serde_json::json!({ "ok": true }))
 }

@@ -1234,6 +1234,10 @@ pub trait Positions {
     fn days(&self, stream: Stream, from: u64, to: u64) -> Result<Vec<u64>, String>;
     /// A day's points in `[from, to)`, or why it was left out.
     fn day(&self, stream: Stream, day_ms: u64, from: u64, to: u64) -> db::DayRead<Sample>;
+    /// Why the fit stops here (the server is stopping, or its data moved away); `None`: it goes on.
+    fn stopped(&self) -> Option<String> {
+        None
+    }
 }
 
 /// What a fit is doing.
@@ -1316,6 +1320,9 @@ pub fn collect(
         let mut n = 0usize;
         let mut mine = Vec::new();
         for day in list {
+            if let Some(why) = pos.stopped() {
+                return Err(why);
+            }
             match pos.day(stream, day, from, to) {
                 db::DayRead::Read(pts) => {
                     c.days_read += 1;
@@ -1344,6 +1351,9 @@ pub fn collect(
     progress(Step { phase: Phase::Logs, done: 0, total, positions_total, logs_total });
     let mut frames = Vec::new();
     for (i, name) in names.iter().enumerate() {
+        if let Some(why) = pos.stopped() {
+            return Err(why);
+        }
         let read = rt.block_on(async {
             let Some(log) = store.read(name).await? else { return Ok(None) };
             let side = store.read(&format!("{name}.json")).await?;
@@ -1499,7 +1509,14 @@ impl Positions for Live<'_> {
             Err(e) => db::DayRead::Changing(e.to_string()),
         }
     }
+
+    fn stopped(&self) -> Option<String> {
+        self.e.inner.stopping.load(std::sync::atomic::Ordering::SeqCst).then(|| STOPPED.to_string())
+    }
 }
+
+/// Why a fit ended when the server stopped under it (a restart, or its data moved to another server).
+pub const STOPPED: &str = "stopped: the server stopped (a restart, or its data moved to another server)";
 
 impl Engine {
     /// Starts finding the layout of the car's Screenmate GPS frame from the last `days` days (1 to [`MAX_DAYS`]),
@@ -1548,26 +1565,35 @@ impl Engine {
         let spawned = std::thread::Builder::new().name("gps-fit".into()).spawn(move || {
             let r = {
                 let _one = lock(&e.inner.gps_fit_one);
-                // (told between two days or logs, and before the layouts are tried: a rebuild under way is let
-                // go first)
-                let set = |st: Step| {
-                    e.gps_fit_update(car, id, |s| {
-                        if st.phase == Phase::Logs && s.phase != Some(Phase::Logs) {
-                            s.logs_started_ms = Some(now_ms());
+                // waited for another fit while the server stopped: none starts
+                if e.inner.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                    Err(STOPPED.to_string())
+                } else {
+                    // (told between two days or logs, and before the layouts are tried: a rebuild under way is let
+                    // go first; a stop of the server ends the wait, and the next day or log ends the fit)
+                    let set = |st: Step| {
+                        e.gps_fit_update(car, id, |s| {
+                            if st.phase == Phase::Logs && s.phase != Some(Phase::Logs) {
+                                s.logs_started_ms = Some(now_ms());
+                            }
+                            (s.phase, s.done, s.total) = (Some(st.phase), st.done, st.total);
+                            if st.positions_total + st.logs_total > 0 {
+                                (s.positions_total, s.logs_total) = (st.positions_total, st.logs_total);
+                            }
+                        });
+                        e.gps_fit_yield(car, id);
+                    };
+                    let live = Live { e: &e, car };
+                    let keys = rec.vehicle_keys.clone();
+                    collect(&live, e.store(), e.judge(), &rt, &keys, days, now_ms(), &set).and_then(|c| {
+                        set(Step { phase: Phase::Fitting, done: 0, total: 0, positions_total: 0, logs_total: 0 });
+                        // stopped while it waited for a rebuild before the layouts: none is tried
+                        if let Some(why) = live.stopped() {
+                            return Err(why);
                         }
-                        (s.phase, s.done, s.total) = (Some(st.phase), st.done, st.total);
-                        if st.positions_total + st.logs_total > 0 {
-                            (s.positions_total, s.logs_total) = (st.positions_total, st.logs_total);
-                        }
-                    });
-                    e.gps_fit_yield(car, id);
-                };
-                let live = Live { e: &e, car };
-                let keys = rec.vehicle_keys.clone();
-                collect(&live, e.store(), e.judge(), &rt, &keys, days, now_ms(), &set).map(|c| {
-                    set(Step { phase: Phase::Fitting, done: 0, total: 0, positions_total: 0, logs_total: 0 });
-                    fit(&c, days, car)
-                })
+                        Ok(fit(&c, days, car))
+                    })
+                }
             };
             e.gps_fit_update(car, id, |s| {
                 s.finished_ms = Some(now_ms());
@@ -1578,8 +1604,10 @@ impl Engine {
                     Err(why) => (s.state, s.error) = (FitState::Failed, Some(why)),
                 }
             });
-            // every run is kept, to be looked at again after the server restarts
+            // every run is kept, to be looked at again after the server restarts (not one the server stopped under:
+            // a server whose data moved away writes nothing more)
             if let Some(done) = e.gps_fit_status(car).filter(|s| s.id == id)
+                && !e.is_stopping()
                 && let Err(x) = e.gps_fit_store(&done)
             {
                 tracing::warn!("GPS layout fit: the run could not be kept: {x}");

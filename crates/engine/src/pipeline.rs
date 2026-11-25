@@ -12,6 +12,8 @@ pub const NEW_CAR_NAME: &str = "New car";
 
 /// The logs of a new key looked in for its VIN before it is given to the only car.
 pub(crate) const VIN_LOGS: usize = 20;
+/// Why a run of logs ended part way: the server stopped (a restart, or its data moved away); the next start goes on.
+pub(crate) const STOPPING_LOGS: &str = "the server is stopping: the logs left are decoded at its next start";
 
 /// The VIN in a log's own frames.
 pub(crate) fn log_vin(log: &[u8]) -> Option<VinInfo> {
@@ -1152,7 +1154,13 @@ impl Engine {
             }
         };
         for c in cars {
-            if let Err(e) = self.reconcile_car(c, None) {
+            // the server stopping (or its data moved away): the next start goes on
+            if self.is_stopping() {
+                break;
+            }
+            if let Err(e) = self.reconcile_car(c, None)
+                && !self.is_stopping()
+            {
                 self.failed(&e);
             }
         }
@@ -1375,6 +1383,11 @@ impl Engine {
                 // a full rebuild whose server is stopping: nothing more is asked of a runtime that is going away
                 if job.is_some_and(|j| j.stopping()) {
                     return Err(Error::Other(crate::full::STOPPING.into()));
+                }
+                // any other run of logs too (the server stopping, or its data moved away): it writes nothing more,
+                // and the next start compares the car's logs with what it recorded and goes on from there
+                if job.is_none() && self.is_stopping() {
+                    return Err(Error::Other(STOPPING_LOGS.into()));
                 }
                 let read = ahead.and_then(|a| a.take(&name));
                 let l = self.car_lock(car);

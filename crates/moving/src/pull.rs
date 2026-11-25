@@ -232,6 +232,9 @@ struct State {
     /// Top-level names a first start wrote that don't count as the owner's ([`Options::first_start_also`]).
     #[serde(default)]
     first_start_also: Vec<String>,
+    /// The move's log for the owner ([`crate::log`]): carried into the moved-in note at the switch.
+    #[serde(default)]
+    log: Vec<crate::log::Line>,
 }
 
 /// A new move's id: 8 random hex digits.
@@ -388,6 +391,8 @@ pub struct Status {
     pub finishing: bool,
     /// A switch with the recovery key was asked for and waits to run.
     pub forced: bool,
+    /// The move's log ([`crate::log`]).
+    pub log: Vec<crate::log::Line>,
 }
 
 pub fn status(data: &Path, keys: &Path) -> Result<Option<Status>, Error> {
@@ -407,6 +412,7 @@ pub fn status(data: &Path, keys: &Path) -> Result<Option<Status>, Error> {
         skipped: st.skipped,
         skipped_count: st.skipped_count,
         started_ms: st.started_ms,
+        log: st.log,
     }))
 }
 
@@ -510,6 +516,9 @@ struct MovedInNote {
     started_ms: u64,
     #[serde(default)]
     same_machine: bool,
+    /// The move's log, carried from the staged state, and what this server did after the switch.
+    #[serde(default)]
+    log: Vec<crate::log::Line>,
 }
 
 const MOVED_IN_LABEL: &str = ".move/moved-in.sealed";
@@ -536,6 +545,8 @@ pub struct MovedIn {
     pub cert_sha256: String,
     /// The old server ran on this machine.
     pub same_machine: bool,
+    /// The move's log.
+    pub log: Vec<crate::log::Line>,
 }
 
 /// The note of a move that brought this server's data (none if it didn't come by a move).
@@ -553,7 +564,28 @@ pub fn moved_in(data: &Path, vault: &Vault) -> Option<MovedIn> {
         at_ms: n.at_ms,
         cert_sha256: n.cert_sha256,
         same_machine: n.same_machine,
+        log: n.log,
     })
+}
+
+/// Held while the moved-in note is read and written again (its log and its `switched` mark are changed from two
+/// tasks).
+static NOTE_WRITE: Mutex<()> = Mutex::new(());
+
+/// Adds a line to the log of the move that brought this server's data (what it started after the switch). `false`:
+/// there is no such note, or it couldn't be written.
+pub fn note_moved_in(data: &Path, vault: &Vault, text: &str) -> bool {
+    let _one = lock(&NOTE_WRITE);
+    let Ok(Some(b)) = vault.read_file(&moved_in_path(data), MOVED_IN_LABEL) else { return false };
+    let Ok(mut n) = serde_json::from_slice::<MovedInNote>(&b) else { return false };
+    crate::log::push(&mut n.log, now_ms(), text);
+    let Ok(b) = serde_json::to_vec(&n).map(Zeroizing::new) else { return false };
+    vault.write_file(&moved_in_path(data), MOVED_IN_LABEL, &b).is_ok()
+}
+
+/// The log of the move coming in here (staged, not switched yet): empty when there is none.
+pub fn log(data: &Path, keys: &Path) -> Vec<crate::log::Line> {
+    load(data, keys).ok().flatten().map(|(_, st)| st.log).unwrap_or_default()
 }
 
 /// Writes the note a switch leaves, from `from` with the old server's certificate `cert_sha256` (tests of what a
@@ -581,6 +613,7 @@ pub fn mark_moved_in_for_tests(
         job_id: "0badc0de".into(),
         started_ms: now,
         same_machine: true,
+        log: Vec::new(),
     };
     let b = Zeroizing::new(serde_json::to_vec(&n).map_err(|e| Error::Move(e.to_string()))?);
     std::fs::create_dir_all(data.join(crate::import::NOTES))?;
@@ -616,7 +649,15 @@ pub fn confirm(data: &Path, vault: &Vault, timeout: Duration) -> Result<bool, Pr
         return Err(Problem::new(&code, format!("the old server answered {status} {code} to `switched`"), true));
     }
     let _ = r.bytes(4096);
+    // read again under the note's lock: a line added to its log meanwhile stays
+    let _one = lock(&NOTE_WRITE);
+    if let Ok(Some(b)) = vault.read_file(&moved_in_path(data), MOVED_IN_LABEL)
+        && let Ok(again) = serde_json::from_slice::<MovedInNote>(&b)
+    {
+        n = again;
+    }
     n.switched_sent = true;
+    crate::log::push(&mut n.log, now_ms(), "Told the old server that this server serves the data now.");
     let b = Zeroizing::new(serde_json::to_vec(&n).map_err(|e| Problem::new("disk", e.to_string(), false))?);
     vault.write_file(&moved_in_path(data), MOVED_IN_LABEL, &b).map_err(Problem::from)?;
     Ok(true)
@@ -632,6 +673,7 @@ pub fn begin(data: &Path, keys: &Path, address: &str, code: &str, opts: &Options
     let k = code.keys();
     let mut claim = [0u8; 16];
     getrandom::fill(&mut claim).map_err(|e| Problem::new("disk", e.to_string(), false))?;
+    let fresh_words = format!("Moving here from {address}: proving the move code to the old server.");
     match load(data, keys).map_err(|e| Problem::new("unreadable", e.to_string(), false))? {
         Some((key, mut st)) => {
             if st.code_id == k.id {
@@ -667,6 +709,8 @@ pub fn begin(data: &Path, keys: &Path, address: &str, code: &str, opts: &Options
                     st.first_start_also.push(a.clone());
                 }
             }
+            let words = format!("A new move code for {}: carrying on with what was copied.", st.address);
+            crate::log::push(&mut st.log, now_ms(), words);
             write_in(&data.join(STAGING), STATE, &seal_state(&key, &st)?).map_err(Problem::io)?;
         }
         None => {
@@ -685,6 +729,9 @@ pub fn begin(data: &Path, keys: &Path, address: &str, code: &str, opts: &Options
         }
     }
     let pull = Pull::open(data, keys, opts).map_err(|e| Problem::new("unreadable", e.to_string(), false))?;
+    if lock(&pull.st).log.is_empty() {
+        pull.note(&fresh_words);
+    }
     match pull.claim_once() {
         Ok(()) => Ok(()),
         Err(p) if p.retry => Err(p),
@@ -778,6 +825,7 @@ fn stage(
         job_id: new_job_id(),
         finishing: false,
         first_start_also: also.to_vec(),
+        log: Vec::new(),
     };
     write_in(&made, STATE, &seal_state(&key, &st)?)?;
     std::fs::File::create(made.join(LOCK))?;
@@ -953,7 +1001,12 @@ struct Pull<'a> {
     logged: Mutex<(Instant, u8)>,
     /// When this run's first copy began, and how much was copied then (for the time left).
     began: Mutex<Option<(Instant, u64)>>,
+    /// When the move's log last named a file copied (one such line every [`FILE_LINE_EVERY`] at most).
+    file_line: Mutex<Option<Instant>>,
 }
+
+/// The move's log names a file copied at most this often (its kind, never its path).
+const FILE_LINE_EVERY: Duration = Duration::from_secs(2);
 
 /// One answer of the old server that refuses.
 struct Refused {
@@ -1007,6 +1060,7 @@ impl<'a> Pull<'a> {
             saving: Mutex::new(()),
             logged: Mutex::new((Instant::now(), 0)),
             began: Mutex::new(None),
+            file_line: Mutex::new(None),
         })
     }
 
@@ -1027,12 +1081,53 @@ impl<'a> Pull<'a> {
 
     fn remember(&self, p: &Problem) {
         let cancelled = p.code == "cancelled";
-        {
-            let mut st = lock(&self.st);
-            st.problem = Some(p.clone());
-            st.cancelled |= cancelled;
-        }
+        self.set_problem(p.clone());
+        lock(&self.st).cancelled |= cancelled;
         let _ = self.save();
+    }
+
+    /// Adds a line to the move's log (saved with the state at its next save).
+    fn note(&self, text: &str) {
+        crate::log::push(&mut lock(&self.st).log, now_ms(), text);
+    }
+
+    /// What the move waits for now; a new one goes in the move's log (the same one again does not).
+    fn set_problem(&self, p: Problem) {
+        let mut st = lock(&self.st);
+        if st.problem.as_ref().is_some_and(|q| q.code == p.code && q.message == p.message) {
+            return;
+        }
+        let words = if p.retry {
+            format!("Waiting: {}; trying again by itself.", p.message)
+        } else {
+            format!("Stopped: {}.", p.message)
+        };
+        if p.code != "stopped" && p.code != SWITCH_NEXT {
+            crate::log::push(&mut st.log, now_ms(), words);
+        }
+        st.problem = Some(p);
+    }
+
+    /// A file copied whole: the move's log names its kind (in the first round, one line every
+    /// [`FILE_LINE_EVERY`] at most; the round's end says how many in all).
+    fn file_copied(&self, path: &str) {
+        let (round, done, total) = {
+            let st = lock(&self.st);
+            if st.finishing {
+                return;
+            }
+            (st.progress.round, st.progress.files_done, st.progress.files_total.max(st.progress.files_done))
+        };
+        if round != 1 {
+            return;
+        }
+        let mut last = lock(&self.file_line);
+        if last.is_some_and(|t| t.elapsed() < FILE_LINE_EVERY) {
+            return;
+        }
+        *last = Some(Instant::now());
+        drop(last);
+        self.note(&format!("Copying file {done} of {total} ({}).", crate::log::kind_of(path)));
     }
 
     fn nothing_copied(&self) -> bool {
@@ -1162,6 +1257,7 @@ impl<'a> Pull<'a> {
                 Ok(v) => {
                     if said {
                         tracing::info!("move: connected to the old server again; carrying on where it stopped");
+                        self.note("Connected to the old server again: carrying on where it stopped.");
                     }
                     return Ok(v);
                 }
@@ -1192,9 +1288,7 @@ impl<'a> Pull<'a> {
                 );
                 said = true;
             }
-            {
-                lock(&self.st).problem = Some(problem.clone());
-            }
+            self.set_problem(problem.clone());
             self.sleep(wait_now)?;
             wait = (wait * 2).min(self.opts.retry_most.max(Duration::from_millis(10)));
         }
@@ -1275,6 +1369,13 @@ impl<'a> Pull<'a> {
         );
         let free = (self.opts.free_bytes)(&self.data);
         tracing::info!("move: {} files, {} to copy; {} free here", a.files, crate::size(a.bytes), crate::size(free));
+        self.note(&format!(
+            "Connected: the old server proved the move code (Sentry Mate {}, this one {}): {} files, {} to copy.",
+            a.app,
+            self.opts.app,
+            a.files,
+            crate::size(a.bytes)
+        ));
         {
             let mut st = lock(&self.st);
             // a copy kept from before counts as done so far (the page doesn't drop back to nothing)
@@ -1297,6 +1398,11 @@ impl<'a> Pull<'a> {
                     so_far = (0, 0);
                 } else {
                     tracing::info!("move: the same old server as before: carrying on with what was copied");
+                    crate::log::push(
+                        &mut st.log,
+                        now_ms(),
+                        "The same old server as before: carrying on with what was copied.",
+                    );
                 }
             }
             st.claimed = Some(Claimed {
@@ -1350,7 +1456,7 @@ impl<'a> Pull<'a> {
                 Err(p) => {
                     let w = wait.min(self.opts.retry_most);
                     tracing::warn!("move: {}; trying again in {} s", p.message, w.as_secs().max(1));
-                    lock(&self.st).problem = Some(p);
+                    self.set_problem(p);
                     self.sleep(w)?;
                     wait *= 2;
                 }
@@ -1413,8 +1519,14 @@ impl<'a> Pull<'a> {
             };
             if round_no == 1 {
                 self.check_space()?;
+                self.note("Round 1: copying the old server's files.");
             }
             let r = self.round(&mut conns, None)?;
+            if round_no == 1 {
+                self.note(&format!("Round 1 done: {} files, {} copied.", r.files, crate::size(r.bytes)));
+            } else {
+                self.note(&format!("Round {round_no} caught up {} files ({}).", r.files, crate::size(r.bytes)));
+            }
             if round_no == 1 {
                 self.log_skipped();
                 tracing::info!(
@@ -1438,7 +1550,7 @@ impl<'a> Pull<'a> {
                     crate::size(r.bytes),
                     self.opts.between_rounds.as_secs()
                 );
-                lock(&self.st).problem = Some(Problem::new(
+                self.set_problem(Problem::new(
                     "changing_fast",
                     "the old server changes faster than this copy catches up",
                     true,
@@ -1474,7 +1586,7 @@ impl<'a> Pull<'a> {
                 true,
             );
             tracing::warn!("move: {}", p.message);
-            lock(&self.st).problem = Some(p);
+            self.set_problem(p);
             let _ = self.save();
             self.sleep(Duration::from_secs(60))?;
         }
@@ -1519,6 +1631,7 @@ impl<'a> Pull<'a> {
         crate::import::unused_but(&self.data, &self.keys, &also)
             .map_err(|e| Problem::new("not_empty", format!("{e}; the move can't switch here"), false))?;
         tracing::info!("move: caught up; the old server pauses uploads for the last changes");
+        self.note("Caught up: asking the old server for the last-round pause.");
         let bearer = self.bearer();
         let pause: Option<proto::PauseAnswer> = self.call(&mut conns[0], |c| {
             let r = c.request("POST", &format!("{}/pause", proto::BASE), &[("Authorization", &bearer)], b"")?;
@@ -1533,16 +1646,21 @@ impl<'a> Pull<'a> {
         })?;
         let Some(pause) = pause else {
             tracing::info!("move: the old server's writes didn't stop in time; catching up and asking again");
+            self.note("The old server's writes didn't stop in time: catching up and asking again.");
             self.sleep(Duration::from_secs(10).min(self.opts.between_rounds))?;
             return Ok(false);
         };
         lock(&self.st).finishing = true;
+        self.note("Last-round pause: uploads wait on the old server while the last changes are copied.");
         self.save()?;
         let started = Instant::now();
         for _ in 0..5 {
             let r = match self.round(conns, Some(&pause.pause)) {
                 Ok(r) => r,
-                Err(p) if p.code == "pause_ended" => return Ok(false),
+                Err(p) if p.code == "pause_ended" => {
+                    self.note("The pause ended on the old server: catching up and asking again.");
+                    return Ok(false);
+                }
                 Err(p) => return Err(p),
             };
             let (files, bytes, digest) = self.local_digest().map_err(Problem::io)?;
@@ -1571,10 +1689,19 @@ impl<'a> Pull<'a> {
                         crate::size(r.bytes),
                         started.elapsed().as_secs()
                     );
+                    self.note(&format!(
+                        "Last round: {} files ({}) in {} s. The old server confirmed the copy and stopped its inputs.",
+                        r.files,
+                        crate::size(r.bytes),
+                        started.elapsed().as_secs()
+                    ));
                     self.finished(a, files, bytes)?;
                     return Ok(true);
                 }
                 Err(x) if x.code == "digest_mismatch" => {
+                    self.note(
+                        "The copy differs from the old server's files in the last round: copying what changed again.",
+                    );
                     tracing::info!(
                         "move: the copy differs from the old server's files in the last round; copying what changed again"
                     );
@@ -1647,6 +1774,10 @@ impl<'a> Pull<'a> {
 
     fn switch(&self) -> Result<Done, Problem> {
         tracing::info!("move: switching to the copied data");
+        if !lock(&self.st).log.last().is_some_and(|l| l.text.starts_with("Switching")) {
+            self.note("Switching to the copied data.");
+            self.save()?;
+        }
         let v = self.data_vault()?;
         let st = lock(&self.st).clone();
         let c = st.claimed.clone().ok_or_else(|| Problem::new("unreadable", "no claim", false))?;
@@ -1679,6 +1810,11 @@ impl<'a> Pull<'a> {
             job_id: st.job_id(),
             started_ms: st.started_ms,
             same_machine,
+            log: {
+                let mut l = st.log.clone();
+                crate::log::push(&mut l, now_ms(), "Switched: this server holds the data now.");
+                l
+            },
         };
         let note = Zeroizing::new(serde_json::to_vec(&note).map_err(|e| Problem::new("disk", e.to_string(), false))?);
         let replaced = crate::import::bring_all_in(
@@ -2118,6 +2254,7 @@ impl<'a> Pull<'a> {
                 self.settled(&t.p, f);
                 done.files += 1;
                 self.progress_bytes(0, 1);
+                self.file_copied(&t.p);
                 Ok(None)
             }
             What::Append { from, .. } => {

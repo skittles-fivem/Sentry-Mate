@@ -224,29 +224,35 @@ pub fn spawn_upkeep(app: web::AppState, announced: bool) -> tokio::task::JoinHan
             let now = app.now();
             let due = announced_ms.is_none_or(|at| now.saturating_sub(at) >= accounts::SETUP_CODE_MS);
             let a = app.clone();
-            let r = tokio::task::spawn_blocking(move || {
-                if let Err(e) = a.accounts.maintain() {
-                    tracing::warn!("accounts upkeep: {e}");
-                }
-                // the connections overview: its counters read, its problems looked at, saved when due
-                web::resources::overview::upkeep(&a);
-                if due && a.accounts.needs_setup() {
-                    return match a.announce_setup() {
-                        Ok(code) => code.is_some(),
-                        Err(e) => {
-                            tracing::warn!("setup code: {}", e.message);
-                            false
-                        }
-                    };
-                }
-                false
-            })
-            .await;
+            let r = tokio::task::spawn_blocking(move || upkeep_once(&a, due)).await;
             if matches!(r, Ok(true)) {
                 announced_ms = Some(now);
             }
         }
     })
+}
+
+/// One round of [`spawn_upkeep`]; `due`: a new setup code may be made. `true`: one was made. Nothing on a server whose
+/// data moved away (it writes nothing: the accounts' "last seen" times included).
+pub fn upkeep_once(a: &web::AppState, due: bool) -> bool {
+    if web::moving::data_moved(a) {
+        return false;
+    }
+    if let Err(e) = a.accounts.maintain() {
+        tracing::warn!("accounts upkeep: {e}");
+    }
+    // the connections overview: its counters read, its problems looked at, saved when due
+    web::resources::overview::upkeep(a);
+    if due && a.accounts.needs_setup() {
+        return match a.announce_setup() {
+            Ok(code) => code.is_some(),
+            Err(e) => {
+                tracing::warn!("setup code: {}", e.message);
+                false
+            }
+        };
+    }
+    false
 }
 
 /// Looks for the CAN logs the server should have but no longer does (`ingest::missing`): a while after the start, in
@@ -264,10 +270,14 @@ pub fn spawn_missing_scan(app: web::AppState, gate: gate::Gate) -> tokio::task::
     })
 }
 
-/// Writes what the accounts and the connections overview gathered (on a stop).
+/// Writes what the accounts and the connections overview gathered (on a stop; nothing on a server whose data moved
+/// away).
 pub async fn flush(app: &web::AppState) {
     let a = app.clone();
     let _ = tokio::task::spawn_blocking(move || {
+        if web::moving::data_moved(&a) {
+            return Ok(());
+        }
         let r = a.accounts.maintain();
         web::resources::overview::flush(&a);
         r

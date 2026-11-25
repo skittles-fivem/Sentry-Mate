@@ -571,6 +571,10 @@ pub fn spawn_watch(app: AppState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut shown: Option<String> = None;
         loop {
+            // a server whose data moved away starts no rebuild and writes no audit entry
+            if crate::moving::data_moved(&app) {
+                return;
+            }
             let a = app.clone();
             if let Ok(s) = tokio::task::spawn_blocking(move || {
                 watch_once(&a);
