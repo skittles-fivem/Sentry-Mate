@@ -437,19 +437,45 @@ impl Redo {
     }
 }
 
-/// Whether a narrow rebuild of the car waits (noted before its job starts, cleared once it is done: a restart in
-/// between does it then).
-pub(crate) fn redo(db: &Db, car: CarId, what: Redo) -> Result<bool> {
-    Ok(get::<bool>(db, NS, &what.key(car))?.unwrap_or(false))
+/// What a narrow rebuild's note is stored as: its generation (each ask for the rebuild makes a later one), or the
+/// `true` an older version stored (the first generation).
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum RedoNote {
+    Gen(u64),
+    Flag(bool),
 }
 
-pub(crate) fn put_redo(db: &Db, car: CarId, what: Redo, on: bool) -> Result<()> {
-    if on {
-        put(db, NS, &what.key(car), &true)
-    } else {
-        db.kv().delete(NS, &what.key(car))?;
-        Ok(())
+impl RedoNote {
+    fn generation(self) -> Option<u64> {
+        match self {
+            RedoNote::Gen(g) => Some(g),
+            RedoNote::Flag(true) => Some(1),
+            RedoNote::Flag(false) => None,
+        }
     }
+}
+
+/// The generation of the narrow rebuild of the car that waits, if one does (noted before its job starts, cleared
+/// once it is done: a restart in between does it then). Whoever clears it clears the generation it began with
+/// ([`crate::Engine::clear_redo_if`]): an ask that came meanwhile is a later one, and stays.
+pub(crate) fn redo(db: &Db, car: CarId, what: Redo) -> Result<Option<u64>> {
+    Ok(get::<RedoNote>(db, NS, &what.key(car))?.and_then(RedoNote::generation))
+}
+
+/// Notes the narrow rebuild asked for once more (a later generation); the car's lock held by the caller.
+pub(crate) fn bump_redo(db: &Db, car: CarId, what: Redo) -> Result<u64> {
+    let next = redo(db, car, what)?.unwrap_or(0).saturating_add(1);
+    put(db, NS, &what.key(car), &next)?;
+    Ok(next)
+}
+
+/// Takes the note away when it still is generation `generation`; the car's lock held by the caller.
+pub(crate) fn clear_redo_if(db: &Db, car: CarId, what: Redo, generation: u64) -> Result<()> {
+    if redo(db, car, what)? == Some(generation) {
+        db.kv().delete(NS, &what.key(car))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn rebuild_mark(db: &Db, car: CarId) -> Result<Option<RebuildMark>> {
@@ -895,6 +921,15 @@ mod tests {
 
     fn sp(a: u64, b: u64, state: ApiState, data: bool) -> ApiSpan {
         ApiSpan { start_ms: a, end_ms: b, state, data, inputs: model::Inputs::NONE }
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_redo_note_an_older_version_stored_reads_as_the_first_generation() {
+        for (stored, read) in [("true", Some(1)), ("false", None), ("7", Some(7))] {
+            let n: RedoNote = serde_json::from_str(stored).unwrap();
+            assert_eq!(n.generation(), read, "{stored}");
+        }
     }
 
     /// [`put_day`] keeps the record it wrote as the reading of its bytes: every field of a day record, of every kind

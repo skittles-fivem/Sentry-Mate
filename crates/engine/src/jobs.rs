@@ -442,6 +442,8 @@ impl Engine {
                 }
                 continue;
             }
+            // (the narrow rebuilds asked for up to now are done by this one; one asked for meanwhile is not)
+            let (gen_p, gen_i) = (records::redo(db, car, Redo::Positions)?, records::redo(db, car, Redo::Inputs)?);
             {
                 let l = self.car_lock(car);
                 let _held = lock(&l);
@@ -465,8 +467,12 @@ impl Engine {
             }
             // (the whole history made again: the narrow rebuilds noted are done with it)
             if from_ms == 0 && to_ms == u64::MAX {
-                records::put_redo(db, car, Redo::Positions, false)?;
-                records::put_redo(db, car, Redo::Inputs, false)?;
+                self.job_clear_hook();
+                for (what, generation) in [(Redo::Positions, gen_p), (Redo::Inputs, gen_i)] {
+                    if let Some(generation) = generation {
+                        self.clear_redo_if(car, what, generation)?;
+                    }
+                }
             }
         }
         // logs that could not be worked on: what they held was cleared and is not made again, so the job did not
@@ -508,9 +514,7 @@ impl Engine {
     /// once (nothing written) to tell.
     pub(crate) fn redo_positions(&self, car: CarId, job: Option<&JobState>) -> Result<()> {
         let db = &self.inner.db;
-        if !records::redo(db, car, Redo::Positions)? {
-            return Ok(());
-        }
+        let Some(generation) = records::redo(db, car, Redo::Positions)? else { return Ok(()) };
         let Some(c) = db.car(car)? else { return Ok(()) };
         let mut wanted = Vec::new();
         let mut bytes = 0;
@@ -570,7 +574,8 @@ impl Engine {
                 j.step(self, Some(car), 0);
             }
         }
-        records::put_redo(db, car, Redo::Positions, false)
+        self.job_clear_hook();
+        self.clear_redo_if(car, Redo::Positions, generation)
     }
 
     /// Whether a stored log's positions come from the Screenmate's own GPS frames (read, nothing written).
@@ -589,9 +594,7 @@ impl Engine {
     /// samples each input stored stay as they are), nothing decoded again.
     pub(crate) fn redo_inputs(&self, car: CarId, job: Option<&JobState>) -> Result<()> {
         let db = &self.inner.db;
-        if !records::redo(db, car, Redo::Inputs)? {
-            return Ok(());
-        }
+        let Some(generation) = records::redo(db, car, Redo::Inputs)? else { return Ok(()) };
         let meta = records::meta(db, car)?;
         let api = self.api_span(car)?;
         let first = [meta.first_ms, api.map(|a| a.0)].into_iter().flatten().min();
@@ -613,7 +616,37 @@ impl Engine {
                 at = to.max(end);
             }
         }
-        records::put_redo(db, car, Redo::Inputs, false)
+        self.job_clear_hook();
+        self.clear_redo_if(car, Redo::Inputs, generation)
+    }
+
+    /// Notes a narrow rebuild asked for (a later generation of its note), under the car's lock.
+    pub(crate) fn note_redo(&self, car: CarId, what: Redo) -> Result<()> {
+        let l = self.car_lock(car);
+        let _held = lock(&l);
+        records::bump_redo(&self.inner.db, car, what).map(|_| ())
+    }
+
+    /// Takes a narrow rebuild's note away once done, unless it was asked for again since the generation `generation` the
+    /// job began with: that ask has its own job, which finds the note.
+    pub(crate) fn clear_redo_if(&self, car: CarId, what: Redo, generation: u64) -> Result<()> {
+        let l = self.car_lock(car);
+        let _held = lock(&l);
+        records::clear_redo_if(&self.inner.db, car, what, generation)
+    }
+
+    /// Tests: called by a job just before it takes its narrow rebuilds' notes away.
+    fn job_clear_hook(&self) {
+        let hook = lock(&self.inner.job_clear_hook).clone();
+        if let Some(h) = hook {
+            h();
+        }
+    }
+
+    /// Tests: calls `hook` in a job just before it clears the notes of the narrow rebuilds it did.
+    #[doc(hidden)]
+    pub fn job_clear_hook_set(&self, hook: Option<crate::full::ExitHook>) {
+        *lock(&self.inner.job_clear_hook) = hook;
     }
 
     /// A job as it is now (kept until the engine stops).
@@ -644,7 +677,7 @@ impl Engine {
     /// on the car at once (a restart before the job carries it out does it then), then its windows built again in
     /// the background ([`Engine::redo_inputs`]); saves in a row are one rebuild.
     pub(crate) fn rebuild_for_order(&self, car: CarId) -> Result<()> {
-        records::put_redo(&self.inner.db, car, Redo::Inputs, true)?;
+        self.note_redo(car, Redo::Inputs)?;
         if self.handle().is_ok() {
             self.rebuild_because(Scope::car(car), What::INPUTS, Cause::source_order(), true)?;
         }
@@ -656,8 +689,8 @@ impl Engine {
         let db = &self.inner.db;
         records::rebuild_mark(db, car).ok().flatten().is_some()
             || !records::dirty(db, car).unwrap_or_default().is_empty()
-            || records::redo(db, car, Redo::Positions).unwrap_or(false)
-            || records::redo(db, car, Redo::Inputs).unwrap_or(false)
+            || records::redo(db, car, Redo::Positions).unwrap_or(None).is_some()
+            || records::redo(db, car, Redo::Inputs).unwrap_or(None).is_some()
             || lock(&self.inner.pending_jobs).keys().any(|k| k.is_none() || *k == Some(car))
     }
 }
