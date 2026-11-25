@@ -48,6 +48,7 @@ pub mod costs;
 pub mod firmware;
 pub mod full;
 pub mod gps_fit;
+pub mod gps_fit_runs;
 pub mod history;
 pub mod importer;
 pub mod invoice_prices;
@@ -376,14 +377,37 @@ impl Engine {
     /// (the others read the same whatever the layout), after a short settle so a few saves in a row are one rebuild
     /// ([`jobs`]). The job is returned.
     pub fn set_gps_layout(&self, car: CarId, layout: Option<model::gps::GpsLayout>) -> Result<Option<jobs::Job>> {
+        self.set_gps_layout_by(car, layout, None, None)
+    }
+
+    /// [`Engine::set_gps_layout`], noting who set it (`by`, an account's name) and the fit run it came from (`fit`)
+    /// in the car's list of layouts over time ([`Engine::gps_layout_changes`]).
+    pub fn set_gps_layout_by(
+        &self,
+        car: CarId,
+        layout: Option<model::gps::GpsLayout>,
+        by: Option<String>,
+        fit: Option<u64>,
+    ) -> Result<Option<jobs::Job>> {
         if layout.is_some_and(|l| !l.lat.valid() || !l.lon.valid() || l.accuracy.is_some_and(|a| !a.valid())) {
             return Err(Error::Store("a GPS field does not fit in 8 bytes".into()));
         }
-        if self.gps_layout(car)? == layout {
+        let before = self.gps_layout(car)?;
+        if before == layout {
             return Ok(None);
         }
         records::put(&self.inner.db, records::NS, &gps_layout_key(car), &layout)?;
         records::put(&self.inner.db, records::NS, &gps_layout_set_key(car), &now_ms())?;
+        self.gps_layout_note(
+            car,
+            gps_fit_runs::LayoutChange {
+                at_ms: now_ms(),
+                by,
+                layout: layout.map(|l| l.to_string()),
+                before: before.map(|l| l.to_string()),
+                fit,
+            },
+        )?;
         // noted first: a restart before the job did it does it then
         records::put_redo(&self.inner.db, car, records::Redo::Positions, true)?;
         Ok(Some(self.rebuild_because(Scope::car(car), jobs::What::POSITIONS, versions::Cause::gps_layout(), true)?))
