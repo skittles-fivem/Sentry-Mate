@@ -212,6 +212,8 @@ struct Row {
     missing_logs: Option<u64>,
     /// A CAN Bridge row: when the car's newest log arrived (`last_ok_ms` is the bridge's last request).
     newest_log_ms: Option<u64>,
+    /// A CAN Bridge row: the logs left out as errors, by why, so far (`None` on the other rows, which name no kinds).
+    error_kinds: Option<BTreeMap<String, u64>>,
 }
 
 impl Row {
@@ -235,6 +237,7 @@ impl Row {
             reading: Reading::default(),
             missing_logs: None,
             newest_log_ms: None,
+            error_kinds: None,
         }
     }
 
@@ -255,12 +258,19 @@ pub struct Reading {
     pub error_at: Option<u64>,
     /// When the newest success happened: a newer one is one more try that worked (with no `count`).
     pub ok_at: Option<u64>,
+    /// Tries that were expected, not errors (a log the server asked the car to send again), counted apart: they are
+    /// in neither `count` nor `errors`.
+    pub expected: Option<u64>,
+    /// The counters are totals that fall when something is worked on again or removed (not only when they start
+    /// again): a fall is no new work, and nothing is counted until they pass where they were.
+    pub totals: bool,
 }
 
 /// Grown by: `new` against `old`, a counter that starts again lower counting from 0.
-fn grown(old: Option<u64>, new: Option<u64>) -> u64 {
+fn grown(old: Option<u64>, new: Option<u64>, totals: bool) -> u64 {
     match (old, new) {
         (Some(o), Some(n)) if n >= o => n - o,
+        (Some(_), Some(_)) if totals => 0,
         (_, Some(n)) => n,
         _ => 0,
     }
@@ -273,8 +283,8 @@ fn newer(old: Option<u64>, new: Option<u64>) -> bool {
 impl Reading {
     /// What happened between `old` and `self`: (tries, errors).
     fn since(&self, old: &Reading) -> (u64, u64) {
-        let mut count = grown(old.count, self.count);
-        let mut errors = grown(old.errors, self.errors);
+        let mut count = grown(old.count, self.count, self.totals);
+        let mut errors = grown(old.errors, self.errors, self.totals);
         if newer(old.error_at, self.error_at) {
             errors += 1;
             if self.count.is_none() {
@@ -285,6 +295,11 @@ impl Reading {
             count += 1;
         }
         (count.max(errors), errors)
+    }
+
+    /// The expected tries between `old` and `self`.
+    fn expected_since(&self, old: &Reading) -> u64 {
+        grown(old.expected, self.expected, self.totals)
     }
 }
 
@@ -342,7 +357,25 @@ fn smo_rows(e: &Engine, now: u64) -> Vec<Row> {
         r.newest_log_ms =
             contacts.into_iter().flat_map(|c| keys().map(|k| c.newest_log(k))).fold(meta.last_arrived_ms, Option::max);
         r.last_ok_ms = contact.max(r.newest_log_ms);
-        r.reading = Reading { count: Some(meta.decoded + meta.holes), errors: Some(meta.holes), ..Reading::default() };
+        // logs left out are the errors, by why; a log the server recorded and lost, asked of the car again, is not an
+        // error (and not a try): it is counted apart. These are totals that fall (a log worked on again or removed),
+        // so a fall is no new work.
+        let asked_again = meta.holes_by.get(engine::records::hole::NOT_STORED).copied().unwrap_or(0);
+        let holes = meta.holes.saturating_sub(asked_again);
+        r.reading = Reading {
+            count: Some(meta.decoded + holes),
+            errors: Some(holes),
+            expected: Some(asked_again),
+            totals: true,
+            ..Reading::default()
+        };
+        r.error_kinds = Some(
+            meta.holes_by
+                .iter()
+                .filter(|(k, _)| *k != engine::records::hole::NOT_STORED)
+                .map(|(k, n)| (k.clone(), *n))
+                .collect(),
+        );
         let age = r.last_ok_ms.map(|t| now.saturating_sub(t));
         match age {
             _ if car.vehicle_keys.is_empty() && !uploads => r.set(Status::Off, Some("not_added")),
@@ -469,6 +502,7 @@ fn teslafi_rows(app: &AppState) -> Vec<Row> {
         r.cap = None;
         r.next_ms = st.and_then(|s| s.next_request_ms);
         r.pace_s = st.and_then(|s| s.next_request_ms.zip(s.last_request_ms)).map(|(n, l)| n.saturating_sub(l) / 1000);
+        let limited = st.and_then(|s| s.rate_limited_until_ms);
         r.last_error = newest(a.last_error.iter().chain(st.and_then(|s| s.last_error.as_ref())));
         r.reading = Reading {
             count: st.map(|s| s.polls_today),
@@ -483,6 +517,7 @@ fn teslafi_rows(app: &AppState) -> Vec<Row> {
             S::Error => r.set(Status::Problem, Some("unreachable")),
             _ if !svc.running(&a.id) => r.set(Status::Off, Some("not_running")),
             S::Checking => r.set(Status::Idle, Some("checking")),
+            S::Ok if limited.is_some() => r.set(Status::Problem, Some("rate_limited")),
             S::Ok => match mode {
                 M::Backoff => r.set(Status::Problem, Some("unreachable")),
                 M::Driving | M::Charging => r.set(Status::Live, None),
@@ -497,7 +532,6 @@ fn teslafi_rows(app: &AppState) -> Vec<Row> {
 }
 
 /// The local TeslaMate: its MQTT broker, then its database.
-        let limited = st.and_then(|s| s.rate_limited_until_ms);
 fn teslamate_rows(app: &AppState) -> Vec<Row> {
     let link = super::teslamate_local::FIX_LINK;
     let mut m = Row::new("teslamate_mqtt", Kind::TeslamateMqtt, "Local TeslaMate (MQTT)", "messages", link);
@@ -512,7 +546,6 @@ fn teslamate_rows(app: &AppState) -> Vec<Row> {
     let running = svc.running();
     // MQTT
     let mq = &st.mqtt;
-            S::Ok if limited.is_some() => r.set(Status::Problem, Some("rate_limited")),
     m.last_ok_ms = mq.last_message_ms;
     m.last_error = mq.last_error.as_ref().map(Error::of);
     m.reading = Reading {
@@ -660,8 +693,38 @@ fn pct(part: u64, whole: u64) -> Option<f64> {
     (whole > 0).then(|| ((part as f64) * 1000.0 / (whole as f64)).round() / 10.0)
 }
 
-fn period(count: u64, ok: u64, errors: u64) -> Value {
-    json!({ "count": count, "ok": ok, "errors": errors, "success_pct": pct(ok, count) })
+/// A period's counters. `by_kind`: the errors by what they were, most first, as the connection names them (a CAN
+/// Bridge row: the logs left out; none on the other rows), with the page that shows them; errors from before the
+/// server named them are `unknown`. `expected`: tries that were expected, in neither `ok` nor `errors` (a log the
+/// server asked the car to send again).
+fn period(r: &Row, t: &Tracker, from: u64, to: u64) -> Value {
+    let (count, ok, errors) = t.sum(&r.id, from, to);
+    let (expected, kinds) = t.detail(&r.id, from, to);
+    let mut by_kind: Vec<Value> = Vec::new();
+    if r.error_kinds.is_some() {
+        let named: u64 = kinds.iter().map(|(_, n)| n).sum();
+        let mut rows: Vec<(String, u64)> = kinds;
+        if errors > named {
+            rows.push(("unknown".into(), errors - named));
+        }
+        by_kind =
+            rows.into_iter().map(|(k, n)| json!({ "kind": k, "count": n, "link": kind_link(&k, &r.link) })).collect();
+    }
+    json!({
+        "count": count, "ok": ok, "errors": errors, "success_pct": pct(ok, count),
+        "expected": expected, "by_kind": by_kind,
+    })
+}
+
+/// The page with the details of one kind of error of a CAN Bridge row (the car's Data health: its logs' checks, and
+/// for logs without a signature the list where the owner can choose to use them); none for a kind with no page.
+fn kind_link(kind: &str, row_link: &str) -> Option<String> {
+    use engine::records::hole;
+    match kind {
+        hole::COULD_NOT_SIGN | hole::NOT_SIGNED => Some(format!("{row_link}#unsigned-logs")),
+        hole::FAILED_CHECK | hole::OTHER_VIN | hole::UNREADABLE => Some(row_link.to_string()),
+        _ => None,
+    }
 }
 
 fn problem_message(reason: Option<&str>, e: Option<&Error>) -> String {
@@ -689,8 +752,6 @@ pub fn build(app: &AppState) -> Value {
         .map(|r| {
             *totals.entry(r.status.word()).or_default() += 1;
             let (today, _, _) = t.sum(&r.id, midnight, now);
-            let (dc, dok, de) = t.sum(&r.id, now.saturating_sub(DAY_MS), now);
-            let (wc, wok, we) = t.sum(&r.id, now.saturating_sub(WEEK_MS), now);
             let hourly: Vec<Value> = (0..24)
                 .map(|i| {
                     let h = hour + i - 23;
@@ -712,8 +773,8 @@ pub fn build(app: &AppState) -> Value {
                 "pace_s": r.pace_s,
                 "unit": r.unit,
                 "today": { "count": today, "cap": r.cap },
-                "day": period(dc, dok, de),
-                "week": period(wc, wok, we),
+                "day": period(r, t, now.saturating_sub(DAY_MS), now),
+                "week": period(r, t, now.saturating_sub(WEEK_MS), now),
                 "uptime": {
                     "day_pct": t.uptime(&r.id, r.status, now, DAY_MS),
                     "week_pct": t.uptime(&r.id, r.status, now, WEEK_MS),
@@ -737,11 +798,15 @@ pub fn build(app: &AppState) -> Value {
 // ---------------------------------------------------------------- the counters and the problem log
 
 /// One hour of a connection.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Bucket {
     count: u64,
     ok: u64,
     errors: u64,
+    /// Tries that were expected, not errors ([`Reading::expected`]).
+    expected: u64,
+    /// The errors by kind, those the source names.
+    kinds: BTreeMap<String, u64>,
     /// Seen other than `off` in this hour.
     on: bool,
 }
@@ -767,9 +832,14 @@ struct St {
     seq: u64,
     /// The sources' counters at the last look (not saved: the first look after a start counts nothing).
     seen: HashMap<String, Reading>,
+    /// The errors by kind at the last look, the same way.
+    seen_kinds: HashMap<String, BTreeMap<String, u64>>,
     saved_ms: u64,
     dirty: bool,
 }
+
+/// One hour's errors by kind in the file: the hour and the counts.
+type HourKinds = (u64, BTreeMap<String, u64>);
 
 /// The file: `[hour, count, ok, errors, on]` per hour of each connection, and the problems.
 #[derive(Default, Serialize, Deserialize)]
@@ -778,6 +848,12 @@ struct Saved {
     seq: u64,
     counters: BTreeMap<String, Vec<[u64; 5]>>,
     problems: Vec<Problem>,
+    /// Per connection: `[hour, expected]` per hour with any (older files have none).
+    #[serde(default)]
+    expected: BTreeMap<String, Vec<[u64; 2]>>,
+    /// Per connection: the errors by kind per hour with any (older files have none).
+    #[serde(default)]
+    kinds: BTreeMap<String, Vec<HourKinds>>,
 }
 
 /// The hourly counters and the problem log (one per server, on [`AppState::overview`]).
@@ -805,9 +881,25 @@ impl Tracker {
                     for (id, hours) in s.counters {
                         let m = hours
                             .into_iter()
-                            .map(|[h, count, ok, errors, on]| (h, Bucket { count, ok, errors, on: on != 0 }))
+                            .map(|[h, count, ok, errors, on]| {
+                                (h, Bucket { count, ok, errors, on: on != 0, ..Bucket::default() })
+                            })
                             .collect();
                         st.counters.insert(id, m);
+                    }
+                    for (id, hours) in s.expected {
+                        for [h, n] in hours {
+                            if let Some(b) = st.counters.get_mut(&id).and_then(|m| m.get_mut(&h)) {
+                                b.expected = n;
+                            }
+                        }
+                    }
+                    for (id, hours) in s.kinds {
+                        for (h, k) in hours {
+                            if let Some(b) = st.counters.get_mut(&id).and_then(|m| m.get_mut(&h)) {
+                                b.kinds = k;
+                            }
+                        }
                     }
                 }
                 Err(e) => tracing::warn!("connections overview: {FILE} can't be read ({e}); the counters start empty"),
@@ -845,6 +937,24 @@ impl Tracker {
             .fold((0, 0, 0), |(c, o, e), (_, b)| (c + b.count, o + b.ok, e + b.errors))
     }
 
+    /// The expected tries (not errors) and the errors by kind, most first, of connection `id` in the hours of
+    /// `[from_ms, to_ms]`.
+    fn detail(&self, id: &str, from_ms: u64, to_ms: u64) -> (u64, Vec<(String, u64)>) {
+        let st = self.lock();
+        let Some(m) = st.counters.get(id) else { return (0, Vec::new()) };
+        let mut expected = 0;
+        let mut kinds: BTreeMap<String, u64> = BTreeMap::new();
+        for (_, b) in m.range(from_ms / HOUR_MS..=to_ms / HOUR_MS) {
+            expected += b.expected;
+            for (k, n) in &b.kinds {
+                *kinds.entry(k.clone()).or_default() += n;
+            }
+        }
+        let mut v: Vec<(String, u64)> = kinds.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        (expected, v)
+    }
+
     /// The share (percent) of the last `span_ms` connection `id` was not in a problem; `None` when it was off all
     /// that time.
     fn uptime(&self, id: &str, now_status: Status, now: u64, span_ms: u64) -> Option<f64> {
@@ -874,13 +984,30 @@ impl Tracker {
         let mut st = self.lock();
         for r in rows {
             let before = st.seen.insert(r.id.clone(), r.reading);
+            let kinds_before = match &r.error_kinds {
+                Some(k) => st.seen_kinds.insert(r.id.clone(), k.clone()),
+                None => st.seen_kinds.remove(&r.id),
+            };
             if let Some(old) = before {
                 let (count, errors) = r.reading.since(&old);
-                if count > 0 {
+                let expected = r.reading.expected_since(&old);
+                let kinds: Vec<(String, u64)> = match (&r.error_kinds, &kinds_before) {
+                    (Some(now_k), Some(was)) => now_k
+                        .iter()
+                        .map(|(k, n)| (k.clone(), grown(was.get(k).copied(), Some(*n), true)))
+                        .filter(|(_, n)| *n > 0)
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                if count > 0 || expected > 0 || !kinds.is_empty() {
                     let b = st.counters.entry(r.id.clone()).or_default().entry(hour).or_default();
                     b.count += count;
                     b.errors += errors;
                     b.ok += count - errors;
+                    b.expected += expected;
+                    for (k, n) in kinds {
+                        *b.kinds.entry(k).or_default() += n;
+                    }
                     st.dirty = true;
                 }
             }
@@ -923,6 +1050,7 @@ impl Tracker {
             p.end_ms = Some(now);
         }
         st.seen.retain(|id, _| ids.contains(id.as_str()));
+        st.seen_kinds.retain(|id, _| ids.contains(id.as_str()));
         trim(&mut st, hour, now);
     }
 
@@ -974,7 +1102,19 @@ impl Tracker {
                     (id.clone(), hours)
                 })
                 .collect();
-            let saved = Saved { v: 1, seq: st.seq, counters, problems: st.problems.clone() };
+            let mut expected: BTreeMap<String, Vec<[u64; 2]>> = BTreeMap::new();
+            let mut kinds: BTreeMap<String, Vec<HourKinds>> = BTreeMap::new();
+            for (id, m) in &st.counters {
+                for (h, b) in m {
+                    if b.expected > 0 {
+                        expected.entry(id.clone()).or_default().push([*h, b.expected]);
+                    }
+                    if !b.kinds.is_empty() {
+                        kinds.entry(id.clone()).or_default().push((*h, b.kinds.clone()));
+                    }
+                }
+            }
+            let saved = Saved { v: 1, seq: st.seq, counters, problems: st.problems.clone(), expected, kinds };
             st.saved_ms = now;
             st.dirty = false;
             serde_json::to_vec(&saved).map_err(std::io::Error::other)?

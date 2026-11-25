@@ -185,7 +185,10 @@ async fn connections_counters_and_problems() {
     let now = o["read_ms"].as_u64().unwrap();
     assert_eq!(rc["hourly"].as_array().unwrap().len(), 24);
     assert_eq!(rc["hourly"][23]["hour_ms"], json!(now - now % HOUR_MS), "the last one the current hour");
-    assert_eq!(rc["day"], json!({ "count": 0, "ok": 0, "errors": 0, "success_pct": null }));
+    assert_eq!(
+        rc["day"],
+        json!({ "count": 0, "ok": 0, "errors": 0, "success_pct": null, "expected": 0, "by_kind": [] })
+    );
 
     // counters: some now, some 3 hours ago, some 2 days ago
     let app = &t.s.app;
@@ -195,8 +198,14 @@ async fn connections_counters_and_problems() {
     app.overview.record("geocoding", now - 200 * HOUR_MS, 99, 0);
     let o = overview(&mut admin).await;
     let g = conn(&o, "geocoding");
-    assert_eq!(g["day"], json!({ "count": 10, "ok": 9, "errors": 1, "success_pct": 90.0 }));
-    assert_eq!(g["week"], json!({ "count": 20, "ok": 17, "errors": 3, "success_pct": 85.0 }));
+    assert_eq!(
+        g["day"],
+        json!({ "count": 10, "ok": 9, "errors": 1, "success_pct": 90.0, "expected": 0, "by_kind": [] })
+    );
+    assert_eq!(
+        g["week"],
+        json!({ "count": 20, "ok": 17, "errors": 3, "success_pct": 85.0, "expected": 0, "by_kind": [] })
+    );
     let midnight = now - now % (24 * HOUR_MS);
     let today = 4 + if now - 3 * HOUR_MS >= midnight { 6 } else { 0 };
     assert_eq!(g["today"], json!({ "count": today, "cap": null }));
@@ -243,7 +252,10 @@ async fn connections_counters_and_problems() {
     let rc = conn(&o, "release_check");
     assert_eq!((rc["status"].clone(), rc["last_error"].clone()), (json!("live"), Value::Null));
     assert!(rc["last_ok_ms"].is_u64(), "{rc}");
-    assert_eq!(rc["week"], json!({ "count": 2, "ok": 1, "errors": 1, "success_pct": 50.0 }));
+    assert_eq!(
+        rc["week"],
+        json!({ "count": 2, "ok": 1, "errors": 1, "success_pct": 50.0, "expected": 0, "by_kind": [] })
+    );
     let p = o["problems"][0].clone();
     assert_eq!((p["resolved"].clone(), p["end_ms"].as_u64()), (json!(true), Some(start + HOUR_MS)));
     assert_eq!(p["duration_ms"], HOUR_MS);
@@ -260,4 +272,54 @@ async fn connections_counters_and_problems() {
     std::fs::write(app.dir.join(web::resources::overview::FILE), b"not sealed").unwrap();
     let empty = Tracker::open(&app.dir, app.vault.clone());
     assert_eq!(empty.sum("geocoding", 0, n), (0, 0, 0));
+}
+
+/// The CAN Bridge row's errors are the logs the engine left out of the car's history. They are named by why (with the
+/// page that shows them), a log the server asked the car to send again is counted apart and is no error, and a log
+/// worked on again (a hole mended) is no new error: the totals fall, which is not a new start.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_can_bridge_s_errors_are_named_and_a_mended_log_is_no_new_error() {
+    let t = setup().await;
+    let mut admin = t.s.admin().await;
+    // the first look takes the car's numbers in (none yet)
+    let o = overview(&mut admin).await;
+    assert_eq!(conn(&o, "smo:c1")["day"]["by_kind"], json!([]));
+    assert_eq!(conn(&o, "tiles")["day"]["by_kind"], json!([]), "only a CAN Bridge row names its errors");
+
+    let set = |decoded: u64, could_not_sign: u64, failed_check: u64, not_stored: u64| {
+        let mut m = engine::records::CarMeta { decoded, ..Default::default() };
+        for (k, n) in [("could_not_sign", could_not_sign), ("failed_check", failed_check), ("not_stored", not_stored)] {
+            if n > 0 {
+                m.holes_by.insert(k.into(), n);
+            }
+        }
+        m.holes = could_not_sign + failed_check + not_stored;
+        engine::records::put_car_meta(t._engine.db(), 1, &m).unwrap();
+    };
+    set(970, 20, 8, 2);
+    let o = overview(&mut admin).await;
+    let smo = conn(&o, "smo:c1");
+    assert_eq!(smo["day"]["errors"], json!(28), "{smo}");
+    assert_eq!(smo["day"]["count"], json!(998), "the two asked of the car again are no try: {smo}");
+    assert_eq!(smo["day"]["expected"], json!(2), "{smo}");
+    assert_eq!(
+        smo["day"]["by_kind"],
+        json!([
+            { "kind": "could_not_sign", "count": 20, "link": "/cars/c1/health#unsigned-logs" },
+            { "kind": "failed_check", "count": 8, "link": "/cars/c1/health" },
+        ]),
+        "{smo}"
+    );
+
+    // one of them is mended (worked on again, now decoded): the counts fall, nothing new went wrong
+    set(971, 19, 8, 2);
+    let smo = conn(&overview(&mut admin).await, "smo:c1");
+    assert_eq!((smo["day"]["errors"].clone(), smo["day"]["count"].clone()), (json!(28), json!(998)), "{smo}");
+    assert_eq!(smo["week"]["by_kind"][0]["count"], json!(20), "{smo}");
+
+    // a new log is left out, and the server asks for another one again
+    set(971, 20, 8, 3);
+    let smo = conn(&overview(&mut admin).await, "smo:c1");
+    assert_eq!((smo["day"]["errors"].clone(), smo["day"]["expected"].clone()), (json!(29), json!(3)), "{smo}");
+    assert_eq!(smo["day"]["by_kind"][0]["count"], json!(21), "{smo}");
 }

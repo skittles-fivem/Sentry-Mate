@@ -509,10 +509,34 @@ def _view(req, c, problems, now):
     hours = _hours(req, c, spans, now)
     midnight = now - now % DAY
 
+    seed = req.app.cfg.seed
+    smo = c.kind == "smo"
+
+    def kind_of(a, e):
+        """Why the logs left out in the hour of `a` were: by the hour's hash (the logs that failed their check are
+        `failed_check`), as `engine::records::hole` names them."""
+        if any(a <= t < a + HOUR and t <= now for t, _, _ in c.extra):
+            return "failed_check"
+        x = h01("overview-kind", seed, c.id, a)
+        return "could_not_sign" if x < 0.6 else "failed_check" if x < 0.9 else "unreadable"
+
     def period(rows):
         n = sum(r[1] for r in rows)
         e = sum(r[2] for r in rows)
-        return {"count": n, "ok": n - e, "errors": e, "success_pct": _pct(n - e, n)}
+        out = {"count": n, "ok": n - e, "errors": e, "success_pct": _pct(n - e, n), "expected": 0, "by_kind": []}
+        if smo:
+            # a CAN Bridge row names its errors; a log asked of the car again is no error and no try
+            tally = {}
+            for a, _, bad in rows:
+                if bad:
+                    k = kind_of(a, bad)
+                    tally[k] = tally.get(k, 0) + bad
+                if h01("overview-again", seed, c.id, a) < 0.03:
+                    out["expected"] += 1
+            link = {"could_not_sign": "#unsigned-logs", "not_signed": "#unsigned-logs"}
+            out["by_kind"] = [{"kind": k, "count": v, "link": c.link + link.get(k, "")}
+                              for k, v in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))]
+        return out
 
     off = c.status == "off"
 

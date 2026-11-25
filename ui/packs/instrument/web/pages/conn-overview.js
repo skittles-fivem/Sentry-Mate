@@ -65,6 +65,16 @@ const reasonText = (c) => {
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 const UNIT = { uploads: ['upload', 'uploads'], requests: ['request', 'requests'], messages: ['message', 'messages'] };
 const unitWord = (c, n) => { const u = UNIT[c.unit] || ['try', 'tries']; return n === 1 ? u[0] : u[1]; };
+// what the errors of a CAN Bridge row were, as `by_kind` names them (the logs the server left out of the car's history)
+const KIND = {
+  could_not_sign: ['could not be signed', 'The CAN Bridge could not sign these logs (its own note on each says why); an admin may choose to use them.'],
+  not_signed: ['without a signature', 'Logs of a paired car that came without a signature; an admin may choose to use them.'],
+  failed_check: ['failed their check', 'Logs whose signature, hash, chain or name did not check out, so their data is not used.'],
+  other_vin: ['of another car', 'Logs that name another car\'s VIN than this car\'s, so they are left out.'],
+  unreadable: ['unreadable', 'Logs that could not be read (a damaged file).'],
+  unknown: ['not named', 'Errors counted before the server kept the reason.'],
+};
+const kindWord = (k) => KIND[k]?.[0] || String(k).replace(/_/g, ' ');
 const n0 = (v) => (v == null ? DASH : formatNumber(Math.round(v)));
 const pct = (v) => (v == null ? DASH : `${formatNumber(v, { maximumFractionDigits: v >= 99.95 || v === 0 ? 0 : 1 })}${NBSP}%`);
 const at = (ms) => (ms == null ? DASH : dateTime(ms, LOCAL));
@@ -145,10 +155,23 @@ function connRow(onLink) {
   const bar = h('span', { class: 'bar co-bar', 'aria-hidden': 'true' }, h('i'));
   today.el.insertBefore(bar, today.s);
   const ok = cell('co-ok', 'Worked 24 h / 7 d');
+  // what the errors were, one line each (CAN Bridge rows), then what was not an error; a kind with a page opens it
+  const kinds = h('span', { class: 'co-kinds', hidden: true });
+  ok.el.append(kinds);
+  let kindsKey = '';
   const up = cell('co-up', 'Uptime 24 h / 7 d');
   const sp = spark();
   const spc = h('div', { class: 'co-c co-spc' }, h('span', { class: 'co-k' }, 'Last 24 h'), sp.el, h('span', { class: 'co-s co-sp-axis', 'aria-hidden': 'true' }, h('span', null, '24 h ago'), h('span', null, 'now')));
-  const el = h('a', { class: 'co-row', href: '#', onclick: (e) => onLink(e, c?.link) }, st, name, contact.el, today.el, ok.el, up.el, spc);
+  // a click on a kind of error opens its own page: the router follows the link's address, so it is set for that click
+  const open = (e) => {
+    const k = e.target.closest?.('.co-kind[data-link]');
+    if (k) {
+      setAttr(el, 'href', k.dataset.link);
+      setTimeout(() => setAttr(el, 'href', c?.link || '#'), 0);
+    }
+    onLink(e, k?.dataset.link || c?.link);
+  };
+  const el = h('a', { class: 'co-row', href: '#', onclick: open }, st, name, contact.el, today.el, ok.el, up.el, spc);
 
   function paint(next) {
     c = next;
@@ -176,12 +199,31 @@ function connRow(onLink) {
     const d = c.day || {}, w = c.week || {};
     setText(ok.v, d.success_pct == null && w.success_pct == null ? 'No tries' : `${pct(d.success_pct)} / ${pct(w.success_pct)}`);
     setText(ok.s, !d.errors && !w.errors ? 'No errors' : `Errors ${n0(d.errors)} / ${n0(w.errors)}`);
-    setAttr(ok.el, 'title', `Last 24 h: ${n0(d.ok)} of ${n0(d.count)} worked, ${n0(d.errors)} errors. Last 7 days: ${n0(w.ok)} of ${n0(w.count)}, ${n0(w.errors)} errors.`);
+    paintKinds(d, w);
+    setAttr(ok.el, 'title', `Last 24 h: ${n0(d.ok)} of ${n0(d.count)} worked, ${n0(d.errors)} errors${d.expected ? `, ${n0(d.expected)} asked of the car again (not errors)` : ''}. Last 7 days: ${n0(w.ok)} of ${n0(w.count)}, ${n0(w.errors)} errors${w.expected ? `, ${n0(w.expected)} asked of the car again` : ''}.`);
     const u = c.uptime || {};
     setText(up.v, u.day_pct == null && u.week_pct == null ? DASH : `${pct(u.day_pct)} / ${pct(u.week_pct)}`);
     setText(up.s, u.week_pct == null ? 'Off all week' : 'Not in a problem');
     setAttr(up.el, 'title', 'The share of the last 24 h and 7 days not inside a problem.');
     sp.paint(c);
+  }
+  // the errors by kind (24 h / 7 d, 7 d alone when the day has none), then the logs the server asked the car for again
+  function paintKinds(d, w) {
+    const day = d.by_kind || [], week = w.by_kind || [];
+    const names = [...new Set([...day, ...week].map((x) => x.kind))];
+    const lines = names.map((k) => {
+      const a = day.find((x) => x.kind === k), b = week.find((x) => x.kind === k);
+      return { k, a: a?.count || 0, b: b?.count || 0, link: (a || b).link };
+    });
+    const again = [d.expected || 0, w.expected || 0];
+    const key = JSON.stringify([lines, again]);
+    if (key === kindsKey) return;
+    kindsKey = key;
+    const rows = lines.map((x) => h('span', { class: ['co-kind', x.link && 'is-link'], dataset: x.link ? { link: x.link } : {}, title: `${KIND[x.k]?.[1] || ''}${x.link ? ' Click to see them.' : ''}`.trim() },
+      `${n0(x.a)} / ${n0(x.b)} ${kindWord(x.k)}`));
+    if (again[0] || again[1]) rows.push(h('span', { class: 'co-kind co-kind--ok', title: 'The server lost these logs and asked the car to send them again: not errors, and not counted as tries.' }, `${n0(again[0])} / ${n0(again[1])} asked of the car again`));
+    kinds.replaceChildren(...rows);
+    kinds.hidden = !rows.length;
   }
   function tick(now = null) {
     if (!c) return;
