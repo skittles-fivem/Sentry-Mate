@@ -224,9 +224,11 @@ class CapacityFollowsCharges(ServerCase):
             charges = {x["id"]: x for x in self.walk(f"/api/v1/cars/{car}/charges", limit=500)}
             cap = self.walk(f"/api/v1/cars/{car}/battery/capacity", limit=500)
             self.assertTrue(cap)
+            factor = self.c.get(f"/api/v1/cars/{car}/efficiency")["factor"]["rated_wh_per_km"]
             for q in cap:
                 ch = charges[q["charge"]]
-                want = ch["energy_added_kwh"] / (ch["end_soc_pct"] - ch["start_soc_pct"]) * 100 + buffer
+                stored = (ch["end_range_km"] - ch["start_range_km"]) * factor / 1000
+                want = stored / (ch["end_soc_pct"] - ch["start_soc_pct"]) * 100 + buffer
                 self.assertAlmostEqual(q["full_pack_kwh"], want, delta=0.2, msg=f"{car} {q['charge']} {q['source']}")
 
 
