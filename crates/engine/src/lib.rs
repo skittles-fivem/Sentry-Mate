@@ -139,6 +139,11 @@ pub struct Options {
     /// log, where that gives the same timeline (nothing stored yet at or after the logs, no API input: a first
     /// start over a full store, a car rebuilt whole). `1`: always after every log, as a log that arrives alone gets.
     pub window_batch: usize,
+    /// A full rebuild (over its shadow, empty of what logs give) rebuilds its windows once per day of logs (at
+    /// most [`full::FULL_RUN_LOGS`] logs), beside API inputs too, instead of per [`Options::window_batch`] logs (a
+    /// window per log beside an API input): the same history, ids included ([`full`], `full_by_day`). `false`:
+    /// as before, for the comparison.
+    pub full_by_day: bool,
     /// A rebuild a saved setting asks for waits this long (ms) before it starts, so a few saves in a row (or a
     /// setting saved again while one runs) are one rebuild ([`Engine::rebuild_because`]).
     pub rebuild_settle_ms: u64,
@@ -172,6 +177,7 @@ impl Default for Options {
             api_rebuild_ms: 30_000,
             fuse: timeline::FuseParams::default(),
             window_batch: 64,
+            full_by_day: true,
             rebuild_settle_ms: 3_000,
             read_ahead: ahead::Ahead::threads(),
             window_look_ms: 2 * 3_600_000,

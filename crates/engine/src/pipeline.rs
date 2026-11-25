@@ -1395,7 +1395,9 @@ impl Engine {
         // it that was there first, and which piece that is depends on the windows rebuilt on the way: there every
         // log's window is rebuilt as before. The same beside an API's samples: a rebuild
         // builds rows from them ahead of the logs, and five made-up days with TeslaFi's API and local TeslaMate
-        // gave a drive another id when rebuilt per run (crates/sentry-mate/src/window_batch.rs).
+        // gave a drive another id when rebuilt per run (crates/sentry-mate/src/window_batch.rs): in place the car's
+        // newest data is the API's, so each window runs on to it. A full rebuild's shadow has no such rows and its
+        // newest data is its newest log's: it goes once per day of logs, beside an API too ([`Engine::full_by_day`]).
         let mut batch = self.inner.opts.window_batch.max(1);
         if batch > 1 {
             let first = wanted.first().and_then(|(_, name, _)| records::name_start_ms(name));
@@ -1458,10 +1460,16 @@ impl Engine {
                 batch = 1;
             }
         }
+        // a full rebuild: once per day of logs instead ([`Engine::full_by_day`])
+        let first = wanted.first().and_then(|(_, name, _)| records::name_start_ms(name));
+        let by_day = self.full_by_day(car, job, first, skipped)?;
+        if by_day {
+            batch = crate::full::FULL_RUN_LOGS;
+        }
         // the logs read and decoded ahead on the other cores, worked on here in order ([`crate::ahead`])
         let threads = self.inner.opts.read_ahead;
         let ended = crate::ahead::Ahead::run(self, car, usable, threads, |ahead| -> Result<bool> {
-            let mut waiting = 0;
+            let (mut waiting, mut run_day) = (0, None);
             for (key, name, len) in wanted {
                 if job.is_some_and(|j| j.cancelled()) {
                     self.rebuild_dirty(car)?;
@@ -1476,6 +1484,13 @@ impl Engine {
                 if job.is_none() && self.is_stopping() {
                     return Err(Error::Other(STOPPING_LOGS.into()));
                 }
+                // (a full rebuild's run ends where a log of another day starts)
+                let day = records::name_start_ms(&name).map(records::day_of);
+                if by_day && waiting > 0 && run_day != day {
+                    waiting = 0;
+                    self.rebuild_dirty(car)?;
+                }
+                run_day = day;
                 let read = ahead.and_then(|a| a.take(&name));
                 let l = self.car_lock(car);
                 let held = lock(&l);
