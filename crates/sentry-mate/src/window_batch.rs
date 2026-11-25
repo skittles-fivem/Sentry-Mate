@@ -250,6 +250,7 @@ async fn beside_apis(days: u32, batch: usize) {
         teslafi_days: 1,
         api_days: days,
         tesla_days: 0,
+        tesla_sentry: false,
     };
     for (k, side) in [&each, &run].into_iter().enumerate() {
         side.take(&all[..20]).await;
@@ -596,6 +597,7 @@ async fn read_ahead(days: u32, batch: usize, threads: usize, apis: bool) -> u64 
             teslafi_days: 1,
             api_days: days,
             tesla_days: 0,
+            tesla_sentry: false,
         };
         for side in [&each, &run] {
             side.take(&first[..20]).await;

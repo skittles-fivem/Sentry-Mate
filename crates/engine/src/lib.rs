@@ -799,6 +799,26 @@ impl Engine {
         }
     }
 
+    /// [`Self::stats`] with the counters of the full rebuild's decoding under way added (it runs on an engine of its
+    /// own, over the shadow): what the logs being worked on took, stage by stage (the rebuild speed).
+    pub fn work_stats(&self) -> EngineStats {
+        let mut s = self.stats();
+        let shadow = lock(&self.inner.full).shadow.clone();
+        if let Some(se) = shadow {
+            let t = se.stats();
+            s.logs_decoded += t.logs_decoded;
+            s.logs_left_out += t.logs_left_out;
+            s.windows_rebuilt += t.windows_rebuilt;
+            s.decode_ms_total += t.decode_ms_total;
+            s.rebuild_ms_total += t.rebuild_ms_total;
+            s.read_us_total += t.read_us_total;
+            s.samples_us_total += t.samples_us_total;
+            s.now_us_total += t.now_us_total;
+            s.logs_read_ahead += t.logs_read_ahead;
+        }
+        s
+    }
+
     /// Waits until no work is queued or under way (tests, and a command that wants the history up to date).
     pub async fn idle(&self) {
         while self.inner.outstanding.load(Ordering::SeqCst) > 0 {
