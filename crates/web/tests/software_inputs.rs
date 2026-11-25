@@ -152,7 +152,9 @@ async fn versions_from_a_live_input_name_the_car_and_its_fingerprint_updates() {
     let mut bms: Vec<&Value> = items.iter().filter(|r| r["module"] == "bms").collect();
     bms.sort_by_key(|r| r["first_seen_ms"].as_u64().unwrap());
     let came: Vec<Value> = bms.iter().map(|r| r["version"].clone()).collect();
-    assert_eq!(came, vec![Value::Null, json!("2026.8.3"), json!("2026.12.1")], "{h}");
+    // (the first one is named by local TeslaMate's reading of 2026.2.9 while it ran, though that is no update)
+    assert_eq!(came, vec![json!("2026.2.9"), json!("2026.8.3"), json!("2026.12.1")], "{h}");
+    assert_eq!(bms[0]["version_source"], json!("teslamate_local"));
     assert_eq!(bms[2]["update"]["version_source"], json!("teslamate_local"));
     let bars: Vec<Value> =
         h["spans"].as_array().unwrap().iter().filter(|s| s["module"] == "bms").map(|s| s["version"].clone()).collect();

@@ -70,14 +70,13 @@ struct Kit {
     s: TestServer,
     id: CarId,
     car: String,
-    engine: Engine,
     db: db::Db,
     _dir: tempfile::TempDir,
 }
 
 /// The car: logs on 7 Nov (set 1), 22 Nov (set 2) and `later` (`(day of November, set)`), the import update of 14 Oct
 /// naming 2026.38.5.1, and local TeslaMate reading 2026.44.1 on 22 Nov at 10:00.
-async fn kit(later: &[(u64, u64)]) -> Kit {
+async fn kit(later: &[(u64, u64)], reads: &[(u64, &str)]) -> Kit {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     std::fs::create_dir_all(&data).unwrap();
@@ -96,11 +95,16 @@ async fn kit(later: &[(u64, u64)]) -> Kit {
         engine.fw_note_values_for_tests(id, &format!("mk1_202611{day:02}T080000Z_{n}.log.xz"), &vals).unwrap();
     }
     db.upsert(id, &[import_update(id, 1, OCT14, "2026.38.5.1")]).unwrap();
-    read(&engine, id, NOV1 + 21 * DAY + 10 * HOUR, "2026.44.1");
+    let mut all: Vec<(u64, &str)> = reads.to_vec();
+    all.push((NOV1 + 21 * DAY + 10 * HOUR, "2026.44.1"));
+    all.sort();
+    for (t, v) in all {
+        read(&engine, id, t, v);
+    }
     engine.idle().await;
     let (e2, d2) = (engine.clone(), db.clone());
     let s = TestServer::start_with(move |b| b.cars(Arc::new(EngineCars(d2))).service(Arc::new(e2))).await;
-    Kit { s, id, car: format!("c{id}"), engine, db, _dir: dir }
+    Kit { s, id, car: format!("c{id}"), db, _dir: dir }
 }
 
 fn read(engine: &Engine, id: CarId, at_ms: u64, v: &str) {
@@ -131,7 +135,7 @@ async fn first(c: &mut Client, car: &str) -> Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_owners_case_is_inferred_from_the_last_known_version() {
-    let k = kit(&[]).await;
+    let k = kit(&[], &[]).await;
     let mut admin = k.s.admin().await;
     let all = rows(&mut admin, &k.car, "bms").await;
     assert_eq!(all.len(), 2, "{all:?}");
@@ -148,12 +152,15 @@ async fn the_owners_case_is_inferred_from_the_last_known_version() {
     let h = admin.get(&format!("/api/v1/cars/{}/firmware/history", k.car)).await.json();
     let spans: Vec<&Value> = h["spans"].as_array().unwrap().iter().filter(|s| s["current"] == false).collect();
     assert_eq!(spans.len(), 4);
-    assert!(spans.iter().all(|s| s["version"].is_null() && s["name_inferred"]["version"] == "2026.38.5.1"), "{spans:?}");
+    assert!(
+        spans.iter().all(|s| s["version"].is_null() && s["name_inferred"]["version"] == "2026.38.5.1"),
+        "{spans:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_import_that_still_covers_the_segment_names_it_outright() {
-    let k = kit(&[]).await;
+    let k = kit(&[], &[]).await;
     // the imported history reaches 15 Nov: its newest version (14 Oct) ran through it, over the segment's start
     import_covers(&k, OCT14, NOV1 + 14 * DAY);
     let mut admin = k.s.admin().await;
@@ -165,7 +172,7 @@ async fn an_import_that_still_covers_the_segment_names_it_outright() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_import_ending_shortly_before_the_segment_is_only_an_inference() {
-    let k = kit(&[]).await;
+    let k = kit(&[], &[]).await;
     import_covers(&k, OCT14, NOV1 + 2 * DAY);
     let mut admin = k.s.admin().await;
     let f = first(&mut admin, &k.car).await;
@@ -175,11 +182,8 @@ async fn an_import_ending_shortly_before_the_segment_is_only_an_inference() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_live_reading_during_the_segment_names_it_though_it_is_not_an_update() {
-    let k = kit(&[]).await;
+    let k = kit(&[], &[(NOV1 + 9 * DAY, "2026.38.5.1"), (NOV1 + 17 * DAY, "2026.38.5.1")]).await;
     // the same version read again by local TeslaMate on 10 and 18 Nov: not updates, but readings that overlap
-    read(&k.engine, k.id, NOV1 + 9 * DAY, "2026.38.5.1");
-    read(&k.engine, k.id, NOV1 + 17 * DAY, "2026.38.5.1");
-    k.engine.idle().await;
     let mut admin = k.s.admin().await;
     let f = first(&mut admin, &k.car).await;
     assert_eq!(f["version"], "2026.38.5.1", "{f}");
@@ -189,7 +193,7 @@ async fn a_live_reading_during_the_segment_names_it_though_it_is_not_an_update()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_later_import_row_of_the_same_version_names_the_segment_and_another_version_leaves_it_unnamed() {
-    let k = kit(&[]).await;
+    let k = kit(&[], &[]).await;
     k.db.upsert(k.id, &[import_update(k.id, 2, NOV1 + 10 * DAY, "2026.38.5.1")]).unwrap();
     let mut admin = k.s.admin().await;
     // an import row of the same version dated inside the segment is the import saying it again
@@ -205,25 +209,21 @@ async fn a_later_import_row_of_the_same_version_names_the_segment_and_another_ve
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nothing_is_inferred_when_something_contradicts_it() {
     // an update with no version between the last known version and the segment
-    let k = kit(&[]).await;
+    let k = kit(&[], &[]).await;
     k.db.upsert(k.id, &[import_update(k.id, 2, OCT14 + 11 * DAY, "")]).unwrap();
     let mut admin = k.s.admin().await;
     let f = first(&mut admin, &k.car).await;
     assert!(f["version"].is_null() && f["name_inferred"].is_null(), "update between: {f}");
 
     // another version read inside the segment names it that (a reading beats the older import)
-    let k = kit(&[]).await;
-    read(&k.engine, k.id, NOV1 + 9 * DAY, "2026.40.2");
-    k.engine.idle().await;
+    let k = kit(&[], &[(NOV1 + 9 * DAY, "2026.40.2")]).await;
     let mut admin = k.s.admin().await;
     let f = first(&mut admin, &k.car).await;
     assert_eq!(f["version"], "2026.40.2", "{f}");
     assert!(f["name_inferred"].is_null());
 
     // the same fingerprints seen again later under another name (the set came back on 24 Nov, named by the input)
-    let k = kit(&[(24, 1)]).await;
-    read(&k.engine, k.id, NOV1 + 23 * DAY + 10 * HOUR, "2026.40.9");
-    k.engine.idle().await;
+    let k = kit(&[(24, 1)], &[(NOV1 + 23 * DAY + 10 * HOUR, "2026.40.9")]).await;
     let mut admin = k.s.admin().await;
     let all = rows(&mut admin, &k.car, "bms").await;
     assert_eq!(all.len(), 3, "{all:?}");
@@ -233,7 +233,7 @@ async fn nothing_is_inferred_when_something_contradicts_it() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_admin_names_a_segment_audited_and_it_shows_the_typed_name() {
-    let k = kit(&[]).await;
+    let k = kit(&[], &[]).await;
     let mut admin = k.s.admin().await;
     let f = first(&mut admin, &k.car).await;
     let path = format!("/api/v1/cars/{}/firmware/history/{}", k.car, f["id"].as_str().unwrap());
