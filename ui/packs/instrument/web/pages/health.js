@@ -41,11 +41,12 @@ import { q, agoEl, statePill, stateLabel, DASH } from '../core/fmt.js';
 import { overviewCard } from './conn-overview.js';
 import { deviceText, renameKeyButton } from './can-key-name.js';
 import { fullRebuild } from './full-rebuild.js';
+import { askPassword } from './settings-server-move.js';
 import { gpsLayoutSection, hasCanData } from '../shared/gpsfit.js';
 import { confirmDialog } from '../core/dialog.js';
 import { follow, carOf, onRows, FALLBACK_POLL_MS } from '../shared/live.js';
 import { morph, morphChildren, keepEl } from '../core/morph.js';
-import { running, lines as frLines } from '../shared/fullrebuild.js';
+import { rowText as frRowText } from '../shared/fullrebuild.js';
 import { unsignedLogs } from './unsigned-logs.js';
 
 // every log of the car as the CAN Bridge app is told it now (`sentry-mate log-checks --car` prints the same)
@@ -288,7 +289,7 @@ async function mountCar(ctx) {
   const gpsLayout = gpsLayoutSection({
     api: ctx.api, car: cid, admin, alive: () => ctx.alive(), flash, when: (ms) => when(ctx, ms),
     confirm: (text, o) => confirmDialog(text, { title: o.title, ok: o.ok }),
-    errorText: (e) => errorWords(e).text, onApplied: () => refreshHealth(),
+    errorText: (e) => errorWords(e).text, onApplied: () => refreshHealth(), password: (o) => askPassword(ctx, o),
     btnClass: 'btn btn--sm', applyClass: 'btn btn--sm btn--primary', resetClass: 'btn btn--sm btn--ghost', barClass: 'bar', icon: (n) => icon(n, 'ico--sm'),
   });
   ctx.onCleanup(() => gpsLayout.stop());
@@ -301,10 +302,10 @@ async function mountCar(ctx) {
   let lastPending = false;
   function paintRebuildRow() {
     const fs = full?.status();
-    if (fs && running(fs) && fs.this_car) {
-      const step = frLines(fs, ctx.api.now(), (id) => names.get(id) || id).find((l) => l.key === 'phase')?.text;
-      rebuildVal.className = 'warn';
-      rebuildVal.textContent = step ? `Running: ${step}` : 'Running';
+    const row = fs?.this_car ? frRowText(fs, ctx.api.now(), (id) => names.get(id) || id) : null;
+    if (row) {
+      rebuildVal.className = row.tone;
+      rebuildVal.textContent = row.text;
     } else {
       rebuildVal.className = lastPending ? 'warn' : '';
       rebuildVal.textContent = lastPending ? 'Running' : 'Nothing pending';

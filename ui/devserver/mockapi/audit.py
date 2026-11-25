@@ -145,6 +145,7 @@ def seed(ds, now):
         (30 * DAY - HOUR, "admin", "car-settings-changed", "car:c3", "c3", "Changed Atlas's battery size when new to 87 kWh."),
         (29 * DAY, "admin", "car-rebuild", "car:c1", "c1", "Rebuilt Comet's drives, charges, states and visits from the stored logs (the whole history)."),
         (28 * DAY, "admin", "car-full-rebuild", "car:c1", "c1", "Started a full rebuild of Comet: everything worked out made again from the stored data, beside the history in use."),
+        (26 * DAY, "admin", "car-gps-fit-removed", "car:c1", "c1", "Removed a past GPS layout fit of Comet."),
         (27 * DAY, "admin", "car-gps-layout", "car:c1", "c1", "Set how Comet's Screenmate GPS frames are read (lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)); its history is rebuilt."),
         (29 * DAY - HOUR, "admin", "car-overlap", "car:c3", "c3", "Atlas shows live (SMO) history from Mar 2 to Mar 9."),
         (28 * DAY, "admin", "key-assigned", "key:c1:cbk_5b2e9f13", "c1", "Moved the CAN Bridge key cbk_5b2e9f13 to Comet."),

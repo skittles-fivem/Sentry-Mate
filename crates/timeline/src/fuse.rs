@@ -169,8 +169,8 @@ pub(crate) struct Field<'a> {
 }
 
 impl<'a> Field<'a> {
-    pub(crate) fn new(below: &[(&'a Sample, Inputs)], has: impl Fn(&Sample) -> bool) -> Field<'a> {
-        Field { at: below.iter().filter(|s| has(s.0)).map(|s| (s.0.t_ms, s.0, s.1)).collect() }
+    pub(crate) fn new(below: &[&'a (Sample, Inputs)], has: impl Fn(&Sample) -> bool) -> Field<'a> {
+        Field { at: below.iter().filter(|s| has(&s.0)).map(|s| (s.0.t_ms, &s.0, s.1)).collect() }
     }
 
     /// The same over samples of no particular input (an import's).
@@ -296,40 +296,32 @@ fn gap_of(inputs: Inputs, p: &FuseParams) -> u64 {
 
 /// The inputs' samples (`layers`, highest first), each filling the one above it: the bottom one first, each higher
 /// one laid over what is below it.
-///
-/// Memory: a window of a month holds over a million samples, so they are copied once here (into what is laid so
-/// far, one input over the other), not once per step: a distrusted input loses its fixes as each sample is copied,
-/// and the samples and their inputs are kept side by side, so the samples given back are the ones laid, not copied
-/// again.
 fn layered(layers: &[(&[Sample], Inputs)], p: &FuseParams) -> Fused {
     let GpsCross { disagree: gps_disagree, distrusted: gps_distrusted, agree: gps_agree } = gps_cross_check(layers);
-    let mut below = Laid::default();
-    for (samples, inputs) in layers.iter().rev() {
-        // a distrusted input's samples without their fixes (its other values stay)
-        let blind = !gps_distrusted.is_empty() && inputs.is_subset(gps_distrusted);
+    // a distrusted input's samples without their fixes (its other values stay)
+    let blind: Vec<Vec<Sample>> = layers
+        .iter()
+        .map(|(s, i)| {
+            if gps_distrusted.is_empty() || !i.is_subset(gps_distrusted) {
+                return Vec::new();
+            }
+            s.iter().map(|x| Sample { lat: None, lon: None, gps_accuracy_m: None, ..x.clone() }).collect()
+        })
+        .collect();
+    let mut below: Vec<(Sample, Inputs)> = Vec::new();
+    for ((samples, inputs), blind) in layers.iter().zip(&blind).rev() {
+        let samples: &[Sample] = if blind.is_empty() { samples } else { blind };
         let top = seconds(samples);
-        below = if below.samples.is_empty() {
-            Laid { samples: top.iter().map(|s| copied(s, blind)).collect(), inputs: vec![*inputs; top.len()] }
+        below = if below.is_empty() {
+            top.into_iter().map(|s| (s.clone(), *inputs)).collect()
         } else {
-            lay(&top, *inputs, blind, &below, gap_of(*inputs, p), p)
+            lay(&top, *inputs, &below, gap_of(*inputs, p), p)
         };
     }
-    let Laid { mut samples, inputs } = below;
-    let marks = samples.iter().zip(&inputs).filter(|(_, i)| **i != Inputs::SMO).map(|(s, i)| (s.t_ms, *i)).collect();
+    let marks = below.iter().filter(|(_, i)| *i != Inputs::SMO).map(|(s, i)| (s.t_ms, *i)).collect();
+    let mut samples: Vec<Sample> = below.into_iter().map(|(s, _)| s).collect();
     let fixes_dropped = crate::calc::drop_bad_fixes(&mut samples, crate::calc::MAX_FIX_KMH);
     Fused { samples, marks, fixes_dropped, gps_disagree, gps_distrusted, gps_agree }
-}
-
-/// Samples laid one input over another (one per second, by time), and beside each the inputs its values came from.
-#[derive(Default)]
-struct Laid {
-    samples: Vec<Sample>,
-    inputs: Vec<Inputs>,
-}
-
-/// A copy of a sample, without its fix when its input's fixes are not used.
-fn copied(s: &Sample, blind: bool) -> Sample {
-    if blind { Sample { lat: None, lon: None, gps_accuracy_m: None, ..s.clone() } } else { s.clone() }
 }
 
 /// Two inputs' fixes at most this far apart in time are compared (ms).
@@ -434,10 +426,9 @@ pub fn gps_cross_check(layers: &[(&[Sample], Inputs)]) -> GpsCross {
     GpsCross { disagree, distrusted, agree: agree_with }
 }
 
-/// `top`'s seconds (one per second, sorted; without their fixes when `blind`) with the values they lack from `below`
-/// (sorted, one per second), and `below`'s seconds outside `top`'s coverage (seconds between two of `top`'s at most
-/// `gap` apart), by time (a second of `top`'s before one of `below`'s at the same time).
-fn lay(top: &[&Sample], top_in: Inputs, blind: bool, below: &Laid, gap: u64, p: &FuseParams) -> Laid {
+/// `top`'s seconds (one per second, sorted) with the values they lack from `below` (sorted, one per second), and
+/// `below`'s seconds outside `top`'s coverage (seconds between two of `top`'s at most `gap` apart), by time.
+fn lay(top: &[&Sample], top_in: Inputs, below: &[(Sample, Inputs)], gap: u64, p: &FuseParams) -> Vec<(Sample, Inputs)> {
     let top_t: Vec<u64> = top.iter().map(|s| s.t_ms).collect();
     // whether a time falls in the top input's coverage: a sample that second, or two around it close enough
     let covered = |t: u64| {
@@ -452,35 +443,26 @@ fn lay(top: &[&Sample], top_in: Inputs, blind: bool, below: &Laid, gap: u64, p: 
     };
     // only the lower samples near the top's seconds are looked at for filling
     let m = p.margin_ms();
-    let near_top: Vec<(&Sample, Inputs)> = below
-        .samples
+    let near_top: Vec<&(Sample, Inputs)> = below
         .iter()
-        .zip(&below.inputs)
         .filter(|(a, _)| {
             let i = top_t.partition_point(|&x| x < a.t_ms);
             top_t.get(i).is_some_and(|&x| x - a.t_ms <= m) || i.checked_sub(1).is_some_and(|j| a.t_ms - top_t[j] <= m)
         })
-        .map(|(a, i)| (a, *i))
         .collect();
-    let looks: Vec<Field<'_>> = SLOTS.iter().map(|slot| Field::new(&near_top, slot.has)).collect();
-    let n = top.len() + below.samples.len();
-    let mut out = Laid { samples: Vec::with_capacity(n), inputs: Vec::with_capacity(n) };
-    // the two merged by time (both are sorted)
-    let mut rest = below.samples.iter().zip(&below.inputs).filter(|(a, _)| !covered(a.t_ms)).peekable();
-    for s in top {
-        while let Some((a, i)) = rest.next_if(|(a, _)| a.t_ms < s.t_ms) {
-            out.samples.push(a.clone());
-            out.inputs.push(*i);
+    let mut out: Vec<(Sample, Inputs)> = Vec::with_capacity(top.len() + below.len());
+    if near_top.is_empty() {
+        out.extend(top.iter().map(|s| ((*s).clone(), top_in)));
+    } else {
+        let looks: Vec<Field<'_>> = SLOTS.iter().map(|slot| Field::new(&near_top, slot.has)).collect();
+        for s in top {
+            let mut x = (*s).clone();
+            let filled = fill_one(&mut x, p, &looks);
+            out.push((x, top_in.union(filled)));
         }
-        let mut x = copied(s, blind);
-        let filled = if near_top.is_empty() { Inputs::NONE } else { fill_one(&mut x, p, &looks) };
-        out.samples.push(x);
-        out.inputs.push(top_in.union(filled));
     }
-    for (a, i) in rest {
-        out.samples.push(a.clone());
-        out.inputs.push(*i);
-    }
+    out.extend(below.iter().filter(|(a, _)| !covered(a.t_ms)).cloned());
+    out.sort_by_key(|(s, _)| s.t_ms);
     out
 }
 
@@ -780,165 +762,5 @@ mod tests {
                 .collect()
         };
         assert_eq!(inside(&whole), inside(&part));
-    }
-
-    /// The fusing as it was before it kept its memory to one copy of the samples ([`layered`]), to compare with.
-    mod before {
-        #![allow(clippy::all)]
-        use super::super::*;
-        /// The inputs' samples (`layers`, highest first), each filling the one above it: the bottom one first, each higher
-        /// one laid over what is below it.
-        pub(super) fn layered_before(layers: &[(&[Sample], Inputs)], p: &FuseParams) -> Fused {
-            let GpsCross { disagree: gps_disagree, distrusted: gps_distrusted, agree: gps_agree } =
-                gps_cross_check(layers);
-            // a distrusted input's samples without their fixes (its other values stay)
-            let blind: Vec<Vec<Sample>> = layers
-                .iter()
-                .map(|(s, i)| {
-                    if gps_distrusted.is_empty() || !i.is_subset(gps_distrusted) {
-                        return Vec::new();
-                    }
-                    s.iter().map(|x| Sample { lat: None, lon: None, gps_accuracy_m: None, ..x.clone() }).collect()
-                })
-                .collect();
-            let mut below: Vec<(Sample, Inputs)> = Vec::new();
-            for ((samples, inputs), blind) in layers.iter().zip(&blind).rev() {
-                let samples: &[Sample] = if blind.is_empty() { samples } else { blind };
-                let top = seconds(samples);
-                below = if below.is_empty() {
-                    top.into_iter().map(|s| (s.clone(), *inputs)).collect()
-                } else {
-                    lay_before(&top, *inputs, &below, gap_of(*inputs, p), p)
-                };
-            }
-            let marks = below.iter().filter(|(_, i)| *i != Inputs::SMO).map(|(s, i)| (s.t_ms, *i)).collect();
-            let mut samples: Vec<Sample> = below.into_iter().map(|(s, _)| s).collect();
-            let fixes_dropped = crate::calc::drop_bad_fixes(&mut samples, crate::calc::MAX_FIX_KMH);
-            Fused { samples, marks, fixes_dropped, gps_disagree, gps_distrusted, gps_agree }
-        }
-
-        /// `top`'s seconds (one per second, sorted) with the values they lack from `below` (sorted, one per second), and
-        /// `below`'s seconds outside `top`'s coverage (seconds between two of `top`'s at most `gap` apart), by time.
-        fn lay_before(
-            top: &[&Sample],
-            top_in: Inputs,
-            below: &[(Sample, Inputs)],
-            gap: u64,
-            p: &FuseParams,
-        ) -> Vec<(Sample, Inputs)> {
-            let top_t: Vec<u64> = top.iter().map(|s| s.t_ms).collect();
-            // whether a time falls in the top input's coverage: a sample that second, or two around it close enough
-            let covered = |t: u64| {
-                let i = top_t.partition_point(|&x| x < t);
-                if top_t.get(i) == Some(&t) {
-                    return true;
-                }
-                match (i.checked_sub(1).map(|j| top_t[j]), top_t.get(i)) {
-                    (Some(a), Some(&b)) => b - a <= gap,
-                    _ => false,
-                }
-            };
-            // only the lower samples near the top's seconds are looked at for filling
-            let m = p.margin_ms();
-            let near_top: Vec<&(Sample, Inputs)> = below
-                .iter()
-                .filter(|(a, _)| {
-                    let i = top_t.partition_point(|&x| x < a.t_ms);
-                    top_t.get(i).is_some_and(|&x| x - a.t_ms <= m)
-                        || i.checked_sub(1).is_some_and(|j| a.t_ms - top_t[j] <= m)
-                })
-                .collect();
-            let mut out: Vec<(Sample, Inputs)> = Vec::with_capacity(top.len() + below.len());
-            if near_top.is_empty() {
-                out.extend(top.iter().map(|s| ((*s).clone(), top_in)));
-            } else {
-                let near: Vec<(&Sample, Inputs)> = near_top.iter().map(|x| (&x.0, x.1)).collect();
-                let looks: Vec<Field<'_>> = SLOTS.iter().map(|slot| Field::new(&near, slot.has)).collect();
-                for s in top {
-                    let mut x = (*s).clone();
-                    let filled = fill_one(&mut x, p, &looks);
-                    out.push((x, top_in.union(filled)));
-                }
-            }
-            out.extend(below.iter().filter(|(a, _)| !covered(a.t_ms)).cloned());
-            out.sort_by_key(|(s, _)| s.t_ms);
-            out
-        }
-    }
-
-    /// A made-up input's samples: `n` seconds from `t0` with gaps, some seconds twice, out of order, values here
-    /// and there, fixes near (`dlat` away from) a road; from a seed.
-    fn made_up(seed: u64, n: u64, t0: u64, step: u64, dlat: f64, api: bool) -> Vec<Sample> {
-        let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-        let mut r = move || {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            x
-        };
-        let mut v = Vec::new();
-        let mut t = t0;
-        for k in 0..n {
-            t += step * (1 + r() % 3) * if r() % 40 == 0 { 30 } else { 1 };
-            let f = k as f64 * 0.0001;
-            let mut s = Sample { t_ms: t * 1000, ..Sample::default() };
-            if r() % 5 != 0 {
-                s.lat = Some(47.5 + f + dlat);
-                s.lon = Some(-122.2 + f);
-                s.gps_accuracy_m = (r() % 2 == 0).then_some(4.0);
-            }
-            s.speed_kmh = (r() % 3 != 0).then(|| (r() % 120) as f64);
-            s.soc = (r() % 4 != 0).then(|| 50.0 + (r() % 30) as f64);
-            s.odometer_km = (r() % 2 == 0).then_some(1000.0 + f);
-            s.inside_temp_c = (api && r() % 2 == 0).then_some(21.0);
-            s.outside_temp_c = (r() % 7 == 0).then_some(12.0);
-            v.push(s.clone());
-            if r() % 25 == 0 {
-                // the same second twice, the second time with another speed
-                v.push(Sample { speed_kmh: Some(1.0), ..s });
-            }
-        }
-        // out of order in places
-        for i in (1..v.len()).step_by(17) {
-            v.swap(i - 1, i);
-        }
-        v
-    }
-
-    #[test]
-    fn the_samples_fused_with_one_copy_are_the_samples_fused_before() {
-        let p = FuseParams::default();
-        let mut cases = 0;
-        let mut blinded = 0;
-        for seed in 1..=60u64 {
-            let n = 50 + seed * 37 % 400;
-            // SMO's fixes near the API's, or 0.5° off (a layout mistake: SMO is distrusted); a third input that
-            // agrees with SMO and not with the second (the second is outvoted)
-            let off = if seed % 3 == 0 { 0.5 } else { 0.0 };
-            let smo = made_up(seed, n, 1_000, 1, off, false);
-            let tesla = made_up(seed + 100, n / 8, 1_000 + seed % 50, 9, 0.0, true);
-            let teslafi = made_up(seed + 200, n / 20, 1_200, 60, if seed % 5 == 0 { 0.0 } else { 0.8 }, true);
-            let empty: Vec<Sample> = Vec::new();
-            let sets: Vec<Vec<(&[Sample], Inputs)>> = vec![
-                vec![(&smo, Inputs::SMO), (&tesla, Inputs::TESLA_API)],
-                vec![(&tesla, Inputs::TESLA_API), (&smo, Inputs::SMO)],
-                vec![(&smo, Inputs::SMO), (&tesla, Inputs::TESLA_API), (&teslafi, Inputs::TESLAFI_API)],
-                vec![(&teslafi, Inputs::TESLAFI_API), (&smo, Inputs::SMO), (&tesla, Inputs::TESLA_API)],
-                vec![(&smo, Inputs::SMO), (&empty, Inputs::TESLA_API)],
-                vec![(&empty, Inputs::SMO), (&tesla, Inputs::TESLA_API)],
-                vec![(&smo, Inputs::SMO)],
-            ];
-            for layers in &sets {
-                let now = layered(layers, &p);
-                let was = before::layered_before(layers, &p);
-                assert_eq!(now, was, "seed {seed}, layers {:?}", layers.iter().map(|l| l.1).collect::<Vec<_>>());
-                cases += 1;
-                if !now.gps_distrusted.is_empty() {
-                    blinded += 1;
-                }
-            }
-        }
-        // (both kinds were there: inputs whose fixes were left out and inputs all used)
-        assert!(blinded > 20 && blinded < cases - 20, "{blinded} of {cases}");
     }
 }

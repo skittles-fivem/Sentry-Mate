@@ -55,7 +55,6 @@ async fn measure_engine() {
             candump: false,
             with_real_cars: false,
             start_ms: None,
-            awake_min: None,
         };
         let gate = gate::Gate::memory();
         let enter = || -> Result<gate::Pass, Box<dyn std::error::Error>> { Ok(gate.enter(GATE_WAIT)?) };
@@ -160,7 +159,6 @@ async fn measure_full_rebuild() {
             candump: false,
             with_real_cars: false,
             start_ms: None,
-            awake_min: None,
         };
         let gate = gate::Gate::memory();
         let enter = || -> Result<gate::Pass, Box<dyn std::error::Error>> { Ok(gate.enter(GATE_WAIT)?) };

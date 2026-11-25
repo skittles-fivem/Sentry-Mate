@@ -383,3 +383,19 @@
 .ss-secret { font-size: 1.25rem; }
 .ss-rcodes { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(round(9.5rem, var(--e)), 1fr)); gap: round(0.5rem, var(--e)) round(1rem, var(--e)); }
 .ss-rdlg > p { margin: 0 0 round(0.875rem, var(--e)); }
+
+/* the move's log (pages/move-log.js): newest last, its own scroll, a time on each line */
+.mlog { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); min-width: 0; padding: round(0.75rem, var(--e)) round(0.875rem, var(--e)); border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--surface-sunken); }
+.mlog[hidden] { display: none; }
+.mlog-head { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.375rem, var(--e)) round(0.75rem, var(--e)); }
+.mlog-title { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); font-size: 1rem; font-weight: 600; margin: 0; }
+.mlog-count { color: var(--text-3); font-size: max(0.78125rem, var(--fs-floor)); }
+.mlog-dl { margin-left: auto; }
+.mlog-list { list-style: none; margin: 0; padding: 0; max-height: round(16rem, var(--e)); overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: round(0.25rem, var(--e)); font-size: max(0.8125rem, var(--fs-floor)); }
+.mlog-list:focus-visible { outline: none; box-shadow: 0 0 0 round(0.1875rem, var(--e)) var(--live-soft); border-radius: round(0.25rem, var(--e)); }
+.mlog-list[hidden] { display: none; }
+.mlog-line { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: round(0.625rem, var(--e)); align-items: baseline; }
+.mlog-time { color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mlog-text { color: var(--text-2); overflow-wrap: anywhere; }
+.mlog-line:last-child .mlog-text { color: var(--text); }
+.mlog-empty { margin: 0; }

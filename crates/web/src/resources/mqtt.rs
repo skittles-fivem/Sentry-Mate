@@ -902,13 +902,46 @@ async fn clean_up(app: &AppState, e: &Engine, p: &Publisher, old: &mqtt::Setting
     }
 }
 
+/// Clears what this server published under `settings` on the broker (the data moved to another server, which
+/// publishes the same topics now): an empty retained message on every car's value topics, its Home Assistant
+/// discovery configs and the connection's status topic. How many were cleared, or why not.
+pub async fn clear_owned(e: &Engine, settings: &mqtt::Settings) -> Result<usize, String> {
+    if !settings.enabled {
+        return Ok(0);
+    }
+    let cars = cars_of(e).await;
+    let what = mqtt::cleanup::Leftovers { values: true, discovery: settings.discovery };
+    let msgs = mqtt::cleanup::messages(settings, &cars, what).map_err(|err| err.to_string())?;
+    mqtt::cleanup::clear(settings, msgs).await.map_err(|(_, why)| why)
+}
+
+/// Resolves when the data moved away (never without the move's side, or while it hasn't).
+async fn moved_away(rx: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    match rx.as_mut() {
+        Some(r) => {
+            if r.wait_for(|m| *m).await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
+        None => std::future::pending::<()>().await,
+    }
+}
+
 /// The publisher, for `serve`: while MQTT is on, every car's newest values go to the broker as the engine records
 /// them, and its drive and charge events once each; a saved change of the settings starts it again with them (after
 /// clearing what the old layout left). Needs the engine and a [`Publisher`] among the services (else it ends at
 /// once). Aborting the task closes the connection.
+///
+/// Once the data moved to another server ([`moving::old::Offer`]'s moved state) it publishes nothing more: it closes
+/// its connection, clears the retained values it published ([`clear_owned`]: the new server publishes the same
+/// topics) and ends. On a server whose data moved away it ends at once.
 pub fn spawn(app: AppState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let (Ok(e), Ok(p)) = (app.service::<Engine>(), app.service::<Publisher>()) else { return };
+        let mut moved = app.service::<moving::old::Offer>().ok().map(|o| o.watch());
+        if crate::moving::data_moved(&app) {
+            return;
+        }
         let mut rx = e.subscribe();
         // the settings the last publisher ran with
         let mut prev: Option<mqtt::Settings> = None;
@@ -952,9 +985,14 @@ pub fn spawn(app: AppState) -> tokio::task::JoinHandle<()> {
                 }
             }
             let mut tick = tokio::time::interval(TICK);
+            let mut gone = false;
             loop {
                 tokio::select! {
                     () = p.restart.notified() => break,
+                    () = moved_away(&mut moved) => {
+                        gone = true;
+                        break;
+                    }
                     _ = tick.tick() => {
                         p.observe(app.now());
                         if let Some(m) = &running
@@ -1003,11 +1041,25 @@ pub fn spawn(app: AppState) -> tokio::task::JoinHandle<()> {
                 }
             }
             *p.live.lock().unwrap_or_else(|x| x.into_inner()) = Weak::new();
+            let was_on = running.is_some();
             if let Some(m) = running {
                 match Arc::try_unwrap(m) {
                     Ok(m) => m.stop().await,
                     Err(m) => drop(m),
                 }
+            }
+            if gone {
+                if was_on {
+                    match clear_owned(&e, &stored.settings).await {
+                        Ok(n) => tracing::info!(
+                            "MQTT: the data moved to another server: publishing stopped, {n} retained topics cleared"
+                        ),
+                        Err(why) => tracing::warn!(
+                            "MQTT: the data moved to another server: publishing stopped; the retained topics were not cleared: {why}"
+                        ),
+                    }
+                }
+                return;
             }
         }
     })

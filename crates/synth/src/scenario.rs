@@ -67,9 +67,6 @@ pub struct Scenario {
     pub with_trouble: bool,
     /// Made-up firmware fingerprints in the modules' info frames (off: none sent).
     pub firmware: Option<crate::firmware::Firmware>,
-    /// How long the car stays awake after it was last used, ms ([`crate::sim::IDLE_AWAKE_MS`] by default; longer is
-    /// a car left in Sentry Mode, which the bridge logs all the while).
-    pub idle_awake_ms: u64,
 }
 
 impl Scenario {
@@ -105,14 +102,7 @@ impl Scenario {
             trouble: Trouble::default(),
             with_trouble: false,
             firmware: None,
-            idle_awake_ms: crate::sim::IDLE_AWAKE_MS,
         }
-    }
-
-    /// The car stays awake this long after it was last used (ms), as in Sentry Mode.
-    pub fn stay_awake(mut self, ms: u64) -> Self {
-        self.idle_awake_ms = ms;
-        self
     }
 
     /// Which car of a fleet, at most [`MAX_CAR`] (a higher number is taken as that).
@@ -267,7 +257,6 @@ impl Scenario {
     fn sim(&self) -> Sim {
         let state = CarState::new(self.model, self.start_ms, self.home, self.start_soc, self.start_odometer_km);
         Sim::new(self.model, self.plan(), state, self.end_ms(), self.car_seed(), self.outside_c)
-            .awake_for(self.idle_awake_ms)
     }
 
     /// What happens, without making any log (quick): the drives, charges, sleeps and updates.

@@ -12,6 +12,8 @@ pub const NEW_CAR_NAME: &str = "New car";
 
 /// The logs of a new key looked in for its VIN before it is given to the only car.
 pub(crate) const VIN_LOGS: usize = 20;
+/// Why a run of logs ended part way: the server stopped (a restart, or its data moved away); the next start goes on.
+pub(crate) const STOPPING_LOGS: &str = "the server is stopping: the logs left are decoded at its next start";
 
 /// The VIN in a log's own frames.
 pub(crate) fn log_vin(log: &[u8]) -> Option<VinInfo> {
@@ -504,13 +506,35 @@ impl Engine {
         Ok(())
     }
 
-    /// One log told of by the judge.
+    /// One log told of by the judge: the first of its key's told and not yet taken (`name` where none is noted), so
+    /// a logger's logs are worked on in the order they came. One worker per log, and the one that gets the car's
+    /// lock first is not always the one told first: a log worked on before the one ahead of it builds its window
+    /// without that one's samples, and a drive made then from the later log alone keeps that start's id once the
+    /// earlier log moves its start back (a whole rebuild names it from its real start).
     pub(crate) fn work_log(&self, key: &str, name: &str) -> Result<()> {
-        let Some(car) = self.car_of_key(key)? else { return Ok(()) };
+        let car = match self.car_of_key(key) {
+            Ok(Some(car)) => car,
+            other => {
+                self.take_told(key);
+                return other.map(|_| ());
+            }
+        };
         let l = self.car_lock(car);
         let _held = lock(&l);
+        let name = self.take_told(key).unwrap_or_else(|| name.to_string());
         let _hot = crate::hot::Keep::new(self);
-        self.log_locked(car, key, name, false, true)
+        self.log_locked(car, key, &name, false, true)
+    }
+
+    /// The first log of `key` told and not yet taken (see `Inner::told`).
+    fn take_told(&self, key: &str) -> Option<String> {
+        let mut told = lock(&self.inner.told);
+        let q = told.get_mut(key)?;
+        let name = q.pop_front();
+        if q.is_empty() {
+            told.remove(key);
+        }
+        name
     }
 
     /// Works on one log of `car` (its lock held): decoded (or left out) and recorded, then the window it changes is
@@ -1152,7 +1176,13 @@ impl Engine {
             }
         };
         for c in cars {
-            if let Err(e) = self.reconcile_car(c, None) {
+            // the server stopping (or its data moved away): the next start goes on
+            if self.is_stopping() {
+                break;
+            }
+            if let Err(e) = self.reconcile_car(c, None)
+                && !self.is_stopping()
+            {
                 self.failed(&e);
             }
         }
@@ -1375,6 +1405,11 @@ impl Engine {
                 // a full rebuild whose server is stopping: nothing more is asked of a runtime that is going away
                 if job.is_some_and(|j| j.stopping()) {
                     return Err(Error::Other(crate::full::STOPPING.into()));
+                }
+                // any other run of logs too (the server stopping, or its data moved away): it writes nothing more,
+                // and the next start compares the car's logs with what it recorded and goes on from there
+                if job.is_none() && self.is_stopping() {
+                    return Err(Error::Other(STOPPING_LOGS.into()));
                 }
                 let read = ahead.and_then(|a| a.take(&name));
                 let l = self.car_lock(car);

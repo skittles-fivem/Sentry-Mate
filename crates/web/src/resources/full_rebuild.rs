@@ -133,10 +133,15 @@ pub fn status_json(e: &Engine, r: Option<&FullRecord>, now_ms: u64) -> Value {
             "bytes": { "done": 0, "total": 0, "copied": 0 }, "percent": null, "rate_bytes_per_s": null,
             "rate_logs_per_s": null, "rate_days_per_s": null, "eta_ms": null,
             "started_ms": null, "finished_ms": null, "last_progress_ms": null, "stalled": false, "errors": [],
-            "error": null, "by": null, "version": version, "causes": [], "hold": null, "history": history_json(e),
+            "error": null, "by": null, "version": version, "causes": [], "hold": null, "cancelling": false, "history": history_json(e),
         });
     };
-    let hold = r.hold.filter(|_| r.held(now_ms)).map(|h| json!({ "kind": hold_word(h.kind), "until_ms": h.until_ms }));
+    // (one asked to stop is stopping, whatever held it: it says that and nothing else about waiting)
+    let cancelling = r.running() && r.cancel;
+    let hold = r
+        .hold
+        .filter(|_| r.held(now_ms) && !cancelling)
+        .map(|h| json!({ "kind": hold_word(h.kind), "until_ms": h.until_ms }));
     let running = r.running();
     let rates = if running { r.rates(now_ms) } else { engine::full::Rates::default() };
     let errors: Vec<Value> = r
@@ -172,6 +177,7 @@ pub fn status_json(e: &Engine, r: Option<&FullRecord>, now_ms: u64) -> Value {
         "version": version,
         "causes": causes_json(&r.causes),
         "hold": hold,
+        "cancelling": cancelling,
         "history": history_json(e),
     })
 }
@@ -565,6 +571,10 @@ pub fn spawn_watch(app: AppState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut shown: Option<String> = None;
         loop {
+            // a server whose data moved away starts no rebuild and writes no audit entry
+            if crate::moving::data_moved(&app) {
+                return;
+            }
             let a = app.clone();
             if let Ok(s) = tokio::task::spawn_blocking(move || {
                 watch_once(&a);

@@ -1234,6 +1234,10 @@ pub trait Positions {
     fn days(&self, stream: Stream, from: u64, to: u64) -> Result<Vec<u64>, String>;
     /// A day's points in `[from, to)`, or why it was left out.
     fn day(&self, stream: Stream, day_ms: u64, from: u64, to: u64) -> db::DayRead<Sample>;
+    /// Why the fit stops here (the server is stopping, or its data moved away); `None`: it goes on.
+    fn stopped(&self) -> Option<String> {
+        None
+    }
 }
 
 /// What a fit is doing.
@@ -1267,6 +1271,10 @@ pub struct Step {
     pub phase: Phase,
     pub done: u64,
     pub total: u64,
+    /// The days of positions and the logs the whole fit reads (known from the first step: the bar is weighed by
+    /// them), 0 before.
+    pub positions_total: u64,
+    pub logs_total: u64,
 }
 
 /// Reads what a fit of the last `days` days (to `now`) needs: the positions of the car's other inputs through
@@ -1286,6 +1294,18 @@ pub fn collect(
     let to = now;
     let from = to.saturating_sub(u64::from(days) * db::DAY_MS);
     let mut c = Collected::default();
+    // the Screenmate's GPS frames of the car's logs in the period, a log a minute at most, newest first
+    let most = usize::try_from(days).unwrap_or(usize::MAX).saturating_mul(1_500).saturating_add(100);
+    let mut names = Vec::new();
+    for key in keys {
+        let usable = rt.block_on(judge.latest_usable(key, most)).map_err(|e| format!("listing the logs: {e}"))?;
+        names.extend(usable.into_iter().filter(|n| {
+            trust::LogName::parse(n)
+                .and_then(|l| u64::try_from(l.started_ms).ok())
+                .is_some_and(|t| (from..to).contains(&t))
+        }));
+    }
+    let logs_total = names.len() as u64;
     // the positions of the car's other inputs, a day at a time
     let mut lists = Vec::new();
     for stream in REFERENCES {
@@ -1293,12 +1313,16 @@ pub fn collect(
     }
     let total = lists.iter().map(|(_, d)| d.len() as u64).sum();
     let mut done = 0;
-    progress(Step { phase: Phase::Positions, done, total });
+    let positions_total = total;
+    progress(Step { phase: Phase::Positions, done, total, positions_total, logs_total });
     let mut refs: Vec<(Stream, Vec<Position>)> = Vec::new();
     for (stream, list) in lists {
         let mut n = 0usize;
         let mut mine = Vec::new();
         for day in list {
+            if let Some(why) = pos.stopped() {
+                return Err(why);
+            }
             match pos.day(stream, day, from, to) {
                 db::DayRead::Read(pts) => {
                     c.days_read += 1;
@@ -1317,27 +1341,19 @@ pub fn collect(
                 }
             }
             done += 1;
-            progress(Step { phase: Phase::Positions, done, total });
+            progress(Step { phase: Phase::Positions, done, total, positions_total, logs_total });
         }
         c.sources.push((stream, n));
         mine.sort_by_key(|r| r.0);
         refs.push((stream, mine));
     }
-    // the Screenmate's GPS frames of the car's logs in the period, a log a minute at most, newest first
-    let most = usize::try_from(days).unwrap_or(usize::MAX).saturating_mul(1_500).saturating_add(100);
-    let mut names = Vec::new();
-    for key in keys {
-        let usable = rt.block_on(judge.latest_usable(key, most)).map_err(|e| format!("listing the logs: {e}"))?;
-        names.extend(usable.into_iter().filter(|n| {
-            trust::LogName::parse(n)
-                .and_then(|l| u64::try_from(l.started_ms).ok())
-                .is_some_and(|t| (from..to).contains(&t))
-        }));
-    }
-    let total = names.len() as u64;
-    progress(Step { phase: Phase::Logs, done: 0, total });
+    let total = logs_total;
+    progress(Step { phase: Phase::Logs, done: 0, total, positions_total, logs_total });
     let mut frames = Vec::new();
     for (i, name) in names.iter().enumerate() {
+        if let Some(why) = pos.stopped() {
+            return Err(why);
+        }
         let read = rt.block_on(async {
             let Some(log) = store.read(name).await? else { return Ok(None) };
             let side = store.read(&format!("{name}.json")).await?;
@@ -1359,7 +1375,7 @@ pub fn collect(
                 tracing::debug!("GPS layout fit: a log left out: {e}");
             }
         }
-        progress(Step { phase: Phase::Logs, done: i as u64 + 1, total });
+        progress(Step { phase: Phase::Logs, done: i as u64 + 1, total, positions_total, logs_total });
     }
     frames.sort_by_key(|f| f.0);
     let p = pair(&frames, &refs);
@@ -1389,6 +1405,14 @@ pub struct FitStatus {
     pub phase: Option<Phase>,
     pub done: u64,
     pub total: u64,
+    /// The days of positions and the logs the fit reads in all (0 until known): its percent is weighed by them.
+    #[serde(default)]
+    pub positions_total: u64,
+    #[serde(default)]
+    pub logs_total: u64,
+    /// When the logs began to be read: their speed, and the time left, are measured from it.
+    #[serde(default)]
+    pub logs_started_ms: Option<u64>,
     pub started_ms: u64,
     pub finished_ms: Option<u64>,
     pub error: Option<String>,
@@ -1397,20 +1421,50 @@ pub struct FitStatus {
     /// they were, and it goes on from there.
     #[serde(default)]
     pub waiting: Option<String>,
+    /// When the layout it found was applied from it, and by whom (an account's name).
+    #[serde(default)]
+    pub applied_ms: Option<u64>,
+    #[serde(default)]
+    pub applied_by: Option<String>,
+    /// How long the fit waited for rebuilds so far (ms): not counted as the speed it reads at.
+    #[serde(default)]
+    pub waited_ms: u64,
 }
 
 impl FitStatus {
-    /// How far it is, 0 to 100 (the phases weighed: positions to 30, logs to 90, then the fit).
+    /// How far it is, 0 to 100, by the work each step has: a day of positions and a log each count one unit (the
+    /// logs are most of them, so reading 22 000 logs is nearly all of the bar), the fit itself a fiftieth of
+    /// them (at least one). Running, it never reaches 100.
     pub fn percent(&self) -> u32 {
-        let part = if self.total == 0 { 0.0 } else { self.done.min(self.total) as f64 / self.total as f64 };
-        let p = match (self.state, self.phase) {
-            (FitState::Done | FitState::Failed, _) => 100.0,
-            (_, None | Some(Phase::Queued)) => 0.0,
-            (_, Some(Phase::Positions)) => 30.0 * part,
-            (_, Some(Phase::Logs)) => 30.0 + 60.0 * part,
-            (_, Some(Phase::Fitting)) => 90.0,
+        let (p, l) = (self.positions_total, self.logs_total);
+        let fit = ((p + l) / 50).max(1);
+        let all = (p + l + fit) as f64;
+        let part = |done: u64, total: u64| if total == 0 { 0 } else { done.min(total) };
+        let units = match (self.state, self.phase) {
+            (FitState::Done | FitState::Failed, _) => return 100,
+            (_, None | Some(Phase::Queued)) => 0,
+            (_, Some(Phase::Positions)) => part(self.done, p),
+            (_, Some(Phase::Logs)) => p + part(self.done, l),
+            (_, Some(Phase::Fitting)) => p + l,
         };
-        p.floor() as u32
+        ((units as f64 / all) * 100.0).floor() as u32
+    }
+
+    /// The time left (ms) while the logs are read, at the speed they were read so far; `None` before there is a
+    /// speed (no log done yet, or none that took any time) and outside that step (the days of positions are a
+    /// sliver of the work and the fit itself too short to tell).
+    pub fn eta_ms(&self, now: u64) -> Option<u64> {
+        if self.state != FitState::Running || self.phase != Some(Phase::Logs) || self.waiting.is_some() {
+            return None;
+        }
+        // (the time spent waiting for a rebuild is not the speed of reading)
+        let elapsed = now.saturating_sub(self.logs_started_ms?).saturating_sub(self.waited_ms);
+        let done = self.done.min(self.logs_total);
+        if done == 0 || elapsed == 0 {
+            return None;
+        }
+        let left = self.logs_total - done;
+        Some((left as f64 * elapsed as f64 / done as f64).round() as u64)
     }
 }
 
@@ -1433,8 +1487,7 @@ impl std::fmt::Display for FitError {
 /// The fits of the cars (the newest of each), kept in memory.
 #[derive(Default)]
 pub(crate) struct Fits {
-    jobs: HashMap<CarId, FitStatus>,
-    next: u64,
+    pub(crate) jobs: HashMap<CarId, FitStatus>,
 }
 
 /// The engine's own db, read inside the server (nothing is skipped: its reads see one moment).
@@ -1456,7 +1509,14 @@ impl Positions for Live<'_> {
             Err(e) => db::DayRead::Changing(e.to_string()),
         }
     }
+
+    fn stopped(&self) -> Option<String> {
+        self.e.inner.stopping.load(std::sync::atomic::Ordering::SeqCst).then(|| STOPPED.to_string())
+    }
 }
+
+/// Why a fit ended when the server stopped under it (a restart, or its data moved to another server).
+pub const STOPPED: &str = "stopped: the server stopped (a restart, or its data moved to another server)";
 
 impl Engine {
     /// Starts finding the layout of the car's Screenmate GPS frame from the last `days` days (1 to [`MAX_DAYS`]),
@@ -1476,20 +1536,26 @@ impl Engine {
             {
                 return Ok(s.clone());
             }
-            fits.next += 1;
+            let id = self.gps_fit_next_id().map_err(|x| FitError::Other(x.to_string()))?;
             let s = FitStatus {
-                id: fits.next,
+                id,
                 car,
                 days,
                 state: FitState::Running,
                 phase: Some(Phase::Queued),
                 done: 0,
                 total: 0,
+                positions_total: 0,
+                logs_total: 0,
+                logs_started_ms: None,
                 started_ms: now_ms(),
                 finished_ms: None,
                 error: None,
                 outcome: None,
                 waiting: None,
+                applied_ms: None,
+                applied_by: None,
+                waited_ms: 0,
             };
             fits.jobs.insert(car, s.clone());
             s
@@ -1499,18 +1565,35 @@ impl Engine {
         let spawned = std::thread::Builder::new().name("gps-fit".into()).spawn(move || {
             let r = {
                 let _one = lock(&e.inner.gps_fit_one);
-                // (told between two days or logs, and before the layouts are tried: a rebuild under way is let
-                // go first)
-                let set = |st: Step| {
-                    e.gps_fit_update(car, id, |s| (s.phase, s.done, s.total) = (Some(st.phase), st.done, st.total));
-                    e.gps_fit_yield(car, id);
-                };
-                let live = Live { e: &e, car };
-                let keys = rec.vehicle_keys.clone();
-                collect(&live, e.store(), e.judge(), &rt, &keys, days, now_ms(), &set).map(|c| {
-                    set(Step { phase: Phase::Fitting, done: 0, total: 0 });
-                    fit(&c, days, car)
-                })
+                // waited for another fit while the server stopped: none starts
+                if e.inner.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                    Err(STOPPED.to_string())
+                } else {
+                    // (told between two days or logs, and before the layouts are tried: a rebuild under way is let
+                    // go first; a stop of the server ends the wait, and the next day or log ends the fit)
+                    let set = |st: Step| {
+                        e.gps_fit_update(car, id, |s| {
+                            if st.phase == Phase::Logs && s.phase != Some(Phase::Logs) {
+                                s.logs_started_ms = Some(now_ms());
+                            }
+                            (s.phase, s.done, s.total) = (Some(st.phase), st.done, st.total);
+                            if st.positions_total + st.logs_total > 0 {
+                                (s.positions_total, s.logs_total) = (st.positions_total, st.logs_total);
+                            }
+                        });
+                        e.gps_fit_yield(car, id);
+                    };
+                    let live = Live { e: &e, car };
+                    let keys = rec.vehicle_keys.clone();
+                    collect(&live, e.store(), e.judge(), &rt, &keys, days, now_ms(), &set).and_then(|c| {
+                        set(Step { phase: Phase::Fitting, done: 0, total: 0, positions_total: 0, logs_total: 0 });
+                        // stopped while it waited for a rebuild before the layouts: none is tried
+                        if let Some(why) = live.stopped() {
+                            return Err(why);
+                        }
+                        Ok(fit(&c, days, car))
+                    })
+                }
             };
             e.gps_fit_update(car, id, |s| {
                 s.finished_ms = Some(now_ms());
@@ -1521,12 +1604,23 @@ impl Engine {
                     Err(why) => (s.state, s.error) = (FitState::Failed, Some(why)),
                 }
             });
+            // every run is kept, to be looked at again after the server restarts (not one the server stopped under:
+            // a server whose data moved away writes nothing more)
+            if let Some(done) = e.gps_fit_status(car).filter(|s| s.id == id)
+                && !e.is_stopping()
+                && let Err(x) = e.gps_fit_store(&done)
+            {
+                tracing::warn!("GPS layout fit: the run could not be kept: {x}");
+            }
         });
         if let Err(err) = spawned {
             self.gps_fit_update(car, id, |s| {
                 (s.state, s.phase, s.finished_ms) = (FitState::Failed, None, Some(now_ms()));
                 s.error = Some(format!("starting the fit: {err}"));
             });
+            if let Some(done) = self.gps_fit_status(car).filter(|s| s.id == id) {
+                let _ = self.gps_fit_store(&done);
+            }
         }
         Ok(self.gps_fit_status(car).unwrap_or(status))
     }
@@ -1536,14 +1630,21 @@ impl Engine {
     /// days or logs: its progress kept, `waiting` saying why) and goes on once none runs. So a fit asked during a
     /// rebuild is never lost, and a rebuild started during a fit waits for one log of the fit at most.
     fn gps_fit_yield(&self, car: CarId, id: u64) {
+        let began = now_ms();
+        let mut waited = false;
         while let Some(why) = self.rebuild_running() {
             if self.inner.stopping.load(std::sync::atomic::Ordering::SeqCst) {
                 break;
             }
+            waited = true;
             self.gps_fit_update(car, id, |s| s.waiting = Some(why));
             std::thread::sleep(*lock(&self.inner.gps_fit_wait));
         }
-        self.gps_fit_update(car, id, |s| s.waiting = None);
+        let spent = if waited { now_ms().saturating_sub(began) } else { 0 };
+        self.gps_fit_update(car, id, |s| {
+            s.waiting = None;
+            s.waited_ms += spent;
+        });
     }
 
     /// What a fit waits for: a full rebuild or a rebuild job running (one put off, paused, or waiting to start
@@ -1575,9 +1676,9 @@ impl Engine {
         }
     }
 
-    /// The car's newest fit (under way, or done since the server started).
+    /// The car's newest fit (under way, or the newest kept: runs are there after a restart).
     pub fn gps_fit_status(&self, car: CarId) -> Option<FitStatus> {
-        lock(&self.inner.gps_fits).jobs.get(&car).cloned()
+        self.gps_fit_newest(car)
     }
 
     /// What else the server is busy with that a person waiting may want to know of: a full rebuild and how far it
@@ -2001,28 +2102,87 @@ mod tests {
         no_position(&o);
     }
 
-    #[test]
-    fn the_percentage_weighs_the_phases() {
-        let mut s = FitStatus {
+    fn status(phase: Phase, done: u64, positions_total: u64, logs_total: u64) -> FitStatus {
+        FitStatus {
             id: 1,
             car: 1,
             days: 30,
             state: FitState::Running,
-            phase: Some(Phase::Positions),
-            done: 5,
-            total: 10,
+            phase: Some(phase),
+            done,
+            total: if phase == Phase::Positions { positions_total } else { logs_total },
+            positions_total,
+            logs_total,
+            logs_started_ms: Some(1_000_000),
             started_ms: 0,
             finished_ms: None,
             error: None,
             outcome: None,
             waiting: None,
-        };
-        assert_eq!(s.percent(), 15);
-        (s.phase, s.done, s.total) = (Some(Phase::Logs), 1, 2);
-        assert_eq!(s.percent(), 60);
-        s.phase = Some(Phase::Queued);
-        assert_eq!(s.percent(), 0);
+            waited_ms: 0,
+            applied_ms: None,
+            applied_by: None,
+        }
+    }
+
+    /// The bar is weighed by the work: 150 days of positions and 22 402 logs, so 272 logs read is not 30 %.
+    #[test]
+    fn the_percentage_is_weighed_by_the_work_of_each_step() {
+        let (p, l) = (150, 22_402);
+        assert_eq!(status(Phase::Queued, 0, 0, 0).percent(), 0);
+        assert_eq!(status(Phase::Positions, 0, p, l).percent(), 0);
+        // every day of positions read: under 1 % of the work
+        assert_eq!(status(Phase::Positions, 150, p, l).percent(), 0);
+        assert_eq!(status(Phase::Logs, 0, p, l).percent(), 0);
+        // the owner's report: 272 of 22 402 logs
+        assert_eq!(status(Phase::Logs, 272, p, l).percent(), 1);
+        assert_eq!(status(Phase::Logs, 11_201, p, l).percent(), 49);
+        assert_eq!(status(Phase::Logs, 22_402, p, l).percent(), 98);
+        let fitting = status(Phase::Fitting, 0, p, l);
+        assert!(fitting.percent() >= 98 && fitting.percent() < 100, "{}", fitting.percent());
+        // a car with almost no logs: the days of positions are most of it
+        assert_eq!(status(Phase::Positions, 75, 150, 10).percent(), 46);
+        let mut s = status(Phase::Logs, 1, p, l);
         s.state = FitState::Done;
         assert_eq!(s.percent(), 100);
+        // a count past its total never passes it
+        assert!(status(Phase::Logs, 99_999, p, l).percent() < 100);
+    }
+
+    /// While it waits for a rebuild there is no time left, and the time waited is not part of the speed.
+    #[test]
+    fn the_time_left_ignores_the_time_waited_for_a_rebuild() {
+        let at = 1_000_000;
+        let mut s = status(Phase::Logs, 2_200, 150, 22_402);
+        s.waiting = Some("a full rebuild".into());
+        assert_eq!(s.eta_ms(at + 22_000), None, "waiting");
+        s.waiting = None;
+        // 22 s since the logs began, 12 of them waited: 2 200 logs in 10 s
+        s.waited_ms = 12_000;
+        assert_eq!(s.eta_ms(at + 22_000), Some(91_827));
+        // all of it waited: no speed yet
+        s.waited_ms = 22_000;
+        assert_eq!(s.eta_ms(at + 22_000), None);
+    }
+
+    /// The time left is from the speed the logs were read at, `None` until there is one.
+    #[test]
+    fn the_time_left_follows_the_speed_of_the_logs() {
+        let (p, l) = (150, 22_402);
+        let at = 1_000_000;
+        assert_eq!(status(Phase::Logs, 0, p, l).eta_ms(at + 5_000), None, "no log done");
+        assert_eq!(status(Phase::Logs, 100, p, l).eta_ms(at), None, "no time passed");
+        // 2 200 logs in 22 s: 100 a second, 20 202 left: 202 s
+        assert_eq!(status(Phase::Logs, 2_200, p, l).eta_ms(at + 22_000), Some(202_020));
+        // the last log done: nothing left
+        assert_eq!(status(Phase::Logs, 22_402, p, l).eta_ms(at + 10_000), Some(0));
+        assert_eq!(status(Phase::Positions, 10, p, l).eta_ms(at + 10_000), None);
+        assert_eq!(status(Phase::Fitting, 0, p, l).eta_ms(at + 10_000), None);
+        let mut s = status(Phase::Logs, 5, p, l);
+        s.logs_started_ms = None;
+        assert_eq!(s.eta_ms(at + 10_000), None);
+        s.logs_started_ms = Some(at);
+        s.state = FitState::Done;
+        assert_eq!(s.eta_ms(at + 10_000), None);
     }
 }

@@ -70,6 +70,9 @@ class Contract(ServerCase):
         cls.ids["row"] = c.get("/api/v1/cars/c1/firmware/history?module=bms&limit=500")["items"][-1]["id"]
         cls.invoice_charge = inv["charge"]
         cls.server.app.store.exports[cls.ids["export"]]["made_ms"] -= 10_000  # prepared
+        # a finished GPS layout fit of c1 (for the paths that name one)
+        cls.ids["fit"] = c.json("POST", "/api/v1/cars/c1/gps-layout/fit", {"days": 30}, expect=202)["id"]
+        cls.server.app.clock.advance(10_000)
         cls.bodies = []
 
     # ------------------------------------------------------------ helpers
@@ -286,6 +289,9 @@ class Contract(ServerCase):
             ("PUT", "/api/v1/cars/{car}/gps-layout",
              lambda: (None, {"layout": "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)"}, None)),
             ("POST", "/api/v1/cars/{car}/gps-layout/fit", lambda: (None, {"days": 30}, None)),
+            ("POST", "/api/v1/cars/{car}/gps-layout/fits/{fit}/apply",
+             lambda: (None, {"confirm_password": "sentry-mate-dev"}, None)),
+            ("DELETE", "/api/v1/cars/{car}/gps-layout/fits/{fit}", lambda: (None, {}, None)),
             ("POST", "/api/v1/system/storage/compact", lambda: (None, None, None)),
             ("POST", "/api/v1/cars/{car}/full-rebuild", lambda: (None, {"confirm_password": "sentry-mate-dev"}, None)),
             ("PATCH", "/api/v1/system/full-rebuild", lambda: (None, {"when": "pause"}, None)),

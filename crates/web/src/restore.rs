@@ -129,6 +129,7 @@ fn view(
         "problem": problem,
         "result": result,
         "skipped": [],
+        "log": [],
     })
 }
 

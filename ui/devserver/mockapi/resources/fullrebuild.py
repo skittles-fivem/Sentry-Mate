@@ -6,7 +6,7 @@ history's length), days and switch take a set share of FULL_MS; it ends done. `-
 server with one of every car under way (a long one, a third through: screenshots), `--full-rebuild failed` with one
 that failed on c2 (the old history kept), `--full-rebuild offered` with c1's history made with an older decoding and
 the automatic run off (the notice offers it), `--full-rebuild planned` with a new version's run of every car waiting
-its grace. The POST asks for the admin's password again (as tesla.reconfirm); one while another runs joins it
+its grace, `--full-rebuild paused` with a run paused part way after an earlier one was cancelled. The POST asks for the admin's password again (as tesla.reconfirm); one while another runs joins it
 (`joined: true`). PATCH `{ when }` starts the one under way now, puts it off until tonight or pauses it: a held run
 does not move on the virtual clock. Each status says why it runs (`causes`) and has the last rebuilds (`history`).
 """
@@ -91,7 +91,15 @@ def seed(store, cfg, now):
         j["causes"] = [POSITIONS, EFFICIENCY]
         j["hold"] = {"kind": "grace", "until_ms": now - MIN + GRACE_MS, "since_ms": now - MIN}
         store.full_rebuild = j
-    if store.full_rebuild and mode in ("running", "failed"):
+    elif mode == "paused" and cars:
+        # one cancelled 73 s ago, and the run started after it paused part way through the decoding
+        store.full_history.insert(0, {"kind": "full", "scope": "all", "cars": list(cars), "state": "cancelled", "logs": 3_120,
+                                      "causes": [_owner("admin")], "started_ms": now - 9 * MIN, "finished_ms": now - 73_000})
+        j = _job(cars, "all", "owner", "admin", now - 50 * MIN, long=True)
+        j["id"] = 2
+        j["hold"] = {"kind": "paused", "until_ms": None, "since_ms": now - 20_000}
+        store.full_rebuild = j
+    if store.full_rebuild and mode in ("running", "failed", "paused"):
         store.full_rebuild["causes"] = [_owner("admin")]
 
 
@@ -216,6 +224,7 @@ def _view(req, j):
         "errors": errors, "error": j["error"] if state == "failed" else None, "by": j["by"],
         "causes": list(j.get("causes") or []),
         "hold": {"kind": held["kind"], "until_ms": held["until_ms"]} if held and state == "running" else None,
+        "cancelling": False,
     }
 
 
@@ -227,7 +236,7 @@ def status(req, car=None):
             "bytes": {"done": 0, "total": 0, "copied": 0}, "percent": None, "rate_bytes_per_s": None,
             "rate_logs_per_s": None, "rate_days_per_s": None, "eta_ms": None,
             "started_ms": None, "finished_ms": None, "last_progress_ms": None, "stalled": False, "errors": [],
-            "error": None, "by": None, "causes": [], "hold": None}
+            "error": None, "by": None, "causes": [], "hold": None, "cancelling": False}
     v = _view(req, j) if j else base
     if j and v["state"] != "running" and not j.get("audited"):
         _audit_end(req, j, v)

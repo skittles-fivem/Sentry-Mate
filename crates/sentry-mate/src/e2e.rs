@@ -57,9 +57,14 @@ fn dechunk(mut b: &[u8]) -> Vec<u8> {
 
 impl Client {
     pub(crate) async fn request(&mut self, method: &str, path: &str, body: Option<Value>) -> Answer {
-        let tcp = tokio::net::TcpStream::connect(("127.0.0.1", self.port)).await.unwrap();
+        self.try_request(method, path, body).await.expect("the server answers")
+    }
+
+    /// [`Client::request`], `None` when the port is closed or the connection drops (a server starting again).
+    pub(crate) async fn try_request(&mut self, method: &str, path: &str, body: Option<Value>) -> Option<Answer> {
+        let tcp = tokio::net::TcpStream::connect(("127.0.0.1", self.port)).await.ok()?;
         let name = ServerName::try_from("localhost").unwrap();
-        let mut tls = tokio_rustls::TlsConnector::from(self.tls.clone()).connect(name, tcp).await.unwrap();
+        let mut tls = tokio_rustls::TlsConnector::from(self.tls.clone()).connect(name, tcp).await.ok()?;
         let body = body.map(|b| serde_json::to_vec(&b).unwrap()).unwrap_or_default();
         let mut req = format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
         if method != "GET" {
@@ -72,8 +77,8 @@ impl Client {
             req.push_str(&format!("Cookie: {c}\r\n"));
         }
         req.push_str("\r\n");
-        tls.write_all(req.as_bytes()).await.unwrap();
-        tls.write_all(&body).await.unwrap();
+        tls.write_all(req.as_bytes()).await.ok()?;
+        tls.write_all(&body).await.ok()?;
         let mut raw = Vec::new();
         let _ = tls.read_to_end(&mut raw).await;
         let split = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap_or(raw.len());
@@ -90,12 +95,15 @@ impl Client {
         for (k, v) in &headers {
             if k.eq_ignore_ascii_case("set-cookie")
                 && let Some(pair) = v.split(';').next()
-                && pair.starts_with(accounts::COOKIE)
+                && (pair.starts_with(accounts::COOKIE) || pair.starts_with(web::moving::CLAIM_COOKIE))
             {
                 self.cookie = (!v.contains("Max-Age=0")).then(|| pair.to_string());
             }
         }
-        Answer { status, headers, body }
+        if status == 0 {
+            return None;
+        }
+        Some(Answer { status, headers, body })
     }
 
     pub(crate) async fn get(&mut self, path: &str) -> Answer {
@@ -137,7 +145,6 @@ async fn a_seeded_server_shows_its_made_up_car_on_the_web_port() {
             candump: false,
             with_real_cars: false,
             start_ms: None,
-            awake_min: None,
         };
         let gate = gate::Gate::memory();
         let enter = || -> Result<gate::Pass, Box<dyn std::error::Error>> { Ok(gate.enter(GATE_WAIT)?) };
@@ -261,7 +268,6 @@ async fn two_seeded_cars_stay_two_cars_and_their_keys_and_tokens_are_served() {
             candump: false,
             with_real_cars: false,
             start_ms: None,
-            awake_min: None,
         };
         let gate = gate::Gate::memory();
         let enter = || -> Result<gate::Pass, Box<dyn std::error::Error>> { Ok(gate.enter(GATE_WAIT)?) };
@@ -564,7 +570,7 @@ impl rustls::client::danger::ServerCertVerifier for AnyCert {
     }
 }
 
-fn any_cert() -> Arc<rustls::ClientConfig> {
+pub(crate) fn any_cert() -> Arc<rustls::ClientConfig> {
     Arc::new(
         rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
             .with_protocol_versions(&[&rustls::version::TLS13])
@@ -723,7 +729,7 @@ async fn a_new_certificate_from_the_web_pages_is_served_on_both_ports_at_once() 
 }
 
 /// A fresh server set up with `PASSWORD` as the owner's: its client.
-async fn set_up(keys: &Path, web_port: u16, password: &str) -> Client {
+pub(crate) async fn set_up(keys: &Path, web_port: u16, password: &str) -> Client {
     let mut c = Client { port: web_port, tls: any_cert(), cookie: None };
     // the code is written just after the port opens
     let file = keys.join(site::SETUP_FILE);

@@ -21,6 +21,8 @@
 
 import { formatNumber } from './i18n.js';
 import { h, setVars } from './dom.js';
+import { gpsFitHistory } from './gpsfits.js';
+import { durationText } from './fullrebuild.js';
 
 export const BUTTON = 'Find GPS layout';
 export const AGAIN = 'Find again';
@@ -74,7 +76,8 @@ export function applyBody(s) {
 
 /**
  * Every slot of the block, as text:
- * { state, running, button, buttonDisabled, pct (0..100), bar (0..1), step, headline, tone ('off'|'wait'|'ok'|'warn'|'error'),
+ * { state, running, button, buttonDisabled, pct (0..100), bar (0..1), step, eta ('about 3 min left' once the logs'
+ *   speed is known, else ''), headline, tone ('off'|'wait'|'ok'|'warn'|'error'),
  *   rows: [{ label, layout, median, p95 }] (latitude and longitude, always two), pairs, notes, canApply, applied,
  *   applyTitle }
  */
@@ -85,7 +88,7 @@ export function fitModel(s) {
     state, running: on,
     button: on ? RUNNING : (state === 'idle' ? BUTTON : AGAIN),
     buttonDisabled: on,
-    pct: 0, bar: 0, step: '', headline: '', tone: 'off',
+    pct: 0, bar: 0, step: '', eta: '', headline: '', tone: 'off',
     rows: [{ label: 'Latitude', layout: '', median: '', p95: '' }, { label: 'Longitude', layout: '', median: '', p95: '' }],
     pairs: '', notes: '', canApply: false, applied: false, applyTitle: '',
   };
@@ -100,6 +103,7 @@ export function fitModel(s) {
     const unit = UNITS[s.phase];
     const what = PHASES[s.phase] || 'Starting';
     out.step = unit && s.total ? `${what}: ${formatNumber(s.done ?? 0)} of ${count(s.total, unit)}` : what;
+    out.eta = Number.isFinite(s.eta_ms) ? `${durationText(s.eta_ms)} left` : '';
     out.headline = `Finding the layout (${out.pct} %)`;
     if (s.server_busy) out.notes = `The server is also busy: ${s.server_busy}.`;
     // (a rebuild runs: the fit waits, its progress kept, and goes on once it ends)
@@ -237,7 +241,7 @@ export function gpsFitBlock({ api, car, alive = () => true, confirm = async () =
     bar.setAttribute('aria-valuenow', String(m.pct));
     pct.textContent = m.state === 'idle' ? '' : `${m.pct} %`;
     head.textContent = m.headline;
-    step.textContent = m.running ? m.step : m.pairs;
+    step.textContent = m.running ? [m.step, m.eta].filter(Boolean).join(' · ') : m.pairs;
     step.title = step.textContent;
     m.rows.forEach((r, i) => {
       rows[i].dt.textContent = r.label;
@@ -305,13 +309,15 @@ export function layoutModel(a, when = (ms) => new Date(ms).toISOString()) {
 /**
  * The always-present "GPS layout" section of Data health, built once and changed in place:
  * gpsLayoutSection({ api, car, admin, when, ...gpsFitBlock's options, resetClass })
- *   admin: the buttons are there (others see the line read-only); when(ms): the pack's words for a moment;
+ *   admin: the buttons are there (others see the line read-only), and the list of past fits (gpsfits.js);
+ *   password(opts): the pack's password dialog (applying a past fit asks the password again);
+ *   when(ms): the pack's words for a moment;
  *   onApplied(): after Apply or Reset (the page reads its health again).
  * -> { el, ready (the first reads), load() (the layout read again), stop() }
  */
 export function gpsLayoutSection({ api, car, admin = false, when, alive = () => true, confirm = async () => true,
   flash = () => {}, errorText = (e) => e?.message || String(e), onApplied = () => {}, btnClass = 'btn btn--sm',
-  applyClass = 'btn btn--sm', resetClass = btnClass, barClass = '', icon = () => null } = {}) {
+  applyClass = 'btn btn--sm', resetClass = btnClass, barClass = '', icon = () => null, password = async () => null } = {}) {
   let A = null;
   let open = false;
   let busy = false;
@@ -328,7 +334,19 @@ export function gpsLayoutSection({ api, car, admin = false, when, alive = () => 
   const block = admin ? gpsFitBlock({
     api, car, alive, confirm, flash, errorText, btnClass, applyClass, barClass, icon, inline: true,
     onApplied: () => { load().catch(() => {}); onApplied(); },
-    onStatus: (s) => { if (s && s.state !== 'idle') open = true; paint(); },
+    onStatus: (s) => {
+      if (s && s.state !== 'idle') open = true;
+      // a run that ended is in the list now
+      if (lastState === 'running' && s?.state !== 'running') past?.load().catch(() => {});
+      lastState = s?.state;
+      paint();
+    },
+  }) : null;
+  let lastState = null;
+  const past = admin ? gpsFitHistory({
+    api, car, when, alive, confirm, password, flash, errorText, btnClass, ghostClass: resetClass, icon,
+    model: fitModel,
+    onApplied: () => { load().catch(() => {}); block?.load().catch(() => {}); onApplied(); },
   }) : null;
   if (block) fitHere.append(block.el);
   const el = h('div', { class: 'gl', id: 'gps-layout' },
@@ -337,7 +355,8 @@ export function gpsLayoutSection({ api, car, admin = false, when, alive = () => 
       // its width follows the line (the packs' pixel snap leaves it alone, so the buttons stay on the line)
       h('span', { class: 'gl-text', 'data-nosnap': '' }, val, at),
       admin ? h('span', { class: 'gl-acts' }, block.find, reset) : null),
-    admin ? fitHere : null);
+    admin ? fitHere : null,
+    past ? past.el : null);
 
   function paint() {
     const m = layoutModel(A, when);
@@ -371,6 +390,6 @@ export function gpsLayoutSection({ api, car, admin = false, when, alive = () => 
   }
 
   paint();
-  const ready = Promise.all([load().catch(() => {}), block?.ready]).then(() => {});
-  return { el, ready, load, stop: () => block?.stop() };
+  const ready = Promise.all([load().catch(() => {}), block?.ready, past?.ready]).then(() => {});
+  return { el, ready, load, stop: () => { block?.stop(); past?.stop(); } };
 }

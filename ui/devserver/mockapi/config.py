@@ -23,8 +23,8 @@ MAP_TILES = ("online", "none", "offline")
 RELEASE_CHECK = ("off", "newer", "up_to_date", "error", "never", "checking")
 # --teslamate-trouble: the local TeslaMate starts in this trouble, with its admins' notice (resources/teslamate.py)
 # --full-rebuild: the full rebuild the server starts with (resources/fullrebuild.py)
-FULL_REBUILD = ("none", "running", "failed", "offered", "planned")
-GPS_FIT = ("none", "disagree", "running", "done")
+FULL_REBUILD = ("none", "running", "failed", "offered", "planned", "paused")
+GPS_FIT = ("none", "disagree", "running", "done", "history")
 TESLAMATE_TROUBLE = ("none", "connection_refused", "auth_failed", "pin_mismatch", "quiet", "catchup_failed")
 
 
@@ -96,7 +96,7 @@ def parse_args(argv=None) -> Config:
     ap.add_argument("--gps-fit", choices=GPS_FIT, default="none",
                     help="every featured car's positions from one input are out of step (Data health's "
                          "gps_inputs_disagree, with Find GPS layout for admins), and its GPS layout fit: not run "
-                         "(disagree), under way and never ending (running), or done with a layout found (done)")
+                         "(disagree), under way and never ending (running), or done with a layout found (done), or four finished runs with one applied (history)")
     ap.add_argument("--verbose", action="store_true", help="log every request to stderr")
     ap.add_argument("--own-certificate", action="store_true",
                     help="run with the owner's own certificate (expiring in 12 days): no new one can be made here")
@@ -115,7 +115,8 @@ def parse_args(argv=None) -> Config:
                     help="start with a full rebuild of every car under way (running: a long one, a third through), "
                          "one that failed on the second car (failed), or the first car's history made with an older "
                          "decoding and the automatic run off (offered: the notice offers one), or a new version's "
-                         "full rebuild of every car planned, waiting its grace (planned: start now, tonight or pause)")
+                         "full rebuild of every car planned, waiting its grace (planned: start now, tonight or pause), or a run paused part way after an "
+                         "earlier one was cancelled (paused)")
     ap.add_argument("--drives", type=int, default=0,
                     help="give car c1 about this many drives in all (short errands from home added each day; "
                          "0: the usual history, about 1150)")

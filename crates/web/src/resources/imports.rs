@@ -177,6 +177,22 @@ impl Imports {
     pub fn set_gate(&self, g: gate::Gate) {
         let _ = self.gate.set(g);
     }
+
+    /// The data moved to another server: every check and import under way stops at its next read and writes
+    /// nothing more (its job stays as it was saved; after `move undo` a cut import goes back to `ready`, and on the
+    /// new server too). How many were under way.
+    pub fn stop_for_move(&self) -> usize {
+        let st = self.lock();
+        for l in st.live.values() {
+            l.stop.store(true, Ordering::Relaxed);
+        }
+        st.live.len()
+    }
+
+    /// The checks and imports running now.
+    pub fn running(&self) -> usize {
+        self.lock().live.len()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1721,6 +1737,10 @@ async fn assign_hold(
 pub fn spawn_rehome(app: &AppState) -> tokio::task::JoinHandle<()> {
     let app = app.clone();
     tokio::task::spawn_blocking(move || {
+        // a server whose data moved away writes nothing
+        if crate::moving::data_moved(&app) {
+            return;
+        }
         if let Err(e) = rehome(&app) {
             tracing::warn!("checking imported rows' cars: {}", e.message);
         }
