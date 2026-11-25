@@ -28,7 +28,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -80,8 +80,12 @@ pub struct MoveSite {
     /// The options a restore runs with (`None`: the usual ones for this version).
     import_opts: Option<Arc<moving::Options>>,
     state: Mutex<SiteState>,
-    /// The export file kept across a restart is looked for once ([`MoveSite::recover_export`]).
+    /// The export file kept across a restart is looked for once ([`recover`]).
     recovered: std::sync::Once,
+    /// This web side's turn at the data folder's state file of the export ([`MoveSite::owned`]).
+    generation: u64,
+    /// How long the start waits for a kept file the web side that stopped before still holds.
+    reopen_wait: Duration,
     /// Held while the first admin is made and while a move or a restore is begun ([`MoveSite::setup_gate`]).
     setup_gate: Mutex<()>,
     /// Tests: called at named points (see [`MoveSite::with_pause`]).
@@ -90,6 +94,30 @@ pub struct MoveSite {
 
 /// A test's hook ([`MoveSite::with_pause`]).
 type Pause = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Which web side of a data folder writes its export state file: the latest made. A web side that was replaced (the
+/// program starts the web side again after an import's switch or a move) and still has a job or a download going
+/// writes nothing of it.
+static OWNERS: Mutex<BTreeMap<PathBuf, u64>> = Mutex::new(BTreeMap::new());
+static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_generation(data: &std::path::Path) -> u64 {
+    let n = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    OWNERS.lock().unwrap_or_else(|e| e.into_inner()).insert(data.to_path_buf(), n);
+    n
+}
+
+/// Why a replaced web side did not write.
+const REPLACED: &str = "the web side was replaced";
+
+impl Drop for MoveSite {
+    /// The web side stops: its export's checksum stops with it (a new one reads the file again).
+    fn drop(&mut self) {
+        if let Some(e) = &self.state.get_mut().unwrap_or_else(|e| e.into_inner()).export {
+            e.watch.cancel();
+        }
+    }
+}
 
 /// The claim: its token's SHA-256, its last use, and the set-up code it was made with (for the first admin).
 type Claim = (String, u64, Zeroizing<String>);
@@ -143,6 +171,9 @@ struct SiteState {
     /// Wrong recovery keys from each address (a restore's), the same way.
     wrong_keys: HashMap<std::net::IpAddr, Vec<u64>>,
     export: Option<ExportSlot>,
+    /// A finished export file the start could not open again because a web side that stopped still holds it: tried
+    /// again when the next request about exports comes ([`MoveSite::retry_pending`]).
+    pending: Option<SlotFile>,
 }
 
 struct ExportSlot {
@@ -174,6 +205,7 @@ impl ExportSlot {
 
 impl MoveSite {
     pub fn new(data: PathBuf, keys: PathBuf, app_version: &str) -> MoveSite {
+        let generation = next_generation(&data);
         MoveSite {
             data,
             keys,
@@ -185,9 +217,18 @@ impl MoveSite {
             import_opts: None,
             state: Mutex::new(SiteState::default()),
             recovered: std::sync::Once::new(),
+            generation,
+            reopen_wait: Duration::from_secs(4),
             setup_gate: Mutex::new(()),
             pause: None,
         }
+    }
+
+    /// Tests only: how long the start waits for a kept export file a stopped web side still holds.
+    #[doc(hidden)]
+    pub fn with_reopen_wait(mut self, wait: Duration) -> MoveSite {
+        self.reopen_wait = wait;
+        self
     }
 
     /// Tests only: `f` is called (on a blocking thread, so it may wait) at these points: `restore-key-opened` (a
@@ -302,15 +343,16 @@ pub fn data_moved(app: &AppState) -> bool {
 }
 
 pub(crate) fn site(app: &AppState) -> ApiResult<Arc<MoveSite>> {
-    let s = app.service::<MoveSite>()?;
-    s.recovered.call_once(|| s.recover_export(app));
-    Ok(s)
+    app.service::<MoveSite>()
 }
 
-/// Takes up the export file a restart left (done once; the first use of the move side does it too). The program
-/// calls it at its start, so a file that expired while the server was stopped is removed then.
+/// Takes up the export file a restart left (done once). The program calls it as it builds the web side (on a blocking
+/// thread, never after the data moved away: nothing writes then), so a file that expired while the server was stopped
+/// is removed then. Nothing else does it: a request never waits for it.
 pub fn recover(app: &AppState) {
-    let _ = site(app);
+    if let Ok(s) = app.service::<MoveSite>() {
+        s.recovered.call_once(|| s.recover_export(app));
+    }
 }
 
 pub(crate) fn moving_error(e: moving::Error) -> ApiError {
@@ -629,7 +671,7 @@ fn tidy_export(s: &MoveSite, vault: &vault::Vault, st: &mut SiteState, now: u64)
     {
         e.watch.cancel();
         if let Some(snap) = e.snapshot.take() {
-            snap.keep_on_drop(false);
+            let _ = snap.keep_on_drop(false);
         }
         e.error = Some(EXPIRED.into());
         s.save_best_effort(vault, e);
@@ -660,17 +702,30 @@ struct SlotFile {
     error: Option<String>,
 }
 
-/// [`moving::Snapshot::reopen`], waiting a few seconds while the folder is still in use: a web side that stopped in
-/// this process (a restart without leaving the program) may hold it until its last download or job lets go.
-fn reopen_waiting(data: &std::path::Path, vault: &vault::Vault, hid: &str) -> Result<moving::Snapshot, String> {
-    let mut tries = 0;
+/// Why a kept snapshot did not open again.
+enum OpenError {
+    /// The folder is held (by a web side that stopped in this process, until its job or download lets go).
+    InUse,
+    Other(String),
+}
+
+/// [`moving::Snapshot::reopen`], waiting up to `wait` while the folder is still in use.
+fn reopen_waiting(
+    data: &std::path::Path,
+    vault: &vault::Vault,
+    hid: &str,
+    wait: Duration,
+) -> Result<moving::Snapshot, OpenError> {
+    let end = std::time::Instant::now() + wait;
     loop {
         match moving::Snapshot::reopen(data, vault, hid) {
-            Err(e) if e.to_string().contains("in use") && tries < 40 => {
-                tries += 1;
-                std::thread::sleep(std::time::Duration::from_millis(100));
+            Err(e) if e.to_string().contains("in use") => {
+                if std::time::Instant::now() >= end {
+                    return Err(OpenError::InUse);
+                }
+                std::thread::sleep(Duration::from_millis(100));
             }
-            r => return r.map_err(|e| e.to_string()),
+            r => return r.map_err(|e| OpenError::Other(e.to_string())),
         }
     }
 }
@@ -702,12 +757,24 @@ impl MoveSite {
             error: e.error.clone(),
         };
         let json = serde_json::to_vec(&f).map_err(|e| e.to_string())?;
-        vault.write_file(&self.slot_path(), SLOT_LABEL, &json).map_err(|e| e.to_string())
+        self.owned(|| vault.write_file(&self.slot_path(), SLOT_LABEL, &json).map_err(|e| e.to_string()))?
+    }
+
+    /// Runs `f` only while this is the latest web side of its data folder (under the lock that makes a newer one
+    /// take over): a replaced web side writes nothing of the export's state.
+    fn owned<T>(&self, f: impl FnOnce() -> T) -> Result<T, String> {
+        let owners = OWNERS.lock().unwrap_or_else(|e| e.into_inner());
+        if owners.get(&self.data) != Some(&self.generation) {
+            return Err(REPLACED.to_string());
+        }
+        Ok(f())
     }
 
     /// [`MoveSite::save_slot`] where a failure only goes to the log.
     fn save_best_effort(&self, vault: &vault::Vault, e: &ExportSlot) {
-        if let Err(err) = self.save_slot(vault, e) {
+        if let Err(err) = self.save_slot(vault, e)
+            && err != REPLACED
+        {
             tracing::warn!("the export file's state could not be saved: {err}");
         }
     }
@@ -735,12 +802,13 @@ impl MoveSite {
     fn retire(&self, e: &ExportSlot) {
         e.watch.cancel();
         if let Some(snap) = &e.snapshot {
-            snap.keep_on_drop(false);
+            let _ = snap.keep_on_drop(false);
         }
     }
 
     fn remove_slot_file(&self) {
-        if let Err(err) = std::fs::remove_file(self.slot_path())
+        let removed = self.owned(|| std::fs::remove_file(self.slot_path()));
+        if let Ok(Err(err)) = removed
             && err.kind() != std::io::ErrorKind::NotFound
         {
             tracing::warn!("the export file's state could not be removed: {err}");
@@ -748,37 +816,93 @@ impl MoveSite {
     }
 
     /// At the start (once): takes up what the last run left of the export file. A finished one that has not expired
-    /// is opened again; one that was being made is reported stopped (its snapshot was one moment taken under a pause
-    /// of the writes that died with the process, and made again it would pause them without the owner's password);
-    /// one that expired meanwhile is removed. What no state file names is removed.
+    /// is opened again (one a web side that stopped still holds is waited for a few seconds, then looked for again
+    /// with the next request about exports); one that was being made is reported stopped (its snapshot was one moment
+    /// taken under a pause of the writes that died with the process, and made again it would pause them without the
+    /// owner's password); one that expired meanwhile is removed. What no state file names is removed.
     fn recover_export(self: &Arc<Self>, app: &AppState) {
-        let _ = std::fs::remove_file(self.data.join(moving::export::SNAPSHOTS).join("slot.tmp"));
+        // a state file being written when the last run stopped
+        for e in std::fs::read_dir(self.data.join(moving::export::SNAPSHOTS)).into_iter().flatten().flatten() {
+            let name = e.file_name();
+            if name.to_str().is_some_and(|n| n.starts_with("slot.") && n.ends_with(".tmp")) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
         let now = app.now();
+        let mut named: Option<String> = None;
         match self.load_slot(&app.vault) {
             Ok(None) => {}
             Err(err) => tracing::warn!("the export file's state could not be read, it is dropped: {err}"),
             Ok(Some(f)) => {
-                let slot = self.take_up(app, f, now);
-                if let Some(e) = &slot {
-                    self.save_best_effort(&app.vault, e);
-                }
-                self.lock().export = slot;
+                let mut st = self.lock();
+                named = self.take_up_into(app, &mut st, f, now, self.reopen_wait);
             }
         }
-        // the one kept holds its lock: only the rest go
+        // the start's upkeep left the kept snapshots: only the one the state file names stays, the rest go
+        moving::export::remove_stale_kept(&self.data, &named.iter().map(String::as_str).collect::<Vec<_>>());
         moving::export::remove_unused_snapshots(&self.data);
     }
 
-    fn take_up(self: &Arc<Self>, app: &AppState, f: SlotFile, now: u64) -> Option<ExportSlot> {
+    /// Takes up `f` into `st` (saved, its checksum started once it is stored). Returns the snapshot's name when it
+    /// is kept (opened, or to be opened again later).
+    fn take_up_into(
+        self: &Arc<Self>,
+        app: &AppState,
+        st: &mut SiteState,
+        f: SlotFile,
+        now: u64,
+        wait: Duration,
+    ) -> Option<String> {
+        match self.take_up(app, f, now, wait) {
+            Taken::Gone => None,
+            Taken::Later(f) => {
+                let hid = f.snapshot.clone();
+                st.pending = Some(f);
+                hid
+            }
+            Taken::Slot(e) => {
+                let hid = e.snapshot.as_ref().map(|s| s.header().id.clone());
+                self.save_best_effort(&app.vault, &e);
+                // stored before the checksum thread starts, so that what it finds is there to be kept
+                let todo = e.snapshot.clone().filter(|_| e.sha256.is_none() && e.checksum_error.is_none());
+                let (watch, id) = (e.watch.clone(), e.id.clone());
+                st.export = Some(e);
+                if let Some(snap) = todo {
+                    self.spawn_checksum(app, snap, watch, id);
+                }
+                hid
+            }
+        }
+    }
+
+    /// With a request about exports: a finished export file the start could not open (a web side that stopped held
+    /// it) is tried again.
+    fn retry_pending(self: &Arc<Self>, app: &AppState) {
+        let mut st = self.lock();
+        let Some(f) = st.pending.take() else { return };
+        let now = app.now();
+        let named = self.take_up_into(app, &mut st, f, now, Duration::ZERO);
+        if st.pending.is_none() {
+            let named: Vec<&str> = named.iter().map(String::as_str).collect();
+            drop(st);
+            moving::export::remove_stale_kept(&self.data, &named);
+        }
+    }
+
+    fn has_pending(&self) -> bool {
+        self.lock().pending.is_some()
+    }
+
+    fn take_up(self: &Arc<Self>, app: &AppState, f: SlotFile, now: u64, wait: Duration) -> Taken {
         let mut e = ExportSlot {
-            id: f.id,
+            id: f.id.clone(),
             made_ms: f.made_ms,
             snapshot: None,
-            error: f.error,
+            error: f.error.clone(),
             problem: f.problem_code.as_deref().map(problem),
             watch: Arc::new(moving::Watch::new(app.clock.clone())),
-            sha256: f.sha256,
-            checksum_error: f.checksum_error,
+            sha256: f.sha256.clone(),
+            checksum_error: f.checksum_error.clone(),
             sent_bytes: f.sent_bytes,
             last_download_ms: f.last_download_ms,
         };
@@ -797,20 +921,25 @@ impl MoveSite {
                     e.error = Some(EXPIRED.into());
                 } else {
                     let opened = match f.snapshot.as_deref() {
-                        Some(hid) => reopen_waiting(&self.data, &app.vault, hid),
-                        None => Err("no snapshot is named".to_string()),
+                        Some(hid) => reopen_waiting(&self.data, &app.vault, hid, wait),
+                        None => Err(OpenError::Other("no snapshot is named".to_string())),
                     };
                     match opened {
-                        Ok(snap) => {
-                            snap.keep_on_drop(true);
-                            let snap = Arc::new(snap);
-                            e.error = None;
-                            e.snapshot = Some(snap.clone());
-                            if e.sha256.is_none() && e.checksum_error.is_none() {
-                                self.spawn_checksum(app, snap, e.watch.clone(), e.id.clone());
+                        Ok(snap) => match snap.keep_on_drop(true) {
+                            Ok(()) => {
+                                e.error = None;
+                                e.snapshot = Some(Arc::new(snap));
                             }
-                        }
-                        Err(err) => {
+                            Err(err) => {
+                                tracing::warn!("the export file could not be kept after the restart: {err}");
+                                e.error = Some(format!("The export file could not be opened again: {err}"));
+                                e.problem = Some(problem("disk"));
+                            }
+                        },
+                        // still held by a web side that stopped: the state file stays as it is, and it is tried
+                        // again with the next request
+                        Err(OpenError::InUse) => return Taken::Later(f),
+                        Err(OpenError::Other(err)) => {
                             tracing::warn!("the export file could not be opened again after the restart: {err}");
                             e.error = Some(format!("The export file could not be opened again: {err}"));
                             e.problem = Some(problem("disk"));
@@ -820,13 +949,15 @@ impl MoveSite {
             }
             other => {
                 tracing::warn!("the export file's state `{other}` is not known, it is dropped");
-                return None;
+                return Taken::Gone;
             }
         }
-        Some(e)
+        Taken::Slot(e)
     }
 
-    /// Works out the SHA-256 on a thread of its own (the export file is ready to download meanwhile).
+    /// Works out the SHA-256 on a thread of its own (the export file is ready to download meanwhile). The thread
+    /// holds the web side only while it stores the result: a web side that stops is dropped, which cancels the
+    /// checksum, and nothing is stored.
     fn spawn_checksum(
         self: &Arc<Self>,
         app: &AppState,
@@ -834,29 +965,63 @@ impl MoveSite {
         watch: Arc<moving::Watch>,
         id: String,
     ) {
-        let (s, vault) = (self.clone(), app.vault.clone());
-        std::thread::spawn(move || s.finish_checksum(&vault, snap, &watch, &id));
+        let (me, pause, vault) = (Arc::downgrade(self), self.pause.clone(), app.vault.clone());
+        std::thread::spawn(move || checksum_job(&me, pause.as_ref(), &vault, snap, &watch, &id));
     }
+}
 
-    /// Reads the export file once for its SHA-256 and keeps it with the export `id`, if that is still the one there is.
-    fn finish_checksum(&self, vault: &vault::Vault, snap: Arc<moving::Snapshot>, watch: &moving::Watch, id: &str) {
-        let sha = snap.sha256(vault, watch);
-        drop(snap);
-        let mut st = self.lock();
-        if let Some(e) = st.export.as_mut().filter(|e| e.id == id) {
-            match sha {
-                Ok(sha) => e.sha256 = Some(sha),
-                Err(moving::Error::Cancelled) => return,
-                Err(err) => e.checksum_error = Some(err.to_string()),
-            }
-            self.save_best_effort(vault, e);
-        }
+/// Reads the export file once for its SHA-256 and keeps it with the export `id`, if that web side lives and the
+/// export is still the one there is.
+fn checksum_job(
+    me: &std::sync::Weak<MoveSite>,
+    pause: Option<&Pause>,
+    vault: &vault::Vault,
+    snap: Arc<moving::Snapshot>,
+    watch: &moving::Watch,
+    id: &str,
+) {
+    if let Some(f) = pause {
+        f("checksum");
     }
+    let sha = snap.sha256(vault, watch);
+    drop(snap);
+    let Some(s) = me.upgrade() else { return };
+    let mut st = s.lock();
+    if let Some(e) = st.export.as_mut().filter(|e| e.id == id) {
+        match sha {
+            Ok(sha) => e.sha256 = Some(sha),
+            Err(moving::Error::Cancelled) => return,
+            Err(err) => e.checksum_error = Some(err.to_string()),
+        }
+        s.save_best_effort(vault, e);
+    }
+}
+
+/// What [`MoveSite::take_up`] made of a state file.
+enum Taken {
+    Slot(ExportSlot),
+    /// The snapshot is in use still: the state file is tried again later.
+    Later(SlotFile),
+    Gone,
+}
+
+/// A finished export file the start could not open yet is tried again (on a blocking thread).
+async fn retry_pending(s: &Arc<MoveSite>, app: &AppState) -> ApiResult<()> {
+    if s.has_pending() {
+        let s = s.clone();
+        app.blocking(move |app| {
+            s.retry_pending(app);
+            Ok(())
+        })
+        .await?;
+    }
+    Ok(())
 }
 
 async fn exports(State(app): State<AppState>, Admin(_): Admin, q: crate::Params) -> ApiResult<Response> {
     q.wants_csv()?;
     let s = site(&app)?;
+    retry_pending(&s, &app).await?;
     let now = app.now();
     let mut st = s.lock();
     tidy_export(&s, &app.vault, &mut st, now);
@@ -869,11 +1034,14 @@ async fn make_export(State(app): State<AppState>, Admin(v): Admin, body: JsonBod
     body.only(&["password", "two_step"])?;
     confirm(&app, &v, &body).await?;
     let s = site(&app)?;
+    retry_pending(&s, &app).await?;
     let now = app.now();
     let mut b = [0u8; 8];
     getrandom::fill(&mut b).map_err(|e| ApiError::server(format!("an id: {e}")))?;
     let id = format!("ex{}", hex::encode(b));
     let watch = Arc::new(moving::Watch::new(app.clock.clone()));
+    // a finished file that is still held by a web side that stopped is let go of (the new one replaces it)
+    let let_go;
     {
         let mut st = s.lock();
         if st.export.as_ref().is_some_and(|e| e.snapshot.is_none() && e.error.is_none()) {
@@ -892,32 +1060,56 @@ async fn make_export(State(app): State<AppState>, Admin(v): Admin, body: JsonBod
             last_download_ms: None,
         };
         // written before anything runs: a server that stops now reports it stopped, never forgets it. A disk that
-        // can't be written fails the job itself with its own problem, which the page shows
-        s.save_best_effort(&app.vault, &new);
+        // can't be written fails the job itself with its own problem, which the page shows; the state file of the
+        // one there was must not stay to name it again after a crash
+        if let Err(err) = s.save_slot(&app.vault, &new) {
+            if err != REPLACED {
+                tracing::warn!("the export file's state could not be saved: {err}");
+            }
+            s.remove_slot_file();
+        }
         // the one there was goes (its snapshot is removed when the last download of it ends; its checksum stops)
         if let Some(old) = &st.export {
             s.retire(old);
         }
+        let_go = st.pending.take().is_some();
         st.export = Some(new);
     }
-    let (s2, app2, id2) = (s.clone(), app.clone(), id.clone());
+    // the job holds the web side only while it stores what it made: a web side that stops cancels it
+    let (me, data, version, vault, pause) =
+        (Arc::downgrade(&s), s.data.clone(), s.app_version.clone(), app.vault.clone(), s.pause.clone());
+    let id2 = id.clone();
     tokio::task::spawn_blocking(move || {
-        s2.paused("export-start");
-        let gate = gate::Gate::open(&s2.data);
-        let made = gate.map_err(moving::Error::from).and_then(|g| {
-            moving::Snapshot::make_watched(&s2.data, &app2.vault, &g, &s2.app_version, EXPORT_WAIT, &watch)
-        });
+        if let Some(f) = &pause {
+            f("export-start");
+        }
+        if let_go {
+            moving::export::remove_stale_kept(&data, &[]);
+        }
+        let gate = gate::Gate::open(&data);
+        let made = gate
+            .map_err(moving::Error::from)
+            .and_then(|g| moving::Snapshot::make_watched(&data, &vault, &g, &version, EXPORT_WAIT, &watch));
         let snap = {
+            let Some(s2) = me.upgrade() else { return };
             let mut st = s2.lock();
             let Some(e) = st.export.as_mut().filter(|e| e.id == id2) else { return };
             match made {
                 Ok(snap) => {
                     let snap = Arc::new(snap);
                     e.snapshot = Some(snap.clone());
-                    // kept across a restart only once its state says so
-                    match s2.save_slot(&app2.vault, e) {
-                        Ok(()) => snap.keep_on_drop(true),
-                        Err(err) => tracing::warn!("the export file's state could not be saved: {err}"),
+                    // kept across a restart only once its state says so (its marker first: a crash between the two
+                    // leaves a state that names no kept folder, which the start removes)
+                    match snap.keep_on_drop(true) {
+                        Ok(()) => {
+                            if let Err(err) = s2.save_slot(&vault, e) {
+                                if err != REPLACED {
+                                    tracing::warn!("the export file's state could not be saved: {err}");
+                                }
+                                let _ = snap.keep_on_drop(false);
+                            }
+                        }
+                        Err(err) => tracing::warn!("the export file could not be kept: {err}"),
                     }
                     snap
                 }
@@ -925,13 +1117,13 @@ async fn make_export(State(app): State<AppState>, Admin(v): Admin, body: JsonBod
                     tracing::warn!("an export file could not be made: {err}");
                     e.problem = Some(export_problem(&err));
                     e.error = Some(err.to_string());
-                    s2.save_best_effort(&app2.vault, e);
+                    s2.save_best_effort(&vault, e);
                     return;
                 }
             }
         };
         // ready to download; its SHA-256 comes after, read once from the snapshot (nothing kept in memory)
-        s2.finish_checksum(&app2.vault, snap, &watch, &id2);
+        checksum_job(&me, pause.as_ref(), &vault, snap, &watch, &id2);
     });
     v.audit(&app, "export-made", Some(&target("export", None, &id)), "Made an export file of the whole server.")
         .await?;
@@ -945,6 +1137,7 @@ fn the_export<'a>(st: &'a mut SiteState, id: &str) -> ApiResult<&'a mut ExportSl
 
 async fn export_one(State(app): State<AppState>, Admin(_): Admin, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let s = site(&app)?;
+    retry_pending(&s, &app).await?;
     let now = app.now();
     let mut st = s.lock();
     tidy_export(&s, &app.vault, &mut st, now);
@@ -955,6 +1148,7 @@ async fn export_one(State(app): State<AppState>, Admin(_): Admin, Path(id): Path
 /// go on).
 async fn remove_export(State(app): State<AppState>, Admin(v): Admin, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let s = site(&app)?;
+    retry_pending(&s, &app).await?;
     let cancelled = {
         let mut st = s.lock();
         let e = the_export(&mut st, &id)?;
@@ -1015,6 +1209,7 @@ async fn export_file(
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let s = site(&app)?;
+    retry_pending(&s, &app).await?;
     let now = app.now();
     let snap = {
         let mut st = s.lock();
