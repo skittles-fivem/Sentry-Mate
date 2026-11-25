@@ -336,11 +336,22 @@ async fn past_fits_are_kept_listed_opened_applied_and_removed() {
     let list = admin.get(&fits).await.json();
     assert_eq!(list["total"], json!(2), "{list}");
     let rows = list["items"].as_array().unwrap();
-    assert_eq!((rows[0]["id"].as_str(), rows[1]["id"].as_str()), (Some(id2.as_str()), Some(id1.as_str())), "newest first");
+    assert_eq!(
+        (rows[0]["id"].as_str(), rows[1]["id"].as_str()),
+        (Some(id2.as_str()), Some(id1.as_str())),
+        "newest first"
+    );
     let row = &rows[1];
-    assert_eq!((row["days"].as_u64(), row["logs"].as_u64(), row["layout"].as_str()), (Some(30), Some(10), Some(FOUND)), "{row}");
+    assert_eq!(
+        (row["days"].as_u64(), row["logs"].as_u64(), row["layout"].as_str()),
+        (Some(30), Some(10), Some(FOUND)),
+        "{row}"
+    );
     assert!(row["pairs"].as_u64().unwrap() > 500 && row["p95_m"].as_f64().unwrap() < 5.0, "{row}");
-    assert_eq!((row["good"].as_bool(), row["weak"].as_bool(), row["applied"].as_bool()), (Some(true), Some(false), Some(false)));
+    assert_eq!(
+        (row["good"].as_bool(), row["weak"].as_bool(), row["applied"].as_bool()),
+        (Some(true), Some(false), Some(false))
+    );
     assert!(row["started_ms"].as_u64().is_some() && row["finished_ms"].as_u64().is_some(), "{row}");
     for bad in ["-30.", "-20.", "29.9", "19.9"] {
         assert!(!list.to_string().contains(bad), "{bad}");
@@ -399,7 +410,8 @@ async fn past_fits_are_kept_listed_opened_applied_and_removed() {
     assert!(changes["items"][0]["by"].is_string() && changes["items"][0]["fit"].is_null());
 
     // there again after the engine restarts (the same data, a new engine)
-    let again = Engine::new(k.db.clone(), k.store.clone(), engine::Options { workers: 2, ..engine::Options::default() });
+    let again =
+        Engine::new(k.db.clone(), k.store.clone(), engine::Options { workers: 2, ..engine::Options::default() });
     let runs = again.gps_fit_runs(k.car).unwrap();
     assert_eq!(runs.iter().map(|r| r.id.to_string()).collect::<Vec<_>>(), vec![id2.clone(), id1.clone()]);
     assert!(runs[1].outcome.is_some() && runs[1].applied_ms.is_some());

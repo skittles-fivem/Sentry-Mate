@@ -769,12 +769,16 @@ def put_gps_layout(req):
     set_at = _gps_layout_set(st)
     if layouts.get(req.car) == layout:
         return {"car": req.car, "layout": layout, "set_ms": set_at.get(req.car), "job": None}
+    before = layouts.get(req.car)
     with st.lock:
         if layout is None:
             layouts.pop(req.car, None)
         else:
             layouts[req.car] = layout
         set_at[req.car] = req.now
+        _gps_runs(req)
+        st.gps_changes.setdefault(req.car, []).append(
+            {"at_ms": req.now, "by": req.account["name"], "layout": layout, "before": before, "fit": None})
     name = st.car_meta(req.car)["name"]
     st.record(req.account, "car-gps-layout", f"car:{req.car}",
               f"Set how {name}'s Screenmate GPS frames are read ({layout}); its history is rebuilt." if layout else
@@ -812,9 +816,9 @@ def _fit_line(bits, slope, intercept, constant):
                       "constant": constant != 0}}
 
 
-def _fit_result(cid, days):
-    return {
-        "car": cid, "days": days, "logs": 412, "logs_skipped": 0, "days_read": 58, "days_skipped": 2,
+def _fit_result(cid, days, variant="good", logs=412):
+    r = {
+        "car": cid, "days": days, "logs": logs, "logs_skipped": 0, "days_read": 58, "days_skipped": 2,
         "pairs": 18_240, "paired": 19_020, "trimmed": 37,
         "sources": [_fit_source("teslamate-local", 0), _fit_source("tesla-api", 21_904, 18_240, 37, (3, 9, 4, 11)),
                     _fit_source("teslafi-api", 0), _fit_source("teslamate", 0),
@@ -829,51 +833,107 @@ def _fit_result(cid, days):
                 "runner_up": None, "line": _fit_line("28|28@1-", 1e-6, 16.777216, 16.777216)},
         "layout": _FIT_LAYOUT, "median_m": 5, "p95_m": 14, "is_dbc": False, "good": True,
     }
+    if variant == "weak":
+        r.update(weak=True, spread_ns_m=310, pairs=2_104, paired=2_240, trimmed=4, median_m=6, p95_m=18)
+    elif variant == "far":
+        r.update(good=False, median_m=410, p95_m=650, pairs=5_880, paired=6_100, trimmed=12)
+        r["lon"]["best"] = {"layout": "28|27@1- (2e-6,0)", "median_m": 380, "p95_m": 620}
+        r["layout"] = "lat 0|28@1- (1e-6,0); lon 28|27@1- (2e-6,0)"
+    return r
 
 
-def _gps_fits(req):
+def _gps_runs(req):
+    """The fits of every car (docs/ui-api.md: every run is kept), oldest first, seeded by --gps-fit."""
     st = req.store
-    if not hasattr(st, "gps_fits"):
-        st.gps_fits = {}
+    if not hasattr(st, "gps_runs"):
+        st.gps_runs = {}
+        st.gps_changes = {}
+        st.gps_fit_seq = 0
         mode = req.app.cfg.gps_fit
-        if mode in ("running", "done"):
-            for cid in req.app.ds.featured:
-                st.gps_fits[cid] = {"id": st.new_id("gf"), "days": 30, "started_ms": req.now - 60_000,
-                                    "ends_ms": None if mode == "running" else req.now - 30_000}
-    return st.gps_fits
+        for cid in req.app.ds.featured:
+            if mode in ("running", "done"):
+                run = _new_run(st, req.now - 60_000, 30, None if mode == "running" else req.now - 30_000)
+                if mode == "running":
+                    # the owner's report: 272 of 22 402 logs read, started a minute ago
+                    run.update(logs=22_402, positions=155, stuck_done=272)
+                st.gps_runs[cid] = [run]
+            elif mode == "history":
+                runs = []
+                for ago, days, variant in ((9 * DAY, 30, "far"), (6 * DAY, 7, "weak"), (3 * DAY, 30, "good"), (45_000, 14, "good")):
+                    run = _new_run(st, req.now - ago - 4 * MIN, days, req.now - ago, variant)
+                    runs.append(run)
+                third = runs[2]
+                third["applied_ms"], third["applied_by"] = req.now - 3 * DAY + 2 * MIN, "admin"
+                st.gps_runs[cid] = runs
+                st.gps_changes[cid] = [
+                    {"at_ms": req.now - 40 * DAY, "by": "admin", "layout": "lat 0|27@1- (2e-6,0); lon 28|28@1- (1e-6,0)",
+                     "before": None, "fit": None},
+                    {"at_ms": third["applied_ms"], "by": "admin", "layout": _FIT_LAYOUT,
+                     "before": "lat 0|27@1- (2e-6,0); lon 28|28@1- (1e-6,0)", "fit": third["id"]},
+                ]
+                _gps_layouts(st)[cid] = _FIT_LAYOUT
+                _gps_layout_set(st)[cid] = third["applied_ms"]
+    return st.gps_runs
 
 
-def _fit_status(req, cid):
-    f = _gps_fits(req).get(cid)
+def _new_run(st, started, days, ends, variant="good"):
+    st.gps_fit_seq += 1
+    return {"id": str(st.gps_fit_seq), "n": st.gps_fit_seq, "days": days, "started_ms": started, "ends_ms": ends,
+            "variant": variant, "logs": 412, "positions": 155, "stuck_done": None, "applied_ms": None,
+            "applied_by": None}
+
+
+def _fit_status(req, cid, run=None):
+    runs = _gps_runs(req).get(cid) or []
+    f = run or (runs[-1] if runs else None)
     current = _gps_layouts(req.store).get(cid)
     busy = "rebuild 34 %" if req.app.cfg.full_rebuild == "running" else None
     if f is None:
         return {"car": cid, "state": "idle", "id": None, "days": None, "phase": None, "done": 0, "total": 0,
-                "percent": 0, "started_ms": None, "finished_ms": None, "error": None, "result": None,
-                "current": current, "applied": False, "server_busy": busy, "waiting": None}
+                "positions_total": 0, "logs_total": 0, "percent": 0, "eta_ms": None, "started_ms": None,
+                "finished_ms": None, "error": None, "result": None, "current": current, "applied": False,
+                "applied_ms": None, "applied_by": None, "server_busy": busy, "waiting": None}
     ends = f["ends_ms"]
+    p_total, l_total = f["positions"], f["logs"]
+    fit_units = max(1, (p_total + l_total) // 50)
+    all_units = p_total + l_total + fit_units
     if ends is None or req.now < ends:
-        # positions over the first 30 %, logs to 90 %, then the fit (a never-ending one stays in the logs, 48 %)
-        part = 0.8 if ends is None else max(0.0, min(1.0, (req.now - f["started_ms"]) / (ends - f["started_ms"])))
-        if part < 0.3:
-            phase, total = "positions", 31 * 5
-            done = int(total * part / 0.3)
-            pct = int(30 * done / total)
-        elif part < 0.9:
-            phase, total = "logs", 412
-            done = int(total * (part - 0.3) / 0.6)
-            pct = int(30 + 60 * done / total)
+        # positions are the first 2 % of the time, logs to 97 %, then the fit (a never-ending one stays in the logs)
+        dur = None if ends is None else ends - f["started_ms"]
+        part = 0.0 if dur is None else max(0.0, min(1.0, (req.now - f["started_ms"]) / dur))
+        eta = None
+        if dur is None:
+            phase, total, done = "logs", l_total, f["stuck_done"] or l_total // 3
+            units = p_total + done
+            # the rate measured since the logs began (5 s after the start)
+            spent = max(1, req.now - f["started_ms"] - 5_000)
+            eta = int((l_total - done) * spent / done)
+        elif part < 0.02:
+            phase, total = "positions", p_total
+            done = int(p_total * part / 0.02)
+            units = done
+        elif part < 0.97:
+            phase, total = "logs", l_total
+            frac = (part - 0.02) / 0.95
+            done = int(l_total * frac)
+            units = p_total + done
+            if done:
+                spent = int(dur * 0.95 * frac)
+                eta = int((l_total - done) * spent / done)
         else:
-            phase, total, done, pct = "fitting", 0, 0, 90
-        if ends is None:
-            phase, total, done, pct = "logs", 412, 120, 47
+            phase, total, done, units = "fitting", 0, 0, p_total + l_total
+        pct = int(100 * units / all_units)
         return {"car": cid, "state": "running", "id": f["id"], "days": f["days"], "phase": phase, "done": done,
-                "total": total, "percent": pct, "started_ms": f["started_ms"], "finished_ms": None, "error": None,
-                "result": None, "current": current, "applied": False, "server_busy": busy, "waiting": None}
+                "total": total, "positions_total": p_total, "logs_total": l_total, "percent": pct, "eta_ms": eta,
+                "started_ms": f["started_ms"], "finished_ms": None, "error": None, "result": None,
+                "current": current, "applied": False, "applied_ms": None, "applied_by": None, "server_busy": busy, "waiting": None}
+    result = _fit_result(cid, f["days"], f["variant"], f["logs"])
     return {"car": cid, "state": "done", "id": f["id"], "days": f["days"], "phase": None, "done": 0, "total": 0,
-            "percent": 100, "started_ms": f["started_ms"], "finished_ms": ends, "error": None,
-            "result": _fit_result(cid, f["days"]), "current": current, "applied": current == _FIT_LAYOUT,
-            "server_busy": busy, "waiting": None}
+            "positions_total": p_total, "logs_total": l_total, "percent": 100, "eta_ms": None,
+            "started_ms": f["started_ms"], "finished_ms": ends, "error": None,
+            "result": result, "current": current,
+            "applied": f["applied_ms"] is not None or current == result["layout"],
+            "applied_ms": f["applied_ms"], "applied_by": f["applied_by"], "server_busy": busy, "waiting": None}
 
 
 def get_gps_fit(req):
@@ -891,12 +951,93 @@ def post_gps_fit(req):
     if not isinstance(days, int) or isinstance(days, bool) or not 1 <= days <= 366:
         raise invalid({"days": "A whole number of days, 1 to 366."})
     st = req.store
-    fits = _gps_fits(req)
+    runs = _gps_runs(req)
     cur = _fit_status(req, req.car)
     if cur["state"] != "running":
         with st.lock:
-            fits[req.car] = {"id": st.new_id("gf"), "days": days, "started_ms": req.now, "ends_ms": req.now + GPS_FIT_MS}
+            runs.setdefault(req.car, []).append(_new_run(st, req.now, days, req.now + GPS_FIT_MS))
     return Response(202, json_bytes(_fit_status(req, req.car)))
+
+
+def _fit_row(req, cid, run):
+    s = _fit_status(req, cid, run)
+    r = s["result"] or {}
+    return {"id": s["id"], "car": cid, "state": s["state"], "days": s["days"], "percent": s["percent"],
+            "started_ms": s["started_ms"], "finished_ms": s["finished_ms"], "error": s["error"],
+            "logs": r.get("logs"), "pairs": r.get("pairs"), "layout": r.get("layout"), "median_m": r.get("median_m"),
+            "p95_m": r.get("p95_m"), "is_dbc": r.get("is_dbc"), "enough": r.get("enough"), "weak": r.get("weak"),
+            "good": r.get("good"), "applied": s["applied"], "applied_ms": s["applied_ms"],
+            "applied_by": s["applied_by"]}
+
+
+def _find_run(req, fit):
+    for run in _gps_runs(req).get(req.car, []):
+        if run["id"] == fit:
+            return run
+    raise not_found("no_such_fit")
+
+
+def get_gps_fits(req):
+    runs = list(_gps_runs(req).get(req.car, []))
+    items, nxt = page(req, runs, lambda r: (r["n"],), reverse=True)
+    return {"items": [_fit_row(req, req.car, r) for r in items], "next": nxt, "total": len(runs)}
+
+
+def get_gps_fit_one(req):
+    return _fit_status(req, req.car, _find_run(req, req.params["fit"]))
+
+
+def delete_gps_fit(req):
+    body = req.json(required=False)
+    if body:
+        raise bad_input({k: "Unknown field." for k in body})
+    run = _find_run(req, req.params["fit"])
+    if _fit_status(req, req.car, run)["state"] == "running":
+        raise conflict("fit_running", "This fit is still under way: wait for it to end.")
+    with req.store.lock:
+        _gps_runs(req)[req.car].remove(run)
+    name = req.store.car_meta(req.car)["name"]
+    req.store.record(req.account, "car-gps-fit-removed", f"car:{req.car}", f"Removed a past GPS layout fit of {name}.")
+    return {"car": req.car, "id": run["id"], "removed": True}
+
+
+def apply_gps_fit(req):
+    from .tesla import reconfirm
+    st = req.store
+    body = req.json(required=False)
+    bad = {k: "Unknown field." for k in body if k not in ("confirm_password", "code")}
+    if bad:
+        raise bad_input(bad)
+    run = _find_run(req, req.params["fit"])
+    s = _fit_status(req, req.car, run)
+    if s["state"] != "done":
+        raise conflict("fit_not_done", "This fit has no result to apply.")
+    reconfirm(req, body)
+    layout = s["result"]["layout"]
+    layouts = _gps_layouts(st)
+    set_at = _gps_layout_set(st)
+    job = None
+    if layouts.get(req.car) != layout:
+        before = layouts.get(req.car)
+        with st.lock:
+            layouts[req.car] = layout
+            set_at[req.car] = req.now
+            _gps_runs(req)
+            st.gps_changes.setdefault(req.car, []).append(
+                {"at_ms": req.now, "by": req.account["name"], "layout": layout, "before": before, "fit": run["id"]})
+        name = st.car_meta(req.car)["name"]
+        st.record(req.account, "car-gps-layout", f"car:{req.car}",
+                  f"Set how {name}'s Screenmate GPS frames are read ({layout}), from a past fit; its history is rebuilt.")
+        job = st.new_id("rb")
+    run["applied_ms"], run["applied_by"] = req.now, req.account["name"]
+    return {"car": req.car, "layout": layout, "set_ms": set_at.get(req.car), "job": job, "fit": run["id"]}
+
+
+def get_gps_changes(req):
+    _gps_runs(req)
+    rows = [dict(c, n=i) for i, c in enumerate(req.store.gps_changes.get(req.car, []))]
+    items, nxt = page(req, rows, lambda r: (r["n"],), reverse=True)
+    return {"items": [{k: v for k, v in c.items() if k != "n"} for c in items], "next": nxt, "total": len(rows)}
 
 
 # ------------------------------------------------------------------ overlaps
@@ -1322,6 +1463,11 @@ def register(router):
     router.add("/api/v1/cars/{car}/rebuild", POST=rebuild, admin=("POST",))
     router.add("/api/v1/cars/{car}/gps-layout", GET=get_gps_layout, PUT=put_gps_layout, admin=("PUT",))
     router.add("/api/v1/cars/{car}/gps-layout/fit", GET=get_gps_fit, POST=post_gps_fit, admin=("GET", "POST"))
+    router.add("/api/v1/cars/{car}/gps-layout/fits", GET=get_gps_fits, admin=("GET",))
+    router.add("/api/v1/cars/{car}/gps-layout/fits/{fit}", GET=get_gps_fit_one, DELETE=delete_gps_fit,
+               admin=("GET", "DELETE"))
+    router.add("/api/v1/cars/{car}/gps-layout/fits/{fit}/apply", POST=apply_gps_fit, admin=("POST",))
+    router.add("/api/v1/cars/{car}/gps-layout/changes", GET=get_gps_changes, admin=("GET",))
     router.add("/api/v1/cars/{car}/overlaps", GET=get_overlaps, PATCH=patch_overlap, admin=("PATCH",))
     router.add("/api/v1/cars/{car}/storage", GET=car_storage)
     router.add("/api/v1/system/storage", GET=system_storage, admin=("GET",))
