@@ -506,13 +506,35 @@ impl Engine {
         Ok(())
     }
 
-    /// One log told of by the judge.
+    /// One log told of by the judge: the first of its key's told and not yet taken (`name` where none is noted), so
+    /// a logger's logs are worked on in the order they came. One worker per log, and the one that gets the car's
+    /// lock first is not always the one told first: a log worked on before the one ahead of it builds its window
+    /// without that one's samples, and a drive made then from the later log alone keeps that start's id once the
+    /// earlier log moves its start back (a whole rebuild names it from its real start).
     pub(crate) fn work_log(&self, key: &str, name: &str) -> Result<()> {
-        let Some(car) = self.car_of_key(key)? else { return Ok(()) };
+        let car = match self.car_of_key(key) {
+            Ok(Some(car)) => car,
+            other => {
+                self.take_told(key);
+                return other.map(|_| ());
+            }
+        };
         let l = self.car_lock(car);
         let _held = lock(&l);
+        let name = self.take_told(key).unwrap_or_else(|| name.to_string());
         let _hot = crate::hot::Keep::new(self);
-        self.log_locked(car, key, name, false, true)
+        self.log_locked(car, key, &name, false, true)
+    }
+
+    /// The first log of `key` told and not yet taken (see `Inner::told`).
+    fn take_told(&self, key: &str) -> Option<String> {
+        let mut told = lock(&self.inner.told);
+        let q = told.get_mut(key)?;
+        let name = q.pop_front();
+        if q.is_empty() {
+            told.remove(key);
+        }
+        name
     }
 
     /// Works on one log of `car` (its lock held): decoded (or left out) and recorded, then the window it changes is
