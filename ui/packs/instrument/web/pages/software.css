@@ -33,6 +33,9 @@
 /* sub-lines and helper lines use the pack's small text (.note, .btn--sm), never less */
 .sw-page .cell-text .sub, .sw-page .form-hint { font-size: max(0.78125rem, var(--fs-floor)); color: var(--text-3); }
 .sw-ver { display: inline-flex; align-items: center; gap: round(0.5rem, var(--e)); font-weight: 500; font-variant-numeric: tabular-nums; }
+/* an inferred name is not a name: italic, dashed under, in the second text colour */
+.sw-ver--inferred { font-style: italic; font-weight: 400; color: var(--text-2); text-decoration: underline dashed; text-decoration-color: var(--text-3); text-underline-offset: 0.2em; flex-wrap: wrap; }
+.sw-fh-seg-bar.is-inferred .sw-fh-seg-text { font-style: italic; color: var(--text-2); }
 .sw-ver.is-unknown { color: var(--text-2); font-weight: 400; flex-wrap: wrap; row-gap: round(0.25rem, var(--e)); }
 .sw-ver .link .ico { width: round(0.8125rem, var(--e)); height: round(0.8125rem, var(--e)); vertical-align: round(-0.0625em, var(--e)); }
 .sw-edit { margin-top: round(0.25rem, var(--e)); }
