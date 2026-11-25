@@ -75,6 +75,9 @@ pub(crate) fn left_for_restart(err: &crate::Error) -> bool {
 pub type ExitHook = Arc<dyn Fn() + Send + Sync>;
 /// The job's record is written at most this often while it moves on (and at every phase).
 const NOTE_EVERY_MS: u64 = 2_000;
+/// The logs of one run of a full rebuild's windows at most ([`Engine::full_by_day`]): a day of a car in sentry mode
+/// is about 1,250 tiny logs, a day of one-minute logs 1,440; a window holds its logs' samples about twice.
+pub const FULL_RUN_LOGS: usize = 3_000;
 /// The version whose automatic full rebuild was planned (once per version).
 const AUTO_KEY: &str = "full-auto";
 /// How long a new version's full rebuild waits before it starts by itself (an admin can start it now, put it off
@@ -1130,6 +1133,52 @@ impl Engine {
         self.full_phase(Phase::Switching)?;
         self.full_switch(car, &se)?;
         Ok(true)
+    }
+
+    /// Whether a full rebuild's logs (`job`, the first of them starting at `first`, `skipped` done before a restart)
+    /// get their windows once per day of logs ([`crate::Options::full_by_day`], [`FULL_RUN_LOGS`]) and not per
+    /// [`crate::Options::window_batch`] logs, or after every log beside an API input.
+    ///
+    /// Only where nothing worked out from logs is stored in the shadow at or after the first of them: a full
+    /// rebuild's shadow starts empty of it, and one carried on after a restart has there only what the logs it
+    /// decoded before gave, all of them older than these. Then a window's rows depend only on the data up to the
+    /// newest log decoded and on the rows before it, and its bounds and the ids it carries come from the rows
+    /// before it: so the windows a day of logs changes, rebuilt once after the day's last log, give what they give
+    /// rebuilt after each of its logs (`crates/sentry-mate/src/window_batch.rs`, `a_full_rebuild_by_day_*`). Beside
+    /// an API input too: in the shadow the car's newest data is its newest log's, so a window never reaches the
+    /// API's samples ahead of the logs (the in-place rebuild of a car, whose newest data is the API's, does: there a
+    /// window per log stays).
+    ///
+    /// The days one after the other, not at once: a day's window starts at the last settled point before it,
+    /// which the day before's window found, and carries the ids of the rows it rebuilds there (a state, a drive or a
+    /// charge that goes on across midnight).
+    pub(crate) fn full_by_day(
+        &self,
+        car: CarId,
+        job: Option<&JobState>,
+        first: Option<u64>,
+        skipped: u64,
+    ) -> Result<bool> {
+        let Some(t) = first else { return Ok(false) };
+        if !self.inner.opts.full_by_day || !job.is_some_and(|j| j.full) {
+            return Ok(false);
+        }
+        let db = &self.inner.db;
+        if skipped > 0 {
+            // (carried on: the logs decoded before are all older than these)
+            let meta = records::meta(db, car)?;
+            for d in meta.days.range(records::day_of(t)..) {
+                let rec = records::day_shared(db, car, *d)?;
+                if rec.logs.keys().any(|n| records::name_start_ms(n).is_some_and(|s| s >= t)) {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+        let q = db::Query { limit: 1, source: Some(Source::Live), ..db::Query::between(t, u64::MAX) };
+        Ok(db.list::<db::StateRow>(car, &q)?.items.is_empty()
+            && db.list::<model::Drive>(car, &q)?.items.is_empty()
+            && db.list::<model::Charge>(car, &q)?.items.is_empty())
     }
 
     /// The worker goes no further once the server is stopping ([`Engine::stopping`]): the run is left as it stands.

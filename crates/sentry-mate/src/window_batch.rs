@@ -18,6 +18,10 @@
 //! (rebuilt as a charge of its own on the way) where a window per log kept the id of its start; and a day's
 //! period with gaps inside gave a drive cut by the period's end the other id the other way round. The part after
 //! the end is kept, and which piece is stored first depends on the windows rebuilt on the way.
+//!
+//! A full rebuild rebuilds its windows once per day of logs, beside API inputs too ([`by_day`]): its shadow has no
+//! rows yet and its newest data is its newest log's, so none of its windows runs on ahead of the logs to the API's
+//! newest sample, as a window of a car rebuilt in place beside an API does.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::print_stdout)]
 
 use super::*;
@@ -37,9 +41,9 @@ fn rows<T: db::Item + std::fmt::Debug>(db: &db::Db, car: model::CarId) -> Vec<St
     }
 }
 
-/// Everything stored for the engine's cars, in named parts (each car's, in the order of their ids).
-fn stored(e: &engine::Engine) -> Vec<(String, Vec<String>)> {
-    let db = e.db();
+/// Everything stored for the cars of a data folder (an engine's, a full rebuild's shadow), in named parts (each
+/// car's, in the order of their ids).
+fn stored_in(db: &db::Db) -> Vec<(String, Vec<String>)> {
     let fleet = db.fleet(&db::FleetQuery { search: None, limit: 10, after: None }).unwrap();
     assert!(!fleet.cars.is_empty(), "a made-up car");
     let mut cars: Vec<&db::FleetEntry> = fleet.cars.iter().collect();
@@ -81,7 +85,12 @@ fn stored(e: &engine::Engine) -> Vec<(String, Vec<String>)> {
 }
 
 fn same(what: &str, a: &engine::Engine, b: &engine::Engine) -> usize {
-    let (x, y) = (stored(a), stored(b));
+    same_in(what, a.db(), b.db())
+}
+
+/// [`same`], of two data folders (two full rebuilds' shadows).
+fn same_in(what: &str, a: &db::Db, b: &db::Db) -> usize {
+    let (x, y) = (stored_in(a), stored_in(b));
     assert_eq!(x.len(), y.len(), "{what}: the same cars");
     let mut n = 0;
     for ((name, p), (_, q)) in x.iter().zip(&y) {
@@ -810,4 +819,133 @@ async fn window_bounds_looked_for_near_the_log_give_the_same_history_over_days()
     for (days, how) in [(7, Logs::Alone), (1, Logs::Sentry), (4, Logs::Sentry), (4, Logs::Apis)] {
         looked_near(days, how).await;
     }
+}
+
+/// A full rebuild that rebuilds its windows once per day of logs ([`engine::Options::full_by_day`]) gives the very
+/// history the full rebuild before it gives (a window per log beside an API input, one per 64 logs alone): the same
+/// made-up logs through an engine of each, then (unless `how` is alone) a TeslaMate import from `back` days before
+/// them, a TeslaFi import over its first two days, TeslaFi's API and local TeslaMate over the logs' last `api_days`
+/// days and the Tesla API in sentry mode over all of them; the history in use compared, then a full rebuild of the
+/// car on each, once per entry of `cuts`: the second one cut off after that many logs (as by a kill) and carried on
+/// by a new engine over the same data when given (the last entry only). Each time the two shadows are compared once
+/// their logs are done, before the switch gives their rows the ids of the history in use, and the histories after
+/// the switch: everything stored, ids included. Returns the windows each kind of full rebuild rebuilt in all.
+async fn by_day(days: u32, how: Logs, back: u32, api_days: u32, cuts: &[Option<u64>]) -> (u64, u64) {
+    let apis = how != Logs::Alone;
+    let s = synth::Scenario::new(7).days(days).rates(synth::Rates::Light).with_trouble(true);
+    let s = match how {
+        Logs::Sentry => s.stays_awake(true).snippets(69_000, 3_000),
+        Logs::SentrySparse => s.stays_awake(true).snippets(600_000, 3_000),
+        Logs::Alone | Logs::Apis => s,
+    };
+    let logs: Vec<synth::LogFile> = s.logs().collect();
+    let n = logs.len() as u64;
+    let all: Vec<&synth::LogFile> = logs.iter().collect();
+    let before = engine::Options { full_by_day: false, ..engine::Options::default() };
+    let (old, new) = (Side::with(before).await, Side::with(engine::Options::default()).await);
+    let what = format!("{days} days ({how:?})");
+    old.take(&all).await;
+    new.take(&all).await;
+    if apis {
+        let o = history::Options {
+            days: days + back,
+            end_ms: synth::DEFAULT_START_MS + u64::from(days) * 86_400_000,
+            seed: 5,
+            drives: 4 * (days + back),
+            charges: days + back,
+            drive_step_s: 5,
+            teslafi_days: 2,
+            api_days,
+            tesla_days: days,
+            tesla_sentry: true,
+        };
+        for side in [&old, &new] {
+            history::run(&side.engine, &o).await.unwrap();
+            side.engine.idle().await;
+        }
+    }
+    same(&format!("{what}: the history in use"), &old.engine, &new.engine);
+    let car = old.cars()[0];
+    let at_days = |e: engine::Engine| async move {
+        for _ in 0..600_000 {
+            let r = e.full_rebuild_status().unwrap().unwrap();
+            if r.phase == engine::full::Phase::Days {
+                return;
+            }
+            assert!(r.running(), "{r:#?}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the full rebuild did not reach its days");
+    };
+    let shadow = |e: &engine::Engine| e.db().open_shadow(engine::full::SHADOW).unwrap().unwrap();
+    let (mut last, mut windows) = (new.engine.clone(), (0, 0));
+    for (k, cut) in cuts.iter().enumerate() {
+        assert!(cut.is_none() || k + 1 == cuts.len(), "a cut one last");
+        assert!(cut.is_none_or(|c| c < n), "a cut before the last log");
+        let what =
+            format!("{what}, full rebuild {k}{}", cut.map_or_else(String::new, |c| format!(", cut after {c} logs")));
+        let w = (old.engine.full_rebuild_windows(), last.full_rebuild_windows());
+        let t = Instant::now();
+        old.engine.full_rebuild_hold_at(Some(engine::full::Phase::Days));
+        old.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+        at_days(old.engine.clone()).await;
+        let took_old = t.elapsed();
+        let t = Instant::now();
+        let w_new = match cut {
+            None => {
+                last.full_rebuild_hold_at(Some(engine::full::Phase::Days));
+                last.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+                at_days(last.clone()).await;
+                last.full_rebuild_windows() - w.1
+            }
+            Some(c) => {
+                last.full_rebuild_crash_after_logs(Some(*c));
+                last.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+                last.idle().await;
+                let cut_windows = last.full_rebuild_windows() - w.1;
+                let data = new._dir.path().join("data");
+                let v = Arc::new(Vault::open(&data, &new._dir.path().join("keys")).unwrap());
+                let e =
+                    engine::Engine::new(last.db().clone(), Store::new(can_dir(&data), v), engine::Options::default());
+                e.full_rebuild_hold_at(Some(engine::full::Phase::Days));
+                e.start().unwrap();
+                at_days(e.clone()).await;
+                last = e;
+                cut_windows + last.full_rebuild_windows()
+            }
+        };
+        let took_new = t.elapsed();
+        let w_old = old.engine.full_rebuild_windows() - w.0;
+        let k = same_in(&format!("{what}: the shadows"), &shadow(&old.engine), &shadow(&last));
+        for e in [&old.engine, &last] {
+            e.full_rebuild_hold_at(None);
+            let r = full_done(e).await;
+            assert_eq!((r.status, r.logs_done), (engine::full::FullStatus::Done, n), "{what}: {r:#?}");
+        }
+        let j = same(&format!("{what}: switched"), &old.engine, &last);
+        assert!(j > 1_000, "{what}: {j}");
+        assert_eq!(old.engine.stats().failures + new.engine.stats().failures + last.stats().failures, 0, "{what}");
+        println!(
+            "{what}: {n} logs, {k} stored things of the shadows the same, {j} after the switch; windows {w_old} a \
+             log at a time ({took_old:.1?}), {w_new} by day ({took_new:.1?})"
+        );
+        windows = (windows.0 + w_old, windows.1 + w_new);
+    }
+    windows
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_full_rebuild_by_day_gives_the_history_a_window_per_log_gives() {
+    // two days of a car in sentry mode beside every input, a full rebuild twice and once more cut off the next day
+    let (before, now) = by_day(2, Logs::SentrySparse, 3, 1, &[None, None, Some(170)]).await;
+    assert!(now * 10 < before, "{now} windows against {before}");
+    by_day(2, Logs::Alone, 0, 0, &[None]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "long: cargo test --release -p sentry-mate a_full_rebuild_by_day -- --ignored --nocapture"]
+async fn a_full_rebuild_by_day_gives_the_history_a_window_per_log_gives_over_days() {
+    by_day(3, Logs::Sentry, 60, 3, &[None, Some(2_000)]).await;
+    by_day(5, Logs::Apis, 20, 2, &[None, Some(500)]).await;
+    by_day(7, Logs::Alone, 0, 0, &[None, Some(400)]).await;
 }
