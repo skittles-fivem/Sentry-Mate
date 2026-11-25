@@ -303,7 +303,36 @@ impl JobState {
     }
 }
 
+/// Counts the rebuild jobs running at once (tests: the most there were at once).
+struct RunningGuard<'a>(&'a crate::Inner);
+
+impl<'a> RunningGuard<'a> {
+    fn new(inner: &'a crate::Inner) -> Self {
+        let now = inner.rebuilds_running.fetch_add(1, Ordering::SeqCst) + 1;
+        inner.rebuilds_overlap.fetch_max(now, Ordering::SeqCst);
+        RunningGuard(inner)
+    }
+}
+
+impl Drop for RunningGuard<'_> {
+    fn drop(&mut self) {
+        self.0.rebuilds_running.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 impl Engine {
+    /// Tests: makes the rebuild jobs that wait to start meet at `barrier` once, each, when they are free to start.
+    #[doc(hidden)]
+    pub fn job_start_hook_set(&self, barrier: Option<Arc<std::sync::Barrier>>) {
+        *lock(&self.inner.job_start_hook) = barrier;
+    }
+
+    /// Tests: the most rebuild jobs that ran at once since the engine started.
+    #[doc(hidden)]
+    pub fn rebuilds_overlap_max(&self) -> u64 {
+        self.inner.rebuilds_overlap.load(Ordering::SeqCst)
+    }
+
     /// Starts a rebuild in the background and returns at once (an admin's: the history of the period made again).
     pub fn rebuild(&self, scope: Scope) -> Result<Job> {
         self.rebuild_because(scope, What::WHOLE, Cause::owner(None), false)
@@ -376,6 +405,7 @@ impl Engine {
     /// Waits until the job may start (its settle time passed, no job of its cars under way), then takes it out of
     /// the jobs that take in later asks. `false`: cancelled before it started.
     fn job_wait(&self, st: &Arc<JobState>) -> bool {
+        let mut hooked = false;
         loop {
             if st.cancelled() {
                 let mut pending = lock(&self.inner.pending_jobs);
@@ -390,11 +420,21 @@ impl Engine {
                 std::thread::sleep(std::time::Duration::from_millis((until - now).min(100)));
                 continue;
             }
+            // tests: both jobs of a pair are here, free to start, before either takes the lock
+            if !std::mem::replace(&mut hooked, true) {
+                let barrier = lock(&self.inner.job_start_hook).clone();
+                if let Some(b) = barrier {
+                    b.wait();
+                }
+            }
+            // (the check and the start are one step under the lock the waiting jobs are kept in: two jobs of the
+            // same car never both find it free. Lock order: `pending_jobs`, then `jobs`)
+            let mut pending = lock(&self.inner.pending_jobs);
             if self.job_busy(st) {
+                drop(pending);
                 std::thread::sleep(std::time::Duration::from_millis(20));
                 continue;
             }
-            let mut pending = lock(&self.inner.pending_jobs);
             // (an ask taken in just now moved the start on)
             if st.settle_until.load(Ordering::SeqCst) > now_ms() {
                 continue;
@@ -419,6 +459,7 @@ impl Engine {
     }
 
     fn run_rebuild(&self, st: &JobState) -> Result<()> {
+        let _running = RunningGuard::new(&self.inner);
         let db = &self.inner.db;
         let cars: Vec<CarId> = match st.car {
             Some(c) => vec![c],

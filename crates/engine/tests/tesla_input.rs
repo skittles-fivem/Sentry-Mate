@@ -1609,3 +1609,34 @@ fn a_second_gps_layout_saved_during_a_narrow_rebuild_is_still_applied_after_it()
         assert!(!k.engine.rebuild_pending(car));
     });
 }
+
+/// A rebuild of one car and a rebuild of every car, both waiting and both free to start at the same instant, run
+/// one after the other, never together on the car.
+#[test]
+fn a_car_job_and_an_every_car_job_never_run_at_once() {
+    rt().block_on(async {
+        let k = kit();
+        let trip = Trip { a: 70, b: 250 };
+        for i in 0..5 {
+            send_smo(&k, i, trip).await;
+        }
+        k.engine.idle().await;
+        let car = k.db.car_for_key(KEY).unwrap().unwrap();
+        k.engine.job_start_hook_set(Some(Arc::new(std::sync::Barrier::new(2))));
+        let one = k
+            .engine
+            .rebuild_because(
+                engine::Scope::car(car),
+                engine::jobs::What::WHOLE,
+                engine::versions::Cause::owner(None),
+                false,
+            )
+            .unwrap();
+        let all = k.engine.rebuild(engine::Scope::all()).unwrap();
+        assert_ne!(one.id, all.id);
+        let (a, b) = (job_done(&k, one.id).await, job_done(&k, all.id).await);
+        assert_eq!((a.status, b.status), (engine::JobStatus::Done, engine::JobStatus::Done), "{a:?} {b:?}");
+        assert_eq!(k.engine.rebuilds_overlap_max(), 1, "two jobs ran on the car at once: {a:?} {b:?}");
+        assert_eq!((a.done, b.done), (5, 5));
+    });
+}
