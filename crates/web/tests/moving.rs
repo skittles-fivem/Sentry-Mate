@@ -30,6 +30,15 @@ type Hook = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// The same, with a hook at the move side's named points ([`web::moving::MoveSite::with_pause`]).
 async fn kit_full(with_data: bool, pause: Option<Hook>) -> Kit {
+    kit_built(with_data, move |site| match pause {
+        Some(p) => site.with_pause(move |at| p(at)),
+        None => site,
+    })
+    .await
+}
+
+/// The same, with the move side as `f` makes it.
+async fn kit_built(with_data: bool, f: impl FnOnce(web::moving::MoveSite) -> web::moving::MoveSite) -> Kit {
     let dir = tempfile::tempdir().unwrap();
     let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
     std::fs::create_dir_all(&data).unwrap();
@@ -39,11 +48,7 @@ async fn kit_full(with_data: bool, pause: Option<Hook>) -> Kit {
     std::fs::create_dir_all(&keys).unwrap();
     // the folder's own vault file (an export's header carries its recovery slot)
     vault::Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
-    let mut site = web::moving::MoveSite::new(data.clone(), keys.clone(), env!("CARGO_PKG_VERSION"));
-    if let Some(p) = pause {
-        site = site.with_pause(move |at| p(at));
-    }
-    let site = Arc::new(site);
+    let site = Arc::new(f(web::moving::MoveSite::new(data.clone(), keys.clone(), env!("CARGO_PKG_VERSION"))));
     let s = TestServer::start_with(move |b| b.service(site)).await;
     if with_data {
         s.app.vault.write_file(&data.join("db").join("made-up"), "db/made-up", b"a made-up row").unwrap();
@@ -855,14 +860,19 @@ async fn the_checksum_of_a_file_taken_up_after_a_restart_is_kept() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_new_export_whose_state_cannot_be_saved_does_not_leave_the_old_one_to_come_back() {
-    let k = kit().await;
+    let failing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let f = failing.clone();
+    let k = kit_built(true, move |site| {
+        site.with_fault(move |at| at == "slot-save" && f.load(std::sync::atomic::Ordering::SeqCst))
+    })
+    .await;
     let mut admin = k.s.admin().await;
     made_export(&mut admin).await;
     let dir = k.data.join(moving::export::SNAPSHOTS);
     let slot = dir.join("slot.sealed");
     let old = std::fs::read(&slot).unwrap();
-    // the state file can't be written (its temporary file's place is taken)
-    std::fs::create_dir_all(dir.join("slot.tmp")).unwrap();
+    // the state file can't be written from now on
+    failing.store(true, std::sync::atomic::Ordering::SeqCst);
     let r = admin.post("/api/v1/system/exports", json!({ "password": ADMIN_PASSWORD })).await;
     assert_eq!(r.status, 201, "{}", r.text());
     // still the old export's state would name a file that is no longer offered: after a crash it must not come back
