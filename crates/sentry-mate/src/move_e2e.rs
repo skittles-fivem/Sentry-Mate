@@ -155,6 +155,7 @@ async fn old_data(data: &Path, keys: &Path, proxy: u16, broker: u16, now: u64) -
             candump: false,
             with_real_cars: false,
             start_ms: None,
+            awake_min: None,
         };
         let gate = gate::Gate::memory();
         let enter = || -> Result<gate::Pass, Box<dyn std::error::Error>> { Ok(gate.enter(GATE_WAIT)?) };
