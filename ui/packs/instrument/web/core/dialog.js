@@ -110,12 +110,15 @@ export function openDialog({ title, body = null, actions = [{ label: 'Close', va
         if (a.focus) first = b;
         return b;
       })) : null);
-    dlg.addEventListener('cancel', (e) => { if (dlg.hasAttribute('data-busy')) e.preventDefault(); });
+    // a close the reader asked for (Escape) comes with a cancel; the page's own close() does not
+    let cancelled = false;
+    dlg.addEventListener('cancel', (e) => { cancelled = true; if (dlg.hasAttribute('data-busy')) e.preventDefault(); });
     // a browser lets a cancel be held back only once between two gestures: Escape itself is held back while busy,
     // and a dialog closed while its request runs opens again, so its answer (a key shown once) is not lost
     dlg.addEventListener('keydown', (e) => { if (e.key === 'Escape' && dlg.hasAttribute('data-busy')) e.preventDefault(); });
+    dlg.addEventListener('keyup', () => { cancelled = false; });
     dlg.addEventListener('close', () => {
-      if (dlg.hasAttribute('data-busy') && dlg.isConnected) { dlg.showModal(); return; }
+      if (cancelled && dlg.hasAttribute('data-busy') && dlg.isConnected) { cancelled = false; dlg.showModal(); return; }
       dlg.remove();
       resolve(result);
       giveBack(back);
