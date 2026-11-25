@@ -74,9 +74,11 @@ export function fullRebuild(ctx, { car = null, carName = (id) => id, label = nul
   function paint() {
     const now = ctx.api.now();
     const on = fr.running(S);
-    if (on !== btnOn) {
-      btnOn = on;
-      replace(btn, icon(on ? 'x' : 'reset', 'ico--sm'), on ? fr.CANCEL : start);
+    const stopping = fr.cancelling(S);
+    if (`${on}${stopping}` !== btnOn) {
+      btnOn = `${on}${stopping}`;
+      replace(btn, icon(on ? 'x' : 'reset', 'ico--sm'), stopping ? 'Cancelling…' : on ? fr.CANCEL : start);
+      btn.disabled = stopping;
       btn.classList.toggle('btn--danger', on);
       setAttr(btn, 'title', on ? 'Stop the full rebuild: cars not switched yet keep their old history' : null);
     }

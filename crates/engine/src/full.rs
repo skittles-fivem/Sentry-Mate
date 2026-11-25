@@ -321,6 +321,10 @@ impl FullRecord {
     /// the phase has left: by the logs left at the logs' speed while decoding (the same measure as the percent
     /// shown), by the days left in the days step.
     pub fn rates(&self, now: u64) -> Rates {
+        // (one that waits or is paused does no work: no speed, and no time left that the clock would run down)
+        if self.held(now) {
+            return Rates::default();
+        }
         let secs = now.saturating_sub(self.phase_started_ms) as f64 / 1000.0;
         let per_s = |done: u64| (secs >= 1.0 && done > 0).then(|| done as f64 / secs);
         let left_ms = |left: u64, rate: Option<f64>| rate.map(|r| ((left as f64 / r) * 1000.0) as u64);
@@ -647,7 +651,8 @@ impl Engine {
         let due = {
             let _one = lock(&self.inner.full_start);
             match self.full_get().ok().flatten() {
-                Some(mut r) if r.running() && !r.held(now) => {
+                // (one asked to stop goes to a worker whatever holds it: only a worker ends it)
+                Some(mut r) if r.running() && (!r.held(now) || r.cancel) => {
                     if r.hold.is_some() {
                         r.hold = None;
                         let _ = self.full_put(&r);
@@ -826,7 +831,7 @@ impl Engine {
                 // (planned for this version: the run under way is it)
                 let _ = records::put(&self.inner.db, NS, AUTO_KEY, &now_v);
             }
-            !r.held(now_ms())
+            !r.held(now_ms()) || r.cancel
         };
         if run {
             self.full_spawn();
@@ -885,7 +890,10 @@ impl Engine {
                         e.full_failed(&err.to_string());
                         false
                     }
-                    Ok(()) => e.full_get().ok().flatten().is_some_and(|r| r.running() && !r.held(now_ms())),
+                    // (a cancel that came in as a pause left the worker: the run is ended cancelled, not left paused)
+                    Ok(()) => {
+                        e.full_get().ok().flatten().is_some_and(|r| r.running() && (!r.held(now_ms()) || r.cancel))
+                    }
                 };
                 if !again {
                     let mut f = lock(&e.inner.full);

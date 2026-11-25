@@ -245,7 +245,7 @@ async fn direct(
         let judge = ingest::Judge::new(store.clone());
         let pos = Beside { reader: Reader::new(&d, vault), car };
         let c = gps_fit::collect(&pos, &store, &judge, &rt, &keys, days, now, &set)?;
-        set(Step { phase: Phase::Fitting, done: 0, total: 0 });
+        set(Step { phase: Phase::Fitting, done: 0, total: 0, positions_total: 0, logs_total: 0 });
         Ok::<_, String>(gps_fit::fit(&c, days, car))
     });
     let mut say = Say::new();
