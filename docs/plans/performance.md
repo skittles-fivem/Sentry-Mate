@@ -1147,3 +1147,134 @@ rebuild never waits for the fit. Not chosen: the fit reading the frames the rebu
 read with one layout, not the raw 8 bytes of the GPS frame every layout is tried on, so that would be a new store of
 frames), or one shared pass (a fit's 30 days and a rebuild's whole history are different logs, and the rebuild
 would wait for the fit's own work).
+
+# Memory: one car, 23,000 logs, in the image
+
+Status (2026-11-25): measured state by state on made-up data the size of the owner's server; one change made (the
+fusing of a long window, below), the rest listed.
+
+The owner asked how much memory the server takes. Their server: one container on TrueNAS, one car, about 22,500 CAN
+logs (about 7 GB of data). During a full rebuild they saw 316 MB for the process and 384 MB for the container, one
+core busy.
+
+## How it is measured
+
+- **The data:** one made-up car, `dev seed --days 33 --awake-min 270 --start 2026-10-21` (a car that stays awake
+  4.5 hours after each use, as in Sentry Mode: 23,141 one-minute logs in columns format, 804 MB, about 700 a day),
+  then `dev history --end 2026-11-23 --days 33 --drives 80 --charges 25 --teslafi-days 0 --api-days 0
+  --tesla-days 30` (a TeslaMate import over the same days and 30 days of Tesla API samples, 129,072 of them). 930 MB
+  in all. The made-up logs are smaller than the owner's (36 KB packed for the busiest minute, the owner's average
+  about 311 KB), so what grows with a log's size is estimated below, not measured.
+- **The server:** the image as `docker build .` makes it (the static musl binary on an empty image), run as a
+  container with the two folders mounted, on this container's 4 cores and 15 GB. The steps through it: the API as the
+  pages use it (setup and sign-in, `full-rebuild`, `gps-layout/fit`, `imports`), three pages open in Chromium (the
+  car, its Logbook, its Data health), `docker exec ... export`, and the move between two containers
+  (`move code`, then a new one started with `SENTRY_MATE_MOVE_FROM` and `SENTRY_MATE_MOVE_CODE`).
+- **Uploads:** `crates/moving/examples/test_bridge.rs` (signed candump logs over TLS, chunks, sidecars, as the
+  bridge sends them) with a token of its own: one log a minute for 10 minutes (the bridge's pace while the car is
+  awake), then a backlog sent 16 at a time as the app does after a time away.
+- **The log checks of a long backlog** run in the process of `crates/ingest/tests/judge_speed.rs`
+  (`JUDGE_LOGS=22000 JUDGE_LOG_KB=40`, glibc): the upload API stops one token at 1,200 requests in 10 minutes, so a
+  backlog of 22,000 can't be sent to a running server in one go.
+- **Sampling:** every second, the process's `VmRSS` and `VmHWM` (`/proc/<pid>/status`), its CPU time
+  (`/proc/<pid>/stat`), and the container's cgroup. This machine has cgroup v1, so the container's figures are
+  `memory.usage_in_bytes` and `memory.max_usage_in_bytes` (cgroup v2, as on TrueNAS SCALE 24.10 and later, calls
+  them `memory.current` and `memory.peak`). Both count the page cache: the data folder's files read through the
+  kernel's cache, which the kernel gives back when the container needs memory. "Steady" is the median of the last
+  two thirds of a state; "peak" the highest sample (and `VmHWM` where a peak was shorter than a second).
+
+## The results
+
+| State | steady RSS | peak RSS | container (cgroup) peak | time, cores |
+|---|---:|---:|---:|---|
+| first start after the history was made (pages' long periods worked out ahead, once) | 146 MB | 662 MB (first 5 s) | 298 MB | quiet after 7 s |
+| just started (a restart) | 155 MB | 228 MB | 193 MB | quiet after 5 s |
+| idle, 3 pages open, 30 minutes | 164 MB | 253 MB (an idle compaction at minute 8) | 961 MB, of which 784 MB page cache | 0.14 cores on average (the compaction) |
+| uploads at the bridge's pace (a log a minute, 10 minutes) | 164 MB | 164 MB | 125 MB | under 0.01 cores |
+| a backlog sent 16 at a time (581 logs before the token's rate limit) | 176 MB | 177 MB | 194 MB | 1.1 cores |
+| log checks of a 22,000-log backlog (in the test's process, glibc) | 87 MB | 95 MB | | 106 s (207 logs/s), 1.3 cores |
+| the same with glibc's default malloc arenas | 356 MB | 412 MB | | 94 s (233 logs/s), 1.2 cores |
+| a full rebuild of the 23,141 logs, before the change below | 316 MB | 3,714 MB (5 s at the end) | 4,515 MB | 35.4 min: 10.9 logs/s, 0.97 cores |
+| the same, with the change | 308 MB | 2,637 MB (5 s at the end) | 2,600 MB | 38.2 min with the GPS fit beside it: 10.1 logs/s, 1.06 cores |
+| the GPS layout fit over 30 days | 261 MB | 272 MB | 1,067 MB, mostly page cache | 265 s, 0.99 cores |
+| the full rebuild and the GPS fit at the same time (the 6.5 minutes they overlap) | 275 MB | 332 MB (393 MB `VmHWM`) | 357 MB | the fit 390 s, 1.64 cores together |
+| an export file made (`export > FILE`, 879 MB) | server 241 MB, export process 10 MB | 241 MB | 1,064 MB, mostly page cache | about 4 s |
+| a move to a second instance (2,881 files, 1.5 GB), old side | 282 MB | 298 MB | 901 MB, mostly page cache | about 40 s, 0.16 cores |
+| the same, new side | 135 MB | 1,035 MB (3 s: its own vault made at start, Argon2id at 1 GiB), 458 MB at the switch | 1,908 MB, mostly page cache | 0.42 cores |
+| a TeslaMate import (a made-up year of two cars, 604 MB, 1.89 million rows of the one imported) | 265 MB | 578 MB | 1,189 MB, mostly page cache | about 45 s with the upload, 1.25 cores |
+| `dev history`'s first decoding of the 23,141 logs (glibc, for comparison) | 230 to 270 MB | | | 450 s, 0.7 cores |
+
+**Idle doesn't grow.** With the three pages open the process stayed at 153 MB for its first 8 minutes, went to 164 MB
+with the idle compaction (44,663 log files packed into their days), and stayed at 164 MB from minute 14 to minute 30.
+Ten minutes of uploads after it stayed at 164 MB too.
+
+**The full rebuild's decoding is steady at about 300 MB**, as on the owner's server, and on one core (one car's logs
+are worked on one after the other). The one exception is its end, below.
+
+**The image's allocator matters.** The image is a static musl binary: its allocator gives freed memory back and has
+no arena per thread. glibc (a build run outside the image, every test) keeps up to eight arenas per core: the same
+backlog of log checks took 412 MB with glibc's default and 95 MB with `MALLOC_ARENA_MAX=2`. The live memory there is
+under 100 MB. Measure the image, not a glibc build.
+
+**The page cache is not the process.** The container's figure rose to about 1 GB in most states, with the process at
+150 to 300 MB: the files the server read (a compaction, a rebuild, an export, a move) stay in the kernel's cache,
+charged to the container. The kernel takes that back first when the container nears its limit; it is not a reason
+to raise the limit.
+
+## The end of a full rebuild: the car's Tesla API days built as one window
+
+For about 5 seconds at the end of the decoding the process went from 320 MB to 3.7 GB. That step builds the car's
+API data into its new history (`Engine::api_build_locked`): every day the car has Tesla API (or TeslaFi, or local
+TeslaMate) data for is one span, and it is rebuilt as one window. A window reads every input's samples of its days
+(here 33 days of SMO samples, 1.3 million of them at about 850 bytes, about 1.1 GB) and fuses them; the fusing held
+them four times over:
+
+1. SMO's fixes are not used when they disagree with the other inputs' (the made-up logs and the made-up API are
+   different drives, so they disagree here): its samples were copied whole without their fixes first;
+2. the top input's samples were copied again, with their inputs, as they were laid over the input below;
+3. and copied once more out of those pairs into the samples given back.
+
+**Changed** (`crates/timeline/src/fuse.rs`, `layered` and `lay`): a distrusted input's fixes are left out as each
+sample is copied; the laid samples and their inputs are kept side by side and the two inputs merged by time (both
+are sorted, so the order is the stable sort's of before: an input's second before the lower input's at the same
+time); the samples given back are the ones laid. The same output, checked by
+`the_samples_fused_with_one_copy_are_the_samples_fused_before`, which keeps the code from before and compares the
+two on 420 made-up sets of inputs (seconds missing, twice, out of order; SMO's fixes or an API's distrusted, and
+not; two and three inputs in several orders, an input with no samples). With the change: 2.6 GB instead of 3.7 GB, the
+rest of the rebuild the same.
+
+**What is left there, and why it matters:** the window still holds its samples twice (as read, and as laid), so the
+step takes about **100 KB per CAN log inside the car's API days** (two copies of a log's 60 samples), on top of the
+300 MB. With 30 days of Tesla API data and 700 logs a day that is the 2.6 GB above; with a year of Tesla API data
+beside a year of logs it would be ten times that. A container limit below it gets the server killed at the end of
+every full rebuild (and a restart carries the rebuild on into the same step). Two ways on, in order:
+
+- **Build a long API span in pieces** (each window from where the one before it ended, as the windows of logs
+  worked on one by one are). Tried here: with pieces of 3 hours, 2 made-up days whose inputs' fixes disagree gave a
+  drive without its start and end positions (whether an input's fixes are used is judged over the window, as the
+  window-per-run work found, above). Not kept: it changes the history where the inputs disagree. Doing it needs
+  that judgement made over a fixed stretch (a day, say) instead of over the window.
+- **Fuse in place:** the window's own samples moved instead of copied (`fuse_ordered` taking the samples it may
+  keep), which leaves one copy: about 50 KB per log.
+
+## Measured and left as it is
+
+- **The days' plaintext cache** (`db/src/plain.rs`) holds what it reads up to a quarter of the memory free, at most
+  4 GB, looked at every 3 s. It is what kept 968 MB after a first start on the long history (above, "Start-up and the
+  idle server"). Under a container limit it reads the cgroup v2 limit (`/sys/fs/cgroup/memory.max`) and fits a
+  quarter of what is left under it, so it shrinks with the limit. On a cgroup v1 host it does not see a container's
+  limit (only the machine's free memory); TrueNAS SCALE 24.10 and later is cgroup v2.
+- **The first start after the history was made** (662 MB for 5 s here, on the engine's threads): what the pages
+  show worked out ahead once. A restart after it peaked at 228 MB.
+- **The judge's book of a car's records** is copied whole for a status call or a rebuild's reconcile (about 15 MB
+  for 22,000 logs) and its mirror keeps up to 250,000 records (about 170 MB) of the keys used last: bounded, and
+  small beside the above.
+- **The bounded caches** checked: the trust journals as last read (4 keys), the day records as last parsed (24 days),
+  the hot days of a car being worked on (3 days, 32 MB, though its read takes the 3 days before it checks the size),
+  the memo of query answers (512 entries, counted not weighed), the opened packs (2 of up to 32 MB). An upload's
+  chunk is buffered whole (16 MiB at most, 16 at once), but a log of 40 KB is one chunk of 40 KB.
+- **A decode worker's buffers** (for the parallel decoding under way in another change): a log's xz window grows
+  with what it unpacks (it is not allocated at the 64 MiB limit), a columns body is held whole about twice over while
+  its frames are made, and a log's minute of samples is small. The busiest made-up log is 227 KB unpacked; the
+  owner's logs, at about 311 KB packed, are about 2 MB unpacked: **about 10 to 20 MB per worker** at the owner's
+  sizes (an estimate from those sizes, not measured), so 12 workers would add about 250 MB to a rebuild's 300 MB.
