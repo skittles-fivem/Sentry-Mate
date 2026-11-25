@@ -621,6 +621,24 @@ async fn a_removed_export_file_stays_gone_after_a_restart() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_still_held_by_the_web_side_that_stopped_is_taken_up_when_it_lets_go() {
+    let mut k = kit().await;
+    let mut admin = k.s.admin().await;
+    let one = made_export(&mut admin).await;
+    let id = one["id"].as_str().unwrap().to_string();
+    // the old web side stays alive a moment longer (a download or job of it still running)
+    let old = k.s.app.clone();
+    restart(&mut k).await;
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        drop(old);
+    });
+    let mut admin = k.s.sign_in_admin().await;
+    let after = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
+    assert_eq!(after["state"], "ready", "{after}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn orphan_snapshots_go_at_a_restart() {
     let mut k = kit().await;
     let mut admin = k.s.admin().await;
