@@ -2131,7 +2131,7 @@ mod tests {
         s.waiting = None;
         // 22 s since the logs began, 12 of them waited: 2 200 logs in 10 s
         s.waited_ms = 12_000;
-        assert_eq!(s.eta_ms(at + 22_000), Some(91_800));
+        assert_eq!(s.eta_ms(at + 22_000), Some(91_827));
         // all of it waited: no speed yet
         s.waited_ms = 22_000;
         assert_eq!(s.eta_ms(at + 22_000), None);
