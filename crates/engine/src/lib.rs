@@ -392,6 +392,8 @@ pub(crate) struct Inner {
     pub(crate) full_windows: AtomicU64,
     /// Tests: the full rebuild's worker stops as by a crash once it decoded this many logs of a car.
     pub(crate) full_crash_logs: Mutex<Option<u64>>,
+    /// Tests: the next rebuild job of a car or a period stops as by a crash once it worked on this many logs.
+    pub(crate) job_crash_logs: Mutex<Option<u64>>,
     /// Tests: called by the full rebuild's worker when its run ended, before it goes.
     pub(crate) full_exit_hook: Mutex<Option<full::ExitHook>>,
     /// Tests: called by a rebuild job just before it clears the narrow rebuilds' notes it did.
@@ -633,6 +635,7 @@ impl Engine {
                 full_hold_at: Mutex::new(None),
                 full_windows: AtomicU64::new(0),
                 full_crash_logs: Mutex::new(None),
+                job_crash_logs: Mutex::new(None),
                 full_exit_hook: Mutex::new(None),
                 job_clear_hook: Mutex::new(None),
                 job_start_hook: Mutex::new(None),
