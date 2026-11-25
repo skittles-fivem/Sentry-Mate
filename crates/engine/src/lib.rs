@@ -265,6 +265,10 @@ pub(crate) struct Inner {
     pub(crate) tx: mpsc::UnboundedSender<Work>,
     rx: Mutex<Option<mpsc::UnboundedReceiver<Work>>>,
     car_locks: Mutex<HashMap<CarId, Arc<Mutex<()>>>>,
+    /// The logs told of and not yet taken, per CAN key, in the order the judge told them: each [`Work::Log`] works
+    /// on the first of its key's once it holds the car's lock, so a logger's logs are worked on in the order they
+    /// came whichever worker gets the lock first ([`Engine::work_log`]).
+    pub(crate) told: Arc<Mutex<HashMap<String, std::collections::VecDeque<String>>>>,
     /// Making a car for a new key, one at a time.
     pub(crate) claim: Mutex<()>,
     /// A change to a car's record (read, changed, written back), one at a time: held only around that, never while
@@ -515,6 +519,7 @@ impl Engine {
                 tx,
                 rx: Mutex::new(Some(rx)),
                 car_locks: Mutex::new(HashMap::new()),
+                told: Arc::default(),
                 claim: Mutex::new(()),
                 car_record: Mutex::new(()),
                 places: RwLock::new(None),
@@ -641,12 +646,18 @@ impl Engine {
 
     /// What to give [`ingest::Judge::on_judged`]: it notes the log and returns at once.
     pub fn listener(&self) -> ingest::OnJudged {
-        let (tx, outstanding) = (self.inner.tx.clone(), self.inner.outstanding.clone());
+        let (tx, outstanding, told) = (self.inner.tx.clone(), self.inner.outstanding.clone(), self.inner.told.clone());
         Arc::new(move |j: &ingest::Judged| {
             // (a send fails only once the engine is gone; the next start's reconcile finds the log)
             outstanding.fetch_add(1, Ordering::SeqCst);
+            // noted in the order told, before the work goes out (see `told`)
+            let mut t = lock(&told);
+            t.entry(j.key.clone()).or_default().push_back(j.name.clone());
             if tx.send(Work::Log { key: j.key.clone(), name: j.name.clone() }).is_err() {
                 outstanding.fetch_sub(1, Ordering::SeqCst);
+                if let Some(q) = t.get_mut(&j.key) {
+                    q.pop_back();
+                }
             }
         })
     }
