@@ -63,6 +63,7 @@ pub mod placing;
 pub mod query;
 pub mod records;
 pub mod rehome;
+mod speed;
 pub mod tesla_in;
 pub mod tmlocal_catchup;
 pub mod tz;
@@ -73,6 +74,7 @@ pub use tesla_in::{TeslaSink, TeslafiSink, TeslamateLocalSink};
 
 pub use jobs::{Job, JobStatus, Scope};
 pub use records::DECODE_VERSION;
+pub use speed::RebuildSpeed;
 
 use db::Db;
 use ingest::{Judge, Store};
@@ -196,6 +198,10 @@ pub struct EngineStats {
     pub now_us_total: u64,
     /// Logs whose reading made ahead on another core was used ([`ahead`]).
     pub logs_read_ahead: u64,
+    /// Of the windows' time (`rebuild_ms_total`, µs): finding the window and its logs, reading the inputs' samples,
+    /// fusing them, building the timeline, writing its rows, and the rest of the writing (the car's state now, the
+    /// events).
+    pub window_parts_us: [u64; 6],
     /// GPS fixes the timeline rebuilds left out since the server started (a placeholder, half a fix, or a jump
     /// faster than a car drives from the fixes around it): rebuilding a window counts its fixes again.
     pub gps_fixes_dropped: u64,
@@ -216,6 +222,7 @@ struct Counters {
     now_us: AtomicU64,
     read_ahead: AtomicU64,
     gps_fixes_dropped: AtomicU64,
+    window_parts: [AtomicU64; 6],
 }
 
 pub(crate) enum Work {
@@ -309,6 +316,8 @@ pub(crate) struct Inner {
     pub(crate) compact_auto: std::sync::atomic::AtomicBool,
     /// The full rebuild under way ([`full`]); its record's changes, one at a time; a test's failure point.
     pub(crate) full: Mutex<full::Full>,
+    /// The counters as last read for [`Engine::rebuild_speed`].
+    pub(crate) speeds: Mutex<speed::Speeds>,
     pub(crate) full_start: Mutex<()>,
     /// The server is stopping ([`Engine::stopping`]): the full rebuild leaves its run as it stands.
     pub(crate) stopping: std::sync::atomic::AtomicBool,
@@ -544,6 +553,7 @@ impl Engine {
                 compact_steps: Mutex::default(),
                 compact_auto: std::sync::atomic::AtomicBool::new(false),
                 full: Mutex::default(),
+                speeds: Mutex::default(),
                 full_start: Mutex::new(()),
                 stopping: std::sync::atomic::AtomicBool::new(false),
                 full_fail_at: Mutex::new(None),
@@ -794,6 +804,7 @@ impl Engine {
             samples_us_total: c.samples_us.load(Ordering::Relaxed),
             now_us_total: c.now_us.load(Ordering::Relaxed),
             logs_read_ahead: c.read_ahead.load(Ordering::Relaxed),
+            window_parts_us: std::array::from_fn(|i| c.window_parts[i].load(Ordering::Relaxed)),
             gps_fixes_dropped: c.gps_fixes_dropped.load(Ordering::Relaxed),
             last_error: lock(&self.inner.last_error).clone(),
         }
@@ -815,6 +826,9 @@ impl Engine {
             s.samples_us_total += t.samples_us_total;
             s.now_us_total += t.now_us_total;
             s.logs_read_ahead += t.logs_read_ahead;
+            for (a, b) in s.window_parts_us.iter_mut().zip(t.window_parts_us) {
+                *a += b;
+            }
         }
         s
     }

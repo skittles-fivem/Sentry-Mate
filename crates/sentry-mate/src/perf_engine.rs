@@ -386,7 +386,14 @@ async fn measure_owner_rebuild() {
         let r = loop {
             let r = e.full_rebuild_status().unwrap().unwrap();
             if r.phase == engine::full::Phase::Decoding {
-                last = e.work_stats();
+                // (the shadow's counters go with it at the phase's end, before the record says so)
+                let w = e.work_stats();
+                if w.decode_ms_total >= last.decode_ms_total {
+                    last = w;
+                }
+                if std::env::var_os("PERF_DEBUG").is_some() {
+                    println!("{:?} {} {:?}", r.phase, r.logs_done, last);
+                }
                 decoding.0.get_or_insert_with(Instant::now);
                 decoding.1 = Some(Instant::now());
             }
@@ -416,6 +423,12 @@ async fn measure_owner_rebuild() {
             decode_ms - read - samples - now,
             (s.windows_rebuilt - before.windows_rebuilt),
         );
+        let parts: Vec<String> = ["find", "read", "fuse", "build", "rows", "rest"]
+            .iter()
+            .zip(s.window_parts_us.iter().zip(before.window_parts_us))
+            .map(|(name, (a, b))| format!("{name} {:.1}", per(*a, b) / 1000.0))
+            .collect();
+        println!("owner shape: {logs} logs: of the windows (ms a log): {}; {:.0} s decoding", parts.join(", "), dec_s);
         println!(
             "owner shape: {logs} logs: a full rebuild in {secs:.1} s, {:.1} s of CPU, {:?}, {} logs\n{row}",
             cpu_s() - cpu,

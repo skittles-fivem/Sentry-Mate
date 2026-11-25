@@ -9,7 +9,7 @@ from .helpers import ServerCase
 PW = "sentry-mate-dev"
 MIN = 60_000
 KEYS = ("state", "id", "scope", "cars", "car", "cars_done", "cars_total", "reason", "phase", "logs", "days", "bytes",
-        "percent", "rate_bytes_per_s", "rate_logs_per_s", "rate_days_per_s", "eta_ms", "started_ms", "finished_ms", "last_progress_ms", "stalled", "errors", "error",
+        "percent", "rate_bytes_per_s", "rate_logs_per_s", "rate_days_per_s", "eta_ms", "speed", "started_ms", "finished_ms", "last_progress_ms", "stalled", "errors", "error",
         "by", "version", "causes", "hold", "cancelling", "history")
 
 
