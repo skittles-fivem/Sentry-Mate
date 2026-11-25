@@ -21,6 +21,7 @@ import { getPrefs, onPrefs } from './prefs.js';
 import { tileChoice, rasterPaint, dimmed, mapColors, tileSources, tileLayers, vectorGround, noTilesNote, watchTileErrors, onImagery, IMAGERY_HALO, mapStyleSwitch, swapTiles, sharpZoom } from '../shared/maptiles.js';
 
 let mlLoad = null;
+const mlSheet = () => styleSheet(new URL('../vendor/maplibre-gl/maplibre-gl.css', import.meta.url).href, { first: true });
 /**
  * Load MapLibre once (an ES module, its worker and its style sheet, all from this pack). Resolves only once the
  * style sheet applies, so no map is drawn without it (its controls would jump into place). Pages without a map
@@ -29,7 +30,7 @@ let mlLoad = null;
 export function loadMapLibre() {
   mlLoad ??= Promise.all([
     import('../vendor/maplibre-gl/maplibre-gl.mjs'),
-    styleSheet(new URL('../vendor/maplibre-gl/maplibre-gl.css', import.meta.url).href, { first: true }),
+    mlSheet(),
   ]).then(([ml]) => {
     ml.setWorkerUrl(new URL('../vendor/maplibre-gl/maplibre-gl-worker.mjs', import.meta.url).href);
     return ml;
@@ -107,9 +108,12 @@ function whenReady(signal) {
  * With lazy: true a map below the fold is made (and MapLibre loaded) only when it comes within a screen of view
  * (shared/lazy.js; with afterReady too, only after the page is ready and once it is in view): until then this
  * waits, so a page awaits it for ready only when nearNow(el) says it is near.
+ * With onShell, the map's foot (its credit and style switch, the page's own) is laid out before MapLibre has arrived
+ * and onShell() is called then: a page can be ready with its overlays where they stay, and the library (over a
+ * megabyte) draws the map into its reserved place after.
  * Throws when MapLibre cannot start (no WebGL): show mapFallback() then.
  */
-export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bounds = null, interactive = true, lazy = false, afterReady = false } = {}) {
+export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bounds = null, interactive = true, lazy = false, afterReady = false, onShell = null } = {}) {
   if (lazy) {
     // afterReady: not before the page is drawn and ready, and then once the map is in view (a map's setup is the
     // largest piece of work on a page: it must not hold up the rest)
@@ -117,23 +121,58 @@ export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bo
     await new Promise((resolve) => ctx.onCleanup(whenNear(container, resolve, { margin: afterReady ? 0 : 1 })));
     if (!ctx.alive()) return null;
   }
-  const [ml, cfg] = await Promise.all([loadMapLibre(), mapsConfig()]);
+  const mlIn = loadMapLibre();
+  mlIn.catch(() => {}); // awaited below; a page left before then does not see its failure
+  const [cfg] = await Promise.all([mapsConfig(), onShell ? mlSheet() : null]);
   let src = tileChoice(cfg, getPrefs());
   watchTilePolicy(src.template && !src.offline ? src.template : null);
   if (!ctx.alive()) return null;
-  const map = new ml.Map({
-    // never opens deeper than the tiles are sharp (the satellite photos end sooner than the map)
-    container, style: style(src), center, zoom: Math.min(zoom, sharpZoom(src)), attributionControl: false, interactive,
-    cooperativeGestures: false, dragRotate: false, pitchWithRotate: false, fadeDuration: 0, refreshExpiredTiles: false,
-    maxZoom: Math.max(src.maxZoom, 18),
-    ...(bounds ? { bounds } : {}),
-  });
+  // the map (made below) and the moment it has loaded; the style switch is made before both
+  let map = null, loaded;
+  const ready = new Promise((res) => { loaded = res; });
   // the credit is the page's own text, there from the start: MapLibre's control fills in only once the tiles have
   // loaded, after the page is ready, and the overlays above it would then move
   const creditText = h('div', { class: 'maplibregl-ctrl-attrib-inner' });
   const credit = h('div', { class: 'maplibregl-ctrl maplibregl-ctrl-attrib' }, creditText);
   const setCredit = (s) => { creditText.textContent = s.attribution || ''; credit.classList.toggle('maplibregl-attrib-empty', !s.attribution); };
   setCredit(src);
+  const styleSwitch = interactive ? mapStyleSwitch(cfg, getPrefs(), {
+    classes: { box: 'map-style maplibregl-ctrl', button: 'map-style-btn', active: 'is-active' },
+    label: 'Map style',
+    // after 'load', not while the style is "loaded": map.loaded() and isStyleLoaded() read false while any tiles or
+    // sources are still loading, long after 'load' fired (which never fires again), and a pick then was lost
+    onChange: (next) => { ready.then(() => { if (ctx.alive()) swap(next); }); },
+    // the pick shows on this page; one that could not be saved is gone on the next, so say it
+    onError: (err, style) => { if (!api.isAbort(err) && ctx.alive()) flash(`Could not save the map style: ${err?.message || 'no answer from the server'} ${style.name} shows on this page only.`, { kind: 'error' }); },
+  }) : null;
+  // the overlays' room for the foot: --map-foot-br above it, and on a narrow map (or a phone) --map-foot under the
+  // page's bottom-left overlay, as the credit and the switch then take the whole bottom
+  const footRoom = (foot) => {
+    if (foot) container.parentElement?.style.setProperty('--map-foot-br', `${Math.ceil(foot.offsetHeight)}px`);
+    const wide = !!document.documentElement.dataset.phone || (foot && foot.offsetWidth > container.clientWidth * 0.5);
+    const h2 = foot && wide ? Math.ceil(foot.offsetHeight) : 0;
+    container.parentElement?.style.setProperty('--map-foot', `${h2}px`);
+    return h2;
+  };
+  let shell = null;
+  if (onShell) {
+    // the foot as MapLibre will lay it out (a bottom control goes in before the ones already there), until it does
+    container.classList.add('maplibregl-map');
+    shell = h('div', { class: 'maplibregl-ctrl-bottom-right' }, styleSwitch, src.template ? credit : null);
+    container.append(shell);
+    footRoom(shell);
+    onShell();
+  }
+  let ml;
+  try { ml = await mlIn; } finally { shell?.remove(); }
+  if (!ctx.alive()) return null;
+  map = new ml.Map({
+    // never opens deeper than the tiles are sharp (the satellite photos end sooner than the map)
+    container, style: style(src), center, zoom: Math.min(zoom, sharpZoom(src)), attributionControl: false, interactive,
+    cooperativeGestures: false, dragRotate: false, pitchWithRotate: false, fadeDuration: 0, refreshExpiredTiles: false,
+    maxZoom: Math.max(src.maxZoom, 18),
+    ...(bounds ? { bounds } : {}),
+  });
   if (src.template) map.addControl({ onAdd: () => credit, onRemove: () => credit.remove() }, 'bottom-right');
   const errorNote = (text) => h('p', { class: 'map-note map-note--error', role: 'status' }, text);
   let offErrors = watchTileErrors(map, container, src, errorNote);
@@ -142,7 +181,7 @@ export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bo
   container.dataset.tiles = src.kind;
   container.dataset.imagery = String(onImagery(src));
   if (src.kind === 'none') container.append(noTilesNote(src, { compact: container.clientHeight < 300, classes: { primary: 'btn btn--sm btn--primary', secondary: 'btn btn--sm btn--ghost' } }));
-  const ready = new Promise((res) => map.once('load', res));
+  map.once('load', loaded);
   map.on('error', (e) => { console.warn('map', e && e.error ? e.error.message : e); });
 
   const sized = [];
@@ -179,15 +218,6 @@ export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bo
     offErrors(); offErrors = watchTileErrors(map, container, src, errorNote);
     watchTilePolicy(src.template && !src.offline ? src.template : null);
   };
-  const styleSwitch = interactive ? mapStyleSwitch(cfg, getPrefs(), {
-    classes: { box: 'map-style maplibregl-ctrl', button: 'map-style-btn', active: 'is-active' },
-    label: 'Map style',
-    // after 'load', not while the style is "loaded": map.loaded() and isStyleLoaded() read false while any tiles or
-    // sources are still loading, long after 'load' fired (which never fires again), and a pick then was lost
-    onChange: (next) => { ready.then(() => { if (ctx.alive()) swap(next); }); },
-    // the pick shows on this page; one that could not be saved is gone on the next, so say it
-    onError: (err, style) => { if (!api.isAbort(err) && ctx.alive()) flash(`Could not save the map style: ${err?.message || 'no answer from the server'} ${style.name} shows on this page only.`, { kind: 'error' }); },
-  }) : null;
   // bottom right, above the credit: the page's own cards sit at the top
   if (styleSwitch) map.addControl({ onAdd: () => styleSwitch, onRemove: () => styleSwitch.remove() }, 'bottom-right');
   // on a narrow map the credit (and the switch) take the whole bottom: the page's bottom-left overlay moves above
@@ -195,15 +225,11 @@ export async function createMap(container, ctx, { center = [0, 0], zoom = 14, bo
   const foot = container.querySelector('.maplibregl-ctrl-bottom-right');
   let footNow = 0;
   const measureFoot = () => {
-    // a bottom-right overlay always sits above the credit and the switch
-    if (foot) container.parentElement?.style.setProperty('--map-foot-br', `${Math.ceil(foot.offsetHeight)}px`);
-    // on a phone the credit and the switch always take the bottom (the credit's text arrives after the map does, and
-    // the overlays must not jump up when it does)
-    const wide = !!document.documentElement.dataset.phone || (foot && foot.offsetWidth > container.clientWidth * 0.5);
-    const h2 = foot && wide ? Math.ceil(foot.offsetHeight) : 0;
+    // a bottom-right overlay always sits above the credit and the switch; on a phone the credit and the switch always
+    // take the bottom (the credit's text arrives after the map does, and the overlays must not jump up when it does)
+    const h2 = footRoom(foot);
     if (h2 === footNow) return;
     footNow = h2;
-    container.parentElement?.style.setProperty('--map-foot', `${h2}px`);
     // with the page's bottom overlays now above the credit, keep their height clear too
     const over = h2 ? Math.max(0, ...[...(container.parentElement?.querySelectorAll(':scope > .map-overlay--bl, :scope > .map-overlay--br') || [])].map((el) => el.offsetHeight)) : 0;
     map.setPadding({ top: 0, left: 0, right: 0, bottom: over ? h2 + over : 0 });
