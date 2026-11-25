@@ -188,6 +188,14 @@ impl Skips {
     }
 }
 
+/// The reasons a walk gives for a skipped entry, by their words (a saved plan names them again).
+pub fn why_of(s: &str) -> &'static str {
+    ["name off the rule", "a link", "not a file or folder", UNREADABLE]
+        .into_iter()
+        .find(|w| *w == s)
+        .unwrap_or("skipped")
+}
+
 /// Why a file that can't be opened is skipped (as for a folder that can't be read).
 pub const UNREADABLE: &str = "can't be read";
 
