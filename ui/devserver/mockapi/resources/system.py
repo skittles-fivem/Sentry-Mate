@@ -850,7 +850,7 @@ def _fit_status(req, cid):
     if f is None:
         return {"car": cid, "state": "idle", "id": None, "days": None, "phase": None, "done": 0, "total": 0,
                 "percent": 0, "started_ms": None, "finished_ms": None, "error": None, "result": None,
-                "current": current, "applied": False, "server_busy": busy}
+                "current": current, "applied": False, "server_busy": busy, "waiting": None}
     ends = f["ends_ms"]
     if ends is None or req.now < ends:
         # positions over the first 30 %, logs to 90 %, then the fit (a never-ending one stays in the logs, 48 %)
@@ -869,11 +869,11 @@ def _fit_status(req, cid):
             phase, total, done, pct = "logs", 412, 120, 47
         return {"car": cid, "state": "running", "id": f["id"], "days": f["days"], "phase": phase, "done": done,
                 "total": total, "percent": pct, "started_ms": f["started_ms"], "finished_ms": None, "error": None,
-                "result": None, "current": current, "applied": False, "server_busy": busy}
+                "result": None, "current": current, "applied": False, "server_busy": busy, "waiting": None}
     return {"car": cid, "state": "done", "id": f["id"], "days": f["days"], "phase": None, "done": 0, "total": 0,
             "percent": 100, "started_ms": f["started_ms"], "finished_ms": ends, "error": None,
             "result": _fit_result(cid, f["days"]), "current": current, "applied": current == _FIT_LAYOUT,
-            "server_busy": busy}
+            "server_busy": busy, "waiting": None}
 
 
 def get_gps_fit(req):
