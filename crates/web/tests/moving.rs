@@ -576,8 +576,8 @@ async fn an_export_being_made_at_a_restart_shows_stopped() {
     let r = admin.post("/api/v1/system/exports", json!({ "password": ADMIN_PASSWORD })).await;
     assert_eq!(r.status, 201, "{}", r.text());
     // (the server that stopped has its job still waiting: let it go, it finds nothing of its own to write)
-    go_tx.send(()).unwrap();
-    go_tx.send(()).unwrap();
+    let _ = go_tx.send(());
+    let _ = go_tx.send(());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -628,14 +628,27 @@ async fn a_file_still_held_by_the_web_side_that_stopped_is_taken_up_when_it_lets
     let id = one["id"].as_str().unwrap().to_string();
     // the old web side stays alive a moment longer (a download or job of it still running)
     let old = k.s.app.clone();
-    restart(&mut k).await;
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-        drop(old);
-    });
+    let (data, keys) = (k.data.clone(), k.keys.clone());
+    let wait = std::time::Duration::from_millis(100);
+    k.s.restart(move |b| {
+        b.service(Arc::new(web::moving::MoveSite::new(data, keys, env!("CARGO_PKG_VERSION")).with_reopen_wait(wait)))
+    })
+    .await;
+    // the start gave up waiting; the file is taken up with the first request after the old side lets go
     let mut admin = k.s.sign_in_admin().await;
-    let after = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
+    let list = admin.get("/api/v1/system/exports").await.json();
+    assert!(list["items"].as_array().unwrap().iter().all(|e| e["state"] != "failed"), "{list}");
+    drop(old);
+    let mut after = serde_json::Value::Null;
+    for _ in 0..100 {
+        after = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
+        if after["state"] == "ready" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     assert_eq!(after["state"], "ready", "{after}");
+    assert_eq!(after["sha256"], one["sha256"], "{after}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -659,4 +672,199 @@ async fn orphan_snapshots_go_at_a_restart() {
     assert!(!orphan.exists());
     assert!(k.data.join(moving::export::SNAPSHOTS).join("slot.sealed").exists());
     assert!(!k.data.join(moving::export::SNAPSHOTS).join("stray").exists());
+}
+
+// ---------------------------------------------------------------- the start's upkeep, replaced web sides, a move away
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_ready_export_file_outlives_the_start_upkeep_of_a_real_restart() {
+    let mut k = kit().await;
+    let mut admin = k.s.admin().await;
+    let one = made_export(&mut admin).await;
+    let id = one["id"].as_str().unwrap().to_string();
+    let (data, keys) = (k.data.clone(), k.keys.clone());
+    drop(admin);
+    // the process ends and starts: `tidy` runs before the vault is opened, and nothing holds a snapshot's lock
+    let (d2, k2) = (data.clone(), keys.clone());
+    k.s.restart_between(
+        move |b| b.service(Arc::new(web::moving::MoveSite::new(data, keys, env!("CARGO_PKG_VERSION")))),
+        axum::Router::new(),
+        // (the kit's folders, not the test server's own)
+        move |_, _| moving::import::tidy(&d2, &k2),
+    )
+    .await;
+    let mut admin = k.s.sign_in_admin().await;
+    let after = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
+    assert_eq!(after["state"], "ready", "{after}");
+    assert_eq!(after["sha256"], one["sha256"], "{after}");
+    let r = admin.get(after["url"].as_str().unwrap()).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(snapshot_folders(&k).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_kept_folder_the_state_does_not_name_is_removed_at_the_start() {
+    let mut k = kit().await;
+    let mut admin = k.s.admin().await;
+    let one = made_export(&mut admin).await;
+    let id = one["id"].as_str().unwrap().to_string();
+    // a kept folder of an export that is not the one the state names (a crash between two exports)
+    let stale = k.data.join(moving::export::SNAPSHOTS).join("0123456789abcdef0123456789abcdef");
+    std::fs::create_dir_all(stale.join("files")).unwrap();
+    std::fs::write(stale.join("keep"), b"").unwrap();
+    let (data, keys) = (k.data.clone(), k.keys.clone());
+    drop(admin);
+    let (d2, k2) = (data.clone(), keys.clone());
+    k.s.restart_between(
+        move |b| b.service(Arc::new(web::moving::MoveSite::new(data, keys, env!("CARGO_PKG_VERSION")))),
+        axum::Router::new(),
+        // (the kit's folders, not the test server's own)
+        move |_, _| moving::import::tidy(&d2, &k2),
+    )
+    .await;
+    let mut admin = k.s.sign_in_admin().await;
+    let after = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
+    assert_eq!(after["state"], "ready", "{after}");
+    assert!(!stale.exists());
+    assert_eq!(snapshot_folders(&k).len(), 1);
+}
+
+/// A restart with the old web side's checksum still running (held at the hook until the test lets it go): the new
+/// side finds the file in use. With `old_lives` the old web side is still alive when its checksum ends (a download or
+/// a job still holds it): it writes nothing then.
+async fn replaced_while_checksumming(old_lives: bool) {
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let (hit_tx, mut hit_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let go_rx = std::sync::Mutex::new(go_rx);
+    let hook: Hook = Arc::new(move |at: &str| {
+        if at == "checksum" {
+            hit_tx.send(()).unwrap();
+            let _ = go_rx.lock().unwrap().recv();
+        }
+    });
+    let mut k = kit_full(true, Some(hook)).await;
+    let mut admin = k.s.admin().await;
+    let r = admin.post("/api/v1/system/exports", json!({ "password": ADMIN_PASSWORD })).await;
+    let id = r.json()["id"].as_str().unwrap().to_string();
+    tokio::time::timeout(std::time::Duration::from_secs(30), hit_rx.recv()).await.unwrap().unwrap();
+    let one = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
+    assert_eq!(one["state"], "ready", "{one}");
+    drop(admin);
+
+    let old = old_lives.then(|| k.s.app.clone());
+    let (data, keys) = (k.data.clone(), k.keys.clone());
+    let wait = std::time::Duration::from_millis(200);
+    k.s.restart(move |b| {
+        b.service(Arc::new(web::moving::MoveSite::new(data, keys, env!("CARGO_PKG_VERSION")).with_reopen_wait(wait)))
+    })
+    .await;
+    let mut admin = k.s.sign_in_admin().await;
+    let list = admin.get("/api/v1/system/exports").await.json();
+    assert!(list["items"].as_array().unwrap().iter().all(|e| e["state"] != "failed"), "{list}");
+    let slot = k.data.join(moving::export::SNAPSHOTS).join("slot.sealed");
+    let saved = std::fs::read(&slot).unwrap();
+    // the old side's checksum goes on to its end (or is cancelled): it writes nothing
+    go_tx.send(()).unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_eq!(std::fs::read(&slot).unwrap(), saved, "the old side wrote the state file");
+    drop(old);
+    let mut after = serde_json::Value::Null;
+    for _ in 0..200 {
+        after = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
+        if after["state"] == "ready" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(after["state"], "ready", "the next request takes the file up: {after}");
+    let r = admin.get(after["url"].as_str().unwrap()).await;
+    assert_eq!(r.status, 200);
+    let done = checksummed(&mut admin, &id).await;
+    assert_eq!(done["checksum"]["state"], "done", "{done}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replaced_web_side_with_a_checksum_running_neither_fails_nor_overwrites_the_file() {
+    replaced_while_checksumming(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replaced_web_side_that_lives_on_does_not_write_the_export_state() {
+    replaced_while_checksumming(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn nothing_is_written_by_the_move_side_after_a_move_away() {
+    let mut k = kit().await;
+    drop(k.s.admin().await);
+    let dir = k.data.join(moving::export::SNAPSHOTS);
+    let orphan = dir.join("0123456789abcdef0123456789abcdef");
+    std::fs::create_dir_all(orphan.join("files")).unwrap();
+    std::fs::write(dir.join("slot.tmp"), b"half").unwrap();
+    moving::old::mark_moved_for_tests(&k.data, &k.s.app.vault, "192.0.2.30", true).unwrap();
+    // started again over a folder whose data moved away: the first request of the move side must not clean up
+    restart(&mut k).await;
+    let mut admin = k.s.sign_in_admin().await;
+    for path in ["/api/v1/system/move", "/api/v1/system/exports"] {
+        assert_eq!(admin.get(path).await.status, 200, "{path}");
+    }
+    assert!(orphan.exists(), "no folder is removed");
+    assert!(dir.join("slot.tmp").exists());
+    assert!(!dir.join("slot.sealed").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_checksum_of_a_file_taken_up_after_a_restart_is_kept() {
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let (hit_tx, mut hit_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let go_rx = std::sync::Mutex::new(go_rx);
+    let hook: Hook = Arc::new(move |at: &str| {
+        if at == "checksum" {
+            hit_tx.send(()).unwrap();
+            let _ = go_rx.lock().unwrap().recv();
+        }
+    });
+    let mut k = kit_full(true, Some(hook)).await;
+    let mut admin = k.s.admin().await;
+    // made, its checksum not worked out when the server stops
+    let r = admin.post("/api/v1/system/exports", json!({ "password": ADMIN_PASSWORD })).await;
+    let id = r.json()["id"].as_str().unwrap().to_string();
+    tokio::time::timeout(std::time::Duration::from_secs(30), hit_rx.recv()).await.unwrap().unwrap();
+    let (data, keys) = (k.data.clone(), k.keys.clone());
+    k.s.restart(move |b| {
+        b.service(Arc::new(
+            web::moving::MoveSite::new(data, keys, env!("CARGO_PKG_VERSION"))
+                .with_reopen_wait(std::time::Duration::from_millis(200)),
+        ))
+    })
+    .await;
+    go_tx.send(()).unwrap();
+    let mut admin = k.s.sign_in_admin().await;
+    // taken up with the first request once the old side has let go of the file
+    for _ in 0..200 {
+        if admin.get(&format!("/api/v1/system/exports/{id}")).await.status == 200 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let done = checksummed(&mut admin, &id).await;
+    assert_eq!(done["state"], "ready", "{done}");
+    assert_eq!(done["checksum"]["state"], "done", "{done}");
+    assert!(done["sha256"].is_string(), "{done}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_export_whose_state_cannot_be_saved_does_not_leave_the_old_one_to_come_back() {
+    let k = kit().await;
+    let mut admin = k.s.admin().await;
+    made_export(&mut admin).await;
+    let dir = k.data.join(moving::export::SNAPSHOTS);
+    let slot = dir.join("slot.sealed");
+    let old = std::fs::read(&slot).unwrap();
+    // the state file can't be written (its temporary file's place is taken)
+    std::fs::create_dir_all(dir.join("slot.tmp")).unwrap();
+    let r = admin.post("/api/v1/system/exports", json!({ "password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    // still the old export's state would name a file that is no longer offered: after a crash it must not come back
+    assert!(!slot.exists() || std::fs::read(&slot).unwrap() != old, "the old export's state is still saved");
 }

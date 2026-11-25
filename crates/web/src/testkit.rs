@@ -35,6 +35,9 @@ pub struct TestServer {
     task: tokio::task::JoinHandle<std::io::Result<()>>,
 }
 
+/// What a restart runs between the old state going and the export file being taken up.
+type Between = Box<dyn FnOnce(&std::path::Path, &std::path::Path) + Send>;
+
 /// What [`TestServer::assemble`] made.
 struct Assembled {
     app: AppState,
@@ -132,6 +135,26 @@ impl TestServer {
 
     /// [`TestServer::restart`], with extra routes.
     pub async fn restart_full(&mut self, f: impl FnOnce(Builder) -> Builder, routes: axum::Router<AppState>) {
+        self.restart_inner(f, routes, None).await;
+    }
+
+    /// [`TestServer::restart_full`], running `between` (on the `data` and `keys` folders) once the old state has
+    /// gone and before the export file is taken up again: what the program's start does first (`moving::import::tidy`).
+    pub async fn restart_between(
+        &mut self,
+        f: impl FnOnce(Builder) -> Builder,
+        routes: axum::Router<AppState>,
+        between: impl FnOnce(&std::path::Path, &std::path::Path) + Send + 'static,
+    ) {
+        self.restart_inner(f, routes, Some(Box::new(between))).await;
+    }
+
+    async fn restart_inner(
+        &mut self,
+        f: impl FnOnce(Builder) -> Builder,
+        routes: axum::Router<AppState>,
+        between: Option<Between>,
+    ) {
         self.task.abort();
         let _ = (&mut self.task).await;
         let (data, keys) = (self.dir.path().join("data"), self.dir.path().join("keys"));
@@ -146,10 +169,30 @@ impl TestServer {
         )
         .await;
         // the old state goes now, with what it held (a snapshot's lock)
+        let old = self.app.service::<crate::moving::MoveSite>().ok().map(|s| Arc::downgrade(&s));
         self.app = up.app;
         self.tls = up.tls;
         self.setup_code = up.setup_code;
         self.task = up.task;
+        // a process that ended holds nothing: wait for connections of the old server that are still closing
+        for _ in 0..100 {
+            if between.is_none() || old.as_ref().is_none_or(|o| o.strong_count() == 0) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let app = self.app.clone();
+        // what the program does as it starts, then as it builds the web side (on a blocking thread)
+        tokio::task::spawn_blocking(move || {
+            if let Some(f) = between {
+                f(&data, &keys);
+            }
+            if !crate::moving::data_moved(&app) {
+                crate::moving::recover(&app);
+            }
+        })
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
     }
 
     /// Moves the server's clock on.
