@@ -109,11 +109,21 @@ cut short) is where it can lose something. It never does so quietly:
   and rebuilds its windows once per run of logs as before the restart, to the very history an uninterrupted one
   gives (`crates/sentry-mate/src/window_batch.rs`:
   `a_full_rebuild_carried_on_after_a_restart_gives_the_same_timeline_per_run_of_logs`).
-- **A rebuild of a period** rebuilds its windows once per run of logs too where no drive or charge goes on across
-  the period's end, to the very history a window per log gives, ids included
-  (`a_rebuild_of_a_period_gives_the_same_timeline_per_run_of_logs`). A period whose end cuts a drive or a charge
-  gets a window per log: the part after the end is kept, and per run the whole drive or charge could keep the id of
-  that part instead of its start's.
+- **A rebuild of a period** rebuilds its windows once per run of logs too, to the very history a window per log
+  gives, ids included (`a_rebuild_of_a_period_gives_the_same_timeline_per_run_of_logs`). Where its end cuts a
+  drive or a charge, the part after the end is kept, and a window that reaches it before the drive's head is
+  decoded makes a drive or charge of it with the id of its first sample; the whole one keeps its start's id only if
+  a row with that id is stored, else the id of the first old row it overlaps. So the id depends on the windows
+  rebuilt before the head: the rebuild notes where the earliest cut drive or charge began (before it clears, on
+  its mark), gives the logs from an hour before that a window each, and the logs before, which carry none of its
+  samples, one per run (`a_rebuild_of_a_period_cutting_a_drive_or_charge_gives_the_same_timeline_per_run_of_logs`:
+  ends at every point of a drive and of a charge, gaps, two cars, a restart, a start that moves earlier). It
+  stays a window per log where it cannot be told that the logs before are free of the drive: logs stored and not
+  worked on yet outside the period, a window grown over a damaged file (above), a mark kept by an older
+  version, a restart that finds rows already rebuilt at or after the logs left, and a car with an API input. The
+  hour is an assumption of the engine (a log is about a minute long): a drive whose start the rebuild moves
+  earlier than the stored one by more than that came out the same in the tests (2 hours 18 minutes earlier), but
+  nothing proves it in general.
 
 ## Version changes
 
