@@ -435,7 +435,7 @@ async fn an_export_file_shows_its_progress_and_its_sha256_and_can_be_cancelled()
     let r = admin.get(one["url"].as_str().unwrap()).await;
     assert_eq!(r.status, 200);
     assert_eq!(hex::encode(sha2::Sha256::digest(&r.body)), sha);
-    let left = std::fs::read_dir(k.data.join(moving::export::SNAPSHOTS)).unwrap().count();
+    let left = snapshot_folders(&k).len();
     assert_eq!(left, 1, "only the snapshot of the export there is");
 }
 
@@ -460,4 +460,185 @@ async fn an_export_file_that_could_not_be_made_says_why_with_a_code() {
     assert_eq!(r.status, 201, "{}", r.text());
     let one = ready_export(&mut admin, r.json()["id"].as_str().unwrap()).await;
     assert_eq!(one["state"], "ready", "{one}");
+}
+
+// ---------------------------------------------------------------- an export file across a restart
+
+/// The server stopped and started again over the same folders (the move side built anew, nothing in memory kept).
+async fn restart(k: &mut Kit) {
+    let (data, keys) = (k.data.clone(), k.keys.clone());
+    k.s.restart(move |b| b.service(Arc::new(web::moving::MoveSite::new(data, keys, env!("CARGO_PKG_VERSION"))))).await;
+}
+
+/// The export made and ready, its checksum worked out.
+async fn made_export(admin: &mut web::testkit::Client) -> serde_json::Value {
+    let r = admin.post("/api/v1/system/exports", json!({ "password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let id = r.json()["id"].as_str().unwrap().to_string();
+    let one = ready_export(admin, &id).await;
+    assert_eq!(one["state"], "ready", "{one}");
+    let one = checksummed(admin, &id).await;
+    assert_eq!(one["checksum"]["state"], "done", "{one}");
+    one
+}
+
+/// The snapshots' folder: the names in it.
+fn export_names(k: &Kit) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(k.data.join(moving::export::SNAPSHOTS))
+        .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+fn snapshot_folders(k: &Kit) -> Vec<String> {
+    export_names(k).into_iter().filter(|n| k.data.join(moving::export::SNAPSHOTS).join(n).is_dir()).collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_ready_export_file_outlives_a_restart() {
+    use sha2::Digest as _;
+    let mut k = kit().await;
+    let mut admin = k.s.admin().await;
+    let one = made_export(&mut admin).await;
+    let (id, url) = (one["id"].as_str().unwrap().to_string(), one["url"].as_str().unwrap().to_string());
+    // downloaded once: that is kept a day more, and it is part of what outlives the restart
+    k.s.advance(3_600_000);
+    let r = admin.get(&url).await;
+    assert_eq!(r.status, 200);
+    let whole = r.body.clone();
+    let one = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
+    let folders = snapshot_folders(&k);
+    assert_eq!(folders.len(), 1, "{folders:?}");
+
+    restart(&mut k).await;
+    let mut admin = k.s.sign_in_admin().await;
+    let after = admin.get(&format!("/api/v1/system/exports/{id}")).await;
+    assert_eq!(after.status, 200, "{}", after.text());
+    let after = after.json();
+    assert_eq!(after["state"], "ready", "{after}");
+    for key in ["id", "made_ms", "expires_ms", "sha256", "size", "files", "bytes", "file_name", "url", "sent_bytes"] {
+        assert_eq!(after[key], one[key], "{key}: {after} against {one}");
+    }
+    assert_eq!(after["checksum"]["state"], "done", "{after}");
+    assert_eq!(snapshot_folders(&k), folders, "the folder is still there");
+    let r = admin.get(&url).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.body, whole, "the same bytes");
+    assert_eq!(hex::encode(sha2::Sha256::digest(&r.body)), one["sha256"].as_str().unwrap());
+    let r = admin.request("GET", &url, None, &[("Range", "bytes=10-")]).await;
+    assert_eq!(r.status, 206);
+    assert_eq!(r.body, whole[10..].to_vec());
+    // it is listed, and it can be removed after the restart: the folder and the state file go
+    let list = admin.get("/api/v1/system/exports").await.json();
+    assert_eq!(list["items"][0]["id"], json!(id));
+    let r = admin.delete(&format!("/api/v1/system/exports/{id}"), json!({})).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    for _ in 0..200 {
+        if export_names(&k).is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert_eq!(export_names(&k), Vec::<String>::new());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_export_being_made_at_a_restart_shows_stopped() {
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let (hit_tx, mut hit_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let go_rx = std::sync::Mutex::new(go_rx);
+    let hook: Hook = Arc::new(move |at: &str| {
+        if at == "export-start" {
+            hit_tx.send(()).unwrap();
+            let _ = go_rx.lock().unwrap().recv();
+        }
+    });
+    let mut k = kit_full(true, Some(hook)).await;
+    let mut admin = k.s.admin().await;
+    let r = admin.post("/api/v1/system/exports", json!({ "password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let id = r.json()["id"].as_str().unwrap().to_string();
+    tokio::time::timeout(std::time::Duration::from_secs(30), hit_rx.recv()).await.unwrap().unwrap();
+
+    restart(&mut k).await;
+    let mut admin = k.s.sign_in_admin().await;
+    let one = admin.get(&format!("/api/v1/system/exports/{id}")).await;
+    assert_eq!(one.status, 200, "{}", one.text());
+    let one = one.json();
+    assert_eq!(one["state"], "failed", "{one}");
+    assert_eq!(one["problem"]["code"], "server_restarted", "{one}");
+    assert!(one["problem"]["what_to_do"].as_str().is_some_and(|w| w.contains("make it again")), "{one}");
+    assert!(one["url"].is_null(), "{one}");
+    let r = admin.get(&format!("/api/v1/system/exports/{id}/file")).await;
+    assert_eq!((r.status, r.code()), (404, Some("export_gone".into())));
+    // a new one may be made at once, and runs to the end
+    let r = admin.post("/api/v1/system/exports", json!({ "password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    // (the server that stopped has its job still waiting: let it go, it finds nothing of its own to write)
+    go_tx.send(()).unwrap();
+    go_tx.send(()).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_export_file_that_expired_while_stopped_is_removed() {
+    let mut k = kit().await;
+    let mut admin = k.s.admin().await;
+    let one = made_export(&mut admin).await;
+    let (id, url) = (one["id"].as_str().unwrap().to_string(), one["url"].as_str().unwrap().to_string());
+    assert_eq!(snapshot_folders(&k).len(), 1);
+    k.s.advance(web::moving::EXPORT_KEPT_MS + 1_000);
+
+    restart(&mut k).await;
+    let mut admin = k.s.sign_in_admin().await;
+    let after = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
+    assert_eq!(after["state"], "expired", "{after}");
+    assert_eq!(snapshot_folders(&k), Vec::<String>::new(), "its folder is gone");
+    let r = admin.get(&url).await;
+    assert_eq!((r.status, r.code()), (404, Some("export_gone".into())));
+    // and it stays expired at the next restart
+    restart(&mut k).await;
+    let mut admin = k.s.sign_in_admin().await;
+    let after = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
+    assert_eq!(after["state"], "expired", "{after}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_removed_export_file_stays_gone_after_a_restart() {
+    let mut k = kit().await;
+    let mut admin = k.s.admin().await;
+    let one = made_export(&mut admin).await;
+    let id = one["id"].as_str().unwrap().to_string();
+    let r = admin.delete(&format!("/api/v1/system/exports/{id}"), json!({})).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert!(!k.data.join(moving::export::SNAPSHOTS).join("slot.sealed").exists(), "its state file goes with it");
+
+    restart(&mut k).await;
+    let mut admin = k.s.sign_in_admin().await;
+    assert_eq!(admin.get("/api/v1/system/exports").await.json()["items"], json!([]));
+    assert_eq!(admin.get(&format!("/api/v1/system/exports/{id}")).await.code(), Some("no_such_export".into()));
+    assert_eq!(snapshot_folders(&k), Vec::<String>::new());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn orphan_snapshots_go_at_a_restart() {
+    let mut k = kit().await;
+    let mut admin = k.s.admin().await;
+    let one = made_export(&mut admin).await;
+    let id = one["id"].as_str().unwrap().to_string();
+    let kept = snapshot_folders(&k);
+    // what a crash left: a folder with no state file naming it, and a stray file
+    let orphan = k.data.join(moving::export::SNAPSHOTS).join("0123456789abcdef0123456789abcdef");
+    std::fs::create_dir_all(orphan.join("files")).unwrap();
+    std::fs::write(orphan.join("files").join("x"), b"made-up").unwrap();
+    std::fs::write(k.data.join(moving::export::SNAPSHOTS).join("stray"), b"made-up").unwrap();
+
+    restart(&mut k).await;
+    let mut admin = k.s.sign_in_admin().await;
+    let after = admin.get(&format!("/api/v1/system/exports/{id}")).await.json();
+    assert_eq!(after["state"], "ready", "{after}");
+    assert_eq!(snapshot_folders(&k), kept, "only the kept one is left");
+    assert!(!orphan.exists());
+    assert!(k.data.join(moving::export::SNAPSHOTS).join("slot.sealed").exists());
+    assert!(!k.data.join(moving::export::SNAPSHOTS).join("stray").exists());
 }

@@ -69,6 +69,13 @@ test('failed: what went wrong and what to do', () => {
   assert.match(old.problem.todo, /log/);
 });
 
+test('failed: a restart that stopped the making says so, with the step to take', () => {
+  const m = exportModel({ id: 'ex1', state: 'failed', phase: 'failed', error: 'The server restarted while the export file was being made.', problem: { code: 'server_restarted', message: 'The server restarted while the export file was being made.' } });
+  assert.equal(m.kind, 'failed');
+  assert.equal(m.problem.code, 'server_restarted');
+  assert.match(m.problem.todo, /make the export again/);
+});
+
 test('ready: the size, then the SHA-256 once it is worked out', () => {
   const e = { id: 'ex1', state: 'ready', phase: 'ready', size: 4_318_761, files: 412, url: '/f', sha256: null, checksum: { state: 'working', bytes_done: 2e6, bytes_total: 4e6, percent: 50, bytes_per_s: 2e6, eta_s: 1, stalled: false } };
   let m = exportModel(e);
