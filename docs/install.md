@@ -36,7 +36,8 @@ Every command is in [commands.md](commands.md). The bridge app in detail is in
 - About 1 GiB of free memory for a few seconds when the vault is made (the
   first start), for a restore and for a new recovery key: the recovery key is
   protected with Argon2id at 1 GiB. The rest of the time it needs very little.
-  A container memory limit below that can make these steps fail.
+  A container memory limit below that can make these steps fail. Memory in
+  use and the limit to set: [Memory](#memory).
 - No Rust and no clone of this repo: the image is published,
   `ghcr.io/skittles-fivem/sentry-mate`, and you only download the compose
   file. Internet is needed to pull the image and its updates. While it runs,
@@ -298,6 +299,47 @@ datasets' paths instead of `data/...` and `keys/...`.
 
 `init` is for Docker Compose only: on TrueNAS the vault is made on the
 first start.
+
+## Memory
+
+Measured on one car with about 23,000 CAN logs and 30 days of Tesla API data, in the image
+([performance.md](plans/performance.md#memory-one-car-23000-logs-in-the-image) has the table and how):
+
+| | process (RSS) |
+|---|---:|
+| started, idle, pages open, uploads arriving | 150 to 170 MB, and it doesn't grow |
+| log checks, the GPS layout fit, an export, a move, a TeslaMate import | 250 to 300 MB, up to about 600 MB for a few seconds |
+| a full rebuild | about 300 MB while it decodes, one core |
+| the end of a full rebuild of a car with Tesla API (or TeslaFi, or local TeslaMate) data | about 300 MB plus 100 KB for every CAN log inside the days that API data covers, for about 5 seconds: 2.6 GB with 30 days of it beside 700 logs a day |
+| making the vault (the first start, a restore, a new recovery key, the new server of a move) | 1 GiB for a few seconds (Argon2id) |
+
+The container's own figure (in TrueNAS, or `docker stats`) is often around 1 GB more than this: the data files the
+server read stay in the kernel's file cache, counted to the container. The kernel gives that back first when the
+container reaches its limit, so it doesn't need room of its own. Sentry Mate also keeps the days it read, opened, in
+a cache of its own of up to a quarter of the memory left under the limit (at most 4 GB): with a limit, it keeps
+less.
+
+**Recommended TrueNAS limit: 4 GiB** for one car. Why:
+
+- Everything except the two short peaks above stays under 600 MB, so 1 GiB would do on most days.
+- The vault's 1 GiB is needed whatever the limit: below about 1.5 GiB a restore, a new recovery key or a move to
+  this server can fail.
+- The end of a full rebuild is what sets it. With about 22,500 logs, all inside the Tesla API's days, it is about
+  2.6 GB; 4 GiB covers that with room for the decoding that is being made parallel (about 10 to 20 MB more per
+  worker at a real car's log sizes). If the server is killed there, the rebuild carries on after the restart into
+  the same step, and is killed again.
+- A car with no Tesla API, TeslaFi or local TeslaMate data doesn't have that step: 2 GiB is enough for it.
+- Many more logs inside the API's days (a year of both, say) need more: about 100 KB a log. Leave the limit off, or
+  raise it, until the rebuild builds that step in pieces (performance.md, the same section).
+
+On TrueNAS, set it in the app's YAML (*Apps → Installed → sentry-mate → Edit*), under the service:
+
+```yaml
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+```
 
 ## The CAN Bridge app
 
