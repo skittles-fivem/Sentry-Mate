@@ -1585,10 +1585,20 @@ impl Engine {
                 Ok(_) => break,
                 Err(e) => e,
             };
-            let Some((a, b)) = db.set_aside_damaged_can_series(car, &err)? else { return Err(err.into()) };
+            let aside = match db.set_aside_damaged_can_series(car, &err)? {
+                Some(span) => Some(span),
+                // the drives table: mended (what reads is kept, imported rows are read again from their kept
+                // uploads), and the window grows over what was lost, to the end: the logs of that time are decoded
+                // again, and the purposes are put back on their drives when the rebuild is done
+                None if crate::repair::is_drives_damage(car, &err) => {
+                    self.repair_drives_locked(car)?.and_then(|r| r.rebuild_from_ms).map(|from| (from, u64::MAX))
+                }
+                None => None,
+            };
+            let Some((a, b)) = aside else { return Err(err.into()) };
             tracing::warn!(
-                "car {car}: {err}; it holds only what was decoded from the stored logs, so it was set aside (as \
-                 .damaged beside it) and the logs of its time are decoded again"
+                "car {car}: {err}; what it held that the stored logs give is decoded again (the damaged file was set \
+                 aside, never deleted)"
             );
             from_ms = from_ms.min(a.saturating_sub(3_600_000));
             to_ms = to_ms.max(b);

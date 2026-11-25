@@ -1232,6 +1232,16 @@ impl Engine {
     /// worked out from CAN logs cleared there.
     fn full_seed(&self, car: CarId) -> Result<Db> {
         let db = &self.inner.db;
+        // a drives table that does not read is mended first (what it held that nothing else keeps, as far as it
+        // reads, and what the imports' kept uploads give back): the shadow is copied from the mended one, and the
+        // purposes are put back on their drives once the new history is in ([`Engine::finish_repair`])
+        {
+            let l = self.car_lock(car);
+            let _held = lock(&l);
+            if matches!(db.count::<model::Drive>(car), Err(ref e) if crate::repair::is_drives_damage(car, e)) {
+                self.repair_drives_locked(car)?;
+            }
+        }
         let (shadow, bytes) = db.shadow(SHADOW, car)?;
         let real_meta = records::meta(db, car)?;
         // the engine's keys of the car that are not worked out from its logs, and the places' extras
@@ -1336,6 +1346,7 @@ impl Engine {
                 db.adopt_car(car, sdb)?;
             }
             self.full_switch_records(car, sdb, &seed)?;
+            self.finish_repair(car)?;
             // a change of the car's order or keys meanwhile was built into the old history only
             let (a, b) = (db.car(car)?, sdb.car(car)?);
             a.as_ref().map(|c| (&c.preferred_key, &c.vehicle_keys))
