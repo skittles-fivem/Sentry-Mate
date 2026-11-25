@@ -253,8 +253,9 @@ fn quantile(sorted: &[f64], p: f64) -> Option<f64> {
     Some(lo + (hi - lo) * f)
 }
 
-/// The charge-based reading of a finished charge that added at least 10 %: the usable capacity (energy added over the
-/// % added, from the figures the charge's row shows) and the full pack (plus the buffer, when known).
+/// The charge-based reading of a finished charge that added at least 10 %: the usable capacity (the energy the charge
+/// stored over the % it added, from the figures the charge's row shows) and the full pack (plus the buffer, when
+/// known).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Reading {
     pub t_ms: u64,
@@ -263,13 +264,21 @@ pub struct Reading {
     pub usable_kwh: Option<f64>,
     #[serde(flatten)]
     pub from: super::Sources,
-    /// `charge` (energy added over the % it added) or `bms` (the pack's own reading).
+    /// `charge` (the energy a charge stored over the % it added) or `bms` (the pack's own reading).
     pub method: &'static str,
     pub charge: Option<String>,
-    /// What `usable_kwh` is: `charge` (measured over the charge), `buffer` (the full pack less the buffer the pack
-    /// named that day), `recent_buffer` (less the newest buffer the pack named on another day) or `full_pack` (no
-    /// buffer known: the full pack itself).
+    /// What `usable_kwh` is: for a charge, `rated_range` (the energy it stored: the rated range it added times the
+    /// car's own stored energy per km of rated range, [`stored_per_km`]) or `energy_added` (no such factor known: the
+    /// energy it added, which counts what charging loses in the pack too, so it reads high); for the pack's own
+    /// reading, `buffer` (the full pack less the buffer the pack named that day), `recent_buffer` (less the newest
+    /// buffer the pack named on another day) or `full_pack` (no buffer known: the full pack itself).
     pub usable_basis: &'static str,
+    /// A charge's: the energy it added into the pack (pack side, as the row shows it) and the energy it stored (what
+    /// the usable capacity is worked out from: `stored_kwh` / % added x 100).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_added_kwh: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stored_kwh: Option<f64>,
     /// Day readings a month's median is over (`group=month`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub readings: Option<usize>,
@@ -294,16 +303,47 @@ fn plausible(kwh: f64, rated: Option<f64>) -> bool {
     }
 }
 
-/// The usable capacity a charge measured: the energy it added over the % it added (at least 10 %), when that is a
-/// [`plausible`] size for the pack.
-fn charge_usable(ch: &Charge, rated: Option<f64>) -> Option<f64> {
-    let (a, b) = (r(ch.start_soc, 1)?, r(ch.end_soc, 1)?);
-    let kwh = r(ch.energy_added_kwh, 3)?;
-    (b - a >= 10.0 && kwh > 0.0).then(|| kwh / (b - a) * 100.0).filter(|u| plausible(*u, rated))
+/// What a charge's capacity reading is worked out with: the pack's rated size ([`plausible`]) and the car's own
+/// stored energy per km of rated range (kWh, [`stored_per_km`]).
+#[derive(Debug, Clone, Copy, Default)]
+struct PerCharge {
+    rated: Option<f64>,
+    per_km: Option<f64>,
 }
 
-fn charge_reading(ch: &Charge, buffer: Option<f64>, rated: Option<f64>) -> Option<Reading> {
-    let usable = charge_usable(ch, rated)?;
+/// A charge's capacity reading: `(usable kWh, basis, energy stored kWh)`.
+///
+/// The pack's own capacity (the BMS's full pack less its buffer) is energy *stored*. A charge's energy added is not:
+/// it is the energy that went into the pack (SMO's from the pack's CAN counter; TeslaMate's, TeslaFi's and the Tesla
+/// API's the car's own `charge_energy_added`), and part of it is lost as heat in the cells or runs the car while it
+/// charges (coolant pumps, the pack's heater, the computers), so the energy added over the % it added reads several %
+/// above the pack's capacity, more on a cold day or a slow charge. (The grid energy is more again: it also counts the
+/// onboard charger's losses; it is never used here.) The % is the car's screen % (TeslaMate's `battery_level`, SMO's
+/// screen %), which already runs over the usable capacity (the energy above the buffer over the full pack less the
+/// buffer), so the reading is usable, and the buffer is added once, for the full pack. The reading is therefore the
+/// energy *stored* over that %: the rated range the charge added (the car works its rated range out from the energy
+/// above the buffer) times the car's own stored energy per km of rated range. Where no such factor is known (no pack
+/// energy readings), the energy added stands in for it (`energy_added`), and reads high.
+fn charge_usable(ch: &Charge, pc: PerCharge) -> Option<(f64, &'static str, f64)> {
+    let (a, b) = (r(ch.start_soc, 1)?, r(ch.end_soc, 1)?);
+    if b - a < 10.0 {
+        return None;
+    }
+    let by_range = pc
+        .per_km
+        .zip(r(ch.start_range_km, 1).zip(r(ch.end_range_km, 1)))
+        .map(|(k, (r0, r1))| (r1 - r0) * k)
+        .filter(|kwh| *kwh > 0.0);
+    let (stored, basis) = match by_range {
+        Some(kwh) => (kwh, "rated_range"),
+        None => (r(ch.energy_added_kwh, 3).filter(|k| *k > 0.0)?, "energy_added"),
+    };
+    let usable = stored / (b - a) * 100.0;
+    plausible(usable, pc.rated).then_some((usable, basis, stored))
+}
+
+fn charge_reading(ch: &Charge, buffer: Option<f64>, pc: PerCharge) -> Option<Reading> {
+    let (usable, basis, stored) = charge_usable(ch, pc)?;
     Some(Reading {
         t_ms: ch.end_ms,
         odometer_km: r(ch.position.as_ref().and_then(|p| p.odometer_km), 1),
@@ -312,7 +352,9 @@ fn charge_reading(ch: &Charge, buffer: Option<f64>, rated: Option<f64>) -> Optio
         from: super::Sources::of(ch.source, ch.inputs),
         method: "charge",
         charge: Some(ch.id.to_string()),
-        usable_basis: "charge",
+        usable_basis: basis,
+        energy_added_kwh: r(ch.energy_added_kwh, 3),
+        stored_kwh: r(Some(stored), 3),
         readings: None,
     })
 }
@@ -335,6 +377,8 @@ fn pack_reading_row(p: &PackReading, recent_buffer: Option<f64>) -> Option<Readi
         method: "bms",
         charge: None,
         usable_basis: basis,
+        energy_added_kwh: None,
+        stored_kwh: None,
         readings: None,
     })
 }
@@ -689,10 +733,58 @@ fn factor_day(e: &Engine, car: CarId, start_ms: u64, stamp: String) -> QResult<F
     Ok(fd)
 }
 
-/// The rated consumption (Wh per km of rated range): the owner's, else an imported factor, else the car's own (its
-/// energy over its range, the median of the daily means of its last [`FACTOR_DAYS`] sample days, so it holds still
-/// between requests). `ideal` is the same per km of ideal range.
+/// The car's own rated consumption from its samples (Wh per km of rated range): its energy above the buffer over its
+/// rated range, the median of the daily means of its last [`FACTOR_DAYS`] sample days (so it holds still between
+/// requests), with the samples it is over and the newest one's time; and the median ratio of rated to ideal range.
+struct OwnFactor {
+    rated: Option<f64>,
+    ideal_ratio: Option<f64>,
+    readings: u64,
+    as_of_ms: Option<u64>,
+}
+
+/// The energy the pack stores per km of rated range (kWh): the car's own, from its pack's energy readings
+/// ([`own_factor`]), never a typed or imported consumption factor (TeslaMate's is the energy its charges added over
+/// the range they added, which counts charging losses: the very figure a charge's capacity reading must not rest on).
+fn stored_per_km(e: &Engine, c: &Car, buffer: Option<f64>) -> QResult<Option<f64>> {
+    Ok(own_factor(e, c, buffer)?.rated.map(|w| w / 1000.0))
+}
+
+/// The rated consumption (Wh per km of rated range): the owner's, else an imported factor, else the car's own
+/// ([`own_factor`]). `ideal` is the same per km of ideal range.
 fn rated_factor(e: &Engine, c: &Car, s: &super::fleet::CarSettings, buffer: Option<f64>) -> QResult<Factor> {
+    let OwnFactor { rated, ideal_ratio, readings, as_of_ms: as_of } = own_factor(e, c, buffer)?;
+    if let Some(v) = s.efficiency_wh_per_km_override {
+        return Ok(Factor {
+            rated: Some(v),
+            ideal: ideal_ratio.map(|k| v * k),
+            source: Some("owner"),
+            readings: 0,
+            as_of_ms: None,
+        });
+    }
+    if let Some(v) = c.efficiency_wh_km {
+        return Ok(Factor {
+            rated: Some(v),
+            ideal: ideal_ratio.map(|k| v * k),
+            source: Some("energy_and_range"),
+            readings: 0,
+            as_of_ms: None,
+        });
+    }
+    Ok(match rated {
+        Some(v) => Factor {
+            rated: Some(v),
+            ideal: ideal_ratio.map(|k| v * k),
+            source: Some("energy_and_range"),
+            readings,
+            as_of_ms: as_of,
+        },
+        None => Factor { rated: None, ideal: None, source: None, readings: 0, as_of_ms: None },
+    })
+}
+
+fn own_factor(e: &Engine, c: &Car, buffer: Option<f64>) -> QResult<OwnFactor> {
     // the days the car has samples of, newest first, each with what its samples take on disk
     const N: usize = model::Stream::ALL.len();
     let mut days: BTreeMap<u64, [u64; N]> = BTreeMap::new();
@@ -718,35 +810,7 @@ fn rated_factor(e: &Engine, c: &Car, s: &super::fleet::CarSettings, buffer: Opti
             ratio.push(fd.s_ratio / fd.n_ratio as f64);
         }
     }
-    let ideal_ratio = median(ratio);
-    if let Some(v) = s.efficiency_wh_per_km_override {
-        return Ok(Factor {
-            rated: Some(v),
-            ideal: ideal_ratio.map(|k| v * k),
-            source: Some("owner"),
-            readings: 0,
-            as_of_ms: None,
-        });
-    }
-    if let Some(v) = c.efficiency_wh_km {
-        return Ok(Factor {
-            rated: Some(v),
-            ideal: ideal_ratio.map(|k| v * k),
-            source: Some("energy_and_range"),
-            readings: 0,
-            as_of_ms: None,
-        });
-    }
-    Ok(match median(rated) {
-        Some(v) => Factor {
-            rated: Some(v),
-            ideal: ideal_ratio.map(|k| v * k),
-            source: Some("energy_and_range"),
-            readings,
-            as_of_ms: as_of,
-        },
-        None => Factor { rated: None, ideal: None, source: None, readings: 0, as_of_ms: None },
-    })
+    Ok(OwnFactor { rated: median(rated), ideal_ratio: median(ratio), readings, as_of_ms: as_of })
 }
 
 struct Factor {
@@ -833,7 +897,8 @@ fn pack_json(swap: Option<Swap>) -> Value {
 
 /// The usable capacity when new, where it comes from and whether it is the full pack (early readings without a
 /// buffer): the owner's, the pack's readings of its first 30 days (a
-/// history that starts with the car new), the first imported charges, the car's build (VIN, CAN configuration).
+/// history that starts with the car new), the first imported charges (the energy they stored), the car's build (VIN,
+/// CAN configuration), else the first imported charges' energy added (`imported_charges_energy_added`: it reads high).
 fn new_capacity(
     e: &Engine,
     c: &Car,
@@ -841,6 +906,7 @@ fn new_capacity(
     start: Option<(u64, bool)>,
     swap: Option<Swap>,
     shown: &Shown,
+    pc: PerCharge,
 ) -> QResult<(Option<f64>, Option<&'static str>, bool)> {
     // after a replacement the owner's value when new is the new pack's
     let owner = if swap.is_some() { s.pack_new_kwh } else { s.capacity_new_kwh };
@@ -864,21 +930,27 @@ fn new_capacity(
             return Ok((Some(m), Some("early_bms"), true));
         }
     }
-    let mut imported = Vec::new();
+    // the earliest ten imported charges' readings, on the same basis as the pack's own (the energy they stored, see
+    // [`charge_usable`]); those that can only give the energy they added are kept apart: they read high
+    let (mut stored, mut added) = (Vec::new(), Vec::new());
     // (imported charges of the pack before a replacement are not the new pack's)
     let from = swap.map_or(0, |w| w.at_ms);
-    let rated = rated_kwh(e, c.id, s)?;
     each_row::<Charge>(e, c.id, from, u64::MAX, Some(super::SourceFilter::Import(None)), shown, false, |ch| {
-        if let Some(u) = charge_usable(&ch, rated) {
-            imported.push(u);
+        match charge_usable(&ch, pc) {
+            Some((u, "rated_range", _)) => stored.push(u),
+            Some((u, _, _)) if added.len() < 10 => added.push(u),
+            _ => {}
         }
-        Ok(imported.len() < 10)
+        Ok(stored.len() < 10)
     })?;
-    if let Some(m) = median(imported) {
+    if let Some(m) = median(stored) {
         return Ok((Some(m), Some("imported_charges"), false));
     }
-    Ok(match super::fleet::vehicle_defaults(e, c.id)?.capacity_new_kwh {
-        Some((v, full)) => (Some(v), Some(super::fleet::VehicleDefaults::SOURCE), full),
+    if let Some((v, full)) = super::fleet::vehicle_defaults(e, c.id)?.capacity_new_kwh {
+        return Ok((Some(v), Some(super::fleet::VehicleDefaults::SOURCE), full));
+    }
+    Ok(match median(added) {
+        Some(m) => (Some(m), Some("imported_charges_energy_added"), false),
         None => (None, None, false),
     })
 }
@@ -956,8 +1028,9 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
     let buffer = packs.iter().find_map(|p| p.buffer_kwh);
     // the charges' readings, newest first: the last five give a usable capacity where the pack sends none
     let live = live_charge(e, &c)?;
-    let rated = rated_kwh(e, car, &s)?;
+    let pc = PerCharge { rated: rated_kwh(e, car, &s)?, per_km: stored_per_km(e, &c, buffer)? };
     let (mut charge_usable_v, mut imported, mut charges_n) = (Vec::new(), false, 0u64);
+    let mut charges_basis = None;
     // by kind, as `/totals` counts them: a charge whose kind no input told is neither AC nor DC
     let (mut ac, mut dc, mut unknown_kind) = (0.0, 0.0, 0.0);
     each_row::<Charge>(e, car, 0, u64::MAX, None, &shown, true, |ch| {
@@ -966,9 +1039,13 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
         if Some(ch.id) != live
             && charge_usable_v.len() < 5
             && ch.start_ms >= since
-            && let Some(u) = charge_usable(&ch, rated)
+            && let Some((u, b, _)) = charge_usable(&ch, pc)
         {
             charge_usable_v.push(u);
+            // (one that gave only the energy added makes the whole median read high)
+            if charges_basis != Some("energy_added") {
+                charges_basis = Some(b);
+            }
         }
         let k = ch.energy_added_kwh.unwrap_or(0.0);
         match ch.kind {
@@ -985,7 +1062,7 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
         drive_kwh += d.energy_used_kwh.unwrap_or(0.0);
         Ok(true)
     })?;
-    let (new_kwh, new_source, new_is_full) = new_capacity(e, &c, &s, start, swap, &shown)?;
+    let (new_kwh, new_source, new_is_full) = new_capacity(e, &c, &s, start, swap, &shown, pc)?;
     let (range_new, range_new_source) = new_range(e, car, &s, start, &shown)?;
     let factor = rated_factor(e, &c, &s, buffer)?;
 
@@ -1041,6 +1118,7 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
         Some("owner") => notes.push("new_value_typed"),
         Some("early_bms") => notes.push("new_value_from_early_readings"),
         Some("imported_charges") => notes.push("new_value_from_imported_charges"),
+        Some("imported_charges_energy_added") => notes.push("new_value_from_imported_charges_energy_added"),
         Some("vehicle_info") => notes.push("new_value_from_vehicle_info"),
         _ => {}
     }
@@ -1102,6 +1180,11 @@ pub fn battery(e: &Engine, car: CarId) -> QResult<Scoped<Battery>> {
             capacity: json!({
                 "full_pack_kwh": r(full, 2), "buffer_kwh": r(buffer, 2), "usable_kwh": r(usable, 2),
                 "basis": basis,
+                "usable_basis": match basis {
+                    Some("pack") if usable.is_some() => Some("buffer"),
+                    Some("charges") => charges_basis,
+                    _ => None,
+                },
                 "spread_kwh": r(spread, 2), "readings": has_history.then_some(readings),
                 "new_kwh": r(new_kwh, 2), "new_source": new_source,
                 "difference_kwh": r(diff, 2), "degradation_pct": r(degradation, 1),
@@ -1277,7 +1360,10 @@ pub fn capacity(
     let shown = Shown::new(e, car, None)?;
     let (start, swap) = pack_start(e, &c, &s, &shown)?;
     let since = swap.map_or(0, |w| w.at_ms);
-    let (new_kwh, _, _) = new_capacity(e, &c, &s, start, swap, &shown)?;
+    let buffer = recent_packs_newest_buffer(e, &c)?;
+    let pc = PerCharge { rated: rated_kwh(e, car, &s)?, per_km: stored_per_km(e, &c, buffer)? };
+    let rated = pc.rated;
+    let (new_kwh, _, _) = new_capacity(e, &c, &s, start, swap, &shown, pc)?;
     let sig = format!("capacity|{car}|{}|{group}|{by_odo}", period.sig());
     let after = super::read_after(paging, &sig)?;
     let key_of = |rd: &Reading| -> (f64, String) {
@@ -1285,8 +1371,6 @@ pub fn capacity(
         (k, format!("{}:{}", rd.t_ms, rd.charge.clone().unwrap_or_default()))
     };
     let keep = |rd: &Reading| !by_odo || rd.odometer_km.is_some();
-    let buffer = recent_packs_newest_buffer(e, &c)?;
-    let rated = rated_kwh(e, car, &s)?;
     let mut resume: Option<String> = None;
     let (items, more, trend_v) = match group {
         "charge" => {
@@ -1297,7 +1381,7 @@ pub fn capacity(
             let mut page = PageBuf { rows: Vec::new(), cap: limit + 1, after: after.as_ref() };
             each_row::<Charge>(e, car, a, b, None, &shown, false, |ch| {
                 if Some(ch.id) != live
-                    && let Some(rd) = charge_reading(&ch, buffer, rated)
+                    && let Some(rd) = charge_reading(&ch, buffer, pc)
                 {
                     if let (Some(o), Some(u)) = (rd.odometer_km, rd.usable_kwh)
                         && rd.t_ms >= since
@@ -1428,6 +1512,8 @@ pub fn capacity(
                         method: "bms",
                         charge: None,
                         usable_basis: basis,
+                        energy_added_kwh: None,
+                        stored_kwh: None,
                         readings: Some(v.len()),
                     };
                     if !keep(&rd) || after.as_ref().is_some_and(|k| super::cmp_key(&key_of(&rd), k, false).is_le()) {
@@ -2476,7 +2562,9 @@ mod tests {
             from: crate::query::Sources::family(model::Source::Live),
             method: "charge",
             charge: Some(t.to_string()),
-            usable_basis: "charge",
+            usable_basis: "rated_range",
+            energy_added_kwh: None,
+            stored_kwh: None,
             readings: None,
         };
         let key = |t: u64| (t as f64, format!("{t}:{t}"));
@@ -2539,3 +2627,6 @@ mod tests {
         assert_eq!(usable_pct(Some(30.0), Some(3.3), None), None);
     }
 }
+
+#[cfg(test)]
+mod capacity_tests;
