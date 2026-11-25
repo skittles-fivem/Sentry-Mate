@@ -401,7 +401,11 @@ Pages are checked with `node ui/tools/check.js --pixel` (see `ui/tools/README.md
   unless one of them changed size other than by whole pixels: a page that reloads its cards while it scrolls
   (a rebuild sends `rows` every second) stays under a frame. Tables that load again keep unchanged rows
   (`reuseRows`) and the page parts that live values draw again keep what did not change, so most reloads
-  change nothing at all.
+  change nothing at all. A table's body puts in only the rows that differ, and rows swapped in a table the last run
+  snapped are snapped alone (their heights, centring and lines; the whole table again only when a row holds more than
+  its column), the same as rows added under it. A change inside a part that was taken off the page in the same turn
+  (the old drawing of a part drawn again) is not a change of the page. The Drives page paints its summary and its
+  driving patterns with `morphChildren`, so a reload that changes one drive's figures writes those figures only.
   A long list (`shared/vlist.js`) is snapped once its scroll rests (150 ms without a change): the rows that
   come into and go out of its window, and its table's height, which changes as the window moves over rows of
   other heights (a run over the whole page for each such change took most of every frame of a scroll).
