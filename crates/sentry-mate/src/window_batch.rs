@@ -792,8 +792,11 @@ async fn looked_near(days: u32, how: Logs) {
     let far = engine::Options { window_look_ms: 2 * 86_400_000, ..engine::Options::default() };
     let what = format!("{days} days ({how:?}), bounds looked for near the log");
     let (_, near, all) = two_engines(&what, days, how, near, far, false).await;
-    // (many windows were bounded near their log, most of them in sentry mode: the comparison is of that)
-    assert!(near * 4 > all, "{what}: {near} of {all} windows bounded near their log");
+    // (in sentry mode most windows were bounded near their log: the comparison is of that; a car that sleeps has a
+    // settled span, often further than two hours away)
+    if matches!(how, Logs::Sentry | Logs::SentrySparse) {
+        assert!(near * 2 > all, "{what}: {near} of {all} windows bounded near their log");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
