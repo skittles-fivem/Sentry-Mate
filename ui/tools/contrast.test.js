@@ -233,6 +233,8 @@ const PARTS = [
   ['/cars/c1/charges', 'charges', 'main .kind-pill--ac'],
   ['/cars/c1/charges', 'charges', 'main .kind-pill--dc'],
   ['/cars/c1/software', 'software', 'main .sw-fh-seg-bar.is-unnamed .sw-fh-seg-text'],
+  ['/cars/c3/software', 'software', 'main .sw-fh-seg-bar.is-inferred .sw-fh-seg-text'],
+  ['/cars/c3/software', 'software', 'main .sw-ver--inferred'],
   ['/cars/c1/logbook', 'logbook', 'main .lb-total.is-zero .explain'],
   ['/cars/c1/logbook', 'logbook', 'main .lb-total.is-zero .lb-total-km .q-u'],
   // the accents as plain words: a warning (amber) and a link or a good word (teal)

@@ -519,6 +519,7 @@ export async function mount(ctx) {
       fhBtns.set(m, b);
       return b;
     }));
+  const UNNAMED_WHY = 'no input reported a version name while this ran';
   const fhColumns = [
     {
       key: 'module', label: 'Module', title: 'The module that sent the fingerprint, or a car version imported without module fingerprints',
@@ -549,9 +550,27 @@ export async function mount(ctx) {
       csv: { label: 'Ran for (days)', value: (r) => (r.duration_ms == null ? '' : Math.round(r.duration_ms / 864000) / 100) },
     },
     {
-      key: 'version', label: 'Came with', cls: 'sw-col-ver', title: 'The name of the version it came with: read from a live input, imported, typed by an admin, or the same fingerprints as a named update',
-      render: (r) => (r.version ? h('span', { class: 'sw-ver', title: SOURCE[r.update?.version_source]?.[1] ?? null }, r.version) : h('span', { class: 'faint' }, 'unnamed')),
+      key: 'version', label: 'Came with', cls: 'sw-col-ver', title: 'The name of the version it came with: read from a live input, imported, typed by an admin, or the same fingerprints as a named update. Never guessed: a version last known before it is shown as "probably", apart.',
+      render: (r) => {
+        if (r.version) return h('span', { class: 'sw-ver', title: SOURCE[r.version_source ?? r.update?.version_source]?.[1] ?? null }, r.version);
+        if (r.kind !== 'module') return h('span', { class: 'faint' }, 'unnamed');
+        const nameBtn = admin ? h('button', { class: 'btn btn--sm btn--ghost sw-edit', type: 'button', onclick: () => nameSegment(r), title: 'Type the version this stretch of fingerprints ran' },
+          icon('settings', 'ico--sm'), 'Name this version') : null;
+        if (r.name_inferred) {
+          return h('span', { class: 'cell-text' },
+            h('span', { class: 'sw-ver sw-ver--inferred', title: 'No input named this stretch. The last version known before it (an import or an input) has no update between it and the first fingerprints seen, and nothing contradicts it, so it is probably still this one.' },
+              `probably ${r.name_inferred.version} (${r.name_inferred.from})`),
+            nameBtn);
+        }
+        return h('span', { class: 'cell-text' },
+          h('span', { class: 'faint', title: UNNAMED_WHY }, 'unnamed'),
+          h('span', { class: 'sub' }, UNNAMED_WHY),
+          nameBtn);
+      },
       csv: { label: 'Came with version', value: (r) => r.version || '' },
+    },
+    {
+      key: 'probably', label: 'Probably', hidden: true, csv: { label: 'Probably (last known before)', value: (r) => r.name_inferred?.version || '' },
     },
   ];
   const fhStrip = h('div', { class: 'sw-fh-strip', 'aria-busy': 'true' }, h('span', { class: 'skel sw-fh-skel' }));
@@ -569,6 +588,8 @@ export async function mount(ctx) {
   });
   fhTable.el.id = 'firmware-history';
   fhTable.el.insertBefore(h('div', { class: 'sw-fh-top' }, fhSeg, fhStrip), fhTable.el.querySelector('.tbl-scroll'));
+
+  const segName = (s) => s.version || (s.name_inferred ? `probably ${s.name_inferred.version}` : 'unnamed');
 
   function paintStrip(pg) {
     const key = JSON.stringify([pg.modules, pg.spans, pg.range]);
@@ -592,11 +613,11 @@ export async function mount(ctx) {
       const own = spans.filter((s) => s.module === m.id);
       const name = m.name || MODULES[m.id] || m.id;
       const track = h('div', { class: 'sw-fh-track', role: 'img',
-        'aria-label': own.length ? `${name}: ${own.map((s) => `${s.version || 'unnamed'} from ${fhDay(s.from_ms)}`).join(', ')}` : `${name}: no fingerprints` },
+        'aria-label': own.length ? `${name}: ${own.map((s) => `${segName(s)} from ${fhDay(s.from_ms)}`).join(', ')}` : `${name}: no fingerprints` },
       own.map((s, i) => {
-        const seg = h('span', { class: ['sw-fh-seg-bar', i % 2 && 'is-alt', s.current && 'is-current', !s.version && 'is-unnamed'],
-          title: `${name}: ${s.fingerprint} · ${s.version || 'unnamed'} · ${fhDay(s.from_ms)} – ${s.current ? 'now' : fhDay(s.to_ms)}` },
-        h('span', { class: 'sw-fh-seg-text' }, s.version || 'unnamed'));
+        const seg = h('span', { class: ['sw-fh-seg-bar', i % 2 && 'is-alt', s.current && 'is-current', !s.version && !s.name_inferred && 'is-unnamed', !s.version && s.name_inferred && 'is-inferred'],
+          title: `${name}: ${s.fingerprint} · ${segName(s)}${s.version || s.name_inferred ? '' : ` (${UNNAMED_WHY})`} · ${fhDay(s.from_ms)} – ${s.current ? 'now' : fhDay(s.to_ms)}` },
+        h('span', { class: 'sw-fh-seg-text' }, segName(s)));
         setVars(seg, { '--x': pc(s.from_ms), '--w': `${Math.max(0, ((Math.min(to, s.to_ms ?? to) - Math.max(from, s.from_ms)) / len) * 100).toFixed(3)}%` });
         return seg;
       }),
@@ -617,6 +638,33 @@ export async function mount(ctx) {
 
   replace(ctx.view, root);
   root.append(head, filters, summary, fpPanel, table.el, fwPanel, fhTable.el, fleetTable.el);
+
+  /* ---------- naming a module's fingerprint segment (admin; the typed versions of the updates, no password) */
+  async function nameSegment(r) {
+    const input = field({
+      label: 'Version', name: 'version', path: 'version', value: r.name_inferred?.version || '',
+      hint: 'As the car’s screen shows it, such as 2026.38.4.' + (r.name_inferred ? ' It is filled in with the version last known before this stretch: keep it only if you know it is right.' : ''),
+      attrs: { pattern: '\\d{4}\\.\\d{1,2}(\\.\\d{1,3}){0,2}', autocomplete: 'off', spellcheck: 'false' },
+    });
+    const f = form({
+      fields: [input], submit: 'Save',
+      async onSubmit(values) {
+        const v = String(values.version || '').trim();
+        if (!VERSION_RX.test(v)) { input.setError('A version looks like 2026.38.4: the year, a dot and one to three numbers.'); return; }
+        await ctx.api.patch(`${fhPath}/${enc(r.id)}`, { version: v });
+        flash(`Saved: ${r.module_name || 'this module'} ran ${v} from ${fhDay(r.first_seen_ms)}.`);
+        f.busy(false);
+        f.el.closest('dialog')?.close();
+        echoUntil = Date.now() + 5000;
+        reloadAll(false);
+      },
+    });
+    await openDialog({
+      title: `Name ${r.module_name || 'this module'}’s version`,
+      body: [h('p', { class: 'note' }, `Fingerprint ${r.fingerprint}, seen ${fhDay(r.first_seen_ms)} to ${r.current ? 'now' : fhDay(r.until_ms ?? r.last_seen_ms)}. ${r.update ? 'It names the update this came with, and every update to the same fingerprints.' : 'No update came with it, so the name is kept for this first stretch alone.'}`), f.el],
+      actions: [],
+    });
+  }
 
   /* ---------- typing a version (admin) */
   async function editVersion(r) {
