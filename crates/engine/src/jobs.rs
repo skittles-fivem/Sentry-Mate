@@ -431,6 +431,8 @@ impl Engine {
             if st.cancelled() {
                 break;
             }
+            // (the live stream gets the car's newest values at most once a second until this car is done)
+            let _rebuilding = self.rebuilding(car);
             if !what.whole {
                 if what.positions {
                     self.redo_positions(car, Some(st))?;
