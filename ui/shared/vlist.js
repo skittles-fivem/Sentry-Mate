@@ -23,6 +23,12 @@
 //
 // dayJumpMs(key, tz, newestFirst): the at_ms of "jump to this day" (a date input's YYYY-MM-DD in the car's zone).
 //
+// Printing: while the page prints (beforeprint / afterprint, or the print media query), every row is drawn and the
+// spacers are empty, so the paper has the whole list, not the rows in view; afterwards the list is windowed again, at
+// the place it was scrolled to. The rows are in the page only while it prints. Rows not loaded yet are drawn as
+// placeholders and come in as they load; Ctrl/Cmd+P loads every chunk first and then prints, a print from the
+// browser's menu cannot wait for the rows.
+//
 // Spacers get their height as the CSS custom property --vl-h (the page policy blocks inline style text): the pack's
 // CSS gives .vl-gap (or its cell) height: var(--vl-h).
 
@@ -48,6 +54,8 @@ export function windowList(opts) {
   let view = { first: 0, last: 0 };
   let queued = false;
   let dead = false;
+  let printing = false;      // the page is being printed: every row is drawn
+  let savedTop = 0;          // where the box was scrolled to before it printed
 
   const topGap = spacer();
   const bottomGap = spacer();
@@ -63,6 +71,7 @@ export function windowList(opts) {
 
   function want() {
     if (total == null) return { first: 0, last: 0 };
+    if (printing) return { first: 0, last: total };
     // row i sits at head + i * rowH; the sticky head covers the top of the box
     const top = box.scrollTop;
     const tall = (box.clientHeight || rowH * 10) - headH();
@@ -189,6 +198,52 @@ export function windowList(opts) {
 
   function onScroll() { schedule(); }
   box.addEventListener('scroll', onScroll, { passive: true });
+
+  function beginPrint() {
+    if (printing || dead) return;
+    printing = true;
+    savedTop = box.scrollTop;
+    draw();
+  }
+  function endPrint() {
+    if (!printing) return;
+    printing = false;
+    if (dead) return;
+    box.scrollTop = savedTop;   // (the print layout leaves the box unscrolled)
+    draw();
+  }
+  // every chunk not loaded yet, three requests at a time
+  async function loadAll() {
+    if (total == null) return;
+    const todo = [];
+    for (let s = 0; s < total; s += limit) if (!items.has(s)) todo.push(s);
+    const worker = async () => {
+      for (let s = todo.shift(); s !== undefined && !dead; s = todo.shift()) {
+        let p = fetchAt(s);
+        for (let n = 0; !p && n < 60 && !dead; n++) { await new Promise((r) => setTimeout(r, 50)); p = fetchAt(s); }
+        if (p) await p;
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+  }
+  const missing = () => {
+    if (total == null) return false;
+    for (let s = 0; s < total; s += limit) if (!items.has(s)) return true;
+    return false;
+  };
+  function onKey(e) {
+    if (e.defaultPrevented || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || String(e.key).toLowerCase() !== 'p') return;
+    if (dead || printing || !box.isConnected || !box.getClientRects?.().length || !missing()) return;
+    e.preventDefault();
+    loadAll().catch(() => {}).finally(() => { if (!dead) globalThis.print?.(); });
+  }
+  const win = typeof window === 'object' && window && typeof window.addEventListener === 'function' ? window : null;
+  const mql = win && typeof win.matchMedia === 'function' ? win.matchMedia('print') : null;
+  const onMql = (e) => (e.matches ? beginPrint() : endPrint());
+  win?.addEventListener('beforeprint', beginPrint);
+  win?.addEventListener('afterprint', endPrint);
+  win?.addEventListener('keydown', onKey);
+  mql?.addEventListener?.('change', onMql);
   let ro = null;
   if (typeof ResizeObserver === 'function') {
     ro = new ResizeObserver(() => { headPx = null; schedule(); });
@@ -254,6 +309,10 @@ export function windowList(opts) {
       dead = true;
       ctrl?.abort();
       box.removeEventListener('scroll', onScroll);
+      win?.removeEventListener('beforeprint', beginPrint);
+      win?.removeEventListener('afterprint', endPrint);
+      win?.removeEventListener('keydown', onKey);
+      mql?.removeEventListener?.('change', onMql);
       ro?.disconnect();
     },
   };
