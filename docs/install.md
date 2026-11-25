@@ -325,8 +325,8 @@ less.
 - The vault's 1 GiB is needed whatever the limit: below about 1.5 GiB a restore, a new recovery key or a move to
   this server can fail.
 - The end of a full rebuild is what sets it. With about 22,500 logs, all inside the Tesla API's days, it is about
-  2.6 GB; 4 GiB covers that with room for the decoding that is being made parallel (about 10 to 20 MB more per
-  worker at a real car's log sizes). If the server is killed there, the rebuild carries on after the restart into
+  2.6 GB; 4 GiB covers that with room for the logs read ahead on the other cores (measured before that came: an
+  estimated 10 to 20 MB more per thread decoding at a real car's log sizes, 8 threads at most). If the server is killed there, the rebuild carries on after the restart into
   the same step, and is killed again.
 - A car with no Tesla API, TeslaFi or local TeslaMate data doesn't have that step: 2 GiB is enough for it.
 - Many more logs inside the API's days (a year of both, say) need more: about 100 KB a log. Leave the limit off, or

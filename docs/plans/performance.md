@@ -1273,8 +1273,11 @@ every full rebuild (and a restart carries the rebuild on into the same step). Tw
   the hot days of a car being worked on (3 days, 32 MB, though its read takes the 3 days before it checks the size),
   the memo of query answers (512 entries, counted not weighed), the opened packs (2 of up to 32 MB). An upload's
   chunk is buffered whole (16 MiB at most, 16 at once), but a log of 40 KB is one chunk of 40 KB.
-- **A decode worker's buffers** (for the parallel decoding under way in another change): a log's xz window grows
+- **A decode worker's buffers** (for the logs read ahead on the other cores, "A full rebuild on every core" above,
+  which came after these measurements: they are of one log at a time): a log's xz window grows
   with what it unpacks (it is not allocated at the 64 MiB limit), a columns body is held whole about twice over while
   its frames are made, and a log's minute of samples is small. The busiest made-up log is 227 KB unpacked; the
   owner's logs, at about 311 KB packed, are about 2 MB unpacked: **about 10 to 20 MB per worker** at the owner's
-  sizes (an estimate from those sizes, not measured), so 12 workers would add about 250 MB to a rebuild's 300 MB.
+  sizes (an estimate from those sizes, not measured). The read-ahead decodes on 8 threads at most (up to 24 logs in
+  flight, but a waiting log is only its packed bytes and a minute's samples): about 100 to 200 MB on top of a
+  rebuild's 300 MB.
