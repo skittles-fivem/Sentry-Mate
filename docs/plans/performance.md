@@ -311,6 +311,49 @@ With it, the same pages (Instrument's 8; phone means of 3 runs, desktop one run)
   phone TTU beyond noise: what is left is the reads a page waits for, next.
 
 
+#### The request chains, and the files a first visit left out of the service worker
+
+Measured with the worker slowed too (above), on origin/main `d3b8371a` against the same with this step on it: the
+phone means of 3 runs, the desktop one run.
+
+The chain of a warm car page (`PERF_TRACE`-style timing of each request, the page's and the worker's own) was not
+the API at all: the worker fetched `pages/car.js` (318 → 966 ms), then that module's 10 parts (to 1466 ms) and the
+display fonts (to 1.7 s) **from the network**, about 300 KB at 1.44 Mbit/s, and the page's reads (about 340 ms each)
+could only start after. On a first visit the page loads those files before the worker answers it, and the worker
+kept only the files `index.html` names, so every second visit fetched them again. Each its own commit:
+1. **The frame's first reads and Settings' own go out with the session check**: a browser signed in last time asks
+   for about, notices (the first page waits for the notices bar) and the fleet count at once, not after `/setup`, me
+   and preferences; Settings: Display warms its reads like the car pages do (not the map settings: a page with a map
+   takes a warmed answer as fresh, and they change from that page; `map-tiles.test.js` caught it).
+2. **A page takes the period its warm-up read with**: the router's warm-up (the first page, a link under the pointer)
+   and the mount after it each resolved the period with their own "now", so every read of a period ending now went
+   out twice (statistics, series, activity and charges on the car page; the harness did not count them as
+   duplicates, their addresses differ by 40 ms).
+3. **The worker keeps the files a first visit loaded before it answered**: the page tells it the versioned files it
+   loaded, and each one that finishes loading past it later (`PerformanceObserver`), and the worker keeps this
+   version's, a few at a time and none twice.
+4. **The worker is registered once the first page is ready** (at most 10 s), not at the load event: its first
+   fetches had taken the first page's bandwidth (with 1–3 alone, on `ea7ad752`, cold view ready went 4.6 → 6.1 s).
+
+| run | phone cold TTU | cold view ready | cold FCP | warm TTU | warm FCP | nav | desktop cold | warm | nav |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| origin/main `d3b8371a` | 8803 | 4691 | 1708 | 1992 | 276 | 1056 | 534 | 331 | 163 |
+| + 1–4 | 8726 | **4373** | 1688 | **1205** | 338 | 1216 | **399** | **309** | **158** |
+
+- Warm phone loads 2.0 → 1.2 s (every page: car 1.9 → 1.1 s, statistics 1.65 → 0.85 s, Settings: Display 1.37 → 0.59 s, Integrations 3.0 → 1.8 s); a warm load fetches
+  no file any more. Long tasks per warm phone load 548 → 507 ms. Warm FCP is within noise (one run 400 ms).
+- **Nav is slower on one page**: the drive page needs the map library (maplibre, 365 KB with its worker) and is
+  ready only once the map is. On main it is fast (about 0.95 s) only when the idle preloads of the main sections
+  (2 s after the first page) loaded it before the harness clicked, slow (2.5 s) otherwise (2 of 6 main runs). With
+  the warm load a second shorter the harness clicks before that every time: 2.5 s in every run. Without the drive
+  page nav is 1070 → 1001 ms.
+- The worker's fetches of the files it keeps were not answered by the browser's cache in the harness (its fetches
+  showed no disk cache hit, though the page's own second load came all from it): on a first visit those files come
+  down twice. Not looked into further.
+- The final run is of the commits before the map settings were left out of Settings' warm-up (a read less there).
+- **Not met yet:** phone warm 1.2 s (target 500 ms) and FCP 338 ms (200); in-app navigation 1.2 s on the phone and
+  158 ms on the desktop (100); desktop warm 309 ms (150). Desktop cold (399 ms) is within its 400.
+
 # Plan: page speed with a long history
 
 Status (2026-11-23): done. On the owner-sized made-up history every page's calls answer within the target warm and
