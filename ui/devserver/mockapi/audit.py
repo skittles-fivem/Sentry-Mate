@@ -145,6 +145,8 @@ def seed(ds, now):
         (30 * DAY, "admin", "car-changed", "car:c2", "c2", "Changed Maple's time zone to America/Chicago."),
         (30 * DAY - HOUR, "admin", "car-settings-changed", "car:c3", "c3", "Changed Atlas's battery size when new to 87 kWh."),
         (29 * DAY, "admin", "car-rebuild", "car:c1", "c1", "Rebuilt Comet's drives, charges, states and visits from the stored logs (the whole history)."),
+        (5 * DAY, "admin", "table-repaired", "car:c1", "c1", "Asked for a repair of Comet's drives table."),
+        (5 * DAY - 40_000, S, "table-repaired", "car:c1", "c1", "Repaired Comet's drives table: 212 rows kept, 3 imported rows put back from the kept uploads, 41 made again from the logs, 17 purposes put back on their drives; 1 thing could not be recovered."),
         (28 * DAY, "admin", "car-full-rebuild", "car:c1", "c1", "Started a full rebuild of Comet: everything worked out made again from the stored data, beside the history in use."),
         (26 * DAY, "admin", "car-gps-fit-removed", "car:c1", "c1", "Removed a past GPS layout fit of Comet."),
         (27 * DAY, "admin", "car-gps-layout", "car:c1", "c1", "Set how Comet's Screenmate GPS frames are read (lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)); its history is rebuilt."),
