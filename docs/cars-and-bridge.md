@@ -210,6 +210,10 @@ once known), and a complete one also its `check`:
   It is judged again; once it verifies its bad copy is dropped, its minutes stop being unknown time on the
   timeline, and the logs after it fit their chain again. The Data health page's "the last log failed its check"
   clears when that log's new copy verifies. The same bytes again answer as before (`201`, `complete`).
+- **A log that is stored but could not be judged** (the car's trust files could not be locked or written, say a full
+  disk) is answered `500 server_error`, not `201`, so the app sends it again. The same bytes again are stored already,
+  and a stored log (or sidecar) with no verdict is judged then. A `201` always means the log has a verdict or is
+  waiting for its sidecar.
 - A `verified` or `pending` log is never overwritten: a different file under its name is `409 exists_different`,
   as before.
 - **How many at once:** `GET /api/can/logs/ping` says `maxParallel` (16): the uploads to send at once. A car's

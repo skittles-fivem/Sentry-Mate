@@ -572,8 +572,14 @@ async fn write_chunk(
         && ((offset > 0 && up.store.part_exists(name))
             || up.judge.replaceable(log_name, up.store.uploading(vehicle_key).await).await);
     let r = up.store.receive_replacing(name, body, offset, length, sha, replace).await?;
-    if r.complete && !r.already {
-        if log_name == name {
+    // a file that is here already but was never judged (the judging failed when it came: the sender was told so and
+    // sends it again) is judged now
+    let unjudged = r.complete && r.already && {
+        let record = up.judge.record(vehicle_key, log_name).await;
+        record.is_none() || (log_name != name && record.is_some_and(|rec| rec.status == Status::Waiting))
+    };
+    if r.complete && (!r.already || unjudged) {
+        if log_name == name && !r.already {
             up.tokens.contacts().log_arrived(vehicle_key);
             up.tokens.contacts().save_soon(&up.gate);
         }
@@ -585,8 +591,12 @@ async fn write_chunk(
                 }
             }
             Ok(Some(_) | None) => {}
-            // not the name: it holds the car's key, and the server's log is kept in the clear
-            Err(e) => tracing::warn!("CAN upload: could not judge a log that arrived: {e}"),
+            // the file is stored but not judged (its trust files could not be locked or written): an error, so the
+            // sender sends it again, which judges it (a log never judged would answer `pending` for ever)
+            Err(e) => {
+                tracing::warn!("CAN upload: could not judge a log that arrived: {e}");
+                return Err(ApiError::server(e));
+            }
         }
     }
     Ok(r)
