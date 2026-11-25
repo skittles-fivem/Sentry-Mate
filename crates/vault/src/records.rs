@@ -411,6 +411,41 @@ impl RecordsReader {
     }
 }
 
+impl RecordsReader {
+    /// Calls `each` with every whole record, in order: `Some(plaintext)` for one that opens, `None` for one that does
+    /// not (changed, or cut from its place). Unlike [`RecordsReader::read_all`] it goes on after a record that does not
+    /// open, so the records on either side of the damage are still given. A record's check also covers the tag of the
+    /// one before it, so one whose own bytes are damaged is followed by records that still open, unless the damage
+    /// reached the tag or the length (records after a length that makes no sense are not reached at all: see
+    /// [`RecordsReader::whole_end`]). For salvage only: nothing is retried when the file changes under it.
+    pub fn read_lenient(&mut self, mut each: impl FnMut(Option<&[u8]>) -> io::Result<()>) -> io::Result<()> {
+        let Some(cipher) = &self.cipher else { return Ok(()) };
+        let (format, label, file) = (self.format, &self.label[..], &self.file);
+        let mut input = BufReader::with_capacity(4 + *format.lengths().end(), file);
+        input.seek(SeekFrom::Start(HEADER as u64))?;
+        let mut buf = vec![0u8; *format.lengths().end()];
+        let (mut pos, mut prev) = (HEADER as u64, [0u8; TAG]);
+        for i in 0..self.count {
+            let n = read_record(&mut input, format, self.end.saturating_sub(pos), &mut buf)?;
+            match open_record(cipher, format, label, i, &prev, &buf[..n]) {
+                Ok(plain) => each(Some(&plain))?,
+                Err(_) => each(None)?,
+            }
+            if let Some(tag) = buf[..n].last_chunk::<TAG>() {
+                prev = *tag;
+            }
+            pos += 4 + n as u64;
+        }
+        Ok(())
+    }
+
+    /// Where the last whole record ends, and the file's length: bytes between them are a record being written or cut
+    /// by a crash, or (when the walk stopped at a length that makes no sense) records that can't be reached.
+    pub fn whole_end(&self) -> io::Result<(u64, u64)> {
+        Ok((self.end, self.file.metadata()?.len()))
+    }
+}
+
 /// A growing sealed file opened to add to it ([`Vault::records`]); it reads back too.
 pub struct Records {
     read: RecordsReader,

@@ -71,6 +71,35 @@ pub(crate) fn decompress(b: &[u8]) -> Result<Vec<u8>> {
     }
 }
 
+/// What unpacks from the start of a body that may be cut short or damaged: the bytes it gives before it stops, and
+/// whether it ended as a whole body does (`false`: the output is a prefix of what was packed, how long a one is not
+/// known).
+pub(crate) fn decompress_prefix(b: &[u8]) -> (Vec<u8>, bool) {
+    let Some((&codec, body)) = b.split_first() else { return (Vec::new(), false) };
+    match codec {
+        NONE => (body.to_vec(), true),
+        BROTLI => {
+            let mut out = Vec::with_capacity(body.len() * 4);
+            let mut d = brotli::Decompressor::new(body, 1 << 16);
+            let mut buf = vec![0u8; 1 << 16];
+            let whole = loop {
+                match d.read(&mut buf) {
+                    Ok(0) => break true,
+                    Ok(n) => {
+                        out.extend_from_slice(&buf[..n]);
+                        if out.len() > MAX_PLAIN {
+                            break false;
+                        }
+                    }
+                    Err(_) => break false,
+                }
+            };
+            (out, whole)
+        }
+        _ => (Vec::new(), false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
