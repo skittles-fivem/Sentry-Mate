@@ -114,6 +114,7 @@ pub struct Sim {
     at_place: usize,
     outside_base: f64,
     seed: u64,
+    idle_awake_ms: u64,
     pub truth: Truth,
 }
 
@@ -134,12 +135,21 @@ impl Sim {
             at_place: crate::plan::HOME,
             outside_base,
             seed,
+            idle_awake_ms: IDLE_AWAKE_MS,
             truth: Truth::default(),
         };
         s.state.outside_c = s.outside_at(t);
         s.state.batt_temp_c = s.state.outside_c + 2.0;
         s.state.cabin_c = s.state.outside_c;
         s
+    }
+
+    /// The car stays awake this long after it was last used (ms) instead of [`IDLE_AWAKE_MS`]; still asleep at the
+    /// start.
+    pub fn awake_for(mut self, ms: u64) -> Sim {
+        self.idle_awake_ms = ms;
+        self.last_end = self.t_ms.saturating_sub(ms + 1);
+        self
     }
 
     pub fn state(&self) -> &CarState {
@@ -276,7 +286,7 @@ impl Sim {
                 Step::Awake { t_ms: t, buses }
             }
             None => {
-                let awake_until = self.last_end + IDLE_AWAKE_MS;
+                let awake_until = self.last_end + self.idle_awake_ms;
                 let wake = self.wake_for();
                 if t < awake_until || wake.is_some_and(|w| w <= t) {
                     self.state.gear = Gear::P;
