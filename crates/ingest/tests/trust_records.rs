@@ -294,6 +294,7 @@ async fn trust_records_of_the_format_before_are_read_and_moved_over() {
         sha256: None,
         length: None,
         sidecar_sha256: None,
+        unsigned: None,
     };
     let mut book = Book {
         v: trust::RULES_VERSION,
@@ -469,6 +470,7 @@ async fn failed_logs_judged_by_older_rules_are_judged_again_once() {
         sha256: None,
         length: None,
         sidecar_sha256: None,
+        unsigned: None,
     };
     // as an older version left them: log 1 judged before its sidecar came (and never again), log 2's file changed
     let mut book = Book {

@@ -150,6 +150,15 @@ handshake) is no charge. Proof: `api_only_drive_keeps_its_last_leg`.
 A break in a car key's chain of logs fails only the log that breaks it, not those after it. The logs that failed
 under the older rules are checked again once. Proof: `a_chain_with_one_bad_log_fails_that_log_alone`.
 
+<a id="trust-3"></a>
+### trust-3: an unsigned log says why it is unsigned
+
+The record of a log without a signature says which kind it is: no sidecar came, its sidecar has no `integrity`
+object (made before the CAN Bridge signed logs), its sidecar says `signed: false`, or the bridge could not sign it.
+Data health shows the kind and an admin can choose to use such logs of a paired car ([security](security.md)). The
+logs that failed under the older rules are checked again once, which gives their records the kind; nothing else
+about them changes. Proof: `unsigned_logs_judged_by_older_rules_learn_why_they_are_unsigned`.
+
 ## Adding a version change
 
 1. Write the test that shows the stored output changing (it fails on the old rules, passes on the new).

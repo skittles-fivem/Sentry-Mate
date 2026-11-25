@@ -107,6 +107,8 @@ const ROUTES: &[(&str, &str, Case)] = &[
     ("DELETE", "/api/v1/cars/{car}/charges/{charge}/cost", Walk),
     ("POST", "/api/v1/network/certificate", Elsewhere("settings.rs")),
     ("POST", "/api/v1/cars/{car}/rebuild", Walk),
+    ("POST", "/api/v1/cars/{car}/logs/use-unsigned", Elsewhere("unsigned_logs.rs")),
+    ("DELETE", "/api/v1/cars/{car}/logs/use-unsigned", Elsewhere("unsigned_logs.rs")),
     ("POST", "/api/v1/system/storage/compact", Walk),
     ("PUT", "/api/v1/cars/{car}/gps-layout", Walk),
     (

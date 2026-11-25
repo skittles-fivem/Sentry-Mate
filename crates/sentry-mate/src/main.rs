@@ -761,7 +761,7 @@ fn log_cmd(cmd: LogCmd) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 trust::Check::Signed(l) => {
                     println!("signed and intact: key {}, chain index {}", l.key_fingerprint, l.index)
                 }
-                trust::Check::NotSigned { bridge_error } => {
+                trust::Check::NotSigned { bridge_error, .. } => {
                     println!(
                         "not signed{}",
                         bridge_error.map(|e| format!(" (the bridge says: {e})")).unwrap_or_default()

@@ -2917,6 +2917,7 @@ dependencies = [
  "tokio-rustls",
  "tower",
  "tracing",
+ "trust",
  "vault",
  "web",
  "zeroize",

@@ -9,7 +9,8 @@
 // API: GET cars/{car}/health, cars/{car}/gaps, cars/{car}/totals?source=, cars/{car}/updates (summary),
 // cars/{car}/storage, cars/{car}/signals/latest, cars/{car}/signals; POST cars/{car}/rebuild (admin),
 // PATCH can-keys/{key} (admin: a key's name, can-key-name.js); GET, POST cars/{car}/full-rebuild and
-// DELETE system/full-rebuild (admin, "Rebuild all data": pages/full-rebuild.js); GET, POST
+// DELETE system/full-rebuild (admin, "Rebuild all data": pages/full-rebuild.js); GET cars/{car}/logs/unsigned, POST
+// and DELETE cars/{car}/logs/use-unsigned (admin: the logs without a signature, pages/unsigned-logs.js); GET, POST
 // cars/{car}/gps-layout/fit and PUT cars/{car}/gps-layout (admin, "Find GPS layout"), GET cars/{car}/gps-layout
 // (the GPS layout line, everyone): shared/gpsfit.js;
 // GET system/storage, system/health (admin), cars, geocode/status, integrations/overview (admin: the counts on
@@ -45,6 +46,7 @@ import { confirmDialog } from '../core/dialog.js';
 import { follow, carOf, onRows, FALLBACK_POLL_MS } from '../shared/live.js';
 import { morph, morphChildren, keepEl } from '../core/morph.js';
 import { running, lines as frLines } from '../shared/fullrebuild.js';
+import { unsignedLogs } from './unsigned-logs.js';
 
 // every log of the car as the CAN Bridge app is told it now (`sentry-mate log-checks --car` prints the same)
 function logChecksText(lc, fmt) {
@@ -291,6 +293,9 @@ async function mountCar(ctx) {
   });
   ctx.onCleanup(() => gpsLayout.stop());
   let gpsRead = false;
+  // the logs without a signature, with Use unsigned logs and Stop using (admins only: the answers are admin reads);
+  // built once and kept in place, read again with the health figures
+  const unsigned = admin ? unsignedLogs(ctx, { car, when, onChanged: () => { refreshHealth(); loadTotals().catch(() => {}); } }) : null;
   // the Rebuild row: the full rebuild's step while one runs for this car, else the period rebuild's state
   const rebuildVal = h('span');
   let lastPending = false;
@@ -321,6 +326,7 @@ async function mountCar(ctx) {
       gpsRead ? gpsLayout.load().catch(() => {}) : gpsLayout.ready.then(() => { gpsRead = true; }),
       // the Tesla API input for this car (admins only): what the server does for it now
       admin ? ctx.api.get('integrations/tesla/status').catch(() => null) : Promise.resolve(null),
+      unsigned ? unsigned.load() : null,
     ]);
     teslaRows = ts;
     return hl;
@@ -430,7 +436,7 @@ async function mountCar(ctx) {
     paintRebuildRow();
 
     // only the texts that changed are written; the full rebuild's panel stays as it is
-    morphChildren(healthSlot, [status, fixes, figs, h('div', { class: 'hl-health-cols' }, h('div', null, keyList, flags, teslaBlock()), h('div', null, spanList, missingBlock(hl.missing_logs || {}))), hasCanData(car, hl) ? keepEl(gpsLayout.el, 'gps-layout') : null, keepEl(rebuildEl, 'rebuild')]);
+    morphChildren(healthSlot, [status, fixes, figs, h('div', { class: 'hl-health-cols' }, h('div', null, keyList, flags, teslaBlock()), h('div', null, spanList, missingBlock(hl.missing_logs || {}), unsigned ? keepEl(unsigned.el, 'unsigned') : null)), hasCanData(car, hl) ? keepEl(gpsLayout.el, 'gps-layout') : null, keepEl(rebuildEl, 'rebuild')]);
   }
 
   // logs the server recorded but no longer has: how many, since when, whether the car was asked again, and the

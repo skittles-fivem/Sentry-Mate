@@ -10,6 +10,7 @@
 - [No way back without a backup](#no-way-back-without-a-backup)
 - [Privacy](#privacy)
 - [When a log fails its check](#when-a-log-fails-its-check)
+- [Pairing and the owner's word](#pairing-and-the-owners-word)
 - [A new signing key](#a-new-signing-key)
 
 ## Security
@@ -43,7 +44,8 @@
 - Every log's ECDSA P-256 signature is checked against the key the car key is paired with. A log signed by another
   key is kept and marked failed, and not used until the owner trusts that key (`keys trust`, after a `yes`). Only
   a key that signed some of the car key's logs can be trusted. Deleted, swapped or reordered logs show in the
-  chain.
+  chain. A log without a signature from a paired car is not used either, unless an admin says so for that log,
+  their password asked again, never for a badly signed one ([Pairing and the owner's word](#pairing-and-the-owners-word)).
 - **Encryption at rest, in Rust.** One random data key seals the contents of everything stored (logs, sidecars,
   uploads still arriving, trust records, tokens, the TLS key) with XChaCha20-Poly1305, in 64 KiB chunks, each file
   with its own key (HKDF-SHA256) and its path bound in, so a file that is changed, cut short, or moved under another
@@ -390,8 +392,8 @@ Every log is kept as uploaded, whatever its check says. Each gets one of these r
 |---|---|
 | verified | Signed by the key the car key is paired with. The first signed log pairs it. A key trusted before keeps the logs that came while it was trusted. |
 | unsigned | Not signed, and the car key isn't paired yet. |
-| could not sign | Not signed, from a paired car key, and the bridge said why it couldn't sign. |
-| failed | A bad signature or sidecar, a changed file, not signed although the car key is paired, or signed by another key. |
+| could not sign | Not signed, from a paired car key, and the bridge said why it couldn't sign. Not used unless the owner says so ([below](#pairing-and-the-owners-word)). |
+| failed | A bad signature or sidecar, a changed file, not signed although the car key is paired, or signed by another key. Only the one that failed for being unsigned can be used on the owner's word. |
 | waiting | The sidecar hasn't come. After 10 minutes the log is judged without it. |
 
 - `log-checks --car c1` counts every log of a car as the app is told it, per `check_reason`, with when the failed
@@ -403,8 +405,13 @@ Every log is kept as uploaded, whatever its check says. Each gets one of these r
   one, whose own file and signature are fine, is verified and starts a new segment of the chain: the break shows
   once, as that log's failure or as a gap in the chain report and on Data health, and a missing log is asked of the
   car again ([Did each log arrive intact](cars-and-bridge.md#did-each-log-arrive-intact)).
-- `log decode` decodes only `verified` and `unsigned` logs, unless `--any`. That is the only way to use a failed log
-  today, one log at a time.
+- `log decode` decodes only `verified` and `unsigned` logs (and those an admin chose to use, below), unless `--any`.
+- Every log without a signature says why (`unsigned_kind` of `GET /cars/{car}/logs`, and Data health): no sidecar
+  came (`no_sidecar`), its sidecar has no `integrity` object, as an app from before signing writes
+  (`no_integrity`), its sidecar says `signed: false` (`signed_false`), or the bridge tried and could not sign it,
+  with its reason (`could_not_sign`). Records judged before the kind was kept get it when their failed logs are
+  checked again by the newer rules (once, after the update); an unsigned log of a car not yet paired then that was
+  never failed says `unknown`.
 - A log signed by another key is marked failed. `keys` lists that key. Check it in the app, then trust it with
   `keys trust` ([A new signing key](#a-new-signing-key)): its logs are verified from then on.
 - The app asks which logs arrived intact (`check` of `POST /api/can/logs/status`) and keeps a failed one. Its
@@ -414,6 +421,37 @@ Every log is kept as uploaded, whatever its check says. Each gets one of these r
 - A reinstalled bridge app or a new Screenmate has a new car key. Its uploads with the old token get
   `403 wrong_car`, so give it a new token. Its logs are kept under the new car key, which is paired by its own first
   signed log. Linking several car keys to one car is planned.
+
+## Pairing and the owner's word
+
+Pairing is what makes a log's data trustworthy: once a car key's first signed log has pinned its signing key, a log
+without that key's signature is not used, because anyone with the car's upload token could have made it. Only the
+owner can say otherwise, and only for logs that failed **for being unsigned and nothing else**:
+
+| Kind | Sidecar | Result | Can be used on the owner's word |
+|---|---|---|---|
+| no sidecar | none came (judged without one after 10 minutes) | failed: not signed, but this car is paired | yes |
+| no integrity | no `integrity` object (an app from before signing) | failed: not signed, but this car is paired | yes |
+| signed false | `integrity.signed` is not `true`, no `error` | failed: not signed, but this car is paired | yes |
+| could not sign | `integrity.signed: false` with an `error` | could not sign (the bridge's reason) | yes |
+| a bad signature, another key's, another car key's, a changed or cut file, bad chain fields, a wrong name | | failed | **never** |
+
+On Data health an admin's **Use unsigned logs** (`POST /cars/{car}/logs/use-unsigned`) asks the admin's password
+(and two-step code) again, says how many logs of which kinds, and sets "use it anyway" on those logs only: a list
+of names with any other log among them is refused whole (`422`, naming each and why). **Stop using**
+(`DELETE` on the same route) takes it back. Each is an audit entry on the car (`can-logs-unsigned-used`,
+`can-logs-unsigned-stopped`) with how many logs of which kinds; the logs are decoded (or left out) again and the
+windows they are in rebuilt, so their drives appear (or go). The choice is kept with the log's record: judging it
+again keeps it while the log still fails only for being unsigned, and drops it otherwise. A log in use is not
+replaced by another copy sent under its name (a copy the owner never saw would take their word). The CAN Bridge app
+is still told such a log failed (`check_reason: unsigned`): it is not signed.
+
+**A log's time is no reason to use it by itself.** A log without a signature whose time is before the car key's
+first signed log looks like one made before the app signed logs, but that time comes from the log's name, and
+whoever holds the car's upload token chooses the name: counting such logs as usable on their own would let a
+backdated log through, which is what pairing refuses. So nothing is used without the owner's word; the logs from
+before the first signed log are only offered together, preselected, in the dialog ("only the N logs from before
+this car's first signed log", `before_first_signed: true`), for an owner who knows their app signed nothing then.
 
 ## A new signing key
 

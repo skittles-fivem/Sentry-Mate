@@ -765,6 +765,7 @@ mod tests {
             sha256: None,
             length: None,
             sidecar_sha256: None,
+            unsigned: None,
         }
     }
 

@@ -28,8 +28,9 @@ pub const VERSION: &str = "canbridge-log-sig-v1";
 pub const ALGORITHM: &str = "ECDSA-P256-SHA256";
 /// `prev_sha256` of the first log of a chain.
 pub const GENESIS_SHA: &str = "0000000000000000000000000000000000000000000000000000000000000000";
-/// Version of these rules: records judged by an older one are judged again.
-pub const RULES_VERSION: u32 = 2;
+/// Version of these rules: records judged by an older one are judged again. 3: an unsigned log's record says why
+/// it is unsigned (no sidecar, no `integrity` object, `signed: false`, or the bridge could not sign it).
+pub const RULES_VERSION: u32 = 3;
 /// The reason of a log that is signed and intact, but by a key other than the one its car key is paired with.
 pub const SIGNED_BY_ANOTHER_KEY: &str = "signed by another key";
 /// The reasons of a log whose bytes are not the ones its sidecar names (changed after signing, or cut).
@@ -95,8 +96,10 @@ pub struct Link {
 pub enum Check {
     /// Signed, and the file is exactly what was signed.
     Signed(Link),
-    /// The sidecar says it is not signed; `bridge_error` is the bridge's reason when it tried and could not.
-    NotSigned { bridge_error: Option<String> },
+    /// Not signed. `integrity`: the sidecar has an `integrity` object, which says it is not signed (`signed` not
+    /// `true`); without one the sidecar is from before the bridge signed logs (or there is no sidecar).
+    /// `bridge_error` is the bridge's reason when it tried and could not.
+    NotSigned { bridge_error: Option<String>, integrity: bool },
     /// Signed but wrong: changed after signing, for another car, bad fields or a bad signature. `link` is set when
     /// the key and chain fields could be read, so the log still has its place in the chain report.
     Bad { reason: String, link: Option<Link> },
@@ -121,7 +124,7 @@ pub fn check(name: &str, sha256: &str, length: u64, sidecar: &serde_json::Value)
             .and_then(|e| e.as_str())
             .map(|e| one_line(e, 120))
             .filter(|e| !e.is_empty());
-        return Check::NotSigned { bridge_error };
+        return Check::NotSigned { bridge_error, integrity: g.is_some() };
     };
     let text = |k: &str| g.get(k).and_then(|v| v.as_str()).unwrap_or("");
     if text("version") != VERSION {
@@ -205,10 +208,10 @@ pub fn judge(check: &Check, paired: Option<&str>) -> Verdict {
         (Check::Signed(l), Some(fp)) if same_fingerprint(&l.key_fingerprint, fp) => Verdict::Verified,
         (Check::Signed(_), Some(_)) => Verdict::Failed(SIGNED_BY_ANOTHER_KEY.into()),
         (Check::NotSigned { .. }, None) => Verdict::Unsigned,
-        (Check::NotSigned { bridge_error: Some(e) }, Some(_)) => {
+        (Check::NotSigned { bridge_error: Some(e), .. }, Some(_)) => {
             Verdict::CouldNotSign(format!("the CAN Bridge could not sign it ({e})"))
         }
-        (Check::NotSigned { bridge_error: None }, Some(_)) => Verdict::Failed(NOT_SIGNED_BUT_PAIRED.into()),
+        (Check::NotSigned { bridge_error: None, .. }, Some(_)) => Verdict::Failed(NOT_SIGNED_BUT_PAIRED.into()),
         (Check::Bad { reason, .. }, _) => Verdict::Failed(reason.clone()),
     }
 }
