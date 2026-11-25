@@ -517,6 +517,8 @@ impl Engine {
                 self.send(crate::Work::Reconcile { car: Some(car) });
                 break;
             }
+            // (a drives table repaired meanwhile: the owner's purposes go back on the drives made again)
+            self.finish_repair(car)?;
             // (the whole history made again: the narrow rebuilds noted are done with it)
             if from_ms == 0 && to_ms == u64::MAX {
                 self.job_clear_hook();

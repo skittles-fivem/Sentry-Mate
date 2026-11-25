@@ -72,13 +72,13 @@ impl<T> Salvage<T> {
             || (self.journal.found && self.journal.why.is_some())
     }
 
-    /// Where the loss begins in time, when it can be told: `Some(0)` for a snapshot lost whole or a journal's loss
-    /// (unknown when), the last row's start for a snapshot cut.
+    /// Where the loss begins in time: the last row's start for a snapshot cut (`0` when none of it read), `0` for a
+    /// journal's loss (when its lost changes were is not known). `None`: nothing is lost.
     pub fn lost_from_ms(&self) -> Option<u64> {
-        if self.snapshot.found && !self.snapshot.whole {
-            return self.snapshot.lost_from_ms;
-        }
-        (self.journal.lost_entries > 0 || self.journal.lost_tail || self.journal.why.is_some()).then_some(0)
+        let snapshot = (self.snapshot.found && !self.snapshot.whole).then_some(self.snapshot.lost_from_ms.unwrap_or(0));
+        let journal =
+            (self.journal.lost_entries > 0 || self.journal.lost_tail || self.journal.why.is_some()).then_some(0);
+        snapshot.into_iter().chain(journal).min()
     }
 
     /// The loss in words, for a report and the log.

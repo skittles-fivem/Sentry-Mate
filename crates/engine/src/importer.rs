@@ -563,6 +563,101 @@ impl import::Sink for DbSink<'_> {
     }
 }
 
+/// Which cars of an import's file go to one car, for reading the file again ([`ReplaySink`]).
+#[derive(Debug, Clone, Default)]
+pub struct ReplayPlan {
+    /// The car the rows are wanted for.
+    pub car: CarId,
+    /// The cars of the file (by their id in it) that were matched to it.
+    pub mine: Vec<i64>,
+    /// Cars of the file that go with another of the file (as [`DbSink::joins`]).
+    pub joins: HashMap<i64, i64>,
+}
+
+/// The sink of an import's file read again to get back the drives of one car: nothing is stored, no car made and
+/// no state kept (a fresh state reads every row), the drives are only collected, with the ids the import gave them.
+pub struct ReplaySink<'a> {
+    engine: &'a Engine,
+    plan: ReplayPlan,
+    source: Source,
+    drives: std::collections::BTreeMap<u64, model::Drive>,
+}
+
+impl<'a> ReplaySink<'a> {
+    pub fn new(engine: &'a Engine, plan: ReplayPlan, source: Source) -> ReplaySink<'a> {
+        ReplaySink { engine, plan, source, drives: Default::default() }
+    }
+
+    /// The drives read, by start.
+    pub fn into_drives(self) -> Vec<model::Drive> {
+        let mut v: Vec<model::Drive> = self.drives.into_values().collect();
+        v.sort_by_key(|d| (d.start_ms, d.id));
+        v
+    }
+
+    fn root(&self, tm: i64) -> i64 {
+        let mut t = tm;
+        for _ in 0..64 {
+            match self.plan.joins.get(&t) {
+                Some(&j) if j != t => t = j,
+                _ => break,
+            }
+        }
+        t
+    }
+}
+
+impl import::Sink for ReplaySink<'_> {
+    fn car(&mut self, tm: &TmCar) -> Result<Option<Target>, SinkError> {
+        let mine = self.plan.mine.contains(&self.root(tm.tm_id));
+        Ok(mine.then(|| Target { car: self.plan.car, state: Default::default() }))
+    }
+
+    fn batch(&mut self, car: CarId, batch: Batch) -> Result<(), SinkError> {
+        match batch {
+            Batch::Drives(rows) => {
+                for r in rows {
+                    let mut d = r.drive;
+                    d.id = imported_id_of(self.source, car, r.tm_id);
+                    d.car = car;
+                    d.source = self.source;
+                    self.drives.insert(d.id, d);
+                }
+            }
+            Batch::Removed(rows) => {
+                for (t, id) in rows {
+                    if t == import::Table::Drives {
+                        self.drives.remove(&imported_id_of(self.source, car, id));
+                    }
+                }
+            }
+            Batch::Cleared(spans) => {
+                for (a, b) in spans {
+                    self.drives.retain(|_, d| d.start_ms < a || d.start_ms > b);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn time_zone(&mut self, car: CarId) -> Option<String> {
+        self.engine.inner.db.car(car).ok().flatten().map(|c| self.engine.inner.car_zone(&c).0)
+    }
+
+    fn places(&mut self, _: Vec<PlaceRow>) -> Result<(), SinkError> {
+        Ok(())
+    }
+
+    fn addresses(&mut self, _: Vec<AddressRow>) -> Result<(), SinkError> {
+        Ok(())
+    }
+
+    fn car_done(&mut self, _: CarReport, _: Option<ImportState>) -> Result<(), SinkError> {
+        Ok(())
+    }
+}
+
 /// Writes imported points over the points already there (by time, in the source's own stream), sorted.
 pub(crate) fn write_merged<P: db::Point>(db: &db::Db, car: CarId, source: Source, pts: &mut [P]) -> db::Result<()> {
     pts.sort_by_key(|p| p.t_ms());

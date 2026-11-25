@@ -1841,3 +1841,391 @@ fn a_rebuild_sends_the_newest_values_once_a_second_and_the_last_at_its_end() {
         assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
     });
 }
+
+// ---- a damaged drives table is mended ----
+
+/// How many made-up imported drives the table has (enough that its snapshot spans several 64 KiB chunks).
+const IMPORTED: u64 = 1200;
+
+/// A TeslaMate drive whose values do not compress away.
+fn imported_row(car: u32, n: u64, seed: &mut u64) -> model::Drive {
+    fn next(seed: &mut u64) -> u64 {
+        *seed ^= *seed >> 12;
+        *seed ^= *seed << 25;
+        *seed ^= *seed >> 27;
+        seed.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+    let mut f = |scale: f64| (next(seed) >> 11) as f64 / (1u64 << 53) as f64 * scale;
+    let start_ms = T0_MS - (IMPORTED - n) * 3 * 3_600_000;
+    model::Drive {
+        id: engine::importer::imported_id(car, n as i64 + 1),
+        car,
+        start_ms,
+        end_ms: start_ms + 1_200_000,
+        start: None,
+        end: None,
+        start_place: None,
+        end_place: None,
+        start_address: Some(format!("Made-up Street {:x}", f(1e15) as u64)),
+        end_address: Some(format!("Made-up Lane {:x}", f(1e15) as u64)),
+        start_odometer_km: Some(f(100_000.0)),
+        end_odometer_km: Some(f(100_000.0)),
+        distance_km: Some(f(100.0)),
+        speed_max_kmh: Some(f(160.0)),
+        power_max_kw: Some(f(200.0)),
+        power_min_kw: Some(-f(80.0)),
+        energy_used_kwh: Some(f(30.0)),
+        start_soc: Some(f(100.0)),
+        end_soc: Some(f(100.0)),
+        start_range_km: Some(f(400.0)),
+        end_range_km: Some(f(400.0)),
+        outside_temp_avg_c: Some(f(30.0)),
+        inside_temp_avg_c: Some(f(30.0)),
+        ascent_m: Some(f(500.0)),
+        descent_m: Some(f(500.0)),
+        source: Source::Teslamate,
+        inputs: model::Inputs::NONE,
+        rules_version: 0,
+    }
+}
+
+/// The imports' kept uploads, as a test has them: what they give, and what they can't.
+struct Kept {
+    drives: Vec<model::Drive>,
+    gone: Vec<engine::repair::Gone>,
+}
+
+impl engine::repair::ImportReplay for Kept {
+    fn drives(&self, _: &Engine, _: u32) -> engine::repair::Replayed {
+        engine::repair::Replayed { drives: self.drives.clone(), gone: self.gone.clone(), held_out: Vec::new() }
+    }
+}
+
+struct Fx {
+    dir: tempfile::TempDir,
+    store: Store,
+    vault: Arc<vault::Vault>,
+    car: u32,
+    /// The id the drive from the logs was given in the table (its start does not give it), and the id its start
+    /// gives.
+    carried: u64,
+    plain: u64,
+    imported: Vec<model::Drive>,
+}
+
+impl Fx {
+    fn file(&self, name: &str) -> std::path::PathBuf {
+        self.dir.path().join("data/db/cars").join(self.car.to_string()).join(name)
+    }
+}
+
+fn set_purpose(e: &Engine, car: u32, id: u64, purpose: &str, note: &str) {
+    engine::query::logbook::set_purpose(e, car, id, purpose, Some("a relation"), Some(note), 1).unwrap();
+}
+
+/// A car with its history made from logs (one drive and one charge), the table of its drives holding that drive
+/// under a carried id and the imported ones, folded into a snapshot of several chunks, then `journal` more imported
+/// rows added one by one (they stay in the journal). Purposes on the carried id and on two imported rows.
+async fn fixture(journal: u64) -> Fx {
+    let k = kit();
+    for i in 0..DAY.len() as u64 {
+        send(&k, i).await;
+    }
+    k.engine.idle().await;
+    let car = the_car(&k);
+    let live: model::Drive = k.db.list::<model::Drive>(car, &db::Query::default()).unwrap().items.remove(0);
+    assert_eq!(live.source, Source::Live);
+    let carried = (u64::from(car) << 32) | ((live.start_ms + 20_000) / 1000);
+    let plain = (u64::from(car) << 32) | (live.start_ms / 1000);
+    assert_eq!(live.id, plain);
+    k.db.delete::<model::Drive>(car, &[plain]).unwrap();
+    k.db.upsert(car, &[model::Drive { id: carried, ..live.clone() }]).unwrap();
+    let mut seed = 0x1234_5678_9ABC_DEF1u64;
+    let imported: Vec<model::Drive> = (0..IMPORTED).map(|n| imported_row(car, n, &mut seed)).collect();
+    k.db.upsert(car, &imported).unwrap();
+    set_purpose(&k.engine, car, carried, "business", "on the carried id");
+    set_purpose(&k.engine, car, imported[10].id, "commute", "an imported row near the start");
+    set_purpose(&k.engine, car, imported[1100].id, "private", "an imported row near the end");
+    k.db.settle(car, u64::MAX).unwrap();
+    let mut more = Vec::new();
+    for n in 0..journal {
+        let mut d = imported_row(car, n, &mut seed);
+        d.id = engine::importer::imported_id(car, 5000 + n as i64);
+        d.start_ms = T0_MS - 10 * 86_400_000 + n * 3_600_000;
+        d.end_ms = d.start_ms + 600_000;
+        k.db.upsert(car, std::slice::from_ref(&d)).unwrap();
+        more.push(d);
+    }
+    let Kit { _dir: dir, store, vault, engine, db, .. } = k;
+    drop((engine, db));
+    let fx = Fx { dir, store, vault, car, carried, plain, imported: [imported, more].concat() };
+    let size = std::fs::metadata(fx.file("drives.snap")).unwrap().len() as usize - vault::stream::HEADER;
+    let chunks = size.div_ceil(vault::stream::CHUNK + vault::stream::TAG);
+    assert!(chunks >= 4, "{chunks} chunks: the snapshot should span several");
+    fx
+}
+
+/// The server started again on the folder, with these kept uploads.
+fn restart(fx: &Fx, kept: Option<Kept>) -> Engine {
+    let db = db::Db::open(&fx.dir.path().join("data"), fx.vault.clone(), db::Options::default()).unwrap();
+    let e = Engine::new(db, fx.store.clone(), Options { workers: 2, ..Options::default() });
+    if let Some(k) = kept {
+        e.set_import_replay(Arc::new(k));
+    }
+    e.start().unwrap();
+    e
+}
+
+fn cut_in_half(p: &std::path::Path) {
+    let b = std::fs::read(p).unwrap();
+    std::fs::write(p, &b[..b.len() / 2]).unwrap();
+}
+
+fn flip_in_chunk(p: &std::path::Path, chunk: usize) {
+    let mut b = std::fs::read(p).unwrap();
+    b[vault::stream::HEADER + chunk * (vault::stream::CHUNK + vault::stream::TAG) + 100] ^= 0x40;
+    std::fs::write(p, b).unwrap();
+}
+
+/// The owner's purposes kept for a car (`aside`: those kept aside), by drive id, with their notes.
+fn purposes(db: &db::Db, car: u32, aside: bool) -> std::collections::BTreeMap<u64, String> {
+    let prefix = format!("car/{car}/{}/", if aside { "purposes-unmatched" } else { "purposes" });
+    let mut out = std::collections::BTreeMap::new();
+    for key in db.kv().keys("drives").unwrap().into_iter().filter(|k| k.starts_with(&prefix)) {
+        let v: serde_json::Value = serde_json::from_slice(&db.kv().get("drives", &key).unwrap().unwrap()).unwrap();
+        for (id, p) in v.as_object().unwrap() {
+            out.insert(id.parse().unwrap(), p["note"].as_str().unwrap().to_string());
+        }
+    }
+    out
+}
+
+fn drive_rows(e: &Engine, car: u32) -> Vec<model::Drive> {
+    let mut all = Vec::new();
+    let mut q = db::Query::default().oldest_first().limit(db::MAX_PAGE);
+    loop {
+        let page = e.db().list::<model::Drive>(car, &q).unwrap();
+        all.extend(page.items);
+        match page.next {
+            Some(c) => q.after = Some(c),
+            None => return all,
+        }
+    }
+}
+
+/// The files put aside, by name.
+fn aside_files(fx: &Fx) -> Vec<String> {
+    let mut v = Vec::new();
+    for d in std::fs::read_dir(fx.file("aside")).unwrap().flatten() {
+        for f in std::fs::read_dir(d.path()).unwrap().flatten() {
+            v.push(f.file_name().to_string_lossy().into_owned());
+        }
+    }
+    v.sort();
+    v
+}
+
+/// What a table mended from a snapshot lost in its second part looks like once the history is made again.
+fn assert_mended_from_a_cut_snapshot(fx: &Fx, e: &Engine) {
+    let car = fx.car;
+    let rows = drive_rows(e, car);
+    let (live, imported): (Vec<_>, Vec<_>) = rows.iter().partition(|d| d.source == Source::Live);
+    assert_eq!(imported.len(), fx.imported.len(), "every imported row is back");
+    assert!(fx.imported.iter().all(|d| rows.contains(d)), "each as it was imported");
+    assert_eq!(live.iter().map(|d| d.id).collect::<Vec<_>>(), vec![fx.plain], "the drive from the logs, made again");
+    assert!(e.db().damaged().is_empty(), "{:?}", e.db().damaged());
+    // the owner's purposes: the carried id's goes to the drive made again, the imported ones stay where they were
+    let p = purposes(e.db(), car, false);
+    assert_eq!(p.get(&fx.plain).map(String::as_str), Some("on the carried id"), "{p:?}");
+    assert_eq!(p.get(&fx.imported[10].id).map(String::as_str), Some("an imported row near the start"));
+    assert_eq!(p.get(&fx.imported[1100].id).map(String::as_str), Some("an imported row near the end"));
+    assert!(!p.contains_key(&fx.carried) && p.len() == 3, "{p:?}");
+    assert!(purposes(e.db(), car, true).is_empty());
+    // what was done and what was not
+    let r = e.repair_report(car).unwrap().expect("a report");
+    assert!(r.finished_ms.is_some(), "{r:#?}");
+    assert!(r.salvaged > 100 && r.salvaged < IMPORTED, "{r:#?}");
+    assert_eq!(r.salvaged + r.reimported, IMPORTED, "{r:#?}");
+    assert_eq!((r.relinked, r.unmatched), (1, 0), "{r:#?}");
+    assert_eq!(r.rebuilt, Some(1), "{r:#?}");
+    assert!(r.lost.is_empty(), "everything came back: {:#?}", r.lost);
+    assert!(r.aside.as_deref().is_some_and(|a| a.contains("/aside/")), "{r:#?}");
+    assert_eq!(aside_files(fx), ["NOTE.txt", "drives.snap"], "the damaged file is kept, never deleted");
+    assert!(r.damage.iter().any(|d| d.contains("snapshot")), "{:?}", r.damage);
+}
+
+#[test]
+fn a_full_rebuild_mends_a_drives_snapshot_cut_in_half() {
+    let rt = rt();
+    rt.block_on(async {
+        let fx = fixture(0).await;
+        cut_in_half(&fx.file("drives.snap"));
+        let e = restart(&fx, Some(Kept { drives: fx.imported.clone(), gone: Vec::new() }));
+        e.idle().await;
+        assert!(e.db().count::<model::Drive>(fx.car).is_err(), "the table does not read");
+        e.full_rebuild(Some(fx.car), engine::full::Reason::Owner, None).unwrap();
+        let r = full_done(&e).await;
+        assert_eq!(r.status, engine::full::FullStatus::Done, "{r:#?}");
+        assert_mended_from_a_cut_snapshot(&fx, &e);
+    });
+}
+
+#[test]
+fn a_full_rebuild_mends_a_drives_snapshot_with_one_bad_chunk() {
+    let rt = rt();
+    rt.block_on(async {
+        let fx = fixture(0).await;
+        flip_in_chunk(&fx.file("drives.snap"), 1);
+        let e = restart(&fx, Some(Kept { drives: fx.imported.clone(), gone: Vec::new() }));
+        e.idle().await;
+        assert!(e.db().count::<model::Drive>(fx.car).is_err());
+        e.full_rebuild(Some(fx.car), engine::full::Reason::Owner, None).unwrap();
+        let r = full_done(&e).await;
+        assert_eq!(r.status, engine::full::FullStatus::Done, "{r:#?}");
+        assert_mended_from_a_cut_snapshot(&fx, &e);
+    });
+}
+
+#[test]
+fn a_plain_rebuild_mends_a_damaged_drives_table() {
+    let rt = rt();
+    rt.block_on(async {
+        let fx = fixture(0).await;
+        cut_in_half(&fx.file("drives.snap"));
+        let e = restart(&fx, Some(Kept { drives: fx.imported.clone(), gone: Vec::new() }));
+        e.idle().await;
+        let job = e.rebuild(Scope::car(fx.car)).unwrap();
+        e.idle().await;
+        let done = e.job(job.id).unwrap();
+        assert_eq!(done.status, engine::JobStatus::Done, "{done:?}");
+        assert_mended_from_a_cut_snapshot(&fx, &e);
+    });
+}
+
+#[test]
+fn imported_rows_without_a_kept_upload_are_reported_lost_with_their_span() {
+    let rt = rt();
+    rt.block_on(async {
+        let fx = fixture(0).await;
+        cut_in_half(&fx.file("drives.snap"));
+        // the import's upload was discarded: it is said what it covered
+        let last = fx.imported.len() - 1;
+        let (from, to) = (fx.imported[0].start_ms, fx.imported[last].end_ms);
+        let gone = engine::repair::Gone {
+            source: Source::Teslamate,
+            name: "made-up-backup.sql".into(),
+            from_ms: Some(from),
+            to_ms: Some(to),
+            why: "it was discarded".into(),
+        };
+        let e = restart(&fx, Some(Kept { drives: Vec::new(), gone: vec![gone] }));
+        e.idle().await;
+        let job = e.rebuild(Scope::car(fx.car)).unwrap();
+        e.idle().await;
+        assert_eq!(e.job(job.id).unwrap().status, engine::JobStatus::Done);
+        let r = e.repair_report(fx.car).unwrap().unwrap();
+        assert_eq!(r.reimported, 0, "{r:#?}");
+        let found = drive_rows(&e, fx.car).iter().filter(|d| d.source == Source::Teslamate).count() as u64;
+        assert_eq!(found, r.salvaged, "only what read is there");
+        let l = r.lost.iter().find(|l| l.what == "imported drives").expect("said lost");
+        assert_eq!((l.source.as_str(), l.expected, l.found), ("teslamate", Some(IMPORTED), Some(found)), "{l:#?}");
+        assert_eq!((l.from_ms, l.to_ms), (Some(from), Some(to)), "its span");
+        assert!(l.why.contains("made-up-backup.sql") && l.why.contains("it was discarded"), "{}", l.why);
+        // with no way to read the uploads at all, the loss is said all the same, from where the snapshot was cut
+        let fx = fixture(0).await;
+        cut_in_half(&fx.file("drives.snap"));
+        let e = restart(&fx, None);
+        e.idle().await;
+        let job = e.rebuild(Scope::car(fx.car)).unwrap();
+        e.idle().await;
+        assert_eq!(e.job(job.id).unwrap().status, engine::JobStatus::Done);
+        let r = e.repair_report(fx.car).unwrap().unwrap();
+        let l = r.lost.iter().find(|l| l.what == "imported drives").expect("said lost");
+        assert!(l.from_ms.is_some_and(|f| f > fx.imported[0].start_ms && f < fx.imported[last].start_ms), "{l:#?}");
+        assert_eq!(l.to_ms, None);
+        assert!(l.why.contains("no kept upload"), "{}", l.why);
+        assert_eq!(aside_files(&fx), ["NOTE.txt", "drives.snap"]);
+    });
+}
+
+#[test]
+fn a_bad_journal_record_loses_only_its_change_and_says_so() {
+    let rt = rt();
+    rt.block_on(async {
+        let fx = fixture(5).await;
+        // the journal: its header, then one record per change; the second change's record is damaged
+        let log = fx.file("drives.log");
+        let mut b = std::fs::read(&log).unwrap();
+        let after = |b: &[u8], p: usize| p + 4 + u32::from_be_bytes([b[p], b[p + 1], b[p + 2], b[p + 3]]) as usize;
+        let second = after(&b, vault::records::HEADER);
+        let third = after(&b, second);
+        b[third + 4 + 40] ^= 0x40;
+        std::fs::write(&log, &b).unwrap();
+        let e = restart(&fx, None);
+        e.idle().await;
+        assert!(e.db().count::<model::Drive>(fx.car).is_err());
+        let job = e.rebuild(Scope::car(fx.car)).unwrap();
+        e.idle().await;
+        assert_eq!(e.job(job.id).unwrap().status, engine::JobStatus::Done);
+        let rows = drive_rows(&e, fx.car);
+        // every imported row but the one of the lost change
+        let missing: Vec<_> = fx.imported.iter().filter(|d| !rows.iter().any(|r| r.id == d.id)).collect();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].id, engine::importer::imported_id(fx.car, 5001));
+        assert_eq!(rows.iter().filter(|d| d.source == Source::Teslamate).count(), fx.imported.len() - 1);
+        let r = e.repair_report(fx.car).unwrap().unwrap();
+        // (the snapshot's rows, its drive from the logs, and the four changes that read)
+        assert_eq!((r.salvaged, r.reimported), (IMPORTED + 1 + 4, 0), "{r:#?}");
+        assert!(r.damage.iter().any(|d| d.contains("journal") && d.contains("1 changes")), "{:?}", r.damage);
+        let l = r.lost.iter().find(|l| l.what == "imported drives").expect("said lost");
+        assert_eq!((l.expected, l.found, l.from_ms, l.to_ms), (Some(IMPORTED + 5), Some(IMPORTED + 4), None, None));
+        assert!(l.why.contains("no kept upload"), "{}", l.why);
+        assert_eq!(aside_files(&fx), ["NOTE.txt", "drives.log", "drives.snap"], "both files kept");
+        // the whole history was rebuilt, so the carried id's purpose went to the drive made again
+        let p = purposes(e.db(), fx.car, false);
+        assert_eq!((p.len(), p.get(&fx.plain).map(String::as_str)), (3, Some("on the carried id")), "{p:?}");
+        assert_eq!(r.relinked, 1, "{r:#?}");
+    });
+}
+
+#[test]
+fn a_purpose_whose_drive_is_gone_is_kept_aside_and_reported() {
+    let rt = rt();
+    rt.block_on(async {
+        let fx = fixture(0).await;
+        let car = fx.car;
+        // a drive no log gives, and its purpose
+        let ghost = {
+            let e = restart(&fx, None);
+            let mut d = fx.imported[3].clone();
+            d.source = Source::Live;
+            d.id = (u64::from(car) << 32) | (d.start_ms / 1000);
+            e.db().upsert(car, std::slice::from_ref(&d)).unwrap();
+            set_purpose(&e, car, d.id, "private", "on a drive no log gives");
+            e.db().settle(car, u64::MAX).unwrap();
+            d.id
+        };
+        cut_in_half(&fx.file("drives.snap"));
+        // the uploads give back the first 300 imported rows only: the imported row with a purpose near the end is gone
+        let e = restart(&fx, Some(Kept { drives: fx.imported[..300].to_vec(), gone: Vec::new() }));
+        e.idle().await;
+        e.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+        let r = full_done(&e).await;
+        assert_eq!(r.status, engine::full::FullStatus::Done, "{r:#?}");
+        let lost_row = fx.imported[1100].id;
+        let rows = drive_rows(&e, car);
+        assert!(rows.iter().all(|d| d.id != ghost && d.id != lost_row));
+        let (own, aside) = (purposes(e.db(), car, false), purposes(e.db(), car, true));
+        assert_eq!(own.get(&fx.plain).map(String::as_str), Some("on the carried id"), "{own:?}");
+        assert_eq!(own.get(&fx.imported[10].id).map(String::as_str), Some("an imported row near the start"));
+        assert_eq!(aside.get(&lost_row).map(String::as_str), Some("an imported row near the end"), "{aside:?}");
+        assert_eq!(aside.get(&ghost).map(String::as_str), Some("on a drive no log gives"), "{aside:?}");
+        assert!(!own.contains_key(&lost_row) && !own.contains_key(&ghost));
+        let rep = e.repair_report(car).unwrap().unwrap();
+        assert_eq!((rep.relinked, rep.unmatched), (1, 2), "{rep:#?}");
+        let said = rep.lost.iter().find(|l| l.what.starts_with("purposes")).expect("said");
+        assert_eq!((said.expected, said.found), (Some(2), Some(0)), "{said:#?}");
+        let live = rep.lost.iter().find(|l| l.what == "drives made from logs").expect("said");
+        assert_eq!((live.expected, live.found), (Some(2), Some(1)), "{live:#?}");
+    });
+}
