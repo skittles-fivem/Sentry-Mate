@@ -6,11 +6,13 @@ The owner's instruction: find every problem and bug in every page and every feat
 
 How it was done: the code was split into areas (below). In each round one hunter per area listed every feature, route, endpoint and job of its area and tried to break each one (edge cases, hostile input, concurrency, data correctness, every page at phone, laptop, 1440p and 4K sizes, light and dark, each interface size). A second pass then tried to refute every finding against the code and the docs; only what it could reproduce counted. Each confirmed bug got a failing test first where that was feasible, then the fix.
 
-State: rounds 1 to 3 done. Round 2: its 41 earlier reports all confirmed and fixed but two kept as limits, 13 more found and fixed. Round 3 (a review of every round-2 change, the settings flows not covered yet and the real server end to end): 18 found, 17 fixed, 1 open. Round 3 found new bugs, so round 4 follows (the owner's stop rule: the hunt ends after round 4, or sooner after a round that finds nothing new). From round 1: 144 bugs fixed, 2 found and open, 39 archived with their pack, 4 reports refuted.
+State: rounds 1 to 4 done, and the owner's reports from the real server in the same weeks. Round 2: its 41 earlier reports all confirmed and fixed but two kept as limits, 13 more found and fixed. Round 3: 18 found, 17 fixed, 1 kept. Round 4 (a review of every round-3 change and the flows no round had driven): 8 found, all fixed. Round 4 still found bugs, so by the owner's stop rule the hunt ends here with what it found fixed, not with a round that found nothing. From round 1: 144 bugs fixed, 2 found and open, 39 archived with their pack, 4 reports refuted.
 
 - [The owner's five decisions](#the-owners-five-decisions)
 - [Round 2](#round-2)
 - [Round 3](#round-3)
+- [Round 4](#round-4)
+- [Reported by the owner from the real server](#reported-by-the-owner-from-the-real-server)
 - [Found and not fixed](#found-and-not-fixed)
 - [Archived with their pack](#archived-with-their-pack)
 - [Fixed](#fixed)
@@ -208,6 +210,27 @@ Three hunters reviewed every change round 2 made (the Rust, then the pages, shar
 
 Checked in round 3 and found working: the ingest seal-on-full guard and paths, the accounts lock and pre-checks, the Service-Worker refusal, the export audit, the pollers' join windows, the TeslaMate id marks, the timeline rules 5 changes, the engine figure changes, the sort keys and cursors, the storage growth span, tonight_ms; on the pages the put-back of typed values, the sort memory, the period picker's Back, time buckets across DST and midnight changes, currency symbols, recovery codes at sign-in; on the real server set-up and sign-in headers and cookies, two-step, check.js on every route, figures against the API, uploads cut and resent across a kill, a full rebuild through a restart, compaction killed midway, export and restore into a new server, UI pack rules, the service worker offline, the audit log, and a limited watch account on about 50 routes.
 
+## Round 4
+
+One hunter reviewed every change of round 3 and decision 2; one drove the flows no round had (TeslaFi and local TeslaMate set-up and edits, certificate and move, Storage, the full-rebuild page, Import, Help, a dialog sweep at 320 and 390 px wide, Interface size 80 and 125, light and dark). All fixed with a test written first.
+
+- **A dialog whose request ran closed on the third Escape and lost its answer (a key shown once)** (medium; a browser holds back one cancel only between gestures). Fixed: Escape is held back while busy, and a dialog closed while busy opens again.
+- **TeslaFi's clock-back wrote over requests a token check had written meanwhile, and left its last good read in the future** (low). Fixed.
+- **A double click on "Save host names" sent two saves and showed a false conflict** (low-medium). Fixed, with Add, Undo and remove held while a save runs.
+- **Import: Start stayed disabled after a failed start** (medium-low), and **Discard during an upload left a false "upload stopped" error** (low). Fixed.
+- **Keyboard focus fell to the page after opening a Storage group, and after the new-certificate and new-recovery-key dialogs closed** (low). Fixed: a dialog whose opener was drawn again gives the focus to the control now in its place.
+
+Checked in round 4 and found working: the accounts ordering, the TeslaMate marks and dump clean-up, the notice announcer, the period-rebuild batching rule (a period end exactly at a drive's start or end is not covered by a test; noted), the put-back of typed values, sort memory, print, Drives clamps; TeslaFi, local TeslaMate, certificate, move code, full rebuild and Compact now each send one request on a double click; Help's links and anchors resolve; every settings dialog fits at phone width.
+
+## Reported by the owner from the real server
+
+- **110 logs stuck as "FAILED: unsigned"**: a paired car's logs with no signature (made before the app signed logs, or sent marked unsigned) are refused, and nothing could let the owner use them. Fixed: Data health shows why each is unsigned, and an admin can use them (password again, audited, undo); never a log with a bad signature, another key's or a changed file. Decided, and written in docs/security.md: such a log dated before the key's first signed log is not trusted on its own, because its date comes from its name, which whoever holds the upload token chooses.
+- **The full rebuild's notice test failed in the whole-file run** (timing). Fixed: the test reads the broadcast, and a rebuild is announced at its start and end too.
+- **A full rebuild used one core (1.1 logs/s on 12 threads)**: fixed in part. A car's logs are now read and decoded ahead on the other cores (identical history, proven by test; 76-81 to 156 logs/s for a made-up 1,283-log history on 4 cores), and a GPS layout fit waits while a rebuild runs instead of reading the same logs. Open: here a log costs about 12 ms (about 30 ms with an API input), the owner's about 900 ms, so something grows with the history; being measured on an owner-shaped made-up history.
+- **"Why is this unnamed still"** (Software, module firmware history): a module's first fingerprint segment had no update and so no input of any kind could name it. Fixed: it is named by an import's or an API's readings that overlap it, else shown as "probably <version> (last known before)" when nothing contradicts that, else says no input reported a name; an admin can name it.
+- **"How is my capacity higher than built?"** (Battery): the per-charge capacity divided the energy a charge added (which runs above what the pack stores) by the % it added, and "when new" was worked out the same way. Fixed: per charge is the energy stored (the rated range added times the car's own energy per km of rated range), so the BMS figure, "when new" and the chart agree; each figure names its source. The size of the gap between energy added and energy stored on that car is inferred from their figures, not measured on their data.
+- In progress: the GPS layout fit's progress bar by actual work with a time left, the Rebuild panel that contradicted itself, a stored history of GPS layout fits, and the server move (what stops on the old server and starts on the new, and a live move log).
+
 ## Found and not fixed
 
 ### Background jobs and storage
@@ -219,6 +242,7 @@ Checked in round 3 and found working: the ingest seal-on-full guard and paths, t
 
 - **Trip and Timeline do not use what an import fills at a live drive's start (the Logbook and Drives do)** (low).
 - **A long virtual list prints only the rows drawn** (low).
+- **The full rebuild costs far more per log on the owner's server than here** (see Reported by the owner).
 - **ui/tools/scroll.test.js is unsteady in this container:** Charges' long tasks while it scrolls through a rebuild were the page swapping in its rebuilt copy mid-scroll (fixed: the swap and the snap wait for the scroll to rest). Drives still sits on the 50 ms frame budget and fails some runs, at the same rate on the commit before the fix: a whole-page snap of 25 to 35 ms every 2 s when its patterns panel is drawn again. Deferring those snaps while scrolling made jumps.test.js fail on /places, so it was left.
 - **An export file does not outlive a restart of the server.** Kept, and now said in docs/ui-api.md: the file is a snapshot kept by the running server; make a new one after a restart.
 - **A rebuild of a period whose end falls inside a drive or charge stays one window per log** (owner decision 2): see the decision.
