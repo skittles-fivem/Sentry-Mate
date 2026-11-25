@@ -198,15 +198,18 @@ pub struct EngineStats {
     pub now_us_total: u64,
     /// Logs whose reading made ahead on another core was used ([`ahead`]).
     pub logs_read_ahead: u64,
-    /// Of the windows' time (`rebuild_ms_total`, µs): finding the window and its logs, reading the inputs' samples,
-    /// fusing them, building the timeline, writing its rows, and the rest of the writing (the car's state now, the
-    /// events).
-    pub window_parts_us: [u64; 6],
+    /// Of the windows' time (`rebuild_ms_total`, µs): finding the window, reading the inputs' samples, fusing them,
+    /// building the timeline, writing its rows, the rest of the writing (the car's state now, the events), and of
+    /// the first: the window's logs, the nearest logs either side.
+    pub window_parts_us: [u64; WINDOW_PARTS],
     /// GPS fixes the timeline rebuilds left out since the server started (a placeholder, half a fix, or a jump
     /// faster than a car drives from the fixes around it): rebuilding a window counts its fixes again.
     pub gps_fixes_dropped: u64,
     pub last_error: Option<String>,
 }
+
+/// The parts of a window's time counted ([`EngineStats::window_parts_us`]).
+pub const WINDOW_PARTS: usize = 8;
 
 #[derive(Default)]
 struct Counters {
@@ -222,7 +225,7 @@ struct Counters {
     now_us: AtomicU64,
     read_ahead: AtomicU64,
     gps_fixes_dropped: AtomicU64,
-    window_parts: [AtomicU64; 6],
+    window_parts: [AtomicU64; WINDOW_PARTS],
 }
 
 pub(crate) enum Work {
