@@ -2164,6 +2164,9 @@ fn a_bad_journal_record_loses_only_its_change_and_says_so() {
         let e = restart(&fx, None);
         e.idle().await;
         assert!(e.db().count::<model::Drive>(fx.car).is_err());
+        // a purpose that was kept aside before the damage
+        let old = r#"{"7777":{"purpose":"private","relation":null,"note":"older","at_ms":1}}"#;
+        e.db().kv().put("drives", &format!("car/{}/purposes-unmatched/2020-01", fx.car), old.as_bytes()).unwrap();
         let job = e.rebuild(Scope::car(fx.car)).unwrap();
         e.idle().await;
         assert_eq!(e.job(job.id).unwrap().status, engine::JobStatus::Done);
@@ -2185,6 +2188,11 @@ fn a_bad_journal_record_loses_only_its_change_and_says_so() {
         let p = purposes(e.db(), fx.car, false);
         assert_eq!((p.len(), p.get(&fx.plain).map(String::as_str)), (3, Some("on the carried id")), "{p:?}");
         assert_eq!(r.relinked, 1, "{r:#?}");
+        // the rows made from the logs are counted as made again (the rebuild cleared the one that read)
+        assert_eq!(r.rebuilt, Some(1), "{r:#?}");
+        // the purpose kept aside before is not this repair's loss
+        assert_eq!(r.unmatched, 1, "{r:#?}");
+        assert!(!r.lost.iter().any(|l| l.what.starts_with("purposes")), "{:#?}", r.lost);
     });
 }
 
@@ -2227,5 +2235,92 @@ fn a_purpose_whose_drive_is_gone_is_kept_aside_and_reported() {
         assert_eq!((said.expected, said.found), (Some(2), Some(0)), "{said:#?}");
         let live = rep.lost.iter().find(|l| l.what == "drives made from logs").expect("said");
         assert_eq!((live.expected, live.found), (Some(2), Some(1)), "{live:#?}");
+    });
+}
+
+/// Uploads that notice whether the damaged table is still where it was when they are read.
+struct Watching {
+    table: std::path::PathBuf,
+    saw_it_in_place: Arc<std::sync::atomic::AtomicBool>,
+    drives: Vec<model::Drive>,
+}
+
+impl engine::repair::ImportReplay for Watching {
+    fn drives(&self, _: &Engine, _: u32) -> engine::repair::Replayed {
+        self.saw_it_in_place.store(self.table.exists(), std::sync::atomic::Ordering::SeqCst);
+        engine::repair::Replayed { drives: self.drives.clone(), ..Default::default() }
+    }
+}
+
+#[test]
+fn a_repair_reads_the_uploads_before_it_sets_anything_aside() {
+    let rt = rt();
+    rt.block_on(async {
+        let fx = fixture(0).await;
+        cut_in_half(&fx.file("drives.snap"));
+        let saw = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let e = restart(&fx, None);
+        e.set_import_replay(Arc::new(Watching {
+            table: fx.file("drives.snap"),
+            saw_it_in_place: saw.clone(),
+            drives: fx.imported.clone(),
+        }));
+        e.idle().await;
+        let job = e.rebuild(Scope::car(fx.car)).unwrap();
+        e.idle().await;
+        assert_eq!(e.job(job.id).unwrap().status, engine::JobStatus::Done);
+        assert!(saw.load(std::sync::atomic::Ordering::SeqCst), "the files were moved before the uploads were read");
+        assert_mended_from_a_cut_snapshot(&fx, &e);
+    });
+}
+
+#[test]
+fn rows_an_earlier_check_moved_to_another_car_are_not_put_back_and_are_said() {
+    let rt = rt();
+    rt.block_on(async {
+        let fx = fixture(0).await;
+        cut_in_half(&fx.file("drives.snap"));
+        let e = restart(&fx, Some(Kept { drives: fx.imported.clone(), gone: Vec::new() }));
+        e.idle().await;
+        // ten of the imported rows are on another car (moved there by a check no import job noted)
+        let other = engine::rehome::new_car(&e, "Another car").unwrap();
+        let moved: Vec<model::Drive> = fx.imported[1100..1110]
+            .iter()
+            .map(|d| model::Drive {
+                id: engine::importer::imported_id(other, (d.id & 0xFF_FFFF_FFFF) as i64),
+                car: other,
+                ..d.clone()
+            })
+            .collect();
+        e.db().upsert(other, &moved).unwrap();
+        let job = e.rebuild(Scope::car(fx.car)).unwrap();
+        e.idle().await;
+        assert_eq!(e.job(job.id).unwrap().status, engine::JobStatus::Done);
+        let rows = drive_rows(&e, fx.car);
+        let here = rows.iter().filter(|d| d.source == Source::Teslamate).count();
+        assert_eq!(here, fx.imported.len() - 10, "the ten stay where they are");
+        let r = e.repair_report(fx.car).unwrap().unwrap();
+        let l = r.lost.iter().find(|l| l.what == "imported drives").expect("said");
+        assert_eq!((l.expected, l.found), (Some(IMPORTED), Some(IMPORTED - 10)), "{l:#?}");
+        assert!(l.why.contains(&format!("10 rows are on car {other}")), "{}", l.why);
+        assert_eq!(drive_rows(&e, other).len(), 10);
+    });
+}
+
+#[test]
+fn a_repair_no_rebuild_follows_is_ended_and_says_so() {
+    let rt = rt();
+    rt.block_on(async {
+        let fx = fixture(0).await;
+        cut_in_half(&fx.file("drives.snap"));
+        let e = restart(&fx, Some(Kept { drives: fx.imported.clone(), gone: Vec::new() }));
+        e.idle().await;
+        let r = e.repair_drives_table_without_rebuild(fx.car).unwrap().expect("repaired");
+        assert!(r.running(), "no rebuild has run");
+        e.settle_repair(fx.car).unwrap();
+        let r = e.repair_report(fx.car).unwrap().unwrap();
+        assert!(r.finished_ms.is_some(), "{r:#?}");
+        assert!(r.notes.iter().any(|n| n.contains("did not end")), "{:?}", r.notes);
+        assert!(!r.lost.iter().any(|l| l.what == "drives made from logs" && !l.why.contains("did not end")), "{r:#?}");
     });
 }

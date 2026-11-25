@@ -204,7 +204,15 @@ pub(crate) fn salvage_files<T: Item>(ctx: &Ctx, files: &Files) -> Result<Salvage
         journal.lost_tail = j.tail_lost;
         journal.why = j.unreadable.clone();
         let stale = matches!((j.generation, generation), (Some(a), Some(b)) if a < b);
-        if stale {
+        if j.generation.is_none() && generation.is_some() && !j.entries.is_empty() {
+            // its header did not read: it can't be told whether it follows the snapshot read or an older one it was
+            // folded into (applying it could put back changes that were taken out), so it is left out, and said
+            journal.lost_entries += j.entries.len() as u64;
+            journal.why.get_or_insert_with(|| {
+                "its header does not read, so its changes can't be told to follow the snapshot read: none was applied"
+                    .to_string()
+            });
+        } else if stale {
             // folded into the snapshot already, a crash came before the journal was removed
             journal.stale = true;
         } else {
@@ -240,44 +248,79 @@ impl Db {
     /// the folder (its path under the data folder), `None` when there were no files. A table put aside is no longer
     /// listed in [`Db::damaged`].
     pub fn set_aside_table(&self, car: CarId, table: Table, why: &str) -> Result<Option<String>> {
-        let moved = self.with_car(car, |db, data, dir| {
-            let files = Files::named(dir, table.name());
-            let present: Vec<&Path> =
-                [&files.snap, &files.log].into_iter().map(|p| p.as_path()).filter(|p| p.exists()).collect();
-            if present.is_empty() {
-                return Ok(None);
-            }
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |t| u64::try_from(t.as_millis()).unwrap_or(0));
-            let base = dir.join("aside");
-            let mut folder = base.join(stamp.to_string());
-            let mut n = 1;
-            while folder.exists() {
-                folder = base.join(format!("{stamp}-{n}"));
-                n += 1;
-            }
-            std::fs::create_dir_all(&folder)?;
-            for p in present {
-                let name = p.file_name().unwrap_or_default();
-                std::fs::rename(p, folder.join(name))?;
-            }
-            let note = format!(
-                "These files of the {} table were set aside because they were damaged: {why}.\n\
-                 Nothing in them was deleted. They open only under their own names: to look at them, stop the \
-                 server and put them back in the folder above, as {0}.snap and {0}.log.\n",
-                table.name()
-            );
-            std::fs::write(folder.join("NOTE.txt"), note)?;
-            sync_dir(&folder);
-            sync_dir(dir);
-            data.unload();
-            let rel = db.inner.ctx.label(&folder);
-            db.forget_damage(&[files.snap.as_path(), files.log.as_path()]);
-            Ok(Some(rel))
-        })?;
+        let moved = self.with_car(car, |db, data, dir| db.move_aside(data, dir, table, why))?;
         self.inner.versions.bump(car, true, true);
         Ok(moved)
+    }
+
+    /// The files of `table` moved into a new folder of the car's `aside` (the car's lock is held by the caller).
+    fn move_aside(
+        &self,
+        data: &mut crate::cars::CarData,
+        dir: &Path,
+        table: Table,
+        why: &str,
+    ) -> Result<Option<String>> {
+        let files = Files::named(dir, table.name());
+        let present: Vec<&Path> =
+            [&files.snap, &files.log].into_iter().map(|p| p.as_path()).filter(|p| p.exists()).collect();
+        if present.is_empty() {
+            return Ok(None);
+        }
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |t| u64::try_from(t.as_millis()).unwrap_or(0));
+        let base = dir.join("aside");
+        let mut folder = base.join(stamp.to_string());
+        let mut n = 1;
+        while folder.exists() {
+            folder = base.join(format!("{stamp}-{n}"));
+            n += 1;
+        }
+        std::fs::create_dir_all(&folder)?;
+        for p in present {
+            let name = p.file_name().unwrap_or_default();
+            std::fs::rename(p, folder.join(name))?;
+        }
+        let note = format!(
+            "These files of the {} table were set aside because they were damaged: {why}.\n\
+             Nothing in them was deleted. They open only under their own names: to look at them, stop the \
+             server and put them back in the folder above, as {0}.snap and {0}.log.\n",
+            table.name()
+        );
+        std::fs::write(folder.join("NOTE.txt"), note)?;
+        sync_dir(&folder);
+        sync_dir(dir);
+        data.unload();
+        self.forget_damage(&[files.snap.as_path(), files.log.as_path()]);
+        Ok(Some(self.inner.ctx.label(&folder)))
+    }
+
+    /// Writes a table that has no files from `rows` as its snapshot and takes the car's summary to count them (the
+    /// car's lock is held by the caller).
+    fn write_table<T: Item>(
+        &self,
+        car: CarId,
+        data: &mut crate::cars::CarData,
+        dir: &Path,
+        rows: Vec<T>,
+    ) -> Result<()> {
+        let files = Files::named(dir, T::TABLE.name());
+        if files.snap.exists() || files.log.exists() {
+            return Err(Error::invalid("a table is written this way only where none is kept"));
+        }
+        data.unload();
+        let (t, _) = data.table::<T>(&self.inner.ctx, dir)?;
+        t.state.apply(Batch { del: Vec::new(), put: rows });
+        t.fold(&self.inner.ctx, crate::file::Which::Warm)?;
+        let w = t.weight();
+        let (mut part, mut last) = (crate::Tally::default(), None);
+        for r in t.state.all() {
+            r.tally(&mut part, 1);
+            last = last.max(Some(r.end_ms()));
+        }
+        data.set_weight(T::TABLE, w);
+        self.mend_summary(car, T::TABLE, &part, last)
     }
 
     /// Writes the table of a car whose table was put aside ([`Db::set_aside_table`]) with `rows`, as its snapshot, and
@@ -287,25 +330,29 @@ impl Db {
         let rows = crate::dedup(rows);
         let imported = rows.iter().any(|r| r.source().is_imported());
         let live = rows.iter().any(|r| !r.source().is_imported());
-        let r = self.with_car(car, |db, data, dir| {
-            let files = Files::named(dir, T::TABLE.name());
-            if files.snap.exists() || files.log.exists() {
-                return Err(Error::invalid("a table is written this way only where none is kept"));
-            }
-            data.unload();
-            let (t, _) = data.table::<T>(&db.inner.ctx, dir)?;
-            t.state.apply(Batch { del: Vec::new(), put: rows });
-            t.fold(&db.inner.ctx, crate::file::Which::Warm)?;
-            let w = t.weight();
-            let (mut part, mut last) = (crate::Tally::default(), None);
-            for r in t.state.all() {
-                r.tally(&mut part, 1);
-                last = last.max(Some(r.end_ms()));
-            }
-            data.set_weight(T::TABLE, w);
-            db.mend_summary(car, T::TABLE, &part, last)
-        });
+        let r = self.with_car(car, |db, data, dir| db.write_table::<T>(car, data, dir, rows));
         self.inner.versions.bump(car, live, imported);
+        r
+    }
+
+    /// [`Db::set_aside_table`] and [`Db::restore_table`] in one step under the car's lock, so nothing can write the
+    /// table in between: the rows are checked first (nothing is moved when they are refused), the files go aside, and
+    /// the table is written with `rows`. If writing fails the files are already aside (never deleted): the folder is
+    /// in the error's text. Returns the folder.
+    pub fn replace_table<T: Item>(&self, car: CarId, why: &str, rows: &[T]) -> Result<Option<String>> {
+        crate::check_rows(car, rows)?;
+        let rows = crate::dedup(rows);
+        let r = self.with_car(car, |db, data, dir| {
+            let folder = db.move_aside(data, dir, T::TABLE, why)?;
+            db.write_table::<T>(car, data, dir, rows).map_err(|e| {
+                Error::invalid(format!(
+                    "the damaged files were put aside in {} but the table could not be written again: {e}",
+                    folder.as_deref().unwrap_or("(no files)")
+                ))
+            })?;
+            Ok(folder)
+        });
+        self.inner.versions.bump(car, true, true);
         r
     }
 }

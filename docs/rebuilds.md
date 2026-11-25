@@ -102,14 +102,14 @@ cut short) is where it can lose something. It never does so quietly:
   admin's repair (`POST /cars/{car}/repair`) all do this when they meet the damage, then: the rows made from the logs
   are made again (the window of a plain rebuild grows over the time the snapshot lost; a journal's loss has no
   time, so it is all of it), imported rows that did not read are read again from the kept uploads of the imports
-  (as the import stored them, each under the id it had; rows the import's moves took off the car are left out),
+  (as the import stored them, each under the id it had; the newest import wins where two hold the same time; a row that is on another car already, or in a lot held for a car, whether an import's move or an odometer check put it there, is left out and said, and so are rows the import's own moves took off this car),
   and the purposes you typed are put back on the drives that are theirs now (a purpose whose drive has no id of its
   own any more goes to the drive that overlaps the second its id names; with none it is kept under
   `purposes-unmatched`, never dropped). What could not be recovered is in the report
   (`GET /cars/{car}/repair`, the notice `data_repaired`): rows from a local TeslaMate's catch-up, imports whose upload
   is gone, rows moved off the car, the changes a damaged journal record held. `crates/engine/tests/pipeline.rs`:
   `a_full_rebuild_mends_a_drives_snapshot_cut_in_half`, `a_full_rebuild_mends_a_drives_snapshot_with_one_bad_chunk`,
-  `a_plain_rebuild_mends_a_damaged_drives_table`, `imported_rows_without_a_kept_upload_are_reported_lost_with_their_span`,
+  The files are moved aside and the table written again in one step under the car's lock, after the uploads were read, and the report is kept from before the move (running, then done, or failed with where the files are); a repair whose rebuild never ends is ended by the next look at it, with a note. `a_plain_rebuild_mends_a_damaged_drives_table`, `imported_rows_without_a_kept_upload_are_reported_lost_with_their_span`,
   `a_bad_journal_record_loses_only_its_change_and_says_so`, `a_purpose_whose_drive_is_gone_is_kept_aside_and_reported`.
   A damaged table of another kind (charges, states, updates), or a damaged series of an import or an API, also holds
   what no log gives: a rebuild that meets one fails and names the file, and the admins get the notice
