@@ -1,6 +1,6 @@
 //! The charge costs TeslaFi lists, on a virtual clock against a fake TeslaFi: off by default, the log read back
 //! in chunks until it is empty, each charge kept once, then a daily check, all between the reads of the car and
-//! under the caps. Everything is made up.
+//! between the polls, without a cap of their own. Everything is made up.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
@@ -21,6 +21,8 @@ struct Fake {
     charges: Arc<Mutex<Vec<(i64, i64)>>>,
     /// The made-up charges: day since the epoch, cost.
     log: Arc<Mutex<Vec<(i64, f64)>>>,
+    /// Answer the charge log with a 429 (the wait TeslaFi asks, in s).
+    limit: Arc<Mutex<Option<Option<u64>>>>,
 }
 
 impl Feed for Fake {
@@ -39,6 +41,9 @@ impl Feed for Fake {
         assert_eq!(token.expose(), TOKEN);
         assert!(from <= to);
         self.charges.lock().unwrap().push((from, to));
+        if let Some(retry_after_s) = *self.limit.lock().unwrap() {
+            return Err(FeedError::RateLimited { retry_after_s });
+        }
         Ok(self
             .log
             .lock()
@@ -153,8 +158,22 @@ async fn the_log_is_read_back_once_then_daily() {
 }
 
 #[tokio::test]
-async fn the_costs_keep_to_their_daily_cap() {
-    let (_t, _s, fake, _sink, mut p) = rig(Cadence { invoices: true, invoice_daily_cap: 2, ..Cadence::default() });
+async fn the_costs_have_no_daily_cap_of_their_own() {
+    let (_t, _s, fake, _sink, mut p) = rig(Cadence { invoices: true, ..Cadence::default() });
+    // a charge in every chunk back to 2012: more than the 60 requests a day an older server allowed them
+    let today = (NOW / DAY) as i64;
+    *fake.log.lock().unwrap() = (0..70).map(|k| (today - 80 * k, 5.0)).collect();
     run(&mut p, NOW, NOW + 6 * 3_600_000).await;
-    assert_eq!(fake.charges.lock().unwrap().len(), 2);
+    let n = fake.charges.lock().unwrap().len();
+    assert!(n > 60, "{n} requests");
+}
+
+#[tokio::test]
+async fn teslafis_429_on_the_costs_is_waited_out_like_the_polls() {
+    let (_t, store, fake, _sink, mut p) = rig(Cadence { invoices: true, ..Cadence::default() });
+    *fake.limit.lock().unwrap() = Some(Some(600));
+    run(&mut p, NOW, NOW + 60_000).await;
+    assert_eq!(fake.charges.lock().unwrap().len(), 1);
+    let until = store.pacing("fa1").unwrap().rate_limited_until_ms;
+    assert!(until >= NOW + 600_000, "nothing is asked before TeslaFi's wait ends: {until}");
 }

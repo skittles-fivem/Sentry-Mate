@@ -465,7 +465,8 @@ fn teslafi_rows(app: &AppState) -> Vec<Row> {
         // the account's own copy is saved at most hourly: the poller's live status is newer while it runs
         r.last_ok_ms = a.last_ok_ms.max(st.and_then(|s| s.last_ok_ms));
         r.pace = pace;
-        r.cap = Some(cadence.daily_cap);
+        // no cap of its own: TeslaFi does the limiting
+        r.cap = None;
         r.next_ms = st.and_then(|s| s.next_request_ms);
         r.pace_s = st.and_then(|s| s.next_request_ms.zip(s.last_request_ms)).map(|(n, l)| n.saturating_sub(l) / 1000);
         r.last_error = newest(a.last_error.iter().chain(st.and_then(|s| s.last_error.as_ref())));
@@ -496,6 +497,7 @@ fn teslafi_rows(app: &AppState) -> Vec<Row> {
 }
 
 /// The local TeslaMate: its MQTT broker, then its database.
+        let limited = st.and_then(|s| s.rate_limited_until_ms);
 fn teslamate_rows(app: &AppState) -> Vec<Row> {
     let link = super::teslamate_local::FIX_LINK;
     let mut m = Row::new("teslamate_mqtt", Kind::TeslamateMqtt, "Local TeslaMate (MQTT)", "messages", link);
@@ -510,6 +512,7 @@ fn teslamate_rows(app: &AppState) -> Vec<Row> {
     let running = svc.running();
     // MQTT
     let mq = &st.mqtt;
+            S::Ok if limited.is_some() => r.set(Status::Problem, Some("rate_limited")),
     m.last_ok_ms = mq.last_message_ms;
     m.last_error = mq.last_error.as_ref().map(Error::of);
     m.reading = Reading {

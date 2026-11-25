@@ -3,7 +3,7 @@
 //!
 //! | Route | |
 //! |---|---|
-//! | `GET`/`PATCH /integrations/teslafi` | `{ enabled, accounts, cars, hosts, poll, polls, polls_today, last_error, clients_built, tls, version }`; PATCH `{ version, poll }` |
+//! | `GET`/`PATCH /integrations/teslafi` | `{ enabled, accounts, cars, hosts, poll, polls, polls_today, rate_limited_until_ms, last_error, clients_built, tls, version }`; PATCH `{ version, poll }` |
 //! | `GET`/`POST /integrations/teslafi/accounts` | POST `{ label, token, time_zone? }` -> 201 Account |
 //! | `GET`/`PATCH`/`DELETE /integrations/teslafi/accounts/{account}` | PATCH `{ version, label?, paused?, time_zone?, token? }` |
 //! | `GET`/`PUT /integrations/teslafi/accounts/{account}/cars` | PUT `{ version, items: [{ vehicle, match }] }` |
@@ -94,6 +94,7 @@ pub fn service(
     audit: Arc<accounts::Audit>,
     events: Events,
 ) -> TeslafiService {
+    let (audit2, events2) = (audit.clone(), events.clone());
     let hook: engine::tesla_in::TeslafiHook = Arc::new(move |a: &Account| {
         let Some(n) = notice(a) else { return };
         let (what, summary) = match a.state {
@@ -124,14 +125,62 @@ pub fn service(
             events.publish(Event::Notice { notice: Arc::new(v), admins_only: true });
         }
     });
-    let sink = engine::TeslafiSink { engine: engine.clone(), on_account: Some(hook) };
+    let limited = rate_limit_hook(audit2, events2);
+    let sink = engine::TeslafiSink { engine: engine.clone(), on_account: Some(hook), on_rate_limit: Some(limited) };
     teslafi::Service::new(data, vault, Arc::new(sink), options(engine))
+}
+
+/// What is done when TeslaFi starts limiting an account's requests (a 429 after none): an audit entry in the server's
+/// name and a notice for the admins' pages, as for the Tesla API (`tesla-rate-limited`).
+pub fn rate_limit_hook(audit: Arc<accounts::Audit>, events: Events) -> engine::tesla_in::TeslafiRateLimitHook {
+    Arc::new(move |a: &Account, until_ms: u64| {
+        let n = rate_notice(a, until_ms, None);
+        let details = audit_details(Some(&target("teslafi", None, &a.id)), &n.message);
+        let audit = audit.clone();
+        let write = move || {
+            if let Err(e) = audit.record(None, None, "teslafi-rate-limited", &details) {
+                tracing::warn!("audit: {e}");
+            }
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(h) => {
+                h.spawn_blocking(write);
+            }
+            Err(_) => write(),
+        }
+        if let Ok(v) = serde_json::to_value(&n) {
+            events.publish(Event::Notice { notice: Arc::new(v), admins_only: true });
+        }
+    })
 }
 
 /// The settings changed: the pollers follow a new proxy (they start again with it).
 pub fn follow_proxy(app: &AppState, proxy: Option<&str>) {
     if let Ok(svc) = app.service::<TeslafiService>() {
         svc.reconfigure(proxy.and_then(tesla::Proxy::parse));
+    }
+}
+
+/// A time in words, UTC to the minute: `2026-11-24 14:05 UTC`.
+fn utc_minute(ms: u64) -> String {
+    let day = engine::tz::date_str(ms, engine::tz::zone("UTC"));
+    format!("{day} {:02}:{:02} UTC", (ms / 3_600_000) % 24, (ms / 60_000) % 60)
+}
+
+/// The notice of TeslaFi limiting an account's requests (it answered 429): nothing is asked before `until_ms`.
+pub fn rate_notice(a: &Account, until_ms: u64, since_ms: Option<u64>) -> Notice {
+    Notice {
+        code: "teslafi_rate_limited",
+        level: "warning",
+        message: format!(
+            "TeslaFi is limiting requests for the TeslaFi account \"{}\", next try at {}. This server sets no limit \
+             of its own; it waits as long as TeslaFi asks.",
+            a.label,
+            utc_minute(until_ms)
+        ),
+        since_ms,
+        fix_link: Some("/settings/integrations#teslafi"),
+        detail: Some(json!({ "account": a.id, "until_ms": until_ms })),
     }
 }
 
@@ -173,7 +222,21 @@ pub fn notice(a: &Account) -> Option<Notice> {
 
 /// The notices of every TeslaFi account in trouble (for admins).
 pub fn notices(app: &AppState) -> Vec<Notice> {
-    app.service::<TeslafiService>().map(|s| s.accounts().iter().filter_map(notice).collect()).unwrap_or_default()
+    let Ok(s) = app.service::<TeslafiService>() else { return Vec::new() };
+    let status = s.status();
+    let mut out: Vec<Notice> = Vec::new();
+    for a in s.accounts() {
+        out.extend(notice(&a));
+        let st = status.iter().find(|x| x.account == a.id);
+        if a.state == AccountState::Ok
+            && !a.paused
+            && let Some(until) = st.and_then(|x| x.rate_limited_until_ms)
+        {
+            let since = st.and_then(|x| x.last_error.as_ref()).filter(|e| e.code == "rate_limited").map(|e| e.at_ms);
+            out.push(rate_notice(&a, until, since));
+        }
+    }
+    out
 }
 
 /// Whether a vehicle of an account is matched to `car` (it is read for that car), for the car's data sources.
@@ -340,6 +403,7 @@ fn account_json(e: &Engine, svc: &TeslafiService, a: &Account) -> Value {
         "last_ok_ms": a.last_ok_ms,
         "last_error": a.last_error.as_ref().map(error_json),
         "polls_today": st.as_ref().map_or(0, |s| s.polls_today),
+        "rate_limited_until_ms": st.as_ref().and_then(|s| s.rate_limited_until_ms),
         "tls": st.as_ref().and_then(|s| s.tls),
         "cars": cars,
         "version": a.version,
@@ -407,9 +471,9 @@ async fn overview(State(app): State<AppState>, Admin(_): Admin) -> ApiResult<Jso
                 "charging_s": c.charging_ms / 1000,
                 "parked_s": c.idle_ms / 1000,
                 "asleep_s": c.asleep_ms / 1000,
-                "daily_cap": c.daily_cap,
             },
             "polls_today": status.iter().map(|s| s.polls_today).sum::<u64>(),
+            "rate_limited_until_ms": status.iter().filter_map(|s| s.rate_limited_until_ms).max(),
             "last_error": last_error(&accounts),
             "clients_built": s.clients_built(),
             "tls": status.iter().find_map(|s| s.tls),
@@ -497,6 +561,7 @@ async fn status(State(app): State<AppState>, Admin(_): Admin, q: Params) -> ApiR
                 "next_request_ms": a.next_request_ms,
                 "last_data_ms": a.last_data_ms,
                 "polls_today": a.polls_today,
+                "rate_limited_until_ms": a.rate_limited_until_ms,
                 "tls": a.tls,
                 "last_error": a.last_error.as_ref().map(error_json),
             })

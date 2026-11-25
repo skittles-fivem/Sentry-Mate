@@ -360,3 +360,43 @@ async fn source_teslafi_api_filters_drives_charges_and_statistics() {
     assert_eq!(r.status, 400);
     assert!(r.text().contains("teslafi_api"), "the word is listed: {}", r.text());
 }
+
+/// TeslaFi limits the requests (it answered 429): the admins are told as for the Tesla API, with a notice on the live
+/// stream and an audit entry in the server's name (`teslafi-rate-limited`), and the overview's daily figures name no
+/// cap of this server's own.
+#[tokio::test(flavor = "multi_thread")]
+async fn teslafi_limiting_requests_is_told_by_a_notice_and_an_audit_entry() {
+    let w = world().await;
+    let mut admin = w.s.admin().await;
+    let a = seed(&w);
+    let hook = web::resources::teslafi::rate_limit_hook(w.s.app.accounts.audit().clone(), w.s.app.events.clone());
+    let until = 1_800_021_930_000;
+    let events = admin.events_for(1500);
+    let fire = async {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        hook(&a, until);
+    };
+    let (frames, ()) = tokio::join!(events, fire);
+    assert!(frames.contains("teslafi_rate_limited"), "{frames}");
+    assert!(frames.contains("next try at 2027-01-15 14:05 UTC"), "{frames}");
+    // the entry is written in the server's name, not an admin's
+    let mut found = None;
+    for _ in 0..50 {
+        found = audit_actions(&mut admin).await.into_iter().find(|(act, _)| act == "teslafi-rate-limited");
+        if found.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let (_, e) = found.expect("an audit entry teslafi-rate-limited");
+    assert!(e["summary"].as_str().unwrap_or_default().contains("TeslaFi is limiting requests"), "{e}");
+    assert_eq!(e["target"], json!("teslafi:fa1"), "{e}");
+
+    // no cap of the server's own: the settings answer has none, the connections row names none
+    let o = admin.get("/api/v1/integrations/teslafi").await.json();
+    assert!(o["polls"].get("daily_cap").is_none(), "{o}");
+    assert_eq!(o["rate_limited_until_ms"], Value::Null);
+    let c = admin.get("/api/v1/integrations/overview").await.json();
+    let row = c["connections"].as_array().unwrap().iter().find(|c| c["id"] == "teslafi:fa1").unwrap();
+    assert_eq!(row["today"]["cap"], Value::Null, "{row}");
+}
