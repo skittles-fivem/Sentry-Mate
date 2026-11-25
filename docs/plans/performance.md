@@ -825,14 +825,33 @@ another case: its windows go once per day of logs beside an API input too, see "
 day".)
 
 **A rebuild of a period** clears the period first, so the rule above looks only at what starts between its first
-log and its end: nothing, and it goes per run, where no drive or charge goes on across the period's end. The same
-two engines compare periods in the middle, at the start and at the end of a history, cut through a drive or a
-charge, with gaps inside and before them, and over two cars (`a_rebuild_of_a_period_gives_the_same_timeline_*`).
-About the middle third of a week: 374 windows after every log (6.7 s) against 12 per run of 64 (2.5 s). A period
-whose end is inside a drive or a charge is not the same per run: the part after the end is kept, made a drive or
-charge of its own on the way, and the whole one keeps the id of whichever piece was stored first (a week's middle
-third that ends 18 minutes into a charge gave the charge its later part's id per run of 64). Such a period still
-gets a window per log.
+log and its end: nothing, and it goes per run. The same two engines compare periods in the middle, at the start and
+at the end of a history, with gaps inside and before them, and over two cars
+(`a_rebuild_of_a_period_gives_the_same_timeline_*`). About the middle third of a week: 374 windows after every log
+(6.7 s) against 12 per run of 64 (2.5 s).
+
+**A period whose end cuts a drive or a charge** is not the same per run all through: the part after the end is
+kept, a window that reaches it before the drive's head is decoded makes a drive or charge of it with the id of its
+first sample, and the whole one rebuilt keeps its start's id only if a row with that id is stored (else the first
+old row it overlaps). So the id depends on the windows rebuilt before its head, and a week's middle third that ends
+18 minutes into a charge gave the charge its later part's id per run of 64. The logs before the drive carry none of
+its samples, so for them the windows build the same piece either way: the rebuild notes where the earliest cut
+drive or charge began (before clearing, on its mark, so a restart carries it on), goes per run of logs up to an
+hour before that, rebuilds what is left, and gives each log from there a window of its own. The tests
+(`a_rebuild_of_a_period_cutting_a_drive_or_charge_gives_the_same_timeline_*`) end periods one log after a drive's or
+charge's start, in its middle, at its last log, 18 minutes into a charge and exactly at its start and end, cut both
+edges, leave gaps inside its logs (left out, filled later, stored and left for the rebuild), before the period, put
+a restart between the clearing and the tail, move the start earlier than the stored one, and use two cars; each
+compares everything stored, ids included, against a window per log after every step, and asserts the windows are
+fewer (before the change they were equal: 14 against 14 for a period one log into a drive). A day runs with the
+tests; two days and a week at runs of 7, 64 and all logs by hand. About the middle third of a week (709 logs, ending 18 minutes into a charge, release build): 236
+windows after every log (11.0 s), 25 now (2.1 s), where a period rebuilt per run of 64 without telling the cut apart
+would have been 8 (1.8 s, and the charge with the later part's id).
+Still a window per log, for the same reason as before, where it cannot be told the logs before are free of the
+drive: logs stored and not worked on yet outside the period, a window grown over a damaged file, a mark kept by an
+older version, a car with an API input, and any restart that finds rows already rebuilt at or after the logs left.
+The hour is what a log's length (about a minute) and a start that moves earlier need; a rebuild that moves a cut
+drive's start earlier by more than that is not proven.
 
 ## Start-up and the idle server, on the long history
 
