@@ -35,6 +35,15 @@ pub struct TestServer {
     task: tokio::task::JoinHandle<std::io::Result<()>>,
 }
 
+/// What [`TestServer::assemble`] made.
+struct Assembled {
+    app: AppState,
+    addr: SocketAddr,
+    tls: Arc<rustls::ClientConfig>,
+    setup_code: String,
+    task: tokio::task::JoinHandle<std::io::Result<()>>,
+}
+
 impl Drop for TestServer {
     fn drop(&mut self) {
         self.task.abort();
@@ -59,8 +68,21 @@ impl TestServer {
         let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
         std::fs::create_dir_all(&data).unwrap_or_else(|e| panic!("{e}"));
         let (v, _) = vault::Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap_or_else(|e| panic!("{e}"));
-        let v = Arc::new(v);
         let clock_ms = Arc::new(std::sync::atomic::AtomicU64::new((accounts::system_clock())()));
+        let up = TestServer::assemble(dir.path(), Arc::new(v), clock_ms.clone(), f, routes, "127.0.0.1:0").await;
+        TestServer { app: up.app, addr: up.addr, tls: up.tls, setup_code: up.setup_code, clock_ms, dir, task: up.task }
+    }
+
+    /// Builds the state over the folders in `root` (`data`, `keys`), serves it on `bind`.
+    async fn assemble(
+        root: &std::path::Path,
+        v: Arc<vault::Vault>,
+        clock_ms: Arc<std::sync::atomic::AtomicU64>,
+        f: impl FnOnce(Builder) -> Builder,
+        routes: axum::Router<AppState>,
+        bind: &str,
+    ) -> Assembled {
+        let (data, keys) = (root.join("data"), root.join("keys"));
         let c2 = clock_ms.clone();
         let clock: accounts::Clock = Arc::new(move || c2.load(std::sync::atomic::Ordering::Relaxed));
         let audit = Arc::new(
@@ -95,10 +117,39 @@ impl TestServer {
                 .with_root_certificates(roots)
                 .with_no_client_auth(),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap_or_else(|e| panic!("{e}"));
+        let listener = tokio::net::TcpListener::bind(bind).await.unwrap_or_else(|e| panic!("{e}"));
         let addr = listener.local_addr().unwrap_or_else(|e| panic!("{e}"));
         let task = tokio::spawn(crate::serve(listener, server_tls, crate::router_with(app.clone(), routes)));
-        TestServer { app, addr, tls, setup_code, clock_ms, dir, task }
+        Assembled { app, addr, tls, setup_code, task }
+    }
+
+    /// Stops the server and starts it again over the same folders, the vault, accounts and files reopened, the clock
+    /// and the address kept (what a restart of the program does). `f` builds the state again; nothing of the old one
+    /// is kept in memory.
+    pub async fn restart(&mut self, f: impl FnOnce(Builder) -> Builder) {
+        self.restart_full(f, axum::Router::new()).await;
+    }
+
+    /// [`TestServer::restart`], with extra routes.
+    pub async fn restart_full(&mut self, f: impl FnOnce(Builder) -> Builder, routes: axum::Router<AppState>) {
+        self.task.abort();
+        let _ = (&mut self.task).await;
+        let (data, keys) = (self.dir.path().join("data"), self.dir.path().join("keys"));
+        let v = vault::Vault::open(&data, &keys).unwrap_or_else(|e| panic!("{e}"));
+        let up = TestServer::assemble(
+            self.dir.path(),
+            Arc::new(v),
+            self.clock_ms.clone(),
+            f,
+            routes,
+            &self.addr.to_string(),
+        )
+        .await;
+        // the old state goes now, with what it held (a snapshot's lock)
+        self.app = up.app;
+        self.tls = up.tls;
+        self.setup_code = up.setup_code;
+        self.task = up.task;
     }
 
     /// Moves the server's clock on.
@@ -118,6 +169,14 @@ impl TestServer {
             .post("/api/v1/setup", json!({ "code": self.setup_code, "name": ADMIN, "password": ADMIN_PASSWORD }))
             .await;
         assert_eq!(r.status, 200, "setup: {}", r.text());
+        c
+    }
+
+    /// A new session of the first admin ([`ADMIN`]) on a server that already has it (after a restart, say).
+    pub async fn sign_in_admin(&self) -> Client {
+        let mut c = self.client();
+        let r = c.post("/api/v1/session", json!({ "name": ADMIN, "password": ADMIN_PASSWORD })).await;
+        assert_eq!(r.status, 200, "sign-in: {}", r.text());
         c
     }
 
