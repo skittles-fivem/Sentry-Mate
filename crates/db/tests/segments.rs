@@ -305,15 +305,29 @@ fn a_reader_without_the_gate_reads_settled_days_and_skips_changing_ones() {
     std::fs::create_dir_all(shadow.join("samples.teslamate")).unwrap();
     std::fs::write(shadow.join("samples.teslamate").join("2026-11-01.snap"), b"not a snapshot").unwrap();
     let busy = DAY0 + DAY_MS;
+    // the day's last second is written first, so no later write is newer than the car's last activity: the fleet's
+    // table is never committed to while the writer runs (it is a car's record, the thing this test reads as quiet)
+    let last = samples(busy + DAY_MS - 1, 1);
+    t.db.write_points(car, Source::Teslamate, busy + DAY_MS - 1, busy + DAY_MS, &last).unwrap();
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (db, s2) = (t.db.clone(), stop.clone());
+    // the writer holds the gate for each write; the reader takes it (the writer waits for it to be asked) to read the
+    // busy day while nothing is written, which must then read
+    let gate = std::sync::Arc::new(std::sync::Mutex::new(()));
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (db, s2, g2, a2) = (t.db.clone(), stop.clone(), gate.clone(), asked.clone());
     let writer = std::thread::spawn(move || {
         let mut i = 0u64;
         while !s2.load(std::sync::atomic::Ordering::Relaxed) {
+            while a2.load(std::sync::atomic::Ordering::Acquire) && !s2.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+            let _turn = g2.lock().unwrap();
             // minute after minute (journal entries, folds), now and then the whole day again (a new snapshot)
             let minute = samples(busy + (i % 1000) * 60_000, 60);
             if i % 50 == 49 {
-                db.write_points(car, Source::Teslamate, busy, busy + DAY_MS, &samples(busy, 120)).unwrap();
+                let mut day = samples(busy, 120);
+                day.extend(last.iter().cloned());
+                db.write_points(car, Source::Teslamate, busy, busy + DAY_MS, &day).unwrap();
             } else {
                 db.write_points(car, Source::Teslamate, minute[0].t_ms, minute[0].t_ms + 60_000, &minute).unwrap();
             }
@@ -322,24 +336,41 @@ fn a_reader_without_the_gate_reads_settled_days_and_skips_changing_ones() {
     });
     let r = db::Reader::new(&t.data, t.vault.clone());
     let (mut read, mut changing) = (0, 0);
-    for _ in 0..200 {
-        assert_eq!(r.car_settled(car, db::READ_TRIES).unwrap().map(|c| c.name), Some("Model Y".into()));
+    for n in 0..200 {
+        // (once: nothing commits to the fleet's files while the writer runs, so no second try is ever needed)
+        assert_eq!(r.car_settled(car, 1).unwrap().map(|c| c.name), Some("Model Y".into()));
         match r.day_points::<Sample>(car, model::Stream::Teslamate, DAY0, 0, u64::MAX, db::READ_TRIES) {
             db::DayRead::Read(p) => assert_eq!(p, quiet),
             db::DayRead::Changing(why) => panic!("a quiet day is read: {why}"),
         }
-        match r.day_points::<Sample>(car, model::Stream::Teslamate, busy, 0, u64::MAX, 2) {
+        // every tenth time the writer is held off: a day nobody writes at that moment reads (the files are the same
+        // before and after); the others race it
+        let held = n % 10 == 0;
+        let turn = if held {
+            asked.store(true, std::sync::atomic::Ordering::Release);
+            let g = gate.lock().unwrap();
+            asked.store(false, std::sync::atomic::Ordering::Release);
+            Some(g)
+        } else {
+            None
+        };
+        let got = r.day_points::<Sample>(car, model::Stream::Teslamate, busy, 0, u64::MAX, 2);
+        drop(turn);
+        match got {
             db::DayRead::Read(p) => {
                 read += 1;
                 assert!(p.windows(2).all(|w| w[0].t_ms < w[1].t_ms), "in time order, no half write");
                 assert!(p.iter().all(|s| (busy..busy + DAY_MS).contains(&s.t_ms)));
             }
-            db::DayRead::Changing(_) => changing += 1,
+            db::DayRead::Changing(why) => {
+                assert!(!held, "a day nobody writes is read: {why}");
+                changing += 1;
+            }
         }
     }
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     writer.join().unwrap();
-    assert!(read + changing == 200 && read > 0, "{read} read, {changing} changing");
+    assert!(read + changing == 200 && read >= 20, "{read} read, {changing} changing");
     // once quiet, the busy day reads as the db has it
     let now: Vec<Sample> = t.db.read_points(car, Source::Teslamate, busy, busy + DAY_MS).unwrap();
     assert_eq!(r.day_points::<Sample>(car, model::Stream::Teslamate, busy, 0, u64::MAX, 1), db::DayRead::Read(now));
