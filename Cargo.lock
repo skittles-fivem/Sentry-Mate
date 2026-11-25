@@ -684,6 +684,7 @@ dependencies = [
  "trust",
  "tzf-rs",
  "vault",
+ "zeroize",
 ]
 
 [[package]]

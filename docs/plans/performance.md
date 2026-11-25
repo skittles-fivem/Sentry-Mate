@@ -1058,9 +1058,92 @@ files, after arrivals, a sweep, a key trusted, all judged again, and a change by
   all of it is the day records and samples read and written (decoding a log is under a millisecond of it), so it is
   not spread over cores; several cars are worked on side by side as before (`Options::workers`). What changed for it
   is that it no longer holds back the uploads (its own threads at nice 10, its record lookups from memory).
+  (Those were light logs, a frame a second. At the car's real rates decoding is about half a log's time, and it is
+  now done on the other cores: the next section.)
 - **Compaction** packs a car's finished days one at a time while it holds that car's upload lock, so days of one car
   packed side by side would only wait for each other, and the automatic pass is meant to take a third of a core at
   most. Left as it is.
 - **Page answers** that read every trust record of a key on each call now read them from memory: Data health's
   counts, the Connections overview's token rows and Settings' key and token rows (`Judge::arrivals`: the first and
   newest arrival and the logs waiting, instead of a copy of the whole book).
+
+## A full rebuild on every core
+
+Status (2026-11-25). The owner's report: a full rebuild of about 22,500 logs at about 1.1 logs/s ("about 5 h 58 min
+left"), the sentry-mate process at about 100 % of one core while the machine (a Ryzen 5 8500G, 6 cores and 12
+threads) was 75 % idle, no iowait, 384 MB of memory; and a GPS layout fit reading the same logs at the same time.
+
+**How it is measured.** `PERF_DAYS=15 cargo test --release -p sentry-mate measure_full_rebuild -- --ignored
+--nocapture` (`crates/sentry-mate/src/perf_engine.rs`): made-up SMO logs at the car's real rates (synth's
+`Realistic`, the bridge's usual trouble, columns format: 15 days, 1,283 one-minute logs, 44.5 MB packed, about 35 KB
+a log) seeded once and copied, then on each copy the engine is started (every log decoded), the car rebuilt whole,
+and a full rebuild run, with the logs read ahead on 0 threads (as before) and on 3 (this container's 4 cores but
+one). `PERF_API=1` adds TeslaFi's API and local TeslaMate over the same days; `PERF_READ_AHEAD=0,3,0,3` the threads
+tried. Where a log's time goes is counted by the engine (`EngineStats`: `read_us_total`, `samples_us_total`,
+`now_us_total`, besides the windows' `rebuild_ms_total`). Release build, this container's 4 cores (other builds
+ran on the machine at times: take the times as ±20 %; the table has the two runs of each).
+
+| 15 days, 1,283 logs | before (read in place) | now (3 threads read ahead) |
+|---|---:|---:|
+| a full rebuild | 16.9 s, 15.8 s (76, 81 logs/s), 13.4 s of CPU | 8.2 s, 8.2 s (156 logs/s), 13.4 s of CPU |
+| the car rebuilt whole | 16.1 s, 15.7 s (79, 82 logs/s) | 9.4 s, 7.9 s (136, 162 logs/s) |
+| the logs found at the start | 18.8 s, 17.1 s (68, 75 logs/s) | 12.2 s, 10.2 s (105, 125 logs/s) |
+| beside TeslaFi's API and local TeslaMate: a full rebuild | 71.9 s (18 logs/s), 37 s of CPU | 111 s (12 logs/s), 38 s of CPU, one run, disk-bound (see below) |
+| beside them: the car rebuilt whole | 162.5 s (7.9 logs/s), 40.8 s of CPU | 84.0 s (15.3 logs/s), 37.9 s of CPU |
+
+**Where a log's time went** (ms, read in place, the car rebuilt whole): reading the log from the store and decoding
+it 6.3, its samples written 1.2, the day records and the rest 2.3, its window 1.0 (once per run of 64 logs); 12.5 in
+all. So at the car's real rates decoding is half of a log's time, not "under a millisecond" (that was a frame a
+second). Beside an API input every log gets its window (see "a rebuild's windows once per run of logs"): 65 ms of
+windows and 22 ms of the car's values now per log, on top of the 6.7 of reading. A full rebuild makes about 7.5
+syncs a log (21 beside the APIs: `strace -f -e trace=fsync,fdatasync`, counted between the run's start and end the
+test prints). The rows beside the APIs, where wall time is twice the CPU time, are bound by those syncs on this
+container's shared disk and vary from run to run more than they differ.
+
+**What changed: a car's logs are read and decoded ahead on the other cores** (`crates/engine/src/ahead.rs`,
+`engine::Options::read_ahead`). A car's logs are still worked on one after the other (each changes the car's
+timeline, and the windows, the samples, the day records and the ids come out of that order), but while one is
+worked on, threads read the next ones from the store (unsealed, unpacked) and decode them into samples
+(`timeline::read_log_with`: a pure function of the log's bytes, the car's DBC set, the sample parameters and the
+car's GPS layout). When a log's turn comes its reading is taken if it was made with the DBC set and GPS layout the
+car has then; one made before the car's VIN was seen (another DBC set) or before a layout was applied is not used,
+and that log is decoded in place as before. Used by the logs found at the start, a car rebuilt whole and a full
+rebuild (`reconcile_car`); a log that arrives alone, and the positions-only rebuild after a GPS layout change, read
+in place as before.
+
+- **Cores:** the machine's cores but one (`available_parallelism() - 1`, eight at most; none on one or two cores).
+  The threads are the rebuild's own, at its nice 10, so the web side and the uploads go first; on the owner's 12
+  threads that is 8.
+- **Memory:** at most two logs a thread read ahead of the one worked on (`AHEAD_PER_THREAD`), so at most 3 x 8 = 24
+  logs in flight on the owner's machine: each a packed log (about 35 KB here; the store takes 64 MB at most) and a
+  minute's samples, and while one is unpacked its text, bounded by the unpack limit (`logfmt::Limits`, 64 MB). In
+  practice a few MB in all.
+- **The same history:** `crates/sentry-mate/src/window_batch.rs`, `logs_read_ahead_on_other_cores_give_the_same_history`:
+  the same made-up logs through an engine that reads each log in place and one with 3 threads reading ahead, at
+  runs of 16 logs, and everything stored compared, ids included (drives, charges, states, updates, charge curves,
+  samples, the summary and newest values, the engine's record), after the logs at the start (the first logs give
+  the car its VIN, so the readings made before were made with another DBC set and are not used), after gaps filled
+  later, after the car rebuilt whole and after a full rebuild; 199 of the logs were taken from the threads. A week
+  at runs of 64 and of 1, and two and three days beside TeslaFi and local TeslaMate, are run by hand
+  (`cargo test --release -p sentry-mate logs_read_ahead -- --ignored`).
+
+**Is 1.1 logs/s what a 4-core box gives?** No. Here one core works a log of the car's real rates in about 12 ms
+(80 logs/s) as a full rebuild, and about 30 ms beside an API input over 15 days; 1.1 logs/s is about 900 ms of CPU a
+log. Reading ahead takes the decoding off the one core (about twice as fast here), but the rest of a log's work
+stays on it, so a server where that rest is what costs gains less. The owner's history differs from these made-up
+ones in its length (a year of logs, and a TeslaMate import of about 3 million positions under the same days, with
+TeslaFi's API: every log gets its window, and a window reads every input's points over its span) and in its logs'
+size. What of a log's work grows with such a history was not measured here (the made-up history at the owner's size
+is a release build and a data folder too big for this machine's disk at the time): it is the next thing to measure,
+on a copy of a real data folder or `history::Options::big` under a year of logs (`PERF_HISTORY=big`, with
+`EngineStats`' counts: reading, samples, values now, windows). Extrapolated from 15 days: 22,500 logs as these would
+take a full rebuild of about 2.5 minutes now (5 before), and with an API input, at 12 to 18 logs/s, 20 to 30
+minutes, if nothing of a log's work grew with the history.
+
+**A GPS layout fit and a rebuild don't run at once** (`crates/engine/src/gps_fit.rs`, `Engine::rebuild_running`;
+docs/rebuilds.md). Both read and unpack the same logs. The fit waits while a full rebuild or a rebuild job runs,
+between two of its days or logs, its progress kept and its status saying why, and goes on once none runs; the
+rebuild never waits for the fit. Not chosen: the fit reading the frames the rebuild decoded (a rebuild keeps samples
+read with one layout, not the raw 8 bytes of the GPS frame every layout is tried on, so that would be a new store of
+frames), or one shared pass (a fit's 30 days and a rebuild's whole history are different logs, and the rebuild
+would wait for the fit's own work).

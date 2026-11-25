@@ -554,3 +554,93 @@ async fn a_rebuild_of_a_period_gives_the_same_timeline_over_a_week() {
         println!("{days} days, runs of {batch}: the middle third's windows {each} after every log, {run} once per run");
     }
 }
+
+/// Waits for the engine's full rebuild to end.
+async fn full_done(e: &engine::Engine) -> engine::full::FullRecord {
+    for _ in 0..60_000 {
+        let r = e.full_rebuild_status().unwrap().unwrap();
+        if !r.running() {
+            e.idle().await;
+            return r;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the full rebuild did not end");
+}
+
+/// The logs read and decoded ahead on other cores ([`engine::Options::read_ahead`]) give the very history that
+/// reading each in its turn gives: the same made-up logs through an engine that reads each log in place and one with
+/// `threads` threads reading ahead, at runs of `batch` logs, everything stored compared (ids included) after every
+/// step: the logs at the start (the first logs give the car its VIN, so the logs read ahead before it was seen were
+/// decoded with another DBC set and are decoded again in place), gaps filled later, the car rebuilt whole, then a
+/// full rebuild, beside API inputs when `apis`. Returns how many logs the second engine took from its threads.
+async fn read_ahead(days: u32, batch: usize, threads: usize, apis: bool) -> u64 {
+    let logs: Vec<synth::LogFile> =
+        synth::Scenario::new(7).days(days).rates(synth::Rates::Light).with_trouble(true).logs().collect();
+    let n = logs.len();
+    let all: Vec<&synth::LogFile> = logs.iter().collect();
+    let opts = |read_ahead| engine::Options { window_batch: batch, read_ahead, ..engine::Options::default() };
+    let (each, run) = (Side::with(opts(0)).await, Side::with(opts(threads)).await);
+    let what = format!("{days} days, runs of {batch}, {threads} threads{}", if apis { ", beside APIs" } else { "" });
+    let gap = |i: usize| i % 5 == 2 || (n / 2..n / 2 + 90).contains(&i);
+    let first: Vec<&synth::LogFile> = all.iter().enumerate().filter(|(i, _)| !gap(*i)).map(|(_, l)| *l).collect();
+    let later: Vec<&synth::LogFile> = all.iter().enumerate().filter(|(i, _)| gap(*i)).map(|(_, l)| *l).collect();
+    if apis {
+        let o = history::Options {
+            days,
+            end_ms: synth::DEFAULT_START_MS + u64::from(days) * 86_400_000,
+            seed: 5,
+            drives: 6 * days,
+            charges: 2 * days,
+            drive_step_s: 5,
+            teslafi_days: 1,
+            api_days: days,
+            tesla_days: 0,
+        };
+        for side in [&each, &run] {
+            side.take(&first[..20]).await;
+            history::run(&side.engine, &o).await.unwrap();
+            side.engine.idle().await;
+        }
+        same(&format!("{what}: the history in"), &each.engine, &run.engine);
+    }
+    each.take(&first).await;
+    run.take(&first).await;
+    let k = same(&format!("{what}: the logs at the start"), &each.engine, &run.engine);
+    println!("{what}: {} logs at the start, {k} stored things the same", first.len());
+    each.take(&later).await;
+    run.take(&later).await;
+    same(&format!("{what}: the gaps filled"), &each.engine, &run.engine);
+    each.rebuild().await;
+    run.rebuild().await;
+    same(&format!("{what}: rebuilt whole"), &each.engine, &run.engine);
+    for side in [&each, &run] {
+        let car = side.cars()[0];
+        side.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+        let r = full_done(&side.engine).await;
+        assert_eq!((r.status, r.logs_done), (engine::full::FullStatus::Done, n as u64), "{r:#?}");
+    }
+    let k = same(&format!("{what}: a full rebuild"), &each.engine, &run.engine);
+    assert!(k > 1_000, "{what}: {k}");
+    assert_eq!(each.engine.stats().failures + run.engine.stats().failures, 0);
+    assert_eq!(each.engine.stats().logs_read_ahead, 0);
+    let used = run.engine.stats().logs_read_ahead;
+    println!("{what}: {k} stored things the same after a full rebuild; {used} logs read ahead were used");
+    used
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn logs_read_ahead_on_other_cores_give_the_same_history() {
+    // (the full rebuild's logs are decoded by its own engine, whose counts are not this one's: these are the logs
+    // at the start, the gaps and the car rebuilt whole)
+    let used = read_ahead(1, 16, 3, false).await;
+    assert!(used > 50, "{used}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "long: cargo test --release -p sentry-mate logs_read_ahead -- --ignored --nocapture"]
+async fn logs_read_ahead_on_other_cores_give_the_same_history_over_a_week() {
+    for (days, batch, threads, apis) in [(7, 64, 3, false), (7, 1, 7, false), (3, 64, 3, true), (2, 7, 2, true)] {
+        read_ahead(days, batch, threads, apis).await;
+    }
+}
