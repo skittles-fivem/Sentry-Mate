@@ -1236,7 +1236,7 @@ fn import_points_span(e: &Engine, car: CarId, site: model::ImportSite) -> QResul
 }
 
 /// The car's imported history, by site: where its points are, else where its rows are.
-fn imports_of(e: &Engine, car: CarId) -> QResult<Vec<ImportHeld>> {
+pub(crate) fn imports_of(e: &Engine, car: CarId) -> QResult<Vec<ImportHeld>> {
     let mut rows: Option<[Option<(u64, u64)>; model::ImportSite::ALL.len()]> = None;
     let mut out = Vec::new();
     for site in model::ImportSite::ALL {

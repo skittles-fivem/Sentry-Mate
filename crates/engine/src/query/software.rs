@@ -39,6 +39,23 @@ fn typed(e: &Engine, car: CarId, id: u64) -> QResult<Option<Typed>> {
     Ok(crate::records::get(e.db(), NS, &typed_key(car, id))?)
 }
 
+/// The name an admin typed on a module's first fingerprint segment (no update came with it).
+pub(crate) fn typed_first(e: &Engine, car: CarId, module: &str) -> QResult<Option<String>> {
+    Ok(crate::records::get::<Typed>(e.db(), NS, &format!("{car}/first:{module}"))?.map(|t| t.version))
+}
+
+/// Types (`Some`) or forgets (`None`) the name of a module's first fingerprint segment.
+pub(crate) fn set_typed_first(e: &Engine, car: CarId, module: &str, version: Option<&str>) -> QResult<()> {
+    let key = format!("{car}/first:{module}");
+    match version {
+        Some(v) => crate::records::put(e.db(), NS, &key, &Typed { version: v.to_string(), at_ms: crate::now_ms() })?,
+        None => {
+            e.db().kv().delete(NS, &key)?;
+        }
+    }
+    Ok(())
+}
+
 /// `2026.38.4` style: a four-digit year, a week of one or two digits, and up to two more parts of up to three digits.
 pub fn valid_version(s: &str) -> bool {
     let parts: Vec<&str> = s.split('.').collect();

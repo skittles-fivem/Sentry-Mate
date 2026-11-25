@@ -4,7 +4,7 @@
 //!
 //! Bounds: four modules of at most nine fields, each with a few runs; read from one record.
 
-use super::{QResult, Scoped, car_of, scoped};
+use super::{QResult, QueryError, Scoped, car_of, scoped};
 use crate::Engine;
 use crate::firmware::{FwEvent, History};
 use dbc::firmware::MODULES;
@@ -188,12 +188,27 @@ pub struct HistoryRow {
     pub current: bool,
     /// The update it came with (null: the first one seen).
     pub update: Option<UpdateRef>,
-    /// The version it came with (the update's).
+    /// The version it came with (the update's), or the name its first segment got: a reading that overlaps it, or one
+    /// an admin typed.
     pub version: Option<String>,
+    /// Who named it: `owner`, `teslamate`, `teslafi`, `tesla_api`, `teslafi_api`, `teslamate_local`, `build_match`;
+    /// null while unnamed.
+    pub version_source: Option<&'static str>,
+    /// A module's first segment without a name, where the version last known before it (an import's or an input's)
+    /// has no update between it and the segment and nothing contradicts it. The name stays null.
+    pub name_inferred: Option<NameInferred>,
     /// Where it changed: the first drive with the new value, and the log it was first seen in.
     pub changed_in: Option<ChangedIn>,
     #[serde(flatten)]
     pub from: super::Sources,
+}
+
+/// [`HistoryRow::name_inferred`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NameInferred {
+    pub version: String,
+    /// `last known before`.
+    pub from: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -234,6 +249,7 @@ pub struct Span {
     pub from_ms: u64,
     pub to_ms: u64,
     pub version: Option<String>,
+    pub name_inferred: Option<NameInferred>,
     pub current: bool,
 }
 
@@ -292,7 +308,8 @@ fn changed_in(e: &Engine, car: CarId, ev: &FwEvent, shown: &super::system::Shown
 /// fields (the update markers' old → new values), with the module's values over each.
 fn module_rows(e: &Engine, car: CarId, h: &History) -> QResult<Vec<HistoryRow>> {
     let shown = super::system::Shown::new(e, car, None)?;
-    let mut out = Vec::new();
+    let known = Known::new(e, car, h)?;
+    let mut out: Vec<HistoryRow> = Vec::new();
     for m in MODULES.iter() {
         let fields: Vec<(&dbc::firmware::Field, &Vec<crate::firmware::Run>)> =
             m.fields.iter().filter_map(|f| Some((f, h.runs.get(f.name).filter(|r| !r.is_empty())?))).collect();
@@ -337,13 +354,139 @@ fn module_rows(e: &Engine, car: CarId, h: &History) -> QResult<Vec<HistoryRow>> 
                 duration_ms: last - first,
                 current: k == evs.len(),
                 version: update.as_ref().and_then(|u| u.version.clone()),
+                version_source: update.as_ref().and_then(|u| u.version_source),
+                name_inferred: None,
                 update,
                 changed_in: changed,
                 from: super::Sources::of(model::Source::Live, model::Inputs::SMO),
             });
+            if k == 0 {
+                let Some(row) = out.last_mut() else { continue };
+                match super::software::typed_first(e, car, m.id)? {
+                    Some(v) => {
+                        row.version = Some(v);
+                        row.version_source = Some("owner");
+                    }
+                    None => match known.verdict(row.first_seen_ms, row.until_ms.unwrap_or(row.last_seen_ms)) {
+                        Verdict::Named(v, source) => {
+                            row.version = Some(v);
+                            row.version_source = Some(source);
+                        }
+                        Verdict::Inferred(v) => row.name_inferred = Some(NameInferred { version: v, from: LAST_KNOWN }),
+                        Verdict::None => {}
+                    },
+                }
+            }
+        }
+    }
+    // the same fingerprint seen again under another name: what named or inferred this one is in doubt
+    type Seen = (Option<&'static str>, Option<String>, Option<String>);
+    let seen: Vec<Seen> = out.iter().map(|r| (r.module, r.fingerprint.clone(), r.version.clone())).collect();
+    for r in out.iter_mut().filter(|r| r.update.is_none() && r.version_source != Some("owner")) {
+        let mine = r.version.clone().or_else(|| r.name_inferred.as_ref().map(|n| n.version.clone()));
+        let other = |(m, f, v): &Seen| *m == r.module && *f == r.fingerprint && v.is_some() && *v != mine;
+        if mine.is_some() && seen.iter().any(other) {
+            r.version = None;
+            r.version_source = None;
+            r.name_inferred = None;
         }
     }
     Ok(out)
+}
+
+const LAST_KNOWN: &str = "last known before";
+
+/// One stretch the car was said to run a version: an import's update row (until the next update row or the end of
+/// what the import covers) or an input's readings (their first and last).
+struct Said {
+    version: String,
+    start: u64,
+    end: u64,
+    source: &'static str,
+}
+
+enum Verdict {
+    Named(String, &'static str),
+    Inferred(String),
+    None,
+}
+
+/// What imports and inputs said about versions, for naming a module's first segment (no update came with it).
+struct Known {
+    said: Vec<Said>,
+    /// Every update row that is not from fingerprints: its start and its version (empty: none).
+    rows: Vec<(u64, String)>,
+    /// When the modules' builds changed.
+    builds: Vec<u64>,
+}
+
+impl Known {
+    fn new(e: &Engine, car: CarId, h: &History) -> QResult<Known> {
+        let all = super::software::shown_updates(e, car, None)?;
+        let rows: Vec<(u64, String)> = all
+            .iter()
+            .filter(|u| !crate::firmware::is_fingerprint(u.id))
+            .map(|u| (u.update.start_ms, u.update.version.trim().to_string()))
+            .collect();
+        let cover = super::fleet::imports_of(e, car)?;
+        let mut said = Vec::new();
+        for u in all.iter().filter(|u| u.update.source.site().is_some()) {
+            let (version, _) = super::software::version_of(e, car, u)?;
+            let (Some(version), Some(site)) =
+                (version.filter(|v| super::software::valid_version(v)), u.update.source.site())
+            else {
+                continue;
+            };
+            let start = u.update.start_ms;
+            let next = rows.iter().map(|r| r.0).filter(|&t| t > start).min().unwrap_or(u64::MAX);
+            let covered = cover.iter().find(|c| c.site == site.word()).map(|c| c.to_ms).filter(|&t| t >= start);
+            let end = match covered {
+                Some(t) => t.min(next),
+                None => u.update.end_ms.unwrap_or(start).max(start).min(next),
+            };
+            said.push(Said { version, start, end, source: site.word() });
+        }
+        for s in crate::records::input_versions(e.db(), car)? {
+            if super::software::valid_version(&s.version) {
+                said.push(Said {
+                    version: s.version.clone(),
+                    start: s.first_ms,
+                    end: s.last_ms.max(s.first_ms),
+                    source: model::Origin::from(s.input).kind(),
+                });
+            }
+        }
+        Ok(Known { said, rows, builds: h.events.iter().map(|ev| ev.to_ms).collect() })
+    }
+
+    /// Whether something happened in `(after, before)` (`before` included with `inclusive`) that says the version
+    /// may have changed away from `v`: an update row without that version, or a module's build change.
+    fn changed(&self, v: &str, after: u64, before: u64, inclusive: bool) -> bool {
+        let inside = |t: u64| t > after && (t < before || inclusive && t == before);
+        self.rows.iter().any(|(t, x)| inside(*t) && x != v) || self.builds.iter().any(|&t| inside(t))
+    }
+
+    /// The first segment of a module, seen from `s0` to `s1`: named by readings that overlap it (all the same
+    /// version, nothing changing it), else inferred from the newest version said before it (no update between).
+    fn verdict(&self, s0: u64, s1: u64) -> Verdict {
+        let overlap: Vec<&Said> = self.said.iter().filter(|x| x.start <= s1 && x.end >= s0).collect();
+        if let Some(first) = overlap.first() {
+            let v = &first.version;
+            let from = overlap.iter().map(|x| x.start).min().unwrap_or(s0);
+            if overlap.iter().any(|x| x.version != *v) || self.changed(v, from, s1, false) {
+                return Verdict::None;
+            }
+            let newest = overlap.iter().max_by_key(|x| (x.start, x.end)).unwrap_or(first);
+            return Verdict::Named(v.clone(), newest.source);
+        }
+        let Some(c) = self.said.iter().filter(|x| x.end < s0).max_by_key(|x| (x.start, x.end)) else {
+            return Verdict::None;
+        };
+        if self.changed(&c.version, c.start, s0, true) {
+            return Verdict::None;
+        }
+        Verdict::Inferred(c.version.clone())
+    }
 }
 
 /// The versions the car was said to run (no module fingerprints): imported updates (TeslaMate, TeslaFi), and the
@@ -435,6 +578,8 @@ fn version_rows(e: &Engine, car: CarId, h: &History) -> QResult<Vec<HistoryRow>>
                 version_source: v.version_source,
             }),
             version: v.version.clone(),
+            version_source: v.version_source,
+            name_inferred: None,
             changed_in: None,
             from: v.from.clone(),
         });
@@ -494,6 +639,7 @@ pub fn history(
                     from_ms: r.first_seen_ms,
                     to_ms: r.until_ms.unwrap_or(r.last_seen_ms),
                     version: r.version.clone(),
+                    name_inferred: r.name_inferred.clone(),
                     current: r.current,
                 },
             ))
@@ -530,4 +676,40 @@ pub fn history(
         &c,
         FirmwareHistory { items: page, next, modules, spans: spans.into_iter().map(|(_, s)| s).collect(), range },
     ))
+}
+
+/// One segment as `PATCH /cars/{car}/firmware/history/{row}` answers it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SegmentOne {
+    #[serde(flatten)]
+    pub row: HistoryRow,
+    pub time_zone: String,
+}
+
+/// `PATCH /cars/{car}/firmware/history/{row}` `{ version }`: an admin names a module's fingerprint segment (`None`
+/// forgets the typed name). A segment that came with an update names that update (as typing on it does, and every
+/// update of the same fingerprint set); a module's first segment, which no update came with, keeps the name itself.
+/// `no_such_update` for a row the car has not, or a segment that is neither.
+pub fn name_segment(e: &Engine, car: CarId, row_id: &str, version: Option<&str>) -> QResult<SegmentOne> {
+    let c = car_of(e, car)?;
+    let version = version.map(str::trim);
+    if version.is_some_and(|v| !super::software::valid_version(v)) {
+        return Err(QueryError::invalid("version", "A version such as 2026.38.4."));
+    }
+    let h = crate::firmware::history(e.db(), car)?;
+    let find = |h: &History| -> QResult<Option<HistoryRow>> {
+        Ok(module_rows(e, car, h)?.into_iter().find(|r| r.id == row_id))
+    };
+    let row = find(&h)?.ok_or(QueryError::NotFound("no_such_update"))?;
+    match (&row.update, row.module) {
+        (Some(u), _) => {
+            let id = super::parse_id(&u.id).ok_or(QueryError::NotFound("no_such_update"))?;
+            super::software::set_version(e, car, id, version)?;
+        }
+        (None, Some(m)) if row.previous.is_none() => super::software::set_typed_first(e, car, m, version)?,
+        _ => return Err(QueryError::NotFound("no_such_update")),
+    }
+    let h = crate::firmware::history(e.db(), car)?;
+    let row = find(&h)?.ok_or(QueryError::NotFound("no_such_update"))?;
+    Ok(SegmentOne { row, time_zone: c.time_zone.clone() })
 }

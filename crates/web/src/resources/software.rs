@@ -24,6 +24,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/cars/{car}/updates/{update}", axum::routing::patch(name_version))
         .route("/api/v1/cars/{car}/firmware", get(firmware))
         .route("/api/v1/cars/{car}/firmware/history", get(firmware_history))
+        .route("/api/v1/cars/{car}/firmware/history/{row}", axum::routing::patch(name_segment))
         .route("/api/v1/fleet/versions", get(versions))
         .route("/api/v1/cars/{car}/events", get(events))
 }
@@ -63,6 +64,41 @@ async fn name_version(
     };
     v.audit(&app, "update-version", Some(&target("update", Some(car), &id.to_string())), &summary).await?;
     let (from_ms, to_ms) = span.and_then(|s| Some((s.get(0)?.as_u64()?, s.get(1)?.as_u64()?))).unwrap_or((0, 0));
+    app.events.publish(Event::Rows { car, kinds: vec!["updates".into()], from_ms, to_ms });
+    Ok(Json(value))
+}
+
+/// `PATCH .../firmware/history/{row}` `{ version }`: an admin names a module's fingerprint segment (the typed
+/// version of its update, or of the module's first fingerprint), or null to forget the typed name.
+async fn name_segment(
+    State(app): State<AppState>,
+    v: Viewer,
+    CarParam(car): CarParam,
+    Path(path): Path<HashMap<String, String>>,
+    body: JsonBody,
+) -> ApiResult<Json<Value>> {
+    let row = path.get("row").cloned().ok_or_else(|| ApiError::not_found("no_such_update"))?;
+    body.only(&["version"])?;
+    if !body.has("version") {
+        return Err(ApiError::bad_input("version", "Required: a version such as 2026.38.4, or null to forget it."));
+    }
+    let version = body.str("version")?.map(|s| s.trim().to_string());
+    if version.as_deref().is_some_and(|s| !q::software::valid_version(s)) {
+        return Err(ApiError::invalid("version", "A version such as 2026.38.4."));
+    }
+    let (typed, id) = (version.clone(), row.clone());
+    let value = run(&app, move |e| q::firmware::name_segment(e, car, &id, typed.as_deref())).await?;
+    let (from_ms, to_ms) = value
+        .get("first_seen_ms")
+        .and_then(Value::as_u64)
+        .map(|a| (a, value.get("until_ms").and_then(Value::as_u64).unwrap_or(a)))
+        .unwrap_or((0, 0));
+    let name = app.car_name_now(car).await;
+    let summary = match &version {
+        Some(x) => format!("Named a firmware version of {name}: {x}."),
+        None => format!("Forgot the typed firmware version of {name}."),
+    };
+    v.audit(&app, "update-version", Some(&target("update", Some(car), &row)), &summary).await?;
     app.events.publish(Event::Rows { car, kinds: vec!["updates".into()], from_ms, to_ms });
     Ok(Json(value))
 }
