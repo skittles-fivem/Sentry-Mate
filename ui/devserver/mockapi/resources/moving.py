@@ -368,11 +368,87 @@ def _old_progress(t):
     return _progress(3, total_f, total_f, total_b, total_b, None)
 
 
+# ------------------------------------------------------------------ the move's log (as the real server words it)
+
+LOG_MAX = 500  # the lines kept
+# what each file copied is, in words (the real server names a file by its kind, never its path)
+FILE_KINDS = ("a CAN log", "a CAN log's sidecar", "a part of the history database", "a trust record", "an upload token",
+              "a web setting", "the accounts", "the audit log")
+FILE_LINE_MS = 2_000  # a "Copying file" line at most this often
+
+
+def _size(n):
+    for unit, k in (("GB", 1e9), ("MB", 1e6), ("KB", 1e3)):
+        if n >= k:
+            return f"{n / k:.1f} {unit}"
+    return f"{int(n)} bytes"
+
+
+def _when(ms):
+    return time.strftime("%Y-%m-%d at %H:%M UTC", time.gmtime(ms / 1000))
+
+
+def _line(at, text):
+    return {"at_ms": int(at), "text": text}
+
+
+def _keep(lines):
+    lines = sorted(lines, key=lambda x: x["at_ms"])
+    return lines[-LOG_MAX:]
+
+
+def _old_timeline(c, claim, now):
+    """The lines a move away from here has written by `now`."""
+    out = []
+    if c is None:
+        return out
+    reach = "from anywhere" if c["anywhere"] else "from the home network only"
+    out.append(_line(c["made_ms"], f"A move code was made: it works once, {reach}, until {_when(c['expires_ms'])}."))
+    if claim is None or now < claim:
+        return out
+    out.append(_line(claim, f"The new server at {PEER_ADDRESS} connected (Sentry Mate {APP_VERSION}): "
+                            f"{MOVE_FILES + CATCH_FILES} files, {_size(MOVE_BYTES)} to copy."))
+    sent_end = OLD_COPY_MS + OLD_CATCH_MS
+    for k in range(1, 11):
+        at = claim + sent_end * k // 10
+        if at <= now:
+            out.append(_line(at, f"Sent {k * 10} % to the new server ({_size(MOVE_BYTES * k / 10)} of {_size(MOVE_BYTES)})."))
+    steps = [
+        (sent_end, "Last-round pause: uploads wait here while the new server copies the last changes."),
+        (sent_end + OLD_PAUSE_MS, f"The new server's copy matches: the data moved to {PEER_ADDRESS}. This server takes "
+                                  "no more uploads and stops its inputs; the new server switches."),
+        (sent_end + OLD_PAUSE_MS + 300, "Inputs stopped on this server: the Tesla API (1 account), TeslaFi (1 account), "
+                                        "MQTT publishing (its retained topics cleared), the history's own work "
+                                        "(decoding, rebuilds, the GPS fit, compaction, the upkeep)."),
+        (sent_end + OLD_PAUSE_MS + OLD_SWITCH_MS, f"Done: {PEER_ADDRESS} serves the data now. This server takes no "
+                                                  "uploads; you can turn it off (keep its folders as a backup for a "
+                                                  "while)."),
+    ]
+    out += [_line(claim + t, text) for t, text in steps if claim + t <= now]
+    return out
+
+
+def old_log(st, now):
+    m = st.move
+    c = m["code"]
+    claim = c.get("claim_at_ms") if c else None
+    if claim is not None and claim >= c["expires_ms"]:
+        claim = None
+    return _keep(list(m.get("log") or []) + _old_timeline(c, claim, now))
+
+
+def _freeze_old_log(st, now, text):
+    """An action that ends the move's code here (a cancel, an undo): what the log said so far stays, with a line."""
+    m = st.move
+    m["log"] = _keep(old_log(st, now) + [_line(now, text)])
+
+
 def old_view(st, now):
     state, c, claim = _old_phase(st, now)
     m = st.move
     out = {"state": state, "code": None, "peer": None, "progress": None, "moved": None,
-           "last_cancelled": m["cancelled"], "last_undone_ms": m["undone_ms"], "skipped": [], "problem": None}
+           "last_cancelled": m["cancelled"], "last_undone_ms": m["undone_ms"], "skipped": [], "problem": None,
+           "log": old_log(st, now)}
     if c is not None:
         out["code"] = {"id": c["id"], "made_ms": c["made_ms"], "expires_ms": c["expires_ms"],
                        "anywhere": c["anywhere"], "wrong_tries": c["wrong_tries"]}
@@ -417,6 +493,7 @@ def post_move(req):
         st.move["code"] = {"id": cid, "made_ms": req.now, "expires_ms": req.now + CODE_VALID_MS, "anywhere": anywhere,
                            "wrong_tries": 0, "claim_at_ms": req.now + after if after else None}
         st.move["moved"] = None
+        st.move["log"] = []
     st.record(req.account, "move-code-made", f"move:{cid}",
               f"Made a move code, valid 24 hours, usable {'from anywhere' if anywhere else 'on the home network'}.")
     out = old_view(st, req.now)
@@ -436,8 +513,10 @@ def delete_move(req):
         if state in ("copying", "paused"):
             what = "ended"
             st.move["cancelled"] = {"at_ms": req.now, "why": "cancelled on this server"}
+            _freeze_old_log(st, req.now, "The move was cancelled here: uploads go on as before.")
         elif c is not None:
             what = "revoked"
+            _freeze_old_log(st, req.now, "The move code was cancelled.")
         st.move["code"] = None
     if what != "nothing":
         st.record(req.account, "move-cancelled", "move:" + ((c or {}).get("id") or "current"),
@@ -459,7 +538,9 @@ def post_undo(req):
     if state not in ("moved", "done"):
         raise conflict("not_moved", "This server has not moved; there is nothing to undo.")
     with st.lock:
-        st.move = {"code": None, "moved": None, "cancelled": st.move["cancelled"], "undone_ms": req.now}
+        _freeze_old_log(st, req.now, "The move was undone: this server takes uploads again.")
+        st.move = {"code": None, "moved": None, "cancelled": st.move["cancelled"], "undone_ms": req.now,
+                   "log": st.move["log"]}
     st.record(req.account, "move-undone", "move:current", "Undid the move: this server takes uploads again.")
     return old_view(st, req.now)
 
@@ -749,14 +830,93 @@ def _scenario(host):
 def job_view(job, now):
     """A move here or a restore as it is at `now` (the job's own times decide it)."""
     if job["kind"] == "move_here":
-        return _move_here_view(job, now)
+        out = _move_here_view(job, now)
+        out["log"] = _move_here_log(job, out, now)
+        return out
     return _restore_view(job, now)
 
 
 def _base(job):
     return {"id": job["id"], "kind": job["kind"], "state": None, "started_ms": job["started_ms"],
             "from": job.get("from"), "file_name": job.get("file_name"), "size": job.get("size"),
-            "received": job.get("received"), "progress": None, "problem": None, "result": None, "skipped": []}
+            "received": job.get("received"), "progress": None, "problem": None, "result": None, "skipped": [],
+            "log": []}
+
+
+def _copy_lines(t0, t1, files):
+    """The round's "Copying file N of M" lines from `t0` to `t1` (one every FILE_LINE_MS)."""
+    out = []
+    span = max(1, NEW_COPY_MS)
+    at = t0
+    k = 0
+    while at <= t1:
+        n = 1 + int((at - t0) * (files - 1) / span)
+        out.append(_line(at, f"Copying file {n} of {files} ({FILE_KINDS[k % len(FILE_KINDS)]})."))
+        at += FILE_LINE_MS
+        k += 1
+    return out
+
+
+def _move_here_log(job, view, now):
+    """The lines a move here has written by `now`, from its own times (the dev server keeps no log of its own)."""
+    start = job["started_ms"]
+    clock0 = job.get("clock0_ms", start)
+    sc = job.get("scenario")
+    drop = FLAKY_DROP_MS if sc == "flaky" else 0
+    out = list(job.get("log_before") or [])
+    out.append(_line(start, f"Moving here from {job['from']}: proving the move code to the old server."))
+    c0 = clock0 + NEW_CONNECT_MS
+    total_f = MOVE_FILES + CATCH_FILES
+    if now >= c0:
+        out.append(_line(c0, f"Connected: the old server proved the move code (Sentry Mate {APP_VERSION}, this one "
+                             f"{APP_VERSION}): {total_f} files, {_size(MOVE_BYTES)} to copy."))
+        out.append(_line(c0 + 1, "Round 1: copying the old server's files."))
+    state = view["state"]
+    pr = view.get("problem")
+    copy_end = c0 + NEW_COPY_MS + drop
+    if sc == "flaky":
+        s0 = c0 + int(NEW_COPY_MS * 0.4)
+        out += _copy_lines(c0 + 2, min(now, s0 - 1), MOVE_FILES)
+        if now >= s0:
+            out.append(_line(s0, f"Waiting: lost the connection to the old server at {job['from']}; trying again "
+                                 "by itself."))
+        if now >= s0 + drop:
+            out.append(_line(s0 + drop, "Connected to the old server again: carrying on where it stopped."))
+            later = _copy_lines(c0 + 2, min(now, copy_end - 1) - drop, MOVE_FILES)
+            out += [_line(x["at_ms"] + drop, x["text"]) for x in later if x["at_ms"] >= s0]
+    elif sc in ("gone", "cancel") and pr is not None:
+        stop_at = c0 + int(NEW_COPY_MS * (0.5 if sc == "gone" else 0.6))
+        out += _copy_lines(c0 + 2, min(now, stop_at - 1), MOVE_FILES)
+        word = "Waiting" if pr.get("retry_ms") else "Stopped"
+        tail = "; trying again by itself." if word == "Waiting" else "."
+        out.append(_line(stop_at, f"{word}: {pr['message']}{tail}"))
+        return _keep(out)
+    else:
+        out += _copy_lines(c0 + 2, min(now, copy_end - 1), MOVE_FILES)
+    if job.get("forced_ms") is not None:
+        fz = job["forced_ms"]
+        out = [x for x in out if x["at_ms"] <= fz]
+        out.append(_line(fz, "Switching to what was copied, opened with the recovery key: the last changes may be "
+                             "missing."))
+        if state == "done":
+            out.append(_line(fz + NEW_SWITCH_MS, "Switched: this server holds the data now."))
+        return _keep(out)
+    steps = [
+        (copy_end, f"Round 1 done: {MOVE_FILES} files, {_size(MOVE_BYTES)} copied."),
+        (copy_end + NEW_CATCH_MS, f"Round 2 caught up {CATCH_FILES} files ({_size(CATCH_BYTES)})."),
+        (copy_end + NEW_CATCH_MS + 1, "Caught up: asking the old server for the last-round pause."),
+        (copy_end + NEW_CATCH_MS + 2, "Last-round pause: uploads wait on the old server while the last changes are "
+                                      "copied."),
+        (copy_end + NEW_CATCH_MS + NEW_FINISH_MS, "Last round: 12 files (6.4 KB) in 1 s. The old server confirmed the "
+                                                  "copy and stopped its inputs."),
+        (copy_end + NEW_CATCH_MS + NEW_FINISH_MS + 1, "Switching to the copied data."),
+        (copy_end + NEW_CATCH_MS + NEW_FINISH_MS + NEW_SWITCH_MS, "Switched: this server holds the data now."),
+        (copy_end + NEW_CATCH_MS + NEW_FINISH_MS + NEW_SWITCH_MS + 800,
+         "Inputs started here: the Tesla API (1 account), TeslaFi (1 account), MQTT publishing, the history's own "
+         "work, each from where the old server left it (its waits, pacing and catch-up marks came with the data)."),
+    ]
+    out += [_line(at, text) for at, text in steps if at <= now]
+    return _keep(out)
 
 
 def _move_here_view(job, now):

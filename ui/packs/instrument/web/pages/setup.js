@@ -6,8 +6,9 @@
 //      - Start fresh (POST /setup/fresh): the first admin, then the recovery key shown once with Copy and
 //        Download, and "I have saved it" (POST /system/recovery-key/saved) before going on.
 //      - Move here from another server (POST /setup/move-here): the old server's address and its move code;
-//        the copy is followed by polling GET /setup/job once a second. Last resort when the old server is
-//        gone for good: POST /setup/move-here/finish with its recovery key.
+//        the copy is followed by polling GET /setup/job once a second, with the move's log underneath (its
+//        `log`, newest last, kept by the server: a reload shows it again; pages/move-log.js). Last resort when
+//        the old server is gone for good: POST /setup/move-here/finish with its recovery key.
 //      - Restore from an export file (POST /setup/restore, then PATCH chunks): the file and the recovery key
 //        are checked before the upload; then the upload, the checks and the switch.
 //   3. After a move or a restore the server has the old server's accounts and nobody is signed in: sign in.
@@ -22,6 +23,7 @@ import { confirmDialog, passwordOk } from '../core/dialog.js';
 import { errorWords } from '../core/states.js';
 import { dateTime, dur, DASH } from '../core/fmt.js';
 import { keyBox, etaText } from './settings-server-move.js';
+import { moveLog } from './move-log.js';
 
 export const id = 'setup';
 
@@ -443,7 +445,9 @@ export async function mount(ctx) {
     J.acts = h('div', { class: 'su-jobacts' });
     J.actsKey = null;
     J.result = h('div', { class: 'su-result' });
-    paint(true, crumbs(2, j.kind === 'move_here' ? 'Move here' : 'Restore'), J.head, J.steps, J.prog, J.state, J.result, J.acts);
+    J.log = j.kind === 'move_here' ? moveLog({ tz, file: 'sentry-mate-move-here-log' }) : null;
+    J.tail = 0;
+    paint(true, crumbs(2, j.kind === 'move_here' ? 'Move here' : 'Restore'), J.head, J.steps, J.prog, J.state, J.result, J.log?.el, J.acts);
     paintJob();
     poll();
   }
@@ -507,6 +511,7 @@ export async function mount(ctx) {
     }
     replace(J.state, st);
     replace(J.result, j.state === 'done' ? result(j) : null);
+    J.log?.update(j.log);
 
     // the buttons: rebuilt only when what they offer changes, so a half-typed key stays
     const canForce = move && (j.state === 'waiting' || j.state === 'stopped') && (p?.bytes_done || 0) > 0;
@@ -639,10 +644,14 @@ export async function mount(ctx) {
     ];
   }
 
+  // once a move is done the new server still says what it started (its first start after the switch): the log is
+  // read a little longer, until it says so
+  const started = (j) => (j.log || []).some((l) => l.text.startsWith('Inputs started here'));
   function poll() {
     stop();
     const j = S.job;
-    if (!j || FINAL.has(j.state) || (j.kind === 'restore' && j.state === 'uploading')) return;
+    const tail = j?.kind === 'move_here' && j.state === 'done' && !started(j) && J.tail++ < 30;
+    if (!j || (FINAL.has(j.state) && !tail) || (j.kind === 'restore' && j.state === 'uploading')) return;
     timer = setTimeout(async () => {
       try {
         const n = await ctx.api.get('setup/job');
