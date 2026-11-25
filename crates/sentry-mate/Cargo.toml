@@ -50,6 +50,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
 synth = { path = "../synth" }
+tesla = { path = "../tesla" }
+teslafi = { path = "../teslafi" }
+tmlocal = { path = "../tmlocal" }
 import = { path = "../import" }
 base64 = "0.22"
 lzma-rs = "0.3"

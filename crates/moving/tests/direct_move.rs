@@ -285,6 +285,41 @@ async fn a_whole_move_while_a_bridge_keeps_uploading() {
     let note = pull::moved_in(&data, &v).unwrap();
     assert!(note.confirmed);
     assert_eq!(moving::import::imported(&data, &v), None);
+    // each server's log of the move: its steps in order, each with a time, nothing secret
+    let new_log: Vec<String> = note.log.iter().map(|l| l.text.clone()).collect();
+    let old_log: Vec<String> = moving::old::log(&old.data, &old.vault).iter().map(|l| l.text.clone()).collect();
+    let steps = |log: &[String], want: &[&str]| {
+        let mut at = 0;
+        for w in want {
+            match log[at..].iter().position(|l| l.contains(w)) {
+                Some(i) => at += i + 1,
+                None => panic!("no \"{w}\" (in order) in {log:#?}"),
+            }
+        }
+    };
+    steps(
+        &new_log,
+        &[
+            "Moving here from",
+            "Connected:",
+            "Round 1: copying",
+            "Copying file 1 of",
+            "Round 1 done",
+            "Last-round pause",
+            "Last round:",
+            "Switching",
+            "Switched:",
+        ],
+    );
+    steps(&old_log, &["A move code was made", "connected", "Sent ", "Last-round pause", "copy matches", "Done:"]);
+    let data_text = data.to_string_lossy().to_string();
+    for l in new_log.iter().chain(&old_log) {
+        for secret in [code.as_str(), token.as_str(), data_text.as_str(), "can/", ".log.xz"] {
+            assert!(!l.contains(secret), "{l}");
+        }
+        assert!(!l.split(|c: char| !c.is_ascii_hexdigit()).any(|w| w.len() >= 32), "{l}");
+    }
+    assert!(note.log.iter().chain(&moving::old::log(&old.data, &old.vault)).all(|l| l.at_ms > 1_700_000_000_000));
     n.stop();
     o.stop();
 }
@@ -587,6 +622,18 @@ async fn cut_connections_and_restarts_of_both_servers_carry_on() {
         o.stop();
     }
     assert!(*cuts.lock().unwrap() > 0, "the proxy cut connections");
+    // the log says what it waited for and that it carried on, once each time, not once per try
+    let log: Vec<String> = pull::status(&data, &keys)
+        .unwrap()
+        .map(|s| s.log)
+        .or_else(|| pull::moved_in(&data, &new_vault(&data, &keys)).map(|n| n.log))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|l| l.text)
+        .collect();
+    assert!(log.iter().any(|l| l.starts_with("Waiting: ")), "{log:#?}");
+    assert!(log.iter().any(|l| l.contains("again: carrying on where it stopped")), "{log:#?}");
+    assert!(log.len() < 200, "{log:#?}");
     ptask.abort();
     watch.abort();
     assert_eq!(*over.lock().unwrap(), None, "files counted twice in the first copy (done, total)");
