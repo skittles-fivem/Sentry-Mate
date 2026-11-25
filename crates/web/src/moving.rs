@@ -660,6 +660,21 @@ struct SlotFile {
     error: Option<String>,
 }
 
+/// [`moving::Snapshot::reopen`], waiting a few seconds while the folder is still in use: a web side that stopped in
+/// this process (a restart without leaving the program) may hold it until its last download or job lets go.
+fn reopen_waiting(data: &std::path::Path, vault: &vault::Vault, hid: &str) -> Result<moving::Snapshot, String> {
+    let mut tries = 0;
+    loop {
+        match moving::Snapshot::reopen(data, vault, hid) {
+            Err(e) if e.to_string().contains("in use") && tries < 40 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            r => return r.map_err(|e| e.to_string()),
+        }
+    }
+}
+
 impl MoveSite {
     fn slot_path(&self) -> PathBuf {
         self.data.join(moving::export::SNAPSHOTS).join(SLOT_FILE)
@@ -782,7 +797,7 @@ impl MoveSite {
                     e.error = Some(EXPIRED.into());
                 } else {
                     let opened = match f.snapshot.as_deref() {
-                        Some(hid) => moving::Snapshot::reopen(&self.data, &app.vault, hid).map_err(|e| e.to_string()),
+                        Some(hid) => reopen_waiting(&self.data, &app.vault, hid),
                         None => Err("no snapshot is named".to_string()),
                     };
                     match opened {
