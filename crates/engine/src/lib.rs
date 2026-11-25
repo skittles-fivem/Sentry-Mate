@@ -151,6 +151,12 @@ pub struct Options {
     /// far it starts: crates/sentry-mate/src/window_batch.rs). Two hours: a car in sentry mode has a cut point every
     /// five minutes, and the stretch read is then about 50 state spans, not two days' of them.
     pub window_look_ms: u64,
+    /// The newest values of a car are sent to the live stream at most this often (ms) while a rebuild of the car
+    /// runs, and once more when it ends if one was held back ([`Engine::send_now`]). Live ingest outside a rebuild
+    /// is never held back. `0`: after every window.
+    pub rebuild_now_gap_ms: u64,
+    /// The clock the throttle above reads (ms since the epoch); a test sets its own.
+    pub clock: fn() -> u64,
 }
 
 impl Default for Options {
@@ -169,6 +175,8 @@ impl Default for Options {
             rebuild_settle_ms: 3_000,
             read_ahead: ahead::Ahead::threads(),
             window_look_ms: 2 * 3_600_000,
+            rebuild_now_gap_ms: 1_000,
+            clock: now_ms,
         }
     }
 }
@@ -274,6 +282,41 @@ pub(crate) enum Work {
     InvoicePrices,
 }
 
+/// A car's newest values as the live stream gets them while a rebuild of the car runs.
+#[derive(Debug, Default)]
+struct NowSent {
+    /// Rebuilds of the car under way.
+    rebuilding: u32,
+    /// When the last one was sent during them.
+    last_ms: Option<u64>,
+    /// One was held back: the rebuild's end sends it.
+    held: bool,
+}
+
+/// A rebuild of a car under way ([`Engine::rebuilding`]): ends with the newest values the throttle held back sent.
+pub(crate) struct Rebuilding {
+    e: Engine,
+    car: CarId,
+}
+
+impl Drop for Rebuilding {
+    fn drop(&mut self) {
+        let held = {
+            let mut m = lock(&self.e.inner.now_sent);
+            let n = m.entry(self.car).or_default();
+            n.rebuilding = n.rebuilding.saturating_sub(1);
+            let held = n.rebuilding == 0 && std::mem::take(&mut n.held);
+            if n.rebuilding == 0 {
+                m.remove(&self.car);
+            }
+            held
+        };
+        if held {
+            self.e.emit_now(self.car);
+        }
+    }
+}
+
 pub(crate) struct Inner {
     /// Work sent and not finished.
     outstanding: Arc<AtomicU64>,
@@ -313,6 +356,8 @@ pub(crate) struct Inner {
     zone_at: Mutex<HashMap<CarId, ZoneAt>>,
     /// Per car, the newest rebuilt stretch whose inputs' fixes disagreed ([`timeline::fuse::gps_cross_check`]).
     pub(crate) gps_cross: Mutex<HashMap<CarId, GpsDisagreement>>,
+    /// Per car, how the newest values reach the live stream while a rebuild of it runs ([`Engine::send_now`]).
+    now_sent: Mutex<HashMap<CarId, NowSent>>,
     /// Answers' parts kept while their data stays the same.
     pub(crate) memo: memo::Memo,
     /// The cars whose long periods wait to be worked out in the background ([`warm`]).
@@ -557,6 +602,7 @@ impl Engine {
                 gap_fill: std::sync::atomic::AtomicBool::new(true),
                 zone_at: Mutex::new(HashMap::new()),
                 gps_cross: Mutex::new(HashMap::new()),
+                now_sent: Mutex::new(HashMap::new()),
                 memo: memo::Memo::default(),
                 warm: Mutex::default(),
                 packs: Default::default(),
@@ -689,6 +735,42 @@ impl Engine {
     /// so by `RecvError::Lagged`); the page then loads what it shows again.
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.inner.events.subscribe()
+    }
+
+    /// Marks `car` as being rebuilt until the answer is dropped.
+    pub(crate) fn rebuilding(&self, car: CarId) -> Rebuilding {
+        lock(&self.inner.now_sent).entry(car).or_default().rebuilding += 1;
+        Rebuilding { e: self.clone(), car }
+    }
+
+    /// Sends the car's newest values to the live stream (worked out only while someone listens: they read the car's
+    /// last 30 days of drives, imported ones included). While a rebuild of the car runs, at most once per
+    /// [`Options::rebuild_now_gap_ms`]: a window finishing sooner holds it back, and the rebuild's end sends it, so
+    /// the last state always arrives. Outside a rebuild every call sends.
+    pub(crate) fn send_now(&self, car: CarId) {
+        if self.inner.events.receiver_count() == 0 {
+            return;
+        }
+        {
+            let mut m = lock(&self.inner.now_sent);
+            if let Some(n) = m.get_mut(&car).filter(|n| n.rebuilding > 0) {
+                let now = (self.inner.opts.clock)();
+                let gap = self.inner.opts.rebuild_now_gap_ms;
+                if n.last_ms.is_some_and(|t| now.saturating_sub(t) < gap) {
+                    n.held = true;
+                    return;
+                }
+                n.last_ms = Some(now);
+                n.held = false;
+            }
+        }
+        self.emit_now(car);
+    }
+
+    fn emit_now(&self, car: CarId) {
+        if let Ok(now) = query::now::now_view(self, car) {
+            self.emit(Event::Now { car, now: Box::new(now) });
+        }
     }
 
     pub(crate) fn emit(&self, e: Event) {

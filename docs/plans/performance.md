@@ -1411,7 +1411,8 @@ rebuild):
 - **A window's Now for the live stream only while someone listens** (`write_timeline`: `events.receiver_count()`).
   The stored Now, the car's state and `state_since_ms` are worked out as before; only the view sent as a `now`
   event is left out where nobody would get it: a full rebuild's engine over its shadow, a test's engine. On the
-  server the live stream always listens, so a rebuild in place still sends one per window.
+  server the live stream always listens, so a rebuild in place sent one per window (since then at most one a second:
+  see What is left).
   `windows_nobody_listens_to_give_the_same_history` (in the suite: a day of a car in sentry mode, 3 s of frames every
   10 minutes, beside a TeslaMate import and the Tesla API in sentry mode, 272 `now` events sent; by hand: four usual
   days beside them, 1,248; three alone, 195; two days of the owner's shape of tiny logs beside them, 4,991): the
@@ -1455,9 +1456,11 @@ history differs from it in something this made-up history does not have; the Reb
 read. What is still per log here, and grows with the logs a day rather than the history: the day's record (about
 1,250 entries) copied and written again for every log (the rest of a log's work, 6 to 8 ms), a window's logs and the
 nearest logs either side read from the day records (2 to 4 ms), the rows replaced in the tables (2 to 4 ms), and
-the car's newest values (3 ms). A rebuild in place on the server (not a full rebuild) still works out and sends the
-window's Now for every window, and with it reads every live state span of the imported span; sending it at most
-once a second during a rebuild would take that away too, and was not done here.
+the car's newest values (3 ms). A rebuild in place on the server (not a full rebuild) used to work out and send the
+window's Now for every window, and with it read every live state span of the imported span. It now sends it at most
+once a second per car while the rebuild runs (`Options::rebuild_now_gap_ms`), and once more when the car's rebuild ends
+if one was held back, so the last state arrives; a log told outside a rebuild sends its own at once as before
+(`a_rebuild_sends_the_newest_values_once_a_second_and_the_last_at_its_end`: 40 windows, 40 events before, 2 now).
 
 **Rebuild speed on Data health** (Instrument, `ui/packs/instrument/web/pages/health.js`): while a rebuild runs, a
 "Rebuild speed" row under Rebuild says the logs a second now (over about the last 30 s) and the stage that took the

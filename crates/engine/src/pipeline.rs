@@ -1202,12 +1202,9 @@ impl Engine {
         records::put_meta(db, car, meta)?;
         self.emit(Event::Rows { car, kinds: vec!["drives", "charges", "states", "visits"], from_ms: from, to_ms: to });
         // (worked out only for someone listening: nobody listens to a full rebuild's engine over its shadow, and the
-        // view reads the car's last 30 days of drives, imported ones included, for its range estimate)
-        if self.inner.events.receiver_count() > 0
-            && let Ok(now) = crate::query::now::now_view(self, car)
-        {
-            self.emit(Event::Now { car, now: Box::new(now) });
-        }
+        // view reads the car's last 30 days of drives, imported ones included, for its range estimate; during a
+        // rebuild at most once a second, and the rebuild's end sends the last)
+        self.send_now(car);
         let rest = u64::try_from(rows_written.elapsed().as_micros()).unwrap_or(u64::MAX);
         self.inner.counters.window_parts[5].fetch_add(rest, Ordering::Relaxed);
         Ok(())
