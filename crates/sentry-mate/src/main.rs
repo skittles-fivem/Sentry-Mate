@@ -236,6 +236,10 @@ enum DevCmd {
         /// them; synth's own first day (2026-03-02) when left out.
         #[arg(long, value_parser = seed::parse_day)]
         start: Option<u64>,
+        /// Minutes the car stays awake after it was last used, logging all the while (Sentry Mode); synth's own 10
+        /// when left out. 360 gives about 22,000 logs in 30 days.
+        #[arg(long)]
+        awake_min: Option<u32>,
     },
     /// A long made-up history for the first car (or a new one): a TeslaMate import of about a year (about 3 million
     /// positions), a TeslaFi import, and TeslaFi's API, local TeslaMate and the Tesla API as live inputs over its
@@ -643,13 +647,16 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
         Cmd::Import { file, cancel } => return import_cmd(&data, &keys, file.as_deref(), cancel).await,
         Cmd::Move { cmd } => return move_cmd(&data, &keys, cli.upload_port, cmd).await,
         #[cfg(feature = "dev-seed")]
-        Cmd::Dev { cmd: DevCmd::Seed { days, cars, seed, light, clean, candump, with_real_cars, start } } => {
+        Cmd::Dev {
+            cmd: DevCmd::Seed { days, cars, seed, light, clean, candump, with_real_cars, start, awake_min },
+        } => {
             let v = Arc::new(Vault::open(&data, &keys)?);
             refuse_writes(&data, &v)?;
             let store = Store::new(can_dir(&data), v.clone());
             let judge = Judge::new(store.clone());
             let tokens = Tokens::open(tokens_file(&data), v.clone()).await?;
-            let o = seed::Options { days, cars, seed, light, clean, candump, with_real_cars, start_ms: start };
+            let o =
+                seed::Options { days, cars, seed, light, clean, candump, with_real_cars, start_ms: start, awake_min };
             // each file's writes go through the data folder's gate, as an upload's chunk does (an export or a move
             // started meanwhile waits for one file, not for the whole run)
             let gate = gate::Gate::open(&data)?;
