@@ -1281,3 +1281,109 @@ every full rebuild (and a restart carries the rebuild on into the same step). Tw
   sizes (an estimate from those sizes, not measured). The read-ahead decodes on 8 threads at most (up to 24 logs in
   flight, but a waiting log is only its packed bytes and a minute's samples): about 100 to 200 MB on top of a
   rebuild's 300 MB.
+
+## A full rebuild in the owner's shape
+
+Status (2026-11-25). The owner's full rebuild runs at about 1.1 logs/s (about 900 ms of CPU a log, one core, no
+iowait) over about 22,500 logs of about 18 days, with the Tesla API over the same days and a TeslaFi/TeslaMate
+import reaching back to February 2026 under them; the made-up logs above cost about 12 ms a log (30 ms beside an API
+input). This measures that shape, made up and small on disk, finds what grows with the history, and changes it.
+
+**How it is measured.** `PERF_LOGS=1000,5000,10000,20000 cargo test --release -p sentry-mate measure_owner_rebuild
+-- --ignored --nocapture` (`crates/sentry-mate/src/perf_engine.rs`; `PERF_OWNER_DATA=DIR` keeps each size's seeded
+folder and starts from a copy of it the next time). Each size is a history of its own:
+
+- **The logs:** a car in sentry mode (synth's `Scenario::stays_awake`: awake between its drives and charges, never
+  asleep) whose bridge gets the frames of the first 3 s of every 69 s (`Scenario::snippets`): tiny logs, each closed
+  `quiet`, about 1,250 a day, from 2026-11-01 (1,000 logs: 1 day; 5,000: 5; 10,000: 9; 20,000: 17). Frames once a
+  second (`Rates::Light`): a log's reading is not what is measured here.
+- **The Tesla API** over the same days, in sentry mode (`history::Options::tesla_sentry`): every second while
+  driving, an answer every 15 to 30 s while parked, online all day.
+- **A TeslaMate import** from 2026-02-01 through the same days, through the importer's own sink: 274 to 290 days,
+  about 2.2 million positions (one a second while driving), 1,100 to 1,160 drives, a charge a day.
+- **Then:** the engine started (every log decoded), the import and the API put in, and a full rebuild of the car run
+  and timed. Its stages come from the full rebuild's own engine's counters, read while it decodes
+  (`Engine::work_stats`): a log's reading, its samples written, the car's newest values ("now"), the rest of a
+  log's work (its records), and its window, that in parts (finding the window and its logs, reading the inputs'
+  samples, fusing, building, writing the rows, and the rest of the writing).
+
+Release build, this container's 4 cores, the logs read ahead on 3. Other sessions' builds ran on the machine at the
+same time (the load was 4 to 8 for most runs): the wall times are ±30 %, the CPU seconds closer.
+
+**Before** (`3eb7d779`; ms a log, wall; every log gets its own window, as a car with an API input always does):
+
+| logs | full rebuild | ms a log | CPU ms a log | samples | now | the rest of the log | windows | of the windows: finding | writing rows | the rest of the writing |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1,000 | 30 s | 30.0 | 21.9 | 1.2 | 2.9 | 5.3 | 16.3 | 3.3 | 2.9 | 5.4 |
+| 5,000 | 280 s | 56.0 | | 2.8 | 7.0 | 8.9 | 31.0 | | | |
+| 10,000 | 455 s | 45.5 | 36.7 | 2.5 | 3.1 | 6.5 | 29.3 | 9.3 | 4.6 | 11.1 |
+| 20,000 | 1,204 s | 60.2 | 42.6 | 2.9 | 4.9 | 7.9 | 38.8 | 10.2 | 6.5 | 17.4 |
+
+(The 5,000 row is of another run, on a busier machine, before the windows' parts were counted.)
+
+**What grows with the history.** A log's time doubles from 1,000 to 20,000 logs, all of it in the windows. Of them:
+
+- **The rest of the writing** (5.4 → 17.4 ms, linear in the history): after every window the engine worked out the
+  car's whole Now for the live stream (`query::now::now_view`) and sent it, whoever listened. That view's range
+  estimate reads the car's last 30 days of drives through `Shown`, the overlap with imported history, whose CAN
+  coverage (`imported_coverage`) is kept only until anything of the car changes, so every window read again every
+  live state span from the import's first drive (February) to now: all of the history the rebuild had made so far.
+  A full rebuild runs on an engine of its own over the shadow, which nobody listens to.
+- **Finding the window** (3.3 → 10.2 ms, growing with the logs a day, flat after about five days): its bounds were
+  looked for in two days of state spans and cut points either side of the log, and a car in sentry mode has a cut
+  point every five minutes (about 600 state spans in those four days, and five days' records read for their cut
+  points).
+- **Writing the rows** (2.9 → 6.5 ms): the drives, charges and state spans replaced in the car's tables and their
+  journals, and the day records the cut points are in.
+
+**What changed** (each kept only where the stored history is proven the same, ids included, by a comparison in
+`crates/sentry-mate/src/window_batch.rs`: drives, charges, states, updates, charge curves, samples, the summary and
+newest values, the engine's record, after the logs at the start, gaps filled later, the car rebuilt whole and a full
+rebuild):
+
+- **A window's Now for the live stream only while someone listens** (`write_timeline`: `events.receiver_count()`).
+  The stored Now, the car's state and `state_since_ms` are worked out as before; only the view sent as a `now`
+  event is left out where nobody would get it: a full rebuild's engine over its shadow, a test's engine. On the
+  server the live stream always listens, so a rebuild in place still sends one per window.
+  `windows_nobody_listens_to_give_the_same_history` (one day beside a TeslaMate import and the Tesla API in sentry
+  mode; four days beside them and three alone by hand): the same history with a listener (187, 1,248 and 195 `now`
+  events sent) and without.
+- **A window's bounds looked for near its log first** (`engine::Options::window_look_ms`, two hours either side).
+  Where both bounds are found in that stretch they are the ones the two days give: a cut point or settled span
+  found near the log is the nearest one in any longer stretch, provided the stretch has the spans the log falls in
+  or between (a span that starts at or before the log and one that ends after it). After the log, "no bound" counts
+  too where nothing is stored between the stretch's end and the two days' and no data is newer than them (a log at
+  the newest end of a history: a full rebuild, the logs at the start). Elsewhere the two days, and further, as
+  before. `window_bounds_looked_for_near_the_log_give_the_same_history`: an engine looking near and one looking at
+  the two days, the same history; 2,085 of 2,485 windows (one day of tiny logs in sentry mode, beside the import
+  and the API) and, by hand, 7,551 of 10,000 (four days of them) and 571 of 1,247 (four usual days beside them)
+  bounded near their log in place, besides the full rebuild's; seven usual days alone the same.
+- **A day's record kept as it was written** (`records::put_day`): the record a log was just added to is kept
+  beside the bytes written, so the next read of that day (the log's window, the next log) does not read 1,250
+  entries back into a record. `a_day_record_reads_back_as_it_was_written` checks that every field of every kind of
+  entry reads back as written.
+
+**After** (`AFTER_COMMIT`; ms a log, wall):
+
+AFTER_TABLE
+
+**What is left.** The owner's 900 ms a log is not reproduced by this shape: here a log costs 25 to 60 ms beside the
+Tesla API and an import under the same days, and what grew with the history is gone or bounded. So the owner's
+history differs from it in something this made-up history does not have; the Rebuild speed line on Data health
+(below) now says which stage takes the time on the owner's server while it rebuilds, which is the next thing to
+read. What is still per log here, and grows with the logs a day rather than the history: the day's record (about
+1,250 entries) copied and written again for every log (the rest of a log's work, 6 to 8 ms), a window's logs and the
+nearest logs either side read from the day records (2 to 4 ms), the rows replaced in the tables (2 to 4 ms), and
+the car's newest values (3 ms). A rebuild in place on the server (not a full rebuild) still works out and sends the
+window's Now for every window, and with it reads every live state span of the imported span; sending it at most
+once a second during a rebuild would take that away too, and was not done here.
+
+**Rebuild speed on Data health** (Instrument, `ui/packs/instrument/web/pages/health.js`): while a rebuild runs, a
+"Rebuild speed" row under Rebuild says the logs a second now (over about the last 30 s) and the stage that took the
+most of that time with its share, for example "1.1 logs/s · most of the time: rebuilding the timeline around them
+(72 %)" (`shared/fullrebuild.js` `speedText`). From `/system/full-rebuild`'s (and `/cars/{car}/full-rebuild`'s)
+`speed` while a full rebuild decodes (admins, who see the full rebuild's panel), else the car health's
+`rebuild_speed` while its rebuild is pending (everyone who sees the page, watch accounts too, as they see the
+Rebuild row today); hidden while none runs, "Measuring…" until the first half minute is measured
+(docs/ui-api.md; the engine's `Engine::rebuild_speed`, `crates/engine/src/speed.rs`, from the counters each time
+it is asked). The dev server's mock says the same (`ui/devserver/tests/test_rebuild_speed.py`).
