@@ -132,7 +132,14 @@ impl Bench {
         let sha = hex::encode(Sha256::digest(bytes));
         let h =
             [("upload-offset", "0".to_string()), ("upload-length", bytes.len().to_string()), ("upload-sha256", sha)];
-        let (s, b) = self.call(&format!("/api/can/logs/{name}"), &h, bytes.to_vec()).await;
+        // (a server error is told to send again, as the app does)
+        let (mut s, mut b) = self.call(&format!("/api/can/logs/{name}"), &h, bytes.to_vec()).await;
+        for _ in 0..3 {
+            if !s.is_server_error() {
+                break;
+            }
+            (s, b) = self.call(&format!("/api/can/logs/{name}"), &h, bytes.to_vec()).await;
+        }
         assert_eq!(s, StatusCode::CREATED, "{name}: {b}");
     }
 

@@ -574,3 +574,31 @@ async fn a_failed_log_sent_again_mends_the_chain_after_it() {
     assert!(chain.issues.is_empty(), "{chain:?}");
     assert_eq!((chain.segments.len(), chain.count), (1, 6));
 }
+
+/// A log stored but not judged (the key's trust lock file cannot be taken) is told to the sender as an error, which
+/// sends it again; once the fault is gone the same bytes answer `already` and get judged. Before, both answered
+/// `201` and the log answered `pending` for ever (nothing looked at a stored file with no record).
+#[tokio::test]
+async fn a_log_that_could_not_be_judged_is_an_error_and_is_judged_when_sent_again() {
+    let t = setup(60_000).await;
+    let key = car_key();
+    // (a first log ties the token to the car)
+    send(&t, &key, 0, &log_bytes(0)).await;
+    let lock = t._dir.path().join("data").join("can").join(KEY).join("trust.lock");
+    std::fs::remove_file(&lock).unwrap();
+    // (a folder where the lock file should be: opening it fails, and that is not a kind the lock puts up with)
+    std::fs::create_dir_all(&lock).unwrap();
+    let n = name(1);
+    let log = log_bytes(1);
+    let side = sidecar(&key, &n, &log, 1, (&name(0), &sha(&log_bytes(0))));
+    let (s, _) = put(&t, &format!("{n}.json"), &side).await;
+    assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
+    let (s, _) = put(&t, &n, &log).await;
+    assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(check_of(&t, &n).await, (None, None), "no answer while the key cannot be read");
+    // the fault clears: the same bytes again are stored already, and are judged now
+    std::fs::remove_dir(&lock).unwrap();
+    assert_eq!(put(&t, &format!("{n}.json"), &side).await.0, StatusCode::CREATED);
+    assert_eq!(put(&t, &n, &log).await.0, StatusCode::CREATED);
+    assert_eq!(check_of(&t, &n).await, verified());
+}
