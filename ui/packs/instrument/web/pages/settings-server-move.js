@@ -2,7 +2,8 @@
 // Two ways to take everything to a new Sentry Mate server, with no shell:
 //   - a move code (POST /system/move): both servers are on at once; the new one copies over the network,
 //     this one keeps taking uploads, and the new one takes over by itself. Shown once, big, with Copy.
-//     While it runs this panel polls GET /system/move once a second: who copies, how much, which step.
+//     While it runs this panel polls GET /system/move once a second: who copies, how much, which step, and the
+//     move's log underneath (its `log`, newest last, kept by the server: a reload shows it again; pages/move-log.js).
 //     Afterwards it says where the data went, with "Undo the move" (POST /system/move/undo).
 //   - an export file (POST /system/exports): one file with everything, for servers that can't reach each
 //     other, or to keep as a backup. It opens only with the recovery key and never holds the key file.
@@ -24,6 +25,7 @@ import { dayKey } from '../shared/time.js';
 import { exportModel, exportPollMs } from '../shared/exportjob.js';
 import { follow, jobOf } from '../shared/live.js';
 import { morphChildren } from '../core/morph.js';
+import { moveLog } from './move-log.js';
 
 const enc = encodeURIComponent;
 const bytes = (n) => (n == null ? DASH : format(n, 'bytes'));
@@ -198,6 +200,9 @@ export async function markKeySaved(ctx) {
 export function movePanel(ctx, { tz, zone }) {
   const S = { move: null, code: null, codeText: null, exp: null, err: null };
   const moveBox = h('div', { class: 'mv-state', 'aria-live': 'polite' });
+  // outside moveBox, which is drawn anew each time: the list keeps its scroll and only gains lines
+  const log = moveLog({ tz, file: 'sentry-mate-move-log' });
+  log.el.hidden = true;
   const expBox = h('div', { class: 'mv-export', 'aria-live': 'polite' });
   const t = (ms) => (ms == null ? DASH : dateTime(ms, tz));
 
@@ -392,6 +397,9 @@ export function movePanel(ctx, { tz, zone }) {
         parts.push(line('info', `State: ${m.state}`));
     }
     replace(moveBox, parts);
+    const lines = m.log || [];
+    log.el.hidden = lines.length === 0;
+    log.update(lines);
   }
 
   /* ---------------------------------------------------------------- export file */
@@ -520,7 +528,7 @@ export function movePanel(ctx, { tz, zone }) {
     h('section', { class: 'mv-way', 'aria-labelledby': 'mv-code-title' },
       h('h3', { id: 'mv-code-title' }, icon('share', 'ico--sm'), 'With a move code'),
       h('p', { class: 'mv-when' }, h('b', null, 'When:'), ' both servers are on at the same time and the new one can reach this one (the same home network, or tick from anywhere). This server keeps taking uploads while the new one copies, and the new one takes over by itself at the end.'),
-      moveBox),
+      moveBox, log.el),
     h('section', { class: 'mv-way', 'aria-labelledby': 'mv-file-title' },
       h('h3', { id: 'mv-file-title' }, icon('download', 'ico--sm'), 'With an export file'),
       h('p', { class: 'mv-when' }, h('b', null, 'When:'), ' the two servers can\'t reach each other, this one will be off before the new one starts, or you want a copy to keep as a backup. One file with everything; uploads that arrive after it was made are not in it.'),
