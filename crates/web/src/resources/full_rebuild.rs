@@ -274,6 +274,8 @@ async fn start(
         )
     };
     audit_run(app, v, &r, &summary).await?;
+    // the open pages hear of it at once, even when it is over before the watcher looks again
+    tell_pages(app, json!({ "code": "full_rebuild_running" }));
     let mut out = read(app, car).await?;
     out["accepted"] = json!(true);
     out["joined"] = json!(joined);
@@ -501,6 +503,8 @@ pub fn watch_once(app: &AppState) {
         match app.accounts.audit().record(None, None, "car-full-rebuild", &details) {
             Ok(()) => {
                 let _ = e.full_rebuild_audited(r.id);
+                // its notice goes (or the failed one comes): the open pages read the notices again
+                tell_pages(app, json!({ "code": "full_rebuild_ended" }));
             }
             Err(err) => tracing::warn!("audit: {err}"),
         }
@@ -530,6 +534,11 @@ pub fn watch_once(app: &AppState) {
     }
 }
 
+/// A `notice` event for the admins' open pages (they read the notices again).
+fn tell_pages(app: &AppState, notice: Value) {
+    app.events.publish(crate::events::Event::Notice { notice: std::sync::Arc::new(notice), admins_only: true });
+}
+
 /// Tells the open pages when the full rebuild's notices change (planned, under way, paused, failed, gone): they read
 /// the notices again on a `notice` event, as for the other inputs' notices. Admins only, as the notices are.
 pub fn announce_notices(app: &AppState, last: &mut Option<String>) {
@@ -548,7 +557,7 @@ pub fn announce_notices(app: &AppState, last: &mut Option<String>) {
         Some(n) => serde_json::to_value(n).unwrap_or(Value::Null),
         None => json!({ "code": "full_rebuild_ended" }),
     };
-    app.events.publish(crate::events::Event::Notice { notice: std::sync::Arc::new(notice), admins_only: true });
+    tell_pages(app, notice);
 }
 
 /// Looks at the full rebuild every [`WATCH_EVERY`] (see [`watch_once`]), off the async threads.
