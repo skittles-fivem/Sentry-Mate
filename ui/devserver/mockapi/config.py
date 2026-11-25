@@ -23,7 +23,7 @@ MAP_TILES = ("online", "none", "offline")
 RELEASE_CHECK = ("off", "newer", "up_to_date", "error", "never", "checking")
 # --teslamate-trouble: the local TeslaMate starts in this trouble, with its admins' notice (resources/teslamate.py)
 # --full-rebuild: the full rebuild the server starts with (resources/fullrebuild.py)
-FULL_REBUILD = ("none", "running", "failed", "offered", "planned")
+FULL_REBUILD = ("none", "running", "failed", "offered", "planned", "paused")
 GPS_FIT = ("none", "disagree", "running", "done")
 TESLAMATE_TROUBLE = ("none", "connection_refused", "auth_failed", "pin_mismatch", "quiet", "catchup_failed")
 
@@ -115,7 +115,8 @@ def parse_args(argv=None) -> Config:
                     help="start with a full rebuild of every car under way (running: a long one, a third through), "
                          "one that failed on the second car (failed), or the first car's history made with an older "
                          "decoding and the automatic run off (offered: the notice offers one), or a new version's "
-                         "full rebuild of every car planned, waiting its grace (planned: start now, tonight or pause)")
+                         "full rebuild of every car planned, waiting its grace (planned: start now, tonight or pause), or a run paused part way after an "
+                         "earlier one was cancelled (paused)")
     ap.add_argument("--drives", type=int, default=0,
                     help="give car c1 about this many drives in all (short errands from home added each day; "
                          "0: the usual history, about 1150)")

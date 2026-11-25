@@ -45,7 +45,7 @@ import { gpsLayoutSection, hasCanData } from '../shared/gpsfit.js';
 import { confirmDialog } from '../core/dialog.js';
 import { follow, carOf, onRows, FALLBACK_POLL_MS } from '../shared/live.js';
 import { morph, morphChildren, keepEl } from '../core/morph.js';
-import { running, lines as frLines } from '../shared/fullrebuild.js';
+import { rowText as frRowText } from '../shared/fullrebuild.js';
 import { unsignedLogs } from './unsigned-logs.js';
 
 // every log of the car as the CAN Bridge app is told it now (`sentry-mate log-checks --car` prints the same)
@@ -301,10 +301,10 @@ async function mountCar(ctx) {
   let lastPending = false;
   function paintRebuildRow() {
     const fs = full?.status();
-    if (fs && running(fs) && fs.this_car) {
-      const step = frLines(fs, ctx.api.now(), (id) => names.get(id) || id).find((l) => l.key === 'phase')?.text;
-      rebuildVal.className = 'warn';
-      rebuildVal.textContent = step ? `Running: ${step}` : 'Running';
+    const row = fs?.this_car ? frRowText(fs, ctx.api.now(), (id) => names.get(id) || id) : null;
+    if (row) {
+      rebuildVal.className = row.tone;
+      rebuildVal.textContent = row.text;
     } else {
       rebuildVal.className = lastPending ? 'warn' : '';
       rebuildVal.textContent = lastPending ? 'Running' : 'Nothing pending';

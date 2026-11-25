@@ -10,7 +10,7 @@ PW = "sentry-mate-dev"
 MIN = 60_000
 KEYS = ("state", "id", "scope", "cars", "car", "cars_done", "cars_total", "reason", "phase", "logs", "days", "bytes",
         "percent", "rate_bytes_per_s", "rate_logs_per_s", "rate_days_per_s", "eta_ms", "started_ms", "finished_ms", "last_progress_ms", "stalled", "errors", "error",
-        "by", "version", "causes", "hold", "history")
+        "by", "version", "causes", "hold", "cancelling", "history")
 
 
 class FullRebuild(ServerCase):
@@ -119,3 +119,19 @@ class FullRebuildPlanned(ServerCase):
         self.assertTrue(all(h["took_ms"] > 0 and h["causes"] for h in s["history"]))
         self.c.json("DELETE", "/api/v1/system/full-rebuild", {})
         self.c.error("PATCH", "/api/v1/system/full-rebuild", 409, "full_rebuild_not_running", body={"when": "now"})
+
+
+class FullRebuildPaused(ServerCase):
+    server_args = {"full_rebuild": "paused"}
+
+    def test_a_paused_run_after_a_cancelled_one_is_one_state(self):
+        s = self.c.get("/api/v1/system/full-rebuild")
+        self.assertEqual((s["state"], s["hold"]["kind"], s["cancelling"], s["id"]), ("running", "paused", False, "2"))
+        self.assertEqual(s["history"][0]["state"], "cancelled")
+        self.assertEqual(s["history"][0]["kind"], "full")
+        # a paused run has no speed and no time left, and does not move
+        self.assertEqual((s["eta_ms"], s["rate_logs_per_s"], s["rate_bytes_per_s"]), (None, None, None))
+        before = s["logs"]["done"]
+        self.server.app.clock.advance(30 * MIN)
+        self.assertEqual(self.c.get("/api/v1/system/full-rebuild")["logs"]["done"], before)
+        self.assertEqual(self.c.get("/api/v1/cars/c1/full-rebuild")["this_car"], True)
