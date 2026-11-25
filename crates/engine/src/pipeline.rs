@@ -949,6 +949,13 @@ impl Engine {
     /// Rebuilds the window of `car`'s timeline that data in `[a, b]` changes; returns it.
     pub(crate) fn rebuild_span(&self, car: CarId, meta: &mut CarMeta, a: u64, b: u64) -> Result<(u64, u64)> {
         let began = Instant::now();
+        let mut mark = began;
+        let part = |i: usize, mark: &mut Instant| {
+            let now = Instant::now();
+            let us = u64::try_from((now - *mark).as_micros()).unwrap_or(u64::MAX);
+            self.inner.counters.window_parts[i].fetch_add(us, Ordering::Relaxed);
+            *mark = now;
+        };
         let db = &self.inner.db;
         let p = &self.inner.opts.params;
         let mut look = 2 * DAY_MS;
@@ -986,6 +993,7 @@ impl Engine {
         }
         logs.sort_by_key(|f| f.span());
         logs.dedup();
+        part(0, &mut mark);
         // the live inputs' samples made one in the car's order (each read a margin around the window as its place
         // asks, so a second inside it fuses as in a longer one)
         let fp = &self.inner.opts.fuse;
@@ -1004,6 +1012,7 @@ impl Engine {
             by.push((points, input));
         }
         let by: Vec<(&[Sample], Input)> = by.iter().map(|(v, i)| (v.as_slice(), *i)).collect();
+        part(1, &mut mark);
         let mut fused = timeline::fuse_ordered(&by, &order, fp);
         self.inner.counters.gps_fixes_dropped.fetch_add(fused.fixes_dropped, Ordering::Relaxed);
         // the car's live position by the same word on SMO's fixes as its history's
@@ -1030,6 +1039,7 @@ impl Engine {
         fused.samples.retain(|s| s.t_ms >= from && s.t_ms < to);
         fused.marks.retain(|m| m.0 >= from && m.0 < to);
         let seen = records::api_between(db, car, meta, from, to)?;
+        part(2, &mut mark);
         let input = timeline::Input {
             car,
             from_ms: from,
@@ -1042,6 +1052,7 @@ impl Engine {
             order,
         };
         let t = timeline::build(&input, p);
+        part(3, &mut mark);
         self.write_timeline(car, meta, from, to, t)?;
         self.inner.counters.windows.fetch_add(1, Ordering::Relaxed);
         let took = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -1057,6 +1068,7 @@ impl Engine {
         to: u64,
         mut t: timeline::Timeline,
     ) -> Result<()> {
+        let began = Instant::now();
         let db = &self.inner.db;
         let places = self.places();
         // a drive or charge that was already there (seen first by one input, then by the other, or by a late log)
@@ -1119,6 +1131,9 @@ impl Engine {
         db.replace_window::<StateRow>(car, from, to, &states)?;
         db.write_points::<ChargePoint>(car, Source::Live, from, to, &points)?;
         records::replace_cuts(db, car, meta, from, to, &t.cuts)?;
+        let rows_written = Instant::now();
+        let rows = u64::try_from((rows_written - began).as_micros()).unwrap_or(u64::MAX);
+        self.inner.counters.window_parts[4].fetch_add(rows, Ordering::Relaxed);
         if let Some(last) = states.last() {
             // the car's state now: the last span's
             if let Some(mut e) = db.entry(car)?.and_then(|e| e.summary.now)
@@ -1142,6 +1157,8 @@ impl Engine {
         if let Ok(now) = crate::query::now::now_view(self, car) {
             self.emit(Event::Now { car, now: Box::new(now) });
         }
+        let rest = u64::try_from(rows_written.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.inner.counters.window_parts[5].fetch_add(rest, Ordering::Relaxed);
         Ok(())
     }
 

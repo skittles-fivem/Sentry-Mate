@@ -100,3 +100,12 @@ test('the recent rebuilds keep their rows, newest first, with cause and time tak
   assert.equal(F.historyLines({ state: 'idle', history: [] }, NOW)[0].text, 'None yet.');
   assert.equal(F.historyLines(null, NOW)[0].text, '');
 });
+
+test('the rebuild speed line: logs a second now and the stage that takes most of the time', () => {
+  assert.equal(F.speedText({ logs_per_s: 1.1, stage: 'windows', stage_share_pct: 72, over_ms: 30000 }),
+    '1.1 logs/s · most of the time: rebuilding the timeline around them (72 %)');
+  assert.equal(F.speedText({ logs_per_s: 0.5, stage: 'now', stage_share_pct: 40.4 }), '30 logs/min · most of the time: the newest values (40 %)');
+  assert.equal(F.speedText({ logs_per_s: 156, stage: 'nope', stage_share_pct: 50 }), '156 logs/s');
+  assert.equal(F.speedText(null), '');
+  assert.equal(F.speedText({ logs_per_s: null }), '');
+});

@@ -206,7 +206,9 @@ What moves on the virtual clock:
   while `decoding` (`days.total` known from the start, `days.done` 0), then `days`, `switching`, done. `percent`
   is logs done of all while decoding, days done of all in `days`, 0 while copying, 100 while switching or done,
   null otherwise; `rate_logs_per_s` and `rate_bytes_per_s` while decoding, `rate_days_per_s` in `days`; `eta_ms`
-  is logs left / logs per second while decoding, days left / days per second in `days`.
+  is logs left / logs per second while decoding, days left / days per second in `days`. `speed` while decoding:
+  `rate_logs_per_s` and the windows as the slowest stage (72 %); a car's health has the same `rebuild_speed`
+  (1.1 logs/s) while its `rebuild_pending`.
 - Uploads (`mockapi/uploads.py`): the preferred CAN Bridge key of each featured car that is driving or charging
   uploads a made-up log every 30 s of the virtual clock (its key's and token's `last_upload_ms`), and the server's
   `free_bytes` shrinks by 34.4 kB a log: `health` and `storage` change.

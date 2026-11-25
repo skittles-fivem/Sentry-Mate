@@ -46,7 +46,7 @@ import { gpsLayoutSection, hasCanData } from '../shared/gpsfit.js';
 import { confirmDialog } from '../core/dialog.js';
 import { follow, carOf, onRows, FALLBACK_POLL_MS } from '../shared/live.js';
 import { morph, morphChildren, keepEl } from '../core/morph.js';
-import { rowText as frRowText } from '../shared/fullrebuild.js';
+import { rowText as frRowText, held as frHeld, cancelling as frCancelling, speedText } from '../shared/fullrebuild.js';
 import { unsignedLogs } from './unsigned-logs.js';
 
 // every log of the car as the CAN Bridge app is told it now (`sentry-mate log-checks --car` prints the same)
@@ -299,17 +299,30 @@ async function mountCar(ctx) {
   const unsigned = admin ? unsignedLogs(ctx, { car, when, onChanged: () => { refreshHealth(); loadTotals().catch(() => {}); } }) : null;
   // the Rebuild row: the full rebuild's step while one runs for this car, else the period rebuild's state
   const rebuildVal = h('span');
+  // and the Rebuild speed row while one runs: logs a second now and the stage that takes most of the time (the full
+  // rebuild's `speed` for admins, else the car health's `rebuild_speed`); hidden while none runs
+  const speedVal = h('span');
   let lastPending = false;
+  let lastSpeed = null;
   function paintRebuildRow() {
     const fs = full?.status();
-    const row = fs?.this_car ? frRowText(fs, ctx.api.now(), (id) => names.get(id) || id) : null;
-    if (row) {
-      rebuildVal.className = row.tone;
-      rebuildVal.textContent = row.text;
+    let speed = null;
+    let runs = lastPending;
+    const r = fs?.this_car ? frRowText(fs, ctx.api.now(), (id) => names.get(id) || id) : null;
+    if (r) {
+      rebuildVal.className = r.tone;
+      rebuildVal.textContent = r.text;
+      // (a paused, waiting or cancelling run has no speed: the row is hidden then)
+      runs = fs.phase === 'decoding' && !frHeld(fs) && !frCancelling(fs);
+      speed = fs.speed;
     } else {
       rebuildVal.className = lastPending ? 'warn' : '';
       rebuildVal.textContent = lastPending ? 'Running' : 'Nothing pending';
+      speed = lastSpeed;
     }
+    speedVal.textContent = speedText(speed) || 'Measuring…';
+    const row = speedVal.closest('.kv-row');
+    if (row) row.hidden = !runs;
   }
 
   // the figures follow the car's `health` events; its endpoint is read at the start, after a reconnect and, only
@@ -402,6 +415,7 @@ async function mountCar(ctx) {
     const flags = kv([
       kvRow('Uploads', hl.uploads_enabled ? h('span', { class: 'ok' }, 'Accepted') : h('span', { class: 'warn' }, 'Turned off for this car'), 'upload'),
       kvRow('Rebuild', keepEl(rebuildVal, 'rebuild-row'), 'reset'),
+      kvRow('Rebuild speed', keepEl(speedVal, 'rebuild-speed'), 'gauge', { title: 'While a rebuild runs: the logs it works on a second now (the last half minute), and the part of a log’s work that takes the most of that time.' }),
     ]);
 
     // keys of this car
@@ -434,10 +448,12 @@ async function mountCar(ctx) {
     const spanList = keepEl(spanEl, `spans-${spanN}`);
 
     lastPending = !!hl.rebuild_pending;
-    paintRebuildRow();
+    lastSpeed = hl.rebuild_speed || null;
 
     // only the texts that changed are written; the full rebuild's panel stays as it is
     morphChildren(healthSlot, [status, fixes, figs, h('div', { class: 'hl-health-cols' }, h('div', null, keyList, flags, teslaBlock()), h('div', null, spanList, missingBlock(hl.missing_logs || {}), unsigned ? keepEl(unsigned.el, 'unsigned') : null)), hasCanData(car, hl) ? keepEl(gpsLayout.el, 'gps-layout') : null, keepEl(rebuildEl, 'rebuild')]);
+    // (after the rows are in place: the speed row is shown or hidden on the one in the page)
+    paintRebuildRow();
   }
 
   // logs the server recorded but no longer has: how many, since when, whether the car was asked again, and the
