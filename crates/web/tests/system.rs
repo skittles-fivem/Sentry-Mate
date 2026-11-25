@@ -751,6 +751,8 @@ async fn a_full_rebuild_asks_the_password_again_runs_one_at_a_time_and_is_audite
     assert_eq!(r.status, 200, "{}", r.text());
     let paused = r.json();
     assert_eq!((paused["state"].as_str(), paused["hold"]["kind"].as_str()), (Some("running"), Some("paused")));
+    assert_eq!(paused["cancelling"], false, "{paused}");
+    assert!(paused["eta_ms"].is_null() && paused["rate_logs_per_s"].is_null(), "a paused run has no time left: {paused}");
     assert!(paused["causes"].as_array().unwrap().iter().all(|c| c["code"] == "owner"), "{paused}");
     let notices = ok(&mut admin, "/api/v1/notices").await;
     assert!(notices["items"].as_array().unwrap().iter().any(|n| n["code"] == "full_rebuild_planned"), "{notices}");

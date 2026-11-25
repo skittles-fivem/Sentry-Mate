@@ -1691,3 +1691,68 @@ fn unknown_time_says_why_its_log_was_left_out() {
         assert!(r.contains(&"other_vin") && !r.contains(&"failed_check"), "{r:?}");
     });
 }
+
+/// A cancel that comes in the instant a run is paused (the worker still there, about to go) used to leave a run that
+/// is "running", paused and asked to stop, for ever: nothing was left to see the cancel. A restart, or the watch,
+/// now ends it cancelled; a paused run's progress never ticks a time left.
+#[test]
+fn a_cancel_that_met_a_pause_is_finished_not_kept_paused() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let e = k.engine.clone();
+        // the worker is cut off while decoding, and in the instant before it goes the run is paused and cancelled
+        e.full_rebuild_crash_after_logs(Some(3));
+        let e2 = e.clone();
+        e.full_rebuild_exit_hook(Some(Arc::new(move || {
+            e2.full_rebuild_when(engine::full::When::Pause).unwrap();
+            assert!(e2.cancel_full_rebuild().unwrap());
+        })));
+        e.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+        e.idle().await;
+        let r = e.full_rebuild_status().unwrap().unwrap();
+        assert!(r.running() && r.cancel && r.hold.is_some(), "the meeting: {r:#?}");
+        // a paused run has no speed and no time left, whatever the clock says
+        let rates = r.rates(r.phase_started_ms + 60_000);
+        assert!(rates.eta_ms.is_none() && rates.logs_per_s.is_none() && rates.bytes_per_s.is_none(), "{rates:?}");
+        // the watch finds it and ends it
+        e.full_rebuild_exit_hook(None);
+        e.full_rebuild_tick();
+        let r = full_done(&e).await;
+        assert_eq!(r.status, engine::full::FullStatus::Cancelled, "{r:#?}");
+        assert_eq!(e.rebuild_history().unwrap()[0].state, "cancelled");
+        assert!(!e.full_rebuild_status().unwrap().unwrap().running());
+    });
+}
+
+/// The same meeting, then the server restarts: the run is finished as cancelled, not carried on paused.
+#[test]
+fn a_restart_finishes_a_run_that_was_asked_to_stop_while_paused() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        for i in 0..DAY.len() as u64 {
+            send(&k, i).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let e = k.engine.clone();
+        e.full_rebuild_crash_after_logs(Some(3));
+        let e2 = e.clone();
+        e.full_rebuild_exit_hook(Some(Arc::new(move || {
+            e2.full_rebuild_when(engine::full::When::Pause).unwrap();
+            assert!(e2.cancel_full_rebuild().unwrap());
+        })));
+        e.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+        e.idle().await;
+        let again = Engine::new(k.db.clone(), k.store.clone(), Options::default());
+        again.start().unwrap();
+        let r = full_done(&again).await;
+        assert_eq!(r.status, engine::full::FullStatus::Cancelled, "{r:#?}");
+    });
+}

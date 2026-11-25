@@ -57,6 +57,9 @@ export function tone(s, nowMs = Date.now()) {
 /** Whether a full rebuild runs (the button is then "Cancel"); one that waits or is paused runs too. */
 export const running = (s) => s?.state === 'running';
 
+/** Whether a cancel was asked and the run has not ended yet: it is stopping, whatever else it was doing. */
+export const cancelling = (s) => running(s) && !!s?.cancelling;
+
 /** Whether the one under way waits (a new version's grace, put off until tonight) or is paused: no progress. */
 export const held = (s) => running(s) && !!s?.hold;
 
@@ -69,7 +72,7 @@ export const WHEN = [
 
 /** Whether the button for `when` is shown: only while one runs, and not for what it does already. */
 export function whenShown(s, when) {
-  if (!running(s)) return false;
+  if (!running(s) || cancelling(s)) return false;
   const k = s.hold?.kind;
   if (when === 'now') return !!k;
   if (when === 'tonight') return k !== 'tonight';
@@ -166,6 +169,19 @@ export function percent(s) {
   return s.phase === 'switching' ? 100 : 0;
 }
 
+/**
+ * The one line of the Rebuild row of Data health, from the same status as the panel (so the two never disagree):
+ * { text, tone } for this car's full rebuild, or null when none runs (the row then says what the period rebuild
+ * does). A paused or waiting run says so; the step is named only while a worker is on it.
+ */
+export function rowText(s, nowMs = Date.now(), carName = (id) => id) {
+  if (!running(s)) return null;
+  if (cancelling(s)) return { text: 'Cancelling the full rebuild', tone: 'warn' };
+  if (held(s)) return { text: `Full rebuild: ${holdText(s, nowMs)}`, tone: 'warn' };
+  const step = lines(s, nowMs, carName).find((l) => l.key === 'phase')?.text;
+  return { text: step ? `Running: ${step}` : 'Running', tone: 'warn' };
+}
+
 /** "12 a second", "1.5 a second", "40 a minute" of a thing counted (logs, days). */
 export function countRate(perS, one, many) {
   if (!Number.isFinite(perS) || perS <= 0) return '';
@@ -191,26 +207,30 @@ export function lines(s, nowMs = Date.now(), carName = (id) => id) {
   if (st === 'done' && s.errors?.length) state = `Done, with ${plural(s.errors.length, 'problem', 'problems')}`;
   if (r && (s.stalled || stalledAt(s, nowMs))) state = 'Running, but no progress for a while';
   if (held(s)) state = holdText(s, nowMs);
+  // (a run asked to stop is stopping: nothing else is said of it)
+  if (cancelling(s)) state = 'Cancelling: the old history is kept';
   const logs = s?.logs || {};
   const days = s?.days || {};
   const bytes = s?.bytes || {};
   const showCounts = r || st === 'done' || st === 'failed' || st === 'cancelled';
-  const speed = !r ? '' : [
+  const idle = held(s) || cancelling(s);
+  const speed = !r || idle ? '' : [
     Number.isFinite(s.rate_bytes_per_s) ? `${bytesText(s.rate_bytes_per_s)}/s` : '',
     s.phase === 'decoding' ? countRate(s.rate_logs_per_s, 'log', 'logs') : '',
     s.phase === 'days' ? countRate(s.rate_days_per_s, 'day', 'days') : '',
   ].filter(Boolean).join(' · ');
-  const left = r && Number.isFinite(s.eta_ms) ? `${durationText(s.eta_ms)} left` : '';
-  const measuring = r && (s.phase === 'decoding' || s.phase === 'days') && !speed && !left ? 'Working out the speed' : '';
+  const left = r && !idle && Number.isFinite(s.eta_ms) ? `${durationText(s.eta_ms)} left` : '';
+  const measuring = r && !idle && (s.phase === 'decoding' || s.phase === 'days') && !speed && !left ? 'Working out the speed' : '';
   // the days are known from the start of the decoding (the car's days, counted again when their step starts), and
   // the data from the logs' sizes: both are shown as soon as a run is under way
   const count = (x, f = (v) => n(v).toLocaleString('en-US')) => (showCounts && n(x.total) ? `${f(x.done)} of ${f(x.total)}` : '');
   const daysText = count(days) || (r && s.phase !== 'switching' ? 'Counted once the logs are decoded' : '');
   const bytesLine = count(bytes, bytesText);
-  const when = st === 'idle' ? '' : held(s) ? '' : r ? agoText(s.last_progress_ms, nowMs) : endedText(s, nowMs);
+  const when = st === 'idle' ? '' : idle ? '' : r ? agoText(s.last_progress_ms, nowMs) : endedText(s, nowMs);
   return [
     { key: 'state', label: 'State', text: state },
-    { key: 'phase', label: 'Step', text: r ? `${PHASES[s.phase] || s.phase || ''}${cars}` : '' },
+    // (a run that waits or is paused does no step: State says so, and the step is not named as if it ran)
+    { key: 'phase', label: 'Step', text: r && !idle ? `${PHASES[s.phase] || s.phase || ''}${cars}` : '' },
     { key: 'logs', label: 'Logs decoded', text: count(logs) },
     { key: 'days', label: 'Days', text: daysText },
     { key: 'bytes', label: 'Data', text: bytesLine },
