@@ -404,7 +404,7 @@ def timeline_row(app, h, s, now):
     live = in_progress(s, now)
     base = {"id": f"{s.kind}:{s.start}", "kind": s.kind, "start_ms": s.start, **S.of_seg(s),
             "cost": None, "ref": None, "parked_ms": None, "awake_reasons": [], "gap_reason": None,
-            "energy_basis": None}
+            "energy_basis": None, "value_sources": {}}
     if s.kind == "drive":
         d = drive_row(app, h, s, now)
         base.update({
@@ -416,6 +416,8 @@ def timeline_row(app, h, s, now):
             "range_end_km": d["end_range_km"], "range_delta_km": r(d["end_range_km"] - d["start_range_km"], 1),
             "energy_delta_kwh": r(-d["energy_kwh"], 3), "energy_basis": d["energy_basis"],
             "outside_avg_c": d["outside_avg_c"], "ref": {"drive": s.id}, "flags": d["flags"],
+            # as the drives list shows it: with what the chosen import filled (mockapi/gapfill.py)
+            **{k: d[k] for k in ("sources", "source_label", "value_sources")},
         })
         return base
     if s.kind == "charge":
