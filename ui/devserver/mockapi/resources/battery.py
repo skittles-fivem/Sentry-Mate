@@ -2,8 +2,10 @@
 level history, projected range, parked drain, consumption by temperature and temperatures.
 
 Capacity readings come from the pack's own controller (one per awake day, method "bms") and from
-each charge (energy added over the battery % it added, method "charge"), so capacity follows the
-charges the Charges page lists. Lifetime counters are the pack's own: the years before logging
+each charge (method "charge"): the energy the charge stored over the battery % it added, where the
+energy stored is the rated range it added times the car's own stored energy per km of rated range
+(as the server works it out, never the energy added, which counts charging losses too), so capacity
+follows the charges the Charges page lists. Lifetime counters are the pack's own: the years before logging
 plus everything logged, with AC, DC and regen adding up exactly.
 """
 
@@ -50,7 +52,9 @@ def _new_capacity(req, h):
         return median(days) - car.buffer_kwh, "early_bms"
     tm = [c for c in h.charges if c.source == "teslamate"][:10]
     if tm:
-        return median([_charge_full(car, c) for c in tm]) - car.buffer_kwh, "imported_charges"
+        got = [u for u in (_charge_usable(car, c) for c in tm) if u is not None]
+        if got:
+            return median([u[0] for u in got]), "imported_charges"
     return car.full_new_kwh - car.buffer_kwh, "vehicle_info"
 
 
@@ -64,14 +68,18 @@ def _new_range(req, h):
     return car.full_range_new_km, "vehicle_info"
 
 
-def _charge_full(car, c):
-    """Full-pack energy worked out from one charge: energy added over the battery % it added, plus the buffer.
-    The same figures the Charges list shows (imported charges included), so a page can redo the sum."""
+def _charge_usable(car, c):
+    """The usable capacity one charge measured, (usable, energy stored, energy added): the energy it stored (the
+    rated range it added times the car's stored energy per km of rated range) over the battery % it added. The same
+    figures the Charges list shows (imported charges included), so a page can redo the sum; the full pack is that
+    plus the buffer, once."""
     f = c.figures()
-    added, soc0, soc1 = r(f["added"], 3), r(c.soc0, 1), r(f["soc1"], 1)  # as the charge row shows them
-    if soc1 - soc0 < 10:
+    soc0, soc1 = r(c.soc0, 1), r(f["soc1"], 1)  # as the charge row shows them
+    r0, r1 = r(f["range0"], 1), r(f["range1"], 1)
+    if soc1 - soc0 < 10 or r1 <= r0:
         return None
-    return added / (soc1 - soc0) * 100 + car.buffer_kwh
+    stored = (r1 - r0) * car.rated_wh_per_km / 1000
+    return stored / (soc1 - soc0) * 100, stored, r(f["added"], 3)
 
 
 def _chemistry(req, h):
@@ -140,7 +148,8 @@ def get_battery(req):
     if h is None:
         n = now_object(req.app, req.car, req.now)
         return {"car": req.car, "time_zone": tz, "as_of_ms": n.get("at_ms"),
-                "capacity": {k: None for k in ("full_pack_kwh", "buffer_kwh", "usable_kwh", "basis", "spread_kwh", "readings",
+                "capacity": {k: None for k in ("full_pack_kwh", "buffer_kwh", "usable_kwh", "basis", "usable_basis",
+                                               "spread_kwh", "readings",
                                                "new_kwh", "new_source", "difference_kwh", "degradation_pct",
                                                "health_pct", "warranty_pct")},
                 "range": {k: None for k in ("full_now_km", "full_now_from_energy_km", "full_new_km", "new_source",
@@ -191,7 +200,7 @@ def get_battery(req):
         "car": req.car, "time_zone": req.tz(), "as_of_ms": at,
         "capacity": {
             "full_pack_kwh": r(full, 2), "buffer_kwh": car.buffer_kwh, "usable_kwh": r(full - car.buffer_kwh, 2),
-            "basis": "pack",
+            "basis": "pack", "usable_basis": "buffer",
             "spread_kwh": r(max(recent) - min(recent), 2), "readings": 30 * 24 * 12,
             "new_kwh": r(new_kwh, 2), "new_source": new_src, "difference_kwh": r(diff, 2),
             "degradation_pct": r(deg, 1), "health_pct": r(100 - deg, 1),
@@ -230,12 +239,14 @@ def get_capacity(req):
         for c in derive.shown_charges(h, a, end, req.now):
             if derive.is_live(c, req.now):
                 continue
-            fp = _charge_full(car, c)
-            if fp is None:
+            got = _charge_usable(car, c)
+            if got is None:
                 continue
-            rows.append({"t_ms": c.data_end, "odometer_km": r(getattr(c, "odo", None), 1), "full_pack_kwh": r(fp, 2),
-                         "usable_kwh": r(fp - car.buffer_kwh, 2), "usable_basis": "charge", **SRC.of_seg(c), "method": "charge",
-                         "charge": c.id})
+            usable, stored, added = got
+            rows.append({"t_ms": c.data_end, "odometer_km": r(getattr(c, "odo", None), 1),
+                         "full_pack_kwh": r(usable + car.buffer_kwh, 2), "usable_kwh": r(usable, 2),
+                         "usable_basis": "rated_range", "energy_added_kwh": added, "stored_kwh": r(stored, 3),
+                         **SRC.of_seg(c), "method": "charge", "charge": c.id})
     else:
         lo = max(a, h.first_ms)
         d0 = local_date(lo, tz)

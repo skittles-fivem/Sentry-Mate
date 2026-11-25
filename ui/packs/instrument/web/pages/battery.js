@@ -45,7 +45,8 @@ const n0 = (v) => (v == null ? '—' : formatNumber(v, { maximumFractionDigits: 
 const NEW_SOURCE = {
   owner: 'typed by the owner',
   early_bms: 'median of the pack’s readings in its first 30 days',
-  imported_charges: 'worked out from the earliest imported charges',
+  imported_charges: 'per charge, from the earliest imported charges: the energy each stored (the rated range it added × the car’s own energy per km of range, from the BMS), pack side, over the % it added',
+  imported_charges_energy_added: 'per charge, from the earliest imported charges: the energy each added over the % it added (no BMS energy readings to do better; reads a few % high)',
   pack_code: 'the pack-size code the car reports (a hint, not a measurement)',
   vehicle_info: 'the car’s build (VIN and CAN), not a measurement',
 };
@@ -55,10 +56,33 @@ const RANGE_SOURCE = {
   pack_code: 'the pack-size code the car reports (a hint, not a measurement)',
   vehicle_info: 'the car’s build (VIN and CAN), not a measurement',
 };
+// what a charge's capacity reading is worked out from (usable_basis)
+const CHARGE_BASIS = {
+  rated_range: 'energy stored over the % added, pack side',
+  energy_added: 'energy added over the % added (reads a few % high)',
+};
+/** What a capacity reading is, by its source: the BMS, or per charge from imported charges or from CAN. */
+function readingLabel(it) {
+  if (it.method !== 'charge') return 'BMS';
+  const from = it.source === 'can' ? 'per charge from CAN' : it.source === 'teslamate' || it.source === 'teslafi' ? 'per charge from imported charges' : 'per charge';
+  return `${from}, ${CHARGE_BASIS[it.usable_basis] || 'energy over the % added'}`;
+}
+/** Where the two figures health compares come from. */
+function healthSources(cap) {
+  const now = cap.basis === 'charges' ? 'Usable now is worked out per charge from the last charges' : 'Usable now comes from the battery management system (BMS), which reports the pack’s capacity every awake minute';
+  const src = cap.new_source;
+  const when = src === 'imported_charges' ? 'usable when new is worked out per charge from the earliest imported charges, on the same basis (energy stored, pack side, not energy added)'
+    : src === 'imported_charges_energy_added' ? 'usable when new is the earliest imported charges’ energy added over the % added, which reads a few % high'
+      : src === 'early_bms' ? 'usable when new is the BMS’s reading in the first 30 days'
+        : src === 'owner' ? 'usable when new is the value typed under Reference values'
+          : src ? 'usable when new is what the car’s build gives' : 'usable when new is not known';
+  return `${now}; ${when}.`;
+}
 const NOTES = {
   new_value_typed: 'The “when new” values are the ones typed under Reference values.',
   new_value_from_early_readings: 'No value was typed, so “when new” is the median of the earliest pack readings. Type the real figure under Reference values if you know it.',
-  new_value_from_imported_charges: 'The car was logged late, so “when new” comes from the earliest imported charges. Type the real figure if you know it.',
+  new_value_from_imported_charges: 'The car was logged late, so “when new” comes from the earliest imported charges, on the same basis as the BMS (energy stored, not energy added). Type the real figure if you know it.',
+  new_value_from_imported_charges_energy_added: 'The car was logged late and there are no BMS energy readings, so “when new” is the earliest imported charges’ energy added over the % added. That counts charging losses and reads a few % high: type the real figure if you know it.',
   new_value_from_pack_code: 'There are no early readings, so “when new” is only the pack-size code. Type the real figure for a true health figure.',
   new_value_from_vehicle_info: 'There are no early readings, so “when new” is what the car’s build (VIN and CAN) gives. Type the real figure under Reference values if you know it.',
   cold_battery_locks_part: 'The pack is cold: part of the energy is locked until it warms up, so usable is below battery %.',
@@ -241,14 +265,14 @@ export async function mount(ctx) {
             h('span', { class: 'metric-label' }, 'Health'),
             h('span', { class: 'cap-ring-sub' }, cap.degradation_pct == null ? 'Lost: not known' : `${formatNumber(cap.degradation_pct, { maximumFractionDigits: 1 })} % lost`))),
         h('div', { class: 'cap-figs' },
-          metric('Usable now', cap.usable_kwh, 'energy', { cover: 'bh.capacity.usable_now', explain: cap.usable_kwh == null ? null : cap.full_pack_kwh != null && cap.buffer_kwh != null ? `Full pack ${format(cap.full_pack_kwh, 'energy')} minus the ${format(cap.buffer_kwh, 'energy')} buffer the car keeps back; the pack’s own reading${readingsWord}.` : `The pack’s own reading${readingsWord}.`, why: 'The pack has not reported it' }),
+          metric('Usable now', cap.usable_kwh, 'energy', { cover: 'bh.capacity.usable_now', explain: cap.usable_kwh == null ? null : cap.basis === 'charges' ? `Per charge: the median of the last charges${readingsWord}, ${CHARGE_BASIS[cap.usable_basis] || 'energy over the % added'}.` : cap.full_pack_kwh != null && cap.buffer_kwh != null ? `From the BMS: full pack ${format(cap.full_pack_kwh, 'energy')} minus the ${format(cap.buffer_kwh, 'energy')} buffer the car keeps back${readingsWord}.` : `From the BMS${readingsWord}.`, why: 'The pack has not reported it' }),
           metric('Usable when new', cap.new_kwh, 'energy', { cover: 'bh.capacity.usable_new', explain: cap.new_source ? `Source: ${NEW_SOURCE[cap.new_source] || cap.new_source}.` : null, why: 'Not known: type it under Reference values' }),
           metric('Difference', cap.difference_kwh == null ? null : -cap.difference_kwh, 'energy', { cover: 'bh.capacity.difference', sign: true, explain: 'Usable now minus usable when new.', why: 'Needs a “when new” value' }),
           metric('Energy per distance of range', factor, 'efficiency', { cover: 'bh.stat.efficiency', explain: eff?.factor ? `How much energy one ${unitLabel('range')} of ${rangeWord} range stands for, from ${n0(eff.factor.readings)} pack readings. Used to turn energy into range.` : null, why: effErr ? 'Could not be loaded' : 'Not worked out yet' }),
           metric('Brick voltage spread', bat.brick_spread_v == null ? null : h('span', { class: 'q' }, h('span', { class: 'q-v' }, formatNumber(bat.brick_spread_v * 1000, { maximumFractionDigits: 0 })), '\u00a0', h('span', { class: 'q-u' }, 'mV')), null, { explain: 'Highest minus lowest cell group: the pack’s balance. Under 30 mV is well balanced.', why: 'Not reported' }),
         )),
       h('div', { class: 'cap-explain', cover: ['bh.capacity.help', 'bh.gauge.degradation_help'] },
-        h('p', { class: 'note' }, icon('info', 'ico--sm'), ' Health is usable now as a share of usable when new. Both come from the battery management system, which reports the pack’s capacity every awake minute; nothing is worked out from range. It is a guide, not a lab test: it moves a little with temperature and with how long since the pack last balanced.'),
+        h('p', { class: 'note cap-sources' }, icon('info', 'ico--sm'), ` Health is usable now as a share of usable when new. ${healthSources(cap)} It is a guide, not a lab test: it moves a little with temperature and with how long since the pack last balanced.`),
         warranty != null ? h('p', { class: 'note' }, h('i', { class: 'k-warranty', 'aria-hidden': 'true' }), ` Warranty line: ${pct(warranty)} health. Above it the pack is inside the usual battery warranty threshold; the threshold is set under Reference values.`) : null,
         packLine, notesEl));
 
@@ -383,12 +407,12 @@ export async function mount(ctx) {
           h('h3', { class: 'life-h' }, icon('bolt', 'ico--sm'), 'Charging', h('a', { class: 'panel-link', href: ctx.link('charges', { period: { preset: 'all' } }), cover: 'bh.charging.link_stats' }, 'Charges', icon('chev-r', 'ico--sm'))),
           kv([
             ['Charging sessions', `${n0(t.charges)}  (AC ${n0(t.ac?.charges)}, DC ${n0(t.dc?.charges)}${t.unknown_kind?.charges ? `, ${n0(t.unknown_kind.charges)} of no known kind` : ''})`, { cover: 'bh.charging.count' }],
-            ['Energy added to the pack', format(t.energy_added_kwh, 'energy'), { cover: 'bh.charging.energy_added' }],
-            ['Energy from the grid', h('span', null, format(t.energy_grid_kwh, 'energy'), t.grid_coverage_pct != null && t.grid_coverage_pct < 100 ? h('span', { class: 'faint' }, ` (measured for ${pct(t.grid_coverage_pct)} of energy)`) : null), { cover: 'bh.charging.energy_used' }],
+            ['Energy added to the pack (pack side)', format(t.energy_added_kwh, 'energy'), { cover: 'bh.charging.energy_added', title: 'What went into the pack, as the car counts it: more than the pack stores, since charging loses some in the cells' }],
+            ['Energy from the grid (wall side)', h('span', null, format(t.energy_grid_kwh, 'energy'), t.grid_coverage_pct != null && t.grid_coverage_pct < 100 ? h('span', { class: 'faint' }, ` (measured for ${pct(t.grid_coverage_pct)} of energy)`) : null), { cover: 'bh.charging.energy_used' }],
             ['Charging efficiency', t.charging_efficiency_pct == null ? '— not measured' : pct(t.charging_efficiency_pct, 1), { cover: 'bh.charging.efficiency' }],
             ['Equivalent full cycles', life.equivalent_cycles == null ? '—' : formatNumber(life.equivalent_cycles, { maximumFractionDigits: 1 }), { cover: 'bh.charging.cycles', title: 'Energy charged divided by usable capacity' }],
           ]),
-          h('p', { class: 'note', cover: 'bh.charging.help' }, 'Efficiency is energy into the pack over energy from the grid, for AC charges where the car measured both. DC fast chargers do not report their grid side, so they are left out instead of counted as 100 %. A full cycle is one usable pack’s worth of charging.'))),
+          h('p', { class: 'note', cover: 'bh.charging.help' }, 'Efficiency is energy into the pack (pack side) over energy from the grid (wall side), for AC charges where the car measured both. Neither is what the pack stores, so capacity is never worked out from them. DC fast chargers do not report their grid side, so they are left out instead of counted as 100 %. A full cycle is one usable pack’s worth of charging.'))),
       split);
   }
 
@@ -437,16 +461,20 @@ export async function mount(ctx) {
     ]);
     if (!ctx.alive()) return;
     const items = pts.items, trend = pts.trend || med.trend;
-    const csv = csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'battery-capacity', opt.capGroup), items, [timeColumn('Time', 't_ms', tz), column('Odometer', 'odometer_km', 'odometer'), column('Full pack', 'full_pack_kwh', 'energy'), column('Usable', 'usable_kwh', 'energy'), column('Method', 'method'), column('Charge', 'charge'), { label: 'Data from', value: (it) => srcText(it) }]) });
+    const csv = csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'battery-capacity', opt.capGroup), items, [timeColumn('Time', 't_ms', tz), column('Odometer', 'odometer_km', 'odometer'), column('Full pack', 'full_pack_kwh', 'energy'), column('Usable', 'usable_kwh', 'energy'), column('Method', 'method'), column('Basis', 'usable_basis'), column('Energy added', 'energy_added_kwh', 'energy'), column('Energy stored', 'stored_kwh', 'energy'), column('Charge', 'charge'), { label: 'Data from', value: (it) => srcText(it) }]) });
     replace(capSide, seg, segG, csv);
     if (!items.length) { replace(capChartSlot, emptyState({ icon: 'battery', title: 'No capacity readings yet', text: opt.capGroup === 'charge' ? 'A reading needs a finished charge that added at least 10 %. Try Per day for the pack’s own daily readings.' : 'The pack reports its capacity while the car is awake; none is stored yet.' })); return; }
 
     const xOf = (it) => (opt.capX === 'odometer' ? convert(it.odometer_km, 'odometer') : it.t_ms / 1000);
-    const P = items.map((it) => ({ x: xOf(it), y: it.usable_kwh, it })).filter((p) => p.x != null && p.y != null);
+    const P = items.map((it) => ({ x: xOf(it), y: it.usable_kwh, it, can: it.method === 'charge' && it.source === 'can' })).filter((p) => p.x != null && p.y != null);
     const M = (med.items || []).map((it) => ({ x: xOf(it), y: it.usable_kwh })).filter((p) => p.x != null && p.y != null);
     // one x column for both series (uPlot needs sorted x)
-    const all = [...P.map((p) => ({ ...p, s: 1 })), ...M.map((p) => ({ ...p, s: 2 }))].sort((a, b) => a.x - b.x);
+    // per charge, the imported (and API) charges and SMO's own (CAN) are two series, so each is labelled
+    const all = [...P.map((p) => ({ ...p, s: p.can ? 4 : 1 })), ...M.map((p) => ({ ...p, s: 2 }))].sort((a, b) => a.x - b.x);
     const xs = all.map((p) => p.x), ys1 = all.map((p) => (p.s === 1 ? p.y : null)), ys2 = all.map((p) => (p.s === 2 ? p.y : null));
+    const ys4 = all.map((p) => (p.s === 4 ? p.y : null));
+    const perCharge = opt.capGroup === 'charge', hasCan = P.some((p) => p.can), hasOther = P.some((p) => !p.can);
+    const anyAdded = items.some((it) => it.usable_basis === 'energy_added');
     // least-squares trend over the readings
     const fit = linFit(P);
     const ys3 = all.map((p) => (fit ? fit.a + fit.b * p.x : null));
@@ -460,8 +488,10 @@ export async function mount(ctx) {
     const slope = trend?.slope_kwh_per_10000_km;
     replace(capChartSlot,
       h('div', { class: 'chart-label' },
-        h('span', { class: 'key', vars: { '--c': 'var(--c-soc)' } }, h('i'), opt.capGroup === 'charge' ? 'Each charge' : 'Each day'),
-        h('span', { class: 'key', vars: { '--c': 'var(--live)' } }, h('i'), 'Monthly median'),
+        !perCharge ? h('span', { class: 'key', vars: { '--c': 'var(--c-soc)' } }, h('i'), 'Each day (BMS)') : null,
+        perCharge && hasOther ? h('span', { class: 'key cap-key-imported', vars: { '--c': 'var(--c-soc)' } }, h('i'), 'Per charge, imported charges (energy stored)') : null,
+        perCharge && hasCan ? h('span', { class: 'key cap-key-can', vars: { '--c': 'var(--c-power)' } }, h('i'), 'Per charge, CAN (energy stored)') : null,
+        h('span', { class: 'key', vars: { '--c': 'var(--live)' } }, h('i'), 'Monthly median (BMS)'),
         h('span', { class: 'key', vars: { '--c': 'var(--warm)' } }, h('i'), 'Trend'),
         newKwh != null ? h('span', { class: 'key', vars: { '--c': 'var(--text-3)' } }, h('i'), `When new ${format(newKwh, 'energy')}`) : null,
         pk.replaced_ms != null ? h('span', { class: 'key', vars: { '--c': 'var(--warm)' } }, h('i'), 'Pack replaced: left of the line is the previous pack') : null,
@@ -475,10 +505,12 @@ export async function mount(ctx) {
           : slope >= 0 ? 'The pack is not losing capacity at the moment.'
             : `Trend: ${format(Math.abs(slope) / convert(1, 'distance'), 'energy')} less per ${formatNumber(10000)} ${unitLabel('distance')} driven.`,
         proj ? ` At this rate the pack reaches the ${pct(proj.warranty_pct)} warranty line (${format(proj.full_pack_kwh_at_warranty, 'energy')}) at about ${format(proj.odometer_km, 'odometer')}, around ${formatDate(proj.t_ms, tz, { weekday: false, month: 'long' })}. A straight line is a rough guide: packs usually lose more early and less later.` : '',
-        ' Per charge: energy added over the % it added, plus the buffer. Per day and the median: the pack’s own reading.'));
+        h('span', { class: 'cap-method' }, ' Per charge: the energy the charge stored over the % it added, on the same basis as the BMS (usable, pack side): the rated range it added × the car’s own energy per km of range from the BMS. Not the energy added: that also counts what charging loses in the pack and reads a few % high; the grid energy (wall side) is never used.',
+          anyAdded ? ' Charges marked “energy added” had no BMS energy readings to work with and read high.' : '',
+          ' Per day and the monthly median: the BMS’s own reading (full pack minus the buffer).')));
     const make = (width, height) => {
       const c = colors();
-      const soc = cssVar('--c-soc');
+      const soc = cssVar('--c-soc'), can = cssVar('--c-power');
       return {
         width, height, padding: [rpx(10), rpx(14), 0, 0], legend: { show: false },
         cursor: { drag: { x: false, y: false }, points: { size: rpx(9), width: rpx(2), stroke: c.cursor }, dataIdx: (u, si, i) => nearestNonNull(u.data[si], i) },
@@ -490,7 +522,8 @@ export async function mount(ctx) {
         series: [{},
           { label: 'Reading', stroke: soc, width: 0, paths: () => null, points: { show: true, space: 0, size: rpx(opt.capGroup === 'day' ? 4 : 6), width: 0, fill: hexA(soc, 0.7), stroke: hexA(soc, 0.7) } },
           { label: 'Median', stroke: c.live, width: rpx(2.25), spanGaps: true, points: { show: false } },
-          { label: 'Trend', stroke: c.warm, width: rpx(1.5), dash: [rpx(6), rpx(4)], spanGaps: true, points: { show: false } }],
+          { label: 'Trend', stroke: c.warm, width: rpx(1.5), dash: [rpx(6), rpx(4)], spanGaps: true, points: { show: false } },
+          { label: 'CAN reading', stroke: can, width: 0, paths: () => null, points: { show: true, space: 0, size: rpx(6), width: 0, fill: hexA(can, 0.75), stroke: hexA(can, 0.75) } }],
         hooks: {
           draw: [(u) => {
             // the day the pack was replaced: readings left of the line are the previous pack's
@@ -506,14 +539,14 @@ export async function mount(ctx) {
             cx.beginPath(); cx.moveTo(u.bbox.left, y); cx.lineTo(u.bbox.left + u.bbox.width, y); cx.stroke(); cx.restore();
           }],
           setCursor: [(u) => {
-            const i = u.cursor.idxs?.[1];
-            if (i == null || u.cursor.left < 0 || ys1[i] == null) { readout.textContent = 'Point at a reading; click a per-charge reading to open that charge.'; return; }
-            const p = all[i];
-            readout.textContent = `${formatDate(p.it.t_ms, tz, { weekday: false })} · ${format(p.it.odometer_km, 'odometer')} · usable ${format(p.it.usable_kwh, 'energy')} (full pack ${format(p.it.full_pack_kwh, 'energy')}) · ${srcShort(p.it) || 'source not known'}${p.it.charge ? ' · click to open the charge' : ''}`;
+            const i = pick(u);
+            if (i == null) { readout.textContent = 'Point at a reading; click a per-charge reading to open that charge.'; return; }
+            const it = all[i].it;
+            readout.textContent = `${formatDate(it.t_ms, tz, { weekday: false })} · ${format(it.odometer_km, 'odometer')} · usable ${format(it.usable_kwh, 'energy')} (full pack ${format(it.full_pack_kwh, 'energy')}) · ${readingLabel(it)}${it.stored_kwh != null ? ` · stored ${format(it.stored_kwh, 'energy')} of ${format(it.energy_added_kwh, 'energy')} added` : ''} · ${srcShort(it) || 'source not known'}${it.charge ? ' · click to open the charge' : ''}`;
           }],
           ready: [(u) => {
             u.over.addEventListener('click', () => {
-              const i = u.cursor.idxs?.[1];
+              const i = pick(u);
               const it = i != null ? all[i]?.it : null;
               if (it?.charge) ctx.navigate(state.buildUrl('charge', { car: cid, charge: it.charge }));
             });
@@ -522,7 +555,14 @@ export async function mount(ctx) {
         },
       };
     };
-    mountPlot(plotEl, make, [xs, ys1, ys2, ys3], ctx);
+    // the reading under the cursor, of either point series
+    const pick = (u) => {
+      if (u.cursor.left < 0) return null;
+      const i = u.cursor.idxs?.[1], j = u.cursor.idxs?.[4];
+      if (i != null && ys1[i] != null) return i;
+      return j != null && ys4[j] != null ? j : null;
+    };
+    mountPlot(plotEl, make, [xs, ys1, ys2, ys3, ys4], ctx);
   }
 
   /* ---------- charge level */
