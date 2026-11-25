@@ -60,11 +60,17 @@ class Battery(ServerCase):
         charges = {x["id"]: x for x in self.c.get(f"/api/v1/cars/c1/charges?from_ms={NOW - 60 * DAY}&limit=500")["items"]}
         self.assertGreater(len(cap["items"]), 5)
         buffer = self.c.get("/api/v1/cars/c1/battery")["capacity"]["buffer_kwh"]
+        factor = self.c.get("/api/v1/cars/c1/efficiency")["factor"]["rated_wh_per_km"]
         for it in cap["items"]:
             ch = charges[it["charge"]]
-            self.assertEqual(it["method"], "charge")
-            usable = ch["energy_added_kwh"] / (ch["end_soc_pct"] - ch["start_soc_pct"]) * 100
-            self.assertAlmostEqual(it["full_pack_kwh"], usable + buffer, delta=0.4, msg=it["charge"])
+            self.assertEqual((it["method"], it["usable_basis"]), ("charge", "rated_range"))
+            # the energy stored (rated range added at the car's factor) over the % added; the buffer once
+            stored = (ch["end_range_km"] - ch["start_range_km"]) * factor / 1000
+            usable = stored / (ch["end_soc_pct"] - ch["start_soc_pct"]) * 100
+            self.assertAlmostEqual(it["usable_kwh"], usable, delta=0.4, msg=it["charge"])
+            self.assertAlmostEqual(it["full_pack_kwh"], it["usable_kwh"] + buffer, delta=0.02, msg=it["charge"])
+            self.assertAlmostEqual(it["stored_kwh"], stored, delta=0.05, msg=it["charge"])
+            self.assertEqual(it["energy_added_kwh"], ch["energy_added_kwh"])
         self.assertLess(cap["trend"]["slope_kwh_per_10000_km"], 0)
         day = self.c.get("/api/v1/cars/c1/battery/capacity?group=day&limit=500")
         self.assertTrue(all(x["method"] == "bms" for x in day["items"]))

@@ -189,6 +189,12 @@ once known), and a complete one also its `check`:
   version with newer rules: only failed ones (verified logs are left as they are), all of a car key at once, without
   anything being sent again. A log that verifies now is decoded and its time stops being unknown time; the audit log
   gets a `can-logs-rechecked` entry on the car saying how many were checked and how many verify now.
+- **Unsigned logs of a paired car** (made by an app from before it signed logs, sent after the first signed one, or
+  that the bridge could not sign) are `failed` with `check_reason: unsigned`, and their data is not used. Data
+  health lists each with why it is unsigned (no sidecar, made before the app signed logs, the app said it is not
+  signed, the app could not sign it), and an admin can choose to use them, their password asked again: only those,
+  never a log with a bad or another key's signature or a changed file ([Pairing and the owner's
+  word](security.md#pairing-and-the-owners-word)). Their drives then appear; the app still sees them as failed.
 - **Why logs failed**, without sharing data: `sentry-mate log-checks --car c1` prints the counts per
   `check_reason` and when the failed runs were ([Log checks](commands.md#log-checks)); Data health shows the same
   counts ("all log checks").

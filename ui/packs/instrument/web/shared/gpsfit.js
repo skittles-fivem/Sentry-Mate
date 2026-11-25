@@ -102,6 +102,11 @@ export function fitModel(s) {
     out.step = unit && s.total ? `${what}: ${formatNumber(s.done ?? 0)} of ${count(s.total, unit)}` : what;
     out.headline = `Finding the layout (${out.pct} %)`;
     if (s.server_busy) out.notes = `The server is also busy: ${s.server_busy}.`;
+    // (a rebuild runs: the fit waits, its progress kept, and goes on once it ends)
+    if (s.waiting) {
+      out.headline = `Waiting (${out.pct} %)`;
+      out.notes = `Waiting: ${s.waiting}.`;
+    }
     return out;
   }
   if (state === 'failed') {

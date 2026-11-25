@@ -684,6 +684,7 @@ dependencies = [
  "trust",
  "tzf-rs",
  "vault",
+ "zeroize",
 ]
 
 [[package]]
@@ -2917,6 +2918,7 @@ dependencies = [
  "tokio-rustls",
  "tower",
  "tracing",
+ "trust",
  "vault",
  "web",
  "zeroize",

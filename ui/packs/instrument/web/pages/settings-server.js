@@ -20,7 +20,7 @@ import { icon } from '../core/icons.js';
 import { soldParts, soldToggle } from '../core/carswitch.js';
 import { pageHead, panel, kv, tag, pill, metric, figures, csvButton } from '../core/page.js';
 import { dataTable } from '../core/table.js';
-import { field, form } from '../core/form.js';
+import { field, form, once } from '../core/form.js';
 import { codeAttrs, codeValue, CODE_HINT } from '../core/code.js';
 import { cancelBtn as twoCancelBtn, ownPassword as twoOwnPassword, ownCode, ownWrong, recoveryDialog, confirmTwoStep } from './two-step-turn-on.js';
 import { emptyState, errorWords } from '../core/states.js';
@@ -183,7 +183,7 @@ export async function mount(ctx) {
   const nameInput = h('input', { class: 'input ss-name-input', type: 'text', placeholder: 'sentry-mate.local', 'aria-label': 'Host name to add', autocomplete: 'off', spellcheck: 'false', disabled: !admin,
     onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); addDraft(); } } });
   const nameErr = h('p', { class: 'form-error', hidden: true });
-  const saveNames = h('button', { class: 'btn btn--primary btn--sm', type: 'button', disabled: true, onclick: () => putNames(draft) }, 'Save host names');
+  const saveNames = h('button', { class: 'btn btn--primary btn--sm', type: 'button', disabled: true, onclick: once(() => putNames(draft)) }, 'Save host names');
   function paintNames() {
     const changed = JSON.stringify(draft) !== JSON.stringify(S.settings.host_names || []);
     saveNames.disabled = !admin || !changed || !draft.length;
@@ -193,14 +193,15 @@ export async function mount(ctx) {
         n.toLowerCase() === here.host ? tag('this address', 'live') : null,
         admin ? h('button', { class: 'btn btn--ghost btn--icon btn--sm', type: 'button', 'aria-label': `Remove ${n}`, disabled: draft.length <= 1,
           title: draft.length <= 1 ? 'The certificate needs at least one name' : null,
-          onclick: () => { draft = draft.filter((_, j) => j !== i); paintNames(); } }, icon('x', 'ico--sm')) : null))),
+          onclick: () => { if (savingNames) return; draft = draft.filter((_, j) => j !== i); paintNames(); } }, icon('x', 'ico--sm')) : null))),
       admin ? h('div', { class: 'row ss-name-add' }, nameInput,
-        h('button', { class: 'btn btn--sm', type: 'button', onclick: addDraft }, icon('plus', 'ico--sm'), 'Add')) : null,
+        h('button', { class: 'btn btn--sm', type: 'button', onclick: () => addDraft() }, icon('plus', 'ico--sm'), 'Add')) : null,
       nameErr,
-      admin ? h('div', { class: 'row' }, saveNames, changed ? h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onclick: () => { draft = [...S.settings.host_names]; paintNames(); } }, 'Undo changes') : null,
+      admin ? h('div', { class: 'row' }, saveNames, changed ? h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onclick: () => { if (savingNames) return; draft = [...S.settings.host_names]; paintNames(); } }, 'Undo changes') : null,
         changed ? h('span', { class: 'setting-note' }, 'Not saved yet.') : null) : h('p', { class: 'setting-note' }, 'Only an admin can change them.'));
   }
   function addDraft() {
+    if (savingNames) return;
     const v = nameInput.value.trim().toLowerCase();
     nameErr.hidden = true;
     if (!v) return;
@@ -224,7 +225,14 @@ export async function mount(ctx) {
   }
   // list: the whole list to save. fromDraft: the list is the draft (a save of the panel); otherwise the
   // draft keeps its unsaved edits on top of the saved list.
+  // one save at a time: a second press (or Add, Undo, a removal) while one runs would send a stale version (409)
+  let savingNames = false;
   async function putNames(list, { fromDraft = true } = {}) {
+    if (savingNames) return;
+    savingNames = true;
+    try { await putNamesNow(list, { fromDraft }); } finally { savingNames = false; }
+  }
+  async function putNamesNow(list, { fromDraft }) {
     nameErr.hidden = true;
     const before = [...(S.settings.host_names || [])];
     try {
@@ -808,20 +816,23 @@ export async function mount(ctx) {
       replace(storList, h('li', { class: 'st-none' }, `The server did not say what takes the space${S.storageErr ? `: ${errText(S.storageErr)}` : '.'}`));
       return;
     }
+    // the list is built again: a head or a scrolling list that had the focus gets it back
+    const kept = storList.contains(document.activeElement) ? document.activeElement.getAttribute('data-fk') : null;
     replace(storList, groups.map((g) => {
       const open = storOpen.has(g.group);
       const bar = h('span', { class: 'bar st-bar', 'aria-hidden': 'true' }, h('i'));
       setVars(bar, { '--w': `${Math.max(g.share > 0 ? 1 : 0, g.share * 100).toFixed(1)}%` });
-      const rows = h('ul', { class: 'st-rows', tabindex: '0', 'aria-label': g.name, hidden: !open },
+      const rows = h('ul', { class: 'st-rows', tabindex: '0', 'data-fk': `rows:${g.group}`, 'aria-label': g.name, hidden: !open },
         g.rows.map((c) => h('li', { class: 'st-row', title: c.label },
           h('span', { class: 'st-row-name' }, shortName(c)), h('span', { class: 'st-row-size num' }, bytes(c.disk_bytes)))));
-      const head = h('button', { class: 'st-group-head', type: 'button', 'aria-expanded': String(open), onclick: () => {
+      const head = h('button', { class: 'st-group-head', type: 'button', 'data-fk': `head:${g.group}`, 'aria-expanded': String(open), onclick: () => {
         if (storOpen.has(g.group)) storOpen.delete(g.group); else storOpen.add(g.group);
         paintGroups();
       } }, icon(open ? 'chev-d' : 'chev-r', 'ico--sm'), h('span', { class: 'st-group-name' }, g.name), bar,
       h('span', { class: 'st-group-size num' }, bytes(g.disk_bytes)), h('span', { class: 'st-group-share num' }, shareText(g.share)));
       return h('li', { class: ['st-group', open && 'is-open'] }, head, rows);
     }));
+    if (kept) [...storList.querySelectorAll('[data-fk]')].find((el) => el.getAttribute('data-fk') === kept)?.focus();
   }
   let storPollErr = null;
   function paintStorage() {

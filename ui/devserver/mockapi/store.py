@@ -124,6 +124,7 @@ class Store:
         self.places_rev = 0  # goes up on every place change (place matches are cached by it)
         self.charge_price = {}  # charge id -> {place, price, at_ms}: the price a charge keeps (see placing.py)
         self.update_versions = {}  # update id -> version typed by the owner
+        self.first_versions = {}  # (car id, module) -> version typed on a module's first fingerprint segment
         self.builds = {}  # build id -> {version, from_update}: versions learned from the owner
         self.rebuilds = {}  # car id -> [{from_ms, to_ms, at_ms}]
         self._seed_cars(now)

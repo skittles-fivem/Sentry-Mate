@@ -110,6 +110,13 @@ pub const BUMPS: &[Bump] = &[
         proof: "a_chain_with_one_bad_log_fails_that_log_alone",
         proof_file: "crates/ingest/tests/checks.rs",
     },
+    Bump {
+        part: Part::Trust,
+        version: 3,
+        what: "an unsigned CAN log says why it is unsigned, so the owner can choose to use it",
+        proof: "unsigned_logs_judged_by_older_rules_learn_why_they_are_unsigned",
+        proof_file: "crates/ingest/tests/unsigned_use.rs",
+    },
 ];
 
 /// Where the changes are explained (from the repository's root).
@@ -301,7 +308,8 @@ mod tests {
         assert!(c[1].text.contains("CAN message definitions"), "{c:?}");
         assert!(causes_between(Some("decode-3.rules-3.dbc-aa"), "decode-3.rules-3.dbc-aa").is_empty());
         assert_eq!(causes_between(None, "decode-3.rules-3.dbc-aa").len(), 1);
-        assert_eq!(trust_cause(1).len(), 1);
+        assert_eq!(trust_cause(1).len(), 2);
+        assert_eq!(trust_cause(2).len(), 1);
         assert!(trust_cause(trust::RULES_VERSION).is_empty());
     }
 }

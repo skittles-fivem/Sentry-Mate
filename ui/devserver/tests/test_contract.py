@@ -66,6 +66,8 @@ class Contract(ServerCase):
         inv = next(i for i in c.get("/api/v1/integrations/invoices?matched=true&limit=200")["items"]
                    if i["car"] == "c1" and i["pdf"])
         cls.ids["invoice"] = inv["id"]
+        # a module's first fingerprint segment of c1 (no update came with it)
+        cls.ids["row"] = c.get("/api/v1/cars/c1/firmware/history?module=bms&limit=500")["items"][-1]["id"]
         cls.invoice_charge = inv["charge"]
         cls.server.app.store.exports[cls.ids["export"]]["made_ms"] -= 10_000  # prepared
         cls.bodies = []
@@ -258,6 +260,7 @@ class Contract(ServerCase):
              lambda: (None, {"mode": "total", "amount": 5.5, "currency": "USD"}, None)),
             ("DELETE", "/api/v1/cars/{car}/charges/{charge}/cost", lambda: (None, None, None)),
             ("PATCH", "/api/v1/cars/{car}/updates/{update}", lambda: (None, {"version": "2026.2.6"}, None)),
+            ("PATCH", "/api/v1/cars/{car}/firmware/history/{row}", lambda: (None, {"version": "2026.2.6"}, None)),
             ("POST", "/api/v1/places/preview", lambda: (None, {"name": "Downtown LA", "lat": 34.0522, "lon": -118.2437,
                                                               "radius_m": 150}, None)),
             ("POST", "/api/v1/places", lambda: (None, {"name": "Contract corner", "kind": "other", "lat": 34.0522,
@@ -276,6 +279,10 @@ class Contract(ServerCase):
             ("POST", "/api/v1/release/check", lambda: (None, {}, None) if c.json("PATCH", "/api/v1/settings", {
                 "version": c.get("/api/v1/settings")["version"], "release_check": {"enabled": True}}) else None),
             ("POST", "/api/v1/cars/{car}/rebuild", lambda: (None, {"from_ms": now - 2 * DAY}, None)),
+            ("POST", "/api/v1/cars/{car}/logs/use-unsigned",
+             lambda: (None, {"all": True, "confirm_password": "sentry-mate-dev"}, None)),
+            ("DELETE", "/api/v1/cars/{car}/logs/use-unsigned",
+             lambda: (None, {"all": True, "confirm_password": "sentry-mate-dev"}, None)),
             ("PUT", "/api/v1/cars/{car}/gps-layout",
              lambda: (None, {"layout": "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)"}, None)),
             ("POST", "/api/v1/cars/{car}/gps-layout/fit", lambda: (None, {"days": 30}, None)),

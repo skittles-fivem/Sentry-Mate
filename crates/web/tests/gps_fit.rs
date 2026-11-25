@@ -66,6 +66,7 @@ async fn put(store: &ingest::Store, judge: &ingest::Judge, name: &str, bytes: &[
 }
 
 struct Seeded {
+    engine: Engine,
     s: TestServer,
     car: CarId,
     _dir: tempfile::TempDir,
@@ -128,7 +129,7 @@ async fn seeded() -> Seeded {
     engine.idle().await;
     let (e2, d2) = (engine.clone(), db.clone());
     let s = TestServer::start_with(move |b| b.cars(Arc::new(EngineCars(d2))).service(Arc::new(e2))).await;
-    Seeded { s, car, _dir: dir }
+    Seeded { s, car, engine, _dir: dir }
 }
 
 /// Polls the fit until it is no longer running.
@@ -236,4 +237,62 @@ async fn an_admin_finds_the_layout_in_the_background_and_applies_it() {
     assert_eq!(watch.post(&fit, json!({})).await.status, 403);
     let other = format!("/api/v1/cars/c{}/gps-layout/fit", k.car + 9);
     assert_eq!(admin.post(&other, json!({})).await.status, 404);
+}
+
+/// A fit asked while a full rebuild runs waits for it (both read the same logs, and the rebuild is what the history
+/// waits for): it says why, its phase and counts stay where they were, and once the rebuild ends it goes on from
+/// there to the same result. (A rebuild started while a fit runs never waits for it: nothing of the rebuild asks
+/// after a fit.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fit_waits_while_a_full_rebuild_runs_and_goes_on_after() {
+    let k = seeded().await;
+    let e = k.engine.clone();
+    e.set_gps_fit_wait(Duration::from_millis(10));
+    let mut admin = k.s.admin().await;
+    let fit = format!("/api/v1/cars/c{}/gps-layout/fit", k.car);
+    assert!(e.rebuild_running().is_none());
+    // a full rebuild held while it decodes (a test's hold: it runs for as long as the test needs)
+    e.full_rebuild_hold_at(Some(engine::full::Phase::Decoding));
+    e.full_rebuild(Some(k.car), engine::full::Reason::Owner, None).unwrap();
+    for _ in 0..2000 {
+        if e.full_rebuild_status().unwrap().unwrap().phase == engine::full::Phase::Decoding {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(e.rebuild_running().is_some());
+    let r = admin.post(&fit, json!({ "days": 30 })).await;
+    assert_eq!(r.status, 202, "{}", r.text());
+    let id = r.json()["id"].clone();
+    // it waits, and says why
+    let mut seen = Value::Null;
+    for _ in 0..500 {
+        seen = admin.get(&fit).await.json();
+        if seen["waiting"].is_string() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(seen["state"], "running", "{seen}");
+    assert!(seen["waiting"].as_str().unwrap().contains("full rebuild goes first"), "{seen}");
+    assert!(seen["server_busy"].as_str().unwrap().starts_with("rebuild"), "{seen}");
+    // and stays where it is while the rebuild runs
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let still = admin.get(&fit).await.json();
+    assert_eq!(still["state"], "running", "{still}");
+    assert!(still["waiting"].is_string(), "{still}");
+    for f in ["id", "phase", "done", "total", "percent"] {
+        assert_eq!(still[f], seen[f], "{f}: {still}");
+    }
+    assert_eq!(still["id"], id);
+    // the rebuild goes on and ends; then the fit goes on from where it was, to the same result
+    e.full_rebuild_hold_at(None);
+    let done = ended(&mut admin, &fit).await;
+    e.idle().await;
+    let r = e.full_rebuild_status().unwrap().unwrap();
+    assert_eq!(r.status, engine::full::FullStatus::Done, "{r:#?}");
+    assert_eq!((done["state"].as_str(), &done["id"], &done["waiting"]), (Some("done"), &id, &Value::Null), "{done}");
+    assert_eq!(done["result"]["layout"], json!(FOUND), "{done}");
+    assert_eq!(done["result"]["logs"], json!(10), "{done}");
+    assert!(e.rebuild_running().is_none());
 }

@@ -57,6 +57,19 @@ thing that does that, how far each one reaches, and the server updates that chan
 - **Put off when you choose.** A new version's full rebuild starts after its grace by itself, unless an admin starts
   it now, puts it off until tonight (02:00, the server's time zone) or pauses it (its progress kept); any full
   rebuild can also be cancelled.
+- **A rebuild goes before a GPS layout fit.** A fit (Data health's **Find GPS layout**, or `sentry-mate
+  gps-layout` beside the server) reads and unpacks the same stored logs a rebuild decodes, and the rebuild is what
+  the history waits for. So while a full rebuild or a rebuild job runs, the fit waits: between two of its days or
+  logs (or before it tries the layouts), its phase and counts kept, its status saying why (`waiting`: "the full
+  rebuild goes first (both read the same logs); this fit goes on from here once it ends"), and it goes on from
+  there once no rebuild runs. A fit asked during a rebuild is never lost or refused, and a rebuild started during
+  a fit never waits for it (the fit lets it go after the log it is on). A full rebuild put off, paused or waiting
+  for tonight, and a job that has not started (it settles), take nothing, so a fit goes on meanwhile
+  (`crates/web/tests/gps_fit.rs`: `a_fit_waits_while_a_full_rebuild_runs_and_goes_on_after`).
+- **On every core.** A car's logs are worked on one after the other (each changes the car's timeline), but each
+  log's reading (its file read, unpacked and decoded into samples) is done ahead on the other cores while the logs
+  before it are worked on, to the very history a log-by-log reading gives
+  ([docs/plans/performance.md](plans/performance.md#a-full-rebuild-on-every-core)).
 
 ## When a stored file can't be read
 
@@ -149,6 +162,15 @@ handshake) is no charge. Proof: `api_only_drive_keeps_its_last_leg`.
 
 A break in a car key's chain of logs fails only the log that breaks it, not those after it. The logs that failed
 under the older rules are checked again once. Proof: `a_chain_with_one_bad_log_fails_that_log_alone`.
+
+<a id="trust-3"></a>
+### trust-3: an unsigned log says why it is unsigned
+
+The record of a log without a signature says which kind it is: no sidecar came, its sidecar has no `integrity`
+object (made before the CAN Bridge signed logs), its sidecar says `signed: false`, or the bridge could not sign it.
+Data health shows the kind and an admin can choose to use such logs of a paired car ([security](security.md)). The
+logs that failed under the older rules are checked again once, which gives their records the kind; nothing else
+about them changes. Proof: `unsigned_logs_judged_by_older_rules_learn_why_they_are_unsigned`.
 
 ## Adding a version change
 

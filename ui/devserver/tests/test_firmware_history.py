@@ -8,7 +8,7 @@ MODS = ["vcfront", "bms", "dir", "dif"]
 MAIN = {"vcfront": "VCFRONT_infoAppCrc", "bms": "BMS_appCrc", "dir": "DIR_applicationCrc",
         "dif": "DIF_applicationCrc"}
 ROW_KEYS = {"id", "kind", "module", "module_name", "fingerprint", "previous", "fields", "first_seen_ms",
-            "last_seen_ms", "until_ms", "duration_ms", "current", "update", "version", "changed_in", "source",
+            "last_seen_ms", "until_ms", "duration_ms", "current", "update", "version", "version_source", "name_inferred", "changed_in", "source",
             "source_label"}
 
 
@@ -112,10 +112,50 @@ class FirmwareHistory(ServerCase):
         self.assertIn("module", e["fields"])
         self.c.error("GET", url("c999"), 404, "no_such_car")
 
+    def first(self, car, module="bms"):
+        return self.c.get(url(car, f"module={module}&limit=500"))["items"][-1]
+
+    def test_first_segment_inferred_from_the_last_known_version(self):
+        # c3's imported history ends (2025.20.6) before its first CAN fingerprints, with no update between
+        for m in MODS:
+            f = self.first("c3", m)
+            self.assertIsNone(f["version"])
+            self.assertEqual(f["name_inferred"], {"version": "2025.20.6", "from": "last known before"}, m)
+        d = self.c.get(url("c3", "limit=500"))
+        spans = [s for s in d["spans"] if not s["current"]]
+        self.assertTrue(any(s["name_inferred"] for s in spans))
+        # a later segment is never inferred, and c1 has no import to infer from
+        self.assertTrue(all(x["name_inferred"] is None for x in d["items"] if x["previous"] is not None))
+        self.assertIsNone(self.first("c1")["name_inferred"])
+
+    def test_naming_a_segment(self):
+        f = self.first("c3", "dir")
+        path = f"/api/v1/cars/c3/firmware/history/{f['id']}"
+        self.c.error("PATCH", path, 400, "bad_input", body={})
+        self.c.error("PATCH", path, 422, "invalid", body={"version": "latest"})
+        self.c.error("PATCH", "/api/v1/cars/c3/firmware/history/dir:1", 404, "no_such_update",
+                     body={"version": "2026.1.1"})
+        one = self.c.json("PATCH", path, {"version": " 2026.38.6 "})
+        self.assertEqual((one["version"], one["version_source"], one["name_inferred"]), ("2026.38.6", "owner", None))
+        again = self.first("c3", "dir")
+        self.assertEqual((again["version"], again["version_source"]), ("2026.38.6", "owner"))
+        self.assertIsNone(self.first("c3", "bms")["version"])
+        self.assertIn("update-version", str(self.c.get("/api/v1/audit?limit=5")))
+        self.c.json("PATCH", path, {"version": None})
+        self.assertEqual(self.first("c3", "dir")["name_inferred"]["version"], "2025.20.6")
+        # a later segment names its update
+        later = self.c.get(url("c3", "module=bms&limit=500"))["items"][0]
+        self.assertIsNotNone(later["update"])
+        self.c.json("PATCH", f"/api/v1/cars/c3/firmware/history/{later['id']}", {"version": "2026.44.2"})
+        self.assertEqual(self.c.get(url("c3", "module=bms&limit=500"))["items"][0]["version"], "2026.44.2")
+
 
 class WatchFirmwareHistory(ServerCase):
     server_args = {"role": "watch"}
 
     def test_watch_reads_its_car(self):
         self.assertTrue(self.c.get(url("c1"))["items"])
+        row = self.c.get(url("c1", "module=bms"))["items"][-1]
+        self.c.error("PATCH", f"/api/v1/cars/c1/firmware/history/{row['id']}", 403, "not_allowed",
+                     body={"version": "2026.1.1"})
         self.c.error("GET", url("c2"), 404, "no_such_car")

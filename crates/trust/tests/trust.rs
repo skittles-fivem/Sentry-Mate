@@ -94,11 +94,18 @@ fn another_key_fails_once_paired() {
 fn unsigned_logs_depend_on_the_pairing() {
     let name = "abcdef123456_20261108T143000Z_1.log.xz";
     let none = check(name, "00", 1, &json!({}));
-    assert_eq!(none, Check::NotSigned { bridge_error: None });
+    assert_eq!(none, Check::NotSigned { bridge_error: None, integrity: false });
     assert_eq!(judge(&none, None), Verdict::Unsigned);
     assert!(matches!(judge(&none, Some("aa")), Verdict::Failed(_)));
     let err = check(name, "00", 1, &json!({ "integrity": { "signed": false, "error": "chain.json\nwas zeroed" } }));
-    assert_eq!(err, Check::NotSigned { bridge_error: Some("chain.json was zeroed".into()) });
+    assert_eq!(err, Check::NotSigned { bridge_error: Some("chain.json was zeroed".into()), integrity: true });
+    let said = check(name, "00", 1, &json!({ "integrity": { "signed": false } }));
+    assert_eq!(said, Check::NotSigned { bridge_error: None, integrity: true });
+    assert!(matches!(judge(&said, Some("aa")), Verdict::Failed(r) if r == trust::NOT_SIGNED_BUT_PAIRED));
+    assert_eq!(
+        check(name, "00", 1, &serde_json::Value::Null),
+        Check::NotSigned { bridge_error: None, integrity: false }
+    );
     assert!(matches!(judge(&err, Some("aa")), Verdict::CouldNotSign(r) if r.contains("chain.json was zeroed")));
     assert!(!judge(&err, Some("aa")).usable() && judge(&err, None).usable());
 }

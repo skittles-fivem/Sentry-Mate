@@ -103,10 +103,13 @@ const ROUTES: &[(&str, &str, Case)] = &[
     ("DELETE", "/api/v1/trips/{trip}", Elsewhere("drives.rs")),
     ("POST", "/api/v1/release/check", Walk),
     ("PATCH", "/api/v1/cars/{car}/updates/{update}", Elsewhere("firmware.rs")),
+    ("PATCH", "/api/v1/cars/{car}/firmware/history/{row}", Elsewhere("firmware_names.rs")),
     ("PUT", "/api/v1/cars/{car}/charges/{charge}/cost", Elsewhere("charges.rs")),
     ("DELETE", "/api/v1/cars/{car}/charges/{charge}/cost", Walk),
     ("POST", "/api/v1/network/certificate", Elsewhere("settings.rs")),
     ("POST", "/api/v1/cars/{car}/rebuild", Walk),
+    ("POST", "/api/v1/cars/{car}/logs/use-unsigned", Elsewhere("unsigned_logs.rs")),
+    ("DELETE", "/api/v1/cars/{car}/logs/use-unsigned", Elsewhere("unsigned_logs.rs")),
     ("POST", "/api/v1/system/storage/compact", Walk),
     ("PUT", "/api/v1/cars/{car}/gps-layout", Walk),
     (

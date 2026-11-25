@@ -169,9 +169,35 @@ def _module_rows(req, h, rs):
                 "fingerprint": hexof(MAIN[mid], v), "previous": hexof(MAIN[mid], seq[i - 1][0]) if i else None,
                 "fields": fields, "first_seen_ms": a, "last_seen_ms": b, "until_ms": nxt, "duration_ms": b - a,
                 "current": nxt is None, "update": upd, "version": upd["version"] if upd else None,
+                "version_source": upd["version_source"] if upd else None, "name_inferred": None,
                 "changed_in": changed, "source": "can", "source_label": S.LABEL["smo"],
             })
+            if i == 0:
+                _name_first(req, h, out[-1])
     return out
+
+
+def _name_first(req, h, row):
+    """A module's first segment (no update came with it): the name an owner typed; else the import's version when
+    the import still covers it; else, as an inference, the last version known before it with no update between."""
+    typed = req.store.first_versions.get((req.car, row["module"]))
+    if typed:
+        row["version"], row["version_source"] = typed, "owner"
+        return
+    a = row["first_seen_ms"]
+    imp = sorted((u for u in h.updates if u.source == "teslamate" and u.start <= req.now), key=lambda u: u.start)
+    known = [(u, update_version(req.app, u)) for u in imp]
+    known = [(u, v) for u, v in known if v[0]]
+    if not known:
+        return
+    u, (ver, _) = known[-1]
+    # an update (of any kind) after it and up to the segment's start: the version may have changed
+    if any(x.start > u.start and x.start <= a for x in h.updates if x.id != u.id):
+        return
+    if min(u.end, req.now) >= a:
+        row["version"], row["version_source"] = ver, S.site_of(u) or "teslamate"
+    else:
+        row["name_inferred"] = {"version": ver, "from": "last known before"}
 
 
 def _version_rows(req, h):
@@ -189,7 +215,7 @@ def _version_rows(req, h):
             "previous": None, "fields": [], "first_seen_ms": u.start, "last_seen_ms": end, "until_ms": nxt,
             "duration_ms": (nxt if nxt is not None else req.now) - u.start, "current": nxt is None,
             "update": {"id": u.id, "version": ver, "version_source": vs if ver else None}, "version": ver,
-            "changed_in": None, "source": site, "source_label": src["source_label"],
+            "version_source": vs if ver else None, "name_inferred": None, "changed_in": None, "source": site, "source_label": src["source_label"],
         })
     return out
 
@@ -210,7 +236,8 @@ def get_firmware_history(req):
         modules.append({"id": mid, "name": name, "can_id": can_id, "fingerprints": len(mine),
                         "current": mine[-1]["fingerprint"] if mine else None})
     spans = sorted(({"module": x["module"], "fingerprint": x["fingerprint"], "from_ms": x["first_seen_ms"],
-                     "to_ms": x["last_seen_ms"], "version": x["version"], "current": x["current"]} for x in mrows),
+                     "to_ms": x["last_seen_ms"], "version": x["version"], "name_inferred": x["name_inferred"],
+                     "current": x["current"]} for x in mrows),
                    key=lambda s: (s["from_ms"], [m[0] for m in MODULES].index(s["module"])))
     sel = [x for x in rows if x["module"] == mod] if mod else rows
     items, nxt = page(req, sel, key=lambda x: (x["first_seen_ms"], x["id"]), reverse=True)
@@ -220,6 +247,50 @@ def get_firmware_history(req):
                       "to_ms": max((x["last_seen_ms"] for x in mrows), default=None)}}
 
 
+def _history_rows(req):
+    h = req.history()
+    return h, ([] if h is None else _module_rows(req, h, runs(h, req.now)))
+
+
+def patch_segment(req):
+    """PATCH /cars/{car}/firmware/history/{row} { version }: an admin names a module's fingerprint segment: the
+    update it came with (as typing on that update does), or, for a module's first one, the segment itself."""
+    from .software import VERSION_RX, patch_update
+    from ..errors import invalid, not_found
+    h, rows = _history_rows(req)
+    row = next((x for x in rows if x["id"] == req.params["row"]), None)
+    if row is None or (row["update"] is None and row["previous"] is not None):
+        raise not_found("no_such_update", "There is no such software update for this car.")
+    if row["update"] is not None:
+        req.params = {**req.params, "update": row["update"]["id"]}
+        patch_update(req)
+    else:
+        body = req.json()
+        bad = {k: "Unknown field." for k in body if k != "version"}
+        if "version" not in body:
+            bad["version"] = "Required (a version such as 2026.38.4, or null to forget it)."
+        elif body["version"] is not None and not isinstance(body["version"], str):
+            bad["version"] = "Must be text or null."
+        if bad:
+            raise bad_input(bad)
+        v = body["version"].strip() if isinstance(body["version"], str) else None
+        if v is not None and not VERSION_RX.fullmatch(v):
+            raise invalid({"version": "A version such as 2026.38.4."})
+        st = req.store
+        with st.lock:
+            if v is None:
+                st.first_versions.pop((req.car, row["module"]), None)
+            else:
+                st.first_versions[(req.car, row["module"])] = v
+        st.record(req.account, "update-version", f"update:{req.car}:{row['id']}",
+                  f"Named a firmware version: {v}." if v else "Forgot the typed firmware version.", car=req.car)
+        req.app.events.publish("rows", {"car": req.car, "kinds": ["updates"], "from_ms": row["first_seen_ms"],
+                                        "to_ms": row["until_ms"] or row["first_seen_ms"]}, car=req.car)
+    _, rows = _history_rows(req)
+    return next(x for x in rows if x["id"] == row["id"]) | {"time_zone": req.tz()}
+
+
 def register(router):
     router.add("/api/v1/cars/{car}/firmware", GET=get_firmware)
     router.add("/api/v1/cars/{car}/firmware/history", GET=get_firmware_history)
+    router.add("/api/v1/cars/{car}/firmware/history/{row}", PATCH=patch_segment, admin=("PATCH",))

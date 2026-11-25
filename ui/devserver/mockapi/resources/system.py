@@ -539,13 +539,6 @@ def ui_pack_download(req):
                     {"Content-Disposition": f'attachment; filename="{pid}-{p.get("version", "0")}.zip"'})
 
 
-def car_logs(req):
-    """A car's uploaded CAN logs with their check results (crates/web/src/resources/logs.rs): the dev data keeps no
-    logs of its own, so the list is empty."""
-    items, nxt = page(req, [], lambda r: (-r["start_ms"], r["name"]))
-    return {"items": items, "next": nxt}
-
-
 # ------------------------------------------------------------------ per-car health
 
 
@@ -857,7 +850,7 @@ def _fit_status(req, cid):
     if f is None:
         return {"car": cid, "state": "idle", "id": None, "days": None, "phase": None, "done": 0, "total": 0,
                 "percent": 0, "started_ms": None, "finished_ms": None, "error": None, "result": None,
-                "current": current, "applied": False, "server_busy": busy}
+                "current": current, "applied": False, "server_busy": busy, "waiting": None}
     ends = f["ends_ms"]
     if ends is None or req.now < ends:
         # positions over the first 30 %, logs to 90 %, then the fit (a never-ending one stays in the logs, 48 %)
@@ -876,11 +869,11 @@ def _fit_status(req, cid):
             phase, total, done, pct = "logs", 412, 120, 47
         return {"car": cid, "state": "running", "id": f["id"], "days": f["days"], "phase": phase, "done": done,
                 "total": total, "percent": pct, "started_ms": f["started_ms"], "finished_ms": None, "error": None,
-                "result": None, "current": current, "applied": False, "server_busy": busy}
+                "result": None, "current": current, "applied": False, "server_busy": busy, "waiting": None}
     return {"car": cid, "state": "done", "id": f["id"], "days": f["days"], "phase": None, "done": 0, "total": 0,
             "percent": 100, "started_ms": f["started_ms"], "finished_ms": ends, "error": None,
             "result": _fit_result(cid, f["days"]), "current": current, "applied": current == _FIT_LAYOUT,
-            "server_busy": busy}
+            "server_busy": busy, "waiting": None}
 
 
 def get_gps_fit(req):
@@ -1325,7 +1318,6 @@ def register(router):
     router.add("/api/v1/release/check", POST=release_check_now, admin=("POST",))
     router.add("/api/v1/ui-packs", GET=ui_packs)
     router.add("/api/v1/ui-packs/{pack}/download", GET=ui_pack_download)
-    router.add("/api/v1/cars/{car}/logs", GET=car_logs, admin=("GET",))
     router.add("/api/v1/cars/{car}/health", GET=car_health)
     router.add("/api/v1/cars/{car}/rebuild", POST=rebuild, admin=("POST",))
     router.add("/api/v1/cars/{car}/gps-layout", GET=get_gps_layout, PUT=put_gps_layout, admin=("PUT",))

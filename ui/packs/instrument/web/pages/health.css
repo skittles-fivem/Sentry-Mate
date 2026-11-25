@@ -33,11 +33,11 @@
 .hl-figs { margin-bottom: round(1.25rem, var(--e)); }
 .hl-health-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: round(1.5rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
 .hl-health-cols .kv { margin-top: round(1rem, var(--e)); }
-.hl-key-list, .hl-span-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); }
+.hl-key-list, .hl-span-list, .hl-unsigned-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); }
 .hl-key { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: round(0.75rem, var(--e)); align-items: center; padding: round(0.5rem, var(--e)) round(0.75rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); }
 .hl-key > .ico { color: var(--text-3); }
 .hl-key-r { align-items: flex-end !important; text-align: right; }
-.hl-span-list li { font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.4 * 1em), 2px); }
+.hl-span-list li, .hl-unsigned-list li { font-size: max(0.8125rem, var(--fs-floor)); --LH: round(calc(1.4 * 1em), 2px); }
 /* the unknown spans scroll in a box of about five lines */
 .hl-span-box { --box-head: 0px; --box-row: round(1.75rem, var(--e)); }
 .hl-rebuild { display: flex; align-items: center; flex-wrap: wrap; gap: round(0.5rem, var(--e)) round(0.875rem, var(--e)); margin-top: round(1.25rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
@@ -163,6 +163,13 @@
 .hl-missing-line > .ico { flex: none; }
 .hl-missing-line:not(.warn) > .ico { color: var(--text-3); }
 .hl-missing-line.warn { color: var(--warm-ink); }
+.hl-unsigned { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); margin-top: round(1.25rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); }
+.hl-unsigned .hl-sub, .hl-unsigned p { margin: 0; }
+.hl-unsigned-row .main { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.375rem, var(--e)); }
+.hl-unsigned-actions { display: flex; flex-wrap: wrap; gap: round(0.5rem, var(--e)); }
+.hl-unsigned-actions:empty { display: none; }
+.hl-unsigned-intro { display: flex; flex-direction: column; gap: round(0.5rem, var(--e)); margin-bottom: round(0.75rem, var(--e)); }
+.hl-unsigned-intro p { margin: 0; }
 
 /* a key's Rename (can-key-name.js): on a phone the words line up with the name when the button wraps */
 :root[data-phone] .hl-key .main > .key-rename { padding-inline: 0; }

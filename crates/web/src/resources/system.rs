@@ -596,7 +596,7 @@ pub fn gps_fit_json(e: &Engine, car: model::CarId, s: Option<&engine::gps_fit::F
     let Some(s) = s else {
         return Ok(json!({
             "car": ids::car(car), "state": "idle", "id": null, "days": null, "phase": null, "done": 0, "total": 0,
-            "percent": 0, "started_ms": null, "finished_ms": null, "error": null, "result": null,
+            "percent": 0, "started_ms": null, "finished_ms": null, "error": null, "result": null, "waiting": null,
             "current": current, "applied": false, "server_busy": busy,
         }));
     };
@@ -625,6 +625,7 @@ pub fn gps_fit_json(e: &Engine, car: model::CarId, s: Option<&engine::gps_fit::F
         "started_ms": s.started_ms,
         "finished_ms": s.finished_ms,
         "error": s.error,
+        "waiting": s.waiting,
         "result": result,
         "current": current,
         "applied": applied,

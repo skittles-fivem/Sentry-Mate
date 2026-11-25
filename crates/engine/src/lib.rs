@@ -42,6 +42,7 @@
 //! the contract's field names and units (metric, named in the field; ids as strings; times in ms UTC; local days in
 //! the car's time zone), with its paging, filters and sorting.
 
+mod ahead;
 pub mod compact;
 pub mod costs;
 pub mod firmware;
@@ -138,6 +139,10 @@ pub struct Options {
     /// A rebuild a saved setting asks for waits this long (ms) before it starts, so a few saves in a row (or a
     /// setting saved again while one runs) are one rebuild ([`Engine::rebuild_because`]).
     pub rebuild_settle_ms: u64,
+    /// Threads that read and decode a car's stored logs ahead while its logs are worked through one after the
+    /// other (the logs found at the start, a car rebuilt whole, a full rebuild: [`ahead`]). `0`: each log is read
+    /// in place. By default the machine's cores but one, eight at most, none on one or two cores.
+    pub read_ahead: usize,
 }
 
 impl Default for Options {
@@ -154,6 +159,7 @@ impl Default for Options {
             fuse: timeline::FuseParams::default(),
             window_batch: 64,
             rebuild_settle_ms: 3_000,
+            read_ahead: ahead::Ahead::threads(),
         }
     }
 }
@@ -182,6 +188,13 @@ pub struct EngineStats {
     pub failures: u64,
     pub decode_ms_total: u64,
     pub rebuild_ms_total: u64,
+    /// Of the time the logs took (`decode_ms_total`): reading each log from the store and decoding it into samples,
+    /// writing its samples, and working out the car's newest values from them (µs; measured, docs/plans/performance.md).
+    pub read_us_total: u64,
+    pub samples_us_total: u64,
+    pub now_us_total: u64,
+    /// Logs whose reading made ahead on another core was used ([`ahead`]).
+    pub logs_read_ahead: u64,
     /// GPS fixes the timeline rebuilds left out since the server started (a placeholder, half a fix, or a jump
     /// faster than a car drives from the fixes around it): rebuilding a window counts its fixes again.
     pub gps_fixes_dropped: u64,
@@ -197,6 +210,10 @@ struct Counters {
     failures: AtomicU64,
     decode_ms: AtomicU64,
     rebuild_ms: AtomicU64,
+    read_us: AtomicU64,
+    samples_us: AtomicU64,
+    now_us: AtomicU64,
+    read_ahead: AtomicU64,
     gps_fixes_dropped: AtomicU64,
 }
 
@@ -292,6 +309,7 @@ pub(crate) struct Inner {
     pub(crate) stopping: std::sync::atomic::AtomicBool,
     pub(crate) full_fail_at: Mutex<Option<full::Phase>>,
     pub(crate) full_crash_at: Mutex<Option<full::Phase>>,
+    pub(crate) full_hold_at: Mutex<Option<full::Phase>>,
     /// The windows the full rebuilds' decoding rebuilt beside the history (their own engine's count, added up).
     pub(crate) full_windows: AtomicU64,
     /// Tests: the full rebuild's worker stops as by a crash once it decoded this many logs of a car.
@@ -313,6 +331,8 @@ pub(crate) struct Inner {
     /// The cars' GPS layout fits ([`gps_fit`]), and the one that runs (one at a time).
     pub(crate) gps_fits: Mutex<gps_fit::Fits>,
     pub(crate) gps_fit_one: Mutex<()>,
+    /// How often a fit waiting for a rebuild looks again ([`gps_fit`]).
+    pub(crate) gps_fit_wait: Mutex<std::time::Duration>,
     /// The rebuilds' history ([`history`]): one writer at a time.
     pub(crate) history: Mutex<()>,
     /// Rebuild jobs not started yet, per car (`None`: every car), that later asks join ([`jobs`]).
@@ -499,6 +519,7 @@ impl Engine {
                 stopping: std::sync::atomic::AtomicBool::new(false),
                 full_fail_at: Mutex::new(None),
                 full_crash_at: Mutex::new(None),
+                full_hold_at: Mutex::new(None),
                 full_windows: AtomicU64::new(0),
                 full_crash_logs: Mutex::new(None),
                 full_exit_hook: Mutex::new(None),
@@ -512,6 +533,7 @@ impl Engine {
                 invoice_prices_run: Mutex::new(()),
                 gps_fits: Mutex::default(),
                 gps_fit_one: Mutex::new(()),
+                gps_fit_wait: Mutex::new(std::time::Duration::from_secs(1)),
                 history: Mutex::new(()),
                 pending_jobs: Mutex::new(HashMap::new()),
                 opts,
@@ -733,6 +755,10 @@ impl Engine {
             failures: c.failures.load(Ordering::Relaxed),
             decode_ms_total: c.decode_ms.load(Ordering::Relaxed),
             rebuild_ms_total: c.rebuild_ms.load(Ordering::Relaxed),
+            read_us_total: c.read_us.load(Ordering::Relaxed),
+            samples_us_total: c.samples_us.load(Ordering::Relaxed),
+            now_us_total: c.now_us.load(Ordering::Relaxed),
+            logs_read_ahead: c.read_ahead.load(Ordering::Relaxed),
             gps_fixes_dropped: c.gps_fixes_dropped.load(Ordering::Relaxed),
             last_error: lock(&self.inner.last_error).clone(),
         }

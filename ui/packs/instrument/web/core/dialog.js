@@ -8,23 +8,50 @@ import { passwordAdvice } from '../shared/password.js';
 // takes the focus off a disabled control, and document.activeElement is then <body>). It is remembered here, so
 // the dialog still gives the focus back to it. Any focus or press after that forgets it.
 let dropped = null;
-document.addEventListener('focusout', (e) => { dropped = !e.relatedTarget && e.target instanceof HTMLElement && e.target.matches(':disabled') ? e.target : null; }, true);
-document.addEventListener('focusin', () => { dropped = null; }, true);
-document.addEventListener('pointerdown', () => { dropped = null; }, true);
+// The control that had the focus last, with what finds its replacement: a page that draws a control again
+// (a certificate panel after a new certificate) takes the focus off the old one, and the dialog that opens next
+// would find no opener. A press elsewhere forgets it.
+let last = null;
+document.addEventListener('focusout', (e) => { dropped = !e.relatedTarget && e.target instanceof HTMLElement && e.target.matches(':disabled') ? ref(e.target) : null; }, true);
+document.addEventListener('focusin', (e) => { dropped = null; last = e.target instanceof HTMLElement ? ref(e.target) : null; }, true);
+document.addEventListener('pointerdown', () => { dropped = null; last = null; }, true);
+
+/** An element with what finds the control now in its place when the page has drawn it again. */
+function ref(el) {
+  return { el, tag: el.tagName, id: el.id, name: el.getAttribute('name'), label: el.getAttribute('aria-label'), text: (el.textContent || '').trim(),
+    scope: el.parentElement?.closest('.panel, section, [id]') || null };
+}
+
+/** The live control in the place of a removed one: same id, name, label or text in the same panel; else the panel's heading. */
+function replacement(r) {
+  const root = r.scope?.isConnected ? r.scope : document.querySelector('main') || document;
+  const same = (x) => (r.id ? x.id === r.id : r.name ? x.getAttribute('name') === r.name : r.label ? x.getAttribute('aria-label') === r.label : !!r.text && (x.textContent || '').trim() === r.text);
+  const found = [...root.querySelectorAll(r.tag.toLowerCase())].find((x) => same(x) && !x.disabled && x.getClientRects().length);
+  if (found) return found;
+  const head = root.querySelector('h1, h2, h3');
+  if (head && !head.hasAttribute('tabindex')) head.setAttribute('tabindex', '-1');
+  return head;
+}
 
 /** The control a dialog opening now gives the focus back to when it closes. */
 function opener() {
   const a = document.activeElement;
-  if (a && a !== document.body) return a;
-  return dropped && dropped.isConnected ? dropped : null;
+  if (a && a !== document.body) return ref(a);
+  if (dropped && dropped.el.isConnected) return dropped;
+  return last && !last.el.isConnected ? last : null;
 }
 
-/** Focus `el`; one that is still disabled (its request has not ended) gets the focus as soon as it is not. */
-function giveBack(el) {
-  if (!el || !el.isConnected || typeof el.focus !== 'function') return;
-  el.focus();
-  if (document.activeElement === el) return;
-  setTimeout(() => { if (el.isConnected && (!document.activeElement || document.activeElement === document.body)) el.focus(); }, 0);
+/** Focus the control (a reference from ref()); one that is still disabled (its request has not ended) gets the
+ * focus as soon as it is not; one that is gone (the page drew it again) gives it to the one in its place. */
+function giveBack(r) {
+  if (!r) return;
+  const target = () => (r.el.isConnected ? r.el : replacement(r));
+  target()?.focus();
+  // the page may draw again once the dialog's answer is handled (the caller goes on after this): look once more then
+  setTimeout(() => {
+    if (document.activeElement && document.activeElement !== document.body) return;
+    target()?.focus();
+  }, 0);
 }
 
 /**
@@ -52,7 +79,7 @@ export function dialogBusy(inside, on) {
  */
 export function openDialog({ title, body = null, actions = [{ label: 'Close', value: null }], wide = false, cls = null, back: backTo = null } = {}) {
   return new Promise((resolve) => {
-    const back = backTo || opener();
+    const back = backTo ? ref(backTo) : opener();
     let result = null;
     const titleId = `dlg-${Math.random().toString(36).slice(2, 8)}`;
     let first = null;
@@ -83,8 +110,15 @@ export function openDialog({ title, body = null, actions = [{ label: 'Close', va
         if (a.focus) first = b;
         return b;
       })) : null);
-    dlg.addEventListener('cancel', (e) => { if (dlg.hasAttribute('data-busy')) e.preventDefault(); });
+    // a close the reader asked for (Escape) comes with a cancel; the page's own close() does not
+    let cancelled = false;
+    dlg.addEventListener('cancel', (e) => { cancelled = true; if (dlg.hasAttribute('data-busy')) e.preventDefault(); });
+    // a browser lets a cancel be held back only once between two gestures: Escape itself is held back while busy,
+    // and a dialog closed while its request runs opens again, so its answer (a key shown once) is not lost
+    dlg.addEventListener('keydown', (e) => { if (e.key === 'Escape' && dlg.hasAttribute('data-busy')) e.preventDefault(); });
+    dlg.addEventListener('keyup', () => { cancelled = false; });
     dlg.addEventListener('close', () => {
+      if (cancelled && dlg.hasAttribute('data-busy') && dlg.isConnected) { cancelled = false; dlg.showModal(); return; }
       dlg.remove();
       resolve(result);
       giveBack(back);

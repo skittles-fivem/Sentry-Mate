@@ -331,7 +331,8 @@ export async function mount(ctx) {
           } catch { /* try the chunk again */ }
           continue;
         }
-        if (e?.code === 'not_uploading') { up.stop = true; break; }
+        // a discarded import is gone on the server: the upload stops without a word
+        if (e?.code === 'not_uploading' || (e?.code === 'no_such_import' && up.discarded)) { up.stop = true; break; }
         up.failed.push({ name: file.name, off, e });
         break;
       }
@@ -341,7 +342,7 @@ export async function mount(ctx) {
 
   async function upload(job) {
     if (up.active || !up.files.size) return;
-    up.active = true; up.paused = false; up.stop = false; up.failed = [];
+    up.active = true; up.paused = false; up.stop = false; up.discarded = false; up.failed = [];
     up.startedAt = Date.now(); up.sentAt0 = uploadedOf(job);
     const max = job.chunk_max_bytes || S.chunkMax || (1024 * 1024 - 1024);
     S.chunkMax = max;
@@ -408,6 +409,7 @@ export async function mount(ctx) {
       if (!ctx.alive()) return;
       replace(startErr, icon('warn', 'ico--sm'), e?.fields ? Object.entries(e.fields).map(([k, v]) => `${k === 'time_zone' ? 'Time zone' : k === 'distance_unit' ? 'Distance' : k === 'temperature_unit' ? 'Temperature' : k}: ${v}`).join(' ') : startWords(e));
       startErr.hidden = false;
+      startBtn.disabled = false;   // a failed start can be tried again (refreshJob below sets it right if the job moved on)
       await refreshJob();
       return;
     }
@@ -424,7 +426,7 @@ export async function mount(ctx) {
           : `Discard ${j.name}? Nothing from it has been stored, so nothing changes in your history. You can upload it again later.`,
       { title: unfinished ? 'Discard this import?' : 'Remove this import?', ok: unfinished ? 'Discard' : 'Remove', danger: true });
     if (!ok || !ctx.alive()) return;
-    up.paused = true; up.files.clear();
+    up.paused = true; up.discarded = true; up.files.clear();
     try {
       await ctx.api.del(`imports/${enc(j.id)}`);
       if (!ctx.alive()) return;

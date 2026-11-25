@@ -26,6 +26,9 @@
 //   CPU      Emulation.setCPUThrottlingRate { rate: 4 }
 //   network  Network.emulateNetworkConditions { latency: 150 ms, download 1.6 Mbit/s * 0.9 = 180000 B/s,
 //            upload 750 kbit/s * 0.9 = 84375 B/s } (Lighthouse's mobile "slow 4G / fast 3G" figures)
+//            on the page and on the site's service worker too: the page's own throttling leaves a request the worker
+//            answers alone, so without it the worker's network reads (every API read once it controls the page: warm
+//            loads and navigations) took no round trip at all (--no-sw-throttle: as before, for comparison)
 //   device   390 x 844 CSS px, deviceScaleFactor 3, isMobile, hasTouch
 //
 // Time to usable (ms after navigation start, in the page's own clock):
@@ -149,13 +152,14 @@ async function load(page, cdp, url) {
       if (e.request.url.startsWith('data:')) return;
       if (reqs.has(e.requestId)) { reqs.get(e.requestId).redirects++; return; }
       const sse = isSse(e.request.url);
-      reqs.set(e.requestId, { url: e.request.url, method: e.request.method, type: e.type, sse, done: false, bytes: 0, redirects: 0, at: Date.now() - t0 });
+      reqs.set(e.requestId, { url: e.request.url, method: e.request.method, type: e.type, sse, done: false, bytes: 0, redirects: 0, at: Date.now() - t0 , staleOk: Object.entries(e.request.headers || {}).some(([k, v]) => k.toLowerCase() === 'x-sentry-mate-stale-ok' && v === '1') });
       if (!sse) inflight++;
       lastActivity = Date.now();
     }),
     on('Network.responseReceived', (e) => {
       const r = reqs.get(e.requestId); if (!r) return;
       r.respondedAt = Date.now(); lastActivity = Date.now();
+      r.memory = Object.keys(e.response.headers || {}).some((k) => k.toLowerCase() === 'x-sentry-mate-stale');
       r.protocol = e.response.protocol; r.status = e.response.status; r.fromCache = !!(e.response.fromDiskCache || e.response.fromServiceWorker || e.response.fromPrefetchCache);
     }),
     on('Network.dataReceived', (e) => { const r = reqs.get(e.requestId); if (r) { r.received = (r.received || 0) + (e.encodedDataLength || 0); if (!r.sse) lastActivity = Date.now(); } }),
@@ -209,7 +213,8 @@ async function load(page, cdp, url) {
   const stat = list.filter((r) => !new URL(r.url).pathname.startsWith('/api/'));
   const sum = (a) => a.reduce((s, r) => s + (r.done ? (r.bytes || 0) : (r.received || 0)), 0);
   const gets = {};
-  for (const r of api) if (r.method === 'GET' && !r.sse) gets[r.url] = (gets[r.url] || 0) + 1;
+  // a stale-ok read the service worker answers from its memory reaches no server (counted apart)
+  for (const r of api) if (r.method === 'GET' && !r.sse && !r.memory) gets[r.url] = (gets[r.url] || 0) + 1;
   const dups = Object.entries(gets).filter(([, n]) => n > 1).map(([u, n]) => ({ url: new URL(u).pathname + new URL(u).search, n }));
   const protos = {};
   for (const r of list) if (r.protocol) protos[r.protocol] = (protos[r.protocol] || 0) + 1;
@@ -230,7 +235,7 @@ async function load(page, cdp, url) {
     ttu_ms: ttu,
     dcl_ms: m.dcl != null ? Math.round(m.dcl) : null,
     long_tasks: m.lt ? m.lt.count : null, long_tasks_ms: m.lt ? Math.round(m.lt.total) : null, long_task_max_ms: m.lt ? Math.round(m.lt.max) : null,
-    dup_api_gets: dups.reduce((s, d) => s + d.n - 1, 0), dup_api_list: dups,
+    dup_api_gets: dups.reduce((s, d) => s + d.n - 1, 0), dup_api_list: dups, memory_api_gets: api.filter((r) => r.memory).length,
     all: args.verbose ? list.map((r) => [new URL(r.url).pathname, r.status, r.done ? r.bytes : r.received, r.type, r.at]) : undefined,
     biggest: list.map((r) => ({ path: new URL(r.url).pathname, status: r.status, bytes: r.done ? r.bytes : (r.received || 0) }))
       .sort((x, y) => y.bytes - x.bytes).slice(0, 8),
@@ -287,7 +292,7 @@ async function navigate(page, cdp, base, target) {
     url: target, final_path: m.path, via, timed_out: timedOut, blocker: timedOut ? m.blocker : null,
     ttu_ms: m.readyAt != null && m.start != null ? Math.round(m.readyAt - m.start) : null, fcp_ms: null,
     bytes: sizes.reduce((a, b) => a + b, 0), requests: reqs.length, requests_static: reqs.filter((q) => !isApi(q)).length,
-    requests_api: reqs.filter(isApi).length, not_modified: 0, dup_api_gets: 0, dup_api_list: [], protocols: {},
+    requests_api: reqs.filter(isApi).length, not_modified: 0, dup_api_gets: 0, dup_api_list: [], memory_api_gets: 0, protocols: {},
     long_tasks: null, long_tasks_ms: null,
   };
 }
@@ -317,6 +322,34 @@ async function scrollRun(page) {
   }, ROW_SELECTOR).catch((e) => ({ error: String(e) }));
 }
 
+// The network conditions on every service worker of the browser too (the page's CDP session cannot reach them):
+// the browser's own CDP endpoint, auto-attached to each new target, which waits until it is set. Returns close().
+async function throttleWorkers(port, net) {
+  const v = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+  const ws = new WebSocket(v.webSocketDebuggerUrl);
+  await new Promise((res, rej) => { ws.addEventListener('open', res); ws.addEventListener('error', rej); });
+  let id = 0;
+  const pend = new Map();
+  const send = (method, params = {}, sessionId) => new Promise((res) => {
+    const i = ++id; pend.set(i, res); ws.send(JSON.stringify({ id: i, method, params, ...(sessionId ? { sessionId } : {}) }));
+  });
+  ws.addEventListener('message', async (m) => {
+    const d = JSON.parse(m.data);
+    if (d.id && pend.has(d.id)) { pend.get(d.id)(d); pend.delete(d.id); return; }
+    if (d.method !== 'Target.attachedToTarget') return;
+    const { sessionId, targetInfo } = d.params;
+    if (targetInfo.type === 'service_worker') {
+      await send('Network.enable', {}, sessionId);
+      const r = await send('Network.emulateNetworkConditions', net, sessionId);
+      if (r.error) console.error('service worker not throttled:', r.error.message);
+    }
+    await send('Runtime.runIfWaitingForDebugger', {}, sessionId);
+  });
+  const r = await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+  if (r.error) throw new Error('Target.setAutoAttach: ' + r.error.message);
+  return () => { try { ws.close(); } catch { /* gone */ } };
+}
+
 async function main() {
   const browser = await chromium.launch({ args: ['--ignore-certificate-errors'] });
   // one sign-in for the whole run (the server limits right-password sign-ins per minute)
@@ -332,7 +365,7 @@ async function main() {
   const about = await (await auth.request.get(BASE + '/api/v1/about', { headers: h })).json().catch(() => ({}));
   const results = { label: LABEL, base: BASE, when: new Date().toISOString(), server_version: about.version || null,
     build: about.build || null, car, cars: cars.items.length,
-    conditions: { desktop: DESKTOP, laptop: LAPTOP, throttled: !args['no-throttle'], network_throttled: THROTTLE_NET, cpu_throttling_rate: CPU, network: NET, device: { ...DEVICE, userAgent: undefined }, quiet_ms: QUIET, timeout_ms: TIMEOUT,
+    conditions: { desktop: DESKTOP, laptop: LAPTOP, throttled: !args['no-throttle'], network_throttled: THROTTLE_NET, service_worker_throttled: !args['no-throttle'] && THROTTLE_NET && !args['no-sw-throttle'], cpu_throttling_rate: CPU, network: NET, device: { ...DEVICE, userAgent: undefined }, quiet_ms: QUIET, timeout_ms: TIMEOUT,
       ttu: 'max(main view ready: content, no aria-busy, no placeholders; last resource responseEnd excl. /api/v1/events), after ' + QUIET + ' ms network quiet',
       warm: 'second page.goto of the same URL in the same page and persistent profile (fresh profile folder per pack/page) (HTTP cache warm; packs answer Cache-Control: no-cache, so 304 revalidations)' },
     runs: [] };
@@ -345,7 +378,10 @@ async function main() {
       // a persistent profile in a new empty folder: an empty disk cache, like a phone's browser (an incognito
       // context's in-memory cache does not keep maplibre-gl.mjs, 1.1 MB, for the warm load)
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-perf-'));
-      const ctx = await chromium.launchPersistentContext(dir, { ignoreHTTPSErrors: true, args: ['--ignore-certificate-errors'], ...DEVICE });
+      const swNet = !args['no-throttle'] && THROTTLE_NET && !args['no-sw-throttle'];
+      const dport = 20000 + Math.floor(Math.random() * 20000);
+      const ctx = await chromium.launchPersistentContext(dir, { ignoreHTTPSErrors: true, args: ['--ignore-certificate-errors', ...(swNet ? [`--remote-debugging-port=${dport}`] : [])], ...DEVICE });
+      const unthrottle = swNet ? await throttleWorkers(dport, NET) : null;
       await ctx.addCookies(cookies);
       await ctx.addInitScript(INIT);
       const page = ctx.pages()[0] || await ctx.newPage();
@@ -374,6 +410,7 @@ async function main() {
           await navigate(page, cdp, BASE, PATHS[PAGES[0]](car, drive));
         }
       }
+      unthrottle?.();
       await ctx.close();
       fs.rmSync(dir, { recursive: true, force: true });
     }

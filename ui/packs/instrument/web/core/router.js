@@ -270,7 +270,8 @@ function firstStage(view, onCommit) {
   // answers it was ready with)
   const root = document.documentElement;
   const r = view.getBoundingClientRect();
-  const cover = h('div', { class: view.className + ' view-cover', 'aria-hidden': 'true' }, [...view.childNodes].map((n) => n.cloneNode(true)));
+  // laid over the page (data-snap-over, data-nosnap): its coming and going is no change for the whole-pixel snap
+  const cover = h('div', { class: view.className + ' view-cover', 'aria-hidden': 'true', 'data-snap-over': '', 'data-nosnap': '' }, [...view.childNodes].map((n) => n.cloneNode(true)));
   Object.assign(cover.style, {
     position: 'absolute', top: `${r.top + window.scrollY}px`, left: `${r.left + window.scrollX}px`, width: `${r.width}px`, boxSizing: 'border-box',
     minHeight: '0', pointerEvents: 'none', zIndex: '1',

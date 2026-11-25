@@ -1393,6 +1393,10 @@ pub struct FitStatus {
     pub finished_ms: Option<u64>,
     pub error: Option<String>,
     pub outcome: Option<Outcome>,
+    /// While it waits for a rebuild to end ([`Engine::rebuild_running`]): why. Its phase and counts stay where
+    /// they were, and it goes on from there.
+    #[serde(default)]
+    pub waiting: Option<String>,
 }
 
 impl FitStatus {
@@ -1485,6 +1489,7 @@ impl Engine {
                 finished_ms: None,
                 error: None,
                 outcome: None,
+                waiting: None,
             };
             fits.jobs.insert(car, s.clone());
             s
@@ -1494,8 +1499,11 @@ impl Engine {
         let spawned = std::thread::Builder::new().name("gps-fit".into()).spawn(move || {
             let r = {
                 let _one = lock(&e.inner.gps_fit_one);
+                // (told between two days or logs, and before the layouts are tried: a rebuild under way is let
+                // go first)
                 let set = |st: Step| {
-                    e.gps_fit_update(car, id, |s| (s.phase, s.done, s.total) = (Some(st.phase), st.done, st.total))
+                    e.gps_fit_update(car, id, |s| (s.phase, s.done, s.total) = (Some(st.phase), st.done, st.total));
+                    e.gps_fit_yield(car, id);
                 };
                 let live = Live { e: &e, car };
                 let keys = rec.vehicle_keys.clone();
@@ -1507,6 +1515,7 @@ impl Engine {
             e.gps_fit_update(car, id, |s| {
                 s.finished_ms = Some(now_ms());
                 s.phase = None;
+                s.waiting = None;
                 match r {
                     Ok(o) => (s.state, s.outcome) = (FitState::Done, Some(o)),
                     Err(why) => (s.state, s.error) = (FitState::Failed, Some(why)),
@@ -1520,6 +1529,42 @@ impl Engine {
             });
         }
         Ok(self.gps_fit_status(car).unwrap_or(status))
+    }
+
+    /// A fit and a rebuild don't run at once: both read and decode the car's stored logs, and the rebuild is what
+    /// the history waits for. While a full rebuild or a rebuild job runs, the fit waits here (between two of its
+    /// days or logs: its progress kept, `waiting` saying why) and goes on once none runs. So a fit asked during a
+    /// rebuild is never lost, and a rebuild started during a fit waits for one log of the fit at most.
+    fn gps_fit_yield(&self, car: CarId, id: u64) {
+        while let Some(why) = self.rebuild_running() {
+            if self.inner.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            self.gps_fit_update(car, id, |s| s.waiting = Some(why));
+            std::thread::sleep(*lock(&self.inner.gps_fit_wait));
+        }
+        self.gps_fit_update(car, id, |s| s.waiting = None);
+    }
+
+    /// What a fit waits for: a full rebuild or a rebuild job running (one put off, paused, or waiting to start
+    /// takes nothing yet, so a fit doesn't wait for it). `None`: nothing.
+    pub fn rebuild_running(&self) -> Option<String> {
+        if self.full_worker_running() {
+            return Some(
+                "the full rebuild goes first (both read the same logs); this fit goes on from here once it ends".into(),
+            );
+        }
+        if self.jobs().iter().any(|j| j.status == crate::JobStatus::Running && !j.waiting) {
+            return Some(
+                "a rebuild goes first (both read the same logs); this fit goes on from here once it ends".into(),
+            );
+        }
+        None
+    }
+
+    /// Tests: how often a waiting fit looks again whether the rebuild ended.
+    pub fn set_gps_fit_wait(&self, every: Duration) {
+        *lock(&self.inner.gps_fit_wait) = every;
     }
 
     fn gps_fit_update(&self, car: CarId, id: u64, f: impl FnOnce(&mut FitStatus)) {
@@ -1970,6 +2015,7 @@ mod tests {
             finished_ms: None,
             error: None,
             outcome: None,
+            waiting: None,
         };
         assert_eq!(s.percent(), 15);
         (s.phase, s.done, s.total) = (Some(Phase::Logs), 1, 2);
