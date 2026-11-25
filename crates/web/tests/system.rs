@@ -1112,41 +1112,44 @@ async fn a_damaged_day_of_decoded_samples_is_said_and_a_rebuild_mends_it() {
     assert!(!drives["items"].as_array().unwrap().is_empty(), "{drives}");
 }
 
-/// An open page hears when the full rebuild's notice comes and goes (it reads the notices again on a `notice` event).
+/// An open page hears when the full rebuild's notice comes and goes (it reads the notices again on a `notice` event):
+/// at its start, when the watcher sees its notices change, and at its end. Read from the server's broadcast, so the
+/// test does not depend on how long a stream is listened to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_full_rebuild_notice_is_announced_when_it_comes_and_goes() {
     let k = seeded().await;
     let car = k.car.clone();
     let mut admin = k.s.admin().await;
+    let notices = |rx: &mut tokio::sync::broadcast::Receiver<std::sync::Arc<web::Event>>| {
+        let mut out = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            if let web::Event::Notice { notice, .. } = &*e {
+                out.push(notice["code"].as_str().unwrap_or_default().to_string());
+            }
+        }
+        out
+    };
     let mut shown: Option<String> = None;
     web::resources::full_rebuild::announce_notices(&k.s.app, &mut shown);
-    let mut listener = admin.clone();
+    let mut rx = k.s.app.events.subscribe();
+    // held under way (its worker stopped as a crash would), so it stays running while the test looks
+    k.engine.full_rebuild_crash_at(Some(engine::full::Phase::Switching));
+    let r = admin
+        .post(&format!("/api/v1/cars/{car}/full-rebuild"), json!({ "confirm_password": web::testkit::ADMIN_PASSWORD }))
+        .await;
+    assert_eq!(r.status, 202, "{}", r.text());
+    assert_eq!(notices(&mut rx), ["full_rebuild_running"], "said at the start");
+    k.engine.idle().await;
     let app = k.s.app.clone();
-    let engine = k.engine.clone();
-    let start = shown.clone();
-    let (events, mut shown) = tokio::join!(listener.events_for(2500), async {
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-        engine.full_rebuild_crash_at(Some(engine::full::Phase::Switching));
-        let r = admin
-            .post(
-                &format!("/api/v1/cars/{car}/full-rebuild"),
-                json!({ "confirm_password": web::testkit::ADMIN_PASSWORD }),
-            )
-            .await;
-        assert_eq!(r.status, 202, "{}", r.text());
-        engine.idle().await;
-        let a = app.clone();
-        let mut shown = start;
-        tokio::task::spawn_blocking(move || {
-            web::resources::full_rebuild::announce_notices(&a, &mut shown);
-            shown
-        })
-        .await
-        .unwrap()
-    });
-    assert!(events.contains("event: notice") && events.contains("full_rebuild_running"), "{events}");
+    let shown = tokio::task::spawn_blocking(move || {
+        web::resources::full_rebuild::announce_notices(&app, &mut shown);
+        shown
+    })
+    .await
+    .unwrap();
+    assert_eq!(notices(&mut rx), ["full_rebuild_running"], "and when the watcher sees it");
     // nothing changed: nothing more is said
-    let before = shown.clone();
-    web::resources::full_rebuild::announce_notices(&k.s.app, &mut shown);
-    assert_eq!(shown, before);
+    let mut again = shown.clone();
+    web::resources::full_rebuild::announce_notices(&k.s.app, &mut again);
+    assert_eq!((again, notices(&mut rx)), (shown, Vec::<String>::new()));
 }
