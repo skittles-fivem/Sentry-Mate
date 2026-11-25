@@ -19,6 +19,7 @@
 //!   state.
 //! - [`pull`]: the new server's side: the claim, the copy rounds, the finish and the switch.
 //! - [`client`]: the new server's TLS 1.3 connection to the old one, pinned to its certificate.
+//! - [`log`]: the move's log for the owner on each server, step by step, nothing secret in it.
 
 pub mod client;
 pub mod code;
@@ -26,6 +27,7 @@ mod error;
 pub mod export;
 mod format;
 pub mod import;
+pub mod log;
 pub mod old;
 pub mod proto;
 pub mod pull;

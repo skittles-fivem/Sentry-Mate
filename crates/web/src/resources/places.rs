@@ -526,6 +526,10 @@ pub const INVOICE_AUDIT_EVERY: std::time::Duration = std::time::Duration::from_s
 /// Writes the engine's invoice price changes not in the audit log yet (`place-invoice-priced`, one per place
 /// changed, by the server itself). Blocking. Answers how many were written.
 pub fn audit_invoice_prices(app: &AppState) -> usize {
+    // a server whose data moved away writes nothing (its audit log included)
+    if crate::moving::data_moved(app) {
+        return 0;
+    }
     let Ok(e) = app.service::<Engine>() else { return 0 };
     let taken = match e.invoice_price_audits() {
         Ok(v) => v,

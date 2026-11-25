@@ -48,6 +48,8 @@ mod keys;
 mod log_checks;
 mod migrate;
 #[cfg(test)]
+mod move_e2e;
+#[cfg(test)]
 mod perf;
 #[cfg(test)]
 mod perf_engine;
@@ -886,8 +888,10 @@ async fn serve(
                         if let Some(h) = housekeeping.take() {
                             h.abort();
                         }
-                        side.stop_engine(site::ENGINE_STOP_RESTART).await;
-                        tracing::info!("move: the data moved; the web UI here shows it, read only");
+                        let stopped = side.stop_for_move(site::ENGINE_STOP_RESTART).await;
+                        // the finish waits for this before it answers: the new server starts its inputs after
+                        offer.quiet(&stopped);
+                        tracing::info!("move: the data moved; stopped here: {stopped}. The web UI here shows it, read only");
                     } else if was_moved || housekeeping.is_none() {
                         // `move undo`: this server takes uploads again, with its housekeeping
                         break Next::Restart;
@@ -976,7 +980,13 @@ struct Side {
     /// The web port (pending forever when it isn't served).
     web: std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>>,
     app: Option<web::AppState>,
+    /// What only reads: the engine's changes and the live figures onto the event stream.
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// What writes on its own (the upkeep, the missing logs' scan, the full rebuild's watch, the invoices' audit): none
+    /// on a server whose data moved away, stopped when it moves.
+    writers: Vec<tokio::task::JoinHandle<()>>,
+    /// The MQTT publisher (none on a server whose data moved away; it ends by itself when it moves).
+    mqtt: Option<tokio::task::JoinHandle<()>>,
     /// The Tesla API input's pollers (running only when a Tesla account exists).
     tesla: Option<Arc<web::resources::tesla::TeslaService>>,
     /// The TeslaFi input's pollers (running only when a TeslaFi account exists).
@@ -985,21 +995,69 @@ struct Side {
     teslamate_local: Option<Arc<web::resources::teslamate_local::TeslamateLocalService>>,
 }
 
+/// How long a move's stop waits for the imports under way to end, and for the MQTT publisher to clear its topics.
+const MOVE_STOP_WAIT: Duration = Duration::from_secs(20);
+
 impl Side {
-    /// Stops the engine's background work only (its data stays readable for the web side).
-    async fn stop_engine(&mut self, wait: Duration) {
+    /// The data moved to another server: every input and everything that writes on its own stops here, the engine's
+    /// background work too (its data stays readable for the web side): the Tesla API, TeslaFi and local TeslaMate
+    /// inputs, the imports under way (at their next read, writing nothing more), the MQTT publisher (its retained
+    /// topics cleared), the upkeep, the scans and watches, the full rebuild and the GPS fit. What stopped, in words.
+    async fn stop_for_move(&mut self, wait: Duration) -> String {
+        let mut stopped: Vec<String> = Vec::new();
         if let Some(t) = &self.tesla {
+            let n = t.accounts().len();
             t.stop();
+            if n > 0 {
+                stopped.push(format!("the Tesla API ({n} account{})", if n == 1 { "" } else { "s" }));
+            }
         }
         if let Some(t) = &self.teslafi {
+            let n = t.accounts().len();
             t.stop();
+            if n > 0 {
+                stopped.push(format!("TeslaFi ({n} account{})", if n == 1 { "" } else { "s" }));
+            }
         }
         if let Some(t) = &self.teslamate_local {
+            let on = t.running();
             t.stop();
+            if on {
+                stopped.push("the local TeslaMate".into());
+            }
+        }
+        if let Some(app) = &self.app
+            && let Ok(im) = app.service::<web::resources::imports::Imports>()
+        {
+            let n = im.stop_for_move();
+            let t0 = tokio::time::Instant::now();
+            while im.running() > 0 && t0.elapsed() < MOVE_STOP_WAIT {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            if n > 0 {
+                stopped.push(format!("{n} import{} under way", if n == 1 { "" } else { "s" }));
+            }
+        }
+        for t in self.writers.drain(..) {
+            t.abort();
+        }
+        if let Some(h) = self.mqtt.take() {
+            // (from the settings: the publisher may have closed already, seeing the moved state first)
+            let on = self.app.as_ref().is_some_and(mqtt_on);
+            // it sees the moved state itself: it closes its connection, clears its topics and ends
+            let abort = h.abort_handle();
+            if tokio::time::timeout(MOVE_STOP_WAIT, h).await.is_err() {
+                abort.abort();
+            }
+            if on {
+                stopped.push("MQTT publishing (its retained topics cleared)".into());
+            }
         }
         if let Some(e) = self.engine.as_mut() {
             e.stop(wait).await;
         }
+        stopped.push("the history's own work (decoding, rebuilds, the GPS fit, compaction, the upkeep)".into());
+        stopped.join(", ")
     }
 
     /// Stops the web port (its connections end) and then the engine (waiting at most `wait` for a log under way).
@@ -1014,7 +1072,7 @@ impl Side {
         if let Some(t) = self.teslamate_local.take() {
             t.stop();
         }
-        for t in self.tasks.drain(..) {
+        for t in self.tasks.drain(..).chain(self.writers.drain(..)).chain(self.mqtt.take()) {
             t.abort();
         }
         if let Some(app) = self.app.take() {
@@ -1039,6 +1097,10 @@ impl OfferAndUploads {
 
     fn is_moved(&self) -> bool {
         self.offer.is_moved()
+    }
+
+    fn quiet(&self, what: &str) {
+        self.offer.quiet(what);
     }
 
     fn last_refused(&self) -> Option<ingest::RefusedCall> {
@@ -1626,6 +1688,8 @@ async fn start(
     // the move's side of this server: a moved one closes its gate and holds it from here on
     let (d, v2, g, fp) = (data.to_path_buf(), v.clone(), gate.clone(), id.fingerprint());
     let offer = tokio::task::spawn_blocking(move || moving::old::Offer::open(&d, v2, g, APP_VERSION, &fp)).await??;
+    // a finish is answered once this server stopped its inputs (`Side::stop_for_move`)
+    offer.expect_quiet();
     // the history: told of every log the uploads' judge checks (not on a server whose data moved away)
     let serving = !offer.is_moved();
     // the engine's own view of the tokens (the same files; the uploads' instance ties them), with the uploads' last
@@ -1722,8 +1786,10 @@ async fn start_web(
     // a CAN export's logs are stored through the data folder's gate, as uploads are
     if let Ok(im) = app.service::<web::resources::imports::Imports>() {
         im.set_gate(gate.clone());
-        // imported rows an older server put on the wrong car are moved, once
-        drop(web::resources::imports::spawn_rehome(&app));
+        // imported rows an older server put on the wrong car are moved, once (not after a move away: no writes)
+        if !moved {
+            drop(web::resources::imports::spawn_rehome(&app));
+        }
     }
     let listener = tokio::net::TcpListener::bind((net.bind.as_str(), net.web)).await?;
     tracing::info!("web UI on https://{}:{}/ (TLS 1.3), the same certificate", net.bind, net.web);
@@ -1734,20 +1800,22 @@ async fn start_web(
             .map_err(|e| format!("the setup code: {e}"))?;
     let tasks = vec![
         site::forward(&engine.engine, app.events.clone()),
-        site::spawn_upkeep(app.clone(), announced),
-        web::resources::mqtt::spawn(app.clone()),
         // the live figures of the open pages (jobs, health, connections, storage) onto the live stream
         web::live::spawn(app.clone()),
     ];
-    // the logs the server lost are looked for after the start and once a day (not after a move away: no uploads)
-    let mut tasks = tasks;
+    // what writes on its own, and the MQTT publisher: not after a move away (nothing writes or publishes there)
+    let mut writers = Vec::new();
+    let mut mqtt = None;
     if !moved {
-        tasks.push(site::spawn_missing_scan(app.clone(), gate.clone()));
+        writers.push(site::spawn_upkeep(app.clone(), announced));
+        // the logs the server lost are looked for after the start and once a day
+        writers.push(site::spawn_missing_scan(app.clone(), gate.clone()));
         // a full rebuild's end into the audit log, and the one a new server version calls for started
-        tasks.push(web::resources::full_rebuild::spawn_watch(app.clone()));
+        writers.push(web::resources::full_rebuild::spawn_watch(app.clone()));
+        // a place's prices worked out from Supercharger invoices into the audit log
+        writers.push(web::resources::places::spawn_invoice_audit(app.clone()));
+        mqtt = Some(web::resources::mqtt::spawn(app.clone()));
     }
-    // a place's prices worked out from Supercharger invoices into the audit log
-    tasks.push(web::resources::places::spawn_invoice_audit(app.clone()));
     // the Tesla API input reads cars only on a server that serves its data (not after a move away), and only for an
     // account an admin added: with none, nothing is started and nothing connects to Tesla
     let tesla = app.service::<web::resources::tesla::TeslaService>().ok();
@@ -1781,9 +1849,65 @@ async fn start_web(
             tracing::info!("local TeslaMate: reading it");
         }
     }
+    if !moved {
+        note_inputs_started(data, v, &app, tesla.as_deref(), teslafi.as_deref(), teslamate_local.as_deref());
+    }
     let web = Box::pin(web::serve(listener, live.tls_config()?, web::router_with(app.clone(), api::routes())));
-    Ok(Side { engine: Some(engine), web, app: Some(app), tasks, tesla, teslafi, teslamate_local })
+    Ok(Side { engine: Some(engine), web, app: Some(app), tasks, writers, mqtt, tesla, teslafi, teslamate_local })
 }
+
+/// On the first start after a move in: what this server started, into the move's log (the old server stopped the
+/// same before it answered the finish).
+fn note_inputs_started(
+    data: &Path,
+    v: &Arc<Vault>,
+    app: &web::AppState,
+    tesla: Option<&web::resources::tesla::TeslaService>,
+    teslafi: Option<&web::resources::teslafi::TeslafiService>,
+    teslamate_local: Option<&web::resources::teslamate_local::TeslamateLocalService>,
+) {
+    let Some(n) = moving::pull::moved_in(data, v) else { return };
+    if n.log.iter().any(|l| l.text.starts_with(INPUTS_STARTED)) {
+        return;
+    }
+    let mut started: Vec<String> = Vec::new();
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    if let Some(t) = tesla {
+        let n = t.accounts().len();
+        if n > 0 {
+            started.push(format!("the Tesla API ({n} account{})", plural(n)));
+        }
+    }
+    if let Some(t) = teslafi {
+        let n = t.accounts().len();
+        if n > 0 {
+            started.push(format!("TeslaFi ({n} account{})", plural(n)));
+        }
+    }
+    if teslamate_local.is_some_and(|t| t.store().exists()) {
+        started.push("the local TeslaMate".into());
+    }
+    if mqtt_on(app) {
+        started.push("MQTT publishing".into());
+    }
+    started.push("the history's own work".into());
+    let text = format!(
+        "{INPUTS_STARTED} {}, each from where the old server left it (its waits, pacing and catch-up marks came with the data).",
+        started.join(", ")
+    );
+    if !moving::pull::note_moved_in(data, v, &text) {
+        tracing::warn!("move: the move's log wasn't written");
+    }
+}
+
+/// Whether MQTT publishing is on in the saved settings.
+fn mqtt_on(app: &web::AppState) -> bool {
+    let e = app.service::<engine::Engine>().ok();
+    e.as_deref().and_then(|e| web::resources::mqtt::load(e).ok()).is_some_and(|s| s.settings.enabled)
+}
+
+/// The move's log line of what a server that moved in started.
+const INPUTS_STARTED: &str = "Inputs started here:";
 
 /// `SENTRY_MATE_OFFER_MOVE`: keeps a move code ready and prints it in the log (with no shell, the log is the only
 /// screen the owner has).
