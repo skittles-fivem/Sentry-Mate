@@ -69,6 +69,8 @@ struct Seeded {
     engine: Engine,
     s: TestServer,
     car: CarId,
+    db: db::Db,
+    store: ingest::Store,
     _dir: tempfile::TempDir,
 }
 
@@ -129,7 +131,7 @@ async fn seeded() -> Seeded {
     engine.idle().await;
     let (e2, d2) = (engine.clone(), db.clone());
     let s = TestServer::start_with(move |b| b.cars(Arc::new(EngineCars(d2))).service(Arc::new(e2))).await;
-    Seeded { s, car, engine, _dir: dir }
+    Seeded { s, car, engine, db, store, _dir: dir }
 }
 
 /// Polls the fit until it is no longer running.
@@ -295,4 +297,133 @@ async fn a_fit_waits_while_a_full_rebuild_runs_and_goes_on_after() {
     assert_eq!(done["result"]["layout"], json!(FOUND), "{done}");
     assert_eq!(done["result"]["logs"], json!(10), "{done}");
     assert!(e.rebuild_running().is_none());
+}
+
+fn gps_entries(app: &web::AppState, action: &str) -> Vec<String> {
+    let page = app.accounts.audit().list(500, None).unwrap();
+    page.entries.into_iter().filter(|r| r.action == action).map(|r| r.details).collect()
+}
+
+/// Every run is kept: listed newest first and paged, opened in full, applied with the password asked again (audited,
+/// with who and which run), removed (audited), there again after the engine restarts, and for admins only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn past_fits_are_kept_listed_opened_applied_and_removed() {
+    let k = seeded().await;
+    let mut admin = k.s.admin().await;
+    let c = format!("/api/v1/cars/c{}/gps-layout", k.car);
+    let fit = format!("{c}/fit");
+    let fits = format!("{c}/fits");
+    // none yet
+    let none = admin.get(&fits).await;
+    assert_eq!(none.status, 200, "{}", none.text());
+    assert_eq!((none.json()["items"].as_array().unwrap().len(), none.json()["total"].as_u64()), (0, Some(0)));
+    assert_eq!(admin.get(&format!("{fits}/1")).await.status, 404);
+    assert_eq!(admin.get(&format!("{fits}/abc")).await.status, 404);
+
+    // two runs
+    assert_eq!(admin.post(&fit, json!({ "days": 30 })).await.status, 202);
+    let first = ended(&mut admin, &fit).await;
+    assert_eq!(first["state"], "done", "{first}");
+    // the work the bar was weighed by, and no time left once done
+    assert_eq!((first["logs_total"].as_u64(), first["eta_ms"].is_null()), (Some(10), true), "{first}");
+    assert!(first["positions_total"].as_u64().unwrap() >= 1, "{first}");
+    assert_eq!(admin.post(&fit, json!({ "days": 7 })).await.status, 202);
+    let second = ended(&mut admin, &fit).await;
+    assert_eq!(second["state"], "done", "{second}");
+    assert_ne!(first["id"], second["id"]);
+    let (id1, id2) = (first["id"].as_str().unwrap().to_string(), second["id"].as_str().unwrap().to_string());
+
+    let list = admin.get(&fits).await.json();
+    assert_eq!(list["total"], json!(2), "{list}");
+    let rows = list["items"].as_array().unwrap();
+    assert_eq!((rows[0]["id"].as_str(), rows[1]["id"].as_str()), (Some(id2.as_str()), Some(id1.as_str())), "newest first");
+    let row = &rows[1];
+    assert_eq!((row["days"].as_u64(), row["logs"].as_u64(), row["layout"].as_str()), (Some(30), Some(10), Some(FOUND)), "{row}");
+    assert!(row["pairs"].as_u64().unwrap() > 500 && row["p95_m"].as_f64().unwrap() < 5.0, "{row}");
+    assert_eq!((row["good"].as_bool(), row["weak"].as_bool(), row["applied"].as_bool()), (Some(true), Some(false), Some(false)));
+    assert!(row["started_ms"].as_u64().is_some() && row["finished_ms"].as_u64().is_some(), "{row}");
+    for bad in ["-30.", "-20.", "29.9", "19.9"] {
+        assert!(!list.to_string().contains(bad), "{bad}");
+    }
+    // paged
+    let p1 = admin.get(&format!("{fits}?limit=1")).await.json();
+    assert_eq!((p1["items"].as_array().unwrap().len(), p1["items"][0]["id"].as_str()), (1, Some(id2.as_str())));
+    let next = p1["next"].as_str().expect("a next page").to_string();
+    let p2 = admin.get(&format!("{fits}?limit=1&after={next}")).await.json();
+    assert_eq!((p2["items"][0]["id"].as_str(), p2["next"].is_null()), (Some(id1.as_str()), true), "{p2}");
+    // one in full: the answer of the fit's own GET
+    let one = admin.get(&format!("{fits}/{id1}")).await.json();
+    assert_eq!(
+        (one["id"].as_str(), one["state"].as_str(), one["result"]["layout"].as_str()),
+        (Some(id1.as_str()), Some("done"), Some(FOUND))
+    );
+    assert_eq!(one["result"]["car"], json!(format!("c{}", k.car)));
+
+    // apply: the password asked again, then audited and told in the layouts over time
+    let apply = format!("{fits}/{id1}/apply");
+    assert_eq!(admin.post(&apply, json!({})).await.status, 403);
+    let wrong = admin.post(&apply, json!({ "confirm_password": "not it" })).await;
+    assert_eq!((wrong.status, wrong.code()), (403, Some("wrong_password".into())), "{}", wrong.text());
+    assert_eq!(admin.get(&format!("{c}/changes")).await.json()["total"], json!(0));
+    let r = admin.post(&apply, json!({ "confirm_password": web::testkit::ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let done = r.json();
+    assert_eq!((done["layout"].as_str(), done["fit"].as_str()), (Some(FOUND), Some(id1.as_str())), "{done}");
+    assert!(done["job"].is_string(), "{done}");
+    let entries = gps_entries(&k.s.app, "car-gps-layout");
+    assert!(entries.iter().any(|d| d.contains("from a past fit") && d.contains(FOUND)), "{entries:?}");
+    let changes = admin.get(&format!("{c}/changes")).await.json();
+    assert_eq!(changes["total"], json!(1), "{changes}");
+    let ch = &changes["items"][0];
+    assert_eq!(
+        (ch["layout"].as_str(), ch["before"].is_null(), ch["fit"].as_str()),
+        (Some(FOUND), true, Some(id1.as_str())),
+        "{ch}"
+    );
+    assert!(ch["by"].as_str().is_some_and(|b| !b.is_empty()) && ch["at_ms"].as_u64().is_some(), "{ch}");
+    let row = admin.get(&format!("{fits}?limit=5")).await.json()["items"][1].clone();
+    assert_eq!((row["applied"].as_bool(), row["applied_by"].as_str()), (Some(true), ch["by"].as_str()), "{row}");
+    assert!(row["applied_ms"].as_u64().is_some());
+    // applied again: nothing changes, no second entry
+    let r = admin.post(&apply, json!({ "confirm_password": web::testkit::ADMIN_PASSWORD })).await;
+    assert_eq!((r.status, r.json()["job"].is_null()), (200, true));
+    assert_eq!(admin.get(&format!("{c}/changes")).await.json()["total"], json!(1));
+    // the plain PUT is told there too, with who
+    assert_eq!(admin.put(&c, json!({ "layout": null })).await.status, 200);
+    let changes = admin.get(&format!("{c}/changes")).await.json();
+    assert_eq!(
+        (changes["total"].as_u64(), changes["items"][0]["layout"].is_null(), changes["items"][0]["before"].as_str()),
+        (Some(2), true, Some(FOUND)),
+        "{changes}"
+    );
+    assert!(changes["items"][0]["by"].is_string() && changes["items"][0]["fit"].is_null());
+
+    // there again after the engine restarts (the same data, a new engine)
+    let again = Engine::new(k.db.clone(), k.store.clone(), engine::Options { workers: 2, ..engine::Options::default() });
+    let runs = again.gps_fit_runs(k.car).unwrap();
+    assert_eq!(runs.iter().map(|r| r.id.to_string()).collect::<Vec<_>>(), vec![id2.clone(), id1.clone()]);
+    assert!(runs[1].outcome.is_some() && runs[1].applied_ms.is_some());
+    assert_eq!(again.gps_fit_status(k.car).unwrap().id.to_string(), id2, "the newest answers the fit's own GET");
+    assert_eq!(again.gps_layout_changes(k.car).unwrap().len(), 2);
+
+    // removed: audited, gone, and a run never takes an id twice
+    let r = admin.delete(&format!("{fits}/{id2}"), json!({})).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(admin.delete(&format!("{fits}/{id2}"), json!({})).await.status, 404);
+    assert!(gps_entries(&k.s.app, "car-gps-fit-removed").iter().any(|d| d.contains("Removed a past GPS layout fit")));
+    let list = admin.get(&fits).await.json();
+    assert_eq!((list["total"].as_u64(), list["items"][0]["id"].as_str()), (Some(1), Some(id1.as_str())), "{list}");
+    assert_eq!(admin.get(&fit).await.json()["id"].as_str(), Some(id1.as_str()));
+    assert_eq!(admin.post(&fit, json!({ "days": 30 })).await.status, 202);
+    let third = ended(&mut admin, &fit).await;
+    assert!(third["id"].as_str().unwrap().parse::<u64>().unwrap() > id2.parse::<u64>().unwrap(), "{third}");
+
+    // admins only
+    let mut watch = k.s.watch(&mut admin, &[k.car]).await;
+    for path in [fits.clone(), format!("{fits}/{id1}"), format!("{c}/changes")] {
+        assert_eq!(watch.get(&path).await.status, 403, "{path}");
+    }
+    assert_eq!(watch.delete(&format!("{fits}/{id1}"), json!({})).await.status, 403);
+    assert_eq!(watch.post(&apply, json!({ "confirm_password": web::testkit::ADMIN_PASSWORD })).await.status, 403);
+    assert_eq!(admin.get(&format!("/api/v1/cars/c{}/gps-layout/fits", k.car + 9)).await.status, 404);
 }

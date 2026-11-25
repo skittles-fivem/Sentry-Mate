@@ -9,6 +9,7 @@
   {"code":"can-logs-unsigned-used","group":"cars","item":"car"},
   {"code":"car-changed","group":"cars","item":"car"},
   {"code":"car-full-rebuild","group":"cars","item":"car"},
+  {"code":"car-gps-fit-removed","group":"cars","item":"car"},
   {"code":"car-gps-layout","group":"cars","item":"car"},
   {"code":"car-overlap","group":"cars","item":"car"},
   {"code":"car-rebuild","group":"cars","item":"car"},
