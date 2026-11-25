@@ -27,6 +27,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use trust::{Check, Entry, Link, LogName, SIGNED_BY_ANOTHER_KEY, Verdict, same_fingerprint};
 
+pub use crate::owner_use::{OwnerUse, Pick, UnsignedSummary};
+
 /// A log without its sidecar this long is judged without it.
 pub const WAIT_MS: u64 = 10 * 60 * 1000;
 /// Keys whose trust head is kept in memory (the others are read from disk when next used; a head is small).
@@ -66,12 +68,84 @@ pub struct Record {
     /// The SHA-256 of its sidecar as it was judged, `None` when it was judged without one (or before this was kept).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidecar_sha256: Option<String>,
+    /// Why a log without a signature has none (`None`: it is signed, or bad, or it was judged before this was kept:
+    /// see [`Record::unsigned_kind`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsigned: Option<UnsignedKind>,
+}
+
+/// Why a log has no signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnsignedKind {
+    /// No sidecar came (the log was judged without one after [`WAIT_MS`]).
+    NoSidecar,
+    /// Its sidecar has no `integrity` object: made by a CAN Bridge app from before it signed logs.
+    NoIntegrity,
+    /// Its sidecar's `integrity` says it is not signed, without a reason.
+    SignedFalse,
+    /// Its sidecar's `integrity` says the bridge tried and could not sign it, and why.
+    CouldNotSign,
+}
+
+impl UnsignedKind {
+    /// The API's word for it.
+    pub fn word(self) -> &'static str {
+        match self {
+            UnsignedKind::NoSidecar => "no_sidecar",
+            UnsignedKind::NoIntegrity => "no_integrity",
+            UnsignedKind::SignedFalse => "signed_false",
+            UnsignedKind::CouldNotSign => "could_not_sign",
+        }
+    }
+
+    /// The kind of a log's check (`had_sidecar`: it was judged with its sidecar). `None` when it is signed (well or
+    /// badly).
+    pub fn of(check: &Check, had_sidecar: bool) -> Option<UnsignedKind> {
+        match check {
+            Check::NotSigned { bridge_error: Some(_), .. } => Some(UnsignedKind::CouldNotSign),
+            Check::NotSigned { integrity: true, .. } => Some(UnsignedKind::SignedFalse),
+            Check::NotSigned { integrity: false, .. } if had_sidecar => Some(UnsignedKind::NoIntegrity),
+            Check::NotSigned { .. } => Some(UnsignedKind::NoSidecar),
+            Check::Signed(_) | Check::Bad { .. } => None,
+        }
+    }
 }
 
 impl Record {
     /// Whether its data may be decoded.
     pub fn usable(&self) -> bool {
         matches!(self.status, Status::Verified | Status::Unsigned) || self.override_use
+    }
+
+    /// Whether it failed its check only for having no signature, from a car that is paired: what the owner may
+    /// choose to use anyway ([`Judge::use_unsigned`]). A bad signature, another key's, a changed or cut file, bad
+    /// chain fields or a wrong name never are.
+    pub fn unsigned_only(&self) -> bool {
+        match self.status {
+            Status::CouldNotSign => true,
+            Status::Failed => self.reason.as_deref() == Some(trust::NOT_SIGNED_BUT_PAIRED),
+            Status::Verified | Status::Unsigned | Status::Waiting => false,
+        }
+    }
+
+    /// Why it has no signature, in the API's words (`no_sidecar`, `no_integrity`, `signed_false`,
+    /// `could_not_sign`; `unknown` for a record judged before the kind was kept that does not show it), `None` for
+    /// a log that is signed (well or badly) or not judged yet.
+    pub fn unsigned_kind(&self) -> Option<&'static str> {
+        let unsigned = match self.status {
+            Status::Unsigned | Status::CouldNotSign => true,
+            Status::Failed => self.reason.as_deref() == Some(trust::NOT_SIGNED_BUT_PAIRED),
+            Status::Verified | Status::Waiting => false,
+        };
+        if !unsigned {
+            return None;
+        }
+        Some(match (self.unsigned, &self.status) {
+            (Some(k), _) => k.word(),
+            (None, Status::CouldNotSign) => UnsignedKind::CouldNotSign.word(),
+            (None, _) => "unknown",
+        })
     }
 
     /// The key that signed it, when its signature checks out (verified, or failed only for being another key's).
@@ -720,6 +794,7 @@ fn settle(
                 sha256: None,
                 length: None,
                 sidecar_sha256: None,
+                unsigned: None,
             };
             return Ok((r.clone(), vec![Change::Log { name: log_name.to_string(), record: r }]));
         }
@@ -757,19 +832,23 @@ fn settle(
         Verdict::CouldNotSign(r) => (Status::CouldNotSign, Some(r)),
         Verdict::Unsigned => (Status::Unsigned, None),
     };
-    let override_use = head.overrides.contains(log_name);
-    let r = Record {
+    let unsigned = UnsignedKind::of(&check, pre.side_sha.is_some());
+    let mut r = Record {
         v: trust::RULES_VERSION,
         status,
         reason,
         link,
-        override_use,
+        override_use: false,
         judged_ms: now_ms(),
         arrived_ms,
         sha256: Some(sha),
         length: Some(len),
         sidecar_sha256: pre.side_sha,
+        unsigned,
     };
+    // the owner's word stands while the log still failed only for being unsigned: judged again as anything else
+    // (verified, or bad), it is dropped
+    r.override_use = head.overrides.contains(log_name) && r.unsigned_only();
     changes.push(Change::Log { name: log_name.to_string(), record: r.clone() });
     Ok((r, changes))
 }
@@ -807,7 +886,7 @@ impl Ctx {
     /// Writes the groups of changes (already applied to `head`, each group whole in one journal record) and keeps
     /// the key's waiting marker and mirror in step: the marker made before a change that leaves logs waiting is
     /// written, removed after the last waiting one is judged. `marker`: one may be there already.
-    fn commit(
+    pub(crate) fn commit(
         &self,
         key: &str,
         mut head: Head,
@@ -998,7 +1077,7 @@ pub(crate) async fn blocking<T: Send + 'static>(
 
 /// How a write is kept.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Fold {
+pub(crate) enum Fold {
     /// Added to the journal, which is folded when it is long.
     WhenLong,
     /// Folded straight into the next generation, with the journal: all of it at once or (a crash, an error) none of
@@ -1577,7 +1656,7 @@ impl Judge {
     /// Reads a key's records with `f`: from the key's mirror without holding the key while its files are still the
     /// ones the mirror was made from (an upload being written, a rebuild reading every record: neither waits for the
     /// other), else with the key held ([`Judge::read_held`]).
-    async fn read<T: Send + 'static>(
+    pub(crate) async fn read<T: Send + 'static>(
         &self,
         key: &str,
         f: impl Fn(&View, &Head) -> std::io::Result<T> + Send + Sync + 'static,
@@ -1736,6 +1815,11 @@ impl Judge {
     /// Whether a stored log failed its check, so that a new upload of its name (or its sidecar's) replaces it.
     pub async fn replaceable(&self, log_name: &str, uploading: std::collections::HashSet<String>) -> bool {
         let Some(n) = LogName::parse(log_name).filter(|n| !n.sidecar) else { return false };
+        // the owner chose to use this copy (an unsigned log): another one sent under its name would take its place
+        // with their word on it, so it is kept as it is
+        if self.record(n.vehicle_key, log_name).await.is_some_and(|r| r.override_use) {
+            return false;
+        }
         let checks = self.upload_checks(n.vehicle_key, &[log_name.to_string()], uploading).await;
         checks.is_ok_and(|c| matches!(c.get(log_name), Some(UploadCheck::Failed(_))))
     }

@@ -69,6 +69,8 @@ const BY_GROUP = {
     'car-overlap': 'Found overlapping data',
     'can-logs-missing': 'Found CAN logs missing on the server',
     'can-logs-rechecked': 'Checked failed CAN logs again',
+    'can-logs-unsigned-used': 'Used unsigned CAN logs',
+    'can-logs-unsigned-stopped': 'Stopped using unsigned CAN logs',
     'charge-cost-entered': 'Entered a charge cost',
     'charge-cost-removed': 'Removed a charge cost',
     'drive-purpose-set': 'Set a drive’s purpose',

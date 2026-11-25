@@ -5,6 +5,8 @@
   {"code":"can-key-renamed","group":"cars","item":"key"},
   {"code":"can-logs-missing","group":"cars","item":"car"},
   {"code":"can-logs-rechecked","group":"cars","item":"car"},
+  {"code":"can-logs-unsigned-stopped","group":"cars","item":"car"},
+  {"code":"can-logs-unsigned-used","group":"cars","item":"car"},
   {"code":"car-changed","group":"cars","item":"car"},
   {"code":"car-full-rebuild","group":"cars","item":"car"},
   {"code":"car-gps-layout","group":"cars","item":"car"},

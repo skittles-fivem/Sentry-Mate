@@ -539,13 +539,6 @@ def ui_pack_download(req):
                     {"Content-Disposition": f'attachment; filename="{pid}-{p.get("version", "0")}.zip"'})
 
 
-def car_logs(req):
-    """A car's uploaded CAN logs with their check results (crates/web/src/resources/logs.rs): the dev data keeps no
-    logs of its own, so the list is empty."""
-    items, nxt = page(req, [], lambda r: (-r["start_ms"], r["name"]))
-    return {"items": items, "next": nxt}
-
-
 # ------------------------------------------------------------------ per-car health
 
 
@@ -1325,7 +1318,6 @@ def register(router):
     router.add("/api/v1/release/check", POST=release_check_now, admin=("POST",))
     router.add("/api/v1/ui-packs", GET=ui_packs)
     router.add("/api/v1/ui-packs/{pack}/download", GET=ui_pack_download)
-    router.add("/api/v1/cars/{car}/logs", GET=car_logs, admin=("GET",))
     router.add("/api/v1/cars/{car}/health", GET=car_health)
     router.add("/api/v1/cars/{car}/rebuild", POST=rebuild, admin=("POST",))
     router.add("/api/v1/cars/{car}/gps-layout", GET=get_gps_layout, PUT=put_gps_layout, admin=("PUT",))

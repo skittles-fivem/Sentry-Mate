@@ -820,7 +820,13 @@ pub struct LogRow {
     pub result: String,
     pub reason: Option<String>,
     pub used: bool,
+    /// Used on the owner's word although it failed only for being unsigned.
     pub override_use: bool,
+    /// Why it has no signature: `no_sidecar`, `no_integrity`, `signed_false`, `could_not_sign` (or `unknown`, judged
+    /// before the kind was kept); `None` for a log that is signed (well or badly) or not judged yet.
+    pub unsigned_kind: Option<&'static str>,
+    /// Its time (from its name) is before its car key's first signed log. Shown only: the name is the uploader's.
+    pub before_first_signed: bool,
     pub arrived_ms: u64,
     /// `decoded`, `left_out` or `not_yet` (not worked on yet).
     pub decoded: &'static str,
@@ -830,6 +836,134 @@ pub struct LogRow {
     pub data_from_ms: Option<u64>,
     pub data_to_ms: Option<u64>,
     pub decoded_ms: Option<u64>,
+}
+
+/// Makes the rows of one car's logs, reading each day's record once for the logs of that day in a row.
+struct RowMaker<'a> {
+    e: &'a Engine,
+    car: CarId,
+    day: Option<(u32, std::sync::Arc<records::DayRec>)>,
+}
+
+impl RowMaker<'_> {
+    fn row(
+        &mut self,
+        start: u64,
+        name: String,
+        key: String,
+        rec: &ingest::judge::Record,
+        first_signed: Option<i64>,
+    ) -> QResult<LogRow> {
+        let d = records::day_of(start);
+        if self.day.as_ref().is_none_or(|(x, _)| *x != d) {
+            self.day = Some((d, records::day_shared(self.e.db(), self.car, d)?));
+        }
+        let entry = self.day.as_ref().and_then(|(_, r)| r.logs.get(&name));
+        let (decoded, samples, dropped, buses, from, to) = match entry.map(|x| &x.outcome) {
+            Some(Outcome::Decoded { facts, samples, samples_from_ms, samples_to_ms }) => {
+                ("decoded", Some(*samples), Some(facts.dropped), facts.buses.clone(), *samples_from_ms, *samples_to_ms)
+            }
+            Some(Outcome::Hole { from_ms, to_ms, .. }) => {
+                ("left_out", None, None, Vec::new(), Some(*from_ms), Some(*to_ms))
+            }
+            None => ("not_yet", None, None, Vec::new(), None, None),
+        };
+        let result = match rec.status {
+            ingest::judge::Status::Verified => "verified",
+            ingest::judge::Status::Failed => "failed",
+            ingest::judge::Status::CouldNotSign => "could_not_sign",
+            ingest::judge::Status::Unsigned => "unsigned",
+            ingest::judge::Status::Waiting => "waiting",
+        };
+        let before_first_signed = first_signed.is_some_and(|f| i64::try_from(start).is_ok_and(|s| s < f));
+        Ok(LogRow {
+            used: rec.usable(),
+            override_use: rec.override_use,
+            unsigned_kind: rec.unsigned_kind(),
+            before_first_signed,
+            arrived_ms: rec.arrived_ms,
+            result: result.into(),
+            reason: rec.reason.clone(),
+            decoded_ms: entry.map(|x| x.done_ms),
+            name,
+            key,
+            start_ms: start,
+            decoded,
+            samples,
+            dropped,
+            buses,
+            data_from_ms: from,
+            data_to_ms: to,
+        })
+    }
+}
+
+/// A car's unsigned logs as the owner's choice sees them (`/cars/{car}/logs/unsigned`): its keys' counts added up,
+/// and the newest [`HEALTH_LIST_MAX`] logs that failed only for being unsigned or are used on the owner's word.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct UnsignedLogs {
+    /// Logs that failed only for being unsigned and are not used: what an admin can choose to use.
+    pub can_use: u64,
+    /// Of those, the ones whose time (from their name) is before their key's first signed log.
+    pub can_use_before_first_signed: u64,
+    /// Of those, per kind (`no_sidecar`, `no_integrity`, `signed_false`, `could_not_sign`, `unknown`).
+    pub kinds: std::collections::BTreeMap<&'static str, u64>,
+    /// Logs used on the owner's word.
+    pub in_use: u64,
+    /// Logs that failed for anything else (a bad signature, another key's, a changed file...): never used.
+    pub never: u64,
+    /// Each key's first signed log (its time from its name), `null` before one.
+    pub keys: Vec<KeyFirstSigned>,
+    pub items: Vec<LogRow>,
+    pub items_total: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct KeyFirstSigned {
+    pub key: String,
+    pub first_signed_ms: Option<i64>,
+}
+
+pub fn unsigned_logs(e: &Engine, car: CarId) -> QResult<Scoped<UnsignedLogs>> {
+    let c = car_of(e, car)?;
+    let rt = e.handle()?;
+    let mut out = UnsignedLogs {
+        can_use: 0,
+        can_use_before_first_signed: 0,
+        kinds: Default::default(),
+        in_use: 0,
+        never: 0,
+        keys: Vec::new(),
+        items: Vec::new(),
+        items_total: 0,
+    };
+    let mut found = Vec::new();
+    for key in &c.vehicle_keys {
+        let s = rt
+            .block_on(e.judge().unsigned_summary(key, HEALTH_LIST_MAX))
+            .map_err(|x| QueryError::Engine(crate::Error::Io(x)))?;
+        out.can_use += s.can_use;
+        out.can_use_before_first_signed += s.can_use_before_first_signed;
+        for (k, n) in &s.kinds {
+            *out.kinds.entry(k).or_default() += n;
+        }
+        out.in_use += s.in_use;
+        out.never += s.never;
+        out.items_total += s.logs_total;
+        out.keys.push(KeyFirstSigned { key: key.clone(), first_signed_ms: s.first_signed_ms });
+        for (name, rec) in s.logs {
+            if let Some(t) = records::name_start_ms(&name) {
+                found.push((t, name, key.clone(), rec, s.first_signed_ms));
+            }
+        }
+    }
+    found.sort_by(|x, y| super::cmp_key(&(x.0 as f64, x.1.clone()), &(y.0 as f64, y.1.clone()), true));
+    found.truncate(HEALTH_LIST_MAX);
+    let mut rows = RowMaker { e, car, day: None };
+    for (start, name, key, rec, first) in found {
+        out.items.push(rows.row(start, name, key, &rec, first)?);
+    }
+    Ok(scoped(&c, out))
 }
 
 /// A car's logs (every CAN key of it), newest first, with their check results and what was decoded. Each key's trust
@@ -872,47 +1006,16 @@ pub fn logs(e: &Engine, car: CarId, period: &Period, paging: &Paging) -> QResult
         Some(last) if more => Some(super::make_after(&(last.0 as f64, last.1.clone()), &sig)?),
         _ => None,
     };
+    let mut firsts = std::collections::HashMap::new();
+    for key in &c.vehicle_keys {
+        let f = rt.block_on(e.judge().first_signed_ms(key)).map_err(|x| QueryError::Engine(crate::Error::Io(x)))?;
+        firsts.insert(key.clone(), f);
+    }
+    let mut rows = RowMaker { e, car, day: None };
     let mut items = Vec::with_capacity(found.len());
-    let mut day_cache: Option<(u32, std::sync::Arc<records::DayRec>)> = None;
     for (start, name, key, rec) in found {
-        let d = records::day_of(start);
-        if day_cache.as_ref().is_none_or(|(x, _)| *x != d) {
-            day_cache = Some((d, records::day_shared(e.db(), car, d)?));
-        }
-        let entry = day_cache.as_ref().and_then(|(_, r)| r.logs.get(&name));
-        let (decoded, samples, dropped, buses, from, to) = match entry.map(|x| &x.outcome) {
-            Some(Outcome::Decoded { facts, samples, samples_from_ms, samples_to_ms }) => {
-                ("decoded", Some(*samples), Some(facts.dropped), facts.buses.clone(), *samples_from_ms, *samples_to_ms)
-            }
-            Some(Outcome::Hole { from_ms, to_ms, .. }) => {
-                ("left_out", None, None, Vec::new(), Some(*from_ms), Some(*to_ms))
-            }
-            None => ("not_yet", None, None, Vec::new(), None, None),
-        };
-        let result = match rec.status {
-            ingest::judge::Status::Verified => "verified",
-            ingest::judge::Status::Failed => "failed",
-            ingest::judge::Status::CouldNotSign => "could_not_sign",
-            ingest::judge::Status::Unsigned => "unsigned",
-            ingest::judge::Status::Waiting => "waiting",
-        };
-        items.push(LogRow {
-            used: rec.usable(),
-            override_use: rec.override_use,
-            arrived_ms: rec.arrived_ms,
-            result: result.into(),
-            reason: rec.reason.clone(),
-            decoded_ms: entry.map(|x| x.done_ms),
-            name,
-            key,
-            start_ms: start,
-            decoded,
-            samples,
-            dropped,
-            buses,
-            data_from_ms: from,
-            data_to_ms: to,
-        });
+        let first = firsts.get(&key).copied().flatten();
+        items.push(rows.row(start, name, key, &rec, first)?);
     }
     Ok(scoped(&c, List { items, next, total: None }))
 }
