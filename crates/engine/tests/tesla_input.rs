@@ -596,6 +596,29 @@ fn a_car_with_teslafi_alone_names_teslafi() {
     });
 }
 
+/// TeslaFi's input line says when TeslaFi's data is from (its own time of the poll) and, beside it, when this server
+/// received it: data stamped hours before it arrived (TeslaFi with nothing new, or its times read in the wrong zone)
+/// is told from data that is current, which the page and the notices build on.
+#[test]
+fn teslafis_input_has_its_own_time_of_the_data_and_when_it_came() {
+    rt().block_on(async {
+        let k = kit();
+        let car = teslafi_car(&k);
+        let trip = Trip { a: 600, b: 1800 };
+        let polls = api_readings(0, 2400, 60, trip);
+        let newest = polls.last().map(|s| s.t_ms).unwrap();
+        k.engine.feed_points(Input::TeslafiApi, car, polls, vec![online(0, 2400)]);
+        k.engine.idle().await;
+        let now = tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap();
+        let fi = now.inputs.iter().find(|i| i.input.kind == "teslafi_api").expect("TeslaFi is a live input");
+        assert_eq!(fi.last_ms, Some(newest), "TeslaFi's own time of its newest poll, not the time it was read");
+        let came = fi.received_ms.expect("when it came");
+        assert!(came > newest + 3_600_000, "the made-up polls are hours older than the moment they were read");
+        let json = serde_json::to_value(fi).unwrap();
+        assert_eq!(json["received_ms"], serde_json::json!(came));
+    });
+}
+
 #[test]
 fn smo_wins_then_the_tesla_api_then_teslafi_in_one_drive() {
     rt().block_on(async {

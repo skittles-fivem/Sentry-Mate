@@ -119,6 +119,11 @@ pub struct Pacing {
     /// TeslaFi's time of it.
     #[serde(default)]
     pub last_poll_ms: Option<u64>,
+    /// When this server last read a poll TeslaFi had not given before (its own clock, not TeslaFi's): with
+    /// `last_poll_ms` it tells TeslaFi having nothing new ([`crate::health`]) from TeslaFi's times being read in the
+    /// wrong zone.
+    #[serde(default)]
+    pub last_new_ms: Option<u64>,
     /// The time zone `last_poll_ms` was read in: another zone reads TeslaFi's times differently, so a poll is then
     /// compared by its id only until one has been read in the new zone.
     #[serde(default)]

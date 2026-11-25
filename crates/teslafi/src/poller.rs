@@ -179,8 +179,12 @@ pub struct AccountStatus {
     pub rate_limited_until_ms: Option<u64>,
     pub last_request_ms: Option<u64>,
     pub next_request_ms: Option<u64>,
-    /// TeslaFi's time of the newest poll handed on.
+    /// TeslaFi's time of the newest poll handed on (the time of its data from the car, not of this server's read).
     pub last_data_ms: Option<u64>,
+    /// When this server last read a poll TeslaFi had not given before (this server's clock).
+    pub last_new_ms: Option<u64>,
+    /// TeslaFi's newest poll says the car is awake (driving, charging or parked awake), not asleep or offline.
+    pub awake: bool,
     pub last_ok_ms: Option<u64>,
     pub last_error: Option<ErrorInfo>,
     /// The TLS version of the last connection (`1.3`, or `1.2` when TeslaFi's host offered no 1.3).
@@ -319,6 +323,8 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                 _ => Some(self.next_ms.max(self.pacing.backoff_until_ms)),
             },
             last_data_ms: self.pacing.last_poll_ms,
+            last_new_ms: self.pacing.last_new_ms,
+            awake: matches!(self.mode, Mode::Driving | Mode::Charging | Mode::Idle),
             last_ok_ms: self.last_ok_ms,
             last_error: self.last_error.clone(),
             tls: (self.tls)(),
@@ -439,6 +445,9 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             self.pacing.backoff_until_ms = self.pacing.backoff_until_ms.saturating_sub(back);
             self.pacing.rate_limited_until_ms = self.pacing.rate_limited_until_ms.saturating_sub(back);
             if let Some(t) = &mut self.pacing.last_request_ms {
+                *t = t.saturating_sub(back);
+            }
+            if let Some(t) = &mut self.pacing.last_new_ms {
                 *t = t.saturating_sub(back);
             }
             self.last_seen = None;
@@ -705,6 +714,9 @@ impl<F: Feed, S: Sink> Poller<F, S> {
         let car = self.matched();
         if new {
             self.pacing.last_data_id = p.data_id.or(self.pacing.last_data_id);
+            if what == Read::Latest {
+                self.pacing.last_new_ms = Some(now_ms);
+            }
             self.pacing.last_poll_ms = Some(p.t_ms.max(self.pacing.last_poll_ms.unwrap_or(0)));
             if let Some(car) = car {
                 let state = match (p.state, self.mode) {

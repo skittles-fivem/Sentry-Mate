@@ -135,6 +135,50 @@ class Teslafi(ServerCase):
         self.assertIsNone(row["today"]["cap"], "no cap shown, whatever the pace")
         self.assertIn("teslafi-rate-limited", [e["action"] for e in self.audit()])
 
+    def test_1c_teslafis_data_age_is_told(self):
+        """TeslaFi's data is old while the connection works: no new data from an awake car (its side), or polls that
+        come but are stamped hours off (the account's zone). The car's input line has both times and the notices,
+        the status and the settings say whose problem it is (docs/ui-api.md, "TeslaFi's data age")."""
+        a = self.server.app.store.teslafi["accounts"]["fa1"]
+        now = self.server.app.clock.now()
+        tf = lambda: next(i for i in self.c.get("/api/v1/cars/c3/now")["inputs"] if i["kind"] == "teslafi_api")
+        codes = lambda: [x["code"] for x in self.c.get("/api/v1/notices")["items"] if x["code"].startswith("teslafi_")]
+        st = lambda: self.c.get(BASE + "/status")["items"][0]
+        # current: TeslaFi's own time of the poll, and when it came a moment later
+        i = tf()
+        self.assertEqual((i["last_ms"], i["received_ms"]), (now - 50_000, now - 45_000))
+        self.assertEqual((codes(), st()["data"]), ([], "fine"))
+        smo = next(i for i in self.c.get("/api/v1/cars/c1/now")["inputs"] if i["kind"] == "smo")
+        self.assertIsNone(smo["received_ms"])
+        try:
+            # TeslaFi has had nothing new for six hours
+            a["data_age_ms"] = 6 * 3_600_000
+            i = tf()
+            self.assertEqual(i["last_ms"], now - 6 * 3_600_000)
+            self.assertGreater(i["received_ms"] - i["last_ms"], 0)
+            if st()["mode"] != "asleep":  # a car TeslaFi says sleeps is silent as expected
+                n = [x for x in self.c.get("/api/v1/notices")["items"] if x["code"] == "teslafi_no_data"]
+                self.assertEqual(len(n), 1, codes())
+                self.assertTrue(n[0]["message"].startswith("TeslaFi has had no new data from the car for 5 h 59 min"),
+                                n[0]["message"])
+                self.assertIn("the problem is on TeslaFi's side", n[0]["message"])
+                self.assertEqual((n[0]["fix_link"], n[0]["detail"]["account"]), ("/settings/integrations#teslafi", "fa1"))
+                self.assertEqual(st()["data"], "no_data")
+            a.pop("data_age_ms")
+            # polls come, stamped six hours before they are read: the zone is wrong
+            a["time_offset_ms"] = 6 * 3_600_000
+            i = tf()
+            self.assertEqual(i["received_ms"] - i["last_ms"], 6 * 3_600_000 + 5_000)
+            n = [x for x in self.c.get("/api/v1/notices")["items"] if x["code"] == "teslafi_time_offset"]
+            self.assertEqual(len(n), 1, codes())
+            self.assertIn("are 6 h before the moment this server reads them", n[0]["message"])
+            self.assertEqual(n[0]["detail"], {"account": "fa1", "skew_ms": 6 * 3_600_000, "behind": True})
+            self.assertEqual(st()["data"], "time_offset")
+        finally:
+            a.pop("data_age_ms", None)
+            a.pop("time_offset_ms", None)
+        self.assertEqual((codes(), st()["data"]), ([], "fine"))
+
 
 class TeslafiWatch(ServerCase):
     """A watch account reads none of it, and hears nothing about TeslaFi accounts."""

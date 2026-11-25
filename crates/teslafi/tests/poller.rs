@@ -379,3 +379,38 @@ async fn a_zone_east_of_the_old_one_does_not_drop_teslafis_polls() {
     p.tick(t).await.unwrap();
     assert_eq!(sink.points.lock().unwrap().len(), 6);
 }
+
+#[tokio::test]
+async fn the_status_keeps_teslafis_time_of_its_data_apart_from_when_a_new_poll_was_read() {
+    let (_t, data, v) = vault();
+    let store = Store::new(&data, v);
+    let id = account(&store, true);
+    let (script, sink) = (Script::default(), Arc::new(MemSink::default()));
+    let mut p = poller(&store, &id, &script, &sink);
+    let six_hours = 6 * 3_600_000;
+    // TeslaFi's newest poll is dated six hours before the moment it is read, and the car is awake
+    script.push(Ok(poll(1, "2027-01-15 02:00:00", "Idling", json!({}))));
+    let next = p.tick(NOW).await.unwrap();
+    let st = p.status();
+    assert_eq!(st.last_data_ms, Some(NOW - six_hours), "TeslaFi's own time of its data");
+    assert_eq!(st.last_new_ms, Some(NOW), "when this server read a poll it had not had");
+    assert!(st.awake);
+    assert_eq!(teslafi::data_health(&st, NOW), teslafi::DataHealth::TimeOffset { skew_ms: six_hours, behind: true });
+    // the same poll again, every few minutes for hours: the connection works, nothing is new
+    let mut t = next;
+    for _ in 0..130 {
+        script.push(Ok(poll(1, "2027-01-15 02:00:00", "Idling", json!({}))));
+        t = p.tick(t).await.unwrap();
+    }
+    assert!(t >= NOW + 2 * 3_600_000, "{}", t - NOW);
+    let st = p.status();
+    assert_eq!((st.last_data_ms, st.last_new_ms), (Some(NOW - six_hours), Some(NOW)), "nothing new was read");
+    assert_eq!(st.last_error, None);
+    assert_eq!(
+        teslafi::data_health(&st, t),
+        teslafi::DataHealth::NoData { age_ms: t - NOW, last_data_ms: NOW - six_hours },
+        "TeslaFi has had nothing new while this server polled without errors"
+    );
+    // kept across a restart
+    assert_eq!(store.pacing(&id).unwrap().last_new_ms, Some(NOW));
+}

@@ -24,6 +24,7 @@ import { openPeriodPicker } from '../core/period.js';
 import { rpx } from '../core/display.js';
 import { downloadCsv, csvFilename, column, timeColumn } from '../shared/csv.js';
 import { srcMark, srcText, inputsLine } from '../core/source.js';
+import { dataNote } from '../shared/teslafi-data.js';
 import { vehicleInfoPanel } from './vehicle-info.js';
 
 export const id = 'car';
@@ -245,11 +246,15 @@ export async function mount(ctx) {
   function paintInputs() {
     const ins = now.inputs || [];
     const api = ins.some((i) => i.kind === 'tesla_api');
+    // TeslaFi's data is stamped with TeslaFi's own time: old while the connection works means TeslaFi has had nothing
+    // new from the car (its problem) or its times are read in the wrong zone (the account's setting)
+    const dn = dataNote(ins, now.state, ctx.api.now());
     redraw(inputsSlot,
       ins.length ? inputsLine(ins, ago) : h('span', { class: 'src-inputs' }, h('span', { class: 'src-inputs-label' }, 'Live inputs'), h('span', { class: 'faint' }, 'none: no SMO log and no Tesla API reading yet')),
       ctx.admin ? panelLink(`${state.buildUrl('settings-cars', { car: cid })}#data-sources`, 'Change order', { class: 'panel-link now-inputs-order', title: 'Which input wins when two cover the same time: Settings: Cars, Data sources' }) : null,
       api ? h('span', { class: 'now-inputs-key' }, 'A value marked ', h('span', { class: 'src-via' }, h('i', { class: 'src-m src-m--tesla_api' }), h('span', null, 'API')), ' came from the Tesla API; the rest from SMO.') : null,
-      car.sources?.length ? h('span', { class: 'now-inputs-hist' }, h('span', { class: 'faint' }, 'History: '), srcMark(car)) : null);
+      car.sources?.length ? h('span', { class: 'now-inputs-hist' }, h('span', { class: 'faint' }, 'History: '), srcMark(car)) : null,
+      dn ? h('p', { class: 'note warn now-inputs-data', role: 'status', dataset: { kind: dn.kind } }, icon('warn', 'ico--sm'), ' ', dn.text) : null);
   }
 
   function paintBanner() {
