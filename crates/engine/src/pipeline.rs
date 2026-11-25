@@ -12,6 +12,10 @@ pub const NEW_CAR_NAME: &str = "New car";
 
 /// The logs of a new key looked in for its VIN before it is given to the only car.
 pub(crate) const VIN_LOGS: usize = 20;
+/// A rebuild of a period that cuts a drive or charge rebuilds a window per log from this long before its start
+/// (ms; at least the parking and charging gaps): a log is about a minute long, so none before carries a sample of
+/// it, unless a rebuild makes it start earlier than the one stored by more than this.
+pub(crate) const TAIL_MARGIN_MS: u64 = 3_600_000;
 /// Why a run of logs ended part way: the server stopped (a restart, or its data moved away); the next start goes on.
 pub(crate) const STOPPING_LOGS: &str = "the server is stopping: the logs left are decoded at its next start";
 
@@ -1390,34 +1394,42 @@ impl Engine {
         //
         // Only where it gives the very timeline that a rebuild after every log gives: nothing of the timeline is
         // stored yet at or after the first of these logs (a first start over a full store, a car rebuilt whole, a
-        // period rebuilt whose end no drive or charge went on across: see `in_period`), and the car has no API
-        // input. Where logs fill a gap before rows that are there, a drive or charge keeps the id of the piece of
-        // it that was there first, and which piece that is depends on the windows rebuilt on the way: there every
-        // log's window is rebuilt as before. The same beside an API's samples: a rebuild
-        // builds rows from them ahead of the logs, and five made-up days with TeslaFi's API and local TeslaMate
-        // gave a drive another id when rebuilt per run (crates/sentry-mate/src/window_batch.rs): in place the car's
+        // period rebuilt: see `in_period`), and the car has no API input. Where logs fill a gap before rows that
+        // are there, a drive or charge keeps the id of the piece of it that was there first, and which piece that
+        // is depends on the windows rebuilt on the way: there every log's window is rebuilt as before. The same
+        // beside an API's samples: a rebuild builds rows from them ahead of the logs, and five made-up days with
+        // TeslaFi's API and local TeslaMate gave a drive another id when rebuilt per run
+        // (crates/sentry-mate/src/window_batch.rs): in place the car's
         // newest data is the API's, so each window runs on to it. A full rebuild's shadow has no such rows and its
         // newest data is its newest log's: it goes once per day of logs, beside an API too ([`Engine::full_by_day`]).
         let mut batch = self.inner.opts.window_batch.max(1);
+        // (the logs from this one on get a window each: a period that cuts a drive or charge, see `in_period`)
+        let mut per_log_from = usize::MAX;
         if batch > 1 {
             let first = wanted.first().and_then(|(_, name, _)| records::name_start_ms(name));
             let meta = records::meta(db, car)?;
             let apis = !(meta.api_days.is_empty() && meta.teslafi_days.is_empty() && meta.tmlocal_days.is_empty());
             // A rebuild of a period: its window was cleared, so nothing worked out from logs is stored in it. Where
             // every log wanted lies in it, only what is stored between the first of them and the period's end
-            // counts: the rows after it are kept, and the windows that reach them are rebuilt either way. Not where
-            // a drive or charge went on across the period's end: its part after the end is still there, the
-            // windows on the way make a drive or charge of it, and the whole one rebuilt keeps the id of whichever
-            // piece was stored first, which depends on those windows (two made-up periods gave a charge, and a
-            // drive, another id per run; crates/sentry-mate/src/window_batch.rs).
+            // counts: the rows after it are kept, and the windows that reach them are rebuilt either way.
+            //
+            // A drive or charge that went on across the period's end lost its row but not its samples after the
+            // end, and a window that reaches past the end before the drive's head is decoded builds those as a row
+            // of their own, with the id of its first sample; the whole drive rebuilt keeps its start's id only if
+            // a row with that id is stored, else the id of the first old row it overlaps (`carry_ids`). So its id
+            // depends on which windows were rebuilt before its head: those logs get a window each (`cut_from_ms`
+            // of the mark: from an hour before the earliest such start, [`TAIL_MARGIN_MS`]). The logs before
+            // carry none of its samples: their windows build the same piece from the samples after the end either
+            // way, and at the switch the store is the same, so the logs from there run as one per log does.
             let in_period = records::rebuild_mark(db, car)?.filter(|m| {
                 m.cleared
-                    && m.end_clear
+                    && (m.end_clear || m.cut_from_ms.is_some())
                     && (m.from_ms, m.to_ms) != (0, u64::MAX)
                     && wanted
                         .iter()
                         .all(|(_, n, _)| records::name_start_ms(n).is_some_and(|s| s >= m.from_ms && s < m.to_ms))
             });
+            let cut_from = in_period.as_ref().and_then(|m| m.cut_from_ms);
             let ahead = match (first, in_period) {
                 // A full rebuild carried on after a restart: its shadow started empty of everything worked out
                 // from logs, so what is stored there at or after these logs (a state that goes on past the last
@@ -1458,6 +1470,15 @@ impl Engine {
             };
             if apis || ahead {
                 batch = 1;
+            } else if let Some(c) = cut_from {
+                // (the switch: from the first log that starts at or after the margin before the cut drive's start)
+                let p = &self.inner.opts.params;
+                let tail = c.saturating_sub(TAIL_MARGIN_MS.max(p.park_ms).max(p.charge_gap_ms));
+                if let Some(i) =
+                    wanted.iter().position(|(_, n, _)| records::name_start_ms(n).is_some_and(|s| s >= tail))
+                {
+                    per_log_from = i;
+                }
             }
         }
         // a full rebuild: once per day of logs instead ([`Engine::full_by_day`])
@@ -1470,7 +1491,12 @@ impl Engine {
         let threads = self.inner.opts.read_ahead;
         let ended = crate::ahead::Ahead::run(self, car, usable, threads, |ahead| -> Result<bool> {
             let (mut waiting, mut run_day) = (0, None);
-            for (key, name, len) in wanted {
+            for (i, (key, name, len)) in wanted.into_iter().enumerate() {
+                if i == per_log_from {
+                    // (the windows of the logs before are rebuilt first, as after every log they would be)
+                    self.rebuild_dirty(car)?;
+                }
+                let each = batch == 1 || i >= per_log_from;
                 if job.is_some_and(|j| j.cancelled()) {
                     self.rebuild_dirty(car)?;
                     return Ok(true);
@@ -1494,7 +1520,7 @@ impl Engine {
                 let read = ahead.and_then(|a| a.take(&name));
                 let l = self.car_lock(car);
                 let held = lock(&l);
-                let r = self.log_read(car, &key, &name, false, batch == 1, read);
+                let r = self.log_read(car, &key, &name, false, each, read);
                 drop(held);
                 if let Err(e) = r {
                     if let Some(j) = job {
@@ -1503,7 +1529,7 @@ impl Engine {
                     self.failed(&e);
                 }
                 waiting += 1;
-                if batch > 1 && waiting >= batch {
+                if !each && waiting >= batch {
                     waiting = 0;
                     self.rebuild_dirty(car)?;
                 }
@@ -1572,6 +1598,7 @@ impl Engine {
                 m.from_ms = m.from_ms.min(from_ms);
                 m.to_ms = m.to_ms.max(to_ms);
                 m.end_clear = false;
+                m.cut_from_ms = None;
                 records::put_rebuild_mark(db, car, Some(&m))?;
             }
         }

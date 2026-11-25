@@ -230,6 +230,12 @@ pub struct RebuildMark {
     /// A mark from before this was kept says no.
     #[serde(default)]
     pub end_clear: bool,
+    /// Where the earliest drive or charge worked out from logs that went on across the period's end began, when it
+    /// was cleared: its part after the end is kept, so only the logs from shortly before that start are rebuilt a
+    /// window each, those before it once per run of logs (`TAIL_MARGIN_MS`). `None` where none
+    /// did (see `end_clear`), and in a mark from before this was kept.
+    #[serde(default)]
+    pub cut_from_ms: Option<u64>,
 }
 
 /// A CAN key no car claims yet.
@@ -921,6 +927,19 @@ mod tests {
 
     fn sp(a: u64, b: u64, state: ApiState, data: bool) -> ApiSpan {
         ApiSpan { start_ms: a, end_ms: b, state, data, inputs: model::Inputs::NONE }
+    }
+
+    /// A mark kept before the earliest start of a cut drive was noted says none: the logs of its period get a window
+    /// each, as they did.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_rebuild_mark_an_older_version_kept_has_no_cut_drive() {
+        let old = r#"{"from_ms":1,"to_ms":9,"started_ms":3,"cleared":true,"end_clear":false}"#;
+        let m: RebuildMark = serde_json::from_str(old).unwrap();
+        assert_eq!((m.cleared, m.end_clear, m.cut_from_ms), (true, false, None));
+        let new = RebuildMark { cut_from_ms: Some(5), ..m };
+        let back: RebuildMark = serde_json::from_str(&serde_json::to_string(&new).unwrap()).unwrap();
+        assert_eq!(back, new);
     }
 
     #[test]
