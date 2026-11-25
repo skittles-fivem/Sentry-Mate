@@ -102,6 +102,10 @@ pub struct Trip {
     pub charges: Vec<String>,
     /// Whether `drives`, `charges` or `markers` stop at [`MAX_LISTED`] (the figures count everything).
     pub truncated: bool,
+    /// What an import filled where the car's own inputs had nothing ([`super::gapfill`]): `distance.odometer_km`
+    /// (an odometer reading of a drive) and `markers` (the start marker's position) -> the imports that gave it.
+    /// Empty when nothing shown was filled.
+    pub value_sources: super::gapfill::ValueSources,
 }
 
 /// Whether a list of `len` rows takes one more (else it is cut at [`MAX_LISTED`], and `truncated` says so).
@@ -123,7 +127,12 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
     let tz = crate::tz::zone(&c.time_zone);
     let shown = Shown::new(e, car, None)?;
     let dx = super::drives::ctx(e, &c)?;
+    // the drives as the drives list shows them: with what the chosen import fills ([`super::gapfill`])
+    let gaps = super::gapfill::Gaps::new(e, car, None)?;
     let mut drives: Vec<String> = Vec::new();
+    let mut value_sources = super::gapfill::ValueSources::new();
+    let (mut odo_first_src, mut odo_last_src) = (Vec::new(), Vec::new());
+    let mut markers_src = Vec::new();
     // the km of the drives with energy (what Wh/km is over, as in the drives list) and the drives' own time
     let (mut km, mut net, mut km_e, mut drive_ms) = (0.0, 0.0, 0.0, 0u64);
     let (mut odo_first, mut odo_last) = (None::<f64>, None::<f64>);
@@ -132,17 +141,21 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
     let mut last: Option<DriveView> = None;
     let mut truncated = false;
     each::<Drive>(e, car, a, end, None, &shown, false, |d| {
-        let v = super::drives::view(&c, &d, &dx);
+        let (v, _) = super::drives::view_filled(&c, &d, &dx, &gaps)?;
         km += v.distance_km.unwrap_or(0.0);
         net += v.energy_kwh.unwrap_or(0.0);
         if v.energy_kwh.is_some() {
             km_e += v.distance_km.unwrap_or(0.0);
         }
         drive_ms += v.duration_ms;
-        if odo_first.is_none() {
+        if odo_first.is_none() && v.start_odometer_km.is_some() {
             odo_first = v.start_odometer_km;
+            odo_first_src = v.value_sources.get("start_odometer_km").cloned().unwrap_or_default();
         }
-        odo_last = v.end_odometer_km.or(odo_last);
+        if v.end_odometer_km.is_some() {
+            odo_last = v.end_odometer_km;
+            odo_last_src = v.value_sources.get("end_odometer_km").cloned().unwrap_or_default();
+        }
         if let Some(p) = &last {
             // the stop between the drive before and this one
             let stop_from = p.end_ms.unwrap_or(p.start_ms);
@@ -166,6 +179,7 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
             drives.push(v.id.clone());
         }
         if first.is_none() {
+            markers_src = v.value_sources.get("start").cloned().unwrap_or_default();
             first = Some(v.clone());
         }
         last = Some(v);
@@ -221,6 +235,17 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
         });
     }
     markers.sort_by_key(|m| (m.t_ms, m.kind != "start"));
+    for (field, srcs) in [("odometer_km", [odo_first_src, odo_last_src].concat()), ("markers", markers_src)] {
+        let mut uniq: Vec<super::SourceRef> = Vec::new();
+        for r in srcs {
+            if !uniq.contains(&r) {
+                uniq.push(r);
+            }
+        }
+        if !uniq.is_empty() {
+            value_sources.insert(field.to_string(), uniq);
+        }
+    }
     // the time in each state, from the activity strip of the same period
     let mut time = TripTime::default();
     if end > a {
@@ -302,6 +327,7 @@ pub fn trip(e: &Engine, car: CarId, period: &Period, now_ms: u64) -> QResult<Sco
             drives,
             charges,
             truncated,
+            value_sources,
         },
     ))
 }

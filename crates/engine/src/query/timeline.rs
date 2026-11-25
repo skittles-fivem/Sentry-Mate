@@ -56,6 +56,9 @@ pub struct Row {
     pub gap_reason: Option<&'static str>,
     #[serde(flatten)]
     pub from: super::Sources,
+    /// The fields an import filled where the car's own inputs had nothing ([`super::gapfill`]): field -> the imports
+    /// that gave it. Empty on every row but a drive that was filled.
+    pub value_sources: super::gapfill::ValueSources,
     /// A drive's or charge's flags (`in_progress`, ...); null on the other rows.
     pub flags: Option<serde_json::Value>,
     pub version: Option<String>,
@@ -197,6 +200,7 @@ fn stretch_rows(
             awake_reasons: Vec::new(),
             gap_reason: None,
             from: super::Sources::family(model::Source::Live),
+            value_sources: Default::default(),
             flags: None,
             version: None,
             version_source: None,
@@ -234,6 +238,7 @@ fn stretch_rows(
             awake_reasons: Vec::new(),
             gap_reason: Some(known.unwrap_or_else(|| why(ga, gb))),
             from: super::Sources::family(model::Source::Live),
+            value_sources: Default::default(),
             flags: None,
             version: None,
             version_source: None,
@@ -354,9 +359,11 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
     // from the drive or charge before the period: the stretch after it may reach in
     let from = super::parked::busy_start_before(e, car, &shown, a)?.unwrap_or(a).min(a);
     let per = Period::new(Some(from), Some(b));
-    let drive_row = |d: &Drive| {
-        let v = super::drives::view(&c, d, &dx);
-        Row {
+    // the drives as the drives list shows them: with what the chosen import fills ([`super::gapfill`])
+    let gaps = super::gapfill::Gaps::new(e, car, None)?;
+    let drive_row = |d: &Drive| -> QResult<Row> {
+        let (v, _) = super::drives::view_filled(&c, d, &dx, &gaps)?;
+        Ok(Row {
             id: format!("drive:{}", d.start_ms),
             kind: "drive",
             start_ms: d.start_ms,
@@ -379,12 +386,13 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             awake_reasons: Vec::new(),
             gap_reason: None,
             from: v.from.clone(),
+            value_sources: v.value_sources.clone(),
             flags: serde_json::to_value(&v.flags).ok(),
             version: None,
             version_source: None,
             detected_by: None,
             changed_modules: None,
-        }
+        })
     };
     let charge_row = |ch: &Charge| -> QResult<Row> {
         let v = super::charges::view(e, &c, ch, &cx)?;
@@ -424,6 +432,7 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             awake_reasons: vec!["charging"],
             gap_reason: None,
             from: v.from.clone(),
+            value_sources: Default::default(),
             flags: serde_json::to_value(&v.flags).ok(),
             version: None,
             version_source: None,
@@ -433,14 +442,14 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
     };
     let mut pieces: Vec<Piece> = Vec::new();
     for d in super::drives::rows(e, car, &per, None)? {
-        pieces.push((d.start_ms, d.end_ms, drive_row(&d)));
+        pieces.push((d.start_ms, d.end_ms, drive_row(&d)?));
     }
     for ch in super::charges::rows(e, car, &per, None)? {
         pieces.push((ch.start_ms, ch.end_ms, charge_row(&ch)?));
     }
     // the first one after the period ends the stretch the period's last one starts
     let next = match super::parked::next_busy(e, car, &shown, b)? {
-        Some(Ok(d)) => Some((d.start_ms, d.end_ms, drive_row(&d))),
+        Some(Ok(d)) => Some((d.start_ms, d.end_ms, drive_row(&d)?)),
         Some(Err(ch)) => Some((ch.start_ms, ch.end_ms, charge_row(&ch)?)),
         None => None,
     };
@@ -554,6 +563,7 @@ pub(crate) fn all_rows_of(e: &Engine, car: CarId, a: u64, b: u64) -> QResult<Vec
             awake_reasons: Vec::new(),
             gap_reason: None,
             from: super::Sources::of(up.source, up.inputs),
+            value_sources: Default::default(),
             flags: None,
             version: match ev {
                 Some(_) => fw_name.as_ref().map(|n| n.0.clone()),

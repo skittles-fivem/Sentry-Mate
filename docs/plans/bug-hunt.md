@@ -242,7 +242,6 @@ Checked in round 4 and found working: the accounts ordering, the TeslaMate marks
 
 ### Open
 
-- **Trip and Timeline do not use what an import fills at a live drive's start (the Logbook and Drives do)** (low).
 - **A long virtual list prints only the rows drawn** (low).
 - **The full rebuild costs far more per log on the owner's server than here** (see Reported by the owner): what grew with the history is fixed; the owner's 900 ms a log is not reproduced, and the Rebuild speed line on their server is the next step. A rebuild in place on the live server still builds the car's newest values once per window (the live stream listens); sending them at most once a second would remove that.
 - **ui/tools/scroll.test.js is unsteady in this container:** Charges' long tasks while it scrolls through a rebuild were the page swapping in its rebuilt copy mid-scroll (fixed: the swap and the snap wait for the scroll to rest). Drives still sits on the 50 ms frame budget and fails some runs, at the same rate on the commit before the fix: a whole-page snap of 25 to 35 ms every 2 s when its patterns panel is drawn again. Deferring those snaps while scrolling made jumps.test.js fail on /places, so it was left.
@@ -498,6 +497,7 @@ Each with a test unless the line says otherwise; the commits name them.
 - Car and logbook pages keep their 50 ms frame budget while scrolling (budgets untouched) (medium). Test: Reproduced: car failed 4 of 5 runs (frames 83 to 117 ms), logbook 2 of 4 (83 ms) and sat at 50 ms otherwise. Car (d1906e63): c1 is driving, so its marker moved every 2 s and the map was drawn again mid-scroll (about 80 ms on this machine's software GL); the move now waits while the page scrolls or t
 - PageRebuild test no longer races its clock (medium). Test: Still flaky on HEAD: 5 of 10 runs failed with `'days' not found in ['decoding', 'done']`. The test raced its clock, not a stream fault: the stream samples job status at most twice a second (less often when a look is slow), and the test's ticking clock passed the 23 virtual seconds of `days` in about
 - `check.js --pack instrument --jumps` runs the jump check instead of crashing (medium). Test: Reproduced the TypeError in jumps.js parseArgs: run as the program, check.js set `module.exports` after calling main(), so jumps.js got an empty module. Exports now come before main; a bad jumps option is a usage error (exit 2). Test ui/tools/check-jumps-flag.test.js (README row), failed before and 
+- Trip and Timeline do not use what an import fills at a live drive's start (low). Test: crates/web/tests/import_gapfill.rs trip_and_timeline_fill_a_live_drive_as_the_drives_list_does (failed before). Both read the drives as the Drives list does (`view_filled`), so the car's `import_gap_fill` setting rules them: Trip's start marker and odometer, and the Timeline's drive rows, take the import's values and name it (`sources`, `source_label`, `value_sources` on a row; `value_sources` on Trip); off, the live row as stored. Trip's Distance figure says when its odometer reading was filled in.
 
 ## Reported and refuted
 

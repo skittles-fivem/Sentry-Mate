@@ -199,12 +199,14 @@ export async function mount(ctx) {
   const per100 = (cost.per_100km || []).filter((x) => x.amount != null);
   const tm = trip.time_ms || {};
   const dist = trip.distance || {};
+  // an odometer reading the car's own inputs lacked, filled from an import (the drives list marks its rows the same way)
+  const odoFill = trip.value_sources?.odometer_km?.length ? srcText({ sources: trip.value_sources.odometer_km }) : '';
   const en = trip.energy_kwh || {};
   const costWhy = nCharges === 0 ? 'No charge in this window' : 'No charge has a price yet';
   const moneyEl = (list, kind) => (list.length ? h('span', { class: 'money-stack' }, list.map((x) => h('span', null, kind ? format({ amount: x.amount, currency: x.currency }, kind) : formatMoney(x.amount, x.currency), list.length > 1 ? h('small', { class: 'cur' }, ` ${x.currency}`) : null))) : null);
   const figs = panel({ title: 'Trip figures', icon: 'stats', cls: 'trip-figures', cover: 'trip.empty_states', side: csvButton({ onClick: () => downloadCsv(csvFilename(car.name, 'trip', dayKey(from, tz), 'figures'), figureRows(trip, car), FIG_COLS) }) },
     h('div', { class: 'trip-fig-grid' },
-      metric('Distance', dist.odometer_km, 'distance', { size: 'lg', cover: 'trip.stat.mileage', why: noDrive ? whyDrive : 'No odometer reading', explain: !noDrive && dist.drives_km != null ? `by odometer; the ${formatNumber(nDrives)} ${nDrives === 1 ? 'drive adds' : 'drives add'} up to ${format(dist.drives_km, 'distance')}` : 'by odometer' }),
+      metric('Distance', dist.odometer_km, 'distance', { size: 'lg', cover: 'trip.stat.mileage', why: noDrive ? whyDrive : 'No odometer reading', explain: !noDrive && dist.drives_km != null ? `by odometer${odoFill ? ` (a reading filled in: ${odoFill.charAt(0).toLowerCase()}${odoFill.slice(1)})` : ''}; the ${formatNumber(nDrives)} ${nDrives === 1 ? 'drive adds' : 'drives add'} up to ${format(dist.drives_km, 'distance')}` : 'by odometer' }),
       metric('Average speed, moving', trip.speed_kph?.moving, 'speed', { cover: 'trip.stat.speed_moving', why: whyDrive, explain: noDrive ? 'distance over the time driving' : `distance over ${formatDuration(tm.driving || 0)} of driving` }),
       metric('Average speed, with fast charging', trip.speed_kph?.incl_dc, 'speed', { cover: 'trip.stat.speed_incl_dc', why: whyDrive, explain: tm.charging_dc ? `the ${formatDuration(tm.charging_dc)} at DC chargers counted as travel time` : 'no DC charging in this window, so the same as moving' }),
       metric('Net consumption', trip.wh_per_km?.net, 'efficiency', { cover: 'trip.stat.consumption_net', why: noDrive ? whyDrive : 'Too little distance', explain: noDrive ? 'energy at the pack per distance, regen taken off' : `${format(en.drive_net, 'energy')} the pack gave while driving, regen taken off` }),
