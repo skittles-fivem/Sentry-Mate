@@ -492,6 +492,19 @@ pub fn held_all(db: &Db) -> Result<Vec<Held>> {
     Ok(out)
 }
 
+/// The drives held lots keep, as (source, start, end, lot): rows that left a car and wait for one.
+pub fn held_drive_spans(db: &Db) -> Result<Vec<(Source, u64, u64, String)>> {
+    let mut out = Vec::new();
+    for h in held_all(db)?.into_iter().filter(|h| h.status != "assigned") {
+        for n in 0..h.parts {
+            if let Some(b) = records::get::<Bundle>(db, NS, &part_key(&h.id, n))? {
+                out.extend(b.drives.iter().map(|d| (b.source, d.start_ms, d.end_ms, h.id.clone())));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// The lots an import holds.
 pub fn held_of_import(db: &Db, import: &str) -> Result<Vec<Held>> {
     Ok(held_all(db)?.into_iter().filter(|h| h.import.as_deref() == Some(import)).collect())

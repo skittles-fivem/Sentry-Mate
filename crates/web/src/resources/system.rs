@@ -458,6 +458,13 @@ async fn start_repair(
     }
     let e = app.service::<Engine>()?;
     super::full_rebuild::refuse_while_running(&e)?;
+    // an import writes the car's rows meanwhile: wait for it
+    if app.service::<super::imports::Imports>().is_ok_and(|im| im.running() > 0) {
+        return Err(ApiError::conflict(
+            "import_running",
+            "An import is running and writes the car's rows: repair the table once it is over.",
+        ));
+    }
     // (the repair claims the car before this answers, so a second ask meets it)
     if !e.repair_begin(car) {
         return Err(ApiError::conflict("repair_running", "A repair of this car's drives table is under way."));

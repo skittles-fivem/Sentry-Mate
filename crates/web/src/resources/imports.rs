@@ -1947,7 +1947,9 @@ impl engine::repair::ImportReplay for Replay {
         }
         let mut jobs: Vec<Job> =
             all.lock().jobs.values().filter(|j| j.status == "done" && !j.is_can()).cloned().collect();
-        jobs.sort_by_key(|j| (j.started_ms, j.id.clone()));
+        // newest first: where two imports hold the same time, the newer one is what the car has
+        jobs.sort_by_key(|j| std::cmp::Reverse((j.started_ms, j.id.clone())));
+        let mut sets: Vec<Vec<model::Drive>> = Vec::new();
         let me = crate::ids::car(car);
         for j in jobs {
             let source = if j.is_teslafi() { model::Source::Teslafi } else { model::Source::Teslamate };
@@ -2000,8 +2002,90 @@ impl engine::repair::ImportReplay for Replay {
                     to_ms: held.iter().map(|d| d.end_ms).max(),
                 });
             }
-            out.drives.extend(kept);
+            sets.push(kept);
         }
+        out.drives = newest_wins(sets);
         out
+    }
+}
+
+/// The drives of several imports' kept uploads, the newest import's set first: a drive of an older import is left out
+/// where a newer import has a drive of the same source over the same time (a newer file replaced it, or took it
+/// away), and a row id comes once.
+fn newest_wins(sets: Vec<Vec<model::Drive>>) -> Vec<model::Drive> {
+    let mut out: Vec<model::Drive> = Vec::new();
+    let mut ids = std::collections::HashSet::new();
+    // (start, end) of what newer sets hold, by source, sorted by start
+    let mut spans: HashMap<model::Source, Vec<(u64, u64)>> = HashMap::new();
+    for set in sets {
+        let mut mine: Vec<(model::Source, u64, u64)> = Vec::new();
+        for d in set {
+            let (a, b) = (d.start_ms, d.end_ms.max(d.start_ms + 1));
+            let covered = spans.get(&d.source).is_some_and(|v| {
+                let i = v.partition_point(|x| x.0 < b);
+                v[i.saturating_sub(8)..i].iter().any(|x| a < x.1)
+            });
+            if covered || !ids.insert(d.id) {
+                continue;
+            }
+            mine.push((d.source, a, b));
+            out.push(d);
+        }
+        for (s, a, b) in mine {
+            let v = spans.entry(s).or_default();
+            let i = v.partition_point(|x| x.0 < a);
+            v.insert(i, (a, b));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::newest_wins;
+    use model::Source;
+
+    fn d(id: u64, start: u64, end: u64, source: Source) -> model::Drive {
+        model::Drive {
+            id,
+            car: 1,
+            start_ms: start,
+            end_ms: end,
+            start: None,
+            end: None,
+            start_place: None,
+            end_place: None,
+            start_address: None,
+            end_address: None,
+            start_odometer_km: None,
+            end_odometer_km: None,
+            distance_km: None,
+            speed_max_kmh: None,
+            power_max_kw: None,
+            power_min_kw: None,
+            energy_used_kwh: None,
+            start_soc: None,
+            end_soc: None,
+            start_range_km: None,
+            end_range_km: None,
+            outside_temp_avg_c: None,
+            inside_temp_avg_c: None,
+            ascent_m: None,
+            descent_m: None,
+            source,
+            inputs: model::Inputs::NONE,
+            rules_version: 0,
+        }
+    }
+
+    #[test]
+    fn a_newer_import_wins_where_two_hold_the_same_time() {
+        let tm = Source::Teslamate;
+        // the newer import (first) holds drive 2 over 1000..2000 and no longer holds drive 1 (it was joined into 2)
+        let newer = vec![d(2, 1000, 2000, tm), d(9, 5000, 6000, tm)];
+        let older =
+            vec![d(1, 1100, 1900, tm), d(2, 1000, 1500, tm), d(3, 8000, 9000, tm), d(4, 1500, 1800, Source::Teslafi)];
+        let got: Vec<u64> = newest_wins(vec![newer, older]).iter().map(|x| x.id).collect();
+        assert_eq!(got, [2, 9, 3, 4], "the older drive 1 is the newer drive 2's; ids once; another site's stays");
     }
 }

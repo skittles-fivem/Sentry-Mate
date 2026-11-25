@@ -180,3 +180,41 @@ fn a_table_put_aside_is_kept_and_written_again_with_what_was_read() {
     // nothing there to put aside the second time
     assert_eq!(again.set_aside_table(c.car, Table::Charges, "none").unwrap(), None);
 }
+
+#[test]
+fn a_table_replaced_in_one_step_is_not_moved_when_its_rows_are_refused() {
+    let c = case(0);
+    let db = reopened(&c);
+    let mut bad = c.rows[..3].to_vec();
+    bad[1].car += 1;
+    assert!(db.replace_table(c.car, "test", &bad).is_err());
+    assert!(c.snap.exists(), "nothing was moved");
+    assert!(!c.t.data.join("db/cars").join(c.car.to_string()).join("aside").exists());
+    // and with good rows: aside and written again in one step, the folder named
+    let folder = db.replace_table(c.car, "test", &c.rows[..3]).unwrap().expect("a folder");
+    assert!(c.t.data.join(&folder).join("drives.snap").exists() && c.snap.exists());
+    assert_eq!(db.count::<Drive>(c.car).unwrap(), 3);
+}
+
+#[test]
+fn a_journal_whose_header_does_not_read_is_not_applied_onto_a_snapshot() {
+    let c = case(3);
+    let mut b = std::fs::read(&c.log).unwrap();
+    // the header record (the first), its ciphertext
+    b[vault::records::HEADER + 4 + 30] ^= 0x40;
+    std::fs::write(&c.log, &b).unwrap();
+    let s = reopened(&c).salvage_table::<Drive>(c.car).unwrap();
+    assert_eq!(s.journal.applied, 0, "its changes can't be told to follow this snapshot");
+    assert!(s.journal.why.as_deref().is_some_and(|w| w.contains("header")), "{:?}", s.journal);
+    assert!(s.lost_something() && s.lost_from_ms() == Some(0));
+    assert_eq!(s.rows.len(), 1200);
+}
+
+#[test]
+fn files_put_aside_after_a_shadow_was_copied_survive_its_adoption() {
+    let c = case(0);
+    let (shadow, _) = c.t.db.shadow(".full-rebuild", c.car).unwrap();
+    let folder = c.t.db.set_aside_table(c.car, db::Table::Drives, "test").unwrap().expect("a folder");
+    c.t.db.adopt_car(c.car, &shadow).unwrap();
+    assert!(c.t.data.join(&folder).join("drives.snap").exists(), "{folder}");
+}

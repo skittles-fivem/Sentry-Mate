@@ -258,6 +258,15 @@ impl Db {
                 }
             }
         }
+        // the files put aside (a repair after the shadow was copied): never lost with the folder that is swapped out
+        if real.join("aside").exists() {
+            for e in std::fs::read_dir(real.join("aside"))? {
+                let p = e?.path();
+                if p.is_dir() {
+                    copy_tree(&p, &new.join("aside").join(p.file_name().unwrap_or_default()), &|_| false)?;
+                }
+            }
+        }
         let ctx = &self.inner.ctx;
         let mut b = header(Kind::Meta);
         b.extend_from_slice(

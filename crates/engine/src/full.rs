@@ -1346,7 +1346,7 @@ impl Engine {
                 db.adopt_car(car, sdb)?;
             }
             self.full_switch_records(car, sdb, &seed)?;
-            self.finish_repair(car)?;
+            self.finish_repair(car, None)?;
             // a change of the car's order or keys meanwhile was built into the old history only
             let (a, b) = (db.car(car)?, sdb.car(car)?);
             a.as_ref().map(|c| (&c.preferred_key, &c.vehicle_keys))

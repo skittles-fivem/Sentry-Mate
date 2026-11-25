@@ -493,6 +493,7 @@ impl Engine {
             }
             // (the narrow rebuilds asked for up to now are done by this one; one asked for meanwhile is not)
             let (gen_p, gen_i) = (records::redo(db, car, Redo::Positions)?, records::redo(db, car, Redo::Inputs)?);
+            let mut window = (from_ms, to_ms);
             {
                 let l = self.car_lock(car);
                 let _held = lock(&l);
@@ -502,6 +503,7 @@ impl Engine {
                 let mut mark = RebuildMark { from_ms, to_ms, started_ms, cleared: false, end_clear, cut_from_ms };
                 records::put_rebuild_mark(db, car, Some(&mark))?;
                 self.clear_window(car, from_ms, to_ms)?;
+                window = records::rebuild_mark(db, car)?.map_or(window, |m| (m.from_ms, m.to_ms));
                 // (a window grown over a damaged file: its end is another)
                 if records::rebuild_mark(db, car)?.is_some_and(|m| (m.from_ms, m.to_ms) != (from_ms, to_ms)) {
                     mark.end_clear = false;
@@ -510,6 +512,8 @@ impl Engine {
                 mark.cleared = true;
                 records::put_rebuild_mark(db, car, Some(&mark))?;
             }
+            // (what was cleared is cleared by now: a repair that came before this is covered by it)
+            let cleared_ms = now_ms();
             self.reconcile_car(car, Some(st))?;
             if st.cancelled() {
                 // the car's window is cleared: the logs this job did not reach are worked on now, in the background
@@ -518,7 +522,7 @@ impl Engine {
                 break;
             }
             // (a drives table repaired meanwhile: the owner's purposes go back on the drives made again)
-            self.finish_repair(car)?;
+            self.repair_after_rebuild(car, cleared_ms, window.0, window.1)?;
             // (the whole history made again: the narrow rebuilds noted are done with it)
             if from_ms == 0 && to_ms == u64::MAX {
                 self.job_clear_hook();
