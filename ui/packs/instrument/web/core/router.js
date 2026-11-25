@@ -49,6 +49,9 @@ let mounted = null;      // { key, queryKey, ctx, instance, cleanups, scope, css
 let seq = 0;
 let firstMount = true;
 let warmedMain = false;
+let firstReadyDone;
+/** Resolves once the first page of this visit is ready (its data drawn). */
+export const firstReady = new Promise((resolve) => { firstReadyDone = resolve; });
 
 const periodKey = (p) => (p ? JSON.stringify(p) : '');
 const routeKey = (s) => [s.page, s.car, s.drive, s.charge, periodKey(s.period)].join('|');
@@ -58,6 +61,22 @@ const queryKey = (q) => JSON.stringify(Object.entries(q || {}).sort());
 let fallbackZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 export const setFallbackZone = (tz) => { if (tz) fallbackZone = tz; };
 export const defaultZone = () => fallbackZone;
+
+// The period a warm and the mount after it share: a warm's period is taken by the next mount of the same address
+// within PERIOD_KEEP_MS, so the page asks for the very reads that were warmed (a "now" taken 40 ms later is another
+// address, read a second time); any other mount (a live refresh, a reload) resolves its own
+const PERIOD_KEEP_MS = 10000;
+let warmedPeriod = null; // { key, at, period }
+function periodOf(s, info, tz, { warming = false } = {}) {
+  if (!info.period) return null;
+  const key = JSON.stringify([s.page, s.car, s.period ?? null, info.period, tz]);
+  const kept = warmedPeriod && warmedPeriod.key === key && Date.now() - warmedPeriod.at < PERIOD_KEEP_MS ? warmedPeriod : null;
+  if (!warming) warmedPeriod = null;
+  if (kept) return kept.period;
+  const period = resolvePeriod(s.period ?? { preset: info.period }, { now: api.now(), tz, fallback: info.period });
+  if (warming) warmedPeriod = { key, at: Date.now(), period };
+  return period;
+}
 
 /** Start following the address. Call once, after the frame exists. */
 export function startRouter() {
@@ -88,7 +107,7 @@ async function warm(s) {
     if (!car) return;
   }
   const tz = car?.time_zone || fallbackZone;
-  const period = info.period ? resolvePeriod(s.period ?? { preset: info.period }, { now: api.now(), tz, fallback: info.period }) : null;
+  const period = periodOf(s, info, tz, { warming: true });
   const mod = await modP;
   if (mod.css) pageSheet(id, new URL(`../pages/${id}.css`, import.meta.url).href, { on: false });
   if (typeof mod.prefetch !== 'function') return;
@@ -439,7 +458,7 @@ async function mount(s, { keepScroll = false, live = false, wall = false } = {})
     if (!alive()) return;
   }
   const tz = car?.time_zone || fallbackZone;
-  const period = info.period ? resolvePeriod(s.period ?? { preset: info.period }, { now: api.now(), tz, fallback: info.period }) : null;
+  const period = periodOf(s, info, tz);
 
   frame.update({ s, info, car, period, tz });
 
@@ -483,6 +502,7 @@ async function mount(s, { keepScroll = false, live = false, wall = false } = {})
       tracker?.close();
       if (!BARE.has(id)) signedInHint(true);
       if (!warmedMain) { warmedMain = true; warmModules(MAIN.map((m) => () => pageModule(m))); }
+      firstReadyDone();
       shownOnce = true;
       if (refreshAsked) { refreshAsked = false; setTimeout(() => ctx.refresh(), 0); }
       st?.settle(() => scope.busy);

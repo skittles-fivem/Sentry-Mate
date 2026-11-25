@@ -39,6 +39,37 @@ test('registers /sw.js for the whole site over HTTPS, then asks it to keep the p
   assert.deepEqual(log, [['register', '/sw.js', '/'], ['active', 'sentry-mate:warm']]);
 });
 
+test('the warm message names the versioned files this load fetched before the worker answered it', async () => {
+  const { g } = page();
+  const sent = [];
+  g.location = { protocol: 'https:', origin: ORIGIN, href: `${ORIGIN}/cars/c1` };
+  g.performance = { getEntriesByType: () => [`${ORIGIN}/_v/aaa/pages/car.js`, `${ORIGIN}/_v/aaa/fonts/a.woff2`, `${ORIGIN}/api/v1/cars`,
+    'https://elsewhere.example/_v/aaa/x.js', `${ORIGIN}/_v/aaa/pages/car.js`].map((name) => ({ name })) };
+  (await g.navigator.serviceWorker.ready).active.postMessage = (m) => sent.push(m);
+  await registerServiceWorker(g);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(sent, [{ type: 'sentry-mate:warm', files: ['/_v/aaa/pages/car.js', '/_v/aaa/fonts/a.woff2'] }]);
+});
+
+test('files that finish loading later without the worker are told to it as they come in', async () => {
+  const { g } = page();
+  const sent = [];
+  let observer = null;
+  g.location = { protocol: 'https:', origin: ORIGIN, href: `${ORIGIN}/cars/c1` };
+  g.performance = { getEntriesByType: () => [] };
+  g.PerformanceObserver = class { constructor(f) { this.f = f; observer = this; } observe(o) { assert.equal(o.type, 'resource'); } };
+  (await g.navigator.serviceWorker.ready).active.postMessage = (m) => sent.push(m);
+  await registerServiceWorker(g);
+  await new Promise((r) => setTimeout(r, 0));
+  const entries = (list) => ({ getEntries: () => list });
+  observer.f(entries([{ name: `${ORIGIN}/_v/aaa/core/c-1.js`, workerStart: 0 }, { name: `${ORIGIN}/_v/aaa/core/c-2.js`, workerStart: 12 },
+    { name: `${ORIGIN}/api/v1/cars`, workerStart: 0 }]));
+  assert.deepEqual(sent.at(-1), { type: 'sentry-mate:warm', files: ['/_v/aaa/core/c-1.js'] }, 'the worker keeps the one it answered itself');
+  const n = sent.length;
+  observer.f(entries([{ name: `${ORIGIN}/_v/aaa/core/c-2.js`, workerStart: 9 }]));
+  assert.equal(sent.length, n, 'nothing to tell');
+});
+
 test('does nothing on plain HTTP (the dev server), outside a secure context, or without service workers', async () => {
   for (const o of [{ protocol: 'http:' }, { secure: false }, { sw: false }]) {
     const { g, log } = page(o);
@@ -173,6 +204,11 @@ test('files under /_v/: cache first; a new version drops the old ones', async ()
   // warm: the page's files, fetched and kept
   await w.message({ type: 'sentry-mate:warm' });
   assert.ok(w.caches.store.get('sm-assets-v1').has(`${ORIGIN}/_v/bbb/core/x.js`));
+  // and the files the page says it loaded: this version's only
+  await w.message({ type: 'sentry-mate:warm', files: ['/_v/bbb/pages/car.js', '/_v/aaa/pages/old.js', '/_v/bbb/../x.js', 7, '/favicon.svg'] });
+  const kept = [...w.caches.store.get('sm-assets-v1').keys()];
+  assert.ok(kept.includes(`${ORIGIN}/_v/bbb/pages/car.js`));
+  assert.ok(!kept.some((k) => /old\.js|favicon|\.\./.test(k)), kept.join(' '));
 });
 
 test('API reads: the network first, the last answer in memory for a stale-ok read and offline', async () => {

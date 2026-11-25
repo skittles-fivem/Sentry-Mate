@@ -4,7 +4,8 @@
 // - The page (index.html: a GET navigation of this site that is no file, not /api/, /_v/ or /original): the kept
 //   copy at once when there is one, while the network's copy is fetched behind it and kept for the next load.
 // - Files under /_v/<version>/: the kept copy first; they never change. Once a new page names another version,
-//   the files of older versions go. After the first page is drawn, the files the page names are fetched and kept.
+//   the files of older versions go. After the first page is drawn, the files the page names, and those it loaded
+//   before this worker answered it (its page module, that module's parts, the fonts it drew with), are kept.
 // - Other files of the site: the network; the kept copy only when the network fails.
 // - API reads: the network first. The last JSON answer of each address is kept in this worker's memory only
 //   (never on disk), at most MEMORY_ENTRIES answers and MEMORY_BYTES, each for MEMORY_AGE_MS; never one that says
@@ -47,7 +48,7 @@ self.addEventListener('message', (event) => {
   const type = event.data && event.data.type;
   const reply = () => { if (event.ports && event.ports[0]) event.ports[0].postMessage({ type: `${type}:done` }); };
   if (type === 'sentry-mate:clear') event.waitUntil(clear({ files: true }).then(reply, reply));
-  else if (type === 'sentry-mate:warm') event.waitUntil(warm().then(reply, reply));
+  else if (type === 'sentry-mate:warm') event.waitUntil(warm(event.data.files).then(reply, reply));
 });
 
 self.addEventListener('fetch', (event) => {
@@ -153,8 +154,13 @@ async function keepFile(key, res, gen) {
 }
 
 // The page and the files it names, fetched and kept once the page has drawn (the first visit loads them before
-// this worker answers anything).
-async function warm() {
+// this worker answers anything), and the files of this version the page says it loaded before (`files`: paths;
+// they never change, so the browser's own cache answers these fetches): without them the next visit's page module
+// and fonts came from the network.
+const WARM_FILES = 200;
+const WARM_AT_ONCE = 6;
+const warming = new Set(); // the files a warm-up is fetching now
+async function warm(files) {
   const gen = generation;
   let page = await (await caches.open(SHELL)).match(SHELL_KEY);
   if (!page) {
@@ -170,15 +176,25 @@ async function warm() {
   for (const m of html.matchAll(/(?:href|src)="(\/_v\/[^"]+)"/g)) {
     if (m[1].startsWith(`/_v/${version}/`)) want.add(m[1]);
   }
-  for (const path of want) {
-    const key = self.location.origin + path;
-    if (gen !== generation) return;
-    if (await cache.match(key)) continue;
-    try {
-      const res = await fetch(key, { credentials: 'same-origin' });
-      if (keepable(res)) await keepFile(key, res, gen);
-    } catch { /* offline: next time */ }
+  for (const f of Array.isArray(files) ? files.slice(0, WARM_FILES) : []) {
+    if (typeof f === 'string' && f.startsWith(`/_v/${version}/`) && !/[?#]|\.\./.test(f)) want.add(f);
   }
+  // a few at a time (one after another, each a round trip, the next visit came before the last were kept), and
+  // never a file another warm-up is fetching already (the page tells this worker its files in batches)
+  const list = [...want];
+  const one = async () => {
+    for (let path = list.shift(); path !== undefined; path = list.shift()) {
+      const key = self.location.origin + path;
+      if (gen !== generation) return;
+      if (warming.has(key) || (await cache.match(key))) continue;
+      warming.add(key);
+      try {
+        const res = await fetch(key, { credentials: 'same-origin' });
+        if (keepable(res)) await keepFile(key, res, gen);
+      } catch { /* offline: next time */ } finally { warming.delete(key); }
+    }
+  };
+  await Promise.all(Array.from({ length: WARM_AT_ONCE }, one));
 }
 
 /* ------------------------------------------------------------------ the API */

@@ -250,14 +250,14 @@ export async function mount(ctx) {
     for (const b of colourSeg.querySelectorAll('[data-colour]')) b.setAttribute('aria-pressed', String(b.dataset.colour === kind));
     if (m && m.map.getLayer('route-line')) m.map.setPaintProperty('route-line', 'line-gradient', gradient(kind));
   }
-  // the page is ready once the map is made (not its tiles): its credit and style switch then sit at the map's foot and
-  // the overlays above them stay where they are
+  // the page is ready once the map's foot is laid out (its credit and style switch, before MapLibre has arrived): the
+  // overlays above them stay where they are, and the map fills in its place after
   let mapMade = null;
   const mapUp = new Promise((res) => { mapMade = res; });
   (async () => {
     if (coords.length < 2) { mapEl.append(mapFallback(trackErr ? `The route could not be loaded: ${trackErr.message}` : 'No route was recorded for this drive.')); mapMade(); return; }
     try {
-      m = await createMap(mapEl, ctx, { bounds: routeBounds });
+      m = await createMap(mapEl, ctx, { bounds: routeBounds, onShell: mapMade });
       mapMade();
       if (!m) return;
       await m.ready;

@@ -330,6 +330,47 @@ async fn the_chosen_import_fills_what_live_history_lacks() {
     assert!(v["items"][0]["outside_avg_c"].is_null(), "{v}");
 }
 
+/// Trip and Timeline show the live drive as the Drives list does: with what the chosen import fills, labelled, and
+/// as the live row stored when the car's switch is off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn trip_and_timeline_fill_a_live_drive_as_the_drives_list_does() {
+    let k = kit().await;
+    let car = k.car.clone();
+    let mut admin = k.s.admin().await;
+    let trip = format!("/api/v1/cars/{car}/trip?from_ms={DAY0}&to_ms={}", DAY0 + 5 * H);
+    let timeline = format!("/api/v1/cars/{car}/timeline?from_ms={DAY0}&to_ms={}&kinds=drive", DAY0 + 5 * H);
+    let drive_row = |t: &Value| t["items"].as_array().unwrap().iter().find(|r| r["ref"]["drive"] == "77").cloned();
+
+    // on: the drive's start position and outside temperature come from TeslaMate, named
+    let t = ok(&mut admin, &trip).await;
+    let start = t["markers"].as_array().unwrap().iter().find(|m| m["kind"] == "start").cloned().unwrap();
+    assert_eq!(start["lat"].as_f64(), Some(37.0), "{t}");
+    assert_eq!(kinds(&t["value_sources"]["markers"]), ["import:teslamate"], "{t}");
+    assert_eq!(t["distance"]["drives_km"].as_f64(), Some(10.0), "distance is never filled: {t}");
+    let row = drive_row(&ok(&mut admin, &timeline).await).unwrap();
+    assert_eq!(row["outside_avg_c"].as_f64(), Some(20.0), "{row}");
+    assert_eq!(row["source"], "can", "{row}");
+    assert_eq!(kinds(&row["sources"]), ["smo", "import:teslamate"], "{row}");
+    assert_eq!(row["source_label"], "Data from SMO; imported from TeslaMate", "{row}");
+    assert_eq!(kinds(&row["value_sources"]["outside_avg_c"]), ["import:teslamate"], "{row}");
+    assert_eq!(row["start"]["lat"].as_f64(), Some(37.0), "{row}");
+
+    // the car's switch off: the live row as stored
+    let cs = ok(&mut admin, &format!("/api/v1/cars/{car}/settings")).await;
+    let r = admin
+        .patch(&format!("/api/v1/cars/{car}/settings"), json!({ "version": cs["version"], "import_gap_fill": false }))
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let t = ok(&mut admin, &trip).await;
+    let start = t["markers"].as_array().unwrap().iter().find(|m| m["kind"] == "start").cloned().unwrap();
+    assert!(start["lat"].is_null(), "{t}");
+    assert_eq!(t["value_sources"], json!({}), "{t}");
+    let row = drive_row(&ok(&mut admin, &timeline).await).unwrap();
+    assert!(row["outside_avg_c"].is_null() && row["start"]["lat"].is_null(), "{row}");
+    assert_eq!(row["value_sources"], json!({}), "{row}");
+    assert_eq!(row["source_label"], "Data from SMO", "{row}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_live_span_flipped_to_the_imported_side_shows_the_import_alone() {
     let k = kit().await;

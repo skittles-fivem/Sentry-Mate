@@ -735,7 +735,8 @@ def trip(req):
                     "energy_kwh": {"drive_net": 0.0, "gross": 0.0, "added_ac": 0.0, "added_dc": 0.0,
                                    "added_unknown": 0.0},
                     "wh_per_km": {"net": None, "gross": None},
-                    "cost": {"by_currency": [], "per_100km": [], "priced": 0, "unpriced": 0}, "markers": []})
+                    "cost": {"by_currency": [], "per_100km": [], "priced": 0, "unpriced": 0}, "markers": [],
+                    "value_sources": {}})
         return out
     end = min(b, req.now)
     tm = dict.fromkeys(("driving", "charging_ac", "charging_dc", "charging_unknown", "parked_awake", "asleep",
@@ -769,8 +770,18 @@ def trip(req):
     drows = [cached_drive_row(req, h, d) for d in drives]
     charges = [c for c in h.charges if a <= c.start < end and c.start <= req.now and h.shown(c)]
     crows = [charge_row(req.app, h, c, req.now) for c in charges]
+    vs = {}
     if drows:
-        odo_first, odo_last = drows[0]["start_odometer_km"], drows[-1]["end_odometer_km"]
+        # the first and last odometer readings of the drives that have one, as the real server
+        with_odo = [x for x in drows if x["start_odometer_km"] is not None]
+        if with_odo:
+            odo_first, odo_last = with_odo[0]["start_odometer_km"], with_odo[-1]["end_odometer_km"]
+            got = with_odo[0]["value_sources"].get("start_odometer_km", []) + \
+                with_odo[-1]["value_sources"].get("end_odometer_km", [])
+            if got:
+                vs["odometer_km"] = [g for i, g in enumerate(got) if g not in got[:i]]
+        if drows[0]["value_sources"].get("start"):
+            vs["markers"] = list(drows[0]["value_sources"]["start"])
         markers.insert(0, {"kind": "start", "lat": drows[0]["start"]["lat"], "lon": drows[0]["start"]["lon"],
                            "t_ms": drows[0]["start_ms"]})
         markers.append({"kind": "end", "lat": drows[-1]["end"]["lat"], "lon": drows[-1]["end"]["lon"],
@@ -811,6 +822,7 @@ def trip(req):
                  if dist > 1 else [], "priced": priced, "unpriced": unpriced},
         "markers": markers,
         "drives": [x["id"] for x in drows], "charges": [c["id"] for c in crows],
+        "value_sources": vs,
     })
     return out
 

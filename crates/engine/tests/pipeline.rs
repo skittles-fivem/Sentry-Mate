@@ -168,6 +168,10 @@ struct Kit {
 }
 
 fn kit() -> Kit {
+    kit_with(Options { workers: 2, ..Options::default() })
+}
+
+fn kit_with(options: Options) -> Kit {
     let dir = tempfile::tempdir().unwrap();
     let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
     std::fs::create_dir_all(&data).unwrap();
@@ -175,7 +179,7 @@ fn kit() -> Kit {
     let v = Arc::new(v);
     let store = Store::with_limits(data.join("can"), v.clone(), 0, 200_000, |_| u64::MAX);
     let db = db::Db::open(&data, v.clone(), db::Options::default()).unwrap();
-    let engine = Engine::new(db.clone(), store.clone(), Options { workers: 2, ..Options::default() });
+    let engine = Engine::new(db.clone(), store.clone(), options);
     let judge = Judge::new(store.clone()).on_judged(engine.listener());
     engine.start().unwrap();
     Kit { _dir: dir, store, judge, engine, db, vault: v }
@@ -1754,5 +1758,86 @@ fn a_restart_finishes_a_run_that_was_asked_to_stop_while_paused() {
         again.start().unwrap();
         let r = full_done(&again).await;
         assert_eq!(r.status, engine::full::FullStatus::Cancelled, "{r:#?}");
+    });
+}
+
+/// The engine's clock in the test below: each reading moves it on by `STEP_MS` (0: it stands still).
+static CLOCK_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_000_000);
+static STEP_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn stepping_clock() -> u64 {
+    use std::sync::atomic::Ordering::SeqCst;
+    CLOCK_MS.fetch_add(STEP_MS.load(SeqCst), SeqCst)
+}
+
+/// The `now` events waiting on `rx`, newest last.
+fn nows(rx: &mut tokio::sync::broadcast::Receiver<engine::Event>) -> Vec<query::now::NowView> {
+    let mut out = Vec::new();
+    while let Ok(e) = rx.try_recv() {
+        if let engine::Event::Now { now, .. } = e {
+            out.push(*now);
+        }
+    }
+    out
+}
+
+/// A rebuild in place sends the car's newest values to the live stream at most once a second (by the engine's
+/// clock), and always once more when it ends, so the last state arrives; logs told outside a rebuild send theirs
+/// as they are worked on.
+#[test]
+fn a_rebuild_sends_the_newest_values_once_a_second_and_the_last_at_its_end() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let rt = rt();
+    rt.block_on(async {
+        STEP_MS.store(0, SeqCst);
+        let k = kit_with(Options { workers: 2, window_batch: 1, clock: stepping_clock, ..Options::default() });
+        let mut rx = k.engine.subscribe();
+        let before = k.engine.stats().windows_rebuilt;
+        for i in 0..40 {
+            let (name, log, side) = minute(i, Minute::Parked);
+            upload(&k, &name, &log).await;
+            upload(&k, &format!("{name}.json"), &side).await;
+        }
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let windows = k.engine.stats().windows_rebuilt - before;
+        assert!(windows >= 30, "{windows} windows");
+        // (the clock stood still: logs told outside a rebuild are not held back)
+        let live = nows(&mut rx);
+        assert_eq!(live.len() as u64, windows, "a newest-values event for every window of the live logs");
+
+        // the clock standing still: the first window's, then the one the rebuild's end sends
+        let before = k.engine.stats().windows_rebuilt;
+        k.engine.rebuild(Scope::car(car)).unwrap();
+        k.engine.idle().await;
+        let windows = k.engine.stats().windows_rebuilt - before;
+        assert!(windows >= 30, "{windows} windows rebuilt");
+        let sent = nows(&mut rx);
+        assert_eq!(sent.len(), 2, "{windows} windows, {} events", sent.len());
+        let last = tokio::task::block_in_place(|| query::now::now_view(&k.engine, car)).unwrap();
+        assert_eq!(sent.last(), Some(&last), "the last state is the one sent");
+
+        // a clock that moves 400 ms a reading: one in three windows, and the end
+        STEP_MS.store(400, SeqCst);
+        let before = k.engine.stats().windows_rebuilt;
+        k.engine.rebuild(Scope::car(car)).unwrap();
+        k.engine.idle().await;
+        let windows = k.engine.stats().windows_rebuilt - before;
+        let sent = nows(&mut rx);
+        assert!(
+            sent.len() as u64 >= windows / 3 && (sent.len() as u64) <= windows / 3 + 2,
+            "{windows} windows, {} events",
+            sent.len()
+        );
+        assert_eq!(sent.last(), Some(&last));
+
+        // after the rebuild a log told is sent at once again
+        STEP_MS.store(0, SeqCst);
+        let (name, log, side) = minute(40, Minute::Parked);
+        upload(&k, &name, &log).await;
+        upload(&k, &format!("{name}.json"), &side).await;
+        k.engine.idle().await;
+        assert!(!nows(&mut rx).is_empty(), "a live log sends its newest values");
+        assert_eq!(k.engine.stats().failures, 0, "{:?}", k.engine.stats().last_error);
     });
 }

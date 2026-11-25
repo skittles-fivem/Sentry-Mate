@@ -311,6 +311,73 @@ With it, the same pages (Instrument's 8; phone means of 3 runs, desktop one run)
   phone TTU beyond noise: what is left is the reads a page waits for, next.
 
 
+#### The request chains, and the files a first visit left out of the service worker
+
+Measured with the worker slowed too (above), on origin/main `d3b8371a` against the same with this step on it: the
+phone means of 3 runs, the desktop one run.
+
+The chain of a warm car page (`PERF_TRACE`-style timing of each request, the page's and the worker's own) was not
+the API at all: the worker fetched `pages/car.js` (318 → 966 ms), then that module's 10 parts (to 1466 ms) and the
+display fonts (to 1.7 s) **from the network**, about 300 KB at 1.44 Mbit/s, and the page's reads (about 340 ms each)
+could only start after. On a first visit the page loads those files before the worker answers it, and the worker
+kept only the files `index.html` names, so every second visit fetched them again. Each its own commit:
+1. **The frame's first reads and Settings' own go out with the session check**: a browser signed in last time asks
+   for about, notices (the first page waits for the notices bar) and the fleet count at once, not after `/setup`, me
+   and preferences; Settings: Display warms its reads like the car pages do (not the map settings: a page with a map
+   takes a warmed answer as fresh, and they change from that page; `map-tiles.test.js` caught it).
+2. **A page takes the period its warm-up read with**: the router's warm-up (the first page, a link under the pointer)
+   and the mount after it each resolved the period with their own "now", so every read of a period ending now went
+   out twice (statistics, series, activity and charges on the car page; the harness did not count them as
+   duplicates, their addresses differ by 40 ms).
+3. **The worker keeps the files a first visit loaded before it answered**: the page tells it the versioned files it
+   loaded, and each one that finishes loading past it later (`PerformanceObserver`), and the worker keeps this
+   version's, a few at a time and none twice.
+4. **The worker is registered once the first page is ready** (at most 10 s), not at the load event: its first
+   fetches had taken the first page's bandwidth (with 1–3 alone, on `ea7ad752`, cold view ready went 4.6 → 6.1 s).
+
+| run | phone cold TTU | cold view ready | cold FCP | warm TTU | warm FCP | nav | desktop cold | warm | nav |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| origin/main `d3b8371a` | 8803 | 4691 | 1708 | 1992 | 276 | 1056 | 534 | 331 | 163 |
+| + 1–4 | 8726 | **4373** | 1688 | **1205** | 338 | 1216 | **399** | **309** | **158** |
+
+- Warm phone loads 2.0 → 1.2 s (every page: car 1.9 → 1.1 s, statistics 1.65 → 0.85 s, Settings: Display 1.37 → 0.59 s, Integrations 3.0 → 1.8 s); a warm load fetches
+  no file any more. Long tasks per warm phone load 548 → 507 ms. Warm FCP is within noise (one run 400 ms).
+- **Nav is slower on one page**: the drive page needs the map library (maplibre, 365 KB with its worker) and is
+  ready only once the map is. On main it is fast (about 0.95 s) only when the idle preloads of the main sections
+  (2 s after the first page) loaded it before the harness clicked, slow (2.5 s) otherwise (2 of 6 main runs). With
+  the warm load a second shorter the harness clicks before that every time: 2.5 s in every run. Without the drive
+  page nav is 1070 → 1001 ms.
+- The worker's fetches of the files it keeps were not answered by the browser's cache in the harness (its fetches
+  showed no disk cache hit, though the page's own second load came all from it): on a first visit those files come
+  down twice. Not looked into further.
+- The final run is of the commits before the map settings were left out of Settings' warm-up (a read less there).
+- **Not met yet:** phone warm 1.2 s (target 500 ms) and FCP 338 ms (200); in-app navigation 1.2 s on the phone and
+  158 ms on the desktop (100); desktop warm 309 ms (150). Desktop cold (399 ms) is within its 400.
+
+##### 5. The drive page is ready before its map library arrives
+
+The drive page was ready only once MapLibre (over a megabyte with its worker) had loaded: after step 1–4, nav to a
+drive took 2.5 s on the phone in every run. A map made with `onShell` (core/map.js) now lays out its foot first, the
+credit and the Map / Satellite switch, which are the page's own elements, where MapLibre will put them (its 71 KB style
+sheet first). The overlays above them take their room from it at once, and the page is ready then. The library draws
+the map into its reserved place after; the zoom buttons come in then at the top right, where nothing moves for them.
+The drive page uses it; the car and trip pages still wait for the map. The optional preload of MapLibre on idle is not
+done: a page that is ready no longer needs it, and on the phone's network it would compete with the next page.
+
+Same harness, same machine; step 1–4 (`bc2e7ba12`) against this step, phone mean of 3 runs taken alternately,
+desktop 1 run, in ms:
+
+| | phone nav | phone nav to a drive | phone cold TTU | phone warm TTU | desktop nav | desktop nav to a drive |
+|---|---:|---:|---:|---:|---:|---:|
+| step 1–4 | 1185 | 2477 | 8659 | 1108 | 141 | 98 |
+| + 5 | **957** | **954** | 8455 | 1328 (1115 without one 6.2 s battery load) | 147 | 107 |
+
+- Nav to a drive is back to where main was (about 0.97 s), every run, without needing the idle preloads.
+- Phone nav 1.19 → 0.96 s overall. The desktop numbers are within the noise of one run (desktop cold 383 → 440).
+- One warm battery load took 6.2 s in the third run (the other two: 1.5 s); its pages are not touched by this step.
+- Checks: `jumps.test.js` (Instrument) clean 3 times in a row, `check.js --pixel` and `--stable` on the drive page
+  pass, and the full checks before the hand-off.
+
 # Plan: page speed with a long history
 
 Status (2026-11-23): done. On the owner-sized made-up history every page's calls answer within the target warm and
@@ -1344,7 +1411,8 @@ rebuild):
 - **A window's Now for the live stream only while someone listens** (`write_timeline`: `events.receiver_count()`).
   The stored Now, the car's state and `state_since_ms` are worked out as before; only the view sent as a `now`
   event is left out where nobody would get it: a full rebuild's engine over its shadow, a test's engine. On the
-  server the live stream always listens, so a rebuild in place still sends one per window.
+  server the live stream always listens, so a rebuild in place sent one per window (since then at most one a second:
+  see What is left).
   `windows_nobody_listens_to_give_the_same_history` (in the suite: a day of a car in sentry mode, 3 s of frames every
   10 minutes, beside a TeslaMate import and the Tesla API in sentry mode, 272 `now` events sent; by hand: four usual
   days beside them, 1,248; three alone, 195; two days of the owner's shape of tiny logs beside them, 4,991): the
@@ -1388,9 +1456,11 @@ history differs from it in something this made-up history does not have; the Reb
 read. What is still per log here, and grows with the logs a day rather than the history: the day's record (about
 1,250 entries) copied and written again for every log (the rest of a log's work, 6 to 8 ms), a window's logs and the
 nearest logs either side read from the day records (2 to 4 ms), the rows replaced in the tables (2 to 4 ms), and
-the car's newest values (3 ms). A rebuild in place on the server (not a full rebuild) still works out and sends the
-window's Now for every window, and with it reads every live state span of the imported span; sending it at most
-once a second during a rebuild would take that away too, and was not done here.
+the car's newest values (3 ms). A rebuild in place on the server (not a full rebuild) used to work out and send the
+window's Now for every window, and with it read every live state span of the imported span. It now sends it at most
+once a second per car while the rebuild runs (`Options::rebuild_now_gap_ms`), and once more when the car's rebuild ends
+if one was held back, so the last state arrives; a log told outside a rebuild sends its own at once as before
+(`a_rebuild_sends_the_newest_values_once_a_second_and_the_last_at_its_end`: 40 windows, 40 events before, 2 now).
 
 **Rebuild speed on Data health** (Instrument, `ui/packs/instrument/web/pages/health.js`): while a rebuild runs, a
 "Rebuild speed" row under Rebuild says the logs a second now (over about the last 30 s) and the stage that took the
