@@ -972,8 +972,18 @@ impl Engine {
             // (the spans the log falls in or between, which the bounds are looked for from, are the same as in a
             // longer stretch only when the stretch has one that starts at or before the log and one that ends after
             // it: else the nearest are further away)
-            let touched = spans.iter().any(|s| s.start_ms <= a) && spans.iter().any(|s| s.end_ms > b.max(a));
-            if touched && w.from_ms > lo && w.to_ms.is_some_and(|t| t < hi) {
+            let before = spans.iter().any(|s| s.start_ms <= a) && w.from_ms > lo;
+            // After the log: a bound found there, or nothing stored at all between the stretch's end and the two
+            // days' and no newer data than them (a log at the newest end of a history, as in a full rebuild): then
+            // the two days see what the stretch sees after the log, and give its bound or none, and look no further.
+            let far = b.saturating_add(2 * DAY_MS);
+            let after = (spans.iter().any(|s| s.end_ms > b.max(a)) && w.to_ms.is_some_and(|t| t < hi))
+                || before && meta.newest_ms.is_none_or(|n| n <= far) && {
+                    let q = db::Query { limit: 1, source: Some(Source::Live), ..db::Query::between(hi, far) };
+                    db.list::<StateRow>(car, &q)?.items.is_empty()
+                        && records::cuts_between(db, car, meta, hi, far)?.is_empty()
+                };
+            if before && after {
                 self.inner.counters.bounded_near.fetch_add(1, Ordering::Relaxed);
                 found = Some((w.from_ms, w.to_ms));
             }
