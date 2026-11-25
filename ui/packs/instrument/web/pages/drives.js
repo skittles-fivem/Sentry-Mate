@@ -9,7 +9,7 @@
 // Live: a drive that starts or ends ("rows" events) loads the lists and patterns again.
 
 import * as state from '../shared/state.js';
-import { h, replace, setVars, quantity } from '../shared/dom.js';
+import { h, replace, holdScroll, setVars, quantity } from '../shared/dom.js';
 import { downloadCsv, csvFilename, column } from '../shared/csv.js';
 import { format, toMetric, unitLabel, convert } from '../shared/units.js';
 import { formatTime, formatDate, formatDuration, formatDayKey, isoWeek } from '../shared/time.js';
@@ -20,6 +20,7 @@ import { pageHead, metric, tag, csvButton } from '../core/page.js';
 import { dataTable } from '../core/table.js';
 import { emptyState } from '../core/states.js';
 import { barChart } from '../core/chart.js';
+import { morphChildren, keepEl } from '../core/morph.js';
 import { openCarSwitcher } from '../core/carswitch.js';
 import { openPeriodPicker } from '../core/period.js';
 import { placePopover } from '../core/popover.js';
@@ -232,14 +233,14 @@ export async function mount(ctx) {
     const blank = st != null || none;
     const measured = (s.count ?? 0) - (s.without_energy ?? 0);
     const hillS = s.efficiency ? s.efficiency === 'hill_corrected' : hill();
-    replace(summary,
+    morphChildren(summary, [
       h('div', { class: 'drives-metrics' },
         metric('Drives', st ? null : s.count ?? 0, 'count', { why, explain: st === 'error' ? 'the list could not be loaded' : st ? 'loading the list' : none ? 'match the filters' : s.without_energy ? `${formatNumber(measured)} with energy, ${formatNumber(s.without_energy)} without` : 'all with energy' }),
         metric('Distance', blank ? null : s.distance_km, 'distance', { cover: 'drives.summary.distance', why, explain: 'sum of the listed drives' }),
         metric('Driving time', blank ? null : s.duration_ms, 'duration', { cover: 'drives.summary.duration', why, explain: 'from start to end of each drive' }),
         metric('Energy', blank ? null : s.energy_kwh, 'energy', { cover: 'drives.summary.energy', why, explain: s.energy_estimated_kwh ? `${format(s.energy_measured_kwh, 'energy')} measured at the pack, ${format(s.energy_estimated_kwh, 'energy')} estimated (Tesla API alone or imported)` : 'measured at the pack, regen taken off' }),
         metric(`Consumption${hillS ? ' (hill corrected)' : ''}`, blank ? null : s.wh_per_km, 'efficiency', { cover: 'drives.summary.consumption', why,
-          explain: `${hillS ? 'energy less the climb, over distance' : 'energy over distance'}${s.without_energy ? ', drives with energy only' : ''}; same basis as the list` })));
+          explain: `${hillS ? 'energy less the climb, over distance' : 'energy over distance'}${s.without_energy ? ', drives with energy only' : ''}; same basis as the list` }))]);
   };
 
   /* ---------- the list */
@@ -306,6 +307,7 @@ export async function mount(ctx) {
     noteMore: 'Drives whose energy is an estimate (Tesla API data alone, or imported) are marked ≈; hover a row to see where its data came from (SMO, the Tesla API, an import), and open it for the details. Efficiency is the rated consumption against the drive\'s own. A thermometer by the end time marks a cold battery (part of the charge was locked, so range and consumption read high), a warning sign missing data. The CSV has every figure.',
     rowTitle: srcTitle,
     rowHref: (d) => state.buildUrl('drive', { car: cid, drive: d.id }),
+    reuseRows: true, // reloads every 2 s while a rebuild runs: a drive that did not change keeps its row
     onPage: (pg) => { if (pg.summary) paintSummary(pg.summary); },
     onError: () => paintSummary(null, 'error'),
     empty: () => {
@@ -345,6 +347,7 @@ export async function mount(ctx) {
       { key: 'distance', label: 'Distance', num: true, render: (d) => format(d.distance_km, 'distance') },
       { key: 'duration', label: 'Time', num: true, render: (d) => formatDuration(d.duration_ms) },
     ],
+    reuseRows: true, // reloads with the list above on every `rows` event
     empty: () => emptyState({ icon: 'check', title: 'No drive is missing data', text: 'Every drive in this period has all its data.' }),
   });
   async function rebuild() {
@@ -356,6 +359,7 @@ export async function mount(ctx) {
   }
 
   /* ---------- driving patterns */
+  let now = null;
   const patterns = h('section', { class: 'panel panel-pad patterns', 'aria-label': 'Driving patterns', cover: 'ds.empty_states' });
   async function loadPatterns() {
     let s;
@@ -393,16 +397,20 @@ export async function mount(ctx) {
     const bandLabel = (b) => (b.to_kph == null ? `${format(b.from_kph, 'speed', { digits: 0 })} and over`
       : `${formatNumber(convert(b.from_kph, 'speed'), { maximumFractionDigits: 0 })}–${format(b.to_kph, 'speed', { digits: 0 })}`);
     perDay = days;
-    const csvSmall = (name, rows, cols) => csvButton({ onClick: () => downloadCsv(csvFilename(car.name, name), rows, cols) });
-    // the parts kept from the last drawing (the chart, its reading, its CSV) go in after the swap: put in the new
-    // drawing while it is built they would leave the panel on screen first, shorter (the chart's height) when
-    // replace() looks at where things are, and Chromium would scroll the page by that much
-    const kept = [];
-    const keep = (el) => { const c = document.createComment(''); kept.push([c, el]); return c; };
-    replace(patterns,
+    // the buttons read what the last drawing had, as a drawing again keeps the buttons that look the same
+    now = { s, nDays, bands, dests };
+    const csvSmall = (name, rows, cols) => csvButton({ onClick: () => downloadCsv(csvFilename(car.name, name), rows(), cols) });
+    // Drawn again on every `rows` event (every second while a rebuild runs): morphChildren changes only the texts and
+    // attributes that differ (the figures of a drive still going), so the panel keeps its elements, its height and its
+    // chart, and the whole-pixel snap has nothing to measure over the panel. The chart, its reading and its CSV are
+    // drawn once and kept (keepEl).
+    // a kept part that is not in the panel now (after an error took its place) goes in whole, as on the first drawing
+    const keep = (el, name) => { if (!patterns.contains(el)) el.remove(); return keepEl(el, name); };
+    holdScroll(patterns);
+    morphChildren(patterns, [
       h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title' }, icon('stats'), 'Driving patterns'),
         h('span', { class: 'faint patterns-scope' }, left.length ? `${period.label}, without drives to or from ${left.join(', ')} (the 30 and 7 day top speeds count every drive; the list filters do not apply here)` : `${period.label}, every drive (the list filters do not apply here)`),
-        csvSmall('drive-patterns', [{ ...s, ...{ distance_per_day_km: s.count ? (s.distance_km || 0) / nDays : null, energy_per_day_kwh: s.count ? (s.energy_kwh || 0) / nDays : null } }], [
+        csvSmall('drive-patterns', () => [{ ...now.s, ...{ distance_per_day_km: now.s.count ? (now.s.distance_km || 0) / now.nDays : null, energy_per_day_kwh: now.s.count ? (now.s.energy_kwh || 0) / now.nDays : null } }], [
           column('Drives', 'count'), column('Distance', 'distance_km', 'distance'), column('Energy', 'energy_kwh', 'energy'), column('Median drive', 'median_distance_km', 'distance'),
           column('Distance per day', 'distance_per_day_km', 'distance'), column('Energy per day', 'energy_per_day_kwh', 'energy'),
           column('Top speed in the period', (r) => r.max_speed?.period?.kph, 'speed'), column('Top speed, last 30 days', (r) => r.max_speed?.last_30d?.kph, 'speed'), column('Top speed, last 7 days', (r) => r.max_speed?.last_7d?.kph, 'speed'),
@@ -421,24 +429,23 @@ export async function mount(ctx) {
         metric('Last 7 days', top(s.max_speed?.last_7d), null, { cover: 'ds.stat.max_speed_7d', explain: `top speed in the 7 days to ${endDay}, whatever the period; every drive counts`, why: 'No drive in those days' }),
         metric('Per month', s.projection?.per_month_km, 'distance', { cover: 'ds.stat.monthly_mileage', explain: s.projection?.basis_days ? `projected from the same ${formatNumber(Math.round(s.projection.basis_days))} days` : 'projected', why: 'Not enough driving to project' }),
         metric('Per year', s.projection?.per_year_km, 'distance', { cover: 'ds.stat.annual_mileage', explain: 'projected at the same rate', why: 'Not enough driving to project' })),
-      h('div', { class: 'daily-chart' }, h('div', { class: 'daily-chart-head' }, h('span', null, "Distance per day, in the car's days"), h('span', { class: 'daily-chart-side' }, keep(dailyRead), keep(dailyCsv))), keep(dailyEl)),
+      h('div', { class: 'daily-chart' }, h('div', { class: 'daily-chart-head' }, h('span', null, "Distance per day, in the car's days"), h('span', { class: 'daily-chart-side' }, keep(dailyRead, 'daily-read'), keep(dailyCsv, 'daily-csv'))), keep(dailyEl, 'daily-plot')),
       h('div', { class: 'pattern-lists' },
         h('div', { cover: 'ds.chart.speed_histogram' }, h('div', { class: 'list-head' }, h('h3', { class: 'list-title' }, 'Time at each speed'),
-          csvSmall('drive-speed-bands', bands, [column('From', 'from_kph', 'speed'), column('To', 'to_kph', 'speed'), column('Time (s)', 'seconds'), column('Share', 'share_pct', 'percent')])),
+          csvSmall('drive-speed-bands', () => now.bands, [column('From', 'from_kph', 'speed'), column('To', 'to_kph', 'speed'), column('Time (s)', 'seconds'), column('Share', 'share_pct', 'percent')])),
           bands.length ? h('ul', { class: 'hbars' }, bands.map((b) => {
             const bar = h('i'); setVars(bar, { '--w': `${((b.share_pct || 0) / maxBand) * 100}%` });
             return h('li', null, h('span', { class: 'hbar-label' }, bandLabel(b)), h('span', { class: 'hbar' }, bar), h('span', { class: 'hbar-val' }, `${format(b.share_pct, 'percent')} · ${formatDuration(b.seconds * 1000)}`));
           })) : h('p', { class: 'note' }, 'No driving in the period.'),
           h('p', { class: 'note' }, 'Counted second by second while driving, from 1 Hz speed.')),
         h('div', { cover: 'ds.chart.top_destinations' }, h('div', { class: 'list-head' }, h('h3', { class: 'list-title' }, 'Most frequent destinations'),
-          csvSmall('drive-destinations', dests, [column('Destination', 'label'), column('Place id', 'place'), column('Drives', 'count')])),
+          csvSmall('drive-destinations', () => now.dests, [column('Destination', 'label'), column('Place id', 'place'), column('Drives', 'count')])),
           dests.length ? h('ul', { class: 'hbars' }, dests.map((d) => {
             const bar = h('i'); setVars(bar, { '--w': `${(d.count / maxDest) * 100}%` });
             return h('li', null, d.place ? h('a', { class: 'hbar-label link', href: state.buildUrl('drives', { car: cid, period: state.current().period, query: { places: d.place, place_side: 'end' } }), title: 'Show the drives to this place' }, d.label) : h('span', { class: 'hbar-label' }, d.label),
               h('span', { class: 'hbar' }, bar), h('span', { class: 'hbar-val' }, `${formatNumber(d.count)} ${d.count === 1 ? 'drive' : 'drives'}`));
           })) : h('p', { class: 'note' }, 'No destination in the period.'),
-          h('p', { class: 'note' }, 'Where each drive ended. A saved place opens its drives; an address is not a place yet.'))));
-    for (const [c, el] of kept) c.replaceWith(el);
+          h('p', { class: 'note' }, 'Where each drive ended. A saved place opens its drives; an address is not a place yet.')))]);
 
     // distance per day
     const xs = days.map((d) => Date.parse(`${d.date}T12:00:00Z`));
