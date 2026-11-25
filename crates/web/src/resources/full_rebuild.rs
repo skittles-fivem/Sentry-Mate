@@ -138,7 +138,10 @@ pub fn status_json(e: &Engine, r: Option<&FullRecord>, now_ms: u64) -> Value {
     };
     // (one asked to stop is stopping, whatever held it: it says that and nothing else about waiting)
     let cancelling = r.running() && r.cancel;
-    let hold = r.hold.filter(|_| r.held(now_ms) && !cancelling).map(|h| json!({ "kind": hold_word(h.kind), "until_ms": h.until_ms }));
+    let hold = r
+        .hold
+        .filter(|_| r.held(now_ms) && !cancelling)
+        .map(|h| json!({ "kind": hold_word(h.kind), "until_ms": h.until_ms }));
     let running = r.running();
     let rates = if running { r.rates(now_ms) } else { engine::full::Rates::default() };
     let errors: Vec<Value> = r
