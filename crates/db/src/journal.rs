@@ -221,6 +221,96 @@ impl Journal {
     }
 }
 
+/// What reading a journal as far as it can be read found ([`Journal::salvage`]).
+pub(crate) struct SalvagedJournal {
+    /// The generation its header names (`None`: the header did not read).
+    pub generation: Option<u64>,
+    /// The entries after the header that read whole, in order.
+    pub entries: Vec<Vec<u8>>,
+    /// Records that did not open, and the entries they were (or were part of).
+    pub bad_records: u64,
+    pub lost_entries: u64,
+    /// Records after the last one read that can't be reached (a length that makes no sense).
+    pub tail_lost: bool,
+    /// Why nothing of it could be read, when that is so.
+    pub unreadable: Option<String>,
+}
+
+impl Journal {
+    /// Reads every entry of a journal that can be read, going on after a record that does not open (the records on
+    /// either side of it read as they do; an entry that was in pieces loses all of them). Only reads: the file is never
+    /// cut or changed. `Ok(None)`: there is none.
+    pub(crate) fn salvage(ctx: &Ctx, path: &Path) -> Result<Option<SalvagedJournal>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let label = ctx.label(path);
+        let mut out = SalvagedJournal {
+            generation: None,
+            entries: Vec::new(),
+            bad_records: 0,
+            lost_entries: 0,
+            tail_lost: check_tail(path, &label).is_err(),
+            unreadable: None,
+        };
+        let mut rec = match ctx.vault.records_read(path, &label) {
+            Ok(r) => r,
+            Err(e) if e.is_not_found() => return Ok(None),
+            Err(e) => {
+                out.unreadable = Some(Error::from(e).to_string());
+                return Ok(Some(out));
+            }
+        };
+        let (mut cur, mut broken): (Option<Vec<u8>>, bool) = (None, false);
+        let mut whole: Vec<Vec<u8>> = Vec::new();
+        let mut header: Option<Vec<u8>> = None;
+        let r = rec.read_lenient(|r| {
+            let piece = r.and_then(|p| p.split_first().map(|(f, b)| (*f, b.to_vec())));
+            let Some((flags, body)) = piece.filter(|(f, _)| f & !(FIRST | LAST) == 0) else {
+                out.bad_records += 1;
+                if !broken {
+                    out.lost_entries += 1;
+                }
+                (cur, broken) = (None, true);
+                return Ok(());
+            };
+            if flags & FIRST != 0 {
+                (cur, broken) = (Some(body), false);
+            } else if !broken {
+                match cur.as_mut() {
+                    Some(c) => c.extend_from_slice(&body),
+                    None => {
+                        out.lost_entries += 1;
+                        broken = true;
+                    }
+                }
+            }
+            if flags & LAST != 0
+                && !broken
+                && let Some(c) = cur.take()
+            {
+                // the first entry, when nothing before it was lost, is the header
+                if header.is_none() && whole.is_empty() && out.bad_records == 0 {
+                    header = Some(c);
+                } else {
+                    whole.push(c);
+                }
+            }
+            Ok(())
+        });
+        if let Err(e) = r {
+            out.unreadable = Some(Error::from(vault::unwrap_io(e)).to_string());
+        }
+        // an entry left open at the end was cut by a crash, never acknowledged: dropped, not counted as lost
+        out.generation = header.and_then(|h| {
+            let body = check_header(&h, Kind::Journal, &label).ok()?;
+            body.get(..8).and_then(|g| <[u8; 8]>::try_from(g).ok()).map(u64::from_be_bytes)
+        });
+        out.entries = whole;
+        Ok(Some(out))
+    }
+}
+
 /// A file pair: the snapshot and its journal.
 #[derive(Debug, Clone)]
 pub(crate) struct Files {
