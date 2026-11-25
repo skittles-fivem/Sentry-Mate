@@ -646,3 +646,91 @@ async fn logs_read_ahead_on_other_cores_give_the_same_history_over_a_week() {
         read_ahead(days, batch, threads, apis).await;
     }
 }
+
+/// A window's newest values for the live stream (`now_view`, which reads the car's last 30 days of drives,
+/// imported ones included) are worked out only while someone listens to the engine's events: nobody listens to a
+/// full rebuild's engine over its shadow. The same made-up logs, beside a TeslaMate import and the Tesla API in
+/// sentry mode when `apis`, through an engine someone listens to and one nobody does, everything stored compared
+/// (ids included) after the logs at the start, the gaps filled, the car rebuilt whole and a full rebuild.
+async fn unwatched(days: u32, apis: bool) {
+    let logs: Vec<synth::LogFile> =
+        synth::Scenario::new(7).days(days).rates(synth::Rates::Light).with_trouble(true).logs().collect();
+    let n = logs.len();
+    let all: Vec<&synth::LogFile> = logs.iter().collect();
+    let (watched, alone) = (Side::new(64).await, Side::new(64).await);
+    let mut events = watched.engine.subscribe();
+    let nows = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // (the events read as they come, as the live stream does)
+    let got = nows.clone();
+    let reader = tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(engine::Event::Now { .. }) => {
+                    got.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    });
+    let what = format!("{days} days{}", if apis { ", beside APIs" } else { "" });
+    let gap = |i: usize| i % 5 == 2 || (n / 2..n / 2 + 90).contains(&i);
+    let first: Vec<&synth::LogFile> = all.iter().enumerate().filter(|(i, _)| !gap(*i)).map(|(_, l)| *l).collect();
+    let later: Vec<&synth::LogFile> = all.iter().enumerate().filter(|(i, _)| gap(*i)).map(|(_, l)| *l).collect();
+    if apis {
+        let o = history::Options {
+            days: days + 20,
+            end_ms: synth::DEFAULT_START_MS + u64::from(days) * 86_400_000,
+            seed: 5,
+            drives: 4 * (days + 20),
+            charges: days + 20,
+            drive_step_s: 5,
+            teslafi_days: 0,
+            api_days: 0,
+            tesla_days: days,
+            tesla_sentry: true,
+        };
+        for side in [&watched, &alone] {
+            side.take(&first[..20]).await;
+            history::run(&side.engine, &o).await.unwrap();
+            side.engine.idle().await;
+        }
+        same(&format!("{what}: the history in"), &watched.engine, &alone.engine);
+    }
+    watched.take(&first).await;
+    alone.take(&first).await;
+    same(&format!("{what}: the logs at the start"), &watched.engine, &alone.engine);
+    watched.take(&later).await;
+    alone.take(&later).await;
+    same(&format!("{what}: the gaps filled"), &watched.engine, &alone.engine);
+    watched.rebuild().await;
+    alone.rebuild().await;
+    same(&format!("{what}: rebuilt whole"), &watched.engine, &alone.engine);
+    for side in [&watched, &alone] {
+        let car = side.cars()[0];
+        side.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+        let r = full_done(&side.engine).await;
+        assert_eq!((r.status, r.logs_done), (engine::full::FullStatus::Done, n as u64), "{r:#?}");
+    }
+    let k = same(&format!("{what}: a full rebuild"), &watched.engine, &alone.engine);
+    assert!(k > 1_000, "{what}: {k}");
+    assert_eq!(watched.engine.stats().failures + alone.engine.stats().failures, 0);
+    reader.abort();
+    let got = nows.load(std::sync::atomic::Ordering::Relaxed);
+    // (the listened-to engine sent its windows' newest values)
+    assert!(got > 10, "{what}: {got} now events");
+    println!("{what}: {k} stored things the same with and without a listener; {got} now events sent");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn windows_nobody_listens_to_give_the_same_history() {
+    unwatched(1, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "long: cargo test --release -p sentry-mate windows_nobody_listens -- --ignored --nocapture"]
+async fn windows_nobody_listens_to_give_the_same_history_over_days() {
+    for (days, apis) in [(4, true), (3, false)] {
+        unwatched(days, apis).await;
+    }
+}

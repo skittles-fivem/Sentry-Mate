@@ -976,6 +976,7 @@ impl Engine {
         let from = from.max(first.saturating_sub(1));
         let to = to.unwrap_or_else(|| b.max(meta.newest_ms.unwrap_or(b)).saturating_add(1)).max(from + 1);
 
+        let t_entries = Instant::now();
         let entries = records::entries_between(db, car, meta, from, to)?;
         let mut logs = Vec::new();
         let mut holes = Vec::new();
@@ -985,12 +986,16 @@ impl Engine {
                 Outcome::Hole { from_ms, to_ms, .. } => holes.push((*from_ms, *to_ms)),
             }
         }
+        let t_nearest = Instant::now();
+        let us = |t: Instant| u64::try_from(t.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.inner.counters.window_parts[6].fetch_add(us(t_entries), Ordering::Relaxed);
         if let Some(f) = records::nearest_decoded(db, car, meta, from, true)? {
             logs.push(f);
         }
         if let Some(f) = records::nearest_decoded(db, car, meta, to, false)? {
             logs.push(f);
         }
+        self.inner.counters.window_parts[7].fetch_add(us(t_nearest), Ordering::Relaxed);
         logs.sort_by_key(|f| f.span());
         logs.dedup();
         part(0, &mut mark);
@@ -1154,7 +1159,11 @@ impl Engine {
         }
         records::put_meta(db, car, meta)?;
         self.emit(Event::Rows { car, kinds: vec!["drives", "charges", "states", "visits"], from_ms: from, to_ms: to });
-        if let Ok(now) = crate::query::now::now_view(self, car) {
+        // (worked out only for someone listening: nobody listens to a full rebuild's engine over its shadow, and the
+        // view reads the car's last 30 days of drives, imported ones included, for its range estimate)
+        if self.inner.events.receiver_count() > 0
+            && let Ok(now) = crate::query::now::now_view(self, car)
+        {
             self.emit(Event::Now { car, now: Box::new(now) });
         }
         let rest = u64::try_from(rows_written.elapsed().as_micros()).unwrap_or(u64::MAX);

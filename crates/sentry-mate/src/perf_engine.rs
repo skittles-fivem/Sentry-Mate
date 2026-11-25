@@ -423,7 +423,7 @@ async fn measure_owner_rebuild() {
             decode_ms - read - samples - now,
             (s.windows_rebuilt - before.windows_rebuilt),
         );
-        let parts: Vec<String> = ["find", "read", "fuse", "build", "rows", "rest"]
+        let parts: Vec<String> = ["find", "read", "fuse", "build", "rows", "rest", "(of find: entries", "nearest)"]
             .iter()
             .zip(s.window_parts_us.iter().zip(before.window_parts_us))
             .map(|(name, (a, b))| format!("{name} {:.1}", per(*a, b) / 1000.0))
