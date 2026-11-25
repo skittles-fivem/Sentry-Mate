@@ -96,12 +96,25 @@ cut short) is where it can lose something. It never does so quietly:
   (`<name>.damaged` beside it), widens its window over the time the file covered and decodes the logs of that time
   again, where it used to clear the car's drives and charges and then stop at the file
   (`a_rebuild_mends_a_damaged_day_of_decoded_samples`). A full rebuild never reads those files: it makes them all.
-- **A damaged table of a car** (`drives.snap` and the like), or a damaged series of an import or an API: these
-  also hold what no log gives (imported rows, typed costs and purposes), so no rebuild replaces them by itself. A
-  rebuild or a full rebuild that meets one fails and names the file, and the admins get the notice `data_damaged`
-  with what to do: put the car's folder back from a backup with the server stopped (the logs that came since are
-  decoded again at the start). This is how it stays: no rebuild and no full rebuild starts such a table empty,
-  because that would lose its imported rows and typed values without a word. The steps are in
+- **A damaged drives table of a car** (`drives.snap` or `drives.log`). The table is read as far as it reads (a
+  snapshot's chunks up to the first bad one, and every journal record that opens), the files are put aside (never
+  deleted: `db/cars/<id>/aside/<time>/`), and a table of what read is written. A rebuild, a full rebuild and an
+  admin's repair (`POST /cars/{car}/repair`) all do this when they meet the damage, then: the rows made from the logs
+  are made again (the window of a plain rebuild grows over the time the snapshot lost; a journal's loss has no
+  time, so it is all of it), imported rows that did not read are read again from the kept uploads of the imports
+  (as the import stored them, each under the id it had; rows the import's moves took off the car are left out),
+  and the purposes you typed are put back on the drives that are theirs now (a purpose whose drive has no id of its
+  own any more goes to the drive that overlaps the second its id names; with none it is kept under
+  `purposes-unmatched`, never dropped). What could not be recovered is in the report
+  (`GET /cars/{car}/repair`, the notice `data_repaired`): rows from a local TeslaMate's catch-up, imports whose upload
+  is gone, rows moved off the car, the changes a damaged journal record held. `crates/engine/tests/pipeline.rs`:
+  `a_full_rebuild_mends_a_drives_snapshot_cut_in_half`, `a_full_rebuild_mends_a_drives_snapshot_with_one_bad_chunk`,
+  `a_plain_rebuild_mends_a_damaged_drives_table`, `imported_rows_without_a_kept_upload_are_reported_lost_with_their_span`,
+  `a_bad_journal_record_loses_only_its_change_and_says_so`, `a_purpose_whose_drive_is_gone_is_kept_aside_and_reported`.
+  A damaged table of another kind (charges, states, updates), or a damaged series of an import or an API, also holds
+  what no log gives: a rebuild that meets one fails and names the file, and the admins get the notice
+  `data_damaged` with what to do: put the car's folder back from a backup with the server stopped (the logs that came
+  since are decoded again at the start). The steps are in
   [A car's history file is damaged](install.md#a-cars-history-file-is-damaged).
 - **A rebuild that fails is said**: `500 rebuild_failed` with why, an audit entry that says it failed, and the
   notice `rebuild_failed` (`crates/web/tests/system.rs`).

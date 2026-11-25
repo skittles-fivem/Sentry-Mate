@@ -281,6 +281,11 @@ struct Job {
     /// The version of the matching its rows were last checked against ([`REHOME_VERSION`]).
     #[serde(default)]
     rehomed: u32,
+    /// The car each car of the file went to when it ran (by its id in the file): a car matched as `new` is only
+    /// known by this. Not in the job's view; what reading the kept upload again for a car needs
+    /// ([`replay`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    went: BTreeMap<i64, model::CarId>,
 }
 
 /// The version of TeslaFi's matching (whole VINs; rows without a VIN only where they plainly carry on): a done import
@@ -575,6 +580,7 @@ async fn create(
             moves: Vec::new(),
             holds: Vec::new(),
             rehomed: REHOME_VERSION,
+            went: BTreeMap::new(),
         };
         save(app, &j)?;
         st.jobs.insert(j.id.clone(), j.clone());
@@ -1467,16 +1473,29 @@ async fn start(
             let mut open = im::counted(opener(&app2, &id2), live.read.clone(), live.stop.clone());
             let pairs: Vec<(BackupCar, Value)> =
                 tables_before.iter().map(|c| (c.car.clone(), json!(c.matched))).collect();
+            let mut went: BTreeMap<i64, model::CarId> = BTreeMap::new();
+            let mut note = |cars: &[import::CarReport]| {
+                // (rows held for a car to be chosen are on a stand-in car far above any real one)
+                went = cars
+                    .iter()
+                    .filter_map(|c| c.car.filter(|id| *id < 0xFE00_0000).map(|id| (c.tm_car_id, id)))
+                    .collect();
+            };
             let r = if teslafi && parts.len() > 1 {
-                im::teslafi_run_files(&e, several_files(&app2, &id2, &parts, &live), &m, &tf)
-                    .map(|done| im::teslafi_report_json(&done.report, &done.cars, &pairs, true))
+                im::teslafi_run_files(&e, several_files(&app2, &id2, &parts, &live), &m, &tf).map(|done| {
+                    note(&done.cars);
+                    im::teslafi_report_json(&done.report, &done.cars, &pairs, true)
+                })
             } else if teslafi {
-                open()
-                    .map_err(import::Error::Io)
-                    .and_then(|r| im::teslafi_run(&e, r, &m, &tf))
-                    .map(|done| im::teslafi_report_json(&done.report, &done.cars, &pairs, true))
+                open().map_err(import::Error::Io).and_then(|r| im::teslafi_run(&e, r, &m, &tf)).map(|done| {
+                    note(&done.cars);
+                    im::teslafi_report_json(&done.report, &done.cars, &pairs, true)
+                })
             } else {
-                im::run(&e, open, &m, currency).map(|done| im::report_json(&done.report, &done.cars, &pairs, true))
+                im::run(&e, open, &m, currency).map(|done| {
+                    note(&done.cars);
+                    im::report_json(&done.report, &done.cars, &pairs, true)
+                })
             };
             if live.stop.load(Ordering::Relaxed) {
                 all2.lock().live.remove(&id2);
@@ -1492,6 +1511,7 @@ async fn start(
                     j.report = Some(report);
                     j.holds = lots.iter().map(lot_view).collect();
                     j.rehomed = REHOME_VERSION;
+                    j.went = went;
                 }
                 Err(err) => {
                     let (code, message) = im::error_of(&err);
@@ -1876,4 +1896,112 @@ pub(crate) fn views_now(app: &AppState) -> Vec<(String, Value)> {
     }
     let st = all.lock();
     st.jobs.values().map(|j| (j.id.clone(), j.view(st.live.get(&j.id)))).collect()
+}
+
+/// How a damaged drives table gets its imported rows back: the kept uploads of the imports are read again, for one
+/// car, nothing stored (see [`engine::repair`]). Register it with [`Engine::set_import_replay`] at the server's start.
+pub fn replay(app: &AppState) -> Arc<dyn engine::repair::ImportReplay> {
+    Arc::new(Replay { app: app.clone() })
+}
+
+struct Replay {
+    app: AppState,
+}
+
+impl Replay {
+    /// One import's drives of a car, read again from its kept files.
+    fn read(&self, e: &Engine, j: &Job, plan: engine::importer::ReplayPlan) -> Result<Vec<model::Drive>, String> {
+        let app = &self.app;
+        let parts = j.parts();
+        let live = Live::new(1);
+        let r = if j.is_teslafi() {
+            let tf = j.teslafi.clone().unwrap_or_default();
+            if parts.len() > 1 {
+                im::replay_teslafi_drives(e, several_files(app, &j.id, &parts, &live), &tf, plan)
+            } else {
+                match opener(app, &j.id)() {
+                    Ok(r) => im::replay_teslafi_drives(
+                        e,
+                        im::TeslafiFiles::<_, Vec<io::Result<(String, Backup)>>>::One(r),
+                        &tf,
+                        plan,
+                    ),
+                    Err(x) => Err(import::Error::Io(x)),
+                }
+            }
+        } else {
+            im::replay_drives(e, opener(app, &j.id), plan)
+        };
+        r.map_err(|x| x.to_string())
+    }
+}
+
+impl engine::repair::ImportReplay for Replay {
+    fn drives(&self, e: &Engine, car: model::CarId) -> engine::repair::Replayed {
+        use engine::repair::{Gone, HeldOut};
+        let app = &self.app;
+        let mut out = engine::repair::Replayed::default();
+        let Ok(all) = imports(app) else { return out };
+        if load(app, &all).is_err() {
+            return out;
+        }
+        let mut jobs: Vec<Job> =
+            all.lock().jobs.values().filter(|j| j.status == "done" && !j.is_can()).cloned().collect();
+        jobs.sort_by_key(|j| (j.started_ms, j.id.clone()));
+        let me = crate::ids::car(car);
+        for j in jobs {
+            let source = if j.is_teslafi() { model::Source::Teslafi } else { model::Source::Teslamate };
+            // the cars of the file that went to this car: matched to it, or made for it (`new`)
+            let mine: Vec<&CarRow> = j
+                .cars
+                .iter()
+                .filter(|c| c.matched.as_deref() == Some(me.as_str()) || j.went.get(&c.car.tm_car) == Some(&car))
+                .collect();
+            if mine.is_empty() {
+                continue;
+            }
+            let from_ms = mine.iter().filter_map(|c| c.car.first_ms).min();
+            let to_ms = mine.iter().filter_map(|c| c.car.last_ms).max();
+            let gone = |why: String| Gone { source, name: j.name.clone(), from_ms, to_ms, why };
+            let names = kept_names(&folder(app, &j.id));
+            if !(0..j.parts().len()).all(|k| names.contains(&backup_file(k))) {
+                out.gone.push(gone("its upload is not kept".into()));
+                continue;
+            }
+            let joins: HashMap<i64, i64> = j
+                .cars
+                .iter()
+                .filter(|c| c.matched.as_deref() == Some(WITH))
+                .filter_map(|c| c.car.joins.map(|to| (c.car.tm_car, to)))
+                .collect();
+            let plan = engine::importer::ReplayPlan { car, mine: mine.iter().map(|c| c.car.tm_car).collect(), joins };
+            let drives = match self.read(e, &j, plan) {
+                Ok(d) => d,
+                Err(why) => {
+                    out.gone.push(gone(format!("its upload can't be read: {why}")));
+                    continue;
+                }
+            };
+            // rows the import's moves took off this car are not put back (they went to another car, or wait for one)
+            let moved: Vec<(u64, u64)> = j
+                .moves
+                .iter()
+                .filter(|m| m["from_car"].as_str() == Some(me.as_str()))
+                .filter_map(|m| Some((m["first_ms"].as_u64()?, m["last_ms"].as_u64()?)))
+                .collect();
+            let (held, kept): (Vec<_>, Vec<_>) =
+                drives.into_iter().partition(|d| moved.iter().any(|(a, b)| d.start_ms >= *a && d.start_ms <= *b));
+            if !held.is_empty() {
+                out.held_out.push(HeldOut {
+                    source,
+                    name: j.name.clone(),
+                    rows: held.len() as u64,
+                    from_ms: held.iter().map(|d| d.start_ms).min(),
+                    to_ms: held.iter().map(|d| d.end_ms).max(),
+                });
+            }
+            out.drives.extend(kept);
+        }
+        out
+    }
 }

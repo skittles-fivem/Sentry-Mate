@@ -1042,9 +1042,16 @@ async fn a_rebuild_that_fails_says_why_in_its_answer_the_audit_log_and_a_notice(
     assert!(!notices.to_string().contains("rebuild_failed"), "{notices}");
 }
 
-/// A damaged table of a car (its drives: imported rows and typed values live there too, so no rebuild may make it
-/// again by itself) is said to the admins in a notice that names the file and what to do, where there used to be
-/// bare server errors and nothing else; a rebuild's refusal names the file too.
+/// The audit entries of one code, newest first.
+fn entries_of(app: &web::AppState, code: &str) -> Vec<String> {
+    let page = app.accounts.audit().list(500, None).unwrap();
+    page.entries.into_iter().filter(|r| r.action == code).map(|r| r.details).collect()
+}
+
+/// A damaged table of a car (its drives) is said to the admins in a notice that names the file and says a rebuild or
+/// Repair mends it; a full rebuild then mends it: the drives answer again, the damaged file is kept aside, and what
+/// could not be recovered (the imported drive no kept upload holds) is said in the report, in a notice and in the
+/// audit log.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_damaged_table_is_said_in_a_notice_with_what_to_do() {
     let k = seeded_then(|data, car| cut(&data.join("db/cars").join(car.to_string()).join("drives.snap"))).await;
@@ -1052,24 +1059,110 @@ async fn a_damaged_table_is_said_in_a_notice_with_what_to_do() {
     let mut admin = k.s.admin().await;
     let mut watch = k.s.watch(&mut admin, &[k.id]).await;
     let file = format!("db/cars/{}/drives.snap", k.id);
+    let repair = format!("/api/v1/cars/{car}/repair");
+    assert_eq!(code(&mut admin, &repair).await, (404, Some("no_repair".into())), "no repair yet");
     let r = admin.get(&format!("/api/v1/cars/{car}/drives")).await;
     assert_eq!(r.status, 500, "{}", r.text());
     let notices = ok(&mut admin, "/api/v1/notices").await;
     let n = notices["items"].as_array().unwrap().iter().find(|n| n["code"] == "data_damaged").expect("a notice");
     assert_eq!(n["level"], "error", "{n}");
     let said = n["message"].as_str().unwrap();
-    assert!(said.contains(&file) && said.contains("from a backup"), "{said}");
+    assert!(said.contains(&file) && said.contains("Repair") && said.contains("set aside"), "{said}");
+    assert!(!said.contains("from a backup"), "{said}");
     assert_eq!(n["detail"]["files"][0]["file"].as_str(), Some(file.as_str()), "{n}");
     assert_eq!(
         (n["detail"]["files"][0]["car"].as_str(), n["detail"]["files"][0]["mend"].as_str()),
-        (Some(car.as_str()), Some("backup"))
+        (Some(car.as_str()), Some("repair"))
     );
     assert!(!ok(&mut watch, "/api/v1/notices").await.to_string().contains("data_damaged"), "admins only");
-    // a rebuild says which file stops it, and leaves the file where it is
-    let r = admin.post(&format!("/api/v1/cars/{car}/rebuild"), json!({})).await;
-    assert_eq!((r.status, r.code().as_deref()), (500, Some("rebuild_failed")), "{}", r.text());
-    assert!(r.text().contains(&file), "{}", r.text());
-    assert!(k.data.join(&file).exists());
+    assert_eq!(watch.get(&repair).await.status, 403, "admins only");
+
+    // a full rebuild mends it
+    let path = format!("/api/v1/cars/{car}/full-rebuild");
+    let r = admin.post(&path, json!({ "confirm_password": web::testkit::ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 202, "{}", r.text());
+    let done = full_state(&k.engine, &mut admin, &path).await;
+    assert_eq!(done["state"], "done", "{done}");
+    k.engine.idle().await;
+    let drives = ok(&mut admin, &format!("/api/v1/cars/{car}/drives")).await;
+    assert!(!drives["items"].as_array().unwrap().is_empty(), "the drives made from the logs are back: {drives}");
+
+    // the notice of the damage is gone; one says what could not be recovered
+    web::resources::full_rebuild::watch_once(&k.s.app);
+    let notices = ok(&mut admin, "/api/v1/notices").await;
+    let all = notices["items"].as_array().unwrap();
+    assert!(!all.iter().any(|n| n["code"] == "data_damaged"), "{notices}");
+    let n = all.iter().find(|n| n["code"] == "data_repaired").expect("a notice of what is lost");
+    let said = n["message"].as_str().unwrap();
+    assert!(said.contains("imported drives") && said.contains("teslamate"), "{said}");
+    assert!(said.contains("Restore from a backup only for what is listed"), "{said}");
+    assert_eq!(n["detail"]["lost"][0]["what"], "imported drives", "{n}");
+    assert!(!ok(&mut watch, "/api/v1/notices").await.to_string().contains("data_repaired"), "admins only");
+
+    // the report
+    let r = ok(&mut admin, &repair).await;
+    assert_eq!(
+        (r["state"].as_str(), r["car"].as_str(), r["table"].as_str()),
+        (Some("done"), Some(car.as_str()), Some("drives"))
+    );
+    assert_eq!((r["salvaged"].as_u64(), r["reimported"].as_u64()), (Some(0), Some(0)), "{r}");
+    let lost = &r["lost"][0];
+    assert_eq!(
+        (lost["source"].as_str(), lost["expected"].as_u64(), lost["found"].as_u64()),
+        (Some("teslamate"), Some(1), Some(0)),
+        "{r}"
+    );
+    assert!(lost["said"].as_str().unwrap().contains("1 of 1 imported drives"), "{lost}");
+    // the damaged file is kept, never deleted
+    let aside = r["aside"].as_str().expect("where it was put aside");
+    assert!(aside.starts_with(&format!("db/cars/{}/aside/", k.id)), "{aside}");
+    assert!(k.data.join(aside).join("drives.snap").exists());
+    // the audit entry, once
+    let said = entries_of(&k.s.app, "table-repaired");
+    assert_eq!(said.len(), 1, "{said:#?}");
+    assert!(said[0].starts_with(&format!("[car:{car}] Repaired")), "{said:#?}");
+    assert!(said[0].contains("1 thing could not be recovered"), "{said:#?}");
+    web::resources::full_rebuild::watch_once(&k.s.app);
+    assert_eq!(entries_of(&k.s.app, "table-repaired").len(), 1, "written once");
+}
+
+/// An admin's repair (`POST /cars/{car}/repair`): the table is mended in the background and the rebuild that makes
+/// the rest again follows; a second ask while one runs is refused, and only the drives table is repaired.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_admin_repairs_a_damaged_drives_table_and_a_second_ask_waits() {
+    let k = seeded_then(|data, car| cut(&data.join("db/cars").join(car.to_string()).join("drives.snap"))).await;
+    let car = k.car.clone();
+    let mut admin = k.s.admin().await;
+    let mut watch = k.s.watch(&mut admin, &[k.id]).await;
+    let path = format!("/api/v1/cars/{car}/repair");
+    assert_eq!(watch.post(&path, json!({ "table": "drives" })).await.status, 403, "admin only");
+    let r = admin.post(&path, json!({ "table": "charges" })).await;
+    assert_eq!((r.status, r.code().as_deref()), (422, Some("invalid")), "{}", r.text());
+    let r = admin.post(&path, json!({})).await;
+    assert_eq!(r.status, 422, "{}", r.text());
+    let r = admin.post(&path, json!({ "table": "drives" })).await;
+    assert_eq!(r.status, 202, "{}", r.text());
+    assert_eq!(r.json()["state"], "running");
+    for _ in 0..3000 {
+        k.engine.idle().await;
+        if k.engine.repair_report(k.id).unwrap().is_some_and(|r| !r.running()) && !k.engine.repair_running(k.id) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let drives = ok(&mut admin, &format!("/api/v1/cars/{car}/drives")).await;
+    assert!(!drives["items"].as_array().unwrap().is_empty(), "{drives}");
+    let r = ok(&mut admin, &path).await;
+    assert_eq!(r["state"], "done", "{r}");
+    assert_eq!(r["lost"][0]["what"], "imported drives", "{r}");
+    web::resources::full_rebuild::watch_once(&k.s.app);
+    let said = entries_of(&k.s.app, "table-repaired");
+    assert!(said.iter().any(|e| e.contains("Asked for a repair")), "{said:#?}");
+    assert!(said.iter().any(|e| e.contains("Repaired") && e.contains("drives table")), "{said:#?}");
+    // one under way: refused
+    assert!(k.engine.repair_begin(k.id));
+    let r = admin.post(&path, json!({ "table": "drives" })).await;
+    assert_eq!((r.status, r.code().as_deref()), (409, Some("repair_running")), "{}", r.text());
 }
 
 /// A damaged day of the samples decoded from the logs is said too, as something a rebuild mends; after the rebuild

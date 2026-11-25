@@ -1787,6 +1787,8 @@ async fn start_web(
     // a CAN export's logs are stored through the data folder's gate, as uploads are
     if let Ok(im) = app.service::<web::resources::imports::Imports>() {
         im.set_gate(gate.clone());
+        // a damaged drives table gets its imported rows back from the imports' kept uploads
+        engine.engine.set_import_replay(web::resources::imports::replay(&app));
         // imported rows an older server put on the wrong car are moved, once (not after a move away: no writes)
         if !moved {
             drop(web::resources::imports::spawn_rehome(&app));
