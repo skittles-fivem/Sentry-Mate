@@ -2504,7 +2504,10 @@ mod tests {
         let v = Vault::open(&k.data, &k.keys).unwrap();
         let first = v.new_recovery_key(&k.data, Kdf::FAST_FOR_TESTS).unwrap();
         let before = std::fs::read(k.data.join(vault::VAULT_FILE)).unwrap();
-        std::fs::create_dir(k.keys.join("RECOVERY-KEY.tmp")).unwrap();
+        // a folder where the key file goes: it can't be written
+        let key_file = k.keys.join(moving::import::RECOVERY_FILE);
+        let _ = std::fs::remove_file(&key_file);
+        std::fs::create_dir(&key_file).unwrap();
         let said = recovery_key_new(&k.data, &k.keys, Kdf::FAST_FOR_TESTS).err().unwrap().to_string();
         assert!(said.contains("the old recovery key still works"), "{said}");
         assert!(std::fs::read(k.data.join(vault::VAULT_FILE)).unwrap() == before, "the vault file is the same");
@@ -2514,7 +2517,7 @@ mod tests {
         std::fs::copy(k.data.join(vault::VAULT_FILE), d.join(vault::VAULT_FILE)).unwrap();
         assert!(Vault::restore(&d, &ks, first.as_str()).is_ok(), "the old key still opens the vault");
         // once it can be written, the new key is in the file
-        std::fs::remove_dir(k.keys.join("RECOVERY-KEY.tmp")).unwrap();
+        std::fs::remove_dir(&key_file).unwrap();
         recovery_key_new(&k.data, &k.keys, Kdf::FAST_FOR_TESTS).unwrap();
         assert!(k.keys.join(moving::import::RECOVERY_FILE).exists());
     }
