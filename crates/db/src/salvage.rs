@@ -273,7 +273,7 @@ impl Db {
             sync_dir(dir);
             data.unload();
             let rel = db.inner.ctx.label(&folder);
-            db.forget_damage(car, &[files.snap.as_path(), files.log.as_path()]);
+            db.forget_damage(&[files.snap.as_path(), files.log.as_path()]);
             Ok(Some(rel))
         })?;
         self.inner.versions.bump(car, true, true);

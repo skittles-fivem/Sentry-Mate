@@ -65,6 +65,7 @@ const BY_GROUP = {
     'car-settings-changed': 'Changed car settings',
     'car-rebuild': 'Rebuilt a car’s history',
     'car-full-rebuild': 'Ran a full rebuild',
+    'table-repaired': 'Repaired a car’s drives table',
     'car-gps-fit-removed': 'Removed a past GPS layout fit of a car',
     'car-gps-layout': 'Set how a car’s Screenmate GPS frames are read',
     'car-overlap': 'Found overlapping data',

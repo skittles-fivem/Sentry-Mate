@@ -185,6 +185,17 @@ impl Engine {
         Ok(())
     }
 
+    /// Claims the car for a repair about to be started with [`Engine::repair_table`] (which releases it when it
+    /// returns). `false`: one is under way already.
+    pub fn repair_begin(&self, car: CarId) -> bool {
+        lock(&self.inner.repairing).insert(car)
+    }
+
+    /// [`Engine::repair_table`] of the drives table.
+    pub fn repair_drives_table(&self, car: CarId) -> Result<Option<RepairReport>> {
+        self.repair_table(car, Table::Drives)
+    }
+
     /// Repairs the car's drives table, if it is damaged: what is lost is read as far as it reads, the files are put
     /// aside, the table is written again, and the rebuild that makes the rest again is started (from where the loss
     /// begins). `Ok(None)`: nothing is damaged. The rebuild and the putting back of purposes finish in the
@@ -193,9 +204,7 @@ impl Engine {
         if table != Table::Drives {
             return Err(crate::Error::Other("only the drives table is repaired".into()));
         }
-        if !lock(&self.inner.repairing).insert(car) {
-            return Err(crate::Error::Other("a repair of this car is under way".into()));
-        }
+        lock(&self.inner.repairing).insert(car);
         let r = (|| {
             let l = self.car_lock(car);
             let held = lock(&l);

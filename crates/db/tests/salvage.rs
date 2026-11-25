@@ -157,6 +157,8 @@ fn a_table_put_aside_is_kept_and_written_again_with_what_was_read() {
     assert!(db.count::<Drive>(c.car).is_err());
     assert_eq!(db.damaged().len(), 1);
     let s = db.salvage_table::<Drive>(c.car).unwrap();
+    let files = |db: &db::Db| db.backup(std::io::sink()).unwrap().files;
+    let before = files(&db);
     let aside = db.set_aside_table(c.car, Table::Drives, "test").unwrap().expect("a folder");
     let folder = c.t.data.join(&aside);
     assert!(aside.starts_with(&format!("db/cars/{}/aside/", c.car)), "{aside}");
@@ -167,6 +169,8 @@ fn a_table_put_aside_is_kept_and_written_again_with_what_was_read() {
     // the table is empty and not an error; a table with no files while the summary counts rows is written this way
     db.restore_table(c.car, &s.rows).unwrap();
     assert_eq!(db.count::<Drive>(c.car).unwrap(), s.rows.len());
+    // a backup (and so an export, and a move) carries the files put aside, and their note, beside the new table
+    assert_eq!(files(&db), before + 2);
     assert_eq!(db.entry(c.car).unwrap().unwrap().summary.tally.can.drives, s.rows.len() as i64);
     drop(db);
     // and it is the table after a restart

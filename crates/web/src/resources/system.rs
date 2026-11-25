@@ -235,6 +235,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/about", get(about))
         .route("/api/v1/cars/{car}/health", get(health))
         .route("/api/v1/cars/{car}/rebuild", post(rebuild))
+        .route("/api/v1/cars/{car}/repair", get(repair_report).post(start_repair))
         .route("/api/v1/cars/{car}/gps-layout", get(gps_layout).put(put_gps_layout))
         .route("/api/v1/cars/{car}/gps-layout/fit", get(gps_fit).post(start_gps_fit))
         .route("/api/v1/cars/{car}/gps-layout/fits", get(gps_fits))
@@ -377,6 +378,139 @@ async fn rebuild(
     })))
 }
 
+/// Whether a file of a car's db is its drives table.
+fn is_drives_table(file: &str) -> bool {
+    file.ends_with("/drives.snap") || file.ends_with("/drives.log")
+}
+
+/// A time span in words: `from 2026-01-02 UTC to 2026-03-04 UTC`, an open end as one.
+fn span_words(from: Option<u64>, to: Option<u64>) -> String {
+    let day = |ms: u64| format!("{} UTC", moving::export::day_of(ms));
+    match (from, to) {
+        (Some(a), Some(b)) => format!("from {} to {}", day(a), day(b)),
+        (Some(a), None) => format!("from {} on", day(a)),
+        (None, Some(b)) => format!("up to {}", day(b)),
+        (None, None) => "at a time that is not known".into(),
+    }
+}
+
+/// What a repair could not give back, in one sentence.
+fn lost_words(l: &engine::repair::Lost) -> String {
+    let n = match (l.expected, l.found) {
+        (Some(e), Some(f)) => format!("{} of {e}", e.saturating_sub(f)),
+        (Some(e), None) => format!("{e}"),
+        _ => "some".into(),
+    };
+    format!("{n} {} ({}, {}): {}", l.what, l.source, span_words(l.from_ms, l.to_ms), l.why)
+}
+
+/// A repair's report as the API gives it.
+fn repair_json(car: model::CarId, r: &engine::repair::RepairReport) -> Value {
+    let mut v = serde_json::to_value(r).unwrap_or(Value::Null);
+    v["car"] = json!(ids::car(car));
+    v["state"] = json!(if r.running() { "running" } else { "done" });
+    v["lost"] = json!(
+        r.lost
+            .iter()
+            .map(|l| {
+                let mut j = serde_json::to_value(l).unwrap_or(Value::Null);
+                j["said"] = json!(lost_words(l));
+                j
+            })
+            .collect::<Vec<_>>()
+    );
+    if let Some(o) = v.as_object_mut() {
+        o.remove("audited");
+        o.remove("live_expected");
+        o.remove("live_salvaged");
+    }
+    v
+}
+
+/// `GET /cars/{car}/repair` (admin): the report of the car's last repair of its drives table (what was kept, put
+/// back and made again, and `lost`: what could not be recovered, each with the time it covered), or `404 no_repair`.
+async fn repair_report(
+    State(app): State<AppState>,
+    Admin(_): Admin,
+    CarParam(car): CarParam,
+) -> ApiResult<Json<Value>> {
+    let e = app.service::<Engine>()?;
+    let r = app.blocking(move |_| e.repair_report(car).map_err(|x| ApiError::server(x.to_string()))).await?;
+    match r {
+        Some(r) => Ok(Json(repair_json(car, &r))),
+        None => Err(ApiError::not_found("no_repair")),
+    }
+}
+
+/// `POST /cars/{car}/repair` `{ table: "drives" }` (admin): repairs the car's damaged drives table in the
+/// background (`202`): what still reads is kept, the files are put aside, imported rows come back from the imports'
+/// kept uploads, and the rest is made again from the stored logs by a rebuild from where the damage begins. A table
+/// that reads is left alone. `409 repair_running` while one is under way. Read the outcome at `GET .../repair`.
+async fn start_repair(
+    State(app): State<AppState>,
+    Admin(v): Admin,
+    CarParam(car): CarParam,
+    body: JsonBody,
+) -> ApiResult<Response> {
+    body.only(&["table"])?;
+    if body.str("table")? != Some("drives") {
+        return Err(ApiError::invalid("table", "Only the drives table is repaired: \"drives\"."));
+    }
+    let e = app.service::<Engine>()?;
+    super::full_rebuild::refuse_while_running(&e)?;
+    // (the repair claims the car before this answers, so a second ask meets it)
+    if !e.repair_begin(car) {
+        return Err(ApiError::conflict("repair_running", "A repair of this car's drives table is under way."));
+    }
+    let name = app.car_name_now(car).await;
+    let e2 = e.clone();
+    drop(tokio::task::spawn_blocking(move || {
+        if let Err(err) = e2.repair_drives_table(car) {
+            tracing::warn!("repairing the drives table of car {car}: {err}");
+        }
+    }));
+    v.audit(
+        &app,
+        "table-repaired",
+        Some(&target("car", Some(car), "")),
+        &format!("Asked for a repair of {name}'s drives table."),
+    )
+    .await?;
+    let out = json!({ "car": ids::car(car), "table": "drives", "state": "running" });
+    Ok((axum::http::StatusCode::ACCEPTED, Json(out)).into_response())
+}
+
+/// The end of each repair into the audit log, once (in the server's name): what was kept, put back and made again,
+/// and what could not be recovered.
+pub fn audit_repairs(app: &AppState, e: &Engine) -> usize {
+    let done = e.repairs_to_audit();
+    for (car, r) in &done {
+        let (car, r) = (*car, r);
+        let name = app.car_name(car);
+        let lost = match r.lost.len() {
+            0 => "nothing was lost".to_string(),
+            1 => "1 thing could not be recovered".to_string(),
+            n => format!("{n} things could not be recovered"),
+        };
+        let summary = format!(
+            "Repaired {name}'s drives table: {} rows kept, {} imported rows put back from the kept uploads, {} \
+             made again from the logs, {} purposes put back on their drives; {lost}.",
+            r.salvaged,
+            r.reimported,
+            r.rebuilt.unwrap_or(0),
+            r.relinked,
+        );
+        let details = crate::ctx::audit_details(Some(&target("car", Some(car), "")), &summary);
+        match app.accounts.audit().record(None, None, "table-repaired", &details) {
+            Ok(()) => {
+                let _ = e.repair_audited(car, r.started_ms);
+            }
+            Err(err) => tracing::warn!("audit: {err}"),
+        }
+    }
+    done.len()
+}
+
 /// Why a rebuild job failed, as a sentence's end.
 fn why_failed(j: &engine::Job) -> String {
     j.error.as_deref().unwrap_or("no reason given").trim_end_matches('.').to_string()
@@ -426,6 +560,11 @@ pub fn notices(app: &AppState) -> Vec<super::notices::Notice> {
         };
         let fix = if damaged.iter().all(|d| d.from_logs) {
             "It holds only what was decoded from the stored logs: a rebuild of the car makes it again.".to_string()
+        } else if damaged.iter().all(|d| d.from_logs || is_drives_table(&d.file)) {
+            "A rebuild of the car, or Repair, mends it: what still reads is kept, the imported rows come back from \
+             the kept uploads of the imports, the rest is made again from the stored logs, and the damaged file is \
+             set aside (never deleted). What could not be recovered is said afterwards."
+                .to_string()
         } else {
             format!(
                 "It also holds what no stored log gives (imported rows, what was typed in), so no rebuild makes it \
@@ -447,9 +586,30 @@ pub fn notices(app: &AppState) -> Vec<super::notices::Notice> {
             detail: Some(json!({
                 "files": damaged.iter().map(|d| json!({
                     "car": ids::car(d.car), "file": d.file, "why": d.why, "since_ms": d.since_ms,
-                    "mend": if d.from_logs { "rebuild" } else { "backup" },
+                    "mend": if d.from_logs { "rebuild" } else if is_drives_table(&d.file) { "repair" } else { "backup" },
                 })).collect::<Vec<_>>(),
             })),
+        });
+    }
+    // a drives table that was repaired and could not be given back whole
+    for car in engine::rehome::car_ids(&e).unwrap_or_default() {
+        let Ok(Some(r)) = e.repair_report(car) else { continue };
+        if r.running() || r.lost.is_empty() {
+            continue;
+        }
+        let said: Vec<String> = r.lost.iter().map(lost_words).collect();
+        out.push(Notice {
+            code: "data_repaired",
+            level: "warning",
+            message: format!(
+                "The drives table of {} was damaged and has been repaired, but some of it could not be recovered: \
+                 {}. The damaged file was kept aside. Restore from a backup only for what is listed here.",
+                app.car_name(car),
+                said.join("; ")
+            ),
+            since_ms: r.finished_ms,
+            fix_link: Some(NOTICE_LINK),
+            detail: Some(repair_json(car, &r)),
         });
     }
     // the newest ended job of each car (or of every car): failed, and none after it ended well

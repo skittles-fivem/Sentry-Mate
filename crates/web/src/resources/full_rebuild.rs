@@ -477,6 +477,11 @@ fn lower_first(s: &str) -> String {
 /// One look: the end of a finished full rebuild into the audit log, and the one a new version calls for started.
 pub fn watch_once(app: &AppState) {
     let Ok(e) = app.service::<Engine>() else { return };
+    // a repaired drives table's end (a rebuild of any kind, or an admin's repair, did it)
+    if super::system::audit_repairs(app, &e) > 0 {
+        // (the notice of the damage goes, and one of what could not be recovered may come)
+        tell_pages(app, json!({ "code": "data_repaired" }));
+    }
     let Ok(r) = e.full_rebuild_status() else { return };
     if let Some(r) = &r
         && !r.running()

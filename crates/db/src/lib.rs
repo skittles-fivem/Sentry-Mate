@@ -818,12 +818,11 @@ impl Db {
     }
 
     /// Forgets that these files of a car were found damaged (they were put aside or written again).
-    fn forget_damage(&self, car: CarId, files: &[&Path]) {
+    fn forget_damage(&self, files: &[&Path]) {
         let Ok(mut d) = self.inner.damaged.lock() else { return };
         for f in files {
             d.remove(&self.inner.ctx.label(f));
         }
-        let _ = car;
     }
 
     /// Takes a car's summary to count `part` as what `table` holds now (and its last activity to include `last`).

@@ -401,3 +401,53 @@ async fn teslafi_files_uploaded_side_by_side_are_each_packed_and_import_as_befor
     assert_eq!(r.status, 200, "{}", r.text());
     assert!(!k.folder(&id).exists());
 }
+
+/// What a damaged drives table gets back from the imports: the drives an import stored are read again from its kept
+/// upload (as uploaded and once packed), exactly as they were stored; an upload that is not there is said, with the
+/// time its rows covered; a car no import went to has nothing to get back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_kept_upload_of_an_import_gives_its_drives_back_for_a_repair() {
+    let k = kit().await;
+    let mut admin = k.s.admin().await;
+    let dump = made_up_dump();
+    let id = upload(&mut admin, "made-up-backup.sql", &dump).await;
+    wait_for(&mut admin, &id, "ready").await;
+    import(&mut admin, &id).await;
+    let car = engine::query::all_cars(&k.engine).unwrap()[0];
+    let mut q = db::Query::default().limit(db::MAX_PAGE);
+    q.source = Some(model::Source::Teslamate);
+    let mut stored = k.engine.db().list::<model::Drive>(car, &q).unwrap().items;
+    stored.sort_by_key(|d| d.id);
+    assert!(!stored.is_empty());
+    let replay = web::resources::imports::replay(&k.s.app);
+    let read = |car: CarId| {
+        let (r, e) = (replay.clone(), k.engine.clone());
+        async move { tokio::task::spawn_blocking(move || r.drives(&e, car)).await.unwrap() }
+    };
+    let sorted = |mut d: Vec<model::Drive>| {
+        d.sort_by_key(|d| d.id);
+        d
+    };
+    // as uploaded
+    let got = read(car).await;
+    assert_eq!(sorted(got.drives), stored);
+    assert!(got.gone.is_empty() && got.held_out.is_empty());
+    // packed
+    let pass = k.compact().await;
+    assert_eq!((pass.others, pass.problems.len()), (1, 0), "{pass:?}");
+    assert_eq!(k.files(&id), ["backup.pack", "job"]);
+    let got = read(car).await;
+    assert_eq!(sorted(got.drives), stored, "from its pack");
+    // another car: no import went to it
+    let got = read(car + 100).await;
+    assert!(got.drives.is_empty() && got.gone.is_empty());
+    // the upload gone (the import is still listed): said, with what it covered
+    std::fs::remove_file(k.folder(&id).join("backup.pack")).unwrap();
+    let got = read(car).await;
+    assert!(got.drives.is_empty());
+    assert_eq!(got.gone.len(), 1, "{:?}", got.gone);
+    let g = &got.gone[0];
+    assert_eq!((g.name.as_str(), g.source), ("made-up-backup.sql", model::Source::Teslamate));
+    assert!(g.why.contains("not kept"), "{}", g.why);
+    assert!(g.from_ms.is_some() && g.to_ms >= g.from_ms, "{g:?}");
+}
