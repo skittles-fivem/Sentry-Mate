@@ -49,7 +49,12 @@ pub(crate) fn api_at(meta: &tesla::ApiMeta, input: model::Input) -> At {
 pub struct InputNow {
     #[serde(flatten)]
     pub input: super::SourceRef,
+    /// When the input's newest value was recorded: the input's own time of it (TeslaFi's time of its poll, not when
+    /// this server read it).
     pub last_ms: Option<u64>,
+    /// When this server received that data (null for SMO, which has its own `received_ms` on the Now): beside
+    /// `last_ms` it tells an input that has nothing new from one whose times are read in the wrong zone.
+    pub received_ms: Option<u64>,
 }
 
 fn vf(x: Option<f64>, d: i32, at: At) -> Option<V<f64>> {
@@ -661,11 +666,11 @@ pub fn now_view(e: &Engine, car: CarId) -> QResult<NowView> {
                 .or_else(|| n.as_ref().filter(|_| times.is_empty()).map(|n| n.at_ms));
             let mut v = Vec::new();
             if let Some(t) = smo_last.filter(|_| n.is_some()) {
-                v.push(InputNow { input: model::Origin::Smo.into(), last_ms: Some(t) });
+                v.push(InputNow { input: model::Origin::Smo.into(), last_ms: Some(t), received_ms: None });
             }
             for i in model::Input::apis() {
-                if let Some(t) = meta.api_times(i).0 {
-                    v.push(InputNow { input: model::Origin::from(i).into(), last_ms: Some(t) });
+                if let (Some(t), received) = meta.api_times(i) {
+                    v.push(InputNow { input: model::Origin::from(i).into(), last_ms: Some(t), received_ms: received });
                 }
             }
             // in the order the car's inputs win in

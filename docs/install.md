@@ -445,7 +445,12 @@ To stop for a while, pause the account; to stop for good, remove it. Removing
 deletes its sealed token; the history already stored stays. Also make a new
 token on TeslaFi's API page, so the old one stops working there. If TeslaFi
 stops taking the token (a new token was made there, or the subscription
-ended), a notice says so: paste a new token. What is sent, and where:
+ended), a notice says so: paste a new token. If TeslaFi has had no new data
+from an awake car for two hours, a notice says so and that the problem is on
+TeslaFi's side (a car TeslaFi says is asleep is silent as expected); if its
+polls keep coming but are stamped an hour or more off, the notice says the
+account's time zone is wrong: set it in the TeslaFi section (TeslaFi writes
+local time without a zone). What is sent, and where:
 [security](security.md#the-teslafi-input).
 
 Every built-in design has the TeslaFi section on Settings: Integrations,

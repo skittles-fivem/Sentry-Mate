@@ -184,6 +184,74 @@ pub fn rate_notice(a: &Account, until_ms: u64, since_ms: Option<u64>) -> Notice 
     }
 }
 
+/// A span in words: `45 min`, `6 h`, `2 h 30 min`, `3 days`.
+fn age_words(ms: u64) -> String {
+    let (h, m) = (ms / 3_600_000, (ms / 60_000) % 60);
+    match (h, m) {
+        (0, m) => format!("{m} min"),
+        (h, _) if h >= 48 => format!("{} days", h / 24),
+        (h, 0) => format!("{h} h"),
+        (h, m) if h < 10 => format!("{h} h {m} min"),
+        (h, _) => format!("{h} h"),
+    }
+}
+
+/// What the age of TeslaFi's data says, as the status words it: `fine`, `no_data` or `time_offset`.
+fn data_word(h: teslafi::DataHealth) -> &'static str {
+    match h {
+        teslafi::DataHealth::Fine => "fine",
+        teslafi::DataHealth::NoData { .. } => "no_data",
+        teslafi::DataHealth::TimeOffset { .. } => "time_offset",
+    }
+}
+
+/// The notice of TeslaFi's data being old while the connection works ([`teslafi::data_health`]): `teslafi_no_data`
+/// (TeslaFi has had nothing new from the awake car: the problem is on TeslaFi's side) or `teslafi_time_offset`
+/// (polls come, dated hours off: the account's time zone is wrong). None while the data is fine.
+pub fn data_notice(a: &Account, health: teslafi::DataHealth) -> Option<Notice> {
+    let detail = |extra: Value| {
+        let mut d = json!({ "account": a.id });
+        if let (Some(o), Some(e)) = (d.as_object_mut(), extra.as_object()) {
+            o.extend(e.clone());
+        }
+        Some(d)
+    };
+    match health {
+        teslafi::DataHealth::Fine => None,
+        teslafi::DataHealth::NoData { age_ms, last_data_ms } => Some(Notice {
+            code: "teslafi_no_data",
+            level: "warning",
+            message: format!(
+                "TeslaFi has had no new data from the car for {} (the TeslaFi account \"{}\"; its last data is from \
+                 {}). This server reads TeslaFi without errors, so the car is not sending TeslaFi anything newer: the \
+                 problem is on TeslaFi's side or between TeslaFi and the car, not here.",
+                age_words(age_ms),
+                a.label,
+                utc_minute(last_data_ms)
+            ),
+            since_ms: Some(last_data_ms),
+            fix_link: Some("/settings/integrations#teslafi"),
+            detail: detail(json!({ "last_data_ms": last_data_ms, "age_ms": age_ms })),
+        }),
+        teslafi::DataHealth::TimeOffset { skew_ms, behind } => Some(Notice {
+            code: "teslafi_time_offset",
+            level: "warning",
+            message: format!(
+                "The times TeslaFi gives for the TeslaFi account \"{}\" are {} {} the moment this server reads them, \
+                 so every value from it looks {}. Check the account's time zone (Settings, TeslaFi): TeslaFi writes \
+                 local time without a zone.",
+                a.label,
+                age_words(skew_ms),
+                if behind { "before" } else { "after" },
+                if behind { "old" } else { "to come" }
+            ),
+            since_ms: None,
+            fix_link: Some("/settings/integrations#teslafi"),
+            detail: detail(json!({ "skew_ms": skew_ms, "behind": behind })),
+        }),
+    }
+}
+
 /// The notice an account in trouble gives (none while it is fine or paused).
 pub fn notice(a: &Account) -> Option<Notice> {
     let detail = Some(json!({ "account": a.id }));
@@ -224,6 +292,7 @@ pub fn notice(a: &Account) -> Option<Notice> {
 pub fn notices(app: &AppState) -> Vec<Notice> {
     let Ok(s) = app.service::<TeslafiService>() else { return Vec::new() };
     let status = s.status();
+    let now = app.now();
     let mut out: Vec<Notice> = Vec::new();
     for a in s.accounts() {
         out.extend(notice(&a));
@@ -234,6 +303,11 @@ pub fn notices(app: &AppState) -> Vec<Notice> {
         {
             let since = st.and_then(|x| x.last_error.as_ref()).filter(|e| e.code == "rate_limited").map(|e| e.at_ms);
             out.push(rate_notice(&a, until, since));
+        }
+        if !a.paused
+            && let Some(st) = st
+        {
+            out.extend(data_notice(&a, teslafi::data_health(st, now)));
         }
     }
     out
@@ -547,6 +621,7 @@ async fn change_settings(
 async fn status(State(app): State<AppState>, Admin(_): Admin, q: Params) -> ApiResult<Response> {
     q.wants_csv()?;
     let s = svc(&app)?;
+    let now = app.now();
     let items: Vec<Value> = s
         .status()
         .into_iter()
@@ -560,6 +635,8 @@ async fn status(State(app): State<AppState>, Admin(_): Admin, q: Params) -> ApiR
                 "last_request_ms": a.last_request_ms,
                 "next_request_ms": a.next_request_ms,
                 "last_data_ms": a.last_data_ms,
+                "last_new_ms": a.last_new_ms,
+                "data": data_word(teslafi::data_health(&a, now)),
                 "polls_today": a.polls_today,
                 "rate_limited_until_ms": a.rate_limited_until_ms,
                 "tls": a.tls,
@@ -824,4 +901,59 @@ pub(crate) fn invoices_now(app: &AppState) -> Option<Value> {
     let e = app.service::<Engine>().ok()?;
     let settings = load_settings(&e);
     Some(super::invoices::teslafi_block(&e, &s, settings.invoices))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn account() -> Account {
+        Account {
+            id: "fa1".into(),
+            label: "Made-up TeslaFi".into(),
+            added_ms: 0,
+            version: 1,
+            paused: false,
+            time_zone: None,
+            state: AccountState::Ok,
+            last_ok_ms: None,
+            last_error: None,
+            cars: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn spans_in_words() {
+        assert_eq!(age_words(45 * 60_000), "45 min");
+        assert_eq!(age_words(6 * 3_600_000), "6 h");
+        assert_eq!(age_words(2 * 3_600_000 + 30 * 60_000), "2 h 30 min");
+        assert_eq!(age_words(13 * 3_600_000 + 20 * 60_000), "13 h");
+        assert_eq!(age_words(72 * 3_600_000), "3 days");
+    }
+
+    #[test]
+    fn the_notice_of_no_new_data_says_whose_problem_it_is() {
+        // 2027-01-15 02:00 UTC
+        let last = 1_799_978_400_000;
+        let n = data_notice(&account(), teslafi::DataHealth::NoData { age_ms: 6 * 3_600_000, last_data_ms: last })
+            .expect("a notice");
+        assert_eq!((n.code, n.level), ("teslafi_no_data", "warning"));
+        assert!(n.message.starts_with("TeslaFi has had no new data from the car for 6 h"), "{}", n.message);
+        assert!(n.message.contains("2027-01-15 02:00 UTC"), "{}", n.message);
+        assert!(n.message.contains("the problem is on TeslaFi's side"), "{}", n.message);
+        assert_eq!(n.since_ms, Some(last));
+        assert_eq!(n.fix_link, Some("/settings/integrations#teslafi"));
+        assert_eq!(n.detail, Some(json!({ "account": "fa1", "last_data_ms": last, "age_ms": 6 * 3_600_000 })));
+        assert!(data_notice(&account(), teslafi::DataHealth::Fine).is_none());
+    }
+
+    #[test]
+    fn the_notice_of_a_wrong_zone_names_the_setting() {
+        let n = data_notice(&account(), teslafi::DataHealth::TimeOffset { skew_ms: 6 * 3_600_000, behind: true })
+            .expect("a notice");
+        assert_eq!(n.code, "teslafi_time_offset");
+        assert!(n.message.contains("are 6 h before the moment this server reads them"), "{}", n.message);
+        assert!(n.message.contains("time zone"), "{}", n.message);
+        assert_eq!(n.detail, Some(json!({ "account": "fa1", "skew_ms": 6 * 3_600_000, "behind": true })));
+    }
 }

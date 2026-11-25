@@ -9,12 +9,14 @@
 
 pub mod api;
 pub mod costs;
+pub mod health;
 pub mod hosts;
 pub mod http;
 pub mod poller;
 pub mod store;
 
 pub use api::{Client, Feed, FeedError, Read};
+pub use health::{DataHealth, data_health};
 pub use hosts::{Endpoint, HOST};
 pub use http::{Http, HttpError};
 pub use poller::{AccountStatus, Cadence, Mode, Pace, Poller, Sink};

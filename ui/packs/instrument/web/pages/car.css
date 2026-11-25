@@ -184,6 +184,7 @@
 /* the live inputs line (core/source.js) and the mark on a value the Tesla API sent */
 .now-inputs { display: flex; flex-wrap: wrap; align-items: center; gap: round(0.5rem, var(--e)) round(1.5rem, var(--e)); margin: round(-0.5rem, var(--e)) 0 var(--gap); padding: round(0.5rem, var(--e)) round(0.875rem, var(--e)); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); }
 .now-inputs:empty { display: none; }
+.now-inputs-data { flex: 1 0 100%; margin: 0; font-size: max(0.8125rem, var(--fs-floor)); }
 .now-inputs-key { color: var(--text-3); font-size: max(0.75rem, var(--fs-floor)); }
 .now-inputs-hist { display: inline-flex; align-items: center; gap: round(0.375rem, var(--e)); margin-left: auto; font-size: max(0.75rem, var(--fs-floor)); }
 .src-via { display: inline-flex; align-items: center; gap: round(0.1875rem, var(--e)); margin-left: round(0.375rem, var(--e)); font-family: var(--font); font-size: max(0.625rem, var(--fs-floor)); font-weight: 600; letter-spacing: 0.04em; color: var(--power-ink); vertical-align: baseline; }

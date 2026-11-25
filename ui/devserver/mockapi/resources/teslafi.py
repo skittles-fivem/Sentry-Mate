@@ -156,6 +156,35 @@ def limited_until(req, a):
     return t if t and t > req.now and not a["paused"] and a["state"] == "ok" else None
 
 
+NO_DATA_AFTER_MS = 2 * 3_600_000  # an awake car with no new poll for this long: TeslaFi has no new data
+FRESH_MS = 10 * 60_000  # a poll this recent: polls keep coming
+TIME_OFFSET_MIN_MS = 3_600_000  # a fresh poll stamped this far off: the account's time zone is wrong
+
+
+def data_health(req, a):
+    """How old TeslaFi's data is and whose problem it is (crates/teslafi/src/health.rs), from what a page check sets
+    on the account: `data_age_ms` (nothing new for that long) or `time_offset_ms` (polls come, stamped that far off).
+    -> ("fine", None) | ("no_data", {age_ms, last_data_ms}) | ("time_offset", {skew_ms, behind})."""
+    if a["paused"] or a["state"] != "ok" or limited_until(req, a) or not any(_matched(c) for c in a["cars"]):
+        return "fine", None
+    age = a.get("data_age_ms")
+    if age and age >= NO_DATA_AFTER_MS and _mode(req, a)[0] not in ("asleep", "off"):
+        return "no_data", {"age_ms": age - 30_000, "last_data_ms": req.now - age}
+    off = a.get("time_offset_ms")
+    if off and abs(off) >= TIME_OFFSET_MIN_MS:
+        return "time_offset", {"skew_ms": abs(off), "behind": off > 0}
+    return "fine", None
+
+
+def _span(ms):
+    h, m = ms // 3_600_000, ms // 60_000 % 60
+    if h >= 48:
+        return f"{h // 24} days"
+    if h == 0:
+        return f"{m} min"
+    return f"{h} h" if m == 0 or h >= 10 else f"{h} h {m} min"
+
+
 def _utc_minute(ms):
     import datetime
     return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -255,6 +284,8 @@ def status(req):
             "next_request_ms": until or (last + step if step else None),
             "last_data_ms": last - 20_000 if mode in ("driving", "charging", "idle") else a["last_ok_ms"]
             if mode != "off" else None,
+            "last_new_ms": last if mode in ("driving", "charging", "idle") else None,
+            "data": data_health(req, a)[0],
             "polls_today": _polls_today(req, a), "rate_limited_until_ms": until, "tls": "1.3",
             "last_error": {"code": "rate_limited", "message": "TeslaFi is limiting requests", "at_ms": until - 120_000}
             if until else a["last_error"],
@@ -463,6 +494,25 @@ def notices(req):
                                    "as TeslaFi asks.",
                         "since_ms": since, "fix_link": "/settings/integrations#teslafi",
                         "detail": {"account": a["id"], "until_ms": until}})
+        word, d = data_health(req, a)
+        if word == "no_data":
+            out.append({"code": "teslafi_no_data", "level": "warning",
+                        "message": f"TeslaFi has had no new data from the car for {_span(d['age_ms'])} (the TeslaFi "
+                                   f"account \"{a['label']}\"; its last data is from {_utc_minute(d['last_data_ms'])}). "
+                                   "This server reads TeslaFi without errors, so the car is not sending TeslaFi "
+                                   "anything newer: the problem is on TeslaFi's side or between TeslaFi and the car, "
+                                   "not here.",
+                        "since_ms": d["last_data_ms"], "fix_link": "/settings/integrations#teslafi",
+                        "detail": {"account": a["id"], "last_data_ms": d["last_data_ms"], "age_ms": d["age_ms"]}})
+        elif word == "time_offset":
+            out.append({"code": "teslafi_time_offset", "level": "warning",
+                        "message": f"The times TeslaFi gives for the TeslaFi account \"{a['label']}\" are "
+                                   f"{_span(d['skew_ms'])} {'before' if d['behind'] else 'after'} the moment this "
+                                   f"server reads them, so every value from it looks "
+                                   f"{'old' if d['behind'] else 'to come'}. Check the account's time zone (Settings, "
+                                   "TeslaFi): TeslaFi writes local time without a zone.",
+                        "since_ms": None, "fix_link": "/settings/integrations#teslafi",
+                        "detail": {"account": a["id"], "skew_ms": d["skew_ms"], "behind": d["behind"]}})
     return out
 
 
