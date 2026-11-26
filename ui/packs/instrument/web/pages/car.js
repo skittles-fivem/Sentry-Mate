@@ -16,7 +16,7 @@ import { statePill, stateLabel, ago, agoEl, when, dur, val, TYRES } from '../cor
 import { timelineRow } from './timeline.js';
 import { createMap, carMarker, addRoute, padClear, mapFallback } from '../core/map.js';
 import { SPOT_ZOOM } from '../shared/maptiles.js';
-import { offstage } from '../core/stage.js';
+import { offstage, afterScroll } from '../core/stage.js';
 import { loadUPlot, mountPlot, timeAxis, valueAxis, colors, areaFill, hexA } from '../core/chart.js';
 import { activityStrip } from '../core/strip.js';
 import { openCarSwitcher } from '../core/carswitch.js';
@@ -915,13 +915,14 @@ export async function mount(ctx) {
     // plugged in, unplugged or moved: learn the usual start time for the place it is at now
     if (plugKey() !== before && !(scheduleHint && scheduleFor === now.location?.place?.id)) learnSchedule();
     if (pend) return;
-    pend = setTimeout(() => { pend = 0; if (!ctx.alive()) return; paintHead(); paintInputs(); paintBanner(); paintGauge(); paintPlace(); paintLive(); placeMarker(); }, 2000);
+    // (while the page scrolls the panels wait for it to rest: drawn all at once they took tens of ms of a frame)
+    pend = setTimeout(() => afterScroll(() => { pend = 0; if (!ctx.alive()) return; paintHead(); paintInputs(); paintBanner(); paintGauge(); paintPlace(); paintLive(); placeMarker(); }), 2000);
   });
   let rowsT = 0;
   ctx.events('rows', (ev) => {
     if (ev.data?.car !== cid) return;
     if (rowsT) return;   // (words that keep coming, as in a rebuild, never put it off)
-    rowsT = setTimeout(() => { rowsT = 0; if (ctx.alive()) { paintWindow().catch(() => {}); paintToday(); } }, 1500);
+    rowsT = setTimeout(() => afterScroll(() => { rowsT = 0; if (ctx.alive()) { paintWindow().catch(() => {}); paintToday(); } }), 1500);
   });
   ctx.onCleanup(() => { clearTimeout(pend); clearTimeout(rowsT); });
   ctx.onCleanup(onUnitsChange(() => { paintGauge(); paintPlace(); paintLive(); paintWindow().catch(() => {}); }));
