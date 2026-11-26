@@ -183,6 +183,10 @@ pub struct AccountStatus {
     pub last_data_ms: Option<u64>,
     /// When this server last read a poll TeslaFi had not given before (this server's clock).
     pub last_new_ms: Option<u64>,
+    /// How far before the moment they were read (after it: below 0) TeslaFi's two newest new polls were dated, when
+    /// both were dated as far within a few minutes ([`crate::health`]: a zone read wrong shifts every poll alike; data
+    /// that is just old does not keep a steady distance from the clock).
+    pub steady_offset_ms: Option<i64>,
     /// TeslaFi's newest poll says the car is awake (driving, charging or parked awake), not asleep or offline.
     pub awake: bool,
     pub last_ok_ms: Option<u64>,
@@ -224,6 +228,10 @@ pub struct Poller<F: Feed, S: Sink> {
     /// The last poll awake was asked for once by this poller: not again (the latest polls name the car once TeslaFi
     /// knows it).
     last_good_asked: bool,
+    /// The newest new poll read: TeslaFi's time of it, and how far before the moment it was read it was dated.
+    last_offset: Option<(u64, i64)>,
+    /// See [`AccountStatus::steady_offset_ms`].
+    steady_offset_ms: Option<i64>,
 }
 
 impl<F: Feed, S: Sink> Poller<F, S> {
@@ -273,6 +281,8 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             now_ms: 0,
             last_good_due: false,
             last_good_asked: false,
+            last_offset: None,
+            steady_offset_ms: None,
         })
     }
 
@@ -324,6 +334,7 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             },
             last_data_ms: self.pacing.last_poll_ms,
             last_new_ms: self.pacing.last_new_ms,
+            steady_offset_ms: self.steady_offset_ms,
             awake: matches!(self.mode, Mode::Driving | Mode::Charging | Mode::Idle),
             last_ok_ms: self.last_ok_ms,
             last_error: self.last_error.clone(),
@@ -451,6 +462,7 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                 *t = t.saturating_sub(back);
             }
             self.last_seen = None;
+            (self.last_offset, self.steady_offset_ms) = (None, None);
             if let Some(t) = &mut self.last_ok_ms {
                 *t = t.saturating_sub(back);
             }
@@ -679,6 +691,8 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                 self.pacing.last_poll_ms = None;
                 self.last_seen = None;
             }
+            // and what was said of the old zone's times is not said of the new one's
+            (self.last_offset, self.steady_offset_ms) = (None, None);
             self.pacing.poll_zone = Some(tz.name().to_string());
         }
         let fields = feed::fields_of(raw);
@@ -716,6 +730,15 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             self.pacing.last_data_id = p.data_id.or(self.pacing.last_data_id);
             if what == Read::Latest {
                 self.pacing.last_new_ms = Some(now_ms);
+                // how far before the moment it was read the poll is dated, the same as the poll before (within a few
+                // minutes of TeslaFi's delay) while TeslaFi's time moved on: a steady distance, the zone's
+                let offset = i128::from(now_ms) - i128::from(p.t_ms);
+                let offset = i64::try_from(offset).unwrap_or(if offset < 0 { i64::MIN } else { i64::MAX });
+                self.steady_offset_ms = self
+                    .last_offset
+                    .filter(|(t, o)| p.t_ms > *t && offset.abs_diff(*o) <= crate::health::STEADY_SLACK_MS)
+                    .map(|_| offset);
+                self.last_offset = Some((p.t_ms, offset));
             }
             self.pacing.last_poll_ms = Some(p.t_ms.max(self.pacing.last_poll_ms.unwrap_or(0)));
             if let Some(car) = car {

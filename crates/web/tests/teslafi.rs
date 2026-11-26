@@ -400,3 +400,18 @@ async fn teslafi_limiting_requests_is_told_by_a_notice_and_an_audit_entry() {
     let row = c["connections"].as_array().unwrap().iter().find(|c| c["id"] == "teslafi:fa1").unwrap();
     assert_eq!(row["today"]["cap"], Value::Null, "{row}");
 }
+
+/// An account with no zone of its own reads TeslaFi's times in the server's default zone as saved (not the one the
+/// server started with), and follows a change of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_account_without_a_zone_follows_the_servers_default_zone() {
+    let w = world().await;
+    assert_eq!(w.svc.default_time_zone(), "UTC");
+    let mut admin = w.s.admin().await;
+    let r = admin.get("/api/v1/settings").await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let v = r.json()["version"].as_u64().unwrap();
+    let r = admin.patch("/api/v1/settings", json!({ "version": v, "default_time_zone": "America/Chicago" })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(w.svc.default_time_zone(), "America/Chicago");
+}
