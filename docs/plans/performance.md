@@ -1555,3 +1555,53 @@ with other builds on them, ±30 %):
 for every log (6.9 ms), its samples (2.4) and the car's newest values (2.3). On the owner's server the windows were
 85 % of 263 ms a log; if the rest stays as it was there, about 40 ms a log is left, some 25 logs/s (an estimate from
 their line, not measured there: their Rebuild speed line will say).
+
+## A full rebuild's records written once per day
+
+Status (2026-11-26). After the windows went once per day, the owner's Data health read "22 logs/s · most of the
+time: the logs' records (69 %)" and the rebuild slowed down as it went through each day. Each log read its day's
+record (about 1,250 entries in sentry mode), copied it, added its entry and wrote it again whole (serialised,
+compressed, sealed, written), and did the same with its day's firmware notes, the car's meta record and the windows
+noted dirty. So a log's cost grew with the logs before it that day, and a day cost the square of its logs.
+
+**What changed** (`records::Hold`, `engine::Options::full_hold_records`; `Engine::fw_hold` in
+`crates/engine/src/firmware.rs`). A full rebuild by day holds those records in memory while it works through a
+day of logs: a log's entry goes into the record held (`records::edit_day`, changed in place, not copied), its counts
+into the meta record held, its window into the dirty list held, its fingerprints into the day's notes held, and
+every read sees what is held. They are written once at the day's end, before the day's window is rebuilt and again
+after it (the window's cut points and the dirty list it clears), in the order a log writes them (the dirty
+windows, the day records, the meta record; the firmware notes first, written as the day's last log's note would be,
+with its tallies and the history). The bytes written are those the last per-log write gave. Only a full rebuild
+by day: its shadow has no other writer. A log that arrives is one write, and a rebuild of a car or a period in place
+shares those records with the server's other writers (an API's samples update the car's meta record), so both still
+write each log's records as before.
+
+**Crash safety.** A run killed in the middle of a day finds the records as they were before the day's first log.
+The samples of the logs it already did are written again, the same, when those logs are redone, which a kill between
+a log's samples and its entry already did before. So the run goes on from the day's first log, by day as before
+(an error, a stop or a cancelled run drops what is held unwritten, as a kill would).
+
+**Proven the same** (`crates/sentry-mate/src/window_batch.rs`,
+`a_full_rebuild_holding_its_records_gives_the_records_written_for_every_log`): a full rebuild that writes the
+records for every log (`full_hold_records: false`) against one that holds them, the logs carrying made-up firmware
+fingerprints, a car in sentry mode beside every input and a car alone, then cut off in the middle of the second day
+(as by a kill) and carried on by a new engine: the shadows and the histories after the switch compared, everything
+stored and ids included, and the engine's records too (`records::stored_records`: the meta record, the dirty
+windows, each day's record, firmware notes and tallies, the firmware history; when each log was worked on left
+out). `a_full_rebuild_by_day_gives_the_history_a_window_per_log_gives` compares those records too.
+
+**Results** (`PERF_LOGS=5000 cargo test --release -p sentry-mate measure_owner_rebuild -- --ignored --nocapture`,
+the before from the commit before this change on the same seeded folder; `PERF_HOLD=0` gives it in one build;
+release build, this container's 4 cores; "within a day" is the first, middle and last third of each day's logs):
+
+| 5,000 logs of the owner's shape | before | records held a day |
+|---|---:|---:|
+| a full rebuild | 106.8 s (46.8 logs/s), 62.0 s of CPU | 37.7 s (133 logs/s), 19.2 s of CPU |
+| within a day: start, middle, end (logs/s) | 62.8, 47.1, 38.9 | 142.4, 144.9, 139.9 |
+| within a day: start, middle, end (ms a log) | 15.9, 21.2, 25.7 | 7.0, 6.9, 7.2 |
+| ms a log: samples, now, the logs' records | 2.7, 4.9, 9.7 | 2.0, 4.8, about 0 |
+
+The slowdown within a day is gone. What is left of a log's own work: the car's newest values (4.8 ms, about two
+thirds) and its samples (2.0). Rebuild speed's stage names stay as they are; on this history the line now names
+"the newest values".
+
