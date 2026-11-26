@@ -108,7 +108,8 @@ export function fitModel(s) {
     if (s.server_busy) out.notes = `The server is also busy: ${s.server_busy}.`;
     // (a rebuild runs: the fit waits, its progress kept, and goes on once it ends)
     if (s.waiting) {
-      out.headline = `Waiting (${out.pct} %)`;
+      const what = /^the full rebuild/.test(s.waiting) ? 'the full rebuild' : 'the rebuild';
+      out.headline = `Waiting for ${what} to end (${out.pct} % done)`;
       out.notes = `Waiting: ${s.waiting}.`;
     }
     return out;
