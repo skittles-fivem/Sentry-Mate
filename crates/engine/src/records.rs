@@ -390,7 +390,11 @@ fn car_key(car: CarId) -> String {
 }
 
 pub(crate) fn meta(db: &Db, car: CarId) -> Result<CarMeta> {
-    Ok(get(db, NS, &car_key(car))?.unwrap_or_default())
+    let key = car_key(car);
+    if let Some(m) = held_get::<CarMeta>(db, &key) {
+        return Ok(m.as_deref().cloned().unwrap_or_default());
+    }
+    Ok(get(db, NS, &key)?.unwrap_or_default())
 }
 
 /// A car's meta record (for readers outside the engine, such as the connections overview's upload counts): the
@@ -406,6 +410,9 @@ pub fn put_car_meta(db: &Db, car: CarId, m: &CarMeta) -> Result<()> {
 }
 
 pub(crate) fn put_meta(db: &Db, car: CarId, m: &CarMeta) -> Result<()> {
+    if held_put(db, &car_key(car), Some(std::sync::Arc::new(m.clone()))) {
+        return Ok(());
+    }
     put(db, NS, &car_key(car), m)
 }
 
@@ -429,6 +436,9 @@ static DAY_CACHE: std::sync::Mutex<DayCache> = std::sync::Mutex::new(DayCache { 
 /// [`day`] to read from only (not copied).
 pub(crate) fn day_shared(db: &Db, car: CarId, d: u32) -> Result<std::sync::Arc<DayRec>> {
     let key = format!("car/{car}/day/{d}");
+    if let Some(r) = held_get::<DayRec>(db, &key) {
+        return Ok(r.unwrap_or_default());
+    }
     let Some(bytes) = db.kv().get(NS, &key)? else { return Ok(std::sync::Arc::new(DayRec::default())) };
     {
         let mut c = DAY_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -455,6 +465,38 @@ pub(crate) fn day_shared(db: &Db, car: CarId, d: u32) -> Result<std::sync::Arc<D
 
 pub(crate) fn put_day(db: &Db, car: CarId, d: u32, rec: &DayRec) -> Result<()> {
     let key = format!("car/{car}/day/{d}");
+    let gone = rec.logs.is_empty() && rec.cuts.is_empty();
+    if held_put(db, &key, (!gone).then(|| std::sync::Arc::new(rec.clone()))) {
+        return Ok(());
+    }
+    write_day(db, &key, rec)
+}
+
+/// Changes a day's record in place: while the db's records are held ([`Hold`]) the record held is changed as it is
+/// (not copied, read or written: a day of a car in sentry mode has about 1,250 entries), else it is read, changed
+/// and written ([`day`], [`put_day`]).
+pub(crate) fn edit_day(db: &Db, car: CarId, d: u32, f: impl FnOnce(&mut DayRec)) -> Result<()> {
+    let key = format!("car/{car}/day/{d}");
+    let Some(slot) = held_take::<DayRec>(db, &key) else {
+        let mut rec = day(db, car, d)?;
+        f(&mut rec);
+        return put_day(db, car, d, &rec);
+    };
+    let mut rec = match slot {
+        Slot::Is(mut r) => std::mem::take(std::sync::Arc::make_mut(&mut r)),
+        Slot::Gone => DayRec::default(),
+        // (the first change of the day while held: read once)
+        Slot::Unread => DayRec::clone(&*day_shared(db, car, d)?),
+    };
+    f(&mut rec);
+    let gone = rec.logs.is_empty() && rec.cuts.is_empty();
+    held_put(db, &key, (!gone).then(|| std::sync::Arc::new(rec)));
+    Ok(())
+}
+
+/// A day's record written (removed when it holds nothing), and kept as written for the next read.
+fn write_day(db: &Db, key: &str, rec: &DayRec) -> Result<()> {
+    let key = key.to_string();
     if rec.logs.is_empty() && rec.cuts.is_empty() {
         db.kv().delete(NS, &key)?;
         return Ok(());
@@ -474,6 +516,178 @@ pub(crate) fn put_day(db: &Db, car: CarId, d: u32, rec: &DayRec) -> Result<()> {
     Ok(())
 }
 
+/// Records held in memory instead of written, while a full rebuild works through a day of logs
+/// ([`crate::Options::full_by_day`]): each log adds its entry to the day's record, counts itself in the car's meta
+/// record and notes its window dirty, and written each time those records were read, changed and written whole
+/// again (a day of a car in sentry mode has about 1,250 entries, so a day's logs cost the square of that). Held,
+/// they are changed in memory (reads see them) and written once ([`Hold::write`]) before the day's window is
+/// rebuilt and after it, the same bytes the last of those writes gave.
+///
+/// Crash safety is that of a crash after the last write: a run killed in the middle of a day finds the records as
+/// they were before the day's first log (its samples written for some of its logs, which are written again the
+/// same when they are worked on again), so it goes on from that log ([`crate::full`]'s carried-on run, and
+/// `crates/sentry-mate/src/window_batch.rs` kills one and compares). A hold dropped without [`Hold::write`] (an
+/// error, the server stopping, a cancelled run) leaves what it held unwritten, as a kill would.
+pub(crate) struct Hold {
+    db: Db,
+    kv: usize,
+    mine: bool,
+}
+
+/// What can be held: its rank in the writes (the order a log writes them in: its window noted dirty, its entry,
+/// the car's counts) and how it is written.
+pub(crate) trait Holdable: std::any::Any + Send + Sync + Clone {
+    const RANK: u8;
+    fn write(db: &Db, key: &str, v: Option<&Self>) -> Result<()>;
+}
+
+impl Holdable for Dirty {
+    const RANK: u8 = 0;
+    fn write(db: &Db, key: &str, v: Option<&Self>) -> Result<()> {
+        write_dirty(db, key, v.map_or(&[][..], |d| &d.0))
+    }
+}
+
+impl Holdable for DayRec {
+    const RANK: u8 = 1;
+    fn write(db: &Db, key: &str, v: Option<&Self>) -> Result<()> {
+        write_day(db, key, v.unwrap_or(&DayRec::default()))
+    }
+}
+
+impl Holdable for CarMeta {
+    const RANK: u8 = 2;
+    fn write(db: &Db, key: &str, v: Option<&Self>) -> Result<()> {
+        match v {
+            Some(m) => put(db, NS, key, m),
+            None => db.kv().delete(NS, key).map(|_| ()).map_err(Into::into),
+        }
+    }
+}
+
+type AnyArc = std::sync::Arc<dyn std::any::Any + Send + Sync>;
+
+struct HeldVal {
+    rank: u8,
+    /// `None`: removed.
+    v: Option<AnyArc>,
+    write: fn(&Db, &str, Option<&AnyArc>) -> Result<()>,
+}
+
+fn write_any<T: Holdable>(db: &Db, key: &str, v: Option<&AnyArc>) -> Result<()> {
+    T::write(db, key, v.and_then(|a| a.downcast_ref::<T>()))
+}
+
+/// The records held, per db (its key/value store's address) holding them.
+static HELD: std::sync::Mutex<Vec<(usize, BTreeMap<String, HeldVal>)>> = std::sync::Mutex::new(Vec::new());
+
+fn held() -> std::sync::MutexGuard<'static, Vec<(usize, BTreeMap<String, HeldVal>)>> {
+    HELD.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn kv_of(db: &Db) -> usize {
+    std::ptr::from_ref(db.kv()) as usize
+}
+
+/// A held record as it is: `Unread` (the db holds its records, but not this one yet: read it from the db).
+pub(crate) enum Slot<T> {
+    Unread,
+    Gone,
+    Is(std::sync::Arc<T>),
+}
+
+/// `None`: the db does not hold its records, or not this one (read it from the db); `Some(None)`: held removed.
+fn held_get<T: Holdable>(db: &Db, key: &str) -> Option<Option<std::sync::Arc<T>>> {
+    let kv = kv_of(db);
+    let h = held();
+    let (_, vals) = h.iter().find(|(k, _)| *k == kv)?;
+    let v = vals.get(key)?;
+    Some(v.v.clone().and_then(|a| a.downcast::<T>().ok()))
+}
+
+/// Takes a held record out to change it ([`edit_day`]); `None`: the db does not hold its records.
+fn held_take<T: Holdable>(db: &Db, key: &str) -> Option<Slot<T>> {
+    let kv = kv_of(db);
+    let mut h = held();
+    let (_, vals) = h.iter_mut().find(|(k, _)| *k == kv)?;
+    Some(match vals.remove(key) {
+        None => Slot::Unread,
+        Some(HeldVal { v: None, .. }) => Slot::Gone,
+        Some(HeldVal { v: Some(a), .. }) => a.downcast::<T>().map_or(Slot::Unread, Slot::Is),
+    })
+}
+
+/// Holds a record in place of writing it; `false`: the db does not hold its records (write it).
+fn held_put<T: Holdable>(db: &Db, key: &str, v: Option<std::sync::Arc<T>>) -> bool {
+    let kv = kv_of(db);
+    let mut h = held();
+    let Some((_, vals)) = h.iter_mut().find(|(k, _)| *k == kv) else { return false };
+    let v = v.map(|a| a as AnyArc);
+    vals.insert(key.to_string(), HeldVal { rank: T::RANK, v, write: write_any::<T> });
+    true
+}
+
+impl Hold {
+    /// Holds `db`'s day records, meta records and dirty windows until the hold goes. A db already held is left
+    /// to the hold that holds it (this one holds nothing of its own).
+    pub(crate) fn new(db: &Db) -> Hold {
+        let kv = kv_of(db);
+        let mut h = held();
+        let mine = !h.iter().any(|(k, _)| *k == kv);
+        if mine {
+            h.push((kv, BTreeMap::new()));
+        }
+        Hold { db: db.clone(), kv, mine }
+    }
+
+    /// Writes what is held (the dirty windows, the day records, the meta records: the order a log writes them in),
+    /// and holds on.
+    pub(crate) fn write(&self) -> Result<()> {
+        if !self.mine {
+            return Ok(());
+        }
+        let vals = {
+            let mut h = held();
+            let Some((_, vals)) = h.iter_mut().find(|(k, _)| *k == self.kv) else { return Ok(()) };
+            std::mem::take(vals)
+        };
+        let mut vals: Vec<(String, HeldVal)> = vals.into_iter().collect();
+        vals.sort_by(|a, b| (a.1.rank, &a.0).cmp(&(b.1.rank, &b.0)));
+        for (key, v) in vals {
+            (v.write)(&self.db, &key, v.v.as_ref())?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        if self.mine {
+            held().retain(|(k, _)| *k != self.kv);
+        }
+    }
+}
+
+/// A car's records as stored, by key, for tests that compare two data folders: its meta record, its windows
+/// noted dirty, and per day of logs its day's record and firmware notes and tallies, then its firmware history.
+#[doc(hidden)]
+pub fn stored_records(db: &Db, car: CarId) -> Result<Vec<(String, serde_json::Value)>> {
+    let mut keys = vec![car_key(car), format!("car/{car}/dirty")];
+    for d in meta(db, car)?.days {
+        keys.push(format!("car/{car}/day/{d}"));
+        keys.push(format!("car/{car}/fw/day/{d}"));
+        keys.push(format!("car/{car}/fw/sum/{d}"));
+    }
+    keys.push(format!("car/{car}/fw/history"));
+    let mut out = Vec::new();
+    for k in keys {
+        if let Some(v) = get::<serde_json::Value>(db, NS, &k)? {
+            out.push((k, v));
+        }
+    }
+    Ok(out)
+}
+
 /// The entry of one log, if it was worked on.
 pub(crate) fn entry(db: &Db, car: CarId, name: &str) -> Result<Option<LogEntry>> {
     let Some(start) = name_start_ms(name) else { return Ok(None) };
@@ -481,11 +695,28 @@ pub(crate) fn entry(db: &Db, car: CarId, name: &str) -> Result<Option<LogEntry>>
 }
 
 pub(crate) fn dirty(db: &Db, car: CarId) -> Result<Vec<(u64, u64)>> {
-    Ok(get(db, NS, &format!("car/{car}/dirty"))?.unwrap_or_default())
+    let key = format!("car/{car}/dirty");
+    if let Some(d) = held_get::<Dirty>(db, &key) {
+        return Ok(d.map(|d| d.0.clone()).unwrap_or_default());
+    }
+    Ok(get(db, NS, &key)?.unwrap_or_default())
 }
 
 pub(crate) fn put_dirty(db: &Db, car: CarId, spans: &[(u64, u64)]) -> Result<()> {
     let key = format!("car/{car}/dirty");
+    if held_put(db, &key, (!spans.is_empty()).then(|| std::sync::Arc::new(Dirty(spans.to_vec())))) {
+        return Ok(());
+    }
+    write_dirty(db, &key, spans)
+}
+
+/// A car's windows written to and not rebuilt yet, as held ([`Hold`]).
+#[derive(Clone, Serialize)]
+#[serde(transparent)]
+struct Dirty(Vec<(u64, u64)>);
+
+fn write_dirty(db: &Db, key: &str, spans: &[(u64, u64)]) -> Result<()> {
+    let key = key.to_string();
     if spans.is_empty() {
         db.kv().delete(NS, &key)?;
         return Ok(());
