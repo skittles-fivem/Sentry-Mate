@@ -131,7 +131,7 @@ jobs:
   tests:
     name: tests (${{ matrix.part }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: ${{ matrix.minutes || 15 }}
     strategy:
       fail-fast: false
       matrix:
@@ -146,10 +146,12 @@ jobs:
           - part: engine
             packages: -p synth -p engine -p moving
           - part: import
-            packages: -p import -p places -p accounts -p timeline
-          # (sentry-mate's own tests: the rebuild proofs need a machine of their own)
+            packages: -p import -p places -p timeline
+          # (sentry-mate's own tests: the rebuild proofs need a machine of their own; accounts beside it, as a
+          # binary alone has no doc tests to run)
           - part: sentry-mate
-            packages: -p sentry-mate
+            packages: -p sentry-mate -p accounts
+            minutes: 25
           - part: rest
             packages: >-
               --workspace --exclude web --exclude synth --exclude engine --exclude moving
