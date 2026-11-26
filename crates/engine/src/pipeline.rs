@@ -858,7 +858,11 @@ impl Engine {
     pub(crate) fn note_now_from(&self, car: CarId, samples: &[Sample], input: Input) -> Result<()> {
         let Some(last) = samples.last() else { return Ok(()) };
         let db = &self.inner.db;
-        let kept = db.entry(car)?.and_then(|e| e.summary.now);
+        let held = lock(&self.inner.now_held).as_ref().map(|h| h.get(&car).cloned());
+        let kept = match held {
+            Some(Some(n)) => Some(n),
+            _ => db.entry(car)?.and_then(|e| e.summary.now),
+        };
         let mut from = records::now_from(db, car)?;
         if input == Input::Smo && from.is_empty() && kept.as_ref().is_some_and(|n| n.at_ms > last.t_ms) {
             // SMO alone, and an older log than what is kept
@@ -936,7 +940,32 @@ impl Engine {
         };
         records::put_now_at(db, car, &at)?;
         records::put_now_from(db, car, &from)?;
+        // a full rebuild's day of logs: held, written with the day's records (as `set_now`, the newer one kept)
+        if let Some(h) = lock(&self.inner.now_held).as_mut() {
+            if kept.as_ref().is_none_or(|k| k.at_ms <= now.at_ms) {
+                h.insert(car, now);
+            }
+            return Ok(());
+        }
         db.set_now(now)?;
+        Ok(())
+    }
+
+    /// Holds the cars' Now worked out from logs in memory (`on`) until [`Engine::now_write_held`] writes them;
+    /// `false`: no longer, and what was not written is not (as a kill would leave it).
+    pub(crate) fn now_hold(&self, on: bool) {
+        *lock(&self.inner.now_held) = on.then(std::collections::BTreeMap::new);
+    }
+
+    /// Writes the cars' Now held ([`Engine::now_hold`]), as the last log's would have been, and holds on.
+    pub(crate) fn now_write_held(&self) -> Result<()> {
+        let held = match lock(&self.inner.now_held).as_mut() {
+            Some(h) => std::mem::take(h),
+            None => return Ok(()),
+        };
+        for now in held.into_values() {
+            self.inner.db.set_now(now)?;
+        }
         Ok(())
     }
 
@@ -1483,6 +1512,7 @@ impl Engine {
         // (their writing counts as the logs' own work, the stage of the logs' records)
         let write_held = |h: &records::Hold| -> Result<()> {
             let t = Instant::now();
+            self.now_write_held()?;
             self.fw_write_held()?;
             h.write()?;
             let took = u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -1502,6 +1532,7 @@ impl Engine {
             Ok(())
         };
         if hold.is_some() {
+            self.now_hold(true);
             self.fw_hold(true);
         }
         // the logs read and decoded ahead on the other cores, worked on here in order ([`crate::ahead`])
@@ -1565,6 +1596,7 @@ impl Engine {
             Ok(false)
         });
         if hold.is_some() {
+            self.now_hold(false);
             self.fw_hold(false);
         }
         drop(hold);

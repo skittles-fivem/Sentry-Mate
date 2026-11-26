@@ -78,7 +78,8 @@ thing that does that, how far each one reaches, and the server updates that chan
   a car or a period in place keeps a window per log beside an API input
   ([docs/plans/performance.md](plans/performance.md#a-full-rebuilds-windows-once-per-day)).
 - **A full rebuild writes each day's records once.** While it works through a day of logs, the records each log
-  changes (the day's record of its logs, the car's counts, the windows to rebuild, the day's firmware notes) are
+  changes (the day's record of its logs, the car's counts, the windows to rebuild, the day's firmware notes, the
+  car's newest values and when and from where each came) are
   held in memory and written at the day's end, before and after its window, instead of read and written whole for
   every log: the same records, history and ids (`crates/sentry-mate/src/window_batch.rs`:
   `a_full_rebuild_holding_its_records_gives_the_records_written_for_every_log`). A run killed in the middle of a

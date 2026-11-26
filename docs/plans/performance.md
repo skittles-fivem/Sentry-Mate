@@ -1601,7 +1601,26 @@ release build, this container's 4 cores; "within a day" is the first, middle and
 | within a day: start, middle, end (ms a log) | 15.9, 21.2, 25.7 | 7.0, 6.9, 7.2 |
 | ms a log: samples, now, the logs' records | 2.7, 4.9, 9.7 | 2.0, 4.8, about 0 |
 
-The slowdown within a day is gone. What is left of a log's own work: the car's newest values (4.8 ms, about two
-thirds) and its samples (2.0). Rebuild speed's stage names stay as they are; on this history the line now names
-"the newest values".
+The slowdown within a day is gone. What was left of a log's own work: the car's newest values (4.8 ms, about two
+thirds) and its samples (2.0).
+
+**The car's newest values held a day too.** Of the 4.8 ms, 3.8 were the two small records a log's newest values
+write (when each value was recorded, `now_at`, and which input sent it, `now_from`), each a sealed file written and
+synced, and 0.8 the car's Now (`Db::set_now`, a fleet journal entry); the work itself (the merge, the API's newest
+fix, the place) took about nothing. They are held with the day's records (`now_at` and `now_from` in
+`records::Hold`, the Now in `Engine::now_hold`, kept newest as `set_now` keeps it) and written first at the day's
+end, as a log writes them first. The comparison above compares them too (`now_at`, `now_from`; the Now is in the
+car's summary it already compared).
+
+| 5,000 logs of the owner's shape | records held a day | and the newest values |
+|---|---:|---:|
+| a full rebuild | 37.7 s (133 logs/s), 19.2 s of CPU | 13.6 s (368 logs/s), 13.4 s of CPU |
+| within a day: start, middle, end (logs/s) | 142.4, 144.9, 139.9 | 422.6, 430.2, 407.3 |
+| ms a log: samples, now, the logs' records | 2.0, 4.8, about 0 | 2.0, 0.1, about 0 |
+
+By hand (`cargo test --release -p sentry-mate a_full_rebuild_holding -- --ignored --nocapture`): three days of the
+owner's shape (3,755 logs) beside an import back 60 days and every API, cut off after 2,000 logs and carried on,
+the same; its full rebuild 106.5 s writing per log, 9.9 s holding. What is left of a log's work is its samples
+(2.0 of 2.7 ms). Rebuild speed's stage names stay as they are; on this history the line now names "writing their
+samples".
 

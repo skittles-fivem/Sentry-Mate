@@ -534,29 +534,46 @@ pub(crate) struct Hold {
     mine: bool,
 }
 
-/// What can be held: its rank in the writes (the order a log writes them in: its window noted dirty, its entry,
-/// the car's counts) and how it is written.
+/// What can be held: its rank in the writes (the order a log writes them in: the car's newest values, its window
+/// noted dirty, its entry, the car's counts) and how it is written.
 pub(crate) trait Holdable: std::any::Any + Send + Sync + Clone {
     const RANK: u8;
     fn write(db: &Db, key: &str, v: Option<&Self>) -> Result<()>;
 }
 
-impl Holdable for Dirty {
+impl Holdable for NowAt {
     const RANK: u8 = 0;
+    fn write(db: &Db, key: &str, v: Option<&Self>) -> Result<()> {
+        match v {
+            Some(m) => put(db, NS, key, &m.0),
+            None => db.kv().delete(NS, key).map(|_| ()).map_err(Into::into),
+        }
+    }
+}
+
+impl Holdable for NowFrom {
+    const RANK: u8 = 0;
+    fn write(db: &Db, key: &str, v: Option<&Self>) -> Result<()> {
+        write_now_from(db, key, v.map_or(&BTreeMap::new(), |m| &m.0))
+    }
+}
+
+impl Holdable for Dirty {
+    const RANK: u8 = 1;
     fn write(db: &Db, key: &str, v: Option<&Self>) -> Result<()> {
         write_dirty(db, key, v.map_or(&[][..], |d| &d.0))
     }
 }
 
 impl Holdable for DayRec {
-    const RANK: u8 = 1;
+    const RANK: u8 = 2;
     fn write(db: &Db, key: &str, v: Option<&Self>) -> Result<()> {
         write_day(db, key, v.unwrap_or(&DayRec::default()))
     }
 }
 
 impl Holdable for CarMeta {
-    const RANK: u8 = 2;
+    const RANK: u8 = 3;
     fn write(db: &Db, key: &str, v: Option<&Self>) -> Result<()> {
         match v {
             Some(m) => put(db, NS, key, m),
@@ -628,7 +645,8 @@ fn held_put<T: Holdable>(db: &Db, key: &str, v: Option<std::sync::Arc<T>>) -> bo
 }
 
 impl Hold {
-    /// Holds `db`'s day records, meta records and dirty windows until the hold goes. A db already held is left
+    /// Holds `db`'s day records, meta records, dirty windows and when and from where the newest values came, until
+    /// the hold goes. A db already held is left
     /// to the hold that holds it (this one holds nothing of its own).
     pub(crate) fn new(db: &Db) -> Hold {
         let kv = kv_of(db);
@@ -640,8 +658,8 @@ impl Hold {
         Hold { db: db.clone(), kv, mine }
     }
 
-    /// Writes what is held (the dirty windows, the day records, the meta records: the order a log writes them in),
-    /// and holds on.
+    /// Writes what is held (the car's newest values, the dirty windows, the day records, the meta records: the order
+    /// a log writes them in), and holds on.
     pub(crate) fn write(&self) -> Result<()> {
         if !self.mine {
             return Ok(());
@@ -669,10 +687,12 @@ impl Drop for Hold {
 }
 
 /// A car's records as stored, by key, for tests that compare two data folders: its meta record, its windows
-/// noted dirty, and per day of logs its day's record and firmware notes and tallies, then its firmware history.
+/// noted dirty, when and from where its newest values came, and per day of logs its day's record and firmware notes
+/// and tallies, then its firmware history.
 #[doc(hidden)]
 pub fn stored_records(db: &Db, car: CarId) -> Result<Vec<(String, serde_json::Value)>> {
-    let mut keys = vec![car_key(car), format!("car/{car}/dirty")];
+    let mut keys =
+        vec![car_key(car), format!("car/{car}/dirty"), format!("car/{car}/now_at"), format!("car/{car}/now_from")];
     for d in meta(db, car)?.days {
         keys.push(format!("car/{car}/day/{d}"));
         keys.push(format!("car/{car}/fw/day/{d}"));
@@ -823,12 +843,30 @@ pub(crate) fn put_token_cars(db: &Db, m: &BTreeMap<String, CarId>) -> Result<()>
 
 /// When each value of a car's Now was recorded (field → ms).
 pub(crate) fn now_at(db: &Db, car: CarId) -> Result<BTreeMap<String, u64>> {
-    Ok(get(db, NS, &format!("car/{car}/now_at"))?.unwrap_or_default())
+    let key = format!("car/{car}/now_at");
+    if let Some(m) = held_get::<NowAt>(db, &key) {
+        return Ok(m.map(|m| m.0.clone()).unwrap_or_default());
+    }
+    Ok(get(db, NS, &key)?.unwrap_or_default())
 }
 
 pub(crate) fn put_now_at(db: &Db, car: CarId, m: &BTreeMap<String, u64>) -> Result<()> {
-    put(db, NS, &format!("car/{car}/now_at"), m)
+    let key = format!("car/{car}/now_at");
+    if held_put(db, &key, Some(std::sync::Arc::new(NowAt(m.clone())))) {
+        return Ok(());
+    }
+    put(db, NS, &key, m)
 }
+
+/// When each of a car's newest values was recorded, as held ([`Hold`]).
+#[derive(Clone, Serialize)]
+#[serde(transparent)]
+struct NowAt(BTreeMap<String, u64>);
+
+/// Which of a car's newest values came from an API, as held ([`Hold`]).
+#[derive(Clone, Serialize)]
+#[serde(transparent)]
+struct NowFrom(BTreeMap<String, model::Input>);
 
 pub(crate) fn put_waiting_keys(db: &Db, keys: &BTreeMap<String, WaitingKey>) -> Result<()> {
     put(db, NS, "keys/waiting", keys)
@@ -975,11 +1013,23 @@ pub(crate) fn put_smo_gps(db: &Db, car: CarId, v: &SmoGps) -> Result<()> {
 
 /// Which of a car's newest values came from the Tesla API (field → input; a field not here is SMO's).
 pub(crate) fn now_from(db: &Db, car: CarId) -> Result<BTreeMap<String, model::Input>> {
-    Ok(get(db, NS, &format!("car/{car}/now_from"))?.unwrap_or_default())
+    let key = format!("car/{car}/now_from");
+    if let Some(m) = held_get::<NowFrom>(db, &key) {
+        return Ok(m.map(|m| m.0.clone()).unwrap_or_default());
+    }
+    Ok(get(db, NS, &key)?.unwrap_or_default())
 }
 
 pub(crate) fn put_now_from(db: &Db, car: CarId, m: &BTreeMap<String, model::Input>) -> Result<()> {
     let key = format!("car/{car}/now_from");
+    if held_put(db, &key, (!m.is_empty()).then(|| std::sync::Arc::new(NowFrom(m.clone())))) {
+        return Ok(());
+    }
+    write_now_from(db, &key, m)
+}
+
+fn write_now_from(db: &Db, key: &str, m: &BTreeMap<String, model::Input>) -> Result<()> {
+    let key = key.to_string();
     if m.is_empty() {
         db.kv().delete(NS, &key)?;
         return Ok(());

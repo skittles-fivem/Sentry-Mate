@@ -400,6 +400,9 @@ pub(crate) struct Inner {
     /// The firmware notes of a full rebuild's day of logs, held in memory and written once a day
     /// ([`records::Hold`], `Engine::fw_hold`): `None` while nothing is held.
     pub(crate) fw_held: Mutex<Option<std::collections::BTreeMap<(model::CarId, u32), firmware::DayLogs>>>,
+    /// The cars' newest values (their Now) worked out while a full rebuild's day of logs is held, written once with
+    /// the day's records (`Engine::now_hold`): `None` while nothing is held.
+    pub(crate) now_held: Mutex<Option<std::collections::BTreeMap<model::CarId, model::Now>>>,
     /// Tests: the full rebuild's worker stops as by a crash once it decoded this many logs of a car.
     pub(crate) full_crash_logs: Mutex<Option<u64>>,
     /// Tests: the next rebuild job of a car or a period stops as by a crash once it worked on this many logs.
@@ -650,6 +653,7 @@ impl Engine {
                 full_hold_at: Mutex::new(None),
                 full_windows: AtomicU64::new(0),
                 fw_held: Mutex::new(None),
+                now_held: Mutex::new(None),
                 full_crash_logs: Mutex::new(None),
                 job_crash_logs: Mutex::new(None),
                 full_exit_hook: Mutex::new(None),
