@@ -542,3 +542,112 @@ async fn measure_owner_rebuild() {
         println!("{row}");
     }
 }
+
+/// A GPS layout change on the owner's shape (every log's positions from the Screenmate's own GPS frames, so every
+/// log is redone): `PERF_LOGS=23690 PERF_OWNER_DATA=DIR cargo test --release -p sentry-mate measure_owner_layout_change
+/// -- --ignored --nocapture` (the seeded folder of [`measure_owner_rebuild`]; `PERF_LAYOUT_S=120` stops it after so
+/// many seconds and gives the logs a second until then). The layout set is the DBC's own (the positions come out the
+/// same), as a fit that finds the layout in use gives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "measurement by hand: cargo test --release -p sentry-mate measure_owner_layout_change -- --ignored --nocapture"]
+async fn measure_owner_layout_change() {
+    let logs: usize = std::env::var("PERF_LOGS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000);
+    let stop_s: u64 = std::env::var("PERF_LAYOUT_S").ok().and_then(|v| v.parse().ok()).unwrap_or(u64::MAX);
+    let tmp = tempfile::tempdir().unwrap();
+    match std::env::var_os("PERF_OWNER_DATA").map(|d| PathBuf::from(d).join(logs.to_string())) {
+        Some(kept) if kept.join("data").exists() => copy_dir(&kept, tmp.path()),
+        _ => {
+            owner_history(tmp.path(), logs).await;
+        }
+    }
+    let (data, keys) = (tmp.path().join("data"), tmp.path().join("keys"));
+    let v = Arc::new(Vault::open(&data, &keys).unwrap());
+    let db = db::Db::open(&data, v.clone(), db::Options::default()).unwrap();
+    let e = engine::Engine::new(db, Store::new(can_dir(&data), v), engine::Options::default());
+    e.start().unwrap();
+    e.idle().await;
+    let car = e.db().fleet(&db::FleetQuery { search: None, limit: 10, after: None }).unwrap().cars[0].car.id;
+    let layout: model::gps::GpsLayout = "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,0)".parse().unwrap();
+    // (Data health's unknown time and chain gaps over the whole history, as the page reads them meanwhile)
+    let health = |e: &engine::Engine| {
+        let h = tokio::task::block_in_place(|| {
+            engine::query::system::health(e, car, &engine::query::Period::new(None, None)).unwrap()
+        });
+        let v = serde_json::to_value(&h).unwrap();
+        (v["unknown_ms"].as_u64().unwrap_or(0), v["chain_gaps_total"].as_u64().unwrap_or(0))
+    };
+    let at_start = health(&e);
+    let mut most = at_start;
+    let by_day = std::env::var("PERF_POSITIONS_BY_DAY").map_or(true, |v| v != "0");
+    let e = if by_day {
+        e
+    } else {
+        // (`PERF_POSITIONS_BY_DAY=0`: a window per log, as before)
+        let db = e.db().clone();
+        drop(e);
+        let v = Arc::new(Vault::open(&data, &keys).unwrap());
+        let opts = engine::Options { positions_by_day: false, ..engine::Options::default() };
+        let e = engine::Engine::new(db, Store::new(can_dir(&data), v), opts);
+        e.start().unwrap();
+        e.idle().await;
+        e
+    };
+    let (t, cpu, before) = (Instant::now(), cpu_s(), e.work_stats());
+    let job = e.set_gps_layout(car, Some(layout)).unwrap().unwrap();
+    let mut stopped = false;
+    let mut looked = Instant::now();
+    let j = loop {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        if looked.elapsed() >= Duration::from_secs(5) {
+            let h = health(&e);
+            most = (most.0.max(h.0), most.1.max(h.1));
+            looked = Instant::now();
+        }
+        let j = e.job(job.id).unwrap();
+        if j.status != engine::JobStatus::Running {
+            break j;
+        }
+        if !stopped && t.elapsed().as_secs() >= stop_s {
+            println!(
+                "owner shape: {logs} logs: a layout change stopped after {:.0} s: {} of {} logs",
+                t.elapsed().as_secs_f64(),
+                j.done,
+                j.total
+            );
+            e.cancel(job.id);
+            stopped = true;
+        }
+    };
+    let secs = t.elapsed().as_secs_f64();
+    e.idle().await;
+    let at_end = health(&e);
+    println!(
+        "owner shape: {logs} logs: Data health's unknown time and chain gaps: {:.1} h and {} before, at most {:.1} h \
+         and {} meanwhile (every 5 s), {:.1} h and {} after",
+        at_start.0 as f64 / 3.6e6,
+        at_start.1,
+        most.0 as f64 / 3.6e6,
+        most.1,
+        at_end.0 as f64 / 3.6e6,
+        at_end.1
+    );
+    let s = e.work_stats();
+    let full = e.full_rebuild_status().unwrap();
+    let n = s.logs_decoded + s.logs_left_out - before.logs_decoded - before.logs_left_out;
+    let per = |a: u64, b: u64| (a - b) as f64 / n.max(1) as f64;
+    println!(
+        "owner shape: {logs} logs: a layout change: {:?} in {secs:.1} s ({:.1} s of CPU), {n} logs decoded again \
+         ({:.1} logs/s); ms a log: read {:.1}, samples {:.1}, now {:.1}, windows {:.1}, all {:.1}; windows rebuilt {}; \
+         full rebuild: {:?}",
+        j.status,
+        cpu_s() - cpu,
+        n as f64 / secs,
+        per(s.read_us_total, before.read_us_total) / 1000.0,
+        per(s.samples_us_total, before.samples_us_total) / 1000.0,
+        per(s.now_us_total, before.now_us_total) / 1000.0,
+        per(s.rebuild_ms_total, before.rebuild_ms_total),
+        per(s.decode_ms_total, before.decode_ms_total) + per(s.rebuild_ms_total, before.rebuild_ms_total),
+        s.windows_rebuilt - before.windows_rebuilt,
+        full.map(|r| (r.status, r.logs_done)),
+    );
+}

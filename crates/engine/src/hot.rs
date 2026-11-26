@@ -150,8 +150,9 @@ impl Engine {
 
     /// Replaces the car's SMO samples in `[from_ms, to_ms)`: [`db::Db::write_points`], and the kept days with it.
     pub(crate) fn write_smo_points(&self, car: CarId, from_ms: u64, to_ms: u64, points: &[Sample]) -> Result<()> {
+        let mine = self.holds_for(car);
         let mut hot = lock(&self.inner.hot);
-        if let Some(held) = hot.held.as_mut() {
+        if let Some(held) = hot.held.as_mut().filter(|_| mine) {
             if from_ms < to_ms {
                 // (as a read gives them back: what is not kept of a sample is not kept here either)
                 let points = db::segment::decode::<Sample>(&db::segment::encode(points))?;

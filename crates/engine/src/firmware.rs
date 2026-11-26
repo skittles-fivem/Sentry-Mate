@@ -614,8 +614,9 @@ impl Engine {
         let db = &self.inner.db;
         // a full rebuild's day of logs: noted in memory, written once the day's logs are done ([`Engine::fw_hold`])
         {
+            let mine = self.holds_for(car);
             let mut held = lock(&self.inner.fw_held);
-            if let Some(h) = held.as_mut() {
+            if let Some(h) = held.as_mut().filter(|_| mine) {
                 let day = match h.entry((car, d)) {
                     std::collections::btree_map::Entry::Occupied(o) => o.into_mut(),
                     std::collections::btree_map::Entry::Vacant(v) => {

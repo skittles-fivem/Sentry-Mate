@@ -1301,3 +1301,103 @@ async fn a_full_rebuild_by_day_gives_the_history_a_window_per_log_gives_over_day
     by_day(5, Logs::Apis, 20, 2, &[None, Some(500)]).await;
     by_day(7, Logs::Alone, 0, 0, &[None, Some(400)]).await;
 }
+
+/// A rebuild job to end.
+async fn job_ended(e: &engine::Engine, id: u64) -> engine::Job {
+    for _ in 0..600_000 {
+        let j = e.job(id).unwrap();
+        if j.status != engine::JobStatus::Running {
+            e.idle().await;
+            return j;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the job did not end");
+}
+
+/// A GPS layout change's narrow rebuild with its windows rebuilt once per day of logs
+/// ([`engine::Options::positions_by_day`]) gives the history a window per log gives: the same made-up logs (with
+/// the Screenmate's own GPS frames, so each is decoded again) through an engine of each kind, a car in sentry mode
+/// beside every input, or alone; a layout that moves every position set, then the DBC's own layout put back,
+/// everything stored compared after each, ids and the engine's records included. Returns the windows each rebuilt
+/// for the changes.
+async fn layout_change(days: u32, how: Logs, back: u32, api_days: u32) -> (u64, u64) {
+    let apis = how != Logs::Alone;
+    let s = synth::Scenario::new(7).days(days).rates(synth::Rates::Light).with_trouble(true);
+    let s = match how {
+        Logs::Sentry => s.stays_awake(true).snippets(69_000, 3_000),
+        Logs::SentrySparse => s.stays_awake(true).snippets(600_000, 3_000),
+        Logs::Alone | Logs::Apis => s,
+    };
+    let logs: Vec<synth::LogFile> = s.logs().collect();
+    let all: Vec<&synth::LogFile> = logs.iter().collect();
+    let each = engine::Options { positions_by_day: false, rebuild_settle_ms: 0, ..engine::Options::default() };
+    let by_day = engine::Options { rebuild_settle_ms: 0, ..engine::Options::default() };
+    let (old, new) = (Side::with(each).await, Side::with(by_day).await);
+    let what = format!("{days} days ({how:?})");
+    old.take(&all).await;
+    new.take(&all).await;
+    if apis {
+        let o = history::Options {
+            days: days + back,
+            end_ms: synth::DEFAULT_START_MS + u64::from(days) * 86_400_000,
+            seed: 5,
+            drives: 4 * (days + back),
+            charges: days + back,
+            drive_step_s: 5,
+            teslafi_days: 2,
+            api_days,
+            tesla_days: days,
+            tesla_sentry: true,
+        };
+        for side in [&old, &new] {
+            history::run(&side.engine, &o).await.unwrap();
+            side.engine.idle().await;
+        }
+    }
+    same(&format!("{what}: the history in use"), &old.engine, &new.engine);
+    let car = old.cars()[0];
+    let moved: model::gps::GpsLayout = "lat 0|28@1- (1e-6,0.001); lon 28|28@1- (1e-6,0.002)".parse().unwrap();
+    let dbc: model::gps::GpsLayout = "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,0)".parse().unwrap();
+    let mut windows = (0, 0);
+    for (k, layout) in [moved, dbc].into_iter().enumerate() {
+        let w = (old.engine.stats().windows_rebuilt, new.engine.stats().windows_rebuilt);
+        let mut done = Vec::new();
+        for side in [&old, &new] {
+            let job = side.engine.set_gps_layout(car, Some(layout)).unwrap().unwrap();
+            let j = job_ended(&side.engine, job.id).await;
+            assert_eq!(j.status, engine::JobStatus::Done, "{what}, change {k}: {j:?}");
+            assert!(!side.engine.rebuild_pending(car), "{what}, change {k}");
+            done.push(j.done);
+        }
+        assert_eq!(done[0], done[1], "{what}, change {k}: the same logs");
+        assert!(done[0] * 2 > logs.len() as u64, "{what}, change {k}: most logs decoded again, {done:?}");
+        let j = same(&format!("{what}, change {k}"), &old.engine, &new.engine);
+        let r = records_same(&format!("{what}, change {k}: the records"), old.engine.db(), new.engine.db());
+        assert!(j > 1_000, "{what}: {j}");
+        assert_eq!(old.engine.stats().failures + new.engine.stats().failures, 0, "{what}");
+        let w = (old.engine.stats().windows_rebuilt - w.0, new.engine.stats().windows_rebuilt - w.1);
+        println!(
+            "{what}, change {k}: {} logs decoded again, {j} stored things and {r} records the same; windows {} a log \
+             at a time, {} by day",
+            done[0], w.0, w.1
+        );
+        windows = (windows.0 + w.0, windows.1 + w.1);
+    }
+    windows
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_gps_layout_change_by_day_gives_the_history_a_window_per_log_gives() {
+    let (before, now) = layout_change(2, Logs::SentrySparse, 3, 1).await;
+    assert!(now * 10 < before, "{now} windows against {before}");
+    layout_change(2, Logs::Alone, 0, 0).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "long: cargo test --release -p sentry-mate a_gps_layout_change_by_day -- --ignored --nocapture"]
+async fn a_gps_layout_change_by_day_gives_the_history_a_window_per_log_gives_over_days() {
+    layout_change(3, Logs::Sentry, 60, 3).await;
+    layout_change(5, Logs::Apis, 20, 2).await;
+    layout_change(7, Logs::Alone, 0, 0).await;
+}
