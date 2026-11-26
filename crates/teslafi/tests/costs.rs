@@ -23,6 +23,8 @@ struct Fake {
     log: Arc<Mutex<Vec<(i64, f64)>>>,
     /// Answer the charge log with a 429 (the wait TeslaFi asks, in s).
     limit: Arc<Mutex<Option<Option<u64>>>>,
+    /// Answer a window holding more charges than this as too large (as past the client's cap).
+    most: Arc<Mutex<Option<usize>>>,
 }
 
 impl Feed for Fake {
@@ -43,6 +45,10 @@ impl Feed for Fake {
         self.charges.lock().unwrap().push((from, to));
         if let Some(retry_after_s) = *self.limit.lock().unwrap() {
             return Err(FeedError::RateLimited { retry_after_s });
+        }
+        let held = self.log.lock().unwrap().iter().filter(|(d, _)| (from..=to).contains(d)).count();
+        if self.most.lock().unwrap().is_some_and(|m| held > m) {
+            return Err(FeedError::Http(teslafi::http::HttpError::TooLarge));
         }
         Ok(self
             .log
@@ -176,4 +182,26 @@ async fn teslafis_429_on_the_costs_is_waited_out_like_the_polls() {
     assert_eq!(fake.charges.lock().unwrap().len(), 1);
     let until = store.pacing("fa1").unwrap().rate_limited_until_ms;
     assert!(until >= NOW + 600_000, "nothing is asked before TeslaFi's wait ends: {until}");
+}
+
+#[tokio::test]
+async fn a_log_too_large_for_one_answer_is_read_in_smaller_windows() {
+    let (_t, store, fake, sink, mut p) = rig(Cadence { invoices: true, ..Cadence::default() });
+    // two charges a day for the last nine months, then nothing; more than 20 in one answer is too large
+    let today = (NOW / DAY) as i64;
+    *fake.log.lock().unwrap() = (0..270).flat_map(|d| [(today - d, 4.0), (today - d, 6.5)]).collect();
+    *fake.most.lock().unwrap() = Some(20);
+    run(&mut p, NOW, NOW + 6 * 3_600_000).await;
+    let c = store.pacing("fa1").unwrap().costs;
+    assert!(c.backfill_done, "{c:?}");
+    assert!(c.last_error.is_none(), "{c:?}");
+    assert_eq!(c.chunk_days, Some(5), "90 days, then 45, 22, 11, 5");
+    // every day read once (the ids are one a day, so each day's charges are one key)
+    let kept = sink.kept.lock().unwrap();
+    let days: std::collections::BTreeSet<i64> = kept.values().map(|f| (f.session.start_ms / DAY) as i64).collect();
+    assert_eq!(days.len(), 270);
+    // and it stopped after two chunks' worth of empty days, not two small empty windows
+    let asked = fake.charges.lock().unwrap().clone();
+    let oldest = asked.iter().map(|w| w.0).min().unwrap();
+    assert!(oldest <= today - 269 - 2 * teslafi::costs::CHUNK_DAYS + 5, "read back to {oldest}");
 }
