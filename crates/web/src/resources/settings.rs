@@ -396,6 +396,7 @@ pub fn apply(app: &AppState, s: &ServerSettings) {
         && let Ok(e) = app.service::<Engine>()
     {
         e.set_default_time_zone(z);
+        super::teslafi::follow_time_zone(app, &e.default_time_zone());
     }
     super::tesla::follow_proxy(app, s.outbound.proxy.as_deref());
     super::teslafi::follow_proxy(app, s.outbound.proxy.as_deref());

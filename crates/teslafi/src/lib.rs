@@ -223,6 +223,11 @@ impl<S: Sink> Service<S> {
         self.opts().cadence
     }
 
+    /// The zone TeslaFi's times are read in for an account with none of its own.
+    pub fn default_time_zone(&self) -> String {
+        self.opts().default_time_zone
+    }
+
     /// A new proxy (a settings change): every running poller starts again with it, on a new client.
     pub fn reconfigure(&self, proxy: Option<Proxy>) {
         {
@@ -231,6 +236,19 @@ impl<S: Sink> Service<S> {
                 return;
             }
             o.proxy = proxy;
+        }
+        self.restart();
+    }
+
+    /// The server's default time zone changed: the accounts with no zone of their own read TeslaFi's times in the new
+    /// one (their pollers start again with it).
+    pub fn set_default_time_zone(&self, zone: &str) {
+        {
+            let mut o = self.inner.opts.write().unwrap_or_else(|p| p.into_inner());
+            if o.default_time_zone == zone {
+                return;
+            }
+            o.default_time_zone = zone.to_string();
         }
         self.restart();
     }

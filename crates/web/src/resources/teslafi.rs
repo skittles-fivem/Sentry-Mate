@@ -79,7 +79,8 @@ pub fn options(e: &Engine) -> teslafi::Options {
     let mut o = teslafi::Options::default();
     o.proxy = super::tesla::proxy(e);
     o.cadence = load_settings(e).cadence();
-    o.default_time_zone = e.options().default_time_zone.clone();
+    // (the server's default zone as saved, not the one it started with: it follows the setting)
+    o.default_time_zone = e.default_time_zone();
     o
 }
 
@@ -158,6 +159,13 @@ pub fn rate_limit_hook(audit: Arc<accounts::Audit>, events: Events) -> engine::t
 pub fn follow_proxy(app: &AppState, proxy: Option<&str>) {
     if let Ok(svc) = app.service::<TeslafiService>() {
         svc.reconfigure(proxy.and_then(tesla::Proxy::parse));
+    }
+}
+
+/// The settings changed: the accounts with no zone of their own read TeslaFi's times in the server's default zone.
+pub fn follow_time_zone(app: &AppState, zone: &str) {
+    if let Ok(svc) = app.service::<TeslafiService>() {
+        svc.set_default_time_zone(zone);
     }
 }
 
