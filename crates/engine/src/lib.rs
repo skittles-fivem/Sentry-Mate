@@ -150,6 +150,10 @@ pub struct Options {
     /// reading and writing them whole for every log ([`records::Hold`]): the same records. `false`: as before, for
     /// the comparison.
     pub full_hold_records: bool,
+    /// A GPS layout change's narrow rebuild ([`Engine::redo_positions`]) decodes its logs again one after the other
+    /// and rebuilds the windows they change once per day of logs (UTC), not after each log: the same history, ids
+    /// included (`crates/sentry-mate/src/window_batch.rs`). `false`: a window per log, as before, for the comparison.
+    pub positions_by_day: bool,
     /// A rebuild a saved setting asks for waits this long (ms) before it starts, so a few saves in a row (or a
     /// setting saved again while one runs) are one rebuild ([`Engine::rebuild_because`]).
     pub rebuild_settle_ms: u64,
@@ -185,6 +189,7 @@ impl Default for Options {
             window_batch: 64,
             full_by_day: true,
             full_hold_records: true,
+            positions_by_day: true,
             rebuild_settle_ms: 3_000,
             read_ahead: ahead::Ahead::threads(),
             window_look_ms: 2 * 3_600_000,
@@ -403,6 +408,12 @@ pub(crate) struct Inner {
     /// The cars' newest values (their Now) worked out while a full rebuild's day of logs is held, written once with
     /// the day's records (`Engine::now_hold`): `None` while nothing is held.
     pub(crate) now_held: Mutex<Option<std::collections::BTreeMap<model::CarId, model::Now>>>,
+    /// The one car whose samples, Now and firmware notes are held while they are (`None`: every car's, as a full
+    /// rebuild's shadow holds them): a GPS layout change's day of logs in place holds its car's only
+    /// ([`Engine::hold_car`]).
+    pub(crate) held_car: Mutex<Option<model::CarId>>,
+    /// Taken by a GPS layout change's day of logs in place while it holds its car's ([`Engine::hold_car`]).
+    pub(crate) day_holding: Mutex<()>,
     /// Tests: the full rebuild's worker stops as by a crash once it decoded this many logs of a car.
     pub(crate) full_crash_logs: Mutex<Option<u64>>,
     /// Tests: the next rebuild job of a car or a period stops as by a crash once it worked on this many logs.
@@ -654,6 +665,8 @@ impl Engine {
                 full_windows: AtomicU64::new(0),
                 fw_held: Mutex::new(None),
                 now_held: Mutex::new(None),
+                held_car: Mutex::new(None),
+                day_holding: Mutex::new(()),
                 full_crash_logs: Mutex::new(None),
                 job_crash_logs: Mutex::new(None),
                 full_exit_hook: Mutex::new(None),

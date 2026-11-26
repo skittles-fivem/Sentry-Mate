@@ -941,7 +941,8 @@ impl Engine {
         records::put_now_at(db, car, &at)?;
         records::put_now_from(db, car, &from)?;
         // a full rebuild's day of logs: held, written with the day's records (as `set_now`, the newer one kept)
-        if let Some(h) = lock(&self.inner.now_held).as_mut() {
+        let mine = self.holds_for(car);
+        if let Some(h) = lock(&self.inner.now_held).as_mut().filter(|_| mine) {
             if kept.as_ref().is_none_or(|k| k.at_ms <= now.at_ms) {
                 h.insert(car, now);
             }
@@ -953,6 +954,17 @@ impl Engine {
 
     /// Holds the cars' Now worked out from logs in memory (`on`) until [`Engine::now_write_held`] writes them;
     /// `false`: no longer, and what was not written is not (as a kill would leave it).
+    /// Whether the samples, Now and firmware notes of `car` are held while holds are on ([`Engine::hold_car`]).
+    pub(crate) fn holds_for(&self, car: CarId) -> bool {
+        lock(&self.inner.held_car).is_none_or(|c| c == car)
+    }
+
+    /// The holds that are turned on next ([`Engine::smo_hold`], [`Engine::now_hold`], [`Engine::fw_hold`]) hold
+    /// only this car's (`Some`), or every car's (`None`, a full rebuild's shadow, which has no other writer).
+    pub(crate) fn hold_car(&self, car: Option<CarId>) {
+        *lock(&self.inner.held_car) = car;
+    }
+
     pub(crate) fn now_hold(&self, on: bool) {
         *lock(&self.inner.now_held) = on.then(std::collections::BTreeMap::new);
     }

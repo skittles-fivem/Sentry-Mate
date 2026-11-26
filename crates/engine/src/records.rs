@@ -608,11 +608,29 @@ fn write_any<T: Holdable>(db: &Db, key: &str, v: Option<&AnyArc>) -> Result<()> 
     T::write(db, key, v.and_then(|a| a.downcast_ref::<T>()))
 }
 
-/// The records held, per db (its key/value store's address) holding them.
-static HELD: std::sync::Mutex<Vec<(usize, BTreeMap<String, HeldVal>)>> = std::sync::Mutex::new(Vec::new());
+/// The records held, per db (its key/value store's address) holding them, and of which car (`None`: every car's).
+static HELD: std::sync::Mutex<Vec<Held>> = std::sync::Mutex::new(Vec::new());
 
-fn held() -> std::sync::MutexGuard<'static, Vec<(usize, BTreeMap<String, HeldVal>)>> {
+struct Held {
+    kv: usize,
+    car: Option<CarId>,
+    vals: BTreeMap<String, HeldVal>,
+}
+
+fn held() -> std::sync::MutexGuard<'static, Vec<Held>> {
     HELD.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Whether `key` is of the car `car` (`car/{car}` and what is under it).
+fn of_car(car: CarId, key: &str) -> bool {
+    key.strip_prefix("car/")
+        .and_then(|r| r.strip_prefix(car.to_string().as_str()))
+        .is_some_and(|r| r.is_empty() || r.starts_with('/'))
+}
+
+/// The records `db` holds where they hold `key`.
+fn holding<'h>(h: &'h mut [Held], kv: usize, key: &str) -> Option<&'h mut BTreeMap<String, HeldVal>> {
+    h.iter_mut().find(|x| x.kv == kv).filter(|x| x.car.is_none_or(|c| of_car(c, key))).map(|x| &mut x.vals)
 }
 
 fn kv_of(db: &Db) -> usize {
@@ -629,8 +647,8 @@ pub(crate) enum Slot<T> {
 /// `None`: the db does not hold its records, or not this one (read it from the db); `Some(None)`: held removed.
 fn held_get<T: Holdable>(db: &Db, key: &str) -> Option<Option<std::sync::Arc<T>>> {
     let kv = kv_of(db);
-    let h = held();
-    let (_, vals) = h.iter().find(|(k, _)| *k == kv)?;
+    let mut h = held();
+    let vals = holding(&mut h, kv, key)?;
     let v = vals.get(key)?;
     Some(v.v.clone().and_then(|a| a.downcast::<T>().ok()))
 }
@@ -639,7 +657,7 @@ fn held_get<T: Holdable>(db: &Db, key: &str) -> Option<Option<std::sync::Arc<T>>
 fn held_take<T: Holdable>(db: &Db, key: &str) -> Option<Slot<T>> {
     let kv = kv_of(db);
     let mut h = held();
-    let (_, vals) = h.iter_mut().find(|(k, _)| *k == kv)?;
+    let vals = holding(&mut h, kv, key)?;
     Some(match vals.remove(key) {
         None => Slot::Unread,
         Some(HeldVal { v: None, .. }) => Slot::Gone,
@@ -651,7 +669,7 @@ fn held_take<T: Holdable>(db: &Db, key: &str) -> Option<Slot<T>> {
 fn held_put<T: Holdable>(db: &Db, key: &str, v: Option<std::sync::Arc<T>>) -> bool {
     let kv = kv_of(db);
     let mut h = held();
-    let Some((_, vals)) = h.iter_mut().find(|(k, _)| *k == kv) else { return false };
+    let Some(vals) = holding(&mut h, kv, key) else { return false };
     let v = v.map(|a| a as AnyArc);
     vals.insert(key.to_string(), HeldVal { rank: T::RANK, v, write: write_any::<T>, clean: None });
     true
@@ -662,11 +680,16 @@ impl Hold {
     /// the hold goes. A db already held is left
     /// to the hold that holds it (this one holds nothing of its own).
     pub(crate) fn new(db: &Db) -> Hold {
+        Hold::of(db, None)
+    }
+
+    /// [`Hold::new`] of one car's records only (`Some`): the other cars' are written as they always are.
+    pub(crate) fn of(db: &Db, car: Option<CarId>) -> Hold {
         let kv = kv_of(db);
         let mut h = held();
-        let mine = !h.iter().any(|(k, _)| *k == kv);
+        let mine = !h.iter().any(|x| x.kv == kv);
         if mine {
-            h.push((kv, BTreeMap::new()));
+            h.push(Held { kv, car, vals: BTreeMap::new() });
         }
         Hold { db: db.clone(), kv, mine, writes: std::sync::atomic::AtomicU64::new(0) }
     }
@@ -684,7 +707,7 @@ impl Hold {
         let n = self.writes.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let mut todo: Vec<(String, u8, Option<AnyArc>, WriteFn)> = {
             let mut h = held();
-            let Some((_, vals)) = h.iter_mut().find(|(k, _)| *k == self.kv) else { return Ok(()) };
+            let Some(vals) = h.iter_mut().find(|x| x.kv == self.kv).map(|x| &mut x.vals) else { return Ok(()) };
             vals.retain(|_, v| v.clean.is_none_or(|g| g + 2 >= n));
             vals.iter()
                 .filter(|(_, v)| v.clean.is_none())
@@ -697,7 +720,7 @@ impl Hold {
         }
         // (what was changed again meanwhile stays to be written; nothing else writes while this one holds)
         let mut h = held();
-        if let Some((_, vals)) = h.iter_mut().find(|(k, _)| *k == self.kv) {
+        if let Some(vals) = h.iter_mut().find(|x| x.kv == self.kv).map(|x| &mut x.vals) {
             for (key, _, v, _) in todo {
                 if let Some(now) = vals.get_mut(&key)
                     && match (&now.v, &v) {
@@ -717,7 +740,7 @@ impl Hold {
 impl Drop for Hold {
     fn drop(&mut self) {
         if self.mine {
-            held().retain(|(k, _)| *k != self.kv);
+            held().retain(|x| x.kv != self.kv);
         }
     }
 }

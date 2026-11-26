@@ -618,22 +618,50 @@ impl Engine {
             }
             j.add_total(wanted.len() as u64, bytes);
         }
+        // A day of logs at a time ([`crate::Options::positions_by_day`]): the car's lock held over the day's logs,
+        // their records, samples, Now and firmware notes held in memory (the car's only) and written before the lock
+        // is let go, as the day's last log would leave them, then the windows the day's logs change rebuilt once.
+        // Nothing else writes the car's records without its lock, so nothing is held but the day's logs' own. A
+        // kill in the middle of a day leaves the day as it was and the change noted: it is done again from the start.
+        let by_day = self.inner.opts.positions_by_day;
+        let mut days: Vec<Vec<(String, String)>> = Vec::new();
+        let mut last_day = None;
         for (key, name) in wanted {
+            let day = records::name_start_ms(&name).map(records::day_of);
+            if !by_day || days.is_empty() || last_day != day {
+                days.push(Vec::new());
+            }
+            last_day = day;
+            if let Some(d) = days.last_mut() {
+                d.push((key, name));
+            }
+        }
+        for logs in days {
             if job.is_some_and(JobState::cancelled) {
                 return Ok(());
             }
-            let l = self.car_lock(car);
-            let held = lock(&l);
-            let r = self.log_locked(car, &key, &name, true, true);
-            drop(held);
-            if let Err(e) = r {
-                if let Some(j) = job {
-                    j.log_failed(&name, &e);
+            {
+                let l = self.car_lock(car);
+                let _held = lock(&l);
+                let holds = if by_day { DayHolds::new(self, car) } else { None };
+                for (key, name) in &logs {
+                    let r = self.log_locked(car, key, name, true, !by_day);
+                    if let Err(e) = r {
+                        if let Some(j) = job {
+                            j.log_failed(name, &e);
+                        }
+                        self.failed(&e);
+                    }
+                    if let Some(j) = job {
+                        j.step(self, Some(car), 0);
+                    }
                 }
-                self.failed(&e);
+                if let Some(h) = &holds {
+                    h.write()?;
+                }
             }
-            if let Some(j) = job {
-                j.step(self, Some(car), 0);
+            if by_day {
+                self.rebuild_dirty(car)?;
             }
         }
         self.job_clear_hook();
@@ -754,5 +782,44 @@ impl Engine {
             || records::redo(db, car, Redo::Positions).unwrap_or(None).is_some()
             || records::redo(db, car, Redo::Inputs).unwrap_or(None).is_some()
             || lock(&self.inner.pending_jobs).keys().any(|k| k.is_none() || *k == Some(car))
+    }
+}
+
+/// The holds of a GPS layout change's day of logs in place ([`Engine::redo_positions`]): one car's records
+/// ([`records::Hold::of`]), samples, Now and firmware notes held while its lock is held; turned off when dropped,
+/// what was not written dropped with them (as a kill would). One car at a time: `None` when another holds.
+struct DayHolds<'e> {
+    e: &'e Engine,
+    records: records::Hold,
+    _one: std::sync::MutexGuard<'e, ()>,
+}
+
+impl<'e> DayHolds<'e> {
+    fn new(e: &'e Engine, car: CarId) -> Option<DayHolds<'e>> {
+        let one = e.inner.day_holding.try_lock().ok()?;
+        // (a full rebuild's shadow holds on its own engine; this engine holds nothing else meanwhile)
+        e.hold_car(Some(car));
+        let records = records::Hold::of(&e.inner.db, Some(car));
+        e.smo_hold(true);
+        e.now_hold(true);
+        e.fw_hold(true);
+        Some(DayHolds { e, records, _one: one })
+    }
+
+    /// Writes what is held, in the order a log writes it (its samples, its Now, its firmware notes, its records).
+    fn write(&self) -> Result<()> {
+        self.e.smo_write_held()?;
+        self.e.now_write_held()?;
+        self.e.fw_write_held()?;
+        self.records.write()
+    }
+}
+
+impl Drop for DayHolds<'_> {
+    fn drop(&mut self) {
+        self.e.smo_hold(false);
+        self.e.now_hold(false);
+        self.e.fw_hold(false);
+        self.e.hold_car(None);
     }
 }
