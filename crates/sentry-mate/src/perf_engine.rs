@@ -651,3 +651,65 @@ async fn measure_owner_layout_change() {
         full.map(|r| (r.status, r.logs_done)),
     );
 }
+
+/// A GPS layout fit of the last 30 days on the owner's shape, alone (no rebuild running): `PERF_LOGS=23690
+/// PERF_OWNER_DATA=DIR cargo test --release -p sentry-mate measure_owner_gps_fit -- --ignored --nocapture` (the seeded
+/// folder of [`measure_owner_rebuild`]); the time of each phase, and what it found (`PERF_FIT_OUT=FILE` writes the
+/// outcome, to compare two builds).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "measurement by hand: cargo test --release -p sentry-mate measure_owner_gps_fit -- --ignored --nocapture"]
+async fn measure_owner_gps_fit() {
+    let logs: usize = std::env::var("PERF_LOGS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000);
+    let tmp = tempfile::tempdir().unwrap();
+    match std::env::var_os("PERF_OWNER_DATA").map(|d| PathBuf::from(d).join(logs.to_string())) {
+        Some(kept) if kept.join("data").exists() => copy_dir(&kept, tmp.path()),
+        _ => {
+            owner_history(tmp.path(), logs).await;
+        }
+    }
+    let (data, keys) = (tmp.path().join("data"), tmp.path().join("keys"));
+    let v = Arc::new(Vault::open(&data, &keys).unwrap());
+    let db = db::Db::open(&data, v.clone(), db::Options::default()).unwrap();
+    let e = engine::Engine::new(db, Store::new(can_dir(&data), v), engine::Options::default());
+    e.start().unwrap();
+    e.idle().await;
+    let car = e.db().fleet(&db::FleetQuery { search: None, limit: 10, after: None }).unwrap().cars[0].car.id;
+    let (t, cpu) = (Instant::now(), cpu_s());
+    e.gps_fit_start(car, 30).unwrap();
+    // (when each phase began)
+    let mut phases: Vec<(String, f64)> = Vec::new();
+    let s = loop {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let s = e.gps_fit_status(car).unwrap();
+        let p = format!("{:?}", s.phase);
+        if phases.last().is_none_or(|(q, _)| *q != p) {
+            phases.push((p, t.elapsed().as_secs_f64()));
+        }
+        if s.state != engine::gps_fit::FitState::Running {
+            break s;
+        }
+    };
+    let secs = t.elapsed().as_secs_f64();
+    let o = s.outcome.clone().unwrap();
+    let mut took = Vec::new();
+    for w in phases.windows(2) {
+        took.push(format!("{} {:.1} s", w[0].0, w[1].1 - w[0].1));
+    }
+    println!(
+        "owner shape: {logs} logs: a GPS fit of 30 days: {:?} in {secs:.1} s ({:.1} s of CPU; {}); {} logs read, \
+         {:.0} logs/s; found {:?}",
+        s.state,
+        cpu_s() - cpu,
+        took.join(", "),
+        o.logs,
+        s.logs_total as f64
+            / phases
+                .iter()
+                .find(|p| p.0.contains("Logs"))
+                .map_or(secs, |l| { phases.iter().find(|p| p.0.contains("Fitting")).map_or(secs, |f| f.1) - l.1 }),
+        o.found().map(|l| l.to_string()),
+    );
+    if let Some(f) = std::env::var_os("PERF_FIT_OUT") {
+        std::fs::write(f, format!("{}\n{}", serde_json::to_string_pretty(&o).unwrap(), o.text())).unwrap();
+    }
+}

@@ -1350,19 +1350,16 @@ pub fn collect(
     let total = logs_total;
     progress(Step { phase: Phase::Logs, done: 0, total, positions_total, logs_total });
     let mut frames = Vec::new();
-    for (i, name) in names.iter().enumerate() {
+    // the logs read on the other cores, a few ahead of the one taken in order here: told on in their order, as
+    // one by one, so what is found is the same; while a rebuild goes first (`progress` waits) the readers stop at
+    // the logs ahead ([`read_frames`])
+    let threads = crate::ahead::Ahead::threads().max(1);
+    let r = read_frames(store, rt, &names, threads, |i, read| {
         if let Some(why) = pos.stopped() {
             return Err(why);
         }
-        let read = rt.block_on(async {
-            let Some(log) = store.read(name).await? else { return Ok(None) };
-            let side = store.read(&format!("{name}.json")).await?;
-            Ok::<_, ingest::ApiError>(Some((log, side)))
-        });
         match read {
-            Ok(Some((log, side))) => {
-                let side: serde_json::Value = side.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-                let f = internal_frames(&log, &side);
+            Ok(Some(f)) => {
                 if !f.is_empty() {
                     c.logs += 1;
                     frames.extend(f);
@@ -1376,11 +1373,111 @@ pub fn collect(
             }
         }
         progress(Step { phase: Phase::Logs, done: i as u64 + 1, total, positions_total, logs_total });
-    }
+        Ok(())
+    });
+    r?;
     frames.sort_by_key(|f| f.0);
     let p = pair(&frames, &refs);
     (c.pairs, c.paired, c.left_out) = (p.pairs, p.paired, p.left_out);
     Ok(c)
+}
+
+/// A log's Screenmate GPS frames ([`internal_frames`]), read from the store (`None`: not stored).
+type Frames = Result<Option<Vec<(u64, [u8; 8])>>, ingest::ApiError>;
+
+/// Logs read ahead at most, per thread.
+const FRAMES_AHEAD: usize = 4;
+
+/// Reads the GPS frames of `names` on `threads` threads, and hands each log's to `each` in their order (its index,
+/// what it read); `each` stopping (an error) stops the readers after the logs they are on. They read at most
+/// [`FRAMES_AHEAD`] logs a thread ahead of the one `each` has, so they wait while it does.
+fn read_frames(
+    store: &ingest::Store,
+    rt: &tokio::runtime::Handle,
+    names: &[String],
+    threads: usize,
+    mut each: impl FnMut(usize, Frames) -> Result<(), String>,
+) -> Result<(), String> {
+    let read = |name: &str| -> Frames {
+        rt.block_on(async {
+            let Some(log) = store.read(name).await? else { return Ok(None) };
+            let side = store.read(&format!("{name}.json")).await?;
+            let side: serde_json::Value = side.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+            Ok(Some(internal_frames(&log, &side)))
+        })
+    };
+    if threads <= 1 || names.len() < 2 {
+        for (i, name) in names.iter().enumerate() {
+            each(i, read(name))?;
+        }
+        return Ok(());
+    }
+    struct State {
+        next: usize,
+        wanted: usize,
+        done: std::collections::HashMap<usize, Frames>,
+        stop: bool,
+    }
+    let state = std::sync::Mutex::new(State { next: 0, wanted: 0, done: HashMap::new(), stop: false });
+    let moved = std::sync::Condvar::new();
+    let ahead = threads * FRAMES_AHEAD;
+    let wait = |st| moved.wait(st).unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::thread::scope(|s| {
+        for t in 0..threads.min(names.len()) {
+            let (state, moved, read) = (&state, &moved, &read);
+            let worker = move || {
+                loop {
+                    let i = {
+                        let mut st = lock(state);
+                        loop {
+                            if st.stop || st.next >= names.len() {
+                                return;
+                            }
+                            if st.next < st.wanted + ahead {
+                                break;
+                            }
+                            st = moved.wait(st).unwrap_or_else(std::sync::PoisonError::into_inner);
+                        }
+                        st.next += 1;
+                        st.next - 1
+                    };
+                    let r = read(&names[i]);
+                    lock(state).done.insert(i, r);
+                    moved.notify_all();
+                }
+            };
+            // (a thread that can't start leaves its logs to the others)
+            let _ = std::thread::Builder::new().name(format!("gps-fit-read-{t}")).spawn_scoped(s, worker);
+        }
+        let r = (|| {
+            for (i, name) in names.iter().enumerate() {
+                let got = {
+                    let mut st = lock(&state);
+                    loop {
+                        if let Some(r) = st.done.remove(&i) {
+                            break Some(r);
+                        }
+                        // taken by no thread yet (none started): read here
+                        if st.next <= i {
+                            st.next = i + 1;
+                            break None;
+                        }
+                        st = wait(st);
+                    }
+                };
+                let got = got.unwrap_or_else(|| read(name));
+                {
+                    lock(&state).wanted = i + 1;
+                    moved.notify_all();
+                }
+                each(i, got)?;
+            }
+            Ok(())
+        })();
+        lock(&state).stop = true;
+        moved.notify_all();
+        r
+    })
 }
 
 // ------------------------------------------------------------------------------------------------- the server's job
@@ -1869,6 +1966,56 @@ mod tests {
 
     fn outcome(pairs: Vec<Pair>, sources: Vec<(Stream, usize)>, logs: usize, car: CarId) -> Outcome {
         fit(&Collected { pairs, sources, logs, ..Collected::default() }, 30, car)
+    }
+
+    /// The logs' frames read on several threads are handed on in the logs' order, the same as one by one, and a
+    /// stop asked by the one taking them ends the reading there.
+    #[test]
+    fn frames_read_on_several_threads_come_in_the_order_of_the_logs() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        std::fs::create_dir_all(&data).unwrap();
+        let (v, _) = vault::Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
+        let store = ingest::Store::new(data.join("can"), Arc::new(v));
+        let sha = |b: &[u8]| {
+            use sha2::Digest;
+            hex::encode(sha2::Sha256::digest(b))
+        };
+        let logs: Vec<synth::LogFile> =
+            synth::Scenario::new(7).days(1).rates(synth::Rates::Light).logs().take(41).collect();
+        let mut names = Vec::new();
+        rt.block_on(async {
+            for l in &logs[..40] {
+                let side = l.sidecar_bytes();
+                for (n, b) in [(l.name.clone(), l.bytes.clone()), (l.sidecar_name(), side)] {
+                    store.receive(&n, b.clone().into(), 0, b.len() as u64, &sha(&b)).await.unwrap();
+                }
+                names.push(l.name.clone());
+            }
+        });
+        // (a name not stored: told as such, in its place)
+        names.insert(7, logs[40].name.clone());
+        let h = rt.handle().clone();
+        let read = |threads: usize, stop_at: Option<usize>| {
+            let mut got = Vec::new();
+            let r = read_frames(&store, &h, &names, threads, |i, f| {
+                got.push((i, f.unwrap()));
+                if stop_at == Some(i) { Err("stopped".into()) } else { Ok(()) }
+            });
+            (r, got)
+        };
+        let (r, one) = read(1, None);
+        assert!(r.is_ok());
+        assert_eq!(one.len(), names.len());
+        assert!(one[7].1.is_none(), "not stored");
+        assert!(one.iter().filter_map(|(_, f)| f.as_ref()).map(Vec::len).sum::<usize>() > 100, "frames read");
+        let (r, many) = read(4, None);
+        assert!(r.is_ok());
+        assert_eq!(many, one, "the same, in the same order");
+        let (r, cut) = read(4, Some(12));
+        assert_eq!(r, Err("stopped".to_string()));
+        assert_eq!(cut, one[..13].to_vec(), "up to the stop");
     }
 
     #[test]
