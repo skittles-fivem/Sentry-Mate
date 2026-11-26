@@ -103,3 +103,25 @@ async fn through_the_owners_proxy_only_to_teslafi() {
     let lines = seen.lock().unwrap().clone();
     assert_eq!(lines, vec!["CONNECT www.teslafi.com:443 HTTP/1.1".to_string()]);
 }
+
+#[tokio::test]
+async fn a_charge_log_larger_than_a_poll_is_read_whole_up_to_its_own_cap() {
+    let f = Fake::start(true, true).await;
+    let c = client(&f);
+    // a busy year of made-up charges: well past the poll's cap
+    let charges: Vec<serde_json::Value> = (0..4000)
+        .map(|i| {
+            serde_json::json!({"id": i, "startDate": "2026-03-01 10:00:00", "endDate": "2026-03-01 10:30:00",
+                               "locationName": format!("Made-up Supercharger {i}"), "cost": 12.5,
+                               "totalEnergyAdded": 30.0, "notes": "x".repeat(200)})
+        })
+        .collect();
+    let body = serde_json::to_string(&charges).unwrap();
+    assert!(body.len() > 4 * teslafi::http::CAP && body.len() < teslafi::http::HISTORY_CAP);
+    f.can(200, vec![], body);
+    assert_eq!(c.charges(&Secret::new(TOKEN), 20_500, 20_589).await.unwrap().len(), 4000);
+    // past the charge log's own cap: too large, said so (the poller asks again in smaller windows)
+    f.can(200, vec![], "x".repeat(teslafi::http::HISTORY_CAP + 10));
+    assert_eq!(c.charges(&Secret::new(TOKEN), 20_500, 20_589).await, Err(FeedError::Http(HttpError::TooLarge)));
+    assert!(f.seen().iter().all(|s| s.path == "/history.php"));
+}

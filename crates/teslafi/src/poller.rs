@@ -779,9 +779,19 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             (today - crate::costs::CHECK_DAYS, today)
         } else {
             let before = self.pacing.costs.backfill_before.unwrap_or(today + 1);
-            ((before - crate::costs::CHUNK_DAYS).max(crate::costs::OLDEST_DAY), before - 1)
+            let chunk =
+                self.pacing.costs.chunk_days.unwrap_or(crate::costs::CHUNK_DAYS).clamp(1, crate::costs::CHUNK_DAYS);
+            ((before - chunk).max(crate::costs::OLDEST_DAY), before - 1)
         };
         let answer = self.feed.charges(&self.token, from, to).await;
+        let too_large = matches!(answer, Err(FeedError::Http(crate::http::HttpError::TooLarge)));
+        let days = to - from + 1;
+        if too_large && !self.pacing.costs.backfill_done && days > 1 {
+            // more charges than one answer holds: the same days again in halves, at the next tick
+            tracing::info!(account = %self.id, days, "teslafi charge log too large; asked in smaller windows");
+            self.pacing.costs.chunk_days = Some(days / 2);
+            return;
+        }
         let records = match answer {
             Ok(r) => r,
             Err(e) => {
@@ -790,10 +800,20 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                     FeedError::NotEnabled | FeedError::NotData => {
                         "TeslaFi gave no charge log for this token".to_string()
                     }
+                    _ if too_large => format!(
+                        "TeslaFi's charge log of {} to {} is larger than {} MB",
+                        crate::costs::date(from),
+                        crate::costs::date(to),
+                        crate::http::HISTORY_CAP >> 20
+                    ),
                     other => other.to_string(),
                 };
                 let (first, max) = (self.cadence.invoice_error_first_ms, self.cadence.invoice_error_max_ms);
                 self.pacing.costs.note_error(err(e.code(), message, now_ms), first, max);
+                if too_large && !self.pacing.costs.backfill_done {
+                    // a single day too large to read: passed over (the error kept), the backfill goes on before it
+                    self.pacing.costs.backfill_before = Some(from);
+                }
                 if let FeedError::RateLimited { retry_after_s } = e {
                     self.rate_limited(now_ms, retry_after_s);
                 }
@@ -839,7 +859,8 @@ impl<F: Feed, S: Sink> Poller<F, S> {
         } else {
             c.backfill_before = Some(from);
             c.empty_chunks = if records.is_empty() { c.empty_chunks + 1 } else { 0 };
-            if c.empty_chunks >= 2 || from <= crate::costs::OLDEST_DAY {
+            c.empty_days = if records.is_empty() { c.empty_days + days } else { 0 };
+            if c.empty_days >= 2 * crate::costs::CHUNK_DAYS || from <= crate::costs::OLDEST_DAY {
                 c.backfill_done = true;
                 c.last_check_ms = Some(now_ms);
                 c.next_check_ms = now_ms + self.cadence.invoice_check_ms;

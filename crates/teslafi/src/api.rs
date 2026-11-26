@@ -110,7 +110,8 @@ impl Feed for Client {
     }
 
     async fn charges(&self, token: &Secret, from_day: i64, to_day: i64) -> Result<Vec<Value>, FeedError> {
-        let a = self.http.get(&crate::costs::path(from_day, to_day), token).await.map_err(FeedError::Http)?;
+        let path = crate::costs::path(from_day, to_day);
+        let a = self.http.get_up_to(&path, token, crate::http::HISTORY_CAP).await.map_err(FeedError::Http)?;
         crate::costs::records(a.status, a.retry_after_s, &a.body)
     }
 }
