@@ -398,7 +398,10 @@ Either way the server checks it with Tesla before it keeps anything. Then:
    charging, every minute awake, every 3 min asleep) or `gentle` (2 min,
    5 min, 20 min). TeslaFi only has new data as often as it polls the car, so
    `often` is as fast as is useful. Whatever the pace, the server waits as
-   long as TeslaFi asks it to (`Retry-After`) and backs off on errors.
+   long as TeslaFi asks it to (`Retry-After`) and backs off on errors. There is no
+   daily cap on this side: TeslaFi does the limiting. When it answers 429 the
+   TeslaFi section, Data health and the notices say "TeslaFi is limiting
+   requests" with the time of the next try.
 
 To stop for a while, pause the account; to stop for good, remove it. Removing
 deletes its sealed tokens; the history already stored stays. Also sign the
@@ -442,7 +445,12 @@ To stop for a while, pause the account; to stop for good, remove it. Removing
 deletes its sealed token; the history already stored stays. Also make a new
 token on TeslaFi's API page, so the old one stops working there. If TeslaFi
 stops taking the token (a new token was made there, or the subscription
-ended), a notice says so: paste a new token. What is sent, and where:
+ended), a notice says so: paste a new token. If TeslaFi has had no new data
+from an awake car for two hours, a notice says so and that the problem is on
+TeslaFi's side (a car TeslaFi says is asleep is silent as expected); if its
+polls keep coming but are stamped an hour or more off, the notice says the
+account's time zone is wrong: set it in the TeslaFi section (TeslaFi writes
+local time without a zone). What is sent, and where:
 [security](security.md#the-teslafi-input).
 
 Every built-in design has the TeslaFi section on Settings: Integrations,
@@ -714,12 +722,21 @@ which of two kinds it is:
   samples). A rebuild makes it again from the logs: *Rebuild all data* on
   the car's Data health page, or *Rebuild the period* on its Drives page
   with the period set over that time. No backup is needed.
-- **It also holds what no stored log gives** (a table such as the car's
-  drives or charges: it carries imported rows and what was typed in, such as
-  costs and purposes). No rebuild and no full rebuild makes this again, and
-  none starts it empty: that would lose those rows without a word. The way
-  back is the car's folder from a backup. This is why the data folder needs
-  backups even though the logs are kept.
+- **The car's drives table** (`drives.snap` and `drives.log`). Repair it first: *Repair* on the notice, or
+  `POST /api/v1/cars/<car>/repair` with `{"table": "drives"}`, or a rebuild or a full rebuild of the car, which
+  mends it as they meet it. Repair keeps what still reads, reads the imports' kept uploads again for the imported
+  rows that don't, makes the drives that come from the logs again by a rebuild from where the damage begins, and
+  puts the purposes you typed back on the drives that are theirs now. The damaged files are not deleted: they are
+  put aside in `db/cars/<id>/aside/<time>/` (with a note), and backups and moves carry that folder. What could not
+  be recovered is said afterwards, with the time it covered, in a notice (*data_repaired*) and in
+  `GET /api/v1/cars/<car>/repair`: imported rows no kept upload holds (an import whose upload was discarded, rows
+  read from a local TeslaMate, rows that moved off the car to another), the changes a damaged journal record held
+  (when they were is not known), and purposes with no drive. **Restore from a backup only for what that report
+  lists.** The way back for those is the car's folder from a backup, as below.
+- **Another table, or an import's or an API's series** (the car's charges, states and updates; samples read from an
+  import or the Tesla API). They also hold what no stored log gives, so no rebuild makes them again, and none
+  starts them empty: that would lose those rows without a word. The way back is the car's folder from a backup.
+  This is why the data folder needs backups even though the logs are kept.
 
 To put one car's folder back, Docker Compose, in the folder with
 `docker-compose.yml`. The notice names the folder: `db/cars/<id>`.

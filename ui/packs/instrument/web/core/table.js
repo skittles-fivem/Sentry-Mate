@@ -7,7 +7,7 @@
 // already has are drawn 200 at a time; the next 200 come as the foot scrolls into view (or "Show more").
 
 import * as state from '../shared/state.js';
-import { h, replace, cover, holdScroll } from '../shared/dom.js';
+import { h, replace, replaceChanged, cover, holdScroll } from '../shared/dom.js';
 import { downloadCsv, csvFilename } from '../shared/csv.js';
 import { scrollBox } from '../shared/scrollbox.js';
 import { formatNumber, compareText } from '../shared/i18n.js';
@@ -214,7 +214,11 @@ export function dataTable(ctx, opts) {
     const now = tbody.children;
     if (now.length === trs.length && trs.every((tr, i) => now[i] === tr)) return;
     holdScroll(tbody);
-    tbody.replaceChildren(...trs);
+    // only the rows that differ are put in (a list that loads again with one drive changed touches one row, not all of
+    // them, and the whole-pixel snap then measures that row alone)
+    const want = new Set(trs);
+    for (const n of Array.from(tbody.childNodes)) if (!want.has(n)) n.remove();
+    trs.forEach((tr, i) => { const cur = tbody.children[i]; if (cur !== tr) tbody.insertBefore(tr, cur || null); });
   }
 
   function skeleton(n = 4) {
@@ -236,24 +240,29 @@ export function dataTable(ctx, opts) {
     return h('tr', { class: 'tbl-empty' }, h('td', { colspan: String(columns.length) }, h('div', { class: 'tbl-empty-view' }, node)));
   }
 
+  // text and attributes set to what they already are still count as a change to the page's mutation observers (the
+  // whole-pixel snap measures what a change touched), so a live reload that finds the same figures sets nothing
+  const text = (el, t) => { if (el.textContent !== t) el.textContent = t; };
+  const hide = (el, v) => { if (el.hidden !== v) el.hidden = v; };
+
   function setCount() {
     if (opts.rows) {
       const n = loaded.length, shown = Math.min(shownLocal, n);
-      count.textContent = `${formatNumber(n)} ${n === 1 ? 'row' : 'rows'}`;
-      foot.hidden = shown >= n;
-      footText.textContent = `Showing ${formatNumber(shown)} of ${formatNumber(n)}`;
+      text(count, `${formatNumber(n)} ${n === 1 ? 'row' : 'rows'}`);
+      hide(foot, shown >= n);
+      text(footText, `Showing ${formatNumber(shown)} of ${formatNumber(n)}`);
       return;
     }
     const n = loaded.length;
-    count.textContent = total != null ? `${formatNumber(total)} in all` : done ? `${formatNumber(n)} ${n === 1 ? 'row' : 'rows'}` : `${formatNumber(n)} shown`;
-    foot.hidden = done || !n;
-    footText.textContent = total != null ? `Showing ${formatNumber(n)} of ${formatNumber(total)}` : `Showing ${formatNumber(n)}. There are more.`;
+    text(count, total != null ? `${formatNumber(total)} in all` : done ? `${formatNumber(n)} ${n === 1 ? 'row' : 'rows'}` : `${formatNumber(n)} shown`);
+    hide(foot, done || !n);
+    text(footText, total != null ? `Showing ${formatNumber(n)} of ${formatNumber(total)}` : `Showing ${formatNumber(n)}. There are more.`);
   }
 
   function setCsv() {
     if (!csv) { replace(csvSlot); return; }
     if (csv === true && opts.path) {
-      replace(csvSlot, csvButton({ href: ctx.api.csvUrl(opts.path, { ...params, ...sortParams() }), filename: csvFilename(ctx.car?.name || 'sentry-mate', opts.csvName || opts.title || 'list') }));
+      replaceChanged(csvSlot, csvButton({ href: ctx.api.csvUrl(opts.path, { ...params, ...sortParams() }), filename: csvFilename(ctx.car?.name || 'sentry-mate', opts.csvName || opts.title || 'list') }));
     } else {
       // a column's csv: false (left out), a function (the value), or a shared/csv.js column() (units in the header)
       const cols = csv.columns || columns.filter((c) => c.csv !== false)

@@ -1,5 +1,5 @@
 //! The poller with a scripted TeslaFi and its own clock: the pace by what the car does (never slower because another
-//! input is live), the same poll never handed on twice, the back-off and TeslaFi's wait, the daily cap, a refused token
+//! input is live), the same poll never handed on twice, the back-off and TeslaFi's wait (told once), no cap of its own, a refused token
 //! stopping the account, and a car TeslaFi names that is not this account's waiting for an admin. Made-up data only.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -196,23 +196,64 @@ async fn errors_back_off_teslafis_wait_is_kept_and_a_refused_token_stops_it() {
 }
 
 #[tokio::test]
-async fn at_most_the_daily_cap_and_a_gap_between_requests() {
+async fn no_daily_cap_only_a_gap_between_requests() {
     let (_t, data, v) = vault();
     let store = Store::new(&data, v);
     let id = account(&store, true);
     let (script, sink) = (Script::default(), Arc::new(MemSink::default()));
-    let cad = Cadence { daily_cap: 3, driving_ms: 1_000, ..Cadence::default() };
+    let cad = Cadence { driving_ms: 1_000, ..Cadence::default() };
     let mut p = Poller::new(store.clone(), &id, script.clone(), sink.clone(), cad, chrono_tz::Tz::UTC).unwrap();
     let day = NOW - NOW % 86_400_000;
     let mut t = day + 1000;
-    for i in 0..3 {
+    // more requests in a day than the cap of 1,500 an older server kept: TeslaFi does the limiting
+    for i in 0..1_700 {
         script.push(Ok(poll(i + 1, "2027-01-15 08:00:00", "Driving", json!({"shift_state": "D"}))));
-        t = p.tick(t).await.unwrap();
+        let next = p.tick(t).await.unwrap();
+        assert_eq!(next, t + 10_000, "never two requests less than 10 s apart, and nothing else holds them back");
+        t = next;
     }
-    assert_eq!(t, day + 1000 + 2 * 10_000 + 10_000, "never two requests less than 10 s apart");
-    assert_eq!(p.tick(t).await.unwrap(), day + 86_400_000, "the cap: nothing until midnight UTC");
-    assert_eq!(script.asked.lock().unwrap().len(), 3);
-    assert_eq!(p.status().last_error.unwrap().code, "daily_cap");
+    assert_eq!(script.asked.lock().unwrap().len(), 1_700);
+    let st = p.status();
+    assert_eq!(st.polls_today, 1_700, "the day's count is kept, for showing");
+    assert!(st.last_error.is_none(), "{:?}", st.last_error);
+    assert_eq!(st.rate_limited_until_ms, None);
+}
+
+#[tokio::test]
+async fn teslafis_429_is_waited_out_and_told_once_per_episode() {
+    let (_t, data, v) = vault();
+    let store = Store::new(&data, v);
+    let id = account(&store, true);
+    let (script, sink) = (Script::default(), Arc::new(MemSink::default()));
+    let mut p = poller(&store, &id, &script, &sink);
+
+    // no Retry-After: five minutes; one request, the sink told once
+    script.push(Err(FeedError::RateLimited { retry_after_s: None }));
+    let until = p.tick(NOW).await.unwrap();
+    assert_eq!(until, NOW + 300_000);
+    assert_eq!(*sink.limited.lock().unwrap(), vec![(id.clone(), until)]);
+    let st = p.status();
+    assert_eq!(st.rate_limited_until_ms, Some(until));
+    assert_eq!(st.last_error.as_ref().unwrap().code, "rate_limited");
+    assert_eq!(st.mode, Mode::Backoff);
+    // asking early asks nothing and tells nothing more
+    p.tick(NOW + 60_000).await.unwrap();
+    assert_eq!(script.asked.lock().unwrap().len(), 1);
+    assert_eq!(sink.limited.lock().unwrap().len(), 1);
+    // the wait is kept across a restart
+    let mut again = poller(&store, &id, &script, &sink);
+    assert_eq!(again.tick(NOW + 61_000).await.unwrap(), until);
+    assert_eq!(again.status().rate_limited_until_ms, Some(until));
+    assert_eq!(sink.limited.lock().unwrap().len(), 1, "the same episode");
+    // the wait ends with a good answer
+    script.push(Ok(poll(1, "2027-01-15 08:00:00", "Idling", json!({}))));
+    again.tick(until).await.unwrap();
+    assert_eq!(again.status().rate_limited_until_ms, None);
+    // a 429 after that is a new episode, with TeslaFi's own wait (at least a minute)
+    script.push(Err(FeedError::RateLimited { retry_after_s: Some(10) }));
+    let next = again.tick(until + 180_000).await.unwrap();
+    assert_eq!(next, until + 180_000 + 60_000);
+    assert_eq!(sink.limited.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -337,4 +378,39 @@ async fn a_zone_east_of_the_old_one_does_not_drop_teslafis_polls() {
     script.push(Ok(poll(6, "2027-01-15 08:05:00", "Driving", json!({"shift_state": "D"}))));
     p.tick(t).await.unwrap();
     assert_eq!(sink.points.lock().unwrap().len(), 6);
+}
+
+#[tokio::test]
+async fn the_status_keeps_teslafis_time_of_its_data_apart_from_when_a_new_poll_was_read() {
+    let (_t, data, v) = vault();
+    let store = Store::new(&data, v);
+    let id = account(&store, true);
+    let (script, sink) = (Script::default(), Arc::new(MemSink::default()));
+    let mut p = poller(&store, &id, &script, &sink);
+    let six_hours = 6 * 3_600_000;
+    // TeslaFi's newest poll is dated six hours before the moment it is read, and the car is awake
+    script.push(Ok(poll(1, "2027-01-15 02:00:00", "Idling", json!({}))));
+    let next = p.tick(NOW).await.unwrap();
+    let st = p.status();
+    assert_eq!(st.last_data_ms, Some(NOW - six_hours), "TeslaFi's own time of its data");
+    assert_eq!(st.last_new_ms, Some(NOW), "when this server read a poll it had not had");
+    assert!(st.awake);
+    assert_eq!(teslafi::data_health(&st, NOW), teslafi::DataHealth::TimeOffset { skew_ms: six_hours, behind: true });
+    // the same poll again, every few minutes for hours: the connection works, nothing is new
+    let mut t = next;
+    for _ in 0..130 {
+        script.push(Ok(poll(1, "2027-01-15 02:00:00", "Idling", json!({}))));
+        t = p.tick(t).await.unwrap();
+    }
+    assert!(t >= NOW + 2 * 3_600_000, "{}", t - NOW);
+    let st = p.status();
+    assert_eq!((st.last_data_ms, st.last_new_ms), (Some(NOW - six_hours), Some(NOW)), "nothing new was read");
+    assert_eq!(st.last_error, None);
+    assert_eq!(
+        teslafi::data_health(&st, t),
+        teslafi::DataHealth::NoData { age_ms: t - NOW, last_data_ms: NOW - six_hours },
+        "TeslaFi has had nothing new while this server polled without errors"
+    );
+    // kept across a restart
+    assert_eq!(store.pacing(&id).unwrap().last_new_ms, Some(NOW));
 }

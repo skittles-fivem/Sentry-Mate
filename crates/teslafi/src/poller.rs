@@ -6,12 +6,15 @@
 //! | `driving` / `charging` | TeslaFi's last poll says so | the latest poll every 60 s (`often`: 15 s; `gentle`: 2 min) |
 //! | `idle` | awake, parked | every 3 min (`often`: 1 min; `gentle`: 5 min) |
 //! | `asleep` | TeslaFi says the car sleeps (or is offline) | every 10 min (`often`: 3 min; `gentle`: 20 min) |
-//! | `backoff` | errors, TeslaFi's wait, the daily cap | 429: TeslaFi's wait (at least 60 s, else 5 min); others: 60 s doubling to 15 min |
+//! | `backoff` | errors, TeslaFi's wait | 429: TeslaFi's wait (at least 60 s, else 5 min); others: 60 s doubling to 15 min |
 //!
 //! The waits are the [`Pace`] an admin chooses (`normal` above). `often` reads about as often as TeslaFi itself polls
 //! the car while it drives or charges (TeslaFi's data changes no faster, so reading faster would only repeat it).
-//! The pace never slows because SMO or the Tesla API is live for the car: every input keeps reading. At most one request every 10 s and 1,500 a day per account (`often`: 6,000) (then nothing until midnight UTC), the checks of
-//! a token included (their requests are written into the pacing). TeslaFi's own poll time is the time of the data, and
+//! The pace never slows because SMO or the Tesla API is live for the car: every input keeps reading. This server sets no daily limit of its own: at most one request every 10 s per account, one at a
+//! time, the checks of a token included (their requests are written into the pacing). TeslaFi does the limiting, and
+//! its 429 is waited out as it asks; each new such wait is handed to the [`Sink`] ([`Sink::rate_limited`]) so the
+//! admins are told, and the status says until when ([`AccountStatus::rate_limited_until_ms`]). The day's count
+//! (`polls_today`, from midnight UTC) is kept only to be shown. TeslaFi's own poll time is the time of the data, and
 //! a poll already handed on (the same `data_id`) is not handed on again.
 //! A refused token stops the account until an admin gives a new one. The back-off, TeslaFi's wait and the day's
 //! count are saved with the account, so a restart does not start asking again early.
@@ -41,6 +44,9 @@ pub trait Sink: Send + Sync + 'static {
     fn off_can(&self, car: CarId, at_ms: u64, values: &model::OffCan) -> Result<(), SinkError>;
     /// The account's state changed (for an audit entry or a notice).
     fn account_changed(&self, _account: &Account) {}
+    /// TeslaFi started limiting the account's requests (a 429 after none): nothing is asked before `until_ms`. Once per
+    /// episode; a 429 during one only moves the end (in the status).
+    fn rate_limited(&self, _account: &Account, _until_ms: u64) {}
     /// Charges with a cost from TeslaFi's log ([`crate::costs`]): kept, one per key. Returns how many were new.
     fn invoices(&self, _found: &[tesla::invoices::Found]) -> Result<u64, SinkError> {
         Ok(0)
@@ -59,7 +65,7 @@ pub enum Mode {
     Backoff,
 }
 
-/// The timing, ms (and the daily cap).
+/// The timing, ms.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cadence {
     pub driving_ms: u64,
@@ -67,7 +73,6 @@ pub struct Cadence {
     pub idle_ms: u64,
     pub asleep_ms: u64,
     pub min_gap_ms: u64,
-    pub daily_cap: u64,
     pub backoff_first_ms: u64,
     pub backoff_max_ms: u64,
     pub rate_limit_min_ms: u64,
@@ -76,9 +81,6 @@ pub struct Cadence {
     pub fact_join_ms: u64,
     /// Read the costs TeslaFi lists for its charges ([`crate::costs`]): off until an admin turns them on.
     pub invoices: bool,
-    /// Requests for them at most a day, and the requests of the daily cap they always leave to the polls.
-    pub invoice_daily_cap: u64,
-    pub invoice_reserve: u64,
     pub invoice_check_ms: u64,
     pub invoice_after_charge_ms: u64,
     pub invoice_error_first_ms: u64,
@@ -103,15 +105,12 @@ impl Default for Cadence {
             idle_ms: 3 * 60_000,
             asleep_ms: 10 * 60_000,
             min_gap_ms: 10_000,
-            daily_cap: 1_500,
             backoff_first_ms: 60_000,
             backoff_max_ms: 15 * 60_000,
             rate_limit_min_ms: 60_000,
             rate_limit_default_ms: 5 * 60_000,
             fact_join_ms: 15 * 60_000,
             invoices: false,
-            invoice_daily_cap: 60,
-            invoice_reserve: 200,
             invoice_check_ms: 24 * 3_600_000,
             invoice_after_charge_ms: 30 * 60_000,
             invoice_error_first_ms: 30 * 60_000,
@@ -125,8 +124,7 @@ impl Default for Cadence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Pace {
-    /// As often as TeslaFi refreshes its data: driving or charging every 15 s, awake 1 min, asleep 3 min (at most
-    /// 6,000 requests a day).
+    /// As often as TeslaFi refreshes its data: driving or charging every 15 s, awake 1 min, asleep 3 min.
     Often,
     #[default]
     Normal,
@@ -154,14 +152,9 @@ impl Pace {
         let n = Cadence::default();
         match self {
             Pace::Normal => n,
-            Pace::Often => Cadence {
-                driving_ms: 15_000,
-                charging_ms: 15_000,
-                idle_ms: 60_000,
-                asleep_ms: 3 * 60_000,
-                daily_cap: 6_000,
-                ..n
-            },
+            Pace::Often => {
+                Cadence { driving_ms: 15_000, charging_ms: 15_000, idle_ms: 60_000, asleep_ms: 3 * 60_000, ..n }
+            }
             Pace::Gentle => {
                 Cadence { driving_ms: 120_000, charging_ms: 120_000, idle_ms: 5 * 60_000, asleep_ms: 20 * 60_000, ..n }
             }
@@ -180,11 +173,18 @@ pub struct AccountStatus {
     pub car: Option<CarId>,
     /// TeslaFi's word for what the car does (`Driving`, `Sleeping`...).
     pub car_state: Option<String>,
+    /// Requests made since midnight UTC: information only (no cap).
     pub polls_today: u64,
+    /// TeslaFi is limiting the account's requests (it answered 429): nothing is asked before this.
+    pub rate_limited_until_ms: Option<u64>,
     pub last_request_ms: Option<u64>,
     pub next_request_ms: Option<u64>,
-    /// TeslaFi's time of the newest poll handed on.
+    /// TeslaFi's time of the newest poll handed on (the time of its data from the car, not of this server's read).
     pub last_data_ms: Option<u64>,
+    /// When this server last read a poll TeslaFi had not given before (this server's clock).
+    pub last_new_ms: Option<u64>,
+    /// TeslaFi's newest poll says the car is awake (driving, charging or parked awake), not asleep or offline.
+    pub awake: bool,
     pub last_ok_ms: Option<u64>,
     pub last_error: Option<ErrorInfo>,
     /// The TLS version of the last connection (`1.3`, or `1.2` when TeslaFi's host offered no 1.3).
@@ -243,6 +243,11 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             Err(StoreError::NotFound) => return Err(StoreError::NotFound),
             Err(_) => Pacing::default(),
         };
+        let mut pacing = pacing;
+        // the wait until midnight of the daily cap older servers kept: not a wait any more
+        if account.last_error.as_ref().is_some_and(|e| e.code == "daily_cap") {
+            pacing.backoff_until_ms = 0;
+        }
         let current = (account.cars.len() == 1).then(|| account.cars[0].vehicle.clone());
         Ok(Poller {
             id: id.to_string(),
@@ -309,6 +314,8 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             car: self.matched(),
             car_state: self.car_state.clone(),
             polls_today: self.pacing.polls_today,
+            rate_limited_until_ms: (self.pacing.rate_limited_until_ms > self.now_ms)
+                .then_some(self.pacing.rate_limited_until_ms),
             last_request_ms: self.pacing.last_request_ms,
             next_request_ms: match mode {
                 Mode::Off => None,
@@ -316,6 +323,8 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                 _ => Some(self.next_ms.max(self.pacing.backoff_until_ms)),
             },
             last_data_ms: self.pacing.last_poll_ms,
+            last_new_ms: self.pacing.last_new_ms,
+            awake: matches!(self.mode, Mode::Driving | Mode::Charging | Mode::Idle),
             last_ok_ms: self.last_ok_ms,
             last_error: self.last_error.clone(),
             tls: (self.tls)(),
@@ -341,6 +350,7 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                         // the admin gave a new token: start over (the store dropped the old waits)
                         self.pacing.backoff_until_ms = p.backoff_until_ms;
                         self.pacing.backoff_step = p.backoff_step;
+                        self.pacing.rate_limited_until_ms = p.rate_limited_until_ms;
                     }
                 }
                 if new_token {
@@ -409,16 +419,6 @@ impl<F: Feed, S: Sink> Poller<F, S> {
         {
             return Err(last + self.cadence.min_gap_ms);
         }
-        if self.pacing.polls_today >= self.cadence.daily_cap {
-            let midnight = (now_ms / 86_400_000 + 1) * 86_400_000;
-            self.set_state(
-                AccountState::Ok,
-                Some(err("daily_cap", "the daily number of requests to TeslaFi was reached", now_ms)),
-                now_ms,
-            );
-            self.pacing.backoff_until_ms = midnight;
-            return Err(midnight);
-        }
         self.pacing.last_request_ms = Some(now_ms);
         self.pacing.polls_today += 1;
         Ok(())
@@ -443,7 +443,11 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             let back = self.now_ms - now_ms;
             self.next_ms = self.next_ms.saturating_sub(back);
             self.pacing.backoff_until_ms = self.pacing.backoff_until_ms.saturating_sub(back);
+            self.pacing.rate_limited_until_ms = self.pacing.rate_limited_until_ms.saturating_sub(back);
             if let Some(t) = &mut self.pacing.last_request_ms {
+                *t = t.saturating_sub(back);
+            }
+            if let Some(t) = &mut self.pacing.last_new_ms {
                 *t = t.saturating_sub(back);
             }
             self.last_seen = None;
@@ -542,13 +546,7 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                 self.mode = Mode::Off;
                 now_ms + self.cadence.idle_ms
             }
-            FeedError::RateLimited { retry_after_s } => {
-                let wait = retry_after_s
-                    .map_or(self.cadence.rate_limit_default_ms, |s| s.saturating_mul(1000))
-                    .clamp(self.cadence.rate_limit_min_ms, MAX_WAIT_MS.max(self.cadence.rate_limit_min_ms));
-                self.last_error = Some(err("rate_limited", e.to_string(), now_ms));
-                self.back_off(now_ms, Some(wait))
-            }
+            FeedError::RateLimited { retry_after_s } => self.rate_limited(now_ms, *retry_after_s),
             other => {
                 let error = err(other.code(), other.to_string(), now_ms);
                 if self.pacing.backoff_step >= 3 {
@@ -559,6 +557,22 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                 self.back_off(now_ms, None)
             }
         }
+    }
+
+    /// TeslaFi answered 429: wait as it asks. A new episode (none running) is handed to the sink once.
+    fn rate_limited(&mut self, now_ms: u64, retry_after_s: Option<u64>) -> u64 {
+        let wait = retry_after_s
+            .map_or(self.cadence.rate_limit_default_ms, |s| s.saturating_mul(1000))
+            .clamp(self.cadence.rate_limit_min_ms, MAX_WAIT_MS.max(self.cadence.rate_limit_min_ms));
+        self.last_error = Some(err("rate_limited", "TeslaFi is limiting requests", now_ms));
+        let until = self.back_off(now_ms, Some(wait));
+        let new = self.pacing.rate_limited_until_ms <= now_ms;
+        self.pacing.rate_limited_until_ms = until;
+        if new {
+            tracing::warn!(account = %self.id, until_ms = until, "TeslaFi is limiting requests");
+            self.sink.rate_limited(&self.account, until);
+        }
+        until
     }
 
     fn make_new_cars(&mut self) {
@@ -700,6 +714,9 @@ impl<F: Feed, S: Sink> Poller<F, S> {
         let car = self.matched();
         if new {
             self.pacing.last_data_id = p.data_id.or(self.pacing.last_data_id);
+            if what == Read::Latest {
+                self.pacing.last_new_ms = Some(now_ms);
+            }
             self.pacing.last_poll_ms = Some(p.t_ms.max(self.pacing.last_poll_ms.unwrap_or(0)));
             if let Some(car) = car {
                 let state = match (p.state, self.mode) {
@@ -751,10 +768,6 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             return None;
         }
         let c = &self.pacing.costs;
-        let midnight = (now_ms / 86_400_000 + 1) * 86_400_000;
-        if c.requests_today >= cad.invoice_daily_cap || self.pacing.polls_today + cad.invoice_reserve >= cad.daily_cap {
-            return Some(midnight);
-        }
         let want = if c.backfill_done { c.next_check_ms } else { now_ms };
         Some(want.max(c.wait_until_ms))
     }
@@ -782,8 +795,7 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                 let (first, max) = (self.cadence.invoice_error_first_ms, self.cadence.invoice_error_max_ms);
                 self.pacing.costs.note_error(err(e.code(), message, now_ms), first, max);
                 if let FeedError::RateLimited { retry_after_s } = e {
-                    let wait = retry_after_s.map_or(self.cadence.rate_limit_default_ms, |s| s.saturating_mul(1000));
-                    self.back_off(now_ms, Some(wait.max(self.cadence.rate_limit_min_ms)));
+                    self.rate_limited(now_ms, retry_after_s);
                 }
                 return;
             }

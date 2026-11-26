@@ -288,6 +288,7 @@ class Contract(ServerCase):
              lambda: (None, {"all": True, "confirm_password": "sentry-mate-dev"}, None)),
             ("PUT", "/api/v1/cars/{car}/gps-layout",
              lambda: (None, {"layout": "lat 0|28@1- (1e-6,0); lon 28|28@1- (1e-6,16.777216)"}, None)),
+            ("POST", "/api/v1/cars/{car}/repair", lambda: (None, {"table": "drives"}, None)),
             ("POST", "/api/v1/cars/{car}/gps-layout/fit", lambda: (None, {"days": 30}, None)),
             ("POST", "/api/v1/cars/{car}/gps-layout/fits/{fit}/apply",
              lambda: (None, {"confirm_password": "sentry-mate-dev"}, None)),

@@ -209,13 +209,14 @@ def now_object(app, car_id, t):
     at = obj.get("at_ms")
     inputs = []
     if at is not None:
-        inputs.append({**S.ref("smo"), "last_ms": at})
+        inputs.append({**S.ref("smo"), "last_ms": at, "received_ms": None})
         if car_id in ("c1", "c2"):
-            inputs.append({**S.ref("tesla_api"), "last_ms": at - 45_000})
+            inputs.append({**S.ref("tesla_api"), "last_ms": at - 45_000, "received_ms": at - 40_000})
         elif offcan.api_input(app, car_id) == "teslafi_api":
-            inputs.append({**S.ref("teslafi_api"), "last_ms": offcan.teslafi_read_ms(t)})
+            last, came = offcan.teslafi_times(app, car_id, t)
+            inputs.append({**S.ref("teslafi_api"), "last_ms": last, "received_ms": came})
         if teslamate_local_on(app, car_id):
-            inputs.append({**S.ref("teslamate_local"), "last_ms": t - 30_000})
+            inputs.append({**S.ref("teslamate_local"), "last_ms": t - 30_000, "received_ms": t - 29_000})
     # in the car's input order (`source_order`), highest priority first
     inputs.sort(key=S.rank(S.order_of(app.store, car_id)))
     obj["inputs"] = inputs

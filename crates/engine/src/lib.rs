@@ -63,6 +63,7 @@ pub mod placing;
 pub mod query;
 pub mod records;
 pub mod rehome;
+pub mod repair;
 mod speed;
 pub mod tesla_in;
 pub mod tmlocal_catchup;
@@ -392,6 +393,8 @@ pub(crate) struct Inner {
     pub(crate) full_windows: AtomicU64,
     /// Tests: the full rebuild's worker stops as by a crash once it decoded this many logs of a car.
     pub(crate) full_crash_logs: Mutex<Option<u64>>,
+    /// Tests: the next rebuild job of a car or a period stops as by a crash once it worked on this many logs.
+    pub(crate) job_crash_logs: Mutex<Option<u64>>,
     /// Tests: called by the full rebuild's worker when its run ended, before it goes.
     pub(crate) full_exit_hook: Mutex<Option<full::ExitHook>>,
     /// Tests: called by a rebuild job just before it clears the narrow rebuilds' notes it did.
@@ -422,6 +425,11 @@ pub(crate) struct Inner {
     pub(crate) history: Mutex<()>,
     /// Rebuild jobs not started yet, per car (`None`: every car), that later asks join ([`jobs`]).
     pub(crate) pending_jobs: Mutex<HashMap<Option<CarId>, Arc<jobs::JobState>>>,
+    /// How the imports' kept uploads are read again, for repairing a damaged drives table ([`repair`]).
+    pub(crate) replay: Mutex<Option<Arc<dyn repair::ImportReplay>>>,
+    /// The cars whose drives table is being repaired, and those whose repair has no audit entry yet.
+    pub(crate) repairing: Mutex<std::collections::HashSet<CarId>>,
+    pub(crate) repair_audit: Mutex<repair::AuditList>,
 }
 
 /// A stretch of a car's history where one input's GPS fixes disagreed with another's of the same moments by far
@@ -633,6 +641,7 @@ impl Engine {
                 full_hold_at: Mutex::new(None),
                 full_windows: AtomicU64::new(0),
                 full_crash_logs: Mutex::new(None),
+                job_crash_logs: Mutex::new(None),
                 full_exit_hook: Mutex::new(None),
                 job_clear_hook: Mutex::new(None),
                 job_start_hook: Mutex::new(None),
@@ -651,6 +660,9 @@ impl Engine {
                 gps_fit_wait: Mutex::new(std::time::Duration::from_secs(1)),
                 history: Mutex::new(()),
                 pending_jobs: Mutex::new(HashMap::new()),
+                replay: Mutex::new(None),
+                repairing: Mutex::new(std::collections::HashSet::new()),
+                repair_audit: Mutex::new(repair::AuditList::default()),
                 opts,
             }),
         }

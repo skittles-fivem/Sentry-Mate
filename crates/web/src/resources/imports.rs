@@ -281,6 +281,11 @@ struct Job {
     /// The version of the matching its rows were last checked against ([`REHOME_VERSION`]).
     #[serde(default)]
     rehomed: u32,
+    /// The car each car of the file went to when it ran (by its id in the file): a car matched as `new` is only
+    /// known by this. Not in the job's view; what reading the kept upload again for a car needs
+    /// ([`replay`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    went: BTreeMap<i64, model::CarId>,
 }
 
 /// The version of TeslaFi's matching (whole VINs; rows without a VIN only where they plainly carry on): a done import
@@ -575,6 +580,7 @@ async fn create(
             moves: Vec::new(),
             holds: Vec::new(),
             rehomed: REHOME_VERSION,
+            went: BTreeMap::new(),
         };
         save(app, &j)?;
         st.jobs.insert(j.id.clone(), j.clone());
@@ -1467,16 +1473,29 @@ async fn start(
             let mut open = im::counted(opener(&app2, &id2), live.read.clone(), live.stop.clone());
             let pairs: Vec<(BackupCar, Value)> =
                 tables_before.iter().map(|c| (c.car.clone(), json!(c.matched))).collect();
+            let mut went: BTreeMap<i64, model::CarId> = BTreeMap::new();
+            let mut note = |cars: &[import::CarReport]| {
+                // (rows held for a car to be chosen are on a stand-in car far above any real one)
+                went = cars
+                    .iter()
+                    .filter_map(|c| c.car.filter(|id| *id < 0xFE00_0000).map(|id| (c.tm_car_id, id)))
+                    .collect();
+            };
             let r = if teslafi && parts.len() > 1 {
-                im::teslafi_run_files(&e, several_files(&app2, &id2, &parts, &live), &m, &tf)
-                    .map(|done| im::teslafi_report_json(&done.report, &done.cars, &pairs, true))
+                im::teslafi_run_files(&e, several_files(&app2, &id2, &parts, &live), &m, &tf).map(|done| {
+                    note(&done.cars);
+                    im::teslafi_report_json(&done.report, &done.cars, &pairs, true)
+                })
             } else if teslafi {
-                open()
-                    .map_err(import::Error::Io)
-                    .and_then(|r| im::teslafi_run(&e, r, &m, &tf))
-                    .map(|done| im::teslafi_report_json(&done.report, &done.cars, &pairs, true))
+                open().map_err(import::Error::Io).and_then(|r| im::teslafi_run(&e, r, &m, &tf)).map(|done| {
+                    note(&done.cars);
+                    im::teslafi_report_json(&done.report, &done.cars, &pairs, true)
+                })
             } else {
-                im::run(&e, open, &m, currency).map(|done| im::report_json(&done.report, &done.cars, &pairs, true))
+                im::run(&e, open, &m, currency).map(|done| {
+                    note(&done.cars);
+                    im::report_json(&done.report, &done.cars, &pairs, true)
+                })
             };
             if live.stop.load(Ordering::Relaxed) {
                 all2.lock().live.remove(&id2);
@@ -1492,6 +1511,7 @@ async fn start(
                     j.report = Some(report);
                     j.holds = lots.iter().map(lot_view).collect();
                     j.rehomed = REHOME_VERSION;
+                    j.went = went;
                 }
                 Err(err) => {
                     let (code, message) = im::error_of(&err);
@@ -1876,4 +1896,196 @@ pub(crate) fn views_now(app: &AppState) -> Vec<(String, Value)> {
     }
     let st = all.lock();
     st.jobs.values().map(|j| (j.id.clone(), j.view(st.live.get(&j.id)))).collect()
+}
+
+/// How a damaged drives table gets its imported rows back: the kept uploads of the imports are read again, for one
+/// car, nothing stored (see [`engine::repair`]). Register it with [`Engine::set_import_replay`] at the server's start.
+pub fn replay(app: &AppState) -> Arc<dyn engine::repair::ImportReplay> {
+    Arc::new(Replay { app: app.clone() })
+}
+
+struct Replay {
+    app: AppState,
+}
+
+impl Replay {
+    /// One import's drives of a car, read again from its kept files.
+    fn read(&self, e: &Engine, j: &Job, plan: engine::importer::ReplayPlan) -> Result<Vec<model::Drive>, String> {
+        let app = &self.app;
+        let parts = j.parts();
+        let live = Live::new(1);
+        let r = if j.is_teslafi() {
+            let tf = j.teslafi.clone().unwrap_or_default();
+            if parts.len() > 1 {
+                im::replay_teslafi_drives(e, several_files(app, &j.id, &parts, &live), &tf, plan)
+            } else {
+                match opener(app, &j.id)() {
+                    Ok(r) => im::replay_teslafi_drives(
+                        e,
+                        im::TeslafiFiles::<_, Vec<io::Result<(String, Backup)>>>::One(r),
+                        &tf,
+                        plan,
+                    ),
+                    Err(x) => Err(import::Error::Io(x)),
+                }
+            }
+        } else {
+            im::replay_drives(e, opener(app, &j.id), plan)
+        };
+        r.map_err(|x| x.to_string())
+    }
+}
+
+impl engine::repair::ImportReplay for Replay {
+    fn drives(&self, e: &Engine, car: model::CarId) -> engine::repair::Replayed {
+        use engine::repair::{Gone, HeldOut};
+        let app = &self.app;
+        let mut out = engine::repair::Replayed::default();
+        let Ok(all) = imports(app) else { return out };
+        if load(app, &all).is_err() {
+            return out;
+        }
+        let mut jobs: Vec<Job> =
+            all.lock().jobs.values().filter(|j| j.status == "done" && !j.is_can()).cloned().collect();
+        // newest first: where two imports hold the same time, the newer one is what the car has
+        jobs.sort_by_key(|j| std::cmp::Reverse((j.started_ms, j.id.clone())));
+        let mut sets: Vec<Vec<model::Drive>> = Vec::new();
+        let me = crate::ids::car(car);
+        for j in jobs {
+            let source = if j.is_teslafi() { model::Source::Teslafi } else { model::Source::Teslamate };
+            // the cars of the file that went to this car: matched to it, or made for it (`new`)
+            let mine: Vec<&CarRow> = j
+                .cars
+                .iter()
+                .filter(|c| c.matched.as_deref() == Some(me.as_str()) || j.went.get(&c.car.tm_car) == Some(&car))
+                .collect();
+            if mine.is_empty() {
+                continue;
+            }
+            let from_ms = mine.iter().filter_map(|c| c.car.first_ms).min();
+            let to_ms = mine.iter().filter_map(|c| c.car.last_ms).max();
+            let gone = |why: String| Gone { source, name: j.name.clone(), from_ms, to_ms, why };
+            let names = kept_names(&folder(app, &j.id));
+            if !(0..j.parts().len()).all(|k| names.contains(&backup_file(k))) {
+                out.gone.push(gone("its upload is not kept".into()));
+                continue;
+            }
+            let joins: HashMap<i64, i64> = j
+                .cars
+                .iter()
+                .filter(|c| c.matched.as_deref() == Some(WITH))
+                .filter_map(|c| c.car.joins.map(|to| (c.car.tm_car, to)))
+                .collect();
+            let plan = engine::importer::ReplayPlan { car, mine: mine.iter().map(|c| c.car.tm_car).collect(), joins };
+            let drives = match self.read(e, &j, plan) {
+                Ok(d) => d,
+                Err(why) => {
+                    out.gone.push(gone(format!("its upload can't be read: {why}")));
+                    continue;
+                }
+            };
+            // rows the import's moves took off this car are not put back (they went to another car, or wait for one)
+            let moved: Vec<(u64, u64)> = j
+                .moves
+                .iter()
+                .filter(|m| m["from_car"].as_str() == Some(me.as_str()))
+                .filter_map(|m| Some((m["first_ms"].as_u64()?, m["last_ms"].as_u64()?)))
+                .collect();
+            let (held, kept): (Vec<_>, Vec<_>) =
+                drives.into_iter().partition(|d| moved.iter().any(|(a, b)| d.start_ms >= *a && d.start_ms <= *b));
+            if !held.is_empty() {
+                out.held_out.push(HeldOut {
+                    source,
+                    name: j.name.clone(),
+                    rows: held.len() as u64,
+                    from_ms: held.iter().map(|d| d.start_ms).min(),
+                    to_ms: held.iter().map(|d| d.end_ms).max(),
+                });
+            }
+            sets.push(kept);
+        }
+        out.drives = newest_wins(sets);
+        out
+    }
+}
+
+/// The drives of several imports' kept uploads, the newest import's set first: a drive of an older import is left out
+/// where a newer import has a drive of the same source over the same time (a newer file replaced it, or took it
+/// away), and a row id comes once.
+fn newest_wins(sets: Vec<Vec<model::Drive>>) -> Vec<model::Drive> {
+    let mut out: Vec<model::Drive> = Vec::new();
+    let mut ids = std::collections::HashSet::new();
+    // (start, end) of what newer sets hold, by source, sorted by start
+    let mut spans: HashMap<model::Source, Vec<(u64, u64)>> = HashMap::new();
+    for set in sets {
+        let mut mine: Vec<(model::Source, u64, u64)> = Vec::new();
+        for d in set {
+            let (a, b) = (d.start_ms, d.end_ms.max(d.start_ms + 1));
+            let covered = spans.get(&d.source).is_some_and(|v| {
+                let i = v.partition_point(|x| x.0 < b);
+                v[i.saturating_sub(8)..i].iter().any(|x| a < x.1)
+            });
+            if covered || !ids.insert(d.id) {
+                continue;
+            }
+            mine.push((d.source, a, b));
+            out.push(d);
+        }
+        for (s, a, b) in mine {
+            let v = spans.entry(s).or_default();
+            let i = v.partition_point(|x| x.0 < a);
+            v.insert(i, (a, b));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::newest_wins;
+    use model::Source;
+
+    fn d(id: u64, start: u64, end: u64, source: Source) -> model::Drive {
+        model::Drive {
+            id,
+            car: 1,
+            start_ms: start,
+            end_ms: end,
+            start: None,
+            end: None,
+            start_place: None,
+            end_place: None,
+            start_address: None,
+            end_address: None,
+            start_odometer_km: None,
+            end_odometer_km: None,
+            distance_km: None,
+            speed_max_kmh: None,
+            power_max_kw: None,
+            power_min_kw: None,
+            energy_used_kwh: None,
+            start_soc: None,
+            end_soc: None,
+            start_range_km: None,
+            end_range_km: None,
+            outside_temp_avg_c: None,
+            inside_temp_avg_c: None,
+            ascent_m: None,
+            descent_m: None,
+            source,
+            inputs: model::Inputs::NONE,
+            rules_version: 0,
+        }
+    }
+
+    #[test]
+    fn a_newer_import_wins_where_two_hold_the_same_time() {
+        let tm = Source::Teslamate;
+        // the newer import (first) holds drive 2 over 1000..2000 and no longer holds drive 1 (it was joined into 2)
+        let newer = vec![d(2, 1000, 2000, tm), d(9, 5000, 6000, tm)];
+        let older =
+            vec![d(1, 1100, 1900, tm), d(2, 1000, 1500, tm), d(3, 8000, 9000, tm), d(4, 1500, 1800, Source::Teslafi)];
+        let got: Vec<u64> = newest_wins(vec![newer, older]).iter().map(|x| x.id).collect();
+        assert_eq!(got, [2, 9, 3, 4], "the older drive 1 is the newer drive 2's; ids once; another site's stays");
+    }
 }

@@ -1134,7 +1134,7 @@ a.tl-kind:hover { color: var(--live-ink); }
 .notice[data-level="warning"] > .ico { color: var(--warm-ink); }
 .notice[data-level="error"] { background: var(--danger-soft); border-bottom-color: rgba(255, 122, 133, 0.3); }
 .notice[data-level="error"] > .ico { color: var(--danger-ink); }
-.notice-text { flex: 1; min-width: 0; }
+.notice-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .notice-when { color: var(--text-3); white-space: nowrap; }
 .notice .btn { flex: none; }
 

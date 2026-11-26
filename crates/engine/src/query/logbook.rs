@@ -105,6 +105,118 @@ pub(crate) fn put_purposes(db: &db::Db, car: CarId, items: &[(u64, u64, OwnPurpo
     Ok(())
 }
 
+/// What [`relink_purposes`] did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Relinked {
+    /// Purposes put on the drive they belong to now.
+    pub relinked: u64,
+    /// Purposes kept aside (`car/<id>/purposes-unmatched/<YYYY-MM>`) because no drive is theirs, now.
+    pub unmatched: u64,
+}
+
+/// The drive a purpose given to drive `id` belongs to now, when no drive has that id (the table was written again and
+/// the drive made again from the logs under the id its start gives): a drive of this car made from logs that
+/// overlaps the second the id names, as a start moved by another input keeps its id ([`crate::pipeline::carry_ids`]).
+/// An imported row's id is the import's and never moves: it is the row, or none.
+fn home_of(db: &db::Db, car: CarId, id: u64) -> crate::Result<Option<Drive>> {
+    if crate::importer::is_imported(id) || CarId::try_from(id >> 32).ok() != Some(car) {
+        return Ok(None);
+    }
+    let from = (id & 0xFFFF_FFFF) * 1000;
+    let mut q = db::Query::between(from, from + 1000).oldest_first().limit(10);
+    q.source = Some(model::Source::Live);
+    Ok(db.list::<Drive>(car, &q)?.items.into_iter().next())
+}
+
+/// How many purposes are kept aside for want of a drive (`car/<id>/purposes-unmatched`).
+pub(crate) fn unmatched_count(db: &db::Db, car: CarId) -> crate::Result<u64> {
+    let aside = format!("car/{car}/purposes-unmatched/");
+    let mut n = 0;
+    for key in db.kv().keys(NS)?.iter().filter(|k| k.starts_with(&aside)) {
+        n += records::get::<BTreeMap<u64, OwnPurpose>>(db, NS, key)?.map_or(0, |m| m.len() as u64);
+    }
+    Ok(n)
+}
+
+/// Puts the purposes whose drive is gone on the drive they belong to now ([`home_of`]); those with none are kept
+/// under `car/<id>/purposes-unmatched/<YYYY-MM>` (the month they were in), never dropped, and put back on a drive
+/// that has their id again, or one that is theirs, whenever this runs. Purposes on a drive that is there stay.
+pub(crate) fn relink_purposes(db: &db::Db, car: CarId) -> crate::Result<Relinked> {
+    let _w = writing();
+    let (live, aside) = (format!("car/{car}/purposes/"), format!("car/{car}/purposes-unmatched/"));
+    let mut out = Relinked::default();
+    let keys = db.kv().keys(NS)?;
+    // (the month, in which of the two) → what is there
+    let mut kept: BTreeMap<(String, bool), BTreeMap<u64, OwnPurpose>> = BTreeMap::new();
+    let mut changed = std::collections::BTreeSet::new();
+    let mut moves: Vec<(u64, u64, OwnPurpose, bool)> = Vec::new();
+    for key in &keys {
+        let (month, is_aside) = match (key.strip_prefix(&live), key.strip_prefix(&aside)) {
+            (Some(m), _) => (m.to_string(), false),
+            (_, Some(m)) => (m.to_string(), true),
+            _ => continue,
+        };
+        let all: BTreeMap<u64, OwnPurpose> = records::get(db, NS, key)?.unwrap_or_default();
+        let mut stay = BTreeMap::new();
+        for (id, p) in all {
+            if db.get::<Drive>(car, id)?.is_some() {
+                if is_aside {
+                    // its drive is there again: back with it
+                    let start = db.get::<Drive>(car, id)?.map_or(0, |d| d.start_ms);
+                    moves.push((id, start, p, false));
+                    changed.insert((month.clone(), true));
+                } else {
+                    stay.insert(id, p);
+                }
+            } else if let Some(d) = home_of(db, car, id)? {
+                moves.push((d.id, d.start_ms, p, !is_aside));
+                changed.insert((month.clone(), is_aside));
+                out.relinked += u64::from(!is_aside);
+            } else {
+                if !is_aside {
+                    changed.insert((month.clone(), false));
+                    changed.insert((month.clone(), true));
+                }
+                kept.entry((month.clone(), true)).or_default().insert(id, p);
+            }
+        }
+        if !is_aside {
+            kept.entry((month, false)).or_default().extend(stay);
+        }
+    }
+    // a drive takes one purpose: a second one meant for it is kept aside
+    let mut put: Vec<(u64, u64, OwnPurpose)> = Vec::new();
+    for (id, start, p, counted) in moves {
+        let taken = kept.values().any(|m| m.contains_key(&id)) || put.iter().any(|x| x.0 == id);
+        if taken {
+            kept.entry((month_of(start), true)).or_default().insert(id, p);
+            changed.insert((month_of(start), true));
+            out.relinked = out.relinked.saturating_sub(u64::from(counted));
+        } else {
+            put.push((id, start, p));
+        }
+    }
+    for (month, is_aside) in &changed {
+        let key = format!("car/{car}/{}/{month}", if *is_aside { "purposes-unmatched" } else { "purposes" });
+        match kept.get(&(month.clone(), *is_aside)).filter(|m| !m.is_empty()) {
+            Some(m) => records::put(db, NS, &key, m)?,
+            None => {
+                db.kv().delete(NS, &key)?;
+            }
+        }
+    }
+    for (id, start, p) in &put {
+        let key = purposes_key(car, *start);
+        let mut all: BTreeMap<u64, OwnPurpose> = records::get(db, NS, &key)?.unwrap_or_default();
+        all.insert(*id, p.clone());
+        records::put(db, NS, &key, &all)?;
+    }
+    for key in db.kv().keys(NS)?.iter().filter(|k| k.starts_with(&aside)) {
+        out.unmatched += records::get::<BTreeMap<u64, OwnPurpose>>(db, NS, key)?.map_or(0, |m| m.len() as u64);
+    }
+    Ok(out)
+}
+
 /// A purpose rule: drives from `from_place` to `to_place` (null: no place) on `days` get `purpose`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Rule {

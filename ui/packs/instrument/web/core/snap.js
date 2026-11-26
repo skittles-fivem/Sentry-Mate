@@ -417,18 +417,19 @@ export function snapAll() {
 
 // Only the parts of the page in roots, after their content changed: the rest of the page is laid out as before
 // as long as each part keeps its size, so it keeps what the last run gave it (settled() below).
-function snapIn(roots) {
+function snapIn(roots, level = 0) {
   holdScroll(document.body);
   const was = roots.map((r) => sizeAt.get(r));
   restore(roots);
   const l = lists();
   for (const r of roots) collect(r, l);
   run(l);
-  settled(roots, was);
+  settled(roots, was, level);
 }
 
-// Rows added under the ones a table had (the next page of a list): the table keeps its columns (fixed by the last
-// run), so only the new rows need whole heights, their cells' content centred and their lines on whole pixels.
+// Rows added under the ones a table had (the next page of a list), or put in the place of rows (a list that loads
+// again with a drive changed): the table keeps its columns (fixed by the last run), so only these rows need whole
+// heights, their cells' content centred and their lines on whole pixels.
 function snapRows(table, rows) {
   holdScroll(document.body);
   const was = left.get(table);
@@ -436,6 +437,9 @@ function snapRows(table, rows) {
   const lined = [];
   for (const row of rows) cellLines(row.querySelectorAll('td *, th *'), lined);
   nudge(lined);
+  // a row whose cell holds more than its column (a wider figure: the columns were fixed by the last run, and a row
+  // that was swapped in place may need a wider one): the table's columns are made again
+  if (rows.some((row) => Array.from(row.cells).some((c) => c.scrollWidth > c.clientWidth + 0.5))) { snapAll(); return; }
   settled([table], [was]);
 }
 
@@ -443,7 +447,7 @@ function snapRows(table, rows) {
 // shrank by whole device pixels, with the boxes around it still on whole ones, moved what follows it by whole
 // pixels, which keeps everything there on whole pixels too. Anything else: the whole page is snapped again, in
 // the same turn.
-function settled(roots, was) {
+function settled(roots, was, level = 0) {
   const r = devicePixelRatio || 1;
   const whole = (v) => Math.abs(v * r - Math.round(v * r)) <= 0.02;
   const around = new Set();
@@ -453,7 +457,18 @@ function settled(roots, was) {
     const b = e.getBoundingClientRect();
     if (was[i] === sizeKey(b)) continue;
     const [w0, h0] = was[i].split(' ').map(Number);
-    if (Math.abs(w0 - b.width) > 0.01 || !whole(b.height) || !whole(h0)) { snapAll(); return; }
+    if (Math.abs(w0 - b.width) > 0.01 || !whole(b.height) || !whole(h0)) {
+      // a part that changed its width (a live figure that got shorter) may move what is beside it: the box around
+      // it is snapped, and so on up to three boxes; only then the whole page
+      const ups = level < 3 ? roots.map(boxAround) : [];
+      if (ups.length && ups.every(Boolean)) {
+        const set = new Set(ups);
+        snapIn([...set].filter((u) => ![...set].some((o) => o !== u && o.contains(u))), level + 1);
+        return;
+      }
+      snapAll();
+      return;
+    }
     for (let a = e.parentElement; a && a !== document.body; a = a.parentElement) around.add(a);
   }
   for (const a of around) {
@@ -472,6 +487,12 @@ function settled(roots, was) {
   }
 }
 
+// the nearest box around e that the last run measured (null: none inside the page)
+function boxAround(e) {
+  for (let a = e.parentElement; a && a !== document.body; a = a.parentElement) if (sizeAt.has(a)) return a;
+  return null;
+}
+
 // the smallest boxes the last run measured that hold every change in the records (null: snap the whole page)
 function changedRoots(list) {
   const roots = new Set();
@@ -485,19 +506,20 @@ function changedRoots(list) {
   const out = [...roots].filter((r) => ![...roots].some((o) => o !== r && o.contains(r)));
   return out.length > 24 ? null : out;
 }
-// rows that were only added at the end of one table's body which the last run snapped (null: anything else)
-function appendedRows(list) {
-  let table = null;
-  const rows = [];
+// What the records say about rows put into or taken out of the body of a table the last run snapped: they go to
+// snapRows (their own sizes only), the other records come back in `others`
+function swappedRows(list) {
+  const tables = new Map();
+  const others = [];
   for (const m of list) {
     const tb = m.target;
-    if (m.type !== 'childList' || tb.localName !== 'tbody' || m.removedNodes.length || m.nextSibling) return null;
-    const t = tb.parentElement;
-    if (!t || t.localName !== 'table' || !left.has(t) || (table && table !== t) || !snapped.has(t)) return null;
-    table = t;
-    for (const n of m.addedNodes) { if (n.localName !== 'tr') return null; rows.push(n); }
+    const t = m.type === 'childList' && tb.localName === 'tbody' ? tb.parentElement : null;
+    const trs = (ns) => Array.from(ns).every((n) => n.localName === 'tr');
+    if (!t || t.localName !== 'table' || !left.has(t) || !snapped.has(t) || !trs(m.addedNodes) || !trs(m.removedNodes)) { others.push(m); continue; }
+    if (!tables.has(t)) tables.set(t, new Set());
+    for (const n of m.addedNodes) if (n.isConnected) tables.get(t).add(n);
   }
-  return table && rows.length ? { table, rows } : null;
+  return { tables: [...tables].map(([t, rows]) => [t, [...rows]]), others };
 }
 
 const left = new WeakMap();
@@ -568,6 +590,9 @@ export function watchTables() {
     // or a box shown or hidden (a table's "Show more" foot): it moves what is around it
     const changed = [];
     for (const m of list) {
+      // a change inside what was taken off the page in the same turn (the old drawing of a part drawn again): nothing
+      // on screen, and the part's own swap is a record of its own
+      if (!m.target.isConnected) continue;
       if (!(m.type === 'attributes' || el(m.addedNodes) || el(m.removedNodes) || inTable(m.target))) continue;
       if (drawn(m.target)) continue;
       // a page, or a part of one, built again off screen (core/router.js stageView, core/stage.js offstage: an invisible box
@@ -580,9 +605,10 @@ export function watchTables() {
     if (rest) atRest();
     if (!changed.length) return;
     if (holds) { held = true; return; }
-    const added = appendedRows(changed);
-    if (added) { snapRows(added.table, added.rows); return; }
-    const roots = changedRoots(changed);
+    const { tables, others } = swappedRows(changed);
+    for (const [table, rows] of tables) snapRows(table, rows);
+    if (!others.length) return;
+    const roots = changedRoots(others);
     if (roots) snapIn(roots); else snapAll();
   }).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['hidden'] });
   if ('ResizeObserver' in window) ro = new ResizeObserver(resized);

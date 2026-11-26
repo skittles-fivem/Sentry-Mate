@@ -171,6 +171,8 @@ class Store:
         teslamate.seed_trouble(self, getattr(cfg, "teslamate_trouble", "none"), now)  # --teslamate-trouble
         from .resources import fullrebuild
         fullrebuild.seed(self, cfg, now)  # --full-rebuild: none, running, failed or offered
+        from .resources import repair
+        repair.seed(self, now)  # c1's drives table was repaired a few days ago
 
     # ------------------------------------------------------------ seeding
     def seed_accounts(self, now):

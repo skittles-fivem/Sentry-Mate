@@ -211,7 +211,7 @@ once known), and a complete one also its `check`:
   timeline, and the logs after it fit their chain again. The Data health page's "the last log failed its check"
   clears when that log's new copy verifies. The same bytes again answer as before (`201`, `complete`).
 - **A log that is stored but could not be judged** (the car's trust files could not be locked or written, say a full
-  disk) is answered `500 server_error`, not `201`, so the app sends it again. The same bytes again are stored already,
+  disk) is answered `500 server_error`, not `201`, so the app sends it again (the CAN Bridge app treats any answer it does not know, a `500` included, as "will retry" and sends the log on its next pass). The same bytes again are stored already,
   and a stored log (or sidecar) with no verdict is judged then. A `201` always means the log has a verdict or is
   waiting for its sidecar.
 - A `verified` or `pending` log is never overwritten: a different file under its name is `409 exists_different`,

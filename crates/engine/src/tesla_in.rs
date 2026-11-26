@@ -207,16 +207,21 @@ fn session_of(f: &tesla::invoices::Found) -> crate::invoices::Session {
 /// and the notice.
 pub type TeslafiHook = std::sync::Arc<dyn Fn(&teslafi::Account) + Send + Sync>;
 
+/// Told when TeslaFi starts limiting an account's requests (a 429), with when the next try is: the web side writes
+/// the audit entry and the notice.
+pub type TeslafiRateLimitHook = std::sync::Arc<dyn Fn(&teslafi::Account, u64) + Send + Sync>;
+
 /// The engine as the `teslafi` crate's poller sees it.
 #[derive(Clone)]
 pub struct TeslafiSink {
     pub engine: Engine,
     pub on_account: Option<TeslafiHook>,
+    pub on_rate_limit: Option<TeslafiRateLimitHook>,
 }
 
 impl TeslafiSink {
     pub fn new(engine: Engine) -> TeslafiSink {
-        TeslafiSink { engine, on_account: None }
+        TeslafiSink { engine, on_account: None, on_rate_limit: None }
     }
 }
 
@@ -243,6 +248,12 @@ impl teslafi::Sink for TeslafiSink {
     fn account_changed(&self, account: &teslafi::Account) {
         if let Some(h) = &self.on_account {
             h(account);
+        }
+    }
+
+    fn rate_limited(&self, account: &teslafi::Account, until_ms: u64) {
+        if let Some(h) = &self.on_rate_limit {
+            h(account, until_ms);
         }
     }
 

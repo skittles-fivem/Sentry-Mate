@@ -50,6 +50,22 @@ function fixWords(n) {
   return fixLabel(n.fix_link);
 }
 
+// a damaged drives table (admins only): Repair puts what reads back, reads the imports' kept uploads again and makes
+// the rest from the logs (POST cars/{car}/repair); the notices are read again when it is done
+const repairCars = (n) => (n.code === 'data_damaged'
+  ? [...new Set((n.detail?.files || []).filter((f) => f.mend === 'repair').map((f) => f.car))] : []);
+async function repair(car, button) {
+  button.disabled = true;
+  button.textContent = 'Repairing…';
+  try {
+    await api.post(`cars/${car}/repair`, { table: 'drives' });
+  } catch (e) {
+    button.disabled = false;
+    button.textContent = 'Repair';
+    button.title = e?.message || 'The repair did not start';
+  }
+}
+
 function render() {
   if (!box) return;
   const gone = hidden();
@@ -61,6 +77,8 @@ function render() {
     const row = h('div', { class: 'notice', dataset: { level, code: n.code }, role: level === 'info' ? 'status' : 'alert' },
       icon(level === 'info' ? 'info' : 'warn'),
       h('span', { class: 'notice-text' }, n.message || n.code),
+      repairCars(n).map((car) => h('button', { class: 'btn btn--sm', type: 'button', onclick: (ev) => repair(car, ev.currentTarget) },
+        repairCars(n).length > 1 ? `Repair ${car}` : 'Repair')),
       fixOf(n) ? h('a', { class: 'btn btn--sm', href: fixOf(n) }, fixWords(n), icon('arrow-r', 'ico--sm')) : null,
       level === 'info' ? h('button', { class: 'btn btn--ghost btn--icon btn--sm', type: 'button', 'aria-label': 'Hide this notice for now',
         onclick: () => { if (n.code === 'release_available') dismissRelease(n); else hide(n.code); render(); } }, icon('x', 'ico--sm')) : null);

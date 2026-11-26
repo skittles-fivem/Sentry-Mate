@@ -42,6 +42,22 @@ def teslafi_read_ms(t):
     return t - 50_000
 
 
+def teslafi_times(app, car_id, t):
+    """(last_ms, received_ms) of TeslaFi's newest data for the car: TeslaFi's own time of it, and when the server read
+    it. A page check sets `data_age_ms` on the car's TeslaFi account (TeslaFi has had nothing new for that long: the
+    data came then) or `time_offset_ms` (polls still come, stamped that long before they are read: the account's
+    time zone is wrong); see `resources.teslafi.data_health`."""
+    a = next((a for a in app.store.teslafi["accounts"].values()
+              if any(c.get("match") == car_id for c in a["cars"])), None) or {}
+    if a.get("data_age_ms"):
+        last = t - a["data_age_ms"]
+        return last, last + 30_000
+    if a.get("time_offset_ms"):
+        return t - 50_000 - a["time_offset_ms"], t - 45_000
+    last = teslafi_read_ms(t)
+    return last, last + 5_000
+
+
 def _v(value, at, kind, t, age):
     if value is None:
         return None

@@ -96,12 +96,25 @@ cut short) is where it can lose something. It never does so quietly:
   (`<name>.damaged` beside it), widens its window over the time the file covered and decodes the logs of that time
   again, where it used to clear the car's drives and charges and then stop at the file
   (`a_rebuild_mends_a_damaged_day_of_decoded_samples`). A full rebuild never reads those files: it makes them all.
-- **A damaged table of a car** (`drives.snap` and the like), or a damaged series of an import or an API: these
-  also hold what no log gives (imported rows, typed costs and purposes), so no rebuild replaces them by itself. A
-  rebuild or a full rebuild that meets one fails and names the file, and the admins get the notice `data_damaged`
-  with what to do: put the car's folder back from a backup with the server stopped (the logs that came since are
-  decoded again at the start). This is how it stays: no rebuild and no full rebuild starts such a table empty,
-  because that would lose its imported rows and typed values without a word. The steps are in
+- **A damaged drives table of a car** (`drives.snap` or `drives.log`). The table is read as far as it reads (a
+  snapshot's chunks up to the first bad one, and every journal record that opens), the files are put aside (never
+  deleted: `db/cars/<id>/aside/<time>/`), and a table of what read is written. A rebuild, a full rebuild and an
+  admin's repair (`POST /cars/{car}/repair`) all do this when they meet the damage, then: the rows made from the logs
+  are made again (the window of a plain rebuild grows over the time the snapshot lost; a journal's loss has no
+  time, so it is all of it), imported rows that did not read are read again from the kept uploads of the imports
+  (as the import stored them, each under the id it had; the newest import wins where two hold the same time; a row that is on another car already, or in a lot held for a car, whether an import's move or an odometer check put it there, is left out and said, and so are rows the import's own moves took off this car),
+  and the purposes you typed are put back on the drives that are theirs now (a purpose whose drive has no id of its
+  own any more goes to the drive that overlaps the second its id names; with none it is kept under
+  `purposes-unmatched`, never dropped). What could not be recovered is in the report
+  (`GET /cars/{car}/repair`, the notice `data_repaired`): rows from a local TeslaMate's catch-up, imports whose upload
+  is gone, rows moved off the car, the changes a damaged journal record held. `crates/engine/tests/pipeline.rs`:
+  `a_full_rebuild_mends_a_drives_snapshot_cut_in_half`, `a_full_rebuild_mends_a_drives_snapshot_with_one_bad_chunk`,
+  The files are moved aside and the table written again in one step under the car's lock, after the uploads were read, and the report is kept from before the move (running, then done, or failed with where the files are); a repair whose rebuild never ends is ended by the next look at it, with a note. `a_plain_rebuild_mends_a_damaged_drives_table`, `imported_rows_without_a_kept_upload_are_reported_lost_with_their_span`,
+  `a_bad_journal_record_loses_only_its_change_and_says_so`, `a_purpose_whose_drive_is_gone_is_kept_aside_and_reported`.
+  A damaged table of another kind (charges, states, updates), or a damaged series of an import or an API, also holds
+  what no log gives: a rebuild that meets one fails and names the file, and the admins get the notice
+  `data_damaged` with what to do: put the car's folder back from a backup with the server stopped (the logs that came
+  since are decoded again at the start). The steps are in
   [A car's history file is damaged](install.md#a-cars-history-file-is-damaged).
 - **A rebuild that fails is said**: `500 rebuild_failed` with why, an audit entry that says it failed, and the
   notice `rebuild_failed` (`crates/web/tests/system.rs`).
@@ -109,11 +122,21 @@ cut short) is where it can lose something. It never does so quietly:
   and rebuilds its windows once per run of logs as before the restart, to the very history an uninterrupted one
   gives (`crates/sentry-mate/src/window_batch.rs`:
   `a_full_rebuild_carried_on_after_a_restart_gives_the_same_timeline_per_run_of_logs`).
-- **A rebuild of a period** rebuilds its windows once per run of logs too where no drive or charge goes on across
-  the period's end, to the very history a window per log gives, ids included
-  (`a_rebuild_of_a_period_gives_the_same_timeline_per_run_of_logs`). A period whose end cuts a drive or a charge
-  gets a window per log: the part after the end is kept, and per run the whole drive or charge could keep the id of
-  that part instead of its start's.
+- **A rebuild of a period** rebuilds its windows once per run of logs too, to the very history a window per log
+  gives, ids included (`a_rebuild_of_a_period_gives_the_same_timeline_per_run_of_logs`). Where its end cuts a
+  drive or a charge, the part after the end is kept, and a window that reaches it before the drive's head is
+  decoded makes a drive or charge of it with the id of its first sample; the whole one keeps its start's id only if
+  a row with that id is stored, else the id of the first old row it overlaps. So the id depends on the windows
+  rebuilt before the head: the rebuild notes where the earliest cut drive or charge began (before it clears, on
+  its mark), gives the logs from an hour before that a window each, and the logs before, which carry none of its
+  samples, one per run (`a_rebuild_of_a_period_cutting_a_drive_or_charge_gives_the_same_timeline_per_run_of_logs`:
+  ends at every point of a drive and of a charge, gaps, two cars, a restart, a start that moves earlier). It
+  stays a window per log where it cannot be told that the logs before are free of the drive: logs stored and not
+  worked on yet outside the period, a window grown over a damaged file (above), a mark kept by an older
+  version, a restart that finds rows already rebuilt at or after the logs left, and a car with an API input. The
+  hour is an assumption of the engine (a log is about a minute long): a drive whose start the rebuild moves
+  earlier than the stored one by more than that came out the same in the tests (2 hours 18 minutes earlier), but
+  nothing proves it in general.
 
 ## Version changes
 

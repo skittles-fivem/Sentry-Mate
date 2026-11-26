@@ -102,6 +102,7 @@ mod logged;
 mod plain;
 mod readonly;
 mod rows;
+mod salvage;
 pub mod segment;
 mod shadow;
 mod table;
@@ -114,6 +115,7 @@ pub use fleet::{FleetCursor, FleetEntry, FleetPage, FleetQuery, Summary};
 pub use kv::{BUNDLE_TARGET, Kv, KvCompacted, KvUsage, MAX_VALUE};
 pub use readonly::{DayRead, Reader, TRIES as READ_TRIES};
 pub use rows::{Cursor, Item, MAX_PAGE, Order, Page, Query, StateRow, Table, Tally, Totals, UpdateRow};
+pub use salvage::{JournalPart, Salvage, SnapshotPart};
 pub use segment::{DAY_MS, DayInfo, END_MS, Fields, Point, keeping_days};
 
 use cars::{CarData, OpenCars};
@@ -813,6 +815,31 @@ impl Db {
             since_ms,
             from_logs,
         });
+    }
+
+    /// Forgets that these files of a car were found damaged (they were put aside or written again).
+    fn forget_damage(&self, files: &[&Path]) {
+        let Ok(mut d) = self.inner.damaged.lock() else { return };
+        for f in files {
+            d.remove(&self.inner.ctx.label(f));
+        }
+    }
+
+    /// Takes a car's summary to count `part` as what `table` holds now (and its last activity to include `last`).
+    fn mend_summary(&self, car: CarId, table: Table, part: &Tally, last: Option<u64>) -> Result<()> {
+        let mut f = lock(&self.inner.fleet)?;
+        if let Some(e) = f.state.get(car) {
+            let have = e.summary.tally.part(table);
+            let late = last.is_some_and(|l| e.summary.last_activity_ms.is_none_or(|a| l > a));
+            if have != *part || late {
+                let mut e = e.clone();
+                e.summary.tally.add(&have, -1);
+                e.summary.tally.add(part, 1);
+                e.summary.last_activity_ms = e.summary.last_activity_ms.max(last);
+                f.commit(&self.inner.ctx, FleetOp::Put(Box::new(e)))?;
+            }
+        }
+        Ok(())
     }
 
     /// The cars' files that something found damaged since the db was opened and that are still there (one set

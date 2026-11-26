@@ -676,6 +676,30 @@ pub fn teslafi_check_files<R: Read, I: IntoIterator<Item = io::Result<(String, R
     Ok(Checked { cars: sink.cars, report: json, groups: report.groups })
 }
 
+/// Reads a TeslaMate backup again for the drives it holds for one car (nothing is stored: see
+/// [`crate::importer::ReplaySink`]).
+pub fn replay_drives<R: Read>(
+    e: &Engine,
+    open: impl FnMut() -> io::Result<R>,
+    plan: crate::importer::ReplayPlan,
+) -> Result<Vec<model::Drive>, import::Error> {
+    let mut sink = crate::importer::ReplaySink::new(e, plan, model::Source::Teslamate);
+    import::import(open, &mut sink, &import::Options::default())?;
+    Ok(sink.into_drives())
+}
+
+/// [`replay_drives`] of TeslaFi's files.
+pub fn replay_teslafi_drives<R: Read, I: IntoIterator<Item = io::Result<(String, R)>>>(
+    e: &Engine,
+    files: TeslafiFiles<R, I>,
+    s: &TeslafiSettings,
+    plan: crate::importer::ReplayPlan,
+) -> Result<Vec<model::Drive>, import::Error> {
+    let mut sink = crate::importer::ReplaySink::new(e, plan, model::Source::Teslafi);
+    files.import(&mut sink, &teslafi_options(e, s))?;
+    Ok(sink.into_drives())
+}
+
 /// What a TeslaFi run did.
 #[derive(Debug, Clone)]
 pub struct TeslafiImported {

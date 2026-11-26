@@ -203,6 +203,8 @@ pub struct MemSink {
     pub new_cars: Mutex<Vec<tesla::NewCar>>,
     pub changed: Mutex<Vec<teslafi::AccountState>>,
     pub off_can: Mutex<Vec<(u32, u64, model::OffCan)>>,
+    /// The accounts TeslaFi began limiting, with the end of the wait.
+    pub limited: Mutex<Vec<(String, u64)>>,
 }
 
 impl teslafi::Sink for MemSink {
@@ -221,6 +223,9 @@ impl teslafi::Sink for MemSink {
     }
     fn account_changed(&self, account: &teslafi::Account) {
         self.changed.lock().unwrap().push(account.state);
+    }
+    fn rate_limited(&self, account: &teslafi::Account, until_ms: u64) {
+        self.limited.lock().unwrap().push((account.id.clone(), until_ms));
     }
 }
 

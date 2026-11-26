@@ -487,7 +487,7 @@ async function mount(s, { keepScroll = false, live = false, wall = false } = {})
     view = first.stage;
   }
 
-  let shownOnce = false, refreshAsked = false;
+  let shownOnce = false, refreshAsked = false, refreshWaits = false;
   const ctx = {
     id, info, view, state: s, query: s.query, car, carId: s.car, tz, period,
     params: period ? periodParams(period) : {},
@@ -554,6 +554,12 @@ async function mount(s, { keepScroll = false, live = false, wall = false } = {})
     refresh: () => {
       if (!alive()) return;
       if (!shownOnce) { refreshAsked = true; return; }
+      // the new page is built in one task of tens of ms (its tables, charts and maps), and its swap waits for the scroll
+      // to rest anyway: building it then takes no frame from a scroll
+      if (scrolling()) {
+        if (!refreshWaits) { refreshWaits = true; afterScroll(() => { refreshWaits = false; ctx.refresh(); }); }
+        return;
+      }
       mount(state.current(), { keepScroll: true, live: true });
     },
   };

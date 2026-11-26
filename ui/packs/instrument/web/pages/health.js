@@ -926,7 +926,7 @@ async function mountSystem(ctx) {
           kv([
             kvRow('Accounts', sh.tesla?.accounts ? h('a', { class: 'link', href: `${state.buildUrl('settings-integrations')}#tesla` }, `${formatNumber(sh.tesla.accounts)} reading ${formatNumber(sh.tesla.cars ?? 0)} ${sh.tesla.cars === 1 ? 'car' : 'cars'}`)
               : h('span', { class: 'faint' }, 'None: no connection to Tesla is made'), 'car'),
-            kvRow('Requests today', formatNumber(sh.tesla?.requests_today ?? 0), 'pulse', { title: 'At most 3,000 a day per account.' }),
+            kvRow('Requests today', formatNumber(sh.tesla?.requests_today ?? 0), 'pulse', { title: 'Since midnight UTC, for information: there is no cap on this side.' }),
             kvRow('Last error', sh.tesla?.last_error ? h('span', { class: 'warn' }, lastErrorText(sh.tesla.last_error), sh.tesla.last_error.at_ms ? h('span', { class: 'faint' }, ' · ', agoEl(sh.tesla.last_error.at_ms, tz)) : null) : h('span', { class: 'faint' }, 'none'), 'warn'),
           ])),
         h('div', null,

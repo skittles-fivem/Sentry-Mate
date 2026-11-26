@@ -333,6 +333,13 @@ impl Engine {
         self.inner.rebuilds_overlap.load(Ordering::SeqCst)
     }
 
+    /// Makes the next rebuild job stop as by a crash once it worked on `logs` logs (tests: the mark it kept is
+    /// what a restart carries on from).
+    #[doc(hidden)]
+    pub fn rebuild_crash_after_logs(&self, logs: Option<u64>) {
+        *lock(&self.inner.job_crash_logs) = logs;
+    }
+
     /// Starts a rebuild in the background and returns at once (an admin's: the history of the period made again).
     pub fn rebuild(&self, scope: Scope) -> Result<Job> {
         self.rebuild_because(scope, What::WHOLE, Cause::owner(None), false)
@@ -355,6 +362,7 @@ impl Engine {
             }
             let id = self.inner.next_job.fetch_add(1, Ordering::SeqCst);
             let st = Arc::new(JobState::new(id, scope.car, from_ms, to_ms));
+            st.crash_after.store(lock(&self.inner.job_crash_logs).take().unwrap_or(0), Ordering::SeqCst);
             *lock(&st.what) = what;
             lock(&st.causes).push(cause);
             st.settle_until.store(settle_until, Ordering::SeqCst);
@@ -485,20 +493,27 @@ impl Engine {
             }
             // (the narrow rebuilds asked for up to now are done by this one; one asked for meanwhile is not)
             let (gen_p, gen_i) = (records::redo(db, car, Redo::Positions)?, records::redo(db, car, Redo::Inputs)?);
+            let mut window = (from_ms, to_ms);
             {
                 let l = self.car_lock(car);
                 let _held = lock(&l);
-                let end_clear = to_ms == u64::MAX || !self.cut_at(car, to_ms)?;
-                let mut mark = RebuildMark { from_ms, to_ms, started_ms, cleared: false, end_clear };
+                // (before the clearing: it takes the row away that tells)
+                let cut_from_ms = if to_ms == u64::MAX { None } else { self.cut_from(car, to_ms)? };
+                let end_clear = to_ms == u64::MAX || cut_from_ms.is_none();
+                let mut mark = RebuildMark { from_ms, to_ms, started_ms, cleared: false, end_clear, cut_from_ms };
                 records::put_rebuild_mark(db, car, Some(&mark))?;
                 self.clear_window(car, from_ms, to_ms)?;
+                window = records::rebuild_mark(db, car)?.map_or(window, |m| (m.from_ms, m.to_ms));
                 // (a window grown over a damaged file: its end is another)
                 if records::rebuild_mark(db, car)?.is_some_and(|m| (m.from_ms, m.to_ms) != (from_ms, to_ms)) {
                     mark.end_clear = false;
+                    mark.cut_from_ms = None;
                 }
                 mark.cleared = true;
                 records::put_rebuild_mark(db, car, Some(&mark))?;
             }
+            // (what was cleared is cleared by now: a repair that came before this is covered by it)
+            let cleared_ms = now_ms();
             self.reconcile_car(car, Some(st))?;
             if st.cancelled() {
                 // the car's window is cleared: the logs this job did not reach are worked on now, in the background
@@ -506,6 +521,8 @@ impl Engine {
                 self.send(crate::Work::Reconcile { car: Some(car) });
                 break;
             }
+            // (a drives table repaired meanwhile: the owner's purposes go back on the drives made again)
+            self.repair_after_rebuild(car, cleared_ms, window.0, window.1)?;
             // (the whole history made again: the narrow rebuilds noted are done with it)
             if from_ms == 0 && to_ms == u64::MAX {
                 self.job_clear_hook();
@@ -535,18 +552,22 @@ impl Engine {
         Ok(())
     }
 
-    /// Whether a drive or a charge worked out from logs goes on across `t` (begun before it, ended after it).
-    fn cut_at(&self, car: CarId, t: u64) -> Result<bool> {
-        fn cut<T: db::Item>(db: &db::Db, car: CarId, t: u64) -> Result<bool> {
+    /// Where the earliest drive or charge worked out from logs that goes on across `t` (begun before it, ended
+    /// after it) began; `None` where none does.
+    fn cut_from(&self, car: CarId, t: u64) -> Result<Option<u64>> {
+        fn cut<T: db::Item>(db: &db::Db, car: CarId, t: u64) -> Result<Option<u64>> {
             let q = db::Query {
                 limit: 10,
                 source: Some(model::Source::Live),
                 ..db::Query::between(t, t.saturating_add(1))
             };
-            Ok(db.list::<T>(car, &q)?.items.iter().any(|r| r.start_ms() < t))
+            Ok(db.list::<T>(car, &q)?.items.iter().map(|r| r.start_ms()).filter(|&s| s < t).min())
         }
         let db = &self.inner.db;
-        Ok(cut::<model::Drive>(db, car, t)? || cut::<model::Charge>(db, car, t)?)
+        Ok(match (cut::<model::Drive>(db, car, t)?, cut::<model::Charge>(db, car, t)?) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        })
     }
 
     /// The narrow rebuild of a GPS layout's change, when one is noted on the car: its logs whose positions came from

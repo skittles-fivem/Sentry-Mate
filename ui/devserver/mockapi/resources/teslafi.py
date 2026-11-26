@@ -25,13 +25,11 @@ HOST = "www.teslafi.com"
 MAX_LABEL = 64
 # how often TeslaFi is read, by pace (crates/teslafi Pace): `often` as often as TeslaFi itself refreshes its data
 PACES = {
-    "often": {"driving_s": 15, "charging_s": 15, "parked_s": 60, "asleep_s": 180,
-              "daily_cap": 6000},
-    "normal": {"driving_s": 60, "charging_s": 60, "parked_s": 180, "asleep_s": 600,
-               "daily_cap": 1500},
-    "gentle": {"driving_s": 120, "charging_s": 120, "parked_s": 300, "asleep_s": 1200,
-               "daily_cap": 1500},
+    "often": {"driving_s": 15, "charging_s": 15, "parked_s": 60, "asleep_s": 180},
+    "normal": {"driving_s": 60, "charging_s": 60, "parked_s": 180, "asleep_s": 600},
+    "gentle": {"driving_s": 120, "charging_s": 120, "parked_s": 300, "asleep_s": 1200},
 }
+# no cap of the server's own: TeslaFi does the limiting (an account's `rate_limited_until_ms`)
 POLLS = PACES["normal"]
 TOKEN_RX = re.compile(r"[\x21-\x7e]{1,256}")
 # the zones the real server takes (chrono-tz's list; crates/teslafi/tests/zones.rs checks it is the same)
@@ -122,7 +120,7 @@ def _mode(req, a):
     """What the server does for the account now: from its car's own state on the virtual clock."""
     if a["paused"] or a["state"] == "refused" or not any(_matched(c) for c in a["cars"]):
         return "off", None
-    if a["state"] == "error":
+    if a["state"] == "error" or limited_until(req, a):
         return "backoff", None
     car = next(c["match"] for c in a["cars"] if _matched(c))
     if req.ds.history(car) is None:
@@ -144,10 +142,52 @@ def _poll(req):
 
 
 def _polls_today(req, a):
+    """Requests since midnight UTC, for information (there is no cap)."""
     if a["paused"] or a["state"] != "ok":
         return 0
     midnight = req.now - req.now % DAY
-    return int((req.now - midnight) / 60_000 * 0.4) % 1500
+    return int((req.now - midnight) / 60_000 * 0.4)
+
+
+def limited_until(req, a):
+    """When TeslaFi's 429 wait of the account ends, while it lasts (a test or a page check sets
+    `rate_limited_until_ms` on the account)."""
+    t = a.get("rate_limited_until_ms")
+    return t if t and t > req.now and not a["paused"] and a["state"] == "ok" else None
+
+
+NO_DATA_AFTER_MS = 2 * 3_600_000  # an awake car with no new poll for this long: TeslaFi has no new data
+FRESH_MS = 10 * 60_000  # a poll this recent: polls keep coming
+TIME_OFFSET_MIN_MS = 3_600_000  # a fresh poll stamped this far off: the account's time zone is wrong
+
+
+def data_health(req, a):
+    """How old TeslaFi's data is and whose problem it is (crates/teslafi/src/health.rs), from what a page check sets
+    on the account: `data_age_ms` (nothing new for that long) or `time_offset_ms` (polls come, stamped that far off).
+    -> ("fine", None) | ("no_data", {age_ms, last_data_ms}) | ("time_offset", {skew_ms, behind})."""
+    if a["paused"] or a["state"] != "ok" or limited_until(req, a) or not any(_matched(c) for c in a["cars"]):
+        return "fine", None
+    age = a.get("data_age_ms")
+    if age and age >= NO_DATA_AFTER_MS and _mode(req, a)[0] not in ("asleep", "off"):
+        return "no_data", {"age_ms": age - 30_000, "last_data_ms": req.now - age}
+    off = a.get("time_offset_ms")
+    if off and abs(off) >= TIME_OFFSET_MIN_MS:
+        return "time_offset", {"skew_ms": abs(off), "behind": off > 0}
+    return "fine", None
+
+
+def _span(ms):
+    h, m = ms // 3_600_000, ms // 60_000 % 60
+    if h >= 48:
+        return f"{h // 24} days"
+    if h == 0:
+        return f"{m} min"
+    return f"{h} h" if m == 0 or h >= 10 else f"{h} h {m} min"
+
+
+def _utc_minute(ms):
+    import datetime
+    return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
 def _suggest(req, c):
@@ -173,7 +213,7 @@ def account_view(req, a):
         "id": a["id"], "label": a["label"], "hosts": [HOST], "added_ms": a["added_ms"], "status": _status_word(a),
         "paused": a["paused"], "time_zone": a["time_zone"], "running": True, "mode": mode,
         "last_ok_ms": a["last_ok_ms"], "last_error": a["last_error"], "polls_today": _polls_today(req, a),
-        "tls": "1.3", "cars": [car_view(req, a, c, car_state) for c in a["cars"]], "version": a["version"],
+        "rate_limited_until_ms": limited_until(req, a), "tls": "1.3", "cars": [car_view(req, a, c, car_state) for c in a["cars"]], "version": a["version"],
     }
 
 
@@ -194,7 +234,9 @@ def overview(req):
     return {
         "enabled": bool(t["accounts"]), "accounts": len(t["accounts"]), "cars": _n_matched(t),
         "hosts": [HOST] if t["accounts"] else [], "poll": _poll(req)["poll"], "polls": dict(PACES[_poll(req)["poll"]]),
-        "polls_today": sum(_polls_today(req, a) for a in t["accounts"].values()), "last_error": _last_error(t),
+        "polls_today": sum(_polls_today(req, a) for a in t["accounts"].values()),
+        "rate_limited_until_ms": max((u for a in t["accounts"].values() if (u := limited_until(req, a))), default=None),
+        "last_error": _last_error(t),
         "clients_built": t["clients_built"], "tls": "1.3" if t["accounts"] else None,
         "version": _poll(req)["version"],
         "invoices": invoices.block(req, "teslafi"),
@@ -234,14 +276,19 @@ def status(req):
         mode, car_state = _mode(req, a)
         step = _step(mode, _poll(req)["poll"])
         last = req.now - req.now % step if step else None
+        until = limited_until(req, a)
         car = next((c for c in a["cars"] if _matched(c)), None)
         items.append({
             "account": a["id"], "car": car["match"] if car else None, "vehicle": a["cars"][-1]["vehicle"]
             if a["cars"] else None, "mode": mode, "car_state": car_state, "last_request_ms": last,
-            "next_request_ms": last + step if step else None,
+            "next_request_ms": until or (last + step if step else None),
             "last_data_ms": last - 20_000 if mode in ("driving", "charging", "idle") else a["last_ok_ms"]
             if mode != "off" else None,
-            "polls_today": _polls_today(req, a), "tls": "1.3", "last_error": a["last_error"],
+            "last_new_ms": last if mode in ("driving", "charging", "idle") else None,
+            "data": data_health(req, a)[0],
+            "polls_today": _polls_today(req, a), "rate_limited_until_ms": until, "tls": "1.3",
+            "last_error": {"code": "rate_limited", "message": "TeslaFi is limiting requests", "at_ms": until - 120_000}
+            if until else a["last_error"],
         })
     return {"items": items, "next": None}
 
@@ -439,6 +486,33 @@ def notices(req):
             out.append({"code": "teslafi_account_error", "level": "warning",
                         "message": f"The TeslaFi account \"{a['label']}\" is not read: {msg}.", "since_ms": since,
                         "fix_link": "/settings/integrations#teslafi", "detail": {"account": a["id"]}})
+        until = limited_until(req, a)
+        if until:
+            out.append({"code": "teslafi_rate_limited", "level": "warning",
+                        "message": f"TeslaFi is limiting requests for the TeslaFi account \"{a['label']}\", next try "
+                                   f"at {_utc_minute(until)}. This server sets no limit of its own; it waits as long "
+                                   "as TeslaFi asks.",
+                        "since_ms": since, "fix_link": "/settings/integrations#teslafi",
+                        "detail": {"account": a["id"], "until_ms": until}})
+        word, d = data_health(req, a)
+        if word == "no_data":
+            out.append({"code": "teslafi_no_data", "level": "warning",
+                        "message": f"TeslaFi has had no new data from the car for {_span(d['age_ms'])} (the TeslaFi "
+                                   f"account \"{a['label']}\"; its last data is from {_utc_minute(d['last_data_ms'])}). "
+                                   "This server reads TeslaFi without errors, so the car is not sending TeslaFi "
+                                   "anything newer: the problem is on TeslaFi's side or between TeslaFi and the car, "
+                                   "not here.",
+                        "since_ms": d["last_data_ms"], "fix_link": "/settings/integrations#teslafi",
+                        "detail": {"account": a["id"], "last_data_ms": d["last_data_ms"], "age_ms": d["age_ms"]}})
+        elif word == "time_offset":
+            out.append({"code": "teslafi_time_offset", "level": "warning",
+                        "message": f"The times TeslaFi gives for the TeslaFi account \"{a['label']}\" are "
+                                   f"{_span(d['skew_ms'])} {'before' if d['behind'] else 'after'} the moment this "
+                                   f"server reads them, so every value from it looks "
+                                   f"{'old' if d['behind'] else 'to come'}. Check the account's time zone (Settings, "
+                                   "TeslaFi): TeslaFi writes local time without a zone.",
+                        "since_ms": None, "fix_link": "/settings/integrations#teslafi",
+                        "detail": {"account": a["id"], "skew_ms": d["skew_ms"], "behind": d["behind"]}})
     return out
 
 

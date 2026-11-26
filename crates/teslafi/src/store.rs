@@ -98,11 +98,14 @@ struct TokenFile {
 /// count are not forgotten. Not part of [`Account`]: nothing outside the poller needs it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pacing {
-    /// No request before this (a back-off, TeslaFi's wait, or midnight after the daily cap).
+    /// No request before this (a back-off or TeslaFi's wait).
     #[serde(default)]
     pub backoff_until_ms: u64,
     #[serde(default)]
     pub backoff_step: u32,
+    /// The end of TeslaFi's last 429 wait (a 429 before it ends is the same episode).
+    #[serde(default)]
+    pub rate_limited_until_ms: u64,
     /// The UTC day (ms / 86,400,000) `polls_today` counts.
     #[serde(default)]
     pub day: u64,
@@ -116,6 +119,11 @@ pub struct Pacing {
     /// TeslaFi's time of it.
     #[serde(default)]
     pub last_poll_ms: Option<u64>,
+    /// When this server last read a poll TeslaFi had not given before (its own clock, not TeslaFi's): with
+    /// `last_poll_ms` it tells TeslaFi having nothing new ([`crate::health`]) from TeslaFi's times being read in the
+    /// wrong zone.
+    #[serde(default)]
+    pub last_new_ms: Option<u64>,
     /// The time zone `last_poll_ms` was read in: another zone reads TeslaFi's times differently, so a poll is then
     /// compared by its id only until one has been read in the new zone.
     #[serde(default)]
@@ -345,6 +353,7 @@ impl Store {
                 // a new token: TeslaFi's earlier waits were for the old one
                 pacing.backoff_until_ms = 0;
                 pacing.backoff_step = 0;
+                pacing.rate_limited_until_ms = 0;
                 token_file(t)
             }
             None => f.token,
