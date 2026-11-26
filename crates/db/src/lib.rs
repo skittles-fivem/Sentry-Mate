@@ -429,6 +429,13 @@ impl Db {
         self.inner.ctx.set_crash(at);
     }
 
+    /// Makes every file a switch to a shadow ([`Db::adopt_car`]) or a new shadow ([`Db::shadow`]) copies wait this
+    /// long first, as a slow disk would (tests only).
+    #[doc(hidden)]
+    pub fn pause_copies(&self, per_file: std::time::Duration) {
+        self.inner.ctx.set_copy_pause(u64::try_from(per_file.as_millis()).unwrap_or(u64::MAX));
+    }
+
     pub fn stats(&self) -> Stats {
         let (open_cars, open_bytes, cars_opened) = self.inner.cars.stats();
         let (cars, fleet_bytes) = self.inner.fleet.lock().map_or((0, 0), |f| (f.state.len(), f.weight()));

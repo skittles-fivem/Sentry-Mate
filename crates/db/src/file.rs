@@ -102,6 +102,8 @@ pub(crate) struct Ctx {
     /// The data folder: labels are paths under it.
     pub data: PathBuf,
     crash: Mutex<Option<Crash>>,
+    /// A pause before each file a switch copies (tests: a slow disk), in milliseconds.
+    copy_pause_ms: std::sync::atomic::AtomicU64,
     pub opts: crate::Options,
     /// Day snapshots read last, opened and unpacked.
     pub plain: crate::plain::PlainCache,
@@ -112,7 +114,15 @@ pub(crate) struct Ctx {
 impl Ctx {
     pub(crate) fn new(vault: Arc<Vault>, data: PathBuf, opts: crate::Options) -> Ctx {
         let plain = crate::plain::PlainCache::new(opts.max_cached_bytes);
-        Ctx { vault, data, crash: Mutex::new(None), opts, plain, packs: Default::default() }
+        Ctx {
+            vault,
+            data,
+            crash: Mutex::new(None),
+            copy_pause_ms: Default::default(),
+            opts,
+            plain,
+            packs: Default::default(),
+        }
     }
 
     /// A file's label: its path under the data folder, with `/` between parts.
@@ -124,6 +134,18 @@ impl Ctx {
     pub(crate) fn set_crash(&self, at: Option<Crash>) {
         if let Ok(mut c) = self.crash.lock() {
             *c = at;
+        }
+    }
+
+    pub(crate) fn set_copy_pause(&self, ms: u64) {
+        self.copy_pause_ms.store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Waits as long as a test asked before a switch copies a file.
+    pub(crate) fn copy_pause(&self) {
+        let ms = self.copy_pause_ms.load(std::sync::atomic::Ordering::Relaxed);
+        if ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
         }
     }
 
