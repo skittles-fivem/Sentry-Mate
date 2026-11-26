@@ -1621,6 +1621,37 @@ car's summary it already compared).
 By hand (`cargo test --release -p sentry-mate a_full_rebuild_holding -- --ignored --nocapture`): three days of the
 owner's shape (3,755 logs) beside an import back 60 days and every API, cut off after 2,000 logs and carried on,
 the same; its full rebuild 106.5 s writing per log, 9.9 s holding. What is left of a log's work is its samples
-(2.0 of 2.7 ms). Rebuild speed's stage names stay as they are; on this history the line now names "writing their
-samples".
+(2.0 of 2.7 ms).
+
+**A day's samples written once.** Each log's samples were a write of their own (`Engine::write_smo_points`: the
+day's journal appended and synced, and the car's activity in the fleet journal). A full rebuild by day now holds
+them too (`Engine::smo_hold` in `crates/engine/src/hot.rs`): each write is kept as it is (every point of its window
+replaced, the points as a read gives them back), a read of the car's samples (`Engine::smo_points`) gets what is
+stored with the writes held laid over it in order, and at the day's end, first, one write per car over the span the
+writes cover puts there what they leave (the points the writes one after the other leave). The samples are compared
+by the same tests (everything stored).
+
+| 5,000 logs of the owner's shape | and the newest values | and the samples |
+|---|---:|---:|
+| a full rebuild | 13.6 s (368 logs/s), 13.4 s of CPU | 7.9 s (633 logs/s), 10.7 s of CPU |
+| within a day: start, middle, end (logs/s) | 422.6, 430.2, 407.3 | 812.3, 842.5, 717.0 |
+| ms a log: samples, now, the logs' records | 2.0, 0.1, about 0 | 0.9, 0.1, about 0 |
+
+At the owner's size (`PERF_LOGS=23690`, the same seeded folder; before: `PERF_HOLD=0`, by day with every log's
+samples and records written as the commit before this section did):
+
+| 23,690 logs of the owner's shape | before (written per log) | held a day: records, newest values, samples |
+|---|---:|---:|
+| a full rebuild | 715.3 s (33.1 logs/s), 332 s of CPU | 44.2 s (536 logs/s), 58.3 s of CPU |
+| within a day: start, middle, end (logs/s) | 43.8, 35.9, 33.4 | 665.7, 649.4, 646.6 |
+| within a day: start, middle, end (ms a log) | 22.8, 27.9, 29.9 | 1.5, 1.5, 1.5 |
+| ms a log: samples, now, the logs' records, windows | 3.6, 8.0, 13.5, 0.1 | 1.2, 0.1, about 0, 0.2 |
+
+16 times as fast here. The owner's server read 22 logs/s where this container read 33 before: at that ratio it
+would read some 350 logs/s (an estimate; their Rebuild speed line will say).
+
+What is left of a log's work (1.6 ms at 5,000 logs) is its samples worked out and merged (0.9: no longer a write) and the rest of
+the log (its entry, its firmware notes, its counts: in memory). More CPU than wall time: the logs are read and
+decoded ahead on the other cores while one works through them in order. Rebuild speed's stage names stay as they
+are.
 
