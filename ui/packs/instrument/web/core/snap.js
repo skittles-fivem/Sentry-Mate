@@ -460,8 +460,12 @@ function settled(roots, was, level = 0) {
     if (Math.abs(w0 - b.width) > 0.01 || !whole(b.height) || !whole(h0)) {
       // a part that changed its width (a live figure that got shorter) may move what is beside it: the box around
       // it is snapped, and so on up to three boxes; only then the whole page
-      const up = roots.length === 1 && level < 3 ? boxAround(e) : null;
-      if (up) { snapIn([up], level + 1); return; }
+      const ups = level < 3 ? roots.map(boxAround) : [];
+      if (ups.length && ups.every(Boolean)) {
+        const set = new Set(ups);
+        snapIn([...set].filter((u) => ![...set].some((o) => o !== u && o.contains(u))), level + 1);
+        return;
+      }
       snapAll();
       return;
     }
