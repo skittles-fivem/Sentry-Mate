@@ -1278,6 +1278,11 @@ pub(crate) fn input_versions(db: &Db, car: CarId) -> Result<Vec<VersionSeen>> {
     Ok(kept(db, NS, &versions_key(car))?.unwrap_or_default())
 }
 
+/// Writes the versions the API inputs said the car ran (oldest first by `first_ms`).
+pub(crate) fn put_input_versions(db: &Db, car: CarId, all: &[VersionSeen]) -> Result<()> {
+    put(db, NS, &versions_key(car), &all)
+}
+
 /// Notes that `input` read the car's version as `version` at `at_ms`: the input's stretch for it grows, or a new one
 /// starts when the version is not the one the input said last. A reading older than the input's newest stretch is
 /// left out (readings come in order; a late one says nothing new).

@@ -25,6 +25,8 @@ struct Fake {
     limit: Arc<Mutex<Option<Option<u64>>>>,
     /// Answer a window holding more charges than this as too large (as past the client's cap).
     most: Arc<Mutex<Option<usize>>>,
+    /// A day whose log alone is too large: every window holding it is.
+    huge_day: Arc<Mutex<Option<i64>>>,
 }
 
 impl Feed for Fake {
@@ -47,7 +49,9 @@ impl Feed for Fake {
             return Err(FeedError::RateLimited { retry_after_s });
         }
         let held = self.log.lock().unwrap().iter().filter(|(d, _)| (from..=to).contains(d)).count();
-        if self.most.lock().unwrap().is_some_and(|m| held > m) {
+        if self.most.lock().unwrap().is_some_and(|m| held > m)
+            || self.huge_day.lock().unwrap().is_some_and(|d| (from..=to).contains(&d))
+        {
             return Err(FeedError::Http(teslafi::http::HttpError::TooLarge));
         }
         Ok(self
@@ -195,7 +199,7 @@ async fn a_log_too_large_for_one_answer_is_read_in_smaller_windows() {
     let c = store.pacing("fa1").unwrap().costs;
     assert!(c.backfill_done, "{c:?}");
     assert!(c.last_error.is_none(), "{c:?}");
-    assert_eq!(c.chunk_days, Some(5), "90 days, then 45, 22, 11, 5");
+    assert_eq!(c.chunk_days, None, "90 days, then 45, 22, 11, 5 for the dense stretch, whole chunks after it");
     // every day read once (the ids are one a day, so each day's charges are one key)
     let kept = sink.kept.lock().unwrap();
     let days: std::collections::BTreeSet<i64> = kept.values().map(|f| (f.session.start_ms / DAY) as i64).collect();
@@ -204,4 +208,51 @@ async fn a_log_too_large_for_one_answer_is_read_in_smaller_windows() {
     let asked = fake.charges.lock().unwrap().clone();
     let oldest = asked.iter().map(|w| w.0).min().unwrap();
     assert!(oldest <= today - 269 - 2 * teslafi::costs::CHUNK_DAYS + 5, "read back to {oldest}");
+}
+
+#[tokio::test]
+async fn a_day_too_large_to_read_is_passed_over_and_stays_said() {
+    let (_t, store, fake, sink, mut p) = rig(Cadence { invoices: true, ..Cadence::default() });
+    let today = (NOW / DAY) as i64;
+    *fake.log.lock().unwrap() = vec![(today - 3, 12.5), (today - 40, 9.0), (today - 120, 7.25)];
+    let huge = today - 50;
+    *fake.huge_day.lock().unwrap() = Some(huge);
+    run(&mut p, NOW, NOW + 12 * 3_600_000).await;
+    let c = store.pacing("fa1").unwrap().costs;
+    assert!(c.backfill_done, "{c:?}");
+    assert_eq!(c.skipped_days, vec![huge]);
+    // the windows that worked after it did not clear what was not read
+    let e = c.last_error.expect("the day passed over is said");
+    assert_eq!(e.code, "too_large");
+    assert!(e.message.contains(&teslafi::costs::date(huge)), "{}", e.message);
+    assert_eq!(sink.kept.lock().unwrap().len(), 3, "the other days' costs are read");
+    // the daily check (the last two weeks) works and still says it
+    run(&mut p, NOW + 12 * 3_600_000, NOW + DAY + 12 * 3_600_000).await;
+    let c = store.pacing("fa1").unwrap().costs;
+    assert_eq!(c.skipped_days, vec![huge]);
+    assert_eq!(c.last_error.map(|e| e.code).as_deref(), Some("too_large"));
+}
+
+#[tokio::test]
+async fn the_window_shrinks_for_a_dense_stretch_and_grows_back_after_it() {
+    let (_t, store, fake, _sink, mut p) = rig(Cadence { invoices: true, ..Cadence::default() });
+    let today = (NOW / DAY) as i64;
+    // three charges a day for twenty days a month back, one a week for two years before that
+    let mut log: Vec<(i64, f64)> =
+        (30..50).flat_map(|d| [(today - d, 4.0), (today - d, 5.0), (today - d, 6.0)]).collect();
+    log.extend((0..104).map(|w| (today - 60 - 7 * w, 8.0)));
+    *fake.log.lock().unwrap() = log;
+    *fake.most.lock().unwrap() = Some(20);
+    run(&mut p, NOW, NOW + DAY).await;
+    let c = store.pacing("fa1").unwrap().costs;
+    assert!(c.backfill_done, "{c:?}");
+    assert!(c.last_error.is_none(), "{c:?}");
+    let asked = fake.charges.lock().unwrap().clone();
+    let sizes: Vec<i64> = asked.iter().map(|(a, b)| b - a + 1).collect();
+    assert!(sizes.iter().any(|n| *n <= 11), "it shrank for the dense stretch: {sizes:?}");
+    // once past it the windows are whole chunks again, not a day or a week
+    let past = asked.iter().position(|(a, _)| *a < today - 120).unwrap();
+    assert!(sizes[past..].iter().all(|n| *n >= 45), "it grew back: {sizes:?}");
+    assert_eq!(c.chunk_days, None);
+    assert!(asked.len() < 40, "{} requests for two years", asked.len());
 }

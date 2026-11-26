@@ -499,3 +499,43 @@ async fn a_wrong_zone_raises_the_notice_and_a_change_of_zone_clears_it_at_the_ne
     let pts = sink.points.lock().unwrap().clone();
     assert_eq!(pts.last().unwrap().1[0].t_ms, t - 180_000, "the car's newest data is dated in the right zone");
 }
+
+#[tokio::test]
+async fn a_change_of_zone_dates_the_stored_data_again_once_before_the_next_read() {
+    let (_t, data, v) = vault();
+    let store = Store::new(&data, v);
+    let id = account(&store, true);
+    let (script, sink) = (Script::default(), Arc::new(MemSink::default()));
+    let mut p = poller(&store, &id, &script, &sink);
+    script.push(Ok(poll(1, &chicago(0), "Idling", json!({"shift_state": "P"}))));
+    let mut t = p.tick(NOW).await.unwrap();
+    assert!(sink.rezoned.lock().unwrap().is_empty(), "the first zone dates nothing again");
+    // the zone set right, and dating the stored data again fails at first: nothing is read meanwhile
+    store.update(&id, None, None, |a| a.time_zone = Some("America/Chicago".into())).unwrap();
+    *sink.rezone_fails.lock().unwrap() = true;
+    let asked = script.asked.lock().unwrap().len();
+    t = p.tick(t).await.unwrap();
+    assert_eq!(script.asked.lock().unwrap().len(), asked, "no poll read in the new zone before the old data moved");
+    assert_eq!(p.status().last_error.map(|e| e.code), Some("rezone_failed".to_string()));
+    assert_eq!(store.pacing(&id).unwrap().poll_zone.as_deref(), Some("UTC"), "the data is still in the old zone");
+    // then it works: once, from the old zone to the new, then the read
+    *sink.rezone_fails.lock().unwrap() = false;
+    script.push(Ok(poll(1, &chicago(0), "Idling", json!({"shift_state": "P"}))));
+    t = p.tick(t).await.unwrap();
+    assert_eq!(*sink.rezoned.lock().unwrap(), vec![(7, "UTC".to_string(), "America/Chicago".to_string())]);
+    assert_eq!(store.pacing(&id).unwrap().poll_zone.as_deref(), Some("America/Chicago"), "kept across a restart");
+    assert_eq!(script.asked.lock().unwrap().len(), asked + 1);
+    // the same zone saved again, and a restart: nothing is dated again
+    store.update(&id, None, None, |a| a.time_zone = Some("America/Chicago".into())).unwrap();
+    let mut p = poller(&store, &id, &script, &sink);
+    for k in 0..3 {
+        script.push(Ok(poll(2 + k, &chicago(10 + k), "Idling", json!({"shift_state": "P"}))));
+        t = p.tick(t).await.unwrap();
+    }
+    assert_eq!(sink.rezoned.lock().unwrap().len(), 1);
+    // and back to UTC: from Chicago
+    store.update(&id, None, None, |a| a.time_zone = Some("UTC".into())).unwrap();
+    script.push(Ok(poll(9, &chicago(20), "Idling", json!({"shift_state": "P"}))));
+    p.tick(t).await.unwrap();
+    assert_eq!(sink.rezoned.lock().unwrap()[1], (7, "America/Chicago".to_string(), "UTC".to_string()));
+}

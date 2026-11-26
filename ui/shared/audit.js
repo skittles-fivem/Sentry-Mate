@@ -118,6 +118,7 @@ const BY_GROUP = {
     'teslafi-token-replaced': 'Replaced a TeslaFi token',
     'teslafi-token-refused': 'TeslaFi refused the token',
     'teslafi-car-matched': 'Matched a TeslaFi car',
+    'teslafi-data-redated': 'Dated TeslaFi\'s stored data again in a new zone',
     'teslafi-poll-changed': 'Changed the TeslaFi pace',
     'teslafi-invoices-changed': 'Turned TeslaFi invoice costs on or off',
     'invoices-downloaded': 'Downloaded Supercharger invoices',
