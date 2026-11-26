@@ -45,9 +45,11 @@ test('waiting for a rebuild: its step and count kept, and why it waits', () => {
   const m = fitModel({ state: 'running', phase: 'logs', done: 272, total: 22402, percent: 30, server_busy: 'rebuild 2 %', waiting: why });
   assert.equal(m.running, true);
   assert.equal(m.step, 'Reading the logs’ GPS frames: 272 of 22,402 logs');
-  assert.equal(m.headline, 'Waiting (30 %)');
+  assert.equal(m.headline, 'Waiting for the full rebuild to end (30 % done)');
   assert.equal(m.notes, `Waiting: ${why}.`);
   assert.equal(fitModel({ state: 'running', phase: 'logs', done: 1, total: 2, percent: 60, waiting: null }).headline, 'Finding the layout (60 %)');
+  const job = 'a rebuild goes first (both read the same logs); this fit goes on from here once it ends';
+  assert.equal(fitModel({ state: 'running', phase: 'logs', done: 1, total: 2, percent: 2, waiting: job }).headline, 'Waiting for the rebuild to end (2 % done)');
 });
 
 test('done: the best layouts with their errors, the pairs, and Apply', () => {
