@@ -333,23 +333,26 @@ async fn rebuild(
     let e = app.service::<Engine>()?;
     let e2 = e.clone();
     let by = v.name().to_string();
-    let job = app
-        .blocking(move |_| {
+    let asked = Asked { car, from, to, who: by.clone(), ip: v.client().address };
+    // The job is followed by a task of its own, which writes the audit entry when it ends, by how it ended. It is
+    // set to follow the job in the same step that starts it: a request that goes away meanwhile (a closed page, a
+    // timeout), even while the job is being started, or that gives up waiting changes neither.
+    let (job, mut end) = app
+        .blocking(move |app| {
             super::full_rebuild::refuse_while_running(&e2)?;
-            e2.rebuild_because(
-                engine::Scope { car: Some(car), from_ms: from, to_ms: to },
-                engine::jobs::What::WHOLE,
-                engine::versions::Cause::owner(Some(&by)),
-                false,
-            )
-            .map_err(|x| ApiError::server(format!("starting the rebuild: {x}")))
+            let job = e2
+                .rebuild_because(
+                    engine::Scope { car: Some(car), from_ms: from, to_ms: to },
+                    engine::jobs::What::WHOLE,
+                    engine::versions::Cause::owner(Some(&by)),
+                    false,
+                )
+                .map_err(|x| ApiError::server(format!("starting the rebuild: {x}")))?;
+            let end = follow_rebuild(app, &e2, job.id, asked);
+            Ok((job, end))
         })
         .await?;
-    // The job is followed by a task of its own, which writes the audit entry when it ends, by how it ended: a
-    // request that goes away meanwhile (a closed page, a timeout) or gives up waiting changes neither.
     v.mark_audited();
-    let asked = Asked { car, from, to, who: v.name().to_string(), ip: v.client().address };
-    let mut end = follow_rebuild(&app, &e, job.id, asked);
     let now = match tokio::time::timeout(REBUILD_WAIT, end.wait_for(Option::is_some)).await {
         Ok(Ok(j)) => j.clone().unwrap_or_else(|| job.clone()),
         _ => e.job(job.id).unwrap_or_else(|| job.clone()),
