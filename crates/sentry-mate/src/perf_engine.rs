@@ -393,7 +393,8 @@ fn within_day(marks: &[(Instant, u64)]) -> String {
 /// `PERF_LOGS=1000,5000,10000,20000 cargo test --release -p sentry-mate measure_owner_rebuild -- --ignored
 /// --nocapture` (the sizes; 1,000 and 5,000 when not given); `PERF_OWNER_DATA=DIR` keeps each size's seeded folder
 /// there and starts from a copy of it the next time; `PERF_FULL_BY_DAY=0` rebuilds the windows as before the full
-/// rebuild built them once per day of logs ([`engine::Options::full_by_day`]).
+/// rebuild built them once per day of logs ([`engine::Options::full_by_day`]); `PERF_LIVE=1` feeds the server's
+/// engine a Tesla API answer a second while the full rebuild runs, as a live input keeps arriving on a server.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "measurement by hand: cargo test --release -p sentry-mate measure_owner_rebuild -- --ignored --nocapture"]
 async fn measure_owner_rebuild() {
@@ -434,6 +435,28 @@ async fn measure_owner_rebuild() {
         let car = e.db().fleet(&db::FleetQuery { search: None, limit: 10, after: None }).unwrap().cars[0].car.id;
         let (t, cpu, before) = (Instant::now(), cpu_s(), e.work_stats());
         e.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+        // (`PERF_LIVE=1`: a live input meanwhile, an answer a second after the history's end)
+        let live = std::env::var_os("PERF_LIVE").is_some().then(|| {
+            let e = e.clone();
+            tokio::spawn(async move {
+                let days = u64::try_from(logs.div_ceil(1200)).unwrap();
+                let mut t = OWNER_LOGS_START_MS + days * 86_400_000;
+                loop {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    let s =
+                        model::Sample { t_ms: t, soc: Some(60.0), odometer_km: Some(12_345.0), ..Default::default() };
+                    let span = timeline::ApiSpan {
+                        start_ms: t,
+                        end_ms: t + 1000,
+                        state: timeline::ApiState::Online,
+                        data: true,
+                        inputs: model::Inputs::NONE,
+                    };
+                    e.feed_points(model::Input::TeslaApi, car, vec![s], vec![span]);
+                    t += 1000;
+                }
+            })
+        });
         let mut last = before.clone();
         let mut decoding = (None, None);
         // (the logs done as time goes, for the speed at the start, middle and end of a day)
@@ -458,6 +481,9 @@ async fn measure_owner_rebuild() {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         };
+        if let Some(l) = live {
+            l.abort();
+        }
         e.idle().await;
         let secs = t.elapsed().as_secs_f64();
         let n = r.logs_done.max(1) as f64;

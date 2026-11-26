@@ -12,8 +12,8 @@ use std::collections::VecDeque;
 pub struct RebuildSpeed {
     /// Logs worked on a second, over [`RebuildSpeed::over_ms`].
     pub logs_per_s: f64,
-    /// The stage that took the most of the logs' time: `read` (reading and decoding the logs), `samples` (writing
-    /// their samples), `now` (the car's newest values), `windows` (rebuilding the timeline around them) or `other`
+    /// The stage that took the most of the logs' time: `read` (reading and decoding the logs), `samples` (working
+    /// out their samples: merged with those around them, held and written at the day's end), `now` (the car's newest values), `windows` (rebuilding the timeline around them) or `other`
     /// (the rest: the logs' records).
     pub stage: &'static str,
     /// Its share of the logs' time, 0 to 100.

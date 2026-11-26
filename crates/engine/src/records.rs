@@ -424,8 +424,13 @@ pub(crate) fn day(db: &Db, car: CarId, d: u32) -> Result<DayRec> {
 /// logs are worked on (a log's entry, the entries and cut points of a window, the nearest decoded log), and reading
 /// one into a [`DayRec`] costs far more than opening its file: a record whose stored bytes are the ones kept here is
 /// not read into a [`DayRec`] again. Nothing here can be out of date: the bytes are read from the db every time.
+///
+/// Kept per data folder (its key/value store's address) and key: a full rebuild's shadow and the server's own folder
+/// hold the same keys with other bytes, and a reading of one used to put the other's out (the server's engine
+/// reading a day of the car, for its live inputs or a GPS fit, while the full rebuild read the same day), so that
+/// each of the rebuild's logs read its day before into a [`DayRec`] again.
 struct DayCache {
-    kept: Vec<(String, Vec<u8>, std::sync::Arc<DayRec>)>,
+    kept: Vec<(usize, String, Vec<u8>, std::sync::Arc<DayRec>)>,
 }
 
 /// Day records kept at most (a window's days and the newest days, of the cars being worked on).
@@ -440,12 +445,13 @@ pub(crate) fn day_shared(db: &Db, car: CarId, d: u32) -> Result<std::sync::Arc<D
         return Ok(r.unwrap_or_default());
     }
     let Some(bytes) = db.kv().get(NS, &key)? else { return Ok(std::sync::Arc::new(DayRec::default())) };
+    let kv = kv_of(db);
     {
         let mut c = DAY_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(i) = c.kept.iter().position(|(k, b, _)| *k == key && *b == bytes) {
+        if let Some(i) = c.kept.iter().position(|(f, k, b, _)| *f == kv && *k == key && *b == bytes) {
             // the most recently used last
             let hit = c.kept.remove(i);
-            let rec = hit.2.clone();
+            let rec = hit.3.clone();
             c.kept.push(hit);
             return Ok(rec);
         }
@@ -454,12 +460,12 @@ pub(crate) fn day_shared(db: &Db, car: CarId, d: u32) -> Result<std::sync::Arc<D
     let rec = std::sync::Arc::new(rec);
     let mut c = DAY_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     // one record per key and data folder is enough: an older reading of the same key goes first
-    if let Some(i) = c.kept.iter().position(|(k, _, _)| *k == key) {
+    if let Some(i) = c.kept.iter().position(|(f, k, _, _)| *f == kv && *k == key) {
         c.kept.remove(i);
     } else if c.kept.len() >= DAYS_KEPT {
         c.kept.remove(0);
     }
-    c.kept.push((key, bytes, rec.clone()));
+    c.kept.push((kv, key, bytes, rec.clone()));
     Ok(rec)
 }
 
@@ -506,13 +512,14 @@ fn write_day(db: &Db, key: &str, rec: &DayRec) -> Result<()> {
     // the record as written is what reading these bytes gives (`a_day_record_reads_back_as_it_was_written`): kept,
     // so the next read of the day (the log's window, the next log) does not read it into a DayRec again
     let rec = std::sync::Arc::new(rec.clone());
+    let kv = kv_of(db);
     let mut c = DAY_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(i) = c.kept.iter().position(|(k, _, _)| *k == key) {
+    if let Some(i) = c.kept.iter().position(|(f, k, _, _)| *f == kv && *k == key) {
         c.kept.remove(i);
     } else if c.kept.len() >= DAYS_KEPT {
         c.kept.remove(0);
     }
-    c.kept.push((key, bytes, rec));
+    c.kept.push((kv, key, bytes, rec));
     Ok(())
 }
 
@@ -532,6 +539,8 @@ pub(crate) struct Hold {
     db: Db,
     kv: usize,
     mine: bool,
+    /// [`Hold::write`]s so far.
+    writes: std::sync::atomic::AtomicU64,
 }
 
 /// What can be held: its rank in the writes (the order a log writes them in: the car's newest values, its window
@@ -583,12 +592,16 @@ impl Holdable for CarMeta {
 }
 
 type AnyArc = std::sync::Arc<dyn std::any::Any + Send + Sync>;
+type WriteFn = fn(&Db, &str, Option<&AnyArc>) -> Result<()>;
 
 struct HeldVal {
     rank: u8,
     /// `None`: removed.
     v: Option<AnyArc>,
-    write: fn(&Db, &str, Option<&AnyArc>) -> Result<()>,
+    write: WriteFn,
+    /// Written as it is by the [`Hold::write`] of this number: kept to be read (the day before's record, which each
+    /// log's neighbours are looked for in), not written again.
+    clean: Option<u64>,
 }
 
 fn write_any<T: Holdable>(db: &Db, key: &str, v: Option<&AnyArc>) -> Result<()> {
@@ -640,7 +653,7 @@ fn held_put<T: Holdable>(db: &Db, key: &str, v: Option<std::sync::Arc<T>>) -> bo
     let mut h = held();
     let Some((_, vals)) = h.iter_mut().find(|(k, _)| *k == kv) else { return false };
     let v = v.map(|a| a as AnyArc);
-    vals.insert(key.to_string(), HeldVal { rank: T::RANK, v, write: write_any::<T> });
+    vals.insert(key.to_string(), HeldVal { rank: T::RANK, v, write: write_any::<T>, clean: None });
     true
 }
 
@@ -655,24 +668,47 @@ impl Hold {
         if mine {
             h.push((kv, BTreeMap::new()));
         }
-        Hold { db: db.clone(), kv, mine }
+        Hold { db: db.clone(), kv, mine, writes: std::sync::atomic::AtomicU64::new(0) }
     }
 
-    /// Writes what is held (the car's newest values, the dirty windows, the day records, the meta records: the order
-    /// a log writes them in), and holds on.
+    /// Writes what is held and changed since the last write (the car's newest values, the dirty windows, the day
+    /// records, the meta records: the order a log writes them in), and holds on. What it wrote stays held, as
+    /// written, to be read (the day before's record is read by every log of the next day, which looks for the logs
+    /// around it there): read from memory instead of opened, unsealed and unpacked for every log. What was written
+    /// three writes ago or more and not changed since is let go (a day's end writes twice, around its window), so a
+    /// run holds about two days' records whatever its length.
     pub(crate) fn write(&self) -> Result<()> {
         if !self.mine {
             return Ok(());
         }
-        let vals = {
+        let n = self.writes.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let mut todo: Vec<(String, u8, Option<AnyArc>, WriteFn)> = {
             let mut h = held();
             let Some((_, vals)) = h.iter_mut().find(|(k, _)| *k == self.kv) else { return Ok(()) };
-            std::mem::take(vals)
+            vals.retain(|_, v| v.clean.is_none_or(|g| g + 2 >= n));
+            vals.iter()
+                .filter(|(_, v)| v.clean.is_none())
+                .map(|(k, v)| (k.clone(), v.rank, v.v.clone(), v.write))
+                .collect()
         };
-        let mut vals: Vec<(String, HeldVal)> = vals.into_iter().collect();
-        vals.sort_by(|a, b| (a.1.rank, &a.0).cmp(&(b.1.rank, &b.0)));
-        for (key, v) in vals {
-            (v.write)(&self.db, &key, v.v.as_ref())?;
+        todo.sort_by(|a, b| (a.1, &a.0).cmp(&(b.1, &b.0)));
+        for (key, _, v, write) in &todo {
+            write(&self.db, key, v.as_ref())?;
+        }
+        // (what was changed again meanwhile stays to be written; nothing else writes while this one holds)
+        let mut h = held();
+        if let Some((_, vals)) = h.iter_mut().find(|(k, _)| *k == self.kv) {
+            for (key, _, v, _) in todo {
+                if let Some(now) = vals.get_mut(&key)
+                    && match (&now.v, &v) {
+                        (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                        (None, None) => true,
+                        _ => false,
+                    }
+                {
+                    now.clean = Some(n);
+                }
+            }
         }
         Ok(())
     }
@@ -1389,6 +1425,46 @@ mod tests {
         rec.logs.insert("feedc0ffee42_20261101T0200Z_10.log.xz".into(), empty);
         let back: DayRec = serde_json::from_slice(&serde_json::to_vec(&rec).unwrap()).unwrap();
         assert_eq!(back, rec);
+    }
+
+    /// A hold keeps what it wrote to be read from memory (the day before's record, read by every log of the next
+    /// day), writes it again only once it changed, and lets it go once a later day's end wrote twice more.
+    #[test]
+    fn a_hold_keeps_what_it_wrote_to_be_read_and_lets_it_go_after_the_next_day() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        std::fs::create_dir_all(&data).unwrap();
+        let (v, _) = vault::Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
+        let db = Db::open(&data, std::sync::Arc::new(v), db::Options::default()).unwrap();
+        let car: CarId = 7;
+        let rec = |cut: u64| DayRec { logs: BTreeMap::new(), cuts: vec![cut] };
+        let stored = |d: u32| get::<DayRec>(&db, NS, &format!("car/{car}/day/{d}")).unwrap();
+        let hold = Hold::new(&db);
+        put_day(&db, car, 1, &rec(10)).unwrap();
+        assert_eq!(stored(1), None, "held, not written");
+        hold.write().unwrap();
+        assert_eq!(stored(1), Some(rec(10)));
+        // (changed behind the hold's back: what is read is what the hold wrote, from memory)
+        put(&db, NS, &format!("car/{car}/day/1"), &rec(11)).unwrap();
+        assert_eq!(*day_shared(&db, car, 1).unwrap(), rec(10));
+        // not written again while it does not change
+        hold.write().unwrap();
+        assert_eq!(stored(1), Some(rec(11)));
+        // changed while held: written at the next write
+        edit_day(&db, car, 1, |r| r.cuts.push(12)).unwrap();
+        hold.write().unwrap();
+        assert_eq!(stored(1), Some(DayRec { logs: BTreeMap::new(), cuts: vec![10, 12] }));
+        // the next day's two writes, and the day before is let go: read from the db again
+        put_day(&db, car, 2, &rec(20)).unwrap();
+        hold.write().unwrap();
+        put(&db, NS, &format!("car/{car}/day/1"), &rec(13)).unwrap();
+        assert_eq!(*day_shared(&db, car, 1).unwrap(), DayRec { logs: BTreeMap::new(), cuts: vec![10, 12] });
+        hold.write().unwrap();
+        hold.write().unwrap();
+        assert_eq!(*day_shared(&db, car, 1).unwrap(), rec(13));
+        assert_eq!(*day_shared(&db, car, 2).unwrap(), rec(20));
+        drop(hold);
+        assert_eq!(stored(2), Some(rec(20)));
     }
 
     #[test]
