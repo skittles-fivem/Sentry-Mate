@@ -469,12 +469,23 @@ async fn a_wrong_zone_raises_the_notice_and_a_change_of_zone_clears_it_at_the_ne
         teslafi::data_health(&p.status(), t),
         teslafi::DataHealth::TimeOffset { skew_ms: six_hours, behind: true }
     );
-    // the admin sets TeslaFi's zone: at the next read (the same poll, the car parked) the notice is gone
+    let stored = sink.points.lock().unwrap().len();
+    assert_eq!(sink.points.lock().unwrap().last().unwrap().1[0].t_ms, t - 180_000 - six_hours, "read six hours early");
+    // the admin sets TeslaFi's zone: at the next read (the same poll, the car parked) the notice is gone, and that
+    // poll is handed on once more, dated right, so the car's newest values are not six hours old any more
     store.update(&id, None, None, |a| a.time_zone = Some("America/Chicago".into())).unwrap();
     script.push(Ok(poll(3, &chicago(6), "Idling", json!({"shift_state": "P"}))));
     let now = t;
     t = p.tick(t).await.unwrap();
     assert_eq!(teslafi::data_health(&p.status(), now), teslafi::DataHealth::Fine);
+    let pts = sink.points.lock().unwrap().clone();
+    assert_eq!(pts.len(), stored + 1, "the same poll, once more in the new zone");
+    assert_eq!(pts.last().unwrap().1[0].t_ms, NOW + 6 * 60_000, "02:06 in Chicago is 08:06 UTC");
+    assert_eq!(p.status().last_new_ms, Some(now - 180_000), "no new poll from TeslaFi for that");
+    // and the same poll after that is not handed on again
+    script.push(Ok(poll(3, &chicago(6), "Idling", json!({"shift_state": "P"}))));
+    t = p.tick(t).await.unwrap();
+    assert_eq!(sink.points.lock().unwrap().len(), stored + 1);
     // and new polls read in the new zone are current: no notice, the data dated as it should be
     for _ in 0..3 {
         let minute = (t - NOW) / 60_000;
