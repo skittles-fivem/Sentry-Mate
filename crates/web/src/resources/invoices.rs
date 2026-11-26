@@ -116,10 +116,12 @@ pub fn teslafi_block(e: &Engine, svc: &TeslafiService, enabled: bool) -> Value {
     let (mut last_check, mut next_check, mut requests, mut last_error): (Option<u64>, Option<u64>, u64, Option<Value>) =
         (None, None, 0, None);
     let mut newest_error = 0;
+    let mut skipped: Vec<String> = Vec::new();
     for a in svc.accounts() {
         let Ok(p) = svc.store().pacing(&a.id) else { continue };
         let c = p.costs;
         words.push(c.backfill_word());
+        skipped.extend(c.skipped_days.iter().map(|d| teslafi::costs::date(*d)));
         last_check = last_check.max(c.last_check_ms);
         if c.next_check_ms > 0 {
             next_check = Some(next_check.map_or(c.next_check_ms, |n| n.min(c.next_check_ms)));
@@ -156,6 +158,7 @@ pub fn teslafi_block(e: &Engine, svc: &TeslafiService, enabled: bool) -> Value {
         "next_check_ms": if enabled { next_check } else { None },
         "requests_today": requests,
         "last_error": last_error,
+        "skipped_days": skipped,
     })
 }
 

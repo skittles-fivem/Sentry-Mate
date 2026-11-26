@@ -890,8 +890,13 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                 let (first, max) = (self.cadence.invoice_error_first_ms, self.cadence.invoice_error_max_ms);
                 self.pacing.costs.note_error(err(e.code(), message, now_ms), first, max);
                 if too_large && !self.pacing.costs.backfill_done {
-                    // a single day too large to read: passed over (the error kept), the backfill goes on before it
-                    self.pacing.costs.backfill_before = Some(from);
+                    // a single day too large to read: passed over and kept as such (said until a later read of it
+                    // works), the backfill goes on before it
+                    let c = &mut self.pacing.costs;
+                    c.backfill_before = Some(from);
+                    if let Err(i) = c.skipped_days.binary_search(&from) {
+                        c.skipped_days.insert(i, from);
+                    }
                 }
                 if let FeedError::RateLimited { retry_after_s } = e {
                     self.rate_limited(now_ms, retry_after_s);
@@ -922,7 +927,13 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                 let c = &mut self.pacing.costs;
                 c.found += n;
                 c.errors = 0;
-                c.last_error = None;
+                // the days passed over stay said, but for those this answer read
+                c.skipped_days.retain(|d| !(from..=to).contains(d));
+                c.last_error = c.skipped_error(now_ms);
+                // an answer that fit: the next window twice as long again, up to a whole chunk
+                if !c.backfill_done {
+                    c.chunk_days = c.chunk_days.map(|d| d * 2).filter(|d| *d < crate::costs::CHUNK_DAYS);
+                }
             }
             Err(e) => {
                 tracing::warn!(account = %self.id, error = %e, "TeslaFi's charge costs could not be stored");
