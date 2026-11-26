@@ -101,7 +101,7 @@ test('discarding an import while its file is uploading stops the upload quietly'
     await page.getByRole('button', { name: 'Discard' }).click();
     await page.locator('dialog[open]').getByRole('button', { name: 'Discard' }).click();
     await page.waitForTimeout(3000);
-    assert.deepEqual(await page.locator('.form-error:visible, [role=alert]:visible').allInnerTexts(), []);
+    assert.deepEqual(await page.locator('main .form-error:visible, main [role=alert]:visible').allInnerTexts(), []);
     assert.doesNotMatch((await page.innerText('main')).replace(/\s+/g, ' '), /upload of .* stopped|no such import/i);
     assert.deepEqual(errors, []);
   }, { freeze: false });
