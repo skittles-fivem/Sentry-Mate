@@ -1679,8 +1679,8 @@ that are not there, 40,000 reads in those 15 s).
 **What changed.**
 
 - **What a hold wrote stays held** (`records::Hold::write`): written as it is and kept to be read, not written again
-  until it changes, and let go three writes later (a day's end writes twice, around its window), so the day before
-  is read from memory by the next day's logs and a run holds about two days' records. Only a full rebuild by day
+  until it changes, and let go two writes later (a day's end writes twice, around its window), so the day before
+  is read from memory by the next day's logs and a run holds two days' records at most. Only a full rebuild by day
   holds; it is the shadow's only writer. `a_hold_keeps_what_it_wrote_to_be_read_and_lets_it_go_after_the_next_day`;
   the comparisons of "A full rebuild's records written once per day" pass with it (everything stored, ids
   included, a run cut off in the middle of a day and carried on).
