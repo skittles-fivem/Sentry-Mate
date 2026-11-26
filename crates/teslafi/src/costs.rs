@@ -10,9 +10,10 @@
 //!
 //! The backfill reads the log [`CHUNK_DAYS`] at a time back from today until two chunks' worth of days in a row hold
 //! no charge (or 2012); a window whose answer is larger than [`crate::http::HISTORY_CAP`] is asked again in halves
-//! (down to a day; a single day larger than that is passed over, the error kept). Then the last [`CHECK_DAYS`] days
-//! once a day, and soon after a charge ends. One request per tick, in the poller's gap ([`crate::poller`]); TeslaFi's
-//! 429 is waited out there as for the polls.
+//! (down to a day), and the window doubles again after each answer that fits. A single day larger than that is
+//! passed over and kept ([`Progress::skipped_days`]): its error stays until a read of it works. Then the last
+//! [`CHECK_DAYS`] days once a day, and soon after a charge ends. One request per tick, in the poller's gap
+//! ([`crate::poller`]); TeslaFi's 429 is waited out there as for the polls.
 
 use crate::api::FeedError;
 use serde::{Deserialize, Serialize};
@@ -37,9 +38,13 @@ pub struct Progress {
     #[serde(default)]
     pub empty_days: i64,
     /// Days the backfill asks for at once, when fewer than [`CHUNK_DAYS`] (TeslaFi's answer for more was larger than
-    /// [`crate::http::HISTORY_CAP`]).
+    /// [`crate::http::HISTORY_CAP`]); doubled again after each answer that fit.
     #[serde(default)]
     pub chunk_days: Option<i64>,
+    /// Days whose log alone was larger than [`crate::http::HISTORY_CAP`] (days since the epoch): passed over, their
+    /// costs not read, and said so ([`Progress::skipped_error`]) until a later read of them works.
+    #[serde(default)]
+    pub skipped_days: Vec<i64>,
     #[serde(default)]
     pub last_check_ms: Option<u64>,
     #[serde(default)]
@@ -66,6 +71,23 @@ impl Progress {
             (Some(_), false) => "running",
             (Some(_), true) => "done",
         }
+    }
+
+    /// The error that stays while days are passed over ([`Progress::skipped_days`]).
+    pub fn skipped_error(&self, at_ms: u64) -> Option<crate::store::ErrorInfo> {
+        let (first, last) = (self.skipped_days.first()?, self.skipped_days.last()?);
+        let n = self.skipped_days.len();
+        let which =
+            if n == 1 { date(*first) } else { format!("{n} days between {} and {}", date(*first), date(*last)) };
+        Some(crate::store::ErrorInfo {
+            code: "too_large".into(),
+            message: format!(
+                "TeslaFi's charge log of {which} is larger than {} MB: the costs of {} are not read",
+                crate::http::HISTORY_CAP >> 20,
+                if n == 1 { "that day" } else { "those days" }
+            ),
+            at_ms,
+        })
     }
 
     pub fn note_error(&mut self, e: crate::store::ErrorInfo, first_ms: u64, max_ms: u64) {
