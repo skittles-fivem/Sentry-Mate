@@ -86,6 +86,42 @@ fn stored_in(db: &db::Db) -> Vec<(String, Vec<String>)> {
     out
 }
 
+/// The engine's records of the cars of a data folder ([`engine::records::stored_records`]: the meta record, the
+/// windows noted dirty, each day's record of its logs and its firmware notes), when each log was worked on by
+/// this machine's clock left out.
+fn records_in(db: &db::Db) -> Vec<String> {
+    let fleet = db.fleet(&db::FleetQuery { search: None, limit: 10, after: None }).unwrap();
+    let mut cars: Vec<model::CarId> = fleet.cars.iter().map(|c| c.car.id).collect();
+    cars.sort_unstable();
+    let mut out = Vec::new();
+    for car in cars {
+        for (key, mut v) in engine::records::stored_records(db, car).unwrap() {
+            if let Some(m) = v.as_object_mut() {
+                for f in ["last_done_ms", "last_took_ms", "last_arrived_ms", "api_received_ms", "teslafi_received_ms"] {
+                    m.remove(f);
+                }
+                m.remove("tmlocal_received_ms");
+                if let Some(logs) = m.get_mut("logs").filter(|_| key.contains("/day/") && !key.contains("/fw/")) {
+                    for e in logs.as_object_mut().into_iter().flat_map(|l| l.values_mut()) {
+                        e.as_object_mut().map(|e| e.remove("done_ms"));
+                    }
+                }
+            }
+            out.push(format!("{key} {v}"));
+        }
+    }
+    out
+}
+
+/// [`records_in`] of two data folders the same; returns how many records.
+fn records_same(what: &str, a: &db::Db, b: &db::Db) -> usize {
+    let (x, y) = (records_in(a), records_in(b));
+    if let Some(i) = (0..x.len().max(y.len())).find(|&i| x.get(i) != y.get(i)) {
+        panic!("{what}: the records differ at {i} of {} and {}:\n {:?}\n {:?}", x.len(), y.len(), x.get(i), y.get(i));
+    }
+    x.len()
+}
+
 fn same(what: &str, a: &engine::Engine, b: &engine::Engine) -> usize {
     same_in(what, a.db(), b.db())
 }
@@ -1111,6 +1147,21 @@ async fn window_bounds_looked_for_near_the_log_give_the_same_history_over_days()
 /// their logs are done, before the switch gives their rows the ids of the history in use, and the histories after
 /// the switch: everything stored, ids included. Returns the windows each kind of full rebuild rebuilt in all.
 async fn by_day(days: u32, how: Logs, back: u32, api_days: u32, cuts: &[Option<u64>]) -> (u64, u64) {
+    let before = engine::Options { full_by_day: false, ..engine::Options::default() };
+    by_day_against(before, false, days, how, back, api_days, cuts).await
+}
+
+/// [`by_day`] against the full rebuild `before` gives (its engine's options), the engine's records compared too;
+/// `firmware`: the logs carry made-up firmware fingerprints, with a software update among them.
+async fn by_day_against(
+    before: engine::Options,
+    firmware: bool,
+    days: u32,
+    how: Logs,
+    back: u32,
+    api_days: u32,
+    cuts: &[Option<u64>],
+) -> (u64, u64) {
     let apis = how != Logs::Alone;
     let s = synth::Scenario::new(7).days(days).rates(synth::Rates::Light).with_trouble(true);
     let s = match how {
@@ -1118,10 +1169,10 @@ async fn by_day(days: u32, how: Logs, back: u32, api_days: u32, cuts: &[Option<u
         Logs::SentrySparse => s.stays_awake(true).snippets(600_000, 3_000),
         Logs::Alone | Logs::Apis => s,
     };
+    let s = if firmware { s.firmware(synth::firmware::Firmware::made_up()) } else { s };
     let logs: Vec<synth::LogFile> = s.logs().collect();
     let n = logs.len() as u64;
     let all: Vec<&synth::LogFile> = logs.iter().collect();
-    let before = engine::Options { full_by_day: false, ..engine::Options::default() };
     let (old, new) = (Side::with(before).await, Side::with(engine::Options::default()).await);
     let what = format!("{days} days ({how:?})");
     old.take(&all).await;
@@ -1197,17 +1248,19 @@ async fn by_day(days: u32, how: Logs, back: u32, api_days: u32, cuts: &[Option<u
         let took_new = t.elapsed();
         let w_old = old.engine.full_rebuild_windows() - w.0;
         let k = same_in(&format!("{what}: the shadows"), &shadow(&old.engine), &shadow(&last));
+        let rk = records_same(&format!("{what}: the shadows' records"), &shadow(&old.engine), &shadow(&last));
         for e in [&old.engine, &last] {
             e.full_rebuild_hold_at(None);
             let r = full_done(e).await;
             assert_eq!((r.status, r.logs_done), (engine::full::FullStatus::Done, n), "{what}: {r:#?}");
         }
         let j = same(&format!("{what}: switched"), &old.engine, &last);
+        let rj = records_same(&format!("{what}: the records switched"), old.engine.db(), last.db());
         assert!(j > 1_000, "{what}: {j}");
         assert_eq!(old.engine.stats().failures + new.engine.stats().failures + last.stats().failures, 0, "{what}");
         println!(
-            "{what}: {n} logs, {k} stored things of the shadows the same, {j} after the switch; windows {w_old} a \
-             log at a time ({took_old:.1?}), {w_new} by day ({took_new:.1?})"
+            "{what}: {n} logs, {k} stored things and {rk} records of the shadows the same, {j} and {rj} after the \
+             switch; windows {w_old} before ({took_old:.1?}), {w_new} by day ({took_new:.1?})"
         );
         windows = (windows.0 + w_old, windows.1 + w_new);
     }
@@ -1220,6 +1273,25 @@ async fn a_full_rebuild_by_day_gives_the_history_a_window_per_log_gives() {
     let (before, now) = by_day(2, Logs::SentrySparse, 3, 1, &[None, None, Some(170)]).await;
     assert!(now * 10 < before, "{now} windows against {before}");
     by_day(2, Logs::Alone, 0, 0, &[None]).await;
+}
+
+/// A full rebuild by day that holds the records each log changes and writes them once a day
+/// ([`engine::Options::full_hold_records`]) gives the records one that writes them for every log gives, and the
+/// same history: a car in sentry mode beside every input, twice, then cut off in the middle of its second day (as
+/// by a kill: what was held is lost) and carried on by a new engine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_full_rebuild_holding_its_records_gives_the_records_written_for_every_log() {
+    let before = engine::Options { full_hold_records: false, ..engine::Options::default() };
+    by_day_against(before, true, 2, Logs::SentrySparse, 3, 1, &[None, Some(220)]).await;
+    let before = engine::Options { full_hold_records: false, ..engine::Options::default() };
+    by_day_against(before, true, 2, Logs::Alone, 0, 0, &[None, Some(150)]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "long: cargo test --release -p sentry-mate a_full_rebuild_holding -- --ignored --nocapture"]
+async fn a_full_rebuild_holding_its_records_gives_the_records_written_for_every_log_over_days() {
+    let before = engine::Options { full_hold_records: false, ..engine::Options::default() };
+    by_day_against(before, true, 3, Logs::Sentry, 60, 3, &[None, Some(2_000)]).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

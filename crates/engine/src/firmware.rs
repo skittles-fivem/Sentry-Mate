@@ -116,7 +116,7 @@ impl LogRef {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct DayLogs {
+pub(crate) struct DayLogs {
     sets: Vec<Vec<Tally>>,
     logs: BTreeMap<String, LogRef>,
 }
@@ -612,26 +612,50 @@ impl Engine {
         let Some(start) = records::name_start_ms(name) else { return Ok(()) };
         let d = records::day_of(start);
         let db = &self.inner.db;
+        // a full rebuild's day of logs: noted in memory, written once the day's logs are done ([`Engine::fw_hold`])
+        {
+            let mut held = lock(&self.inner.fw_held);
+            if let Some(h) = held.as_mut() {
+                let day = match h.entry((car, d)) {
+                    std::collections::btree_map::Entry::Occupied(o) => o.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(v) => {
+                        v.insert(records::get(db, NS, &day_key(car, d))?.unwrap_or_default())
+                    }
+                };
+                note_in(day, name, start, fw);
+                return Ok(());
+            }
+        }
         let mut day: DayLogs = records::get(db, NS, &day_key(car, d))?.unwrap_or_default();
         let before = day.clone();
-        day.logs.remove(name);
-        if let Some((f, quiet)) = fw.filter(|(f, _)| !f.is_empty()) {
-            let (set, mut log) = log_ref(f, start, quiet);
-            let i = match day.sets.iter().position(|s| *s == set) {
-                Some(i) => i,
-                None => {
-                    day.sets.push(set);
-                    day.sets.len() - 1
-                }
-            };
-            log.set = u32::try_from(i).unwrap_or(u32::MAX);
-            day.logs.insert(name.to_string(), log);
-        }
+        note_in(&mut day, name, start, fw);
         if day == before {
             return Ok(());
         }
-        compact(&mut day);
         self.fw_put_day(car, d, &day, false)
+    }
+
+    /// Holds the firmware notes of logs in memory (`on`) until [`Engine::fw_write_held`] writes them, a day at a
+    /// time as the note of each log would have; `false`: no longer, and what was not written is not (as a kill would
+    /// leave it).
+    pub(crate) fn fw_hold(&self, on: bool) {
+        *lock(&self.inner.fw_held) = on.then(BTreeMap::new);
+    }
+
+    /// Writes the firmware notes held ([`Engine::fw_hold`]) of each day, as its last log's note would have, and
+    /// holds on.
+    pub(crate) fn fw_write_held(&self) -> Result<()> {
+        let days = match lock(&self.inner.fw_held).as_mut() {
+            Some(h) => std::mem::take(h),
+            None => return Ok(()),
+        };
+        for ((c, d), day) in days {
+            let before: DayLogs = records::get(&self.inner.db, NS, &day_key(c, d))?.unwrap_or_default();
+            if day != before {
+                self.fw_put_day(c, d, &day, false)?;
+            }
+        }
+        Ok(())
     }
 
     /// Notes made-up fingerprints for one log, for tests that lay a car's history down by hand: each value
@@ -863,6 +887,28 @@ fn log_ref(f: &LogFirmware, start: u64, quiet: bool) -> (Vec<Tally>, LogRef) {
 }
 
 /// Drops the sets no log uses any more (indexes kept in step).
+/// One log's fingerprints noted in its day's (none: taken out), the day's sets kept to those its logs use.
+fn note_in(day: &mut DayLogs, name: &str, start: u64, fw: Option<(&LogFirmware, bool)>) {
+    let had = day.logs.remove(name);
+    let mut changed = had.is_some();
+    if let Some((f, quiet)) = fw.filter(|(f, _)| !f.is_empty()) {
+        let (set, mut log) = log_ref(f, start, quiet);
+        let i = match day.sets.iter().position(|s| *s == set) {
+            Some(i) => i,
+            None => {
+                day.sets.push(set);
+                day.sets.len() - 1
+            }
+        };
+        log.set = u32::try_from(i).unwrap_or(u32::MAX);
+        changed |= had.as_ref() != Some(&log);
+        day.logs.insert(name.to_string(), log);
+    }
+    if changed {
+        compact(day);
+    }
+}
+
 fn compact(day: &mut DayLogs) {
     let used: BTreeSet<u32> = day.logs.values().map(|l| l.set).collect();
     if used.len() == day.sets.len() {

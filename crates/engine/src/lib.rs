@@ -145,6 +145,11 @@ pub struct Options {
     /// window per log beside an API input): the same history, ids included ([`full`], `full_by_day`). `false`:
     /// as before, for the comparison.
     pub full_by_day: bool,
+    /// Such a full rebuild holds the records each log changes (its day's record, the car's counts, the windows noted
+    /// dirty, the day's firmware notes) in memory and writes them once per day, around the day's window, instead of
+    /// reading and writing them whole for every log ([`records::Hold`]): the same records. `false`: as before, for
+    /// the comparison.
+    pub full_hold_records: bool,
     /// A rebuild a saved setting asks for waits this long (ms) before it starts, so a few saves in a row (or a
     /// setting saved again while one runs) are one rebuild ([`Engine::rebuild_because`]).
     pub rebuild_settle_ms: u64,
@@ -179,6 +184,7 @@ impl Default for Options {
             fuse: timeline::FuseParams::default(),
             window_batch: 64,
             full_by_day: true,
+            full_hold_records: true,
             rebuild_settle_ms: 3_000,
             read_ahead: ahead::Ahead::threads(),
             window_look_ms: 2 * 3_600_000,
@@ -391,6 +397,9 @@ pub(crate) struct Inner {
     pub(crate) full_hold_at: Mutex<Option<full::Phase>>,
     /// The windows the full rebuilds' decoding rebuilt beside the history (their own engine's count, added up).
     pub(crate) full_windows: AtomicU64,
+    /// The firmware notes of a full rebuild's day of logs, held in memory and written once a day
+    /// ([`records::Hold`], `Engine::fw_hold`): `None` while nothing is held.
+    pub(crate) fw_held: Mutex<Option<std::collections::BTreeMap<(model::CarId, u32), firmware::DayLogs>>>,
     /// Tests: the full rebuild's worker stops as by a crash once it decoded this many logs of a car.
     pub(crate) full_crash_logs: Mutex<Option<u64>>,
     /// Tests: the next rebuild job of a car or a period stops as by a crash once it worked on this many logs.
@@ -640,6 +649,7 @@ impl Engine {
                 full_crash_at: Mutex::new(None),
                 full_hold_at: Mutex::new(None),
                 full_windows: AtomicU64::new(0),
+                fw_held: Mutex::new(None),
                 full_crash_logs: Mutex::new(None),
                 job_crash_logs: Mutex::new(None),
                 full_exit_hook: Mutex::new(None),
