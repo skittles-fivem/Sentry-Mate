@@ -94,6 +94,7 @@
   {"code":"teslafi-account-removed","group":"integrations","item":"teslafi"},
   {"code":"teslafi-account-resumed","group":"integrations","item":"teslafi"},
   {"code":"teslafi-car-matched","group":"integrations","item":"teslafi"},
+  {"code":"teslafi-data-redated","group":"integrations","item":"teslafi"},
   {"code":"teslafi-invoices-changed","group":"integrations","item":"settings"},
   {"code":"teslafi-poll-changed","group":"integrations","item":"settings"},
   {"code":"teslafi-rate-limited","group":"integrations","item":"teslafi"},

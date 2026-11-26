@@ -64,6 +64,7 @@ pub mod query;
 pub mod records;
 pub mod rehome;
 pub mod repair;
+pub mod rezone;
 mod speed;
 pub mod tesla_in;
 pub mod tmlocal_catchup;
@@ -365,6 +366,8 @@ pub(crate) struct Inner {
     tokens: std::sync::OnceLock<Arc<ingest::Tokens>>,
     /// Cars whose Tesla API data waits for a build, and when each was last built.
     pub(crate) api_pending: Mutex<std::collections::HashSet<CarId>>,
+    /// Tests: a re-dating fails after this many more of its writes ([`Engine::rezone_fail_after`]; `u64::MAX`: never).
+    pub(crate) rezone_fail: AtomicU64,
     pub(crate) api_built: Mutex<HashMap<CarId, u64>>,
     /// The time zone a car made from now on starts in.
     default_zone: RwLock<String>,
@@ -641,6 +644,7 @@ impl Engine {
                 handle: Mutex::new(None),
                 tokens: std::sync::OnceLock::new(),
                 api_pending: Mutex::new(std::collections::HashSet::new()),
+                rezone_fail: AtomicU64::new(u64::MAX),
                 api_built: Mutex::new(HashMap::new()),
                 default_zone: RwLock::new(opts.default_time_zone.clone()),
                 gap_fill: std::sync::atomic::AtomicBool::new(true),
@@ -856,6 +860,8 @@ impl Engine {
         self.invoice_prices_soon();
         // a full rebuild a restart cut off carries on
         self.full_resume();
+        // and a re-dating of stored data
+        self.rezone_resume();
         // the days' pack readings, worked out once idle (and again now and then)
         handle.spawn(query::pack_logs::passes(self.clone()));
         Ok(())
