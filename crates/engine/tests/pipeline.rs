@@ -1418,12 +1418,21 @@ fn a_planned_full_rebuild_can_be_started_now_put_off_or_paused() {
 }
 
 /// A server killed while a full rebuild decodes carries on with the logs left, and its progress counts every log of
-/// the car: the ones done before the restart too, in the bar and in the end's count.
+/// the car: the ones done before the restart too, in the bar and in the end's count. A full rebuild that holds a
+/// day's records until the day's end (`full_hold_records`, the default) has written none of a day it was killed in
+/// the middle of: it does that day's logs again, and counts the logs the same.
 #[test]
 fn a_full_rebuild_cut_off_while_decoding_still_counts_every_log() {
+    for hold in [false, true] {
+        cut_off_while_decoding(hold);
+    }
+}
+
+fn cut_off_while_decoding(hold: bool) {
     let rt = rt();
     rt.block_on(async {
-        let k = kit();
+        let opts = || Options { full_hold_records: hold, ..Options::default() };
+        let k = kit_with(Options { workers: 2, ..opts() });
         for i in 0..DAY.len() as u64 {
             send(&k, i).await;
         }
@@ -1437,17 +1446,19 @@ fn a_full_rebuild_cut_off_while_decoding_still_counts_every_log() {
         let cut = k.engine.full_rebuild_status().unwrap().unwrap();
         assert!(cut.running() && cut.phase == engine::full::Phase::Decoding, "{cut:#?}");
 
-        let again = Engine::new(k.db.clone(), k.store.clone(), Options::default());
-        // (stopped once more, two logs on: what a status says in between)
+        let again = Engine::new(k.db.clone(), k.store.clone(), opts());
+        // (stopped once more, a log on: what a status says in between)
         again.full_rebuild_crash_after_logs(Some(1));
         again.start().unwrap();
         again.idle().await;
         let mid = again.full_rebuild_status().unwrap().unwrap();
         assert!(mid.running() && mid.phase == engine::full::Phase::Decoding, "{mid:#?}");
         assert_eq!(mid.logs_total, all, "the car's logs, not only the ones left: {mid:#?}");
-        assert_eq!(mid.base_logs, 4, "the rate is of the logs decoded since the restart: {mid:#?}");
+        // (held: the 4 logs of the day it was killed in were not written, so they are done again)
+        let done_before = if hold { 0 } else { 4 };
+        assert_eq!(mid.base_logs, done_before, "the rate is of the logs decoded since the restart: {mid:#?}");
 
-        let third = Engine::new(k.db.clone(), k.store.clone(), Options::default());
+        let third = Engine::new(k.db.clone(), k.store.clone(), opts());
         third.start().unwrap();
         let r = full_done(&third).await;
         assert_eq!(r.status, engine::full::FullStatus::Done, "{r:#?}");

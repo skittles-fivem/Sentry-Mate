@@ -722,9 +722,9 @@ impl Engine {
         dirty.push(span);
         records::put_dirty(db, car, &dirty)?;
         let d = records::day_of(start);
-        let mut rec = records::day(db, car, d)?;
-        rec.logs.insert(name.to_string(), entry);
-        records::put_day(db, car, d, &rec)?;
+        records::edit_day(db, car, d, |rec| {
+            rec.logs.insert(name.to_string(), entry);
+        })?;
         self.fw_note_log(car, name, firmware.as_ref().map(|(f, q)| (f, *q)))?;
         let mut meta = records::meta(db, car)?;
         meta.days.insert(d);
@@ -1477,6 +1477,33 @@ impl Engine {
         if by_day {
             batch = crate::full::FULL_RUN_LOGS;
         }
+        // a full rebuild by day: the records each log changes are held in memory and written once a day, around
+        // the day's window ([`records::Hold`])
+        let hold = (by_day && self.inner.opts.full_hold_records).then(|| records::Hold::new(db));
+        // (their writing counts as the logs' own work, the stage of the logs' records)
+        let write_held = |h: &records::Hold| -> Result<()> {
+            let t = Instant::now();
+            self.fw_write_held()?;
+            h.write()?;
+            let took = u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
+            self.inner.counters.decode_ms.fetch_add(took, Ordering::Relaxed);
+            Ok(())
+        };
+        let written = |rebuild: bool| -> Result<()> {
+            if let Some(h) = &hold {
+                write_held(h)?;
+            }
+            if rebuild {
+                self.rebuild_dirty(car)?;
+                if let Some(h) = &hold {
+                    write_held(h)?;
+                }
+            }
+            Ok(())
+        };
+        if hold.is_some() {
+            self.fw_hold(true);
+        }
         // the logs read and decoded ahead on the other cores, worked on here in order ([`crate::ahead`])
         let threads = self.inner.opts.read_ahead;
         let ended = crate::ahead::Ahead::run(self, car, usable, threads, |ahead| -> Result<bool> {
@@ -1488,7 +1515,7 @@ impl Engine {
                 }
                 let each = batch == 1 || i >= per_log_from;
                 if job.is_some_and(|j| j.cancelled()) {
-                    self.rebuild_dirty(car)?;
+                    written(true)?;
                     return Ok(true);
                 }
                 // a full rebuild whose server is stopping: nothing more is asked of a runtime that is going away
@@ -1504,7 +1531,7 @@ impl Engine {
                 let day = records::name_start_ms(&name).map(records::day_of);
                 if by_day && waiting > 0 && run_day != day {
                     waiting = 0;
-                    self.rebuild_dirty(car)?;
+                    written(true)?;
                 }
                 run_day = day;
                 let read = ahead.and_then(|a| a.take(&name));
@@ -1521,7 +1548,11 @@ impl Engine {
                 waiting += 1;
                 if !each && waiting >= batch {
                     waiting = 0;
-                    self.rebuild_dirty(car)?;
+                    if by_day {
+                        written(true)?;
+                    } else {
+                        self.rebuild_dirty(car)?;
+                    }
                 }
                 if let Some(j) = job {
                     j.step(self, Some(car), len);
@@ -1530,8 +1561,14 @@ impl Engine {
                     }
                 }
             }
+            written(false)?;
             Ok(false)
-        })?;
+        });
+        if hold.is_some() {
+            self.fw_hold(false);
+        }
+        drop(hold);
+        let ended = ended?;
         if ended {
             return Ok(());
         }

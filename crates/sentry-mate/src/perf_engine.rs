@@ -356,6 +356,36 @@ async fn owner_history(base: &Path, logs: usize) -> model::CarId {
     car
 }
 
+/// The logs a second and ms a log at the start, middle and end of a day (its first, middle and last third of
+/// logs: the owner's shape has a log every 69 s from midnight), from the logs done as time went (`marks`).
+fn within_day(marks: &[(Instant, u64)]) -> String {
+    const PER_DAY: f64 = 86_400.0 / 69.0;
+    let mut parts = [(0.0f64, 0u64); 3];
+    for w in marks.windows(2) {
+        let ((t0, n0), (t1, n1)) = (w[0], w[1]);
+        if n1 <= n0 {
+            continue;
+        }
+        let (d0, d1) = ((n0 as f64 / PER_DAY).floor(), (n1 as f64 / PER_DAY).floor());
+        if d0 != d1 {
+            continue;
+        }
+        let at = (n0 as f64 + n1 as f64) / 2.0 / PER_DAY - d0;
+        let i = ((at * 3.0) as usize).min(2);
+        parts[i].0 += (t1 - t0).as_secs_f64();
+        parts[i].1 += n1 - n0;
+    }
+    let words: Vec<String> = ["start", "middle", "end"]
+        .iter()
+        .zip(parts)
+        .map(|(name, (s, n))| {
+            let n = n.max(1) as f64;
+            format!("{name} {:.1} logs/s ({:.1} ms a log)", n / s.max(1e-9), s * 1000.0 / n)
+        })
+        .collect();
+    format!("within a day: {}", words.join(", "))
+}
+
 /// A full rebuild's time per log as the history grows, in the owner's shape ([`owner_history`]; docs/plans/
 /// performance.md, "A full rebuild in the owner's shape"): ms a log, and of it the stages (the full rebuild's own
 /// counters, [`engine::Engine::work_stats`]).
@@ -395,7 +425,9 @@ async fn measure_owner_rebuild() {
         let db = db::Db::open(&data, v.clone(), db::Options::default()).unwrap();
         // (`PERF_FULL_BY_DAY=0`: the windows as before, a window per log beside the API)
         let by_day = std::env::var("PERF_FULL_BY_DAY").map_or(true, |v| v != "0");
-        let opts = engine::Options { full_by_day: by_day, ..engine::Options::default() };
+        // (`PERF_HOLD=0`: the records each log changes written for every log, as before they were held a day)
+        let hold = std::env::var("PERF_HOLD").map_or(true, |v| v != "0");
+        let opts = engine::Options { full_by_day: by_day, full_hold_records: hold, ..engine::Options::default() };
         let e = engine::Engine::new(db, Store::new(can_dir(&data), v), opts);
         e.start().unwrap();
         e.idle().await;
@@ -404,6 +436,8 @@ async fn measure_owner_rebuild() {
         e.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
         let mut last = before.clone();
         let mut decoding = (None, None);
+        // (the logs done as time goes, for the speed at the start, middle and end of a day)
+        let mut marks: Vec<(Instant, u64)> = Vec::new();
         let r = loop {
             let r = e.full_rebuild_status().unwrap().unwrap();
             if r.phase == engine::full::Phase::Decoding {
@@ -417,6 +451,7 @@ async fn measure_owner_rebuild() {
                 }
                 decoding.0.get_or_insert_with(Instant::now);
                 decoding.1 = Some(Instant::now());
+                marks.push((Instant::now(), r.logs_done));
             }
             if !r.running() {
                 break r;
@@ -469,6 +504,7 @@ async fn measure_owner_rebuild() {
             r.status,
             r.logs_done
         );
+        println!("owner shape: {logs} logs: {}", within_day(&marks));
         table.push(row);
         assert_eq!(r.status, engine::full::FullStatus::Done);
     }
