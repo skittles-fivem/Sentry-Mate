@@ -362,7 +362,8 @@ async fn owner_history(base: &Path, logs: usize) -> model::CarId {
 ///
 /// `PERF_LOGS=1000,5000,10000,20000 cargo test --release -p sentry-mate measure_owner_rebuild -- --ignored
 /// --nocapture` (the sizes; 1,000 and 5,000 when not given); `PERF_OWNER_DATA=DIR` keeps each size's seeded folder
-/// there and starts from a copy of it the next time.
+/// there and starts from a copy of it the next time; `PERF_FULL_BY_DAY=0` rebuilds the windows as before the full
+/// rebuild built them once per day of logs ([`engine::Options::full_by_day`]).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "measurement by hand: cargo test --release -p sentry-mate measure_owner_rebuild -- --ignored --nocapture"]
 async fn measure_owner_rebuild() {
@@ -392,7 +393,10 @@ async fn measure_owner_rebuild() {
         let (data, keys) = (tmp.path().join("data"), tmp.path().join("keys"));
         let v = Arc::new(Vault::open(&data, &keys).unwrap());
         let db = db::Db::open(&data, v.clone(), db::Options::default()).unwrap();
-        let e = engine::Engine::new(db, Store::new(can_dir(&data), v), engine::Options::default());
+        // (`PERF_FULL_BY_DAY=0`: the windows as before, a window per log beside the API)
+        let by_day = std::env::var("PERF_FULL_BY_DAY").map_or(true, |v| v != "0");
+        let opts = engine::Options { full_by_day: by_day, ..engine::Options::default() };
+        let e = engine::Engine::new(db, Store::new(can_dir(&data), v), opts);
         e.start().unwrap();
         e.idle().await;
         let car = e.db().fleet(&db::FleetQuery { search: None, limit: 10, after: None }).unwrap().cars[0].car.id;
