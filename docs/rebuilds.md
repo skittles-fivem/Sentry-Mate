@@ -70,6 +70,13 @@ thing that does that, how far each one reaches, and the server updates that chan
   log's reading (its file read, unpacked and decoded into samples) is done ahead on the other cores while the logs
   before it are worked on, to the very history a log-by-log reading gives
   ([docs/plans/performance.md](plans/performance.md#a-full-rebuild-on-every-core)).
+- **A full rebuild builds each day once.** Its timeline is rebuilt once per day of logs (after the day's last log,
+  3,000 logs at most), not after each log, beside the Tesla API, TeslaFi and local TeslaMate too, to the very history
+  and ids a window per log gives (`crates/sentry-mate/src/window_batch.rs`:
+  `a_full_rebuild_by_day_gives_the_history_a_window_per_log_gives`). The days go one after the other: a day's window
+  starts at the last settled point the day before's found and keeps the ids of what it rebuilds there. A rebuild of
+  a car or a period in place keeps a window per log beside an API input
+  ([docs/plans/performance.md](plans/performance.md#a-full-rebuilds-windows-once-per-day)).
 
 ## When a stored file can't be read
 
