@@ -20,7 +20,7 @@ thing that does that, how far each one reaches, and the server updates that chan
 | **An update that changed the CAN log check** (`trust-N`) | Only the logs that **failed** their check under the older rules are checked again, per car key; those whose verdict changes are decoded again | Once per key, two minutes after the start | No: each key's new rules version is written with its results, all at once |
 | **An admin's full rebuild** (Data health, Settings → Server) | A full rebuild of the car or of every car | At once | No: an ask while one runs joins that run (its cars added) |
 | **An admin's rebuild of a car or a period** (`POST /cars/{car}/rebuild`) | That car's drives, charges, states and visits from its logs | At once (refused while a full rebuild runs) | No: one job per car at a time; asks meanwhile join one job after it |
-| **The car's GPS layout** (`PUT /cars/{car}/gps-layout`) | **Positions only**: the logs whose positions came from the Screenmate's own GPS frames are decoded again; the others read the same whatever the layout and are left | After a 3 s settle | No: saves in a row are one job; noted on the car first, so a restart before it ran does it then |
+| **The car's GPS layout** (`PUT /cars/{car}/gps-layout`) | **Positions only**: the logs whose positions came from the Screenmate's own GPS frames are decoded again; the others read the same whatever the layout and are left; a day of logs at a time, the windows they change rebuilt once per day ([below](#the-rules-every-rebuild-follows)) | After a 3 s settle | No: saves in a row are one job; noted on the car first, so a restart before it ran does it then |
 | **The car's source order** (Settings → the car → Data sources) | **The inputs joined again**: every window built again from what is stored, nothing decoded again | After a 3 s settle | No: saves in a row are one job, the same as above |
 | **The preferred CAN key of a car** | The car's history from its logs (each second's source follows the key) | After a 3 s settle | No: saves in a row are one job |
 | **A CAN key given to another car** | The logs of that key are worked on for their new car; the old car's windows they were in are built again | At once | No: only that key's logs |
@@ -57,6 +57,13 @@ thing that does that, how far each one reaches, and the server updates that chan
 - **Put off when you choose.** A new version's full rebuild starts after its grace by itself, unless an admin starts
   it now, puts it off until tonight (02:00, the server's time zone) or pauses it (its progress kept); any full
   rebuild can also be cancelled.
+- **A GPS layout change goes a day at a time.** Its logs are decoded again one after the other, a day of them
+  (UTC) at a time under the car's lock: their records, samples, newest values and firmware notes are held in
+  memory and written at the day's end, and the windows they change are rebuilt once, instead of after each log. The
+  same history and ids as a window per log (`crates/sentry-mate/src/window_batch.rs`:
+  `a_gps_layout_change_by_day_gives_the_history_a_window_per_log_gives`). A live input of the car waits for the
+  day's logs (a few seconds); a restart in the middle of a day finds that day as it was and the change still noted,
+  and does it again ([docs/plans/performance.md](plans/performance.md#a-gps-layout-change-a-day-at-a-time)).
 - **A rebuild goes before a GPS layout fit.** A fit (Data health's **Find GPS layout**, or `sentry-mate
   gps-layout` beside the server) reads and unpacks the same stored logs a rebuild decodes, and the rebuild is what
   the history waits for. So while a full rebuild or a rebuild job runs, the fit waits: between two of its days or

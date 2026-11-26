@@ -1712,3 +1712,55 @@ note and its owner), the rest in memory. The syncs are the day ends' writes, abo
 
 Rebuild speed's stage `samples` now reads "working out their samples" (`ui/shared/fullrebuild.js`): its time is a
 log's samples worked out and merged with those around it, and their write once a day.
+
+## A GPS layout change a day at a time
+
+Status (2026-11-26). The owner applied a GPS layout and its rebuild read "5.5 logs/s · most of the time: rebuilding
+the timeline around them (45 %)", some 75 minutes for about 24,800 logs. A layout change is not a full rebuild: it
+is the narrow rebuild of the car's positions (`Engine::redo_positions`, `What::POSITIONS`), done in place on the
+history in use, which decoded every log whose positions come from the Screenmate's own GPS frames (all of a car in
+sentry mode's) again and rebuilt the window it changes after each one, beside the API inputs. None of the full
+rebuild's speedups reached it. The other rebuilds of a car in place go that way too (a rebuild of a car or a period,
+a CAN key's logs given to another car, imported rows moved): they decode every log and keep a window per log beside
+an API input; a source order change decodes nothing and rebuilds every window once.
+
+**Not as a full rebuild.** A full rebuild of the car (by day, its records held, beside the history in use) would do
+it in about a minute, but it gives another history than the one built in place: beside the API inputs, the first
+state of the made-up car's CAN history is the TeslaMate import's "asleep" in place and a live "unknown" from the full
+rebuild (a full rebuild with no layout change gives the same difference, so it is the full rebuild's, older than
+this), and the car's newest values keep the position of the layout before. So the narrow rebuild stays, and goes
+faster.
+
+**What changed** (`engine::Options::positions_by_day`, `redo_positions` in `crates/engine/src/jobs.rs`). Its logs
+go a day (UTC) at a time: the car's lock is taken for the day's logs, and their records, samples, newest values and
+firmware notes are held in memory as a full rebuild by day holds them, but only the car's (`records::Hold::of`,
+`Engine::hold_car`: another car's are written as they always are, and one car holds at a time), and written before
+the lock goes; the windows the day's logs changed are then rebuilt once. Every other writer of the car's records (a
+log that arrives, the APIs' samples) takes the car's lock, so nothing is held but the day's logs' own, and a live
+input of the car waits for the day's logs (a second or two for a day in sentry mode here). A kill in the middle of a day
+leaves that day as it was and the change noted; the start does it again.
+
+**Proven the same** (`crates/sentry-mate/src/window_batch.rs`,
+`a_gps_layout_change_by_day_gives_the_history_a_window_per_log_gives`): the same made-up logs (with the
+Screenmate's GPS frames) through an engine with a window per log and one by day, a car in sentry mode beside every
+input and a car alone, a layout that moves every position, then the DBC's own put back: everything stored compared
+after each, ids and the engine's records included. In the suite two days (288 logs: 288 windows against 2; 310 alone:
+310 against 7); by hand (`-- --ignored`) three days of the owner's shape beside an import back 60 days and every
+API, five usual days beside them and seven alone.
+
+**Results** (`PERF_LOGS=23690 cargo test --release -p sentry-mate measure_owner_layout_change -- --ignored
+--nocapture`, the seeded folder of "A full rebuild in the owner's shape", the DBC's own layout set, so every log is
+decoded again and the positions come out the same; `PERF_POSITIONS_BY_DAY=0` for before, stopped after 300 s;
+release build, this container's 4 cores):
+
+| a layout change, 23,690 logs of the owner's shape | a window per log | by day |
+|---|---:|---:|
+| logs/s | 21.9 | 465 |
+| the whole change | about 18 minutes (6,585 logs in 300 s) | 50.9 s |
+| windows rebuilt | one per log | 23 |
+| ms a log: read, samples, now, windows, all | 0.7, 2.4, 2.3, 27.3, 41.6 | 0.6, 0.9, 0.1, 0.1, 1.2 |
+
+On the owner's server, at the ratio of their 5.5 logs/s to 21.9 here, some 115 logs/s: about 4 minutes for 24,800
+logs where it was 75 (an estimate; their Rebuild speed line will say). Data health's unknown time and chain gaps,
+read every 5 s while it ran, stayed at none here on both (this made-up history has neither); chain gaps come from
+the signed chains of the car's keys, which no rebuild changes.
