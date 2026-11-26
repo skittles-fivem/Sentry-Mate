@@ -9,16 +9,22 @@
 //!   empty (the engine copies in what it keeps).
 //! - **The switch** ([`Db::adopt_car`]): the newest copy of the series the shadow does not make (the APIs' and the
 //!   imports') is put in it, then the car's folder is swapped for the shadow's with two renames under the car's lock,
-//!   and the car's summary takes the shadow's counts. A sealed note (`db/adopt`) is written before the first rename
-//!   and removed after the second, so a crash between them is finished on the next open ([`finish_adopt`]): either
-//!   the old folder or the new one is in place, never neither nor half of one.
+//!   and the car's summary takes the shadow's counts. The copy is made while the car is in use, and only what
+//!   changed since is copied again under its lock (`Mirror`), so the car is read and written meanwhile: an import of
+//!   years, gigabytes to copy, holds it for as long as it takes to look at its files' sizes and times. A new
+//!   shadow's copy of the car's folder is made the same way. A sealed note (`db/adopt`) is written once the copy is
+//!   complete, under the lock, just before the first rename, and removed after the second, so a crash between them
+//!   is finished on the next open ([`finish_adopt`]): either the old folder or the new one is in place, never
+//!   neither nor half of one.
 
 use crate::error::{Error, Result};
 use crate::file::{Ctx, Kind, check_header, header, remove_if_exists, sync_dir};
 use crate::fleet::FleetOp;
+use crate::plain::Stamp;
 use crate::{Crash, Db, Options, Tally, lock};
 use model::{CarId, Stream};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// The note a switch keeps while its two renames are under way.
@@ -40,29 +46,144 @@ fn shadow_name_ok(name: &str) -> bool {
         && name[1..].bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
 }
 
-/// Copies a folder's files and folders (not following links), leaving out the folders `skip` names.
-fn copy_tree(from: &Path, to: &Path, skip: &dyn Fn(&Path) -> bool) -> Result<u64> {
-    let mut bytes = 0;
-    std::fs::create_dir_all(to)?;
-    for e in std::fs::read_dir(from)? {
-        let e = e?;
-        let ty = e.file_type()?;
-        let (src, dst) = (e.path(), to.join(e.file_name()));
-        if ty.is_dir() {
-            if !skip(&src) {
-                bytes += copy_tree(&src, &dst, skip)?;
-            }
-        } else if ty.is_file() {
-            let name = e.file_name();
-            // what a crash left of a write is no file of the db
-            if name.to_string_lossy().ends_with(".tmp") {
+/// A file written this recently may be written again within the same tick of the file system's clock, its size
+/// unchanged: it is copied again under the car's lock.
+const SETTLED_NS: i128 = 2_000_000_000;
+
+fn now_ns() -> i128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i128::try_from(d.as_nanos()).unwrap_or(i128::MAX))
+}
+
+fn not_found(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::NotFound
+}
+
+/// The copy of a car's folder (or of some of it) into a shadow, made in two passes so the car's lock is held only
+/// for the second: the first copies every file while the car is in use and notes what each was when copied (its
+/// inode, size and modification time: a journal grows in place, every other file is replaced whole by a rename);
+/// the second, under the lock, copies again only the files that are new or changed since and removes the copies of
+/// files that are gone ([`Mirror::prune`]).
+#[derive(Default)]
+struct Mirror {
+    /// A source file, its copy and its stamp when copied (`None`: it changed while it was copied, or was written
+    /// just before, so the next pass copies it again).
+    files: HashMap<PathBuf, (PathBuf, Option<Stamp>)>,
+    /// A source folder and its copy.
+    dirs: HashMap<PathBuf, PathBuf>,
+    /// The sources found by the last pass.
+    seen: HashSet<PathBuf>,
+    bytes: u64,
+}
+
+impl Mirror {
+    /// Copies `from` into `to` (not following links, leaving out the folders `skip` names and what a crash left of a
+    /// write, `*.tmp`): a file not copied before, or changed since. `settled`: the car's lock is held, so nothing
+    /// writes the folder; otherwise a file or folder that goes while it is read is passed over.
+    fn pass(&mut self, ctx: &Ctx, from: &Path, to: &Path, skip: &dyn Fn(&Path) -> bool, settled: bool) -> Result<()> {
+        let entries = match std::fs::read_dir(from) {
+            Ok(r) => r,
+            Err(e) if !settled && not_found(&e) => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        std::fs::create_dir_all(to)?;
+        self.dirs.insert(from.to_path_buf(), to.to_path_buf());
+        self.seen.insert(from.to_path_buf());
+        let mut wrote = false;
+        for e in entries {
+            let e = match e {
+                Ok(e) => e,
+                Err(e) if !settled && not_found(&e) => continue,
+                Err(e) => return Err(e.into()),
+            };
+            let ty = e.file_type()?;
+            let (src, dst) = (e.path(), to.join(e.file_name()));
+            if ty.is_dir() {
+                if !skip(&src) {
+                    self.pass(ctx, &src, &dst, skip, settled)?;
+                }
                 continue;
             }
-            bytes += std::fs::copy(&src, &dst)?;
+            if !ty.is_file() || e.file_name().to_string_lossy().ends_with(".tmp") {
+                continue;
+            }
+            let Some(before) = crate::plain::stamp(&src)? else { continue };
+            self.seen.insert(src.clone());
+            if self.files.get(&src).is_some_and(|(_, s)| *s == Some(before)) {
+                continue;
+            }
+            ctx.copy_pause();
+            let n = match std::fs::copy(&src, &dst) {
+                Ok(n) => n,
+                Err(e) if !settled && not_found(&e) => {
+                    self.seen.remove(&src);
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            };
+            self.bytes += n;
+            wrote = true;
+            let kept =
+                settled || (crate::plain::stamp(&src)? == Some(before) && now_ns() - before.mtime_ns() > SETTLED_NS);
+            self.files.insert(src, (dst, kept.then_some(before)));
         }
+        if wrote {
+            sync_dir(to);
+        }
+        Ok(())
     }
-    sync_dir(to);
-    Ok(bytes)
+
+    /// Starts a pass: what it finds is all there is.
+    fn begin(&mut self) {
+        self.seen.clear();
+    }
+
+    /// Removes the copies of the files and folders the last pass did not find (the car's lock held).
+    fn prune(&mut self) -> Result<()> {
+        let mut touched = HashSet::new();
+        let gone: Vec<PathBuf> = self.files.keys().filter(|f| !self.seen.contains(*f)).cloned().collect();
+        for src in gone {
+            if let Some((dst, _)) = self.files.remove(&src) {
+                remove_if_exists(&dst)?;
+                touched.extend(dst.parent().map(Path::to_path_buf));
+            }
+        }
+        let gone: Vec<PathBuf> = self.dirs.keys().filter(|d| !self.seen.contains(*d)).cloned().collect();
+        for src in gone {
+            if let Some(dst) = self.dirs.remove(&src) {
+                match std::fs::remove_dir_all(&dst) {
+                    Err(e) if !not_found(&e) => return Err(e.into()),
+                    _ => {}
+                }
+                touched.extend(dst.parent().map(Path::to_path_buf));
+            }
+        }
+        for d in touched.iter().filter(|d| d.exists()) {
+            sync_dir(d);
+        }
+        Ok(())
+    }
+
+    /// The series the shadow does not make (`seg/*` but SMO's) and the files put aside, from the car's folder
+    /// `real` into the shadow's `new`, then (`settled`) what is no longer there removed.
+    fn streams(&mut self, ctx: &Ctx, real: &Path, new: &Path, settled: bool) -> Result<()> {
+        self.begin();
+        for (part, keep) in [("seg", &(|p: &Path| !smo_series(p)) as &dyn Fn(&Path) -> bool), ("aside", &|_| true)] {
+            let entries = match std::fs::read_dir(real.join(part)) {
+                Ok(r) => r,
+                Err(e) if not_found(&e) => continue,
+                Err(e) => return Err(e.into()),
+            };
+            for e in entries {
+                let p = e?.path();
+                if p.is_dir() && keep(&p) {
+                    self.pass(ctx, &p, &new.join(part).join(p.file_name().unwrap_or_default()), &|_| false, settled)?;
+                }
+            }
+        }
+        if settled { self.prune() } else { Ok(()) }
+    }
 }
 
 /// Whether a series folder (`seg/<series>.<stream>`) holds SMO's points.
@@ -166,14 +287,20 @@ impl Db {
             let _s = lock(&self.inner.settings)?;
             bytes += copy(SHARED[2])?;
         }
+        // the car's folder copied while it is in use, then what changed meanwhile under its lock
+        let (src, dst) = (self.car_dir(car), to.join("cars").join(car.to_string()));
+        let mut m = Mirror::default();
+        m.pass(&self.inner.ctx, &src, &dst, &smo_series, false)?;
         {
             let slot = self.inner.cars.get(car);
             let _data = slot.lock();
-            let src = self.car_dir(car);
+            m.begin();
             if src.exists() {
-                bytes += copy_tree(&src, &to.join("cars").join(car.to_string()), &smo_series)?;
+                m.pass(&self.inner.ctx, &src, &dst, &smo_series, true)?;
             }
+            m.prune()?;
         }
+        bytes += m.bytes;
         sync_dir(&to);
         let db = Db::open(&dir, self.inner.ctx.vault.clone(), self.shadow_options())?;
         Ok((db, bytes))
@@ -234,14 +361,10 @@ impl Db {
         let shadow_slot = shadow.inner.cars.get(car);
         let mut sdata = shadow_slot.lock();
         sdata.unload();
-        let slot = self.inner.cars.get(car);
-        let mut data = slot.lock();
-        if data.removed || !lock(&self.inner.fleet)?.state.contains(car) {
-            return Err(Error::NoSuchCar(car));
-        }
-        data.unload();
+        let ctx = &self.inner.ctx;
         let (real, new) = (self.car_dir(car), shadow.car_dir(car));
-        // the streams the shadow keeps as copied: their newest files (written while it was built)
+        // the streams the shadow keeps as copied: their newest files (written while it was built), copied while the
+        // car is in use, then, under its lock, only what changed since (a car's pages keep answering meanwhile)
         let new_seg = new.join("seg");
         std::fs::create_dir_all(&new_seg)?;
         for e in std::fs::read_dir(&new_seg)? {
@@ -250,32 +373,28 @@ impl Db {
                 std::fs::remove_dir_all(&p)?;
             }
         }
-        if real.join("seg").exists() {
-            for e in std::fs::read_dir(real.join("seg"))? {
-                let p = e?.path();
-                if p.is_dir() && !smo_series(&p) {
-                    copy_tree(&p, &new_seg.join(p.file_name().unwrap_or_default()), &|_| false)?;
-                }
-            }
+        // (the files put aside, a repair after the shadow was copied: never lost with the folder that is swapped out)
+        let mut m = Mirror::default();
+        m.streams(ctx, &real, &new, false)?;
+        let trash = self.inner.dir.join("trash");
+        std::fs::create_dir_all(&trash)?;
+        let old = trash.join(format!("{car}-replaced"));
+        if old.exists() {
+            std::fs::remove_dir_all(&old)?;
         }
-        // the files put aside (a repair after the shadow was copied): never lost with the folder that is swapped out
-        if real.join("aside").exists() {
-            for e in std::fs::read_dir(real.join("aside"))? {
-                let p = e?.path();
-                if p.is_dir() {
-                    copy_tree(&p, &new.join("aside").join(p.file_name().unwrap_or_default()), &|_| false)?;
-                }
-            }
+        let slot = self.inner.cars.get(car);
+        let mut data = slot.lock();
+        if data.removed || !lock(&self.inner.fleet)?.state.contains(car) {
+            return Err(Error::NoSuchCar(car));
         }
-        let ctx = &self.inner.ctx;
+        data.unload();
+        m.streams(ctx, &real, &new, true)?;
         let mut b = header(Kind::Meta);
         b.extend_from_slice(
             &serde_json::to_vec(&Note { car, from: from_rel }).map_err(|e| Error::Corrupt(e.to_string()))?,
         );
+        // (the note only now, the shadow complete: a crash before it leaves the car's folder as it was)
         ctx.write_atomic(&note_file(&self.inner.dir), &b)?;
-        let trash = self.inner.dir.join("trash");
-        std::fs::create_dir_all(&trash)?;
-        let old = trash.join(format!("{car}-replaced"));
         if old.exists() {
             std::fs::remove_dir_all(&old)?;
         }

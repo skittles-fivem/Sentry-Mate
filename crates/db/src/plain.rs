@@ -22,6 +22,11 @@ pub(crate) struct Stamp {
 }
 
 impl Stamp {
+    /// When the file was last written, in nanoseconds since 1970.
+    pub(crate) fn mtime_ns(&self) -> i128 {
+        self.mtime_ns
+    }
+
     /// The stamp of a day kept inside a month's pack ([`crate::segment::pack`]): what the day is there (its
     /// generation, its body's length and content hash), not what the pack file is, so it stays the same when the
     /// month is packed again around it. Never equal to a file's stamp.

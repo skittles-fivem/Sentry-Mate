@@ -25,7 +25,8 @@
 //!   move finish --recovery-key    a new server, last resort: switch to what was copied
 //!   keys KEY                      the signing keys a car key's logs name, and which one is trusted
 //!   keys trust KEY SIGNING-KEY    trust another signing key for a car key (asks first; --yes doesn't)
-//!   health                        exit 0 when the upload port answers, or a move comes in (for Docker)
+//!   health                        exit 0 when the upload port answers and the web port's /health page does, or a
+//!                                 move comes in (for Docker)
 //!   gps-layout --car C [--days N] [--wait MIN]
 //!                                 where the Screenmate's GPS frame keeps latitude and longitude, from the stored
 //!                                 logs and the other inputs' positions (only reads; prints no positions; with the
@@ -42,6 +43,7 @@ mod decode;
 mod e2e;
 mod folders;
 mod gps_layout;
+mod health;
 #[cfg(any(test, feature = "dev-seed"))]
 mod history;
 mod keys;
@@ -721,19 +723,13 @@ async fn run(cli: Cli, mounts: bool) -> Result<ExitCode, Box<dyn std::error::Err
             if data.join(moving::pull::STAGING).exists() {
                 return Ok(ExitCode::SUCCESS);
             }
-            // the upload port, and the web port unless the data moved away (the web UI then runs on the new server)
-            let mut ports = vec![cli.upload_port];
-            if !moving::old::is_moved(&data) {
-                ports.push(cli.web_port);
+            // the upload port takes connections, and the web port answers its /health page over HTTPS unless the
+            // data moved away (the web UI then runs on the new server)
+            if !health::port_open(cli.upload_port, health::WAIT).await {
+                return Ok(ExitCode::FAILURE);
             }
-            for port in ports {
-                let addr = format!("127.0.0.1:{port}");
-                let ok = tokio::time::timeout(Duration::from_secs(5), tokio::net::TcpStream::connect(&addr))
-                    .await
-                    .is_ok_and(|r| r.is_ok());
-                if !ok {
-                    return Ok(ExitCode::FAILURE);
-                }
+            if !moving::old::is_moved(&data) && !health::web_answers(cli.web_port, health::WAIT).await {
+                return Ok(ExitCode::FAILURE);
             }
             return Ok(ExitCode::SUCCESS);
         }

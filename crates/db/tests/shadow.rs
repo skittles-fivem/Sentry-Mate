@@ -98,3 +98,55 @@ fn a_shadow_is_never_named_outside_the_rule() {
     assert!(t.db.shadow(".x", 99).is_err());
     assert!(t.db.open_shadow(".nothing").unwrap().is_none());
 }
+
+#[test]
+fn the_car_is_read_and_written_while_a_switch_copies_its_api_series() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+    let t = test_db(Options::default());
+    let car = car_with_history(&t);
+    // twenty days of Tesla API samples: twenty files and more for the switch to copy
+    for d in 1..=20 {
+        let t0 = DAY0 + d * DAY_MS;
+        t.db.write_points(car, Stream::TeslaApi, t0, t0 + H, &samples(t0, 10)).unwrap();
+    }
+    let (shadow, _) = t.db.shadow(".full-rebuild", car).unwrap();
+    // (a file written just now is copied again under the lock: the import is older than that)
+    std::thread::sleep(Duration::from_millis(2100));
+    // every file copied takes a while, as on a slow disk with a big import
+    t.db.pause_copies(Duration::from_millis(60));
+    let api = |db: &db::Db| db.read_points::<Sample>(car, Stream::TeslaApi, 0, u64::MAX).unwrap().len();
+    let done = AtomicBool::new(false);
+    let (longest, took) = std::thread::scope(|s| {
+        let switch = s.spawn(|| {
+            let t0 = Instant::now();
+            t.db.adopt_car(car, &shadow).unwrap();
+            done.store(true, Ordering::SeqCst);
+            t0.elapsed()
+        });
+        // the car's pages read it all the while; the Tesla API sends more meanwhile, which the switch takes along
+        let mut longest = Duration::ZERO;
+        let mut sent = false;
+        while !done.load(Ordering::SeqCst) {
+            let t0 = Instant::now();
+            let n = api(&t.db);
+            if !sent && t0.elapsed() < Duration::from_millis(50) {
+                assert_eq!(n, 210, "the history in use, read while the switch copies");
+                let t1 = DAY0 + 30 * DAY_MS;
+                t.db.write_points(car, Stream::TeslaApi, t1, t1 + H, &samples(t1, 5)).unwrap();
+                sent = true;
+            }
+            longest = longest.max(t0.elapsed());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(sent);
+        (longest, switch.join().unwrap())
+    });
+    assert!(took >= Duration::from_millis(1200), "the copy was slow: {took:?}");
+    assert!(longest < Duration::from_millis(600), "a read waited {longest:?} (the switch took {took:?})");
+    t.db.pause_copies(Duration::ZERO);
+    assert_eq!(api(&t.db), 215, "what came while the switch copied is in the new history");
+    let mut t = t;
+    t.reopen(Options::default());
+    assert_eq!(api(&t.db), 215);
+}

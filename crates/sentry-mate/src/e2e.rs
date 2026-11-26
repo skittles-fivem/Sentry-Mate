@@ -161,6 +161,9 @@ async fn a_seeded_server_shows_its_made_up_car_on_the_web_port() {
             .map_err(|e| e.to_string())
     });
     listening(web_port, &server).await;
+    // the image's health check: the upload port takes connections, the web port answers /health over HTTPS
+    assert!(crate::health::port_open(upload, crate::health::WAIT).await);
+    assert!(crate::health::web_answers(web_port, crate::health::WAIT).await);
 
     // the client trusts only this server's certificate (the one both ports use)
     let id = Identity::load_or_create(&tls_dir(&data), &[], &v).unwrap();
