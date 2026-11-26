@@ -72,7 +72,9 @@ thing that does that, how far each one reaches, and the server updates that chan
   there once no rebuild runs. A fit asked during a rebuild is never lost or refused, and a rebuild started during
   a fit never waits for it (the fit lets it go after the log it is on). A full rebuild put off, paused or waiting
   for tonight, and a job that has not started (it settles), take nothing, so a fit goes on meanwhile
-  (`crates/web/tests/gps_fit.rs`: `a_fit_waits_while_a_full_rebuild_runs_and_goes_on_after`).
+  (`crates/web/tests/gps_fit.rs`: `a_fit_waits_while_a_full_rebuild_runs_and_goes_on_after`). Data health says what
+  it waits for ("Waiting for the full rebuild to end"). Running, a fit reads its logs on the other cores, as a
+  rebuild reads ahead ([docs/plans/performance.md](plans/performance.md#a-gps-layout-fit-on-the-other-cores)).
 - **On every core.** A car's logs are worked on one after the other (each changes the car's timeline), but each
   log's reading (its file read, unpacked and decoded into samples) is done ahead on the other cores while the logs
   before it are worked on, to the very history a log-by-log reading gives
