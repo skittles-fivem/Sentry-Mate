@@ -1506,12 +1506,16 @@ impl Engine {
         if by_day {
             batch = crate::full::FULL_RUN_LOGS;
         }
-        // a full rebuild by day: the records each log changes are held in memory and written once a day, around
-        // the day's window ([`records::Hold`])
+        // a full rebuild by day: the samples and records each log changes are held in memory and written once a
+        // day, around the day's window ([`records::Hold`], [`Engine::smo_hold`])
         let hold = (by_day && self.inner.opts.full_hold_records).then(|| records::Hold::new(db));
         // (their writing counts as the logs' own work, the stage of the logs' records)
         let write_held = |h: &records::Hold| -> Result<()> {
             let t = Instant::now();
+            self.smo_write_held()?;
+            // (the samples' part counted as theirs)
+            let smo = u64::try_from(t.elapsed().as_micros()).unwrap_or(u64::MAX);
+            self.inner.counters.samples_us.fetch_add(smo, Ordering::Relaxed);
             self.now_write_held()?;
             self.fw_write_held()?;
             h.write()?;
@@ -1532,6 +1536,7 @@ impl Engine {
             Ok(())
         };
         if hold.is_some() {
+            self.smo_hold(true);
             self.now_hold(true);
             self.fw_hold(true);
         }
@@ -1596,6 +1601,7 @@ impl Engine {
             Ok(false)
         });
         if hold.is_some() {
+            self.smo_hold(false);
             self.now_hold(false);
             self.fw_hold(false);
         }

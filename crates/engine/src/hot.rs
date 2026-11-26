@@ -34,6 +34,32 @@ pub(crate) struct HotDays {
 pub(crate) struct Hot {
     keeping: usize,
     days: Option<HotDays>,
+    /// A full rebuild's day of logs: the SMO writes of each car held, in order, written once at the day's end
+    /// ([`Engine::smo_hold`]); `None` while nothing is held.
+    held: Option<std::collections::BTreeMap<CarId, Vec<Held>>>,
+}
+
+/// One SMO write held: every point of `[from_ms, to_ms)` replaced with `points` (as a read gives them back).
+struct Held {
+    from_ms: u64,
+    to_ms: u64,
+    points: Vec<Sample>,
+}
+
+/// `points` (of `[from_ms, to_ms)`, in time order) with the writes held laid over them in order, each replacing its
+/// window's points.
+fn lay(mut points: Vec<Sample>, from_ms: u64, to_ms: u64, held: &[Held]) -> Vec<Sample> {
+    for h in held {
+        let (a, b) = (h.from_ms.max(from_ms), h.to_ms.min(to_ms));
+        if a >= b {
+            continue;
+        }
+        let i = points.partition_point(|p| p.t_ms < a);
+        let j = points.partition_point(|p| p.t_ms < b);
+        let mine = slice(&h.points, a, b).to_vec();
+        points.splice(i..j.max(i), mine);
+    }
+    points
 }
 
 /// Held while a log, or a car's logs, are worked on: days are kept only meanwhile, and let go with the last one
@@ -78,6 +104,11 @@ impl Engine {
             return Ok(db.read_points::<Sample>(car, Stream::Smo, from_ms, to_ms)?);
         }
         let mut hot = lock(&self.inner.hot);
+        // writes held ([`Engine::smo_hold`]): what is stored, with them laid over it
+        if let Some(held) = hot.held.as_ref().and_then(|h| h.get(&car)).filter(|h| !h.is_empty()) {
+            let stored = db.read_points::<Sample>(car, Stream::Smo, from_ms, to_ms)?;
+            return Ok(lay(stored, from_ms, to_ms, held));
+        }
         if hot.keeping == 0 {
             drop(hot);
             return Ok(db.read_points::<Sample>(car, Stream::Smo, from_ms, to_ms)?);
@@ -119,8 +150,52 @@ impl Engine {
 
     /// Replaces the car's SMO samples in `[from_ms, to_ms)`: [`db::Db::write_points`], and the kept days with it.
     pub(crate) fn write_smo_points(&self, car: CarId, from_ms: u64, to_ms: u64, points: &[Sample]) -> Result<()> {
+        let mut hot = lock(&self.inner.hot);
+        if let Some(held) = hot.held.as_mut() {
+            if from_ms < to_ms {
+                // (as a read gives them back: what is not kept of a sample is not kept here either)
+                let points = db::segment::decode::<Sample>(&db::segment::encode(points))?;
+                held.entry(car).or_default().push(Held { from_ms, to_ms, points });
+            }
+            return Ok(());
+        }
+        self.write_smo_points_locked(&mut hot, car, from_ms, to_ms, points)
+    }
+
+    /// Holds the cars' SMO writes in memory (`on`) until [`Engine::smo_write_held`] writes them, reads seeing them
+    /// laid over what is stored; `false`: no longer, and what was not written is not (as a kill would leave it).
+    pub(crate) fn smo_hold(&self, on: bool) {
+        lock(&self.inner.hot).held = on.then(std::collections::BTreeMap::new);
+    }
+
+    /// Writes the SMO writes held ([`Engine::smo_hold`]): per car one write over the span they cover, of what they
+    /// leave there laid over what is stored (the points the writes one after the other leave), and holds on.
+    pub(crate) fn smo_write_held(&self) -> Result<()> {
         let db = &self.inner.db;
         let mut hot = lock(&self.inner.hot);
+        let Some(held) = hot.held.as_mut().map(std::mem::take) else { return Ok(()) };
+        for (car, writes) in held {
+            let (Some(from_ms), Some(to_ms)) =
+                (writes.iter().map(|w| w.from_ms).min(), writes.iter().map(|w| w.to_ms).max())
+            else {
+                continue;
+            };
+            let stored = db.read_points::<Sample>(car, Stream::Smo, from_ms, to_ms)?;
+            let points = lay(stored, from_ms, to_ms, &writes);
+            self.write_smo_points_locked(&mut hot, car, from_ms, to_ms, &points)?;
+        }
+        Ok(())
+    }
+
+    fn write_smo_points_locked(
+        &self,
+        hot: &mut Hot,
+        car: CarId,
+        from_ms: u64,
+        to_ms: u64,
+        points: &[Sample],
+    ) -> Result<()> {
+        let db = &self.inner.db;
         // the kept days follow only when they were the db's before the write, and the window is inside them
         let follows = match hot.days.as_ref() {
             Some(h) if h.car == car && from_ms >= h.from_ms && to_ms <= h.to_ms && from_ms < to_ms => {
