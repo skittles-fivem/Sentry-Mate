@@ -199,7 +199,7 @@ export function countRate(perS, one, many) {
 /** The stages of a log's work, as `speed.stage` names them (docs/ui-api.md: the rebuild speed). */
 const STAGES = {
   read: 'reading the logs',
-  samples: 'writing their samples',
+  samples: 'working out their samples',
   now: 'the newest values',
   windows: 'rebuilding the timeline around them',
   other: 'the logs’ records',

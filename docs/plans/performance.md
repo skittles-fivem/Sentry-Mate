@@ -1655,3 +1655,60 @@ the log (its entry, its firmware notes, its counts: in memory). More CPU than wa
 decoded ahead on the other cores while one works through them in order. Rebuild speed's stage names stay as they
 are.
 
+
+## A full rebuild's day before read from memory
+
+Status (2026-11-26). After the samples were held a day, the owner's Data health read "147 logs/s · most of the
+time: writing their samples (72 %)", about 6.8 ms a log of which 4.9 were samples, where this container read 536
+logs/s (1.2 ms of samples) on the same shape: some four times what the machines' ratio would give.
+
+**What was slow.** Not a sync: during a by-day rebuild of the owner's shape the process syncs 1,674 times in all
+(`LD_PRELOAD` of a shim that counts `fsync`/`fdatasync`), 134 in 15 s of `strace -f -c` while about 7,900 logs went
+by, none of them per log: the day ends' records and samples, and the switch. What a log did instead, in the samples
+stage: it looks for the logs around it (`records::entries_between`, the day before and its own), and the day before
+had been written at its end and was no longer held, so every log opened it from the store, unsealed it, unpacked it
+(about 40 KB stored, a day of 1,250 entries in sentry mode) and compared its bytes with the record kept in the day
+records' cache, and when that cache did not have it, read all 1,250 entries into a record again. That cache is one
+for the process, of 24 days, kept by key alone: the server's own folder and a full rebuild's shadow hold the same
+keys (`car/1/day/…`) with other bytes, so a day the server's engine read (its live inputs, a GPS fit reading the
+stored logs) put the rebuild's out. Read again for every log (`DAY_CACHE_MISS=1` on the commit before, a
+measurement switch not kept), the samples take 4.1 ms a log and the rebuild 224 logs/s here: the owner's 4.9 ms and
+147 logs/s. The opens and reads themselves are dearer on ZFS too (about 6 opens a log, half of them of records
+that are not there, 40,000 reads in those 15 s).
+
+**What changed.**
+
+- **What a hold wrote stays held** (`records::Hold::write`): written as it is and kept to be read, not written again
+  until it changes, and let go three writes later (a day's end writes twice, around its window), so the day before
+  is read from memory by the next day's logs and a run holds about two days' records. Only a full rebuild by day
+  holds; it is the shadow's only writer. `a_hold_keeps_what_it_wrote_to_be_read_and_lets_it_go_after_the_next_day`;
+  the comparisons of "A full rebuild's records written once per day" pass with it (everything stored, ids
+  included, a run cut off in the middle of a day and carried on).
+- **The day records' cache per data folder** (`records::day_shared`): kept by the folder's store and key, so the
+  server's engine and a full rebuild no longer put each other's days out.
+
+**Results** (`PERF_LOGS=23690 cargo test --release -p sentry-mate measure_owner_rebuild -- --ignored --nocapture`,
+the same seeded folder as before; the before is `c340fe9b`; release build, this container's 4 cores, each run
+alone; "sync 5 ms": every `fsync` and `fdatasync` made 5 ms slower by an `LD_PRELOAD` shim, a model of ZFS without a
+log device; "live": `PERF_LIVE=1`, the server's engine fed a Tesla API answer a second while the rebuild runs). ms a
+log of the decoding:
+
+| 23,690 logs of the owner's shape | full rebuild | logs/s | decoding, ms a log | read | samples | now | windows | syncs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| before | 38.2 s | 620 | 1.6 | 0.0 | 1.1 | 0.1 | 0.2 | 1,674 |
+| before, the cache missed | 111.9 s | 212 | 4.7 | 0.0 | 4.1 | 0.1 | 0.2 | |
+| before, sync 5 ms | 43.7 s | 542 | 1.7 | 0.0 | 1.1 | 0.1 | 0.2 | 1,674 |
+| before, live, sync 5 ms | 61.1 s | 388 | 1.7 | 0.0 | 1.0 | 0.1 | 0.3 | 2,350 |
+| the day before held | 12.0 s | 1,974 | 0.5 | 0.0 | 0.1 | 0.1 | 0.2 | |
+| the day before held, sync 5 ms | 18.5 s | 1,281 | 0.7 | 0.0 | 0.1 | 0.1 | 0.2 | 993 |
+| the day before held, live, sync 5 ms | 31.1 s | 762 | 0.7 | 0.0 | 0.1 | 0.1 | 0.3 | 1,971 |
+
+(With the live input the full rebuild's end takes longer, before and after alike: the answers that came meanwhile
+are built into the shadow's history before its switch.) Within a day: 740 → 3,600 logs/s at its start, 690 → 3,000
+at its end. On the owner's server the samples should fall from 4.9 ms to about the 0.1 here times their ratio, with
+or without the cache missing (an estimate: their Rebuild speed line will say). What is left of a log's own work is
+about 0.3 ms: four small records looked for in the store for every log (the car's GPS layout twice, its own GPS's
+note and its owner), the rest in memory. The syncs are the day ends' writes, about 50 a day of logs, and the switch.
+
+Rebuild speed's stage `samples` now reads "working out their samples" (`ui/shared/fullrebuild.js`): its time is a
+log's samples worked out and merged with those around it, and their write once a day.

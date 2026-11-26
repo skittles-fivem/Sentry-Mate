@@ -105,6 +105,7 @@ test('the rebuild speed line: logs a second now and the stage that takes most of
   assert.equal(F.speedText({ logs_per_s: 1.1, stage: 'windows', stage_share_pct: 72, over_ms: 30000 }),
     '1.1 logs/s · most of the time: rebuilding the timeline around them (72 %)');
   assert.equal(F.speedText({ logs_per_s: 0.5, stage: 'now', stage_share_pct: 40.4 }), '30 logs/min · most of the time: the newest values (40 %)');
+  assert.equal(F.speedText({ logs_per_s: 147, stage: 'samples', stage_share_pct: 72 }), '147 logs/s · most of the time: working out their samples (72 %)');
   assert.equal(F.speedText({ logs_per_s: 156, stage: 'nope', stage_share_pct: 50 }), '156 logs/s');
   assert.equal(F.speedText(null), '');
   assert.equal(F.speedText({ logs_per_s: null }), '');

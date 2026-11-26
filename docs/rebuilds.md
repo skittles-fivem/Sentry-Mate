@@ -84,7 +84,10 @@ thing that does that, how far each one reaches, and the server updates that chan
   for every log: the same samples, records, history and ids (`crates/sentry-mate/src/window_batch.rs`:
   `a_full_rebuild_holding_its_records_gives_the_records_written_for_every_log`). A run killed in the middle of a
   day goes on from that day's first log
-  ([docs/plans/performance.md](plans/performance.md#a-full-rebuilds-records-written-once-per-day)).
+  ([docs/plans/performance.md](plans/performance.md#a-full-rebuilds-records-written-once-per-day)). What it wrote
+  at a day's end stays in memory to be read through the next day (each log looks for the logs around it in the day
+  before), so a log opens no record of the day before
+  ([docs/plans/performance.md](plans/performance.md#a-full-rebuilds-day-before-read-from-memory)).
 
 ## When a stored file can't be read
 
