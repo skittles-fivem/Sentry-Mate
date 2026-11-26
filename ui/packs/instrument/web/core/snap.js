@@ -417,14 +417,14 @@ export function snapAll() {
 
 // Only the parts of the page in roots, after their content changed: the rest of the page is laid out as before
 // as long as each part keeps its size, so it keeps what the last run gave it (settled() below).
-function snapIn(roots) {
+function snapIn(roots, level = 0) {
   holdScroll(document.body);
   const was = roots.map((r) => sizeAt.get(r));
   restore(roots);
   const l = lists();
   for (const r of roots) collect(r, l);
   run(l);
-  settled(roots, was);
+  settled(roots, was, level);
 }
 
 // Rows added under the ones a table had (the next page of a list), or put in the place of rows (a list that loads
@@ -447,7 +447,7 @@ function snapRows(table, rows) {
 // shrank by whole device pixels, with the boxes around it still on whole ones, moved what follows it by whole
 // pixels, which keeps everything there on whole pixels too. Anything else: the whole page is snapped again, in
 // the same turn.
-function settled(roots, was) {
+function settled(roots, was, level = 0) {
   const r = devicePixelRatio || 1;
   const whole = (v) => Math.abs(v * r - Math.round(v * r)) <= 0.02;
   const around = new Set();
@@ -457,7 +457,14 @@ function settled(roots, was) {
     const b = e.getBoundingClientRect();
     if (was[i] === sizeKey(b)) continue;
     const [w0, h0] = was[i].split(' ').map(Number);
-    if (Math.abs(w0 - b.width) > 0.01 || !whole(b.height) || !whole(h0)) { snapAll(); return; }
+    if (Math.abs(w0 - b.width) > 0.01 || !whole(b.height) || !whole(h0)) {
+      // a part that changed its width (a live figure that got shorter) may move what is beside it: the box around
+      // it is snapped, and so on up to three boxes; only then the whole page
+      const up = roots.length === 1 && level < 3 ? boxAround(e) : null;
+      if (up) { snapIn([up], level + 1); return; }
+      snapAll();
+      return;
+    }
     for (let a = e.parentElement; a && a !== document.body; a = a.parentElement) around.add(a);
   }
   for (const a of around) {
@@ -474,6 +481,12 @@ function settled(roots, was) {
     if (sizeAt.has(e)) sizeAt.set(e, sizeKey(e.getBoundingClientRect()));
     if (left.has(e)) left.set(e, sizeKey(e.getBoundingClientRect()));
   }
+}
+
+// the nearest box around e that the last run measured (null: none inside the page)
+function boxAround(e) {
+  for (let a = e.parentElement; a && a !== document.body; a = a.parentElement) if (sizeAt.has(a)) return a;
+  return null;
 }
 
 // the smallest boxes the last run measured that hold every change in the records (null: snap the whole page)

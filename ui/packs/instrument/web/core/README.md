@@ -398,7 +398,7 @@ Pages are checked with `node ui/tools/check.js --pixel` (see `ui/tools/README.md
   snapped grid or table changes size (not when the run itself changed it) and when the fonts have loaded. A
   whole run takes about 1 s on a page of 40,000 elements (it reads all sizes before it writes any), so after a
   change of content only the boxes that hold it are snapped again (a card drawn again, a table's new rows),
-  unless one of them changed size other than by whole pixels: a page that reloads its cards while it scrolls
+  unless one of them changed size other than by whole pixels (then the box around it is snapped, up to three boxes up, before the whole page): a page that reloads its cards while it scrolls
   (a rebuild sends `rows` every second) stays under a frame. Tables that load again keep unchanged rows
   (`reuseRows`) and the page parts that live values draw again keep what did not change, so most reloads
   change nothing at all. A table's body puts in only the rows that differ, and rows swapped in a table the last run
