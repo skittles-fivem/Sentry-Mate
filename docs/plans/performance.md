@@ -820,7 +820,9 @@ which piece of a drive is stored first depends on the windows on the way). With 
 a drive without its start and end positions (which input's position is used is judged over the window). Rebuilding
 after every log is deterministic there: two such engines agreed on everything. So a car with TeslaFi or TeslaMate
 beside SMO gains nothing from this step; for it to, a drive's id would have to come from the data alone and not
-from what was stored before, which is a change to what a rebuild keeps and not a speed-up.
+from what was stored before, which is a change to what a rebuild keeps and not a speed-up. (A full rebuild is
+another case: its windows go once per day of logs beside an API input too, see "A full rebuild's windows once per
+day".)
 
 **A rebuild of a period** clears the period first, so the rule above looks only at what starts between its first
 log and its end: nothing, and it goes per run, where no drive or charge goes on across the period's end. The same
@@ -1471,3 +1473,66 @@ most of that time with its share, for example "1.1 logs/s · most of the time: r
 Rebuild row today); hidden while none runs, "Measuring…" until the first half minute is measured
 (docs/ui-api.md; the engine's `Engine::rebuild_speed`, `crates/engine/src/speed.rs`, from the counters each time
 it is asked). The dev server's mock says the same (`ui/devserver/tests/test_rebuild_speed.py`).
+
+## A full rebuild's windows once per day
+
+Status (2026-11-25). The owner's full rebuild of 23,690 logs (one car with the Tesla API, TeslaFi and local
+TeslaMate, imports back to February) read "3.8 logs/s · most of the time: rebuilding the timeline around them
+(85 %)" on Data health, the process at about one core of 12: the windows, one per log beside an API input, took the
+time, not the decoding read ahead on the other cores.
+
+**What changed** (`engine::Options::full_by_day`, `Engine::full_by_day` in `crates/engine/src/full.rs`). A full
+rebuild's logs are still worked on one after the other (read and decoded ahead on the other cores), but the windows
+they change are rebuilt once per day of logs: when the first log of the next day (UTC) comes, or after 3,000 logs
+(`full::FULL_RUN_LOGS`, a day of one-minute logs is 1,440), joined where they meet as before; beside API inputs too,
+where it was a window per log, and alone, where it was one per 64 logs. Only the full rebuild: a rebuild of a car or
+a period in place and a log that arrives go as before.
+
+**Why a full rebuild can, beside an API input.** A car with an API input got a window per log because a car rebuilt
+whole per run gave a drive another id (above, "a rebuild's windows once per run of logs"). That is a rebuild in
+place: the car's record keeps its newest time, which the API's samples give, so each log's window runs from the log
+on to the API's newest sample and builds rows from the API ahead of the logs; the next windows start at those rows,
+and a drive keeps the id of whichever of its pieces was stored first. A full rebuild's shadow starts with no row
+worked out (the API's rows are built again at its end, `Engine::api_build_locked`) and a record whose newest time is
+its newest decoded log's, so none of its windows reaches past the logs: a day's window, from the last settled point
+before the day to the day's last log, is the window that log would get, and what is before it is what the windows
+per log left there. A full rebuild carried on after a restart goes by day too where its shadow has nothing at or
+after the logs left (as per run before).
+
+**Proven the same** (`crates/sentry-mate/src/window_batch.rs`, `a_full_rebuild_by_day_gives_the_history_a_window_per_log_gives`):
+the same made-up logs through an engine as before (`full_by_day: false`) and one by day, a car in sentry mode beside a
+TeslaMate import, a TeslaFi import, TeslaFi's API, local TeslaMate and the Tesla API in sentry mode, and a car alone;
+the history in use compared, then a full rebuild on each, three times (the third cut off on the second day as by a
+kill and carried on by a new engine), each time the two shadows compared once their logs are done (before the switch
+gives their rows the ids of the history in use, so those hide nothing) and the histories after the switch:
+everything stored, ids included. In the suite two days (288 logs of 3 s every 10 minutes: 289 windows a log at a
+time, 3 and 4 by day); by hand (`cargo test --release -p sentry-mate a_full_rebuild_by_day -- --ignored`) three days
+of the owner's shape (3 s every 69 s) beside an import back 60 days, five usual days beside the APIs and seven alone,
+each also cut off and carried on: 3,755 logs of the owner's shape, 3,756 windows a log at a time against 5 by day (6
+cut off); 676 usual logs beside the APIs, 677 against 15 (16); 709 alone, 24 against 15 (16).
+
+**Not all the logs first, and not the days at once.** Every log decoded before any window would not give the same: a
+window reads its inputs a margin past its end and the nearest log after it, which a window per log never has, and
+with nothing stored yet the first window would run to the newest log (the whole history in memory). The days are
+built one after the other, not on several cores: a day's window starts at the last settled point before it, which
+the day before's window found, and carries the ids of the rows it rebuilds there (a state, a drive or a charge that
+goes on across midnight); days built apart from midnight would cut those rows and could name them otherwise. So the
+other cores read and decode the next logs, as before, and the windows stay on one.
+
+**Results** (`PERF_LOGS=23690 cargo test --release -p sentry-mate measure_owner_rebuild -- --ignored --nocapture`,
+`PERF_FULL_BY_DAY=0` for before; the owner's shape of "A full rebuild in the owner's shape" at the owner's size: 20
+days of 23,690 tiny logs, the Tesla API in sentry mode over them (209,738 samples), a TeslaMate import of 293 days
+(2,285,357 positions, 1,172 drives); the same seeded folder copied for both; release build, this container's 4 cores
+with other builds on them, ±30 %):
+
+| 23,690 logs | before (a window per log) | by day |
+|---|---:|---:|
+| a full rebuild | 720 s (32.9 logs/s), 542 s of CPU | 340 s (69.7 logs/s), 259 s of CPU |
+| windows rebuilt | 23,691 | 24 |
+| ms a log: samples, now, the logs' records, windows | 2.5, 2.9, 6.2, 15.1 | 2.4, 2.3, 6.9, 0.2 |
+| Rebuild speed's stage | rebuilding the timeline around them (57 %) | the logs' records (58 %; windows 2 %) |
+
+**What is left.** A log's own work: its day's record (about 1,250 entries in sentry mode) copied and written again
+for every log (6.9 ms), its samples (2.4) and the car's newest values (2.3). On the owner's server the windows were
+85 % of 263 ms a log; if the rest stays as it was there, about 40 ms a log is left, some 25 logs/s (an estimate from
+their line, not measured there: their Rebuild speed line will say).
