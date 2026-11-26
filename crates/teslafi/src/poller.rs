@@ -686,10 +686,14 @@ impl<F: Feed, S: Sink> Poller<F, S> {
         // handed on is not comparable any more (a zone east of the old one makes every new poll look older), so
         // until a poll is read in the new zone only its id tells a poll handed on already
         let tz = self.tz();
+        // (and the poll handed on last, in the old zone, is handed on once more in the new one: the car's newest
+        // values then carry their right time, not the old zone's)
+        let mut rezoned = false;
         if self.pacing.poll_zone.as_deref() != Some(tz.name()) {
             if self.pacing.poll_zone.is_some() {
                 self.pacing.last_poll_ms = None;
                 self.last_seen = None;
+                rezoned = true;
             }
             // and what was said of the old zone's times is not said of the new one's
             (self.last_offset, self.steady_offset_ms) = (None, None);
@@ -721,14 +725,13 @@ impl<F: Feed, S: Sink> Poller<F, S> {
         }
         // a poll already handed on (the same id), or one older than it (the last awake poll asked for later): not
         // again
-        let new = match p.data_id {
-            Some(id) => Some(id) != self.pacing.last_data_id,
-            None => true,
-        } && self.pacing.last_poll_ms.is_none_or(|t| p.t_ms > t);
+        let same = p.data_id.is_some() && p.data_id == self.pacing.last_data_id;
+        let new = (!same || rezoned) && self.pacing.last_poll_ms.is_none_or(|t| p.t_ms > t);
         let car = self.matched();
         if new {
             self.pacing.last_data_id = p.data_id.or(self.pacing.last_data_id);
-            if what == Read::Latest {
+            // (a poll handed on again in a new zone is no new poll from TeslaFi)
+            if what == Read::Latest && !same {
                 self.pacing.last_new_ms = Some(now_ms);
                 // how far before the moment it was read the poll is dated, the same as the poll before (within a few
                 // minutes of TeslaFi's delay) while TeslaFi's time moved on: a steady distance, the zone's
