@@ -1764,3 +1764,33 @@ On the owner's server, at the ratio of their 5.5 logs/s to 21.9 here, some 115 l
 logs where it was 75 (an estimate; their Rebuild speed line will say). Data health's unknown time and chain gaps,
 read every 5 s while it ran, stayed at none here on both (this made-up history has neither); chain gaps come from
 the signed chains of the car's keys, which no rebuild changes.
+
+## A GPS layout fit on the other cores
+
+Status (2026-11-26). On the owner's server a fit ("Find GPS layout", the last 30 days) read "Waiting (2 %)" for as
+long as a rebuild ran: a fit and a rebuild read the same stored logs, so the fit waits between two of its logs while
+a full rebuild or a rebuild job runs, a GPS layout change's included (above, "A GPS layout fit and a rebuild don't
+run at once"), sleeping a second between looks. It took no CPU then: the server's load meanwhile was the rebuild's.
+Alone, the fit read its logs one after the other on one core (each opened, unsealed, unpacked and its lines read for
+the Screenmate's 0x04F frames), nearly all of its time.
+
+**What changed** (`gps_fit::read_frames`). The logs are read on the other cores (as many threads as a rebuild reads
+ahead with: the cores but one, eight at most), at most four a thread ahead of the log taken in order, and handed on
+in the logs' order, so what the fit finds is the same. While the fit waits for a rebuild, its readers stop at the
+logs ahead. `frames_read_on_several_threads_come_in_the_order_of_the_logs`: the frames of 41 logs (one not stored)
+read on four threads and on one, the same in the same order, and a stop ends the reading there. On Data health the
+fit's headline says what it waits for ("Waiting for the full rebuild to end (2 % done)", `ui/shared/gpsfit.js`).
+
+**Results** (`PERF_LOGS=23690 cargo test --release -p sentry-mate measure_owner_gps_fit -- --ignored --nocapture`,
+the seeded folder of "A full rebuild in the owner's shape", 30 days, nothing else running; this container's 4 cores,
+so 3 readers; the outcome written by both, `PERF_FIT_OUT`, byte for byte the same):
+
+| a GPS layout fit of 30 days, 23,690 logs | one by one | on the other cores |
+|---|---:|---:|
+| the fit | 14.3 s | 5.6 s |
+| reading the logs | 13.4 s (1,767 logs/s) | 4.8 s (4,981 logs/s) |
+| the positions, the fitting | 0.5 s, 0.3 s | 0.5 s, 0.3 s |
+
+On the owner's server, with 8 readers, the logs should read some six times as fast as before (an estimate). Not
+done: reading only the frames a fit needs out of a log (its xz is unpacked whole either way), and keeping each log's
+frames for the next fit.
