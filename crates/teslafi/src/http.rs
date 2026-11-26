@@ -35,6 +35,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Largest answer read, bytes (one poll is a few KB).
 pub const CAP: usize = 256 * 1024;
 
+/// Largest charge log read, bytes ([`crate::costs`]: a few KB a charge; a window that holds more is read in smaller
+/// windows).
+pub const HISTORY_CAP: usize = 8 << 20;
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HttpError {
     #[error("not TeslaFi's host")]
@@ -155,10 +159,15 @@ impl Http {
 
     /// `GET path` (`path` starts with `/`) with the token, its answer read up to [`CAP`] bytes.
     pub(crate) async fn get(&self, path: &str, token: &Secret) -> Result<Answer, HttpError> {
-        timeout(REQUEST_TIMEOUT, self.send(path, token)).await.map_err(|_| HttpError::Timeout)?
+        self.get_up_to(path, token, CAP).await
     }
 
-    async fn send(&self, path: &str, token: &Secret) -> Result<Answer, HttpError> {
+    /// [`Http::get`], its answer read up to `cap` bytes.
+    pub(crate) async fn get_up_to(&self, path: &str, token: &Secret, cap: usize) -> Result<Answer, HttpError> {
+        timeout(REQUEST_TIMEOUT, self.send(path, token, cap)).await.map_err(|_| HttpError::Timeout)?
+    }
+
+    async fn send(&self, path: &str, token: &Secret, cap: usize) -> Result<Answer, HttpError> {
         let origin = self.endpoint.origin.clone();
         if !path.starts_with('/') || !self.endpoint.allows(&origin) {
             return Err(HttpError::HostNotAllowed);
@@ -217,7 +226,7 @@ impl Http {
         let status = resp.status().as_u16();
         let retry_after_s =
             resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok());
-        let body = Limited::new(resp.into_body(), CAP).collect().await.map_err(|e| {
+        let body = Limited::new(resp.into_body(), cap).collect().await.map_err(|e| {
             if e.downcast_ref::<LengthLimitError>().is_some() { HttpError::TooLarge } else { HttpError::Protocol }
         })?;
         tracing::debug!(host = %origin.host, status, tls = v, "teslafi request");

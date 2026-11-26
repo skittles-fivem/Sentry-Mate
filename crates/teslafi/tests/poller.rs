@@ -395,22 +395,107 @@ async fn the_status_keeps_teslafis_time_of_its_data_apart_from_when_a_new_poll_w
     assert_eq!(st.last_data_ms, Some(NOW - six_hours), "TeslaFi's own time of its data");
     assert_eq!(st.last_new_ms, Some(NOW), "when this server read a poll it had not had");
     assert!(st.awake);
-    assert_eq!(teslafi::data_health(&st, NOW), teslafi::DataHealth::TimeOffset { skew_ms: six_hours, behind: true });
+    assert_eq!(teslafi::data_health(&st, NOW), teslafi::DataHealth::Fine, "one poll is no steady distance yet");
+    // the next poll, three minutes on, dated as far before: a zone read wrong
+    script.push(Ok(poll(2, "2027-01-15 02:03:00", "Idling", json!({}))));
+    let mut t = p.tick(next).await.unwrap();
+    let st = p.status();
+    let read = next;
+    assert_eq!(teslafi::data_health(&st, read), teslafi::DataHealth::TimeOffset { skew_ms: six_hours, behind: true });
     // the same poll again, every few minutes for hours: the connection works, nothing is new
-    let mut t = next;
     for _ in 0..130 {
-        script.push(Ok(poll(1, "2027-01-15 02:00:00", "Idling", json!({}))));
+        script.push(Ok(poll(2, "2027-01-15 02:03:00", "Idling", json!({}))));
         t = p.tick(t).await.unwrap();
     }
     assert!(t >= NOW + 2 * 3_600_000, "{}", t - NOW);
     let st = p.status();
-    assert_eq!((st.last_data_ms, st.last_new_ms), (Some(NOW - six_hours), Some(NOW)), "nothing new was read");
+    let data = read - six_hours;
+    assert_eq!((st.last_data_ms, st.last_new_ms), (Some(data), Some(read)), "nothing new was read");
     assert_eq!(st.last_error, None);
     assert_eq!(
         teslafi::data_health(&st, t),
-        teslafi::DataHealth::NoData { age_ms: t - NOW, last_data_ms: NOW - six_hours },
+        teslafi::DataHealth::NoData { age_ms: t - read, last_data_ms: data },
         "TeslaFi has had nothing new while this server polled without errors"
     );
     // kept across a restart
-    assert_eq!(store.pacing(&id).unwrap().last_new_ms, Some(NOW));
+    assert_eq!(store.pacing(&id).unwrap().last_new_ms, Some(read));
+}
+
+/// TeslaFi writes the local time of its account's zone; `NOW` (08:00 UTC) is 02:00 in Chicago.
+fn chicago(minute: u64) -> String {
+    format!("2027-01-15 02:{minute:02}:00")
+}
+
+#[tokio::test]
+async fn a_parked_cars_old_data_read_in_the_right_zone_raises_no_zone_notice() {
+    let (_t, data, v) = vault();
+    let store = Store::new(&data, v);
+    let id = account(&store, true);
+    store.update(&id, None, None, |a| a.time_zone = Some("America/Chicago".into())).unwrap();
+    let (script, sink) = (Script::default(), Arc::new(MemSink::default()));
+    let mut p = poller(&store, &id, &script, &sink);
+    // parked in Sentry: TeslaFi's newest data is from six hours ago, the same poll every time
+    let mut t = NOW;
+    for _ in 0..20 {
+        script.push(Ok(poll(1, "2027-01-14 20:00:00", "Sentry", json!({"shift_state": "P"}))));
+        t = p.tick(t).await.unwrap();
+        assert_eq!(teslafi::data_health(&p.status(), t), teslafi::DataHealth::Fine);
+    }
+    // and when TeslaFi does write new polls of a parked car, hours apart and old: no steady whole offset
+    for (k, date) in ["2027-01-14 21:13:00", "2027-01-14 21:41:00"].iter().enumerate() {
+        script.push(Ok(poll(2 + k as u64, date, "Sentry", json!({"shift_state": "P"}))));
+        let now = t;
+        t = p.tick(t).await.unwrap();
+        assert_eq!(teslafi::data_health(&p.status(), now), teslafi::DataHealth::Fine, "{date}");
+    }
+}
+
+#[tokio::test]
+async fn a_wrong_zone_raises_the_notice_and_a_change_of_zone_clears_it_at_the_next_read() {
+    let (_t, data, v) = vault();
+    let store = Store::new(&data, v);
+    // the account reads UTC, TeslaFi writes Chicago time
+    let id = account(&store, true);
+    let (script, sink) = (Script::default(), Arc::new(MemSink::default()));
+    let mut p = poller(&store, &id, &script, &sink);
+    let mut t = NOW;
+    for k in 0..3u64 {
+        let minute = (t - NOW) / 60_000;
+        script.push(Ok(poll(1 + k, &chicago(minute), "Idling", json!({"shift_state": "P"}))));
+        t = p.tick(t).await.unwrap();
+    }
+    let six_hours = 6 * 3_600_000;
+    assert_eq!(
+        teslafi::data_health(&p.status(), t),
+        teslafi::DataHealth::TimeOffset { skew_ms: six_hours, behind: true }
+    );
+    let stored = sink.points.lock().unwrap().len();
+    assert_eq!(sink.points.lock().unwrap().last().unwrap().1[0].t_ms, t - 180_000 - six_hours, "read six hours early");
+    // the admin sets TeslaFi's zone: at the next read (the same poll, the car parked) the notice is gone, and that
+    // poll is handed on once more, dated right, so the car's newest values are not six hours old any more
+    store.update(&id, None, None, |a| a.time_zone = Some("America/Chicago".into())).unwrap();
+    script.push(Ok(poll(3, &chicago(6), "Idling", json!({"shift_state": "P"}))));
+    let now = t;
+    t = p.tick(t).await.unwrap();
+    assert_eq!(teslafi::data_health(&p.status(), now), teslafi::DataHealth::Fine);
+    let pts = sink.points.lock().unwrap().clone();
+    assert_eq!(pts.len(), stored + 1, "the same poll, once more in the new zone");
+    assert_eq!(pts.last().unwrap().1[0].t_ms, NOW + 6 * 60_000, "02:06 in Chicago is 08:06 UTC");
+    assert_eq!(p.status().last_new_ms, Some(now - 180_000), "no new poll from TeslaFi for that");
+    // and the same poll after that is not handed on again
+    script.push(Ok(poll(3, &chicago(6), "Idling", json!({"shift_state": "P"}))));
+    t = p.tick(t).await.unwrap();
+    assert_eq!(sink.points.lock().unwrap().len(), stored + 1);
+    // and new polls read in the new zone are current: no notice, the data dated as it should be
+    for _ in 0..3 {
+        let minute = (t - NOW) / 60_000;
+        script.push(Ok(poll(10 + minute, &chicago(minute), "Idling", json!({"shift_state": "P"}))));
+        let now = t;
+        t = p.tick(t).await.unwrap();
+        let st = p.status();
+        assert_eq!(teslafi::data_health(&st, now), teslafi::DataHealth::Fine);
+        assert_eq!(st.last_data_ms, Some(now), "read in Chicago, the poll is of the moment it was read");
+    }
+    let pts = sink.points.lock().unwrap().clone();
+    assert_eq!(pts.last().unwrap().1[0].t_ms, t - 180_000, "the car's newest data is dated in the right zone");
 }

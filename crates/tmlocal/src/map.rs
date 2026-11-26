@@ -418,7 +418,12 @@ impl Car {
     /// Takes one message (`name`: the topic's last level). `now_ms`: when it came.
     pub fn apply(&mut self, name: &str, payload: &str, now_ms: u64) -> Applied {
         self.last_message_ms = Some(now_ms);
-        let p = payload.trim();
+        // TeslaMate publishes `nil` (Elixir's null) for a value it does not have, as for the route when none is set:
+        // no value, as an empty payload, on every topic
+        let p = match payload.trim() {
+            w if w.eq_ignore_ascii_case("nil") || w.eq_ignore_ascii_case("null") => "",
+            w => w,
+        };
         let changed = match target(name) {
             Target::DisplayName => {
                 let n = text(p);
@@ -594,6 +599,42 @@ mod tests {
         assert_eq!(parse_time("2026-11-22T06:00:00.000+01:00"), Some(1_795_323_600_000));
         assert_eq!(parse_time("1970-01-01T00:00:01Z"), Some(1_000));
         assert_eq!(parse_time("not a time"), None);
+    }
+
+    #[test]
+    fn nil_null_and_empty_are_no_value_on_every_topic() {
+        let mut c = Car::default();
+        c.apply("display_name", "Made-up car", 1);
+        c.apply("active_route_destination", "Made-up Lake", 1);
+        c.apply("active_route_miles_to_arrival", "10", 1);
+        c.apply("version", "2026.32.5", 1);
+        c.apply("battery_level", "70", 1);
+        c.apply("speed", "30", 1);
+        c.apply("locked", "true", 1);
+        c.apply("shift_state", "D", 1);
+        assert!(c.take_meta(1_000).is_some() && c.take(1_000, 1_000).is_some());
+        // the route ended, and TeslaMate has no value for the rest for a while
+        for (name, empty) in [
+            ("active_route_destination", "nil"),
+            ("active_route_miles_to_arrival", "nil"),
+            ("version", "NULL"),
+            ("speed", ""),
+            ("locked", " nil "),
+            ("shift_state", "null"),
+        ] {
+            assert_eq!(c.apply(name, empty, 2_000), Applied::Value, "{name} {empty:?} clears it");
+        }
+        let o = c.take_meta(1_000 + META_EVERY_MS).unwrap();
+        assert_eq!(o.off_can.route_destination, None, "no route, not a route to \"nil\"");
+        assert_eq!((o.off_can.route_km, o.off_can.version.as_deref(), o.locked), (None, None, None));
+        let s = c.take(2_000, 1_000).unwrap();
+        assert_eq!((s.soc, s.speed_kmh, s.gear), (Some(70.0), None, None), "the values it still has stay");
+        // a name, a state and a place are never \"nil\" either
+        assert_eq!(c.apply("display_name", "nil", 3_000), Applied::Nothing);
+        assert_eq!(c.apply("state", "nil", 3_000), Applied::Nothing);
+        assert_eq!(c.apply("location", "null", 3_000), Applied::Nothing);
+        assert_eq!(c.meta.display_name.as_deref(), Some("Made-up car"));
+        assert!(c.state().is_none());
     }
 
     #[test]

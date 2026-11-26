@@ -12,11 +12,14 @@
 //!   the problem is on TeslaFi's side or between TeslaFi and the car, not here. A car TeslaFi says is asleep or
 //!   offline is silent as expected, however long: no notice.
 //! - **TeslaFi's times are read in the wrong zone** ([`DataHealth::TimeOffset`]): polls keep coming (a new one in the
-//!   last [`FRESH_MS`], 10 minutes) but each is dated at least [`TIME_OFFSET_MIN_MS`] (1 hour) before, or after, the
-//!   moment it was read. A fresh poll is at most minutes old, so such a gap is the time zone the account's times are
-//!   read in (TeslaFi writes local time without a zone: `time_zone` of the account, else the server's) not being
-//!   TeslaFi's own. Every value from TeslaFi then looks hours old (or to come). A zone that differs by under an hour
-//!   (a half-hour zone) is not seen.
+//!   last [`FRESH_MS`], 10 minutes), and the two newest were each dated as far before (or after) the moment they were
+//!   read, within [`STEADY_SLACK_MS`] (TeslaFi's delay), at least [`TIME_OFFSET_MIN_MS`] (1 hour) and close to a
+//!   whole quarter of an hour (zones differ by whole hours, a few by half or three quarters). TeslaFi writes local
+//!   time without a zone (`time_zone` of the account, else the server's default), so a zone read wrong shifts every
+//!   poll by the same whole offset, while TeslaFi's time moves on with the clock. Data that is just old (a parked
+//!   car TeslaFi heard from hours ago) does not keep a steady distance from the clock, nor one of whole hours: no
+//!   notice. After a change of the account's zone nothing is said until two polls have been read in the new one. A
+//!   zone that differs by under an hour is not seen.
 
 use crate::poller::AccountStatus;
 
@@ -26,6 +29,10 @@ pub const NO_DATA_AFTER_MS: u64 = 2 * 3_600_000;
 pub const FRESH_MS: u64 = 10 * 60_000;
 /// A fresh poll dated this far from the moment it was read: the account's time zone is wrong (1 hour).
 pub const TIME_OFFSET_MIN_MS: u64 = 3_600_000;
+/// Two polls dated this close to the same distance from the moment each was read keep a steady distance (5 minutes:
+/// TeslaFi's delay varies by a few), and a distance this close to a whole quarter of an hour is a zone's.
+pub const STEADY_SLACK_MS: u64 = 5 * 60_000;
+const QUARTER_HOUR_MS: u64 = 15 * 60_000;
 
 /// What the age of TeslaFi's data says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,10 +57,12 @@ pub fn data_health(st: &AccountStatus, now_ms: u64) -> DataHealth {
     // when a poll TeslaFi had not given before last came, on this server's clock (before the first one after a
     // restart that is not known: TeslaFi's own time stands for it)
     let seen_ms = st.last_new_ms;
-    if let Some(seen) = seen_ms.filter(|s| now_ms.saturating_sub(*s) <= FRESH_MS) {
-        let (skew, behind) = if seen >= data_ms { (seen - data_ms, true) } else { (data_ms - seen, false) };
-        return if skew >= TIME_OFFSET_MIN_MS {
-            DataHealth::TimeOffset { skew_ms: skew, behind }
+    if seen_ms.is_some_and(|s| now_ms.saturating_sub(s) <= FRESH_MS) {
+        let Some(offset) = st.steady_offset_ms else { return DataHealth::Fine };
+        let skew = offset.unsigned_abs();
+        let off_grid = (skew % QUARTER_HOUR_MS).min(QUARTER_HOUR_MS - skew % QUARTER_HOUR_MS);
+        return if skew >= TIME_OFFSET_MIN_MS && off_grid <= STEADY_SLACK_MS {
+            DataHealth::TimeOffset { skew_ms: skew, behind: offset > 0 }
         } else {
             DataHealth::Fine
         };
@@ -89,6 +98,7 @@ mod tests {
             next_request_ms: None,
             last_data_ms: Some(NOW - MIN),
             last_new_ms: Some(NOW - MIN),
+            steady_offset_ms: Some(MIN as i64),
             awake: true,
             last_ok_ms: Some(NOW),
             last_error: None,
@@ -134,20 +144,38 @@ mod tests {
     #[test]
     fn polls_that_come_fresh_but_are_dated_hours_off_are_a_wrong_zone() {
         let mut s = status();
-        // read a minute ago, dated six hours before it: the zone is read six hours behind
+        // read a minute ago, dated six hours before it, as the poll before: the zone is read six hours behind
         s.last_new_ms = Some(NOW - MIN);
         s.last_data_ms = Some(NOW - MIN - 6 * HOUR);
-        assert_eq!(data_health(&s, NOW), DataHealth::TimeOffset { skew_ms: 6 * HOUR, behind: true });
+        s.steady_offset_ms = Some((6 * HOUR + 2 * MIN) as i64);
+        assert_eq!(data_health(&s, NOW), DataHealth::TimeOffset { skew_ms: 6 * HOUR + 2 * MIN, behind: true });
         // dated hours after the moment it was read: read ahead
-        s.last_data_ms = Some(NOW - MIN + 5 * HOUR);
+        s.steady_offset_ms = Some(-((5 * HOUR) as i64));
         assert_eq!(data_health(&s, NOW), DataHealth::TimeOffset { skew_ms: 5 * HOUR, behind: false });
+        // a half-hour zone
+        s.steady_offset_ms = Some((5 * HOUR + 30 * MIN + MIN) as i64);
+        assert_eq!(data_health(&s, NOW), DataHealth::TimeOffset { skew_ms: 5 * HOUR + 31 * MIN, behind: true });
         // minutes apart is just TeslaFi's delay
-        s.last_data_ms = Some(NOW - MIN - 20 * MIN);
+        s.steady_offset_ms = Some((20 * MIN) as i64);
         assert_eq!(data_health(&s, NOW), DataHealth::Fine);
         // not said while the car sleeps either: a fresh poll is a fresh poll
         s.awake = false;
-        s.last_data_ms = Some(NOW - MIN - 6 * HOUR);
+        s.steady_offset_ms = Some((6 * HOUR) as i64);
         assert_eq!(data_health(&s, NOW), DataHealth::TimeOffset { skew_ms: 6 * HOUR, behind: true });
+    }
+
+    #[test]
+    fn old_data_that_keeps_no_steady_whole_offset_is_no_wrong_zone() {
+        let mut s = status();
+        s.awake = false;
+        s.last_new_ms = Some(NOW - MIN);
+        s.last_data_ms = Some(NOW - 6 * HOUR - 7 * MIN);
+        // the two newest polls were not dated alike (a parked car's old data, TeslaFi catching up): nothing to say
+        s.steady_offset_ms = None;
+        assert_eq!(data_health(&s, NOW), DataHealth::Fine);
+        // steady, but far from any zone's offset
+        s.steady_offset_ms = Some((6 * HOUR + 7 * MIN) as i64);
+        assert_eq!(data_health(&s, NOW), DataHealth::Fine);
     }
 
     #[test]

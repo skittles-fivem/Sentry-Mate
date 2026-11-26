@@ -8,9 +8,11 @@
 //! below 0) is left out; a cost is read with either decimal mark (`12.50`, `12,50`).
 //! The path is built from numbers only (two dates): no text from anywhere goes into it.
 //!
-//! The backfill reads the log [`CHUNK_DAYS`] at a time back from today until two chunks in a row hold no charge (or
-//! 2012); then the last [`CHECK_DAYS`] days once a day, and soon after a charge ends. One request per tick, in the
-//! poller's gap ([`crate::poller`]); TeslaFi's 429 is waited out there as for the polls.
+//! The backfill reads the log [`CHUNK_DAYS`] at a time back from today until two chunks' worth of days in a row hold
+//! no charge (or 2012); a window whose answer is larger than [`crate::http::HISTORY_CAP`] is asked again in halves
+//! (down to a day; a single day larger than that is passed over, the error kept). Then the last [`CHECK_DAYS`] days
+//! once a day, and soon after a charge ends. One request per tick, in the poller's gap ([`crate::poller`]); TeslaFi's
+//! 429 is waited out there as for the polls.
 
 use crate::api::FeedError;
 use serde::{Deserialize, Serialize};
@@ -31,6 +33,13 @@ pub struct Progress {
     pub backfill_done: bool,
     #[serde(default)]
     pub empty_chunks: u32,
+    /// Days read back in a row with no charge: the backfill stops at two chunks' worth ([`CHUNK_DAYS`]).
+    #[serde(default)]
+    pub empty_days: i64,
+    /// Days the backfill asks for at once, when fewer than [`CHUNK_DAYS`] (TeslaFi's answer for more was larger than
+    /// [`crate::http::HISTORY_CAP`]).
+    #[serde(default)]
+    pub chunk_days: Option<i64>,
     #[serde(default)]
     pub last_check_ms: Option<u64>,
     #[serde(default)]
