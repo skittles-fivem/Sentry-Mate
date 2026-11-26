@@ -47,6 +47,13 @@ pub trait Sink: Send + Sync + 'static {
     /// TeslaFi started limiting the account's requests (a 429 after none): nothing is asked before `until_ms`. Once per
     /// episode; a 429 during one only moves the end (in the status).
     fn rate_limited(&self, _account: &Account, _until_ms: u64) {}
+    /// The account's times are read in another zone now (`from`, then `to`: zone names): what was stored for `car`
+    /// from its polls is dated again (each time as the local time it was read from). Returns how many samples moved.
+    /// Called once per change, before the first poll is read in the new zone; an error leaves the change to the
+    /// next tick (nothing is read meanwhile).
+    fn rezone(&self, _account: &Account, _car: CarId, _from: &str, _to: &str) -> Result<u64, SinkError> {
+        Ok(0)
+    }
     /// Charges with a cost from TeslaFi's log ([`crate::costs`]): kept, one per key. Returns how many were new.
     fn invoices(&self, _found: &[tesla::invoices::Found]) -> Result<u64, SinkError> {
         Ok(0)
@@ -232,6 +239,8 @@ pub struct Poller<F: Feed, S: Sink> {
     last_offset: Option<(u64, i64)>,
     /// See [`AccountStatus::steady_offset_ms`].
     steady_offset_ms: Option<i64>,
+    /// The stored data was dated again in a new zone ([`Poller::rezone`]): the next poll is handed on once more.
+    rehand: bool,
 }
 
 impl<F: Feed, S: Sink> Poller<F, S> {
@@ -283,6 +292,7 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             last_good_asked: false,
             last_offset: None,
             steady_offset_ms: None,
+            rehand: false,
         })
     }
 
@@ -532,6 +542,9 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             }
             return Some(self.next_ms);
         }
+        if let Err(t) = self.rezone(now_ms).await {
+            return Some(t);
+        }
         if let Err(t) = self.gate(now_ms) {
             return Some(t);
         }
@@ -548,6 +561,46 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             }
             Err(e) => Some(self.failed(&e, now_ms)),
         }
+    }
+
+    /// The account's zone changed since its data was stored ([`Pacing::poll_zone`], the zone every stored time of it
+    /// was read in): the data of each car it is matched to is dated again ([`Sink::rezone`]), then the data is in
+    /// the new zone. `Err`: when to try again (nothing is read before).
+    async fn rezone(&mut self, now_ms: u64) -> Result<(), u64> {
+        let to = self.tz().name().to_string();
+        let Some(from) = self.pacing.poll_zone.clone().filter(|z| *z != to) else { return Ok(()) };
+        let cars: Vec<CarId> = self
+            .account
+            .cars
+            .iter()
+            .filter_map(|c| match c.matched {
+                Some(Match::Car { car }) => Some(car),
+                _ => None,
+            })
+            .collect();
+        for car in cars {
+            let (sink, account, f, t) = (self.sink.clone(), self.account.clone(), from.clone(), to.clone());
+            let r = tokio::task::spawn_blocking(move || sink.rezone(&account, car, &f, &t)).await;
+            let e = match r {
+                Ok(Ok(_)) => continue,
+                Ok(Err(e)) => e.to_string(),
+                Err(e) => e.to_string(),
+            };
+            tracing::warn!(account = %self.id, car, error = %e, "TeslaFi's stored data could not be dated again");
+            self.last_error = Some(err(
+                "rezone_failed",
+                format!("The data stored in {from} could not be dated in {to}: {e}"),
+                now_ms,
+            ));
+            return Err(now_ms + self.cadence.idle_ms);
+        }
+        self.pacing.poll_zone = Some(to);
+        self.pacing.last_poll_ms = None;
+        self.last_seen = None;
+        (self.last_offset, self.steady_offset_ms) = (None, None);
+        self.rehand = true;
+        self.save_pacing();
+        Ok(())
     }
 
     fn failed(&mut self, e: &FeedError, now_ms: u64) -> u64 {
@@ -688,7 +741,7 @@ impl<F: Feed, S: Sink> Poller<F, S> {
         let tz = self.tz();
         // (and the poll handed on last, in the old zone, is handed on once more in the new one: the car's newest
         // values then carry their right time, not the old zone's)
-        let mut rezoned = false;
+        let mut rezoned = std::mem::take(&mut self.rehand);
         if self.pacing.poll_zone.as_deref() != Some(tz.name()) {
             if self.pacing.poll_zone.is_some() {
                 self.pacing.last_poll_ms = None;

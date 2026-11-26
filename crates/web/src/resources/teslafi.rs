@@ -126,9 +126,35 @@ pub fn service(
             events.publish(Event::Notice { notice: Arc::new(v), admins_only: true });
         }
     });
+    let rezoned = rezone_hook(audit2.clone());
     let limited = rate_limit_hook(audit2, events2);
-    let sink = engine::TeslafiSink { engine: engine.clone(), on_account: Some(hook), on_rate_limit: Some(limited) };
+    let sink = engine::TeslafiSink {
+        engine: engine.clone(),
+        on_account: Some(hook),
+        on_rate_limit: Some(limited),
+        on_rezone: Some(rezoned),
+    };
     teslafi::Service::new(data, vault, Arc::new(sink), options(engine))
+}
+
+/// What is done when a TeslaFi account's stored data of a car was dated again in a new zone (its zone, or the
+/// server's default it follows, changed): an audit entry in the server's name saying how much moved.
+pub fn rezone_hook(audit: Arc<accounts::Audit>) -> engine::tesla_in::TeslafiRezoneHook {
+    Arc::new(move |a: &Account, car: model::CarId, from: &str, to: &str, r: &engine::rezone::Rezoned| {
+        let span = match (r.from_ms, r.to_ms) {
+            (Some(x), Some(y)) => format!(", between {} and {}", utc_minute(x), utc_minute(y)),
+            _ => String::new(),
+        };
+        let summary = format!(
+            "Dated the data the TeslaFi account {} stored for car {car} again: read in {to}, not {from} ({} samples and \
+             {} state spans{span}). What was built from it is built again.",
+            a.label, r.samples, r.spans
+        );
+        let details = audit_details(Some(&target("teslafi", None, &a.id)), &summary);
+        if let Err(e) = audit.record(None, None, "teslafi-data-redated", &details) {
+            tracing::warn!("audit: {e}");
+        }
+    })
 }
 
 /// What is done when TeslaFi starts limiting an account's requests (a 429 after none): an audit entry in the server's
