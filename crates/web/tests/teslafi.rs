@@ -415,3 +415,65 @@ async fn an_account_without_a_zone_follows_the_servers_default_zone() {
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(w.svc.default_time_zone(), "America/Chicago");
 }
+
+/// Data stored while the account's zone was wrong, dated again: the moment and the zone before from the audit log
+/// (none before a change of the zone), once (asked again, nothing moves), with an audit entry, admin only and with
+/// the password again.
+#[tokio::test(flavor = "multi_thread")]
+async fn data_stored_in_a_wrong_zone_is_dated_again_once() {
+    let w = world().await;
+    let a = seed(&w);
+    let mut admin = w.s.admin().await;
+    let base = format!("/api/v1/integrations/teslafi/accounts/{}/redate", a.id);
+    let d = admin.get(&base).await;
+    assert_eq!(d.status, 200, "{}", d.text());
+    assert_eq!((d.json()["zone"].as_str(), d.json()["before_ms"].as_u64()), (Some("America/Chicago"), None));
+    let r = admin.post(&base, json!({ "zone_before": "UTC", "confirm_password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 422, "no change of the zone to start from: {}", r.text());
+    // the zone set to UTC, then to Chicago: the audit log says when, and what it was before
+    let one = format!("/api/v1/integrations/teslafi/accounts/{}", a.id);
+    let r = admin
+        .put(
+            &format!("{one}/cars"),
+            json!({ "version": a.version, "items": [{ "vehicle": "fv1", "match": format!("c{}", w.car) }] }),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let mut version = r.json()["version"].as_u64().unwrap();
+    for z in ["UTC", "America/Chicago"] {
+        let r =
+            admin.patch(&one, json!({ "version": version, "time_zone": z, "confirm_password": ADMIN_PASSWORD })).await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        version = r.json()["version"].as_u64().unwrap();
+    }
+    let d = admin.get(&base).await.json();
+    assert_eq!(d["zone_before"], "UTC", "{d}");
+    let moment = d["before_ms"].as_u64().expect("when the zone was set");
+    // TeslaFi's data stored before it, read as UTC
+    let t0 = moment - 10 * 3_600_000;
+    let samples: Vec<model::Sample> = (0..10u64)
+        .map(|i| model::Sample { t_ms: t0 + i * 60_000, soc: Some(70.0), ..model::Sample::default() })
+        .collect();
+    // (this world's engine is started here: its data is stored in the background)
+    w._engine.start().unwrap();
+    w._engine.feed_points(model::Input::TeslafiApi, w.car, samples, Vec::new());
+    w._engine.idle().await;
+    for bad in [json!({ "zone_before": "Mars/Base" }), json!({ "zone_before": "UTC", "before_ms": u64::MAX / 2 })] {
+        let mut body = bad.clone();
+        body["confirm_password"] = json!(ADMIN_PASSWORD);
+        assert_eq!(admin.post(&base, body).await.status, 422, "{bad}");
+    }
+    let r = admin.post(&base, json!({ "zone_before": "UTC", "confirm_password": "not it" })).await;
+    assert_ne!(r.status, 200, "the password again");
+    let r = admin.post(&base, json!({ "zone_before": "UTC", "confirm_password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let b = r.json();
+    assert_eq!((b["cars"][0]["samples"].as_u64(), b["cars"][0]["already"].as_bool()), (Some(10), Some(false)), "{b}");
+    assert_eq!(b["before_ms"].as_u64(), Some(moment));
+    let audit = audit_actions(&mut admin).await;
+    let (_, e) = audit.iter().find(|(act, _)| act == "teslafi-data-redated").expect("an audit entry");
+    assert!(e.to_string().contains("America/Chicago, not UTC"), "{e}");
+    // asked again: nothing moves
+    let r = admin.post(&base, json!({ "zone_before": "UTC", "confirm_password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.json()["cars"][0]["already"], true, "{}", r.text());
+}

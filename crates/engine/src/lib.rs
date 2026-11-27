@@ -366,8 +366,8 @@ pub(crate) struct Inner {
     tokens: std::sync::OnceLock<Arc<ingest::Tokens>>,
     /// Cars whose Tesla API data waits for a build, and when each was last built.
     pub(crate) api_pending: Mutex<std::collections::HashSet<CarId>>,
-    /// An API input's data sent to be stored and not stored yet, per car and input ([`rezone`]).
-    pub(crate) api_inflight: Mutex<std::collections::HashMap<(CarId, model::Input), u64>>,
+    /// Tests: a re-dating fails after this many more of its writes ([`Engine::rezone_fail_after`]; `u64::MAX`: never).
+    pub(crate) rezone_fail: AtomicU64,
     pub(crate) api_built: Mutex<HashMap<CarId, u64>>,
     /// The time zone a car made from now on starts in.
     default_zone: RwLock<String>,
@@ -644,7 +644,7 @@ impl Engine {
                 handle: Mutex::new(None),
                 tokens: std::sync::OnceLock::new(),
                 api_pending: Mutex::new(std::collections::HashSet::new()),
-                api_inflight: Mutex::new(std::collections::HashMap::new()),
+                rezone_fail: AtomicU64::new(u64::MAX),
                 api_built: Mutex::new(HashMap::new()),
                 default_zone: RwLock::new(opts.default_time_zone.clone()),
                 gap_fill: std::sync::atomic::AtomicBool::new(true),
@@ -860,6 +860,8 @@ impl Engine {
         self.invoice_prices_soon();
         // a full rebuild a restart cut off carries on
         self.full_resume();
+        // and a re-dating of stored data
+        self.rezone_resume();
         // the days' pack readings, worked out once idle (and again now and then)
         handle.spawn(query::pack_logs::passes(self.clone()));
         Ok(())
@@ -910,10 +912,6 @@ impl Engine {
             self.inner.counters.queued.fetch_add(1, Ordering::Relaxed);
             let rt = tokio::runtime::Handle::current();
             Engine::background(&rt, "engine-work", move || {
-                let inflight = match &w {
-                    Work::ApiData { input, car, .. } | Work::OffCan { input, car, .. } => Some((*car, *input)),
-                    _ => None,
-                };
                 let r = match w {
                     Work::Log { key, name } => e.work_log(&key, &name),
                     Work::Reconcile { car } => e.work_reconcile(car),
@@ -925,9 +923,6 @@ impl Engine {
                 };
                 if let Err(err) = r {
                     e.failed(&err);
-                }
-                if let Some(k) = inflight {
-                    e.api_landed(k);
                 }
                 e.inner.counters.queued.fetch_sub(1, Ordering::Relaxed);
                 e.inner.outstanding.fetch_sub(1, Ordering::SeqCst);

@@ -637,6 +637,12 @@ fn kv_of(db: &Db) -> usize {
     std::ptr::from_ref(db.kv()) as usize
 }
 
+/// Whether `db` holds the records of `car` now (a full rebuild's or a by-day rebuild's day of logs under way).
+pub(crate) fn holds_car(db: &Db, car: CarId) -> bool {
+    let kv = kv_of(db);
+    held().iter().any(|x| x.kv == kv && x.car.is_none_or(|c| c == car))
+}
+
 /// A held record as it is: `Unread` (the db holds its records, but not this one yet: read it from the db).
 pub(crate) enum Slot<T> {
     Unread,
@@ -931,7 +937,7 @@ pub(crate) fn put_waiting_keys(db: &Db, keys: &BTreeMap<String, WaitingKey>) -> 
     put(db, NS, "keys/waiting", keys)
 }
 
-fn month_of(ms: u64) -> String {
+pub(crate) fn month_of(ms: u64) -> String {
     let (y, m, _) = trust::name::civil_from_days(i64::try_from(ms / DAY_MS).unwrap_or(0));
     format!("{y:04}-{m:02}")
 }
@@ -1453,6 +1459,25 @@ mod tests {
         rec.logs.insert("feedc0ffee42_20261101T0200Z_10.log.xz".into(), empty);
         let back: DayRec = serde_json::from_slice(&serde_json::to_vec(&rec).unwrap()).unwrap();
         assert_eq!(back, rec);
+    }
+
+    /// Whether a car's records are held: while a hold of it (or of every car) is there, not before or after.
+    #[test]
+    fn a_car_is_held_while_a_hold_of_it_is_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        std::fs::create_dir_all(&data).unwrap();
+        let (v, _) = vault::Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
+        let db = Db::open(&data, std::sync::Arc::new(v), db::Options::default()).unwrap();
+        assert!(!holds_car(&db, 7));
+        let one = Hold::of(&db, Some(7));
+        assert!(holds_car(&db, 7) && !holds_car(&db, 8));
+        drop(one);
+        assert!(!holds_car(&db, 7));
+        let all = Hold::new(&db);
+        assert!(holds_car(&db, 7) && holds_car(&db, 8));
+        drop(all);
+        assert!(!holds_car(&db, 8));
     }
 
     /// A hold keeps what it wrote to be read from memory (the day before's record, read by every log of the next

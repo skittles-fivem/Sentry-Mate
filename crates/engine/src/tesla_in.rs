@@ -211,23 +211,17 @@ pub type TeslafiHook = std::sync::Arc<dyn Fn(&teslafi::Account) + Send + Sync>;
 /// the audit entry and the notice.
 pub type TeslafiRateLimitHook = std::sync::Arc<dyn Fn(&teslafi::Account, u64) + Send + Sync>;
 
-/// Told when a TeslaFi account's stored data of a car was dated again in a new zone (the account, the car, the old
-/// zone, the new one, what moved): the web side writes the audit entry.
-pub type TeslafiRezoneHook =
-    std::sync::Arc<dyn Fn(&teslafi::Account, CarId, &str, &str, &crate::rezone::Rezoned) + Send + Sync>;
-
 /// The engine as the `teslafi` crate's poller sees it.
 #[derive(Clone)]
 pub struct TeslafiSink {
     pub engine: Engine,
     pub on_account: Option<TeslafiHook>,
     pub on_rate_limit: Option<TeslafiRateLimitHook>,
-    pub on_rezone: Option<TeslafiRezoneHook>,
 }
 
 impl TeslafiSink {
     pub fn new(engine: Engine) -> TeslafiSink {
-        TeslafiSink { engine, on_account: None, on_rate_limit: None, on_rezone: None }
+        TeslafiSink { engine, on_account: None, on_rate_limit: None }
     }
 }
 
@@ -261,21 +255,6 @@ impl teslafi::Sink for TeslafiSink {
         if let Some(h) = &self.on_rate_limit {
             h(account, until_ms);
         }
-    }
-
-    fn rezone(
-        &self,
-        account: &teslafi::Account,
-        car: CarId,
-        from: &str,
-        to: &str,
-    ) -> std::result::Result<u64, tesla::SinkError> {
-        let r =
-            self.engine.api_rezone(Input::TeslafiApi, car, from, to).map_err(|e| tesla::SinkError(e.to_string()))?;
-        if let Some(h) = &self.on_rezone {
-            h(account, car, from, to, &r);
-        }
-        Ok(r.samples)
     }
 
     fn invoices(&self, found: &[tesla::invoices::Found]) -> std::result::Result<u64, tesla::SinkError> {
@@ -363,7 +342,7 @@ impl Engine {
         if (samples.is_empty() && facts.is_empty()) || input == Input::Smo || crate::query::fleet::is_sold(self, car) {
             return;
         }
-        self.send_api((car, input), Work::ApiData { input, car, samples, facts });
+        self.send(Work::ApiData { input, car, samples, facts });
     }
 
     /// Whether the Tesla API sent the car's data in the last few minutes.
@@ -389,7 +368,7 @@ impl Engine {
         if values.is_empty() || crate::query::fleet::is_sold(self, car) {
             return;
         }
-        self.send_api((car, input), Work::OffCan { input, car, at_ms, values: Box::new(values) });
+        self.send(Work::OffCan { input, car, at_ms, values: Box::new(values) });
     }
 
     /// Keeps an input's values no CAN message carries (its newest reading wins) and tells the car's Now.

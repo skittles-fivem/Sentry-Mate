@@ -8,7 +8,9 @@
 // confirm_password and code. The car match takes the admin's session alone (it stores and shows no token).
 //
 // API: GET integrations/teslafi, GET/POST integrations/teslafi/accounts, PATCH/DELETE
-// integrations/teslafi/accounts/{id}, GET/PUT integrations/teslafi/accounts/{id}/cars, GET integrations/teslafi/status.
+// integrations/teslafi/accounts/{id}, GET/PUT integrations/teslafi/accounts/{id}/cars, GET/POST
+// integrations/teslafi/accounts/{id}/redate (data stored while the zone was wrong, dated again), GET
+// integrations/teslafi/status.
 
 import { h, replace } from '../shared/dom.js';
 import { icon } from '../core/icons.js';
@@ -92,6 +94,12 @@ const tokenField = (label, hint) => field({ label, name: 'token', path: 'token',
 const zoneField = (value) => field({ label: 'TeslaFi\'s time zone', name: 'time_zone', path: 'time_zone', value: value || '',
   hint: 'The zone TeslaFi shows its times in (TeslaFi, Settings, Account), such as America/Chicago. Empty: the server\'s own zone.',
   attrs: { list: 'tf-zones', autocomplete: 'off', spellcheck: 'false', placeholder: 'America/Chicago' } });
+/** A time as a datetime-local input's value, in the browser's zone (`2026-11-26T13:58`). */
+const localInput = (ms) => {
+  if (ms == null) return '';
+  const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60000);
+  return d.toISOString().slice(0, 16);
+};
 const zoneList = () => h('datalist', { id: 'tf-zones' }, ZONES.map((z) => h('option', { value: z })));
 const zoneOk = (z) => !z || !ZONES.length || ZONES.includes(z) || z === 'UTC';
 
@@ -255,6 +263,33 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
       const z = zoneField(a.time_zone);
       return patch(`Change ${a.label}`, 'After a change of the time zone TeslaFi\'s times are read in the new zone at once.', 'Save', (v) => ({ label: v.label.trim(), time_zone: v.time_zone.trim() || null }), [n, z], 'Saved.')();
     } }, icon('settings', 'ico--sm'), 'Name and zone');
+    // data stored while the zone was wrong: dated again, once (the moment and the old zone from the audit log)
+    const redateBtn = h('button', { class: 'btn btn--sm btn--ghost', type: 'button', onclick: async () => {
+      let d = {};
+      try { d = await ctx.api.get(`${BASE}/accounts/${enc(a.id)}/redate`); } catch (e) { flash(errorWords(e).text, { kind: 'error' }); return; }
+      const zb = field({ label: 'TeslaFi\'s times were read in', name: 'zone_before', path: 'zone_before', value: d.zone_before || 'UTC',
+        hint: 'The zone this server read TeslaFi\'s times in before (UTC when it was the server\'s own and the server runs in UTC).',
+        attrs: { list: 'tf-zones', autocomplete: 'off', spellcheck: 'false' } });
+      const until = field({ label: 'For the data stored before', name: 'before', path: 'before_ms', type: 'datetime-local', required: true, value: localInput(d.before_ms),
+        hint: `When the zone was set right (your time, ${tzName(LOCAL)}). ${d.before_ms ? 'From the audit log.' : 'The audit log has no change of the zone: give the moment.'}` });
+      const r = await askPassword(ctx, {
+        title: `Date ${a.label}'s stored data again`,
+        intro: h('div', null, h('p', { class: 'note' }, `TeslaFi writes its times without a zone. The data stored before the moment below is dated again as read in ${d.zone || 'the zone set now'}, each time by its own offset; the drives and charges made from it move with it (their purposes, notes and costs stay on them), and TeslaFi's charge costs are read again. Asking the same again moves nothing.`), zoneList()),
+        submit: 'Date it again', extra: [zb, until],
+        run: guarded((cred, v) => {
+          const z = v.zone_before.trim();
+          if (!zoneOk(z) || !z) { const e = new Error(); e.fields = { zone_before: `${z} is not a time zone. Pick one from the list, such as UTC.` }; throw e; }
+          const t = new Date(v.before).getTime();
+          if (!Number.isFinite(t)) { const e = new Error(); e.fields = { before_ms: 'Give the moment the zone was set right.' }; throw e; }
+          return ctx.api.post(`${BASE}/accounts/${enc(a.id)}/redate`, withPw(cred, { zone_before: z, before_ms: t }));
+        }),
+      });
+      await after(r, (x) => {
+        const sum = (k) => (x.cars || []).reduce((n, c) => n + (c[k] || 0), 0);
+        if ((x.cars || []).every((c) => c.already)) return 'That was done before: nothing moved.';
+        return `Dated again: ${num(sum('samples'))} samples, ${num(sum('drives'))} drives and ${num(sum('charges'))} charges. What was built from them is being built again.`;
+      });
+    } }, icon('clock', 'ico--sm'), 'Re-date stored data');
     const removeBtn = h('button', { class: 'btn btn--sm btn--ghost ta-remove', type: 'button', onclick: async () => {
       const r = await askPassword(ctx, {
         title: `Remove ${a.label}?`, danger: true, submit: 'Remove',
@@ -266,7 +301,7 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
     return h('div', { class: 'panel panel-pad ta-account', id: `teslafi-${a.id}` },
       h('div', { class: 'ta-acc-head' },
         h('div', { class: 'ta-acc-title' }, h('h3', null, a.label), pill(st[0], { tone: st[1] }), a.tls ? h('span', { class: 'faint' }, `TLS ${a.tls}`) : null),
-        h('div', { class: 'row ta-acc-acts' }, pauseBtn, tokenBtn, editBtn, removeBtn)),
+        h('div', { class: 'row ta-acc-acts' }, pauseBtn, tokenBtn, editBtn, redateBtn, removeBtn)),
       st[2] ? h('p', { class: ['setting-note', (a.status === 'token_refused' || a.status === 'error') && 'warn'] }, st[2]) : null,
       a.rate_limited_until_ms ? limitedNote(a.rate_limited_until_ms, LOCAL) : null,
       kv([

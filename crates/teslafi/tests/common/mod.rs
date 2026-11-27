@@ -205,10 +205,6 @@ pub struct MemSink {
     pub off_can: Mutex<Vec<(u32, u64, model::OffCan)>>,
     /// The accounts TeslaFi began limiting, with the end of the wait.
     pub limited: Mutex<Vec<(String, u64)>>,
-    /// The cars whose stored data was dated again: the car, the old zone, the new one.
-    pub rezoned: Mutex<Vec<(u32, String, String)>>,
-    /// Dating stored data again fails while this is set.
-    pub rezone_fails: Mutex<bool>,
 }
 
 impl teslafi::Sink for MemSink {
@@ -230,13 +226,6 @@ impl teslafi::Sink for MemSink {
     }
     fn rate_limited(&self, account: &teslafi::Account, until_ms: u64) {
         self.limited.lock().unwrap().push((account.id.clone(), until_ms));
-    }
-    fn rezone(&self, _account: &teslafi::Account, car: u32, from: &str, to: &str) -> Result<u64, tesla::SinkError> {
-        if *self.rezone_fails.lock().unwrap() {
-            return Err(tesla::SinkError("made-up failure".into()));
-        }
-        self.rezoned.lock().unwrap().push((car, from.to_string(), to.to_string()));
-        Ok(1)
     }
 }
 

@@ -266,6 +266,21 @@ impl<S: Sink> Service<S> {
         self.restart();
     }
 
+    /// Reads the account's charge costs from the start again (their times were read in another zone): its poller is
+    /// stopped, the backfill starts over (the count read so far kept), and the poller starts again when it ran.
+    /// TeslaFi's costs are kept one per charge, so those read again take the place of the old ones.
+    pub fn restart_costs(&self, id: &str) -> Result<(), ServiceError> {
+        let was = lock(&self.inner.tasks).remove(id).map(|t| t.join.abort()).is_some();
+        let store = &self.inner.store;
+        let mut p = store.pacing(id)?;
+        p.costs = costs::Progress { found: p.costs.found, ..costs::Progress::default() };
+        store.set_pacing_exact(id, &p)?;
+        if was {
+            self.spawn(id, None)?;
+        }
+        Ok(())
+    }
+
     fn restart(&self) {
         let running: Vec<String> = lock(&self.inner.tasks).keys().cloned().collect();
         for id in running {

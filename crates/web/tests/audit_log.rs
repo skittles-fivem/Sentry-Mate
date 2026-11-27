@@ -82,6 +82,7 @@ const ROUTES: &[(&str, &str, Case)] = &[
     ("PATCH", "/api/v1/integrations/teslafi/accounts/{teslafi_account}", Elsewhere("teslafi.rs")),
     ("DELETE", "/api/v1/integrations/teslafi/accounts/{teslafi_account}", Elsewhere("teslafi.rs")),
     ("PUT", "/api/v1/integrations/teslafi/accounts/{teslafi_account}/cars", Elsewhere("teslafi.rs")),
+    ("POST", "/api/v1/integrations/teslafi/accounts/{teslafi_account}/redate", Elsewhere("teslafi.rs")),
     ("PUT", "/api/v1/integrations/teslamate", Elsewhere("teslamate_local.rs")),
     ("PATCH", "/api/v1/integrations/teslamate", Elsewhere("teslamate_local.rs")),
     ("DELETE", "/api/v1/integrations/teslamate", Elsewhere("teslamate_local.rs")),
