@@ -830,7 +830,7 @@ fn zone_now(s: &TeslafiService, a: &Account) -> String {
 
 /// `GET .../accounts/{account}/redate`: what dating its stored data again starts from: the zone its times are read
 /// in now, when that was last set (from the audit log; `null` when the log has no change of it) and the zone it was
-/// read in before (the zone of the change before that; `null`: not known, the server's default then).
+/// read in before (the zone of the change before that; not known: the server's default zone).
 async fn redate_defaults(
     State(app): State<AppState>,
     Admin(_): Admin,
@@ -843,7 +843,8 @@ async fn redate_defaults(
         Ok(Json(json!({
             "zone": zone_now(&s, &a),
             "before_ms": changes.first().map(|c| c.0),
-            "zone_before": changes.get(1).and_then(|c| c.1.clone()),
+            // (the zone before the last change; not known: the server's default zone)
+            "zone_before": changes.get(1).and_then(|c| c.1.clone()).unwrap_or_else(|| s.default_time_zone()),
         })))
     })
     .await
@@ -896,44 +897,66 @@ async fn redate(
         })
         .collect();
     let e = app.service::<Engine>()?;
-    let mut out = Vec::new();
-    let mut moved = false;
-    for car in cars {
-        let (e, zb, z) = (e.clone(), zone_before.clone(), zone.clone());
-        let r = app
-            .blocking(move |_| {
-                e.api_rezone(model::Input::TeslafiApi, car, &zb, &z, before_ms)
-                    .map_err(|err| ApiError::conflict("redate_failed", err.to_string()))
-            })
-            .await?;
-        if !r.already && (r.samples > 0 || r.spans > 0) {
-            moved = true;
-            let summary = format!(
-                "Dated the data the TeslaFi account {} stored for car {} before {} again: read in {zone}, not \
-                 {zone_before} ({} samples, {} state spans, {} drives and {} charges moved). What was built from it is \
-                 built again.",
-                a.label,
-                ids::car(car),
-                utc_minute(before_ms),
-                r.samples,
-                r.spans,
-                r.drives,
-                r.charges
-            );
-            v.audit(&app, "teslafi-data-redated", Some(&target("teslafi", None, &id)), &summary).await?;
-        }
-        out.push(json!({
-            "car": ids::car(car), "samples": r.samples, "spans": r.spans, "drives": r.drives, "charges": r.charges,
-            "already": r.already,
-        }));
-    }
-    if moved {
-        let (s, id) = (s.clone(), id.clone());
-        app.blocking(move |_| s.restart_costs(&id).map_err(|e| failed(&s, Some(&id), e))).await?;
-    } else {
-        v.mark_audited();
-    }
-    Ok(Json(json!({ "zone_before": zone_before, "zone": zone, "before_ms": before_ms, "cars": out })))
+    // the cars one after the other, then what follows (an audit entry for each car whose data moved, the charge
+    // costs read again), all in one task: an answer no one waits for any more does not stop it half way
+    v.mark_audited();
+    let (who, ip) = (v.name().to_string(), v.client().address);
+    let (label, zb, z, aid) = (a.label.clone(), zone_before.clone(), zone.clone(), id.clone());
+    let (out, errors) = app
+        .blocking(move |app| {
+            let (mut out, mut errors, mut follow) = (Vec::new(), Vec::new(), Vec::new());
+            for car in cars {
+                match e.api_rezone(model::Input::TeslafiApi, car, &zb, &z, before_ms) {
+                    Ok(r) => {
+                        out.push(json!({
+                            "car": ids::car(car), "samples": r.samples, "spans": r.spans, "drives": r.drives,
+                            "charges": r.charges, "already": r.already,
+                        }));
+                        if r.follow_up {
+                            follow.push((car, r));
+                        }
+                    }
+                    Err(err) => errors.push(json!({ "car": ids::car(car), "message": err.to_string() })),
+                }
+            }
+            if !follow.is_empty() {
+                for (car, r) in &follow {
+                    let what = if r.already {
+                        "(done before this ask: after a restart, or an ask cut off)".to_string()
+                    } else {
+                        format!(
+                            "({} samples, {} state spans, {} drives and {} charges moved)",
+                            r.samples, r.spans, r.drives, r.charges
+                        )
+                    };
+                    let summary = format!(
+                        "Dated the data the TeslaFi account {label} stored for car {} before {} again: read in {z}, \
+                         not {zb} {what}. What was built from it is built again, and TeslaFi's charge costs are read \
+                         again.",
+                        ids::car(*car),
+                        utc_minute(before_ms)
+                    );
+                    let details = audit_details(Some(&target("teslafi", None, &aid)), &summary);
+                    app.accounts.audit().record(Some(&who), Some(ip), "teslafi-data-redated", &details)?;
+                }
+                s.restart_costs(&aid).map_err(|err| failed(&s, Some(&aid), err))?;
+                for (car, _) in &follow {
+                    e.api_rezone_followed_up(model::Input::TeslafiApi, *car)
+                        .map_err(|err| ApiError::server(err.to_string()))?;
+                }
+            }
+            match errors.first() {
+                Some(first) if out.is_empty() => Err(ApiError::conflict(
+                    "redate_failed",
+                    first["message"].as_str().unwrap_or("the data could not be dated again").to_string(),
+                )),
+                _ => Ok((out, errors)),
+            }
+        })
+        .await?;
+    Ok(Json(json!({
+        "zone_before": zone_before, "zone": zone, "before_ms": before_ms, "cars": out, "errors": errors,
+    })))
 }
 
 // ---------------------------------------------------------------- the cars of an account

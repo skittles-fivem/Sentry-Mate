@@ -425,9 +425,15 @@ async fn data_stored_in_a_wrong_zone_is_dated_again_once() {
     let a = seed(&w);
     let mut admin = w.s.admin().await;
     let base = format!("/api/v1/integrations/teslafi/accounts/{}/redate", a.id);
+    // the server's default zone is Berlin: with no change of the account's zone, the zone before is the server's
+    let r = admin.get("/api/v1/settings").await;
+    let sv = r.json()["version"].as_u64().unwrap();
+    let r = admin.patch("/api/v1/settings", json!({ "version": sv, "default_time_zone": "Europe/Berlin" })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
     let d = admin.get(&base).await;
     assert_eq!(d.status, 200, "{}", d.text());
     assert_eq!((d.json()["zone"].as_str(), d.json()["before_ms"].as_u64()), (Some("America/Chicago"), None));
+    assert_eq!(d.json()["zone_before"], "Europe/Berlin", "{}", d.text());
     let r = admin.post(&base, json!({ "zone_before": "UTC", "confirm_password": ADMIN_PASSWORD })).await;
     assert_eq!(r.status, 422, "no change of the zone to start from: {}", r.text());
     // the zone set to UTC, then to Chicago: the audit log says when, and what it was before
@@ -465,6 +471,10 @@ async fn data_stored_in_a_wrong_zone_is_dated_again_once() {
     }
     let r = admin.post(&base, json!({ "zone_before": "UTC", "confirm_password": "not it" })).await;
     assert_ne!(r.status, 200, "the password again");
+    // TeslaFi's charge costs read back to the start already: read again once the data moved
+    let mut p = w.svc.store().pacing(&a.id).unwrap();
+    (p.costs.backfill_before, p.costs.backfill_done, p.costs.found) = (Some(19_000), true, 4);
+    w.svc.store().set_pacing_exact(&a.id, &p).unwrap();
     let r = admin.post(&base, json!({ "zone_before": "UTC", "confirm_password": ADMIN_PASSWORD })).await;
     assert_eq!(r.status, 200, "{}", r.text());
     let b = r.json();
@@ -473,7 +483,93 @@ async fn data_stored_in_a_wrong_zone_is_dated_again_once() {
     let audit = audit_actions(&mut admin).await;
     let (_, e) = audit.iter().find(|(act, _)| act == "teslafi-data-redated").expect("an audit entry");
     assert!(e.to_string().contains("America/Chicago, not UTC"), "{e}");
-    // asked again: nothing moves
+    let c = w.svc.store().pacing(&a.id).unwrap().costs;
+    assert_eq!((c.backfill_before, c.backfill_done, c.found), (None, false, 4), "the costs read again from the start");
+    // asked again: nothing moves, nothing more is written
     let r = admin.post(&base, json!({ "zone_before": "UTC", "confirm_password": ADMIN_PASSWORD })).await;
     assert_eq!(r.json()["cars"][0]["already"], true, "{}", r.text());
+    let n = audit_actions(&mut admin).await.iter().filter(|(act, _)| act == "teslafi-data-redated").count();
+    assert_eq!(n, 1);
+}
+
+/// Two cars: one whose re-dating was finished outside this ask (a restart carried it on) and one that cannot be
+/// dated now (a full rebuild of it under way). The first still gets what follows (its audit entry, the costs read
+/// again), once; the second is said in `errors`.
+#[tokio::test(flavor = "multi_thread")]
+async fn what_follows_a_re_dating_is_done_whoever_finished_it_and_a_failing_car_stops_nothing() {
+    let w = world().await;
+    let mut a = seed(&w);
+    let car2 = w
+        ._engine
+        .api_new_car_for(
+            &tesla::NewCar {
+                vin_prefix: Some(PREFIX.into()),
+                model: Some('3'),
+                year: Some(2024),
+                display_name: Some("Made-up second car".into()),
+            },
+            model::Input::TeslafiApi,
+        )
+        .unwrap();
+    a = w
+        .svc
+        .store()
+        .update(&a.id, None, None, |acc| {
+            let mut c = acc.cars[0].clone();
+            c.vehicle = "fv2".into();
+            acc.cars.push(c);
+        })
+        .unwrap()
+        .0;
+    let mut admin = w.s.admin().await;
+    let one = format!("/api/v1/integrations/teslafi/accounts/{}", a.id);
+    let items = json!([{ "vehicle": "fv1", "match": format!("c{}", w.car) }, { "vehicle": "fv2", "match": format!("c{car2}") }]);
+    let r = admin.put(&format!("{one}/cars"), json!({ "version": a.version, "items": items })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let mut version = r.json()["version"].as_u64().unwrap();
+    for z in ["UTC", "America/Chicago"] {
+        let r =
+            admin.patch(&one, json!({ "version": version, "time_zone": z, "confirm_password": ADMIN_PASSWORD })).await;
+        version = r.json()["version"].as_u64().unwrap();
+    }
+    let base = format!("{one}/redate");
+    let moment = admin.get(&base).await.json()["before_ms"].as_u64().unwrap();
+    w._engine.start().unwrap();
+    for car in [w.car, car2] {
+        let s = model::Sample { t_ms: moment - 10 * 3_600_000, soc: Some(70.0), ..model::Sample::default() };
+        w._engine.feed_points(model::Input::TeslafiApi, car, vec![s], Vec::new());
+    }
+    w._engine.idle().await;
+    // the first car's done already, as a restart would have carried it on; the second's under a full rebuild
+    let (e, c1) = (w._engine.clone(), w.car);
+    let r = tokio::task::spawn_blocking(move || {
+        e.api_rezone(model::Input::TeslafiApi, c1, "UTC", "America/Chicago", moment).unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(r.follow_up && !r.already);
+    w._engine.full_rebuild_hold_at(Some(engine::full::Phase::Copying));
+    w._engine.full_rebuild(Some(car2), engine::full::Reason::Owner, None).unwrap();
+    let r = admin.post(&base, json!({ "zone_before": "UTC", "confirm_password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let b = r.json();
+    assert_eq!(b["cars"][0]["already"], true, "{b}");
+    assert_eq!(b["errors"][0]["car"], format!("c{car2}"), "{b}");
+    assert!(b["errors"][0]["message"].as_str().unwrap_or_default().contains("full rebuild"), "{b}");
+    let entries: Vec<Value> = audit_actions(&mut admin)
+        .await
+        .into_iter()
+        .filter(|(act, _)| act == "teslafi-data-redated")
+        .map(|(_, e)| e)
+        .collect();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert!(entries[0].to_string().contains("done before this ask"), "{entries:?}");
+    assert_eq!(w.svc.store().pacing(&a.id).unwrap().costs.backfill_before, None, "the costs read again");
+    // asked again: what follows is done, nothing more is written
+    let r = admin.post(&base, json!({ "zone_before": "UTC", "confirm_password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let n = audit_actions(&mut admin).await.iter().filter(|(act, _)| act == "teslafi-data-redated").count();
+    assert_eq!(n, 1);
+    w._engine.full_rebuild_hold_at(None);
+    let _ = version;
 }

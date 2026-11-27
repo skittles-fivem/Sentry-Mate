@@ -45,6 +45,10 @@ pub struct Rezoned {
     pub to_ms: Option<u64>,
     /// The same was asked and done before: nothing moved now.
     pub already: bool,
+    /// What follows a re-dating (its audit entry, the input's charge costs read again) is still to be done: done by
+    /// the caller, then said with [`Engine::api_rezone_followed_up`]. Set until then, whoever finished the job (this
+    /// ask, an earlier one cut off, or a restart).
+    pub follow_up: bool,
 }
 
 fn ms<T: TimeZone>(d: &chrono::DateTime<T>) -> u64 {
@@ -118,6 +122,8 @@ struct Job {
     from: String,
     to: String,
     before_ms: u64,
+    /// The moment as the data read in the old zone was stored ([`cut_of`]): what is stored before it moves.
+    cut: u64,
     /// The days with data before the moment, in the order they are done; `next` is the next one.
     days: Vec<u32>,
     next: usize,
@@ -138,6 +144,41 @@ struct Done {
     from: String,
     to: String,
     before_ms: u64,
+    /// [`Rezoned::follow_up`] done.
+    #[serde(default)]
+    followed_up: bool,
+}
+
+/// A time in words, UTC to the minute (`2026-11-26 19:58`).
+fn fmt_ms(ms: u64) -> String {
+    i64::try_from(ms)
+        .ok()
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map_or_else(|| ms.to_string(), |d| d.format("%Y-%m-%d %H:%M").to_string())
+}
+
+/// Where the data read in `from` before the moment `before_ms` ends, by its stored time: the moment as `from` read it
+/// (data read in a zone west of the right one was stored early: its last reading before the moment, hours early;
+/// what was stored after that, up to the moment, was read right), and never after the moment.
+pub fn cut_of(before_ms: u64, from: Tz, to: Tz) -> u64 {
+    redate(before_ms, to, from, None).min(before_ms)
+}
+
+/// Whether moving the times stored in `from` before `to_ms` to `to` moves some later and some earlier (zones whose
+/// offsets cross, looked at every hour from `from_ms`): those cannot be moved a day at a time.
+fn crossing(from_ms: u64, to_ms: u64, fz: Tz, tz: Tz) -> bool {
+    let (mut later, mut earlier) = (false, false);
+    let mut t = from_ms;
+    while t < to_ms {
+        let n = redate(t, fz, tz, None);
+        later |= n > t;
+        earlier |= n < t;
+        if later && earlier {
+            return true;
+        }
+        t += 3_600_000;
+    }
+    false
 }
 
 fn word(input: Input) -> &'static str {
@@ -219,7 +260,28 @@ impl Engine {
         Ok(r)
     }
 
-    /// Carries on the re-datings a restart cut off, in the background.
+    /// Whether a re-dating of `car`'s data is under way (a job not done: a full rebuild waits for it).
+    pub fn rezone_pending(&self, car: CarId) -> bool {
+        Input::apis().any(|i| self.inner.db.kv().get(records::NS, &job_key(car, i)).ok().flatten().is_some())
+    }
+
+    /// Notes that what follows the re-datings of `input`'s data for `car` done so far is done ([`Rezoned::follow_up`]).
+    pub fn api_rezone_followed_up(&self, input: Input, car: CarId) -> Result<()> {
+        let l = self.car_lock(car);
+        let _held = lock(&l);
+        let db = &self.inner.db;
+        let dk = done_key(car, input);
+        let mut done: Vec<Done> = records::get(db, records::NS, &dk)?.unwrap_or_default();
+        if done.iter().any(|d| !d.followed_up) {
+            for d in &mut done {
+                d.followed_up = true;
+            }
+            records::put(db, records::NS, &dk, &done)?;
+        }
+        Ok(())
+    }
+
+    /// Carries on the re-datings a restart (or a full rebuild) cut off, in the background.
     pub(crate) fn rezone_resume(&self) {
         let Ok(h) = self.handle() else { return };
         let e = self.clone();
@@ -249,28 +311,56 @@ impl Engine {
         }
         let (fz, tz) = (crate::tz::zone(from), crate::tz::zone(to));
         let key = job_key(car, input);
-        let mut job: Job = match records::get::<Job>(db, records::NS, &key)? {
-            Some(j) if j.from == from && j.to == to && j.before_ms == before_ms => j,
-            Some(j) => {
+        // a job under way is done first, as it was asked
+        if let Some(j) = records::get::<Job>(db, records::NS, &key)? {
+            let (was, from_was, to_was) = (j.before_ms, j.from.clone(), j.to.clone());
+            let ran = self.rezone_run(input, car, &key, j)?;
+            if !self.rezone_same_done(input, car, fz, tz, before_ms)? {
                 return Err(Error::Other(format!(
-                    "another re-dating of this car's data ({} to {}) is under way: it carries on first",
-                    j.from, j.to
+                    "a re-dating asked before (the data stored before {} UTC, from {from_was} to {to_was}) was carried \
+                     on and is done now: look at the data, and ask again only for another moment or zone",
+                    fmt_ms(was)
                 )));
             }
-            None => {
-                let done: Vec<Done> = records::get(db, records::NS, &done_key(car, input))?.unwrap_or_default();
-                if done.iter().any(|d| d.from == from && d.to == to && d.before_ms == before_ms) {
-                    return Ok(Rezoned { already: true, ..Rezoned::default() });
-                }
-                if same_zone(fz, tz) {
-                    return Ok(Rezoned::default());
-                }
-                let j = self.rezone_job(input, car, fz, tz, from, to, before_ms)?;
-                records::put(db, records::NS, &key, &j)?;
-                self.rezone_wrote()?;
-                j
+            return Ok(ran);
+        }
+        if same_zone(fz, tz) {
+            return Ok(Rezoned::default());
+        }
+        // the data already moved into this zone: the same ask is done, another one would move it twice
+        let done: Vec<Done> = records::get(db, records::NS, &done_key(car, input))?.unwrap_or_default();
+        if let Some(d) = done.iter().rev().find(|d| same_zone(crate::tz::zone(&d.to), tz)) {
+            if same_zone(crate::tz::zone(&d.from), fz) && d.before_ms == before_ms {
+                return Ok(Rezoned { already: true, follow_up: !d.followed_up, ..Rezoned::default() });
             }
-        };
+            return Err(Error::Other(format!(
+                "the data stored before {} UTC was dated again from {} to {} already: dating it again would move it \
+                 twice",
+                fmt_ms(d.before_ms),
+                d.from,
+                d.to
+            )));
+        }
+        let j = self.rezone_job(input, car, fz, tz, from, to, before_ms)?;
+        records::put(db, records::NS, &key, &j)?;
+        self.rezone_wrote()?;
+        self.rezone_run(input, car, &key, j)
+    }
+
+    /// Whether a re-dating of `input`'s data for `car` from `fz` to `tz` before `before_ms` is done.
+    fn rezone_same_done(&self, input: Input, car: CarId, fz: Tz, tz: Tz, before_ms: u64) -> Result<bool> {
+        let done: Vec<Done> = records::get(&self.inner.db, records::NS, &done_key(car, input))?.unwrap_or_default();
+        Ok(done.iter().any(|d| {
+            same_zone(crate::tz::zone(&d.from), fz) && same_zone(crate::tz::zone(&d.to), tz) && d.before_ms == before_ms
+        }))
+    }
+
+    /// Does a job (the days not done yet, then the small records, then what is noted), notes it done.
+    fn rezone_run(&self, input: Input, car: CarId, key: &str, mut job: Job) -> Result<Rezoned> {
+        let db = &self.inner.db;
+        let (fz, tz) = (crate::tz::zone(&job.from), crate::tz::zone(&job.to));
+        let key = key.to_string();
+        let cut = job.cut;
         while job.next < job.days.len() {
             let d = job.days[job.next];
             self.rezone_day(input, car, fz, tz, &key, &mut job, d)?;
@@ -292,7 +382,7 @@ impl Engine {
                 }
             }
             // (newer data may have come meanwhile: it stays)
-            let moved = job.small.last_ms.map(|l| if l < before_ms { redate(l, fz, tz, None) } else { l });
+            let moved = job.small.last_ms.map(|l| if l < cut { redate(l, fz, tz, None) } else { l });
             *track.last_ms = if *track.last_ms == job.small.last_ms { moved } else { (*track.last_ms).max(moved) };
         }
         let (lo, hi) = (job.lo, job.hi);
@@ -308,14 +398,18 @@ impl Engine {
         self.rezone_wrote()?;
         let dk = done_key(car, input);
         let mut done: Vec<Done> = records::get(db, records::NS, &dk)?.unwrap_or_default();
-        let this = Done { from: from.to_string(), to: to.to_string(), before_ms };
-        if !done.contains(&this) {
-            done.push(this);
+        if !done.iter().any(|d| d.from == job.from && d.to == job.to && d.before_ms == job.before_ms) {
+            done.push(Done {
+                from: job.from.clone(),
+                to: job.to.clone(),
+                before_ms: job.before_ms,
+                followed_up: false,
+            });
             records::put(db, records::NS, &dk, &done)?;
             self.rezone_wrote()?;
         }
         db.kv().delete(records::NS, &key)?;
-        let mut r = job.done;
+        let mut r = Rezoned { follow_up: true, ..job.done };
         if lo < hi {
             (r.from_ms, r.to_ms) = (Some(lo), Some(hi));
         }
@@ -336,37 +430,45 @@ impl Engine {
     ) -> Result<Job> {
         let db = &self.inner.db;
         let meta = records::meta(db, car)?;
+        let cut = cut_of(before_ms, fz, tz);
         let mut days: Vec<u32> = meta
             .api_days_of(input)
-            .map(|d| d.iter().copied().filter(|d| u64::from(*d) * DAY_MS < before_ms).collect())
+            .map(|d| d.iter().copied().filter(|d| u64::from(*d) * DAY_MS < cut).collect())
             .unwrap_or_default();
-        let probe = days.first().map_or(before_ms.saturating_sub(DAY_MS), |d| u64::from(*d) * DAY_MS + DAY_MS / 2);
+        // (refused before anything is written: a job is never left half done for it)
+        if let Some(first) = days.first()
+            && crossing(u64::from(*first) * DAY_MS, cut, fz, tz)
+        {
+            return Err(Error::Other(format!(
+                "{} and {} cross each other in that time (one moves the data later, the other earlier): it cannot be \
+                 dated again",
+                fz.name(),
+                tz.name()
+            )));
+        }
+        let probe = days.first().map_or(cut.saturating_sub(DAY_MS), |d| u64::from(*d) * DAY_MS + DAY_MS / 2);
         let later = redate(probe, fz, tz, None) >= probe;
         if later {
             days.reverse();
         }
         let o = records::off_can_of(db, car, input)?;
-        let versions: Vec<records::VersionSeen> = records::input_versions(db, car)?
-            .into_iter()
-            .filter(|v| v.input == input && v.first_ms < before_ms)
-            .collect();
+        let versions: Vec<records::VersionSeen> =
+            records::input_versions(db, car)?.into_iter().filter(|v| v.input == input && v.first_ms < cut).collect();
         let from_of = records::now_from(db, car)?;
-        let now_at: BTreeMap<String, u64> = records::now_at(db, car)?
-            .into_iter()
-            .filter(|(f, t)| from_of.get(f) == Some(&input) && *t < before_ms)
-            .collect();
+        let now_at: BTreeMap<String, u64> =
+            records::now_at(db, car)?.into_iter().filter(|(f, t)| from_of.get(f) == Some(&input) && *t < cut).collect();
         let alone = Inputs::from(input);
         let rows = |v: Vec<(u64, u64, u64, Inputs)>| -> Vec<(u64, u64, u64)> {
-            v.into_iter().filter(|r| r.3 == alone && r.1 < before_ms).map(|r| (r.0, r.1, r.2)).collect()
+            v.into_iter().filter(|r| r.3 == alone && r.1 < cut).map(|r| (r.0, r.1, r.2)).collect()
         };
         let drives = rows(
-            all_rows::<Drive>(db, car, 0, before_ms, Some(Source::Live))?
+            all_rows::<Drive>(db, car, 0, cut, Some(Source::Live))?
                 .into_iter()
                 .map(|d| (d.id, d.start_ms, d.end_ms, d.inputs))
                 .collect(),
         );
         let charges = rows(
-            all_rows::<Charge>(db, car, 0, before_ms, Some(Source::Live))?
+            all_rows::<Charge>(db, car, 0, cut, Some(Source::Live))?
                 .into_iter()
                 .map(|c| (c.id, c.start_ms, c.end_ms, c.inputs))
                 .collect(),
@@ -376,12 +478,13 @@ impl Engine {
             from: from.to_string(),
             to: to.to_string(),
             before_ms,
+            cut,
             days,
             next: 0,
             later,
             kept: None,
             small: SmallKept {
-                off_can_at_ms: if o.at_ms < before_ms { o.at_ms } else { 0 },
+                off_can_at_ms: if o.at_ms < cut { o.at_ms } else { 0 },
                 versions,
                 now_at,
                 last_ms,
@@ -402,7 +505,7 @@ impl Engine {
         let db = &self.inner.db;
         let stream = Stream::from(input);
         let (d0, d1) = (u64::from(d) * DAY_MS, (u64::from(d) + 1) * DAY_MS);
-        let end = d1.min(job.before_ms);
+        let end = d1.min(job.cut);
         let kept = match &job.kept {
             Some(k) if k.day == d => k.clone(),
             _ => {
@@ -438,10 +541,8 @@ impl Engine {
                 .map(|s| (s.t_ms, s))
                 .collect();
             for (t, s) in moved {
-                // never in place of one read from the moment on
-                if t < job.before_ms || !all.contains_key(&t) {
-                    all.insert(t, s);
-                }
+                // never in place of one already there (read right, or moved already)
+                all.entry(t).or_insert(s);
             }
             db.write_points(car, stream, w0, w1, &all.into_values().collect::<Vec<_>>())?;
             self.rezone_wrote()?;
@@ -450,7 +551,7 @@ impl Engine {
             job.landed.extend(records::day_of(a)..=records::day_of(b));
         }
         // the state spans: the day keeps its part from the moment on, the rest is laid where it belongs
-        let (before, after) = split_at(&kept.spans, job.before_ms);
+        let (before, after) = split_at(&kept.spans, job.cut);
         let mut days: BTreeMap<u32, Vec<ApiSpan>> = BTreeMap::new();
         days.insert(d, after);
         let starts = redate_all(before.iter().map(|s| s.start_ms), fz, tz);
@@ -501,16 +602,25 @@ impl Engine {
             }
         }
         if !small.versions.is_empty() {
-            let moved: Vec<records::VersionSeen> = small
-                .versions
-                .iter()
-                .map(|v| records::VersionSeen { first_ms: map(v.first_ms), last_ms: map(v.last_ms), ..v.clone() })
-                .collect();
-            let mut all: Vec<records::VersionSeen> = records::input_versions(db, car)?
-                .into_iter()
-                .filter(|v| !small.versions.contains(v) && !moved.contains(v))
-                .collect();
-            all.extend(moved);
+            // each stretch found by its input, version and first reading (its last may have grown since), moved in
+            // place: its first reading, and its last while that is still before the moment (a stretch still going on
+            // was read right since)
+            let cut = job.cut;
+            let mut all = records::input_versions(db, car)?;
+            for k in &small.versions {
+                let (first, done) =
+                    (map(k.first_ms), |v: &records::VersionSeen| v.input == input && v.version == k.version);
+                if all.iter().any(|v| done(v) && v.first_ms == first && first != k.first_ms) {
+                    continue;
+                }
+                if let Some(v) = all.iter_mut().find(|v| done(v) && v.first_ms == k.first_ms) {
+                    v.first_ms = first;
+                    if v.last_ms < cut {
+                        v.last_ms = map(v.last_ms);
+                    }
+                    v.last_ms = v.last_ms.max(v.first_ms);
+                }
+            }
             all.sort_by_key(|s| (s.first_ms, s.input));
             records::put_input_versions(db, car, &all)?;
             self.rezone_wrote()?;
@@ -615,6 +725,38 @@ mod tests {
         assert_eq!(redate(t("2027-03-14 02:30:00"), utc, chi, None), t("2027-03-14 07:30:00"));
         // the same zone: nothing moves
         assert_eq!(redate(once, chi, chi, None), once);
+    }
+
+    /// A version stretch that began before the moment and still goes on: its first reading moves, its last (read
+    /// right, after the moment) stays; asked again after a crash, it is not moved twice nor copied.
+    #[test]
+    fn a_version_still_current_keeps_its_last_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, keys) = (dir.path().join("data"), dir.path().join("keys"));
+        std::fs::create_dir_all(&data).unwrap();
+        let (v, _) = vault::Vault::create(&data, &keys, vault::Kdf::FAST_FOR_TESTS).unwrap();
+        let v = std::sync::Arc::new(v);
+        let db = db::Db::open(&data, v.clone(), db::Options::default()).unwrap();
+        let e = Engine::new(db.clone(), ingest::Store::new(data.join("can"), v), crate::Options::default());
+        let new = tesla::NewCar {
+            vin_prefix: Some("5YJ3E1EA0PF".into()),
+            model: Some('3'),
+            year: Some(2023),
+            display_name: None,
+        };
+        let car = e.api_new_car_for(&new, Input::TeslafiApi).unwrap();
+        let before = t("2026-11-26 19:58:00");
+        // first read on Nov 22 as UTC (6 h early), still read after the moment, read right
+        let (first, last) = (t("2026-11-22 10:00:00"), before + 2 * H);
+        records::note_input_version(&db, car, Input::TeslafiApi, "2026.38.1", first).unwrap();
+        records::note_input_version(&db, car, Input::TeslafiApi, "2026.38.1", last).unwrap();
+        let r = e.api_rezone(Input::TeslafiApi, car, "UTC", "America/Chicago", before).unwrap();
+        assert!(r.follow_up);
+        let vs = records::input_versions(&db, car).unwrap();
+        assert_eq!(vs.len(), 1, "{vs:?}");
+        assert_eq!((vs[0].first_ms, vs[0].last_ms), (first + 6 * H, last), "the first moved, the last as it was");
+        assert!(e.api_rezone(Input::TeslafiApi, car, "UTC", "America/Chicago", before).unwrap().already);
+        assert_eq!(records::input_versions(&db, car).unwrap(), vs);
     }
 
     #[test]

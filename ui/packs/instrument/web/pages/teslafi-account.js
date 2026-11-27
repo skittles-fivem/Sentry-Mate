@@ -271,7 +271,7 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
         hint: 'The zone this server read TeslaFi\'s times in before (UTC when it was the server\'s own and the server runs in UTC).',
         attrs: { list: 'tf-zones', autocomplete: 'off', spellcheck: 'false' } });
       const until = field({ label: 'For the data stored before', name: 'before', path: 'before_ms', type: 'datetime-local', required: true, value: localInput(d.before_ms),
-        hint: `When the zone was set right (your time, ${tzName(LOCAL)}). ${d.before_ms ? 'From the audit log.' : 'The audit log has no change of the zone: give the moment.'}` });
+        hint: `When the zone was set right (your time, ${tzName(LOCAL)}). ${d.before_ms ? 'From the audit log.' : 'The audit log has no change of the zone: give the moment.'} When TeslaFi's zone is east of the zone its times were read in (Europe/Berlin read as UTC), the last hours before the moment were stored after it: give a moment that much later.` });
       const r = await askPassword(ctx, {
         title: `Date ${a.label}'s stored data again`,
         intro: h('div', { class: 'tf-intro' }, h('p', { class: 'note' }, `TeslaFi writes its times without a zone. The data stored before the moment below is dated again as read in ${d.zone || 'the zone set now'}, each time by its own offset; the drives and charges made from it move with it (their purposes, notes and costs stay on them), and TeslaFi's charge costs are read again. Asking the same again moves nothing.`), zoneList()),
@@ -279,15 +279,17 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
         run: guarded((cred, v) => {
           const z = v.zone_before.trim();
           if (!zoneOk(z) || !z) { const e = new Error(); e.fields = { zone_before: `${z} is not a time zone. Pick one from the list, such as UTC.` }; throw e; }
-          const t = new Date(v.before).getTime();
+          // the moment as the server gave it, to the millisecond, unless it was changed here
+          const t = d.before_ms != null && v.before === localInput(d.before_ms) ? d.before_ms : new Date(v.before).getTime();
           if (!Number.isFinite(t)) { const e = new Error(); e.fields = { before_ms: 'Give the moment the zone was set right.' }; throw e; }
           return ctx.api.post(`${BASE}/accounts/${enc(a.id)}/redate`, withPw(cred, { zone_before: z, before_ms: t }));
         }),
       });
       await after(r, (x) => {
         const sum = (k) => (x.cars || []).reduce((n, c) => n + (c[k] || 0), 0);
-        if ((x.cars || []).every((c) => c.already)) return 'That was done before: nothing moved.';
-        return `Dated again: ${num(sum('samples'))} samples, ${num(sum('drives'))} drives and ${num(sum('charges'))} charges. What was built from them is being built again.`;
+        const failed = (x.errors || []).map((e) => ` Car ${e.car}: ${e.message}`).join('');
+        if ((x.cars || []).every((c) => c.already)) return `That was done before: nothing moved.${failed}`;
+        return `Dated again: ${num(sum('samples'))} samples, ${num(sum('drives'))} drives and ${num(sum('charges'))} charges. What was built from them is being built again.${failed}`;
       });
     } }, icon('clock', 'ico--sm'), 'Re-date stored data');
     const removeBtn = h('button', { class: 'btn btn--sm btn--ghost ta-remove', type: 'button', onclick: async () => {

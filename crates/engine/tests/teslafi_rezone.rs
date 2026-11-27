@@ -290,3 +290,118 @@ fn chicago_to_utc_and_back_across_the_fall_back() {
         let _ = o;
     });
 }
+
+/// One sample at a time, as a poll.
+fn poll(k: &Kit, car: u32, t: u64, soc: f64) {
+    let s = Sample { t_ms: t, soc: Some(soc), ..Sample::default() };
+    k.engine.feed_points(Input::TeslafiApi, car, vec![s], vec![]);
+}
+
+#[test]
+fn only_what_the_old_zone_read_before_the_moment_moves_never_past_it() {
+    rt().block_on(async {
+        let k = kit();
+        let car = new_car(&k);
+        let t = moment();
+        // a poll read right three minutes before the moment (re-handed in the new zone), and its copy read as UTC,
+        // stored six hours early; one read right after the moment
+        poll(&k, car, t - 3 * MIN, 61.0);
+        poll(&k, car, t - 3 * MIN - 6 * H, 60.0);
+        poll(&k, car, t + 10 * MIN, 62.0);
+        k.engine.idle().await;
+        let r = rezone(&k, car).unwrap();
+        k.engine.idle().await;
+        assert_eq!(r.samples, 1, "only the copy read in the old zone: {r:?}");
+        let pts = k.db.read_points::<Sample>(car, Stream::TeslafiApi, t - 12 * H, t + H).unwrap();
+        let got: Vec<(u64, Option<f64>)> = pts.iter().map(|s| (s.t_ms, s.soc)).collect();
+        assert_eq!(
+            got,
+            vec![(t - 3 * MIN, Some(61.0)), (t + 10 * MIN, Some(62.0))],
+            "the one read right stays as it was"
+        );
+        assert!(pts.iter().filter(|s| s.t_ms >= t).all(|s| s.soc == Some(62.0)), "nothing lands after the moment");
+    });
+}
+
+#[test]
+fn a_second_ask_is_done_already_or_refused_never_moved_twice() {
+    rt().block_on(async {
+        let k = kit();
+        let car = new_car(&k);
+        let o = owners_data(&k, car);
+        k.engine.idle().await;
+        rezone(&k, car).unwrap();
+        k.engine.idle().await;
+        let ask = |from: &str, to: &str, at: u64| {
+            tokio::task::block_in_place(|| k.engine.api_rezone(Input::TeslafiApi, car, from, to, at))
+        };
+        // names for the same zones, the same moment: done already
+        assert!(ask("Etc/UTC", "US/Central", moment()).unwrap().already);
+        // another moment, or another old zone into the same one: refused
+        let e = ask("UTC", "America/Chicago", moment() + MIN).unwrap_err().to_string();
+        assert!(e.contains("would move it twice"), "{e}");
+        assert!(ask("America/Denver", "America/Chicago", moment()).is_err());
+        k.engine.idle().await;
+        assert_eq!(times(&k, car), want(&o), "moved once");
+    });
+}
+
+#[test]
+fn what_follows_is_asked_for_until_it_is_said_done_also_after_a_restart() {
+    rt().block_on(async {
+        let k = kit();
+        let car = new_car(&k);
+        let o = owners_data(&k, car);
+        k.engine.idle().await;
+        k.engine.rezone_fail_after(Some(4));
+        assert!(rezone(&k, car).is_err());
+        let Kit { dir, engine, db } = k;
+        drop((engine, db));
+        let k = open(dir, false);
+        let mut tries = 0;
+        while times(&k, car) != want(&o) {
+            tries += 1;
+            assert!(tries < 500);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        // carried on by the restart: the next ask is done already, and says what follows is still to do
+        let r = rezone(&k, car).unwrap();
+        assert!(r.already && r.follow_up, "{r:?}");
+        k.engine.api_rezone_followed_up(Input::TeslafiApi, car).unwrap();
+        let r = rezone(&k, car).unwrap();
+        assert!(r.already && !r.follow_up, "{r:?}");
+    });
+}
+
+#[test]
+fn zones_that_cross_each_other_are_refused_before_anything_moves() {
+    rt().block_on(async {
+        let k = kit();
+        let car = new_car(&k);
+        // Halifax is an hour behind Santiago in August and an hour ahead in November (their summers are opposite)
+        for s in ["2026-08-15 12:00", "2026-11-15 12:00"] {
+            poll(&k, car, as_utc(s), 70.0);
+        }
+        k.engine.idle().await;
+        let before =
+            k.db.read_points::<Sample>(car, Stream::TeslafiApi, as_utc("2026-08-01 00:00"), as_utc("2026-12-01 00:00"))
+                .unwrap();
+        let e = tokio::task::block_in_place(|| {
+            k.engine.api_rezone(
+                Input::TeslafiApi,
+                car,
+                "America/Halifax",
+                "America/Santiago",
+                as_utc("2026-11-30 00:00"),
+            )
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("cross each other"), "{e}");
+        assert!(!k.engine.rezone_pending(car), "no job left half done");
+        let after =
+            k.db.read_points::<Sample>(car, Stream::TeslafiApi, as_utc("2026-08-01 00:00"), as_utc("2026-12-01 00:00"))
+                .unwrap();
+        assert_eq!(after, before);
+    });
+}
