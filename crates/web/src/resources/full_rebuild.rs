@@ -543,6 +543,10 @@ pub fn watch_once(app: &AppState) {
             tracing::info!("full rebuild of {} planned: {why}", of_words(app, &r));
         }
         Ok(None) | Err(StartError::Running(_)) => {}
+        // planned at the next look, once the re-dating is done
+        Err(StartError::Rezoning(car)) => {
+            tracing::info!("the full rebuild a new version calls for waits for the re-dating of car {car}'s data")
+        }
         Err(err) => tracing::warn!("the full rebuild a new version calls for was not planned: {err}"),
     }
 }

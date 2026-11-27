@@ -405,3 +405,105 @@ fn zones_that_cross_each_other_are_refused_before_anything_moves() {
         assert_eq!(after, before);
     });
 }
+
+#[test]
+fn zones_that_agree_part_of_the_time_are_dated_again_not_left_half_done() {
+    rt().block_on(async {
+        let k = kit();
+        let car = new_car(&k);
+        // London is UTC in January and an hour ahead in June: read as UTC, June's data was stored an hour late
+        let (jan, jun) = (as_utc("2026-01-15 12:00"), as_utc("2026-06-15 12:00"));
+        poll(&k, car, jan, 70.0);
+        poll(&k, car, jun, 71.0);
+        k.engine.idle().await;
+        let r = tokio::task::block_in_place(|| {
+            k.engine.api_rezone(Input::TeslafiApi, car, "UTC", "Europe/London", as_utc("2026-07-01 00:00"))
+        })
+        .unwrap();
+        k.engine.idle().await;
+        assert!(!k.engine.rezone_pending(car), "done, not left half done: {r:?}");
+        let pts = k.db.read_points::<Sample>(car, Stream::TeslafiApi, jan - H, jun + H).unwrap();
+        assert_eq!(pts.iter().map(|s| s.t_ms).collect::<Vec<_>>(), vec![jan, jun - H]);
+    });
+}
+
+#[test]
+fn a_job_finished_by_another_ask_owes_its_follow_up_with_its_own_moment() {
+    rt().block_on(async {
+        let k = kit();
+        let car = new_car(&k);
+        let o = owners_data(&k, car);
+        k.engine.idle().await;
+        k.engine.rezone_fail_after(Some(4));
+        assert!(rezone(&k, car).is_err());
+        // asked with another moment: the job under way is done first and answered as done, owing its follow-up
+        let r = tokio::task::block_in_place(|| {
+            k.engine.api_rezone(Input::TeslafiApi, car, "UTC", "America/Chicago", moment() + MIN)
+        })
+        .unwrap();
+        assert!(r.already && r.follow_up, "{r:?}");
+        let owed = k.engine.rezone_owed(Input::TeslafiApi, car).unwrap();
+        assert_eq!(owed.len(), 1);
+        assert_eq!((owed[0].before_ms, owed[0].from.as_str(), owed[0].moved.samples), (moment(), "UTC", 93));
+        k.engine.idle().await;
+        assert_eq!(times(&k, car), want(&o));
+        k.engine.api_rezone_followed_up(Input::TeslafiApi, car).unwrap();
+        assert!(k.engine.rezone_owed(Input::TeslafiApi, car).unwrap().is_empty());
+    });
+}
+
+#[test]
+fn a_job_a_restart_carried_on_is_told_to_the_hook() {
+    rt().block_on(async {
+        let k = kit();
+        let car = new_car(&k);
+        let o = owners_data(&k, car);
+        k.engine.idle().await;
+        k.engine.rezone_fail_after(Some(6));
+        assert!(rezone(&k, car).is_err());
+        let Kit { dir, engine, db } = k;
+        drop((engine, db));
+        let k = open(dir, false);
+        let told: Arc<std::sync::Mutex<Vec<u32>>> = Arc::default();
+        let t = told.clone();
+        k.engine.on_rezone_done(Arc::new(move |c, input| {
+            assert_eq!(input, Input::TeslafiApi);
+            t.lock().unwrap().push(c);
+        }));
+        let mut tries = 0;
+        while told.lock().unwrap().is_empty() {
+            tries += 1;
+            assert!(tries < 500, "the hook is told");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(told.lock().unwrap()[0], car);
+        assert_eq!(times(&k, car), want(&o));
+        assert_eq!(k.engine.rezone_owed(Input::TeslafiApi, car).unwrap().len(), 1);
+    });
+}
+
+#[test]
+fn moved_there_back_and_there_again_moves_each_time() {
+    rt().block_on(async {
+        let k = kit();
+        let car = new_car(&k);
+        let o = owners_data(&k, car);
+        k.engine.idle().await;
+        let stored = times(&k, car);
+        rezone(&k, car).unwrap();
+        k.engine.idle().await;
+        // undone: Chicago's times read as UTC again, before the same moment (the drive stored right after it stays)
+        let back = moment();
+        let r =
+            tokio::task::block_in_place(|| k.engine.api_rezone(Input::TeslafiApi, car, "America/Chicago", "UTC", back))
+                .unwrap();
+        assert!(!r.already);
+        k.engine.idle().await;
+        assert_eq!(times(&k, car), stored);
+        // and done again: it moves again, it is not "done already"
+        let r = rezone(&k, car).unwrap();
+        assert!(!r.already, "{r:?}");
+        k.engine.idle().await;
+        assert_eq!(times(&k, car), want(&o));
+    });
+}
