@@ -276,10 +276,10 @@ fn chicago_to_utc_and_back_across_the_fall_back() {
                 .unwrap();
         assert_eq!(there.samples, 124, "every sample, the one stored right too: {there:?}");
         k.engine.idle().await;
-        let back = tokio::task::block_in_place(|| {
-            k.engine.api_rezone(Input::TeslafiApi, car, "America/Chicago", "UTC", end + 6 * H)
-        })
-        .unwrap();
+        // (its exact undo: the same moment)
+        let back =
+            tokio::task::block_in_place(|| k.engine.api_rezone(Input::TeslafiApi, car, "America/Chicago", "UTC", end))
+                .unwrap();
         assert_eq!(back.samples, 124);
         k.engine.idle().await;
         assert_eq!(times(&k, car), stored, "there and back is where it started");
@@ -505,5 +505,38 @@ fn moved_there_back_and_there_again_moves_each_time() {
         assert!(!r.already, "{r:?}");
         k.engine.idle().await;
         assert_eq!(times(&k, car), want(&o));
+    });
+}
+
+#[test]
+fn only_the_exact_undo_lets_the_same_re_dating_be_done_again() {
+    rt().block_on(async {
+        let ask = |k: &Kit, car: u32, from: &str, to: &str, at: u64| {
+            tokio::task::block_in_place(|| k.engine.api_rezone(Input::TeslafiApi, car, from, to, at))
+        };
+        // (a) undone only for the data before an earlier moment: refused (done again after it, the data between the
+        // two moments would move twice); only the exact undo is taken
+        let k = kit();
+        let car = new_car(&k);
+        owners_data(&k, car);
+        k.engine.idle().await;
+        rezone(&k, car).unwrap();
+        k.engine.idle().await;
+        let before = times(&k, car);
+        let e = ask(&k, car, "America/Chicago", "UTC", as_utc("2026-11-01 00:00")).unwrap_err().to_string();
+        assert!(e.contains("would move it twice"), "{e}");
+        assert!(rezone(&k, car).unwrap().already);
+        assert_eq!(times(&k, car), before);
+        // (b) moved on to a third zone: dated from UTC again, Denver's data would move again
+        let k = kit();
+        let car = new_car(&k);
+        owners_data(&k, car);
+        k.engine.idle().await;
+        rezone(&k, car).unwrap();
+        ask(&k, car, "America/Chicago", "America/Denver", moment()).unwrap();
+        k.engine.idle().await;
+        let before = times(&k, car);
+        assert!(rezone(&k, car).is_err());
+        assert_eq!(times(&k, car), before);
     });
 }
