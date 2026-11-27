@@ -1316,12 +1316,12 @@ impl Engine {
         let db = &self.inner.db;
         let sdb = &se.inner.db;
         let seed = self.full_get()?.map(|r| r.seed).unwrap_or_default();
-        // a GPS layout set while the run went on: its logs were decoded with the layout of its start, and the switch
-        // takes the note of the change away with the rest of the old history's (noted again after it, under the lock)
-        let layout_moved = self.gps_layout(car)? != se.gps_layout(car)?;
-        let redo = {
+        let (redo, positions) = {
             let l = self.car_lock(car);
             let _held = lock(&l);
+            // the positions' rebuild noted on the history in use, before the switch takes the note away with the rest
+            // of the old history's
+            let noted = records::redo(db, car, records::Redo::Positions)?;
             if sdb.car_folder_exists(car) {
                 // what came meanwhile and is not made again: imported rows (an import ran) and the updates the
                 // Tesla API named
@@ -1354,15 +1354,24 @@ impl Engine {
                 }
             }
             self.full_switch_records(car, sdb, &seed)?;
-            if layout_moved {
-                records::bump_redo(db, car, records::Redo::Positions)?;
+            // The positions are owed again when a GPS layout was set while the run went on (its logs were decoded
+            // with the layout of its start: compared here, under the lock a layout's note is taken under), or when
+            // a change of it was still noted (its own rebuild let go or still settling: the Now may keep a position
+            // of the old layout). Noted at a later generation than any the history in use had, so a job that began
+            // with an older one does not take this note away when it ends.
+            let positions = noted.is_some() || self.gps_layout(car)? != se.gps_layout(car)?;
+            if positions {
+                let shadow = records::redo(sdb, car, records::Redo::Positions)?;
+                let next = noted.max(shadow).unwrap_or(0).saturating_add(1);
+                records::set_redo(db, car, records::Redo::Positions, next)?;
             }
             self.finish_repair(car, None)?;
             // a change of the car's order or keys meanwhile was built into the old history only
             let (a, b) = (db.car(car)?, sdb.car(car)?);
-            a.as_ref().map(|c| (&c.preferred_key, &c.vehicle_keys))
+            let redo = a.as_ref().map(|c| (&c.preferred_key, &c.vehicle_keys))
                 != b.as_ref().map(|c| (&c.preferred_key, &c.vehicle_keys))
-                || self.source_order(car) != se.source_order(car)
+                || self.source_order(car) != se.source_order(car);
+            (redo, positions)
         };
         lock(&self.inner.version_stale).remove(&car);
         db.remove_shadow(SHADOW)?;
@@ -1386,8 +1395,9 @@ impl Engine {
                 false,
             )?;
         } else {
-            if layout_moved {
-                // (only the logs whose positions the layout gives, as a layout change does)
+            if positions {
+                // (only the logs whose positions the layout gives, as a layout change does; the start's look at the
+                // car below leaves them to this job)
                 self.rebuild_because(crate::Scope::car(car), crate::jobs::What::POSITIONS, Cause::gps_layout(), false)?;
             }
             self.send(Work::Reconcile { car: Some(car) });
@@ -1447,11 +1457,16 @@ impl Engine {
         meta.tmlocal_last_ms = inputs.tmlocal_last_ms;
         meta.tmlocal_received_ms = inputs.tmlocal_received_ms;
         meta.last_arrived_ms = meta.last_arrived_ms.max(real_meta.last_arrived_ms);
-        // (the inputs' data moved the car's first and newest data as it came: the shadow's are its logs' alone)
-        meta.first_ms = [meta.first_ms, real_meta.first_ms].into_iter().flatten().min();
-        meta.newest_ms = meta.newest_ms.max(real_meta.newest_ms);
         meta.version = Some(derived_version());
         records::put_meta(db, car, &meta)?;
+        // the inputs' data moved the car's first and newest data as it came (the shadow's are its logs' alone): from
+        // the inputs' own stored spans, never the bounds the history in use had (a log stamped far off and taken out
+        // since would stay in them)
+        if let Some((a, b)) = self.api_span(car)? {
+            meta.first_ms = Some(meta.first_ms.map_or(a, |f| f.min(a)));
+            meta.newest_ms = Some(meta.newest_ms.map_or(b, |n| n.max(b)));
+            records::put_meta(db, car, &meta)?;
+        }
         records::put_api_dirty(db, car, &crate::pipeline::join_spans(dirty))?;
         records::put_rebuild_mark(db, car, None)?;
         Ok(())
