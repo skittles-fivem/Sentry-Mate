@@ -490,6 +490,8 @@ async fn data_stored_in_a_wrong_zone_is_dated_again_once() {
     assert_eq!(r.json()["cars"][0]["already"], true, "{}", r.text());
     let n = audit_actions(&mut admin).await.iter().filter(|(act, _)| act == "teslafi-data-redated").count();
     assert_eq!(n, 1);
+    // the page's old zone now is the zone the data before the moment is in (Chicago), not the one before the change
+    assert_eq!(admin.get(&base).await.json()["zone_before"], "America/Chicago");
 }
 
 /// Two cars: one whose re-dating was finished outside this ask (a restart carried it on) and one that cannot be

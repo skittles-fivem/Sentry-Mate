@@ -902,11 +902,22 @@ async fn redate_defaults(
     app.blocking(move |app| {
         let a = s.account(&id).map_err(|e| failed(&s, Some(&id), e))?;
         let changes = zone_changes(app, &id)?;
+        let before_ms = changes.first().map(|c| c.0);
+        // the zone the data before the moment is in now, when a re-dating said it; else the zone before the last
+        // change; not known: the server's default zone
+        let e = app.service::<Engine>()?;
+        let said = before_ms.and_then(|t| {
+            a.cars.iter().find_map(|c| match c.matched {
+                Some(Match::Car { car }) => e.rezone_zone_before(model::Input::TeslafiApi, car, t).ok().flatten(),
+                _ => None,
+            })
+        });
         Ok(Json(json!({
             "zone": zone_now(&s, &a),
-            "before_ms": changes.first().map(|c| c.0),
-            // (the zone before the last change; not known: the server's default zone)
-            "zone_before": changes.get(1).and_then(|c| c.1.clone()).unwrap_or_else(|| s.default_time_zone()),
+            "before_ms": before_ms,
+            "zone_before": said
+                .or_else(|| changes.get(1).and_then(|c| c.1.clone()))
+                .unwrap_or_else(|| s.default_time_zone()),
         })))
     })
     .await

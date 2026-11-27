@@ -337,10 +337,12 @@ fn a_second_ask_is_done_already_or_refused_never_moved_twice() {
         };
         // names for the same zones, the same moment: done already
         assert!(ask("Etc/UTC", "US/Central", moment()).unwrap().already);
-        // another moment, or another old zone into the same one: refused
-        let e = ask("UTC", "America/Chicago", moment() + MIN).unwrap_err().to_string();
-        assert!(e.contains("would move it twice"), "{e}");
-        assert!(ask("America/Denver", "America/Chicago", moment()).is_err());
+        // a moment a little later (what was stored before it is in Chicago now), or another old zone: done already
+        assert!(ask("UTC", "America/Chicago", moment() + MIN).unwrap().already);
+        assert!(ask("America/Denver", "America/Chicago", moment()).unwrap().already);
+        // from the old zone into a third one: refused, the data is in Chicago now
+        let e = ask("UTC", "America/Denver", moment()).unwrap_err().to_string();
+        assert!(e.contains("is in America/Chicago now: ask from America/Chicago"), "{e}");
         k.engine.idle().await;
         assert_eq!(times(&k, car), want(&o), "moved once");
     });
@@ -509,34 +511,96 @@ fn moved_there_back_and_there_again_moves_each_time() {
 }
 
 #[test]
-fn only_the_exact_undo_lets_the_same_re_dating_be_done_again() {
+fn undone_for_part_of_the_data_what_follows_goes_by_the_zone_each_part_is_in() {
     rt().block_on(async {
         let ask = |k: &Kit, car: u32, from: &str, to: &str, at: u64| {
             tokio::task::block_in_place(|| k.engine.api_rezone(Input::TeslafiApi, car, from, to, at))
         };
-        // (a) undone only for the data before an earlier moment: refused (done again after it, the data between the
-        // two moments would move twice); only the exact undo is taken
+        // undone only for the data before an earlier moment: taken; done again for all of it then, the data between
+        // the two moments would move twice: refused, naming the zones each part is in
         let k = kit();
         let car = new_car(&k);
-        owners_data(&k, car);
+        let o = owners_data(&k, car);
+        k.engine.idle().await;
+        let stored = times(&k, car);
+        rezone(&k, car).unwrap();
+        k.engine.idle().await;
+        let early = as_utc("2026-11-01 12:00");
+        assert!(!ask(&k, car, "America/Chicago", "UTC", early).unwrap().already);
+        k.engine.idle().await;
+        let first: Vec<u64> = drive(o.wrong[0].0).iter().map(|s| s.t_ms).collect();
+        assert_eq!(times(&k, car)[..first.len()], first[..], "the first drive is back where it was stored");
+        let before = times(&k, car);
+        assert_ne!(before, stored);
+        let e = rezone(&k, car).unwrap_err().to_string();
+        assert!(e.contains("more than one zone") && e.contains("UTC before") && e.contains("America/Chicago"), "{e}");
+        k.engine.idle().await;
+        assert_eq!(times(&k, car), before, "nothing moved");
+        // the same moment as the part undone: done again, it moves again
+        assert!(!ask(&k, car, "UTC", "America/Chicago", early).unwrap().already);
+        k.engine.idle().await;
+        assert_eq!(times(&k, car), want(&o));
+    });
+}
+
+#[test]
+fn undone_with_a_later_moment_moves_all_before_it_back() {
+    rt().block_on(async {
+        // the owner set the zone back to UTC later on, and undoes with that moment (the page's default)
+        let k = kit();
+        let car = new_car(&k);
+        let o = owners_data(&k, car);
+        k.engine.idle().await;
+        let stored = times(&k, car);
+        rezone(&k, car).unwrap();
+        k.engine.idle().await;
+        let later = as_utc("2026-11-26 23:00");
+        let r = tokio::task::block_in_place(|| {
+            k.engine.api_rezone(Input::TeslafiApi, car, "America/Chicago", "UTC", later)
+        })
+        .unwrap();
+        assert!(!r.already, "{r:?}");
+        k.engine.idle().await;
+        // the data stored early is back as it was stored; the drive stored right (in Chicago) is read as UTC now
+        let mut back: Vec<u64> = stored.iter().copied().filter(|t| *t < o.right).collect();
+        back.extend(drive(o.right - 6 * H).iter().map(|s| s.t_ms));
+        back.sort_unstable();
+        assert_eq!(times(&k, car), back);
+        assert_eq!(
+            k.engine.rezone_zone_before(Input::TeslafiApi, car, later).unwrap().as_deref(),
+            Some("UTC"),
+            "the page's default old zone"
+        );
+    });
+}
+
+#[test]
+fn from_the_old_zone_again_into_a_third_one_is_refused_from_the_new_one_it_is_taken() {
+    rt().block_on(async {
+        let ask = |k: &Kit, car: u32, from: &str, to: &str, at: u64| {
+            tokio::task::block_in_place(|| k.engine.api_rezone(Input::TeslafiApi, car, from, to, at))
+        };
+        // "UTC was the old zone, Denver the right one": the data is in Chicago now, it would move twice
+        let k = kit();
+        let car = new_car(&k);
+        let o = owners_data(&k, car);
         k.engine.idle().await;
         rezone(&k, car).unwrap();
         k.engine.idle().await;
         let before = times(&k, car);
-        let e = ask(&k, car, "America/Chicago", "UTC", as_utc("2026-11-01 00:00")).unwrap_err().to_string();
-        assert!(e.contains("would move it twice"), "{e}");
-        assert!(rezone(&k, car).unwrap().already);
-        assert_eq!(times(&k, car), before);
-        // (b) moved on to a third zone: dated from UTC again, Denver's data would move again
-        let k = kit();
-        let car = new_car(&k);
-        owners_data(&k, car);
+        let e = ask(&k, car, "UTC", "America/Denver", moment()).unwrap_err().to_string();
+        assert!(e.contains("is in America/Chicago now: ask from America/Chicago"), "{e}");
         k.engine.idle().await;
-        rezone(&k, car).unwrap();
-        ask(&k, car, "America/Chicago", "America/Denver", moment()).unwrap();
+        assert_eq!(times(&k, car), before, "nothing moved");
+        // from Chicago, where it is: taken, an hour earlier than Chicago's times (Denver is an hour behind)
+        assert!(!ask(&k, car, "America/Chicago", "America/Denver", moment()).unwrap().already);
         k.engine.idle().await;
-        let before = times(&k, car);
-        assert!(rezone(&k, car).is_err());
-        assert_eq!(times(&k, car), before);
+        let mut v: Vec<u64> = o.wrong.iter().flat_map(|(_, to)| drive(to + H).into_iter().map(|s| s.t_ms)).collect();
+        v.extend(drive(o.right).iter().map(|s| s.t_ms));
+        v.sort_unstable();
+        assert_eq!(times(&k, car), v);
+        // and from UTC once more: refused, it is in Denver now
+        let e = rezone(&k, car).unwrap_err().to_string();
+        assert!(e.contains("is in America/Denver now: ask from America/Denver"), "{e}");
     });
 }
