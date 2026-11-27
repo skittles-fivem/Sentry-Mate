@@ -464,6 +464,87 @@ def put_cars(req):
     return get_cars(req)
 
 
+# ------------------------------------------------------------------ data stored in a wrong zone, dated again
+
+
+def _zone_changes(req, a):
+    """The changes of the account's zone in the audit log, newest first: (when, the zone set; None: the default)."""
+    out = []
+    for e in sorted(req.store.audit, key=lambda e: e["at_ms"], reverse=True):
+        if e["action"] != "teslafi-account-changed" or e.get("target") != f"teslafi:{a['id']}":
+            continue
+        m = re.search(r"set its time zone to ([^,.]+)", e.get("summary") or "")
+        if m:
+            z = m.group(1).strip()
+            out.append((e["at_ms"], z if z in ZONES else None))
+    return out
+
+
+def _zone_now(req, a):
+    return a["time_zone"] or req.store.server_settings.get("default_time_zone") or "UTC"
+
+
+def get_redate(req):
+    a = _account(req)
+    ch = _zone_changes(req, a)
+    before = ch[1][1] if len(ch) > 1 else None
+    return {"zone": _zone_now(req, a), "before_ms": ch[0][0] if ch else None,
+            "zone_before": before or req.store.server_settings.get("default_time_zone") or "UTC"}
+
+
+def post_redate(req):
+    """The made-up cars' TeslaFi data is not kept by time here: made-up counts, asked once per zones and moment."""
+    body = req.json()
+    _only(body, ("zone_before", "before_ms", "confirm_password", "code"))
+    a = _account(req)
+    zb = body.get("zone_before")
+    if not isinstance(zb, str) or zb.strip() not in ZONES:
+        raise invalid({"zone_before": "Must be the time zone the times were read in (e.g. UTC)."})
+    zb = zb.strip()
+    before = body.get("before_ms")
+    if before is not None and (not isinstance(before, int) or isinstance(before, bool) or before < 0):
+        raise bad_input({"before_ms": "Must be a time (ms since 1970)."})
+    if before is not None and before > req.now:
+        raise invalid({"before_ms": "Must not be in the future."})
+    reconfirm(req, body)
+    if before is None:
+        ch = _zone_changes(req, a)
+        if not ch:
+            raise invalid({"before_ms": "The audit log has no change of this account's zone: give the moment."})
+        before = ch[0][0]
+    zone = _zone_now(req, a)
+    st = req.store
+    out, errors = [], []
+    with st.lock:
+        done = a.setdefault("redated", [])
+        for c in (c for c in a["cars"] if _matched(c)):
+            if zb == zone:
+                # the same zone: nothing moves
+                out.append({"car": c["match"], "samples": 0, "spans": 0, "drives": 0, "charges": 0, "already": False})
+                continue
+            same = [d for d in done if d["car"] == c["match"] and d["zone"] == zone]
+            if any(d["zone_before"] == zb and d["before_ms"] == before for d in same):
+                out.append({"car": c["match"], "samples": 0, "spans": 0, "drives": 0, "charges": 0, "already": True})
+                continue
+            if same:
+                errors.append({"car": c["match"], "message": f"the data stored before {_utc_minute(same[0]['before_ms'])} "
+                               f"was dated again from {same[0]['zone_before']} to {zone} already: dating it again "
+                               "would move it twice"})
+                continue
+            moved = {"samples": 5_760, "spans": 24, "drives": 6, "charges": 2}
+            done.append({"car": c["match"], "zone_before": zb, "zone": zone, "before_ms": before})
+            st.record(req.account, "teslafi-data-redated", f"teslafi:{a['id']}",
+                      f"Dated the data the TeslaFi account {a['label']} stored for car {c['match']} before "
+                      f"{_utc_minute(before)} again: read in {zone}, not {zb} ({moved['samples']} samples, "
+                      f"{moved['spans']} state spans, {moved['drives']} drives and {moved['charges']} charges moved). "
+                      "What was built from it is built again, and TeslaFi's charge costs are read again.")
+            out.append({"car": c["match"], **moved, "already": False})
+        st.rev += 1
+    if errors and not out:
+        raise conflict("redate_failed", errors[0]["message"])
+    return {"zone_before": zb, "zone": zone, "before_ms": before, "cars": out, "errors": errors}
+
+
 # ------------------------------------------------------------------ for other resources
 
 
@@ -552,5 +633,7 @@ def register(router):
     router.add("/api/v1/integrations/teslafi/accounts/{teslafi_account}", GET=get_account, PATCH=patch_account,
                DELETE=delete_account, admin=admin_all)
     router.add("/api/v1/integrations/teslafi/accounts/{teslafi_account}/cars", GET=get_cars, PUT=put_cars,
+               admin=admin_all)
+    router.add("/api/v1/integrations/teslafi/accounts/{teslafi_account}/redate", GET=get_redate, POST=post_redate,
                admin=admin_all)
     router.add("/api/v1/integrations/teslafi/status", GET=status, admin=admin_all)

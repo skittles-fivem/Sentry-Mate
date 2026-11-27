@@ -346,6 +346,8 @@ class Contract(ServerCase):
             ("PUT", "/api/v1/integrations/teslafi/accounts/{teslafi_account}/cars",
              lambda: (None, {"version": c.get("/api/v1/integrations/teslafi/accounts/fa1")["version"],
                              "items": [{"vehicle": "fv1", "match": "c3"}]}, None)),
+            ("POST", "/api/v1/integrations/teslafi/accounts/{teslafi_account}/redate",
+             lambda: (None, {"zone_before": "UTC", "confirm_password": "sentry-mate-dev"}, None)),
             ("DELETE", "/api/v1/integrations/teslafi/accounts/{teslafi_account}",
              lambda: (self.fill("/api/v1/integrations/teslafi/accounts/{teslafi_account}",
                                 teslafi_account=ctx["teslafi_account"]), {"confirm_password": "sentry-mate-dev"},
