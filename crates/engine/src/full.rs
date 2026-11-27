@@ -1316,6 +1316,9 @@ impl Engine {
         let db = &self.inner.db;
         let sdb = &se.inner.db;
         let seed = self.full_get()?.map(|r| r.seed).unwrap_or_default();
+        // a GPS layout set while the run went on: its logs were decoded with the layout of its start, and the switch
+        // takes the note of the change away with the rest of the old history's (noted again after it, under the lock)
+        let layout_moved = self.gps_layout(car)? != se.gps_layout(car)?;
         let redo = {
             let l = self.car_lock(car);
             let _held = lock(&l);
@@ -1346,6 +1349,9 @@ impl Engine {
                 db.adopt_car(car, sdb)?;
             }
             self.full_switch_records(car, sdb, &seed)?;
+            if layout_moved {
+                records::bump_redo(db, car, records::Redo::Positions)?;
+            }
             self.finish_repair(car, None)?;
             // a change of the car's order or keys meanwhile was built into the old history only
             let (a, b) = (db.car(car)?, sdb.car(car)?);
@@ -1375,6 +1381,10 @@ impl Engine {
                 false,
             )?;
         } else {
+            if layout_moved {
+                // (only the logs whose positions the layout gives, as a layout change does)
+                self.rebuild_because(crate::Scope::car(car), crate::jobs::What::POSITIONS, Cause::gps_layout(), false)?;
+            }
             self.send(Work::Reconcile { car: Some(car) });
         }
         self.send(Work::ApiBuild { car });
