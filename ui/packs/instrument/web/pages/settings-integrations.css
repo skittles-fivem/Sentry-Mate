@@ -171,6 +171,8 @@
 .ta-acc-title h3 { margin: 0; font-size: 1.0625rem; font-weight: 600; }
 .ta-acc-acts { flex-wrap: wrap; gap: round(0.375rem, var(--e)); }
 .ta-remove { color: var(--danger-ink); }
+/* a TeslaFi dialog's words above its fields: as far from the first field as the other dialogs' (.mv-intro) */
+.tf-intro { margin-bottom: round(1rem, var(--e)); }
 .ta-account > .kv { grid-template-columns: repeat(auto-fit, minmax(min(100%, round(16rem, var(--e))), 1fr)); }
 .ta-cars { display: flex; flex-direction: column; gap: round(0.625rem, var(--e)); padding-top: round(1rem, var(--e)); border-top: 1px solid var(--line); min-width: 0; }
 .ta-cars > p { margin: 0; }

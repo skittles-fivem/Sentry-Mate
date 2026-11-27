@@ -363,6 +363,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/integrations/teslafi/accounts", get(list).post(add))
         .route("/api/v1/integrations/teslafi/accounts/{teslafi_account}", get(one).patch(change).delete(remove))
         .route("/api/v1/integrations/teslafi/accounts/{teslafi_account}/cars", get(cars).put(put_cars))
+        .route("/api/v1/integrations/teslafi/accounts/{teslafi_account}/redate", get(redate_defaults).post(redate))
         .route("/api/v1/integrations/teslafi/status", get(status))
 }
 
@@ -787,6 +788,175 @@ async fn remove(
     );
     v.audit(&app, "teslafi-account-removed", Some(&target("teslafi", None, &id)), &summary).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
+}
+
+// ---------------------------------------------------------------- data stored in a wrong zone
+
+/// The newest changes of an account's zone in the audit log, newest first: when, and the zone it was set to (`None`:
+/// the server's default). The log is read back from the newest entry, at most this many entries.
+const ZONE_CHANGES_LOOKED_AT: usize = 20_000;
+
+fn zone_changes(app: &AppState, id: &str) -> ApiResult<Vec<(u64, Option<String>)>> {
+    let tag = format!("[{}] ", target("teslafi", None, id));
+    let (mut out, mut cursor, mut seen) = (Vec::new(), None::<String>, 0usize);
+    loop {
+        let page = app.accounts.audit().list(accounts::audit::MAX_PAGE, cursor.as_deref())?;
+        seen += page.entries.len();
+        for e in &page.entries {
+            if e.action != "teslafi-account-changed" || !e.details.starts_with(&tag) {
+                continue;
+            }
+            let Some((_, rest)) = e.details.split_once("set its time zone to ") else { continue };
+            let zone = rest.split([',', '.']).next().unwrap_or_default().trim();
+            out.push((e.t_ms, teslafi::time_zone_ok(zone).then(|| zone.to_string())));
+            if out.len() >= 2 {
+                return Ok(out);
+            }
+        }
+        match page.next {
+            // (a page with nothing, or the same place again: the end)
+            Some(n) if seen < ZONE_CHANGES_LOOKED_AT && !page.entries.is_empty() && cursor.as_ref() != Some(&n) => {
+                cursor = Some(n)
+            }
+            _ => return Ok(out),
+        }
+    }
+}
+
+/// The zone the account's times are read in now.
+fn zone_now(s: &TeslafiService, a: &Account) -> String {
+    a.time_zone.clone().unwrap_or_else(|| s.default_time_zone())
+}
+
+/// `GET .../accounts/{account}/redate`: what dating its stored data again starts from: the zone its times are read
+/// in now, when that was last set (from the audit log; `null` when the log has no change of it) and the zone it was
+/// read in before (the zone of the change before that; not known: the server's default zone).
+async fn redate_defaults(
+    State(app): State<AppState>,
+    Admin(_): Admin,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let s = svc(&app)?;
+    app.blocking(move |app| {
+        let a = s.account(&id).map_err(|e| failed(&s, Some(&id), e))?;
+        let changes = zone_changes(app, &id)?;
+        Ok(Json(json!({
+            "zone": zone_now(&s, &a),
+            "before_ms": changes.first().map(|c| c.0),
+            // (the zone before the last change; not known: the server's default zone)
+            "zone_before": changes.get(1).and_then(|c| c.1.clone()).unwrap_or_else(|| s.default_time_zone()),
+        })))
+    })
+    .await
+}
+
+/// `POST .../accounts/{account}/redate` `{ zone_before, before_ms?, confirm_password, code? }`: the data the account
+/// stored for its cars before `before_ms` (by its stored time; default: when its zone was last set, from the audit
+/// log) was read in `zone_before`: it is dated again in the zone the account's times are read in now
+/// ([`engine::rezone`]), what was built from it is built again, and TeslaFi's charge costs are read again from the
+/// start. Asking the same again moves nothing. Answers what moved for each car.
+async fn redate(
+    State(app): State<AppState>,
+    Admin(v): Admin,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: JsonBody,
+) -> ApiResult<Json<Value>> {
+    body.only(&["zone_before", "before_ms", "confirm_password", "code"])?;
+    let zone_before = match body.str("zone_before")?.map(str::trim) {
+        Some(z) if teslafi::time_zone_ok(z) => z.to_string(),
+        _ => return Err(ApiError::invalid("zone_before", "Must be the time zone the times were read in (e.g. UTC).")),
+    };
+    let asked = body.u64("before_ms")?;
+    if asked.is_some_and(|t| t > app.now()) {
+        return Err(ApiError::invalid("before_ms", "Must not be in the future."));
+    }
+    let s = svc(&app)?;
+    let a = {
+        let (s, id) = (s.clone(), id.clone());
+        app.blocking(move |_| s.account(&id).map_err(|e| failed(&s, Some(&id), e))).await?
+    };
+    reconfirm(&app, &v, &body, &headers).await?;
+    let before_ms = match asked {
+        Some(t) => t,
+        None => {
+            let id = id.clone();
+            let changes = app.blocking(move |app| zone_changes(app, &id)).await?;
+            changes.first().map(|c| c.0).ok_or_else(|| {
+                ApiError::invalid("before_ms", "The audit log has no change of this account's zone: give the moment.")
+            })?
+        }
+    };
+    let zone = zone_now(&s, &a);
+    let cars: Vec<model::CarId> = a
+        .cars
+        .iter()
+        .filter_map(|c| match c.matched {
+            Some(Match::Car { car }) => Some(car),
+            _ => None,
+        })
+        .collect();
+    let e = app.service::<Engine>()?;
+    // the cars one after the other, then what follows (an audit entry for each car whose data moved, the charge
+    // costs read again), all in one task: an answer no one waits for any more does not stop it half way
+    v.mark_audited();
+    let (who, ip) = (v.name().to_string(), v.client().address);
+    let (label, zb, z, aid) = (a.label.clone(), zone_before.clone(), zone.clone(), id.clone());
+    let (out, errors) = app
+        .blocking(move |app| {
+            let (mut out, mut errors, mut follow) = (Vec::new(), Vec::new(), Vec::new());
+            for car in cars {
+                match e.api_rezone(model::Input::TeslafiApi, car, &zb, &z, before_ms) {
+                    Ok(r) => {
+                        out.push(json!({
+                            "car": ids::car(car), "samples": r.samples, "spans": r.spans, "drives": r.drives,
+                            "charges": r.charges, "already": r.already,
+                        }));
+                        if r.follow_up {
+                            follow.push((car, r));
+                        }
+                    }
+                    Err(err) => errors.push(json!({ "car": ids::car(car), "message": err.to_string() })),
+                }
+            }
+            if !follow.is_empty() {
+                for (car, r) in &follow {
+                    let what = if r.already {
+                        "(done before this ask: after a restart, or an ask cut off)".to_string()
+                    } else {
+                        format!(
+                            "({} samples, {} state spans, {} drives and {} charges moved)",
+                            r.samples, r.spans, r.drives, r.charges
+                        )
+                    };
+                    let summary = format!(
+                        "Dated the data the TeslaFi account {label} stored for car {} before {} again: read in {z}, \
+                         not {zb} {what}. What was built from it is built again, and TeslaFi's charge costs are read \
+                         again.",
+                        ids::car(*car),
+                        utc_minute(before_ms)
+                    );
+                    let details = audit_details(Some(&target("teslafi", None, &aid)), &summary);
+                    app.accounts.audit().record(Some(&who), Some(ip), "teslafi-data-redated", &details)?;
+                }
+                s.restart_costs(&aid).map_err(|err| failed(&s, Some(&aid), err))?;
+                for (car, _) in &follow {
+                    e.api_rezone_followed_up(model::Input::TeslafiApi, *car)
+                        .map_err(|err| ApiError::server(err.to_string()))?;
+                }
+            }
+            match errors.first() {
+                Some(first) if out.is_empty() => Err(ApiError::conflict(
+                    "redate_failed",
+                    first["message"].as_str().unwrap_or("the data could not be dated again").to_string(),
+                )),
+                _ => Ok((out, errors)),
+            }
+        })
+        .await?;
+    Ok(Json(json!({
+        "zone_before": zone_before, "zone": zone, "before_ms": before_ms, "cars": out, "errors": errors,
+    })))
 }
 
 // ---------------------------------------------------------------- the cars of an account

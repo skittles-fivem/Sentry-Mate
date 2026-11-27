@@ -382,6 +382,9 @@ pub enum StartError {
     Running(Box<FullRecord>),
     #[error("no such car")]
     NoSuchCar,
+    /// A re-dating of the car's stored data is under way ([`crate::rezone`]): it is done first.
+    #[error("a re-dating of car {0}'s stored data is under way: the full rebuild can start once it is done")]
+    Rezoning(CarId),
     #[error(transparent)]
     Engine(#[from] crate::Error),
 }
@@ -548,6 +551,10 @@ impl Engine {
         hold: Option<Hold>,
     ) -> Result<FullRecord, StartError> {
         self.handle()?;
+        // a re-dating of a car's stored data is done first: the rebuild would start from it half moved
+        if let Some(c) = cars.iter().find(|c| self.rezone_pending(**c)) {
+            return Err(StartError::Rezoning(*c));
+        }
         let _one = lock(&self.inner.full_start);
         if let Some(mut r) = self.full_get()?
             && r.running()
@@ -850,6 +857,8 @@ impl Engine {
 
     /// A full rebuild ended: kept in the rebuilds' history.
     fn full_ended(&self, r: &FullRecord) {
+        // a re-dating refused while it ran carries on now
+        self.rezone_resume();
         self.note_rebuild(crate::history::Run {
             kind: "full".into(),
             cars: r.cars.clone(),

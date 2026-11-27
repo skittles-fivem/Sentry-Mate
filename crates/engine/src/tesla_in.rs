@@ -540,7 +540,7 @@ impl Engine {
 
     /// Has the car's stored API data built: now, or once [`crate::Options::api_rebuild_ms`] has passed since the
     /// last build. One build waits at a time per car.
-    fn schedule_api(&self, car: CarId) {
+    pub(crate) fn schedule_api(&self, car: CarId) {
         if !lock(&self.inner.api_pending).insert(car) {
             return;
         }
