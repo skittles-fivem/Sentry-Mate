@@ -268,6 +268,7 @@ async fn start(
             Ok(r) => Ok(r),
             Err(StartError::Running(r)) => Err(running_error(&r)),
             Err(StartError::NoSuchCar) => Err(ApiError::not_found("no_such_car")),
+            Err(e @ StartError::Rezoning(_)) => Err(ApiError::conflict("redate_running", e.to_string())),
             Err(StartError::Engine(x)) => Err(ApiError::server(format!("starting the full rebuild: {x}"))),
         })
         .await?;
