@@ -521,14 +521,14 @@ def post_redate(req):
     with st.lock:
         done = a.setdefault("redated", [])
         for c in (c for c in a["cars"] if _matched(c)):
-            if zb == zone:
-                # the same zone: nothing moves
-                out.append({"car": c["match"], "samples": 0, "spans": 0, "drives": 0, "charges": 0, "already": False})
-                continue
             # the zone the car's data is in now (made up: one zone for all of it, once a re-dating said it)
             now_in = next((d["zone"] for d in reversed(done) if d["car"] == c["match"]), None)
             if now_in == zone:
                 out.append({"car": c["match"], "samples": 0, "spans": 0, "drives": 0, "charges": 0, "already": True})
+                continue
+            if zb == zone:
+                # the same zone: nothing moves
+                out.append({"car": c["match"], "samples": 0, "spans": 0, "drives": 0, "charges": 0, "already": False})
                 continue
             if now_in is not None and now_in != zb:
                 errors.append({"car": c["match"], "message": f"the data stored before {_utc_minute(before)} is in "
