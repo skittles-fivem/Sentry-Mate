@@ -89,9 +89,6 @@ impl What {
     pub const WHOLE: What = What { whole: true, positions: false, inputs: false };
     pub const POSITIONS: What = What { whole: false, positions: true, inputs: false };
 
-    fn positions_or_whole(self) -> bool {
-        self.whole || self.positions
-    }
     pub const INPUTS: What = What { whole: false, positions: false, inputs: true };
 
     fn join(self, o: What) -> What {
@@ -475,9 +472,13 @@ impl Engine {
     /// Whether a job that redoes the car's positions (a GPS layout's, or the whole history's) is pending or runs.
     pub(crate) fn positions_job_live(&self, car: CarId) -> bool {
         lock(&self.inner.jobs).values().any(|j| {
+            let w = *lock(&j.what);
+            let (from_ms, to_ms) = j.period();
+            // (a whole job redoes the positions only over the full period: a narrow one, or one cancelled, leaves them)
             (j.car.is_none() || j.car == Some(car))
                 && *lock(&j.status) == JobStatus::Running
-                && lock(&j.what).positions_or_whole()
+                && !j.cancelled()
+                && if w.whole { from_ms == 0 && to_ms == u64::MAX } else { w.positions }
         })
     }
 
