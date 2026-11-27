@@ -1634,7 +1634,11 @@ impl Engine {
         }
         // a narrow rebuild asked for and not done (a restart came before its job, or its job was cancelled)
         if job.is_none() {
-            self.redo_positions(car, None)?;
+            // (not while a job that does them is pending or runs: a full rebuild's switch starts one and asks for
+            // this look at the car too, and both would decode every log with the Screenmate's GPS)
+            if !self.positions_job_live(car) {
+                self.redo_positions(car, None)?;
+            }
             self.redo_inputs(car, None)?;
         }
         Ok(())

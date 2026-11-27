@@ -1814,16 +1814,24 @@ window began at midnight and made those hours unknown.
 
 - `Engine::api_span` runs from where the first stored span of any API input begins to where the last one ends, not
   from the start of its first day to the end of its last (where the last state was drawn on to midnight).
-- The switch of a full rebuild keeps the car's first and newest data as the inputs moved them (the earlier and the
-  later of the shadow's and the history in use's), and gives the car the Now its new history worked out, unless a
-  newer one came meanwhile (`Db::set_now` keeps the newer).
+- The switch of a full rebuild works the car's first and newest data out from the shadow's (its logs') and the API
+  inputs' own stored spans, never from the bounds the history in use had (a log stamped far off and taken out since
+  would stay in them, and a source order change would walk every day between), and gives the car the Now its new
+  history worked out, unless a newer one came meanwhile (`Db::set_now` keeps the newer).
 - A GPS layout set while a full rebuild runs is noted again at its switch and done after it: the shadow decoded its
   logs with the layout of its start, and the switch takes the note away with the old history's
-  (`a_gps_layout_set_during_a_full_rebuild_is_kept_at_its_switch`).
+  (`a_gps_layout_set_during_a_full_rebuild_is_kept_at_its_switch`). The layouts are compared under the car's lock,
+  after the switch, where a layout's own note is taken; a change still noted when the run switches (its own rebuild
+  let go, or still settling) is noted again too, so a position of the old layout does not stay in the Now. It is noted
+  at a later generation than the history in use had, so a job that began with that one does not take it away when it
+  ends (`a_full_rebuild_gives_the_car_the_now_of_its_new_history`), and the look at the car the switch asks for leaves
+  the positions to the job it starts (they were decoded twice).
+
 
 **Proven** (`crates/sentry-mate/src/window_batch.rs`): `a_full_rebuild_gives_the_history_built_as_the_data_came`
 (the same logs and inputs through two engines, one then rebuilt in full: everything stored the same, ids included; a
-car in sentry mode beside every input, and alone; by hand three days of the owner's shape beside an import back 60
+car in sentry mode beside every input, and alone, and the first beside a record of the history in use given first and
+newest data far off; by hand three days of the owner's shape beside an import back 60
 days and every API, five usual days beside them, seven alone), and `a_full_rebuild_gives_the_car_the_now_of_its_new_history`
 (a layout set and its own rebuild let go, then a full rebuild, against the layout's rebuild: the summary too). The
 comparisons of a GPS layout change and of the full rebuild by day pass with it.

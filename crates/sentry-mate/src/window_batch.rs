@@ -1455,10 +1455,14 @@ async fn a_gps_layout_set_during_a_full_rebuild_is_kept_at_its_switch() {
     // (the shadow's logs are decoded: the layout is set on the history in use, and its job done there)
     let job = during.engine.set_gps_layout(car, Some(moved)).unwrap().unwrap();
     assert_eq!(job_over(&during.engine, job.id).await.status, engine::JobStatus::Done);
+    let decoded = during.engine.stats().logs_decoded;
     during.engine.full_rebuild_hold_at(None);
     let r = full_done(&during.engine).await;
     assert_eq!(r.status, engine::full::FullStatus::Done, "{r:#?}");
     settled(&during.engine, car).await;
+    // (after the switch its logs are decoded again once, by the positions' job, not also by the look at the car)
+    let again = during.engine.stats().logs_decoded - decoded;
+    assert!(again <= logs.len() as u64, "{again} logs decoded again of {}", logs.len());
     let job = alone.engine.set_gps_layout(car, Some(moved)).unwrap().unwrap();
     assert_eq!(job_ended(&alone.engine, job.id).await.status, engine::JobStatus::Done);
     settled(&alone.engine, car).await;
@@ -1473,6 +1477,13 @@ async fn a_gps_layout_set_during_a_full_rebuild_is_kept_at_its_switch() {
 /// one of them then rebuilt in full; everything stored compared (ids included, the switch keeps them), a car in
 /// sentry mode beside every input, and a car alone.
 async fn full_against_arrived(days: u32, how: Logs, back: u32, api_days: u32) {
+    full_against_arrived_with(days, how, back, api_days, false).await;
+}
+
+/// [`full_against_arrived`]; `far_off`: the record of the history in use given first and newest data far off (as a
+/// log stamped 1970 or 2036 left them, taken out since), which a full rebuild works out again from the logs and
+/// the inputs.
+async fn full_against_arrived_with(days: u32, how: Logs, back: u32, api_days: u32, far_off: bool) {
     let apis = how != Logs::Alone;
     let s = synth::Scenario::new(7).days(days).rates(synth::Rates::Light).with_trouble(true);
     let s = match how {
@@ -1505,6 +1516,11 @@ async fn full_against_arrived(days: u32, how: Logs, back: u32, api_days: u32) {
     }
     same(&format!("{what}: the history in use"), &arrived.engine, &full.engine);
     let car = full.cars()[0];
+    if far_off {
+        let mut m = engine::records::car_meta(full.engine.db(), car).unwrap();
+        (m.first_ms, m.newest_ms) = (Some(1_000), Some(2_100_000_000_000));
+        engine::records::put_car_meta(full.engine.db(), car, &m).unwrap();
+    }
     full.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
     let r = full_done(&full.engine).await;
     assert_eq!(r.status, engine::full::FullStatus::Done, "{r:#?}");
@@ -1518,6 +1534,7 @@ async fn full_against_arrived(days: u32, how: Logs, back: u32, api_days: u32) {
 async fn a_full_rebuild_gives_the_history_built_as_the_data_came() {
     full_against_arrived(2, Logs::SentrySparse, 3, 1).await;
     full_against_arrived(2, Logs::Alone, 0, 0).await;
+    full_against_arrived_with(2, Logs::SentrySparse, 3, 1, true).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1528,10 +1545,23 @@ async fn a_full_rebuild_gives_the_history_built_as_the_data_came_over_days() {
     full_against_arrived(7, Logs::Alone, 0, 0).await;
 }
 
+/// A full rebuild to end, the engine's other work not waited for (a job it started that still settles).
+async fn full_over(e: &engine::Engine) -> engine::full::FullRecord {
+    for _ in 0..600_000 {
+        let r = e.full_rebuild_status().unwrap().unwrap();
+        if !r.running() {
+            return r;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the full rebuild did not end");
+}
+
 /// A full rebuild's switch gives the car the Now its new history works out (the position read with the layout in
 /// use), not the one worked out with the old decoding: a layout set and its own rebuild let go before it started, then
 /// a full rebuild (which reads the logs with it), against a car whose layout change was rebuilt: everything stored the
-/// same, its summary (the Now) included.
+/// same, its summary (the Now) included. The change still noted is noted again at the switch, at a later generation
+/// than the one the history in use had, so a job that began with that one does not take it away when it ends.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_full_rebuild_gives_the_car_the_now_of_its_new_history() {
     let logs: Vec<synth::LogFile> =
@@ -1547,8 +1577,35 @@ async fn a_full_rebuild_gives_the_car_the_now_of_its_new_history() {
     let moved: model::gps::GpsLayout = "lat 0|28@1- (1e-6,0.001); lon 28|28@1- (1e-6,0.002)".parse().unwrap();
     let job = full.engine.set_gps_layout(car, Some(moved)).unwrap().unwrap();
     assert!(full.engine.cancel(job.id));
+    let before = full.engine.positions_redo_for_tests(car).unwrap();
+    // (the positions' job the switch starts waits here, before it takes its note away, until let go)
+    let go = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    // (opened when this test ends too, so an assertion that fails never leaves the job waiting)
+    struct Open(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+    impl Drop for Open {
+        fn drop(&mut self) {
+            let (m, c) = &*self.0;
+            *m.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+            c.notify_all();
+        }
+    }
+    let open = Open(go.clone());
+    let gate = go.clone();
+    full.engine.job_clear_hook_set(Some(Arc::new(move || {
+        let (m, c) = &*gate;
+        let mut open = m.lock().unwrap();
+        while !*open {
+            open = c.wait(open).unwrap();
+        }
+    })));
     full.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
-    assert_eq!(full_done(&full.engine).await.status, engine::full::FullStatus::Done);
+    assert_eq!(full_over(&full.engine).await.status, engine::full::FullStatus::Done);
+    // (noted again at the switch, later than before; a job that began with the older one ends: it stays)
+    let after = full.engine.positions_redo_for_tests(car).unwrap();
+    assert!(after > before, "{after} after {before}");
+    full.engine.positions_redo_done_for_tests(car, before).unwrap();
+    assert_eq!(full.engine.positions_redo_for_tests(car), Some(after));
+    drop(open);
     settled(&full.engine, car).await;
     let job = narrow.engine.set_gps_layout(car, Some(moved)).unwrap().unwrap();
     assert_eq!(job_ended(&narrow.engine, job.id).await.status, engine::JobStatus::Done);

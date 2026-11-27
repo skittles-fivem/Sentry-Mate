@@ -88,6 +88,10 @@ pub struct What {
 impl What {
     pub const WHOLE: What = What { whole: true, positions: false, inputs: false };
     pub const POSITIONS: What = What { whole: false, positions: true, inputs: false };
+
+    fn positions_or_whole(self) -> bool {
+        self.whole || self.positions
+    }
     pub const INPUTS: What = What { whole: false, positions: false, inputs: true };
 
     fn join(self, o: What) -> What {
@@ -454,6 +458,27 @@ impl Engine {
             st.started.store(true, Ordering::SeqCst);
             return true;
         }
+    }
+
+    /// Tests: the generation of the car's positions' rebuild noted (`None`: none).
+    #[doc(hidden)]
+    pub fn positions_redo_for_tests(&self, car: CarId) -> Option<u64> {
+        records::redo(&self.inner.db, car, Redo::Positions).ok().flatten()
+    }
+
+    /// Tests: what a positions' job that began with generation `generation` does when it ends.
+    #[doc(hidden)]
+    pub fn positions_redo_done_for_tests(&self, car: CarId, generation: u64) -> Result<()> {
+        self.clear_redo_if(car, Redo::Positions, generation)
+    }
+
+    /// Whether a job that redoes the car's positions (a GPS layout's, or the whole history's) is pending or runs.
+    pub(crate) fn positions_job_live(&self, car: CarId) -> bool {
+        lock(&self.inner.jobs).values().any(|j| {
+            (j.car.is_none() || j.car == Some(car))
+                && *lock(&j.status) == JobStatus::Running
+                && lock(&j.what).positions_or_whole()
+        })
     }
 
     /// Whether another job of the same car (or of every car) has started and runs.

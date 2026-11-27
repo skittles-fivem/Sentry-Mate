@@ -861,6 +861,11 @@ pub(crate) fn bump_redo(db: &Db, car: CarId, what: Redo) -> Result<u64> {
     Ok(next)
 }
 
+/// Notes the narrow rebuild asked for at generation `generation`; the car's lock held by the caller.
+pub(crate) fn set_redo(db: &Db, car: CarId, what: Redo, generation: u64) -> Result<()> {
+    put(db, NS, &what.key(car), &generation)
+}
+
 /// Takes the note away when it still is generation `generation`; the car's lock held by the caller.
 pub(crate) fn clear_redo_if(db: &Db, car: CarId, what: Redo, generation: u64) -> Result<()> {
     if redo(db, car, what)? == Some(generation) {
