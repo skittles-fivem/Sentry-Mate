@@ -649,3 +649,27 @@ async fn what_a_car_is_owed_is_done_even_when_its_ask_fails() {
     assert!(w._engine.rezone_owed(model::Input::TeslafiApi, w.car).unwrap().is_empty());
     w._engine.full_rebuild_hold_at(None);
 }
+
+/// Two follow-ups of the same re-dating at once (an ask and a restart's hook): one audit entry, one reading of the
+/// costs.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_follow_ups_at_once_write_one_entry() {
+    let (w, mut admin, _base, moment) = redate_world().await;
+    let (e, car) = (w._engine.clone(), w.car);
+    tokio::task::spawn_blocking(move || {
+        e.api_rezone(model::Input::TeslafiApi, car, "UTC", "America/Chicago", moment).unwrap()
+    })
+    .await
+    .unwrap();
+    let both: Vec<_> = (0..2)
+        .map(|_| {
+            let (e, s, app) = (w._engine.clone(), (*w.svc).clone(), w.s.app.clone());
+            std::thread::spawn(move || {
+                web::resources::teslafi::redate_follow_up(&e, &s, app.accounts.audit(), car, None).unwrap()
+            })
+        })
+        .collect();
+    let did: Vec<bool> = both.into_iter().map(|t| t.join().unwrap()).collect();
+    assert_eq!(did.iter().filter(|d| **d).count(), 1, "one did it, the other found nothing owed: {did:?}");
+    assert_eq!(redated(&audit_actions(&mut admin).await).len(), 1);
+}
