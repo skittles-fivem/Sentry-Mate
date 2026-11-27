@@ -51,6 +51,12 @@ thing that does that, how far each one reaches, and the server updates that chan
   start when it is first made and stay when a late log moves the start), so what points at it stays with it: a
   cost typed or kept, a drive's purpose and notes. A full rebuild, which makes the history from scratch beside the
   one in use, gives its rows those ids at the switch.
+- **The history built as the data came.** A full rebuild gives the history the car's logs and inputs gave as they
+  came, ids included: a window is built from where an input's data begins (a rebuild in place too), and the
+  switch keeps the car's first and newest data as the inputs moved them and gives it the Now of its new history
+  (`crates/sentry-mate/src/window_batch.rs`: `a_full_rebuild_gives_the_history_built_as_the_data_came`,
+  `a_full_rebuild_gives_the_car_the_now_of_its_new_history`;
+  [docs/plans/performance.md](plans/performance.md#a-full-rebuild-gives-the-history-built-as-the-data-came)).
 - **Said why.** Every rebuild carries its causes: the full rebuild's status and its notice name them (for a server
   update with a link to the change below), and Data health shows the last rebuilds with their cause and how long
   they took.
