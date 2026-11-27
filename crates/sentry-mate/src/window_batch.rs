@@ -1304,10 +1304,16 @@ async fn a_full_rebuild_by_day_gives_the_history_a_window_per_log_gives_over_day
 
 /// A rebuild job to end.
 async fn job_ended(e: &engine::Engine, id: u64) -> engine::Job {
+    let j = job_over(e, id).await;
+    e.idle().await;
+    j
+}
+
+/// [`job_ended`], the engine's other work not waited for (a full rebuild held at a step, say).
+async fn job_over(e: &engine::Engine, id: u64) -> engine::Job {
     for _ in 0..600_000 {
         let j = e.job(id).unwrap();
         if j.status != engine::JobStatus::Running {
-            e.idle().await;
             return j;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1400,4 +1406,152 @@ async fn a_gps_layout_change_by_day_gives_the_history_a_window_per_log_gives_ove
     layout_change(3, Logs::Sentry, 60, 3).await;
     layout_change(5, Logs::Apis, 20, 2).await;
     layout_change(7, Logs::Alone, 0, 0).await;
+}
+
+/// A full rebuild under way to reach its days step (its logs all decoded), held there by
+/// [`engine::Engine::full_rebuild_hold_at`].
+async fn full_at_days(e: &engine::Engine) {
+    for _ in 0..600_000 {
+        let r = e.full_rebuild_status().unwrap().unwrap();
+        if r.phase == engine::full::Phase::Days {
+            return;
+        }
+        assert!(r.running(), "{r:#?}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the full rebuild did not reach its days");
+}
+
+/// Waits until the car has no rebuild pending (the jobs a switch or a setting asked for).
+async fn settled(e: &engine::Engine, car: model::CarId) {
+    for _ in 0..600_000 {
+        e.idle().await;
+        if !e.rebuild_pending(car) && e.jobs().iter().all(|j| j.status != engine::JobStatus::Running) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the car's rebuilds did not end");
+}
+
+/// A GPS layout set while a full rebuild runs is not lost at its switch: its logs were decoded with the layout of
+/// the run's start, so the switch notes the change again and the car's positions are rebuilt with the new layout,
+/// to the history of a car whose layout was set with no full rebuild under way (the same made-up logs, with the
+/// Screenmate's GPS frames; everything stored compared, ids and the engine's records included).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_gps_layout_set_during_a_full_rebuild_is_kept_at_its_switch() {
+    let logs: Vec<synth::LogFile> =
+        synth::Scenario::new(7).days(2).rates(synth::Rates::Light).with_trouble(true).logs().collect();
+    let all: Vec<&synth::LogFile> = logs.iter().collect();
+    let opts = engine::Options { rebuild_settle_ms: 0, ..engine::Options::default() };
+    let (during, alone) = (Side::with(opts.clone()).await, Side::with(opts).await);
+    during.take(&all).await;
+    alone.take(&all).await;
+    let car = during.cars()[0];
+    let moved: model::gps::GpsLayout = "lat 0|28@1- (1e-6,0.001); lon 28|28@1- (1e-6,0.002)".parse().unwrap();
+    during.engine.full_rebuild_hold_at(Some(engine::full::Phase::Days));
+    during.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+    full_at_days(&during.engine).await;
+    // (the shadow's logs are decoded: the layout is set on the history in use, and its job done there)
+    let job = during.engine.set_gps_layout(car, Some(moved)).unwrap().unwrap();
+    assert_eq!(job_over(&during.engine, job.id).await.status, engine::JobStatus::Done);
+    during.engine.full_rebuild_hold_at(None);
+    let r = full_done(&during.engine).await;
+    assert_eq!(r.status, engine::full::FullStatus::Done, "{r:#?}");
+    settled(&during.engine, car).await;
+    let job = alone.engine.set_gps_layout(car, Some(moved)).unwrap().unwrap();
+    assert_eq!(job_ended(&alone.engine, job.id).await.status, engine::JobStatus::Done);
+    settled(&alone.engine, car).await;
+    let k = same("a layout set during a full rebuild", &alone.engine, &during.engine);
+    let rk = records_same("a layout set during a full rebuild: the records", alone.engine.db(), during.engine.db());
+    assert!(k > 1_000, "{k}");
+    assert_eq!(during.engine.stats().failures + alone.engine.stats().failures, 0);
+    println!("a layout set during a full rebuild: {k} stored things and {rk} records the same");
+}
+
+/// A full rebuild gives the history built as the data came: the same made-up logs and inputs through two engines,
+/// one of them then rebuilt in full; everything stored compared (ids included, the switch keeps them), a car in
+/// sentry mode beside every input, and a car alone.
+async fn full_against_arrived(days: u32, how: Logs, back: u32, api_days: u32) {
+    let apis = how != Logs::Alone;
+    let s = synth::Scenario::new(7).days(days).rates(synth::Rates::Light).with_trouble(true);
+    let s = match how {
+        Logs::Sentry => s.stays_awake(true).snippets(69_000, 3_000),
+        Logs::SentrySparse => s.stays_awake(true).snippets(600_000, 3_000),
+        Logs::Alone | Logs::Apis => s,
+    };
+    let logs: Vec<synth::LogFile> = s.logs().collect();
+    let all: Vec<&synth::LogFile> = logs.iter().collect();
+    let (arrived, full) = (Side::with(engine::Options::default()).await, Side::with(engine::Options::default()).await);
+    let what = format!("{days} days ({how:?})");
+    for side in [&arrived, &full] {
+        side.take(&all).await;
+        if apis {
+            let o = history::Options {
+                days: days + back,
+                end_ms: synth::DEFAULT_START_MS + u64::from(days) * 86_400_000,
+                seed: 5,
+                drives: 4 * (days + back),
+                charges: days + back,
+                drive_step_s: 5,
+                teslafi_days: 2,
+                api_days,
+                tesla_days: days,
+                tesla_sentry: true,
+            };
+            history::run(&side.engine, &o).await.unwrap();
+            side.engine.idle().await;
+        }
+    }
+    same(&format!("{what}: the history in use"), &arrived.engine, &full.engine);
+    let car = full.cars()[0];
+    full.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+    let r = full_done(&full.engine).await;
+    assert_eq!(r.status, engine::full::FullStatus::Done, "{r:#?}");
+    settled(&full.engine, car).await;
+    let k = same(&format!("{what}: built as it came, and rebuilt in full"), &arrived.engine, &full.engine);
+    assert!(k > 1_000, "{what}: {k}");
+    println!("{what}: {k} stored things the same built as they came and rebuilt in full");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_full_rebuild_gives_the_history_built_as_the_data_came() {
+    full_against_arrived(2, Logs::SentrySparse, 3, 1).await;
+    full_against_arrived(2, Logs::Alone, 0, 0).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "long: cargo test --release -p sentry-mate a_full_rebuild_gives_the_history_built -- --ignored --nocapture"]
+async fn a_full_rebuild_gives_the_history_built_as_the_data_came_over_days() {
+    full_against_arrived(3, Logs::Sentry, 60, 3).await;
+    full_against_arrived(5, Logs::Apis, 20, 2).await;
+    full_against_arrived(7, Logs::Alone, 0, 0).await;
+}
+
+/// A full rebuild's switch gives the car the Now its new history works out (the position read with the layout in
+/// use), not the one worked out with the old decoding: a layout set and its own rebuild let go before it started, then
+/// a full rebuild (which reads the logs with it), against a car whose layout change was rebuilt: everything stored the
+/// same, its summary (the Now) included.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_full_rebuild_gives_the_car_the_now_of_its_new_history() {
+    let logs: Vec<synth::LogFile> =
+        synth::Scenario::new(7).days(1).rates(synth::Rates::Light).with_trouble(true).logs().collect();
+    let all: Vec<&synth::LogFile> = logs.iter().collect();
+    let (full, narrow) = (
+        Side::with(engine::Options { rebuild_settle_ms: 600_000, ..engine::Options::default() }).await,
+        Side::with(engine::Options { rebuild_settle_ms: 0, ..engine::Options::default() }).await,
+    );
+    full.take(&all).await;
+    narrow.take(&all).await;
+    let car = full.cars()[0];
+    let moved: model::gps::GpsLayout = "lat 0|28@1- (1e-6,0.001); lon 28|28@1- (1e-6,0.002)".parse().unwrap();
+    let job = full.engine.set_gps_layout(car, Some(moved)).unwrap().unwrap();
+    assert!(full.engine.cancel(job.id));
+    full.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+    assert_eq!(full_done(&full.engine).await.status, engine::full::FullStatus::Done);
+    settled(&full.engine, car).await;
+    let job = narrow.engine.set_gps_layout(car, Some(moved)).unwrap().unwrap();
+    assert_eq!(job_ended(&narrow.engine, job.id).await.status, engine::JobStatus::Done);
+    let k = same("the Now after a full rebuild", &narrow.engine, &full.engine);
+    assert!(k > 1_000, "{k}");
 }

@@ -704,8 +704,9 @@ impl Hold {
     /// records, the meta records: the order a log writes them in), and holds on. What it wrote stays held, as
     /// written, to be read (the day before's record is read by every log of the next day, which looks for the logs
     /// around it there): read from memory instead of opened, unsealed and unpacked for every log. What was written
-    /// three writes ago or more and not changed since is let go (a day's end writes twice, around its window), so a
-    /// run holds about two days' records whatever its length.
+    /// two writes ago or more and not changed since is let go (a day's end writes twice, around its window): the day
+    /// before is kept through the next day's logs and goes at that day's end, so a run holds two days' records at
+    /// most whatever its length.
     pub(crate) fn write(&self) -> Result<()> {
         if !self.mine {
             return Ok(());
@@ -714,7 +715,7 @@ impl Hold {
         let mut todo: Vec<(String, u8, Option<AnyArc>, WriteFn)> = {
             let mut h = held();
             let Some(vals) = h.iter_mut().find(|x| x.kv == self.kv).map(|x| &mut x.vals) else { return Ok(()) };
-            vals.retain(|_, v| v.clean.is_none_or(|g| g + 2 >= n));
+            vals.retain(|_, v| v.clean.is_none_or(|g| g + 1 >= n));
             vals.iter()
                 .filter(|(_, v)| v.clean.is_none())
                 .map(|(k, v)| (k.clone(), v.rank, v.v.clone(), v.write))
@@ -1481,7 +1482,7 @@ mod tests {
     }
 
     /// A hold keeps what it wrote to be read from memory (the day before's record, read by every log of the next
-    /// day), writes it again only once it changed, and lets it go once a later day's end wrote twice more.
+    /// day), writes it again only once it changed, and lets it go at the next day's end (two writes later).
     #[test]
     fn a_hold_keeps_what_it_wrote_to_be_read_and_lets_it_go_after_the_next_day() {
         let dir = tempfile::tempdir().unwrap();
@@ -1512,7 +1513,6 @@ mod tests {
         hold.write().unwrap();
         put(&db, NS, &format!("car/{car}/day/1"), &rec(13)).unwrap();
         assert_eq!(*day_shared(&db, car, 1).unwrap(), DayRec { logs: BTreeMap::new(), cuts: vec![10, 12] });
-        hold.write().unwrap();
         hold.write().unwrap();
         assert_eq!(*day_shared(&db, car, 1).unwrap(), rec(13));
         assert_eq!(*day_shared(&db, car, 2).unwrap(), rec(20));

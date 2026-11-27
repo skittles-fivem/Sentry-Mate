@@ -1679,8 +1679,8 @@ that are not there, 40,000 reads in those 15 s).
 **What changed.**
 
 - **What a hold wrote stays held** (`records::Hold::write`): written as it is and kept to be read, not written again
-  until it changes, and let go three writes later (a day's end writes twice, around its window), so the day before
-  is read from memory by the next day's logs and a run holds about two days' records. Only a full rebuild by day
+  until it changes, and let go two writes later (a day's end writes twice, around its window), so the day before
+  is read from memory by the next day's logs and a run holds two days' records at most. Only a full rebuild by day
   holds; it is the shadow's only writer. `a_hold_keeps_what_it_wrote_to_be_read_and_lets_it_go_after_the_next_day`;
   the comparisons of "A full rebuild's records written once per day" pass with it (everything stored, ids
   included, a run cut off in the middle of a day and carried on).
@@ -1794,3 +1794,36 @@ so 3 readers; the outcome written by both, `PERF_FIT_OUT`, byte for byte the sam
 On the owner's server, with 8 readers, the logs should read some six times as fast as before (an estimate). Not
 done: reading only the frames a fit needs out of a log (its xz is unpacked whole either way), and keeping each log's
 frames for the next fit.
+
+## A full rebuild gives the history built as the data came
+
+Status (2026-11-27). Found while proving the GPS layout change (above): beside the API inputs, a full rebuild gave
+another history than the one built as the data came. Its first CAN state was a live "unknown" from midnight of the
+API's first day to its first answer (where the TeslaMate import says asleep), the engine's record of the car had the
+first and newest data of its logs alone, and the car's Now stayed the one worked out with the old decoding (after a
+GPS layout change, a position of the old layout). A rebuild of the car in place gave the full rebuild's history, so it
+was the rebuilding that differed, not the shadow. Over five days beside the APIs, the car's last state also ran on
+to midnight of the API's last day in a rebuild, and to its newest data as it came.
+
+**Which is right.** The history built as the data came: a window is built from where an input's data begins, and the
+hours before an input's first answer have no data of it, so nothing worked out from it belongs there (the import's
+state shows). A rebuild marked the API's days whole (`Engine::api_span` from the start of its first day), so its
+window began at midnight and made those hours unknown.
+
+**What changed.**
+
+- `Engine::api_span` runs from where the first stored span of any API input begins to where the last one ends, not
+  from the start of its first day to the end of its last (where the last state was drawn on to midnight).
+- The switch of a full rebuild keeps the car's first and newest data as the inputs moved them (the earlier and the
+  later of the shadow's and the history in use's), and gives the car the Now its new history worked out, unless a
+  newer one came meanwhile (`Db::set_now` keeps the newer).
+- A GPS layout set while a full rebuild runs is noted again at its switch and done after it: the shadow decoded its
+  logs with the layout of its start, and the switch takes the note away with the old history's
+  (`a_gps_layout_set_during_a_full_rebuild_is_kept_at_its_switch`).
+
+**Proven** (`crates/sentry-mate/src/window_batch.rs`): `a_full_rebuild_gives_the_history_built_as_the_data_came`
+(the same logs and inputs through two engines, one then rebuilt in full: everything stored the same, ids included; a
+car in sentry mode beside every input, and alone; by hand three days of the owner's shape beside an import back 60
+days and every API, five usual days beside them, seven alone), and `a_full_rebuild_gives_the_car_the_now_of_its_new_history`
+(a layout set and its own rebuild let go, then a full rebuild, against the layout's rebuild: the summary too). The
+comparisons of a GPS layout change and of the full rebuild by day pass with it.

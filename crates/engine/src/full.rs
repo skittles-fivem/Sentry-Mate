@@ -1325,6 +1325,9 @@ impl Engine {
         let db = &self.inner.db;
         let sdb = &se.inner.db;
         let seed = self.full_get()?.map(|r| r.seed).unwrap_or_default();
+        // a GPS layout set while the run went on: its logs were decoded with the layout of its start, and the switch
+        // takes the note of the change away with the rest of the old history's (noted again after it, under the lock)
+        let layout_moved = self.gps_layout(car)? != se.gps_layout(car)?;
         let redo = {
             let l = self.car_lock(car);
             let _held = lock(&l);
@@ -1353,8 +1356,16 @@ impl Engine {
                     }
                 })?;
                 db.adopt_car(car, sdb)?;
+                // the car's Now as the new history works it out from its logs, unless a newer one came meanwhile
+                // (an input's): the one kept was worked out with the old decoding (a position of another layout)
+                if let Some(now) = sdb.entry(car)?.and_then(|e| e.summary.now) {
+                    db.set_now(now)?;
+                }
             }
             self.full_switch_records(car, sdb, &seed)?;
+            if layout_moved {
+                records::bump_redo(db, car, records::Redo::Positions)?;
+            }
             self.finish_repair(car, None)?;
             // a change of the car's order or keys meanwhile was built into the old history only
             let (a, b) = (db.car(car)?, sdb.car(car)?);
@@ -1384,6 +1395,10 @@ impl Engine {
                 false,
             )?;
         } else {
+            if layout_moved {
+                // (only the logs whose positions the layout gives, as a layout change does)
+                self.rebuild_because(crate::Scope::car(car), crate::jobs::What::POSITIONS, Cause::gps_layout(), false)?;
+            }
             self.send(Work::Reconcile { car: Some(car) });
         }
         self.send(Work::ApiBuild { car });
@@ -1441,6 +1456,9 @@ impl Engine {
         meta.tmlocal_last_ms = inputs.tmlocal_last_ms;
         meta.tmlocal_received_ms = inputs.tmlocal_received_ms;
         meta.last_arrived_ms = meta.last_arrived_ms.max(real_meta.last_arrived_ms);
+        // (the inputs' data moved the car's first and newest data as it came: the shadow's are its logs' alone)
+        meta.first_ms = [meta.first_ms, real_meta.first_ms].into_iter().flatten().min();
+        meta.newest_ms = meta.newest_ms.max(real_meta.newest_ms);
         meta.version = Some(derived_version());
         records::put_meta(db, car, &meta)?;
         records::put_api_dirty(db, car, &crate::pipeline::join_spans(dirty))?;

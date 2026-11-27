@@ -20,7 +20,7 @@ thing that does that, how far each one reaches, and the server updates that chan
 | **An update that changed the CAN log check** (`trust-N`) | Only the logs that **failed** their check under the older rules are checked again, per car key; those whose verdict changes are decoded again | Once per key, two minutes after the start | No: each key's new rules version is written with its results, all at once |
 | **An admin's full rebuild** (Data health, Settings → Server) | A full rebuild of the car or of every car | At once | No: an ask while one runs joins that run (its cars added) |
 | **An admin's rebuild of a car or a period** (`POST /cars/{car}/rebuild`) | That car's drives, charges, states and visits from its logs | At once (refused while a full rebuild runs) | No: one job per car at a time; asks meanwhile join one job after it |
-| **The car's GPS layout** (`PUT /cars/{car}/gps-layout`) | **Positions only**: the logs whose positions came from the Screenmate's own GPS frames are decoded again; the others read the same whatever the layout and are left; a day of logs at a time, the windows they change rebuilt once per day ([below](#the-rules-every-rebuild-follows)) | After a 3 s settle | No: saves in a row are one job; noted on the car first, so a restart before it ran does it then |
+| **The car's GPS layout** (`PUT /cars/{car}/gps-layout`) | **Positions only**: the logs whose positions came from the Screenmate's own GPS frames are decoded again; the others read the same whatever the layout and are left; a day of logs at a time, the windows they change rebuilt once per day ([below](#the-rules-every-rebuild-follows)) | After a 3 s settle | No: saves in a row are one job; noted on the car first, so a restart before it ran does it then; one set while a full rebuild runs is noted again at its switch and done after it (`a_gps_layout_set_during_a_full_rebuild_is_kept_at_its_switch`) |
 | **The car's source order** (Settings → the car → Data sources) | **The inputs joined again**: every window built again from what is stored, nothing decoded again | After a 3 s settle | No: saves in a row are one job, the same as above |
 | **The preferred CAN key of a car** | The car's history from its logs (each second's source follows the key) | After a 3 s settle | No: saves in a row are one job |
 | **A CAN key given to another car** | The logs of that key are worked on for their new car; the old car's windows they were in are built again | At once | No: only that key's logs |
@@ -51,6 +51,12 @@ thing that does that, how far each one reaches, and the server updates that chan
   start when it is first made and stay when a late log moves the start), so what points at it stays with it: a
   cost typed or kept, a drive's purpose and notes. A full rebuild, which makes the history from scratch beside the
   one in use, gives its rows those ids at the switch.
+- **The history built as the data came.** A full rebuild gives the history the car's logs and inputs gave as they
+  came, ids included: a window is built from where an input's data begins (a rebuild in place too), and the
+  switch keeps the car's first and newest data as the inputs moved them and gives it the Now of its new history
+  (`crates/sentry-mate/src/window_batch.rs`: `a_full_rebuild_gives_the_history_built_as_the_data_came`,
+  `a_full_rebuild_gives_the_car_the_now_of_its_new_history`;
+  [docs/plans/performance.md](plans/performance.md#a-full-rebuild-gives-the-history-built-as-the-data-came)).
 - **Said why.** Every rebuild carries its causes: the full rebuild's status and its notice name them (for a server
   update with a link to the change below), and Data health shows the last rebuilds with their cause and how long
   they took.
