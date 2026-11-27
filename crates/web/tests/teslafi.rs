@@ -563,7 +563,7 @@ async fn what_follows_a_re_dating_is_done_whoever_finished_it_and_a_failing_car_
         .map(|(_, e)| e)
         .collect();
     assert_eq!(entries.len(), 1, "{entries:?}");
-    assert!(entries[0].to_string().contains("done before this ask"), "{entries:?}");
+    assert!(entries[0].to_string().contains("1 samples"), "what moved when it was done: {entries:?}");
     assert_eq!(w.svc.store().pacing(&a.id).unwrap().costs.backfill_before, None, "the costs read again");
     // asked again: what follows is done, nothing more is written
     let r = admin.post(&base, json!({ "zone_before": "UTC", "confirm_password": ADMIN_PASSWORD })).await;
@@ -572,4 +572,80 @@ async fn what_follows_a_re_dating_is_done_whoever_finished_it_and_a_failing_car_
     assert_eq!(n, 1);
     w._engine.full_rebuild_hold_at(None);
     let _ = version;
+}
+
+/// One car, its TeslaFi data stored as UTC before the zone was set to Chicago; the admin's page, the redate route
+/// and the moment.
+async fn redate_world() -> (World, Client, String, u64) {
+    let w = world().await;
+    let a = seed(&w);
+    let mut admin = w.s.admin().await;
+    let one = format!("/api/v1/integrations/teslafi/accounts/{}", a.id);
+    let items = json!([{ "vehicle": "fv1", "match": format!("c{}", w.car) }]);
+    let r = admin.put(&format!("{one}/cars"), json!({ "version": a.version, "items": items })).await;
+    let mut version = r.json()["version"].as_u64().unwrap();
+    for z in ["UTC", "America/Chicago"] {
+        let r =
+            admin.patch(&one, json!({ "version": version, "time_zone": z, "confirm_password": ADMIN_PASSWORD })).await;
+        version = r.json()["version"].as_u64().unwrap();
+    }
+    let base = format!("{one}/redate");
+    let moment = admin.get(&base).await.json()["before_ms"].as_u64().unwrap();
+    w._engine.start().unwrap();
+    let samples: Vec<model::Sample> = (0..10u64)
+        .map(|i| model::Sample { t_ms: moment - 10 * 3_600_000 + i * 60_000, soc: Some(70.0), ..Default::default() })
+        .collect();
+    w._engine.feed_points(model::Input::TeslafiApi, w.car, samples, Vec::new());
+    w._engine.idle().await;
+    (w, admin, base, moment)
+}
+
+fn redated(entries: &[(String, Value)]) -> Vec<String> {
+    entries.iter().filter(|(a, _)| a == "teslafi-data-redated").map(|(_, e)| e.to_string()).collect()
+}
+
+/// A re-dating cut off half way, then asked again with another moment: the one under way is finished as it was
+/// asked, the answer says done, and what follows it is done with its own moment.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_re_dating_cut_off_then_asked_otherwise_is_finished_and_followed_up_as_it_was_asked() {
+    let (w, mut admin, base, moment) = redate_world().await;
+    let (e, car) = (w._engine.clone(), w.car);
+    e.rezone_fail_after(Some(3));
+    let err = tokio::task::spawn_blocking(move || {
+        e.api_rezone(model::Input::TeslafiApi, car, "UTC", "America/Chicago", moment).is_err()
+    })
+    .await
+    .unwrap();
+    assert!(err);
+    let r = admin
+        .post(&base, json!({ "zone_before": "UTC", "before_ms": moment - 60_000, "confirm_password": ADMIN_PASSWORD }))
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["cars"][0]["already"], true, "{}", r.text());
+    let entries = redated(&audit_actions(&mut admin).await);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    let t = (moment / 60_000) * 60_000;
+    let words = chrono::DateTime::from_timestamp_millis(t as i64).unwrap().format("%Y-%m-%d %H:%M").to_string();
+    assert!(entries[0].contains(&words) && entries[0].contains("10 samples"), "its own moment: {}", entries[0]);
+    assert!(w._engine.rezone_owed(model::Input::TeslafiApi, w.car).unwrap().is_empty());
+}
+
+/// A car owed what follows a re-dating, whose ask now fails (a full rebuild of it under way): what follows is done
+/// all the same.
+#[tokio::test(flavor = "multi_thread")]
+async fn what_a_car_is_owed_is_done_even_when_its_ask_fails() {
+    let (w, mut admin, base, moment) = redate_world().await;
+    let (e, car) = (w._engine.clone(), w.car);
+    tokio::task::spawn_blocking(move || {
+        e.api_rezone(model::Input::TeslafiApi, car, "UTC", "America/Chicago", moment).unwrap()
+    })
+    .await
+    .unwrap();
+    w._engine.full_rebuild_hold_at(Some(engine::full::Phase::Copying));
+    w._engine.full_rebuild(Some(w.car), engine::full::Reason::Owner, None).unwrap();
+    let r = admin.post(&base, json!({ "zone_before": "UTC", "confirm_password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 409, "every car failed: {}", r.text());
+    assert_eq!(redated(&audit_actions(&mut admin).await).len(), 1, "followed up all the same");
+    assert!(w._engine.rezone_owed(model::Input::TeslafiApi, w.car).unwrap().is_empty());
+    w._engine.full_rebuild_hold_at(None);
 }

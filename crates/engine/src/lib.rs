@@ -368,6 +368,8 @@ pub(crate) struct Inner {
     pub(crate) api_pending: Mutex<std::collections::HashSet<CarId>>,
     /// Tests: a re-dating fails after this many more of its writes ([`Engine::rezone_fail_after`]; `u64::MAX`: never).
     pub(crate) rezone_fail: AtomicU64,
+    /// Told when a re-dating is done without an ask waiting for it ([`Engine::on_rezone_done`]).
+    pub(crate) rezone_hook: Mutex<Option<crate::rezone::RezoneHook>>,
     pub(crate) api_built: Mutex<HashMap<CarId, u64>>,
     /// The time zone a car made from now on starts in.
     default_zone: RwLock<String>,
@@ -645,6 +647,7 @@ impl Engine {
                 tokens: std::sync::OnceLock::new(),
                 api_pending: Mutex::new(std::collections::HashSet::new()),
                 rezone_fail: AtomicU64::new(u64::MAX),
+                rezone_hook: Mutex::new(None),
                 api_built: Mutex::new(HashMap::new()),
                 default_zone: RwLock::new(opts.default_time_zone.clone()),
                 gap_fill: std::sync::atomic::AtomicBool::new(true),
@@ -860,8 +863,9 @@ impl Engine {
         self.invoice_prices_soon();
         // a full rebuild a restart cut off carries on
         self.full_resume();
-        // and a re-dating of stored data
+        // and a re-dating of stored data, and what follows one done
         self.rezone_resume();
+        self.rezone_tell_owed();
         // the days' pack readings, worked out once idle (and again now and then)
         handle.spawn(query::pack_logs::passes(self.clone()));
         Ok(())
