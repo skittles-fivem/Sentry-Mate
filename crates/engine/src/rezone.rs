@@ -163,13 +163,23 @@ pub struct Owed {
     pub moved: Rezoned,
 }
 
+/// What zone the data of a stretch is in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum In {
+    /// The zone the poller read it in (not known; an ask says which it was).
+    Poller,
+    Zone(String),
+    /// Nothing is stored there (the data stored there moved earlier, out of it): any zone.
+    Nothing,
+}
+
 /// A stretch of the input's stored data (by its stored time) and the zone it is in: up to `until_ms` (from the end of
 /// the stretch before it), or, for the last one (`until_ms` none), all stored after that, the poller's included.
-/// `zone` none: the zone the poller read it in (not known; an ask says which it was).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Stretch {
     until_ms: Option<u64>,
-    zone: Option<String>,
+    zone: In,
 }
 
 /// What is noted of the re-datings of an input's data for a car: those done, and the zone its stored data is in now.
@@ -180,52 +190,78 @@ struct Noted {
     zones: Vec<Stretch>,
 }
 
-/// The stretches of `zones` with data stored before `t` (all when `zones` is empty: the poller's zone).
-fn zones_before(zones: &[Stretch], t: u64) -> Vec<Stretch> {
+/// `zones` as `(start, end, zone)`, the last one ending at `u64::MAX`.
+fn spans_of(zones: &[Stretch]) -> Vec<(u64, u64, In)> {
     if zones.is_empty() {
-        return vec![Stretch { until_ms: None, zone: None }];
+        return vec![(0, u64::MAX, In::Poller)];
     }
     let mut start = 0;
-    let mut out = Vec::new();
-    for s in zones {
-        if start < t {
-            out.push(s.clone());
-        }
-        start = s.until_ms.unwrap_or(u64::MAX);
-    }
-    out
+    zones
+        .iter()
+        .map(|s| {
+            let end = s.until_ms.unwrap_or(u64::MAX);
+            let out = (start, end, s.zone.clone());
+            start = end;
+            out
+        })
+        .collect()
 }
 
-/// `zones` once the data stored before `before_ms` is in `to`: one stretch up to the moment, then what was there
-/// after it, as it was (stretches next to each other in the same zone made one).
-fn zones_after(zones: &[Stretch], to: &str, before_ms: u64) -> Vec<Stretch> {
-    let old = if zones.is_empty() { vec![Stretch { until_ms: None, zone: None }] } else { zones.to_vec() };
-    let mut out = vec![Stretch { until_ms: Some(before_ms), zone: Some(to.to_string()) }];
-    for s in old {
-        if s.until_ms.is_none_or(|u| u > before_ms) {
-            out.push(s);
+/// The stretches of `zones` with data stored in `[a, b)`, cut to it (those with nothing stored left out).
+fn zones_in(zones: &[Stretch], a: u64, b: u64) -> Vec<Stretch> {
+    if a >= b {
+        return Vec::new();
+    }
+    spans_of(zones)
+        .into_iter()
+        .filter(|(s, e, z)| *s < b && *e > a && *z != In::Nothing)
+        .map(|(_, e, zone)| Stretch { until_ms: (e < b).then_some(e).or((b < u64::MAX).then_some(b)), zone })
+        .collect()
+}
+
+/// `zones` once the data stored before `before_ms` is in `to`, stored before `lo` now (data that moved earlier
+/// leaves nothing in `[lo, before_ms)`): then what was there from the moment on, as it was (stretches next to each
+/// other in the same zone made one).
+fn zones_after(zones: &[Stretch], to: &str, lo: u64, before_ms: u64) -> Vec<Stretch> {
+    let mut out = vec![(lo, In::Zone(to.to_string())), (before_ms, In::Nothing)];
+    for (_, e, z) in spans_of(zones) {
+        if e > before_ms {
+            out.push((e, z));
         }
     }
     let mut merged: Vec<Stretch> = Vec::new();
-    for s in out {
-        match merged.last_mut() {
-            Some(l) if l.zone == s.zone => l.until_ms = s.until_ms,
-            _ => merged.push(s),
+    let mut start = 0;
+    for (end, zone) in out {
+        if end > start {
+            match merged.last_mut() {
+                Some(l) if l.zone == zone => l.until_ms = Some(end),
+                _ => merged.push(Stretch { until_ms: Some(end), zone }),
+            }
+            start = end;
         }
     }
+    if let Some(l) = merged.last_mut().filter(|l| l.until_ms == Some(u64::MAX)) {
+        l.until_ms = None;
+    }
     merged
+}
+
+/// A zone in words.
+fn zone_words(z: &In) -> &str {
+    match z {
+        In::Zone(z) => z,
+        In::Poller => "as the poller read it",
+        In::Nothing => "nothing",
+    }
 }
 
 /// Stretches in words, for a refusal: `America/Chicago before 2026-11-26 19:58 UTC, then as the poller read it`.
 fn zones_words(zones: &[Stretch]) -> String {
     zones
         .iter()
-        .map(|s| {
-            let z = s.zone.as_deref().unwrap_or("as the poller read it");
-            match s.until_ms {
-                Some(u) => format!("{z} before {} UTC", fmt_ms(u)),
-                None => format!("{z} after that"),
-            }
+        .map(|s| match s.until_ms {
+            Some(u) => format!("{} before {} UTC", zone_words(&s.zone), fmt_ms(u)),
+            None => format!("{} after that", zone_words(&s.zone)),
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -351,7 +387,10 @@ impl Engine {
     /// The zone the data `input` stored for `car` just before `before_ms` is in now, when a re-dating said it (none:
     /// as the poller read it).
     pub fn rezone_zone_before(&self, input: Input, car: CarId, before_ms: u64) -> Result<Option<String>> {
-        Ok(zones_before(&self.rezone_noted(car, input)?.zones, before_ms).pop().and_then(|s| s.zone))
+        Ok(zones_in(&self.rezone_noted(car, input)?.zones, 0, before_ms).pop().and_then(|s| match s.zone {
+            In::Zone(z) => Some(z),
+            _ => None,
+        }))
     }
 
     /// Whether a re-dating of `car`'s data is under way (a job not done: a full rebuild waits for it).
@@ -459,15 +498,13 @@ impl Engine {
             }
             return Ok(Rezoned { already: true, follow_up: true, ..ran });
         }
-        if same_zone(fz, tz) {
-            return Ok(Rezoned::default());
-        }
         // the zone the data before the moment is in now (the ledger: [`Noted::zones`]): all of it in `from` (or as
         // the poller read it, which the ask says was `from`) is dated again; all of it in `to` already is done;
         // anything else would move some of it twice
         let noted = self.rezone_noted(car, input)?;
-        let there = zones_before(&noted.zones, cut_of(before_ms, fz, tz));
-        let is = |s: &Stretch, z: Tz| s.zone.as_deref().is_some_and(|n| same_zone(crate::tz::zone(n), z));
+        let cut = cut_of(before_ms, fz, tz);
+        let there = zones_in(&noted.zones, 0, cut);
+        let is = |s: &Stretch, z: Tz| matches!(&s.zone, In::Zone(n) if same_zone(crate::tz::zone(n), z));
         if !there.is_empty() && there.iter().all(|s| is(s, tz)) {
             return Ok(Rezoned {
                 already: true,
@@ -475,8 +512,12 @@ impl Engine {
                 ..Rezoned::default()
             });
         }
-        if !there.iter().all(|s| s.zone.is_none() || is(s, fz)) {
-            let known: BTreeSet<&str> = there.iter().filter_map(|s| s.zone.as_deref()).collect();
+        if same_zone(fz, tz) {
+            return Ok(Rezoned::default());
+        }
+        if !there.iter().all(|s| s.zone == In::Poller || is(s, fz)) {
+            let known: BTreeSet<&str> =
+                there.iter().filter(|s| s.zone != In::Poller).map(|s| zone_words(&s.zone)).collect();
             return Err(Error::Other(match (known.len(), there.len()) {
                 (1, 1) => {
                     let z = known.first().copied().unwrap_or_default();
@@ -489,6 +530,18 @@ impl Engine {
                     zones_words(&there)
                 ),
             }));
+        }
+        // what was stored from the cut to the moment stays (as the poller read it, it was read right): data a
+        // re-dating put there in another zone would stay in it (moved, it would land after the moment)
+        if let Some(s) = zones_in(&noted.zones, cut, before_ms).iter().find(|s| s.zone != In::Poller && !is(s, tz)) {
+            return Err(Error::Other(format!(
+                "the data stored between {} and {} UTC is in {}: it would stay there, or moved land after the moment; \
+                 give a moment at least {} min later",
+                fmt_ms(cut),
+                fmt_ms(before_ms),
+                zone_words(&s.zone),
+                (before_ms - cut).div_ceil(60_000)
+            )));
         }
         let j = self.rezone_job(input, car, fz, tz, from, to, before_ms)?;
         records::put(db, records::NS, &key, &j)?;
@@ -555,7 +608,9 @@ impl Engine {
         // (the newest only is this job's, when it was noted already before a crash)
         // (with the zone the data is in now, in the same write)
         if !noted.done.last().is_some_and(|d| d.from == job.from && d.to == job.to && d.before_ms == job.before_ms) {
-            noted.zones = zones_after(&noted.zones, &job.to, job.before_ms);
+            // (data that moved earlier is stored before the cut dated again now; what moved later ends at the moment)
+            let lo = if job.later { job.before_ms } else { redate(cut, fz, tz, None).min(job.before_ms) };
+            noted.zones = zones_after(&noted.zones, &job.to, lo, job.before_ms);
             noted.done.push(Done {
                 from: job.from.clone(),
                 to: job.to.clone(),
