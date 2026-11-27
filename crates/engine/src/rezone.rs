@@ -18,7 +18,9 @@
 //! small records (the values no CAN message carries, the versions, the car's newest values, the rows) are kept in the
 //! job as they were when it began, and each is moved only while it is still as it was. A job a restart cut off is
 //! carried on at the next start ([`Engine::rezone_resume`]); one that is done is noted
-//! (`car/<id>/rezoned/<input>`), so asking the same again moves nothing. It is refused while a full rebuild of the
+//! (`car/<id>/rezoned/<input>`) with the zone the input's data is in now, by stored time ([`Noted::zones`]), in the same
+//! write: an ask is taken only when all the data it moves is in its old zone (or as the poller read it), answers done
+//! when all of it is in its new zone already, and is refused otherwise (some of it would move twice). It is refused while a full rebuild of the
 //! car runs or a rebuild by day holds its records ([`records::holds_car`]), whose records would not take it.
 
 use crate::pipeline::{all_rows, join_spans};
@@ -161,6 +163,74 @@ pub struct Owed {
     pub moved: Rezoned,
 }
 
+/// A stretch of the input's stored data (by its stored time) and the zone it is in: up to `until_ms` (from the end of
+/// the stretch before it), or, for the last one (`until_ms` none), all stored after that, the poller's included.
+/// `zone` none: the zone the poller read it in (not known; an ask says which it was).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Stretch {
+    until_ms: Option<u64>,
+    zone: Option<String>,
+}
+
+/// What is noted of the re-datings of an input's data for a car: those done, and the zone its stored data is in now.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct Noted {
+    done: Vec<Done>,
+    /// In order of stored time, the last one open-ended; empty: never dated again (all in the poller's zone).
+    zones: Vec<Stretch>,
+}
+
+/// The stretches of `zones` with data stored before `t` (all when `zones` is empty: the poller's zone).
+fn zones_before(zones: &[Stretch], t: u64) -> Vec<Stretch> {
+    if zones.is_empty() {
+        return vec![Stretch { until_ms: None, zone: None }];
+    }
+    let mut start = 0;
+    let mut out = Vec::new();
+    for s in zones {
+        if start < t {
+            out.push(s.clone());
+        }
+        start = s.until_ms.unwrap_or(u64::MAX);
+    }
+    out
+}
+
+/// `zones` once the data stored before `before_ms` is in `to`: one stretch up to the moment, then what was there
+/// after it, as it was (stretches next to each other in the same zone made one).
+fn zones_after(zones: &[Stretch], to: &str, before_ms: u64) -> Vec<Stretch> {
+    let old = if zones.is_empty() { vec![Stretch { until_ms: None, zone: None }] } else { zones.to_vec() };
+    let mut out = vec![Stretch { until_ms: Some(before_ms), zone: Some(to.to_string()) }];
+    for s in old {
+        if s.until_ms.is_none_or(|u| u > before_ms) {
+            out.push(s);
+        }
+    }
+    let mut merged: Vec<Stretch> = Vec::new();
+    for s in out {
+        match merged.last_mut() {
+            Some(l) if l.zone == s.zone => l.until_ms = s.until_ms,
+            _ => merged.push(s),
+        }
+    }
+    merged
+}
+
+/// Stretches in words, for a refusal: `America/Chicago before 2026-11-26 19:58 UTC, then as the poller read it`.
+fn zones_words(zones: &[Stretch]) -> String {
+    zones
+        .iter()
+        .map(|s| {
+            let z = s.zone.as_deref().unwrap_or("as the poller read it");
+            match s.until_ms {
+                Some(u) => format!("{z} before {} UTC", fmt_ms(u)),
+                None => format!("{z} after that"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Told when a re-dating of `input`'s data for a car was done with no ask waiting for it (a restart, or the end of a
 /// full rebuild, carried it on), and once for every car owed one when it is set ([`Engine::on_rezone_done`]): the
 /// caller does what follows ([`Engine::rezone_owed`], then [`Engine::api_rezone_followed_up`]).
@@ -273,6 +343,17 @@ impl Engine {
         Ok(r)
     }
 
+    /// What is noted of the re-datings of `input`'s data for `car` ([`Noted`]).
+    fn rezone_noted(&self, car: CarId, input: Input) -> Result<Noted> {
+        Ok(records::get(&self.inner.db, records::NS, &done_key(car, input))?.unwrap_or_default())
+    }
+
+    /// The zone the data `input` stored for `car` just before `before_ms` is in now, when a re-dating said it (none:
+    /// as the poller read it).
+    pub fn rezone_zone_before(&self, input: Input, car: CarId, before_ms: u64) -> Result<Option<String>> {
+        Ok(zones_before(&self.rezone_noted(car, input)?.zones, before_ms).pop().and_then(|s| s.zone))
+    }
+
     /// Whether a re-dating of `car`'s data is under way (a job not done: a full rebuild waits for it).
     pub fn rezone_pending(&self, car: CarId) -> bool {
         Input::apis().any(|i| self.inner.db.kv().get(records::NS, &job_key(car, i)).ok().flatten().is_some())
@@ -283,21 +364,21 @@ impl Engine {
         let l = self.car_lock(car);
         let _held = lock(&l);
         let db = &self.inner.db;
-        let dk = done_key(car, input);
-        let mut done: Vec<Done> = records::get(db, records::NS, &dk)?.unwrap_or_default();
-        if done.iter().any(|d| !d.followed_up) {
-            for d in &mut done {
+        let mut noted = self.rezone_noted(car, input)?;
+        if noted.done.iter().any(|d| !d.followed_up) {
+            for d in &mut noted.done {
                 d.followed_up = true;
             }
-            records::put(db, records::NS, &dk, &done)?;
+            records::put(db, records::NS, &done_key(car, input), &noted)?;
         }
         Ok(())
     }
 
     /// The re-datings of `input`'s data for `car` done whose follow-up is still to do.
     pub fn rezone_owed(&self, input: Input, car: CarId) -> Result<Vec<Owed>> {
-        let done: Vec<Done> = records::get(&self.inner.db, records::NS, &done_key(car, input))?.unwrap_or_default();
-        Ok(done
+        Ok(self
+            .rezone_noted(car, input)?
+            .done
             .into_iter()
             .filter(|d| !d.followed_up)
             .map(|d| Owed { from: d.from, to: d.to, before_ms: d.before_ms, moved: d.moved })
@@ -381,32 +462,33 @@ impl Engine {
         if same_zone(fz, tz) {
             return Ok(Rezoned::default());
         }
-        // the data already moved into this zone: the same ask is done, another one would move it twice
-        // (the newest first: back to the exact undo of this ask, which leaves the data as it was before this ask
-        // was done; any other re-dating into or out of this zone since would move some of the data twice)
-        let done: Vec<Done> = records::get(db, records::NS, &done_key(car, input))?.unwrap_or_default();
-        let mut into = None;
-        for d in done.iter().rev() {
-            let (df, dt) = (crate::tz::zone(&d.from), crate::tz::zone(&d.to));
-            if same_zone(df, tz) && same_zone(dt, fz) && d.before_ms == before_ms {
-                break;
-            }
-            if same_zone(dt, tz) || same_zone(df, tz) {
-                into = Some(d);
-                break;
-            }
+        // the zone the data before the moment is in now (the ledger: [`Noted::zones`]): all of it in `from` (or as
+        // the poller read it, which the ask says was `from`) is dated again; all of it in `to` already is done;
+        // anything else would move some of it twice
+        let noted = self.rezone_noted(car, input)?;
+        let there = zones_before(&noted.zones, cut_of(before_ms, fz, tz));
+        let is = |s: &Stretch, z: Tz| s.zone.as_deref().is_some_and(|n| same_zone(crate::tz::zone(n), z));
+        if !there.is_empty() && there.iter().all(|s| is(s, tz)) {
+            return Ok(Rezoned {
+                already: true,
+                follow_up: noted.done.iter().any(|d| !d.followed_up),
+                ..Rezoned::default()
+            });
         }
-        if let Some(d) = into {
-            if same_zone(crate::tz::zone(&d.from), fz) && d.before_ms == before_ms {
-                return Ok(Rezoned { already: true, follow_up: !d.followed_up, ..Rezoned::default() });
-            }
-            return Err(Error::Other(format!(
-                "the data stored before {} UTC was dated again from {} to {} already: dating it again would move it \
-                 twice",
-                fmt_ms(d.before_ms),
-                d.from,
-                d.to
-            )));
+        if !there.iter().all(|s| s.zone.is_none() || is(s, fz)) {
+            let known: BTreeSet<&str> = there.iter().filter_map(|s| s.zone.as_deref()).collect();
+            return Err(Error::Other(match (known.len(), there.len()) {
+                (1, 1) => {
+                    let z = known.first().copied().unwrap_or_default();
+                    format!("the data stored before {} UTC is in {z} now: ask from {z}", fmt_ms(before_ms))
+                }
+                _ => format!(
+                    "the data stored before {} UTC is in more than one zone now ({}): it cannot be dated again in one \
+                     ask; give a moment where it is in one",
+                    fmt_ms(before_ms),
+                    zones_words(&there)
+                ),
+            }));
         }
         let j = self.rezone_job(input, car, fz, tz, from, to, before_ms)?;
         records::put(db, records::NS, &key, &j)?;
@@ -416,7 +498,7 @@ impl Engine {
 
     /// Whether a re-dating of `input`'s data for `car` from `fz` to `tz` before `before_ms` is done.
     fn rezone_same_done(&self, input: Input, car: CarId, fz: Tz, tz: Tz, before_ms: u64) -> Result<bool> {
-        let done: Vec<Done> = records::get(&self.inner.db, records::NS, &done_key(car, input))?.unwrap_or_default();
+        let done = self.rezone_noted(car, input)?.done;
         // (the newest only: an older one may have been undone since)
         Ok(done.last().is_some_and(|d| {
             same_zone(crate::tz::zone(&d.from), fz) && same_zone(crate::tz::zone(&d.to), tz) && d.before_ms == before_ms
@@ -465,21 +547,23 @@ impl Engine {
         records::put_meta(db, car, &meta)?;
         self.rezone_wrote()?;
         let dk = done_key(car, input);
-        let mut done: Vec<Done> = records::get(db, records::NS, &dk)?.unwrap_or_default();
+        let mut noted = self.rezone_noted(car, input)?;
         let mut moved = job.done.clone();
         if lo < hi {
             (moved.from_ms, moved.to_ms) = (Some(lo), Some(hi));
         }
         // (the newest only is this job's, when it was noted already before a crash)
-        if !done.last().is_some_and(|d| d.from == job.from && d.to == job.to && d.before_ms == job.before_ms) {
-            done.push(Done {
+        // (with the zone the data is in now, in the same write)
+        if !noted.done.last().is_some_and(|d| d.from == job.from && d.to == job.to && d.before_ms == job.before_ms) {
+            noted.zones = zones_after(&noted.zones, &job.to, job.before_ms);
+            noted.done.push(Done {
                 from: job.from.clone(),
                 to: job.to.clone(),
                 before_ms: job.before_ms,
                 followed_up: false,
                 moved,
             });
-            records::put(db, records::NS, &dk, &done)?;
+            records::put(db, records::NS, &dk, &noted)?;
             self.rezone_wrote()?;
         }
         db.kv().delete(records::NS, &key)?;

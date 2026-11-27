@@ -488,6 +488,9 @@ def get_redate(req):
     a = _account(req)
     ch = _zone_changes(req, a)
     before = ch[1][1] if len(ch) > 1 else None
+    # (the zone the data is in now, once a re-dating said it)
+    cars = {c["match"] for c in a["cars"] if _matched(c)}
+    before = next((d["zone"] for d in reversed(a.get("redated", [])) if d["car"] in cars), None) or before
     return {"zone": _zone_now(req, a), "before_ms": ch[0][0] if ch else None,
             "zone_before": before or req.store.server_settings.get("default_time_zone") or "UTC"}
 
@@ -522,14 +525,14 @@ def post_redate(req):
                 # the same zone: nothing moves
                 out.append({"car": c["match"], "samples": 0, "spans": 0, "drives": 0, "charges": 0, "already": False})
                 continue
-            same = [d for d in done if d["car"] == c["match"] and d["zone"] == zone]
-            if any(d["zone_before"] == zb and d["before_ms"] == before for d in same):
+            # the zone the car's data is in now (made up: one zone for all of it, once a re-dating said it)
+            now_in = next((d["zone"] for d in reversed(done) if d["car"] == c["match"]), None)
+            if now_in == zone:
                 out.append({"car": c["match"], "samples": 0, "spans": 0, "drives": 0, "charges": 0, "already": True})
                 continue
-            if same:
-                errors.append({"car": c["match"], "message": f"the data stored before {_utc_minute(same[0]['before_ms'])} "
-                               f"was dated again from {same[0]['zone_before']} to {zone} already: dating it again "
-                               "would move it twice"})
+            if now_in is not None and now_in != zb:
+                errors.append({"car": c["match"], "message": f"the data stored before {_utc_minute(before)} is in "
+                               f"{now_in} now: ask from {now_in}"})
                 continue
             moved = {"samples": 5_760, "spans": 24, "drives": 6, "charges": 2}
             done.append({"car": c["match"], "zone_before": zb, "zone": zone, "before_ms": before})
