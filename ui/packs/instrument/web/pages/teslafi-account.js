@@ -242,7 +242,7 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
     const err = a.last_error;
     const patch = (title, intro, submit, bodyOf, extra = [], msg = 'Saved.') => async () => {
       const r = await askPassword(ctx, {
-        title, intro: intro ? h('div', null, h('p', { class: 'note' }, intro), zoneList()) : zoneList(), submit, extra,
+        title, intro: intro ? h('div', { class: 'tf-intro' }, h('p', { class: 'note' }, intro), zoneList()) : zoneList(), submit, extra,
         run: guarded((cred, v) => {
           const b = bodyOf(v);
           if ('time_zone' in b && !zoneOk(b.time_zone)) { const e = new Error(); e.fields = { time_zone: `${b.time_zone} is not a time zone. Pick one from the list.` }; throw e; }
@@ -274,7 +274,7 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
         hint: `When the zone was set right (your time, ${tzName(LOCAL)}). ${d.before_ms ? 'From the audit log.' : 'The audit log has no change of the zone: give the moment.'}` });
       const r = await askPassword(ctx, {
         title: `Date ${a.label}'s stored data again`,
-        intro: h('div', null, h('p', { class: 'note' }, `TeslaFi writes its times without a zone. The data stored before the moment below is dated again as read in ${d.zone || 'the zone set now'}, each time by its own offset; the drives and charges made from it move with it (their purposes, notes and costs stay on them), and TeslaFi's charge costs are read again. Asking the same again moves nothing.`), zoneList()),
+        intro: h('div', { class: 'tf-intro' }, h('p', { class: 'note' }, `TeslaFi writes its times without a zone. The data stored before the moment below is dated again as read in ${d.zone || 'the zone set now'}, each time by its own offset; the drives and charges made from it move with it (their purposes, notes and costs stay on them), and TeslaFi's charge costs are read again. Asking the same again moves nothing.`), zoneList()),
         submit: 'Date it again', extra: [zb, until],
         run: guarded((cred, v) => {
           const z = v.zone_before.trim();
