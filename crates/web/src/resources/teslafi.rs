@@ -95,7 +95,7 @@ pub fn service(
     audit: Arc<accounts::Audit>,
     events: Events,
 ) -> TeslafiService {
-    let (audit2, events2) = (audit.clone(), events.clone());
+    let (audit2, events2, audit3) = (audit.clone(), events.clone(), audit.clone());
     let hook: engine::tesla_in::TeslafiHook = Arc::new(move |a: &Account| {
         let Some(n) = notice(a) else { return };
         let (what, summary) = match a.state {
@@ -128,7 +128,63 @@ pub fn service(
     });
     let limited = rate_limit_hook(audit2, events2);
     let sink = engine::TeslafiSink { engine: engine.clone(), on_account: Some(hook), on_rate_limit: Some(limited) };
-    teslafi::Service::new(data, vault, Arc::new(sink), options(engine))
+    let svc = teslafi::Service::new(data, vault, Arc::new(sink), options(engine));
+    // a re-dating done with no ask waiting for it (a restart or the end of a full rebuild carried it on): what
+    // follows it is done here, in the server's name
+    let (e, s, a) = (engine.clone(), svc.clone(), audit3);
+    engine.on_rezone_done(Arc::new(move |car, input| {
+        if input == model::Input::TeslafiApi
+            && let Err(err) = redate_follow_up(&e, &s, &a, car, None)
+        {
+            tracing::warn!(car, "what follows a re-dating of TeslaFi's data could not be done: {err:?}");
+        }
+    }));
+    svc
+}
+
+/// What follows the re-datings of a car's TeslaFi data that are done ([`engine::Engine::rezone_owed`]), whoever
+/// finished them: an audit entry for each (in the name of the admin who asked, else the server's), the charge costs
+/// of the TeslaFi accounts matched to the car read again, then said done. Whether there was any.
+pub fn redate_follow_up(
+    e: &Engine,
+    s: &TeslafiService,
+    audit: &accounts::Audit,
+    car: model::CarId,
+    who: Option<(&str, std::net::IpAddr)>,
+) -> ApiResult<bool> {
+    let server = |x: engine::Error| ApiError::server(x.to_string());
+    let owed = e.rezone_owed(model::Input::TeslafiApi, car).map_err(server)?;
+    if owed.is_empty() {
+        return Ok(false);
+    }
+    let accounts: Vec<Account> =
+        s.accounts().into_iter().filter(|a| a.cars.iter().any(|c| c.matched == Some(Match::Car { car }))).collect();
+    for o in &owed {
+        for a in &accounts {
+            let m = &o.moved;
+            let summary = format!(
+                "Dated the data the TeslaFi account {} stored for car {} before {} again: read in {}, not {} ({} \
+                 samples, {} state spans, {} drives and {} charges moved). What was built from it is built again, \
+                 and TeslaFi's charge costs are read again.",
+                a.label,
+                ids::car(car),
+                utc_minute(o.before_ms),
+                o.to,
+                o.from,
+                m.samples,
+                m.spans,
+                m.drives,
+                m.charges
+            );
+            let details = audit_details(Some(&target("teslafi", None, &a.id)), &summary);
+            audit.record(who.map(|w| w.0), who.map(|w| w.1), "teslafi-data-redated", &details)?;
+        }
+    }
+    for a in &accounts {
+        s.restart_costs(&a.id).map_err(|err| failed(s, Some(&a.id), err))?;
+    }
+    e.api_rezone_followed_up(model::Input::TeslafiApi, car).map_err(server)?;
+    Ok(true)
 }
 
 /// What is done when TeslaFi starts limiting an account's requests (a 429 after none): an audit entry in the server's
@@ -901,49 +957,21 @@ async fn redate(
     // costs read again), all in one task: an answer no one waits for any more does not stop it half way
     v.mark_audited();
     let (who, ip) = (v.name().to_string(), v.client().address);
-    let (label, zb, z, aid) = (a.label.clone(), zone_before.clone(), zone.clone(), id.clone());
+    let (zb, z) = (zone_before.clone(), zone.clone());
     let (out, errors) = app
         .blocking(move |app| {
-            let (mut out, mut errors, mut follow) = (Vec::new(), Vec::new(), Vec::new());
+            let (mut out, mut errors) = (Vec::new(), Vec::new());
             for car in cars {
                 match e.api_rezone(model::Input::TeslafiApi, car, &zb, &z, before_ms) {
-                    Ok(r) => {
-                        out.push(json!({
-                            "car": ids::car(car), "samples": r.samples, "spans": r.spans, "drives": r.drives,
-                            "charges": r.charges, "already": r.already,
-                        }));
-                        if r.follow_up {
-                            follow.push((car, r));
-                        }
-                    }
+                    Ok(r) => out.push(json!({
+                        "car": ids::car(car), "samples": r.samples, "spans": r.spans, "drives": r.drives,
+                        "charges": r.charges, "already": r.already,
+                    })),
                     Err(err) => errors.push(json!({ "car": ids::car(car), "message": err.to_string() })),
                 }
-            }
-            if !follow.is_empty() {
-                for (car, r) in &follow {
-                    let what = if r.already {
-                        "(done before this ask: after a restart, or an ask cut off)".to_string()
-                    } else {
-                        format!(
-                            "({} samples, {} state spans, {} drives and {} charges moved)",
-                            r.samples, r.spans, r.drives, r.charges
-                        )
-                    };
-                    let summary = format!(
-                        "Dated the data the TeslaFi account {label} stored for car {} before {} again: read in {z}, \
-                         not {zb} {what}. What was built from it is built again, and TeslaFi's charge costs are read \
-                         again.",
-                        ids::car(*car),
-                        utc_minute(before_ms)
-                    );
-                    let details = audit_details(Some(&target("teslafi", None, &aid)), &summary);
-                    app.accounts.audit().record(Some(&who), Some(ip), "teslafi-data-redated", &details)?;
-                }
-                s.restart_costs(&aid).map_err(|err| failed(&s, Some(&aid), err))?;
-                for (car, _) in &follow {
-                    e.api_rezone_followed_up(model::Input::TeslafiApi, *car)
-                        .map_err(|err| ApiError::server(err.to_string()))?;
-                }
+                // what follows each re-dating of the car done (this one, one carried on, one an earlier ask
+                // finished), also when this ask failed
+                redate_follow_up(&e, &s, app.accounts.audit(), car, Some((&who, ip)))?;
             }
             match errors.first() {
                 Some(first) if out.is_empty() => Err(ApiError::conflict(

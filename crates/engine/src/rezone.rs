@@ -147,7 +147,24 @@ struct Done {
     /// [`Rezoned::follow_up`] done.
     #[serde(default)]
     followed_up: bool,
+    /// What moved.
+    #[serde(default)]
+    moved: Rezoned,
 }
+
+/// A re-dating done whose follow-up ([`Rezoned::follow_up`]) is still to do: what was asked and what moved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Owed {
+    pub from: String,
+    pub to: String,
+    pub before_ms: u64,
+    pub moved: Rezoned,
+}
+
+/// Told when a re-dating of `input`'s data for a car was done with no ask waiting for it (a restart, or the end of a
+/// full rebuild, carried it on), and once for every car owed one when it is set ([`Engine::on_rezone_done`]): the
+/// caller does what follows ([`Engine::rezone_owed`], then [`Engine::api_rezone_followed_up`]).
+pub type RezoneHook = std::sync::Arc<dyn Fn(CarId, Input) + Send + Sync>;
 
 /// A time in words, UTC to the minute (`2026-11-26 19:58`).
 fn fmt_ms(ms: u64) -> String {
@@ -164,21 +181,20 @@ pub fn cut_of(before_ms: u64, from: Tz, to: Tz) -> u64 {
     redate(before_ms, to, from, None).min(before_ms)
 }
 
-/// Whether moving the times stored in `from` before `to_ms` to `to` moves some later and some earlier (zones whose
-/// offsets cross, looked at every hour from `from_ms`): those cannot be moved a day at a time.
-fn crossing(from_ms: u64, to_ms: u64, fz: Tz, tz: Tz) -> bool {
+/// Which way moving the times stored in `from` in `[from_ms, to_ms)` to `to` moves them, looked at every hour:
+/// `(some later, some earlier)`. Zones that agree for part of the time (UTC and Europe/London in winter) move some
+/// times not at all; zones whose offsets cross move some later and some earlier (those cannot be moved a day at a
+/// time).
+fn moves(from_ms: u64, to_ms: u64, fz: Tz, tz: Tz) -> (bool, bool) {
     let (mut later, mut earlier) = (false, false);
     let mut t = from_ms;
-    while t < to_ms {
+    while t < to_ms && !(later && earlier) {
         let n = redate(t, fz, tz, None);
         later |= n > t;
         earlier |= n < t;
-        if later && earlier {
-            return true;
-        }
         t += 3_600_000;
     }
-    false
+    (later, earlier)
 }
 
 fn word(input: Input) -> &'static str {
@@ -254,9 +270,6 @@ impl Engine {
             let _held = lock(&l);
             self.rezone_locked(input, car, from, to, before_ms)?
         };
-        if r.from_ms.is_some() && !r.already {
-            self.schedule_api(car);
-        }
         Ok(r)
     }
 
@@ -281,19 +294,64 @@ impl Engine {
         Ok(())
     }
 
-    /// Carries on the re-datings a restart (or a full rebuild) cut off, in the background.
+    /// The re-datings of `input`'s data for `car` done whose follow-up is still to do.
+    pub fn rezone_owed(&self, input: Input, car: CarId) -> Result<Vec<Owed>> {
+        let done: Vec<Done> = records::get(&self.inner.db, records::NS, &done_key(car, input))?.unwrap_or_default();
+        Ok(done
+            .into_iter()
+            .filter(|d| !d.followed_up)
+            .map(|d| Owed { from: d.from, to: d.to, before_ms: d.before_ms, moved: d.moved })
+            .collect())
+    }
+
+    /// Sets what is told when a re-dating is done with no ask waiting for it ([`RezoneHook`]), and tells it now, in
+    /// the background, of every car owed a follow-up.
+    pub fn on_rezone_done(&self, hook: RezoneHook) {
+        *lock(&self.inner.rezone_hook) = Some(hook);
+        self.rezone_tell_owed();
+    }
+
+    /// Tells the hook ([`Engine::on_rezone_done`]), in the background, of every car owed a follow-up (at the start,
+    /// and when the hook is set: a restart may have cut one off after its job was done).
+    pub(crate) fn rezone_tell_owed(&self) {
+        let Some(hook) = lock(&self.inner.rezone_hook).clone() else { return };
+        let Ok(h) = self.handle() else { return };
+        let e = self.clone();
+        Engine::background(&h, "engine-rezone-owed", move || {
+            let Ok(cars) = crate::rehome::car_ids(&e) else { return };
+            for car in cars {
+                for input in Input::apis() {
+                    if e.rezone_owed(input, car).is_ok_and(|o| !o.is_empty()) {
+                        hook(car, input);
+                    }
+                }
+            }
+        });
+    }
+
+    /// Carries on the re-datings a restart (or a full rebuild) cut off, in the background, and tells the hook of
+    /// each done ([`Engine::on_rezone_done`]).
     pub(crate) fn rezone_resume(&self) {
         let Ok(h) = self.handle() else { return };
         let e = self.clone();
         Engine::background(&h, "engine-rezone", move || {
+            // a full rebuild that just ended has written that it did (its record is written under this lock)
+            drop(lock(&e.inner.full_start));
             let Ok(cars) = crate::rehome::car_ids(&e) else { return };
             for car in cars {
                 for input in Input::apis() {
                     let job: Option<Job> = records::get(&e.inner.db, records::NS, &job_key(car, input)).ok().flatten();
-                    if let Some(j) = job
-                        && let Err(err) = e.api_rezone(input, car, &j.from, &j.to, j.before_ms)
-                    {
-                        tracing::warn!(car, error = %err, "a re-dating of stored data could not be carried on");
+                    let Some(j) = job else { continue };
+                    match e.api_rezone(input, car, &j.from, &j.to, j.before_ms) {
+                        Ok(_) => {
+                            let hook = lock(&e.inner.rezone_hook).clone();
+                            if let Some(hook) = hook {
+                                hook(car, input);
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(car, error = %err, "a re-dating of stored data could not be carried on")
+                        }
                     }
                 }
             }
@@ -312,24 +370,26 @@ impl Engine {
         let (fz, tz) = (crate::tz::zone(from), crate::tz::zone(to));
         let key = job_key(car, input);
         // a job under way is done first, as it was asked
+        // (one asked otherwise answers as done: what was done is in what it owes, [`Engine::rezone_owed`])
         if let Some(j) = records::get::<Job>(db, records::NS, &key)? {
-            let (was, from_was, to_was) = (j.before_ms, j.from.clone(), j.to.clone());
             let ran = self.rezone_run(input, car, &key, j)?;
-            if !self.rezone_same_done(input, car, fz, tz, before_ms)? {
-                return Err(Error::Other(format!(
-                    "a re-dating asked before (the data stored before {} UTC, from {from_was} to {to_was}) was carried \
-                     on and is done now: look at the data, and ask again only for another moment or zone",
-                    fmt_ms(was)
-                )));
+            if self.rezone_same_done(input, car, fz, tz, before_ms)? {
+                return Ok(ran);
             }
-            return Ok(ran);
+            return Ok(Rezoned { already: true, follow_up: true, ..ran });
         }
         if same_zone(fz, tz) {
             return Ok(Rezoned::default());
         }
         // the data already moved into this zone: the same ask is done, another one would move it twice
+        // (the newest first, back to one that moved the data out of this zone: what was before that is undone)
         let done: Vec<Done> = records::get(db, records::NS, &done_key(car, input))?.unwrap_or_default();
-        if let Some(d) = done.iter().rev().find(|d| same_zone(crate::tz::zone(&d.to), tz)) {
+        let into = done
+            .iter()
+            .rev()
+            .take_while(|d| !same_zone(crate::tz::zone(&d.from), tz))
+            .find(|d| same_zone(crate::tz::zone(&d.to), tz));
+        if let Some(d) = into {
             if same_zone(crate::tz::zone(&d.from), fz) && d.before_ms == before_ms {
                 return Ok(Rezoned { already: true, follow_up: !d.followed_up, ..Rezoned::default() });
             }
@@ -350,7 +410,8 @@ impl Engine {
     /// Whether a re-dating of `input`'s data for `car` from `fz` to `tz` before `before_ms` is done.
     fn rezone_same_done(&self, input: Input, car: CarId, fz: Tz, tz: Tz, before_ms: u64) -> Result<bool> {
         let done: Vec<Done> = records::get(&self.inner.db, records::NS, &done_key(car, input))?.unwrap_or_default();
-        Ok(done.iter().any(|d| {
+        // (the newest only: an older one may have been undone since)
+        Ok(done.last().is_some_and(|d| {
             same_zone(crate::tz::zone(&d.from), fz) && same_zone(crate::tz::zone(&d.to), tz) && d.before_ms == before_ms
         }))
     }
@@ -398,12 +459,18 @@ impl Engine {
         self.rezone_wrote()?;
         let dk = done_key(car, input);
         let mut done: Vec<Done> = records::get(db, records::NS, &dk)?.unwrap_or_default();
-        if !done.iter().any(|d| d.from == job.from && d.to == job.to && d.before_ms == job.before_ms) {
+        let mut moved = job.done.clone();
+        if lo < hi {
+            (moved.from_ms, moved.to_ms) = (Some(lo), Some(hi));
+        }
+        // (the newest only is this job's, when it was noted already before a crash)
+        if !done.last().is_some_and(|d| d.from == job.from && d.to == job.to && d.before_ms == job.before_ms) {
             done.push(Done {
                 from: job.from.clone(),
                 to: job.to.clone(),
                 before_ms: job.before_ms,
                 followed_up: false,
+                moved,
             });
             records::put(db, records::NS, &dk, &done)?;
             self.rezone_wrote()?;
@@ -412,6 +479,8 @@ impl Engine {
         let mut r = Rezoned { follow_up: true, ..job.done };
         if lo < hi {
             (r.from_ms, r.to_ms) = (Some(lo), Some(hi));
+            // what is built from it, again, whoever finished the job
+            self.schedule_api(car);
         }
         Ok(r)
     }
@@ -435,10 +504,10 @@ impl Engine {
             .api_days_of(input)
             .map(|d| d.iter().copied().filter(|d| u64::from(*d) * DAY_MS < cut).collect())
             .unwrap_or_default();
-        // (refused before anything is written: a job is never left half done for it)
-        if let Some(first) = days.first()
-            && crossing(u64::from(*first) * DAY_MS, cut, fz, tz)
-        {
+        // which way the data moves, from the times that move at all; refused before anything is written when it is
+        // both ways (a job is never left half done for it)
+        let (later, earlier) = days.first().map_or((true, false), |d| moves(u64::from(*d) * DAY_MS, cut, fz, tz));
+        if later && earlier {
             return Err(Error::Other(format!(
                 "{} and {} cross each other in that time (one moves the data later, the other earlier): it cannot be \
                  dated again",
@@ -446,8 +515,7 @@ impl Engine {
                 tz.name()
             )));
         }
-        let probe = days.first().map_or(cut.saturating_sub(DAY_MS), |d| u64::from(*d) * DAY_MS + DAY_MS / 2);
-        let later = redate(probe, fz, tz, None) >= probe;
+        let later = later || !earlier;
         if later {
             days.reverse();
         }
