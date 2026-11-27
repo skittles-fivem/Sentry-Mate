@@ -587,12 +587,27 @@ impl Engine {
     /// The span of the car's API data (the Tesla API's and TeslaFi's), when it has some: what a rebuild of the car
     /// builds again from it.
     pub(crate) fn api_span(&self, car: CarId) -> Result<Option<(u64, u64)>> {
-        let meta = records::meta(&self.inner.db, car)?;
-        let days = || Input::apis().filter_map(|i| meta.api_days_of(i));
-        let first = days().filter_map(std::collections::BTreeSet::first).min();
-        let last = days().filter_map(std::collections::BTreeSet::last).max();
+        let db = &self.inner.db;
+        let meta = records::meta(db, car)?;
+        // from where the first data of any input begins to where the last ends (as they were built when they came),
+        // not the starts and ends of their days: the hours of those days without data of them were made unknown, or
+        // the last state was drawn on to midnight, by a window over the whole days
+        let (mut first, mut last): (Option<u64>, Option<u64>) = (None, None);
+        for i in Input::apis() {
+            let Some(days) = meta.api_days_of(i) else { continue };
+            if let Some(&d) = days.first() {
+                let day = u64::from(d) * records::DAY_MS;
+                let at = records::api_day(db, car, i, d)?.iter().map(|s| s.start_ms).min().unwrap_or(day).max(day);
+                first = Some(first.map_or(at, |f| f.min(at)));
+            }
+            if let Some(&d) = days.last() {
+                let end = (u64::from(d) + 1) * records::DAY_MS;
+                let at = records::api_day(db, car, i, d)?.iter().map(|s| s.end_ms).max().unwrap_or(end).min(end);
+                last = Some(last.map_or(at, |l| l.max(at)));
+            }
+        }
         match (first, last) {
-            (Some(&a), Some(&b)) => Ok(Some((u64::from(a) * records::DAY_MS, (u64::from(b) + 1) * records::DAY_MS))),
+            (Some(a), Some(b)) if b > a => Ok(Some((a, b))),
             _ => Ok(None),
         }
     }
