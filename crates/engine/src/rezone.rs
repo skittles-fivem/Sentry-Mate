@@ -382,13 +382,20 @@ impl Engine {
             return Ok(Rezoned::default());
         }
         // the data already moved into this zone: the same ask is done, another one would move it twice
-        // (the newest first, back to one that moved the data out of this zone: what was before that is undone)
+        // (the newest first: back to the exact undo of this ask, which leaves the data as it was before this ask
+        // was done; any other re-dating into or out of this zone since would move some of the data twice)
         let done: Vec<Done> = records::get(db, records::NS, &done_key(car, input))?.unwrap_or_default();
-        let into = done
-            .iter()
-            .rev()
-            .take_while(|d| !same_zone(crate::tz::zone(&d.from), tz))
-            .find(|d| same_zone(crate::tz::zone(&d.to), tz));
+        let mut into = None;
+        for d in done.iter().rev() {
+            let (df, dt) = (crate::tz::zone(&d.from), crate::tz::zone(&d.to));
+            if same_zone(df, tz) && same_zone(dt, fz) && d.before_ms == before_ms {
+                break;
+            }
+            if same_zone(dt, tz) || same_zone(df, tz) {
+                into = Some(d);
+                break;
+            }
+        }
         if let Some(d) = into {
             if same_zone(crate::tz::zone(&d.from), fz) && d.before_ms == before_ms {
                 return Ok(Rezoned { already: true, follow_up: !d.followed_up, ..Rezoned::default() });

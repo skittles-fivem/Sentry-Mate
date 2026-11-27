@@ -142,9 +142,14 @@ pub fn service(
     svc
 }
 
+/// One follow-up of re-datings at a time ([`redate_follow_up`]): an ask and the hook (a restart's, the end of a full
+/// rebuild's) never both write one. Taken before the car's lock, never while it is held.
+static FOLLOW_UP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// What follows the re-datings of a car's TeslaFi data that are done ([`engine::Engine::rezone_owed`]), whoever
 /// finished them: an audit entry for each (in the name of the admin who asked, else the server's), the charge costs
-/// of the TeslaFi accounts matched to the car read again, then said done. Whether there was any.
+/// of the TeslaFi accounts matched to the car read again, then said done; one at a time, so each once. Whether there
+/// was any.
 pub fn redate_follow_up(
     e: &Engine,
     s: &TeslafiService,
@@ -152,6 +157,7 @@ pub fn redate_follow_up(
     car: model::CarId,
     who: Option<(&str, std::net::IpAddr)>,
 ) -> ApiResult<bool> {
+    let _one = FOLLOW_UP.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = |x: engine::Error| ApiError::server(x.to_string());
     let owed = e.rezone_owed(model::Input::TeslafiApi, car).map_err(server)?;
     if owed.is_empty() {
