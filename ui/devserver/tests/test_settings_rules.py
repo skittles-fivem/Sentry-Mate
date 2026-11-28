@@ -1,11 +1,11 @@
-"""Verification (hunt r6, W5): the dev server's settings PATCH against the real server's rules. Made-up data."""
+"""The dev server's settings PATCH keeps the real server's rules (crates/web/src/resources/settings.rs). Made-up data."""
 
 from __future__ import annotations
 
 from .helpers import ServerCase
 
 
-class HuntR6Settings(ServerCase):
+class SettingsRules(ServerCase):
     def patch(self, body, expect=None):
         v = self.c.get("/api/v1/settings")["version"]
         st, _, raw = self.c.request("PATCH", "/api/v1/settings", {"version": v, **body})
@@ -13,7 +13,7 @@ class HuntR6Settings(ServerCase):
 
     def test_language_characters_refused(self):
         st, raw = self.patch({"geocode": {"language": "e n;<"}})
-        self.assertEqual(st, 422, raw)  # real: ASCII letters, digits, - and _ only
+        self.assertEqual(st, 422, raw)
 
     def test_language_trimmed(self):
         st, raw = self.patch({"geocode": {"language": "  de  "}})
