@@ -666,6 +666,8 @@ impl Engine {
             if job.is_some_and(JobState::cancelled) {
                 return Ok(());
             }
+            // a log or an input's data of the car that came meanwhile goes first: it waits a day of logs at most
+            self.let_live_in(car);
             {
                 let l = self.car_lock(car);
                 let _held = lock(&l);
@@ -687,6 +689,7 @@ impl Engine {
                 }
             }
             if by_day {
+                self.let_live_in(car);
                 self.rebuild_dirty(car)?;
             }
         }
@@ -723,6 +726,7 @@ impl Engine {
                     return Ok(());
                 }
                 // (the car's lock per window: logs that arrive meanwhile wait one window at most)
+                self.let_live_in(car);
                 let l = self.car_lock(car);
                 let _held = lock(&l);
                 let mut meta = records::meta(db, car)?;

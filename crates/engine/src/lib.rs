@@ -83,7 +83,7 @@ use ingest::{Judge, Store};
 use model::CarId;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::{broadcast, mpsc};
 
@@ -347,6 +347,9 @@ pub(crate) struct Inner {
     pub(crate) tx: mpsc::UnboundedSender<Work>,
     rx: Mutex<Option<mpsc::UnboundedReceiver<Work>>>,
     car_locks: Mutex<HashMap<CarId, Arc<Mutex<()>>>>,
+    /// Live work (a log, an input's data) waiting for a car's lock: a long job of the car lets it in between its steps
+    /// ([`Engine::let_live_in`]).
+    car_waiting: Mutex<HashMap<CarId, Arc<AtomicUsize>>>,
     /// The logs told of and not yet taken, per CAN key, in the order the judge told them: each [`Work::Log`] works
     /// on the first of its key's once it holds the car's lock, so a logger's logs are worked on in the order they
     /// came whichever worker gets the lock first ([`Engine::work_log`]).
@@ -635,6 +638,7 @@ impl Engine {
                 tx,
                 rx: Mutex::new(Some(rx)),
                 car_locks: Mutex::new(HashMap::new()),
+                car_waiting: Mutex::new(HashMap::new()),
                 told: Arc::default(),
                 claim: Mutex::new(()),
                 car_record: Mutex::new(()),
@@ -944,6 +948,27 @@ impl Engine {
     /// The lock that keeps one car's work one at a time.
     pub(crate) fn car_lock(&self, car: CarId) -> Arc<Mutex<()>> {
         lock(&self.inner.car_locks).entry(car).or_default().clone()
+    }
+
+    /// The car's lock taken for live work: counted while it waits, so that a long job of the car, which takes the
+    /// lock again right after it lets it go (the lock is not fair), lets it in between its steps
+    /// ([`Engine::let_live_in`]) instead of keeping it waiting to the job's end.
+    pub(crate) fn lock_live<'a>(&self, car: CarId, l: &'a Mutex<()>) -> std::sync::MutexGuard<'a, ()> {
+        let n = lock(&self.inner.car_waiting).entry(car).or_default().clone();
+        n.fetch_add(1, Ordering::SeqCst);
+        let held = lock(l);
+        n.fetch_sub(1, Ordering::SeqCst);
+        held
+    }
+
+    /// Between two steps of a long job of the car (its lock let go): waits while live work waits for the lock, so it
+    /// gets the lock first (at most a few seconds, so a steady stream of it cannot hold the job back for good).
+    pub(crate) fn let_live_in(&self, car: CarId) {
+        let Some(n) = lock(&self.inner.car_waiting).get(&car).cloned() else { return };
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while n.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 
     /// Work sent and not finished (logs and comparisons).
