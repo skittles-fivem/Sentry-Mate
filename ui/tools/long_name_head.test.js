@@ -1,4 +1,4 @@
-// a car named 64 characters with no spaces must not widen the page heads (Data health, Logbook,
+// A car named 64 characters with no spaces must not widen the page heads (Data health, Logbook,
 // Software) at 1440x900: the page must not scroll sideways. Made-up data only.
 'use strict';
 

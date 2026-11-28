@@ -1,4 +1,4 @@
-// the Efficiency page of a car with no drives must not say "the — the pack gave while driving"
+// The Efficiency page of a car with no drives must not say "the — the pack gave while driving"
 // (dev server with --cars 12, synthetic car c4). Made-up data only.
 'use strict';
 

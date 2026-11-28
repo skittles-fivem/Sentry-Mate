@@ -1,4 +1,4 @@
-// a double click on Settings: Server's "Turn on" (two-step sign-in) must start one set-up, not two
+// A double click on Settings: Server's "Turn on" (two-step sign-in) must start one set-up, not two
 // stacked dialogs with different keys. Made-up data only.
 'use strict';
 
