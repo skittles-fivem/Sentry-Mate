@@ -999,7 +999,17 @@ async fn redate(
                 }
                 // what follows each re-dating of the car done (this one, one carried on, one an earlier ask
                 // finished), also when this ask failed
-                redate_follow_up(&e, &s, app.accounts.audit(), car, Some((&who, ip)))?;
+                // (one that fails stays owed, done at the next ask or start: the other cars are still asked)
+                if let Err(err) = redate_follow_up(&e, &s, app.accounts.audit(), car, Some((&who, ip))) {
+                    tracing::warn!(car = %ids::car(car), error = %err.message, "a TeslaFi re-dating's follow-up failed; left for later");
+                    errors.push(json!({
+                        "car": ids::car(car),
+                        "message": format!(
+                            "what follows the re-dating (its audit entry, the charge costs read again) is done later: {}",
+                            err.message
+                        ),
+                    }));
+                }
             }
             match errors.first() {
                 Some(first) if out.is_empty() => Err(ApiError::conflict(
