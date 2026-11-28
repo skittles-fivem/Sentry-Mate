@@ -250,9 +250,85 @@ async fn the_window_shrinks_for_a_dense_stretch_and_grows_back_after_it() {
     let asked = fake.charges.lock().unwrap().clone();
     let sizes: Vec<i64> = asked.iter().map(|(a, b)| b - a + 1).collect();
     assert!(sizes.iter().any(|n| *n <= 11), "it shrank for the dense stretch: {sizes:?}");
-    // once past it the windows are whole chunks again, not a day or a week
-    let past = asked.iter().position(|(a, _)| *a < today - 120).unwrap();
+    // once past it the windows are whole chunks again, not a day or a week (a few fit at the size below one found too
+    // large before it grows back to it)
+    let past = asked.iter().position(|(a, _)| *a < today - 180).unwrap();
     assert!(sizes[past..].iter().all(|n| *n >= 45), "it grew back: {sizes:?}");
     assert_eq!(c.chunk_days, None);
     assert!(asked.len() < 40, "{} requests for two years", asked.len());
+}
+
+/// A day passed over as too large is asked alone again once the backfill is done, and read once it fits.
+#[tokio::test]
+async fn a_day_passed_over_is_asked_again_and_read_once_it_fits() {
+    let (_t, store, fake, sink, mut p) = rig(Cadence { invoices: true, ..Cadence::default() });
+    let today = (NOW / DAY) as i64;
+    let huge = today - 50;
+    *fake.log.lock().unwrap() = vec![(today - 3, 12.5), (today - 40, 9.0), (huge, 3.0), (today - 120, 7.25)];
+    *fake.huge_day.lock().unwrap() = Some(huge);
+    run(&mut p, NOW, NOW + 12 * 3_600_000).await;
+    let c = store.pacing("fa1").unwrap().costs;
+    assert!(c.backfill_done, "{c:?}");
+    assert_eq!(c.skipped_days, vec![huge]);
+    // TeslaFi now serves that day within the cap; a week of daily checks goes by
+    *fake.huge_day.lock().unwrap() = None;
+    run(&mut p, NOW + 12 * 3_600_000, NOW + 8 * DAY).await;
+    let asked = fake.charges.lock().unwrap().clone();
+    let c = store.pacing("fa1").unwrap().costs;
+    assert!(
+        asked.iter().skip_while(|w| w.0 != huge || w.1 != huge).skip(1).any(|(a, b)| (*a..=*b).contains(&huge)),
+        "the skipped day is never asked for again: skipped_days={:?} last_error={:?}",
+        c.skipped_days,
+        c.last_error.map(|e| e.code)
+    );
+    assert!(sink.kept.lock().unwrap().values().any(|f| f.session.total == Some(3.0)));
+}
+
+/// A day passed over as too large holds charges, so it ends a run of empty days as any day with charges does.
+#[tokio::test]
+async fn a_day_passed_over_ends_a_run_of_empty_days() {
+    let (_t, store, fake, sink, mut p) = rig(Cadence { invoices: true, ..Cadence::default() });
+    let today = (NOW / DAY) as i64;
+    let huge = today - 150;
+    // 150 days with no charge before the huge day would stop nothing; counting through it does
+    *fake.log.lock().unwrap() = vec![(today - 3, 12.5), (huge, 3.0), (today - 300, 7.25)];
+    *fake.huge_day.lock().unwrap() = Some(huge);
+    run(&mut p, NOW, NOW + 2 * DAY).await;
+    let c = store.pacing("fa1").unwrap().costs;
+    assert!(c.backfill_done, "{c:?}");
+    assert_eq!(c.skipped_days, vec![huge]);
+    let oldest = fake.charges.lock().unwrap().iter().map(|w| w.0).min().unwrap();
+    assert!(
+        sink.kept.lock().unwrap().values().any(|f| f.session.total == Some(7.25)),
+        "the charge 300 days back is never read: backfill stopped at day today-{} (empty_days={})",
+        today - oldest,
+        c.empty_days
+    );
+}
+
+/// The same row read with the same decimal mark for its cost and its energy.
+#[test]
+fn a_decimal_comma_in_the_energy_and_duration_is_a_decimal_comma() {
+    let r = json!({"id": 77, "startDate": "2026-07-04 03:00:00", "cost": "12,50", "totalEnergyAdded": "41,2",
+                   "duration": "30,5"});
+    let s = teslafi::costs::session(&r, chrono_tz::Tz::UTC).unwrap();
+    assert_eq!(s.total, Some(12.5));
+    assert_eq!(s.fees[0].usage, Some(41.2), "energy 41,2 kWh");
+    assert_eq!(s.end_ms - s.start_ms, 30 * 60_000 + 30_000, "duration 30,5 min");
+}
+
+/// A stretch dense all along, where 45 days fit in an answer and 90 do not: the window is not asked at 90 again after
+/// every answer of 45 (each such answer is up to 8 MB read and thrown away).
+#[tokio::test]
+async fn a_window_found_too_large_is_not_asked_again_after_every_answer_that_fits() {
+    let (_t, store, fake, _sink, mut p) = rig(Cadence { invoices: true, ..Cadence::default() });
+    let today = (NOW / DAY) as i64;
+    *fake.log.lock().unwrap() = (0..720).map(|d| (today - d, 4.0)).collect();
+    *fake.most.lock().unwrap() = Some(60);
+    run(&mut p, NOW, NOW + 6 * 3_600_000).await;
+    let c = store.pacing("fa1").unwrap().costs;
+    assert!(c.backfill_done, "{c:?}");
+    let sizes: Vec<i64> = fake.charges.lock().unwrap().iter().map(|(a, b)| b - a + 1).collect();
+    let too_large = sizes.iter().filter(|n| **n > 60).count();
+    assert!(too_large * 3 <= sizes.len(), "{too_large} of {} requests too large: {sizes:?}", sizes.len());
 }

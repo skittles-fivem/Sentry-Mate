@@ -519,7 +519,7 @@ impl Engine {
             }
         };
         let l = self.car_lock(car);
-        let _held = lock(&l);
+        let _held = self.lock_live(car, &l);
         let name = self.take_told(key).unwrap_or_else(|| name.to_string());
         let _hot = crate::hot::Keep::new(self);
         self.log_locked(car, key, &name, false, true)

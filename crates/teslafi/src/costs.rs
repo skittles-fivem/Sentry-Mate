@@ -10,8 +10,10 @@
 //!
 //! The backfill reads the log [`CHUNK_DAYS`] at a time back from today until two chunks' worth of days in a row hold
 //! no charge (or 2012); a window whose answer is larger than [`crate::http::HISTORY_CAP`] is asked again in halves
-//! (down to a day), and the window doubles again after each answer that fits. A single day larger than that is
-//! passed over and kept ([`Progress::skipped_days`]): its error stays until a read of it works. Then the last
+//! (down to a day), and the window doubles again after each answer that fits (back to a size found too large only
+//! after a few fit in a row). A single day larger than that is
+//! passed over and kept ([`Progress::skipped_days`]): its error stays until a read of it works, and once the backfill
+//! is done each such day is asked alone again, one a day. Then the last
 //! [`CHECK_DAYS`] days once a day, and soon after a charge ends. One request per tick, in the poller's gap
 //! ([`crate::poller`]); TeslaFi's 429 is waited out there as for the polls.
 
@@ -21,6 +23,8 @@ use serde_json::Value;
 
 pub const CHUNK_DAYS: i64 = 90;
 pub const CHECK_DAYS: i64 = 14;
+/// Answers that fit in a row before a window grows back to a size found too large ([`Progress::failed_days`]).
+pub const FITS_BEFORE_RETRY: u32 = 4;
 /// The first day the backfill reaches back to (days since the epoch of 2012-01-01).
 pub const OLDEST_DAY: i64 = 15_340;
 
@@ -41,10 +45,21 @@ pub struct Progress {
     /// [`crate::http::HISTORY_CAP`]); doubled again after each answer that fit.
     #[serde(default)]
     pub chunk_days: Option<i64>,
+    /// The last window found too large (days): the window grows back to it only after [`FITS_BEFORE_RETRY`] answers
+    /// in a row fit at the size below, not at the next one (a stretch dense all along asked every other time in a
+    /// window too large to read).
+    #[serde(default)]
+    pub failed_days: Option<i64>,
+    /// Answers in a row that fit since the window last changed.
+    #[serde(default)]
+    pub fits: u32,
     /// Days whose log alone was larger than [`crate::http::HISTORY_CAP`] (days since the epoch): passed over, their
     /// costs not read, and said so ([`Progress::skipped_error`]) until a later read of them works.
     #[serde(default)]
     pub skipped_days: Vec<i64>,
+    /// The last day passed over that was asked alone again, and when (`(today, day)`, days since the epoch).
+    #[serde(default)]
+    pub retried: Option<(i64, i64)>,
     #[serde(default)]
     pub last_check_ms: Option<u64>,
     #[serde(default)]
@@ -71,6 +86,17 @@ impl Progress {
             (Some(_), false) => "running",
             (Some(_), true) => "done",
         }
+    }
+
+    /// The day passed over to ask alone again `today`, once the backfill is done: one a day, each in turn, and none
+    /// that the day's check reads anyway.
+    pub fn retry_due(&self, today: i64) -> Option<i64> {
+        if !self.backfill_done || self.retried.is_some_and(|(on, _)| on == today) {
+            return None;
+        }
+        let old = self.skipped_days.iter().copied().filter(|d| *d < today - CHECK_DAYS);
+        let after = self.retried.map(|(_, d)| d);
+        old.clone().find(|d| after.is_some_and(|a| *d > a)).or_else(|| old.min())
     }
 
     /// The error that stays while days are passed over ([`Progress::skipped_days`]).
@@ -164,7 +190,8 @@ fn num(v: &Value, keys: &[&str]) -> Option<f64> {
     keys.iter()
         .find_map(|k| match v.get(*k)? {
             Value::Number(n) => n.as_f64(),
-            Value::String(s) => s.trim().trim_start_matches(['$', '€', '£']).replace(',', "").parse().ok(),
+            // either decimal mark, as for a cost on the same row ([`amount`])
+            Value::String(s) => amount(s),
             _ => None,
         })
         .filter(|x| x.is_finite())

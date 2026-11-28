@@ -664,3 +664,54 @@ fn what_a_dating_put_in_the_last_hour_before_its_moment_never_moves_twice() {
         assert_eq!(socs(&k, car), stored, "back where it was stored");
     });
 }
+
+fn ask(k: &Kit, car: u32, from: &str, to: &str, at: u64) -> engine::Result<engine::rezone::Rezoned> {
+    tokio::task::block_in_place(|| k.engine.api_rezone(Input::TeslafiApi, car, from, to, at))
+}
+
+/// A moment earlier than all the data stored moves nothing: nothing is noted done or owed (an audit entry and the
+/// charge costs read again), and the ledger does not then refuse the ask at the right moment.
+#[test]
+fn a_moment_before_all_the_data_moves_nothing_and_owes_nothing() {
+    rt().block_on(async {
+        let k = kit();
+        let car = new_car(&k);
+        let _o = owners_data(&k, car);
+        k.engine.idle().await;
+        let r = ask(&k, car, "UTC", "America/Chicago", as_utc("2026-10-01 00:00")).unwrap();
+        assert_eq!(r.samples, 0);
+        let owed = k.engine.rezone_owed(Input::TeslafiApi, car).unwrap();
+        assert!(owed.is_empty(), "a re-dating that moved nothing owes an audit entry and a costs restart");
+    });
+}
+
+#[test]
+fn a_moment_before_all_the_data_leaves_the_ask_at_the_right_moment_taken() {
+    rt().block_on(async {
+        let k = kit();
+        let car = new_car(&k);
+        let o = owners_data(&k, car);
+        k.engine.idle().await;
+        let r = ask(&k, car, "UTC", "America/Chicago", as_utc("2026-10-01 00:00")).unwrap();
+        assert_eq!(r.samples, 0);
+        k.engine.api_rezone_followed_up(Input::TeslafiApi, car).unwrap();
+        let real = ask(&k, car, "UTC", "America/Chicago", moment());
+        let real = real.expect("the real ask is taken");
+        assert_eq!(real.samples, 93);
+        k.engine.idle().await;
+        assert_eq!(times(&k, car), want(&o));
+    });
+}
+
+#[test]
+fn a_moment_of_1_ms_then_the_ask_at_the_right_moment_is_taken() {
+    rt().block_on(async {
+        let k = kit();
+        let car = new_car(&k);
+        let _o = owners_data(&k, car);
+        k.engine.idle().await;
+        assert_eq!(ask(&k, car, "UTC", "America/Chicago", 1).unwrap().samples, 0);
+        let real = ask(&k, car, "UTC", "America/Chicago", moment());
+        assert!(real.is_ok());
+    });
+}

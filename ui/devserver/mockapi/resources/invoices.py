@@ -308,7 +308,7 @@ def block(req, source):
         available = not accounts or any(a["region"] == "global" for a in accounts.values())
     else:
         available = True
-    return {
+    out = {
         "enabled": enabled, "available": available, "gives_pdfs": source == "tesla",
         "note": TESLAFI_NOTE if source == "teslafi" else None,
         "sessions": len(rows), "matched": matched, "unmatched": len(rows) - matched,
@@ -318,6 +318,9 @@ def block(req, source):
         "next_check_ms": (max(last + CHECK_EVERY_MS, req.now) if last else req.now + 5 * MIN) if enabled and accounts else None,
         "requests_today": state["requests_today"], "last_error": None,
     }
+    if source == "teslafi":
+        out["skipped_days"] = []
+    return out
 
 
 def patch_value(body):

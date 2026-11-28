@@ -288,6 +288,7 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
       await after(r, (x) => {
         const sum = (k) => (x.cars || []).reduce((n, c) => n + (c[k] || 0), 0);
         const failed = (x.errors || []).map((e) => ` Car ${e.car}: ${e.message}`).join('');
+        if (!(x.cars || []).length && !(x.errors || []).length) return 'Nothing moved: no car of this account is matched.';
         if ((x.cars || []).every((c) => c.already)) return `That was done before: nothing moved.${failed}`;
         if (['samples', 'spans', 'drives', 'charges'].every((k) => sum(k) === 0)) return `Nothing moved: no data stored before the moment was read in that zone.${failed}`;
         return `Dated again: ${num(sum('samples'))} samples, ${num(sum('drives'))} drives and ${num(sum('charges'))} charges. What was built from them is being built again.${failed}`;

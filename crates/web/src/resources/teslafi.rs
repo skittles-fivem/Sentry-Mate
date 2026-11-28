@@ -806,7 +806,9 @@ async fn change(
     if let Some(z) = &time_zone
         && *z != before.time_zone
     {
-        what.push(format!("set its time zone to {}", z.as_deref().unwrap_or("the server's default")));
+        // (the zone it was read in until now too: the zone a re-dating starts from, [`redate_defaults`])
+        let was = before.time_zone.clone().unwrap_or_else(|| s.default_time_zone());
+        what.push(format!("set its time zone to {} (from {was})", z.as_deref().unwrap_or("the server's default")));
     }
     if !what.is_empty() {
         let summary = format!("Changed the TeslaFi account {}: {}.", after.label, what.join(", "));
@@ -858,7 +860,12 @@ async fn remove(
 /// the server's default). The log is read back from the newest entry, at most this many entries.
 const ZONE_CHANGES_LOOKED_AT: usize = 20_000;
 
-fn zone_changes(app: &AppState, id: &str) -> ApiResult<Vec<(u64, Option<String>)>> {
+/// A change of an account's zone: when, the zone set (none: the server's default), the zone it was read in until then.
+type ZoneChange = (u64, Option<String>, Option<String>);
+
+/// The changes of the account's zone in the audit log, newest first (two at most): when, the zone set (none: the
+/// server's default) and the zone it was read in until then, where the entry says it.
+fn zone_changes(app: &AppState, id: &str) -> ApiResult<Vec<ZoneChange>> {
     let tag = format!("[{}] ", target("teslafi", None, id));
     let (mut out, mut cursor, mut seen) = (Vec::new(), None::<String>, 0usize);
     loop {
@@ -869,8 +876,14 @@ fn zone_changes(app: &AppState, id: &str) -> ApiResult<Vec<(u64, Option<String>)
                 continue;
             }
             let Some((_, rest)) = e.details.split_once("set its time zone to ") else { continue };
-            let zone = rest.split([',', '.']).next().unwrap_or_default().trim();
-            out.push((e.t_ms, teslafi::time_zone_ok(zone).then(|| zone.to_string())));
+            let zone = rest.split([',', '.', ' ']).next().unwrap_or_default().trim();
+            let was = rest
+                .split_once(" (from ")
+                .and_then(|(_, w)| w.split_once(')'))
+                .map(|(w, _)| w.trim())
+                .filter(|w| teslafi::time_zone_ok(w))
+                .map(str::to_string);
+            out.push((e.t_ms, teslafi::time_zone_ok(zone).then(|| zone.to_string()), was));
             if out.len() >= 2 {
                 return Ok(out);
             }
@@ -892,7 +905,7 @@ fn zone_now(s: &TeslafiService, a: &Account) -> String {
 
 /// `GET .../accounts/{account}/redate`: what dating its stored data again starts from: the zone its times are read
 /// in now, when that was last set (from the audit log; `null` when the log has no change of it) and the zone it was
-/// read in before (the zone of the change before that; not known: the server's default zone).
+/// read in before (as the change says it, else the zone of the change before that; not known: the server's default).
 async fn redate_defaults(
     State(app): State<AppState>,
     Admin(_): Admin,
@@ -916,6 +929,7 @@ async fn redate_defaults(
             "zone": zone_now(&s, &a),
             "before_ms": before_ms,
             "zone_before": said
+                .or_else(|| changes.first().and_then(|c| c.2.clone()))
                 .or_else(|| changes.get(1).and_then(|c| c.1.clone()))
                 .unwrap_or_else(|| s.default_time_zone()),
         })))
@@ -988,7 +1002,17 @@ async fn redate(
                 }
                 // what follows each re-dating of the car done (this one, one carried on, one an earlier ask
                 // finished), also when this ask failed
-                redate_follow_up(&e, &s, app.accounts.audit(), car, Some((&who, ip)))?;
+                // (one that fails stays owed, done at the next ask or start: the other cars are still asked)
+                if let Err(err) = redate_follow_up(&e, &s, app.accounts.audit(), car, Some((&who, ip))) {
+                    tracing::warn!(car = %ids::car(car), error = %err.message, "a TeslaFi re-dating's follow-up failed; left for later");
+                    errors.push(json!({
+                        "car": ids::car(car),
+                        "message": format!(
+                            "what follows the re-dating (its audit entry, the charge costs read again) is done later: {}",
+                            err.message
+                        ),
+                    }));
+                }
             }
             match errors.first() {
                 Some(first) if out.is_empty() => Err(ApiError::conflict(

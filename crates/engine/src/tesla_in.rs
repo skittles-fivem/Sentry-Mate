@@ -375,7 +375,7 @@ impl Engine {
     pub(crate) fn work_off_can(&self, input: Input, car: CarId, at_ms: u64, values: model::OffCan) -> Result<()> {
         {
             let l = self.car_lock(car);
-            let _held = lock(&l);
+            let _held = self.lock_live(car, &l);
             let db = &self.inner.db;
             if db.car(car)?.is_none() || records::off_can_of(db, car, input)?.at_ms > at_ms {
                 return Ok(());
@@ -476,7 +476,7 @@ impl Engine {
     ) -> Result<()> {
         {
             let l = self.car_lock(car);
-            let _held = lock(&l);
+            let _held = self.lock_live(car, &l);
             self.api_store(input, car, samples, facts)?;
         }
         self.schedule_api(car);
@@ -566,7 +566,7 @@ impl Engine {
         lock(&self.inner.api_pending).remove(&car);
         lock(&self.inner.api_built).insert(car, now_ms());
         let l = self.car_lock(car);
-        let _held = lock(&l);
+        let _held = self.lock_live(car, &l);
         self.api_build_locked(car)
     }
 
@@ -617,7 +617,7 @@ impl Engine {
     /// and Now.
     pub(crate) fn work_api_meta(&self, input: Input, car: CarId, meta: tesla::ApiMeta) -> Result<()> {
         let l = self.car_lock(car);
-        let _held = lock(&l);
+        let _held = self.lock_live(car, &l);
         let db = &self.inner.db;
         if db.car(car)?.is_none() {
             return Ok(());
