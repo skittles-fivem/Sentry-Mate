@@ -860,9 +860,12 @@ async fn remove(
 /// the server's default). The log is read back from the newest entry, at most this many entries.
 const ZONE_CHANGES_LOOKED_AT: usize = 20_000;
 
+/// A change of an account's zone: when, the zone set (none: the server's default), the zone it was read in until then.
+type ZoneChange = (u64, Option<String>, Option<String>);
+
 /// The changes of the account's zone in the audit log, newest first (two at most): when, the zone set (none: the
 /// server's default) and the zone it was read in until then, where the entry says it.
-fn zone_changes(app: &AppState, id: &str) -> ApiResult<Vec<(u64, Option<String>, Option<String>)>> {
+fn zone_changes(app: &AppState, id: &str) -> ApiResult<Vec<ZoneChange>> {
     let tag = format!("[{}] ", target("teslafi", None, id));
     let (mut out, mut cursor, mut seen) = (Vec::new(), None::<String>, 0usize);
     loop {
