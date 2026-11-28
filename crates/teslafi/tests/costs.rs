@@ -250,8 +250,9 @@ async fn the_window_shrinks_for_a_dense_stretch_and_grows_back_after_it() {
     let asked = fake.charges.lock().unwrap().clone();
     let sizes: Vec<i64> = asked.iter().map(|(a, b)| b - a + 1).collect();
     assert!(sizes.iter().any(|n| *n <= 11), "it shrank for the dense stretch: {sizes:?}");
-    // once past it the windows are whole chunks again, not a day or a week
-    let past = asked.iter().position(|(a, _)| *a < today - 120).unwrap();
+    // once past it the windows are whole chunks again, not a day or a week (a few fit at the size below one found too
+    // large before it grows back to it)
+    let past = asked.iter().position(|(a, _)| *a < today - 180).unwrap();
     assert!(sizes[past..].iter().all(|n| *n >= 45), "it grew back: {sizes:?}");
     assert_eq!(c.chunk_days, None);
     assert!(asked.len() < 40, "{} requests for two years", asked.len());
@@ -314,4 +315,20 @@ fn a_decimal_comma_in_the_energy_and_duration_is_a_decimal_comma() {
     assert_eq!(s.total, Some(12.5));
     assert_eq!(s.fees[0].usage, Some(41.2), "energy 41,2 kWh");
     assert_eq!(s.end_ms - s.start_ms, 30 * 60_000 + 30_000, "duration 30,5 min");
+}
+
+/// A stretch dense all along, where 45 days fit in an answer and 90 do not: the window is not asked at 90 again after
+/// every answer of 45 (each such answer is up to 8 MB read and thrown away).
+#[tokio::test]
+async fn a_window_found_too_large_is_not_asked_again_after_every_answer_that_fits() {
+    let (_t, store, fake, _sink, mut p) = rig(Cadence { invoices: true, ..Cadence::default() });
+    let today = (NOW / DAY) as i64;
+    *fake.log.lock().unwrap() = (0..720).map(|d| (today - d, 4.0)).collect();
+    *fake.most.lock().unwrap() = Some(60);
+    run(&mut p, NOW, NOW + 6 * 3_600_000).await;
+    let c = store.pacing("fa1").unwrap().costs;
+    assert!(c.backfill_done, "{c:?}");
+    let sizes: Vec<i64> = fake.charges.lock().unwrap().iter().map(|(a, b)| b - a + 1).collect();
+    let too_large = sizes.iter().filter(|n| **n > 60).count();
+    assert!(too_large * 3 <= sizes.len(), "{too_large} of {} requests too large: {sizes:?}", sizes.len());
 }

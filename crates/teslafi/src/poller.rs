@@ -821,7 +821,10 @@ impl<F: Feed, S: Sink> Poller<F, S> {
         if too_large && !self.pacing.costs.backfill_done && days > 1 {
             // more charges than one answer holds: the same days again in halves, at the next tick
             tracing::info!(account = %self.id, days, "teslafi charge log too large; asked in smaller windows");
-            self.pacing.costs.chunk_days = Some(days / 2);
+            let c = &mut self.pacing.costs;
+            c.chunk_days = Some(days / 2);
+            c.failed_days = Some(days);
+            c.fits = 0;
             return;
         }
         let records = match answer {
@@ -889,8 +892,19 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                 let since = c.last_error.as_ref().filter(|e| e.code == "too_large").map_or(now_ms, |e| e.at_ms);
                 c.last_error = c.skipped_error(since);
                 // an answer that fit: the next window twice as long again, up to a whole chunk
-                if !c.backfill_done {
-                    c.chunk_days = c.chunk_days.map(|d| d * 2).filter(|d| *d < crate::costs::CHUNK_DAYS);
+                if !c.backfill_done
+                    && let Some(d) = c.chunk_days
+                {
+                    // up to a size found too large only after a few fit in a row at this one
+                    let again = c.failed_days.is_some_and(|f| d * 2 >= f);
+                    c.fits += 1;
+                    if !again || c.fits >= crate::costs::FITS_BEFORE_RETRY {
+                        c.chunk_days = Some(d * 2).filter(|d| *d < crate::costs::CHUNK_DAYS);
+                        c.fits = 0;
+                        if again {
+                            c.failed_days = None;
+                        }
+                    }
                 }
             }
             Err(e) => {
