@@ -799,3 +799,20 @@ async fn a_zone_set_to_the_one_it_is_read_in_is_no_moment_for_a_re_dating() {
     assert_eq!(r.status, 200, "{}", r.text());
     assert!(admin.get(&format!("{one}/redate")).await.json()["before_ms"].is_null());
 }
+
+/// An account with its own zone equal to the server's default, cleared to follow the default: the zone it is read in
+/// is unchanged, so a re-dating's moment does not move to it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_zone_cleared_to_a_default_equal_to_it_is_no_moment_for_a_re_dating() {
+    let w = world().await;
+    let a = seed_zone(&w, Some("UTC"));
+    let mut admin = w.s.admin().await;
+    let one = format!("/api/v1/integrations/teslafi/accounts/{}", a.id);
+    let r =
+        admin.patch(&one, json!({ "version": a.version, "time_zone": null, "confirm_password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let d = admin.get(&format!("{one}/redate")).await.json();
+    assert!(d["before_ms"].is_null(), "{d}");
+    let acts = audit_actions(&mut admin).await;
+    assert!(acts.iter().any(|(a, _)| a == "teslafi-account-changed"), "the change is still audited");
+}
