@@ -723,3 +723,79 @@ async fn the_zone_before_an_old_change_that_does_not_say_it_is_not_guessed() {
     assert!(d.json()["before_ms"].is_u64(), "{}", d.text());
     assert_eq!(d.json()["zone_before"], Value::Null, "{}", d.text());
 }
+
+fn seed_zone(w: &World, zone: Option<&str>) -> Account {
+    let mut a = seed_template();
+    a.time_zone = zone.map(str::to_string);
+    w.svc.store().add(a, &Secret::new(TOKEN)).unwrap()
+}
+
+fn seed_template() -> Account {
+    Account {
+        id: String::new(),
+        label: "Made-up TeslaFi".into(),
+        added_ms: 1_800_000_000_000,
+        version: 0,
+        paused: false,
+        time_zone: None,
+        state: AccountState::Ok,
+        last_ok_ms: Some(1_800_000_000_000),
+        last_error: None,
+        cars: vec![AccountCar {
+            vehicle: "fv1".into(),
+            vin_prefix: Some(PREFIX.into()),
+            vin_tag: Some("made-up-tag".into()),
+            model: Some('3'),
+            year: Some(2023),
+            display_name: Some("Made-up car".into()),
+            matched: None,
+        }],
+    }
+}
+
+/// An account with no zone of its own when the server's default zone changes: it is read in the new zone from then
+/// on, so the change is in its audit entries as a change of its zone, and a re-dating starts from it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_change_of_the_servers_zone_is_a_change_of_the_zone_of_an_account_with_none() {
+    let w = world().await;
+    let a = seed_zone(&w, None);
+    let mut admin = w.s.admin().await;
+    let base = format!("/api/v1/integrations/teslafi/accounts/{}/redate", a.id);
+    let sv = admin.get("/api/v1/settings").await.json()["version"].as_u64().unwrap();
+    let r = admin.patch("/api/v1/settings", json!({ "version": sv, "default_time_zone": "Europe/Berlin" })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let d = admin.get(&base).await.json();
+    assert_eq!(d["zone"], "Europe/Berlin", "{d}");
+    assert!(d["before_ms"].is_u64(), "{d}");
+    assert_eq!(d["zone_before"], "UTC", "{d}");
+}
+
+/// A label that says what a change of the zone says is refused (the zone's changes are read back from the entries
+/// that name the account by its label).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_label_that_says_a_change_of_the_zone_is_refused() {
+    let w = world().await;
+    let a = seed(&w);
+    let mut admin = w.s.admin().await;
+    let one = format!("/api/v1/integrations/teslafi/accounts/{}", a.id);
+    let label = "Made-up set its time zone to Asia/Tokyo (from UTC)";
+    let r =
+        admin.patch(&one, json!({ "version": a.version, "label": label, "confirm_password": ADMIN_PASSWORD })).await;
+    assert_eq!(r.status, 422, "{}", r.text());
+    assert!(admin.get(&format!("{one}/redate")).await.json()["before_ms"].is_null());
+}
+
+/// An account with no zone (read in the default, UTC) set to UTC: nothing it is read in changed, so a re-dating's
+/// moment does not move to it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_zone_set_to_the_one_it_is_read_in_is_no_moment_for_a_re_dating() {
+    let w = world().await;
+    let a = seed_zone(&w, None);
+    let mut admin = w.s.admin().await;
+    let one = format!("/api/v1/integrations/teslafi/accounts/{}", a.id);
+    let r = admin
+        .patch(&one, json!({ "version": a.version, "time_zone": "UTC", "confirm_password": ADMIN_PASSWORD }))
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert!(admin.get(&format!("{one}/redate")).await.json()["before_ms"].is_null());
+}

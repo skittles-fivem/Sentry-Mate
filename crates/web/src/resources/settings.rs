@@ -475,7 +475,7 @@ async fn read(State(app): State<AppState>, v: Viewer) -> ApiResult<Json<Value>> 
 async fn change(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiResult<Json<Value>> {
     let e = app.service::<Engine>()?;
     let who = v.clone();
-    let (before, after) = app
+    let (before, after, zone_moved) = app
         .blocking(move |app| {
             let _one = CHANGES.lock().unwrap_or_else(|p| p.into_inner());
             let cur = load(&e, &cert_names(app))?;
@@ -492,8 +492,11 @@ async fn change(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiRe
                 super::mqtt::follow_units(app, &e, new.units)?;
             }
             // still under the lock, so the frame follows the changes in the order they were saved
+            let zone_was = app.service::<super::teslafi::TeslafiService>().ok().map(|s| s.default_time_zone());
             apply(app, &new);
-            Ok((cur, new))
+            let zone_is = app.service::<super::teslafi::TeslafiService>().ok().map(|s| s.default_time_zone());
+            let zone_moved = zone_was.zip(zone_is).filter(|(a, b)| a != b);
+            Ok((cur, new, zone_moved))
         })
         .await?;
     let mut changed: Vec<&str> = Vec::new();
@@ -521,6 +524,17 @@ async fn change(State(app): State<AppState>, v: Viewer, body: JsonBody) -> ApiRe
         format!("Changed the server settings: {}.", changed.join(", "))
     };
     v.audit(&app, "settings-changed", Some(&target("settings", None, "server")), &summary).await?;
+    // the TeslaFi accounts with no zone of their own read their times in the new default from now on: each says so
+    // as a change of its zone would (what a re-dating of the data read before starts from)
+    if let (Some((was, is)), Ok(svc)) = (zone_moved, app.service::<super::teslafi::TeslafiService>()) {
+        for a in svc.accounts().into_iter().filter(|a| a.time_zone.is_none()) {
+            let summary = format!(
+                "Changed the TeslaFi account {}: set its time zone to {is} (from {was}), the server's default.",
+                a.label
+            );
+            v.audit(&app, "teslafi-account-changed", Some(&target("teslafi", None, &a.id)), &summary).await?;
+        }
+    }
     Ok(Json(view(&app, &v, &after)))
 }
 
