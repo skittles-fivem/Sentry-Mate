@@ -136,6 +136,9 @@ pub fn teslafi_block(e: &Engine, svc: &TeslafiService, enabled: bool) -> Value {
             last_error = Some(json!({ "code": er.code, "message": er.message, "at_ms": er.at_ms }));
         }
     }
+    // (oldest first, once each, with several accounts)
+    skipped.sort();
+    skipped.dedup();
     let backfill = if !enabled || words.iter().all(|w| *w == "off") {
         "off"
     } else if words.contains(&"running") || words.contains(&"off") {
@@ -158,7 +161,7 @@ pub fn teslafi_block(e: &Engine, svc: &TeslafiService, enabled: bool) -> Value {
         "next_check_ms": if enabled { next_check } else { None },
         "requests_today": requests,
         "last_error": last_error,
-        "skipped_days": { skipped.sort(); skipped.dedup(); skipped },
+        "skipped_days": skipped,
     })
 }
 
