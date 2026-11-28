@@ -1089,6 +1089,9 @@ impl Engine {
         let db = &self.inner.db;
         let shadow = match (r.phase, db.open_shadow(SHADOW)?) {
             (Phase::Decoding | Phase::Days | Phase::Switching, Some(s)) if s.car(car)?.is_some() => s,
+            // the shadow goes only once the switch is done: a stop after that and before the next car is a car done,
+            // not one to copy and decode again
+            (Phase::Switching, None) => return Ok(true),
             _ => {
                 self.full_phase(Phase::Copying)?;
                 self.full_seed(car)?
@@ -1126,7 +1129,9 @@ impl Engine {
             self.full_edit(|_| {})?;
             lock(&self.inner.full).job = None;
             res?;
-            if self.full_cancelled() {
+            // a pause the job stopped for and a "Start now" right after it leave the record running and not held: the
+            // job's own stop still says the logs were not all decoded, so the run carries on from where it is
+            if job.cancelled() || self.full_cancelled() {
                 return Ok(false);
             }
             self.full_runtime_there()?;
