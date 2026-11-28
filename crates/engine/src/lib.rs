@@ -349,7 +349,7 @@ pub(crate) struct Inner {
     car_locks: Mutex<HashMap<CarId, Arc<Mutex<()>>>>,
     /// Live work (a log, an input's data) waiting for a car's lock: a long job of the car lets it in between its steps
     /// ([`Engine::let_live_in`]).
-    car_waiting: Mutex<HashMap<CarId, Arc<AtomicUsize>>>,
+    car_waiting: Mutex<HashMap<CarId, Arc<LiveWait>>>,
     /// The logs told of and not yet taken, per CAN key, in the order the judge told them: each [`Work::Log`] works
     /// on the first of its key's once it holds the car's lock, so a logger's logs are worked on in the order they
     /// came whichever worker gets the lock first ([`Engine::work_log`]).
@@ -954,21 +954,16 @@ impl Engine {
     /// lock again right after it lets it go (the lock is not fair), lets it in between its steps
     /// ([`Engine::let_live_in`]) instead of keeping it waiting to the job's end.
     pub(crate) fn lock_live<'a>(&self, car: CarId, l: &'a Mutex<()>) -> std::sync::MutexGuard<'a, ()> {
-        let n = lock(&self.inner.car_waiting).entry(car).or_default().clone();
-        n.fetch_add(1, Ordering::SeqCst);
-        let held = lock(l);
-        n.fetch_sub(1, Ordering::SeqCst);
-        held
+        let w = lock(&self.inner.car_waiting).entry(car).or_default().clone();
+        w.lock(l)
     }
 
-    /// Between two steps of a long job of the car (its lock let go): waits while live work waits for the lock, so it
-    /// gets the lock first (at most a few seconds, so a steady stream of it cannot hold the job back for good).
+    /// Between two steps of a long job of the car (its lock let go): waits until the live work that waited for the
+    /// lock then has had it, so it goes first (not for work that comes meanwhile: a backlog of logs would keep the
+    /// job waiting; and a few seconds at most).
     pub(crate) fn let_live_in(&self, car: CarId) {
-        let Some(n) = lock(&self.inner.car_waiting).get(&car).cloned() else { return };
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while n.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < until {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        let Some(w) = lock(&self.inner.car_waiting).get(&car).cloned() else { return };
+        w.let_in(std::time::Duration::from_secs(5));
     }
 
     /// Work sent and not finished (logs and comparisons).
@@ -1031,6 +1026,92 @@ impl Engine {
 
 pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Live work waiting for a car's lock ([`Engine::lock_live`]): how many wait, and how many have had it.
+#[derive(Default)]
+pub(crate) struct LiveWait {
+    waiting: AtomicUsize,
+    taken: AtomicU64,
+}
+
+impl LiveWait {
+    fn lock<'a>(&self, l: &'a Mutex<()>) -> std::sync::MutexGuard<'a, ()> {
+        self.waiting.fetch_add(1, Ordering::SeqCst);
+        let held = lock(l);
+        self.taken.fetch_add(1, Ordering::SeqCst);
+        self.waiting.fetch_sub(1, Ordering::SeqCst);
+        held
+    }
+
+    /// Waits until those waiting now have had the lock (at most `cap`).
+    fn let_in(&self, cap: std::time::Duration) {
+        let target = self.taken.load(Ordering::SeqCst) + self.waiting.load(Ordering::SeqCst) as u64;
+        let until = std::time::Instant::now() + cap;
+        while self.taken.load(Ordering::SeqCst) < target && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+}
+
+#[cfg(test)]
+mod live_wait_tests {
+    use super::*;
+
+    /// A steady stream of live work on the lock (always one waiting): the job waits for those waiting when it let
+    /// go, not for the stream to end (nor the whole cap).
+    #[test]
+    fn a_steady_stream_of_live_work_does_not_hold_the_job_for_the_whole_wait() {
+        let (w, l) = (Arc::new(LiveWait::default()), Arc::new(Mutex::new(())));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let streams: Vec<_> = (0..2)
+            .map(|_| {
+                let (w, l, stop) = (w.clone(), l.clone(), stop.clone());
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::SeqCst) {
+                        let _held = w.lock(&l);
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
+                })
+            })
+            .collect();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let t = std::time::Instant::now();
+        for _ in 0..5 {
+            w.let_in(std::time::Duration::from_secs(2));
+        }
+        let took = t.elapsed();
+        stop.store(true, Ordering::SeqCst);
+        for s in streams {
+            s.join().ok();
+        }
+        assert!(took < std::time::Duration::from_secs(2), "5 steps waited {took:?} for a stream that never ends");
+    }
+
+    /// Live work waiting when the job lets go has the lock before the job goes on.
+    #[test]
+    fn the_work_waiting_when_the_job_lets_go_has_the_lock_first() {
+        let (w, l) = (Arc::new(LiveWait::default()), Arc::new(Mutex::new(())));
+        let job = lock(&l);
+        let got = Arc::new(AtomicU64::new(0));
+        let waiter = {
+            let (w, l, got) = (w.clone(), l.clone(), got.clone());
+            std::thread::spawn(move || {
+                let _held = w.lock(&l);
+                got.store(1, Ordering::SeqCst);
+            })
+        };
+        while w.waiting.load(Ordering::SeqCst) == 0 {
+            std::thread::yield_now();
+        }
+        drop(job);
+        w.let_in(std::time::Duration::from_secs(5));
+        // (it has the lock: the job would wait for it now)
+        assert_eq!(w.taken.load(Ordering::SeqCst), 1);
+        let _job = lock(&l);
+        assert_eq!(got.load(Ordering::SeqCst), 1);
+        waiter.join().ok();
+    }
 }
 
 pub(crate) fn now_ms() -> u64 {
