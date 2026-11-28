@@ -542,8 +542,8 @@ async fn create(
     let compression = match body.str("compression")? {
         Some(c) => c.to_string(),
         None if name.to_ascii_lowercase().ends_with(".zip") => "zip".into(),
-        None if name.ends_with(".xz") => "xz".into(),
-        None if name.ends_with(".gz") => "gzip".into(),
+        None if name.to_ascii_lowercase().ends_with(".xz") => "xz".into(),
+        None if name.to_ascii_lowercase().ends_with(".gz") => "gzip".into(),
         None => "plain".into(),
     };
     if !COMPRESSIONS.contains(&compression.as_str()) {

@@ -332,3 +332,75 @@ async fn a_window_found_too_large_is_not_asked_again_after_every_answer_that_fit
     let too_large = sizes.iter().filter(|n| **n > 60).count();
     assert!(too_large * 3 <= sizes.len(), "{too_large} of {} requests too large: {sizes:?}", sizes.len());
 }
+
+/// The poller run as `run` does, noting when each charge-log window was asked.
+async fn run_timed(p: &mut Poller<Fake, Sink>, fake: &Fake, from: u64, to: u64, at: &mut Vec<(u64, (i64, i64))>) {
+    let mut now = from;
+    while now < to {
+        let before = fake.charges.lock().unwrap().len();
+        let next = p.tick(now).await.unwrap();
+        let asked = fake.charges.lock().unwrap().clone();
+        for w in &asked[before..] {
+            at.push((now, *w));
+        }
+        assert!(next > now);
+        now = next;
+    }
+}
+
+/// A day passed over that TeslaFi still answers too large, asked again each day: the day's check stays a day apart
+/// (not put off by a wait for the retry's error) and the error keeps the time the day was first found.
+#[tokio::test]
+async fn a_day_passed_over_still_too_large_neither_puts_the_daily_check_off_nor_dates_its_error_anew() {
+    let cad = Cadence { invoices: true, ..Cadence::default() };
+    let check = cad.invoice_check_ms;
+    let (_t, store, fake, _sink, mut p) = rig(cad);
+    let today = (NOW / DAY) as i64;
+    let huge = today - 50;
+    *fake.log.lock().unwrap() = vec![(today - 3, 12.5), (today - 40, 9.0), (today - 120, 7.25)];
+    *fake.huge_day.lock().unwrap() = Some(huge);
+    let mut at = Vec::new();
+    run_timed(&mut p, &fake, NOW, NOW + 12 * 3_600_000, &mut at).await;
+    let c = store.pacing("fa1").unwrap().costs;
+    assert!(c.backfill_done);
+    assert_eq!(c.skipped_days, vec![huge]);
+    let first_at = c.last_error.clone().unwrap().at_ms;
+    let mut seen_at = vec![first_at];
+    let mut t = NOW + 12 * 3_600_000;
+    for _ in 0..4 {
+        run_timed(&mut p, &fake, t, t + DAY, &mut at).await;
+        t += DAY;
+        seen_at.push(store.pacing("fa1").unwrap().costs.last_error.unwrap().at_ms);
+    }
+    let checks: Vec<u64> =
+        at.iter().filter(|(_, (a, b))| b - a == teslafi::costs::CHECK_DAYS).map(|(t, _)| *t).collect();
+    let retries: Vec<u64> = at.iter().filter(|(_, (a, b))| a == b && *a == huge).map(|(t, _)| *t).collect();
+    assert!(checks.len() >= 3, "{checks:?}");
+    assert!(retries.len() >= 3, "the day passed over is asked again each day: {retries:?}");
+    // the checks are a day apart (within a few minutes of tick granularity), not a day and the retry's wait
+    for w in checks.windows(2) {
+        let gap = w[1] - w[0];
+        assert!(gap <= check + 5 * 60_000, "check gap {} min over a day", (gap - check) / 60_000);
+    }
+    assert!(seen_at.iter().all(|t| *t == first_at), "the error's since moved: {seen_at:?}");
+}
+
+/// The server's clock set back 3 days once the costs are read: the next check comes within a day, not 3 days later.
+#[tokio::test]
+async fn a_clock_set_back_moves_the_costs_check_back_too() {
+    let cad = Cadence { invoices: true, ..Cadence::default() };
+    let check = cad.invoice_check_ms;
+    let (_t, store, fake, _sink, mut p) = rig(cad);
+    run(&mut p, NOW, NOW + 3_600_000).await;
+    assert!(store.pacing("fa1").unwrap().costs.backfill_done);
+    let n = fake.charges.lock().unwrap().len();
+    let back = NOW + 3_600_000 - 3 * DAY;
+    run(&mut p, back, back + check + 3_600_000).await;
+    let after = fake.charges.lock().unwrap().len();
+    let c = store.pacing("fa1").unwrap().costs;
+    assert!(
+        after > n,
+        "no costs check within a day and an hour after the clock went back 3 days: next_check_ms is {} h ahead of the clock",
+        (c.next_check_ms - back) / 3_600_000
+    );
+}

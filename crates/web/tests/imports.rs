@@ -493,3 +493,18 @@ async fn a_check_under_way_when_the_data_moves_stops_and_writes_nothing() {
     assert_eq!(std::fs::metadata(&job).unwrap().modified().unwrap(), saved, "the job was written after the stop");
     assert_eq!(admin.get(&format!("/api/v1/imports/{id}")).await.json()["status"], "checking");
 }
+
+/// A backup named in capitals (`BACKUP.SQL.GZ`, as some systems name files) is said to be gzip from its name, as a
+/// lower-case one is.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_name_in_capitals_says_its_compression() {
+    let k = kit().await;
+    let mut admin = k.s.admin().await;
+    for (name, word) in [("BACKUP.SQL.GZ", "gzip"), ("BACKUP.SQL.XZ", "xz"), ("BACKUP.ZIP", "zip")] {
+        let r = admin.post("/api/v1/imports", json!({ "name": name, "bytes_total": 1000 })).await;
+        assert_eq!(r.status, 201, "{}", r.text());
+        assert_eq!(r.json()["compression"], word, "{name}: {}", r.text());
+        let id = r.json()["id"].as_str().unwrap().to_string();
+        admin.request("DELETE", &format!("/api/v1/imports/{id}"), None, &[]).await;
+    }
+}

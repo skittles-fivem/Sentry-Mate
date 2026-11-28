@@ -634,7 +634,7 @@ export async function mount(ctx) {
           ? h('div', { class: 'row ss-acts' },
             h('button', { class: 'btn btn--sm', type: 'button', onclick: () => newRecoveryCodes() }, 'New recovery codes'),
             h('button', { class: 'btn btn--sm btn--ghost', type: 'button', onclick: () => turnOffTwoStep() }, 'Turn off'))
-          : h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: () => turnOnTwoStep() }, 'Turn on'));
+          : h('button', { class: 'btn btn--sm btn--primary', type: 'button', onclick: once(() => turnOnTwoStep()) }, 'Turn on'));
     const rule = admin && S.policy ? setting('Where it is required', 'The rule for every account, not for one: set here by an admin.',
       h('div', { class: 'ss-rule' },
         h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'rule-everyone', checked: !!S.policy.everyone, onchange: (e) => saveRule('everyone', e.target) }), h('span', null, 'Require it for every account')),

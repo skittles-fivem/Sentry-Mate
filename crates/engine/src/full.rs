@@ -296,6 +296,10 @@ pub struct FullRecord {
     /// Test only: fail at this phase.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fail_at: Option<Phase>,
+    /// The car under way was switched with its keys or source order changed during the run: the whole rebuild owed
+    /// for it (kept from just before its shadow goes until the next car, so a stop between them still owes it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    switch_redo: bool,
 }
 
 impl FullRecord {
@@ -622,6 +626,7 @@ impl Engine {
             causes,
             hold,
             fail_at: *lock(&self.inner.full_fail_at),
+            switch_redo: false,
         };
         self.full_put(&r)?;
         if !r.held(now) {
@@ -1079,6 +1084,7 @@ impl Engine {
             r.car_base_logs = r.logs_done;
             r.car_base_bytes = r.bytes_done;
             r.car_base_failed = r.logs_failed;
+            r.switch_redo = false;
         })?;
         Ok(())
     }
@@ -1090,8 +1096,12 @@ impl Engine {
         let shadow = match (r.phase, db.open_shadow(SHADOW)?) {
             (Phase::Decoding | Phase::Days | Phase::Switching, Some(s)) if s.car(car)?.is_some() => s,
             // the shadow goes only once the switch is done: a stop after that and before the next car is a car done,
-            // not one to copy and decode again
-            (Phase::Switching, None) => return Ok(true),
+            // not one to copy and decode again; what follows a switch is asked again (a positions note is kept with
+            // the car and done by the car's reconcile)
+            (Phase::Switching, None) => {
+                self.full_after_switch(car, r.switch_redo, false)?;
+                return Ok(true);
+            }
             _ => {
                 self.full_phase(Phase::Copying)?;
                 self.full_seed(car)?
@@ -1117,6 +1127,11 @@ impl Engine {
                 let mut full = lock(&self.inner.full);
                 full.job = Some(job.clone());
                 full.shadow = Some(se.clone());
+            }
+            // a pause or cancel pressed while the car was copied (no job then to stop): the job is stopped before its
+            // first log (the record is read after the job is set, as the pause reads the job after the record)
+            if self.full_cancelled() {
+                job.cancel_now();
             }
             let res = se.reconcile_car(car, Some(&job));
             lock(&self.inner.full).shadow = None;
@@ -1388,6 +1403,7 @@ impl Engine {
             (redo, positions)
         };
         lock(&self.inner.version_stale).remove(&car);
+        self.full_edit(|r| r.switch_redo = redo)?;
         db.remove_shadow(SHADOW)?;
         self.full_edit(|r| r.last_progress_ms = now_ms())?;
         self.emit(Event::Rows {
@@ -1399,8 +1415,12 @@ impl Engine {
         if let Ok(now) = crate::query::now::now_view(self, car) {
             self.emit(Event::Now { car, now: Box::new(now) });
         }
-        // the logs that came during the rebuild (not recorded in the new history), the API data that came, the
-        // days' readings and long periods worked out again ahead
+        self.full_after_switch(car, redo, positions)
+    }
+
+    /// What follows a car's switch: the logs that came during the rebuild (not recorded in the new history), the API
+    /// data that came, the days' readings and long periods worked out again ahead.
+    fn full_after_switch(&self, car: CarId, redo: bool, positions: bool) -> Result<()> {
         if redo {
             self.rebuild_because(
                 crate::Scope::car(car),

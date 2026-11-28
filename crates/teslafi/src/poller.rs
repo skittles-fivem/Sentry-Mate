@@ -461,6 +461,13 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             if let Some(t) = &mut self.pacing.last_new_ms {
                 *t = t.saturating_sub(back);
             }
+            // the charge costs' check and wait too (`retried` is a day, not a time)
+            let c = &mut self.pacing.costs;
+            c.next_check_ms = c.next_check_ms.saturating_sub(back);
+            c.wait_until_ms = c.wait_until_ms.saturating_sub(back);
+            if let Some(t) = &mut c.last_check_ms {
+                *t = t.saturating_sub(back);
+            }
             self.last_seen = None;
             (self.last_offset, self.steady_offset_ms) = (None, None);
             if let Some(t) = &mut self.last_ok_ms {
@@ -829,6 +836,16 @@ impl<F: Feed, S: Sink> Poller<F, S> {
         }
         let records = match answer {
             Ok(r) => r,
+            // a day passed over asked again and not read (still too large, or any failure): it stays passed over, as
+            // said since it was first found, and the day's check follows at the next tick, not after a wait (a 429 is
+            // still waited out)
+            Err(e) if retry.is_some() => {
+                tracing::info!(account = %self.id, code = %e.code(), "a TeslaFi charge-log day passed over is still not read");
+                if let FeedError::RateLimited { retry_after_s } = e {
+                    self.rate_limited(now_ms, retry_after_s);
+                }
+                return;
+            }
             Err(e) => {
                 tracing::warn!(account = %self.id, code = %e.code(), "teslafi charge costs request failed");
                 let message = match &e {

@@ -565,6 +565,9 @@ async fn account_answer(app: &AppState, id: String) -> ApiResult<Value> {
     .await
 }
 
+/// How an audit entry says a change of an account's zone ([`zone_changes`] reads it back).
+const ZONE_SAID: &str = "set its time zone to ";
+
 fn label_of(body: &JsonBody) -> ApiResult<Option<String>> {
     let Some(l) = body.str("label")? else { return Ok(None) };
     if l.trim().is_empty() {
@@ -572,6 +575,10 @@ fn label_of(body: &JsonBody) -> ApiResult<Option<String>> {
     }
     if l.chars().count() > MAX_LABEL {
         return Err(ApiError::invalid("label", "At most 64 characters."));
+    }
+    // (the audit entries name the account by its label, and a change of its zone is read back from them)
+    if l.to_lowercase().contains(ZONE_SAID) {
+        return Err(ApiError::invalid("label", "Must not say \"set its time zone to\"."));
     }
     Ok(Some(l.trim().to_string()))
 }
@@ -875,7 +882,7 @@ fn zone_changes(app: &AppState, id: &str) -> ApiResult<Vec<ZoneChange>> {
             if e.action != "teslafi-account-changed" || !e.details.starts_with(&tag) {
                 continue;
             }
-            let Some((_, rest)) = e.details.split_once("set its time zone to ") else { continue };
+            let Some((_, rest)) = e.details.split_once(ZONE_SAID) else { continue };
             let zone = rest.split([',', '.', ' ']).next().unwrap_or_default().trim();
             let was = rest
                 .split_once(" (from ")
@@ -883,7 +890,12 @@ fn zone_changes(app: &AppState, id: &str) -> ApiResult<Vec<ZoneChange>> {
                 .map(|(w, _)| w.trim())
                 .filter(|w| teslafi::time_zone_ok(w))
                 .map(str::to_string);
-            out.push((e.t_ms, teslafi::time_zone_ok(zone).then(|| zone.to_string()), was));
+            let zone = teslafi::time_zone_ok(zone).then(|| zone.to_string());
+            // (a zone set to the one the times were read in already: nothing was read otherwise)
+            if zone.is_some() && zone == was {
+                continue;
+            }
+            out.push((e.t_ms, zone, was));
             if out.len() >= 2 {
                 return Ok(out);
             }
@@ -905,7 +917,8 @@ fn zone_now(s: &TeslafiService, a: &Account) -> String {
 
 /// `GET .../accounts/{account}/redate`: what dating its stored data again starts from: the zone its times are read
 /// in now, when that was last set (from the audit log; `null` when the log has no change of it) and the zone it was
-/// read in before (as the change says it, else the zone of the change before that; not known: the server's default).
+/// read in before (as the change says it, else the zone of the change before that; the server's default when the
+/// zone was never changed; else `null`: not known).
 async fn redate_defaults(
     State(app): State<AppState>,
     Admin(_): Admin,
@@ -928,10 +941,12 @@ async fn redate_defaults(
         Ok(Json(json!({
             "zone": zone_now(&s, &a),
             "before_ms": before_ms,
+            // (the server's zone only when the account's zone was never changed: after a change the log does not
+            // say the zone of, an entry written before changes said it, it is not known and the admin gives it)
             "zone_before": said
                 .or_else(|| changes.first().and_then(|c| c.2.clone()))
                 .or_else(|| changes.get(1).and_then(|c| c.1.clone()))
-                .unwrap_or_else(|| s.default_time_zone()),
+                .or_else(|| changes.is_empty().then(|| s.default_time_zone())),
         })))
     })
     .await

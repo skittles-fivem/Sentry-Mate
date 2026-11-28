@@ -294,3 +294,86 @@ fn a_stop_after_the_shadow_went_is_a_car_switched_not_decoded_again() {
         assert!(again.full_rebuild_windows() == 0, "the car switched already was copied and decoded again");
     });
 }
+
+/// The same stop with the car's keys or source order changed during the run (the switch owes a whole rebuild): the
+/// whole rebuild is still asked after the restart, not lost with the shadow.
+#[test]
+fn a_stop_after_the_shadow_went_still_owes_the_whole_rebuild_a_key_change_asked() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        send_all(&k).await;
+        k.engine.idle().await;
+        let car = the_car(&k);
+        k.engine.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+        let r = full_done(&k.engine).await;
+        assert_eq!(r.status, engine::full::FullStatus::Done);
+        k.engine.idle().await;
+        let mut rec: serde_json::Value =
+            serde_json::from_slice(&k.db.kv().get("engine", "full-rebuild").unwrap().unwrap()).unwrap();
+        rec["status"] = serde_json::json!("running");
+        rec["phase"] = serde_json::json!("switching");
+        rec["index"] = serde_json::json!(0);
+        rec["finished_ms"] = serde_json::Value::Null;
+        rec["switch_redo"] = serde_json::json!(true);
+        k.db.kv().put("engine", "full-rebuild", &serde_json::to_vec(&rec).unwrap()).unwrap();
+        let again = Engine::new(k.db.clone(), k.store.clone(), Options { workers: 2, ..Options::default() });
+        let before: Vec<u64> = again.jobs().iter().map(|j| j.id).collect();
+        again.start().unwrap();
+        let r2 = full_done(&again).await;
+        assert_eq!(r2.status, engine::full::FullStatus::Done);
+        let whole = again.jobs().into_iter().find(|j| {
+            !before.contains(&j.id)
+                && j.car == Some(car)
+                && j.kind == "car"
+                && j.causes.iter().any(|c| c.code == "full_rebuild")
+        });
+        assert!(whole.is_some(), "no whole rebuild asked after the restart: {:#?}", again.jobs());
+        again.idle().await;
+    });
+}
+
+/// A Pause pressed while the car is copied beside its history (no decoding job yet to stop): the decoding that follows
+/// stops before its logs, not after all of them.
+#[test]
+fn a_pause_pressed_while_the_car_is_copied_stops_it_before_its_decoding() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        send_all(&k).await;
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let e = k.engine.clone();
+        let at_exit = Arc::new(AtomicU64::new(u64::MAX));
+        let (e2, a2) = (e.clone(), at_exit.clone());
+        e.full_rebuild_exit_hook(Some(Arc::new(move || {
+            let r = e2.full_rebuild_status().unwrap().unwrap();
+            a2.store(r.logs_done, Ordering::SeqCst);
+        })));
+        e.full_rebuild_hold_at(Some(engine::full::Phase::Copying));
+        e.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+        let mut met = false;
+        for _ in 0..20_000 {
+            let r = e.full_rebuild_status().unwrap().unwrap();
+            if r.phase == engine::full::Phase::Copying {
+                met = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        assert!(met, "never at Copying");
+        e.full_rebuild_when(engine::full::When::Pause).unwrap();
+        e.full_rebuild_hold_at(None);
+        for _ in 0..60_000 {
+            if at_exit.load(Ordering::SeqCst) != u64::MAX {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let done = at_exit.load(Ordering::SeqCst);
+        e.cancel_full_rebuild().unwrap();
+        let _ = full_done(&e).await;
+        assert!(done != u64::MAX, "the worker never exited");
+        assert!(done < N, "the pause pressed while copying did not stop the decoding: {done}/{N} logs decoded");
+    });
+}

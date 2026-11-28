@@ -21,7 +21,7 @@ use crate::cache::{KeyLocks, Lru};
 use crate::ledger::{self, Change, Head, Ledger};
 use crate::store::Store;
 use crate::store::now_ms;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
@@ -579,6 +579,12 @@ struct Mirrors {
     /// Each with how many records it holds.
     keys: Vec<(String, Arc<RwLock<Mirror>>, usize)>,
     budget: usize,
+    /// Keys found to hold more records than the budget, with the generation of their files then: read from their
+    /// files without trying again to mirror them until their files are folded into another generation (else every
+    /// read of such a key read the budget's worth of records first, to throw them away).
+    over: HashMap<String, u64>,
+    /// Mirrors made from the files, or tried (tests).
+    tries: u64,
 }
 
 impl Mirrors {
@@ -616,7 +622,7 @@ impl Shared {
         Shared {
             heads: Mutex::new(Lru::new(CACHED_HEADS)),
             locks: KeyLocks::new(),
-            mirrors: Mutex::new(Mirrors { keys: Vec::new(), budget: MIRRORED_RECORDS }),
+            mirrors: Mutex::new(Mirrors { keys: Vec::new(), budget: MIRRORED_RECORDS, over: HashMap::new(), tries: 0 }),
         }
     }
 
@@ -971,7 +977,14 @@ impl Ctx {
         if head.stamp.is_none() {
             return Ok(None);
         }
-        let budget = self.shared.mirrors().budget;
+        let budget = {
+            let mut all = self.shared.mirrors();
+            if all.over.get(key) == Some(&head.generation) {
+                return Ok(None);
+            }
+            all.tries += 1;
+            all.budget
+        };
         let mut logs = BTreeMap::new();
         let mut over = false;
         self.ledger(key).for_each(head, |name, r| {
@@ -984,6 +997,7 @@ impl Ctx {
         })?;
         if over {
             self.shared.forget_mirror(key);
+            self.shared.mirrors().over.insert(key.to_string(), head.generation);
             return Ok(None);
         }
         let n = logs.len();
@@ -1129,6 +1143,7 @@ impl Judge {
     pub fn mirror_size(self, records: usize) -> Judge {
         let mut m = self.shared.mirrors();
         m.budget = records;
+        m.over.clear();
         m.trim();
         drop(m);
         self
@@ -1152,6 +1167,12 @@ impl Judge {
     }
 
     /// Keys whose records are in memory now, and how many records that is.
+    /// How many times a key's records were read from its files to mirror them (tests).
+    #[doc(hidden)]
+    pub fn mirror_tries(&self) -> u64 {
+        self.shared.mirrors().tries
+    }
+
     pub fn mirrored(&self) -> (usize, usize) {
         let m = self.shared.mirrors();
         (m.keys.len(), m.total())

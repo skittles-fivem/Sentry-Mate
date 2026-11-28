@@ -130,7 +130,7 @@ def patch_settings(req):
         if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
             bad["car_order"] = "Must be a list of car ids."
         elif any(not req.ds.exists(c) for c in v):
-            rule["car_order"] = "Unknown car in the list."
+            rule["car_order"] = "No such car."
         else:
             new["car_order"] = list(dict.fromkeys(v))
     if "host_names" in body:
@@ -168,14 +168,22 @@ def patch_settings(req):
     if bad:
         raise bad_input(bad)
     g, t = new["geocode"], new["tiles"]
+    # (trimmed, as the real server keeps them)
+    g["language"] = g["language"].strip()
+    if isinstance(t.get("attribution"), str):
+        t["attribution"] = t["attribution"].strip()
+    if "car_order" in new and len(new["car_order"]) > 10_000:
+        rule["car_order"] = "At most 10000 cars."
     if g["mode"] == "online" and not _https_url(g.get("url")):
         rule["geocode.url"] = "Online address lookup needs an https:// address of the service."
     if g.get("url") is not None and not _https_url(g["url"]):
         rule["geocode.url"] = "An https:// address, or null."
     if not 0 <= g["rounding_m"] <= 1000:
         rule["geocode.rounding_m"] = "Must be between 0 and 1000 m."
-    if not 2 <= len(g["language"]) <= 10:
+    if not 2 <= len(g["language"]) <= 10 or not re.fullmatch(r"[A-Za-z0-9_-]+", g["language"]):
         rule["geocode.language"] = "A language code such as en or de."
+    if len(t.get("attribution") or "") > 300:
+        rule["tiles.attribution"] = "At most 300 characters."
     if t["mode"] == "online" and not _https_url(t.get("online_url"), template=True):
         rule["tiles.online_url"] = "An https:// tile address with {z}, {x} and {y}."
     px = new["outbound"].get("proxy")
