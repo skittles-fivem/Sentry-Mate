@@ -685,3 +685,24 @@ async fn two_follow_ups_at_once_write_one_entry() {
     assert_eq!(did.iter().filter(|d| **d).count(), 1, "one did it, the other found nothing owed: {did:?}");
     assert_eq!(redated(&audit_actions(&mut admin).await).len(), 1);
 }
+
+/// An account added with a zone, then set to another: the re-dating starts from the zone it was read in (not the
+/// server's default, though the log has no change before).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_zone_before_is_the_zone_the_account_had_before_its_first_change() {
+    let w = world().await;
+    let a = seed(&w); // time_zone: America/Chicago, as added
+    let mut admin = w.s.admin().await;
+    let one = format!("/api/v1/integrations/teslafi/accounts/{}", a.id);
+    let items = json!([{ "vehicle": "fv1", "match": format!("c{}", w.car) }]);
+    let r = admin.put(&format!("{one}/cars"), json!({ "version": a.version, "items": items })).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let version = r.json()["version"].as_u64().unwrap();
+    let r = admin
+        .patch(&one, json!({ "version": version, "time_zone": "Europe/Oslo", "confirm_password": ADMIN_PASSWORD }))
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let d = admin.get(&format!("{one}/redate")).await;
+    assert_eq!(d.status, 200, "{}", d.text());
+    assert_eq!(d.json()["zone_before"], "America/Chicago", "{}", d.text());
+}

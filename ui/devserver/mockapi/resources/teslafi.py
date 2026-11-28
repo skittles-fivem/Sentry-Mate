@@ -366,7 +366,8 @@ def patch_account(req):
             what.append(f"renamed it from {a['label']}")
             a["label"] = label
         if zone is not ... and zone != a["time_zone"]:
-            what.append("set its time zone to " + (zone or "the server's default"))
+            was = a["time_zone"] or req.store.server_settings.get("default_time_zone") or "UTC"
+            what.append("set its time zone to " + (zone or "the server's default") + f" (from {was})")
             a["time_zone"] = zone
         if what:
             st.record(req.account, "teslafi-account-changed", target,
@@ -468,15 +469,16 @@ def put_cars(req):
 
 
 def _zone_changes(req, a):
-    """The changes of the account's zone in the audit log, newest first: (when, the zone set; None: the default)."""
+    """The changes of the account's zone in the audit log, newest first: (when, the zone set; None: the default, the
+    zone read in until then where the entry says it)."""
     out = []
     for e in sorted(req.store.audit, key=lambda e: e["at_ms"], reverse=True):
         if e["action"] != "teslafi-account-changed" or e.get("target") != f"teslafi:{a['id']}":
             continue
-        m = re.search(r"set its time zone to ([^,.]+)", e.get("summary") or "")
+        m = re.search(r"set its time zone to ([^,.(]+?)(?: \(from ([^)]+)\))?(?:[,.]|$)", e.get("summary") or "")
         if m:
-            z = m.group(1).strip()
-            out.append((e["at_ms"], z if z in ZONES else None))
+            z, was = m.group(1).strip(), (m.group(2) or "").strip()
+            out.append((e["at_ms"], z if z in ZONES else None, was if was in ZONES else None))
     return out
 
 
@@ -487,7 +489,7 @@ def _zone_now(req, a):
 def get_redate(req):
     a = _account(req)
     ch = _zone_changes(req, a)
-    before = ch[1][1] if len(ch) > 1 else None
+    before = (ch[0][2] if ch else None) or (ch[1][1] if len(ch) > 1 else None)
     # (the zone the data is in now, once a re-dating said it)
     cars = {c["match"] for c in a["cars"] if _matched(c)}
     before = next((d["zone"] for d in reversed(a.get("redated", [])) if d["car"] in cars), None) or before
