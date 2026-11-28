@@ -813,9 +813,19 @@ async fn change(
     if let Some(z) = &time_zone
         && *z != before.time_zone
     {
-        // (the zone it was read in until now too: the zone a re-dating starts from, [`redate_defaults`])
+        // (the zone it was read in until now too: the zone a re-dating starts from, [`redate_defaults`]); the zone
+        // it is read in unchanged (its own set to the server's default or back) is said otherwise, never read as a
+        // change of the zone
         let was = before.time_zone.clone().unwrap_or_else(|| s.default_time_zone());
-        what.push(format!("set its time zone to {} (from {was})", z.as_deref().unwrap_or("the server's default")));
+        let is = z.clone().unwrap_or_else(|| s.default_time_zone());
+        what.push(match z {
+            _ if is == was && z.is_none() => {
+                format!("made it follow the server's default time zone ({was}, as before)")
+            }
+            _ if is == was => format!("gave it {was} as its own time zone (as before, from the server's default)"),
+            Some(z) => format!("{ZONE_SAID}{z} (from {was})"),
+            None => format!("{ZONE_SAID}the server's default (from {was})"),
+        });
     }
     if !what.is_empty() {
         let summary = format!("Changed the TeslaFi account {}: {}.", after.label, what.join(", "));

@@ -366,8 +366,14 @@ def patch_account(req):
             what.append(f"renamed it from {a['label']}")
             a["label"] = label
         if zone is not ... and zone != a["time_zone"]:
-            was = a["time_zone"] or req.store.server_settings.get("default_time_zone") or "UTC"
-            what.append("set its time zone to " + (zone or "the server's default") + f" (from {was})")
+            dflt = req.store.server_settings.get("default_time_zone") or "UTC"
+            was, now = a["time_zone"] or dflt, zone or dflt
+            if now == was and zone is None:
+                what.append(f"made it follow the server's default time zone ({was}, as before)")
+            elif now == was:
+                what.append(f"gave it {was} as its own time zone (as before, from the server's default)")
+            else:
+                what.append("set its time zone to " + (zone or "the server's default") + f" (from {was})")
             a["time_zone"] = zone
         if what:
             st.record(req.account, "teslafi-account-changed", target,
