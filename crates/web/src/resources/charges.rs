@@ -155,6 +155,8 @@ async fn put_cost(
     let (Some(mode), Some(amount), Some(currency)) = (mode, amount, currency) else {
         return Err(ApiError::bad_input("mode", "Required."));
     };
+    // (-0 is 0: never kept, answered or written in the audit log as "-0")
+    let amount = amount + 0.0;
     let mut rule = Fields::new();
     let m = costs::Mode::parse(mode);
     if m.is_none() {

@@ -854,3 +854,25 @@ async fn one_decoded_day_gives_drives_and_a_charge_on_the_api() {
     let mut anon = s.client();
     assert_eq!(anon.get(&format!("/api/v1/cars/{car}/charges")).await.status, 401);
 }
+
+/// A cost typed as minus zero (`-0`, `-0.0`) is kept and answered as 0, never "-0".
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cost_of_minus_zero_is_zero() {
+    let s = seeded().await;
+    let mut admin = s.s.admin().await;
+    let a = s.cars[0].clone();
+    let list = ok(&mut admin, &format!("/api/v1/cars/{a}/charges?limit=1")).await;
+    let id = list["items"][0]["id"].as_str().unwrap().to_string();
+    let cost = format!("/api/v1/cars/{a}/charges/{id}/cost");
+    for raw in
+        [r#"{"mode":"total","amount":-0,"currency":"USD"}"#, r#"{"mode":"total","amount":-0.0,"currency":"USD"}"#]
+    {
+        let r = admin.request("PUT", &cost, Some(raw.as_bytes()), &[("Content-Type", "application/json")]).await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert!(!r.text().contains("-0"), "{raw}: {}", r.text());
+        let d = ok(&mut admin, &format!("/api/v1/cars/{a}/charges/{id}")).await;
+        assert!(!d.to_string().contains("-0"), "{raw}: {d}");
+    }
+    let audit = admin.get("/api/v1/audit?limit=5").await.text();
+    assert!(!audit.contains(": -0 "), "{audit}");
+}
