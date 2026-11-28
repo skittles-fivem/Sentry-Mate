@@ -656,3 +656,25 @@ async fn the_records_in_memory_are_the_records_on_disk() {
     Judge::alone(t.store.clone()).rejudge_all(KEY).await.unwrap();
     same(&judge, &disk(), "judged again by another process").await;
 }
+
+/// A key with more records than all mirrors may hold is read from its files: it is not read whole again at every
+/// look to find that it is still too big, and each record is still found.
+#[tokio::test]
+async fn a_key_too_big_to_mirror_is_not_read_whole_at_every_look() {
+    let key = SigningKey::from_slice(&Sha256::digest(b"made-up key too big to mirror")).unwrap();
+    let logs = chain_of(&key, 12);
+    let t = setup();
+    let judge = Judge::new(t.store.clone()).mirror_size(5);
+    for (name, log, side) in &logs {
+        arrive(&t, &judge, name, log).await;
+        arrive(&t, &judge, &format!("{name}.json"), side).await;
+    }
+    let before = judge.mirror_tries();
+    for _ in 0..3 {
+        for (name, ..) in &logs {
+            assert!(judge.record(KEY, name).await.is_some(), "{name}");
+        }
+    }
+    assert_eq!(judge.mirrored(), (0, 0));
+    assert!(judge.mirror_tries() - before <= 1, "read whole {} times for 36 looks", judge.mirror_tries() - before);
+}
