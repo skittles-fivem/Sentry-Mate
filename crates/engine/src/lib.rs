@@ -1054,6 +1054,12 @@ impl LiveWait {
     }
 }
 
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
 #[cfg(test)]
 mod live_wait_tests {
     use super::*;
@@ -1112,10 +1118,4 @@ mod live_wait_tests {
         assert_eq!(got.load(Ordering::SeqCst), 1);
         waiter.join().ok();
     }
-}
-
-pub(crate) fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
