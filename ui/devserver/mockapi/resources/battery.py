@@ -504,7 +504,8 @@ def get_efficiency(req):
     h = req.history()
     out = {"car": req.car, "time_zone": req.tz(), "from_ms": a, "to_ms": min(b, req.now), "temp_group_c": group,
            "min_distance_km": min_d}
-    empty = {"net_wh_per_km": None, "gross_wh_per_km": None, "parked_kwh": 0.0, "distance_km": 0.0, "drives": 0,
+    empty = {"net_wh_per_km": None, "gross_wh_per_km": None, "energy_kwh": 0.0, "parked_kwh": 0.0, "distance_km": 0.0,
+             "drives": 0,
              "without_energy": 0, "estimated_drives": 0, "all_drives": {"drives": 0, "distance_km": 0.0, "energy_kwh": 0.0},
              "by_temperature": [], "no_temperature": {"drives": 0, "distance_km": 0.0},
              "factor": {"rated_wh_per_km": None, "ideal_wh_per_km": None, "source": None, "readings": 0,
