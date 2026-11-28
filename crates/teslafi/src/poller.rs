@@ -801,7 +801,13 @@ impl<F: Feed, S: Sink> Poller<F, S> {
     async fn costs_step(&mut self, now_ms: u64) {
         let today = (now_ms / 86_400_000) as i64;
         self.pacing.costs.requests_today += 1;
-        let (from, to) = if self.pacing.costs.backfill_done {
+        // once the backfill is done, a day passed over as too large is asked alone again, one a day in turn, before
+        // that day's check (which then follows at the next tick)
+        let retry = self.pacing.costs.retry_due(today);
+        let (from, to) = if let Some(d) = retry {
+            self.pacing.costs.retried = Some((today, d));
+            (d, d)
+        } else if self.pacing.costs.backfill_done {
             (today - crate::costs::CHECK_DAYS, today)
         } else {
             let before = self.pacing.costs.backfill_before.unwrap_or(today + 1);
@@ -841,6 +847,9 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                     // works), the backfill goes on before it
                     let c = &mut self.pacing.costs;
                     c.backfill_before = Some(from);
+                    // a day with charges in it: the run of empty days ends there
+                    c.empty_days = 0;
+                    c.empty_chunks = 0;
                     if let Err(i) = c.skipped_days.binary_search(&from) {
                         c.skipped_days.insert(i, from);
                     }
@@ -876,7 +885,9 @@ impl<F: Feed, S: Sink> Poller<F, S> {
                 c.errors = 0;
                 // the days passed over stay said, but for those this answer read
                 c.skipped_days.retain(|d| !(from..=to).contains(d));
-                c.last_error = c.skipped_error(now_ms);
+                // still said since it was first (or last) found too large, not as new at every read
+                let since = c.last_error.as_ref().filter(|e| e.code == "too_large").map_or(now_ms, |e| e.at_ms);
+                c.last_error = c.skipped_error(since);
                 // an answer that fit: the next window twice as long again, up to a whole chunk
                 if !c.backfill_done {
                     c.chunk_days = c.chunk_days.map(|d| d * 2).filter(|d| *d < crate::costs::CHUNK_DAYS);
@@ -890,7 +901,9 @@ impl<F: Feed, S: Sink> Poller<F, S> {
             }
         }
         let c = &mut self.pacing.costs;
-        if c.backfill_done {
+        if retry.is_some() {
+            // the day's check is still due
+        } else if c.backfill_done {
             c.last_check_ms = Some(now_ms);
             c.next_check_ms = now_ms + self.cadence.invoice_check_ms;
         } else {

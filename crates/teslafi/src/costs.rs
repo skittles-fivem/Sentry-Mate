@@ -11,7 +11,8 @@
 //! The backfill reads the log [`CHUNK_DAYS`] at a time back from today until two chunks' worth of days in a row hold
 //! no charge (or 2012); a window whose answer is larger than [`crate::http::HISTORY_CAP`] is asked again in halves
 //! (down to a day), and the window doubles again after each answer that fits. A single day larger than that is
-//! passed over and kept ([`Progress::skipped_days`]): its error stays until a read of it works. Then the last
+//! passed over and kept ([`Progress::skipped_days`]): its error stays until a read of it works, and once the backfill
+//! is done each such day is asked alone again, one a day. Then the last
 //! [`CHECK_DAYS`] days once a day, and soon after a charge ends. One request per tick, in the poller's gap
 //! ([`crate::poller`]); TeslaFi's 429 is waited out there as for the polls.
 
@@ -45,6 +46,9 @@ pub struct Progress {
     /// costs not read, and said so ([`Progress::skipped_error`]) until a later read of them works.
     #[serde(default)]
     pub skipped_days: Vec<i64>,
+    /// The last day passed over that was asked alone again, and when (`(today, day)`, days since the epoch).
+    #[serde(default)]
+    pub retried: Option<(i64, i64)>,
     #[serde(default)]
     pub last_check_ms: Option<u64>,
     #[serde(default)]
@@ -71,6 +75,17 @@ impl Progress {
             (Some(_), false) => "running",
             (Some(_), true) => "done",
         }
+    }
+
+    /// The day passed over to ask alone again `today`, once the backfill is done: one a day, each in turn, and none
+    /// that the day's check reads anyway.
+    pub fn retry_due(&self, today: i64) -> Option<i64> {
+        if !self.backfill_done || self.retried.is_some_and(|(on, _)| on == today) {
+            return None;
+        }
+        let old = self.skipped_days.iter().copied().filter(|d| *d < today - CHECK_DAYS);
+        let after = self.retried.map(|(_, d)| d);
+        old.clone().find(|d| after.is_some_and(|a| *d > a)).or_else(|| old.min())
     }
 
     /// The error that stays while days are passed over ([`Progress::skipped_days`]).
@@ -164,7 +179,8 @@ fn num(v: &Value, keys: &[&str]) -> Option<f64> {
     keys.iter()
         .find_map(|k| match v.get(*k)? {
             Value::Number(n) => n.as_f64(),
-            Value::String(s) => s.trim().trim_start_matches(['$', '€', '£']).replace(',', "").parse().ok(),
+            // either decimal mark, as for a cost on the same row ([`amount`])
+            Value::String(s) => amount(s),
             _ => None,
         })
         .filter(|x| x.is_finite())
