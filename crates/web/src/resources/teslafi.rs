@@ -905,7 +905,8 @@ fn zone_now(s: &TeslafiService, a: &Account) -> String {
 
 /// `GET .../accounts/{account}/redate`: what dating its stored data again starts from: the zone its times are read
 /// in now, when that was last set (from the audit log; `null` when the log has no change of it) and the zone it was
-/// read in before (as the change says it, else the zone of the change before that; not known: the server's default).
+/// read in before (as the change says it, else the zone of the change before that; the server's default when the
+/// zone was never changed; else `null`: not known).
 async fn redate_defaults(
     State(app): State<AppState>,
     Admin(_): Admin,
@@ -928,10 +929,12 @@ async fn redate_defaults(
         Ok(Json(json!({
             "zone": zone_now(&s, &a),
             "before_ms": before_ms,
+            // (the server's zone only when the account's zone was never changed: after a change the log does not
+            // say the zone of, an entry written before changes said it, it is not known and the admin gives it)
             "zone_before": said
                 .or_else(|| changes.first().and_then(|c| c.2.clone()))
                 .or_else(|| changes.get(1).and_then(|c| c.1.clone()))
-                .unwrap_or_else(|| s.default_time_zone()),
+                .or_else(|| changes.is_empty().then(|| s.default_time_zone())),
         })))
     })
     .await

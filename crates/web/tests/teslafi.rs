@@ -706,3 +706,20 @@ async fn the_zone_before_is_the_zone_the_account_had_before_its_first_change() {
     assert_eq!(d.status, 200, "{}", d.text());
     assert_eq!(d.json()["zone_before"], "America/Chicago", "{}", d.text());
 }
+
+/// A zone change logged before changes said the zone they replaced (no "(from ...)") and no change before it: the zone
+/// before is not known, so none is given (not the server's, which would move the data by a wrong offset).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_zone_before_an_old_change_that_does_not_say_it_is_not_guessed() {
+    let w = world().await;
+    let a = seed(&w);
+    let mut admin = w.s.admin().await;
+    let one = format!("/api/v1/integrations/teslafi/accounts/{}", a.id);
+    let details =
+        format!("[teslafi:{}] Changed the TeslaFi account {}: set its time zone to America/Chicago.", a.id, a.label);
+    w.s.app.accounts.audit().record(Some("admin"), None, "teslafi-account-changed", &details).unwrap();
+    let d = admin.get(&format!("{one}/redate")).await;
+    assert_eq!(d.status, 200, "{}", d.text());
+    assert!(d.json()["before_ms"].is_u64(), "{}", d.text());
+    assert_eq!(d.json()["zone_before"], Value::Null, "{}", d.text());
+}

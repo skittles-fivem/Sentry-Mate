@@ -267,8 +267,8 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
     const redateBtn = h('button', { class: 'btn btn--sm btn--ghost', type: 'button', onclick: async () => {
       let d = {};
       try { d = await ctx.api.get(`${BASE}/accounts/${enc(a.id)}/redate`); } catch (e) { flash(errorWords(e).text, { kind: 'error' }); return; }
-      const zb = field({ label: 'TeslaFi\'s times were read in', name: 'zone_before', path: 'zone_before', value: d.zone_before || 'UTC',
-        hint: 'The zone this server read TeslaFi\'s times in before (UTC when it was the server\'s own and the server runs in UTC).',
+      const zb = field({ label: 'TeslaFi\'s times were read in', name: 'zone_before', path: 'zone_before', value: d.zone_before || '',
+        hint: `The zone TeslaFi's times were read in before${d.zone_before ? '' : ' (the audit log does not say it)'}; if the account had no zone, the server's (UTC in the image).`,
         attrs: { list: 'tf-zones', autocomplete: 'off', spellcheck: 'false' } });
       const until = field({ label: 'For the data stored before', name: 'before', path: 'before_ms', type: 'datetime-local', required: true, value: localInput(d.before_ms),
         hint: `When the zone was set right (your time, ${tzName(LOCAL)}). ${d.before_ms ? 'From the audit log.' : 'The audit log has no change of the zone: give the moment.'} When TeslaFi's zone is east of the zone its times were read in (Europe/Berlin read as UTC), the last hours before the moment were stored after it: give a moment that much later.` });
@@ -278,7 +278,8 @@ export function teslafiSection(ctx, { cars = [] } = {}) {
         submit: 'Date it again', extra: [zb, until],
         run: guarded((cred, v) => {
           const z = v.zone_before.trim();
-          if (!zoneOk(z) || !z) { const e = new Error(); e.fields = { zone_before: `${z} is not a time zone. Pick one from the list, such as UTC.` }; throw e; }
+          if (!z) { const e = new Error(); e.fields = { zone_before: 'Give the zone TeslaFi\'s times were read in before.' }; throw e; }
+          if (!zoneOk(z)) { const e = new Error(); e.fields = { zone_before: `${z} is not a time zone. Pick one from the list, such as UTC.` }; throw e; }
           // the moment as the server gave it, to the millisecond, unless it was changed here
           const t = d.before_ms != null && v.before === localInput(d.before_ms) ? d.before_ms : new Date(v.before).getTime();
           if (!Number.isFinite(t)) { const e = new Error(); e.fields = { before_ms: 'Give the moment the zone was set right.' }; throw e; }

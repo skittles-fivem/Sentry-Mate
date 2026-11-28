@@ -494,7 +494,7 @@ def get_redate(req):
     cars = {c["match"] for c in a["cars"] if _matched(c)}
     before = next((d["zone"] for d in reversed(a.get("redated", [])) if d["car"] in cars), None) or before
     return {"zone": _zone_now(req, a), "before_ms": ch[0][0] if ch else None,
-            "zone_before": before or req.store.server_settings.get("default_time_zone") or "UTC"}
+            "zone_before": before or (None if ch else req.store.server_settings.get("default_time_zone") or "UTC")}
 
 
 def post_redate(req):
