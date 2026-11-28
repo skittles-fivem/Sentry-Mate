@@ -141,6 +141,20 @@ struct Job {
     done: Rezoned,
 }
 
+impl Job {
+    /// No data of the input stored before the cut: nothing for the job to move.
+    fn moves_nothing(&self) -> bool {
+        let s = &self.small;
+        self.days.is_empty()
+            && s.off_can_at_ms == 0
+            && s.versions.is_empty()
+            && s.now_at.is_empty()
+            && s.last_ms.is_none_or(|t| t >= self.cut)
+            && s.drives.is_empty()
+            && s.charges.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Done {
     from: String,
@@ -544,6 +558,11 @@ impl Engine {
             )));
         }
         let j = self.rezone_job(input, car, fz, tz, from, to, before_ms)?;
+        // nothing stored before the moment: nothing done, nothing noted in the ledger (it would say the data before
+        // it is in the new zone, and refuse the ask at the right moment) and nothing owed
+        if j.moves_nothing() {
+            return Ok(Rezoned::default());
+        }
         records::put(db, records::NS, &key, &j)?;
         self.rezone_wrote()?;
         self.rezone_run(input, car, &key, j)
