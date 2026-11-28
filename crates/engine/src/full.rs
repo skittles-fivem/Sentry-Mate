@@ -1128,6 +1128,11 @@ impl Engine {
                 full.job = Some(job.clone());
                 full.shadow = Some(se.clone());
             }
+            // a pause or cancel pressed while the car was copied (no job then to stop): the job is stopped before its
+            // first log (the record is read after the job is set, as the pause reads the job after the record)
+            if self.full_cancelled() {
+                job.cancel_now();
+            }
             let res = se.reconcile_car(car, Some(&job));
             lock(&self.inner.full).shadow = None;
             self.inner.full_windows.fetch_add(se.stats().windows_rebuilt, Ordering::SeqCst);

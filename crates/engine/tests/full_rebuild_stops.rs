@@ -332,3 +332,48 @@ fn a_stop_after_the_shadow_went_still_owes_the_whole_rebuild_a_key_change_asked(
         again.idle().await;
     });
 }
+
+/// A Pause pressed while the car is copied beside its history (no decoding job yet to stop): the decoding that follows
+/// stops before its logs, not after all of them.
+#[test]
+fn a_pause_pressed_while_the_car_is_copied_stops_it_before_its_decoding() {
+    let rt = rt();
+    rt.block_on(async {
+        let k = kit();
+        send_all(&k).await;
+        k.engine.idle().await;
+        let car = the_car(&k);
+        let e = k.engine.clone();
+        let at_exit = Arc::new(AtomicU64::new(u64::MAX));
+        let (e2, a2) = (e.clone(), at_exit.clone());
+        e.full_rebuild_exit_hook(Some(Arc::new(move || {
+            let r = e2.full_rebuild_status().unwrap().unwrap();
+            a2.store(r.logs_done, Ordering::SeqCst);
+        })));
+        e.full_rebuild_hold_at(Some(engine::full::Phase::Copying));
+        e.full_rebuild(Some(car), engine::full::Reason::Owner, None).unwrap();
+        let mut met = false;
+        for _ in 0..20_000 {
+            let r = e.full_rebuild_status().unwrap().unwrap();
+            if r.phase == engine::full::Phase::Copying {
+                met = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        assert!(met, "never at Copying");
+        e.full_rebuild_when(engine::full::When::Pause).unwrap();
+        e.full_rebuild_hold_at(None);
+        for _ in 0..60_000 {
+            if at_exit.load(Ordering::SeqCst) != u64::MAX {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let done = at_exit.load(Ordering::SeqCst);
+        e.cancel_full_rebuild().unwrap();
+        let _ = full_done(&e).await;
+        assert!(done != u64::MAX, "the worker never exited");
+        assert!(done < N, "the pause pressed while copying did not stop the decoding: {done}/{N} logs decoded");
+    });
+}
