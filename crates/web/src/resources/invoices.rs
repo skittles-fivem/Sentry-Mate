@@ -158,7 +158,7 @@ pub fn teslafi_block(e: &Engine, svc: &TeslafiService, enabled: bool) -> Value {
         "next_check_ms": if enabled { next_check } else { None },
         "requests_today": requests,
         "last_error": last_error,
-        "skipped_days": skipped,
+        "skipped_days": { skipped.sort(); skipped.dedup(); skipped },
     })
 }
 
